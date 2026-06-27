@@ -1,0 +1,38 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# Repo-wide CI gates that span the whole workspace rather than one package:
+# workspace rustfmt, the cargo-deny license/supply-chain fence, and biome across
+# all JS/TS/JSON. (This project also houses the Woodpecker pipeline + CI image.)
+layer: 'tool'
+language: 'bash'
+
+tasks:
+  fmt:
+    command: 'cargo fmt --check'
+    options:
+      runFromWorkspaceRoot: true
+    inputs:
+      - '/crates/**/*.rs'
+      - '/rustfmt.toml'
+  deny:
+    command: 'cargo deny check'
+    options:
+      runFromWorkspaceRoot: true
+    inputs:
+      - '/deny.toml'
+      - '/Cargo.lock'
+  biome:
+    command: 'bunx biome check .'
+    options:
+      runFromWorkspaceRoot: true
+    inputs:
+      - '/**/*.ts'
+      - '/**/*.json'
+      - '/biome.json'
+  ci:
+    deps:
+      - 'fmt'
+      - 'deny'
+      - 'biome'
+    options:
+      cache: false

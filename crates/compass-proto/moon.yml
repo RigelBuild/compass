@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+# The compass.v1 contract crate (generated gRPC client/server stubs + local
+# transport). System tasks — cargo from the devenv/proto toolchain on PATH;
+# moon owns the graph + affected detection. Rust compile caching is sccache's
+# job inside the cargo task, so these set cache: false.
+layer: 'library'
+language: 'rust'
+dependsOn: ['proto']
+
+tasks:
+  clippy:
+    command: 'cargo clippy -p compass-proto --all-targets -- -D warnings'
+    deps: ['proto:gen']
+    inputs: ['src/**/*', 'tests/**/*', 'Cargo.toml', '/Cargo.lock']
+    options:
+      cache: false
+  test:
+    command: 'cargo nextest run -p compass-proto'
+    deps: ['proto:gen']
+    inputs: ['src/**/*', 'tests/**/*', 'Cargo.toml', '/Cargo.lock']
+    options:
+      cache: false
+  ci:
+    deps: ['clippy', 'test']
+    options:
+      cache: false

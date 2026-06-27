@@ -1,0 +1,12 @@
+# Nextest config. The `ci` profile (selected via NEXTEST_PROFILE=ci) inherits
+# from [profile.default] and adds a JUnit report CI ingests for flaky-test and
+# timing trends.
+
+[profile.default]
+# Kill switch for hung tests: terminate any test still running after 5 SLOW
+# reports (~5 min wall clock) so a deadlock fails fast instead of stalling CI
+# until the job's hard cap.
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+[profile.ci.junit]
+path = "junit.xml"

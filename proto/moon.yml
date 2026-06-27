@@ -1,0 +1,67 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# The compass.v1 schema + the single buf codegen pipeline. Tasks run from the
+# workspace root so buf resolves buf.yaml / buf.gen.yaml; generated clients land
+# in compass-proto (Rust) and compass-client (TS), both checked in + drift-gated.
+layer: 'library'
+language: 'unknown'
+
+tasks:
+  install:
+    command: 'bun install --frozen-lockfile'
+    options:
+      runFromWorkspaceRoot: true
+      internal: true
+      cache: false
+      # Serialize with the other workspace bun installs — concurrent
+      # `bun install` on the same workspace race on node_modules.
+      mutex: 'bun-install'
+    inputs:
+      - '/package.json'
+      - '/bun.lock'
+  lint:
+    command: 'buf lint'
+    options:
+      runFromWorkspaceRoot: true
+    inputs:
+      - 'compass/**/*.proto'
+      - '/buf.yaml'
+  breaking:
+    # Gate incompatible schema edits against the merge target. CI passes
+    # --against the base ref; locally this is a no-op without an upstream.
+    command: 'buf breaking --against .git#ref=refs/remotes/origin/main,subdir=.'
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    inputs:
+      - 'compass/**/*.proto'
+      - '/buf.yaml'
+  gen:
+    command: 'buf generate'
+    deps:
+      - 'install'
+    options:
+      runFromWorkspaceRoot: true
+    inputs:
+      - 'compass/**/*.proto'
+      - '/buf.yaml'
+      - '/buf.gen.yaml'
+    outputs:
+      - '/crates/compass-proto/src/gen'
+      - '/packages/compass-client/src/gen'
+  drift:
+    # Regenerate (cached; reruns when the schema changes) then fail if the
+    # checked-in clients differ — i.e. someone edited the schema without
+    # committing regenerated clients.
+    command: 'git diff --exit-code -- crates/compass-proto/src/gen packages/compass-client/src/gen'
+    deps:
+      - 'gen'
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+  ci:
+    deps:
+      - 'lint'
+      - 'drift'
+    options:
+      cache: false

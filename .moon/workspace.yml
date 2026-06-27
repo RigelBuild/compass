@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/workspace.json
+#
+# moon workspace. One project per crate/package plus a `ci` project for the
+# repo-wide gates. Tasks are *system* tasks: they exec the toolchain the devenv
+# shell puts on PATH via proto (cargo/bun/buf/...), rather than moon managing
+# its own toolchain — proto (.prototools + rust-toolchain.toml) stays the single
+# version source. This mirrors the cargo-as-system posture.
+#
+# `moon run :ci --affected` is local CI; the same affected graph feeds the
+# Woodpecker dynamic-pipeline generator for remote fan-out — one job per
+# affected task, each body `moon run <project>:<task>`.
+projects:
+  proto: 'proto'
+  compass-proto: 'crates/compass-proto'
+  compass-daemon: 'crates/compass-daemon'
+  compass-client: 'packages/compass-client'
+  ui: 'apps/ui'
+  ci: 'ci'
+
+vcs:
+  client: 'git'
+  provider: 'github'
+  defaultBranch: 'main'

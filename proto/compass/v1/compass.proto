@@ -1,0 +1,32 @@
+// The compass.v1 contract — the single, sole, owned door between any UI and
+// the Compass daemon (compass.md §7.2). One gRPC service: typed unary commands
+// plus a server-streaming event channel, served over Connect so native (gRPC
+// over the local transport) and browser (gRPC-Web) clients share it.
+//
+// This scaffold defines the minimal liveness slice. The full M1 surface
+// (projects, named agents, PTY I/O, the SubscribeEvents stream with seq /
+// since_seq resubscribe) lands in SEA-1024 and grows behind the buf breaking
+// gate — generated clients are the only sanctioned way to reach the daemon.
+//
+// Package is versioned `compass.v1` so a future v2 schema bump doesn't have to
+// retrofit a version segment.
+
+syntax = "proto3";
+
+package compass.v1;
+
+// The Compass daemon service.
+service CompassService {
+  // Liveness probe plus the daemon's build + contract version. The first
+  // round-trip a UI makes after connecting over the local transport.
+  rpc GetDaemonInfo(GetDaemonInfoRequest) returns (GetDaemonInfoResponse);
+}
+
+message GetDaemonInfoRequest {}
+
+message GetDaemonInfoResponse {
+  // Daemon semantic version, e.g. "0.1.0".
+  string version = 1;
+  // The contract version this daemon serves, e.g. "compass.v1".
+  string api_version = 2;
+}

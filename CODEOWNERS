@@ -1,0 +1,11 @@
+# Default owner for the repository.
+* @mattwilkinsonn
+
+# The compass.v1 contract is the sole, owned door between any UI and the daemon.
+# The schema, the generated clients, and their build config require the contract
+# owner's review — a change here ripples to every client.
+/proto/                      @mattwilkinsonn
+/buf.yaml                    @mattwilkinsonn
+/buf.gen.yaml                @mattwilkinsonn
+/crates/compass-proto/       @mattwilkinsonn
+/packages/compass-client/    @mattwilkinsonn

@@ -1,0 +1,12 @@
+# Pins the Rust toolchain for every cargo invocation in this workspace, and
+# is the single Rust-version source (proto reads it via its rust plugin).
+#
+# Stable, not nightly: Compass has no nightly-only build needs. The daemon,
+# the compass.v1 contract crate, and the clients all build on stable. (The
+# WASM Warden runtime arrives later via the seal runtime, reached over the
+# compass.v1 contract, not built in this workspace.) Pinned to an exact
+# version rather than the rolling `stable` channel so CI caches survive
+# between releases; bumping is a deliberate, reviewed change.
+[toolchain]
+channel = "1.95.0"
+components = ["rustfmt", "clippy"]

@@ -1,0 +1,57 @@
+// Git hooks managed by hk (https://hk.jdx.dev).
+//
+// Only a pre-push hook is configured. Pre-commit is intentionally unused — jj
+// doesn't map cleanly to git's commit stage, so a pre-commit hook fires
+// inconsistently. The pre-push gate mirrors the cheap half of `moon run :ci`
+// (fmt, clippy, buf lint, biome, contract drift); the full graph — builds,
+// tests, cargo-deny — runs in CI.
+//
+// Bypass knobs:
+//   HK=0 git push           // skip all hooks (emergency)
+//   git push --no-verify    // hk respects this too
+amends "package://github.com/jdx/hk/releases/download/v1.48.0/hk@1.48.0#/Config.pkl"
+
+// Pin the default-branch reference. Without this, hk's auto-detect reads
+// refs/remotes/origin/HEAD, which isn't always set on a `jj workspace add`
+// clone, causing `hk run pre-push` to fail before it loads a step.
+default_branch = "main"
+
+hooks {
+    // Pre-push gate: the cheap, fast-feedback subset of `moon run :ci` (fmt,
+    // clippy, buf lint, biome, contract drift). hk runs steps in parallel, so
+    // the two bun-dependent steps share a single `install` step via `depends`:
+    // concurrent `bun install` on the same workspace race on the node_modules
+    // symlinks, and hk runs in an ephemeral worktree that starts with no
+    // node_modules. fmt/clippy/buf-lint need no node_modules, so they run free.
+    ["pre-push"] {
+        steps {
+            ["install"] = new Step {
+                check = "bun install --frozen-lockfile"
+            }
+            ["fmt"] = new Step {
+                check = "cargo fmt --check"
+            }
+            ["clippy"] = new Step {
+                check = "cargo clippy --workspace --all-targets -- -D warnings"
+            }
+            ["buf-lint"] = new Step {
+                glob = List("proto/**/*.proto", "buf.yaml")
+                check = "buf lint"
+            }
+            ["biome"] = new Step {
+                depends = List("install")
+                check = "bunx biome check ."
+            }
+            // Contract drift: regenerate the clients and fail if they differ
+            // from what's checked in. Generates into a temp dir (buf.gen.yaml
+            // sets clean: true, which would briefly empty the in-tree gen dirs)
+            // so it never races the clippy step reading those files. protoc-gen-es
+            // comes from node_modules (the install step); prost/tonic from devenv.
+            ["drift"] = new Step {
+                depends = List("install")
+                glob = List("proto/**/*.proto", "buf.gen.yaml")
+                check = "out=\"$(mktemp -d)\" && PATH=\"$PWD/node_modules/.bin:$PATH\" buf generate -o \"$out\" && diff -r \"$out/crates/compass-proto/src/gen\" crates/compass-proto/src/gen && diff -r \"$out/packages/compass-client/src/gen\" packages/compass-client/src/gen"
+            }
+        }
+    }
+}

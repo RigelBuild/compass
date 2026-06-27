@@ -1,0 +1,27 @@
+# The single buf codegen pipeline: one schema, generated clients fanned out to
+# each language, all checked in and CI drift-gated (regenerate + git diff). The
+# generated client is the only sanctioned way to reach the daemon.
+#
+#   Rust  — prost (messages) + tonic (gRPC client/server) → crates/compass-proto
+#   TS    — protoc-gen-es v2 (messages + Connect-capable service defs) →
+#           packages/compass-client, consumed by @connectrpc/connect
+version: v2
+clean: true
+plugins:
+  # Rust messages.
+  - local: protoc-gen-prost
+    out: crates/compass-proto/src/gen
+    opt:
+      - compile_well_known_types
+  # Rust gRPC client + server stubs.
+  - local: protoc-gen-tonic
+    out: crates/compass-proto/src/gen
+    opt:
+      - compile_well_known_types
+  # TypeScript (connect-es v2: protoc-gen-es emits the service defs createClient
+  # consumes — no separate connect plugin needed).
+  - local: protoc-gen-es
+    out: packages/compass-client/src/gen
+    opt:
+      - target=ts
+      - import_extension=none

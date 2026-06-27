@@ -1,0 +1,17 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+# The Compass daemon binary. System tasks via cargo on PATH. (Daemon tests
+# arrive with the transport server in SEA-1025; clippy gates the scaffold.)
+layer: 'application'
+language: 'rust'
+dependsOn: ['compass-proto']
+
+tasks:
+  clippy:
+    command: 'cargo clippy -p compass-daemon --all-targets -- -D warnings'
+    inputs: ['src/**/*', 'Cargo.toml', '/Cargo.lock']
+    options:
+      cache: false
+  ci:
+    deps: ['clippy']
+    options:
+      cache: false
