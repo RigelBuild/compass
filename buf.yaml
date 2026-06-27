@@ -3,7 +3,7 @@
 # the owned door; `buf lint` keeps the schema idiomatic.
 version: v2
 modules:
-  - path: proto
+  - path: crates/compass-proto/proto
 lint:
   use:
     - STANDARD

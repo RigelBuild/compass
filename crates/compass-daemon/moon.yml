@@ -8,7 +8,7 @@ dependsOn: ['compass-proto']
 tasks:
   clippy:
     command: 'cargo clippy -p compass-daemon --all-targets -- -D warnings'
-    deps: ['proto:gen']
+    deps: ['compass-proto:gen']
     inputs: ['src/**/*', 'Cargo.toml', '/Cargo.lock']
     options:
       cache: false

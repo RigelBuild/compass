@@ -30,7 +30,8 @@ UI**, all speaking one typed contract:
 
 - **`compass.v1` is the single, owned door.** Every UI reaches the daemon only
   through the generated contract client — never a raw socket or hand-written
-  stub. The schema lives in [`proto/compass/v1`](./proto/compass/v1); the
+  stub. The schema lives under the permissive
+  [`compass-proto`](./crates/compass-proto) crate (`proto/compass/v1/`); the
   generated Rust and TypeScript clients are checked in and CI drift-gated, so a
   stale client fails the build.
 - **The daemon owns everything privileged.** The shell holds no logic — it
@@ -41,9 +42,10 @@ UI**, all speaking one typed contract:
 ## Repository layout
 
 ```text
-proto/compass/v1/        the compass.v1 schema — the owned door
 crates/
-  compass-proto/         generated Rust client/server stubs (checked in)
+  compass-proto/         the compass.v1 schema + generated Rust client
+    proto/compass/v1/    the schema — the owned door
+    src/gen/             generated client/server stubs (checked in)
   compass-daemon/        the `compassd` daemon binary
 packages/
   compass-client/        generated TypeScript client (checked in)
@@ -91,8 +93,8 @@ CI, so "passes locally" and "passes in CI" are the same check.
 The `compass.v1` schema is the seam the whole app is built against. To change
 it:
 
-1. Edit the `.proto` files under [`proto/compass/v1`](./proto/compass/v1).
-2. Regenerate the clients: `moon run proto:gen`.
+1. Edit the `.proto` files under `crates/compass-proto/proto/compass/v1`.
+2. Regenerate the clients: `moon run compass-proto:gen`.
 3. Commit the regenerated `crates/compass-proto/src/gen` and
    `packages/compass-client/src/gen` alongside the schema change.
 

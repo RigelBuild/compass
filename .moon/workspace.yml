@@ -10,7 +10,6 @@
 # Woodpecker dynamic-pipeline generator for remote fan-out — one job per
 # affected task, each body `moon run <project>:<task>`.
 projects:
-  proto: 'proto'
   compass-proto: 'crates/compass-proto'
   compass-daemon: 'crates/compass-daemon'
   compass-client: 'packages/compass-client'

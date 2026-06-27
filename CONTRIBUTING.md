@@ -55,8 +55,8 @@ socket or stub.
 
 To change the contract:
 
-1. Edit the schema under `proto/compass/v1`.
-2. Regenerate: `moon run proto:gen`.
+1. Edit the schema under `crates/compass-proto/proto/compass/v1`.
+2. Regenerate: `moon run compass-proto:gen`.
 3. Commit the regenerated clients alongside the schema change.
 
 CI enforces `buf lint`, backward compatibility (`buf breaking`), and the drift

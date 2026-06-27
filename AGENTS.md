@@ -21,9 +21,10 @@ and in CI.
 
 - **Never hand-edit generated code** under `crates/compass-proto/src/gen` or
   `packages/compass-client/src/gen`. It is generated and checked in.
-- To change the contract: edit the schema under `proto/compass/v1`, run
-  `moon run proto:gen`, and commit the regenerated clients with the schema
-  change. CI's drift gate (regenerate + `git diff`) fails if they disagree.
+- To change the contract: edit the schema under
+  `crates/compass-proto/proto/compass/v1`, run `moon run compass-proto:gen`,
+  and commit the regenerated clients with the schema change. CI's drift gate
+  (regenerate + `git diff`) fails if they disagree.
 - UI code reaches the daemon only through the generated client
   (`@compass/client`) — never a raw socket or hand-written stub.
 

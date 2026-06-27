@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 # The Compass web UI (SolidJS + Vite). System tasks: bun/vite/biome from the
 # devenv/proto toolchain on PATH. It consumes the generated client
-# (@compass/client -> compass.v1), so typecheck/build/test depend on proto:gen.
+# (@compass/client -> compass.v1), so typecheck/build/test depend on compass-proto:gen.
 layer: 'application'
 language: 'typescript'
 dependsOn: ['compass-client']
@@ -19,19 +19,19 @@ tasks:
   dev:
     command: 'bunx vite'
     preset: 'server'
-    deps: ['install', 'proto:gen']
+    deps: ['install', 'compass-proto:gen']
   typecheck:
     script: 'bunx tsc --noEmit && bunx tsc --noEmit -p tsconfig.test.json'
-    deps: ['install', 'proto:gen']
+    deps: ['install', 'compass-proto:gen']
     inputs: ['src/**/*', 'tsconfig.json', 'tsconfig.test.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*']
   build:
     command: 'bunx vite build'
-    deps: ['install', 'proto:gen']
+    deps: ['install', 'compass-proto:gen']
     inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*']
     outputs: ['dist']
   test:
     command: 'bun test'
-    deps: ['install', 'proto:gen']
+    deps: ['install', 'compass-proto:gen']
     inputs: ['src/**/*', 'package.json', '/bun.lock', '/packages/compass-client/src/**/*']
   ci:
     deps: ['typecheck', 'build', 'test']
