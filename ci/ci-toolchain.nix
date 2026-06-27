@@ -8,14 +8,13 @@
 # dev shell), fetched and autoPatchelf'd because proto can't run during a
 # hermetic build. Bump the hashes here when .prototools changes — the fetch
 # fails loudly on the mismatch, so the image can't silently drift from local
-# dev. The Rust toolchain comes from nixpkgs; pinning it to rust-toolchain.toml
-# exactly (e.g. via fenix) is deferred to CI activation, when version parity
-# starts to matter — the contract drift gate is buf-driven and
-# Rust-version-independent.
+# dev. Rust is the exact rust-toolchain.toml pin (via fenix) — the same
+# derivation the dev shell uses (devenv.nix), so CI and local run one Rust;
+# a C linker (cc) is included below so cargo can link test/bin crates.
 #
 # protoc-gen-es, biome, tsc and vite are NOT baked in: they install with the
 # rest of the bun workspace deps (`bun install`) at pipeline time.
-{ pkgs }:
+{ pkgs, rustToolchain }:
 let
   protoTools = builtins.fromTOML (builtins.readFile ../.prototools);
 
@@ -95,12 +94,10 @@ pkgs.buildEnv {
     bun
     nodejs
     moon
-    # Rust toolchain (compiler + the lint/format/test extensions the moon tasks
-    # invoke) and the cargo plugins the contract + crate gates use.
-    pkgs.cargo
-    pkgs.rustc
-    pkgs.clippy
-    pkgs.rustfmt
+    # Rust: the exact rust-toolchain.toml toolchain (fenix, shared with the dev
+    # shell) + a C linker (cc/ld) so cargo can link test/bin crates.
+    rustToolchain
+    pkgs.stdenv.cc
     pkgs.cargo-nextest
     pkgs.cargo-deny
     pkgs.sccache

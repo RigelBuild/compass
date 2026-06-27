@@ -61,12 +61,13 @@ lives at the repository root.
 
 ## Toolchain
 
-Two layers, with a strict split: **[proto](https://moonrepo.dev/proto)** owns
-the language toolchains (Rust, bun, node, moon — pinned in `.prototools` and
-`rust-toolchain.toml`); **[devenv](https://devenv.sh)** provides everything
-else (the protobuf/contract tooling, the Rust dev tools, the linters). proto
-bootstraps standalone, so you do not need nix to build Compass — devenv is the
-convenience path and the source of the CI image. The split is documented in
+A strict split, three layers. **[proto](https://moonrepo.dev/proto)** pins the
+bun/node/moon runtimes (`.prototools`).
+**[fenix](https://github.com/nix-community/fenix)** builds the exact Rust
+toolchain from `rust-toolchain.toml`. **[devenv](https://devenv.sh)** provides
+the rest (protobuf/contract tooling, Rust dev tools, a C linker, the linters)
+and emits the CI image. The dev shell is the supported path; the no-nix route
+is below. Detail in
 [`docs/architecture/build-and-ci.md`](./docs/architecture/build-and-ci.md).
 
 ## Quickstart
@@ -80,10 +81,10 @@ moon run :ci      # the full local gate: build, lint, test, contract drift
 ```
 
 The devenv shell is the supported path. Without nix you can still build: install
-proto (it bootstraps the pinned Rust, bun, node, and moon toolchains from
-`.prototools` and `rust-toolchain.toml`) and supply the protobuf toolchain the
-dev shell otherwise provides — `buf`, `protoc`, `protoc-gen-prost`,
-`protoc-gen-tonic` — then `bun install` and `moon run :ci`.
+proto (it bootstraps bun, node, and moon from `.prototools`), install Rust with
+rustup (it reads `rust-toolchain.toml`), and supply the rest the dev shell
+otherwise provides — `buf`, `protoc`, `protoc-gen-prost`, `protoc-gen-tonic`,
+and a C compiler — then `bun install` and `moon run :ci`.
 
 `moon run :ci` is the entire CI gate — the same task graph runs locally and in
 CI, so "passes locally" and "passes in CI" are the same check.

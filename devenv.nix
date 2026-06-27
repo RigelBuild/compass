@@ -1,23 +1,38 @@
-{ pkgs, lib, ... }:
+{
+  pkgs,
+  lib,
+  inputs,
+  ...
+}:
 # Compass dev shell — the single source of the dev + CI toolchain. Compass is
 # OSS and self-contained (it does not extend another repo's shell). The split,
 # per docs/architecture/build-and-ci.md:
 #
-#   proto  — language/runtime toolchains (rust, bun, node, moon), pinned in
-#            .prototools + rust-toolchain.toml. Activated on shell entry below.
-#   devenv — proto itself plus everything non-language: the protobuf/contract
+#   proto  — the bun/node/moon runtimes, pinned in .prototools. Activated on
+#            shell entry below.
+#   fenix  — the exact Rust toolchain from rust-toolchain.toml, shared by the
+#            dev shell and the CI image so both run one pinned Rust.
+#   devenv — proto + fenix plus everything non-language: the protobuf/contract
 #            toolchain (buf, protoc, the Rust prost/tonic codegen plugins), the
-#            Rust dev tools that aren't the toolchain (cargo-deny, cargo-nextest,
+#            Rust dev tools that aren't the compiler (cargo-deny, cargo-nextest,
 #            sccache), and the lint tools the pre-push + CI gates run.
 #
-# proto can bootstrap standalone, so an OSS contributor gets the language
-# toolchains without nix; devenv is the convenience + the CI-image source.
+# proto bootstraps bun/node/moon standalone; Rust comes from fenix (nix) here,
+# or from rustup reading rust-toolchain.toml on the no-nix path.
+let
+  # Exact Rust toolchain (channel + components) from rust-toolchain.toml, built
+  # by fenix. The dev shell and the CI image (ci/ci-toolchain.nix) share this
+  # one derivation, so rust-toolchain.toml is the single source of truth.
+  rustToolchain = inputs.fenix.packages.${pkgs.stdenv.system}.fromToolchainFile {
+    file = ./rust-toolchain.toml;
+    sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
+  };
+in
 {
   packages =
     with pkgs;
     [
-      # Language/runtime manager. Installs rust/bun/node/moon per
-      # .prototools + rust-toolchain.toml on shell entry.
+      # Runtime manager: installs bun/node/moon per .prototools on shell entry.
       proto
 
       # Contract toolchain: protobuf schema lint/breaking + the single
@@ -27,7 +42,10 @@
       protoc-gen-prost # Rust message codegen plugin
       protoc-gen-tonic # Rust gRPC service codegen plugin
 
-      # Rust dev tools (not the toolchain itself — proto owns that).
+      # Rust: the exact rust-toolchain.toml toolchain (fenix) + a C linker so
+      # cargo can link test/bin crates, then the cargo dev tools.
+      rustToolchain
+      stdenv.cc # cc/ld for cargo's link step
       cargo-deny # license + contract dep-ban fence
       cargo-nextest # test runner (JUnit `ci` profile)
       sccache # Rust compile cache
@@ -47,9 +65,9 @@
   env.RUSTC_WRAPPER = "${pkgs.sccache}/bin/sccache";
 
   enterShell = ''
-    # Activate the proto-managed toolchains (rust/bun/node/moon). The shims
-    # dir is ahead on PATH so a bare `bun`/`moon` resolves these pins, not a
-    # host install.
+    # Activate the proto-managed runtimes (bun/node/moon) — Rust is from fenix
+    # (packages). The shims dir is ahead on PATH so a bare `bun`/`moon`
+    # resolves these pins, not a host install.
     export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
     export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
     ${pkgs.proto}/bin/proto install
@@ -75,7 +93,7 @@
       # A container layer's copyToRoot relocates store paths to the image root,
       # landing the toolchain on /bin where a command step's default PATH finds it.
       layers = [
-        { copyToRoot = [ (import ./ci/ci-toolchain.nix { inherit pkgs; }) ]; }
+        { copyToRoot = [ (import ./ci/ci-toolchain.nix { inherit pkgs rustToolchain; }) ]; }
       ];
     };
   };
