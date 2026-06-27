@@ -27,9 +27,11 @@ tasks:
       - 'compass/**/*.proto'
       - '/buf.yaml'
   breaking:
-    # Gate incompatible schema edits against the merge target. CI passes
-    # --against the base ref; locally this is a no-op without an upstream.
-    command: 'buf breaking --against .git#ref=refs/remotes/origin/main,subdir=.'
+    # Gate incompatible schema edits against origin/main. Skips on the first
+    # contract PR (no base yet) and offline; enforces once the contract is on
+    # main. ${GIT_DIR:-.git} keeps it working in a normal checkout and in a
+    # secondary jj workspace alike.
+    script: 'if git cat-file -e "refs/remotes/origin/main:proto/compass/v1/compass.proto" 2>/dev/null; then buf breaking --against "${GIT_DIR:-.git}#ref=refs/remotes/origin/main,subdir=."; else echo "no base contract on origin/main yet — skipping breaking gate"; fi'
     options:
       runFromWorkspaceRoot: true
       cache: false
@@ -46,14 +48,16 @@ tasks:
       - 'compass/**/*.proto'
       - '/buf.yaml'
       - '/buf.gen.yaml'
+      - '/package.json'
+      - '/bun.lock'
     outputs:
       - '/crates/compass-proto/src/gen'
       - '/packages/compass-client/src/gen'
   drift:
-    # Regenerate (cached; reruns when the schema changes) then fail if the
-    # checked-in clients differ — i.e. someone edited the schema without
-    # committing regenerated clients.
-    command: 'git diff --exit-code -- crates/compass-proto/src/gen packages/compass-client/src/gen'
+    # Regenerate, then fail if the checked-in clients differ from the result —
+    # someone edited the schema without committing regenerated clients. The
+    # untracked check also catches a newly generated file that wasn't added.
+    script: 'git diff --exit-code -- crates/compass-proto/src/gen packages/compass-client/src/gen && test -z "$(git status --porcelain --untracked-files=all -- crates/compass-proto/src/gen packages/compass-client/src/gen)"'
     deps:
       - 'gen'
     options:
@@ -62,6 +66,7 @@ tasks:
   ci:
     deps:
       - 'lint'
+      - 'breaking'
       - 'drift'
     options:
       cache: false

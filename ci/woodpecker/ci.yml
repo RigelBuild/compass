@@ -16,8 +16,8 @@ steps:
     image: ghcr.io/sealedsecurity/compass-ci:latest
     commands:
       # The bun workspace deps (biome, tsc, vite, protoc-gen-es) install at job
-      # time, not in the image; put their bin dir on PATH so buf resolves the
-      # protoc-gen-es plugin during codegen.
+      # time, not in the image. Append their bin dir so the image's pinned buf
+      # still wins and only the node-only plugins (protoc-gen-es) resolve here.
       - bun install --frozen-lockfile
-      - export PATH="$PWD/node_modules/.bin:$PATH"
+      - export PATH="$PATH:$PWD/node_modules/.bin"
       - moon run :ci

@@ -15,8 +15,8 @@ license = "AGPL-3.0-only"
 tonic = "0.14"
 tonic-prost = "0.14"
 prost = "0.14"
-# Direct deps for the Unix-domain-socket connector (added with the daemon
-# transport in SEA-1025): tower's service_fn adapter + hyper-util's TokioIo.
+# Direct deps for the Unix-domain-socket connector behind the daemon transport:
+# tower's service_fn adapter + hyper-util's TokioIo.
 tower = "0.5"
 hyper-util = "0.1"
 

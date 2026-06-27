@@ -79,6 +79,15 @@ let
       runHook postInstall
     '';
   };
+
+  # Woodpecker command steps + moon `script` tasks run via /bin/sh, and node
+  # tools (e.g. protoc-gen-es) use `#!/usr/bin/env node` shebangs. A buildEnv of
+  # bash gives /bin/bash, not /bin/sh, and no /usr/bin/env — symlink both.
+  links = pkgs.runCommand "compass-ci-links" { } ''
+    mkdir -p "$out/bin" "$out/usr/bin"
+    ln -s ${pkgs.bashInteractive}/bin/bash "$out/bin/sh"
+    ln -s ${pkgs.coreutils}/bin/env "$out/usr/bin/env"
+  '';
 in
 pkgs.buildEnv {
   name = "compass-ci-toolchain";
@@ -103,7 +112,25 @@ pkgs.buildEnv {
     pkgs.protoc-gen-tonic
     # git for moon's VCS/affected detection + the contract drift task's git diff.
     pkgs.git
+    # A POSIX shell + core utilities: Woodpecker command steps and the moon
+    # `script` tasks (e.g. contract drift) run through /bin/sh and shell out to
+    # mktemp/diff/find/grep. buildEnv links only each package's /bin, so list them.
+    links
+    pkgs.bashInteractive
+    pkgs.coreutils
+    pkgs.diffutils
+    pkgs.findutils
+    pkgs.gnugrep
+    # The nix/shell/toml/yaml lint tasks moon run :ci invokes.
+    pkgs.nixfmt-rfc-style
+    pkgs.shellcheck
+    pkgs.shfmt
+    pkgs.taplo
+    pkgs.actionlint
   ];
   # /bin only — the image just needs the toolchain on PATH for command steps.
-  pathsToLink = [ "/bin" ];
+  pathsToLink = [
+    "/bin"
+    "/usr/bin"
+  ];
 }

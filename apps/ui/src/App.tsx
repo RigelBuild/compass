@@ -1,11 +1,9 @@
 import { CompassService } from "@compass/client";
 import type { Component } from "solid-js";
 
-// The walking-skeleton view: it renders the contract's fully-qualified service
-// name straight from the generated @compass/client descriptor, proving the
-// schema -> generated client -> Solid UI stack compiles and renders. The real
-// Bridge (swimlane board, agent panes, the xterm.js terminal) lands with the
-// daemon transport and the M3 UI work.
+// Walking-skeleton view: renders the contract's service name from the generated
+// @compass/client descriptor, proving the schema -> client -> Solid UI stack
+// compiles and renders.
 const App: Component = () => (
 	<main>
 		<h1>Compass</h1>

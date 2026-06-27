@@ -77,8 +77,11 @@ bun install       # install the workspace JS deps
 moon run :ci      # the full local gate: build, lint, test, contract drift
 ```
 
-Without nix, install proto, let it bootstrap the pinned toolchains from
-`.prototools` + `rust-toolchain.toml`, then `bun install` and `moon run :ci`.
+The devenv shell is the supported path. Without nix you can still build: install
+proto (it bootstraps the pinned Rust, bun, node, and moon toolchains from
+`.prototools` and `rust-toolchain.toml`) and supply the protobuf toolchain the
+dev shell otherwise provides — `buf`, `protoc`, `protoc-gen-prost`,
+`protoc-gen-tonic` — then `bun install` and `moon run :ci`.
 
 `moon run :ci` is the entire CI gate — the same task graph runs locally and in
 CI, so "passes locally" and "passes in CI" are the same check.

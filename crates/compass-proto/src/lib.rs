@@ -1,10 +1,7 @@
-//! `compass.v1` contract — the single, sole, owned door between any UI and the
-//! Compass daemon (compass.md §7.2).
-//!
-//! This crate holds the generated gRPC client + server stubs (checked in and
-//! CI drift-gated against `proto/compass/v1/`) and, from SEA-1025, the local
-//! transport helpers. A generated client is the only sanctioned way to reach
-//! the daemon; raw gRPC stub/socket access is fenced off elsewhere.
+//! `compass.v1` contract: the generated gRPC client + server stubs (checked in
+//! and CI drift-gated against `proto/compass/v1/`). A generated client is the
+//! only sanctioned way to reach the daemon; raw stub/socket access is fenced
+//! off elsewhere.
 //!
 //! Permissively licensed (carve-out from the workspace AGPL default) so
 //! third-party UIs, the native client, and enterprise builds can link the wire

@@ -1,10 +1,7 @@
-//! `compassd` — the Compass daemon entry point.
-//!
-//! The long-lived backend that owns all privileged operations (agent
-//! processes, PTYs, the Warden security layer, the taint registry, VCS/issue
-//! integration) and serves the `compass.v1` contract over a platform-local
-//! transport. This scaffold is the entry point only; lifecycle (start/stop/
-//! status) and the transport server land in SEA-1025.
+//! `compassd` — the Compass daemon entry point: the long-lived backend that
+//! owns the privileged surface (agent processes, PTYs, the security layer,
+//! VCS/issue integration) and serves the `compass.v1` contract over a
+//! platform-local transport.
 
 use anyhow::Result;
 use clap::Parser;
@@ -14,7 +11,8 @@ use clap::Parser;
 #[command(name = "compassd", version, about)]
 struct Cli {}
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),

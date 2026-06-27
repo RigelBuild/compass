@@ -19,19 +19,20 @@ tasks:
   dev:
     command: 'bunx vite'
     preset: 'server'
-  typecheck:
-    command: 'bunx tsc --noEmit'
     deps: ['install', 'proto:gen']
-    inputs: ['src/**/*', 'tsconfig.json', 'package.json', 'vite.config.ts']
+  typecheck:
+    script: 'bunx tsc --noEmit && bunx tsc --noEmit -p tsconfig.test.json'
+    deps: ['install', 'proto:gen']
+    inputs: ['src/**/*', 'tsconfig.json', 'tsconfig.test.json', 'package.json', 'vite.config.ts', '/packages/compass-client/src/**/*']
   build:
     command: 'bunx vite build'
     deps: ['install', 'proto:gen']
-    inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts']
+    inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', '/packages/compass-client/src/**/*']
     outputs: ['dist']
   test:
     command: 'bun test'
     deps: ['install', 'proto:gen']
-    inputs: ['src/**/*', 'package.json']
+    inputs: ['src/**/*', 'package.json', '/packages/compass-client/src/**/*']
   ci:
     deps: ['typecheck', 'build', 'test']
     options:

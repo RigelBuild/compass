@@ -3,13 +3,15 @@
 		"target": "ES2022",
 		"module": "preserve",
 		"moduleResolution": "bundler",
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
 		"strict": true,
 		"verbatimModuleSyntax": true,
 		"noEmit": true,
 		"skipLibCheck": true,
 		"jsx": "preserve",
 		"jsxImportSource": "solid-js",
-		"types": ["bun"]
+		"types": ["vite/client"]
 	},
-	"include": ["src", "vite.config.ts"]
+	"include": ["src", "vite.config.ts"],
+	"exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }

@@ -44,8 +44,8 @@ the fix and passes after. Rust: `cargo nextest run -p <crate>`. TypeScript:
 ## Version control
 
 - git-backed; jujutsu (jj) works against it too if you prefer.
-- Conventional Commits subjects (`feat(scope): …`, `fix(scope): …`). Reference a
-  tracked issue in the PR body, not in source.
+- Conventional Commits subjects (`feat`, `fix`, `chore`, `refactor`, `docs`, … —
+  optional `(scope)`). Reference a tracked issue in the PR body, not in source.
 - During review, add a new commit per round of feedback rather than rewriting
   pushed history.
 

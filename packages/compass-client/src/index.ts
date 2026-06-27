@@ -1,6 +1,6 @@
 // @compass/client — the generated TypeScript client for the compass.v1
 // contract. The sole sanctioned way for UI code to reach the daemon; raw gRPC
-// stub/socket access is fenced off by lint (the owned door, compass.md §7.2).
+// stub/socket access is fenced off by lint (the owned door).
 
 import { type Client, createClient, type Transport } from "@connectrpc/connect";
 import { CompassService } from "./gen/compass/v1/compass_pb";
