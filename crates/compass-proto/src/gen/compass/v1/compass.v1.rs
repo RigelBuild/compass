@@ -23,7 +23,7 @@ pub struct SubscribeEventsRequest {
 }
 /// One entry in the daemon event stream.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
-pub struct Event {
+pub struct SubscribeEventsResponse {
     /// Daemon-assigned, strictly monotonic across the whole stream. The cursor a
     /// client passes back as `since_seq` to resubscribe without gaps.
     #[prost(uint64, tag="1")]
@@ -33,11 +33,11 @@ pub struct Event {
     pub at_unix_ms: i64,
     /// Later milestones add board/agent/audit payloads here; new variants are
     /// backward-compatible additions behind the buf breaking gate.
-    #[prost(oneof="event::Payload", tags="10, 11")]
-    pub payload: ::core::option::Option<event::Payload>,
+    #[prost(oneof="subscribe_events_response::Payload", tags="10, 11")]
+    pub payload: ::core::option::Option<subscribe_events_response::Payload>,
 }
-/// Nested message and enum types in `Event`.
-pub mod event {
+/// Nested message and enum types in `SubscribeEventsResponse`.
+pub mod subscribe_events_response {
     /// Later milestones add board/agent/audit payloads here; new variants are
     /// backward-compatible additions behind the buf breaking gate.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]

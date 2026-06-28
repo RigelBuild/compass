@@ -4,7 +4,10 @@
 use compass_proto::v1::GetDaemonInfoResponse;
 use compass_proto::v1::compass_service_client::CompassServiceClient;
 use compass_proto::v1::compass_service_server::CompassService;
-use compass_proto::v1::{DaemonState, DaemonStatus, Event, SubscribeEventsRequest, event};
+use compass_proto::v1::{
+    DaemonState, DaemonStatus, SubscribeEventsRequest, SubscribeEventsResponse,
+    subscribe_events_response,
+};
 
 #[test]
 fn api_version_is_v1() {
@@ -32,17 +35,21 @@ fn uses_server_trait<T: CompassService>() {}
 
 #[test]
 fn event_carries_seq_and_typed_payload() {
-    let ev = Event {
+    let ev = SubscribeEventsResponse {
         seq: 42,
         at_unix_ms: 1_700_000_000_000,
-        payload: Some(event::Payload::DaemonStatus(DaemonStatus {
-            state: DaemonState::Ready as i32,
-        })),
+        payload: Some(subscribe_events_response::Payload::DaemonStatus(
+            DaemonStatus {
+                state: DaemonState::Ready as i32,
+            },
+        )),
     };
     assert_eq!(ev.seq, 42);
     assert_eq!(ev.at_unix_ms, 1_700_000_000_000);
     match ev.payload {
-        Some(event::Payload::DaemonStatus(s)) => assert_eq!(s.state(), DaemonState::Ready),
+        Some(subscribe_events_response::Payload::DaemonStatus(s)) => {
+            assert_eq!(s.state(), DaemonState::Ready)
+        }
         _ => panic!("expected daemon_status payload"),
     }
 }

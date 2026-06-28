@@ -118,7 +118,7 @@ pub mod compass_service_client {
             &mut self,
             request: impl tonic::IntoRequest<super::SubscribeEventsRequest>,
         ) -> std::result::Result<
-            tonic::Response<tonic::codec::Streaming<super::Event>>,
+            tonic::Response<tonic::codec::Streaming<super::SubscribeEventsResponse>>,
             tonic::Status,
         > {
             self.inner
@@ -162,7 +162,7 @@ pub mod compass_service_server {
         >;
         /// Server streaming response type for the SubscribeEvents method.
         type SubscribeEventsStream: tonic::codegen::tokio_stream::Stream<
-                Item = std::result::Result<super::Event, tonic::Status>,
+                Item = std::result::Result<super::SubscribeEventsResponse, tonic::Status>,
             >
             + std::marker::Send
             + 'static;
@@ -304,7 +304,7 @@ pub mod compass_service_server {
                     > tonic::server::ServerStreamingService<
                         super::SubscribeEventsRequest,
                     > for SubscribeEventsSvc<T> {
-                        type Response = super::Event;
+                        type Response = super::SubscribeEventsResponse;
                         type ResponseStream = T::SubscribeEventsStream;
                         type Future = BoxFuture<
                             tonic::Response<Self::ResponseStream>,

@@ -18,7 +18,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/compass.proto.
  */
 export const file_compass_v1_compass: GenFile = /*@__PURE__*/
-  fileDesc("Chhjb21wYXNzL3YxL2NvbXBhc3MucHJvdG8SCmNvbXBhc3MudjEiFgoUR2V0RGFlbW9uSW5mb1JlcXVlc3QiPQoVR2V0RGFlbW9uSW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSEwoLYXBpX3ZlcnNpb24YAiABKAkiKwoWU3Vic2NyaWJlRXZlbnRzUmVxdWVzdBIRCglzaW5jZV9zZXEYASABKAQinQEKBUV2ZW50EgsKA3NlcRgBIAEoBBISCgphdF91bml4X21zGAIgASgDEjEKDWRhZW1vbl9zdGF0dXMYCiABKAsyGC5jb21wYXNzLnYxLkRhZW1vblN0YXR1c0gAEjUKD3Jlc3luY19yZXF1aXJlZBgLIAEoCzIaLmNvbXBhc3MudjEuUmVzeW5jUmVxdWlyZWRIAEIJCgdwYXlsb2FkIjYKDERhZW1vblN0YXR1cxImCgVzdGF0ZRgBIAEoDjIXLmNvbXBhc3MudjEuRGFlbW9uU3RhdGUiEAoOUmVzeW5jUmVxdWlyZWQqQwoLRGFlbW9uU3RhdGUSHAoYREFFTU9OX1NUQVRFX1VOU1BFQ0lGSUVEEAASFgoSREFFTU9OX1NUQVRFX1JFQURZEAEysgEKDkNvbXBhc3NTZXJ2aWNlElQKDUdldERhZW1vbkluZm8SIC5jb21wYXNzLnYxLkdldERhZW1vbkluZm9SZXF1ZXN0GiEuY29tcGFzcy52MS5HZXREYWVtb25JbmZvUmVzcG9uc2USSgoPU3Vic2NyaWJlRXZlbnRzEiIuY29tcGFzcy52MS5TdWJzY3JpYmVFdmVudHNSZXF1ZXN0GhEuY29tcGFzcy52MS5FdmVudDABYgZwcm90bzM");
+  fileDesc("Chhjb21wYXNzL3YxL2NvbXBhc3MucHJvdG8SCmNvbXBhc3MudjEiFgoUR2V0RGFlbW9uSW5mb1JlcXVlc3QiPQoVR2V0RGFlbW9uSW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSEwoLYXBpX3ZlcnNpb24YAiABKAkiKwoWU3Vic2NyaWJlRXZlbnRzUmVxdWVzdBIRCglzaW5jZV9zZXEYASABKAQirwEKF1N1YnNjcmliZUV2ZW50c1Jlc3BvbnNlEgsKA3NlcRgBIAEoBBISCgphdF91bml4X21zGAIgASgDEjEKDWRhZW1vbl9zdGF0dXMYCiABKAsyGC5jb21wYXNzLnYxLkRhZW1vblN0YXR1c0gAEjUKD3Jlc3luY19yZXF1aXJlZBgLIAEoCzIaLmNvbXBhc3MudjEuUmVzeW5jUmVxdWlyZWRIAEIJCgdwYXlsb2FkIjYKDERhZW1vblN0YXR1cxImCgVzdGF0ZRgBIAEoDjIXLmNvbXBhc3MudjEuRGFlbW9uU3RhdGUiEAoOUmVzeW5jUmVxdWlyZWQqQwoLRGFlbW9uU3RhdGUSHAoYREFFTU9OX1NUQVRFX1VOU1BFQ0lGSUVEEAASFgoSREFFTU9OX1NUQVRFX1JFQURZEAEyxAEKDkNvbXBhc3NTZXJ2aWNlElQKDUdldERhZW1vbkluZm8SIC5jb21wYXNzLnYxLkdldERhZW1vbkluZm9SZXF1ZXN0GiEuY29tcGFzcy52MS5HZXREYWVtb25JbmZvUmVzcG9uc2USXAoPU3Vic2NyaWJlRXZlbnRzEiIuY29tcGFzcy52MS5TdWJzY3JpYmVFdmVudHNSZXF1ZXN0GiMuY29tcGFzcy52MS5TdWJzY3JpYmVFdmVudHNSZXNwb25zZTABYgZwcm90bzM");
 
 /**
  * @generated from message compass.v1.GetDaemonInfoRequest
@@ -85,9 +85,9 @@ export const SubscribeEventsRequestSchema: GenMessage<SubscribeEventsRequest> = 
 /**
  * One entry in the daemon event stream.
  *
- * @generated from message compass.v1.Event
+ * @generated from message compass.v1.SubscribeEventsResponse
  */
-export type Event = Message<"compass.v1.Event"> & {
+export type SubscribeEventsResponse = Message<"compass.v1.SubscribeEventsResponse"> & {
   /**
    * Daemon-assigned, strictly monotonic across the whole stream. The cursor a
    * client passes back as `since_seq` to resubscribe without gaps.
@@ -107,7 +107,7 @@ export type Event = Message<"compass.v1.Event"> & {
    * Later milestones add board/agent/audit payloads here; new variants are
    * backward-compatible additions behind the buf breaking gate.
    *
-   * @generated from oneof compass.v1.Event.payload
+   * @generated from oneof compass.v1.SubscribeEventsResponse.payload
    */
   payload: {
     /**
@@ -125,10 +125,10 @@ export type Event = Message<"compass.v1.Event"> & {
 };
 
 /**
- * Describes the message compass.v1.Event.
- * Use `create(EventSchema)` to create a new message.
+ * Describes the message compass.v1.SubscribeEventsResponse.
+ * Use `create(SubscribeEventsResponseSchema)` to create a new message.
  */
-export const EventSchema: GenMessage<Event> = /*@__PURE__*/
+export const SubscribeEventsResponseSchema: GenMessage<SubscribeEventsResponse> = /*@__PURE__*/
   messageDesc(file_compass_v1_compass, 3);
 
 /**
@@ -208,7 +208,7 @@ export const CompassService: GenService<{
   },
   /**
    * The event channel: board, agent, and audit updates as a server stream
-   * (compass.md §7.2). Each Event carries a daemon-assigned monotonic `seq`;
+   * (compass.md §7.2). Each response carries a daemon-assigned monotonic `seq`;
    * reconnect with `since_seq` for a gap-free resubscribe. The sole push path
    * from the daemon to the UI.
    *
@@ -217,7 +217,7 @@ export const CompassService: GenService<{
   subscribeEvents: {
     methodKind: "server_streaming";
     input: typeof SubscribeEventsRequestSchema;
-    output: typeof EventSchema;
+    output: typeof SubscribeEventsResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_compass_v1_compass, 0);

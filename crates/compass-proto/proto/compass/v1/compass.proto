@@ -17,10 +17,10 @@ service CompassService {
   rpc GetDaemonInfo(GetDaemonInfoRequest) returns (GetDaemonInfoResponse);
 
   // The event channel: board, agent, and audit updates as a server stream
-  // (compass.md §7.2). Each Event carries a daemon-assigned monotonic `seq`;
+  // (compass.md §7.2). Each response carries a daemon-assigned monotonic `seq`;
   // reconnect with `since_seq` for a gap-free resubscribe. The sole push path
   // from the daemon to the UI.
-  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream Event);
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream SubscribeEventsResponse);
 }
 
 message GetDaemonInfoRequest {}
@@ -41,7 +41,7 @@ message SubscribeEventsRequest {
 }
 
 // One entry in the daemon event stream.
-message Event {
+message SubscribeEventsResponse {
   // Daemon-assigned, strictly monotonic across the whole stream. The cursor a
   // client passes back as `since_seq` to resubscribe without gaps.
   uint64 seq = 1;

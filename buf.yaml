@@ -7,11 +7,6 @@ modules:
 lint:
   use:
     - STANDARD
-  except:
-    # The SubscribeEvents stream delivers domain `Event`s, not one-shot
-    # responses; an `<Rpc>Response` name would obscure that. Request types
-    # still follow the standard name.
-    - RPC_RESPONSE_STANDARD_NAME
 breaking:
   use:
     - FILE

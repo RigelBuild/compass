@@ -13,7 +13,16 @@
 						"paths": {
 							"@connectrpc/connect": "Reach the daemon only through @compass/client — the owned compass.v1 door. Raw stub access is fenced.",
 							"@connectrpc/connect-web": "Reach the daemon only through @compass/client — the owned compass.v1 door. Raw transport access is fenced."
-						}
+						},
+						"patterns": [
+							{
+								"group": [
+									"@connectrpc/connect/**",
+									"@connectrpc/connect-web/**"
+								],
+								"message": "Reach the daemon only through @compass/client — the owned compass.v1 door."
+							}
+						]
 					}
 				}
 			}
