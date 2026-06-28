@@ -23,16 +23,16 @@ tasks:
   typecheck:
     command: 'bunx tsc --noEmit'
     deps: ['install', 'compass-proto:gen']
-    inputs: ['src/**/*', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*']
+    inputs: ['src/**/*', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
   build:
     command: 'bunx vite build'
     deps: ['install', 'compass-proto:gen']
-    inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*']
+    inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
     outputs: ['dist']
   test:
     command: 'bun test --pass-with-no-tests'
     deps: ['install', 'compass-proto:gen']
-    inputs: ['src/**/*', 'package.json', '/bun.lock', '/packages/compass-client/src/**/*']
+    inputs: ['src/**/*', 'package.json', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
   ci:
     deps: ['typecheck', 'build', 'test']
     options:
