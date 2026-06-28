@@ -10,15 +10,15 @@
 // @generated from file compass/v1/compass.proto (package compass.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
+import type { GenEnum, GenFile, GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc, serviceDesc } from "@bufbuild/protobuf/codegenv2";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file compass/v1/compass.proto.
  */
 export const file_compass_v1_compass: GenFile = /*@__PURE__*/
-  fileDesc("Chhjb21wYXNzL3YxL2NvbXBhc3MucHJvdG8SCmNvbXBhc3MudjEiFgoUR2V0RGFlbW9uSW5mb1JlcXVlc3QiPQoVR2V0RGFlbW9uSW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSEwoLYXBpX3ZlcnNpb24YAiABKAkyZgoOQ29tcGFzc1NlcnZpY2USVAoNR2V0RGFlbW9uSW5mbxIgLmNvbXBhc3MudjEuR2V0RGFlbW9uSW5mb1JlcXVlc3QaIS5jb21wYXNzLnYxLkdldERhZW1vbkluZm9SZXNwb25zZWIGcHJvdG8z");
+  fileDesc("Chhjb21wYXNzL3YxL2NvbXBhc3MucHJvdG8SCmNvbXBhc3MudjEiFgoUR2V0RGFlbW9uSW5mb1JlcXVlc3QiPQoVR2V0RGFlbW9uSW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSEwoLYXBpX3ZlcnNpb24YAiABKAkiKwoWU3Vic2NyaWJlRXZlbnRzUmVxdWVzdBIRCglzaW5jZV9zZXEYASABKAQinQEKBUV2ZW50EgsKA3NlcRgBIAEoBBISCgphdF91bml4X21zGAIgASgDEjEKDWRhZW1vbl9zdGF0dXMYCiABKAsyGC5jb21wYXNzLnYxLkRhZW1vblN0YXR1c0gAEjUKD3Jlc3luY19yZXF1aXJlZBgLIAEoCzIaLmNvbXBhc3MudjEuUmVzeW5jUmVxdWlyZWRIAEIJCgdwYXlsb2FkIjYKDERhZW1vblN0YXR1cxImCgVzdGF0ZRgBIAEoDjIXLmNvbXBhc3MudjEuRGFlbW9uU3RhdGUiEAoOUmVzeW5jUmVxdWlyZWQqQwoLRGFlbW9uU3RhdGUSHAoYREFFTU9OX1NUQVRFX1VOU1BFQ0lGSUVEEAASFgoSREFFTU9OX1NUQVRFX1JFQURZEAEysgEKDkNvbXBhc3NTZXJ2aWNlElQKDUdldERhZW1vbkluZm8SIC5jb21wYXNzLnYxLkdldERhZW1vbkluZm9SZXF1ZXN0GiEuY29tcGFzcy52MS5HZXREYWVtb25JbmZvUmVzcG9uc2USSgoPU3Vic2NyaWJlRXZlbnRzEiIuY29tcGFzcy52MS5TdWJzY3JpYmVFdmVudHNSZXF1ZXN0GhEuY29tcGFzcy52MS5FdmVudDABYgZwcm90bzM");
 
 /**
  * @generated from message compass.v1.GetDaemonInfoRequest
@@ -60,6 +60,136 @@ export const GetDaemonInfoResponseSchema: GenMessage<GetDaemonInfoResponse> = /*
   messageDesc(file_compass_v1_compass, 1);
 
 /**
+ * Subscribe to the daemon event stream.
+ *
+ * @generated from message compass.v1.SubscribeEventsRequest
+ */
+export type SubscribeEventsRequest = Message<"compass.v1.SubscribeEventsRequest"> & {
+  /**
+   * 0: snapshot the current state as events, then tail live updates.
+   * >0: replay only events with a higher `seq` than this — a gap-free
+   * resubscribe after a dropped connection.
+   *
+   * @generated from field: uint64 since_seq = 1;
+   */
+  sinceSeq: bigint;
+};
+
+/**
+ * Describes the message compass.v1.SubscribeEventsRequest.
+ * Use `create(SubscribeEventsRequestSchema)` to create a new message.
+ */
+export const SubscribeEventsRequestSchema: GenMessage<SubscribeEventsRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 2);
+
+/**
+ * One entry in the daemon event stream.
+ *
+ * @generated from message compass.v1.Event
+ */
+export type Event = Message<"compass.v1.Event"> & {
+  /**
+   * Daemon-assigned, strictly monotonic across the whole stream. The cursor a
+   * client passes back as `since_seq` to resubscribe without gaps.
+   *
+   * @generated from field: uint64 seq = 1;
+   */
+  seq: bigint;
+
+  /**
+   * Event time, Unix epoch milliseconds.
+   *
+   * @generated from field: int64 at_unix_ms = 2;
+   */
+  atUnixMs: bigint;
+
+  /**
+   * Later milestones add board/agent/audit payloads here; new variants are
+   * backward-compatible additions behind the buf breaking gate.
+   *
+   * @generated from oneof compass.v1.Event.payload
+   */
+  payload: {
+    /**
+     * @generated from field: compass.v1.DaemonStatus daemon_status = 10;
+     */
+    value: DaemonStatus;
+    case: "daemonStatus";
+  } | {
+    /**
+     * @generated from field: compass.v1.ResyncRequired resync_required = 11;
+     */
+    value: ResyncRequired;
+    case: "resyncRequired";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message compass.v1.Event.
+ * Use `create(EventSchema)` to create a new message.
+ */
+export const EventSchema: GenMessage<Event> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 3);
+
+/**
+ * The daemon's liveness state, pushed on connect and whenever it changes.
+ *
+ * @generated from message compass.v1.DaemonStatus
+ */
+export type DaemonStatus = Message<"compass.v1.DaemonStatus"> & {
+  /**
+   * @generated from field: compass.v1.DaemonState state = 1;
+   */
+  state: DaemonState;
+};
+
+/**
+ * Describes the message compass.v1.DaemonStatus.
+ * Use `create(DaemonStatusSchema)` to create a new message.
+ */
+export const DaemonStatusSchema: GenMessage<DaemonStatus> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 4);
+
+/**
+ * The requested `since_seq` predates the daemon's retained event buffer, so a
+ * gap-free replay isn't possible; the client must reconnect with
+ * `since_seq = 0` to re-snapshot. The last event the daemon sends before it
+ * closes the stream.
+ *
+ * @generated from message compass.v1.ResyncRequired
+ */
+export type ResyncRequired = Message<"compass.v1.ResyncRequired"> & {
+};
+
+/**
+ * Describes the message compass.v1.ResyncRequired.
+ * Use `create(ResyncRequiredSchema)` to create a new message.
+ */
+export const ResyncRequiredSchema: GenMessage<ResyncRequired> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 5);
+
+/**
+ * @generated from enum compass.v1.DaemonState
+ */
+export enum DaemonState {
+  /**
+   * @generated from enum value: DAEMON_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: DAEMON_STATE_READY = 1;
+   */
+  READY = 1,
+}
+
+/**
+ * Describes the enum compass.v1.DaemonState.
+ */
+export const DaemonStateSchema: GenEnum<DaemonState> = /*@__PURE__*/
+  enumDesc(file_compass_v1_compass, 0);
+
+/**
  * The Compass daemon service.
  *
  * @generated from service compass.v1.CompassService
@@ -75,6 +205,19 @@ export const CompassService: GenService<{
     methodKind: "unary";
     input: typeof GetDaemonInfoRequestSchema;
     output: typeof GetDaemonInfoResponseSchema;
+  },
+  /**
+   * The event channel: board, agent, and audit updates as a server stream
+   * (compass.md §7.2). Each Event carries a daemon-assigned monotonic `seq`;
+   * reconnect with `since_seq` for a gap-free resubscribe. The sole push path
+   * from the daemon to the UI.
+   *
+   * @generated from rpc compass.v1.CompassService.SubscribeEvents
+   */
+  subscribeEvents: {
+    methodKind: "server_streaming";
+    input: typeof SubscribeEventsRequestSchema;
+    output: typeof EventSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_compass_v1_compass, 0);

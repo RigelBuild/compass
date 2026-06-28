@@ -15,6 +15,12 @@ service CompassService {
   // Liveness probe plus the daemon's build + contract version. The first
   // round-trip a UI makes after connecting over the local transport.
   rpc GetDaemonInfo(GetDaemonInfoRequest) returns (GetDaemonInfoResponse);
+
+  // The event channel: board, agent, and audit updates as a server stream
+  // (compass.md §7.2). Each Event carries a daemon-assigned monotonic `seq`;
+  // reconnect with `since_seq` for a gap-free resubscribe. The sole push path
+  // from the daemon to the UI.
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream Event);
 }
 
 message GetDaemonInfoRequest {}
@@ -25,3 +31,42 @@ message GetDaemonInfoResponse {
   // The contract version this daemon serves, e.g. "compass.v1".
   string api_version = 2;
 }
+
+// Subscribe to the daemon event stream.
+message SubscribeEventsRequest {
+  // 0: snapshot the current state as events, then tail live updates.
+  // >0: replay only events with a higher `seq` than this — a gap-free
+  // resubscribe after a dropped connection.
+  uint64 since_seq = 1;
+}
+
+// One entry in the daemon event stream.
+message Event {
+  // Daemon-assigned, strictly monotonic across the whole stream. The cursor a
+  // client passes back as `since_seq` to resubscribe without gaps.
+  uint64 seq = 1;
+  // Event time, Unix epoch milliseconds.
+  int64 at_unix_ms = 2;
+  // Later milestones add board/agent/audit payloads here; new variants are
+  // backward-compatible additions behind the buf breaking gate.
+  oneof payload {
+    DaemonStatus daemon_status = 10;
+    ResyncRequired resync_required = 11;
+  }
+}
+
+// The daemon's liveness state, pushed on connect and whenever it changes.
+message DaemonStatus {
+  DaemonState state = 1;
+}
+
+enum DaemonState {
+  DAEMON_STATE_UNSPECIFIED = 0;
+  DAEMON_STATE_READY = 1;
+}
+
+// The requested `since_seq` predates the daemon's retained event buffer, so a
+// gap-free replay isn't possible; the client must reconnect with
+// `since_seq = 0` to re-snapshot. The last event the daemon sends before it
+// closes the stream.
+message ResyncRequired {}

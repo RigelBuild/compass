@@ -1,9 +1,8 @@
 import { expect, test } from "bun:test";
-import { createGrpcWebTransport } from "@connectrpc/connect-web";
-import { type CompassClient, createCompassClient } from "./index";
+import { type CompassClient, createCompassWebClient } from "./index";
 
-test("createCompassClient wires the generated CompassService onto a transport", () => {
-	const transport = createGrpcWebTransport({ baseUrl: "http://localhost" });
-	const client: CompassClient = createCompassClient(transport);
+test("createCompassWebClient exposes the compass.v1 surface over gRPC-Web", () => {
+	const client: CompassClient = createCompassWebClient("http://localhost");
 	expect(typeof client.getDaemonInfo).toBe("function");
+	expect(typeof client.subscribeEvents).toBe("function");
 });
