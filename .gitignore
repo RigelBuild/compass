@@ -1,0 +1,31 @@
+# moon (task cache + generated docker contexts)
+.moon/cache
+.moon/docker
+
+# Rust
+/target
+**/target
+
+# Node / bun
+node_modules
+dist
+*.tsbuildinfo
+
+# devenv / direnv
+.devenv*
+.direnv
+devenv.local.nix
+
+# direnv local overrides (e.g. a secondary jj workspace's GIT_DIR)
+.envrc.local
+
+# nix build outputs
+result
+result-*
+
+# misc
+*.log
+.DS_Store
+
+# NOTE: generated clients (crates/compass-proto/src/gen, packages/compass-client/src/gen)
+# are intentionally committed and CI drift-gated — do not ignore them.

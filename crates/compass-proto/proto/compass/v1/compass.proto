@@ -1,0 +1,27 @@
+// The compass.v1 contract: the single, owned door between any UI and the
+// Compass daemon — a gRPC service served over Connect so native (gRPC over the
+// local transport) and browser (gRPC-Web) clients share it. The generated
+// clients are the only sanctioned way to reach the daemon.
+//
+// Versioned `compass.v1` so a future v2 schema bump doesn't have to retrofit a
+// version segment.
+
+syntax = "proto3";
+
+package compass.v1;
+
+// The Compass daemon service.
+service CompassService {
+  // Liveness probe plus the daemon's build + contract version. The first
+  // round-trip a UI makes after connecting over the local transport.
+  rpc GetDaemonInfo(GetDaemonInfoRequest) returns (GetDaemonInfoResponse);
+}
+
+message GetDaemonInfoRequest {}
+
+message GetDaemonInfoResponse {
+  // Daemon semantic version, e.g. "0.1.0".
+  string version = 1;
+  // The contract version this daemon serves, e.g. "compass.v1".
+  string api_version = 2;
+}

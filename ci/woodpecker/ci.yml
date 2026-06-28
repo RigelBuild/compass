@@ -1,0 +1,23 @@
+# The compass CI pipeline: run the full moon CI graph inside the compass-ci
+# image, so a remote run is byte-identical to a local `moon run :ci`.
+#
+# This is the static bootstrap pipeline. The per-task affected fan-out (one
+# Woodpecker workflow per affected moon task, each body `moon run <proj>:<task>`)
+# is produced by the shared pipeline generator once compass is wired into the
+# Woodpecker control plane; see the CI-activation tracking issue.
+#
+# Routes to a Linux agent via the `type: linux` runner label.
+labels:
+  type: linux
+when:
+  - event: [push, pull_request]
+steps:
+  - name: ci
+    image: ghcr.io/sealedsecurity/compass-ci:latest
+    commands:
+      # The bun workspace deps (biome, tsc, vite, protoc-gen-es) install at job
+      # time, not in the image. Append their bin dir so the image's pinned buf
+      # still wins and only the node-only plugins (protoc-gen-es) resolve here.
+      - bun install --frozen-lockfile
+      - export PATH="$PATH:$PWD/node_modules/.bin"
+      - moon run :ci

@@ -1,0 +1,22 @@
+# devenv inputs. Rolling nixpkgs is devenv's recommended dev-shell channel.
+# nix2container + mk-shell-bin back `devenv container build` — the CI step
+# image the Woodpecker agents run Compass's moon tasks in (ci/ci-toolchain.nix).
+# fenix builds the exact rust-toolchain.toml Rust pin for the dev shell + image.
+inputs:
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/rolling
+  nix2container:
+    url: github:nlewo/nix2container
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  mk-shell-bin:
+    url: github:rrbutani/nix-mk-shell-bin
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  fenix:
+    url: github:nix-community/fenix
+    inputs:
+      nixpkgs:
+        follows: nixpkgs

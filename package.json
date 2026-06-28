@@ -1,0 +1,13 @@
+{
+	"name": "@compass/monorepo",
+	"private": true,
+	"workspaces": [
+		"packages/*",
+		"apps/*"
+	],
+	"devDependencies": {
+		"@biomejs/biome": "2.4.15",
+		"@bufbuild/buf": "1.71.0",
+		"@bufbuild/protoc-gen-es": "2.12.1"
+	}
+}

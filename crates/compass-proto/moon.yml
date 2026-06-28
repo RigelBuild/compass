@@ -1,0 +1,82 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+# The compass.v1 contract crate. It owns the schema (proto/) and the single buf
+# codegen pipeline — one schema, clients fanned out and checked in: prost/tonic
+# Rust here in src/gen, connect-es TS in compass-client, both drift-gated. The
+# schema lives in this crate so it shares the crate's permissive license.
+# System tasks — cargo + buf + bun from the devenv/proto toolchain on PATH.
+layer: 'library'
+language: 'rust'
+
+tasks:
+  install:
+    command: 'bun install --frozen-lockfile'
+    options:
+      runFromWorkspaceRoot: true
+      internal: true
+      cache: false
+      # Serialize with the other workspace bun installs — concurrent
+      # `bun install` on the same workspace race on node_modules.
+      mutex: 'bun-install'
+    inputs:
+      - '/package.json'
+      - '/bun.lock'
+  lint:
+    command: 'buf lint'
+    options:
+      runFromWorkspaceRoot: true
+    inputs:
+      - 'proto/compass/**/*.proto'
+      - '/buf.yaml'
+  breaking:
+    # Gate incompatible schema edits against origin/main. Skips on the first
+    # contract PR (no base yet) and offline; enforces once the contract is on
+    # main. ${GIT_DIR:-.git} keeps it working in a normal checkout and in a
+    # secondary jj workspace alike.
+    script: 'if git cat-file -e "refs/remotes/origin/main:crates/compass-proto/proto/compass/v1/compass.proto" 2>/dev/null; then buf breaking --against "${GIT_DIR:-.git}#ref=refs/remotes/origin/main,subdir=."; else echo "no base contract on origin/main yet — skipping breaking gate"; fi'
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    inputs:
+      - 'proto/compass/**/*.proto'
+      - '/buf.yaml'
+  gen:
+    command: 'buf generate'
+    deps:
+      - 'install'
+    options:
+      runFromWorkspaceRoot: true
+    inputs:
+      - 'proto/compass/**/*.proto'
+      - '/buf.yaml'
+      - '/buf.gen.yaml'
+      - '/package.json'
+      - '/bun.lock'
+    outputs:
+      - '/crates/compass-proto/src/gen'
+      - '/packages/compass-client/src/gen'
+  drift:
+    # Regenerate, then fail if the checked-in clients differ from the result —
+    # someone edited the schema without committing regenerated clients. The
+    # untracked check also catches a newly generated file that wasn't added.
+    script: 'git diff --exit-code -- crates/compass-proto/src/gen packages/compass-client/src/gen && test -z "$(git status --porcelain --untracked-files=all -- crates/compass-proto/src/gen packages/compass-client/src/gen)"'
+    deps:
+      - 'gen'
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+  clippy:
+    command: 'cargo clippy -p compass-proto --all-targets -- -D warnings'
+    deps: ['gen']
+    inputs: ['src/**/*', 'tests/**/*', 'Cargo.toml', '/Cargo.lock']
+    options:
+      cache: false
+  test:
+    command: 'cargo nextest run -p compass-proto'
+    deps: ['gen']
+    inputs: ['src/**/*', 'tests/**/*', 'Cargo.toml', '/Cargo.lock']
+    options:
+      cache: false
+  ci:
+    deps: ['lint', 'breaking', 'drift', 'clippy', 'test']
+    options:
+      cache: false
