@@ -32,7 +32,7 @@ tasks:
   test:
     command: 'bun test --pass-with-no-tests'
     deps: ['install', 'compass-proto:gen']
-    inputs: ['src/**/*', 'package.json', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+    inputs: ['src/**/*', 'tsconfig.json', 'package.json', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
   ci:
     deps: ['typecheck', 'build', 'test']
     options:
