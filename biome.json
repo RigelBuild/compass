@@ -3,12 +3,46 @@
 	"vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
 	"files": { "includes": ["**", "!**/gen"] },
 	"formatter": { "indentStyle": "tab" },
-	"linter": { "enabled": true },
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"style": {
+				"noRestrictedImports": {
+					"level": "error",
+					"options": {
+						"paths": {
+							"@connectrpc/connect": "Reach the daemon only through @compass/client — the owned compass.v1 door. Raw stub access is fenced.",
+							"@connectrpc/connect-web": "Reach the daemon only through @compass/client — the owned compass.v1 door. Raw transport access is fenced."
+						},
+						"patterns": [
+							{
+								"group": [
+									"@connectrpc/connect/**",
+									"@connectrpc/connect-web/**"
+								],
+								"message": "Reach the daemon only through @compass/client — the owned compass.v1 door."
+							}
+						]
+					}
+				}
+			}
+		}
+	},
 	"assist": {
 		"actions": {
 			"source": {
 				"organizeImports": "on"
 			}
 		}
-	}
+	},
+	"overrides": [
+		{
+			"includes": ["packages/compass-client/**"],
+			"linter": {
+				"rules": {
+					"style": { "noRestrictedImports": "off" }
+				}
+			}
+		}
+	]
 }

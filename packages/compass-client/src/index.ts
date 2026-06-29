@@ -3,6 +3,7 @@
 // stub/socket access is fenced off by lint (the owned door).
 
 import { type Client, createClient, type Transport } from "@connectrpc/connect";
+import { createGrpcWebTransport } from "@connectrpc/connect-web";
 import { CompassService } from "./gen/compass/v1/compass_pb";
 
 /** A typed client for the Compass daemon over a given transport. */
@@ -13,8 +14,24 @@ export function createCompassClient(transport: Transport): CompassClient {
 	return createClient(CompassService, transport);
 }
 
+// Re-exported so non-web consumers can type a custom transport without
+// importing @connectrpc/connect directly (the fence blocks that import).
+export type { Transport } from "@connectrpc/connect";
+
+/**
+ * Create a compass.v1 client over gRPC-Web at `baseUrl` — the door the web UI
+ * uses. Bundles the transport so UI code imports only `@compass/client`.
+ */
+export function createCompassWebClient(baseUrl: string): CompassClient {
+	return createCompassClient(createGrpcWebTransport({ baseUrl }));
+}
+
 export type {
+	DaemonStatus,
 	GetDaemonInfoRequest,
 	GetDaemonInfoResponse,
+	ResyncRequired,
+	SubscribeEventsRequest,
+	SubscribeEventsResponse,
 } from "./gen/compass/v1/compass_pb";
-export { CompassService } from "./gen/compass/v1/compass_pb";
+export { CompassService, DaemonState } from "./gen/compass/v1/compass_pb";

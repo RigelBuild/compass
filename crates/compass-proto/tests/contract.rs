@@ -4,6 +4,10 @@
 use compass_proto::v1::GetDaemonInfoResponse;
 use compass_proto::v1::compass_service_client::CompassServiceClient;
 use compass_proto::v1::compass_service_server::CompassService;
+use compass_proto::v1::{
+    DaemonState, DaemonStatus, SubscribeEventsRequest, SubscribeEventsResponse,
+    subscribe_events_response,
+};
 
 #[test]
 fn api_version_is_v1() {
@@ -28,3 +32,37 @@ type GeneratedClient = CompassServiceClient<tonic::transport::Channel>;
 // Compile-time proof the generated server trait exists — what the daemon impls.
 #[allow(dead_code)]
 fn uses_server_trait<T: CompassService>() {}
+
+#[test]
+fn event_carries_seq_and_typed_payload() {
+    let ev = SubscribeEventsResponse {
+        seq: 42,
+        at_unix_ms: 1_700_000_000_000,
+        payload: Some(subscribe_events_response::Payload::DaemonStatus(
+            DaemonStatus {
+                state: DaemonState::Ready as i32,
+            },
+        )),
+    };
+    assert_eq!(ev.seq, 42);
+    assert_eq!(ev.at_unix_ms, 1_700_000_000_000);
+    match ev.payload {
+        Some(subscribe_events_response::Payload::DaemonStatus(s)) => {
+            assert_eq!(s.state(), DaemonState::Ready)
+        }
+        _ => panic!("expected daemon_status payload"),
+    }
+}
+
+#[test]
+fn daemon_state_enum_is_stable() {
+    assert_eq!(DaemonState::Unspecified as i32, 0);
+    assert_eq!(DaemonState::Ready as i32, 1);
+    assert_eq!(DaemonState::Ready.as_str_name(), "DAEMON_STATE_READY");
+}
+
+#[test]
+fn subscribe_events_request_defaults_to_snapshot() {
+    // since_seq = 0 is the snapshot-then-tail cursor.
+    assert_eq!(SubscribeEventsRequest::default().since_seq, 0);
+}

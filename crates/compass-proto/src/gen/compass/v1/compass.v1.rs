@@ -12,5 +12,80 @@ pub struct GetDaemonInfoResponse {
     #[prost(string, tag="2")]
     pub api_version: ::prost::alloc::string::String,
 }
+/// Subscribe to the daemon event stream.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubscribeEventsRequest {
+    /// 0: snapshot the current state as events, then tail live updates.
+    /// >0: replay only events with a higher `seq` than this — a gap-free
+    /// resubscribe after a dropped connection.
+    #[prost(uint64, tag="1")]
+    pub since_seq: u64,
+}
+/// One entry in the daemon event stream.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubscribeEventsResponse {
+    /// Daemon-assigned, strictly monotonic across the whole stream. The cursor a
+    /// client passes back as `since_seq` to resubscribe without gaps.
+    #[prost(uint64, tag="1")]
+    pub seq: u64,
+    /// Event time, Unix epoch milliseconds.
+    #[prost(int64, tag="2")]
+    pub at_unix_ms: i64,
+    /// Later milestones add board/agent/audit payloads here; new variants are
+    /// backward-compatible additions behind the buf breaking gate.
+    #[prost(oneof="subscribe_events_response::Payload", tags="10, 11")]
+    pub payload: ::core::option::Option<subscribe_events_response::Payload>,
+}
+/// Nested message and enum types in `SubscribeEventsResponse`.
+pub mod subscribe_events_response {
+    /// Later milestones add board/agent/audit payloads here; new variants are
+    /// backward-compatible additions behind the buf breaking gate.
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Payload {
+        #[prost(message, tag="10")]
+        DaemonStatus(super::DaemonStatus),
+        #[prost(message, tag="11")]
+        ResyncRequired(super::ResyncRequired),
+    }
+}
+/// The daemon's liveness state, pushed on connect and whenever it changes.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct DaemonStatus {
+    #[prost(enumeration="DaemonState", tag="1")]
+    pub state: i32,
+}
+/// The requested `since_seq` predates the daemon's retained event buffer, so a
+/// gap-free replay isn't possible; the client must reconnect with
+/// `since_seq = 0` to re-snapshot. The last event the daemon sends before it
+/// closes the stream.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct ResyncRequired {
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum DaemonState {
+    Unspecified = 0,
+    Ready = 1,
+}
+impl DaemonState {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "DAEMON_STATE_UNSPECIFIED",
+            Self::Ready => "DAEMON_STATE_READY",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "DAEMON_STATE_UNSPECIFIED" => Some(Self::Unspecified),
+            "DAEMON_STATE_READY" => Some(Self::Ready),
+            _ => None,
+        }
+    }
+}
 include!("compass.v1.tonic.rs");
 // @@protoc_insertion_point(module)
