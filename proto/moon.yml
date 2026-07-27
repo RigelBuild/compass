@@ -30,9 +30,12 @@ tasks:
       - 'compass/**/*.proto'
       - '/buf.yaml'
   breaking:
-    # Gate incompatible schema edits against the merge target. No-op on the
-    # first contract PR (no base yet) and offline. ${GIT_DIR:-.git} resolves in
-    # both a plain checkout and a secondary jj workspace.
+    # Gate incompatible schema edits against the merge target. No-op when the
+    # probed path is absent from origin/main, and offline. That covers two
+    # cases: the first contract PR (no base yet), and the one cycle after the
+    # monorepo import, while origin/main still holds the pre-import tree — the
+    # gate re-arms on its own once the import lands. ${GIT_DIR:-.git} resolves
+    # in both a plain checkout and a secondary jj workspace.
     script: 'if git cat-file -e "refs/remotes/origin/main:proto/compass/v1/compass.proto" 2>/dev/null; then buf breaking . --against "${GIT_DIR:-.git}#ref=refs/remotes/origin/main"; else echo "no base contract on origin/main yet - skipping breaking gate"; fi'
     options:
       runFromWorkspaceRoot: true

@@ -1,11 +1,10 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
-# The Compass backend Go module (go/). This lane keeps the generated
-# compass.v1 Go stubs compiling + drift-free AND runs the full Go gate battery
+# The Compass backend Go module (go/). This lane keeps the generated compass.v1
+# Go stubs compiling + drift-free AND runs the full Go gate battery
 # (docs/designs/platform/go-toolchain-default.md T10 +
 # go-idioms-and-libraries.md L1/L2): gofmt + go vet + golangci-lint (with the
 # gochecksumtype/exhaustive exhaustiveness gate on), a CGO -race test lane, go
-# build, and the supply-chain fence (govulncheck + go-licenses) — the Go parity
-# of the Rust cargo-deny/clippy battery on compass-proto/moon.yml. An advisory
+# build, and the supply-chain fence (govulncheck + go-licenses). An advisory
 # (non-gating) nilaway lane rides alongside until its baseline is clean.
 #
 # Tagged `oss` for the import boundary (may only depend on other oss/ projects),
@@ -112,9 +111,8 @@ tasks:
 
   vuln:
     # govulncheck: known-vulnerability scan over the module's actual call graph
-    # (reports only vulns in code paths the module reaches). The Go parity of the
-    # Rust supply-chain gate; unlike cargo-deny's offline bans/licenses/sources,
-    # govulncheck queries the Go vuln DB (vuln.go.dev), so it is a network gate.
+    # (reports only vulns in code paths the module reaches). It queries the Go
+    # vuln DB (vuln.go.dev), so it is a network gate.
     command: 'govulncheck ./...'
     options:
       runFromWorkspaceRoot: false
@@ -125,12 +123,10 @@ tasks:
 
   licenses:
     # go-licenses: the dependency-license fence — fails if any dependency's
-    # license is outside the permissive allowlist, the Go parity of cargo-deny's
-    # `licenses` check. The allowlist mirrors the root deny.toml `allow` set
-    # exactly (Apache-2.0 incl. the LLVM-exception, MIT, the BSD family, ISC,
-    # Unicode-3.0, Zlib, MPL-2.0, CC0-1.0) so the two fences can't diverge. The
-    # first-party module packages carry no LICENSE file (the license lives at the
-    # repo root, applied on OSS export), so --ignore excludes the module's own
+    # license is outside the permissive allowlist (Apache-2.0 incl. the
+    # LLVM-exception, MIT, the BSD family, ISC, Unicode-3.0, Zlib, MPL-2.0,
+    # CC0-1.0). The first-party module packages carry no LICENSE file (the
+    # license lives at the repo root), so --ignore excludes the module's own
     # import path — the fence governs third-party deps, which is its job.
     command: 'go-licenses check ./... --allowed_licenses=Apache-2.0,Apache-2.0-WITH-LLVM-exception,MIT,BSD-3-Clause,BSD-2-Clause,ISC,Unicode-3.0,Zlib,MPL-2.0,CC0-1.0 --ignore github.com/sealedsecurity/compass/go'
     options:

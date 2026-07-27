@@ -7,7 +7,7 @@ skim this too — the conventions are not agent-specific. See
 ## Toolchain and the gate
 
 The toolchain is [proto](https://moonrepo.dev/proto) (language toolchains,
-pinned in `.prototools` + `rust-toolchain.toml`) plus [devenv](https://devenv.sh)
+pinned in `.prototools`) plus [devenv](https://devenv.sh)
 (everything else). Enter the dev shell with `direnv allow`, then `bun install`.
 
 `moon run :ci` is the entire gate — build, lint, test, and contract drift across

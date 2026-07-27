@@ -1,6 +1,6 @@
 {
 	"$schema": "https://biomejs.dev/schemas/2.4.16/schema.json",
-	"root": false,
+	"root": true,
 	"files": { "includes": ["**", "!**/gen"] },
 	"formatter": { "indentStyle": "tab" },
 	"linter": {
