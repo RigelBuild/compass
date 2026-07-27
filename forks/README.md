@@ -37,9 +37,10 @@ distinction drives every rule here:
   **markdownlint** (`.markdownlint-cli2.jsonc`) ignores `forks/*/**`, where the
   `*/**` is load-bearing: it exempts the fork trees while keeping the
   first-party `forks/README.md` (this file) linted. **biome** (`biome.json`)
-  excludes `!forks/*`, biome's folder-ignore form since 2.2.0 — a trailing
-  `/**` there trips its own `useBiomeIgnoreFolder` rule. Biome does not process
-  markdown at all, so this file's linting does not depend on the biome glob.
+  carries `!forks/*` in `files.includes` — biome's folder-ignore form since
+  2.2.0, where a trailing `/**` trips its own `useBiomeIgnoreFolder` rule.
+  Biome does not process markdown at all, so this file's linting does not
+  depend on the biome glob.
 - **Functionally tested.** Style exemption is **not** test exemption. Each fork
   carries its own `forks/<name>/moon.yml` registering its native build/test/lint
   tasks (upstream's own toolchain) as moon tasks with `inputs` scoped to
@@ -140,12 +141,14 @@ becomes permanent) can opt into full gating, take the one-time reformat, and
 gain first-party style gating. It then needs no inbound Copybara.
 
 Opt one fork in without touching the others: both exclusions are wildcards over
-every fork, so do **not** simply delete them. Expand each into the explicit
-per-fork entries it stands for and omit the graduating fork — in
+every fork, so do **not** simply delete them. Replace each with the explicit
+per-fork entries, omitting the graduating fork — in
 `.markdownlint-cli2.jsonc`, replace `forks/*/**` with one `forks/<name>/**` per
 still-vendored fork; in `biome.json`, replace `!forks/*` with one `!forks/<name>`
-per still-vendored fork. Deleting the wildcards outright would de-exempt every
-vendored tree at once and reformat them all.
+per still-vendored fork. That expansion also narrows the biome exclusion to the
+fork directories themselves rather than every direct child of `forks/`, which is
+what is intended. Deleting the wildcards outright would de-exempt every vendored
+tree at once and reformat them all.
 
 This is the per-fork opt-in that keeps the vendored-by-default posture from
 trapping a fork that has become de-facto sealed-first.

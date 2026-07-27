@@ -40,5 +40,17 @@ result-*
 # forks/devenv's covers result/target/node_modules but not dist or *.log.
 # Unrelated: proptest-regressions/, poetry.lock, devenv.local.*, and uv.lock are
 # hidden by the forks' OWN nested .gitignore files, which no root negation
-# overrides — they are tracked only because they were `git add -f`'d.
+# overrides — they predate the ignore rules in the index and stay tracked
+# regardless.
+#
+# IMPORTING A NEW FORK: this anchor only rescues .DS_Store, so an upstream tree
+# that legitimately tracks an ignored-pattern path loses those files SILENTLY —
+# a bulk `git add -A` skips them with no warning and no error (git only warns on
+# an explicit `git add <ignored-path>`), and nothing in CI checks file counts.
+# This is real, not hypothetical: hermes-agent tracks checked-in plugin build
+# output at plugins/*/dashboard/dist/*. So before committing an import, compare
+# `git ls-files forks/<name> | wc -l` against the source tree's count. If they
+# differ, find the cause with
+# `git ls-files --others --ignored --exclude-standard forks/<name>` and add a
+# matching anchored negation below, e.g. `!forks/<name>/**/dist/**`.
 !forks/**/.DS_Store
