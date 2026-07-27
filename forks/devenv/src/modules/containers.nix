@@ -6,7 +6,6 @@ let
     then throw ''You need to set `name = "myproject";` or `containers.${name}.name = "mycontainer"; to be able to generate a container.''
     else config.name;
   types = lib.types;
-  envContainerName = builtins.getEnv "DEVENV_CONTAINER";
   projectRoot = builtins.path { path = self; name = "source"; };
 
   requiredInputs = config.lib.getInputs [
@@ -38,19 +37,56 @@ let
 
     ${bash} -c "$cmd"
   '';
-  user = "user";
-  group = "user";
+  # Default container identity. Per-container overridable via the `user` /
+  # `group` / `homeDir` options below — the uid/gid stay module-wide because
+  # nix2container's `nixUid`/`nixGid` and the initialized Nix DB are built around
+  # a single numeric owner, and nothing has needed to move it.
+  #
+  # These remain the DEFAULTS, and the two additions that would otherwise fire on
+  # the default path — staging the container user's $HOME and its `perms` entry —
+  # are guarded on the home actually moving. So a container that sets none of
+  # these options resolves to the SAME `mkEtc` store path as upstream, with an
+  # identical image config and no extra `perms` entry — held by construction:
+  # every parameterized script body keeps upstream's bytes verbatim, line
+  # breaking included, since a comment inside `runCommand`'s text is part of the
+  # build command (see the `mkEtc` note below, and `mkHome` above).
+  defaultUser = "user";
+  defaultGroup = "user";
   uid = "1000";
   gid = "1000";
-  homeDir = "/env";
+  defaultHomeDir = "/env";
 
-  mkHome = path: (pkgs.runCommand "devenv-container-home" { } ''
-    mkdir -p $out${homeDir}
+  # Resolve a container's identity from its config, falling back to the defaults.
+  # Everything that bakes identity into the image (the passwd/group/shadow rows,
+  # the $HOME skeleton, file ownership, the image config's User/HOME/USER) reads
+  # through these so a single option set moves all of them together.
+  cfgUser = cfg: cfg.user;
+  cfgGroup = cfg: cfg.group;
+  cfgHomeDir = cfg: cfg.homeDir;
+
+  # The homeDir of the container currently being built, for the module-scope
+  # devenv.root/dotfile overrides below. The container being built is found from
+  # config only: the backend re-evaluates the module tree once per container with
+  # that container's `isBuilding` forced true
+  # (devenv-nix-backend/bootstrap/bootstrapLib.nix, `mkContainerBuilds`), and that
+  # `mkForce` is the single source of truth — nothing else ever sets `isBuilding`,
+  # so at most one container carries it and this lookup is deterministic. Falls
+  # back to the default when no container is building, so evaluation never depends
+  # on a container that does not exist.
+  buildingContainer =
+    lib.findFirst (cfg: cfg.isBuilding) null (lib.attrValues config.containers);
+  buildingHomeDir =
+    if buildingContainer == null
+    then defaultHomeDir
+    else buildingContainer.homeDir;
+
+  mkHome = cfg: path: (pkgs.runCommand "devenv-container-home" { } ''
+    mkdir -p $out${cfgHomeDir cfg}
     if [ -d ${path} ]; then
       # Copy the directory's contents into the working directory so that, e.g.,
-      # the project root ends up directly under ${homeDir} rather than in a
+      # the project root ends up directly under ${cfgHomeDir cfg} rather than in a
       # hash-prefixed subdirectory.
-      cp -rP ${path}/. $out${homeDir}/
+      cp -rP ${path}/. $out${cfgHomeDir cfg}/
     else
       # Copy a single file using its original name, dropping the store hash.
       # Preserve symlinks (-P) rather than following them: paths produced by the
@@ -58,11 +94,11 @@ let
       # of this source path's closure, so dereferencing would fail to stat them.
       # Keeping the symlink lets Nix's output scan pull the target into the
       # closure so it ends up in the image.
-      cp -P ${path} "$out${homeDir}/${baseNameOf path}"
+      cp -P ${path} "$out${cfgHomeDir cfg}/${baseNameOf path}"
     fi
   '');
 
-  mkMultiHome = paths: map mkHome paths;
+  mkMultiHome = cfg: paths: map (mkHome cfg) paths;
 
   homeRoots = cfg: (
     if (builtins.typeOf cfg.copyToRoot == "list")
@@ -74,19 +110,35 @@ let
     mkdir -p $out/tmp
   '');
 
-  mkEtc = (pkgs.runCommand "devenv-container-etc" { } ''
+  # The container user's /etc scaffold: passwd/shadow/group rows, a permissive
+  # pam stack, and — for a container that moves its home off the default — the
+  # home directory itself.
+  #
+  # The $HOME staging is conditional on purpose. nix, direnv and devenv all write
+  # into $HOME, and a root-owned or absent home makes nix fall back to the passwd
+  # home with "$HOME is not owned by you" (ownership comes from the buildImage
+  # `perms` entry below). But upstream never created this directory, so staging it
+  # unconditionally would add an empty `/env` to every default-configured
+  # container's output and move its derivation hash. The guard — and keeping this
+  # explanation OUT of the script body, since a comment inside `runCommand`'s text
+  # is itself part of the build command and would shift the hash on its own —
+  # keeps the default path byte-identical to upstream. The optional fragment
+  # carries its own leading `\n\n` as an explicit escape rather than as blank
+  # lines inside an indented string, so the statement separation cannot be lost
+  # to a whitespace-trimming edit.
+  mkEtc = cfg: (pkgs.runCommand "devenv-container-etc" { } ''
     mkdir -p $out/etc/pam.d
 
     echo "root:x:0:0:System administrator:/root:${bash}" > \
           $out/etc/passwd
-    echo "${user}:x:${uid}:${gid}::${homeDir}:${bash}" >> \
+    echo "${cfgUser cfg}:x:${uid}:${gid}::${cfgHomeDir cfg}:${bash}" >> \
           $out/etc/passwd
 
     echo "root:!x:::::::" > $out/etc/shadow
-    echo "${user}:!x:::::::" >> $out/etc/shadow
+    echo "${cfgUser cfg}:!x:::::::" >> $out/etc/shadow
 
     echo "root:x:0:" > $out/etc/group
-    echo "${group}:x:${gid}:" >> $out/etc/group
+    echo "${cfgGroup cfg}:x:${gid}:" >> $out/etc/group
 
     cat > $out/etc/pam.d/other <<EOF
     account sufficient pam_unix.so
@@ -95,18 +147,38 @@ let
     session required pam_unix.so
     EOF
 
-    touch $out/etc/login.defs
+    touch $out/etc/login.defs${lib.optionalString (cfgHomeDir cfg != defaultHomeDir)
+      "\n\nmkdir -p \"$out${cfgHomeDir cfg}\""}
   '');
 
-  mkPerm = derivation:
+  mkPerm = cfg: derivation:
     {
       path = derivation;
       mode = "0744";
       uid = lib.toInt uid;
       gid = lib.toInt gid;
-      uname = user;
-      gname = group;
+      uname = cfgUser cfg;
+      gname = cfgGroup cfg;
     };
+
+  # The env baked into the image config, with devenv's own orchestration vars
+  # dropped.
+  #
+  # `config.env` is the MERGED env of the whole devenv, and top-level.nix assigns
+  # DEVENV_PROFILE/STATE/RUNTIME/DOTFILE/ROOT into it unconditionally (top-level.nix:
+  # 328-332). Those are build-host coordinates — the builder's project directory,
+  # its `/run/user/<uid>` runtime dir, its `.devenv` dotfile tree — and none of
+  # them exists inside the image. Serializing them is worse than omitting them:
+  # DEVENV_ROOT being set is precisely the sentinel devenv's shell hook reads to
+  # conclude a devenv shell is already active (devenv/hooks/hook.posix.sh:24-35),
+  # so an image carrying it silently refuses to activate anything. It also makes
+  # the image config differ per build host.
+  #
+  # This has to happen HERE, at serialization. A project setting `env = { }` cannot
+  # suppress them, because the merge that adds them happens upstream in
+  # top-level.nix on the same attrset. A container's entrypoint still gets correct
+  # in-image values from the sourced shell env script.
+  imageEnv = lib.filterAttrs (name: _: !(lib.hasPrefix "DEVENV_" name)) config.env;
 
 
   mkDerivation = cfg: nix2container.nix2container.buildImage ({
@@ -128,7 +200,7 @@ let
         ];
         pathsToLink = [ "/bin" "/usr/bin" ];
       })
-      mkEtc
+      (mkEtc cfg)
       mkTmp
     ];
 
@@ -158,17 +230,45 @@ let
         uname = "root";
         gname = "root";
       }
-    ];
+    ]
+    # The container user's $HOME, staged by mkEtc. Without this the directory
+    # arrives root-owned and read-only, and every tool that writes under $HOME
+    # (nix's cache, direnv, devenv) fails or silently falls back.
+    #
+    # Added only alongside the staged directory above, so a default-configured
+    # container's perms list is unchanged.
+    #
+    # The regex matches the SOURCE path — nix2container tests it against
+    # `srcPath`, the store path, BEFORE `rewrite` strips the store prefix
+    # (nix/tar.go:104-106) — so it is anchored on the staging derivation's own
+    # store path rather than on the in-image `$HOME`. Anchoring on the image
+    # path (`^/home/agent`) silently matches nothing and the home stays
+    # root-owned; leaving it bare would match any staged path merely
+    # CONTAINING the home's name, since `re.Match` is unanchored.
+    #
+    # Both halves are regex-escaped: `homeDir` is a free-form `types.str`, so a
+    # path holding regex syntax (`+`, `(`, `.`) would otherwise reach
+    # `regexp.MustCompile` as a pattern — panicking the build on invalid syntax,
+    # or silently matching paths the operator never named.
+    ++ lib.optional (cfgHomeDir cfg != defaultHomeDir) {
+      path = mkEtc cfg;
+      regex = "^${lib.strings.escapeRegex "${mkEtc cfg}${cfgHomeDir cfg}"}";
+      mode = "0755";
+      uid = lib.toInt uid;
+      gid = lib.toInt gid;
+      uname = cfgUser cfg;
+      gname = cfgGroup cfg;
+    };
 
     config = {
       Entrypoint = cfg.entrypoint;
-      User = "${user}";
+      User = "${cfgUser cfg}";
       WorkingDir = cfg.workingDir;
       Env = lib.mapAttrsToList
         (name: value:
           "${name}=${toString value}"
         )
-        config.env ++ [ "HOME=${homeDir}" "USER=${user}" ];
+        imageEnv ++ [ "HOME=${cfgHomeDir cfg}" "USER=${cfgUser cfg}" ];
       Cmd =
         if builtins.isList cfg.startupCommand
         then cfg.startupCommand
@@ -253,10 +353,39 @@ let
         defaultText = lib.literalExpression "[ entrypoint ]";
       };
 
+      user = lib.mkOption {
+        type = types.str;
+        description = ''
+          Unix user name baked into the container's passwd/shadow entry, its
+          image config `User`, and `$USER`. The uid stays 1000 regardless — it is
+          what nix2container's `nixUid` and the initialized Nix DB are built
+          around — so this renames the account, it does not renumber it.
+        '';
+        default = defaultUser;
+      };
+
+      group = lib.mkOption {
+        type = types.str;
+        description = "Unix group name baked into the container's group entry. The gid stays 1000.";
+        default = defaultGroup;
+      };
+
+      homeDir = lib.mkOption {
+        type = types.str;
+        description = ''
+          The container user's `$HOME`: its passwd home field, the `HOME` in the
+          image config, the staged (and uid-owned) home directory, and the
+          default `workingDir`. Set this when the image must match a home path
+          an external supervisor execs with — a mismatch makes nix, direnv and
+          devenv fall back to the passwd home ("$HOME is not owned by you").
+        '';
+        default = defaultHomeDir;
+      };
+
       workingDir = lib.mkOption {
         type = types.str;
         description = "Working directory of the container.";
-        default = homeDir;
+        default = config.homeDir;
       };
 
       defaultCopyArgs = lib.mkOption {
@@ -418,8 +547,8 @@ let
 
     config.layers = [
       {
-        perms = map mkPerm (mkMultiHome (homeRoots config));
-        copyToRoot = mkMultiHome (homeRoots config);
+        perms = map (mkPerm config) (mkMultiHome config (homeRoots config));
+        copyToRoot = mkMultiHome config (homeRoots config);
       }
     ];
   });
@@ -454,8 +583,6 @@ in
 
   config = lib.mkMerge [
     {
-      container.isBuilding = envContainerName != "";
-
       containers.shell = {
         name = lib.mkDefault "shell";
         startupCommand = lib.mkDefault bash;
@@ -466,14 +593,14 @@ in
         startupCommand = lib.mkDefault config.procfileScript;
       };
     }
-    (if envContainerName == "" then { } else {
-      containers.${envContainerName}.isBuilding = true;
-    })
     (lib.mkIf config.container.isBuilding {
       devenv.tmpdir = lib.mkOverride (lib.modules.defaultOverridePriority - 1) "/tmp";
       devenv.runtime = lib.mkOverride (lib.modules.defaultOverridePriority - 1) "${config.devenv.tmpdir}/devenv";
-      devenv.root = lib.mkForce "${homeDir}";
-      devenv.dotfile = lib.mkOverride 49 "${homeDir}/.devenv";
+      # The building container's own home, not the module default: `homeDir` is
+      # per-container now, and `buildingHomeDir` reads it off the one container the
+      # backend forced `isBuilding` on.
+      devenv.root = lib.mkForce buildingHomeDir;
+      devenv.dotfile = lib.mkOverride 49 "${buildingHomeDir}/.devenv";
     })
     {
       tasks."devenv:container:copy" = {

@@ -71,14 +71,54 @@ Per-fork customization, consumer, and sync policy.
 ### devenv
 
 - **Upstream:** `cachix/devenv` (`main`). **Spoke:** `sealedsecurity/devenv`.
-- **Sealed changes:** the container module's baked identity (passwd row,
-  `$HOME`, image `USER`/`HOME`) is per-container rather than upstream's
-  hardcoded `user` + `/env`; upstream's values are kept as DEFAULTS, so every
-  other consumer is byte-identical.
+- **Sealed changes:** one patch set, all in `src/modules/containers.nix`, added
+  for the Compass agent base image:
+  - Per-container `user` / `group` / `homeDir` options. Upstream hardcodes user
+    `user` with `$HOME=/env` module-wide; these move the passwd/group/shadow
+    rows, the file ownership `perms`, and the image config's `User`/`HOME`/`USER`
+    together per container. **Upstream's values are kept as the defaults**, so a
+    consumer that sets none of them resolves to a byte-identical `mkEtc` store
+    path and image config. That identity is asserted by construction, not by a
+    build-and-diff: the parameterized script bodies keep upstream's exact bytes
+    (including line breaking — a comment inside `runCommand`'s text is part of
+    the build command and shifts the derivation hash on its own).
+  - Conditional `$HOME` staging plus its `perms` entry, guarded on the home
+    actually moving off the `/env` default. nix, direnv and devenv all write into
+    `$HOME`, and an absent or root-owned home makes nix fall back with "$HOME is
+    not owned by you"; the guard keeps the default path byte-identical to
+    upstream, which never created this directory.
+  - The `DEVENV_`-prefix `imageEnv` filter. `top-level.nix` merges
+    `DEVENV_PROFILE`/`STATE`/`RUNTIME`/`DOTFILE`/`ROOT` into `config.env`
+    unconditionally; those are build-host coordinates that do not exist inside
+    the image, and a baked `DEVENV_ROOT` is precisely the sentinel devenv's shell
+    hook reads to conclude a shell is already active — so an image carrying it
+    silently refuses to activate. Filtering at serialization is the only place a
+    project can suppress them.
+  - Removal of `envContainerName = builtins.getEnv "DEVENV_CONTAINER"` and the
+    two config blocks it drove (`container.isBuilding` and
+    `containers.<name>.isBuilding`), replaced by a config-only `buildingContainer`
+    lookup. The env path is dead: the nix backend already forces both
+    (`devenv-nix-backend/bootstrap/bootstrapLib.nix:440-441`, `lib.mkForce true`),
+    and nothing in the tree writes `DEVENV_CONTAINER`. Reading identity out of an
+    impure `getEnv` while the options carry it is two sources of truth; the
+    lookup keeps one. Listed because `fork-sync` 3-way-merges with `ours` = the
+    current subtree: the change survives the merge either way, but an undeclared
+    one is indistinguishable from upstream drift at a conflict marker.
+
+  Plus the `forks/devenv/moon.yml` functional-CI registration (absent upstream),
+  a declared export-exclusion excluded from the import byte-fidelity diff.
+- **Base ref & rebase policy:** the functional diff is confined to
+  `src/modules/containers.nix`; everything else tracks upstream `main` so rebases
+  stay cheap. Do not accumulate local changes outside that one module.
 - **Consumer:** the Compass agent image's `devenv.yaml` `devenv` input, pointed
-  at this subtree by relative path.
-- **Sync policy:** Copybara inbound from `cachix/devenv` (monorepo side);
-  outbound only if an upstreamable diff ever accumulates.
+  at this subtree by relative path — the base image is built against this fork's
+  module tree, not the installed CLI's bundled modules.
+- **Sync policy:** Copybara inbound from `cachix/devenv` (monorepo side). The
+  subtree carries local patches, so an inbound sync 3-way-merges upstream over
+  them: preserve the three `containers.nix` changes above when resolving
+  conflicts. Outbound only if the diff becomes upstreamable (the per-container
+  identity options plausibly are; the `imageEnv` filter is shaped for this
+  repo's use).
 
 ### nix2container
 
