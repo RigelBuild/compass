@@ -1,0 +1,85 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# oh-my-pi (oss/forks/oh-my-pi): vendored fork of can1357/oh-my-pi, imported as a
+# plain-copy squash (no upstream history — Matt's OQ1 exception for this fork; at
+# 4.5x the largest history-preserving import, a full-history subtree was not worth
+# the permanent monorepo growth). Style-gate-exempt vendored code (oss/forks/**
+# exclusions, SEA-1245 Task 2); this moon.yml is the sealed-added functional-CI
+# registration. It is the one sealed file inside the subtree — a declared Copybara
+# export-exclusion, excluded from the import byte-fidelity diff.
+#
+# oh-my-pi is a Rust + TypeScript + Python monorepo, and it is nix-source class:
+# it ships its own flake (`flake.nix` + `nix/package.nix` + `bun.nix`) that
+# builds the `omp` binary from THIS subtree (`src = self`). So the functional-CI
+# gate is that nix build — the same shape as the other two vendored forks, and
+# exactly how a downstream consumer resolves the fork.
+#
+# That covers the load-bearing native surface without a Rust toolchain on PATH:
+# the derivation vendors the cargo deps (`rustPlatform.fetchCargoVendor`,
+# `cargoHash` pinned in `nix/hashes.json`), runs `cargo build --release -p
+# pi-natives`, generates the napi bindings, `bun compile`s the JS into the
+# binary, and smoke-tests the result in `installCheckPhase`. nix supplies rust
+# inside the build, which matters here: this repo's dev shell carries no Rust
+# toolchain (it was stripped deliberately — the first-party Compass tree has
+# zero `.rs` files), so a `cargo`-invoking task could not run at all.
+#
+# Deliberately not the full upstream suite: upstream's matrix
+# (.github/workflows/ci.yml) is a heavy multi-job release pipeline —
+# cargo-zigbuild glibc-floor native addons, napi packaging, npm publish, bun
+# test tiers — none of which gates a vendored byte-copy's correctness, and its
+# integration tiers are network- and toolchain-provisioning-heavy. The nix build
+# proves the property a vendored import must hold: the tree still builds. It
+# builds the crates the `omp` binary depends on, not the workspace's test-only
+# targets (`cargo build` does not compile `tests/`/`benches/`) — neither did the
+# `cargo check` this replaces, so no coverage is lost, but "builds" here does not
+# mean "every target compiles".
+#
+# Inputs are scoped to this subtree, so a fork-only change schedules only this
+# task and a change elsewhere never marks oh-my-pi affected. That scoping is
+# about SCHEDULING only. The flake takes `src = self`, which resolves to the
+# whole repo subpathed to this directory (`git+file://<root>?dir=forks/oh-my-pi`)
+# rather than to the subtree alone — so the derivation's store path, and with
+# cache:false the only cache key that exists, is sensitive to commits ANYWHERE in
+# the repo. Verified: touching a file outside the fork and re-evaluating moves
+# the omp .drv hash. The practical cost is that once something does schedule this
+# task, an unrelated commit can force a cold ~4.5-minute rebuild. forks/devenv
+# has the same property; forks/nix2container does not, because it pins its source
+# with `lib.fileset.gitTracked ./.`. Not worth fixing here: the flake is vendored
+# code, and editing it to narrow `src` would break the byte-identity this import
+# is verified by.
+layer: 'application'
+language: 'nix'
+tags: ['oss']
+
+workspace:
+  inheritedTasks:
+    # Vendored nix-built fork, not a first-party bun package: skip the root bun
+    # install + the biome lint/format that tag-bun applies to every project
+    # (style-exempt vendored tree).
+    exclude: ['install', 'lint', 'format']
+
+fileGroups:
+  sources: ['**/*']
+
+tasks:
+  # Build the `omp` binary through the fork's own flake — upstream's Rust
+  # natives, napi bindings and bun-compiled JS in one derivation, plus its
+  # `installCheckPhase` smoke test of the built binary. Must be the FLAKE build:
+  # `nix/package.nix` takes `src = self`, so the flake is what pins the source to
+  # this subtree, and it is also exactly how a downstream consumer resolves the
+  # fork. Only `.#omp` is built (not `.#default`, which aliases it) to keep the
+  # gate to one derivation. cache:false: nix has its own store-path caching;
+  # moon must not false-green a build it did not re-run (same posture as the
+  # other two fork tasks).
+  build:
+    command: 'nix build -L --no-link --print-out-paths --accept-flake-config .#omp'
+    options:
+      cache: false
+      runInCI: true
+    inputs: ['@group(sources)']
+
+  ci:
+    deps: ['build']
+    options:
+      cache: false
+      runInCI: true
