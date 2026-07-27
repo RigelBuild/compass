@@ -29,6 +29,14 @@ projects:
   # (biome + markdownlint exclusions). moon discovers projects from this
   # explicit map, so these entries are what make the forks moon projects at all.
   # The `-fork` id suffix marks them vendored rather than first-party.
+  #
+  # VENDORING A NEW FORK: add its entry here in the SAME change that adds the
+  # tree. A forks/<name>/moon.yml with no entry below is silently inert — moon
+  # never discovers it, so the fork ships a functional-CI registration that
+  # gates nothing while reading as covered, which is worse than no gate. No
+  # single PR's CI catches this: the tree and this map can arrive on separate
+  # branches, each green alone, and the union is still unregistered. Confirm
+  # with `moon query projects` after merging.
   devenv-fork: 'forks/devenv'
   nix2container-fork: 'forks/nix2container'
 
