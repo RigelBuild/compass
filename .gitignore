@@ -31,10 +31,14 @@ result-*
 # are intentionally committed and CI drift-gated — do not ignore them.
 
 # Vendored fork subtrees (forks/<name>/) are upstream code, vendored into this
-# repo per SEA-1512. The unanchored patterns above (node_modules, dist,
-# .direnv, result, .DS_Store, ...) otherwise apply at every depth under forks/,
-# which would silently drop tracked upstream files from the vendored trees.
-# This blanket negation re-includes the whole fork tree. Must be a directory
-# blanket, not per-file: git cannot re-include a file whose parent dir stays
-# excluded.
-!forks/**
+# repo per SEA-1512. Of the unanchored patterns above, the only one that
+# actually catches tracked upstream files in these trees is `.DS_Store` (two of
+# them, under forks/devenv/logos/), so that is all the negation re-includes.
+# Keeping it anchored to the file pattern — rather than a `!forks/**` blanket —
+# means real build detritus inside a fork (dist/, *.log, node_modules/, result)
+# stays ignored; forks/nix2container carries no .gitignore of its own, and
+# forks/devenv's covers result/target/node_modules but not dist or *.log.
+# Unrelated: proptest-regressions/, poetry.lock, devenv.local.*, and uv.lock are
+# hidden by the forks' OWN nested .gitignore files, which no root negation
+# overrides — they are tracked only because they were `git add -f`'d.
+!forks/**/.DS_Store
