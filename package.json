@@ -1,0 +1,24 @@
+{
+	"name": "@compass/workspace",
+	"private": true,
+	"type": "module",
+	"description": "Compass workspace root. Coordinates the bun workspace (one root bun.lock + hoisted node_modules) and pins shared dependency versions via the catalog. proto (.prototools) owns the bun/node toolchains; this catalog owns the shared package versions. The overrides are reviewed floors/pins, not floats: @tanstack/virtual-core 3.17.5 is the chat-mode scroll floor the message-surface renderer requires, and @bufbuild/protoc-gen-es is pinned exact because its version string is stamped into every generated TS header — a float would fail compass-proto:drift against the checked-in trees on the next minor.",
+	"workspaces": {
+		"packages": [
+			"packages/*",
+			"apps/*"
+		],
+		"catalog": {
+			"@biomejs/biome": "2.5.4",
+			"@types/bun": "^1.3.14",
+			"typescript": "^6.0.3"
+		}
+	},
+	"overrides": {
+		"@tanstack/virtual-core": "3.17.5",
+		"@bufbuild/protoc-gen-es": "2.12.1"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "catalog:"
+	}
+}

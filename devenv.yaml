@@ -1,0 +1,8 @@
+# devenv inputs. Rolling nixpkgs is devenv's recommended channel for dev
+# shells (newer than a release channel, curated for devenv). It is the only
+# input this shell needs: the toolchain is nixpkgs derivations plus the
+# proto-managed runtimes (.prototools), with no container image, no Rust
+# toolchain, and no secrets provider to source.
+inputs:
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/rolling

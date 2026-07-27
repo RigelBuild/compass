@@ -1,0 +1,36 @@
+// Git hooks managed by hk (https://hk.jdx.dev).
+//
+// Install once per clone:  `hk install`
+//   (the devenv shell provides hk; `direnv allow` runs `bun install` +
+//    `hk install` for you, so that is the whole fresh-machine bootstrap.)
+//
+// Only a pre-push hook is configured.
+//
+// The pre-push gate is a thin shell over the local CI command: `moon ci` runs
+// every affected `runInCI` moon task — the hermetic, no-secret checks (biome
+// lint, markdownlint, the buf contract gates, the Go battery, bun typecheck +
+// tests, the UI build). moon's affected detection path-filters by the diff, and
+// moon's cache skips unchanged tasks.
+//
+// Bypass knobs:
+//   HK=0 git push           // skip all hooks (emergency)
+//   git push --no-verify    // hk respects this too
+amends "package://github.com/jdx/hk/releases/download/v1.45.0/hk@1.45.0#/Config.pkl"
+
+// Pin the default-branch reference. Without this, hk's auto-detect reads
+// `refs/remotes/origin/HEAD`, which is not always set on fresh clones (and in
+// CI), causing `hk run pre-push` to fail before it ever loads a step.
+default_branch = "main"
+
+hooks {
+    ["pre-push"] {
+        steps {
+            // The whole local CI gate in one target. `moon ci` resolves the
+            // affected `runInCI` tasks and runs them with its own cache.
+            // Nothing is hand-listed.
+            ["ci"] = new Step {
+                check = "moon ci"
+            }
+        }
+    }
+}

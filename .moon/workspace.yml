@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/workspace.json
+#
+# moon workspace. One project per package, plus the workspace root. Tasks are
+# *system* tasks — they exec the toolchain that the devenv shell puts on PATH
+# (bun/node/go/moon via proto, buf/biome/the Go battery via nixpkgs) rather than
+# moon managing its own toolchain. That keeps .prototools the single version
+# source and moon's graph/caching layer toolchain-agnostic.
+
+projects:
+  # Workspace root project: owns the single bun dependency install (one root
+  # bun.lock + hoisted node_modules) plus the whole-repo lint/format sweeps.
+  # bun-tagged projects' `install` is a no-op that depends on `root:install`, so
+  # `moon ci` installs once instead of N per-project installs racing on the
+  # shared root.
+  root: '.'
+  # The compass.v1 contract schema and its single buf codegen pipeline.
+  compass-proto: 'proto'
+  # The generated TypeScript client — the sole door to the daemon.
+  compass-client: 'packages/compass-client'
+  # The first-party agent, built on the OMP SDK.
+  compass-agent: 'packages/compass-agent'
+  # The SolidJS web UI.
+  compass-ui: 'apps/ui'
+  # The backend Go module: server + comms + the generated compass.v1 Go stubs.
+  compass-go: 'go'
+
+vcs:
+  client: 'git'
+  provider: 'github'
+  defaultBranch: 'main'
