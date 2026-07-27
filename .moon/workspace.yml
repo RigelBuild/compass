@@ -23,6 +23,14 @@ projects:
   compass-ui: 'apps/ui'
   # The backend Go module: server + comms + the generated compass.v1 Go stubs.
   compass-go: 'go'
+  # Vendored upstream fork subtrees (forks/<name>, SEA-1512). Each carries its
+  # own nix-driven build as functional CI — so a fork-only change is gated by
+  # the fork's own suite — while its tree stays exempt from the style gates
+  # (biome + markdownlint exclusions). moon discovers projects from this
+  # explicit map, so these entries are what make the forks moon projects at all.
+  # The `-fork` id suffix marks them vendored rather than first-party.
+  devenv-fork: 'forks/devenv'
+  nix2container-fork: 'forks/nix2container'
 
 vcs:
   client: 'git'
