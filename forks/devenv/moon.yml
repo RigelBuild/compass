@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# devenv (oss/forks/devenv): vendored fork of cachix/devenv — a bare passthrough
+# of upstream (no sealed diff). Style-gate-exempt vendored code (oss/forks/**
+# exclusions, SEA-1245 Task 2); this moon.yml is the sealed-added functional-CI
+# registration so the fork's own suite gates its own changes (Task 3). It is the
+# one sealed file inside the subtree — a declared Copybara export-exclusion and
+# excluded from the import byte-fidelity diff.
+#
+# devenv builds through nix (a flake), the same toolchain sealed CI already runs
+# for infra/nix + personal-nix system tasks; its Rust crates compile via the
+# flake's fenix toolchain, not the repo's own cargo, so tasks are nix-driven, not
+# bare `cargo`. Inputs are scoped to this subtree so a fork-only change schedules
+# only these tasks and a change elsewhere never marks devenv affected.
+layer: 'application'
+language: 'nix'
+tags: ['oss']
+
+workspace:
+  inheritedTasks:
+    # Vendored nix fork, not a bun package: skip the root bun install + the
+    # biome lint/format that tag-bun applies to every project (style-exempt).
+    exclude: ['install', 'lint', 'format']
+
+fileGroups:
+  sources: ['**/*']
+
+tasks:
+  # Build devenv from its flake — the upstream CI's canonical build step
+  # (.github/workflows/test.yml: `nix build -L`). Proves the fork tree evaluates
+  # and compiles (Rust crates via the flake's fenix pin) against sealed CI's nix.
+  # cache:false: nix has its own store-path caching; moon must not false-green a
+  # build it did not re-run (same posture as infra/nix flake-eval-*).
+  build:
+    command: 'nix build -L --no-link --print-out-paths --accept-flake-config'
+    options:
+      cache: false
+      runInCI: true
+    inputs: ['@group(sources)']
+
+  ci:
+    deps: ['build']
+    options:
+      cache: false
+      runInCI: true
