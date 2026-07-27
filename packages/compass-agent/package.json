@@ -1,0 +1,22 @@
+{
+	"name": "@compass/agent",
+	"version": "0.1.0",
+	"description": "First-party Compass agent built on the OMP SDK (@oh-my-pi/pi-agent-core), emitting compass.v1 natively over a newline-framed stdio channel. Runs inside the per-agent container; the Runner drives it over ExecStreaming.",
+	"license": "MIT OR Apache-2.0",
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"dependencies": {
+		"@bufbuild/protobuf": "^2.12.1",
+		"@connectrpc/connect": "^2.1.0",
+		"@connectrpc/connect-node": "^2.1.0",
+		"@oh-my-pi/pi-agent-core": "^16.4.8",
+		"@oh-my-pi/pi-ai": "^16.4.8",
+		"@oh-my-pi/pi-coding-agent": "^16.4.8"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

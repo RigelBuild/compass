@@ -1,0 +1,68 @@
+# Internal-only gen lane (Go): every compass.v1 surface that is spoken between
+# our own binaries and NEVER by a public client. Two protos share this lane
+# because they share one output tree (go/internal/gen) and buf's `clean: true`
+# wipes that whole tree per invocation — so both must be generated in a SINGLE
+# `buf generate`, exactly as the public lane generates compass.proto + comms.proto
+# together into go/gen. Splitting them into two templates would make whichever
+# ran last erase the other's output.
+#
+#   agent.proto  — the first-party-agent in-container stdio envelopes (§T5). The
+#                  Runner decodes the agent's stdout AgentFrame in Go and
+#                  write-throughs each oneof variant to the surface that owns it
+#                  (design.md:1074-1077, 1106-1109).
+#   runner.proto — the Server<->Runner RunnerService (§T4): enrollment, the
+#                  session-command relay, and the Runner-sequenced event stream,
+#                  consumed by internal/server (handler) + internal/runner (client).
+#
+# Emits into go/internal/gen — NOT the public go/gen. Go's `internal/` visibility
+# rule makes the SEA-1267 fence compiler-enforced: nothing outside the
+# github.com/sealedsecurity/compass/go module can import these types
+# (go-toolchain-default.md:332-333). Same go module as go/gen (one go.mod), a
+# distinct directory + import path — not a nested module.
+#
+# runner.proto declares a SERVICE (agent.proto is messages only), so this lane
+# runs protoc-gen-connect-go as well as protoc-gen-go: the Connect handler +
+# client land in go/internal/gen/compass/v1/compassv1internalconnect/. connect-go
+# emits nothing for agent.proto (no service), which is correct.
+#
+# Run WITHOUT `--include-imports`: protoc-gen-go's `M` mappings redirect every
+# imported payload type to the package that already generates it, so this lane
+# never regenerates an import. The internal protos' Ms point at this internal
+# package (compassv1internal); the public compass.proto/comms.proto Ms point at
+# the public go/gen package — that import-redirect is exactly M's job here.
+#
+# NEVER add `--include-imports` here — it is init-panic avoidance, not hygiene.
+# protoc-gen-go registers every generated file into the global proto registry
+# keyed by proto file path (compass/v1/comms.proto) + message full name
+# (compass.v1.MessagePosted). With `--include-imports` this lane would regenerate
+# comms.pb.go + compass.pb.go under the SAME file paths as the public go/gen lane
+# → duplicate registration → panic at init the instant one binary imports both
+# trees (the Runner imports go/gen AND go/internal/gen). The M redirect above
+# sidesteps it by construction: the deps are imported, never re-registered here.
+version: v2
+clean: true
+inputs:
+  - directory: proto
+    paths:
+      - proto/compass/v1/agent.proto
+      - proto/compass/v1/runner.proto
+      - proto/compass/v1/agent_gateway.proto
+plugins:
+  - local: protoc-gen-go
+    out: go/internal/gen
+    opt:
+      - paths=source_relative
+      - "Mcompass/v1/agent.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/runner.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/agent_gateway.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/compass.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"
+      - "Mcompass/v1/comms.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"
+  - local: protoc-gen-connect-go
+    out: go/internal/gen
+    opt:
+      - paths=source_relative
+      - "Mcompass/v1/agent.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/runner.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/agent_gateway.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/compass.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"
+      - "Mcompass/v1/comms.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"

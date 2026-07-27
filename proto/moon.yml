@@ -1,0 +1,155 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+# The compass.v1 contract schema. It owns the schema (compass/v1/*.proto) and
+# the single buf codegen pipeline - one schema, per-language clients fanned out
+# and checked in: connect-es TS in compass-client and protoc-gen-go/connect-go
+# Go in the go module, both drift-gated. buf comes from the devenv toolchain on
+# PATH; buf's TS plugin (protoc-gen-es) is a compass-client devDep, so gen/drift
+# depend on that package's install.
+#
+# Language-neutral (no crate, no language toolchain of its own): tagged `oss`
+# for the import boundary. The Rust backend that once co-owned this schema was
+# deleted at the Go cutover (docs/designs/platform/go-toolchain-default.md); the
+# schema outlives it as the sole source of truth the Go and TS clients generate
+# from.
+layer: 'library'
+language: 'bash'
+tags: ['oss']
+
+workspace:
+  inheritedTasks:
+    # Not a bun package: skip the global install + biome lint/format that
+    # tag-bun.yml applies to every project (it has no inheritedBy scope).
+    exclude: ['install', 'lint', 'format']
+
+tasks:
+  lint:
+    command: 'buf lint .'
+    options:
+      runFromWorkspaceRoot: true
+    inputs:
+      - 'compass/**/*.proto'
+      - '/buf.yaml'
+  breaking:
+    # Gate incompatible schema edits against the merge target. No-op when the
+    # probed path is absent from origin/main, and offline. That covers two
+    # cases: the first contract PR (no base yet), and the one cycle after the
+    # monorepo import, while origin/main still holds the pre-import tree — the
+    # gate re-arms on its own once the import lands. ${GIT_DIR:-.git} resolves
+    # in both a plain checkout and a secondary jj workspace.
+    script: 'if git cat-file -e "refs/remotes/origin/main:proto/compass/v1/compass.proto" 2>/dev/null; then buf breaking . --against "${GIT_DIR:-.git}#ref=refs/remotes/origin/main"; else echo "no base contract on origin/main yet - skipping breaking gate"; fi'
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    inputs:
+      - 'compass/**/*.proto'
+      - '/buf.yaml'
+  gen:
+    # In-place regen for developers after a schema edit (outputs declared so
+    # moon caches on the proto). THREE lanes: the public lane (buf.gen.yaml —
+    # protoc-gen-es → compass-client, protoc-gen-go/connect-go → go/gen, with the
+    # internal protos excluded), plus two internal-only lanes for the surfaces
+    # spoken only between our binaries (buf.gen.agent-ts.yaml → the agent's
+    # packages/compass-agent/src/gen, and buf.gen.internal-go.yaml → go/internal/gen
+    # for BOTH agent.proto and runner.proto — one lane because they share that
+    # output tree and buf's clean:true wipes it per invocation). protoc-gen-es is a
+    # compass-client devDep, so depend on its install and put that .bin on PATH; the
+    # Go plugins come from the devenv/CI PATH. The task runs from the workspace root,
+    # which is the compass root, so the templates' relative outs land in-tree.
+    # The TS internal lane needs --include-imports
+    # (protoc-gen-es has no import-path mapping, so it regenerates the imported
+    # payload types byte-identically); the Go internal lane must NOT (its M-mappings
+    # redirect the imported types to the public go/gen package instead of
+    # regenerating them). The checked-in clients are what consumers compile; drift
+    # guarantees freshness.
+    script: 'PATH="$PWD/packages/compass-client/node_modules/.bin:$PATH" buf generate && PATH="$PWD/packages/compass-client/node_modules/.bin:$PATH" buf generate --template buf.gen.agent-ts.yaml --include-imports && buf generate --template buf.gen.internal-go.yaml'
+    deps:
+      - 'compass-client:install'
+    options:
+      runFromWorkspaceRoot: true
+    inputs:
+      - 'compass/**/*.proto'
+      - '/buf.yaml'
+      - '/buf.gen.yaml'
+      - '/buf.gen.agent-ts.yaml'
+      - '/buf.gen.internal-go.yaml'
+      - '/package.json'
+      - '/bun.lock'
+    outputs:
+      - '/packages/compass-client/src/gen'
+      - '/go/gen'
+      - '/packages/compass-agent/src/gen'
+      - '/go/internal/gen'
+  drift:
+    # Regenerate every lane into a throwaway dir and compare against the checked-in
+    # trees — fails if the schema changed without committing the regenerated output.
+    # FOUR trees: the two public (compass-client/src/gen, go/gen) plus the two
+    # internal-only (packages/compass-agent/src/gen, go/internal/gen). Each lane
+    # regenerates with the SAME flags as `gen` (the TS internal lane keeps
+    # --include-imports; the Go internal lane omits it), just redirected under $tmp
+    # via -o. go/internal/gen holds BOTH agent.proto and runner.proto from the one
+    # buf.gen.internal-go.yaml invocation, so a single `git diff --no-index` on that
+    # tree covers both. A brand-new internal OUTPUT TREE (not a new proto in an
+    # existing tree) would add one more `buf generate -o` + one more `git diff
+    # --no-index … || rc=1` pair here + its own inputs glob below. `git diff
+    # --no-index` compares raw file trees (reads no index/worktree state, and git is
+    # always on PATH — unlike `diff`), so it runs identically in CI and in a
+    # secondary jj workspace.
+    script: 'tmp=$(mktemp -d) && export PATH="$PWD/packages/compass-client/node_modules/.bin:$PATH" && if ! buf generate -o "$tmp" || ! buf generate --template buf.gen.agent-ts.yaml --include-imports -o "$tmp" || ! buf generate --template buf.gen.internal-go.yaml -o "$tmp"; then rm -rf "$tmp"; exit 1; fi; rc=0; git diff --no-index "$tmp/packages/compass-client/src/gen" packages/compass-client/src/gen || rc=1; git diff --no-index "$tmp/go/gen" go/gen || rc=1; git diff --no-index "$tmp/packages/compass-agent/src/gen" packages/compass-agent/src/gen || rc=1; git diff --no-index "$tmp/go/internal/gen" go/internal/gen || rc=1; rm -rf "$tmp"; exit $rc'
+    deps:
+      - 'compass-client:install'
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    inputs:
+      - 'compass/**/*.proto'
+      - '/buf.yaml'
+      - '/buf.gen.yaml'
+      - '/buf.gen.agent-ts.yaml'
+      - '/buf.gen.internal-go.yaml'
+      - '/packages/compass-client/src/gen/**/*'
+      - '/go/gen/**/*'
+      - '/packages/compass-agent/src/gen/**/*'
+      - '/go/internal/gen/**/*'
+      - '/package.json'
+      - '/bun.lock'
+  gen-fence:
+    # SEA-1267 enforcement, and distinct from drift: drift only catches a schema
+    # edit that wasn't regenerated. It CANNOT catch a forgotten `exclude_paths`
+    # entry — once an internal symbol leaks into a public tree and is committed,
+    # regen reproduces it and drift passes green. This check is the real fence:
+    # assert no internal-only symbol appears in either PUBLIC gen tree
+    # (compass-client/src/gen, go/gen). The internal envelopes live only in the
+    # internal trees (packages/compass-agent/src/gen, go/internal/gen). Extend the
+    # symbol list as internal messages are added. Current internal surfaces:
+    # agent.proto (AgentFrame/AgentControl/SessionFrame + the AgentControl
+    # payload messages + the ReplayCompleteAck/ControlAck AgentFrame ack
+    # variants) + runner.proto (RunnerService/RunnerError) + agent_gateway.proto
+    # (AgentGateway + the CommsCall* envelopes it defines: CommsCallRequest/
+    # CommsCallResult/CommsCallError; plus the C1 wire messages
+    # PublishFrame*/PostConversationFrame*/ControlSubscribe*). `compassv1internal`
+    # catches any Go-package leak regardless of message name.
+    #
+    # Each of the whole-type symbols is word-bounded (\b…\b) so the fence matches
+    # a WHOLE internal identifier, never a substring of a larger public one. This
+    # is load-bearing for the public AgentSessionFrame (compass.proto, frozen
+    # compass-0.6): it contains "SessionFrame" as a substring, so an unanchored
+    # grep false-fires the moment it generates into a public tree
+    # (SEA-1267/OQ-2.4). Word boundaries also future-proof the others (a public
+    # "AgentControlFoo" would not trip "AgentControl"). AgentGateway and CommsCall
+    # stay UNANCHORED (prefix-matched) on purpose: the generated identifiers are
+    # families — AgentGatewayService and CommsCallRequest/CommsCallResult/
+    # CommsCallError — so anchoring their tails would match none of the real
+    # symbols. Internal symbols only ever leak as whole identifiers (a generated
+    # type name or a `compassv1internal.` package ref), never as a substring, so
+    # this mix still catches every real leak.
+    script: 'if grep -rlE "\bAgentFrame\b|\bAgentControl\b|\bSessionFrame\b|\bReplayCompleteAck\b|\bControlAck\b|\bPromptControl\b|\bAskAnswerControl\b|\bReplayComplete\b|\bSteerControl\b|\bDeliverControl\b|\bTranscriptReplay\b|\bConfigControl\b|\bRunnerService\b|\bRunnerError\b|AgentGateway|CommsCall|PublishFrame|PostConversationFrame|ControlSubscribe|\bcompassv1internal\b" packages/compass-client/src/gen go/gen; then echo "SEA-1267 FENCE VIOLATION: internal-only symbol found in a PUBLIC gen tree above — an internal proto leaked past buf.gen.yaml exclude_paths"; exit 1; fi; echo "gen-fence ok: no internal symbols in public gen"'
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+    inputs:
+      - '/packages/compass-client/src/gen/**/*'
+      - '/go/gen/**/*'
+  ci:
+    deps: ['lint', 'breaking', 'drift', 'gen-fence']
+    options:
+      cache: false

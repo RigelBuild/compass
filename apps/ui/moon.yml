@@ -1,37 +1,33 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 # The Compass web UI (SolidJS + Vite). System tasks: bun/vite/biome from the
-# devenv/proto toolchain on PATH. It consumes the generated client
-# (@compass/client -> compass.v1), so typecheck/build/test depend on compass-proto:gen.
+# devenv/proto toolchain on PATH. It consumes the checked-in generated client
+# (@compass/client -> compass.v1); compass-proto:drift gates its freshness.
 layer: 'application'
 language: 'typescript'
+tags: ['bun', 'oss']
 dependsOn: ['compass-client']
 
 tasks:
-  install:
-    command: 'bun install --frozen-lockfile'
-    inputs: ['package.json', '/bun.lock']
-    options:
-      internal: true
-      cache: false
-      # Serialize with the other workspace bun install (compass-client) —
-      # concurrent `bun install` on the same workspace race on node_modules.
-      mutex: 'bun-install'
   dev:
     command: 'bunx vite'
     preset: 'server'
-    deps: ['install', 'compass-proto:gen']
+    deps: ['install']
   typecheck:
     command: 'bunx tsc --noEmit'
-    deps: ['install', 'compass-proto:gen']
+    deps: ['install']
     inputs: ['src/**/*', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
   build:
     command: 'bunx vite build'
-    deps: ['install', 'compass-proto:gen']
+    deps: ['install']
     inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
     outputs: ['dist']
   test:
-    command: 'bun test --pass-with-no-tests'
-    deps: ['install', 'compass-proto:gen']
+    # `--conditions browser` resolves solid-js to its client build (dist/solid.js),
+    # matching what vite bundles for the app. Bun's default `node` condition pulls
+    # the SSR build (dist/server.js), where createMemo is inert (computes once, no
+    # tracking) — so store memos would falsely read stale. The UI is browser-only.
+    command: 'bun test --conditions browser --pass-with-no-tests'
+    deps: ['install']
     inputs: ['src/**/*', 'tsconfig.json', 'package.json', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
   ci:
     deps: ['typecheck', 'build', 'test']

@@ -14,8 +14,8 @@ direnv allow      # loads the devenv shell (toolchain on PATH)
 bun install       # install the workspace JS deps
 ```
 
-Without nix, install proto and let it bootstrap the pinned toolchains (Rust,
-bun, node, moon) from `.prototools` + `rust-toolchain.toml`, then `bun install`.
+Without nix, install proto and let it bootstrap the pinned toolchains (go,
+bun, node, moon) from the repository toolchain config, then `bun install`.
 
 ## The local gate
 
@@ -28,34 +28,34 @@ moon run :ci
 The same task graph runs locally and in CI, so a green local run is the same
 check CI runs. It covers, across the workspace:
 
-- Rust: `cargo fmt --check`, `clippy -D warnings`, `cargo nextest`.
-- Contract: `buf lint`, the codegen drift gate (regenerate + `git diff`).
+- Go: `go build ./...`, `go test ./...` (the fuller `-race` / lint / vuln
+  battery lands with the backend tiers).
+- Contract: `buf lint`, `buf breaking`, the codegen drift gate (regenerate +
+  `git diff`).
 - TypeScript: `tsc`, `biome`, `bun test`, and the UI build.
-- Supply chain: `cargo deny` (licenses, advisories, bans, sources).
 
 Run `moon run <project>:<task>` for a single piece (e.g. `moon run
-compass-daemon:clippy`). A `hk` pre-push hook runs the cheap subset (fmt,
-clippy, buf lint, biome, drift) before a push; install it with the hk CLI.
+compass-go:build`). A `hk` pre-push hook runs the cheap subset (fmt, buf lint,
+biome, drift) before a push; install it with the hk CLI.
 
 ## Tests
 
 Add tests for new behavior, and add a regression test for a bug fix (it should
 fail before the fix and pass after).
 
-- Rust: `cargo nextest run -p <crate>`.
+- Go: `go test ./...` in `go/`.
 - TypeScript: `bun test` in the package.
 
 ## Changing the `compass.v1` contract
 
-The contract is the sole, owned door between any UI and the daemon. Generated
-clients are the only sanctioned way to reach the daemon — never hand-edit the
-generated code under `crates/compass-proto/src/gen` or
-`packages/compass-client/src/gen`, and never reach the daemon through a raw
-socket or stub.
+The contract is the sole, owned door between any UI and the server. Generated
+clients are the only sanctioned way to reach the server — never hand-edit the
+generated code under `go/gen` or `packages/compass-client/src/gen`, and never
+reach the server through a raw socket or stub.
 
 To change the contract:
 
-1. Edit the schema under `crates/compass-proto/proto/compass/v1`.
+1. Edit the schema under `proto/compass/v1`.
 2. Regenerate: `moon run compass-proto:gen`.
 3. Commit the regenerated clients alongside the schema change.
 
@@ -89,6 +89,6 @@ Please do **not** open a public issue for a security vulnerability. Email
 
 By contributing, you agree that your contributions are licensed under the
 project's [AGPL-3.0-only](./LICENSE) license — except contributions to the
-permissively-licensed protocol crate (`compass-proto`) and the generated
+permissively-licensed `compass.v1` protocol schema and the generated
 TypeScript client (`@compass/client`), which are licensed under
 `MIT OR Apache-2.0`. See the README's License section for the rationale.

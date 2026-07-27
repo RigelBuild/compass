@@ -1,0 +1,169 @@
+// The compass.v1 first-party-agent stdio envelopes (design compass-0.6 §T5).
+//
+// INTERNAL-ONLY surface. Unlike compass.proto / comms.proto — the public,
+// generated-client door between a UI and the Server — these messages are the
+// framing on the agent's in-container stdio channel, spoken only between the
+// first-party agent and the Runner that drives it (ExecStreaming). They are
+// generated into the agent + Runner alone, never onto the public client
+// surface, so the `@compass/client` server-door fence stays intact (the agent
+// is not a server-door client). The gen fan-out that enforces this is a
+// separate path-filtered lane; the public buf.gen.yaml never takes this file
+// as input.
+//
+// Additive and buf-breaking-safe: a new file in the owned `compass.v1` package,
+// not a change to the public messages. `buf lint`/`buf breaking` still cover it
+// (they glob `compass/**/*.proto`).
+//
+// Ratified additive contract change (design compass-0.6, "Ratified additive
+// contract changes"; freeze gate July 2026).
+
+syntax = "proto3";
+
+package compass.v1;
+
+import "compass/v1/comms.proto";
+import "compass/v1/compass.proto";
+
+// The agent's stdout envelope: one discriminated frame per newline-delimited
+// protojson line. The agent emits two payload classes, routed to two surfaces
+// with two owners (design compass-0.6 §T5, spine-inversion). The durable
+// CONVERSATION (an agent `text` reply or an `ask`) is Compass-owned and typed —
+// it commits to comms Message/MessageBlock rows + SubscribeComms. The
+// execution-trace SESSION data (thought chunks, tool calls, todos, edits) is
+// OMP-native and OPAQUE — relayed verbatim to the dedicated session-tail stream
+// and rendered by OMP's own renderer, never re-typed by Compass. The Runner
+// classifies each line by the set `oneof` field and write-throughs each variant
+// to the surface that owns it (conversation → comms rows + SubscribeComms;
+// session → the session-tail stream, plus the extracted AgentSessionState →
+// SubscribeEvents for the board). An unset or unrecognized field IS the
+// "unknown frame" the Runner logs and counts — never silently dropped.
+message AgentFrame {
+  oneof frame {
+    // Conversation: a newly posted durable message (wraps a Message of
+    // MessageBlocks) → comms Message rows + SubscribeComms.
+    MessagePosted conversation_posted = 1;
+    // Conversation: an existing message changed — a streaming turn appended a
+    // block (carries the full current block set) → comms + SubscribeComms.
+    MessageUpdated conversation_updated = 2;
+    // Session: an opaque OMP-native execution-trace event and/or a board
+    // lifecycle transition → the session-tail stream (+ the extracted state →
+    // SubscribeEvents). Replaces the former typed status/plan/tool_call
+    // variants: under the first-party OMP agent the trace is not re-typed by
+    // Compass — OMP's own renderer inflates it.
+    SessionFrame session = 3;
+    // Agent -> Runner control-plane acks, riding the loss-tolerable Publish
+    // spine beside the conversation/session frames (the established frame-spine
+    // ack convention, design compass-0.6 DeliveryAck; consolidation OQ-4(i) +
+    // amended OQ-6). Both are consumed by the Runner's control lane (C2 routes
+    // them off Publish to C3), never written through to a comms/session surface.
+    //   replay_complete_ack — the agent's replay-barrier ack: on receipt the
+    //     Runner releases the live ops held behind the restart replay barrier.
+    ReplayCompleteAck replay_complete_ack = 4;
+    //   control_ack — the agent's selective apply-ack: a contiguous cursor
+    //     (highest contiguously-APPLIED control_seq) plus a bounded set of seqs
+    //     applied out of order above it. The Runner retires retained ops up to
+    //     the cursor and drops the individually-acked ones.
+    ControlAck control_ack = 5;
+  }
+}
+
+// The `session` variant's payload: a typed OMP-native session event plus the
+// board's lifecycle state (design compass-0.8 §"First-party typed session
+// renderer", retyping the former opaque `bytes event`). A frame carries one or
+// both:
+//   - `typed_event` — one typed SessionEvent (compass.proto): the execution
+//     trace (assistant text/thinking chunks, tool calls + updates, plan,
+//     notice). Unset for a pure lifecycle transition that carries no trace
+//     event.
+//   - `state` — the agent-session lifecycle state this frame transitions to;
+//     the Runner extracts it into an AgentSessionStatus (stamping the
+//     session_id it owns) → SubscribeEvents for the board.
+//     AGENT_SESSION_STATE_UNSPECIFIED means "no transition — trace only".
+//
+// Field 1 (`bytes event`) is retired: the trace is typed now, never a dual
+// opaque+typed wire. Removing it is buf-breaking on this INTERNAL-only message,
+// permitted under the ephemeral-Server rationale (the Server on `main` has no
+// live client; agent + Runner ship together) — the same precedent as
+// compass-0.6's own field removal.
+message SessionFrame {
+  reserved 1;
+  reserved "event";
+  AgentSessionState state = 2;
+  SessionEvent typed_event = 3;
+}
+
+// The agent's inbound control envelope — the other half of this §T5 contract,
+// pushed to the agent over AgentGateway.Control (agent_gateway.proto). One
+// AgentControl per control op. The variant NAMES and TYPES are the ratified
+// v0.6 oneof (design compass-0.6 §"control ops"); the transport-consolidation
+// record (docs/designs/product/compass-agent-transport-consolidation) gives it
+// its first WIRE definition, replacing the never-built stdin decoder.
+//
+// Payload FIELDS: only the variants representable with existing compass.v1
+// scalars carry fields here (PromptControl.input, AskAnswerControl). The
+// SteerControl / DeliverControl / TranscriptReplay / ConfigControl payloads
+// stay empty shells — their fields carry an inbound SDK `AgentMessage` (a
+// four-way union with an opaque provider payload) and a tool set (whose SDK
+// representation includes a non-serializable `execute` handle), neither of
+// which any existing compass.v1 message represents. That payload-shape decision
+// is parked (SEA-1310); the shells keep the oneof complete on the wire and are
+// populated by a stacked PR once the shapes settle. Defining the empty shells
+// now is additive and buf-breaking-safe (field additions to a proto3 message).
+message AgentControl {
+  // Runner-assigned, monotonic per session: the retention/redelivery cursor
+  // (consolidation amended OQ-6). An ENVELOPE field, not a payload field, so it
+  // does not touch the parked payload decision. High field number leaves the
+  // low numbers to the oneof variants.
+  uint64 control_seq = 8;
+  oneof control {
+    PromptControl prompt = 1;
+    SteerControl steer = 2;
+    DeliverControl deliver = 3;
+    AskAnswerControl ask_answer = 4;
+    ConfigControl config = 5;
+    TranscriptReplay replay = 6;
+    ReplayComplete replay_complete = 7;
+  }
+}
+
+// Representable payloads (existing compass.v1 scalars only).
+message PromptControl {
+  // The live user prompt text.
+  string input = 1;
+}
+message AskAnswerControl {
+  // Correlates to the in-flight ask (the ask_id the agent emitted).
+  string ask_id = 1;
+  // Exactly one answer per AskQuestion in the ask, keyed by question_id —
+  // reuses comms.v1 AskQuestionAnswer so the answer survives the wire with the
+  // same shape RespondToAskRequest carries: multi-question asks stay keyed, and
+  // a free-text ("Other") answer rides custom_text. A flat chosen_option_ids
+  // (the superseded single-question shape RespondToAskRequest itself reserved,
+  // comms.proto) cannot represent either, so it is not used here.
+  repeated AskQuestionAnswer answers = 2;
+}
+// A bare barrier signal: replay is complete, live ops may now flow. No payload.
+message ReplayComplete {}
+
+// Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
+// oneof is complete on the wire; populated by a stacked PR.
+//   SteerControl / DeliverControl / TranscriptReplay carry an inbound SDK
+//   AgentMessage; ConfigControl carries a tool set.
+message SteerControl {}
+message DeliverControl {}
+message TranscriptReplay {}
+message ConfigControl {}
+
+// Two agent -> Runner control-plane ACK frames, added as AgentFrame oneof
+// variants above (riding the loss-tolerable Publish spine beside DeliveryAck,
+// the established frame-spine ack convention — consolidation OQ-4(i) + amended
+// OQ-6). Additive to the frozen oneof; buf-breaking-safe.
+message ReplayCompleteAck {}
+message ControlAck {
+  // Highest contiguously-applied control_seq: the Runner retires retained ops
+  // up to and including this cursor.
+  uint64 acked_seq = 1;
+  // Seqs applied out of order ABOVE the contiguous cursor: the Runner drops
+  // these individually-acked ops from retention. Bounded (a small window).
+  repeated uint64 applied_above = 2;
+}

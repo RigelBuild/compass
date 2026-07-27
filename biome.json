@@ -1,6 +1,6 @@
 {
-	"$schema": "https://biomejs.dev/schemas/2.4.15/schema.json",
-	"vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+	"$schema": "https://biomejs.dev/schemas/2.4.16/schema.json",
+	"root": true,
 	"files": { "includes": ["**", "!**/gen"] },
 	"formatter": { "indentStyle": "tab" },
 	"linter": {
@@ -12,13 +12,15 @@
 					"options": {
 						"paths": {
 							"@connectrpc/connect": "Reach the daemon only through @compass/client — the owned compass.v1 door. Raw stub access is fenced.",
-							"@connectrpc/connect-web": "Reach the daemon only through @compass/client — the owned compass.v1 door. Raw transport access is fenced."
+							"@connectrpc/connect-web": "Reach the daemon only through @compass/client — the owned compass.v1 door. Raw transport access is fenced.",
+							"@connectrpc/connect-node": "Reach the daemon only through @compass/client — the owned compass.v1 door. Raw transport access is fenced (the agent's Runner-socket transport is the one scoped exception)."
 						},
 						"patterns": [
 							{
 								"group": [
 									"@connectrpc/connect/**",
-									"@connectrpc/connect-web/**"
+									"@connectrpc/connect-web/**",
+									"@connectrpc/connect-node/**"
 								],
 								"message": "Reach the daemon only through @compass/client — the owned compass.v1 door."
 							}
@@ -38,6 +40,14 @@
 	"overrides": [
 		{
 			"includes": ["packages/compass-client/**"],
+			"linter": {
+				"rules": {
+					"style": { "noRestrictedImports": "off" }
+				}
+			}
+		},
+		{
+			"includes": ["packages/compass-agent/src/transport/**"],
 			"linter": {
 				"rules": {
 					"style": { "noRestrictedImports": "off" }

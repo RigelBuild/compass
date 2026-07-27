@@ -1,0 +1,164 @@
+# yaml-language-server: $schema=https://golangci-lint.run/jsonschema/golangci.jsonschema.json
+#
+# golangci-lint config for the Compass backend Go module (go/).
+# Realizes the F1 posture from docs/designs/platform/go-idioms-and-libraries.md:
+# enable EVERY linter by default, then argue specific ones OUT with a reason —
+# so a version bump arrives with its new linters enabled and each must be
+# justified to disable, never justified to add. The golangci-lint version is
+# pinned (devenv.nix + ci/ci-toolchain.nix) so an upgrade is a deliberate act
+# that re-reviews the newly-shipped linters (the F1 ratchet).
+#
+# The load-bearing pair is the exhaustiveness gate (F-sumtype): `exhaustive`
+# for enum/iota switches and `gochecksumtype` for sealed-interface sum types
+# (the compass.v1 oneof wrapper interfaces). A dropped oneof arm compiles and
+# silently drops a variant in Go, so this gate is what makes a missing arm a
+# build failure — the enforcement the totality discipline relies on.
+
+version: "2"
+
+linters:
+  # Enable everything, then disable with a reason (F1). `all` is the widest
+  # net; the disable list below is the whole policy surface.
+  default: all
+
+  # Explicitly (re)enabled so the load-bearing security gates are named at the
+  # config surface, not just implied by `default: all` — they must never silently
+  # drop out under a future default change (F-sumtype, F-slog).
+  enable:
+    - gochecksumtype # sealed-interface (oneof) exhaustiveness — the D1 enforcement
+    - exhaustive # enum/iota-switch exhaustiveness, the sibling gate
+    - sloglint # consistent log/slog key-value usage (F-slog)
+
+  # Disabled with a reason, grouped by the four F1 reason classes.
+  disable:
+    # ── Class 1: pure formatting religion (gofmt/gofumpt own formatting) ──────
+    - wsl # blank-line/cuddle religion — stylistic, not correctness
+    - wsl_v5 # successor to wsl, same religion
+    - nlreturn # demands a blank line before every return/break — stylistic
+    - lll # line-length religion; long type names + t.Fatalf messages are unavoidable
+    - whitespace # leading/trailing blank-line nits gofmt already governs
+    - embeddedstructfieldcheck # blank line between embedded and regular fields — cosmetic
+
+    # ── Class 2: fights Go idiom ─────────────────────────────────────────────
+    - exhaustruct # demands every struct field set; Go zero-values + partial literals are idiomatic
+    - varnamelen # short names (i, g, ok, ul) are idiomatic Go, not a defect
+    - ireturn # returning interfaces (constructors, test helpers) is idiomatic Go
+    - noctx # the daemon binds process-lifetime listeners and does a local stale-socket probe; a request-scoped net.Dialer/ListenConfig has no caller ctx to thread here (a T3+ outbound client to the Runner brings noctx back into play with per-call ctx)
+    - gochecknoglobals # sentinel errors are package-level vars by design (errors.Is/%w, F-oops)
+    - err113 # demands a sentinel var per dynamic error; inline fmt.Errorf leaf errors are idiomatic
+    - noinlineerr # `if err := f(); err != nil` is THE idiomatic Go form
+    - wrapcheck # demands wrapping every external error; returning errgroup.Wait/stream.Send directly is idiomatic
+    - mnd # magic-number religion; file modes (0o600) and timeouts are self-documenting in context
+    - nonamedreturns # named returns are idiomatic for deferred error handling
+    - godoclint # pedantic godoc-shape checks; descriptive per-file package headers are fine
+
+    # ── Class 3: needs an undeclared fleet policy ────────────────────────────
+    - depguard # no import-allowlist policy declared yet; it blocks every import by default
+    - tagliatelle # struct-tag naming convention undeclared, and proto-generated tags would fight one
+    - gomodguard # module-allowlist policy undeclared (deprecated alias; gomodguard_v2 below)
+    - gomodguard_v2 # same: no declared module allow/block policy
+    - importas # no import-alias convention declared
+    - testpackage # no policy forbidding white-box test packages; the tests need unexported access
+    - paralleltest # no fleet policy mandating t.Parallel() in every test
+
+    # ── Class 4: wrong for our workflow ──────────────────────────────────────
+    - godox # we track TODOs with issue refs (Linear SEA-nnn), never forbid them
+
+  settings:
+    # F3: complexity linters ON, at generous thresholds — they catch real sprawl
+    # but must not manufacture refactors of correct dispatch code (long
+    # switch-over-oneof handlers, the serve loop). Tuned above the current
+    # module's honest peaks (Serve=16, forward=11, run=62 lines).
+    cyclop:
+      max-complexity: 30
+    gocognit:
+      min-complexity: 40
+    funlen:
+      lines: 120
+      statements: 80
+    nestif:
+      min-complexity: 8
+
+    # F-sumtype prerequisite: gochecksumtype only checks interfaces carrying the
+    # `//sumtype:decl` directive, and by default a `default:` arm satisfies the
+    # check. Turn that off so a sum-type switch must enumerate every arm — a
+    # non-panicking default no longer masks a dropped variant. Advisory in effect
+    # until the first sealed interface carries `//sumtype:decl` (the compass.v1
+    # oneof wrappers, when a handler switches over one); gates from that point on.
+    gochecksumtype:
+      default-signifies-exhaustive: false
+
+    # For enum/iota switches, an explicit `default:` arm IS an acceptable
+    # catch-all (the sibling of the sum-type rule above; enums are open-ended).
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    # F-slog: enforce consistent slog usage for when logging lands — key-value
+    # pairs must be complete and keys consistently cased. Advisory in effect
+    # until the first slog call site exists.
+    sloglint:
+      no-mixed-args: true
+      kv-only: false
+      key-naming-case: snake
+      static-msg: false
+
+    # nolintlint governs the inline `//nolint` directives themselves — the
+    # per-site suppression form this module uses for architectural false
+    # positives (SEA-1287). Every directive must name its linter and carry a
+    # reason, and a directive that no longer suppresses anything is flagged —
+    # so a stale inline suppression can't rot silently, the same anti-rot
+    # ratchet `warn-unused: true` gives the central exclusion rules.
+    nolintlint:
+      require-explanation: true # every //nolint must carry a // reason
+      require-specific: true # every //nolint must name the linter(s) it suppresses
+      allow-unused: false # a //nolint that suppresses nothing is a finding (default; explicit here)
+
+    revive:
+      rules:
+        # Keep revive's high-signal defaults; drop only the package-comment
+        # shape rule — this module deliberately carries a descriptive header
+        # comment on more than one file per package (serve.go, socket.go,
+        # service.go), which the rule would reject for not starting "Package x".
+        - name: package-comments
+          disabled: true
+
+  exclusions:
+    # Only skip machine-generated code by the strict Go convention
+    # (`// Code generated … DO NOT EDIT.`), never hand-written files.
+    generated: strict
+    # Surface a dead exclusion rule so this config can't rot silently as the
+    # module grows and a rule stops matching.
+    warn-unused: true
+
+    # Policy (SEA-1287): the central rules below are PATH-CLASSES only — whole
+    # categories of file (here, test files) that earn a looser standard. Per-site
+    # architectural false positives live inline at their site as
+    # `//nolint:<linter> // <reason>` (nolintlint settings above enforce the
+    # linter name + reason, and flag a stale one), not as central path+source
+    # rules — so the reason sits next to the code it excuses.
+
+    rules:
+      # ── Test files carry looser standards than shipped code ──────────────
+      - path: _test\.go
+        linters:
+          - errcheck # deferred/cleanup Close() in tests is not actionable
+          - gosec # test security findings are noise here: G404 deterministic-RNG fixtures, G301 test-dir perms, G104 cleanup closes
+          - forcetypeassert # a failed assert in a test is an acceptable panic
+          - dupl # table-driven test bodies legitimately repeat
+          - goconst # repeated literals read clearer inline in a test
+          - containedctx # a case struct may carry its own context
+          - errorlint # a direct != on an unwrapped local sentinel is fine in a test
+          - predeclared # a test-local may shadow a builtin (e.g. a var named recover)
+      # staticcheck's SA-class real-bug checks stay ON for tests (a broken test is
+      # load-bearing); only the QF* quickfix *suggestions* are advisory noise there.
+      - path: _test\.go
+        linters: [staticcheck]
+        text: "QF[0-9]"
+
+formatters:
+  # gofmt is the formatting authority (the fmt moon task runs `gofmt -l`);
+  # golangci-lint reports (never rewrites) any file gofmt would change.
+  enable:
+    - gofmt
+  exclusions:
+    generated: strict

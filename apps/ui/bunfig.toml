@@ -1,0 +1,7 @@
+# Compass UI test config. `bun test` runs headless by default; the preload
+# installs a happy-dom global DOM so component tests can mount SolidJS trees and
+# assert against rendered output. Bun reads bunfig from the run directory (moon
+# runs compass-ui:test with cwd = this project), so the install-time supply-chain
+# guard in the workspace-root bunfig is unaffected — install still runs from root.
+[test]
+preload = ["./test-setup.ts"]
