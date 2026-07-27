@@ -1,0 +1,7 @@
+mkdocs
+mkdocs-material
+mkdocs-material[imaging]
+mkdocs-include-markdown-plugin
+mkdocs-rss-plugin
+mkdocs-awesome-nav
+mkdocs-llmstxt

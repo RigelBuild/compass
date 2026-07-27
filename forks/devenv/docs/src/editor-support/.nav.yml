@@ -1,0 +1,4 @@
+nav:
+  - VSCode: vscode.md
+  - PhpStorm/Intellij/PyCharm: intellij.md
+  - Zed: zed.md

@@ -29,3 +29,12 @@ result-*
 
 # NOTE: generated clients (go/gen, packages/compass-client/src/gen)
 # are intentionally committed and CI drift-gated — do not ignore them.
+
+# Vendored fork subtrees (forks/<name>/) are upstream code, vendored into this
+# repo per SEA-1512. The unanchored patterns above (node_modules, dist,
+# .direnv, result, .DS_Store, ...) otherwise apply at every depth under forks/,
+# which would silently drop tracked upstream files from the vendored trees.
+# This blanket negation re-includes the whole fork tree. Must be a directory
+# blanket, not per-file: git cannot re-include a file whose parent dir stays
+# excluded.
+!forks/**

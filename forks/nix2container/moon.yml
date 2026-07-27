@@ -1,0 +1,52 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# nix2container (oss/forks/nix2container): vendored fork of nlewo/nix2container.
+# Sealed carries one patch — drops relocated copyToRoot paths from the
+# initialized nix DB so the CI image self-rebuild does not fail lstat'ing a
+# missing store path (SEA-1101, commit 8f4a6fd7b). Style-gate-exempt vendored
+# code (oss/forks/** exclusions, SEA-1245 Task 2); this moon.yml is the
+# sealed-added functional-CI registration (Task 3), the one sealed file inside
+# the subtree — a declared Copybara export-exclusion, excluded from the import
+# byte-fidelity diff.
+#
+# nix2container builds through nix (a plain default.nix, not a flake): its Go
+# binary compiles via buildGoModule inside nix (vendored deps, vendorHash), so
+# no separate Go toolchain is needed — nix is the one toolchain, the same sealed
+# CI already runs for infra/nix. Inputs are scoped to this subtree so a
+# fork-only change schedules only this task.
+layer: 'library'
+language: 'nix'
+tags: ['oss']
+
+workspace:
+  inheritedTasks:
+    # Vendored nix fork, not a bun package: skip the root bun install + biome
+    # lint/format that tag-bun applies to every project (style-exempt).
+    exclude: ['install', 'lint', 'format']
+
+fileGroups:
+  sources: ['**/*']
+
+tasks:
+  # Build the nix2container Go binary + skopeo wrapper — the upstream CI's
+  # canonical build (.github/workflows/darwin.yml: `nix build -L
+  # .#nix2container-bin .#skopeo-nix2container`). buildGoModule compiles + runs Go's own checks inside
+  # the nix build, so this one task covers the fork's build and Go test surface
+  # without a separate Go toolchain on PATH. Must be the FLAKE build, not
+  # `nix-build -A`: default.nix pins its source via `lib.fileset.gitTracked ./.`,
+  # which needs a git-repo root — true only for the store-copied flake tree, not
+  # the in-monorepo subdir. The flake path is also exactly how the fork is
+  # consumed (devenv.yaml resolves it as a flake). cache:false: nix has its own
+  # store-path caching; moon must not false-green a build it did not re-run.
+  build:
+    command: 'nix build -L --no-link --print-out-paths --accept-flake-config .#nix2container-bin .#skopeo-nix2container'
+    options:
+      cache: false
+      runInCI: true
+    inputs: ['@group(sources)']
+
+  ci:
+    deps: ['build']
+    options:
+      cache: false
+      runInCI: true

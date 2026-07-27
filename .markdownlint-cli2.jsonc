@@ -1,0 +1,11 @@
+{
+	// Rules live in .markdownlint.json. This file scopes markdownlint-cli2 to the
+	// whole repo, honoring .gitignore (skips node_modules + build outputs).
+	// Exclusions:
+	//   - forks/<name> — vendored upstream fork subtrees (SEA-1512). The glob is
+	//     `forks/*/**`, not `forks/**`: the first-party forks/README.md stays
+	//     linted; only the fork trees under it are exempt.
+	"globs": ["**/*.md"],
+	"gitignore": true,
+	"ignores": ["forks/*/**"]
+}

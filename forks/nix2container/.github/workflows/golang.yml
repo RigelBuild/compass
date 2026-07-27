@@ -1,0 +1,16 @@
+on:
+  pull_request:
+  push:
+    branches:
+      - 'master'
+name: Test Golang
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install Go
+      uses: actions/setup-go@v2
+    - name: Checkout code
+      uses: actions/checkout@v2
+    - name: Test
+      run: go test ./...

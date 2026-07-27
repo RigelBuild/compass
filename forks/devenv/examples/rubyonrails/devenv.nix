@@ -1,0 +1,31 @@
+{ pkgs, lib, ... }:
+
+# Create a new Rails project:
+#
+# gem install rails
+# rails new blog --database=postgresql --force
+# cd blog
+# bundle
+{
+  languages.ruby.enable = true;
+  languages.ruby.version = "3.4";
+
+  packages = [
+    pkgs.openssl
+    pkgs.libyaml
+    pkgs.git
+    pkgs.curl
+    pkgs.redis
+  ];
+
+  services.postgres.enable = true;
+
+  processes.rails = {
+    exec = "cd blog && exec rails server";
+    after = [ "devenv:processes:postgres" ];
+  };
+
+  enterShell = ''
+    export PATH="$DEVENV_ROOT/blog/bin:$PATH"
+  '';
+}
