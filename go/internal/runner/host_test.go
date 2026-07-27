@@ -5,8 +5,10 @@ package runner
 // The production SessionHost (agentHost): OQ6 row 5 (Runner-authoritative
 // Status, answered from the host's own live set), the Start-twice-same-container
 // → errAlreadyRunning guard, Stop idempotency (an unknown session succeeds),
-// Provision driving SpecBuilder→AgentRuntime.Launch, and Reload reusing the
-// session id. Every test names the contract a plausible bug would break.
+// Provision driving SpecBuilder→AgentRuntime.Launch, Reload reusing the session
+// id, and the AgentEnv the host derives from a launched container's handle (the
+// exec's uid, $HOME, checkout and model) staying identical across Start and
+// Reload. Every test names the contract a plausible bug would break.
 //
 // Start/Reload spawn a relay whose AgentStream.Stop terminates a real child, so
 // these use the stub-streaming runtime (a real terminatable Process) plus a live
@@ -15,6 +17,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -42,6 +45,14 @@ func (b *fakeSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceReques
 // engine, the registry, and the spec builder.
 func newHostFixture(t *testing.T, specs SpecBuilder) (SessionHost, *stubStreamingRuntime, *runtime.AgentRegistry) {
 	t.Helper()
+	return newHostFixtureWithModel(t, specs, "")
+}
+
+// newHostFixtureWithModel is newHostFixture with the host's Runner-wide model
+// selector set, for the tests that assert what configuration a started agent
+// actually receives.
+func newHostFixtureWithModel(t *testing.T, specs SpecBuilder, model string) (SessionHost, *stubStreamingRuntime, *runtime.AgentRegistry) {
+	t.Helper()
 	engine := newStubStreamingRuntime(t)
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
@@ -50,7 +61,8 @@ func newHostFixture(t *testing.T, specs SpecBuilder) (SessionHost, *stubStreamin
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
 	var n int
 	newID := func() string { n++; return "sess-" + string(rune('0'+n)) }
-	host := NewSessionHost(link, rt, registry, engine, specs, t.TempDir(), discardLoggerRunner(), newID)
+	cfg := AgentHostConfig{RuntimeDir: t.TempDir(), AgentModel: model}
+	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner(), newID)
 	return host, engine, registry
 }
 
@@ -258,6 +270,183 @@ func TestReloadUnknownSessionIsSessionUnknown(t *testing.T) {
 	if err := host.Reload(context.Background(), "ghost"); !errors.Is(err, errSessionUnknown) {
 		t.Fatalf("Reload(unknown) = %v, want errSessionUnknown", err)
 	}
+}
+
+// Start runs the agent with the identity and configuration derived from the
+// launched container's OWN handle — uid, $HOME and checkout from the container
+// it execs into, model from Runner-wide host config. This is what keeps a
+// session's exec consistent with the container hosting it: a bug that read the
+// uid or the checkout from anywhere but the handle (a hardcoded default, another
+// container's spec, the Runner's own environment) would put the agent in the
+// wrong directory or run it under the wrong user. The spec values here are
+// deliberately unlike the other fixtures' so a stale-source bug cannot pass by
+// coincidence.
+func TestStartExecsAgentWithTheContainersOwnIdentity(t *testing.T) {
+	spec := liveSpec()
+	spec.Workspace.UID = 4242
+	spec.Workspace.HomeDir = "/home/scoped"
+	spec.Workspace.CheckoutDir = "/srv/checkout"
+	specs := &fakeSpecBuilder{spec: spec}
+	host, engine, _ := newHostFixtureWithModel(t, specs, "claude-opus-4")
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { _ = host.Stop(context.Background(), sessionID) })
+
+	got := onlyStreamingSpec(t, engine)
+	if got.User == nil || *got.User != "4242" {
+		t.Fatalf("exec --user = %v, want the handle's workspace uid 4242 (an exec with no --user inherits the container's NET_ADMIN)", derefOr(got.User))
+	}
+	if got.Workdir == nil || *got.Workdir != "/srv/checkout" {
+		t.Fatalf("exec --workdir = %v, want the handle's checkout /srv/checkout", derefOr(got.Workdir))
+	}
+	for _, want := range []struct{ key, value string }{
+		{"HOME", "/home/scoped"},
+		{"COMPASS_WORKDIR", "/srv/checkout"},
+		{"COMPASS_MODEL", "claude-opus-4"},
+	} {
+		if got := got.Env[want.key]; got != want.value {
+			t.Fatalf("exec env %s = %q, want %q", want.key, got, want.value)
+		}
+	}
+}
+
+// A Runner with no configured model starts its agents with COMPASS_MODEL
+// ABSENT, so the agent falls back to its own SDK default rather than receiving
+// a blank selector it must special-case. A bug that always exported the host's
+// model field would export an empty value here.
+func TestStartOmitsModelWhenRunnerHasNoneConfigured(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine, _ := newHostFixtureWithModel(t, specs, "")
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { _ = host.Stop(context.Background(), sessionID) })
+
+	if got, ok := onlyStreamingSpec(t, engine).Env["COMPASS_MODEL"]; ok {
+		t.Fatalf("COMPASS_MODEL exported as %q with no model configured; want the key absent so the agent uses its SDK default", got)
+	}
+}
+
+// Reload relaunches with the SAME exec configuration Start used. Reload has no
+// AgentEnv of its own: it re-resolves the container's handle from the registry
+// so the restarted agent cannot drift from the one it replaces — a Reload that
+// relaunched bare would silently move the agent's cwd back to $HOME and drop
+// its model selector mid-session, with the board still showing a live session.
+func TestReloadRelaunchesWithTheSameAgentEnv(t *testing.T) {
+	spec := liveSpec()
+	spec.Workspace.UID = 4242
+	spec.Workspace.HomeDir = "/home/scoped"
+	spec.Workspace.CheckoutDir = "/srv/checkout"
+	specs := &fakeSpecBuilder{spec: spec}
+	host, engine, _ := newHostFixtureWithModel(t, specs, "claude-opus-4")
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	if err := host.Reload(ctx, sessionID); err != nil {
+		t.Fatalf("Reload = %v", err)
+	}
+	t.Cleanup(func() { _ = host.Stop(context.Background(), sessionID) })
+
+	execs := engine.streamingSpecs()
+	if len(execs) != 2 {
+		t.Fatalf("ExecStreaming called %d times, want 2 (Start then Reload's relaunch)", len(execs))
+	}
+	// Guard against the degenerate pass where BOTH execs are bare: the relaunch
+	// must match a Start that itself carried the container's identity.
+	if execs[0].User == nil || execs[0].Workdir == nil {
+		t.Fatalf("the initial Start exec carried no user/workdir (%+v); the equality below would be vacuous", execs[0])
+	}
+	if !reflect.DeepEqual(execs[0], execs[1]) {
+		t.Fatalf("Reload relaunched with %+v (user %v, workdir %v), want the same exec spec Start used: %+v (user %v, workdir %v)",
+			execs[1], derefOr(execs[1].User), derefOr(execs[1].Workdir),
+			execs[0], derefOr(execs[0].User), derefOr(execs[0].Workdir))
+	}
+}
+
+// A session whose container has since left the registry cannot be reloaded:
+// Reload returns errSessionUnknown rather than relaunching without the handle's
+// identity. Deregistering models the container being torn down underneath a
+// live session. Without the re-resolve, Reload would have started a bare,
+// root-privileged agent in a container it can no longer describe.
+//
+// The rejection must also be a true no-op: the handle is re-resolved BEFORE the
+// stream is stopped, so the failed Reload leaves the original agent running
+// behind a session the live set still truthfully reports READY. Resolving after
+// the stop instead killed the agent and then bailed, leaving a wedged session —
+// READY with nothing behind it, and no longer stoppable.
+func TestReloadWithDeregisteredContainerIsSessionUnknown(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine, registry := newHostFixture(t, specs)
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	registry.Deregister("cont-1")
+
+	if err := host.Reload(ctx, sessionID); !errors.Is(err, errSessionUnknown) {
+		t.Fatalf("Reload of a session whose container is gone = %v, want errSessionUnknown", err)
+	}
+	if n := len(engine.streamingSpecs()); n != 1 {
+		t.Fatalf("ExecStreaming called %d times, want 1 (the original Start only); Reload must not relaunch without a handle", n)
+	}
+	live, err := host.Status(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("Status after a rejected Reload = %v, want the session still live", err)
+	}
+	if len(live) != 1 || live[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_READY {
+		t.Fatalf("Status after a rejected Reload = %+v, want one READY session", live)
+	}
+	// The READY above is only honest if the agent is still running. Stop is the
+	// probe: it terminates and reaps the live child, which succeeds exactly once.
+	// Against an agent the rejected Reload had already stopped, this second
+	// teardown cannot reap again and errors.
+	if err := host.Stop(ctx, sessionID); err != nil {
+		t.Fatalf("Stop after a rejected Reload = %v, want success; the rejected Reload must leave the agent running, not wedged", err)
+	}
+}
+
+// onlyStreamingSpec returns the single exec spec the host started an agent
+// with, failing if the count is anything but one.
+func onlyStreamingSpec(t *testing.T, engine *stubStreamingRuntime) runtime.StreamingExecSpec {
+	t.Helper()
+	specs := engine.streamingSpecs()
+	if len(specs) != 1 {
+		t.Fatalf("ExecStreaming called %d times, want exactly 1", len(specs))
+	}
+	return specs[0]
+}
+
+// derefOr renders an optional exec-spec field for a failure message: its value,
+// or "<unset>" when the pointer is nil.
+func derefOr(p *string) string {
+	if p == nil {
+		return "<unset>"
+	}
+	return *p
 }
 
 // liveSpec is a minimal launchable AgentSpec for the test container "cont-1".

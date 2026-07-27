@@ -104,7 +104,7 @@ func newTransportFixture(t *testing.T, relay compassv1internalconnect.RunnerServ
 	var n int
 	newID := func() string { n++; return "sess-" + strconv.Itoa(n) }
 	specs := &fakeSpecBuilder{spec: liveSpec()}
-	host := NewSessionHost(link, rt, registry, engine, specs, t.TempDir(), discardLoggerRunner(), newID)
+	host := NewSessionHost(link, rt, registry, engine, specs, AgentHostConfig{RuntimeDir: t.TempDir()}, discardLoggerRunner(), newID)
 	return host.(*agentHost)
 }
 

@@ -2,8 +2,10 @@
 
 // The agent relay tail (design compass-0.6 §T5, the Runner side that lives in
 // T4): StartAgent spawns the first-party agent in a container over the built
-// streaming exec, reads its newline-framed compass.v1 stdout, and relays each
-// frame up the PublishEvents client-stream — Runner-sequenced. stderr is drained
+// streaming exec. The agent's frames ride the AgentGateway socket the Runner
+// bind-mounts into the container; the newline-framed compass.v1 stdout this
+// package scans and relays up the PublishEvents client-stream — Runner-sequenced
+// — is the legacy carrier, retained until it is retired. stderr is drained
 // continuously so a chatty agent can never fill the OS pipe buffer and stall the
 // frame stream. A frame whose oneof variant is unset or unrecognized is logged
 // and counted, never silently dropped.
@@ -16,6 +18,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 
@@ -27,9 +30,48 @@ import (
 )
 
 // agentCommand is the argv the Runner execs to start the first-party agent in a
-// container. The agent binary is installed in the image; it speaks the
-// newline-framed compass.v1 stdio contract on its stdin/stdout.
+// container. The agent binary is installed in the image; it speaks compass.v1
+// over the AgentGateway socket bind-mounted into the container, and also over
+// the newline-framed stdio contract on its stdin/stdout — the legacy carrier
+// retained until it is retired.
 var agentCommand = []string{"compass-agent"}
+
+// AgentEnv is the container-side configuration the Runner hands the agent
+// process at exec time. The agent reads each as an environment variable
+// (packages/compass-agent/src/cli.ts): HOME locates the provider seed,
+// COMPASS_WORKDIR is the session cwd, COMPASS_MODEL selects the model. Empty
+// Model is omitted rather than exported blank, so the agent falls back to its
+// SDK default instead of receiving a value it must special-case.
+type AgentEnv struct {
+	// UID is the agent user the exec runs as. Set explicitly because podman
+	// strips the container's ambient capabilities only when --user is passed:
+	// without it the agent's own process inherits the NET_ADMIN the container
+	// carries to arm its firewall (runtime/agent.go:212) and can flush the
+	// ruleset meant to contain it, violating runtime/egress.go:6-10. This
+	// closes that on this exec path. A follow-up removes the capability from the
+	// agent container entirely so no exec path can reach the ruleset.
+	UID uint32
+	// HomeDir is the agent's scoped $HOME.
+	HomeDir string
+	// Workdir is the in-container checkout the session runs in.
+	Workdir string
+	// Model is the model selector, or empty for the agent's default.
+	Model string
+}
+
+// execSpec builds the streaming exec that starts the agent: unprivileged, in
+// the checkout, carrying exactly the vars the agent reads.
+func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
+	spec := runtime.NewStreamingExecSpec(agentCommand...).
+		AsUser(strconv.FormatUint(uint64(e.UID), 10)).
+		InDir(e.Workdir)
+	spec.Env["HOME"] = e.HomeDir
+	spec.Env["COMPASS_WORKDIR"] = e.Workdir
+	if e.Model != "" {
+		spec.Env["COMPASS_MODEL"] = e.Model
+	}
+	return spec
+}
 
 // AgentStream is a live relayed agent: the streaming exec handle plus the
 // publisher pumping its frames upward. Stop terminates the in-container agent and
@@ -45,14 +87,15 @@ type AgentStream struct {
 func (s *AgentStream) SessionID() string { return s.sessionID }
 
 // StartAgent spawns the agent in container id over ExecStreaming and starts
-// relaying its stdout frames up the PublishEvents stream under sessionID. stderr
-// is drained to the diagnostic log continuously. The returned AgentStream lives
-// until Stop or ctx cancellation terminates the in-container agent.
-func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtime.ContainerID, engine runtime.ContainerRuntime, log *slog.Logger) (*AgentStream, error) {
+// relaying its stdout frames up the PublishEvents stream under sessionID. env
+// carries the identity and configuration the exec runs with. stderr is drained
+// to the diagnostic log continuously. The returned AgentStream lives until Stop
+// or ctx cancellation terminates the in-container agent.
+func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtime.ContainerID, engine runtime.ContainerRuntime, env AgentEnv, log *slog.Logger) (*AgentStream, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	xs, err := engine.ExecStreaming(ctx, id, runtime.StreamingExecSpec{Command: agentCommand})
+	xs, err := engine.ExecStreaming(ctx, id, env.execSpec())
 	if err != nil {
 		return nil, err
 	}

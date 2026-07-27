@@ -12,7 +12,10 @@
 // this is not a server-door client.
 
 import { type CallOptions, createClient } from "@connectrpc/connect";
-import { createGrpcTransport } from "@connectrpc/connect-node";
+import {
+	createGrpcTransport,
+	Http2SessionManager,
+} from "@connectrpc/connect-node";
 
 import type {
 	CommsCallRequest,
@@ -42,6 +45,11 @@ import { createPublishSpine, type PublishSpine } from "./publish-spine";
  *    erred); the sink awaits + retries it.
  *  - `control` — the agent-opened control server-stream; the ControlSource
  *    consumes it.
+ *  - `close()` — release the underlying HTTP/2 session. The composition root
+ *    calls it AFTER the sink's drain barrier: the session manager keeps an idle
+ *    connection alive for `idleConnectionTimeoutMs` (15 minutes by default), so
+ *    a self-terminating agent that only drains would linger holding the socket.
+ *    Draining first is what makes closing safe — close abandons open streams.
  */
 export interface RunnerTransport {
 	comms(req: CommsCallRequest): Promise<CommsCallResult>;
@@ -51,6 +59,7 @@ export interface RunnerTransport {
 		options?: CallOptions,
 	): Promise<PostConversationFrameResponse>;
 	control(req: ControlSubscribeRequest): AsyncIterable<AgentControl>;
+	close(): void;
 }
 
 /**
@@ -58,17 +67,27 @@ export interface RunnerTransport {
  * socket at socketPath. Uses the gRPC transport over Node's http2 module for
  * cleartext HTTP/2 (h2c), matching the Runner's socket door.
  *
- * The socket is addressed via `nodeOptions.path` (Node http2/tls's Unix-socket
- * option — NOT `socketPath`, which is the http.request name for the HTTP/1.1
- * transport). When `path` is set, http2.connect ignores host/port, so `baseUrl`
- * is a required-but-ignored placeholder the URL parser needs.
+ * The socket is addressed via the session manager's http2 session options
+ * (Node http2/tls's Unix-socket `path` option — NOT `socketPath`, which is the
+ * http.request name for the HTTP/1.1 transport). When `path` is set,
+ * http2.connect ignores host/port, so `baseUrl` is a required-but-ignored
+ * placeholder the URL parser needs.
+ *
+ * The session manager is constructed here rather than left implicit so the
+ * transport has a handle to abort: `sessionManager` supersedes the transport's
+ * own `nodeOptions`, so the socket path moves onto the manager with it.
  */
 export function createUnixSocketTransport(socketPath: string): RunnerTransport {
+	// Placeholder host: the URL parser requires one, but http2.connect ignores
+	// host/port once the session options name the Unix socket.
+	const sessionManager = new Http2SessionManager(
+		"http://unix",
+		{},
+		{ path: socketPath },
+	);
 	const transport = createGrpcTransport({
-		// Placeholder: the URL parser requires a host, but http2.connect ignores
-		// host/port once nodeOptions.path names the Unix socket.
 		baseUrl: "http://unix",
-		nodeOptions: { path: socketPath },
+		sessionManager,
 	});
 	const client = createClient(AgentGateway, transport);
 	// The Publish spine is created once on first use and shared by the sink +
@@ -83,5 +102,6 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 		postConversationFrame: (req, options) =>
 			client.postConversationFrame(req, options),
 		control: (req) => client.control(req),
+		close: () => sessionManager.abort(),
 	};
 }

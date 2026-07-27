@@ -29,6 +29,13 @@ import (
 	"github.com/sealedsecurity/compass/go/internal/runtime"
 )
 
+// testAgentEnv is the agent exec configuration the relay tests start agents
+// with. Values are arbitrary but non-empty, so a test asserting on the exec
+// argv sees each var actually carried rather than an omitted empty.
+func testAgentEnv() AgentEnv {
+	return AgentEnv{UID: 1000, HomeDir: "/home/agent", Workdir: "/work/repo", Model: "test-model"}
+}
+
 // testTimeout bounds every blocking wait so a wedged relay fails fast instead of
 // hanging the suite. A deadline safety net, never a synchronization device:
 // tests event-gate on the frames actually observed, not elapsed time.
@@ -119,11 +126,14 @@ func (f *pipeRuntime) closeStdout() { _ = f.stdoutW.Close() }
 // a shell stub — so it returns a StreamingExec with a REAL, terminatable
 // Process (the host's Reload / live-session Stop call Process.Terminate, which a
 // nil-Process fake would panic on). The stub ignores the podman argv and sleeps
-// past the test, so it is a live child that SIGKILL reaps.
+// past the test, so it is a live child that SIGKILL reaps. Every streaming exec
+// spec it is handed is recorded, so a test can assert what identity and
+// configuration the host actually started an agent with.
 type stubStreamingRuntime struct {
-	mu    sync.Mutex
-	calls []string
-	cli   *runtime.PodmanCLI
+	mu        sync.Mutex
+	calls     []string
+	execSpecs []runtime.StreamingExecSpec
+	cli       *runtime.PodmanCLI
 }
 
 func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
@@ -150,7 +160,10 @@ func (f *stubStreamingRuntime) Exec(context.Context, runtime.ContainerID, runtim
 	return runtime.ExecOutput{}, nil
 }
 func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.ContainerID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
-	f.record("exec_streaming")
+	f.mu.Lock()
+	f.calls = append(f.calls, "exec_streaming")
+	f.execSpecs = append(f.execSpecs, spec)
+	f.mu.Unlock()
 	return f.cli.ExecStreaming(ctx, id, spec)
 }
 func (f *stubStreamingRuntime) Stop(context.Context, runtime.ContainerID, time.Duration) error {
@@ -167,6 +180,14 @@ func (f *stubStreamingRuntime) record(call string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, call)
+}
+
+// streamingSpecs returns a copy of the exec specs the host has started agents
+// with so far, taken under the lock.
+func (f *stubStreamingRuntime) streamingSpecs() []runtime.StreamingExecSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]runtime.StreamingExecSpec(nil), f.execSpecs...)
 }
 
 // --- capturing PublishEvents server ------------------------------------------

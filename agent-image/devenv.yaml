@@ -1,0 +1,45 @@
+# Inputs for the Compass agent base image.
+#
+# This devenv is scoped to the image alone: its environment is the agent's, not
+# any dev shell's (see the WHY block in devenv.nix). It therefore carries only
+# what building the image needs — nixpkgs, the nix2container fork devenv's
+# container module builds through, and mk-shell-bin (which that module
+# hard-requires).
+inputs:
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/rolling
+  nix2container:
+    # The vendored fork rather than upstream: upstream's buildImage registers
+    # relocated copyToRoot paths (the /etc,/tmp scaffolds whose content moves to
+    # the image root) in the initialized nix DB as valid store paths even though
+    # their /nix/store content is absent from the image. That is load-bearing
+    # HERE specifically — this
+    # image's whole point is a working in-container nix DB the agent rebuilds
+    # against, and a DB claiming paths the image does not carry breaks exactly
+    # that. Tracks forks/nix2container.
+    url: path:../forks/nix2container
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  # Required by devenv's `containers` module itself — it refuses to evaluate
+  # without this input ("To use 'containers', run: devenv inputs add
+  # mk-shell-bin"). The module uses it to turn the devenv shell into the
+  # image's entrypoint environment.
+  mk-shell-bin:
+    url: github:rrbutani/nix-mk-shell-bin
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  # devenv itself, pinned to the vendored fork rather than the installed CLI's
+  # bundled modules. Load-bearing for THIS image: the container module's baked
+  # identity (passwd row, $HOME, image USER/HOME) is per-container only on the
+  # fork — upstream hardcodes user `user` + /env, which does not match the uid
+  # 1000 `agent` + /home/agent the Go runtime execs with
+  # (cmd/compass-runner/main.go:48 `-home-dir`, :118 `UID: defaultAgentUID`).
+  # With upstream's module the agent's $HOME is root-owned and nix falls back
+  # with "$HOME is not owned by you".
+  #
+  # Tracks forks/devenv; the fork keeps upstream's values as DEFAULTS, so a
+  # consumer setting none of the new options is byte-identical.
+  devenv:
+    url: path:../forks/devenv
