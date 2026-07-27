@@ -1,0 +1,628 @@
+// The compass.v1 communication layer: the Discord/Slack-style channel system
+// that is the spine of Compass (design compass-0.5, D1/D5/D9). Humans and
+// agents are first-class accounts in a management hierarchy. Channels nest in
+// channel groups, so a user's space (e.g. group "matt" → channel
+// "coordination", the path "matt.coordination") carries group-level
+// permissions. An agent's interactive surface — its ACP UI: the conversation
+// (text and structured asks) plus terminal and file panes — renders in the
+// agent's channel; the AgentWorkspace is the observation pane over that session
+// (D5), its access a projection of channel membership. All
+// comms flow through this layer, so audit and search are properties of the
+// substrate, not a separate pipeline (D1).
+//
+// This lives alongside compass.proto in the same owned `compass.v1` package as
+// an additive surface (new file, new service) that evolves the contract from a
+// single-user local server door into the multi-user networked Server door (D2)
+// without a breaking change.
+
+syntax = "proto3";
+
+package compass.v1;
+
+// The communication-layer service: accounts, channel groups + channels,
+// messages, agent workspaces, and the event stream. A second service in the
+// compass.v1 package, distinct from CompassService's server/agent-session
+// lifecycle surface, sitting behind the Compass-owned comms seam (D1).
+//
+// Authorization model: the caller is the account authenticated on the
+// connection (the Server's TLS + token transport, D3/D10) — never a field in a
+// request, which would be spoofable. Every RPC is authorized server-side
+// against that caller's visibility (D9's owner-gated access): the server
+// rejects access to accounts, groups, channels, and workspaces the caller may
+// not see, and scopes every listing, search, and event result to the caller's
+// visible set. No message below carries a caller identity, for that reason.
+service CommsService {
+  // Create a human user account. The new account is a regular member; role
+  // elevation to admin is a separate admin-authorized path (deferred), not a
+  // field a signup can set.
+  rpc CreateUser(CreateUserRequest) returns (CreateUserResponse);
+
+  // Create an agent account owned by the authenticated caller (D9). The owner
+  // is the caller, not a request field — a user creates agents they own.
+  rpc CreateAgent(CreateAgentRequest) returns (CreateAgentResponse);
+
+  // List the accounts visible to the caller.
+  rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse);
+
+  // Create a channel group — a namespace node that holds channels and nested
+  // groups and carries the group-level visibility that scopes an owner's space
+  // (D9). Owned by the caller.
+  rpc CreateChannelGroup(CreateChannelGroupRequest) returns (CreateChannelGroupResponse);
+
+  // List the channel groups visible to the caller.
+  rpc ListChannelGroups(ListChannelGroupsRequest) returns (ListChannelGroupsResponse);
+
+  // List the channels the caller may see.
+  rpc ListChannels(ListChannelsRequest) returns (ListChannelsResponse);
+
+  // Create a channel within a group — caller-authorized against the parent
+  // group. Emits ChannelChanged.
+  rpc CreateChannel(CreateChannelRequest) returns (CreateChannelResponse);
+
+  // Add or remove channel members and flip a member's subscribe opt-in —
+  // caller-authorized against channel visibility. Emits ChannelChanged. One RPC
+  // covers join, subscribe-toggle, DM-expansion, and share-replacement.
+  rpc UpdateChannelMembers(UpdateChannelMembersRequest) returns (UpdateChannelMembersResponse);
+
+  // Open (or fetch) the caller's agent workspace for an agent — its ACP surface
+  // (D5). Idempotent: created on first open, returned after. Authorized: the
+  // caller must be a member of the agent's channel.
+  rpc OpenAgentWorkspace(OpenAgentWorkspaceRequest) returns (OpenAgentWorkspaceResponse);
+
+  // Page a channel's message history, newest-first. The channel is one the
+  // caller may see.
+  rpc ListMessages(ListMessagesRequest) returns (ListMessagesResponse);
+
+  // Post a message to a channel: a human turn, or a human prompt into an agent's
+  // channel.
+  rpc PostMessage(PostMessageRequest) returns (PostMessageResponse);
+
+  // Answer a pending structured ask (D5). Authorized: the caller must be a
+  // member of the channel the ask belongs to.
+  rpc RespondToAsk(RespondToAskRequest) returns (RespondToAskResponse);
+
+  // Full-text search across the messages the caller may see — the audit/search
+  // property served from the store of record (D1, D12). Results are scoped to
+  // the caller's visible channels regardless of the scope field.
+  rpc SearchMessages(SearchMessagesRequest) returns (SearchMessagesResponse);
+
+  // The event stream: message, channel, group, account, and workspace updates,
+  // scoped to the caller's visible set, with gap-free replay-on-join. The sole
+  // push path for the comms surface, mirroring CompassService.SubscribeEvents'
+  // seq/epoch replay contract (D1).
+  rpc SubscribeComms(SubscribeCommsRequest) returns (stream SubscribeCommsResponse);
+}
+
+// ── Accounts (D9) ────────────────────────────────────────────────────────
+
+// An account in the communication layer: a human user or an owned agent. Both
+// are first-class posters; an agent is a constrained subtype gated by its
+// owning user's access controls.
+message Account {
+  // Server-assigned stable id.
+  string id = 1;
+  // Unique handle, e.g. "matt" or "cook".
+  string handle = 2;
+  // Human-friendly display name.
+  string display_name = 3;
+  oneof kind {
+    UserAccount user = 10;
+    AgentAccount agent = 11;
+  }
+}
+
+// A human account with a standard permission role.
+message UserAccount {
+  UserRole role = 1;
+}
+
+// The user permission roles, expandable later. A regular member is the default
+// (zero value) — least privilege; admin is an explicit elevation (D9).
+enum UserRole {
+  USER_ROLE_MEMBER = 0;
+  USER_ROLE_ADMIN = 1;
+}
+
+// An agent account: a constrained, owned subtype (D9). It posts as a peer but
+// is gated by its owning user, who has first-class control over which channels
+// and groups the agent may see and post to. Owner-set access is enforced
+// server-side.
+message AgentAccount {
+  // The owning user's account id. Server-set to the creating caller; not a
+  // client-chosen field.
+  string owner_user_id = 1;
+  // Field 2 (`harness`) retired pre-launch: under the single-first-party-agent
+  // model there is no runtime to select, so no interop label to carry.
+  reserved 2;
+  reserved "harness";
+  // The agent's home channel, minted at CreateAgent. The agent is always
+  // subscribed to it (implicit, not a togglable row); turn-end delivery and the
+  // observation-pane ACL scope to it. Server-set.
+  string home_channel_id = 3;
+}
+
+// ── Channel groups + channels (D9) ─────────────────────────────────────────
+
+// A channel group: a namespace node holding channels and nested groups, so a
+// user's owned agents work in that user's space by default (e.g. group "matt" →
+// channel "coordination", the path "matt.coordination") while shared groups stay
+// available for wider collaboration. Visibility is set per group but constrained
+// to be no more open than its parent — a child group cannot widen its parent's
+// scope. A channel's or nested group's effective visibility is the most
+// restrictive value on its path to the root (D9): e.g. a "matt" group visible
+// only to matt and matt's agents keeps its channels and nested groups
+// owner-scoped too.
+message ChannelGroup {
+  // Server-assigned stable id.
+  string id = 1;
+  // Leaf segment of the namespace, e.g. "matt".
+  string name = 2;
+  // Parent group; empty for a top-level group.
+  string parent_group_id = 3;
+  // The user whose space this group is; empty for a shared/global group.
+  // Server-set to the creating caller.
+  string owner_user_id = 4;
+  // This group's own visibility; the server rejects a value more open than the
+  // parent group's (child ≤ parent). Effective visibility is the most
+  // restrictive on the path to the root.
+  ChannelGroupVisibility visibility = 5;
+}
+
+// Group-level visibility. A group's own value must be no more open than its
+// parent's, and the effective visibility of a channel or nested group is the
+// most restrictive value on its path to the root. The default (zero value) is
+// owner-scoped — a group is private to its owner unless explicitly opened up.
+enum ChannelGroupVisibility {
+  // Visible only to the owning user and the agents that user owns.
+  CHANNEL_GROUP_VISIBILITY_OWNER = 0;
+  // Visible to all accounts (announcements, cross-team collaboration).
+  CHANNEL_GROUP_VISIBILITY_SHARED = 1;
+}
+
+// A channel in the communication layer — a named conversation within a group.
+message Channel {
+  // Server-assigned stable id.
+  string id = 1;
+  // Leaf name within the group, e.g. "coordination".
+  string name = 2;
+  // The channel group this channel belongs to; empty for an ungrouped channel,
+  // which is owner-scoped to its creating caller (the OWNER default), not global.
+  // A grouped channel's effective visibility is inherited from its group.
+  string group_id = 3;
+  ChannelKind kind = 4;
+  // The accounts party to the channel.
+  repeated string member_account_ids = 5;
+  // The subset of members subscribed to push delivery (the subscribe opt-in).
+  // For an agent, a plain message in a subscribed channel is delivered at its
+  // turn end; a joined-but-unsubscribed member has read access only. An agent is
+  // always subscribed to its home channel implicitly, independent of this list.
+  repeated string subscriber_account_ids = 6;
+}
+
+// A channel's kind. A plain channel is the default; a DM is a direct
+// conversation (human↔human, human↔agent, or agent↔agent) that widens into a
+// GROUP_DM as members are added — an agent's primary surface is a channel/DM.
+enum ChannelKind {
+  CHANNEL_KIND_CHANNEL = 0;
+  CHANNEL_KIND_DM = 1;
+  CHANNEL_KIND_GROUP_DM = 2;
+}
+
+// ── Agent workspace (D5) ─────────────────────────────────────────────────────
+
+// An agent's interactive surface: the observation pane for one agent account —
+// the ACP conversation plus the terminal and file panes the ADE hosts. Demoted
+// to the observation pane (D5, fork f): no longer a message container, and its
+// access is a projection of the agent's channel membership rather than a
+// separate participant ACL.
+message AgentWorkspace {
+  // Server-assigned stable id.
+  string id = 1;
+  // The agent account whose ACP session this surface renders.
+  string agent_account_id = 2;
+  // Field 3 (`participant_user_ids`) removed (fork f): observation-pane access
+  // is a projection of home-channel membership, not a second cross-service ACL.
+  reserved 3;
+  reserved "participant_user_ids";
+}
+
+// ── Messages + content blocks (D5) ─────────────────────────────────────────
+
+// A message in a channel — the persisted unit of the comms layer, held in the
+// Server store of record (D12). An agent's ACP turn is a channel message whose
+// blocks stream in and update as the session runs (see MessageUpdated).
+message Message {
+  // Server-assigned stable id.
+  string id = 1;
+  // The channel this message belongs to.
+  oneof container {
+    string channel_id = 2;
+  }
+  reserved 3;
+  reserved "workspace_id";
+  // The posting account (a user or an agent).
+  string author_account_id = 4;
+  int64 at_unix_ms = 5;
+  // Ordered content; mirrors ACP session/update blocks (D5).
+  repeated MessageBlock blocks = 6;
+  // The message this one replies to, threading it under its parent; unset for a
+  // root message.
+  string parent_message_id = 7;
+}
+
+// One content block in a message: the durable conversation the comms layer
+// persists. `text` is settled markdown; `ask` is a structured question the ACP
+// surface needs (D5). The execution trace (thought / tool calls / plans /
+// diffs) is delivered as opaque OMP-native session data on a dedicated stream,
+// not as comms blocks.
+message MessageBlock {
+  oneof block {
+    // Settled user-facing / assistant text (markdown).
+    string text = 1;
+    // A structured question awaiting an answer.
+    Ask ask = 6;
+  }
+  reserved 2, 3, 4, 5;
+  reserved "thought", "tool_call", "plan", "diff";
+}
+
+// A structured question set the agent asks: one atomic form of one or more
+// questions (mirrors the native OMP ask tool, which is multi-question by
+// schema). A participant answers ALL questions in one RespondToAsk — the
+// native tool awaits a single result covering every question. This is not a
+// permission prompt — permission gating is a separate, deferred concern
+// (agents run in containers with prompts disabled), so it is intentionally
+// absent from the contract. The ask is a normal async channel message; the
+// agent chooses at the turn level whether to wait for the answer, which
+// arrives via RespondToAsk.
+message Ask {
+  // Correlation id echoed by RespondToAsk; server-assigned and globally
+  // unique, resolved within the caller's authorized channels. One id per Ask
+  // (per native ask tool call), NOT per question — questions are keyed inside
+  // the Ask by AskQuestion.question_id.
+  string ask_id = 1;
+  // The questions, in the order the agent asked them. At least one.
+  repeated AskQuestion questions = 6;
+  // Superseded single-question shape (compass-0.5 D5); see
+  // docs/designs/product/compass-ask-typed-derivation.md.
+  reserved 2 to 5;
+  reserved "question", "options", "allow_multiple", "chosen_option_ids";
+}
+
+// One question within an Ask, carrying its own options and answer state.
+message AskQuestion {
+  // The agent-supplied question id (unique AND non-empty within the Ask); the
+  // key an AskQuestionAnswer addresses. Native `QuestionItem.id` is bare
+  // agent-controlled text (ask.ts:64, no uniqueness/non-empty constraint), so
+  // uniqueness + non-emptiness is ENFORCED downstream (the T5 mapper counts a
+  // duplicate/empty id as malformed; the store append rejects it).
+  string question_id = 1;
+  // The question text.
+  string question = 2;
+  // Optional short display chip rendered above/beside the question.
+  string header = 3;
+  // Selectable options; MAY be empty (a free-text-only question — free-text
+  // answering is always available, mirroring the native tool's always-offered
+  // "Other (type your own)").
+  repeated AskOption options = 4;
+  // Whether more than one option may be chosen.
+  bool allow_multiple = 5;
+  // Zero-based index into options of the agent-recommended default; unset when
+  // the agent recommended nothing.
+  optional int32 recommended = 6;
+  // ── Answer state, empty/unset while pending (kept for audit) ──
+  // The chosen option ids once answered.
+  repeated string chosen_option_ids = 7;
+  // The participant's free-text answer, when they typed one instead of (or,
+  // for allow_multiple, alongside) picking options.
+  string custom_text = 8;
+  // True when the answer was recorded by timeout auto-selection rather than a
+  // participant (SEA-1310 owns whether/when the Compass answer path can time
+  // out; the field is the audit carrier either way).
+  bool timed_out = 9;
+}
+
+// One selectable answer to an AskQuestion.
+message AskOption {
+  string id = 1;
+  string label = 2;
+  // Optional explanatory text shown under the label.
+  string description = 3;
+  // Optional rich preview content (e.g. a rendered snippet) for interactive
+  // ask dialogs.
+  string preview = 4;
+}
+
+// ── Event stream ─────────────────────────────────────────────────────────
+
+// One entry in the comms event stream. Mirrors compass.proto's SubscribeEvents
+// replay model exactly: a server-assigned monotonic `seq` cursor plus a per-boot
+// `instance_epoch`, so a client resubscribes gap-free after a drop and the server
+// forces a resync when a cursor predates the retained buffer (D1 replay-on-join).
+message SubscribeCommsResponse {
+  // Server-assigned, strictly monotonic across the stream for positioned events.
+  // The cursor a client passes back as `since_seq`. The terminal
+  // `resync_required` signal is the exception: it carries seq = 0 and is not a
+  // cursor.
+  uint64 seq = 1;
+  // Event time, Unix epoch milliseconds.
+  int64 at_unix_ms = 2;
+  // The server's per-boot instance epoch, echoed on reconnect so the server can
+  // tell a live cursor from a prior-instance one. Distinct across restarts.
+  uint64 instance_epoch = 3;
+  // The snapshot boundary for since_seq=0 recovery: a consistent point-in-time
+  // cursor a client passes to each read RPC so every page reads one view under
+  // concurrent writes.
+  //
+  // Client contract (the gap-free seam — no other server-visible artifact
+  // states it): this is a store-space `messages.seq` value, unrelated to the
+  // bus-space `seq` on positioned events above (the bus resets to 1 each boot).
+  // A client MUST union the snapshot reads with the *full* live tail and dedup
+  // by message id; it MUST NOT seq-filter or drop tail events by `snapshot_seq`.
+  // BIGSERIAL assignment can lag commit, so a row with seq <= snapshot_seq may
+  // commit after the boundary is captured: it is excluded from the bounded
+  // catch-up read but delivered on the already-active tail, and dropping it by
+  // seq would reintroduce the exact miss this boundary prevents. This supersedes
+  // `design.md:813` ("live stream tails from exactly `snapshot_seq + 1`"), which
+  // is not literally implementable across the two number spaces.
+  uint64 snapshot_seq = 4;
+  oneof payload {
+    MessagePosted message_posted = 10;
+    MessageUpdated message_updated = 11;
+    ChannelChanged channel_changed = 12;
+    ChannelGroupChanged channel_group_changed = 13;
+    AccountChanged account_changed = 14;
+    AgentWorkspaceChanged agent_workspace_changed = 15;
+    CommsResyncRequired resync_required = 16;
+  }
+}
+
+// A new message appeared in a channel.
+message MessagePosted {
+  Message message = 1;
+}
+
+// An existing message changed — a streaming agent turn appended a block, or a
+// tool call / ask transitioned state. Carries the full current block set (v1;
+// block-level deltas are a later optimization that needs no contract change).
+message MessageUpdated {
+  Message message = 1;
+}
+
+// A channel was created, or its membership changed. On a membership change, a
+// member who was removed is no longer in the channel's member_account_ids, so it
+// could no longer match the stream's visibility filter — removed_account_ids
+// carries exactly those departed accounts so the server can deliver each of them
+// this one final event (their removal), which they would otherwise never see.
+// Empty on a create or a pure add/subscribe change.
+message ChannelChanged {
+  Channel channel = 1;
+  // Accounts removed by this change (empty otherwise). Present so a departing
+  // member receives this one last event before the channel goes silent to them.
+  repeated string removed_account_ids = 2;
+}
+
+// A channel group was created, or its membership/visibility changed.
+message ChannelGroupChanged {
+  ChannelGroup group = 1;
+}
+
+// An account was created or changed.
+message AccountChanged {
+  Account account = 1;
+}
+
+// An agent workspace was created or changed.
+message AgentWorkspaceChanged {
+  AgentWorkspace workspace = 1;
+}
+
+// The requested `since_seq` predates the retained buffer, so a gap-free replay
+// isn't possible; the client must reconnect with since_seq = 0 to re-snapshot.
+// Mirrors compass.proto's ResyncRequired.
+message CommsResyncRequired {}
+
+// ── Request / response envelopes ───────────────────────────────────────────
+
+message CreateUserRequest {
+  string handle = 1;
+  string display_name = 2;
+}
+
+message CreateUserResponse {
+  Account account = 1;
+}
+
+message CreateAgentRequest {
+  string handle = 1;
+  string display_name = 2;
+  // Field 3 (`harness`) retired pre-launch: under the single-first-party-agent
+  // model there is no runtime to select at create time, so no interop label to
+  // carry.
+  reserved 3;
+  reserved "harness";
+}
+
+message CreateAgentResponse {
+  Account account = 1;
+}
+
+message ListAccountsRequest {
+  // Point-in-time snapshot cursor (see SubscribeCommsResponse.snapshot_seq).
+  // 0 = latest.
+  uint64 snapshot_seq = 1;
+}
+
+message ListAccountsResponse {
+  repeated Account accounts = 1;
+}
+
+message CreateChannelGroupRequest {
+  // Leaf name of the group, e.g. "matt".
+  string name = 1;
+  // Parent group; empty for a top-level group.
+  string parent_group_id = 2;
+  ChannelGroupVisibility visibility = 3;
+}
+
+message CreateChannelGroupResponse {
+  ChannelGroup group = 1;
+}
+
+message ListChannelGroupsRequest {
+  // Point-in-time snapshot cursor (see SubscribeCommsResponse.snapshot_seq).
+  // 0 = latest.
+  uint64 snapshot_seq = 1;
+}
+
+message ListChannelGroupsResponse {
+  repeated ChannelGroup groups = 1;
+}
+
+message ListChannelsRequest {
+  // Point-in-time snapshot cursor (see SubscribeCommsResponse.snapshot_seq).
+  // 0 = latest.
+  uint64 snapshot_seq = 1;
+}
+
+message ListChannelsResponse {
+  repeated Channel channels = 1;
+}
+
+message CreateChannelRequest {
+  // Leaf name within the group, e.g. "coordination".
+  string name = 1;
+  // The channel group this channel belongs to; empty for an ungrouped,
+  // owner-scoped channel.
+  string group_id = 2;
+  ChannelKind kind = 3;
+  // Initial members party to the channel.
+  repeated string member_account_ids = 4;
+}
+
+message CreateChannelResponse {
+  Channel channel = 1;
+}
+
+message UpdateChannelMembersRequest {
+  // The channel to mutate.
+  string channel_id = 1;
+  // Accounts to add as members (join, read access).
+  repeated string add_member_account_ids = 2;
+  // Accounts to remove from membership.
+  repeated string remove_member_account_ids = 3;
+  // Members to mark subscribed (push opt-in); must be current or added members.
+  repeated string subscribe_account_ids = 4;
+  // Members to mark unsubscribed (read-only).
+  repeated string unsubscribe_account_ids = 5;
+}
+
+message UpdateChannelMembersResponse {
+  Channel channel = 1;
+}
+
+message OpenAgentWorkspaceRequest {
+  // The agent account to open the workspace (ACP surface) for.
+  string agent_account_id = 1;
+}
+
+message OpenAgentWorkspaceResponse {
+  AgentWorkspace workspace = 1;
+}
+
+message ListMessagesRequest {
+  // The channel to page.
+  oneof container {
+    string channel_id = 1;
+  }
+  reserved 2;
+  reserved "workspace_id";
+  // Page size; the server clamps to a maximum.
+  uint32 limit = 3;
+  // Page before this message id (exclusive); empty = the newest page.
+  string before_message_id = 4;
+  // Point-in-time snapshot cursor (see SubscribeCommsResponse.snapshot_seq).
+  // 0 = latest.
+  uint64 snapshot_seq = 5;
+}
+
+message ListMessagesResponse {
+  // Newest-first.
+  repeated Message messages = 1;
+}
+
+message PostMessageRequest {
+  // The channel to post to.
+  oneof container {
+    string channel_id = 1;
+  }
+  reserved 2;
+  reserved "workspace_id";
+  repeated MessageBlock blocks = 3;
+  // The message this post replies to, threading it under its parent; unset for
+  // a root message. Persisted and echoed back on the stored Message
+  // (Message.parent_message_id). The parent must be an existing message.
+  string parent_message_id = 5;
+  // Client-supplied idempotency key: a caller-unique id for this post. The
+  // server deduplicates retries of the same key (at-least-once transport over a
+  // store of record, D12), returning the already-stored message rather than
+  // posting a duplicate. Optional; empty disables dedup for this call.
+  string client_request_id = 4;
+}
+
+message PostMessageResponse {
+  Message message = 1;
+}
+
+message RespondToAskRequest {
+  string ask_id = 1;
+  // Exactly one answer per AskQuestion in the Ask, keyed by question_id. The
+  // server rejects a request that omits a question, repeats one, or names an
+  // unknown one — answering is atomic, all questions in one round-trip.
+  repeated AskQuestionAnswer answers = 3;
+  // Superseded flat single-question answer shape.
+  reserved 2;
+  reserved "chosen_option_ids";
+}
+
+// The answer to one AskQuestion.
+message AskQuestionAnswer {
+  string question_id = 1;
+  // The chosen option id(s); more than one only when the question allows it.
+  repeated string chosen_option_ids = 2;
+  // Free-text answer ("Other"); a question with no options is answered by
+  // custom_text alone.
+  string custom_text = 3;
+}
+
+message RespondToAskResponse {}
+
+message SearchMessagesRequest {
+  string query = 1;
+  // Optional channel scope; unset = every channel the caller may see. The
+  // server scopes results to the caller's visible set regardless.
+  oneof scope {
+    string channel_id = 2;
+  }
+  reserved 3;
+  reserved "workspace_id";
+  // Page size; the server clamps to a maximum.
+  uint32 limit = 4;
+  // Point-in-time snapshot cursor (see SubscribeCommsResponse.snapshot_seq).
+  // 0 = latest.
+  uint64 snapshot_seq = 5;
+}
+
+message SearchMessagesResponse {
+  // Best-match-first.
+  repeated Message messages = 1;
+}
+
+message SubscribeCommsRequest {
+  // 0: snapshot current state as events, then tail. >0: replay only events with
+  // a higher seq — a gap-free resubscribe after a drop.
+  uint64 since_seq = 1;
+  // The server's per-boot instance epoch, echoed from a prior SubscribeCommsResponse; a
+  // mismatch forces a resync regardless of the numeric cursor.
+  uint64 instance_epoch = 2;
+}

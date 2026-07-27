@@ -1,0 +1,3327 @@
+/* Compass ADE — dev UI styling. Dark, dense, board-first. An Orca-inspired
+ * shell: a left folder tree of agents, a central Bridge (swimlane board) or
+ * agent (ACP + terminals) view, and a right sidebar carrying the fleet
+ * conversations (Supervisor · Warden · Status) above the workstream files/VCS/PR
+ * tabs, plus a bottom usage bar. All read one store. */
+
+:root {
+	/* Surfaces — layered dark greys, back to front. */
+	--bg: #0a0d12;
+	--bg-raised: #10141b;
+	--bg-panel: #131820;
+	--bg-card: #1a2029;
+	--bg-hover: #202836;
+	--bg-active: #263041;
+
+	/* Lines. */
+	--border: #232a36;
+	--border-strong: #333c4b;
+
+	/* Text. */
+	--text: #e6edf3;
+	--text-dim: #8b949e;
+	--text-faint: #616b78;
+
+	/* Accents + semantic. */
+	--accent: #58a6ff;
+	--accent-dim: #1f6feb;
+	--add: #3fb950;
+	--del: #f85149;
+	--warn: #d29922;
+	--purple: #a371f7;
+	--pink: #db61a2;
+
+	/* State colors, shared by dots + lane heads + badges. */
+	--st-working: #3fb950;
+	--st-idle: #616b78;
+	--st-waiting: #d29922;
+	--st-paused: #58a6ff;
+	--st-error: #f85149;
+	--st-done: #2ea043;
+	--st-stopped: #414b58;
+	--st-disconnected: #d29922;
+	--st-blocked: #f85149;
+	--st-review: #a371f7;
+	--st-merged: #8957e5;
+
+	--radius: 8px;
+	--radius-sm: 5px;
+	--font-mono:
+		ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", "Menlo",
+		"Consolas", monospace;
+	--topbar-h: 44px;
+	--usage-h: 26px;
+	/* Right sidebar width (dock-in-sidebar D4). The single knob the deferred
+	 * resize task (D7/T4) will drive; 400px is the locked default, comfortable
+	 * for the conversation text now that the fleet chats live here. */
+	--right-w: 400px;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+	height: 100%;
+	margin: 0;
+}
+
+body {
+	background: var(--bg);
+	color: var(--text);
+	font:
+		13px / 1.5 ui-sans-serif,
+		system-ui,
+		-apple-system,
+		"Segoe UI",
+		sans-serif;
+	overflow: hidden;
+}
+
+button {
+	font: inherit;
+	color: inherit;
+	cursor: pointer;
+}
+
+/* Thin, styled scrollbars everywhere. */
+::-webkit-scrollbar {
+	width: 9px;
+	height: 9px;
+}
+::-webkit-scrollbar-thumb {
+	background: var(--border-strong);
+	border-radius: 5px;
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+	background: #45505f;
+	background-clip: padding-box;
+}
+
+/* ── Shell grid ─────────────────────────────────────────────────────────── */
+
+.app {
+	display: grid;
+	height: 100%;
+	grid-template-columns: auto 1fr auto;
+	grid-template-rows: var(--topbar-h) 1fr var(--usage-h);
+	grid-template-areas:
+		"topbar topbar topbar"
+		"left   main   right"
+		"usage  usage  usage";
+}
+
+/* ── Top bar ────────────────────────────────────────────────────────────── */
+
+.topbar {
+	grid-area: topbar;
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	padding: 0 12px;
+	background: var(--bg-raised);
+	border-bottom: 1px solid var(--border);
+}
+
+.brand {
+	display: flex;
+	align-items: baseline;
+	gap: 7px;
+}
+
+.brand .logo {
+	color: var(--accent);
+	font-size: 16px;
+	align-self: center;
+}
+
+.brand .title {
+	font-weight: 700;
+	font-size: 14px;
+	letter-spacing: 0.01em;
+}
+
+.brand .subtitle {
+	color: var(--text-dim);
+	font-size: 11px;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+}
+
+.topbar-sep {
+	width: 1px;
+	align-self: stretch;
+	margin: 10px 0;
+	background: var(--border);
+}
+
+.view-tabs {
+	display: flex;
+	gap: 2px;
+}
+
+.view-tab {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: var(--radius-sm);
+	padding: 5px 11px;
+	color: var(--text-dim);
+	font-size: 12px;
+	font-weight: 500;
+}
+
+.view-tab:hover {
+	background: var(--bg-hover);
+	color: var(--text);
+}
+
+.view-tab.active {
+	background: var(--bg-active);
+	color: var(--text);
+	border-color: var(--border-strong);
+}
+
+.view-tab .tab-glyph {
+	font-size: 13px;
+}
+
+.topbar-spacer {
+	flex: 1;
+}
+
+.daemon {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	font-size: 11px;
+	color: var(--text-dim);
+	padding: 4px 9px;
+	background: var(--bg-panel);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+}
+
+.daemon .dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--warn);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 18%, transparent);
+}
+
+.daemon.live .dot {
+	background: var(--add);
+	box-shadow: 0 0 0 3px color-mix(in srgb, var(--add) 18%, transparent);
+}
+
+.daemon-ver {
+	color: var(--text-faint);
+	font-family: var(--font-mono);
+	font-size: 10px;
+}
+
+.pane-toggles {
+	display: flex;
+	gap: 2px;
+}
+
+.pane-toggle {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 28px;
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: var(--radius-sm);
+	color: var(--text-faint);
+	font-size: 15px;
+	line-height: 1;
+}
+
+.pane-toggle:hover {
+	background: var(--bg-hover);
+	color: var(--text);
+}
+
+.pane-toggle.active {
+	color: var(--accent);
+}
+
+/* ── Left sidebar: folder tree ──────────────────────────────────────────── */
+
+.left {
+	grid-area: left;
+	width: 244px;
+	background: var(--bg-raised);
+	border-right: 1px solid var(--border);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.left-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 10px 12px 6px;
+}
+
+.left-head .label {
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.07em;
+	color: var(--text-faint);
+}
+
+.icon-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	color: var(--text-faint);
+	font-size: 14px;
+	line-height: 1;
+}
+
+.icon-btn:hover {
+	background: var(--bg-hover);
+	color: var(--text);
+}
+
+/* Bridge link — pinned at the top of the tree. */
+.bridge-link {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	margin: 0 8px 6px;
+	padding: 8px 10px;
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: var(--radius-sm);
+	color: var(--text);
+	font-weight: 600;
+	font-size: 13px;
+	width: calc(100% - 16px);
+	text-align: left;
+}
+
+.bridge-link:hover {
+	background: var(--bg-hover);
+}
+
+.bridge-link.active {
+	background: var(--bg-active);
+	border-color: var(--accent-dim);
+}
+
+.bridge-link .glyph {
+	color: var(--accent);
+	font-size: 15px;
+}
+
+.bridge-link .count {
+	margin-left: auto;
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--text-dim);
+	background: var(--bg-card);
+	border-radius: 10px;
+	padding: 1px 8px;
+}
+
+.tree {
+	flex: 1;
+	overflow-y: auto;
+	padding: 4px 8px 12px;
+}
+
+.tree-sep {
+	height: 1px;
+	background: var(--border);
+	margin: 4px 4px 8px;
+}
+
+/* A folder row + its nested children. */
+.folder-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	width: 100%;
+	padding: 5px 7px;
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	color: var(--text);
+	text-align: left;
+	font-size: 12px;
+	font-weight: 500;
+}
+
+.folder-row:hover {
+	background: var(--bg-hover);
+}
+
+.folder-caret {
+	color: var(--text-faint);
+	font-size: 9px;
+	width: 10px;
+	display: inline-flex;
+	justify-content: center;
+	transition: transform 0.12s;
+}
+
+.folder-caret.collapsed {
+	transform: rotate(-90deg);
+}
+
+.folder-icon {
+	font-size: 13px;
+	width: 16px;
+	text-align: center;
+}
+
+.folder-name {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.folder-badge {
+	font-size: 10px;
+	color: var(--text-faint);
+	font-variant-numeric: tabular-nums;
+}
+
+.folder-children {
+	margin-left: 11px;
+	padding-left: 6px;
+	border-left: 1px solid var(--border);
+}
+
+/* An agent leaf in the tree. */
+.tree-agent {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 5px 7px;
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: 4px;
+	color: var(--text);
+	text-align: left;
+}
+
+.tree-agent:hover {
+	background: var(--bg-hover);
+}
+
+.tree-agent.selected {
+	background: var(--bg-active);
+	border-color: var(--border-strong);
+}
+
+.state-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	flex: none;
+	background: var(--st-idle);
+}
+.state-dot[data-state="working"] {
+	background: var(--st-working);
+	box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--st-working) 20%, transparent);
+}
+.state-dot[data-state="waiting"] {
+	background: var(--st-waiting);
+}
+.state-dot[data-state="paused"] {
+	background: var(--st-paused);
+}
+.state-dot[data-state="error"] {
+	background: var(--st-error);
+}
+.state-dot[data-state="done"] {
+	background: var(--st-done);
+	box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--st-done) 22%, transparent);
+}
+.state-dot[data-state="stopped"] {
+	background: transparent;
+	box-shadow: inset 0 0 0 1.5px var(--st-stopped);
+}
+.state-dot[data-state="disconnected"] {
+	background: transparent;
+	box-shadow: inset 0 0 0 1.5px var(--st-disconnected);
+}
+
+.tree-agent .name {
+	flex: 1;
+	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.role-pip {
+	font-size: 10px;
+	flex: none;
+}
+.role-pip[data-role="supervisor"] {
+	color: var(--accent);
+}
+.role-pip[data-role="warden"] {
+	color: var(--purple);
+}
+
+/* ── Main area ──────────────────────────────────────────────────────────── */
+
+.main {
+	grid-area: main;
+	min-width: 0;
+	min-height: 0;
+	background: var(--bg);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+/* ── Bridge: swimlane board ─────────────────────────────────────────────── */
+
+.bridge {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	overflow: hidden;
+}
+
+.bridge-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 9px 14px;
+	border-bottom: 1px solid var(--border);
+	flex: none;
+}
+
+.bridge-toolbar .heading {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.bridge-toolbar .sub {
+	font-size: 11px;
+	color: var(--text-dim);
+}
+
+.seg {
+	display: flex;
+	margin-left: auto;
+	background: var(--bg-panel);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	overflow: hidden;
+}
+
+.seg button {
+	background: transparent;
+	border: none;
+	padding: 4px 10px;
+	font-size: 11px;
+	color: var(--text-dim);
+}
+
+.seg button.active {
+	background: var(--bg-active);
+	color: var(--text);
+}
+
+/* The swimlane grid: a sticky column header row, then one row per agent. */
+.swimlane {
+	flex: 1;
+	overflow: auto;
+	display: grid;
+	/* First column = agent gutter; the rest are status columns, set inline. */
+	align-content: start;
+}
+
+.swim-corner {
+	position: sticky;
+	top: 0;
+	left: 0;
+	z-index: 3;
+	background: var(--bg-raised);
+	border-bottom: 1px solid var(--border);
+	border-right: 1px solid var(--border);
+	padding: 8px 12px;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--text-faint);
+	display: flex;
+	align-items: center;
+}
+
+.swim-colhead {
+	position: sticky;
+	top: 0;
+	z-index: 2;
+	background: var(--bg-raised);
+	border-bottom: 1px solid var(--border);
+	border-right: 1px solid var(--border);
+	padding: 8px 12px;
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--text-dim);
+}
+
+.swim-colhead .lane-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+}
+.swim-colhead .lane-count {
+	margin-left: auto;
+	color: var(--text-faint);
+	font-variant-numeric: tabular-nums;
+}
+
+/* An agent's row gutter — sticky to the left as the board scrolls. */
+.swim-gutter {
+	position: sticky;
+	left: 0;
+	z-index: 1;
+	background: var(--bg-raised);
+	border-bottom: 1px solid var(--border);
+	border-right: 1px solid var(--border);
+	padding: 10px 12px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.swim-gutter:hover {
+	background: var(--bg-hover);
+}
+
+.swim-gutter .g-name {
+	font-size: 12px;
+	font-weight: 600;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.swim-gutter .g-meta {
+	font-size: 10px;
+	color: var(--text-faint);
+}
+
+.swim-gutter .g-open {
+	margin-left: auto;
+	color: var(--text-faint);
+	font-size: 11px;
+	opacity: 0;
+}
+
+.swim-gutter:hover .g-open {
+	opacity: 1;
+}
+
+/* A cell at (agent, status) — may hold 0..n cards. */
+.swim-cell {
+	border-bottom: 1px solid var(--border);
+	border-right: 1px solid var(--border);
+	padding: 7px;
+	display: flex;
+	flex-direction: column;
+	gap: 7px;
+	min-width: 210px;
+	background: var(--bg);
+}
+
+.swim-cell.dim {
+	background: color-mix(in srgb, var(--bg) 60%, transparent);
+}
+
+/* ── Workstream card ────────────────────────────────────────────────────── */
+
+.card {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	text-align: left;
+	background: var(--bg-card);
+	border: 1px solid var(--border);
+	border-left-width: 3px;
+	border-radius: var(--radius-sm);
+	padding: 8px 10px;
+	color: var(--text);
+	transition:
+		border-color 0.12s,
+		background 0.12s,
+		transform 0.05s;
+}
+
+.card:hover {
+	background: var(--bg-hover);
+	border-color: var(--border-strong);
+}
+
+.card:active {
+	transform: translateY(1px);
+}
+
+.card.selected {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 1px var(--accent);
+}
+
+.card[data-priority="urgent"] {
+	border-left-color: var(--del);
+}
+.card[data-priority="high"] {
+	border-left-color: var(--warn);
+}
+.card[data-priority="medium"] {
+	border-left-color: var(--accent);
+}
+.card[data-priority="low"] {
+	border-left-color: var(--border-strong);
+}
+
+.card-top {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.card-issue {
+	color: var(--accent);
+	font-size: 11px;
+	font-weight: 600;
+	font-family: var(--font-mono);
+}
+
+.card-pr {
+	margin-left: auto;
+	font-size: 10px;
+	color: var(--text-faint);
+	font-family: var(--font-mono);
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+}
+
+.card-title {
+	font-size: 12px;
+	line-height: 1.35;
+}
+
+.card-foot {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	font-size: 10px;
+	color: var(--text-dim);
+}
+
+.card-diff {
+	display: inline-flex;
+	gap: 5px;
+	font-family: var(--font-mono);
+}
+
+.check-pips {
+	display: inline-flex;
+	gap: 3px;
+}
+
+.check-pip {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--text-faint);
+}
+.check-pip[data-status="success"] {
+	background: var(--add);
+}
+.check-pip[data-status="failure"] {
+	background: var(--del);
+}
+.check-pip[data-status="pending"] {
+	background: var(--warn);
+}
+
+.add {
+	color: var(--add);
+}
+.del {
+	color: var(--del);
+}
+
+/* ── Agent view: ACP conversation + terminals ──────────────────────────── */
+
+.agent-view {
+	display: grid;
+	grid-template-columns: 1fr auto;
+	grid-template-rows: auto 1fr;
+	grid-template-areas:
+		"header header"
+		"body log";
+	height: 100%;
+	overflow: hidden;
+}
+
+.av-body {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	grid-area: body;
+}
+
+.av-header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 9px 14px;
+	border-bottom: 1px solid var(--border);
+	flex: none;
+	grid-area: header;
+}
+
+.av-header .av-name {
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.av-header .av-model {
+	font-size: 11px;
+	color: var(--text-dim);
+	font-family: var(--font-mono);
+}
+
+.av-header .av-cwd {
+	font-size: 11px;
+	color: var(--text-faint);
+	font-family: var(--font-mono);
+	margin-left: 4px;
+}
+
+.av-header .av-spacer {
+	flex: 1;
+}
+
+/* Workspace share affordance in the agent-view header (design D5). */
+.av-header .av-share {
+	flex: none;
+	border: 1px solid var(--accent-dim);
+	border-radius: var(--radius-sm);
+	padding: 5px 12px;
+	font-size: 11px;
+	font-weight: 600;
+	background: transparent;
+	color: var(--accent);
+	cursor: pointer;
+}
+.av-header .av-share:hover {
+	background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.av-header .av-share:disabled {
+	cursor: default;
+	opacity: 0.55;
+	border-color: var(--border);
+	color: var(--text-dim);
+}
+.av-header .av-share:disabled:hover {
+	background: transparent;
+}
+
+.av-header .av-shared {
+	flex: none;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--add);
+	font-family: var(--font-mono);
+}
+
+/* The "Agent Workspaces" section label over the workspace list (the agent
+ * tree in the left sidebar of the board-primary shell). */
+.ws-section-label {
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-faint);
+	padding: 10px 12px 4px;
+}
+
+/* A collapsible left-sidebar section (Channels / Agent workspaces — design
+ * compass-0.7 §580-590). The header reuses the .ws-section-label typography as a
+ * clickable toggle with a caret; the body holds the section's rows/tree. */
+.ws-section {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.ws-section-head {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	width: 100%;
+	background: none;
+	border: none;
+	cursor: pointer;
+	text-align: left;
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-faint);
+	padding: 10px 12px 4px;
+}
+
+.ws-section-head:hover {
+	color: var(--text);
+}
+
+.ws-caret {
+	display: inline-block;
+	transition: transform 0.12s ease;
+}
+
+.ws-caret.open {
+	transform: rotate(90deg);
+}
+
+.ws-section-body {
+	overflow-y: auto;
+}
+
+/* Share pip on a shared workspace entry in the list (design D5). */
+.ws-share-pip {
+	flex: none;
+	font-size: 8px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+	color: var(--add);
+	border: 1px solid color-mix(in srgb, var(--add) 45%, transparent);
+	border-radius: 3px;
+	padding: 1px 4px;
+}
+
+/* ACP conversation column. */
+.acp {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	border-right: 1px solid var(--border);
+	overflow: hidden;
+}
+
+.acp-stream {
+	flex: 1;
+	overflow-y: auto;
+	padding: 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.msg {
+	display: flex;
+	flex-direction: column;
+	gap: 7px;
+	max-width: 100%;
+}
+
+.msg-head {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	font-size: 11px;
+}
+
+.msg-role {
+	font-weight: 600;
+}
+
+.msg.user .msg-role {
+	color: var(--accent);
+}
+.msg.agent .msg-role {
+	color: var(--add);
+}
+
+.msg-at {
+	color: var(--text-faint);
+	font-family: var(--font-mono);
+}
+
+.block-text {
+	font-size: 13px;
+	line-height: 1.55;
+}
+
+.msg.user .block-text {
+	background: var(--bg-panel);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 9px 11px;
+}
+
+.block-thinking {
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--text-dim);
+	font-style: italic;
+	border-left: 2px solid var(--border-strong);
+	padding: 2px 0 2px 10px;
+}
+
+.block-tool {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	background: var(--bg-panel);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 7px 10px;
+}
+
+.tool-status {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	flex: none;
+	background: var(--text-faint);
+}
+.tool-status[data-status="pending"] {
+	background: var(--text-faint);
+}
+.tool-status[data-status="in_progress"] {
+	background: var(--warn);
+}
+.tool-status[data-status="completed"] {
+	background: var(--add);
+}
+.tool-status[data-status="failed"] {
+	background: var(--del);
+}
+
+.tool-name {
+	color: var(--purple);
+	font-weight: 600;
+}
+
+.tool-title {
+	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tool-detail {
+	color: var(--text-faint);
+	margin-left: auto;
+	flex: none;
+}
+
+/* Plan block: the agent's execution plan, one row per step (design D5). */
+.block-plan {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	background: var(--bg-panel);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 9px 11px;
+}
+
+.plan-step {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.plan-mark {
+	width: 8px;
+	height: 8px;
+	border-radius: 2px;
+	flex: none;
+	transform: translateY(1px);
+	background: var(--text-faint);
+}
+.plan-step[data-status="in_progress"] .plan-mark {
+	background: var(--warn);
+}
+.plan-step[data-status="completed"] .plan-mark {
+	background: var(--add);
+}
+
+.plan-step[data-status="completed"] .plan-content {
+	color: var(--text-dim);
+	text-decoration: line-through;
+}
+
+/* Diff block: an inline file diff the agent produced (design D5). */
+.block-diff {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	background: var(--bg-panel);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	overflow: hidden;
+}
+
+.diff-path {
+	padding: 6px 10px;
+	color: var(--text-dim);
+	border-bottom: 1px solid var(--border);
+	background: var(--bg-inset, var(--bg-panel));
+}
+
+.diff-line {
+	display: flex;
+	gap: 8px;
+	padding: 1px 10px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.diff-gutter {
+	flex: none;
+	width: 8px;
+	color: var(--text-faint);
+	user-select: none;
+}
+
+.diff-line[data-kind="add"] {
+	background: color-mix(in srgb, var(--add) 14%, transparent);
+}
+.diff-line[data-kind="add"] .diff-gutter {
+	color: var(--add);
+}
+.diff-line[data-kind="del"] {
+	background: color-mix(in srgb, var(--del) 14%, transparent);
+}
+.diff-line[data-kind="del"] .diff-gutter {
+	color: var(--del);
+}
+
+/* Ask block: a structured question the agent asks, rendered inline in the
+ * workspace conversation (design D5). The options are the selectable answers; a
+ * chosen answer marks the block answered and disables further clicks. Not a
+ * permission prompt — permission gating is a separate, deferred concern. */
+.block-ask {
+	display: flex;
+	flex-direction: column;
+	gap: 9px;
+	background: color-mix(in srgb, var(--accent) 8%, var(--bg-panel));
+	border: 1px solid var(--accent-dim);
+	border-radius: var(--radius-sm);
+	padding: 10px 12px;
+}
+
+.block-ask.answered {
+	border-color: var(--border);
+	background: var(--bg-panel);
+}
+
+.ask-question {
+	font-size: 13px;
+	line-height: 1.5;
+	font-weight: 600;
+}
+
+.ask-hint {
+	font-size: 11px;
+	color: var(--text-faint);
+	margin-top: -4px;
+}
+
+.ask-options {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 7px;
+}
+
+.ask-option {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	text-align: left;
+	border: 1px solid var(--border-strong, var(--border));
+	border-radius: var(--radius-sm);
+	padding: 6px 12px;
+	font-size: 12px;
+	font-weight: 600;
+	background: var(--bg-panel);
+	color: var(--text);
+	cursor: pointer;
+}
+
+.ask-option-desc {
+	font-size: 11px;
+	font-weight: 400;
+	color: var(--text-dim);
+}
+
+.ask-option.chosen {
+	background: var(--accent-dim);
+	border-color: var(--accent-dim);
+	color: #fff;
+}
+
+.ask-option:disabled {
+	cursor: default;
+	opacity: 0.55;
+}
+.ask-option.chosen:disabled {
+	opacity: 1;
+}
+
+/* Fallback for a message block whose kind this UI doesn't render (a newer
+ * backend block kind) — a visible placeholder rather than silently dropping
+ * the content. */
+.block-unknown {
+	font-size: 12px;
+	font-style: italic;
+	color: var(--text-faint);
+	border: 1px dashed var(--border);
+	border-radius: var(--radius-sm);
+	padding: 7px 10px;
+}
+
+/* The prompt composer (non-functional in the mockup). */
+.acp-composer {
+	flex: none;
+	border-top: 1px solid var(--border);
+	padding: 10px 12px;
+	display: flex;
+	gap: 8px;
+	align-items: flex-end;
+}
+
+.acp-composer .field {
+	flex: 1;
+	background: var(--bg-panel);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 9px 11px;
+	color: var(--text-dim);
+	font-size: 12px;
+}
+
+.acp-composer .send {
+	background: var(--accent-dim);
+	border: none;
+	border-radius: var(--radius-sm);
+	padding: 9px 14px;
+	color: #fff;
+	font-weight: 600;
+	font-size: 12px;
+}
+
+.term-body {
+	flex: 1;
+	overflow: auto;
+	padding: 10px 12px;
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	line-height: 1.55;
+	color: #c9d3df;
+	white-space: pre-wrap;
+}
+
+.term-empty {
+	color: var(--text-faint);
+	padding: 20px;
+	text-align: center;
+	font-family: var(--font-mono);
+	font-size: 11px;
+}
+
+/* ── Right sidebar: fleet conversations / files / VCS / PR ──────────────── */
+
+.right {
+	grid-area: right;
+	width: var(--right-w);
+	background: var(--bg-raised);
+	border-left: 1px solid var(--border);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+/* File explorer tree. */
+.file-row {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 6px;
+	border-radius: 4px;
+	font-size: 12px;
+	color: var(--text);
+}
+
+.file-row:hover {
+	background: var(--bg-hover);
+}
+
+.file-row .f-icon {
+	font-size: 11px;
+	width: 14px;
+	text-align: center;
+	color: var(--text-faint);
+}
+
+.file-row .f-name {
+	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.file-row .f-status {
+	font-size: 10px;
+	font-weight: 700;
+	font-family: var(--font-mono);
+	width: 12px;
+	text-align: center;
+}
+
+.f-status[data-s="modified"] {
+	color: var(--warn);
+}
+.f-status[data-s="added"] {
+	color: var(--add);
+}
+.f-status[data-s="deleted"] {
+	color: var(--del);
+}
+.f-status[data-s="untracked"] {
+	color: var(--text-faint);
+}
+
+.file-children {
+	margin-left: 10px;
+	padding-left: 5px;
+	border-left: 1px solid var(--border);
+}
+
+/* VCS summary. */
+.vcs-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 6px;
+	font-size: 12px;
+}
+
+.vcs-row .k {
+	color: var(--text-dim);
+	width: 66px;
+	flex: none;
+}
+
+.vcs-row .v {
+	color: var(--text);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* PR pane. */
+.pr-card {
+	padding: 4px 6px;
+}
+
+.pr-title-row {
+	display: flex;
+	align-items: baseline;
+	gap: 7px;
+	margin-bottom: 8px;
+}
+
+.pr-num {
+	color: var(--accent);
+	font-family: var(--font-mono);
+	font-weight: 600;
+	font-size: 12px;
+}
+
+.pr-state {
+	font-size: 9px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	padding: 1px 6px;
+	border-radius: 3px;
+}
+.pr-state[data-state="open"] {
+	color: var(--add);
+	background: color-mix(in srgb, var(--add) 15%, transparent);
+}
+.pr-state[data-state="draft"] {
+	color: var(--text-dim);
+	background: var(--bg-card);
+}
+.pr-state[data-state="merged"] {
+	color: #fff;
+	background: var(--st-merged);
+}
+.pr-state[data-state="closed"] {
+	color: var(--del);
+	background: color-mix(in srgb, var(--del) 15%, transparent);
+}
+
+.pr-title {
+	font-size: 12px;
+	line-height: 1.4;
+	margin-bottom: 10px;
+}
+
+.pr-checks {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-bottom: 10px;
+}
+
+.pr-check {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	font-size: 11px;
+}
+
+.pr-check .c-name {
+	color: var(--text-dim);
+	font-family: var(--font-mono);
+}
+
+.pr-check .c-verdict {
+	margin-left: auto;
+	font-size: 10px;
+	font-family: var(--font-mono);
+}
+.c-verdict[data-status="success"] {
+	color: var(--add);
+}
+.c-verdict[data-status="failure"] {
+	color: var(--del);
+}
+.c-verdict[data-status="pending"] {
+	color: var(--warn);
+}
+
+.pr-reviews {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 5px;
+	margin-bottom: 10px;
+}
+
+.review-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 10px;
+	padding: 2px 7px;
+	border-radius: 10px;
+	background: var(--bg-card);
+	border: 1px solid var(--border);
+	color: var(--text-dim);
+}
+
+.review-chip .rv {
+	font-weight: 700;
+}
+.rv[data-v="approved"] {
+	color: var(--add);
+}
+.rv[data-v="changes"] {
+	color: var(--del);
+}
+.rv[data-v="commented"] {
+	color: var(--warn);
+}
+
+.pr-threads {
+	font-size: 11px;
+	color: var(--text-dim);
+}
+
+.pr-threads .bar {
+	height: 5px;
+	border-radius: 3px;
+	background: var(--bg-card);
+	margin-top: 5px;
+	overflow: hidden;
+}
+
+.pr-threads .bar-fill {
+	height: 100%;
+	background: var(--add);
+}
+
+/* ── Usage bar (bottom status strip) ────────────────────────────────────── */
+
+.usage {
+	grid-area: usage;
+	display: flex;
+	align-items: center;
+	gap: 16px;
+	padding: 0 12px;
+	background: var(--bg-panel);
+	border-top: 1px solid var(--border);
+	font-size: 11px;
+}
+
+.usage-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.usage-item .u-provider {
+	font-weight: 600;
+	color: var(--text);
+}
+
+.usage-item .u-plan {
+	color: var(--text-faint);
+	font-size: 10px;
+}
+
+.usage-meter {
+	width: 90px;
+	height: 5px;
+	border-radius: 3px;
+	background: var(--bg-card);
+	overflow: hidden;
+}
+
+.usage-meter .fill {
+	height: 100%;
+	background: var(--accent);
+}
+
+.usage-meter .fill.hot {
+	background: var(--warn);
+}
+
+.usage-item .u-pct {
+	color: var(--text-dim);
+	font-family: var(--font-mono);
+	font-variant-numeric: tabular-nums;
+}
+
+.usage-item .u-reset {
+	color: var(--text-faint);
+	font-family: var(--font-mono);
+}
+
+.usage-spacer {
+	flex: 1;
+}
+
+.usage-git {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--text-dim);
+	font-family: var(--font-mono);
+}
+
+/* ── Shared helpers ─────────────────────────────────────────────────────── */
+
+.muted {
+	color: var(--text-dim);
+	padding: 20px;
+	text-align: center;
+	font-size: 12px;
+}
+
+/* ── Backlog view (T4/D3): Linear-style collapsible issue list ───────────── */
+
+.backlog-view,
+.done-view,
+.settings-view {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 14px 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+}
+
+.backlog-view > .heading,
+.done-view > .heading {
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.backlog-section {
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--bg-panel);
+	overflow: hidden;
+}
+
+.backlog-section-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	padding: 8px 12px;
+	background: var(--bg-raised);
+	border: none;
+	border-bottom: 1px solid var(--border);
+	text-align: left;
+}
+
+.backlog-section-head:hover {
+	background: var(--bg-hover);
+}
+
+.backlog-chevron {
+	color: var(--text-faint);
+	font-size: 10px;
+	transition: transform 0.12s ease;
+}
+
+.backlog-chevron.open {
+	transform: rotate(90deg);
+}
+
+.backlog-section-title {
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.backlog-count {
+	margin-left: auto;
+	min-width: 20px;
+	padding: 1px 7px;
+	border-radius: 999px;
+	background: var(--bg-active);
+	color: var(--text-dim);
+	font-size: 11px;
+	text-align: center;
+}
+
+.backlog-empty {
+	margin: 0;
+	padding: 12px;
+}
+
+.backlog-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.backlog-row {
+	display: flex;
+	align-items: stretch;
+	border-bottom: 1px solid var(--border);
+}
+
+.backlog-row:last-child {
+	border-bottom: none;
+}
+
+.backlog-row-main {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex: 1;
+	min-width: 0;
+	padding: 8px 12px;
+	background: transparent;
+	border: none;
+	border-left: 2px solid transparent;
+	text-align: left;
+}
+
+.backlog-row-main:hover {
+	background: var(--bg-hover);
+}
+
+.backlog-row-main.selected {
+	background: var(--bg-active);
+	border-left-color: var(--accent);
+}
+
+.backlog-row-main[data-priority="urgent"] {
+	border-left-color: var(--del);
+}
+
+.backlog-row-main[data-priority="high"] {
+	border-left-color: var(--warn);
+}
+
+.backlog-id {
+	color: var(--text-faint);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	flex: none;
+}
+
+.backlog-title {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+}
+
+.backlog-priority {
+	flex: none;
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-dim);
+}
+
+.backlog-priority[data-priority="urgent"] {
+	color: var(--del);
+}
+
+.backlog-priority[data-priority="high"] {
+	color: var(--warn);
+}
+
+.backlog-state {
+	flex: none;
+	font-size: 10px;
+	padding: 1px 6px;
+	border-radius: var(--radius-sm);
+	background: var(--bg-card);
+	color: var(--text-dim);
+}
+
+.backlog-tracker {
+	flex: none;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	color: var(--purple);
+}
+
+.backlog-promote {
+	flex: none;
+	margin: 6px 10px;
+	padding: 0 10px;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	background: var(--bg-card);
+	color: var(--text);
+	font-size: 11px;
+	white-space: nowrap;
+}
+
+.backlog-promote:hover {
+	background: var(--accent-dim);
+	border-color: var(--accent);
+}
+
+/* ── Done / archive view (T5/D4) ─────────────────────────────────────────── */
+
+.done-section {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.done-section-head {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+}
+
+.done-section-head .heading {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.done-empty {
+	margin: 0;
+	padding: 10px 12px;
+	color: var(--text-dim);
+	font-size: 12px;
+}
+
+.done-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.done-row {
+	display: flex;
+	align-items: stretch;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--bg-panel);
+	border-left: 2px solid transparent;
+	overflow: hidden;
+}
+
+.done-row[data-priority="urgent"] {
+	border-left-color: var(--del);
+}
+
+.done-row[data-priority="high"] {
+	border-left-color: var(--warn);
+}
+
+.done-row-main {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	flex: 1;
+	min-width: 0;
+	padding: 9px 12px;
+	background: transparent;
+	border: none;
+	text-align: left;
+}
+
+.done-row-main:hover {
+	background: var(--bg-hover);
+}
+
+.done-row-main.selected {
+	background: var(--bg-active);
+}
+
+.done-row-top {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.done-row-priority {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-dim);
+}
+
+.done-row-title {
+	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.done-row-foot {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	font-size: 11px;
+	color: var(--text-dim);
+}
+
+.done-row-branch {
+	font-family: var(--font-mono);
+	color: var(--text-faint);
+}
+
+.done-row-merge {
+	color: var(--st-merged);
+}
+
+.done-archive-btn {
+	flex: none;
+	margin: 8px 10px;
+	padding: 0 12px;
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	background: var(--bg-card);
+	color: var(--text);
+	font-size: 11px;
+	align-self: center;
+}
+
+.done-archive-btn:hover {
+	background: var(--bg-hover);
+	border-color: var(--accent);
+}
+
+.done-archived-mark {
+	flex: none;
+	display: flex;
+	align-items: center;
+	padding: 0 12px;
+	color: var(--text-faint);
+	font-size: 11px;
+	font-family: var(--font-mono);
+}
+
+/* ── Settings view (T11/D8): tracker config + status-mapping editor ──────── */
+
+.settings-head {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+}
+
+.settings-head .heading {
+	font-size: 14px;
+	font-weight: 600;
+}
+
+.settings-section {
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	background: var(--bg-panel);
+	padding: 12px 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.settings-section-head {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+}
+
+.settings-section-head .heading {
+	font-size: 12px;
+	font-weight: 600;
+}
+
+.settings-fields {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 14px;
+}
+
+.settings-field {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.settings-label {
+	font-size: 11px;
+	color: var(--text-dim);
+}
+
+.settings-input,
+.settings-select {
+	background: var(--bg-card);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	color: var(--text);
+	padding: 5px 8px;
+	font-size: 12px;
+	min-width: 200px;
+}
+
+.settings-input:focus,
+.settings-select:focus {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+	border-color: var(--accent);
+}
+
+.settings-map {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.settings-map-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.settings-map-state {
+	flex: none;
+	width: 100px;
+	font-size: 12px;
+}
+
+.settings-map-arrow {
+	color: var(--text-faint);
+	font-size: 11px;
+}
+
+.settings-map-input {
+	flex: 1;
+	min-width: 0;
+}
+
+.settings-reverse {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+
+.settings-reverse-row {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	font-size: 11px;
+}
+
+.settings-reverse-status {
+	flex: none;
+	width: 140px;
+	font-family: var(--font-mono);
+	color: var(--purple);
+}
+
+.settings-reverse-states {
+	color: var(--text-dim);
+}
+
+.settings-actions {
+	display: flex;
+	gap: 10px;
+}
+
+.settings-btn {
+	padding: 6px 16px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--border-strong);
+	font-size: 12px;
+}
+
+.settings-btn:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.settings-btn-save {
+	background: var(--accent-dim);
+	border-color: var(--accent);
+	color: var(--text);
+}
+
+.settings-btn-save:not(:disabled):hover {
+	background: var(--accent);
+}
+
+.settings-btn-reset {
+	background: var(--bg-card);
+	color: var(--text-dim);
+}
+
+.settings-btn-reset:not(:disabled):hover {
+	background: var(--bg-hover);
+	color: var(--text);
+}
+
+/* ── T6 right sidebar activity bar ── */
+
+/* The right sidebar splits into a content column (`.r-main`) and a vertical
+ *  activity bar on the far edge (`.r-activity`), mirroring Orca's icon-per-tab
+ *  layout. */
+.r-shell {
+	flex: 1;
+	display: flex;
+	min-height: 0;
+}
+
+.r-main {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.r-pane {
+	flex: 1;
+	overflow-y: auto;
+}
+
+.r-pane-body {
+	padding: 10px 12px;
+}
+
+.r-files {
+	padding: 6px 4px;
+}
+
+/* Workstream detail header: issue + title, plus the "Open agent" action (D10). */
+.r-detail-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--border);
+}
+
+.r-detail-meta {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	gap: 1px;
+}
+
+.r-detail-issue {
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--accent);
+}
+
+.r-detail-title {
+	font-size: 11px;
+	color: var(--text-dim);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+/* A fleet tab's pane: a compact open-workspace header over the inline home-DM
+   conversation (design compass-0.7). */
+.fleet-pane {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+}
+
+.fleet-head {
+	display: flex;
+	flex: none;
+	padding: 6px 8px;
+	border-bottom: 1px solid var(--border);
+}
+
+.r-open-agent {
+	margin-left: auto;
+	flex: none;
+	background: var(--bg-active);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	padding: 5px 10px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--text);
+	cursor: pointer;
+}
+
+.r-open-agent:hover {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--bg);
+}
+
+/* Files pane: a search box over the worktree tree (D5), then the tree. */
+.r-files-pane {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.r-files-search {
+	margin: 8px 10px;
+	padding: 5px 8px;
+	background: var(--bg);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	color: var(--text);
+	font-size: 12px;
+}
+
+.r-files-search:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+/* Commit history — the menu at the bottom of the VCS pane (D5). */
+.vcs-commits {
+	margin-top: 12px;
+	border-top: 1px solid var(--border);
+	padding-top: 8px;
+}
+
+.vcs-commits-head {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--text-dim);
+	margin-bottom: 6px;
+}
+
+.commit-row {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	padding: 3px 0;
+	font-size: 11px;
+}
+
+.commit-sha {
+	font-family: var(--font-mono);
+	color: var(--accent);
+	flex: none;
+}
+
+.commit-subject {
+	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.commit-at {
+	margin-left: auto;
+	flex: none;
+	color: var(--text-faint);
+	font-family: var(--font-mono);
+	font-size: 10px;
+}
+
+/* Vertical icon-tab strip on the sidebar edge. */
+.r-activity {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 8px 4px;
+	border-left: 1px solid var(--border);
+	background: var(--bg-panel);
+}
+
+/* Divider between the fleet group (top) and the workstream group
+ * (dock-in-sidebar D2). */
+.r-activity-divider {
+	height: 1px;
+	margin: 4px 6px;
+	background: var(--border-strong);
+}
+
+.r-tab {
+	position: relative; /* anchors the fleet StateDot badge (dock-in-sidebar D2) */
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 34px;
+	height: 34px;
+	border: 1px solid transparent;
+	border-radius: var(--radius-sm);
+	background: transparent;
+	color: var(--text-faint);
+	cursor: pointer;
+}
+
+.r-tab:hover {
+	background: var(--bg-hover);
+	color: var(--text);
+}
+
+.r-tab.active {
+	background: var(--bg-active);
+	border-color: var(--border-strong);
+	color: var(--text);
+}
+
+.r-tab .r-tab-icon {
+	font-size: 15px;
+	line-height: 1;
+}
+
+/* Fleet tabs badge their icon with the agent's StateDot, bottom-right
+ * (dock-in-sidebar D2) — the at-a-glance liveness the dock tabs carried. */
+.r-tab .state-dot {
+	position: absolute;
+	right: 3px;
+	bottom: 3px;
+}
+
+/* Fleet panes host a full-height flex conversation, not a scrolling document —
+ * the counterpart of .r-pane { overflow-y: auto }. The border-right suppression
+ * mirrors the dock's own .acp override against .acp's base border
+ * (dock-in-sidebar D3/T1). */
+.r-pane.fleet {
+	display: flex;
+	overflow: hidden;
+}
+
+.r-pane.fleet .acp {
+	flex: 1;
+	min-height: 0;
+	border-right: none;
+}
+
+/* The Status pane (dock-in-sidebar D3/T2): the fleet metrics strip, salvaged
+ * from the old dock's Supervisor facet (.dock-facet/.dock-metrics) and rehomed
+ * full-width — the dock's 300px facet cap and its border-right are dropped so
+ * the pane fills the sidebar column. */
+.r-status {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.r-status-metrics {
+	display: flex;
+	gap: 20px;
+	padding: 9px 14px;
+	border-bottom: 1px solid var(--border);
+	flex: none;
+	font-size: 11px;
+}
+
+.r-status-metric {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+}
+
+.r-status-metric .m-val {
+	font-size: 15px;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+}
+
+.r-status-metric .m-label {
+	color: var(--text-dim);
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+/* Repo + branch dropdown at the top of the content column. */
+.repo-branch {
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--border);
+}
+
+.rb-repo-label {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
+	color: var(--text-dim);
+}
+
+.rb-dd {
+	position: relative;
+}
+
+.rb-dd-btn {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	background: var(--bg-card);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-sm);
+	padding: 7px 10px;
+	color: var(--text);
+	text-align: left;
+	cursor: pointer;
+}
+
+.rb-dd-btn:hover {
+	border-color: var(--border-strong);
+}
+
+.rb-icon {
+	color: var(--accent);
+	font-size: 12px;
+	flex: none;
+}
+
+.rb-name {
+	flex: 1;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.rb-dd-btn .caret {
+	color: var(--text-faint);
+	font-size: 9px;
+	flex: none;
+}
+
+.rb-menu {
+	position: absolute;
+	top: calc(100% + 4px);
+	left: 0;
+	right: 0;
+	z-index: 20;
+	background: var(--bg-raised);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-sm);
+	padding: 4px;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.rb-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	padding: 6px 8px;
+	color: var(--text-dim);
+	text-align: left;
+	cursor: pointer;
+}
+
+.rb-item:hover {
+	background: var(--bg-hover);
+}
+
+.rb-item.active {
+	background: var(--bg-active);
+	color: var(--text);
+}
+
+/* ── T7 agent view: full-screen tabs + per-tab pane splits ── */
+
+/* The tab strip sits atop the active tab's pane tree. Each tab is a full-screen
+ *  group of panes; clicking a tab switches which group shows. */
+.av-tabs {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	flex: none;
+	padding: 4px 8px 0;
+	border-bottom: 1px solid var(--border);
+	overflow-x: auto;
+}
+
+.av-tab {
+	display: flex;
+	align-items: center;
+	border: 1px solid transparent;
+	border-bottom: none;
+	border-top-left-radius: var(--radius-sm);
+	border-top-right-radius: var(--radius-sm);
+}
+
+.av-tab.active {
+	background: var(--bg-active);
+	border-color: var(--border);
+}
+
+.av-tab-label {
+	background: transparent;
+	border: none;
+	padding: 6px 4px 6px 10px;
+	font-size: 12px;
+	color: var(--text-dim);
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.av-tab.active .av-tab-label {
+	color: var(--text);
+}
+
+.av-tab-label:hover {
+	color: var(--text);
+}
+
+.av-tab-close {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: transparent;
+	border: none;
+	padding: 0 8px 0 4px;
+	font-size: 10px;
+	line-height: 1;
+	color: var(--text-faint);
+	cursor: pointer;
+}
+
+.av-tab-close:hover {
+	color: var(--text);
+}
+
+.av-tab-new {
+	background: transparent;
+	border: none;
+	padding: 6px 10px;
+	font-size: 14px;
+	line-height: 1;
+	color: var(--text-faint);
+	cursor: pointer;
+}
+
+.av-tab-new:hover:not(:disabled) {
+	color: var(--text);
+}
+
+.av-tab-new:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+/* The active tab's pane tree fills the body below the tab strip. */
+.av-tree {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+}
+
+/* A split node: two children in a row (side by side) or column (stacked). */
+.av-split {
+	flex: 1;
+	min-height: 0;
+	min-width: 0;
+	display: flex;
+	gap: 1px;
+	background: var(--border);
+}
+
+.av-split.row {
+	flex-direction: row;
+}
+
+.av-split.column {
+	flex-direction: column;
+}
+
+.av-split > * {
+	flex: 1;
+	min-height: 0;
+	min-width: 0;
+}
+
+/* A pane: one leaf UI (session / terminal / file) with a header carrying the
+ *  split-right / split-down / close affordances. The focused pane — where the
+ *  split buttons act — gets an accent ring. */
+.av-pane {
+	flex: 1;
+	min-height: 0;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	background: var(--bg);
+	overflow: hidden;
+	border: 1px solid transparent;
+}
+
+.av-pane.focused {
+	border-color: var(--accent);
+}
+
+.av-pane-head {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex: none;
+	padding: 3px 6px;
+	border-bottom: 1px solid var(--border);
+	background: var(--bg-raised);
+}
+
+.av-pane-title {
+	background: transparent;
+	border: none;
+	padding: 0;
+	text-align: left;
+	cursor: pointer;
+	font-size: 11px;
+	color: var(--text-dim);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.av-pane.focused .av-pane-title {
+	color: var(--text);
+}
+
+.av-pane-title:hover {
+	color: var(--text);
+}
+
+.av-pane-spacer {
+	flex: 1;
+}
+
+.av-pane-btn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: transparent;
+	border: none;
+	padding: 2px 5px;
+	font-size: 12px;
+	line-height: 1;
+	color: var(--text-faint);
+	cursor: pointer;
+	border-radius: var(--radius-sm);
+}
+
+.av-pane-btn:hover:not(:disabled) {
+	background: var(--bg-hover);
+	color: var(--text);
+}
+
+.av-pane-btn:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+
+.av-pane-close:hover:not(:disabled) {
+	color: var(--del);
+}
+
+.av-pane-body {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.av-pane-body .acp {
+	flex: 1;
+	min-height: 0;
+	border-right: none;
+}
+
+.av-leaf-empty {
+	padding: 20px;
+	text-align: center;
+	font-size: 12px;
+}
+
+/* File pane: read-only Markdown viewer placeholder (resolved decision 2). */
+.av-file {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: auto;
+}
+
+.av-file-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	border-bottom: 1px solid var(--border);
+}
+
+.av-file-path {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	color: var(--text);
+}
+
+.av-file-ro {
+	font-size: 10px;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--text-faint);
+}
+
+.av-file-note {
+	padding: 20px;
+	font-size: 12px;
+}
+
+/* ══ Channel surface (board-primary shell) ═══════════════════════════════════
+ * The standalone ChannelView mounted in the center (grid-area: main): the
+ * threaded conversation + composer. One channel surface within the
+ * board-primary shell, not the primary surface of the app. */
+
+.rail-section {
+	margin-top: 10px;
+}
+
+.rail-section-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 4px 8px;
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--text-faint);
+}
+
+.rail-vis {
+	font-size: 9px;
+	font-weight: 600;
+	color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 14%, transparent);
+	padding: 1px 5px;
+	border-radius: 999px;
+	text-transform: none;
+	letter-spacing: 0;
+}
+
+/* A channel/DM row: a flex container holding the selection button (glyph + name
+ * + unread) and the subscribe toggle as a sibling. The row itself is not
+ * interactive — the button carries the click/keyboard affordance. */
+.ch-row {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	border-radius: var(--radius-sm);
+	color: var(--text-dim);
+}
+
+.ch-row:hover {
+	background: var(--bg-hover);
+	color: var(--text);
+}
+
+.ch-row.selected {
+	background: var(--bg-active);
+	color: var(--text);
+}
+
+.ch-row.unjoined {
+	opacity: 0.6;
+}
+
+/* The selection button: the full-width interactive part of a row. Transparent
+ * (the container paints hover/selected), left-aligned, holds the flex of
+ * glyph + name + unread. */
+.ch-row-select {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	padding: 5px 8px;
+	border: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+
+.ch-glyph {
+	color: var(--text-faint);
+	font-size: 13px;
+	width: 12px;
+	text-align: center;
+	flex: 0 0 auto;
+}
+
+.ch-name {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.ch-unread {
+	flex: 0 0 auto;
+	min-width: 17px;
+	height: 17px;
+	padding: 0 5px;
+	border-radius: 999px;
+	background: var(--accent-dim);
+	color: #fff;
+	font-size: 10px;
+	font-weight: 700;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+
+/* Membership affordances: join (a channel you can see but haven't joined) or
+ * a subscribe toggle (only meaningful once joined). Hidden until row hover /
+ * selection to keep the rail calm, except when they carry live state. */
+.ch-join {
+	flex: 0 0 auto;
+	font-size: 10px;
+	font-weight: 600;
+	padding: 1px 7px;
+	border-radius: 999px;
+	border: 1px solid var(--border-strong);
+	background: transparent;
+	color: var(--text-dim);
+}
+
+.ch-join:hover {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.ch-sub {
+	flex: 0 0 auto;
+	border: none;
+	background: transparent;
+	color: var(--text-faint);
+	font-size: 12px;
+	line-height: 1;
+	opacity: 0;
+}
+
+.ch-row:hover .ch-sub,
+.ch-row.selected .ch-sub {
+	opacity: 1;
+}
+
+.ch-sub.on {
+	color: var(--accent);
+	opacity: 1;
+}
+
+/* A fixed (non-togglable) subscription — always-subscribed-to-own. Shown as a
+ * static filled marker, never a button; the model says it can't be turned off. */
+.ch-sub.fixed {
+	opacity: 1;
+	color: var(--text-faint);
+	cursor: default;
+}
+
+/* Browse/discover section: joinable channels the caller hasn't joined, collapsed
+ * by default under the member rail. */
+.browse-head {
+	width: 100%;
+	background: transparent;
+	border: none;
+	cursor: pointer;
+}
+
+.browse-caret {
+	display: inline-block;
+	transition: transform 0.12s ease;
+	margin-right: 4px;
+	color: var(--text-faint);
+}
+
+.browse-caret.open {
+	transform: rotate(90deg);
+}
+
+.browse-count {
+	margin-left: auto;
+	font-size: 10px;
+	color: var(--text-faint);
+	background: var(--bg-card);
+	padding: 0 6px;
+	border-radius: 999px;
+}
+
+.browse-row {
+	opacity: 0.75;
+	gap: 7px;
+	padding: 5px 8px;
+}
+
+/* ── Conversation center ──────────────────────────────────────────────────── */
+
+.conversation {
+	grid-area: main;
+	min-width: 0;
+	min-height: 0;
+	background: var(--bg);
+	display: flex;
+	flex-direction: column;
+	/* Fill the flex-column parent (`.main` standalone, `.av-pane-body` chat pane,
+	   `.fleet-pane` sidebar) so `.conv-stream` takes the slack and the composer
+	   pins to the bottom — never floating under a short conversation. */
+	flex: 1;
+	overflow: hidden;
+}
+
+.conv-head {
+	height: 44px;
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 0 16px;
+	border-bottom: 1px solid var(--border);
+	background: var(--bg-raised);
+}
+
+.conv-glyph {
+	color: var(--text-faint);
+	font-size: 15px;
+}
+
+.conv-name {
+	font-weight: 600;
+	color: var(--text);
+}
+
+.conv-topic {
+	color: var(--text-dim);
+	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	border-left: 1px solid var(--border);
+	padding-left: 8px;
+}
+
+.conv-spacer {
+	flex: 1;
+}
+
+.conv-membership {
+	font-size: 10px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	padding: 2px 8px;
+	border-radius: 999px;
+	color: var(--text-faint);
+	background: var(--bg-card);
+}
+
+.conv-membership[data-m="subscribed"] {
+	color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.conv-membership[data-m="none"] {
+	color: var(--warn);
+	background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+
+.conv-stream {
+	flex: 1;
+	overflow-y: auto;
+	padding: 12px 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.conv-empty {
+	margin: auto;
+	color: var(--text-faint);
+	font-size: 13px;
+}
+
+/* A thread: root message + indented replies under it. */
+.thread-replies {
+	margin-left: 20px;
+	padding-left: 12px;
+	border-left: 2px solid var(--border);
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	margin-top: 8px;
+}
+
+/* T-T2: the thread panel splits beside the stream. The conversation body is a
+ * flex row — the main stream+composer on the left, the panel pinned right. */
+.conv-body-row {
+	display: flex;
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.conv-main {
+	display: flex;
+	flex-direction: column;
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+}
+
+.thread-panel {
+	flex: 0 0 320px;
+	display: flex;
+	flex-direction: column;
+	border-left: 1px solid var(--border);
+	background: var(--bg-raised);
+	overflow: hidden;
+}
+
+.thread-panel-head {
+	height: 44px;
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 0 12px 0 16px;
+	border-bottom: 1px solid var(--border);
+}
+
+.thread-panel-title {
+	font-weight: 600;
+	color: var(--text);
+	font-size: 13px;
+}
+
+.thread-panel-body {
+	flex: 1;
+	overflow-y: auto;
+	padding: 12px 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+/* The per-thread reply affordance on the root row — a small subtle text button. */
+.thread-reply {
+	background: none;
+	border: none;
+	color: var(--text-faint);
+	font-size: 11px;
+	cursor: pointer;
+	padding: 2px 4px;
+	align-self: flex-start;
+}
+
+.thread-reply:hover {
+	color: var(--accent);
+}
+
+/* The Slack-model summary pill on a threaded root row — descended from
+   .thread-reply (small, faint, accent on hover). Count · people pile · time. */
+.thread-summary {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	background: none;
+	border: none;
+	color: var(--text-faint);
+	font-size: 11px;
+	cursor: pointer;
+	padding: 2px 4px;
+	align-self: flex-start;
+}
+
+.thread-summary:hover {
+	color: var(--accent);
+}
+
+.thread-summary-count {
+	font-weight: 600;
+}
+
+.thread-summary-people {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+}
+
+.thread-summary-avatar {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	background: var(--surface-2, rgba(255, 255, 255, 0.08));
+	color: var(--text-muted, inherit);
+	font-size: 9px;
+	font-weight: 600;
+	text-transform: uppercase;
+}
+
+.thread-summary-overflow {
+	font-size: 9px;
+	color: var(--text-faint);
+}
+
+.thread-summary-time {
+	color: var(--text-faint);
+}
+
+.thread-close {
+	background: none;
+	border: none;
+	color: var(--text-faint);
+	font-size: 11px;
+	cursor: pointer;
+	padding: 2px 6px;
+}
+
+.thread-close:hover {
+	color: var(--text);
+}
+
+/* Conversation messages reuse the .msg family from the ACP view (role coloring,
+ * head layout). Channel-specific bits below. */
+.msg-text {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+
+/* @-mention chip: a highlighted run inside message text. */
+.mention-chip {
+	color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 14%, transparent);
+	border-radius: var(--radius-sm);
+	padding: 0 3px;
+	font-weight: 600;
+}
+
+.mention-chip.reserved {
+	color: var(--purple);
+	background: color-mix(in srgb, var(--purple) 16%, transparent);
+}
+
+.mention-chip.unknown {
+	color: var(--text-dim);
+	background: var(--bg-card);
+	font-weight: 400;
+}
+
+/* ── Composer ─────────────────────────────────────────────────────────────── */
+
+.conv-composer {
+	flex: 0 0 auto;
+	display: flex;
+	gap: 8px;
+	padding: 10px 16px;
+	border-top: 1px solid var(--border);
+	background: var(--bg-raised);
+}
+
+.conv-composer .field {
+	flex: 1;
+	background: var(--bg-card);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	color: var(--text);
+	padding: 8px 12px;
+	font: inherit;
+}
+
+.conv-composer .field:focus {
+	outline: none;
+	border-color: var(--accent);
+}
+
+.conv-composer .field:disabled {
+	opacity: 0.5;
+}
+
+.conv-composer .send {
+	flex: 0 0 auto;
+	background: var(--accent-dim);
+	border: none;
+	border-radius: var(--radius);
+	color: #fff;
+	font-weight: 600;
+	padding: 0 16px;
+}
+
+.conv-composer .send:disabled {
+	background: var(--bg-card);
+	color: var(--text-faint);
+	cursor: default;
+}
+
+/* ── Log panel (T4): minimizable observation companion at the workspace's right
+ * edge, outside the tab/split tree. Open = full panel + trace body; minimized =
+ * slim vertical rail keeping the running dot visible. ─────────────────────── */
+.log-panel {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	width: 340px;
+	border-left: 1px solid var(--border);
+	background: var(--bg-inset, transparent);
+	grid-area: log;
+}
+
+.log-panel.minimized {
+	width: 40px;
+}
+
+.log-panel .obs-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: 0 0 auto;
+	padding: 8px 10px;
+	border-bottom: 1px solid var(--border);
+}
+
+.log-panel.minimized .obs-head {
+	flex-direction: column;
+	border-bottom: none;
+}
+
+.log-panel .obs-title {
+	font-size: 12px;
+	font-weight: 600;
+	font-family: var(--font-mono);
+}
+
+.log-panel .obs-spacer {
+	flex: 1;
+}
+
+.log-panel.minimized .obs-spacer {
+	flex: 0;
+}
+
+.obs-run {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 11px;
+	color: var(--text-faint);
+}
+
+.obs-run-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--text-faint);
+}
+
+.obs-run.live .obs-run-dot {
+	background: var(--st-working);
+}
+
+.obs-stop {
+	flex: 0 0 auto;
+	font-size: 11px;
+	font-weight: 600;
+	padding: 3px 9px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--border-strong);
+	background: transparent;
+	color: var(--text-dim);
+}
+
+.obs-stop:not(:disabled):hover {
+	border-color: var(--del);
+	color: var(--del);
+}
+
+.obs-stop:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.obs-min {
+	flex: 0 0 auto;
+	font-size: 12px;
+	padding: 3px 8px;
+	border-radius: var(--radius-sm);
+	border: 1px solid var(--border);
+	background: transparent;
+	color: var(--text-dim);
+}
+
+.obs-min:hover {
+	color: var(--text);
+}
+
+.log-panel .obs-body {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 8px 10px;
+	font-family: var(--font-mono);
+	font-size: 12px;
+	line-height: 1.6;
+}
+
+.obs-empty {
+	color: var(--text-faint);
+	padding: 12px 2px;
+}
+
+/* Notice row: a typed session notice, with an optional link-out anchor. */
+.block-notice {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--text-dim);
+	padding: 3px 0;
+}
+
+.notice-text {
+	flex: 1;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.notice-link {
+	flex: 0 0 auto;
+	color: var(--accent);
+	text-decoration: none;
+	font-size: 11px;
+}
+
+.notice-link:hover {
+	text-decoration: underline;
+}
+
+/* Tool output disclosure: the collapsed output a tool update carried. */
+.tool-output {
+	margin-left: auto;
+	flex: none;
+	font-size: 11px;
+}
+
+.tool-output-body {
+	margin: 6px 0 0;
+	white-space: pre-wrap;
+	word-break: break-word;
+	color: var(--text-dim);
+}

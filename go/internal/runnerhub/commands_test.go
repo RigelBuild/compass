@@ -1,0 +1,149 @@
+//go:build unix
+
+package runnerhub
+
+// The Server-facing command surface: the RunnerError→Connect code mapping and
+// the no-Runner→Unavailable path. Every row pins the exact Connect code a client
+// sees, so a mis-mapping (an ALREADY_RUNNING surfaced as Internal, a NOT_FOUND
+// swallowed) is caught. The end-to-end relay test drives the mapping through the
+// real router so the wiring, not just the pure function, is proven.
+
+import (
+	"context"
+	"testing"
+
+	"connectrpc.com/connect"
+
+	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/store"
+)
+
+// runnerErrorToConnect maps each RunnerErrorCode to the exact Connect code the
+// client sees. Table-driven over every code, including UNSPECIFIED (the "else"
+// arm) which must fall to Internal.
+func TestRunnerErrorToConnectCodeMapping(t *testing.T) {
+	cases := []struct {
+		name string
+		code compassv1internal.RunnerErrorCode
+		want connect.Code
+	}{
+		{"already running", compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING, connect.CodeAlreadyExists},
+		{"not found", compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND, connect.CodeNotFound},
+		{"internal", compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL, connect.CodeInternal},
+		{"unspecified falls to internal", compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_UNSPECIFIED, connect.CodeInternal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runnerErrorToConnect(&compassv1internal.RunnerError{Code: tc.code, Message: "boom"})
+			if got := connect.CodeOf(err); got != tc.want {
+				t.Fatalf("runnerErrorToConnect(%v) code = %v, want %v", tc.code, got, tc.want)
+			}
+			// The Runner's message is surfaced, not swallowed.
+			mustContain(t, err.Error(), "boom")
+		})
+	}
+}
+
+// A session RPC with no enrolled Runner is Unavailable — there is no Runner to
+// serve it, a transport-class failure, never a per-command error code. Driven
+// across every command surface so no method mis-classifies the empty registry.
+func TestCommandsNoRunnerIsUnavailable(t *testing.T) {
+	hub := newHubOnly() // no enroll → no Runner
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"provision", func() error {
+			_, err := hub.Provision(ctx, "r1", &compassv1.ProvisionAgentWorkspaceRequest{})
+			return err
+		}},
+		{"start", func() error {
+			_, err := hub.Start(ctx, "r1", &compassv1.StartAgentSessionRequest{ContainerName: "c1"})
+			return err
+		}},
+		{"stop", func() error {
+			_, err := hub.Stop(ctx, "r1", &compassv1.StopAgentSessionRequest{SessionId: "s1"})
+			return err
+		}},
+		{"reload", func() error {
+			_, err := hub.Reload(ctx, "r1", &compassv1.ReloadAgentSessionRequest{SessionId: "s1"})
+			return err
+		}},
+		{"status", func() error {
+			_, err := hub.Status(ctx, "r1", &compassv1.GetAgentStatusRequest{SessionId: "s1"})
+			return err
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatalf("%s with no runner = nil error, want Unavailable", tc.name)
+			}
+			if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+				t.Fatalf("%s with no runner = code %v, want Unavailable", tc.name, got)
+			}
+		})
+	}
+}
+
+// End-to-end through the real router: a Start whose Runner returns an
+// ALREADY_RUNNING RunnerError surfaces as CodeAlreadyExists at the Hub.Start
+// boundary — proving the relay wires the mapping, not just the pure function.
+// This is OQ6 row 3's genuine-double half: a real already-live container.
+func TestStartRelaySurfacesAlreadyRunningAsAlreadyExists(t *testing.T) {
+	hub := newHubOnly()
+	// Enroll a Runner and bind a send that answers every command with an
+	// ALREADY_RUNNING error result correlated by the pushed request id.
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	router, err := hub.routerFor("any")
+	if err != nil {
+		t.Fatalf("routerFor after enroll = %v, want a router", err)
+	}
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		// Answer asynchronously the way the real Sessions loop does.
+		go router.complete(&compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
+				Code:    compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING,
+				Message: "session already running on container",
+			}},
+		})
+		return nil
+	})
+
+	_, err = hub.Start(context.Background(), "req-1", &compassv1.StartAgentSessionRequest{ContainerName: "c1"})
+	if err == nil {
+		t.Fatal("Start against an already-running container = nil, want AlreadyExists")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
+		t.Fatalf("Start error code = %v, want AlreadyExists (a genuine double start)", got)
+	}
+}
+
+// A successful relay returns the typed response, not an error — the happy path
+// through the same wiring, so the error tests above are not the only path
+// exercised.
+func TestStartRelayReturnsSessionIdOnSuccess(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	router, _ := hub.routerFor("any")
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		go router.complete(&compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-ok"}},
+		})
+		return nil
+	})
+
+	resp, err := hub.Start(context.Background(), "req-ok", &compassv1.StartAgentSessionRequest{ContainerName: "c1"})
+	if err != nil {
+		t.Fatalf("Start = %v, want success", err)
+	}
+	if got := resp.GetSessionId(); got != "sess-ok" {
+		t.Fatalf("Start session id = %q, want sess-ok", got)
+	}
+}

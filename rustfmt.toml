@@ -1,5 +1,0 @@
-# rustfmt runs via `cargo fmt`, which only formats files reachable through
-# `mod` declarations. The generated protobuf clients are pulled in via
-# `include!`, so rustfmt never visits them — the drift gate (buf generate +
-# git diff) stays the sole authority over generated content.
-edition = "2024"

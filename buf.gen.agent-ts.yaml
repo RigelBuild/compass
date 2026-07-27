@@ -1,0 +1,30 @@
+# Internal-only gen lane (TS): the compass.v1 agent-stdio envelopes for the
+# first-party agent (design compass-0.6 §T5). Separate template — buf v2 scopes
+# path filters at the INPUT level (template-wide), not per-plugin, so the
+# internal protos cannot be included here and excluded from the public
+# buf.gen.yaml within one template. This lane is its own `buf generate
+# --template` over just agent.proto, emitting protoc-gen-es into the agent
+# package's own gen tree — never the public compass-client surface, keeping the
+# @compass/client server-door fence intact (the agent is not a server-door
+# client).
+#
+# Run WITH `--include-imports`: protoc-gen-es has no per-file import-path
+# mapping (unlike protoc-gen-go's `M`), so the envelope's imported payload types
+# (MessagePosted/… from comms.proto + compass.proto) must be regenerated into
+# this tree to resolve. The output is byte-identical to the public compass-client
+# TS gen — a codegen-output copy, not a schema redefinition. The agent imports
+# these types only through its own src/gen (never @compass/client), so the two
+# copies never need to unify.
+version: v2
+clean: true
+inputs:
+  - directory: proto
+    paths:
+      - proto/compass/v1/agent.proto
+      - proto/compass/v1/agent_gateway.proto
+plugins:
+  - local: protoc-gen-es
+    out: packages/compass-agent/src/gen
+    opt:
+      - target=ts
+      - import_extension=none

@@ -27,5 +27,5 @@ result-*
 *.log
 .DS_Store
 
-# NOTE: generated clients (crates/compass-proto/src/gen, packages/compass-client/src/gen)
+# NOTE: generated clients (go/gen, packages/compass-client/src/gen)
 # are intentionally committed and CI drift-gated — do not ignore them.

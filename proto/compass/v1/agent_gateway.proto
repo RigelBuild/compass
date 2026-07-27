@@ -1,0 +1,126 @@
+// The compass.v1 agent->Runner call transport (design
+// docs/designs/product/compass-agent-runner-transport/design.md, SEA-1351 T1).
+//
+// INTERNAL-ONLY surface. Unlike compass.proto / comms.proto — the public,
+// generated-client door between a UI and the Server — AgentGateway is the
+// Runner-side LISTENER for calls the in-container first-party agent makes to its
+// Runner. It runs the OPPOSITE direction to RunnerService (runner.proto, which
+// is Runner->Server dial-out): here the agent is the client and the Runner is
+// the server, over a per-container bind-mounted Unix socket (a local hop, no
+// network path — the egress seal is untouched). It is generated ONLY into the
+// internal lanes (the Runner's Go handler via buf.gen.internal-go.yaml; the
+// agent's TS client via buf.gen.agent-ts.yaml), never onto the public client
+// surface, so the `@compass/client` server-door fence stays intact (the agent is
+// not a server-door client). The gen fan-out that enforces this is a separate
+// path-filtered lane; the public buf.gen.yaml excludes this file.
+//
+// Additive and buf-breaking-safe: a new file in the owned `compass.v1` package,
+// not a change to the public messages. `buf lint`/`buf breaking` still cover it
+// (they glob `compass/**/*.proto`).
+//
+// Naming: the service is a `Gateway` (a Runner-side door for agent calls), not a
+// public `*Service`, and its sole RPC `Comms` carries the general
+// `CommsCallRequest`/`CommsCallResult` envelopes — named for the call family,
+// NOT `CommsRequest`/`CommsResponse`, because the SAME messages are reused
+// verbatim as the `RelayCommsCallRequest.call` / `RelayCommsCallResponse.result`
+// payloads on the Runner->Server leg (runner.proto RelayCommsCall). Sharing one
+// envelope across both hops is the point; renaming per-RPC would fork the wire.
+// buf's SERVICE_SUFFIX / RPC_REQUEST_STANDARD_NAME / RPC_RESPONSE_STANDARD_NAME
+// are ignore_only-scoped to this file in buf.yaml for exactly that reason.
+
+syntax = "proto3";
+
+package compass.v1;
+
+import "compass/v1/comms.proto";
+// AgentFrame (Publish/PostConversationFrame payload) + AgentControl (the
+// Control server-stream message) live in agent.proto; the gateway carries them.
+import "compass/v1/agent.proto";
+
+// agent -> Runner, unary. The agent emits a correlated comms call; the Runner
+// forwards it to the Server (RelayCommsCall) tagged with the session it
+// structurally owns (the one session bound to the per-container socket the call
+// arrived on). The Runner resolves NO account and asserts NO account identity;
+// the Server resolves session_id -> account from its own Provision-originated
+// binding and attributes in-process, fail-closed (design Decision #3, OQ-2).
+// INTERNAL surface (never public gen).
+service AgentGateway {
+  rpc Comms(CommsCallRequest) returns (CommsCallResult);  // frozen T1, unchanged
+  // agent -> Runner, client-stream: the loss-tolerable telemetry spine. Every
+  // TRACE and SESSION AgentFrame rides it in emission order. Replaces the
+  // stdout relay's trace/session half. The Runner assigns the upstream sequence
+  // (PublishEvents RunnerSeq), so the request carries no seq of its own.
+  rpc Publish(stream PublishFrameRequest) returns (PublishFrameResponse);
+  // agent -> Runner, UNARY, delivered-or-erred: the durable conversation-frame
+  // path (consolidation OQ-2(c)). conversation_posted / conversation_updated
+  // ride THIS, not Publish — request/response so an agent-side drop is an ERROR
+  // the agent retries (with a stable idempotency_key, so a commit whose response
+  // was lost is deduped on retry, never duplicated), never a silent gapless loss.
+  rpc PostConversationFrame(PostConversationFrameRequest) returns (PostConversationFrameResponse);
+  // agent-opened server-stream: the control lane. The agent opens it at boot and
+  // the Runner pushes one AgentControl per message. Replaces the never-built
+  // stdin decoder.
+  rpc Control(ControlSubscribeRequest) returns (stream AgentControl);
+}
+
+// One agent-initiated comms call. `call_id` is the agent-minted correlation id
+// (the SDK toolCallId); the `call` oneof selects the comms operation. The same
+// message is the `RelayCommsCallRequest.call` payload on the Runner->Server leg.
+message CommsCallRequest {
+  string call_id = 1;
+  oneof call {
+    PostMessageRequest post = 2;
+    ListMessagesRequest list = 3;
+  }
+}
+
+// The result of one comms call, correlated by `call_id`. A successful call sets
+// `post`/`list`; an in-band failure (a tool error — non-member channel, bad
+// input) sets `error`, which is NOT a transport teardown. The same message is
+// the `RelayCommsCallResponse.result` payload on the Runner->Server leg.
+message CommsCallResult {
+  string call_id = 1;
+  oneof result {
+    PostMessageResponse post = 2;
+    ListMessagesResponse list = 3;
+    CommsCallError error = 4;
+  }
+}
+
+// An in-band comms-call failure: a tool error the agent renders to the model,
+// never a stream teardown. `code` is a short stable token (e.g. "not_found");
+// `message` is human-readable detail.
+message CommsCallError {
+  string code = 1;
+  string message = 2;
+}
+
+// Publish stream element: one trace/session AgentFrame, in emission order. No
+// seq field — the Runner assigns the upstream PublishEvents RunnerSeq. The
+// durable conversation frames do NOT ride this stream; they take the correlated
+// PostConversationFrame unary.
+message PublishFrameRequest {
+  AgentFrame frame = 1;  // trace/session only
+}
+// Acked at stream close, mirroring RunnerService.PublishEvents' PublishEventsResponse.
+message PublishFrameResponse {}
+
+// The durable-frame unary carries the SAME AgentFrame message, constrained by
+// the agent side (C4) to a conversation_posted / conversation_updated variant,
+// plus an agent-minted idempotency_key. Runner-sequenced upstream through the
+// same ordered per-session publisher as Publish frames, so hub gap-detection is
+// identical; the difference is delivered-or-erred to the agent.
+message PostConversationFrameRequest {
+  AgentFrame frame = 1;
+  // Agent-minted, stable across retries of the same logical frame; the Runner
+  // commits at-most-once per key so a lost-response retry is not duplicated. An
+  // ENVELOPE field (C2 dedup), not a payload field — SEA-1310's parked payload
+  // decision is untouched.
+  string idempotency_key = 2;
+}
+// Returned only after the upstream PublishEvents forward is accepted.
+message PostConversationFrameResponse {}
+
+// The Control subscribe request carries no session id: the per-container socket
+// the call arrives on IS the session identity (frozen Decision #4).
+message ControlSubscribeRequest {}

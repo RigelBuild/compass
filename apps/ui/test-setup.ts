@@ -1,0 +1,136 @@
+// Bun test preload. Two jobs, both required before any test module loads:
+//
+//  1. A happy-dom global DOM, so component tests can mount SolidJS trees and
+//     assert against rendered output (Bun's runner is otherwise headless).
+//  2. A SolidJS JSX transform. Solid's JSX is not a pragma swap like React's —
+//     it needs babel-preset-solid's compile-time reactive transform (the same
+//     one vite-plugin-solid runs for the build). Bun's native transpiler emits
+//     broken React-shaped code for Solid JSX (oven-sh/bun#3528), so we register
+//     a Bun loader plugin that runs the official preset over .tsx on load.
+//     Matching the build transform keeps test and production semantics identical.
+//
+// Wired via bunfig.toml `preload`.
+import { transformAsync } from "@babel/core";
+import syntaxJsx from "@babel/plugin-syntax-jsx";
+import presetTypeScript from "@babel/preset-typescript";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import solid from "babel-preset-solid";
+import { plugin } from "bun";
+
+GlobalRegistrator.register();
+
+plugin({
+	name: "solid-jsx",
+	setup(build) {
+		build.onLoad({ filter: /\.tsx$/ }, async (args) => {
+			const source = await Bun.file(args.path).text();
+			const result = await transformAsync(source, {
+				filename: args.path,
+				presets: [
+					[solid, { generate: "dom", hydratable: false }],
+					[presetTypeScript, { onlyRemoveTypeImports: true }],
+				],
+				plugins: [syntaxJsx],
+				sourceMaps: "inline",
+			});
+			return { contents: result?.code ?? source, loader: "js" };
+		});
+	},
+});
+
+// ── Virtualized-list geometry shim ───────────────────────────────────────────
+// The conversation stream (`.conv-stream`) is a @tanstack/solid-virtual chat-mode
+// virtualizer: it only renders the thread rows whose measured positions fall in
+// the scroll viewport. happy-dom has NO layout, so a scroll element's real rect
+// is 0×0 and item offsetHeight is 0 — under which the virtualizer renders an
+// EMPTY window and every test asserting on `.conv-stream` content (a `.msg`, a
+// `.block-ask`, a `.thread`) would see nothing. This shim gives the layout-less
+// DOM just enough geometry that a virtualized list renders its rows:
+//
+//   - `.conv-stream` reports a very tall viewport (100_000px), so the whole
+//     fixture-sized channel is inside the window and renders in full — matching
+//     the pre-virtualization behavior every existing suite was written against.
+//   - a rendered thread row ([data-index]) reports a nonzero height so
+//     measureElement records a real size.
+//   - clientHeight / scrollHeight / a no-op scrollTo exist so the chat-mode
+//     scrollToEnd() and the offset observer never throw in happy-dom.
+//
+// The dedicated scroll-contract suite (ChannelView.scroll.test.tsx) OVERRIDES
+// this with a small viewport + real scroll emulation to exercise genuine
+// windowing; this global default just keeps every other suite rendering content.
+//
+// Scoping: these getters are defined on HTMLDivElement.prototype, so they shadow
+// the property div-prototype-wide for the whole test process. happy-dom defines
+// the real getters on ANCESTOR prototypes (offsetHeight/clientHeight on
+// HTMLElement.prototype, scrollHeight on Element.prototype), never own on
+// HTMLDivElement.prototype — so we cannot conditionally skip installing. Instead
+// each getter, for a NON-conv element, DELEGATES to the inherited getter
+// (captured below before we override), so an ordinary div keeps happy-dom's real
+// value and only `.conv-stream` / `[data-index]` rows get the synthetic geometry.
+const CONV_STREAM_VIEWPORT = 100_000;
+const CONV_ROW_HEIGHT = 64;
+const divProto = Object.getPrototypeOf(document.createElement("div"));
+const isConvStream = (el: HTMLElement): boolean =>
+	el.classList?.contains("conv-stream") ?? false;
+const hasIndex = (el: HTMLElement): boolean =>
+	el.hasAttribute?.("data-index") ?? false;
+
+/** The inherited getter for `prop` (from an ancestor prototype — happy-dom's
+ *  real implementation), so a non-conv element delegates to it instead of being
+ *  forced to 0. Walks the prototype chain above divProto; undefined if none. */
+const inheritedGetter = (prop: string): (() => number) | undefined => {
+	let proto = Object.getPrototypeOf(divProto);
+	while (proto) {
+		const desc = Object.getOwnPropertyDescriptor(proto, prop);
+		if (desc?.get) return desc.get as () => number;
+		proto = Object.getPrototypeOf(proto);
+	}
+	return undefined;
+};
+
+for (const [prop, convGet] of [
+	[
+		"offsetHeight",
+		function (this: HTMLElement): number {
+			if (isConvStream(this)) return CONV_STREAM_VIEWPORT;
+			if (hasIndex(this)) return CONV_ROW_HEIGHT;
+			return 0;
+		},
+	],
+	[
+		"clientHeight",
+		function (this: HTMLElement): number {
+			return isConvStream(this) ? CONV_STREAM_VIEWPORT : 0;
+		},
+	],
+	[
+		"scrollHeight",
+		function (this: HTMLElement): number {
+			if (!isConvStream(this)) return 0;
+			const sizer = this.querySelector<HTMLElement>(".conv-sizer");
+			return Number.parseInt(sizer?.style.height ?? "", 10) || 0;
+		},
+	],
+] as const) {
+	const inherited = inheritedGetter(prop);
+	// A conv element gets the synthetic geometry; any other div delegates to the
+	// inherited getter so this shim never shadows happy-dom's real value globally.
+	const get = function (this: HTMLElement): number {
+		if (isConvStream(this) || hasIndex(this)) return convGet.call(this);
+		return inherited ? inherited.call(this) : 0;
+	};
+	Object.defineProperty(divProto, prop, { configurable: true, get });
+}
+// scrollTo: the virtualizer calls it via scrollToEnd(). happy-dom may leave it
+// absent or non-callable on elements; install a no-op unless a real function is
+// already present, so the chat-mode path never throws. This is the ONLY scroll
+// affordance the global default provides — it deliberately gives NO
+// scroll-behavior fidelity (the 100_000px viewport renders the whole list, so
+// nothing windows); ALL scroll-contract coverage lives in
+// ChannelView.scroll.test.tsx, which installs its own real scroll emulation.
+if (typeof (divProto as { scrollTo?: unknown }).scrollTo !== "function") {
+	Object.defineProperty(divProto, "scrollTo", {
+		configurable: true,
+		value() {},
+	});
+}

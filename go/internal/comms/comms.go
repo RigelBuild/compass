@@ -1,0 +1,336 @@
+// Package comms is the CommsService handler: the communication-layer door of the
+// compass.v1 contract (accounts, channel groups + channels, messages, agent
+// workspaces, and the comms event stream). It is a thin shell over the T1
+// Postgres store (the store of record and the owner of D9 visibility, enforced
+// server-side in SQL) and the generic event bus (the live fan-out): every RPC
+// maps proto <-> store at its edge, authorizes against the caller's visible set
+// through the store, and — for a mutation — writes Postgres first, then publishes
+// the corresponding event onto the comms bus (write-through fan-out).
+//
+// The caller identity is never a request field (spoofable); it is the account
+// authenticated on the connection, read from the request context. On the shipped
+// local-socket door there is no interceptor yet, so every RPC is attributed to
+// the bootstrap admin (the 0600 socket is the local credential); the T3 network
+// door adds a token interceptor that sets the real caller. actorFromContext is
+// the single seam both paths write through.
+package comms
+
+import (
+	"context"
+
+	"connectrpc.com/connect"
+
+	"github.com/sealedsecurity/compass/go/events"
+	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/sealedsecurity/compass/go/internal/store"
+)
+
+// commsBus is the comms event bus instantiation: a second bus instance distinct
+// from CompassService's SubscribeEvents bus, with its own seq space and its own
+// per-boot instance_epoch (design.md:1198-1208). Like the landed busPayload
+// (server/service.go:33-37) it carries the whole wire response with only the
+// payload oneof set, so the bus generic needs no domain sum type; the stream
+// edge stamps Seq/AtUnixMs/InstanceEpoch onto a copy.
+type commsBus = *events.Bus[*compassv1.SubscribeCommsResponse]
+
+// Comms implements compassv1connect.CommsServiceHandler over the store and the
+// comms event bus. Cheap to share by pointer; the store and bus are each safe
+// for concurrent use, and Comms holds no mutable state of its own — the store is
+// the source of truth, so there is no in-memory account/channel/group state.
+type Comms struct {
+	store *store.Store
+	bus   commsBus
+	// adminID attributes every RPC on the local-socket door (the door has no
+	// interceptor yet). The T3 interceptor overrides this per-request by setting
+	// a caller on the context; adminID is the fallback when none is set.
+	adminID store.AccountID
+}
+
+// NewComms constructs the CommsService handler over store and bus. adminID is the
+// bootstrap-admin account the local-socket door attributes callers to until the
+// T3 interceptor sets a real identity (design.md:1219-1222).
+func NewComms(st *store.Store, bus commsBus, adminID store.AccountID) *Comms {
+	return &Comms{store: st, bus: bus, adminID: adminID}
+}
+
+// Ensure Comms satisfies the generated handler interface at compile time.
+var _ compassv1connect.CommsServiceHandler = (*Comms)(nil)
+
+// ---- account RPCs (D9) ----
+
+// CreateUser creates a human member account. Role elevation to admin is a
+// separate path, never a signup field (comms.proto:39-42).
+func (c *Comms) CreateUser(
+	ctx context.Context,
+	req *connect.Request[compassv1.CreateUserRequest],
+) (*connect.Response[compassv1.CreateUserResponse], error) {
+	acc, err := c.store.CreateUser(ctx, store.NewUser{
+		Handle:      req.Msg.GetHandle(),
+		DisplayName: req.Msg.GetDisplayName(),
+	})
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.publishAccountChanged(acc)
+	return connect.NewResponse(&compassv1.CreateUserResponse{Account: accountToWire(acc)}), nil
+}
+
+// CreateAgent creates an agent account owned by the authenticated caller; the
+// store mints the agent's home channel (RT-2) in the same transaction.
+func (c *Comms) CreateAgent(
+	ctx context.Context,
+	req *connect.Request[compassv1.CreateAgentRequest],
+) (*connect.Response[compassv1.CreateAgentResponse], error) {
+	owner := c.actorFromContext(ctx)
+	acc, err := c.store.CreateAgent(ctx, owner, store.NewAgent{
+		Handle:      req.Msg.GetHandle(),
+		DisplayName: req.Msg.GetDisplayName(),
+	})
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.publishAccountChanged(acc)
+	return connect.NewResponse(&compassv1.CreateAgentResponse{Account: accountToWire(acc)}), nil
+}
+
+// ListAccounts lists the accounts visible to the caller (store-scoped in SQL).
+func (c *Comms) ListAccounts(
+	ctx context.Context,
+	_ *connect.Request[compassv1.ListAccountsRequest],
+) (*connect.Response[compassv1.ListAccountsResponse], error) {
+	accs, err := c.store.ListAccounts(ctx, c.actorFromContext(ctx))
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	out := make([]*compassv1.Account, len(accs))
+	for i, a := range accs {
+		out[i] = accountToWire(a)
+	}
+	return connect.NewResponse(&compassv1.ListAccountsResponse{Accounts: out}), nil
+}
+
+// ---- channel group + channel RPCs (D9) ----
+
+// CreateChannelGroup creates a namespace node owned by the caller.
+func (c *Comms) CreateChannelGroup(
+	ctx context.Context,
+	req *connect.Request[compassv1.CreateChannelGroupRequest],
+) (*connect.Response[compassv1.CreateChannelGroupResponse], error) {
+	grp, err := c.store.CreateChannelGroup(ctx, c.actorFromContext(ctx), store.NewChannelGroup{
+		Name:          req.Msg.GetName(),
+		ParentGroupID: store.ChannelGroupID(req.Msg.GetParentGroupId()),
+		Visibility:    groupVisibilityFromWire(req.Msg.GetVisibility()),
+	})
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.publishChannelGroupChanged(grp)
+	return connect.NewResponse(&compassv1.CreateChannelGroupResponse{Group: groupToWire(grp)}), nil
+}
+
+// ListChannelGroups lists the channel groups visible to the caller.
+func (c *Comms) ListChannelGroups(
+	ctx context.Context,
+	_ *connect.Request[compassv1.ListChannelGroupsRequest],
+) (*connect.Response[compassv1.ListChannelGroupsResponse], error) {
+	grps, err := c.store.ListChannelGroups(ctx, c.actorFromContext(ctx))
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	out := make([]*compassv1.ChannelGroup, len(grps))
+	for i, g := range grps {
+		out[i] = groupToWire(g)
+	}
+	return connect.NewResponse(&compassv1.ListChannelGroupsResponse{Groups: out}), nil
+}
+
+// ListChannels lists the channels the caller may see.
+func (c *Comms) ListChannels(
+	ctx context.Context,
+	_ *connect.Request[compassv1.ListChannelsRequest],
+) (*connect.Response[compassv1.ListChannelsResponse], error) {
+	chans, err := c.store.ListChannels(ctx, c.actorFromContext(ctx))
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	out := make([]*compassv1.Channel, len(chans))
+	for i, ch := range chans {
+		out[i] = channelToWire(ch)
+	}
+	return connect.NewResponse(&compassv1.ListChannelsResponse{Channels: out}), nil
+}
+
+// CreateChannel creates a channel within a group, caller-authorized against the
+// parent group; emits ChannelChanged (additive RPC, this task).
+func (c *Comms) CreateChannel(
+	ctx context.Context,
+	req *connect.Request[compassv1.CreateChannelRequest],
+) (*connect.Response[compassv1.CreateChannelResponse], error) {
+	ch, err := c.store.CreateChannel(ctx, c.actorFromContext(ctx), store.NewChannel{
+		Name:             req.Msg.GetName(),
+		GroupID:          store.ChannelGroupID(req.Msg.GetGroupId()),
+		Kind:             channelKindFromWire(req.Msg.GetKind()),
+		MemberAccountIDs: accountIDsFromWire(req.Msg.GetMemberAccountIds()),
+	})
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.publishChannelChanged(ch, nil)
+	return connect.NewResponse(&compassv1.CreateChannelResponse{Channel: channelToWire(ch)}), nil
+}
+
+// UpdateChannelMembers adds/removes members and flips the per-member subscribe
+// opt-in, caller-authorized against channel visibility; emits ChannelChanged.
+// One RPC covers join, subscribe-toggle, DM-expansion, and share-replacement
+// (RT-1): the request's add/remove/subscribe/unsubscribe lists collapse into the
+// store's per-member MemberUpdate set.
+func (c *Comms) UpdateChannelMembers(
+	ctx context.Context,
+	req *connect.Request[compassv1.UpdateChannelMembersRequest],
+) (*connect.Response[compassv1.UpdateChannelMembersResponse], error) {
+	ch, removed, err := c.store.UpdateChannelMembers(
+		ctx,
+		c.actorFromContext(ctx),
+		store.ChannelID(req.Msg.GetChannelId()),
+		memberUpdatesFromWire(req.Msg),
+	)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.publishChannelChanged(ch, removed)
+	return connect.NewResponse(&compassv1.UpdateChannelMembersResponse{Channel: channelToWire(ch)}), nil
+}
+
+// ---- agent workspace RPC (D5) ----
+
+// OpenAgentWorkspace opens (or fetches) the caller's observation pane for an
+// agent; access is a projection of the agent's channel membership, enforced by
+// the store. Idempotent.
+func (c *Comms) OpenAgentWorkspace(
+	ctx context.Context,
+	req *connect.Request[compassv1.OpenAgentWorkspaceRequest],
+) (*connect.Response[compassv1.OpenAgentWorkspaceResponse], error) {
+	ws, err := c.store.OpenAgentWorkspace(
+		ctx,
+		c.actorFromContext(ctx),
+		store.AccountID(req.Msg.GetAgentAccountId()),
+	)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.publishAgentWorkspaceChanged(ws)
+	return connect.NewResponse(&compassv1.OpenAgentWorkspaceResponse{Workspace: workspaceToWire(ws)}), nil
+}
+
+// ---- message RPCs (D5) ----
+
+// ListMessages pages a channel's message history, newest-first.
+func (c *Comms) ListMessages(
+	ctx context.Context,
+	req *connect.Request[compassv1.ListMessagesRequest],
+) (*connect.Response[compassv1.ListMessagesResponse], error) {
+	// Container is channel-only (OQ-C). Visibility is enforced in the store's
+	// read path, scoped to the actor (D9 not-found/forbidden merge).
+	msgs, err := c.store.ListMessages(ctx, c.actorFromContext(ctx), store.ContainerRef{
+		ChannelID: store.ChannelID(req.Msg.GetChannelId()),
+	}, store.Page{
+		Limit:           req.Msg.GetLimit(),
+		BeforeMessageID: store.MessageID(req.Msg.GetBeforeMessageId()),
+		SnapshotSeq:     req.Msg.GetSnapshotSeq(),
+	})
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	return connect.NewResponse(&compassv1.ListMessagesResponse{Messages: messagesToWire(msgs)}), nil
+}
+
+// PostMessage posts a message to a channel — a human turn, or a human prompt
+// into an agent's channel; emits MessagePosted (write-through).
+func (c *Comms) PostMessage(
+	ctx context.Context,
+	req *connect.Request[compassv1.PostMessageRequest],
+) (*connect.Response[compassv1.PostMessageResponse], error) {
+	blocks, err := blocksFromWire(req.Msg.GetBlocks())
+	if err != nil {
+		return nil, err
+	}
+	msg, inserted, err := c.store.AppendMessage(ctx, store.Message{
+		Container:       store.ContainerRef{ChannelID: store.ChannelID(req.Msg.GetChannelId())},
+		AuthorAccountID: c.actorFromContext(ctx),
+		Blocks:          blocks,
+		ParentMessageID: store.MessageID(req.Msg.GetParentMessageId()),
+	}, req.Msg.GetClientRequestId())
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	// Publish only on a genuine insert: an idempotent retry returns the stored
+	// row unchanged (inserted=false), so re-fanning MessagePosted would emit a
+	// spurious live state-change for a row that did not change.
+	if inserted {
+		c.publishMessagePosted(msg)
+	}
+	return connect.NewResponse(&compassv1.PostMessageResponse{Message: messageToWire(msg)}), nil
+}
+
+// RespondToAsk answers a pending structured ask; the caller must be a member of
+// the channel the ask belongs to (store-enforced). Answering updates the ask's
+// message in place and emits MessageUpdated.
+func (c *Comms) RespondToAsk(
+	ctx context.Context,
+	req *connect.Request[compassv1.RespondToAskRequest],
+) (*connect.Response[compassv1.RespondToAskResponse], error) {
+	answers := make([]store.AskAnswer, len(req.Msg.GetAnswers()))
+	for i, a := range req.Msg.GetAnswers() {
+		answers[i] = store.AskAnswer{
+			QuestionID:      a.GetQuestionId(),
+			ChosenOptionIDs: a.GetChosenOptionIds(),
+			CustomText:      a.GetCustomText(),
+		}
+	}
+	msg, err := c.store.AnswerAsk(
+		ctx,
+		c.actorFromContext(ctx),
+		req.Msg.GetAskId(),
+		answers,
+	)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.publishMessageUpdated(msg)
+	return connect.NewResponse(&compassv1.RespondToAskResponse{}), nil
+}
+
+// SearchMessages runs a visibility-scoped full-text search; the store scopes
+// results to the caller's visible set regardless of the scope field.
+func (c *Comms) SearchMessages(
+	ctx context.Context,
+	req *connect.Request[compassv1.SearchMessagesRequest],
+) (*connect.Response[compassv1.SearchMessagesResponse], error) {
+	msgs, err := c.store.SearchMessages(
+		ctx,
+		c.actorFromContext(ctx),
+		store.SearchScope{ChannelID: store.ChannelID(req.Msg.GetChannelId())},
+		req.Msg.GetQuery(),
+		store.Page{Limit: req.Msg.GetLimit(), SnapshotSeq: req.Msg.GetSnapshotSeq()},
+	)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	return connect.NewResponse(&compassv1.SearchMessagesResponse{Messages: messagesToWire(msgs)}), nil
+}
+
+// SubscribeComms is implemented in subscribe.go.
+
+// actorFromContext returns the authenticated caller for this request. The T3
+// interceptor sets it on the context; on the shipped socket door no interceptor
+// runs, so it falls back to the bootstrap admin (the socket is the local
+// credential). It never returns empty — an unattributed request on a door that
+// should have set an identity is a server fault, but the socket path always has
+// the admin fallback.
+func (c *Comms) actorFromContext(ctx context.Context) store.AccountID {
+	if actor, ok := actorFrom(ctx); ok && actor != "" {
+		return actor
+	}
+	return c.adminID
+}

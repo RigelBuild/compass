@@ -3,10 +3,70 @@
 # the owned door; `buf lint` keeps the schema idiomatic.
 version: v2
 modules:
-  - path: crates/compass-proto/proto
+  - path: proto
 lint:
   use:
     - STANDARD
+  # comms.proto deliberately gives its enums a meaningful zero value (member,
+  # owner-scoped, plain channel) instead of an `_UNSPECIFIED` sentinel: the UI
+  # renders the zero value as a real default rather than an "unset" limbo. That
+  # trades ENUM_ZERO_VALUE_SUFFIX on this one file; every other rule still
+  # applies, and compass.proto keeps the suffix (a wire-compatibility-sensitive
+  # change there would be a breaking edit).
+  # agent_gateway.proto (SEA-1351 T1) freezes three names the STANDARD lint would
+  # rename, each a deliberate contract choice scoped to this one internal file:
+  #   - SERVICE_SUFFIX: the service is `AgentGateway` (a Runner-side door for
+  #     agent calls), not a public `*Service`. It is the internal opposite-
+  #     direction peer of RunnerService, deliberately NOT surfaced as one.
+  #   - RPC_REQUEST_STANDARD_NAME / RPC_RESPONSE_STANDARD_NAME: `Comms` carries
+  #     `CommsCallRequest`/`CommsCallResult`, NOT `CommsRequest`/`CommsResponse`,
+  #     because the SAME envelopes are reused verbatim as the
+  #     `RelayCommsCallRequest.call` / `RelayCommsCallResponse.result` payloads
+  #     on the Runner->Server leg (runner.proto RelayCommsCall). One shared
+  #     envelope across both hops is the design point; a per-RPC rename forks the
+  #     wire. Scoped to this file; every other STANDARD rule still applies here,
+  #     and both public protos keep all three rules armed.
+  ignore_only:
+    ENUM_ZERO_VALUE_SUFFIX:
+      - proto/compass/v1/comms.proto
+    SERVICE_SUFFIX:
+      - proto/compass/v1/agent_gateway.proto
+    RPC_REQUEST_STANDARD_NAME:
+      - proto/compass/v1/agent_gateway.proto
+    RPC_RESPONSE_STANDARD_NAME:
+      - proto/compass/v1/agent_gateway.proto
 breaking:
   use:
     - FILE
+  # Pre-launch buf-breaking removals ride here, safe ONLY because the Server on
+  # `main` is ephemeral with no live client. Three frozen records ratify distinct
+  # removal sets from comms.proto: compass-0.6 design.md:352-356 (the T2 removals
+  # — the ACP-translation/trace MessageBlock variants and their `Diff` message,
+  # the share/participant RPCs `ShareAgentWorkspace`/`UnshareAgentWorkspace` and
+  # their request/response messages, and Message.container.workspace_id);
+  # compass-0.7 design.md:691-697 (the single-first-party-agent harness fields,
+  # AgentAccount.harness + CreateAgentRequest.harness — no runtime to select, so
+  # no interop label to carry); and compass-ask-typed-derivation.md (Option A:
+  # the ask reshape to `repeated AskQuestion` — removes Ask fields 2-5
+  # `question`/`options`/`allow_multiple`/`chosen_option_ids` and
+  # RespondToAskRequest field 2 `chosen_option_ids`, both replaced by the
+  # multi-question shape). Those removals trip three FILE-category rules:
+  # FIELD_NO_DELETE (dropped fields — all three sets), MESSAGE_NO_DELETE (the
+  # orphaned `Diff` + Share*/Unshare* request/response messages), and
+  # RPC_NO_DELETE (the two workspace-share RPCs). A fourth record ratifies a
+  # removal from agent.proto: compass-0.8 design.md OQ-2.3 (the internal
+  # SessionFrame's opaque `bytes event = 1`, retyped to a typed `SessionEvent
+  # typed_event = 3` — never a dual opaque+typed wire). That trips FIELD_NO_DELETE
+  # on agent.proto. agent.proto is an INTERNAL-only surface (agent↔Runner stdio,
+  # never generated onto the public client), so exempting it leaves the public
+  # contract even more fully armed than the comms.proto exemptions do: all of
+  # compass.proto stays guarded. REMOVE these exemptions at launch — once a live
+  # client exists, any deletion is a real break again.
+  ignore_only:
+    FIELD_NO_DELETE:
+      - proto/compass/v1/comms.proto
+      - proto/compass/v1/agent.proto
+    MESSAGE_NO_DELETE:
+      - proto/compass/v1/comms.proto
+    RPC_NO_DELETE:
+      - proto/compass/v1/comms.proto

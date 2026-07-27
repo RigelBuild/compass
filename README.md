@@ -7,12 +7,12 @@ security layer around them — and gives you one place to drive them.
 
 > **Status: early.** This repository currently holds the foundation — the
 > toolchain, the workspace, the `compass.v1` contract pipeline, and the CI
-> scaffold. It is not yet installable. The daemon, the desktop shell, and the
+> scaffold. It is not yet installable. The server, the desktop shell, and the
 > UI are being built against the contract defined here.
 
 ## Architecture
 
-Compass is a long-lived **daemon** plus a thin desktop **shell** and a **web
+Compass is a long-lived **server** plus a thin desktop **shell** and a **web
 UI**, all speaking one typed contract:
 
 ```text
@@ -22,41 +22,41 @@ UI**, all speaking one typed contract:
 └───────────────────────┬─────────────────────┘
                         │ compass.v1 (Connect / gRPC-Web)
 ┌───────────────────────▼─────────────────────┐
-│ compass-daemon (Rust)                        │
+│ compass-server (Go)                          │
 │   owns agent processes, PTYs, VCS, security  │
 │   serves compass.v1 over a local transport   │
 └──────────────────────────────────────────────┘
 ```
 
-- **`compass.v1` is the single, owned door.** Every UI reaches the daemon only
+- **`compass.v1` is the single, owned door.** Every UI reaches the server only
   through the generated contract client — never a raw socket or hand-written
-  stub. The schema lives under the permissive
-  [`compass-proto`](./crates/compass-proto) crate (`proto/compass/v1/`); the
-  generated Rust and TypeScript clients are checked in and CI drift-gated, so a
-  stale client fails the build.
-- **The daemon owns everything privileged.** The shell holds no logic — it
-  launches and supervises the daemon and points the webview at the contract.
+  stub. The schema lives at `proto/compass/v1/`; the generated Go and
+  TypeScript clients are checked in and CI drift-gated, so a stale client fails
+  the build.
+- **The server owns everything privileged.** The shell holds no logic — it
+  launches and supervises the server and points the webview at the contract.
 - Native (gRPC over the local transport) and browser (gRPC-Web) clients share
   the same contract.
 
 ## Repository layout
 
 ```text
-crates/
-  compass-proto/         the compass.v1 schema + generated Rust client
-    proto/compass/v1/    the schema — the owned door
-    src/gen/             generated client/server stubs (checked in)
-  compass-daemon/        the `compassd` daemon binary
+proto/
+  compass/v1/            the schema — the owned door
+go/
+  cmd/compass-server/    the compass-server binary
+  server/                the server implementation
+  events/                the event bus
+  gen/                   generated Go client/server stubs (checked in)
 packages/
   compass-client/        generated TypeScript client (checked in)
 apps/
   ui/                    web UI (SolidJS + Vite)
-ci/                      CI step image + publish script + Woodpecker pipeline
 docs/architecture/       architecture notes
 ```
 
 The build and toolchain config (`Cargo.toml`, `package.json`, `.moon/`,
-`buf.*`, `devenv.nix`, `.prototools`, `deny.toml`, `biome.json`, `hk.pkl`)
+`buf.*`, `devenv.nix`, `.prototools`, `deny.toml`, `biome.json`)
 lives at the repository root.
 
 ## Toolchain
@@ -94,10 +94,10 @@ CI, so "passes locally" and "passes in CI" are the same check.
 The `compass.v1` schema is the seam the whole app is built against. To change
 it:
 
-1. Edit the `.proto` files under `crates/compass-proto/proto/compass/v1`.
+1. Edit the `.proto` files under `proto/compass/v1`.
 2. Regenerate the clients: `moon run compass-proto:gen`.
-3. Commit the regenerated `crates/compass-proto/src/gen` and
-   `packages/compass-client/src/gen` alongside the schema change.
+3. Commit the regenerated `go/gen` and `packages/compass-client/src/gen`
+   alongside the schema change.
 
 CI runs `buf lint`, a backward-compatibility check (`buf breaking`), and a
 drift gate (regenerate + `git diff`) — so the checked-in clients can never
@@ -107,12 +107,12 @@ silently fall out of sync with the schema.
 
 Compass is **AGPL-3.0-only** — see [LICENSE](./LICENSE).
 
-The protocol crate is the exception. To let third-party UIs and closed-source
+The protocol is the exception. To let third-party UIs and closed-source
 consumers link the contract without taking on the workspace's copyleft, the
-**`compass-proto`** crate (and the generated TypeScript client,
-`@compass/client`) is licensed permissively as **`MIT OR Apache-2.0`** — the
-protocol is permissive, the implementation is copyleft. See
-[LICENSE-MIT](./LICENSE-MIT) and [LICENSE-APACHE](./LICENSE-APACHE).
+`compass.v1` schema and the generated TypeScript client (`@compass/client`)
+are licensed permissively as **`MIT OR Apache-2.0`** — the protocol is
+permissive, the implementation is copyleft. See [LICENSE-MIT](./LICENSE-MIT)
+and [LICENSE-APACHE](./LICENSE-APACHE).
 
 ## Contributing
 

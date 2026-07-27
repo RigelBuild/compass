@@ -1,0 +1,257 @@
+//go:build pgtest
+
+package store
+
+// Account contracts: the uniqueness and validation errors CreateUser/CreateAgent
+// surface, the RT-2 home-channel minting that CreateAgent performs atomically,
+// GetAccount's not-found mapping, and ListAccounts' D9 visibility scoping — a
+// caller sees every user and its own agents, but never an unrelated owner's
+// agent it shares no channel with.
+
+import (
+	"context"
+	"testing"
+)
+
+func TestCreateUserDuplicateHandleConflicts(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	if _, err := s.CreateUser(ctx, NewUser{Handle: "matt", DisplayName: "Matt"}); err != nil {
+		t.Fatalf("first CreateUser: %v", err)
+	}
+	_, err := s.CreateUser(ctx, NewUser{Handle: "matt", DisplayName: "Matt Two"})
+	sentinelIs(t, err, ErrConflict, "duplicate user handle")
+}
+
+func TestCreateUserEmptyHandleInvalid(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.CreateUser(context.Background(), NewUser{DisplayName: "no handle"})
+	sentinelIs(t, err, ErrInvalidArgument, "empty user handle")
+}
+
+func TestCreateAgentMintsHomeChannel(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+
+	agent, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "agent", DisplayName: "Agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	if agent.Agent == nil {
+		t.Fatalf("returned account is not an agent: %+v", agent)
+	}
+	// RT-2: the home channel is minted at creation, non-empty.
+	home := agent.Agent.HomeChannelID
+	if home == "" {
+		t.Fatal("agent HomeChannelID is empty; RT-2 requires a minted home channel")
+	}
+
+	ch, err := s.getChannel(ctx, home)
+	if err != nil {
+		t.Fatalf("home channel %q does not exist: %v", home, err)
+	}
+	// Owner and agent are both members.
+	if !containsAccount(ch.MemberAccountIDs, owner.ID) {
+		t.Fatalf("home channel members %v missing owner %s", ch.MemberAccountIDs, owner.ID)
+	}
+	if !containsAccount(ch.MemberAccountIDs, agent.ID) {
+		t.Fatalf("home channel members %v missing agent %s", ch.MemberAccountIDs, agent.ID)
+	}
+	// The agent is always-subscribed to its own channel; the owner is not.
+	if !memberSubscribed(t, s, home, agent.ID) {
+		t.Fatal("agent is not subscribed to its home channel (RT-2 always-subscribed)")
+	}
+	if memberSubscribed(t, s, home, owner.ID) {
+		t.Fatal("owner is subscribed to the agent's home channel, want unsubscribed by default")
+	}
+}
+
+func TestCreateAgentUnknownOwnerInvalid(t *testing.T) {
+	s := newTestStore(t)
+	// An owner id that does not reference a user account is a caller error.
+	_, err := s.CreateAgent(context.Background(), AccountID("nobody"),
+		NewAgent{Handle: "agent", DisplayName: "Agent"})
+	sentinelIs(t, err, ErrInvalidArgument, "unknown owner")
+}
+
+func TestCreateAgentDuplicateHandleConflicts(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	if _, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "dup"}); err != nil {
+		t.Fatalf("first CreateAgent: %v", err)
+	}
+	_, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "dup"})
+	sentinelIs(t, err, ErrConflict, "duplicate agent handle")
+}
+
+func TestCreateAgentEmptyHandleInvalid(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	_, err := s.CreateAgent(ctx, owner.ID, NewAgent{DisplayName: "no handle"})
+	sentinelIs(t, err, ErrInvalidArgument, "empty agent handle")
+}
+
+func TestGetAccountUnknownNotFound(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.GetAccount(context.Background(), AccountID("ghost"))
+	sentinelIs(t, err, ErrNotFound, "unknown account")
+}
+
+func TestGetAccountRoundTripsSubtype(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	user := mustUser(t, s, "human")
+	agent := mustAgent(t, s, user.ID, "bot")
+
+	gotUser, err := s.GetAccount(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("GetAccount(user): %v", err)
+	}
+	if gotUser.User == nil || gotUser.IsAgent() {
+		t.Fatalf("user fetch = %+v, want User subtype set", gotUser)
+	}
+
+	gotAgent, err := s.GetAccount(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("GetAccount(agent): %v", err)
+	}
+	if !gotAgent.IsAgent() || gotAgent.User != nil {
+		t.Fatalf("agent fetch = %+v, want Agent subtype set", gotAgent)
+	}
+	if gotAgent.Agent.OwnerUserID != user.ID {
+		t.Fatalf("agent owner = %q, want %q", gotAgent.Agent.OwnerUserID, user.ID)
+	}
+}
+
+func TestBootstrapAdminCreatesAdmin(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	admin, err := s.BootstrapAdmin(ctx, NewUser{Handle: "root", DisplayName: "Root"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	// The returned account is an admin user, not a plain member.
+	if admin.User == nil {
+		t.Fatalf("bootstrapped account is not a user: %+v", admin)
+	}
+	if admin.User.Role != UserRoleAdmin {
+		t.Fatalf("bootstrapped role = %d, want UserRoleAdmin (%d)", admin.User.Role, UserRoleAdmin)
+	}
+
+	// The admin role is durable, not just set on the returned value: a fresh
+	// id-addressed read sees the elevation Postgres committed.
+	got, err := s.GetAccount(ctx, admin.ID)
+	if err != nil {
+		t.Fatalf("GetAccount(admin): %v", err)
+	}
+	if got.User == nil || got.User.Role != UserRoleAdmin {
+		t.Fatalf("durable role = %+v, want an admin user", got.User)
+	}
+}
+
+func TestBootstrapAdminIdempotentByHandle(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	first, err := s.BootstrapAdmin(ctx, NewUser{Handle: "root", DisplayName: "Root"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin(first): %v", err)
+	}
+	// A second bootstrap with the same handle (the restart path) is a no-op
+	// find, not an error and not a second account: same id, still an admin.
+	second, err := s.BootstrapAdmin(ctx, NewUser{Handle: "root", DisplayName: "Root Renamed"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin(restart): %v", err)
+	}
+	if second.ID != first.ID {
+		t.Fatalf("restart minted a new admin %q, want the existing %q", second.ID, first.ID)
+	}
+	if second.User == nil || second.User.Role != UserRoleAdmin {
+		t.Fatalf("restart returned %+v, want the existing admin", second.User)
+	}
+}
+
+func TestBootstrapAdminNonAdminHandleConflicts(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	// A handle already taken by a plain member must NOT be silently elevated:
+	// BootstrapAdmin refuses rather than turning an existing member into an admin.
+	if _, err := s.CreateUser(ctx, NewUser{Handle: "dup", DisplayName: "Member"}); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	_, err := s.BootstrapAdmin(ctx, NewUser{Handle: "dup", DisplayName: "Would-be admin"})
+	sentinelIs(t, err, ErrConflict, "bootstrap over an existing non-admin handle")
+}
+
+func TestBootstrapAdminEmptyHandleInvalid(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.BootstrapAdmin(context.Background(), NewUser{DisplayName: "no handle"})
+	sentinelIs(t, err, ErrInvalidArgument, "empty admin handle")
+}
+
+func TestListAccountsVisibilityScoping(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	// Two independent users, each with an owner-scoped agent, plus a third user
+	// who shares a channel with alice's agent.
+	alice := mustUser(t, s, "alice")
+	bob := mustUser(t, s, "bob")
+	carol := mustUser(t, s, "carol")
+	aliceAgent := mustAgent(t, s, alice.ID, "alice-agent")
+	bobAgent := mustAgent(t, s, bob.ID, "bob-agent")
+
+	// carol shares a channel with alice's agent (so carol should see it), but
+	// nothing links carol to bob's agent.
+	if _, err := s.CreateChannel(ctx, carol.ID, NewChannel{
+		Name: "shared-room", Kind: ChannelKindGroupDM,
+		MemberAccountIDs: []AccountID{aliceAgent.ID},
+	}); err != nil {
+		t.Fatalf("CreateChannel shared-room: %v", err)
+	}
+
+	got, err := s.ListAccounts(ctx, carol.ID)
+	if err != nil {
+		t.Fatalf("ListAccounts(carol): %v", err)
+	}
+	ids := accountIDSet(got)
+
+	// Every user is visible to any caller (the member directory), including self.
+	for _, u := range []AccountID{alice.ID, bob.ID, carol.ID} {
+		if !ids[u] {
+			t.Fatalf("carol cannot see user %s; all users must be visible", u)
+		}
+	}
+	// carol shares a channel with alice's agent → visible.
+	if !ids[aliceAgent.ID] {
+		t.Fatalf("carol cannot see alice's agent %s despite sharing a channel", aliceAgent.ID)
+	}
+	// carol has no link to bob's owner-scoped agent → hidden.
+	if ids[bobAgent.ID] {
+		t.Fatalf("carol can see bob's unrelated owner-scoped agent %s; it must be hidden", bobAgent.ID)
+	}
+
+	// bob, as the owner, always sees his own agent.
+	bobView, err := s.ListAccounts(ctx, bob.ID)
+	if err != nil {
+		t.Fatalf("ListAccounts(bob): %v", err)
+	}
+	if !accountIDSet(bobView)[bobAgent.ID] {
+		t.Fatalf("bob cannot see his own agent %s", bobAgent.ID)
+	}
+}
+
+// accountIDSet indexes a slice of accounts by id for membership checks.
+func accountIDSet(accts []Account) map[AccountID]bool {
+	set := make(map[AccountID]bool, len(accts))
+	for _, a := range accts {
+		set[a.ID] = true
+	}
+	return set
+}

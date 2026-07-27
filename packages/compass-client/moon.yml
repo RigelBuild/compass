@@ -1,28 +1,20 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 # The generated TypeScript client for compass.v1. System tasks: bun + biome
-# from the devenv/proto toolchain on PATH. typecheck/test need the generated
-# client to exist (compass-proto:gen).
+# from the devenv/proto toolchain on PATH. typecheck/test compile the checked-in
+# generated client (src/gen); compass-proto:drift gates its freshness.
 layer: 'library'
 language: 'typescript'
+tags: ['bun', 'oss']
 dependsOn: ['compass-proto']
 
 tasks:
-  install:
-    command: 'bun install --frozen-lockfile'
-    inputs: ['package.json', '/bun.lock']
-    options:
-      internal: true
-      cache: false
-      # Serialize with the other workspace bun install (apps/ui) — concurrent
-      # `bun install` on the same workspace race on node_modules.
-      mutex: 'bun-install'
   typecheck:
     command: 'bunx tsc --noEmit'
-    deps: ['install', 'compass-proto:gen']
+    deps: ['install']
     inputs: ['src/**/*', 'tsconfig.json', 'package.json', '/bun.lock']
   test:
     command: 'bun test'
-    deps: ['install', 'compass-proto:gen']
+    deps: ['install']
     inputs: ['src/**/*', 'package.json', '/bun.lock']
   ci:
     deps: ['typecheck', 'test']

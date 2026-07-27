@@ -36,8 +36,8 @@ silently decides which copy of a tool wins.
 - **Local:** `direnv allow` puts the toolchain on PATH. devenv injects tools,
   not a whole shell — you keep your own prompt and dotfiles.
 - **CI parity:** the same `devenv.nix` emits an OCI image (the `ci` container,
-  built from `ci/ci-toolchain.nix`), so CI runs in the same toolchain
-  developers use locally. `ci/publish-ci-image.sh` builds and pushes it.
+  built from `ci/toolchain/ci-toolchain.nix`), so CI runs in the same toolchain
+  developers use locally. `ci/image/publish-ci-image.ts` builds and pushes it.
 
 ## Task graph: moon
 

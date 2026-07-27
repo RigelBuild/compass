@@ -1,0 +1,24 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+# The first-party Compass agent: built on @oh-my-pi/pi-agent-core, maps the SDK
+# event stream to compass.v1 payloads in-process, and speaks a newline-framed
+# compass.v1 stdio channel the Runner drives over ExecStreaming. System tasks:
+# bun + biome from the devenv toolchain on PATH. typecheck/test compile the
+# package source; the SDK->compass.v1 mapping is the package's own testable
+# surface (no Runner-side translator).
+layer: 'library'
+language: 'typescript'
+tags: ['bun', 'oss']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['src/**/*', 'tsconfig.json', 'package.json', '/bun.lock']
+  test:
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['src/**/*', 'package.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

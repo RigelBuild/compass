@@ -1,0 +1,411 @@
+// The compass.v1 contract: the single, owned door between any UI and the
+// Compass server — a gRPC service served over Connect so native (gRPC over the
+// local transport) and browser (gRPC-Web) clients share it. The generated
+// clients are the only sanctioned way to reach the server.
+//
+// Versioned `compass.v1` so a future v2 schema bump doesn't have to retrofit a
+// version segment.
+
+syntax = "proto3";
+
+package compass.v1;
+
+// The Compass server service.
+service CompassService {
+  // Liveness probe plus the server's build + contract version. The first
+  // round-trip a UI makes after connecting over the local transport.
+  rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
+
+  // The event channel: board, agent, and audit updates as a server stream
+  // (compass.md §7.2). Each response carries a server-assigned monotonic `seq`;
+  // reconnect with `since_seq` for a gap-free resubscribe. The sole push path
+  // from the server to the UI.
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream SubscribeEventsResponse);
+
+  // Provision a per-agent container for a workstream: build the image, create
+  // and start the isolated container, arm egress, and clone the repo — the
+  // built lifecycle façade (internal/runtime/agent.go). Returns the stable
+  // container_name that StartAgentSession then brings online. Provision and
+  // start are separate RPCs: a container can exist idle before an agent session
+  // runs in it. Routes Client -> Server -> RunnerHub -> Runner (compass-0.6 §T4).
+  rpc ProvisionAgentWorkspace(ProvisionAgentWorkspaceRequest) returns (ProvisionAgentWorkspaceResponse);
+
+  // Bring the first-party agent in a provisioned container online over the
+  // Runner streaming-exec bridge and stream its relayed activity onto
+  // SubscribeEvents. Returns the server-side session id (compass.md §7.1).
+  rpc StartAgentSession(StartAgentSessionRequest) returns (StartAgentSessionResponse);
+
+  // Stop a live agent session: deliberately kill the in-container agent and
+  // release the session. Idempotent — stopping an unknown/already-stopped
+  // session succeeds.
+  rpc StopAgentSession(StopAgentSessionRequest) returns (StopAgentSessionResponse);
+
+  // Reload a live agent session in place: tear down the current agent exec and
+  // start a fresh one against the same container, reusing the session id so the
+  // board entry is continuous. The agent reloads from workspace state
+  // (compass.md §4.1).
+  rpc ReloadAgentSession(ReloadAgentSessionRequest) returns (ReloadAgentSessionResponse);
+
+  // Query one session's status, or every live session's when no id is given.
+  rpc GetAgentStatus(GetAgentStatusRequest) returns (GetAgentStatusResponse);
+
+  // Subscribe to one agent session's typed observation trace as a server
+  // stream: the session-tail pane. Access is scoped to the caller's
+  // home-channel membership — the handler resolves the session's owning agent's
+  // home channel and authorizes the caller against THAT channel, so a caller
+  // cannot stream a session in a channel it cannot see. An unknown session_id is
+  // rejected (not-found), never leaked (compass-0.8 §"First-party typed session
+  // renderer").
+  //
+  // The streamed response is AgentSessionFrame, not the `SubscribeAgentSessionResponse`
+  // that RPC_RESPONSE_STANDARD_NAME wants: the name is frozen (compass-0.6) and
+  // a wrapper would change the frozen wire shape. Ignore
+  // the rule for this one RPC only — every other RPC keeps it armed.
+  // buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
+  rpc SubscribeAgentSession(SubscribeAgentSessionRequest) returns (stream AgentSessionFrame);
+
+  // Admin-gated: only an admin may mint a token for an account; a non-admin
+  // caller gets permission_denied. Enforcement lands with the network door's
+  // admin gate (not in this schema-only change). Token is 32B random,
+  // base64url, returned once; the server stores only its SHA-256 hash and
+  // resolves it to this account. Sole public-contract path to mint a
+  // non-bootstrap account's token (the bootstrap admin token is issued
+  // out-of-band at first start).
+  rpc IssueToken(IssueTokenRequest) returns (IssueTokenResponse);
+}
+
+message GetServerInfoRequest {}
+
+message GetServerInfoResponse {
+  // Server semantic version, e.g. "0.1.0".
+  string version = 1;
+  // The contract version this server serves, e.g. "compass.v1".
+  string api_version = 2;
+}
+
+// Subscribe to the server event stream.
+message SubscribeEventsRequest {
+  // 0: snapshot the current state as events, then tail live updates.
+  // >0: replay only events with a higher `seq` than this — a gap-free
+  // resubscribe after a dropped connection.
+  uint64 since_seq = 1;
+
+  // The server's per-boot instance epoch, echoed back from a prior
+  // SubscribeEventsResponse. When since_seq > 0, an epoch that does not match
+  // the running server's (including 0 — an old client that never saw one) means
+  // the cursor came from a prior server instance whose seq space this one does
+  // not share, so the server forces a resync regardless of the numeric cursor.
+  uint64 instance_epoch = 2;
+}
+
+// One entry in the server event stream.
+message SubscribeEventsResponse {
+  // Server-assigned, strictly monotonic across the whole stream for positioned
+  // events. The cursor a client passes back as `since_seq` to resubscribe
+  // without gaps. Terminal control signals (`resync_required`) are the one
+  // exception: they carry `seq = 0`, are not positioned events, and must not be
+  // treated as a cursor — the client discards its cursor and reconnects.
+  uint64 seq = 1;
+  // Event time, Unix epoch milliseconds.
+  int64 at_unix_ms = 2;
+  // The server's per-boot instance epoch: a nonce minted at startup and stamped
+  // on every response. The client stores it and echoes it on reconnect (above)
+  // so the server can tell a live cursor from a prior-instance one. Distinct
+  // across restarts; never 0.
+  uint64 instance_epoch = 3;
+  // Later milestones add board/agent/audit payloads here; new variants are
+  // backward-compatible additions behind the buf breaking gate.
+  oneof payload {
+    ServerStatus server_status = 10;
+    ResyncRequired resync_required = 11;
+    // Agent-session payloads, relayed from the Runner's agent event stream
+    // (compass.md §7.2). Each carries the server-side session id so the UI
+    // attributes activity to the right agent.
+    AgentSessionStatus agent_session_status = 12;
+    AgentMessageChunk agent_message_chunk = 13;
+    AgentToolCall agent_tool_call = 14;
+    AgentPlan agent_plan = 15;
+  }
+}
+
+// The server's liveness state, pushed on connect and whenever it changes.
+message ServerStatus {
+  ServerState state = 1;
+}
+
+enum ServerState {
+  SERVER_STATE_UNSPECIFIED = 0;
+  SERVER_STATE_READY = 1;
+}
+
+// The requested `since_seq` predates the server's retained event buffer, so a
+// gap-free replay isn't possible; the client must reconnect with
+// `since_seq = 0` to re-snapshot. The last event the server sends before it
+// closes the stream.
+message ResyncRequired {}
+
+// The lifecycle state of one agent session, pushed on every transition.
+message AgentSessionStatus {
+  // The server-side session id this status is for.
+  string session_id = 1;
+  AgentSessionState state = 2;
+}
+
+// Agent-session lifecycle states. `ERRORED` is an unexpected agent exit (OOM,
+// panic, engine restart); recovery is an explicit ReloadAgentSession, never an
+// automatic reconnect. `DISCONNECTED` is distinct: the owning Runner's link
+// dropped, so live session truth is temporarily unreachable but not lost — a
+// bounded reattach window governs recovery (reattach within it resumes;
+// expiry falls to `ERRORED`, and the no-auto-reconnect policy above then
+// applies as written). OQ6, design docs/designs/platform/go-toolchain-default.md
+// :1378-1396.
+//
+// Scope: T4 (SEA-1243) ships the DISCONNECTED *signal* only. The server-side
+// reattach-window enforcement — the per-session registry, the bounded timer,
+// the expiry→ERRORED transition, and GetAgentStatus reconciliation on reattach
+// — is T9 (go-toolchain-default.md:979). Until T9 lands, a dropped Runner link
+// surfaces as an in-flight-command failure; the window/expiry state machine is
+// not yet enforced.
+enum AgentSessionState {
+  AGENT_SESSION_STATE_UNSPECIFIED = 0;
+  AGENT_SESSION_STATE_STARTING = 1;
+  AGENT_SESSION_STATE_READY = 2;
+  AGENT_SESSION_STATE_WORKING = 3;
+  AGENT_SESSION_STATE_STOPPED = 4;
+  AGENT_SESSION_STATE_ERRORED = 5;
+  // The owning Runner disconnected; sessions await reattach within the bounded
+  // window before falling to ERRORED. A backward-compatible new enum value
+  // (buf treats an added value as non-breaking).
+  AGENT_SESSION_STATE_DISCONNECTED = 6;
+}
+
+// A chunk of the agent's message stream (assistant text / thought), relayed
+// from the Runner's agent event stream.
+message AgentMessageChunk {
+  string session_id = 1;
+  // Rendered text of the chunk.
+  string text = 2;
+  // Whether this chunk is the agent's internal reasoning (thought) rather than
+  // user-facing output.
+  bool is_thought = 3;
+}
+
+// A tool call the agent started or updated, relayed from the Runner's agent
+// event stream. Terminal output rides here as tool-call content.
+message AgentToolCall {
+  string session_id = 1;
+  // The agent's id for this tool call, stable across its updates.
+  string tool_call_id = 2;
+  // Human-readable title of the call (e.g. the command or file).
+  string title = 3;
+  // Lifecycle of the call as the agent reports it.
+  AgentToolCallStatus status = 4;
+}
+
+enum AgentToolCallStatus {
+  AGENT_TOOL_CALL_STATUS_UNSPECIFIED = 0;
+  AGENT_TOOL_CALL_STATUS_PENDING = 1;
+  AGENT_TOOL_CALL_STATUS_IN_PROGRESS = 2;
+  AGENT_TOOL_CALL_STATUS_COMPLETED = 3;
+  AGENT_TOOL_CALL_STATUS_FAILED = 4;
+}
+
+// The agent's current execution plan, relayed from the Runner's agent event
+// stream.
+message AgentPlan {
+  string session_id = 1;
+  repeated AgentPlanEntry entries = 2;
+}
+
+// One step in an agent plan.
+message AgentPlanEntry {
+  string content = 1;
+  AgentPlanEntryStatus status = 2;
+}
+
+enum AgentPlanEntryStatus {
+  AGENT_PLAN_ENTRY_STATUS_UNSPECIFIED = 0;
+  AGENT_PLAN_ENTRY_STATUS_PENDING = 1;
+  AGENT_PLAN_ENTRY_STATUS_IN_PROGRESS = 2;
+  AGENT_PLAN_ENTRY_STATUS_COMPLETED = 3;
+}
+
+// The typed observation-trace event — the render contract for the UI's session
+// pane (compass-0.8 §"First-party typed session renderer"). One SessionEvent is
+// one thing that happened in the agent's execution trace: a chunk of assistant
+// text or thinking, a tool call and its updates, a plan, or a notice. It is the
+// payload the public SubscribeAgentSession stream relays to a subscribed UI,
+// and the internal agent→Runner envelope carries it too (that envelope imports
+// this file — the import direction is internal→public, so no mirror
+// duplication). Additions to the `event` oneof are non-breaking appends.
+message SessionEvent {
+  // Stable id for this event, assigned by the emitter.
+  string event_id = 1;
+  // Emitter wall-clock time of the event, epoch milliseconds.
+  int64 at_unix_ms = 2;
+  oneof event {
+    SessionAssistantText assistant_text = 3;
+    SessionThinking thinking = 4;
+    SessionToolCall tool_call = 5;
+    SessionToolCallUpdate tool_call_update = 6;
+    SessionPlan plan = 7;
+    SessionNotice notice = 8;
+  }
+}
+
+// A chunk of the agent's user-facing message stream. message_id correlates the
+// chunks of one logical message: the emitter streams one event per delta and
+// the renderer appends by message_id (foldSession coalesces), so a turn does
+// not paint one row per word.
+message SessionAssistantText {
+  string text = 1;
+  string message_id = 2;
+}
+
+// A chunk of the agent's internal-reasoning (thought) stream, correlated by
+// message_id with the same append semantics as SessionAssistantText.
+message SessionThinking {
+  string text = 1;
+  string message_id = 2;
+}
+
+// A tool call the agent started. Reuses AgentToolCallStatus rather than minting
+// a parallel enum.
+message SessionToolCall {
+  string tool_call_id = 1;
+  string title = 2;
+  AgentToolCallStatus status = 3;
+}
+
+// An update to a running or finished tool call: its new status, any accumulated
+// output, and the file diffs it produced (diffs ride the update, matching how
+// the agent produces them).
+message SessionToolCallUpdate {
+  string tool_call_id = 1;
+  AgentToolCallStatus status = 2;
+  string output = 3;
+  repeated SessionFileDiff diffs = 4;
+}
+
+// One file edit within a tool-call update. old_text absent = a file creation.
+message SessionFileDiff {
+  string path = 1;
+  optional string old_text = 2;
+  string new_text = 3;
+}
+
+// The agent's current execution plan. Reuses AgentPlanEntry.
+message SessionPlan {
+  repeated AgentPlanEntry entries = 1;
+}
+
+// A free-standing notice in the trace (a status line or advisory), with an
+// optional link.
+message SessionNotice {
+  string text = 1;
+  optional string link = 2;
+}
+
+// SubscribeAgentSession: the session whose typed observation trace to tail.
+message SubscribeAgentSessionRequest {
+  string session_id = 1;
+}
+
+// One frame on the SubscribeAgentSession stream: a typed trace event, a
+// lifecycle transition, or both. `event` is unset for a pure lifecycle frame;
+// `state` is UNSPECIFIED when the frame carries no transition (trace only).
+message AgentSessionFrame {
+  string session_id = 1;
+  SessionEvent event = 2;
+  AgentSessionState state = 3;
+}
+
+// ProvisionAgentWorkspace: create the isolated per-agent container for a
+// workstream. Agent ref + repo/workstream spec in, container_name out — the
+// handle StartAgentSession then brings online (compass-0.6 §T4).
+message ProvisionAgentWorkspaceRequest {
+  // The owned agent account this workstream belongs to (the AgentAccount id
+  // from CommsService). Names whose credentials + home channel the container
+  // is provisioned for.
+  string agent_account_id = 1;
+  // Where the agent's repo is cloned from inside the container. Exactly one of
+  // remote_url / local_path is set, mirroring the built RepoSource
+  // (internal/runtime/workspace.go:17-33): remote_url clones over the network
+  // (egress-gated); local_path clones a container-local bare mirror over
+  // file:// for a hermetic, network-free clone.
+  oneof repo {
+    string remote_url = 2;
+    string local_path = 3;
+  }
+  // The branch/ref the workstream checks out. Empty = the repo's default branch.
+  string ref = 4;
+  // Idempotency key (OQ6). When set, a timeout-retry with the same id returns
+  // the same container_name rather than provisioning a second container: the
+  // Server threads it as the RunnerHub request id so the retry joins the
+  // in-flight/completed call instead of re-dispatching. Empty = no dedup (each
+  // call provisions). compass.md §"A retried provision creates no duplicate
+  // container".
+  string client_request_id = 5;
+}
+
+message ProvisionAgentWorkspaceResponse {
+  // The stable container name — the handle passed to StartAgentSession and the
+  // cursor for the container's lifecycle.
+  string container_name = 1;
+}
+
+// StartAgentSession: bring the first-party agent in a provisioned container
+// online over the Runner streaming-exec bridge.
+message StartAgentSessionRequest {
+  // The launched container's stable name (the server's agent handle).
+  string container_name = 1;
+  // Optional initial prompt to send once the session is ready. Empty = start
+  // idle, awaiting a later prompt.
+  string initial_prompt = 2;
+}
+
+message StartAgentSessionResponse {
+  // The server-side session id; the cursor for Stop/Reload/GetAgentStatus and
+  // the attribution id on every agent payload.
+  string session_id = 1;
+}
+
+message StopAgentSessionRequest {
+  string session_id = 1;
+}
+
+message StopAgentSessionResponse {}
+
+message ReloadAgentSessionRequest {
+  string session_id = 1;
+}
+
+message ReloadAgentSessionResponse {
+  // Echoes the reused session id (unchanged across a reload).
+  string session_id = 1;
+}
+
+// GetAgentStatus: one session when `session_id` is set, else every live one.
+message GetAgentStatusRequest {
+  // Empty = every live session.
+  string session_id = 1;
+}
+
+message GetAgentStatusResponse {
+  repeated AgentSessionStatus statuses = 1;
+}
+
+// IssueToken: the admin-only path to mint a bearer token for an account.
+message IssueTokenRequest {
+  // The account to mint a token for — the id of an Account created via
+  // CommsService. The caller's identity is the authenticated connection, never
+  // a field here.
+  string account_id = 1;
+}
+
+message IssueTokenResponse {
+  // The freshly minted bearer token: 32 random bytes, base64url-encoded,
+  // returned exactly once. Present it as `authorization: Bearer <token>` on
+  // subsequent requests; the server retains only its hash.
+  string token = 1;
+}

@@ -1,0 +1,149 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+# The Compass backend Go module (go/). This lane keeps the generated
+# compass.v1 Go stubs compiling + drift-free AND runs the full Go gate battery
+# (docs/designs/platform/go-toolchain-default.md T10 +
+# go-idioms-and-libraries.md L1/L2): gofmt + go vet + golangci-lint (with the
+# gochecksumtype/exhaustive exhaustiveness gate on), a CGO -race test lane, go
+# build, and the supply-chain fence (govulncheck + go-licenses) — the Go parity
+# of the Rust cargo-deny/clippy battery on compass-proto/moon.yml. An advisory
+# (non-gating) nilaway lane rides alongside until its baseline is clean.
+#
+# Tagged `oss` for the import boundary (may only depend on other oss/ projects),
+# NOT `bun` — it is a Go module. go/gofmt/golangci-lint/govulncheck/go-licenses/
+# nilaway all come from the devenv/CI PATH (proto installs the .prototools Go pin
+# in the dev shell; ci/ci-toolchain.nix vendors Go + the lint + supply-chain
+# binaries into the image).
+layer: 'library'
+language: 'go'
+tags: ['oss']
+
+workspace:
+  inheritedTasks:
+    # Go module, not a bun package: skip the global install + biome lint/format
+    # that tag-bun.yml applies to every project (it has no inheritedBy scope).
+    exclude: ['install', 'lint', 'format']
+
+# gen/drift for the compass.v1 schema live on compass-proto (it owns the single
+# buf pipeline that fans out to both language lanes — TS and Go). Expose
+# them here as thin aliases so `moon run compass-go:gen` / `:drift` resolve and
+# so a change under go/gen/ schedules the drift gate through this project too.
+dependsOn:
+  - 'compass-proto'
+
+tasks:
+  gen:
+    # Regenerate all client lanes (delegates to the owning proto project).
+    deps: ['compass-proto:gen']
+    options:
+      runInCI: false
+  drift:
+    # Fail if the checked-in Go stubs are stale vs the schema (delegates to the
+    # proto project's drift gate, which diffs the Go tree too).
+    deps: ['compass-proto:drift']
+
+  fmt:
+    # gofmt --check over the module: lists any files that differ from canonical
+    # form and fails (never rewrites) if any do. Mirrors the Rust fmt task's
+    # --check posture (compass-proto/moon.yml). The generated gen/ tree is
+    # included deliberately — protoc-gen-go output is already gofmt-canonical, so
+    # it never trips this, and the drift gate owns its correctness regardless.
+    script: 'out=$(gofmt -l .); if [ -n "$out" ]; then echo "gofmt needs to run on:"; echo "$out"; exit 1; fi'
+    options:
+      runFromWorkspaceRoot: false
+    inputs: &go_sources
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+
+  vet:
+    # go vet: the compiler-adjacent correctness pass (printf, struct tags,
+    # unreachable code). Fast, and distinct from golangci-lint's staticcheck set.
+    command: 'go vet ./...'
+    options:
+      runFromWorkspaceRoot: false
+    inputs: *go_sources
+
+  lint:
+    # golangci-lint over the module against .golangci.yml (F1 enable-all +
+    # reasoned disable-list, with the load-bearing gochecksumtype/exhaustive
+    # exhaustiveness gate on). The gate (L1/L2). `--config` is explicit so the
+    # run can't silently fall back to a discovered or absent config.
+    command: 'golangci-lint run --config .golangci.yml ./...'
+    options:
+      runFromWorkspaceRoot: false
+    inputs:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - '.golangci.yml'
+
+  nilaway:
+    # nilaway: cross-function nil-flow analysis — the closest Go gets to Rust's
+    # no-null guarantee (F2). ADVISORY (non-gating) until the baseline is clean:
+    # `|| true` means findings are printed but never fail the pipeline, so the
+    # tool informs without teaching agents to appease its beta false positives.
+    # Promote to gating (drop the `|| true`) in a follow-up once the baseline is
+    # clean. `-include-pkgs` scopes it to first-party code (not deps/stdlib).
+    script: 'nilaway -include-pkgs=github.com/sealedsecurity/compass/go ./... || true'
+    options:
+      runFromWorkspaceRoot: false
+    inputs: *go_sources
+
+  build:
+    # Compile the whole module: proves the generated stubs and the ported
+    # backend packages build. `runFromWorkspaceRoot: false` runs in the project
+    # dir so `go build` resolves go.mod; `./...` is every package.
+    command: 'go build ./...'
+    options:
+      runFromWorkspaceRoot: false
+    inputs: *go_sources
+
+  test:
+    # Run the module's unit + transport tests under the race detector. The race
+    # detector requires cgo (CGO_ENABLED=1), so this lane opts back in — Global
+    # Constraint 5's release-build CGO_ENABLED=0 governs the shipped binary, not
+    # the test lane (go-toolchain-default.md T10, :1074-1076).
+    command: 'go test -race ./...'
+    env:
+      CGO_ENABLED: '1'
+    options:
+      runFromWorkspaceRoot: false
+    inputs: *go_sources
+
+  vuln:
+    # govulncheck: known-vulnerability scan over the module's actual call graph
+    # (reports only vulns in code paths the module reaches). The Go parity of the
+    # Rust supply-chain gate; unlike cargo-deny's offline bans/licenses/sources,
+    # govulncheck queries the Go vuln DB (vuln.go.dev), so it is a network gate.
+    command: 'govulncheck ./...'
+    options:
+      runFromWorkspaceRoot: false
+      # Consults the live vuln DB, so its result isn't a pure function of the
+      # inputs — never cache a security scan.
+      cache: false
+    inputs: *go_sources
+
+  licenses:
+    # go-licenses: the dependency-license fence — fails if any dependency's
+    # license is outside the permissive allowlist, the Go parity of cargo-deny's
+    # `licenses` check. The allowlist mirrors the root deny.toml `allow` set
+    # exactly (Apache-2.0 incl. the LLVM-exception, MIT, the BSD family, ISC,
+    # Unicode-3.0, Zlib, MPL-2.0, CC0-1.0) so the two fences can't diverge. The
+    # first-party module packages carry no LICENSE file (the license lives at the
+    # repo root, applied on OSS export), so --ignore excludes the module's own
+    # import path — the fence governs third-party deps, which is its job.
+    command: 'go-licenses check ./... --allowed_licenses=Apache-2.0,Apache-2.0-WITH-LLVM-exception,MIT,BSD-3-Clause,BSD-2-Clause,ISC,Unicode-3.0,Zlib,MPL-2.0,CC0-1.0 --ignore github.com/sealedsecurity/compass/go'
+    options:
+      runFromWorkspaceRoot: false
+      cache: false
+    inputs: *go_sources
+
+  ci:
+    # The whole Go gate battery, one aggregate the pipeline schedules when the
+    # module is affected: format, vet, lint (incl. exhaustiveness), -race test,
+    # build, and the supply-chain fence. `drift` is NOT a dep here — it belongs
+    # to the schema pipeline (compass-proto) and is scheduled through the gen
+    # tree, matching compass-proto/moon.yml's own `ci` composition.
+    deps: ['fmt', 'vet', 'lint', 'nilaway', 'test', 'build', 'vuln', 'licenses']
+    options:
+      cache: false

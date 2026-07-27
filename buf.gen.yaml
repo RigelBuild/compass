@@ -1,23 +1,33 @@
 # The single buf codegen pipeline: one schema, generated clients fanned out to
 # each language, all checked in and CI drift-gated (regenerate + git diff). The
-# generated client is the only sanctioned way to reach the daemon.
+# generated client is the only sanctioned way to reach the Compass server.
 #
-#   Rust  — prost (messages) + tonic (gRPC client/server) → crates/compass-proto
 #   TS    — protoc-gen-es v2 (messages + Connect-capable service defs) →
 #           packages/compass-client, consumed by @connectrpc/connect
+#   Go    — protoc-gen-go (messages) + protoc-gen-connect-go (Connect service
+#           handlers + clients) → go/gen, consumed by the Go backend
+#           (docs/designs/platform/go-toolchain-default.md). Go is the backend;
+#           the Rust lane that once generated here was removed at the cutover.
 version: v2
 clean: true
+# The internal-only surfaces (compass/v1/agent.proto — the agent-stdio envelopes;
+# compass/v1/runner.proto — the Server<->Runner RunnerService; compass/v1/
+# agent_gateway.proto — the agent->Runner AgentGateway call transport) are fenced
+# OFF the public client surfaces here: buf v2 scopes path filters at the input
+# level, so excluding them from this template keeps protoc-gen-es (→ compass-client)
+# and protoc-gen-go/connect-go (→ go/gen) from ever emitting them. Their gen lives
+# in separate per-consumer templates (buf.gen.agent-ts.yaml for agent.proto +
+# agent_gateway.proto → the compass-agent TS client; buf.gen.internal-go.yaml for
+# agent.proto + runner.proto + agent_gateway.proto → go/internal/gen). Keep this
+# list in sync with those templates' `paths:` — a proto that leaks here breaks the
+# SEA-1267 fence (the gen-fence check in proto/moon.yml catches a forgotten entry).
+inputs:
+  - directory: proto
+    exclude_paths:
+      - proto/compass/v1/agent.proto
+      - proto/compass/v1/runner.proto
+      - proto/compass/v1/agent_gateway.proto
 plugins:
-  # Rust messages.
-  - local: protoc-gen-prost
-    out: crates/compass-proto/src/gen
-    opt:
-      - compile_well_known_types
-  # Rust gRPC client + server stubs.
-  - local: protoc-gen-tonic
-    out: crates/compass-proto/src/gen
-    opt:
-      - compile_well_known_types
   # TypeScript (connect-es v2: protoc-gen-es emits the service defs createClient
   # consumes — no separate connect plugin needed).
   - local: protoc-gen-es
@@ -25,3 +35,28 @@ plugins:
     opt:
       - target=ts
       - import_extension=none
+  # Go messages → gen/compass/v1/*.pb.go (package compassv1).
+  # The protos declare no `go_package`, so each file's Go import path + package
+  # name are supplied here via per-file `M` mappings (`<import-path>;<package>`).
+  # This is deliberately NOT buf managed mode: managed mode injects `go_package`
+  # into the shared FileDescriptorProto, which protoc-gen-es then embeds in its
+  # base64 `fileDesc(...)` blob — drifting the checked-in TS output. The `M`
+  # mappings set the Go path at the plugin only, leaving the checked-in TS
+  # output byte-for-byte untouched. The path is the public Copybara module
+  # path (oss/ is stripped on export) so imports resolve on the mirror.
+  # `paths=source_relative` keeps the on-disk tree matching the proto package
+  # path. `;compassv1` pins the package name so the connect subpackage lands at
+  # gen/compass/v1/compassv1connect/ (not the default v1connect/).
+  - local: protoc-gen-go
+    out: go/gen
+    opt:
+      - paths=source_relative
+      - "Mcompass/v1/compass.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"
+      - "Mcompass/v1/comms.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"
+  # Go Connect service handlers + clients → gen/compass/v1/compassv1connect/.
+  - local: protoc-gen-connect-go
+    out: go/gen
+    opt:
+      - paths=source_relative
+      - "Mcompass/v1/compass.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"
+      - "Mcompass/v1/comms.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"

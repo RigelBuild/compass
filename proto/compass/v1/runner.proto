@@ -1,0 +1,208 @@
+// The compass.v1 Server<->Runner seam (design compass-0.6 §T4,
+// design.md:1279-1369; wire shape frozen by the platform record
+// docs/designs/platform/go-toolchain-default.md:925-943).
+//
+// INTERNAL-ONLY surface. Like agent.proto (the in-container agent stdio
+// envelopes) and unlike compass.proto / comms.proto (the public generated-client
+// door between a UI and the Server), RunnerService is an internal control
+// protocol spoken only between the Server and the Runner binaries. It is
+// generated ONLY into the internal Go consumers (internal/server handler +
+// internal/runner client), never the module-root exported `gen/` nor the public
+// TS client, so the `@compass/client` server-door fence stays intact
+// (go-toolchain-default.md:330-338, :1303-1307). The gen fan-out that enforces
+// this is a separate path-filtered lane; the public buf.gen.yaml never takes
+// this file as input.
+//
+// Additive and buf-breaking-safe: a new file in the owned `compass.v1` package,
+// not a change to the public messages. `buf lint`/`buf breaking` still cover it
+// (they glob `compass/**/*.proto`).
+//
+// Frozen, not re-decided here: the three-RPC shape and directions are fixed by
+// the platform record (go-toolchain-default.md:931-937). Because the Runner
+// dials OUT to the Server, the Server has no inbound route to call the Runner:
+// command delivery cannot be a unary Server->Runner RPC, so it rides the
+// Server's *response* half of a Runner-opened bidi stream. Cutting the concrete
+// message fields to realize that frozen shape is conformance.
+
+syntax = "proto3";
+
+package compass.v1;
+
+import "compass/v1/agent_gateway.proto";
+import "compass/v1/agent.proto";
+import "compass/v1/compass.proto";
+
+// The internal control seam between the Server and one Runner. Three RPCs, all
+// initiated by the Runner (it dials out; the Server has no inbound route to the
+// Runner):
+//   - Enroll        unary handshake at connect (auth + registry entry).
+//   - Sessions      bidi: the Server pushes session commands, the Runner
+//                   returns results, correlated by request id.
+//   - PublishEvents client-stream: the Runner relays agent events upward,
+//                   Runner-sequenced for gap detection.
+service RunnerService {
+  // Enroll (unary, Runner->Server, at connect): the authenticated registration
+  // handshake. A valid Runner-subject token (OQ7: store.Subject{Kind:
+  // SubjectRunner}) that reaches the handler is enrolled; an account-subject
+  // token is rejected here with CodeUnauthenticated (the RunnerService side of
+  // the two mandatory cross-door rejection tests, go-toolchain-default.md:
+  // 1417-1419). Duplicate enrollment re-attaches the same Runner rather than
+  // registering a second (single-Runner MVP, OQ6 go-toolchain-default.md:1392).
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+
+  // Sessions (bidi, Runner-opened): the session-command relay. Because the
+  // Runner is the gRPC client, its REQUEST stream carries command *results*
+  // upward and the Server's RESPONSE stream pushes session *commands* downward
+  // — the inversion is inherent to the dial-out model
+  // (go-toolchain-default.md:929-934), not a naming accident. Every command and
+  // its result carry a shared `request_id` (OQ6): a command retried after a
+  // timeout reuses its id so the Runner dedupes it to the original result — no
+  // duplicate container, no spurious ALREADY_RUNNING (go-toolchain-default.md:
+  // 1388-1389).
+  rpc Sessions(stream SessionsRequest) returns (stream SessionsResponse);
+
+  // PublishEvents (client-stream, Runner->Server): the Runner relays each agent
+  // stdout frame upward. The stream is Runner-sequenced (seq assigned at the
+  // Runner, not at Server publish) so in-transit loss is detectable as a gap
+  // and the Client bus's gap-free guarantee holds (OQ6, go-toolchain-default.md:
+  // 1389-1392). This is the sole path Runner events take into the Server; the
+  // RunnerHub.Deliver seam behind it is where a future brokered transport would
+  // substitute, nothing else (design.md:1347-1352).
+  rpc PublishEvents(stream PublishEventsRequest) returns (PublishEventsResponse);
+
+  // RelayCommsCall (unary, Runner->Server): execute one agent-initiated comms
+  // call under the agent account the session resolves to. The Runner is a pure
+  // forwarder — it sends the session_id it structurally owns (which per-container
+  // socket the AgentGateway call arrived on, 1:1 with the session) and the
+  // CommsCallRequest, and asserts NO account. The SERVER resolves
+  // session_id -> agent account from its own Provision-originated hub binding and
+  // attributes the call in-process under comms.WithActor, fail-closed: an
+  // unknown/stopped session is CodeNotFound, never a stale account or the
+  // bootstrap-admin fallback (transport design Decision #3 / OQ-2, comms-tools
+  // design T2). A fourth RPC, additive to the frozen dial-out shape (the Runner
+  // still initiates; the Server gains no inbound route): merging the comms-tools
+  // record ratifies it (comms-tools OQ-1). The request oneof (CommsCallRequest,
+  // agent_gateway.proto) cannot express RespondToAsk — the no-answer-ask
+  // constraint is structural, not a runtime check.
+  rpc RelayCommsCall(RelayCommsCallRequest) returns (RelayCommsCallResponse);
+}
+
+// Enroll request: the Runner announces its stable identity at connect. The id
+// is cross-checked against the authenticated token subject (store.Subject.ID for
+// a SubjectRunner token) — a mismatch is a spoofing attempt and is rejected
+// CodeUnauthenticated, so the field is a defense-in-depth cross-check, not a
+// trusted input. The credential itself rides the transport as a bearer token,
+// never a field here (mirroring IssueTokenRequest, compass.proto:237-242).
+message EnrollRequest {
+  string runner_id = 1;
+}
+
+// Enroll response: the handshake ack. `reattached` distinguishes a fresh
+// enrollment from a re-attach of an already-registered Runner (OQ6 duplicate
+// enrollment, go-toolchain-default.md:1392) — the wire-level evidence a
+// reattach test asserts on.
+message EnrollResponse {
+  bool reattached = 1;
+}
+
+// A session command result, sent Runner->Server on the Sessions request stream
+// (the inversion: the Runner's request half carries results — see the RPC
+// comment). `request_id` correlates it to the SessionsResponse command that
+// produced it. Exactly one result variant is set; `error` carries an in-band
+// failure so a single command's failure does not tear down the shared stream.
+message SessionsRequest {
+  string request_id = 1;
+  oneof result {
+    StartAgentSessionResponse start = 2;
+    StopAgentSessionResponse stop = 3;
+    ReloadAgentSessionResponse reload = 4;
+    GetAgentStatusResponse status = 5;
+    ProvisionAgentWorkspaceResponse provision = 6;
+    RunnerError error = 7;
+  }
+}
+
+// A session command, pushed Server->Runner on the Sessions response stream (the
+// inversion: the Server's response half carries commands — see the RPC comment).
+// The command variants reuse the frozen public session-RPC request payloads
+// (compass.proto) verbatim: the relay carries exactly what the Client-facing
+// CompassService session RPC received, so a payload field added there flows
+// through the relay unchanged. `request_id` is the OQ6 idempotency key: a retry
+// reuses it and the Runner returns the original result.
+message SessionsResponse {
+  string request_id = 1;
+  oneof command {
+    StartAgentSessionRequest start = 2;
+    StopAgentSessionRequest stop = 3;
+    ReloadAgentSessionRequest reload = 4;
+    GetAgentStatusRequest status = 5;
+    ProvisionAgentWorkspaceRequest provision = 6;
+  }
+}
+
+// An in-band command failure carried in a SessionsRequest result oneof. The
+// Server maps `code` to the Connect status it returns to the Client-facing
+// caller of the relayed session RPC. ALREADY_RUNNING is distinguished so the
+// OQ6 idempotency test can assert a legitimate retry does NOT surface it (the
+// retry dedupes to the original success), while a genuine double-start of a
+// live session does.
+message RunnerError {
+  RunnerErrorCode code = 1;
+  string message = 2;
+}
+
+// The failure classes a Runner returns for a relayed session command. Kept to
+// what the Runner actually distinguishes; the Server maps each to a Connect code.
+enum RunnerErrorCode {
+  RUNNER_ERROR_CODE_UNSPECIFIED = 0;
+  // A start hit a session already live on this container (a genuine double
+  // start, not an idempotent retry) -> Connect AlreadyExists.
+  RUNNER_ERROR_CODE_ALREADY_RUNNING = 1;
+  // The target session/container is unknown to the Runner -> Connect NotFound.
+  RUNNER_ERROR_CODE_NOT_FOUND = 2;
+  // Any other Runner-side failure (container engine error, exec failure) ->
+  // Connect Internal.
+  RUNNER_ERROR_CODE_INTERNAL = 3;
+}
+
+// One Runner-sequenced agent event, relayed Runner->Server on PublishEvents.
+message PublishEventsRequest {
+  // Runner-assigned monotonic sequence across this Runner's whole event stream
+  // (not per session). A gap in the sequence the Server observes is detectable
+  // in-transit loss (OQ6, go-toolchain-default.md:1389-1392).
+  uint64 runner_seq = 1;
+  // The session this event belongs to (the Server-side session id the Runner
+  // was handed at Start).
+  string session_id = 2;
+  // The relayed agent stdout frame, verbatim. The RunnerHub classifies it by
+  // the set `oneof frame` field (conversation -> comms rows + SubscribeComms;
+  // session -> the session-tail stream + extracted AgentSessionState ->
+  // SubscribeEvents). An unset/unrecognized variant is the "unknown frame" the
+  // hub logs and counts, never silently drops (agent.proto:38-39).
+  AgentFrame frame = 3;
+}
+
+// PublishEvents ack, returned once when the Runner closes the event stream.
+message PublishEventsResponse {}
+
+// RelayCommsCall request: the Runner forwards one agent-initiated comms call to
+// the Server. `session_id` is the session the Runner structurally owns for this
+// call (from which per-container AgentGateway socket it arrived on — 1:1 with
+// the session, agent_gateway.proto). `call` is the agent's request verbatim.
+// The Runner asserts NO account here; the Server resolves session_id -> account
+// from its own binding (comms-tools design T2). A session_id the Server does not
+// know (never provisioned, or stopped/dropped-on-reconnect) fails closed
+// CodeNotFound — never a stale account, never the bootstrap admin.
+message RelayCommsCallRequest {
+  string session_id = 1;
+  CommsCallRequest call = 2;
+}
+
+// RelayCommsCall response: the result of the executed comms call, correlated by
+// the same call_id the agent minted. A successful call carries its post/list
+// result; an in-band tool failure (non-member channel, bad input) carries the
+// CommsCallError variant — NOT a Connect stream error, so a single failed call
+// never tears down the transport.
+message RelayCommsCallResponse {
+  CommsCallResult result = 1;
+}
