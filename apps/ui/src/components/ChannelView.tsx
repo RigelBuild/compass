@@ -12,7 +12,6 @@ import {
 	dmLabel,
 	handleOf,
 	isDm,
-	parseMentions,
 	type Thread,
 	threadSummary,
 	threadsOf,
@@ -26,6 +25,7 @@ import type {
 	Message,
 } from "../comms-stub";
 import { useStore } from "../context";
+import { MarkdownText } from "./MarkdownText";
 import { ThreadPanel } from "./ThreadPanel";
 import { ThreadStream } from "./ThreadStream";
 
@@ -38,63 +38,6 @@ function hhmm(atUnixMs: number): string {
 	const m = String(d.getUTCMinutes()).padStart(2, "0");
 	return `${h}:${m}`;
 }
-
-/** Render a text block as alternating plain runs and `@`-mention chips. A
- *  reserved mention (@everyone/@agents/@users) and a mention resolving to a
- *  known account both chip; an unresolved mention chips too but reads muted. */
-const MentionText: Component<{
-	text: string;
-	byHandle: Map<string, Account>;
-}> = (props) => {
-	// Recompute on text change; the parse is cheap and the block is immutable per
-	// render, so a memo would add ceremony without saving work.
-	const parts = () => {
-		const mentions = parseMentions(props.text);
-		const out: {
-			text: string;
-			mention?: { handle: string; known: boolean; reserved: boolean };
-		}[] = [];
-		let cursor = 0;
-		for (const men of mentions) {
-			if (men.start > cursor)
-				out.push({ text: props.text.slice(cursor, men.start) });
-			out.push({
-				text: props.text.slice(men.start, men.end),
-				mention: {
-					handle: men.handle,
-					known: props.byHandle.has(men.handle.toLowerCase()),
-					reserved: men.reserved,
-				},
-			});
-			cursor = men.end;
-		}
-		if (cursor < props.text.length)
-			out.push({ text: props.text.slice(cursor) });
-		return out;
-	};
-
-	return (
-		<span class="msg-text">
-			<For each={parts()}>
-				{(part) => (
-					<Show when={part.mention} fallback={part.text}>
-						{(m) => (
-							<span
-								class="mention-chip"
-								classList={{
-									reserved: m().reserved,
-									unknown: !m().reserved && !m().known,
-								}}
-							>
-								{part.text}
-							</span>
-						)}
-					</Show>
-				)}
-			</For>
-		</span>
-	);
-};
 
 /** An inline async ask (comms.proto Ask): a question with selectable options,
  *  answerable in place — never a blocking modal. A single-select question locks
@@ -200,9 +143,10 @@ const AskBlock: Component<{
 	);
 };
 
-/** One durable conversation block — text (with mention chips) or an inline ask.
- *  The rich ACP blocks (thought/tool_call/plan/diff) are not in the channel;
- *  they live in the session observation panel. */
+/** One durable conversation block — markdown text (with mention chips + code
+ *  highlighting) or an inline ask. The rich session blocks
+ *  (thought/tool_call/plan/diff) are not in the channel; they render in the
+ *  session observation panel. */
 const Block: Component<{
 	messageId: string;
 	block: ConvBlock;
@@ -211,7 +155,7 @@ const Block: Component<{
 	<Show
 		when={props.block.kind === "ask" ? props.block : undefined}
 		fallback={
-			<MentionText text={blockText(props.block)} byHandle={props.byHandle} />
+			<MarkdownText text={blockText(props.block)} byHandle={props.byHandle} />
 		}
 	>
 		{(askBlock) => (

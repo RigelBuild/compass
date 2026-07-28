@@ -3155,6 +3155,130 @@ button {
 	font-weight: 400;
 }
 
+/* Markdown-rendered message body. `.msg-text` still carries the
+ * mention-chip context and wrap behavior; `.markdown-content` overlays the
+ * block-flow rules a real markdown tree needs (the base `.msg-text` is
+ * `white-space: pre-wrap`, which is for plain text — reset it here so block
+ * elements lay out normally while inline runs still wrap). */
+.markdown-content {
+	white-space: normal;
+}
+
+/* Tight vertical rhythm inside a message: paragraphs and lists get modest
+ * spacing, and the first/last block hugs the message edges so a single-paragraph
+ * message reads identically to the old plain-text render. solid-markdown wraps
+ * its output in an unconditional `<div>` (its `options.class` wrapper), so the
+ * real first/last block is a GRANDCHILD of `.markdown-content` — reset the outer
+ * margins through that wrapper, not on the wrapper itself (which has no margin). */
+.markdown-content p,
+.markdown-content ul,
+.markdown-content ol,
+.markdown-content pre,
+.markdown-content .code-highlight,
+.markdown-content blockquote,
+.markdown-content table {
+	margin: 6px 0;
+}
+
+.markdown-content > * > :first-child {
+	margin-top: 0;
+}
+
+.markdown-content > * > :last-child {
+	margin-bottom: 0;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+	padding-left: 20px;
+}
+
+/* Agent-authored headings are demoted inside a chat message — a message is not
+ * a document, so an `#` heading must not render at page-title scale. */
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+	font-size: 14px;
+	font-weight: 600;
+	margin: 8px 0 4px;
+}
+
+/* Chips keep their own color/weight even inside emphasis (a mention in bold or
+ * italic prose still reads as a chip, not as styled text). */
+.markdown-content em .mention-chip,
+.markdown-content strong .mention-chip {
+	font-style: normal;
+}
+
+/* Inline code: a subtle card, distinct from a chip. */
+.markdown-content :not(pre) > code {
+	background: var(--bg-card);
+	border-radius: var(--radius-sm);
+	padding: 0 4px;
+	font-family: var(--font-mono, ui-monospace, monospace);
+	font-size: 0.92em;
+}
+
+/* A fenced code block lives inside a measured, virtualized row, so long lines
+ * scroll horizontally rather than forcing the row (and the whole list) wide.
+ * `.code-block` is the plain-fallback `pre` wrapper; `.code-highlight pre` is
+ * Shiki's own `<pre>` after the async swap. */
+.markdown-content pre.code-block,
+.markdown-content .code-highlight pre {
+	overflow-x: auto;
+	padding: 8px 10px;
+	border-radius: var(--radius-sm);
+	background: var(--bg-card);
+	font-family: var(--font-mono, ui-monospace, monospace);
+	font-size: 0.92em;
+	line-height: 1.45;
+}
+
+/* Shiki paints its own background/colors; drop the fallback card so the theme
+ * shows through, and let the wrapper carry the scroll. The wrapper keeps the
+ * `6px 0` block margin above — only the INNER `pre` is zeroed, so the async
+ * swap is height-identical and does not shift the virtualized row. */
+.markdown-content .code-highlight pre {
+	margin: 0;
+	background: none;
+}
+
+.markdown-content .code-highlight {
+	background: none;
+}
+
+/* An agent-authored image is never fetched (no `src` reaches the DOM), but its
+ * alt text renders in place so the sentence around it still reads. */
+.markdown-content .md-img-omitted {
+	color: var(--fg-muted);
+	font-style: italic;
+}
+
+.markdown-content pre code {
+	white-space: pre;
+}
+
+/* GFM tables: a compact bordered grid that fits a chat row. */
+.markdown-content table {
+	border-collapse: collapse;
+	font-size: 0.95em;
+}
+
+.markdown-content th,
+.markdown-content td {
+	border: 1px solid var(--border);
+	padding: 3px 8px;
+	text-align: left;
+}
+
+.markdown-content a {
+	color: var(--accent);
+	text-decoration: underline;
+}
+
 /* ── Composer ─────────────────────────────────────────────────────────────── */
 
 .conv-composer {

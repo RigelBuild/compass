@@ -6,6 +6,8 @@
 	"type": "module",
 	"dependencies": {
 		"@compass/client": "workspace:*",
+		"@shikijs/langs": "4.3.1",
+		"@shikijs/themes": "4.3.1",
 		"@tanstack/solid-virtual": "3.13.33",
 		"@tauri-apps/api": "^2",
 		"@tauri-apps/plugin-opener": "^2",
@@ -24,6 +26,7 @@
 		"@solidjs/testing-library": "0.8.10",
 		"@testing-library/jest-dom": "6.9.1",
 		"@types/bun": "catalog:",
+		"@types/hast": "3.0.4",
 		"happy-dom": "20.10.6",
 		"typescript": "catalog:",
 		"vite": "^8.1.0",
