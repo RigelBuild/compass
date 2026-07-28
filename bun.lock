@@ -50,6 +50,7 @@
         "@oh-my-pi/pi-agent-core": "^16.4.8",
         "@oh-my-pi/pi-ai": "^16.4.8",
         "@oh-my-pi/pi-coding-agent": "^16.4.8",
+        "arktype": "2.2.3",
       },
       "devDependencies": {
         "@types/bun": "catalog:",

@@ -16,6 +16,20 @@
 // Codec: protobuf-es v2 runtime (the gen files import from the same package).
 export { create, fromJson, type JsonValue, toJson } from "@bufbuild/protobuf";
 export {
+	// The agent-initiated comms call envelopes (internal-only AgentGateway gen).
+	// One `CommsCallRequest` carries the SDK toolCallId as `call_id` plus a oneof
+	// over the comms operations; the `CommsCallResult` mirrors it with a third
+	// `error` case — an in-band domain failure, NOT a transport teardown. The same
+	// two messages are reused verbatim as the RelayCommsCall payloads on the
+	// Runner->Server leg, so this is the one wire shape for both hops.
+	type CommsCallError,
+	CommsCallErrorSchema,
+	type CommsCallRequest,
+	CommsCallRequestSchema,
+	type CommsCallResult,
+	CommsCallResultSchema,
+} from "./gen/compass/v1/agent_gateway_pb";
+export {
 	// The inbound control envelope (internal-only §T5): a oneof over the control
 	// ops plus a Runner-assigned `controlSeq` envelope field (retention cursor).
 	// The control source decodes one AgentControl per Control-stream message;
@@ -65,7 +79,15 @@ export {
 	// same shape RespondToAskRequest uses.
 	type AskQuestionAnswer,
 	AskQuestionAnswerSchema,
+	AskQuestionSchema,
 	AskSchema,
+	// The comms call payloads the agent tools construct: the post/list request
+	// pair (each with a `container` oneof whose unset case means "the agent's
+	// home channel", resolved server-side) and their responses.
+	type ListMessagesRequest,
+	ListMessagesRequestSchema,
+	type ListMessagesResponse,
+	ListMessagesResponseSchema,
 	// Conversation payloads (comms surface). The AgentFrame reuses
 	// MessagePosted/MessageUpdated (each wraps a Message carrying MessageBlocks)
 	// as its conversation variants — no bare-block variant. The MessageBlock
@@ -80,6 +102,10 @@ export {
 	MessageSchema,
 	type MessageUpdated,
 	MessageUpdatedSchema,
+	type PostMessageRequest,
+	PostMessageRequestSchema,
+	type PostMessageResponse,
+	PostMessageResponseSchema,
 } from "./gen/compass/v1/comms_pb";
 export {
 	// The plan entry the typed session plan reuses (content + status) and its
