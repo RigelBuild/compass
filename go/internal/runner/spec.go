@@ -52,6 +52,13 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 	if defaults.CheckoutDir == "" || defaults.HomeDir == "" {
 		return nil, errors.New("spec defaults require checkout and home dirs")
 	}
+	// The other operand of the container name. validAccountID constrains the
+	// request-derived half; this constrains the operator-derived half, so both
+	// inputs to a path segment are checked and a separator here cannot escape
+	// RuntimeDir through the same filepath.Join clean.
+	if strings.Contains(defaults.NamePrefix, "/") {
+		return nil, errors.New("spec defaults name prefix must not contain a path separator")
+	}
 	return &configSpecBuilder{defaults: defaults}, nil
 }
 
@@ -105,8 +112,18 @@ func validAccountID(id string) error {
 	if id == "" {
 		return errors.New("provision request requires an agent account id")
 	}
+	// fs.ValidPath rejects "", "..", any empty segment, a leading or trailing
+	// "/", and invalid UTF-8, but returns true for "." (documented) and for a
+	// legal multi-element path like "abc/def" — hence the other two conjuncts.
 	if !fs.ValidPath(id) || id == "." || strings.Contains(id, "/") {
 		return fmt.Errorf("agent account id %q is not a valid path element", id)
+	}
+	// A control character survives the checks above (a NUL is valid UTF-8 and
+	// carries no separator) and fails much later, at bind, as a bare EINVAL —
+	// the same undiagnosable error the socket's length guard exists to replace.
+	// Refuse it here, where the message can name the input.
+	if strings.ContainsFunc(id, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+		return fmt.Errorf("agent account id %q contains a control character", id)
 	}
 	return nil
 }

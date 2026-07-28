@@ -41,6 +41,11 @@ func TestNewConfigSpecBuilderRejectsIncompleteDefaults(t *testing.T) {
 		{"no image", func(d *SpecDefaults) { d.Image = "" }},
 		{"no checkout dir", func(d *SpecDefaults) { d.CheckoutDir = "" }},
 		{"no home dir", func(d *SpecDefaults) { d.HomeDir = "" }},
+		// NamePrefix is the operator-derived half of the container name, which
+		// becomes a path segment of the agent socket. A separator here escapes
+		// RuntimeDir through the same filepath.Join clean that validAccountID
+		// guards on the request-derived half, so both operands are checked.
+		{"a name prefix containing a path separator", func(d *SpecDefaults) { d.NamePrefix = "a/../../" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -195,6 +200,12 @@ func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
 		{"an embedded separator", "abc/def"},
 		{"a leading separator (absolute)", "/etc/passwd"},
 		{"a trailing separator", "abc/"},
+		// Control characters clear every check above — a NUL is valid UTF-8 and
+		// carries no separator — and would otherwise fail at bind as a bare
+		// EINVAL naming nothing.
+		{"an embedded NUL", "abc\x00def"},
+		{"an embedded newline", "abc\ndef"},
+		{"an embedded DEL", "abc\x7fdef"},
 	}
 	for _, tc := range rejected {
 		t.Run(tc.name, func(t *testing.T) {

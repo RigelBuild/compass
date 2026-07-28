@@ -462,9 +462,9 @@ func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 
 // agentNamePrefix is the container-name prefix this test wires into its
 // SpecDefaults, hoisted so shortRuntimeDir models the same name the Runner
-// actually builds (spec.go:73 joins it with the account id). Editing the prefix
-// in one place would otherwise silently shrink the modelled path and turn the
-// budget assertion into a false negative.
+// actually builds (BuildSpec in spec.go joins it with the account id). Editing
+// the prefix in one place would otherwise silently shrink the modelled path and
+// turn the budget assertion into a false negative.
 const agentNamePrefix = "compass-agent-"
 
 // accountIDHexLen is the width of a store account id: 16 random bytes
@@ -532,14 +532,15 @@ func runSessionsLoop(t *testing.T, ctx context.Context, cancel context.CancelFun
 // work dir, or macOS's ~49-byte /var/folders/<2>/<hash>/T) re-inflates it. So
 // the resulting path is asserted rather than assumed.
 //
-// This site FAILS rather than skips on an over-budget root, unlike
-// gateway/socket_test.go:381 which t.Skipf's the same condition: there the
-// environment merely blocks one unit assertion, whereas here a skip would
-// silently drop the only end-to-end coverage of the socket path. The cap is
-// derived the way the production guard derives it (gateway/socket.go:59), never
-// restated — sun_path is not one size across the platforms //go:build unix
-// admits (108 on linux/solaris/illumos, 104 on darwin and the BSDs, 1023 on
-// aix), and this file is //go:build unix.
+// This site FAILS rather than skips on an over-budget root: a skip would
+// silently drop the only end-to-end coverage of the socket path, reporting `ok`
+// for a test that asserted nothing. The gateway's padTo fails closed for the
+// same reason. The cap is derived the way the production guard derives it
+// (gateway.sunPathMax) rather than written down — sun_path is not one size
+// across the platforms //go:build unix admits (108 on linux/solaris/illumos,
+// 104 on darwin and the BSDs, 1023 on aix), and this file is //go:build unix.
+// The derivation is duplicated below because that constant is unexported; the
+// NUMBER is never restated.
 func shortRuntimeDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "cr") //nolint:usetesting // t.TempDir embeds the test name, which is what put this path over the sun_path cap — the bug this helper exists to prevent

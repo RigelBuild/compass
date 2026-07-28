@@ -378,8 +378,9 @@ func TestRejectsWrongOwnerSocketNeverDeletes(t *testing.T) {
 // the bound to >= refuses the at-cap path the kernel accepts, failing the first
 // subtest.
 func TestRejectsPathOverSunPathLimit(t *testing.T) {
-	// padTo returns a path under a fresh temp root of exactly n bytes, or skips
-	// when the root alone already exceeds the budget (a very deep TMPDIR).
+	// padTo returns a path under a fresh temp root of exactly n bytes, or fails
+	// the subtest when the root alone already exceeds the budget (a very deep
+	// TMPDIR).
 	padTo := func(t *testing.T, n int) (dir, path string) {
 		t.Helper()
 		// A short fixed root, not t.TempDir(): the latter embeds the test name,
