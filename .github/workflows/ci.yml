@@ -47,6 +47,18 @@ jobs:
     # The vendored forks build through nix (devenv's Rust crates via its flake's
     # fenix pin), so this is a long job by construction.
     timeout-minutes: 90
+    env:
+      # A short temp root, because AF_UNIX sun_path is 108 bytes and the Go
+      # suites bind sockets under `t.TempDir()`. The runner's default TMPDIR is
+      # /home/runner/work/_temp — 22 bytes before the test's own name-derived
+      # path — which pushes the runner and server socket tests past the cap and
+      # fails them with a bare EINVAL from bind(2). /tmp is 4 bytes and leaves
+      # the budget those tests were written against.
+      #
+      # A CI-shaped constraint, fixed in CI: the cap is real and the code's own
+      # guards against it are elsewhere; nothing about this repo's sockets should
+      # be redesigned around one runner's choice of temp root.
+      TMPDIR: /tmp
     steps:
       - uses: actions/checkout@v6
         with:
@@ -150,6 +162,9 @@ jobs:
     name: pgtest
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # Same AF_UNIX sun_path budget as the gate job: this lane binds sockets too.
+      TMPDIR: /tmp
     services:
       postgres:
         # Matches pgtest.go's pinned image: the suites assert on generated-tsvector
