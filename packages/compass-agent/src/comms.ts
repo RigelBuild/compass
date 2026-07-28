@@ -222,6 +222,14 @@ const attr = (v: string, fence?: string): string =>
 			? "(malformed)"
 			: `(malformed ${fence})`;
 
+// `attr` guards a tag attribute; `flat` guards a marker LINE. Every untrusted
+// value interpolated into a one-line `[ask]`/`[answered]` record passes through
+// here, because a newline in any of them splits that line into two and the
+// second carries no fence and no marker — a forgery that needs no guessing.
+// One collapse at the merge point rather than one per field, so a value added
+// to that line later cannot arrive raw by omission.
+const flat = (v: string): string => v.replaceAll(/\s*\n\s*/g, " ");
+
 /**
  * The native comms tool set. Exactly two tools; never an ask-answering one.
  *
@@ -422,7 +430,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 								const rendered = b.block.value.questions
 									.filter((q) => q.question.trim().length > 0)
 									.map((q) => {
-										const text = q.question.replaceAll(/\s*\n\s*/g, " ");
+										const text = flat(q.question);
 										// Answer state is on the wire (`chosen_option_ids`,
 										// `custom_text`, `timed_out`) and projected by
 										// `askToWire`. Dropping it showed a settled question as
@@ -431,15 +439,19 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 										// `AskOption.label` lives on the ask, not the answer —
 										// so an id-only answer resolves against `options` when
 										// it can and falls back to the bare id.
-										const labels = q.chosenOptionIds.map(
-											(id) => q.options.find((o) => o.id === id)?.label ?? id,
+										// Every value that lands on this line is collapsed at
+										// the point they MERGE, not per-field: a newline in any
+										// of them splits one marker line into two, the second
+										// unfenced and unmarked. `label` is the widest reach —
+										// it is caller-supplied on the ask and stored verbatim
+										// (nothing on the Go path inspects it), so any member
+										// who can post can plant one, where `custom_text` at
+										// least needs a pending ask to answer.
+										const labels = q.chosenOptionIds.map((id) =>
+											flat(q.options.find((o) => o.id === id)?.label ?? id),
 										);
-										// `custom_text` is participant free text on the same
-										// line, so it needs the same collapse as the question
-										// above — a newline in it splits one marker line into
-										// two, the second unfenced and unmarked.
 										if (q.customText.length > 0)
-											labels.push(q.customText.replaceAll(/\s*\n\s*/g, " "));
+											labels.push(flat(q.customText));
 										if (labels.length === 0 && !q.timedOut)
 											return `[ask ${fence}] ${text}`;
 										const how = q.timedOut ? " (timed out)" : "";
