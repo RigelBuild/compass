@@ -1,0 +1,211 @@
+# The remote gate for every pull request and every push to main.
+#
+# ONE JOB, NOT A MATRIX — the central structural decision, made deliberately.
+#
+# A matrix fanning each moon task into its own job would give per-task check
+# names and crisper failure attribution. It was rejected on one decisive
+# ground: it can only be built by enumerating projects (or tasks) in YAML, and
+# a project list in a workflow is a second source of truth for something
+# .moon/workspace.yml already owns. That list goes stale silently. It has
+# already happened in this repo's history — a fork tree shipped a functional-CI
+# registration with no entry in the project map, so it read as covered and
+# gated nothing. A YAML enumeration recreates exactly that failure at the CI
+# layer: add a project, forget the matrix entry, and the gate goes quiet about
+# it while still reporting green. `moon run :ci` cannot go quiet; a new project
+# with a `ci` task is picked up the moment it is registered, which is why the
+# arriving oh-my-pi fork needs no edit to this file.
+#
+# The costs of one job are real and accepted: a single check name to require,
+# and the failing task named in the log rather than in the check list. moon
+# already prints the failing target and only the failing target's output, so
+# attribution costs one click, not a bisect.
+#
+# The pgtest lane IS a separate job — not for attribution, but for blast
+# radius: it depends on a Postgres service container, and a service outage
+# must never red the hermetic gate.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# One in-flight run per ref. A superseded push's run is answering a question
+# nobody is asking any more.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-latest
+    # The vendored forks build through nix (devenv's Rust crates via its flake's
+    # fenix pin), so this is a long job by construction.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # buf breaking compares against refs/remotes/origin/main, and the drift
+          # gate's `git diff --no-index` needs real git. A shallow single-ref
+          # checkout has neither.
+          fetch-depth: 0
+
+      - name: Fetch the merge base
+        # actions/checkout leaves no refs/remotes/* even at full depth, and
+        # proto/moon.yml's breaking gate probes exactly that ref. Without this the
+        # gate takes its "no base contract yet" branch and passes vacuously —
+        # a green that checked nothing, which is the failure mode this whole
+        # pipeline exists to end.
+        run: git fetch --no-tags origin main:refs/remotes/origin/main
+
+      - name: Read the toolchain pins
+        id: pins
+        # .prototools is the single source for the language/runtime versions.
+        # Reading it here rather than hardcoding into the `setup-*` inputs below
+        # is what keeps that true — a pin bump is one file, and the parity gate
+        # further down proves the runner actually got what was asked for.
+        #
+        # `/^\[/q` stops at the first table header, so only top-level pins are
+        # read and a future [settings] section is never mistaken for one. This
+        # mirrors parseProtoTools in tools/toolchain/parity-core.ts, which is
+        # what checks the result — a divergence between the two shows up as a
+        # parity failure, not as a silent wrong version.
+        run: |
+          sed -n '/^\[/q; s/^\([A-Za-z0-9_-]\{1,\}\)[[:space:]]*=[[:space:]]*"\([^"]\{1,\}\)".*/\1=\2/p' \
+            .prototools | tee -a "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ steps.pins.outputs.bun }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ steps.pins.outputs.node }}
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.pins.outputs.go }}
+          # go/moon.yml owns caching decisions per task; a second cache keyed on
+          # a go.sum this action found by guessing only adds a way to be wrong.
+          cache: false
+
+      - name: Install moon
+        # moon has no first-party setup action that pins from .prototools, and
+        # its npm package is version-for-version the release. The parity gate
+        # confirms the binary that lands reports the pinned version.
+        run: npm install --global @moonrepo/cli@${{ steps.pins.outputs.moon }}
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          # The forks' functional CI is `nix build` of their own flakes, and the
+          # nixpkgs half of the toolchain is fetched below. Flakes are needed for
+          # the former; nix-command for both.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Put the dev shell's nixpkgs tools on PATH
+        # buf, protoc, the Go analysis battery, biome and markdownlint have no
+        # `setup-*` action that could reproduce a nixpkgs pin. Rather than pick a
+        # close-enough release from some other channel and hope, CI resolves the
+        # SAME derivations the dev shell does, from the nixpkgs revision
+        # devenv.lock pins. Nix is a mechanism for this step; it is not the
+        # toolchain strategy — the language runtimes above come from the native
+        # actions, per the standing decision.
+        #
+        # The attribute list comes from the parity script's own parse of
+        # devenv.nix, so what CI installs and what the gate expects cannot
+        # disagree, and neither is enumerated here.
+        run: |
+          attrs=$(bun tools/toolchain/parity.ts --print-nix-attrs)
+          out=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
+          echo "$out/bin" >>"$GITHUB_PATH"
+
+      - name: Toolchain parity
+        # Runs BEFORE the gate, though `:ci` schedules it again (it takes under a
+        # second). A toolchain skew invalidates every result the gate is about to
+        # produce, so finding out first is worth running it twice.
+        run: bun tools/toolchain/parity.ts
+
+      - name: Gate
+        # The whole battery: the contract gates, the Go analysis + race test
+        # lanes, the TS typechecks and tests, the UI build, the repo-wide
+        # lint/markdownlint sweeps, and each vendored fork's own nix build. moon
+        # resolves the order and the fan-out; nothing is enumerated here.
+        run: moon run :ci
+
+  pgtest:
+    # The real-Postgres suites. Build-tagged `pgtest`, so `go test ./...` in the
+    # gate job never compiles them — this job is the only thing that runs them.
+    #
+    # Separate from `gate` deliberately: it is the one lane with an external
+    # dependency, and a Postgres service failing to come up must not be able to
+    # red the hermetic gate.
+    name: pgtest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        # Matches pgtest.go's pinned image: the suites assert on generated-tsvector
+        # and websearch_to_tsquery behavior, which is major-version-sensitive.
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: compass-test
+          POSTGRES_DB: compass
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read the toolchain pins
+        id: pins
+        # Same read as the gate job: .prototools stays the single version source.
+        run: |
+          sed -n '/^\[/q; s/^\([A-Za-z0-9_-]\{1,\}\)[[:space:]]*=[[:space:]]*"\([^"]\{1,\}\)".*/\1=\2/p' \
+            .prototools >>"$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.pins.outputs.go }}
+          cache: false
+
+      - name: Real-Postgres suites
+        working-directory: go
+        env:
+          # pgtest.go's documented CI-service path: with a DSN set the harness
+          # uses this database (giving each test its own schema) instead of
+          # managing a container.
+          COMPASS_TEST_DATABASE_DSN: postgres://postgres:compass-test@127.0.0.1:5432/compass?sslmode=disable
+          CGO_ENABLED: '1'
+        # -v so the assertion below can read per-test outcomes. Tee: keep the log
+        # visible AND inspectable.
+        run: go test -tags pgtest -race -v ./... 2>&1 | tee /tmp/pgtest.log
+
+      - name: Assert the suites ran rather than skipped
+        # The harness SKIPS (never fails) when it can find no database — correct
+        # for a container-less sandbox, and a silent no-op here. This job exists
+        # to run those assertions, so a skip is a failure of the job's whole
+        # purpose and must be loud. Belt and braces: the harness must not have
+        # skipped, and it must have run something.
+        run: |
+          if grep -q 'skipping real-Postgres test' /tmp/pgtest.log; then
+            echo "::error::pgtest harness skipped — the service Postgres was not reached, so nothing was asserted"
+            grep -n 'skipping real-Postgres test' /tmp/pgtest.log | head
+            exit 1
+          fi
+          passed=$(grep -c '^--- PASS' /tmp/pgtest.log || true)
+          echo "pgtest: $passed test functions passed against the service Postgres"
+          if [ "$passed" -eq 0 ]; then
+            echo "::error::no pgtest test function passed — the lane compiled but asserted nothing"
+            exit 1
+          fi

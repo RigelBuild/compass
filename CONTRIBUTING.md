@@ -17,26 +17,36 @@ bun install       # install the workspace JS deps
 Without nix, install proto and let it bootstrap the pinned toolchains (go,
 bun, node, moon) from the repository toolchain config, then `bun install`.
 
-## The local gate
+## The gate
 
-`moon run :ci` is the whole CI gate, run locally:
+`moon run :ci` is the whole gate:
 
 ```bash
 moon run :ci
 ```
 
-The same task graph runs locally and in CI, so a green local run is the same
-check CI runs. It covers, across the workspace:
+CI runs that exact command on every pull request, so a green local run is the
+same check. It covers, across the workspace:
 
-- Go: `go build ./...`, `go test ./...` (the fuller `-race` / lint / vuln
-  battery lands with the backend tiers).
-- Contract: `buf lint`, `buf breaking`, the codegen drift gate (regenerate +
-  `git diff`).
-- TypeScript: `tsc`, `biome`, `bun test`, and the UI build.
+- **Go:** `gofmt --check`, `go vet`, `golangci-lint`, `nilaway` (advisory),
+  `go build ./...`, `go test -race ./...`, `govulncheck`, and a dependency
+  license fence.
+- **Contract:** `buf lint`, `buf breaking` against `origin/main`, the codegen
+  drift gate (regenerate + `git diff`), and a fence rejecting internal-only
+  symbols in the public generated trees.
+- **TypeScript:** `tsc --noEmit` and `bun test` per package, plus the UI build.
+- **Whole repo:** `biome check` and `markdownlint`.
+- **Vendored forks:** each fork's own `nix build`.
+- **Toolchain parity:** the versions on PATH must match the dev shell's pins.
+
+Two things run only in CI. The **real-Postgres suites** are build-tagged
+`pgtest`, so `moon run :ci` never compiles them; a separate job runs them
+against a service container. And CI checks out full history so `buf breaking`
+has a base to compare against.
 
 Run `moon run <project>:<task>` for a single piece (e.g. `moon run
-compass-go:build`). A `hk` pre-push hook runs the cheap subset (fmt, buf lint,
-biome, drift) before a push; install it with the hk CLI.
+compass-go:build`). A `hk` pre-push hook runs `moon ci` — the affected subset —
+before a push; the dev shell installs it for you.
 
 ## Tests
 

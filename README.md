@@ -7,8 +7,8 @@ security layer around them — and gives you one place to drive them.
 
 > **Status: early.** This repository currently holds the foundation — the
 > toolchain, the workspace, the `compass.v1` contract pipeline, and the CI
-> scaffold. It is not yet installable. The server, the desktop shell, and the
-> UI are being built against the contract defined here.
+> pipeline that gates them. It is not yet installable. The server, the desktop
+> shell, and the UI are being built against the contract defined here.
 
 ## Architecture
 
@@ -50,8 +50,11 @@ go/
   gen/                   generated Go client/server stubs (checked in)
 packages/
   compass-client/        generated TypeScript client (checked in)
+  compass-agent/         the first-party agent
 apps/
   ui/                    web UI (SolidJS + Vite)
+forks/                   vendored upstream fork subtrees, each nix-built
+tools/toolchain/         the CI/dev-shell version-parity gate
 docs/architecture/       architecture notes
 ```
 
@@ -82,8 +85,13 @@ proto (it bootstraps Go, bun, node, and moon from `.prototools`), and supply the
 rest the dev shell otherwise provides — `buf`, `protoc`, `protoc-gen-go`,
 `protoc-gen-connect-go` — then `bun install` and `moon run :ci`.
 
-`moon run :ci` is the entire CI gate — the same task graph runs locally and in
-CI, so "passes locally" and "passes in CI" are the same check.
+`moon run :ci` is the entire gate. CI (`.github/workflows/ci.yml`) runs that
+same command on every pull request, so "passes locally" and "passes in CI" are
+the same check — and a version-parity gate fails the build if CI's toolchain
+has drifted from the dev shell's, so that equivalence is enforced rather than
+assumed. One further job runs the real-Postgres suites (build-tagged `pgtest`,
+so they are excluded from the default `go test` lane) against a service
+container.
 
 ## Changing the contract
 
