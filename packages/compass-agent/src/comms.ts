@@ -1,14 +1,19 @@
 // The agent's comms surface: a thin broker over the Runner transport, plus the
-// two native tools the container entrypoint registers on the Agent (design
-// docs/designs/product/compass-agent-comms-tools/design.md, T3).
+// two native tools an agent registers on its Agent (design
+// sealedsecurity/sealed docs/designs/product/compass-agent-comms-tools/design.md,
+// T3 — design records live in sealed, not this repo).
 //
 // WHY THE BROKER IS THIN. An earlier stdio draft had to own correlation itself —
 // a pending map keyed by call id, a stdin pump feeding results back, and a
 // mid-turn deadlock to design around. The frozen transport removed all of that:
 // `AgentGateway.Comms` is a Connect **unary** over the per-container Unix socket
-// (transport/index.ts), so correlation, deadlines, and cancellation belong to the
-// RPC, and a result is just the awaited return value delivered by the Node event
-// loop — no `ControlSource` pull, hence no deadlock to avoid. What is left for a
+// (transport/index.ts), so correlation and deadlines belong to the RPC, and a
+// result is just the awaited return value delivered by the Node event
+// loop — no `ControlSource` pull, hence no deadlock to avoid. Cancellation is
+// NOT plumbed: `execute`'s `AbortSignal` is not forwarded, so an aborted turn
+// does not cancel an in-flight post — it lands. Whether it should is an open
+// question on the PR; the idempotency key means a re-issue after an abort
+// dedupes rather than double-posting. What is left for a
 // broker is one delegation. It exists at all so the tools depend on a narrow
 // one-method surface (`CommsTransport`) rather than the whole four-method
 // `RunnerTransport`: the tools cannot reach the publish spine or the control
@@ -38,6 +43,11 @@
 // Exactly two tools ship for MVP, post and list; search is deferred (OQ-3).
 
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+// `arktype` is pinned exact in package.json to whatever the SDK resolves
+// (2.2.3, via @oh-my-pi/pi-coding-agent 16.5.2), NOT to a version of our
+// choosing. A mismatch resolves two @ark/schema copies and the tool parameter
+// types stop being assignable to the SDK's — `tsc` catches it, but the SDK dep
+// floats on ^, so an SDK bump is the prompt to re-check this pin.
 import { type } from "arktype";
 import {
 	type CommsCallRequest,
@@ -60,8 +70,8 @@ export interface CommsTransport {
 
 /**
  * A thin adapter over the comms leg of the Runner transport. `call` delegates
- * straight to `transport.comms(req)`; the Connect unary owns correlation,
- * deadlines, and cancellation.
+ * straight to `transport.comms(req)`; the Connect unary owns correlation and
+ * deadlines. Cancellation is not plumbed — see the file header.
  */
 export class CommsBroker {
 	readonly #transport: CommsTransport;
@@ -213,8 +223,11 @@ const attr = (v: string, fence?: string): string =>
 			: `(malformed ${fence})`;
 
 /**
- * The native comms tool set the container entrypoint registers at Agent
- * construction. Exactly two tools; never an ask-answering one.
+ * The native comms tool set. Exactly two tools; never an ask-answering one.
+ *
+ * NOT YET WIRED: there is no container entrypoint in this repo, so this has no
+ * non-test caller. The registration leg is tracked separately — until it lands,
+ * the end-to-end contract is exercised only by this package's tests.
  */
 export function createCommsTools(broker: CommsBroker): AgentTool[] {
 	const postMessage: AgentTool<typeof postParameters> = {
@@ -421,7 +434,12 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 										const labels = q.chosenOptionIds.map(
 											(id) => q.options.find((o) => o.id === id)?.label ?? id,
 										);
-										if (q.customText.length > 0) labels.push(q.customText);
+										// `custom_text` is participant free text on the same
+										// line, so it needs the same collapse as the question
+										// above — a newline in it splits one marker line into
+										// two, the second unfenced and unmarked.
+										if (q.customText.length > 0)
+											labels.push(q.customText.replaceAll(/\s*\n\s*/g, " "));
 										if (labels.length === 0 && !q.timedOut)
 											return `[ask ${fence}] ${text}`;
 										const how = q.timedOut ? " (timed out)" : "";
@@ -454,7 +472,19 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					// shape test unchanged. `parent` is omitted entirely on a root
 					// message rather than rendered empty, so its presence means
 					// something.
-					const at = new Date(Number(m.atUnixMs)).toISOString();
+					//
+					// The conversion degrades rather than throws. `at_unix_ms` is an
+					// int64 on the wire and `toISOString()` throws a RangeError past
+					// ±8.64e15 ms, which would escape `execute` and fail the WHOLE
+					// page — one bad row costing every message in the channel, a
+					// strictly wider blast radius than the degraded attributes above.
+					// Server-minted from a real clock today, so nothing reaches it;
+					// so was `id`, and a boundary that holds by accident is not one.
+					const ms = Number(m.atUnixMs);
+					const at =
+						Number.isFinite(ms) && Math.abs(ms) <= 8.64e15
+							? new Date(ms).toISOString()
+							: `(malformed ${fence})`;
 					const parent =
 						m.parentMessageId.length > 0
 							? ` parent="${attr(m.parentMessageId, fence)}"`
