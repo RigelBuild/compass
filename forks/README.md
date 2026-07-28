@@ -20,8 +20,9 @@ canonical home to **Copybara spoke**: the GitHub-side staging ground upstream
 PRs are cut from. Nothing in the fleet builds from a spoke anymore — every
 consumer repoints to the vendored subtree at its fork's import.
 
-Design record (the contract this tree executes, in the monorepo):
-`docs/designs/platform/oss-fork-consolidation.md`.
+Design record (the contract this tree executes) lives in the sealed monorepo
+(`sealedsecurity/sealed`), not here:
+`docs/designs/platform/oss-fork-consolidation.md` in that repo.
 
 ## What a fork subtree is
 
@@ -31,10 +32,15 @@ distinction drives every rule here:
 - **Style-gate-exempt.** Fork subtrees face upstream's own style, not this
   repo's. A locally-formatted fork can never round-trip a diff to its upstream
   without reformat noise upstream maintainers reject, and every upstream pull
-  would re-conflict against the reformat. So `forks/*/**` is excluded from biome
-  and markdownlint (`biome.json`, `.markdownlint-cli2.jsonc`). The first-party
-  `forks/README.md` (this file) stays linted — the glob is `forks/*/**`, not
-  `forks/**`, precisely so that holds.
+  would re-conflict against the reformat. So the vendored trees are excluded
+  from both style gates — but each dialect spells it differently:
+  **markdownlint** (`.markdownlint-cli2.jsonc`) ignores `forks/*/**`, where the
+  `*/**` is load-bearing: it exempts the fork trees while keeping the
+  first-party `forks/README.md` (this file) linted. **biome** (`biome.json`)
+  carries `!forks/*` in `files.includes` — biome's folder-ignore form since
+  2.2.0, where a trailing `/**` trips its own `useBiomeIgnoreFolder` rule.
+  Biome does not process markdown at all, so this file's linting does not
+  depend on the biome glob.
 - **Functionally tested.** Style exemption is **not** test exemption. Each fork
   carries its own `forks/<name>/moon.yml` registering its native build/test/lint
   tasks (upstream's own toolchain) as moon tasks with `inputs` scoped to
@@ -131,7 +137,18 @@ there, and reinstall the root hook if the repo has one.
 ## Escape hatch: a fork that stops tracking upstream
 
 A fork whose upstream relationship ends (upstream archived, or the divergence
-becomes permanent) can opt into full gating: drop its `forks/*/**` exclusions,
-take the one-time reformat, and gain first-party style gating. It then needs no
-inbound Copybara. This is the per-fork opt-in that keeps the vendored-by-default
-posture from trapping a fork that has become de-facto sealed-first.
+becomes permanent) can opt into full gating, take the one-time reformat, and
+gain first-party style gating. It then needs no inbound Copybara.
+
+Opt one fork in without touching the others: both exclusions are wildcards over
+every fork, so do **not** simply delete them. Replace each with the explicit
+per-fork entries, omitting the graduating fork — in
+`.markdownlint-cli2.jsonc`, replace `forks/*/**` with one `forks/<name>/**` per
+still-vendored fork; in `biome.json`, replace `!forks/*` with one `!forks/<name>`
+per still-vendored fork. That expansion also narrows the biome exclusion to the
+fork directories themselves rather than every direct child of `forks/`, which is
+what is intended. Deleting the wildcards outright would de-exempt every vendored
+tree at once and reformat them all.
+
+This is the per-fork opt-in that keeps the vendored-by-default posture from
+trapping a fork that has become de-facto sealed-first.
