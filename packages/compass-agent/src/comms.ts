@@ -165,14 +165,19 @@ function commsFailure(
 		// The detail is server text that interpolates caller-supplied values, and
 		// it lands in the model's context as a tool failure — a position at least
 		// as trusted as the transcript, with no framing line and no author. A
-		// newline in it would forge a second line of authoritative output. Go's
-		// `%q` happens to quote those values at the store sites reachable today,
-		// but that is a formatting-verb choice in another language and layer: the
-		// same accidental invariant `attr` exists to stop relying on. Collapse to
-		// one line and bound the length here, where it becomes model-visible.
-		const detail = outcome.value.message
-			.replaceAll(/\s*\n\s*/g, " ")
-			.slice(0, 500);
+		// line break in it would forge a second line of authoritative output.
+		// Go's `%q` happens to quote those values at the store sites reachable
+		// today, but that is a formatting-verb choice in another language and
+		// layer: the same accidental invariant `attr` exists to stop relying on.
+		//
+		// The same `flat` the marker lines use, not a second copy of its regex —
+		// this site held one, and it kept the LF-only spelling when `flat` was
+		// widened. Two guards against one threat drift apart silently, and the
+		// weaker one is the one nobody re-reads.
+		//
+		// The bound runs AFTER the collapse, so slicing cannot re-expose a break
+		// the collapse removed.
+		const detail = flat(outcome.value.message).slice(0, 500);
 		return new Error(
 			`${toolName} failed: ${attr(outcome.value.code)}: ${detail}`,
 		);
@@ -224,11 +229,21 @@ const attr = (v: string, fence?: string): string =>
 
 // `attr` guards a tag attribute; `flat` guards a marker LINE. Every untrusted
 // value interpolated into a one-line `[ask]`/`[answered]` record passes through
-// here, because a newline in any of them splits that line into two and the
+// here, because a line break in any of them splits that line into two and the
 // second carries no fence and no marker — a forgery that needs no guessing.
 // One collapse at the merge point rather than one per field, so a value added
 // to that line later cannot arrive raw by omission.
-const flat = (v: string): string => v.replaceAll(/\s*\n\s*/g, " ");
+//
+// Constrain rather than enumerate, for the reason `attr` argues above. A
+// list of the breaks to collapse must spell every one of them, and `\n` alone
+// missed six: a lone `\r`, U+2028 and U+2029 (both formal line terminators),
+// VT, FF, and NEL. Widening that list to those six still admits every other
+// C0 control — including ESC, which in a terminal is an ANSI escape rather
+// than a character. So the class is the property, not the roster: everything
+// in `Cc`/`Zl`/`Zp` plus whitespace collapses, and a break spelled in some
+// encoding nobody here thought of is already covered.
+const flat = (v: string): string =>
+	v.replaceAll(/[\p{Cc}\p{Zl}\p{Zp}\s]+/gu, " ");
 
 /**
  * The native comms tool set. Exactly two tools; never an ask-answering one.
