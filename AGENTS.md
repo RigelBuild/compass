@@ -12,8 +12,9 @@ pinned in `.prototools`) plus [devenv](https://devenv.sh)
 
 `moon run :ci` is the entire gate — build, lint, test, and contract drift across
 the workspace. **Run it and get it green before declaring a change ready.** Use
-`moon run <project>:<task>` to run one piece. The same task graph runs locally
-and in CI.
+`moon run <project>:<task>` to run one piece. That one task graph is the whole
+gate — there is no remote pipeline yet (SEA-1507), so your local green is the
+only check the change gets.
 
 ## The compass.v1 contract: the owned door
 
@@ -23,8 +24,8 @@ and in CI.
   `packages/compass-client/src/gen`. It is generated and checked in.
 - To change the contract: edit the schema under `proto/compass/v1`, run
   `moon run compass-proto:gen`, and commit the regenerated clients with the
-  schema change. CI's drift gate (regenerate + `git diff`) fails if they
-  disagree.
+  schema change. The drift gate (regenerate + `git diff`) in `moon run :ci`
+  fails if they disagree.
 - UI code reaches the server only through the generated client
   (`@compass/client`) — never a raw socket or hand-written stub.
 

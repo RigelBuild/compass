@@ -96,11 +96,12 @@ Per-fork customization, consumer, and sync policy.
 ## nix-source forks build through the flake, not `nix-build -A`
 
 Both forks are nix-source class, so their functional-CI task is a nix build —
-`nix` is on CI's PATH, no per-fork language toolchain needed (devenv's Rust
-compiles via its flake's fenix pin; nix2container's Go via `buildGoModule`
-inside the nix build, which also runs Go's own checks). **Use the flake build
-(`nix build .#<attr>`), never `nix-build -A`.** nix2container's `default.nix`
-pins its source with `lib.fileset.gitTracked ./.`, which requires a git-repo
+`nix` is on the PATH wherever this runs, no per-fork language toolchain needed
+(devenv's Rust compiles via its flake's fenix pin; nix2container's Go via
+`buildGoModule` inside the nix build, which also runs Go's own checks). **Use
+the flake build (`nix build .#<attr>`), never `nix-build -A`.**
+nix2container's `default.nix` pins its source with
+`lib.fileset.gitTracked ./.`, which requires a git-repo
 root — satisfied only by the store-copied flake tree, not the in-repo
 subdirectory; `nix-build -A` fails there with "not a local working tree of a
 Git repository." The flake path is also exactly how a downstream consumer

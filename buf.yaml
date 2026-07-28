@@ -1,6 +1,7 @@
 # buf module config: lint + breaking-change detection for the compass.v1
-# schema. `buf breaking` (run against main in CI) gates incompatible edits to
-# the owned door; `buf lint` keeps the schema idiomatic.
+# schema. `buf breaking` (run against main by `moon run
+# compass-proto:breaking`) gates incompatible edits to the owned door;
+# `buf lint` keeps the schema idiomatic.
 version: v2
 modules:
   - path: proto
