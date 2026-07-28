@@ -29,6 +29,7 @@ import type {
 	Ask,
 	Channel,
 	ChannelGroup,
+	ConvBlock,
 	Message,
 } from "./comms-stub";
 import { adaptMessage } from "./live/adapt";
@@ -586,7 +587,9 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// ── Comms: the channel surface (design compass-0.7) ──
 	// ONE reduced CommsState drives all four comms accessors. It starts at
 	// `initialComms` (EMPTY by default — the store no longer boots from the
-	// fixture) and is replaced wholesale by each `runCommsStream` push; the local
+	// fixture) and is replaced wholesale by each `runCommsStream` push — bar the
+	// in-progress local ask answers `preserveLocalAsks` carries across, the one
+	// state the server cannot send back because it was never told; the local
 	// membership mutations below rewrite it the same immutable way. The four
 	// accessors are memos over it, so a message event leaves the channels array
 	// reference untouched and the rail doesn't re-render.
@@ -617,8 +620,12 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// user's explicit pick wins as long as the channel is still visible, so a
 	// later snapshot/event can never yank the surface out from under them; an
 	// absent or vanished selection falls back to the first subscribed channel.
+	//
+	// The push is adopted WHOLESALE except for in-progress local ask answers,
+	// which the server has never been told about and so cannot send back — see
+	// `preserveLocalAsks`.
 	const adoptComms = (next: CommsState) => {
-		setComms(next);
+		setComms((prev) => preserveLocalAsks(prev, next));
 		const current = selectedChannelId();
 		if (current && next.channels.some((c) => c.id === current)) return;
 		setSelectedChannelId(firstChannelId(next));
@@ -948,6 +955,13 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// the point at which one atomic RespondToAsk can carry the whole thing.
 	const isAskComplete = (ask: Ask) =>
 		ask.questions.every((q) => q.chosenOptionIds.length > 0);
+	// Whether two asks pose the SAME questions in the same order — the shape
+	// test every ask-to-ask comparison starts from. An ask whose questions moved
+	// is a different ask as far as local state is concerned: there is nothing
+	// left to line the answers up against.
+	const sameQuestions = (a: Ask, b: Ask) =>
+		a.questions.length === b.questions.length &&
+		a.questions.every((q, i) => q.questionId === b.questions[i]?.questionId);
 	// Whether an ask still carries exactly the answers that were SHIPPED — the
 	// test a rollback must pass, since restoring over an ask the stream moved
 	// meanwhile would overwrite the server's value with stale local state. A
@@ -955,16 +969,78 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// to roll back into.
 	const sameAnswers = (current: Ask | undefined, shipped: Ask) =>
 		current !== undefined &&
-		current.questions.length === shipped.questions.length &&
+		sameQuestions(current, shipped) &&
 		current.questions.every((q, i) => {
 			const was = shipped.questions[i];
 			return (
 				was !== undefined &&
-				q.questionId === was.questionId &&
 				q.chosenOptionIds.length === was.chosenOptionIds.length &&
 				q.chosenOptionIds.every((id, j) => id === was.chosenOptionIds[j])
 			);
 		});
+	// An ask the server has said nothing about: every question still unanswered.
+	// The server records an ask's answers only on a RespondToAsk it ACCEPTED, so
+	// this is exactly "no authoritative value yet".
+	const isAskUnanswered = (ask: Ask) =>
+		ask.questions.every((q) => q.chosenOptionIds.length === 0);
+	// Carry in-progress LOCAL ask answers across a stream push.
+	//
+	// The wire is atomic — one RespondToAsk per ask, issued only on the click
+	// that COMPLETES it (see `sendAsk`) — so on a multi-question ask every choice
+	// but the last lives ONLY in this state. `adoptComms` otherwise replaces it
+	// wholesale, so a push landing mid-ask would silently discard the user's
+	// clicks, and the server could not send them back: it was never told.
+	//
+	// A local answer is kept ONLY where the server demonstrably has no value of
+	// its own, which keeps "a server value for an ask is AUTHORITATIVE" — the
+	// property `sendAsk`'s conditional rollback rests on — exactly true:
+	//
+	//   - the ask must not be SUBMITTED: once our respond is issued the local
+	//     record is a claim about what the server was told, not an edit in
+	//     progress, and the rollback decides by comparing it against whatever
+	//     the stream has since put in its place;
+	//   - the pushed ask must be wholly unanswered: any recorded answer — ours
+	//     accepted, or another participant's — is the record and wins;
+	//   - the questions must line up, or the ask's shape moved and it is new.
+	//
+	// A hoisted declaration so it can sit beside the ask machinery it reuses
+	// while `adoptComms`, defined above with the rest of the stream wiring,
+	// still calls it.
+	function preserveLocalAsks(prev: CommsState, next: CommsState): CommsState {
+		// The unsubmitted, actually-answered asks, by message id then ask id.
+		// Empty whenever no ask is mid-answer — which is nearly every push — and
+		// then the pushed state is adopted untouched, references and all.
+		const local = new Map<string, Map<string, Ask>>();
+		for (const msg of prev.messages) {
+			for (const b of msg.blocks) {
+				if (b.kind !== "ask") continue;
+				if (isAskSubmitted(b.ask.askId) || isAskUnanswered(b.ask)) continue;
+				const byAsk = local.get(msg.id) ?? new Map<string, Ask>();
+				byAsk.set(b.ask.askId, b.ask);
+				local.set(msg.id, byAsk);
+			}
+		}
+		if (local.size === 0) return next;
+		let touched = false;
+		const messages = next.messages.map((msg) => {
+			const byAsk = local.get(msg.id);
+			if (!byAsk) return msg;
+			let replaced = false;
+			const blocks = msg.blocks.map((b): ConvBlock => {
+				if (b.kind !== "ask") return b;
+				const mine = byAsk.get(b.ask.askId);
+				if (!mine || !isAskUnanswered(b.ask) || !sameQuestions(b.ask, mine)) {
+					return b;
+				}
+				replaced = true;
+				return { kind: "ask", ask: mine };
+			});
+			if (!replaced) return msg;
+			touched = true;
+			return { ...msg, blocks };
+		});
+		return touched ? { ...next, messages } : next;
+	}
 	// Replace an ask in place — the one write used both to record an answer and
 	// to roll a refused one back.
 	const putAsk = (messageId: string, ask: Ask) => {
@@ -1092,7 +1168,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		if (isAskSubmitted(askId)) return;
 		const ask = findAsk(messageId, askId);
 		if (!ask) return;
-		if (ask.questions.every((q) => q.chosenOptionIds.length === 0)) return;
+		if (isAskUnanswered(ask)) return;
 		// No rollback target: nothing was recorded by this call, so a refusal
 		// leaves the local record exactly as the user staged it — still honest,
 		// still unsent, still retryable.
