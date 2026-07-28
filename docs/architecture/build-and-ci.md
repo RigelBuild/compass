@@ -9,8 +9,9 @@ devenv      the dev shell
 moon        the task graph: what to build/test, caching, affected detection
 ```
 
-The headline property: **the same task graph runs CI and local CI.** Only the
-scheduler differs — GitHub Actions remotely, moon on one box locally.
+The headline property: **one task graph is the whole gate.** Today it runs only
+locally, on one box, via moon; the remote scheduler (SEA-1507) will reproduce
+that graph rather than define a second one.
 
 ## Toolchains: proto
 
@@ -33,29 +34,33 @@ tool wins.
   together (Linux). The server is ready only once it answers a real
   `GetServerInfo` — it binds its socket before running store migrations, so a
   socket-exists check would flip ready while a dial still blocks. It serves the
-  Unix socket plus a loopback gRPC-Web door on `127.0.0.1:50051` for the UI dev
-  server.
+  Unix socket plus a loopback gRPC-Web door for the UI dev server — base port
+  `127.0.0.1:50051`, which devenv may relocate on collision, so read the
+  resolved value rather than hardcoding it.
 
 ### Verifying the client against a live server
 
-The UI suite runs against `comms-fake`/`compass-fake`, so it cannot catch a
-break in the client↔server contract: a renamed proto field or a tightened
-server-side validation leaves every UI test green and the shipped app broken.
+The UI suite runs against checked-in stubs (`apps/ui/src/comms-stub.ts`,
+`stub-data.ts`) and hand-written fake clients in the `live/` tests, so it
+cannot catch a break in the client↔server contract: a renamed proto field or
+a tightened server-side validation leaves every UI test green and the shipped
+app broken.
 The only check that covers it drives `@compass/client`'s
 `createCompassWebClient`/`createCommsWebClient` — the doors
 `apps/ui/src/live/connection.ts` itself uses — against `devenv up`.
 
-Subscribe, post a message, and assert **the id the caller just minted arrives
-back over `SubscribeComms`**. Correlating on that id is the whole point:
-`SubscribeComms` replays history before it tails, so asserting merely that *a*
-`messagePosted` arrived passes identically against a stream that only ever
-replays and never delivers anything live.
+Subscribe, post a message, and assert **the id `PostMessage` returned for that
+post arrives back over `SubscribeComms`**. Correlating on that id is the whole
+point: `SubscribeComms` replays history before it tails, so asserting merely
+that *a* `messagePosted` arrived passes identically against a stream that only
+ever replays and never delivers anything live. (`Message.id` is server-assigned
+— the caller learns it from the post's response. `client_request_id` is an
+idempotency key and is not echoed on `MessagePosted`, so it cannot carry the
+correlation.)
 
-Keep the correlation even if the replay behaviour changes. Matching a minted id
-does not depend on knowing *how* the stream might break — it discriminates
-against failure modes nobody has enumerated, which is most of them. Reasoning
-about which broken cases a weaker assertion would catch requires already
-knowing them; the replay above was only obvious in hindsight.
+Keep the id correlation even if the replay behaviour changes — it discriminates
+against failure modes nobody has enumerated yet, and the replay above was only
+obvious in hindsight.
 
 What the id settles is *attribution* — is this event the one I caused? It does
 not settle *completeness* (were exactly the right events emitted, and no
@@ -104,8 +109,8 @@ The wide run is occasionally flaky: `compass-proto:drift` can fail with
 having received a truncated request. It has only been observed inside the
 full `:ci` fan-out, never when `drift` runs alone, and the mechanism is not
 yet established (SEA-1526). `--concurrency 4` has not reproduced it and runs
-the battery ~14x faster than serial, so it is a reasonable default — but it
-is a mitigation, not a diagnosis. **A red `:ci` is worth re-running once on
+the battery ~14x faster than serial, so it is a reasonable flag to pass — but
+it is a mitigation, not a diagnosis. **A red `:ci` is worth re-running once on
 the same tree before you treat it as your change's fault.**
 
 ## Caching

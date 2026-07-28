@@ -95,9 +95,10 @@ it:
 3. Commit the regenerated `go/gen` and `packages/compass-client/src/gen`
    alongside the schema change.
 
-CI runs `buf lint`, a backward-compatibility check (`buf breaking`), and a
-drift gate (regenerate + `git diff`) — so the checked-in clients can never
-silently fall out of sync with the schema.
+These gates — `buf lint`, a backward-compatibility check (`buf breaking`), and
+a drift gate (regenerate + `git diff`) — keep the checked-in clients from
+silently falling out of sync with the schema. They run locally via
+`moon run :ci`; there is no remote pipeline yet (SEA-1507).
 
 ## License
 

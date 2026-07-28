@@ -25,8 +25,9 @@ bun, node, moon) from the repository toolchain config, then `bun install`.
 moon run :ci
 ```
 
-The same task graph runs locally and in CI, so a green local run is the same
-check CI runs. It covers, across the workspace:
+This one task graph is the whole gate — there is no remote pipeline yet
+(SEA-1507), so a green local run is the only check your change gets. It
+covers, across the workspace:
 
 - Go: `go build ./...`, `go test ./...` (the fuller `-race` / lint / vuln
   battery lands with the backend tiers).
