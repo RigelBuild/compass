@@ -1208,6 +1208,37 @@ button {
 	opacity: 1;
 }
 
+/* The skip affordance on a partially answered multi-question ask. An ask is
+ * answerable exactly ONCE, so this is the deliberate "send what I have and
+ * leave the rest blank" — quieter than an option, since answering the rest is
+ * the ordinary path. */
+.ask-submit-row {
+	display: flex;
+}
+
+.ask-submit {
+	font-size: 11px;
+	font-weight: 600;
+	padding: 3px 10px;
+	border-radius: 999px;
+	border: 1px dashed var(--border-strong);
+	background: transparent;
+	color: var(--text-dim);
+}
+
+.ask-submit:hover {
+	border-style: solid;
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+/* A REFUSED RespondToAsk: the ask block rolls the answer back, and says why —
+ * same weight and colour as the composer's failed-post error. */
+.ask-error {
+	color: var(--danger, #f87171);
+	font-size: 12px;
+}
+
 /* Fallback for a message block whose kind this UI doesn't render (a newer
  * backend block kind) — a visible placeholder rather than silently dropping
  * the content. */
@@ -3129,6 +3160,7 @@ button {
 .conv-composer {
 	flex: 0 0 auto;
 	display: flex;
+	flex-wrap: wrap;
 	gap: 8px;
 	padding: 10px 16px;
 	border-top: 1px solid var(--border);
@@ -3168,6 +3200,14 @@ button {
 	background: var(--bg-card);
 	color: var(--text-faint);
 	cursor: default;
+}
+
+/* A failed post: the error sits beside the field on its own row (the composer
+ * wraps) so the restored draft stays visible and editable. */
+.conv-composer-error {
+	flex: 1 0 100%;
+	color: var(--danger, #f87171);
+	font-size: 12px;
 }
 
 /* ── Log panel (T4): minimizable observation companion at the workspace's right
@@ -3253,6 +3293,14 @@ button {
 .obs-stop:disabled {
 	opacity: 0.4;
 	cursor: default;
+}
+
+/* A REFUSED stop, said beside the control rather than left in the console —
+ * same weight and colour as the ask block's refusal (.ask-error). */
+.obs-error {
+	flex: 0 1 auto;
+	color: var(--danger, #f87171);
+	font-size: 12px;
 }
 
 .obs-min {

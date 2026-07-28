@@ -97,8 +97,15 @@ const MentionText: Component<{
 };
 
 /** An inline async ask (comms.proto Ask): a question with selectable options,
- *  answerable in place — never a blocking modal. A single-select ask locks once
- *  answered; a multi-select stays open so choices can toggle. */
+ *  answerable in place — never a blocking modal. A single-select question locks
+ *  once answered; a multi-select stays open so choices can toggle.
+ *
+ *  The wire send is GATED on completeness in the store: the server accepts
+ *  exactly ONE RespondToAsk per ask, so clicks accumulate locally and the
+ *  completing click ships them all at once. A question the user means to SKIP
+ *  would never complete the ask, so a partially answered ask grows a `submit`
+ *  control that ships what is answered with the skipped questions empty. Once
+ *  the ask is submitted it is settled on the wire and every option locks. */
 const AskBlock: Component<{
 	messageId: string;
 	ask: Ask;
@@ -107,9 +114,26 @@ const AskBlock: Component<{
 	const ask = () => props.ask;
 	const chosen = (q: AskQuestion, optionId: string) =>
 		q.chosenOptionIds.includes(optionId);
-	// A single-select question is settled once answered; further clicks are locked.
+	// The ask's one respond has been issued: it is settled server-side, so no
+	// further click may record an answer the server will never receive.
+	const submitted = () => store.isAskSubmitted(ask().askId);
+	// The last refusal for this ask, if any. A refused respond rolls the local
+	// answer back, so without this the user's click just disappears — the same
+	// hole the composer's error span closes for a failed post.
+	const error = () => store.askError(ask().askId);
+	// A single-select question is settled once answered; further clicks are
+	// locked. A submitted ask locks every question outright.
 	const locked = (q: AskQuestion) =>
-		!q.allowMultiple && q.chosenOptionIds.length > 0;
+		submitted() || (!q.allowMultiple && q.chosenOptionIds.length > 0);
+	const answeredCount = () =>
+		ask().questions.filter((q) => q.chosenOptionIds.length > 0).length;
+	// The skip affordance is meaningful only in between: an untouched ask has
+	// nothing to submit, and a complete one has already been sent by its
+	// completing click.
+	const canSubmit = () =>
+		!submitted() &&
+		answeredCount() > 0 &&
+		answeredCount() < ask().questions.length;
 
 	return (
 		<div
@@ -153,6 +177,25 @@ const AskBlock: Component<{
 					</>
 				)}
 			</Index>
+			<Show when={canSubmit()}>
+				<div class="ask-submit-row">
+					<button
+						type="button"
+						class="ask-submit"
+						title="Send this ask now, leaving the unanswered questions blank. An ask can only be answered once."
+						onClick={() => store.submitAsk(props.messageId, ask().askId)}
+					>
+						submit — skip the rest
+					</button>
+				</div>
+			</Show>
+			<Show when={error()}>
+				{(msg) => (
+					<span class="ask-error" role="alert">
+						{msg()}
+					</span>
+				)}
+			</Show>
 		</div>
 	);
 };
@@ -303,18 +346,42 @@ const ChannelHeader: Component<{
 	);
 };
 
-/** The composer (non-functional in the mockup — posting lands with PostMessage).
+/** The composer: posts a root message to the channel through the wire
+ *  `PostMessage` (store.postMessage). NOTHING is inserted locally — the stored
+ *  message arrives on the SubscribeComms echo, deduped by id, so it renders
+ *  exactly once.
+ *
  *  Carries the @-mention affordance: typing `@` is how you reach an agent's
  *  immediate attention (a steer); a plain message reaches a subscribed agent at
- *  its turn end. */
+ *  its turn end.
+ *
+ *  Failure keeps the user's text: the draft is cleared OPTIMISTICALLY so the
+ *  input frees up immediately, and restored verbatim if the post rejects (with
+ *  the error rendered beside the field). A later keystroke wins over the
+ *  restore — the user's in-flight typing is never clobbered by a stale reject. */
 const Composer: Component<{ channel: Channel }> = (props) => {
+	const store = useStore();
 	const [draft, setDraft] = createSignal("");
+	const [error, setError] = createSignal<string | null>(null);
 	const placeholder = () => {
 		if (props.channel.membership === "none") return "Join to post…";
 		const target = isDm(props.channel)
 			? `@${props.channel.name}`
 			: `#${props.channel.name}`;
 		return `Message ${target} — @ to mention or steer an agent`;
+	};
+	const send = () => {
+		const text = draft().trim();
+		if (!text || props.channel.membership === "none") return;
+		setError(null);
+		setDraft("");
+		store.postMessage(props.channel.id, text).catch((e: unknown) => {
+			setError(e instanceof Error ? e.message : String(e));
+			// Restore only into an empty field: if the user has started typing the
+			// next message, their text stands and the failed one is theirs to
+			// recover from the error, not something we splice in mid-word.
+			setDraft((current) => (current === "" ? text : current));
+		});
 	};
 	return (
 		<div class="conv-composer">
@@ -324,6 +391,12 @@ const Composer: Component<{ channel: Channel }> = (props) => {
 				value={draft()}
 				disabled={props.channel.membership === "none"}
 				onInput={(e) => setDraft(e.currentTarget.value)}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" && !e.shiftKey) {
+						e.preventDefault();
+						send();
+					}
+				}}
 			/>
 			<button
 				type="button"
@@ -331,9 +404,17 @@ const Composer: Component<{ channel: Channel }> = (props) => {
 				disabled={
 					props.channel.membership === "none" || draft().trim().length === 0
 				}
+				onClick={send}
 			>
 				send
 			</button>
+			<Show when={error()}>
+				{(msg) => (
+					<span class="conv-composer-error" role="alert">
+						{msg()}
+					</span>
+				)}
+			</Show>
 		</div>
 	);
 };
@@ -390,7 +471,22 @@ export const ChannelView: Component<{
 											: "No messages yet."
 									}
 								/>
-								<Composer channel={chan()} />
+								{/* A FRESH composer per channel. The enclosing `<Show>` is
+								    unkeyed — Solid memoizes its condition on truthiness, so
+								    switching between two truthy channels does NOT re-run these
+								    children — which would leave one Composer instance holding
+								    channel A's draft/error while `props.channel` points at B,
+								    posting a private draft into the wrong channel. Keying on
+								    the id remounts the composer (fresh signals) and nothing
+								    else: the stream above keeps its scroll position.
+
+								    The child MUST declare its parameter: `Show` only invokes a
+								    children function of arity > 0, and returns a zero-arg one
+								    as a reactive getter instead — which re-renders in place
+								    and defeats the keying. */}
+								<Show when={chan().id} keyed>
+									{(_channelId) => <Composer channel={chan()} />}
+								</Show>
 							</div>
 							<ThreadPanel
 								channel={chan()}

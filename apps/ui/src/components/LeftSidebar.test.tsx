@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
-import { STUB_CHANNELS } from "../comms-stub";
+import { STUB_CHANNELS, STUB_COMMS_STATE } from "../comms-stub";
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_AGENTS } from "../stub-data";
@@ -43,7 +43,7 @@ const AGENT_DM_ROWS = STUB_CHANNELS.filter((c) => c.kind === "dm").length;
 function mountSidebar(): { store: AppStore; container: HTMLElement } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore();
+		store = createAppStore({ initialComms: STUB_COMMS_STATE });
 		return (
 			<StoreContext.Provider value={store}>
 				<LeftSidebar />
@@ -207,10 +207,15 @@ describe("LeftSidebar (T5)", () => {
 		expect(store.selectedAgentId()).toBe("acc-cook");
 	});
 
-	// Contract (§613): the browse/join affordance still mutates membership through
-	// the store — expanding the browse list and joining ch-random moves it off
-	// `none`.
-	test("browse/join still mutates channel membership", () => {
+	// Matt's ruling: join/subscribe are NOT wired to the wire yet — there is no
+	// join/subscribe RPC, and the old local-only mutation silently reverted the
+	// moment the next SubscribeComms snapshot re-derived membership from the
+	// server (store.ts adoptComms → live/adapt.ts deriveMembership). A control
+	// that plainly does not work beats one that appears to and undoes itself, so
+	// the join control renders DISABLED with an honest title and clicking it
+	// changes nothing. Mutation-check: restoring the local-toggle mutation
+	// reddens the membership leg; an enabled button reddens the disabled leg.
+	test("browse/join renders disabled and does not fake membership", () => {
 		const { store, container } = mountSidebar();
 
 		const membershipOf = () =>
@@ -230,9 +235,38 @@ describe("LeftSidebar (T5)", () => {
 		const join = randomRow?.querySelector<HTMLButtonElement>(".ch-join");
 		expect(join).not.toBeNull();
 		if (!join) throw new Error("ch-random join button not rendered");
-		fireEvent.click(join);
 
-		// Joined — no longer a `none`/browse channel.
-		expect(membershipOf()).not.toBe("none");
+		// The control is visibly non-functional, and says why.
+		expect(join.disabled).toBe(true);
+		expect(join.title).toContain("not wired up yet");
+
+		// And nothing fakes state behind it.
+		fireEvent.click(join);
+		expect(membershipOf()).toBe("none");
+	});
+
+	// The same ruling on the subscribe toggle: a joined row's ◉/○ control is
+	// disabled with an honest title, and a click leaves membership alone. The
+	// always-subscribed rows render a non-button `.ch-sub.fixed` marker, so this
+	// picks a row that actually has the toggle. Mutation-check: restoring
+	// toggleSubscribe's local mutation reddens the membership leg.
+	test("the subscribe toggle renders disabled and does not fake membership", () => {
+		const { store, container } = mountSidebar();
+
+		const toggles = [
+			...container.querySelectorAll<HTMLButtonElement>("button.ch-sub"),
+		];
+		// Non-triviality: the rail really does render togglable rows.
+		expect(toggles.length).toBeGreaterThan(0);
+
+		const before = store.channels().map((c) => c.membership);
+		for (const toggle of toggles) {
+			expect(toggle.disabled).toBe(true);
+			expect(toggle.title).toContain("not wired up yet");
+			fireEvent.click(toggle);
+		}
+
+		// No membership anywhere moved.
+		expect(store.channels().map((c) => c.membership)).toEqual(before);
 	});
 });

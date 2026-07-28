@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { STUB_COMMS_STATE } from "../comms-stub";
 import { StoreContext } from "../context";
 import {
 	type AppStore,
@@ -62,7 +63,7 @@ function mountAgentView(): {
 } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore();
+		store = createAppStore({ initialComms: STUB_COMMS_STATE });
 		return (
 			<StoreContext.Provider value={store}>
 				<AgentView />

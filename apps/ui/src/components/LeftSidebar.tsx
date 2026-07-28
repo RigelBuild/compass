@@ -150,7 +150,11 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 			</button>
 
 			{/* Subscribe toggle (only meaningful once joined, which every rail row
-			    is). Fixed/disabled where the subscription is implicit. */}
+			    is). Fixed where the subscription is implicit; DISABLED everywhere
+			    else until the subscribe RPC lands — the wire has none, and the
+			    local-only toggle this used to drive silently reverted on the next
+			    SubscribeComms snapshot. It still shows the real membership, it
+			    just can't change it yet. */}
 			<Show
 				when={!fixed()}
 				fallback={
@@ -168,12 +172,12 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 					type="button"
 					class="ch-sub"
 					classList={{ on: subscribed() }}
+					disabled
 					title={
 						subscribed()
-							? "Subscribed — new messages are pushed to you. Click to unsubscribe."
-							: "Joined — click to subscribe (get new messages pushed)."
+							? "Subscribed — new messages are pushed to you. Unsubscribing is not wired up yet."
+							: "Joined, not subscribed. Subscribing is not wired up yet."
 					}
-					onClick={() => store.toggleSubscribe(channel().id)}
 					aria-pressed={subscribed()}
 				>
 					{subscribed() ? "◉" : "○"}
@@ -187,7 +191,6 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
  *  (membership `none`). Collapsed by default so the rail stays member-focused;
  *  expanding reveals a join affordance per channel. */
 const BrowseChannels: Component<{ channels: Channel[] }> = (props) => {
-	const store = useStore();
 	const [open, setOpen] = createSignal(false);
 	return (
 		<div class="rail-section rail-browse">
@@ -214,8 +217,8 @@ const BrowseChannels: Component<{ channels: Channel[] }> = (props) => {
 							<button
 								type="button"
 								class="ch-join"
-								title="Join — read this channel's messages"
-								onClick={() => store.joinChannel(channel.id)}
+								disabled
+								title="Joining is not wired up yet — the server has no join RPC, so this would only pretend."
 							>
 								join
 							</button>

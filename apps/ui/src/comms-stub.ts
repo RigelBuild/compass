@@ -573,3 +573,16 @@ export const STUB_MESSAGES: Message[] = [
 		],
 	},
 ];
+
+/** The fixture as a `CommsState` — the shape `createAppStore` takes as
+ *  `initialComms` when constructed OFFLINE (no comms client). The store no
+ *  longer boots from this: it is the tests' explicit seed for the surfaces whose
+ *  behavior is asserted over a populated conversation. Typed structurally (not
+ *  by importing ./live/comms-state) so the fixture module stays free of the live
+ *  layer; the store's parameter type checks the fit at every call site. */
+export const STUB_COMMS_STATE = {
+	accounts: STUB_ACCOUNTS,
+	channelGroups: STUB_CHANNEL_GROUPS,
+	channels: STUB_CHANNELS,
+	messages: STUB_MESSAGES,
+};

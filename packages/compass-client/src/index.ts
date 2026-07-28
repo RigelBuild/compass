@@ -146,19 +146,29 @@ export { create } from "@bufbuild/protobuf";
 export type {
 	Account,
 	AgentAccount,
+	Ask,
+	AskOption,
+	AskQuestion,
 	Channel,
 	ChannelGroup,
+	Message,
+	MessageBlock,
 	SubscribeCommsResponse,
 	UserAccount,
 } from "./gen/compass/v1/comms_pb";
 export {
 	AccountSchema,
 	AgentAccountSchema,
+	AskOptionSchema,
+	AskQuestionSchema,
+	AskSchema,
 	ChannelGroupSchema,
 	ChannelGroupVisibility,
 	ChannelKind,
 	ChannelSchema,
 	CommsService,
+	MessageBlockSchema,
+	MessageSchema,
 	UserAccountSchema,
 } from "./gen/compass/v1/comms_pb";
 export type {

@@ -13,8 +13,10 @@ import type { AgentSession } from "./session-events";
 // to an empty trace.
 export const STUB_SESSION_EVENTS: Record<string, AgentSession> = {
 	"acc-livingstone": {
+		sessionId: "sess-livingstone-1",
 		agentAccountId: "acc-livingstone",
 		running: true,
+		fixture: true,
 		events: [
 			// A thinking beat before the turn.
 			{
@@ -137,8 +139,10 @@ export const STUB_SESSION_EVENTS: Record<string, AgentSession> = {
 		],
 	},
 	"acc-drake": {
+		sessionId: "sess-drake-1",
 		agentAccountId: "acc-drake",
 		running: false,
+		fixture: true,
 		events: [
 			{
 				id: "se-d1",
@@ -149,8 +153,10 @@ export const STUB_SESSION_EVENTS: Record<string, AgentSession> = {
 		],
 	},
 	"acc-cook": {
+		sessionId: "sess-cook-1",
 		agentAccountId: "acc-cook",
 		running: true,
+		fixture: true,
 		events: [
 			{
 				id: "se-k1",
