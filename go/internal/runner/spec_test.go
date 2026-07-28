@@ -200,12 +200,16 @@ func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
 		{"an embedded separator", "abc/def"},
 		{"a leading separator (absolute)", "/etc/passwd"},
 		{"a trailing separator", "abc/"},
-		// Control characters clear every check above — a NUL is valid UTF-8 and
-		// carries no separator — and would otherwise fail at bind as a bare
-		// EINVAL naming nothing.
+		// Control and format characters clear every check above and, measured,
+		// pass MkdirAll and bind too (a NUL is the exception, failing at
+		// MkdirAll) — so without this guard they reach the container name and
+		// the logs that quote it. The C1 and bidi rows are the ones a predicate
+		// written as `r < 0x20 || r == 0x7f` would silently admit.
 		{"an embedded NUL", "abc\x00def"},
 		{"an embedded newline", "abc\ndef"},
 		{"an embedded DEL", "abc\x7fdef"},
+		{"an embedded C1 control", "abc\u0085def"},
+		{"an embedded bidi override", "abc\u202edef"},
 	}
 	for _, tc := range rejected {
 		t.Run(tc.name, func(t *testing.T) {

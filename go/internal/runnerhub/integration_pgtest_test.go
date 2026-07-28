@@ -540,7 +540,8 @@ func runSessionsLoop(t *testing.T, ctx context.Context, cancel context.CancelFun
 // across the platforms //go:build unix admits (108 on linux/solaris/illumos,
 // 104 on darwin and the BSDs, 1023 on aix), and this file is //go:build unix.
 // The derivation is duplicated below because that constant is unexported; the
-// NUMBER is never restated.
+// code below derives the cap rather than writing a literal. (The sizes quoted
+// just above are for the reader, not values anything computes against.)
 func shortRuntimeDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "cr") //nolint:usetesting // t.TempDir embeds the test name, which is what put this path over the sun_path cap — the bug this helper exists to prevent

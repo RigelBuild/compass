@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"net/url"
 	"strings"
+	"unicode"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/runtime"
@@ -112,18 +113,27 @@ func validAccountID(id string) error {
 	if id == "" {
 		return errors.New("provision request requires an agent account id")
 	}
-	// fs.ValidPath rejects "", "..", any empty segment, a leading or trailing
-	// "/", and invalid UTF-8, but returns true for "." (documented) and for a
-	// legal multi-element path like "abc/def" — hence the other two conjuncts.
+	// fs.ValidPath rejects "..", any empty segment, a leading or trailing "/",
+	// and invalid UTF-8, but returns true for "." (documented) and for a legal
+	// multi-element path like "abc/def" — hence the other two conjuncts. (The
+	// empty id returned above, with its own message.)
 	if !fs.ValidPath(id) || id == "." || strings.Contains(id, "/") {
 		return fmt.Errorf("agent account id %q is not a valid path element", id)
 	}
-	// A control character survives the checks above (a NUL is valid UTF-8 and
-	// carries no separator) and fails much later, at bind, as a bare EINVAL —
-	// the same undiagnosable error the socket's length guard exists to replace.
-	// Refuse it here, where the message can name the input.
-	if strings.ContainsFunc(id, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-		return fmt.Errorf("agent account id %q contains a control character", id)
+	// A control or format character clears every check above — it is valid UTF-8
+	// and carries no separator — and nothing downstream stops it either.
+	// Measured on Linux against listenAgentSocket's own ordering: a newline, a
+	// DEL, a C1 control and a bidi override all pass MkdirAll AND bind, so the
+	// id reaches the container name and every log line that quotes it intact.
+	// (A NUL is the lone exception, failing at MkdirAll — one hop before the
+	// listener — as a bare EINVAL naming nothing.) The name is what an operator
+	// reads back out of `podman ps` and the Runner's logs to identify an agent,
+	// so a character that can forge a line break or reorder the display makes
+	// that identification unreliable. unicode.IsControl covers C0, DEL and C1;
+	// the format class (Cf) is checked with it because a bidi override is not a
+	// control character but spoofs a rendered name just as effectively.
+	if strings.ContainsFunc(id, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
+		return fmt.Errorf("agent account id %q contains a control or format character", id)
 	}
 	return nil
 }
