@@ -10,9 +10,9 @@ package runner
 // exec's uid, $HOME, checkout and model) staying identical across Start and
 // Reload. Every test names the contract a plausible bug would break.
 //
-// Start/Reload spawn a relay whose AgentStream.Stop terminates a real child, so
-// these use the stub-streaming runtime (a real terminatable Process) plus a live
-// PublishEvents wire for the relay to publish onto.
+// Start/Reload spawn an agent whose AgentStream.Stop terminates a real child, so
+// these use the stub-streaming runtime (a real terminatable Process) plus a
+// RunnerService wire for the link's client.
 
 import (
 	"context"
@@ -41,7 +41,7 @@ func (b *fakeSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceReques
 
 // newHostFixture builds an agentHost over the stub-streaming runtime (real,
 // terminatable Process) with its registry + runtime wired, a live PublishEvents
-// wire for the relay, and a deterministic id minter. Returns the host, the
+// wire for the link's client, and a deterministic id minter. Returns the host, the
 // engine, the registry, and the spec builder.
 func newHostFixture(t *testing.T, specs SpecBuilder) (SessionHost, *stubStreamingRuntime, *runtime.AgentRegistry) {
 	t.Helper()
@@ -56,8 +56,8 @@ func newHostFixtureWithModel(t *testing.T, specs SpecBuilder, model string) (Ses
 	engine := newStubStreamingRuntime(t)
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
-	// The relay publishes onto a real wire; a capture server drains it so the
-	// relay goroutine never blocks and the stream terminates cleanly.
+	// newLink needs a RunnerService client; the capture server terminates a real
+	// wire so nothing in the host path blocks on a missing handler.
 	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
 	var n int
 	newID := func() string { n++; return "sess-" + string(rune('0'+n)) }
