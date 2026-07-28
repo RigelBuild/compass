@@ -170,6 +170,64 @@ func TestBuildSpecRejectsEmptyAgentAccountID(t *testing.T) {
 	}
 }
 
+// The agent account id becomes a path segment of the agent socket
+// (RuntimeDir/containers/<prefix><id>/agent.sock), and filepath.Join cleans, so
+// a "../" in the id escapes RuntimeDir: "../../../../tmp/pwned" resolves to
+// /run/tmp/pwned/agent.sock, where the Runner would MkdirAll a 0700 directory
+// and bind. The socket's length guard cannot catch this, because traversal
+// SHORTENS the path — every row here is well under the AF_UNIX cap. Each reject
+// must surface a non-nil error AND the zero AgentSpec, so no half-built spec
+// carries an escaping name to Launch. Uses a valid repo so the id is the only
+// failing dimension.
+func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
+	builder, err := NewConfigSpecBuilder(goodDefaults())
+	if err != nil {
+		t.Fatalf("NewConfigSpecBuilder: %v", err)
+	}
+	rejected := []struct {
+		name      string
+		accountID string
+	}{
+		{"parent traversal escaping the runtime dir", "../../../../tmp/pwned"},
+		{"shallow parent traversal", "../../etc"},
+		{"a single parent segment", ".."},
+		{"the current directory", "."},
+		{"an embedded separator", "abc/def"},
+		{"a leading separator (absolute)", "/etc/passwd"},
+		{"a trailing separator", "abc/"},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
+				AgentAccountId: tc.accountID,
+				Repo:           &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: "https://example.com/r.git"},
+			})
+			if err == nil {
+				t.Fatalf("BuildSpec with agent_account_id %q = nil error, want a path-element rejection", tc.accountID)
+			}
+			if !strings.Contains(err.Error(), "agent account id") {
+				t.Fatalf("BuildSpec error = %v, want the agent-account-id validation error (not a repo failure)", err)
+			}
+			if spec.Name != "" {
+				t.Fatalf("BuildSpec on rejection returned spec with name %q, want the zero AgentSpec", spec.Name)
+			}
+		})
+	}
+
+	// The ordinary minted shape still builds, so the guard refuses traversal
+	// rather than every id.
+	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
+		AgentAccountId: strings.Repeat("f", 32),
+		Repo:           &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: "https://example.com/r.git"},
+	})
+	if err != nil {
+		t.Fatalf("BuildSpec with a 32-hex account id: %v", err)
+	}
+	if want := "compass-agent-" + strings.Repeat("f", 32); spec.Name != want {
+		t.Fatalf("BuildSpec name = %q, want %q", spec.Name, want)
+	}
+}
+
 // BuildSpec must constrain the caller-supplied repo value before it is forwarded
 // verbatim as the `git clone` target: an unconstrained remote_url reaches git's
 // `ext::<cmd>` (arbitrary command) / `file://` (read-outside-boundary) transports,

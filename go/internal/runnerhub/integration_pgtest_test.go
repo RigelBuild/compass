@@ -56,9 +56,24 @@ func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
 	// runSessionsLoop's drain has confirmed the loop left dispatch (see there).
 	runtimeDir := shortRuntimeDir(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	// Registered adjacent to WithCancel so the ~60 lines of fixture setup below
+	// (openStoreFixture, runner.Dial, NewConfigSpecBuilder) cannot t.Fatalf out
+	// with the context never cancelled. runSessionsLoop registers cancel again,
+	// later, so LIFO still runs its copy FIRST and the drain ordering the loop
+	// documents is unchanged; context.CancelFunc is idempotent, so the second
+	// call here is a no-op.
+	t.Cleanup(cancel)
 
 	st, agent, bus, sub := openStoreFixture(t, ctx, dsn)
 	homeChannel := agent.Agent.HomeChannelID
+	// shortRuntimeDir budgeted the path against a MODEL of the account id
+	// (accountIDHexLen "f"s), because it runs before an account exists. Tie the
+	// model to the real minted value now that it does: widen store ids and this
+	// reddens here, rather than silently invalidating that budget and letting
+	// the real socket path overrun.
+	if got := len(agent.ID); got != accountIDHexLen {
+		t.Fatalf("minted account id is %d chars, but shortRuntimeDir budgeted for %d; update accountIDHexLen", got, accountIDHexLen)
+	}
 
 	// A store-backed ConversationSink: a relayed conversation frame is committed
 	// to the agent's home channel and the commit is signalled so the test

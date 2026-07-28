@@ -11,6 +11,7 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"strings"
 
@@ -67,8 +68,8 @@ func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequ
 
 	d := b.defaults
 	accountID := req.GetAgentAccountId()
-	if accountID == "" {
-		return runtime.AgentSpec{}, errors.New("provision request requires an agent account id")
+	if err := validAccountID(accountID); err != nil {
+		return runtime.AgentSpec{}, err
 	}
 	name := d.NamePrefix + accountID
 	return runtime.AgentSpec{
@@ -84,6 +85,30 @@ func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequ
 		Egress: d.Egress,
 		Mounts: d.Mounts,
 	}, nil
+}
+
+// validAccountID refuses an agent account id that is not a single safe path
+// element. The id is not merely a label: it is concatenated into the container
+// name (below) and that name becomes a path segment of the agent socket,
+// RuntimeDir/containers/<container>/agent.sock (host.go). filepath.Join CLEANS,
+// so a "../" in the id escapes RuntimeDir entirely — "../../../../tmp/pwned"
+// resolves to /run/tmp/pwned/agent.sock — and the socket's own length guard
+// cannot catch it, because traversal SHORTENS the path.
+//
+// Nothing upstream makes this check redundant. The id is minted 32-hex, but the
+// width is a property of the minting site and is never re-checked here; the
+// foreign key that ties the id to a real account is enforced by
+// RecordAgentContainer, which runs after hub.Provision has already created the
+// 0700 directory and bound the socket; and an admin-only RPC narrows who calls
+// it, not what they may pass. So this is the hop that has to reject the shape.
+func validAccountID(id string) error {
+	if id == "" {
+		return errors.New("provision request requires an agent account id")
+	}
+	if !fs.ValidPath(id) || id == "." || strings.Contains(id, "/") {
+		return fmt.Errorf("agent account id %q is not a valid path element", id)
+	}
+	return nil
 }
 
 // repoSourceFromRequest maps the request's repo oneof to a runtime.RepoSource,

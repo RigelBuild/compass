@@ -401,10 +401,12 @@ func TestRejectsPathOverSunPathLimit(t *testing.T) {
 		})
 		dir = filepath.Join(root, "run")
 		base := len(dir) + 1 // + separator
-		// Backstop for a pathological TMPDIR; with the short root above this
-		// should not fire in practice on any supported platform.
+		// These two subtests are the only coverage of the boundary the guard
+		// exists to enforce, so a deep TMPDIR must redden the run rather than
+		// skip it — a skip here reports `ok` for a package that asserted
+		// nothing, which is the failure mode this whole change is about.
 		if base >= n {
-			t.Skipf("temp root %q is %d bytes, leaving no room for a %d-byte path", dir, base, n)
+			t.Fatalf("temp root %q is %d bytes, leaving no room for a %d-byte path; set TMPDIR to a short path", dir, base, n)
 		}
 		path = filepath.Join(dir, strings.Repeat("s", n-base))
 		if len(path) != n {

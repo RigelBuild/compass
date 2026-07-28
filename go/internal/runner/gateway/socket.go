@@ -61,10 +61,14 @@ const shutdownGrace = 5 * time.Second
 // have worked, but an over-sized one passes a path the kernel rejects at bind,
 // which is the exact failure this check exists to prevent.
 //
-// The expression is also not an approximation of the kernel's rule but exactly
-// the bound Go's own wrapper enforces before the syscall: syscall_linux.go:559
-// rejects n == len(Path) for a non-abstract name, syscall_bsd.go:191 rejects
-// n >= len(Path). Two different predicates, both landing on len-1.
+// The -1 is the NUL terminator, which is justification enough on its own — no
+// appeal to Go's internals is needed, and citing them by line would pin this
+// comment to a toolchain version nothing here asserts. Worth knowing that the
+// bound is deliberately conservative rather than exact at two edges: AIX's
+// wrapper permits a name of len(Path), and a Linux ABSTRACT name carries no
+// terminator, so both admit one byte more than this constant. Neither reaches
+// the Runner, which only ever binds a filesystem path, and refusing a byte that
+// would have worked is the safe direction.
 const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
 
 // runnerUID reports the uid a reclaimable stale socket must be owned by. It is a
@@ -97,22 +101,21 @@ type SocketListener struct {
 // the diagnostic: a bind that fails EINVAL has already run MkdirAll, and the
 // dir survives — measured, 0700 left on disk. Nothing reclaims it on any path,
 // because nothing in this socket's lifecycle removes the directory at all:
-// Close removes the socket file (:210) and never filepath.Dir(path), so the
+// Close removes the socket file and never filepath.Dir(path), so the
 // Launch-failure teardown Provision does run (host.go:120-125) leaks it too.
 // Refusing before the mkdir is what makes the question moot, rather than a
 // teardown that would have to be added.
 func listenAgentSocket(ctx context.Context, path string, h http.Handler) (*SocketListener, error) {
-	// Two inputs drive this length. The socket path is RuntimeDir +
-	// /containers/<container>/agent.sock (host.go:291), where <container> is
-	// NamePrefix + the agent account id (spec.go:73).
+	// The socket path is RuntimeDir + /containers/<container>/agent.sock
+	// (host.go), where <container> is NamePrefix + the agent account id
+	// (spec.go). RuntimeDir is the operator-supplied variable: --runtime-dir is
+	// unbounded on every hop and inflates the path for every agent at once.
 	//
-	// Only one of them is a real variable. The account id is server-minted at
-	// exactly 32 hex chars (store/ids.go:21-29), Provision is admin-only
-	// (auth/admin_gate.go:50-56), and the id is FK-constrained to an existing
-	// account (0003_agent_ownership.sql:26) — so a longer id reaches this check
-	// but can never name an account that exists. RuntimeDir is operator-supplied
-	// (--runtime-dir) with no bound on any hop, and it inflates the path for
-	// every agent at once rather than for one doomed request.
+	// The account id's SHAPE is validated where it enters, not here — see
+	// validAccountID in spec.go, which refuses an id that is not a single safe
+	// path element. That is a separate property from length and cannot be
+	// checked here: a traversing id SHORTENS the path, so it would sail past
+	// this guard.
 	//
 	// With the minted id the tail is 69 bytes, so the default /run/compass lands
 	// at 81 and the --runtime-dir budget is sunPathMax-69: 38 on Linux, 34 on
