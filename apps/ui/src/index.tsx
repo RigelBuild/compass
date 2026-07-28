@@ -18,7 +18,7 @@ if (!root) {
 // SubscribeComms stream.
 //
 // Resolution is required and can fail: a missing VITE_COMPASS_BASE_URL or
-// VITE_COMPASS_CALLER_ID throws by design (live/connection.ts:52-73).
+// VITE_COMPASS_CALLER_ID throws by design (live/connection.ts:60-73).
 // bootConnection catches that at the boundary and paints the resolver's own
 // message into #root, so a misconfigured env is a readable screen naming the
 // variable rather than the blank page a throw escaping module init used to

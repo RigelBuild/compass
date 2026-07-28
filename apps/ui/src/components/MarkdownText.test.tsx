@@ -682,12 +682,21 @@ describe("MarkdownText — content preservation", () => {
 		expect(container.querySelector("details")).toBeNull();
 	});
 
-	// The verbatim-in-code rule outranks the break rescue, exactly as it does
-	// for plain text: `white-space: pre` already renders the newline, and the
-	// `code` override reads through `rawText`, which concatenates text
-	// descendants and IGNORES `br` — so an interleaved break would not just be
-	// redundant, it would collapse the block onto one line.
-	test("a multi-line raw HTML node inside a code block stays verbatim", () => {
+	// The verbatim-in-code rule outranks the break rescue: `white-space: pre`
+	// already renders the newline, and the `code` override reads through
+	// `rawText`, which concatenates text descendants and IGNORES `br` — so an
+	// interleaved break would not just be redundant, it would collapse the block
+	// onto one line.
+	//
+	// This covers PLAIN TEXT in code, which is all it can cover: a `raw` node
+	// never reaches a code subtree. Fenced and indented code become mdast `code`
+	// nodes, and only an mdast `html` node becomes `raw` (mdast-util-to-hast
+	// handlers/html.js), so the two are disjoint by construction — verified by
+	// resolving `` ```\n<a>\n<b>\n``` `` through the real from-markdown/to-hast
+	// stack: zero raw nodes in the tree at all. The angle brackets below are
+	// therefore code text, not markup, and the `inCode` guard they exercise is
+	// the pre-existing plain-text one.
+	test("a fenced block keeps its newlines and adds no break", () => {
 		const { container } = render(() => (
 			<MarkdownText text={"```\n<a>\n<b>\n```"} byHandle={byHandle()} />
 		));

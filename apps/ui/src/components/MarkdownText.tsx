@@ -133,14 +133,19 @@ function rehypeInertRawAndBreaks() {
 			// in its own arm instead would skip the split: a multi-line raw block
 			// (`<div>` around two lines, or `<b>` spanning a softbreak) would reach
 			// the DOM as one text node whose newlines then collapse under
-			// `white-space: normal`, joining the lines onto one. The `inCode` guard
-			// on the split still holds, so a raw node inside a code subtree stays
-			// verbatim — code is verbatim all the way down, and `rawText` would eat
-			// an interleaved `br` anyway.
+			// `white-space: normal`, joining the lines onto one.
+			//
+			// The retype cannot disturb the `inCode` guard below, because a `raw`
+			// node never reaches a code subtree: fenced and indented code become
+			// mdast `code` nodes and only an mdast `html` node becomes `raw`
+			// (mdast-util-to-hast handlers/html.js), so the two are disjoint by
+			// construction. That guard exists for plain text, which is verbatim in
+			// code and whose `br` `rawText` would eat.
 			//
 			// The lookarounds below read the UNCONVERTED neighbours, which is
-			// harmless: a `raw` node is neither a block element nor a `br` in
-			// either form, so `isBlock`/`isBr` answer the same for both.
+			// harmless: `isBlock` and `isBr` both require `type === "element"`, and
+			// the retype only maps `"raw"` to `"text"`, so neither predicate can
+			// change its answer.
 			const child: Child =
 				source.type === "raw" ? { type: "text", value: source.value } : source;
 			// A bare `"\n"` between blocks is layout whitespace: drop it, exactly as

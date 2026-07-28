@@ -4,7 +4,7 @@ import { resolveConnection } from "./live/connection";
 
 // boot.ts guards the one unrecoverable step that runs BEFORE render(): resolving
 // the connection from the env. `resolveConnection` throws by design on a missing
-// VITE_COMPASS_BASE_URL / VITE_COMPASS_CALLER_ID (connection.ts:58-73), and that
+// VITE_COMPASS_BASE_URL / VITE_COMPASS_CALLER_ID (connection.ts:60-73), and that
 // throw used to escape module initialization in index.tsx — killing the module
 // before render() ever ran, so the developer got a BLANK #root and a console
 // error nobody looks at.
@@ -90,10 +90,14 @@ describe("bootConnection", () => {
 		el.append(document.createElement("span"));
 
 		bootConnection(el, () => resolveConnection({}));
-		const first = el.innerHTML;
 		bootConnection(el, () => resolveConnection({}));
 
+		// The child COUNT is the stacking assertion, and it comes first so the
+		// failure reads as `2 !== 1` rather than a serialized-DOM dump: `append`
+		// in place of `replaceChildren` leaves two error screens here.
+		expect(el.childNodes.length).toBe(1);
+		// The pre-existing content is gone, and what remains is the screen.
 		expect(el.querySelector("span")).toBeNull();
-		expect(el.innerHTML).toBe(first);
+		expect(el.textContent).toContain("VITE_COMPASS_BASE_URL");
 	});
 });

@@ -2,7 +2,7 @@
 // connection from the Vite env.
 //
 // `resolveConnection` throws by design when VITE_COMPASS_BASE_URL or
-// VITE_COMPASS_CALLER_ID is absent (live/connection.ts:52-73) — a live build with
+// VITE_COMPASS_CALLER_ID is absent (live/connection.ts:60-73) — a live build with
 // no door URL or no caller identity is a misconfiguration, and dialing a wrong
 // default or deriving membership against a wrong "me" would be worse than
 // failing. That requiredness is correct and stays. What was wrong is where the
