@@ -19,10 +19,12 @@ package gateway
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -359,6 +361,109 @@ func TestRejectsWrongOwnerSocketNeverDeletes(t *testing.T) {
 	if fi.Mode().Type() != os.ModeSocket {
 		t.Fatalf("object is now %s, want the untouched socket", fi.Mode().Type())
 	}
+}
+
+// Case 7b. A path over the AF_UNIX sun_path limit is refused with an error that
+// names the limit and the actual length, and nothing is created on disk; a path
+// exactly at the limit still binds. The kernel enforces the cap at bind(2) with
+// a bare EINVAL ("invalid argument"), which names neither number and reads as a
+// permissions or path fault; the Runner's socket path is RuntimeDir plus a
+// 69-byte tail at the store-minted 32-hex account id — a width fixed at its
+// minting site, not validated at this hop — and RuntimeDir is operator-supplied
+// with no bound anywhere, so this is a reachable misconfiguration, not a
+// defensive check.
+//
+// Mutations, both RED: dropping the pre-check lets the over-long path reach bind,
+// failing the message assertions and the never-created-dir assertion; tightening
+// the bound to >= refuses the at-cap path the kernel accepts, failing the first
+// subtest.
+func TestRejectsPathOverSunPathLimit(t *testing.T) {
+	// padTo returns a path under a fresh temp root of exactly n bytes, or skips
+	// when the root alone already exceeds the budget (a very deep TMPDIR).
+	padTo := func(t *testing.T, n int) (dir, path string) {
+		t.Helper()
+		// A short fixed root, not t.TempDir(): the latter embeds the test name,
+		// which lands these subtests at ~135 bytes under a darwin-shaped TMPDIR
+		// (/var/folders/<2>/<hash>/T, ~49 bytes) and skips them — on the one
+		// platform where sunPathMax differs from Linux's, and so the one platform
+		// this test most needs to run. MkdirTemp("", "g") is bounded instead: the
+		// random suffix is a uint32 in decimal, so at most 10 digits, giving <=16
+		// bytes on Linux and <=61 under that darwin TMPDIR — both well under the
+		// cap, and a bound rather than a measurement that could drift.
+		root, err := os.MkdirTemp("", "g") //nolint:usetesting // t.TempDir embeds the test name and blows this test's own byte budget on darwin — see above
+		if err != nil {
+			t.Fatalf("MkdirTemp: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := os.RemoveAll(root); err != nil {
+				t.Errorf("removing %q: %v", root, err)
+			}
+		})
+		dir = filepath.Join(root, "run")
+		base := len(dir) + 1 // + separator
+		// Backstop for a pathological TMPDIR; with the short root above this
+		// should not fire in practice on any supported platform.
+		if base >= n {
+			t.Skipf("temp root %q is %d bytes, leaving no room for a %d-byte path", dir, base, n)
+		}
+		path = filepath.Join(dir, strings.Repeat("s", n-base))
+		if len(path) != n {
+			t.Fatalf("constructed path is %d bytes, want exactly %d", len(path), n)
+		}
+		return dir, path
+	}
+
+	t.Run("exactly at the cap binds", func(t *testing.T) {
+		// The boundary case: the check must reject only what the kernel would.
+		// An off-by-one (>= instead of >) refuses a path that binds fine, so this
+		// is what keeps the guard from being over-tight.
+		_, path := padTo(t, sunPathMax)
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		l, err := listenAgentSocket(ctx, path, stubHandler(t))
+		if err != nil {
+			t.Fatalf("listen on a %d-byte path (exactly the cap) = %v, want success", len(path), err)
+		}
+		if err := l.Close(context.Background()); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+
+	t.Run("one byte over is refused with a diagnostic", func(t *testing.T) {
+		dir, path := padTo(t, sunPathMax+1)
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		l, err := listenAgentSocket(ctx, path, stubHandler(t))
+		if err == nil {
+			_ = l.Close(context.Background())
+			t.Fatal("listen on an over-long path must fail, got nil error")
+		}
+		// The diagnostic is the whole point: the message must carry both numbers
+		// and the flag to change, none of which the kernel's EINVAL does. Match
+		// the surrounding phrases, not the bare digits — a temp path carries
+		// random digits that could contain the cap by chance and pass a
+		// substring check against a message that never mentioned it.
+		msg := err.Error()
+		for _, want := range []string{
+			fmt.Sprintf("is %d bytes", len(path)),
+			fmt.Sprintf("over the %d-byte", sunPathMax),
+			"--runtime-dir",
+		} {
+			if !strings.Contains(msg, want) {
+				t.Errorf("error %q does not contain %q", msg, want)
+			}
+		}
+		// A bare EINVAL is exactly what the check exists to replace, so the
+		// message must not be one: that would mean the path reached bind.
+		if strings.Contains(msg, "invalid argument") {
+			t.Errorf("error %q reached bind; the pre-check must refuse it first", msg)
+		}
+
+		// Refused before anything was created: no directory left behind.
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			t.Errorf("Lstat(%q) = %v, want the dir never to have been created", dir, err)
+		}
+	})
 }
 
 // Case 8. Close is idempotent and tolerates the socket file already being gone:

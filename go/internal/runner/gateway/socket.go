@@ -46,6 +46,27 @@ const socketDirMode os.FileMode = 0o700
 // teardown (design SocketListener.Close).
 const shutdownGrace = 5 * time.Second
 
+// sunPathMax is the longest AF_UNIX path the kernel accepts: sockaddr_un's
+// sun_path holds the path plus a NUL terminator. Exceeded, bind(2) returns a
+// bare EINVAL naming neither the limit nor the length, so the path is checked
+// here instead (see listenAgentSocket).
+//
+// Derived from the platform's own sockaddr_un rather than hard-coded, because
+// the array is not one size across the platforms //go:build unix admits, and
+// the spread is wider than the two sizes anyone reaches for: measured over all
+// nine, it is 108 bytes on linux, solaris and illumos, 104 on darwin and the
+// BSDs including dragonfly, and 1023 on aix. No pair of hand-written numbers is
+// correct here, and an author who enumerates the ones they thought of ships the
+// bug on the rest — an under-sized constant merely refuses a path that would
+// have worked, but an over-sized one passes a path the kernel rejects at bind,
+// which is the exact failure this check exists to prevent.
+//
+// The expression is also not an approximation of the kernel's rule but exactly
+// the bound Go's own wrapper enforces before the syscall: syscall_linux.go:559
+// rejects n == len(Path) for a non-abstract name, syscall_bsd.go:191 rejects
+// n >= len(Path). Two different predicates, both landing on len-1.
+const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
+
 // runnerUID reports the uid a reclaimable stale socket must be owned by. It is a
 // package var over os.Getuid so a hermetic test can drive the wrong-owner
 // fail-closed branch (which cannot be forged on disk without root).
@@ -71,7 +92,42 @@ type SocketListener struct {
 // (regular file, dir, symlink, or a socket owned by another uid — a path
 // collision or partial op, never an abandoned Runner socket) is rejected fail-
 // closed and never deleted.
+//
+// Path length is checked FIRST, before any directory is created. Not only for
+// the diagnostic: a bind that fails EINVAL has already run MkdirAll, and the
+// dir survives — measured, 0700 left on disk. Nothing reclaims it on any path,
+// because nothing in this socket's lifecycle removes the directory at all:
+// Close removes the socket file (:210) and never filepath.Dir(path), so the
+// Launch-failure teardown Provision does run (host.go:120-125) leaks it too.
+// Refusing before the mkdir is what makes the question moot, rather than a
+// teardown that would have to be added.
 func listenAgentSocket(ctx context.Context, path string, h http.Handler) (*SocketListener, error) {
+	// Two inputs drive this length. The socket path is RuntimeDir +
+	// /containers/<container>/agent.sock (host.go:291), where <container> is
+	// NamePrefix + the agent account id (spec.go:73).
+	//
+	// Only one of them is a real variable. The account id is server-minted at
+	// exactly 32 hex chars (store/ids.go:21-29), Provision is admin-only
+	// (auth/admin_gate.go:50-56), and the id is FK-constrained to an existing
+	// account (0003_agent_ownership.sql:26) — so a longer id reaches this check
+	// but can never name an account that exists. RuntimeDir is operator-supplied
+	// (--runtime-dir) with no bound on any hop, and it inflates the path for
+	// every agent at once rather than for one doomed request.
+	//
+	// With the minted id the tail is 69 bytes, so the default /run/compass lands
+	// at 81 and the --runtime-dir budget is sunPathMax-69: 38 on Linux, 34 on
+	// darwin/BSD. That is the figure a startup precheck should assert, so an
+	// operator learns it at boot rather than at first provision (SEA-1443).
+	//
+	// The bind's own error is "bind: invalid argument", an EINVAL naming neither
+	// the limit nor the actual length, which reads as a permissions or path
+	// problem. Check first, before any directory is created, so a misconfigured
+	// deployment is self-diagnosing at Provision and leaves nothing behind. The
+	// message names both knobs: the path alone does not say which one to shrink.
+	if len(path) > sunPathMax {
+		return nil, fmt.Errorf("agent socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten the Runner's --runtime-dir or the agent account id", path, len(path), sunPathMax)
+	}
+
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, socketDirMode); err != nil {
 		return nil, fmt.Errorf("creating agent socket dir %q: %w", dir, err)
