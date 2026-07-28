@@ -47,6 +47,13 @@ func TestNewConfigSpecBuilderRejectsIncompleteDefaults(t *testing.T) {
 		// guards on the request-derived half, so both operands are checked.
 		{"a name prefix containing a path separator", func(d *SpecDefaults) { d.NamePrefix = "a/../../" }},
 		{"zero uid", func(d *SpecDefaults) { d.UID = 0 }},
+		// An over-long prefix is not a missing field but the same class of
+		// startup misconfiguration: it widens every container name past what
+		// the Runner's socket-path budget reserved, so the runtime dir clears
+		// the budget at boot and the socket then fails EINVAL at bind.
+		{"name prefix wider than the socket budget reserves", func(d *SpecDefaults) {
+			d.NamePrefix = AgentContainerNamePrefix + "x"
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

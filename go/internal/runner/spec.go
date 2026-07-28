@@ -63,6 +63,18 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 	if defaults.UID == 0 {
 		return nil, errors.New("spec defaults require a non-root uid")
 	}
+	// Length is a separate property from shape, and the budget depends on it.
+	// The Runner's startup socket-path budget (validateRuntimeDir) models the
+	// container name as AgentContainerNamePrefix + a 32-char account id. A
+	// longer prefix would build a path wider than the budget cleared, so the
+	// runtime dir would pass at boot and the socket would then fail EINVAL at
+	// bind — the exact failure the budget check exists to prevent. Reject the
+	// prefix here instead, at the same startup edge, so the model stays true.
+	if len(defaults.NamePrefix) > len(AgentContainerNamePrefix) {
+		return nil, fmt.Errorf(
+			"spec defaults name prefix %q (%d bytes) exceeds the %d bytes the agent socket path budget reserves for it",
+			defaults.NamePrefix, len(defaults.NamePrefix), len(AgentContainerNamePrefix))
+	}
 	return &configSpecBuilder{defaults: defaults}, nil
 }
 
@@ -112,6 +124,15 @@ func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequ
 // RecordAgentContainer, which runs after hub.Provision has already created the
 // 0700 directory and bound the socket; and an admin-only RPC narrows who calls
 // it, not what they may pass. So this is the hop that has to reject the shape.
+//
+// The WIDTH is deliberately not asserted here, and that is an open question
+// rather than an oversight. run.go's validateRuntimeDir derives the startup
+// budget from agentAccountIDWidth, so a path-safe id wider than 32 clears the
+// budget at boot and then fails EINVAL at bind. Shape and length are
+// independent properties and only the shape is checked. Asserting the width
+// here would change the Runner's contract with every caller — four test files
+// provision ids like "acct-1" and "a" — so it is a design call, not a fixture
+// fix. Tracked as SEA-1443; see this PR's Open Questions.
 func validAccountID(id string) error {
 	if id == "" {
 		return errors.New("provision request requires an agent account id")
