@@ -6,12 +6,17 @@
 > exception, `oh-my-pi/moon.yml`, retargeted at this repo's CI (see its
 > provenance entry) — per Matt's ruling that Compass carries them as its own
 > trees rather than consuming them from a public spoke. They live at `forks/`
-> (repo root), not `oss/forks/`, because the
-> agent image's devenv inputs pin them by a path relative to `agent-image/`. The
-> monorepo remains the other home for each; the sections below describing
-> Copybara spokes, the monorepo import runbook, and sync policy are carried
-> over as provenance and describe the monorepo-side machinery, not a process
-> that runs here.
+> (repo root), not `oss/forks/`, because the agent image's devenv inputs pin
+> them by a path relative to `agent-image/`. The monorepo remains the other
+> home for each; the sections below describing Copybara spokes, the monorepo
+> import runbook, and sync policy are carried over as provenance and describe
+> the monorepo-side machinery, not a process that runs here.
+>
+> **That byte-identity is against the MONOREPO's copy, never against the public
+> upstream.** Each monorepo copy is upstream plus sealed changes, and for
+> `oh-my-pi` those include a live sealed feature, not just build wrapping. Read
+> a tree's provenance entry in full before any upstream re-sync: "restoring"
+> one of these trees to its upstream would delete sealed work.
 
 Vendored upstream forks. Each `forks/<name>/` subtree is the tree of a fork
 sealed maintains on top of a public upstream — the code the fleet actually runs
@@ -108,17 +113,29 @@ Per-fork customization, consumer, and sync policy.
   same `17.0.3`, which is what the nix build stamps onto its output
   (`omp-17.0.3`). So the upstream tag, the nix-built artifact, and this line all
   agree; none of the three is an independent claim about the others.
-- **Sealed changes** (all inherited from the monorepo except `moon.yml` — this
-  tree is byte-identical to the monorepo's `oss/forks/oh-my-pi` across all 5497
-  files save that one, and the monorepo's copy is itself upstream plus these):
-  two compat edits to the vendored `biome.json` — the one fork that ships a
-  nested biome config. `"root": false` scopes it as a
-  child of this repo's root biome config (which would otherwise reject it as a
-  nested root), and `"preset": "recommended"` is spelled `"recommended": true`
-  (behavior-identical, and valid in both this repo's biome 2.4.16 and
-  oh-my-pi's 2.5.3 — `preset` is a 2.5-only key). Plus the nix-build surface
-  (`flake.nix`, `flake.lock`, `nix/`, a root `bun.nix`) making the fork a
-  nix-source flake that builds `omp` from itself (`src = self`).
+- **Sealed changes, build wrapper** (all inherited from the monorepo except
+  `moon.yml` — this tree is byte-identical to the monorepo's
+  `oss/forks/oh-my-pi` across all 5497 files save that one, and the monorepo's
+  copy is itself upstream plus everything in this bullet and the next): two
+  compat edits to the vendored `biome.json`, the one fork that ships a nested
+  biome config. `"root": false` scopes it as a child of this repo's root biome
+  config (which would otherwise reject it as a nested root), and
+  `"preset": "recommended"` is spelled `"recommended": true` — behavior-identical,
+  and valid on both biome versions in play. (The spelling was required by the
+  monorepo's biome 2.4.16, which predates the 2.5-only `preset` key; this repo
+  pins 2.5.4, where `preset` would also parse. Carried unchanged so the two
+  copies stay byte-identical.) Plus the nix-build surface (`flake.nix`,
+  `flake.lock`, `nix/`, a root `bun.nix`) making the fork a nix-source flake
+  that builds `omp` from itself (`src = self`).
+- **Sealed changes, functional — this fork carries a sealed FEATURE, not just a
+  build wrapper.** The SEA-1242 auth-broker Prometheus `/metrics` exposition:
+  `packages/ai/src/auth-broker/prometheus-metrics.ts` (`renderUsageMetrics`, a
+  pure `UsageReport[] → string` renderer emitting the `llm_usage_*` gauge
+  families) plus a `GET /metrics` route in `auth-broker/server.ts` gated behind
+  a dedicated scrape-scoped `metricsTokens` set, never the master bearer. This
+  is a feature-on-fork and is **not** upstream. Read the two bullets together
+  before any upstream re-sync: treating this tree as upstream-plus-build-wrapper
+  and pulling upstream over it would silently revert a live feature.
 - **Changed here (the one exception to byte-identity):** `moon.yml`. The
   monorepo's copy gates the fork with `cargo check --workspace --profile ci`,
   which cannot run in this repo — the dev shell carries no Rust toolchain (it
