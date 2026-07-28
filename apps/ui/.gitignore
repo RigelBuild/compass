@@ -1,0 +1,7 @@
+# Vite loads `.env.local` last, so it overrides the checked-in
+# `.env.development` defaults. It is the file a developer puts their own
+# machine's VITE_COMPASS_CALLER_ID in (and a bearer, if they ever point the UI
+# at a real authenticated door) — never tracked, so a live credential cannot be
+# committed by accident.
+.env.local
+.env.*.local
