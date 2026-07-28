@@ -22,6 +22,7 @@ package runnerhub_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -183,7 +184,13 @@ func assertCleanShutdown(t *testing.T, ctx context.Context, cancel context.Cance
 	engine.closeStdout()
 	cancel()
 	select {
-	case <-loopDone:
+	case err := <-loopDone:
+		// A cancelled ctx is the expected end; anything else is a real stream
+		// failure, and discarding it here would let the loop die of a genuine
+		// error while this assertion still reads as a clean shutdown.
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunSessions = %v, want a clean end after ctx cancel", err)
+		}
 	case <-time.After(integrationTimeout):
 		t.Fatal("RunSessions loop did not end after ctx cancel")
 	}
@@ -508,7 +515,15 @@ func runSessionsLoop(t *testing.T, ctx context.Context, cancel context.CancelFun
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-loopDone:
+		case err := <-loopDone:
+			// On the clean path assertCleanShutdown already took the value and
+			// this reads the zero from a closed channel. On a failure path it
+			// takes the real one, and a stream error that killed the loop must
+			// surface here — otherwise the test reports only whatever Fatalf'd
+			// first, with the actual cause discarded.
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("RunSessions ended with %v", err)
+			}
 		case <-time.After(integrationTimeout):
 			t.Errorf("RunSessions still running %s after cancel; the runtime dir removal below runs anyway and will race an in-flight Provision", integrationTimeout)
 		}
