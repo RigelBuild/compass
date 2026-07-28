@@ -40,6 +40,14 @@ type RunnerEvent struct {
 	SessionID string
 	// Frame is the relayed agent stdout frame, verbatim.
 	Frame *compassv1internal.AgentFrame
+	// IdempotencyKey is the agent-minted key for a durable conversation frame
+	// (the durable PostConversationFrame path), populated from
+	// PublishEventsRequest.idempotency_key. Empty for trace/session frames. The
+	// Runner's gateway carries it (SEA-1364 C2); the conversation write-through's
+	// at-most-once dedup ships via the CommitConversationFrame unary keyed path
+	// (compass-server's handler), not this Publish-spine sink, so the hub does
+	// not thread it into the keyless ConversationSink.
+	IdempotencyKey string
 }
 
 // ConversationSink write-throughs a durable conversation frame (an agent text

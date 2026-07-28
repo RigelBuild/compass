@@ -396,7 +396,7 @@ func (*PublishFrameResponse) Descriptor() ([]byte, []int) {
 }
 
 // The durable-frame unary carries the SAME AgentFrame message, constrained by
-// the agent side (C4) to a conversation_posted / conversation_updated variant,
+// the agent side to a conversation_posted / conversation_updated variant,
 // plus an agent-minted idempotency_key. Runner-sequenced upstream through the
 // same ordered per-session publisher as Publish frames, so hub gap-detection is
 // identical; the difference is delivered-or-erred to the agent.
@@ -405,7 +405,7 @@ type PostConversationFrameRequest struct {
 	Frame *AgentFrame            `protobuf:"bytes,1,opt,name=frame,proto3" json:"frame,omitempty"`
 	// Agent-minted, stable across retries of the same logical frame; the Runner
 	// commits at-most-once per key so a lost-response retry is not duplicated. An
-	// ENVELOPE field (C2 dedup), not a payload field — SEA-1310's parked payload
+	// ENVELOPE field (dedup), not a payload field — SEA-1310's parked payload
 	// decision is untouched.
 	IdempotencyKey string `protobuf:"bytes,2,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
 	unknownFields  protoimpl.UnknownFields

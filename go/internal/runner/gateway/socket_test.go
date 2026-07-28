@@ -134,7 +134,7 @@ func TestLifecycleAbsentPresentGone(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	l, err := listenAgentSocket(ctx, path, stubHandler(t))
+	l, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
 	if err != nil {
 		t.Fatalf("listenAgentSocket: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestServesMountedHandler(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
 
-	l, err := listenAgentSocket(ctx, path, stubHandler(t))
+	l, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
 	if err != nil {
 		t.Fatalf("listenAgentSocket: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestDirModeForcedFromLooser(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	l, err := listenAgentSocket(ctx, path, stubHandler(t))
+	l, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
 	if err != nil {
 		t.Fatalf("listenAgentSocket: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestReclaimsOwnedStaleSocket(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	l, err := listenAgentSocket(ctx, path, stubHandler(t))
+	l, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
 	if err != nil {
 		t.Fatalf("second listen over an owned stale socket must reclaim it, got: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestRejectsNonSocketNeverDeletes(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 			defer cancel()
-			l, err := listenAgentSocket(ctx, path, stubHandler(t))
+			l, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
 			if err == nil {
 				_ = l.Close(context.Background())
 				t.Fatalf("listen over a %s must fail closed, got nil error", tc.name)
@@ -348,7 +348,7 @@ func TestRejectsWrongOwnerSocketNeverDeletes(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	l, err := listenAgentSocket(ctx, path, stubHandler(t))
+	l, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
 	if err == nil {
 		_ = l.Close(context.Background())
 		t.Fatal("listen over a wrong-owner socket must fail closed, got nil error")
@@ -423,7 +423,7 @@ func TestRejectsPathOverSunPathLimit(t *testing.T) {
 		_, path := padTo(t, sunPathMax)
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		l, err := listenAgentSocket(ctx, path, stubHandler(t))
+		l, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
 		if err != nil {
 			t.Fatalf("listen on a %d-byte path (exactly the cap) = %v, want success", len(path), err)
 		}
@@ -436,7 +436,7 @@ func TestRejectsPathOverSunPathLimit(t *testing.T) {
 		dir, path := padTo(t, sunPathMax+1)
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		l, err := listenAgentSocket(ctx, path, stubHandler(t))
+		l, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
 		if err == nil {
 			_ = l.Close(context.Background())
 			t.Fatal("listen on an over-long path must fail, got nil error")
@@ -478,7 +478,7 @@ func TestCloseIdempotentAndTolerantOfMissingFile(t *testing.T) {
 		path := socketPath(t)
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		l, err := listenAgentSocket(ctx, path, stubHandler(t))
+		l, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
 		if err != nil {
 			t.Fatalf("listenAgentSocket: %v", err)
 		}
@@ -494,7 +494,7 @@ func TestCloseIdempotentAndTolerantOfMissingFile(t *testing.T) {
 		path := socketPath(t)
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		l, err := listenAgentSocket(ctx, path, stubHandler(t))
+		l, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
 		if err != nil {
 			t.Fatalf("listenAgentSocket: %v", err)
 		}
@@ -512,7 +512,7 @@ func TestCloseIdempotentAndTolerantOfMissingFile(t *testing.T) {
 // signals entry by closing started exactly once, so a test can event-gate on a
 // live in-flight call with no sleep.
 type blockingGateway struct {
-	// Satisfy the C1-grown AgentGateway interface (Publish/PostConversationFrame/
+	// Satisfy the grown AgentGateway interface (Publish/PostConversationFrame/
 	// Control) with Unimplemented stubs; this double only exercises Comms.
 	compassv1internalconnect.UnimplementedAgentGatewayHandler
 	started chan struct{}
@@ -542,7 +542,7 @@ func TestCloseForceClosesWedgedHandler(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.Handle(compassv1internalconnect.NewAgentGatewayHandler(h))
 
-	l, err := listenAgentSocket(context.Background(), path, mux)
+	l, err := listenAgentSocket(context.Background(), path, mux, func() {})
 	if err != nil {
 		t.Fatalf("listenAgentSocket: %v", err)
 	}
@@ -593,7 +593,7 @@ func TestMountTargetsLiveSocketReadWrite(t *testing.T) {
 	path := socketPath(t)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	l, err := listenAgentSocket(ctx, path, stubHandler(t))
+	l, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
 	if err != nil {
 		t.Fatalf("listenAgentSocket: %v", err)
 	}

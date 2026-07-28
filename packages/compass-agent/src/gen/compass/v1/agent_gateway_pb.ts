@@ -196,7 +196,7 @@ export const PublishFrameResponseSchema: GenMessage<PublishFrameResponse> = /*@_
 
 /**
  * The durable-frame unary carries the SAME AgentFrame message, constrained by
- * the agent side (C4) to a conversation_posted / conversation_updated variant,
+ * the agent side to a conversation_posted / conversation_updated variant,
  * plus an agent-minted idempotency_key. Runner-sequenced upstream through the
  * same ordered per-session publisher as Publish frames, so hub gap-detection is
  * identical; the difference is delivered-or-erred to the agent.
@@ -212,7 +212,7 @@ export type PostConversationFrameRequest = Message<"compass.v1.PostConversationF
   /**
    * Agent-minted, stable across retries of the same logical frame; the Runner
    * commits at-most-once per key so a lost-response retry is not duplicated. An
-   * ENVELOPE field (C2 dedup), not a payload field — SEA-1310's parked payload
+   * ENVELOPE field (dedup), not a payload field — SEA-1310's parked payload
    * decision is untouched.
    *
    * @generated from field: string idempotency_key = 2;

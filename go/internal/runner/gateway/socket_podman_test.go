@@ -55,7 +55,7 @@ func TestSocketOwnedAndConnectableInContainer(t *testing.T) {
 	// Intended shape once the probe image lands (mirrors
 	// internal/runtime/lifecycle_test.go's Launch/ExecAsAgent flow):
 	//
-	//   1. l, _ := listenAgentSocket(ctx, hostPath, stubHandler(t))  // host door live
+	//   1. l, _ := listenAgentSocket(ctx, hostPath, stubHandler(t), func() {})
 	//      defer l.Close(ctx)
 	//   2. build a tiny image carrying a unix-socket client (a Connect/gRPC probe,
 	//      or `socat - UNIX-CONNECT:<path>`), run it with --userns=keep-id and
