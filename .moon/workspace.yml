@@ -42,6 +42,10 @@ projects:
   # with `moon query projects` after merging.
   devenv-fork: 'forks/devenv'
   nix2container-fork: 'forks/nix2container'
+  # Not nix-source like the two above: upstream oh-my-pi ships no flake, so its
+  # functional-CI task is upstream's own bun check (see forks/oh-my-pi/moon.yml,
+  # which also states what that gate does and does not cover).
+  oh-my-pi-fork: 'forks/oh-my-pi'
 
 vcs:
   client: 'git'

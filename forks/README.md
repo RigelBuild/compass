@@ -1,6 +1,6 @@
 # forks/
 
-> **Vendored into this repo (SEA-1512).** These two trees — `devenv/` and
+> **Vendored into this repo (SEA-1512).** Two of these trees — `devenv/` and
 > `nix2container/` — were copied byte-identically out of the sealed monorepo's
 > `oss/forks/` at `origin/main`, per Matt's ruling that Compass carries them as
 > its own trees rather than consuming them from a public spoke. They live at
@@ -9,11 +9,15 @@
 > other home for both; the sections below describing Copybara spokes, the
 > monorepo import runbook, and sync policy are carried over as provenance and
 > describe the monorepo-side machinery, not a process that runs here.
+> `oh-my-pi/` arrived later and by a different route (SEA-1514): imported
+> straight from public upstream at a tag, never via the monorepo.
 
-Vendored upstream forks. Each `forks/<name>/` subtree is the tree of a fork
-sealed maintains on top of a public upstream — the code the fleet actually runs
-— collapsed out of its own GitHub repo into one repo, one `main`, one review
-flow, one CI, atomic with the changes that consume it.
+Vendored upstream forks. A `forks/<name>/` subtree is upstream code carried in
+this repo — usually a fork sealed maintains on top of a public upstream (the
+code the fleet actually runs), collapsed out of its own GitHub repo into one
+repo, one `main`, one review flow, one CI, atomic with the changes that consume
+it. A subtree may also be plain upstream with no sealed delta at all
+(`oh-my-pi`); the Provenance section below is authoritative per fork.
 
 The public fork repos (`sealedsecurity/<name>`) stay alive, demoted from
 canonical home to **Copybara spoke**: the GitHub-side staging ground upstream
@@ -60,6 +64,7 @@ Directory names are lowercase.
 | --- | --- | --- | --- | --- |
 | `devenv` | `cachix/devenv` | `main` | `sealedsecurity/devenv` | nix-source (flake) |
 | `nix2container` | `nlewo/nix2container` | `master` | `sealedsecurity/nix2container` | nix-source (flake input) |
+| `oh-my-pi` | `can1357/oh-my-pi` | `main` | — (no spoke) | bun/TypeScript + Rust source |
 
 Branch name is data, never hardcoded: `nix2container` defaults to `master`,
 `devenv` to `main`.
@@ -133,12 +138,45 @@ Per-fork customization, consumer, and sync policy.
   spoke (the fix is upstreamable — track back to `nlewo/nix2container` if
   merged).
 
+### oh-my-pi
+
+- **Upstream:** `can1357/oh-my-pi` (`main`), imported at tag **`v17.1.8`**.
+  **Spoke:** none — this fork has no `sealedsecurity/oh-my-pi` staging repo.
+- **Sealed changes: NONE.** This tree is **plain public upstream**, verified
+  byte-identical to `can1357/oh-my-pi` at `v17.1.8` (5891 files, compared
+  git-natively — blob OIDs *and* file modes — via `git ls-files -s` against
+  `git ls-tree -r` of the tag). The **only** exception is the sealed-added
+  `forks/oh-my-pi/moon.yml`, the functional-CI registration every fork carries.
+- **Deliberately NOT present — read this before importing or "restoring"
+  anything.** The sealed monorepo carries its *own* fork of oh-my-pi (at
+  17.0.3), and that fork has a real sealed delta this tree does not:
+  a Prometheus `/metrics` exposition in the auth-broker; a tool-call-id pairing
+  fix; a `refresh`/`restart` tool surface; two `biome.json` compat edits; and a
+  nix build surface (`flake.nix`, `flake.lock`, `nix/`, root `bun.nix`). Per
+  Matt's ruling on SEA-1514, Compass ships **plain upstream first** and re-adds
+  what it actually needs later, as a separate change. So their absence here is
+  a decision, not an import defect — **do not** treat this tree as evidence
+  that those features never existed, and do not conclude from a diff against
+  the monorepo's fork that work was lost. It lives on, in the monorepo.
+- **Consumer:** none yet — the tree is vendored ahead of the consumers that
+  will build on it.
+- **Sync policy:** re-import from public upstream at a tag, as a plain-copy
+  squash. No Copybara, inbound or outbound, while the sealed delta is empty.
+- **Gating caveat:** unlike the two nix-source forks, this one's functional-CI
+  task covers its **TypeScript surface only** (upstream's own
+  `bun run ci:check:full`). Upstream's ~415-file Rust tree under `crates/` is
+  gated upstream by bazel against a rust nightly pin, and this repo's dev shell
+  has neither bazel nor a Rust toolchain — so that half is ungated here.
+  `forks/oh-my-pi/moon.yml` says so at the point of registration.
+
 ## nix-source forks build through the flake, not `nix-build -A`
 
-Both forks are nix-source class, so their functional-CI task is a nix build —
-`nix` is on CI's PATH, no per-fork language toolchain needed (devenv's Rust
-compiles via its flake's fenix pin; nix2container's Go via `buildGoModule`
-inside the nix build, which also runs Go's own checks). **Use the flake build
+`devenv` and `nix2container` are nix-source class, so their functional-CI task
+is a nix build — `nix` is on CI's PATH, no per-fork language toolchain needed
+(devenv's Rust compiles via its flake's fenix pin; nix2container's Go via
+`buildGoModule` inside the nix build, which also runs Go's own checks).
+`oh-my-pi` is not in this class: it ships no flake and gates through bun
+instead. **Use the flake build
 (`nix build .#<attr>`), never `nix-build -A`.** nix2container's `default.nix`
 pins its source with `lib.fileset.gitTracked ./.`, which requires a git-repo
 root — satisfied only by the store-copied flake tree, not the in-repo

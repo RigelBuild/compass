@@ -1,0 +1,60 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# oh-my-pi (forks/oh-my-pi): vendored fork of can1357/oh-my-pi at tag v17.1.8 —
+# plain public upstream, byte-identical to the tag with no sealed diff (see
+# forks/README.md for what is deliberately absent). Style-gate-exempt vendored
+# code (the forks/* exclusions in biome.json and .markdownlint-cli2.jsonc); this
+# moon.yml is the sealed-added functional-CI registration, the one sealed file
+# inside the subtree — a declared export-exclusion, excluded from the import
+# byte-fidelity diff.
+#
+# Unlike the other two forks, this one is NOT nix-source: upstream ships no
+# flake and no .nix file at all, so there is nothing to `nix build`. Its own
+# toolchain is bun, which this repo already pins (.prototools, bun 1.3.13) and
+# puts on PATH via proto — so the gate below is upstream's own bun CI step, run
+# directly. The subtree is self-contained (its own package.json + bun.lock,
+# outside the root bun workspace, which globs only packages/* and apps/*), so
+# its install never touches the root node_modules.
+#
+# COVERAGE, STATED PLAINLY: this gate covers the TypeScript surface only.
+# Upstream also carries ~415 Rust files under crates/, gated upstream by bazel
+# (.bazelversion 9.2.0) against a rust nightly pin (rust-toolchain.toml). This
+# repo's dev shell has NEITHER — no bazel/bazelisk, and no Rust toolchain (it
+# was deliberately stripped; the first-party tree has zero .rs files). So the
+# Rust half is UNGATED here and this file does not pretend otherwise. Adding it
+# would mean putting bazel + a rust nightly into the dev shell, which is a
+# scope decision, not an import detail.
+layer: 'application'
+language: 'typescript'
+tags: ['oss']
+
+workspace:
+  inheritedTasks:
+    # Vendored fork with its own lockfile, not a root bun workspace member: skip
+    # the root bun install plus the biome lint/format that tag-bun applies to
+    # every project (style-exempt).
+    exclude: ['install', 'lint', 'format']
+
+fileGroups:
+  sources: ['**/*']
+
+tasks:
+  # Upstream CI's `check` job verbatim (.github/workflows/ci.yml, job `check`:
+  # `bun run ci:check:full`) — biome over the tree plus a tsgo --noEmit type
+  # check of every workspace package. Preceded by the subtree's own frozen
+  # install, since the fork resolves its deps from its own bun.lock, not the
+  # repo root's. cache:false: the install reaches the network and the type check
+  # is the real signal; moon must not false-green a run it did not re-execute
+  # (same posture as the other two forks' nix builds).
+  check:
+    script: 'bun install --frozen-lockfile && bun run ci:check:full'
+    options:
+      cache: false
+      runInCI: true
+    inputs: ['@group(sources)']
+
+  ci:
+    deps: ['check']
+    options:
+      cache: false
+      runInCI: true
