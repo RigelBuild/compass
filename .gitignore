@@ -28,7 +28,7 @@ result-*
 .DS_Store
 
 # NOTE: generated clients (go/gen, packages/compass-client/src/gen)
-# are intentionally committed and CI drift-gated — do not ignore them.
+# are intentionally committed and drift-gated — do not ignore them.
 
 # Vendored fork subtrees (forks/<name>/) are upstream code, vendored into this
 # repo per SEA-1512. Of the unanchored patterns above, the only one that

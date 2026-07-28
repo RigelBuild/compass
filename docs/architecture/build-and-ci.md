@@ -44,13 +44,13 @@ The UI suite runs against checked-in stubs (`apps/ui/src/comms-stub.ts`,
 `stub-data.ts`) and a hand-written fake client in `live/stream.test.ts`. A
 schema *shape* change does not slip past it — the `live/` tests build fixtures
 from the real generated types, so a renamed proto field fails `typecheck`,
-which `apps/ui:ci` depends on. What it cannot catch is semantic drift: a
+which `compass-ui:ci` depends on. What it cannot catch is semantic drift: a
 tightened server-side validation, a changed default, or a visibility rule the
 fixtures do not model leaves every UI test green and the shipped app broken.
 
 The only check that covers that drives `@compass/client`'s
 `createCompassWebClient`/`createCommsWebClient` — the doors
-`apps/ui/src/live/client.ts` builds — against `devenv up`.
+`apps/ui/src/live/client.ts` dials — against `devenv up`.
 
 Subscribe, post a message, and assert **the id `PostMessage` returned for that
 post arrives back over `SubscribeComms`**. Correlating on that id is the whole
@@ -111,11 +111,10 @@ The wide run is occasionally flaky: `compass-proto:drift` can fail with
 `wire unmarshal: cannot parse invalid wire-format data`, `protoc-gen-es`
 having received a truncated request. It has only been observed inside the
 full `:ci` fan-out, never when `drift` runs alone, and the mechanism is not
-yet established (SEA-1526). `--concurrency 4` has not reproduced it and runs
-the battery ~3x faster than serial (25s vs 8s here, both against a warm
-cache), so it is a reasonable flag to pass — but
-it is a mitigation, not a diagnosis. **A red `:ci` is worth re-running once on
-the same tree before you treat it as your change's fault.**
+yet established (SEA-1526). `--concurrency 4` has not reproduced it, and
+bounding concurrency costs little on a many-core box, so it is a reasonable
+flag to pass — but it is a mitigation, not a diagnosis. **A red `:ci` is worth
+re-running once on the same tree before you treat it as your change's fault.**
 
 ## Caching
 

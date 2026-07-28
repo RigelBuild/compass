@@ -60,8 +60,8 @@ To change the contract:
 2. Regenerate: `moon run compass-proto:gen`.
 3. Commit the regenerated clients alongside the schema change.
 
-CI enforces `buf lint`, backward compatibility (`buf breaking`), and the drift
-gate, so the checked-in clients always match the schema.
+`moon run :ci` enforces `buf lint`, backward compatibility (`buf breaking`),
+and the drift gate, so the checked-in clients always match the schema.
 
 ## Version control
 

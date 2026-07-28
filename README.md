@@ -31,8 +31,8 @@ UI**, all speaking one typed contract:
 - **`compass.v1` is the single, owned door.** Every UI reaches the server only
   through the generated contract client — never a raw socket or hand-written
   stub. The schema lives at `proto/compass/v1/`; the generated Go and
-  TypeScript clients are checked in and CI drift-gated, so a stale client fails
-  the build.
+  TypeScript clients are checked in and drift-gated by `moon run :ci`, so a
+  stale client fails the build.
 - **The server owns everything privileged.** The shell holds no logic — it
   launches and supervises the server and points the webview at the contract.
 - Native (gRPC over the local transport) and browser (gRPC-Web) clients share
@@ -82,8 +82,8 @@ proto (it bootstraps Go, bun, node, and moon from `.prototools`), and supply the
 rest the dev shell otherwise provides — `buf`, `protoc`, `protoc-gen-go`,
 `protoc-gen-connect-go` — then `bun install` and `moon run :ci`.
 
-`moon run :ci` is the entire CI gate — the same task graph runs locally and in
-CI, so "passes locally" and "passes in CI" are the same check.
+`moon run :ci` is the entire gate — it runs locally, and there is no remote
+pipeline yet (SEA-1507), so your local green is the only check a change gets.
 
 ## Changing the contract
 

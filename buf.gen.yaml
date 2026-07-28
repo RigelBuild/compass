@@ -1,6 +1,7 @@
 # The single buf codegen pipeline: one schema, generated clients fanned out to
-# each language, all checked in and CI drift-gated (regenerate + git diff). The
-# generated client is the only sanctioned way to reach the Compass server.
+# each language, all checked in and drift-gated by `moon run
+# compass-proto:drift` (regenerate + git diff). The generated client is the
+# only sanctioned way to reach the Compass server.
 #
 #   TS    — protoc-gen-es v2 (messages + Connect-capable service defs) →
 #           packages/compass-client, consumed by @connectrpc/connect
