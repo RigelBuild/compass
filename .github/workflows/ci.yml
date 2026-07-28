@@ -60,20 +60,29 @@ jobs:
       # be redesigned around one runner's choice of temp root.
       TMPDIR: /tmp
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           # buf breaking compares against refs/remotes/origin/main, and the drift
           # gate's `git diff --no-index` needs real git. A shallow single-ref
           # checkout has neither.
           fetch-depth: 0
 
-      - name: Fetch the merge base
-        # actions/checkout leaves no refs/remotes/* even at full depth, and
-        # proto/moon.yml's breaking gate probes exactly that ref. Without this the
-        # gate takes its "no base contract yet" branch and passes vacuously —
-        # a green that checked nothing, which is the failure mode this whole
-        # pipeline exists to end.
-        run: git fetch --no-tags origin main:refs/remotes/origin/main
+      - name: Guarantee the base ref the breaking gate compares against
+        # proto/moon.yml's `buf breaking` compares against
+        # refs/remotes/origin/main, and takes a "no base contract yet" branch
+        # when that ref is absent — a vacuous pass, the failure mode this whole
+        # pipeline exists to end. checkout at fetch-depth: 0 does populate
+        # refs/remotes/origin/* today, so the fetch below is normally a no-op;
+        # it is kept as a cheap guarantee that does not depend on the action's
+        # future behaviour. The rev-parse is the part that matters: it turns a
+        # missing base ref into a loud failure here instead of a silent skip
+        # inside the gate.
+        run: |
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          git rev-parse --verify refs/remotes/origin/main >/dev/null || {
+            echo "::error::refs/remotes/origin/main is absent — buf breaking would skip its comparison and pass without checking anything"
+            exit 1
+          }
 
       - name: Read the toolchain pins
         id: pins
@@ -87,19 +96,47 @@ jobs:
         # mirrors parseProtoTools in tools/toolchain/parity-core.ts, which is
         # what checks the result — a divergence between the two shows up as a
         # parity failure, not as a silent wrong version.
+        #
+        # Every value is shape-checked before it is written. A pin is always a
+        # version string; anything else means the file is malformed or crafted,
+        # and refusing is the same posture the parity gate takes — fail rather
+        # than proceed over something unvouched. This also closes GITHUB_OUTPUT
+        # injection, since a rejected value never reaches the file.
         run: |
-          sed -n '/^\[/q; s/^\([A-Za-z0-9_-]\{1,\}\)[[:space:]]*=[[:space:]]*"\([^"]\{1,\}\)".*/\1=\2/p' \
-            .prototools | tee -a "$GITHUB_OUTPUT"
+          pins=$(sed -n '/^\[/q; s/^\([A-Za-z0-9_-]\{1,\}\)[[:space:]]*=[[:space:]]*"\([^"]\{1,\}\)".*/\1=\2/p' \
+            .prototools)
+          while IFS='=' read -r name value; do
+            [ -n "$name" ] || continue
+            case $value in
+              *[!0-9A-Za-z.+-]*|'')
+                echo "::error::.prototools pin '$name' has value '$value', which is not a version string"
+                exit 1
+                ;;
+            esac
+          done <<EOF
+          $pins
+          EOF
+          # Refuse over nothing: a malformed .prototools parses to zero pins, and
+          # every `setup-*` below would then silently take its own default
+          # version — a green run on an unpinned toolchain. Each pin the jobs
+          # consume must be present.
+          for required in bun node go moon; do
+            printf '%s\n' "$pins" | grep -q "^$required=" || {
+              echo "::error::.prototools yielded no '$required' pin — the file is malformed or its shape changed"
+              exit 1
+            }
+          done
+          printf '%s\n' "$pins" | tee -a "$GITHUB_OUTPUT"
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2 (v2.2.0)
         with:
           bun-version: ${{ steps.pins.outputs.bun }}
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: ${{ steps.pins.outputs.node }}
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6 (6.5.0)
         with:
           go-version: ${{ steps.pins.outputs.go }}
           # go/moon.yml owns caching decisions per task; a second cache keyed on
@@ -110,16 +147,35 @@ jobs:
         # moon has no first-party setup action that pins from .prototools, and
         # its npm package is version-for-version the release. The parity gate
         # confirms the binary that lands reports the pinned version.
-        run: npm install --global @moonrepo/cli@${{ steps.pins.outputs.moon }}
+        #
+        # The pin arrives via env rather than a `${{ }}` interpolation into the
+        # script: `${{ }}` is textual substitution performed BEFORE the shell
+        # parses the line, so a .prototools value carrying shell metacharacters
+        # would execute. A shell variable is data. .prototools is PR-editable, so
+        # this is reachable from a fork.
+        env:
+          MOON_VERSION: ${{ steps.pins.outputs.moon }}
+        run: npm install --global "@moonrepo/cli@$MOON_VERSION"
 
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
           # The forks' functional CI is `nix build` of their own flakes, and the
           # nixpkgs half of the toolchain is fetched below. Flakes are needed for
           # the former; nix-command for both.
+          #
+          # The substituters below are declared here rather than delegated via
+          # `accept-flake-config = true`. That setting makes nix accept the
+          # `nixConfig` of ANY flake it evaluates, and forks/devenv/flake.nix
+          # carries exactly such a block — so a PR could add its own substituter
+          # AND its own trusted public key, and CI would fetch and run binaries
+          # signed by the attacker's key, with signature verification satisfied
+          # by the key the same PR supplied. Naming the two caches the forks
+          # legitimately use keeps that trust in a reviewed file: adding a third
+          # is a change to this workflow, not to a vendored tree.
           extra_nix_config: |
             experimental-features = nix-command flakes
-            accept-flake-config = true
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
       - name: Put the dev shell's nixpkgs tools on PATH
         # buf, protoc, the Go analysis battery, biome and markdownlint have no
@@ -180,16 +236,34 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Read the toolchain pins
         id: pins
-        # Same read as the gate job: .prototools stays the single version source.
+        # Same read as the gate job: .prototools stays the single version source,
+        # and the same shape check applies — a pin is a version string or the job
+        # refuses, rather than feeding an unvouched value into setup-go.
         run: |
-          sed -n '/^\[/q; s/^\([A-Za-z0-9_-]\{1,\}\)[[:space:]]*=[[:space:]]*"\([^"]\{1,\}\)".*/\1=\2/p' \
-            .prototools >>"$GITHUB_OUTPUT"
+          pins=$(sed -n '/^\[/q; s/^\([A-Za-z0-9_-]\{1,\}\)[[:space:]]*=[[:space:]]*"\([^"]\{1,\}\)".*/\1=\2/p' \
+            .prototools)
+          while IFS='=' read -r name value; do
+            [ -n "$name" ] || continue
+            case $value in
+              *[!0-9A-Za-z.+-]*|'')
+                echo "::error::.prototools pin '$name' has value '$value', which is not a version string"
+                exit 1
+                ;;
+            esac
+          done <<EOF
+          $pins
+          EOF
+          printf '%s\n' "$pins" | grep -q '^go=' || {
+            echo "::error::.prototools yielded no 'go' pin — the file is malformed or its shape changed"
+            exit 1
+          }
+          printf '%s\n' "$pins" >>"$GITHUB_OUTPUT"
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6 (6.5.0)
         with:
           go-version: ${{ steps.pins.outputs.go }}
           cache: false
@@ -202,25 +276,61 @@ jobs:
           # managing a container.
           COMPASS_TEST_DATABASE_DSN: postgres://postgres:compass-test@127.0.0.1:5432/compass?sslmode=disable
           CGO_ENABLED: '1'
-        # -v so the assertion below can read per-test outcomes. Tee: keep the log
-        # visible AND inspectable.
-        run: go test -tags pgtest -race -v ./... 2>&1 | tee /tmp/pgtest.log
+        # -v so the assertion below can read per-test outcomes. The redirect —
+        # rather than a pipe to tee — is deliberate: a pipeline's exit status is
+        # its LAST command's, so `go test ... | tee` returns tee's 0 and a real
+        # test failure is silently discarded (this job reported green over a
+        # `FAIL` before this was fixed). Capture, replay the log, then exit on
+        # go test's own status. `|| rc=$?` because the step runs under `bash -e`,
+        # which would otherwise abort before the log is ever printed. The
+        # explicit -timeout exceeds the job's slowest suite: on the default 10m a
+        # wedged test panics mid-run and the panic, not the failure, is the story.
+        run: |
+          rc=0
+          go test -tags pgtest -race -v -timeout 15m ./... >/tmp/pgtest.log 2>&1 || rc=$?
+          cat /tmp/pgtest.log
+          exit "$rc"
 
-      - name: Assert the suites ran rather than skipped
+      - name: Assert the real-Postgres suites ran rather than skipped
+        working-directory: go
         # The harness SKIPS (never fails) when it can find no database — correct
         # for a container-less sandbox, and a silent no-op here. This job exists
         # to run those assertions, so a skip is a failure of the job's whole
-        # purpose and must be loud. Belt and braces: the harness must not have
-        # skipped, and it must have run something.
+        # purpose and must be loud.
+        #
+        # Both halves are derived from source rather than hardcoded, because a
+        # guard that drifts out of step with what it guards passes silently:
+        #   - the skip text is read from pgtest.go, so rewording it cannot leave
+        #     this grep matching nothing and reporting success;
+        #   - the package list is the set that actually calls RequireDSN, so the
+        #     count means "the real-Postgres packages ran". Counting every
+        #     `--- PASS` in the module would be inert: the module has hundreds of
+        #     tests that touch no database, so the total stays high even if every
+        #     database suite vanished.
         run: |
-          if grep -q 'skipping real-Postgres test' /tmp/pgtest.log; then
+          skip=$(sed -n 's/.*t\.Skip("\(no COMPASS_TEST_DATABASE_DSN[^"]*\)").*/\1/p' \
+            internal/pgtest/pgtest.go)
+          if [ -z "$skip" ]; then
+            echo "::error::could not read the skip message out of internal/pgtest/pgtest.go — this guard has drifted from the harness and is no longer checking anything"
+            exit 1
+          fi
+          if grep -qF "$skip" /tmp/pgtest.log; then
             echo "::error::pgtest harness skipped — the service Postgres was not reached, so nothing was asserted"
-            grep -n 'skipping real-Postgres test' /tmp/pgtest.log | head
+            grep -nF "$skip" /tmp/pgtest.log | head
             exit 1
           fi
-          passed=$(grep -c '^--- PASS' /tmp/pgtest.log || true)
-          echo "pgtest: $passed test functions passed against the service Postgres"
-          if [ "$passed" -eq 0 ]; then
-            echo "::error::no pgtest test function passed — the lane compiled but asserted nothing"
+          pkgs=$(grep -rl 'pgtest\.RequireDSN' --include='*.go' . \
+            | sed 's|^\./||' | xargs -n1 dirname | sort -u)
+          if [ -z "$pkgs" ]; then
+            echo "::error::no package calls pgtest.RequireDSN — the harness moved and this guard is vacuous"
             exit 1
           fi
+          rc=0
+          for pkg in $pkgs; do
+            if ! grep -qE "^ok[[:space:]]+github\.com/sealedsecurity/compass/go/$pkg[[:space:]]" /tmp/pgtest.log; then
+              echo "::error::real-Postgres package '$pkg' did not report ok — it failed, skipped, or never ran"
+              rc=1
+            fi
+          done
+          echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
+          exit "$rc"

@@ -99,6 +99,14 @@ export function parseProtoTools(source: string): ProtoPin[] {
  *
  * Comments are stripped first, so an attribute name merely MENTIONED in the
  * block's prose (they are mentioned constantly) is never mistaken for an entry.
+ *
+ * A dotted attribute path (`nodePackages.prettier`) THROWS rather than being
+ * skipped. Skipping is the tempting behaviour and the wrong one: the same parse
+ * feeds both `--print-nix-attrs` (what CI installs) and the expected-identity
+ * set (what the gate checks), so a dropped attribute is simultaneously absent
+ * from PATH and unreported by the gate — it resurfaces as `command not found`
+ * inside some later task, or not at all. Refusing keeps the promise above
+ * honest: the gate covers the list, or it says why it cannot.
  */
 export function parseDevenvPackages(source: string): string[] {
 	const open = source.indexOf("packages = with pkgs; [");
@@ -116,8 +124,18 @@ export function parseDevenvPackages(source: string): string[] {
 		.join("\n");
 	const attrs: string[] = [];
 	for (const token of body.split(/\s+/)) {
-		if (token !== "" && /^[A-Za-z][A-Za-z0-9_-]*$/.test(token))
+		if (token === "") continue;
+		if (/^[A-Za-z][A-Za-z0-9_-]*$/.test(token)) {
 			attrs.push(token);
+			continue;
+		}
+		if (/^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z][A-Za-z0-9_-]*)+$/.test(token)) {
+			throw new Error(
+				`devenv.nix packages entry "${token}" is a dotted attribute path, which this gate cannot resolve. ` +
+					`Skipping it would leave the tool uninstalled in CI AND unreported here. ` +
+					`Teach nixIdentities to resolve dotted paths (lib.getAttrFromPath) before adding it.`,
+			);
+		}
 	}
 	return attrs;
 }

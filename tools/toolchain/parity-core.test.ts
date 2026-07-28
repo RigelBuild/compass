@@ -94,6 +94,21 @@ describe("parseDevenvPackages", () => {
 	test("yields nothing when the block is absent, so the caller can refuse a vacuous pass", () => {
 		expect(parseDevenvPackages("{ packages = [ ]; }")).toEqual([]);
 	});
+
+	test("throws on a dotted attribute path rather than silently dropping it", () => {
+		// A skipped attribute is absent from BOTH what CI installs and what the
+		// gate expects, so the tool goes uncovered in silence — the false green
+		// this gate exists to prevent. Refusing is the only safe behaviour.
+		const dotted = [
+			"{",
+			"  packages = with pkgs; [",
+			"    buf",
+			"    nodePackages.prettier",
+			"  ];",
+			"}",
+		].join("\n");
+		expect(() => parseDevenvPackages(dotted)).toThrow(/dotted attribute path/);
+	});
 });
 
 describe("extractVersion", () => {
