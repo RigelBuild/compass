@@ -55,19 +55,20 @@ tasks:
     # spoken only between our binaries (buf.gen.agent-ts.yaml → the agent's
     # packages/compass-agent/src/gen, and buf.gen.internal-go.yaml → go/internal/gen
     # for BOTH agent.proto and runner.proto — one lane because they share that
-    # output tree and buf's clean:true wipes it per invocation). protoc-gen-es is a
-    # compass-client devDep, so depend on its install and put that .bin on PATH; the
-    # Go plugins come from the devenv/CI PATH. The task runs from the workspace root,
-    # which is the compass root, so the templates' relative outs land in-tree.
+    # output tree and buf's clean:true wipes it per invocation). Every plugin
+    # comes from the same place as buf itself: protoc-gen-es and protoc-gen-go/
+    # protoc-gen-connect-go are all on the devenv PATH, resolved from immutable
+    # store paths. Codegen therefore depends on no package-install state, and no
+    # concurrent writer can tear a plugin mid-exec. The task runs from the
+    # workspace root, which is the compass root, so the templates' relative outs
+    # land in-tree.
     # The TS internal lane needs --include-imports
     # (protoc-gen-es has no import-path mapping, so it regenerates the imported
     # payload types byte-identically); the Go internal lane must NOT (its M-mappings
     # redirect the imported types to the public go/gen package instead of
     # regenerating them). The checked-in clients are what consumers compile; drift
     # guarantees freshness.
-    script: 'PATH="$PWD/packages/compass-client/node_modules/.bin:$PATH" buf generate && PATH="$PWD/packages/compass-client/node_modules/.bin:$PATH" buf generate --template buf.gen.agent-ts.yaml --include-imports && buf generate --template buf.gen.internal-go.yaml'
-    deps:
-      - 'compass-client:install'
+    script: 'command -v protoc-gen-es >/dev/null 2>&1 || { echo "protoc-gen-es is not on PATH: enter the devenv shell (direnv allow), or your devenv predates the baked plugin"; exit 1; }; buf generate && buf generate --template buf.gen.agent-ts.yaml --include-imports && buf generate --template buf.gen.internal-go.yaml'
     options:
       runFromWorkspaceRoot: true
     inputs:
@@ -76,8 +77,7 @@ tasks:
       - '/buf.gen.yaml'
       - '/buf.gen.agent-ts.yaml'
       - '/buf.gen.internal-go.yaml'
-      - '/package.json'
-      - '/bun.lock'
+      - '/devenv.lock'
     outputs:
       - '/packages/compass-client/src/gen'
       - '/go/gen'
@@ -98,9 +98,12 @@ tasks:
     # --no-index` compares raw file trees (reads no index/worktree state, and git is
     # always on PATH — unlike `diff`), so it runs identically in CI and in a
     # secondary jj workspace.
-    script: 'tmp=$(mktemp -d) && export PATH="$PWD/packages/compass-client/node_modules/.bin:$PATH" && if ! buf generate -o "$tmp" || ! buf generate --template buf.gen.agent-ts.yaml --include-imports -o "$tmp" || ! buf generate --template buf.gen.internal-go.yaml -o "$tmp"; then rm -rf "$tmp"; exit 1; fi; rc=0; git diff --no-index "$tmp/packages/compass-client/src/gen" packages/compass-client/src/gen || rc=1; git diff --no-index "$tmp/go/gen" go/gen || rc=1; git diff --no-index "$tmp/packages/compass-agent/src/gen" packages/compass-agent/src/gen || rc=1; git diff --no-index "$tmp/go/internal/gen" go/internal/gen || rc=1; rm -rf "$tmp"; exit $rc'
-    deps:
-      - 'compass-client:install'
+    #
+    # The preflight matches gen's: both tasks invoke the plugin, and a shell
+    # without the baked plugin makes buf report `exec: executable file not
+    # found`, which reads as a codegen fault rather than a missing tool. The
+    # check is a no-op whenever the plugin is present.
+    script: 'command -v protoc-gen-es >/dev/null 2>&1 || { echo "protoc-gen-es is not on PATH: enter the devenv shell (direnv allow), or your devenv predates the baked plugin"; exit 1; }; tmp=$(mktemp -d) && if ! buf generate -o "$tmp" || ! buf generate --template buf.gen.agent-ts.yaml --include-imports -o "$tmp" || ! buf generate --template buf.gen.internal-go.yaml -o "$tmp"; then rm -rf "$tmp"; exit 1; fi; rc=0; git diff --no-index "$tmp/packages/compass-client/src/gen" packages/compass-client/src/gen || rc=1; git diff --no-index "$tmp/go/gen" go/gen || rc=1; git diff --no-index "$tmp/packages/compass-agent/src/gen" packages/compass-agent/src/gen || rc=1; git diff --no-index "$tmp/go/internal/gen" go/internal/gen || rc=1; rm -rf "$tmp"; exit $rc'
     options:
       runFromWorkspaceRoot: true
       cache: false
@@ -114,8 +117,7 @@ tasks:
       - '/go/gen/**/*'
       - '/packages/compass-agent/src/gen/**/*'
       - '/go/internal/gen/**/*'
-      - '/package.json'
-      - '/bun.lock'
+      - '/devenv.lock'
   gen-fence:
     # SEA-1267 enforcement, and distinct from drift: drift only catches a schema
     # edit that wasn't regenerated. It CANNOT catch a forgotten `exclude_paths`
