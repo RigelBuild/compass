@@ -69,6 +69,13 @@
         "typescript": "catalog:",
       },
     },
+    "tools/stamp-gate": {
+      "name": "@compass/stamp-gate",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/toolchain": {
       "name": "@compass/toolchain-parity",
       "version": "0.1.0",
@@ -178,6 +185,8 @@
     "@compass/agent": ["@compass/agent@workspace:packages/compass-agent"],
 
     "@compass/client": ["@compass/client@workspace:packages/compass-client"],
+
+    "@compass/stamp-gate": ["@compass/stamp-gate@workspace:tools/stamp-gate"],
 
     "@compass/toolchain-parity": ["@compass/toolchain-parity@workspace:tools/toolchain"],
 
