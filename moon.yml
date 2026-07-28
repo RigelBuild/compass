@@ -1,0 +1,81 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# Workspace root project (`.`). Owns two whole-repo concerns:
+#
+#   1. The single bun dependency install — one root `bun.lock` + hoisted
+#      `node_modules`. Every bun-tagged project's inherited `install` is a no-op
+#      depending on `root:install` (.moon/tasks/tag-bun.yml), so the gate
+#      installs once instead of N per-project installs racing on linking the
+#      shared `node_modules/` (EEXIST) in a cold worktree.
+#
+#   2. Whole-repo lint/format — one task per tool, run from the workspace root:
+#      biome (TS/JS/JSON/CSS/HTML, via the single /biome.json) and markdownlint.
+#
+# As the `.`-sourced project it inherits the `bun` tag's tasks by default, so it
+# excludes them and defines its own below (the real install + lint/format).
+layer: 'library'
+language: 'typescript'
+
+workspace:
+  inheritedTasks:
+    exclude: ['install', 'lint', 'format']
+
+tasks:
+  install:
+    command: 'bun install --frozen-lockfile'
+    inputs: ['/package.json', '/bun.lock', '/bunfig.toml']
+    options:
+      # internal: never a standalone CI job — it runs only as each bun project's
+      # install dep. cache:false + runFromWorkspaceRoot: the install mutates the
+      # shared root node_modules, so never skip-as-cached and always run from
+      # the workspace root.
+      internal: true
+      cache: false
+      runFromWorkspaceRoot: true
+
+  # ── Whole-repo lint/format. Each runs from the workspace root over the repo. ──
+  # The CI sweeps below carry cache:false: they are the always-run
+  # merge-boundary gate, and a cached green from another checkout is exactly the
+  # false-green a fail-closed gate exists to stop. `format` is omitted from CI
+  # (runInCI:false, never a gate).
+
+  # biome governs all TS/JS/JSON/CSS/HTML via the single /biome.json, which
+  # carries the @connectrpc/* import fence — reach the daemon only through
+  # @compass/client. This task is what enforces it.
+  lint:
+    command: 'biome check .'
+    deps: ['install']
+    inputs:
+      - '**/*.{ts,tsx,js,jsx,cjs,mjs,json,jsonc,css,html}'
+      - '!**/node_modules/**'
+      - '/biome.json'
+    options:
+      # Never cache: an always-fresh whole-repo gate. Runs the nixpkgs `biome`
+      # on PATH (provided by the devenv shell) — not `bunx @biomejs/biome` — so
+      # one nixpkgs pin decides the version for everyone.
+      cache: false
+
+  # Write-mode: biome format + import organization + safe lint fixes. Local
+  # convenience (makes `lint` pass), never a CI gate.
+  format:
+    command: 'biome check --write .'
+    deps: ['install']
+    options:
+      runInCI: false
+
+  # markdownlint-cli2 reads /.markdownlint.json (rules) + /.markdownlint-cli2.jsonc
+  # (globs, gitignore).
+  markdownlint:
+    command: 'markdownlint-cli2'
+    inputs: ['**/*.md', '!**/node_modules/**', '/.markdownlint.json', '/.markdownlint-cli2.jsonc']
+    options:
+      # Never cache the whole-repo gate. Runs the nixpkgs `markdownlint-cli2` on
+      # PATH (provided by devenv), not `bunx`.
+      cache: false
+
+  ci:
+    # The root project's gate: the whole-repo sweeps. Every other project owns
+    # its own `ci` aggregate, so `moon run :ci` covers the repo end to end.
+    deps: ['lint', 'markdownlint']
+    options:
+      cache: false

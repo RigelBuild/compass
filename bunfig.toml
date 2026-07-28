@@ -1,0 +1,13 @@
+# Supply-chain timing defense for the root bun workspace: refuses to install a
+# package version published less than 5 days ago. `bun install` runs from this
+# root (the workspace lockfile is /bun.lock), and Bun reads bunfig from the
+# install dir (not parent dirs), so the guard lives here rather than per-project.
+[install]
+minimumReleaseAge = 432000
+# @tanstack/virtual-core is pinned to 3.17.5 via root `overrides` — the chat-mode
+# scroll floor the compass message-surface renderer requires (the end-anchored
+# anchorTo:'end'+followOnAppend path needs the 3.17.5 anchor-offset clamp). That
+# exact version is exempted from the 5-day cooldown because the floor is a
+# reviewed, record-mandated pin, not an unvetted float; the exact-version
+# exclude keeps the exemption from covering any other virtual-core release.
+minimumReleaseAgeExcludes = ["@tanstack/virtual-core"]

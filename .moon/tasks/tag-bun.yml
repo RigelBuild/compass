@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/tasks.json
+#
+# Tasks inherited by every project tagged `bun`. Only the dependency install
+# lives here — lint and format are whole-repo tasks on the root project
+# (/moon.yml), so biome runs once across the repo instead of once per bun
+# project.
+tasks:
+  # Workspace dep install: a no-op that depends on the single `root:install`
+  # (the real `bun install`, defined on the root project in /moon.yml). The N
+  # bun projects share that one install instead of each running its own from the
+  # hoisted root and racing on linking node_modules/ (EEXIST) in a cold worktree.
+  # internal = dependency-only: runs as each leaf's implicit dep, never fanned
+  # out as a CI job.
+  install:
+    command: 'noop'
+    deps: ['root:install']
+    options:
+      internal: true

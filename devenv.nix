@@ -1,0 +1,166 @@
+{
+  pkgs,
+  lib,
+  config,
+  ...
+}:
+# Compass dev shell — the single source of the dev + CI toolchain. The split:
+#
+#   proto  — owns the language/runtime toolchains (bun, node, moon, go),
+#            pinned in .prototools. Activated on shell entry below.
+#   devenv — provides proto itself plus everything non-language: the contract
+#            codegen tools, the Go analysis battery, and the linters the moon
+#            gate runs.
+#
+# Everything here is a system task's dependency: moon execs what this shell puts
+# on PATH rather than managing a toolchain of its own.
+{
+  packages = with pkgs; [
+    # Language/runtime manager. Pins bun/node/moon/go via .prototools.
+    proto
+
+    # compass.v1 contract codegen. buf drives the pipeline; protobuf supplies
+    # protoc; protoc-gen-go (messages) + protoc-gen-connect-go (Connect
+    # handlers/clients) are the Go lane's plugins. From nixpkgs (pinned), NOT
+    # `go install`, so the plugin version stamped into the generated headers is
+    # reproducible and the drift gate stays deterministic. The TS lane's plugin
+    # (protoc-gen-es) is deliberately absent: it is a packages/compass-client bun
+    # devDep, put on PATH by the compass-proto:gen/drift tasks themselves.
+    buf
+    protobuf # protoc
+    protoc-gen-go
+    protoc-gen-connect-go
+
+    # Go gate battery (go/moon.yml): golangci-lint (lint gate incl. the
+    # gochecksumtype/exhaustive exhaustiveness check), govulncheck (vuln scan),
+    # go-licenses (license fence), nilaway (advisory nil-flow analysis). Go
+    # itself is a .prototools-pinned runtime installed by `proto install` on
+    # shell entry, like bun/node/moon.
+    golangci-lint
+    govulncheck
+    go-licenses
+    nilaway
+
+    # Lint gate. biome + markdownlint-cli2 are nixpkgs derivations here, not
+    # `bunx` — one nixpkgs pin means `moon run root:lint` / `root:markdownlint`
+    # resolve the identical binary and version for everyone, with no drift
+    # between a contributor's node_modules and anyone else's. `@biomejs/biome`
+    # stays a package.json devDep for the editor LSP.
+    biome
+    markdownlint-cli2
+
+    # curl: the compass-server readiness probe (processes below) POSTs to
+    # GetServerInfo over the loopback dev-http door to gate readiness on a real
+    # serving handler. Pin it here (referenced via `lib.getExe` in the probe)
+    # rather than inheriting an ambient system curl, so the one-command bring-up
+    # works on any dev box — a non-NixOS nix/devenv host, or a NixOS box without
+    # curl in current-system — not only one whose current-system ships curl.
+    curl
+  ];
+
+  enterShell = ''
+    # Activate the proto-managed toolchains (bun/node/moon/go from .prototools).
+    export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
+    export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
+    # Use the pinned nix proto (the shims dir is ahead on PATH, so a bare
+    # `proto` would resolve a host install instead of this one).
+    ${pkgs.proto}/bin/proto install
+    # Bootstrap the workspace on shell entry so a fresh clone is ready right
+    # after `direnv allow` — no separate install step. --frozen-lockfile is a
+    # fast no-op once node_modules is current.
+    bun install --frozen-lockfile
+    # Pre-push git hook (a thin shell over `moon ci`). hk install is idempotent,
+    # so re-run it on every entry — a guard on the hook file being absent would
+    # never pick up `hk.pkl` changes in an already-cloned checkout.
+    if command -v hk >/dev/null 2>&1; then
+      hk install >/dev/null 2>&1 || echo "devenv: hk install failed; run 'hk install' to enable the pre-push gate"
+    fi
+  '';
+
+  # One-command Compass dogfood bring-up: `devenv up` stands up the backend a
+  # human can drive a session against. Postgres is the store of record
+  # (compass-server opens it at startup and applies its embedded migrations
+  # under an advisory lock — go/internal/store/store.go), and compass-server
+  # serves compass.v1 on a Unix socket plus an optional loopback gRPC-Web port
+  # for the browser UI dev server.
+  #
+  # Linux-only: the Postgres service and the backend build stack target the
+  # Linux dev box.
+  services.postgres = lib.optionalAttrs pkgs.stdenv.isLinux {
+    enable = true;
+    # The single dogfood database compass-server opens. Owned by $USER over the
+    # local Unix socket (peer auth) — no password on the loopback dev path.
+    initialDatabases = [ { name = "compass"; } ];
+  };
+
+  processes = lib.optionalAttrs pkgs.stdenv.isLinux {
+    # compass-server: serves compass.v1 on a Unix domain socket (the shipped
+    # local door) plus a loopback gRPC-Web port for the browser UI dev server.
+    # It builds the binary once, then `exec`s it. process-compose does not run
+    # this script directly: it runs `exec devenv-tasks run … compass-server`, so
+    # the tree is process-compose → devenv-tasks → compass-server. `exec` here
+    # still matters: it collapses the bash-wrapper → binary hop so no `go
+    # run`/shell parent is left to orphan (exit status propagates, and the
+    # compiled binary sits directly in the process group devenv-tasks signals).
+    # On stop, devenv-tasks traps SIGTERM and killpg()s that group (SIGTERM,
+    # then SIGKILL after a 5s grace); the SIGTERM reaches compass-server, which
+    # traps it in cmd/compass-server and drains both doors. Note the 5s killpg
+    # grace equals compass-server's own 5s drain deadline (server/serve.go), so
+    # a drain that runs its full budget races the SIGKILL at the boundary. The
+    # build is incremental/cached, so the per-restart cost is negligible.
+    # Restarts on failure (devenv caps this at 5 by default) so a transient
+    # store hiccup recovers.
+    compass-server = {
+      exec = ''
+        # Go is proto-managed (.prototools, go = 1.26.5); make its shim
+        # resolvable even when this process is launched outside the enterShell
+        # PATH mutation. This fixes PATH only — installing the pinned toolchain
+        # is `proto install`'s job, which `direnv allow` runs via enterShell.
+        # Absent that, the proto shim auto-installs the pinned Go on the first
+        # `go build`.
+        export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
+        export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
+        # Build once into the state dir, then exec the binary so no shell/`go
+        # run` parent lingers between devenv-tasks and compass-server — the
+        # binary lands directly in the process group devenv-tasks signals on
+        # stop (see the process comment above for the full signal path).
+        bin="${config.devenv.state}/compass/compass-server"
+        go build -o "$bin" ./cmd/compass-server
+        exec "$bin" \
+          --socket "$COMPASS_SOCKET" \
+          --dev-http "127.0.0.1:${toString config.processes.compass-server.ports.devhttp.value}" \
+          --database "$COMPASS_DATABASE_DSN"
+      '';
+      cwd = "${config.devenv.root}/go";
+      ports.devhttp.allocate = 50051;
+      env = {
+        # Unix socket under the devenv state dir so the path is stable across
+        # restarts and a co-located client (the UI/shell) resolves the same one.
+        COMPASS_SOCKET = "${config.devenv.state}/compass/server.sock";
+        # pgx keyword/value DSN over the Postgres Unix socket ($PGHOST is the
+        # socket dir, $PGPORT the allocated port — set by services.postgres).
+        # No user= : pgx defaults to the OS user, which is the peer-auth identity
+        # ($USER) that owns the `compass` database (services.postgres above).
+        COMPASS_DATABASE_DSN = "host=${config.env.PGHOST} port=${toString config.env.PGPORT} dbname=compass sslmode=disable";
+      };
+      # Wait for Postgres to be accepting connections before starting, so the
+      # store opens on the first try rather than crash-restarting until it's up.
+      after = [ "devenv:processes:postgres" ];
+      # Ready only once the server actually answers — not merely once the socket
+      # file exists. compass-server binds (and chmods) the socket BEFORE it runs
+      # the store migrations and starts accepting, so `test -S` would flip ready
+      # true while a dial still blocks on the first RPC. Probe GetServerInfo over
+      # the loopback dev door instead: it succeeds only after the store is
+      # migrated and the handler serves, which is the real signal an `after`-
+      # dependent needs.
+      ready.exec = ''
+        ${lib.getExe pkgs.curl} -fsS --max-time 2 \
+          -H 'Content-Type: application/json' \
+          -X POST \
+          "http://127.0.0.1:${toString config.processes.compass-server.ports.devhttp.value}/compass.v1.CompassService/GetServerInfo" \
+          -d '{}' >/dev/null
+      '';
+      restart.on = "on_failure";
+    };
+  };
+}
