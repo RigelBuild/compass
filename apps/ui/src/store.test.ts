@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createMemo, createRoot } from "solid-js";
 import type { Ask, AskQuestion } from "./comms-stub";
-import { STUB_CHANNELS, STUB_MESSAGES } from "./comms-stub";
+import { STUB_CHANNELS, STUB_COMMS_STATE, STUB_MESSAGES } from "./comms-stub";
 import {
 	type AgentTab,
 	type AppStore,
@@ -23,9 +23,15 @@ import { STUB_AGENTS, STUB_ASSIGNED_ISSUES } from "./stub-data";
 // `createRoot`, runs the body, then disposes. Actions are synchronous and memo
 // reads recompute on demand within the root, so every assertion runs inside the
 // root before it is torn down — no effects, no waiting, no cross-test leakage.
+//
+// The store no longer boots from the comms fixture — its comms surface is fed by
+// the live SubscribeComms stream. These tests are OFFLINE (no client), so they
+// seed the same fixture explicitly through `initialComms`: the behavior asserted
+// below (membership transitions, boot selection, ask recording, routing) is the
+// store's reduction over a populated comms state, whatever its origin.
 function withStore(body: (store: AppStore) => void): void {
 	createRoot((dispose) => {
-		const store = createAppStore();
+		const store = createAppStore({ initialComms: STUB_COMMS_STATE });
 		try {
 			body(store);
 		} finally {
@@ -46,7 +52,7 @@ async function withStoreAsync(
 	let dispose!: () => void;
 	const store = createRoot((d) => {
 		dispose = d;
-		return createAppStore();
+		return createAppStore({ initialComms: STUB_COMMS_STATE });
 	});
 	try {
 		await body(store);
@@ -670,8 +676,8 @@ describe("store isolation", () => {
 	// shared signals). Mutating one store leaves another untouched.
 	test("two stores do not share state", () => {
 		createRoot((dispose) => {
-			const a = createAppStore();
-			const b = createAppStore();
+			const a = createAppStore({ initialComms: STUB_COMMS_STATE });
+			const b = createAppStore({ initialComms: STUB_COMMS_STATE });
 			try {
 				a.openAgent("acc-cook");
 				a.toggleLeft();
@@ -1246,10 +1252,20 @@ describe("comms boot selection", () => {
 	});
 });
 
+// Matt's ruling: joining/subscribing has NO wire RPC yet. The store used to
+// mutate `membership` locally, which was harmless against a fixture but a lie
+// against the live stream — `adoptComms` replaces the state wholesale and
+// `deriveMembership` re-derives membership from the server's member lists, so a
+// local toggle silently reverted mid-use (the composer enabling, then disabling
+// under a half-typed draft). Until the RPCs land the store MUST NOT fake
+// membership state, and the rail's controls render disabled
+// (LeftSidebar.test.tsx). These tests pin the store half: both functions keep
+// their shape (the rail's onClick seam still type-checks) and are inert.
 describe("joinChannel", () => {
-	// none → joined. Uses a channel the fixture starts at `none`, asserting the
-	// transition rather than a fixed id.
-	test("joins a channel the caller has not joined (none → joined)", () => {
+	// The transition the old local-only path produced (none → joined) must NOT
+	// happen: it is a state the server never agreed to. Mutation-check:
+	// restoring `setMembership(id, m => m === "none" ? "joined" : m)` reddens.
+	test("does not fake a join — membership is unchanged (no wire RPC yet)", () => {
 		withStore((s) => {
 			const target = s.channels().find((c) => c.membership === "none");
 			expect(target).toBeDefined();
@@ -1258,39 +1274,29 @@ describe("joinChannel", () => {
 			s.joinChannel(target.id);
 
 			expect(s.channels().find((c) => c.id === target.id)?.membership).toBe(
-				"joined",
+				"none",
 			);
 		});
 	});
 
-	// No-op when already joined and when already subscribed — join never demotes a
-	// higher membership.
-	test("is a no-op on an already-joined or subscribed channel", () => {
+	// Inert everywhere, not just on the `none` row — and it leaves the channels
+	// array REFERENCE untouched, so it cannot even churn the rail's memo.
+	test("leaves every channel (and the channels reference) untouched", () => {
 		withStore((s) => {
-			const joined = s.channels().find((c) => c.membership === "joined");
-			const subscribed = s
-				.channels()
-				.find((c) => c.membership === "subscribed");
-			expect(joined).toBeDefined();
-			expect(subscribed).toBeDefined();
-			if (!joined || !subscribed) return;
+			const before = s.channels();
+			for (const channel of before) s.joinChannel(channel.id);
+			s.joinChannel("ch-nope");
 
-			s.joinChannel(joined.id);
-			s.joinChannel(subscribed.id);
-
-			expect(s.channels().find((c) => c.id === joined.id)?.membership).toBe(
-				"joined",
-			);
-			expect(s.channels().find((c) => c.id === subscribed.id)?.membership).toBe(
-				"subscribed",
-			);
+			expect(s.channels()).toBe(before);
 		});
 	});
 });
 
 describe("toggleSubscribe", () => {
-	// joined ⇆ subscribed round-trips on a normal (non-always-subscribed) channel.
-	test("toggles a joined channel to subscribed and back", () => {
+	// The joined ⇆ subscribed round-trip the old local path produced is gone: a
+	// subscription the server does not hold must never render as held.
+	// Mutation-check: restoring the local toggle reddens the first assertion.
+	test("does not fake a subscribe — membership is unchanged (no wire RPC yet)", () => {
 		withStore((s) => {
 			const target = s
 				.channels()
@@ -1299,48 +1305,34 @@ describe("toggleSubscribe", () => {
 			if (!target) return;
 
 			s.toggleSubscribe(target.id);
-			expect(s.channels().find((c) => c.id === target.id)?.membership).toBe(
-				"subscribed",
-			);
 
-			s.toggleSubscribe(target.id);
 			expect(s.channels().find((c) => c.id === target.id)?.membership).toBe(
 				"joined",
 			);
 		});
 	});
 
-	// No-op on a `none` channel — subscribe is only meaningful once joined, so a
-	// toggle must not promote an unjoined channel straight to subscribed.
-	test("is a no-op on a none channel (subscribe requires joining first)", () => {
+	// Inert across every row — including the two the old implementation already
+	// refused (a `none` channel, and the alwaysSubscribed one whose subscription
+	// is implicit and non-togglable, design.md:416). The fixture pins
+	// ch-announcements as alwaysSubscribed + subscribed.
+	test("leaves every channel (and the channels reference) untouched", () => {
 		withStore((s) => {
-			const target = s.channels().find((c) => c.membership === "none");
-			expect(target).toBeDefined();
-			if (!target) return;
+			// Non-triviality: the fixture really carries all three shapes, so an
+			// "unchanged" pass is not an empty-set pass.
+			expect(s.channels().some((c) => c.membership === "none")).toBe(true);
+			expect(s.channels().some((c) => c.alwaysSubscribed)).toBe(true);
+			expect(
+				s
+					.channels()
+					.some((c) => c.membership === "joined" && !c.alwaysSubscribed),
+			).toBe(true);
 
-			s.toggleSubscribe(target.id);
+			const before = s.channels();
+			for (const channel of before) s.toggleSubscribe(channel.id);
+			s.toggleSubscribe("ch-nope");
 
-			expect(s.channels().find((c) => c.id === target.id)?.membership).toBe(
-				"none",
-			);
-		});
-	});
-
-	// No-op on an always-subscribed channel — the implicit, non-togglable
-	// subscription must survive a toggle even if a caller bypasses the fixed UI
-	// control. The fixture pins ch-announcements as alwaysSubscribed + subscribed.
-	test("is a no-op on an alwaysSubscribed channel (stays subscribed)", () => {
-		withStore((s) => {
-			const target = s.channels().find((c) => c.alwaysSubscribed);
-			expect(target).toBeDefined();
-			expect(target?.membership).toBe("subscribed");
-			if (!target) return;
-
-			s.toggleSubscribe(target.id);
-
-			expect(s.channels().find((c) => c.id === target.id)?.membership).toBe(
-				"subscribed",
-			);
+			expect(s.channels()).toBe(before);
 		});
 	});
 });

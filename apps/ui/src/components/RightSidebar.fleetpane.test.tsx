@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
-import { type Ask, STUB_ACCOUNTS, STUB_MESSAGES } from "../comms-stub";
+import {
+	type Ask,
+	STUB_ACCOUNTS,
+	STUB_COMMS_STATE,
+	STUB_MESSAGES,
+} from "../comms-stub";
 import { RIGHT_SIDEBAR_TAB_BY_ID } from "../constants";
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
@@ -33,7 +38,7 @@ import { RightSidebar } from "./RightSidebar";
 function mountRightSidebar(): { store: AppStore; container: HTMLElement } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore();
+		store = createAppStore({ initialComms: STUB_COMMS_STATE });
 		return (
 			<StoreContext.Provider value={store}>
 				<RightSidebar />

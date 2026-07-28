@@ -4,6 +4,7 @@ import {
 	type Ask,
 	STUB_ACCOUNTS,
 	STUB_CHANNELS,
+	STUB_COMMS_STATE,
 	STUB_MESSAGES,
 } from "../comms-stub";
 import { StoreContext } from "../context";
@@ -97,7 +98,7 @@ function mountChannelView(readonly: boolean): {
 } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore();
+		store = createAppStore({ initialComms: STUB_COMMS_STATE });
 		const extra: Record<string, unknown> = readonly
 			? { readonlyAsks: true }
 			: {};

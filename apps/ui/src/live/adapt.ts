@@ -6,9 +6,8 @@
 //
 // Scope (T7, franklin-clear half): the STABLE entities — Account, ChannelGroup,
 // Channel — plus the caller-relative `membership` derivation the domain type
-// carries but the wire does not. Message/Ask mapping lands with the per-question
-// Ask reshape (franklin-sea-1195-ask-in-channel-impl) so it is not built here
-// against a shape about to change.
+// carries but the wire does not, and the durable Message/Ask mapping the live
+// read path consumes through `MapMessage` (./comms-state).
 //
 // Two structural gaps every mapper bridges:
 //  - protobuf-es oneofs are `{case, value}` tagged unions; the domain uses a
@@ -19,18 +18,26 @@
 
 import type {
 	Account as WireAccount,
+	Ask as WireAsk,
+	AskQuestion as WireAskQuestion,
 	Channel as WireChannel,
 	ChannelGroup as WireChannelGroup,
+	Message as WireMessage,
 } from "@compass/client";
 import { ChannelGroupVisibility, ChannelKind } from "@compass/client";
 import type {
+	Ask,
+	AskQuestion,
 	Channel,
 	ChannelGroup,
+	ConvBlock,
 	ChannelKind as DomainChannelKind,
 	ChannelGroupVisibility as DomainVisibility,
 	Membership,
+	Message,
 } from "../comms-stub";
 import type { Account } from "../stub-data";
+import type { MapMessage } from "./comms-state";
 
 /** The wire `ChannelKind` enum → the domain's string-literal kind. Total over
  *  the enum: a `satisfies Record<ChannelKind, …>` makes a new wire variant a
@@ -147,3 +154,80 @@ export function agentHomeChannelIds(
 	}
 	return ids;
 }
+
+/** Map a wire AskQuestion to the domain one, preserving option order. The wire's
+ *  presentation/audit extras (header, recommended, customText, timedOut) are not
+ *  in the domain contract and are deliberately dropped here rather than carried
+ *  half-rendered. The option `description` follows the file's empty-string→absent
+ *  convention. */
+function adaptAskQuestion(w: WireAskQuestion): AskQuestion {
+	return {
+		questionId: w.questionId,
+		question: w.question,
+		options: w.options.map((o) => ({
+			id: o.id,
+			label: o.label,
+			description: o.description || undefined,
+		})),
+		allowMultiple: w.allowMultiple,
+		chosenOptionIds: w.chosenOptionIds,
+	};
+}
+
+/** Map a wire Ask to the domain Ask: the correlation id plus every question in
+ *  ask order (comms.proto Ask — one ask_id per Ask, questions keyed inside by
+ *  question_id, so order is the only positional contract and is preserved). */
+export function adaptAsk(w: WireAsk): Ask {
+	return {
+		askId: w.askId,
+		questions: w.questions.map(adaptAskQuestion),
+	};
+}
+
+/** Map a wire MessageBlock's oneof to a durable domain block, or `undefined` for
+ *  any other/unset case. The domain narrows the proto oneof to the two DURABLE
+ *  conversation kinds (comms-stub.ts:143-147): the rich ACP blocks
+ *  (thought/tool_call/plan/diff) are execution trace that renders in the session
+ *  observation panel, not the conversation, so a non-durable case is DROPPED —
+ *  not mapped to a placeholder (which would render as a phantom message body)
+ *  and not thrown on (which would blank the whole channel over one block). */
+function adaptBlock(w: WireMessage["blocks"][number]): ConvBlock | undefined {
+	switch (w.block.case) {
+		case "text":
+			return { kind: "text", text: w.block.value };
+		case "ask":
+			return { kind: "ask", ask: adaptAsk(w.block.value) };
+		default:
+			return undefined;
+	}
+}
+
+/** Map a wire Message to the domain Message. Three bridges beyond the verbatim
+ *  scalars:
+ *   - `container` is a oneof; the domain is channel-only, so the channel arm
+ *     flattens to `channelId` and an unset oneof yields "" (an inert, unplaceable
+ *     message) rather than a throw, matching adaptAccount's malformed-row policy.
+ *   - `at_unix_ms` is an int64 → a JS `bigint` on the wire; the domain wants a
+ *     `number`, so convert EXPLICITLY (implicit coercion on a bigint throws).
+ *   - `parent_message_id` uses the wire's empty-string "unset"; the domain's
+ *     parent is optional and `comms.ts` threading treats a falsy parent as a
+ *     root, so "" normalizes to undefined here — this is the single seam. */
+function adaptWireMessage(w: WireMessage): Message {
+	return {
+		id: w.id,
+		channelId: w.container.case === "channelId" ? w.container.value : "",
+		authorAccountId: w.authorAccountId,
+		atUnixMs: Number(w.atUnixMs),
+		parentMessageId: w.parentMessageId || undefined,
+		blocks: w.blocks
+			.map(adaptBlock)
+			.filter((b): b is ConvBlock => b !== undefined),
+	};
+}
+
+/** The injected wire→domain message mapper the live reducer consumes
+ *  (./comms-state MapMessage). The reducer's parameter is `unknown` on purpose —
+ *  it never names the block shape — so the narrowing happens ONCE, here at the
+ *  boundary, and the body stays typed against the generated wire message. */
+export const adaptMessage: MapMessage = (wire) =>
+	adaptWireMessage(wire as WireMessage);

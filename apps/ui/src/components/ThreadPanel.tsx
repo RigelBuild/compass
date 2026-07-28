@@ -7,15 +7,27 @@ import { MessageRow } from "./ChannelView";
 /** The thread-scoped composer: mirrors the main Composer's `.conv-composer`
  *  markup and membership-based enablement (OQ-1 §711-719 — a reply is text
  *  posting, never read-only in a joined channel), posting through
- *  store.postReply under the thread root. */
+ *  store.postReply (the wire PostMessage with parentMessageId) under the thread
+ *  root. No local insert: the SubscribeComms echo renders the reply. Same
+ *  failure contract as the main composer — the typed text is restored into an
+ *  empty field when the post rejects. */
 const ThreadComposer: Component<{ channel: Channel; rootId: string }> = (
 	props,
 ) => {
 	const store = useStore();
 	const [draft, setDraft] = createSignal("");
+	const [error, setError] = createSignal<string | null>(null);
 	const send = () => {
-		store.postReply(props.channel.id, props.rootId, draft().trim());
+		const text = draft().trim();
+		if (!text || props.channel.membership === "none") return;
+		setError(null);
 		setDraft("");
+		store
+			.postReply(props.channel.id, props.rootId, text)
+			.catch((e: unknown) => {
+				setError(e instanceof Error ? e.message : String(e));
+				setDraft((current) => (current === "" ? text : current));
+			});
 	};
 	return (
 		<div class="conv-composer">
@@ -25,6 +37,12 @@ const ThreadComposer: Component<{ channel: Channel; rootId: string }> = (
 				value={draft()}
 				disabled={props.channel.membership === "none"}
 				onInput={(e) => setDraft(e.currentTarget.value)}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" && !e.shiftKey) {
+						e.preventDefault();
+						send();
+					}
+				}}
 			/>
 			<button
 				type="button"
@@ -36,6 +54,13 @@ const ThreadComposer: Component<{ channel: Channel; rootId: string }> = (
 			>
 				send
 			</button>
+			<Show when={error()}>
+				{(msg) => (
+					<span class="conv-composer-error" role="alert">
+						{msg()}
+					</span>
+				)}
+			</Show>
 		</div>
 	);
 };
@@ -93,7 +118,16 @@ export const ThreadPanel: Component<{
 							</div>
 						</Show>
 					</div>
-					<ThreadComposer channel={props.channel} rootId={t().root.id} />
+					{/* A FRESH composer per thread root, for the same reason the channel
+					    composer is keyed (ChannelView.tsx): the enclosing `<Show>` is
+					    unkeyed, so moving between two truthy threads reuses this
+					    instance and its draft/error would post one thread's text under
+					    another's root. */}
+					<Show when={t().root.id} keyed>
+						{(rootId) => (
+							<ThreadComposer channel={props.channel} rootId={rootId} />
+						)}
+					</Show>
 				</aside>
 			)}
 		</Show>

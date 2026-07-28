@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { render } from "@solidjs/testing-library";
 import App from "./App";
-import { STUB_CHANNELS, STUB_MESSAGES } from "./comms-stub";
+import { STUB_CHANNELS, STUB_COMMS_STATE, STUB_MESSAGES } from "./comms-stub";
 import { StoreContext } from "./context";
 import { type AppStore, createAppStore } from "./store";
 import { STUB_AGENTS } from "./stub-data";
@@ -84,7 +84,7 @@ const AGENT_NAME = (() => {
 function mountApp(): { store: AppStore; container: HTMLElement } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore();
+		store = createAppStore({ initialComms: STUB_COMMS_STATE });
 		return (
 			<StoreContext.Provider value={store}>
 				<App />

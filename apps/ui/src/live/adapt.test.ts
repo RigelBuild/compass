@@ -1,19 +1,27 @@
 import { describe, expect, test } from "bun:test";
+import type { Ask as WireAsk } from "@compass/client";
 import {
 	AccountSchema,
 	AgentAccountSchema,
+	AskOptionSchema,
+	AskQuestionSchema,
+	AskSchema,
 	ChannelGroupSchema,
 	ChannelGroupVisibility,
 	ChannelKind,
 	ChannelSchema,
 	create,
+	MessageBlockSchema,
+	MessageSchema,
 	UserAccountSchema,
 } from "@compass/client";
 import type { Account } from "../stub-data";
 import {
 	adaptAccount,
+	adaptAsk,
 	adaptChannel,
 	adaptChannelGroup,
+	adaptMessage,
 	agentHomeChannelIds,
 	deriveMembership,
 } from "./adapt";
@@ -370,5 +378,206 @@ describe("agentHomeChannelIds", () => {
 			},
 		]);
 		expect(ids.size).toBe(0);
+	});
+});
+
+// ── Message / Ask fixture builders ───────────────────────────────────────────
+function textBlock(text: string) {
+	return create(MessageBlockSchema, { block: { case: "text", value: text } });
+}
+function askBlock(ask: WireAsk) {
+	return create(MessageBlockSchema, { block: { case: "ask", value: ask } });
+}
+/** A block whose oneof is unset — the stand-in for any non-durable/unknown
+ *  wire case the domain does not model. */
+function unsetBlock() {
+	return create(MessageBlockSchema, {});
+}
+
+describe("adaptAsk", () => {
+	test("maps askId and every question, preserving question and option order", () => {
+		const r = adaptAsk(
+			create(AskSchema, {
+				askId: "ask-1",
+				questions: [
+					create(AskQuestionSchema, {
+						questionId: "q-1",
+						question: "Which lane?",
+						options: [
+							create(AskOptionSchema, { id: "o-a", label: "A" }),
+							create(AskOptionSchema, { id: "o-b", label: "B" }),
+							create(AskOptionSchema, { id: "o-c", label: "C" }),
+						],
+						allowMultiple: true,
+						chosenOptionIds: ["o-c", "o-a"],
+					}),
+					create(AskQuestionSchema, {
+						questionId: "q-2",
+						question: "Ship it?",
+						options: [create(AskOptionSchema, { id: "o-y", label: "Yes" })],
+					}),
+				],
+			}),
+		);
+		expect(r.askId).toBe("ask-1");
+		// Question order is the ask order, not a set.
+		expect(r.questions.map((q) => q.questionId)).toEqual(["q-1", "q-2"]);
+		const [q1, q2] = r.questions;
+		expect(q1?.question).toBe("Which lane?");
+		// Option order is preserved verbatim.
+		expect(q1?.options).toEqual([
+			{ id: "o-a", label: "A", description: undefined },
+			{ id: "o-b", label: "B", description: undefined },
+			{ id: "o-c", label: "C", description: undefined },
+		]);
+		expect(q1?.allowMultiple).toBe(true);
+		// Chosen ids carry through in the answer's own order, not re-sorted.
+		expect(q1?.chosenOptionIds).toEqual(["o-c", "o-a"]);
+		// A pending single-select question: unanswered and not multi.
+		expect(q2?.allowMultiple).toBe(false);
+		expect(q2?.chosenOptionIds).toEqual([]);
+	});
+
+	test("option description normalizes empty-string wire unset to undefined", () => {
+		const r = adaptAsk(
+			create(AskSchema, {
+				askId: "ask-2",
+				questions: [
+					create(AskQuestionSchema, {
+						questionId: "q-1",
+						question: "Pick",
+						options: [
+							create(AskOptionSchema, { id: "o-a", label: "A" }),
+							create(AskOptionSchema, {
+								id: "o-b",
+								label: "B",
+								description: "the safer one",
+							}),
+						],
+					}),
+				],
+			}),
+		);
+		const opts = r.questions[0]?.options ?? [];
+		expect(opts[0]?.description).toBeUndefined();
+		expect(opts[0]?.description).not.toBe("");
+		expect(opts[1]?.description).toBe("the safer one");
+	});
+
+	test("an ask with no options on a question maps to an empty option list", () => {
+		const r = adaptAsk(
+			create(AskSchema, {
+				askId: "ask-3",
+				questions: [
+					create(AskQuestionSchema, { questionId: "q-1", question: "Free?" }),
+				],
+			}),
+		);
+		expect(r.questions[0]?.options).toEqual([]);
+	});
+});
+
+describe("adaptMessage", () => {
+	test("maps the scalar fields and flattens the container oneof to channelId", () => {
+		const r = adaptMessage(
+			create(MessageSchema, {
+				id: "msg-1",
+				container: { case: "channelId", value: "chan-1" },
+				authorAccountId: "acc-matt",
+				atUnixMs: 1_700_000_000_000n,
+				blocks: [textBlock("hello")],
+			}),
+		);
+		expect(r.id).toBe("msg-1");
+		expect(r.channelId).toBe("chan-1");
+		expect(r.authorAccountId).toBe("acc-matt");
+	});
+
+	test("atUnixMs converts the wire bigint to a real number", () => {
+		const r = adaptMessage(
+			create(MessageSchema, { id: "msg-1", atUnixMs: 1_700_000_000_000n }),
+		);
+		// A number, not a bigint: the domain sorts/compares these with `<`.
+		expect(typeof r.atUnixMs).toBe("number");
+		expect(r.atUnixMs).toBe(1_700_000_000_000);
+	});
+
+	test("a text block maps to a domain text block", () => {
+		const r = adaptMessage(
+			create(MessageSchema, { id: "msg-1", blocks: [textBlock("hi there")] }),
+		);
+		expect(r.blocks).toEqual([{ kind: "text", text: "hi there" }]);
+	});
+
+	test("an ask block maps through adaptAsk", () => {
+		const ask = create(AskSchema, {
+			askId: "ask-1",
+			questions: [
+				create(AskQuestionSchema, {
+					questionId: "q-1",
+					question: "Which?",
+					options: [create(AskOptionSchema, { id: "o-a", label: "A" })],
+					allowMultiple: true,
+					chosenOptionIds: ["o-a"],
+				}),
+			],
+		});
+		const r = adaptMessage(
+			create(MessageSchema, { id: "msg-1", blocks: [askBlock(ask)] }),
+		);
+		expect(r.blocks).toEqual([{ kind: "ask", ask: adaptAsk(ask) }]);
+		const block = r.blocks[0];
+		expect(block?.kind).toBe("ask");
+		if (block?.kind !== "ask") throw new Error("expected an ask block");
+		expect(block.ask.questions[0]?.allowMultiple).toBe(true);
+		expect(block.ask.questions[0]?.chosenOptionIds).toEqual(["o-a"]);
+	});
+
+	test("a non-durable/unset block case is DROPPED, keeping the durable ones in order", () => {
+		const r = adaptMessage(
+			create(MessageSchema, {
+				id: "msg-1",
+				blocks: [textBlock("first"), unsetBlock(), textBlock("second")],
+			}),
+		);
+		// Dropped, never a placeholder block and never a throw.
+		expect(r.blocks).toEqual([
+			{ kind: "text", text: "first" },
+			{ kind: "text", text: "second" },
+		]);
+	});
+
+	test("a message whose blocks are all non-durable yields an empty blocks array", () => {
+		const r = adaptMessage(
+			create(MessageSchema, {
+				id: "msg-1",
+				blocks: [unsetBlock(), unsetBlock()],
+			}),
+		);
+		expect(r.blocks).toEqual([]);
+	});
+
+	test("parentMessageId empty-string wire unset maps to undefined", () => {
+		const r = adaptMessage(
+			create(MessageSchema, { id: "msg-1", parentMessageId: "" }),
+		);
+		// The threading seam: comms.ts treats a falsy parent as a root, and the
+		// wire round-trip pins "" — the conversion must land on undefined, not "".
+		expect(r.parentMessageId).toBeUndefined();
+		expect(r.parentMessageId).not.toBe("");
+	});
+
+	test("a real parentMessageId round-trips verbatim", () => {
+		const r = adaptMessage(
+			create(MessageSchema, { id: "msg-2", parentMessageId: "msg-1" }),
+		);
+		expect(r.parentMessageId).toBe("msg-1");
+	});
+
+	test("an unset container oneof maps to an empty channelId rather than throwing", () => {
+		const w = create(MessageSchema, { id: "msg-1" });
+		expect(w.container.case).toBeUndefined();
+		expect(() => adaptMessage(w)).not.toThrow();
+		expect(adaptMessage(w).channelId).toBe("");
 	});
 });

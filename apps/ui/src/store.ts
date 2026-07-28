@@ -7,26 +7,33 @@
 // agent in the tree, a card on the board, or a row in a swimlane all resolve to
 // the same selection.
 //
-// This is a dev mockup: the store reads the in-memory fixture (stub-data.ts).
-// When the daemon grows the real streams, the accessors below stay and their
-// bodies swap the fixture for the generated @compass/client — the AppStore
-// contract is the seam the components are written against.
+// The comms surface reads LIVE: `createAppStore` takes an optional CommsClient
+// and runs `runCommsStream` over it, mirroring each reduced CommsState into the
+// accessors below. The accessors are the seam the components were written
+// against, so nothing above the store changed when the fixture went away. A
+// store built WITHOUT a client is offline: it starts from `initialComms` (the
+// fixture, in tests) and every write rejects — construction never needs a
+// network client.
 
-import { type Accessor, createMemo, createSignal } from "solid-js";
+import type { CommsClient, CompassClient } from "@compass/client";
+import {
+	type Accessor,
+	createMemo,
+	createSignal,
+	getOwner,
+	onCleanup,
+} from "solid-js";
 import { agentDmAccountId, threadsOf } from "./comms";
 import type {
 	Account,
+	Ask,
 	Channel,
 	ChannelGroup,
-	Membership,
 	Message,
 } from "./comms-stub";
-import {
-	STUB_ACCOUNTS,
-	STUB_CHANNEL_GROUPS,
-	STUB_CHANNELS,
-	STUB_MESSAGES,
-} from "./comms-stub";
+import { adaptMessage } from "./live/adapt";
+import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
+import { runCommsStream } from "./live/stream";
 import type { AgentSession } from "./session-events";
 import { STUB_SESSION_EVENTS } from "./session-events-stub";
 import {
@@ -285,14 +292,14 @@ export interface AppStore {
 	caller: Accessor<Account>;
 	/** All accounts visible to the caller — the author/handle resolution source
 	 *  for the channel surface (distinct from `agents`, the board's fleet). */
-	accounts: Accessor<Account[]>;
+	accounts: Accessor<readonly Account[]>;
 	/** All channel groups visible to the caller (the rail's group headers). */
-	channelGroups: Accessor<ChannelGroup[]>;
+	channelGroups: Accessor<readonly ChannelGroup[]>;
 	/** All channels + DMs visible to the caller — the reactive rail source, so a
 	 *  join/subscribe is visible everywhere at once. */
-	channels: Accessor<Channel[]>;
+	channels: Accessor<readonly Channel[]>;
 	/** All messages visible to the caller — the reactive conversation source. */
-	messages: Accessor<Message[]>;
+	messages: Accessor<readonly Message[]>;
 	/** The selected channel id, or null (the empty state before a pick). */
 	selectedChannelId: Accessor<string | null>;
 	/** The resolved selected channel, or undefined. */
@@ -302,23 +309,46 @@ export interface AppStore {
 	 *  standalone surface can't re-point the workspace pane. Undefined when no
 	 *  agent is selected. */
 	workspaceChannel: Accessor<Channel | undefined>;
-	/** Join a channel the caller can see but hasn't joined (`none` → `joined`).
-	 *  No-op if already joined/subscribed. */
+	/** NOT WIRED YET — inert. The wire has no join RPC; the rail's join control
+	 *  renders disabled. Kept as the seam the control binds to (and where the
+	 *  RPC lands), but it fakes NO membership: a local-only join silently
+	 *  reverted on the next SubscribeComms snapshot, which re-derives membership
+	 *  from the server. */
 	joinChannel: (channelId: string) => void;
-	/** Toggle the caller's subscription on a joined channel (`joined` ⇆
-	 *  `subscribed`). No-op on an unjoined channel or an always-subscribed one. */
+	/** NOT WIRED YET — inert, for the same reason as `joinChannel`. The rail's
+	 *  subscribe toggle renders disabled. */
 	toggleSubscribe: (channelId: string) => void;
-	/** Answer a question within an ask in a message: records the chosen
-	 *  option(s) on the named question. Single-select is first-responder-wins —
-	 *  once a question is answered a later single-select answer is a no-op;
-	 *  multi-select toggles. No-op for an unknown message/ask/question/option.
-	 *  Becomes a RespondToAsk call when the stream lands. */
+	/** Record an answer to a question within an ask, LOCALLY. The wire
+	 *  `RespondToAsk` is gated on COMPLETENESS: the server accepts exactly one
+	 *  respond per ask (go/internal/store/messages.go:400-403/:437), so answers
+	 *  accumulate locally and exactly ONE atomic respond — every question's
+	 *  answer in one call — is issued on the click that completes the ask. A
+	 *  single-question ask completes on its only click. Single-select is
+	 *  first-responder-wins (a later answer is a local no-op); multi-select
+	 *  toggles. No-op for an unknown message/ask/question/option, and for an ask
+	 *  already submitted. A REFUSED respond rolls the local answer back and
+	 *  clears the submitted mark (the ask stays retryable); the error also
+	 *  reaches `onCommsError`. */
 	answerAsk: (
 		messageId: string,
 		askId: string,
 		questionId: string,
 		optionId: string,
 	) => void;
+	/** Submit an INCOMPLETE ask — the skip affordance. Issues the ask's one
+	 *  `RespondToAsk` with the answers recorded so far and an empty
+	 *  `chosenOptionIds` for every skipped question (the wire requires coverage
+	 *  of each question, not an answer to each). No-op on an unknown ask, an ask
+	 *  already submitted, and a wholly unanswered one. */
+	submitAsk: (messageId: string, askId: string) => void;
+	/** Whether this ask's one `RespondToAsk` has been issued — reactive, so the
+	 *  render locks a submitted ask. Cleared again if the respond is refused. */
+	isAskSubmitted: (askId: string) => boolean;
+	/** The message from the last REFUSED `RespondToAsk` for this ask, or
+	 *  undefined when its last respond was not refused — reactive, so the ask
+	 *  block can say what went wrong instead of leaving the user's click to
+	 *  vanish into a console line. Cleared when the user answers the ask again. */
+	askError: (askId: string) => string | undefined;
 	/** The root id of the currently open thread on the standalone channel
 	 *  surface, or null when no thread is open. Channel-scoped: a selection
 	 *  change (openChannel/openAgent) clears it. */
@@ -329,10 +359,21 @@ export interface AppStore {
 	openThread: (rootMessageId: string) => void;
 	/** Close the open thread, resetting `openThreadRootId` to null. */
 	closeThread: () => void;
-	/** Post a reply under `parentMessageId` in `channelId`: appends one in-memory
-	 *  Message authored by the caller with a single text block and a minted local
-	 *  id. Becomes a PostMessage call when the stream lands. */
-	postReply: (channelId: string, parentMessageId: string, text: string) => void;
+	/** Post a root message to `channelId` through the wire `PostMessage`, with a
+	 *  single text block and a fresh `clientRequestId` (the server dedups a
+	 *  retry). Does NOT insert locally: the stored message arrives through the
+	 *  SubscribeComms echo, which `upsertMessage` dedups by id — so the sent
+	 *  message renders exactly once. Rejects when the post fails (or when the
+	 *  store has no client) so the composer can keep the user's text. */
+	postMessage: (channelId: string, text: string) => Promise<void>;
+	/** Post a reply under `parentMessageId` in `channelId` — `postMessage` with
+	 *  the wire's `parentMessageId` set. Same no-local-insert contract: the
+	 *  stream echo renders it. */
+	postReply: (
+		channelId: string,
+		parentMessageId: string,
+		text: string,
+	) => Promise<void>;
 
 	// ── Agent view: tabs (pane groups) + per-tab split trees (T7) ──
 	/** The selected agent's live session: the typed AgentSession (its ordered
@@ -377,9 +418,20 @@ export interface AppStore {
 	 *  permanent. */
 	closePane: (paneId: string) => void;
 	/** Stop the selected agent (the workspace's stop control). Steering happens
-	 *  in the channel, not here — this is the one non-observational control. A
-	 *  no-op stub until the daemon's StopAgentSession lands. */
-	stopAgent: () => void;
+	 *  in the channel, not here — this is the one non-observational control.
+	 *  Issues StopAgentSession for the OBSERVED session (`agentSession()`), a
+	 *  no-op when nothing is selected. Resolves either way: the RPC is
+	 *  Runner-backed and answers `Unavailable` when the server has no RunnerHub
+	 *  attached (the socket-only path), so a refusal is routed to
+	 *  `onCommsError` rather than rejected — there is no user text to preserve,
+	 *  unlike a failed post. */
+	stopAgent: () => Promise<void>;
+	/** The message from the last REFUSED stop — a server refusal
+	 *  (`Unavailable`), a fixture-sourced session, or a store with no compass
+	 *  client — or undefined when the last attempt was not refused. Reactive, so
+	 *  the log panel can SAY what went wrong instead of leaving the click to
+	 *  vanish into a console line. Cleared at the start of the next attempt. */
+	stopError: Accessor<string | undefined>;
 
 	// ── Log panel (D2) ──
 	/** Whether the bottom log panel is open. Defaults open; resets open on
@@ -417,11 +469,50 @@ export interface AppStore {
 	setTrackerConfig: (cfg: TrackerConfig) => void;
 }
 
+/** What `createAppStore` is handed at boot. Everything is optional so a unit
+ *  test constructs the store with NO network client at all: the comms surface
+ *  then holds `initialComms` (the fixture, in tests) and every write rejects.
+ *  index.tsx supplies the real `Connection`-derived client + caller. */
+export interface AppStoreOptions {
+	/** The live comms client. Present → the store runs `runCommsStream` over it
+	 *  for its lifetime and every comms write is a real RPC. Absent → offline. */
+	readonly comms?: CommsClient;
+	/** The caller's account id, from the Connection (`VITE_COMPASS_CALLER_ID`).
+	 *
+	 *  SEAM (caller-identity): there is no `WhoAmI` RPC, so the operator supplies
+	 *  the account the bearer authenticates as (live/connection.ts:28-35). The
+	 *  fixture default keeps the offline store on the fixture's owner. */
+	readonly callerId?: string;
+	/** The comms state the store starts from before any stream push. Defaults to
+	 *  EMPTY — tests that need populated comms pass the fixture explicitly. */
+	readonly initialComms?: CommsState;
+	/** The live compass client — the agent-lifecycle surface (StopAgentSession).
+	 *  Absent → offline: `stopAgent` reports through `onCommsError` instead of
+	 *  dialing. Separate from `comms`: the two services are separate clients over
+	 *  the one Connection (live/client.ts:28-33). */
+	readonly compass?: CompassClient;
+	/** The observable agent sessions, keyed by agent account id. Defaults to the
+	 *  hand-written fixture (STUB_SESSION_EVENTS), which is what the shipped app
+	 *  still shows until SubscribeAgentSession is wired — every fixture entry is
+	 *  marked `fixture: true`, so `stopAgent` refuses to put its id on the wire.
+	 *  A test (or, later, the live stream) supplies server-sourced sessions here
+	 *  to exercise the real Stop path. */
+	readonly sessions?: Record<string, AgentSession>;
+	/** Observes a comms failure — a stream error the driver retries past, a
+	 *  rejected `RespondToAsk`, or a refused `StopAgentSession`.
+	 *  `postMessage`/`postReply` reject to their caller instead (the composer
+	 *  must keep the user's text) and do NOT route here. */
+	readonly onCommsError?: (error: unknown) => void;
+}
+
 /**
- * Build the app store over the in-memory fixture. Called once at the app root;
- * the instance is provided through context.
+ * Build the app store. Called once at the app root; the instance is provided
+ * through context. With `options.comms` set, the comms accessors are fed by the
+ * live SubscribeComms stream, which runs until the store's reactive owner is
+ * disposed (index.tsx's root lives for the app's lifetime).
  */
-export function createAppStore(): AppStore {
+export function createAppStore(options: AppStoreOptions = {}): AppStore {
+	const callerId = options.callerId ?? CALLER_ID;
 	const agents = STUB_AGENTS;
 	// The workstream list is reactive so promote/archive (below) are visible on
 	// every surface at once. Seeded from the fixture; the real @compass/client
@@ -482,29 +573,79 @@ export function createAppStore(): AppStore {
 	const [activeRepoId, setActiveRepoId] = createSignal<string | null>(null);
 
 	// ── Comms: the channel surface (design compass-0.7) ──
-	// Accounts/groups are static seeds; channels + messages are reactive so a
-	// membership toggle or (later) a post shows on every surface at once. The
-	// accessors stay the seam when the real SubscribeComms stream replaces them.
-	const [accounts] = createSignal<Account[]>(STUB_ACCOUNTS);
-	const [channelGroups] = createSignal<ChannelGroup[]>(STUB_CHANNEL_GROUPS);
-	const [channels, setChannels] = createSignal<Channel[]>(STUB_CHANNELS);
-	const [messages, setMessages] = createSignal<Message[]>(STUB_MESSAGES);
-	// Open on the first subscribed channel so the shell boots into a live
-	// conversation, not the empty state — no hardcoded id (survives the swap to
-	// the real stream).
-	const [selectedChannelId, setSelectedChannelId] = createSignal<string | null>(
-		STUB_CHANNELS.find((c) => c.membership === "subscribed")?.id ??
-			STUB_CHANNELS[0]?.id ??
-			null,
+	// ONE reduced CommsState drives all four comms accessors. It starts at
+	// `initialComms` (EMPTY by default — the store no longer boots from the
+	// fixture) and is replaced wholesale by each `runCommsStream` push; the local
+	// membership mutations below rewrite it the same immutable way. The four
+	// accessors are memos over it, so a message event leaves the channels array
+	// reference untouched and the rail doesn't re-render.
+	const [comms, setComms] = createSignal<CommsState>(
+		options.initialComms ?? EMPTY_COMMS_STATE,
 	);
+	// CommsState's collections are `readonly` (a pure value the reducer rebuilds
+	// on every transition) and the accessors keep that: nothing here or in the
+	// components mutates in place — every write goes through setComms with a
+	// fresh array — and a `readonly` signature is what keeps the compiler able
+	// to hold that true, rather than a cast that silently permits the first
+	// in-place mutation someone adds.
+	const accounts = createMemo(() => comms().accounts);
+	const channelGroups = createMemo(() => comms().channelGroups);
+	const channels = createMemo(() => comms().channels);
+	const messages = createMemo(() => comms().messages);
+	// Open on the first subscribed channel so the shell boots into a live
+	// conversation, not the empty state — no hardcoded id, and null before the
+	// first snapshot arrives (the components render their empty state).
+	const firstChannelId = (state: CommsState): string | null =>
+		state.channels.find((c) => c.membership === "subscribed")?.id ??
+		state.channels[0]?.id ??
+		null;
+	const [selectedChannelId, setSelectedChannelId] = createSignal<string | null>(
+		firstChannelId(comms()),
+	);
+	// Adopt a state pushed by the stream and settle the selection onto it: the
+	// user's explicit pick wins as long as the channel is still visible, so a
+	// later snapshot/event can never yank the surface out from under them; an
+	// absent or vanished selection falls back to the first subscribed channel.
+	const adoptComms = (next: CommsState) => {
+		setComms(next);
+		const current = selectedChannelId();
+		if (current && next.channels.some((c) => c.id === current)) return;
+		setSelectedChannelId(firstChannelId(next));
+	};
 	// The root id of the open thread on the standalone channel surface, or null.
 	// Channel-scoped: openChannel/openAgent clear it (T-T1).
 	const [openThreadRootId, setOpenThreadRootId] = createSignal<string | null>(
 		null,
 	);
-	// Monotonic counter for MINTED local reply ids (the PostMessage seam). Not
-	// reactive — like mintedTerminalCount, it only sources fresh ids on demand.
-	let localReplyCount = 0;
+	// The live read path: run the SubscribeComms driver for the store's lifetime,
+	// mirroring each reduced state into the signals above. Aborted on teardown
+	// (index.tsx's root is never disposed, so in the app this runs forever; a
+	// test root's dispose stops it). `runCommsStream` resolves only on abort and
+	// retries internally, so nothing here awaits it — a rejection would be a
+	// driver bug, and it is surfaced rather than swallowed.
+	if (options.comms) {
+		const client = options.comms;
+		const abort = new AbortController();
+		if (getOwner()) onCleanup(() => abort.abort());
+		void runCommsStream({
+			client,
+			callerId,
+			mapMessage: adaptMessage,
+			onState: adoptComms,
+			signal: abort.signal,
+			onError: (error) => options.onCommsError?.(error),
+		}).catch((error) => {
+			if (!abort.signal.aborted) options.onCommsError?.(error);
+		});
+	}
+
+	// The per-post idempotency key source: `clientRequestId` must be
+	// caller-unique, so a per-store random prefix plus a monotonic counter gives
+	// a fresh key per post. Not reactive — it only sources fresh ids on demand.
+	const requestIdPrefix = `ui-${Date.now().toString(36)}-${Math.random()
+		.toString(36)
+		.slice(2, 10)}`;
+	let requestCount = 0;
 
 	// ── Agent view (T7): tabs (pane groups) + active tab ──
 	// Each tab owns its own split tree of panes and its focused pane. A fresh
@@ -575,10 +716,10 @@ export function createAppStore(): AppStore {
 	// ── Comms memos ──
 	const caller = createMemo<Account>(
 		() =>
-			accounts().find((a) => a.id === CALLER_ID) ?? {
-				id: CALLER_ID,
-				handle: CALLER_ID,
-				displayName: CALLER_ID,
+			accounts().find((a) => a.id === callerId) ?? {
+				id: callerId,
+				handle: callerId,
+				displayName: callerId,
 				kind: "user",
 			},
 	);
@@ -599,9 +740,13 @@ export function createAppStore(): AppStore {
 	// The selected agent's live session trace (the workspace's trace source), or
 	// undefined when no agent is selected or it has no trace. One id space after
 	// T1 makes the observed agent ≡ the selected agent (record §478-481).
+	// Sourced from the hand-written fixture unless the caller supplies sessions
+	// — fixture entries carry `fixture: true`, which keeps their never-minted
+	// ids off the wire (see `stopAgent`).
+	const sessions = options.sessions ?? STUB_SESSION_EVENTS;
 	const agentSession = createMemo<AgentSession | undefined>(() => {
 		const id = selectedAgentId();
-		return id ? STUB_SESSION_EVENTS[id] : undefined;
+		return id ? sessions[id] : undefined;
 	});
 
 	// The agent view's tabs (T7): the chat tab first (always present), then the
@@ -667,7 +812,7 @@ export function createAppStore(): AppStore {
 		const chan = channels().find((c) => c.id === channelId);
 		if (!chan) return;
 		const byId = new Map(accounts().map((a) => [a.id, a]));
-		const agentId = agentDmAccountId(chan, CALLER_ID, byId);
+		const agentId = agentDmAccountId(chan, callerId, byId);
 		if (agentId) {
 			openAgent(agentId);
 			return;
@@ -686,30 +831,172 @@ export function createAppStore(): AppStore {
 	};
 
 	// ── Comms mutations (design compass-0.7) ──
-	// A membership transition on one channel, applied immutably so the accessor
-	// emits a fresh list. `next` maps the current membership to its new value.
-	const setMembership = (
-		channelId: string,
-		next: (current: Membership) => Membership,
-	) => {
-		setChannels((cs) =>
-			cs.map((c) =>
-				c.id === channelId ? { ...c, membership: next(c.membership) } : c,
+	// Join / subscribe are NOT WIRED (Matt's ruling). The wire has no join or
+	// subscribe RPC yet — that slice is unbuilt — and the local-only mutation
+	// these used to perform was a lie against the live stream: `adoptComms`
+	// replaces the state wholesale on every push and `deriveMembership`
+	// (live/adapt.ts) re-derives membership from the server's member lists, so
+	// the toggle silently reverted mid-use (join → the composer enables → you
+	// type → the next snapshot flips the row back and the composer disables
+	// under your draft). A control that plainly does not work yet beats one that
+	// appears to work and undoes itself, so the rail renders these disabled
+	// (LeftSidebar) and the store fakes NO membership state.
+	//
+	// They keep their shape rather than being deleted: they are the seam the
+	// rail's controls are bound to, and the RPCs land here when the slice is
+	// built. Until then they are deliberately inert — `channelId` is unused
+	// because there is nothing yet to do with it.
+	const joinChannel = (_channelId: string) => {};
+	const toggleSubscribe = (_channelId: string) => {};
+	// Apply one answer to a question, or return the SAME question object when the
+	// answer is rejected (unknown option, or a settled single-select). Returning
+	// the identical reference is what lets answerAsk below tell "recorded" from
+	// "no-op" — and a no-op must send nothing on the wire.
+	const answerQuestion = (
+		q: Ask["questions"][number],
+		optionId: string,
+	): Ask["questions"][number] => {
+		if (!q.options.some((o) => o.id === optionId)) return q;
+		// First-responder-wins: a single-select question settles on its first
+		// answer; a later answer is a no-op. Multi-select stays a toggle.
+		if (!q.allowMultiple && q.chosenOptionIds.length > 0) return q;
+		const chosen = q.allowMultiple
+			? q.chosenOptionIds.includes(optionId)
+				? q.chosenOptionIds.filter((id) => id !== optionId)
+				: [...q.chosenOptionIds, optionId]
+			: [optionId];
+		return { ...q, chosenOptionIds: chosen };
+	};
+	// Whether an ask has had its ONE RespondToAsk issued. Reactive so the render
+	// can lock a submitted ask, and the guard that keeps the store from ever
+	// issuing a second respond for the same ask (the server accepts exactly one:
+	// go/internal/store/messages.go:400-403 rejects a later one with ErrConflict,
+	// :437 flips Answered on the first). An ask is marked ONLY when a respond is
+	// actually issued, so an offline store (no `comms`) never marks anything.
+	const [submittedAskIds, setSubmittedAskIds] = createSignal<
+		ReadonlySet<string>
+	>(new Set());
+	const isAskSubmitted = (askId: string) => submittedAskIds().has(askId);
+	const unmarkAskSubmitted = (askId: string) =>
+		setSubmittedAskIds((prev) => {
+			const next = new Set(prev);
+			next.delete(askId);
+			return next;
+		});
+	// The last refusal per ask, keyed by askId — what the ask block RENDERS so a
+	// refused respond is not user-invisible (the rollback makes the state honest,
+	// but the click would otherwise vanish with only a console line). Cleared
+	// when the user answers that ask again, i.e. on the next respond.
+	const [askErrors, setAskErrors] = createSignal<ReadonlyMap<string, string>>(
+		new Map(),
+	);
+	const askError = (askId: string) => askErrors().get(askId);
+	const clearAskError = (askId: string) =>
+		setAskErrors((prev) => {
+			if (!prev.has(askId)) return prev;
+			const next = new Map(prev);
+			next.delete(askId);
+			return next;
+		});
+	// Locate an ask by its message + ask coordinates in the current state.
+	const findAsk = (messageId: string, askId: string): Ask | undefined => {
+		const msg = messages().find((m) => m.id === messageId);
+		for (const b of msg?.blocks ?? []) {
+			if (b.kind === "ask" && b.ask.askId === askId) return b.ask;
+		}
+		return undefined;
+	};
+	// An ask is COMPLETE once every question holds at least one chosen option —
+	// the point at which one atomic RespondToAsk can carry the whole thing.
+	const isAskComplete = (ask: Ask) =>
+		ask.questions.every((q) => q.chosenOptionIds.length > 0);
+	// Whether an ask still carries exactly the answers that were SHIPPED — the
+	// test a rollback must pass, since restoring over an ask the stream moved
+	// meanwhile would overwrite the server's value with stale local state. A
+	// vanished ask (`current` undefined) counts as moved: there is nothing left
+	// to roll back into.
+	const sameAnswers = (current: Ask | undefined, shipped: Ask) =>
+		current !== undefined &&
+		current.questions.length === shipped.questions.length &&
+		current.questions.every((q, i) => {
+			const was = shipped.questions[i];
+			return (
+				was !== undefined &&
+				q.questionId === was.questionId &&
+				q.chosenOptionIds.length === was.chosenOptionIds.length &&
+				q.chosenOptionIds.every((id, j) => id === was.chosenOptionIds[j])
+			);
+		});
+	// Replace an ask in place — the one write used both to record an answer and
+	// to roll a refused one back.
+	const putAsk = (messageId: string, ask: Ask) => {
+		setComms((prev) => ({
+			...prev,
+			messages: prev.messages.map((msg) =>
+				msg.id === messageId
+					? {
+							...msg,
+							blocks: msg.blocks.map((b) =>
+								b.kind === "ask" && b.ask.askId === ask.askId
+									? { kind: "ask", ask }
+									: b,
+							),
+						}
+					: msg,
 			),
-		);
+		}));
 	};
-	const joinChannel = (channelId: string) => {
-		setMembership(channelId, (m) => (m === "none" ? "joined" : m));
-	};
-	const toggleSubscribe = (channelId: string) => {
-		// always-subscribed-to-own is implicit + non-togglable (design.md:416):
-		// refuse to toggle it at the store seam, so the invariant holds even if a
-		// caller bypasses the UI's fixed control.
-		const channel = channels().find((c) => c.id === channelId);
-		if (channel?.alwaysSubscribed) return;
-		setMembership(channelId, (m) =>
-			m === "subscribed" ? "joined" : m === "joined" ? "subscribed" : m,
-		);
+	// Issue the ask's ONE RespondToAsk. The wire is ATOMIC: exactly one
+	// AskQuestionAnswer per question (comms.proto RespondToAsk — the server
+	// rejects a request that omits one, and accepts a request exactly once per
+	// ask), so this ships every question's settled choice in a single call.
+	// `chosenOptionIds` is empty for a question the user skipped, which the wire
+	// permits: the contract is coverage of every question, not an answer to each.
+	//
+	// A REFUSED respond must not leave the UI showing an answer the server does
+	// not have: `rollback` (the ask as it stood before the click that triggered
+	// the send) is restored, and the submitted mark is cleared so the ask is
+	// retryable — the server only burns an ask on a respond it ACCEPTED. The
+	// refusal is also recorded against the ask so the block can SAY so: a
+	// rollback alone makes the state honest but silently erases the click.
+	//
+	// The restore is CONDITIONAL on the ask not having moved while the respond
+	// was in flight. An `adoptComms` stream push landing between the click and
+	// the refusal carries the AUTHORITATIVE server value (another participant's
+	// accepted answer, say); restoring over it would show an ask state the
+	// server never had, with no further push to correct it before a resync.
+	//
+	// KNOWN-BROKEN END TO END (SEA-1310): the agent SDK's correlation key is
+	// unwired, so the answer does not reach the asking agent. The client side
+	// is correct and stays wired; nothing here assumes the round-trip lands.
+	const sendAsk = (messageId: string, ask: Ask, rollback?: Ask) => {
+		const comms = options.comms;
+		if (!comms) return;
+		setSubmittedAskIds((prev) => new Set(prev).add(ask.askId));
+		clearAskError(ask.askId);
+		void comms
+			.respondToAsk({
+				askId: ask.askId,
+				answers: ask.questions.map((q) => ({
+					questionId: q.questionId,
+					chosenOptionIds: [...q.chosenOptionIds],
+				})),
+			})
+			.catch((error) => {
+				unmarkAskSubmitted(ask.askId);
+				if (rollback && sameAnswers(findAsk(messageId, ask.askId), ask)) {
+					putAsk(messageId, rollback);
+				}
+				setAskErrors((prev) => {
+					const next = new Map(prev);
+					next.set(
+						ask.askId,
+						error instanceof Error ? error.message : String(error),
+					);
+					return next;
+				});
+				options.onCommsError?.(error);
+			});
 	};
 	const answerAsk = (
 		messageId: string,
@@ -717,38 +1004,61 @@ export function createAppStore(): AppStore {
 		questionId: string,
 		optionId: string,
 	) => {
-		setMessages((ms) =>
-			ms.map((msg) => {
+		// A submitted ask is settled on the wire: recording a further click would
+		// put the UI back into the exact lying state the gate removes.
+		if (isAskSubmitted(askId)) return;
+		// The ask BEFORE and AFTER the local edit. `before` is the rollback target
+		// if the send this click triggers is refused; both stay undefined when the
+		// coordinates miss or the answer is rejected — then nothing is sent.
+		let before: Ask | undefined;
+		let answered: Ask | undefined;
+		setComms((prev) => ({
+			...prev,
+			messages: prev.messages.map((msg) => {
 				if (msg.id !== messageId) return msg;
 				return {
 					...msg,
 					blocks: msg.blocks.map((b) => {
 						if (b.kind !== "ask" || b.ask.askId !== askId) return b;
 						const ask = b.ask;
-						return {
-							kind: "ask",
-							ask: {
-								...ask,
-								questions: ask.questions.map((q) => {
-									if (q.questionId !== questionId) return q;
-									if (!q.options.some((o) => o.id === optionId)) return q;
-									// First-responder-wins: a single-select question settles on its
-									// first answer; a later answer is a no-op. Multi-select stays a toggle.
-									if (!q.allowMultiple && q.chosenOptionIds.length > 0)
-										return q;
-									const chosen = q.allowMultiple
-										? q.chosenOptionIds.includes(optionId)
-											? q.chosenOptionIds.filter((id) => id !== optionId)
-											: [...q.chosenOptionIds, optionId]
-										: [optionId];
-									return { ...q, chosenOptionIds: chosen };
-								}),
-							},
-						};
+						const questions = ask.questions.map((q) =>
+							q.questionId === questionId ? answerQuestion(q, optionId) : q,
+						);
+						// Reference-identical questions ⇒ the answer was rejected (or the
+						// questionId named no question): leave the block untouched.
+						if (questions.every((q, i) => q === ask.questions[i])) return b;
+						before = ask;
+						answered = { ...ask, questions };
+						return { kind: "ask", ask: answered };
 					}),
 				};
 			}),
-		);
+		}));
+		// The user acted on this ask again: whatever the last refusal said is no
+		// longer what the block should be showing.
+		if (answered) clearAskError(askId);
+		// THE GATE (Matt's ruling): the click stays LOCAL until the ask is
+		// COMPLETE. A per-click respond would persist a partial answer and lock
+		// the ask against the rest of it — the server takes exactly one respond
+		// per ask, forever. A single-question ask completes on its only click, so
+		// it still sends there.
+		if (!answered || !isAskComplete(answered)) return;
+		sendAsk(messageId, answered, before);
+	};
+	// The skip affordance. A question the user means to SKIP never gets an
+	// answer, so the ask never completes and `answerAsk` never sends it: this is
+	// the explicit "send what I have" — the answered questions plus an empty
+	// `chosenOptionIds` for each skipped one. Inert on an ask that is already
+	// submitted, unknown, or wholly unanswered (there is nothing to submit).
+	const submitAsk = (messageId: string, askId: string) => {
+		if (isAskSubmitted(askId)) return;
+		const ask = findAsk(messageId, askId);
+		if (!ask) return;
+		if (ask.questions.every((q) => q.chosenOptionIds.length === 0)) return;
+		// No rollback target: nothing was recorded by this call, so a refusal
+		// leaves the local record exactly as the user staged it — still honest,
+		// still unsent, still retryable.
+		sendAsk(messageId, ask);
 	};
 	// ── Thread actions (T-T1) ──
 	// Guarded open: callers pass a ROOT id; resolve the message's channel and
@@ -763,25 +1073,43 @@ export function createAppStore(): AppStore {
 		if (isRoot) setOpenThreadRootId(rootMessageId);
 	};
 	const closeThread = () => setOpenThreadRootId(null);
-	// The PostMessage seam: append one in-memory reply authored by the caller,
-	// mirroring answerAsk's immutable setMessages and the minted-id counter. The
-	// daemon will issue a real PostMessage at this seam later.
+	// The one write path for both a root post and a threaded reply: PostMessage
+	// with a single text block and a fresh clientRequestId (the server dedups a
+	// retry of the same key and suppresses the duplicate fan-out).
+	//
+	// NOTHING is inserted locally. PostMessage returns the stored Message AND
+	// SubscribeComms echoes it; comms-state's upsertMessage dedups by message id
+	// and splices into (atUnixMs, id) order, so letting the echo render it is
+	// what makes it appear exactly once — a local insert would render a
+	// duplicate under a different (minted) id until the next resync.
+	//
+	// Rejects rather than swallowing: the composer must be able to keep the
+	// user's typed text when a post fails.
+	const post = async (
+		channelId: string,
+		text: string,
+		parentMessageId: string,
+	): Promise<void> => {
+		const client = options.comms;
+		if (!client) {
+			throw new Error(
+				"cannot post: this store has no comms client (offline construction)",
+			);
+		}
+		await client.postMessage({
+			container: { case: "channelId", value: channelId },
+			blocks: [{ block: { case: "text", value: text } }],
+			parentMessageId,
+			clientRequestId: `${requestIdPrefix}-${++requestCount}`,
+		});
+	};
+	const postMessage = (channelId: string, text: string): Promise<void> =>
+		post(channelId, text, "");
 	const postReply = (
 		channelId: string,
 		parentMessageId: string,
 		text: string,
-	) => {
-		const id = `msg-local-${++localReplyCount}`;
-		const reply: Message = {
-			id,
-			channelId,
-			authorAccountId: CALLER_ID,
-			atUnixMs: Date.now(),
-			parentMessageId,
-			blocks: [{ kind: "text", text }],
-		};
-		setMessages((ms) => [...ms, reply]);
-	};
+	): Promise<void> => post(channelId, text, parentMessageId);
 
 	// ── Agent view actions (T7) ──
 	const setActiveAgentTab = (tabId: string) => {
@@ -882,10 +1210,68 @@ export function createAppStore(): AppStore {
 			),
 		);
 	};
+	// The last refused Stop, or undefined when the last attempt was not refused
+	// — the reactive hole the log panel RENDERS, the same shape `askError` gives
+	// the ask block. Without it a refusal is a console line and a refused Stop is
+	// observably identical to a successful one (nothing visibly happens either
+	// way). Cleared at the start of the next attempt.
+	const [stopError, setStopError] = createSignal<string | undefined>(undefined);
+	// Record a refusal AND keep routing it to the shell funnel — additive.
+	const refuseStop = (error: unknown) => {
+		setStopError(error instanceof Error ? error.message : String(error));
+		options.onCommsError?.(error);
+	};
 	// The observation pane's stop control. Steering happens in the channel; this
-	// is the one non-observational control. A no-op stub until StopAgentSession
-	// lands (the daemon owns the actual stop).
-	const stopAgent = () => {};
+	// is the one non-observational control.
+	//
+	// StopAgentSession's whole request is the server-minted `session_id`
+	// (compass_pb.ts:831-836), so this stops the OBSERVED session — no selection,
+	// no session, nothing issued (an empty-string stop would be a wrong live
+	// request). It is CompassClient-backed, NOT comms: the two services are
+	// separate clients over the one Connection.
+	//
+	// Never rejects, and never swallows. The RPC is Runner-backed: a server with
+	// no RunnerHub attached answers `Unavailable` (go/server/service.go:152-154),
+	// which is a REAL condition on the socket-only path, not a bug. There is no
+	// user text to preserve (unlike a failed post, which rejects so the composer
+	// can keep it), so the honest shape is to resolve and route the failure —
+	// including the offline no-client case — to `onCommsError`, where the shell
+	// surfaces it. Stop is idempotent server-side, so a retry after a refusal is
+	// safe.
+	const stopAgent = async (): Promise<void> => {
+		setStopError(undefined);
+		const session = agentSession();
+		if (!session) return;
+		// A fixture-sourced session's id was never minted by a server. Issuing
+		// StopAgentSession for it is worse than doing nothing: the server's
+		// unknown-session path is idempotent-success (go/internal/runner/host.go:
+		// 217-228), so the RPC would return OK, stop nothing, and never reach
+		// onCommsError — a control that is inert in the one way indistinguishable
+		// from working. Refuse locally and say why instead. (The control also
+		// renders disabled for such a session — LogPanel.tsx.)
+		if (session.fixture) {
+			refuseStop(
+				new Error(
+					"cannot stop: this session is fixture data, not a server-minted session",
+				),
+			);
+			return;
+		}
+		const client = options.compass;
+		if (!client) {
+			refuseStop(
+				new Error(
+					"cannot stop: this store has no compass client (offline construction)",
+				),
+			);
+			return;
+		}
+		try {
+			await client.stopAgentSession({ sessionId: session.sessionId });
+		} catch (error) {
+			refuseStop(error);
+		}
+	};
 	const showBridge = () => setView("bridge");
 	const showBacklog = () => setView("backlog");
 	const showDone = () => setView("done");
@@ -1011,9 +1397,13 @@ export function createAppStore(): AppStore {
 		joinChannel,
 		toggleSubscribe,
 		answerAsk,
+		submitAsk,
+		isAskSubmitted,
+		askError,
 		openThreadRootId,
 		openThread,
 		closeThread,
+		postMessage,
 		postReply,
 		agentSession,
 		agentTabs,
@@ -1027,6 +1417,7 @@ export function createAppStore(): AppStore {
 		setFocusedPane,
 		closePane,
 		stopAgent,
+		stopError,
 		logOpen,
 		toggleLog,
 		isSectionCollapsed,

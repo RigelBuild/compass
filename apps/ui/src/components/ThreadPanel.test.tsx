@@ -6,9 +6,17 @@ import {
 	type Channel,
 	type Message,
 	STUB_CHANNELS,
+	STUB_COMMS_STATE,
 	STUB_MESSAGES,
 } from "../comms-stub";
 import { StoreContext } from "../context";
+import {
+	createFakeComms,
+	type FakeComms,
+	wireAccount,
+	wireChannel,
+	wireTextMessage,
+} from "../live/comms-fake";
 import { type AppStore, createAppStore } from "../store";
 import { ChannelView, ThreadView } from "./ChannelView";
 import { ThreadPanel } from "./ThreadPanel";
@@ -71,7 +79,7 @@ const THREAD = (() => {
 function mountChannelView(): { store: AppStore; container: HTMLElement } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore();
+		store = createAppStore({ initialComms: STUB_COMMS_STATE });
 		return (
 			<StoreContext.Provider value={store}>
 				<ChannelView />
@@ -79,6 +87,66 @@ function mountChannelView(): { store: AppStore; container: HTMLElement } {
 		);
 	});
 	return { store, container };
+}
+
+// ── The LIVE mount, for the one test whose subject is a real post ────────────
+// Posting is a wire call now, so the composer test drives a store over the
+// CommsClient double (live/comms-fake.ts) rather than the offline fixture. A
+// minimal server: one channel, one root with one existing reply — enough for
+// the panel to resolve a thread and for the summary count to move 1 → 2.
+const LIVE_CALLER = "acc-me";
+const LIVE_CHANNEL = "chan-live";
+const LIVE_ROOT = "m-live-root";
+const LIVE_ROOT_TEXT = "the live root";
+
+const liveThreadSnapshot = () => ({
+	accounts: [wireAccount(LIVE_CALLER)],
+	channels: [wireChannel(LIVE_CHANNEL, LIVE_CALLER)],
+	messagesByChannel: {
+		[LIVE_CHANNEL]: [
+			wireTextMessage({
+				id: LIVE_ROOT,
+				channelId: LIVE_CHANNEL,
+				authorAccountId: LIVE_CALLER,
+				atUnixMs: 100,
+				text: LIVE_ROOT_TEXT,
+			}),
+			wireTextMessage({
+				id: "m-live-reply-1",
+				channelId: LIVE_CHANNEL,
+				authorAccountId: LIVE_CALLER,
+				atUnixMs: 200,
+				text: "an existing reply",
+				parentMessageId: LIVE_ROOT,
+			}),
+		],
+	},
+});
+
+/** Mount the standalone ChannelView over a LIVE store and wait out the driver's
+ *  snapshot round-trip, so the view is rendering server data before the body
+ *  runs. `settled` drains the microtask queue after each further interaction. */
+async function mountLiveChannelView(fake: FakeComms): Promise<{
+	store: AppStore;
+	container: HTMLElement;
+	settled: () => Promise<void>;
+}> {
+	let store!: AppStore;
+	const { container } = render(() => {
+		store = createAppStore({ comms: fake.client, callerId: LIVE_CALLER });
+		return (
+			<StoreContext.Provider value={store}>
+				<ChannelView />
+			</StoreContext.Provider>
+		);
+	});
+	// Every hop of the snapshot round-trip is a resolved promise, so a bounded
+	// microtask drain is deterministic — no timers, no wall-clock wait.
+	const settled = async () => {
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+	};
+	await settled();
+	return { store, container, settled };
 }
 
 // The `.thread` element rendering the derived root — scoped so we click the
@@ -139,47 +207,84 @@ describe("ThreadPanel (T-T2)", () => {
 		expect(panel?.textContent).toContain(THREAD.replyText);
 	});
 
-	// The thread-scoped composer posts through store.postReply. Type a distinctive
-	// line into `.thread-panel .conv-composer input.field`, click its `.send`, and
-	// assert the text (a) appears inside the panel as a new reply, and (b) does
-	// NOT leak into the main stream — under the Slack model no reply body renders
+	// The thread-scoped composer posts through store.postReply — now the real
+	// wire PostMessage. This used to assert the locally-appended reply; it now
+	// asserts the same user-visible contract against the live path: the click
+	// puts a parented PostMessage on the wire, the draft clears, and when the
+	// SubscribeComms ECHO arrives the reply renders (a) inside the panel and
+	// (b) NOT in the main stream — under the Slack model no reply body renders
 	// under `.conv-stream`; instead the root's `.thread-summary-count` reflects
-	// the incremented count (2 → 3 replies).
-	test("panel composer posts a reply appearing in-panel only, not in the stream", () => {
-		const { store, container } = mountChannelView();
-		store.openChannel(THREAD.channelId);
-		store.openThread(THREAD.rootId);
+	// the incremented count (1 → 2 replies).
+	test("panel composer posts a reply appearing in-panel only, not in the stream", async () => {
+		const fake = createFakeComms(liveThreadSnapshot());
+		const { store, container, settled } = await mountLiveChannelView(fake);
+		try {
+			store.openChannel(LIVE_CHANNEL);
+			store.openThread(LIVE_ROOT);
 
-		const input = container.querySelector<HTMLInputElement>(
-			".thread-panel .conv-composer input.field",
-		);
-		const send = container.querySelector<HTMLButtonElement>(
-			".thread-panel .conv-composer .send",
-		);
-		expect(input).not.toBeNull();
-		expect(send).not.toBeNull();
+			const input = container.querySelector<HTMLInputElement>(
+				".thread-panel .conv-composer input.field",
+			);
+			const send = container.querySelector<HTMLButtonElement>(
+				".thread-panel .conv-composer .send",
+			);
+			expect(input).not.toBeNull();
+			expect(send).not.toBeNull();
 
-		fireEvent.input(input as HTMLInputElement, {
-			target: { value: "reply-from-test" },
-		});
-		fireEvent.click(send as HTMLButtonElement);
+			fireEvent.input(input as HTMLInputElement, {
+				target: { value: "reply-from-test" },
+			});
+			fireEvent.click(send as HTMLButtonElement);
+			await settled();
 
-		// (a) inside the panel, as a new reply
-		expect(container.querySelector(".thread-panel")?.textContent).toContain(
-			"reply-from-test",
-		);
-		// (b) NOT in the main stream: no reply-body rows and the text is absent
-		expect(
-			container.querySelectorAll(".conv-stream .thread-replies").length,
-		).toBe(0);
-		expect(container.querySelector(".conv-stream")?.textContent).not.toContain(
-			"reply-from-test",
-		);
-		// …and the root's summary count reflects the incremented reply count.
-		const threadEl = threadElFor(container, THREAD.rootText);
-		expect(
-			threadEl?.querySelector(".thread-summary-count")?.textContent,
-		).toContain("3 replies");
+			// The click reached the wire, parented under the open thread's root…
+			expect(fake.posts.length).toBe(1);
+			expect(fake.posts[0].parentMessageId).toBe(LIVE_ROOT);
+			expect(fake.posts[0].text).toBe("reply-from-test");
+			// …the draft cleared…
+			expect((input as HTMLInputElement).value).toBe("");
+			// …and nothing rendered yet: the echo is what renders it.
+			expect(
+				container.querySelector(".thread-panel")?.textContent,
+			).not.toContain("reply-from-test");
+
+			await fake.emit(
+				{
+					case: "messagePosted",
+					value: {
+						message: wireTextMessage({
+							id: "m-live-reply-2",
+							channelId: LIVE_CHANNEL,
+							authorAccountId: LIVE_CALLER,
+							atUnixMs: 300,
+							text: "reply-from-test",
+							parentMessageId: LIVE_ROOT,
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+
+			// (a) inside the panel, as a new reply
+			expect(container.querySelector(".thread-panel")?.textContent).toContain(
+				"reply-from-test",
+			);
+			// (b) NOT in the main stream: no reply-body rows and the text is absent
+			expect(
+				container.querySelectorAll(".conv-stream .thread-replies").length,
+			).toBe(0);
+			expect(
+				container.querySelector(".conv-stream")?.textContent,
+			).not.toContain("reply-from-test");
+			// …and the root's summary count reflects the incremented reply count.
+			const threadEl = threadElFor(container, LIVE_ROOT_TEXT);
+			expect(
+				threadEl?.querySelector(".thread-summary-count")?.textContent,
+			).toContain("2 replies");
+		} finally {
+			fake.close();
+		}
 	});
 
 	// The close control tears the panel down: click `.thread-close` →
@@ -227,7 +332,7 @@ describe("ThreadPanel (T-T2)", () => {
 	test("thread composer is disabled in a non-member channel", () => {
 		let store!: AppStore;
 		const { container } = render(() => {
-			store = createAppStore();
+			store = createAppStore({ initialComms: STUB_COMMS_STATE });
 			const real = store
 				.channels()
 				.find((c) => c.id === THREAD.channelId) as Channel;
@@ -285,6 +390,67 @@ describe("ThreadPanel (T-T2)", () => {
 		store.openChannel(other.id);
 
 		expect(container.querySelector(".thread-panel")).toBeNull();
+	});
+
+	// A thread draft is scoped to the ROOT it was typed under. The panel's
+	// enclosing `<Show>` is unkeyed, so moving between two truthy threads would
+	// otherwise reuse one ThreadComposer instance — its draft surviving while
+	// `rootId` points at the new root, posting one thread's text under another's.
+	// Mirrors the channel composer's keying leg in ChannelView.composer.test.tsx.
+	test("an unsent reply draft does not survive a thread-root switch", async () => {
+		const SECOND_ROOT = "m-live-root-2";
+		const base = liveThreadSnapshot();
+		const fake = createFakeComms({
+			...base,
+			messagesByChannel: {
+				[LIVE_CHANNEL]: [
+					...base.messagesByChannel[LIVE_CHANNEL],
+					wireTextMessage({
+						id: SECOND_ROOT,
+						channelId: LIVE_CHANNEL,
+						authorAccountId: LIVE_CALLER,
+						atUnixMs: 400,
+						text: "the second live root",
+					}),
+				],
+			},
+		});
+		const { store, container, settled } = await mountLiveChannelView(fake);
+		try {
+			store.openChannel(LIVE_CHANNEL);
+			store.openThread(LIVE_ROOT);
+
+			const input = container.querySelector<HTMLInputElement>(
+				".thread-panel .conv-composer input.field",
+			);
+			if (!input) throw new Error("thread composer did not render");
+			fireEvent.input(input, { target: { value: "meant for root one" } });
+
+			store.openThread(SECOND_ROOT);
+			await settled();
+
+			const switched = container.querySelector<HTMLInputElement>(
+				".thread-panel .conv-composer input.field",
+			);
+			if (!switched) throw new Error("thread composer did not re-render");
+			expect(switched.value).toBe("");
+
+			// …and a reply typed now is parented under the NEW root, carrying only
+			// the newly-typed text.
+			fireEvent.input(switched, { target: { value: "meant for root two" } });
+			fireEvent.click(
+				container.querySelector(
+					".thread-panel .conv-composer .send",
+				) as HTMLButtonElement,
+			);
+			await settled();
+
+			expect(fake.posts.length).toBe(1);
+			expect(fake.posts[0].parentMessageId).toBe(SECOND_ROOT);
+			expect(fake.posts[0].text).toBe("meant for root two");
+		} finally {
+			fake.close();
+		}
 	});
 });
 
@@ -469,7 +635,7 @@ describe("ThreadView (Slack summary)", () => {
 		// exist, so build a real store inside render's reactive root exactly as
 		// mountChannelView does.
 		const { container } = render(() => {
-			const store = createAppStore();
+			const store = createAppStore({ initialComms: STUB_COMMS_STATE });
 			return (
 				<StoreContext.Provider value={store}>
 					<ThreadView thread={thread} byId={byId} byHandle={byHandle} />

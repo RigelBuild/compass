@@ -45,6 +45,12 @@ const TracePane: Component = () => {
 export const LogPanel: Component<{ agent: Agent }> = (props) => {
 	const store = useStore();
 	const running = () => store.agentSession()?.running ?? false;
+	// A fixture-sourced session's id was never minted by a server, so Stop has
+	// nothing it can honestly issue (store.ts `stopAgent` refuses it outright).
+	// Render the control disabled and say why, the same shape the channel rail
+	// uses for its not-yet-wired subscribe control (LeftSidebar.tsx:171-184) — a
+	// visibly-dead button beats one that only reports into the console.
+	const fixture = () => store.agentSession()?.fixture === true;
 	return (
 		<aside
 			class="log-panel"
@@ -70,12 +76,28 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 					<button
 						type="button"
 						class="obs-stop"
-						disabled={!running()}
-						title={`Stop @${props.agent.account.handle}`}
-						onClick={() => store.stopAgent()}
+						disabled={!running() || fixture()}
+						title={
+							fixture()
+								? "Can't stop: this session is fixture data, not a server-minted session."
+								: `Stop @${props.agent.account.handle}`
+						}
+						onClick={() => void store.stopAgent()}
 					>
 						■ stop
 					</button>
+				</Show>
+				{/* A refused stop (a server with no RunnerHub answers `Unavailable`,
+				    and a fixture-sourced session is refused locally) resolves rather
+				    than rejecting, so without this the click is indistinguishable
+				    from a successful stop. Same shape as the ask block's refusal
+				    (ChannelView.tsx:193-197). */}
+				<Show when={store.stopError()}>
+					{(msg) => (
+						<span class="obs-error" role="alert">
+							{msg()}
+						</span>
+					)}
 				</Show>
 				<button
 					type="button"

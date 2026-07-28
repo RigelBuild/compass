@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { createRoot } from "solid-js";
 import { agentDmChannel } from "./comms";
-import { STUB_ACCOUNTS, STUB_CHANNELS, STUB_MESSAGES } from "./comms-stub";
+import {
+	STUB_ACCOUNTS,
+	STUB_CHANNELS,
+	STUB_COMMS_STATE,
+	STUB_MESSAGES,
+} from "./comms-stub";
 import { STUB_SESSION_EVENTS } from "./session-events-stub";
 import { type AppStore, CALLER_ID, createAppStore } from "./store";
 import type { Account, Agent } from "./stub-data";
@@ -28,7 +33,7 @@ import { STUB_AGENTS, STUB_WORKSTREAMS } from "./stub-data";
 // composed `agentView`/`agentSession` memos only compute inside an owner.
 function withStore(body: (store: AppStore) => void): void {
 	createRoot((dispose) => {
-		const store = createAppStore();
+		const store = createAppStore({ initialComms: STUB_COMMS_STATE });
 		try {
 			body(store);
 		} finally {

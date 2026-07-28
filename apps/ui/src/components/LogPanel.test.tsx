@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
+import type { CompassClient } from "@compass/client";
 import { fireEvent, render } from "@solidjs/testing-library";
 import { Show } from "solid-js";
 import { StoreContext } from "../context";
-import { foldSession } from "../session-events";
+import { createFakeCompass } from "../live/compass-fake";
+import { type AgentSession, foldSession } from "../session-events";
 import { STUB_SESSION_EVENTS } from "../session-events-stub";
 import { type AppStore, createAppStore } from "../store";
 import { LogPanel } from "./LogPanel";
@@ -52,13 +54,17 @@ const LIVINGSTONE_TOOL_TITLE = (() => {
 // library's per-test cleanup); `openAgent` runs BEFORE the JSX resolves, and a
 // `<Show when={store.selectedAgent()} keyed>` narrows the agent for the prop —
 // re-opening another agent re-keys the Show, re-driving both prop and session.
-function mountLogPanel(agentId: string): {
+function mountLogPanel(
+	agentId: string,
+	sessions?: Record<string, AgentSession>,
+	compass?: CompassClient,
+): {
 	store: AppStore;
 	container: HTMLElement;
 } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore();
+		store = createAppStore({ sessions, compass });
 		store.openAgent(agentId);
 		return (
 			<StoreContext.Provider value={store}>
@@ -70,6 +76,15 @@ function mountLogPanel(agentId: string): {
 	});
 	return { store, container };
 }
+
+/** A server-sourced session (no `fixture` marker) for the agent — the only kind
+ *  Stop may actually issue for. */
+const served = (agentId: string, running: boolean): AgentSession => ({
+	sessionId: "sess-7",
+	agentAccountId: agentId,
+	running,
+	events: STUB_SESSION_EVENTS[agentId]?.events ?? [],
+});
 
 describe("LogPanel (T-U2)", () => {
 	// Contract: an agent with a session renders its TYPED trace. The fold must
@@ -148,10 +163,14 @@ describe("LogPanel (T-U2)", () => {
 	});
 
 	// SHELL INVARIANT (stays GREEN): Stop is disabled when the agent is idle and
-	// enabled while it is running. Re-opening a running agent on the same mount
-	// re-drives the session and re-enables Stop.
+	// enabled while it is running. Driven over SERVER-SOURCED sessions, because a
+	// fixture session now disables Stop unconditionally (below) — so this keeps
+	// defending running-vs-idle rather than accidentally re-asserting the guard.
 	test("Stop is disabled when idle, enabled when running", () => {
-		const { store, container } = mountLogPanel("acc-drake");
+		const { store, container } = mountLogPanel("acc-drake", {
+			"acc-drake": served("acc-drake", false),
+			"acc-livingstone": served("acc-livingstone", true),
+		});
 
 		// acc-drake: running:false → Stop disabled.
 		const idleStop = container.querySelector<HTMLButtonElement>(".obs-stop");
@@ -164,6 +183,70 @@ describe("LogPanel (T-U2)", () => {
 		const liveStop = container.querySelector<HTMLButtonElement>(".obs-stop");
 		expect(liveStop).not.toBeNull();
 		expect(liveStop?.disabled).toBe(false);
+	});
+
+	// HONESTY INVARIANT: the shipped app still resolves sessions from the
+	// hand-written fixture, whose ids no server ever minted. Stop cannot issue
+	// anything for one (store.stopAgent refuses), so the control must LOOK dead
+	// rather than silently no-op — even though the fixture pins `running: true`.
+	test("Stop is disabled for a fixture session even while it reads running", () => {
+		const { container } = mountLogPanel("acc-livingstone");
+
+		expect(STUB_SESSION_EVENTS["acc-livingstone"].running).toBe(true);
+		const stop = container.querySelector<HTMLButtonElement>(".obs-stop");
+		expect(stop).not.toBeNull();
+		expect(stop?.disabled).toBe(true);
+		expect(stop?.title).toMatch(/fixture data/);
+	});
+
+	// SURFACING (the counterpart to the disabled control): a refused Stop must
+	// not be observably identical to a successful one. The store's `stopError`
+	// is rendered beside the control as a role="alert", the same shape the ask
+	// block uses for a refused respond (ChannelView.tsx:193-197).
+	test("a refused stop renders its message beside the control", async () => {
+		const compass = createFakeCompass();
+		const { container } = mountLogPanel(
+			"acc-livingstone",
+			{ "acc-livingstone": served("acc-livingstone", true) },
+			compass.client,
+		);
+
+		expect(container.querySelector(".obs-head .obs-error")).toBeNull();
+
+		compass.failNextStop(
+			new Error("[unavailable] compass: no runner hub attached"),
+		);
+		const stop = container.querySelector<HTMLButtonElement>(".obs-stop");
+		if (!stop) throw new Error("stop control not rendered");
+		fireEvent.click(stop);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const alert = container.querySelector(".obs-head .obs-error");
+		expect(alert).not.toBeNull();
+		expect(alert?.getAttribute("role")).toBe("alert");
+		expect(alert?.textContent).toContain("unavailable");
+
+		// The retry clears the stale refusal rather than leaving the panel
+		// claiming a failure that no longer holds.
+		fireEvent.click(stop);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(container.querySelector(".obs-head .obs-error")).toBeNull();
+	});
+
+	// The fixture refusal is the DEFAULT in the shipped app, and its control is
+	// disabled — so the panel must still say why when a stop is attempted, not
+	// leave the reason in the console.
+	test("a fixture-session refusal renders its message", async () => {
+		const { store, container } = mountLogPanel("acc-livingstone");
+
+		await store.stopAgent();
+
+		const alert = container.querySelector(".obs-head .obs-error");
+		expect(alert).not.toBeNull();
+		expect(alert?.getAttribute("role")).toBe("alert");
+		expect(alert?.textContent).toMatch(/fixture data/);
 	});
 
 	// HARD INVARIANT (stays GREEN, design grounding line 17): the trace surface is

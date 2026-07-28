@@ -6,7 +6,8 @@
 //
 // Two clients from one connection: the CommsClient (the channel surface — the
 // T7 body-swap's data source) and the CompassClient (server liveness/version via
-// GetServerInfo, the post-connect probe). Both carry the same bearer as a
+// GetServerInfo, the post-connect probe, plus the agent-lifecycle RPCs the
+// workspace drives — StopAgentSession). Both carry the same bearer as a
 // connect interceptor (the factories install it); no local-assumption leaks.
 
 import type { CommsClient, CompassClient } from "@compass/client";
@@ -18,7 +19,8 @@ export interface LiveClients {
 	/** The comms surface client — channels, messages, asks, the SubscribeComms
 	 *  stream (the T7 data source). */
 	readonly comms: CommsClient;
-	/** The compass service client — server liveness/version (GetServerInfo). */
+	/** The compass service client — server liveness/version (GetServerInfo) and
+	 *  the agent-lifecycle RPCs (StopAgentSession). */
 	readonly compass: CompassClient;
 }
 
