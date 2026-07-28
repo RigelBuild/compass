@@ -651,6 +651,51 @@ describe("MarkdownText — content preservation", () => {
 		expect(kids[2]?.textContent).toBe("line two");
 	});
 
+	// A `raw` node is retyped to `text` so its characters survive, and it must
+	// then go through the SAME newline→`br` split a plain text node gets: raw
+	// HTML is a block-level chunk of source, so a multi-line one is the common
+	// case, and skipping the split lets `white-space: normal` collapse its
+	// newlines and render every line joined on one.
+	test("a multi-line raw HTML block renders its lines as separate lines", () => {
+		const { container } = render(() => (
+			<MarkdownText
+				text={"<details>\nline one\nline two\n</details>"}
+				byHandle={byHandle()}
+			/>
+		));
+		// `textContent` ignores `br` per spec, so assert the STRUCTURE: the two
+		// lines are separate text runs with a break between them. (The opening and
+		// closing tag lines get their own breaks too — the whole raw chunk is one
+		// multi-line node — so match on the two prose lines rather than on a
+		// fixed child count.)
+		const kids = [
+			...(container.querySelector(".markdown-content > div")?.childNodes ?? []),
+		];
+		const at = (text: string) => kids.findIndex((n) => n.textContent === text);
+		const one = at("line one");
+		const two = at("line two");
+		expect(one).toBeGreaterThanOrEqual(0);
+		expect(two).toBe(one + 2);
+		expect((kids[one + 1] as Element).tagName.toLowerCase()).toBe("br");
+		// Still inert: the markup is text, never a live element.
+		expect(container.textContent).toContain("<details>");
+		expect(container.querySelector("details")).toBeNull();
+	});
+
+	// The verbatim-in-code rule outranks the break rescue, exactly as it does
+	// for plain text: `white-space: pre` already renders the newline, and the
+	// `code` override reads through `rawText`, which concatenates text
+	// descendants and IGNORES `br` — so an interleaved break would not just be
+	// redundant, it would collapse the block onto one line.
+	test("a multi-line raw HTML node inside a code block stays verbatim", () => {
+		const { container } = render(() => (
+			<MarkdownText text={"```\n<a>\n<b>\n```"} byHandle={byHandle()} />
+		));
+		const code = container.querySelector("pre code");
+		expect(code?.textContent).toBe("<a>\n<b>\n");
+		expect(container.querySelectorAll("br").length).toBe(0);
+	});
+
 	test("a disallowed image keeps its alt text as a visible placeholder", () => {
 		const { container } = render(() => (
 			<MarkdownText

@@ -127,11 +127,22 @@ function rehypeInertRawAndBreaks() {
 	const visit = (node: HastParent, inCode: boolean) => {
 		const children = node.children as Child[];
 		const out: HastRootContent[] = [];
-		for (const [i, child] of children.entries()) {
-			if (child.type === "raw") {
-				out.push({ type: "text", value: child.value });
-				continue;
-			}
+		for (const [i, source] of children.entries()) {
+			// Inert-retype `raw` to `text` HERE, at the top of the loop, so the
+			// newline rules below see it as the prose text it now is. Handling it
+			// in its own arm instead would skip the split: a multi-line raw block
+			// (`<div>` around two lines, or `<b>` spanning a softbreak) would reach
+			// the DOM as one text node whose newlines then collapse under
+			// `white-space: normal`, joining the lines onto one. The `inCode` guard
+			// on the split still holds, so a raw node inside a code subtree stays
+			// verbatim — code is verbatim all the way down, and `rawText` would eat
+			// an interleaved `br` anyway.
+			//
+			// The lookarounds below read the UNCONVERTED neighbours, which is
+			// harmless: a `raw` node is neither a block element nor a `br` in
+			// either form, so `isBlock`/`isBr` answer the same for both.
+			const child: Child =
+				source.type === "raw" ? { type: "text", value: source.value } : source;
 			// A bare `"\n"` between blocks is layout whitespace: drop it, exactly as
 			// solid-markdown's own renderer would have.
 			if (
