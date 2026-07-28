@@ -142,9 +142,10 @@ func TestServeShutdownIsClean(t *testing.T) {
 //
 // That claim was untrue for as long as this test failed at its subscriber gate:
 // it never reached the drain, so the regression it names went undefended while
-// the test reported red for an unrelated reason. A red test is not self-evidently
-// doing its job - it has to fail at the assertion it exists for, and that is what
-// the drain mutation below is checked against.
+// the test reported red for an unrelated reason. A red test is not
+// self-evidently doing its job — it has to fail at the assertion it exists for.
+// Verified by deleting the drain's commsBus.Close() and confirming this test
+// then fails at the Serve-returns-nil assertion rather than at the gate.
 func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "compass.sock")
 
@@ -196,22 +197,22 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	// released it.
 	//
 	// A since_seq=0 subscribe receives commsSnapshotBoundary FIRST, before any
-	// event (internal/comms/subscribe.go). Assert that frame rather than
-	// skipping one blindly: a bare skip silently re-breaks the moment the
-	// preamble grows a second frame, which is how this gate broke in the first
-	// place - it was written before the boundary existed and read frame one as
-	// the seeded event, failing here with an empty channel id and never
-	// reaching the shutdown drain that is its actual subject.
-	//
-	// The boundary is identifiable by construction: seq 0 and no payload. The
-	// terminal resync is also seq 0, so payload is what separates them - it
-	// carries a CommsResyncRequired and the boundary carries nothing.
+	// event (internal/comms/subscribe.go, which documents the frame's shape).
+	// Assert that frame rather than skipping one blindly: a bare skip silently
+	// re-breaks the moment the preamble grows a second frame, which is how this
+	// gate broke in the first place — it was written before the boundary
+	// existed and read frame one as the seeded event, failing here with an
+	// empty channel id and never reaching the shutdown drain that is its
+	// actual subject.
 	gate := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		if !stream.Receive() {
-			gate <- fmt.Errorf("stream ended before the snapshot boundary: %w", stream.Err())
+			// Describe the observable, not a cause: all this proves is that the
+			// stream ended before any frame arrived. Naming the boundary as the
+			// missing one would mis-attribute a stream that ended early.
+			gate <- fmt.Errorf("stream ended before any frame (expected the snapshot boundary first): %w", stream.Err())
 			return
 		}
 		if seq, payload := stream.Msg().GetSeq(), stream.Msg().GetPayload(); seq != 0 || payload != nil {
