@@ -479,11 +479,9 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					// Time and thread parent are on the wire and were dropped, which
 					// left the transcript flat: a threaded reply read as a top-level
 					// statement addressed to whatever preceded it. Both go inside the
-					// tag, so both are already covered by the fence and by `attr` —
-					// the ISO timestamp is digit-and-punctuation only and passes the
-					// shape test unchanged. `parent` is omitted entirely on a root
-					// message rather than rendered empty, so its presence means
-					// something.
+					// tag, so both are covered by the fence. `parent` is omitted
+					// entirely on a root message rather than rendered empty, so its
+					// presence means something.
 					//
 					// The conversion degrades rather than throws. `at_unix_ms` is an
 					// int64 on the wire and `toISOString()` throws a RangeError past
@@ -492,9 +490,16 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					// strictly wider blast radius than the degraded attributes above.
 					// Server-minted from a real clock today, so nothing reaches it;
 					// so was `id`, and a boundary that holds by accident is not one.
+					//
+					// The bound is year 9999, not the ±8.64e15 range limit, so this
+					// is the ONLY place a timestamp degrades. Past year 9999 the ISO
+					// form is the expanded-year `+275760-09-13T…`, whose leading `+`
+					// fails `attr`'s shape test — admitting it here would mean two
+					// mechanisms degrading the same value in two places, with the
+					// comment above true of neither.
 					const ms = Number(m.atUnixMs);
 					const at =
-						Number.isFinite(ms) && Math.abs(ms) <= 8.64e15
+						ms >= -62135596800000 && ms <= 253402300799999
 							? new Date(ms).toISOString()
 							: `(malformed ${fence})`;
 					const parent =

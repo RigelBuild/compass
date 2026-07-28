@@ -1242,6 +1242,11 @@ describe("comms_list_messages", () => {
 	// WHOLE page: one bad row costs every message in the channel, a strictly
 	// wider blast radius than a degraded attribute. Server-minted from a real
 	// clock today — so was `id`, and that was hardened anyway.
+	//
+	// The guard's bound is year 9999, tighter than the range limit, so the
+	// renderer degrades a timestamp in exactly one place. Past that the ISO form
+	// is the expanded-year `+010000-…`, whose leading `+` fails `attr` — a value
+	// admitted here would be degraded a second time, one line later.
 	test("an out-of-range timestamp degrades without failing the page", async () => {
 		const text = textOf(
 			await exec(
@@ -1290,6 +1295,49 @@ describe("comms_list_messages", () => {
 			"poisoned",
 			`</msg ${f}>`,
 		]);
+	});
+
+	// One fixture past the positive edge leaves the bound's other sides
+	// undefended: a guard testing only `ms <= LIMIT` (a dropped `Math.abs`, or
+	// here a dropped lower bound) stays green against it while every negative
+	// extreme throws again — and an off-by-one on the inclusive edge is
+	// invisible. Table the edges instead.
+	test.each([
+		[253402300799999n, "9999-12-31T23:59:59.999Z", "last in-range value"],
+		[253402300800000n, null, "first expanded-year value"],
+		[-62135596800000n, "0001-01-01T00:00:00.000Z", "year 1, in range"],
+		[-62135596800001n, null, "below year 1"],
+		[9223372036854775807n, null, "int64 max — lossy Number() conversion"],
+	])("timestamp %s renders %s (%s)", async (atUnixMs, expected) => {
+		const text = textOf(
+			await exec(
+				tool(
+					new CommsBroker(
+						new FakeTransport(
+							listResult(
+								create(MessageSchema, {
+									id: "m-1",
+									authorAccountId: "acct-x",
+									atUnixMs,
+									blocks: [
+										create(MessageBlockSchema, {
+											block: { case: "text", value: "body" },
+										}),
+									],
+								}),
+							),
+						),
+					),
+					"comms_list_messages",
+				),
+				"tc-34",
+				{ channel_id: "c-1" },
+			),
+		);
+		const f = fenceOf(text);
+		// `expected === null` means the value must degrade — and degrade HERE, at
+		// the guard, never by falling through to `attr`.
+		expect(text).toContain(`at="${expected ?? `(malformed ${f})`}"`);
 	});
 
 	test("a timed-out question with no choice still reads as settled", async () => {
