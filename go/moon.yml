@@ -78,12 +78,25 @@ tasks:
 
   nilaway:
     # nilaway: cross-function nil-flow analysis — the closest Go gets to Rust's
-    # no-null guarantee (F2). ADVISORY (non-gating) until the baseline is clean:
-    # `|| true` means findings are printed but never fail the pipeline, so the
-    # tool informs without teaching agents to appease its beta false positives.
-    # Promote to gating (drop the `|| true`) in a follow-up once the baseline is
-    # clean. `-include-pkgs` scopes it to first-party code (not deps/stdlib).
-    script: 'nilaway -include-pkgs=github.com/sealedsecurity/compass/go ./... || true'
+    # no-null guarantee (F2). ADVISORY: `|| true` means findings print but never
+    # fail the pipeline, so promoting this lane to gating means dropping it.
+    # `-include-pkgs` scopes it to first-party code, not deps/stdlib; the two
+    # exclusions pair with .golangci.yml so both tools agree on what is out of
+    # scope. `-exclude-errors-in-files` drops the checked-in protoc/connect
+    # output (AGENTS.md forbids hand-editing `go/gen`; buf's `clean: true` wipes
+    # both trees on regeneration). Its patterns are unanchored string prefixes
+    # resolved against the task CWD — hence `runFromWorkspaceRoot: false`, and
+    # hence the cut at the `compass/v1` package root: the narrowest spelling that
+    # still covers the whole generated tree, since a shorter one would also
+    # swallow a first-party `generator/`. It is version-pinned, so a `compass/v2`
+    # tree must be added here or its findings return. `-test=false` covers
+    # golangci's `path: _test\.go` class but is coarser — golangci relaxes named
+    # linters on tests, while nilaway has no per-linter dial, so this also drops
+    # flows whose source is a test caller even when the deref is in shipped code.
+    # There is no per-site alternative: run standalone rather than under
+    # golangci-lint, nilaway ignores `//nolint`, and its docstring opt-out
+    # silences a whole file.
+    script: 'nilaway -include-pkgs=github.com/sealedsecurity/compass/go -test=false -exclude-errors-in-files="gen/compass/v1/,internal/gen/compass/v1/" ./... || true'
     options:
       runFromWorkspaceRoot: false
     inputs: *go_sources
