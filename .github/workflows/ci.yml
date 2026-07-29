@@ -1,4 +1,5 @@
-# The remote gate for every pull request and every push to main.
+# The remote gate for every pull request and every push to main, plus a nightly
+# full sweep of main.
 #
 # ONE JOB, NOT A MATRIX — the central structural decision, made deliberately.
 #
@@ -11,14 +12,28 @@
 # registration with no entry in the project map, so it read as covered and
 # gated nothing. A YAML enumeration recreates exactly that failure at the CI
 # layer: add a project, forget the matrix entry, and the gate goes quiet about
-# it while still reporting green. `moon run :ci` cannot go quiet; a new project
-# with a `ci` task is picked up the moment it is registered, which is why the
-# arriving oh-my-pi fork needs no edit to this file.
+# it while still reporting green. moon discovers projects from
+# .moon/workspace.yml, so a new project with a `ci` task is picked up the moment
+# it is registered — no matrix entry to forget, which is why the arriving
+# oh-my-pi fork needs no edit to this file.
 #
 # The costs of one job are real and accepted: a single check name to require,
 # and the failing task named in the log rather than in the check list. moon
 # already prints the failing target and only the failing target's output, so
 # attribution costs one click, not a bisect.
+#
+# AFFECTED ON PRs, FULL ON MAIN. A pull request runs `moon ci :ci`, which runs
+# only the projects the PR affects — a Go, UI, or docs PR never pays for the
+# vendored forks' nix builds (the dominant cost, and the reason the gate job's
+# timeout is 90m). The tradeoff is real and named: affected detection trusts
+# each task's `inputs` globs to be complete, so an inputs glob that misses a
+# file would skip a task that should have run — the same silent-skip class the
+# matrix rationale above rejects. The backstop is that main is never gated by
+# affected: every push to main AND a nightly `schedule` run the FULL `moon run
+# :ci` — every task, every project, no filter. So an inputs gap a PR skipped is
+# caught the moment the change lands on main (named and attributable), not left
+# to hide; the nightly sweep re-checks main even on a quiet day. Fast affected
+# path on PRs, exhaustive sweep on everything that reaches main.
 #
 # The pgtest lane IS a separate job — not for attribution, but for blast
 # radius: it depends on a Postgres service container, and a service outage
@@ -30,11 +45,18 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    # Nightly full backstop: runs the whole battery over main so an incomplete
+    # `inputs` glob the affected PR gate skipped cannot hide indefinitely.
+    # 07:17 UTC, off the top-of-hour cron congestion GitHub throttles.
+    - cron: '17 7 * * *'
 
-# One in-flight run per ref. A superseded push's run is answering a question
-# nobody is asking any more.
+# One in-flight run per ref per event. A superseded push's run is answering a
+# question nobody is asking any more. Event is in the key so a nightly schedule
+# run and a coincident post-merge push don't cancel each other — they answer
+# different questions about the same ref.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
@@ -201,12 +223,37 @@ jobs:
         # produce, so finding out first is worth running it twice.
         run: bun tools/toolchain/parity.ts
 
-      - name: Gate
-        # The whole battery: the contract gates, the Go analysis + race test
-        # lanes, the TS typechecks and tests, the UI build, the repo-wide
-        # lint/markdownlint sweeps, and each vendored fork's own nix build. moon
-        # resolves the order and the fan-out; nothing is enumerated here.
+      - name: Gate (affected)
+        # Pull requests only: run only what the PR affects. moon reads the base
+        # from GITHUB_BASE_REF (the PR's target branch) via the ci_env crate and
+        # diffs against it — see the AFFECTED section in the header for the
+        # tradeoff and the backstop. Restricted to `pull_request` deliberately:
+        # on a push GITHUB_BASE_REF is unset, so moon would fall back to
+        # comparing vcs.defaultBranch against HEAD — which on a push to main is
+        # main against its own tip, an empty diff that runs nothing and reports a
+        # misleading green. So affected is the fast PR path; every landing on
+        # main gets the full sweep below.
+        if: github.event_name == 'pull_request'
+        run: moon ci :ci
+
+      - name: Gate (full sweep)
+        # Every push to main and the nightly schedule: the whole battery,
+        # unconditionally. This is what makes the affected PR gate safe — an
+        # incomplete `inputs` glob that let a task be skipped on a PR is caught
+        # here the moment the change lands on main (and again nightly), named and
+        # attributable, not left to hide indefinitely. `moon run :ci`, not `moon
+        # ci`: affected detection would find nothing to do on a push to main.
+        if: github.event_name != 'pull_request'
         run: moon run :ci
+
+      - name: Retrospect
+        # Collapse the single job's flat task fan-out into per-task sections in
+        # the Actions log, so a failure is one expand instead of a scroll. Reads
+        # .moon/cache/{ci,run}Report.json — no token, no added permissions, so
+        # `permissions: contents: read` above is untouched. `success() ||
+        # failure()` so it still renders when the gate failed.
+        if: success() || failure()
+        uses: appthrust/moon-ci-retrospect@631a1e667f96e8ca893eab69f03e425f7fbfdc2b # v2.1.0
 
   pgtest:
     # The real-Postgres suites. Build-tagged `pgtest`, so `go test ./...` in the
