@@ -2,23 +2,31 @@
 
 package runnerhub_test
 
-// End-to-end T4 seam integration, gated behind the `pgtest` tag and SKIPPING
+// End-to-end T5 seam integration, gated behind the `pgtest` tag and SKIPPING
 // cleanly when no Postgres/podman runtime is available (via internal/pgtest, the
-// same gate serve_pgtest_test.go uses). It drives the WHOLE public path against
-// a real store + real event bus:
+// same gate serve_pgtest_test.go uses). It drives the WHOLE public path — an
+// agent-initiated comms call over the real per-container AgentGateway socket —
+// against a real store + real comms bus:
 //
 //	hub.Provision → Sessions relay → real Runner (runner.RunSessions) →
-//	AgentRuntime.Launch (pipe-backed fake container) → hub.Start → the agent
-//	relay (StartAgent) → PublishEvents → hub.Deliver → the real store + bus.
+//	AgentRuntime.Launch (stub container) + gateway.Serve (the per-container Unix
+//	socket) → hub.Start (binds session→account) → the agent dials the socket →
+//	Gateway.Comms → RelayCommsCall → hub → comms.PostAsAccount → the real store
+//	+ the real comms bus.
 //
-// The container is a pipe-backed fake ContainerRuntime (no real compass-agent
-// image exists in CI): its ExecStreaming returns a StreamingExec whose IO.Stdout
-// is an io.PipeReader the test writes framed protojson agent frames into. A
-// conversation frame is written THROUGH Deliver to a store-backed
-// ConversationSink (observed by reading the message back), and a session
-// lifecycle frame fans onto SubscribeEvents (observed on a real bus
-// subscription). This is the seam terminating a real wire and committing to a
-// real store — an external-package (black-box) test, driving only exported APIs.
+// Post-#16 the retired stdout→PublishEvents relay is gone: the agent's protocol
+// no longer rides stdout (that pipe is diagnostics-only), so a conversation is
+// no longer a stdout frame written through Deliver. It is now a CommsCallRequest
+// Post the in-container agent makes over its socket. The Server resolves the
+// relayed session_id to the bound agent account (fail-closed) and executes the
+// Post under it through the SAME PostMessage handler a human takes — so it
+// commits a Message row to Postgres (observed by reading it back under the agent
+// account) AND fans MessagePosted onto the comms bus (observed on a live
+// subscription). The container is a stub ContainerRuntime (no real compass-agent
+// image exists in CI) whose ExecStreaming spawns a live, terminatable child so
+// host.Stop reaps a real process. This is the seam terminating a real
+// agent-initiated wire and committing to a real store — an external-package
+// (black-box) test, driving only exported APIs.
 
 import (
 	"context"
@@ -37,11 +45,12 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/sealedsecurity/compass/go/events"
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/comms"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/sealedsecurity/compass/go/internal/pgtest"
 	"github.com/sealedsecurity/compass/go/internal/runner"
 	"github.com/sealedsecurity/compass/go/internal/runnerhub"
@@ -51,7 +60,11 @@ import (
 
 const integrationTimeout = 30 * time.Second
 
-func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
+// relayText is the body the agent posts over the socket, asserted back out of
+// the store (the committed row) and the comms bus (the fanned MessagePosted).
+const relayText = "e2e reply over the AgentGateway socket"
+
+func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	dsn := pgtest.RequireDSN(t) // SKIPs when no podman/DSN — never fails hard.
 	// First cleanup registered, so LIFO removes the tree LAST — after
 	// runSessionsLoop's drain has confirmed the loop left dispatch (see there).
@@ -65,7 +78,7 @@ func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
 	// call here is a no-op.
 	t.Cleanup(cancel)
 
-	st, agent, bus, sub := openStoreFixture(t, ctx, dsn)
+	st, agent, commsSvc, commsSub := openStoreFixture(t, ctx, dsn)
 	homeChannel := agent.Agent.HomeChannelID
 	// shortRuntimeDir budgeted the path against a MODEL of the account id
 	// (accountIDHexLen "f"s), because it runs before an account exists. Tie the
@@ -76,23 +89,19 @@ func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
 		t.Fatalf("minted account id is %d chars, but shortRuntimeDir budgeted for %d; update accountIDHexLen", got, accountIDHexLen)
 	}
 
-	// A store-backed ConversationSink: a relayed conversation frame is committed
-	// to the agent's home channel and the commit is signalled so the test
-	// event-gates on the observed write, not a sleep.
-	convSink := &storeConversationSink{
-		store:     st,
-		channelID: homeChannel,
-		author:    agent.ID,
-		committed: make(chan store.MessageID, 4),
-	}
-	hub := runnerhub.NewHub(convSink, busLifecycle{bus: bus}, noopTail{}, nil, discardLog())
+	// comms is the hub's CommsCaller — the real agent-comms execution leg over
+	// the real store + bus. Deliver never runs on this path (the stdout relay
+	// #16 retired is gone, so no relayed frame reaches the write-through sinks),
+	// so the three write-through sinks are no-ops; only the RelayCommsCall leg is
+	// exercised.
+	hub := runnerhub.NewHub(noopConversationSink{}, noopLifecycleSink{}, noopTail{}, commsSvc, discardLog())
 
 	// Mount the RunnerService door on an h2c server, accepting one Runner token.
 	resolver := &integResolver{token: "runner-tok", subj: store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}}
 	url := mountRunnerServer(t, hub, resolver.resolve)
 
-	// A real Runner dials in over the wire with a pipe-backed container engine.
-	engine := newIntegPipeRuntime(t)
+	// A real Runner dials in over the wire with a stub container engine.
+	engine := newIntegStubRuntime(t)
 	link, err := runner.Dial(ctx, runner.RunnerConfig{
 		RunnerID:   "runner-1",
 		ServerAddr: url,
@@ -108,7 +117,7 @@ func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
 	}
 
 	// Drive the Runner's Sessions dispatch loop with the production SessionHost
-	// over the pipe-backed engine + spec builder.
+	// over the stub engine + spec builder.
 	specs, err := runner.NewConfigSpecBuilder(runner.SpecDefaults{
 		Image:       "compass-agent:latest",
 		Egress:      runtime.MustAllowEgress("github.com"),
@@ -125,9 +134,13 @@ func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
 	host := runner.NewSessionHost(link, rt, registry, engine, specs, runner.AgentHostConfig{RuntimeDir: runtimeDir}, discardLog(), nil)
 	loopDone := runSessionsLoop(t, ctx, cancel, link, host)
 
+	// Provision serves the per-container AgentGateway socket (before container
+	// launch), so it is live when the agent dials.
 	containerName := provisionWhenSeamLive(t, ctx, hub, agent.ID)
 
-	// Start the session → the Runner spawns the agent relay over the pipe engine.
+	// Start binds the session to the account BOTH in the Runner (so the Gateway
+	// resolves container→session) AND in the hub (so RelayCommsCall resolves
+	// session→account). A comms call before this fails closed CodePermissionDenied.
 	startResp, err := hub.Start(ctx, "start-1", &compassv1.StartAgentSessionRequest{ContainerName: containerName})
 	if err != nil {
 		t.Fatalf("hub.Start over the seam = %v", err)
@@ -137,51 +150,84 @@ func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
 		t.Fatal("Start returned an empty session id")
 	}
 
-	writeRelayFrames(t, engine)
-
-	// The conversation frame was written THROUGH Deliver to the real store: gate
-	// on the commit signal, then read the message back.
-	select {
-	case <-convSink.committed:
-	case <-time.After(integrationTimeout):
-		t.Fatal("conversation frame never committed to the store through the seam")
+	// Dial the real per-container socket and make an agent-initiated Comms Post —
+	// the exact wire an in-container agent rides. client.Comms blocks until the
+	// full round-trip (socket → Gateway → RelayCommsCall → hub → comms → store +
+	// bus → back) completes, so both the commit and the fan are done on return.
+	client := dialAgentSocket(t, agentSocketPath(runtimeDir, containerName))
+	callCtx, cancelCall := context.WithTimeout(ctx, integrationTimeout)
+	defer cancelCall()
+	resp, err := client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+		CallId: "call-1",
+		Call: &compassv1internal.CommsCallRequest_Post{
+			Post: &compassv1.PostMessageRequest{
+				Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(homeChannel)},
+				Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: relayText}}},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("Comms over the socket = %v, want the round-trip result", err)
 	}
+
+	// The Server resolved session→account from its own binding and attributed
+	// the post to the AGENT account (never the bootstrap admin): the round-trip
+	// result carries the call id verbatim and the agent as author.
+	result := resp.Msg
+	if got := result.GetCallId(); got != "call-1" {
+		t.Fatalf("result call id = %q, want the agent's %q (verbatim forward)", got, "call-1")
+	}
+	posted := result.GetPost().GetMessage()
+	if posted == nil {
+		t.Fatal("Comms post result carried no message")
+	}
+	if got := posted.GetAuthorAccountId(); got != string(agent.ID) {
+		t.Fatalf("posted message author = %q, want the bound agent account %q (not admin)", got, agent.ID)
+	}
+
+	// Committed to the REAL store: read it back under the agent account.
 	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: homeChannel}, store.Page{Limit: 10})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
 	if len(msgs) != 1 {
-		t.Fatalf("store has %d messages, want 1 (the relayed frame written through)", len(msgs))
+		t.Fatalf("store has %d messages, want 1 (the socket post committed through)", len(msgs))
 	}
-	if got := textOf(msgs[0]); got != "e2e relayed reply" {
-		t.Fatalf("stored message text = %q, want the relayed frame body", got)
+	if got := textOf(msgs[0]); got != relayText {
+		t.Fatalf("stored message text = %q, want the posted body", got)
 	}
-
-	// The lifecycle frame fanned onto the real bus: gate on the live event.
-	status := waitLifecycle(t, sub)
-	if status.GetSessionId() != sessionID {
-		t.Fatalf("lifecycle status session id = %q, want %q", status.GetSessionId(), sessionID)
-	}
-	if status.GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
-		t.Fatalf("lifecycle status state = %v, want WORKING (the relayed transition)", status.GetState())
+	if msgs[0].AuthorAccountID != agent.ID {
+		t.Fatalf("stored message author = %q, want the agent account %q", msgs[0].AuthorAccountID, agent.ID)
 	}
 
-	assertCleanShutdown(t, ctx, cancel, host, engine, sessionID, loopDone)
+	// Fanned onto the REAL comms bus as MessagePosted — the new model's event fan
+	// for an agent post (the retired relay's SubscribeEvents lifecycle frame has
+	// no replacement Runner trigger, so the post's own bus event IS the seam's
+	// live-fan coverage). Gate on the live event.
+	fanned := waitMessagePosted(t, commsSub)
+	if got := fanned.GetMessage().GetChannelId(); got != string(homeChannel) {
+		t.Fatalf("fanned MessagePosted channel = %q, want the agent home channel %q", got, homeChannel)
+	}
+	if got := firstText(fanned.GetMessage()); got != relayText {
+		t.Fatalf("fanned MessagePosted text = %q, want the posted body", got)
+	}
+
+	assertCleanShutdown(t, ctx, cancel, host, sessionID, loopDone)
 }
 
 // assertCleanShutdown mirrors production shutdown (run.go): stop the session,
-// then cancel the loop. closeStdout models the container's stdout closing on
-// death (the fake's pipe is not ctx-bound the way a real exec's is), so the
-// relay's scan ends; cancel then unwinds RunSessions' blocking Receive.
+// cancel the loop, then close the host (draining the per-container socket). The
+// child the stub exec spawned dies on host.Stop's Terminate, closing its pipes
+// so StartAgent's drains end on EOF; cancel then unwinds RunSessions' blocking
+// Receive.
 //
 // This is the CLEAN path, asserted as its own property. The cleanup registered
 // by runSessionsLoop covers the failing paths, where a t.Fatalf skips this.
-func assertCleanShutdown(t *testing.T, ctx context.Context, cancel context.CancelFunc, host runner.SessionHost, engine *integPipeRuntime, sessionID string, loopDone <-chan error) {
+func assertCleanShutdown(t *testing.T, ctx context.Context, cancel context.CancelFunc, host runner.SessionHost, sessionID string, loopDone <-chan error) {
 	t.Helper()
 	if err := host.Stop(ctx, sessionID); err != nil {
 		t.Fatalf("host.Stop = %v", err)
 	}
-	engine.closeStdout()
 	cancel()
 	select {
 	case err := <-loopDone:
@@ -194,10 +240,21 @@ func assertCleanShutdown(t *testing.T, ctx context.Context, cancel context.Cance
 	case <-time.After(integrationTimeout):
 		t.Fatal("RunSessions loop did not end after ctx cancel")
 	}
+	// Mirror run.go's deferred host.Close after RunSessions returns: drain the
+	// AgentGateway socket Provision served so its listener goroutine is torn down
+	// deterministically rather than left serving until the runtime dir is
+	// removed. ctx is cancelled by now, so the bounded drain rides a fresh
+	// short-deadline context rooted at the test root (Background is the
+	// sanctioned test root; ctx here is already done).
+	if closer, ok := host.(interface{ Close(context.Context) }); ok {
+		closeCtx, cancelClose := context.WithTimeout(context.Background(), integrationTimeout)
+		defer cancelClose()
+		closer.Close(closeCtx)
+	}
 }
 
 // provisionWhenSeamLive provisions the workspace through the public hub path →
-// the Runner launches the (fake) container and returns its name.
+// the Runner launches the (stub) container and returns its name.
 //
 // The Sessions stream is server-speaks-first: RunSessions' bootstrap Send
 // flushes the headers that run the server handler's router.attach, and that
@@ -235,37 +292,17 @@ func provisionWhenSeamLive(t *testing.T, ctx context.Context, hub *runnerhub.Hub
 	}
 }
 
-// writeRelayFrames drives the agent side of the seam: the relay goroutine is
-// reading the agent's stdout pipe, so write one conversation frame (committed
-// through to the store) and one lifecycle frame (fanned onto the bus). Together
-// they exercise both write-through paths the integration exists to cover.
-func writeRelayFrames(t *testing.T, engine *integPipeRuntime) {
-	t.Helper()
-	writeAgentFrame(t, engine.stdoutW, &compassv1internal.AgentFrame{
-		Frame: &compassv1internal.AgentFrame_ConversationPosted{
-			ConversationPosted: &compassv1.MessagePosted{
-				Message: &compassv1.Message{
-					Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "e2e relayed reply"}}},
-				},
-			},
-		},
-	})
-	writeAgentFrame(t, engine.stdoutW, &compassv1internal.AgentFrame{
-		Frame: &compassv1internal.AgentFrame_Session{
-			Session: &compassv1internal.SessionFrame{State: compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING},
-		},
-	})
-}
-
-// openStoreFixture opens the store and builds the account + bus fixture the seam
-// writes through: a real agent account and its home channel (the write-through
-// target for a relayed conversation frame — the agent is a member of its home
-// channel, so AppendMessage authorizes), plus the real event bus and a live
-// subscription observing the lifecycle status the seam fans out.
+// openStoreFixture opens the store and builds the account + comms fixture the
+// seam writes through: a real agent account and its home channel (the agent is a
+// member of its home channel, so PostAsAccount authorizes), plus the real comms
+// bus, a live subscription observing the MessagePosted the seam fans, and the
+// real comms.Comms that is the hub's CommsCaller — it executes the
+// agent-initiated Post under the resolved account over the same PostMessage
+// handler a human takes (store commit + MessagePosted fan-out).
 //
 // Its cleanups register here, so under LIFO they run after everything the caller
 // registers later: the store and bus outlive the Runner loop that talks to them.
-func openStoreFixture(t *testing.T, ctx context.Context, dsn string) (*store.Store, store.Account, *events.Bus[*compassv1.SubscribeEventsResponse], events.Subscription[*compassv1.SubscribeEventsResponse]) {
+func openStoreFixture(t *testing.T, ctx context.Context, dsn string) (*store.Store, store.Account, *comms.Comms, events.Subscription[*compassv1.SubscribeCommsResponse]) {
 	t.Helper()
 	st, err := store.Open(ctx, dsn)
 	if err != nil {
@@ -282,61 +319,37 @@ func openStoreFixture(t *testing.T, ctx context.Context, dsn string) (*store.Sto
 		t.Fatalf("CreateAgent: %v", err)
 	}
 
-	bus := events.NewBus[*compassv1.SubscribeEventsResponse]()
+	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(bus.Close)
+	// adminID is the comms handler's ambient fallback; the agent-initiated leg
+	// (PostAsAccount) overrides it per-call with the resolved agent account, so
+	// the post attributes to the agent, never the admin.
+	commsSvc := comms.NewComms(st, bus, admin.ID)
 	sub, err := bus.Subscribe(0, 0)
 	if err != nil {
 		t.Fatalf("bus.Subscribe: %v", err)
 	}
-	return st, agent, bus, sub
+	return st, agent, commsSvc, sub
 }
 
-// storeConversationSink commits a relayed conversation frame to a fixed channel
-// as a fixed author (the seam's session→channel mapping T5 will own; fixed here
-// so the test drives a real store write-through). It signals each commit so the
-// test event-gates on the observed row.
-type storeConversationSink struct {
-	store     *store.Store
-	channelID store.ChannelID
-	author    store.AccountID
-	committed chan store.MessageID
-}
+// noopConversationSink is the hub's ConversationSink stub. Deliver never runs on
+// this path (the stdout→PublishEvents relay #16 retired is gone), so no relayed
+// conversation frame reaches it — the agent's conversation is a socket Post the
+// CommsCaller leg handles instead.
+type noopConversationSink struct{}
 
-func (s *storeConversationSink) PostAgentMessage(ctx context.Context, _ string, posted *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error {
-	var msg *compassv1.Message
-	switch {
-	case posted != nil:
-		msg = posted.GetMessage()
-	case updated != nil:
-		msg = updated.GetMessage()
-	}
-	text := firstText(msg)
-	stored, _, err := s.store.AppendMessage(ctx, store.Message{
-		Container:       store.ContainerRef{ChannelID: s.channelID},
-		AuthorAccountID: s.author,
-		Blocks:          []store.MessageBlock{{Text: &text}},
-	}, "")
-	if err != nil {
-		return err
-	}
-	s.committed <- stored.ID
+func (noopConversationSink) PostAgentMessage(context.Context, string, *compassv1.MessagePosted, *compassv1.MessageUpdated) error {
 	return nil
 }
 
-// busLifecycle fans an AgentSessionStatus onto the SubscribeEvents bus, matching
-// board.Projection's production bus fan-out (minus the projection's own recording).
-type busLifecycle struct {
-	bus *events.Bus[*compassv1.SubscribeEventsResponse]
-}
+// noopLifecycleSink is the hub's LifecycleSink stub — see noopConversationSink;
+// no relayed lifecycle frame reaches Deliver on this path.
+type noopLifecycleSink struct{}
 
-func (s busLifecycle) PublishSessionStatus(status *compassv1.AgentSessionStatus) {
-	s.bus.Publish(&compassv1.SubscribeEventsResponse{
-		Payload: &compassv1.SubscribeEventsResponse_AgentSessionStatus{AgentSessionStatus: status},
-	})
-}
+func (noopLifecycleSink) PublishSessionStatus(*compassv1.AgentSessionStatus) {}
 
-// noopTail is the observation-pane tail sink; the integration path asserts the
-// conversation + lifecycle surfaces, so the tail is a no-op here.
+// noopTail is the observation-pane tail sink; nothing relays session frames on
+// this path, so the tail is a no-op here.
 type noopTail struct{}
 
 func (noopTail) RelaySessionFrame(string, *compassv1internal.SessionFrame) {}
@@ -354,95 +367,102 @@ func (r *integResolver) resolve(_ context.Context, presented string, want store.
 	return r.subj, nil
 }
 
-// integPipeRuntime is the pipe-backed fake ContainerRuntime: ExecStreaming
-// returns a StreamingExec whose IO.Stdout is an io.PipeReader the test writes
-// framed agent frames into, plus a real terminatable Process (via a shell-stub
-// PodmanCLI) so host.Stop's Terminate works. Lifecycle methods are no-op
-// successes so Launch registers a handle.
-type integPipeRuntime struct {
-	stdoutR *io.PipeReader
-	stdoutW *io.PipeWriter
-	stderrR *io.PipeReader
-	stderrW *io.PipeWriter
-	cli     *runtime.PodmanCLI // shell-stub podman → a real terminatable Process
+// integStubRuntime is the fake ContainerRuntime backing the Runner: its
+// ExecStreaming spawns a real, terminatable child (a shell-stub `podman`
+// exec-ing `sleep`) so host.Stop's Terminate reaps a live process and
+// StartAgent's pipe drains end on that reap. Post-#16 nothing rides
+// stdout/stderr — the agent's protocol travels the AgentGateway socket — so the
+// child's own (empty) pipes are what StartAgent drains and no frame is injected.
+// Lifecycle methods are no-op successes so Launch registers a handle.
+type integStubRuntime struct {
+	cli *runtime.PodmanCLI // shell-stub podman → a real terminatable Process
 }
 
-func newIntegPipeRuntime(t *testing.T) *integPipeRuntime {
+func newIntegStubRuntime(t *testing.T) *integStubRuntime {
 	t.Helper()
-	outR, outW := io.Pipe()
-	errR, errW := io.Pipe()
 	dir := t.TempDir()
 	stub := "#!/bin/sh\nexec sleep 120\n"
 	prog := filepath.Join(dir, "podman-stub.sh")
 	if err := os.WriteFile(prog, []byte(stub), 0o755); err != nil {
 		t.Fatalf("writing streaming stub: %v", err)
 	}
-	return &integPipeRuntime{
-		stdoutR: outR, stdoutW: outW, stderrR: errR, stderrW: errW,
-		cli: runtime.NewPodmanCLI().WithProgram(prog),
-	}
+	return &integStubRuntime{cli: runtime.NewPodmanCLI().WithProgram(prog)}
 }
 
-func (f *integPipeRuntime) Create(context.Context, runtime.ContainerSpec) (runtime.ContainerID, error) {
+func (f *integStubRuntime) Create(context.Context, runtime.ContainerSpec) (runtime.ContainerID, error) {
 	return runtime.ContainerID("fake-id"), nil
 }
-func (f *integPipeRuntime) Start(context.Context, runtime.ContainerID) error { return nil }
-func (f *integPipeRuntime) Exec(context.Context, runtime.ContainerID, runtime.ExecSpec) (runtime.ExecOutput, error) {
+func (f *integStubRuntime) Start(context.Context, runtime.ContainerID) error { return nil }
+func (f *integStubRuntime) Exec(context.Context, runtime.ContainerID, runtime.ExecSpec) (runtime.ExecOutput, error) {
 	return runtime.ExecOutput{}, nil
 }
-func (f *integPipeRuntime) ExecStreaming(ctx context.Context, id runtime.ContainerID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
-	// A real streaming exec against the shell stub gives a live, terminatable
-	// Process (host.Stop calls Process.Terminate). Its own stdio goes to the
-	// harmless sleep; the relay reads OUR stdout pipe (the frames the test
-	// writes) instead, so we swap IO.Stdout/Stderr onto the returned handle.
-	xs, err := f.cli.ExecStreaming(ctx, id, spec)
-	if err != nil {
-		return nil, err
-	}
-	xs.IO.Stdout = f.stdoutR
-	xs.IO.Stderr = f.stderrR
-	return xs, nil
+func (f *integStubRuntime) ExecStreaming(ctx context.Context, id runtime.ContainerID, spec runtime.StreamingExecSpec) (*runtime.StreamingExec, error) {
+	// A real streaming exec against the shell stub: a live, terminatable Process
+	// (host.Stop → Terminate) whose stdout/stderr pipes StartAgent drains. The
+	// stub just sleeps, so the pipes stay empty until Terminate closes them.
+	return f.cli.ExecStreaming(ctx, id, spec)
 }
-func (f *integPipeRuntime) Stop(context.Context, runtime.ContainerID, time.Duration) error {
+func (f *integStubRuntime) Stop(context.Context, runtime.ContainerID, time.Duration) error {
 	return nil
 }
-func (f *integPipeRuntime) Remove(context.Context, runtime.ContainerID) error { return nil }
-func (f *integPipeRuntime) Exists(context.Context, string) (bool, error)      { return false, nil }
-func (f *integPipeRuntime) closeStdout()                                      { _ = f.stdoutW.Close() }
+func (f *integStubRuntime) Remove(context.Context, runtime.ContainerID) error { return nil }
+func (f *integStubRuntime) Exists(context.Context, string) (bool, error)      { return false, nil }
 
 // --- helpers -----------------------------------------------------------------
 
-func writeAgentFrame(t *testing.T, w io.Writer, frame *compassv1internal.AgentFrame) {
-	t.Helper()
-	b, err := protojson.Marshal(frame)
-	if err != nil {
-		t.Fatalf("marshal frame: %v", err)
-	}
-	if _, err := w.Write(append(b, '\n')); err != nil {
-		t.Fatalf("write frame: %v", err)
-	}
+// agentSocketPath is the host path the Runner serves a container's AgentGateway
+// socket at: RuntimeDir/containers/<container>/agent.sock (host.go's
+// agentSocketDir/agentSocketFile layout). Reconstructed here rather than read
+// off the host — h.sockets is unexported and this is an external test package —
+// so it is the exact socket an in-container agent bind-mounts and dials.
+func agentSocketPath(runtimeDir, containerName string) string {
+	return filepath.Join(runtimeDir, "containers", containerName, "agent.sock")
 }
 
-func waitLifecycle(t *testing.T, sub events.Subscription[*compassv1.SubscribeEventsResponse]) *compassv1.AgentSessionStatus {
+// dialAgentSocket builds a real generated AgentGatewayClient that dials the unix
+// socket at path over prior-knowledge h2c — the same cleartext-HTTP/2 door the
+// per-container listener serves — so the Gateway is exercised over the wire it
+// ships on. The base URL is a placeholder; DialContext routes every dial to the
+// socket. (Mirrors dialAgent in runner/e2e_transport_test.go.)
+func dialAgentSocket(t *testing.T, path string) compassv1internalconnect.AgentGatewayClient {
+	t.Helper()
+	p := new(http.Protocols)
+	p.SetUnencryptedHTTP2(true)
+	tr := &http.Transport{
+		Protocols: p,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", path)
+		},
+	}
+	t.Cleanup(tr.CloseIdleConnections)
+	return compassv1internalconnect.NewAgentGatewayClient(&http.Client{Transport: tr}, "http://unix")
+}
+
+// waitMessagePosted returns the first MessagePosted the comms bus fans out,
+// checking Replay first (the publish is synchronous within the socket Post's
+// round-trip, so it has already landed on the ring by the time client.Comms
+// returns) then Live. The deadline bounds a wedged fan so it fails fast; nothing
+// here is a sleep.
+func waitMessagePosted(t *testing.T, sub events.Subscription[*compassv1.SubscribeCommsResponse]) *compassv1.MessagePosted {
 	t.Helper()
 	deadline := time.After(integrationTimeout)
-	// Replay first (in case the publish landed before the loop reads Live).
 	for _, e := range sub.Replay {
-		if s := e.Payload.GetAgentSessionStatus(); s != nil {
-			return s
+		if m := e.Payload.GetMessagePosted(); m != nil {
+			return m
 		}
 	}
 	for {
 		select {
 		case ev, ok := <-sub.Live:
 			if !ok {
-				t.Fatal("bus Live closed before a lifecycle status arrived")
+				t.Fatal("comms bus Live closed before a MessagePosted arrived")
 			}
-			if s := ev.Payload.GetAgentSessionStatus(); s != nil {
-				return s
+			if m := ev.Payload.GetMessagePosted(); m != nil {
+				return m
 			}
 		case <-deadline:
-			t.Fatal("no AgentSessionStatus fanned onto the bus through the seam")
+			t.Fatal("no MessagePosted fanned onto the comms bus through the seam")
 		}
 	}
 }
@@ -614,5 +634,3 @@ func mountRunnerServer(t *testing.T, hub *runnerhub.Hub, resolve runnerhub.Token
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
-
-var _ = runtime.ContainerID("")
