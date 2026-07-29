@@ -5,8 +5,8 @@ package store
 // Message contracts: AppendMessage assigns id + timestamp and validates its
 // input; ListMessages pages newest-first with a working BeforeMessageID cursor
 // and a clamped limit; idempotency dedups on (author, non-empty request id) and
-// not on an empty key; UpdateMessageBlocks replaces the block set; blocks (text
-// and ask, with all ask fields) round-trip through JSONB unchanged; and
+// not on an empty key; updateMessageBlocksExec replaces the block set; blocks
+// (text and ask, with all ask fields) round-trip through JSONB unchanged; and
 // SearchMessages finds matches, scopes to the actor's visible channels, narrows
 // by scope, and tolerates punctuated queries.
 
@@ -466,8 +466,8 @@ func TestUpdateMessageBlocksReplaces(t *testing.T) {
 	}
 
 	replacement := []MessageBlock{textBlock("rewritten"), askBlock()}
-	if err := s.UpdateMessageBlocks(ctx, msg.ID, replacement); err != nil {
-		t.Fatalf("UpdateMessageBlocks: %v", err)
+	if err := updateMessageBlocksExec(ctx, s.pool, msg.ID, replacement); err != nil {
+		t.Fatalf("updateMessageBlocksExec: %v", err)
 	}
 	got, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
 	if err != nil {
@@ -496,7 +496,7 @@ func TestUpdateMessageBlocksRejectsEmptyAskID(t *testing.T) {
 	// ask_id is assigned once at append and immutable thereafter. An update
 	// carrying an ask block with an empty AskID must be rejected, NOT re-minted:
 	// a fresh id would orphan any pending RespondToAsk against the original.
-	err = s.UpdateMessageBlocks(ctx, msg.ID, []MessageBlock{textBlock("rewritten"), askBlockID("")})
+	err = updateMessageBlocksExec(ctx, s.pool, msg.ID, []MessageBlock{textBlock("rewritten"), askBlockID("")})
 	sentinelIs(t, err, ErrInvalidArgument, "update ask block with empty ask_id")
 
 	// The rejected update must not have persisted: the message still reads back
@@ -511,8 +511,8 @@ func TestUpdateMessageBlocksRejectsEmptyAskID(t *testing.T) {
 	// the caller's existing id verbatim (the id the append minted is what an
 	// update must carry back).
 	replacement := []MessageBlock{textBlock("rewritten"), askBlockID("ask-existing-42")}
-	if err := s.UpdateMessageBlocks(ctx, msg.ID, replacement); err != nil {
-		t.Fatalf("UpdateMessageBlocks(non-empty ask id): %v", err)
+	if err := updateMessageBlocksExec(ctx, s.pool, msg.ID, replacement); err != nil {
+		t.Fatalf("updateMessageBlocksExec(non-empty ask id): %v", err)
 	}
 	after, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
 	if err != nil {
@@ -525,7 +525,8 @@ func TestUpdateMessageBlocksRejectsEmptyAskID(t *testing.T) {
 }
 
 func TestUpdateMessageBlocksUnknownNotFound(t *testing.T) {
-	err := newTestStore(t).UpdateMessageBlocks(context.Background(), MessageID("ghost"), []MessageBlock{textBlock("x")})
+	s := newTestStore(t)
+	err := updateMessageBlocksExec(context.Background(), s.pool, MessageID("ghost"), []MessageBlock{textBlock("x")})
 	sentinelIs(t, err, ErrNotFound, "unknown message")
 }
 
@@ -1054,7 +1055,7 @@ func TestAnswerAskRejectsDuplicateOption(t *testing.T) {
 // TestAnswerAskConcurrentDistinctAsksSerialize is the SEA-1226 red-first
 // regression: two distinct asks on ONE message answered concurrently. AnswerAsk
 // reads the whole block set, records its answer on its own ask in that snapshot,
-// and writes ALL blocks back (UpdateMessageBlocks) — so an unserialized
+// and writes ALL blocks back (updateMessageBlocksExec) — so an unserialized
 // read-modify-write lets the second writer's stale snapshot clobber the first
 // writer's answer, silently losing it (last-writer-wins). The contract is that
 // both answers survive; this test SHOULD stay RED until the store serializes the
