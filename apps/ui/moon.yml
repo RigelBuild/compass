@@ -26,7 +26,15 @@ tasks:
     # matching what vite bundles for the app. Bun's default `node` condition pulls
     # the SSR build (dist/server.js), where createMemo is inert (computes once, no
     # tracking) — so store memos would falsely read stale. The UI is browser-only.
-    command: 'bun test --conditions browser --pass-with-no-tests'
+    #
+    # No `--pass-with-no-tests`: bun exits 1 when a run matches no test file, and
+    # that is the behaviour this task wants. With the flag, a `src/**` restructure
+    # or a rename that stops matching reports success having run nothing — and the
+    # output carries no `pass` line at all, so a count check reads absent rather
+    # than zero. Green-on-543 and green-on-0 become the same result. Nothing here
+    # needs the flag: this project has test files, and its two sibling bun
+    # projects run a bare `bun test`.
+    command: 'bun test --conditions browser'
     deps: ['install']
     inputs: ['src/**/*', 'tsconfig.json', 'package.json', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
   ci:
