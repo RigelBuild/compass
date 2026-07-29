@@ -122,7 +122,7 @@ func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
 	}
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
-	host := runner.NewSessionHost(link, rt, registry, engine, specs, runtimeDir, discardLog(), nil)
+	host := runner.NewSessionHost(link, rt, registry, engine, specs, runner.AgentHostConfig{RuntimeDir: runtimeDir}, discardLog(), nil)
 	loopDone := runSessionsLoop(t, ctx, cancel, link, host)
 
 	containerName := provisionWhenSeamLive(t, ctx, hub, agent.ID)

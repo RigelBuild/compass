@@ -32,7 +32,8 @@ type AgentSpec struct {
 	// Name is the stable container name — the Runner's handle for this
 	// workstream.
 	Name string
-	// Image in local storage (from ImageBuilder).
+	// Image is the agent base image ref, supplied by the Runner's config
+	// (--image / $COMPASS_AGENT_IMAGE) — never a per-repo build result.
 	Image string
 	// Workspace is the per-agent clone + scoped $HOME.
 	Workspace Workspace

@@ -36,7 +36,10 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(cfg.Engine, registry)
-	host := NewSessionHost(link, rt, registry, cfg.Engine, specs, cfg.RuntimeDir, log, nil)
+	host := NewSessionHost(link, rt, registry, cfg.Engine, specs, AgentHostConfig{
+		RuntimeDir: cfg.RuntimeDir,
+		AgentModel: cfg.AgentModel,
+	}, log, nil)
 	// The per-container agent sockets the host serves live until the Runner
 	// process ends (no per-container Deprovision RPC in the single-Runner MVP);
 	// close them all on shutdown, draining any in-flight call.

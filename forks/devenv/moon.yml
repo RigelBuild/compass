@@ -1,17 +1,30 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
-# devenv (oss/forks/devenv): vendored fork of cachix/devenv — a bare passthrough
-# of upstream (no sealed diff). Style-gate-exempt vendored code (oss/forks/**
-# exclusions, SEA-1245 Task 2); this moon.yml is the sealed-added functional-CI
-# registration so the fork's own suite gates its own changes (Task 3). It is the
-# one sealed file inside the subtree — a declared Copybara export-exclusion and
-# excluded from the import byte-fidelity diff.
+# devenv (forks/devenv): vendored fork of cachix/devenv. The fork CARRIES a
+# sealed diff — the per-container `user`/`group`/`homeDir` options, the
+# conditional `$HOME` staging, the `DEVENV_`-prefix `imageEnv` filter, and the
+# removal of the `DEVENV_CONTAINER` env lookup, all in
+# `src/modules/containers.nix` (see forks/README.md § devenv).
+# Style-gate-exempt vendored code (`forks/*/**` exclusions); this moon.yml is the
+# sealed-added functional-CI registration. It is the one sealed file inside the
+# subtree — a declared Copybara export-exclusion and excluded from the import
+# byte-fidelity diff.
 #
-# devenv builds through nix (a flake), the same toolchain sealed CI already runs
-# for infra/nix + personal-nix system tasks; its Rust crates compile via the
-# flake's fenix toolchain, not the repo's own cargo, so tasks are nix-driven, not
-# bare `cargo`. Inputs are scoped to this subtree so a fork-only change schedules
-# only these tasks and a change elsewhere never marks devenv affected.
+# WHAT GATES THE SEALED DIFF — and what does not. This repo has no CI: nothing
+# executes the tasks below, so they gate nothing here today. Even once something
+# runs them, they run the fork's OWN upstream suite (`nix build -L` over the
+# flake) — that gates the fork as upstream ships it and proves the tree with
+# sealed's changes still evaluates, but it does NOT exercise the sealed-added
+# container behavior: nothing builds a container with a moved `homeDir`, and the
+# only consumer of those options — `agent-image` — is not a registered moon
+# project. So a defect confined to the sealed `containers.nix` logic is caught
+# by manual verification alone. A reflow inside a `runCommand` body already
+# reached review that way; prefer a mechanical check over a re-asserted claim.
+#
+# devenv builds through nix (a flake); its Rust crates compile via the flake's
+# fenix toolchain, not the repo's own cargo, so tasks are nix-driven, not bare
+# `cargo`. Inputs are scoped to this subtree so a fork-only change schedules only
+# these tasks and a change elsewhere never marks devenv affected.
 layer: 'application'
 language: 'nix'
 tags: ['oss']

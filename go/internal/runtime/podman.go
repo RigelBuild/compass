@@ -2,16 +2,15 @@
 // own rootless-podman container with its own full git clone, a scoped $HOME for
 // that agent's credentials, and a default-deny egress firewall — the container
 // is the unit of isolation (compass.md §5.3). The Runner owns the container
-// lifecycle: build the image from the repo's devenv, create/start the
-// container, clone the repo inside it, arm the firewall, exec the agent as a
-// non-root user, and tear it all down.
+// lifecycle: create/start the container from the configured agent base image,
+// arm the firewall, exec the agent as a non-root user, and tear it all down.
+// The agent clones its own repos and activates their devenv from inside the
+// container, so neither the image build nor the clone is the Runner's job.
 //
 // The layering, bottom to top:
 //   - podman.go — a thin ContainerRuntime over the podman CLI: the only place a
 //     subprocess is spawned. Everything above depends on the interface, so a
 //     libpod-REST backend can replace it without touching a caller.
-//   - image.go — builds a repo's devenv environment into a local OCI image and
-//     loads it into rootless container storage (no registry round-trip).
 //   - egress.go — the default-deny + allowlist firewall applied inside the
 //     container before the agent runs.
 //   - workspace.go — clone-per-container plus the scoped $HOME and its git
@@ -69,7 +68,8 @@ type Mount struct {
 // engine-agnostic: the podman-specific argv is assembled in PodmanCLI.Create,
 // not here.
 type ContainerSpec struct {
-	// Image reference in local container storage (e.g. compass-agent/<repo>:<tag>).
+	// Image reference in local container storage (e.g. compass-agent:latest —
+	// one shared base image, not a per-repo tag).
 	Image string
 	// Name is the container name — the Runner's stable handle for this agent
 	// workstream.

@@ -63,7 +63,7 @@ func TestRelaySequencesFramesMonotonically(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if _, err := link.StartAgent(ctx, "sess-1", runtime.ContainerID("c1"), engine, discardLoggerRunner()); err != nil {
+	if _, err := link.StartAgent(ctx, "sess-1", runtime.ContainerID("c1"), engine, testAgentEnv(), discardLoggerRunner()); err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
 
@@ -104,7 +104,7 @@ func TestRelaySkipsUndecodableLineNonFatal(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if _, err := link.StartAgent(ctx, "sess-1", runtime.ContainerID("c1"), engine, discardLoggerRunner()); err != nil {
+	if _, err := link.StartAgent(ctx, "sess-1", runtime.ContainerID("c1"), engine, testAgentEnv(), discardLoggerRunner()); err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
 
@@ -141,7 +141,7 @@ func TestRelaySkipsBlankLines(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if _, err := link.StartAgent(ctx, "sess-1", runtime.ContainerID("c1"), engine, discardLoggerRunner()); err != nil {
+	if _, err := link.StartAgent(ctx, "sess-1", runtime.ContainerID("c1"), engine, testAgentEnv(), discardLoggerRunner()); err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
 
@@ -168,7 +168,7 @@ func TestRelayForwardsConversationFrame(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if _, err := link.StartAgent(ctx, "sess-conv", runtime.ContainerID("c1"), engine, discardLoggerRunner()); err != nil {
+	if _, err := link.StartAgent(ctx, "sess-conv", runtime.ContainerID("c1"), engine, testAgentEnv(), discardLoggerRunner()); err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
 
@@ -203,7 +203,7 @@ func TestRelayDrainsStderrSoStdoutDoesNotStall(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	if _, err := link.StartAgent(ctx, "sess-1", runtime.ContainerID("c1"), engine, discardLoggerRunner()); err != nil {
+	if _, err := link.StartAgent(ctx, "sess-1", runtime.ContainerID("c1"), engine, testAgentEnv(), discardLoggerRunner()); err != nil {
 		t.Fatalf("StartAgent = %v", err)
 	}
 

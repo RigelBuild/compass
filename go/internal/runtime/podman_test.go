@@ -66,9 +66,14 @@ func TestExecOutputSuccessTracksExitCode(t *testing.T) {
 	}
 }
 
+// The full agent exec the Runner assembles (runner.AgentEnv.execSpec): user,
+// workdir, and every env key the agent reads. Env is emitted in sorted key
+// order, so the expectation is exact rather than order-tolerant.
 func TestExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
 	spec := NewStreamingExecSpec("omp", "acp").AsUser("1000").InDir("/work")
 	spec.Env["HOME"] = "/home/agent"
+	spec.Env["COMPASS_WORKDIR"] = "/work"
+	spec.Env["COMPASS_MODEL"] = "test-model"
 
 	args := execStreamingArgs(ContainerID("ctr123"), spec)
 
@@ -76,6 +81,8 @@ func TestExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
 		"exec", "--interactive",
 		"--user", "1000",
 		"--workdir", "/work",
+		"-e", "COMPASS_MODEL=test-model",
+		"-e", "COMPASS_WORKDIR=/work",
 		"-e", "HOME=/home/agent",
 		"ctr123", "omp", "acp",
 	}

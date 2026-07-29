@@ -47,6 +47,10 @@ func run() error {
 		"In-container checkout directory (the agent session's cwd).")
 	homeDir := flag.String("home-dir", "/home/agent",
 		"In-container scoped $HOME for the agent user.")
+	agentModel := flag.String("agent-model", "",
+		"Model selector handed to every agent this Runner starts (the agent's "+
+			"COMPASS_MODEL). Empty leaves each agent on its own default. "+
+			"Defaults to $COMPASS_AGENT_MODEL.")
 	egressHosts := flag.String("egress-allow", "",
 		"Comma-separated default-deny egress allowlist (DNS names or IP literals).")
 	runtimeDir := flag.String("runtime-dir", "/run/compass",
@@ -68,6 +72,14 @@ func run() error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	log := slog.Default()
 
+	// Ahead of every operator-input check: this validates the process's own
+	// identity, takes no configuration, and its failure is unconditional. Behind
+	// the flag checks, an operator on the wrong uid is told to set a token, fixes
+	// that, re-runs, and only then learns the process can never work as this user.
+	if err := verifyRunnerUID(os.Getuid()); err != nil {
+		return err
+	}
+
 	id := orEnv(*runnerID, "COMPASS_RUNNER_ID")
 	if id == "" {
 		return errors.New("a runner id is required: pass --runner-id or set $COMPASS_RUNNER_ID")
@@ -86,7 +98,6 @@ func run() error {
 	if img == "" {
 		return errors.New("an agent image is required: pass --image or set $COMPASS_AGENT_IMAGE")
 	}
-
 	egress, err := parseEgress(*egressHosts)
 	if err != nil {
 		return err
@@ -127,6 +138,7 @@ func run() error {
 		Token:      token,
 		Engine:     runtime.NewPodmanCLI(),
 		RuntimeDir: *runtimeDir,
+		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
 		HTTPClient: httpClient,
 	}, specs, log)
 }
@@ -134,6 +146,31 @@ func run() error {
 // defaultAgentUID is the unprivileged uid the agent user runs as inside the
 // container, matching the runtime package's agent-user convention.
 const defaultAgentUID uint32 = 1000
+
+// verifyRunnerUID enforces the baked-uid invariant the agent image and the
+// container runtime jointly depend on. The image bakes the agent user, /nix and
+// $HOME as uid defaultAgentUID, and the containers are launched with podman's
+// plain --userns=keep-id, which maps the host uid through unchanged rather than
+// remapping it. A Runner running as any other uid therefore produces a container
+// whose agent is that uid and so does not own /nix or its own home — the
+// agent-managed devenv then fails deep inside the first nix build. Fail here
+// instead, where the cause is visible.
+//
+// The caller passes the REAL uid (os.Getuid), deliberately, not the effective
+// one: keep-id maps the invoking process's real uid into the container, so that
+// is the uid the agent ends up as. A setuid-style effective-uid difference must
+// therefore not satisfy this guard.
+func verifyRunnerUID(uid int) error {
+	if uid == int(defaultAgentUID) {
+		return nil
+	}
+	return fmt.Errorf(
+		"the runner must run as uid %d, but it is running as uid %d: the agent "+
+			"image bakes the agent user, /nix and $HOME as uid %d, and podman's "+
+			"--userns=keep-id maps the host uid into the container unchanged, so "+
+			"an agent launched by this runner would not own /nix",
+		defaultAgentUID, uid, defaultAgentUID)
+}
 
 // orEnv returns flagVal when non-empty, else the named environment variable.
 func orEnv(flagVal, envKey string) string {

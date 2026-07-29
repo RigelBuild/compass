@@ -53,6 +53,9 @@ type agentHost struct {
 	specs      SpecBuilder
 	log        *slog.Logger
 	runtimeDir string
+	// model is the model selector handed to every agent this Runner starts;
+	// empty leaves the agent on its own default.
+	model string
 
 	mu       sync.Mutex
 	sessions map[string]*liveSession
@@ -70,12 +73,23 @@ type liveSession struct {
 	state         compassv1.AgentSessionState
 }
 
+// AgentHostConfig is the SessionHost's own configuration, distinct from the
+// collaborators it is built over. Two adjacent strings as positional params
+// would be silently swappable at the call site; a struct makes each named.
+type AgentHostConfig struct {
+	// RuntimeDir is the Runner-owned base dir the per-container agent sockets
+	// live under (RuntimeDir/containers/<container>/agent.sock).
+	RuntimeDir string
+	// AgentModel is the model selector every agent this host starts receives;
+	// empty leaves the agent on its default.
+	AgentModel string
+}
+
 // NewSessionHost builds the production SessionHost over the link, the agent
 // runtime + registry (so a launched container resolves by name), the container
-// engine, the spec builder Provision derives its AgentSpec from, and the
-// Runner-owned runtimeDir the per-container agent sockets live under. newID
-// mints session ids; nil uses a monotonic counter.
-func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtime.AgentRegistry, engine runtime.ContainerRuntime, specs SpecBuilder, runtimeDir string, log *slog.Logger, newID func() string) SessionHost {
+// engine, the spec builder Provision derives its AgentSpec from, and the host's
+// own config. newID mints session ids; nil uses a monotonic counter.
+func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtime.AgentRegistry, engine runtime.ContainerRuntime, specs SpecBuilder, cfg AgentHostConfig, log *slog.Logger, newID func() string) SessionHost {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -89,7 +103,8 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		engine:     engine,
 		specs:      specs,
 		log:        log,
-		runtimeDir: runtimeDir,
+		runtimeDir: cfg.RuntimeDir,
+		model:      cfg.AgentModel,
 		sessions:   map[string]*liveSession{},
 		sockets:    map[string]*gateway.SocketListener{},
 		nextID:     newID,
@@ -195,7 +210,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	// transition lock is deferred to T9, where in-process reattach against a
 	// persistent host first makes concurrent callers reachable (go-toolchain-default.md:979).
 
-	stream, err := h.link.StartAgent(ctx, sessionID, handle.ID(), h.engine, h.log)
+	stream, err := h.link.StartAgent(ctx, sessionID, handle.ID(), h.engine, h.agentEnv(handle), h.log)
 	if err != nil {
 		return "", err
 	}
@@ -242,10 +257,19 @@ func (h *agentHost) Reload(ctx context.Context, sessionID string) error {
 	if !ok {
 		return errSessionUnknown
 	}
+	// Re-resolve the handle BEFORE stopping, so the relaunch carries the same
+	// identity and configuration the original Start did and a session whose
+	// container has since been dropped from the registry is rejected while its
+	// agent is still running: the error path is a true no-op, never a stopped
+	// agent left behind a session the live set still reports READY.
+	handle, ok := h.registry.Resolve(s.containerName)
+	if !ok {
+		return errSessionUnknown
+	}
 	if err := s.stream.Stop(); err != nil {
 		return err
 	}
-	stream, err := h.link.StartAgent(ctx, sessionID, s.containerID, h.engine, h.log)
+	stream, err := h.link.StartAgent(ctx, sessionID, s.containerID, h.engine, h.agentEnv(handle), h.log)
 	if err != nil {
 		return err
 	}
@@ -273,6 +297,18 @@ func (h *agentHost) Status(_ context.Context, sessionID string) ([]*compassv1.Ag
 		out = append(out, &compassv1.AgentSessionStatus{SessionId: s.sessionID, State: s.state})
 	}
 	return out, nil
+}
+
+// agentEnv derives the agent exec's identity and configuration from the
+// launched container's handle, so Start and Reload cannot drift apart. The
+// model is Runner-wide config; everything else is per-container.
+func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
+	return AgentEnv{
+		UID:     handle.WorkspaceUID(),
+		HomeDir: handle.HomeDir(),
+		Workdir: handle.CheckoutDir(),
+		Model:   h.model,
+	}
 }
 
 // serveSocket creates and serves the per-container agent socket for

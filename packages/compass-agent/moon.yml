@@ -1,10 +1,11 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 # The first-party Compass agent: built on @oh-my-pi/pi-agent-core, maps the SDK
-# event stream to compass.v1 payloads in-process, and speaks a newline-framed
-# compass.v1 stdio channel the Runner drives over ExecStreaming. System tasks:
-# bun + biome from the devenv toolchain on PATH. typecheck/test compile the
-# package source; the SDK->compass.v1 mapping is the package's own testable
-# surface (no Runner-side translator).
+# event stream to compass.v1 payloads in-process, and emits them natively over
+# the AgentGateway socket the Runner bind-mounts into the container. (The
+# newline-framed compass.v1 stdio channel is the legacy carrier, retained only
+# until it is retired.) System tasks: bun + biome from the devenv toolchain
+# on PATH. typecheck/test compile the package source; the SDK->compass.v1
+# mapping is the package's own testable surface (no Runner-side translator).
 layer: 'library'
 language: 'typescript'
 tags: ['bun', 'oss']
