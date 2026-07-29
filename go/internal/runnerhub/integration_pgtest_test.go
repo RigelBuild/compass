@@ -22,6 +22,7 @@ package runnerhub_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -30,6 +31,8 @@ import (
 	"os"
 	"path/filepath"
 	stdruntime "runtime"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -50,35 +53,27 @@ const integrationTimeout = 30 * time.Second
 
 func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
 	dsn := pgtest.RequireDSN(t) // SKIPs when no podman/DSN — never fails hard.
+	// First cleanup registered, so LIFO removes the tree LAST — after
+	// runSessionsLoop's drain has confirmed the loop left dispatch (see there).
+	runtimeDir := shortRuntimeDir(t)
 	ctx, cancel := context.WithCancel(context.Background())
+	// Registered adjacent to WithCancel so the ~60 lines of fixture setup below
+	// (openStoreFixture, runner.Dial, NewConfigSpecBuilder) cannot t.Fatalf out
+	// with the context never cancelled. runSessionsLoop registers cancel again,
+	// later, so LIFO still runs its copy FIRST and the drain ordering the loop
+	// documents is unchanged; context.CancelFunc is idempotent, so the second
+	// call here is a no-op.
 	t.Cleanup(cancel)
 
-	st, err := store.Open(ctx, dsn)
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-	t.Cleanup(st.Close)
-
-	// A real agent account + its home channel: the write-through target for a
-	// relayed conversation frame. The agent is a member of its home channel, so
-	// AppendMessage authorizes.
-	admin, err := st.BootstrapAdmin(ctx, store.NewUser{Handle: "admin", DisplayName: "Administrator"})
-	if err != nil {
-		t.Fatalf("BootstrapAdmin: %v", err)
-	}
-	agent, err := st.CreateAgent(ctx, admin.ID, store.NewAgent{Handle: "atlas", DisplayName: "Atlas"})
-	if err != nil {
-		t.Fatalf("CreateAgent: %v", err)
-	}
+	st, agent, bus, sub := openStoreFixture(t, ctx, dsn)
 	homeChannel := agent.Agent.HomeChannelID
-
-	// The real event bus (the SubscribeEvents surface) + a live subscription to
-	// observe the lifecycle status the seam fans out.
-	bus := events.NewBus[*compassv1.SubscribeEventsResponse]()
-	t.Cleanup(bus.Close)
-	sub, err := bus.Subscribe(0, 0)
-	if err != nil {
-		t.Fatalf("bus.Subscribe: %v", err)
+	// shortRuntimeDir budgeted the path against a MODEL of the account id
+	// (accountIDHexLen "f"s), because it runs before an account exists. Tie the
+	// model to the real minted value now that it does: widen store ids and this
+	// reddens here, rather than silently invalidating that budget and letting
+	// the real socket path overrun.
+	if got := len(agent.ID); got != accountIDHexLen {
+		t.Fatalf("minted account id is %d chars, but shortRuntimeDir budgeted for %d; update accountIDHexLen", got, accountIDHexLen)
 	}
 
 	// A store-backed ConversationSink: a relayed conversation frame is committed
@@ -120,51 +115,17 @@ func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
 		CheckoutDir: "/work/repo",
 		HomeDir:     "/home/agent",
 		UID:         1000,
-		NamePrefix:  "compass-agent-",
+		NamePrefix:  agentNamePrefix,
 	})
 	if err != nil {
 		t.Fatalf("NewConfigSpecBuilder: %v", err)
 	}
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
-	host := runner.NewSessionHost(link, rt, registry, engine, specs, t.TempDir(), discardLog(), nil)
-	loopDone := make(chan error, 1)
-	go func() { loopDone <- link.RunSessions(ctx, host) }()
+	host := runner.NewSessionHost(link, rt, registry, engine, specs, runtimeDir, discardLog(), nil)
+	loopDone := runSessionsLoop(t, ctx, cancel, link, host)
 
-	// Provision the workspace through the public hub path → the Runner launches
-	// the (fake) container and returns its name. The Sessions stream is
-	// server-speaks-first: RunSessions' bootstrap Send flushes the headers that
-	// run the server handler's router.attach, and that round-trip is async to the
-	// goroutine spawned above. A command dispatched into the pre-attach window
-	// gets a retriable Unavailable ("no live runner sessions stream") — the same
-	// transient a production client rides out. Gate on the seam being live by
-	// retrying Provision (idempotent on its stable request id "prov-1", so no
-	// double-provision), yielding to the handler goroutine between probes; a
-	// deadline bounds it so a genuinely wedged seam fails fast, never a sleep.
-	var provResp *compassv1.ProvisionAgentWorkspaceResponse
-	provDeadline := time.After(integrationTimeout)
-	for {
-		provResp, err = hub.Provision(ctx, "prov-1", &compassv1.ProvisionAgentWorkspaceRequest{
-			AgentAccountId: string(agent.ID),
-			Repo:           &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
-		})
-		if err == nil {
-			break
-		}
-		if connect.CodeOf(err) != connect.CodeUnavailable {
-			t.Fatalf("hub.Provision over the seam = %v", err)
-		}
-		select {
-		case <-provDeadline:
-			t.Fatalf("hub.Provision never reached a live Sessions stream: %v", err)
-		default:
-		}
-		stdruntime.Gosched()
-	}
-	containerName := provResp.GetContainerName()
-	if containerName == "" {
-		t.Fatal("Provision returned an empty container name")
-	}
+	containerName := provisionWhenSeamLive(t, ctx, hub, agent.ID)
 
 	// Start the session → the Runner spawns the agent relay over the pipe engine.
 	startResp, err := hub.Start(ctx, "start-1", &compassv1.StartAgentSessionRequest{ContainerName: containerName})
@@ -176,23 +137,7 @@ func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
 		t.Fatal("Start returned an empty session id")
 	}
 
-	// The relay goroutine is now reading the agent's stdout pipe. Write one
-	// conversation frame (→ committed to the store) and one lifecycle frame (→
-	// fanned onto the bus).
-	writeAgentFrame(t, engine.stdoutW, &compassv1internal.AgentFrame{
-		Frame: &compassv1internal.AgentFrame_ConversationPosted{
-			ConversationPosted: &compassv1.MessagePosted{
-				Message: &compassv1.Message{
-					Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "e2e relayed reply"}}},
-				},
-			},
-		},
-	})
-	writeAgentFrame(t, engine.stdoutW, &compassv1internal.AgentFrame{
-		Frame: &compassv1internal.AgentFrame_Session{
-			Session: &compassv1internal.SessionFrame{State: compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING},
-		},
-	})
+	writeRelayFrames(t, engine)
 
 	// The conversation frame was written THROUGH Deliver to the real store: gate
 	// on the commit signal, then read the message back.
@@ -221,20 +166,129 @@ func TestIntegrationProvisionStartRelayToStoreAndBus(t *testing.T) {
 		t.Fatalf("lifecycle status state = %v, want WORKING (the relayed transition)", status.GetState())
 	}
 
-	// Clean teardown mirrors production shutdown (run.go): stop the session, then
-	// cancel the loop. closeStdout models the container's stdout closing on death
-	// (the fake's pipe is not ctx-bound the way a real exec's is), so the relay's
-	// scan ends; cancel then unwinds RunSessions' blocking Receive.
+	assertCleanShutdown(t, ctx, cancel, host, engine, sessionID, loopDone)
+}
+
+// assertCleanShutdown mirrors production shutdown (run.go): stop the session,
+// then cancel the loop. closeStdout models the container's stdout closing on
+// death (the fake's pipe is not ctx-bound the way a real exec's is), so the
+// relay's scan ends; cancel then unwinds RunSessions' blocking Receive.
+//
+// This is the CLEAN path, asserted as its own property. The cleanup registered
+// by runSessionsLoop covers the failing paths, where a t.Fatalf skips this.
+func assertCleanShutdown(t *testing.T, ctx context.Context, cancel context.CancelFunc, host runner.SessionHost, engine *integPipeRuntime, sessionID string, loopDone <-chan error) {
+	t.Helper()
 	if err := host.Stop(ctx, sessionID); err != nil {
 		t.Fatalf("host.Stop = %v", err)
 	}
 	engine.closeStdout()
 	cancel()
 	select {
-	case <-loopDone:
+	case err := <-loopDone:
+		// A cancelled ctx is the expected end; anything else is a real stream
+		// failure, and discarding it here would let the loop die of a genuine
+		// error while this assertion still reads as a clean shutdown.
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunSessions = %v, want a clean end after ctx cancel", err)
+		}
 	case <-time.After(integrationTimeout):
 		t.Fatal("RunSessions loop did not end after ctx cancel")
 	}
+}
+
+// provisionWhenSeamLive provisions the workspace through the public hub path →
+// the Runner launches the (fake) container and returns its name.
+//
+// The Sessions stream is server-speaks-first: RunSessions' bootstrap Send
+// flushes the headers that run the server handler's router.attach, and that
+// round-trip is async to the loop goroutine. A command dispatched into the
+// pre-attach window gets a retriable Unavailable ("no live runner sessions
+// stream") — the same transient a production client rides out. So gate on the
+// seam being live by retrying, idempotent on the stable request id "prov-1" so
+// there is no double-provision, yielding to the handler goroutine between
+// probes. A deadline bounds it, so a genuinely wedged seam fails fast rather
+// than spinning, and nothing here is a sleep.
+func provisionWhenSeamLive(t *testing.T, ctx context.Context, hub *runnerhub.Hub, agentID store.AccountID) string {
+	t.Helper()
+	deadline := time.After(integrationTimeout)
+	for {
+		resp, err := hub.Provision(ctx, "prov-1", &compassv1.ProvisionAgentWorkspaceRequest{
+			AgentAccountId: string(agentID),
+			Repo:           &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
+		})
+		if err == nil {
+			name := resp.GetContainerName()
+			if name == "" {
+				t.Fatal("Provision returned an empty container name")
+			}
+			return name
+		}
+		if connect.CodeOf(err) != connect.CodeUnavailable {
+			t.Fatalf("hub.Provision over the seam = %v", err)
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("hub.Provision never reached a live Sessions stream: %v", err)
+		default:
+		}
+		stdruntime.Gosched()
+	}
+}
+
+// writeRelayFrames drives the agent side of the seam: the relay goroutine is
+// reading the agent's stdout pipe, so write one conversation frame (committed
+// through to the store) and one lifecycle frame (fanned onto the bus). Together
+// they exercise both write-through paths the integration exists to cover.
+func writeRelayFrames(t *testing.T, engine *integPipeRuntime) {
+	t.Helper()
+	writeAgentFrame(t, engine.stdoutW, &compassv1internal.AgentFrame{
+		Frame: &compassv1internal.AgentFrame_ConversationPosted{
+			ConversationPosted: &compassv1.MessagePosted{
+				Message: &compassv1.Message{
+					Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "e2e relayed reply"}}},
+				},
+			},
+		},
+	})
+	writeAgentFrame(t, engine.stdoutW, &compassv1internal.AgentFrame{
+		Frame: &compassv1internal.AgentFrame_Session{
+			Session: &compassv1internal.SessionFrame{State: compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING},
+		},
+	})
+}
+
+// openStoreFixture opens the store and builds the account + bus fixture the seam
+// writes through: a real agent account and its home channel (the write-through
+// target for a relayed conversation frame — the agent is a member of its home
+// channel, so AppendMessage authorizes), plus the real event bus and a live
+// subscription observing the lifecycle status the seam fans out.
+//
+// Its cleanups register here, so under LIFO they run after everything the caller
+// registers later: the store and bus outlive the Runner loop that talks to them.
+func openStoreFixture(t *testing.T, ctx context.Context, dsn string) (*store.Store, store.Account, *events.Bus[*compassv1.SubscribeEventsResponse], events.Subscription[*compassv1.SubscribeEventsResponse]) {
+	t.Helper()
+	st, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(st.Close)
+
+	admin, err := st.BootstrapAdmin(ctx, store.NewUser{Handle: "admin", DisplayName: "Administrator"})
+	if err != nil {
+		t.Fatalf("BootstrapAdmin: %v", err)
+	}
+	agent, err := st.CreateAgent(ctx, admin.ID, store.NewAgent{Handle: "atlas", DisplayName: "Atlas"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+
+	bus := events.NewBus[*compassv1.SubscribeEventsResponse]()
+	t.Cleanup(bus.Close)
+	sub, err := bus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("bus.Subscribe: %v", err)
+	}
+	return st, agent, bus, sub
 }
 
 // storeConversationSink commits a relayed conversation frame to a fixed channel
@@ -412,6 +466,120 @@ func textOf(m store.Message) string {
 }
 
 func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// agentNamePrefix is the container-name prefix this test wires into its
+// SpecDefaults, hoisted so shortRuntimeDir models the same name the Runner
+// actually builds (BuildSpec in spec.go joins it with the account id). Editing
+// the prefix in one place would otherwise silently shrink the modelled path and
+// turn the budget assertion into a false negative.
+const agentNamePrefix = "compass-agent-"
+
+// accountIDHexLen is the width of a store account id: 16 random bytes
+// hex-encoded (internal/store/ids.go:21-28). Fixed at that minting site — the
+// only one — rather than validated where the path is built, so it is the right
+// width to model the tail with and the wrong thing to call a guarantee.
+const accountIDHexLen = 32
+
+// runSessionsLoop starts the Runner's dispatch loop and registers the teardown
+// that must bracket it. The ordering is load-bearing in both directions, which
+// is why it lives beside the goroutine rather than beside context.WithCancel.
+//
+// It must run BEFORE httptest's srv.Close (registered inside mountRunnerServer,
+// therefore earlier, therefore later under LIFO): Close waits on its handlers,
+// and the live Sessions handler returns only once ctx is cancelled, so
+// cancelling after Close deadlocks the entire cleanup stack — every later
+// cleanup, the runtime dir removal included, never runs.
+//
+// It must run AFTER the runtime dir removal registered at the top of the test,
+// so LIFO reclaims that tree only once the loop has left dispatch. Cancel alone
+// would not do it: cancel signals and returns, so the WAIT is what makes the
+// ordering mean anything.
+//
+// The wait is what orders the two; it is not a gate on the removal. If the
+// drain times out, the later cleanups still run — a cleanup cannot cancel the
+// ones registered before it. Neither `return` (it exits only its own closure)
+// nor t.Fatalf (it marks the test and runs the rest of the stack anyway) skips
+// them, so the timeout arm reports the collision rather than averting it. That
+// is the right trade at this point: the test has already failed, and the
+// alternative — a flag threaded into shortRuntimeDir to skip RemoveAll — leaks
+// the tree and couples two independent helpers to buy nothing a red test needs.
+func runSessionsLoop(t *testing.T, ctx context.Context, cancel context.CancelFunc, link *runner.ServerLink, host runner.SessionHost) <-chan error {
+	t.Helper()
+	loopDone := make(chan error, 1)
+	go func() {
+		loopDone <- link.RunSessions(ctx, host)
+		// Closed as well as sent: the clean-teardown drain at the end of the test
+		// takes the value, and the cleanup below must still observe the exit.
+		close(loopDone)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-loopDone:
+			// On the clean path assertCleanShutdown already took the value and
+			// this reads the zero from a closed channel. On a failure path it
+			// takes the real one, and a stream error that killed the loop must
+			// surface here — otherwise the test reports only whatever Fatalf'd
+			// first, with the actual cause discarded.
+			if err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("RunSessions ended with %v", err)
+			}
+		case <-time.After(integrationTimeout):
+			t.Errorf("RunSessions still running %s after cancel; the runtime dir removal below runs anyway and will race an in-flight Provision", integrationTimeout)
+		}
+	})
+	return loopDone
+}
+
+// shortRuntimeDir is a Runner RuntimeDir bounded to fit the AF_UNIX sun_path
+// limit, replacing t.TempDir() for the one test here that builds a real agent
+// socket. The Runner appends a 69-byte tail to its RuntimeDir
+// (/containers/compass-agent-<32hex>/agent.sock, host.go:291) at the
+// store-minted 32-hex id, leaving 38 bytes of a 107-byte cap on Linux.
+// t.TempDir() derives its path from the TEST NAME, and every one of this
+// package's tests exceeds that budget: the ceiling is a 19-character name and
+// the shortest here is 26. Only this test fails today because only this one
+// opens a socket, so the name-length dependency is a trap for the next test
+// that wires a SessionHost.
+//
+// A fixed short root removes the TEST-NAME dependency. It does not make the
+// budget unconditional: the root still comes from TMPDIR, and a deep one (a CI
+// work dir, or macOS's ~49-byte /var/folders/<2>/<hash>/T) re-inflates it. So
+// the resulting path is asserted rather than assumed.
+//
+// This site FAILS rather than skips on an over-budget root: a skip would
+// silently drop the only end-to-end coverage of the socket path, reporting `ok`
+// for a test that asserted nothing. The gateway's padTo fails closed for the
+// same reason. The cap is derived the way the production guard derives it
+// (gateway.sunPathMax) rather than written down — sun_path is not one size
+// across the platforms //go:build unix admits (108 on linux/solaris/illumos,
+// 104 on darwin and the BSDs, 1023 on aix), and this file is //go:build unix.
+// The derivation is duplicated below because that constant is unexported; the
+// code below derives the cap rather than writing a literal. (The sizes quoted
+// just above are for the reader, not values anything computes against.)
+func shortRuntimeDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "cr") //nolint:usetesting // t.TempDir embeds the test name, which is what put this path over the sun_path cap — the bug this helper exists to prevent
+	if err != nil {
+		t.Fatalf("MkdirTemp for runner runtime dir: %v", err)
+	}
+	// Longest path the Runner builds under dir. sun_path holds the path plus a
+	// NUL, so the usable cap is one less than the platform's array.
+	const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
+	longest := filepath.Join(dir, "containers", agentNamePrefix+strings.Repeat("f", accountIDHexLen), "agent.sock")
+	if len(longest) > sunPathMax {
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			t.Errorf("removing over-budget runner runtime dir %q: %v", dir, rmErr)
+		}
+		t.Fatalf("runner runtime dir %q yields a %d-byte agent socket path, over the %d-byte sun_path cap (TMPDIR too deep)", dir, len(longest), sunPathMax)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("removing runner runtime dir %q: %v", dir, err)
+		}
+	})
+	return dir
+}
 
 func cleartextH2() *http.Protocols {
 	p := new(http.Protocols)

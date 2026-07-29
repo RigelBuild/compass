@@ -41,6 +41,11 @@ func TestNewConfigSpecBuilderRejectsIncompleteDefaults(t *testing.T) {
 		{"no image", func(d *SpecDefaults) { d.Image = "" }},
 		{"no checkout dir", func(d *SpecDefaults) { d.CheckoutDir = "" }},
 		{"no home dir", func(d *SpecDefaults) { d.HomeDir = "" }},
+		// NamePrefix is the operator-derived half of the container name, which
+		// becomes a path segment of the agent socket. A separator here escapes
+		// RuntimeDir through the same filepath.Join clean that validAccountID
+		// guards on the request-derived half, so both operands are checked.
+		{"a name prefix containing a path separator", func(d *SpecDefaults) { d.NamePrefix = "a/../../" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -167,6 +172,74 @@ func TestBuildSpecRejectsEmptyAgentAccountID(t *testing.T) {
 	}
 	if spec.Name != "" {
 		t.Fatalf("BuildSpec on rejection returned spec with name %q, want the zero AgentSpec", spec.Name)
+	}
+}
+
+// The agent account id becomes a path segment of the agent socket
+// (RuntimeDir/containers/<prefix><id>/agent.sock), and filepath.Join cleans, so
+// a "../" in the id escapes RuntimeDir: "../../../../tmp/pwned" resolves to
+// /run/tmp/pwned/agent.sock, where the Runner would MkdirAll a 0700 directory
+// and bind. The socket's length guard cannot catch this, because traversal
+// SHORTENS the path — every row here is well under the AF_UNIX cap. Each reject
+// must surface a non-nil error AND the zero AgentSpec, so no half-built spec
+// carries an escaping name to Launch. Uses a valid repo so the id is the only
+// failing dimension.
+func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
+	builder, err := NewConfigSpecBuilder(goodDefaults())
+	if err != nil {
+		t.Fatalf("NewConfigSpecBuilder: %v", err)
+	}
+	rejected := []struct {
+		name      string
+		accountID string
+	}{
+		{"parent traversal escaping the runtime dir", "../../../../tmp/pwned"},
+		{"shallow parent traversal", "../../etc"},
+		{"a single parent segment", ".."},
+		{"the current directory", "."},
+		{"an embedded separator", "abc/def"},
+		{"a leading separator (absolute)", "/etc/passwd"},
+		{"a trailing separator", "abc/"},
+		// Control and format characters clear every check above and, measured,
+		// pass MkdirAll and bind too (a NUL is the exception, failing at
+		// MkdirAll) — so without this guard they reach the container name and
+		// the logs that quote it. The C1 and bidi rows are the ones a predicate
+		// written as `r < 0x20 || r == 0x7f` would silently admit.
+		{"an embedded NUL", "abc\x00def"},
+		{"an embedded newline", "abc\ndef"},
+		{"an embedded DEL", "abc\x7fdef"},
+		{"an embedded C1 control", "abc\u0085def"},
+		{"an embedded bidi override", "abc\u202edef"},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
+				AgentAccountId: tc.accountID,
+				Repo:           &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: "https://example.com/r.git"},
+			})
+			if err == nil {
+				t.Fatalf("BuildSpec with agent_account_id %q = nil error, want a path-element rejection", tc.accountID)
+			}
+			if !strings.Contains(err.Error(), "agent account id") {
+				t.Fatalf("BuildSpec error = %v, want the agent-account-id validation error (not a repo failure)", err)
+			}
+			if spec.Name != "" {
+				t.Fatalf("BuildSpec on rejection returned spec with name %q, want the zero AgentSpec", spec.Name)
+			}
+		})
+	}
+
+	// The ordinary minted shape still builds, so the guard refuses traversal
+	// rather than every id.
+	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
+		AgentAccountId: strings.Repeat("f", 32),
+		Repo:           &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: "https://example.com/r.git"},
+	})
+	if err != nil {
+		t.Fatalf("BuildSpec with a 32-hex account id: %v", err)
+	}
+	if want := "compass-agent-" + strings.Repeat("f", 32); spec.Name != want {
+		t.Fatalf("BuildSpec name = %q, want %q", spec.Name, want)
 	}
 }
 

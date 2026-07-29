@@ -11,8 +11,10 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"strings"
+	"unicode"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/runtime"
@@ -51,6 +53,13 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 	if defaults.CheckoutDir == "" || defaults.HomeDir == "" {
 		return nil, errors.New("spec defaults require checkout and home dirs")
 	}
+	// The other operand of the container name. validAccountID constrains the
+	// request-derived half; this constrains the operator-derived half, so both
+	// inputs to a path segment are checked and a separator here cannot escape
+	// RuntimeDir through the same filepath.Join clean.
+	if strings.Contains(defaults.NamePrefix, "/") {
+		return nil, errors.New("spec defaults name prefix must not contain a path separator")
+	}
 	return &configSpecBuilder{defaults: defaults}, nil
 }
 
@@ -67,8 +76,8 @@ func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequ
 
 	d := b.defaults
 	accountID := req.GetAgentAccountId()
-	if accountID == "" {
-		return runtime.AgentSpec{}, errors.New("provision request requires an agent account id")
+	if err := validAccountID(accountID); err != nil {
+		return runtime.AgentSpec{}, err
 	}
 	name := d.NamePrefix + accountID
 	return runtime.AgentSpec{
@@ -84,6 +93,49 @@ func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequ
 		Egress: d.Egress,
 		Mounts: d.Mounts,
 	}, nil
+}
+
+// validAccountID refuses an agent account id that is not a single safe path
+// element. The id is not merely a label: it is concatenated into the container
+// name (below) and that name becomes a path segment of the agent socket,
+// RuntimeDir/containers/<container>/agent.sock (host.go). filepath.Join CLEANS,
+// so a "../" in the id escapes RuntimeDir entirely — "../../../../tmp/pwned"
+// resolves to /run/tmp/pwned/agent.sock — and the socket's own length guard
+// cannot catch it, because traversal SHORTENS the path.
+//
+// Nothing upstream makes this check redundant. The id is minted 32-hex, but the
+// width is a property of the minting site and is never re-checked here; the
+// foreign key that ties the id to a real account is enforced by
+// RecordAgentContainer, which runs after hub.Provision has already created the
+// 0700 directory and bound the socket; and an admin-only RPC narrows who calls
+// it, not what they may pass. So this is the hop that has to reject the shape.
+func validAccountID(id string) error {
+	if id == "" {
+		return errors.New("provision request requires an agent account id")
+	}
+	// fs.ValidPath rejects "..", any empty segment, a leading or trailing "/",
+	// and invalid UTF-8, but returns true for "." (documented) and for a legal
+	// multi-element path like "abc/def" — hence the other two conjuncts. (The
+	// empty id returned above, with its own message.)
+	if !fs.ValidPath(id) || id == "." || strings.Contains(id, "/") {
+		return fmt.Errorf("agent account id %q is not a valid path element", id)
+	}
+	// A control or format character clears every check above — it is valid UTF-8
+	// and carries no separator — and nothing downstream stops it either.
+	// Measured on Linux against listenAgentSocket's own ordering: a newline, a
+	// DEL, a C1 control and a bidi override all pass MkdirAll AND bind, so the
+	// id reaches the container name and every log line that quotes it intact.
+	// (A NUL is the lone exception, failing at MkdirAll — one hop before the
+	// listener — as a bare EINVAL naming nothing.) The name is what an operator
+	// reads back out of `podman ps` and the Runner's logs to identify an agent,
+	// so a character that can forge a line break or reorder the display makes
+	// that identification unreliable. unicode.IsControl covers C0, DEL and C1;
+	// the format class (Cf) is checked with it because a bidi override is not a
+	// control character but spoofs a rendered name just as effectively.
+	if strings.ContainsFunc(id, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
+		return fmt.Errorf("agent account id %q contains a control or format character", id)
+	}
+	return nil
 }
 
 // repoSourceFromRequest maps the request's repo oneof to a runtime.RepoSource,
