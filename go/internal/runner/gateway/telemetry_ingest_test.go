@@ -19,6 +19,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -87,24 +88,6 @@ func (c *capturePublish) recvFrame(t *testing.T) *compassv1internal.PublishEvent
 		return nil
 	}
 }
-
-// awaitEnded blocks until the capture server's PublishEvents handler has returned
-// (its Receive loop drained and the upstream stream closed). The handler pushes
-// every frame onto c.frames BEFORE it signals ended, so once ended fires the
-// c.frames channel holds exactly the frames that were forwarded — no async wire
-// race. Used to make a "how many forwards?" count deterministic.
-func (c *capturePublish) awaitEnded(t *testing.T) {
-	t.Helper()
-	select {
-	case <-c.ended:
-	case <-time.After(testTimeout):
-		t.Fatal("timed out waiting for the upstream PublishEvents stream to close")
-	}
-}
-
-// drainCount returns how many frames the capture server holds right now. Call
-// only after awaitEnded, when the count is settled.
-func (c *capturePublish) drainCount() int { return len(c.frames) }
 
 // --- h2c transport helpers ---------------------------------------------------
 // cleartextHTTP2 lives in socket.go (production); testTimeout in socket_test.go.
@@ -293,6 +276,64 @@ func (s *toggleSessions) set(id string) {
 	s.sessionID = id
 }
 
+// --- fake ConversationCommitter ----------------------------------------------
+
+// capturedCommit records one CommitConversationFrame call: the session id the
+// Runner resolved, the frame it forwarded verbatim, and the idempotency key.
+type capturedCommit struct {
+	sessionID      string
+	frame          *compassv1internal.AgentFrame
+	idempotencyKey string
+}
+
+// fakeCommitter is the durable path's ConversationCommitter under test. It
+// records every commit call and returns a canned (resp, err) — the Runner is a
+// pure forwarder, so a test drives the Server's retryability-split Connect status
+// by setting err and asserts the Runner passes it straight through. Mutex-guarded
+// because the concurrency test drives it from several goroutines at once (mirrors
+// fakeRelay's guarded recorder).
+type fakeCommitter struct {
+	mu    sync.Mutex
+	calls []capturedCommit
+	// err, when non-nil, is returned from every CommitConversationFrame call
+	// (models the Server erring). resp is returned on success; a nil resp is
+	// filled with an empty response so a caller never dereferences nil.
+	err  error
+	resp *compassv1internal.CommitConversationFrameResponse
+}
+
+func (f *fakeCommitter) CommitConversationFrame(_ context.Context, req *connect.Request[compassv1internal.CommitConversationFrameRequest]) (*connect.Response[compassv1internal.CommitConversationFrameResponse], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, capturedCommit{
+		sessionID:      req.Msg.GetSessionId(),
+		frame:          req.Msg.GetFrame(),
+		idempotencyKey: req.Msg.GetIdempotencyKey(),
+	})
+	if f.err != nil {
+		return nil, f.err
+	}
+	resp := f.resp
+	if resp == nil {
+		resp = &compassv1internal.CommitConversationFrameResponse{}
+	}
+	return connect.NewResponse(resp), nil
+}
+
+// snapshot returns a copy of the recorded commit calls under the lock.
+func (f *fakeCommitter) snapshot() []capturedCommit {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]capturedCommit(nil), f.calls...)
+}
+
+// count returns how many commit calls have been recorded.
+func (f *fakeCommitter) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
 // --- Case 1 ------------------------------------------------------------------
 
 // Publish forwards three trace frames Runner-sequenced 1,2,3, in order, under the
@@ -303,7 +344,7 @@ func (s *toggleSessions) set(id string) {
 func TestPublishOrdersThreeTraceFrames(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events, nil)
 	client := newAgentGatewayServer(t, g)
 
 	texts := []string{"alpha", "bravo", "charlie"}
@@ -333,15 +374,15 @@ func TestPublishOrdersThreeTraceFrames(t *testing.T) {
 
 // --- Case 2 ------------------------------------------------------------------
 
-// PostConversationFrame forwards ONE durable frame Runner-sequenced, the
-// idempotency key rides the PublishEventsRequest envelope, the body is verbatim,
-// and the unary returns success.
-// RED: drop the pub.forward call (or return success without forwarding) -> the
-// capture server sees nothing -> recvFrame times out RED.
+// PostConversationFrame commits ONE durable frame via CommitConversationFrame:
+// the commit RPC is called exactly once with the bound SessionId, the frame
+// verbatim, and the idempotency key; the unary returns success. The durable path
+// no longer rides the publisher, so there is no RunnerSeq to assert.
+// RED: drop the g.committer.CommitConversationFrame call (or return success
+// without committing) -> the fake records no call -> the count assertion goes RED.
 func TestPostConversationFrameForwardsSequencedWithKey(t *testing.T) {
-	capture := newCapturePublish()
-	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
+	committer := &fakeCommitter{}
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, committer)
 
 	resp, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 		Frame:          conversationFrame("durable body"),
@@ -354,173 +395,157 @@ func TestPostConversationFrameForwardsSequencedWithKey(t *testing.T) {
 		t.Fatal("nil response on success")
 	}
 
-	// Close the shared upstream, then await the capture handler's return: every
-	// forwarded frame is on the channel before `ended` fires, so the count is
-	// settled — no async wire race.
-	if err := g.releasePublisher(); err != nil {
-		t.Fatalf("releasePublisher: %v", err)
+	calls := committer.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("commit calls = %d, want exactly 1 for one post", len(calls))
 	}
-	capture.awaitEnded(t)
-	if n := capture.drainCount(); n != 1 {
-		t.Fatalf("forwards = %d, want exactly 1 for one post", n)
+	c := calls[0]
+	if c.sessionID != "sess-1" {
+		t.Fatalf("commit SessionId = %q, want sess-1 (the Runner sends the session it structurally owns)", c.sessionID)
 	}
-
-	f := capture.recvFrame(t)
-	if got := f.GetRunnerSeq(); got != 1 {
-		t.Fatalf("RunnerSeq = %d, want 1", got)
+	if c.idempotencyKey != "key-2" {
+		t.Fatalf("commit IdempotencyKey = %q, want key-2 (must ride the request)", c.idempotencyKey)
 	}
-	if got := f.GetIdempotencyKey(); got != "key-2" {
-		t.Fatalf("IdempotencyKey = %q, want key-2 (must ride the envelope)", got)
-	}
-	if got := f.GetFrame().GetConversationPosted().GetMessage().GetBlocks()[0].GetText(); got != "durable body" {
-		t.Fatalf("body = %q, want %q (verbatim)", got, "durable body")
+	if got := c.frame.GetConversationPosted().GetMessage().GetBlocks()[0].GetText(); got != "durable body" {
+		t.Fatalf("committed body = %q, want %q (verbatim)", got, "durable body")
 	}
 }
 
 // --- Case 3 ------------------------------------------------------------------
 
-// PostConversationFrame is delivered-or-erred: a genuine upstream forward failure
-// surfaces as a Connect error (CodeUnavailable), never a silent success. F1
-// decoupled the shared upstream PublishEvents stream from any one request ctx (it
-// now rides g.baseCtx, not the calling unary's ctx), so the old lever — a
-// cancelled REQUEST ctx passed to PostConversationFrame — no longer fails the
-// Send: it was testing a coincidence (the stream happened to share the request
-// ctx), not the contract. Re-levered on a genuine failing upstream: a RunnerService
-// server whose transport is dead (pre-closed), so every upstream Send fails
-// against it. That is the real forward failure the delivered-or-erred contract
-// must surface.
-// RED: swallow the pub.forward error (return success without surfacing it) -> the
-// unary wrongly returns success against the dead upstream.
+// PostConversationFrame is delivered-or-erred: a commit failure surfaces as the
+// Server's Connect error, never a silent success. The Runner is a pure forwarder,
+// so it passes the Server's retryability-split status straight through (mirror
+// Comms). Levered on a committer returning CodeUnavailable — the real commit
+// failure the delivered-or-erred contract must surface.
+// RED: swallow the commit error (return success without surfacing it) -> the
+// unary wrongly returns success against a failing commit.
 func TestPostConversationFrameDeliveredOrErred(t *testing.T) {
-	events := newClosedRunnerServiceServer(t)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
-	t.Cleanup(func() { _ = g.releasePublisher() })
+	committer := &fakeCommitter{err: connect.NewError(connect.CodeUnavailable, errors.New("server unreachable"))}
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, committer)
 
 	resp, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 		Frame:          conversationFrame("boom"),
 		IdempotencyKey: "key-3",
 	}))
 	if err == nil {
-		t.Fatal("expected an error when the upstream forward fails, got success")
+		t.Fatal("expected an error when the commit fails, got success")
 	}
 	if resp != nil {
 		t.Fatalf("expected nil response on failure, got %+v", resp)
 	}
 	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
-		t.Fatalf("error code = %v, want CodeUnavailable", got)
+		t.Fatalf("error code = %v, want CodeUnavailable (the Server's status, passed straight through)", got)
 	}
 }
 
-// A failed forward must not leave the dead publisher installed. The single-post
-// test above passes either way, which is exactly why the wedge survived review:
-// the defect is only observable on the SECOND post. A connect client-stream
-// caches its first error and short-circuits every later Send on it, and
-// acquirePublisher replaces g.pub only on a session CHANGE — so a publisher left
-// installed after a failure is reused for the life of the session and every
-// subsequent durable frame is lost, not just the one that failed.
+// THE durable-contract test (OQ-3 item 5): the retryability split, and that a
+// transient commit failure leaves the idempotency key UN-committed so the sink
+// retries the SAME key, while a success marks it committed so a retry
+// short-circuits without a second commit. The old wedge test defended publisher
+// teardown on the durable path, which no longer exists — the commit IS the
+// durable boundary, so there is no buffer-accept-then-lose to express.
 //
-// RED: drop the releasePublisher call from PostConversationFrame's error path ->
-// the third post still fails against the live upstream, because the Gateway is
-// still holding the publisher bound to the dead one.
-func TestPostConversationFrameFailureDoesNotWedgeThePublisher(t *testing.T) {
-	dead := newClosedRunnerServiceServer(t)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, dead)
-	t.Cleanup(func() { _ = g.releasePublisher() })
+// RED: swallow the commit error -> a transient failure wrongly returns success.
+// RED: mark the key committed on a transient failure -> the retry short-circuits
+// (no second commit call) and a genuinely-uncommitted frame is silently dropped.
+func TestPostConversationFrameAtLeastOnceRetryability(t *testing.T) {
+	// A permanent failure surfaces terminal (the agent drops): CodeNotFound /
+	// CodeInvalidArgument. A transient failure surfaces retryable
+	// (CodeUnavailable). The Runner passes each straight through.
+	for _, tc := range []struct {
+		name string
+		code connect.Code
+	}{
+		{"permanent-not-found", connect.CodeNotFound},
+		{"permanent-invalid-argument", connect.CodeInvalidArgument},
+		{"transient-unavailable", connect.CodeUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			committer := &fakeCommitter{err: connect.NewError(tc.code, errors.New("commit failed"))}
+			g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, committer)
+			_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+				Frame:          conversationFrame("f"),
+				IdempotencyKey: "retry-key",
+			}))
+			if got := connect.CodeOf(err); got != tc.code {
+				t.Fatalf("error code = %v, want %v (the Server's retryability-split status passed straight through)", got, tc.code)
+			}
+			// A failed commit must NOT mark the key committed: the sink retries
+			// the SAME key, and the advisory fast-path must let it re-commit.
+			if g.keyCommitted("retry-key") {
+				t.Fatal("key marked committed after a commit FAILURE: a retry would wrongly short-circuit and the frame would be silently dropped")
+			}
+		})
+	}
 
-	post := func(key string) error {
+	// The retry after a transient failure re-commits under the SAME key (the
+	// fast-path did not short-circuit), and once it succeeds the key IS marked so
+	// a further retry short-circuits without a second commit.
+	committer := &fakeCommitter{err: connect.NewError(connect.CodeUnavailable, errors.New("transient"))}
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, committer)
+	post := func() error {
 		_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-			Frame:          conversationFrame("boom"),
-			IdempotencyKey: key,
+			Frame:          conversationFrame("f"),
+			IdempotencyKey: "k",
 		}))
 		return err
 	}
 
-	// Both posts against the dead upstream must fail the same clean way. A wedged
-	// publisher also fails here, so this pair alone does not discriminate.
-	for i, key := range []string{"wedge-1", "wedge-2"} {
-		err := post(key)
-		if err == nil {
-			t.Fatalf("post %d against a dead upstream = success, want an error", i+1)
-		}
-		if got := connect.CodeOf(err); got != connect.CodeUnavailable {
-			t.Fatalf("post %d error code = %v, want CodeUnavailable", i+1, got)
-		}
+	if err := post(); connect.CodeOf(err) != connect.CodeUnavailable {
+		t.Fatalf("first (transient) commit = %v, want CodeUnavailable", err)
 	}
-
-	// The discriminator: repoint the Gateway at a LIVE upstream. If the failed
-	// publisher was torn down, the next acquire builds a fresh one against it and
-	// the post succeeds. If it was left installed, this fails on the cached error
-	// from a stream that is no longer even the configured upstream.
-	capture := newCapturePublish()
-	g.events = newRunnerServiceServer(t, capture)
-	if err := post("wedge-3"); err != nil {
-		t.Fatalf("post against a live upstream after a failure = %v, want success: the dead publisher was not released", err)
+	// The retry must re-commit (a second call), because the transient failure
+	// left the key un-committed.
+	committer.mu.Lock()
+	committer.err = nil // the Server recovers; the retry now succeeds.
+	committer.mu.Unlock()
+	if err := post(); err != nil {
+		t.Fatalf("retry after transient failure = %v, want success", err)
 	}
-
-	// Close the live stream HERE, not in a t.Cleanup. The successful post above
-	// leaves a publisher holding an open upstream stream, and capturePublish's
-	// handler blocks sending each frame to a bounded channel. Cleanup order
-	// between this test's release and newRunnerServiceServer's own
-	// httptest.Server.Close is unspecified, so leaving it to cleanup lets the
-	// server close while its handler is still parked mid-Receive — which hangs
-	// Server.Close on its handler WaitGroup and times out the WHOLE package, not
-	// just this test.
-	//
-	// Measured, by reverting exactly this to `t.Cleanup(func() { _ =
-	// g.releasePublisher() })` on the current tree: 6 of 8 runs hang at -race
-	// -count=10, against 0 of 8 as written. Releasing inline ends the stream, and
-	// awaitEnded proves the handler returned before any cleanup runs.
-	_ = g.releasePublisher()
-	capture.awaitEnded(t)
+	if n := committer.count(); n != 2 {
+		t.Fatalf("commit calls = %d, want 2 (the transient failure must NOT short-circuit the retry)", n)
+	}
+	if !g.keyCommitted("k") {
+		t.Fatal("key not marked committed after a SUCCESSFUL commit: a legitimate retry would re-commit needlessly")
+	}
+	// A further retry short-circuits: the successful commit marked the key, so no
+	// third commit call is made.
+	if err := post(); err != nil {
+		t.Fatalf("post-success retry = %v, want success (advisory short-circuit)", err)
+	}
+	if n := committer.count(); n != 2 {
+		t.Fatalf("commit calls = %d, want still 2 (a committed key must short-circuit the retry)", n)
+	}
 }
 
 // --- Case 4 ------------------------------------------------------------------
 
-// THE load-bearing test for the shared-publisher critical section: a Publish
-// client-stream and several PostConversationFrame unaries forward CONCURRENTLY
-// through the one shared ordered publisher. Because forward allocates the seq and
-// sends under a SINGLE critical section, allocation order == emission order, so
-// the single ordered upstream delivers seqs 1..N with no gap, dup, or reorder —
-// asserted in ARRIVAL order (a reorder is exactly the false hub gap this guards).
+// THE load-bearing test for the publisher's critical section: several trace
+// frames stream through the ordered publisher and arrive Runner-sequenced 1..N
+// with no gap, dup, or reorder. Since the swap, durable conversation frames
+// commit off this spine (CommitConversationFrame), so ONLY Publish drives the
+// publisher — the concurrent-durable-unary arm is gone. The Publish client-stream
+// is itself serial, but forward still allocates the seq and sends under a SINGLE
+// critical section, so a slow Send can never let allocation order diverge from
+// emission order (the false hub gap this guards).
 // RED: split allocate-seq from Send (atomic incr then Send outside the lock) ->
 // send order diverges from allocation order -> arrival order is not 1..N.
 // Run under -race.
 func TestConcurrencyNoFalseGap(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", staticSessions{sessionID: "sess-1", ok: true}, nil, events)
+	g := NewGateway(context.Background(), "cont-1", staticSessions{sessionID: "sess-1", ok: true}, nil, events, nil)
 	client := newAgentGatewayServer(t, g)
 
-	const nStream = 10
-	const nUnary = 10
-	const total = nStream + nUnary
+	const total = 20
 
 	stream := client.Publish(context.Background())
-
-	var wg sync.WaitGroup
-	// Concurrent Publish sender: nStream trace frames on the client-stream.
-	wg.Go(func() {
-		for i := range nStream {
-			if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame(fmt.Sprintf("t%d", i))}); err != nil {
-				t.Errorf("stream send %d: %v", i, err)
-				return
-			}
+	for i := range total {
+		if err := stream.Send(&compassv1internal.PublishFrameRequest{Frame: traceFrame(fmt.Sprintf("t%d", i))}); err != nil {
+			t.Fatalf("stream send %d: %v", i, err)
 		}
-	})
-	// Concurrent durable unaries against the SAME Gateway (shared publisher).
-	for i := range nUnary {
-		wg.Go(func() {
-			if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-				Frame:          conversationFrame(fmt.Sprintf("c%d", i)),
-				IdempotencyKey: fmt.Sprintf("ck-%d", i),
-			})); err != nil {
-				t.Errorf("post %d: %v", i, err)
-			}
-		})
 	}
-	wg.Wait()
-	// Close the Publish stream only after every concurrent forward has returned,
-	// so releasePublisher does not close the shared upstream mid-forward.
 	if _, err := stream.CloseAndReceive(); err != nil {
 		t.Fatalf("close publish stream: %v", err)
 	}
@@ -582,25 +607,25 @@ func (s *seqSink) seqs() []uint64 {
 func TestSequenceSurvivesPublisherReplacement(t *testing.T) {
 	sink := &seqSink{}
 	events := newRunnerServiceServer(t, sink)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events, nil)
 
-	post := func(key string) {
+	// Drive the publisher directly: since the swap, only Publish rides it, so the
+	// counter-ownership guarantee is exercised through the publisher API itself
+	// rather than a durable unary (which no longer touches the publisher).
+	forward := func(txt string) {
 		t.Helper()
-		if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-			Frame:          conversationFrame(key),
-			IdempotencyKey: key,
-		})); err != nil {
-			t.Fatalf("post %q = %v, want success", key, err)
+		if err := g.acquirePublisher("sess-1").forward(traceFrame(txt)); err != nil {
+			t.Fatalf("forward %q = %v, want success", txt, err)
 		}
 	}
 
-	// Each release drops the publisher; the next post builds a fresh one. The
+	// Each release drops the publisher; the next forward builds a fresh one. The
 	// sequence must continue across both swaps.
-	post("p1")
+	forward("p1")
 	if err := g.releasePublisher(); err != nil {
 		t.Fatalf("release after p1 = %v", err)
 	}
-	post("p2")
+	forward("p2")
 	if err := g.releasePublisher(); err != nil {
 		t.Fatalf("release after p2 = %v", err)
 	}
@@ -623,39 +648,38 @@ func TestSequenceSurvivesPublisherReplacement(t *testing.T) {
 func TestFailedForwardDoesNotBurnASequenceNumber(t *testing.T) {
 	sink := &seqSink{}
 	live := newRunnerServiceServer(t, sink)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, live)
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, live, nil)
 
-	post := func(key string) error {
-		_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-			Frame:          conversationFrame(key),
-			IdempotencyKey: key,
-		}))
-		return err
+	forward := func(txt string) error {
+		return g.acquirePublisher("sess-1").forward(traceFrame(txt))
 	}
 
-	if err := post("ok-1"); err != nil {
-		t.Fatalf("first post = %v, want success", err)
+	if err := forward("ok-1"); err != nil {
+		t.Fatalf("first forward = %v, want success", err)
 	}
 
 	// Point at a dead upstream so the next forward fails, then back at the live
 	// one. The failure must leave no hole behind it.
 	//
-	// Release before each swap: repointing g.events does not touch the publisher
-	// already holding an open stream to the previous upstream, and an abandoned
-	// stream leaves its server-side handler receiving forever — httptest's
-	// Server.Close then blocks on it at cleanup and the package times out.
+	// Release before the dead swap: repointing g.events does not touch the
+	// publisher already holding an open stream to the previous upstream, and an
+	// abandoned stream leaves its server-side handler receiving forever —
+	// httptest's Server.Close then blocks on it at cleanup and the package times
+	// out.
 	if err := g.releasePublisher(); err != nil {
 		t.Fatalf("release before the dead swap = %v", err)
 	}
 	g.events = newClosedRunnerServiceServer(t)
-	if err := post("dead-2"); err == nil {
-		t.Fatal("post against a dead upstream = success, want an error")
+	if err := forward("dead-2"); err == nil {
+		t.Fatal("forward against a dead upstream = success, want an error")
 	}
-	// The failed forward already dropped the dead publisher (the durable path
-	// releases on failure), so there is nothing open against the dead upstream.
+	// Driving forward directly (unlike the Publish handler) does not auto-release
+	// on failure, so drop the dead publisher explicitly before the live swap; its
+	// close errors on the dead transport, which is expected and not actionable.
+	_ = g.releasePublisher()
 	g.events = live
-	if err := post("ok-3"); err != nil {
-		t.Fatalf("post after a failure = %v, want success", err)
+	if err := forward("ok-3"); err != nil {
+		t.Fatalf("forward after a failure = %v, want success", err)
 	}
 	if err := g.releasePublisher(); err != nil {
 		t.Fatalf("final release = %v", err)
@@ -684,12 +708,12 @@ func TestFailedForwardDoesNotBurnASequenceNumber(t *testing.T) {
 func TestReleaseDoesNotRestartTheSequence(t *testing.T) {
 	sink := &seqSink{}
 	events := newRunnerServiceServer(t, sink)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events, nil)
 
 	// This test opens MORE than one upstream stream (the release closes the
 	// first, a later forward opens a fresh one), which the shared capture
-	// fixture is not built for: its send is blocking, its `ended` channel
-	// signals once per handler return, and awaitEnded consumes a single signal.
+	// fixture is not built for: its send is blocking and its `ended` channel
+	// signals once per handler return, consumed by a single receiver.
 	// So this test owns its own sink — an unbounded recorder that can never
 	// block a handler, which is the only property the assertion needs.
 	//
@@ -710,24 +734,23 @@ func TestReleaseDoesNotRestartTheSequence(t *testing.T) {
 		seen[seq] = true
 	}
 
-	const nUnary = 24
+	const nForward = 24
 	var wg sync.WaitGroup
-	for i := range nUnary {
+	for i := range nForward {
 		wg.Go(func() {
-			// An error is legitimate here: a forward landing after the release
-			// fails cleanly rather than being silently dropped. What must never
-			// happen is a SUCCESS carrying a restarted seq.
-			_, _ = g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-				Frame:          conversationFrame(fmt.Sprintf("r%d", i)),
-				IdempotencyKey: fmt.Sprintf("rk-%d", i),
-			}))
+			// An error is legitimate here: a forward racing the release fails
+			// cleanly rather than being silently dropped. What must never happen
+			// is a SUCCESS carrying a restarted seq — so the error is not
+			// actionable and is deliberately discarded.
+			_ = g.acquirePublisher("sess-1").forward(traceFrame(fmt.Sprintf("r%d", i)))
 		})
 	}
-	// Release WHILE the unaries are in flight — the case the sibling avoids.
+	// Release WHILE the forwards are in flight — the case the sibling avoids. A
+	// close error racing an in-flight forward is expected and not actionable.
 	wg.Go(func() { _ = g.releasePublisher() })
 	wg.Wait()
-	// Drop the last publisher so every capture handler's Receive loop ends and
-	// its httptest server can close in cleanup without parking.
+	// Drop the last publisher so every handler's Receive loop ends and its
+	// httptest server can close in cleanup without parking.
 	_ = g.releasePublisher()
 
 	for _, seq := range sink.seqs() {
@@ -746,14 +769,13 @@ func TestReleaseDoesNotRestartTheSequence(t *testing.T) {
 // --- Case 5 ------------------------------------------------------------------
 
 // Idempotency dedup: a key already committed in this process short-circuits a
-// retry (the committed-but-response-lost case) — exactly ONE forward, and BOTH
-// unaries return success (advisory fast-path).
+// retry (the committed-but-response-lost case) — exactly ONE commit call, and
+// BOTH unaries return success (advisory fast-path).
 // RED: ignore committedKeys (skip the keyCommitted fast-path) -> the retry
-// forwards again -> a second frame is captured.
+// commits again -> a second commit call is recorded.
 func TestPostConversationFrameDedupOnKey(t *testing.T) {
-	capture := newCapturePublish()
-	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
+	committer := &fakeCommitter{}
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, committer)
 
 	post := func(key string) {
 		t.Helper()
@@ -766,31 +788,24 @@ func TestPostConversationFrameDedupOnKey(t *testing.T) {
 	}
 
 	post("k1")
-	post("k1") // committed-but-response-lost retry: must not re-forward.
+	post("k1") // committed-but-response-lost retry: must not re-commit.
 
-	// Settle the count deterministically: close upstream, await the handler's
-	// return, then assert exactly one frame was forwarded.
-	if err := g.releasePublisher(); err != nil {
-		t.Fatalf("releasePublisher: %v", err)
+	calls := committer.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("commit calls = %d, want exactly 1 (dedup on repeated key)", len(calls))
 	}
-	capture.awaitEnded(t)
-	if n := capture.drainCount(); n != 1 {
-		t.Fatalf("forwards = %d, want exactly 1 (dedup on repeated key)", n)
-	}
-	if got := capture.recvFrame(t).GetIdempotencyKey(); got != "k1" {
-		t.Fatalf("forward key = %q, want k1", got)
+	if calls[0].idempotencyKey != "k1" {
+		t.Fatalf("commit key = %q, want k1", calls[0].idempotencyKey)
 	}
 }
 
-// An EMPTY idempotency key never short-circuits: two empty-key posts both forward
+// An EMPTY idempotency key never short-circuits: two empty-key posts both commit
 // (there is nothing to dedup on).
 // RED: drop the `key != ""` guard on the fast-path -> the second empty-key post
-// short-circuits -> only one forward, and the second recvFrame times out RED.
+// short-circuits -> only one commit call is recorded.
 func TestPostConversationFrameEmptyKeyNeverDedups(t *testing.T) {
-	capture := newCapturePublish()
-	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
-	t.Cleanup(func() { _ = g.releasePublisher() })
+	committer := &fakeCommitter{}
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, committer)
 
 	for range 2 {
 		if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
@@ -801,10 +816,42 @@ func TestPostConversationFrameEmptyKeyNeverDedups(t *testing.T) {
 		}
 	}
 
-	f1 := capture.recvFrame(t)
-	f2 := capture.recvFrame(t)
-	if f1.GetRunnerSeq() == f2.GetRunnerSeq() {
-		t.Fatalf("empty-key posts collapsed to one forward (both seq %d)", f1.GetRunnerSeq())
+	if n := committer.count(); n != 2 {
+		t.Fatalf("commit calls = %d, want 2 (an empty key must never dedup)", n)
+	}
+}
+
+// A non-conversation frame fails closed CodeInvalidArgument BEFORE the commit
+// RPC — the durable unary carries only conversation_posted / conversation_updated,
+// so a trace/session frame, an empty AgentFrame with an unset oneof, and a nil
+// frame must each be rejected without ever reaching the committer.
+// RED: drop the isConversationFrame guard -> a non-conversation frame reaches the
+// commit RPC -> the commit-count assertion goes RED.
+func TestPostConversationFrameRejectsNonConversationFrame(t *testing.T) {
+	cases := []struct {
+		name  string
+		frame *compassv1internal.AgentFrame
+	}{
+		{"trace/session frame", traceFrame("not durable")},
+		{"empty frame, unset oneof", &compassv1internal.AgentFrame{}},
+		{"nil frame", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			committer := &fakeCommitter{}
+			g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, committer)
+
+			_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+				Frame:          tc.frame,
+				IdempotencyKey: "k",
+			}))
+			if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+				t.Fatalf("PostConversationFrame code = %v, want CodeInvalidArgument", got)
+			}
+			if n := committer.count(); n != 0 {
+				t.Fatalf("commit calls = %d, want 0: a rejected frame must never reach the commit RPC", n)
+			}
+		})
 	}
 }
 
@@ -813,32 +860,26 @@ func TestPostConversationFrameEmptyKeyNeverDedups(t *testing.T) {
 // Crash-atomicity / advisory-set-loss safety: the in-process committedKeys set is
 // an advisory fast-path, NOT the durability boundary. Simulate advisory-set loss
 // (a Runner crash) with a FRESH Gateway (empty committedKeys) sharing the same
-// upstream: re-posting the same key forwards AGAIN, which is SAFE because the true
+// committer: re-posting the same key commits AGAIN, which is SAFE because the true
 // at-most-once boundary is the store's atomic unique-constraint commit on the
 // same idempotency_key (store AppendMessage clientRequestID) — exercised in the
 // pgtest integration (integration_pgtest_test.go), not here.
 // RED: rely on the in-process set for durability (e.g. a package-global set that
 // outlives the Gateway) -> the fresh Gateway wrongly dedups and does NOT
-// re-forward -> the second recvFrame times out RED.
+// re-commit -> the second commit call is never recorded.
 func TestPostConversationFrameAdvisorySetLossReforwards(t *testing.T) {
-	capture := newCapturePublish()
-	events := newRunnerServiceServer(t, capture)
+	committer := &fakeCommitter{}
 
-	g1 := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
-	t.Cleanup(func() { _ = g1.releasePublisher() })
+	g1 := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, committer)
 	if _, err := g1.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 		Frame:          conversationFrame("dur"),
 		IdempotencyKey: "same-key",
 	})); err != nil {
 		t.Fatalf("g1 post: %v", err)
 	}
-	if got := capture.recvFrame(t).GetIdempotencyKey(); got != "same-key" {
-		t.Fatalf("g1 forward key = %q, want same-key", got)
-	}
 
 	// Advisory-set loss: a fresh Gateway with an empty committedKeys map.
-	g2 := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
-	t.Cleanup(func() { _ = g2.releasePublisher() })
+	g2 := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, committer)
 	resp, err := g2.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 		Frame:          conversationFrame("dur"),
 		IdempotencyKey: "same-key",
@@ -849,8 +890,15 @@ func TestPostConversationFrameAdvisorySetLossReforwards(t *testing.T) {
 	if resp == nil {
 		t.Fatal("g2 re-post returned nil response")
 	}
-	if got := capture.recvFrame(t).GetIdempotencyKey(); got != "same-key" {
-		t.Fatalf("g2 forward key = %q, want same-key (a fresh Gateway must re-forward; the advisory set is gone)", got)
+
+	calls := committer.snapshot()
+	if len(calls) != 2 {
+		t.Fatalf("commit calls = %d, want 2 (a fresh Gateway must re-commit; the advisory set is gone)", len(calls))
+	}
+	for i, c := range calls {
+		if c.idempotencyKey != "same-key" {
+			t.Fatalf("commit %d key = %q, want same-key", i, c.idempotencyKey)
+		}
 	}
 }
 
@@ -865,7 +913,7 @@ func TestPostConversationFrameAdvisorySetLossReforwards(t *testing.T) {
 func TestPublishRoutesAcksToControlRouterNotUpstream(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events, nil)
 	router := &fakeControlRouter{}
 	g.SetControlRouter(router) // set before serving: not concurrency-safe with a live stream.
 	client := newAgentGatewayServer(t, g)
@@ -922,7 +970,8 @@ func TestPublishRoutesAcksToControlRouterNotUpstream(t *testing.T) {
 func TestNoSessionFailsClosedBothHandlers(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", &fakeSessions{ok: false}, nil, events)
+	committer := &fakeCommitter{}
+	g := NewGateway(context.Background(), "cont-1", &fakeSessions{ok: false}, nil, events, committer)
 	client := newAgentGatewayServer(t, g)
 
 	_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
@@ -931,6 +980,9 @@ func TestNoSessionFailsClosedBothHandlers(t *testing.T) {
 	}))
 	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
 		t.Fatalf("PostConversationFrame code = %v, want CodePermissionDenied", got)
+	}
+	if n := committer.count(); n != 0 {
+		t.Fatalf("commit calls = %d, want 0: a frame must never commit under an unbound session", n)
 	}
 
 	stream := client.Publish(context.Background())
@@ -958,7 +1010,7 @@ func TestNoSessionFailsClosedBothHandlers(t *testing.T) {
 func TestPublishCleanEndClosesUpstreamAndAwaitsAck(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events, nil)
 	client := newAgentGatewayServer(t, g)
 
 	stream := client.Publish(context.Background())
@@ -992,7 +1044,7 @@ func TestPublishCleanEndClosesUpstreamAndAwaitsAck(t *testing.T) {
 func TestPublishOverLimitFailsStream(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events, nil)
 	client := newAgentGatewayServer(t, g)
 
 	huge := strings.Repeat("A", maxAgentMessageBytes+1024)
@@ -1005,69 +1057,15 @@ func TestPublishOverLimitFailsStream(t *testing.T) {
 	}
 }
 
-// --- Case 11 (F1) ------------------------------------------------------------
-
-// A PostConversationFrame-created publisher survives the unary's return. The
-// durable unary is the first forward, so it lazily opens the shared upstream
-// stream; F1 binds that stream to g.baseCtx (the socket's lifetime), NOT the
-// unary's request ctx, so cancelling the first unary's ctx AFTER it returns must
-// not tear the shared stream down — a SECOND forward through the same Gateway
-// still succeeds and the capture server sees BOTH frames. Run under -race.
-// RED (pre-fix): give acquirePublisher a ctx param again and open with the
-// caller's request ctx (newSessionPublisher(ctx, ...)) — cancelling the first
-// unary's ctx then kills the shared stream, so the second forward fails.
-func TestPostConversationFramePublisherSurvivesUnaryReturn(t *testing.T) {
-	capture := newCapturePublish()
-	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
-	t.Cleanup(func() { _ = g.releasePublisher() })
-
-	// First durable post: opens the shared upstream against a request ctx we can
-	// cancel once the unary has returned.
-	ctx, cancel := context.WithCancel(context.Background())
-	if _, err := g.PostConversationFrame(ctx, connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-		Frame:          conversationFrame("first"),
-		IdempotencyKey: "k1",
-	})); err != nil {
-		t.Fatalf("first post: %v", err)
-	}
-	cancel() // the first unary has returned; its request ctx dies here.
-
-	// Second forward through the SAME Gateway: it rides the shared stream the
-	// first post opened, which must have outlived the first request ctx.
-	if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-		Frame:          conversationFrame("second"),
-		IdempotencyKey: "k2",
-	})); err != nil {
-		t.Fatalf("second post after first request ctx cancelled: %v", err)
-	}
-
-	// Settle: close the shared upstream, await the handler's return, then assert
-	// BOTH frames were forwarded (count is settled once ended fires).
-	if err := g.releasePublisher(); err != nil {
-		t.Fatalf("releasePublisher: %v", err)
-	}
-	capture.awaitEnded(t)
-	if n := capture.drainCount(); n != 2 {
-		t.Fatalf("forwards = %d, want 2 (both frames survive the first unary's ctx cancel)", n)
-	}
-	got := map[string]bool{}
-	for range 2 {
-		got[capture.recvFrame(t).GetIdempotencyKey()] = true
-	}
-	if !got["k1"] || !got["k2"] {
-		t.Fatalf("captured keys = %v, want both k1 and k2", got)
-	}
-}
-
 // --- Case 12 (F3) ------------------------------------------------------------
 
 // The publisher resets when the resolved session changes. A Gateway is retained
 // for the container socket across Stop→Start, so a publisher opened for a prior
 // session can linger; when the container rebinds to a new session, the next
 // forward must open a FRESH publisher stamped with the new session id, never the
-// stopped session's. The first forward stamps sess-1; after the resolver flips to
-// sess-2 the second forward stamps sess-2.
+// stopped session's. Driven directly through the publisher API (only Publish
+// rides it since the swap): the first forward stamps sess-1; after the resolver
+// flips to sess-2 the second forward stamps sess-2.
 // RED (pre-fix): drop the session-change reset in acquirePublisher (the
 // `g.pub != nil && g.pub.sessionID != sessionID` replace-and-close block) — the
 // existing publisher is reused and the second frame is stamped sess-1.
@@ -1075,27 +1073,27 @@ func TestPublisherResetsOnSessionChange(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
 	sessions := &toggleSessions{sessionID: "sess-1"}
-	g := NewGateway(context.Background(), "cont-1", sessions, nil, events)
+	g := NewGateway(context.Background(), "cont-1", sessions, nil, events, nil)
 	t.Cleanup(func() { _ = g.releasePublisher() })
 
-	if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-		Frame:          conversationFrame("a"),
-		IdempotencyKey: "k1",
-	})); err != nil {
-		t.Fatalf("first post: %v", err)
+	// acquirePublisher resolves the session the same way the Publish handler
+	// does, so drive it with the resolver's current id.
+	forward := func() {
+		t.Helper()
+		sessionID, _ := sessions.Session("cont-1")
+		if err := g.acquirePublisher(sessionID).forward(traceFrame("f")); err != nil {
+			t.Fatalf("forward under %q = %v, want success", sessionID, err)
+		}
 	}
+
+	forward()
 	if got := capture.recvFrame(t).GetSessionId(); got != "sess-1" {
 		t.Fatalf("first frame SessionId = %q, want sess-1", got)
 	}
 
 	sessions.set("sess-2") // container rebound to a new session across Stop→Start.
 
-	if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-		Frame:          conversationFrame("b"),
-		IdempotencyKey: "k2",
-	})); err != nil {
-		t.Fatalf("second post after session flip: %v", err)
-	}
+	forward()
 	if got := capture.recvFrame(t).GetSessionId(); got != "sess-2" {
 		t.Fatalf("second frame SessionId = %q, want sess-2 (a fresh publisher must stamp the new session)", got)
 	}
@@ -1107,19 +1105,17 @@ func TestPublisherResetsOnSessionChange(t *testing.T) {
 // cannot grow it without limit by emitting many distinct-key durable frames.
 // Commit committedKeysMax+N distinct keys, then assert the earliest are evicted
 // (keyCommitted==false) while the most-recent stay resident (keyCommitted==true),
-// and that eviction is SAFE — a re-post of an evicted key re-forwards (the
+// and that eviction is SAFE — a re-post of an evicted key re-commits (the
 // fast-path missed; the store dedups on its own at-most-once boundary). Cheap: a
 // few-thousand-over-the-bound Adds, no sleeps.
 // RED (pre-fix): size the LRU unbounded — temporarily replace committedKeysMax in
 // NewGateway's expirable.NewLRU(...) with a huge capacity (e.g. 1<<30, models the
 // pre-fix unbounded map: never evicts) — the earliest key stays committed, so the
 // eviction assertion goes RED (and the re-post short-circuits instead of
-// re-forwarding, timing out recvFrame).
+// re-committing, so no second commit call is recorded).
 func TestCommittedKeysBounded(t *testing.T) {
-	capture := newCapturePublish()
-	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
-	t.Cleanup(func() { _ = g.releasePublisher() })
+	committer := &fakeCommitter{}
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, committer)
 
 	const overflow = 100
 	total := committedKeysMax + overflow
@@ -1140,14 +1136,18 @@ func TestCommittedKeysBounded(t *testing.T) {
 	}
 
 	// Eviction is SAFE: a re-post of an evicted key misses the fast-path and
-	// re-forwards. The capture server sees the re-forward under that key.
+	// re-commits. The committer records the re-commit under that key.
 	if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 		Frame:          conversationFrame("re"),
 		IdempotencyKey: key(0),
 	})); err != nil {
 		t.Fatalf("re-post of evicted key: %v", err)
 	}
-	if got := capture.recvFrame(t).GetIdempotencyKey(); got != key(0) {
-		t.Fatalf("re-forward key = %q, want %q (an evicted key must re-forward, not short-circuit)", got, key(0))
+	calls := committer.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("commit calls = %d, want 1 (an evicted key must re-commit, not short-circuit)", len(calls))
+	}
+	if calls[0].idempotencyKey != key(0) {
+		t.Fatalf("re-commit key = %q, want %q", calls[0].idempotencyKey, key(0))
 	}
 }
