@@ -227,8 +227,15 @@ func Serve(ctx context.Context, path, containerName string, sessions SessionForC
 	// opens the stream does not tie the stream's life to its own request.
 	socketCtx, socketCancel := context.WithCancel(ctx)
 	mux := http.NewServeMux()
+	g := NewGateway(socketCtx, containerName, sessions, relay, events)
+	// The real producer in production: without this the Gateway would serve
+	// Control against the ack-only no-op default, so the session lifecycle could
+	// never reach the agent. Set before Serve accepts calls, per
+	// SetControlRouter's concurrency note.
+	control := newControlProducer()
+	g.SetControlRouter(control)
 	mux.Handle(compassv1internalconnect.NewAgentGatewayHandler(
-		NewGateway(socketCtx, containerName, sessions, relay, events),
+		g,
 		connect.WithReadMaxBytes(maxAgentMessageBytes),
 	))
 	l, err := listenAgentSocket(ctx, path, mux, socketCancel)
@@ -236,6 +243,9 @@ func Serve(ctx context.Context, path, containerName string, sessions SessionForC
 		socketCancel()
 		return nil, err
 	}
+	// Hand the producer to the listener so the session lifecycle can retire a
+	// session's control state: the socket outlives any one session.
+	l.control = control
 	return l, nil
 }
 

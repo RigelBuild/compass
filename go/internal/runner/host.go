@@ -223,6 +223,15 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 		stream:        stream,
 		state:         compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
 	}
+	// Create the session's control state here, under the same lock that records
+	// the session — the mirror of Stop's retirement. The Runner owning both ends
+	// is what lets the agent-driven paths refuse an id they do not know: an
+	// agent that subscribes or acks against a session the lifecycle never bound
+	// (or already retired) is turned away, instead of minting state nothing
+	// would ever reclaim.
+	if listener, served := h.sockets[name]; served {
+		listener.BindSession(sessionID)
+	}
 	h.mu.Unlock()
 	return sessionID, nil
 }
@@ -234,6 +243,14 @@ func (h *agentHost) Stop(_ context.Context, sessionID string) error {
 	s, ok := h.sessions[sessionID]
 	if ok {
 		delete(h.sessions, sessionID)
+		// The socket outlives the session (a Stop/Start reuses the container and
+		// its socket), so the control producer keeps this session's retained ops
+		// unless the teardown says otherwise. Retire under the same lock that
+		// drops the session, so a concurrent Start on a fresh id cannot observe a
+		// half-torn state.
+		if listener, served := h.sockets[s.containerName]; served {
+			listener.RetireSession(sessionID)
+		}
 	}
 	h.mu.Unlock()
 	if !ok {
