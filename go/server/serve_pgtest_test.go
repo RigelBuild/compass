@@ -216,11 +216,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	//	boundary Send removed entirely    skip: caught at 25.4s, gate deadline
 	//	                                  assert: caught at 11.8s, names the frame
 	//
-	// So a bare skip is slower and far less diagnostic, not silent. An earlier
-	// version of this comment claimed it re-breaks silently; a reviewer ran
-	// both variants and falsified that. The claim was the justification for
-	// the assertion, and it was never measured — the same defect this test's
-	// header records, in the prose arguing the fix.
+	// So a bare skip is slower and far less diagnostic, not silent.
 	gate := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
