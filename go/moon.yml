@@ -87,9 +87,10 @@ tasks:
     # both trees on regeneration). Its patterns are unanchored string prefixes
     # resolved against the task CWD — hence `runFromWorkspaceRoot: false`, and
     # hence the cut at the `compass/v1` package root: the narrowest spelling that
-    # still covers the whole generated tree, since a shorter one would also
-    # swallow a first-party `generator/`. It is version-pinned, so a `compass/v2`
-    # tree must be added here or its findings return. `-test=false` covers
+    # still covers the whole generated tree, since a shorter one could also
+    # swallow first-party code such as a future `generator/` package. It is
+    # version-pinned, so a `compass/v2` tree must be added here or its findings
+    # return. `-test=false` covers
     # golangci's `path: _test\.go` class but is coarser — golangci relaxes named
     # linters on tests, while nilaway has no per-linter dial, so this also drops
     # flows whose source is a test caller even when the deref is in shipped code.
