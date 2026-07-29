@@ -95,19 +95,48 @@ describe("parseDevenvPackages", () => {
 		expect(parseDevenvPackages("{ packages = [ ]; }")).toEqual([]);
 	});
 
-	test("throws on a dotted attribute path rather than silently dropping it", () => {
-		// A skipped attribute is absent from BOTH what CI installs and what the
-		// gate expects, so the tool goes uncovered in silence — the false green
-		// this gate exists to prevent. Refusing is the only safe behaviour.
-		const dotted = [
+	// A skipped entry is absent from BOTH what CI installs and what the gate
+	// expects, so the tool goes uncovered in silence — the false green this gate
+	// exists to prevent. Refusing is the only safe behaviour.
+	//
+	// Every form here is a real thing a devenv.nix can legally contain. The
+	// dotted path is only the one we hit first; each of the others was silently
+	// dropped until the refusal moved to the default branch, so they are listed
+	// individually rather than folded into one representative case.
+	test.each([
+		["a dotted attribute path", "nodePackages.prettier"],
+		["a parenthesised call", "(python3.withPackages (ps: [ps.requests]))"],
+		// Nix interpolation syntax in a plain string is the fixture — deliberately
+		// NOT a JS template literal, which is what makes it unparseable to the gate.
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: see above
+		["an interpolation", "${myTool}"],
+		["a quoted string", '"weird"'],
+	])("throws on %s rather than silently dropping it", (_label, entry) => {
+		const source = [
 			"{",
 			"  packages = with pkgs; [",
 			"    buf",
-			"    nodePackages.prettier",
+			`    ${entry}`,
 			"  ];",
 			"}",
 		].join("\n");
-		expect(() => parseDevenvPackages(dotted)).toThrow(/dotted attribute path/);
+		expect(() => parseDevenvPackages(source)).toThrow(
+			/not a bare nixpkgs attribute name/,
+		);
+	});
+
+	test("still yields the bare entries it can resolve", () => {
+		// Guards the refusal against over-reach: a block of ordinary entries must
+		// keep parsing, or the gate refuses everything and covers nothing.
+		const source = [
+			"{",
+			"  packages = with pkgs; [",
+			"    buf",
+			"    protobuf",
+			"  ];",
+			"}",
+		].join("\n");
+		expect(parseDevenvPackages(source)).toEqual(["buf", "protobuf"]);
 	});
 });
 

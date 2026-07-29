@@ -100,13 +100,21 @@ export function parseProtoTools(source: string): ProtoPin[] {
  * Comments are stripped first, so an attribute name merely MENTIONED in the
  * block's prose (they are mentioned constantly) is never mistaken for an entry.
  *
- * A dotted attribute path (`nodePackages.prettier`) THROWS rather than being
- * skipped. Skipping is the tempting behaviour and the wrong one: the same parse
- * feeds both `--print-nix-attrs` (what CI installs) and the expected-identity
- * set (what the gate checks), so a dropped attribute is simultaneously absent
- * from PATH and unreported by the gate — it resurfaces as `command not found`
- * inside some later task, or not at all. Refusing keeps the promise above
- * honest: the gate covers the list, or it says why it cannot.
+ * Anything that is not a bare attribute name THROWS rather than being skipped.
+ * Skipping is the tempting behaviour and the wrong one: the same parse feeds
+ * both `--print-nix-attrs` (what CI installs) and the expected-identity set
+ * (what the gate checks), so a dropped entry is simultaneously absent from PATH
+ * and unreported by the gate — it resurfaces as `command not found` inside some
+ * later task, or not at all. Refusing keeps the promise above honest: the gate
+ * covers the list, or it says why it cannot.
+ *
+ * The refusal is deliberately on the DEFAULT branch rather than on an
+ * enumeration of known-bad shapes. A dotted path (`nodePackages.prettier`) is
+ * only the form we happened to hit first; a parenthesised call
+ * (`(python3.withPackages …)`), an interpolation (`${myTool}`), and a quoted
+ * string are equally unresolvable and equally silent. Enumerating the bad
+ * shapes leaves every shape nobody thought of falling through to a silent drop,
+ * which is the failure this function exists to prevent.
  */
 export function parseDevenvPackages(source: string): string[] {
 	const open = source.indexOf("packages = with pkgs; [");
@@ -129,13 +137,12 @@ export function parseDevenvPackages(source: string): string[] {
 			attrs.push(token);
 			continue;
 		}
-		if (/^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z][A-Za-z0-9_-]*)+$/.test(token)) {
-			throw new Error(
-				`devenv.nix packages entry "${token}" is a dotted attribute path, which this gate cannot resolve. ` +
-					`Skipping it would leave the tool uninstalled in CI AND unreported here. ` +
-					`Teach nixIdentities to resolve dotted paths (lib.getAttrFromPath) before adding it.`,
-			);
-		}
+		throw new Error(
+			`devenv.nix packages entry ${JSON.stringify(token)} is not a bare nixpkgs ` +
+				`attribute name, so this gate cannot resolve it. Skipping it would leave the ` +
+				`tool uninstalled in CI AND unreported here. Teach nixIdentities to resolve ` +
+				`this form (for a dotted path, lib.getAttrFromPath) before adding it.`,
+		);
 	}
 	return attrs;
 }
