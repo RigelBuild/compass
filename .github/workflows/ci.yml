@@ -35,9 +35,13 @@
 # to hide; the nightly sweep re-checks main even on a quiet day. Fast affected
 # path on PRs, exhaustive sweep on everything that reaches main.
 #
-# The pgtest lane IS a separate job — not for attribution, but for blast
-# radius: it depends on a Postgres service container, and a service outage
-# must never red the hermetic gate.
+# pgtest — the real-Postgres suites — runs as a step in the same `gate` job,
+# after the moon battery, against a Postgres service container attached to the
+# job. It was once a separate job to keep a Postgres-service outage from redding
+# the hermetic gate; folded in so there is one required check, at the cost that a
+# service-container flake now reds `gate` (a re-run clears it). The suites are
+# build-tagged `pgtest`, so the moon battery's `go test ./...` never compiles
+# them — the folded step below is the only thing that runs them.
 
 name: CI
 
@@ -81,6 +85,27 @@ jobs:
       # guards against it are elsewhere; nothing about this repo's sockets should
       # be redesigned around one runner's choice of temp root.
       TMPDIR: /tmp
+    services:
+      postgres:
+        # Matches pgtest.go's pinned image: the suites assert on generated-tsvector
+        # and websearch_to_tsquery behavior, which is major-version-sensitive.
+        #
+        # Pinned by DIGEST, not tag. `16-alpine` is mutable, so a repoint would
+        # ship unreviewed container code into the gate and could change the
+        # database behavior the suites assert on — with the tag unchanged, so
+        # nothing in the diff would show it. The digest must stay equal to
+        # pgtest.go's pgImage, or CI and a local run stop exercising the same
+        # Postgres, which is the parity the line above claims.
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_PASSWORD: compass-test
+          POSTGRES_DB: compass
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -246,89 +271,6 @@ jobs:
         if: github.event_name != 'pull_request'
         run: moon run :ci
 
-      - name: Retrospect
-        # Collapse the single job's flat task fan-out into per-task sections in
-        # the Actions log, so a failure is one expand instead of a scroll. Reads
-        # .moon/cache/{ci,run}Report.json — no token, no added permissions, so
-        # `permissions: contents: read` above is untouched. `success() ||
-        # failure()` so it still renders when the gate failed.
-        #
-        # This is third-party JS that runs on every event, fork PRs included, so
-        # the SHA pin below IS its trust anchor — the same posture the pgtest
-        # image digest and the nix substituter keys take for their own boundaries.
-        # At the pinned commit the action takes no token, makes no network call,
-        # and only reads and prints local cache files, so a fork PR cannot turn it
-        # into an exfiltration or write path. Bump the pin deliberately (it rides
-        # the same dependabot config as the other pinned actions), never drift it.
-        if: success() || failure()
-        uses: appthrust/moon-ci-retrospect@631a1e667f96e8ca893eab69f03e425f7fbfdc2b # v2.1.0
-
-  pgtest:
-    # The real-Postgres suites. Build-tagged `pgtest`, so `go test ./...` in the
-    # gate job never compiles them — this job is the only thing that runs them.
-    #
-    # Separate from `gate` deliberately: it is the one lane with an external
-    # dependency, and a Postgres service failing to come up must not be able to
-    # red the hermetic gate.
-    name: pgtest
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      # Same AF_UNIX sun_path budget as the gate job: this lane binds sockets too.
-      TMPDIR: /tmp
-    services:
-      postgres:
-        # Matches pgtest.go's pinned image: the suites assert on generated-tsvector
-        # and websearch_to_tsquery behavior, which is major-version-sensitive.
-        #
-        # Pinned by DIGEST, not tag. `16-alpine` is mutable, so a repoint would
-        # ship unreviewed container code into the gate and could change the
-        # database behavior the suites assert on — with the tag unchanged, so
-        # nothing in the diff would show it. The digest must stay equal to
-        # pgtest.go's pgImage, or CI and a local run stop exercising the same
-        # Postgres, which is the parity the line above claims.
-        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
-        env:
-          POSTGRES_PASSWORD: compass-test
-          POSTGRES_DB: compass
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Read the toolchain pins
-        id: pins
-        # Same read as the gate job: .prototools stays the single version source,
-        # and the same shape check applies — a pin is a version string or the job
-        # refuses, rather than feeding an unvouched value into setup-go.
-        run: |
-          pins=$(sed -n '/^\[/q; s/^\([A-Za-z0-9_-]\{1,\}\)[[:space:]]*=[[:space:]]*"\([^"]\{1,\}\)".*/\1=\2/p' \
-            .prototools)
-          while IFS='=' read -r name value; do
-            [ -n "$name" ] || continue
-            case $value in
-              *[!0-9A-Za-z.+-]*|'')
-                echo "::error::.prototools pin '$name' has value '$value', which is not a version string"
-                exit 1
-                ;;
-            esac
-          done <<EOF
-          $pins
-          EOF
-          printf '%s\n' "$pins" | grep -q '^go=' || {
-            echo "::error::.prototools yielded no 'go' pin — the file is malformed or its shape changed"
-            exit 1
-          }
-          printf '%s\n' "$pins" >>"$GITHUB_OUTPUT"
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6 (6.5.0)
-        with:
-          go-version: ${{ steps.pins.outputs.go }}
-          cache: false
 
       - name: Real-Postgres suites
         working-directory: go
@@ -356,9 +298,9 @@ jobs:
       - name: Assert the real-Postgres suites ran rather than skipped
         working-directory: go
         # The harness SKIPS (never fails) when it can find no database — correct
-        # for a container-less sandbox, and a silent no-op here. This job exists
-        # to run those assertions, so a skip is a failure of the job's whole
-        # purpose and must be loud.
+        # for a container-less sandbox, and a silent no-op here. This step exists
+        # to run those assertions, so a skip is a failure of its whole purpose and
+        # must be loud.
         #
         # Both halves are derived from source rather than hardcoded, because a
         # guard that drifts out of step with what it guards passes silently:
@@ -396,3 +338,21 @@ jobs:
           done
           echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
           exit "$rc"
+
+      - name: Retrospect
+        # Collapse the single job's flat task fan-out into per-task sections in
+        # the Actions log, so a failure is one expand instead of a scroll. Reads
+        # .moon/cache/{ci,run}Report.json — no token, no added permissions, so
+        # `permissions: contents: read` above is untouched. `success() ||
+        # failure()` so it still renders when the gate failed.
+        #
+        # This is third-party JS that runs on every event, fork PRs included, so
+        # the SHA pin below IS its trust anchor — the same posture the pgtest
+        # image digest and the nix substituter keys take for their own boundaries.
+        # At the pinned commit the action takes no token, makes no network call,
+        # and only reads and prints local cache files, so a fork PR cannot turn it
+        # into an exfiltration or write path. Bump the pin deliberately (it rides
+        # the same dependabot config as the other pinned actions), never drift it.
+        if: success() || failure()
+        uses: appthrust/moon-ci-retrospect@631a1e667f96e8ca893eab69f03e425f7fbfdc2b # v2.1.0
+
