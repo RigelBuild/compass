@@ -148,8 +148,8 @@ function upsertMessage(
 	const next = list.slice();
 	if (next[i].atUnixMs === msg.atUnixMs) {
 		// Same post time — the server never rewrites at_unix_ms on an update or a
-		// redelivery (UpdateMessageBlocks touches blocks/text only), so an in-place
-		// content replace preserves (atUnixMs, id) order.
+		// redelivery (a block/text update touches blocks and text only), so an
+		// in-place content replace preserves (atUnixMs, id) order.
 		next[i] = msg;
 		return next;
 	}

@@ -141,21 +141,17 @@ func (s *Store) MessagesHeadSeq(ctx context.Context) (uint64, error) {
 	return head, nil
 }
 
-// UpdateMessageBlocks replaces a message's block set — the streaming-turn update
-// path (comms.proto:334-336, MessageUpdated). It rewrites both the JSONB blocks
-// and the extracted text content so search stays consistent with the current
-// blocks. An empty block set or an unknown message is rejected. ask_id is
-// assigned once at append and immutable thereafter, so an ask block here must
-// carry its existing id; an empty AskID is rejected rather than re-minted (a
-// fresh id would orphan any pending RespondToAsk against the original).
-func (s *Store) UpdateMessageBlocks(ctx context.Context, id MessageID, blocks []MessageBlock) error {
-	return updateMessageBlocksExec(ctx, s.pool, id, blocks)
-}
-
-// updateMessageBlocksExec is the shared block-write core, run against either the
-// pool (UpdateMessageBlocks) or a transaction (AnswerAsk's locked read-modify-
-// write). It re-serializes the full block set and refreshes the text index,
-// rejecting an empty set or an ask block missing its immutable id.
+// updateMessageBlocksExec is the shared block-write core, run against a
+// transaction (AnswerAsk's locked read-modify-write) or any other execer. It
+// re-serializes the full block set and refreshes the extracted text content so
+// search stays consistent with the current blocks. An empty block set or an
+// unknown message is rejected. ask_id is assigned once at append and immutable
+// thereafter, so an ask block here must carry its existing id; an empty AskID is
+// rejected rather than re-minted (a fresh id would orphan any pending
+// RespondToAsk against the original).
+//
+// It performs NO membership or authorship check, so it is deliberately
+// unexported: every exported write path must authorize before reaching it.
 func updateMessageBlocksExec(ctx context.Context, db execer, id MessageID, blocks []MessageBlock) error {
 	if len(blocks) == 0 {
 		return fmt.Errorf("%w: message has no blocks", ErrInvalidArgument)
@@ -227,13 +223,13 @@ func (s *Store) ListMessages(ctx context.Context, actor AccountID, container Con
 	// captured on subscribe (seq <= SnapshotSeq, comms.proto:353-368,
 	// design.md:807-817); zero reads the latest, no boundary.
 	// The boundary is point-in-time on set membership (which messages the page
-	// returns, by insert seq), not on content: UpdateMessageBlocks/AnswerAsk
-	// mutate m.blocks in place without bumping m.seq, so a row present at the
-	// boundary but edited mid-catch-up returns its post-boundary blocks. This is
-	// sufficient, not a lost update — the matching MessageUpdated also rides the
-	// live tail, so an id-deduping client converges to current content
-	// (last-write-wins). Freezing content too would need an update/change-seq and
-	// a larger schema change; membership-only is the ratified scope (SEA-1333 OQ5).
+	// returns, by insert seq), not on content: AnswerAsk mutates m.blocks in
+	// place without bumping m.seq, so a row present at the boundary but edited
+	// mid-catch-up returns its post-boundary blocks. This is sufficient, not a
+	// lost update — the matching MessageUpdated also rides the live tail, so an
+	// id-deduping client converges to current content (last-write-wins).
+	// Freezing content too would need an update/change-seq and a larger schema
+	// change; membership-only is the ratified scope (SEA-1333 OQ5).
 	const q = `
 		SELECT m.id, m.channel_id, m.author_account_id, m.at_unix_ms, m.blocks, COALESCE(m.parent_message_id, '')
 		FROM messages m
