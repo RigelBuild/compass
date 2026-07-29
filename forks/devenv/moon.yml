@@ -31,8 +31,12 @@ tags: ['oss']
 
 workspace:
   inheritedTasks:
-    # Vendored nix fork, not a bun package: skip the root bun install + the
-    # biome lint/format that tag-bun applies to every project (style-exempt).
+    # tag-bun contributes exactly one inherited task, `install` (a no-op
+    # depending on the single root:install). This vendored nix fork is not a bun
+    # package, so that install must not run here. `lint` and `format` are
+    # whole-repo tasks on the root project, never inherited, so those two
+    # entries are no-ops today — kept as a defensive guard in case tag-bun.yml
+    # later grows tasks a vendored tree must not run.
     exclude: ['install', 'lint', 'format']
 
 fileGroups:
