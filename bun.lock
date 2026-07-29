@@ -70,6 +70,14 @@
         "typescript": "catalog:",
       },
     },
+    "tools/toolchain": {
+      "name": "@compass/toolchain-parity",
+      "version": "0.1.0",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
   },
   "overrides": {
     "@bufbuild/protoc-gen-es": "2.12.1",
@@ -176,6 +184,8 @@
     "@compass/agent": ["@compass/agent@workspace:packages/compass-agent"],
 
     "@compass/client": ["@compass/client@workspace:packages/compass-client"],
+
+    "@compass/toolchain-parity": ["@compass/toolchain-parity@workspace:tools/toolchain"],
 
     "@compass/ui": ["@compass/ui@workspace:apps/ui"],
 

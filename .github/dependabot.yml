@@ -1,0 +1,21 @@
+# Every `uses:` in this repo's workflows is pinned to an immutable commit SHA,
+# because a git tag can be repointed by its owner to arbitrary code that then
+# runs in CI with no review and no diff. SHAs make that impossible — and make
+# the actions go stale, since nothing follows a moving tag any more.
+#
+# Dependabot is the other half of that trade: it opens a reviewable PR to move
+# each SHA forward, so the pins stay current through the same gate as any other
+# change rather than drifting silently or being bumped by hand.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # One PR moving several actions is one review and one CI run; separate PRs
+    # per action are neither, for changes that are almost always routine.
+    groups:
+      actions:
+        patterns:
+          - '*'

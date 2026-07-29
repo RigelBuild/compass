@@ -23,6 +23,9 @@ projects:
   compass-ui: 'apps/ui'
   # The backend Go module: server + comms + the generated compass.v1 Go stubs.
   compass-go: 'go'
+  # The toolchain version-parity gate: asserts CI's PATH holds the dev shell's
+  # toolchain, and carries the unit tests for its own comparison logic.
+  toolchain-parity: 'tools/toolchain'
   # Vendored upstream fork subtrees (forks/<name>, SEA-1512). Each carries its
   # own nix-driven build as functional CI — so a fork-only change is gated by
   # the fork's own suite — while its tree stays exempt from the style gates

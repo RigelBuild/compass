@@ -1,0 +1,12 @@
+{
+	"name": "@compass/toolchain-parity",
+	"version": "0.1.0",
+	"private": true,
+	"description": "The toolchain version-parity gate: fails CI when the toolchain on the runner's PATH is not the one the dev shell defines (.prototools literals plus the devenv.lock-pinned nixpkgs derivations). Dependency-free by design — it must be able to run before `bun install` has.",
+	"license": "MIT OR Apache-2.0",
+	"type": "module",
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}
