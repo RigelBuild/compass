@@ -1,6 +1,6 @@
 # forks/
 
-> **Vendored into this repo (SEA-1512).** These two trees — `devenv/` and
+> **Vendored into this repo (SEA-1512).** Two of these trees — `devenv/` and
 > `nix2container/` — were copied byte-identically out of the sealed monorepo's
 > `oss/forks/` at `origin/main`, per Matt's ruling that Compass carries them as
 > its own trees rather than consuming them from a public spoke. They live at
@@ -9,16 +9,22 @@
 > other home for both; the sections below describing Copybara spokes, the
 > monorepo import runbook, and sync policy are carried over as provenance and
 > describe the monorepo-side machinery, not a process that runs here.
+> `oh-my-pi/` arrived later and by a different route: imported straight from
+> public upstream at a tag, never via the monorepo.
 
-Vendored upstream forks. Each `forks/<name>/` subtree is the tree of a fork
-sealed maintains on top of a public upstream — the code the fleet actually runs
-— collapsed out of its own GitHub repo into one repo, one `main`, one review
-flow, one CI, atomic with the changes that consume it.
+Vendored upstream forks. A `forks/<name>/` subtree is upstream code carried in
+this repo — usually a fork sealed maintains on top of a public upstream (the
+code the fleet actually runs), collapsed out of its own GitHub repo into one
+repo, one `main`, one review flow, one CI, atomic with the changes that consume
+it. A subtree may also be plain upstream with no sealed delta at all
+(`oh-my-pi`); the Provenance section below is authoritative per fork.
 
-The public fork repos (`sealedsecurity/<name>`) stay alive, demoted from
-canonical home to **Copybara spoke**: the GitHub-side staging ground upstream
-PRs are cut from. Nothing in the fleet builds from a spoke anymore — every
-consumer repoints to the vendored subtree at its fork's import.
+Where a public fork repo exists (`sealedsecurity/<name>`), it stays alive,
+demoted from canonical home to **Copybara spoke**: the GitHub-side staging
+ground upstream PRs are cut from. Nothing in the fleet builds from a spoke
+anymore — every consumer repoints to the vendored subtree at its fork's import.
+Not every fork has one: `oh-my-pi` was imported straight from public upstream
+and has no spoke at all.
 
 Design record (the contract this tree executes) lives in the sealed monorepo
 (`sealedsecurity/sealed`), not here:
@@ -42,12 +48,16 @@ distinction drives every rule here:
   Biome does not process markdown at all, so this file's linting does not
   depend on the biome glob.
 - **Functionally tested.** Style exemption is **not** test exemption. Each fork
-  carries its own `forks/<name>/moon.yml` registering its native build/test/lint
-  tasks (upstream's own toolchain) as moon tasks with `inputs` scoped to
-  `forks/<name>/**` and `options.runInCI: true`, **and** a matching entry in the
-  `.moon/workspace.yml` `projects:` map — moon discovers projects from that
-  explicit list, not by globbing for `moon.yml`, so the registration is what
-  makes the fork a moon project at all.
+  carries its own `forks/<name>/moon.yml` registering upstream's own toolchain
+  as one or more moon tasks with `options.runInCI: true` — a nix build for the
+  two nix-source forks, a type check plus web bundle for `oh-my-pi`; what the
+  task runs is per fork, not a uniform build/test/lint trio. Task `inputs` come
+  from a project-relative `**/*` file group, which moon resolves against the
+  project root, so they land on `forks/<name>/**` without the fork spelling out
+  a path — a change elsewhere never marks the fork affected. Registration also
+  needs a matching entry in the `.moon/workspace.yml` `projects:` map — moon
+  discovers projects from that explicit list, not by globbing for `moon.yml`, so
+  that entry is what makes the fork a moon project at all.
 - **Self-contained, out of the root workspace.** Fork trees keep their own
   lockfiles and package managers. `forks/` carries no `package.json`, so nothing
   under it joins the root bun workspace or the version catalog.
@@ -60,6 +70,7 @@ Directory names are lowercase.
 | --- | --- | --- | --- | --- |
 | `devenv` | `cachix/devenv` | `main` | `sealedsecurity/devenv` | nix-source (flake) |
 | `nix2container` | `nlewo/nix2container` | `master` | `sealedsecurity/nix2container` | nix-source (flake input) |
+| `oh-my-pi` | `can1357/oh-my-pi` | `main` | — (no spoke) | bun/TypeScript + Rust source |
 
 Branch name is data, never hardcoded: `nix2container` defaults to `master`,
 `devenv` to `main`.
@@ -133,12 +144,93 @@ Per-fork customization, consumer, and sync policy.
   spoke (the fix is upstreamable — track back to `nlewo/nix2container` if
   merged).
 
+### oh-my-pi
+
+- **Upstream:** `can1357/oh-my-pi` (`main`), imported at tag **`v17.1.8`**.
+  **Spoke:** none — this fork has no `sealedsecurity/oh-my-pi` staging repo.
+- **Sealed changes: NONE.** This tree is **plain public upstream**, verified
+  byte-identical to `can1357/oh-my-pi` at `v17.1.8` (5891 files, compared
+  git-natively — blob OIDs *and* file modes — via `git ls-files -s` against
+  `git ls-tree -r` of the tag). The **only** exception is the sealed-added
+  `forks/oh-my-pi/moon.yml`, the functional-CI registration every fork carries.
+- **Deliberately NOT present — read this before importing or "restoring"
+  anything.** The sealed monorepo carries its *own* fork of oh-my-pi, and that
+  fork has a real sealed delta this tree does not. Compass ships **plain
+  upstream first** and re-adds what it actually needs later, as a separate
+  change. So their absence here is a decision, not
+  an import defect — **do not** treat this tree as evidence that those features
+  never existed, and do not conclude from a diff against the monorepo's fork
+  that work was lost. It lives on, in the monorepo. What is absent:
+
+  - A Prometheus `/metrics` exposition in the auth-broker.
+  - A tool-call-id pairing fix.
+  - A `refresh`/`restart` tool surface.
+  - **A rule-bucketing fix, distinct from that tool surface.**
+    `packages/coding-agent/src/export/ttsr.ts` adds a public
+    `hasRule(name: string): boolean`, and
+    `packages/coding-agent/src/capability/rule-buckets.ts` gates on membership
+    rather than on what `addRule` returns. The sealed comment states the bug:
+    `addRule` "is name-idempotent — on a re-bucket (in-session refresh) it
+    returns false for an already-registered rule", so a rule the manager
+    already held fell through into the rulebook buckets as well. A companion
+    change lives in `test/capability/rule-buckets.test.ts`. Re-add this on its
+    own merits; it is not a sub-part of the refresh surface.
+  - **An ACP permission gate for `refresh` — security-relevant, do not drop it
+    silently.** `refresh("mcp"/"all")` reconnects MCP, which spawns the
+    project's `.mcp.json` stdio subprocesses — arbitrary exec — so an ACP
+    client must gate it like bash or edit instead of letting a model
+    self-invoke it. The sealed fork puts `refresh` in
+    `PERMISSION_REQUIRED_TOOLS`; before that fix it was absent from the set and
+    ran ungated. The regression test is
+    `packages/coding-agent/test/agent-session-acp-permission.test.ts`.
+  - Error-message affordances in
+    `packages/coding-agent/src/internal-urls/rule-protocol.ts` and
+    `skill-protocol.ts`: both append to their unknown-name errors "If it was
+    added since this session started, run refresh (or /refresh rules|skills) to
+    re-scan the roster."
+  - Two `biome.json` edits that are **different in kind**, despite arriving as
+    one two-hunk diff. `"preset": "recommended"` → `"recommended": true` is a
+    genuine biome schema-version compat edit. `"root": false` is a
+    monorepo-nesting marker, present solely because that fork sits inside the
+    sealed monorepo's biome graph. Compass will never need the second one — a
+    future re-adder should port the compat edit and **not** `"root": false`.
+  - A nix build surface (`flake.nix`, `flake.lock`, `nix/`, root `bun.nix`).
+
+  One file is **excluded on purpose and is not sealed work**:
+  `packages/catalog/src/models.json`. It shows as modified against the sealed
+  fork's base, but that is upstream catalog drift `v17.1.8` has already
+  absorbed — every id the sealed fork added (`anthropic.claude-opus-5`,
+  `gemini-3.6-flash`, `moonshotai/kimi-k3`) is present in this tree, and every
+  id it removed (`deepseek-ai/deepseek-v3.1-maas`, `zai-org/glm-5-maas`) is
+  absent. Nothing to re-add; recorded so the next importer does not
+  re-investigate.
+
+  **Reproducing this list** (so it is re-derivable, not trusted): the sealed
+  fork's own base is recorded in its `.upstream-sync` file — commit
+  `48241afc`, whose tree is identical to upstream tag `v17.0.3`. Take
+  `git ls-tree -r` of that base and of the monorepo subtree, and `LC_ALL=C`
+  join the two by path, comparing blob OIDs. That yields **29 added, 0 deleted,
+  20 modified**. If a future reader gets different counts, this list is stale.
+- **Consumer:** none yet — the tree is vendored ahead of the consumers that
+  will build on it.
+- **Sync policy:** re-import from public upstream at a tag, as a plain-copy
+  squash. No Copybara, inbound or outbound, while the sealed delta is empty.
+- **Gating caveat:** unlike the two nix-source forks, this one's functional-CI
+  task covers its **TypeScript surface only** (upstream's own
+  `bun run ci:check:full` plus `bun run collab:web:build`). Upstream's
+  ~415-file Rust tree under `crates/` is gated upstream by bazel against a rust
+  nightly pin, and this repo's dev shell has neither bazel nor a Rust
+  toolchain — so that half is ungated here.
+  `forks/oh-my-pi/moon.yml` says so at the point of registration.
+
 ## nix-source forks build through the flake, not `nix-build -A`
 
-Both forks are nix-source class, so their functional-CI task is a nix build —
-`nix` is on CI's PATH, no per-fork language toolchain needed (devenv's Rust
-compiles via its flake's fenix pin; nix2container's Go via `buildGoModule`
-inside the nix build, which also runs Go's own checks). **Use the flake build
+`devenv` and `nix2container` are nix-source class, so their functional-CI task
+is a nix build — `nix` is on CI's PATH, no per-fork language toolchain needed
+(devenv's Rust compiles via its flake's fenix pin; nix2container's Go via
+`buildGoModule` inside the nix build, which also runs Go's own checks).
+`oh-my-pi` is not in this class: it ships no flake and gates through bun
+instead. **Use the flake build
 (`nix build .#<attr>`), never `nix-build -A`.** nix2container's `default.nix`
 pins its source with `lib.fileset.gitTracked ./.`, which requires a git-repo
 root — satisfied only by the store-copied flake tree, not the in-repo

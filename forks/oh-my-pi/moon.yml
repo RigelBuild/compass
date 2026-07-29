@@ -1,0 +1,90 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# oh-my-pi (forks/oh-my-pi): vendored fork of can1357/oh-my-pi at tag v17.1.8 —
+# plain public upstream, byte-identical to the tag with no sealed diff (see
+# forks/README.md for what is deliberately absent). Style-gate-exempt vendored
+# code (the forks/* exclusions in biome.json and .markdownlint-cli2.jsonc); this
+# moon.yml is the sealed-added functional-CI registration, the one sealed file
+# inside the subtree — a declared export-exclusion, excluded from the import
+# byte-fidelity diff.
+#
+# Unlike the other two forks, this one is NOT nix-source: upstream ships no
+# flake and no .nix file at all, so there is nothing to `nix build`. Its own
+# toolchain is bun, which this repo already pins (.prototools) and puts on PATH
+# via proto — so the gate below is upstream's own bun CI step, run directly. The
+# subtree is self-contained (its own package.json + bun.lock, outside the root
+# bun workspace, which globs only packages/* and apps/*), so its install never
+# touches the root node_modules.
+#
+# BUN PIN DIVERGENCE: the repo pins bun 1.3.13 (.prototools); the fork declares
+# "packageManager": "bun@1.3.14" and upstream CI installs bun-v1.3.14. The gate
+# passes on 1.3.13 because the fork's bun.lock is lockfileVersion 1, which
+# 1.3.13 reads — but the pins are not the same and nothing enforces the fork's.
+# A future import must re-check whether the root pin has to move with the fork.
+#
+# COVERAGE, STATED PLAINLY: this gate covers the TypeScript surface only.
+# Upstream also carries ~415 Rust files under crates/, gated upstream by bazel
+# (.bazelversion 9.2.0) against a rust nightly pin (rust-toolchain.toml). This
+# repo's dev shell has NEITHER — no bazel/bazelisk, and no Rust toolchain (it
+# was deliberately stripped; the first-party tree has zero .rs files). So the
+# Rust half is UNGATED here and this file does not pretend otherwise. Adding it
+# would mean putting bazel + a rust nightly into the dev shell, which is a
+# scope decision, not an import detail.
+layer: 'application'
+language: 'typescript'
+tags: ['oss']
+
+workspace:
+  inheritedTasks:
+    # tag-bun contributes exactly one inherited task, `install` (a no-op
+    # depending on the single root:install). This fork carries its own lockfile
+    # and is not a root bun workspace member, so that install must not run here.
+    # `lint` and `format` are whole-repo tasks on the root project, never
+    # inherited, so those two entries are no-ops today — kept as a defensive
+    # guard in case tag-bun.yml later grows tasks a vendored tree must not run.
+    exclude: ['install', 'lint', 'format']
+
+fileGroups:
+  sources: ['**/*']
+
+tasks:
+  # Upstream CI's `check` job (.github/workflows/ci.yml, job `check`, "Lint,
+  # type check & web build"): `bun run ci:check:full` — biome over the tree plus
+  # a tsgo --noEmit type check of every workspace package THAT DEFINES A `check`
+  # SCRIPT — followed by `bun run collab:web:build`, upstream's real bundle of
+  # packages/collab-web (`bun build ./index.html --minify`), which catches
+  # bundler-resolution and asset-pipeline breakage a type check cannot see.
+  #
+  # `ci:check:full` -> `check:ts` -> biome + `bun run --workspaces --if-present
+  # check`, and `--if-present` SILENTLY SKIPS a member without a `check` script.
+  # One member is skipped today with no signal: `robomp-web` (python/robomp/web,
+  # a declared workspace member) defines only `check:types`. A future import
+  # should re-check that list rather than assume full workspace coverage.
+  #
+  # --ignore-scripts on the install is load-bearing, not tidiness: the fork's
+  # `prepare` script (`bun run gen:tool-views`) WRITES INTO THE VENDORED TREE
+  # (packages/coding-agent/src/export/html/tool-views.generated.js). Byte
+  # identity to the upstream tag is this subtree's entire verification basis, so
+  # the gate must not mutate it. Skipping scripts is verified sufficient: the
+  # type check and the web build both pass with that file absent. Two writes
+  # remain and survive only because upstream's own forks/oh-my-pi/.gitignore
+  # ignores them — node_modules/ (line 2) and packages/collab-web/dist/ (the
+  # `dist/` and `packages/*/dist/` rules, lines 6-7). A re-import at a tag whose
+  # .gitignore was reorganized must re-confirm those rules, or the gate leaves a
+  # dirty tree.
+  #
+  # cache:false: the install reaches the network and the checks are the real
+  # signal; moon must not false-green a run it did not re-execute (same posture
+  # as the other two forks' nix builds).
+  check:
+    script: 'bun install --frozen-lockfile --ignore-scripts && bun run ci:check:full && bun run collab:web:build'
+    options:
+      cache: false
+      runInCI: true
+    inputs: ['@group(sources)']
+
+  ci:
+    deps: ['check']
+    options:
+      cache: false
+      runInCI: true
