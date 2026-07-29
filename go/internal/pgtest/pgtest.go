@@ -37,8 +37,14 @@ import (
 )
 
 // pgImage is the Postgres image the harness runs. A pinned major keeps the
-// generated-tsvector + websearch_to_tsquery behavior the tests assert stable.
-const pgImage = "docker.io/library/postgres:16-alpine"
+// generated-tsvector + websearch_to_tsquery behavior the tests assert stable,
+// and the digest keeps it byte-identical: `16-alpine` is a mutable tag, so
+// without one a repoint silently swaps the database under the suites here and
+// in CI at different times, producing a divergence no diff would show.
+//
+// Must stay equal to the pgtest service image in .github/workflows/ci.yml, or a
+// local run and CI stop exercising the same Postgres.
+const pgImage = "docker.io/library/postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777"
 
 // DSNEnvVar, when set, points the harness at an already-running Postgres and
 // suppresses container management — the CI-service path (design.md:1188).

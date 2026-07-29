@@ -225,7 +225,14 @@ jobs:
       postgres:
         # Matches pgtest.go's pinned image: the suites assert on generated-tsvector
         # and websearch_to_tsquery behavior, which is major-version-sensitive.
-        image: postgres:16-alpine
+        #
+        # Pinned by DIGEST, not tag. `16-alpine` is mutable, so a repoint would
+        # ship unreviewed container code into the gate and could change the
+        # database behavior the suites assert on — with the tag unchanged, so
+        # nothing in the diff would show it. The digest must stay equal to
+        # pgtest.go's pgImage, or CI and a local run stop exercising the same
+        # Postgres, which is the parity the line above claims.
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
         env:
           POSTGRES_PASSWORD: compass-test
           POSTGRES_DB: compass

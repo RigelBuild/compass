@@ -23,7 +23,11 @@ tasks:
   test:
     command: 'bun test'
     deps: ['install']
-    inputs: ['*.ts', '/bun.lock']
+    # ci.yml and pgtest.go are inputs because a test below asserts their two
+    # Postgres image digests are equal. Without them an edit to either file
+    # leaves this task cached, so the assertion silently stops re-running
+    # against the thing it constrains.
+    inputs: ['*.ts', '/bun.lock', '/.github/workflows/ci.yml', '/go/internal/pgtest/pgtest.go']
 
   parity:
     # The gate itself. cache:false and no `inputs`: its verdict is a function of

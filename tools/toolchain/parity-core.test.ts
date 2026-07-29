@@ -17,6 +17,41 @@ import {
 	verifyStorePath,
 } from "./parity-core.ts";
 
+describe("the Postgres image pin", () => {
+	// Two files name the image the real-Postgres suites run against: the CI
+	// service (.github/workflows/ci.yml) and the local harness (pgtest.go). Their
+	// comments each assert the two are the same image, and nothing enforced it —
+	// so a digest bump to one would leave CI and a local run silently exercising
+	// different databases, which is precisely the divergence the pin exists to
+	// prevent. An invariant asserted only in prose is not an invariant.
+	const digestOf = (source: string, label: string): string => {
+		const matches =
+			source.match(/postgres:[0-9]+-alpine@(sha256:[0-9a-f]{64})/g) ?? [];
+		expect(
+			matches,
+			`${label} must pin the Postgres image by digest, not by a mutable tag`,
+		).toHaveLength(1);
+		const [digest] = matches;
+		// Not a `!`: under noUncheckedIndexedAccess the length assertion above does
+		// not narrow the index, and asserting here keeps a zero-match file failing
+		// with the message above rather than comparing two `undefined`s as equal.
+		if (digest === undefined)
+			throw new Error(`${label}: no Postgres image digest found`);
+		return digest;
+	};
+
+	test("is identical in ci.yml and pgtest.go, and is a digest in both", async () => {
+		const root = new URL("../../", import.meta.url).pathname;
+		const [ci, harness] = await Promise.all([
+			Bun.file(`${root}.github/workflows/ci.yml`).text(),
+			Bun.file(`${root}go/internal/pgtest/pgtest.go`).text(),
+		]);
+		expect(digestOf(harness, "pgtest.go")).toBe(
+			digestOf(ci, ".github/workflows/ci.yml"),
+		);
+	});
+});
+
 describe("parseProtoTools", () => {
 	test("reads every pin from the real .prototools shape", () => {
 		const pins = parseProtoTools(
