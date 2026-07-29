@@ -141,8 +141,8 @@ func (s *Store) MessagesHeadSeq(ctx context.Context) (uint64, error) {
 	return head, nil
 }
 
-// updateMessageBlocksExec is the shared block-write core, run against a
-// transaction (AnswerAsk's locked read-modify-write) or any other execer. It
+// updateMessageBlocksExec is the shared block-write core, run against
+// AnswerAsk's locked read-modify-write transaction. It
 // re-serializes the full block set and refreshes the extracted text content so
 // search stays consistent with the current blocks. An empty block set or an
 // unknown message is rejected. ask_id is assigned once at append and immutable
@@ -223,7 +223,7 @@ func (s *Store) ListMessages(ctx context.Context, actor AccountID, container Con
 	// captured on subscribe (seq <= SnapshotSeq, comms.proto:353-368,
 	// design.md:807-817); zero reads the latest, no boundary.
 	// The boundary is point-in-time on set membership (which messages the page
-	// returns, by insert seq), not on content: AnswerAsk mutates m.blocks in
+	// returns, by insert seq), not on content: a blocks update mutates m.blocks in
 	// place without bumping m.seq, so a row present at the boundary but edited
 	// mid-catch-up returns its post-boundary blocks. This is sufficient, not a
 	// lost update — the matching MessageUpdated also rides the live tail, so an
