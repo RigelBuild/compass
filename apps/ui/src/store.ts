@@ -32,13 +32,16 @@ import type {
 	Message,
 } from "./comms-stub";
 import { adaptMessage } from "./live/adapt";
+import { probeServer } from "./live/client";
 import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
 import { runCommsStream } from "./live/stream";
 import type { AgentSession } from "./session-events";
 import { STUB_SESSION_EVENTS } from "./session-events-stub";
 import {
 	type Agent,
+	type DaemonInfo,
 	STUB_AGENTS,
+	STUB_DAEMON,
 	STUB_WORKSTREAMS,
 	type TrackerConfig,
 	type Workstream,
@@ -287,6 +290,13 @@ export interface AppStore {
 	 *  belongs to a workstream of the selected agent. */
 	setActiveBranch: (branch: string) => void;
 
+	// ── Daemon: server liveness/version banner ──
+	/** The daemon liveness/version the top-bar banner shows (compass.v1
+	 *  GetServerInfo). A store built with `options.compass` probes once at boot
+	 *  and flips this to the live info; an offline store keeps STUB_DAEMON
+	 *  (live:false). */
+	daemon: Accessor<DaemonInfo>;
+
 	// ── Comms: the channel surface (design compass-0.7) ──
 	/** The calling account (the authenticated user; comms.proto caller model). */
 	caller: Accessor<Account>;
@@ -499,7 +509,8 @@ export interface AppStoreOptions {
 	 *  to exercise the real Stop path. */
 	readonly sessions?: Record<string, AgentSession>;
 	/** Observes a comms failure — a stream error the driver retries past, a
-	 *  rejected `RespondToAsk`, or a refused `StopAgentSession`.
+	 *  rejected `RespondToAsk`, a refused `StopAgentSession`, or a failed boot
+	 *  `GetServerInfo` probe (the banner stays on the stub, offline).
 	 *  `postMessage`/`postReply` reject to their caller instead (the composer
 	 *  must keep the user's text) and do NOT route here. */
 	readonly onCommsError?: (error: unknown) => void;
@@ -637,6 +648,33 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		}).catch((error) => {
 			if (!abort.signal.aborted) options.onCommsError?.(error);
 		});
+	}
+
+	// The daemon banner reads LIVE: a one-shot GetServerInfo probe at boot flips
+	// the banner to the server's liveness/version. An offline store (no
+	// `options.compass`) keeps STUB_DAEMON — the stub banner shows exactly as
+	// before the wire. api_version-mismatch policy is deliberately NOT handled
+	// here (a parked design question): the banner surfaces what the probe
+	// returns, nothing more. One-shot async (not a stream), so no
+	// AbortController — a `disposed` flag guards a late-resolving probe from
+	// writing into a torn-down root; a rejection routes through onCommsError.
+	const [daemon, setDaemon] = createSignal<DaemonInfo>(STUB_DAEMON);
+	if (options.compass) {
+		const client = options.compass;
+		let disposed = false;
+		if (getOwner()) onCleanup(() => (disposed = true));
+		void probeServer(client)
+			.then((info) => {
+				if (!disposed)
+					setDaemon({
+						version: info.version,
+						apiVersion: info.apiVersion,
+						live: true,
+					});
+			})
+			.catch((error) => {
+				if (!disposed) options.onCommsError?.(error);
+			});
 	}
 
 	// The per-post idempotency key source: `clientRequestId` must be
@@ -1387,6 +1425,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		setActiveRepo,
 		setActiveBranch,
 		caller,
+		daemon,
 		accounts,
 		channelGroups,
 		channels,
