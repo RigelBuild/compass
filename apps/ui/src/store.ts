@@ -961,15 +961,25 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// ask whose shape moved is a different ask as far as local state is
 	// concerned: there is nothing left to line the answers up against.
 	//
-	// The OPTIONS are part of that shape, not decoration on it. The server's
+	// The OPTION IDS are part of that shape, not decoration on it. The server's
 	// block-update path rewrites a message's entire block set and requires only
-	// that `ask_id` survive (go/internal/store/messages.go:151, :163-167):
-	// question text, option ids and option labels are all free to move under a
-	// stable question id. Comparing question ids alone would silently discard
-	// such a revision, leaving the UI rendering WITHDRAWN options and shipping
-	// an option id the server no longer offers — which `validateQuestionAnswer`
-	// rejects as ErrInvalidArgument, a refusal the user cannot act on, because
-	// the option they need is not on screen.
+	// that `ask_id` survive (go/internal/store/messages.go:151, :163-167), so an
+	// option's id can appear, vanish, or be replaced under a stable question id.
+	// Comparing question ids alone would miss that, leaving the UI rendering a
+	// WITHDRAWN option and shipping an option id the server no longer offers —
+	// which `validateQuestionAnswer` rejects as ErrInvalidArgument, a refusal the
+	// user cannot act on, because the option they need is not on screen. So the
+	// offered option ids, in order, are part of the shape the compare checks.
+	//
+	// What it deliberately does NOT distinguish: a revision to question text,
+	// option LABELS, or allowMultiple under stable question and option ids. When
+	// the ids all still line up, `preserveLocalAsks` carries the local ask copy
+	// forward whole, so such a revision would momentarily render with the local
+	// wording. That is tolerable only because the path is unwired (see below) and
+	// a text/label edit is cosmetic and self-corrects on the next resync. Wiring
+	// the block-update path live must instead overlay the local picks onto the
+	// PUSHED question objects, so a server revision to any non-id field is
+	// adopted while the in-progress pick survives.
 	//
 	// Scope honesty: this is designed-for, not yet wired. Nothing calls the
 	// block-update RPC today, so the widened compare defends a documented wire
