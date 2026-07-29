@@ -296,20 +296,22 @@ func readBoundedLine(r *bufio.Reader, limit int) ([]byte, error) {
 		if errors.Is(err, bufio.ErrBufferFull) {
 			continue // more of the same line; keep consuming.
 		}
-		// The whole line is in hand, so discount its one real terminator,
-		// mirroring trimEOL exactly: a \n, then a \r only because that \n
-		// followed it. `tail` carries the last two bytes across the chunk
-		// boundary, since a CRLF can straddle one and leave this chunk
-		// holding a bare "\n".
+		// The whole line is in hand, so discount its one real terminator. `tail`
+		// carries the last two bytes across the chunk boundary, since a CRLF can
+		// straddle one and leave this chunk holding a bare "\n". It is also the
+		// ONLY witness to what terminated the line: `line` may have been clipped
+		// at the cap, so its own suffix says nothing about the terminator, and an
+		// unterminated final line legitimately ends in a payload "\r".
+		terminated := seen > 0 && tail[1] == '\n'
 		payload := seen
-		if payload > 0 && tail[1] == '\n' {
+		if terminated {
 			payload--
 			if payload > 0 && tail[0] == '\r' {
 				payload--
 			}
 		}
 		truncated := payload > limit
-		line = trimEOL(line)
+		line = trimEOL(line, terminated)
 		switch {
 		case err != nil && truncated:
 			return line, errors.Join(errLineTruncated, err)
@@ -323,8 +325,19 @@ func readBoundedLine(r *bufio.Reader, limit int) ([]byte, error) {
 	}
 }
 
-// trimEOL drops a trailing newline (and its CR, if any).
-func trimEOL(b []byte) []byte {
+// trimEOL drops the line's terminator: a trailing newline and, only because that
+// newline followed it, its CR. `terminated` is threaded in rather than sniffed
+// from `b`, because `b` cannot answer the question. Two cases defeat a suffix
+// test: a line clipped at the cap has already lost its newline, so it looks
+// unterminated; and an unterminated final line — an agent dying mid-write, or a
+// progress-bar write — legitimately ENDS in a payload "\r" that stripping would
+// silently drop from the log. Only readBoundedLine's `tail` witnesses the real
+// terminator, and it is the same witness the truncation arithmetic uses, so the
+// logged bytes and the measured length can never disagree about what counted.
+func trimEOL(b []byte, terminated bool) []byte {
+	if !terminated {
+		return b
+	}
 	b = bytes.TrimSuffix(b, []byte("\n"))
 	return bytes.TrimSuffix(b, []byte("\r"))
 }

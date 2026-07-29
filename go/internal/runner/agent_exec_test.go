@@ -240,6 +240,44 @@ func TestStderrIsDrainedUnderItsOwnLabel(t *testing.T) {
 	engine.closeStdout()
 }
 
+// A bare trailing `\r` with NO newline is payload, not a terminator, and must
+// survive the drain. The bug this pins is a disagreement between two
+// computations of the same thing inside `readBoundedLine`: the truncation
+// arithmetic discounts a `\r` only when a `\n` followed it (`tail[1] == '\n'`),
+// while `trimEOL` stripped one unconditionally. So an unterminated final line —
+// exactly what an agent that dies mid-write leaves behind, and what a `\r`
+// progress-bar write produces — silently lost its last byte in the log.
+//
+// EOF is the discriminator: only an unterminated line reaches `trimEOL` with a
+// `\r` that no `\n` follows, so the write must close the pipe rather than end
+// in a newline. A test writing "x\r\n" cannot fail either way.
+func TestBareTrailingCarriageReturnIsPayload(t *testing.T) {
+	engine := newPipeRuntime()
+	capture := newCapturePublish()
+	logs := newCaptureLog()
+	link := newLink(newRunnerServiceServer(t, capture))
+
+	// context.Background() as the test root — the rule's explicit test exemption.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	if _, err := link.StartAgent(ctx, "sess-cr", runtime.ContainerID("c1"), engine, testAgentEnv(), logs.logger()); err != nil {
+		t.Fatalf("StartAgent = %v", err)
+	}
+
+	// No trailing newline: the `\r` is the final byte before EOF, so nothing
+	// terminated this line and the CR is ordinary payload.
+	if _, err := engine.stdoutW.Write([]byte("progress 50%\r")); err != nil {
+		t.Fatalf("write stdout: %v", err)
+	}
+	engine.closeStdout()
+
+	line := logs.recvLine(t)
+	if got := line.attrs["line"]; got != "progress 50%\r" {
+		t.Fatalf("drained line = %q, want %q — a bare CR with no newline after it is payload, not a terminator", got, "progress 50%\r")
+	}
+}
+
 // A line too long to log must NOT end the drain. Draining is the contract — an
 // unread pipe stalls the agent's next write — so an oversized line costs a
 // truncated entry and nothing else. A bufio.Scanner ends its scan on
