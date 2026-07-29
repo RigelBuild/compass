@@ -40,8 +40,10 @@ tool wins.
 [moon](https://moonrepo.dev) owns the task graph (`deps:`), result caching
 (`inputs`/`outputs`), affected-target detection, and local parallel execution.
 `moon run <project>:<task>` is the interface; `moon run :ci` runs every
-project's `ci` task. Affected detection (`moon run :ci --affected`) decides
-which projects a change actually touches.
+project's `ci` task. Affected detection decides which projects a change
+actually touches — CI's PR gate drives it through `moon ci :ci` (the
+CI-environment form, which reads the base from the provider), while a local
+`moon run :ci --affected` is the same detection on demand.
 
 moon runs `go` and `bun` as **system tasks** — it execs the toolchain on PATH
 rather than managing its own. moon's graph/caching layer stays
