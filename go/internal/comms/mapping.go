@@ -140,7 +140,7 @@ func askToWire(a *store.Ask) *compassv1.Ask {
 			TimedOut:        q.TimedOut,
 		}
 	}
-	return &compassv1.Ask{AskId: a.AskID, Questions: questions}
+	return &compassv1.Ask{AskId: a.AskID, Questions: questions, Answered: a.Answered}
 }
 
 func accountIDsToWire(ids []store.AccountID) []string {
@@ -257,22 +257,32 @@ func askFromWire(a *compassv1.Ask) *store.Ask {
 			opts[j] = store.AskOption{ID: o.GetId(), Label: o.GetLabel(), Description: o.GetDescription(), Preview: o.GetPreview()}
 		}
 		questions[i] = store.AskQuestion{
-			QuestionID:      q.GetQuestionId(),
-			Question:        q.GetQuestion(),
-			Header:          q.GetHeader(),
-			Options:         opts,
-			AllowMultiple:   q.GetAllowMultiple(),
-			Recommended:     q.Recommended,
-			ChosenOptionIDs: q.GetChosenOptionIds(),
-			CustomText:      q.GetCustomText(),
-			TimedOut:        q.GetTimedOut(),
+			QuestionID:    q.GetQuestionId(),
+			Question:      q.GetQuestion(),
+			Header:        q.GetHeader(),
+			Options:       opts,
+			AllowMultiple: q.GetAllowMultiple(),
+			Recommended:   q.Recommended,
 		}
 	}
-	// ask_id is server-owned: drop any caller-supplied value so the store's
-	// mintAskIDs always assigns a fresh, globally-unique id on append
-	// (comms.proto: "server-assigned and globally unique"). Honoring a wire
-	// value would let two posts share an ask_id, making RespondToAsk's
-	// containment SELECT match multiple rows and answer a nondeterministic one.
+	// ask_id and every answer-state field are server-owned: drop any
+	// caller-supplied value.
+	//
+	// ask_id, because the store's mintAskIDs must assign a fresh globally-unique
+	// id on append (comms.proto: "server-assigned and globally unique").
+	// Honoring a wire value would let two posts share an ask_id, making
+	// RespondToAsk's containment SELECT match multiple rows and answer a
+	// nondeterministic one.
+	//
+	// The answer state — Answered, and the per-question ChosenOptionIDs /
+	// CustomText / TimedOut — because an ask arriving over the wire has by
+	// definition not been answered yet: it is being posted, and only
+	// RespondToAsk may record an answer. Honoring them let a caller post an ask
+	// that arrives pre-populated, which a client reading the per-question
+	// fields renders as already settled while the server still holds it
+	// pending and answerable. Zeroing them by construction (omitted from the
+	// composite literal, not stripped afterwards) means there is no line to
+	// delete without a compile-visible change.
 	return &store.Ask{AskID: "", Questions: questions}
 }
 

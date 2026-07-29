@@ -283,6 +283,13 @@ message Ask {
   string ask_id = 1;
   // The questions, in the order the agent asked them. At least one.
   repeated AskQuestion questions = 6;
+  // True once this ask has been answered. It flips exactly once, on the first
+  // RespondToAsk, and a second one is rejected — so a client that cannot see
+  // this field renders an answered ask as answerable and fires an RPC the
+  // server is guaranteed to refuse. It is the ONLY reliable answered-signal:
+  // a fully-skipped ask leaves every AskQuestion's answer fields empty, which
+  // is indistinguishable from pending by inspecting the questions alone.
+  bool answered = 7;
   // Superseded single-question shape (compass-0.5 D5); see
   // docs/designs/product/compass-ask-typed-derivation.md.
   reserved 2 to 5;
