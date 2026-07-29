@@ -139,10 +139,22 @@ func TestServeShutdownIsClean(t *testing.T) {
 // nil assertion below — or, if Shutdown blocks past the test deadline, the
 // timeout fires. Either way the pre-fix drain is caught; the fix returns nil
 // promptly.
+//
+// That claim was untrue for as long as this test failed at its subscriber gate:
+// it never reached the drain, so the regression it names went undefended while
+// the test reported red for an unrelated reason. A red test is not
+// self-evidently doing its job — it has to fail at the assertion it exists for.
+// Verified by deleting the drain's commsBus.Close() and confirming this test
+// then fails at the Serve-returns-nil assertion rather than at the gate.
 func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "compass.sock")
 
 	serveCtx, cancel := context.WithCancel(context.Background())
+	// Idempotent with the explicit cancel() on the happy path below. Needed
+	// because every failure path here t.Fatalf's before reaching that call,
+	// which would otherwise leave Serve running against a live socket and pg
+	// pool for the remainder of the binary.
+	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Serve(serveCtx, ServeConfig{
@@ -183,14 +195,43 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	}
 	defer func() { _ = stream.Close() }()
 
-	// Drive the stream on a goroutine: gate on the seeded event (registration
-	// proof), then keep receiving so the stream stays open on the comms bus
-	// until the server's shutdown drain closes it. The final Receive returning
-	// false (clean EOF) is what proves the server-side close released it.
+	// Drive the stream on a goroutine: consume the preamble, gate on the seeded
+	// event (registration proof), then keep receiving so the stream stays open
+	// on the comms bus until the server's shutdown drain closes it. The final
+	// Receive returning false (clean EOF) is what proves the server-side close
+	// released it.
+	//
+	// A since_seq=0 subscribe receives commsSnapshotBoundary FIRST, before any
+	// event (see commsSnapshotBoundary in internal/comms/subscribe.go, whose
+	// doc comment specifies the frame's shape).
+	//
+	// Assert that frame rather than skipping one blindly. The gain is
+	// attribution, not catch-vs-miss: the seeded-event assertion below is a
+	// hard backstop either way, because no control frame can satisfy
+	// GetChannelChanged().GetChannel().GetId() == wantChannelID. Measured, by
+	// mutating subscribe.go with the skip and the assertion in turn:
+	//
+	//	preamble grows a second boundary  skip: caught, opaque empty channel id
+	//	                                  assert: caught, same
+	//	boundary Send removed entirely    skip: caught at 25.4s, gate deadline
+	//	                                  assert: caught at 11.8s, names the frame
+	//
+	// So a bare skip is slower and far less diagnostic, not silent.
 	gate := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		if !stream.Receive() {
+			// Describe the observable, not a cause: all this proves is that the
+			// stream ended before any frame arrived. Naming the boundary as the
+			// missing one would mis-attribute a stream that ended early.
+			gate <- fmt.Errorf("stream ended before any frame (expected the snapshot boundary first): %w", stream.Err())
+			return
+		}
+		if seq, payload := stream.Msg().GetSeq(), stream.Msg().GetPayload(); seq != 0 || payload != nil {
+			gate <- fmt.Errorf("first frame = seq %d payload %T, want the snapshot boundary (seq 0, no payload)", seq, payload)
+			return
+		}
 		if !stream.Receive() {
 			gate <- fmt.Errorf("stream ended before the seeded event: %w", stream.Err())
 			return
@@ -230,5 +271,9 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	}
 
 	// The subscriber's stream ended because the server closed the comms bus.
-	<-done
+	select {
+	case <-done:
+	case <-timeAfter():
+		t.Fatal("subscriber stream never ended after the drain closed the comms bus")
+	}
 }
