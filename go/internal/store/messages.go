@@ -178,6 +178,96 @@ func updateMessageBlocksExec(ctx context.Context, db execer, id MessageID, block
 	return nil
 }
 
+// UpdateMessageBlocksAsAuthor replaces a message's block set UNDER an acting
+// account — the only update path safe for a message id that arrives from
+// outside the Server's own trust boundary (a relayed agent MessageUpdated
+// frame, SEA-1364 T3).
+//
+// Why it is a fork and not a flag on the shared core. updateMessageBlocksExec
+// addresses the row by a bare MessageID with NO membership and NO authorship
+// check. That is correct where it is used — AnswerAsk has already resolved the
+// target through a membership JOIN and locked it FOR UPDATE, so re-checking
+// would be redundant, and AnswerAsk deliberately permits a MEMBER who is not
+// the author to answer. Folding this path onto that core would either strip the
+// authz a relayed id requires or break every ask answered by anyone but the
+// asker. The two predicates genuinely differ, so they are two statements.
+//
+// The predicate is membership AND authorship: the actor must be a member of the
+// message's channel and be its author. Both halves are load-bearing — authorship
+// alone would let an account edit its own past message in a channel it has since
+// been removed from, and membership alone would let any member rewrite another
+// account's words. A failure of EITHER half, and an id that names no row at all,
+// return the same ErrNotFound: the D9 not-found/forbidden merge, so an actor
+// cannot learn that a message it may not touch exists (the same collapse
+// AnswerAsk documents at :307-310).
+//
+// The updated row is returned via RETURNING, so the caller fans out the
+// post-update state without a second read that could observe a later write.
+// Validation mirrors updateMessageBlocksExec (an empty block set is rejected; an
+// ask block must carry its immutable ask_id, since a re-minted id would orphan a
+// pending RespondToAsk) and adds one this path needs: an EMPTY message id is
+// ErrInvalidArgument rather than a zero-rows ErrNotFound, because a relayed
+// MessageUpdated whose message.id was never stamped is a malformed frame, not an
+// edit aimed at a row the actor cannot see.
+//
+// Deliberately NOT built on RequireAgentSessionSubscriber (agent_sessions.go:91).
+// That primitive resolves the whole session-ownership chain in a SINGLE EXISTS
+// query returning only ErrNotFound-or-nil, so an unknown session and a
+// known-but-foreign one are indistinguishable by error class AND by timing — a
+// deliberate anti-enumeration property. Reusing its joins here would mean
+// splitting it into a resolve-then-check pair, which would look like a clean
+// refactor, pass every test, and reintroduce a session-enumeration oracle. This
+// path needs a message-scoped predicate, not a session-scoped one, so it is its
+// own single-statement gate and that primitive is left completely alone.
+func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID, id MessageID, blocks []MessageBlock) (Message, error) {
+	if id == "" {
+		return Message{}, fmt.Errorf("%w: message id is required", ErrInvalidArgument)
+	}
+	if len(blocks) == 0 {
+		return Message{}, fmt.Errorf("%w: message has no blocks", ErrInvalidArgument)
+	}
+	for i, b := range blocks {
+		if b.Ask != nil && b.Ask.AskID == "" {
+			return Message{}, fmt.Errorf("%w: block %d ask has no ask_id (an update must carry the existing id)", ErrInvalidArgument, i)
+		}
+	}
+	blocksJSON, err := marshalBlocks(blocks)
+	if err != nil {
+		return Message{}, err
+	}
+
+	// One statement, so the authz predicate and the write cannot race: a
+	// membership revoked concurrently either lands before the UPDATE (which then
+	// matches no row) or after it, never between a separate check and the write.
+	// The EXISTS subquery is the membership half and the author_account_id
+	// equality the authorship half; both must hold for the row to match.
+	const q = `
+		UPDATE messages m
+		SET blocks = $1, text_content = $2
+		WHERE m.id = $3
+		  AND m.author_account_id = $4
+		  AND EXISTS (
+		    SELECT 1 FROM channel_members cm
+		    WHERE cm.channel_id = m.channel_id AND cm.account_id = $4
+		  )
+		RETURNING m.id, m.channel_id, m.author_account_id, m.at_unix_ms, m.blocks, COALESCE(m.parent_message_id, '')`
+	rows, err := s.pool.Query(ctx, q, blocksJSON, textContent(blocks), string(id), string(actor))
+	if err != nil {
+		return Message{}, fmt.Errorf("store: update message blocks as author: %w", err)
+	}
+	defer rows.Close()
+	msgs, err := scanMessages(rows)
+	if err != nil {
+		return Message{}, err
+	}
+	if len(msgs) == 0 {
+		// Unknown id, not the author, or no longer a member — one answer for all
+		// three, so a refusal enumerates nothing.
+		return Message{}, fmt.Errorf("%w: message %q", ErrNotFound, id)
+	}
+	return msgs[0], nil
+}
+
 // ListMessages pages a channel's messages newest-first, clamped to the store's
 // page bounds (comms.proto:446-461). Ordering keys on the monotonic seq (a
 // stable total order even under equal timestamps); BeforeMessageID pages

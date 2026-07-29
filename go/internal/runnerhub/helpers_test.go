@@ -71,27 +71,32 @@ const testTimeout = 15 * time.Second
 
 func timeAfter() <-chan time.Time { return time.After(testTimeout) }
 
-// convCall is one recorded PostAgentMessage: exactly one of posted/updated is
-// non-nil, mirroring the ConversationSink contract.
+// convCall is one recorded PostAgentMessage: the account the hub resolved the
+// session to, the session id it resolved from, and exactly one of
+// posted/updated — mirroring the ConversationSink contract. The account is the
+// fake's proof of WHICH attribution the hub applied, the same security
+// invariant the RelayCommsCall tests defend through commsCall.
 type convCall struct {
+	account   store.AccountID
 	sessionID string
 	posted    *compassv1.MessagePosted
 	updated   *compassv1.MessageUpdated
 }
 
 // fakeConversationSink records the conversation write-throughs Deliver drives so
-// a test can assert which variant reached the comms surface, under which session
-// id. Concurrency-safe: Deliver can run from a PublishEvents handler goroutine.
+// a test can assert which variant reached the comms surface, under which account
+// and session id. Concurrency-safe: Deliver can run from a PublishEvents handler
+// goroutine.
 type fakeConversationSink struct {
 	mu    sync.Mutex
 	calls []convCall
 	err   error // returned by PostAgentMessage when set (a write-through failure)
 }
 
-func (f *fakeConversationSink) PostAgentMessage(_ context.Context, sessionID string, posted *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error {
+func (f *fakeConversationSink) PostAgentMessage(_ context.Context, account store.AccountID, sessionID string, posted *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, convCall{sessionID: sessionID, posted: posted, updated: updated})
+	f.calls = append(f.calls, convCall{account: account, sessionID: sessionID, posted: posted, updated: updated})
 	return f.err
 }
 
@@ -159,6 +164,25 @@ func newHub() (*Hub, *fakeConversationSink, *fakeLifecycleSink, *fakeTailSink) {
 // the hub's own accessors rather than reaching into a specific sink.
 func newHubOnly() *Hub {
 	return NewHub(&fakeConversationSink{}, &fakeLifecycleSink{}, &fakeTailSink{}, nil, discardLogger())
+}
+
+// testAgentAccount is the account every conversation test binds its session to.
+// The tests assert WHICH account the hub attributed a frame to, so the value
+// has to be nameable at the assertion site; it is a constant rather than a
+// bindSession parameter because no test needs a second account — a cross
+// -account case is built by binding this one and asserting a refusal, not by
+// binding a different one.
+const testAgentAccount store.AccountID = "acct-agent"
+
+// bindSession binds sessionID to testAgentAccount through the real
+// Provision->Start promotion path, the same two-step the command handlers
+// drive. Deliver's conversation arms resolve against this binding and fail
+// closed without it, so any conversation test that expects a write-through must
+// bind first.
+func bindSession(hub *Hub, sessionID string) {
+	container := "container-for-" + sessionID
+	hub.bindContainer(container, testAgentAccount)
+	hub.promoteSession(container, sessionID)
 }
 
 // commsCall records one CommsCaller invocation: the account the hub resolved
@@ -303,8 +327,32 @@ func convPostedFrame(text string) *compassv1internal.AgentFrame {
 	}
 }
 
-// convUpdatedFrame wraps a ConversationUpdated variant carrying one text block.
+// convUpdatedFrame wraps a ConversationUpdated variant carrying one text block
+// and an ADDRESSED message id — the shape an update must have to name the row it
+// edits. No production emitter produces this yet (see convUpdatedFrameIDLess
+// below); it is the shape the relay will carry once Runner-side id
+// reconciliation lands, and the shape every test that expects a commit needs.
 func convUpdatedFrame(text string) *compassv1internal.AgentFrame {
+	return &compassv1internal.AgentFrame{
+		Frame: &compassv1internal.AgentFrame_ConversationUpdated{
+			ConversationUpdated: &compassv1.MessageUpdated{
+				Message: &compassv1.Message{
+					Id:     "msg-addressed",
+					Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
+				},
+			},
+		},
+	}
+}
+
+// convUpdatedFrameIDLess wraps a ConversationUpdated variant carrying one text
+// block and NO message id — byte-for-byte the frame the first-party agent
+// actually emits today (EventMapper.#appendBlock,
+// packages/compass-agent/src/mapping.ts:386-393, which builds a Message from
+// `blocks` alone because the agent has no server id to mint). Nothing between
+// the agent and this hub stamps one, so this — not convUpdatedFrame — is the
+// production shape on the current base.
+func convUpdatedFrameIDLess(text string) *compassv1internal.AgentFrame {
 	return &compassv1internal.AgentFrame{
 		Frame: &compassv1internal.AgentFrame_ConversationUpdated{
 			ConversationUpdated: &compassv1.MessageUpdated{
