@@ -4,10 +4,11 @@ package runner
 
 // Shared scaffolding for the Runner-side seam tests: a pipe-backed fake
 // ContainerRuntime (the existing runtime.fakeRuntime.ExecStreaming is a nil-pipe
-// stub, unusable for relay — this one returns a StreamingExec whose IO.Stdout is
-// an io.PipeReader the test writes framed protojson into), a recording fake
-// runtime for the Provision→Launch path, a capturing PublishEvents server so the
-// relay's client-stream terminates a real wire, and the h2c transport helpers.
+// stub — this one returns a StreamingExec whose IO.Stdout/IO.Stderr are
+// io.PipeReaders the test writes into), a recording fake runtime for the
+// Provision→Launch path, a capturing slog handler for the drain's log lines, a
+// PublishEvents server that backs newLink's client, and the h2c transport
+// helpers.
 
 import (
 	"context"
@@ -19,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,22 +31,22 @@ import (
 	"github.com/sealedsecurity/compass/go/internal/runtime"
 )
 
-// testAgentEnv is the agent exec configuration the relay tests start agents
-// with. Values are arbitrary but non-empty, so a test asserting on the exec
-// argv sees each var actually carried rather than an omitted empty.
+// testAgentEnv is the agent exec configuration the tests start agents with.
+// Values are arbitrary but non-empty, so a test asserting on the exec argv sees
+// each var actually carried rather than an omitted empty.
 func testAgentEnv() AgentEnv {
 	return AgentEnv{UID: 1000, HomeDir: "/home/agent", Workdir: "/work/repo", Model: "test-model"}
 }
 
-// testTimeout bounds every blocking wait so a wedged relay fails fast instead of
+// testTimeout bounds every blocking wait so a wedged drain fails fast instead of
 // hanging the suite. A deadline safety net, never a synchronization device:
 // tests event-gate on the frames actually observed, not elapsed time.
 const testTimeout = 15 * time.Second
 
 func timeAfter() <-chan time.Time { return time.After(testTimeout) }
 
-// discardLoggerRunner builds a slog.Logger that drops output, so the relay's
-// warn/debug diagnostics do not spam the test log.
+// discardLoggerRunner builds a slog.Logger that drops output, so the drain's
+// per-line diagnostics do not spam the test log.
 func discardLoggerRunner() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
@@ -57,10 +59,10 @@ func (nopWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
 func (nopWriteCloser) Close() error                { return nil }
 
 // pipeRuntime is a ContainerRuntime whose ExecStreaming returns a StreamingExec
-// backed by real in-memory pipes: the test writes newline-framed protojson into
-// stdoutW / stderrW and the relay reads them off IO.Stdout / IO.Stderr. Its
+// backed by real in-memory pipes: the test writes lines into stdoutW / stderrW
+// and the drains read them off IO.Stdout / IO.Stderr. Its
 // lifecycle methods (Create/Start/Exec/…) are recording no-ops so it also serves
-// the Provision→Launch path. Process is left nil: the relay reads only IO, so a
+// the Provision→Launch path. Process is left nil: the drains read only IO, so a
 // test that never calls AgentStream.Stop needs no real child handle.
 type pipeRuntime struct {
 	mu      sync.Mutex
@@ -97,7 +99,7 @@ func (f *pipeRuntime) ExecStreaming(_ context.Context, _ runtime.ContainerID, _ 
 	}
 	return &runtime.StreamingExec{
 		IO: runtime.StreamingIO{Stdin: nopWriteCloser{}, Stdout: f.stdoutR, Stderr: f.stderrR},
-		// Process intentionally nil — relay reads only IO; a test using this
+		// Process intentionally nil — the drains read only IO; a test using this
 		// fake must not call AgentStream.Stop.
 	}, nil
 }
@@ -117,7 +119,7 @@ func (f *pipeRuntime) record(call string) {
 	f.calls = append(f.calls, call)
 }
 
-// closeStdout closes the stdout pipe writer, ending the relay's scanner (agent
+// closeStdout closes the stdout pipe writer, ending the stdout drain (agent
 // exit / EOF).
 func (f *pipeRuntime) closeStdout() { _ = f.stdoutW.Close() }
 
@@ -192,13 +194,15 @@ func (f *stubStreamingRuntime) streamingSpecs() []runtime.StreamingExecSpec {
 
 // --- capturing PublishEvents server ------------------------------------------
 
-// capturePublish is a RunnerService handler that captures every PublishEvents
-// frame the relay sends, so the relay's Runner-sequencing is asserted over a
-// real wire. Enroll/Sessions are unimplemented — the relay tests only exercise
-// PublishEvents.
+// capturePublish is a RunnerService handler backing newLink's client. Post-C5
+// nothing publishes agent frames, so its role is inverted: it exists to prove
+// PublishEvents is never used. `opened` counts stream opens — a live publisher
+// opens the stream before it sends anything, so a non-zero count catches a
+// resurrected relay even when no frame has crossed the wire yet.
 type capturePublish struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 	frames chan *compassv1internal.PublishEventsRequest
+	opened atomic.Uint64
 }
 
 func newCapturePublish() *capturePublish {
@@ -206,6 +210,7 @@ func newCapturePublish() *capturePublish {
 }
 
 func (c *capturePublish) PublishEvents(_ context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+	c.opened.Add(1)
 	for stream.Receive() {
 		c.frames <- stream.Msg()
 	}
@@ -215,15 +220,75 @@ func (c *capturePublish) PublishEvents(_ context.Context, stream *connect.Client
 	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
 }
 
-// recvFrame reads one captured frame with a fail-fast deadline.
-func (c *capturePublish) recvFrame(t *testing.T) *compassv1internal.PublishEventsRequest {
+// streamOpens reports how many PublishEvents streams were opened against this
+// handler.
+func (c *capturePublish) streamOpens() uint64 { return c.opened.Load() }
+
+// --- capturing diagnostic log ------------------------------------------------
+
+// captureLog is a slog.Handler that publishes every record's message and its
+// string attributes to a channel, so a test can event-gate on a log line the
+// way the PublishEvents tests gate on a frame — no sleeps, no polling. It backs
+// the stdout-drain assertions: after the relay is retired, "the bytes reached
+// the diagnostic log" is the only observable the drain leaves behind.
+type captureLog struct {
+	lines   chan logLine
+	dropped atomic.Uint64
+}
+
+// logLine is one captured record: its message plus the attributes the drain
+// stamps (session id and the drained text).
+type logLine struct {
+	msg   string
+	attrs map[string]string
+}
+
+func newCaptureLog() *captureLog {
+	return &captureLog{lines: make(chan logLine, 64)}
+}
+
+func (c *captureLog) Enabled(context.Context, slog.Level) bool { return true }
+
+func (c *captureLog) Handle(_ context.Context, r slog.Record) error {
+	line := logLine{msg: r.Message, attrs: make(map[string]string, r.NumAttrs())}
+	r.Attrs(func(a slog.Attr) bool {
+		line.attrs[a.Key] = a.Value.String()
+		return true
+	})
+	select {
+	case c.lines <- line:
+	default:
+		// A full buffer must never block the unit under test, so the record is
+		// dropped — counted, so a downstream timeout can say why.
+		c.dropped.Add(1)
+	}
+	return nil
+}
+
+// WithAttrs / WithGroup intentionally drop attrs and groups: the drain stamps
+// every attribute inline on its Debug call, so nothing is lost today. A future
+// refactor to `log.With(...)` must implement these first, or the session_id
+// assertions will silently see an empty map.
+func (c *captureLog) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *captureLog) WithGroup(string) slog.Handler      { return c }
+
+// logger builds the slog.Logger the unit under test writes into.
+func (c *captureLog) logger() *slog.Logger { return slog.New(c) }
+
+// recvLine reads one captured log record with a fail-fast deadline. A timeout
+// reports any dropped records, so an undersized buffer diagnoses itself instead
+// of looking like a wedged drain.
+func (c *captureLog) recvLine(t *testing.T) logLine {
 	t.Helper()
 	select {
-	case f := <-c.frames:
-		return f
+	case l := <-c.lines:
+		return l
 	case <-timeAfter():
-		t.Fatal("timed out waiting for a relayed PublishEvents frame")
-		return nil
+		if n := c.dropped.Load(); n > 0 {
+			t.Fatalf("timed out waiting for a diagnostic log line (%d records dropped — buffer too small)", n)
+		}
+		t.Fatal("timed out waiting for a diagnostic log line")
+		return logLine{}
 	}
 }
 
@@ -266,7 +331,7 @@ func newRunnerServiceServer(t *testing.T, svc compassv1internalconnect.RunnerSer
 }
 
 // newLink builds a ServerLink over the given RunnerService client (white-box:
-// the client field is what StartAgent's relay publisher needs).
+// the client field backs Sessions and the per-container gateway).
 func newLink(client compassv1internalconnect.RunnerServiceClient) *ServerLink {
 	return &ServerLink{client: client}
 }
