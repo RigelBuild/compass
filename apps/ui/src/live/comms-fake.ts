@@ -383,7 +383,19 @@ export function wireTextMessage(opts: {
  *  `chosen` seeds a question's already-recorded answer — what the server sends
  *  when ANOTHER participant answered the ask (the state a stream push carries),
  *  which a test needs to tell an authoritative server value apart from local
- *  state. */
+ *  state.
+ *
+ *  `answered` seeds the server's own spent-flag (comms.proto Ask.answered),
+ *  which it flips on the first RespondToAsk it accepted. It DEFAULTS to whether
+ *  `chosen` recorded anything, because the server cannot hold a chosen id
+ *  without having accepted the respond that produced it — so seeding an answer
+ *  implies a closed ask. Pass it explicitly to build the states that answer
+ *  shape alone cannot express: an ask closed with NO chosen ids anywhere, which
+ *  is exactly a deliberate skip or a custom_text-only answer.
+ *
+ *  `freeText` names the questions the server holds with NO options — the ones
+ *  answerable by custom_text alone, so a recorded answer to one leaves its
+ *  `chosenOptionIds` empty even though the ask is closed. */
 export function wireAskMessage(opts: {
 	id: string;
 	channelId: string;
@@ -391,6 +403,8 @@ export function wireAskMessage(opts: {
 	askId: string;
 	questionIds: readonly string[];
 	chosen?: Readonly<Record<string, readonly string[]>>;
+	answered?: boolean;
+	freeText?: readonly string[];
 }): WireMessage {
 	return create(MessageSchema, {
 		id: opts.id,
@@ -403,22 +417,30 @@ export function wireAskMessage(opts: {
 					case: "ask",
 					value: create(AskSchema, {
 						askId: opts.askId,
+						answered:
+							opts.answered ??
+							Object.values(opts.chosen ?? {}).some((ids) => ids.length > 0),
 						questions: opts.questionIds.map((questionId) =>
 							create(AskQuestionSchema, {
 								questionId,
 								question: `${questionId}?`,
 								allowMultiple: false,
 								chosenOptionIds: [...(opts.chosen?.[questionId] ?? [])],
-								options: [
-									create(AskOptionSchema, {
-										id: `${questionId}-a`,
-										label: "A",
-									}),
-									create(AskOptionSchema, {
-										id: `${questionId}-b`,
-										label: "B",
-									}),
-								],
+								// A free-text question carries no options at all: it is
+								// answered by custom_text alone, which is why a recorded
+								// answer to one leaves chosenOptionIds empty.
+								options: opts.freeText?.includes(questionId)
+									? []
+									: [
+											create(AskOptionSchema, {
+												id: `${questionId}-a`,
+												label: "A",
+											}),
+											create(AskOptionSchema, {
+												id: `${questionId}-b`,
+												label: "B",
+											}),
+										],
 							}),
 						),
 					}),

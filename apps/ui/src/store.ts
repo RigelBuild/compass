@@ -978,11 +978,21 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 				q.chosenOptionIds.every((id, j) => id === was.chosenOptionIds[j])
 			);
 		});
-	// An ask the server has said nothing about: every question still unanswered.
-	// The server records an ask's answers only on a RespondToAsk it ACCEPTED, so
-	// this is exactly "no authoritative value yet".
-	const isAskUnanswered = (ask: Ask) =>
-		ask.questions.every((q) => q.chosenOptionIds.length === 0);
+	// An ask the server has said nothing about. The server's own `answered` flag
+	// is the authority: it flips exactly once, on the first RespondToAsk the
+	// server ACCEPTED, so `!answered` is precisely "no authoritative value yet".
+	//
+	// Scanning the questions for an empty `chosenOptionIds` CANNOT stand in for
+	// it, because two answer shapes the server accepts and records leave every
+	// question's chosen ids empty on a CLOSED ask: (a) a deliberate skip — an
+	// answer entry with no chosen ids and empty custom_text is an ACCEPTED skip
+	// that satisfies the wire's coverage-of-every-question contract (see
+	// `submitAsk`); (b) a custom_text-only answer to a free-text question, which
+	// carries no options to choose. Against either, a question scan reports "the
+	// server has no value" for an ask the server has already closed, so
+	// `preserveLocalAsks` restores stale local picks over it and the completing
+	// respond comes back ErrConflict (comms.proto Ask.answered).
+	const serverHasNoAnswer = (ask: Ask) => !ask.answered;
 	// Carry in-progress LOCAL ask answers across a stream push.
 	//
 	// The wire is atomic — one RespondToAsk per ask, issued only on the click
@@ -999,22 +1009,34 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	//     record is a claim about what the server was told, not an edit in
 	//     progress, and the rollback decides by comparing it against whatever
 	//     the stream has since put in its place;
-	//   - the pushed ask must be wholly unanswered: any recorded answer — ours
-	//     accepted, or another participant's — is the record and wins;
+	//   - the pushed ask must not be ANSWERED: once the server's `answered` flag
+	//     is set the ask is closed and its record — ours accepted, or another
+	//     participant's — wins;
 	//   - the questions must line up, or the ask's shape moved and it is new.
 	//
 	// A hoisted declaration so it can sit beside the ask machinery it reuses
 	// while `adoptComms`, defined above with the rest of the stream wiring,
 	// still calls it.
 	function preserveLocalAsks(prev: CommsState, next: CommsState): CommsState {
-		// The unsubmitted, actually-answered asks, by message id then ask id.
+		// The unsubmitted asks carrying a local pick, by message id then ask id.
 		// Empty whenever no ask is mid-answer — which is nearly every push — and
 		// then the pushed state is adopted untouched, references and all.
+		//
+		// This leg scans the LOCAL record's chosen ids on purpose: the question is
+		// "is there an unshipped edit here worth carrying", and a local ask never
+		// carries a server answer shape — `answered` is server-owned and stays
+		// false on everything we build, and neither skip-with-empty-custom_text
+		// nor a custom_text-only answer can exist locally, since both only come
+		// back FROM the server on an ask it closed. The authority question — has
+		// the server closed the ask — is `serverHasNoAnswer` on the PUSHED ask
+		// below.
 		const local = new Map<string, Map<string, Ask>>();
 		for (const msg of prev.messages) {
 			for (const b of msg.blocks) {
 				if (b.kind !== "ask") continue;
-				if (isAskSubmitted(b.ask.askId) || isAskUnanswered(b.ask)) continue;
+				if (isAskSubmitted(b.ask.askId)) continue;
+				if (b.ask.questions.every((q) => q.chosenOptionIds.length === 0))
+					continue;
 				const byAsk = local.get(msg.id) ?? new Map<string, Ask>();
 				byAsk.set(b.ask.askId, b.ask);
 				local.set(msg.id, byAsk);
@@ -1029,7 +1051,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 			const blocks = msg.blocks.map((b): ConvBlock => {
 				if (b.kind !== "ask") return b;
 				const mine = byAsk.get(b.ask.askId);
-				if (!mine || !isAskUnanswered(b.ask) || !sameQuestions(b.ask, mine)) {
+				if (!mine || !serverHasNoAnswer(b.ask) || !sameQuestions(b.ask, mine)) {
 					return b;
 				}
 				replaced = true;
@@ -1168,7 +1190,10 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		if (isAskSubmitted(askId)) return;
 		const ask = findAsk(messageId, askId);
 		if (!ask) return;
-		if (isAskUnanswered(ask)) return;
+		// "Nothing staged" is a question about the LOCAL record, so it scans the
+		// chosen ids rather than the server's `answered` flag: this ask has never
+		// been shipped, so the server has no view of it to consult.
+		if (ask.questions.every((q) => q.chosenOptionIds.length === 0)) return;
 		// No rollback target: nothing was recorded by this call, so a refusal
 		// leaves the local record exactly as the user staged it — still honest,
 		// still unsent, still retryable.

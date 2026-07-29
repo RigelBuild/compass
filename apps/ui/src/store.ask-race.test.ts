@@ -35,11 +35,16 @@ const CALLER = "acc-me";
 const CHANNEL = "chan-1";
 
 const wireChannel = (id: string) => buildWireChannel(id, CALLER);
-/** The ask as the SERVER holds it, with whatever answers it has recorded — the
- *  payload both the snapshot and a `messageUpdated` push carry. */
+/** The ask as the SERVER holds it, with whatever answers it has recorded and
+ *  whatever its spent-flag says — the payload both the snapshot and a
+ *  `messageUpdated` push carry. `answered` is passed separately from `chosen`
+ *  because the server records a CLOSED ask with no chosen ids at all in two
+ *  shapes (a deliberate skip, a custom_text-only answer), and those shapes are
+ *  the ones a chosen-ids scan cannot see. */
 const askMessage = (
 	questionIds: readonly string[],
 	chosen?: Readonly<Record<string, readonly string[]>>,
+	over?: { answered?: boolean; freeText?: readonly string[] },
 ) =>
 	wireAskMessage({
 		id: "m-ask",
@@ -48,6 +53,8 @@ const askMessage = (
 		askId: "ask-1",
 		questionIds,
 		chosen,
+		answered: over?.answered,
+		freeText: over?.freeText,
 	});
 
 // The chosen option ids of one question, read out of the store's reactive
@@ -208,6 +215,138 @@ describe("adoptComms vs an in-progress ask", () => {
 			await settled();
 
 			expect(chosenIn(store, "q-only")).toEqual([]);
+		});
+	});
+
+	// The shape that held this fix: a CLOSED ask with no chosen ids anywhere.
+	// A deliberate skip is an ACCEPTED answer — an entry with no chosen ids and
+	// empty custom_text satisfies the wire's coverage-of-every-question contract
+	// — so the server flips Ask.answered and records nothing to see. The server
+	// has closed this ask, so our unshipped click must NOT be restored over it:
+	// preserving it would leave the UI offering a completing click the server is
+	// guaranteed to refuse with ErrConflict.
+	//
+	// Mutation-check: this is precisely the case the old chosen-ids scan got
+	// wrong — it read this ask as "the server has said nothing" and let local
+	// state clobber it, so reverting the predicate reddens this test.
+	test("a fully-skipped answered ask beats an unsubmitted local one", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: { [CHANNEL]: [askMessage(["q-1", "q-2"])] },
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+			expect(fake.askResponses).toEqual([]);
+
+			// The push: answered, and EVERY question's chosen ids empty.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1", "q-2"], undefined, {
+							answered: true,
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+
+			// The server's closed ask wins: the local pick is gone.
+			expect(chosenIn(store, "q-1")).toEqual([]);
+			expect(chosenIn(store, "q-2")).toEqual([]);
+		});
+	});
+
+	// The second defeating shape: a free-text question carries NO options, so it
+	// is answered by custom_text alone and its chosenOptionIds stays empty even
+	// though the server accepted the answer and closed the ask. Same rule, same
+	// reason — only Ask.answered can see it.
+	//
+	// Mutation-check: reverting to the chosen-ids scan reddens this too.
+	test("a custom-text-only answered ask beats an unsubmitted local one", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: {
+				[CHANNEL]: [askMessage(["q-1", "q-free"])],
+			},
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1", "q-free"], undefined, {
+							answered: true,
+							freeText: ["q-free"],
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+
+			expect(chosenIn(store, "q-1")).toEqual([]);
+			expect(chosenIn(store, "q-free")).toEqual([]);
+		});
+	});
+
+	// The other side of the same flag, and the original bug: `answered: false`
+	// with empty chosen ids is the GENUINELY pending ask — the server was never
+	// told, has nothing to send back, and the user's unshipped click must
+	// survive. This is what stops the new predicate from being read as "any push
+	// wins".
+	//
+	// Mutation-check: a predicate that always reported "the server has a value"
+	// reddens this.
+	test("an unanswered pushed ask still preserves the local answer", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: { [CHANNEL]: [askMessage(["q-1", "q-2"])] },
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1", "q-2"], undefined, {
+							answered: false,
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+
+			// And it is real state, not a ghost: completing the ask ships both.
+			store.answerAsk("m-ask", "ask-1", "q-2", "q-2-a");
+			await settled();
+			expect(fake.askResponses).toEqual([
+				{
+					askId: "ask-1",
+					answers: [
+						{ questionId: "q-1", chosenOptionIds: ["q-1-a"] },
+						{ questionId: "q-2", chosenOptionIds: ["q-2-a"] },
+					],
+				},
+			]);
 		});
 	});
 });
