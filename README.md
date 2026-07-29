@@ -83,7 +83,14 @@ moon run :ci      # the full local gate: build, lint, test, contract drift
 The devenv shell is the supported path. Without nix you can still build: install
 proto (it bootstraps Go, bun, node, and moon from `.prototools`), and supply the
 rest the dev shell otherwise provides — `buf`, `protoc`, `protoc-gen-go`,
-`protoc-gen-connect-go` — then `bun install` and `moon run :ci`.
+`protoc-gen-connect-go`, `protoc-gen-es` — then `bun install` and
+`moon run :ci`.
+
+`protoc-gen-es` is on that list rather than arriving with `bun install`: the
+codegen tasks resolve it from PATH, not from `node_modules`, so its version is
+pinned by the toolchain that stamps it into every generated header instead of by
+a lockfile that can float underneath it. Install it at the version
+`devenv.nix` bakes.
 
 `moon run :ci` is the entire gate. CI (`.github/workflows/ci.yml`) runs that
 same command on every pull request, so "passes locally" and "passes in CI" are

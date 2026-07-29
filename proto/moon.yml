@@ -68,7 +68,7 @@ tasks:
     # redirect the imported types to the public go/gen package instead of
     # regenerating them). The checked-in clients are what consumers compile; drift
     # guarantees freshness.
-    script: 'command -v protoc-gen-es >/dev/null 2>&1 || { echo "protoc-gen-es is not on PATH: enter the devenv shell (direnv allow), or your devenv predates the baked plugin"; exit 1; }; buf generate && buf generate --template buf.gen.agent-ts.yaml --include-imports && buf generate --template buf.gen.internal-go.yaml'
+    script: 'command -v protoc-gen-es >/dev/null 2>&1 || { echo "protoc-gen-es is not on PATH: enter the devenv shell (direnv allow), or your devenv predates the baked plugin. Building without nix? It is not a bun devDep - install it yourself at the version devenv.nix bakes (see README Quickstart)"; exit 1; }; buf generate && buf generate --template buf.gen.agent-ts.yaml --include-imports && buf generate --template buf.gen.internal-go.yaml'
     options:
       runFromWorkspaceRoot: true
     inputs:
@@ -103,7 +103,7 @@ tasks:
     # without the baked plugin makes buf report `exec: executable file not
     # found`, which reads as a codegen fault rather than a missing tool. The
     # check is a no-op whenever the plugin is present.
-    script: 'command -v protoc-gen-es >/dev/null 2>&1 || { echo "protoc-gen-es is not on PATH: enter the devenv shell (direnv allow), or your devenv predates the baked plugin"; exit 1; }; tmp=$(mktemp -d) && if ! buf generate -o "$tmp" || ! buf generate --template buf.gen.agent-ts.yaml --include-imports -o "$tmp" || ! buf generate --template buf.gen.internal-go.yaml -o "$tmp"; then rm -rf "$tmp"; exit 1; fi; rc=0; git diff --no-index "$tmp/packages/compass-client/src/gen" packages/compass-client/src/gen || rc=1; git diff --no-index "$tmp/go/gen" go/gen || rc=1; git diff --no-index "$tmp/packages/compass-agent/src/gen" packages/compass-agent/src/gen || rc=1; git diff --no-index "$tmp/go/internal/gen" go/internal/gen || rc=1; rm -rf "$tmp"; exit $rc'
+    script: 'command -v protoc-gen-es >/dev/null 2>&1 || { echo "protoc-gen-es is not on PATH: enter the devenv shell (direnv allow), or your devenv predates the baked plugin. Building without nix? It is not a bun devDep - install it yourself at the version devenv.nix bakes (see README Quickstart)"; exit 1; }; tmp=$(mktemp -d) && if ! buf generate -o "$tmp" || ! buf generate --template buf.gen.agent-ts.yaml --include-imports -o "$tmp" || ! buf generate --template buf.gen.internal-go.yaml -o "$tmp"; then rm -rf "$tmp"; exit 1; fi; rc=0; git diff --no-index "$tmp/packages/compass-client/src/gen" packages/compass-client/src/gen || rc=1; git diff --no-index "$tmp/go/gen" go/gen || rc=1; git diff --no-index "$tmp/packages/compass-agent/src/gen" packages/compass-agent/src/gen || rc=1; git diff --no-index "$tmp/go/internal/gen" go/internal/gen || rc=1; rm -rf "$tmp"; exit $rc'
     options:
       runFromWorkspaceRoot: true
       cache: false
