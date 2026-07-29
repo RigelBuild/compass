@@ -971,6 +971,117 @@ test("F2(d): the SAME drop shape as F2(c) survives indefinitely once ops are APP
 	);
 }, 30000);
 
+test("a long apply survives >budget socket flaps — an op in flight is progress (SEA-1540)", async () => {
+	// The latent kill this fix closes. The source is apply-then-ack and its
+	// single consumer (CompassAgent's control loop) awaits the WHOLE turn before
+	// pulling the next op, so while a long turn applies op N the ack cursor
+	// CANNOT advance — op N is acked only when the consumer returns for N+1.
+	// This test models exactly that: the consumer pulls ONE op and then HOLDS
+	// it (never pulls again), so appliedCount is frozen at 0 and the op stays in
+	// flight, while the Control socket flaps MORE than CONTROL_RECONNECT_NO_PROGRESS_MAX
+	// times — each reopen redelivering the same op, deduped as already-queued so
+	// nothing new is ever applied. F2(c) is this exact drop shape with NOTHING
+	// in flight and dies at open 10; the only difference here is that an op is
+	// mid-apply, which is progress, so the session must SURVIVE past the budget.
+	//
+	// Non-vacuity (mutation-verified): revert the production progress calc to
+	// appliedCount-only — drop the `|| applyInFlight` arm so
+	// `madeProgress = applied > appliedAtLastDrop` — and this test goes RED: with
+	// nothing applied and the in-flight arm gone, `noProgress` climbs one per
+	// drop and the source `buffer.fail`s at open 10, so it never re-opens past
+	// the budget, `overBudget` never fires, and the opens-stalled detector wins
+	// the race → "failed". That reverted calc IS the SEA-1540 defect.
+	//
+	// Isolation: like F2(c)/F2(d) the reset-on-open line is the shared premise —
+	// every connection outlives the min-uptime floor (t += 6000 per header), so
+	// the backoff ladder resets on every drop and ONLY the no-progress budget is
+	// under test. See F2(c)'s note.
+	const rec = emptyRecorder();
+	const overBudget = deferred();
+	const pulledOp1 = deferred();
+	const release = deferred();
+	let t = 0;
+	const socketPath = await serve(rec, {
+		control: async function* (open) {
+			// An open past the budget can only happen if the in-flight arm spared
+			// the session — the whole point of the test.
+			if (open > CONTROL_RECONNECT_NO_PROGRESS_MAX) overBudget.resolve();
+			// Every open (re)delivers the SAME op 1: genuinely queued on open 1,
+			// deduped as already-queued on every reopen (:303), so appliedCount
+			// never advances and the source's only progress signal is that op 1 is
+			// in flight.
+			yield promptOp(1n, "op-1");
+			// On the FIRST open, drop only AFTER the consumer has pulled op 1, so
+			// applyInFlight is true from the very first budget check. Later opens
+			// need no gate: the consumer holds op 1 for the whole test, so
+			// applyInFlight stays true across every drop.
+			if (open === 1) await pulledOp1.promise;
+			throw new Error("blip mid-apply");
+		},
+	});
+	const { immediate } = recordingImmediate();
+	const source = createSocketControlSource(
+		// Same 6s-per-connection clock as F2(c)/F2(d): past the floor, so the
+		// ladder resets on every drop and cannot be what bounds (or spares) this
+		// session — only the no-progress budget can.
+		headerObserver(createUnixSocketTransport(socketPath), () => {
+			t += 6000;
+		}),
+		immediate,
+		{ onUnmapped: () => {}, now: () => t },
+	);
+	// A consumer that pulls ONE op and then HOLDS it — a long apply / long turn.
+	// It never pulls again, so it never acks op 1 (appliedCount stays 0) and the
+	// op stays in flight for the whole flap storm.
+	const it = source[Symbol.asyncIterator]();
+	const held = (async () => {
+		await it.next();
+		pulledOp1.resolve();
+		await release.promise;
+		await it.return?.();
+	})();
+	// The RED-case detector, named rather than left to surface as a suite
+	// timeout (the discipline F2(c)/F2(d) follow, mirroring ackGate.starved). If
+	// the reverted calc fails the source at the budget, it stops re-opening
+	// Control, so `controlOpens` freezes at or below the budget: an unchanged
+	// count across a full window, while still <= the budget, is that terminal
+	// state. In the GREEN case the count climbs past the budget every
+	// ~backoff[0]ms and `overBudget` wins the race long before any window
+	// elapses unchanged.
+	//
+	// Real setTimeout (not fake timers) is deliberate here, as in ackGate: this
+	// is a live-socket integration test whose RED terminal state — buffer.fail()
+	// with no puller parked — emits no promise or event to await, and the source
+	// drives its own reconnects on real Node timers we do not control. Polling
+	// the one observable (controlOpens) over a real window is the only signal;
+	// fake timers cannot advance the source's out-of-test reconnect clock.
+	const opensStalled = (ms: number): Promise<void> =>
+		new Promise<void>((resolve) => {
+			const tick = (): void => {
+				const at = rec.controlOpens;
+				setTimeout(() => {
+					if (
+						rec.controlOpens === at &&
+						at <= CONTROL_RECONNECT_NO_PROGRESS_MAX
+					)
+						resolve();
+					else tick();
+				}, ms).unref?.();
+			};
+			tick();
+		});
+	const outcome = await Promise.race([
+		overBudget.promise.then(() => "survived" as const),
+		opensStalled(1000).then(() => "failed" as const),
+	]);
+	expect(outcome).toBe("survived");
+	// Re-opened PAST the budget with a single op in flight the whole time and
+	// nothing ever applied — the exact case appliedCount-only would have killed.
+	expect(rec.controlOpens).toBeGreaterThan(CONTROL_RECONNECT_NO_PROGRESS_MAX);
+	release.resolve();
+	await held;
+}, 15000);
+
 test("F3: abandoning the for-await (iterator return()) aborts the pump AND cancels the Control server-stream (M2)", async () => {
 	// The server holds the stream open after rc(1) and parks on its OWN handler
 	// AbortSignal, which connect fires when the client cancels the RPC. return()

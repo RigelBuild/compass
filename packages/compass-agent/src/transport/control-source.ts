@@ -96,9 +96,21 @@ export const CONTROL_RECONNECT_BACKOFF_MS: readonly number[] = [
 export const CONTROL_RECONNECT_MIN_UPTIME_MS = 5000;
 
 // The no-progress reconnect budget: at most this many consecutive reconnects
-// WITHOUT the agent applying a single control op before the drop is definitive
-// and the iterable fails. Reset by PROGRESS — the ack cursor advancing, i.e. an
-// op actually applied — never by elapsed time.
+// WITHOUT the session making progress before the drop is definitive and the
+// iterable fails. Progress is EITHER an op applied since the last drop (the ack
+// cursor advanced) OR an op currently in flight — one yielded to the consumer
+// and awaiting its apply-then-ack. Reset by progress, never by elapsed time.
+//
+// The in-flight arm is load-bearing, not a nicety (SEA-1540). The source is
+// apply-then-ack and its single consumer (CompassAgent's control loop) awaits
+// the WHOLE turn before pulling the next op, so while a long turn applies op N
+// the ack cursor cannot advance — op N is acked only when the consumer returns
+// for N+1. A budget watching `appliedCount` alone therefore reads a long apply
+// as zero progress: if the Control socket flaps >= this many times during that
+// one turn (each reconnect redelivering op N, deduped as already-queued so
+// nothing new applies), the budget would fill and kill a healthy session
+// mid-apply. An op in flight is progress precisely because the session IS
+// getting that op done, however long the apply runs.
 //
 // Progress, not rate, is the discriminator, because rate cannot express the
 // distinction being asked of it. The backoff schedule catches a socket flapping
@@ -119,16 +131,18 @@ export const CONTROL_RECONNECT_MIN_UPTIME_MS = 5000;
 // produce the SAME reconnect rate, so no threshold separates them.
 //
 // What separates them is whether the session is getting anything done. A wedged
-// socket redelivers nothing and applies nothing however slowly it flaps, so it
-// exhausts this budget; a session that applies ops between blips resets it and
+// socket redelivers nothing, applies nothing, and holds nothing in flight
+// however slowly it flaps, so it exhausts this budget; a session that applies
+// ops between blips — or is mid-apply on one when a blip lands — resets it and
 // is never killed, at any spacing.
 //
 // The residual, stated rather than hidden: a genuinely IDLE session — one with
-// no control traffic at all — makes no progress either, so 10 consecutive
-// no-op reconnects fail it. That is deliberate fail-closed behavior. A control
-// stream that has re-opened ten times and carried nothing is indistinguishable
-// at this seam from a Runner that will never send again, and surfacing ERRORED
-// is better than an agent silently reconnecting forever against a dead peer.
+// no control traffic at all, nothing applied and nothing in flight — makes no
+// progress either, so 10 consecutive no-op reconnects fail it. That is
+// deliberate fail-closed behavior. A control stream that has re-opened ten times
+// and carried nothing is indistinguishable at this seam from a Runner that will
+// never send again, and surfacing ERRORED is better than an agent silently
+// reconnecting forever against a dead peer.
 export const CONTROL_RECONNECT_NO_PROGRESS_MAX = 10;
 
 // The immediate-dispatch handle: the SDK actions a mid-turn `steer` / turn-end
@@ -254,6 +268,13 @@ export function createSocketControlSource(
 	// enforces it locally (invariant 1) — a belt-and-suspenders on the Runner's
 	// hold and CompassAgent's iterator-side barrier.
 	let replayComplete = false;
+	// SEA-1540: an op is "in flight" when the iterator has yielded it to the
+	// consumer and is awaiting the apply-then-ack the next pull proves. Set by
+	// the iterator's next() and read by pump's no-progress budget: a drop while
+	// an apply is in flight is progress, not a wedge — a long turn cannot advance
+	// the ack cursor until the consumer returns for the next op. Factory-scope
+	// mutable state shared between the iterator and pump, like the two above.
+	let applyInFlight = false;
 
 	function count(eventType: string, reason: string): void {
 		onUnmapped({ kind: "unmapped", eventType, reason });
@@ -389,10 +410,13 @@ export function createSocketControlSource(
 	// rejection.
 	async function pump(): Promise<void> {
 		let attempt = 0;
-		// Consecutive reconnects since the last op the agent actually applied. The
-		// progress signal is the AckCursor's applied count, not a timestamp: it
-		// advances only on a genuinely new application, so a redelivery the source
-		// dedups and re-acks is correctly NOT progress.
+		// Consecutive reconnects without the session making progress. Progress is
+		// the AckCursor's applied count advancing OR an apply in flight
+		// (`applyInFlight`), not a timestamp: the count advances only on a
+		// genuinely new application (a redelivery the source dedups and re-acks is
+		// correctly NOT progress), and the in-flight arm keeps a long apply
+		// mid-turn — which cannot advance the cursor until the consumer returns for
+		// the next op — from reading as a wedge (SEA-1540).
 		let noProgress = 0;
 		let appliedAtLastDrop = acks.appliedCount;
 		for (;;) {
@@ -444,14 +468,19 @@ export function createSocketControlSource(
 				// the termination the reset cannot clear. A socket that is accepted,
 				// stays up past the floor, and then fails (wedged Runner, server-side
 				// deadline, door idle timeout) resets the ladder on every drop, so the
-				// ladder can never bound it; what bounds it is that it never delivers
-				// an op the agent applies. Any single application zeroes the counter,
-				// so a healthy session is untouched however widely its blips are
-				// spaced — the distinction a reconnect-RATE window could not draw,
-				// since a healthy sparse-blip session and a socket wedging at an idle
-				// timeout reconnect at the same rate.
+				// ladder can never bound it; what bounds it is that it never makes
+				// progress. Progress is any single application since the last drop OR
+				// an op in flight at drop time (`applyInFlight`) — a long apply
+				// mid-turn cannot advance the ack cursor until the consumer returns for
+				// the next op, so without the in-flight arm a healthy session flapping
+				// during one long turn would be killed mid-apply (SEA-1540). Either arm
+				// zeroes the counter, so a healthy session is untouched however widely
+				// its blips are spaced — the distinction a reconnect-RATE window could
+				// not draw, since a healthy sparse-blip session and a socket wedging at
+				// an idle timeout reconnect at the same rate.
 				const applied = acks.appliedCount;
-				noProgress = applied > appliedAtLastDrop ? 0 : noProgress + 1;
+				const madeProgress = applied > appliedAtLastDrop || applyInFlight;
+				noProgress = madeProgress ? 0 : noProgress + 1;
 				appliedAtLastDrop = applied;
 				if (noProgress >= CONTROL_RECONNECT_NO_PROGRESS_MAX) {
 					buffer.fail(err);
@@ -506,6 +535,7 @@ export function createSocketControlSource(
 					if (lastYielded !== undefined) {
 						const applied = lastYielded;
 						lastYielded = undefined;
+						applyInFlight = false;
 						queued.delete(applied.seq);
 						if (applied.op.kind === "replayComplete")
 							acks.emitReplayCompleteAck();
@@ -514,6 +544,7 @@ export function createSocketControlSource(
 					const r = await buffer.pull();
 					if (r.done) return { value: undefined, done: true };
 					lastYielded = r.value;
+					applyInFlight = true;
 					return { value: r.value.op, done: false };
 				},
 				// The consumer abandoned the `for await` (agent.ts's control loop
