@@ -267,8 +267,10 @@ func TestRespondToAskHappyPathEmitsMessageUpdated(t *testing.T) {
 		t.Fatalf("event payload = %T, want MessageUpdated", got.GetPayload())
 	}
 	var chosen []string
+	var answered bool
 	for _, b := range mu.GetMessage().GetBlocks() {
 		if a := b.GetAsk(); a != nil && a.GetAskId() == "ask-1" {
+			answered = a.GetAnswered()
 			for _, q := range a.GetQuestions() {
 				if q.GetQuestionId() == "q1" {
 					chosen = q.GetChosenOptionIds()
@@ -278,6 +280,202 @@ func TestRespondToAskHappyPathEmitsMessageUpdated(t *testing.T) {
 	}
 	if len(chosen) != 1 || chosen[0] != "opt-a" {
 		t.Fatalf("MessageUpdated ask chosen = %v, want [opt-a]", chosen)
+	}
+	// The live-stream surface is what a UI consumes to flip an ask from
+	// answerable to spent, so the flag is asserted where it actually matters,
+	// not only on the ListMessages read.
+	if !answered {
+		t.Fatal("MessageUpdated ask reads answered=false, want true")
+	}
+}
+
+// TestPostMessageDropsCallerSuppliedAnswerState pins that answer state is
+// server-owned on the way IN. A caller can put anything in an Ask block it
+// posts, so askFromWire must drop every field only the server may set:
+// answered, and the per-question chosen_option_ids / custom_text / timed_out.
+//
+// It matters because a client renders a settled ask from those fields. An ask
+// posted pre-populated would read as already-answered-and-locked while the
+// server still holds it pending and answerable — the mirror of the bug the
+// answered flag closes, arriving through the door instead of the window.
+// ask_id is asserted alongside them since it is dropped by the same rule.
+//
+// The keep half is pinned here too: every content field the caller DID supply
+// must survive. Over-dropping is as wrong as under-dropping — nothing else
+// fails if askFromWire also swallowed header / allow_multiple / recommended or
+// a per-option description / preview, so agent-supplied question content would
+// vanish with the suite green. The drop/keep boundary is the contract; both
+// halves belong in one test.
+func TestPostMessageDropsCallerSuppliedAnswerState(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	author := mustUser(t, st, "author")
+	ch, err := st.CreateChannel(ctx, author.ID, store.NewChannel{Name: "room", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	// Every field the server owns, set by the caller to a value it must not
+	// keep, alongside every content field, which it must.
+	recommended := int32(1)
+	posted, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
+		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
+			AskId:    "forged-ask-id",
+			Answered: true,
+			Questions: []*compassv1.AskQuestion{{
+				QuestionId: "q1",
+				Question:   "Which environment?",
+				Header:     "Deploy target",
+				Options: []*compassv1.AskOption{
+					{Id: "opt-a", Label: "staging", Description: "the safe one", Preview: "staging.example"},
+					{Id: "opt-b", Label: "prod", Description: "the scary one", Preview: "prod.example"},
+				},
+				AllowMultiple:   true,
+				Recommended:     &recommended,
+				ChosenOptionIds: []string{"opt-a"},
+				CustomText:      "forged answer",
+				TimedOut:        true,
+			}},
+		}}}},
+	}))
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+
+	var got *compassv1.Ask
+	for _, b := range posted.Msg.GetMessage().GetBlocks() {
+		if a := b.GetAsk(); a != nil {
+			got = a
+		}
+	}
+	if got == nil {
+		t.Fatal("posted message carries no ask block")
+	}
+	if got.GetAnswered() {
+		t.Error("caller-supplied answered=true was honored, want a pending ask")
+	}
+	if got.GetAskId() == "forged-ask-id" {
+		t.Error("caller-supplied ask_id was honored, want a server-minted id")
+	}
+	if got.GetAskId() == "" {
+		t.Error("server minted no ask id")
+	}
+	q := got.GetQuestions()[0]
+	if len(q.GetChosenOptionIds()) != 0 {
+		t.Errorf("caller-supplied chosen_option_ids = %v, want none", q.GetChosenOptionIds())
+	}
+	if q.GetCustomText() != "" {
+		t.Errorf("caller-supplied custom_text = %q, want empty", q.GetCustomText())
+	}
+	if q.GetTimedOut() {
+		t.Error("caller-supplied timed_out=true was honored, want false")
+	}
+
+	// The other half of the boundary: every content field the caller supplied
+	// survives untouched. Nothing else catches an over-broad drop here.
+	if q.GetQuestionId() != "q1" {
+		t.Errorf("question_id = %q, want %q", q.GetQuestionId(), "q1")
+	}
+	if q.GetQuestion() != "Which environment?" {
+		t.Errorf("question = %q, want %q", q.GetQuestion(), "Which environment?")
+	}
+	if q.GetHeader() != "Deploy target" {
+		t.Errorf("header = %q, want %q", q.GetHeader(), "Deploy target")
+	}
+	if !q.GetAllowMultiple() {
+		t.Error("allow_multiple = false, want true")
+	}
+	if q.GetRecommended() != recommended {
+		t.Errorf("recommended = %d, want %d", q.GetRecommended(), recommended)
+	}
+	opts := q.GetOptions()
+	if len(opts) != 2 {
+		t.Fatalf("options length = %d, want 2", len(opts))
+	}
+	for i, want := range []*compassv1.AskOption{
+		{Id: "opt-a", Label: "staging", Description: "the safe one", Preview: "staging.example"},
+		{Id: "opt-b", Label: "prod", Description: "the scary one", Preview: "prod.example"},
+	} {
+		if got := opts[i]; got.GetId() != want.GetId() || got.GetLabel() != want.GetLabel() ||
+			got.GetDescription() != want.GetDescription() || got.GetPreview() != want.GetPreview() {
+			t.Errorf("options[%d] = {%q %q %q %q}, want {%q %q %q %q}",
+				i, got.GetId(), got.GetLabel(), got.GetDescription(), got.GetPreview(),
+				want.GetId(), want.GetLabel(), want.GetDescription(), want.GetPreview())
+		}
+	}
+
+	// The ask is genuinely still answerable — the drop left real pending state,
+	// not a cosmetically-blanked row.
+	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+		AskId:   got.GetAskId(),
+		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-b"}}},
+	})); err != nil {
+		t.Fatalf("RespondToAsk on the posted ask: %v", err)
+	}
+}
+
+// TestAskAnsweredFlagReachesTheWire is the L2 mapping regression for the one
+// field that tells a client an ask is spent. The store's Answered flag is the
+// ONLY reliable answered-signal — a fully-skipped ask leaves every question's
+// answer fields empty, so a client inspecting the questions alone cannot
+// distinguish spent from pending. Before this projection existed the flag was
+// dropped in askToWire, so a second participant saw an answered ask as
+// answerable and fired a RespondToAsk the server is guaranteed to reject with
+// ErrConflict, silently discarding their click.
+//
+// It asserts BOTH poles from the same ask: pending reads false, and the same
+// ask reads true after RespondToAsk. Asserting only the true pole would pass
+// against a hard-coded `Answered: true`.
+func TestAskAnsweredFlagReachesTheWire(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	author := mustUser(t, st, "author")
+	ch, err := st.CreateChannel(ctx, author.ID, store.NewChannel{Name: "room", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if _, _, err := st.AppendMessage(ctx, store.Message{
+		Container: store.ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
+		Blocks: []store.MessageBlock{pendingAskStore("ask-1")},
+	}, ""); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	// readAsk pulls ask-1 off the ListMessages wire read — the same projection
+	// a UI consumes, not the store row.
+	readAsk := func() *compassv1.Ask {
+		t.Helper()
+		list, err := svc.ListMessages(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+			Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(ch.ID)},
+		}))
+		if err != nil {
+			t.Fatalf("ListMessages: %v", err)
+		}
+		for _, m := range list.Msg.GetMessages() {
+			for _, b := range m.GetBlocks() {
+				if a := b.GetAsk(); a != nil && a.GetAskId() == "ask-1" {
+					return a
+				}
+			}
+		}
+		t.Fatal("ask-1 not found on the wire")
+		return nil
+	}
+
+	if readAsk().GetAnswered() {
+		t.Fatal("pending ask reads answered=true on the wire, want false")
+	}
+
+	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+		AskId:   "ask-1",
+		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
+	})); err != nil {
+		t.Fatalf("RespondToAsk: %v", err)
+	}
+
+	if !readAsk().GetAnswered() {
+		t.Fatal("answered ask reads answered=false on the wire, want true — the flag is not projected")
 	}
 }
 

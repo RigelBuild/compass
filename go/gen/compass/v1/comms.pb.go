@@ -877,7 +877,18 @@ type Ask struct {
 	// the Ask by AskQuestion.question_id.
 	AskId string `protobuf:"bytes,1,opt,name=ask_id,json=askId,proto3" json:"ask_id,omitempty"`
 	// The questions, in the order the agent asked them. At least one.
-	Questions     []*AskQuestion `protobuf:"bytes,6,rep,name=questions,proto3" json:"questions,omitempty"`
+	Questions []*AskQuestion `protobuf:"bytes,6,rep,name=questions,proto3" json:"questions,omitempty"`
+	// True once this ask has been answered. It flips exactly once, on the first
+	// RespondToAsk, and a second one is rejected — so a client that cannot see
+	// this field renders an answered ask as answerable and fires an RPC the
+	// server is guaranteed to refuse. It is the ONLY reliable answered-signal:
+	// a fully-skipped ask leaves every AskQuestion's answer fields empty, which
+	// is indistinguishable from pending by inspecting the questions alone.
+	//
+	// Server-owned: set only by the server, on RespondToAsk. A value supplied on
+	// an inbound Ask (via PostMessage) is IGNORED — an ask being posted has by
+	// definition not been answered.
+	Answered      bool `protobuf:"varint,7,opt,name=answered,proto3" json:"answered,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -926,6 +937,13 @@ func (x *Ask) GetQuestions() []*AskQuestion {
 	return nil
 }
 
+func (x *Ask) GetAnswered() bool {
+	if x != nil {
+		return x.Answered
+	}
+	return false
+}
+
 // One question within an Ask, carrying its own options and answer state.
 type AskQuestion struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -949,6 +967,9 @@ type AskQuestion struct {
 	// the agent recommended nothing.
 	Recommended *int32 `protobuf:"varint,6,opt,name=recommended,proto3,oneof" json:"recommended,omitempty"`
 	// ── Answer state, empty/unset while pending (kept for audit) ──
+	// Server-owned: recorded only by RespondToAsk. Values supplied on an inbound
+	// Ask (via PostMessage) are IGNORED — an ask being posted has by definition
+	// not been answered.
 	// The chosen option ids once answered.
 	ChosenOptionIds []string `protobuf:"bytes,7,rep,name=chosen_option_ids,json=chosenOptionIds,proto3" json:"chosen_option_ids,omitempty"`
 	// The participant's free-text answer, when they typed one instead of (or,
@@ -3257,10 +3278,11 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\fMessageBlock\x12\x14\n" +
 	"\x04text\x18\x01 \x01(\tH\x00R\x04text\x12#\n" +
 	"\x03ask\x18\x06 \x01(\v2\x0f.compass.v1.AskH\x00R\x03askB\a\n" +
-	"\x05blockJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\athoughtR\ttool_callR\x04planR\x04diff\"\x8f\x01\n" +
+	"\x05blockJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\athoughtR\ttool_callR\x04planR\x04diff\"\xab\x01\n" +
 	"\x03Ask\x12\x15\n" +
 	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x125\n" +
-	"\tquestions\x18\x06 \x03(\v2\x17.compass.v1.AskQuestionR\tquestionsJ\x04\b\x02\x10\x06R\bquestionR\aoptionsR\x0eallow_multipleR\x11chosen_option_ids\"\xdb\x02\n" +
+	"\tquestions\x18\x06 \x03(\v2\x17.compass.v1.AskQuestionR\tquestions\x12\x1a\n" +
+	"\banswered\x18\a \x01(\bR\bansweredJ\x04\b\x02\x10\x06R\bquestionR\aoptionsR\x0eallow_multipleR\x11chosen_option_ids\"\xdb\x02\n" +
 	"\vAskQuestion\x12\x1f\n" +
 	"\vquestion_id\x18\x01 \x01(\tR\n" +
 	"questionId\x12\x1a\n" +
