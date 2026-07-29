@@ -12,15 +12,21 @@ package gateway
 // The load-bearing property is ordering under concurrency. A durable unary can
 // race a stream frame; if two goroutines allocated the sequence and then sent
 // independently, allocation order could diverge from emission order and the hub's
-// gap detector (seq > lastSeq+1) would record a false gap. So one mutex guards
-// BOTH the sequence allocation AND the matching Send as a single critical
-// section: the goroutine that allocates seq N is the one that sends seq N, before
-// any other goroutine can allocate N+1. Emission order == allocation order by
-// construction, across both paths (transport-consolidation record).
+// gap detector (seq > lastSeq+1) would record a false gap. So a publisher holds
+// its own stream mutex across BOTH the sequence allocation AND the matching Send
+// as a single critical section: the goroutine that allocates seq N is the one that
+// sends seq N, before any other goroutine on that publisher can allocate N+1.
+// Emission order == allocation order by construction, across both paths
+// (transport-consolidation record). The counter's own lock is separate and is held
+// only to allocate, so one publisher's close can never stall another's Send.
 //
-// Scope mirrors relay.go's eventPublisher: the sequence is per-session (one
-// publisher per live Publish stream), exact for the single-Runner / single-live-
-// session MVP. The per-Runner hoist stays deferred (relay.go:113-119).
+// Scope: the counter is Gateway-scoped — per socket, i.e. per Runner link — and
+// survives a publisher replacement, because a publisher is replaceable within one
+// session and a per-publisher counter would restart the sequence on that swap.
+// relay.go's eventPublisher still owns a SECOND counter, and both feed the hub's
+// single high-water mark (runnerhub/hub.go:229-236), so gap detection is only
+// meaningful while exactly one of them is live. Unifying the two into one truly
+// per-Runner sequence is T9 (relay.go:113-119).
 
 import (
 	"context"
@@ -39,15 +45,45 @@ type EventRelay interface {
 }
 
 // seqCounter is the RunnerSeq allocator shared by every publisher a Gateway
-// builds for its socket. It is a struct rather than a bare uint64 because its
-// mutex is the publishers' critical section: the goroutine that allocates
-// sequence N is the one that sends N, before any concurrent sender allocates
-// N+1, so allocation order == emission order. Sharing the LOCK as well as the
-// counter also serializes a replacement publisher's first Send against the
-// outgoing publisher's close, so a swap cannot interleave two upstream writers.
+// builds for its socket. It carries ONLY the counter and the lock that guards
+// the counter — deliberately not the publishers' stream lock.
+//
+// Sharing the counter is required: a publisher is replaceable within one session,
+// and a per-publisher counter restarts the sequence on that swap. Sharing the
+// STREAM lock as well is not, and is actively harmful: acquirePublisher installs
+// a replacement and then closes the stale publisher outside pubMu, so a
+// CloseAndReceive round-trip against an unresponsive-but-connected Server would
+// block every forward on the live replacement's separate upstream stream. Two
+// distinct streams need no mutual ordering — the hub keeps one global high-water
+// mark and cannot observe an interleaving between them — so the coupling would
+// buy nothing and cost unbounded liveness.
 type seqCounter struct {
 	mu sync.Mutex
 	n  uint64
+}
+
+// next allocates and returns the next sequence. Called with the publisher's own
+// stream lock held, so allocation order still equals emission order.
+func (c *seqCounter) next() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+	return c.n
+}
+
+// rollback returns an allocated-but-unsent sequence. A forward that fails must
+// not burn a number: the counter is socket-lifetime, so a burned number is a
+// permanent hole, and the hub flags a skipped number as in-transit loss
+// (runnerhub/hub.go:230). A durable frame erring back to the agent is correct,
+// expected behaviour — it must not make the Server report a loss that did not
+// happen. Safe because the caller holds its stream lock across allocate-and-send,
+// so no other goroutine can have sent past this value.
+func (c *seqCounter) rollback(seq uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.n == seq {
+		c.n--
+	}
 }
 
 // sessionPublisher owns the one PublishEvents client-stream for a session and
@@ -65,12 +101,18 @@ type seqCounter struct {
 type sessionPublisher struct {
 	sessionID string
 
-	// seq is the Gateway's shared allocator. Its mutex guards this publisher's
-	// stream too: connect client-streams are not safe for concurrent Send, and
-	// one lock covering allocate-and-send is what makes allocation order equal
-	// emission order.
-	seq    *seqCounter
+	// mu guards this publisher's stream: connect client-streams are not safe for
+	// concurrent Send, and holding it across allocate-and-send is what makes
+	// allocation order equal emission order. It is per-publisher, NOT shared with
+	// the Gateway's other publishers — a close on an outgoing publisher must not
+	// be able to block a forward on its live replacement.
+	mu     sync.Mutex
 	stream *connect.ClientStreamForClient[compassv1internal.PublishEventsRequest, compassv1internal.PublishEventsResponse]
+
+	// seq is the Gateway's shared allocator, carried across publishers so the
+	// sequence survives a replacement. Only the counter is shared; its lock is
+	// held just long enough to allocate.
+	seq *seqCounter
 }
 
 // newSessionPublisher opens the upstream PublishEvents client-stream for
@@ -93,26 +135,35 @@ func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string
 // the durable frame at-most-once per key at the comms Message store. A send error
 // is returned to the caller: the Publish handler ends its stream, the
 // PostConversationFrame unary surfaces it delivered-or-erred.
+//
+// A failed Send rolls the allocation back. The counter is socket-lifetime, so an
+// unsent number would be a permanent hole, and the hub reads a skipped number as
+// in-transit loss — a durable frame erring back to the agent for retry must not
+// make the Server report a loss that never happened.
 func (p *sessionPublisher) forward(frame *compassv1internal.AgentFrame, idempotencyKey string) error {
-	p.seq.mu.Lock()
-	defer p.seq.mu.Unlock()
-	p.seq.n++
-	return p.stream.Send(&compassv1internal.PublishEventsRequest{
-		RunnerSeq:      p.seq.n,
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	seq := p.seq.next()
+	if err := p.stream.Send(&compassv1internal.PublishEventsRequest{
+		RunnerSeq:      seq,
 		SessionId:      p.sessionID,
 		Frame:          frame,
 		IdempotencyKey: idempotencyKey,
-	})
+	}); err != nil {
+		p.seq.rollback(seq)
+		return err
+	}
+	return nil
 }
 
 // close closes the upstream stream and awaits its ack, mirroring the stdout
 // relay's CloseAndReceive at EOF (relay.go:168-171). Called by the Publish
 // handler when the agent's client-stream ends. Returns the ack error (nil on a
-// clean close) so the handler can classify it. Takes the shared lock, so a close
-// never interleaves with another publisher's Send.
+// clean close) so the handler can classify it. Takes only this publisher's own
+// lock, so a slow ack cannot stall another publisher's Send.
 func (p *sessionPublisher) close() error {
-	p.seq.mu.Lock()
-	defer p.seq.mu.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	_, err := p.stream.CloseAndReceive()
 	return err
 }
@@ -165,13 +216,13 @@ func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 // pubMu is held ACROSS the close, not just around the field clear. Clearing
 // first and closing after opens a window where g.pub is nil while the old
 // stream is still draining: a concurrent PostConversationFrame acquires, sees
-// nil, and builds a SECOND publisher for the same session whose seq restarts at
-// 0. RunnerSeq is contractually monotonic across the Runner's whole event
-// stream (runner.proto), and the hub's gap detector is one shared high-water
-// mark — a restarted counter replays low seqs under a high lastSeq, so the
-// detector goes deaf for that range and a genuine in-transit loss inside it is
-// no longer detectable. acquirePublisher takes the same mutex, so it now blocks
-// until the close completes and then builds exactly one fresh publisher.
+// nil, and builds a SECOND publisher while the old one is still sending. Two
+// live publishers on one session interleave writes on two upstream streams, so
+// the Server sees this session's frames arrive out of emission order across
+// them. (They no longer restart the sequence — the counter is the Gateway's, not
+// the publisher's — but a shared counter does not order two independent
+// streams.) acquirePublisher takes the same mutex, so it blocks until the close
+// completes and then builds exactly one fresh publisher.
 func (g *Gateway) releasePublisher() error {
 	g.pubMu.Lock()
 	defer g.pubMu.Unlock()

@@ -148,10 +148,16 @@ type Gateway struct {
 	// seq > lastSeq+1 (runnerhub/hub.go:230), so replayed low seqs are ACCEPTED
 	// and in-transit loss inside the replayed range stops being detectable.
 	// Hoisting it to the socket-lifetime Gateway makes the sequence survive every
-	// publisher replacement. Scope is still per-Runner-link rather than truly
-	// per-Runner (relay.go's eventPublisher owns a separate counter; unifying
-	// both is T9's multi-session work) — but within this link it is now
-	// unbroken.
+	// publisher replacement.
+	//
+	// Scope is per-Runner-link, not yet truly per-Runner, and the hazard is worth
+	// stating precisely: relay.go's eventPublisher owns a SECOND counter, and both
+	// feed the hub's one high-water mark (runnerhub/hub.go:229-236). So gap
+	// detection is meaningful only while exactly one of them is live — a live
+	// stdout relay alongside a live Gateway would have the two counters corrupt
+	// each other's detection. This path replaced the stdout relay for gateway
+	// traffic (see publisher.go's header), so that is the case today; unifying the
+	// two counters is T9's multi-session work.
 	pubMu sync.Mutex
 	pub   *sessionPublisher
 	seq   seqCounter

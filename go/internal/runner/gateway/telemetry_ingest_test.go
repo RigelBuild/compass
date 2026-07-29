@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -462,9 +463,13 @@ func TestPostConversationFrameFailureDoesNotWedgeThePublisher(t *testing.T) {
 	// between this test's release and newRunnerServiceServer's own
 	// httptest.Server.Close is unspecified, so leaving it to cleanup lets the
 	// server close while its handler is still parked mid-Receive — which hangs
-	// Server.Close on its handler WaitGroup and times out the whole package
-	// (measured 3-of-8 runs at -race -count=10). Releasing inline ends the
-	// stream, and awaitEnded proves the handler returned before any cleanup runs.
+	// Server.Close on its handler WaitGroup and times out the WHOLE package, not
+	// just this test.
+	//
+	// Measured, by reverting exactly this to `t.Cleanup(func() { _ =
+	// g.releasePublisher() })` on the current tree: 6 of 8 runs hang at -race
+	// -count=10, against 0 of 8 as written. Releasing inline ends the stream, and
+	// awaitEnded proves the handler returned before any cleanup runs.
 	_ = g.releasePublisher()
 	capture.awaitEnded(t)
 }
@@ -564,22 +569,118 @@ func (s *seqSink) seqs() []uint64 {
 	return append([]uint64(nil), s.seen...)
 }
 
-// The sibling above closes the Publish stream only after every forward has
-// returned, explicitly so releasePublisher cannot run mid-forward — which means
-// it does not cover the window that matters. This one enters it: the release
-// races the durable unaries.
+// THE guard for the counter's ownership, and it needs no race at all: the defect
+// is purely sequential. Post, release, post — a counter owned by the publisher
+// restarts, so the second frame is stamped 1 again.
 //
-// The defect it caught is not the clear-then-close window (releasePublisher
-// already holds pubMu across the close) but the counter's OWNER: seq lived on
-// sessionPublisher, so any release-then-reacquire inside one session restarted
-// stamping at 0. runner.proto:170-172 states runner_seq is monotonic across the
-// Runner's whole event stream, and the hub flags only seq > lastSeq+1
-// (runnerhub/hub.go:230) — so replayed low seqs are ACCEPTED and in-transit loss
-// in the replayed range stops being detectable. The durable path releases on any
-// upstream forward failure, which put this on a common path.
+// Asserting the exact sequence rather than merely the absence of a duplicate:
+// a variant defect that restarts at a value which happens not to collide would
+// pass a duplicates-only check. [1 2] pins the contract.
 //
 // RED: give newSessionPublisher its own &seqCounter{} instead of the Gateway's
-// -> 8-of-10 runs report a duplicate RunnerSeq under -race.
+// -> seqs = [1 1], and this fails every run.
+func TestSequenceSurvivesPublisherReplacement(t *testing.T) {
+	sink := &seqSink{}
+	events := newRunnerServiceServer(t, sink)
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
+
+	post := func(key string) {
+		t.Helper()
+		if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+			Frame:          conversationFrame(key),
+			IdempotencyKey: key,
+		})); err != nil {
+			t.Fatalf("post %q = %v, want success", key, err)
+		}
+	}
+
+	// Each release drops the publisher; the next post builds a fresh one. The
+	// sequence must continue across both swaps.
+	post("p1")
+	if err := g.releasePublisher(); err != nil {
+		t.Fatalf("release after p1 = %v", err)
+	}
+	post("p2")
+	if err := g.releasePublisher(); err != nil {
+		t.Fatalf("release after p2 = %v", err)
+	}
+
+	got := sink.seqs()
+	want := []uint64{1, 2}
+	if !slices.Equal(got, want) {
+		t.Fatalf("RunnerSeq sequence = %v, want %v: the counter must survive a publisher replacement", got, want)
+	}
+}
+
+// A failed forward must not burn a sequence number. The counter is
+// socket-lifetime, so an allocated-but-unsent number is a permanent hole, and
+// the hub reads a skipped number as in-transit loss (runnerhub/hub.go:230) — so
+// a durable frame correctly erring back to the agent for retry would make the
+// Server report a loss that never happened.
+//
+// RED: drop the p.seq.rollback(seq) call in sessionPublisher.forward -> the
+// delivered sequence is [1 3] and the failed frame's number is gone forever.
+func TestFailedForwardDoesNotBurnASequenceNumber(t *testing.T) {
+	sink := &seqSink{}
+	live := newRunnerServiceServer(t, sink)
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, live)
+
+	post := func(key string) error {
+		_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+			Frame:          conversationFrame(key),
+			IdempotencyKey: key,
+		}))
+		return err
+	}
+
+	if err := post("ok-1"); err != nil {
+		t.Fatalf("first post = %v, want success", err)
+	}
+
+	// Point at a dead upstream so the next forward fails, then back at the live
+	// one. The failure must leave no hole behind it.
+	//
+	// Release before each swap: repointing g.events does not touch the publisher
+	// already holding an open stream to the previous upstream, and an abandoned
+	// stream leaves its server-side handler receiving forever — httptest's
+	// Server.Close then blocks on it at cleanup and the package times out.
+	if err := g.releasePublisher(); err != nil {
+		t.Fatalf("release before the dead swap = %v", err)
+	}
+	g.events = newClosedRunnerServiceServer(t)
+	if err := post("dead-2"); err == nil {
+		t.Fatal("post against a dead upstream = success, want an error")
+	}
+	// The failed forward already dropped the dead publisher (the durable path
+	// releases on failure), so there is nothing open against the dead upstream.
+	g.events = live
+	if err := post("ok-3"); err != nil {
+		t.Fatalf("post after a failure = %v, want success", err)
+	}
+	if err := g.releasePublisher(); err != nil {
+		t.Fatalf("final release = %v", err)
+	}
+
+	got := sink.seqs()
+	want := []uint64{1, 2}
+	if !slices.Equal(got, want) {
+		t.Fatalf("delivered RunnerSeq = %v, want %v: the failed forward burned a number, which the hub reads as in-transit loss", got, want)
+	}
+}
+
+// A SUPPLEMENTARY race check, not the guard. TestSequenceSurvivesPublisherReplacement
+// above is the deterministic guard for the counter's ownership; this one adds the
+// concurrent case the other sibling explicitly avoids — TestConcurrencyNoFalseGap
+// closes its Publish stream only after every forward has returned, so
+// releasePublisher can never run mid-forward there. This test lets it.
+//
+// Deliberately weaker as an assertion, because under a genuine race both the
+// arrival count and the interleaving are nondeterministic: it can only claim that
+// no seq arrived TWICE, which is possible only if two publishers stamped the same
+// session independently. Its detection rate is correspondingly partial — measured
+// 26 of 40 runs under -race with a per-publisher counter — so it must never be
+// the only thing standing between the codebase and this defect. The sequential
+// test detects the same defect 100% of the time with no race at all.
 func TestReleaseDoesNotRestartTheSequence(t *testing.T) {
 	sink := &seqSink{}
 	events := newRunnerServiceServer(t, sink)
