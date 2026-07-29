@@ -299,6 +299,13 @@ func TestRespondToAskHappyPathEmitsMessageUpdated(t *testing.T) {
 // server still holds it pending and answerable — the mirror of the bug the
 // answered flag closes, arriving through the door instead of the window.
 // ask_id is asserted alongside them since it is dropped by the same rule.
+//
+// The keep half is pinned here too: every content field the caller DID supply
+// must survive. Over-dropping is as wrong as under-dropping — nothing else
+// fails if askFromWire also swallowed header / allow_multiple / recommended or
+// a per-option description / preview, so agent-supplied question content would
+// vanish with the suite green. The drop/keep boundary is the contract; both
+// halves belong in one test.
 func TestPostMessageDropsCallerSuppliedAnswerState(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -308,16 +315,24 @@ func TestPostMessageDropsCallerSuppliedAnswerState(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	// Every field the server owns, set by the caller to a value it must not keep.
+	// Every field the server owns, set by the caller to a value it must not
+	// keep, alongside every content field, which it must.
+	recommended := int32(1)
 	posted, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
 		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
 			AskId:    "forged-ask-id",
 			Answered: true,
 			Questions: []*compassv1.AskQuestion{{
-				QuestionId:      "q1",
-				Question:        "Which environment?",
-				Options:         []*compassv1.AskOption{{Id: "opt-a", Label: "staging"}, {Id: "opt-b", Label: "prod"}},
+				QuestionId: "q1",
+				Question:   "Which environment?",
+				Header:     "Deploy target",
+				Options: []*compassv1.AskOption{
+					{Id: "opt-a", Label: "staging", Description: "the safe one", Preview: "staging.example"},
+					{Id: "opt-b", Label: "prod", Description: "the scary one", Preview: "prod.example"},
+				},
+				AllowMultiple:   true,
+				Recommended:     &recommended,
 				ChosenOptionIds: []string{"opt-a"},
 				CustomText:      "forged answer",
 				TimedOut:        true,
@@ -355,6 +370,39 @@ func TestPostMessageDropsCallerSuppliedAnswerState(t *testing.T) {
 	}
 	if q.GetTimedOut() {
 		t.Error("caller-supplied timed_out=true was honored, want false")
+	}
+
+	// The other half of the boundary: every content field the caller supplied
+	// survives untouched. Nothing else catches an over-broad drop here.
+	if q.GetQuestionId() != "q1" {
+		t.Errorf("question_id = %q, want %q", q.GetQuestionId(), "q1")
+	}
+	if q.GetQuestion() != "Which environment?" {
+		t.Errorf("question = %q, want %q", q.GetQuestion(), "Which environment?")
+	}
+	if q.GetHeader() != "Deploy target" {
+		t.Errorf("header = %q, want %q", q.GetHeader(), "Deploy target")
+	}
+	if !q.GetAllowMultiple() {
+		t.Error("allow_multiple = false, want true")
+	}
+	if q.GetRecommended() != recommended {
+		t.Errorf("recommended = %d, want %d", q.GetRecommended(), recommended)
+	}
+	opts := q.GetOptions()
+	if len(opts) != 2 {
+		t.Fatalf("options length = %d, want 2", len(opts))
+	}
+	for i, want := range []*compassv1.AskOption{
+		{Id: "opt-a", Label: "staging", Description: "the safe one", Preview: "staging.example"},
+		{Id: "opt-b", Label: "prod", Description: "the scary one", Preview: "prod.example"},
+	} {
+		if got := opts[i]; got.GetId() != want.GetId() || got.GetLabel() != want.GetLabel() ||
+			got.GetDescription() != want.GetDescription() || got.GetPreview() != want.GetPreview() {
+			t.Errorf("options[%d] = {%q %q %q %q}, want {%q %q %q %q}",
+				i, got.GetId(), got.GetLabel(), got.GetDescription(), got.GetPreview(),
+				want.GetId(), want.GetLabel(), want.GetDescription(), want.GetPreview())
+		}
 	}
 
 	// The ask is genuinely still answerable — the drop left real pending state,

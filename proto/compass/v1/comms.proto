@@ -289,6 +289,10 @@ message Ask {
   // server is guaranteed to refuse. It is the ONLY reliable answered-signal:
   // a fully-skipped ask leaves every AskQuestion's answer fields empty, which
   // is indistinguishable from pending by inspecting the questions alone.
+  //
+  // Server-owned: set only by the server, on RespondToAsk. A value supplied on
+  // an inbound Ask (via PostMessage) is IGNORED — an ask being posted has by
+  // definition not been answered.
   bool answered = 7;
   // Superseded single-question shape (compass-0.5 D5); see
   // docs/designs/product/compass-ask-typed-derivation.md.
@@ -318,6 +322,9 @@ message AskQuestion {
   // the agent recommended nothing.
   optional int32 recommended = 6;
   // ── Answer state, empty/unset while pending (kept for audit) ──
+  // Server-owned: recorded only by RespondToAsk. Values supplied on an inbound
+  // Ask (via PostMessage) are IGNORED — an ask being posted has by definition
+  // not been answered.
   // The chosen option ids once answered.
   repeated string chosen_option_ids = 7;
   // The participant's free-text answer, when they typed one instead of (or,

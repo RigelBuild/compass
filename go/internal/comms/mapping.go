@@ -280,9 +280,15 @@ func askFromWire(a *compassv1.Ask) *store.Ask {
 	// RespondToAsk may record an answer. Honoring them let a caller post an ask
 	// that arrives pre-populated, which a client reading the per-question
 	// fields renders as already settled while the server still holds it
-	// pending and answerable. Zeroing them by construction (omitted from the
-	// composite literal, not stripped afterwards) means there is no line to
-	// delete without a compile-visible change.
+	// pending and answerable.
+	//
+	// Omission is the mechanism, but it is NOT self-enforcing: a keyed composite
+	// literal compiles and vets clean with any subset of fields set, so a field
+	// added to store.Ask or store.AskQuestion is silently honored here from
+	// whatever the caller sent. Every new field must therefore be consciously
+	// classified — content (map it) or answer state (omit it) — and
+	// TestAskFromWireDropsEveryServerOwnedField walks the descriptor to fail
+	// when one is added without that decision.
 	return &store.Ask{AskID: "", Questions: questions}
 }
 
