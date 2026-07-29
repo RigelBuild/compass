@@ -127,11 +127,27 @@ function rehypeInertRawAndBreaks() {
 	const visit = (node: HastParent, inCode: boolean) => {
 		const children = node.children as Child[];
 		const out: HastRootContent[] = [];
-		for (const [i, child] of children.entries()) {
-			if (child.type === "raw") {
-				out.push({ type: "text", value: child.value });
-				continue;
-			}
+		for (const [i, source] of children.entries()) {
+			// Inert-retype `raw` to `text` HERE, at the top of the loop, so the
+			// newline rules below see it as the prose text it now is. Handling it
+			// in its own arm instead would skip the split: a multi-line raw block
+			// (`<div>` around two lines, or `<b>` spanning a softbreak) would reach
+			// the DOM as one text node whose newlines then collapse under
+			// `white-space: normal`, joining the lines onto one.
+			//
+			// The retype cannot disturb the `inCode` guard below, because a `raw`
+			// node never reaches a code subtree: fenced and indented code become
+			// mdast `code` nodes and only an mdast `html` node becomes `raw`
+			// (mdast-util-to-hast handlers/html.js), so the two are disjoint by
+			// construction. That guard exists for plain text, which is verbatim in
+			// code and whose `br` `rawText` would eat.
+			//
+			// The lookarounds below read the UNCONVERTED neighbours, which is
+			// harmless: `isBlock` and `isBr` both require `type === "element"`, and
+			// the retype only maps `"raw"` to `"text"`, so neither predicate can
+			// change its answer.
+			const child: Child =
+				source.type === "raw" ? { type: "text", value: source.value } : source;
 			// A bare `"\n"` between blocks is layout whitespace: drop it, exactly as
 			// solid-markdown's own renderer would have.
 			if (

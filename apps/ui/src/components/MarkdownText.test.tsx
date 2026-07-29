@@ -44,6 +44,15 @@ const DEBOUNCE_FLUSH_MS = 200;
 const flushHighlightDebounce = () =>
 	new Promise((r) => setTimeout(r, DEBOUNCE_FLUSH_MS));
 
+// The async Shiki highlight (150ms debounce + async tokenize) is observed with
+// `waitFor`, whose default ceiling is 1000ms. On a loaded CI box (concurrent go
+// + nix builds) the tokenize has resolved as late as ~1350ms — correct, just
+// slow — so give the highlight-observing waits a headroom ceiling. This is not a
+// retry: `waitFor` still polls the real highlighter to genuine completion; the
+// wider ceiling only tolerates a contended runner, and a highlighter that never
+// resolves still fails.
+const HIGHLIGHT_WAIT_MS = 5000;
+
 describe("MarkdownText — markdown semantics", () => {
 	test("renders bold, a list, and a link as semantic HTML", () => {
 		const { container } = render(() => (
@@ -166,9 +175,12 @@ describe("MarkdownText — code is verbatim, never chipped", () => {
 				byHandle={byHandle()}
 			/>
 		));
-		await waitFor(() => {
-			expect(container.querySelector(".code-highlight")).not.toBeNull();
-		});
+		await waitFor(
+			() => {
+				expect(container.querySelector(".code-highlight")).not.toBeNull();
+			},
+			{ timeout: HIGHLIGHT_WAIT_MS },
+		);
 		const pre = container.querySelector(".code-highlight pre");
 		expect(pre?.textContent).toBe("const a = 1;\nconst b = 2;\n");
 		// Shiki wraps each source line in its own `.line`, so the two statements
@@ -249,10 +261,13 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 			<MarkdownText text={"```ts\nconst x = 1;\n```"} byHandle={byHandle()} />
 		));
 		// Shiki resolves asynchronously and swaps in styled token spans.
-		await waitFor(() => {
-			const styled = container.querySelector("pre code span[style]");
-			expect(styled).not.toBeNull();
-		});
+		await waitFor(
+			() => {
+				const styled = container.querySelector("pre code span[style]");
+				expect(styled).not.toBeNull();
+			},
+			{ timeout: HIGHLIGHT_WAIT_MS },
+		);
 		// The code text survives the swap.
 		expect(container.querySelector("pre code")?.textContent).toContain(
 			"const x = 1;",
@@ -649,6 +664,60 @@ describe("MarkdownText — content preservation", () => {
 		expect(kids[0]?.textContent).toBe("line one");
 		expect((kids[1] as Element).tagName.toLowerCase()).toBe("br");
 		expect(kids[2]?.textContent).toBe("line two");
+	});
+
+	// A `raw` node is retyped to `text` so its characters survive, and it must
+	// then go through the SAME newline→`br` split a plain text node gets: raw
+	// HTML is a block-level chunk of source, so a multi-line one is the common
+	// case, and skipping the split lets `white-space: normal` collapse its
+	// newlines and render every line joined on one.
+	test("a multi-line raw HTML block renders its lines as separate lines", () => {
+		const { container } = render(() => (
+			<MarkdownText
+				text={"<details>\nline one\nline two\n</details>"}
+				byHandle={byHandle()}
+			/>
+		));
+		// `textContent` ignores `br` per spec, so assert the STRUCTURE: the two
+		// lines are separate text runs with a break between them. (The opening and
+		// closing tag lines get their own breaks too — the whole raw chunk is one
+		// multi-line node — so match on the two prose lines rather than on a
+		// fixed child count.)
+		const kids = [
+			...(container.querySelector(".markdown-content > div")?.childNodes ?? []),
+		];
+		const at = (text: string) => kids.findIndex((n) => n.textContent === text);
+		const one = at("line one");
+		const two = at("line two");
+		expect(one).toBeGreaterThanOrEqual(0);
+		expect(two).toBe(one + 2);
+		expect((kids[one + 1] as Element).tagName.toLowerCase()).toBe("br");
+		// Still inert: the markup is text, never a live element.
+		expect(container.textContent).toContain("<details>");
+		expect(container.querySelector("details")).toBeNull();
+	});
+
+	// The verbatim-in-code rule outranks the break rescue: `white-space: pre`
+	// already renders the newline, and the `code` override reads through
+	// `rawText`, which concatenates text descendants and IGNORES `br` — so an
+	// interleaved break would not just be redundant, it would collapse the block
+	// onto one line.
+	//
+	// This covers PLAIN TEXT in code, which is all it can cover: a `raw` node
+	// never reaches a code subtree. Fenced and indented code become mdast `code`
+	// nodes, and only an mdast `html` node becomes `raw` (mdast-util-to-hast
+	// handlers/html.js), so the two are disjoint by construction — verified by
+	// resolving `` ```\n<a>\n<b>\n``` `` through the real from-markdown/to-hast
+	// stack: zero raw nodes in the tree at all. The angle brackets below are
+	// therefore code text, not markup, and the `inCode` guard they exercise is
+	// the pre-existing plain-text one.
+	test("a fenced block keeps its newlines and adds no break", () => {
+		const { container } = render(() => (
+			<MarkdownText text={"```\n<a>\n<b>\n```"} byHandle={byHandle()} />
+		));
+		const code = container.querySelector("pre code");
+		expect(code?.textContent).toBe("<a>\n<b>\n");
+		expect(container.querySelectorAll("br").length).toBe(0);
 	});
 
 	test("a disallowed image keeps its alt text as a visible placeholder", () => {

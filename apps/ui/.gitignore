@@ -1,0 +1,14 @@
+# Every env file is untracked except the checked-in dev defaults, so a live
+# credential cannot be committed by accident.
+#
+# `.env.local` is where a developer puts their own machine's
+# VITE_COMPASS_CALLER_ID (and a bearer, if they ever point the UI at a real
+# authenticated door); Vite loads it last, so it overrides `.env.development`.
+# A bare `.env` and `.env.production` are ignored for a sharper reason: Vite
+# loads `.env` in EVERY mode, production included, and bakes its VITE_* values
+# into the built bundle — so a token left there ships.
+#
+# `.env.development` is the one exception: loopback defaults, no secret, and it
+# documents the required keys by existing.
+.env*
+!.env.development

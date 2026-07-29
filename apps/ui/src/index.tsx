@@ -1,6 +1,7 @@
 import { createRoot } from "solid-js";
 import { render } from "solid-js/web";
 import App from "./App";
+import { bootConnection } from "./boot";
 import { StoreContext } from "./context";
 import { createLiveClients } from "./live/client";
 import { connectionFromEnv } from "./live/connection";
@@ -15,7 +16,20 @@ if (!root) {
 // bearer + caller account id), and the typed compass.v1 clients built over it.
 // Client construction is pure — no request is sent until the store opens the
 // SubscribeComms stream.
-const connection = connectionFromEnv();
+//
+// Resolution is required and can fail: a missing VITE_COMPASS_BASE_URL or
+// VITE_COMPASS_CALLER_ID throws by design (live/connection.ts:60-73).
+// bootConnection catches that at the boundary and paints the resolver's own
+// message into #root, so a misconfigured env is a readable screen naming the
+// variable rather than the blank page a throw escaping module init used to
+// leave. Undefined means there is nothing valid to dial — we stop rather than
+// boot against a wrong default, and the error screen is the whole UI.
+const connection = bootConnection(root, connectionFromEnv);
+if (!connection) {
+	throw new Error(
+		"compass: boot aborted — see the configuration error rendered in #root",
+	);
+}
 const clients = createLiveClients(connection);
 
 // The store is an app-lifetime singleton; createRoot gives its memos a stable
