@@ -6,6 +6,7 @@ import {
 	type FakeComms,
 	wireAccount,
 	wireAskMessage,
+	wireTextMessage,
 } from "./live/comms-fake";
 import { type AppStore, createAppStore } from "./store";
 
@@ -68,6 +69,17 @@ const chosenIn = (
 		if (b.kind !== "ask" || b.ask.askId !== "ask-1") continue;
 		const q = b.ask.questions.find((q) => q.questionId === questionId);
 		if (q) return [...q.chosenOptionIds];
+	}
+	return undefined;
+};
+
+// The ask itself as the store holds it — the whole block value, so a test can
+// observe the pushed SHAPE (question ids, an option list) and the OBJECT the
+// adoption settled on, neither of which the chosen ids can express.
+const askIn = (store: AppStore) => {
+	const msg = store.messages().find((m) => m.id === "m-ask");
+	for (const b of msg?.blocks ?? []) {
+		if (b.kind === "ask" && b.ask.askId === "ask-1") return b.ask;
 	}
 	return undefined;
 };
@@ -154,7 +166,11 @@ describe("adoptComms vs an in-progress ask", () => {
 	// The other end of the rule, and the one the refusal rollback depends on: an
 	// ask the SERVER has an opinion about takes the server's value, even while
 	// the user has an unsubmitted local answer on it. Here another participant
-	// answered q-1 differently; ours was never shipped, so theirs is the record.
+	// answered q-1 differently and the server closed the ask recording it, so
+	// the push carries BOTH halves of that one write — the chosen id and the
+	// spent flag (go/internal/store/messages.go:435 sets ChosenOptionIDs, :438
+	// sets Answered). `answered` is passed out loud rather than left to the
+	// fixture's default because it is what the preserve gate actually reads.
 	// Mutation-check: preserving local answers unconditionally reddens this.
 	test("an authoritative server answer beats an unsubmitted local one", async () => {
 		const fake = createFakeComms({
@@ -172,7 +188,11 @@ describe("adoptComms vs an in-progress ask", () => {
 				{
 					case: "messageUpdated",
 					value: {
-						message: askMessage(["q-1", "q-2"], { "q-1": ["q-1-b"] }),
+						message: askMessage(
+							["q-1", "q-2"],
+							{ "q-1": ["q-1-b"] },
+							{ answered: true },
+						),
 					},
 				},
 				1n,
@@ -347,6 +367,208 @@ describe("adoptComms vs an in-progress ask", () => {
 					],
 				},
 			]);
+		});
+	});
+
+	// The write gate, one half. `answered` is not only a reconciliation input:
+	// once the reconciliation correctly ADOPTS a server-closed ask, every option
+	// on it still rendered enabled and the completing click still issued the one
+	// RespondToAsk the server has already spent — refused with ErrConflict
+	// (go/internal/store/messages.go:404-406). Nothing about the ask says
+	// "submitted" to this client: the respond that closed it was someone else's.
+	// So the click must be refused where it is recorded, not discovered at the
+	// server.
+	//
+	// Mutation-check: gating `answerAsk` on `isAskSubmitted` alone reddens this.
+	test("a click on a server-closed ask ships nothing", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: { [CHANNEL]: [askMessage(["q-1"])] },
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			// The ask arrives closed with nothing recorded — the skip shape, which
+			// only `answered` can see.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1"], undefined, { answered: true }),
+					},
+				},
+				1n,
+			);
+			await settled();
+			expect(store.isAskSubmitted("ask-1")).toBe(false);
+
+			// A one-question ask completes on its only click, so this is the click
+			// that would ship the doomed respond.
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+
+			expect(fake.askResponses).toEqual([]);
+			expect(chosenIn(store, "q-1")).toEqual([]);
+		});
+	});
+
+	// The write gate, other half — and the shape the user actually meets: another
+	// participant answered q-1, so the server recorded their id AND closed the
+	// ask in the one write (messages.go:435 sets ChosenOptionIDs, :438 sets
+	// Answered). Judged by chosen ids alone this is a partially answered ask, so
+	// the skip control renders and `submitAsk` ships — into a guaranteed
+	// ErrConflict. The server's flag is the only thing that knows better.
+	//
+	// Mutation-check: gating `submitAsk` on `isAskSubmitted` alone reddens this.
+	test("a submit on a server-closed ask ships nothing", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: { [CHANNEL]: [askMessage(["q-1", "q-2"])] },
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(
+							["q-1", "q-2"],
+							{ "q-1": ["q-1-b"] },
+							{ answered: true },
+						),
+					},
+				},
+				1n,
+			);
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-b"]);
+			expect(store.isAskSubmitted("ask-1")).toBe(false);
+
+			store.submitAsk("m-ask", "ask-1");
+			await settled();
+
+			expect(fake.askResponses).toEqual([]);
+		});
+	});
+
+	// An ask whose QUESTIONS moved is a different ask: there is nothing to line
+	// the local answers up against, so the pushed shape is adopted whole and the
+	// unshipped pick goes with the shape it belonged to. Here the server grew a
+	// third question under an in-progress answer.
+	//
+	// Mutation-check: dropping the `sameQuestions` clause from the preserve
+	// guard reddens this — the two-question local ask is restored over the
+	// three-question pushed one, and the render loses a question the server
+	// posed.
+	test("a pushed ask that grew a question beats the local shape", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: { [CHANNEL]: [askMessage(["q-1", "q-2"])] },
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: { message: askMessage(["q-1", "q-2", "q-3"]) },
+				},
+				1n,
+			);
+			await settled();
+
+			expect(askIn(store)?.questions.map((q) => q.questionId)).toEqual([
+				"q-1",
+				"q-2",
+				"q-3",
+			]);
+			expect(chosenIn(store, "q-1")).toEqual([]);
+		});
+	});
+
+	// The same rule where the shape moved without the COUNT moving: q-2 became
+	// q-9. Positionally the local answers still fit, which is exactly why the
+	// comparison is by question id and not by length — carrying the pick across
+	// would attach the user's answer to a question they were never shown.
+	//
+	// Mutation-check: weakening `sameQuestions` to a length-only compare reddens
+	// this one specifically; the grew-a-question case above cannot see it.
+	test("a pushed ask that renamed a question beats the local shape", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: { [CHANNEL]: [askMessage(["q-1", "q-2"])] },
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: { message: askMessage(["q-1", "q-9"]) },
+				},
+				1n,
+			);
+			await settled();
+
+			expect(askIn(store)?.questions.map((q) => q.questionId)).toEqual([
+				"q-1",
+				"q-9",
+			]);
+			expect(chosenIn(store, "q-1")).toEqual([]);
+		});
+	});
+
+	// The fast path the preserve is built around: with no unshipped pick
+	// anywhere, `preserveLocalAsks` collects nothing and hands the pushed state
+	// back UNTOUCHED — references and all — so a push that did not name the ask
+	// leaves the ask's message object identical. That is what keeps every
+	// downstream memo and every rendered row from re-running on a push about
+	// some other message, which is nearly every push.
+	//
+	// Mutation-check: dropping the local chosen-ids scan from the collect loop
+	// reddens this — the untouched ask is collected, the block is rebuilt with
+	// the (identical) local copy, and the message object is replaced for nothing.
+	test("a push over an untouched ask is adopted by reference", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: { [CHANNEL]: [askMessage(["q-1", "q-2"])] },
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			const before = store.messages().find((m) => m.id === "m-ask");
+			expect(before).toBeDefined();
+
+			// A push about a DIFFERENT message: the ask row is not restated, so
+			// nothing about it may be rebuilt.
+			await fake.emit(
+				{
+					case: "messagePosted",
+					value: {
+						message: wireTextMessage({
+							id: "m-2",
+							channelId: CHANNEL,
+							authorAccountId: CALLER,
+							atUnixMs: 2000,
+							text: "unrelated",
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+
+			expect(store.messages().find((m) => m.id === "m-2")).toBeDefined();
+			expect(store.messages().find((m) => m.id === "m-ask")).toBe(before);
 		});
 	});
 });

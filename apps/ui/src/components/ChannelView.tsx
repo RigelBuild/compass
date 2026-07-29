@@ -48,7 +48,8 @@ function hhmm(atUnixMs: number): string {
  *  completing click ships them all at once. A question the user means to SKIP
  *  would never complete the ask, so a partially answered ask grows a `submit`
  *  control that ships what is answered with the skipped questions empty. Once
- *  the ask is submitted it is settled on the wire and every option locks. */
+ *  the ask is SETTLED — our respond issued, or the server's own `answered` flag
+ *  set by whoever answered it first — every option locks. */
 const AskBlock: Component<{
 	messageId: string;
 	ask: Ask;
@@ -64,17 +65,26 @@ const AskBlock: Component<{
 	// answer back, so without this the user's click just disappears — the same
 	// hole the composer's error span closes for a failed post.
 	const error = () => store.askError(ask().askId);
+	// The server burns an ask on the first RespondToAsk it ACCEPTS and refuses
+	// every later one with ErrConflict (go/internal/store/messages.go:404-406),
+	// so an ask arriving with `answered` set is CLOSED to this client whoever
+	// closed it — another participant, or an earlier run of ours. `submitted`
+	// cannot see those: it records only the responds THIS store issued. Offering
+	// an enabled option on a closed ask promises a click that can only produce a
+	// refusal, so the closed ask locks and the honest surface is a dead control
+	// rather than a doomed RPC and an error span.
+	const closed = () => submitted() || ask().answered;
 	// A single-select question is settled once answered; further clicks are
-	// locked. A submitted ask locks every question outright.
+	// locked. A settled ask locks every question outright.
 	const locked = (q: AskQuestion) =>
-		submitted() || (!q.allowMultiple && q.chosenOptionIds.length > 0);
+		closed() || (!q.allowMultiple && q.chosenOptionIds.length > 0);
 	const answeredCount = () =>
 		ask().questions.filter((q) => q.chosenOptionIds.length > 0).length;
 	// The skip affordance is meaningful only in between: an untouched ask has
-	// nothing to submit, and a complete one has already been sent by its
-	// completing click.
+	// nothing to submit, a complete one has already been sent by its completing
+	// click, and a settled one takes no further respond at all.
 	const canSubmit = () =>
-		!submitted() &&
+		!closed() &&
 		answeredCount() > 0 &&
 		answeredCount() < ask().questions.length;
 

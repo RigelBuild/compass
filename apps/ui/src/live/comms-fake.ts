@@ -389,9 +389,14 @@ export function wireTextMessage(opts: {
  *  which it flips on the first RespondToAsk it accepted. It DEFAULTS to whether
  *  `chosen` recorded anything, because the server cannot hold a chosen id
  *  without having accepted the respond that produced it — so seeding an answer
- *  implies a closed ask. Pass it explicitly to build the states that answer
- *  shape alone cannot express: an ask closed with NO chosen ids anywhere, which
- *  is exactly a deliberate skip or a custom_text-only answer.
+ *  implies a closed ask. The same reason makes `{ chosen, answered: false }` a
+ *  state no server can be in, and it THROWS rather than building it: one write
+ *  records the chosen ids and sets the flag (go/internal/store/messages.go:435
+ *  sets ChosenOptionIDs, :438 sets Answered), so a fixture asserting that pair
+ *  would have the UI defend against a wire shape that cannot arrive. Pass
+ *  `answered` explicitly to build the states answer shape alone cannot express:
+ *  an ask closed with NO chosen ids anywhere, which is exactly a deliberate
+ *  skip or a custom_text-only answer.
  *
  *  `freeText` names the questions the server holds with NO options — the ones
  *  answerable by custom_text alone, so a recorded answer to one leaves its
@@ -406,6 +411,14 @@ export function wireAskMessage(opts: {
 	answered?: boolean;
 	freeText?: readonly string[];
 }): WireMessage {
+	const hasChosen = Object.values(opts.chosen ?? {}).some(
+		(ids) => ids.length > 0,
+	);
+	if (hasChosen && opts.answered === false) {
+		throw new Error(
+			"wireAskMessage: chosen ids with answered:false is not a state the server can hold — messages.go:435-438 records the ids and sets Answered in one write",
+		);
+	}
 	return create(MessageSchema, {
 		id: opts.id,
 		container: { case: "channelId", value: opts.channelId },
@@ -417,9 +430,7 @@ export function wireAskMessage(opts: {
 					case: "ask",
 					value: create(AskSchema, {
 						askId: opts.askId,
-						answered:
-							opts.answered ??
-							Object.values(opts.chosen ?? {}).some((ids) => ids.length > 0),
+						answered: opts.answered ?? hasChosen,
 						questions: opts.questionIds.map((questionId) =>
 							create(AskQuestionSchema, {
 								questionId,

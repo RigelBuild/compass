@@ -209,4 +209,55 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 			fake.close();
 		}
 	});
+
+	// The other way an ask is settled, and the one `submitted` cannot see: the
+	// server flips Ask.answered on the first RespondToAsk it ACCEPTS and refuses
+	// every later one with ErrConflict (go/internal/store/messages.go:404-406).
+	// An ask another participant already answered therefore arrives CLOSED to
+	// this client, which has issued no respond of its own — so judged by the
+	// submitted mark alone every option renders enabled and the skip control
+	// renders too, offering clicks that can only produce a refusal. The closed
+	// ask locks instead.
+	//
+	// Mutation-check: gating `locked` on `submitted()` alone leaves the options
+	// enabled and reddens the disabled leg; gating `canSubmit` on it alone
+	// renders the skip control and reddens the second.
+	test("a server-closed ask renders locked with no submit control", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL, CALLER)],
+			messagesByChannel: {
+				[CHANNEL]: [
+					// Another participant answered q-1; the server recorded their id
+					// and closed the ask in the one write. Partially answered by
+					// chosen ids, which is exactly when the skip control would show.
+					wireAskMessage({
+						id: "m-ask",
+						channelId: CHANNEL,
+						authorAccountId: CALLER,
+						askId: "ask-1",
+						questionIds: ["q-1", "q-2"],
+						chosen: { "q-1": ["q-1-a"] },
+					}),
+				],
+			},
+		});
+		const { store, container, settled } = await mountAsk(fake);
+		try {
+			expect(store.isAskSubmitted("ask-1")).toBe(false);
+
+			const options = askOptions(container);
+			expect(options.length).toBe(4);
+			for (const option of options) expect(option.disabled).toBe(true);
+			expect(submitControl(container)).toBeNull();
+
+			// And the dead control is honest: a click on the untouched question
+			// puts nothing on the wire.
+			fireEvent.click(options[2]);
+			await settled();
+			expect(fake.askResponses).toEqual([]);
+		} finally {
+			fake.close();
+		}
+	});
 });

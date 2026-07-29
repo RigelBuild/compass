@@ -331,7 +331,8 @@ export interface AppStore {
 	toggleSubscribe: (channelId: string) => void;
 	/** Record an answer to a question within an ask, LOCALLY. The wire
 	 *  `RespondToAsk` is gated on COMPLETENESS: the server accepts exactly one
-	 *  respond per ask (go/internal/store/messages.go:400-403/:437), so answers
+	 *  respond per ask (go/internal/store/messages.go:404-405 rejects a later one,
+	 *  :438 sets the flag that gate reads), so answers
 	 *  accumulate locally and exactly ONE atomic respond — every question's
 	 *  answer in one call — is issued on the click that completes the ask. A
 	 *  single-question ask completes on its only click. Single-select is
@@ -915,8 +916,8 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// Whether an ask has had its ONE RespondToAsk issued. Reactive so the render
 	// can lock a submitted ask, and the guard that keeps the store from ever
 	// issuing a second respond for the same ask (the server accepts exactly one:
-	// go/internal/store/messages.go:400-403 rejects a later one with ErrConflict,
-	// :437 flips Answered on the first). An ask is marked ONLY when a respond is
+	// go/internal/store/messages.go:404-405 rejects a later one with ErrConflict,
+	// :438 flips Answered on the first). An ask is marked ONLY when a respond is
 	// actually issued, so an offline store (no `comms`) never marks anything.
 	const [submittedAskIds, setSubmittedAskIds] = createSignal<
 		ReadonlySet<string>
@@ -1012,7 +1013,10 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	//   - the pushed ask must not be ANSWERED: once the server's `answered` flag
 	//     is set the ask is closed and its record — ours accepted, or another
 	//     participant's — wins;
-	//   - the questions must line up, or the ask's shape moved and it is new.
+	//   - the questions must line up, or the ask's shape moved and it is new;
+	//   - the LOCAL ask must carry an unshipped pick at all: a wholly untouched
+	//     ask has nothing to carry, so it is skipped and the pushed state is
+	//     adopted by reference — the fast path nearly every push takes.
 	//
 	// A hoisted declaration so it can sit beside the ask machinery it reuses
 	// while `adoptComms`, defined above with the rest of the stream wiring,
@@ -1022,14 +1026,16 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		// Empty whenever no ask is mid-answer — which is nearly every push — and
 		// then the pushed state is adopted untouched, references and all.
 		//
-		// This leg scans the LOCAL record's chosen ids on purpose: the question is
-		// "is there an unshipped edit here worth carrying", and a local ask never
-		// carries a server answer shape — `answered` is server-owned and stays
-		// false on everything we build, and neither skip-with-empty-custom_text
-		// nor a custom_text-only answer can exist locally, since both only come
-		// back FROM the server on an ask it closed. The authority question — has
-		// the server closed the ask — is `serverHasNoAnswer` on the PUSHED ask
-		// below.
+		// This leg scans the LOCAL record's chosen ids on purpose, and does not
+		// consult `answered` on a `prev` entry at all: the question here is only
+		// "is there an unshipped edit worth carrying", which the chosen ids
+		// answer by themselves. A `prev` entry is the last SERVER state we
+		// adopted with our clicks layered over it — `answerAsk` spreads the ask
+		// it edits (`{ ...ask, questions }`), so a server `answered: true` rides
+		// straight through onto a locally-edited ask — which makes the flag on a
+		// `prev` entry a statement about the ask we ADOPTED, not about our edit.
+		// The authority question — has the server closed this ask — is asked
+		// where its answer lives: `serverHasNoAnswer` on the PUSHED ask below.
 		const local = new Map<string, Map<string, Ask>>();
 		for (const msg of prev.messages) {
 			for (const b of msg.blocks) {
@@ -1157,6 +1163,17 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 					blocks: msg.blocks.map((b) => {
 						if (b.kind !== "ask" || b.ask.askId !== askId) return b;
 						const ask = b.ask;
+						// The other way an ask is settled, and the one the submitted
+						// mark cannot see: the server burns an ask on the first
+						// RespondToAsk it ACCEPTS and refuses every later one with
+						// ErrConflict (go/internal/store/messages.go:404-406). An ask
+						// carrying `answered` is therefore closed no matter who closed
+						// it — us on a previous run, another participant, or a push we
+						// adopted already-closed — so recording a click here could only
+						// ever complete the ask into a respond the server is guaranteed
+						// to refuse. Refusing the click is the honest surface; shipping
+						// the doomed RPC and rendering its error is not.
+						if (ask.answered) return b;
 						const questions = ask.questions.map((q) =>
 							q.questionId === questionId ? answerQuestion(q, optionId) : q,
 						);
@@ -1185,11 +1202,18 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// answer, so the ask never completes and `answerAsk` never sends it: this is
 	// the explicit "send what I have" — the answered questions plus an empty
 	// `chosenOptionIds` for each skipped one. Inert on an ask that is already
-	// submitted, unknown, or wholly unanswered (there is nothing to submit).
+	// submitted, CLOSED by the server, unknown, or wholly unanswered (there is
+	// nothing to submit).
 	const submitAsk = (messageId: string, askId: string) => {
 		if (isAskSubmitted(askId)) return;
 		const ask = findAsk(messageId, askId);
 		if (!ask) return;
+		// Closed server-side: the ask's one accepted respond has already been
+		// taken, and messages.go:404-406 refuses a second with ErrConflict. The
+		// submitted mark does not cover this — the ask can arrive closed on a
+		// push, or be closed by another participant, without this client ever
+		// having issued a respond.
+		if (ask.answered) return;
 		// "Nothing staged" is a question about the LOCAL record, so it scans the
 		// chosen ids rather than the server's `answered` flag: this ask has never
 		// been shipped, so the server has no view of it to consult.
