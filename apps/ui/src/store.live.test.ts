@@ -302,7 +302,7 @@ describe("store live write path", () => {
 	});
 
 	// THE GATE (Matt's ruling). An ask is answerable exactly ONCE server-side
-	// (go/internal/store/messages.go:400-403 rejects a second respond, :437 sets
+	// (go/internal/store/messages.go:404-406 rejects a second respond, :438 sets
 	// Answered on the first), so a per-click respond would persist a partial
 	// answer and lock the ask against the rest of it. Clicks therefore stay
 	// LOCAL until every question is settled, and the completing click issues

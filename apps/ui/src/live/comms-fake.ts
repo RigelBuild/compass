@@ -239,8 +239,8 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 			}
 			// An ask is answered exactly ONCE. The server flips Ask.Answered on the
 			// first AnswerAsk and rejects every later one with ErrConflict →
-			// connect CodeAlreadyExists (go/internal/store/messages.go:400-406 and
-			// :437; internal/comms/context.go:50-51) — a re-answer would silently
+			// connect CodeAlreadyExists (go/internal/store/messages.go:404-406 and
+			// :438; internal/comms/context.go:50-51) — a re-answer would silently
 			// destroy the recorded audit value. A UI that fires one RespondToAsk
 			// per click on a multi-question ask therefore gets its SECOND click
 			// rejected by a real server; modelling it here is what makes that
@@ -400,7 +400,13 @@ export function wireTextMessage(opts: {
  *
  *  `freeText` names the questions the server holds with NO options — the ones
  *  answerable by custom_text alone, so a recorded answer to one leaves its
- *  `chosenOptionIds` empty even though the ask is closed. */
+ *  `chosenOptionIds` empty even though the ask is closed.
+ *
+ *  `optionIds` overrides one question's OFFERED option ids (labels are derived
+ *  from the id). The block-update path rewrites a message's whole block set
+ *  requiring only that `ask_id` survive, so an agent may restate an ask with
+ *  the same question ids and a REVISED option set; this is how a test builds
+ *  that push. */
 export function wireAskMessage(opts: {
 	id: string;
 	channelId: string;
@@ -410,13 +416,14 @@ export function wireAskMessage(opts: {
 	chosen?: Readonly<Record<string, readonly string[]>>;
 	answered?: boolean;
 	freeText?: readonly string[];
+	optionIds?: Readonly<Record<string, readonly string[]>>;
 }): WireMessage {
 	const hasChosen = Object.values(opts.chosen ?? {}).some(
 		(ids) => ids.length > 0,
 	);
 	if (hasChosen && opts.answered === false) {
 		throw new Error(
-			"wireAskMessage: chosen ids with answered:false is not a state the server can hold — messages.go:435-438 records the ids and sets Answered in one write",
+			"wireAskMessage: chosen ids with answered:false is not a state the server can hold — messages.go:435 records the ids and :438 sets Answered in one write",
 		);
 	}
 	return create(MessageSchema, {
@@ -440,18 +447,14 @@ export function wireAskMessage(opts: {
 								// A free-text question carries no options at all: it is
 								// answered by custom_text alone, which is why a recorded
 								// answer to one leaves chosenOptionIds empty.
-								options: opts.freeText?.includes(questionId)
-									? []
-									: [
-											create(AskOptionSchema, {
-												id: `${questionId}-a`,
-												label: "A",
-											}),
-											create(AskOptionSchema, {
-												id: `${questionId}-b`,
-												label: "B",
-											}),
-										],
+								options: (
+									opts.optionIds?.[questionId] ??
+									(opts.freeText?.includes(questionId)
+										? []
+										: [`${questionId}-a`, `${questionId}-b`])
+								).map((id) =>
+									create(AskOptionSchema, { id, label: id.toUpperCase() }),
+								),
 							}),
 						),
 					}),

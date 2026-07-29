@@ -45,7 +45,11 @@ const wireChannel = (id: string) => buildWireChannel(id, CALLER);
 const askMessage = (
 	questionIds: readonly string[],
 	chosen?: Readonly<Record<string, readonly string[]>>,
-	over?: { answered?: boolean; freeText?: readonly string[] },
+	over?: {
+		answered?: boolean;
+		freeText?: readonly string[];
+		optionIds?: Readonly<Record<string, readonly string[]>>;
+	},
 ) =>
 	wireAskMessage({
 		id: "m-ask",
@@ -56,6 +60,7 @@ const askMessage = (
 		chosen,
 		answered: over?.answered,
 		freeText: over?.freeText,
+		optionIds: over?.optionIds,
 	});
 
 // The chosen option ids of one question, read out of the store's reactive
@@ -569,6 +574,127 @@ describe("adoptComms vs an in-progress ask", () => {
 
 			expect(store.messages().find((m) => m.id === "m-2")).toBeDefined();
 			expect(store.messages().find((m) => m.id === "m-ask")).toBe(before);
+		});
+	});
+
+	// The accepted-then-lost-reply race, and the one case the rollback's answer
+	// comparison structurally cannot see. The server COMMITTED our respond — it
+	// recorded our chosen ids and flipped Ask.answered in the one write
+	// (go/internal/store/messages.go:435 then :438) and write-through published
+	// the MessageUpdated — but our RPC's own reply never landed (connection
+	// reset, proxy timeout), so the promise rejects. The push therefore carries
+	// OUR ids, which is exactly what makes `sameAnswers` pass; only `answered`
+	// distinguishes "the stream restated the ask we shipped" from "the server
+	// CLOSED it recording what we shipped". Restoring the pre-click ask there
+	// would overwrite the authoritative CLOSED state with a stale OPEN one and
+	// re-offer a click that can only earn ErrConflict (:404-406).
+	//
+	// Mutation-check: dropping `!current.answered` from the rollback condition
+	// reddens this — the restore fires and the ask reads answered:false with no
+	// chosen ids.
+	test("a refusal after the server accepted does not reopen the closed ask", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: { [CHANNEL]: [askMessage(["q-1"])] },
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			// (1) the completing click on a one-question ask: shipped, and HELD in
+			// flight so the push can land before the refusal.
+			const gate = fake.holdNextAskResponse();
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+			expect(store.isAskSubmitted("ask-1")).toBe(true);
+
+			// (2) the write-through of the respond the server ACCEPTED: our ids,
+			// and the ask closed.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1"], { "q-1": ["q-1-a"] }),
+					},
+				},
+				1n,
+			);
+			await settled();
+			expect(askIn(store)?.answered).toBe(true);
+
+			// (3) only now does our own call fail.
+			gate.reject(new Error("connection reset"));
+			await settled();
+
+			// The rollback DECLINED: the ask is still the server's closed record.
+			expect(askIn(store)?.answered).toBe(true);
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+			// The refusal really happened, so the user is told …
+			expect(store.askError("ask-1")).toBe("connection reset");
+			// … and the ask is not left falsely in flight — it is left CLOSED, so
+			// the write gates refuse a further click and nothing more ships. The
+			// count is read rather than written as a literal because the double
+			// records a respond only on its ACCEPT path: the refused one above was
+			// thrown ahead of the bookkeeping, so the baseline here is zero and the
+			// contract under test is that it does not GROW.
+			expect(store.isAskSubmitted("ask-1")).toBe(false);
+			const shipped = fake.askResponses.length;
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-b");
+			await settled();
+			expect(fake.askResponses).toHaveLength(shipped);
+		});
+	});
+
+	// An ask's SHAPE includes the options it offers, not just its question ids.
+	// The server's block-update path rewrites a message's whole block set and
+	// requires only that ask_id survive (go/internal/store/messages.go:151,
+	// :163-167), so an agent may restate an ask under the same question ids with
+	// REVISED options. Carrying the local pick across would silently discard the
+	// revision: the UI would render withdrawn options and ship an option id the
+	// server no longer offers, which the server's validateQuestionAnswer
+	// rejects as ErrInvalidArgument — a refusal the user cannot act on, because
+	// the option they need is not on screen.
+	//
+	// Designed-for, not yet wired: no caller issues the block-update RPC today,
+	// so this defends a documented wire capability (comms.proto MessageUpdated
+	// carries the full CURRENT block set), not a live bug.
+	//
+	// Mutation-check: reverting `sameQuestions` to the question-id-only compare
+	// reddens this; the grew/renamed cases above cannot see it.
+	test("a pushed ask that revised its options beats the local pick", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHANNEL)],
+			messagesByChannel: { [CHANNEL]: [askMessage(["q-1", "q-2"])] },
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			store.answerAsk("m-ask", "ask-1", "q-1", "q-1-a");
+			await settled();
+			expect(chosenIn(store, "q-1")).toEqual(["q-1-a"]);
+
+			// Same question ids, a withdrawn option and a fresh one in its place.
+			await fake.emit(
+				{
+					case: "messageUpdated",
+					value: {
+						message: askMessage(["q-1", "q-2"], undefined, {
+							optionIds: { "q-1": ["q-1-b", "q-1-c"] },
+						}),
+					},
+				},
+				1n,
+			);
+			await settled();
+
+			// The PUSHED option list won — the assertion the chosen ids cannot
+			// make, since a cleared pick alone would also satisfy them.
+			expect(
+				askIn(store)
+					?.questions.find((q) => q.questionId === "q-1")
+					?.options.map((o) => o.id),
+			).toEqual(["q-1-b", "q-1-c"]);
+			expect(chosenIn(store, "q-1")).toEqual([]);
 		});
 	});
 });

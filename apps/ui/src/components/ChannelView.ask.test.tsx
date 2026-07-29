@@ -17,7 +17,7 @@ import { ChannelView } from "./ChannelView";
 // show — the send GATE and its skip affordance (Matt's ruling):
 //
 //   - the server accepts exactly ONE RespondToAsk per ask
-//     (go/internal/store/messages.go:400-403 rejects a later one; :437 flips
+//     (go/internal/store/messages.go:404-406 rejects a later one; :438 flips
 //     Answered on the first), so a partial answer sent on the first click would
 //     be the permanent audit record and lock the rest of the ask out;
 //   - therefore clicks stay LOCAL until the ask is complete, and the completing

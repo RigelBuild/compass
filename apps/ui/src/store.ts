@@ -956,13 +956,36 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// the point at which one atomic RespondToAsk can carry the whole thing.
 	const isAskComplete = (ask: Ask) =>
 		ask.questions.every((q) => q.chosenOptionIds.length > 0);
-	// Whether two asks pose the SAME questions in the same order — the shape
-	// test every ask-to-ask comparison starts from. An ask whose questions moved
-	// is a different ask as far as local state is concerned: there is nothing
-	// left to line the answers up against.
+	// Whether two asks pose the SAME questions, in the same order, offering the
+	// same options — the shape test every ask-to-ask comparison starts from. An
+	// ask whose shape moved is a different ask as far as local state is
+	// concerned: there is nothing left to line the answers up against.
+	//
+	// The OPTIONS are part of that shape, not decoration on it. The server's
+	// block-update path rewrites a message's entire block set and requires only
+	// that `ask_id` survive (go/internal/store/messages.go:151, :163-167):
+	// question text, option ids and option labels are all free to move under a
+	// stable question id. Comparing question ids alone would silently discard
+	// such a revision, leaving the UI rendering WITHDRAWN options and shipping
+	// an option id the server no longer offers — which `validateQuestionAnswer`
+	// rejects as ErrInvalidArgument, a refusal the user cannot act on, because
+	// the option they need is not on screen.
+	//
+	// Scope honesty: this is designed-for, not yet wired. Nothing calls the
+	// block-update RPC today, so the widened compare defends a documented wire
+	// capability (comms.proto MessageUpdated carries the full CURRENT block set)
+	// rather than a bug in flight.
 	const sameQuestions = (a: Ask, b: Ask) =>
 		a.questions.length === b.questions.length &&
-		a.questions.every((q, i) => q.questionId === b.questions[i]?.questionId);
+		a.questions.every((q, i) => {
+			const other = b.questions[i];
+			return (
+				other !== undefined &&
+				q.questionId === other.questionId &&
+				q.options.length === other.options.length &&
+				q.options.every((o, j) => o.id === other.options[j]?.id)
+			);
+		});
 	// Whether an ask still carries exactly the answers that were SHIPPED — the
 	// test a rollback must pass, since restoring over an ask the stream moved
 	// meanwhile would overwrite the server's value with stale local state. A
@@ -1108,6 +1131,25 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// accepted answer, say); restoring over it would show an ask state the
 	// server never had, with no further push to correct it before a resync.
 	//
+	// A CLOSED ask is the case `sameAnswers` cannot see, because it compares
+	// answers and `answered` is not one. The server flips the flag in the very
+	// write that records the chosen ids (go/internal/store/messages.go:438,
+	// beside the :435 that records them) and refuses every later respond with
+	// ErrConflict (:404-406), so a pushed ask carrying `answered` is CLOSED —
+	// and on the accepted-then-lost-reply path (the server COMMITTED our respond
+	// and published the update, but our RPC's own reply never landed) that push
+	// carries OUR chosen ids, which is precisely what makes `sameAnswers` pass.
+	// Restoring there would overwrite the authoritative CLOSED state with the
+	// stale OPEN one, re-enable every option, and re-offer a click that can only
+	// produce ErrConflict — or ship a DIFFERENT answer than the one durably
+	// recorded, showing the user a state contradicting the audit record. So the
+	// guard sits at the SITE, not in `sameAnswers`: a rollback into a closed ask
+	// is never right whether or not the answers line up.
+	//
+	// The submitted mark is still cleared on that path, so the ask is not left
+	// falsely "in flight"; it is left CLOSED, which is the truth — and the write
+	// gates (`answerAsk`, `submitAsk`) read the flag, so nothing further ships.
+	//
 	// KNOWN-BROKEN END TO END (SEA-1310): the agent SDK's correlation key is
 	// unwired, so the answer does not reach the asking agent. The client side
 	// is correct and stays wired; nothing here assumes the round-trip lands.
@@ -1126,7 +1168,13 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 			})
 			.catch((error) => {
 				unmarkAskSubmitted(ask.askId);
-				if (rollback && sameAnswers(findAsk(messageId, ask.askId), ask)) {
+				const current = findAsk(messageId, ask.askId);
+				if (
+					rollback &&
+					current &&
+					!current.answered &&
+					sameAnswers(current, ask)
+				) {
 					putAsk(messageId, rollback);
 				}
 				setAskErrors((prev) => {
