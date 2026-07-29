@@ -25,6 +25,7 @@ package comms
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -46,12 +47,21 @@ func updatedFrame(id string, blocks []*compassv1.MessageBlock) *compassv1.Messag
 	return &compassv1.MessageUpdated{Message: &compassv1.Message{Id: id, Blocks: blocks}}
 }
 
-// askBlockWire builds a wire ask block carrying one question, for the malformed
-// -ask rejection case (the id an update must carry is the store's, minted at
-// append; a wire ask always enters id-less, so an UPDATE carrying one is
-// necessarily missing its immutable id).
+// askBlockWire builds a wire ask block carrying one question and NO ask_id — the
+// id-less shape a genuinely malformed update frame carries (an update must carry
+// back the id the append minted; an ask block with no id at all is a malformed
+// update, distinct from one whose id merely disagrees with the stored row).
 func askBlockWire() *compassv1.MessageBlock {
+	return askBlockWireID("")
+}
+
+// askBlockWireID builds a wire ask block carrying one question and the given
+// ask_id — used to relay an UPDATE that carries the id the append minted (the
+// legitimate ask-bearing update) or a forged one that disagrees with the stored
+// row.
+func askBlockWireID(askID string) *compassv1.MessageBlock {
 	return &compassv1.MessageBlock{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
+		AskId: askID,
 		Questions: []*compassv1.AskQuestion{{
 			QuestionId: "q1",
 			Question:   "Which environment?",
@@ -291,7 +301,13 @@ func TestCommitAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
 
 // The two malformed-input refusals, both CodeInvalidArgument: an update whose
 // message.id is empty (a frame the agent never stamped) and an update carrying
-// an ask block with no ask_id (which would orphan a pending RespondToAsk).
+// an ask block with NO ask_id that has no stored counterpart to reconcile it
+// from — a genuinely id-less frame, distinct from an ask-bearing update carrying
+// its stored id (which now PERSISTS, see TestCommitAgentUpdatePersistsAskBlock)
+// and from one whose id merely disagrees with the stored row (see
+// TestCommitAgentUpdateRejectsAskIDMismatch). An id-less ask that cannot be
+// reconciled is still an error, because the store's immutable-ask_id contract
+// requires an update to carry the id the append minted.
 func TestCommitAgentUpdateRejectsMalformedFrames(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
@@ -308,9 +324,12 @@ func TestCommitAgentUpdateRejectsMalformedFrames(t *testing.T) {
 		connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate(empty message id)")
 	})
 	t.Run("ask block with no ask id", func(t *testing.T) {
-		// A wire ask always enters id-less (askFromWire strips any caller value),
-		// so an UPDATE carrying one is necessarily missing the immutable id the
-		// store minted at append.
+		// The seeded row is text-only, so an ask block on the update has NO
+		// stored counterpart for reconcileUpdateAskIDs to fill its id from: it
+		// stays id-less and the store rejects it. This pins the truly id-less
+		// case (an update that cannot carry the immutable id the append would
+		// have minted), NOT that ask-bearing updates are unsupported — one
+		// carrying its stored id persists (TestCommitAgentUpdatePersistsAskBlock).
 		_, err := svc.CommitAgentUpdate(ctx, agent.ID,
 			updatedFrame(posted.GetMessage().GetId(), []*compassv1.MessageBlock{askBlockWire()}))
 		connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate(ask with no ask_id)")
@@ -498,4 +517,172 @@ func TestAgentCallsWithANonAgentAccountAreRefusedNotPanics(t *testing.T) {
 
 	_, err = svc.ListAsAccount(ctx, user.ID, &compassv1.ListMessagesRequest{})
 	connectCodeIs(t, err, connect.CodeFailedPrecondition, "ListAsAccount(user account, empty channel)")
+}
+
+// THE positive contract this fix restores: an addressed conversation UPDATE
+// carrying an ask block WITH the stored ask_id PERSISTS, rather than being
+// refused. Before the fix, updateBlocksFromWire did not exist and the update
+// went through blocksFromWire -> askFromWire, which unconditionally stripped the
+// ask_id, so UpdateMessageBlocksAsAuthor rejected the id-less ask as
+// CodeInvalidArgument and the update never committed. Now the update path
+// preserves the wire ask_id and reconciles it against the stored row, so the
+// ask survives the write and round-trips its id.
+//
+// Mutation that reddens it: routing the update back through blocksFromWire (the
+// POST mapper) reintroduces the strip and the ask is refused again.
+func TestCommitAgentUpdatePersistsAskBlock(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "agent")
+
+	// Seed a real ask through the POST path so the store mints the ask_id the
+	// update must carry back. The minted id is read off the committed row.
+	posted, err := svc.CommitAgentPost(ctx, agent.ID,
+		postedFrame([]*compassv1.MessageBlock{askBlockWire()}))
+	if err != nil {
+		t.Fatalf("CommitAgentPost(ask): %v", err)
+	}
+	id := posted.GetMessage().GetId()
+	storedAskID := posted.GetMessage().GetBlocks()[0].GetAsk().GetAskId()
+	if storedAskID == "" {
+		t.Fatalf("post did not mint an ask_id; got %+v", posted.GetMessage().GetBlocks())
+	}
+
+	// The streaming turn re-sends the full block set: a new text block plus the
+	// SAME ask, carrying the id the append minted. This is the frame that used
+	// to be refused.
+	updated, err := svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame(id,
+		[]*compassv1.MessageBlock{
+			{Block: &compassv1.MessageBlock_Text{Text: "settled turn"}},
+			askBlockWireID(storedAskID),
+		}))
+	if err != nil {
+		t.Fatalf("CommitAgentUpdate(ask with stored ask_id) was refused, want persisted: %v", err)
+	}
+	if got := updated.GetMessage().GetBlocks(); len(got) != 2 {
+		t.Fatalf("updated message has %d blocks, want 2 (text + ask)", len(got))
+	} else if got[1].GetAsk().GetAskId() != storedAskID {
+		t.Fatalf("updated ask_id = %q, want the preserved %q", got[1].GetAsk().GetAskId(), storedAskID)
+	}
+
+	// Durable: the row on the home channel carries the updated set and the same
+	// ask_id, so a pending RespondToAsk still correlates.
+	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("home channel holds %d messages, want 1 (in-place edit)", len(msgs))
+	}
+	blocks := msgs[0].Blocks
+	if len(blocks) != 2 || blocks[0].Text == nil || *blocks[0].Text != "settled turn" {
+		t.Fatalf("stored blocks = %+v, want [text 'settled turn', ask]", blocks)
+	}
+	if blocks[1].Ask == nil || blocks[1].Ask.AskID != storedAskID {
+		t.Fatalf("stored ask_id = %v, want the preserved %q", blocks[1].Ask, storedAskID)
+	}
+}
+
+// The distinct misclassification the review flagged: an ask-bearing update that
+// carries a NON-EMPTY ask_id disagreeing with the stored one is a forged/
+// malformed frame, refused CodeInvalidArgument — and refused by
+// reconcileUpdateAskIDs's own mismatch error, never conflated with the generic
+// id-less case and never silently overwriting the stored id. It stays
+// CodeInvalidArgument (still a caller error), but a distinct, clearly-messaged
+// one.
+//
+// Mutation that reddens it: blindly trusting the wire ask_id (dropping the
+// mismatch branch) lets the forged id through and the refusal disappears.
+func TestCommitAgentUpdateRejectsAskIDMismatch(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "agent")
+	posted, err := svc.CommitAgentPost(ctx, agent.ID,
+		postedFrame([]*compassv1.MessageBlock{askBlockWire()}))
+	if err != nil {
+		t.Fatalf("CommitAgentPost(ask): %v", err)
+	}
+	id := posted.GetMessage().GetId()
+	storedAskID := posted.GetMessage().GetBlocks()[0].GetAsk().GetAskId()
+	_, err = svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame(id,
+		[]*compassv1.MessageBlock{askBlockWireID("forged-" + storedAskID)}))
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate(ask_id mismatch)")
+	// The classification must be the DISTINCT mismatch, not the generic id-less
+	// refusal ("ask has no ask_id"): asserting the code alone would pass against
+	// the old strip-everything behavior too, which is the misclassification the
+	// review flagged. Pinning the message keeps the two errors distinct.
+	if err == nil || !strings.Contains(err.Error(), "does not match the stored ask_id") {
+		t.Fatalf("mismatch error = %v, want the distinct 'does not match the stored ask_id' classification", err)
+	}
+
+	// The forged update left no trace: the row still carries the original ask
+	// with its minted id, so RespondToAsk against that id still resolves.
+	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 || len(msgs[0].Blocks) != 1 || msgs[0].Blocks[0].Ask == nil {
+		t.Fatalf("stored blocks = %+v, want the single untouched ask", msgs[0].Blocks)
+	}
+	if msgs[0].Blocks[0].Ask.AskID != storedAskID {
+		t.Fatalf("stored ask_id = %q, want the untouched %q", msgs[0].Blocks[0].Ask.AskID, storedAskID)
+	}
+}
+
+// The forgery vector the review flagged: a relayed UPDATE that appends a SURPLUS
+// ask block (beyond the stored ask count) carrying a caller-chosen non-empty
+// ask_id must be refused, not persisted. A surplus ask has no stored counterpart
+// to reconcile against, and an update cannot introduce a new ask (ask_id is
+// minted only on POST), so accepting a caller-supplied id would reopen exactly
+// the collision askFromWire strips to prevent on POST: a forged id shared with
+// another message makes RespondToAsk's containment SELECT match both rows. The
+// store guards only the empty-id case, so the edge must reject the non-empty
+// surplus.
+//
+// Mutation that reddens it: skipping surplus asks in reconcileUpdateAskIDs (the
+// pre-fix `if askIdx < len(storedAskIDs)` gate) lets the forged id through and
+// the row is silently updated with it.
+func TestCommitAgentUpdateRejectsSurplusForgedAsk(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+
+	owner := mustUser(t, st, "owner")
+	agent := mustAgent(t, st, owner.ID, "agent")
+	posted, err := svc.CommitAgentPost(ctx, agent.ID,
+		postedFrame([]*compassv1.MessageBlock{askBlockWire()}))
+	if err != nil {
+		t.Fatalf("CommitAgentPost(ask): %v", err)
+	}
+	id := posted.GetMessage().GetId()
+	storedAskID := posted.GetMessage().GetBlocks()[0].GetAsk().GetAskId()
+
+	// Re-send the stored ask (correctly carrying its minted id) AND a surplus
+	// ask carrying a forged, caller-chosen id. The first reconciles cleanly; the
+	// surplus has no stored counterpart and must be rejected.
+	_, err = svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame(id,
+		[]*compassv1.MessageBlock{
+			askBlockWireID(storedAskID),
+			askBlockWireID("forged-surplus-ask"),
+		}))
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate(surplus forged ask)")
+	if err == nil || !strings.Contains(err.Error(), "an update cannot introduce a new ask") {
+		t.Fatalf("surplus error = %v, want the distinct 'an update cannot introduce a new ask' classification", err)
+	}
+
+	// The forged surplus left no trace: the row still carries only the original
+	// ask with its minted id, and the forged id was never persisted.
+	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 || len(msgs[0].Blocks) != 1 || msgs[0].Blocks[0].Ask == nil {
+		t.Fatalf("stored blocks = %+v, want the single untouched ask", msgs[0].Blocks)
+	}
+	if msgs[0].Blocks[0].Ask.AskID != storedAskID {
+		t.Fatalf("stored ask_id = %q, want the untouched %q", msgs[0].Blocks[0].Ask.AskID, storedAskID)
+	}
 }

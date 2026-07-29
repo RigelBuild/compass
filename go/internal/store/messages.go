@@ -268,6 +268,46 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 	return msgs[0], nil
 }
 
+// MessageAskIDs returns the ask_id of every ask block on the message, in block
+// order, for the relayed-update write-through's ask_id reconciliation
+// (comms.CommitAgentUpdate). It exists so the UPDATE path can source the
+// server-owned ask_id from the stored row instead of stripping it (the POST
+// path's mintAskIDs behavior, wrong for an update) or trusting a wire value.
+//
+// Safe as a SEPARATE statement from the authz UPDATE precisely because ask_id is
+// immutable: mintAskIDs (blocks.go) assigns it once at append and nothing ever
+// reassigns it, so a value read here cannot be invalidated by a later write —
+// unlike the mutable post-state the UPDATE returns via RETURNING, this read
+// observes a field that is stable for the row's life. It is scoped by message id
+// ALONE — the same scope the UPDATE addresses — and performs NO membership or
+// authorship check and returns NO distinct not-found (an unknown id or a message
+// with no ask yields an empty slice), so it cannot be turned into an
+// authz/session enumeration oracle: the sole authz gate remains the
+// single-statement UpdateMessageBlocksAsAuthor that follows, and its result is
+// never derived from what this read returned.
+func (s *Store) MessageAskIDs(ctx context.Context, id MessageID) ([]string, error) {
+	var blocksJSON []byte
+	if err := s.pool.QueryRow(ctx,
+		`SELECT blocks FROM messages WHERE id = $1`, string(id),
+	).Scan(&blocksJSON); err != nil {
+		if noRows(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("store: read message ask ids: %w", err)
+	}
+	blocks, err := unmarshalBlocks(blocksJSON)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, b := range blocks {
+		if b.Ask != nil {
+			ids = append(ids, b.Ask.AskID)
+		}
+	}
+	return ids, nil
+}
+
 // ListMessages pages a channel's messages newest-first, clamped to the store's
 // page bounds (comms.proto:446-461). Ordering keys on the monotonic seq (a
 // stable total order even under equal timestamps); BeforeMessageID pages

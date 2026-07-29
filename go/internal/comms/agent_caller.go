@@ -33,6 +33,7 @@ package comms
 
 import (
 	"context"
+	"fmt"
 
 	"connectrpc.com/connect"
 
@@ -77,6 +78,40 @@ type notAgentAccountError struct{}
 
 func (notAgentAccountError) Error() string {
 	return "comms: agent-initiated call resolved to a non-agent account, which has no home channel; the session->account binding is wrong"
+}
+
+// askIDMismatchError is the cause when a relayed UPDATE frame's ask block carries
+// a non-empty ask_id that DISAGREES with the id stored for that block — a
+// forged/malformed frame, distinct from an ask block that simply arrived id-less
+// (which reconcileUpdateAskIDs fills from the stored row). It maps to
+// CodeInvalidArgument, but its own message so the mismatch reads as the specific
+// defect it is, never conflated with the generic "no ask_id" refusal.
+type askIDMismatchError struct {
+	block  int
+	wire   string
+	stored string
+}
+
+func (e askIDMismatchError) Error() string {
+	return fmt.Sprintf(
+		"comms: block %d ask_id %q from the update frame does not match the stored ask_id %q; ask_id is immutable and an update must carry the stored id, not a different one",
+		e.block, e.wire, e.stored)
+}
+
+// surplusAskError is the cause when a relayed UPDATE frame carries MORE ask
+// blocks than the stored message has — a surplus ask with no stored counterpart
+// to reconcile against. An update cannot introduce a new ask (a fresh ask_id is
+// minted only on POST), so a surplus ask is always illegitimate: rejecting it
+// keeps a caller-chosen ask_id off the UPDATE path, the same no-forged-ask_id
+// invariant askFromWire enforces for POST. Maps to CodeInvalidArgument.
+type surplusAskError struct {
+	block int
+}
+
+func (e surplusAskError) Error() string {
+	return fmt.Sprintf(
+		"comms: block %d is an ask the stored message does not have; an update cannot introduce a new ask (ask_id is minted only when the ask is first posted)",
+		e.block)
 }
 
 // PostAsAccount executes one agent-initiated PostMessage as account. It sets the
@@ -202,9 +237,19 @@ func (c *Comms) CommitAgentPost(
 //
 // Errors map through edgeError to the same Connect codes a human caller gets:
 // CodeNotFound for a refused row, CodeInvalidArgument for a malformed frame (an
-// empty message.id, an empty block set, an ask block missing its immutable
-// ask_id). Those are the refusals the hub treats as non-fatal drops rather than
-// stream teardowns.
+// empty message.id, an empty block set, or an ask block whose ask_id cannot be
+// reconciled against the stored row — see reconcileUpdateAskIDs). Those are the
+// refusals the hub treats as non-fatal drops rather than stream teardowns.
+//
+// Ask_id handling is the one place the UPDATE frame differs from a POST. A POST
+// strips any wire ask_id and lets the store mint one; an update must instead
+// carry back the id the append already minted, so this path maps blocks with
+// updateBlocksFromWire (which PRESERVES the wire ask_id) and then reconciles that
+// id against the stored row before the write. The stored ask_id is authoritative
+// (it is immutable once minted), so reconciliation fills an id-less update ask
+// from the stored ask and rejects a non-empty wire ask_id that disagrees with
+// the stored one as a forged/malformed frame — never blindly trusting the wire
+// value, which would reopen the forgery/collision risk askFromWire guards.
 func (c *Comms) CommitAgentUpdate(
 	ctx context.Context,
 	account store.AccountID,
@@ -214,8 +259,11 @@ func (c *Comms) CommitAgentUpdate(
 		return nil, errNoActor
 	}
 	msg := updated.GetMessage()
-	blocks, err := blocksFromWire(msg.GetBlocks())
+	blocks, err := updateBlocksFromWire(msg.GetBlocks())
 	if err != nil {
+		return nil, err
+	}
+	if err := c.reconcileUpdateAskIDs(ctx, store.MessageID(msg.GetId()), blocks); err != nil {
 		return nil, err
 	}
 	stored, err := c.store.UpdateMessageBlocksAsAuthor(ctx, account, store.MessageID(msg.GetId()), blocks)
@@ -227,6 +275,68 @@ func (c *Comms) CommitAgentUpdate(
 	// not commit.
 	c.publishMessageUpdated(stored)
 	return &compassv1.MessageUpdated{Message: messageToWire(stored)}, nil
+}
+
+// reconcileUpdateAskIDs makes the ask blocks of a relayed UPDATE frame carry the
+// stored, server-owned ask_id — the safe alternative to trusting the wire value.
+// It reads the stored row's ask_ids (an immutable field, so a separate read from
+// the authz UPDATE that follows is race-free — see store.MessageAskIDs) and, for
+// the k-th ask block of the frame, reconciles it against the k-th stored ask:
+//
+//   - an id-LESS update ask is filled from the stored ask_id (the common case —
+//     the id the append minted, which the store then requires);
+//   - a non-empty wire ask_id that MATCHES the stored one is left as-is;
+//   - a non-empty wire ask_id that DISAGREES with the stored one is a
+//     forged/malformed frame, rejected CodeInvalidArgument and distinctly
+//     messaged (never conflated with the generic id-less case, and never
+//     silently overwriting the stored id).
+//
+// Matching is POSITIONAL among ask blocks: a streaming turn re-sends its FULL
+// current block set in stable order (comms.proto:388-390), so the k-th ask of
+// the frame is the k-th ask of the row. If the frame carries MORE ask blocks
+// than the stored row, the surplus ask has no stored counterpart and is
+// REJECTED (CodeInvalidArgument): an update cannot introduce a brand-new ask —
+// a fresh ask is minted only on POST — so a surplus ask is always illegitimate,
+// whether id-less (unanswerable) or carrying a caller-chosen id (the forgery the
+// POST path strips to keep RespondToAsk's containment SELECT unambiguous). The
+// store guards only the empty-id case, so rejecting here is what closes the
+// non-empty forged-id surplus.
+func (c *Comms) reconcileUpdateAskIDs(ctx context.Context, id store.MessageID, blocks []store.MessageBlock) error {
+	storedAskIDs, err := c.store.MessageAskIDs(ctx, id)
+	if err != nil {
+		return edgeError(err)
+	}
+	askIdx := 0
+	for i := range blocks {
+		ask := blocks[i].Ask
+		if ask == nil {
+			continue
+		}
+		if askIdx >= len(storedAskIDs) {
+			// A surplus ask block (beyond the stored ask count) has no stored
+			// counterpart to reconcile against. An UPDATE cannot legitimately
+			// introduce a new ask — a fresh ask is minted only on the POST path
+			// (mintAskIDs) — so any surplus ask is illegitimate regardless of its
+			// ask_id: an id-less one could not be answered (no minted id), and a
+			// NON-empty one is a caller-chosen id, exactly the forgery the POST
+			// path strips to prevent (askFromWire: a shared ask_id makes
+			// RespondToAsk's containment SELECT match multiple rows). Reject it
+			// here rather than passing a wire id through to the store, which only
+			// guards the empty case.
+			return connect.NewError(connect.CodeInvalidArgument,
+				surplusAskError{block: i})
+		}
+		stored := storedAskIDs[askIdx]
+		switch {
+		case ask.AskID == "":
+			ask.AskID = stored
+		case ask.AskID != stored:
+			return connect.NewError(connect.CodeInvalidArgument,
+				askIDMismatchError{block: i, wire: ask.AskID, stored: stored})
+		}
+		askIdx++
+	}
+	return nil
 }
 
 // defaultChannel returns req with an empty channel_id filled from the account's

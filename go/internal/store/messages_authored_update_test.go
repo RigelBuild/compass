@@ -180,7 +180,12 @@ func TestUpdateMessageBlocksAsAuthorUnknownMessageIsNotFound(t *testing.T) {
 // untouched. Empty message id is new here (updateMessageBlocksExec lets it fall
 // through to a zero-rows ErrNotFound); the empty block set and the empty AskID
 // mirror the checks the shared core already makes, restated because this path
-// deliberately does not call it.
+// deliberately does not call it. The empty-AskID case pins the id-LESS frame
+// specifically — a genuinely malformed update that carries no id to persist —
+// NOT that ask-bearing updates are unsupported: the store trusts and persists a
+// caller-supplied NON-empty ask_id (TestUpdateMessageBlocksAsAuthorEditsInPlace
+// AndReturnsRow already stores one), and the comms edge fills an id-less update
+// ask from the stored row before it ever reaches here (reconcileUpdateAskIDs).
 func TestUpdateMessageBlocksAsAuthorRejectsMalformedInput(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -201,8 +206,12 @@ func TestUpdateMessageBlocksAsAuthorRejectsMalformedInput(t *testing.T) {
 		sentinelIs(t, err, ErrInvalidArgument, "empty block set")
 	})
 	t.Run("ask block with no ask id", func(t *testing.T) {
-		// ask_id is minted once at append and immutable; an update carrying an
-		// id-less ask would orphan any pending RespondToAsk against the original.
+		// A truly id-LESS ask is still an error at the store: ask_id is minted
+		// once at append and immutable, so an update carrying no id has nothing
+		// to persist and would orphan any pending RespondToAsk against the
+		// original. This is the store's last-line guard; the comms edge reconciles
+		// an id-less UPDATE ask from the stored row before the write, so a
+		// legitimate ask-bearing update never arrives here id-less.
 		_, err := s.UpdateMessageBlocksAsAuthor(ctx, author.ID, msg.ID, []MessageBlock{textBlock("x"), askBlockID("")})
 		sentinelIs(t, err, ErrInvalidArgument, "ask block with an empty ask_id")
 	})
@@ -213,6 +222,48 @@ func TestUpdateMessageBlocksAsAuthorRejectsMalformedInput(t *testing.T) {
 		t.Fatalf("ListMessages: %v", err)
 	}
 	assertBlocksEqual(t, got[0].Blocks, []MessageBlock{textBlock("untouched")})
+}
+
+// MessageAskIDs backs the comms edge's UPDATE ask_id reconciliation: it returns
+// every ask block's stored ask_id in block order (an immutable field, so this
+// separate read is race-free against the authz UPDATE that follows). A row with
+// mixed text and ask blocks yields only the asks' ids, in order; an unknown id
+// yields an empty slice rather than an error, so the read can never be turned
+// into a not-found enumeration oracle.
+//
+// Mutation that reddens it: returning ids for text blocks too (breaks the
+// positional match the edge relies on), or erroring on an unknown id (turns the
+// benign read into a distinct not-found signal).
+func TestMessageAskIDsReturnsStoredIDsInOrder(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	author := mustUser(t, s, "author")
+	ch := mustChannel(t, s, author.ID)
+
+	msg, _, err := s.AppendMessage(ctx, Message{
+		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
+		Blocks: []MessageBlock{askBlockID("ask-first"), textBlock("between"), askBlockID("ask-second")},
+	}, "")
+	if err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	ids, err := s.MessageAskIDs(ctx, msg.ID)
+	if err != nil {
+		t.Fatalf("MessageAskIDs: %v", err)
+	}
+	if want := []string{"ask-first", "ask-second"}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("ask ids = %v, want %v (asks only, in block order)", ids, want)
+	}
+
+	// An unknown id is a benign empty slice, never a distinct not-found.
+	unknown, err := s.MessageAskIDs(ctx, MessageID("ghost"))
+	if err != nil {
+		t.Fatalf("MessageAskIDs(unknown): %v", err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("unknown message ask ids = %v, want empty", unknown)
+	}
 }
 
 // The regression a shared-helper change would cause: AnswerAsk must keep working
