@@ -9,8 +9,8 @@
 > other home for both; the sections below describing Copybara spokes, the
 > monorepo import runbook, and sync policy are carried over as provenance and
 > describe the monorepo-side machinery, not a process that runs here.
-> `oh-my-pi/` arrived later and by a different route (SEA-1514): imported
-> straight from public upstream at a tag, never via the monorepo.
+> `oh-my-pi/` arrived later and by a different route: imported straight from
+> public upstream at a tag, never via the monorepo.
 
 Vendored upstream forks. A `forks/<name>/` subtree is upstream code carried in
 this repo — usually a fork sealed maintains on top of a public upstream (the
@@ -155,9 +155,9 @@ Per-fork customization, consumer, and sync policy.
   `forks/oh-my-pi/moon.yml`, the functional-CI registration every fork carries.
 - **Deliberately NOT present — read this before importing or "restoring"
   anything.** The sealed monorepo carries its *own* fork of oh-my-pi, and that
-  fork has a real sealed delta this tree does not. Per Matt's ruling on
-  SEA-1514, Compass ships **plain upstream first** and re-adds what it actually
-  needs later, as a separate change. So their absence here is a decision, not
+  fork has a real sealed delta this tree does not. Compass ships **plain
+  upstream first** and re-adds what it actually needs later, as a separate
+  change. So their absence here is a decision, not
   an import defect — **do not** treat this tree as evidence that those features
   never existed, and do not conclude from a diff against the monorepo's fork
   that work was lost. It lives on, in the monorepo. What is absent:
