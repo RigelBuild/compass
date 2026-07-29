@@ -9,9 +9,9 @@
  *
  * This gate asserts those stamps agree with each other AND with the plugin on
  * PATH. A `devenv.lock` bump that moves the plugin surfaces as a named skew
- * ("baked X != gen-tree stamp Y"), and a partial regeneration — the gen trees
- * are produced by three separate `buf generate` invocations, so one can restamp
- * while the others lag — surfaces as a named intra-tree disagreement.
+ * ("baked X != gen-tree stamp Y"), and a partial regeneration — the two TS gen
+ * trees are produced by separate `buf generate` invocations, so one can restamp
+ * while the other lags — surfaces as a named intra-tree disagreement.
  *
  * `compass-proto:drift` catches the OUTCOME of both, but reports it as a
  * comment-only diff on a PR that touched neither the schema nor the gen trees.
@@ -131,4 +131,20 @@ export async function assertGeneratorStamp(
 		detail: `${actual} == gen-tree stamp (${sources.length} files)`,
 		output: "",
 	};
+}
+
+/**
+ * Maps a gate result to a process exit code, emitting the summary and any
+ * remediation context. The single line that makes the gate fail-closed at the
+ * process boundary; extracted from the I/O shell so an accidental inversion of
+ * the exit mapping reds a unit test rather than only the integration check.
+ */
+export function report(result: GateResult): number {
+	if (!result.pass) {
+		console.error(`protoc-gen-es-stamp: ${result.detail}`);
+		if (result.output) console.error(result.output);
+		return 1;
+	}
+	console.log(`protoc-gen-es-stamp ok: ${result.detail}`);
+	return 0;
 }

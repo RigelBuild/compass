@@ -35,6 +35,9 @@ tasks:
       # unchanged tree, and that is precisely the skew this gate exists to
       # catch. A cached green would survive exactly the change it must red on.
       cache: false
+    # With caching off these inputs do not form a cache key — the task always
+    # runs. They are kept as documentation of the gate's conceptual dependency
+    # set (the gen trees, the pin, the gate's own source), not as a hash input.
     inputs:
       - '/packages/*/src/gen/**/*_pb.ts'
       - '/devenv.lock'

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
 	assertGeneratorStamp,
 	type CommandRunner,
+	report,
 	type StampSource,
 } from "./stamp-gate";
 
@@ -158,5 +159,27 @@ describe("assertGeneratorStamp", () => {
 			),
 		]);
 		expect(r.pass).toBe(true);
+	});
+});
+
+describe("report", () => {
+	test("a failing result maps to exit code 1", () => {
+		expect(
+			report({
+				pass: false,
+				detail: "baked 2.13.0 != gen-tree stamp 2.12.0",
+				output: "",
+			}),
+		).toBe(1);
+	});
+
+	test("a passing result maps to exit code 0", () => {
+		expect(
+			report({
+				pass: true,
+				detail: "2.12.0 == gen-tree stamp (6 files)",
+				output: "",
+			}),
+		).toBe(0);
 	});
 });

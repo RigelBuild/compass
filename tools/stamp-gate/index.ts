@@ -6,7 +6,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import { Glob } from "bun";
-import { assertGeneratorStamp, type CommandRunner } from "./stamp-gate";
+import { assertGeneratorStamp, type CommandRunner, report } from "./stamp-gate";
 
 // This file is tools/stamp-gate/index.ts, so `../..` is the workspace root.
 const WORKSPACE_ROOT = resolve(import.meta.dir, "../..");
@@ -15,6 +15,12 @@ const WORKSPACE_ROOT = resolve(import.meta.dir, "../..");
 // produced by protoc-gen-es and both carry its stamp, so both must agree — a
 // glob covering only one would miss exactly the partial-regeneration case this
 // gate exists to name.
+//
+// INVARIANT: every protoc-gen-es out-dir lives under packages/*/src/gen. This
+// glob must stay in sync with the `out:` paths in buf.gen*.yaml — a future gen
+// tree under another workspace root (apps/*, tools/*) would be silently invisible
+// to the gate (a non-empty-but-incomplete source set the fail-closed empty check
+// cannot catch), so widen this glob whenever a buf template targets a new root.
 const GEN_GLOB = "packages/*/src/gen/**/*_pb.ts";
 
 const runner: CommandRunner = async (argv) => {
@@ -41,13 +47,7 @@ async function main(): Promise<number> {
 	sources.sort((a, b) => a.path.localeCompare(b.path));
 
 	const result = await assertGeneratorStamp(runner, sources);
-	if (!result.pass) {
-		console.error(`protoc-gen-es-stamp: ${result.detail}`);
-		if (result.output) console.error(result.output);
-		return 1;
-	}
-	console.log(`protoc-gen-es-stamp ok: ${result.detail}`);
-	return 0;
+	return report(result);
 }
 
 process.exit(await main());
