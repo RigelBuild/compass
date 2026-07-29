@@ -158,7 +158,7 @@ func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 	h := newTransportFixture(t, fake)
 	ctx := context.Background()
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"})
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -213,7 +213,7 @@ func TestE2EFailClosedBeforeStart(t *testing.T) {
 	h := newTransportFixture(t, fake)
 	ctx := context.Background()
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"})
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -251,7 +251,7 @@ func TestE2EInFlightCallForceClosedAtTeardown(t *testing.T) {
 	h := newTransportFixture(t, fake)
 	ctx := context.Background()
 
-	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "acct-1"})
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"})
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}

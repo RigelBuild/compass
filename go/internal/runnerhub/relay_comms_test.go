@@ -356,7 +356,7 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	if _, _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "acct-agent"}); err != nil {
+	if _, _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
 	if _, err := hub.Start(ctx, "req-start", &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}); err != nil {
@@ -367,8 +367,8 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 	if !ok {
 		t.Fatal("accountForSession(sess-live) = not bound, want the provisioned account after Provision->Start")
 	}
-	if account != "acct-agent" {
-		t.Fatalf("session bound to %q, want the Provision request's agent_account_id acct-agent", account)
+	if account != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("session bound to %q, want the Provision request's agent_account_id 0123456789abcdef0123456789abcdef", account)
 	}
 }
 

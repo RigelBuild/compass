@@ -112,15 +112,15 @@ func listenAgentSocket(ctx context.Context, path string, h http.Handler) (*Socke
 	// unbounded on every hop and inflates the path for every agent at once.
 	//
 	// The account id's SHAPE is validated where it enters, not here — see
-	// validAccountID in spec.go, which refuses an id that is not a single safe
-	// path element. That is a separate property from length and cannot be
-	// checked here: a traversing id SHORTENS the path, so it would sail past
-	// this guard.
+	// validAccountID in spec.go, which refuses an id that is not fixed-width
+	// lowercase hex (the minted shape). That is a separate property from length
+	// and cannot be checked here: a traversing id SHORTENS the path, so it would
+	// sail past this guard.
 	//
 	// With the minted id the tail is 69 bytes, so the default /run/compass lands
 	// at 81 and the --runtime-dir budget is sunPathMax-69: 38 on Linux, 34 on
-	// darwin/BSD. That is the figure a startup precheck should assert, so an
-	// operator learns it at boot rather than at first provision (SEA-1443).
+	// darwin/BSD. validateRuntimeDir (run.go) asserts that budget at startup, so
+	// an operator learns it at boot rather than at first provision.
 	//
 	// The bind's own error is "bind: invalid argument", an EINVAL naming neither
 	// the limit nor the actual length, which reads as a permissions or path

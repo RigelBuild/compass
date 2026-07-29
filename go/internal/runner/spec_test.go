@@ -84,7 +84,7 @@ func TestBuildSpecMapsRepoSource(t *testing.T) {
 
 	t.Run("remote url", func(t *testing.T) {
 		spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
-			AgentAccountId: "acct-1",
+			AgentAccountId: strings.Repeat("a", 32),
 			Repo:           &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: "https://example.com/r.git"},
 		})
 		if err != nil {
@@ -97,7 +97,7 @@ func TestBuildSpecMapsRepoSource(t *testing.T) {
 
 	t.Run("local path", func(t *testing.T) {
 		spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
-			AgentAccountId: "acct-1",
+			AgentAccountId: strings.Repeat("a", 32),
 			Repo:           &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/r.git"},
 		})
 		if err != nil {
@@ -109,7 +109,7 @@ func TestBuildSpecMapsRepoSource(t *testing.T) {
 	})
 
 	t.Run("neither set is an error", func(t *testing.T) {
-		_, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "acct-1"})
+		_, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: strings.Repeat("a", 32)})
 		if err == nil {
 			t.Fatal("BuildSpec with no repo variant = nil error, want a required-repo error")
 		}
@@ -117,7 +117,7 @@ func TestBuildSpecMapsRepoSource(t *testing.T) {
 
 	t.Run("empty remote url is an error", func(t *testing.T) {
 		_, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
-			AgentAccountId: "acct-1",
+			AgentAccountId: strings.Repeat("a", 32),
 			Repo:           &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: ""},
 		})
 		if err == nil {
@@ -135,15 +135,15 @@ func TestBuildSpecDerivesNameAndBranch(t *testing.T) {
 		t.Fatalf("NewConfigSpecBuilder: %v", err)
 	}
 	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId: "atlas-42",
+		AgentAccountId: "0123456789abcdef0123456789abcdef",
 		Ref:            "feature-branch",
 		Repo:           &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/r.git"},
 	})
 	if err != nil {
 		t.Fatalf("BuildSpec = %v", err)
 	}
-	if spec.Name != "compass-agent-atlas-42" {
-		t.Fatalf("spec name = %q, want prefix+agent_account_id (compass-agent-atlas-42)", spec.Name)
+	if spec.Name != "compass-agent-0123456789abcdef0123456789abcdef" {
+		t.Fatalf("spec name = %q, want prefix+agent_account_id (compass-agent-0123456789abcdef0123456789abcdef)", spec.Name)
 	}
 	if spec.Workspace.Branch != "feature-branch" {
 		t.Fatalf("workspace branch = %q, want the request ref", spec.Workspace.Branch)
@@ -218,6 +218,13 @@ func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
 		{"an embedded DEL", "abc\x7fdef"},
 		{"an embedded C1 control", "abc\u0085def"},
 		{"an embedded bidi override", "abc\u202edef"},
+		// The fixed-width lowercase-hex guard adds three dimensions the shape
+		// checks above never covered: wrong width (either side) and a
+		// path-safe, right-width string that is not [0-9a-f].
+		{"over-width (33 hex)", strings.Repeat("a", 33)},
+		{"under-width (short hex)", "abc"},
+		{"right width, non-hex letter", strings.Repeat("g", 32)},
+		{"right width, uppercase hex", "A" + strings.Repeat("a", 31)},
 	}
 	for _, tc := range rejected {
 		t.Run(tc.name, func(t *testing.T) {
@@ -290,7 +297,7 @@ func TestBuildSpecValidatesRepoScheme(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "acct-1"}
+			req := &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: strings.Repeat("a", 32)}
 			tc.repo(req)
 			spec, err := builder.BuildSpec(req)
 			if tc.wantErr {

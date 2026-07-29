@@ -84,14 +84,14 @@ func TestProvisionDrivesSpecBuilderThenLaunch(t *testing.T) {
 	}}
 	host, engine, registry := newHostFixture(t, specs)
 
-	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "acct-1"})
+	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"})
 	if err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
 	if name != "atlas-agent-1" {
 		t.Fatalf("Provision returned name %q, want the spec's container name", name)
 	}
-	if specs.last == nil || specs.last.GetAgentAccountId() != "acct-1" {
+	if specs.last == nil || specs.last.GetAgentAccountId() != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("SpecBuilder.BuildSpec was not called with the request; got %+v", specs.last)
 	}
 	// Launch ran (create+start on the engine) and registered the handle so a
@@ -126,7 +126,7 @@ func TestStartTwiceSameContainerIsAlreadyRunning(t *testing.T) {
 	host, _, _ := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	first, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
@@ -178,7 +178,7 @@ func TestStatusIsAnsweredFromLiveSet(t *testing.T) {
 	host, _, _ := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
@@ -232,7 +232,7 @@ func TestReloadReusesSessionId(t *testing.T) {
 	host, _, _ := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
@@ -290,7 +290,7 @@ func TestStartExecsAgentWithTheContainersOwnIdentity(t *testing.T) {
 	host, engine, _ := newHostFixtureWithModel(t, specs, "claude-opus-4")
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
@@ -326,7 +326,7 @@ func TestStartOmitsModelWhenRunnerHasNoneConfigured(t *testing.T) {
 	host, engine, _ := newHostFixtureWithModel(t, specs, "")
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
@@ -354,7 +354,7 @@ func TestReloadRelaunchesWithTheSameAgentEnv(t *testing.T) {
 	host, engine, _ := newHostFixtureWithModel(t, specs, "claude-opus-4")
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
@@ -398,7 +398,7 @@ func TestReloadWithDeregisteredContainerIsSessionUnknown(t *testing.T) {
 	host, engine, registry := newHostFixture(t, specs)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})

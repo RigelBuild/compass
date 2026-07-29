@@ -108,14 +108,15 @@ func TestSunPathMaxIsPlatformDerived(t *testing.T) {
 	}
 }
 
-// agentAccountIDWidth is the one budget operand with no check anywhere: the
-// Runner never verifies an incoming id is that wide (spec.go validAccountID
-// constrains the shape only), so if the minting site ever changes width, the
-// budget silently clears a path the kernel will refuse. The comment below and
-// TestSunPathMaxMatchesTheKernel bind sunPathMax to reality; nothing binds
-// this. Pin it against the actual construction rather than against the literal
-// 32 — store.newID is hex.EncodeToString of a 16-byte array, and asserting
-// `32 == 32` would restate the constant instead of testing it.
+// This test binds agentAccountIDWidth to the minting site. validAccountID now
+// rejects any incoming id that is not exactly this wide, so a request can never
+// widen the socket path past what the budget cleared; but nothing binds the
+// constant to store.newID's actual output, so if the minting site ever changed
+// width the two would drift silently. TestSunPathMaxMatchesTheKernel binds
+// sunPathMax to reality; this binds the width. Pin it against the actual
+// construction rather than against the literal 32 — store.newID is
+// hex.EncodeToString of a 16-byte array, and asserting `32 == 32` would restate
+// the constant instead of testing it.
 func TestAgentAccountIDWidthMatchesTheMintingSite(t *testing.T) {
 	var minted [16]byte
 	if got := len(hex.EncodeToString(minted[:])); got != agentAccountIDWidth {
