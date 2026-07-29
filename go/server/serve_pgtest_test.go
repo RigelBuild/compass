@@ -150,6 +150,13 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "compass.sock")
 
 	serveCtx, cancel := context.WithCancel(context.Background())
+	// Idempotent with the explicit cancel() on the happy path below, and the
+	// reason it is needed: every failure path here t.Fatalf before reaching
+	// that call, which would leave Serve running against a live socket and pg
+	// pool for the remainder of the binary. Adopted from the parallel sealed
+	// fix (sealed#973) after comparing the two; that lane caught a leak this
+	// one had.
+	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Serve(serveCtx, ServeConfig{
