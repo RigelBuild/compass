@@ -60,7 +60,7 @@ jobs:
       # be redesigned around one runner's choice of temp root.
       TMPDIR: /tmp
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # buf breaking compares against refs/remotes/origin/main, and the drift
           # gate's `git diff --no-index` needs real git. A shallow single-ref
@@ -132,11 +132,11 @@ jobs:
         with:
           bun-version: ${{ steps.pins.outputs.bun }}
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ steps.pins.outputs.node }}
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6 (6.5.0)
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6 (6.5.0)
         with:
           go-version: ${{ steps.pins.outputs.go }}
           # go/moon.yml owns caching decisions per task; a second cache keyed on
@@ -243,7 +243,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Read the toolchain pins
         id: pins
@@ -270,7 +270,7 @@ jobs:
           }
           printf '%s\n' "$pins" >>"$GITHUB_OUTPUT"
 
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6 (6.5.0)
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6 (6.5.0)
         with:
           go-version: ${{ steps.pins.outputs.go }}
           cache: false
