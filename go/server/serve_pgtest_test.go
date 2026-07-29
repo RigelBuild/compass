@@ -150,12 +150,10 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "compass.sock")
 
 	serveCtx, cancel := context.WithCancel(context.Background())
-	// Idempotent with the explicit cancel() on the happy path below, and the
-	// reason it is needed: every failure path here t.Fatalf before reaching
-	// that call, which would leave Serve running against a live socket and pg
-	// pool for the remainder of the binary. Adopted from the parallel sealed
-	// fix (sealed#973) after comparing the two; that lane caught a leak this
-	// one had.
+	// Idempotent with the explicit cancel() on the happy path below. Needed
+	// because every failure path here t.Fatalf's before reaching that call,
+	// which would otherwise leave Serve running against a live socket and pg
+	// pool for the remainder of the binary.
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
@@ -204,13 +202,25 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	// released it.
 	//
 	// A since_seq=0 subscribe receives commsSnapshotBoundary FIRST, before any
-	// event (internal/comms/subscribe.go, which documents the frame's shape).
-	// Assert that frame rather than skipping one blindly: a bare skip silently
-	// re-breaks the moment the preamble grows a second frame, which is how this
-	// gate broke in the first place — it was written before the boundary
-	// existed and read frame one as the seeded event, failing here with an
-	// empty channel id and never reaching the shutdown drain that is its
-	// actual subject.
+	// event (see commsSnapshotBoundary in internal/comms/subscribe.go, whose
+	// doc comment specifies the frame's shape).
+	//
+	// Assert that frame rather than skipping one blindly. The gain is
+	// attribution, not catch-vs-miss: the seeded-event assertion below is a
+	// hard backstop either way, because no control frame can satisfy
+	// GetChannelChanged().GetChannel().GetId() == wantChannelID. Measured, by
+	// mutating subscribe.go with the skip and the assertion in turn:
+	//
+	//	preamble grows a second boundary  skip: caught, opaque empty channel id
+	//	                                  assert: caught, same
+	//	boundary Send removed entirely    skip: caught at 25.4s, gate deadline
+	//	                                  assert: caught at 11.8s, names the frame
+	//
+	// So a bare skip is slower and far less diagnostic, not silent. An earlier
+	// version of this comment claimed it re-breaks silently; a reviewer ran
+	// both variants and falsified that. The claim was the justification for
+	// the assertion, and it was never measured — the same defect this test's
+	// header records, in the prose arguing the fix.
 	gate := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
@@ -265,5 +275,9 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	}
 
 	// The subscriber's stream ended because the server closed the comms bus.
-	<-done
+	select {
+	case <-done:
+	case <-timeAfter():
+		t.Fatal("subscriber stream never ended after the drain closed the comms bus")
+	}
 }
