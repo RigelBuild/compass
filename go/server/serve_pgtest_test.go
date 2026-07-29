@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -143,6 +144,10 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	socketPath := filepath.Join(t.TempDir(), "compass.sock")
 
 	serveCtx, cancel := context.WithCancel(context.Background())
+	// Idempotent with the explicit cancel() on the happy path below: the gate's
+	// failure paths t.Fatalf before reaching it, and without this Serve would
+	// keep running against a live socket and pg pool for the rest of the binary.
+	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- Serve(serveCtx, ServeConfig{
@@ -183,20 +188,81 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	}
 	defer func() { _ = stream.Close() }()
 
-	// Drive the stream on a goroutine: gate on the seeded event (registration
-	// proof), then keep receiving so the stream stays open on the comms bus
-	// until the server's shutdown drain closes it. The final Receive returning
-	// false (clean EOF) is what proves the server-side close released it.
+	// Drive the stream on a goroutine: assert the snapshot-boundary frame, gate
+	// on the seeded event (registration proof), then keep receiving so the
+	// stream stays open on the comms bus until the server's shutdown drain
+	// closes it. The gate therefore needs TWO frames, boundary then event. The
+	// final Receive returning false (clean EOF) is what proves the server-side
+	// close released it.
 	gate := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// Frame 1 on since_seq=0 is the snapshot boundary, sent unconditionally
+		// ahead of any event (subscribe.go:72-80). Assert it rather than discard
+		// it: a bare Receive() here would also go green against a server that
+		// stopped sending the boundary at all, and that frame is ratified
+		// contract (SEA-1333 OQ4).
+		//
+		// The boundary's documented discriminators are its zero seq and absent
+		// payload (subscribe.go:220-224); both are asserted below. The other two
+		// checks are weaker on purpose and are NOT discriminators — see each.
 		if !stream.Receive() {
-			gate <- fmt.Errorf("stream ended before the seeded event: %w", stream.Err())
+			gate <- fmt.Errorf("stream ended before the snapshot boundary (Err=%v)", stream.Err())
+			return
+		}
+		boundary := stream.Msg()
+		switch {
+		// Discriminator 1: an event frame always carries a payload oneof.
+		case boundary.GetPayload() != nil:
+			gate <- fmt.Errorf("frame 1 carries payload %T, want the payload-less snapshot boundary", boundary.GetPayload())
+			return
+		// Discriminator 2: the boundary is a control frame at seq 0
+		// (commsResyncSeq), never positioned in bus-seq space, where a real event
+		// carries the nonzero seq stamped at publish (events.go:169-172, off a
+		// nextSeq that starts at 1 — events.go:155 — so no event is ever seq 0).
+		case boundary.GetSeq() != 0:
+			gate <- fmt.Errorf("snapshot boundary seq = %d, want 0 (control frame, not positioned)", boundary.GetSeq())
+			return
+		// Not a discriminator — every event carries the epoch too
+		// (subscribe.go:201). This is a field-stamping check: it catches a
+		// boundary built with a literal 0 instead of sub.Epoch (subscribe.go:77).
+		// A nonzero-but-wrong epoch gets caught below, against frame 2.
+		case boundary.GetInstanceEpoch() == 0:
+			gate <- errors.New("snapshot boundary instance_epoch = 0, want the per-boot nonce")
+			return
+		// A no-drift check on the empty-store head, NOT a presence check: the
+		// getter returns 0 for an unset field, and this fixture's true head is
+		// also 0 (it seeds a channel, never a message), so a server that dropped
+		// the SnapshotSeq assignment entirely would still pass here. That is
+		// deliberate scope, not an ordering constraint: this fixture is a
+		// shutdown-drain regression, and pinning a nonzero head against a
+		// populated store is subscribe_test.go:243-244's job, where
+		// non_empty_ring already asserts it. Kept single-purpose.
+		case boundary.GetSnapshotSeq() != 0:
+			gate <- fmt.Errorf("snapshot boundary snapshot_seq = %d, want 0 (empty store: COALESCE(MAX(seq), 0))", boundary.GetSnapshotSeq())
+			return
+		}
+		wantEpoch := boundary.GetInstanceEpoch()
+		if !stream.Receive() {
+			gate <- fmt.Errorf("stream ended before the seeded event (Err=%v)", stream.Err())
 			return
 		}
 		if got := stream.Msg().GetChannelChanged().GetChannel().GetId(); got != wantChannelID {
 			gate <- fmt.Errorf("first event channel id = %q, want the seeded %q", got, wantChannelID)
+			return
+		}
+		// The boundary and the events after it come from one Bus, so they carry
+		// one per-boot nonce: Publish stamps b.instanceEpoch (events.go:174) and
+		// Subscription.Epoch returns the same field (events.go:242, :288). Both
+		// read one immutable field of one Bus, so this is narrow by construction:
+		// it catches a boundary stamped from a literal or from a different Bus —
+		// which a != 0 test passes — and nothing wider. Compared by value,
+		// captured before this Receive: connect reuses no message across Receives
+		// (client_stream.go:184-195), but a uint64 copy makes that irrelevant
+		// rather than a fact to re-verify.
+		if got := stream.Msg().GetInstanceEpoch(); got != wantEpoch {
+			gate <- fmt.Errorf("seeded event instance_epoch = %d, want the boundary's %d (one bus, one nonce)", got, wantEpoch)
 			return
 		}
 		gate <- nil
@@ -213,7 +279,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 			t.Fatalf("subscriber gate: %v", err)
 		}
 	case <-timeAfter():
-		t.Fatal("subscriber never received the seeded ChannelChanged")
+		t.Fatal("subscriber never completed the boundary + seeded ChannelChanged handshake")
 	}
 
 	// Shutdown with the subscriber still live: Serve must drain and return nil
