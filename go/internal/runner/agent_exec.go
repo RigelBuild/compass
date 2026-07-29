@@ -196,10 +196,10 @@ func isDeliberateKill(err error) bool {
 // pathological line costs a truncated log entry instead of unbounded memory.
 const maxLoggedLine = 1024 * 1024
 
-// drainReaderSize is the drain's read buffer. It is a named constant because
-// readBoundedLine's truncation flag is only exact when maxLoggedLine is a
-// multiple of it — see TestLoggedLineCapIsCommensurateWithReaderBuffer, which
-// pins that relationship. Changing either constant alone re-arms a silent drop.
+// drainReaderSize is the drain's read buffer. Its size does not affect
+// correctness: readBoundedLine's truncation flag is measured from `seen`, the
+// exact running byte total for the line, so it is exact regardless of how the
+// line is split across reads — buffer-size-independent.
 const drainReaderSize = 64 * 1024
 
 // drainToLog copies one of the agent's pipes to the diagnostic log line by line
@@ -311,7 +311,7 @@ func readBoundedLine(r *bufio.Reader, limit int) ([]byte, error) {
 			}
 		}
 		truncated := payload > limit
-		line = trimEOL(line, terminated)
+		line = trimEOL(line, terminated && !truncated)
 		switch {
 		case err != nil && truncated:
 			return line, errors.Join(errLineTruncated, err)

@@ -353,15 +353,20 @@ func TestReadBoundedLineCountsCRBeforeFinalByte(t *testing.T) {
 	}
 }
 
-// The production constants are commensurate (1 MiB cap, 64 KiB buffer), so the
-// cap always falls on a chunk boundary and the miss above cannot be reached in
-// production. Nothing in the source ties them, so this pins the relationship
-// the safety of those constants rests on: change either and the drain silently
-// starts dropping bytes without flagging them.
-func TestLoggedLineCapIsCommensurateWithReaderBuffer(t *testing.T) {
-	if maxLoggedLine%drainReaderSize != 0 {
-		t.Errorf("maxLoggedLine (%d) %% drainReaderSize (%d) = %d, want 0 — an over-cap "+
-			"line whose last payload byte is a CR can now be truncated without being flagged",
-			maxLoggedLine, drainReaderSize, maxLoggedLine%drainReaderSize)
+// A truncated line whose KEPT prefix ends in a payload CR sitting exactly on
+// the cap boundary: the real terminator is beyond the cap and was never
+// appended, so the kept prefix is entirely payload and trimEOL must leave it
+// alone. Stripping that boundary CR drops an in-cap byte from the log. Unlike
+// ...PayloadCREndsAChunk (CR one byte PAST the cap), here the CR is the last
+// retained byte, so this is the case that pins trimEOL's truncated no-op.
+func TestReadBoundedLineKeepsBoundaryCROnTruncatedLine(t *testing.T) {
+	const limit = 8
+	got := readAll(t, strings.NewReader(strings.Repeat("a", limit-1)+"\r"+strings.Repeat("b", limit)+"\n"), limit)
+
+	if !got[0].truncated {
+		t.Error("truncated = false, want true")
+	}
+	if want := strings.Repeat("a", limit-1) + "\r"; got[0].text != want {
+		t.Errorf("text = %q, want %q — the boundary CR is payload and must survive", got[0].text, want)
 	}
 }
