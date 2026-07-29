@@ -262,13 +262,17 @@ func (h *Hub) enroll(id string, subject store.Subject) (reattached bool) {
 	return reattached
 }
 
-// router returns the attached Runner's command router, or an error when no
-// Runner is enrolled (a session command with no Runner to serve it).
-func (h *Hub) routerFor(sessionID string) (*commandRouter, error) {
+// routerFor returns the attached Runner's command router and its id, or an error
+// when no Runner is enrolled (a session command with no Runner to serve it). The
+// id travels out with the router so a caller that must attribute the call to a
+// Runner (Provision, recording an agent's durable placement) names the Runner
+// that actually served it, rather than re-reading the registry afterwards and
+// racing a re-enroll onto the wrong id.
+func (h *Hub) routerFor(sessionID string) (*commandRouter, string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.runner == nil {
-		return nil, fmt.Errorf("no runner enrolled to serve session %q", sessionID)
+		return nil, "", fmt.Errorf("no runner enrolled to serve session %q", sessionID)
 	}
-	return h.runner.router, nil
+	return h.runner.router, h.runner.id, nil
 }

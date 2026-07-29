@@ -3,50 +3,46 @@
 package store
 
 // Read-path authorization: RequireAgentSessionSubscriber resolves
-// the ownership chain (session_id -> container_name -> agent_account_id ->
-// home_channel_id) and authorizes a caller iff it is a member of that home
-// channel. The load-bearing contract is the not-found/forbidden MERGE: an
-// unknown session and a known-but-foreign session are refused with the SAME
-// ErrNotFound, so a caller holding a foreign session_id cannot probe whether it
-// exists. Pgtest-backed — the authz lives in the JOIN, provable only against a
-// real database.
+// the ownership chain (session_id -> agent_account_id -> home_channel_id) and
+// authorizes a caller iff it is a member of that home channel. The load-bearing
+// contract is the not-found/forbidden MERGE: an unknown session and a
+// known-but-foreign session are refused with the SAME ErrNotFound, so a caller
+// holding a foreign session_id cannot probe whether it exists. Pgtest-backed —
+// the authz lives in the JOIN, provable only against a real database.
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
-// recordChain seeds a full ownership chain for agent and returns the session_id
-// a subscriber would present. container_name and session_id are opaque handles
-// here (the server mints them in production).
-func recordChain(t *testing.T, s *Store, agent Account, container, sessionID string) {
+// recordSession seeds the ownership chain for agent and returns the session_id a
+// subscriber would present. session_id is an opaque handle here (the server
+// mints it in production). The chain used to hop through a container_name row;
+// 0004 collapsed that hop, so seeding is now the single session write.
+func recordSession(t *testing.T, s *Store, agent Account, sessionID string) {
 	t.Helper()
-	ctx := context.Background()
-	if err := s.RecordAgentContainer(ctx, container, agent.ID); err != nil {
-		t.Fatalf("RecordAgentContainer(%q): %v", container, err)
-	}
-	if err := s.RecordAgentSession(ctx, sessionID, container); err != nil {
+	if err := s.RecordAgentSession(t.Context(), sessionID, agent.ID); err != nil {
 		t.Fatalf("RecordAgentSession(%q): %v", sessionID, err)
 	}
 }
 
 // TestRequireAgentSessionSubscriberAuthorizesHomeChannelMember pins the happy
-// path AND, by construction, that the resolve walks all three hops: the caller
-// is authorized only because the full session->container->agent->home_channel
-// chain resolves to a channel it belongs to. The owner is seeded into the
-// agent's home channel at CreateAgent. A bug in ANY of the three joins would
-// drop the row and turn this legitimate subscribe into an ErrNotFound, reddening
-// this test.
+// path AND, by construction, that the resolve walks every hop: the caller is
+// authorized only because the full session->agent->home_channel chain resolves
+// to a channel it belongs to. The owner is seeded into the agent's home channel
+// at CreateAgent. A bug in EITHER join would drop the row and turn this
+// legitimate subscribe into an ErrNotFound, reddening this test.
 func TestRequireAgentSessionSubscriberAuthorizesHomeChannelMember(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
-	recordChain(t, s, agent, "cont-1", "sess-1")
+	recordSession(t, s, agent, "sess-1")
 
 	// owner is a member of the agent's home channel (seeded at CreateAgent).
 	if err := s.RequireAgentSessionSubscriber(ctx, owner.ID, "sess-1"); err != nil {
-		t.Fatalf("home-channel member authorize = %v, want nil (full chain resolves + member)", err)
+		t.Fatalf("home-channel member authorize = %v, want nil (chain resolves + member)", err)
 	}
 }
 
@@ -76,7 +72,7 @@ func TestRequireAgentSessionSubscriberNonMemberSameAsUnknown(t *testing.T) {
 	owner := mustUser(t, s, "owner")
 	outsider := mustUser(t, s, "outsider")
 	agent := mustAgent(t, s, owner.ID, "agent")
-	recordChain(t, s, agent, "cont-1", "real-session")
+	recordSession(t, s, agent, "real-session")
 
 	// outsider even owns an unrelated channel — so it IS a member of something,
 	// proving membership is checked against the RESOLVED home channel, not any
@@ -110,4 +106,75 @@ func TestRequireAgentSessionSubscriberEmptySessionIDIsInvalidArgument(t *testing
 
 	err := s.RequireAgentSessionSubscriber(ctx, owner.ID, "")
 	sentinelIs(t, err, ErrInvalidArgument, "empty session id subscribe")
+}
+
+// TestRequireAgentSessionSubscriberCollapseIsUniformAcrossRefusalCauses is the
+// 0004 regression guard for the visibility collapse. Collapsing the chain from
+// session -> container -> agent -> home_channel down to
+// session -> agent -> home_channel removed a JOIN from a SECURITY query, and
+// the risk of that edit is not that a refusal becomes an authorization — it is
+// that the refusals stop being IDENTICAL, so the error a caller gets back
+// starts discriminating between causes it must not distinguish.
+//
+// The three tests above each pin one refusal in isolation. This one pins them
+// against EACH OTHER: every way of failing to be authorized — the session was
+// never recorded, the session exists but belongs to another owner's agent, the
+// session exists and the caller is a total stranger to the system — must produce
+// one indistinguishable ErrNotFound. If a future rewrite of the JOIN surfaced,
+// say, a distinct error once the agent row resolves but membership does not, a
+// caller could subtract the two answers and enumerate live session ids. Every
+// refusal below is checked against the same sentinel AND against the same
+// message, so a divergence in either reddens this test.
+func TestRequireAgentSessionSubscriberCollapseIsUniformAcrossRefusalCauses(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	recordSession(t, s, agent, "live-session")
+
+	// Three unauthorized callers, each failing for a structurally DIFFERENT
+	// reason, all presenting the same real session id.
+	rival := mustUser(t, s, "rival")
+	rivalAgent := mustAgent(t, s, rival.ID, "rival-agent") // owns a DIFFERENT agent + home channel
+	recordSession(t, s, rivalAgent, "rival-session")
+	stranger := mustUser(t, s, "stranger") // member of nothing at all
+
+	refusals := []struct {
+		name      string
+		sessionID string
+		err       error
+	}{
+		// The session does not exist: no chain resolves.
+		{"unknown session", "no-such-session", s.RequireAgentSessionSubscriber(ctx, owner.ID, "no-such-session")},
+		// The session exists; the caller is a member of a home channel, just not
+		// THIS one. The chain resolves fully and membership is what fails — the
+		// case a two-step resolve-then-check would answer differently.
+		{"foreign session, caller owns another agent", "live-session", s.RequireAgentSessionSubscriber(ctx, rival.ID, "live-session")},
+		// The session exists; the caller belongs to nothing.
+		{"foreign session, caller belongs to nothing", "live-session", s.RequireAgentSessionSubscriber(ctx, stranger.ID, "live-session")},
+		// Symmetric: the owner probing the RIVAL's session. Proves the refusal is
+		// not a property of one privileged caller.
+		{"owner probing a rival's session", "rival-session", s.RequireAgentSessionSubscriber(ctx, owner.ID, "rival-session")},
+	}
+
+	for _, r := range refusals {
+		sentinelIs(t, r.err, ErrNotFound, r.name)
+	}
+
+	// Uniformity, the actual contract: every refusal reads identically apart from
+	// the session id the caller itself supplied. A message that varied by cause
+	// would leak the cause even while the sentinel matched.
+	for _, r := range refusals {
+		want := fmt.Sprintf("%v: session %q", ErrNotFound, r.sessionID)
+		if got := r.err.Error(); got != want {
+			t.Fatalf("%s refusal = %q, want %q (every refusal must read identically, echoing only the presented session id)", r.name, got, want)
+		}
+	}
+
+	// And the collapse must not have cost the happy path: the legitimate owner
+	// still resolves through the shortened chain. Without this, a query that
+	// refused EVERYTHING would satisfy the uniformity check above.
+	if err := s.RequireAgentSessionSubscriber(ctx, owner.ID, "live-session"); err != nil {
+		t.Fatalf("owner on its own agent's session = %v, want nil (uniform refusal must not mean universal refusal)", err)
+	}
 }

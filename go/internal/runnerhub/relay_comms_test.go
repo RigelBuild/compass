@@ -331,7 +331,7 @@ func TestRelayCommsCallStoppedSessionFailsClosedNotFound(t *testing.T) {
 func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
-	router, err := hub.routerFor("any")
+	router, _, err := hub.routerFor("any")
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
@@ -356,7 +356,7 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	if _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "acct-agent"}); err != nil {
+	if _, _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "acct-agent"}); err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
 	if _, err := hub.Start(ctx, "req-start", &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}); err != nil {
@@ -378,7 +378,7 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 	hub, comms := newHubWithComms()
 	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
-	router, err := hub.routerFor("any")
+	router, _, err := hub.routerFor("any")
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
@@ -401,7 +401,7 @@ func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	if _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: ""}); err != nil {
+	if _, _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: ""}); err != nil {
 		t.Fatalf("Provision (empty account) = %v, want success", err)
 	}
 	if _, err := hub.Start(ctx, "req-start", &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}); err != nil {

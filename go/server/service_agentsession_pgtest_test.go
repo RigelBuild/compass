@@ -75,11 +75,8 @@ func newAgentSessionFixture(t *testing.T) agentSessionFixture {
 	if err != nil {
 		t.Fatalf("CreateAgent: %v", err)
 	}
-	if err := st.RecordAgentContainer(ctx, "cont-1", agent.ID); err != nil {
-		t.Fatalf("RecordAgentContainer: %v", err)
-	}
 	const sessionID = "sess-1"
-	if err := st.RecordAgentSession(ctx, sessionID, "cont-1"); err != nil {
+	if err := st.RecordAgentSession(ctx, sessionID, agent.ID); err != nil {
 		t.Fatalf("RecordAgentSession: %v", err)
 	}
 
