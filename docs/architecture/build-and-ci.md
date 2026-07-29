@@ -64,16 +64,24 @@ step.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every pull request and every push to `main`.
-Two jobs:
+`.github/workflows/ci.yml` runs on every pull request, every push to `main`,
+and a nightly schedule. Two jobs:
 
-- **`gate`** — the whole battery, as one `moon run :ci`. Nothing about the
-  workspace is enumerated in the workflow, so a new project (or a newly
-  vendored fork) is gated the moment it is registered in
-  `.moon/workspace.yml`. This is the same command, over the same task graph,
-  that the local gate and the `hk` pre-push hook run.
+- **`gate`** — the whole battery over the moon task graph. It runs one of two
+  ways by event. On a **pull request** it is `moon ci :ci`, which runs only the
+  projects the PR affects — a Go, UI, or docs change never pays for the vendored
+  forks' nix builds. On a **push to `main`** and on the **nightly schedule** it
+  is the full `moon run :ci`: every task, every project, no affected filter.
+  Affected detection trusts each task's `inputs` globs, so the full sweep on
+  everything that reaches `main` is the backstop — an incomplete glob that let a
+  task be skipped on a PR is caught the moment the change lands (and re-checked
+  nightly), named rather than hidden. Either way nothing about the workspace is
+  enumerated in the workflow, so a new project (or a newly vendored fork) is
+  gated the moment it is registered in `.moon/workspace.yml`. This is the same
+  task graph the local gate and the `hk` pre-push hook run.
 - **`pgtest`** — the real-Postgres suites, which are build-tagged `pgtest` and
-  therefore never compiled by the `gate` job's `go test ./...`. It runs them
+  therefore never compiled by the `gate` job's `go test ./...`. It carries no
+  event filter, so it runs on every trigger including the nightly. It runs them
   against an Actions Postgres service container, and asserts afterwards that
   they actually ran: the harness *skips* when it finds no database, so a
   service that never came up would otherwise pass silently. It is a separate

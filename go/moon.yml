@@ -53,6 +53,12 @@ tasks:
       - '**/*.go'
       - 'go.mod'
       - 'go.sum'
+      # go.work / go.work.sum are not present today, but a workspace file
+      # rewrites which modules the go commands see, so it must invalidate this
+      # lane the moment one lands — otherwise a go.work-only change would read as
+      # affecting nothing and the affected PR gate would skip the Go battery.
+      - 'go.work'
+      - 'go.work.sum'
 
   vet:
     # go vet: the compiler-adjacent correctness pass (printf, struct tags,
