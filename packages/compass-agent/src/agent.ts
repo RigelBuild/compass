@@ -65,10 +65,12 @@ export class CompassAgent {
 	readonly #mapper: EventMapper;
 	readonly #onUnmapped: (u: UnmappedEvent) => void;
 	// The tools the session was constructed with (container entrypoint) — the
-	// native set a control frame may never drop (see #withNatives). Snapshotted
-	// as a COPY: `agent.state` hands back the live state object, so holding its
-	// array by reference would let a later setTools mutate this out from under
-	// us — reintroducing the very revocation this field exists to prevent.
+	// native set no control frame may drop or substitute (see #withNatives).
+	// Snapshotted as a COPY: `agent.state` hands back the live, caller-owned
+	// `state.tools` array by reference, so an in-place mutation of that array
+	// after construction (a push, a truncation) would otherwise alter the native
+	// set out from under us — reintroducing the very revocation this field exists
+	// to prevent.
 	readonly #natives: AgentTool[];
 	// Runner holds live prompt/steer until the agent acks ReplayComplete, but the
 	// agent also guards locally: control frames that arrive before replay settles
@@ -213,26 +215,53 @@ export class CompassAgent {
 		}
 	}
 
-	// Union the control's tool list with any construction-time native missing
-	// from it, keyed by name: a control may add tools and reorder freely, but it
-	// can never drop a native. Comms is not a grantable capability — it is what
-	// makes this process an agent rather than a compute job; an agent silently
-	// stripped of it cannot even report that it lost it. Restricting what an
-	// account may say or see is a server-side authorization decision (visibility
-	// and channel membership, enforced in SQL), so a control frame omitting a
-	// tool must not be able to make that decision here, in a layer with no
-	// authorization code at all. Control order is preserved and the surviving
-	// natives follow; the input array passes through unchanged when nothing is
-	// missing, so the common case allocates nothing.
+	// Merge the control's tool list with the construction-time natives, keyed by
+	// name, under a strong guarantee: a native ALWAYS wins. A control may add
+	// tools and reorder freely, but it can neither drop a native nor substitute
+	// its own instance for one. When a control tool's name collides with a
+	// native, the native instance REPLACES the control's tool at the control's
+	// position (control ordering for non-colliding tools is preserved; a replaced
+	// slot keeps its index but holds the native). Non-colliding natives follow.
+	//
+	// Comms is not a grantable capability — it is what makes this process an agent
+	// rather than a compute job; an agent silently stripped of it cannot even
+	// report that it lost it. Restricting what an account may say or see is a
+	// server-side authorization decision (visibility and channel membership,
+	// enforced in SQL), so neither an omission nor a same-name substitution in a
+	// control frame may make that decision here, in a layer with no authorization
+	// code at all. An attempted substitution (a same-named tool that is NOT the
+	// native instance) is a server misconfig: the native is kept and the attempt
+	// is surfaced through #onUnmapped, never silently overridden. Re-supplying the
+	// exact native instance is fine (no event). The input array passes through
+	// unchanged when nothing is missing or substituted, so the common case
+	// allocates nothing.
 	#withNatives(tools: AgentTool[]): AgentTool[] {
 		if (this.#natives.length === 0) return tools;
-		const names = new Set(tools.map((tool) => tool.name));
+		const nativeByName = new Map(
+			this.#natives.map((native) => [native.name, native]),
+		);
+		const present = new Set<string>();
 		let merged: AgentTool[] | undefined;
+		for (let i = 0; i < tools.length; i++) {
+			const controlTool = tools[i];
+			present.add(controlTool.name);
+			const native = nativeByName.get(controlTool.name);
+			if (native === undefined || native === controlTool) continue;
+			// Same name, different instance: an attempted substitution of a
+			// native. Keep the native at the control's position and surface the
+			// rejected misconfig — never a silent override.
+			merged ??= tools.slice();
+			merged[i] = native;
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "control:config",
+				reason: `config control tried to replace native tool "${native.name}" — substitution rejected, native kept`,
+			});
+		}
 		for (const native of this.#natives) {
-			if (names.has(native.name)) continue;
+			if (present.has(native.name)) continue;
 			merged ??= tools.slice();
 			merged.push(native);
-			names.add(native.name);
 		}
 		return merged ?? tools;
 	}

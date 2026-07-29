@@ -339,15 +339,40 @@ describe("CompassAgent — construction-time native tools survive every config c
 		expect(names(agent.toolSets[0])).toEqual(["read", "cotal_send"]);
 	});
 
-	test("a native the control already lists is not duplicated, and the control's instance wins", async () => {
-		const controlSend = tool("cotal_send");
+	test("a native the control lists (same instance) is not duplicated; the native survives", async () => {
 		const nativeSend = tool("cotal_send");
 		const { agent } = await runWith(
-			[{ kind: "config", tools: [controlSend] }],
+			[{ kind: "config", tools: [nativeSend] }],
 			[nativeSend],
 		);
 		expect(names(agent.toolSets[0])).toEqual(["cotal_send"]);
-		expect(agent.toolSets[0]?.[0]).toBe(controlSend);
+		expect(agent.toolSets[0]?.[0]).toBe(nativeSend);
+	});
+
+	test("a native wins over a same-named control tool: the native instance replaces it at its position", async () => {
+		const controlSend = tool("cotal_send");
+		const nativeSend = tool("cotal_send");
+		const { agent, unmapped } = await runWith(
+			[{ kind: "config", tools: [tool("read"), controlSend, tool("write")] }],
+			[nativeSend],
+		);
+		// Control ordering preserved; the collided slot keeps its index but holds
+		// the NATIVE instance, not the control's.
+		expect(names(agent.toolSets[0])).toEqual(["read", "cotal_send", "write"]);
+		expect(agent.toolSets[0]?.[1]).toBe(nativeSend);
+		// The substitution attempt is surfaced as a rejected server misconfig.
+		expect(unmapped).toHaveLength(1);
+		expect(unmapped[0]?.eventType).toBe("control:config");
+		expect(unmapped[0]?.reason).toContain("cotal_send");
+	});
+
+	test("re-supplying the exact native instance emits no unmapped event", async () => {
+		const nativeSend = tool("cotal_send");
+		const { unmapped } = await runWith(
+			[{ kind: "config", tools: [nativeSend] }],
+			[nativeSend],
+		);
+		expect(unmapped).toEqual([]);
 	});
 
 	test("a control may add tools and set their order; natives follow", async () => {
@@ -377,17 +402,35 @@ describe("CompassAgent — construction-time native tools survive every config c
 		expect(agent.toolSets).toEqual([]);
 	});
 
-	test("the native snapshot is a copy: a later setTools cannot mutate it away", async () => {
-		const natives = [tool("cotal_send")];
-		const { agent } = await runWith(
-			[
-				{ kind: "config", tools: [tool("read")] },
-				{ kind: "config", tools: [tool("write")] },
-			],
-			natives,
-		);
-		expect(names(agent.toolSets[0])).toEqual(["read", "cotal_send"]);
-		expect(names(agent.toolSets[1])).toEqual(["write", "cotal_send"]);
+	test("the native snapshot is a copy: mutating the live state.tools in place after construction cannot alter the native set", async () => {
+		// Split construction from run so we can mutate the caller-owned
+		// `state.tools` array AFTER the constructor snapshots it but BEFORE a
+		// config control merges natives. The snapshot is a copy (agent.ts), so
+		// the in-place mutation below must not leak through: the native still
+		// merges from the construction-time set, and the injected tool never
+		// appears. This FAILS if the defensive spread at construction is dropped.
+		const nativeSend = tool("cotal_send");
+		const session = recordingSession([nativeSend]);
+		const frames: OutboundFrame[] = [];
+		const unmapped: UnmappedEvent[] = [];
+		const control: ControlSource = {
+			async *[Symbol.asyncIterator]() {
+				yield { kind: "config", tools: [tool("read")] } as AgentControl;
+			},
+		};
+		const agent = new CompassAgent({
+			session: session as unknown as AgentSession,
+			sink: { emit: (f) => frames.push(f) },
+			control,
+			onUnmapped: (u) => unmapped.push(u),
+		});
+		// Mutate the live source array in place: truncate it and inject an evil
+		// tool. If the snapshot aliased this array, the native would vanish and
+		// "evil" would merge instead.
+		session.agent.state.tools.length = 0;
+		session.agent.state.tools.push(tool("evil"));
+		await agent.run();
+		expect(names(session.agent.toolSets[0])).toEqual(["read", "cotal_send"]);
 	});
 });
 
