@@ -33,6 +33,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/jackc/pgx/v5"
@@ -75,7 +76,13 @@ type placementFixture struct {
 // router is attached — so a dispatched command reaches the fake rather than
 // racing the stream open.
 func newPlacementFixture(t *testing.T) placementFixture {
-	t.Helper()
+	return newPlacementFixtureWith(t, false)
+}
+
+// newPlacementFixtureWith is newPlacementFixture with a fake Runner that either
+// answers Stop (withholdStop=false) or accepts but never answers it
+// (withholdStop=true) — the wedged-Runner shape the rollback-bound test drives.
+func newPlacementFixtureWith(t *testing.T, withholdStop bool) placementFixture {
 	ctx := context.Background() // the test root context
 	dsn := pgtest.RequireDSN(t)
 	st, err := store.Open(ctx, dsn)
@@ -111,7 +118,7 @@ func newPlacementFixture(t *testing.T) placementFixture {
 		dsn:     dsn,
 		store:   st,
 		client:  newH2CClient(t, newH2CTestServer(t, svc)),
-		runner:  attachFakeRunner(t, st, hub),
+		runner:  attachFakeRunner(t, st, hub, withholdStop),
 		agentID: agent.ID,
 	}
 }
@@ -209,6 +216,54 @@ func TestStartAgentSessionStopsTheSessionItCannotRecord(t *testing.T) {
 	// either it exists AND is recorded, or it does not exist.
 	if got := sessionRowCount(t, ctx, f.dsn, fakeSessionID); got != 0 {
 		t.Fatalf("agent_sessions has %d rows for the rolled-back session %q, want 0", got, fakeSessionID)
+	}
+}
+
+// TestStartAgentSessionRollbackStopIsBounded pins that the anti-stranding Stop
+// cannot itself hang StartAgentSession: against a Runner that ACCEPTS the Stop
+// but never answers its result (the wedged-but-connected shape), the handler
+// must still return within rollbackStopTimeout rather than blocking forever on
+// a dispatch path that has no deadline of its own. Without the bound this test
+// hangs until the go-test binary's own timeout kills it; with it the handler
+// returns the same Internal error naming the session promptly. The timeout is
+// shortened here so the test is fast and deterministic — no real long sleep.
+func TestStartAgentSessionRollbackStopIsBounded(t *testing.T) {
+	prev := rollbackStopTimeout
+	rollbackStopTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { rollbackStopTimeout = prev })
+
+	f := newPlacementFixtureWith(t, true) // Runner withholds the Stop result
+	ctx := context.Background()           // the test root context
+
+	// A generous ceiling relative to the 200ms bound: comfortably above it, far
+	// below any real 30s hang, so a regression to unbounded reddens as a
+	// timeout here rather than stalling the whole suite.
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.client.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+			ContainerName: fakeContainer,
+		}))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("StartAgentSession on an unplaced container = success, want an error")
+		}
+		if got := connect.CodeOf(err); got != connect.CodeInternal {
+			t.Fatalf("error code = %v, want Internal", got)
+		}
+		if !strings.Contains(err.Error(), fakeSessionID) {
+			t.Fatalf("error %q does not name the started session %q; an operator could not reap it", err, fakeSessionID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("StartAgentSession did not return within 10s against a Runner that never answers Stop; the rollback Stop is unbounded")
+	}
+
+	// The Stop was still pushed — the invariant holds; it is merely bounded.
+	if !f.runner.sawStop(fakeSessionID) {
+		t.Fatalf("runner never received a Stop for session %q (commands seen: %v)", fakeSessionID, f.runner.commands())
 	}
 }
 
@@ -321,7 +376,7 @@ func connectPG(t *testing.T, ctx context.Context, dsn string) *pgx.Conn {
 
 // attachFakeRunner mounts the real RunnerService door over hub, dials it with a
 // fake Runner, runs its Sessions loop, and returns once the router is live.
-func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub) *recordingRunner {
+func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, withholdStop bool) *recordingRunner {
 	t.Helper()
 	path, handler := runnerhub.NewMountedHandler(hub,
 		func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
@@ -351,7 +406,7 @@ func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub) *record
 		t.Fatalf("Enroll = %v, want success", err)
 	}
 
-	rec := &recordingRunner{attached: make(chan struct{})}
+	rec := &recordingRunner{attached: make(chan struct{}), withholdStop: withholdStop}
 	stream := rc.Sessions(ctx)
 	loopDone := make(chan error, 1)
 	go rec.serve(stream, loopDone)
@@ -411,6 +466,10 @@ type recordingRunner struct {
 	// attached closes once the bootstrap Send has flushed the stream open.
 	attached chan struct{}
 
+	// withholdStop makes the loop record a Stop but never answer its result —
+	// the wedged-but-connected Runner that hangs an unbounded rollback Stop.
+	withholdStop bool
+
 	mu   sync.Mutex
 	seen []*compassv1internal.SessionsResponse
 }
@@ -440,6 +499,9 @@ func (r *recordingRunner) serve(
 			return
 		}
 		r.record(cmd)
+		if r.withholdStop && cmd.GetStop() != nil {
+			continue // record it, but never answer: the wedged-Runner shape
+		}
 		if err := stream.Send(answer(cmd)); err != nil {
 			done <- err
 			return

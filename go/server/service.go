@@ -40,6 +40,14 @@ const apiVersion = "compass.v1"
 // sinceSeq = 0, so it carries no meaningful position.
 const resyncSeq uint64 = 0
 
+// rollbackStopTimeout bounds the best-effort Stop in abandonStartedSession. The
+// runnerhub dispatch path (internal/runnerhub) has NO deadline of its own — a
+// wedged-but-connected Runner that accepts Stop but never answers its result
+// would otherwise hang StartAgentSession (and stall graceful-shutdown drain)
+// forever. A package var rather than a const only so a test can shorten it; it
+// is never reassigned in production.
+var rollbackStopTimeout = 30 * time.Second
+
 // errNoRunnerHub is returned by the container-lifecycle RPCs when no Runner door
 // is mounted (the socket-only path) — the RPC is Unavailable, never a panic.
 var errNoRunnerHub = errors.New("no runner hub configured on this server")
@@ -369,11 +377,15 @@ func (s *service) SubscribeAgentSession(
 // already be cancelled (a client that gave up is one plausible reason the store
 // write failed at all), and the session is live regardless — the same reasoning
 // AgentRuntime.Launch uses to remove a half-provisioned container
-// (internal/runtime/agent.go). The relay's own per-call bounds still apply.
+// (internal/runtime/agent.go). The dispatch path has no independent deadline, so
+// the Stop is bounded here by rollbackStopTimeout — StartAgentSession returns
+// within that bound even against a Runner that accepts Stop but never answers.
 func (s *service) abandonStartedSession(ctx context.Context, containerName, sessionID string, cause error) error {
 	stopErr := errNoSessionID
 	if sessionID != "" {
-		_, stopErr = s.hub.Stop(context.WithoutCancel(ctx), "", &compassv1.StopAgentSessionRequest{SessionId: sessionID})
+		stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackStopTimeout)
+		defer cancel()
+		_, stopErr = s.hub.Stop(stopCtx, "", &compassv1.StopAgentSessionRequest{SessionId: sessionID})
 	}
 	if stopErr != nil {
 		slog.ErrorContext(ctx, "started agent session could not be recorded or stopped; it is running unreapable",
