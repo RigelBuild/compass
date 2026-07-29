@@ -44,6 +44,15 @@ const DEBOUNCE_FLUSH_MS = 200;
 const flushHighlightDebounce = () =>
 	new Promise((r) => setTimeout(r, DEBOUNCE_FLUSH_MS));
 
+// The async Shiki highlight (150ms debounce + async tokenize) is observed with
+// `waitFor`, whose default ceiling is 1000ms. On a loaded CI box (concurrent go
+// + nix builds) the tokenize has resolved as late as ~1350ms — correct, just
+// slow — so give the highlight-observing waits a headroom ceiling. This is not a
+// retry: `waitFor` still polls the real highlighter to genuine completion; the
+// wider ceiling only tolerates a contended runner, and a highlighter that never
+// resolves still fails.
+const HIGHLIGHT_WAIT_MS = 5000;
+
 describe("MarkdownText — markdown semantics", () => {
 	test("renders bold, a list, and a link as semantic HTML", () => {
 		const { container } = render(() => (
@@ -166,9 +175,12 @@ describe("MarkdownText — code is verbatim, never chipped", () => {
 				byHandle={byHandle()}
 			/>
 		));
-		await waitFor(() => {
-			expect(container.querySelector(".code-highlight")).not.toBeNull();
-		});
+		await waitFor(
+			() => {
+				expect(container.querySelector(".code-highlight")).not.toBeNull();
+			},
+			{ timeout: HIGHLIGHT_WAIT_MS },
+		);
 		const pre = container.querySelector(".code-highlight pre");
 		expect(pre?.textContent).toBe("const a = 1;\nconst b = 2;\n");
 		// Shiki wraps each source line in its own `.line`, so the two statements
@@ -249,10 +261,13 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 			<MarkdownText text={"```ts\nconst x = 1;\n```"} byHandle={byHandle()} />
 		));
 		// Shiki resolves asynchronously and swaps in styled token spans.
-		await waitFor(() => {
-			const styled = container.querySelector("pre code span[style]");
-			expect(styled).not.toBeNull();
-		});
+		await waitFor(
+			() => {
+				const styled = container.querySelector("pre code span[style]");
+				expect(styled).not.toBeNull();
+			},
+			{ timeout: HIGHLIGHT_WAIT_MS },
+		);
 		// The code text survives the swap.
 		expect(container.querySelector("pre code")?.textContent).toContain(
 			"const x = 1;",
