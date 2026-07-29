@@ -290,6 +290,7 @@ export interface AppStore {
 	 *  belongs to a workstream of the selected agent. */
 	setActiveBranch: (branch: string) => void;
 
+	// ── Daemon: server liveness/version banner ──
 	/** The daemon liveness/version the top-bar banner shows (compass.v1
 	 *  GetServerInfo). A store built with `options.compass` probes once at boot
 	 *  and flips this to the live info; an offline store keeps STUB_DAEMON
@@ -508,7 +509,8 @@ export interface AppStoreOptions {
 	 *  to exercise the real Stop path. */
 	readonly sessions?: Record<string, AgentSession>;
 	/** Observes a comms failure — a stream error the driver retries past, a
-	 *  rejected `RespondToAsk`, or a refused `StopAgentSession`.
+	 *  rejected `RespondToAsk`, a refused `StopAgentSession`, or a failed boot
+	 *  `GetServerInfo` probe (the banner stays on the stub, offline).
 	 *  `postMessage`/`postReply` reject to their caller instead (the composer
 	 *  must keep the user's text) and do NOT route here. */
 	readonly onCommsError?: (error: unknown) => void;

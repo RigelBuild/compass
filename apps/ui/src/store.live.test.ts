@@ -950,11 +950,13 @@ describe("daemon banner (live GetServerInfo)", () => {
 
 	// A successful probe surfaces the server's OWN version/apiVersion with
 	// live:true. Mutation check: dropping live:true, or reading STUB_DAEMON's
-	// version instead of the probe's, reddens this.
+	// version/apiVersion instead of the probe's, reddens this — the fixture uses
+	// values (version 1.2.3, apiVersion compass.v2) distinct from STUB_DAEMON's
+	// (0.1.0-dev / compass.v1), so each field is pinned to the probe as source.
 	test("a successful probe surfaces the live server info", async () => {
 		const compass = createFakeCompass();
 		compass.serverInfo.version = "1.2.3";
-		compass.serverInfo.apiVersion = "compass.v1";
+		compass.serverInfo.apiVersion = "compass.v2";
 		let dispose!: () => void;
 		const store = createRoot((d) => {
 			dispose = d;
@@ -964,7 +966,7 @@ describe("daemon banner (live GetServerInfo)", () => {
 			await tick();
 			expect(store.daemon()).toEqual({
 				version: "1.2.3",
-				apiVersion: "compass.v1",
+				apiVersion: "compass.v2",
 				live: true,
 			});
 		} finally {
