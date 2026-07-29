@@ -277,6 +277,67 @@ func (c *Comms) CommitAgentUpdate(
 	return &compassv1.MessageUpdated{Message: messageToWire(stored)}, nil
 }
 
+// CommitAgentPostKeyed is CommitAgentPost with the agent-minted idempotency_key
+// threaded into ClientRequestId — the DURABLE, at-most-once commit path
+// CommitConversationFrame drives (#24 / OQ-3), as opposed to the loss-tolerant
+// unkeyed Deliver-path CommitAgentPost above.
+//
+// The key rides the request all the way to AppendMessage's
+// (author_account_id, client_request_id) unique index (store/messages.go:82):
+// a first send inserts the row and fans out MessagePosted; a retry with the SAME
+// key hits ON CONFLICT DO NOTHING, writes nothing, does NOT re-fan the event,
+// and re-reads the already-committed row — so the returned message_id is the
+// ORIGINAL, stable across the replay, which is exactly what lets the ack report
+// committed=true with the first commit's id on a retry. An empty key leaves
+// ClientRequestId unset and this behaves identically to CommitAgentPost (no
+// dedup), so a caller that forwards no key is not silently deduped against the
+// empty string — the store's unique constraint is predicated on a non-empty
+// client_request_id.
+//
+// Everything else — home-channel default via an unset Container, threaded
+// parent_message_id, the shared PostMessage handler path and its D9 write-authz
+// — is exactly CommitAgentPost's contract; see its doc for the rationale.
+func (c *Comms) CommitAgentPostKeyed(
+	ctx context.Context,
+	account store.AccountID,
+	posted *compassv1.MessagePosted,
+	idempotencyKey string,
+) (*compassv1.PostMessageResponse, error) {
+	if account == "" {
+		return nil, errNoActor
+	}
+	return c.PostAsAccount(ctx, account, &compassv1.PostMessageRequest{
+		// Container unset on purpose — routes to the agent's home channel.
+		Blocks:          posted.GetMessage().GetBlocks(),
+		ParentMessageId: posted.GetMessage().GetParentMessageId(),
+		ClientRequestId: idempotencyKey,
+	})
+}
+
+// CommitAgentUpdateKeyed is the UPDATE counterpart on the durable
+// CommitConversationFrame path. It deliberately IGNORES idempotencyKey and is a
+// straight pass-through to CommitAgentUpdate.
+//
+// An UPDATE is idempotent by construction, so it needs no dedup key. It
+// addresses an existing row by message.id and REPLACES its block set
+// (store.UpdateMessageBlocksAsAuthor is an UPDATE ... SET blocks = $1), so
+// re-applying the same frame writes the same bytes to the same row and yields
+// the same message_id — a replay is a no-op-equivalent, not a second row.
+// Threading the key would require widening UpdateMessageBlocksAsAuthor with a
+// client_request_id column and constraint (a store-write-signature change that
+// is a stated non-goal here), and would buy nothing the addressing already
+// gives. The parameter is accepted so the hub dispatches both frame variants
+// through one keyed surface, and named with a leading underscore to mark the
+// intent explicit rather than an oversight.
+func (c *Comms) CommitAgentUpdateKeyed(
+	ctx context.Context,
+	account store.AccountID,
+	updated *compassv1.MessageUpdated,
+	_ string,
+) (*compassv1.MessageUpdated, error) {
+	return c.CommitAgentUpdate(ctx, account, updated)
+}
+
 // reconcileUpdateAskIDs makes the ask blocks of a relayed UPDATE frame carry the
 // stored, server-owned ask_id — the safe alternative to trusting the wire value.
 // It reads the stored row's ask_ids (an immutable field, so a separate read from

@@ -139,6 +139,31 @@ func (h *Handler) RelayCommsCall(ctx context.Context, req *connect.Request[compa
 	return connect.NewResponse(resp), nil
 }
 
+// CommitConversationFrame durably commits one agent-authored conversation frame
+// and returns the commit outcome — the DURABLE counterpart to PublishEvents. The
+// hub resolves the relayed session_id to its bound agent account and commits the
+// frame under that account, fail-closed (relay_comms.go): an unresolved session
+// is a Connect CodeNotFound and a Deliver-only hub with no comms wired is
+// CodeUnavailable. The bearer interceptor has already Kind-gated the caller to a
+// SubjectRunner subject; the defense-in-depth check rejects a context with none.
+//
+// The commit is at-most-once keyed on the agent-minted idempotency_key: a fresh
+// commit AND an idempotent replay of an already-committed key both return
+// committed=true with the ORIGINAL row's message_id (stable across the replay).
+// A non-commit is never committed=false with a nil error — it is always a
+// Connect status error, because the Runner drives at-least-once purely off the
+// Connect code. seq is deferred and shipped as 0.
+func (h *Handler) CommitConversationFrame(ctx context.Context, req *connect.Request[compassv1internal.CommitConversationFrameRequest]) (*connect.Response[compassv1internal.CommitConversationFrameResponse], error) {
+	if _, ok := runnerSubjectFrom(ctx); !ok {
+		return nil, errUnauthenticated
+	}
+	resp, err := h.hub.CommitConversationFrame(ctx, req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
+}
+
 // NewMountedHandler builds the RunnerService HTTP handler with the Runner-subject
 // bearer interceptor applied, returning the mount path and handler for serve.go
 // to Handle on the network mux. resolve is the shared credential resolver
