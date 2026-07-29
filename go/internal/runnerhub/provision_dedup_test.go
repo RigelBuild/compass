@@ -53,7 +53,7 @@ type provisionOutcome struct {
 func enrollAttached(t *testing.T, hub *Hub, send *recordingSend) *commandRouter {
 	t.Helper()
 	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
-	router, err := hub.routerFor("any")
+	router, _, err := hub.routerFor("any")
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want the live router", err)
 	}
@@ -83,7 +83,7 @@ func TestProvisionSameClientRequestIdDedups(t *testing.T) {
 		}
 		outcomes := make(chan provisionOutcome, 2)
 		call := func() {
-			resp, err := hub.Provision(context.Background(), id, req)
+			resp, _, err := hub.Provision(context.Background(), id, req)
 			outcomes <- provisionOutcome{resp, err}
 		}
 
@@ -140,7 +140,7 @@ func TestProvisionEmptyClientRequestIdDoesNotDedup(t *testing.T) {
 		req := &compassv1.ProvisionAgentWorkspaceRequest{}
 		outcomes := make(chan provisionOutcome, 2)
 		call := func() {
-			resp, err := hub.Provision(context.Background(), "", req)
+			resp, _, err := hub.Provision(context.Background(), "", req)
 			outcomes <- provisionOutcome{resp, err}
 		}
 
@@ -211,7 +211,7 @@ func TestProvisionSameIdDifferentWorkspaceDoesNotDedup(t *testing.T) {
 		}
 		outcomes := make(chan provisionOutcome, 2)
 		call := func(req *compassv1.ProvisionAgentWorkspaceRequest) {
-			resp, err := hub.Provision(context.Background(), id, req)
+			resp, _, err := hub.Provision(context.Background(), id, req)
 			outcomes <- provisionOutcome{resp, err}
 		}
 

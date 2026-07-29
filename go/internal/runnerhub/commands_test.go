@@ -57,7 +57,7 @@ func TestCommandsNoRunnerIsUnavailable(t *testing.T) {
 		call func() error
 	}{
 		{"provision", func() error {
-			_, err := hub.Provision(ctx, "r1", &compassv1.ProvisionAgentWorkspaceRequest{})
+			_, _, err := hub.Provision(ctx, "r1", &compassv1.ProvisionAgentWorkspaceRequest{})
 			return err
 		}},
 		{"start", func() error {
@@ -99,7 +99,7 @@ func TestStartRelaySurfacesAlreadyRunningAsAlreadyExists(t *testing.T) {
 	// Enroll a Runner and bind a send that answers every command with an
 	// ALREADY_RUNNING error result correlated by the pushed request id.
 	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
-	router, err := hub.routerFor("any")
+	router, _, err := hub.routerFor("any")
 	if err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a router", err)
 	}
@@ -130,7 +130,7 @@ func TestStartRelaySurfacesAlreadyRunningAsAlreadyExists(t *testing.T) {
 func TestStartRelayReturnsSessionIdOnSuccess(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
-	router, _ := hub.routerFor("any")
+	router, _, _ := hub.routerFor("any")
 	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
 		go router.complete(&compassv1internal.SessionsRequest{
 			RequestId: cmd.GetRequestId(),

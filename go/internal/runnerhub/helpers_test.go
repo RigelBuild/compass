@@ -51,7 +51,7 @@ func waitRouterAttached(t *testing.T, hub *Hub) {
 			t.Fatal("runner command router never attached a live Sessions send")
 		default:
 		}
-		if router, err := hub.routerFor("gate"); err == nil {
+		if router, _, err := hub.routerFor("gate"); err == nil {
 			router.mu.Lock()
 			attached := router.send != nil
 			router.mu.Unlock()

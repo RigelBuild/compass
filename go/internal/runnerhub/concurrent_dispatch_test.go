@@ -59,7 +59,7 @@ func TestConcurrentDispatchOverRealStreamNoDataRace(t *testing.T) {
 	// before router.attach ran would (correctly) find no live send.
 	waitRouterAttached(t, hub)
 
-	router, err := hub.routerFor("runner-1")
+	router, _, err := hub.routerFor("runner-1")
 	if err != nil {
 		t.Fatalf("routerFor after enroll+attach = %v, want the live router", err)
 	}

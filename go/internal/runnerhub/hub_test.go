@@ -269,7 +269,7 @@ func TestEnrollDuplicateReattaches(t *testing.T) {
 	}
 	// A router is resolvable after enrollment (a session command has a Runner to
 	// serve it).
-	if _, err := hub.routerFor("any"); err != nil {
+	if _, _, err := hub.routerFor("any"); err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a live router", err)
 	}
 }

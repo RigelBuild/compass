@@ -25,9 +25,15 @@ import (
 )
 
 // Provision relays a ProvisionAgentWorkspace command to the owning Runner and
-// returns the container name it created. requestID is the client_request_id
-// idempotency key: a timeout-retry with the same id returns the same container
-// (no duplicate); empty mints a fresh id (no dedup).
+// returns the container name it created plus the id of the Runner that served
+// the call. The Runner id is returned rather than looked up afterwards so the
+// caller records the agent's durable placement against the Runner that ACTUALLY
+// ran the provision — re-reading the registry after the round trip could name a
+// different Runner if one re-enrolled in the meantime, and a placement pointing
+// at the wrong Runner is worse than none (reattach would re-drive the wrong
+// set). requestID is the client_request_id idempotency key: a timeout-retry with
+// the same id returns the same container (no duplicate); empty mints a fresh id
+// (no dedup).
 //
 // The client_request_id alone must NOT be the dedup key: it is a client-chosen
 // string, and two provisions that reuse one value for DIFFERENT workspaces
@@ -39,26 +45,28 @@ import (
 // This mirrors the comms store's (author_account_id, client_request_id)
 // idempotency scoping (store/migrations/0001_init.sql), strengthened to the full
 // provision identity since a provision creates a real isolated container.
-func (h *Hub) Provision(ctx context.Context, requestID string, req *compassv1.ProvisionAgentWorkspaceRequest) (*compassv1.ProvisionAgentWorkspaceResponse, error) {
-	result, err := h.relay(ctx, "", &compassv1internal.SessionsResponse{
+func (h *Hub) Provision(ctx context.Context, requestID string, req *compassv1.ProvisionAgentWorkspaceRequest) (*compassv1.ProvisionAgentWorkspaceResponse, string, error) {
+	result, runnerID, err := h.relay(ctx, "", &compassv1internal.SessionsResponse{
 		RequestId: provisionDedupID(requestID, req),
 		Command:   &compassv1internal.SessionsResponse_Provision{Provision: req},
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	resp := result.GetProvision()
 	// Record which agent account this container was provisioned for, so a later
 	// Start can promote it to a session binding RelayCommsCall resolves against
 	// (comms-tools design T2). The Runner never asserts this account; it is the
-	// Server's own record, keyed by the container name the Runner returned.
+	// Server's own record, keyed by the container name the Runner returned. This
+	// binding is the LIVE comms binding only, cleared on re-enroll; the DURABLE
+	// container/Runner placement is the caller's store write.
 	h.bindContainer(resp.GetContainerName(), store.AccountID(req.GetAgentAccountId()))
-	return resp, nil
+	return resp, runnerID, nil
 }
 
 // Start relays a StartAgentSession command to the owning Runner.
 func (h *Hub) Start(ctx context.Context, requestID string, req *compassv1.StartAgentSessionRequest) (*compassv1.StartAgentSessionResponse, error) {
-	result, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
+	result, _, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
 		RequestId: orNewRequestID(requestID),
 		Command:   &compassv1internal.SessionsResponse_Start{Start: req},
 	})
@@ -76,7 +84,7 @@ func (h *Hub) Start(ctx context.Context, requestID string, req *compassv1.StartA
 
 // Stop relays a StopAgentSession command to the owning Runner.
 func (h *Hub) Stop(ctx context.Context, requestID string, req *compassv1.StopAgentSessionRequest) (*compassv1.StopAgentSessionResponse, error) {
-	result, err := h.relay(ctx, req.GetSessionId(), &compassv1internal.SessionsResponse{
+	result, _, err := h.relay(ctx, req.GetSessionId(), &compassv1internal.SessionsResponse{
 		RequestId: orNewRequestID(requestID),
 		Command:   &compassv1internal.SessionsResponse_Stop{Stop: req},
 	})
@@ -92,7 +100,7 @@ func (h *Hub) Stop(ctx context.Context, requestID string, req *compassv1.StopAge
 
 // Reload relays a ReloadAgentSession command to the owning Runner.
 func (h *Hub) Reload(ctx context.Context, requestID string, req *compassv1.ReloadAgentSessionRequest) (*compassv1.ReloadAgentSessionResponse, error) {
-	result, err := h.relay(ctx, req.GetSessionId(), &compassv1internal.SessionsResponse{
+	result, _, err := h.relay(ctx, req.GetSessionId(), &compassv1internal.SessionsResponse{
 		RequestId: orNewRequestID(requestID),
 		Command:   &compassv1internal.SessionsResponse_Reload{Reload: req},
 	})
@@ -105,7 +113,7 @@ func (h *Hub) Reload(ctx context.Context, requestID string, req *compassv1.Reloa
 // Status relays a GetAgentStatus command to the owning Runner — the Runner is
 // authoritative for live session truth, so the Server reconciles to its answer.
 func (h *Hub) Status(ctx context.Context, requestID string, req *compassv1.GetAgentStatusRequest) (*compassv1.GetAgentStatusResponse, error) {
-	result, err := h.relay(ctx, req.GetSessionId(), &compassv1internal.SessionsResponse{
+	result, _, err := h.relay(ctx, req.GetSessionId(), &compassv1internal.SessionsResponse{
 		RequestId: orNewRequestID(requestID),
 		Command:   &compassv1internal.SessionsResponse_Status{Status: req},
 	})
@@ -119,20 +127,22 @@ func (h *Hub) Status(ctx context.Context, requestID string, req *compassv1.GetAg
 // the outcome to a Connect status: a RunnerError result becomes the mapped
 // Connect code; a transport failure (no Runner, stream drop) becomes
 // Unavailable. sessionKey selects the owning Runner (single-Runner MVP: any
-// non-empty key resolves the one Runner).
-func (h *Hub) relay(ctx context.Context, sessionKey string, cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, error) {
-	router, err := h.routerFor(sessionKey)
+// non-empty key resolves the one Runner). The served Runner's id is returned
+// alongside the result for the one caller that must attribute the command to a
+// Runner (Provision, recording a durable placement); the rest discard it.
+func (h *Hub) relay(ctx context.Context, sessionKey string, cmd *compassv1internal.SessionsResponse) (*compassv1internal.SessionsRequest, string, error) {
+	router, runnerID, err := h.routerFor(sessionKey)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err)
+		return nil, "", connect.NewError(connect.CodeUnavailable, err)
 	}
 	result, err := router.dispatch(ctx, cmd)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err)
+		return nil, "", connect.NewError(connect.CodeUnavailable, err)
 	}
 	if runnerErr := result.GetError(); runnerErr != nil {
-		return nil, runnerErrorToConnect(runnerErr)
+		return nil, "", runnerErrorToConnect(runnerErr)
 	}
-	return result, nil
+	return result, runnerID, nil
 }
 
 // runnerErrorToConnect maps a RunnerError to the Connect status the client sees.

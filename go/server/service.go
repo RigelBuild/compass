@@ -18,6 +18,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"connectrpc.com/connect"
@@ -47,6 +48,11 @@ var errNoRunnerHub = errors.New("no runner hub configured on this server")
 // context — an interceptor-wiring bug (both doors must attach one). Fail closed
 // with Unauthenticated rather than stream an unauthorized session.
 var errNoCaller = errors.New("no caller identity in request context")
+
+// errNoSessionID is the abandon-path cause when a Runner returned success for a
+// Start but no session id: there is nothing to Stop, and nothing the caller
+// could ever address, so the roll-back reduces to logging it loudly.
+var errNoSessionID = errors.New("runner returned no session id to stop")
 
 // busPayload is the bus's event type. Go's generated oneof interface is
 // unexported, so the bus carries the whole response message with only its
@@ -97,17 +103,27 @@ func (s *service) ProvisionAgentWorkspace(
 	if s.hub == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
 	}
-	resp, err := s.hub.Provision(ctx, req.Msg.GetClientRequestId(), req.Msg)
+	resp, runnerID, err := s.hub.Provision(ctx, req.Msg.GetClientRequestId(), req.Msg)
 	if err != nil {
 		return nil, err
 	}
-	// Record the container_name -> agent_account_id link of the durable
-	// ownership chain, only now that the Runner has created the
-	// container. agent_account_id is the request field; container_name is the
-	// server-minted response — so the row is rooted on a value the client cannot
-	// forge. Idempotent, matching the client_request_id provision-retry contract.
-	if err := s.store.RecordAgentContainer(ctx, resp.GetContainerName(), store.AccountID(req.Msg.GetAgentAccountId())); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("recording agent container ownership: %w", err))
+	// Record the agent's durable PLACEMENT — which Runner it is on and the
+	// container name it runs under — only now that the Runner has created the
+	// container. Every field is trustworthy at exactly this point:
+	// agent_account_id is the Server's own request field, container_name is the
+	// Runner's response, and runnerID names the Runner that actually served this
+	// call, so the row is rooted on values the client cannot forge. Idempotent
+	// (upsert on the agent), matching the client_request_id provision-retry
+	// contract.
+	//
+	// This is the write that makes the Server's knowledge survive itself: before
+	// it, the container -> account mapping lived only in the RunnerHub's
+	// in-memory binding, so a Server restart or Runner re-enroll between
+	// Provision and Start left StartAgentSession unable to say whose session it
+	// was recording. It is also what SEA-1516 reattach recovery reads to name
+	// every agent stranded by a Runner restart.
+	if err := s.store.RecordAgentPlacement(ctx, store.AccountID(req.Msg.GetAgentAccountId()), runnerID, resp.GetContainerName()); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("recording agent placement: %w", err))
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -131,12 +147,34 @@ func (s *service) StartAgentSession(
 	if err != nil {
 		return nil, err
 	}
-	// Bind the session_id -> container_name link of the durable ownership chain
-	// now that the Runner has started the session. container_name
-	// is the request handle; session_id is the server-minted response. Completes
-	// the chain SubscribeAgentSession resolves to authorize a subscriber.
-	if err := s.store.RecordAgentSession(ctx, resp.GetSessionId(), req.Msg.GetContainerName()); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("recording agent session ownership: %w", err))
+	// Complete the durable ownership chain now that the Runner has started the
+	// session: session_id (the server-minted response) -> agent_account_id, the
+	// chain SubscribeAgentSession resolves to authorize a subscriber. The
+	// request carries only container_name, so the owning account comes from the
+	// placement recorded at Provision — a durable read, not an in-memory
+	// binding, so the ownership record is written correctly even across a Server
+	// restart or a Runner re-enroll since the container was provisioned.
+	//
+	// Either store step can fail AFTER the Runner has irreversibly started an
+	// agent, and unlike Provision this does NOT self-heal: Provision's write is
+	// an idempotent upsert and its client_request_id dedups a retry at the
+	// router, whereas StartAgentSessionRequest carries no client_request_id (the
+	// relay id is minted per call above), so a client retry issues a genuinely
+	// NEW Start rather than rejoining this one. Returning the error alone would
+	// therefore discard the only handle to a LIVE session — the response, and
+	// with it the session id, never reaches the caller, so it can never Stop,
+	// Reload or Subscribe it, while the hub's promoteSession binding inside
+	// hub.Start already considers it live. So we tear the session back down and
+	// keep the invariant: either the session exists AND is recorded, or it does
+	// not exist.
+	agentAccountID, err := s.store.AgentForContainer(ctx, req.Msg.GetContainerName())
+	if err != nil {
+		return nil, s.abandonStartedSession(ctx, req.Msg.GetContainerName(), resp.GetSessionId(),
+			fmt.Errorf("resolving agent for container: %w", err))
+	}
+	if err := s.store.RecordAgentSession(ctx, resp.GetSessionId(), agentAccountID); err != nil {
+		return nil, s.abandonStartedSession(ctx, req.Msg.GetContainerName(), resp.GetSessionId(),
+			fmt.Errorf("recording agent session ownership: %w", err))
 	}
 	return connect.NewResponse(resp), nil
 }
@@ -268,9 +306,9 @@ func (s *service) SubscribeEvents(
 // SubscribeAgentSession streams one agent session's typed observation trace to a
 // caller authorized to see it. It first resolves-and-authorizes in one step —
 // RequireAgentSessionSubscriber walks the durable ownership chain (session_id ->
-// container_name -> agent_account_id -> home_channel_id) and checks the caller's
-// membership on that home channel, returning the SAME not-found for an unknown
-// session and a non-member so neither can probe session existence. Only past
+// agent_account_id -> home_channel_id) and checks the caller's membership on
+// that home channel, returning the SAME not-found for an unknown session and a
+// non-member so neither can probe session existence. Only past
 // that gate does it subscribe to the session's live tail and
 // forward frames until the client disconnects, the session ends, or the
 // subscriber lags past its buffer. No snapshot replay: the observation pane is a
@@ -318,6 +356,33 @@ func (s *service) SubscribeAgentSession(
 			}
 		}
 	}
+}
+
+// abandonStartedSession tears down a session StartAgentSession already started
+// on the Runner but could not record, and returns the Internal error to fail
+// with. Best-effort: the Stop's own failure must not mask the original cause,
+// which is why the returned error NAMES the session id — a session the store
+// never recorded and Stop could not kill is only reapable by an operator who
+// can see its id.
+//
+// The teardown runs on context.WithoutCancel(ctx): the caller's context may
+// already be cancelled (a client that gave up is one plausible reason the store
+// write failed at all), and the session is live regardless — the same reasoning
+// AgentRuntime.Launch uses to remove a half-provisioned container
+// (internal/runtime/agent.go). The relay's own per-call bounds still apply.
+func (s *service) abandonStartedSession(ctx context.Context, containerName, sessionID string, cause error) error {
+	stopErr := errNoSessionID
+	if sessionID != "" {
+		_, stopErr = s.hub.Stop(context.WithoutCancel(ctx), "", &compassv1.StopAgentSessionRequest{SessionId: sessionID})
+	}
+	if stopErr != nil {
+		slog.ErrorContext(ctx, "started agent session could not be recorded or stopped; it is running unreapable",
+			"session_id", sessionID, "container_name", containerName, "cause", cause, "stop_error", stopErr)
+	} else {
+		slog.ErrorContext(ctx, "started agent session could not be recorded; stopped it to avoid stranding",
+			"session_id", sessionID, "container_name", containerName, "cause", cause)
+	}
+	return connect.NewError(connect.CodeInternal, fmt.Errorf("%w (started session %q was rolled back)", cause, sessionID))
 }
 
 // forward drains the replay snapshot (oldest first), then forwards the live tail

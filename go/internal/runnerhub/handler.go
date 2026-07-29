@@ -70,7 +70,7 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 	if !ok {
 		return errUnauthenticated
 	}
-	router, err := h.hub.routerFor(subj.ID)
+	router, _, err := h.hub.routerFor(subj.ID)
 	if err != nil {
 		// A Sessions stream with no enrolled Runner — the Runner must Enroll
 		// before opening Sessions.
