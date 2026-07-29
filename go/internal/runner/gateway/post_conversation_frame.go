@@ -60,9 +60,16 @@ func (g *Gateway) PostConversationFrame(
 	pub := g.acquirePublisher(sessionID)
 	// Forward Runner-sequenced through the SAME publisher as Publish so allocation
 	// order == emission order; the idempotency_key rides the envelope to the
-	// Server's at-most-once store commit. Return delivered-or-erred: a forward
-	// failure is the unary's error, which the agent retries under the same key.
+	// Server's at-most-once store commit. A forward failure is the unary's error,
+	// which the agent retries under the same key.
 	if err := pub.forward(frame, key); err != nil {
+		// Tear the dead publisher down, exactly as Publish does. A connect
+		// client-stream caches its first error and every later Send short-
+		// circuits on it, and acquirePublisher only replaces g.pub on a SESSION
+		// change — never on stream death. Leaving it installed would make one
+		// upstream failure wedge every subsequent durable frame for the life of
+		// the session, turning a single erred frame into a whole-session outage.
+		_ = g.releasePublisher()
 		return nil, connect.NewError(connect.CodeUnavailable, err)
 	}
 

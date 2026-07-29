@@ -38,30 +38,49 @@ type EventRelay interface {
 	PublishEvents(ctx context.Context) *connect.ClientStreamForClient[compassv1internal.PublishEventsRequest, compassv1internal.PublishEventsResponse]
 }
 
+// seqCounter is the RunnerSeq allocator shared by every publisher a Gateway
+// builds for its socket. It is a struct rather than a bare uint64 because its
+// mutex is the publishers' critical section: the goroutine that allocates
+// sequence N is the one that sends N, before any concurrent sender allocates
+// N+1, so allocation order == emission order. Sharing the LOCK as well as the
+// counter also serializes a replacement publisher's first Send against the
+// outgoing publisher's close, so a swap cannot interleave two upstream writers.
+type seqCounter struct {
+	mu sync.Mutex
+	n  uint64
+}
+
 // sessionPublisher owns the one PublishEvents client-stream for a session and
 // stamps a monotonic RunnerSeq on every frame it forwards. It is opened by the
 // Publish handler at stream entry and closed at stream end; PostConversationFrame
 // unaries forward through the SAME publisher for the life of that stream, so both
 // paths share one sequence and one ordered upstream.
+//
+// The counter is NOT owned here. A publisher is replaceable within one session
+// (the durable path releases on an upstream failure so a dead stream cannot
+// wedge the session), and a per-publisher counter restarts at 0 on that swap —
+// replaying low seqs under the hub's high-water mark and silently disabling gap
+// detection for the replayed range. The counter belongs to the Gateway; see its
+// seq field.
 type sessionPublisher struct {
 	sessionID string
 
-	// mu serializes the allocate-seq-and-send critical section. It covers seq so
-	// the goroutine that allocates a sequence is the one that sends it, before
-	// any concurrent sender allocates the next — allocation order == emission
-	// order. It also guards stream: connect client-streams are not safe for
-	// concurrent Send.
-	mu     sync.Mutex
-	seq    uint64
+	// seq is the Gateway's shared allocator. Its mutex guards this publisher's
+	// stream too: connect client-streams are not safe for concurrent Send, and
+	// one lock covering allocate-and-send is what makes allocation order equal
+	// emission order.
+	seq    *seqCounter
 	stream *connect.ClientStreamForClient[compassv1internal.PublishEventsRequest, compassv1internal.PublishEventsResponse]
 }
 
 // newSessionPublisher opens the upstream PublishEvents client-stream for
 // sessionID and returns the publisher that drives it. ctx bounds the stream's
-// life (the Publish handler's inbound ctx).
-func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string) *sessionPublisher {
+// life (the socket-lifetime context, not a handler's request ctx). seq is the
+// Gateway's counter, carried across publishers so the sequence never restarts.
+func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string, seq *seqCounter) *sessionPublisher {
 	return &sessionPublisher{
 		sessionID: sessionID,
+		seq:       seq,
 		stream:    relay.PublishEvents(ctx),
 	}
 }
@@ -75,11 +94,11 @@ func newSessionPublisher(ctx context.Context, relay EventRelay, sessionID string
 // is returned to the caller: the Publish handler ends its stream, the
 // PostConversationFrame unary surfaces it delivered-or-erred.
 func (p *sessionPublisher) forward(frame *compassv1internal.AgentFrame, idempotencyKey string) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.seq++
+	p.seq.mu.Lock()
+	defer p.seq.mu.Unlock()
+	p.seq.n++
 	return p.stream.Send(&compassv1internal.PublishEventsRequest{
-		RunnerSeq:      p.seq,
+		RunnerSeq:      p.seq.n,
 		SessionId:      p.sessionID,
 		Frame:          frame,
 		IdempotencyKey: idempotencyKey,
@@ -89,10 +108,11 @@ func (p *sessionPublisher) forward(frame *compassv1internal.AgentFrame, idempote
 // close closes the upstream stream and awaits its ack, mirroring the stdout
 // relay's CloseAndReceive at EOF (relay.go:168-171). Called by the Publish
 // handler when the agent's client-stream ends. Returns the ack error (nil on a
-// clean close) so the handler can classify it.
+// clean close) so the handler can classify it. Takes the shared lock, so a close
+// never interleaves with another publisher's Send.
 func (p *sessionPublisher) close() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	p.seq.mu.Lock()
+	defer p.seq.mu.Unlock()
 	_, err := p.stream.CloseAndReceive()
 	return err
 }
@@ -122,7 +142,7 @@ func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 		g.pub = nil
 	}
 	if g.pub == nil {
-		g.pub = newSessionPublisher(g.baseCtx, g.events, sessionID)
+		g.pub = newSessionPublisher(g.baseCtx, g.events, sessionID, &g.seq)
 	}
 	pub := g.pub
 	g.pubMu.Unlock()
@@ -139,12 +159,24 @@ func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 
 // releasePublisher closes the shared publisher's upstream stream and clears it so
 // a later Publish reconnect opens a fresh one. Called by the Publish handler (the
-// stream owner) at stream end. Returns the upstream close/ack error.
+// stream owner) at stream end, and by the durable path when a forward fails.
+// Returns the upstream close/ack error.
+//
+// pubMu is held ACROSS the close, not just around the field clear. Clearing
+// first and closing after opens a window where g.pub is nil while the old
+// stream is still draining: a concurrent PostConversationFrame acquires, sees
+// nil, and builds a SECOND publisher for the same session whose seq restarts at
+// 0. RunnerSeq is contractually monotonic across the Runner's whole event
+// stream (runner.proto), and the hub's gap detector is one shared high-water
+// mark — a restarted counter replays low seqs under a high lastSeq, so the
+// detector goes deaf for that range and a genuine in-transit loss inside it is
+// no longer detectable. acquirePublisher takes the same mutex, so it now blocks
+// until the close completes and then builds exactly one fresh publisher.
 func (g *Gateway) releasePublisher() error {
 	g.pubMu.Lock()
+	defer g.pubMu.Unlock()
 	pub := g.pub
 	g.pub = nil
-	g.pubMu.Unlock()
 	if pub == nil {
 		return nil
 	}

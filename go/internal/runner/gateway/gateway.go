@@ -137,8 +137,24 @@ type Gateway struct {
 	// race, for the swap back to nil when Publish closes the stream, and for the
 	// session-change reset (a publisher bound to a prior session is replaced when
 	// the container rebinds to a new session across Stop→Start).
+	//
+	// seq is the RunnerSeq counter, and it lives HERE rather than on the
+	// publisher because a publisher is replaceable within one session: the
+	// durable path releases on an upstream forward failure so a dead stream
+	// cannot wedge the session, and the next forward builds a fresh publisher.
+	// A counter owned by the publisher restarts at 0 on that swap, which is
+	// silently worse than a gap: runner.proto states runner_seq is monotonic
+	// across the Runner's whole event stream, and the hub's detector only flags
+	// seq > lastSeq+1 (runnerhub/hub.go:230), so replayed low seqs are ACCEPTED
+	// and in-transit loss inside the replayed range stops being detectable.
+	// Hoisting it to the socket-lifetime Gateway makes the sequence survive every
+	// publisher replacement. Scope is still per-Runner-link rather than truly
+	// per-Runner (relay.go's eventPublisher owns a separate counter; unifying
+	// both is T9's multi-session work) — but within this link it is now
+	// unbroken.
 	pubMu sync.Mutex
 	pub   *sessionPublisher
+	seq   seqCounter
 	// committedKeys is the advisory in-process at-most-once fast-path for durable
 	// PostConversationFrame idempotency: a key seen committed here short-circuits
 	// a retry without a redundant upstream forward. It is NOT the durability

@@ -410,6 +410,65 @@ func TestPostConversationFrameDeliveredOrErred(t *testing.T) {
 	}
 }
 
+// A failed forward must not leave the dead publisher installed. The single-post
+// test above passes either way, which is exactly why the wedge survived review:
+// the defect is only observable on the SECOND post. A connect client-stream
+// caches its first error and short-circuits every later Send on it, and
+// acquirePublisher replaces g.pub only on a session CHANGE — so a publisher left
+// installed after a failure is reused for the life of the session and every
+// subsequent durable frame is lost, not just the one that failed.
+//
+// RED: drop the releasePublisher call from PostConversationFrame's error path ->
+// the third post still fails against the live upstream, because the Gateway is
+// still holding the publisher bound to the dead one.
+func TestPostConversationFrameFailureDoesNotWedgeThePublisher(t *testing.T) {
+	dead := newClosedRunnerServiceServer(t)
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, dead)
+	t.Cleanup(func() { _ = g.releasePublisher() })
+
+	post := func(key string) error {
+		_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+			Frame:          conversationFrame("boom"),
+			IdempotencyKey: key,
+		}))
+		return err
+	}
+
+	// Both posts against the dead upstream must fail the same clean way. A wedged
+	// publisher also fails here, so this pair alone does not discriminate.
+	for i, key := range []string{"wedge-1", "wedge-2"} {
+		err := post(key)
+		if err == nil {
+			t.Fatalf("post %d against a dead upstream = success, want an error", i+1)
+		}
+		if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+			t.Fatalf("post %d error code = %v, want CodeUnavailable", i+1, got)
+		}
+	}
+
+	// The discriminator: repoint the Gateway at a LIVE upstream. If the failed
+	// publisher was torn down, the next acquire builds a fresh one against it and
+	// the post succeeds. If it was left installed, this fails on the cached error
+	// from a stream that is no longer even the configured upstream.
+	capture := newCapturePublish()
+	g.events = newRunnerServiceServer(t, capture)
+	if err := post("wedge-3"); err != nil {
+		t.Fatalf("post against a live upstream after a failure = %v, want success: the dead publisher was not released", err)
+	}
+
+	// Close the live stream HERE, not in a t.Cleanup. The successful post above
+	// leaves a publisher holding an open upstream stream, and capturePublish's
+	// handler blocks sending each frame to a bounded channel. Cleanup order
+	// between this test's release and newRunnerServiceServer's own
+	// httptest.Server.Close is unspecified, so leaving it to cleanup lets the
+	// server close while its handler is still parked mid-Receive — which hangs
+	// Server.Close on its handler WaitGroup and times out the whole package
+	// (measured 3-of-8 runs at -race -count=10). Releasing inline ends the
+	// stream, and awaitEnded proves the handler returned before any cleanup runs.
+	_ = g.releasePublisher()
+	capture.awaitEnded(t)
+}
+
 // --- Case 4 ------------------------------------------------------------------
 
 // THE load-bearing test for the shared-publisher critical section: a Publish
@@ -469,6 +528,117 @@ func TestConcurrencyNoFalseGap(t *testing.T) {
 		if s != uint64(i+1) {
 			t.Fatalf("arrival %d: RunnerSeq = %d, want %d (allocation order must equal emission order); full arrival sequence = %v", i, s, i+1, seqs)
 		}
+	}
+}
+
+// seqSink is a RunnerService whose PublishEvents records only the RunnerSeq of
+// every frame it receives, into an unbounded slice under a mutex. Deliberately
+// NOT capturePublish: that fixture sends each frame to a bounded channel, so a
+// handler blocks once the buffer fills, and a test opening several streams can
+// park a handler forever — httptest.Server.Close then hangs the whole package in
+// cleanup. An append can never block, so any number of concurrent streams drain
+// to completion with no drainer goroutine at all.
+type seqSink struct {
+	compassv1internalconnect.UnimplementedRunnerServiceHandler
+
+	mu   sync.Mutex
+	seen []uint64
+}
+
+func (s *seqSink) PublishEvents(_ context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+	for stream.Receive() {
+		s.mu.Lock()
+		s.seen = append(s.seen, stream.Msg().GetRunnerSeq())
+		s.mu.Unlock()
+	}
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
+}
+
+// seqs returns a copy of what has been recorded so far.
+func (s *seqSink) seqs() []uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]uint64(nil), s.seen...)
+}
+
+// The sibling above closes the Publish stream only after every forward has
+// returned, explicitly so releasePublisher cannot run mid-forward — which means
+// it does not cover the window that matters. This one enters it: the release
+// races the durable unaries.
+//
+// The defect it caught is not the clear-then-close window (releasePublisher
+// already holds pubMu across the close) but the counter's OWNER: seq lived on
+// sessionPublisher, so any release-then-reacquire inside one session restarted
+// stamping at 0. runner.proto:170-172 states runner_seq is monotonic across the
+// Runner's whole event stream, and the hub flags only seq > lastSeq+1
+// (runnerhub/hub.go:230) — so replayed low seqs are ACCEPTED and in-transit loss
+// in the replayed range stops being detectable. The durable path releases on any
+// upstream forward failure, which put this on a common path.
+//
+// RED: give newSessionPublisher its own &seqCounter{} instead of the Gateway's
+// -> 8-of-10 runs report a duplicate RunnerSeq under -race.
+func TestReleaseDoesNotRestartTheSequence(t *testing.T) {
+	sink := &seqSink{}
+	events := newRunnerServiceServer(t, sink)
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, events)
+
+	// This test opens MORE than one upstream stream (the release closes the
+	// first, a later forward opens a fresh one), which the shared capture
+	// fixture is not built for: its send is blocking, its `ended` channel
+	// signals once per handler return, and awaitEnded consumes a single signal.
+	// So this test owns its own sink — an unbounded recorder that can never
+	// block a handler, which is the only property the assertion needs.
+	//
+	// What is asserted: a DUPLICATE RunnerSeq. Under a genuine race the arrival
+	// count and interleaving are both nondeterministic, but a repeated seq is
+	// possible only if two publishers stamped the same session independently.
+	var (
+		sinkMu sync.Mutex
+		seen   = map[uint64]bool{}
+		dup    uint64
+	)
+	record := func(seq uint64) {
+		sinkMu.Lock()
+		defer sinkMu.Unlock()
+		if seen[seq] && dup == 0 {
+			dup = seq
+		}
+		seen[seq] = true
+	}
+
+	const nUnary = 24
+	var wg sync.WaitGroup
+	for i := range nUnary {
+		wg.Go(func() {
+			// An error is legitimate here: a forward landing after the release
+			// fails cleanly rather than being silently dropped. What must never
+			// happen is a SUCCESS carrying a restarted seq.
+			_, _ = g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+				Frame:          conversationFrame(fmt.Sprintf("r%d", i)),
+				IdempotencyKey: fmt.Sprintf("rk-%d", i),
+			}))
+		})
+	}
+	// Release WHILE the unaries are in flight — the case the sibling avoids.
+	wg.Go(func() { _ = g.releasePublisher() })
+	wg.Wait()
+	// Drop the last publisher so every capture handler's Receive loop ends and
+	// its httptest server can close in cleanup without parking.
+	_ = g.releasePublisher()
+
+	for _, seq := range sink.seqs() {
+		record(seq)
+	}
+	sinkMu.Lock()
+	defer sinkMu.Unlock()
+	if dup != 0 {
+		t.Fatalf("RunnerSeq %d arrived twice: the sequence restarted, so two publishers stamped the same session independently", dup)
+	}
+	if len(seen) == 0 {
+		t.Fatal("no frames captured; the test cannot discriminate")
 	}
 }
 
