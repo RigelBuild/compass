@@ -31,8 +31,8 @@ func goodDefaults() SpecDefaults {
 }
 
 // The constructor rejects incomplete defaults so a misconfigured Runner fails at
-// startup, not at the first provision. Table-driven over the two required-field
-// gaps.
+// startup, not at the first provision. Table-driven over the required-field
+// gaps and the non-root uid guard.
 func TestNewConfigSpecBuilderRejectsIncompleteDefaults(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -46,6 +46,7 @@ func TestNewConfigSpecBuilderRejectsIncompleteDefaults(t *testing.T) {
 		// RuntimeDir through the same filepath.Join clean that validAccountID
 		// guards on the request-derived half, so both operands are checked.
 		{"a name prefix containing a path separator", func(d *SpecDefaults) { d.NamePrefix = "a/../../" }},
+		{"zero uid", func(d *SpecDefaults) { d.UID = 0 }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

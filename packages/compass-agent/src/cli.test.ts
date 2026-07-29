@@ -675,27 +675,30 @@ describe("main", () => {
 		]);
 	});
 
-	test("treats an empty COMPASS_WORKDIR as unset, not as a cwd", async () => {
+	test("treats an empty or whitespace-only COMPASS_WORKDIR as unset, not as a cwd", async () => {
 		// Mirrors the empty-HOME case: `??` would forward "" verbatim, and bun does
 		// not reject `cwd: ""` — the agent would silently load project context from
-		// the wrong tree. The Runner sets COMPASS_WORKDIR unconditionally
+		// the wrong tree. A whitespace-only value is truthy, so the `.trim()` is
+		// what catches it. The Runner sets COMPASS_WORKDIR unconditionally
 		// (relay.go `execSpec`), so a blank AgentEnv.Workdir reaches here directly.
-		const session = fakeSession();
-		const seen: (string | undefined)[] = [];
-		await main(
-			{ HOME: scratch(), COMPASS_WORKDIR: "" },
-			{
-				createSession: (options) => {
-					seen.push(options.cwd);
-					return Promise.resolve({
-						session: session as unknown as AgentSession,
-					});
+		for (const workdir of ["", "   "]) {
+			const session = fakeSession();
+			const seen: (string | undefined)[] = [];
+			await main(
+				{ HOME: scratch(), COMPASS_WORKDIR: workdir },
+				{
+					createSession: (options) => {
+						seen.push(options.cwd);
+						return Promise.resolve({
+							session: session as unknown as AgentSession,
+						});
+					},
+					createTransport: () =>
+						fakeCarrier(emptyLog(), { control: emptyControlStream }),
 				},
-				createTransport: () =>
-					fakeCarrier(emptyLog(), { control: emptyControlStream }),
-			},
-		);
-		expect(seen).toEqual([process.cwd()]);
+			);
+			expect(seen).toEqual([process.cwd()]);
+		}
 	});
 });
 

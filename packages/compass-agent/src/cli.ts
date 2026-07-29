@@ -152,11 +152,11 @@ export async function main(
 	}
 
 	const { session } = await (deps.createSession ?? createAgentSession)({
-		// `||`, not `??`: an empty COMPASS_WORKDIR is unset, not a valid cwd. The
-		// Runner sets it unconditionally (relay.go `execSpec`), so a caller that
-		// builds an AgentEnv with a blank Workdir would otherwise hand bun
-		// `cwd: ""` — which does not throw, it silently loads the wrong tree.
-		cwd: env.COMPASS_WORKDIR || process.cwd(),
+		// `||`, not `??`: an empty or whitespace-only COMPASS_WORKDIR is unset, not
+		// a valid cwd. The Runner sets it unconditionally (relay.go `execSpec`), so
+		// a caller that builds an AgentEnv with a blank Workdir would otherwise hand
+		// bun `cwd: ""` — which does not throw, it silently loads the wrong tree.
+		cwd: env.COMPASS_WORKDIR?.trim() || process.cwd(),
 		modelPattern: resolveModelSelector(env),
 	});
 

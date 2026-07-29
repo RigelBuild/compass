@@ -60,6 +60,9 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 	if strings.Contains(defaults.NamePrefix, "/") {
 		return nil, errors.New("spec defaults name prefix must not contain a path separator")
 	}
+	if defaults.UID == 0 {
+		return nil, errors.New("spec defaults require a non-root uid")
+	}
 	return &configSpecBuilder{defaults: defaults}, nil
 }
 
