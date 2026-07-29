@@ -36,6 +36,10 @@ interface RecordingAgent {
 	readonly appended: AgentMessage[];
 	readonly systemPrompts: (string[] | string)[];
 	readonly toolSets: AgentTool[][];
+	// The live SDK-shaped state CompassAgent reads its native tool set from at
+	// construction. Mirrors `Agent.state` (which returns the live object), so a
+	// test can assert the snapshot is a copy and not this array.
+	readonly state: { tools: AgentTool[] };
 }
 
 // A recording fake for AgentSession — the external boundary CompassAgent
@@ -49,13 +53,14 @@ interface RecordingSession {
 	listener: AgentSessionEventListener | undefined;
 }
 
-function recordingSession(): RecordingSession {
+function recordingSession(natives: AgentTool[] = []): RecordingSession {
 	const agent: RecordingAgent = {
 		prompts: [],
 		steers: [],
 		appended: [],
 		systemPrompts: [],
 		toolSets: [],
+		state: { tools: natives },
 	};
 	const agentImpl = {
 		prompt(input: string): Promise<void> {
@@ -100,13 +105,24 @@ function userMessage(text: string): AgentMessage {
 	return { role: "user", content: text, timestamp: 0 };
 }
 
+// A minimally-shaped AgentTool fixture. The merge is keyed purely on `name`, so
+// only the name is load-bearing; distinct calls yield distinct instances, which
+// is what lets a test assert WHICH instance of a shared name survived.
+function tool(name: string): AgentTool {
+	return { name, description: name, parameters: {} } as unknown as AgentTool;
+}
+
+function names(tools: AgentTool[] | undefined): string[] {
+	return (tools ?? []).map((t) => t.name);
+}
+
 // Run one agent over a fixed control script, capturing sink frames and unmapped
 // events. The ControlSource is a finite async generator (no stdin, no timers),
 // so `run()` resolves once it ends. The recording session is the only external
 // dependency; the cast to AgentSession is honest because CompassAgent touches
 // only the members implemented above.
-async function runWith(controls: AgentControl[]) {
-	const session = recordingSession();
+async function runWith(controls: AgentControl[], natives: AgentTool[] = []) {
+	const session = recordingSession(natives);
 	const frames: OutboundFrame[] = [];
 	const unmapped: UnmappedEvent[] = [];
 	const control: ControlSource = {
@@ -294,10 +310,10 @@ describe("CompassAgent — config applies to the SDK independent of the barrier"
 	});
 
 	test("config tools → setTools, without touching the system prompt", async () => {
-		const tools: AgentTool[] = [];
+		const tools = [tool("read"), tool("write")];
 		const { agent } = await runWith([{ kind: "config", tools }]);
 		expect(agent.toolSets).toHaveLength(1);
-		expect(agent.toolSets[0]).toBe(tools);
+		expect(names(agent.toolSets[0])).toEqual(["read", "write"]);
 		expect(agent.systemPrompts).toEqual([]);
 	});
 
@@ -307,6 +323,114 @@ describe("CompassAgent — config applies to the SDK independent of the barrier"
 		]);
 		expect(agent.systemPrompts).toEqual([["early cfg"]]);
 		expect(unmapped).toEqual([]);
+	});
+});
+
+// The natives the container entrypoint builds the session with are not a
+// grantable capability — a config control may add and reorder tools, but a tool
+// it omits must survive. Anything else lets a control frame silently revoke an
+// agent's ability to speak, mid-session, with no error and no log.
+describe("CompassAgent — construction-time native tools survive every config control", () => {
+	test("a config omitting a native still reaches setTools carrying it", async () => {
+		const { agent } = await runWith(
+			[{ kind: "config", tools: [tool("read")] }],
+			[tool("cotal_send")],
+		);
+		expect(names(agent.toolSets[0])).toEqual(["read", "cotal_send"]);
+	});
+
+	test("a native the control lists (same instance) is not duplicated; the native survives", async () => {
+		const nativeSend = tool("cotal_send");
+		const { agent } = await runWith(
+			[{ kind: "config", tools: [nativeSend] }],
+			[nativeSend],
+		);
+		expect(names(agent.toolSets[0])).toEqual(["cotal_send"]);
+		expect(agent.toolSets[0]?.[0]).toBe(nativeSend);
+	});
+
+	test("a native wins over a same-named control tool: the native instance replaces it at its position", async () => {
+		const controlSend = tool("cotal_send");
+		const nativeSend = tool("cotal_send");
+		const { agent, unmapped } = await runWith(
+			[{ kind: "config", tools: [tool("read"), controlSend, tool("write")] }],
+			[nativeSend],
+		);
+		// Control ordering preserved; the collided slot keeps its index but holds
+		// the NATIVE instance, not the control's.
+		expect(names(agent.toolSets[0])).toEqual(["read", "cotal_send", "write"]);
+		expect(agent.toolSets[0]?.[1]).toBe(nativeSend);
+		// The substitution attempt is surfaced as a rejected server misconfig.
+		expect(unmapped).toHaveLength(1);
+		expect(unmapped[0]?.eventType).toBe("control:config");
+		expect(unmapped[0]?.reason).toContain("cotal_send");
+	});
+
+	test("re-supplying the exact native instance emits no unmapped event", async () => {
+		const nativeSend = tool("cotal_send");
+		const { unmapped } = await runWith(
+			[{ kind: "config", tools: [nativeSend] }],
+			[nativeSend],
+		);
+		expect(unmapped).toEqual([]);
+	});
+
+	test("a control may add tools and set their order; natives follow", async () => {
+		const { agent } = await runWith(
+			[{ kind: "config", tools: [tool("write"), tool("read")] }],
+			[tool("cotal_send"), tool("cotal_dm")],
+		);
+		expect(names(agent.toolSets[0])).toEqual([
+			"write",
+			"read",
+			"cotal_send",
+			"cotal_dm",
+		]);
+	});
+
+	test("with no natives the control's own array reaches setTools untouched", async () => {
+		const tools = [tool("read")];
+		const { agent } = await runWith([{ kind: "config", tools }]);
+		expect(agent.toolSets[0]).toBe(tools);
+	});
+
+	test("a config carrying only a systemPrompt never calls setTools, natives or not", async () => {
+		const { agent } = await runWith(
+			[{ kind: "config", systemPrompt: ["be terse"] }],
+			[tool("cotal_send")],
+		);
+		expect(agent.toolSets).toEqual([]);
+	});
+
+	test("the native snapshot is a copy: mutating the live state.tools in place after construction cannot alter the native set", async () => {
+		// Split construction from run so we can mutate the caller-owned
+		// `state.tools` array AFTER the constructor snapshots it but BEFORE a
+		// config control merges natives. The snapshot is a copy (agent.ts), so
+		// the in-place mutation below must not leak through: the native still
+		// merges from the construction-time set, and the injected tool never
+		// appears. This FAILS if the defensive spread at construction is dropped.
+		const nativeSend = tool("cotal_send");
+		const session = recordingSession([nativeSend]);
+		const frames: OutboundFrame[] = [];
+		const unmapped: UnmappedEvent[] = [];
+		const control: ControlSource = {
+			async *[Symbol.asyncIterator]() {
+				yield { kind: "config", tools: [tool("read")] } as AgentControl;
+			},
+		};
+		const agent = new CompassAgent({
+			session: session as unknown as AgentSession,
+			sink: { emit: (f) => frames.push(f) },
+			control,
+			onUnmapped: (u) => unmapped.push(u),
+		});
+		// Mutate the live source array in place: truncate it and inject an evil
+		// tool. If the snapshot aliased this array, the native would vanish and
+		// "evil" would merge instead.
+		session.agent.state.tools.length = 0;
+		session.agent.state.tools.push(tool("evil"));
+		await agent.run();
+		expect(names(session.agent.toolSets[0])).toEqual(["read", "cotal_send"]);
 	});
 });
 

@@ -29,6 +29,7 @@
 // never touches wire bytes, so the pending gen of those internal proto messages
 // changes only the sink/source impls, not this class.
 
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
 import {
 	AgentSessionState,
@@ -63,6 +64,14 @@ export class CompassAgent {
 	readonly #control: ControlSource;
 	readonly #mapper: EventMapper;
 	readonly #onUnmapped: (u: UnmappedEvent) => void;
+	// The tools the session was constructed with (container entrypoint) — the
+	// native set no control frame may drop or substitute (see #withNatives).
+	// Snapshotted as a COPY: `agent.state` hands back the live, caller-owned
+	// `state.tools` array by reference, so an in-place mutation of that array
+	// after construction (a push, a truncation) would otherwise alter the native
+	// set out from under us — reintroducing the very revocation this field exists
+	// to prevent.
+	readonly #natives: AgentTool[];
 	// Runner holds live prompt/steer until the agent acks ReplayComplete, but the
 	// agent also guards locally: control frames that arrive before replay settles
 	// are applied as replay (context), and live prompt/steer are refused until
@@ -71,6 +80,10 @@ export class CompassAgent {
 
 	constructor(opts: CompassAgentOptions) {
 		this.#session = opts.session;
+		// Tolerate a session that exposes no `state`/`state.tools`: this is a
+		// read for a safety net, and a constructor that throws on a shape it
+		// merely inspects is worse than one that degrades to no natives.
+		this.#natives = [...(opts.session.agent?.state?.tools ?? [])];
 		this.#sink = opts.sink;
 		this.#control = opts.control;
 		this.#mapper = new EventMapper();
@@ -145,7 +158,7 @@ export class CompassAgent {
 				if (control.systemPrompt !== undefined)
 					this.#session.agent.setSystemPrompt(control.systemPrompt);
 				if (control.tools !== undefined)
-					this.#session.agent.setTools(control.tools);
+					this.#session.agent.setTools(this.#withNatives(control.tools));
 				return;
 			case "prompt":
 				// Live input: the Runner holds these until ReplayComplete; the
@@ -200,5 +213,56 @@ export class CompassAgent {
 				});
 				return;
 		}
+	}
+
+	// Merge the control's tool list with the construction-time natives, keyed by
+	// name, under a strong guarantee: a native ALWAYS wins. A control may add
+	// tools and reorder freely, but it can neither drop a native nor substitute
+	// its own instance for one. When a control tool's name collides with a
+	// native, the native instance REPLACES the control's tool at the control's
+	// position (control ordering for non-colliding tools is preserved; a replaced
+	// slot keeps its index but holds the native). Non-colliding natives follow.
+	//
+	// Comms is not a grantable capability — it is what makes this process an agent
+	// rather than a compute job; an agent silently stripped of it cannot even
+	// report that it lost it. Restricting what an account may say or see is a
+	// server-side authorization decision (visibility and channel membership,
+	// enforced in SQL), so neither an omission nor a same-name substitution in a
+	// control frame may make that decision here, in a layer with no authorization
+	// code at all. An attempted substitution (a same-named tool that is NOT the
+	// native instance) is a server misconfig: the native is kept and the attempt
+	// is surfaced through #onUnmapped, never silently overridden. Re-supplying the
+	// exact native instance is fine (no event). The input array passes through
+	// unchanged when nothing is missing or substituted, so the common case
+	// allocates nothing.
+	#withNatives(tools: AgentTool[]): AgentTool[] {
+		if (this.#natives.length === 0) return tools;
+		const nativeByName = new Map(
+			this.#natives.map((native) => [native.name, native]),
+		);
+		const present = new Set<string>();
+		let merged: AgentTool[] | undefined;
+		for (let i = 0; i < tools.length; i++) {
+			const controlTool = tools[i];
+			present.add(controlTool.name);
+			const native = nativeByName.get(controlTool.name);
+			if (native === undefined || native === controlTool) continue;
+			// Same name, different instance: an attempted substitution of a
+			// native. Keep the native at the control's position and surface the
+			// rejected misconfig — never a silent override.
+			merged ??= tools.slice();
+			merged[i] = native;
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "control:config",
+				reason: `config control tried to replace native tool "${native.name}" — substitution rejected, native kept`,
+			});
+		}
+		for (const native of this.#natives) {
+			if (present.has(native.name)) continue;
+			merged ??= tools.slice();
+			merged.push(native);
+		}
+		return merged ?? tools;
 	}
 }
