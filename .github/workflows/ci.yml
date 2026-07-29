@@ -252,6 +252,14 @@ jobs:
         # .moon/cache/{ci,run}Report.json — no token, no added permissions, so
         # `permissions: contents: read` above is untouched. `success() ||
         # failure()` so it still renders when the gate failed.
+        #
+        # This is third-party JS that runs on every event, fork PRs included, so
+        # the SHA pin below IS its trust anchor — the same posture the pgtest
+        # image digest and the nix substituter keys take for their own boundaries.
+        # At the pinned commit the action takes no token, makes no network call,
+        # and only reads and prints local cache files, so a fork PR cannot turn it
+        # into an exfiltration or write path. Bump the pin deliberately (it rides
+        # the same dependabot config as the other pinned actions), never drift it.
         if: success() || failure()
         uses: appthrust/moon-ci-retrospect@631a1e667f96e8ca893eab69f03e425f7fbfdc2b # v2.1.0
 
