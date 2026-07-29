@@ -11,7 +11,6 @@ import { SettingsView } from "./components/SettingsView";
 import { StateDot } from "./components/StateDot";
 import { UsageBar } from "./components/UsageBar";
 import { useStore } from "./context";
-import { STUB_DAEMON } from "./stub-data";
 
 // The Compass ADE shell — an Orca-inspired layout over the compass.v1 surface
 // (docs/specs/product/compass.md). A CSS grid: a topbar, a left agent-folder
@@ -71,13 +70,13 @@ const App: Component = () => {
 
 				<span class="topbar-spacer" />
 
-				<div class="daemon" classList={{ live: STUB_DAEMON.live }}>
+				<div class="daemon" classList={{ live: store.daemon().live }}>
 					<span class="dot" aria-hidden="true" />
 					<span>
-						{STUB_DAEMON.live ? "daemon connected" : "stub data — no daemon"}
+						{store.daemon().live ? "daemon connected" : "stub data — no daemon"}
 					</span>
 					<span class="daemon-ver">
-						{STUB_DAEMON.version} · {STUB_DAEMON.apiVersion}
+						{store.daemon().version} · {store.daemon().apiVersion}
 					</span>
 				</div>
 

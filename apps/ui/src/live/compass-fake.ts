@@ -1,12 +1,14 @@
 // A hand-written CompassClient double for driving the store's agent-lifecycle
-// path without a server — today just StopAgentSession, recorded verbatim so a
-// test asserts the exact wire request the UI issued.
+// and boot-probe paths without a server — today StopAgentSession (recorded
+// verbatim so a test asserts the exact wire request the UI issued) and
+// GetServerInfo (the boot liveness/version probe the daemon banner reads).
 //
 // It models the ONE server behaviour a permissive double would hide: the RPC is
 // Runner-backed, so a server built with no RunnerHub attached answers
 // `Unavailable` (go/server/service.go:152-154) rather than succeeding. That is a
 // real, expected condition on the socket-only path, and the UI must surface it —
-// `failNextStop` is how a test drives it.
+// `failNextStop` is how a test drives it; `failNextProbe` drives the boot
+// probe's rejection (server down / RPC error) the same one-shot way.
 //
 // Sibling of comms-fake.ts (the CommsClient double) and shaped the same way, so
 // every live-path suite describes ONE server. Dev/test-only — nothing in the
@@ -29,12 +31,20 @@ export interface FakeCompass {
 	 *  with. Thrown BEFORE the request is recorded is wrong: the UI DID issue it,
 	 *  so it is recorded first and then refused. */
 	failNextStop: (error: Error) => void;
+	/** The server info GetServerInfo returns — the boot probe reads it into the
+	 *  daemon banner. Set before constructing the store to drive the live path. */
+	serverInfo: { version: string; apiVersion: string };
+	/** Reject the next GetServerInfo with `error` (one-shot) — the server-down /
+	 *  RPC-error path the boot probe must leave the banner offline for. */
+	failNextProbe: (error: Error) => void;
 }
 
 /** Build the fake. Pure and synchronous apart from the RPC's promise. */
 export function createFakeCompass(): FakeCompass {
 	const stops: RecordedStop[] = [];
 	let stopFailure: Error | undefined;
+	let probeFailure: Error | undefined;
+	const serverInfo = { version: "9.9.9-test", apiVersion: "compass.v1" };
 
 	const client = {
 		stopAgentSession: async (req: { sessionId: string }) => {
@@ -46,6 +56,17 @@ export function createFakeCompass(): FakeCompass {
 			}
 			return {};
 		},
+		getServerInfo: async (_req: Record<string, never>) => {
+			if (probeFailure) {
+				const err = probeFailure;
+				probeFailure = undefined;
+				throw err;
+			}
+			return {
+				version: serverInfo.version,
+				apiVersion: serverInfo.apiVersion,
+			};
+		},
 	};
 
 	return {
@@ -56,6 +77,10 @@ export function createFakeCompass(): FakeCompass {
 		stops,
 		failNextStop: (error) => {
 			stopFailure = error;
+		},
+		serverInfo,
+		failNextProbe: (error) => {
+			probeFailure = error;
 		},
 	};
 }

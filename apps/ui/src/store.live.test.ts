@@ -12,6 +12,7 @@ import { createFakeCompass } from "./live/compass-fake";
 import type { AgentSession } from "./session-events";
 import { STUB_SESSION_EVENTS } from "./session-events-stub";
 import { type AppStore, createAppStore } from "./store";
+import { STUB_DAEMON } from "./stub-data";
 
 // The store's LIVE comms path: `createAppStore({ comms })` runs the
 // SubscribeComms driver and mirrors each reduced CommsState into the four comms
@@ -928,6 +929,89 @@ describe("store stopAgent (StopAgentSession)", () => {
 
 			expect(store.stopError()).toBeUndefined();
 			expect(compass.stops.length).toBe(2);
+		} finally {
+			dispose();
+		}
+	});
+});
+
+describe("daemon banner (live GetServerInfo)", () => {
+	// The top-bar banner reads LIVE: a store built with `options.compass` fires a
+	// one-shot GetServerInfo probe at boot and flips `daemon()` to the server's
+	// liveness/version. An offline store keeps STUB_DAEMON (live:false), and a
+	// probe rejection (server down / RPC error) must leave the banner offline and
+	// route the error out — never gate boot, never surface a half-live banner.
+	// The probe chains through a few async boundaries (probeServer awaits the
+	// fake's async getServerInfo, then the store's .then/.catch runs), so flush
+	// several microtasks to let the whole chain settle — no timers, no sleeps.
+	const tick = async () => {
+		for (let i = 0; i < 5; i++) await Promise.resolve();
+	};
+
+	// A successful probe surfaces the server's OWN version/apiVersion with
+	// live:true. Mutation check: dropping live:true, or reading STUB_DAEMON's
+	// version instead of the probe's, reddens this.
+	test("a successful probe surfaces the live server info", async () => {
+		const compass = createFakeCompass();
+		compass.serverInfo.version = "1.2.3";
+		compass.serverInfo.apiVersion = "compass.v1";
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({ compass: compass.client });
+		});
+		try {
+			await tick();
+			expect(store.daemon()).toEqual({
+				version: "1.2.3",
+				apiVersion: "compass.v1",
+				live: true,
+			});
+		} finally {
+			dispose();
+		}
+	});
+
+	// No compass client → no probe → the banner stays on the stub fixture
+	// exactly as before the wire. Mutation check: a probe that fired anyway (or
+	// an initial value other than STUB_DAEMON) reddens this.
+	test("an offline store keeps the stub banner", async () => {
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({});
+		});
+		try {
+			await tick();
+			expect(store.daemon()).toEqual(STUB_DAEMON);
+			expect(store.daemon().live).toBe(false);
+		} finally {
+			dispose();
+		}
+	});
+
+	// A rejected probe (server down) leaves the banner offline and routes the
+	// error to onCommsError — boot never throws, the error is never swallowed.
+	// Mutation check: swallowing the rejection, or flipping live:true on failure,
+	// reddens this.
+	test("a rejected probe keeps the stub banner and routes onCommsError", async () => {
+		const compass = createFakeCompass();
+		const errors: unknown[] = [];
+		compass.failNextProbe(new Error("[unavailable] server down"));
+		let dispose!: () => void;
+		const store = createRoot((d) => {
+			dispose = d;
+			return createAppStore({
+				compass: compass.client,
+				onCommsError: (error) => errors.push(error),
+			});
+		});
+		try {
+			await tick();
+			expect(store.daemon().live).toBe(false);
+			expect(store.daemon()).toEqual(STUB_DAEMON);
+			expect(errors.length).toBe(1);
+			expect(String(errors[0])).toMatch(/unavailable/);
 		} finally {
 			dispose();
 		}
