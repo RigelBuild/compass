@@ -153,13 +153,8 @@ func TestAccountTokenRejectedOnEveryRPCPath(t *testing.T) {
 		assertUnauthenticated(t, err)
 	})
 
-	t.Run("relay comms call", func(t *testing.T) {
-		_, err := rejectClient.RelayCommsCall(context.Background(), connect.NewRequest(&compassv1internal.RelayCommsCallRequest{}))
-		assertUnauthenticated(t, err)
-	})
-
-	t.Run("relay comms call", func(t *testing.T) {
-		_, err := rejectClient.RelayCommsCall(context.Background(), connect.NewRequest(&compassv1internal.RelayCommsCallRequest{}))
+	t.Run("commit conversation frame", func(t *testing.T) {
+		_, err := rejectClient.CommitConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.CommitConversationFrameRequest{}))
 		assertUnauthenticated(t, err)
 	})
 }

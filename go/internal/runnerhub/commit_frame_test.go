@@ -44,6 +44,18 @@ func commitPostReq(sessionID, idempotencyKey string, posted *compassv1.MessagePo
 	}
 }
 
+// commitUpdateReq builds a CommitConversationFrameRequest carrying an updated
+// conversation variant, under sessionID and the agent-minted idempotency key.
+func commitUpdateReq(sessionID, idempotencyKey string, updated *compassv1.MessageUpdated) *compassv1internal.CommitConversationFrameRequest {
+	return &compassv1internal.CommitConversationFrameRequest{
+		SessionId: sessionID,
+		Frame: &compassv1internal.AgentFrame{
+			Frame: &compassv1internal.AgentFrame_ConversationUpdated{ConversationUpdated: updated},
+		},
+		IdempotencyKey: idempotencyKey,
+	}
+}
+
 // commitUnsetFrameReq builds a request whose AgentFrame has NO oneof variant set
 // — the malformed frame the hub rejects CodeInvalidArgument.
 func commitUnsetFrameReq(sessionID, idempotencyKey string) *compassv1internal.CommitConversationFrameRequest {
@@ -157,6 +169,47 @@ func TestCommitConversationFrameHappyPostForwardsKeyedUnderBoundAccount(t *testi
 	}
 }
 
+// 4b. The happy updated path is the symmetric mirror of the posted path through
+// the SAME hub dispatcher: the ConversationUpdated arm forwards under the bound
+// account WITH the key threaded, and returns committed=true carrying the updated
+// row's message_id. Pins that the dispatcher's updated arm is wired to
+// CommitAgentUpdateKeyed (not the posted arm) and returns the update's own id —
+// a mis-wire that returned the posted id or forwarded the wrong frame fails here.
+func TestCommitConversationFrameHappyUpdateForwardsKeyedUnderBoundAccount(t *testing.T) {
+	hub, comms := newHubWithComms()
+	comms.commitUpdate = &compassv1.MessageUpdated{Message: &compassv1.Message{Id: "m-99"}}
+	bindLiveSession(hub)
+
+	updated := updatedTextFrame("the agent revises")
+	resp, err := hub.CommitConversationFrame(context.Background(), commitUpdateReq("sess-1", "idem-key-2", updated))
+	if err != nil {
+		t.Fatalf("CommitConversationFrame(update) = %v, want success", err)
+	}
+
+	calls := comms.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("caller invoked %d times, want exactly 1", len(calls))
+	}
+	if calls[0].account != "acct-agent" {
+		t.Fatalf("caller attributed to %q, want the bound account acct-agent", calls[0].account)
+	}
+	if calls[0].commitUpdate != updated {
+		t.Fatalf("caller received a different MessageUpdated than the relayed one")
+	}
+	if calls[0].commitKey != "idem-key-2" {
+		t.Fatalf("caller received idempotency key %q, want the relayed idem-key-2", calls[0].commitKey)
+	}
+	if !resp.GetCommitted() {
+		t.Fatal("ack committed = false, want true on a fresh update commit")
+	}
+	if got := resp.GetMessageId(); got != "m-99" {
+		t.Fatalf("ack message_id = %q, want the updated row id m-99 (the update arm must return the update's id, not the posted id)", got)
+	}
+	if got := resp.GetSeq(); got != 0 {
+		t.Fatalf("ack seq = %d, want 0 (deferred)", got)
+	}
+}
+
 // 5. A comms-layer error is propagated AS-IS — the frame's Connect code (already
 // mapped by edgeError) reaches the Runner unchanged, so the retryable/terminal
 // split reads the right code, and it is NEVER swallowed into a committed=false
@@ -184,6 +237,15 @@ func TestCommitConversationFramePropagatesCommsErrorCode(t *testing.T) {
 // frame carries only blocks.
 func postedTextFrame(text string) *compassv1.MessagePosted {
 	return &compassv1.MessagePosted{Message: &compassv1.Message{
+		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
+	}}
+}
+
+// updatedTextFrame wraps a single text block in the MessageUpdated frame shape a
+// streaming turn re-sends on the durable path (the full current block set). The
+// row id is server-owned, so the relayed frame carries only blocks.
+func updatedTextFrame(text string) *compassv1.MessageUpdated {
+	return &compassv1.MessageUpdated{Message: &compassv1.Message{
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
 	}}
 }
