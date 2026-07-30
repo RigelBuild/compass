@@ -8,11 +8,15 @@
 //
 //   - PostAsAccount / ListAsAccount serve RelayCommsCall — a comms call the
 //     agent made deliberately, as a tool.
-//   - CommitAgentPost / CommitAgentUpdate serve the ConversationSink — the
-//     write-through that turns a relayed conversation FRAME (the agent's own
-//     turn, streamed out as it speaks) into a durable comms row (SEA-1364 T3).
-//     They are built on the first pair and the authorizing store update rather
-//     than being a second write path.
+//   - CommitAgentPostKeyed / CommitAgentUpdateKeyed serve the ConversationSink —
+//     the write-through that turns a relayed conversation FRAME (the agent's own
+//     turn, streamed out as it speaks) into a durable comms row (SEA-1364 T3),
+//     keyed at-most-once on the agent-minted idempotency_key. The two differ:
+//     CommitAgentUpdateKeyed is a thin pass-through to the unkeyed
+//     CommitAgentUpdate (which stays the live update implementation, idempotent
+//     by row-replacement); CommitAgentPostKeyed is a parallel post path (calling
+//     PostAsAccount directly with the key), so the unkeyed CommitAgentPost now
+//     has no production caller and survives only as a test helper.
 //
 // These are deliberately NOT new CommsService RPCs: an agent-initiated call
 // never reaches a network door (it rides the per-container socket to the Runner,
@@ -194,18 +198,14 @@ func (c *Comms) ListAsAccount(
 // AppendMessage's membership gate applies to it exactly as it does for a human
 // reply, so a frame naming a parent it may not see is refused, not honored.
 //
-// Idempotency: ClientRequestId is left unset because the relayed frame carries
-// no key on this base. PublishEventsRequest is {runner_seq, session_id, frame}
-// (proto/compass/v1/runner.proto:169-183), and the agent-minted key lives one hop
-// earlier on PostConversationFrameRequest.idempotency_key
-// (proto/compass/v1/agent_gateway.proto:113-120), where it terminates at the
-// Runner's C2 dedup and is not forwarded upstream. This is NOT a deliberate
-// decision to go unkeyed: #894/T2 adds idempotency_key to PublishEventsRequest
-// and threads it to this seam, at which point it populates ClientRequestId below
-// and the store's (author_account_id, client_request_id) unique constraint
-// (messages.go:82) makes the commit genuinely at-most-once. Until then a retried
-// frame would commit twice — the gap is the missing key, and the hook is the one
-// field on the request built here.
+// Idempotency: this unkeyed post sets no ClientRequestId. It is the pre-key
+// commit form; since the conversation Deliver sink was flipped to
+// CommitAgentPostKeyed (server/sinks.go) it has no production caller and
+// survives only as a test helper. The durable, at-most-once path is its
+// sibling CommitAgentPostKeyed, which sets ClientRequestId to the
+// agent-minted idempotency_key so the store's (author_account_id,
+// client_request_id) unique constraint (messages.go:82) dedups a retried
+// frame to one row.
 func (c *Comms) CommitAgentPost(
 	ctx context.Context,
 	account store.AccountID,
@@ -218,7 +218,6 @@ func (c *Comms) CommitAgentPost(
 		// Container unset on purpose — see the home-channel note above.
 		Blocks:          posted.GetMessage().GetBlocks(),
 		ParentMessageId: posted.GetMessage().GetParentMessageId(),
-		// ClientRequestId: threaded from the frame's idempotency_key by #894/T2.
 	})
 }
 

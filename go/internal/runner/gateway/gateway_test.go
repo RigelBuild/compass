@@ -17,6 +17,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,18 +31,35 @@ import (
 // name it was asked to resolve (so a test can prove the handler resolves the
 // name fixed at construction, never one read off the request) and returns a
 // canned (sessionID, ok).
+//
+// The recorder is mutex-guarded because the Gateway's handlers run on the
+// socket's http.Server goroutines and a test may drive several concurrently.
+// The counter was unsynchronized until a concurrent durable-path test called it
+// from 24 goroutines; every existing caller happened to be sequential, so the
+// race was latent rather than absent.
 type fakeSessions struct {
 	sessionID string
 	ok        bool
 
+	mu      sync.Mutex
 	gotName string
 	calls   int
 }
 
 func (f *fakeSessions) Session(containerName string) (string, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls++
 	f.gotName = containerName
 	return f.sessionID, f.ok
+}
+
+// snapshot returns the recorded (name, calls) under the lock, for a test
+// asserting after its goroutines have joined.
+func (f *fakeSessions) snapshot() (string, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gotName, f.calls
 }
 
 // recordedRelayCall is one observed forward: the ctx the handler propagated and
@@ -98,7 +116,7 @@ func postCall() *compassv1internal.CommsCallRequest {
 func TestCommsNoSessionFailsClosedPermissionDenied(t *testing.T) {
 	sessions := &fakeSessions{ok: false}
 	relay := &fakeRelay{}
-	g := NewGateway("cnt-A", sessions, relay)
+	g := NewGateway(context.Background(), "cnt-A", sessions, relay, nil)
 
 	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
 	if err == nil {
@@ -129,7 +147,7 @@ func TestCommsHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.T) {
 		}},
 	}
 	relay := &fakeRelay{resp: &compassv1internal.RelayCommsCallResponse{Result: wantResult}}
-	g := NewGateway("cnt-A", sessions, relay)
+	g := NewGateway(context.Background(), "cnt-A", sessions, relay, nil)
 
 	call := postCall()
 	resp, err := g.Comms(context.Background(), connect.NewRequest(call))
@@ -163,16 +181,17 @@ func TestCommsResolvesConstructionContainerName(t *testing.T) {
 			relay := &fakeRelay{resp: &compassv1internal.RelayCommsCallResponse{
 				Result: &compassv1internal.CommsCallResult{CallId: "tc-1"},
 			}}
-			g := NewGateway(name, sessions, relay)
+			g := NewGateway(context.Background(), name, sessions, relay, nil)
 
 			if _, err := g.Comms(context.Background(), connect.NewRequest(postCall())); err != nil {
 				t.Fatalf("Comms = %v, want success", err)
 			}
-			if sessions.calls != 1 {
-				t.Fatalf("Session() called %d times, want exactly 1", sessions.calls)
+			gotName, calls := sessions.snapshot()
+			if calls != 1 {
+				t.Fatalf("Session() called %d times, want exactly 1", calls)
 			}
-			if sessions.gotName != name {
-				t.Fatalf("Session() resolved %q, want the construction name %q (identity is the socket's, never off the request)", sessions.gotName, name)
+			if gotName != name {
+				t.Fatalf("Session() resolved %q, want the construction name %q (identity is the socket's, never off the request)", gotName, name)
 			}
 		})
 	}
@@ -192,7 +211,7 @@ func TestCommsInBandErrorRidesThroughAsResult(t *testing.T) {
 		}},
 	}
 	relay := &fakeRelay{resp: &compassv1internal.RelayCommsCallResponse{Result: errResult}}
-	g := NewGateway("cnt-A", sessions, relay)
+	g := NewGateway(context.Background(), "cnt-A", sessions, relay, nil)
 
 	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
 	if err != nil {
@@ -212,7 +231,7 @@ func TestCommsInBandErrorRidesThroughAsResult(t *testing.T) {
 func TestCommsTransportFailurePropagatesConnectError(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "sess-7", ok: true}
 	relay := &fakeRelay{err: connect.NewError(connect.CodeUnavailable, errors.New("server unreachable"))}
-	g := NewGateway("cnt-A", sessions, relay)
+	g := NewGateway(context.Background(), "cnt-A", sessions, relay, nil)
 
 	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
 	if err == nil {
@@ -234,7 +253,7 @@ func TestCommsPropagatesContextToRelay(t *testing.T) {
 	relay := &fakeRelay{resp: &compassv1internal.RelayCommsCallResponse{
 		Result: &compassv1internal.CommsCallResult{CallId: "tc-1"},
 	}}
-	g := NewGateway("cnt-A", sessions, relay)
+	g := NewGateway(context.Background(), "cnt-A", sessions, relay, nil)
 
 	type ctxKey struct{}
 	const want = "inbound-marker"
@@ -267,7 +286,7 @@ func TestCommsPropagatesContextToRelay(t *testing.T) {
 func TestCommsEmptySessionIDFailsClosedPermissionDenied(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "", ok: true}
 	relay := &fakeRelay{}
-	g := NewGateway("cnt-A", sessions, relay)
+	g := NewGateway(context.Background(), "cnt-A", sessions, relay, nil)
 
 	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
 	if err == nil {
@@ -293,7 +312,7 @@ func TestCommsEmptySessionIDFailsClosedPermissionDenied(t *testing.T) {
 func TestCommsNilRelayResultFailsInternal(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "sess-7", ok: true}
 	relay := &fakeRelay{resp: &compassv1internal.RelayCommsCallResponse{}}
-	g := NewGateway("cnt-A", sessions, relay)
+	g := NewGateway(context.Background(), "cnt-A", sessions, relay, nil)
 
 	resp, err := g.Comms(context.Background(), connect.NewRequest(postCall()))
 	if err == nil {

@@ -582,9 +582,19 @@ type PublishEventsRequest struct {
 	// session -> the session-tail stream + extracted AgentSessionState ->
 	// SubscribeEvents). An unset/unrecognized variant is the "unknown frame" the
 	// hub logs and counts, never silently drops (agent.proto:38-39).
-	Frame         *AgentFrame `protobuf:"bytes,3,opt,name=frame,proto3" json:"frame,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Frame *AgentFrame `protobuf:"bytes,3,opt,name=frame,proto3" json:"frame,omitempty"`
+	// Agent-minted idempotency key for a durable conversation frame (the durable
+	// PostConversationFrame path). Empty for trace/session frames and for the
+	// Publish stream — only the delivered-or-erred durable path sets it. The
+	// Server commits the frame at-most-once per (author, key) at the comms
+	// Message store (store/messages.go AppendMessage clientRequestID), so a
+	// committed-but-response-lost retry is deduped, never duplicated. Carried
+	// here because the frozen wire had no field for it and Message.id is
+	// Server-assigned, not agent-minted (transport-consolidation record,
+	// Matt's Option A ruling 2026-07-24).
+	IdempotencyKey string `protobuf:"bytes,4,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *PublishEventsRequest) Reset() {
@@ -636,6 +646,13 @@ func (x *PublishEventsRequest) GetFrame() *AgentFrame {
 		return x.Frame
 	}
 	return nil
+}
+
+func (x *PublishEventsRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
 }
 
 // PublishEvents ack, returned once when the Runner closes the event stream.
@@ -973,13 +990,14 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\acommand\"X\n" +
 	"\vRunnerError\x12/\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x1b.compass.v1.RunnerErrorCodeR\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\x82\x01\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xab\x01\n" +
 	"\x14PublishEventsRequest\x12\x1d\n" +
 	"\n" +
 	"runner_seq\x18\x01 \x01(\x04R\trunnerSeq\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12,\n" +
-	"\x05frame\x18\x03 \x01(\v2\x16.compass.v1.AgentFrameR\x05frame\"\x17\n" +
+	"\x05frame\x18\x03 \x01(\v2\x16.compass.v1.AgentFrameR\x05frame\x12'\n" +
+	"\x0fidempotency_key\x18\x04 \x01(\tR\x0eidempotencyKey\"\x17\n" +
 	"\x15PublishEventsResponse\"h\n" +
 	"\x15RelayCommsCallRequest\x12\x1d\n" +
 	"\n" +

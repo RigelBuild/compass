@@ -46,7 +46,7 @@ func TestNoConversationVariantIsAnInternalDefectNotADroppableRefusal(t *testing.
 	// itself the assertion that the guard fires first rather than dereferencing.
 	sink := commsConversationSink{comms: nil}
 
-	err := sink.PostAgentMessage(context.Background(), "acct-agent", "sess-1", nil, nil)
+	err := sink.PostAgentMessage(context.Background(), "acct-agent", "sess-1", "", nil, nil)
 	if err == nil {
 		t.Fatal("PostAgentMessage(no variant) = nil, want an error — a silent success would ack a frame that committed nothing")
 	}

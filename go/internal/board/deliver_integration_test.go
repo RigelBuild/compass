@@ -28,7 +28,7 @@ import (
 // nothing.
 type noopConversationSink struct{}
 
-func (noopConversationSink) PostAgentMessage(_ context.Context, _ store.AccountID, _ string, _ *compassv1.MessagePosted, _ *compassv1.MessageUpdated) error {
+func (noopConversationSink) PostAgentMessage(_ context.Context, _ store.AccountID, _ string, _ string, _ *compassv1.MessagePosted, _ *compassv1.MessageUpdated) error {
 	return nil
 }
 

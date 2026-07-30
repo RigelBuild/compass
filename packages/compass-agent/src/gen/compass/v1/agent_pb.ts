@@ -91,8 +91,9 @@ export type AgentFrame = Message<"compass.v1.AgentFrame"> & {
      * Agent -> Runner control-plane acks, riding the loss-tolerable Publish
      * spine beside the conversation/session frames (the established frame-spine
      * ack convention, design compass-0.6 DeliveryAck; consolidation OQ-4(i) +
-     * amended OQ-6). Both are consumed by the Runner's control lane (C2 routes
-     * them off Publish to C3), never written through to a comms/session surface.
+     * amended OQ-6). Both are consumed by the Runner's control lane (the
+     * telemetry-ingest path routes them off Publish to it), never written
+     * through to a comms/session surface.
      *   replay_complete_ack — the agent's replay-barrier ack: on receipt the
      *     Runner releases the live ops held behind the restart replay barrier.
      *

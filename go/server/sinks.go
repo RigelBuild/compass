@@ -73,15 +73,16 @@ func (s commsConversationSink) PostAgentMessage(
 	ctx context.Context,
 	account store.AccountID,
 	_ string,
+	idempotencyKey string,
 	posted *compassv1.MessagePosted,
 	updated *compassv1.MessageUpdated,
 ) error {
 	switch {
 	case posted != nil:
-		_, err := s.comms.CommitAgentPost(ctx, account, posted)
+		_, err := s.comms.CommitAgentPostKeyed(ctx, account, posted, idempotencyKey)
 		return err
 	case updated != nil:
-		_, err := s.comms.CommitAgentUpdate(ctx, account, updated)
+		_, err := s.comms.CommitAgentUpdateKeyed(ctx, account, updated, idempotencyKey)
 		return err
 	default:
 		return errNoConversationVariant

@@ -108,9 +108,10 @@ func (h *Handler) PublishEvents(ctx context.Context, stream *connect.ClientStrea
 	for stream.Receive() {
 		msg := stream.Msg()
 		if err := h.hub.Deliver(ctx, RunnerEvent{
-			RunnerSeq: msg.GetRunnerSeq(),
-			SessionID: msg.GetSessionId(),
-			Frame:     msg.GetFrame(),
+			RunnerSeq:      msg.GetRunnerSeq(),
+			SessionID:      msg.GetSessionId(),
+			Frame:          msg.GetFrame(),
+			IdempotencyKey: msg.GetIdempotencyKey(),
 		}); err != nil {
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}

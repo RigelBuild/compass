@@ -83,6 +83,11 @@ type SocketListener struct {
 	path string
 	srv  *http.Server
 	done chan struct{}
+	// cancel tears down the socket-lifetime context Serve opened (the scope the
+	// shared upstream PublishEvents stream is bound to), so Close ends that
+	// stream along with the server and the socket file — one teardown for the
+	// whole socket lifecycle.
+	cancel context.CancelFunc
 }
 
 // listenAgentSocket opens the per-container agent socket at path and serves h
@@ -105,7 +110,7 @@ type SocketListener struct {
 // Launch-failure teardown Provision does run (host.go:120-125) leaks it too.
 // Refusing before the mkdir is what makes the question moot, rather than a
 // teardown that would have to be added.
-func listenAgentSocket(ctx context.Context, path string, h http.Handler) (*SocketListener, error) {
+func listenAgentSocket(ctx context.Context, path string, h http.Handler, cancel context.CancelFunc) (*SocketListener, error) {
 	// The socket path is RuntimeDir + /containers/<container>/agent.sock
 	// (host.go), where <container> is NamePrefix + the agent account id
 	// (spec.go). RuntimeDir is the operator-supplied variable: --runtime-dir is
@@ -158,7 +163,7 @@ func listenAgentSocket(ctx context.Context, path string, h http.Handler) (*Socke
 	}
 
 	srv := &http.Server{Handler: h, Protocols: cleartextHTTP2()} //nolint:gosec // G112: socket-only door (never internet-facing), so the Slowloris ReadHeaderTimeout does not apply
-	l := &SocketListener{path: path, srv: srv, done: make(chan struct{})}
+	l := &SocketListener{path: path, srv: srv, done: make(chan struct{}), cancel: cancel}
 	go func() {
 		defer close(l.done)
 		// A clean Shutdown/Close returns ErrServerClosed; anything else is a
@@ -207,6 +212,15 @@ func reclaimStaleSocket(path string) error {
 func (l *SocketListener) Close(ctx context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(ctx, shutdownGrace)
 	defer cancel()
+
+	// Cancel the socket-lifetime context on the way out (after the drain below
+	// lets in-flight handlers finish and release the shared publisher), tearing
+	// down any upstream PublishEvents stream still bound to it — e.g. one a
+	// PostConversationFrame unary opened and left installed. Deferred so it runs
+	// on every return path; nil-guarded for a listener built without a cancel.
+	if l.cancel != nil {
+		defer l.cancel()
+	}
 
 	drainErr := l.srv.Shutdown(shutdownCtx)
 	if drainErr != nil {

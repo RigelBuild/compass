@@ -210,6 +210,16 @@ message PublishEventsRequest {
   // SubscribeEvents). An unset/unrecognized variant is the "unknown frame" the
   // hub logs and counts, never silently drops (agent.proto:38-39).
   AgentFrame frame = 3;
+  // Agent-minted idempotency key for a durable conversation frame (the durable
+  // PostConversationFrame path). Empty for trace/session frames and for the
+  // Publish stream — only the delivered-or-erred durable path sets it. The
+  // Server commits the frame at-most-once per (author, key) at the comms
+  // Message store (store/messages.go AppendMessage clientRequestID), so a
+  // committed-but-response-lost retry is deduped, never duplicated. Carried
+  // here because the frozen wire had no field for it and Message.id is
+  // Server-assigned, not agent-minted (transport-consolidation record,
+  // Matt's Option A ruling 2026-07-24).
+  string idempotency_key = 4;
 }
 
 // PublishEvents ack, returned once when the Runner closes the event stream.

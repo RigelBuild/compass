@@ -40,6 +40,16 @@ type RunnerEvent struct {
 	SessionID string
 	// Frame is the relayed agent stdout frame, verbatim.
 	Frame *compassv1internal.AgentFrame
+	// IdempotencyKey is the agent-minted key for a durable conversation frame
+	// (the durable PostConversationFrame path), populated from
+	// PublishEventsRequest.idempotency_key. Empty for trace/session frames. The
+	// Runner's gateway carries it (SEA-1364 C2); the hub threads it into the
+	// ConversationSink so the conversation write-through commits KEYED at the
+	// comms store's (author_account_id, client_request_id) unique constraint —
+	// the frozen at-most-once invariant. The sink-ack swap (SEA-1561) later
+	// retires this Publish-spine Deliver path for the CommitConversationFrame
+	// unary, at which point the key rides that unary instead.
+	IdempotencyKey string
 }
 
 // ConversationSink write-throughs a durable conversation frame (an agent text
@@ -83,7 +93,7 @@ type ConversationSink interface {
 	// mapping tears the stream down loudly instead of having its errors silently
 	// reinterpreted as "the frame was bad". Never return a bare error to mean a
 	// refusal — say it with a code.
-	PostAgentMessage(ctx context.Context, account store.AccountID, sessionID string, msg *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error
+	PostAgentMessage(ctx context.Context, account store.AccountID, sessionID string, idempotencyKey string, msg *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error
 }
 
 // LifecycleSink publishes an extracted agent-session lifecycle transition onto
@@ -119,12 +129,14 @@ type CommsCaller interface {
 	PostAsAccount(ctx context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error)
 	ListAsAccount(ctx context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error)
 	// CommitAgentPostKeyed / CommitAgentUpdateKeyed serve CommitConversationFrame
-	// — the DURABLE, at-most-once counterpart to the loss-tolerant Deliver-path
-	// ConversationSink. They take the agent-minted idempotency_key the Runner
-	// forwards and thread it (POST) or deliberately do not (UPDATE, idempotent by
-	// replacement — see the comms implementation) so a retried frame commits at
-	// most once. Distinct from the unkeyed CommitAgentPost/CommitAgentUpdate the
-	// Deliver-path sink drives, which stay unkeyed until #894/T2.
+	// AND the Deliver-path ConversationSink — the DURABLE, at-most-once commit.
+	// They take the agent-minted idempotency_key the Runner forwards and thread it
+	// (POST) or deliberately do not (UPDATE, idempotent by replacement — see the
+	// comms implementation) so a retried frame commits at most once.
+	// CommitAgentUpdateKeyed is a thin pass-through to the unkeyed CommitAgentUpdate
+	// (which stays the live update implementation); CommitAgentPostKeyed posts
+	// directly, so the unkeyed CommitAgentPost survives only as a test helper
+	// (agent_caller.go).
 	CommitAgentPostKeyed(ctx context.Context, account store.AccountID, posted *compassv1.MessagePosted, idempotencyKey string) (*compassv1.PostMessageResponse, error)
 	CommitAgentUpdateKeyed(ctx context.Context, account store.AccountID, updated *compassv1.MessageUpdated, idempotencyKey string) (*compassv1.MessageUpdated, error)
 }
@@ -400,7 +412,7 @@ func (h *Hub) deliverConversation(
 		h.countContractDefect(ev, "relayed conversation_updated carries no message.id, so it addresses no row and nothing can commit")
 		return nil
 	}
-	if err := h.conversation.PostAgentMessage(ctx, account, ev.SessionID, posted, updated); err != nil {
+	if err := h.conversation.PostAgentMessage(ctx, account, ev.SessionID, ev.IdempotencyKey, posted, updated); err != nil {
 		switch {
 		case isContractDefect(err):
 			// Not this frame's fault: the relay is wired wrong (a session bound
