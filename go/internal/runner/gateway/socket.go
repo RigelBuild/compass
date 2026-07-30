@@ -88,6 +88,11 @@ type SocketListener struct {
 	// stream along with the server and the socket file — one teardown for the
 	// whole socket lifecycle.
 	cancel context.CancelFunc
+	// control is the socket's control producer, held so the session lifecycle can
+	// retire a session's control state. The socket outlives any one session (a
+	// Stop/Start reuses the container and its socket), so without an explicit
+	// retirement the producer accumulates one session's state per cycle.
+	control *controlProducer
 }
 
 // listenAgentSocket opens the per-container agent socket at path and serves h
@@ -244,6 +249,30 @@ func (l *SocketListener) Close(ctx context.Context) error {
 
 // Path returns the host path of the agent socket.
 func (l *SocketListener) Path() string { return l.path }
+
+// BindSession creates a session's control state on this container's socket.
+// Called when the lifecycle starts the session, so the Runner is the only
+// thing that ever brings control state into existence — the agent's own
+// Control subscribe then refuses an id the Runner never bound, instead of
+// minting one that nothing would retire. Idempotent, and safe on a listener
+// whose producer was never wired.
+func (l *SocketListener) BindSession(sessionID string) {
+	if l.control == nil {
+		return
+	}
+	l.control.Bind(sessionID)
+}
+
+// RetireSession drops a session's control state on this container's socket.
+// Called when the session ends: the socket and its producer outlive the
+// session, so nothing else would ever release it. Idempotent, and safe on a
+// listener whose producer was never wired.
+func (l *SocketListener) RetireSession(sessionID string) {
+	if l.control == nil {
+		return
+	}
+	l.control.Retire(sessionID)
+}
 
 // Mount describes the socket bind-mount handed to the runtime: the host socket
 // at containerPath inside the container, read-write (the agent must connect()).
