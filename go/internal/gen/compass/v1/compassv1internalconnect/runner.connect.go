@@ -69,6 +69,9 @@ const (
 	// RunnerServiceRelayCommsCallProcedure is the fully-qualified name of the RunnerService's
 	// RelayCommsCall RPC.
 	RunnerServiceRelayCommsCallProcedure = "/compass.v1.RunnerService/RelayCommsCall"
+	// RunnerServiceCommitConversationFrameProcedure is the fully-qualified name of the RunnerService's
+	// CommitConversationFrame RPC.
+	RunnerServiceCommitConversationFrameProcedure = "/compass.v1.RunnerService/CommitConversationFrame"
 )
 
 // RunnerServiceClient is a client for the compass.v1.RunnerService service.
@@ -114,6 +117,31 @@ type RunnerServiceClient interface {
 	// agent_gateway.proto) cannot express RespondToAsk — the no-answer-ask
 	// constraint is structural, not a runtime check.
 	RelayCommsCall(context.Context, *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error)
+	// CommitConversationFrame (unary, Runner->Server): durably commit one
+	// agent-authored conversation frame and return the commit outcome. This is
+	// the DURABLE counterpart to PublishEvents: conversation_posted /
+	// conversation_updated frames leave the loss-tolerant Publish spine entirely
+	// and commit here, request/response, so the agent's PostConversationFrame is
+	// acked on a real store commit rather than a spine forward-accept (#24 OQ-3).
+	//
+	// The Runner is a pure forwarder, exactly as in RelayCommsCall: it sends the
+	// session_id it structurally owns (the per-container AgentGateway socket the
+	// frame arrived on, 1:1 with the session) and asserts NO account. The Server
+	// resolves session_id -> agent account from its own Provision-originated hub
+	// binding and commits under that actor, fail-closed — an unknown/stopped
+	// session is CodeNotFound, never a stale account or the bootstrap admin.
+	//
+	// idempotency_key is the SAME agent-minted envelope key carried on
+	// AgentGateway.PostConversationFrame (agent_gateway.proto:113-119): the Server
+	// commits at-most-once per key against the store's (author, client_request_id)
+	// unique constraint, so a retry after a lost ack dedups to the original row
+	// and returns committed=true with the ORIGINAL message_id/seq — never a
+	// duplicate. A new field would fork the Runner's advisory dedup from the real
+	// commit boundary, so we reuse it (Matt-ratified).
+	//
+	// Additive to the frozen dial-out shape (the Runner still initiates; the
+	// Server gains no inbound route), same justification as RelayCommsCall.
+	CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error)
 }
 
 // NewRunnerServiceClient constructs a client for the compass.v1.RunnerService service. By default,
@@ -151,15 +179,22 @@ func NewRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(runnerServiceMethods.ByName("RelayCommsCall")),
 			connect.WithClientOptions(opts...),
 		),
+		commitConversationFrame: connect.NewClient[v1.CommitConversationFrameRequest, v1.CommitConversationFrameResponse](
+			httpClient,
+			baseURL+RunnerServiceCommitConversationFrameProcedure,
+			connect.WithSchema(runnerServiceMethods.ByName("CommitConversationFrame")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // runnerServiceClient implements RunnerServiceClient.
 type runnerServiceClient struct {
-	enroll         *connect.Client[v1.EnrollRequest, v1.EnrollResponse]
-	sessions       *connect.Client[v1.SessionsRequest, v1.SessionsResponse]
-	publishEvents  *connect.Client[v1.PublishEventsRequest, v1.PublishEventsResponse]
-	relayCommsCall *connect.Client[v1.RelayCommsCallRequest, v1.RelayCommsCallResponse]
+	enroll                  *connect.Client[v1.EnrollRequest, v1.EnrollResponse]
+	sessions                *connect.Client[v1.SessionsRequest, v1.SessionsResponse]
+	publishEvents           *connect.Client[v1.PublishEventsRequest, v1.PublishEventsResponse]
+	relayCommsCall          *connect.Client[v1.RelayCommsCallRequest, v1.RelayCommsCallResponse]
+	commitConversationFrame *connect.Client[v1.CommitConversationFrameRequest, v1.CommitConversationFrameResponse]
 }
 
 // Enroll calls compass.v1.RunnerService.Enroll.
@@ -180,6 +215,11 @@ func (c *runnerServiceClient) PublishEvents(ctx context.Context) *connect.Client
 // RelayCommsCall calls compass.v1.RunnerService.RelayCommsCall.
 func (c *runnerServiceClient) RelayCommsCall(ctx context.Context, req *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error) {
 	return c.relayCommsCall.CallUnary(ctx, req)
+}
+
+// CommitConversationFrame calls compass.v1.RunnerService.CommitConversationFrame.
+func (c *runnerServiceClient) CommitConversationFrame(ctx context.Context, req *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error) {
+	return c.commitConversationFrame.CallUnary(ctx, req)
 }
 
 // RunnerServiceHandler is an implementation of the compass.v1.RunnerService service.
@@ -225,6 +265,31 @@ type RunnerServiceHandler interface {
 	// agent_gateway.proto) cannot express RespondToAsk — the no-answer-ask
 	// constraint is structural, not a runtime check.
 	RelayCommsCall(context.Context, *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error)
+	// CommitConversationFrame (unary, Runner->Server): durably commit one
+	// agent-authored conversation frame and return the commit outcome. This is
+	// the DURABLE counterpart to PublishEvents: conversation_posted /
+	// conversation_updated frames leave the loss-tolerant Publish spine entirely
+	// and commit here, request/response, so the agent's PostConversationFrame is
+	// acked on a real store commit rather than a spine forward-accept (#24 OQ-3).
+	//
+	// The Runner is a pure forwarder, exactly as in RelayCommsCall: it sends the
+	// session_id it structurally owns (the per-container AgentGateway socket the
+	// frame arrived on, 1:1 with the session) and asserts NO account. The Server
+	// resolves session_id -> agent account from its own Provision-originated hub
+	// binding and commits under that actor, fail-closed — an unknown/stopped
+	// session is CodeNotFound, never a stale account or the bootstrap admin.
+	//
+	// idempotency_key is the SAME agent-minted envelope key carried on
+	// AgentGateway.PostConversationFrame (agent_gateway.proto:113-119): the Server
+	// commits at-most-once per key against the store's (author, client_request_id)
+	// unique constraint, so a retry after a lost ack dedups to the original row
+	// and returns committed=true with the ORIGINAL message_id/seq — never a
+	// duplicate. A new field would fork the Runner's advisory dedup from the real
+	// commit boundary, so we reuse it (Matt-ratified).
+	//
+	// Additive to the frozen dial-out shape (the Runner still initiates; the
+	// Server gains no inbound route), same justification as RelayCommsCall.
+	CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error)
 }
 
 // NewRunnerServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -258,6 +323,12 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(runnerServiceMethods.ByName("RelayCommsCall")),
 		connect.WithHandlerOptions(opts...),
 	)
+	runnerServiceCommitConversationFrameHandler := connect.NewUnaryHandler(
+		RunnerServiceCommitConversationFrameProcedure,
+		svc.CommitConversationFrame,
+		connect.WithSchema(runnerServiceMethods.ByName("CommitConversationFrame")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/compass.v1.RunnerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case RunnerServiceEnrollProcedure:
@@ -268,6 +339,8 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 			runnerServicePublishEventsHandler.ServeHTTP(w, r)
 		case RunnerServiceRelayCommsCallProcedure:
 			runnerServiceRelayCommsCallHandler.ServeHTTP(w, r)
+		case RunnerServiceCommitConversationFrameProcedure:
+			runnerServiceCommitConversationFrameHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -291,4 +364,8 @@ func (UnimplementedRunnerServiceHandler) PublishEvents(context.Context, *connect
 
 func (UnimplementedRunnerServiceHandler) RelayCommsCall(context.Context, *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.RelayCommsCall is not implemented"))
+}
+
+func (UnimplementedRunnerServiceHandler) CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.CommitConversationFrame is not implemented"))
 }

@@ -32,7 +32,7 @@ import "compass/v1/agent_gateway.proto";
 import "compass/v1/agent.proto";
 import "compass/v1/compass.proto";
 
-// The internal control seam between the Server and one Runner. Three RPCs, all
+// The internal control seam between the Server and one Runner. Five RPCs, all
 // initiated by the Runner (it dials out; the Server has no inbound route to the
 // Runner):
 //   - Enroll        unary handshake at connect (auth + registry entry).
@@ -40,6 +40,10 @@ import "compass/v1/compass.proto";
 //                   returns results, correlated by request id.
 //   - PublishEvents client-stream: the Runner relays agent events upward,
 //                   Runner-sequenced for gap detection.
+//   - RelayCommsCall       unary: execute one agent-initiated comms call under
+//                          the account the session resolves to.
+//   - CommitConversationFrame unary: commit one durable conversation frame and
+//                          return its sink coordinates (message_id, seq).
 service RunnerService {
   // Enroll (unary, Runner->Server, at connect): the authenticated registration
   // handshake. A valid Runner-subject token (OQ7: store.Subject{Kind:
@@ -85,6 +89,32 @@ service RunnerService {
   // agent_gateway.proto) cannot express RespondToAsk — the no-answer-ask
   // constraint is structural, not a runtime check.
   rpc RelayCommsCall(RelayCommsCallRequest) returns (RelayCommsCallResponse);
+
+  // CommitConversationFrame (unary, Runner->Server): durably commit one
+  // agent-authored conversation frame and return the commit outcome. This is
+  // the DURABLE counterpart to PublishEvents: conversation_posted /
+  // conversation_updated frames leave the loss-tolerant Publish spine entirely
+  // and commit here, request/response, so the agent's PostConversationFrame is
+  // acked on a real store commit rather than a spine forward-accept (#24 OQ-3).
+  //
+  // The Runner is a pure forwarder, exactly as in RelayCommsCall: it sends the
+  // session_id it structurally owns (the per-container AgentGateway socket the
+  // frame arrived on, 1:1 with the session) and asserts NO account. The Server
+  // resolves session_id -> agent account from its own Provision-originated hub
+  // binding and commits under that actor, fail-closed — an unknown/stopped
+  // session is CodeNotFound, never a stale account or the bootstrap admin.
+  //
+  // idempotency_key is the SAME agent-minted envelope key carried on
+  // AgentGateway.PostConversationFrame (agent_gateway.proto:113-119): the Server
+  // commits at-most-once per key against the store's (author, client_request_id)
+  // unique constraint, so a retry after a lost ack dedups to the original row
+  // and returns committed=true with the ORIGINAL message_id/seq — never a
+  // duplicate. A new field would fork the Runner's advisory dedup from the real
+  // commit boundary, so we reuse it (Matt-ratified).
+  //
+  // Additive to the frozen dial-out shape (the Runner still initiates; the
+  // Server gains no inbound route), same justification as RelayCommsCall.
+  rpc CommitConversationFrame(CommitConversationFrameRequest) returns (CommitConversationFrameResponse);
 }
 
 // Enroll request: the Runner announces its stable identity at connect. The id
@@ -205,4 +235,49 @@ message RelayCommsCallRequest {
 // never tears down the transport.
 message RelayCommsCallResponse {
   CommsCallResult result = 1;
+}
+
+// CommitConversationFrame request: one durable conversation frame the Runner
+// forwards for commit. `session_id` is the session the Runner structurally owns
+// (resolved to an account Server-side, fail-closed — see the RPC comment).
+// `frame` is constrained by the agent side to a conversation_posted /
+// conversation_updated AgentFrame variant (the same C4 constraint Publish
+// telemetry frames are held to). `idempotency_key` is the agent-minted envelope
+// key reused verbatim from AgentGateway.PostConversationFrameRequest.
+message CommitConversationFrameRequest {
+  string session_id = 1;
+  AgentFrame frame = 2;
+  string idempotency_key = 3;
+}
+
+// CommitConversationFrame response: the commit outcome for one frame. Named
+// `Response` (not `Ack`) to satisfy the STANDARD RPC-response lint runner.proto
+// keeps armed; it IS the commit acknowledgement, in its fields.
+//   committed  — the frame is durable in the Server store (true on a fresh
+//                commit AND on an idempotent replay of an already-committed
+//                key; the ack is self-describing so the agent's sink reads the
+//                durable boundary from the flag, not by inferring it from the
+//                absence of a transport error).
+//   message_id — the store-assigned message id of the committed row (stable
+//                across idempotent replay).
+//   seq        — the durable store-space sequence of the committed row
+//                (`messages.seq`, a BIGSERIAL), the replay-stable ordered
+//                position. NOT the bus-space SubscribeCommsResponse.seq, which
+//                resets to 1 each server boot (comms.proto:372-373) and so is
+//                not stable across a restart; the durable coordinate is
+//                messages.seq. Stable across idempotent replay. MAY be 0 until
+//                the store surfaces a per-row sequence; consumers must not treat
+//                0 as a valid head position.
+// A NON-commit is surfaced as a Connect status, not committed=false, split by
+// retryability so the Runner can drive at-least-once correctly:
+//   transient (Unavailable / stream teardown / FailedPrecondition contract
+//     defect) -> a RETRYABLE Connect code; the agent's sink retries on the same
+//     idempotency_key.
+//   permanent (InvalidArgument malformed frame / NotFound unknown-or-stopped
+//     session) -> a TERMINAL non-retryable code; the sink drops rather than
+//     looping the agent forever.
+message CommitConversationFrameResponse {
+  bool committed = 1;
+  string message_id = 2;
+  uint64 seq = 3;
 }
