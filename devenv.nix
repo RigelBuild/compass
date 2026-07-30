@@ -71,6 +71,28 @@
     curl
   ];
 
+  env = {
+    # Without this the Go gates lie in the dev shell: govulncheck and
+    # golangci-lint fail outright (`can't determine type sizes for compiler
+    # "an"` / `package missing import path`) and nilaway reports a silent zero
+    # findings on most runs — a false clean indistinguishable from a real one.
+    # The cause is proto's shim: seeing CLAUDECODE, it prints a "Detected an AI
+    # agent environment" banner as NDJSON on STDOUT, and Go tooling shells out
+    # to `go list` and parses that stdout, so the banner lands in the package
+    # list. `text` drops the banner line, leaving a shimmed tool's stdout
+    # carrying only the tool's own output. It does NOT move proto's progress to
+    # stderr — that still goes to stdout — so a run that triggers a shim
+    # auto-install would still prepend installer lines; in practice the
+    # toolchain is already installed (enterShell's `proto install`, above)
+    # before the gates run, so that path is not normally reached.
+    # This is a dev-shell-only env. CI (.github/workflows/ci.yml) installs the
+    # language runtimes via the setup-bun/node/go actions and moon via npm, and
+    # never runs enterShell — so proto's shims are never activated on the runner
+    # (`go` comes straight from setup-go), the shimmed `go list` that emits the
+    # banner never happens, and CI never had the bug.
+    PROTO_REPORTER = "text";
+  };
+
   enterShell = ''
     # Activate the proto-managed toolchains (bun/node/moon/go from .prototools).
     export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
