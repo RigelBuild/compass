@@ -38,8 +38,11 @@ import {
 	type AgentControl as WireAgentControl,
 } from "../gen/compass/v1/agent_pb";
 import type { UnmappedEvent } from "../mapping";
-import { createSocketControlSource } from "./control-source";
-import { createUnixSocketTransport } from "./index";
+import {
+	CONTROL_RECONNECT_NO_PROGRESS_MAX,
+	createSocketControlSource,
+} from "./control-source";
+import { createUnixSocketTransport, type RunnerTransport } from "./index";
 
 // One server + socket per test, torn down in afterEach so a failing case never
 // leaks the socket file or a listening server into the next test.
@@ -69,7 +72,11 @@ interface ServerHooks {
 	// Drives the Control server-stream: yields the AgentControl ops to push, then
 	// returns (clean close) or throws (transport drop). `open` is the 1-based
 	// subscription count so a reconnect test can behave differently per open.
-	control(open: number): AsyncIterable<WireAgentControl>;
+	// `signal` is the handler's own AbortSignal — it fires when the CLIENT
+	// cancels the stream, which is how the M2 return()-aborts-the-stream test
+	// observes cancellation reaching the server (an async generator parked on an
+	// `await` cannot be force-returned, so its `finally` alone proves nothing).
+	control(open: number, signal: AbortSignal): AsyncIterable<WireAgentControl>;
 	// Awaited after each ack frame is recorded — lets a test gate on ack arrival.
 	onPublish?(frame: PublishFrameRequest): Promise<void> | void;
 }
@@ -81,9 +88,9 @@ async function serve(rec: Recorder, hooks: ServerHooks): Promise<string> {
 	);
 	const adapter = connectNodeAdapter({
 		routes(router) {
-			router.rpc(AgentGateway.method.control, async function* () {
+			router.rpc(AgentGateway.method.control, async function* (_req, ctx) {
 				const open = ++rec.controlOpens;
-				yield* hooks.control(open);
+				yield* hooks.control(open, ctx.signal);
 			});
 			router.rpc(AgentGateway.method.publish, async (stream) => {
 				for await (const frame of stream) {
@@ -169,6 +176,75 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 	return { promise, resolve };
 }
 
+// A Control stream that delivers ZERO ops and then drops (throws) — the
+// quiet-flap shape the reconnect flap-detector tests are built on. Expressed as
+// a plain async function returning an AsyncIterable rather than an `async
+// function*`, because a generator whose body only throws never yields.
+function dropsImmediately(): AsyncIterable<WireAgentControl> {
+	return {
+		[Symbol.asyncIterator]: () => ({
+			next: () => Promise.reject(new Error("blip")),
+		}),
+	};
+}
+
+// Gates a test on the consumer demonstrably APPLYING an op, not merely on the
+// op being pushed. Apply-then-ack means op N is acked when the consumer returns
+// for N+1, so "the server yielded it" and "the agent applied it" are separated
+// by an unpredictable number of microtasks — a progress-budget test that dropped
+// the connection without waiting would race the ack and flake. The gate watches
+// the ControlAck cursor on the Publish spine, which is the same signal the
+// source's own reconnect budget reads.
+//
+// `starved` converts the failure mode into a NAMED one. A gate that never
+// resolves parks the server generator, so the stream never drops, `collect`
+// never settles, and the test would otherwise red as a bare suite timeout with
+// no diagnostic — asymmetric with F2(b)/F2(c), which go to deliberate trouble to
+// name their branch. Racing `starved` says "the source stopped acking" instead.
+function ackGate(): {
+	onPublish(frame: PublishFrameRequest): void;
+	applied(seq: bigint): Promise<void>;
+	starved(ms: number): Promise<void>;
+} {
+	let cursor = 0n;
+	const waiters: { seq: bigint; resolve: () => void }[] = [];
+	return {
+		onPublish(frame) {
+			const ack = ackOf(frame);
+			if (ack?.kind !== "controlAck") return;
+			if (ack.value.ackedSeq > cursor) cursor = ack.value.ackedSeq;
+			for (let i = waiters.length - 1; i >= 0; i--) {
+				const w = waiters[i] as { seq: bigint; resolve: () => void };
+				if (w.seq <= cursor) {
+					waiters.splice(i, 1);
+					w.resolve();
+				}
+			}
+		},
+		applied(seq) {
+			if (seq <= cursor) return Promise.resolve();
+			return new Promise<void>((resolve) => {
+				waiters.push({ seq, resolve });
+			});
+		},
+		// Resolves only if a waiter is still parked `ms` after the last ack moved
+		// the cursor — i.e. the source has gone quiet mid-script. Rearmed on every
+		// advance, so a slow-but-progressing run never trips it.
+		starved(ms) {
+			return new Promise<void>((resolve) => {
+				const tick = (): void => {
+					const at = cursor;
+					setTimeout(() => {
+						if (waiters.length > 0 && cursor === at) resolve();
+						else tick();
+					}, ms).unref?.();
+				};
+				tick();
+			});
+		},
+	};
+}
+
 // Drain the iterable into an array, stopping when it ends. Used by the
 // clean-close tests where the stream returns after a fixed script.
 async function collect(
@@ -223,7 +299,7 @@ test("an empty-shell steer is counted-unmapped, not yielded, and immediate.* is 
 	const source = createSocketControlSource(
 		createUnixSocketTransport(socketPath),
 		immediate,
-		(u) => unmapped.push(u),
+		{ onUnmapped: (u) => unmapped.push(u) },
 	);
 	const ops = await collect(source);
 	// The steer never reaches the iterable; only barrier + prompt do.
@@ -249,7 +325,7 @@ test("a pre-ReplayComplete immediate op is refused by the barrier and counted (i
 	const source = createSocketControlSource(
 		createUnixSocketTransport(socketPath),
 		immediate,
-		(u) => unmapped.push(u),
+		{ onUnmapped: (u) => unmapped.push(u) },
 	);
 	await collect(source);
 	expect(steers).toEqual([]);
@@ -373,8 +449,8 @@ test("a redelivered already-QUEUED op is deduped and NOT re-acked, never re-yiel
 	// iterable exactly once. A steer(4) sentinel decoded AFTER the dup gives a
 	// dispatch-order signal that fires regardless of which dedup branch runs, so a
 	// mutation reds an assertion instead of hanging a dedup-count gate.
-	// Non-vacuity (mutation-verified): drop the queued-dedup branch
-	// (control-source.ts:288-291) → the dup is no longer counted "already queued"
+	// Non-vacuity (mutation-verified): drop the `queued.has(seq)` dedup branch in
+	// `dispatch` → the dup is no longer counted "already queued"
 	// AND re-queues → the "counted exactly once as already-queued" assertion reds
 	// (and, downstream, seq 2 would then yield a second prompt).
 	const rec = emptyRecorder();
@@ -393,9 +469,11 @@ test("a redelivered already-QUEUED op is deduped and NOT re-acked, never re-yiel
 	const unmapped: UnmappedEvent[] = [];
 	const transport = createUnixSocketTransport(socketPath);
 	const { immediate } = recordingImmediate();
-	const source = createSocketControlSource(transport, immediate, (u) => {
-		unmapped.push(u);
-		if (u.eventType === "control:steer") sentinelDispatched.resolve();
+	const source = createSocketControlSource(transport, immediate, {
+		onUnmapped: (u) => {
+			unmapped.push(u);
+			if (u.eventType === "control:steer") sentinelDispatched.resolve();
+		},
 	});
 	const it = source[Symbol.asyncIterator]();
 	const first = await it.next(); // replayComplete(1)
@@ -437,8 +515,8 @@ test("a redelivered already-APPLIED op is deduped, RE-ACKED, never re-yielded (a
 	// retained op — a SECOND ControlAck for seq 2 is published — while the op is
 	// never re-yielded. This is the Runner-retirement half the prior single test
 	// never exercised.
-	// Non-vacuity (mutation-verified): drop `acks.markApplied(seq)` at
-	// control-source.ts:285 (the count line stays, so the dedup gate still resolves
+	// Non-vacuity (mutation-verified): drop the `acks.markApplied(seq)` call in
+	// `dispatch`'s immediate-op arm (the count line stays, so the dedup gate still resolves
 	// — no hang) → no second seq-2 ControlAck → the "two seq-2 ControlAcks"
 	// assertion reds.
 	const rec = emptyRecorder();
@@ -462,9 +540,11 @@ test("a redelivered already-APPLIED op is deduped, RE-ACKED, never re-yielded (a
 	const unmapped: UnmappedEvent[] = [];
 	const transport = createUnixSocketTransport(socketPath);
 	const { immediate } = recordingImmediate();
-	const source = createSocketControlSource(transport, immediate, (u) => {
-		unmapped.push(u);
-		if (u.reason.includes("already applied")) dedupCounted.resolve();
+	const source = createSocketControlSource(transport, immediate, {
+		onUnmapped: (u) => {
+			unmapped.push(u);
+			if (u.reason.includes("already applied")) dedupCounted.resolve();
+		},
 	});
 	const it = source[Symbol.asyncIterator]();
 	const first = await it.next(); // replayComplete(1)
@@ -514,7 +594,7 @@ test("appliedAbove: an immediate op applied ahead of an unfinished queued op car
 	// appliedAbove:[3]}. pull past prompt(2) → markApplied(2): 2>1 → #above={3,2}
 	// → prune deletes 2 (cursor→2) then 3 (cursor→3) → Ack{ackedSeq:3,
 	// appliedAbove:[]} — the collapse.
-	// Non-vacuity (mutation-verified): break the prune loop at control-source.ts:198
+	// Non-vacuity (mutation-verified): break the prune loop in `AckCursor.markApplied`
 	// (`this.#cursor + 1n` → `this.#cursor + 2n`) → the contiguous run never picks
 	// up cursor+1, so markApplied(3) yields {ackedSeq:2, appliedAbove:[]} rather
 	// than {ackedSeq:1, appliedAbove:[3]} → the intermediate appliedAbove
@@ -579,4 +659,858 @@ test("appliedAbove: an immediate op applied ahead of an unfinished queued op car
 	expect(collapseAck?.appliedAbove).toEqual([]); // contiguous run pruned 2 then 3
 	holdStream.resolve();
 	await third.catch(() => undefined);
+});
+
+test("a control_seq < 1 op is fail-closed (counted 'invalid control_seq < 1', dropped, not yielded, not acked) BEFORE the dedup path (M3)", async () => {
+	// The Runner assigns strictly-positive 1-based control_seq; a seq-0 op (proto3
+	// uint64 default) is a broken/0-based producer. The guard must sit BEFORE the
+	// isApplied dedup: isApplied(0n) is 0n<=0n=true, so without the guard seq 0 is
+	// swallowed as an "already-applied duplicate" (wrong reason) AND re-acked
+	// (markApplied(0n) emits a ControlAck{ackedSeq:0}). With the guard it is
+	// counted once with the invalid-seq reason and dropped un-acked.
+	// Non-vacuity (mutation-verified): delete the `if (seq < 1n)` guard in
+	// `dispatch` → seq 0 falls into isApplied(0n)=true → counted
+	// "duplicate redelivered op — already applied" (NOT "invalid control_seq < 1")
+	// and re-acked → the invalid-reason count assertion reds AND a seq-0 ControlAck
+	// appears → the no-ack-0 assertion reds.
+	const rec = emptyRecorder();
+	const socketPath = await serve(rec, {
+		control: async function* () {
+			yield promptOp(0n, "x"); // seq 0 — refused before dedup
+			yield replayCompleteOp(1n);
+			yield promptOp(2n, "after");
+			// clean close
+		},
+	});
+	const unmapped: UnmappedEvent[] = [];
+	const transport = createUnixSocketTransport(socketPath);
+	const { immediate } = recordingImmediate();
+	const source = createSocketControlSource(transport, immediate, {
+		onUnmapped: (u) => unmapped.push(u),
+	});
+	const ops = await collect(source);
+	await transport.publishSpine().drain();
+	// The seq-0 op never reaches the iterable; only the two valid ops do.
+	expect(ops.map((o) => o.kind)).toEqual(["replayComplete", "prompt"]);
+	expect(ops[1]).toMatchObject({ kind: "prompt", input: "after" });
+	// Counted exactly once with the fail-closed reason on control:prompt.
+	expect(
+		unmapped.filter(
+			(u) =>
+				u.eventType === "control:prompt" &&
+				u.reason.includes("invalid control_seq < 1"),
+		),
+	).toHaveLength(1);
+	// It was NOT re-acked as a dup: no ControlAck names seq 0 (the only acks are
+	// for the valid ops — cursor jumps 1→2, never 0).
+	const controlAcks = rec.publishFrames.flatMap((f) => {
+		const a = ackOf(f);
+		return a?.kind === "controlAck" ? [a.value] : [];
+	});
+	expect(
+		controlAcks.some((a) => a.ackedSeq === 0n || a.appliedAbove.includes(0n)),
+	).toBe(false);
+});
+
+test("F2(a): a quiet-but-healthy session flapping MORE than the backoff length still survives — reset-on-open fires on every past-floor drop (M1)", async () => {
+	// Opens 1..6 each yield ZERO ops then throw (a healthy connection that blips
+	// before redelivering anything); open 7 yields the prompt then clean-closes.
+	// Six flaps > the backoff length (4): the OLD reset-on-op-receipt would never
+	// reset (zero ops delivered) and would climb the budget to a spurious fail at
+	// open 5. The reset-on-open flap-detector resets `attempt` on every drop whose
+	// connection stayed up past the floor, so all six reconnects fire at backoff[0]
+	// and the prompt on open 7 is yielded.
+	// The injected clock is a SETTABLE value, not an auto-advancing counter: the
+	// server hook advances it to model each connection's real lifetime (6000ms >=
+	// the 5000 floor) no matter how many times the source samples the clock. A
+	// counter that bumped per CALL would instead pin the implementation's
+	// sampling pattern — add a third `now()` read anywhere in the pump and the
+	// modelled uptime would silently change meaning. Deterministic either way:
+	// no real 5s wait.
+	//
+	// The advance happens at the START of the next open, not at the drop. Uptime
+	// is stamped when the stream is ESTABLISHED (the response header), and the
+	// header lands only once the handler has been entered — so an advance made
+	// before throwing would be included in `openedAt` itself and measure an
+	// elapsed of ZERO. Advancing on the following open attributes the 6000ms to
+	// the connection that just ended, which is what the floor is asking about.
+	// Non-vacuity (mutation-verified): replace the reset line in `pump`'s catch
+	// (`if (established && now() - openedAt >= CONTROL_RECONNECT_MIN_UPTIME_MS)`)
+	// with a no-op (never reset) → attempt climbs the schedule and the iterable
+	// FAILS at open 5 → collect() rejects, the prompt is never yielded and
+	// controlOpens stays 5 → red.
+	const rec = emptyRecorder();
+	// Advanced when the source OBSERVES a connection's header, not by the server:
+	// uptime is stamped at establishment, so the advance has to land after that
+	// stamp or it is absorbed into `openedAt` and the measured elapsed is zero.
+	// `headerObserver` below wraps the transport and bumps the clock once per
+	// open, immediately after the source's own onHeader has run.
+	let t = 0;
+	const socketPath = await serve(rec, {
+		control: async function* (open) {
+			if (open < 7) {
+				throw new Error("blip"); // zero-op drop, connection was healthy
+			}
+			yield promptOp(1n, "survived");
+			// clean close
+		},
+	});
+	const { immediate } = recordingImmediate();
+	const now = (): number => t;
+	const source = createSocketControlSource(
+		headerObserver(createUnixSocketTransport(socketPath), () => {
+			t += 6000; // the connection just established stayed up 6s
+		}),
+		immediate,
+		{ onUnmapped: () => {}, now: now },
+	);
+	// Capture the outcome rather than letting a regression surface as a raw
+	// transport rejection: under the never-reset mutation the source gives up at
+	// open 5 and collect() rejects, which should red the NAMED "survived" assertion
+	// below, not spray a ConnectError stack.
+	const outcome = await collect(source).then(
+		(ops) => ({ ended: "cleanly" as const, ops }),
+		(err: unknown) => ({ ended: "failed" as const, err }),
+	);
+	expect(outcome.ended).toBe("cleanly"); // 6 flaps did NOT exhaust the budget
+	expect(rec.controlOpens).toBe(7); // survived 6 flaps, re-opened each time
+	const ops = outcome.ended === "cleanly" ? outcome.ops : [];
+	expect(ops.map((o) => o.kind)).toEqual(["prompt"]);
+	expect(ops[0]).toMatchObject({ kind: "prompt", input: "survived" });
+});
+
+test("F2(b): a rapid sub-floor flap still fails, bounded — the iterable rejects after exactly 5 opens (M1 infinite-loop guard)", async () => {
+	// Every open yields nothing then drops immediately. The injected clock is a
+	// SETTABLE value the server never advances, so every connection reports uptime
+	// 0 < the 5000 floor → the flap never resets. `attempt` climbs
+	// [50,200,800,2000] and after the schedule is exhausted the iterable fails:
+	// initial open + 4 retries = exactly 5 opens. This is the guard that a dead
+	// socket cannot spin forever. It pays the real backoff (~3.05s) once — the
+	// actual schedule firing, not test overhead.
+	// Non-vacuity (mutation-verified, two ways): (i) shrink the budget check
+	// (`attempt >= CONTROL_RECONNECT_BACKOFF_MS.length` → `attempt >= 2`) → 3 opens
+	// → the exactly-5 assertion reds; (ii) make the reset predicate always-true
+	// (`attempt = 0` unconditionally) → the budget is never reached and the pump
+	// spins forever — caught here as a NAMED assertion, not a suite timeout: the
+	// server hook resolves `overBudget` the moment a 6th open arrives, and the race
+	// below turns that into "opened 6 times — unbounded reconnect spin".
+	// The surfaced error text is not pinned (connect renders a pre-first-message
+	// server throw as a protocol error — an artifact of the wire, not this
+	// source's contract). What IS pinned: the iterable FAILS rather than ending
+	// cleanly or spinning, after exactly the budgeted number of opens.
+	const rec = emptyRecorder();
+	const overBudget = deferred();
+	const socketPath = await serve(rec, {
+		control: (open) => {
+			// A 6th open can only happen if the budget never terminates the climb.
+			if (open > 5) overBudget.resolve();
+			return dropsImmediately(); // sub-floor drop, every open
+		},
+	});
+	const { immediate } = recordingImmediate();
+	const now = (): number => 0; // never advances → uptime 0 << 5000 floor
+	const source = createSocketControlSource(
+		createUnixSocketTransport(socketPath),
+		immediate,
+		{ onUnmapped: () => {}, now: now },
+	);
+	const settled = collect(source).then(
+		(ops) => ({ ended: "cleanly" as const, ops }),
+		(err: unknown) => ({ ended: "failed" as const, err }),
+	);
+	const outcome = await Promise.race([
+		settled,
+		overBudget.promise.then(() => ({ ended: "spinning" as const })),
+	]);
+	// "spinning" = a 6th open landed → the reconnect budget is not bounded.
+	expect(outcome.ended).toBe("failed"); // definitive fail, not clean STOPPED, not a spin
+	expect(rec.controlOpens).toBe(5); // initial + 4 bounded retries, then gives up
+}, 15000);
+
+test("F2(c): a SLOW-failing socket terminates — past-floor drops reset the backoff every time, so the NO-PROGRESS budget is what bounds it", async () => {
+	// The gap F2(a)/F2(b) leave open: the reset-on-open flap-detector clears
+	// `attempt` on ANY drop from a connection that outlived the min-uptime floor.
+	// A socket that is accepted, stays up past the floor, and THEN fails (a
+	// wedged Runner, a server-side deadline, an idle timeout) therefore resets
+	// the climb on every attempt and the backoff ladder is never reached —
+	// reconnecting forever. Reproduced against a live server on the PRODUCTION
+	// clock: 8 opens in 41s and still going.
+	//
+	// A reconnect-RATE window cannot bound this, which is why the budget counts
+	// PROGRESS instead. Every connection here outlives the floor, so the reset
+	// fires every time and the ladder delay is always backoff[0]; the budget
+	// terminates it anyway, because none of these connections ever delivers an
+	// op the agent applies. Crucially the bound is INDIFFERENT to connection
+	// lifetime — the clock advance below is 6s, but making it 6 minutes changes
+	// nothing, which is exactly what a wall-window could not say.
+	//
+	// Non-vacuity (mutation-verified): delete the budget check
+	// (`noProgress >= CONTROL_RECONNECT_NO_PROGRESS_MAX` → `false`) → the pump
+	// spins forever, caught HERE as a named assertion rather than a suite
+	// timeout via the same over-budget race F2(b) uses → red.
+	//
+	// Isolation, and its ONE deliberate exception: deleting the budget check
+	// reds exactly this test, so a red here names its branch. But deleting the
+	// reset-on-open line itself also reds F2(a) and F2(d). That is structural,
+	// not sloppy coupling: the reset is this test's PREMISE. With it gone the
+	// 4-entry backoff ladder is exhausted at attempt 4, long before the budget
+	// can bound anything, so the scenario "resets every drop, the budget
+	// terminates it" is not constructible at all. Decoupling would mean
+	// injecting the backoff schedule — production surface added purely for a
+	// test — so the dependency is recorded instead. If all three red at once,
+	// suspect the reset line; F2(a) is the test that names it.
+	const rec = emptyRecorder();
+	const overBudget = deferred();
+	let t = 0;
+	const socketPath = await serve(rec, {
+		control: (open) => {
+			// An 11th open can only happen if the budget does not terminate it.
+			if (open > CONTROL_RECONNECT_NO_PROGRESS_MAX) overBudget.resolve();
+			return dropsImmediately();
+		},
+	});
+	const { immediate } = recordingImmediate();
+	const now = (): number => t;
+	const source = createSocketControlSource(
+		// Each connection lasted 6s — past the 5000 floor, so the reset fires and
+		// `attempt` returns to 0 on every drop. Advanced when the source observes
+		// the header (uptime is stamped at establishment), never by its sampling.
+		headerObserver(createUnixSocketTransport(socketPath), () => {
+			t += 6000;
+		}),
+		immediate,
+		{ onUnmapped: () => {}, now: now },
+	);
+	const settled = collect(source).then(
+		(ops) => ({ ended: "cleanly" as const, ops }),
+		(err: unknown) => ({ ended: "failed" as const, err }),
+	);
+	const outcome = await Promise.race([
+		settled,
+		overBudget.promise.then(() => ({ ended: "spinning" as const })),
+	]);
+	// "spinning" = the budget never terminated a socket that resets every drop.
+	expect(outcome.ended).toBe("failed");
+	expect(rec.controlOpens).toBe(CONTROL_RECONNECT_NO_PROGRESS_MAX);
+}, 15000);
+
+test("F2(d): the SAME drop shape as F2(c) survives indefinitely once ops are APPLIED — progress, not rate, is what separates them", async () => {
+	// The other half of the budget's contract, and the case a reconnect-RATE
+	// window provably could not express. This test is F2(c) with one variable
+	// changed: identical connection lifetimes, identical clock advance,
+	// identical drop-every-connection shape — the only difference is that each
+	// connection delivers an op the consumer applies. F2(c) dies at open 10;
+	// this one runs 15 drops past the budget and still delivers. No wall-clock
+	// threshold can tell those two sessions apart, because their reconnect rates
+	// are the same; progress tells them apart trivially.
+	//
+	// Non-vacuity (mutation-verified): make the progress test an unconditional
+	// increment (`noProgress = noProgress + 1` regardless of
+	// `applied > appliedAtLastDrop`) → progress stops resetting the budget, it
+	// fills at drop 10 and the source fails → red, and measured to red EXACTLY
+	// this test out of the four F2 cases. That mutation is the old rate-only
+	// behavior in miniature: it is the defect this replaced.
+	//
+	// Isolation: the reset-on-open line is the shared premise here as in F2(c)
+	// — without it the 4-entry ladder ends the session at open 5, before
+	// progress can be demonstrated at all. See F2(c)'s note.
+	const rec = emptyRecorder();
+	const gate = ackGate();
+	// 16 opens: 15 that deliver an op, have it APPLIED, then drop; then a clean
+	// close. 15 > NO_PROGRESS_MAX, so a budget that ignored progress would fail.
+	const totalOpens = 16;
+	let t = 0;
+	const socketPath = await serve(rec, {
+		control: async function* (open) {
+			if (open === totalOpens) return; // clean close ends the iterable
+			// Seqs are CONTIGUOUS from 1: the ack cursor only advances through a
+			// contiguous run, so a gapped script would never move it and the gate
+			// below would never fire.
+			const seq = BigInt(open);
+			yield promptOp(seq, `op-${open}`);
+			// Wait for the consumer to actually APPLY it — apply-then-ack, so the
+			// ack lands when the consumer comes back for the next op — then drop.
+			// Gating on the ack rather than a timer is what makes "the drop
+			// happens after progress" deterministic instead of a race.
+			await gate.applied(seq);
+			throw new Error("blip after progress");
+		},
+		onPublish: (frame) => gate.onPublish(frame),
+	});
+	const { immediate } = recordingImmediate();
+	const source = createSocketControlSource(
+		// Same 6s-per-connection clock as F2(c): past the floor, so the ladder
+		// resets on every drop and cannot be what bounds (or spares) this session.
+		headerObserver(createUnixSocketTransport(socketPath), () => {
+			t += 6000;
+		}),
+		immediate,
+		{ onUnmapped: () => {}, now: () => t },
+	);
+	const settled = collect(source).then(
+		(ops) => ({ ended: "cleanly" as const, ops }),
+		(err: unknown) => ({ ended: "failed" as const, err }),
+	);
+	const outcome = await Promise.race([
+		settled,
+		// "never-acked" = the source stopped acking mid-script, so the server is
+		// parked on a gate that will never open. Named here rather than left to
+		// surface as an unexplained 30s suite timeout.
+		gate.starved(2000).then(() => ({ ended: "never-acked" as const })),
+	]);
+	expect(outcome.ended).toBe("cleanly");
+	expect(rec.controlOpens).toBe(totalOpens);
+	// 15 applied ops across 15 drops — half again the budget, never killed.
+	// Asserting the PAYLOADS, not just the kinds: the arity is the property this
+	// test exists for, but pinning `op-N` in order buys exactly-once and ordering
+	// across 15 reconnects for free — a source that re-yielded one redelivery and
+	// dropped another would satisfy a kinds-only assertion unchanged.
+	const ops = outcome.ended === "cleanly" ? outcome.ops : [];
+	expect(ops.map((o) => (o.kind === "prompt" ? o.input : o.kind))).toEqual(
+		Array.from({ length: totalOpens - 1 }, (_, i) => `op-${i + 1}`),
+	);
+}, 30000);
+
+test("a long apply survives >budget socket flaps — an op in flight is progress (SEA-1540)", async () => {
+	// The latent kill this fix closes. The source is apply-then-ack and its
+	// single consumer (CompassAgent's control loop) awaits the WHOLE turn before
+	// pulling the next op, so while a long turn applies op N the ack cursor
+	// CANNOT advance — op N is acked only when the consumer returns for N+1.
+	// This test models exactly that: the consumer pulls ONE op and then HOLDS
+	// it (never pulls again), so appliedCount is frozen at 0 and the op stays in
+	// flight, while the Control socket flaps MORE than CONTROL_RECONNECT_NO_PROGRESS_MAX
+	// times — each reopen redelivering the same op, deduped as already-queued so
+	// nothing new is ever applied. F2(c) is this exact drop shape with NOTHING
+	// in flight and dies at open 10; the only difference here is that an op is
+	// mid-apply, which is progress, so the session must SURVIVE past the budget.
+	//
+	// Non-vacuity (mutation-verified): revert the production progress calc to
+	// appliedCount-only — drop the `|| applyInFlight` arm so
+	// `madeProgress = applied > appliedAtLastDrop` — and this test goes RED: with
+	// nothing applied and the in-flight arm gone, `noProgress` climbs one per
+	// drop and the source `buffer.fail`s at open 10, so it never re-opens past
+	// the budget, `overBudget` never fires, and the opens-stalled detector wins
+	// the race → "failed". That reverted calc IS the SEA-1540 defect.
+	//
+	// Isolation: like F2(c)/F2(d) the reset-on-open line is the shared premise —
+	// every connection outlives the min-uptime floor (t += 6000 per header), so
+	// the backoff ladder resets on every drop and ONLY the no-progress budget is
+	// under test. See F2(c)'s note.
+	const rec = emptyRecorder();
+	const overBudget = deferred();
+	const pulledOp1 = deferred();
+	const release = deferred();
+	let t = 0;
+	const socketPath = await serve(rec, {
+		control: async function* (open) {
+			// An open past the budget can only happen if the in-flight arm spared
+			// the session — the whole point of the test.
+			if (open > CONTROL_RECONNECT_NO_PROGRESS_MAX) overBudget.resolve();
+			// Every open (re)delivers the SAME op 1: genuinely queued on open 1,
+			// deduped as already-queued on every reopen (:303), so appliedCount
+			// never advances and the source's only progress signal is that op 1 is
+			// in flight.
+			yield promptOp(1n, "op-1");
+			// On the FIRST open, drop only AFTER the consumer has pulled op 1, so
+			// applyInFlight is true from the very first budget check. Later opens
+			// need no gate: the consumer holds op 1 for the whole test, so
+			// applyInFlight stays true across every drop.
+			if (open === 1) await pulledOp1.promise;
+			throw new Error("blip mid-apply");
+		},
+	});
+	const { immediate } = recordingImmediate();
+	const source = createSocketControlSource(
+		// Same 6s-per-connection clock as F2(c)/F2(d): past the floor, so the
+		// ladder resets on every drop and cannot be what bounds (or spares) this
+		// session — only the no-progress budget can.
+		headerObserver(createUnixSocketTransport(socketPath), () => {
+			t += 6000;
+		}),
+		immediate,
+		{ onUnmapped: () => {}, now: () => t },
+	);
+	// A consumer that pulls ONE op and then HOLDS it — a long apply / long turn.
+	// It never pulls again, so it never acks op 1 (appliedCount stays 0) and the
+	// op stays in flight for the whole flap storm.
+	const it = source[Symbol.asyncIterator]();
+	const held = (async () => {
+		await it.next();
+		pulledOp1.resolve();
+		await release.promise;
+		await it.return?.();
+	})();
+	// The RED-case detector, named rather than left to surface as a suite
+	// timeout (the discipline F2(c)/F2(d) follow, mirroring ackGate.starved). If
+	// the reverted calc fails the source at the budget, it stops re-opening
+	// Control, so `controlOpens` freezes at or below the budget: an unchanged
+	// count across a full window, while still <= the budget, is that terminal
+	// state. In the GREEN case the count climbs past the budget every
+	// ~backoff[0]ms and `overBudget` wins the race long before any window
+	// elapses unchanged.
+	//
+	// Real setTimeout (not fake timers) is deliberate here, as in ackGate: this
+	// is a live-socket integration test whose RED terminal state — buffer.fail()
+	// with no puller parked — emits no promise or event to await, and the source
+	// drives its own reconnects on real Node timers we do not control. Polling
+	// the one observable (controlOpens) over a real window is the only signal;
+	// fake timers cannot advance the source's out-of-test reconnect clock.
+	const opensStalled = (ms: number): Promise<void> =>
+		new Promise<void>((resolve) => {
+			const tick = (): void => {
+				const at = rec.controlOpens;
+				setTimeout(() => {
+					if (
+						rec.controlOpens === at &&
+						at <= CONTROL_RECONNECT_NO_PROGRESS_MAX
+					)
+						resolve();
+					else tick();
+				}, ms).unref?.();
+			};
+			tick();
+		});
+	const outcome = await Promise.race([
+		overBudget.promise.then(() => "survived" as const),
+		opensStalled(1000).then(() => "failed" as const),
+	]);
+	expect(outcome).toBe("survived");
+	// Re-opened PAST the budget with a single op in flight the whole time and
+	// nothing ever applied — the exact case appliedCount-only would have killed.
+	expect(rec.controlOpens).toBeGreaterThan(CONTROL_RECONNECT_NO_PROGRESS_MAX);
+	release.resolve();
+	await held;
+}, 15000);
+
+test("F3: abandoning the for-await (iterator return()) aborts the pump AND cancels the Control server-stream (M2)", async () => {
+	// The server holds the stream open after rc(1) and parks on its OWN handler
+	// AbortSignal, which connect fires when the client cancels the RPC. return()
+	// must abort.abort() — cancelling the { signal } threaded into
+	// transport.control() — so that cancellation reaches the server; and it must
+	// NOT reconnect (the aborted pump returns quietly), so controlOpens stays 1.
+	// Parking on ctx.signal rather than a generator `finally` is deliberate: an
+	// async generator suspended at an `await` cannot be force-returned, so its
+	// finally would not run on cancellation and would prove nothing either way.
+	// Non-vacuity (mutation-verified): make the iterator's `return()` skip
+	// `abort.abort()` (leave only buffer.close()) → the Connect stream
+	// stays open, the server's signal never fires → serverCancelled loses the race
+	// and the bounded timer rejects → red (an assertion, not a suite hang).
+	const rec = emptyRecorder();
+	const serverCancelled = deferred();
+	const socketPath = await serve(rec, {
+		control: async function* (_open, signal) {
+			yield replayCompleteOp(1n);
+			// Hold the stream open until the client cancels the RPC.
+			await new Promise<void>((resolve) => {
+				if (signal.aborted) resolve();
+				else signal.addEventListener("abort", () => resolve(), { once: true });
+			});
+			serverCancelled.resolve();
+		},
+	});
+	const { immediate } = recordingImmediate();
+	const source = createSocketControlSource(
+		createUnixSocketTransport(socketPath),
+		immediate,
+	);
+	const it = source[Symbol.asyncIterator]();
+	const first = await it.next(); // pull rc(1) — the pump is now live on the stream
+	expect(first.value?.kind).toBe("replayComplete");
+	// The iterator MUST implement return() — that optional protocol member is
+	// exactly what JS calls on an abandoned `for await`, and it is where M2 hangs
+	// the abort. Asserted, not `!`-asserted away: a source that dropped it would
+	// silently leak the pump.
+	const ret = await it.return?.();
+	expect(ret).toEqual({ value: undefined, done: true });
+	// Prove the cancellation reached the server. Real bounded timer
+	// (ts-no-test-timers exception): the awaited signal is an HTTP/2 stream
+	// cancellation propagating over a real socket into connect's handler context —
+	// there is no injectable clock on that path, and the timer exists solely to
+	// convert a broken-abort HANG into a named assertion failure. It is cleared
+	// the moment the cancellation lands, so a passing run waits zero extra time.
+	const guard = new Promise<never>((_, reject) => {
+		const t = setTimeout(
+			() =>
+				reject(
+					new Error(
+						"server stream not cancelled within 2s — return() did not abort the Control stream",
+					),
+				),
+			2000,
+		);
+		void serverCancelled.promise.then(() => clearTimeout(t));
+	});
+	await Promise.race([serverCancelled.promise, guard]);
+	expect(rec.controlOpens).toBe(1); // the aborted pump did not reconnect
+});
+
+// ---------------------------------------------------------------------------
+// Abort-branch observation seam (F4/F5).
+//
+// Once the consumer abandons the iterable, an aborted pump touches NOTHING the
+// helpers above can see: it dispatches no op, emits no ack, and both
+// buffer.close() and buffer.fail() are no-ops after return() already closed the
+// buffer. So the terminal-state assertions the earlier tests lean on cannot
+// discriminate the abort branches at all — which is precisely why those
+// branches survived deletion with the suite green.
+//
+// What DOES discriminate them is the source's OUTBOUND behaviour: how many times
+// it opens `Control`, and the AbortSignal it threads into each open. Both are
+// public surface — `transport` is an injected collaborator of the frozen C4
+// factory signature, not an internal — so observing them is black-box, not a
+// reach into the source. This wraps a real transport to report:
+//
+//   - control() call count, counted CLIENT-side, so a re-open attempt made with
+//     an already-aborted signal still registers even when it never reaches the
+//     server (the server's own `controlOpens` cannot see that attempt, which is
+//     why F4 does not assert on it).
+//   - live "abort" listeners on the source-lifetime signal, the only observable
+//     that distinguishes a wait which WATCHES the abort from one that ignores it.
+//   - a per-open gate on the client-side stream rejection, which marks the pump
+//     entering its catch and therefore its backoff wait.
+// Runs `onEstablished` immediately after the source's own `onHeader` fires for
+// an open. Uptime is stamped at stream ESTABLISHMENT, so a fake clock modelling
+// "this connection stayed up N ms" has to advance AFTER that stamp — advancing
+// server-side (before the header reaches the client) is absorbed into `openedAt`
+// itself and measures an elapsed of zero. This is a source-side seam, so it does
+// not pin the pump's sampling pattern: the clock moves once per established
+// connection, no matter how many times `now()` is read.
+function headerObserver(
+	inner: RunnerTransport,
+	onEstablished: () => void,
+): RunnerTransport {
+	return {
+		comms: (req) => inner.comms(req),
+		publishSpine: () => inner.publishSpine(),
+		postConversationFrame: (req, options) =>
+			inner.postConversationFrame(req, options),
+		close: () => inner.close(),
+		control: (req, options) =>
+			inner.control(req, {
+				...options,
+				onHeader: (header) => {
+					options?.onHeader?.(header);
+					onEstablished();
+				},
+			}),
+	};
+}
+
+interface TransportObserver {
+	transport: RunnerTransport;
+	controlCalls(): number;
+	liveAbortListeners(): number;
+	// Resolves once the client has seen `n` stream rejections.
+	streamRejected(n: number): Promise<void>;
+}
+
+function observingTransport(inner: RunnerTransport): TransportObserver {
+	let controlCalls = 0;
+	let rejections = 0;
+	// Listener identities, added/removed at runtime → Set, not a Record.
+	const liveAbort = new Set<unknown>();
+	const gates = new Map<
+		number,
+		{ promise: Promise<void>; resolve: () => void }
+	>();
+	let instrumented = false;
+
+	function gateFor(n: number): { promise: Promise<void>; resolve: () => void } {
+		const existing = gates.get(n);
+		if (existing !== undefined) return existing;
+		const fresh = deferred();
+		gates.set(n, fresh);
+		return fresh;
+	}
+
+	// Count net addEventListener/removeEventListener("abort") on the signal. The
+	// source holds ONE AbortController for its whole life and threads the same
+	// signal into every open, so this is patched once, on first sight.
+	function instrument(signal: AbortSignal): void {
+		if (instrumented) return;
+		instrumented = true;
+		const add = signal.addEventListener.bind(signal);
+		const remove = signal.removeEventListener.bind(signal);
+		Object.assign(signal, {
+			addEventListener(type: string, listener: unknown, opts?: unknown): void {
+				if (type === "abort") liveAbort.add(listener);
+				add(type as "abort", listener as never, opts as never);
+			},
+			removeEventListener(
+				type: string,
+				listener: unknown,
+				opts?: unknown,
+			): void {
+				if (type === "abort") liveAbort.delete(listener);
+				remove(type as "abort", listener as never, opts as never);
+			},
+		});
+	}
+
+	const transport: RunnerTransport = {
+		comms: (req) => inner.comms(req),
+		publishSpine: () => inner.publishSpine(),
+		postConversationFrame: (req, options) =>
+			inner.postConversationFrame(req, options),
+		close: () => inner.close(),
+		control(req, options) {
+			controlCalls += 1;
+			const signal = options?.signal;
+			if (signal !== undefined) instrument(signal);
+			const stream = inner.control(req, options);
+			return {
+				[Symbol.asyncIterator](): AsyncIterator<WireAgentControl> {
+					const it = stream[Symbol.asyncIterator]();
+					return {
+						next: () =>
+							it.next().then(
+								(r) => r,
+								(err: unknown) => {
+									rejections += 1;
+									gateFor(rejections).resolve();
+									throw err;
+								},
+							),
+					};
+				},
+			};
+		},
+	};
+
+	return {
+		transport,
+		controlCalls: () => controlCalls,
+		liveAbortListeners: () => liveAbort.size,
+		streamRejected: (n) =>
+			rejections >= n ? Promise.resolve() : gateFor(n).promise,
+	};
+}
+
+// Yield past a macrotask boundary, so every already-scheduled microtask has run.
+// NOT a duration wait and not a retry: the pump's path from a stream rejection to
+// its backoff wait (and, under the F4 mutant, from the abort back around to
+// `transport.control()`) is pure microtask work, and `setImmediate` is ordered
+// strictly after all of it. So one hop is an EVENT boundary — "the pump has run
+// as far as it can without a timer" — not an arbitrary sleep.
+function flush(): Promise<void> {
+	return new Promise<void>((resolve) => {
+		setImmediate(resolve);
+	});
+}
+
+// Drive a source to the head of its DEEPEST backoff wait (the 2000ms entry), by
+// dropping every open. Returns once the 4th drop has been seen client-side and
+// the pump has had its macrotask boundary to reach the wait.
+//
+// Why the 4th: `attempt` climbs 0→4 over the schedule [50,200,800,2000], so drop
+// N leaves the pump waiting backoff[N-1]; the 4th leaves 2000ms of slack for the
+// abort to land INSIDE the wait rather than racing its expiry. The 5th drop would
+// exhaust the budget and fail the iterable instead.
+//
+// The injected clock never advances, so no connection reaches the min-uptime
+// floor (uptime 0 << 5000) and the climb is never reset. Four drops also stay
+// under CONTROL_RECONNECT_NO_PROGRESS_MAX (10), so the no-progress budget does
+// not terminate the source before the ladder does.
+const DROPS_TO_DEEPEST_BACKOFF = 4;
+
+// The catch-side `if (abort.signal.aborted) return;` in `pump`'s catch has NO
+// test here, deliberately. It is UNTESTABLE at the public surface, not untested,
+// and the distinction matters because the next person to run a mutation sweep
+// will see it survive and be tempted to "fix the gap."
+//
+// Measured, by deleting that line and running this file: 18 pass / 0 fail. The
+// reason is that the two abort guards mask each other. With the catch-side guard
+// gone, an abort during a stream still runs the no-progress bookkeeping, falls
+// through to the backoff wait — which returns at once on an already-aborted
+// signal — and then hits the TOP-OF-LOOP guard, which returns. `buffer.fail()`
+// in between is a no-op, because the iterator's `return()` already closed the
+// buffer. So the mutant reconnects nothing, surfaces nothing, and yields
+// nothing: every consumer-visible outcome is identical, and the source is left
+// holding no observable difference to assert on.
+//
+// The one difference is internal — the mutant consumes a slot of the no-progress
+// budget (`noProgress` 0 vs 1) for an abort that is not a reconnect. Reaching it
+// means asserting on `pump`'s closure state, or inferring it by counting `now()`
+// samples; both pin the implementation's shape rather than a contract, and the
+// second is the sampling-pattern coupling F2(a)/F2(b) were rewritten to remove.
+// A test that reads internals to kill a mutant with no external effect is the
+// vacuous coverage this file's mutation discipline exists to reject.
+//
+// What the line is actually worth: it is a clarity/robustness guard that keeps an
+// intentional cancellation from being processed as a transport drop, and it stops
+// being redundant the moment anything with an observable effect is added to the
+// catch above the backoff. Left in place, documented, unpinned.
+
+test("F4: a source abandoned DURING a reconnect backoff wait never opens another Control subscription (M2 top-of-loop abort guard)", async () => {
+	// The abandon-mid-BACKOFF path, which F3 structurally cannot reach: F3's
+	// server PARKS the stream open, so its abort lands while the pump is suspended
+	// in `for await` and the CATCH-side guard returns first — the top-of-loop
+	// guard is never reached, and deleting it leaves F3 green. Only an abort that
+	// lands while the pump sits in a backoff WAIT arrives at the head of the loop,
+	// where that guard is the one thing standing between an abandoned source and a
+	// fresh subscription.
+	//
+	// Contract: a consumer that walked away mid-backoff must never cause another
+	// `Control` open. The real harm the guard prevents is a source the consumer has
+	// released re-attaching to the transport and pulling ops nobody will ever read.
+	//
+	// Non-vacuity (mutation-verified): delete the top-of-loop
+	// `if (abort.signal.aborted) return;` at the head of `pump`'s `for(;;)` → the
+	// abortable backoff still wakes on the abort, the loop turns, and with no guard
+	// the pump calls `transport.control()` a 5th time carrying an already-aborted
+	// signal → the "no further open" assertion reds.
+	const rec = emptyRecorder();
+	const socketPath = await serve(rec, {
+		control: () => dropsImmediately(),
+	});
+	const obs = observingTransport(createUnixSocketTransport(socketPath));
+	const { immediate } = recordingImmediate();
+	const source = createSocketControlSource(obs.transport, immediate, {
+		onUnmapped: () => {},
+		// never advances → uptime 0 << the floor → the climb never resets
+		now: () => 0,
+	});
+	const it = source[Symbol.asyncIterator]();
+	const pending = it.next();
+	await obs.streamRejected(DROPS_TO_DEEPEST_BACKOFF);
+	await flush();
+	// Precondition: exactly the four opens, so the pump has climbed to its deepest
+	// backoff rather than still dialling. Asserted so a harness change that stopped
+	// reaching the wait would red HERE, instead of silently turning the assertion
+	// below into a tautology about a pump that never got that far.
+	//
+	// Deliberately NOT asserting the wait's abort-listener here: that is F5's
+	// construct, and pinning it in both places would make this test die under F5's
+	// mutation too, so a single red could no longer tell the two branches apart.
+	// Each of these tests names exactly one branch.
+	expect(obs.controlCalls()).toBe(DROPS_TO_DEEPEST_BACKOFF);
+
+	const ret = await it.return?.();
+	expect(ret).toEqual({ value: undefined, done: true });
+	// The mutant's re-open is pure microtask work off the abort event (the wait
+	// resolves, the loop turns, control() is called), so one macrotask boundary is
+	// enough for it to have happened — no duration is waited on.
+	await flush();
+	expect(obs.controlCalls()).toBe(DROPS_TO_DEEPEST_BACKOFF); // no 5th open
+	// Not awaited, for the reason given in F5: settling this pull is F6's contract.
+	void pending.catch(() => undefined);
+});
+
+test("F5: the reconnect backoff wait watches the abort signal, so an abandoned source's wait does not outlive it (M2 abortable backoff)", async () => {
+	// Contract: the backoff wait is CANCELLABLE. A consumer that abandons the
+	// iterable while the pump sits in the deepest (2s) backoff must not leave that
+	// wait — and the timer behind it — running to term. In a long-lived agent
+	// container this is the difference between an abandoned source releasing its
+	// timer at once and one pinning a timer per retry until it expires.
+	//
+	// The observable is the source-lifetime AbortSignal it threads into
+	// `transport.control()`: a wait that watches the abort is REGISTERED on that
+	// signal for exactly as long as it waits, and detaches on both paths. A wait
+	// that ignores the signal registers nothing at all. This is a behavioural
+	// difference and not a timing one on purpose — the pump's post-wake work is
+	// silent (the top-of-loop guard returns without touching a single seam), so
+	// "woke early" has no observable to time against; "was watching the signal"
+	// does.
+	//
+	// Non-vacuity (mutation-verified): replace the `sleepOrAbort(delay,
+	// abort.signal)` call in `pump`'s catch with a plain
+	// `await new Promise<void>((resolve) => setTimeout(resolve, delay));` → nothing
+	// observes the signal for the duration of the wait, so the live-listener count
+	// during the backoff is 0 → the "registered on the abort signal" assertion
+	// reds.
+	const rec = emptyRecorder();
+	const socketPath = await serve(rec, {
+		control: () => dropsImmediately(),
+	});
+	const obs = observingTransport(createUnixSocketTransport(socketPath));
+	const { immediate } = recordingImmediate();
+	const source = createSocketControlSource(obs.transport, immediate, {
+		onUnmapped: () => {},
+		now: () => 0,
+	});
+	const it = source[Symbol.asyncIterator]();
+	const pending = it.next();
+	await obs.streamRejected(DROPS_TO_DEEPEST_BACKOFF);
+	await flush();
+	// Mid-wait: the wait holds exactly one listener on the signal. Exactly one, not
+	// "at least one": the per-open listener connect attaches for the stream is
+	// already detached by the time that stream has rejected, so a surviving second
+	// registration would mean a leak — the very accumulation the wait's
+	// always-detach exists to prevent.
+	expect(obs.liveAbortListeners()).toBe(1);
+
+	await it.return?.();
+	await flush();
+	// The abort fired: the wait woke and detached. Nothing stays attached to the
+	// source-lifetime signal, so an abandoned source retains no listener (and no
+	// timer behind it).
+	expect(obs.liveAbortListeners()).toBe(0);
+	// The abandoned first pull is deliberately NOT awaited: whether it settles is
+	// the buffer-close contract F6 owns, and awaiting it here would hang this test
+	// under F6's mutation, so one red could no longer name one branch. Detached
+	// with a swallow so an abandoned pull can never surface as an unhandled
+	// rejection.
+	void pending.catch(() => undefined);
+});
+
+test("F6: return() is terminal and idempotent — before any pull, twice over, and for a pull that follows it (M2 iterator protocol)", async () => {
+	// Contract: `return()` always settles `{ value: undefined, done: true }`, and
+	// leaves the iterator terminally done. A consumer that breaks out of its `for
+	// await` BEFORE the first op — agent.ts's control loop erroring during setup —
+	// must get a clean completion, and a pull that arrives after it must settle
+	// done rather than wedge on a buffer no producer will ever fill again (the pump
+	// is aborted; nothing will push).
+	//
+	// Non-vacuity (mutation-verified): drop `buffer.close()` from the iterator's
+	// `return()`, leaving only `abort.abort()` → the post-return `next()` finds an
+	// un-closed, empty buffer and parks forever; the bounded guard converts that
+	// wedge into its named failure → red. (The two `return()` calls themselves
+	// still settle, so this is the assertion that carries the mutation.)
+	const rec = emptyRecorder();
+	const socketPath = await serve(rec, {
+		// Parks open: the source is abandoned before it ever consumes an op, so the
+		// stream must never be the thing that ends the iterable here.
+		control: async function* (_open, signal) {
+			yield* [];
+			await new Promise<void>((resolve) => {
+				if (signal.aborted) resolve();
+				else signal.addEventListener("abort", () => resolve(), { once: true });
+			});
+		},
+	});
+	const { immediate } = recordingImmediate();
+	const source = createSocketControlSource(
+		createUnixSocketTransport(socketPath),
+		immediate,
+	);
+	const it = source[Symbol.asyncIterator]();
+	// return() BEFORE the first next(): the pump is already running (the
+	// asyncIterator call started it) but nothing has been pulled.
+	expect(await it.return?.()).toEqual({ value: undefined, done: true });
+	// Idempotent: a second return() is not an error and does not change the answer.
+	expect(await it.return?.()).toEqual({ value: undefined, done: true });
+
+	const pulled = it.next();
+	// Real bounded timer (ts-no-test-timers exception, same rationale as F3's): it
+	// exists solely to convert a WEDGED pull into a named assertion failure, and is
+	// cleared the moment the pull settles, so a passing run waits zero extra time.
+	const guard = new Promise<never>((_, reject) => {
+		const t = setTimeout(
+			() =>
+				reject(
+					new Error(
+						"next() after return() did not settle within 2s — the abandoned iterator wedged on a pull no producer will answer",
+					),
+				),
+			2000,
+		);
+		void pulled.then(
+			() => clearTimeout(t),
+			() => clearTimeout(t),
+		);
+	});
+	expect(await Promise.race([pulled, guard])).toEqual({
+		value: undefined,
+		done: true,
+	});
 });

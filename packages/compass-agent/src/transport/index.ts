@@ -58,7 +58,10 @@ export interface RunnerTransport {
 		req: PostConversationFrameRequest,
 		options?: CallOptions,
 	): Promise<PostConversationFrameResponse>;
-	control(req: ControlSubscribeRequest): AsyncIterable<AgentControl>;
+	control(
+		req: ControlSubscribeRequest,
+		options?: CallOptions,
+	): AsyncIterable<AgentControl>;
 	close(): void;
 }
 
@@ -101,7 +104,7 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 		},
 		postConversationFrame: (req, options) =>
 			client.postConversationFrame(req, options),
-		control: (req) => client.control(req),
+		control: (req, options) => client.control(req, options),
 		close: () => sessionManager.abort(),
 	};
 }
