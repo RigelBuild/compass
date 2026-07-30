@@ -90,6 +90,14 @@ func TestSeamEnrollSessionsRoundTripAndPublishEvents(t *testing.T) {
 		t.Fatalf("runner sessions loop ended with %v, want clean EOF", err)
 	}
 
+	// Bind the relayed session to an agent account. Deliver's conversation arms
+	// resolve session->account and fail closed on an unbound session (hub.go,
+	// deliverConversation), so without a binding the frame below would be a
+	// counted refusal rather than reaching the sink. Production binds this at
+	// Provision->Start; this seam test drives PublishEvents directly, so it
+	// binds through the same promotion path the command handlers use.
+	bindSession(hub, "sess-wire")
+
 	// --- PublishEvents: one relayed frame must reach Hub.Deliver (a fake sink
 	// observes it). This is the event path terminating the wire. -----------------
 	pub := client.PublishEvents(ctx)

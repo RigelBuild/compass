@@ -20,6 +20,7 @@ import (
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/runnerhub"
+	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
 // noopConversationSink is a do-nothing ConversationSink: this seam test targets
@@ -27,7 +28,7 @@ import (
 // nothing.
 type noopConversationSink struct{}
 
-func (noopConversationSink) PostAgentMessage(_ context.Context, _ string, _ *compassv1.MessagePosted, _ *compassv1.MessageUpdated) error {
+func (noopConversationSink) PostAgentMessage(_ context.Context, _ store.AccountID, _ string, _ *compassv1.MessagePosted, _ *compassv1.MessageUpdated) error {
 	return nil
 }
 

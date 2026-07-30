@@ -338,7 +338,7 @@ func openStoreFixture(t *testing.T, ctx context.Context, dsn string) (*store.Sto
 // CommsCaller leg handles instead.
 type noopConversationSink struct{}
 
-func (noopConversationSink) PostAgentMessage(context.Context, string, *compassv1.MessagePosted, *compassv1.MessageUpdated) error {
+func (noopConversationSink) PostAgentMessage(context.Context, store.AccountID, string, *compassv1.MessagePosted, *compassv1.MessageUpdated) error {
 	return nil
 }
 

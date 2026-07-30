@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -33,6 +34,7 @@ import (
 	"github.com/sealedsecurity/compass/go/internal/auth"
 	"github.com/sealedsecurity/compass/go/internal/board"
 	"github.com/sealedsecurity/compass/go/internal/comms"
+	"github.com/sealedsecurity/compass/go/internal/runnerhub"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
@@ -212,7 +214,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// service's SubscribeAgentSession source (reader) — a frame the hub relays
 	// fans to that session's stream subscribers.
 	tail := newSessionTail()
-	hub := newRunnerHub(brd, tail, commsSvc, nil)
+	// One logger for the hub's per-frame diagnostics and for the frame-loss
+	// summary the drain logs, so both land on the same sink.
+	hubLog := slog.Default()
+	hub := newRunnerHub(brd, tail, commsSvc, hubLog)
 	svc := newService(cfg.Version, bus, st, hub, brd, tail)
 
 	// Shipped door: the Unix socket serves native gRPC (cleartext HTTP/2),
@@ -300,42 +305,76 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	// Drain member of the same group: wake on gctx cancellation (parent shutdown
-	// or a server erroring), close both buses first so held-open SubscribeEvents /
-	// SubscribeComms streams end and release their handlers, then drain the HTTP
-	// servers under a bounded deadline. A drain that overruns (a handler still
-	// wedged — e.g. a stream stuck mid replay to a stalled client) surfaces as the
-	// error rather than being swallowed into a false clean shutdown; because the
-	// group keeps the first error, a real serve error still wins over this drain.
+	// or a server erroring), then hand off to drainDoors. A drain that overruns
+	// (a handler still wedged — e.g. a stream stuck mid replay to a stalled
+	// client) surfaces as the error rather than being swallowed into a false
+	// clean shutdown; because the group keeps the first error, a real serve error
+	// still wins over this drain.
 	g.Go(func() error {
 		<-gctx.Done()
-		// Close both buses so held-open streams end and release their handlers:
-		// the CompassService SubscribeEvents rides bus, the CommsService
-		// SubscribeComms rides commsBus, and both serve on every door. Closing only
-		// bus would leave a live SubscribeComms subscriber wedged (its ctx is not
-		// cancelled by Shutdown), stalling the drain to the deadline. Both closes
-		// are idempotent, so the deferred Close of each stays a safe no-op.
-		bus.Close()
-		commsBus.Close()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		drainErr := udsServer.Shutdown(shutdownCtx) //nolint:contextcheck // fresh ctx is deliberate: the parent is already cancelled (that woke this drain), so the bounded drain needs a live ctx, not the dead inherited one
-		if devServer != nil {
-			if err := devServer.Shutdown(shutdownCtx); err != nil && drainErr == nil { //nolint:contextcheck // same fresh-ctx rationale as the uds drain above
-				drainErr = err
-			}
-		}
-		if netServer != nil {
-			if err := netServer.Shutdown(shutdownCtx); err != nil && drainErr == nil { //nolint:contextcheck // same fresh-ctx rationale as the uds drain above
-				drainErr = err
-			}
-		}
-		if drainErr != nil {
-			return fmt.Errorf("draining compass.v1 servers on shutdown: %w", drainErr)
-		}
-		return nil
+		return drainDoors(drainSet{ //nolint:contextcheck // drainDoors deliberately takes no ctx: the inherited one is already cancelled (that cancellation is what woke this drain), so a bounded shutdown needs the fresh ctx drainDoors makes internally, not the dead one
+			bus:      bus,
+			commsBus: commsBus,
+			uds:      udsServer,
+			dev:      devServer,
+			net:      netServer,
+			hub:      hub,
+			log:      hubLog,
+		})
 	})
 
 	return g.Wait()
+}
+
+// drainSet is the shutdown-side view of what Serve built: the two buses whose
+// held-open streams must end before a door can drain, the doors themselves
+// (dev and net are nil when not configured), and the hub whose frame-loss
+// counters are final once every door is drained.
+type drainSet struct {
+	bus      *events.Bus[busPayload]
+	commsBus *events.Bus[*compassv1.SubscribeCommsResponse]
+	uds      *http.Server
+	dev      *http.Server
+	net      *http.Server
+	hub      *runnerhub.Hub
+	log      *slog.Logger
+}
+
+// drainDoors ends the live streams, drains every configured door under one
+// bounded deadline, and reports the hub's final frame accounting. It is split
+// out of Serve so the shutdown sequence reads as one unit: the ordering here is
+// load-bearing and was previously buried at the bottom of a 200-line function.
+func drainDoors(d drainSet) error {
+	// Close both buses so held-open streams end and release their handlers:
+	// the CompassService SubscribeEvents rides bus, the CommsService
+	// SubscribeComms rides commsBus, and both serve on every door. Closing only
+	// bus would leave a live SubscribeComms subscriber wedged (its ctx is not
+	// cancelled by Shutdown), stalling the drain to the deadline. Both closes
+	// are idempotent, so the deferred Close of each stays a safe no-op.
+	d.bus.Close()
+	d.commsBus.Close()
+	// Fresh ctx is deliberate: the parent is already cancelled (that woke this
+	// drain), so the bounded drain needs a live ctx, not the dead inherited one.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	drainErr := d.uds.Shutdown(shutdownCtx)
+	for _, srv := range []*http.Server{d.dev, d.net} {
+		if srv == nil {
+			continue
+		}
+		if err := srv.Shutdown(shutdownCtx); err != nil && drainErr == nil {
+			drainErr = err
+		}
+	}
+	// Every door is drained, so no further frame can arrive: the hub's counters
+	// are final. Report them — this is the only non-test reader of the frame-loss
+	// accounting, and without it a run that committed none of the agent's
+	// conversation would end indistinguishably from one that committed all of it.
+	logFrameDiagnostics(shutdownCtx, d.log, d.hub)
+	if drainErr != nil {
+		return fmt.Errorf("draining compass.v1 servers on shutdown: %w", drainErr)
+	}
+	return nil
 }
 
 // publishReady stamps the initial ServerStatus{Ready} onto the bus.

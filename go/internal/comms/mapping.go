@@ -249,7 +249,54 @@ func blocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBlock, err
 	return out, nil
 }
 
+// updateBlocksFromWire maps wire blocks for the UPDATE write-through
+// (CommitAgentUpdate), differing from blocksFromWire in ONE respect: an ask
+// block PRESERVES its wire ask_id rather than stripping it. Stripping is correct
+// for a POST (the server mints a fresh id via mintAskIDs), but an update carries
+// the id the append already minted — dropping it would make every ask-bearing
+// update fail the store's immutable-ask_id check. The preserved value is NOT
+// trusted as-is: CommitAgentUpdate reconciles it against the stored row before
+// the write (an empty id is filled from the stored ask, a non-empty id that
+// disagrees with the stored one is rejected as a forged frame).
+func updateBlocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBlock, error) {
+	out := make([]store.MessageBlock, 0, len(blocks))
+	for _, b := range blocks {
+		switch body := b.GetBlock().(type) {
+		case *compassv1.MessageBlock_Text:
+			text := body.Text
+			out = append(out, store.MessageBlock{Text: &text})
+		case *compassv1.MessageBlock_Ask:
+			out = append(out, store.MessageBlock{Ask: askFromWireForUpdate(body.Ask)})
+		default:
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				errEmptyBlock)
+		}
+	}
+	return out, nil
+}
+
 func askFromWire(a *compassv1.Ask) *store.Ask {
+	// ask_id is server-owned on the POST path: drop any caller-supplied value so
+	// the store's mintAskIDs always assigns a fresh, globally-unique id on append
+	// (comms.proto: "server-assigned and globally unique"). Honoring a wire value
+	// would let two posts share an ask_id, making RespondToAsk's containment
+	// SELECT match multiple rows and answer a nondeterministic one.
+	return &store.Ask{AskID: "", Questions: askQuestionsFromWire(a)}
+}
+
+// askFromWireForUpdate is askFromWire's UPDATE sibling: it PRESERVES the wire
+// ask_id (an update must carry back the id minted at append) instead of
+// stripping it. Safe only because CommitAgentUpdate reconciles the preserved
+// value against the immutable stored ask_id before writing — this mapper alone
+// does not trust it.
+func askFromWireForUpdate(a *compassv1.Ask) *store.Ask {
+	return &store.Ask{AskID: a.GetAskId(), Questions: askQuestionsFromWire(a)}
+}
+
+// askQuestionsFromWire maps an ask's questions onto store types, shared by the
+// POST (askFromWire) and UPDATE (askFromWireForUpdate) mappers — the two differ
+// only in ask_id handling, never in how the question set crosses the edge.
+func askQuestionsFromWire(a *compassv1.Ask) []store.AskQuestion {
 	questions := make([]store.AskQuestion, len(a.GetQuestions()))
 	for i, q := range a.GetQuestions() {
 		opts := make([]store.AskOption, len(q.GetOptions()))
@@ -265,31 +312,7 @@ func askFromWire(a *compassv1.Ask) *store.Ask {
 			Recommended:   q.Recommended,
 		}
 	}
-	// ask_id and every answer-state field are server-owned: drop any
-	// caller-supplied value.
-	//
-	// ask_id, because the store's mintAskIDs must assign a fresh globally-unique
-	// id on append (comms.proto: "server-assigned and globally unique").
-	// Honoring a wire value would let two posts share an ask_id, making
-	// RespondToAsk's containment SELECT match multiple rows and answer a
-	// nondeterministic one.
-	//
-	// The answer state — Answered, and the per-question ChosenOptionIDs /
-	// CustomText / TimedOut — because an ask arriving over the wire has by
-	// definition not been answered yet: it is being posted, and only
-	// RespondToAsk may record an answer. Honoring them let a caller post an ask
-	// that arrives pre-populated, which a client reading the per-question
-	// fields renders as already settled while the server still holds it
-	// pending and answerable.
-	//
-	// Omission is the mechanism, but it is NOT self-enforcing: a keyed composite
-	// literal compiles and vets clean with any subset of fields set, so a field
-	// added to store.Ask or store.AskQuestion is silently honored here from
-	// whatever the caller sent. Every new field must therefore be consciously
-	// classified — content (map it) or answer state (omit it) — and
-	// TestAskFromWireDropsEveryServerOwnedField walks the descriptor to fail
-	// when one is added without that decision.
-	return &store.Ask{AskID: "", Questions: questions}
+	return questions
 }
 
 // ---- write-through event publishers ----

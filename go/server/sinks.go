@@ -6,26 +6,26 @@
 // (runnerhub/hub.go): a lifecycle transition to the board, a conversation frame
 // to comms, a session-trace frame to the observation pane.
 //
-// T4 wires the lifecycle sink for real — an agent-session state transition fans
-// onto SubscribeEvents, the board/liveness surface the T4 acceptance path tails
-// (provision a workspace, observe lifecycle on SubscribeEvents). The conversation
-// and session-tail sinks are minimal in T4 by the frozen design
-// (compass-0.6 §T4/§T5): the agent that emits conversation and trace frames is
-// the first-party agent built in T5, and the conversation write-through
-// additionally needs a session→channel mapping that lands with T5's store
-// schema. Until then no agent produces those frames on this path; a frame that
-// nonetheless arrives is observed (logged) rather than dropped, and T5
-// substitutes the real comms write-through and the SubscribeAgentSession stream
-// behind the same interfaces without touching the hub.
+// All three sinks are real. The lifecycle sink is the Bridge board — an
+// agent-session state transition fans onto SubscribeEvents, the board/liveness
+// surface. The conversation sink is the comms write-through (commsConversationSink
+// below), committing a relayed conversation frame to durable Message rows +
+// SubscribeComms. The session-tail sink is the per-session fan-out backing
+// SubscribeAgentSession.
 package server
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+
+	"connectrpc.com/connect"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/board"
+	"github.com/sealedsecurity/compass/go/internal/comms"
 	"github.com/sealedsecurity/compass/go/internal/runnerhub"
+	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
 // The lifecycle sink is the Bridge board (internal/board): a session lifecycle
@@ -34,26 +34,76 @@ import (
 // the live stream carried. The board is a strict superset of a bus-only sink, so
 // it is the one lifecycle sink — see newRunnerHub.
 
-// observedConversationSink is the T4-minimal ConversationSink. The real
-// write-through commits an agent conversation frame to comms Message rows +
-// SubscribeComms; it needs the session→channel mapping T5's store adds and a
-// first-party agent (T5) to emit the frames, so no agent produces conversation
-// frames on this path in T4. A frame that nonetheless arrives is logged (never
-// silently dropped) so a contract skew is observable; T5 replaces this with the
-// comms write-through behind the same interface.
-type observedConversationSink struct {
-	log *slog.Logger
+// commsConversationSink is the real conversation write-through: a relayed
+// conversation frame becomes a durable comms Message row and fans out on
+// SubscribeComms, so an agent's turn is indistinguishable downstream from a
+// human's post (SEA-1364 T3).
+//
+// It is a thin adapter, deliberately. All the work lives in the CommsService
+// handler's *AsAccount family (internal/comms/agent_caller.go): a post delegates
+// to the same PostMessage path a human takes, and an update goes through the
+// authorizing store update that requires channel membership AND authorship. So
+// there is no server-package authz to drift from the comms package's — this type
+// only maps the sink interface onto those two calls.
+//
+// The account arrives already resolved: the hub owns the session->account
+// binding and resolves it at the Deliver site, so this sink never looks a
+// session up (runnerhub/hub.go, ConversationSink).
+type commsConversationSink struct {
+	comms *comms.Comms
 }
 
-func (s observedConversationSink) PostAgentMessage(_ context.Context, sessionID string, _ *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error {
-	kind := "posted"
-	if updated != nil {
-		kind = "updated"
+// PostAgentMessage commits one relayed conversation frame under account.
+//
+// ERROR VOCABULARY. The hub classifies what this returns by its CONNECT CODE
+// alone (runnerhub/hub.go, ConversationSink) — NotFound/InvalidArgument drop the
+// frame as a refusal, FailedPrecondition drops it as a contract defect, anything
+// else ends the Runner's relay stream. This method satisfies that contract by
+// construction: both delegates return errors already mapped through the comms
+// package's edgeError, and the one error minted here
+// (errNoConversationVariant) picks its code deliberately. Never return a bare
+// error from here — connect.CodeOf reports CodeUnknown for one, which tears the
+// stream down.
+//
+// A frame with neither variant set cannot happen: Deliver dispatches on the
+// oneof and only ever passes exactly one. The unset case is therefore a guard,
+// returning an error rather than panicking or reporting a silent success
+// (rule://go-no-panic-in-lib).
+func (s commsConversationSink) PostAgentMessage(
+	ctx context.Context,
+	account store.AccountID,
+	_ string,
+	posted *compassv1.MessagePosted,
+	updated *compassv1.MessageUpdated,
+) error {
+	switch {
+	case posted != nil:
+		_, err := s.comms.CommitAgentPost(ctx, account, posted)
+		return err
+	case updated != nil:
+		_, err := s.comms.CommitAgentUpdate(ctx, account, updated)
+		return err
+	default:
+		return errNoConversationVariant
 	}
-	s.log.Debug("conversation frame relayed before the T5 comms write-through is wired; observed, not committed",
-		slog.String("session_id", sessionID), slog.String("kind", kind))
-	return nil
 }
+
+// errNoConversationVariant is the cause for a conversation write-through called
+// with neither variant set. Unreachable through Deliver's dispatch, so it can
+// only fire on a SERVER-SIDE wiring defect — the frame is well-formed and the
+// dispatch is what broke.
+//
+// CodeInternal, so the hub ends the relay stream. It was CodeInvalidArgument,
+// which classified a Server bug as a routine droppable frame: the Server would
+// have silently discarded relayed turns because of its own defect, hidden among
+// the refusals a healthy relay is expected to produce. An unreachable branch
+// firing is exactly the case worth a loud teardown. It is deliberately not
+// CodeFailedPrecondition either — that bucket is for a skew the relay keeps
+// serving through, and this one must not be served through.
+var errNoConversationVariant = connect.NewError(
+	connect.CodeInternal,
+	errors.New("server: conversation frame has neither a posted nor an updated variant"),
+)
 
 // newRunnerHub's session-tail sink is the real per-session fan-out (sessionTail,
 // sessiontail.go): RelaySessionFrame repackages each internal frame to its
@@ -65,21 +115,56 @@ func (s observedConversationSink) PostAgentMessage(_ context.Context, sessionID 
 // newRunnerHub constructs the Server-side RunnerHub over its write-through sinks
 // and the agent-comms caller: the Bridge board as the lifecycle sink (a session
 // transition is recorded into the board projection and fanned onto
-// SubscribeEvents), the minimal conversation sink (see the file doc), the real
+// SubscribeEvents), the comms write-through as the conversation sink (a relayed
+// conversation frame becomes a durable Message row + SubscribeComms), the real
 // per-session tail sink for SubscribeAgentSession passed in by serve.go so the
 // same instance is shared with the service, and comms — the CommsService handler,
 // which executes an agent-initiated comms call under the account a session
-// resolves to (RelayCommsCall). log carries the sinks' observed-frame diagnostics
-// and the hub's gap/unknown-frame warnings; nil falls back to slog.Default().
-func newRunnerHub(brd *board.Projection, tail runnerhub.SessionTailSink, comms runnerhub.CommsCaller, log *slog.Logger) *runnerhub.Hub {
+// resolves to (RelayCommsCall). The one CommsService instance serves both comms
+// legs: the conversation write-through and RelayCommsCall. log carries the hub's
+// gap/unknown/refused-frame diagnostics; nil falls back to slog.Default().
+func newRunnerHub(brd *board.Projection, tail runnerhub.SessionTailSink, commsSvc *comms.Comms, log *slog.Logger) *runnerhub.Hub {
 	if log == nil {
 		log = slog.Default()
 	}
 	return runnerhub.NewHub(
-		observedConversationSink{log: log},
+		commsConversationSink{comms: commsSvc},
 		brd,
 		tail,
-		comms,
+		commsSvc,
 		log,
 	)
+}
+
+// logFrameDiagnostics emits the hub's frame-loss snapshot as one line. Serve
+// calls it on shutdown, so every run states plainly how many relayed frames
+// never reached their surface.
+//
+// It exists because the counters had no non-test reader at all. Total frame loss
+// was observable only by reading per-frame warn lines and tallying them by hand
+// — which means, in practice, that a relay committing NOTHING looked exactly
+// like a relay committing everything to anyone not already suspicious. That is
+// the failure mode this whole classification split exists to expose, so leaving
+// the numbers unreadable would have undone it.
+//
+// A clean run logs at Info and reads as four zeros. Any contract defect flips it
+// to Error and says the relay is misconfigured, because on the current base a
+// non-zero defect count means every agent turn was lost (runnerhub/hub.go,
+// ContractDefects). This is the minimum that makes the counters observable — the
+// server has no metrics surface to register a gauge on, and inventing one is not
+// this change's job. A future metrics or diagnostics RPC reads the same
+// FrameDiagnostics snapshot.
+func logFrameDiagnostics(ctx context.Context, log *slog.Logger, hub *runnerhub.Hub) {
+	d := hub.FrameDiagnostics()
+	attrs := []any{
+		slog.Uint64("contract_defects", d.ContractDefects),
+		slog.Uint64("refused_frames", d.RefusedFrames),
+		slog.Uint64("unknown_frames", d.UnknownFrames),
+		slog.Bool("seen_sequence_gap", d.SeenGap),
+	}
+	if d.ContractDefects > 0 {
+		log.ErrorContext(ctx, "relayed agent frames were dropped for relay misconfiguration: agent conversation was NOT committed to comms", attrs...)
+		return
+	}
+	log.InfoContext(ctx, "relayed agent frame accounting", attrs...)
 }

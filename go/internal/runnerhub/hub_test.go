@@ -80,9 +80,12 @@ func TestDeliverSessionTraceOnlyPublishesNoLifecycle(t *testing.T) {
 
 // Routing: a conversation-posted frame hits ONLY the ConversationSink (as a
 // posted message), and NOT the tail or lifecycle. Mis-routing a conversation to
-// the tail would silently drop it from the comms store of record.
+// the tail would silently drop it from the comms store of record. The frame
+// reaches the sink under the account the hub resolved the session to — the
+// attribution the write-through commits under.
 func TestDeliverConversationPostedRoutesToCommsOnly(t *testing.T) {
 	hub, conv, life, tail := newHub()
+	bindSession(hub, "sess-conv")
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
 		RunnerSeq: 1,
@@ -97,6 +100,9 @@ func TestDeliverConversationPostedRoutesToCommsOnly(t *testing.T) {
 		t.Fatalf("conversation sink saw %d calls, want 1", len(calls))
 	}
 	c := calls[0]
+	if c.account != "acct-agent" {
+		t.Fatalf("conversation account = %q, want the bound acct-agent (the hub resolves session->account before the sink)", c.account)
+	}
 	if c.sessionID != "sess-conv" {
 		t.Fatalf("conversation session id = %q, want sess-conv", c.sessionID)
 	}
@@ -119,10 +125,11 @@ func TestDeliverConversationPostedRoutesToCommsOnly(t *testing.T) {
 }
 
 // A conversation-updated frame arrives on the ConversationSink as the UPDATED
-// arg (posted nil) — the streaming-turn path. A bug that swapped the posted and
-// updated args would redden the nil checks.
+// arg (posted nil) — the streaming-turn path — under the same resolved account.
+// A bug that swapped the posted and updated args would redden the nil checks.
 func TestDeliverConversationUpdatedRoutesAsUpdated(t *testing.T) {
 	hub, conv, _, _ := newHub()
+	bindSession(hub, "sess-conv")
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
 		RunnerSeq: 1,
@@ -135,6 +142,9 @@ func TestDeliverConversationUpdatedRoutesAsUpdated(t *testing.T) {
 	calls := conv.snapshot()
 	if len(calls) != 1 {
 		t.Fatalf("conversation sink saw %d calls, want 1", len(calls))
+	}
+	if calls[0].account != "acct-agent" {
+		t.Fatalf("conversation account = %q, want the bound acct-agent", calls[0].account)
 	}
 	if calls[0].updated == nil {
 		t.Fatalf("updated arg was nil; an updated frame must arrive as the updated arg")
