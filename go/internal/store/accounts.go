@@ -106,7 +106,7 @@ func (s *Store) adminByHandle(ctx context.Context, handle string) (Account, erro
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
@@ -154,8 +154,8 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
-		"INSERT INTO agent_accounts (account_id, owner_user_id, home_channel_id) VALUES ($1, $2, $3)",
-		accountID, string(ownerUserID), channelID,
+		"INSERT INTO agent_accounts (account_id, owner_user_id, home_channel_id, persona) VALUES ($1, $2, $3, $4)",
+		accountID, string(ownerUserID), channelID, a.Persona,
 	); err != nil {
 		// owner_user_id references user_accounts; an unknown owner is a caller
 		// error, not a store fault.
@@ -190,6 +190,7 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 		Agent: &AgentAccount{
 			OwnerUserID:   ownerUserID,
 			HomeChannelID: ChannelID(channelID),
+			Persona:       a.Persona,
 		},
 	}, nil
 }
@@ -202,7 +203,7 @@ func (s *Store) GetAccount(ctx context.Context, id AccountID) (Account, error) {
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
@@ -252,7 +253,7 @@ func (s *Store) ListAccounts(ctx context.Context, visibleTo AccountID) ([]Accoun
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id` +
+		       ag.owner_user_id, ag.home_channel_id, ag.persona` +
 		accountVisibleFromWhere + `
 		ORDER BY a.handle`
 	rows, err := s.pool.Query(ctx, q, string(visibleTo))
@@ -303,8 +304,9 @@ func scanAccount(row pgx.Row) (Account, error) {
 		role          *int32
 		ownerUserID   *string
 		homeChannelID *string
+		persona       *string
 	)
-	if err := row.Scan(&id, &handle, &displayName, &role, &ownerUserID, &homeChannelID); err != nil {
+	if err := row.Scan(&id, &handle, &displayName, &role, &ownerUserID, &homeChannelID, &persona); err != nil {
 		return Account{}, err
 	}
 	acc.ID = AccountID(id)
@@ -317,6 +319,9 @@ func scanAccount(row pgx.Row) (Account, error) {
 		agent := &AgentAccount{OwnerUserID: AccountID(*ownerUserID)}
 		if homeChannelID != nil {
 			agent.HomeChannelID = ChannelID(*homeChannelID)
+		}
+		if persona != nil {
+			agent.Persona = *persona
 		}
 		acc.Agent = agent
 	}

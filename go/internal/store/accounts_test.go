@@ -127,6 +127,52 @@ func TestGetAccountRoundTripsSubtype(t *testing.T) {
 	}
 }
 
+func TestCreateAgentPersonaRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+
+	const persona = "You are a terse, precise assistant."
+	created, err := s.CreateAgent(ctx, owner.ID,
+		NewAgent{Handle: "agent", DisplayName: "Agent", Persona: persona})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	if created.Agent == nil || created.Agent.Persona != persona {
+		t.Fatalf("CreateAgent returned persona = %q, want %q", created.Agent.Persona, persona)
+	}
+
+	got, err := s.GetAccount(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if !got.IsAgent() || got.Agent.Persona != persona {
+		t.Fatalf("GetAccount persona = %q, want %q", got.Agent.Persona, persona)
+	}
+}
+
+func TestCreateAgentPersonaDefaultsEmpty(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+
+	created, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "agent", DisplayName: "Agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	if created.Agent == nil || created.Agent.Persona != "" {
+		t.Fatalf("CreateAgent default persona = %q, want empty", created.Agent.Persona)
+	}
+
+	got, err := s.GetAccount(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if !got.IsAgent() || got.Agent.Persona != "" {
+		t.Fatalf("GetAccount default persona = %q, want empty", got.Agent.Persona)
+	}
+}
+
 func TestBootstrapAdminCreatesAdmin(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
