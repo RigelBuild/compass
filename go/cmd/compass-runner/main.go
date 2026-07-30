@@ -120,7 +120,7 @@ func run() error {
 		CheckoutDir: *checkoutDir,
 		HomeDir:     *homeDir,
 		UID:         defaultAgentUID,
-		NamePrefix:  "compass-agent-",
+		NamePrefix:  runner.AgentContainerNamePrefix,
 	})
 	if err != nil {
 		return err

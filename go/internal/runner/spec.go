@@ -11,10 +11,8 @@ package runner
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/url"
 	"strings"
-	"unicode"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/runtime"
@@ -63,6 +61,18 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 	if defaults.UID == 0 {
 		return nil, errors.New("spec defaults require a non-root uid")
 	}
+	// Length is a separate property from shape, and the budget depends on it.
+	// The Runner's startup socket-path budget (validateRuntimeDir) models the
+	// container name as AgentContainerNamePrefix + a 32-char account id. A
+	// longer prefix would build a path wider than the budget cleared, so the
+	// runtime dir would pass at boot and the socket would then fail EINVAL at
+	// bind — the exact failure the budget check exists to prevent. Reject the
+	// prefix here instead, at the same startup edge, so the model stays true.
+	if len(defaults.NamePrefix) > len(AgentContainerNamePrefix) {
+		return nil, fmt.Errorf(
+			"spec defaults name prefix %q (%d bytes) exceeds the %d bytes the agent socket path budget reserves for it",
+			defaults.NamePrefix, len(defaults.NamePrefix), len(AgentContainerNamePrefix))
+	}
 	return &configSpecBuilder{defaults: defaults}, nil
 }
 
@@ -98,45 +108,39 @@ func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequ
 	}, nil
 }
 
-// validAccountID refuses an agent account id that is not a single safe path
-// element. The id is not merely a label: it is concatenated into the container
-// name (below) and that name becomes a path segment of the agent socket,
-// RuntimeDir/containers/<container>/agent.sock (host.go). filepath.Join CLEANS,
-// so a "../" in the id escapes RuntimeDir entirely — "../../../../tmp/pwned"
-// resolves to /run/tmp/pwned/agent.sock — and the socket's own length guard
-// cannot catch it, because traversal SHORTENS the path.
+// validAccountID refuses an agent account id that is not a fixed-width lowercase
+// hex string — exactly agentAccountIDWidth (32) characters, each in [0-9a-f].
+// This is the exact shape the server mints (16 random bytes hex-encoded,
+// store/ids.go newID), so a well-formed request always passes.
 //
-// Nothing upstream makes this check redundant. The id is minted 32-hex, but the
-// width is a property of the minting site and is never re-checked here; the
-// foreign key that ties the id to a real account is enforced by
-// RecordAgentContainer, which runs after hub.Provision has already created the
-// 0700 directory and bound the socket; and an admin-only RPC narrows who calls
-// it, not what they may pass. So this is the hop that has to reject the shape.
+// The id is not merely a label: it is concatenated into the container name
+// (spec.go BuildSpec) and that name becomes a path segment of the agent socket,
+// RuntimeDir/containers/<container>/agent.sock (host.go). A fixed-width hex
+// string cannot carry a "/", a "..", a ".", a control or format character, or
+// invalid UTF-8, so it cannot escape RuntimeDir nor forge a container name an
+// operator reads back from `podman ps` or the Runner's logs. Constraining the
+// id to its minted shape here — the hop before hub.Provision creates the 0700
+// directory and binds the socket — is what keeps that path segment safe.
+//
+// The width is asserted here on purpose: run.go's validateRuntimeDir derives the
+// startup socket-path budget from agentAccountIDWidth, so an id of any other
+// width would break the model the budget check is built on. Nothing upstream
+// makes this check redundant — the foreign key that ties the id to a real
+// account is enforced later by RecordAgentContainer, and the admin-only RPC
+// narrows who calls Provision, not what they may pass.
 func validAccountID(id string) error {
 	if id == "" {
 		return errors.New("provision request requires an agent account id")
 	}
-	// fs.ValidPath rejects "..", any empty segment, a leading or trailing "/",
-	// and invalid UTF-8, but returns true for "." (documented) and for a legal
-	// multi-element path like "abc/def" — hence the other two conjuncts. (The
-	// empty id returned above, with its own message.)
-	if !fs.ValidPath(id) || id == "." || strings.Contains(id, "/") {
-		return fmt.Errorf("agent account id %q is not a valid path element", id)
+	if len(id) != agentAccountIDWidth {
+		return fmt.Errorf(
+			"agent account id %q is %d characters, not the required %d",
+			id, len(id), agentAccountIDWidth)
 	}
-	// A control or format character clears every check above — it is valid UTF-8
-	// and carries no separator — and nothing downstream stops it either.
-	// Measured on Linux against listenAgentSocket's own ordering: a newline, a
-	// DEL, a C1 control and a bidi override all pass MkdirAll AND bind, so the
-	// id reaches the container name and every log line that quotes it intact.
-	// (A NUL is the lone exception, failing at MkdirAll — one hop before the
-	// listener — as a bare EINVAL naming nothing.) The name is what an operator
-	// reads back out of `podman ps` and the Runner's logs to identify an agent,
-	// so a character that can forge a line break or reorder the display makes
-	// that identification unreliable. unicode.IsControl covers C0, DEL and C1;
-	// the format class (Cf) is checked with it because a bidi override is not a
-	// control character but spoofs a rendered name just as effectively.
-	if strings.ContainsFunc(id, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
-		return fmt.Errorf("agent account id %q contains a control or format character", id)
+	if strings.ContainsFunc(id, func(r rune) bool {
+		return (r < '0' || r > '9') && (r < 'a' || r > 'f')
+	}) {
+		return fmt.Errorf("agent account id %q is not lowercase hex ([0-9a-f])", id)
 	}
 	return nil
 }

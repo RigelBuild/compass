@@ -78,7 +78,7 @@ func TestProvisionSameClientRequestIdDedups(t *testing.T) {
 		// join. Same id + same workspace = one derived dedup id = one command.
 		req := &compassv1.ProvisionAgentWorkspaceRequest{
 			ClientRequestId: id,
-			AgentAccountId:  "acct-1",
+			AgentAccountId:  "0123456789abcdef0123456789abcdef",
 			Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
 		}
 		outcomes := make(chan provisionOutcome, 2)
@@ -201,12 +201,12 @@ func TestProvisionSameIdDifferentWorkspaceDoesNotDedup(t *testing.T) {
 		const id = "dup" // the SAME client_request_id for both callers
 		reqA := &compassv1.ProvisionAgentWorkspaceRequest{
 			ClientRequestId: id,
-			AgentAccountId:  "acct-A",
+			AgentAccountId:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
 		}
 		reqB := &compassv1.ProvisionAgentWorkspaceRequest{
 			ClientRequestId: id,
-			AgentAccountId:  "acct-B", // different account, same id
+			AgentAccountId:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", // different account, same id
 			Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
 		}
 		outcomes := make(chan provisionOutcome, 2)
@@ -254,8 +254,8 @@ func TestProvisionSameIdDifferentWorkspaceDoesNotDedup(t *testing.T) {
 			}
 			got[o.resp.GetContainerName()] = true
 		}
-		if !got["container-for-acct-A"] || !got["container-for-acct-B"] {
-			t.Fatalf("callers received containers %v, want both container-for-acct-A and container-for-acct-B (a cross-account join would hand both the same container)", got)
+		if !got["container-for-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] || !got["container-for-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"] {
+			t.Fatalf("callers received containers %v, want both container-for-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa and container-for-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb (a cross-account join would hand both the same container)", got)
 		}
 	})
 }
