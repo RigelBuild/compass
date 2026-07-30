@@ -29,6 +29,7 @@ import type {
 	Ask,
 	Channel,
 	ChannelGroup,
+	ConvBlock,
 	Message,
 } from "./comms-stub";
 import { adaptMessage } from "./live/adapt";
@@ -330,7 +331,8 @@ export interface AppStore {
 	toggleSubscribe: (channelId: string) => void;
 	/** Record an answer to a question within an ask, LOCALLY. The wire
 	 *  `RespondToAsk` is gated on COMPLETENESS: the server accepts exactly one
-	 *  respond per ask (go/internal/store/messages.go:400-403/:437), so answers
+	 *  respond per ask (go/internal/store/messages.go:404-405 rejects a later one,
+	 *  :438 sets the flag that gate reads), so answers
 	 *  accumulate locally and exactly ONE atomic respond — every question's
 	 *  answer in one call — is issued on the click that completes the ask. A
 	 *  single-question ask completes on its only click. Single-select is
@@ -586,7 +588,9 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// ── Comms: the channel surface (design compass-0.7) ──
 	// ONE reduced CommsState drives all four comms accessors. It starts at
 	// `initialComms` (EMPTY by default — the store no longer boots from the
-	// fixture) and is replaced wholesale by each `runCommsStream` push; the local
+	// fixture) and is replaced wholesale by each `runCommsStream` push — bar the
+	// in-progress local ask answers `preserveLocalAsks` carries across, the one
+	// state the server cannot send back because it was never told; the local
 	// membership mutations below rewrite it the same immutable way. The four
 	// accessors are memos over it, so a message event leaves the channels array
 	// reference untouched and the rail doesn't re-render.
@@ -617,8 +621,12 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// user's explicit pick wins as long as the channel is still visible, so a
 	// later snapshot/event can never yank the surface out from under them; an
 	// absent or vanished selection falls back to the first subscribed channel.
+	//
+	// The push is adopted WHOLESALE except for in-progress local ask answers,
+	// which the server has never been told about and so cannot send back — see
+	// `preserveLocalAsks`.
 	const adoptComms = (next: CommsState) => {
-		setComms(next);
+		setComms((prev) => preserveLocalAsks(prev, next));
 		const current = selectedChannelId();
 		if (current && next.channels.some((c) => c.id === current)) return;
 		setSelectedChannelId(firstChannelId(next));
@@ -908,8 +916,8 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// Whether an ask has had its ONE RespondToAsk issued. Reactive so the render
 	// can lock a submitted ask, and the guard that keeps the store from ever
 	// issuing a second respond for the same ask (the server accepts exactly one:
-	// go/internal/store/messages.go:400-403 rejects a later one with ErrConflict,
-	// :437 flips Answered on the first). An ask is marked ONLY when a respond is
+	// go/internal/store/messages.go:404-405 rejects a later one with ErrConflict,
+	// :438 flips Answered on the first). An ask is marked ONLY when a respond is
 	// actually issued, so an offline store (no `comms`) never marks anything.
 	const [submittedAskIds, setSubmittedAskIds] = createSignal<
 		ReadonlySet<string>
@@ -948,6 +956,46 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// the point at which one atomic RespondToAsk can carry the whole thing.
 	const isAskComplete = (ask: Ask) =>
 		ask.questions.every((q) => q.chosenOptionIds.length > 0);
+	// Whether two asks pose the SAME questions, in the same order, offering the
+	// same options — the shape test every ask-to-ask comparison starts from. An
+	// ask whose shape moved is a different ask as far as local state is
+	// concerned: there is nothing left to line the answers up against.
+	//
+	// The OPTION IDS are part of that shape, not decoration on it. The server's
+	// block-update path rewrites a message's entire block set and requires only
+	// that `ask_id` survive (go/internal/store/messages.go:151, :163-167), so an
+	// option's id can appear, vanish, or be replaced under a stable question id.
+	// Comparing question ids alone would miss that, leaving the UI rendering a
+	// WITHDRAWN option and shipping an option id the server no longer offers —
+	// which `validateQuestionAnswer` rejects as ErrInvalidArgument, a refusal the
+	// user cannot act on, because the option they need is not on screen. So the
+	// offered option ids, in order, are part of the shape the compare checks.
+	//
+	// What it deliberately does NOT distinguish: a revision to question text,
+	// option LABELS, or allowMultiple under stable question and option ids. When
+	// the ids all still line up, `preserveLocalAsks` carries the local ask copy
+	// forward whole, so such a revision would momentarily render with the local
+	// wording. That is tolerable only because the path is unwired (see below) and
+	// a text/label edit is cosmetic and self-corrects on the next resync. Wiring
+	// the block-update path live must instead overlay the local picks onto the
+	// PUSHED question objects, so a server revision to any non-id field is
+	// adopted while the in-progress pick survives.
+	//
+	// Scope honesty: this is designed-for, not yet wired. Nothing calls the
+	// block-update RPC today, so the widened compare defends a documented wire
+	// capability (comms.proto MessageUpdated carries the full CURRENT block set)
+	// rather than a bug in flight.
+	const sameQuestions = (a: Ask, b: Ask) =>
+		a.questions.length === b.questions.length &&
+		a.questions.every((q, i) => {
+			const other = b.questions[i];
+			return (
+				other !== undefined &&
+				q.questionId === other.questionId &&
+				q.options.length === other.options.length &&
+				q.options.every((o, j) => o.id === other.options[j]?.id)
+			);
+		});
 	// Whether an ask still carries exactly the answers that were SHIPPED — the
 	// test a rollback must pass, since restoring over an ask the stream moved
 	// meanwhile would overwrite the server's value with stale local state. A
@@ -955,16 +1003,105 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// to roll back into.
 	const sameAnswers = (current: Ask | undefined, shipped: Ask) =>
 		current !== undefined &&
-		current.questions.length === shipped.questions.length &&
+		sameQuestions(current, shipped) &&
 		current.questions.every((q, i) => {
 			const was = shipped.questions[i];
 			return (
 				was !== undefined &&
-				q.questionId === was.questionId &&
 				q.chosenOptionIds.length === was.chosenOptionIds.length &&
 				q.chosenOptionIds.every((id, j) => id === was.chosenOptionIds[j])
 			);
 		});
+	// An ask the server has said nothing about. The server's own `answered` flag
+	// is the authority: it flips exactly once, on the first RespondToAsk the
+	// server ACCEPTED, so `!answered` is precisely "no authoritative value yet".
+	//
+	// Scanning the questions for an empty `chosenOptionIds` CANNOT stand in for
+	// it, because two answer shapes the server accepts and records leave every
+	// question's chosen ids empty on a CLOSED ask: (a) a deliberate skip — an
+	// answer entry with no chosen ids and empty custom_text is an ACCEPTED skip
+	// that satisfies the wire's coverage-of-every-question contract (see
+	// `submitAsk`); (b) a custom_text-only answer to a free-text question, which
+	// carries no options to choose. Against either, a question scan reports "the
+	// server has no value" for an ask the server has already closed, so
+	// `preserveLocalAsks` restores stale local picks over it and the completing
+	// respond comes back ErrConflict (comms.proto Ask.answered).
+	const serverHasNoAnswer = (ask: Ask) => !ask.answered;
+	// Carry in-progress LOCAL ask answers across a stream push.
+	//
+	// The wire is atomic — one RespondToAsk per ask, issued only on the click
+	// that COMPLETES it (see `sendAsk`) — so on a multi-question ask every choice
+	// but the last lives ONLY in this state. `adoptComms` otherwise replaces it
+	// wholesale, so a push landing mid-ask would silently discard the user's
+	// clicks, and the server could not send them back: it was never told.
+	//
+	// A local answer is kept ONLY where the server demonstrably has no value of
+	// its own, which keeps "a server value for an ask is AUTHORITATIVE" — the
+	// property `sendAsk`'s conditional rollback rests on — exactly true:
+	//
+	//   - the ask must not be SUBMITTED: once our respond is issued the local
+	//     record is a claim about what the server was told, not an edit in
+	//     progress, and the rollback decides by comparing it against whatever
+	//     the stream has since put in its place;
+	//   - the pushed ask must not be ANSWERED: once the server's `answered` flag
+	//     is set the ask is closed and its record — ours accepted, or another
+	//     participant's — wins;
+	//   - the questions must line up, or the ask's shape moved and it is new;
+	//   - the LOCAL ask must carry an unshipped pick at all: a wholly untouched
+	//     ask has nothing to carry, so it is skipped and the pushed state is
+	//     adopted by reference — the fast path nearly every push takes.
+	//
+	// A hoisted declaration so it can sit beside the ask machinery it reuses
+	// while `adoptComms`, defined above with the rest of the stream wiring,
+	// still calls it.
+	function preserveLocalAsks(prev: CommsState, next: CommsState): CommsState {
+		// The unsubmitted asks carrying a local pick, by message id then ask id.
+		// Empty whenever no ask is mid-answer — which is nearly every push — and
+		// then the pushed state is adopted untouched, references and all.
+		//
+		// This leg scans the LOCAL record's chosen ids on purpose, and does not
+		// consult `answered` on a `prev` entry at all: the question here is only
+		// "is there an unshipped edit worth carrying", which the chosen ids
+		// answer by themselves. A `prev` entry is the last SERVER state we
+		// adopted with our clicks layered over it — `answerAsk` spreads the ask
+		// it edits (`{ ...ask, questions }`), so a server `answered: true` rides
+		// straight through onto a locally-edited ask — which makes the flag on a
+		// `prev` entry a statement about the ask we ADOPTED, not about our edit.
+		// The authority question — has the server closed this ask — is asked
+		// where its answer lives: `serverHasNoAnswer` on the PUSHED ask below.
+		const local = new Map<string, Map<string, Ask>>();
+		for (const msg of prev.messages) {
+			for (const b of msg.blocks) {
+				if (b.kind !== "ask") continue;
+				if (isAskSubmitted(b.ask.askId)) continue;
+				if (b.ask.questions.every((q) => q.chosenOptionIds.length === 0))
+					continue;
+				const byAsk = local.get(msg.id) ?? new Map<string, Ask>();
+				byAsk.set(b.ask.askId, b.ask);
+				local.set(msg.id, byAsk);
+			}
+		}
+		if (local.size === 0) return next;
+		let touched = false;
+		const messages = next.messages.map((msg) => {
+			const byAsk = local.get(msg.id);
+			if (!byAsk) return msg;
+			let replaced = false;
+			const blocks = msg.blocks.map((b): ConvBlock => {
+				if (b.kind !== "ask") return b;
+				const mine = byAsk.get(b.ask.askId);
+				if (!mine || !serverHasNoAnswer(b.ask) || !sameQuestions(b.ask, mine)) {
+					return b;
+				}
+				replaced = true;
+				return { kind: "ask", ask: mine };
+			});
+			if (!replaced) return msg;
+			touched = true;
+			return { ...msg, blocks };
+		});
+		return touched ? { ...next, messages } : next;
+	}
 	// Replace an ask in place — the one write used both to record an answer and
 	// to roll a refused one back.
 	const putAsk = (messageId: string, ask: Ask) => {
@@ -1004,6 +1141,25 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// accepted answer, say); restoring over it would show an ask state the
 	// server never had, with no further push to correct it before a resync.
 	//
+	// A CLOSED ask is the case `sameAnswers` cannot see, because it compares
+	// answers and `answered` is not one. The server flips the flag in the very
+	// write that records the chosen ids (go/internal/store/messages.go:438,
+	// beside the :435 that records them) and refuses every later respond with
+	// ErrConflict (:404-406), so a pushed ask carrying `answered` is CLOSED —
+	// and on the accepted-then-lost-reply path (the server COMMITTED our respond
+	// and published the update, but our RPC's own reply never landed) that push
+	// carries OUR chosen ids, which is precisely what makes `sameAnswers` pass.
+	// Restoring there would overwrite the authoritative CLOSED state with the
+	// stale OPEN one, re-enable every option, and re-offer a click that can only
+	// produce ErrConflict — or ship a DIFFERENT answer than the one durably
+	// recorded, showing the user a state contradicting the audit record. So the
+	// guard sits at the SITE, not in `sameAnswers`: a rollback into a closed ask
+	// is never right whether or not the answers line up.
+	//
+	// The submitted mark is still cleared on that path, so the ask is not left
+	// falsely "in flight"; it is left CLOSED, which is the truth — and the write
+	// gates (`answerAsk`, `submitAsk`) read the flag, so nothing further ships.
+	//
 	// KNOWN-BROKEN END TO END (SEA-1310): the agent SDK's correlation key is
 	// unwired, so the answer does not reach the asking agent. The client side
 	// is correct and stays wired; nothing here assumes the round-trip lands.
@@ -1022,7 +1178,13 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 			})
 			.catch((error) => {
 				unmarkAskSubmitted(ask.askId);
-				if (rollback && sameAnswers(findAsk(messageId, ask.askId), ask)) {
+				const current = findAsk(messageId, ask.askId);
+				if (
+					rollback &&
+					current &&
+					!current.answered &&
+					sameAnswers(current, ask)
+				) {
 					putAsk(messageId, rollback);
 				}
 				setAskErrors((prev) => {
@@ -1059,6 +1221,17 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 					blocks: msg.blocks.map((b) => {
 						if (b.kind !== "ask" || b.ask.askId !== askId) return b;
 						const ask = b.ask;
+						// The other way an ask is settled, and the one the submitted
+						// mark cannot see: the server burns an ask on the first
+						// RespondToAsk it ACCEPTS and refuses every later one with
+						// ErrConflict (go/internal/store/messages.go:404-406). An ask
+						// carrying `answered` is therefore closed no matter who closed
+						// it — us on a previous run, another participant, or a push we
+						// adopted already-closed — so recording a click here could only
+						// ever complete the ask into a respond the server is guaranteed
+						// to refuse. Refusing the click is the honest surface; shipping
+						// the doomed RPC and rendering its error is not.
+						if (ask.answered) return b;
 						const questions = ask.questions.map((q) =>
 							q.questionId === questionId ? answerQuestion(q, optionId) : q,
 						);
@@ -1087,11 +1260,21 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// answer, so the ask never completes and `answerAsk` never sends it: this is
 	// the explicit "send what I have" — the answered questions plus an empty
 	// `chosenOptionIds` for each skipped one. Inert on an ask that is already
-	// submitted, unknown, or wholly unanswered (there is nothing to submit).
+	// submitted, CLOSED by the server, unknown, or wholly unanswered (there is
+	// nothing to submit).
 	const submitAsk = (messageId: string, askId: string) => {
 		if (isAskSubmitted(askId)) return;
 		const ask = findAsk(messageId, askId);
 		if (!ask) return;
+		// Closed server-side: the ask's one accepted respond has already been
+		// taken, and messages.go:404-406 refuses a second with ErrConflict. The
+		// submitted mark does not cover this — the ask can arrive closed on a
+		// push, or be closed by another participant, without this client ever
+		// having issued a respond.
+		if (ask.answered) return;
+		// "Nothing staged" is a question about the LOCAL record, so it scans the
+		// chosen ids rather than the server's `answered` flag: this ask has never
+		// been shipped, so the server has no view of it to consult.
 		if (ask.questions.every((q) => q.chosenOptionIds.length === 0)) return;
 		// No rollback target: nothing was recorded by this call, so a refusal
 		// leaves the local record exactly as the user staged it — still honest,

@@ -138,6 +138,13 @@ export interface Ask {
 	askId: string;
 	/** The questions, in ask order. At least one (comms.proto Ask.questions). */
 	questions: AskQuestion[];
+	/** The server's own record that this ask is SPENT: it flips exactly once, on
+	 *  the first RespondToAsk the server accepted, and every later respond is
+	 *  refused. This is the ONLY reliable answered-signal — a fully-skipped ask
+	 *  and a `custom_text`-only answer both leave every question's
+	 *  `chosenOptionIds` empty, so scanning the questions cannot tell a CLOSED
+	 *  ask from a pending one (comms.proto Ask.answered). */
+	answered: boolean;
 }
 
 /** A durable content block inside a channel message. The comms model
@@ -386,6 +393,7 @@ export const STUB_MESSAGES: Message[] = [
 							],
 						},
 					],
+					answered: false,
 				},
 			},
 		],
@@ -458,6 +466,7 @@ export const STUB_MESSAGES: Message[] = [
 							],
 						},
 					],
+					answered: false,
 				},
 			},
 		],
@@ -533,6 +542,7 @@ export const STUB_MESSAGES: Message[] = [
 							],
 						},
 					],
+					answered: false,
 				},
 			},
 		],

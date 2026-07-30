@@ -239,8 +239,8 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 			}
 			// An ask is answered exactly ONCE. The server flips Ask.Answered on the
 			// first AnswerAsk and rejects every later one with ErrConflict →
-			// connect CodeAlreadyExists (go/internal/store/messages.go:400-406 and
-			// :437; internal/comms/context.go:50-51) — a re-answer would silently
+			// connect CodeAlreadyExists (go/internal/store/messages.go:404-406 and
+			// :438; internal/comms/context.go:50-51) — a re-answer would silently
 			// destroy the recorded audit value. A UI that fires one RespondToAsk
 			// per click on a multi-question ask therefore gets its SECOND click
 			// rejected by a real server; modelling it here is what makes that
@@ -383,7 +383,30 @@ export function wireTextMessage(opts: {
  *  `chosen` seeds a question's already-recorded answer — what the server sends
  *  when ANOTHER participant answered the ask (the state a stream push carries),
  *  which a test needs to tell an authoritative server value apart from local
- *  state. */
+ *  state.
+ *
+ *  `answered` seeds the server's own spent-flag (comms.proto Ask.answered),
+ *  which it flips on the first RespondToAsk it accepted. It DEFAULTS to whether
+ *  `chosen` recorded anything, because the server cannot hold a chosen id
+ *  without having accepted the respond that produced it — so seeding an answer
+ *  implies a closed ask. The same reason makes `{ chosen, answered: false }` a
+ *  state no server can be in, and it THROWS rather than building it: one write
+ *  records the chosen ids and sets the flag (go/internal/store/messages.go:435
+ *  sets ChosenOptionIDs, :438 sets Answered), so a fixture asserting that pair
+ *  would have the UI defend against a wire shape that cannot arrive. Pass
+ *  `answered` explicitly to build the states answer shape alone cannot express:
+ *  an ask closed with NO chosen ids anywhere, which is exactly a deliberate
+ *  skip or a custom_text-only answer.
+ *
+ *  `freeText` names the questions the server holds with NO options — the ones
+ *  answerable by custom_text alone, so a recorded answer to one leaves its
+ *  `chosenOptionIds` empty even though the ask is closed.
+ *
+ *  `optionIds` overrides one question's OFFERED option ids (labels are derived
+ *  from the id). The block-update path rewrites a message's whole block set
+ *  requiring only that `ask_id` survive, so an agent may restate an ask with
+ *  the same question ids and a REVISED option set; this is how a test builds
+ *  that push. */
 export function wireAskMessage(opts: {
 	id: string;
 	channelId: string;
@@ -391,7 +414,18 @@ export function wireAskMessage(opts: {
 	askId: string;
 	questionIds: readonly string[];
 	chosen?: Readonly<Record<string, readonly string[]>>;
+	answered?: boolean;
+	freeText?: readonly string[];
+	optionIds?: Readonly<Record<string, readonly string[]>>;
 }): WireMessage {
+	const hasChosen = Object.values(opts.chosen ?? {}).some(
+		(ids) => ids.length > 0,
+	);
+	if (hasChosen && opts.answered === false) {
+		throw new Error(
+			"wireAskMessage: chosen ids with answered:false is not a state the server can hold — messages.go:435 records the ids and :438 sets Answered in one write",
+		);
+	}
 	return create(MessageSchema, {
 		id: opts.id,
 		container: { case: "channelId", value: opts.channelId },
@@ -403,22 +437,24 @@ export function wireAskMessage(opts: {
 					case: "ask",
 					value: create(AskSchema, {
 						askId: opts.askId,
+						answered: opts.answered ?? hasChosen,
 						questions: opts.questionIds.map((questionId) =>
 							create(AskQuestionSchema, {
 								questionId,
 								question: `${questionId}?`,
 								allowMultiple: false,
 								chosenOptionIds: [...(opts.chosen?.[questionId] ?? [])],
-								options: [
-									create(AskOptionSchema, {
-										id: `${questionId}-a`,
-										label: "A",
-									}),
-									create(AskOptionSchema, {
-										id: `${questionId}-b`,
-										label: "B",
-									}),
-								],
+								// A free-text question carries no options at all: it is
+								// answered by custom_text alone, which is why a recorded
+								// answer to one leaves chosenOptionIds empty.
+								options: (
+									opts.optionIds?.[questionId] ??
+									(opts.freeText?.includes(questionId)
+										? []
+										: [`${questionId}-a`, `${questionId}-b`])
+								).map((id) =>
+									create(AskOptionSchema, { id, label: id.toUpperCase() }),
+								),
 							}),
 						),
 					}),

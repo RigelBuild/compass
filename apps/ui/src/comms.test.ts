@@ -76,6 +76,7 @@ const askBlock = (): ConvBlock => ({
 				chosenOptionIds: [],
 			},
 		],
+		answered: false,
 	},
 });
 const CH = "ch-x";

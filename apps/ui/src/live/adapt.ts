@@ -176,11 +176,16 @@ function adaptAskQuestion(w: WireAskQuestion): AskQuestion {
 
 /** Map a wire Ask to the domain Ask: the correlation id plus every question in
  *  ask order (comms.proto Ask — one ask_id per Ask, questions keyed inside by
- *  question_id, so order is the only positional contract and is preserved). */
+ *  question_id, so order is the only positional contract and is preserved),
+ *  plus the server's `answered` flag. That flag is SERVER-OWNED and read-only to
+ *  the client: the server flips it on the first RespondToAsk it accepted and
+ *  DROPS it on anything inbound, so it is only ever read here, never asserted
+ *  (comms.proto Ask.answered). */
 export function adaptAsk(w: WireAsk): Ask {
 	return {
 		askId: w.askId,
 		questions: w.questions.map(adaptAskQuestion),
+		answered: w.answered,
 	};
 }
 
