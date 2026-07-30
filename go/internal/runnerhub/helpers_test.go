@@ -193,6 +193,11 @@ type commsCall struct {
 	account store.AccountID
 	post    *compassv1.PostMessageRequest
 	list    *compassv1.ListMessagesRequest
+	// Keyed-commit invocations (CommitConversationFrame path): exactly one of
+	// commitPost/commitUpdate is set, alongside the forwarded idempotency key.
+	commitPost   *compassv1.MessagePosted
+	commitUpdate *compassv1.MessageUpdated
+	commitKey    string
 }
 
 // fakeCommsCaller is a hand-written CommsCaller: it records every call (account
@@ -209,6 +214,13 @@ type fakeCommsCaller struct {
 	postErr  error
 	listResp *compassv1.ListMessagesResponse
 	listErr  error
+
+	// Keyed-commit canned responses (CommitConversationFrame path). commitPost
+	// / commitUpdate drive the fresh-commit id; commitErr drives the
+	// Connect-coded refusal both keyed methods return.
+	commitPost   *compassv1.PostMessageResponse
+	commitUpdate *compassv1.MessageUpdated
+	commitErr    error
 }
 
 func (f *fakeCommsCaller) PostAsAccount(_ context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error) {
@@ -229,6 +241,26 @@ func (f *fakeCommsCaller) ListAsAccount(_ context.Context, account store.Account
 		return nil, f.listErr
 	}
 	return f.listResp, nil
+}
+
+func (f *fakeCommsCaller) CommitAgentPostKeyed(_ context.Context, account store.AccountID, posted *compassv1.MessagePosted, idempotencyKey string) (*compassv1.PostMessageResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, commitPost: posted, commitKey: idempotencyKey})
+	if f.commitErr != nil {
+		return nil, f.commitErr
+	}
+	return f.commitPost, nil
+}
+
+func (f *fakeCommsCaller) CommitAgentUpdateKeyed(_ context.Context, account store.AccountID, updated *compassv1.MessageUpdated, idempotencyKey string) (*compassv1.MessageUpdated, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, commitUpdate: updated, commitKey: idempotencyKey})
+	if f.commitErr != nil {
+		return nil, f.commitErr
+	}
+	return f.commitUpdate, nil
 }
 
 func (f *fakeCommsCaller) snapshot() []commsCall {

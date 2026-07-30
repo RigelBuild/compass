@@ -130,6 +130,94 @@ func (h *Hub) RelayCommsCall(
 	return &compassv1internal.RelayCommsCallResponse{Result: result}, nil
 }
 
+// CommitConversationFrame durably commits one agent-authored conversation frame
+// under the agent account the relayed session resolves to, at most once keyed on
+// the agent-minted idempotency_key — the DURABLE counterpart to the loss-
+// tolerant Deliver/PublishEvents path (#24 / OQ-3). The Runner asserts no
+// account; this resolves session_id -> account from the hub's own binding,
+// exactly as RelayCommsCall does, and runs the commit through the CommsCaller
+// under that account.
+//
+// Contract (ratified — do not redesign):
+//   - An unresolved session fails closed CodeNotFound — never a stale account,
+//     never the bootstrap admin. Same fail-closed shape as RelayCommsCall.
+//   - A hub with no CommsCaller wired fails CodeUnavailable (a Deliver-only hub).
+//   - committed=true on a fresh commit AND on an idempotent replay of an
+//     already-committed key; the returned message_id is the ORIGINAL row's id,
+//     stable across the replay. A non-commit is NEVER committed=false with a nil
+//     error — it is ALWAYS a Connect status error, because the Runner drives
+//     at-least-once purely off the Connect code (err==nil => committed).
+//   - Comms errors are propagated AS-IS: the *AsAccount/CommitAgent* methods
+//     already map through edgeError to proper Connect codes (InvalidArgument /
+//     NotFound / FailedPrecondition), and the Runner splits retryable
+//     (transient) from terminal (permanent) on that code. Never return a bare
+//     error connect.CodeOf would report as CodeUnknown — that would wrongly read
+//     as a retryable teardown.
+//   - seq is deferred: shipped as 0 (the downstream consumer reads neither
+//     message_id nor seq today), never widened into the store write path.
+func (h *Hub) CommitConversationFrame(
+	ctx context.Context,
+	req *compassv1internal.CommitConversationFrameRequest,
+) (*compassv1internal.CommitConversationFrameResponse, error) {
+	if h.comms == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errCommsUnavailable)
+	}
+	account, ok := h.accountForSession(req.GetSessionId())
+	if !ok {
+		// Fail closed: no live session maps to this id. Never a stale account,
+		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
+		return nil, connect.NewError(
+			connect.CodeNotFound,
+			errors.New("runnerhub: no agent account bound to session"),
+		)
+	}
+
+	key := req.GetIdempotencyKey()
+	messageID, err := h.commitFrame(ctx, account, req.GetFrame(), key)
+	if err != nil {
+		// Already Connect-coded by the comms layer (edgeError). Propagate as-is
+		// so the Runner's retryable/terminal split reads the right code.
+		return nil, err
+	}
+	return &compassv1internal.CommitConversationFrameResponse{
+		Committed: true,
+		MessageId: messageID,
+		Seq:       0, // Deferred (#24 contract): the consumer reads neither id nor seq today.
+	}, nil
+}
+
+// commitFrame dispatches one conversation frame to the keyed commit path by its
+// set oneof variant, returning the committed row's id (original and stable on an
+// idempotent replay). A frame with neither the posted nor updated variant set is
+// CodeInvalidArgument — the terminal "malformed frame" the Runner does not
+// retry. Any comms error is returned as-is (already Connect-coded).
+func (h *Hub) commitFrame(
+	ctx context.Context,
+	account store.AccountID,
+	frame *compassv1internal.AgentFrame,
+	idempotencyKey string,
+) (string, error) {
+	switch frame.GetFrame().(type) {
+	case *compassv1internal.AgentFrame_ConversationPosted:
+		resp, err := h.comms.CommitAgentPostKeyed(ctx, account, frame.GetConversationPosted(), idempotencyKey)
+		if err != nil {
+			return "", err
+		}
+		return resp.GetMessage().GetId(), nil
+	case *compassv1internal.AgentFrame_ConversationUpdated:
+		updated, err := h.comms.CommitAgentUpdateKeyed(ctx, account, frame.GetConversationUpdated(), idempotencyKey)
+		if err != nil {
+			return "", err
+		}
+		return updated.GetMessage().GetId(), nil
+	default:
+		return "", connect.NewError(
+			connect.CodeInvalidArgument,
+			errors.New("runnerhub: conversation frame has no conversation_posted/conversation_updated variant set"),
+		)
+	}
+}
+
 // executeCall dispatches one comms call to the CommsCaller under account,
 // returning the typed success result (call_id unset — the caller stamps it) or a
 // non-nil error to be rendered in-band. An unset or unrecognized call oneof is an
