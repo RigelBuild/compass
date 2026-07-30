@@ -129,12 +129,12 @@ type CommsCaller interface {
 	PostAsAccount(ctx context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error)
 	ListAsAccount(ctx context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error)
 	// CommitAgentPostKeyed / CommitAgentUpdateKeyed serve CommitConversationFrame
-	// — the DURABLE, at-most-once counterpart to the loss-tolerant Deliver-path
-	// ConversationSink. They take the agent-minted idempotency_key the Runner
-	// forwards and thread it (POST) or deliberately do not (UPDATE, idempotent by
-	// replacement — see the comms implementation) so a retried frame commits at
-	// most once. Distinct from the unkeyed CommitAgentPost/CommitAgentUpdate the
-	// Deliver-path sink drives, which stay unkeyed until #894/T2.
+	// AND the Deliver-path ConversationSink — the DURABLE, at-most-once commit.
+	// They take the agent-minted idempotency_key the Runner forwards and thread it
+	// (POST) or deliberately do not (UPDATE, idempotent by replacement — see the
+	// comms implementation) so a retried frame commits at most once. The unkeyed
+	// CommitAgentPost/CommitAgentUpdate they build on survive only as test helpers
+	// (agent_caller.go).
 	CommitAgentPostKeyed(ctx context.Context, account store.AccountID, posted *compassv1.MessagePosted, idempotencyKey string) (*compassv1.PostMessageResponse, error)
 	CommitAgentUpdateKeyed(ctx context.Context, account store.AccountID, updated *compassv1.MessageUpdated, idempotencyKey string) (*compassv1.MessageUpdated, error)
 }

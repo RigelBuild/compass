@@ -8,11 +8,13 @@
 //
 //   - PostAsAccount / ListAsAccount serve RelayCommsCall — a comms call the
 //     agent made deliberately, as a tool.
-//   - CommitAgentPost / CommitAgentUpdate serve the ConversationSink — the
-//     write-through that turns a relayed conversation FRAME (the agent's own
-//     turn, streamed out as it speaks) into a durable comms row (SEA-1364 T3).
-//     They are built on the first pair and the authorizing store update rather
-//     than being a second write path.
+//   - CommitAgentPostKeyed / CommitAgentUpdateKeyed serve the ConversationSink —
+//     the write-through that turns a relayed conversation FRAME (the agent's own
+//     turn, streamed out as it speaks) into a durable comms row (SEA-1364 T3),
+//     keyed at-most-once on the agent-minted idempotency_key. They are built on
+//     the unkeyed CommitAgentPost / CommitAgentUpdate — which now survive only as
+//     test helpers — and the authorizing store update, rather than being a second
+//     write path.
 //
 // These are deliberately NOT new CommsService RPCs: an agent-initiated call
 // never reaches a network door (it rides the per-container socket to the Runner,
