@@ -124,6 +124,34 @@ func TestDeliverConversationPostedRoutesToCommsOnly(t *testing.T) {
 	}
 }
 
+// Keying: the agent-minted idempotency_key on the RunnerEvent reaches the
+// ConversationSink verbatim, so the write-through can commit KEYED at the comms
+// store's (author_account_id, client_request_id) unique constraint — the frozen
+// at-most-once invariant a retried durable frame relies on. A hub that dropped
+// the key (the pre-flip keyless sink) would commit unkeyed and a replay would
+// double-write; this reddens the moment the key stops threading through.
+func TestDeliverConversationThreadsIdempotencyKeyToSink(t *testing.T) {
+	hub, conv, _, _ := newHub()
+	bindSession(hub, "sess-conv")
+
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq:      1,
+		SessionID:      "sess-conv",
+		Frame:          convPostedFrame("hello from agent"),
+		IdempotencyKey: "key-42",
+	}); err != nil {
+		t.Fatalf("Deliver = %v, want nil", err)
+	}
+
+	calls := conv.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("conversation sink saw %d calls, want 1", len(calls))
+	}
+	if got := calls[0].idempotencyKey; got != "key-42" {
+		t.Fatalf("conversation idempotency key = %q, want key-42 — the hub must thread RunnerEvent.IdempotencyKey to the sink so the commit is keyed at-most-once", got)
+	}
+}
+
 // A conversation-updated frame arrives on the ConversationSink as the UPDATED
 // arg (posted nil) — the streaming-turn path — under the same resolved account.
 // A bug that swapped the posted and updated args would redden the nil checks.

@@ -77,10 +77,11 @@ func timeAfter() <-chan time.Time { return time.After(testTimeout) }
 // fake's proof of WHICH attribution the hub applied, the same security
 // invariant the RelayCommsCall tests defend through commsCall.
 type convCall struct {
-	account   store.AccountID
-	sessionID string
-	posted    *compassv1.MessagePosted
-	updated   *compassv1.MessageUpdated
+	account        store.AccountID
+	sessionID      string
+	idempotencyKey string
+	posted         *compassv1.MessagePosted
+	updated        *compassv1.MessageUpdated
 }
 
 // fakeConversationSink records the conversation write-throughs Deliver drives so
@@ -93,10 +94,10 @@ type fakeConversationSink struct {
 	err   error // returned by PostAgentMessage when set (a write-through failure)
 }
 
-func (f *fakeConversationSink) PostAgentMessage(_ context.Context, account store.AccountID, sessionID string, posted *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error {
+func (f *fakeConversationSink) PostAgentMessage(_ context.Context, account store.AccountID, sessionID string, idempotencyKey string, posted *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.calls = append(f.calls, convCall{account: account, sessionID: sessionID, posted: posted, updated: updated})
+	f.calls = append(f.calls, convCall{account: account, sessionID: sessionID, idempotencyKey: idempotencyKey, posted: posted, updated: updated})
 	return f.err
 }
 

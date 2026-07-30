@@ -43,10 +43,12 @@ type RunnerEvent struct {
 	// IdempotencyKey is the agent-minted key for a durable conversation frame
 	// (the durable PostConversationFrame path), populated from
 	// PublishEventsRequest.idempotency_key. Empty for trace/session frames. The
-	// Runner's gateway carries it (SEA-1364 C2); the conversation write-through's
-	// at-most-once dedup ships via the CommitConversationFrame unary keyed path
-	// (compass-server's handler), not this Publish-spine sink, so the hub does
-	// not thread it into the keyless ConversationSink.
+	// Runner's gateway carries it (SEA-1364 C2); the hub threads it into the
+	// ConversationSink so the conversation write-through commits KEYED at the
+	// comms store's (author_account_id, client_request_id) unique constraint —
+	// the frozen at-most-once invariant. The sink-ack swap (SEA-1561) later
+	// retires this Publish-spine Deliver path for the CommitConversationFrame
+	// unary, at which point the key rides that unary instead.
 	IdempotencyKey string
 }
 
@@ -91,7 +93,7 @@ type ConversationSink interface {
 	// mapping tears the stream down loudly instead of having its errors silently
 	// reinterpreted as "the frame was bad". Never return a bare error to mean a
 	// refusal — say it with a code.
-	PostAgentMessage(ctx context.Context, account store.AccountID, sessionID string, msg *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error
+	PostAgentMessage(ctx context.Context, account store.AccountID, sessionID string, idempotencyKey string, msg *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error
 }
 
 // LifecycleSink publishes an extracted agent-session lifecycle transition onto
@@ -408,7 +410,7 @@ func (h *Hub) deliverConversation(
 		h.countContractDefect(ev, "relayed conversation_updated carries no message.id, so it addresses no row and nothing can commit")
 		return nil
 	}
-	if err := h.conversation.PostAgentMessage(ctx, account, ev.SessionID, posted, updated); err != nil {
+	if err := h.conversation.PostAgentMessage(ctx, account, ev.SessionID, ev.IdempotencyKey, posted, updated); err != nil {
 		switch {
 		case isContractDefect(err):
 			// Not this frame's fault: the relay is wired wrong (a session bound
