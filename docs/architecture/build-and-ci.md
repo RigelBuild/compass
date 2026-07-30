@@ -40,8 +40,10 @@ tool wins.
 [moon](https://moonrepo.dev) owns the task graph (`deps:`), result caching
 (`inputs`/`outputs`), affected-target detection, and local parallel execution.
 `moon run <project>:<task>` is the interface; `moon run :ci` runs every
-project's `ci` task. Affected detection (`moon run :ci --affected`) decides
-which projects a change actually touches.
+project's `ci` task. Affected detection decides which projects a change
+actually touches — CI's PR gate drives it through `moon ci :ci` (the
+CI-environment form, which reads the base from the provider), while a local
+`moon run :ci --affected` is the same detection on demand.
 
 moon runs `go` and `bun` as **system tasks** — it execs the toolchain on PATH
 rather than managing its own. moon's graph/caching layer stays
@@ -64,20 +66,32 @@ step.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on every pull request and every push to `main`.
-Two jobs:
+`.github/workflows/ci.yml` runs on every pull request, every push to `main`,
+and a nightly schedule. One job, `gate`, with two parts:
 
-- **`gate`** — the whole battery, as one `moon run :ci`. Nothing about the
-  workspace is enumerated in the workflow, so a new project (or a newly
-  vendored fork) is gated the moment it is registered in
-  `.moon/workspace.yml`. This is the same command, over the same task graph,
-  that the local gate and the `hk` pre-push hook run.
-- **`pgtest`** — the real-Postgres suites, which are build-tagged `pgtest` and
-  therefore never compiled by the `gate` job's `go test ./...`. It runs them
-  against an Actions Postgres service container, and asserts afterwards that
-  they actually ran: the harness *skips* when it finds no database, so a
-  service that never came up would otherwise pass silently. It is a separate
-  job so a Postgres outage cannot red the hermetic gate.
+- **The moon battery** — the whole battery over the moon task graph. It runs
+  one of two ways by event. On a **pull request** it is `moon ci :ci`, which
+  runs only the projects the PR affects — a Go, UI, or docs change never pays
+  for the vendored forks' nix builds. On a **push to `main`** and on the
+  **nightly schedule** it is the full `moon run :ci`: every task, every project,
+  no affected filter. Affected detection trusts each task's `inputs` globs, so
+  the full sweep on everything that reaches `main` is the backstop — an
+  incomplete glob that let a task be skipped on a PR is caught the moment the
+  change lands (and re-checked nightly), named rather than hidden. Either way
+  nothing about the workspace is enumerated in the workflow, so a new project
+  (or a newly vendored fork) is gated the moment it is registered in
+  `.moon/workspace.yml`. This is the same task graph the local gate and the
+  `hk` pre-push hook run.
+- **The real-Postgres suites** — build-tagged `pgtest`, and therefore never
+  compiled by the moon battery's `go test ./...`. They run as a step in this
+  same job, unconditionally (no affected filter and no event filter, so they
+  run on every trigger including the nightly), against a Postgres service
+  container attached to the job. A step afterwards asserts they actually ran:
+  the harness *skips* when it finds no database, so a service that never came
+  up would otherwise pass silently. These suites were once a separate `pgtest`
+  job, to keep a Postgres-service outage from redding the hermetic gate; they
+  were folded in so there is one required check to gate `main` on, at the cost
+  that a service-container flake now reds `gate` (a re-run clears it).
 
 ### Where CI's toolchain comes from
 
