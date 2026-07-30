@@ -132,8 +132,10 @@ type CommsCaller interface {
 	// AND the Deliver-path ConversationSink — the DURABLE, at-most-once commit.
 	// They take the agent-minted idempotency_key the Runner forwards and thread it
 	// (POST) or deliberately do not (UPDATE, idempotent by replacement — see the
-	// comms implementation) so a retried frame commits at most once. The unkeyed
-	// CommitAgentPost/CommitAgentUpdate they build on survive only as test helpers
+	// comms implementation) so a retried frame commits at most once.
+	// CommitAgentUpdateKeyed is a thin pass-through to the unkeyed CommitAgentUpdate
+	// (which stays the live update implementation); CommitAgentPostKeyed posts
+	// directly, so the unkeyed CommitAgentPost survives only as a test helper
 	// (agent_caller.go).
 	CommitAgentPostKeyed(ctx context.Context, account store.AccountID, posted *compassv1.MessagePosted, idempotencyKey string) (*compassv1.PostMessageResponse, error)
 	CommitAgentUpdateKeyed(ctx context.Context, account store.AccountID, updated *compassv1.MessageUpdated, idempotencyKey string) (*compassv1.MessageUpdated, error)

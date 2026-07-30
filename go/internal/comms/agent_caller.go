@@ -11,10 +11,12 @@
 //   - CommitAgentPostKeyed / CommitAgentUpdateKeyed serve the ConversationSink —
 //     the write-through that turns a relayed conversation FRAME (the agent's own
 //     turn, streamed out as it speaks) into a durable comms row (SEA-1364 T3),
-//     keyed at-most-once on the agent-minted idempotency_key. They are built on
-//     the unkeyed CommitAgentPost / CommitAgentUpdate — which now survive only as
-//     test helpers — and the authorizing store update, rather than being a second
-//     write path.
+//     keyed at-most-once on the agent-minted idempotency_key. The two differ:
+//     CommitAgentUpdateKeyed is a thin pass-through to the unkeyed
+//     CommitAgentUpdate (which stays the live update implementation, idempotent
+//     by row-replacement); CommitAgentPostKeyed is a parallel post path (calling
+//     PostAsAccount directly with the key), so the unkeyed CommitAgentPost now
+//     has no production caller and survives only as a test helper.
 //
 // These are deliberately NOT new CommsService RPCs: an agent-initiated call
 // never reaches a network door (it rides the per-container socket to the Runner,
