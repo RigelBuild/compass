@@ -1418,11 +1418,9 @@ func TestControlAckJumpDropsStrandedSeqs(t *testing.T) {
 func TestControlServeRefusesRetiredSessionInResolveWindow(t *testing.T) {
 	p := newTestProducer()
 
-	// Fire a full Retire in serve's resolve->bind window, exactly once.
-	var once sync.Once
-	p.setAfterResolve(func() {
-		once.Do(func() { p.Retire(testSession) })
-	})
+	// Fire a full Retire in serve's resolve->bind window. The seam fires once
+	// per serve and one serve goroutine runs, so no guard is needed.
+	p.setAfterResolve(func() { p.Retire(testSession) })
 
 	stream := newControlStream()
 	served := make(chan error, 1)
