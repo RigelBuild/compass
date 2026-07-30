@@ -1400,3 +1400,51 @@ func TestControlAckJumpDropsStrandedSeqs(t *testing.T) {
 			"they are unreachable by the upward walk and the jump guard does not re-fire, so this is the unbounded leak", got)
 	}
 }
+
+// TestControlServeRefusesRetiredSessionInResolveWindow covers the
+// serve()-vs-Retire() TOCTOU (SEA-1550): serve resolves the session under p.mu
+// and releases it, then takes s.mu ~13 lines later to bind. A full Retire that
+// lands in that window deletes the session, marks it dead, and closes its wake.
+// Without a re-check, serve then binds the DETACHED session: its own s.sub++
+// outruns Retire's bump so the drain loop's `s.sub != mine` exit never fires,
+// and it parks on a fresh wake nothing will ever close — the drainer and its
+// session state strand for the process lifetime (a live goroutine leak once
+// in-process reattach lets Retire run without killing the agent connection).
+//
+// The afterResolve seam makes the interleave deterministic: it fires on serve's
+// own goroutine after the resolve and before the bind, so the Retire it runs is
+// GUARANTEED to sit in the window rather than being timing-dependent. No sleeps,
+// no retries — the seam IS the synchronization.
+func TestControlServeRefusesRetiredSessionInResolveWindow(t *testing.T) {
+	p := newTestProducer()
+
+	// Fire a full Retire in serve's resolve->bind window, exactly once.
+	var once sync.Once
+	p.setAfterResolve(func() {
+		once.Do(func() { p.Retire(testSession) })
+	})
+
+	stream := newControlStream()
+	served := make(chan error, 1)
+	go func() { served <- p.serve(t.Context(), testSession, stream) }()
+
+	// serve must REFUSE the bind and return promptly: the session was retired
+	// in the window, so there is nothing live to serve. A drainer that instead
+	// bound the detached session would park forever on a wake Retire already
+	// closed-and-nilled, so this never returns — the leak.
+	select {
+	case err := <-served:
+		if connect.CodeOf(err) != connect.CodeNotFound {
+			t.Fatalf("serve on a session retired in the resolve window = %v (code %v), want CodeNotFound: a session torn down before the bind must be refused, not bound", err, connect.CodeOf(err))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("serve did not return within 2s: it bound a session Retire had already detached and parked on a wake nothing will ever close — the stranded drainer SEA-1550 describes")
+	}
+
+	// No detached session may survive the retirement: binding on the torn-down
+	// object would have left live=true state behind that nothing retires again.
+	if got := p.sessionCount(); got != 0 {
+		t.Fatalf("sessions after a Retire in the serve window = %d, want 0: serve revived a session Retire had deleted", got)
+	}
+	stream.none(t, "a refused subscription must receive nothing")
+}

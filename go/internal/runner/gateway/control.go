@@ -144,8 +144,18 @@ type controlSession struct {
 	// from sub, which only ever increases: after the first agent disconnects,
 	// sub is nonzero forever, so a liveness test written against it silently
 	// stops working exactly when a caller most wants to fail fast.
-	live   bool
-	cursor uint64 // highest contiguously-acked seq
+	live bool
+	// retired is the tombstone Retire leaves on a session it has detached from
+	// the map. serve resolves the session under p.mu and releases it before
+	// taking s.mu to bind, so a Retire can delete the session in that window;
+	// the resolved pointer still refers to the now-orphaned object. Binding on
+	// it would revive live=true state nothing retires again and park a drainer
+	// on a wake the completed Retire already closed. serve re-checks this under
+	// s.mu at the bind and refuses, so a session torn down mid-resolve is never
+	// bound. Set once and never cleared: a retired id is dead for good, and a
+	// reused id gets a fresh controlSession from Bind.
+	retired bool
+	cursor  uint64 // highest contiguously-acked seq
 }
 
 // controlProducer owns every session's control state for one Runner.
@@ -164,6 +174,13 @@ type controlProducer struct {
 	// at bind time, so a late set is merely ineffective for the subscriptions
 	// already running, not a data race.
 	onCycle func(aboveLen int)
+	// afterResolve is a test seam: nil in production, and when set it is called
+	// by serve immediately after it resolves the session and BEFORE it takes
+	// s.mu to bind. It exists to make the serve-vs-Retire interleaving
+	// deterministic — a full Retire fired here lands squarely in the window
+	// between the resolve and the bind. Guarded by p.mu like onCycle, and read
+	// once per serve call, so a late set cannot race a bind already past it.
+	afterResolve func()
 }
 
 func newControlProducer() *controlProducer {
@@ -250,6 +267,9 @@ func (p *controlProducer) Retire(sessionID string) {
 	// writing to a stream whose session no longer exists.
 	s.sub++
 	s.live = false
+	// Tombstone the detached object so a serve that resolved this session
+	// before the delete refuses the bind rather than reviving it.
+	s.retired = true
 	s.ops = nil
 	if s.wake != nil {
 		close(s.wake)
@@ -471,6 +491,22 @@ func (p *controlProducer) setOnCycle(hook func(int)) {
 	p.onCycle = hook
 }
 
+// afterResolveHook reads the resolve-window test seam under the lock, matching
+// cycleHook's discipline: serve captures it once so a concurrent set cannot
+// race the read.
+func (p *controlProducer) afterResolveHook() func() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.afterResolve
+}
+
+// setAfterResolve installs the resolve-window seam under the lock.
+func (p *controlProducer) setAfterResolve(hook func()) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.afterResolve = hook
+}
+
 // send is the shared body. requireLive is the SendIfLive gate: fail rather than
 // queue when no subscription is bound. It does not affect retention — an op
 // that clears the gate is retained like any other.
@@ -608,7 +644,25 @@ func (p *controlProducer) serve(ctx context.Context, sessionID string, sink cont
 	// concurrent write to the seam on its hot loop.
 	onCycle := p.cycleHook()
 
+	// Resolve-window seam (nil in production): fires after the session is
+	// resolved and before the bind takes s.mu, the exact interleaving a
+	// concurrent Retire can exploit. A test installs a Retire here to make
+	// that race deterministic.
+	if hook := p.afterResolveHook(); hook != nil {
+		hook()
+	}
+
 	s.mu.Lock()
+	// Re-check the tombstone under s.mu: a Retire may have deleted this session
+	// from the map between the resolve above and this lock. Binding on a
+	// detached object would revive live=true state nothing retires again and
+	// park a drainer on a wake the completed Retire already closed — the
+	// serve-vs-Retire leak. Refuse honestly, as the initial resolve does for an
+	// id the Runner never bound.
+	if s.retired {
+		s.mu.Unlock()
+		return connect.NewError(connect.CodeNotFound, errNoBoundSession)
+	}
 	s.sub++
 	mine := s.sub
 	// Retire the predecessor: closing its channel unparks its drainer at once,
