@@ -77,9 +77,10 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 }
 
 // BuildSpec maps the request's agent account + repo + ref onto a full AgentSpec,
-// filling image/egress/workspace-layout from the defaults. Exactly one of the
-// request's repo variants (remote_url / local_path) must be set, mirroring the
-// built RepoSource.
+// filling image/egress/workspace-layout from the defaults. The request's repo
+// variant (remote_url / local_path) is optional; when absent the built
+// workspace has no Source (a source-less workspace). When set, exactly one
+// variant must be, mirroring the built RepoSource.
 func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {
 	source, err := repoSourceFromRequest(req)
 	if err != nil {
@@ -145,8 +146,9 @@ func validAccountID(id string) error {
 	return nil
 }
 
-// repoSourceFromRequest maps the request's repo oneof to a runtime.RepoSource,
-// enforcing that exactly one variant is set.
+// repoSourceFromRequest maps the request's repo oneof to a runtime.RepoSource.
+// The repo variant is optional; when absent an empty RepoSource is returned (a
+// source-less workspace). When a variant is set, it must be non-empty.
 func repoSourceFromRequest(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.RepoSource, error) {
 	switch r := req.GetRepo().(type) {
 	case *compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl:
@@ -166,7 +168,9 @@ func repoSourceFromRequest(req *compassv1.ProvisionAgentWorkspaceRequest) (runti
 		}
 		return runtime.LocalPathSource(r.LocalPath), nil
 	default:
-		return runtime.RepoSource{}, errors.New("provision request requires a repo (remote_url or local_path)")
+		// No repo variant set: a source-less workspace (SEA-1527). The Runner
+		// provisions no clone; the agent clones what it has credentials for.
+		return runtime.RepoSource{}, nil
 	}
 }
 

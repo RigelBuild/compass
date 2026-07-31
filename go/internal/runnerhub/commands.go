@@ -203,8 +203,9 @@ func provisionDedupID(clientRequestID string, req *compassv1.ProvisionAgentWorks
 
 // provisionRepoKey returns a stable (kind, value) pair for the request's repo
 // oneof, so the dedup id binds to which repo source was requested. An unset
-// oneof yields empty strings (BuildSpec rejects it downstream); the kind tag
-// keeps a remote_url and a local_path of the same string distinct.
+// oneof yields empty strings — a source-less workspace (SEA-1527), a valid
+// request; the kind tag keeps a remote_url and a local_path of the same string
+// distinct.
 func provisionRepoKey(req *compassv1.ProvisionAgentWorkspaceRequest) (kind, value string) {
 	switch r := req.GetRepo().(type) {
 	case *compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl:

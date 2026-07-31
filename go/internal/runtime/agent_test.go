@@ -167,6 +167,55 @@ func TestLaunchOrdersStagesEgressBeforeClone(t *testing.T) {
 	}
 }
 
+// A source-less workspace (empty Workspace.Source) provisions without ever
+// emitting a `git clone` exec — the Runner clones no repo (SEA-1527). An agent
+// is not constrained to one repo; it clones what it has credentials for. The
+// firewall is still armed, and CheckoutDir is still created (the clone would
+// otherwise have materialized it) so the session's --workdir has a cwd.
+func TestLaunchWithoutSourceSkipsClone(t *testing.T) {
+	fake := newFakeRuntime(t)
+	rt := NewAgentRuntime(fake)
+
+	spec := specWithCreds(true)
+	spec.Workspace.Source = RepoSource{}
+
+	if _, err := rt.Launch(t.Context(), spec); err != nil {
+		t.Fatalf("Launch error = %v", err)
+	}
+
+	calls := fake.callsSnapshot()
+	for _, call := range calls {
+		if strings.Contains(call, "git clone") {
+			t.Fatalf("source-less workspace emitted a clone call %q, want none", call)
+		}
+	}
+	// Egress is still armed on the source-less path (the clone is skipped, the
+	// firewall is not) — a source-less container must not launch unfirewalled.
+	if !slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "compass_egress") }) {
+		t.Fatal("source-less workspace armed no egress firewall, want egress still armed")
+	}
+	// CheckoutDir is still created as the agent user. The clone used to be what
+	// materialized it; without this the session's --workdir CheckoutDir would
+	// chdir into a missing directory and the agent would never start.
+	var mkdir *ExecSpec
+	execs := fake.execsSnapshot()
+	for i := range execs {
+		if len(execs[i].Command) > 0 && execs[i].Command[0] == "mkdir" {
+			mkdir = &execs[i]
+			break
+		}
+	}
+	if mkdir == nil {
+		t.Fatal("source-less workspace created no checkout dir, want a mkdir of CheckoutDir")
+	}
+	if !slices.Contains(mkdir.Command, spec.Workspace.CheckoutDir) {
+		t.Errorf("checkout-dir mkdir = %v, want it to target CheckoutDir %q", mkdir.Command, spec.Workspace.CheckoutDir)
+	}
+	if mkdir.User == nil || *mkdir.User != "1000" {
+		t.Errorf("checkout-dir mkdir User = %v, want \"1000\" (created as the agent, owned by the agent)", mkdir.User)
+	}
+}
+
 func TestCloneRunsAsAgentUserWithScopedHome(t *testing.T) {
 	fake := newFakeRuntime(t)
 	rt := NewAgentRuntime(fake)

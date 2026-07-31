@@ -5,7 +5,7 @@ package runner
 // NewConfigSpecBuilder + BuildSpec: the constructor rejects incomplete defaults
 // (no image, missing checkout/home dir), and BuildSpec maps the request's repo
 // oneof to the right RepoSource (remote_url→RemoteSource, local_path→
-// LocalPathSource, neither→error) and derives the container name as
+// LocalPathSource, neither→empty source-less RepoSource) and derives the
 // prefix+agent_account_id. Every test names the contract a plausible bug would
 // break: a misconfigured Runner must fail at startup, not first provision; a
 // request with the wrong repo variant must not silently launch.
@@ -74,8 +74,8 @@ func TestNewConfigSpecBuilderAcceptsCompleteDefaults(t *testing.T) {
 }
 
 // BuildSpec maps each repo oneof variant to the matching RepoSource, and neither
-// set is an error. Table-driven, including the empty-URL / empty-path sub-cases
-// the mapper rejects.
+// set yields a source-less workspace (no error, empty Source). Table-driven,
+// including the empty-URL / empty-path sub-cases the mapper rejects.
 func TestBuildSpecMapsRepoSource(t *testing.T) {
 	builder, err := NewConfigSpecBuilder(goodDefaults())
 	if err != nil {
@@ -108,10 +108,13 @@ func TestBuildSpecMapsRepoSource(t *testing.T) {
 		}
 	})
 
-	t.Run("neither set is an error", func(t *testing.T) {
-		_, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: strings.Repeat("a", 32)})
-		if err == nil {
-			t.Fatal("BuildSpec with no repo variant = nil error, want a required-repo error")
+	t.Run("neither set is a source-less workspace", func(t *testing.T) {
+		spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: strings.Repeat("a", 32)})
+		if err != nil {
+			t.Fatalf("BuildSpec with no repo variant = %v, want no error (source-less workspace)", err)
+		}
+		if !spec.Workspace.Source.IsEmpty() {
+			t.Fatalf("no repo variant source = %+v, want an empty (source-less) RepoSource", spec.Workspace.Source)
 		}
 	})
 
@@ -122,6 +125,16 @@ func TestBuildSpecMapsRepoSource(t *testing.T) {
 		})
 		if err == nil {
 			t.Fatal("BuildSpec with empty remote_url = nil error, want a rejection")
+		}
+	})
+
+	t.Run("empty local_path is an error", func(t *testing.T) {
+		_, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
+			AgentAccountId: strings.Repeat("a", 32),
+			Repo:           &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: ""},
+		})
+		if err == nil {
+			t.Fatal("BuildSpec with empty local_path = nil error, want a rejection")
 		}
 	})
 }

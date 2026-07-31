@@ -231,13 +231,24 @@ func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (Cont
 }
 
 // provision runs the post-start steps, all inside the running container:
-// firewall (root), credentials (agent user), clone (agent user).
+// firewall (root), credentials (agent user), then the workspace checkout as the
+// agent user. With a clone source that is `git clone` into CheckoutDir; for a
+// source-less workspace (SEA-1527) the Runner clones nothing, but must still
+// create CheckoutDir so the agent session's exec — which runs with
+// --workdir CheckoutDir (runner/host.go agentEnv) — has a cwd to chdir into.
 func (r *AgentRuntime) provision(ctx context.Context, id ContainerID, spec AgentSpec) error {
 	if err := r.armEgress(ctx, id, spec.Egress); err != nil {
 		return err
 	}
 	if err := r.installCredentials(ctx, id, spec.Workspace); err != nil {
 		return err
+	}
+	if spec.Workspace.Source.IsEmpty() {
+		// No clone source: a source-less workspace (SEA-1527). Egress and
+		// credentials are still provisioned so the agent can clone for itself,
+		// and CheckoutDir is created so the session's --workdir resolves — the
+		// clone would otherwise have been what materialized it.
+		return r.ensureCheckoutDir(ctx, id, spec.Workspace)
 	}
 	return r.cloneRepo(ctx, id, spec.Workspace)
 }
@@ -287,4 +298,20 @@ func (r *AgentRuntime) cloneRepo(ctx context.Context, id ContainerID, workspace 
 		return atStage("clone repo", err)
 	}
 	return requireSuccess("clone repo", out)
+}
+
+// ensureCheckoutDir creates the in-container checkout directory as the agent
+// user, for a source-less workspace where no clone materializes it. Run as the
+// agent uid (not root) so the directory is owned by the agent, exactly as the
+// clone's working tree would be. This carries the same precondition the clone
+// already did — CheckoutDir's parent must be writable by the agent uid — so it
+// succeeds in exactly the images where a clone into CheckoutDir would have.
+func (r *AgentRuntime) ensureCheckoutDir(ctx context.Context, id ContainerID, workspace Workspace) error {
+	spec := NewExecSpec("mkdir", "-p", workspace.CheckoutDir).
+		AsUser(strconv.FormatUint(uint64(workspace.UID), 10))
+	out, err := r.runtime.Exec(ctx, id, spec)
+	if err != nil {
+		return atStage("create checkout dir", err)
+	}
+	return requireSuccess("create checkout dir", out)
 }

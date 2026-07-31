@@ -15,7 +15,9 @@ import (
 )
 
 // RepoSource is where an agent's repo is cloned from, inside the container.
-// Exactly one of Remote or LocalPath is set.
+// Zero fields may be set — a source-less workspace the operator left without a
+// clone source, provisioned without any clone (SEA-1527). When a source IS set,
+// exactly one of Remote or LocalPath is.
 //
 // Remote is a URL cloned over the network (subject to the egress allowlist).
 // LocalPath is a path inside the container — typically a bare mirror
@@ -31,6 +33,11 @@ func RemoteSource(url string) RepoSource { return RepoSource{Remote: url} }
 
 // LocalPathSource clones from a container-local path over file://.
 func LocalPathSource(path string) RepoSource { return RepoSource{LocalPath: path} }
+
+// IsEmpty reports whether no clone source is set — a workspace the operator
+// left source-less, so the Runner provisions no repo (SEA-1527). Nothing
+// downstream may assume a clone exists.
+func (r RepoSource) IsEmpty() bool { return r.Remote == "" && r.LocalPath == "" }
 
 // cloneArg is the argument passed to `git clone`: the URL directly for a remote,
 // or a file:// URL for a container-local path.
@@ -69,6 +76,8 @@ func (c Credentials) GoString() string { return c.String() }
 // Workspace is a per-agent workspace: the clone source, the branch to check out,
 // the scoped $HOME, and the unprivileged uid the agent runs as.
 type Workspace struct {
+	// Source is the clone source. Optional: a source-less workspace (zero-value
+	// RepoSource) is provisioned without a clone (SEA-1527).
 	Source RepoSource
 	Branch string
 	// CheckoutDir is the absolute path inside the container where the repo is
