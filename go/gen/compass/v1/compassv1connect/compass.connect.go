@@ -31,6 +31,8 @@ const _ = connect.IsAtLeastVersion1_13_0
 const (
 	// CompassServiceName is the fully-qualified name of the CompassService service.
 	CompassServiceName = "compass.v1.CompassService"
+	// SecretsServiceName is the fully-qualified name of the SecretsService service.
+	SecretsServiceName = "compass.v1.SecretsService"
 )
 
 // These constants are the fully-qualified names of the RPCs defined in this package. They're
@@ -68,6 +70,15 @@ const (
 	// CompassServiceIssueTokenProcedure is the fully-qualified name of the CompassService's IssueToken
 	// RPC.
 	CompassServiceIssueTokenProcedure = "/compass.v1.CompassService/IssueToken"
+	// SecretsServiceSetSecretProcedure is the fully-qualified name of the SecretsService's SetSecret
+	// RPC.
+	SecretsServiceSetSecretProcedure = "/compass.v1.SecretsService/SetSecret"
+	// SecretsServiceListSecretsProcedure is the fully-qualified name of the SecretsService's
+	// ListSecrets RPC.
+	SecretsServiceListSecretsProcedure = "/compass.v1.SecretsService/ListSecrets"
+	// SecretsServiceDeleteSecretProcedure is the fully-qualified name of the SecretsService's
+	// DeleteSecret RPC.
+	SecretsServiceDeleteSecretProcedure = "/compass.v1.SecretsService/DeleteSecret"
 )
 
 // CompassServiceClient is a client for the compass.v1.CompassService service.
@@ -432,4 +443,136 @@ func (UnimplementedCompassServiceHandler) SubscribeAgentSession(context.Context,
 
 func (UnimplementedCompassServiceHandler) IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.IssueToken is not implemented"))
+}
+
+// SecretsServiceClient is a client for the compass.v1.SecretsService service.
+type SecretsServiceClient interface {
+	// Declare a secret's registry row (name/delivery/kind/routing) and write its
+	// value via the resolver. User-only. `value` is never logged.
+	SetSecret(context.Context, *connect.Request[v1.SetSecretRequest]) (*connect.Response[v1.SetSecretResponse], error)
+	// List declared secrets by name with set/unset + routing — never values.
+	// User and agent tokens.
+	ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error)
+	// Remove a secret's registry row + value. User-only.
+	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)
+}
+
+// NewSecretsServiceClient constructs a client for the compass.v1.SecretsService service. By
+// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
+// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
+// connect.WithGRPC() or connect.WithGRPCWeb() options.
+//
+// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
+// http://api.acme.com or https://acme.com/grpc).
+func NewSecretsServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) SecretsServiceClient {
+	baseURL = strings.TrimRight(baseURL, "/")
+	secretsServiceMethods := v1.File_compass_v1_compass_proto.Services().ByName("SecretsService").Methods()
+	return &secretsServiceClient{
+		setSecret: connect.NewClient[v1.SetSecretRequest, v1.SetSecretResponse](
+			httpClient,
+			baseURL+SecretsServiceSetSecretProcedure,
+			connect.WithSchema(secretsServiceMethods.ByName("SetSecret")),
+			connect.WithClientOptions(opts...),
+		),
+		listSecrets: connect.NewClient[v1.ListSecretsRequest, v1.ListSecretsResponse](
+			httpClient,
+			baseURL+SecretsServiceListSecretsProcedure,
+			connect.WithSchema(secretsServiceMethods.ByName("ListSecrets")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteSecret: connect.NewClient[v1.DeleteSecretRequest, v1.DeleteSecretResponse](
+			httpClient,
+			baseURL+SecretsServiceDeleteSecretProcedure,
+			connect.WithSchema(secretsServiceMethods.ByName("DeleteSecret")),
+			connect.WithClientOptions(opts...),
+		),
+	}
+}
+
+// secretsServiceClient implements SecretsServiceClient.
+type secretsServiceClient struct {
+	setSecret    *connect.Client[v1.SetSecretRequest, v1.SetSecretResponse]
+	listSecrets  *connect.Client[v1.ListSecretsRequest, v1.ListSecretsResponse]
+	deleteSecret *connect.Client[v1.DeleteSecretRequest, v1.DeleteSecretResponse]
+}
+
+// SetSecret calls compass.v1.SecretsService.SetSecret.
+func (c *secretsServiceClient) SetSecret(ctx context.Context, req *connect.Request[v1.SetSecretRequest]) (*connect.Response[v1.SetSecretResponse], error) {
+	return c.setSecret.CallUnary(ctx, req)
+}
+
+// ListSecrets calls compass.v1.SecretsService.ListSecrets.
+func (c *secretsServiceClient) ListSecrets(ctx context.Context, req *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error) {
+	return c.listSecrets.CallUnary(ctx, req)
+}
+
+// DeleteSecret calls compass.v1.SecretsService.DeleteSecret.
+func (c *secretsServiceClient) DeleteSecret(ctx context.Context, req *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error) {
+	return c.deleteSecret.CallUnary(ctx, req)
+}
+
+// SecretsServiceHandler is an implementation of the compass.v1.SecretsService service.
+type SecretsServiceHandler interface {
+	// Declare a secret's registry row (name/delivery/kind/routing) and write its
+	// value via the resolver. User-only. `value` is never logged.
+	SetSecret(context.Context, *connect.Request[v1.SetSecretRequest]) (*connect.Response[v1.SetSecretResponse], error)
+	// List declared secrets by name with set/unset + routing — never values.
+	// User and agent tokens.
+	ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error)
+	// Remove a secret's registry row + value. User-only.
+	DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error)
+}
+
+// NewSecretsServiceHandler builds an HTTP handler from the service implementation. It returns the
+// path on which to mount the handler and the handler itself.
+//
+// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
+// and JSON codecs. They also support gzip compression.
+func NewSecretsServiceHandler(svc SecretsServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
+	secretsServiceMethods := v1.File_compass_v1_compass_proto.Services().ByName("SecretsService").Methods()
+	secretsServiceSetSecretHandler := connect.NewUnaryHandler(
+		SecretsServiceSetSecretProcedure,
+		svc.SetSecret,
+		connect.WithSchema(secretsServiceMethods.ByName("SetSecret")),
+		connect.WithHandlerOptions(opts...),
+	)
+	secretsServiceListSecretsHandler := connect.NewUnaryHandler(
+		SecretsServiceListSecretsProcedure,
+		svc.ListSecrets,
+		connect.WithSchema(secretsServiceMethods.ByName("ListSecrets")),
+		connect.WithHandlerOptions(opts...),
+	)
+	secretsServiceDeleteSecretHandler := connect.NewUnaryHandler(
+		SecretsServiceDeleteSecretProcedure,
+		svc.DeleteSecret,
+		connect.WithSchema(secretsServiceMethods.ByName("DeleteSecret")),
+		connect.WithHandlerOptions(opts...),
+	)
+	return "/compass.v1.SecretsService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case SecretsServiceSetSecretProcedure:
+			secretsServiceSetSecretHandler.ServeHTTP(w, r)
+		case SecretsServiceListSecretsProcedure:
+			secretsServiceListSecretsHandler.ServeHTTP(w, r)
+		case SecretsServiceDeleteSecretProcedure:
+			secretsServiceDeleteSecretHandler.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// UnimplementedSecretsServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedSecretsServiceHandler struct{}
+
+func (UnimplementedSecretsServiceHandler) SetSecret(context.Context, *connect.Request[v1.SetSecretRequest]) (*connect.Response[v1.SetSecretResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.SecretsService.SetSecret is not implemented"))
+}
+
+func (UnimplementedSecretsServiceHandler) ListSecrets(context.Context, *connect.Request[v1.ListSecretsRequest]) (*connect.Response[v1.ListSecretsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.SecretsService.ListSecrets is not implemented"))
+}
+
+func (UnimplementedSecretsServiceHandler) DeleteSecret(context.Context, *connect.Request[v1.DeleteSecretRequest]) (*connect.Response[v1.DeleteSecretResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.SecretsService.DeleteSecret is not implemented"))
 }

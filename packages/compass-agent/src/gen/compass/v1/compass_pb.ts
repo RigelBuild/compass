@@ -18,7 +18,170 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/compass.proto.
  */
 export const file_compass_v1_compass: GenFile = /*@__PURE__*/
-  fileDesc("Chhjb21wYXNzL3YxL2NvbXBhc3MucHJvdG8SCmNvbXBhc3MudjEiFgoUR2V0U2VydmVySW5mb1JlcXVlc3QiPQoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSEwoLYXBpX3ZlcnNpb24YAiABKAkiQwoWU3Vic2NyaWJlRXZlbnRzUmVxdWVzdBIRCglzaW5jZV9zZXEYASABKAQSFgoOaW5zdGFuY2VfZXBvY2gYAiABKAQiqAMKF1N1YnNjcmliZUV2ZW50c1Jlc3BvbnNlEgsKA3NlcRgBIAEoBBISCgphdF91bml4X21zGAIgASgDEhYKDmluc3RhbmNlX2Vwb2NoGAMgASgEEjEKDXNlcnZlcl9zdGF0dXMYCiABKAsyGC5jb21wYXNzLnYxLlNlcnZlclN0YXR1c0gAEjUKD3Jlc3luY19yZXF1aXJlZBgLIAEoCzIaLmNvbXBhc3MudjEuUmVzeW5jUmVxdWlyZWRIABI+ChRhZ2VudF9zZXNzaW9uX3N0YXR1cxgMIAEoCzIeLmNvbXBhc3MudjEuQWdlbnRTZXNzaW9uU3RhdHVzSAASPAoTYWdlbnRfbWVzc2FnZV9jaHVuaxgNIAEoCzIdLmNvbXBhc3MudjEuQWdlbnRNZXNzYWdlQ2h1bmtIABI0Cg9hZ2VudF90b29sX2NhbGwYDiABKAsyGS5jb21wYXNzLnYxLkFnZW50VG9vbENhbGxIABIrCgphZ2VudF9wbGFuGA8gASgLMhUuY29tcGFzcy52MS5BZ2VudFBsYW5IAEIJCgdwYXlsb2FkIjYKDFNlcnZlclN0YXR1cxImCgVzdGF0ZRgBIAEoDjIXLmNvbXBhc3MudjEuU2VydmVyU3RhdGUiEAoOUmVzeW5jUmVxdWlyZWQiVgoSQWdlbnRTZXNzaW9uU3RhdHVzEhIKCnNlc3Npb25faWQYASABKAkSLAoFc3RhdGUYAiABKA4yHS5jb21wYXNzLnYxLkFnZW50U2Vzc2lvblN0YXRlIkkKEUFnZW50TWVzc2FnZUNodW5rEhIKCnNlc3Npb25faWQYASABKAkSDAoEdGV4dBgCIAEoCRISCgppc190aG91Z2h0GAMgASgIInkKDUFnZW50VG9vbENhbGwSEgoKc2Vzc2lvbl9pZBgBIAEoCRIUCgx0b29sX2NhbGxfaWQYAiABKAkSDQoFdGl0bGUYAyABKAkSLwoGc3RhdHVzGAQgASgOMh8uY29tcGFzcy52MS5BZ2VudFRvb2xDYWxsU3RhdHVzIkwKCUFnZW50UGxhbhISCgpzZXNzaW9uX2lkGAEgASgJEisKB2VudHJpZXMYAiADKAsyGi5jb21wYXNzLnYxLkFnZW50UGxhbkVudHJ5IlMKDkFnZW50UGxhbkVudHJ5Eg8KB2NvbnRlbnQYASABKAkSMAoGc3RhdHVzGAIgASgOMiAuY29tcGFzcy52MS5BZ2VudFBsYW5FbnRyeVN0YXR1cyLxAgoMU2Vzc2lvbkV2ZW50EhAKCGV2ZW50X2lkGAEgASgJEhIKCmF0X3VuaXhfbXMYAiABKAMSOgoOYXNzaXN0YW50X3RleHQYAyABKAsyIC5jb21wYXNzLnYxLlNlc3Npb25Bc3Npc3RhbnRUZXh0SAASLwoIdGhpbmtpbmcYBCABKAsyGy5jb21wYXNzLnYxLlNlc3Npb25UaGlua2luZ0gAEjAKCXRvb2xfY2FsbBgFIAEoCzIbLmNvbXBhc3MudjEuU2Vzc2lvblRvb2xDYWxsSAASPQoQdG9vbF9jYWxsX3VwZGF0ZRgGIAEoCzIhLmNvbXBhc3MudjEuU2Vzc2lvblRvb2xDYWxsVXBkYXRlSAASJwoEcGxhbhgHIAEoCzIXLmNvbXBhc3MudjEuU2Vzc2lvblBsYW5IABIrCgZub3RpY2UYCCABKAsyGS5jb21wYXNzLnYxLlNlc3Npb25Ob3RpY2VIAEIHCgVldmVudCI4ChRTZXNzaW9uQXNzaXN0YW50VGV4dBIMCgR0ZXh0GAEgASgJEhIKCm1lc3NhZ2VfaWQYAiABKAkiMwoPU2Vzc2lvblRoaW5raW5nEgwKBHRleHQYASABKAkSEgoKbWVzc2FnZV9pZBgCIAEoCSJnCg9TZXNzaW9uVG9vbENhbGwSFAoMdG9vbF9jYWxsX2lkGAEgASgJEg0KBXRpdGxlGAIgASgJEi8KBnN0YXR1cxgDIAEoDjIfLmNvbXBhc3MudjEuQWdlbnRUb29sQ2FsbFN0YXR1cyKaAQoVU2Vzc2lvblRvb2xDYWxsVXBkYXRlEhQKDHRvb2xfY2FsbF9pZBgBIAEoCRIvCgZzdGF0dXMYAiABKA4yHy5jb21wYXNzLnYxLkFnZW50VG9vbENhbGxTdGF0dXMSDgoGb3V0cHV0GAMgASgJEioKBWRpZmZzGAQgAygLMhsuY29tcGFzcy52MS5TZXNzaW9uRmlsZURpZmYiVQoPU2Vzc2lvbkZpbGVEaWZmEgwKBHBhdGgYASABKAkSFQoIb2xkX3RleHQYAiABKAlIAIgBARIQCghuZXdfdGV4dBgDIAEoCUILCglfb2xkX3RleHQiOgoLU2Vzc2lvblBsYW4SKwoHZW50cmllcxgBIAMoCzIaLmNvbXBhc3MudjEuQWdlbnRQbGFuRW50cnkiOQoNU2Vzc2lvbk5vdGljZRIMCgR0ZXh0GAEgASgJEhEKBGxpbmsYAiABKAlIAIgBAUIHCgVfbGluayIyChxTdWJzY3JpYmVBZ2VudFNlc3Npb25SZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkifgoRQWdlbnRTZXNzaW9uRnJhbWUSEgoKc2Vzc2lvbl9pZBgBIAEoCRInCgVldmVudBgCIAEoCzIYLmNvbXBhc3MudjEuU2Vzc2lvbkV2ZW50EiwKBXN0YXRlGAMgASgOMh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25TdGF0ZSKWAQoeUHJvdmlzaW9uQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0EhgKEGFnZW50X2FjY291bnRfaWQYASABKAkSFAoKcmVtb3RlX3VybBgCIAEoCUgAEhQKCmxvY2FsX3BhdGgYAyABKAlIABILCgNyZWYYBCABKAkSGQoRY2xpZW50X3JlcXVlc3RfaWQYBSABKAlCBgoEcmVwbyI5Ch9Qcm92aXNpb25BZ2VudFdvcmtzcGFjZVJlc3BvbnNlEhYKDmNvbnRhaW5lcl9uYW1lGAEgASgJIkoKGFN0YXJ0QWdlbnRTZXNzaW9uUmVxdWVzdBIWCg5jb250YWluZXJfbmFtZRgBIAEoCRIWCg5pbml0aWFsX3Byb21wdBgCIAEoCSIvChlTdGFydEFnZW50U2Vzc2lvblJlc3BvbnNlEhIKCnNlc3Npb25faWQYASABKAkiLQoXU3RvcEFnZW50U2Vzc2lvblJlcXVlc3QSEgoKc2Vzc2lvbl9pZBgBIAEoCSIaChhTdG9wQWdlbnRTZXNzaW9uUmVzcG9uc2UiLwoZUmVsb2FkQWdlbnRTZXNzaW9uUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJIjAKGlJlbG9hZEFnZW50U2Vzc2lvblJlc3BvbnNlEhIKCnNlc3Npb25faWQYASABKAkiKwoVR2V0QWdlbnRTdGF0dXNSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiSgoWR2V0QWdlbnRTdGF0dXNSZXNwb25zZRIwCghzdGF0dXNlcxgBIAMoCzIeLmNvbXBhc3MudjEuQWdlbnRTZXNzaW9uU3RhdHVzIicKEUlzc3VlVG9rZW5SZXF1ZXN0EhIKCmFjY291bnRfaWQYASABKAkiIwoSSXNzdWVUb2tlblJlc3BvbnNlEg0KBXRva2VuGAEgASgJKkMKC1NlcnZlclN0YXRlEhwKGFNFUlZFUl9TVEFURV9VTlNQRUNJRklFRBAAEhYKElNFUlZFUl9TVEFURV9SRUFEWRABKoICChFBZ2VudFNlc3Npb25TdGF0ZRIjCh9BR0VOVF9TRVNTSU9OX1NUQVRFX1VOU1BFQ0lGSUVEEAASIAocQUdFTlRfU0VTU0lPTl9TVEFURV9TVEFSVElORxABEh0KGUFHRU5UX1NFU1NJT05fU1RBVEVfUkVBRFkQAhIfChtBR0VOVF9TRVNTSU9OX1NUQVRFX1dPUktJTkcQAxIfChtBR0VOVF9TRVNTSU9OX1NUQVRFX1NUT1BQRUQQBBIfChtBR0VOVF9TRVNTSU9OX1NUQVRFX0VSUk9SRUQQBRIkCiBBR0VOVF9TRVNTSU9OX1NUQVRFX0RJU0NPTk5FQ1RFRBAGKtIBChNBZ2VudFRvb2xDYWxsU3RhdHVzEiYKIkFHRU5UX1RPT0xfQ0FMTF9TVEFUVVNfVU5TUEVDSUZJRUQQABIiCh5BR0VOVF9UT09MX0NBTExfU1RBVFVTX1BFTkRJTkcQARImCiJBR0VOVF9UT09MX0NBTExfU1RBVFVTX0lOX1BST0dSRVNTEAISJAogQUdFTlRfVE9PTF9DQUxMX1NUQVRVU19DT01QTEVURUQQAxIhCh1BR0VOVF9UT09MX0NBTExfU1RBVFVTX0ZBSUxFRBAEKrQBChRBZ2VudFBsYW5FbnRyeVN0YXR1cxInCiNBR0VOVF9QTEFOX0VOVFJZX1NUQVRVU19VTlNQRUNJRklFRBAAEiMKH0FHRU5UX1BMQU5fRU5UUllfU1RBVFVTX1BFTkRJTkcQARInCiNBR0VOVF9QTEFOX0VOVFJZX1NUQVRVU19JTl9QUk9HUkVTUxACEiUKIUFHRU5UX1BMQU5fRU5UUllfU1RBVFVTX0NPTVBMRVRFRBADMugGCg5Db21wYXNzU2VydmljZRJUCg1HZXRTZXJ2ZXJJbmZvEiAuY29tcGFzcy52MS5HZXRTZXJ2ZXJJbmZvUmVxdWVzdBohLmNvbXBhc3MudjEuR2V0U2VydmVySW5mb1Jlc3BvbnNlElwKD1N1YnNjcmliZUV2ZW50cxIiLmNvbXBhc3MudjEuU3Vic2NyaWJlRXZlbnRzUmVxdWVzdBojLmNvbXBhc3MudjEuU3Vic2NyaWJlRXZlbnRzUmVzcG9uc2UwARJyChdQcm92aXNpb25BZ2VudFdvcmtzcGFjZRIqLmNvbXBhc3MudjEuUHJvdmlzaW9uQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0GisuY29tcGFzcy52MS5Qcm92aXNpb25BZ2VudFdvcmtzcGFjZVJlc3BvbnNlEmAKEVN0YXJ0QWdlbnRTZXNzaW9uEiQuY29tcGFzcy52MS5TdGFydEFnZW50U2Vzc2lvblJlcXVlc3QaJS5jb21wYXNzLnYxLlN0YXJ0QWdlbnRTZXNzaW9uUmVzcG9uc2USXQoQU3RvcEFnZW50U2Vzc2lvbhIjLmNvbXBhc3MudjEuU3RvcEFnZW50U2Vzc2lvblJlcXVlc3QaJC5jb21wYXNzLnYxLlN0b3BBZ2VudFNlc3Npb25SZXNwb25zZRJjChJSZWxvYWRBZ2VudFNlc3Npb24SJS5jb21wYXNzLnYxLlJlbG9hZEFnZW50U2Vzc2lvblJlcXVlc3QaJi5jb21wYXNzLnYxLlJlbG9hZEFnZW50U2Vzc2lvblJlc3BvbnNlElcKDkdldEFnZW50U3RhdHVzEiEuY29tcGFzcy52MS5HZXRBZ2VudFN0YXR1c1JlcXVlc3QaIi5jb21wYXNzLnYxLkdldEFnZW50U3RhdHVzUmVzcG9uc2USYgoVU3Vic2NyaWJlQWdlbnRTZXNzaW9uEiguY29tcGFzcy52MS5TdWJzY3JpYmVBZ2VudFNlc3Npb25SZXF1ZXN0Gh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25GcmFtZTABEksKCklzc3VlVG9rZW4SHS5jb21wYXNzLnYxLklzc3VlVG9rZW5SZXF1ZXN0Gh4uY29tcGFzcy52MS5Jc3N1ZVRva2VuUmVzcG9uc2ViBnByb3RvMw");
+  fileDesc("Chhjb21wYXNzL3YxL2NvbXBhc3MucHJvdG8SCmNvbXBhc3MudjEiqAEKEFNldFNlY3JldFJlcXVlc3QSDAoEbmFtZRgBIAEoCRISCgV2YWx1ZRgCIAEoCUIDgAEBEiwKCGRlbGl2ZXJ5GAMgASgOMhouY29tcGFzcy52MS5TZWNyZXREZWxpdmVyeRIkCgRraW5kGAQgASgOMhYuY29tcGFzcy52MS5TZWNyZXRLaW5kEhAKCHByb3ZpZGVyGAUgASgJEgwKBGhvc3QYBiABKAkiEwoRU2V0U2VjcmV0UmVzcG9uc2UiFAoSTGlzdFNlY3JldHNSZXF1ZXN0IkAKE0xpc3RTZWNyZXRzUmVzcG9uc2USKQoHc2VjcmV0cxgBIAMoCzIYLmNvbXBhc3MudjEuU2VjcmV0U3RhdHVzIqABCgxTZWNyZXRTdGF0dXMSDAoEbmFtZRgBIAEoCRIOCgZpc19zZXQYAiABKAgSLAoIZGVsaXZlcnkYAyABKA4yGi5jb21wYXNzLnYxLlNlY3JldERlbGl2ZXJ5EiQKBGtpbmQYBCABKA4yFi5jb21wYXNzLnYxLlNlY3JldEtpbmQSEAoIcHJvdmlkZXIYBSABKAkSDAoEaG9zdBgGIAEoCSIjChNEZWxldGVTZWNyZXRSZXF1ZXN0EgwKBG5hbWUYASABKAkiFgoURGVsZXRlU2VjcmV0UmVzcG9uc2UiFgoUR2V0U2VydmVySW5mb1JlcXVlc3QiPQoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSEwoLYXBpX3ZlcnNpb24YAiABKAkiQwoWU3Vic2NyaWJlRXZlbnRzUmVxdWVzdBIRCglzaW5jZV9zZXEYASABKAQSFgoOaW5zdGFuY2VfZXBvY2gYAiABKAQiqAMKF1N1YnNjcmliZUV2ZW50c1Jlc3BvbnNlEgsKA3NlcRgBIAEoBBISCgphdF91bml4X21zGAIgASgDEhYKDmluc3RhbmNlX2Vwb2NoGAMgASgEEjEKDXNlcnZlcl9zdGF0dXMYCiABKAsyGC5jb21wYXNzLnYxLlNlcnZlclN0YXR1c0gAEjUKD3Jlc3luY19yZXF1aXJlZBgLIAEoCzIaLmNvbXBhc3MudjEuUmVzeW5jUmVxdWlyZWRIABI+ChRhZ2VudF9zZXNzaW9uX3N0YXR1cxgMIAEoCzIeLmNvbXBhc3MudjEuQWdlbnRTZXNzaW9uU3RhdHVzSAASPAoTYWdlbnRfbWVzc2FnZV9jaHVuaxgNIAEoCzIdLmNvbXBhc3MudjEuQWdlbnRNZXNzYWdlQ2h1bmtIABI0Cg9hZ2VudF90b29sX2NhbGwYDiABKAsyGS5jb21wYXNzLnYxLkFnZW50VG9vbENhbGxIABIrCgphZ2VudF9wbGFuGA8gASgLMhUuY29tcGFzcy52MS5BZ2VudFBsYW5IAEIJCgdwYXlsb2FkIjYKDFNlcnZlclN0YXR1cxImCgVzdGF0ZRgBIAEoDjIXLmNvbXBhc3MudjEuU2VydmVyU3RhdGUiEAoOUmVzeW5jUmVxdWlyZWQiVgoSQWdlbnRTZXNzaW9uU3RhdHVzEhIKCnNlc3Npb25faWQYASABKAkSLAoFc3RhdGUYAiABKA4yHS5jb21wYXNzLnYxLkFnZW50U2Vzc2lvblN0YXRlIkkKEUFnZW50TWVzc2FnZUNodW5rEhIKCnNlc3Npb25faWQYASABKAkSDAoEdGV4dBgCIAEoCRISCgppc190aG91Z2h0GAMgASgIInkKDUFnZW50VG9vbENhbGwSEgoKc2Vzc2lvbl9pZBgBIAEoCRIUCgx0b29sX2NhbGxfaWQYAiABKAkSDQoFdGl0bGUYAyABKAkSLwoGc3RhdHVzGAQgASgOMh8uY29tcGFzcy52MS5BZ2VudFRvb2xDYWxsU3RhdHVzIkwKCUFnZW50UGxhbhISCgpzZXNzaW9uX2lkGAEgASgJEisKB2VudHJpZXMYAiADKAsyGi5jb21wYXNzLnYxLkFnZW50UGxhbkVudHJ5IlMKDkFnZW50UGxhbkVudHJ5Eg8KB2NvbnRlbnQYASABKAkSMAoGc3RhdHVzGAIgASgOMiAuY29tcGFzcy52MS5BZ2VudFBsYW5FbnRyeVN0YXR1cyLxAgoMU2Vzc2lvbkV2ZW50EhAKCGV2ZW50X2lkGAEgASgJEhIKCmF0X3VuaXhfbXMYAiABKAMSOgoOYXNzaXN0YW50X3RleHQYAyABKAsyIC5jb21wYXNzLnYxLlNlc3Npb25Bc3Npc3RhbnRUZXh0SAASLwoIdGhpbmtpbmcYBCABKAsyGy5jb21wYXNzLnYxLlNlc3Npb25UaGlua2luZ0gAEjAKCXRvb2xfY2FsbBgFIAEoCzIbLmNvbXBhc3MudjEuU2Vzc2lvblRvb2xDYWxsSAASPQoQdG9vbF9jYWxsX3VwZGF0ZRgGIAEoCzIhLmNvbXBhc3MudjEuU2Vzc2lvblRvb2xDYWxsVXBkYXRlSAASJwoEcGxhbhgHIAEoCzIXLmNvbXBhc3MudjEuU2Vzc2lvblBsYW5IABIrCgZub3RpY2UYCCABKAsyGS5jb21wYXNzLnYxLlNlc3Npb25Ob3RpY2VIAEIHCgVldmVudCI4ChRTZXNzaW9uQXNzaXN0YW50VGV4dBIMCgR0ZXh0GAEgASgJEhIKCm1lc3NhZ2VfaWQYAiABKAkiMwoPU2Vzc2lvblRoaW5raW5nEgwKBHRleHQYASABKAkSEgoKbWVzc2FnZV9pZBgCIAEoCSJnCg9TZXNzaW9uVG9vbENhbGwSFAoMdG9vbF9jYWxsX2lkGAEgASgJEg0KBXRpdGxlGAIgASgJEi8KBnN0YXR1cxgDIAEoDjIfLmNvbXBhc3MudjEuQWdlbnRUb29sQ2FsbFN0YXR1cyKaAQoVU2Vzc2lvblRvb2xDYWxsVXBkYXRlEhQKDHRvb2xfY2FsbF9pZBgBIAEoCRIvCgZzdGF0dXMYAiABKA4yHy5jb21wYXNzLnYxLkFnZW50VG9vbENhbGxTdGF0dXMSDgoGb3V0cHV0GAMgASgJEioKBWRpZmZzGAQgAygLMhsuY29tcGFzcy52MS5TZXNzaW9uRmlsZURpZmYiVQoPU2Vzc2lvbkZpbGVEaWZmEgwKBHBhdGgYASABKAkSFQoIb2xkX3RleHQYAiABKAlIAIgBARIQCghuZXdfdGV4dBgDIAEoCUILCglfb2xkX3RleHQiOgoLU2Vzc2lvblBsYW4SKwoHZW50cmllcxgBIAMoCzIaLmNvbXBhc3MudjEuQWdlbnRQbGFuRW50cnkiOQoNU2Vzc2lvbk5vdGljZRIMCgR0ZXh0GAEgASgJEhEKBGxpbmsYAiABKAlIAIgBAUIHCgVfbGluayIyChxTdWJzY3JpYmVBZ2VudFNlc3Npb25SZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkifgoRQWdlbnRTZXNzaW9uRnJhbWUSEgoKc2Vzc2lvbl9pZBgBIAEoCRInCgVldmVudBgCIAEoCzIYLmNvbXBhc3MudjEuU2Vzc2lvbkV2ZW50EiwKBXN0YXRlGAMgASgOMh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25TdGF0ZSKWAQoeUHJvdmlzaW9uQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0EhgKEGFnZW50X2FjY291bnRfaWQYASABKAkSFAoKcmVtb3RlX3VybBgCIAEoCUgAEhQKCmxvY2FsX3BhdGgYAyABKAlIABILCgNyZWYYBCABKAkSGQoRY2xpZW50X3JlcXVlc3RfaWQYBSABKAlCBgoEcmVwbyI5Ch9Qcm92aXNpb25BZ2VudFdvcmtzcGFjZVJlc3BvbnNlEhYKDmNvbnRhaW5lcl9uYW1lGAEgASgJIkoKGFN0YXJ0QWdlbnRTZXNzaW9uUmVxdWVzdBIWCg5jb250YWluZXJfbmFtZRgBIAEoCRIWCg5pbml0aWFsX3Byb21wdBgCIAEoCSIvChlTdGFydEFnZW50U2Vzc2lvblJlc3BvbnNlEhIKCnNlc3Npb25faWQYASABKAkiLQoXU3RvcEFnZW50U2Vzc2lvblJlcXVlc3QSEgoKc2Vzc2lvbl9pZBgBIAEoCSIaChhTdG9wQWdlbnRTZXNzaW9uUmVzcG9uc2UiLwoZUmVsb2FkQWdlbnRTZXNzaW9uUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJIjAKGlJlbG9hZEFnZW50U2Vzc2lvblJlc3BvbnNlEhIKCnNlc3Npb25faWQYASABKAkiKwoVR2V0QWdlbnRTdGF0dXNSZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiSgoWR2V0QWdlbnRTdGF0dXNSZXNwb25zZRIwCghzdGF0dXNlcxgBIAMoCzIeLmNvbXBhc3MudjEuQWdlbnRTZXNzaW9uU3RhdHVzIicKEUlzc3VlVG9rZW5SZXF1ZXN0EhIKCmFjY291bnRfaWQYASABKAkiIwoSSXNzdWVUb2tlblJlc3BvbnNlEg0KBXRva2VuGAEgASgJKmQKDlNlY3JldERlbGl2ZXJ5Eh8KG1NFQ1JFVF9ERUxJVkVSWV9VTlNQRUNJRklFRBAAEhgKFFNFQ1JFVF9ERUxJVkVSWV9GSUxFEAESFwoTU0VDUkVUX0RFTElWRVJZX0VOVhACKnAKClNlY3JldEtpbmQSGwoXU0VDUkVUX0tJTkRfVU5TUEVDSUZJRUQQABIXChNTRUNSRVRfS0lORF9HRU5FUklDEAESGAoUU0VDUkVUX0tJTkRfUFJPVklERVIQAhISCg5TRUNSRVRfS0lORF9HSBADKkMKC1NlcnZlclN0YXRlEhwKGFNFUlZFUl9TVEFURV9VTlNQRUNJRklFRBAAEhYKElNFUlZFUl9TVEFURV9SRUFEWRABKoICChFBZ2VudFNlc3Npb25TdGF0ZRIjCh9BR0VOVF9TRVNTSU9OX1NUQVRFX1VOU1BFQ0lGSUVEEAASIAocQUdFTlRfU0VTU0lPTl9TVEFURV9TVEFSVElORxABEh0KGUFHRU5UX1NFU1NJT05fU1RBVEVfUkVBRFkQAhIfChtBR0VOVF9TRVNTSU9OX1NUQVRFX1dPUktJTkcQAxIfChtBR0VOVF9TRVNTSU9OX1NUQVRFX1NUT1BQRUQQBBIfChtBR0VOVF9TRVNTSU9OX1NUQVRFX0VSUk9SRUQQBRIkCiBBR0VOVF9TRVNTSU9OX1NUQVRFX0RJU0NPTk5FQ1RFRBAGKtIBChNBZ2VudFRvb2xDYWxsU3RhdHVzEiYKIkFHRU5UX1RPT0xfQ0FMTF9TVEFUVVNfVU5TUEVDSUZJRUQQABIiCh5BR0VOVF9UT09MX0NBTExfU1RBVFVTX1BFTkRJTkcQARImCiJBR0VOVF9UT09MX0NBTExfU1RBVFVTX0lOX1BST0dSRVNTEAISJAogQUdFTlRfVE9PTF9DQUxMX1NUQVRVU19DT01QTEVURUQQAxIhCh1BR0VOVF9UT09MX0NBTExfU1RBVFVTX0ZBSUxFRBAEKrQBChRBZ2VudFBsYW5FbnRyeVN0YXR1cxInCiNBR0VOVF9QTEFOX0VOVFJZX1NUQVRVU19VTlNQRUNJRklFRBAAEiMKH0FHRU5UX1BMQU5fRU5UUllfU1RBVFVTX1BFTkRJTkcQARInCiNBR0VOVF9QTEFOX0VOVFJZX1NUQVRVU19JTl9QUk9HUkVTUxACEiUKIUFHRU5UX1BMQU5fRU5UUllfU1RBVFVTX0NPTVBMRVRFRBADMugGCg5Db21wYXNzU2VydmljZRJUCg1HZXRTZXJ2ZXJJbmZvEiAuY29tcGFzcy52MS5HZXRTZXJ2ZXJJbmZvUmVxdWVzdBohLmNvbXBhc3MudjEuR2V0U2VydmVySW5mb1Jlc3BvbnNlElwKD1N1YnNjcmliZUV2ZW50cxIiLmNvbXBhc3MudjEuU3Vic2NyaWJlRXZlbnRzUmVxdWVzdBojLmNvbXBhc3MudjEuU3Vic2NyaWJlRXZlbnRzUmVzcG9uc2UwARJyChdQcm92aXNpb25BZ2VudFdvcmtzcGFjZRIqLmNvbXBhc3MudjEuUHJvdmlzaW9uQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0GisuY29tcGFzcy52MS5Qcm92aXNpb25BZ2VudFdvcmtzcGFjZVJlc3BvbnNlEmAKEVN0YXJ0QWdlbnRTZXNzaW9uEiQuY29tcGFzcy52MS5TdGFydEFnZW50U2Vzc2lvblJlcXVlc3QaJS5jb21wYXNzLnYxLlN0YXJ0QWdlbnRTZXNzaW9uUmVzcG9uc2USXQoQU3RvcEFnZW50U2Vzc2lvbhIjLmNvbXBhc3MudjEuU3RvcEFnZW50U2Vzc2lvblJlcXVlc3QaJC5jb21wYXNzLnYxLlN0b3BBZ2VudFNlc3Npb25SZXNwb25zZRJjChJSZWxvYWRBZ2VudFNlc3Npb24SJS5jb21wYXNzLnYxLlJlbG9hZEFnZW50U2Vzc2lvblJlcXVlc3QaJi5jb21wYXNzLnYxLlJlbG9hZEFnZW50U2Vzc2lvblJlc3BvbnNlElcKDkdldEFnZW50U3RhdHVzEiEuY29tcGFzcy52MS5HZXRBZ2VudFN0YXR1c1JlcXVlc3QaIi5jb21wYXNzLnYxLkdldEFnZW50U3RhdHVzUmVzcG9uc2USYgoVU3Vic2NyaWJlQWdlbnRTZXNzaW9uEiguY29tcGFzcy52MS5TdWJzY3JpYmVBZ2VudFNlc3Npb25SZXF1ZXN0Gh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25GcmFtZTABEksKCklzc3VlVG9rZW4SHS5jb21wYXNzLnYxLklzc3VlVG9rZW5SZXF1ZXN0Gh4uY29tcGFzcy52MS5Jc3N1ZVRva2VuUmVzcG9uc2Uy/QEKDlNlY3JldHNTZXJ2aWNlEkgKCVNldFNlY3JldBIcLmNvbXBhc3MudjEuU2V0U2VjcmV0UmVxdWVzdBodLmNvbXBhc3MudjEuU2V0U2VjcmV0UmVzcG9uc2USTgoLTGlzdFNlY3JldHMSHi5jb21wYXNzLnYxLkxpc3RTZWNyZXRzUmVxdWVzdBofLmNvbXBhc3MudjEuTGlzdFNlY3JldHNSZXNwb25zZRJRCgxEZWxldGVTZWNyZXQSHy5jb21wYXNzLnYxLkRlbGV0ZVNlY3JldFJlcXVlc3QaIC5jb21wYXNzLnYxLkRlbGV0ZVNlY3JldFJlc3BvbnNlYgZwcm90bzM");
+
+/**
+ * @generated from message compass.v1.SetSecretRequest
+ */
+export type SetSecretRequest = Message<"compass.v1.SetSecretRequest"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: string value = 2;
+   */
+  value: string;
+
+  /**
+   * @generated from field: compass.v1.SecretDelivery delivery = 3;
+   */
+  delivery: SecretDelivery;
+
+  /**
+   * @generated from field: compass.v1.SecretKind kind = 4;
+   */
+  kind: SecretKind;
+
+  /**
+   * set for SECRET_KIND_PROVIDER
+   *
+   * @generated from field: string provider = 5;
+   */
+  provider: string;
+
+  /**
+   * set for SECRET_KIND_GH
+   *
+   * @generated from field: string host = 6;
+   */
+  host: string;
+};
+
+/**
+ * Describes the message compass.v1.SetSecretRequest.
+ * Use `create(SetSecretRequestSchema)` to create a new message.
+ */
+export const SetSecretRequestSchema: GenMessage<SetSecretRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 0);
+
+/**
+ * @generated from message compass.v1.SetSecretResponse
+ */
+export type SetSecretResponse = Message<"compass.v1.SetSecretResponse"> & {
+};
+
+/**
+ * Describes the message compass.v1.SetSecretResponse.
+ * Use `create(SetSecretResponseSchema)` to create a new message.
+ */
+export const SetSecretResponseSchema: GenMessage<SetSecretResponse> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 1);
+
+/**
+ * @generated from message compass.v1.ListSecretsRequest
+ */
+export type ListSecretsRequest = Message<"compass.v1.ListSecretsRequest"> & {
+};
+
+/**
+ * Describes the message compass.v1.ListSecretsRequest.
+ * Use `create(ListSecretsRequestSchema)` to create a new message.
+ */
+export const ListSecretsRequestSchema: GenMessage<ListSecretsRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 2);
+
+/**
+ * @generated from message compass.v1.ListSecretsResponse
+ */
+export type ListSecretsResponse = Message<"compass.v1.ListSecretsResponse"> & {
+  /**
+   * @generated from field: repeated compass.v1.SecretStatus secrets = 1;
+   */
+  secrets: SecretStatus[];
+};
+
+/**
+ * Describes the message compass.v1.ListSecretsResponse.
+ * Use `create(ListSecretsResponseSchema)` to create a new message.
+ */
+export const ListSecretsResponseSchema: GenMessage<ListSecretsResponse> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 3);
+
+/**
+ * A declared secret's status — names + set/unset + routing, NEVER the value.
+ *
+ * @generated from message compass.v1.SecretStatus
+ */
+export type SecretStatus = Message<"compass.v1.SecretStatus"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * @generated from field: bool is_set = 2;
+   */
+  isSet: boolean;
+
+  /**
+   * @generated from field: compass.v1.SecretDelivery delivery = 3;
+   */
+  delivery: SecretDelivery;
+
+  /**
+   * @generated from field: compass.v1.SecretKind kind = 4;
+   */
+  kind: SecretKind;
+
+  /**
+   * @generated from field: string provider = 5;
+   */
+  provider: string;
+
+  /**
+   * @generated from field: string host = 6;
+   */
+  host: string;
+};
+
+/**
+ * Describes the message compass.v1.SecretStatus.
+ * Use `create(SecretStatusSchema)` to create a new message.
+ */
+export const SecretStatusSchema: GenMessage<SecretStatus> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 4);
+
+/**
+ * @generated from message compass.v1.DeleteSecretRequest
+ */
+export type DeleteSecretRequest = Message<"compass.v1.DeleteSecretRequest"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+};
+
+/**
+ * Describes the message compass.v1.DeleteSecretRequest.
+ * Use `create(DeleteSecretRequestSchema)` to create a new message.
+ */
+export const DeleteSecretRequestSchema: GenMessage<DeleteSecretRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 5);
+
+/**
+ * @generated from message compass.v1.DeleteSecretResponse
+ */
+export type DeleteSecretResponse = Message<"compass.v1.DeleteSecretResponse"> & {
+};
+
+/**
+ * Describes the message compass.v1.DeleteSecretResponse.
+ * Use `create(DeleteSecretResponseSchema)` to create a new message.
+ */
+export const DeleteSecretResponseSchema: GenMessage<DeleteSecretResponse> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 6);
 
 /**
  * @generated from message compass.v1.GetServerInfoRequest
@@ -31,7 +194,7 @@ export type GetServerInfoRequest = Message<"compass.v1.GetServerInfoRequest"> & 
  * Use `create(GetServerInfoRequestSchema)` to create a new message.
  */
 export const GetServerInfoRequestSchema: GenMessage<GetServerInfoRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 0);
+  messageDesc(file_compass_v1_compass, 7);
 
 /**
  * @generated from message compass.v1.GetServerInfoResponse
@@ -57,7 +220,7 @@ export type GetServerInfoResponse = Message<"compass.v1.GetServerInfoResponse"> 
  * Use `create(GetServerInfoResponseSchema)` to create a new message.
  */
 export const GetServerInfoResponseSchema: GenMessage<GetServerInfoResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 1);
+  messageDesc(file_compass_v1_compass, 8);
 
 /**
  * Subscribe to the server event stream.
@@ -91,7 +254,7 @@ export type SubscribeEventsRequest = Message<"compass.v1.SubscribeEventsRequest"
  * Use `create(SubscribeEventsRequestSchema)` to create a new message.
  */
 export const SubscribeEventsRequestSchema: GenMessage<SubscribeEventsRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 2);
+  messageDesc(file_compass_v1_compass, 9);
 
 /**
  * One entry in the server event stream.
@@ -181,7 +344,7 @@ export type SubscribeEventsResponse = Message<"compass.v1.SubscribeEventsRespons
  * Use `create(SubscribeEventsResponseSchema)` to create a new message.
  */
 export const SubscribeEventsResponseSchema: GenMessage<SubscribeEventsResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 3);
+  messageDesc(file_compass_v1_compass, 10);
 
 /**
  * The server's liveness state, pushed on connect and whenever it changes.
@@ -200,7 +363,7 @@ export type ServerStatus = Message<"compass.v1.ServerStatus"> & {
  * Use `create(ServerStatusSchema)` to create a new message.
  */
 export const ServerStatusSchema: GenMessage<ServerStatus> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 4);
+  messageDesc(file_compass_v1_compass, 11);
 
 /**
  * The requested `since_seq` predates the server's retained event buffer, so a
@@ -218,7 +381,7 @@ export type ResyncRequired = Message<"compass.v1.ResyncRequired"> & {
  * Use `create(ResyncRequiredSchema)` to create a new message.
  */
 export const ResyncRequiredSchema: GenMessage<ResyncRequired> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 5);
+  messageDesc(file_compass_v1_compass, 12);
 
 /**
  * The lifecycle state of one agent session, pushed on every transition.
@@ -244,7 +407,7 @@ export type AgentSessionStatus = Message<"compass.v1.AgentSessionStatus"> & {
  * Use `create(AgentSessionStatusSchema)` to create a new message.
  */
 export const AgentSessionStatusSchema: GenMessage<AgentSessionStatus> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 6);
+  messageDesc(file_compass_v1_compass, 13);
 
 /**
  * A chunk of the agent's message stream (assistant text / thought), relayed
@@ -279,7 +442,7 @@ export type AgentMessageChunk = Message<"compass.v1.AgentMessageChunk"> & {
  * Use `create(AgentMessageChunkSchema)` to create a new message.
  */
 export const AgentMessageChunkSchema: GenMessage<AgentMessageChunk> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 7);
+  messageDesc(file_compass_v1_compass, 14);
 
 /**
  * A tool call the agent started or updated, relayed from the Runner's agent
@@ -320,7 +483,7 @@ export type AgentToolCall = Message<"compass.v1.AgentToolCall"> & {
  * Use `create(AgentToolCallSchema)` to create a new message.
  */
 export const AgentToolCallSchema: GenMessage<AgentToolCall> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 8);
+  messageDesc(file_compass_v1_compass, 15);
 
 /**
  * The agent's current execution plan, relayed from the Runner's agent event
@@ -345,7 +508,7 @@ export type AgentPlan = Message<"compass.v1.AgentPlan"> & {
  * Use `create(AgentPlanSchema)` to create a new message.
  */
 export const AgentPlanSchema: GenMessage<AgentPlan> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 9);
+  messageDesc(file_compass_v1_compass, 16);
 
 /**
  * One step in an agent plan.
@@ -369,7 +532,7 @@ export type AgentPlanEntry = Message<"compass.v1.AgentPlanEntry"> & {
  * Use `create(AgentPlanEntrySchema)` to create a new message.
  */
 export const AgentPlanEntrySchema: GenMessage<AgentPlanEntry> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 10);
+  messageDesc(file_compass_v1_compass, 17);
 
 /**
  * The typed observation-trace event — the render contract for the UI's session
@@ -445,7 +608,7 @@ export type SessionEvent = Message<"compass.v1.SessionEvent"> & {
  * Use `create(SessionEventSchema)` to create a new message.
  */
 export const SessionEventSchema: GenMessage<SessionEvent> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 11);
+  messageDesc(file_compass_v1_compass, 18);
 
 /**
  * A chunk of the agent's user-facing message stream. message_id correlates the
@@ -472,7 +635,7 @@ export type SessionAssistantText = Message<"compass.v1.SessionAssistantText"> & 
  * Use `create(SessionAssistantTextSchema)` to create a new message.
  */
 export const SessionAssistantTextSchema: GenMessage<SessionAssistantText> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 12);
+  messageDesc(file_compass_v1_compass, 19);
 
 /**
  * A chunk of the agent's internal-reasoning (thought) stream, correlated by
@@ -497,7 +660,7 @@ export type SessionThinking = Message<"compass.v1.SessionThinking"> & {
  * Use `create(SessionThinkingSchema)` to create a new message.
  */
 export const SessionThinkingSchema: GenMessage<SessionThinking> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 13);
+  messageDesc(file_compass_v1_compass, 20);
 
 /**
  * A tool call the agent started. Reuses AgentToolCallStatus rather than minting
@@ -527,7 +690,7 @@ export type SessionToolCall = Message<"compass.v1.SessionToolCall"> & {
  * Use `create(SessionToolCallSchema)` to create a new message.
  */
 export const SessionToolCallSchema: GenMessage<SessionToolCall> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 14);
+  messageDesc(file_compass_v1_compass, 21);
 
 /**
  * An update to a running or finished tool call: its new status, any accumulated
@@ -563,7 +726,7 @@ export type SessionToolCallUpdate = Message<"compass.v1.SessionToolCallUpdate"> 
  * Use `create(SessionToolCallUpdateSchema)` to create a new message.
  */
 export const SessionToolCallUpdateSchema: GenMessage<SessionToolCallUpdate> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 15);
+  messageDesc(file_compass_v1_compass, 22);
 
 /**
  * One file edit within a tool-call update. old_text absent = a file creation.
@@ -592,7 +755,7 @@ export type SessionFileDiff = Message<"compass.v1.SessionFileDiff"> & {
  * Use `create(SessionFileDiffSchema)` to create a new message.
  */
 export const SessionFileDiffSchema: GenMessage<SessionFileDiff> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 16);
+  messageDesc(file_compass_v1_compass, 23);
 
 /**
  * The agent's current execution plan. Reuses AgentPlanEntry.
@@ -611,7 +774,7 @@ export type SessionPlan = Message<"compass.v1.SessionPlan"> & {
  * Use `create(SessionPlanSchema)` to create a new message.
  */
 export const SessionPlanSchema: GenMessage<SessionPlan> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 17);
+  messageDesc(file_compass_v1_compass, 24);
 
 /**
  * A free-standing notice in the trace (a status line or advisory), with an
@@ -636,7 +799,7 @@ export type SessionNotice = Message<"compass.v1.SessionNotice"> & {
  * Use `create(SessionNoticeSchema)` to create a new message.
  */
 export const SessionNoticeSchema: GenMessage<SessionNotice> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 18);
+  messageDesc(file_compass_v1_compass, 25);
 
 /**
  * SubscribeAgentSession: the session whose typed observation trace to tail.
@@ -655,7 +818,7 @@ export type SubscribeAgentSessionRequest = Message<"compass.v1.SubscribeAgentSes
  * Use `create(SubscribeAgentSessionRequestSchema)` to create a new message.
  */
 export const SubscribeAgentSessionRequestSchema: GenMessage<SubscribeAgentSessionRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 19);
+  messageDesc(file_compass_v1_compass, 26);
 
 /**
  * One frame on the SubscribeAgentSession stream: a typed trace event, a
@@ -686,7 +849,7 @@ export type AgentSessionFrame = Message<"compass.v1.AgentSessionFrame"> & {
  * Use `create(AgentSessionFrameSchema)` to create a new message.
  */
 export const AgentSessionFrameSchema: GenMessage<AgentSessionFrame> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 20);
+  messageDesc(file_compass_v1_compass, 27);
 
 /**
  * ProvisionAgentWorkspace: create the isolated per-agent container for a
@@ -753,7 +916,7 @@ export type ProvisionAgentWorkspaceRequest = Message<"compass.v1.ProvisionAgentW
  * Use `create(ProvisionAgentWorkspaceRequestSchema)` to create a new message.
  */
 export const ProvisionAgentWorkspaceRequestSchema: GenMessage<ProvisionAgentWorkspaceRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 21);
+  messageDesc(file_compass_v1_compass, 28);
 
 /**
  * @generated from message compass.v1.ProvisionAgentWorkspaceResponse
@@ -773,7 +936,7 @@ export type ProvisionAgentWorkspaceResponse = Message<"compass.v1.ProvisionAgent
  * Use `create(ProvisionAgentWorkspaceResponseSchema)` to create a new message.
  */
 export const ProvisionAgentWorkspaceResponseSchema: GenMessage<ProvisionAgentWorkspaceResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 22);
+  messageDesc(file_compass_v1_compass, 29);
 
 /**
  * StartAgentSession: bring the first-party agent in a provisioned container
@@ -803,7 +966,7 @@ export type StartAgentSessionRequest = Message<"compass.v1.StartAgentSessionRequ
  * Use `create(StartAgentSessionRequestSchema)` to create a new message.
  */
 export const StartAgentSessionRequestSchema: GenMessage<StartAgentSessionRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 23);
+  messageDesc(file_compass_v1_compass, 30);
 
 /**
  * @generated from message compass.v1.StartAgentSessionResponse
@@ -823,7 +986,7 @@ export type StartAgentSessionResponse = Message<"compass.v1.StartAgentSessionRes
  * Use `create(StartAgentSessionResponseSchema)` to create a new message.
  */
 export const StartAgentSessionResponseSchema: GenMessage<StartAgentSessionResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 24);
+  messageDesc(file_compass_v1_compass, 31);
 
 /**
  * @generated from message compass.v1.StopAgentSessionRequest
@@ -840,7 +1003,7 @@ export type StopAgentSessionRequest = Message<"compass.v1.StopAgentSessionReques
  * Use `create(StopAgentSessionRequestSchema)` to create a new message.
  */
 export const StopAgentSessionRequestSchema: GenMessage<StopAgentSessionRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 25);
+  messageDesc(file_compass_v1_compass, 32);
 
 /**
  * @generated from message compass.v1.StopAgentSessionResponse
@@ -853,7 +1016,7 @@ export type StopAgentSessionResponse = Message<"compass.v1.StopAgentSessionRespo
  * Use `create(StopAgentSessionResponseSchema)` to create a new message.
  */
 export const StopAgentSessionResponseSchema: GenMessage<StopAgentSessionResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 26);
+  messageDesc(file_compass_v1_compass, 33);
 
 /**
  * @generated from message compass.v1.ReloadAgentSessionRequest
@@ -870,7 +1033,7 @@ export type ReloadAgentSessionRequest = Message<"compass.v1.ReloadAgentSessionRe
  * Use `create(ReloadAgentSessionRequestSchema)` to create a new message.
  */
 export const ReloadAgentSessionRequestSchema: GenMessage<ReloadAgentSessionRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 27);
+  messageDesc(file_compass_v1_compass, 34);
 
 /**
  * @generated from message compass.v1.ReloadAgentSessionResponse
@@ -889,7 +1052,7 @@ export type ReloadAgentSessionResponse = Message<"compass.v1.ReloadAgentSessionR
  * Use `create(ReloadAgentSessionResponseSchema)` to create a new message.
  */
 export const ReloadAgentSessionResponseSchema: GenMessage<ReloadAgentSessionResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 28);
+  messageDesc(file_compass_v1_compass, 35);
 
 /**
  * GetAgentStatus: one session when `session_id` is set, else every live one.
@@ -910,7 +1073,7 @@ export type GetAgentStatusRequest = Message<"compass.v1.GetAgentStatusRequest"> 
  * Use `create(GetAgentStatusRequestSchema)` to create a new message.
  */
 export const GetAgentStatusRequestSchema: GenMessage<GetAgentStatusRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 29);
+  messageDesc(file_compass_v1_compass, 36);
 
 /**
  * @generated from message compass.v1.GetAgentStatusResponse
@@ -927,7 +1090,7 @@ export type GetAgentStatusResponse = Message<"compass.v1.GetAgentStatusResponse"
  * Use `create(GetAgentStatusResponseSchema)` to create a new message.
  */
 export const GetAgentStatusResponseSchema: GenMessage<GetAgentStatusResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 30);
+  messageDesc(file_compass_v1_compass, 37);
 
 /**
  * IssueToken: the admin-only path to mint a bearer token for an account.
@@ -950,7 +1113,7 @@ export type IssueTokenRequest = Message<"compass.v1.IssueTokenRequest"> & {
  * Use `create(IssueTokenRequestSchema)` to create a new message.
  */
 export const IssueTokenRequestSchema: GenMessage<IssueTokenRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 31);
+  messageDesc(file_compass_v1_compass, 38);
 
 /**
  * @generated from message compass.v1.IssueTokenResponse
@@ -971,7 +1134,81 @@ export type IssueTokenResponse = Message<"compass.v1.IssueTokenResponse"> & {
  * Use `create(IssueTokenResponseSchema)` to create a new message.
  */
 export const IssueTokenResponseSchema: GenMessage<IssueTokenResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_compass, 32);
+  messageDesc(file_compass_v1_compass, 39);
+
+/**
+ * How a resolved secret is delivered into the agent container. Mirrors
+ * secrets.DeliveryKind (go/internal/secrets/secrets.go:34-46), mapped at the
+ * handler edge.
+ *
+ * @generated from enum compass.v1.SecretDelivery
+ */
+export enum SecretDelivery {
+  /**
+   * @generated from enum value: SECRET_DELIVERY_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * 0600 file under the agent's scoped $HOME
+   *
+   * @generated from enum value: SECRET_DELIVERY_FILE = 1;
+   */
+  FILE = 1,
+
+  /**
+   * aggregate 0600 env file each wrapped exec reads
+   *
+   * @generated from enum value: SECRET_DELIVERY_ENV = 2;
+   */
+  ENV = 2,
+}
+
+/**
+ * Describes the enum compass.v1.SecretDelivery.
+ */
+export const SecretDeliverySchema: GenEnum<SecretDelivery> = /*@__PURE__*/
+  enumDesc(file_compass_v1_compass, 0);
+
+/**
+ * The routing class the T5 materializer switches on. Mirrors secrets.SecretKind
+ * (go/internal/secrets/secrets.go:48-61), mapped at the handler edge.
+ *
+ * @generated from enum compass.v1.SecretKind
+ */
+export enum SecretKind {
+  /**
+   * @generated from enum value: SECRET_KIND_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * plain declared secret placed by delivery
+   *
+   * @generated from enum value: SECRET_KIND_GENERIC = 1;
+   */
+  GENERIC = 1,
+
+  /**
+   * LLM provider credential; carries provider id
+   *
+   * @generated from enum value: SECRET_KIND_PROVIDER = 2;
+   */
+  PROVIDER = 2,
+
+  /**
+   * gh credential; carries host
+   *
+   * @generated from enum value: SECRET_KIND_GH = 3;
+   */
+  GH = 3,
+}
+
+/**
+ * Describes the enum compass.v1.SecretKind.
+ */
+export const SecretKindSchema: GenEnum<SecretKind> = /*@__PURE__*/
+  enumDesc(file_compass_v1_compass, 1);
 
 /**
  * @generated from enum compass.v1.ServerState
@@ -992,7 +1229,7 @@ export enum ServerState {
  * Describes the enum compass.v1.ServerState.
  */
 export const ServerStateSchema: GenEnum<ServerState> = /*@__PURE__*/
-  enumDesc(file_compass_v1_compass, 0);
+  enumDesc(file_compass_v1_compass, 2);
 
 /**
  * Agent-session lifecycle states. `ERRORED` is an unexpected agent exit (OOM,
@@ -1058,7 +1295,7 @@ export enum AgentSessionState {
  * Describes the enum compass.v1.AgentSessionState.
  */
 export const AgentSessionStateSchema: GenEnum<AgentSessionState> = /*@__PURE__*/
-  enumDesc(file_compass_v1_compass, 1);
+  enumDesc(file_compass_v1_compass, 3);
 
 /**
  * @generated from enum compass.v1.AgentToolCallStatus
@@ -1094,7 +1331,7 @@ export enum AgentToolCallStatus {
  * Describes the enum compass.v1.AgentToolCallStatus.
  */
 export const AgentToolCallStatusSchema: GenEnum<AgentToolCallStatus> = /*@__PURE__*/
-  enumDesc(file_compass_v1_compass, 2);
+  enumDesc(file_compass_v1_compass, 4);
 
 /**
  * @generated from enum compass.v1.AgentPlanEntryStatus
@@ -1125,7 +1362,7 @@ export enum AgentPlanEntryStatus {
  * Describes the enum compass.v1.AgentPlanEntryStatus.
  */
 export const AgentPlanEntryStatusSchema: GenEnum<AgentPlanEntryStatus> = /*@__PURE__*/
-  enumDesc(file_compass_v1_compass, 3);
+  enumDesc(file_compass_v1_compass, 5);
 
 /**
  * The Compass server service.
@@ -1259,4 +1496,49 @@ export const CompassService: GenService<{
   },
 }> = /*@__PURE__*/
   serviceDesc(file_compass_v1_compass, 0);
+
+/**
+ * User-facing secret registry writes. SetSecret/DeleteSecret are user-only
+ * (enforced in the handler: caller account kind == User, an agent account is
+ * rejected PermissionDenied); ListSecrets is callable by user AND agent tokens
+ * (the Setup agent drives it). The proto carries no gate — authz is the
+ * handler's (SEA-1327 T7).
+ *
+ * @generated from service compass.v1.SecretsService
+ */
+export const SecretsService: GenService<{
+  /**
+   * Declare a secret's registry row (name/delivery/kind/routing) and write its
+   * value via the resolver. User-only. `value` is never logged.
+   *
+   * @generated from rpc compass.v1.SecretsService.SetSecret
+   */
+  setSecret: {
+    methodKind: "unary";
+    input: typeof SetSecretRequestSchema;
+    output: typeof SetSecretResponseSchema;
+  },
+  /**
+   * List declared secrets by name with set/unset + routing — never values.
+   * User and agent tokens.
+   *
+   * @generated from rpc compass.v1.SecretsService.ListSecrets
+   */
+  listSecrets: {
+    methodKind: "unary";
+    input: typeof ListSecretsRequestSchema;
+    output: typeof ListSecretsResponseSchema;
+  },
+  /**
+   * Remove a secret's registry row + value. User-only.
+   *
+   * @generated from rpc compass.v1.SecretsService.DeleteSecret
+   */
+  deleteSecret: {
+    methodKind: "unary";
+    input: typeof DeleteSecretRequestSchema;
+    output: typeof DeleteSecretResponseSchema;
+  },
+}> = /*@__PURE__*/
+  serviceDesc(file_compass_v1_compass, 1);
 

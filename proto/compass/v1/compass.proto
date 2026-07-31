@@ -74,6 +74,69 @@ service CompassService {
   rpc IssueToken(IssueTokenRequest) returns (IssueTokenResponse);
 }
 
+// How a resolved secret is delivered into the agent container. Mirrors
+// secrets.DeliveryKind (go/internal/secrets/secrets.go:34-46), mapped at the
+// handler edge.
+enum SecretDelivery {
+  SECRET_DELIVERY_UNSPECIFIED = 0;
+  SECRET_DELIVERY_FILE = 1;  // 0600 file under the agent's scoped $HOME
+  SECRET_DELIVERY_ENV = 2;   // aggregate 0600 env file each wrapped exec reads
+}
+
+// The routing class the T5 materializer switches on. Mirrors secrets.SecretKind
+// (go/internal/secrets/secrets.go:48-61), mapped at the handler edge.
+enum SecretKind {
+  SECRET_KIND_UNSPECIFIED = 0;
+  SECRET_KIND_GENERIC = 1;   // plain declared secret placed by delivery
+  SECRET_KIND_PROVIDER = 2;  // LLM provider credential; carries provider id
+  SECRET_KIND_GH = 3;        // gh credential; carries host
+}
+
+// User-facing secret registry writes. SetSecret/DeleteSecret are user-only
+// (enforced in the handler: caller account kind == User, an agent account is
+// rejected PermissionDenied); ListSecrets is callable by user AND agent tokens
+// (the Setup agent drives it). The proto carries no gate — authz is the
+// handler's (SEA-1327 T7).
+service SecretsService {
+  // Declare a secret's registry row (name/delivery/kind/routing) and write its
+  // value via the resolver. User-only. `value` is never logged.
+  rpc SetSecret(SetSecretRequest) returns (SetSecretResponse);
+  // List declared secrets by name with set/unset + routing — never values.
+  // User and agent tokens.
+  rpc ListSecrets(ListSecretsRequest) returns (ListSecretsResponse);
+  // Remove a secret's registry row + value. User-only.
+  rpc DeleteSecret(DeleteSecretRequest) returns (DeleteSecretResponse);
+}
+
+message SetSecretRequest {
+  string name = 1;
+  string value = 2 [debug_redact = true];
+  SecretDelivery delivery = 3;
+  SecretKind kind = 4;
+  string provider = 5;  // set for SECRET_KIND_PROVIDER
+  string host = 6;      // set for SECRET_KIND_GH
+}
+message SetSecretResponse {}
+
+message ListSecretsRequest {}
+message ListSecretsResponse {
+  repeated SecretStatus secrets = 1;
+}
+// A declared secret's status — names + set/unset + routing, NEVER the value.
+message SecretStatus {
+  string name = 1;
+  bool is_set = 2;
+  SecretDelivery delivery = 3;
+  SecretKind kind = 4;
+  string provider = 5;
+  string host = 6;
+}
+
+message DeleteSecretRequest {
+  string name = 1;
+}
+message DeleteSecretResponse {}
+
 message GetServerInfoRequest {}
 
 message GetServerInfoResponse {

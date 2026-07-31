@@ -72,6 +72,9 @@ const (
 	// RunnerServiceCommitConversationFrameProcedure is the fully-qualified name of the RunnerService's
 	// CommitConversationFrame RPC.
 	RunnerServiceCommitConversationFrameProcedure = "/compass.v1.RunnerService/CommitConversationFrame"
+	// RunnerServiceFetchSecretsProcedure is the fully-qualified name of the RunnerService's
+	// FetchSecrets RPC.
+	RunnerServiceFetchSecretsProcedure = "/compass.v1.RunnerService/FetchSecrets"
 )
 
 // RunnerServiceClient is a client for the compass.v1.RunnerService service.
@@ -142,6 +145,13 @@ type RunnerServiceClient interface {
 	// Additive to the frozen dial-out shape (the Runner still initiates; the
 	// Server gains no inbound route), same justification as RelayCommsCall.
 	CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error)
+	// FetchSecrets (unary, Runner->Server): the Runner fetches the full resolved
+	// secret set for one session to materialize into the agent container (SEA-1327
+	// T4). Inject-all: no name filter, no per-agent grants (the filter is the
+	// named future per-agent-scoping seam). The response is no-log: a logging
+	// interceptor must never dump resolved values. Additive to the frozen dial-out
+	// shape (the Runner still initiates; the Server gains no inbound route).
+	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
 }
 
 // NewRunnerServiceClient constructs a client for the compass.v1.RunnerService service. By default,
@@ -185,6 +195,12 @@ func NewRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(runnerServiceMethods.ByName("CommitConversationFrame")),
 			connect.WithClientOptions(opts...),
 		),
+		fetchSecrets: connect.NewClient[v1.FetchSecretsRequest, v1.FetchSecretsResponse](
+			httpClient,
+			baseURL+RunnerServiceFetchSecretsProcedure,
+			connect.WithSchema(runnerServiceMethods.ByName("FetchSecrets")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -195,6 +211,7 @@ type runnerServiceClient struct {
 	publishEvents           *connect.Client[v1.PublishEventsRequest, v1.PublishEventsResponse]
 	relayCommsCall          *connect.Client[v1.RelayCommsCallRequest, v1.RelayCommsCallResponse]
 	commitConversationFrame *connect.Client[v1.CommitConversationFrameRequest, v1.CommitConversationFrameResponse]
+	fetchSecrets            *connect.Client[v1.FetchSecretsRequest, v1.FetchSecretsResponse]
 }
 
 // Enroll calls compass.v1.RunnerService.Enroll.
@@ -220,6 +237,11 @@ func (c *runnerServiceClient) RelayCommsCall(ctx context.Context, req *connect.R
 // CommitConversationFrame calls compass.v1.RunnerService.CommitConversationFrame.
 func (c *runnerServiceClient) CommitConversationFrame(ctx context.Context, req *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error) {
 	return c.commitConversationFrame.CallUnary(ctx, req)
+}
+
+// FetchSecrets calls compass.v1.RunnerService.FetchSecrets.
+func (c *runnerServiceClient) FetchSecrets(ctx context.Context, req *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error) {
+	return c.fetchSecrets.CallUnary(ctx, req)
 }
 
 // RunnerServiceHandler is an implementation of the compass.v1.RunnerService service.
@@ -290,6 +312,13 @@ type RunnerServiceHandler interface {
 	// Additive to the frozen dial-out shape (the Runner still initiates; the
 	// Server gains no inbound route), same justification as RelayCommsCall.
 	CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error)
+	// FetchSecrets (unary, Runner->Server): the Runner fetches the full resolved
+	// secret set for one session to materialize into the agent container (SEA-1327
+	// T4). Inject-all: no name filter, no per-agent grants (the filter is the
+	// named future per-agent-scoping seam). The response is no-log: a logging
+	// interceptor must never dump resolved values. Additive to the frozen dial-out
+	// shape (the Runner still initiates; the Server gains no inbound route).
+	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
 }
 
 // NewRunnerServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -329,6 +358,12 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(runnerServiceMethods.ByName("CommitConversationFrame")),
 		connect.WithHandlerOptions(opts...),
 	)
+	runnerServiceFetchSecretsHandler := connect.NewUnaryHandler(
+		RunnerServiceFetchSecretsProcedure,
+		svc.FetchSecrets,
+		connect.WithSchema(runnerServiceMethods.ByName("FetchSecrets")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/compass.v1.RunnerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case RunnerServiceEnrollProcedure:
@@ -341,6 +376,8 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 			runnerServiceRelayCommsCallHandler.ServeHTTP(w, r)
 		case RunnerServiceCommitConversationFrameProcedure:
 			runnerServiceCommitConversationFrameHandler.ServeHTTP(w, r)
+		case RunnerServiceFetchSecretsProcedure:
+			runnerServiceFetchSecretsHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -368,4 +405,8 @@ func (UnimplementedRunnerServiceHandler) RelayCommsCall(context.Context, *connec
 
 func (UnimplementedRunnerServiceHandler) CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.CommitConversationFrame is not implemented"))
+}
+
+func (UnimplementedRunnerServiceHandler) FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.FetchSecrets is not implemented"))
 }

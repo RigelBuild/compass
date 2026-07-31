@@ -115,6 +115,14 @@ service RunnerService {
   // Additive to the frozen dial-out shape (the Runner still initiates; the
   // Server gains no inbound route), same justification as RelayCommsCall.
   rpc CommitConversationFrame(CommitConversationFrameRequest) returns (CommitConversationFrameResponse);
+
+  // FetchSecrets (unary, Runner->Server): the Runner fetches the full resolved
+  // secret set for one session to materialize into the agent container (SEA-1327
+  // T4). Inject-all: no name filter, no per-agent grants (the filter is the
+  // named future per-agent-scoping seam). The response is no-log: a logging
+  // interceptor must never dump resolved values. Additive to the frozen dial-out
+  // shape (the Runner still initiates; the Server gains no inbound route).
+  rpc FetchSecrets(FetchSecretsRequest) returns (FetchSecretsResponse);
 }
 
 // Enroll request: the Runner announces its stable identity at connect. The id
@@ -167,7 +175,42 @@ message SessionsResponse {
     ReloadAgentSessionRequest reload = 4;
     GetAgentStatusRequest status = 5;
     ProvisionAgentWorkspaceRequest provision = 6;
+    // secrets_version (tag 8; tag 7 reserved for forge_notification): the Server
+    // signals the Runner that the session's secret set changed; the Runner
+    // re-fetches via FetchSecrets. Signal-only — never carries values, no result
+    // variant on the request stream.
+    SecretsVersion secrets_version = 8;
   }
+}
+
+// FetchSecrets request: the session whose secrets to resolve. Inject-all — no
+// name filter.
+message FetchSecretsRequest {
+  string session_id = 1;
+}
+// FetchSecrets response: the whole resolved secret set. NO-LOG — carries live
+// secret values.
+message FetchSecretsResponse {
+  repeated ResolvedSecret secrets = 1;
+}
+// One resolved secret: name + value + content-hash version + delivery/kind
+// routing. The SecretDelivery/SecretKind enums are the public ones from
+// compass.proto (this internal file already imports it). `value` is the no-log
+// target.
+message ResolvedSecret {
+  string name = 1;
+  string value = 2 [debug_redact = true];
+  string version = 3;  // content-hash (SHA-256 hex)
+  SecretDelivery delivery = 4;
+  SecretKind kind = 5;
+  string host = 6;      // set only for SECRET_KIND_GH
+  string provider = 7;  // set only for SECRET_KIND_PROVIDER
+}
+// SecretsVersion: a Server->Runner signal that a session's secret set changed.
+// Signal only — carries no values; the Runner re-fetches on it.
+message SecretsVersion {
+  string session_id = 1;
+  string version = 2;
 }
 
 // An in-band command failure carried in a SessionsRequest result oneof. The
