@@ -2166,8 +2166,18 @@ type ProvisionAgentWorkspaceRequest struct {
 	// call provisions). compass.md §"A retried provision creates no duplicate
 	// container".
 	ClientRequestId string `protobuf:"bytes,5,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// The agent's persona, baked into the container's system prompt at provision
+	// so it survives compaction (a system-prompt config block is not part of the
+	// message history a snapcompact archives). SERVER-AUTHORITATIVE: the Server
+	// is expected to populate this by reading AgentAccount.persona from the store
+	// on the provision path and to overwrite any client-supplied value, so a
+	// caller cannot inject a system prompt — an invariant enforced by the server
+	// provision path (not by this wire-settable field). The Runner materializes
+	// it into the container
+	// (compass-runner consumer). Empty = no persona baked (default).
+	Persona       string `protobuf:"bytes,6,opt,name=persona,proto3" json:"persona,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProvisionAgentWorkspaceRequest) Reset() {
@@ -2242,6 +2252,13 @@ func (x *ProvisionAgentWorkspaceRequest) GetRef() string {
 func (x *ProvisionAgentWorkspaceRequest) GetClientRequestId() string {
 	if x != nil {
 		return x.ClientRequestId
+	}
+	return ""
+}
+
+func (x *ProvisionAgentWorkspaceRequest) GetPersona() string {
+	if x != nil {
+		return x.Persona
 	}
 	return ""
 }
@@ -2889,7 +2906,7 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12.\n" +
 	"\x05event\x18\x02 \x01(\v2\x18.compass.v1.SessionEventR\x05event\x123\n" +
-	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\"\xd2\x01\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\"\xec\x01\n" +
 	"\x1eProvisionAgentWorkspaceRequest\x12(\n" +
 	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12\x1f\n" +
 	"\n" +
@@ -2897,7 +2914,8 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\n" +
 	"local_path\x18\x03 \x01(\tH\x00R\tlocalPath\x12\x10\n" +
 	"\x03ref\x18\x04 \x01(\tR\x03ref\x12*\n" +
-	"\x11client_request_id\x18\x05 \x01(\tR\x0fclientRequestIdB\x06\n" +
+	"\x11client_request_id\x18\x05 \x01(\tR\x0fclientRequestId\x12\x18\n" +
+	"\apersona\x18\x06 \x01(\tR\apersonaB\x06\n" +
 	"\x04repo\"H\n" +
 	"\x1fProvisionAgentWorkspaceResponse\x12%\n" +
 	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\"h\n" +
