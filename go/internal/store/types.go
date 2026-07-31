@@ -134,6 +134,9 @@ type AgentAccount struct {
 	OwnerUserID AccountID
 	// HomeChannelID is the agent's home channel, minted at creation (RT-2).
 	HomeChannelID ChannelID
+	// Persona is the agent's system-prompt text, baked at creation (SEA-1571);
+	// empty means no persona override.
+	Persona string
 }
 
 // ChannelGroup is a namespace node holding channels and nested groups

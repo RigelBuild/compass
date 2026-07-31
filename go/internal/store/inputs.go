@@ -20,6 +20,10 @@ type NewUser struct {
 type NewAgent struct {
 	Handle      string
 	DisplayName string
+	// Persona is the agent's system-prompt text, baked at creation (SEA-1571).
+	// Empty means no persona override; the caller supplies it and the server
+	// stores it verbatim, never synthesizing one.
+	Persona string
 }
 
 // ChannelGroup input for CreateChannelGroup. OwnerUserID is the authenticated
