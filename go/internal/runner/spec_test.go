@@ -3,12 +3,10 @@
 package runner
 
 // NewConfigSpecBuilder + BuildSpec: the constructor rejects incomplete defaults
-// (no image, missing checkout/home dir), and BuildSpec maps the request's repo
-// oneof to the right RepoSource (remote_url→RemoteSource, local_path→
-// LocalPathSource, neither→error) and derives the container name as
+// (no image, missing checkout/home dir), and BuildSpec fills the workspace
+// layout from the defaults and derives the container name as
 // prefix+agent_account_id. Every test names the contract a plausible bug would
-// break: a misconfigured Runner must fail at startup, not first provision; a
-// request with the wrong repo variant must not silently launch.
+// break: a misconfigured Runner must fail at startup, not first provision.
 
 import (
 	"strings"
@@ -73,80 +71,45 @@ func TestNewConfigSpecBuilderAcceptsCompleteDefaults(t *testing.T) {
 	}
 }
 
-// BuildSpec maps each repo oneof variant to the matching RepoSource, and neither
-// set is an error. Table-driven, including the empty-URL / empty-path sub-cases
-// the mapper rejects.
-func TestBuildSpecMapsRepoSource(t *testing.T) {
+// BuildSpec fills the workspace layout from the defaults — checkout dir, home
+// dir, and agent uid — with no clone source or branch: the runner no longer
+// clones, the agent self-clones post-launch.
+func TestBuildSpecFillsWorkspaceFromDefaults(t *testing.T) {
 	builder, err := NewConfigSpecBuilder(goodDefaults())
 	if err != nil {
 		t.Fatalf("NewConfigSpecBuilder: %v", err)
 	}
-
-	t.Run("remote url", func(t *testing.T) {
-		spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
-			AgentAccountId: strings.Repeat("a", 32),
-			Repo:           &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: "https://example.com/r.git"},
-		})
-		if err != nil {
-			t.Fatalf("BuildSpec(remote) = %v", err)
-		}
-		if spec.Workspace.Source != runtime.RemoteSource("https://example.com/r.git") {
-			t.Fatalf("remote source = %+v, want RemoteSource of the url", spec.Workspace.Source)
-		}
+	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
+		AgentAccountId: strings.Repeat("a", 32),
 	})
-
-	t.Run("local path", func(t *testing.T) {
-		spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
-			AgentAccountId: strings.Repeat("a", 32),
-			Repo:           &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/r.git"},
-		})
-		if err != nil {
-			t.Fatalf("BuildSpec(local) = %v", err)
-		}
-		if spec.Workspace.Source != runtime.LocalPathSource("/mirror/r.git") {
-			t.Fatalf("local source = %+v, want LocalPathSource of the path", spec.Workspace.Source)
-		}
-	})
-
-	t.Run("neither set is an error", func(t *testing.T) {
-		_, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: strings.Repeat("a", 32)})
-		if err == nil {
-			t.Fatal("BuildSpec with no repo variant = nil error, want a required-repo error")
-		}
-	})
-
-	t.Run("empty remote url is an error", func(t *testing.T) {
-		_, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
-			AgentAccountId: strings.Repeat("a", 32),
-			Repo:           &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: ""},
-		})
-		if err == nil {
-			t.Fatal("BuildSpec with empty remote_url = nil error, want a rejection")
-		}
-	})
+	if err != nil {
+		t.Fatalf("BuildSpec = %v", err)
+	}
+	want := runtime.Workspace{
+		CheckoutDir: "/work/repo",
+		HomeDir:     "/home/agent",
+		UID:         1000,
+	}
+	if spec.Workspace != want {
+		t.Fatalf("workspace = %+v, want %+v", spec.Workspace, want)
+	}
 }
 
-// The container name is prefix+agent_account_id, and the request's ref becomes
-// the workspace branch. A bug in the name derivation would collide containers or
-// misroute the per-agent workspace.
-func TestBuildSpecDerivesNameAndBranch(t *testing.T) {
+// The container name is prefix+agent_account_id. A bug in the name derivation
+// would collide containers or misroute the per-agent workspace.
+func TestBuildSpecDerivesName(t *testing.T) {
 	builder, err := NewConfigSpecBuilder(goodDefaults())
 	if err != nil {
 		t.Fatalf("NewConfigSpecBuilder: %v", err)
 	}
 	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
 		AgentAccountId: "0123456789abcdef0123456789abcdef",
-		Ref:            "feature-branch",
-		Repo:           &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/r.git"},
 	})
 	if err != nil {
 		t.Fatalf("BuildSpec = %v", err)
 	}
 	if spec.Name != "compass-agent-0123456789abcdef0123456789abcdef" {
 		t.Fatalf("spec name = %q, want prefix+agent_account_id (compass-agent-0123456789abcdef0123456789abcdef)", spec.Name)
-	}
-	if spec.Workspace.Branch != "feature-branch" {
-		t.Fatalf("workspace branch = %q, want the request ref", spec.Workspace.Branch)
 	}
 	// Defaults thread through onto the spec.
 	if spec.Image != "compass-agent:latest" {
@@ -162,7 +125,7 @@ func TestBuildSpecDerivesNameAndBranch(t *testing.T) {
 // prefix+"" == "compass-agent-" passed the old `if name == ""` guard and
 // collapsed every empty-account provision onto one shared container name. Uses
 // goodDefaults() (non-empty NamePrefix) with an otherwise valid request so the
-// only failure is the account-id validation, not a repo error.
+// only failure is the account-id validation.
 func TestBuildSpecRejectsEmptyAgentAccountID(t *testing.T) {
 	builder, err := NewConfigSpecBuilder(goodDefaults())
 	if err != nil {
@@ -170,7 +133,6 @@ func TestBuildSpecRejectsEmptyAgentAccountID(t *testing.T) {
 	}
 	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
 		AgentAccountId: "",
-		Repo:           &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: "https://example.com/r.git"},
 	})
 	if err == nil {
 		t.Fatal("BuildSpec with empty agent_account_id = nil error, want an account-id rejection")
@@ -190,8 +152,7 @@ func TestBuildSpecRejectsEmptyAgentAccountID(t *testing.T) {
 // and bind. The socket's length guard cannot catch this, because traversal
 // SHORTENS the path — every row here is well under the AF_UNIX cap. Each reject
 // must surface a non-nil error AND the zero AgentSpec, so no half-built spec
-// carries an escaping name to Launch. Uses a valid repo so the id is the only
-// failing dimension.
+// carries an escaping name to Launch.
 func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
 	builder, err := NewConfigSpecBuilder(goodDefaults())
 	if err != nil {
@@ -230,7 +191,6 @@ func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
 				AgentAccountId: tc.accountID,
-				Repo:           &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: "https://example.com/r.git"},
 			})
 			if err == nil {
 				t.Fatalf("BuildSpec with agent_account_id %q = nil error, want a path-element rejection", tc.accountID)
@@ -248,87 +208,11 @@ func TestBuildSpecRejectsAgentAccountIDThatEscapesItsPathElement(t *testing.T) {
 	// rather than every id.
 	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
 		AgentAccountId: strings.Repeat("f", 32),
-		Repo:           &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: "https://example.com/r.git"},
 	})
 	if err != nil {
 		t.Fatalf("BuildSpec with a 32-hex account id: %v", err)
 	}
 	if want := "compass-agent-" + strings.Repeat("f", 32); spec.Name != want {
 		t.Fatalf("BuildSpec name = %q, want %q", spec.Name, want)
-	}
-}
-
-// BuildSpec must constrain the caller-supplied repo value before it is forwarded
-// verbatim as the `git clone` target: an unconstrained remote_url reaches git's
-// `ext::<cmd>` (arbitrary command) / `file://` (read-outside-boundary) transports,
-// and a non-absolute or URL-shaped local_path escapes the intended container-local
-// mirror. Table-driven over the allowed transports and each rejected shape; every
-// reject row must surface a non-nil error AND return the zero AgentSpec (no
-// half-built spec leaks past a rejected clone target). Uses goodDefaults() + a
-// valid agent_account_id so the repo value is the only failing dimension.
-func TestBuildSpecValidatesRepoScheme(t *testing.T) {
-	builder, err := NewConfigSpecBuilder(goodDefaults())
-	if err != nil {
-		t.Fatalf("NewConfigSpecBuilder: %v", err)
-	}
-	cases := []struct {
-		name    string
-		repo    isRepoVariant
-		wantErr bool
-	}{
-		// Accept: the two network transports plus an absolute container-local mirror.
-		{"https remote", remote("https://example.com/r.git"), false},
-		{"ssh remote", remote("ssh://git@github.com/org/repo.git"), false},
-		{"absolute local path", local("/mirror/r.git"), false},
-
-		// Reject remote_url: non-git-network transports and option injection.
-		{"ext transport remote", remote("ext::sh -c 'touch /tmp/pwned'"), true},
-		{"file transport remote", remote("file:///etc/passwd"), true},
-		{"git transport remote", remote("git://example.com/r.git"), true},
-		{"plaintext http remote", remote("http://example.com/r.git"), true},
-		{"scp shorthand remote", remote("git@github.com:org/repo.git"), true},
-		{"option-injecting remote", remote("-oProxyCommand=evil"), true},
-
-		// Reject local_path: non-absolute, URL-shaped, and option injection.
-		{"relative local path", local("relative/path"), true},
-		{"ext scheme local path", local("ext::evil"), true},
-		{"file url local path", local("file:///x"), true},
-		{"option-injecting local path", local("-x"), true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			req := &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: strings.Repeat("a", 32)}
-			tc.repo(req)
-			spec, err := builder.BuildSpec(req)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatalf("BuildSpec(%s) = nil error, want an unsafe-repo rejection", tc.name)
-				}
-				if spec.Name != "" {
-					t.Fatalf("BuildSpec(%s) on rejection returned spec with name %q, want the zero AgentSpec", tc.name, spec.Name)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("BuildSpec(%s) = %v, want the safe repo value accepted", tc.name, err)
-			}
-		})
-	}
-}
-
-// isRepoVariant sets the repo oneof on a request. The oneof interface is
-// unexported in the compassv1 package, so the table stores a setter instead of
-// the variant value directly.
-type isRepoVariant func(*compassv1.ProvisionAgentWorkspaceRequest)
-
-func remote(url string) isRepoVariant {
-	return func(req *compassv1.ProvisionAgentWorkspaceRequest) {
-		req.Repo = &compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl{RemoteUrl: url}
-	}
-}
-
-func local(path string) isRepoVariant {
-	return func(req *compassv1.ProvisionAgentWorkspaceRequest) {
-		req.Repo = &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: path}
 	}
 }

@@ -36,15 +36,15 @@ import (
 // (no dedup).
 //
 // The client_request_id alone must NOT be the dedup key: it is a client-chosen
-// string, and two provisions that reuse one value for DIFFERENT workspaces
-// (distinct account, repo, or ref) are distinct operations — joining them would
-// hand the second caller a container provisioned for the first's account. So a
-// non-empty id is scoped to the request's workspace identity (account + repo +
-// ref): a genuine retry resends the identical request and dedups, while a reused
-// id with different inputs derives a distinct correlation id and does not join.
+// string, and two provisions that reuse one value for DIFFERENT agent accounts
+// are distinct operations — joining them would hand the second caller a
+// container provisioned for the first's account. So a non-empty id is scoped to
+// the agent account: a genuine retry resends the identical request and dedups,
+// while a reused id for a different account derives a distinct correlation id
+// and does not join. The cross-account boundary is the invariant that remains.
 // This mirrors the comms store's (author_account_id, client_request_id)
-// idempotency scoping (store/migrations/0001_init.sql), strengthened to the full
-// provision identity since a provision creates a real isolated container.
+// idempotency scoping (store/migrations/0001_init.sql), keyed to the agent
+// account the provision creates an isolated container for.
 func (h *Hub) Provision(ctx context.Context, requestID string, req *compassv1.ProvisionAgentWorkspaceRequest) (*compassv1.ProvisionAgentWorkspaceResponse, string, error) {
 	result, runnerID, err := h.relay(ctx, "", &compassv1internal.SessionsResponse{
 		RequestId: provisionDedupID(requestID, req),
@@ -171,9 +171,8 @@ func orNewRequestID(id string) string {
 
 // provisionDedupID derives the correlation/dedup id for a provision. An empty
 // client_request_id mints a fresh random id (no dedup, per the contract). A
-// non-empty id is bound to the workspace identity — the agent account, the repo
-// source (variant + value), and the ref — so a retry of the SAME provision
-// dedups while the same client_request_id reused for a DIFFERENT workspace
+// non-empty id is bound to the agent account, so a retry of the SAME provision
+// dedups while the same client_request_id reused for a DIFFERENT agent account
 // derives a distinct id and does not join. The derivation is a domain-separated
 // SHA-256 over length-prefixed fields, so no field's value can be shifted into
 // another to forge a collision.
@@ -183,15 +182,11 @@ func provisionDedupID(clientRequestID string, req *compassv1.ProvisionAgentWorks
 		_, _ = rand.Read(b[:])
 		return hex.EncodeToString(b[:])
 	}
-	repoKind, repoValue := provisionRepoKey(req)
 	h := sha256.New()
 	for _, field := range []string{
 		"compass.provision.v1", // domain separator
 		clientRequestID,
 		req.GetAgentAccountId(),
-		repoKind,
-		repoValue,
-		req.GetRef(),
 	} {
 		var lp [8]byte
 		binary.BigEndian.PutUint64(lp[:], uint64(len(field)))
@@ -199,19 +194,4 @@ func provisionDedupID(clientRequestID string, req *compassv1.ProvisionAgentWorks
 		h.Write([]byte(field))
 	}
 	return hex.EncodeToString(h.Sum(nil))
-}
-
-// provisionRepoKey returns a stable (kind, value) pair for the request's repo
-// oneof, so the dedup id binds to which repo source was requested. An unset
-// oneof yields empty strings (BuildSpec rejects it downstream); the kind tag
-// keeps a remote_url and a local_path of the same string distinct.
-func provisionRepoKey(req *compassv1.ProvisionAgentWorkspaceRequest) (kind, value string) {
-	switch r := req.GetRepo().(type) {
-	case *compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl:
-		return "remote_url", r.RemoteUrl
-	case *compassv1.ProvisionAgentWorkspaceRequest_LocalPath:
-		return "local_path", r.LocalPath
-	default:
-		return "", ""
-	}
 }

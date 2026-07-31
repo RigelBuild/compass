@@ -14,40 +14,13 @@ import (
 	"strings"
 )
 
-// RepoSource is where an agent's repo is cloned from, inside the container.
-// Exactly one of Remote or LocalPath is set.
-//
-// Remote is a URL cloned over the network (subject to the egress allowlist).
-// LocalPath is a path inside the container — typically a bare mirror
-// bind-mounted read-only from a host cache, cloned over file:// for a hermetic,
-// network-free clone (node-local, never a network share).
-type RepoSource struct {
-	Remote    string
-	LocalPath string
-}
-
-// RemoteSource clones from a network URL.
-func RemoteSource(url string) RepoSource { return RepoSource{Remote: url} }
-
-// LocalPathSource clones from a container-local path over file://.
-func LocalPathSource(path string) RepoSource { return RepoSource{LocalPath: path} }
-
-// cloneArg is the argument passed to `git clone`: the URL directly for a remote,
-// or a file:// URL for a container-local path.
-func (r RepoSource) cloneArg() string {
-	if r.LocalPath != "" {
-		return "file://" + r.LocalPath
-	}
-	return r.Remote
-}
-
 // Credentials are the agent's forge credentials — a dedicated machine user's
 // token, never the human's (compass.md §5.3, §9). Written into the agent's
 // $HOME, scoped to this container.
 type Credentials struct {
 	// Host is the forge host these credentials authenticate to (e.g. github.com
-	// or a GitHub Enterprise / GitLab host). Must match the authority of a
-	// Remote RepoSource URL, so the substrate stays forge-agnostic.
+	// or a GitHub Enterprise / GitLab host). Must match the authority of the
+	// remote the agent self-clones over, so the substrate stays forge-agnostic.
 	Host string
 	// Username is the forge username the token belongs to (the *-agent machine
 	// user).
@@ -66,13 +39,11 @@ func (c Credentials) String() string {
 // GoString redacts the token under %#v as well, so a struct dump can't leak it.
 func (c Credentials) GoString() string { return c.String() }
 
-// Workspace is a per-agent workspace: the clone source, the branch to check out,
-// the scoped $HOME, and the unprivileged uid the agent runs as.
+// Workspace is a per-agent workspace: the in-container checkout dir, the scoped
+// $HOME, the unprivileged uid the agent runs as, and optional forge credentials.
 type Workspace struct {
-	Source RepoSource
-	Branch string
-	// CheckoutDir is the absolute path inside the container where the repo is
-	// cloned.
+	// CheckoutDir is the absolute path inside the container where the agent's
+	// checkout dir is created (the agent self-clones into it post-launch).
 	CheckoutDir string
 	// HomeDir is the agent's $HOME inside the container (holds .gitconfig +
 	// creds).
@@ -82,18 +53,6 @@ type Workspace struct {
 	UID uint32
 	// Credentials is optional forge credentials to install into $HOME.
 	Credentials *Credentials
-}
-
-// CloneCommand is the `git clone` command an unprivileged exec runs to create
-// the clone. HOME is set on the exec so git reads the scoped .gitconfig (and its
-// credential helper), not any image-default config.
-func (w Workspace) CloneCommand() []string {
-	return []string{
-		"git", "clone",
-		"--branch", w.Branch,
-		w.Source.cloneArg(),
-		w.CheckoutDir,
-	}
 }
 
 // CredentialSetupScript is the shell script that installs the scoped credential

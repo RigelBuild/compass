@@ -1,8 +1,8 @@
 // The agent lifecycle façade the Runner drives (compass.md §5.3, §7.1): build
 // the image, create and start the container, arm the egress firewall as root,
-// install scoped credentials, clone the repo as the unprivileged agent user, and
-// tear it all down. Composed from the podman, egress, and workspace pieces of
-// this package.
+// install scoped credentials, create the agent's checkout dir as the unprivileged
+// agent user, and tear it all down. Composed from the podman, egress, and
+// workspace pieces of this package.
 //
 // Deliberately stateless about container existence: the container engine is the
 // source of truth for what exists, so there's no in-memory registry to keep in
@@ -146,9 +146,9 @@ func NewAgentRuntimeWithRegistry(runtime ContainerRuntime, registry *AgentRegist
 }
 
 // Launch brings an agent online: create + start the container, arm egress as
-// root, install scoped credentials, and clone the repo as the agent user. On any
-// failure after the container exists, the partial container is removed so a retry
-// starts clean rather than colliding on the name.
+// root, install scoped credentials, and create the checkout dir as the agent
+// user. On any failure after the container exists, the partial container is
+// removed so a retry starts clean rather than colliding on the name.
 func (r *AgentRuntime) Launch(ctx context.Context, spec AgentSpec) (*AgentHandle, error) {
 	id, err := r.createAndStart(ctx, spec)
 	if err != nil {
@@ -231,7 +231,7 @@ func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (Cont
 }
 
 // provision runs the post-start steps, all inside the running container:
-// firewall (root), credentials (agent user), clone (agent user).
+// firewall (root), credentials (agent user), checkout dir (agent user).
 func (r *AgentRuntime) provision(ctx context.Context, id ContainerID, spec AgentSpec) error {
 	if err := r.armEgress(ctx, id, spec.Egress); err != nil {
 		return err
@@ -239,7 +239,7 @@ func (r *AgentRuntime) provision(ctx context.Context, id ContainerID, spec Agent
 	if err := r.installCredentials(ctx, id, spec.Workspace); err != nil {
 		return err
 	}
-	return r.cloneRepo(ctx, id, spec.Workspace)
+	return r.ensureCheckoutDir(ctx, id, spec.Workspace)
 }
 
 // armEgress arms the egress firewall as root (needs NET_ADMIN). After this, the
@@ -276,15 +276,16 @@ func (r *AgentRuntime) installCredentials(ctx context.Context, id ContainerID, w
 	return requireSuccess("install credentials", out)
 }
 
-// cloneRepo clones the repo as the agent user into the in-container workspace,
-// with HOME pointed at the scoped home so git reads the scoped credentials.
-func (r *AgentRuntime) cloneRepo(ctx context.Context, id ContainerID, workspace Workspace) error {
-	spec := NewExecSpec(workspace.CloneCommand()...).
+// ensureCheckoutDir creates the in-container checkout directory as the agent
+// user, so an agent that self-clones post-launch has an owned working dir. Run
+// as the agent uid (not root) so the directory is owned by the agent. Its
+// precondition: CheckoutDir's parent must be writable by the agent uid.
+func (r *AgentRuntime) ensureCheckoutDir(ctx context.Context, id ContainerID, workspace Workspace) error {
+	spec := NewExecSpec("mkdir", "-p", workspace.CheckoutDir).
 		AsUser(strconv.FormatUint(uint64(workspace.UID), 10))
-	spec.Env["HOME"] = workspace.HomeDir
 	out, err := r.runtime.Exec(ctx, id, spec)
 	if err != nil {
-		return atStage("clone repo", err)
+		return atStage("create checkout dir", err)
 	}
-	return requireSuccess("clone repo", out)
+	return requireSuccess("create checkout dir", out)
 }

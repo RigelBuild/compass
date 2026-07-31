@@ -113,8 +113,6 @@ func specWithCreds(withCreds bool) AgentSpec {
 		Name:  "atlas-1",
 		Image: "compass-agent:latest",
 		Workspace: Workspace{
-			Source:      LocalPathSource("/src/demo.git"),
-			Branch:      "main",
 			CheckoutDir: "/work/repo",
 			HomeDir:     "/home/agent",
 			UID:         1000,
@@ -137,7 +135,7 @@ func lastIndexOf(calls []string, want string) int {
 	return -1
 }
 
-func TestLaunchOrdersStagesEgressBeforeClone(t *testing.T) {
+func TestLaunchOrdersStagesEgressBeforeCheckoutDir(t *testing.T) {
 	fake := newFakeRuntime(t)
 	rt := NewAgentRuntime(fake)
 
@@ -149,25 +147,29 @@ func TestLaunchOrdersStagesEgressBeforeClone(t *testing.T) {
 	create := slices.IndexFunc(calls, func(c string) bool { return strings.HasPrefix(c, "create:") })
 	start := slices.Index(calls, "start")
 	egress := slices.IndexFunc(calls, func(c string) bool { return strings.Contains(c, "compass_egress") })
-	clone := slices.IndexFunc(calls, func(c string) bool { return strings.Contains(c, "git clone") })
-	if create < 0 || start < 0 || egress < 0 || clone < 0 {
-		t.Fatalf("missing a stage call: create=%d start=%d egress=%d clone=%d; calls=%v", create, start, egress, clone, calls)
+	mkdir := slices.IndexFunc(calls, func(c string) bool { return strings.Contains(c, "mkdir") })
+	if create < 0 || start < 0 || egress < 0 || mkdir < 0 {
+		t.Fatalf("missing a stage call: create=%d start=%d egress=%d mkdir=%d; calls=%v", create, start, egress, mkdir, calls)
+	}
+	// The runner no longer clones; it only creates the checkout dir the agent
+	// self-clones into post-launch.
+	if slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "git clone") }) {
+		t.Fatalf("launch must not run a git clone; calls=%v", calls)
 	}
 
-	// create -> start -> arm egress -> ... -> clone. Egress must be armed before
-	// the clone reaches the network.
+	// create -> start -> arm egress -> ... -> create checkout dir.
 	if create >= start {
 		t.Errorf("create (%d) must precede start (%d)", create, start)
 	}
 	if start >= egress {
 		t.Errorf("egress (%d) must be armed after start (%d)", egress, start)
 	}
-	if egress >= clone {
-		t.Errorf("egress (%d) must be armed before the clone (%d)", egress, clone)
+	if egress >= mkdir {
+		t.Errorf("egress (%d) must be armed before the checkout dir is created (%d)", egress, mkdir)
 	}
 }
 
-func TestCloneRunsAsAgentUserWithScopedHome(t *testing.T) {
+func TestCheckoutDirCreatedAsAgentUser(t *testing.T) {
 	fake := newFakeRuntime(t)
 	rt := NewAgentRuntime(fake)
 
@@ -175,22 +177,25 @@ func TestCloneRunsAsAgentUserWithScopedHome(t *testing.T) {
 		t.Fatalf("Launch error = %v", err)
 	}
 
-	var clone *ExecSpec
+	var mkdir *ExecSpec
 	execs := fake.execsSnapshot()
 	for i := range execs {
-		if slices.Contains(execs[i].Command, "clone") {
-			clone = &execs[i]
+		if slices.Contains(execs[i].Command, "mkdir") {
+			mkdir = &execs[i]
 			break
 		}
+		if slices.Contains(execs[i].Command, "clone") {
+			t.Fatalf("launch must not run a git clone; command=%v", execs[i].Command)
+		}
 	}
-	if clone == nil {
-		t.Fatal("no clone exec recorded")
+	if mkdir == nil {
+		t.Fatal("no mkdir exec recorded")
 	}
-	if clone.User == nil || *clone.User != "1000" {
-		t.Errorf("clone exec User = %v, want \"1000\" (clone runs unprivileged)", clone.User)
+	if mkdir.User == nil || *mkdir.User != "1000" {
+		t.Errorf("mkdir exec User = %v, want \"1000\" (checkout dir owned by the agent)", mkdir.User)
 	}
-	if got := clone.Env["HOME"]; got != "/home/agent" {
-		t.Errorf("clone exec HOME = %q, want %q (scoped $HOME)", got, "/home/agent")
+	if !slices.Contains(mkdir.Command, "/work/repo") {
+		t.Errorf("mkdir exec Command = %v, want it to target the checkout dir", mkdir.Command)
 	}
 }
 

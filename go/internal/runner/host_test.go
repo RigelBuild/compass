@@ -75,7 +75,6 @@ func TestProvisionDrivesSpecBuilderThenLaunch(t *testing.T) {
 		Name:  "atlas-agent-1",
 		Image: "compass-agent:latest",
 		Workspace: runtime.Workspace{
-			Source:      runtime.LocalPathSource("/src/demo.git"),
 			CheckoutDir: "/work/repo",
 			HomeDir:     "/home/agent",
 			UID:         1000,
@@ -455,7 +454,6 @@ func liveSpec() runtime.AgentSpec {
 		Name:  "cont-1",
 		Image: "compass-agent:latest",
 		Workspace: runtime.Workspace{
-			Source:      runtime.LocalPathSource("/src/demo.git"),
 			CheckoutDir: "/work/repo",
 			HomeDir:     "/home/agent",
 			UID:         1000,

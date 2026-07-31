@@ -280,7 +280,6 @@ func TestProvisionAgentWorkspaceRecordsPlacementNamingServingRunner(t *testing.T
 
 	resp, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
 		AgentAccountId:  string(f.agentID),
-		Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
 		ClientRequestId: "prov-1",
 	}))
 	if err != nil {
@@ -349,7 +348,6 @@ func TestProvisionAgentWorkspaceOverwritesPersonaFromStore(t *testing.T) {
 	f.runner.forget() // discard the attach probe
 	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
 		AgentAccountId:  string(personaAgent.ID),
-		Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
 		ClientRequestId: "prov-persona",
 		Persona:         "CLIENT-INJECTED-EVIL",
 	})); err != nil {
@@ -385,7 +383,6 @@ func TestProvisionAgentWorkspaceClearsPersonaForNonAgentAccount(t *testing.T) {
 	// and not what this test pins, so it is deliberately discarded.
 	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
 		AgentAccountId:  string(adminID),
-		Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
 		ClientRequestId: "prov-nonagent",
 		Persona:         "CLIENT-INJECTED-EVIL",
 	}))
@@ -404,7 +401,6 @@ func TestProvisionAgentWorkspaceUnknownAccountIsNotFound(t *testing.T) {
 
 	_, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
 		AgentAccountId:  "acct-does-not-exist",
-		Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
 		ClientRequestId: "prov-unknown",
 		Persona:         "whatever",
 	}))

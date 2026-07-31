@@ -73,13 +73,12 @@ func TestProvisionSameClientRequestIdDedups(t *testing.T) {
 		router := enrollAttached(t, hub, send)
 
 		const id = "req-1"
-		// A fully-specified workspace: the dedup id now binds to (account, repo,
-		// ref), so both callers must send the identical request for the retry to
-		// join. Same id + same workspace = one derived dedup id = one command.
+		// A fully-specified workspace: the dedup id now binds to the agent
+		// account, so both callers must send the identical request for the retry
+		// to join. Same id + same account = one derived dedup id = one command.
 		req := &compassv1.ProvisionAgentWorkspaceRequest{
 			ClientRequestId: id,
 			AgentAccountId:  "0123456789abcdef0123456789abcdef",
-			Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
 		}
 		outcomes := make(chan provisionOutcome, 2)
 		call := func() {
@@ -187,7 +186,7 @@ func TestProvisionEmptyClientRequestIdDoesNotDedup(t *testing.T) {
 // were the sole dedup key, two provisions sharing one value for different agent
 // accounts would join — the second caller would be handed a container
 // provisioned for the FIRST caller's account (a cross-account boundary break).
-// The dedup id binds to the workspace identity (account + repo + ref), so a
+// The dedup id binds to the agent account, so a
 // reused id with a different account derives a distinct id, dispatches its own
 // Provision, and each caller gets its own container. A regression that keyed on
 // the raw client_request_id alone would push ONE command and hand both callers
@@ -202,12 +201,10 @@ func TestProvisionSameIdDifferentWorkspaceDoesNotDedup(t *testing.T) {
 		reqA := &compassv1.ProvisionAgentWorkspaceRequest{
 			ClientRequestId: id,
 			AgentAccountId:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
 		}
 		reqB := &compassv1.ProvisionAgentWorkspaceRequest{
 			ClientRequestId: id,
 			AgentAccountId:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", // different account, same id
-			Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
 		}
 		outcomes := make(chan provisionOutcome, 2)
 		call := func(req *compassv1.ProvisionAgentWorkspaceRequest) {

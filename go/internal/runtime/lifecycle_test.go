@@ -6,7 +6,9 @@ package runtime
 // (compass.md §5.3), driving the production AgentRuntime.Launch path:
 //
 //  1. the Runner creates + starts a per-agent container,
-//  2. its own git clone is present inside the container,
+//  2. the agent's checkout dir is present inside the container, owned by the
+//     unprivileged agent user (the runner no longer clones — the agent
+//     self-clones into it post-launch),
 //  3. a command execs in-container as the unprivileged agent user (uid 1000),
 //  4. the default-deny egress firewall holds — a non-allowlisted host is
 //     blocked while an allowlisted one is reachable, and the agent user can't
@@ -70,38 +72,6 @@ func buildImage(t *testing.T, dir string) {
 	}
 }
 
-// git runs a git command in cwd, failing the test on a non-zero exit.
-func git(t *testing.T, cwd string, args ...string) {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = cwd
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git %v failed: %v\n%s", args, err, out)
-	}
-}
-
-// makeBareRepo builds a bare git repo on the host with one commit on `main`.
-// Bind-mounted read-only and cloned over file:// — hermetic, needs no network
-// (so it clones fine under the egress firewall).
-func makeBareRepo(t *testing.T, dir string) string {
-	t.Helper()
-	bare := filepath.Join(dir, "demo.git")
-	work := filepath.Join(dir, "work")
-	git(t, dir, "init", "--quiet", "--bare", bare)
-	git(t, dir, "-C", bare, "symbolic-ref", "HEAD", "refs/heads/main")
-	git(t, dir, "clone", "--quiet", bare, work)
-	git(t, work, "config", "user.email", "test@compass.local")
-	git(t, work, "config", "user.name", "compass-test")
-	git(t, work, "checkout", "--quiet", "-b", "main")
-	if err := os.WriteFile(filepath.Join(work, "README.md"), []byte("compass-lifecycle\n"), 0o644); err != nil {
-		t.Fatalf("write README: %v", err)
-	}
-	git(t, work, "add", ".")
-	git(t, work, "commit", "--quiet", "-m", "seed")
-	git(t, work, "push", "--quiet", "origin", "main")
-	return bare
-}
-
 // runtimeExists is a direct `podman container exists` check for the
 // post-teardown assertion, independent of the runtime under test.
 func runtimeExists(name string) bool {
@@ -115,7 +85,6 @@ func TestPerAgentContainerLifecycle(t *testing.T) {
 
 	tmp := t.TempDir()
 	buildImage(t, tmp)
-	bare := makeBareRepo(t, tmp)
 
 	name := "compass-lifecycle-" + strconv.Itoa(os.Getpid())
 	facade := NewAgentRuntime(NewPodmanCLI())
@@ -131,37 +100,29 @@ func TestPerAgentContainerLifecycle(t *testing.T) {
 		Name:  name,
 		Image: imageTag,
 		Workspace: Workspace{
-			Source:      LocalPathSource("/src/demo.git"),
-			Branch:      "main",
 			CheckoutDir: "/work/repo",
 			HomeDir:     "/home/agent",
 			UID:         1000,
 			Credentials: nil,
 		},
 		Egress: MustAllowEgress(allowedHost),
-		Mounts: []Mount{{
-			HostPath:      bare,
-			ContainerPath: "/src/demo.git",
-			ReadOnly:      true,
-		}},
 	}
 
-	// 1. The production lifecycle: create + start + arm egress + clone.
+	// 1. The production lifecycle: create + start + arm egress + create checkout dir.
 	handle, err := facade.Launch(ctx, spec)
 	if err != nil {
 		t.Fatalf("launch the agent container: %v", err)
 	}
 
-	// 2. The agent's own clone is present with the seeded content.
-	readme, err := facade.ExecAsAgent(ctx, handle, "cat", "/work/repo/README.md")
+	// 2. The agent's checkout dir exists and is owned by the agent user — the
+	// runner no longer clones; the agent self-clones into this owned dir
+	// post-launch. `test -w` as the agent confirms it can write there.
+	writable, err := facade.ExecAsAgent(ctx, handle, "sh", "-c", "test -w /work/repo; echo rc=$?")
 	if err != nil {
-		t.Fatalf("read cloned file: %v", err)
+		t.Fatalf("check checkout dir: %v", err)
 	}
-	if !readme.Success() {
-		t.Fatalf("clone missing: %s", readme.Stderr)
-	}
-	if got := strings.TrimSpace(readme.Stdout); got != "compass-lifecycle" {
-		t.Fatalf("cloned README = %q, want %q", got, "compass-lifecycle")
+	if !strings.Contains(writable.Stdout, "rc=0") {
+		t.Fatalf("checkout dir must exist and be writable by the agent, got: %s", writable.Stdout)
 	}
 
 	// 3. Exec runs as the unprivileged agent user (uid 1000), not root.
