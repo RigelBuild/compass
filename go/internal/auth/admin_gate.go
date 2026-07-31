@@ -83,6 +83,17 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CommsServiceSubscribeCommsProcedure:
 		return authenticatedOpen{}, true
 
+	// The SecretsService write + read RPCs: open to any authenticated account.
+	// The frozen secrets record scopes these to the user (SetSecret/DeleteSecret)
+	// and to the user and its agents (ListSecrets) — none is admin-only, so the
+	// door gate admits any authenticated account and the service body enforces
+	// the per-account authorization (RequireUser on the writes, user-or-agent on
+	// the list), the same split as every CommsService method above.
+	case compassv1connect.SecretsServiceSetSecretProcedure,
+		compassv1connect.SecretsServiceListSecretsProcedure,
+		compassv1connect.SecretsServiceDeleteSecretProcedure:
+		return authenticatedOpen{}, true
+
 	default:
 		// Fail closed: an unrecognized path (not a generated procedure) is gated
 		// to admin and reported unclassified (ok=false). classify_exhaustive_test
