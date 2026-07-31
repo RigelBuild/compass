@@ -180,7 +180,27 @@ message SessionsResponse {
     // re-fetches via FetchSecrets. Signal-only — never carries values, no result
     // variant on the request stream.
     SecretsVersion secrets_version = 8;
+    // deliver_control (tag 11; tags 9 config_version / 10 remove reserved
+    // between): the Server relays a control op — for SEA-1569, a message
+    // delivery — down to the Runner, which writes it to the session's
+    // per-container socket. Carries the op as payload (DispatchControl). No
+    // SUCCESS result variant: the delivery receipt rides AgentFrame.delivery_ack
+    // (RT-3); a refusal rides the RunnerError result (error = 7), correlated by
+    // request_id.
+    DispatchControl deliver_control = 11;
   }
+}
+
+// DispatchControl — the Server->Runner relay envelope for a control op
+// (SEA-1569). Carries the full AgentControl op (for a delivery,
+// AgentControl{ deliver: DeliverControl{ message } }); the Runner relays op
+// down the addressed session's per-container socket. Payload-carrying, not
+// signal-only.
+message DispatchControl {
+  // The target session on this Runner.
+  string session_id = 1;
+  // The control op to relay into the session.
+  AgentControl op = 2;
 }
 
 // FetchSecrets request: the session whose secrets to resolve. Inject-all — no
@@ -243,6 +263,11 @@ enum RunnerErrorCode {
   // Any other Runner-side failure (container engine error, exec failure) ->
   // Connect Internal.
   RUNNER_ERROR_CODE_INTERNAL = 3;
+  // A delivery (deliver_control) was refused because the session's retention
+  // buffer is full (SEA-1569) -> Connect ResourceExhausted. Distinguishes a
+  // retention-full refusal in-band so the Server can leave the delivery cursor
+  // unadvanced and redeliver.
+  RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED = 4;
 }
 
 // One Runner-sequenced agent event, relayed Runner->Server on PublishEvents.

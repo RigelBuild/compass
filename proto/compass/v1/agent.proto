@@ -65,6 +65,11 @@ message AgentFrame {
     //     applied out of order above it. The Runner retires retained ops up to
     //     the cursor and drops the individually-acked ones.
     ControlAck control_ack = 5;
+    //   delivery_ack — the agent's per-message delivery receipt for a
+    //     DeliverControl relayed down the session (SEA-1569). The success
+    //     receipt for a delivery rides this frame, not the Runner result
+    //     stream (RT-3); the Server advances the delivery cursor on it.
+    DeliveryAck delivery_ack = 6;
   }
 }
 
@@ -101,14 +106,15 @@ message SessionFrame {
 // its first WIRE definition, replacing the never-built stdin decoder.
 //
 // Payload FIELDS: only the variants representable with existing compass.v1
-// scalars carry fields here (PromptControl.input, AskAnswerControl). The
-// SteerControl / DeliverControl / TranscriptReplay / ConfigControl payloads
-// stay empty shells — their fields carry an inbound SDK `AgentMessage` (a
-// four-way union with an opaque provider payload) and a tool set (whose SDK
+// scalars carry fields here (PromptControl.input, AskAnswerControl,
+// DeliverControl.message). The SteerControl / TranscriptReplay / ConfigControl
+// payloads stay empty shells — their fields carry an inbound SDK `AgentMessage`
+// (a four-way union with an opaque provider payload) and a tool set (whose SDK
 // representation includes a non-serializable `execute` handle), neither of
 // which any existing compass.v1 message represents. That payload-shape decision
 // is parked (SEA-1310); the shells keep the oneof complete on the wire and are
-// populated by a stacked PR once the shapes settle. Defining the empty shells
+// populated by a stacked PR once the shapes settle (DeliverControl was so
+// populated by SEA-1569, carrying a comms Message). Defining the empty shells
 // now is additive and buf-breaking-safe (field additions to a proto3 message).
 message AgentControl {
   // Runner-assigned, monotonic per session: the retention/redelivery cursor
@@ -148,12 +154,29 @@ message ReplayComplete {}
 
 // Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
 // oneof is complete on the wire; populated by a stacked PR.
-//   SteerControl / DeliverControl / TranscriptReplay carry an inbound SDK
-//   AgentMessage; ConfigControl carries a tool set.
+//   SteerControl / TranscriptReplay carry an inbound SDK AgentMessage;
+//   ConfigControl carries a tool set.
 message SteerControl {}
-message DeliverControl {}
 message TranscriptReplay {}
 message ConfigControl {}
+
+// DeliverControl carries a comms Message to deliver into the agent's live
+// session (SEA-1569): the Server wraps it in an AgentControl and relays it via
+// the runner control seam (DispatchControl); the Runner writes it down the
+// per-container socket. Populated from the SEA-1310 parked shell.
+message DeliverControl {
+  // The message to deliver into the session.
+  Message message = 1;
+}
+
+// DeliveryAck — the agent's per-message delivery receipt (SEA-1569), an
+// AgentFrame oneof variant riding the Publish spine. Correlates to the
+// delivered message by id; on receipt the Server advances the delivery cursor
+// (the success receipt for a delivery, per RT-3 — not a Runner result).
+message DeliveryAck {
+  // The delivered comms Message's id.
+  string message_id = 1;
+}
 
 // Two agent -> Runner control-plane ACK frames, added as AgentFrame oneof
 // variants above (riding the loss-tolerable Publish spine beside DeliveryAck,

@@ -23,7 +23,7 @@
 
 import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { AskQuestionAnswer, MessagePosted, MessageUpdated } from "./comms_pb";
+import type { AskQuestionAnswer, Message as Message$1, MessagePosted, MessageUpdated } from "./comms_pb";
 import { file_compass_v1_comms } from "./comms_pb";
 import type { AgentSessionState, SessionEvent } from "./compass_pb";
 import { file_compass_v1_compass } from "./compass_pb";
@@ -33,7 +33,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/agent.proto.
  */
 export const file_compass_v1_agent: GenFile = /*@__PURE__*/
-  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIqUCCgpBZ2VudEZyYW1lEjgKE2NvbnZlcnNhdGlvbl9wb3N0ZWQYASABKAsyGS5jb21wYXNzLnYxLk1lc3NhZ2VQb3N0ZWRIABI6ChRjb252ZXJzYXRpb25fdXBkYXRlZBgCIAEoCzIaLmNvbXBhc3MudjEuTWVzc2FnZVVwZGF0ZWRIABIrCgdzZXNzaW9uGAMgASgLMhguY29tcGFzcy52MS5TZXNzaW9uRnJhbWVIABI8ChNyZXBsYXlfY29tcGxldGVfYWNrGAQgASgLMh0uY29tcGFzcy52MS5SZXBsYXlDb21wbGV0ZUFja0gAEi0KC2NvbnRyb2xfYWNrGAUgASgLMhYuY29tcGFzcy52MS5Db250cm9sQWNrSABCBwoFZnJhbWUieAoMU2Vzc2lvbkZyYW1lEiwKBXN0YXRlGAIgASgOMh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25TdGF0ZRItCgt0eXBlZF9ldmVudBgDIAEoCzIYLmNvbXBhc3MudjEuU2Vzc2lvbkV2ZW50SgQIARACUgVldmVudCL9AgoMQWdlbnRDb250cm9sEhMKC2NvbnRyb2xfc2VxGAggASgEEisKBnByb21wdBgBIAEoCzIZLmNvbXBhc3MudjEuUHJvbXB0Q29udHJvbEgAEikKBXN0ZWVyGAIgASgLMhguY29tcGFzcy52MS5TdGVlckNvbnRyb2xIABItCgdkZWxpdmVyGAMgASgLMhouY29tcGFzcy52MS5EZWxpdmVyQ29udHJvbEgAEjIKCmFza19hbnN3ZXIYBCABKAsyHC5jb21wYXNzLnYxLkFza0Fuc3dlckNvbnRyb2xIABIrCgZjb25maWcYBSABKAsyGS5jb21wYXNzLnYxLkNvbmZpZ0NvbnRyb2xIABIuCgZyZXBsYXkYBiABKAsyHC5jb21wYXNzLnYxLlRyYW5zY3JpcHRSZXBsYXlIABI1Cg9yZXBsYXlfY29tcGxldGUYByABKAsyGi5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlSABCCQoHY29udHJvbCIeCg1Qcm9tcHRDb250cm9sEg0KBWlucHV0GAEgASgJIlIKEEFza0Fuc3dlckNvbnRyb2wSDgoGYXNrX2lkGAEgASgJEi4KB2Fuc3dlcnMYAiADKAsyHS5jb21wYXNzLnYxLkFza1F1ZXN0aW9uQW5zd2VyIhAKDlJlcGxheUNvbXBsZXRlIg4KDFN0ZWVyQ29udHJvbCIQCg5EZWxpdmVyQ29udHJvbCISChBUcmFuc2NyaXB0UmVwbGF5Ig8KDUNvbmZpZ0NvbnRyb2wiEwoRUmVwbGF5Q29tcGxldGVBY2siNgoKQ29udHJvbEFjaxIRCglhY2tlZF9zZXEYASABKAQSFQoNYXBwbGllZF9hYm92ZRgCIAMoBGIGcHJvdG8z", [file_compass_v1_comms, file_compass_v1_compass]);
+  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxItYCCgpBZ2VudEZyYW1lEjgKE2NvbnZlcnNhdGlvbl9wb3N0ZWQYASABKAsyGS5jb21wYXNzLnYxLk1lc3NhZ2VQb3N0ZWRIABI6ChRjb252ZXJzYXRpb25fdXBkYXRlZBgCIAEoCzIaLmNvbXBhc3MudjEuTWVzc2FnZVVwZGF0ZWRIABIrCgdzZXNzaW9uGAMgASgLMhguY29tcGFzcy52MS5TZXNzaW9uRnJhbWVIABI8ChNyZXBsYXlfY29tcGxldGVfYWNrGAQgASgLMh0uY29tcGFzcy52MS5SZXBsYXlDb21wbGV0ZUFja0gAEi0KC2NvbnRyb2xfYWNrGAUgASgLMhYuY29tcGFzcy52MS5Db250cm9sQWNrSAASLwoMZGVsaXZlcnlfYWNrGAYgASgLMhcuY29tcGFzcy52MS5EZWxpdmVyeUFja0gAQgcKBWZyYW1lIngKDFNlc3Npb25GcmFtZRIsCgVzdGF0ZRgCIAEoDjIdLmNvbXBhc3MudjEuQWdlbnRTZXNzaW9uU3RhdGUSLQoLdHlwZWRfZXZlbnQYAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25FdmVudEoECAEQAlIFZXZlbnQi/QIKDEFnZW50Q29udHJvbBITCgtjb250cm9sX3NlcRgIIAEoBBIrCgZwcm9tcHQYASABKAsyGS5jb21wYXNzLnYxLlByb21wdENvbnRyb2xIABIpCgVzdGVlchgCIAEoCzIYLmNvbXBhc3MudjEuU3RlZXJDb250cm9sSAASLQoHZGVsaXZlchgDIAEoCzIaLmNvbXBhc3MudjEuRGVsaXZlckNvbnRyb2xIABIyCgphc2tfYW5zd2VyGAQgASgLMhwuY29tcGFzcy52MS5Bc2tBbnN3ZXJDb250cm9sSAASKwoGY29uZmlnGAUgASgLMhkuY29tcGFzcy52MS5Db25maWdDb250cm9sSAASLgoGcmVwbGF5GAYgASgLMhwuY29tcGFzcy52MS5UcmFuc2NyaXB0UmVwbGF5SAASNQoPcmVwbGF5X2NvbXBsZXRlGAcgASgLMhouY29tcGFzcy52MS5SZXBsYXlDb21wbGV0ZUgAQgkKB2NvbnRyb2wiHgoNUHJvbXB0Q29udHJvbBINCgVpbnB1dBgBIAEoCSJSChBBc2tBbnN3ZXJDb250cm9sEg4KBmFza19pZBgBIAEoCRIuCgdhbnN3ZXJzGAIgAygLMh0uY29tcGFzcy52MS5Bc2tRdWVzdGlvbkFuc3dlciIQCg5SZXBsYXlDb21wbGV0ZSIOCgxTdGVlckNvbnRyb2wiEgoQVHJhbnNjcmlwdFJlcGxheSIPCg1Db25maWdDb250cm9sIjYKDkRlbGl2ZXJDb250cm9sEiQKB21lc3NhZ2UYASABKAsyEy5jb21wYXNzLnYxLk1lc3NhZ2UiIQoLRGVsaXZlcnlBY2sSEgoKbWVzc2FnZV9pZBgBIAEoCSITChFSZXBsYXlDb21wbGV0ZUFjayI2CgpDb250cm9sQWNrEhEKCWFja2VkX3NlcRgBIAEoBBIVCg1hcHBsaWVkX2Fib3ZlGAIgAygEYgZwcm90bzM", [file_compass_v1_comms, file_compass_v1_compass]);
 
 /**
  * The agent's stdout envelope: one discriminated frame per newline-delimited
@@ -112,6 +112,17 @@ export type AgentFrame = Message<"compass.v1.AgentFrame"> & {
      */
     value: ControlAck;
     case: "controlAck";
+  } | {
+    /**
+     *   delivery_ack — the agent's per-message delivery receipt for a
+     *     DeliverControl relayed down the session (SEA-1569). The success
+     *     receipt for a delivery rides this frame, not the Runner result
+     *     stream (RT-3); the Server advances the delivery cursor on it.
+     *
+     * @generated from field: compass.v1.DeliveryAck delivery_ack = 6;
+     */
+    value: DeliveryAck;
+    case: "deliveryAck";
   } | { case: undefined; value?: undefined };
 };
 
@@ -172,14 +183,15 @@ export const SessionFrameSchema: GenMessage<SessionFrame> = /*@__PURE__*/
  * its first WIRE definition, replacing the never-built stdin decoder.
  *
  * Payload FIELDS: only the variants representable with existing compass.v1
- * scalars carry fields here (PromptControl.input, AskAnswerControl). The
- * SteerControl / DeliverControl / TranscriptReplay / ConfigControl payloads
- * stay empty shells — their fields carry an inbound SDK `AgentMessage` (a
- * four-way union with an opaque provider payload) and a tool set (whose SDK
+ * scalars carry fields here (PromptControl.input, AskAnswerControl,
+ * DeliverControl.message). The SteerControl / TranscriptReplay / ConfigControl
+ * payloads stay empty shells — their fields carry an inbound SDK `AgentMessage`
+ * (a four-way union with an opaque provider payload) and a tool set (whose SDK
  * representation includes a non-serializable `execute` handle), neither of
  * which any existing compass.v1 message represents. That payload-shape decision
  * is parked (SEA-1310); the shells keep the oneof complete on the wire and are
- * populated by a stacked PR once the shapes settle. Defining the empty shells
+ * populated by a stacked PR once the shapes settle (DeliverControl was so
+ * populated by SEA-1569, carrying a comms Message). Defining the empty shells
  * now is additive and buf-breaking-safe (field additions to a proto3 message).
  *
  * @generated from message compass.v1.AgentControl
@@ -320,8 +332,8 @@ export const ReplayCompleteSchema: GenMessage<ReplayComplete> = /*@__PURE__*/
 /**
  * Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
  * oneof is complete on the wire; populated by a stacked PR.
- *   SteerControl / DeliverControl / TranscriptReplay carry an inbound SDK
- *   AgentMessage; ConfigControl carries a tool set.
+ *   SteerControl / TranscriptReplay carry an inbound SDK AgentMessage;
+ *   ConfigControl carries a tool set.
  *
  * @generated from message compass.v1.SteerControl
  */
@@ -336,19 +348,6 @@ export const SteerControlSchema: GenMessage<SteerControl> = /*@__PURE__*/
   messageDesc(file_compass_v1_agent, 6);
 
 /**
- * @generated from message compass.v1.DeliverControl
- */
-export type DeliverControl = Message<"compass.v1.DeliverControl"> & {
-};
-
-/**
- * Describes the message compass.v1.DeliverControl.
- * Use `create(DeliverControlSchema)` to create a new message.
- */
-export const DeliverControlSchema: GenMessage<DeliverControl> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent, 7);
-
-/**
  * @generated from message compass.v1.TranscriptReplay
  */
 export type TranscriptReplay = Message<"compass.v1.TranscriptReplay"> & {
@@ -359,7 +358,7 @@ export type TranscriptReplay = Message<"compass.v1.TranscriptReplay"> & {
  * Use `create(TranscriptReplaySchema)` to create a new message.
  */
 export const TranscriptReplaySchema: GenMessage<TranscriptReplay> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent, 8);
+  messageDesc(file_compass_v1_agent, 7);
 
 /**
  * @generated from message compass.v1.ConfigControl
@@ -372,7 +371,55 @@ export type ConfigControl = Message<"compass.v1.ConfigControl"> & {
  * Use `create(ConfigControlSchema)` to create a new message.
  */
 export const ConfigControlSchema: GenMessage<ConfigControl> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent, 8);
+
+/**
+ * DeliverControl carries a comms Message to deliver into the agent's live
+ * session (SEA-1569): the Server wraps it in an AgentControl and relays it via
+ * the runner control seam (DispatchControl); the Runner writes it down the
+ * per-container socket. Populated from the SEA-1310 parked shell.
+ *
+ * @generated from message compass.v1.DeliverControl
+ */
+export type DeliverControl = Message<"compass.v1.DeliverControl"> & {
+  /**
+   * The message to deliver into the session.
+   *
+   * @generated from field: compass.v1.Message message = 1;
+   */
+  message?: Message$1 | undefined;
+};
+
+/**
+ * Describes the message compass.v1.DeliverControl.
+ * Use `create(DeliverControlSchema)` to create a new message.
+ */
+export const DeliverControlSchema: GenMessage<DeliverControl> = /*@__PURE__*/
   messageDesc(file_compass_v1_agent, 9);
+
+/**
+ * DeliveryAck — the agent's per-message delivery receipt (SEA-1569), an
+ * AgentFrame oneof variant riding the Publish spine. Correlates to the
+ * delivered message by id; on receipt the Server advances the delivery cursor
+ * (the success receipt for a delivery, per RT-3 — not a Runner result).
+ *
+ * @generated from message compass.v1.DeliveryAck
+ */
+export type DeliveryAck = Message<"compass.v1.DeliveryAck"> & {
+  /**
+   * The delivered comms Message's id.
+   *
+   * @generated from field: string message_id = 1;
+   */
+  messageId: string;
+};
+
+/**
+ * Describes the message compass.v1.DeliveryAck.
+ * Use `create(DeliveryAckSchema)` to create a new message.
+ */
+export const DeliveryAckSchema: GenMessage<DeliveryAck> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent, 10);
 
 /**
  * Two agent -> Runner control-plane ACK frames, added as AgentFrame oneof
@@ -390,7 +437,7 @@ export type ReplayCompleteAck = Message<"compass.v1.ReplayCompleteAck"> & {
  * Use `create(ReplayCompleteAckSchema)` to create a new message.
  */
 export const ReplayCompleteAckSchema: GenMessage<ReplayCompleteAck> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent, 10);
+  messageDesc(file_compass_v1_agent, 11);
 
 /**
  * @generated from message compass.v1.ControlAck
@@ -418,5 +465,5 @@ export type ControlAck = Message<"compass.v1.ControlAck"> & {
  * Use `create(ControlAckSchema)` to create a new message.
  */
 export const ControlAckSchema: GenMessage<ControlAck> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent, 11);
+  messageDesc(file_compass_v1_agent, 12);
 

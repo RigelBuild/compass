@@ -63,6 +63,7 @@ type AgentFrame struct {
 	//	*AgentFrame_Session
 	//	*AgentFrame_ReplayCompleteAck
 	//	*AgentFrame_ControlAck
+	//	*AgentFrame_DeliveryAck
 	Frame         isAgentFrame_Frame `protobuf_oneof:"frame"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -150,6 +151,15 @@ func (x *AgentFrame) GetControlAck() *ControlAck {
 	return nil
 }
 
+func (x *AgentFrame) GetDeliveryAck() *DeliveryAck {
+	if x != nil {
+		if x, ok := x.Frame.(*AgentFrame_DeliveryAck); ok {
+			return x.DeliveryAck
+		}
+	}
+	return nil
+}
+
 type isAgentFrame_Frame interface {
 	isAgentFrame_Frame()
 }
@@ -197,6 +207,15 @@ type AgentFrame_ControlAck struct {
 	ControlAck *ControlAck `protobuf:"bytes,5,opt,name=control_ack,json=controlAck,proto3,oneof"`
 }
 
+type AgentFrame_DeliveryAck struct {
+	// delivery_ack — the agent's per-message delivery receipt for a
+	//
+	//	DeliverControl relayed down the session (SEA-1569). The success
+	//	receipt for a delivery rides this frame, not the Runner result
+	//	stream (RT-3); the Server advances the delivery cursor on it.
+	DeliveryAck *DeliveryAck `protobuf:"bytes,6,opt,name=delivery_ack,json=deliveryAck,proto3,oneof"`
+}
+
 func (*AgentFrame_ConversationPosted) isAgentFrame_Frame() {}
 
 func (*AgentFrame_ConversationUpdated) isAgentFrame_Frame() {}
@@ -206,6 +225,8 @@ func (*AgentFrame_Session) isAgentFrame_Frame() {}
 func (*AgentFrame_ReplayCompleteAck) isAgentFrame_Frame() {}
 
 func (*AgentFrame_ControlAck) isAgentFrame_Frame() {}
+
+func (*AgentFrame_DeliveryAck) isAgentFrame_Frame() {}
 
 // The `session` variant's payload: a typed OMP-native session event plus the
 // board's lifecycle state (design compass-0.8 §"First-party typed session
@@ -285,14 +306,15 @@ func (x *SessionFrame) GetTypedEvent() *v1.SessionEvent {
 // its first WIRE definition, replacing the never-built stdin decoder.
 //
 // Payload FIELDS: only the variants representable with existing compass.v1
-// scalars carry fields here (PromptControl.input, AskAnswerControl). The
-// SteerControl / DeliverControl / TranscriptReplay / ConfigControl payloads
-// stay empty shells — their fields carry an inbound SDK `AgentMessage` (a
-// four-way union with an opaque provider payload) and a tool set (whose SDK
+// scalars carry fields here (PromptControl.input, AskAnswerControl,
+// DeliverControl.message). The SteerControl / TranscriptReplay / ConfigControl
+// payloads stay empty shells — their fields carry an inbound SDK `AgentMessage`
+// (a four-way union with an opaque provider payload) and a tool set (whose SDK
 // representation includes a non-serializable `execute` handle), neither of
 // which any existing compass.v1 message represents. That payload-shape decision
 // is parked (SEA-1310); the shells keep the oneof complete on the wire and are
-// populated by a stacked PR once the shapes settle. Defining the empty shells
+// populated by a stacked PR once the shapes settle (DeliverControl was so
+// populated by SEA-1569, carrying a comms Message). Defining the empty shells
 // now is additive and buf-breaking-safe (field additions to a proto3 message).
 type AgentControl struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -613,8 +635,8 @@ func (*ReplayComplete) Descriptor() ([]byte, []int) {
 // Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
 // oneof is complete on the wire; populated by a stacked PR.
 //
-//	SteerControl / DeliverControl / TranscriptReplay carry an inbound SDK
-//	AgentMessage; ConfigControl carries a tool set.
+//	SteerControl / TranscriptReplay carry an inbound SDK AgentMessage;
+//	ConfigControl carries a tool set.
 type SteerControl struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -651,42 +673,6 @@ func (*SteerControl) Descriptor() ([]byte, []int) {
 	return file_compass_v1_agent_proto_rawDescGZIP(), []int{6}
 }
 
-type DeliverControl struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *DeliverControl) Reset() {
-	*x = DeliverControl{}
-	mi := &file_compass_v1_agent_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *DeliverControl) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*DeliverControl) ProtoMessage() {}
-
-func (x *DeliverControl) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use DeliverControl.ProtoReflect.Descriptor instead.
-func (*DeliverControl) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{7}
-}
-
 type TranscriptReplay struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -695,7 +681,7 @@ type TranscriptReplay struct {
 
 func (x *TranscriptReplay) Reset() {
 	*x = TranscriptReplay{}
-	mi := &file_compass_v1_agent_proto_msgTypes[8]
+	mi := &file_compass_v1_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -707,7 +693,7 @@ func (x *TranscriptReplay) String() string {
 func (*TranscriptReplay) ProtoMessage() {}
 
 func (x *TranscriptReplay) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[8]
+	mi := &file_compass_v1_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -720,7 +706,7 @@ func (x *TranscriptReplay) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TranscriptReplay.ProtoReflect.Descriptor instead.
 func (*TranscriptReplay) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{8}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{7}
 }
 
 type ConfigControl struct {
@@ -731,7 +717,7 @@ type ConfigControl struct {
 
 func (x *ConfigControl) Reset() {
 	*x = ConfigControl{}
-	mi := &file_compass_v1_agent_proto_msgTypes[9]
+	mi := &file_compass_v1_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -743,7 +729,7 @@ func (x *ConfigControl) String() string {
 func (*ConfigControl) ProtoMessage() {}
 
 func (x *ConfigControl) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[9]
+	mi := &file_compass_v1_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -756,7 +742,105 @@ func (x *ConfigControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigControl.ProtoReflect.Descriptor instead.
 func (*ConfigControl) Descriptor() ([]byte, []int) {
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{8}
+}
+
+// DeliverControl carries a comms Message to deliver into the agent's live
+// session (SEA-1569): the Server wraps it in an AgentControl and relays it via
+// the runner control seam (DispatchControl); the Runner writes it down the
+// per-container socket. Populated from the SEA-1310 parked shell.
+type DeliverControl struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The message to deliver into the session.
+	Message       *v1.Message `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeliverControl) Reset() {
+	*x = DeliverControl{}
+	mi := &file_compass_v1_agent_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeliverControl) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeliverControl) ProtoMessage() {}
+
+func (x *DeliverControl) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_agent_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeliverControl.ProtoReflect.Descriptor instead.
+func (*DeliverControl) Descriptor() ([]byte, []int) {
 	return file_compass_v1_agent_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *DeliverControl) GetMessage() *v1.Message {
+	if x != nil {
+		return x.Message
+	}
+	return nil
+}
+
+// DeliveryAck — the agent's per-message delivery receipt (SEA-1569), an
+// AgentFrame oneof variant riding the Publish spine. Correlates to the
+// delivered message by id; on receipt the Server advances the delivery cursor
+// (the success receipt for a delivery, per RT-3 — not a Runner result).
+type DeliveryAck struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The delivered comms Message's id.
+	MessageId     string `protobuf:"bytes,1,opt,name=message_id,json=messageId,proto3" json:"message_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeliveryAck) Reset() {
+	*x = DeliveryAck{}
+	mi := &file_compass_v1_agent_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeliveryAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeliveryAck) ProtoMessage() {}
+
+func (x *DeliveryAck) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_agent_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeliveryAck.ProtoReflect.Descriptor instead.
+func (*DeliveryAck) Descriptor() ([]byte, []int) {
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *DeliveryAck) GetMessageId() string {
+	if x != nil {
+		return x.MessageId
+	}
+	return ""
 }
 
 // Two agent -> Runner control-plane ACK frames, added as AgentFrame oneof
@@ -771,7 +855,7 @@ type ReplayCompleteAck struct {
 
 func (x *ReplayCompleteAck) Reset() {
 	*x = ReplayCompleteAck{}
-	mi := &file_compass_v1_agent_proto_msgTypes[10]
+	mi := &file_compass_v1_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -783,7 +867,7 @@ func (x *ReplayCompleteAck) String() string {
 func (*ReplayCompleteAck) ProtoMessage() {}
 
 func (x *ReplayCompleteAck) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[10]
+	mi := &file_compass_v1_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -796,7 +880,7 @@ func (x *ReplayCompleteAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplayCompleteAck.ProtoReflect.Descriptor instead.
 func (*ReplayCompleteAck) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{10}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{11}
 }
 
 type ControlAck struct {
@@ -813,7 +897,7 @@ type ControlAck struct {
 
 func (x *ControlAck) Reset() {
 	*x = ControlAck{}
-	mi := &file_compass_v1_agent_proto_msgTypes[11]
+	mi := &file_compass_v1_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -825,7 +909,7 @@ func (x *ControlAck) String() string {
 func (*ControlAck) ProtoMessage() {}
 
 func (x *ControlAck) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[11]
+	mi := &file_compass_v1_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -838,7 +922,7 @@ func (x *ControlAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlAck.ProtoReflect.Descriptor instead.
 func (*ControlAck) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{11}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ControlAck) GetAckedSeq() uint64 {
@@ -860,7 +944,7 @@ var File_compass_v1_agent_proto protoreflect.FileDescriptor
 const file_compass_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"\x16compass/v1/agent.proto\x12\n" +
-	"compass.v1\x1a\x16compass/v1/comms.proto\x1a\x18compass/v1/compass.proto\"\xf6\x02\n" +
+	"compass.v1\x1a\x16compass/v1/comms.proto\x1a\x18compass/v1/compass.proto\"\xb4\x03\n" +
 	"\n" +
 	"AgentFrame\x12L\n" +
 	"\x13conversation_posted\x18\x01 \x01(\v2\x19.compass.v1.MessagePostedH\x00R\x12conversationPosted\x12O\n" +
@@ -868,7 +952,8 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\asession\x18\x03 \x01(\v2\x18.compass.v1.SessionFrameH\x00R\asession\x12O\n" +
 	"\x13replay_complete_ack\x18\x04 \x01(\v2\x1d.compass.v1.ReplayCompleteAckH\x00R\x11replayCompleteAck\x129\n" +
 	"\vcontrol_ack\x18\x05 \x01(\v2\x16.compass.v1.ControlAckH\x00R\n" +
-	"controlAckB\a\n" +
+	"controlAck\x12<\n" +
+	"\fdelivery_ack\x18\x06 \x01(\v2\x17.compass.v1.DeliveryAckH\x00R\vdeliveryAckB\a\n" +
 	"\x05frame\"\x8b\x01\n" +
 	"\fSessionFrame\x123\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\x129\n" +
@@ -892,10 +977,14 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x127\n" +
 	"\aanswers\x18\x02 \x03(\v2\x1d.compass.v1.AskQuestionAnswerR\aanswers\"\x10\n" +
 	"\x0eReplayComplete\"\x0e\n" +
-	"\fSteerControl\"\x10\n" +
-	"\x0eDeliverControl\"\x12\n" +
+	"\fSteerControl\"\x12\n" +
 	"\x10TranscriptReplay\"\x0f\n" +
-	"\rConfigControl\"\x13\n" +
+	"\rConfigControl\"?\n" +
+	"\x0eDeliverControl\x12-\n" +
+	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\",\n" +
+	"\vDeliveryAck\x12\x1d\n" +
+	"\n" +
+	"message_id\x18\x01 \x01(\tR\tmessageId\"\x13\n" +
 	"\x11ReplayCompleteAck\"N\n" +
 	"\n" +
 	"ControlAck\x12\x1b\n" +
@@ -914,7 +1003,7 @@ func file_compass_v1_agent_proto_rawDescGZIP() []byte {
 	return file_compass_v1_agent_proto_rawDescData
 }
 
-var file_compass_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_compass_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_compass_v1_agent_proto_goTypes = []any{
 	(*AgentFrame)(nil),           // 0: compass.v1.AgentFrame
 	(*SessionFrame)(nil),         // 1: compass.v1.SessionFrame
@@ -923,38 +1012,42 @@ var file_compass_v1_agent_proto_goTypes = []any{
 	(*AskAnswerControl)(nil),     // 4: compass.v1.AskAnswerControl
 	(*ReplayComplete)(nil),       // 5: compass.v1.ReplayComplete
 	(*SteerControl)(nil),         // 6: compass.v1.SteerControl
-	(*DeliverControl)(nil),       // 7: compass.v1.DeliverControl
-	(*TranscriptReplay)(nil),     // 8: compass.v1.TranscriptReplay
-	(*ConfigControl)(nil),        // 9: compass.v1.ConfigControl
-	(*ReplayCompleteAck)(nil),    // 10: compass.v1.ReplayCompleteAck
-	(*ControlAck)(nil),           // 11: compass.v1.ControlAck
-	(*v1.MessagePosted)(nil),     // 12: compass.v1.MessagePosted
-	(*v1.MessageUpdated)(nil),    // 13: compass.v1.MessageUpdated
-	(v1.AgentSessionState)(0),    // 14: compass.v1.AgentSessionState
-	(*v1.SessionEvent)(nil),      // 15: compass.v1.SessionEvent
-	(*v1.AskQuestionAnswer)(nil), // 16: compass.v1.AskQuestionAnswer
+	(*TranscriptReplay)(nil),     // 7: compass.v1.TranscriptReplay
+	(*ConfigControl)(nil),        // 8: compass.v1.ConfigControl
+	(*DeliverControl)(nil),       // 9: compass.v1.DeliverControl
+	(*DeliveryAck)(nil),          // 10: compass.v1.DeliveryAck
+	(*ReplayCompleteAck)(nil),    // 11: compass.v1.ReplayCompleteAck
+	(*ControlAck)(nil),           // 12: compass.v1.ControlAck
+	(*v1.MessagePosted)(nil),     // 13: compass.v1.MessagePosted
+	(*v1.MessageUpdated)(nil),    // 14: compass.v1.MessageUpdated
+	(v1.AgentSessionState)(0),    // 15: compass.v1.AgentSessionState
+	(*v1.SessionEvent)(nil),      // 16: compass.v1.SessionEvent
+	(*v1.AskQuestionAnswer)(nil), // 17: compass.v1.AskQuestionAnswer
+	(*v1.Message)(nil),           // 18: compass.v1.Message
 }
 var file_compass_v1_agent_proto_depIdxs = []int32{
-	12, // 0: compass.v1.AgentFrame.conversation_posted:type_name -> compass.v1.MessagePosted
-	13, // 1: compass.v1.AgentFrame.conversation_updated:type_name -> compass.v1.MessageUpdated
+	13, // 0: compass.v1.AgentFrame.conversation_posted:type_name -> compass.v1.MessagePosted
+	14, // 1: compass.v1.AgentFrame.conversation_updated:type_name -> compass.v1.MessageUpdated
 	1,  // 2: compass.v1.AgentFrame.session:type_name -> compass.v1.SessionFrame
-	10, // 3: compass.v1.AgentFrame.replay_complete_ack:type_name -> compass.v1.ReplayCompleteAck
-	11, // 4: compass.v1.AgentFrame.control_ack:type_name -> compass.v1.ControlAck
-	14, // 5: compass.v1.SessionFrame.state:type_name -> compass.v1.AgentSessionState
-	15, // 6: compass.v1.SessionFrame.typed_event:type_name -> compass.v1.SessionEvent
-	3,  // 7: compass.v1.AgentControl.prompt:type_name -> compass.v1.PromptControl
-	6,  // 8: compass.v1.AgentControl.steer:type_name -> compass.v1.SteerControl
-	7,  // 9: compass.v1.AgentControl.deliver:type_name -> compass.v1.DeliverControl
-	4,  // 10: compass.v1.AgentControl.ask_answer:type_name -> compass.v1.AskAnswerControl
-	9,  // 11: compass.v1.AgentControl.config:type_name -> compass.v1.ConfigControl
-	8,  // 12: compass.v1.AgentControl.replay:type_name -> compass.v1.TranscriptReplay
-	5,  // 13: compass.v1.AgentControl.replay_complete:type_name -> compass.v1.ReplayComplete
-	16, // 14: compass.v1.AskAnswerControl.answers:type_name -> compass.v1.AskQuestionAnswer
-	15, // [15:15] is the sub-list for method output_type
-	15, // [15:15] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	11, // 3: compass.v1.AgentFrame.replay_complete_ack:type_name -> compass.v1.ReplayCompleteAck
+	12, // 4: compass.v1.AgentFrame.control_ack:type_name -> compass.v1.ControlAck
+	10, // 5: compass.v1.AgentFrame.delivery_ack:type_name -> compass.v1.DeliveryAck
+	15, // 6: compass.v1.SessionFrame.state:type_name -> compass.v1.AgentSessionState
+	16, // 7: compass.v1.SessionFrame.typed_event:type_name -> compass.v1.SessionEvent
+	3,  // 8: compass.v1.AgentControl.prompt:type_name -> compass.v1.PromptControl
+	6,  // 9: compass.v1.AgentControl.steer:type_name -> compass.v1.SteerControl
+	9,  // 10: compass.v1.AgentControl.deliver:type_name -> compass.v1.DeliverControl
+	4,  // 11: compass.v1.AgentControl.ask_answer:type_name -> compass.v1.AskAnswerControl
+	8,  // 12: compass.v1.AgentControl.config:type_name -> compass.v1.ConfigControl
+	7,  // 13: compass.v1.AgentControl.replay:type_name -> compass.v1.TranscriptReplay
+	5,  // 14: compass.v1.AgentControl.replay_complete:type_name -> compass.v1.ReplayComplete
+	17, // 15: compass.v1.AskAnswerControl.answers:type_name -> compass.v1.AskQuestionAnswer
+	18, // 16: compass.v1.DeliverControl.message:type_name -> compass.v1.Message
+	17, // [17:17] is the sub-list for method output_type
+	17, // [17:17] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_agent_proto_init() }
@@ -968,6 +1061,7 @@ func file_compass_v1_agent_proto_init() {
 		(*AgentFrame_Session)(nil),
 		(*AgentFrame_ReplayCompleteAck)(nil),
 		(*AgentFrame_ControlAck)(nil),
+		(*AgentFrame_DeliveryAck)(nil),
 	}
 	file_compass_v1_agent_proto_msgTypes[2].OneofWrappers = []any{
 		(*AgentControl_Prompt)(nil),
@@ -984,7 +1078,7 @@ func file_compass_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compass_v1_agent_proto_rawDesc), len(file_compass_v1_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
