@@ -27,7 +27,7 @@ import type { Message as Message$1 } from "@bufbuild/protobuf";
  * Describes the file compass/v1/comms.proto.
  */
 export const file_compass_v1_comms: GenFile = /*@__PURE__*/
-  fileDesc("ChZjb21wYXNzL3YxL2NvbW1zLnByb3RvEgpjb21wYXNzLnYxIpcBCgdBY2NvdW50EgoKAmlkGAEgASgJEg4KBmhhbmRsZRgCIAEoCRIUCgxkaXNwbGF5X25hbWUYAyABKAkSJwoEdXNlchgKIAEoCzIXLmNvbXBhc3MudjEuVXNlckFjY291bnRIABIpCgVhZ2VudBgLIAEoCzIYLmNvbXBhc3MudjEuQWdlbnRBY2NvdW50SABCBgoEa2luZCIxCgtVc2VyQWNjb3VudBIiCgRyb2xlGAEgASgOMhQuY29tcGFzcy52MS5Vc2VyUm9sZSJNCgxBZ2VudEFjY291bnQSFQoNb3duZXJfdXNlcl9pZBgBIAEoCRIXCg9ob21lX2NoYW5uZWxfaWQYAyABKAlKBAgCEANSB2hhcm5lc3MikAEKDENoYW5uZWxHcm91cBIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEhcKD3BhcmVudF9ncm91cF9pZBgDIAEoCRIVCg1vd25lcl91c2VyX2lkGAQgASgJEjYKCnZpc2liaWxpdHkYBSABKA4yIi5jb21wYXNzLnYxLkNoYW5uZWxHcm91cFZpc2liaWxpdHkimAEKB0NoYW5uZWwSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIQCghncm91cF9pZBgDIAEoCRIlCgRraW5kGAQgASgOMhcuY29tcGFzcy52MS5DaGFubmVsS2luZBIaChJtZW1iZXJfYWNjb3VudF9pZHMYBSADKAkSHgoWc3Vic2NyaWJlcl9hY2NvdW50X2lkcxgGIAMoCSJSCg5BZ2VudFdvcmtzcGFjZRIKCgJpZBgBIAEoCRIYChBhZ2VudF9hY2NvdW50X2lkGAIgASgJSgQIAxAEUhRwYXJ0aWNpcGFudF91c2VyX2lkcyLAAQoHTWVzc2FnZRIKCgJpZBgBIAEoCRIUCgpjaGFubmVsX2lkGAIgASgJSAASGQoRYXV0aG9yX2FjY291bnRfaWQYBCABKAkSEgoKYXRfdW5peF9tcxgFIAEoAxIoCgZibG9ja3MYBiADKAsyGC5jb21wYXNzLnYxLk1lc3NhZ2VCbG9jaxIZChFwYXJlbnRfbWVzc2FnZV9pZBgHIAEoCUILCgljb250YWluZXJKBAgDEARSDHdvcmtzcGFjZV9pZCJ/CgxNZXNzYWdlQmxvY2sSDgoEdGV4dBgBIAEoCUgAEh4KA2FzaxgGIAEoCzIPLmNvbXBhc3MudjEuQXNrSABCBwoFYmxvY2tKBAgCEANKBAgDEARKBAgEEAVKBAgFEAZSB3Rob3VnaHRSCXRvb2xfY2FsbFIEcGxhblIEZGlmZiKPAQoDQXNrEg4KBmFza19pZBgBIAEoCRIqCglxdWVzdGlvbnMYBiADKAsyFy5jb21wYXNzLnYxLkFza1F1ZXN0aW9uEhAKCGFuc3dlcmVkGAcgASgISgQIAhAGUghxdWVzdGlvblIHb3B0aW9uc1IOYWxsb3dfbXVsdGlwbGVSEWNob3Nlbl9vcHRpb25faWRzIvEBCgtBc2tRdWVzdGlvbhITCgtxdWVzdGlvbl9pZBgBIAEoCRIQCghxdWVzdGlvbhgCIAEoCRIOCgZoZWFkZXIYAyABKAkSJgoHb3B0aW9ucxgEIAMoCzIVLmNvbXBhc3MudjEuQXNrT3B0aW9uEhYKDmFsbG93X211bHRpcGxlGAUgASgIEhgKC3JlY29tbWVuZGVkGAYgASgFSACIAQESGQoRY2hvc2VuX29wdGlvbl9pZHMYByADKAkSEwoLY3VzdG9tX3RleHQYCCABKAkSEQoJdGltZWRfb3V0GAkgASgIQg4KDF9yZWNvbW1lbmRlZCJMCglBc2tPcHRpb24SCgoCaWQYASABKAkSDQoFbGFiZWwYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSDwoHcHJldmlldxgEIAEoCSKQBAoWU3Vic2NyaWJlQ29tbXNSZXNwb25zZRILCgNzZXEYASABKAQSEgoKYXRfdW5peF9tcxgCIAEoAxIWCg5pbnN0YW5jZV9lcG9jaBgDIAEoBBIUCgxzbmFwc2hvdF9zZXEYBCABKAQSMwoObWVzc2FnZV9wb3N0ZWQYCiABKAsyGS5jb21wYXNzLnYxLk1lc3NhZ2VQb3N0ZWRIABI1Cg9tZXNzYWdlX3VwZGF0ZWQYCyABKAsyGi5jb21wYXNzLnYxLk1lc3NhZ2VVcGRhdGVkSAASNQoPY2hhbm5lbF9jaGFuZ2VkGAwgASgLMhouY29tcGFzcy52MS5DaGFubmVsQ2hhbmdlZEgAEkAKFWNoYW5uZWxfZ3JvdXBfY2hhbmdlZBgNIAEoCzIfLmNvbXBhc3MudjEuQ2hhbm5lbEdyb3VwQ2hhbmdlZEgAEjUKD2FjY291bnRfY2hhbmdlZBgOIAEoCzIaLmNvbXBhc3MudjEuQWNjb3VudENoYW5nZWRIABJEChdhZ2VudF93b3Jrc3BhY2VfY2hhbmdlZBgPIAEoCzIhLmNvbXBhc3MudjEuQWdlbnRXb3Jrc3BhY2VDaGFuZ2VkSAASOgoPcmVzeW5jX3JlcXVpcmVkGBAgASgLMh8uY29tcGFzcy52MS5Db21tc1Jlc3luY1JlcXVpcmVkSABCCQoHcGF5bG9hZCI1Cg1NZXNzYWdlUG9zdGVkEiQKB21lc3NhZ2UYASABKAsyEy5jb21wYXNzLnYxLk1lc3NhZ2UiNgoOTWVzc2FnZVVwZGF0ZWQSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZSJTCg5DaGFubmVsQ2hhbmdlZBIkCgdjaGFubmVsGAEgASgLMhMuY29tcGFzcy52MS5DaGFubmVsEhsKE3JlbW92ZWRfYWNjb3VudF9pZHMYAiADKAkiPgoTQ2hhbm5lbEdyb3VwQ2hhbmdlZBInCgVncm91cBgBIAEoCzIYLmNvbXBhc3MudjEuQ2hhbm5lbEdyb3VwIjYKDkFjY291bnRDaGFuZ2VkEiQKB2FjY291bnQYASABKAsyEy5jb21wYXNzLnYxLkFjY291bnQiRgoVQWdlbnRXb3Jrc3BhY2VDaGFuZ2VkEi0KCXdvcmtzcGFjZRgBIAEoCzIaLmNvbXBhc3MudjEuQWdlbnRXb3Jrc3BhY2UiFQoTQ29tbXNSZXN5bmNSZXF1aXJlZCI5ChFDcmVhdGVVc2VyUmVxdWVzdBIOCgZoYW5kbGUYASABKAkSFAoMZGlzcGxheV9uYW1lGAIgASgJIjoKEkNyZWF0ZVVzZXJSZXNwb25zZRIkCgdhY2NvdW50GAEgASgLMhMuY29tcGFzcy52MS5BY2NvdW50IkkKEkNyZWF0ZUFnZW50UmVxdWVzdBIOCgZoYW5kbGUYASABKAkSFAoMZGlzcGxheV9uYW1lGAIgASgJSgQIAxAEUgdoYXJuZXNzIjsKE0NyZWF0ZUFnZW50UmVzcG9uc2USJAoHYWNjb3VudBgBIAEoCzITLmNvbXBhc3MudjEuQWNjb3VudCIrChNMaXN0QWNjb3VudHNSZXF1ZXN0EhQKDHNuYXBzaG90X3NlcRgBIAEoBCI9ChRMaXN0QWNjb3VudHNSZXNwb25zZRIlCghhY2NvdW50cxgBIAMoCzITLmNvbXBhc3MudjEuQWNjb3VudCJ6ChlDcmVhdGVDaGFubmVsR3JvdXBSZXF1ZXN0EgwKBG5hbWUYASABKAkSFwoPcGFyZW50X2dyb3VwX2lkGAIgASgJEjYKCnZpc2liaWxpdHkYAyABKA4yIi5jb21wYXNzLnYxLkNoYW5uZWxHcm91cFZpc2liaWxpdHkiRQoaQ3JlYXRlQ2hhbm5lbEdyb3VwUmVzcG9uc2USJwoFZ3JvdXAYASABKAsyGC5jb21wYXNzLnYxLkNoYW5uZWxHcm91cCIwChhMaXN0Q2hhbm5lbEdyb3Vwc1JlcXVlc3QSFAoMc25hcHNob3Rfc2VxGAEgASgEIkUKGUxpc3RDaGFubmVsR3JvdXBzUmVzcG9uc2USKAoGZ3JvdXBzGAEgAygLMhguY29tcGFzcy52MS5DaGFubmVsR3JvdXAiKwoTTGlzdENoYW5uZWxzUmVxdWVzdBIUCgxzbmFwc2hvdF9zZXEYASABKAQiPQoUTGlzdENoYW5uZWxzUmVzcG9uc2USJQoIY2hhbm5lbHMYASADKAsyEy5jb21wYXNzLnYxLkNoYW5uZWwieQoUQ3JlYXRlQ2hhbm5lbFJlcXVlc3QSDAoEbmFtZRgBIAEoCRIQCghncm91cF9pZBgCIAEoCRIlCgRraW5kGAMgASgOMhcuY29tcGFzcy52MS5DaGFubmVsS2luZBIaChJtZW1iZXJfYWNjb3VudF9pZHMYBCADKAkiPQoVQ3JlYXRlQ2hhbm5lbFJlc3BvbnNlEiQKB2NoYW5uZWwYASABKAsyEy5jb21wYXNzLnYxLkNoYW5uZWwitAEKG1VwZGF0ZUNoYW5uZWxNZW1iZXJzUmVxdWVzdBISCgpjaGFubmVsX2lkGAEgASgJEh4KFmFkZF9tZW1iZXJfYWNjb3VudF9pZHMYAiADKAkSIQoZcmVtb3ZlX21lbWJlcl9hY2NvdW50X2lkcxgDIAMoCRIdChVzdWJzY3JpYmVfYWNjb3VudF9pZHMYBCADKAkSHwoXdW5zdWJzY3JpYmVfYWNjb3VudF9pZHMYBSADKAkiRAocVXBkYXRlQ2hhbm5lbE1lbWJlcnNSZXNwb25zZRIkCgdjaGFubmVsGAEgASgLMhMuY29tcGFzcy52MS5DaGFubmVsIjUKGU9wZW5BZ2VudFdvcmtzcGFjZVJlcXVlc3QSGAoQYWdlbnRfYWNjb3VudF9pZBgBIAEoCSJLChpPcGVuQWdlbnRXb3Jrc3BhY2VSZXNwb25zZRItCgl3b3Jrc3BhY2UYASABKAsyGi5jb21wYXNzLnYxLkFnZW50V29ya3NwYWNlIowBChNMaXN0TWVzc2FnZXNSZXF1ZXN0EhQKCmNoYW5uZWxfaWQYASABKAlIABINCgVsaW1pdBgDIAEoDRIZChFiZWZvcmVfbWVzc2FnZV9pZBgEIAEoCRIUCgxzbmFwc2hvdF9zZXEYBSABKARCCwoJY29udGFpbmVySgQIAhADUgx3b3Jrc3BhY2VfaWQiPQoUTGlzdE1lc3NhZ2VzUmVzcG9uc2USJQoIbWVzc2FnZXMYASADKAsyEy5jb21wYXNzLnYxLk1lc3NhZ2UiqwEKElBvc3RNZXNzYWdlUmVxdWVzdBIUCgpjaGFubmVsX2lkGAEgASgJSAASKAoGYmxvY2tzGAMgAygLMhguY29tcGFzcy52MS5NZXNzYWdlQmxvY2sSGQoRcGFyZW50X21lc3NhZ2VfaWQYBSABKAkSGQoRY2xpZW50X3JlcXVlc3RfaWQYBCABKAlCCwoJY29udGFpbmVySgQIAhADUgx3b3Jrc3BhY2VfaWQiOwoTUG9zdE1lc3NhZ2VSZXNwb25zZRIkCgdtZXNzYWdlGAEgASgLMhMuY29tcGFzcy52MS5NZXNzYWdlIm4KE1Jlc3BvbmRUb0Fza1JlcXVlc3QSDgoGYXNrX2lkGAEgASgJEi4KB2Fuc3dlcnMYAyADKAsyHS5jb21wYXNzLnYxLkFza1F1ZXN0aW9uQW5zd2VySgQIAhADUhFjaG9zZW5fb3B0aW9uX2lkcyJYChFBc2tRdWVzdGlvbkFuc3dlchITCgtxdWVzdGlvbl9pZBgBIAEoCRIZChFjaG9zZW5fb3B0aW9uX2lkcxgCIAMoCRITCgtjdXN0b21fdGV4dBgDIAEoCSIWChRSZXNwb25kVG9Bc2tSZXNwb25zZSJ+ChVTZWFyY2hNZXNzYWdlc1JlcXVlc3QSDQoFcXVlcnkYASABKAkSFAoKY2hhbm5lbF9pZBgCIAEoCUgAEg0KBWxpbWl0GAQgASgNEhQKDHNuYXBzaG90X3NlcRgFIAEoBEIHCgVzY29wZUoECAMQBFIMd29ya3NwYWNlX2lkIj8KFlNlYXJjaE1lc3NhZ2VzUmVzcG9uc2USJQoIbWVzc2FnZXMYASADKAsyEy5jb21wYXNzLnYxLk1lc3NhZ2UiQgoVU3Vic2NyaWJlQ29tbXNSZXF1ZXN0EhEKCXNpbmNlX3NlcRgBIAEoBBIWCg5pbnN0YW5jZV9lcG9jaBgCIAEoBCo1CghVc2VyUm9sZRIUChBVU0VSX1JPTEVfTUVNQkVSEAASEwoPVVNFUl9ST0xFX0FETUlOEAEqYQoWQ2hhbm5lbEdyb3VwVmlzaWJpbGl0eRIiCh5DSEFOTkVMX0dST1VQX1ZJU0lCSUxJVFlfT1dORVIQABIjCh9DSEFOTkVMX0dST1VQX1ZJU0lCSUxJVFlfU0hBUkVEEAEqVwoLQ2hhbm5lbEtpbmQSGAoUQ0hBTk5FTF9LSU5EX0NIQU5ORUwQABITCg9DSEFOTkVMX0tJTkRfRE0QARIZChVDSEFOTkVMX0tJTkRfR1JPVVBfRE0QAjLoCQoMQ29tbXNTZXJ2aWNlEksKCkNyZWF0ZVVzZXISHS5jb21wYXNzLnYxLkNyZWF0ZVVzZXJSZXF1ZXN0Gh4uY29tcGFzcy52MS5DcmVhdGVVc2VyUmVzcG9uc2USTgoLQ3JlYXRlQWdlbnQSHi5jb21wYXNzLnYxLkNyZWF0ZUFnZW50UmVxdWVzdBofLmNvbXBhc3MudjEuQ3JlYXRlQWdlbnRSZXNwb25zZRJRCgxMaXN0QWNjb3VudHMSHy5jb21wYXNzLnYxLkxpc3RBY2NvdW50c1JlcXVlc3QaIC5jb21wYXNzLnYxLkxpc3RBY2NvdW50c1Jlc3BvbnNlEmMKEkNyZWF0ZUNoYW5uZWxHcm91cBIlLmNvbXBhc3MudjEuQ3JlYXRlQ2hhbm5lbEdyb3VwUmVxdWVzdBomLmNvbXBhc3MudjEuQ3JlYXRlQ2hhbm5lbEdyb3VwUmVzcG9uc2USYAoRTGlzdENoYW5uZWxHcm91cHMSJC5jb21wYXNzLnYxLkxpc3RDaGFubmVsR3JvdXBzUmVxdWVzdBolLmNvbXBhc3MudjEuTGlzdENoYW5uZWxHcm91cHNSZXNwb25zZRJRCgxMaXN0Q2hhbm5lbHMSHy5jb21wYXNzLnYxLkxpc3RDaGFubmVsc1JlcXVlc3QaIC5jb21wYXNzLnYxLkxpc3RDaGFubmVsc1Jlc3BvbnNlElQKDUNyZWF0ZUNoYW5uZWwSIC5jb21wYXNzLnYxLkNyZWF0ZUNoYW5uZWxSZXF1ZXN0GiEuY29tcGFzcy52MS5DcmVhdGVDaGFubmVsUmVzcG9uc2USaQoUVXBkYXRlQ2hhbm5lbE1lbWJlcnMSJy5jb21wYXNzLnYxLlVwZGF0ZUNoYW5uZWxNZW1iZXJzUmVxdWVzdBooLmNvbXBhc3MudjEuVXBkYXRlQ2hhbm5lbE1lbWJlcnNSZXNwb25zZRJjChJPcGVuQWdlbnRXb3Jrc3BhY2USJS5jb21wYXNzLnYxLk9wZW5BZ2VudFdvcmtzcGFjZVJlcXVlc3QaJi5jb21wYXNzLnYxLk9wZW5BZ2VudFdvcmtzcGFjZVJlc3BvbnNlElEKDExpc3RNZXNzYWdlcxIfLmNvbXBhc3MudjEuTGlzdE1lc3NhZ2VzUmVxdWVzdBogLmNvbXBhc3MudjEuTGlzdE1lc3NhZ2VzUmVzcG9uc2USTgoLUG9zdE1lc3NhZ2USHi5jb21wYXNzLnYxLlBvc3RNZXNzYWdlUmVxdWVzdBofLmNvbXBhc3MudjEuUG9zdE1lc3NhZ2VSZXNwb25zZRJRCgxSZXNwb25kVG9Bc2sSHy5jb21wYXNzLnYxLlJlc3BvbmRUb0Fza1JlcXVlc3QaIC5jb21wYXNzLnYxLlJlc3BvbmRUb0Fza1Jlc3BvbnNlElcKDlNlYXJjaE1lc3NhZ2VzEiEuY29tcGFzcy52MS5TZWFyY2hNZXNzYWdlc1JlcXVlc3QaIi5jb21wYXNzLnYxLlNlYXJjaE1lc3NhZ2VzUmVzcG9uc2USWQoOU3Vic2NyaWJlQ29tbXMSIS5jb21wYXNzLnYxLlN1YnNjcmliZUNvbW1zUmVxdWVzdBoiLmNvbXBhc3MudjEuU3Vic2NyaWJlQ29tbXNSZXNwb25zZTABYgZwcm90bzM");
+  fileDesc("ChZjb21wYXNzL3YxL2NvbW1zLnByb3RvEgpjb21wYXNzLnYxIpcBCgdBY2NvdW50EgoKAmlkGAEgASgJEg4KBmhhbmRsZRgCIAEoCRIUCgxkaXNwbGF5X25hbWUYAyABKAkSJwoEdXNlchgKIAEoCzIXLmNvbXBhc3MudjEuVXNlckFjY291bnRIABIpCgVhZ2VudBgLIAEoCzIYLmNvbXBhc3MudjEuQWdlbnRBY2NvdW50SABCBgoEa2luZCIxCgtVc2VyQWNjb3VudBIiCgRyb2xlGAEgASgOMhQuY29tcGFzcy52MS5Vc2VyUm9sZSJNCgxBZ2VudEFjY291bnQSFQoNb3duZXJfdXNlcl9pZBgBIAEoCRIXCg9ob21lX2NoYW5uZWxfaWQYAyABKAlKBAgCEANSB2hhcm5lc3MikAEKDENoYW5uZWxHcm91cBIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEhcKD3BhcmVudF9ncm91cF9pZBgDIAEoCRIVCg1vd25lcl91c2VyX2lkGAQgASgJEjYKCnZpc2liaWxpdHkYBSABKA4yIi5jb21wYXNzLnYxLkNoYW5uZWxHcm91cFZpc2liaWxpdHkimAEKB0NoYW5uZWwSCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRIQCghncm91cF9pZBgDIAEoCRIlCgRraW5kGAQgASgOMhcuY29tcGFzcy52MS5DaGFubmVsS2luZBIaChJtZW1iZXJfYWNjb3VudF9pZHMYBSADKAkSHgoWc3Vic2NyaWJlcl9hY2NvdW50X2lkcxgGIAMoCSJSCg5BZ2VudFdvcmtzcGFjZRIKCgJpZBgBIAEoCRIYChBhZ2VudF9hY2NvdW50X2lkGAIgASgJSgQIAxAEUhRwYXJ0aWNpcGFudF91c2VyX2lkcyLAAQoHTWVzc2FnZRIKCgJpZBgBIAEoCRIUCgpjaGFubmVsX2lkGAIgASgJSAASGQoRYXV0aG9yX2FjY291bnRfaWQYBCABKAkSEgoKYXRfdW5peF9tcxgFIAEoAxIoCgZibG9ja3MYBiADKAsyGC5jb21wYXNzLnYxLk1lc3NhZ2VCbG9jaxIZChFwYXJlbnRfbWVzc2FnZV9pZBgHIAEoCUILCgljb250YWluZXJKBAgDEARSDHdvcmtzcGFjZV9pZCJ/CgxNZXNzYWdlQmxvY2sSDgoEdGV4dBgBIAEoCUgAEh4KA2FzaxgGIAEoCzIPLmNvbXBhc3MudjEuQXNrSABCBwoFYmxvY2tKBAgCEANKBAgDEARKBAgEEAVKBAgFEAZSB3Rob3VnaHRSCXRvb2xfY2FsbFIEcGxhblIEZGlmZiKPAQoDQXNrEg4KBmFza19pZBgBIAEoCRIqCglxdWVzdGlvbnMYBiADKAsyFy5jb21wYXNzLnYxLkFza1F1ZXN0aW9uEhAKCGFuc3dlcmVkGAcgASgISgQIAhAGUghxdWVzdGlvblIHb3B0aW9uc1IOYWxsb3dfbXVsdGlwbGVSEWNob3Nlbl9vcHRpb25faWRzIvEBCgtBc2tRdWVzdGlvbhITCgtxdWVzdGlvbl9pZBgBIAEoCRIQCghxdWVzdGlvbhgCIAEoCRIOCgZoZWFkZXIYAyABKAkSJgoHb3B0aW9ucxgEIAMoCzIVLmNvbXBhc3MudjEuQXNrT3B0aW9uEhYKDmFsbG93X211bHRpcGxlGAUgASgIEhgKC3JlY29tbWVuZGVkGAYgASgFSACIAQESGQoRY2hvc2VuX29wdGlvbl9pZHMYByADKAkSEwoLY3VzdG9tX3RleHQYCCABKAkSEQoJdGltZWRfb3V0GAkgASgIQg4KDF9yZWNvbW1lbmRlZCJMCglBc2tPcHRpb24SCgoCaWQYASABKAkSDQoFbGFiZWwYAiABKAkSEwoLZGVzY3JpcHRpb24YAyABKAkSDwoHcHJldmlldxgEIAEoCSLUBAoWU3Vic2NyaWJlQ29tbXNSZXNwb25zZRILCgNzZXEYASABKAQSEgoKYXRfdW5peF9tcxgCIAEoAxIWCg5pbnN0YW5jZV9lcG9jaBgDIAEoBBIUCgxzbmFwc2hvdF9zZXEYBCABKAQSMwoObWVzc2FnZV9wb3N0ZWQYCiABKAsyGS5jb21wYXNzLnYxLk1lc3NhZ2VQb3N0ZWRIABI1Cg9tZXNzYWdlX3VwZGF0ZWQYCyABKAsyGi5jb21wYXNzLnYxLk1lc3NhZ2VVcGRhdGVkSAASNQoPY2hhbm5lbF9jaGFuZ2VkGAwgASgLMhouY29tcGFzcy52MS5DaGFubmVsQ2hhbmdlZEgAEkAKFWNoYW5uZWxfZ3JvdXBfY2hhbmdlZBgNIAEoCzIfLmNvbXBhc3MudjEuQ2hhbm5lbEdyb3VwQ2hhbmdlZEgAEjUKD2FjY291bnRfY2hhbmdlZBgOIAEoCzIaLmNvbXBhc3MudjEuQWNjb3VudENoYW5nZWRIABJEChdhZ2VudF93b3Jrc3BhY2VfY2hhbmdlZBgPIAEoCzIhLmNvbXBhc3MudjEuQWdlbnRXb3Jrc3BhY2VDaGFuZ2VkSAASOgoPcmVzeW5jX3JlcXVpcmVkGBAgASgLMh8uY29tcGFzcy52MS5Db21tc1Jlc3luY1JlcXVpcmVkSAASQgoWYWdlbnRfcHJlc2VuY2VfY2hhbmdlZBgRIAEoCzIgLmNvbXBhc3MudjEuQWdlbnRQcmVzZW5jZUNoYW5nZWRIAEIJCgdwYXlsb2FkIjUKDU1lc3NhZ2VQb3N0ZWQSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZSI2Cg5NZXNzYWdlVXBkYXRlZBIkCgdtZXNzYWdlGAEgASgLMhMuY29tcGFzcy52MS5NZXNzYWdlIlMKDkNoYW5uZWxDaGFuZ2VkEiQKB2NoYW5uZWwYASABKAsyEy5jb21wYXNzLnYxLkNoYW5uZWwSGwoTcmVtb3ZlZF9hY2NvdW50X2lkcxgCIAMoCSI+ChNDaGFubmVsR3JvdXBDaGFuZ2VkEicKBWdyb3VwGAEgASgLMhguY29tcGFzcy52MS5DaGFubmVsR3JvdXAiNgoOQWNjb3VudENoYW5nZWQSJAoHYWNjb3VudBgBIAEoCzITLmNvbXBhc3MudjEuQWNjb3VudCJGChVBZ2VudFdvcmtzcGFjZUNoYW5nZWQSLQoJd29ya3NwYWNlGAEgASgLMhouY29tcGFzcy52MS5BZ2VudFdvcmtzcGFjZSIVChNDb21tc1Jlc3luY1JlcXVpcmVkIl0KFEFnZW50UHJlc2VuY2VDaGFuZ2VkEhgKEGFnZW50X2FjY291bnRfaWQYASABKAkSKwoIcHJlc2VuY2UYAiABKA4yGS5jb21wYXNzLnYxLkFnZW50UHJlc2VuY2UiOQoRQ3JlYXRlVXNlclJlcXVlc3QSDgoGaGFuZGxlGAEgASgJEhQKDGRpc3BsYXlfbmFtZRgCIAEoCSI6ChJDcmVhdGVVc2VyUmVzcG9uc2USJAoHYWNjb3VudBgBIAEoCzITLmNvbXBhc3MudjEuQWNjb3VudCJJChJDcmVhdGVBZ2VudFJlcXVlc3QSDgoGaGFuZGxlGAEgASgJEhQKDGRpc3BsYXlfbmFtZRgCIAEoCUoECAMQBFIHaGFybmVzcyI7ChNDcmVhdGVBZ2VudFJlc3BvbnNlEiQKB2FjY291bnQYASABKAsyEy5jb21wYXNzLnYxLkFjY291bnQiKwoTTGlzdEFjY291bnRzUmVxdWVzdBIUCgxzbmFwc2hvdF9zZXEYASABKAQiPQoUTGlzdEFjY291bnRzUmVzcG9uc2USJQoIYWNjb3VudHMYASADKAsyEy5jb21wYXNzLnYxLkFjY291bnQiegoZQ3JlYXRlQ2hhbm5lbEdyb3VwUmVxdWVzdBIMCgRuYW1lGAEgASgJEhcKD3BhcmVudF9ncm91cF9pZBgCIAEoCRI2Cgp2aXNpYmlsaXR5GAMgASgOMiIuY29tcGFzcy52MS5DaGFubmVsR3JvdXBWaXNpYmlsaXR5IkUKGkNyZWF0ZUNoYW5uZWxHcm91cFJlc3BvbnNlEicKBWdyb3VwGAEgASgLMhguY29tcGFzcy52MS5DaGFubmVsR3JvdXAiMAoYTGlzdENoYW5uZWxHcm91cHNSZXF1ZXN0EhQKDHNuYXBzaG90X3NlcRgBIAEoBCJFChlMaXN0Q2hhbm5lbEdyb3Vwc1Jlc3BvbnNlEigKBmdyb3VwcxgBIAMoCzIYLmNvbXBhc3MudjEuQ2hhbm5lbEdyb3VwIisKE0xpc3RDaGFubmVsc1JlcXVlc3QSFAoMc25hcHNob3Rfc2VxGAEgASgEIj0KFExpc3RDaGFubmVsc1Jlc3BvbnNlEiUKCGNoYW5uZWxzGAEgAygLMhMuY29tcGFzcy52MS5DaGFubmVsInkKFENyZWF0ZUNoYW5uZWxSZXF1ZXN0EgwKBG5hbWUYASABKAkSEAoIZ3JvdXBfaWQYAiABKAkSJQoEa2luZBgDIAEoDjIXLmNvbXBhc3MudjEuQ2hhbm5lbEtpbmQSGgoSbWVtYmVyX2FjY291bnRfaWRzGAQgAygJIj0KFUNyZWF0ZUNoYW5uZWxSZXNwb25zZRIkCgdjaGFubmVsGAEgASgLMhMuY29tcGFzcy52MS5DaGFubmVsIrQBChtVcGRhdGVDaGFubmVsTWVtYmVyc1JlcXVlc3QSEgoKY2hhbm5lbF9pZBgBIAEoCRIeChZhZGRfbWVtYmVyX2FjY291bnRfaWRzGAIgAygJEiEKGXJlbW92ZV9tZW1iZXJfYWNjb3VudF9pZHMYAyADKAkSHQoVc3Vic2NyaWJlX2FjY291bnRfaWRzGAQgAygJEh8KF3Vuc3Vic2NyaWJlX2FjY291bnRfaWRzGAUgAygJIkQKHFVwZGF0ZUNoYW5uZWxNZW1iZXJzUmVzcG9uc2USJAoHY2hhbm5lbBgBIAEoCzITLmNvbXBhc3MudjEuQ2hhbm5lbCI1ChlPcGVuQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0EhgKEGFnZW50X2FjY291bnRfaWQYASABKAkiSwoaT3BlbkFnZW50V29ya3NwYWNlUmVzcG9uc2USLQoJd29ya3NwYWNlGAEgASgLMhouY29tcGFzcy52MS5BZ2VudFdvcmtzcGFjZSKMAQoTTGlzdE1lc3NhZ2VzUmVxdWVzdBIUCgpjaGFubmVsX2lkGAEgASgJSAASDQoFbGltaXQYAyABKA0SGQoRYmVmb3JlX21lc3NhZ2VfaWQYBCABKAkSFAoMc25hcHNob3Rfc2VxGAUgASgEQgsKCWNvbnRhaW5lckoECAIQA1IMd29ya3NwYWNlX2lkIj0KFExpc3RNZXNzYWdlc1Jlc3BvbnNlEiUKCG1lc3NhZ2VzGAEgAygLMhMuY29tcGFzcy52MS5NZXNzYWdlIqsBChJQb3N0TWVzc2FnZVJlcXVlc3QSFAoKY2hhbm5lbF9pZBgBIAEoCUgAEigKBmJsb2NrcxgDIAMoCzIYLmNvbXBhc3MudjEuTWVzc2FnZUJsb2NrEhkKEXBhcmVudF9tZXNzYWdlX2lkGAUgASgJEhkKEWNsaWVudF9yZXF1ZXN0X2lkGAQgASgJQgsKCWNvbnRhaW5lckoECAIQA1IMd29ya3NwYWNlX2lkIjsKE1Bvc3RNZXNzYWdlUmVzcG9uc2USJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZSJuChNSZXNwb25kVG9Bc2tSZXF1ZXN0Eg4KBmFza19pZBgBIAEoCRIuCgdhbnN3ZXJzGAMgAygLMh0uY29tcGFzcy52MS5Bc2tRdWVzdGlvbkFuc3dlckoECAIQA1IRY2hvc2VuX29wdGlvbl9pZHMiWAoRQXNrUXVlc3Rpb25BbnN3ZXISEwoLcXVlc3Rpb25faWQYASABKAkSGQoRY2hvc2VuX29wdGlvbl9pZHMYAiADKAkSEwoLY3VzdG9tX3RleHQYAyABKAkiFgoUUmVzcG9uZFRvQXNrUmVzcG9uc2UifgoVU2VhcmNoTWVzc2FnZXNSZXF1ZXN0Eg0KBXF1ZXJ5GAEgASgJEhQKCmNoYW5uZWxfaWQYAiABKAlIABINCgVsaW1pdBgEIAEoDRIUCgxzbmFwc2hvdF9zZXEYBSABKARCBwoFc2NvcGVKBAgDEARSDHdvcmtzcGFjZV9pZCI/ChZTZWFyY2hNZXNzYWdlc1Jlc3BvbnNlEiUKCG1lc3NhZ2VzGAEgAygLMhMuY29tcGFzcy52MS5NZXNzYWdlIkIKFVN1YnNjcmliZUNvbW1zUmVxdWVzdBIRCglzaW5jZV9zZXEYASABKAQSFgoOaW5zdGFuY2VfZXBvY2gYAiABKAQqNQoIVXNlclJvbGUSFAoQVVNFUl9ST0xFX01FTUJFUhAAEhMKD1VTRVJfUk9MRV9BRE1JThABKmEKFkNoYW5uZWxHcm91cFZpc2liaWxpdHkSIgoeQ0hBTk5FTF9HUk9VUF9WSVNJQklMSVRZX09XTkVSEAASIwofQ0hBTk5FTF9HUk9VUF9WSVNJQklMSVRZX1NIQVJFRBABKlcKC0NoYW5uZWxLaW5kEhgKFENIQU5ORUxfS0lORF9DSEFOTkVMEAASEwoPQ0hBTk5FTF9LSU5EX0RNEAESGQoVQ0hBTk5FTF9LSU5EX0dST1VQX0RNEAIqnAEKDUFnZW50UHJlc2VuY2USHgoaQUdFTlRfUFJFU0VOQ0VfVU5TUEVDSUZJRUQQABIXChNBR0VOVF9QUkVTRU5DRV9JRExFEAESGgoWQUdFTlRfUFJFU0VOQ0VfV09SS0lORxACEhoKFkFHRU5UX1BSRVNFTkNFX1dBSVRJTkcQAxIaChZBR0VOVF9QUkVTRU5DRV9PRkZMSU5FEAQy6AkKDENvbW1zU2VydmljZRJLCgpDcmVhdGVVc2VyEh0uY29tcGFzcy52MS5DcmVhdGVVc2VyUmVxdWVzdBoeLmNvbXBhc3MudjEuQ3JlYXRlVXNlclJlc3BvbnNlEk4KC0NyZWF0ZUFnZW50Eh4uY29tcGFzcy52MS5DcmVhdGVBZ2VudFJlcXVlc3QaHy5jb21wYXNzLnYxLkNyZWF0ZUFnZW50UmVzcG9uc2USUQoMTGlzdEFjY291bnRzEh8uY29tcGFzcy52MS5MaXN0QWNjb3VudHNSZXF1ZXN0GiAuY29tcGFzcy52MS5MaXN0QWNjb3VudHNSZXNwb25zZRJjChJDcmVhdGVDaGFubmVsR3JvdXASJS5jb21wYXNzLnYxLkNyZWF0ZUNoYW5uZWxHcm91cFJlcXVlc3QaJi5jb21wYXNzLnYxLkNyZWF0ZUNoYW5uZWxHcm91cFJlc3BvbnNlEmAKEUxpc3RDaGFubmVsR3JvdXBzEiQuY29tcGFzcy52MS5MaXN0Q2hhbm5lbEdyb3Vwc1JlcXVlc3QaJS5jb21wYXNzLnYxLkxpc3RDaGFubmVsR3JvdXBzUmVzcG9uc2USUQoMTGlzdENoYW5uZWxzEh8uY29tcGFzcy52MS5MaXN0Q2hhbm5lbHNSZXF1ZXN0GiAuY29tcGFzcy52MS5MaXN0Q2hhbm5lbHNSZXNwb25zZRJUCg1DcmVhdGVDaGFubmVsEiAuY29tcGFzcy52MS5DcmVhdGVDaGFubmVsUmVxdWVzdBohLmNvbXBhc3MudjEuQ3JlYXRlQ2hhbm5lbFJlc3BvbnNlEmkKFFVwZGF0ZUNoYW5uZWxNZW1iZXJzEicuY29tcGFzcy52MS5VcGRhdGVDaGFubmVsTWVtYmVyc1JlcXVlc3QaKC5jb21wYXNzLnYxLlVwZGF0ZUNoYW5uZWxNZW1iZXJzUmVzcG9uc2USYwoST3BlbkFnZW50V29ya3NwYWNlEiUuY29tcGFzcy52MS5PcGVuQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0GiYuY29tcGFzcy52MS5PcGVuQWdlbnRXb3Jrc3BhY2VSZXNwb25zZRJRCgxMaXN0TWVzc2FnZXMSHy5jb21wYXNzLnYxLkxpc3RNZXNzYWdlc1JlcXVlc3QaIC5jb21wYXNzLnYxLkxpc3RNZXNzYWdlc1Jlc3BvbnNlEk4KC1Bvc3RNZXNzYWdlEh4uY29tcGFzcy52MS5Qb3N0TWVzc2FnZVJlcXVlc3QaHy5jb21wYXNzLnYxLlBvc3RNZXNzYWdlUmVzcG9uc2USUQoMUmVzcG9uZFRvQXNrEh8uY29tcGFzcy52MS5SZXNwb25kVG9Bc2tSZXF1ZXN0GiAuY29tcGFzcy52MS5SZXNwb25kVG9Bc2tSZXNwb25zZRJXCg5TZWFyY2hNZXNzYWdlcxIhLmNvbXBhc3MudjEuU2VhcmNoTWVzc2FnZXNSZXF1ZXN0GiIuY29tcGFzcy52MS5TZWFyY2hNZXNzYWdlc1Jlc3BvbnNlElkKDlN1YnNjcmliZUNvbW1zEiEuY29tcGFzcy52MS5TdWJzY3JpYmVDb21tc1JlcXVlc3QaIi5jb21wYXNzLnYxLlN1YnNjcmliZUNvbW1zUmVzcG9uc2UwAWIGcHJvdG8z");
 
 /**
  * An account in the communication layer: a human user or an owned agent. Both
@@ -674,6 +674,15 @@ export type SubscribeCommsResponse = Message$1<"compass.v1.SubscribeCommsRespons
      */
     value: CommsResyncRequired;
     case: "resyncRequired";
+  } | {
+    /**
+     * A live agent's presence changed (SEA-1569). Derived from the session
+     * lifecycle (not a heartbeat); PUBLIC — UI board state consumes it.
+     *
+     * @generated from field: compass.v1.AgentPresenceChanged agent_presence_changed = 17;
+     */
+    value: AgentPresenceChanged;
+    case: "agentPresenceChanged";
   } | { case: undefined; value?: undefined };
 };
 
@@ -831,6 +840,37 @@ export const CommsResyncRequiredSchema: GenMessage<CommsResyncRequired> = /*@__P
   messageDesc(file_compass_v1_comms, 18);
 
 /**
+ * A live agent's presence changed (SEA-1569). Presence is derived from the
+ * session lifecycle (D4) — a projection of the session state and the Runner
+ * link, not a heartbeat. PUBLIC (UI board state, comms presence, the
+ * delivery-settle gate consume it); NOT gen-fenced.
+ *
+ * @generated from message compass.v1.AgentPresenceChanged
+ */
+export type AgentPresenceChanged = Message$1<"compass.v1.AgentPresenceChanged"> & {
+  /**
+   * The agent whose presence changed.
+   *
+   * @generated from field: string agent_account_id = 1;
+   */
+  agentAccountId: string;
+
+  /**
+   * The new presence.
+   *
+   * @generated from field: compass.v1.AgentPresence presence = 2;
+   */
+  presence: AgentPresence;
+};
+
+/**
+ * Describes the message compass.v1.AgentPresenceChanged.
+ * Use `create(AgentPresenceChangedSchema)` to create a new message.
+ */
+export const AgentPresenceChangedSchema: GenMessage<AgentPresenceChanged> = /*@__PURE__*/
+  messageDesc(file_compass_v1_comms, 19);
+
+/**
  * @generated from message compass.v1.CreateUserRequest
  */
 export type CreateUserRequest = Message$1<"compass.v1.CreateUserRequest"> & {
@@ -850,7 +890,7 @@ export type CreateUserRequest = Message$1<"compass.v1.CreateUserRequest"> & {
  * Use `create(CreateUserRequestSchema)` to create a new message.
  */
 export const CreateUserRequestSchema: GenMessage<CreateUserRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 19);
+  messageDesc(file_compass_v1_comms, 20);
 
 /**
  * @generated from message compass.v1.CreateUserResponse
@@ -867,7 +907,7 @@ export type CreateUserResponse = Message$1<"compass.v1.CreateUserResponse"> & {
  * Use `create(CreateUserResponseSchema)` to create a new message.
  */
 export const CreateUserResponseSchema: GenMessage<CreateUserResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 20);
+  messageDesc(file_compass_v1_comms, 21);
 
 /**
  * @generated from message compass.v1.CreateAgentRequest
@@ -889,7 +929,7 @@ export type CreateAgentRequest = Message$1<"compass.v1.CreateAgentRequest"> & {
  * Use `create(CreateAgentRequestSchema)` to create a new message.
  */
 export const CreateAgentRequestSchema: GenMessage<CreateAgentRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 21);
+  messageDesc(file_compass_v1_comms, 22);
 
 /**
  * @generated from message compass.v1.CreateAgentResponse
@@ -906,7 +946,7 @@ export type CreateAgentResponse = Message$1<"compass.v1.CreateAgentResponse"> & 
  * Use `create(CreateAgentResponseSchema)` to create a new message.
  */
 export const CreateAgentResponseSchema: GenMessage<CreateAgentResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 22);
+  messageDesc(file_compass_v1_comms, 23);
 
 /**
  * @generated from message compass.v1.ListAccountsRequest
@@ -926,7 +966,7 @@ export type ListAccountsRequest = Message$1<"compass.v1.ListAccountsRequest"> & 
  * Use `create(ListAccountsRequestSchema)` to create a new message.
  */
 export const ListAccountsRequestSchema: GenMessage<ListAccountsRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 23);
+  messageDesc(file_compass_v1_comms, 24);
 
 /**
  * @generated from message compass.v1.ListAccountsResponse
@@ -943,7 +983,7 @@ export type ListAccountsResponse = Message$1<"compass.v1.ListAccountsResponse"> 
  * Use `create(ListAccountsResponseSchema)` to create a new message.
  */
 export const ListAccountsResponseSchema: GenMessage<ListAccountsResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 24);
+  messageDesc(file_compass_v1_comms, 25);
 
 /**
  * @generated from message compass.v1.CreateChannelGroupRequest
@@ -974,7 +1014,7 @@ export type CreateChannelGroupRequest = Message$1<"compass.v1.CreateChannelGroup
  * Use `create(CreateChannelGroupRequestSchema)` to create a new message.
  */
 export const CreateChannelGroupRequestSchema: GenMessage<CreateChannelGroupRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 25);
+  messageDesc(file_compass_v1_comms, 26);
 
 /**
  * @generated from message compass.v1.CreateChannelGroupResponse
@@ -991,7 +1031,7 @@ export type CreateChannelGroupResponse = Message$1<"compass.v1.CreateChannelGrou
  * Use `create(CreateChannelGroupResponseSchema)` to create a new message.
  */
 export const CreateChannelGroupResponseSchema: GenMessage<CreateChannelGroupResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 26);
+  messageDesc(file_compass_v1_comms, 27);
 
 /**
  * @generated from message compass.v1.ListChannelGroupsRequest
@@ -1011,7 +1051,7 @@ export type ListChannelGroupsRequest = Message$1<"compass.v1.ListChannelGroupsRe
  * Use `create(ListChannelGroupsRequestSchema)` to create a new message.
  */
 export const ListChannelGroupsRequestSchema: GenMessage<ListChannelGroupsRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 27);
+  messageDesc(file_compass_v1_comms, 28);
 
 /**
  * @generated from message compass.v1.ListChannelGroupsResponse
@@ -1028,7 +1068,7 @@ export type ListChannelGroupsResponse = Message$1<"compass.v1.ListChannelGroupsR
  * Use `create(ListChannelGroupsResponseSchema)` to create a new message.
  */
 export const ListChannelGroupsResponseSchema: GenMessage<ListChannelGroupsResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 28);
+  messageDesc(file_compass_v1_comms, 29);
 
 /**
  * @generated from message compass.v1.ListChannelsRequest
@@ -1048,7 +1088,7 @@ export type ListChannelsRequest = Message$1<"compass.v1.ListChannelsRequest"> & 
  * Use `create(ListChannelsRequestSchema)` to create a new message.
  */
 export const ListChannelsRequestSchema: GenMessage<ListChannelsRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 29);
+  messageDesc(file_compass_v1_comms, 30);
 
 /**
  * @generated from message compass.v1.ListChannelsResponse
@@ -1065,7 +1105,7 @@ export type ListChannelsResponse = Message$1<"compass.v1.ListChannelsResponse"> 
  * Use `create(ListChannelsResponseSchema)` to create a new message.
  */
 export const ListChannelsResponseSchema: GenMessage<ListChannelsResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 30);
+  messageDesc(file_compass_v1_comms, 31);
 
 /**
  * @generated from message compass.v1.CreateChannelRequest
@@ -1104,7 +1144,7 @@ export type CreateChannelRequest = Message$1<"compass.v1.CreateChannelRequest"> 
  * Use `create(CreateChannelRequestSchema)` to create a new message.
  */
 export const CreateChannelRequestSchema: GenMessage<CreateChannelRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 31);
+  messageDesc(file_compass_v1_comms, 32);
 
 /**
  * @generated from message compass.v1.CreateChannelResponse
@@ -1121,7 +1161,7 @@ export type CreateChannelResponse = Message$1<"compass.v1.CreateChannelResponse"
  * Use `create(CreateChannelResponseSchema)` to create a new message.
  */
 export const CreateChannelResponseSchema: GenMessage<CreateChannelResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 32);
+  messageDesc(file_compass_v1_comms, 33);
 
 /**
  * @generated from message compass.v1.UpdateChannelMembersRequest
@@ -1168,7 +1208,7 @@ export type UpdateChannelMembersRequest = Message$1<"compass.v1.UpdateChannelMem
  * Use `create(UpdateChannelMembersRequestSchema)` to create a new message.
  */
 export const UpdateChannelMembersRequestSchema: GenMessage<UpdateChannelMembersRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 33);
+  messageDesc(file_compass_v1_comms, 34);
 
 /**
  * @generated from message compass.v1.UpdateChannelMembersResponse
@@ -1185,7 +1225,7 @@ export type UpdateChannelMembersResponse = Message$1<"compass.v1.UpdateChannelMe
  * Use `create(UpdateChannelMembersResponseSchema)` to create a new message.
  */
 export const UpdateChannelMembersResponseSchema: GenMessage<UpdateChannelMembersResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 34);
+  messageDesc(file_compass_v1_comms, 35);
 
 /**
  * @generated from message compass.v1.OpenAgentWorkspaceRequest
@@ -1204,7 +1244,7 @@ export type OpenAgentWorkspaceRequest = Message$1<"compass.v1.OpenAgentWorkspace
  * Use `create(OpenAgentWorkspaceRequestSchema)` to create a new message.
  */
 export const OpenAgentWorkspaceRequestSchema: GenMessage<OpenAgentWorkspaceRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 35);
+  messageDesc(file_compass_v1_comms, 36);
 
 /**
  * @generated from message compass.v1.OpenAgentWorkspaceResponse
@@ -1221,7 +1261,7 @@ export type OpenAgentWorkspaceResponse = Message$1<"compass.v1.OpenAgentWorkspac
  * Use `create(OpenAgentWorkspaceResponseSchema)` to create a new message.
  */
 export const OpenAgentWorkspaceResponseSchema: GenMessage<OpenAgentWorkspaceResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 36);
+  messageDesc(file_compass_v1_comms, 37);
 
 /**
  * @generated from message compass.v1.ListMessagesRequest
@@ -1268,7 +1308,7 @@ export type ListMessagesRequest = Message$1<"compass.v1.ListMessagesRequest"> & 
  * Use `create(ListMessagesRequestSchema)` to create a new message.
  */
 export const ListMessagesRequestSchema: GenMessage<ListMessagesRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 37);
+  messageDesc(file_compass_v1_comms, 38);
 
 /**
  * @generated from message compass.v1.ListMessagesResponse
@@ -1287,7 +1327,7 @@ export type ListMessagesResponse = Message$1<"compass.v1.ListMessagesResponse"> 
  * Use `create(ListMessagesResponseSchema)` to create a new message.
  */
 export const ListMessagesResponseSchema: GenMessage<ListMessagesResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 38);
+  messageDesc(file_compass_v1_comms, 39);
 
 /**
  * @generated from message compass.v1.PostMessageRequest
@@ -1336,7 +1376,7 @@ export type PostMessageRequest = Message$1<"compass.v1.PostMessageRequest"> & {
  * Use `create(PostMessageRequestSchema)` to create a new message.
  */
 export const PostMessageRequestSchema: GenMessage<PostMessageRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 39);
+  messageDesc(file_compass_v1_comms, 40);
 
 /**
  * @generated from message compass.v1.PostMessageResponse
@@ -1353,7 +1393,7 @@ export type PostMessageResponse = Message$1<"compass.v1.PostMessageResponse"> & 
  * Use `create(PostMessageResponseSchema)` to create a new message.
  */
 export const PostMessageResponseSchema: GenMessage<PostMessageResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 40);
+  messageDesc(file_compass_v1_comms, 41);
 
 /**
  * @generated from message compass.v1.RespondToAskRequest
@@ -1379,7 +1419,7 @@ export type RespondToAskRequest = Message$1<"compass.v1.RespondToAskRequest"> & 
  * Use `create(RespondToAskRequestSchema)` to create a new message.
  */
 export const RespondToAskRequestSchema: GenMessage<RespondToAskRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 41);
+  messageDesc(file_compass_v1_comms, 42);
 
 /**
  * The answer to one AskQuestion.
@@ -1413,7 +1453,7 @@ export type AskQuestionAnswer = Message$1<"compass.v1.AskQuestionAnswer"> & {
  * Use `create(AskQuestionAnswerSchema)` to create a new message.
  */
 export const AskQuestionAnswerSchema: GenMessage<AskQuestionAnswer> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 42);
+  messageDesc(file_compass_v1_comms, 43);
 
 /**
  * @generated from message compass.v1.RespondToAskResponse
@@ -1426,7 +1466,7 @@ export type RespondToAskResponse = Message$1<"compass.v1.RespondToAskResponse"> 
  * Use `create(RespondToAskResponseSchema)` to create a new message.
  */
 export const RespondToAskResponseSchema: GenMessage<RespondToAskResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 43);
+  messageDesc(file_compass_v1_comms, 44);
 
 /**
  * @generated from message compass.v1.SearchMessagesRequest
@@ -1472,7 +1512,7 @@ export type SearchMessagesRequest = Message$1<"compass.v1.SearchMessagesRequest"
  * Use `create(SearchMessagesRequestSchema)` to create a new message.
  */
 export const SearchMessagesRequestSchema: GenMessage<SearchMessagesRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 44);
+  messageDesc(file_compass_v1_comms, 45);
 
 /**
  * @generated from message compass.v1.SearchMessagesResponse
@@ -1491,7 +1531,7 @@ export type SearchMessagesResponse = Message$1<"compass.v1.SearchMessagesRespons
  * Use `create(SearchMessagesResponseSchema)` to create a new message.
  */
 export const SearchMessagesResponseSchema: GenMessage<SearchMessagesResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 45);
+  messageDesc(file_compass_v1_comms, 46);
 
 /**
  * @generated from message compass.v1.SubscribeCommsRequest
@@ -1519,7 +1559,7 @@ export type SubscribeCommsRequest = Message$1<"compass.v1.SubscribeCommsRequest"
  * Use `create(SubscribeCommsRequestSchema)` to create a new message.
  */
 export const SubscribeCommsRequestSchema: GenMessage<SubscribeCommsRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_comms, 46);
+  messageDesc(file_compass_v1_comms, 47);
 
 /**
  * The user permission roles, expandable later. A regular member is the default
@@ -1604,6 +1644,45 @@ export enum ChannelKind {
  */
 export const ChannelKindSchema: GenEnum<ChannelKind> = /*@__PURE__*/
   enumDesc(file_compass_v1_comms, 2);
+
+/**
+ * The presence states a live agent projects (SEA-1569, OQ-1). MVP is four
+ * states derived from the session lifecycle; PUBLIC, NOT gen-fenced.
+ *
+ * @generated from enum compass.v1.AgentPresence
+ */
+export enum AgentPresence {
+  /**
+   * @generated from enum value: AGENT_PRESENCE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: AGENT_PRESENCE_IDLE = 1;
+   */
+  IDLE = 1,
+
+  /**
+   * @generated from enum value: AGENT_PRESENCE_WORKING = 2;
+   */
+  WORKING = 2,
+
+  /**
+   * @generated from enum value: AGENT_PRESENCE_WAITING = 3;
+   */
+  WAITING = 3,
+
+  /**
+   * @generated from enum value: AGENT_PRESENCE_OFFLINE = 4;
+   */
+  OFFLINE = 4,
+}
+
+/**
+ * Describes the enum compass.v1.AgentPresence.
+ */
+export const AgentPresenceSchema: GenEnum<AgentPresence> = /*@__PURE__*/
+  enumDesc(file_compass_v1_comms, 3);
 
 /**
  * The communication-layer service: accounts, channel groups + channels,
