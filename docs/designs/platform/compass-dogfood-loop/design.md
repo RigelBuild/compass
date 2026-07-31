@@ -46,13 +46,13 @@ created here.
   mint-runner-token → compass-runner. Server readiness stays the existing
   GetServerInfo probe (`devenv.nix:191-197`), which flips only after the store
   is migrated.
-- **Never on-every-up heavy work unless Matt rules so.** The image build and
-  the live session drive default to opt-in tasks pending OQ4; `devenv up`
-  itself stays light.
+- **Session drive is opt-in (D5).** The image build and the live session
+  drive land as opt-in tasks, not wired into `devenv up`; `up` itself stays
+  light.
 - **Lane split.** compass-repo lane owns all `devenv.nix` wiring; the
-  compass-server/compass-runner lane owns the net-new admin session driver
-  (OQ2). Tasks below are tagged so the wiring ships independently of the
-  driver.
+  compass-server lane owns the net-new admin session driver (D3), with a
+  scoped compass-runner mount flag (T5a). Tasks below are tagged so the wiring
+  ships independently of the driver.
 - **Commits** authored as Matt with the seal co-author trailer
   (rule://commit-conventions); the spawning agent ships the PR.
 
@@ -61,7 +61,7 @@ created here.
 Extend the existing `devenv up` bring-up (postgres + compass-server,
 `devenv.nix:115-200`) with the Runner half, composed from binaries that already
 exist for exactly this purpose — no new server code is needed for enrollment;
-the only net-new code is the admin session driver (OQ2).
+the only net-new code is the admin session driver (compass-server lane, D3).
 
 ### Process/task graph
 
@@ -184,9 +184,9 @@ flows, and DNS to the container's own resolver)"
 (`go/internal/runtime/egress.go:29-31`), enforced by nftables armed at launch
 (`go/internal/runtime/agent.go:148-150`) — so the agent's LLM provider call is
 dropped by its own firewall until the provider host is added to
-`--egress-allow`. That addition is coupled to OQ1 (Matt picks the provider
-host when he picks the credentials path); do NOT add a provider host to the
-base argv.
+`--egress-allow`. That addition rides the real-turn leg (D1/D2 — the LiteLLM
+proxy host is added when the credential path lands); do NOT add a provider
+host to the base argv.
 
 ### 5. Agent image build + load (opt-in task, VERIFIED command)
 
@@ -215,7 +215,7 @@ agent-image devenv pins only its MODULE set to the fork
 (`agent-image/devenv.yaml:44-45`), so a PATH CLI could diverge from the
 verified fork source — the pin eliminates that risk.
 
-This task is opt-in (not `after`-wired into `up`) pending OQ4: the image
+This task is opt-in (not `after`-wired into `up`, D5): the image
 closure is large ("The agent's store is large and grows",
 `agent-image/devenv.nix:100-105`) and rebuilding on every `up` violates the
 never-heavy-on-up constraint. The runner starts fine without the image present
@@ -243,8 +243,8 @@ It:
    Server → RunnerHub → Runner (`go/server/service.go:107-137`,
    `go/internal/runnerhub/commands.go:48`). `client_request_id` set to a
    stable key so "a timeout-retry with the same id returns the same
-   container_name" (`compass.proto:342-348`). Repo source: `local_path` (OQ3,
-   recommended) — "local_path clones a container-local bare mirror over
+   container_name" (`compass.proto:342-348`). Repo source: `local_path`
+   (D4) — "local_path clones a container-local bare mirror over
    file:// for a hermetic, network-free clone" (`compass.proto:331-335`;
    `go/internal/runtime/workspace.go:20-23` notes it is "typically a bare
    mirror bind-mounted read-only from a host cache"). A file:// clone needs no
@@ -269,18 +269,18 @@ operator surface reaches it — so no host bare mirror can become
 container-visible, and Provision's file:// clone would target a nonexistent
 path. The missing piece is a small runner-lane flag (e.g. repeatable
 `--mount host:container[:ro]` into `SpecDefaults.Mounts`); this mount-surface
-lane/scope is the remaining open part of OQ2 (the driver ownership itself is
-resolved — compass-server lane).
+flag is scoped as T5a (D3); the driver ownership itself is resolved
+(compass-server lane).
 
 Ownership and shape are RESOLVED: the compass-server lane owns this driver as a
 committed `compass-dogfood` / `compass drive` Go CLI (reusing the generated
 Connect clients + the CA-trust client), which reads the admin token, then
 CreateAgent → ProvisionAgentWorkspace → StartAgentSession → tails the session.
-What remains open (OQ2) is only the runner mount surface below and whether it
-becomes its own server/runner-lane design record — the record specs the RPC
-contract, the owning lane implements it.
+The runner mount surface below is the T5a scope (D3); the driver is a
+compass-server-lane `compass-dogfood` / `compass drive` CLI — the record specs
+the RPC contract, the owning lane implements it.
 
-### Model credentials (OQ1)
+### Model credentials (D1/D2)
 
 The runner forwards a model selector: `--agent-model` / `$COMPASS_AGENT_MODEL`
 becomes the agent's `COMPASS_MODEL` (`go/cmd/compass-runner/main.go:50-53`;
@@ -301,7 +301,8 @@ credential in the container AND the provider host in `--egress-allow`
 materializer (ITEM 7 — FetchSecrets → the runner writes the frozen
 `auth-seed.json`) is the writer the compass-server lane owns, so the real-turn
 leg sequences AFTER ITEM 7 rather than needing a throwaway seed. How and when
-the turn becomes real is OQ1, Matt's call.
+the turn becomes real is D1 (sequencing) + D2 (LiteLLM proxy, key via user
+`SetSecret`).
 
 ### Cert model (summary)
 
@@ -314,7 +315,7 @@ external CA, no relaxed loopback)" (`go/cmd/compass-gen-cert/main.go:6-9`).
 ## Alternatives considered
 
 - **Wire everything (image build + session drive) into every `devenv up`.**
-  Rejected as the default (pending OQ4): the image closure is large and an
+  Rejected as the default (D5): the image closure is large and an
   LLM turn on every shell entry is slow, costly, and needs credentials.
   Enrollment-on-up + opt-in drive keeps `up` light while the full loop stays
   one command away.
@@ -336,7 +337,7 @@ external CA, no relaxed loopback)" (`go/cmd/compass-gen-cert/main.go:6-9`).
 
 Tasks are lane-tagged: `[repo]` = compass-repo lane (devenv.nix wiring,
 independently shippable), `[server/runner]` = the compass-server/compass-runner
-lane (net-new driver, owned by compass-server; the mount-surface scope is OQ2).
+lane (net-new driver, owned by compass-server; the mount-surface flag is T5a).
 cycle plus a smoke assertion (rule://red-green-testing).
 
 ### T1 [repo] — gen-cert task + TLS door on compass-server
@@ -428,13 +429,13 @@ smoke: a corrupted token file yields the runner's Unauthenticated error
 ("an Unauthenticated here means a bad/expired/wrong-kind token",
 `runner.go:97-99`), proving the door actually authenticates.
 
-### T4 [repo] — agent-image build+load task (opt-in pending OQ4)
+### T4 [repo] — agent-image build+load task (opt-in per D5)
 
 Add `tasks."dogfood:agent-image"` running
 `nix run path:./forks/devenv#devenv -- container copy agent` from
 `agent-image/` (build+load semantics verified in Approach §5; the invocation
 is pinned to the vendored fork's CLI). Not wired
-`after` into `up` unless OQ4 rules otherwise.
+`after` into `up` (D5).
 
 Interfaces:
 
@@ -460,9 +461,9 @@ missing runner mount surface (Approach §6 "Mount-surface blocker"): a
 container-visible bare mirror requires a new compass-runner `--mount
 host:container[:ro]` flag wiring into `SpecDefaults.Mounts`
 (`go/internal/runner/spec.go:26-32,107`) plus devenv wiring to pass it — a
-cross-lane dependency whose mount-surface scope/ownership is the remaining open
-part of OQ2 (own design record vs an explicit T5a here; the driver itself is
-compass-server-owned). Preparing the bare mirror itself is driver-side work
+cross-lane dependency whose mount-surface flag is scoped as T5a (D3; the
+driver itself is compass-server-owned). Preparing the bare mirror itself is
+driver-side work
 (the runtime integration test seeds one the same way,
 `go/internal/runtime/lifecycle_test.go:99-102` — though that test drives the
 runtime API directly, below the runner binary).
@@ -513,7 +514,7 @@ succeeds twice.
 
 ### T7 [repo] — end-to-end `devenv up` smoke + docs
 
-A scripted smoke (shape depends on OQ4: an opt-in `dogfood:session` task
+A scripted smoke (an opt-in `dogfood:session` task per D5
 chaining T4+T5, or CI-style script) asserting, in order: postgres up; server
 ready with TLS door answering under the generated cert; `admin-token` +
 `runner.token` present 0600 (the admin-token assertion doubles as the
@@ -542,83 +543,57 @@ checkout before the wiring lands, green is all passing after.
 - [ ] T3 [repo] compass-runner process: enroll + idle, restart on_failure (red-green + bad-token smoke)
 - [ ] T4 [repo] agent-image build+load opt-in task via the fork-pinned CLI (red-green via podman image exists)
 - [ ] T5 [compass-server] admin session driver `compass-dogfood`/`compass drive`: CreateAgent → Provision(local_path) → Start → tail (red-green + podman ps smoke) — owned by compass-server lane, sequenced after ITEM 7 + ITEM 1
-- [ ] T5a [compass-runner] runner `--mount host:container[:ro]` flag into SpecDefaults.Mounts (unblocks local_path bare mirror) — ownership/scope per OQ2
+- [ ] T5a [compass-runner] runner `--mount host:container[:ro]` flag into SpecDefaults.Mounts (unblocks local_path bare mirror) — scoped here per D3
 - [ ] T6 [repo] dogfood:clean teardown task (red-green via second-run provision)
-- [ ] T7 [repo] end-to-end `devenv up` smoke + prereq/cert-expiry docs (gated on OQ4 for the session leg)
+- [ ] T7 [repo] end-to-end `devenv up` smoke + prereq/cert-expiry docs (session leg is opt-in per D5)
 
-## Open Questions
+## Decisions (ruled by Matt)
 
-Batched for Matt (this designer is headless); each carries a recommendation
-and a load-bearing marker. F2 (idempotent devenv tasks) and F3 (gen-cert →
-postgres → server-ready → mint → runner ordering) are DECIDED per Matt's
-ruling and recorded in Global Constraints, not re-asked here.
+F2 (idempotent devenv tasks) and F3 (gen-cert → postgres → server-ready →
+mint → runner ordering) are recorded in Global Constraints. The forks below
+were batched to Matt at the design-PR gate and ruled as noted.
 
-1. **OQ1 — What makes the turn real: credentials + egress + model.**
-   [LOAD-BEARING for Matt's ruled acceptance] The ruling says the loop "runs
-   an agent turn" — and spawn+start-idle does NOT satisfy that: without a
-   provider credential the agent boots and reports but never calls a model
-   (`packages/compass-agent/src/cli.ts:47-50` `authSeedPath`, `:98-102` seed
-   resolver; `cli.test.ts:166-168`). Three coupled pieces make a turn real:
-   (i) a provider credential in the container — the frozen contract is a 0600
-   `$HOME/.compass/auth-seed.json` written by the Runner's T5 materializer
-   ("The seed path is the frozen T5 placement",
-   `packages/compass-agent/src/cli.test.ts:110-111`), which does NOT exist in
-   the runner at this HEAD (grep evidence in Approach; per the compass-runner
-   owner, the SEA-1327 materializer is unbuilt — there is no established
-   dogfood model-cred path today); (ii) the provider host in
-   `--egress-allow`, since the default is pure default-deny and the agent's
-   own nftables drops the LLM call (`go/internal/runtime/egress.go:29-31`,
+1. **D1 — Real-turn sequencing (was OQ1): ship the enroll loop now; the
+   real-turn leg follows the ITEM 7 + driver chain.** The compass-repo enroll
+   loop (postgres, server+TLS, mint, runner enrolled+idle) has no credential
+   dependency and ships standalone as `[repo]` tasks T1-T4/T6/T7. The FULL
+   "runs a turn" acceptance completes once the SEA-1327 secrets materializer
+   (compass-server lane) and the driver (T5) land. A real turn needs three
+   coupled pieces, all deferred to that chain: (i) the provider credential —
+   the frozen 0600 `$HOME/.compass/auth-seed.json` the SEA-1327 materializer
+   writes (`packages/compass-agent/src/cli.ts:47-50,98-102`;
+   `cli.test.ts:110-111`); (ii) the provider host in `--egress-allow` (default
+   is pure default-deny, `go/internal/runtime/egress.go:29-31`,
    `agent.go:148-150`); (iii) the model selector via
    `--agent-model`→`COMPASS_MODEL` (`go/cmd/compass-runner/main.go:50-53`).
-   Options, fairly weighted — Matt's call, not defaulted by the designer. The
-   production cred writer is NOT a throwaway: the SEA-1327 materializer
-   (ITEM 7, owned by the compass-server lane) is the real writer of that
-   frozen `auth-seed.json`, and the compass-server driver rides on top of it —
-   so this is a SEQUENCING + config question, not stopgap-vs-materializer:
-   **(a)** ship the compass-repo enroll loop NOW (postgres, server+TLS, mint,
-   runner enrolled+idle — all in this lane, no cred dependency) and let the
-   real-turn leg follow once ITEM 7's materializer + the compass-server driver
-   land; the FULL "runs a turn" acceptance is met when that chain completes.
-   **(b)** block the whole loop from shipping until the ITEM 7 + driver chain
-   is ready, so the first landed version already runs a real turn. Either way
-   Matt also picks: the model (`--agent-model`→`COMPASS_MODEL`), and how the
-   provider (LiteLLM) key reaches the dogfood secret store so the materializer
-   can resolve it; and the provider host goes in `--egress-allow` for the
-   real-turn leg.
-2. **OQ2 — The session-drive half: remaining scope (driver ownership
-   RESOLVED).** [LOAD-BEARING for the task breakdown] Ownership is settled: the
-   compass-server lane owns the admin driver (T5) as a committed
-   `compass-dogfood` / `compass drive` Go CLI under `go/cmd` (confirmed with
-   that owner), sequenced after ITEM 7 + ITEM 1. What remains open is the
-   runner MOUNT SURFACE: at this HEAD nothing populates `SpecDefaults.Mounts`
-   (Approach §6 "Mount-surface blocker"), so the `local_path` bare mirror
-   cannot become container-visible and Provision's file:// clone fails. Closing
-   it needs a net-new runner `--mount host:container[:ro]` flag into
-   `SpecDefaults.Mounts` (compass-runner; `go/internal/runner/spec.go:26-32,107`,
-   `go/internal/runtime/agent.go:42-43` — the field is designed, only the
-   operator surface is missing) plus the devenv wiring that passes it
-   (compass-repo). Fork for Matt: **(a)** fold the mount flag + driver into
-   their own server/runner-lane design record referencing this frozen contract;
-   or **(b)** keep the driver owned by compass-server and add an explicit
-   **T5a [compass-runner]** for the mount flag, with the devenv wiring staying
-   here. Recommendation: (b) — the driver ownership is already settled, so a
-   single scoped T5a for the mount flag is lighter than a whole new record.
-3. **OQ3 — Repo source: `local_path` mirror vs `remote_url`.**
-   [LOAD-BEARING — reclassified: the local_path path cannot work at this HEAD
-   without the OQ2 mount surface] `local_path` is "a container-local bare
-   mirror … for a hermetic, network-free clone" (`compass.proto:331-335`) and
-   needs no forge credentials (`go/internal/runtime/workspace.go:109-110`);
-   `remote_url` needs BOTH forge credentials in the container and the forge
-   host in `--egress-allow` — strictly more machinery. The compass-runner
-   owner confirmed the local_path clone is credential-free and the right
-   hermetic choice; the mount seam is the remaining gap.
-   **Recommendation:** `local_path` with a bare mirror of the compass repo
-   itself, contingent on the OQ2 mount surface landing.
-4. **OQ4 — Session drive on every `up` vs opt-in task.** [LOAD-BEARING for
-   T4/T7 wiring; genuine fork] Matt ruled the FULL loop; does that mean the heavy
-   legs (image build, live LLM turn) run on EVERY `devenv up`, or land as an
-   explicit `devenv tasks run dogfood:session`? **Recommendation:**
-   enroll-loop on `up` (postgres, server+TLS, mint, runner — all light and
-   idempotent); image build + session drive as opt-in tasks. Every `up` proves
-   enrollment; the full loop is one command away without burdening every
-   shell entry.
+2. **D2 — Model + credential path (was OQ1b): LiteLLM proxy, key via the user
+   `SetSecret` (KIND_PROVIDER) path.** The dogfood agent targets the LiteLLM
+   proxy as its provider; a developer seeds the key once via the user-facing
+   `SetSecret` flow (the production cred path, ITEM 7), so the dogfood exercises
+   the real secret path end to end. `--egress-allow` gets the LiteLLM proxy
+   host for the real-turn leg. Applies when the real-turn chain (D1) lands.
+3. **D3 — Mount-surface scope (was OQ2): a scoped T5a task in this record.**
+   Driver ownership is settled (compass-server lane, T5). The remaining gap —
+   nothing populates `SpecDefaults.Mounts` at this HEAD, so the `local_path`
+   bare mirror cannot reach the container (Approach §6 "Mount-surface
+   blocker") — is closed by a net-new compass-runner
+   `--mount host:container[:ro]` flag into `SpecDefaults.Mounts` (T5a,
+   `go/internal/runner/spec.go:26-32,107`), with the devenv wiring passing it
+   ([repo]). Not a separate design record — a single scoped task here.
+4. **D4 — `local_path` mirror (was OQ3).** Repo source is `local_path` with a
+   bare mirror of the compass repo itself — hermetic, credential-free
+   (`compass.proto:331-335`; `go/internal/runtime/workspace.go:109-110`),
+   contingent on the D3 mount surface. Follows from D3.
+5. **D5 — Session drive is opt-in (was OQ4).** The heavy legs (image build,
+   live LLM turn) land as explicit opt-in tasks (`devenv tasks run
+   dogfood:session`), not wired into `devenv up`. Note: `devenv up` is an
+   explicit command that starts the process stack — it is NOT run automatically
+   on shell entry (direnv loads env/tooling on entry; `up` is separate). So the
+   split keeps the on-demand heavy legs off the always-on `up` process set: `up`
+   brings up the light, idempotent enroll loop; the image build + real turn run
+   on demand.
+
+A related public-API fork in the ITEM 7 (SEA-1327 secrets) lane was ruled in
+the same batch: the `SetSecret`/`ListSecrets`/`DeleteSecret` RPCs go on a new
+`SecretsService` (not folded onto `CompassService`). That governs the ITEM 7
+proto edit, not this record's tasks; noted here only for provenance.
