@@ -409,6 +409,14 @@ message ProvisionAgentWorkspaceRequest {
   // call provisions). compass.md §"A retried provision creates no duplicate
   // container".
   string client_request_id = 5;
+  // The agent's persona, baked into the container's system prompt at provision
+  // so it survives compaction (a system-prompt config block is not part of the
+  // message history a snapcompact archives). SERVER-AUTHORITATIVE: the Server
+  // populates this by reading AgentAccount.persona from the store on the
+  // provision path and OVERWRITES any client-supplied value, so a caller can
+  // never inject a system prompt. The Runner materializes it into the container
+  // (compass-runner consumer). Empty = no persona baked (default).
+  string persona = 6;
 }
 
 message ProvisionAgentWorkspaceResponse {
