@@ -625,7 +625,7 @@ func h2cClient(t *testing.T) *http.Client {
 
 func mountRunnerServer(t *testing.T, hub *runnerhub.Hub, resolve runnerhub.TokenResolver) string {
 	t.Helper()
-	path, handler := runnerhub.NewMountedHandler(hub, resolve)
+	path, handler := runnerhub.NewMountedHandler(hub, resolve, nil)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)

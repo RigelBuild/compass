@@ -26,6 +26,7 @@ import (
 	"github.com/sealedsecurity/compass/go/internal/auth"
 	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/sealedsecurity/compass/go/internal/runnerhub"
+	"github.com/sealedsecurity/compass/go/internal/secrets"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
@@ -237,10 +238,12 @@ func buildNetworkServer(
 	cfg ServeConfig,
 	svc *service,
 	commsSvc compassv1connect.CommsServiceHandler,
+	secretsSvc compassv1connect.SecretsServiceHandler,
 	hub *runnerhub.Hub,
 	st *store.Store,
 	adminID store.AccountID,
 	netTLS *tls.Config,
+	resolver secrets.Resolver,
 ) (*http.Server, error) {
 	handle := cfg.AdminHandle
 	if handle == "" {
@@ -273,6 +276,11 @@ func buildNetworkServer(
 	netMux := http.NewServeMux()
 	netMux.Handle(netPath, netHandler)
 	netMux.Handle(netCommsPath, netCommsHandler)
+	// SecretsService rides the same bearer + admin-gate chain: the gate classifies
+	// its 3 procedures authenticatedOpen, so any authenticated account clears it and
+	// the handler enforces the user-only writes / user-or-agent list.
+	netSecretsPath, netSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc, interceptors)
+	netMux.Handle(netSecretsPath, netSecretsHandler)
 
 	// The internal RunnerService door: the surface a Runner dials out to (Enroll +
 	// Sessions bidi + PublishEvents client-stream). It is mounted only here, on the
@@ -287,7 +295,7 @@ func buildNetworkServer(
 	runnerResolve := func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		return auth.ResolveToken(ctx, st, presented, want)
 	}
-	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve)
+	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve, resolver)
 	netMux.Handle(runnerPath, runnerHandler)
 	var netRoot http.Handler = netMux
 	if cfg.CORSAllowedOrigin != "" {

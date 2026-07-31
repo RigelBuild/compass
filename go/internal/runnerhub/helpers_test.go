@@ -27,6 +27,7 @@ import (
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/sealedsecurity/compass/go/internal/secrets"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
@@ -428,10 +429,19 @@ func h2cHTTPClient(t *testing.T) *http.Client {
 
 // newMountedH2CServer stands up the RunnerService handler (mounted behind the
 // bearer interceptor over resolve) on an httptest h2c server and returns its
-// base URL. Torn down via t.Cleanup.
+// base URL. Torn down via t.Cleanup. No secret resolver is wired — for the
+// FetchSecrets tests that need one, use newMountedH2CServerWithResolver.
 func newMountedH2CServer(t *testing.T, hub *Hub, resolve TokenResolver) string {
 	t.Helper()
-	path, handler := NewMountedHandler(hub, resolve)
+	return newMountedH2CServerWithResolver(t, hub, resolve, nil)
+}
+
+// newMountedH2CServerWithResolver is newMountedH2CServer with a secret resolver
+// threaded into the handler, so a FetchSecrets test drives the resolve path over
+// the real wire.
+func newMountedH2CServerWithResolver(t *testing.T, hub *Hub, resolve TokenResolver, resolver secrets.Resolver) string {
+	t.Helper()
+	path, handler := NewMountedHandler(hub, resolve, resolver)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)

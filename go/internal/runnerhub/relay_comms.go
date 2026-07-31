@@ -82,6 +82,22 @@ func (h *Hub) accountForSession(sessionID string) (store.AccountID, bool) {
 	return account, ok
 }
 
+// HasLiveSession reports whether sessionID names a live session bound in the
+// hub. It mirrors accountForSession's lock discipline but discards the account —
+// the FetchSecrets authz check only needs "is this a session bound to the (one)
+// enrolled Runner", not whose session it is. Under the inject-all + single-Runner
+// MVP, a live binding in the hub IS a session bound to this Runner (there is
+// exactly one), so this is the whole session-binding authz. The per-Runner
+// differentiation — verifying the session belongs to THIS Runner among several —
+// is the future multi-Runner seam (record §761-762); today there is one Runner,
+// so membership in sessionAccounts is that check.
+func (h *Hub) HasLiveSession(sessionID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, ok := h.sessionAccounts[sessionID]
+	return ok
+}
+
 // errCommsUnavailable is the fail-closed cause when a hub with no CommsCaller
 // wired receives a RelayCommsCall (a Deliver-only hub). It maps to
 // CodeUnavailable — the comms leg is not mounted, never a silent success.
