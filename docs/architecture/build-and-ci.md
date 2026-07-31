@@ -67,7 +67,7 @@ step.
 ## CI
 
 `.github/workflows/ci.yml` runs on every pull request, every push to `main`,
-and a nightly schedule. One job, `gate`, with two parts:
+and a nightly schedule. One job, `CI`, with two parts:
 
 - **The moon battery** — the whole battery over the moon task graph. It runs
   one of two ways by event. On a **pull request** it is `moon ci :ci`, which
@@ -91,7 +91,7 @@ and a nightly schedule. One job, `gate`, with two parts:
   up would otherwise pass silently. These suites were once a separate `pgtest`
   job, to keep a Postgres-service outage from redding the hermetic gate; they
   were folded in so there is one required check to gate `main` on, at the cost
-  that a service-container flake now reds `gate` (a re-run clears it).
+  that a service-container flake now reds `CI` (a re-run clears it).
 
 ### Where CI's toolchain comes from
 

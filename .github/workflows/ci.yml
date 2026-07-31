@@ -24,7 +24,7 @@
 #
 # AFFECTED ON PRs, FULL ON MAIN. A pull request runs `moon ci :ci`, which runs
 # only the projects the PR affects — a Go, UI, or docs PR never pays for the
-# vendored forks' nix builds (the dominant cost, and the reason the gate job's
+# vendored forks' nix builds (the dominant cost, and the reason the CI job's
 # timeout is 90m). The tradeoff is real and named: affected detection trusts
 # each task's `inputs` globs to be complete, so an inputs glob that misses a
 # file would skip a task that should have run — the same silent-skip class the
@@ -35,11 +35,11 @@
 # to hide; the nightly sweep re-checks main even on a quiet day. Fast affected
 # path on PRs, exhaustive sweep on everything that reaches main.
 #
-# pgtest — the real-Postgres suites — runs as a step in the same `gate` job,
+# pgtest — the real-Postgres suites — runs as a step in the same `CI` job,
 # after the moon battery, against a Postgres service container attached to the
 # job. It was once a separate job to keep a Postgres-service outage from redding
 # the hermetic gate; folded in so there is one required check, at the cost that a
-# service-container flake now reds `gate` (a re-run clears it). The suites are
+# service-container flake now reds `CI` (a re-run clears it). The suites are
 # build-tagged `pgtest`, so the moon battery's `go test ./...` never compiles
 # them — the folded step below is the only thing that runs them.
 
@@ -67,8 +67,8 @@ permissions:
   contents: read
 
 jobs:
-  gate:
-    name: gate
+  ci:
+    name: CI
     runs-on: ubuntu-latest
     # The vendored forks build through nix (devenv's Rust crates via its flake's
     # fenix pin), so this is a long job by construction.
@@ -248,7 +248,7 @@ jobs:
         # produce, so finding out first is worth running it twice.
         run: bun tools/toolchain/parity.ts
 
-      - name: Gate (affected)
+      - name: CI (affected)
         # Pull requests only: run only what the PR affects. moon reads the base
         # from GITHUB_BASE_REF (the PR's target branch) via the ci_env crate and
         # diffs against it — see the AFFECTED section in the header for the
@@ -261,7 +261,7 @@ jobs:
         if: github.event_name == 'pull_request'
         run: moon ci :ci
 
-      - name: Gate (full sweep)
+      - name: CI (full sweep)
         # Every push to main and the nightly schedule: the whole battery,
         # unconditionally. This is what makes the affected PR gate safe — an
         # incomplete `inputs` glob that let a task be skipped on a PR is caught
