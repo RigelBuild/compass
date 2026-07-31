@@ -319,6 +319,48 @@ func TestProvisionAgentWorkspaceRecordsPlacementNamingServingRunner(t *testing.T
 	}
 }
 
+// TestProvisionAgentWorkspaceOverwritesPersonaFromStore pins the
+// server-authoritative persona invariant: on the provision path the Server
+// populates the outgoing persona from the store's AgentAccount.persona and
+// overwrites any client-supplied value, so a caller cannot inject a system
+// prompt (proto compass.proto persona=6). The client sends a bogus persona; the
+// Runner must receive the store's value instead. Under the pre-fix handler the
+// client value passes straight through and the Runner sees "CLIENT-INJECTED-EVIL".
+func TestProvisionAgentWorkspaceOverwritesPersonaFromStore(t *testing.T) {
+	f := newPlacementFixture(t)
+	ctx := context.Background() // the test root context
+
+	// The fixture's default agent has an empty persona, so seed a second agent
+	// under the same owner with a real persona to prove the read-through.
+	seed, err := f.store.GetAccount(ctx, f.agentID)
+	if err != nil {
+		t.Fatalf("GetAccount(%q): %v", f.agentID, err)
+	}
+	const wantPersona = "You are Atlas, a meticulous senior engineer."
+	personaAgent, err := f.store.CreateAgent(ctx, seed.Agent.OwnerUserID, store.NewAgent{
+		Handle:      "withpersona",
+		DisplayName: "P",
+		Persona:     wantPersona,
+	})
+	if err != nil {
+		t.Fatalf("CreateAgent(withpersona): %v", err)
+	}
+
+	f.runner.forget() // discard the attach probe
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
+		AgentAccountId:  string(personaAgent.ID),
+		Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
+		ClientRequestId: "prov-persona",
+		Persona:         "CLIENT-INJECTED-EVIL",
+	})); err != nil {
+		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
+	}
+
+	if got := f.runner.provisionPersona(t); got != wantPersona {
+		t.Fatalf("Runner received persona %q, want %q (server must overwrite the client value)", got, wantPersona)
+	}
+}
+
 // --- direct SQL (the two facts the Store deliberately does not expose) --------
 
 // execSQL runs one statement against the test's isolated schema. Used only to
@@ -581,6 +623,23 @@ func answer(cmd *compassv1internal.SessionsResponse) *compassv1internal.Sessions
 		}}
 	}
 	return out
+}
+
+// provisionPersona returns the persona on the recorded Provision command — the
+// value the Runner actually received on the wire. Fails if no Provision was
+// seen, so a silent miss cannot masquerade as an empty persona.
+func (r *recordingRunner) provisionPersona(t *testing.T) string {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.seen {
+		switch v := c.GetCommand().(type) {
+		case *compassv1internal.SessionsResponse_Provision:
+			return v.Provision.GetPersona()
+		}
+	}
+	t.Fatalf("no Provision command recorded, saw %v", r.commands())
+	return ""
 }
 
 // runnerBearer stamps the Runner's bearer on every outbound RPC (unary +
