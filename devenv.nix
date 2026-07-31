@@ -112,15 +112,43 @@
     fi
   '';
 
-  # One-command Compass dogfood bring-up: `devenv up` stands up the backend a
-  # human can drive a session against. Postgres is the store of record
-  # (compass-server opens it at startup and applies its embedded migrations
-  # under an advisory lock — go/internal/store/store.go), and compass-server
-  # serves compass.v1 on a Unix socket plus an optional loopback gRPC-Web port
-  # for the browser UI dev server.
+  # One-command Compass dogfood enroll-loop: `devenv up` stands up the full
+  # backend a human can drive an agent session against. The chain:
   #
-  # Linux-only: the Postgres service and the backend build stack target the
-  # Linux dev box.
+  #   postgres            — the store of record; compass-server opens it at
+  #                         startup and applies its embedded migrations under an
+  #                         advisory lock (go/internal/store/store.go).
+  #   dogfood:gen-cert    — mints the self-signed TLS trust anchor (tls.crt /
+  #                         tls.key) the network door serves and the runner
+  #                         trusts. Skip-if-present, so a restart never swaps the
+  #                         cert out from under a live server/runner pair.
+  #   compass-server      — serves compass.v1 on a Unix socket (the local door),
+  #                         a loopback gRPC-Web port for the browser UI dev
+  #                         server, AND an authenticated TLS network door
+  #                         (RunnerService lives only here — runners are remote
+  #                         and dial the TLS door, never the loopback socket).
+  #                         On network-door startup it mints the bootstrap
+  #                         admin-token 0600 under the state dir.
+  #   dogfood:mint-runner-token — registers the `dogfood` runner and writes its
+  #                         enrollment token; runs after the server is ready
+  #                         (the readiness probe gates on the migrated store).
+  #   compass-runner      — enrolls over the TLS door with that token, then
+  #                         idles in RunSessions awaiting Provision/Start.
+  #
+  # Opt-in (NOT wired into up): `dogfood:agent-image` builds+loads the agent
+  # base image (heavy closure — kept off the hot up path), and `dogfood:clean`
+  # tears down the deterministic-named agent containers so a second session
+  # drive does not hit a podman create name collision.
+  #
+  # Prereqs: a Linux dev box with rootless podman and the uid-1000 subuid/subgid
+  # ranges configured (the runner guards on uid 1000 and creates per-container
+  # sockets under its runtime dir). Cert expiry: gen-cert is skip-if-present
+  # forever against a finite --validity, so once the cert expires the loop fails
+  # with an opaque TLS error — rerun `compass-gen-cert --force` (or delete
+  # tls.crt/tls.key from the state dir) to rotate.
+  #
+  # Linux-only: the Postgres service, the backend build stack, and the whole
+  # podman-backed runner loop target the Linux dev box.
   services.postgres = lib.optionalAttrs pkgs.stdenv.isLinux {
     enable = true;
     # The single dogfood database compass-server opens. Owned by $USER over the
@@ -164,10 +192,18 @@
         exec "$bin" \
           --socket "$COMPASS_SOCKET" \
           --dev-http "127.0.0.1:${toString config.processes.compass-server.ports.devhttp.value}" \
-          --database "$COMPASS_DATABASE_DSN"
+          --database "$COMPASS_DATABASE_DSN" \
+          --listen "127.0.0.1:${toString config.processes.compass-server.ports.network.value}" \
+          --tls-cert "${config.devenv.state}/compass/tls.crt" \
+          --tls-key "${config.devenv.state}/compass/tls.key"
       '';
       cwd = "${config.devenv.root}/go";
       ports.devhttp.allocate = 50051;
+      # The authenticated TLS network door. RunnerService lives only on this
+      # door, so the runner (and any remote client) dials it over TLS with the
+      # gen-cert trust anchor; the loopback socket/dev-http doors stay for the
+      # co-located UI/shell.
+      ports.network.allocate = 50052;
       env = {
         # Unix socket under the devenv state dir so the path is stable across
         # restarts and a co-located client (the UI/shell) resolves the same one.
@@ -180,6 +216,8 @@
       };
       # Wait for Postgres to be accepting connections before starting, so the
       # store opens on the first try rather than crash-restarting until it's up.
+      # (dogfood:gen-cert orders itself `before` this process so the TLS cert/key
+      # the network door opens over exist by the time the server starts.)
       after = [ "devenv:processes:postgres" ];
       # Ready only once the server actually answers — not merely once the socket
       # file exists. compass-server binds (and chmods) the socket BEFORE it runs
@@ -196,6 +234,135 @@
           -d '{}' >/dev/null
       '';
       restart.on = "on_failure";
+    };
+
+    # compass-runner: enrolls with the server over the TLS network door, then
+    # idles awaiting Provision/Start commands. Built into the state dir and
+    # exec'd the same way as compass-server (see that process's comment for the
+    # PATH/build/exec rationale and the devenv-tasks signal path). Runners are
+    # remote by design, so this dials the authenticated TLS door
+    # (https://127.0.0.1:<network-port>) with the gen-cert cert as the single
+    # trust anchor (--ca) — never the loopback socket. The enrollment token is
+    # passed via COMPASS_RUNNER_TOKEN env ONLY, never a flag (a flag would leak
+    # it into the process table); the exec script reads it from the token file
+    # dogfood:mint-runner-token produced. --runtime-dir overrides the root-only
+    # /run/compass default with $XDG_RUNTIME_DIR/compass-runner: the runner mints
+    # per-container sockets at <runtime-dir>/containers/compass-agent-<32-hex>/
+    # agent.sock (a fixed 69-byte suffix) and validates at startup that the widest
+    # such path fits the 107-byte AF_UNIX sun_path limit (run.go
+    # validateRuntimeDir), capping the dir at 38 bytes — the deep $DEVENV_STATE
+    # checkout overflows it, a short per-user /run path (this uid owns it) does
+    # not. --egress-allow is omitted:
+    # the base loop's local_path clone needs no network, so the agent runs pure
+    # default-deny. `ready` is intentionally unset — the runner exposes no HTTP
+    # surface and devenv has no log-line readiness type, so it idles unprobed;
+    # nothing `after`s it, so that is safe. Restarts on failure because
+    # Dial/Enroll is single-shot with no retry, so a transient enroll failure
+    # would otherwise leave a permanently dead runner.
+    compass-runner = {
+      exec = ''
+        export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
+        export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
+        bin="${config.devenv.state}/compass/compass-runner"
+        go build -o "$bin" ./cmd/compass-runner
+        export COMPASS_RUNNER_TOKEN="$(cat "${config.devenv.state}/compass/runner.token")"
+        exec "$bin" \
+          --runner-id dogfood \
+          --server "https://127.0.0.1:${toString config.processes.compass-server.ports.network.value}" \
+          --ca "${config.devenv.state}/compass/tls.crt" \
+          --image compass-agent:latest \
+          --runtime-dir "$XDG_RUNTIME_DIR/compass-runner"
+      '';
+      cwd = "${config.devenv.root}/go";
+      # Enroll only once the token exists (mint runs after the server is ready,
+      # which is after the store is migrated — so the whole chain is ordered).
+      after = [ "dogfood:mint-runner-token" ];
+      restart.on = "on_failure";
+    };
+  };
+
+  # Dogfood loop tasks. All Linux-only (the whole podman-backed loop targets the
+  # Linux dev box), so they sit under the same guard as the processes above.
+  tasks = lib.optionalAttrs pkgs.stdenv.isLinux {
+    # gen-cert: mint the self-signed TLS trust anchor the network door serves and
+    # the runner trusts. Built into the state dir and run the same way the server
+    # binary is (PATH/build preamble mirrors compass-server). SAN defaults
+    # (127.0.0.1,::1,localhost) suffice for the loopback loop, and the binary is
+    # skip-if-present, so a restart never swaps the cert out from under a live
+    # server/runner pair (cert 0644 public anchor, key 0600). Ordered `before`
+    # the compass-server process so the cert/key exist when the network door
+    # opens over them.
+    "dogfood:gen-cert" = {
+      exec = ''
+        export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
+        export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
+        bin="${config.devenv.state}/compass/compass-gen-cert"
+        go build -o "$bin" ./cmd/compass-gen-cert
+        exec "$bin" \
+          --cert-out "${config.devenv.state}/compass/tls.crt" \
+          --key-out "${config.devenv.state}/compass/tls.key"
+      '';
+      cwd = "${config.devenv.root}/go";
+      before = [ "devenv:processes:compass-server" ];
+    };
+
+    # mint-runner-token: register the `dogfood` runner and write its enrollment
+    # token 0600 (raw, no newline) to the state dir. Reads COMPASS_DATABASE_DSN
+    # (the same DSN the server uses) so its store precedence matches. Runs after
+    # the server is ready — the readiness probe gates on the migrated store,
+    # which mint's store.Open requires. Idempotent: re-registers the same token
+    # without rotating when the file exists.
+    "dogfood:mint-runner-token" = {
+      exec = ''
+        export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
+        export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
+        bin="${config.devenv.state}/compass/compass-mint-runner-token"
+        go build -o "$bin" ./cmd/compass-mint-runner-token
+        exec "$bin" \
+          --runner-id dogfood \
+          --token-out "${config.devenv.state}/compass/runner.token"
+      '';
+      cwd = "${config.devenv.root}/go";
+      env = {
+        COMPASS_DATABASE_DSN = "host=${config.env.PGHOST} port=${toString config.env.PGPORT} dbname=compass sslmode=disable";
+      };
+      after = [ "devenv:processes:compass-server" ];
+    };
+
+    # agent-image: build AND load the agent base image into
+    # containers-storage:compass-agent:latest (the ref the runner resolves with
+    # no pull). `container copy` builds then copies; the invocation is pinned to
+    # the vendored fork's own CLI (`nix run path:../forks/devenv#devenv`, run
+    # from agent-image/ where the fork sits one level up) so it cannot diverge
+    # from the fork source the agent-image module set is pinned to. Opt-in (per
+    # D5): NOT wired `after` into up — the image closure is large and rebuilding
+    # it on every `up` would violate the never-heavy-on-up constraint. The runner
+    # starts fine without the image; it only resolves it at Provision time.
+    "dogfood:agent-image" = {
+      exec = ''
+        exec nix run path:../forks/devenv#devenv -- container copy agent
+      '';
+      cwd = "${config.devenv.root}/agent-image";
+    };
+
+    # clean: tear down the deterministic-named agent containers and sweep the
+    # runner's per-container socket dirs. Opt-in (not wired into up/down):
+    # container names are NamePrefix + agent account id (deterministic) and the
+    # runner's create-dedup is in-memory, so a second session drive after a
+    # restart would hit a `podman create` name collision without this cleanup.
+    "dogfood:clean" = {
+      exec = ''
+        set -euo pipefail
+        # Uses the host's rootless podman — the same binary/storage the runner
+        # execs to create these containers, so it sees them (a nix-pinned podman
+        # could resolve a different containers-storage config).
+        ids="$(podman ps -a --filter name=compass-agent- --format '{{.ID}}')"
+        if [ -n "$ids" ]; then
+          # shellcheck disable=SC2086
+          podman rm -f $ids
+        fi
+        rm -rf "$XDG_RUNTIME_DIR/compass-runner/containers/"
+      '';
     };
   };
 }
