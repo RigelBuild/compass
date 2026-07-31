@@ -78,6 +78,37 @@ func TestExecSpecExportsModelOnlyWhenConfigured(t *testing.T) {
 	}
 }
 
+// COMPASS_PERSONA is exported only when a persona is configured. An empty
+// Persona must leave the key ABSENT, not mapped to "": the agent treats an
+// absent var as "no identity overlay" and stays on its default system prompt,
+// so exporting a blank value would force it to special-case an empty string. A
+// non-empty Persona is exported verbatim — this is the assertion that proves the
+// overlay is wired from the AgentEnv seam at all.
+func TestExecSpecExportsPersonaOnlyWhenConfigured(t *testing.T) {
+	tests := []struct {
+		name    string
+		persona string
+		want    string
+		present bool
+	}{
+		{name: "empty persona omits the key entirely", persona: "", present: false},
+		{name: "configured persona is exported verbatim", persona: "You are Ada.", want: "You are Ada.", present: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := AgentEnv{UID: 1000, HomeDir: "/home/coder", Workdir: "/srv/checkout", Persona: tc.persona}.execSpec()
+
+			got, ok := spec.Env["COMPASS_PERSONA"]
+			if ok != tc.present {
+				t.Fatalf("COMPASS_PERSONA present = %v (value %q), want present = %v", ok, got, tc.present)
+			}
+			if ok && got != tc.want {
+				t.Fatalf("COMPASS_PERSONA = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // SECURITY-LOAD-BEARING. The container is created with --cap-add NET_ADMIN
 // (runtime/agent.go:212) so its root entrypoint can arm the nft egress
 // firewall. Podman strips a container's ambient capabilities from an exec ONLY

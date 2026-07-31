@@ -285,6 +285,7 @@ func TestStartExecsAgentWithTheContainersOwnIdentity(t *testing.T) {
 	spec.Workspace.UID = 4242
 	spec.Workspace.HomeDir = "/home/scoped"
 	spec.Workspace.CheckoutDir = "/srv/checkout"
+	spec.Persona = "You are Ada."
 	specs := &fakeSpecBuilder{spec: spec}
 	host, engine, _ := newHostFixtureWithModel(t, specs, "claude-opus-4")
 	ctx := context.Background()
@@ -309,6 +310,7 @@ func TestStartExecsAgentWithTheContainersOwnIdentity(t *testing.T) {
 		{"HOME", "/home/scoped"},
 		{"COMPASS_WORKDIR", "/srv/checkout"},
 		{"COMPASS_MODEL", "claude-opus-4"},
+		{"COMPASS_PERSONA", "You are Ada."},
 	} {
 		if got := got.Env[want.key]; got != want.value {
 			t.Fatalf("exec env %s = %q, want %q", want.key, got, want.value)

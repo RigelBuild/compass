@@ -95,6 +95,26 @@ func TestBuildSpecFillsWorkspaceFromDefaults(t *testing.T) {
 	}
 }
 
+// BuildSpec maps the request's server-authoritative persona onto the AgentSpec
+// so it rides through to the agent's system prompt. A bug that dropped it would
+// boot every agent with no identity overlay.
+func TestBuildSpecMapsPersona(t *testing.T) {
+	builder, err := NewConfigSpecBuilder(goodDefaults())
+	if err != nil {
+		t.Fatalf("NewConfigSpecBuilder: %v", err)
+	}
+	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
+		AgentAccountId: strings.Repeat("a", 32),
+		Persona:        "You are Ada.",
+	})
+	if err != nil {
+		t.Fatalf("BuildSpec = %v", err)
+	}
+	if spec.Persona != "You are Ada." {
+		t.Fatalf("spec.Persona = %q, want %q (req.Persona must reach the AgentSpec)", spec.Persona, "You are Ada.")
+	}
+}
+
 // The container name is prefix+agent_account_id. A bug in the name derivation
 // would collide containers or misroute the per-agent workspace.
 func TestBuildSpecDerivesName(t *testing.T) {

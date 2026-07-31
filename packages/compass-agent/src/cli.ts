@@ -8,6 +8,8 @@
 //     per container (`internal/runner/host.go:33`), chosen "so the agent needs no
 //     per-session configuration" (`host.go:28-29`);
 //   - the model selector from `COMPASS_MODEL`;
+//   - the persona identity overlay from `COMPASS_PERSONA`, appended to the
+//     agent's default system prompt;
 //   - the provider credential from the 0600 `$HOME/.compass/auth-seed.json` the
 //     Runner's materializer writes (design §T5).
 //
@@ -63,6 +65,23 @@ export function resolveModelSelector(
 	env: Record<string, string | undefined>,
 ): string | undefined {
 	const raw = env.COMPASS_MODEL?.trim();
+	return raw ? raw : undefined;
+}
+
+/**
+ * The identity persona for this container, from `COMPASS_PERSONA`.
+ *
+ * An OVERLAY string appended to the SDK's default system prompt (see `main`),
+ * not a replacement — block-0 base instructions and the project footer survive.
+ *
+ * Unset (or blank) is a legitimate configuration: the Runner empty-omits the
+ * env var (`go/internal/runner/agent_exec.go` `execSpec`), so an absent overlay
+ * leaves the agent on its default prompt.
+ */
+export function resolvePersona(
+	env: Record<string, string | undefined>,
+): string | undefined {
+	const raw = env.COMPASS_PERSONA?.trim();
 	return raw ? raw : undefined;
 }
 
@@ -151,6 +170,12 @@ export async function main(
 		);
 	}
 
+	// The identity overlay; undefined when unset or whitespace-only. What omits
+	// the overlay in that case is the `persona ?` spread guard below (an absent
+	// `systemPrompt` key), not any `||`/`??` subtlety — `resolvePersona` has
+	// already normalized a blank value to undefined.
+	const persona = resolvePersona(env);
+
 	const { session } = await (deps.createSession ?? createAgentSession)({
 		// `||`, not `??`: an empty or whitespace-only COMPASS_WORKDIR is unset, not
 		// a valid cwd. The Runner sets it unconditionally (relay.go `execSpec`), so
@@ -158,6 +183,16 @@ export async function main(
 		// bun `cwd: ""` — which does not throw, it silently loads the wrong tree.
 		cwd: env.COMPASS_WORKDIR?.trim() || process.cwd(),
 		modelPattern: resolveModelSelector(env),
+		// Persona is an identity OVERLAY, not a replacement: append it after the
+		// default prompt so block-0 base instructions + project footer survive.
+		...(persona
+			? {
+					systemPrompt: (defaultPrompt: string[]) => [
+						...defaultPrompt,
+						persona,
+					],
+				}
+			: {}),
 	});
 
 	// Post-construction assignment, not a `createAgentSession` option: the SDK

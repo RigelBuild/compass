@@ -37,6 +37,7 @@ import {
 	type MainDeps,
 	main,
 	resolveModelSelector,
+	resolvePersona,
 } from "./cli";
 import {
 	AgentControlSchema,
@@ -103,6 +104,33 @@ describe("resolveModelSelector", () => {
 	test("trims surrounding whitespace so a padded env value still resolves", () => {
 		expect(resolveModelSelector({ COMPASS_MODEL: "  openai/gpt-5  " })).toBe(
 			"openai/gpt-5",
+		);
+	});
+});
+
+// COMPASS_PERSONA is the server-authoritative identity overlay. The entrypoint
+// forwards it verbatim (trimmed) as an append customizer; unset or blank leaves
+// the agent on its default prompt. Same unset/trim semantics as the model
+// selector, extracted as a pure function so `main` composes tested decisions.
+describe("resolvePersona", () => {
+	test("returns the COMPASS_PERSONA value when set", () => {
+		expect(resolvePersona({ COMPASS_PERSONA: "You are Ada." })).toBe(
+			"You are Ada.",
+		);
+	});
+
+	test("returns undefined when COMPASS_PERSONA is unset (default prompt applies)", () => {
+		expect(resolvePersona({})).toBeUndefined();
+	});
+
+	test("treats an empty or whitespace-only value as unset", () => {
+		expect(resolvePersona({ COMPASS_PERSONA: "" })).toBeUndefined();
+		expect(resolvePersona({ COMPASS_PERSONA: "   " })).toBeUndefined();
+	});
+
+	test("trims surrounding whitespace so a padded env value still resolves", () => {
+		expect(resolvePersona({ COMPASS_PERSONA: "  You are Ada.  " })).toBe(
+			"You are Ada.",
 		);
 	});
 });
@@ -698,6 +726,70 @@ describe("main", () => {
 				},
 			);
 			expect(seen).toEqual([process.cwd()]);
+		}
+	});
+
+	// COMPASS_PERSONA is the identity overlay: when set, main must APPEND it to
+	// the SDK's default prompt (block-0 base + project footer survive), never
+	// replace it. The customizer is a function; drive it with a fake default and
+	// assert the persona lands last.
+	test("appends COMPASS_PERSONA to the default systemPrompt when set", async () => {
+		const session = fakeSession();
+		const seen: (
+			| string
+			| string[]
+			| ((p: string[]) => string | string[])
+			| undefined
+		)[] = [];
+		await main(
+			{ HOME: scratch(), COMPASS_PERSONA: "You are Ada." },
+			{
+				createSession: (options) => {
+					seen.push(options.systemPrompt);
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		expect(seen).toHaveLength(1);
+		const customizer = seen[0];
+		if (typeof customizer !== "function") {
+			throw new Error("systemPrompt was not the append customizer function");
+		}
+		expect(customizer(["base", "project footer"])).toEqual([
+			"base",
+			"project footer",
+			"You are Ada.",
+		]);
+	});
+
+	test("leaves systemPrompt unset when COMPASS_PERSONA is empty or whitespace", async () => {
+		// A whitespace-only persona resolves to undefined (resolvePersona), so the
+		// `persona ?` guard omits systemPrompt and the agent keeps its default
+		// prompt rather than an overlay of blank identity.
+		for (const persona of [undefined, "", "   "]) {
+			const session = fakeSession();
+			const seen: unknown[] = [];
+			await main(
+				{
+					HOME: scratch(),
+					...(persona === undefined ? {} : { COMPASS_PERSONA: persona }),
+				},
+				{
+					createSession: (options) => {
+						seen.push(options.systemPrompt);
+						return Promise.resolve({
+							session: session as unknown as AgentSession,
+						});
+					},
+					createTransport: () =>
+						fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				},
+			);
+			expect(seen).toEqual([undefined]);
 		}
 	});
 });
