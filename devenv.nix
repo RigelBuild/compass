@@ -14,6 +14,13 @@
 #
 # Everything here is a system task's dependency: moon execs what this shell puts
 # on PATH rather than managing a toolchain of its own.
+let
+  # Postgres DSN shared by compass-server and dogfood:mint-runner-token. mint
+  # MUST open the same store the server migrated, so both consumers reference one
+  # binding — a lone edit to either copy would silently point mint at a different
+  # database, surfacing only as a runner enroll failure.
+  dogfoodDSN = "host=${config.env.PGHOST} port=${toString config.env.PGPORT} dbname=compass sslmode=disable";
+in
 {
   packages = with pkgs; [
     # Language/runtime manager. Pins bun/node/moon/go via .prototools.
@@ -212,7 +219,7 @@
         # socket dir, $PGPORT the allocated port — set by services.postgres).
         # No user= : pgx defaults to the OS user, which is the peer-auth identity
         # ($USER) that owns the `compass` database (services.postgres above).
-        COMPASS_DATABASE_DSN = "host=${config.env.PGHOST} port=${toString config.env.PGPORT} dbname=compass sslmode=disable";
+        COMPASS_DATABASE_DSN = dogfoodDSN;
       };
       # Wait for Postgres to be accepting connections before starting, so the
       # store opens on the first try rather than crash-restarting until it's up.
@@ -263,6 +270,7 @@
       exec = ''
         export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
         export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
+        : "''${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set; the compass-runner per-container sockets live under it}"
         bin="${config.devenv.state}/compass/compass-runner"
         go build -o "$bin" ./cmd/compass-runner
         export COMPASS_RUNNER_TOKEN="$(cat "${config.devenv.state}/compass/runner.token")"
@@ -324,7 +332,7 @@
       '';
       cwd = "${config.devenv.root}/go";
       env = {
-        COMPASS_DATABASE_DSN = "host=${config.env.PGHOST} port=${toString config.env.PGPORT} dbname=compass sslmode=disable";
+        COMPASS_DATABASE_DSN = dogfoodDSN;
       };
       after = [ "devenv:processes:compass-server" ];
     };
