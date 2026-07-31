@@ -97,6 +97,16 @@ type CommsRelay interface {
 	RelayCommsCall(ctx context.Context, req *connect.Request[compassv1internal.RelayCommsCallRequest]) (*connect.Response[compassv1internal.RelayCommsCallResponse], error)
 }
 
+// ConversationCommitter is the narrow slice of the generated RunnerServiceClient
+// the durable conversation path needs — just CommitConversationFrame. The real
+// client satisfies it; a test supplies a fake. Mirrors CommsRelay's narrowing of
+// RelayCommsCall. The Runner is a pure forwarder: it sends the session_id it
+// structurally owns and the agent's frame verbatim, and passes the Server's
+// retryability-split Connect status straight back — it resolves no account.
+type ConversationCommitter interface {
+	CommitConversationFrame(ctx context.Context, req *connect.Request[compassv1internal.CommitConversationFrameRequest]) (*connect.Response[compassv1internal.CommitConversationFrameResponse], error)
+}
+
 // Gateway implements compassv1internalconnect.AgentGatewayHandler for one
 // container's socket. containerName is the identity the socket structurally
 // carries; sessions resolves it to the bound session; relay forwards the call.
@@ -111,10 +121,15 @@ type Gateway struct {
 	containerName string
 	sessions      SessionForContainer
 	relay         CommsRelay
-	// events forwards trace/session + durable conversation frames up
-	// PublishEvents. control routes the two control-plane ack frames off the
-	// Publish stream to the control lane; the default is a no-op until the control
-	// lane injects the real sender.
+	// committer forwards ONE durable conversation frame to the Server for commit
+	// (CommitConversationFrame, the delivered-or-erred unary) and returns the
+	// commit outcome. Durable conversation frames leave the loss-tolerant Publish
+	// spine entirely, so this path does NOT go through events/the publisher.
+	committer ConversationCommitter
+	// events forwards trace/session frames up PublishEvents (the loss-tolerant
+	// Publish client-stream). control routes the two control-plane ack frames off
+	// the Publish stream to the control lane; the default is a no-op until the
+	// control lane injects the real sender.
 	events  EventRelay
 	control ControlRouter
 	// baseCtx is the socket's lifetime context — it lives as long as the socket
@@ -129,26 +144,27 @@ type Gateway struct {
 	// request contexts; there is no other channel for the socket-lifetime scope.
 	//nolint:containedctx // socket-lifetime scope for the shared upstream stream; the per-request handler ctx is the wrong lifetime (see field doc)
 	baseCtx context.Context
-	// pub is the ordered per-session publisher shared by Publish and
-	// PostConversationFrame so both stamp one monotonic RunnerSeq and send on one
-	// upstream stream (allocation order == emission order, so concurrent traffic
-	// across the two paths opens no false hub gap). It is created lazily by
-	// whichever handler first forwards a frame, guarded by pubMu for that init
-	// race, for the swap back to nil when Publish closes the stream, and for the
-	// session-change reset (a publisher bound to a prior session is replaced when
-	// the container rebinds to a new session across Stop→Start).
+	// pub is the ordered per-session publisher driven ONLY by Publish (the
+	// loss-tolerant telemetry-ingest spine). Durable conversation frames do NOT
+	// ride it: they leave this spine and commit request/response via
+	// CommitConversationFrame (post_conversation_frame.go), so pub stamps a
+	// monotonic RunnerSeq for Publish traffic alone. It is created lazily by the
+	// first Publish forward, guarded by pubMu for that init race, for the swap
+	// back to nil when Publish closes the stream, and for the session-change
+	// reset (a publisher bound to a prior session is replaced when the container
+	// rebinds to a new session across Stop→Start).
 	//
 	// seq is the RunnerSeq counter, and it lives HERE rather than on the
-	// publisher because a publisher is replaceable within one session: the
-	// durable path releases on an upstream forward failure so a dead stream
-	// cannot wedge the session, and the next forward builds a fresh publisher.
-	// A counter owned by the publisher restarts at 0 on that swap, which is
-	// silently worse than a gap: runner.proto states runner_seq is monotonic
-	// across the Runner's whole event stream, and the hub's detector only flags
-	// seq > lastSeq+1 (runnerhub/hub.go:230), so replayed low seqs are ACCEPTED
-	// and in-transit loss inside the replayed range stops being detectable.
-	// Hoisting it to the socket-lifetime Gateway makes the sequence survive every
-	// publisher replacement.
+	// publisher because a publisher is replaceable within one Gateway: the
+	// session-change reset in acquirePublisher closes an orphan bound to a
+	// stopped session and opens a fresh one. A counter owned by the publisher
+	// restarts at 0 on that swap, which is silently worse than a gap:
+	// runner.proto states runner_seq is monotonic across the Runner's whole event
+	// stream, and the hub's detector only flags seq > lastSeq+1
+	// (runnerhub/hub.go:230), so replayed low seqs are ACCEPTED and in-transit
+	// loss inside the replayed range stops being detectable. Hoisting it to the
+	// socket-lifetime Gateway makes the sequence survive every publisher
+	// replacement.
 	//
 	// Scope is per-Runner-link, not yet truly per-Runner, and the hazard is worth
 	// stating precisely: relay.go's eventPublisher owns a SECOND counter, and both
@@ -180,21 +196,23 @@ var _ compassv1internalconnect.AgentGatewayHandler = (*Gateway)(nil)
 // NewGateway builds the AgentGateway handler for the container's socket:
 // containerName is bound here (the socket is that container's identity),
 // sessions resolves the container to its live session, relay forwards a comms
-// call to the Server, and events forwards telemetry/durable frames up
-// PublishEvents. The control router defaults to a no-op; SetControlRouter
-// injects the real one once the control lane is wired.
+// call to the Server, events forwards trace/session telemetry up PublishEvents,
+// and committer forwards a durable conversation frame to the Server for commit.
+// The control router defaults to a no-op; SetControlRouter injects the real one
+// once the control lane is wired.
 //
 // baseCtx is the socket's lifetime context (Serve owns it, SocketListener.Close
 // cancels it): the shared upstream PublishEvents stream is opened against it so
 // the stream outlives any one agent request. A caller with no distinct socket
 // scope (a hermetic test) passes context.Background().
-func NewGateway(baseCtx context.Context, containerName string, sessions SessionForContainer, relay CommsRelay, events EventRelay) *Gateway {
+func NewGateway(baseCtx context.Context, containerName string, sessions SessionForContainer, relay CommsRelay, events EventRelay, committer ConversationCommitter) *Gateway {
 	return &Gateway{
 		baseCtx:       baseCtx,
 		containerName: containerName,
 		sessions:      sessions,
 		relay:         relay,
 		events:        events,
+		committer:     committer,
 		control:       noopControlRouter{},
 		// ttl=0: no expiry, a pure size-bounded LRU (committedKeysMax). The cache
 		// is advisory, so eviction is safe — it never drops the store's boundary.
@@ -213,13 +231,14 @@ func (g *Gateway) SetControlRouter(r ControlRouter) {
 // Serve creates the per-container agent socket at path and serves this
 // container's AgentGateway over it, returning the live listener. It composes the
 // container's Gateway (containerName bound to the socket, sessions resolving it
-// to the live session, relay + events forwarding to the Server) onto the
+// to the live session, relay + events forwarding to the Server, committer
+// committing durable conversation frames) onto the
 // owner-only Unix socket the SocketListener owns, with an explicit ReadMaxBytes
 // bound on every method (Global Constraints: a large agent-buffered message is a
 // stream/unary error, not an OOM). Called at Provision, before `podman run`, so
 // the bind-mount source is live when the container starts; the returned
 // listener's Close tears the socket down at container teardown.
-func Serve(ctx context.Context, path, containerName string, sessions SessionForContainer, relay CommsRelay, events EventRelay) (*SocketListener, error) {
+func Serve(ctx context.Context, path, containerName string, sessions SessionForContainer, relay CommsRelay, events EventRelay, committer ConversationCommitter) (*SocketListener, error) {
 	// The socket-lifetime context: it outlives any one agent request and is
 	// cancelled when the listener closes at container teardown (listenAgentSocket
 	// hands socketCancel to the listener). The shared upstream PublishEvents
@@ -227,7 +246,7 @@ func Serve(ctx context.Context, path, containerName string, sessions SessionForC
 	// opens the stream does not tie the stream's life to its own request.
 	socketCtx, socketCancel := context.WithCancel(ctx)
 	mux := http.NewServeMux()
-	g := NewGateway(socketCtx, containerName, sessions, relay, events)
+	g := NewGateway(socketCtx, containerName, sessions, relay, events, committer)
 	// The real producer in production: without this the Gateway would serve
 	// Control against the ack-only no-op default, so the session lifecycle could
 	// never reach the agent. Set before Serve accepts calls, per

@@ -3,20 +3,23 @@
 package gateway
 
 // post_conversation_frame.go is the durable-frame ingest: the delivered-or-
-// erred unary that carries a conversation_posted / conversation_updated frame off
-// the lossy Publish spine (transport-consolidation record OQ-2(c), P1 #1). Unlike
-// Publish's fire-and-forget stream, this returns success ONLY after the upstream
-// PublishEvents send is accepted, so an agent-side drop is an error the agent
-// retries — never a silent gapless loss of a durable message.
+// erred handler that carries a conversation_posted / conversation_updated frame
+// off the lossy Publish spine (transport-consolidation record OQ-2(c), P1 #1).
+// It commits the frame request/response via the dedicated
+// RunnerService.CommitConversationFrame unary — the durable counterpart to the
+// loss-tolerant PublishEvents stream — and returns success ONLY after the Server
+// acknowledges the commit. A Server-side loss is a Connect error the agent
+// retries, never a silent gapless loss of a durable message (OQ-3): the old path
+// acked on a mere PublishEvents buffer-accept, which delivered-or-erred forbids.
 //
 // Idempotency: the agent retries under a stable idempotency_key, so a
 // committed-but-response-lost retry must not duplicate the frame. The durability
 // boundary is the atomic commit at the comms Message store keyed on that key
-// (store AppendMessage clientRequestID, threaded upstream via
-// PublishEventsRequest.idempotency_key); the in-process committedKeys set here is
-// an advisory fast-path that short-circuits a retry without a redundant forward.
-// A Runner crash that loses the map is safe: the store commit is the real
-// boundary, so a post-crash retry hits the committed key at the store.
+// (store AppendMessage clientRequestID, carried on CommitConversationFrameRequest
+// .idempotency_key); the in-process committedKeys set here is an advisory
+// fast-path that short-circuits a retry without a redundant commit. A Runner
+// crash that loses the map is safe: the store commit is the real boundary, so a
+// post-crash retry hits the committed key at the store.
 
 import (
 	"context"
@@ -26,14 +29,18 @@ import (
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 )
 
-// PostConversationFrame forwards ONE durable conversation frame up PublishEvents
-// through the shared ordered per-session publisher and returns only once the
-// upstream accepts it (delivered-or-erred). It rejects a non-conversation frame
-// with CodeInvalidArgument (the durable unary carries only conversation_posted /
-// conversation_updated), and fails closed CodePermissionDenied when no session is
-// bound. Dedups on idempotency_key: a key already committed in this process
-// returns success without re-forwarding (advisory fast-path); the durable
-// boundary is the store's atomic at-most-once commit on the same key.
+// PostConversationFrame commits ONE durable conversation frame to the Server via
+// the dedicated CommitConversationFrame unary and returns only once the Server
+// acknowledges the commit (delivered-or-erred). Unlike the loss-tolerant Publish
+// spine, this does NOT ride the shared PublishEvents publisher: a durable frame
+// leaves that spine entirely and commits request/response, so a Server-side loss
+// is a Connect error the agent retries, never a silent gapless drop. It rejects
+// a non-conversation frame with CodeInvalidArgument (the durable unary carries
+// only conversation_posted / conversation_updated), and fails closed
+// CodePermissionDenied when no session is bound. Dedups on idempotency_key: a
+// key already committed in this process returns success without re-committing
+// (advisory fast-path); the durable boundary is the store's atomic at-most-once
+// commit on the same key.
 func (g *Gateway) PostConversationFrame(
 	ctx context.Context,
 	req *connect.Request[compassv1internal.PostConversationFrameRequest],
@@ -50,32 +57,32 @@ func (g *Gateway) PostConversationFrame(
 
 	key := req.Msg.GetIdempotencyKey()
 	// Advisory fast-path: a key already committed in this process is a retry whose
-	// original forward succeeded — return success without a redundant upstream
-	// send. An empty key never short-circuits (nothing to dedup on); it still
-	// forwards, and the store applies no dedup for an empty key.
+	// original commit succeeded — return success without a redundant upstream
+	// commit. An empty key never short-circuits (nothing to dedup on); it still
+	// commits, and the store applies no dedup for an empty key.
 	if key != "" && g.keyCommitted(key) {
 		return connect.NewResponse(&compassv1internal.PostConversationFrameResponse{}), nil
 	}
 
-	pub := g.acquirePublisher(sessionID)
-	// Forward Runner-sequenced through the SAME publisher as Publish so allocation
-	// order == emission order; the idempotency_key rides the envelope to the
-	// Server's at-most-once store commit. A forward failure is the unary's error,
-	// which the agent retries under the same key.
-	if err := pub.forward(frame, key); err != nil {
-		// Tear the dead publisher down, exactly as Publish does. A connect
-		// client-stream caches its first error and every later Send short-
-		// circuits on it, and acquirePublisher only replaces g.pub on a SESSION
-		// change — never on stream death. Leaving it installed would make one
-		// upstream failure wedge every subsequent durable frame for the life of
-		// the session, turning a single erred frame into a whole-session outage.
-		_ = g.releasePublisher()
-		return nil, connect.NewError(connect.CodeUnavailable, err)
+	// Commit the frame request/response on THIS request's ctx: the commit is a
+	// unary bound to this call (unlike the shared Publish stream, which rides the
+	// socket-lifetime baseCtx). The Runner is a pure forwarder — it sends the
+	// session_id it structurally owns and the frame verbatim, and passes the
+	// Server's retryability-split Connect status straight back (mirror Comms). A
+	// transient failure surfaces retryable so the sink retries the SAME key; a
+	// permanent failure surfaces terminal so the agent drops.
+	if _, err := g.committer.CommitConversationFrame(ctx, connect.NewRequest(&compassv1internal.CommitConversationFrameRequest{
+		SessionId:      sessionID,
+		Frame:          frame,
+		IdempotencyKey: key,
+	})); err != nil {
+		return nil, err
 	}
 
-	// The forward was accepted upstream. Record the key so a retry whose response
-	// was lost short-circuits here (advisory; the store commit is the real
-	// boundary).
+	// The commit was acknowledged. Record the key so a retry whose response was
+	// lost short-circuits here (advisory; the store commit is the real boundary).
+	// A transient failure returned above, so the key is NOT marked — a retry
+	// re-commits under the same key.
 	if key != "" {
 		g.markKeyCommitted(key)
 	}

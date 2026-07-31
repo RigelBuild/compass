@@ -65,11 +65,11 @@ func (g *Gateway) Publish(
 		}
 		// Trace/session telemetry: forward Runner-sequenced. A durable
 		// conversation frame does NOT belong on this lossy stream (it takes the
-		// PostConversationFrame unary); but if one arrives here it is still a
+		// CommitConversationFrame unary); but if one arrives here it is still a
 		// valid AgentFrame the hub can classify, so forward it rather than drop
 		// it — the split is enforced agent-side, and dropping a durable frame
 		// silently is the exact loss the split exists to prevent.
-		if err := pub.forward(frame, ""); err != nil {
+		if err := pub.forward(frame); err != nil {
 			// A mid-stream upstream failure ends the relay; the agent reconnects.
 			// Release the shared upstream stream on the way out.
 			_ = g.releasePublisher()
