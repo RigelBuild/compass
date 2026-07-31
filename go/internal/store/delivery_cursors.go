@@ -49,10 +49,16 @@ func (s *Store) SeedDeliveryCursor(ctx context.Context, tx pgx.Tx, agent Account
 // message never dispatched to this agent for this channel is a no-op (the
 // resolution IS the overshoot clamp — a fabricated id cannot advance the
 // cursor). It marks the seq acked (retained in above_seqs), then advances the
-// contiguous cursor across every seq that is EITHER acked (in above_seqs) OR not
-// owed to this agent (author_account_id = agent — the agent's own posts, never
-// dispatched), retaining sparse above-cursor seqs in above_seqs. A duplicate or
-// reordered ack is a no-op.
+// contiguous cursor across every seq that is EITHER acked (in above_seqs) OR
+// self-authored in this channel (author_account_id = agent — never dispatched).
+// Because messages.seq is a table-global BIGSERIAL (0001_init.sql:114), a
+// channel's owed seqs are sparse: a seq belonging to another channel sits
+// between two owed seqs and currently stops the advance, so above_seqs can
+// accumulate acked seqs on a busy multi-channel deployment. Tightening this
+// advance to drain across cross-channel gaps without reintroducing commit-lag
+// loss is a parked design question (SEA-1569 review, PR #55 Open Questions) — do
+// not "fix" it by jumping the low-water past an un-acked lower owed seq, which
+// loses commit-lagged messages. A duplicate or reordered ack is a no-op.
 func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel ChannelID, messageID string) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -83,7 +89,8 @@ func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel Channe
 	)
 	switch err := tx.QueryRow(ctx,
 		`SELECT acked_seq, above_seqs FROM agent_delivery_cursors
-		 WHERE agent_account_id = $1 AND channel_id = $2`,
+		 WHERE agent_account_id = $1 AND channel_id = $2
+		 FOR UPDATE`,
 		string(agent), string(channel),
 	).Scan(&ackedSeq, &aboveSeqs); {
 	case noRows(err):
@@ -107,10 +114,15 @@ func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel Channe
 	above[seq] = true
 
 	// Advance the contiguous cursor across every next seq that is either acked
-	// (in the above-set) or not owed to this agent (its own post — never
-	// dispatched, so vacuously satisfied). Query the author-exclusion set once
-	// for the span above the cursor so a run of self-posts cannot wedge the
-	// contiguous advance and does not linger in above_seqs.
+	// (in the above-set) or self-authored in this channel (author_account_id =
+	// agent — never dispatched, so vacuously satisfied). Query the
+	// author-exclusion set once for the span above the cursor so a run of
+	// self-posts cannot wedge the contiguous advance. Note: this advance stops
+	// at the first un-acked owed seq, and because messages.seq is a table-global
+	// BIGSERIAL a cross-channel seq can sit in that position — so on a busy
+	// multi-channel deployment acked seqs above such a gap remain in above_seqs
+	// rather than draining. That boundedness gap is the parked design question
+	// (PR #55 Open Questions); correctness (no message loss) is unaffected.
 	rows, err := tx.Query(ctx,
 		`SELECT seq FROM messages
 		 WHERE channel_id = $1 AND seq > $2 AND author_account_id = $3`,

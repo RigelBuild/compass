@@ -16,6 +16,7 @@ package store
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -461,5 +462,184 @@ func TestUndeliveredMessagesHomeChannelSweepsWhenUnsubscribed(t *testing.T) {
 	owed := got[ch]
 	if len(owed) != 1 || string(owed[0].ID) != owedID {
 		t.Fatalf("home sweep = %v, want exactly [%s] (D1 disjunct, flag-independent)", owed, owedID)
+	}
+}
+
+// Case 11 — cross-channel gap: NO MESSAGE LOSS. Because messages.seq is a
+// table-global BIGSERIAL, a message on another channel sits between two owed
+// seqs on ch, so the contiguous cursor wedges at the gap and the higher owed
+// seq stays in above_seqs. The point of this test is the SAFE invariant that
+// the parked design question must never regress: even wedged, the sweep still
+// returns every owed message (no loss). It also documents the current wedge.
+func TestAckDeliveryCrossChannelGapIsLossless(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := agent.Agent.HomeChannelID
+
+	// A second channel with a different member author, to inject a cross-channel
+	// global-seq gap between the two owed messages on ch.
+	other := mustNamedChannel(t, s, owner.ID, "other")
+
+	// Owed A on ch, then a message on other (the gap), then owed B on ch: A.seq
+	// and B.seq are non-contiguous, separated by the other-channel seq.
+	mA, seqA := postAs(t, s, ch, owner.ID, "owed A")
+	postAs(t, s, other.ID, owner.ID, "cross-channel gap")
+	mB, seqB := postAs(t, s, ch, owner.ID, "owed B")
+
+	if err := s.AckDelivery(ctx, agent.ID, ch, mA); err != nil {
+		t.Fatalf("AckDelivery(mA): %v", err)
+	}
+	if err := s.AckDelivery(ctx, agent.ID, ch, mB); err != nil {
+		t.Fatalf("AckDelivery(mB): %v", err)
+	}
+
+	// No-loss invariant: after acking both, ch has no owed messages — A drained
+	// via the contiguous cursor, B is retained in above_seqs; both are excluded.
+	got, err := s.UndeliveredMessages(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("UndeliveredMessages: %v", err)
+	}
+	if n := len(got[ch]); n != 0 {
+		t.Fatalf("sweep returned %d owed on ch after acking A and B, want 0 (no loss)", n)
+	}
+
+	// Post a third owed message C: the sweep returns exactly [C], proving the
+	// acked A/B are excluded and C is not lost.
+	mC, _ := postAs(t, s, ch, owner.ID, "owed C")
+	got, err = s.UndeliveredMessages(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("UndeliveredMessages (after C): %v", err)
+	}
+	owed := got[ch]
+	if len(owed) != 1 || string(owed[0].ID) != mC {
+		t.Fatalf("sweep = %v, want exactly [%s] (A/B acked, C owed)", owed, mC)
+	}
+
+	// Documents the parked cross-channel-wedge limitation (PR #55 Open Questions): the
+	// contiguous cursor stops at the cross-channel gap and B stays in above_seqs.
+	// Correctness is preserved (the sweep above is lossless); only boundedness is parked.
+	acked, above, _ := readCursor(t, s, agent.ID, ch)
+	if acked != seqA {
+		t.Fatalf("acked=%d, want %d (cursor wedged at the cross-channel gap, did not drain to B)", acked, seqA)
+	}
+	if !equalInt64Set(above, []int64{seqB}) {
+		t.Fatalf("above=%v, want [%d] (B retained above the wedge)", above, seqB)
+	}
+}
+
+// Case 12 — concurrent acks don't lose a seq (defends FIX B / FOR UPDATE). Two
+// concurrent acks for the same (agent, channel) do a read-modify-write on the
+// cursor row; without FOR UPDATE the second UPDATE clobbers the first's
+// above_seqs (a dropped acked seq → spurious redelivery). With FOR UPDATE the
+// RMW serializes so both acked seqs are retained regardless of interleaving.
+func TestAckDeliveryConcurrentAcksRetainBothSeqs(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := agent.Agent.HomeChannelID
+	other := mustNamedChannel(t, s, owner.ID, "other")
+
+	// A and B owed on ch, with a cross-channel gap between them so both acks land
+	// in above_seqs under the current advance (neither drains the contiguous
+	// cursor), forcing both concurrent RMWs to touch above_seqs — the field a
+	// lost update would clobber.
+	mA, seqA := postAs(t, s, ch, owner.ID, "owed A")
+	postAs(t, s, other.ID, owner.ID, "cross-channel gap")
+	mB, seqB := postAs(t, s, ch, owner.ID, "owed B")
+
+	// Gate both goroutines so they contend, then launch concurrently.
+	var start, done sync.WaitGroup
+	start.Add(1)
+	done.Add(2)
+	errs := make([]error, 2)
+	for i, mID := range []string{mA, mB} {
+		go func(i int, mID string) {
+			defer done.Done()
+			start.Wait()
+			errs[i] = s.AckDelivery(ctx, agent.ID, ch, mID)
+		}(i, mID)
+	}
+	start.Done()
+	done.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent AckDelivery[%d]: %v", i, err)
+		}
+	}
+
+	// No lost update: the union of acked_seq and above_seqs accounts for BOTH
+	// A.seq and B.seq. Neither drains the contiguous cursor (A is owed below the
+	// cross-channel gap only until acked; whichever order ran, the retained set
+	// plus acked_seq must cover both).
+	acked, above, _ := readCursor(t, s, agent.ID, ch)
+	covered := map[int64]bool{acked: true}
+	for _, sq := range above {
+		covered[sq] = true
+	}
+	if !covered[seqA] || !covered[seqB] {
+		t.Fatalf("acked=%d above=%v does not cover both seqs %d and %d (lost update)", acked, above, seqA, seqB)
+	}
+
+	// And the sweep returns neither A nor B on ch.
+	got, err := s.UndeliveredMessages(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("UndeliveredMessages: %v", err)
+	}
+	for _, m := range got[ch] {
+		if string(m.ID) == mA || string(m.ID) == mB {
+			t.Fatalf("sweep redelivered an acked message %s (lost update)", m.ID)
+		}
+	}
+}
+
+// Case 13 — re-subscribe never resets an existing cursor (design.md:293-304):
+// the seed's ON CONFLICT DO NOTHING keeps the stale acked_seq, so backlog owed
+// since the ORIGINAL seed still replays after an unsubscribe/re-subscribe. Pins
+// the ratified DO-NOTHING choice against a silent future flip. No code change.
+func TestReSubscribeDoesNotResetCursor(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+
+	// A non-home channel so the subscribed flag governs the sweep (the home
+	// channel sweeps regardless — Case 10). Owner creates and subscribes agent,
+	// which seeds the cursor to the current head (0 messages yet).
+	ch := mustNamedChannel(t, s, owner.ID, "room").ID
+	subscribeAgent(t, s, owner.ID, ch, agent.ID)
+	seededAcked, _, ok := readCursor(t, s, agent.ID, ch)
+	if !ok {
+		t.Fatal("precondition: subscribe should have seeded a cursor")
+	}
+
+	// M1 owed while subscribed.
+	m1, _ := postAs(t, s, ch, owner.ID, "owed M1")
+
+	// Unsubscribe, post M2 during the unsubscribed window, then re-subscribe.
+	if _, _, err := s.UpdateChannelMembers(ctx, owner.ID, ch, []MemberUpdate{
+		{AccountID: agent.ID, Subscribed: false},
+	}); err != nil {
+		t.Fatalf("UpdateChannelMembers(unsubscribe): %v", err)
+	}
+	m2, _ := postAs(t, s, ch, owner.ID, "owed M2 during unsub")
+	subscribeAgent(t, s, owner.ID, ch, agent.ID) // ON CONFLICT DO NOTHING: keeps the old cursor.
+
+	// The cursor row was NOT reset to a new head by the re-subscribe.
+	acked, _, _ := readCursor(t, s, agent.ID, ch)
+	if acked != seededAcked {
+		t.Fatalf("re-subscribe reset acked_seq to %d, want unchanged %d (DO NOTHING must not reset)", acked, seededAcked)
+	}
+
+	// The backlog owed since the original seed still replays — both M1 and M2.
+	got, err := s.UndeliveredMessages(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("UndeliveredMessages: %v", err)
+	}
+	owed := got[ch]
+	if len(owed) != 2 || string(owed[0].ID) != m1 || string(owed[1].ID) != m2 {
+		t.Fatalf("sweep = %v, want ascending [%s %s] (backlog replays since original seed)", owed, m1, m2)
 	}
 }
