@@ -66,6 +66,28 @@ func newHostFixtureWithModel(t *testing.T, specs SpecBuilder, model string) (Ses
 	return host, engine, registry
 }
 
+// newHostFixtureWithS3 is newHostFixture with the host's standing S3 config set,
+// for the tests that assert an agent is started carrying the object-store
+// carriage that makes its session log persist.
+func newHostFixtureWithS3(t *testing.T, specs SpecBuilder) (SessionHost, *stubStreamingRuntime, *runtime.AgentRegistry) {
+	t.Helper()
+	engine := newStubStreamingRuntime(t)
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	var n int
+	newID := func() string { n++; return "sess-" + string(rune('0'+n)) }
+	cfg := AgentHostConfig{
+		RuntimeDir:        t.TempDir(),
+		S3Endpoint:        "https://s3.example:9000",
+		S3Bucket:          "compass-sessions",
+		S3AccessKeyID:     "AKIA-test",
+		S3SecretAccessKey: "secret-test",
+	}
+	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner(), newID)
+	return host, engine, registry
+}
+
 // Provision derives the AgentSpec from the request via the SpecBuilder and
 // launches the container through AgentRuntime, returning the launched name. A
 // bug that bypassed the SpecBuilder or never called Launch would redden the
@@ -426,6 +448,46 @@ func TestReloadWithDeregisteredContainerIsSessionUnknown(t *testing.T) {
 	// teardown cannot reap again and errors.
 	if err := host.Stop(ctx, sessionID); err != nil {
 		t.Fatalf("Stop after a rejected Reload = %v, want success; the rejected Reload must leave the agent running, not wedged", err)
+	}
+}
+
+// A Runner configured with an S3 endpoint starts each agent carrying the
+// standing object-store config AND the session's own id, so the agent persists
+// its session log to the right bucket keyed under the right session. The epoch
+// and resume vars stay ABSENT on this fresh path (T7) — the agent derives the
+// epoch and starts clean; only a resume (T8) sets them. A bug that dropped the
+// S3 carriage silently disables persistence; one that exported a stale epoch or
+// a resume flag would make a fresh session rehydrate a log that isn't there.
+func TestStartCarriesS3ConfigAndSessionIdentity(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine, _ := newHostFixtureWithS3(t, specs)
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { _ = host.Stop(context.Background(), sessionID) })
+
+	env := onlyStreamingSpec(t, engine).Env
+	for _, want := range []struct{ key, value string }{
+		{"COMPASS_S3_ENDPOINT", "https://s3.example:9000"},
+		{"COMPASS_S3_BUCKET", "compass-sessions"},
+		{"COMPASS_S3_ACCESS_KEY_ID", "AKIA-test"},
+		{"COMPASS_S3_SECRET_ACCESS_KEY", "secret-test"},
+		{"COMPASS_SESSION_ID", sessionID},
+	} {
+		if got := env[want.key]; got != want.value {
+			t.Fatalf("exec env %s = %q, want %q", want.key, got, want.value)
+		}
+	}
+	for _, absent := range []string{"COMPASS_SESSION_EPOCH", "COMPASS_SESSION_RESUME"} {
+		if got, ok := env[absent]; ok {
+			t.Fatalf("%s exported as %q on the fresh path; want it absent (T8 sets it)", absent, got)
+		}
 	}
 }
 

@@ -111,3 +111,73 @@ func TestExecSpecRunsAsWorkspaceUIDNotContainerRoot(t *testing.T) {
 		})
 	}
 }
+
+// The S3 + session-identity vars are the session-log-persistence carriage: each
+// COMPASS_S3_* / COMPASS_SESSION_ID key is exported exactly when its AgentEnv
+// field is set, and an AgentEnv with none of them set exports none of the keys —
+// so the dev path (empty S3Endpoint) leaves the agent's persistence off rather
+// than handing it blank credentials it would have to special-case. A bug that
+// always exported a field, or misspelled a key, is a silently mis-persisted (or
+// unreachable) session log rather than a build error.
+func TestExecSpecExportsS3AndSessionVarsOnlyWhenSet(t *testing.T) {
+	// Every S3/session field populated: each maps to its contracted key verbatim.
+	full := AgentEnv{
+		UID: 1000, HomeDir: "/home/coder", Workdir: "/srv/checkout",
+		S3Endpoint:        "https://s3.example:9000",
+		S3Bucket:          "compass-sessions",
+		S3AccessKeyID:     "AKIA",
+		S3SecretAccessKey: "secret",
+		SessionID:         "sess-7",
+		SessionEpoch:      "3",
+	}.execSpec()
+	for _, want := range []struct{ key, value string }{
+		{"COMPASS_S3_ENDPOINT", "https://s3.example:9000"},
+		{"COMPASS_S3_BUCKET", "compass-sessions"},
+		{"COMPASS_S3_ACCESS_KEY_ID", "AKIA"},
+		{"COMPASS_S3_SECRET_ACCESS_KEY", "secret"},
+		{"COMPASS_SESSION_ID", "sess-7"},
+		{"COMPASS_SESSION_EPOCH", "3"},
+	} {
+		if got, ok := full.Env[want.key]; !ok || got != want.value {
+			t.Fatalf("%s = %q (present %v), want %q", want.key, got, ok, want.value)
+		}
+	}
+
+	// No S3/session fields set: none of the keys appear. Model still absent too,
+	// but these are the keys under test.
+	bare := AgentEnv{UID: 1000, HomeDir: "/home/coder", Workdir: "/srv/checkout"}.execSpec()
+	for _, key := range []string{
+		"COMPASS_S3_ENDPOINT", "COMPASS_S3_BUCKET", "COMPASS_S3_ACCESS_KEY_ID",
+		"COMPASS_S3_SECRET_ACCESS_KEY", "COMPASS_SESSION_ID", "COMPASS_SESSION_EPOCH",
+		"COMPASS_SESSION_RESUME",
+	} {
+		if got, ok := bare.Env[key]; ok {
+			t.Fatalf("%s exported as %q with no field set; want the key absent", key, got)
+		}
+	}
+}
+
+// COMPASS_SESSION_RESUME is present exactly when Resume is true, carrying "1";
+// false must leave the key absent so the agent takes its fresh-start path rather
+// than special-casing a blank value. (Var name is a T7 stated assumption — the
+// design record leaves it unspecified; T8 is its only setter.)
+func TestExecSpecExportsResumeOnlyWhenTrue(t *testing.T) {
+	if got, ok := (AgentEnv{Resume: true}).execSpec().Env["COMPASS_SESSION_RESUME"]; !ok || got != "1" {
+		t.Fatalf("COMPASS_SESSION_RESUME = %q (present %v), want \"1\" when Resume is true", got, ok)
+	}
+	if got, ok := (AgentEnv{Resume: false}).execSpec().Env["COMPASS_SESSION_RESUME"]; ok {
+		t.Fatalf("COMPASS_SESSION_RESUME exported as %q with Resume false; want the key absent", got)
+	}
+}
+
+// COMPASS_SESSION_EPOCH is present exactly when SessionEpoch is set. The fresh
+// path (T7) leaves it empty for the agent to derive; only a resume sets it, so
+// an empty epoch must not export a blank key.
+func TestExecSpecExportsEpochOnlyWhenSet(t *testing.T) {
+	if got, ok := (AgentEnv{SessionEpoch: "5"}).execSpec().Env["COMPASS_SESSION_EPOCH"]; !ok || got != "5" {
+		t.Fatalf("COMPASS_SESSION_EPOCH = %q (present %v), want \"5\"", got, ok)
+	}
+	if got, ok := (AgentEnv{SessionEpoch: ""}).execSpec().Env["COMPASS_SESSION_EPOCH"]; ok {
+		t.Fatalf("COMPASS_SESSION_EPOCH exported as %q with empty SessionEpoch; want the key absent", got)
+	}
+}

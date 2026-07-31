@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -55,6 +56,16 @@ func run() error {
 		"Comma-separated default-deny egress allowlist (DNS names or IP literals).")
 	runtimeDir := flag.String("runtime-dir", "/run/compass",
 		"Runner-owned base dir for per-container agent sockets (RuntimeDir/containers/<container>/agent.sock).")
+	s3Endpoint := flag.String("s3-endpoint", "",
+		"S3-compatible object store endpoint URL agents persist their session "+
+			"log to. Empty disables persistence (the dev path). Defaults to "+
+			"$COMPASS_S3_ENDPOINT. Its host is merged into the egress allowlist.")
+	s3Bucket := flag.String("s3-bucket", "",
+		"S3 bucket session logs are written under. Defaults to $COMPASS_S3_BUCKET.")
+	s3AccessKeyID := flag.String("s3-access-key-id", "",
+		"S3 access key id. Defaults to $COMPASS_S3_ACCESS_KEY_ID.")
+	s3SecretAccessKey := flag.String("s3-secret-access-key", "",
+		"S3 secret access key. Defaults to $COMPASS_S3_SECRET_ACCESS_KEY.")
 	caPath := flag.String("ca", "",
 		"PEM CA/certificate to trust for the Server's TLS network door, instead "+
 			"of the system roots. Set this to the locally-generated self-signed "+
@@ -98,7 +109,8 @@ func run() error {
 	if img == "" {
 		return errors.New("an agent image is required: pass --image or set $COMPASS_AGENT_IMAGE")
 	}
-	egress, err := parseEgress(*egressHosts)
+	s3EndpointURL := orEnv(*s3Endpoint, "COMPASS_S3_ENDPOINT")
+	egress, err := egressWithS3(*egressHosts, s3EndpointURL)
 	if err != nil {
 		return err
 	}
@@ -133,13 +145,17 @@ func run() error {
 	defer stop()
 
 	return runner.Run(ctx, runner.RunnerConfig{
-		RunnerID:   id,
-		ServerAddr: addr,
-		Token:      token,
-		Engine:     runtime.NewPodmanCLI(),
-		RuntimeDir: *runtimeDir,
-		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
-		HTTPClient: httpClient,
+		RunnerID:          id,
+		ServerAddr:        addr,
+		Token:             token,
+		Engine:            runtime.NewPodmanCLI(),
+		RuntimeDir:        *runtimeDir,
+		AgentModel:        orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
+		S3Endpoint:        s3EndpointURL,
+		S3Bucket:          orEnv(*s3Bucket, "COMPASS_S3_BUCKET"),
+		S3AccessKeyID:     orEnv(*s3AccessKeyID, "COMPASS_S3_ACCESS_KEY_ID"),
+		S3SecretAccessKey: orEnv(*s3SecretAccessKey, "COMPASS_S3_SECRET_ACCESS_KEY"),
+		HTTPClient:        httpClient,
 	}, specs, log)
 }
 
@@ -180,11 +196,11 @@ func orEnv(flagVal, envKey string) string {
 	return os.Getenv(envKey)
 }
 
-// parseEgress parses the comma-separated allowlist into a validated EgressPolicy.
-// An empty list is a valid default-deny policy (no host reachable).
-func parseEgress(csv string) (runtime.EgressPolicy, error) {
+// splitCSVHosts collects the non-empty, trimmed hosts from a comma-separated
+// allowlist. An empty or whitespace-only csv yields no hosts.
+func splitCSVHosts(csv string) []string {
 	if strings.TrimSpace(csv) == "" {
-		return runtime.AllowEgress()
+		return nil
 	}
 	parts := strings.Split(csv, ",")
 	hosts := make([]string, 0, len(parts))
@@ -192,6 +208,31 @@ func parseEgress(csv string) (runtime.EgressPolicy, error) {
 		if h := strings.TrimSpace(p); h != "" {
 			hosts = append(hosts, h)
 		}
+	}
+	return hosts
+}
+
+// egressWithS3 builds the validated default-deny EgressPolicy from the
+// comma-separated allowlist, additionally admitting the S3 endpoint's host when
+// s3Endpoint is set — so the agent can reach the object store it persists its
+// session log to through the otherwise-default-deny firewall. An empty
+// s3Endpoint adds nothing (persistence off, the dev path); a set endpoint that
+// parses to no host is a misconfiguration and errors here rather than leaving a
+// firewall that silently blocks every persistence write. The policy is built
+// once and immutable — the S3 host is merged into the host set, never patched
+// in per-spec.
+func egressWithS3(csv, s3Endpoint string) (runtime.EgressPolicy, error) {
+	hosts := splitCSVHosts(csv)
+	if s3Endpoint != "" {
+		u, err := url.Parse(s3Endpoint)
+		if err != nil {
+			return runtime.EgressPolicy{}, fmt.Errorf("invalid S3 endpoint %q: %w", s3Endpoint, err)
+		}
+		host := u.Hostname()
+		if host == "" {
+			return runtime.EgressPolicy{}, fmt.Errorf("S3 endpoint %q has no host to allowlist", s3Endpoint)
+		}
+		hosts = append(hosts, host)
 	}
 	return runtime.AllowEgress(hosts...)
 }

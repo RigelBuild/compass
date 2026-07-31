@@ -102,8 +102,12 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	registry := runtime.NewAgentRegistry()
 	rt := runtime.NewAgentRuntimeWithRegistry(cfg.Engine, registry)
 	host := NewSessionHost(link, rt, registry, cfg.Engine, specs, AgentHostConfig{
-		RuntimeDir: cfg.RuntimeDir,
-		AgentModel: cfg.AgentModel,
+		RuntimeDir:        cfg.RuntimeDir,
+		AgentModel:        cfg.AgentModel,
+		S3Endpoint:        cfg.S3Endpoint,
+		S3Bucket:          cfg.S3Bucket,
+		S3AccessKeyID:     cfg.S3AccessKeyID,
+		S3SecretAccessKey: cfg.S3SecretAccessKey,
 	}, log, nil)
 	// The per-container agent sockets the host serves live until the Runner
 	// process ends (no per-container Deprovision RPC in the single-Runner MVP);

@@ -49,6 +49,13 @@ type RunnerConfig struct {
 	// starts (the agent's COMPASS_MODEL). Empty leaves each agent on its own
 	// default rather than exporting a blank value it would have to ignore.
 	AgentModel string
+	// S3Endpoint/S3Bucket/S3AccessKeyID/S3SecretAccessKey are the object-store
+	// config every agent this Runner starts persists its session log to; empty
+	// S3Endpoint leaves persistence off (the dev path).
+	S3Endpoint        string
+	S3Bucket          string
+	S3AccessKeyID     string
+	S3SecretAccessKey string
 	// HTTPClient dials the Server. Nil uses a default HTTP/2 client; tests inject
 	// one wired to an httptest server.
 	HTTPClient connect.HTTPClient

@@ -56,6 +56,13 @@ type agentHost struct {
 	// model is the model selector handed to every agent this Runner starts;
 	// empty leaves the agent on its own default.
 	model string
+	// s3Endpoint/s3Bucket/s3AccessKeyID/s3SecretAccessKey are the standing
+	// object-store config carried into every agent this Runner starts, so its
+	// session log persists; empty s3Endpoint leaves persistence off (dev).
+	s3Endpoint        string
+	s3Bucket          string
+	s3AccessKeyID     string
+	s3SecretAccessKey string
 
 	mu       sync.Mutex
 	sessions map[string]*liveSession
@@ -83,6 +90,13 @@ type AgentHostConfig struct {
 	// AgentModel is the model selector every agent this host starts receives;
 	// empty leaves the agent on its default.
 	AgentModel string
+	// S3Endpoint/S3Bucket/S3AccessKeyID/S3SecretAccessKey are the object-store
+	// config every agent this host starts persists its session log to; empty
+	// S3Endpoint leaves persistence off (the dev path).
+	S3Endpoint        string
+	S3Bucket          string
+	S3AccessKeyID     string
+	S3SecretAccessKey string
 }
 
 // NewSessionHost builds the production SessionHost over the link, the agent
@@ -97,17 +111,21 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		newID = monotonicIDs()
 	}
 	return &agentHost{
-		link:       link,
-		runtime:    rt,
-		registry:   registry,
-		engine:     engine,
-		specs:      specs,
-		log:        log,
-		runtimeDir: cfg.RuntimeDir,
-		model:      cfg.AgentModel,
-		sessions:   map[string]*liveSession{},
-		sockets:    map[string]*gateway.SocketListener{},
-		nextID:     newID,
+		link:              link,
+		runtime:           rt,
+		registry:          registry,
+		engine:            engine,
+		specs:             specs,
+		log:               log,
+		runtimeDir:        cfg.RuntimeDir,
+		model:             cfg.AgentModel,
+		s3Endpoint:        cfg.S3Endpoint,
+		s3Bucket:          cfg.S3Bucket,
+		s3AccessKeyID:     cfg.S3AccessKeyID,
+		s3SecretAccessKey: cfg.S3SecretAccessKey,
+		sessions:          map[string]*liveSession{},
+		sockets:           map[string]*gateway.SocketListener{},
+		nextID:            newID,
 	}
 }
 
@@ -210,7 +228,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	// transition lock is deferred to T9, where in-process reattach against a
 	// persistent host first makes concurrent callers reachable (go-toolchain-default.md:979).
 
-	stream, err := h.link.StartAgent(ctx, sessionID, handle.ID(), h.engine, h.agentEnv(handle), h.log)
+	stream, err := h.link.StartAgent(ctx, sessionID, handle.ID(), h.engine, h.agentEnv(handle, sessionID), h.log)
 	if err != nil {
 		return "", err
 	}
@@ -286,7 +304,7 @@ func (h *agentHost) Reload(ctx context.Context, sessionID string) error {
 	if err := s.stream.Stop(); err != nil {
 		return err
 	}
-	stream, err := h.link.StartAgent(ctx, sessionID, s.containerID, h.engine, h.agentEnv(handle), h.log)
+	stream, err := h.link.StartAgent(ctx, sessionID, s.containerID, h.engine, h.agentEnv(handle, sessionID), h.log)
 	if err != nil {
 		return err
 	}
@@ -319,12 +337,17 @@ func (h *agentHost) Status(_ context.Context, sessionID string) ([]*compassv1.Ag
 // agentEnv derives the agent exec's identity and configuration from the
 // launched container's handle, so Start and Reload cannot drift apart. The
 // model is Runner-wide config; everything else is per-container.
-func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
+func (h *agentHost) agentEnv(handle *runtime.AgentHandle, sessionID string) AgentEnv {
 	return AgentEnv{
-		UID:     handle.WorkspaceUID(),
-		HomeDir: handle.HomeDir(),
-		Workdir: handle.CheckoutDir(),
-		Model:   h.model,
+		UID:               handle.WorkspaceUID(),
+		HomeDir:           handle.HomeDir(),
+		Workdir:           handle.CheckoutDir(),
+		Model:             h.model,
+		S3Endpoint:        h.s3Endpoint,
+		S3Bucket:          h.s3Bucket,
+		S3AccessKeyID:     h.s3AccessKeyID,
+		S3SecretAccessKey: h.s3SecretAccessKey,
+		SessionID:         sessionID,
 	}
 }
 

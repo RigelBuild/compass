@@ -52,6 +52,25 @@ type AgentEnv struct {
 	Workdir string
 	// Model is the model selector, or empty for the agent's default.
 	Model string
+	// S3Endpoint is the URL of the S3-compatible object store the agent
+	// persists its session log to. Empty disables persistence entirely (the
+	// dev path): the agent keeps its log local and no S3 vars are exported.
+	S3Endpoint string
+	// S3Bucket is the bucket session logs are written under.
+	S3Bucket string
+	// S3AccessKeyID is the access key id for the S3 endpoint.
+	S3AccessKeyID string
+	// S3SecretAccessKey is the secret access key for the S3 endpoint.
+	S3SecretAccessKey string
+	// SessionID is the stable logical session id, minted Runner-side and
+	// carried so the agent keys its persisted log under it.
+	SessionID string
+	// SessionEpoch is the resume generation of the session. Empty on the fresh
+	// path (the agent derives it); only a resume orchestration sets it.
+	SessionEpoch string
+	// Resume requests the agent rehydrate its persisted session log rather than
+	// start clean. False on the fresh path; exported only when true.
+	Resume bool
 }
 
 // execSpec builds the streaming exec that starts the agent: unprivileged, in
@@ -64,6 +83,27 @@ func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 	spec.Env["COMPASS_WORKDIR"] = e.Workdir
 	if e.Model != "" {
 		spec.Env["COMPASS_MODEL"] = e.Model
+	}
+	if e.S3Endpoint != "" {
+		spec.Env["COMPASS_S3_ENDPOINT"] = e.S3Endpoint
+	}
+	if e.S3Bucket != "" {
+		spec.Env["COMPASS_S3_BUCKET"] = e.S3Bucket
+	}
+	if e.S3AccessKeyID != "" {
+		spec.Env["COMPASS_S3_ACCESS_KEY_ID"] = e.S3AccessKeyID
+	}
+	if e.S3SecretAccessKey != "" {
+		spec.Env["COMPASS_S3_SECRET_ACCESS_KEY"] = e.S3SecretAccessKey
+	}
+	if e.SessionID != "" {
+		spec.Env["COMPASS_SESSION_ID"] = e.SessionID
+	}
+	if e.SessionEpoch != "" {
+		spec.Env["COMPASS_SESSION_EPOCH"] = e.SessionEpoch
+	}
+	if e.Resume {
+		spec.Env["COMPASS_SESSION_RESUME"] = "1"
 	}
 	return spec
 }
