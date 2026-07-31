@@ -178,3 +178,133 @@ func TestRequireAgentSessionSubscriberCollapseIsUniformAcrossRefusalCauses(t *te
 		t.Fatalf("owner on its own agent's session = %v, want nil (uniform refusal must not mean universal refusal)", err)
 	}
 }
+
+// ptr is a small helper: a *string for the nullable transcript endpoint.
+func ptr(s string) *string { return &s }
+
+// TestRecordSessionTranscriptUnknownSessionIsInvalidArgument pins the FK: a
+// pointer for a session_id that was never recorded in agent_sessions is a
+// caller error (ErrInvalidArgument), not a store fault — it references a row
+// that does not exist.
+func TestRecordSessionTranscriptUnknownSessionIsInvalidArgument(t *testing.T) {
+	s := newTestStore(t)
+
+	err := s.RecordSessionTranscript(t.Context(), "no-such-session", "bucket", "prefix/", nil)
+	sentinelIs(t, err, ErrInvalidArgument, "unknown session transcript")
+}
+
+// TestSessionTranscriptRoundTrips records a pointer with a non-nil endpoint and
+// resolves the same bucket/prefix/endpoint back, then a second session with a
+// nil endpoint and confirms the NULL column resolves back to nil — the nullable
+// endpoint provenance surviving the round trip in both directions.
+func TestSessionTranscriptRoundTrips(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	recordSession(t, s, agent, "sess-1")
+	recordSession(t, s, agent, "sess-2")
+
+	if err := s.RecordSessionTranscript(ctx, "sess-1", "bkt", "logs/sess-1/", ptr("https://r2.example")); err != nil {
+		t.Fatalf("RecordSessionTranscript(sess-1): %v", err)
+	}
+	bucket, prefix, endpoint, err := s.SessionTranscript(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("SessionTranscript(sess-1): %v", err)
+	}
+	if bucket != "bkt" || prefix != "logs/sess-1/" {
+		t.Fatalf("SessionTranscript(sess-1) = (%q, %q), want (%q, %q)", bucket, prefix, "bkt", "logs/sess-1/")
+	}
+	if endpoint == nil || *endpoint != "https://r2.example" {
+		t.Fatalf("SessionTranscript(sess-1) endpoint = %v, want %q", endpoint, "https://r2.example")
+	}
+
+	// A nil endpoint writes SQL NULL and resolves back to nil.
+	if err := s.RecordSessionTranscript(ctx, "sess-2", "bkt", "logs/sess-2/", nil); err != nil {
+		t.Fatalf("RecordSessionTranscript(sess-2, nil endpoint): %v", err)
+	}
+	_, _, endpoint2, err := s.SessionTranscript(ctx, "sess-2")
+	if err != nil {
+		t.Fatalf("SessionTranscript(sess-2): %v", err)
+	}
+	if endpoint2 != nil {
+		t.Fatalf("SessionTranscript(sess-2) endpoint = %v, want nil (NULL round-trips to nil)", *endpoint2)
+	}
+}
+
+// TestRecordSessionTranscriptIdempotent pins the load-bearing idempotency: a
+// re-record of the IDENTICAL tuple (including a NULL endpoint) is a nil success,
+// so a retried StartAgentSession does not fail on its own prior write.
+func TestRecordSessionTranscriptIdempotent(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	recordSession(t, s, agent, "sess-1")
+	recordSession(t, s, agent, "sess-2")
+
+	// Identical re-record with a non-nil endpoint.
+	if err := s.RecordSessionTranscript(ctx, "sess-1", "bkt", "p/", ptr("e")); err != nil {
+		t.Fatalf("first RecordSessionTranscript(sess-1): %v", err)
+	}
+	if err := s.RecordSessionTranscript(ctx, "sess-1", "bkt", "p/", ptr("e")); err != nil {
+		t.Fatalf("idempotent re-record(sess-1) = %v, want nil", err)
+	}
+
+	// Identical re-record with a nil endpoint — the NULL-aware comparison must
+	// treat NULL == NULL as equal, not as a conflict.
+	if err := s.RecordSessionTranscript(ctx, "sess-2", "bkt", "p/", nil); err != nil {
+		t.Fatalf("first RecordSessionTranscript(sess-2): %v", err)
+	}
+	if err := s.RecordSessionTranscript(ctx, "sess-2", "bkt", "p/", nil); err != nil {
+		t.Fatalf("idempotent re-record(sess-2, nil endpoint) = %v, want nil", err)
+	}
+}
+
+// TestRecordSessionTranscriptConflictingRePointConflicts pins the other arm: a
+// re-record for an already-pointed session with a DIFFERENT bucket, prefix, or
+// endpoint is ErrConflict — never a silent overwrite. Each differing field is
+// checked independently, including the NULL-vs-non-NULL endpoint transition
+// (one NULL, one set = differ), the case a naive equality would miss.
+func TestRecordSessionTranscriptConflictingRePointConflicts(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	recordSession(t, s, agent, "sess-1")
+
+	if err := s.RecordSessionTranscript(ctx, "sess-1", "bkt", "p/", ptr("e")); err != nil {
+		t.Fatalf("first RecordSessionTranscript(sess-1): %v", err)
+	}
+
+	// Different bucket.
+	sentinelIs(t, s.RecordSessionTranscript(ctx, "sess-1", "other", "p/", ptr("e")),
+		ErrConflict, "re-point differing bucket")
+	// Different prefix.
+	sentinelIs(t, s.RecordSessionTranscript(ctx, "sess-1", "bkt", "other/", ptr("e")),
+		ErrConflict, "re-point differing prefix")
+	// Different endpoint value.
+	sentinelIs(t, s.RecordSessionTranscript(ctx, "sess-1", "bkt", "p/", ptr("other")),
+		ErrConflict, "re-point differing endpoint")
+	// Endpoint dropped to NULL where it was set — one NULL, one set = differ.
+	sentinelIs(t, s.RecordSessionTranscript(ctx, "sess-1", "bkt", "p/", nil),
+		ErrConflict, "re-point endpoint set -> NULL")
+
+	// The refused re-points left the original pointer intact.
+	bucket, prefix, endpoint, err := s.SessionTranscript(ctx, "sess-1")
+	if err != nil {
+		t.Fatalf("SessionTranscript(sess-1) after refused re-points: %v", err)
+	}
+	if bucket != "bkt" || prefix != "p/" || endpoint == nil || *endpoint != "e" {
+		t.Fatalf("pointer mutated by a refused re-point: (%q, %q, %v)", bucket, prefix, endpoint)
+	}
+}
+
+// TestSessionTranscriptUnknownIsNotFound pins the resolve miss: a session_id
+// with no recorded pointer is ErrNotFound (resume finds nothing to resolve).
+func TestSessionTranscriptUnknownIsNotFound(t *testing.T) {
+	s := newTestStore(t)
+
+	_, _, _, err := s.SessionTranscript(t.Context(), "never-recorded")
+	sentinelIs(t, err, ErrNotFound, "unknown session transcript resolve")
+}

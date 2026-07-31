@@ -55,6 +55,72 @@ func (s *Store) RecordAgentSession(ctx context.Context, sessionID string, agentA
 	return nil
 }
 
+// RecordSessionTranscript persists the session_id -> (bucket, prefix, endpoint)
+// pointer at StartAgentSession success. Idempotent for identical values (a
+// re-record of the same tuple returns nil); a conflicting re-point — a different
+// bucket, prefix, or endpoint for an already-recorded session — is ErrConflict.
+// An unknown session_id is ErrInvalidArgument (the FK to agent_sessions).
+//
+// The idempotency-vs-conflict distinction is made in ONE race-free statement:
+// ON CONFLICT DO UPDATE fires a no-op SET only when the stored tuple already
+// matches (the WHERE, with IS NOT DISTINCT FROM so NULL endpoints compare
+// equal), so a matching re-record affects one row like a fresh insert (-> nil),
+// while a conflicting re-point matches neither the insert nor the guarded
+// update and affects zero rows (-> ErrConflict). Doing it in the single upsert
+// avoids the TOCTOU a check-then-select pair would open.
+func (s *Store) RecordSessionTranscript(ctx context.Context, sessionID, bucket, prefix string, endpoint *string) error {
+	if sessionID == "" {
+		return fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	if bucket == "" {
+		return fmt.Errorf("%w: bucket is required", ErrInvalidArgument)
+	}
+	if prefix == "" {
+		return fmt.Errorf("%w: prefix is required", ErrInvalidArgument)
+	}
+	tag, err := s.pool.Exec(ctx,
+		`INSERT INTO agent_session_transcripts (session_id, bucket, prefix, endpoint)
+		      VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (session_id) DO UPDATE
+		        SET session_id = agent_session_transcripts.session_id
+		      WHERE agent_session_transcripts.bucket = EXCLUDED.bucket
+		        AND agent_session_transcripts.prefix = EXCLUDED.prefix
+		        AND agent_session_transcripts.endpoint IS NOT DISTINCT FROM EXCLUDED.endpoint`,
+		sessionID, bucket, prefix, endpoint,
+	)
+	if err != nil {
+		if pgErrIs(err, pgForeignKeyViolation) {
+			return fmt.Errorf("%w: session %q does not exist", ErrInvalidArgument, sessionID)
+		}
+		return fmt.Errorf("store: record session transcript: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		// A row exists for this session but its tuple differs: a conflicting
+		// re-point, not the idempotent re-record the guarded update allows.
+		return fmt.Errorf("%w: session %q already has a differing transcript pointer", ErrConflict, sessionID)
+	}
+	return nil
+}
+
+// SessionTranscript resolves the transcript pointer for resume. Unknown
+// session_id is ErrNotFound; a NULL endpoint column scans back to a nil
+// *string (the deployment's default endpoint).
+func (s *Store) SessionTranscript(ctx context.Context, sessionID string) (bucket, prefix string, endpoint *string, err error) {
+	if sessionID == "" {
+		return "", "", nil, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT bucket, prefix, endpoint FROM agent_session_transcripts WHERE session_id = $1`,
+		sessionID,
+	).Scan(&bucket, &prefix, &endpoint); err != nil {
+		if noRows(err) {
+			return "", "", nil, fmt.Errorf("%w: session %q", ErrNotFound, sessionID)
+		}
+		return "", "", nil, fmt.Errorf("store: resolve session transcript: %w", err)
+	}
+	return bucket, prefix, endpoint, nil
+}
+
 // RequireAgentSessionSubscriber is the read-path authorization primitive for
 // SubscribeAgentSession — the streaming sibling of requireChannelMember. In ONE
 // query it resolves the ownership chain (session_id -> agent_account_id ->
