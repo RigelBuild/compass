@@ -264,8 +264,10 @@ func TestRecordSessionTranscriptIdempotent(t *testing.T) {
 // TestRecordSessionTranscriptConflictingRePointConflicts pins the other arm: a
 // re-record for an already-pointed session with a DIFFERENT bucket, prefix, or
 // endpoint is ErrConflict — never a silent overwrite. Each differing field is
-// checked independently, including the NULL-vs-non-NULL endpoint transition
-// (one NULL, one set = differ), the case a naive equality would miss.
+// checked independently, including both endpoint NULL-transition directions
+// (set -> NULL and NULL -> set), which IS NOT DISTINCT FROM treats as differing
+// (the symmetric counterpart to the nil==nil idempotent match a naive equality
+// would wrongly reject in TestRecordSessionTranscriptIdempotent).
 func TestRecordSessionTranscriptConflictingRePointConflicts(t *testing.T) {
 	ctx := t.Context()
 	s := newTestStore(t)
@@ -289,6 +291,15 @@ func TestRecordSessionTranscriptConflictingRePointConflicts(t *testing.T) {
 	// Endpoint dropped to NULL where it was set — one NULL, one set = differ.
 	sentinelIs(t, s.RecordSessionTranscript(ctx, "sess-1", "bkt", "p/", nil),
 		ErrConflict, "re-point endpoint set -> NULL")
+	// And the symmetric direction on a separately-seeded nil-endpoint pointer:
+	// NULL -> set also differs (pairs with the nil-endpoint round-trip/idempotent
+	// paths, so both transition directions are asserted, not just logically implied).
+	recordSession(t, s, agent, "sess-nil")
+	if err := s.RecordSessionTranscript(ctx, "sess-nil", "bkt", "p/", nil); err != nil {
+		t.Fatalf("seed RecordSessionTranscript(sess-nil, nil endpoint): %v", err)
+	}
+	sentinelIs(t, s.RecordSessionTranscript(ctx, "sess-nil", "bkt", "p/", ptr("e")),
+		ErrConflict, "re-point endpoint NULL -> set")
 
 	// The refused re-points left the original pointer intact.
 	bucket, prefix, endpoint, err := s.SessionTranscript(ctx, "sess-1")
@@ -307,4 +318,34 @@ func TestSessionTranscriptUnknownIsNotFound(t *testing.T) {
 
 	_, _, _, err := s.SessionTranscript(t.Context(), "never-recorded")
 	sentinelIs(t, err, ErrNotFound, "unknown session transcript resolve")
+}
+
+// TestSessionTranscriptInputGuards pins the empty-argument guards on both
+// funcs: RecordSessionTranscript rejects an empty sessionID, bucket, or prefix
+// with ErrInvalidArgument BEFORE the INSERT (so an empty-string bucket/prefix
+// can never persist — the columns are NOT NULL but not non-empty-checked at the
+// DB), and SessionTranscript rejects an empty sessionID. Mirrors the package's
+// convention of pinning these guards explicitly (e.g. the empty-id guards on
+// RequireAgentSessionSubscriber). A dropped guard would redden here rather than
+// silently write or query a malformed pointer.
+func TestSessionTranscriptInputGuards(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	for _, tc := range []struct {
+		name                      string
+		sessionID, bucket, prefix string
+	}{
+		{"empty session id", "", "bkt", "p/"},
+		{"empty bucket", "sess-1", "", "p/"},
+		{"empty prefix", "sess-1", "bkt", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := s.RecordSessionTranscript(ctx, tc.sessionID, tc.bucket, tc.prefix, nil)
+			sentinelIs(t, err, ErrInvalidArgument, "RecordSessionTranscript "+tc.name)
+		})
+	}
+
+	_, _, _, err := s.SessionTranscript(ctx, "")
+	sentinelIs(t, err, ErrInvalidArgument, "SessionTranscript empty session id")
 }
