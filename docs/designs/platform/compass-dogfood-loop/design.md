@@ -336,9 +336,10 @@ external CA, no relaxed loopback)" (`go/cmd/compass-gen-cert/main.go:6-9`).
 ## Plan
 
 Tasks are lane-tagged: `[repo]` = compass-repo lane (devenv.nix wiring,
-independently shippable), `[server/runner]` = the compass-server/compass-runner
-lane (net-new driver, owned by compass-server; the mount-surface flag is T5a).
-cycle plus a smoke assertion (rule://red-green-testing).
+independently shippable); `[compass-server]` = the net-new admin session
+driver (T5); `[compass-runner]` = the runner mount-surface flag (T5a). Each
+task carries a real red-green cycle plus a smoke assertion
+(rule://red-green-testing).
 
 ### T1 [repo] — gen-cert task + TLS door on compass-server
 
@@ -483,6 +484,28 @@ Interfaces:
 Test cycle: red — driver absent/failing against a stood-up loop. Green —
 driver exits 0; `podman ps` shows the agent container;
 `GetAgentStatus` (adminOnly, `admin_gate.go:50-56`) lists the session.
+
+### T5a [compass-runner] — the runner mount-surface flag
+
+Add a repeatable `--mount host:container[:ro]` flag on `compass-runner` that
+populates `SpecDefaults.Mounts` (`go/internal/runner/spec.go:26-35`, the field
+is designed and wired through to podman at `spec.go:100-107` but no operator
+surface reaches it today, `cmd/compass-runner/main.go:40-64,117-124`). This
+unblocks the `local_path` bare mirror (D3): the devenv wiring passes the host
+mirror path so it becomes container-visible for Provision's file:// clone.
+
+Interfaces:
+
+- Consumes: `compass-runner --mount <host>:<container>[:ro]` (repeatable),
+  wiring into `SpecDefaults.Mounts` (`spec.go:26-35`).
+- Produces: a runner that mounts the host bare mirror read-only into the agent
+  container at the path `ProvisionAgentWorkspace{local_path}` names.
+
+Test cycle: red — a runner built without the flag leaves `SpecDefaults.Mounts`
+nil, so Provision's file:// clone targets a path absent from the container and
+fails. Green — `--mount <host-mirror>:<container-path>:ro` populates
+`SpecDefaults.Mounts` and the mirror is readable inside the container, so the
+clone succeeds.
 
 ### T6 [repo] — teardown: `dogfood:clean` task
 
