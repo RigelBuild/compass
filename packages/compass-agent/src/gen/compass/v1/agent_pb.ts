@@ -183,14 +183,15 @@ export const SessionFrameSchema: GenMessage<SessionFrame> = /*@__PURE__*/
  * its first WIRE definition, replacing the never-built stdin decoder.
  *
  * Payload FIELDS: only the variants representable with existing compass.v1
- * scalars carry fields here (PromptControl.input, AskAnswerControl). The
- * SteerControl / DeliverControl / TranscriptReplay / ConfigControl payloads
- * stay empty shells — their fields carry an inbound SDK `AgentMessage` (a
- * four-way union with an opaque provider payload) and a tool set (whose SDK
+ * scalars carry fields here (PromptControl.input, AskAnswerControl,
+ * DeliverControl.message). The SteerControl / TranscriptReplay / ConfigControl
+ * payloads stay empty shells — their fields carry an inbound SDK `AgentMessage`
+ * (a four-way union with an opaque provider payload) and a tool set (whose SDK
  * representation includes a non-serializable `execute` handle), neither of
  * which any existing compass.v1 message represents. That payload-shape decision
  * is parked (SEA-1310); the shells keep the oneof complete on the wire and are
- * populated by a stacked PR once the shapes settle. Defining the empty shells
+ * populated by a stacked PR once the shapes settle (DeliverControl was so
+ * populated by SEA-1569, carrying a comms Message). Defining the empty shells
  * now is additive and buf-breaking-safe (field additions to a proto3 message).
  *
  * @generated from message compass.v1.AgentControl
