@@ -1,18 +1,21 @@
 // The tracker seam (design D2/T11/T12) — Compass state is canonical; a tracker's
 // native status is a projection over it, through a user-editable mapping.
 //
-// This is a UI-side client seam, NOT a compass.v1 change (design D11): board /
-// workstream state is UI-app-state for this record, so the seam lives here and
-// the fixture implements it in-memory. When a later daemon board-state milestone
-// moves it onto the wire, that PR carries the additive compass.v1 delta under
-// the agent-state owner's review — not this module.
+// Compass state is server-authoritative (DL-070): the canonical `Issue.state`
+// is computed and streamed by the server projection, and the tracker is a
+// projection OF it (DL-032), mirrored server-side on real working-state
+// transitions. This module is the UI-side client seam over that model; the
+// fixture implements it in-memory until the daemon's board projection and
+// write-path RPC land, when `listAssignedIssues`/`updateIssueStatus` become
+// `@compass/client` calls — a one-module swap. The projection domain is the
+// seven WORKING states; `archived` carries no tracker status (DL-071).
 
 import type {
+	Issue,
 	TrackerConfig,
 	TrackerKind,
 	TrackerStatusMapping,
-	Workstream,
-	WorkstreamState,
+	WorkingIssueState,
 } from "./stub-data";
 import { STUB_ASSIGNED_ISSUES } from "./stub-data";
 
@@ -23,10 +26,10 @@ import { STUB_ASSIGNED_ISSUES } from "./stub-data";
  */
 export interface TrackerSeam {
 	/** The user's tracker-assigned issues, for the Backlog view (D3). */
-	listAssignedIssues(handle: string): Promise<Workstream[]>;
+	listAssignedIssues(handle: string): Promise<Issue[]>;
 	/** Mirror a Compass state change onto the tracker (D2), mapping through
 	 *  `TrackerStatusMapping.toTracker` before the write. */
-	updateIssueStatus(id: string, compassState: WorkstreamState): Promise<void>;
+	updateIssueStatus(id: string, compassState: WorkingIssueState): Promise<void>;
 }
 
 /**
@@ -64,10 +67,10 @@ export const DEFAULT_TRACKER_CONFIG: TrackerConfig = {
 	mapping: LINEAR_STATUS_MAPPING,
 };
 
-/** Project a Compass state onto the tracker's native status name (D2). Total
- *  over the union, so every state has a target. */
+/** Project a Compass working state onto the tracker's native status name (D2).
+ *  Total over the seven working states, so every state has a target. */
 export function toTrackerStatus(
-	state: WorkstreamState,
+	state: WorkingIssueState,
 	mapping: TrackerStatusMapping,
 ): string {
 	return mapping.toTracker[state];
@@ -79,7 +82,7 @@ export function toTrackerStatus(
 export function fromTrackerStatus(
 	status: string,
 	mapping: TrackerStatusMapping,
-): WorkstreamState {
+): WorkingIssueState {
 	return mapping.fromTracker[status] ?? "backlog";
 }
 
@@ -93,7 +96,7 @@ export function createFixtureTrackerSeam(
 	config: TrackerConfig = DEFAULT_TRACKER_CONFIG,
 ): TrackerSeam {
 	return {
-		listAssignedIssues(handle: string): Promise<Workstream[]> {
+		listAssignedIssues(handle: string): Promise<Issue[]> {
 			// The fixture ignores the handle beyond the contract; the real seam
 			// queries the tracker for `handle`'s assigned issues. An empty handle
 			// (tracker not configured) yields nothing.
@@ -101,7 +104,7 @@ export function createFixtureTrackerSeam(
 		},
 		updateIssueStatus(
 			_id: string,
-			compassState: WorkstreamState,
+			compassState: WorkingIssueState,
 		): Promise<void> {
 			// Map before the (no-op) write so the mapping is exercised, matching
 			// the real write path's shape.

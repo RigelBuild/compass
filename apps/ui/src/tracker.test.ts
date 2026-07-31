@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { WorkstreamState } from "./stub-data";
+import type { WorkingIssueState } from "./stub-data";
 import {
 	fromTrackerStatus,
 	LINEAR_STATUS_MAPPING,
@@ -9,13 +9,15 @@ import {
 // tracker.ts is the pure D2 projection between Compass state (canonical) and a
 // tracker's native status, through a user-editable mapping. These tests defend
 // the projection's two structural invariants — `toTracker` is TOTAL over the
-// WorkstreamState union, `fromTracker` is MANY-TO-ONE with a `backlog` fallback
-// — independent of any reactive root (the functions are pure).
+// WorkingIssueState domain (the seven working states), `fromTracker` is
+// MANY-TO-ONE with a `backlog` fallback — independent of any reactive root (the
+// functions are pure).
 
-// The complete lifecycle (stub-data WorkstreamState). Enumerated on purpose: a
-// future 8th union member reddens this literal against the exhaustiveness type,
-// forcing the new state to be given a tracker projection.
-const ALL_STATES: readonly WorkstreamState[] = [
+// The seven WORKING states (stub-data WorkingIssueState). Enumerated on purpose:
+// a future working-state addition reddens this literal against the
+// exhaustiveness type, forcing the new state to be given a tracker projection.
+// `archived` carries no tracker status (DL-071), so it is not in this domain.
+const ALL_STATES: readonly WorkingIssueState[] = [
 	"backlog",
 	"todo",
 	"queued",
@@ -30,7 +32,7 @@ describe("toTrackerStatus (D2 totality)", () => {
 	// status under the Linear map; there is no state without a target. A map
 	// with a missing/blank entry (e.g. a new union member left unmapped) fails
 	// here rather than surfacing `undefined` on a tracker write.
-	test("maps every WorkstreamState to a non-empty status", () => {
+	test("maps every WorkingIssueState to a non-empty status", () => {
 		for (const state of ALL_STATES) {
 			const status = toTrackerStatus(state, LINEAR_STATUS_MAPPING);
 			expect(typeof status).toBe("string");
@@ -70,7 +72,7 @@ describe("fromTrackerStatus (D2 many-to-one + fallback)", () => {
 
 	// The mapped statuses each resolve to their canonical Compass state.
 	test("resolves each mapped status to its Compass state", () => {
-		const cases: [string, WorkstreamState][] = [
+		const cases: [string, WorkingIssueState][] = [
 			["Backlog", "backlog"],
 			["Todo", "todo"],
 			["In Progress", "in_progress"],

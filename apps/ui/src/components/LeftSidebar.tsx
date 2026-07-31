@@ -6,7 +6,7 @@ import {
 	Show,
 	Switch,
 } from "solid-js";
-import { activeWorkstreams, backlogWorkstreams } from "../board";
+import { activeIssues, backlogIssues } from "../board";
 import {
 	agentDmAccountId,
 	browsableChannels,
@@ -338,12 +338,10 @@ export const LeftSidebar: Component = () => {
 	// done, via the same board.ts partition the Bridge reads — so the sidebar can
 	// never show more than the board displays (D1, one source of truth).
 	const inFlightCount = () =>
-		activeWorkstreams(store.workstreams()).filter((w) => w.state !== "done")
-			.length;
+		activeIssues(store.issues()).filter((w) => w.state !== "done").length;
 	// Backlog view badge: the pre-active tier (Todo + Backlog) the human triages.
 	const backlogCount = () =>
-		backlogWorkstreams(store.workstreams()).length +
-		store.assignedIssues().length;
+		backlogIssues(store.issues()).length + store.assignedIssues().length;
 	return (
 		<aside class="left" aria-label="Agents">
 			<div class="left-head">

@@ -2,13 +2,13 @@
 // label/color lookups every surface reads. Static string-keyed tables → Record.
 
 import type { RightSidebarTab } from "./store";
-import type { AgentState, WorkstreamState } from "./stub-data";
+import type { AgentState, IssueState } from "./stub-data";
 
-/** Board columns, left to right — the ACTIVE subset of the workstream
- *  lifecycle (design D1). Backlog + Todo are the pre-active tier and live in the
- *  Backlog view (`BACKLOG_STATES`), not the board grid. */
+/** Board columns, left to right — the ACTIVE subset of the issue lifecycle
+ *  (design D1). Backlog + Todo are the pre-active tier and live in the Backlog
+ *  view (`BACKLOG_STATES`), not the board grid. */
 export interface Lane {
-	state: WorkstreamState;
+	state: IssueState;
 	label: string;
 	/** The CSS state color variable name, for the column dot. */
 	color: string;
@@ -25,7 +25,7 @@ export const BOARD_LANES: Lane[] = [
 /** The pre-active tier, in Backlog-view display order (Todo first, then
  *  Backlog). Todo is the global pool of promoted-but-unassigned tasks; Backlog
  *  is the un-promoted tier (design D1). Neither renders on the board grid. */
-export const BACKLOG_STATES: readonly WorkstreamState[] = ["todo", "backlog"];
+export const BACKLOG_STATES: readonly IssueState[] = ["todo", "backlog"];
 
 /** Human labels for the agent dot (design D9/T10). Keyed on the full union so a
  *  new agent state can't ship without a label. */
@@ -40,9 +40,9 @@ export const AGENT_STATE_LABEL: Record<AgentState, string> = {
 	disconnected: "Disconnected",
 };
 
-/** Activity-bar group: fleet tabs render above the divider, workstream below
+/** Activity-bar group: fleet tabs render above the divider, issue below
  *  (design dock-in-sidebar D2). */
-export type RightTabGroup = "fleet" | "workstream";
+export type RightTabGroup = "fleet" | "issue";
 
 /** An icon-per-tab item in the right-sidebar activity bar (design D5/T6,
  *  dock-in-sidebar D2), mirroring Orca's `ActivityBarItem`. The icon is a glyph
@@ -54,7 +54,7 @@ export interface ActivityBarItem {
 	icon: string;
 	/** Short label under the icon / for the tooltip. */
 	title: string;
-	/** Activity-bar group: fleet renders above the divider, workstream below. */
+	/** Activity-bar group: fleet renders above the divider, issue below. */
 	group: RightTabGroup;
 	/** Fleet agent tabs: the agent whose `StateDot` badges the tab icon. */
 	agentId?: string;
@@ -63,7 +63,7 @@ export interface ActivityBarItem {
 /** The right-sidebar tabs in activity-bar order (design dock-in-sidebar
  *  D2/D3): the fleet group first (Supervisor · Warden — always-on agent
  *  conversations — then Status, the fleet metrics pane), then
- *  the workstream group (Files with a search box, VCS with commit history, PR
+ *  the issue group (Files with a search box, VCS with commit history, PR
  *  with its checks). Keyed on the full `RightSidebarTab` union in a mapped
  *  object, so TypeScript rejects the module unless EVERY tab has an
  *  activity-bar entry (an array of `ActivityBarItem` only validates the ids
@@ -87,20 +87,20 @@ export const RIGHT_SIDEBAR_TAB_BY_ID: {
 		agentId: "acc-warden",
 	},
 	status: { id: "status", icon: "▦", title: "Fleet status", group: "fleet" },
-	files: { id: "files", icon: "🗀", title: "Files", group: "workstream" },
-	vcs: { id: "vcs", icon: "⎇", title: "Version control", group: "workstream" },
-	pr: { id: "pr", icon: "⇄", title: "Pull request", group: "workstream" },
+	files: { id: "files", icon: "🗀", title: "Files", group: "issue" },
+	vcs: { id: "vcs", icon: "⎇", title: "Version control", group: "issue" },
+	pr: { id: "pr", icon: "⇄", title: "Pull request", group: "issue" },
 };
 
 /** The activity bar as ordered groups (design dock-in-sidebar D2): fleet first,
- *  workstream second, each carrying its items in declaration order (JS
+ *  issue second, each carrying its items in declaration order (JS
  *  preserves string-key insertion order). One source of truth — adding a tab to
  *  the union forces an entry above, and it appears in its group here
  *  automatically. The activity-bar nav renders a divider between groups. */
 export const RIGHT_SIDEBAR_TAB_GROUPS: readonly {
 	group: RightTabGroup;
 	items: readonly ActivityBarItem[];
-}[] = (["fleet", "workstream"] as const).map((group) => ({
+}[] = (["fleet", "issue"] as const).map((group) => ({
 	group,
 	items: Object.values(RIGHT_SIDEBAR_TAB_BY_ID).filter(
 		(t) => t.group === group,

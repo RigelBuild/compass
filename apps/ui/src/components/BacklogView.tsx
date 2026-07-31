@@ -1,31 +1,34 @@
 import { type Component, createSignal, For, Show } from "solid-js";
+import { isMultiForge, issueKey } from "../board-render";
 import { useStore } from "../context";
-import type { Workstream } from "../stub-data";
+import type { Issue } from "../stub-data";
 
 /** A single Linear-style issue row: id · title · priority · state · tracker.
- *  Clicking the row selects the workstream (staying on the view); Backlog rows
- *  also get a Promote → Todo action. Not the board `WorkstreamCard` — that's a
- *  swimlane card and can't nest an action button. */
-const BacklogRow: Component<{ ws: Workstream }> = (props) => {
+ *  Clicking the row selects the issue (staying on the view); Backlog rows also
+ *  get a Promote → Todo action. Not the board `IssueCard` — that's a swimlane
+ *  card and can't nest an action button. */
+const BacklogRow: Component<{ issue: Issue }> = (props) => {
 	const store = useStore();
 	return (
 		<li class="backlog-row">
 			<button
 				type="button"
 				class="backlog-row-main"
-				data-priority={props.ws.priority}
-				classList={{ selected: props.ws.id === store.selectedWorkstreamId() }}
-				onClick={() => store.selectWorkstream(props.ws.id)}
+				data-priority={props.issue.priority}
+				classList={{ selected: props.issue.id === store.selectedIssueId() }}
+				onClick={() => store.selectIssue(props.issue.id)}
 			>
-				<span class="backlog-id">{props.ws.issue}</span>
-				<span class="backlog-title">{props.ws.title}</span>
-				<span class="backlog-priority" data-priority={props.ws.priority}>
-					{props.ws.priority}
+				<span class="backlog-id">
+					{issueKey(props.issue, isMultiForge(store.issues()))}
 				</span>
-				<span class="backlog-state" data-state={props.ws.state}>
-					{props.ws.state}
+				<span class="backlog-title">{props.issue.title}</span>
+				<span class="backlog-priority" data-priority={props.issue.priority}>
+					{props.issue.priority}
 				</span>
-				<Show when={props.ws.tracker}>
+				<span class="backlog-state" data-state={props.issue.state}>
+					{props.issue.state}
+				</span>
+				<Show when={props.issue.tracker}>
 					{(tracker) => (
 						<span class="backlog-tracker" data-kind={tracker().kind}>
 							{tracker().id}
@@ -33,11 +36,11 @@ const BacklogRow: Component<{ ws: Workstream }> = (props) => {
 					)}
 				</Show>
 			</button>
-			<Show when={props.ws.state === "backlog"}>
+			<Show when={props.issue.state === "backlog"}>
 				<button
 					type="button"
 					class="backlog-promote"
-					onClick={() => store.promoteToTodo(props.ws.id)}
+					onClick={() => store.promoteToTodo(props.issue.id)}
 				>
 					Promote → Todo
 				</button>
@@ -50,7 +53,7 @@ const BacklogRow: Component<{ ws: Workstream }> = (props) => {
  *  component-local UI state (`createSignal`) — no store state (design D3). */
 const BacklogSection: Component<{
 	title: string;
-	rows: Workstream[];
+	rows: Issue[];
 	empty: string;
 }> = (props) => {
 	const [open, setOpen] = createSignal(true);
@@ -81,7 +84,7 @@ const BacklogSection: Component<{
 						fallback={<p class="backlog-empty sub">{props.empty}</p>}
 					>
 						<ul class="backlog-list">
-							<For each={props.rows}>{(ws) => <BacklogRow ws={ws} />}</For>
+							<For each={props.rows}>{(ws) => <BacklogRow issue={ws} />}</For>
 						</ul>
 					</Show>
 				</div>
@@ -97,9 +100,8 @@ const BacklogSection: Component<{
 export const BacklogView: Component = () => {
 	const store = useStore();
 
-	const todo = () => store.workstreams().filter((w) => w.state === "todo");
-	const backlog = () =>
-		store.workstreams().filter((w) => w.state === "backlog");
+	const todo = () => store.issues().filter((w) => w.state === "todo");
+	const backlog = () => store.issues().filter((w) => w.state === "backlog");
 
 	return (
 		<section class="backlog-view" aria-label="Backlog">

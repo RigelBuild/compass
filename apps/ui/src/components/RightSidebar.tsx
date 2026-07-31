@@ -6,6 +6,14 @@ import {
 	Show,
 	Switch,
 } from "solid-js";
+import {
+	attributionLabel,
+	checkPip,
+	isMultiForge,
+	issueKey,
+	prBadge,
+	primaryPr,
+} from "../board-render";
 import type { Channel } from "../comms-stub";
 import {
 	type ActivityBarItem,
@@ -15,12 +23,13 @@ import {
 import { useStore } from "../context";
 import {
 	type Agent,
+	type Check,
 	type FileNode,
+	type Issue,
+	type IssueState,
 	type PullRequest,
 	STUB_AGENTS,
 	STUB_FILES,
-	type Workstream,
-	type WorkstreamState,
 } from "../stub-data";
 import { ChannelView } from "./ChannelView";
 import { StateDot } from "./StateDot";
@@ -111,97 +120,142 @@ const FilesPane: Component<{ files: FileNode[] }> = (props) => {
 	);
 };
 
-/** The VCS pane body: branch, issue, changed-files count, the latest activity
- *  summary, and — at the bottom — the branch's recent commit history (design
- *  D5: "history is a commits menu at the bottom of the VCS pane"). */
-const VcsPane: Component<{ w: Workstream }> = (props) => (
-	<div class="r-pane-body">
-		<div class="vcs-row">
-			<span class="k">Branch</span>
-			<span class="v">{props.w.branch}</span>
+/** The VCS pane body: branch, issue, the primary PR's changed-files count, the
+ *  latest activity summary, and — at the bottom — the branch's recent commit
+ *  history (design D5: "history is a commits menu at the bottom of the VCS
+ *  pane"). The diff is a PR fact (DL-071 correction #4): the Changes row
+ *  re-sources from the primary PR's `changed`, showing a dash when there is no
+ *  PR diffstat. */
+const VcsPane: Component<{ issue: Issue }> = (props) => {
+	const store = useStore();
+	const changed = () => primaryPr(props.issue)?.changed;
+	return (
+		<div class="r-pane-body">
+			<div class="vcs-row">
+				<span class="k">Branch</span>
+				<span class="v">{props.issue.branch}</span>
+			</div>
+			<div class="vcs-row">
+				<span class="k">Issue</span>
+				<span class="v">
+					{issueKey(props.issue, isMultiForge(store.issues()))}
+				</span>
+			</div>
+			<div class="vcs-row">
+				<span class="k">Changes</span>
+				<span class="v">
+					<Show when={changed()} fallback={<span class="sub">—</span>} keyed>
+						{(c) => (
+							<>
+								{c.files} files <span class="add">+{c.additions}</span>{" "}
+								<span class="del">−{c.deletions}</span>
+							</>
+						)}
+					</Show>
+				</span>
+			</div>
+			<div class="vcs-row">
+				<span class="k">Summary</span>
+				<span class="v" style={{ "white-space": "normal" }}>
+					{props.issue.summary}
+				</span>
+			</div>
+			<div class="vcs-commits">
+				<div class="vcs-commits-head">History</div>
+				<Show
+					when={props.issue.commits && props.issue.commits.length > 0}
+					fallback={<p class="term-empty">No commits in the stub.</p>}
+				>
+					<For each={props.issue.commits}>
+						{(c) => (
+							<div class="commit-row">
+								<span class="commit-sha">{c.sha}</span>
+								<span class="commit-subject">{c.subject}</span>
+								<span class="commit-at">{c.at}</span>
+							</div>
+						)}
+					</For>
+				</Show>
+			</div>
 		</div>
-		<div class="vcs-row">
-			<span class="k">Issue</span>
-			<span class="v">{props.w.issue}</span>
-		</div>
-		<div class="vcs-row">
-			<span class="k">Changes</span>
-			<span class="v">
-				{props.w.changed.files} files{" "}
-				<span class="add">+{props.w.changed.additions}</span>{" "}
-				<span class="del">−{props.w.changed.deletions}</span>
-			</span>
-		</div>
-		<div class="vcs-row">
-			<span class="k">Summary</span>
-			<span class="v" style={{ "white-space": "normal" }}>
-				{props.w.summary}
-			</span>
-		</div>
-		<div class="vcs-commits">
-			<div class="vcs-commits-head">History</div>
-			<Show
-				when={props.w.commits && props.w.commits.length > 0}
-				fallback={<p class="term-empty">No commits in the stub.</p>}
-			>
-				<For each={props.w.commits}>
-					{(c) => (
-						<div class="commit-row">
-							<span class="commit-sha">{c.sha}</span>
-							<span class="commit-subject">{c.subject}</span>
-							<span class="commit-at">{c.at}</span>
-						</div>
-					)}
-				</For>
-			</Show>
-		</div>
-	</div>
-);
+	);
+};
 
 /** The PR check-run list — one pip + name + verdict per run. Shared by the
- *  Checks pane and the PR pane so the two can't drift in styling or markup. */
-const CheckRuns: Component<{ checks: PullRequest["checks"] }> = (props) => (
+ *  Checks pane and the PR pane so the two can't drift in styling or markup.
+ *  Each 6-valued forge `Check.state` maps to a 3-valued pip class via the shared
+ *  `checkPip` map (DL-071). */
+const CheckRuns: Component<{ checks: Check[] }> = (props) => (
 	<div class="pr-checks">
 		<For each={props.checks}>
-			{(c) => (
-				<div class="pr-check">
-					<span class="check-pip" data-status={c.status} />
-					<span class="c-name">{c.name}</span>
-					<span class="c-verdict" data-status={c.status}>
-						{c.status}
-					</span>
-				</div>
-			)}
+			{(c) => {
+				const pip = checkPip(c.state);
+				return (
+					<div class="pr-check">
+						<span class="check-pip" data-status={pip} />
+						<span class="c-name">{c.name}</span>
+						<span class="c-verdict" data-status={pip}>
+							{pip}
+						</span>
+					</div>
+				);
+			}}
 		</For>
 	</div>
 );
 
-/** The PR pane body: state, checks, bot reviews, thread progress. */
+/** The latest verdict per review author — `reviews` is submission-ordered, so a
+ *  reviewer's current verdict is its last entry (DL-069). */
+function latestVerdicts(
+	reviews: readonly PullRequest["reviews"][number][],
+): PullRequest["reviews"][number][] {
+	const byAuthor = new Map<string, PullRequest["reviews"][number]>();
+	for (const r of reviews) byAuthor.set(r.author, r);
+	return [...byAuthor.values()];
+}
+
+/** The canonical (forge) verdict vocabulary → the existing chip key (DL-069):
+ *  "changes_requested" → "changes", like the checks 6→3 map. */
+const VERDICT_CHIP: Record<PullRequest["reviews"][number]["verdict"], string> =
+	{
+		approved: "approved",
+		changes_requested: "changes",
+		commented: "commented",
+	};
+
+/** The PR pane body: state badge, checks, bot reviews, thread progress. */
 const PrPane: Component<{ pr: PullRequest }> = (props) => {
+	const total = () => props.pr.threads.length;
+	const resolved = () => props.pr.threads.filter((t) => t.resolved).length;
 	const pct = () =>
-		props.pr.threads.total === 0
-			? 100
-			: Math.round((props.pr.threads.resolved / props.pr.threads.total) * 100);
+		total() === 0 ? 100 : Math.round((resolved() / total()) * 100);
+	const botReviews = () =>
+		latestVerdicts(props.pr.reviews.filter((r) => r.isBot));
 	return (
 		<div class="pr-card">
 			<div class="pr-title-row">
 				<span class="pr-num">#{props.pr.number}</span>
-				<span class="pr-state" data-state={props.pr.state}>
-					{props.pr.state}
+				<span class="pr-state" data-state={prBadge(props.pr)}>
+					{prBadge(props.pr)}
 				</span>
 			</div>
 			<div class="pr-title">{props.pr.title}</div>
-			<CheckRuns checks={props.pr.checks} />
-			<Show when={props.pr.reviews.length > 0}>
+			<div class="pr-agent">
+				{attributionLabel(props.pr.agent, props.pr.forgeAccount)}
+			</div>
+			<Show when={props.pr.checks}>
+				{(checks) => <CheckRuns checks={checks().checks} />}
+			</Show>
+			<Show when={botReviews().length > 0}>
 				<div class="pr-reviews">
-					<For each={props.pr.reviews}>
+					<For each={botReviews()}>
 						{(r) => (
 							<span class="review-chip">
-								{r.bot}
-								<span class="rv" data-v={r.verdict}>
+								{r.author}
+								<span class="rv" data-v={VERDICT_CHIP[r.verdict]}>
 									{r.verdict === "approved"
 										? "✓"
-										: r.verdict === "changes"
+										: r.verdict === "changes_requested"
 											? "✗"
 											: "•"}
 								</span>
@@ -211,7 +265,7 @@ const PrPane: Component<{ pr: PullRequest }> = (props) => {
 				</div>
 			</Show>
 			<div class="pr-threads">
-				{props.pr.threads.resolved}/{props.pr.threads.total} threads resolved
+				{resolved()}/{total()} threads resolved
 				<div class="bar">
 					<div class="bar-fill" style={{ width: `${pct()}%` }} />
 				</div>
@@ -220,26 +274,28 @@ const PrPane: Component<{ pr: PullRequest }> = (props) => {
 	);
 };
 
-/** The prompt the pane shows when no workstream is selected. */
+/** The prompt the pane shows when no issue is selected. */
 const SelectPrompt: Component = () => (
-	<p class="muted">Select a workstream to see its files, VCS, and PR.</p>
+	<p class="muted">Select an issue to see its files, VCS, and PR.</p>
 );
 
-/** The workstream detail header: the selected issue + title, and the primary
+/** The issue detail header: the selected issue key + title, and the primary
  *  "Open agent" action that jumps into the assigned agent's view (design D10 —
  *  the button is the primary gesture; a card double-click is the accelerator).
- *  Hidden when the workstream has no assignee (no jump target). */
-const WorkstreamDetailHead: Component<{ w: Workstream }> = (props) => {
+ *  Hidden when the issue has no assignee (no jump target). */
+const IssueDetailHead: Component<{ issue: Issue }> = (props) => {
 	const store = useStore();
 	return (
 		<div class="r-detail-head">
 			<div class="r-detail-meta">
-				<span class="r-detail-issue">{props.w.issue}</span>
-				<span class="r-detail-title" title={props.w.title}>
-					{props.w.title}
+				<span class="r-detail-issue">
+					{issueKey(props.issue, isMultiForge(store.issues()))}
+				</span>
+				<span class="r-detail-title" title={props.issue.title}>
+					{props.issue.title}
 				</span>
 			</div>
-			<Show when={props.w.assignee}>
+			<Show when={props.issue.assignee}>
 				{(agentId) => (
 					<button
 						type="button"
@@ -364,7 +420,7 @@ const RepoBranchDropdown: Component = () => {
 	);
 };
 
-// Resolve a tab's agent — fleet tabs carry an agentId, workstream tabs don't;
+// Resolve a tab's agent — fleet tabs carry an agentId, issue tabs don't;
 // mirrors the dock's STUB_AGENTS.find, no new store surface. Shared by the
 // fleet panes and the activity-bar StateDot badge.
 const agentFor = (item: ActivityBarItem): Agent | undefined =>
@@ -407,7 +463,7 @@ const FleetPane: Component<{ item: ActivityBarItem }> = (props) => {
 	);
 };
 
-/** The four fleet workstream counts shown on the Status pane (design
+/** The four fleet issue counts shown on the Status pane (design
  *  dock-in-sidebar T2). `active` sums both live states (`in_progress` +
  *  `in_review`); the others are single-state counts. States outside these
  *  buckets (`backlog`, `done`) are intentionally not surfaced here. */
@@ -418,12 +474,12 @@ export interface FleetMetrics {
 	blocked: number;
 }
 
-/** Bucket a workstream list into the Status pane's counts (design T2). Pure and
+/** Bucket an issue list into the Status pane's counts (design T2). Pure and
  *  exported for tests — the salvaged `countState` logic from the old dock
  *  facet, where "active" is the two in-flight states combined. */
-export function fleetMetrics(workstreams: readonly Workstream[]): FleetMetrics {
-	const count = (...states: WorkstreamState[]): number =>
-		workstreams.filter((w) => states.includes(w.state)).length;
+export function fleetMetrics(issues: readonly Issue[]): FleetMetrics {
+	const count = (...states: IssueState[]): number =>
+		issues.filter((w) => states.includes(w.state)).length;
 	return {
 		active: count("in_progress", "in_review"),
 		queued: count("queued"),
@@ -433,12 +489,12 @@ export function fleetMetrics(workstreams: readonly Workstream[]): FleetMetrics {
 }
 
 /** The Status pane (design dock-in-sidebar D3/T2): the fleet metrics strip over
- *  every workstream. Salvaged from the dock's Supervisor facet, full-width — no
+ *  every issue. Salvaged from the dock's Supervisor facet, full-width — no
  *  agent conversation, so this is the one fleet tab with no `agentId`. Works
- *  with no workstream selected. */
+ *  with no issue selected. */
 const StatusPane: Component = () => {
 	const store = useStore();
-	const metrics = (): FleetMetrics => fleetMetrics(store.workstreams());
+	const metrics = (): FleetMetrics => fleetMetrics(store.issues());
 	return (
 		<div class="r-status">
 			<div class="r-status-metrics">
@@ -466,18 +522,18 @@ const StatusPane: Component = () => {
 };
 
 /** The right sidebar (design D5, dock-in-sidebar D2/D3/D5): an icon-per-tab
- *  activity bar mirroring Orca, grouped fleet-over-workstream with a divider.
+ *  activity bar mirroring Orca, grouped fleet-over-issue with a divider.
  *  Fleet tabs (Supervisor · Warden) render the agent's home-DM conversation
  *  inline (read-only asks) above an open-workspace control;
- *  workstream tabs render the repo/branch dropdown + detail head above the pane
+ *  issue tabs render the repo/branch dropdown + detail head above the pane
  *  for the active tab — Files (with a search box), VCS (changed files + commit
  *  history), or PR (with its checks inside). The card-scoped chrome is hidden
  *  while a fleet tab is active. */
 export const RightSidebar: Component = () => {
 	const store = useStore();
-	const ws = store.selectedWorkstream;
+	const ws = store.selectedIssue;
 	const files = (): FileNode[] => {
-		const id = store.selectedWorkstreamId();
+		const id = store.selectedIssueId();
 		return id ? (STUB_FILES[id] ?? []) : [];
 	};
 	// D5: the card-scoped chrome (detail head + repo/branch dropdown) is
@@ -487,11 +543,11 @@ export const RightSidebar: Component = () => {
 		RIGHT_SIDEBAR_TAB_BY_ID[store.activeRightTab()].group === "fleet";
 
 	return (
-		<aside class="right" aria-label="Workstream detail">
+		<aside class="right" aria-label="Issue detail">
 			<div class="r-shell">
 				<div class="r-main">
 					<Show when={!fleetActive()}>
-						<Show when={ws()}>{(w) => <WorkstreamDetailHead w={w()} />}</Show>
+						<Show when={ws()}>{(w) => <IssueDetailHead issue={w()} />}</Show>
 						<RepoBranchDropdown />
 					</Show>
 					<div class="r-pane" classList={{ fleet: fleetActive() }}>
@@ -516,7 +572,7 @@ export const RightSidebar: Component = () => {
 
 							<Match when={store.activeRightTab() === "vcs"}>
 								<Show when={ws()} fallback={<SelectPrompt />}>
-									{(w) => <VcsPane w={w()} />}
+									{(w) => <VcsPane issue={w()} />}
 								</Show>
 							</Match>
 
@@ -524,7 +580,7 @@ export const RightSidebar: Component = () => {
 								<Show when={ws()} fallback={<SelectPrompt />}>
 									{(w) => (
 										<Show
-											when={w().pr}
+											when={primaryPr(w())}
 											fallback={<p class="term-empty">No PR opened yet.</p>}
 										>
 											{(pr) => (
