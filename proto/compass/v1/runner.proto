@@ -210,6 +210,13 @@ message ResolvedSecret {
 // Signal only — carries no values; the Runner re-fetches on it.
 message SecretsVersion {
   string session_id = 1;
+  // An OPAQUE per-session monotonic set-change token — bumped on any registry
+  // write to the session's set, NOT value-derived. It MUST NOT be an aggregate
+  // content-hash of the set: the oracle-sensitive diff is downstream on the
+  // per-value ResolvedSecret.version (a content hash, redacted for exactly that
+  // reason), so a value-derived token here would gratuitously mint a second
+  // confirmation oracle for zero benefit. Its only job is "re-fetch now", so it
+  // carries no value entropy and is deliberately un-redacted.
   string version = 2;
 }
 

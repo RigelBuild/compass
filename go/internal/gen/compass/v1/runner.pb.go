@@ -720,9 +720,16 @@ func (x *ResolvedSecret) GetProvider() string {
 // SecretsVersion: a Server->Runner signal that a session's secret set changed.
 // Signal only — carries no values; the Runner re-fetches on it.
 type SecretsVersion struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Version       string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	SessionId string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// An OPAQUE per-session monotonic set-change token — bumped on any registry
+	// write to the session's set, NOT value-derived. It MUST NOT be an aggregate
+	// content-hash of the set: the oracle-sensitive diff is downstream on the
+	// per-value ResolvedSecret.version (a content hash, redacted for exactly that
+	// reason), so a value-derived token here would gratuitously mint a second
+	// confirmation oracle for zero benefit. Its only job is "re-fetch now", so it
+	// carries no value entropy and is deliberately un-redacted.
+	Version       string `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
