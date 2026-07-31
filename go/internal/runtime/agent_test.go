@@ -197,6 +197,9 @@ func TestCheckoutDirCreatedAsAgentUser(t *testing.T) {
 	if !slices.Contains(mkdir.Command, "/work/repo") {
 		t.Errorf("mkdir exec Command = %v, want it to target the checkout dir", mkdir.Command)
 	}
+	if !slices.Contains(mkdir.Command, "-p") {
+		t.Errorf("mkdir exec Command = %v, want -p (recursive create of the checkout dir)", mkdir.Command)
+	}
 }
 
 func TestEgressIsArmedAsRootNotTheAgentUser(t *testing.T) {

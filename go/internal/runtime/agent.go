@@ -39,7 +39,7 @@ type AgentSpec struct {
 	Workspace Workspace
 	// Egress is default-deny egress with this allowlist.
 	Egress EgressPolicy
-	// Mounts is read-only host mounts (e.g. a bare-repo mirror cache).
+	// Mounts is read-only host mounts (e.g. a host cache mounted read-only).
 	Mounts []Mount
 }
 

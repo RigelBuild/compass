@@ -64,8 +64,9 @@ func run() error {
 	var mounts []runtime.Mount
 	flag.Func("mount",
 		"Repeatable host:container[:ro] bind mount into the agent container "+
-			"(add ':ro' for read-only). Flag-only, no env fallback. Used to mount "+
-			"a host bare-repo mirror read-only for the dogfood file:// clone.",
+			"(add ':ro' for read-only). Flag-only, no env fallback. A general "+
+			"read-only bind-mount facility for host paths the agent needs (e.g. a "+
+			"cache mounted read-only).",
 		func(s string) error {
 			m, err := parseMount(s)
 			if err != nil {

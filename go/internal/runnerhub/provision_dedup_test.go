@@ -191,7 +191,7 @@ func TestProvisionEmptyClientRequestIdDoesNotDedup(t *testing.T) {
 // Provision, and each caller gets its own container. A regression that keyed on
 // the raw client_request_id alone would push ONE command and hand both callers
 // the same container — reddening the count and the per-caller container asserts.
-func TestProvisionSameIdDifferentWorkspaceDoesNotDedup(t *testing.T) {
+func TestProvisionSameIdDifferentAccountDoesNotDedup(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		hub := newHubOnly()
 		send := newRecordingSend()
