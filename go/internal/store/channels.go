@@ -454,6 +454,16 @@ func addOrUpdateMember(ctx context.Context, tx pgx.Tx, channelID ChannelID, u Me
 			); err != nil {
 				return upsertMemberErr(err, m)
 			}
+			// Seed this member's delivery cursor in the SAME txn as the member
+			// insert when it is subscribed (D2 seed-at-subscribe). The seed is
+			// self-guarding (agent-only via WHERE EXISTS), so a subscribed user
+			// member is a silent no-op — no separate kind lookup. Pulled-in owner
+			// rows (index > 0, DO NOTHING) are not seeded.
+			if u.Subscribed {
+				if err := seedDeliveryCursor(ctx, tx, m, channelID); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		if _, err := tx.Exec(ctx,
