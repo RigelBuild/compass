@@ -113,6 +113,27 @@ func TestFetchSecretsBoundSessionReturnsResolvedSet(t *testing.T) {
 	}
 }
 
+// TestFetchSecretsResolveErrorInternal: a bound live session whose resolve FAILS
+// maps to CodeInternal (handler.go's "resolving secrets" path). This exercises the
+// resolveErr seam on the fake resolver so a resolve fault is surfaced loudly, not
+// swallowed as an empty set.
+func TestFetchSecretsResolveErrorInternal(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	bindSession(hub, "sess-1")
+	resolver := &fakeResolverSecrets{resolveErr: errors.New("resolve boom")}
+	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
+	client := newRawRunnerClient(t, url, "runner-tok")
+
+	_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{SessionId: "sess-1"}))
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("FetchSecrets with a failing resolve code = %v, want Internal", got)
+	}
+	if resolver.resolveCalls != 1 {
+		t.Fatalf("resolver.Resolve called %d times, want 1", resolver.resolveCalls)
+	}
+}
+
 // TestFetchSecretsNoResolverUnavailable: a handler with no resolver wired fails
 // closed Unavailable rather than returning an empty set as if there were no
 // secrets — a wiring bug must be loud.

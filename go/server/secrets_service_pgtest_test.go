@@ -37,6 +37,7 @@ import (
 // wires this into ListSecrets proves the list path never resolves values to
 // compute is_set (record §906-908 / brief item 7).
 type recordingResolver struct {
+	setErr      error
 	setNames    []string
 	deleteNames []string
 	resolveHit  bool
@@ -48,6 +49,9 @@ func (r *recordingResolver) Resolve(_ context.Context, _ string) ([]secrets.Reso
 }
 
 func (r *recordingResolver) Set(_ context.Context, name, _ string) error {
+	if r.setErr != nil {
+		return r.setErr
+	}
 	r.setNames = append(r.setNames, name)
 	return nil
 }
@@ -209,6 +213,55 @@ func TestSetSecretReSetRewrites(t *testing.T) {
 	}
 	if len(f.resolver.setNames) != 2 {
 		t.Fatalf("resolver.Set called %d times across two Sets, want 2", len(f.resolver.setNames))
+	}
+}
+
+// TestSetSecretRollsBackDeclarationOnWriteFailure: a FRESH declaration whose
+// resolver.Set fails (a provider/exec fault) is rolled back — the RPC returns
+// CodeUnavailable and no orphaned declaration survives. An orphan would be
+// required=true in the resolve manifest and poison EVERY live session's
+// FetchSecrets, so the surface must be left clean. A follow-up re-Set (once the
+// provider recovers) then succeeds and the name appears, proving the failure left
+// nothing behind.
+func TestSetSecretRollsBackDeclarationOnWriteFailure(t *testing.T) {
+	f := newSecretsFixture(t)
+	ctx := context.Background()
+	f.resolver.setErr = errors.New("provider down")
+
+	_, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v"))
+	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
+		t.Fatalf("SetSecret with a failing provider write code = %v, want Unavailable", got)
+	}
+
+	// The failed fresh write must leave no orphaned declaration behind.
+	resp, err := f.client.ListSecrets(ctx, listReq(f.userToken))
+	if err != nil {
+		t.Fatalf("ListSecrets = %v, want success", err)
+	}
+	for _, s := range resp.Msg.GetSecrets() {
+		if s.GetName() == "DB_URL" {
+			t.Fatal("declaration survived a failed fresh write — orphan left behind")
+		}
+	}
+
+	// Provider recovers: a re-Set of the same name now succeeds and appears,
+	// proving the earlier failure left the surface clean (a fresh declaration).
+	f.resolver.setErr = nil
+	if _, err := f.client.SetSecret(ctx, setReq(f.userToken, "DB_URL", "v")); err != nil {
+		t.Fatalf("re-SetSecret after provider recovery = %v, want success", err)
+	}
+	resp, err = f.client.ListSecrets(ctx, listReq(f.userToken))
+	if err != nil {
+		t.Fatalf("ListSecrets after recovery = %v, want success", err)
+	}
+	var found bool
+	for _, s := range resp.Msg.GetSecrets() {
+		if s.GetName() == "DB_URL" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("DB_URL absent after a successful re-Set, want present")
 	}
 }
 

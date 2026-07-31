@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"connectrpc.com/connect"
 
@@ -80,8 +81,11 @@ var errNoResolver = errors.New("no secret resolver configured on this server")
 // name is a value REWRITE, not a failure: DeclareSecret returns ErrConflict for a
 // duplicate name (store/secrets.go), so on ErrConflict this proceeds to
 // resolver.Set anyway — the name already exists and we are rewriting its value.
-// (Conflict policy per the driver brief; not invented here.) On a successful write
-// the secrets version is bumped so live sessions re-fetch.
+// (Conflict policy per the driver brief; not invented here.) An empty value is
+// rejected up front, before any row is declared. A failed FRESH write rolls back
+// the declaration so no orphan survives (an orphaned declaration is required=true
+// in the resolve manifest and would poison EVERY live session's FetchSecrets). On
+// a successful write the secrets version is bumped so live sessions re-fetch.
 func (s *secretsService) SetSecret(
 	ctx context.Context,
 	req *connect.Request[compassv1.SetSecretRequest],
@@ -98,6 +102,9 @@ func (s *secretsService) SetSecret(
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	if strings.TrimSpace(msg.GetValue()) == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("secret value is empty"))
+	}
 
 	declErr := s.store.DeclareSecret(ctx, callerID, msg.GetName(), delivery, kind, msg.GetProvider(), msg.GetHost())
 	switch {
@@ -112,7 +119,23 @@ func (s *secretsService) SetSecret(
 	}
 
 	if err := s.resolver.Set(ctx, msg.GetName(), msg.GetValue()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("writing secret value: %w", err))
+		// The name was validated by DeclareSecret and the value was screened
+		// non-empty above, so a Set failure here is a provider/exec fault
+		// (CLI unreachable, non-zero exit) — retryable and operator-side, never
+		// the caller's argument, so CodeUnavailable, not CodeInvalidArgument.
+		// Roll back a FRESH declaration: an orphaned declaration is required=true
+		// in the resolve manifest and would fail EVERY live session's FetchSecrets
+		// (a global denial from one failed write). Leave an ErrConflict (re-Set)
+		// row alone — it legitimately pre-existed this call. The Set error wraps
+		// name/cli/stderr, never the value, so logging it server-side is safe; the
+		// client-facing error is value-free.
+		if declErr == nil {
+			if delErr := s.store.DeleteSecretDeclaration(ctx, callerID, msg.GetName()); delErr != nil {
+				slog.ErrorContext(ctx, "rolling back secret declaration after failed write", "err", delErr)
+			}
+		}
+		slog.ErrorContext(ctx, "writing secret value", "err", err)
+		return nil, connect.NewError(connect.CodeUnavailable, errors.New("writing secret value failed"))
 	}
 	s.bumpSecretsVersion(ctx)
 	return connect.NewResponse(&compassv1.SetSecretResponse{}), nil
@@ -172,6 +195,13 @@ func (s *secretsService) DeleteSecret(
 		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
 	}
 	name := req.Msg.GetName()
+	// Ordering note: resolver.Delete is a validate-only no-op today (no upstream
+	// provider hard-delete verb), so calling it before DeleteSecretDeclaration is
+	// inert. When a real provider delete lands, this MUST flip to
+	// declaration-first: the declaration is the source of truth Resolve reads, and
+	// deleting the provider value before the row would leave a required=true
+	// declaration pointing at a missing value — the same global resolve-poison as a
+	// failed Set, in reverse.
 	if err := s.resolver.Delete(ctx, name); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("deleting secret value: %w", err))
 	}
@@ -247,7 +277,7 @@ func secretRoutingFromProto(d compassv1.SecretDelivery, k compassv1.SecretKind) 
 	case compassv1.SecretDelivery_SECRET_DELIVERY_ENV:
 		delivery = store.SecretDeliveryEnv
 	default:
-		return 0, 0, fmt.Errorf("secret delivery is unspecified")
+		return 0, 0, errors.New("secret delivery is unspecified")
 	}
 	var kind store.SecretKind
 	switch k {
@@ -258,7 +288,7 @@ func secretRoutingFromProto(d compassv1.SecretDelivery, k compassv1.SecretKind) 
 	case compassv1.SecretKind_SECRET_KIND_GH:
 		kind = store.SecretKindGH
 	default:
-		return 0, 0, fmt.Errorf("secret kind is unspecified")
+		return 0, 0, errors.New("secret kind is unspecified")
 	}
 	return delivery, kind, nil
 }

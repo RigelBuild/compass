@@ -61,6 +61,12 @@ func (h *Hub) SignalSecretsVersion() error {
 	if router == nil {
 		return nil
 	}
+	// Single-Runner MVP: every live session pushes through the same router/stream
+	// (hub.go), so a push failure is stream-wide — the unpushed remainder would
+	// fail identically, making this early return total by construction, not a
+	// partial best-effort. A future multi-Runner change giving sessions distinct
+	// routers MUST switch this to accumulate-and-continue (errors.Join) so it does
+	// not silently under-notify.
 	for _, sessionID := range sessionIDs {
 		cmd := &compassv1internal.SessionsResponse{
 			Command: &compassv1internal.SessionsResponse_SecretsVersion{

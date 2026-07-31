@@ -432,6 +432,7 @@ func h2cHTTPClient(t *testing.T) *http.Client {
 // base URL. Torn down via t.Cleanup. No secret resolver is wired — for the
 // FetchSecrets tests that need one, use newMountedH2CServerWithResolver.
 func newMountedH2CServer(t *testing.T, hub *Hub, resolve TokenResolver) string {
+	t.Helper()
 	return newMountedH2CServerWithResolver(t, hub, resolve, nil)
 }
 
