@@ -684,11 +684,26 @@ func (x *DispatchControl) GetOp() *AgentControl {
 	return nil
 }
 
-// FetchSecrets request: the session whose secrets to resolve. Inject-all — no
-// name filter.
+// FetchSecrets request: which agent's secret set to resolve. Inject-all — no
+// name filter. The caller sets exactly one selector: a `container_name` for the
+// PROVISION-time initial materialize (the container→account binding exists from
+// Provision, before any session is minted — SEA-1327 T5 materializes before the
+// agent is exec'd), or a `session_id` for the post-Start rotation re-fetch (the
+// SecretsVersion signal path, T6). The two are mutually exclusive by convention,
+// not a oneof: session_id kept tag 1 with its original flat cardinality so the
+// change stays wire-compatible, and an empty string means "unset" (neither a
+// session id nor a container name is ever empty). The server resolves the agent
+// account from whichever binding is named and rejects an unbound/foreign one —
+// or a request that sets neither — accordingly.
 type FetchSecretsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// session_id: authorize against the live session→Runner binding (rotation
+	// re-fetch, T6). Empty when the caller selects by container_name instead.
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// container_name: authorize against the container→account binding recorded at
+	// Provision (initial pre-exec materialize, T5). Empty when the caller selects
+	// by session_id instead.
+	ContainerName string `protobuf:"bytes,2,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -726,6 +741,13 @@ func (*FetchSecretsRequest) Descriptor() ([]byte, []int) {
 func (x *FetchSecretsRequest) GetSessionId() string {
 	if x != nil {
 		return x.SessionId
+	}
+	return ""
+}
+
+func (x *FetchSecretsRequest) GetContainerName() string {
+	if x != nil {
+		return x.ContainerName
 	}
 	return ""
 }
@@ -1423,10 +1445,11 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\x0fDispatchControl\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12(\n" +
-	"\x02op\x18\x02 \x01(\v2\x18.compass.v1.AgentControlR\x02op\"4\n" +
+	"\x02op\x18\x02 \x01(\v2\x18.compass.v1.AgentControlR\x02op\"[\n" +
 	"\x13FetchSecretsRequest\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"L\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12%\n" +
+	"\x0econtainer_name\x18\x02 \x01(\tR\rcontainerName\"L\n" +
 	"\x14FetchSecretsResponse\x124\n" +
 	"\asecrets\x18\x01 \x03(\v2\x1a.compass.v1.ResolvedSecretR\asecrets\"\xf2\x01\n" +
 	"\x0eResolvedSecret\x12\x12\n" +

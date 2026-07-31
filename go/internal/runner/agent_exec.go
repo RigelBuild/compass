@@ -58,11 +58,13 @@ type AgentEnv struct {
 }
 
 // execSpec builds the streaming exec that starts the agent: unprivileged, in
-// the checkout, carrying exactly the vars the agent reads.
+// the checkout, carrying exactly the vars the agent reads plus the aggregate
+// env-secret file via --env-file (materialized before this exec, SEA-1327 T5).
 func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 	spec := runtime.NewStreamingExecSpec(agentCommand...).
 		AsUser(strconv.FormatUint(uint64(e.UID), 10)).
-		InDir(e.Workdir)
+		InDir(e.Workdir).
+		WithEnvFile(runtime.AgentEnvFilePath(e.HomeDir))
 	spec.Env["HOME"] = e.HomeDir
 	spec.Env["COMPASS_WORKDIR"] = e.Workdir
 	if e.Model != "" {

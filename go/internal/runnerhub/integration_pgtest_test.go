@@ -526,7 +526,7 @@ func runSessionsLoop(t *testing.T, ctx context.Context, cancel context.CancelFun
 	t.Helper()
 	loopDone := make(chan error, 1)
 	go func() {
-		loopDone <- link.RunSessions(ctx, host)
+		loopDone <- link.RunSessions(ctx, host, discardLog())
 		// Closed as well as sent: the clean-teardown drain at the end of the test
 		// takes the value, and the cleanup below must still observe the exit.
 		close(loopDone)

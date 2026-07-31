@@ -224,10 +224,25 @@ message DispatchControl {
   AgentControl op = 2;
 }
 
-// FetchSecrets request: the session whose secrets to resolve. Inject-all — no
-// name filter.
+// FetchSecrets request: which agent's secret set to resolve. Inject-all — no
+// name filter. The caller sets exactly one selector: a `container_name` for the
+// PROVISION-time initial materialize (the container→account binding exists from
+// Provision, before any session is minted — SEA-1327 T5 materializes before the
+// agent is exec'd), or a `session_id` for the post-Start rotation re-fetch (the
+// SecretsVersion signal path, T6). The two are mutually exclusive by convention,
+// not a oneof: session_id kept tag 1 with its original flat cardinality so the
+// change stays wire-compatible, and an empty string means "unset" (neither a
+// session id nor a container name is ever empty). The server resolves the agent
+// account from whichever binding is named and rejects an unbound/foreign one —
+// or a request that sets neither — accordingly.
 message FetchSecretsRequest {
+  // session_id: authorize against the live session→Runner binding (rotation
+  // re-fetch, T6). Empty when the caller selects by container_name instead.
   string session_id = 1;
+  // container_name: authorize against the container→account binding recorded at
+  // Provision (initial pre-exec materialize, T5). Empty when the caller selects
+  // by session_id instead.
+  string container_name = 2;
 }
 // FetchSecrets response: the whole resolved secret set. NO-LOG — carries live
 // secret values.

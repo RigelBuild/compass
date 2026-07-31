@@ -102,6 +102,39 @@ func TestExecStreamingArgsMinimalOmitsUserAndWorkdir(t *testing.T) {
 	}
 }
 
+// The env-file rides before the -e vars, so an -e key still wins on collision
+// (podman applies -e after --env-file). The agent exec always carries one.
+func TestExecStreamingArgsCarriesEnvFileBeforeInlineEnv(t *testing.T) {
+	spec := NewStreamingExecSpec("omp", "acp").AsUser("1000").InDir("/work").WithEnvFile("/home/agent/.compass/env")
+	spec.Env["HOME"] = "/home/agent"
+
+	args := execStreamingArgs(ContainerID("ctr123"), spec)
+
+	want := []string{
+		"exec", "--interactive",
+		"--user", "1000",
+		"--workdir", "/work",
+		"--env-file", "/home/agent/.compass/env",
+		"-e", "HOME=/home/agent",
+		"ctr123", "omp", "acp",
+	}
+	if !slices.Equal(args, want) {
+		t.Fatalf("execStreamingArgs = %q, want %q", args, want)
+	}
+}
+
+// An empty env-file path (WithEnvFile("")) adds no flag — the no-op guard.
+func TestExecStreamingArgsOmitsEmptyEnvFile(t *testing.T) {
+	spec := NewStreamingExecSpec("omp").WithEnvFile("")
+
+	args := execStreamingArgs(ContainerID("c"), spec)
+
+	want := []string{"exec", "--interactive", "c", "omp"}
+	if !slices.Equal(args, want) {
+		t.Fatalf("execStreamingArgs with empty env-file = %q, want %q", args, want)
+	}
+}
+
 // TestSpawnCaptureWaitDelayBoundsLeakedPipeHang pins the reliability contract on
 // the one-shot exec path: spawnCapture must return within a bounded wall-clock
 // after its per-command timeout fires, even when a descendant of the killed

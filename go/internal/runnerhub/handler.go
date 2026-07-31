@@ -179,12 +179,14 @@ func (h *Handler) CommitConversationFrame(ctx context.Context, req *connect.Requ
 // Unauthenticated here, the OQ7 cross-door rule); the runnerSubjectFrom check is
 // defense in depth, mirroring the other handlers.
 //
-// Session-binding authz (record §756-762): the requested session_id must be a
-// live session bound to this Runner, else CodePermissionDenied. Under inject-all
-// + single-Runner, "bound to this Runner" == "is a live session in the hub"
-// (there is exactly one Runner); HasLiveSession is that check. A foreign or
-// unknown session is rejected CodePermissionDenied ("rejects a foreign session
-// with CodePermissionDenied").
+// Binding authz (record §756-762): the request selects the binding to authorize
+// against. A session_id must be a live session bound to this Runner (rotation
+// re-fetch); a container_name must have a recorded container→account binding
+// (the PROVISION-time initial materialize, before any session exists). Under
+// inject-all + single-Runner, "bound to this Runner" == "present in the hub"
+// (there is exactly one Runner); HasLiveSession / HasContainerBinding are those
+// checks. A foreign/unknown selector is rejected CodePermissionDenied; a missing
+// selector is CodeInvalidArgument.
 //
 // NO-LOG posture (record §770-772): the response carries live secret values
 // (ResolvedSecret.value/.version are [debug_redact] on the wire). This handler
@@ -196,10 +198,25 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 	if h.resolver == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
 	}
-	sessionID := req.Msg.GetSessionId()
-	if !h.hub.HasLiveSession(sessionID) {
-		// Unbound/unknown session: not this Runner's to resolve secrets for.
-		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("session %q is not a live session bound to this runner", sessionID))
+	// Authorize against whichever binding the selector names, then resolve the
+	// same inject-all set for either (no per-agent differentiation in the MVP).
+	// A container_name authorizes the PROVISION-time initial materialize (bound
+	// from Provision, before any session); a session_id authorizes the
+	// post-Start rotation re-fetch. A foreign/unknown selector — or none — is
+	// rejected CodePermissionDenied, never a silent empty set.
+	switch sessionID, containerName := req.Msg.GetSessionId(), req.Msg.GetContainerName(); {
+	case sessionID != "" && containerName != "":
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("FetchSecrets accepts a session_id or a container_name, not both"))
+	case sessionID != "":
+		if !h.hub.HasLiveSession(sessionID) {
+			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("session %q is not a live session bound to this runner", sessionID))
+		}
+	case containerName != "":
+		if !h.hub.HasContainerBinding(containerName) {
+			return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("container %q has no provisioned binding on this runner", containerName))
+		}
+	default:
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("FetchSecrets requires a session_id or container_name selector"))
 	}
 	resolved, err := h.resolver.Resolve(ctx, "runner fetch")
 	if err != nil {

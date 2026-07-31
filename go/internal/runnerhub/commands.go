@@ -79,6 +79,11 @@ func (h *Hub) Start(ctx context.Context, requestID string, req *compassv1.StartA
 	// agent account (comms-tools design T2). A container with no recorded
 	// account leaves no session binding, and its comms calls fail closed.
 	h.promoteSession(req.GetContainerName(), resp.GetSessionId())
+	// The initial secret materialize no longer rides a signal: the Runner
+	// materializes the container's set pre-exec at Start (host.Start,
+	// FetchSecretsByContainer authorized on the Provision-time container→account
+	// binding), before the agent runs. The SecretsVersion signal is now the T6
+	// ROTATION path only (SignalSecretsVersion, on a registry write).
 	return resp, nil
 }
 

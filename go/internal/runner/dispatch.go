@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"sync"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
@@ -41,6 +42,12 @@ type SessionHost interface {
 	// Status returns the live status of one session, or every live session when
 	// id is empty — answered from the Runner's authoritative session set.
 	Status(ctx context.Context, sessionID string) ([]*compassv1.AgentSessionStatus, error)
+	// RefreshSecrets re-fetches the session's resolved secret set from the
+	// Server and materializes it into the container — the SecretsVersion-driven
+	// install path (initial materialize and rotation ride the same signal). An
+	// unknown session errors; a fetch/materialize failure is returned for the
+	// caller to log and recover from on the next signal.
+	RefreshSecrets(ctx context.Context, sessionID string) error
 }
 
 // Sentinel errors the host returns, mapped to RunnerErrorCode on the wire.
@@ -52,6 +59,7 @@ var (
 // dispatcher runs the Sessions command loop with request-id idempotency.
 type dispatcher struct {
 	host SessionHost
+	log  *slog.Logger
 
 	mu sync.Mutex
 	// handled records the result for each request id already processed, so a
@@ -65,8 +73,11 @@ type dispatcher struct {
 	handled map[string]*compassv1internal.SessionsRequest
 }
 
-func newDispatcher(host SessionHost) *dispatcher {
-	return &dispatcher{host: host, handled: map[string]*compassv1internal.SessionsRequest{}}
+func newDispatcher(host SessionHost, log *slog.Logger) *dispatcher {
+	if log == nil {
+		log = slog.Default()
+	}
+	return &dispatcher{host: host, log: log, handled: map[string]*compassv1internal.SessionsRequest{}}
 }
 
 // RunSessions opens the Sessions bidi stream on the link and runs the dispatch
@@ -83,8 +94,8 @@ func newDispatcher(host SessionHost) *dispatcher {
 // So open with one empty bootstrap frame (no request id, no result variant) to
 // flush the headers; the Server's router ignores a result frame with no matching
 // in-flight request id, so the bootstrap is a harmless no-op there.
-func (l *ServerLink) RunSessions(ctx context.Context, host SessionHost) error {
-	d := newDispatcher(host)
+func (l *ServerLink) RunSessions(ctx context.Context, host SessionHost, log *slog.Logger) error {
+	d := newDispatcher(host, log)
 	// Derive a cancelable ctx so the watcher goroutine below always exits when
 	// RunSessions returns — on ctx cancel, EOF, or error alike — never leaking.
 	ctx, cancel := context.WithCancel(ctx)
@@ -109,6 +120,11 @@ func (l *ServerLink) RunSessions(ctx context.Context, host SessionHost) error {
 			return err
 		}
 		result := d.handle(ctx, cmd)
+		// A signal-only command (SecretsVersion) has no result variant on the
+		// request half — handle returns nil, and nothing is sent back.
+		if result == nil {
+			continue
+		}
 		if err := stream.Send(result); err != nil {
 			return err
 		}
@@ -118,6 +134,13 @@ func (l *ServerLink) RunSessions(ctx context.Context, host SessionHost) error {
 // handle executes one command (or returns the recorded result for a retried
 // request id) and builds the correlated result message.
 func (d *dispatcher) handle(ctx context.Context, cmd *compassv1internal.SessionsResponse) *compassv1internal.SessionsRequest {
+	// A signal-only command (SecretsVersion) carries no request id and has no
+	// result variant — it must never enter the request-id dedup map, or the
+	// empty-id key would collapse every signal to one and a later rotation would
+	// never re-materialize. Execute it directly and return no result frame.
+	if _, ok := cmd.GetCommand().(*compassv1internal.SessionsResponse_SecretsVersion); ok {
+		return d.execute(ctx, "", cmd)
+	}
 	id := cmd.GetRequestId()
 
 	// Idempotent retry: a request id already handled returns the recorded
@@ -185,6 +208,18 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 			RequestId: id,
 			Result:    &compassv1internal.SessionsRequest_Status{Status: &compassv1.GetAgentStatusResponse{Statuses: statuses}},
 		}
+	case *compassv1internal.SessionsResponse_SecretsVersion:
+		// Signal-only: re-fetch and re-materialize the session's secret set. A
+		// fetch/materialize failure is logged (never a secret value, per the
+		// no-log posture) and swallowed — the Runner recovers on the next signal
+		// or reconnect, and never crashes the session over a rotation blip
+		// (best-effort, mirroring the Server's emit side). No result frame.
+		sessionID := c.SecretsVersion.GetSessionId()
+		if err := d.host.RefreshSecrets(ctx, sessionID); err != nil {
+			d.log.ErrorContext(ctx, "refreshing secrets on SecretsVersion signal failed; will retry on next signal",
+				slog.String("session_id", sessionID), slog.Any("error", err))
+		}
+		return nil
 	default:
 		// An unset/unrecognized command variant — a contract skew. Return an
 		// internal error so the Server surfaces it rather than hanging the call.

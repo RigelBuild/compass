@@ -19,9 +19,11 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/runtime"
 )
 
@@ -64,6 +66,23 @@ func newHostFixtureWithModel(t *testing.T, specs SpecBuilder, model string) (Ses
 	cfg := AgentHostConfig{RuntimeDir: t.TempDir(), AgentModel: model}
 	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner(), newID)
 	return host, engine, registry
+}
+
+// newHostFixtureWithPublish is newHostFixture that also returns the
+// capturePublish backing the link's client, so a test can seed the resolved set
+// FetchSecrets returns and assert which selector the Runner used.
+func newHostFixtureWithPublish(t *testing.T, specs SpecBuilder) (SessionHost, *stubStreamingRuntime, *capturePublish) {
+	t.Helper()
+	engine := newStubStreamingRuntime(t)
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	pub := newCapturePublish()
+	link := newLink(newRunnerServiceServer(t, pub))
+	var n int
+	newID := func() string { n++; return "sess-" + string(rune('0'+n)) }
+	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
+	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner(), newID)
+	return host, engine, pub
 }
 
 // Provision derives the AgentSpec from the request via the SpecBuilder and
@@ -471,4 +490,102 @@ func assertRecorded(t *testing.T, calls []string, want string) {
 		return
 	}
 	t.Fatalf("engine calls %v missing %q", calls, want)
+}
+
+// TestStartMaterializesSecretsBeforeExec pins the load-bearing conformance
+// invariant: the secret materialize (a plain `exec` of `sh -s`) runs BEFORE the
+// agent launch (`exec_streaming`), so the agent never comes up before its
+// secrets are in the container. The stub records the ordered call log; the
+// materialize exec must precede the streaming exec.
+func TestStartMaterializesSecretsBeforeExec(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine, pub := newHostFixtureWithPublish(t, specs)
+	pub.setSecrets(&compassv1internal.ResolvedSecret{
+		Name:     "OPENAI",
+		Value:    "sk-live",
+		Kind:     compassv1.SecretKind_SECRET_KIND_PROVIDER,
+		Provider: "openai",
+		Delivery: compassv1.SecretDelivery_SECRET_DELIVERY_FILE,
+	})
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { _ = host.Stop(context.Background(), sessionID) })
+
+	calls := engine.callsSnapshot()
+	firstExec := slices.Index(calls, "exec")
+	launch := slices.Index(calls, "exec_streaming")
+	if firstExec == -1 {
+		t.Fatalf("no materialize exec ran before the agent launch; calls = %v", calls)
+	}
+	if launch == -1 {
+		t.Fatalf("agent was never launched; calls = %v", calls)
+	}
+	if firstExec > launch {
+		t.Fatalf("materialize exec (idx %d) ran AFTER the agent launch (idx %d); the agent can race an empty seed. calls = %v", firstExec, launch, calls)
+	}
+}
+
+// TestStartFetchesSecretsByContainer pins that the pre-exec fetch selects the
+// container binding (not a session, which does not exist yet), so the Server can
+// authorize it against the Provision-time container→account binding.
+func TestStartFetchesSecretsByContainer(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, _, pub := newHostFixtureWithPublish(t, specs)
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { _ = host.Stop(context.Background(), sessionID) })
+
+	reqs := pub.fetchRequests()
+	if len(reqs) != 1 {
+		t.Fatalf("FetchSecrets called %d times during Start, want exactly 1", len(reqs))
+	}
+	if got := reqs[0].GetContainerName(); got != "cont-1" {
+		t.Fatalf("pre-exec fetch container_name = %q, want cont-1", got)
+	}
+	if got := reqs[0].GetSessionId(); got != "" {
+		t.Fatalf("pre-exec fetch set session_id = %q, want empty (by-container selector only)", got)
+	}
+}
+
+// TestStartAttachesEnvFileToAgentExec pins that the agent's own exec carries
+// --env-file pointing at the aggregate env-secret file, so env-delivery secrets
+// reach the agent process.
+func TestStartAttachesEnvFileToAgentExec(t *testing.T) {
+	spec := liveSpec()
+	spec.Workspace.HomeDir = "/home/scoped"
+	specs := &fakeSpecBuilder{spec: spec}
+	host, engine, _ := newHostFixtureWithPublish(t, specs)
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { _ = host.Stop(context.Background(), sessionID) })
+
+	got := onlyStreamingSpec(t, engine)
+	want := runtime.AgentEnvFilePath("/home/scoped")
+	if got.EnvFile == nil || *got.EnvFile != want {
+		t.Fatalf("agent exec --env-file = %v, want %q", derefOr(got.EnvFile), want)
+	}
+	if !strings.HasSuffix(want, "/.compass/env") {
+		t.Fatalf("env-file path %q is not the aggregate $HOME/.compass/env", want)
+	}
 }

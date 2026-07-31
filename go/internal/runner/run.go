@@ -115,7 +115,7 @@ func Run(ctx context.Context, cfg RunnerConfig, specs SpecBuilder, log *slog.Log
 	// The Sessions loop blocks until the stream ends (ctx cancel = clean
 	// shutdown; any other end is the link dropping). The relay streams
 	// (PublishEvents) are driven per-session inside StartAgent, bound to ctx.
-	if err := link.RunSessions(ctx, host); err != nil {
+	if err := link.RunSessions(ctx, host, log); err != nil {
 		return fmt.Errorf("runner sessions loop: %w", err)
 	}
 	return nil

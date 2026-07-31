@@ -175,6 +175,11 @@ func runnerSessionsLoop(stream *connect.BidiStreamForClient[compassv1internal.Se
 				RequestId: cmd.GetRequestId(),
 				Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-wire"}},
 			}
+		case *compassv1internal.SessionsResponse_SecretsVersion:
+			// Signal-only: the initial-materialize trigger commands.go fires after
+			// promoteSession. Like the production dispatcher, it has no result
+			// variant — consume it and send nothing back.
+			continue
 		default:
 			result = &compassv1internal.SessionsRequest{
 				RequestId: cmd.GetRequestId(),

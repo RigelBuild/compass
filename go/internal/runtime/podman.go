@@ -102,6 +102,10 @@ type ExecSpec struct {
 	// `sh -s` — the script (and any secret it embeds) then never appears in the
 	// exec argv, which is visible in the container's process list.
 	Stdin *string
+	// EnvFile is a `--env-file` path read inside the container at spawn — the
+	// same env-secret channel as StreamingExecSpec.EnvFile, for a wrapped
+	// exec. Nil adds no --env-file; Env wins on a key collision.
+	EnvFile *string
 }
 
 // NewExecSpec builds an ExecSpec running command with an empty environment.
@@ -118,6 +122,15 @@ func (s ExecSpec) AsUser(user string) ExecSpec {
 // InDir sets the --workdir the command runs in.
 func (s ExecSpec) InDir(dir string) ExecSpec {
 	s.Workdir = &dir
+	return s
+}
+
+// WithEnvFile sets the --env-file path the exec reads at spawn. Empty is a
+// no-op (adds no flag).
+func (s ExecSpec) WithEnvFile(path string) ExecSpec {
+	if path != "" {
+		s.EnvFile = &path
+	}
 	return s
 }
 
@@ -150,6 +163,12 @@ type StreamingExecSpec struct {
 	// Workdir is the --workdir inside the container.
 	Workdir *string
 	Env     map[string]string
+	// EnvFile is a `--env-file` path read inside the container at spawn. Env
+	// secrets ride this 0600 aggregate file ($HOME/.compass/env, SEA-1327 T5)
+	// rather than `-e KEY=VALUE`, which is host-process-list visible. Nil adds
+	// no --env-file. Values from --env-file and Env both apply; Env wins on a
+	// key collision (podman applies -e after --env-file).
+	EnvFile *string
 }
 
 // NewStreamingExecSpec builds a StreamingExecSpec running command with an empty
@@ -167,6 +186,15 @@ func (s StreamingExecSpec) AsUser(user string) StreamingExecSpec {
 // InDir sets the --workdir the command runs in.
 func (s StreamingExecSpec) InDir(dir string) StreamingExecSpec {
 	s.Workdir = &dir
+	return s
+}
+
+// WithEnvFile sets the --env-file path the exec reads at spawn. Empty is a
+// no-op (adds no flag).
+func (s StreamingExecSpec) WithEnvFile(path string) StreamingExecSpec {
+	if path != "" {
+		s.EnvFile = &path
+	}
 	return s
 }
 
@@ -397,6 +425,9 @@ func (p *PodmanCLI) Exec(ctx context.Context, id ContainerID, spec ExecSpec) (Ex
 	if spec.Workdir != nil {
 		args = append(args, "--workdir", *spec.Workdir)
 	}
+	if spec.EnvFile != nil {
+		args = append(args, "--env-file", *spec.EnvFile)
+	}
 	for _, kv := range sortedEnv(spec.Env) {
 		args = append(args, "-e", kv.key+"="+kv.value)
 	}
@@ -590,6 +621,9 @@ func execStreamingArgs(id ContainerID, spec StreamingExecSpec) []string {
 	}
 	if spec.Workdir != nil {
 		args = append(args, "--workdir", *spec.Workdir)
+	}
+	if spec.EnvFile != nil {
+		args = append(args, "--env-file", *spec.EnvFile)
 	}
 	for _, kv := range sortedEnv(spec.Env) {
 		args = append(args, "-e", kv.key+"="+kv.value)

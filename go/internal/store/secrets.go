@@ -34,8 +34,8 @@ const (
 	// SecretKindProvider is an LLM provider credential routed to the AuthStorage
 	// seed (never the generic env/file channels); carries a Provider id.
 	SecretKindProvider SecretKind = 1
-	// SecretKindGH is a gh credential routed to GHCredentials.SetupScript;
-	// carries a Host (default github.com).
+	// SecretKindGH is a gh credential routed to the gh hosts.yml placement
+	// (runtime.GHHostsScript); carries a Host (default github.com).
 	SecretKindGH SecretKind = 2
 )
 
