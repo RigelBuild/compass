@@ -111,6 +111,23 @@ func (s *service) ProvisionAgentWorkspace(
 	if s.hub == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
 	}
+	// SERVER-AUTHORITATIVE persona (proto compass.proto persona=6): populate the
+	// outgoing persona from the store's AgentAccount, overwriting whatever the
+	// client sent, so a caller cannot inject a system prompt. A non-agent account
+	// carries no persona, but the client value is still cleared for the same
+	// reason. The Runner receives this on the same relayed req.Msg.
+	acc, err := s.store.GetAccount(ctx, store.AccountID(req.Msg.GetAgentAccountId()))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no account with id %s", req.Msg.GetAgentAccountId()))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("reading agent account for persona: %w", err))
+	}
+	if acc.IsAgent() {
+		req.Msg.Persona = acc.Agent.Persona
+	} else {
+		req.Msg.Persona = ""
+	}
 	resp, runnerID, err := s.hub.Provision(ctx, req.Msg.GetClientRequestId(), req.Msg)
 	if err != nil {
 		return nil, err
