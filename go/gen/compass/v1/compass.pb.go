@@ -2169,9 +2169,11 @@ type ProvisionAgentWorkspaceRequest struct {
 	// The agent's persona, baked into the container's system prompt at provision
 	// so it survives compaction (a system-prompt config block is not part of the
 	// message history a snapcompact archives). SERVER-AUTHORITATIVE: the Server
-	// populates this by reading AgentAccount.persona from the store on the
-	// provision path and OVERWRITES any client-supplied value, so a caller can
-	// never inject a system prompt. The Runner materializes it into the container
+	// is expected to populate this by reading AgentAccount.persona from the store
+	// on the provision path and to overwrite any client-supplied value, so a
+	// caller cannot inject a system prompt — an invariant enforced by the server
+	// provision path (not by this wire-settable field). The Runner materializes
+	// it into the container
 	// (compass-runner consumer). Empty = no persona baked (default).
 	Persona       string `protobuf:"bytes,6,opt,name=persona,proto3" json:"persona,omitempty"`
 	unknownFields protoimpl.UnknownFields
