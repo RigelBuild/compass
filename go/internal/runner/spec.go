@@ -2,16 +2,14 @@
 
 // The config-driven SpecBuilder: it assembles a launchable runtime.AgentSpec
 // from operator-supplied defaults (the image, the default-deny egress allowlist,
-// the workspace layout) plus the per-request repo + ref. It is the production
-// SpecBuilder the Runner binary wires; the per-agent-account credential and
-// egress derivation that later tiers add plugs into the same SpecBuilder seam
-// without changing Provision.
+// the workspace layout). It is the production SpecBuilder the Runner binary
+// wires; the per-agent-account credential and egress derivation that later tiers
+// add plugs into the same SpecBuilder seam without changing Provision.
 package runner
 
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
@@ -21,8 +19,8 @@ import (
 // SpecDefaults are the operator-provisioned, request-independent parts of an
 // AgentSpec: the image every agent container runs, the default-deny egress
 // allowlist, the in-container checkout/home layout + agent uid, and any read-only
-// host mounts (e.g. a bare-repo mirror cache). The per-workstream repo and ref
-// come from the request; everything else is policy set once at Runner startup.
+// host mounts (e.g. a bare-repo mirror cache). Everything here is policy set once
+// at Runner startup.
 type SpecDefaults struct {
 	Image       string
 	Egress      runtime.EgressPolicy
@@ -76,17 +74,9 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 	return &configSpecBuilder{defaults: defaults}, nil
 }
 
-// BuildSpec maps the request's agent account + repo + ref onto a full AgentSpec,
-// filling image/egress/workspace-layout from the defaults. Exactly one of the
-// request's repo variants (remote_url / local_path) must be set, mirroring the
-// built RepoSource.
+// BuildSpec maps the request's agent account onto a full AgentSpec, filling
+// image/egress/workspace-layout from the defaults.
 func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {
-	source, err := repoSourceFromRequest(req)
-	if err != nil {
-		return runtime.AgentSpec{}, err
-	}
-	branch := req.GetRef()
-
 	d := b.defaults
 	accountID := req.GetAgentAccountId()
 	if err := validAccountID(accountID); err != nil {
@@ -97,8 +87,6 @@ func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequ
 		Name:  name,
 		Image: d.Image,
 		Workspace: runtime.Workspace{
-			Source:      source,
-			Branch:      branch,
 			CheckoutDir: d.CheckoutDir,
 			HomeDir:     d.HomeDir,
 			UID:         d.UID,
@@ -141,79 +129,6 @@ func validAccountID(id string) error {
 		return (r < '0' || r > '9') && (r < 'a' || r > 'f')
 	}) {
 		return fmt.Errorf("agent account id %q is not lowercase hex ([0-9a-f])", id)
-	}
-	return nil
-}
-
-// repoSourceFromRequest maps the request's repo oneof to a runtime.RepoSource,
-// enforcing that exactly one variant is set.
-func repoSourceFromRequest(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.RepoSource, error) {
-	switch r := req.GetRepo().(type) {
-	case *compassv1.ProvisionAgentWorkspaceRequest_RemoteUrl:
-		if r.RemoteUrl == "" {
-			return runtime.RepoSource{}, errors.New("remote_url is empty")
-		}
-		if err := validateRemoteURL(r.RemoteUrl); err != nil {
-			return runtime.RepoSource{}, err
-		}
-		return runtime.RemoteSource(r.RemoteUrl), nil
-	case *compassv1.ProvisionAgentWorkspaceRequest_LocalPath:
-		if r.LocalPath == "" {
-			return runtime.RepoSource{}, errors.New("local_path is empty")
-		}
-		if err := validateLocalPath(r.LocalPath); err != nil {
-			return runtime.RepoSource{}, err
-		}
-		return runtime.LocalPathSource(r.LocalPath), nil
-	default:
-		return runtime.RepoSource{}, errors.New("provision request requires a repo (remote_url or local_path)")
-	}
-}
-
-// validateRemoteURL constrains a caller-supplied remote_url to the git transports
-// we intend before it reaches `git clone` inside the container. The URL is
-// forwarded verbatim as the clone target (workspace.go CloneCommand), so an
-// unconstrained value is a clone-time code-execution / read-outside-boundary
-// vector: git's `ext::<cmd>` transport runs an arbitrary command, and `file://`
-// (or a bare local path) reads outside the intended network-clone boundary.
-// Allow only explicit https:// and ssh:// — the two network transports a
-// workstream repo is cloned over; a container-local mirror uses local_path, not
-// a remote_url. A leading '-' is rejected so the value can never be mistaken for
-// a git option.
-func validateRemoteURL(raw string) error {
-	if strings.HasPrefix(raw, "-") {
-		return fmt.Errorf("remote_url %q must not begin with '-'", raw)
-	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("remote_url %q is not a valid URL: %w", raw, err)
-	}
-	switch u.Scheme {
-	case "https", "ssh":
-		if u.Host == "" {
-			return fmt.Errorf("remote_url %q has no host", raw)
-		}
-		return nil
-	default:
-		return fmt.Errorf("remote_url %q must use the https:// or ssh:// transport (got scheme %q)", raw, u.Scheme)
-	}
-}
-
-// validateLocalPath constrains a caller-supplied local_path: it becomes the
-// clone target as file://<path> (workspace.go cloneArg), so it must be a plain
-// absolute in-container path — not itself a URL (no scheme, no `://`, no `ext::`)
-// and not an option-injecting leading '-'. It names a container-local bare mirror
-// bind-mounted in; the container boundary + read-only mount are the containment,
-// this guards the value's shape.
-func validateLocalPath(raw string) error {
-	if strings.HasPrefix(raw, "-") {
-		return fmt.Errorf("local_path %q must not begin with '-'", raw)
-	}
-	if !strings.HasPrefix(raw, "/") {
-		return fmt.Errorf("local_path %q must be an absolute path", raw)
-	}
-	if strings.Contains(raw, "://") || strings.Contains(raw, "::") {
-		return fmt.Errorf("local_path %q must be a plain path, not a URL", raw)
 	}
 	return nil
 }

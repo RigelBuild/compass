@@ -58,15 +58,28 @@ breaking:
   # SessionFrame's opaque `bytes event = 1`, retyped to a typed `SessionEvent
   # typed_event = 3` — never a dual opaque+typed wire). That trips FIELD_NO_DELETE
   # on agent.proto. agent.proto is an INTERNAL-only surface (agent↔Runner stdio,
-  # never generated onto the public client), so exempting it leaves the public
-  # contract even more fully armed than the comms.proto exemptions do: all of
-  # compass.proto stays guarded. REMOVE these exemptions at launch — once a live
-  # client exists, any deletion is a real break again.
+  # never generated onto the public client). A fifth record ratifies a removal
+  # from compass.proto itself: the SEA-1527 repo-wipe (Matt, 2026-07-29 —
+  # docs/designs/product/compass-agent-spawn-despawn/design.md, "Spawn carries no
+  # repo"; sealed c8d55f81), which drops ProvisionAgentWorkspaceRequest's repo
+  # oneof (remote_url=2/local_path=3) + ref=4, reserving those tags/names. Server-
+  # side auto-clone is deleted, not made optional; the agent self-clones after
+  # launch. Removing a whole oneof (repo) plus its fields trips TWO FILE-category
+  # rules on compass.proto: FIELD_NO_DELETE (the three fields remote_url/local_path/
+  # ref) and ONEOF_NO_DELETE (the repo oneof container itself) — both relaxed here,
+  # still safe under the same pre-launch invariant (the Server on `main` is
+  # ephemeral, no live client). Every other removable surface of compass.proto
+  # stays guarded (MESSAGE_NO_DELETE / RPC_NO_DELETE stay armed on it). REMOVE
+  # these exemptions at launch — once a live client exists, any deletion is a real
+  # break again.
   ignore_only:
     FIELD_NO_DELETE:
       - proto/compass/v1/comms.proto
       - proto/compass/v1/agent.proto
+      - proto/compass/v1/compass.proto
     MESSAGE_NO_DELETE:
       - proto/compass/v1/comms.proto
+    ONEOF_NO_DELETE:
+      - proto/compass/v1/compass.proto
     RPC_NO_DELETE:
       - proto/compass/v1/comms.proto

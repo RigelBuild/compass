@@ -79,7 +79,7 @@ type ContainerSpec struct {
 	// agent itself runs as a non-root user with an empty capability set (see
 	// egress.go).
 	CapAdd []string
-	// Mounts is the bind mounts (e.g. the host bare-repo cache, mounted
+	// Mounts is the read-only host bind mounts (e.g. a host cache mounted
 	// read-only).
 	Mounts []Mount
 	// Env is the environment variables set on the container.

@@ -271,7 +271,6 @@ func provisionWhenSeamLive(t *testing.T, ctx context.Context, hub *runnerhub.Hub
 	for {
 		resp, _, err := hub.Provision(ctx, "prov-1", &compassv1.ProvisionAgentWorkspaceRequest{
 			AgentAccountId: string(agentID),
-			Repo:           &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
 		})
 		if err == nil {
 			name := resp.GetContainerName()

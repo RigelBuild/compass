@@ -1,25 +1,18 @@
 package runtime
 
-// Clone-per-container + the scoped $HOME credential helper. These pin the two
-// caller-facing outputs: the `git clone` argv (file:// for a local mirror, the
-// URL verbatim for a remote) and the credential setup script (token scoped to
-// $HOME, forge-host-agnostic, reserved chars percent-encoded, invalid host
-// refused). A regression here either breaks the clone or leaks/mis-scopes a
-// token.
+// The scoped $HOME credential helper. These pin the credential setup script:
+// token scoped to $HOME, forge-host-agnostic, reserved chars percent-encoded,
+// invalid host refused. A regression here leaks or mis-scopes a token.
 
 import (
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 )
 
-// testWorkspace mirrors the Rust `workspace` helper: a fixed workspace over the
-// given source, with credentials optionally attached.
-func testWorkspace(source RepoSource, creds *Credentials) Workspace {
+// testWorkspace is a fixed workspace with credentials optionally attached.
+func testWorkspace(creds *Credentials) Workspace {
 	return Workspace{
-		Source:      source,
-		Branch:      "main",
 		CheckoutDir: "/work/repo",
 		HomeDir:     "/home/agent",
 		UID:         1000,
@@ -32,7 +25,7 @@ func testWorkspace(source RepoSource, creds *Credentials) Workspace {
 // error or empty result.
 func scriptFor(t *testing.T, creds Credentials) string {
 	t.Helper()
-	script, err := testWorkspace(RemoteSource("https://x/y"), &creds).CredentialSetupScript()
+	script, err := testWorkspace(&creds).CredentialSetupScript()
 	if err != nil {
 		t.Fatalf("CredentialSetupScript() error = %v, want nil", err)
 	}
@@ -42,26 +35,8 @@ func scriptFor(t *testing.T, creds Credentials) string {
 	return script
 }
 
-func TestLocalPathClonesOverFileScheme(t *testing.T) {
-	ws := testWorkspace(LocalPathSource("/src/demo.git"), nil)
-
-	want := []string{"git", "clone", "--branch", "main", "file:///src/demo.git", "/work/repo"}
-	if got := ws.CloneCommand(); !slices.Equal(got, want) {
-		t.Fatalf("CloneCommand() = %q, want %q", got, want)
-	}
-}
-
-func TestRemoteClonesTheURLDirectly(t *testing.T) {
-	ws := testWorkspace(RemoteSource("https://github.com/sealedsecurity/sealed"), nil)
-
-	cmd := ws.CloneCommand()
-	if cmd[4] != "https://github.com/sealedsecurity/sealed" {
-		t.Fatalf("CloneCommand()[4] = %q, want the remote URL verbatim", cmd[4])
-	}
-}
-
 func TestNoCredentialsMeansNoCredentialScript(t *testing.T) {
-	ws := testWorkspace(LocalPathSource("/src/demo.git"), nil)
+	ws := testWorkspace(nil)
 
 	script, err := ws.CredentialSetupScript()
 	if err != nil {
@@ -128,7 +103,7 @@ func TestCredentialEntryPercentEncodesReservedCharacters(t *testing.T) {
 }
 
 func TestInvalidCredentialHostIsRejected(t *testing.T) {
-	ws := testWorkspace(RemoteSource("https://x/y"), &Credentials{
+	ws := testWorkspace(&Credentials{
 		Host:     "evil.com; rm -rf /",
 		Username: "u",
 		Token:    "t",
@@ -149,7 +124,7 @@ func TestZoneScopedCredentialHostIsRejected(t *testing.T) {
 	// after the fix CredentialSetupScript surfaces an *InvalidHostError and emits
 	// no script.
 	host := "::1%\nCRED_EOF\ntouch /tmp/pwned\n#"
-	ws := testWorkspace(RemoteSource("https://x/y"), &Credentials{
+	ws := testWorkspace(&Credentials{
 		Host:     host,
 		Username: "u",
 		Token:    "t",

@@ -35,7 +35,7 @@ func TestVerifyRunnerUID(t *testing.T) {
 // rejected at flag-parse with a message an operator can act on (it names the bad
 // input and the host:container[:ro] shape), and a well-formed value must reach
 // SpecDefaults.Mounts intact — the ':ro' suffix is the load-bearing bit that
-// makes the dogfood bare-repo mirror read-only, so ReadOnly must be exact.
+// makes a mount read-only, so ReadOnly must be exact.
 func TestParseMount(t *testing.T) {
 	okCases := []struct {
 		name string

@@ -391,17 +391,13 @@ message ProvisionAgentWorkspaceRequest {
   // from CommsService). Names whose credentials + home channel the container
   // is provisioned for.
   string agent_account_id = 1;
-  // Where the agent's repo is cloned from inside the container. Exactly one of
-  // remote_url / local_path is set, mirroring the built RepoSource
-  // (internal/runtime/workspace.go:17-33): remote_url clones over the network
-  // (egress-gated); local_path clones a container-local bare mirror over
-  // file:// for a hermetic, network-free clone.
-  oneof repo {
-    string remote_url = 2;
-    string local_path = 3;
-  }
-  // The branch/ref the workstream checks out. Empty = the repo's default branch.
-  string ref = 4;
+  // Repo carriage removed (SEA-1527, Matt 2026-07-29): spawn/provision no longer
+  // clone a repo for the agent. The container is provisioned with a git
+  // credential + workspace and the agent self-clones whatever it needs after
+  // launch. Tags 2,3,4 (the former repo oneof + ref) are reserved so a live
+  // consumer never re-binds them.
+  reserved 2, 3, 4;
+  reserved "remote_url", "local_path", "ref";
   // Idempotency key (OQ6). When set, a timeout-retry with the same id returns
   // the same container_name rather than provisioning a second container: the
   // Server threads it as the RunnerHub request id so the retry joins the

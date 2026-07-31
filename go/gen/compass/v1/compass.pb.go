@@ -2146,19 +2146,6 @@ type ProvisionAgentWorkspaceRequest struct {
 	// from CommsService). Names whose credentials + home channel the container
 	// is provisioned for.
 	AgentAccountId string `protobuf:"bytes,1,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
-	// Where the agent's repo is cloned from inside the container. Exactly one of
-	// remote_url / local_path is set, mirroring the built RepoSource
-	// (internal/runtime/workspace.go:17-33): remote_url clones over the network
-	// (egress-gated); local_path clones a container-local bare mirror over
-	// file:// for a hermetic, network-free clone.
-	//
-	// Types that are valid to be assigned to Repo:
-	//
-	//	*ProvisionAgentWorkspaceRequest_RemoteUrl
-	//	*ProvisionAgentWorkspaceRequest_LocalPath
-	Repo isProvisionAgentWorkspaceRequest_Repo `protobuf_oneof:"repo"`
-	// The branch/ref the workstream checks out. Empty = the repo's default branch.
-	Ref string `protobuf:"bytes,4,opt,name=ref,proto3" json:"ref,omitempty"`
 	// Idempotency key (OQ6). When set, a timeout-retry with the same id returns
 	// the same container_name rather than provisioning a second container: the
 	// Server threads it as the RunnerHub request id so the retry joins the
@@ -2217,38 +2204,6 @@ func (x *ProvisionAgentWorkspaceRequest) GetAgentAccountId() string {
 	return ""
 }
 
-func (x *ProvisionAgentWorkspaceRequest) GetRepo() isProvisionAgentWorkspaceRequest_Repo {
-	if x != nil {
-		return x.Repo
-	}
-	return nil
-}
-
-func (x *ProvisionAgentWorkspaceRequest) GetRemoteUrl() string {
-	if x != nil {
-		if x, ok := x.Repo.(*ProvisionAgentWorkspaceRequest_RemoteUrl); ok {
-			return x.RemoteUrl
-		}
-	}
-	return ""
-}
-
-func (x *ProvisionAgentWorkspaceRequest) GetLocalPath() string {
-	if x != nil {
-		if x, ok := x.Repo.(*ProvisionAgentWorkspaceRequest_LocalPath); ok {
-			return x.LocalPath
-		}
-	}
-	return ""
-}
-
-func (x *ProvisionAgentWorkspaceRequest) GetRef() string {
-	if x != nil {
-		return x.Ref
-	}
-	return ""
-}
-
 func (x *ProvisionAgentWorkspaceRequest) GetClientRequestId() string {
 	if x != nil {
 		return x.ClientRequestId
@@ -2262,22 +2217,6 @@ func (x *ProvisionAgentWorkspaceRequest) GetPersona() string {
 	}
 	return ""
 }
-
-type isProvisionAgentWorkspaceRequest_Repo interface {
-	isProvisionAgentWorkspaceRequest_Repo()
-}
-
-type ProvisionAgentWorkspaceRequest_RemoteUrl struct {
-	RemoteUrl string `protobuf:"bytes,2,opt,name=remote_url,json=remoteUrl,proto3,oneof"`
-}
-
-type ProvisionAgentWorkspaceRequest_LocalPath struct {
-	LocalPath string `protobuf:"bytes,3,opt,name=local_path,json=localPath,proto3,oneof"`
-}
-
-func (*ProvisionAgentWorkspaceRequest_RemoteUrl) isProvisionAgentWorkspaceRequest_Repo() {}
-
-func (*ProvisionAgentWorkspaceRequest_LocalPath) isProvisionAgentWorkspaceRequest_Repo() {}
 
 type ProvisionAgentWorkspaceResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2906,17 +2845,13 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12.\n" +
 	"\x05event\x18\x02 \x01(\v2\x18.compass.v1.SessionEventR\x05event\x123\n" +
-	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\"\xec\x01\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\"\xbf\x01\n" +
 	"\x1eProvisionAgentWorkspaceRequest\x12(\n" +
-	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12\x1f\n" +
-	"\n" +
-	"remote_url\x18\x02 \x01(\tH\x00R\tremoteUrl\x12\x1f\n" +
-	"\n" +
-	"local_path\x18\x03 \x01(\tH\x00R\tlocalPath\x12\x10\n" +
-	"\x03ref\x18\x04 \x01(\tR\x03ref\x12*\n" +
+	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12*\n" +
 	"\x11client_request_id\x18\x05 \x01(\tR\x0fclientRequestId\x12\x18\n" +
-	"\apersona\x18\x06 \x01(\tR\apersonaB\x06\n" +
-	"\x04repo\"H\n" +
+	"\apersona\x18\x06 \x01(\tR\apersonaJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\n" +
+	"remote_urlR\n" +
+	"local_pathR\x03ref\"H\n" +
 	"\x1fProvisionAgentWorkspaceResponse\x12%\n" +
 	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\"h\n" +
 	"\x18StartAgentSessionRequest\x12%\n" +
@@ -3139,10 +3074,6 @@ func file_compass_v1_compass_proto_init() {
 	}
 	file_compass_v1_compass_proto_msgTypes[23].OneofWrappers = []any{}
 	file_compass_v1_compass_proto_msgTypes[25].OneofWrappers = []any{}
-	file_compass_v1_compass_proto_msgTypes[28].OneofWrappers = []any{
-		(*ProvisionAgentWorkspaceRequest_RemoteUrl)(nil),
-		(*ProvisionAgentWorkspaceRequest_LocalPath)(nil),
-	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
