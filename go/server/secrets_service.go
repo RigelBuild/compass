@@ -85,7 +85,10 @@ var errNoResolver = errors.New("no secret resolver configured on this server")
 // rejected up front, before any row is declared. A failed FRESH write rolls back
 // the declaration so no orphan survives (an orphaned declaration is required=true
 // in the resolve manifest and would poison EVERY live session's FetchSecrets). On
-// a successful write the secrets version is bumped so live sessions re-fetch.
+// a successful write the secrets version is bumped so live sessions re-fetch. The
+// declare/set/rollback trio is not atomic and assumes no concurrent same-name
+// writer (the single-Runner MVP: SetSecret is user-driven CLI); a future
+// multi-writer path must re-examine the race.
 func (s *secretsService) SetSecret(
 	ctx context.Context,
 	req *connect.Request[compassv1.SetSecretRequest],
