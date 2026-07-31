@@ -61,6 +61,19 @@ func run() error {
 			"cert for the local dogfood path (where one cert is both the server's "+
 			"--tls-cert and this trust anchor); leave unset when the Server is "+
 			"behind a public CA. Defaults to $COMPASS_RUNNER_CA.")
+	var mounts []runtime.Mount
+	flag.Func("mount",
+		"Repeatable host:container[:ro] bind mount into the agent container "+
+			"(add ':ro' for read-only). Flag-only, no env fallback. Used to mount "+
+			"a host bare-repo mirror read-only for the dogfood file:// clone.",
+		func(s string) error {
+			m, err := parseMount(s)
+			if err != nil {
+				return err
+			}
+			mounts = append(mounts, m)
+			return nil
+		})
 	showVersion := flag.Bool("version", false, "Print the version and exit.")
 	flag.Parse()
 
@@ -121,6 +134,7 @@ func run() error {
 		HomeDir:     *homeDir,
 		UID:         defaultAgentUID,
 		NamePrefix:  runner.AgentContainerNamePrefix,
+		Mounts:      mounts,
 	})
 	if err != nil {
 		return err
@@ -194,4 +208,41 @@ func parseEgress(csv string) (runtime.EgressPolicy, error) {
 		}
 	}
 	return runtime.AllowEgress(hosts...)
+}
+
+// parseMount parses one --mount value of the form host:container[:ro] into a
+// bind mount. Exactly two fields (read-write) or three fields where the third is
+// literally "ro" (read-only); host and container are required. Errors name the
+// offending input and the accepted shape so an operator can act on them.
+func parseMount(s string) (runtime.Mount, error) {
+	fields := strings.Split(s, ":")
+	if len(fields) != 2 && len(fields) != 3 {
+		return runtime.Mount{}, fmt.Errorf(
+			"invalid --mount %q: want host:container[:ro]", s)
+	}
+	host := strings.TrimSpace(fields[0])
+	container := strings.TrimSpace(fields[1])
+	if host == "" {
+		return runtime.Mount{}, fmt.Errorf(
+			"invalid --mount %q: empty host path, want host:container[:ro]", s)
+	}
+	if container == "" {
+		return runtime.Mount{}, fmt.Errorf(
+			"invalid --mount %q: empty container path, want host:container[:ro]", s)
+	}
+	if strings.ContainsRune(host, ',') || strings.ContainsRune(container, ',') {
+		return runtime.Mount{}, fmt.Errorf(
+			"invalid --mount %q: ',' is not allowed in a path (podman reads it as a "+
+				"-v option separator), want host:container[:ro]", s)
+	}
+	readOnly := false
+	if len(fields) == 3 {
+		mode := strings.TrimSpace(fields[2])
+		if mode != "ro" {
+			return runtime.Mount{}, fmt.Errorf(
+				"invalid --mount %q: unknown mode %q, want host:container[:ro]", s, mode)
+		}
+		readOnly = true
+	}
+	return runtime.Mount{HostPath: host, ContainerPath: container, ReadOnly: readOnly}, nil
 }
