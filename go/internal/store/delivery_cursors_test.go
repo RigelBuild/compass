@@ -533,7 +533,10 @@ func TestAckDeliveryCrossChannelGapIsLossless(t *testing.T) {
 // concurrent acks for the same (agent, channel) do a read-modify-write on the
 // cursor row; without FOR UPDATE the second UPDATE clobbers the first's
 // above_seqs (a dropped acked seq → spurious redelivery). With FOR UPDATE the
-// RMW serializes so both acked seqs are retained regardless of interleaving.
+// RMW serializes so both acked seqs are retained regardless of interleaving. A
+// single two-goroutine race can interleave to green by luck even without the
+// lock, so the contend section is repeated N times to make the lost-update catch
+// reliable, each iteration a real concurrent RMW against a growing above_seqs.
 func TestAckDeliveryConcurrentAcksRetainBothSeqs(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -542,54 +545,59 @@ func TestAckDeliveryConcurrentAcksRetainBothSeqs(t *testing.T) {
 	ch := agent.Agent.HomeChannelID
 	other := mustNamedChannel(t, s, owner.ID, "other")
 
-	// A and B owed on ch, with a cross-channel gap between them so both acks land
-	// in above_seqs under the current advance (neither drains the contiguous
-	// cursor), forcing both concurrent RMWs to touch above_seqs — the field a
-	// lost update would clobber.
-	mA, seqA := postAs(t, s, ch, owner.ID, "owed A")
-	postAs(t, s, other.ID, owner.ID, "cross-channel gap")
-	mB, seqB := postAs(t, s, ch, owner.ID, "owed B")
+	const iterations = 50
+	ackedIDs := map[string]bool{}
+	for iter := range iterations {
+		// Fresh A and B owed on ch, with a cross-channel gap message between
+		// them: the table-global BIGSERIAL seq puts an out-of-channel seq
+		// between seqA and seqB, so at least one ack lands in above_seqs.
+		mA, seqA := postAs(t, s, ch, owner.ID, "owed A")
+		postAs(t, s, other.ID, owner.ID, "cross-channel gap")
+		mB, seqB := postAs(t, s, ch, owner.ID, "owed B")
 
-	// Gate both goroutines so they contend, then launch concurrently.
-	var start, done sync.WaitGroup
-	start.Add(1)
-	done.Add(2)
-	errs := make([]error, 2)
-	for i, mID := range []string{mA, mB} {
-		go func(i int, mID string) {
-			defer done.Done()
-			start.Wait()
-			errs[i] = s.AckDelivery(ctx, agent.ID, ch, mID)
-		}(i, mID)
-	}
-	start.Done()
-	done.Wait()
-	for i, err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent AckDelivery[%d]: %v", i, err)
+		// Gate both goroutines so they contend, then launch concurrently.
+		var start, done sync.WaitGroup
+		start.Add(1)
+		done.Add(2)
+		errs := make([]error, 2)
+		for i, mID := range []string{mA, mB} {
+			go func(i int, mID string) {
+				defer done.Done()
+				start.Wait()
+				errs[i] = s.AckDelivery(ctx, agent.ID, ch, mID)
+			}(i, mID)
 		}
+		start.Done()
+		done.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("iter %d: concurrent AckDelivery[%d]: %v", iter, i, err)
+			}
+		}
+
+		// No lost update: the union of acked_seq and above_seqs must cover BOTH
+		// this iteration's seqA and seqB, regardless of the interleaving or which
+		// seq drained into the contiguous cursor. A lost update drops one acked
+		// seq from above_seqs, so the union would miss it.
+		acked, above, _ := readCursor(t, s, agent.ID, ch)
+		covered := map[int64]bool{acked: true}
+		for _, sq := range above {
+			covered[sq] = true
+		}
+		if !covered[seqA] || !covered[seqB] {
+			t.Fatalf("iter %d: acked=%d above=%v does not cover both seqs %d and %d (lost update)", iter, acked, above, seqA, seqB)
+		}
+		ackedIDs[mA] = true
+		ackedIDs[mB] = true
 	}
 
-	// No lost update: the union of acked_seq and above_seqs accounts for BOTH
-	// A.seq and B.seq. Neither drains the contiguous cursor (A is owed below the
-	// cross-channel gap only until acked; whichever order ran, the retained set
-	// plus acked_seq must cover both).
-	acked, above, _ := readCursor(t, s, agent.ID, ch)
-	covered := map[int64]bool{acked: true}
-	for _, sq := range above {
-		covered[sq] = true
-	}
-	if !covered[seqA] || !covered[seqB] {
-		t.Fatalf("acked=%d above=%v does not cover both seqs %d and %d (lost update)", acked, above, seqA, seqB)
-	}
-
-	// And the sweep returns neither A nor B on ch.
+	// And the sweep returns no message that was acked in any iteration.
 	got, err := s.UndeliveredMessages(ctx, agent.ID)
 	if err != nil {
 		t.Fatalf("UndeliveredMessages: %v", err)
 	}
 	for _, m := range got[ch] {
-		if string(m.ID) == mA || string(m.ID) == mB {
+		if ackedIDs[string(m.ID)] {
 			t.Fatalf("sweep redelivered an acked message %s (lost update)", m.ID)
 		}
 	}
