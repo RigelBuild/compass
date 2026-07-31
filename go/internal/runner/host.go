@@ -325,6 +325,7 @@ func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
 		HomeDir: handle.HomeDir(),
 		Workdir: handle.CheckoutDir(),
 		Model:   h.model,
+		Persona: handle.Persona(),
 	}
 }
 

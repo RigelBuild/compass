@@ -41,6 +41,9 @@ type AgentSpec struct {
 	Egress EgressPolicy
 	// Mounts is read-only host mounts (e.g. a host cache mounted read-only).
 	Mounts []Mount
+	// Persona is the server-authoritative identity overlay for this agent,
+	// appended to the agent's system prompt at boot. Empty means no overlay.
+	Persona string
 }
 
 // AgentHandle is a live agent container: the resolved id plus the spec it was
@@ -67,6 +70,10 @@ func (h *AgentHandle) CheckoutDir() string { return h.spec.Workspace.CheckoutDir
 
 // HomeDir returns the agent's scoped $HOME.
 func (h *AgentHandle) HomeDir() string { return h.spec.Workspace.HomeDir }
+
+// Persona returns the server-authoritative identity overlay for this agent, or
+// empty for none.
+func (h *AgentHandle) Persona() string { return h.spec.Persona }
 
 // StageError wraps a container runtime error with the lifecycle stage it
 // failed at, so a failure is diagnosable without a container inspect.
