@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"time"
 
 	"connectrpc.com/connect"
@@ -35,6 +36,7 @@ import (
 	"github.com/sealedsecurity/compass/go/internal/board"
 	"github.com/sealedsecurity/compass/go/internal/comms"
 	"github.com/sealedsecurity/compass/go/internal/runnerhub"
+	"github.com/sealedsecurity/compass/go/internal/secrets"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
@@ -83,6 +85,22 @@ const (
 	bootstrapAdminHandle      = "admin"
 	bootstrapAdminDisplayName = "Administrator"
 )
+
+// secretsStateDir returns the Server-owned directory the secret resolver writes
+// its generated SecretSpec manifests under: a "secrets" subdirectory of the same
+// state dir the bootstrap-admin token is written under (cfg.StateDir, defaulting
+// to the socket's parent, then "."), matching the network door's stateDir
+// derivation (network_door.go). Server state, never repo state; NewSpecResolver
+// creates it 0700 if absent.
+func secretsStateDir(cfg ServeConfig) string {
+	base := cfg.StateDir
+	if base == "" {
+		if base = parentDir(cfg.SocketPath); base == "" {
+			base = "."
+		}
+	}
+	return filepath.Join(base, "secrets")
+}
 
 // Serve binds the compass.v1 service to cfg.SocketPath and drives it until ctx
 // is cancelled.
@@ -210,6 +228,15 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	commsSvc := comms.NewComms(st, commsBus, admin.ID)
 	commsPath, commsHandler := compassv1connect.NewCommsServiceHandler(commsSvc)
 
+	// The Server-side secret resolver: reads the store's names registry, generates
+	// the SecretSpec manifest under a Server-owned state dir, and resolves values
+	// from the configured provider. It is the single place SecretSpec runs — the
+	// RunnerService FetchSecrets handler and the SecretsService write path both
+	// delegate to this one instance. The state dir is a "secrets" subdirectory of
+	// the same state dir the bootstrap-admin token is written under (secretsStateDir);
+	// NewSpecResolver creates it 0700 if absent.
+	resolver := secrets.NewSpecResolver(st, secretsStateDir(cfg))
+
 	// One sessionTail instance is the hub's session-tail sink (writer) and the
 	// service's SubscribeAgentSession source (reader) — a frame the hub relays
 	// fans to that session's stream subscribers.
@@ -219,6 +246,14 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	hubLog := slog.Default()
 	hub := newRunnerHub(brd, tail, commsSvc, hubLog)
 	svc := newService(cfg.Version, bus, st, hub, brd, tail)
+
+	// The SecretsService is an account-facing sibling of CompassService/CommsService:
+	// it mounts on every account door (socket, dev, network) behind the same bearer +
+	// admin-gate chain, which classifies its three procedures authenticatedOpen — the
+	// door admits any authenticated account and the handler enforces the user-only
+	// writes / user-or-agent list. The hub is its SecretsVersion signaler (a Set/Delete
+	// notifies live sessions to re-fetch); it shares the one resolver with FetchSecrets.
+	secretsSvc := newSecretsService(st, resolver, hub)
 
 	// Shipped door: the Unix socket serves native gRPC (cleartext HTTP/2),
 	// gRPC-Web, and Connect off the one connect-go handler. No CORS — the socket
@@ -230,9 +265,15 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// http.Server.Shutdown and drain with the rest on shutdown.
 	socketPath, socketHandler := compassv1connect.NewCompassServiceHandler(svc,
 		connect.WithInterceptors(auth.AmbientIdentity(admin.ID), auth.AmbientStreamInterceptor(admin.ID)))
+	// SecretsService rides the same ambient-identity pair so its handler reads a
+	// caller via CallerFrom (the bootstrap admin, a user): the socket's 0600 mode
+	// is the credential, and admin being a user satisfies the user-only writes.
+	secretsSocketPath, secretsSocketHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
+		connect.WithInterceptors(auth.AmbientIdentity(admin.ID), auth.AmbientStreamInterceptor(admin.ID)))
 	udsMux := http.NewServeMux()
 	udsMux.Handle(socketPath, socketHandler)
 	udsMux.Handle(commsPath, commsHandler)
+	udsMux.Handle(secretsSocketPath, secretsSocketHandler)
 	udsServer := &http.Server{Handler: udsMux, Protocols: cleartextHTTP2()} //nolint:gosec // G112: socket-only door (never internet-facing), so the Slowloris ReadHeaderTimeout does not apply; the network door below sets it
 
 	// Dev-only browser door: the same services with permissive CORS on the
@@ -260,9 +301,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if devListener != nil {
 		devPath, devHandler := compassv1connect.NewCompassServiceHandler(svc,
 			connect.WithInterceptors(auth.NewAdminGate(admin.ID), auth.AmbientIdentity(admin.ID), auth.AmbientStreamInterceptor(admin.ID)))
+		// SecretsService on the dev door: same admin-gate + ambient chain as
+		// CompassService. The gate classifies its 3 procedures authenticatedOpen,
+		// so it passes them, then the ambient pair attaches the bootstrap admin
+		// (a user) the handler reads for the user-only write authz.
+		devSecretsPath, devSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
+			connect.WithInterceptors(auth.NewAdminGate(admin.ID), auth.AmbientIdentity(admin.ID), auth.AmbientStreamInterceptor(admin.ID)))
 		devMux := http.NewServeMux()
 		devMux.Handle(devPath, devHandler)
 		devMux.Handle(commsPath, commsHandler)
+		devMux.Handle(devSecretsPath, devSecretsHandler)
 		devServer = &http.Server{Handler: devCORS().Handler(devMux), Protocols: cleartextHTTP2()} //nolint:gosec // G112: loopback dev-only door (off on the shipped path), so the Slowloris ReadHeaderTimeout does not apply here either
 	}
 
@@ -274,7 +322,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// On a build error the listeners this Serve bound are still ours to close.
 	var netServer *http.Server
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, hub, st, admin.ID, netTLS)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, netTLS, resolver)
 		if err != nil {
 			udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
 			listeners.close()

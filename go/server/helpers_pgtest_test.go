@@ -95,3 +95,32 @@ func newH2CTestServerWithInterceptors(t *testing.T, svc *service, interceptors .
 	t.Cleanup(srv.Close)
 	return srv.URL
 }
+
+// newSecretsH2CServer stands up the SecretsService handler on an h2c httptest
+// server with the given interceptor chain (the network door's bearer + admin-gate
+// chain), driven over a real connect client so the handler reads a populated
+// caller identity the shipped door supplies. Returns the base URL; torn down via
+// t.Cleanup.
+func newSecretsH2CServer(t *testing.T, svc compassv1connect.SecretsServiceHandler, interceptors ...connect.Interceptor) string {
+	t.Helper()
+	path, handler := compassv1connect.NewSecretsServiceHandler(svc, connect.WithInterceptors(interceptors...))
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	srv := httptest.NewUnstartedServer(mux)
+	srv.Config.Protocols = cleartextHTTP2()
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// newSecretsH2CClient builds a SecretsService connect client speaking h2c
+// prior-knowledge to baseURL (a TCP address). Idle conns are closed via t.Cleanup.
+func newSecretsH2CClient(t *testing.T, baseURL string) compassv1connect.SecretsServiceClient {
+	t.Helper()
+	tr := h2cTransport(func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	})
+	t.Cleanup(tr.CloseIdleConnections)
+	return compassv1connect.NewSecretsServiceClient(&http.Client{Transport: tr}, baseURL)
+}

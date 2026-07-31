@@ -381,7 +381,7 @@ func attachFakeRunner(t *testing.T, st *store.Store, hub *runnerhub.Hub, withhol
 	path, handler := runnerhub.NewMountedHandler(hub,
 		func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 			return auth.ResolveToken(ctx, st, presented, want)
-		})
+		}, nil)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)

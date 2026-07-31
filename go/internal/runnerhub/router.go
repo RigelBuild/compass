@@ -117,6 +117,26 @@ func (r *commandRouter) dispatch(ctx context.Context, cmd *compassv1internal.Ses
 	return waitCall(ctx, call)
 }
 
+// push sends cmd down the live Sessions stream WITHOUT registering a pendingCall
+// or waiting for a result — the fire-and-forget counterpart to dispatch, for a
+// signal-only Server->Runner push (SecretsVersion) that has no result variant on
+// the request stream. A nil send (no attached Runner) is a no-op success: the
+// signal is best-effort, and the Runner re-fetches its secret set on reconnect
+// regardless, so a session whose stream is momentarily detached loses nothing
+// permanent. It takes sendMu (never mu while sending) exactly as dispatch does,
+// because connect's server-side BidiStream.Send is not safe for concurrent use.
+func (r *commandRouter) push(cmd *compassv1internal.SessionsResponse) error {
+	r.mu.Lock()
+	send := r.send
+	r.mu.Unlock()
+	if send == nil {
+		return nil
+	}
+	r.sendMu.Lock()
+	defer r.sendMu.Unlock()
+	return send(cmd)
+}
+
 // waitCall blocks until the call completes or ctx is cancelled. A ctx timeout
 // leaves the call in-flight on purpose: a retry with the same id joins it, so a
 // timeout-then-retry is idempotent rather than orphaning the original.

@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"connectrpc.com/connect"
 
@@ -192,6 +193,10 @@ type Hub struct {
 	// all. Counted separately from refusedFrames precisely so total loss cannot
 	// masquerade as a healthy relay refusing the occasional frame.
 	contractDefects uint64
+	// secretsVersion is the monotonic set-change token minted for the
+	// SecretsVersion signal (mintSecretsVersion). An atomic counter, not a
+	// content hash: see mintSecretsVersion for the load-bearing invariant.
+	secretsVersion atomic.Uint64
 }
 
 // attachedRunner is one enrolled Runner: its id, its authenticated token

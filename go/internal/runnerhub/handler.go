@@ -11,26 +11,34 @@ package runnerhub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 
 	"connectrpc.com/connect"
 
+	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/sealedsecurity/compass/go/internal/secrets"
 )
 
 // Handler implements compassv1internalconnect.RunnerServiceHandler over the hub.
-// It holds no state of its own — the hub owns the registry, router, and Deliver
-// seam; the handler is the wire-termination shell that drives them.
+// The hub owns the registry, router, and Deliver seam; the resolver is the
+// Server-side secret resolve surface FetchSecrets delegates to. The handler is
+// the wire-termination shell that drives them.
 type Handler struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
-	hub *Hub
+	hub      *Hub
+	resolver secrets.Resolver
 }
 
-// NewHandler constructs the RunnerService handler over the hub.
-func NewHandler(hub *Hub) *Handler {
-	return &Handler{hub: hub}
+// NewHandler constructs the RunnerService handler over the hub and the secret
+// resolver. resolver may be nil on a server built with no secrets surface, in
+// which case FetchSecrets fails closed (CodeUnavailable) rather than panicking —
+// the same posture the service takes for a nil hub.
+func NewHandler(hub *Hub, resolver secrets.Resolver) *Handler {
+	return &Handler{hub: hub, resolver: resolver}
 }
 
 // Ensure Handler satisfies the generated interface at compile time.
@@ -165,15 +173,99 @@ func (h *Handler) CommitConversationFrame(ctx context.Context, req *connect.Requ
 	return connect.NewResponse(resp), nil
 }
 
+// FetchSecrets resolves the whole declared secret set for a live session and
+// returns it to the Runner. Auth is already at the door (the Runner-subject
+// bearer interceptor Kind-gates every RunnerService RPC — an account token is
+// Unauthenticated here, the OQ7 cross-door rule); the runnerSubjectFrom check is
+// defense in depth, mirroring the other handlers.
+//
+// Session-binding authz (record §756-762): the requested session_id must be a
+// live session bound to this Runner, else CodePermissionDenied. Under inject-all
+// + single-Runner, "bound to this Runner" == "is a live session in the hub"
+// (there is exactly one Runner); HasLiveSession is that check. A foreign or
+// unknown session is rejected CodePermissionDenied ("rejects a foreign session
+// with CodePermissionDenied").
+//
+// NO-LOG posture (record §770-772): the response carries live secret values
+// (ResolvedSecret.value/.version are [debug_redact] on the wire). This handler
+// logs neither the response nor the resolved set.
+func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compassv1internal.FetchSecretsRequest]) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
+	if _, ok := runnerSubjectFrom(ctx); !ok {
+		return nil, errUnauthenticated
+	}
+	if h.resolver == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
+	}
+	sessionID := req.Msg.GetSessionId()
+	if !h.hub.HasLiveSession(sessionID) {
+		// Unbound/unknown session: not this Runner's to resolve secrets for.
+		return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("session %q is not a live session bound to this runner", sessionID))
+	}
+	resolved, err := h.resolver.Resolve(ctx, "runner fetch")
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving secrets: %w", err))
+	}
+	out := make([]*compassv1internal.ResolvedSecret, 0, len(resolved))
+	for _, s := range resolved {
+		out = append(out, resolvedSecretToProto(s))
+	}
+	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{Secrets: out}), nil
+}
+
+// errNoResolver is the fail-closed cause when FetchSecrets reaches a handler
+// built with no resolver (a server with no secrets surface). It maps to
+// CodeUnavailable — the secrets leg is not mounted, never a silent empty set.
+var errNoResolver = errors.New("runnerhub: no secret resolver wired to serve FetchSecrets")
+
+// resolvedSecretToProto maps a secrets.ResolvedSecret to the wire ResolvedSecret,
+// translating the resolve-surface delivery/kind enums to the public proto enums
+// at this edge (the same store↔proto enum discipline the secrets package uses at
+// its own edge). The value/version ride through verbatim; they are the no-log
+// targets ([debug_redact] on the wire), so this mapping never stringifies them.
+func resolvedSecretToProto(s secrets.ResolvedSecret) *compassv1internal.ResolvedSecret {
+	return &compassv1internal.ResolvedSecret{
+		Name:     s.Name,
+		Value:    s.Value,
+		Version:  s.Version,
+		Delivery: deliveryToProto(s.Delivery),
+		Kind:     kindToProto(s.Kind),
+		Host:     s.Host,
+		Provider: s.Provider,
+	}
+}
+
+// deliveryToProto maps the resolve-surface delivery enum to the public proto
+// enum. The proto reserves 0 for UNSPECIFIED, so File/Env map to 1/2.
+func deliveryToProto(d secrets.DeliveryKind) compassv1.SecretDelivery {
+	if d == secrets.DeliveryEnv {
+		return compassv1.SecretDelivery_SECRET_DELIVERY_ENV
+	}
+	return compassv1.SecretDelivery_SECRET_DELIVERY_FILE
+}
+
+// kindToProto maps the resolve-surface kind enum to the public proto enum. The
+// proto reserves 0 for UNSPECIFIED, so Generic/Provider/GH map to 1/2/3.
+func kindToProto(k secrets.SecretKind) compassv1.SecretKind {
+	switch k {
+	case secrets.SecretProvider:
+		return compassv1.SecretKind_SECRET_KIND_PROVIDER
+	case secrets.SecretGH:
+		return compassv1.SecretKind_SECRET_KIND_GH
+	default:
+		return compassv1.SecretKind_SECRET_KIND_GENERIC
+	}
+}
+
 // NewMountedHandler builds the RunnerService HTTP handler with the Runner-subject
 // bearer interceptor applied, returning the mount path and handler for serve.go
 // to Handle on the network mux. resolve is the shared credential resolver
 // (auth.ResolveToken with the store closed over); the door authenticates every
-// RPC through it for a SubjectRunner token.
-func NewMountedHandler(hub *Hub, resolve TokenResolver) (string, http.Handler) {
+// RPC through it for a SubjectRunner token. resolver is the Server-side secret
+// resolve surface FetchSecrets delegates to.
+func NewMountedHandler(hub *Hub, resolve TokenResolver, resolver secrets.Resolver) (string, http.Handler) {
 	auth := &bearerAuth{resolve: resolve}
 	return compassv1internalconnect.NewRunnerServiceHandler(
-		NewHandler(hub),
+		NewHandler(hub, resolver),
 		connect.WithInterceptors(auth.unaryInterceptor(), auth.streamInterceptor()),
 	)
 }

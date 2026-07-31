@@ -66,7 +66,8 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 		StateDir:          t.TempDir(), // bootstrap-admin token file lands here (0600)
 		CORSAllowedOrigin: corsOrigin,
 	}
-	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, nil, st, admin, nil)
+	secretsSvc := newSecretsService(st, nil, nil)
+	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, nil, st, admin, nil, nil)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}
