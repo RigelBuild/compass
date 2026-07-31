@@ -200,7 +200,7 @@ message FetchSecretsResponse {
 message ResolvedSecret {
   string name = 1;
   string value = 2 [debug_redact = true];
-  string version = 3;  // content-hash (SHA-256 hex)
+  string version = 3 [debug_redact = true];  // content-hash (SHA-256 hex); redacted like value — the hash is a confirmation oracle for a low-entropy secret (mirrors secrets.go String/GoString omitting Version)
   SecretDelivery delivery = 4;
   SecretKind kind = 5;
   string host = 6;      // set only for SECRET_KIND_GH

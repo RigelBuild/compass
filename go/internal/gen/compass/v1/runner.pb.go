@@ -629,7 +629,7 @@ type ResolvedSecret struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
-	Version       string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"` // content-hash (SHA-256 hex)
+	Version       string                 `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"` // content-hash (SHA-256 hex); redacted like value — the hash is a confirmation oracle for a low-entropy secret (mirrors secrets.go String/GoString omitting Version)
 	Delivery      v1.SecretDelivery      `protobuf:"varint,4,opt,name=delivery,proto3,enum=compass.v1.SecretDelivery" json:"delivery,omitempty"`
 	Kind          v1.SecretKind          `protobuf:"varint,5,opt,name=kind,proto3,enum=compass.v1.SecretKind" json:"kind,omitempty"`
 	Host          string                 `protobuf:"bytes,6,opt,name=host,proto3" json:"host,omitempty"`         // set only for SECRET_KIND_GH
@@ -1255,11 +1255,11 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"L\n" +
 	"\x14FetchSecretsResponse\x124\n" +
-	"\asecrets\x18\x01 \x03(\v2\x1a.compass.v1.ResolvedSecretR\asecrets\"\xed\x01\n" +
+	"\asecrets\x18\x01 \x03(\v2\x1a.compass.v1.ResolvedSecretR\asecrets\"\xf2\x01\n" +
 	"\x0eResolvedSecret\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x19\n" +
-	"\x05value\x18\x02 \x01(\tB\x03\x80\x01\x01R\x05value\x12\x18\n" +
-	"\aversion\x18\x03 \x01(\tR\aversion\x126\n" +
+	"\x05value\x18\x02 \x01(\tB\x03\x80\x01\x01R\x05value\x12\x1d\n" +
+	"\aversion\x18\x03 \x01(\tB\x03\x80\x01\x01R\aversion\x126\n" +
 	"\bdelivery\x18\x04 \x01(\x0e2\x1a.compass.v1.SecretDeliveryR\bdelivery\x12*\n" +
 	"\x04kind\x18\x05 \x01(\x0e2\x16.compass.v1.SecretKindR\x04kind\x12\x12\n" +
 	"\x04host\x18\x06 \x01(\tR\x04host\x12\x1a\n" +
