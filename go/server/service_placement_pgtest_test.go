@@ -361,6 +361,61 @@ func TestProvisionAgentWorkspaceOverwritesPersonaFromStore(t *testing.T) {
 	}
 }
 
+// TestProvisionAgentWorkspaceClearsPersonaForNonAgentAccount pins the non-agent
+// branch of the server-authoritative persona invariant: when a user-account id
+// is passed as agent_account_id, the store read-through finds a non-agent
+// account (acc.IsAgent()==false) and must clear the client-supplied persona to
+// empty, so a caller cannot inject a system prompt via a non-agent account.
+func TestProvisionAgentWorkspaceClearsPersonaForNonAgentAccount(t *testing.T) {
+	f := newPlacementFixture(t)
+	ctx := context.Background() // the test root context
+
+	// The admin (a user account, not an agent) is the fixture agent's owner.
+	seed, err := f.store.GetAccount(ctx, f.agentID)
+	if err != nil {
+		t.Fatalf("GetAccount(%q): %v", f.agentID, err)
+	}
+	adminID := seed.Agent.OwnerUserID
+
+	f.runner.forget() // discard the attach probe
+	// This call is EXPECTED to error: admin is a user account, absent from
+	// agent_accounts, so the placement write fails on its FK (CodeInternal). The
+	// persona-clear is still observable because the Provision command is recorded
+	// (persona cleared) before the placement write runs. The error is expected
+	// and not what this test pins, so it is deliberately discarded.
+	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
+		AgentAccountId:  string(adminID),
+		Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
+		ClientRequestId: "prov-nonagent",
+		Persona:         "CLIENT-INJECTED-EVIL",
+	}))
+
+	if got := f.runner.provisionPersona(t); got != "" {
+		t.Fatalf("Runner received persona %q for a non-agent account, want empty (client value must be cleared)", got)
+	}
+}
+
+// TestProvisionAgentWorkspaceUnknownAccountIsNotFound pins that the persona
+// read-through fails closed: an unknown agent_account_id yields CodeNotFound,
+// short-circuiting container creation before any Provision or placement.
+func TestProvisionAgentWorkspaceUnknownAccountIsNotFound(t *testing.T) {
+	f := newPlacementFixture(t)
+	ctx := context.Background() // the test root context
+
+	_, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
+		AgentAccountId:  "acct-does-not-exist",
+		Repo:            &compassv1.ProvisionAgentWorkspaceRequest_LocalPath{LocalPath: "/mirror/repo.git"},
+		ClientRequestId: "prov-unknown",
+		Persona:         "whatever",
+	}))
+	if err == nil {
+		t.Fatalf("ProvisionAgentWorkspace = nil error, want CodeNotFound for an unknown account id")
+	}
+	if code := connect.CodeOf(err); code != connect.CodeNotFound {
+		t.Fatalf("ProvisionAgentWorkspace error code = %v, want %v", code, connect.CodeNotFound)
+	}
+}
+
 // --- direct SQL (the two facts the Store deliberately does not expose) --------
 
 // execSQL runs one statement against the test's isolated schema. Used only to
