@@ -70,19 +70,12 @@ export function isMultiForge(issues: readonly Issue[]): boolean {
 	return false;
 }
 
-/** The agent-attribution label for a card/PR-pane (DL-068). Attribution is
- *  UNTRUSTED display metadata parsed from the owner header — it is rendered as
- *  a hedged CLAIM unless the server-set `verified` bit is true, and is NEVER
- *  derived into `assignee` or fed to a routing/selection decision. The three
- *  wordings are frozen (pinned verbatim in the design record with a golden
- *  test): the verified form is the unverified form minus the leading
- *  `claims to be ` hedge, and the no-agent form is the bare forge login. One
- *  total function so the card, the PR pane, and the test share one wording. */
-export function attributionLabel(
-	agent: AgentAttribution | undefined,
-	forgeAccount: string,
-): string {
-	if (!agent) return `${forgeAccount} (not a Compass agent)`;
-	const claim = `@${agent.agentHandle} (Compass agent, owned by @${agent.ownerHandle})`;
-	return agent.verified ? claim : `claims to be ${claim}`;
+/** The author label for a card / PR pane: the boarded artifact's Compass agent
+ *  as `@handle`. Only Compass artifacts from trusted agent accounts are boarded
+ *  (Matt's 2026-07-31 ruling), so there is no untrusted owner-header spoof
+ *  surface to hedge — the label is the bare handle, with no owner text and no
+ *  verified/claims hedge. An agent's owner is a property of the agent account
+ *  (AgentAccount.owner_user_id), never restated per artifact. */
+export function authorLabel(agent: AgentAttribution): string {
+	return `@${agent.agentHandle}`;
 }

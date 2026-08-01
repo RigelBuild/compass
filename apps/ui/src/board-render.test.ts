@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-	attributionLabel,
+	authorLabel,
 	checkPip,
 	isMultiForge,
 	issueKey,
@@ -172,34 +172,24 @@ describe("issueKey + isMultiForge", () => {
 	});
 });
 
-// attributionLabel renders UNTRUSTED agent attribution (DL-068) as a hedged
-// claim unless the server-set `verified` bit is true. The three wordings are
-// frozen in the design record (pinned verbatim with a golden test). These
-// golden strings guard the frozen copy: any silent promotion of a claim to a
-// fact — dropping the `claims to be ` hedge while `verified` is false, or
-// re-adding an `@` to the no-agent forge login — reddens the case that changed.
-describe("attributionLabel", () => {
+// authorLabel renders the boarded artifact's Compass agent as a bare `@handle`.
+// Only Compass artifacts from trusted agent accounts are boarded (Matt's
+// 2026-07-31 ruling), so there is no untrusted owner-header spoof surface: the
+// label carries no owner text and no verified/claims hedge. This golden string
+// guards that copy — any re-introduction of the owner suffix or a hedge reddens
+// here.
+describe("authorLabel", () => {
 	const agent = (verified: boolean): AgentAttribution => ({
 		agentHandle: "atlas",
 		ownerHandle: "matt",
 		verified,
 	});
 
-	test("unverified agent is hedged as a claim", () => {
-		expect(attributionLabel(agent(false), "compass-bot")).toBe(
-			"claims to be @atlas (Compass agent, owned by @matt)",
-		);
+	test("renders the agent handle as @handle, with no owner text or hedge", () => {
+		expect(authorLabel(agent(true))).toBe("@atlas");
 	});
 
-	test("verified agent drops the hedge", () => {
-		expect(attributionLabel(agent(true), "compass-bot")).toBe(
-			"@atlas (Compass agent, owned by @matt)",
-		);
-	});
-
-	test("no agent renders the bare forge login", () => {
-		expect(attributionLabel(undefined, "octocat")).toBe(
-			"octocat (not a Compass agent)",
-		);
+	test("the label is independent of the verified bit (no hedge either way)", () => {
+		expect(authorLabel(agent(false))).toBe("@atlas");
 	});
 });

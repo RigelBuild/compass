@@ -7,7 +7,7 @@ import {
 	Switch,
 } from "solid-js";
 import {
-	attributionLabel,
+	authorLabel,
 	checkPip,
 	isMultiForge,
 	issueKey,
@@ -240,9 +240,9 @@ const PrPane: Component<{ pr: PullRequest }> = (props) => {
 				</span>
 			</div>
 			<div class="pr-title">{props.pr.title}</div>
-			<div class="pr-agent">
-				{attributionLabel(props.pr.agent, props.pr.forgeAccount)}
-			</div>
+			<Show when={props.pr.agent}>
+				{(agent) => <div class="pr-agent">{authorLabel(agent())}</div>}
+			</Show>
 			<Show when={props.pr.checks}>
 				{(checks) => <CheckRuns checks={checks().checks} />}
 			</Show>

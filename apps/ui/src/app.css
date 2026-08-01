@@ -746,7 +746,7 @@ button {
 	color: var(--text-dim);
 }
 
-.card-agent {
+.card-author {
 	font-size: 10px;
 	color: var(--text-faint);
 	overflow: hidden;

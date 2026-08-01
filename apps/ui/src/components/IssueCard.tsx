@@ -1,11 +1,5 @@
 import { type Component, For, Show } from "solid-js";
-import {
-	attributionLabel,
-	checkPip,
-	isMultiForge,
-	issueKey,
-	primaryPr,
-} from "../board-render";
+import { checkPip, isMultiForge, issueKey, primaryPr } from "../board-render";
 import { useStore } from "../context";
 import type { Issue } from "../stub-data";
 
@@ -21,6 +15,14 @@ export const IssueCard: Component<{ issue: Issue }> = (props) => {
 	};
 	const pr = () => primaryPr(props.issue);
 	const key = () => issueKey(props.issue, isMultiForge(store.issues()));
+	// The assignee is a trusted Compass account id; show its handle as `@handle`.
+	// Only Compass artifacts are boarded, so there is no separate untrusted
+	// author to reconcile (Matt's 2026-07-31 ruling).
+	const assignee = () => {
+		const id = props.issue.assignee;
+		if (!id) return undefined;
+		return store.agentView(id)?.account.handle ?? id.replace("acc-", "");
+	};
 	return (
 		<button
 			type="button"
@@ -56,9 +58,8 @@ export const IssueCard: Component<{ issue: Issue }> = (props) => {
 			</span>
 			<span class="card-title">{props.issue.title}</span>
 			<span class="card-foot">
-				<span>{props.issue.assignee?.replace("acc-", "") ?? "unassigned"}</span>
-				<span class="card-agent">
-					{attributionLabel(props.issue.agent, props.issue.forgeAccount)}
+				<span class="card-author">
+					{assignee() ? `@${assignee()}` : "unassigned"}
 				</span>
 				<Show when={pr()?.changed} keyed>
 					{(changed) => (
