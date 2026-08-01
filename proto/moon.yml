@@ -2,9 +2,10 @@
 # The compass.v1 contract schema. It owns the schema (compass/v1/*.proto) and
 # the single buf codegen pipeline - one schema, per-language clients fanned out
 # and checked in: connect-es TS in compass-client and protoc-gen-go/connect-go
-# Go in the go module, both drift-gated. buf comes from the devenv toolchain on
-# PATH; buf's TS plugin (protoc-gen-es) is a compass-client devDep, so gen/drift
-# depend on that package's install.
+# Go in the go module, both drift-gated. buf and all its plugins (protoc-gen-es,
+# protoc-gen-go, protoc-gen-connect-go) come from the devenv toolchain on PATH,
+# resolved from immutable nix store paths, so codegen depends on no
+# package-install state.
 #
 # Language-neutral (no crate, no language toolchain of its own): tagged `oss`
 # for the import boundary. The Rust backend that once co-owned this schema was
