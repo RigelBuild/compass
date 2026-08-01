@@ -270,7 +270,7 @@ func (c *Comms) PostMessage(
 	if inserted {
 		c.publishMessagePosted(msg)
 	}
-	return connect.NewResponse(&compassv1.PostMessageResponse{Message: messageToWire(msg)}), nil
+	return connect.NewResponse(&compassv1.PostMessageResponse{Message: MessageToWire(msg)}), nil
 }
 
 // RespondToAsk answers a pending structured ask; the caller must be a member of

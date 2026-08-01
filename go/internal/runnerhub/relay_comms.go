@@ -18,6 +18,7 @@ package runnerhub
 import (
 	"context"
 	"errors"
+	"maps"
 
 	"connectrpc.com/connect"
 
@@ -55,6 +56,7 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 		return
 	}
 	h.sessionAccounts[sessionID] = account
+	h.accountSessions[account] = sessionID
 	// The container->account entry has served its purpose; the session binding
 	// is now authoritative. Drop it so a container name reused across the
 	// Runner's life cannot resurrect a stale account (reconnect clears both maps
@@ -68,6 +70,14 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 func (h *Hub) unbindSession(sessionID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if account, ok := h.sessionAccounts[sessionID]; ok {
+		// Drop the reverse entry only if it still points at THIS session — a
+		// promoteSession for the account onto a newer session would have already
+		// repointed it, and a stale delete would then unbind the live one.
+		if h.accountSessions[account] == sessionID {
+			delete(h.accountSessions, account)
+		}
+	}
 	delete(h.sessionAccounts, sessionID)
 }
 
@@ -80,6 +90,35 @@ func (h *Hub) accountForSession(sessionID string) (store.AccountID, bool) {
 	defer h.mu.Unlock()
 	account, ok := h.sessionAccounts[sessionID]
 	return account, ok
+}
+
+// SessionForAccount resolves the LIVE session bound to an agent account — the
+// REVERSE of accountForSession, the direction the delivery consumer (SEA-1569
+// T3) needs to dispatch a deliver to a resolved subscriber. The bool is false
+// when the account has no live session (never started, stopped, or dropped on a
+// Runner reconnect): the consumer pushes nothing now and lets the D2 cursor
+// sweep deliver on the recipient's next start (design.md:137). It satisfies the
+// delivery.SessionResolver interface the consumer holds, kept separate from the
+// ControlDispatcher (DispatchControl) so that stays the frozen dispatch-only
+// shape.
+func (h *Hub) SessionForAccount(account store.AccountID) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	sessionID, ok := h.accountSessions[account]
+	return sessionID, ok
+}
+
+// LiveAgentSessions snapshots every live (agent account -> session) binding — the
+// set the delivery consumer's lag-resync sweep iterates to redeliver owed
+// messages to every live recipient (design.md:227-231). A copy under the lock,
+// so the caller iterates without holding hub state; the map is empty when no
+// session is live.
+func (h *Hub) LiveAgentSessions() map[store.AccountID]string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make(map[store.AccountID]string, len(h.accountSessions))
+	maps.Copy(out, h.accountSessions)
+	return out
 }
 
 // HasLiveSession reports whether sessionID names a live session bound in the

@@ -426,3 +426,35 @@ func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 		t.Fatalf("caller invoked %d times for an empty-account session, want 0", len(calls))
 	}
 }
+
+// FIX 2 (SEA-1569 T3 review): enroll() must clear the reverse accountSessions
+// map alongside sessionAccounts. The accountSessions doc (hub.go) states the
+// reverse map is "maintained wherever sessionAccounts is so the two never
+// drift: promoteSession adds, unbindSession removes, enroll clears" — the
+// pre-fix code omitted the enroll clear, so a Runner re-enroll emptied
+// sessionAccounts while accountSessions retained the dead Runner's stale
+// account->session entry. The delivery consumer then resolved a DEAD session as
+// live (SessionForAccount returns stale; LiveAgentSessions hands dead sessions
+// to the sweep), breaking design.md:177-178. This binds an account->session,
+// re-enrolls, and asserts the reverse map is empty.
+func TestEnrollClearsReverseAccountSessions(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	bindLiveSession(hub) // acct-agent -> sess-1, via the real Provision->Start path
+
+	// Sanity: the reverse map is populated before the re-enroll.
+	if _, ok := hub.SessionForAccount("acct-agent"); !ok {
+		t.Fatal("SessionForAccount(acct-agent) not bound before re-enroll; the test setup is wrong")
+	}
+
+	// A Runner reconnect: enroll re-attaches and MUST drop every stale binding,
+	// forward AND reverse.
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+
+	if sess, ok := hub.SessionForAccount("acct-agent"); ok {
+		t.Fatalf("SessionForAccount(acct-agent) = %q, ok=true after re-enroll; want ok=false — enroll left a stale reverse entry, so a dead session resolves as live", sess)
+	}
+	if live := hub.LiveAgentSessions(); len(live) != 0 {
+		t.Fatalf("LiveAgentSessions = %v after re-enroll, want empty — the sweep would hand dead sessions a deliver", live)
+	}
+}

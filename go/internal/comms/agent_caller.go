@@ -273,7 +273,7 @@ func (c *Comms) CommitAgentUpdate(
 	// RespondToAsk use, so a subscriber never sees an event for a row that did
 	// not commit.
 	c.publishMessageUpdated(stored)
-	return &compassv1.MessageUpdated{Message: messageToWire(stored)}, nil
+	return &compassv1.MessageUpdated{Message: MessageToWire(stored)}, nil
 }
 
 // CommitAgentPostKeyed is CommitAgentPost with the agent-minted idempotency_key

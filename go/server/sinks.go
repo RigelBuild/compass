@@ -21,9 +21,13 @@ import (
 
 	"connectrpc.com/connect"
 
+	"golang.org/x/sync/errgroup"
+
+	"github.com/sealedsecurity/compass/go/events"
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/board"
 	"github.com/sealedsecurity/compass/go/internal/comms"
+	"github.com/sealedsecurity/compass/go/internal/delivery"
 	"github.com/sealedsecurity/compass/go/internal/runnerhub"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
@@ -135,6 +139,20 @@ func newRunnerHub(brd *board.Projection, tail runnerhub.SessionTailSink, commsSv
 		commsSvc,
 		log,
 	)
+}
+
+// startDeliveryConsumer builds the SEA-1569 T3 fan-out consumer over the comms
+// bus, wires the consumer<->hub construction cycle (the consumer takes hub as
+// its ControlDispatcher + SessionResolver; the hub takes the consumer as its
+// SettleSink with st as its delivery-cursor store — the post-construction
+// setters that break the cycle), and starts its bus-tail goroutine on the serve
+// group rooted on gctx (so it cancels at shutdown; it also ends when the comms
+// bus closes in drainDoors, so shutdown reaches it two ways).
+func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
+	c := delivery.NewConsumer(commsBus, st, hub, hub, log)
+	hub.SetSettleSink(c)
+	hub.SetDeliveryStore(st)
+	g.Go(func() error { return c.Run(gctx) })
 }
 
 // logFrameDiagnostics emits the hub's frame-loss snapshot as one line. Serve
