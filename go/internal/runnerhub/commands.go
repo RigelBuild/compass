@@ -103,6 +103,23 @@ func (h *Hub) Stop(ctx context.Context, requestID string, req *compassv1.StopAge
 	return result.GetStop(), nil
 }
 
+// Remove relays a RemoveAgentWorkspace command to the owning Runner — the
+// teardown counterpart to Provision, tearing down the per-agent container the
+// container_name names. Idempotent: removing an unknown/already-removed
+// container succeeds (the Runner's contract). The request id is the caller's
+// client_request_id (empty mints a fresh id, no dedup) — Remove is idempotent
+// Runner-side, so it needs no cross-account dedup derivation (unlike Provision).
+func (h *Hub) Remove(ctx context.Context, requestID string, req *compassv1.RemoveAgentWorkspaceRequest) (*compassv1.RemoveAgentWorkspaceResponse, error) {
+	result, _, err := h.relay(ctx, req.GetContainerName(), &compassv1internal.SessionsResponse{
+		RequestId: orNewRequestID(requestID),
+		Command:   &compassv1internal.SessionsResponse_Remove{Remove: req},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.GetRemove(), nil
+}
+
 // Reload relays a ReloadAgentSession command to the owning Runner.
 func (h *Hub) Reload(ctx context.Context, requestID string, req *compassv1.ReloadAgentSessionRequest) (*compassv1.ReloadAgentSessionResponse, error) {
 	result, _, err := h.relay(ctx, req.GetSessionId(), &compassv1internal.SessionsResponse{

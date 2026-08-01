@@ -198,6 +198,13 @@ type Hub struct {
 	// T3). Nil until SetDeliveryStore wires it; read under mu. Nil-safe: a hub
 	// with no delivery store drops delivery_ack frames.
 	delivery DeliveryStore
+	// lifecycleCaller is the spawn/despawn execution seam RelayLifecycleCall
+	// delegates a resolved lifecycle call to (spawn/despawn record T4). Nil until
+	// SetLifecycleCaller wires it (after both hub and lifecycleService exist,
+	// breaking their construction cycle), and read under mu so the setter and the
+	// serve path never race. Nil-safe: a hub with none wired fails
+	// RelayLifecycleCall closed CodeUnavailable — the lifecycle leg is not mounted.
+	lifecycleCaller LifecycleCaller
 
 	mu sync.Mutex
 	// runner is the single attached Runner (single-Runner MVP, OQ6
@@ -311,6 +318,18 @@ func (h *Hub) SetDeliveryStore(delivery DeliveryStore) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.delivery = delivery
+}
+
+// SetLifecycleCaller wires the lifecycle execution seam after construction, so
+// no NewHub caller signature changes and the hub<->lifecycleService construction
+// cycle (the service needs the hub for Provision/Start/Remove; the hub needs the
+// service to serve RelayLifecycleCall) is broken exactly as SetSettleSink breaks
+// the consumer cycle. A hub with none wired fails RelayLifecycleCall closed
+// CodeUnavailable. Wired under mu; read under mu.
+func (h *Hub) SetLifecycleCaller(c LifecycleCaller) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.lifecycleCaller = c
 }
 
 // Deliver is the sole entry point a relayed Runner event takes into the Server.

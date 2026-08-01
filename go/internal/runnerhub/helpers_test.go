@@ -280,6 +280,71 @@ func newHubWithComms() (*Hub, *fakeCommsCaller) {
 	return NewHub(&fakeConversationSink{}, &fakeLifecycleSink{}, &fakeTailSink{}, comms, discardLogger()), comms
 }
 
+// lifecycleCall records one LifecycleCaller invocation: the account the hub
+// attributed it to plus the request forwarded, one of spawn/despawn set. A test
+// asserts the hub delegated under the RESOLVED caller account (never the
+// Runner's, never admin) and dispatched the right variant.
+type lifecycleCall struct {
+	account store.AccountID
+	spawn   *compassv1internal.SpawnPeerRequest
+	despawn *compassv1internal.DespawnPeerRequest
+}
+
+// fakeLifecycleCaller is a hand-written LifecycleCaller mirroring
+// fakeCommsCaller: it records every call (account + request) so a test asserts
+// the hub attributed to the bound account and forwarded the exact request, and
+// returns a configurable canned response or error per method so a test drives
+// both the success and the in-band tool-error path without a real service.
+// Concurrency-safe for parity with the real caller, though the hub calls it
+// inline.
+type fakeLifecycleCaller struct {
+	mu    sync.Mutex
+	calls []lifecycleCall
+
+	spawnResp   *compassv1internal.SpawnPeerResponse
+	spawnErr    error
+	despawnResp *compassv1internal.DespawnPeerResponse
+	despawnErr  error
+}
+
+func (f *fakeLifecycleCaller) SpawnAsAccount(_ context.Context, caller store.AccountID, req *compassv1internal.SpawnPeerRequest) (*compassv1internal.SpawnPeerResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, lifecycleCall{account: caller, spawn: req})
+	if f.spawnErr != nil {
+		return nil, f.spawnErr
+	}
+	return f.spawnResp, nil
+}
+
+func (f *fakeLifecycleCaller) DespawnAsAccount(_ context.Context, caller store.AccountID, req *compassv1internal.DespawnPeerRequest) (*compassv1internal.DespawnPeerResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, lifecycleCall{account: caller, despawn: req})
+	if f.despawnErr != nil {
+		return nil, f.despawnErr
+	}
+	return f.despawnResp, nil
+}
+
+func (f *fakeLifecycleCaller) snapshot() []lifecycleCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]lifecycleCall(nil), f.calls...)
+}
+
+// newHubWithLifecycle builds a hub whose LifecycleCaller is the returned fake
+// (wired post-construction via SetLifecycleCaller, the real wiring path), so a
+// RelayLifecycleCall test drives the resolve->attribute->delegate path and
+// asserts on the caller account the fake was called with. Like newHubOnly
+// otherwise.
+func newHubWithLifecycle() (*Hub, *fakeLifecycleCaller) {
+	fake := &fakeLifecycleCaller{}
+	hub := newHubOnly()
+	hub.SetLifecycleCaller(fake)
+	return hub, fake
+}
+
 // resolverEntry is one token the fakeResolver knows: the subject it resolves to
 // and whether it has been revoked.
 type resolverEntry struct {
