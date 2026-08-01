@@ -161,6 +161,36 @@ func TestRelayLifecycleCallToolErrorIsInBandNotStreamError(t *testing.T) {
 	}
 }
 
+// 4b. The despawn tool-error path is in-band too — the same contract as spawn,
+// on the one variant carrying a request-controlled account. A DespawnAsAccount
+// error (e.g. an indistinguishable not-found for a foreign/unknown target)
+// surfaces as the LifecycleCallError variant in a nil-err response, never a
+// transport error that would tear the stream down.
+//
+// Mutation: returning the caller error as a Connect error (instead of in-band)
+// reddens the err==nil assertion; it also exercises the despawnErr field, so a
+// caller that dropped despawn error propagation would surface here.
+func TestRelayLifecycleCallDespawnToolErrorIsInBand(t *testing.T) {
+	hub, fake := newHubWithLifecycle()
+	fake.despawnErr = connect.NewError(connect.CodeNotFound, errors.New("peer not found"))
+	bindLiveSession(hub)
+
+	resp, err := hub.RelayLifecycleCall(context.Background(), relayDespawn("sess-1", "lc-4b", &compassv1internal.DespawnPeerRequest{AgentAccountId: "acct-victim"}))
+	if err != nil {
+		t.Fatalf("RelayLifecycleCall with a despawn tool error returned a Go error %v, want nil (in-band render)", err)
+	}
+	toolErr := resp.GetResult().GetError()
+	if toolErr == nil {
+		t.Fatal("response has no in-band LifecycleCallError, want the despawn failure rendered in-band")
+	}
+	if toolErr.GetCode() != "not_found" {
+		t.Fatalf("in-band error code = %q, want not_found", toolErr.GetCode())
+	}
+	if got := resp.GetResult().GetCallId(); got != "lc-4b" {
+		t.Fatalf("in-band error call_id = %q, want lc-4b", got)
+	}
+}
+
 // 5. On a successful spawn the minted call_id is echoed onto the result so the
 // agent correlates its call.
 func TestRelayLifecycleCallEchoesCallIDOnSuccess(t *testing.T) {
@@ -216,6 +246,16 @@ func TestRelayLifecycleCallDispatchesSpawnVsDespawn(t *testing.T) {
 		calls := fake.snapshot()
 		if len(calls) != 1 || calls[0].despawn == nil || calls[0].spawn != nil {
 			t.Fatalf("despawn call did not reach DespawnAsAccount exclusively: %+v", calls)
+		}
+		// The teardown is attributed to the RESOLVED caller (acct-agent, bound to
+		// sess-1), never the request-named target acct-victim — DespawnPeerRequest
+		// is the one variant with a request-controlled account, so this pins that
+		// the hub never lets a caller name whose authority a despawn runs under.
+		//
+		// Mutation: forwarding c.Despawn.GetAgentAccountId() as the caller (a
+		// confusion attributing the teardown under the victim) reddens this.
+		if calls[0].account != "acct-agent" {
+			t.Fatalf("despawn attributed to %q, want the bound caller acct-agent (never the request target acct-victim)", calls[0].account)
 		}
 		if resp.GetResult().GetDespawn() == nil {
 			t.Fatal("despawn produced no despawn result variant")

@@ -81,6 +81,19 @@ func (h *Hub) unbindSession(sessionID string) {
 	delete(h.sessionAccounts, sessionID)
 }
 
+// unbindContainer drops a container's provisioned account binding. Called from
+// Remove, the teardown counterpart to Provision (which binds via bindContainer):
+// on a Provision->Remove path that never reached Start, promoteSession never
+// cleared the entry, so without this a stale container->account binding would
+// linger and keep authorizing a pre-exec FetchSecrets materialize
+// (HasContainerBinding) against a container that no longer exists. A no-op on
+// the normal lifecycle (Start's promoteSession already cleared it).
+func (h *Hub) unbindContainer(containerName string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.containerAccounts, containerName)
+}
+
 // accountForSession resolves the agent account bound to sessionID. The bool is
 // false when no live binding exists (never provisioned, stopped, or dropped on a
 // Runner reconnect) — the fail-closed signal RelayCommsCall turns into

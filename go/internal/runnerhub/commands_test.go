@@ -211,3 +211,35 @@ func TestRemoveRelayReturnsResponseOnSuccess(t *testing.T) {
 		t.Fatal("Runner did not receive a RemoveAgentWorkspace command variant")
 	}
 }
+
+// Remove clears the container's provisioned account binding — the teardown
+// counterpart to Provision's bindContainer. On a Provision->Remove path that
+// never reached Start (promoteSession clears it there), a lingering binding would
+// keep authorizing a pre-exec FetchSecrets materialize (HasContainerBinding) for
+// a container that no longer exists.
+//
+// Mutation: dropping the unbindContainer call in Remove leaves HasContainerBinding
+// true after teardown and reddens this.
+func TestRemoveClearsContainerBinding(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.bindContainer("c1", testAgentAccount)
+	if !hub.HasContainerBinding("c1") {
+		t.Fatal("precondition: container c1 should be bound after bindContainer")
+	}
+	router, _, _ := hub.routerFor("any")
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		go router.complete(&compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result:    &compassv1internal.SessionsRequest_Remove{Remove: &compassv1.RemoveAgentWorkspaceResponse{}},
+		})
+		return nil
+	})
+
+	if _, err := hub.Remove(context.Background(), "req-rm", &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "c1"}); err != nil {
+		t.Fatalf("Remove = %v, want success", err)
+	}
+	if hub.HasContainerBinding("c1") {
+		t.Fatal("container c1 still bound after Remove, want the binding cleared (stale binding authorizes pre-exec secrets materialize)")
+	}
+}
