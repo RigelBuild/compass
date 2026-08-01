@@ -47,6 +47,16 @@ name: CI
 
 on:
   pull_request:
+    # The default types (opened, synchronize, reopened) OMIT `edited`, which is
+    # the only event fired when a PR's BASE branch is re-pointed. A stacked PR
+    # whose base flips when the PR below it merges/closes fires only
+    # `pull_request.edited` — with the default set, no fresh CI runs against the
+    # new base and `gh run rerun` only replays the frozen stale merge SHA (a
+    # phantom red against the dead base's tree; the only escape was close+reopen).
+    # `edited` closes that gap. It also fires on title/body edits, so the job
+    # below guards on `changes.base` to stay a no-op for everything but a real
+    # base re-point — no added CI spend on a title/body edit.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
   schedule:
@@ -70,6 +80,16 @@ jobs:
   ci:
     name: CI
     runs-on: ubuntu-latest
+    # Skip only the no-op case of the `edited` trigger above: a PR title/body
+    # edit that did NOT move the base. `changes.base` is present on the payload
+    # only when the base branch was re-pointed, so a real base re-point still
+    # runs (the whole reason `edited` is in the trigger set), while a title/body
+    # edit is a no-op. push and schedule are not `pull_request` events, so the
+    # first clause lets them through unconditionally.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.action != 'edited' ||
+      github.event.changes.base != null
     # The vendored forks build through nix (devenv's Rust crates via its flake's
     # fenix pin), so this is a long job by construction.
     timeout-minutes: 90
