@@ -30,8 +30,15 @@ import {
 	type AgentSession,
 	type CreateAgentSessionOptions,
 	createAgentSession,
+	type IndexedSessionStorage,
+	SessionManager,
 } from "@oh-my-pi/pi-coding-agent";
 import { CompassAgent } from "./agent";
+import type { FrameSink } from "./frame";
+import {
+	createTeeSessionStorage,
+	type TranscriptTeeBackend,
+} from "./session-tee";
 import { createSocketControlSource } from "./transport/control-source";
 import { createSocketFrameSink } from "./transport/frame-sink";
 import {
@@ -153,6 +160,19 @@ export interface MainDeps {
 	) => Promise<{ session: AgentSession }>;
 	/** Runner-socket carrier. Defaults to `createUnixSocketTransport`. */
 	createTransport?: (socketPath: string) => RunnerTransport;
+	/**
+	 * Tee-storage constructor (SEA-1570). Defaults to `createTeeSessionStorage`.
+	 * A seam for the same reason as the other two: the real one wraps the SDK's
+	 * `IndexedSessionStorage` over a filesystem backend and awaits `initialize()`
+	 * off disk, so a test composes `main` over a recording storage instead.
+	 */
+	createSessionStorage?: (
+		sink: FrameSink,
+		sessionDir: string,
+	) => Promise<{
+		storage: IndexedSessionStorage;
+		backend: TranscriptTeeBackend;
+	}>;
 }
 
 /**
@@ -176,13 +196,49 @@ export async function main(
 	// already normalized a blank value to undefined.
 	const persona = resolvePersona(env);
 
+	// The workdir the session is keyed to. `||`, not `??`: an empty or
+	// whitespace-only COMPASS_WORKDIR is unset, not a valid cwd. The Runner sets
+	// it unconditionally (relay.go `execSpec`), so a caller that builds an
+	// AgentEnv with a blank Workdir would otherwise hand bun `cwd: ""` — which
+	// does not throw, it silently loads the wrong tree.
+	const cwd = env.COMPASS_WORKDIR?.trim() || process.cwd();
+
+	// The socket carrier + sink come FIRST: the tee storage backend teems every
+	// committed session write onto the sink's DURABLE lane (SEA-1570), so the
+	// sink must exist before the storage that holds it.
+	const transport = (deps.createTransport ?? createUnixSocketTransport)(
+		AGENT_SOCKET_PATH,
+	);
+	const sink = createSocketFrameSink(transport);
+
+	// The tee session storage, wrapped + initialize()d (its scan of the session
+	// dir must complete before SessionManager.create so synchronous resume
+	// lookups see the keyspace). SESSION_DIR is the SDK-default HOME-relative dir
+	// for this cwd — checkout-independent (anchored on the agent's scoped $HOME,
+	// not a populated repo; sealed#1019 no-auto-clone), mirroring the auth-seed
+	// anchoring above.
+	const sessionDir = SessionManager.getDefaultSessionDir(cwd);
+	const { storage } = await (
+		deps.createSessionStorage ?? createTeeSessionStorage
+	)(sink, sessionDir);
+	// SYNCHRONOUS (session-manager.ts:1839 returns SessionManager, not a Promise):
+	// do NOT await. The wrapped IndexedSessionStorage is the 3rd arg.
+	const manager = SessionManager.create(cwd, sessionDir, storage);
+
+	// Resume (SEA-1570): T8 exports COMPASS_RESUME_SESSION_FILE on the agent exec.
+	// When set, load it through the SDK-native path (setSessionFile → drain →
+	// loadEntriesFromFile → migrate → resolveBlobRefs → apply) BEFORE creating
+	// the session — reads flow through the tee backend's readFull/loadIndex, no
+	// replay code. The reconstructed body is authoritative; the load never tees.
+	const resumeFile = env.COMPASS_RESUME_SESSION_FILE?.trim();
+	if (resumeFile) await manager.setSessionFile(resumeFile);
+
 	const { session } = await (deps.createSession ?? createAgentSession)({
-		// `||`, not `??`: an empty or whitespace-only COMPASS_WORKDIR is unset, not
-		// a valid cwd. The Runner sets it unconditionally (relay.go `execSpec`), so
-		// a caller that builds an AgentEnv with a blank Workdir would otherwise hand
-		// bun `cwd: ""` — which does not throw, it silently loads the wrong tree.
-		cwd: env.COMPASS_WORKDIR?.trim() || process.cwd(),
+		cwd,
 		modelPattern: resolveModelSelector(env),
+		// The tee-backed manager, so every session write teems upstream and the
+		// resumed history (if any) is already loaded.
+		sessionManager: manager,
 		// Persona is an identity OVERLAY, not a replacement: append it after the
 		// default prompt so block-0 base instructions + project footer survive.
 		...(persona
@@ -203,10 +259,6 @@ export async function main(
 	// type-safe path to the same per-call resolution semantics.
 	session.agent.getApiKey = createSeedApiKeyResolver(home);
 
-	const transport = (deps.createTransport ?? createUnixSocketTransport)(
-		AGENT_SOCKET_PATH,
-	);
-	const sink = createSocketFrameSink(transport);
 	const control = createSocketControlSource(transport, {
 		steer: (msg) => session.agent.steer(msg),
 		deliver: (msg) => session.agent.appendMessage(msg),
@@ -236,9 +288,19 @@ export async function main(
 		await new CompassAgent({ session, sink, control }).run();
 	} finally {
 		try {
-			await sink.drain?.();
+			// Belt for the APPEND vector: `writeTextSync` tracks drain
+			// (indexed-session-storage.ts:143 trackDrain:true) so a queued append's
+			// tee send is awaited here; the compaction `writeTextAtomic` checkpoint
+			// vector does NOT track drain (:270), but the sink drain below covers
+			// its durable send. Storage drain precedes sink drain so a late append's
+			// emitDurable is in the sink's in-flight set before it is awaited.
+			await storage.drain();
 		} finally {
-			transport.close();
+			try {
+				await sink.drain?.();
+			} finally {
+				transport.close();
+			}
 		}
 	}
 }

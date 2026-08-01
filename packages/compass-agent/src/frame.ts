@@ -1,17 +1,22 @@
 // The frame boundary: the seam between the typed compass.v1 payloads the agent
 // produces/consumes and the bytes on the stdio channel the Runner drives.
 //
-// The frame CONTRACT is frozen (design compass-0.6 §T5, spine-inversion):
+// The frame CONTRACT is frozen (design compass-0.6 §T5, spine-inversion;
+// extended by SEA-1570 with the transcript-tee lane):
 //   - stdout: `AgentFrame` — oneof frame {
 //         MessagePosted conversation_posted; MessageUpdated conversation_updated;
-//         SessionFrame session }
+//         SessionFrame session; TranscriptEntry transcript_entry }
 //     The set oneof field IS the type discriminator; an unset/unrecognized
 //     field is the "unknown frame" the Runner logs + counts. CONVERSATION
 //     (text/ask) rides MessagePosted/MessageUpdated (each wraps a Message of
 //     MessageBlocks) → comms; the opaque OMP-native execution trace + board
 //     lifecycle ride the single `session` variant (SessionFrame) → the
-//     session-tail stream. Dual-surface split: the Runner write-throughs each
-//     variant to the surface that owns it.
+//     session-tail stream. TRANSCRIPT (SEA-1570) rides the single
+//     `transcript_entry` variant (TranscriptEntry): one committed SDK session
+//     entry the tee backend commits locally and forwards on the DURABLE
+//     conversation-frame lane (never the droppable Publish spine) so the Server
+//     can reconstruct the session on resume. Dual-surface split: the Runner
+//     write-throughs each variant to the surface that owns it.
 //   - stdin: `AgentControl` — oneof control {
 //         PromptControl prompt; SteerControl steer; AskAnswerControl ask_answer;
 //         ConfigControl config; TranscriptReplay replay; ReplayComplete
@@ -34,6 +39,7 @@ import {
 	type MessagePosted,
 	type MessageUpdated,
 	type SessionFrame,
+	type TranscriptEntry,
 	toJson,
 } from "./compassv1";
 
@@ -43,12 +49,25 @@ import {
 export type OutboundFrame =
 	| { readonly kind: "conversationPosted"; readonly value: MessagePosted }
 	| { readonly kind: "conversationUpdated"; readonly value: MessageUpdated }
-	| { readonly kind: "session"; readonly value: SessionFrame };
+	| { readonly kind: "session"; readonly value: SessionFrame }
+	// SEA-1570: one committed SDK session entry, teed upstream. `value` is a
+	// branded generated message (`create(TranscriptEntrySchema, …)`), and `kind`
+	// matches the generated oneof case name 1:1 like every other variant.
+	| { readonly kind: "transcriptEntry"; readonly value: TranscriptEntry };
 
 // The sink the agent writes outbound frames to. The wire envelope lives
 // entirely behind this interface.
 export interface FrameSink {
 	emit(frame: OutboundFrame): void;
+	// SEA-1570 transcript lane: send one frame on the DURABLE unary and AWAIT its
+	// commit, REJECTING on definitive give-up (inner-retry exhaustion). Unlike
+	// `emit()` — which stays void + silent-give-up for the loss-tolerable
+	// conversation/session lanes — the tee backend awaits this inside the
+	// per-path storage op (so per-session emit order == send order == commit
+	// order) and observes a definitive error so it can buffer/retry/fatal (R4).
+	// The frame still rides the same delivered-or-erred unary and is retained for
+	// drain(); only the give-up signalling differs.
+	emitDurable(frame: OutboundFrame): Promise<void>;
 	// Teardown barrier: resolve once every durable frame already emitted has been
 	// committed (or definitively erred) and the send spine flushed, bounded by
 	// the caller's shutdown deadline. Optional because the loss-tolerable
@@ -81,5 +100,13 @@ export class ProtojsonLineSink implements FrameSink {
 			frame: { case: frame.kind, value: frame.value } as AgentFrame["frame"],
 		});
 		this.#write(`${JSON.stringify(toJson(AgentFrameSchema, message))}\n`);
+	}
+
+	// The line sink writes in-body and never errs, so the durable lane is the
+	// same write, resolved. Kept only to satisfy the FrameSink contract for the
+	// retired stdio path; the socket sink carries the real R4 semantics.
+	emitDurable(frame: OutboundFrame): Promise<void> {
+		this.emit(frame);
+		return Promise.resolve();
 	}
 }

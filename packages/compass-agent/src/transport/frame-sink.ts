@@ -90,9 +90,13 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	const nonce = randomUUID();
 	let seq = 0;
 
-	// Send one durable conversation frame on the unary, retrying transient errors
-	// on the bounded backoff schedule. The idempotency key is minted ONCE and
-	// reused across retries so the Runner dedups a lost-response retry.
+	// Send one durable frame on the unary, retrying transient errors on the
+	// bounded backoff schedule. The idempotency key is minted ONCE and reused
+	// across retries so the Runner dedups a lost-response retry. On retry-cap
+	// exhaustion this REJECTS with the last error — the definitive give-up
+	// signal. `emit()` swallows that reject (loss-tolerable conversation/session
+	// telemetry, unchanged); `emitDurable()` propagates it so the transcript tee
+	// backend can buffer/retry/fatal (SEA-1570 R4).
 	async function sendDurable(req: OutboundFrame): Promise<void> {
 		const idempotencyKey = `${nonce}-${seq++}`;
 		const request = create(PostConversationFrameRequestSchema, {
@@ -105,20 +109,39 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 					timeoutMs: DURABLE_CALL_TIMEOUT_MS,
 				});
 				return;
-			} catch {
+			} catch (err) {
 				if (attempt >= DURABLE_RETRY_BACKOFF_MS.length) {
-					// Exhausted: definitively erred. Do NOT throw — a rejection here
-					// would surface as an unhandled rejection off the void emit() path;
-					// the frame is delivered-or-erred and the agent has retried to the
-					// bound. Surfacing the give-up is the Runner's problem once the
-					// socket returns (gap-detection), not the sink's to crash on.
-					return;
+					// Exhausted: definitively erred. Throw so the durable transcript
+					// lane (emitDurable) observes it; the void emit() path catches and
+					// swallows (its frame is delivered-or-erred and the give-up is the
+					// Runner's problem via gap-detection, never a crash).
+					throw err;
 				}
-				await new Promise((r) =>
-					setTimeout(r, DURABLE_RETRY_BACKOFF_MS[attempt]),
-				);
+				const { promise, resolve } = Promise.withResolvers<void>();
+				setTimeout(resolve, DURABLE_RETRY_BACKOFF_MS[attempt]);
+				await promise;
 			}
 		}
+	}
+
+	// Launch a tracked durable send, retained behind drain() so teardown awaits
+	// its commit. `onError` decides the give-up disposition: emit() swallows
+	// (void, loss-tolerable), emitDurable() rejects to its caller (R4). The
+	// returned promise settles when the send does.
+	function launchDurable(
+		frame: OutboundFrame,
+		onError: (err: unknown) => void,
+	): Promise<void> {
+		const send = sendDurable(frame);
+		const tracked = send.then(
+			() => {},
+			(err) => onError(err),
+		);
+		const retained = tracked.finally(() => {
+			inflight.delete(retained);
+		});
+		inflight.add(retained);
+		return retained;
 	}
 
 	return {
@@ -135,13 +158,22 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 				return;
 			}
 			// Durable conversation frame: launch the tracked, retried send. emit()
-			// stays void — the promise is retained for drain(), and its rejection
-			// path is handled inside sendDurable (never throws), so this is not an
-			// unhandled rejection.
-			const send = sendDurable(frame).finally(() => {
-				inflight.delete(send);
-			});
-			inflight.add(send);
+			// stays void + silent-give-up — the retained promise SWALLOWS the
+			// definitive-error reject (loss-tolerable telemetry; the give-up is the
+			// Runner's problem via gap-detection, never an unhandled rejection).
+			launchDurable(frame, () => {});
+		},
+
+		emitDurable(frame: OutboundFrame): Promise<void> {
+			// SEA-1570 transcript lane: same durable unary + drain tracking as
+			// emit(), but the definitive-error reject PROPAGATES to the caller so the
+			// tee backend can buffer/retry/fatal (R4). The backend awaits this inside
+			// the per-path storage op, so per-session emit order == send order.
+			// `session` frames never reach here (transcript rides the durable unary
+			// by fallthrough, exactly like conversation).
+			const { promise, resolve, reject } = Promise.withResolvers<void>();
+			launchDurable(frame, (err) => reject(err)).then(resolve, () => {});
+			return promise;
 		},
 
 		async drain(): Promise<void> {
