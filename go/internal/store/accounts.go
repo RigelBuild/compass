@@ -272,7 +272,12 @@ func (s *Store) AgentByHandle(ctx context.Context, handle string) (Account, erro
 		return Account{}, fmt.Errorf("store: resolve agent by handle: %w", err)
 	}
 	if !acc.IsAgent() {
-		return Account{}, fmt.Errorf("%w: handle %q is not an agent", ErrNotFound, handle)
+		// Identical wrapped text to the noRows branch above: a user handle must
+		// be indistinguishable from an unknown one at the message-text level too,
+		// not just the sentinel — the reason this lookup never reuses the
+		// admin-asserting adminByHandle. The distinguishing detail stays out of
+		// the client-visible error (the edge maps the store err verbatim).
+		return Account{}, fmt.Errorf("%w: handle %q", ErrNotFound, handle)
 	}
 	return acc, nil
 }
