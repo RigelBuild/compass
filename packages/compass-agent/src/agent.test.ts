@@ -132,7 +132,15 @@ async function runWith(controls: AgentControl[], natives: AgentTool[] = []) {
 	};
 	await new CompassAgent({
 		session: session as unknown as AgentSession,
-		sink: { emit: (f) => frames.push(f) },
+		sink: {
+			emit: (f) => {
+				frames.push(f);
+			},
+			emitDurable: (f) => {
+				frames.push(f);
+				return Promise.resolve();
+			},
+		},
 		control,
 		onUnmapped: (u) => unmapped.push(u),
 	}).run();
@@ -152,7 +160,15 @@ async function runWithSource(control: ControlSource) {
 	try {
 		await new CompassAgent({
 			session: session as unknown as AgentSession,
-			sink: { emit: (f) => frames.push(f) },
+			sink: {
+				emit: (f) => {
+					frames.push(f);
+				},
+				emitDurable: (f) => {
+					frames.push(f);
+					return Promise.resolve();
+				},
+			},
 			control,
 			onUnmapped: () => {},
 		}).run();
@@ -420,7 +436,15 @@ describe("CompassAgent — construction-time native tools survive every config c
 		};
 		const agent = new CompassAgent({
 			session: session as unknown as AgentSession,
-			sink: { emit: (f) => frames.push(f) },
+			sink: {
+				emit: (f) => {
+					frames.push(f);
+				},
+				emitDurable: (f) => {
+					frames.push(f);
+					return Promise.resolve();
+				},
+			},
 			control,
 			onUnmapped: (u) => unmapped.push(u),
 		});

@@ -21,7 +21,7 @@
 // timers, no sleeps — the composition tests gate on events (a deferred resolved
 // from the fake carrier's own RPC handlers).
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,6 +30,8 @@ import type {
 	AgentSession,
 	AgentSessionEventListener,
 } from "@oh-my-pi/pi-coding-agent";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent";
+import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import {
 	AGENT_SOCKET_PATH,
 	authSeedPath,
@@ -51,6 +53,7 @@ import {
 	PostConversationFrameResponseSchema,
 	type PublishFrameRequest,
 } from "./gen/compass/v1/agent_gateway_pb";
+import { createTeeSessionStorage } from "./session-tee";
 import type { RunnerTransport } from "./transport/index";
 import { createPublishSpine } from "./transport/publish-spine";
 
@@ -62,7 +65,21 @@ function scratch(): string {
 	return dir;
 }
 
+// `main` computes its session dir via SessionManager.getDefaultSessionDir(cwd),
+// which anchors on the global HOME (os.homedir() → process.env.HOME). Pin it to
+// a per-test scratch dir so the tee storage's mkdir + the manager's writes land
+// under a throwaway tree, never the developer's real ~/.omp session store. (The
+// `env` arg main receives controls the auth-seed lookup, NOT the session dir —
+// that reads the process HOME, which is what this pins.)
+let savedHome: string | undefined;
+beforeEach(() => {
+	savedHome = process.env.HOME;
+	process.env.HOME = scratch();
+});
+
 afterEach(() => {
+	if (savedHome === undefined) delete process.env.HOME;
+	else process.env.HOME = savedHome;
 	for (const dir of tmpdirs.splice(0)) {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -349,6 +366,10 @@ function fakeSession(opts: { promptError?: Error } = {}): FakeSession {
 }
 
 // The deps `main` runs under: the fake session factory plus the fake carrier.
+// `createSessionStorage` is left to its production default — the REAL
+// `createTeeSessionStorage`, writing under the per-test scratch HOME (pinned in
+// beforeEach) — so `main`'s full composition (build sink → tee storage →
+// SessionManager.create) is exercised, not stubbed.
 function deps(session: FakeSession, transport: RunnerTransport): MainDeps {
 	return {
 		createSession: () =>
@@ -792,6 +813,281 @@ describe("main", () => {
 			expect(seen).toEqual([undefined]);
 		}
 	});
+
+	// ── SEA-1570: the tee-storage composition + resume ────────────────────────
+	//
+	// `main` builds the tee storage over the socket sink and injects the
+	// resulting IndexedSessionStorage into SessionManager.create, passed to
+	// createAgentSession as `sessionManager`. This pins that wiring: what reaches
+	// createSession is the manager main built (not the SDK's own default), so
+	// every session write teems onto the durable lane.
+	test("passes the tee-backed SessionManager to createAgentSession", async () => {
+		const session = fakeSession();
+		let seenManager: unknown;
+		await main(
+			{ HOME: scratch(), COMPASS_WORKDIR: "/work/repo" },
+			{
+				createSession: (options) => {
+					seenManager = options.sessionManager;
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		// A SessionManager built for the resolved cwd, its session file under the
+		// SDK's HOME-relative default dir (the beforeEach-pinned scratch HOME).
+		// Non-vacuity: a main that passed no manager (SDK default) leaves this
+		// undefined → red.
+		const manager = seenManager as SessionManager | undefined;
+		if (!manager) throw new Error("main passed no sessionManager");
+		expect(manager.getCwd()).toBe("/work/repo");
+		expect(
+			manager
+				.getSessionFile()
+				?.startsWith(SessionManager.getDefaultSessionDir("/work/repo")),
+		).toBe(true);
+	});
+
+	// COMPASS_RESUME_SESSION_FILE (exported by T8) is loaded through the SDK-native
+	// setSessionFile path BEFORE the session is created — so the resumed history
+	// is already present when createAgentSession runs. This pins that the manager
+	// handed to createSession carries the fixture's entries, loaded via the tee
+	// backend's readFull/loadIndex (no replay code).
+	test("resumes COMPASS_RESUME_SESSION_FILE before creating the session", async () => {
+		const session = fakeSession();
+		// The resume file must be INDEXED by the tee backend's initialize() scan
+		// (the wrapper ENOENTs un-indexed paths, indexed-session-storage.ts:177),
+		// so it lives in the SDK default session dir for this cwd and is written
+		// before main() builds the storage. Current-version fixture → no load-time
+		// migration rewrite, so the resume path emits no checkpoint frame.
+		const cwd = process.cwd();
+		const sessionDir = SessionManager.getDefaultSessionDir(cwd);
+		mkdirSync(sessionDir, { recursive: true });
+		const resumeFile = join(sessionDir, "20260101-000000_resume.jsonl");
+		writeFileSync(resumeFile, sessionFixture([userLine("resumed turn")]));
+
+		let entriesAtCreate: unknown[] | undefined;
+		await main(
+			{ HOME: process.env.HOME, COMPASS_RESUME_SESSION_FILE: resumeFile },
+			{
+				createSession: (options) => {
+					entriesAtCreate = (
+						options.sessionManager as SessionManager
+					).getEntries();
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		// Loaded BEFORE createSession ran: the user turn is already in the manager.
+		// Non-vacuity: a main that ignored the env var (today's behavior) leaves
+		// entriesAtCreate empty → red.
+		const texts = (entriesAtCreate ?? [])
+			.filter((e): e is { type: "message"; message: { content: string } } => {
+				const entry = e as { type?: string };
+				return entry.type === "message";
+			})
+			.map((e) => e.message.content);
+		expect(texts).toContain("resumed turn");
+	});
+
+	// The storage drain is in the same `finally` as the sink drain, so it runs on
+	// the ERROR path too — a crashed session must still flush its queued append
+	// tee-sends before teardown. This pins that main awaits storage.drain() even
+	// when run() rejects (and still propagates the original error).
+	test("drains the tee storage on the error path", async () => {
+		const boom = new Error("SDK prompt failed mid-turn");
+		const session = fakeSession({ promptError: boom });
+		const dir = scratch();
+		let drained = false;
+		const { storage } = await createTeeSessionStorage(
+			{
+				emit: () => {},
+				emitDurable: () => Promise.resolve(),
+				drain: () => Promise.resolve(),
+			},
+			dir,
+		);
+		const realDrain = storage.drain.bind(storage);
+		storage.drain = async () => {
+			drained = true;
+			await realDrain();
+		};
+		const carrier = fakeCarrier(emptyLog(), {
+			control: async function* () {
+				yield replayCompleteOp(1n);
+				yield promptOp(2n, "go");
+			},
+		});
+		await expect(
+			main(
+				{ HOME: scratch() },
+				{
+					createSession: () =>
+						Promise.resolve({ session: session as unknown as AgentSession }),
+					createTransport: () => carrier,
+					createSessionStorage: () =>
+						Promise.resolve({ storage, backend: undefined as never }),
+				},
+			),
+		).rejects.toBe(boom);
+		// Non-vacuity: a main that only drained on the clean path (or omitted the
+		// storage drain) leaves this false → red.
+		expect(drained).toBe(true);
+	});
+
+	// ── T3: the resume proof-smoke (SDK-native load) ──────────────────────────
+	//
+	// The full round-trip, no Runner: run one main(), drive two turns through the
+	// REAL tee-backed SessionManager, capture the durable TranscriptEntry frames
+	// off the carrier; reconstruct the session-JSONL body the way T5 does (latest
+	// checkpoint body + later delta lines by entry_seq); write it to the default
+	// session dir; start a SECOND main() with COMPASS_RESUME_SESSION_FILE at it;
+	// and assert the second session's manager carries the first run's turns,
+	// loaded via setSessionFile → loadEntriesFromFile — with NO TranscriptEntry
+	// frames emitted during the load (reads never tee), and a post-resume turn
+	// emitting deltas with a FRESH per-lifetime entry_seq starting at 1 (the
+	// server-rebase model, T4). The load touches only the $HOME session dir, so
+	// it is checkout-independent.
+	test("a teed run reconstructs into a resumable session (SDK-native load)", async () => {
+		// ── Run 1: drive two turns through the real tee manager, in the
+		// createSession callback (it holds options.sessionManager — the manager
+		// main built over the tee storage). appendMessage → tee → durable lane;
+		// flush() awaits storage.drain() so the frames are committed to the
+		// carrier before the callback returns. ──
+		const log1 = emptyLog();
+		const session1 = fakeSession();
+		await main(
+			{ HOME: process.env.HOME },
+			{
+				createSession: async (options) => {
+					const m = options.sessionManager;
+					if (!m) throw new Error("run 1: main passed no sessionManager");
+					m.appendMessage(userMsg("first question"));
+					m.appendMessage(assistantMsg("first answer"));
+					m.appendMessage(userMsg("second question"));
+					m.appendMessage(assistantMsg("second answer"));
+					await m.flush();
+					return { session: session1 as unknown as AgentSession };
+				},
+				createTransport: () =>
+					fakeCarrier(log1, { control: emptyControlStream }),
+			},
+		);
+
+		// The durable transcript frames the run committed, in commit order: the
+		// first assistant append rewrites the body (a checkpoint), later appends
+		// ride as deltas — and the per-lifetime entry_seq started at 1n.
+		const frames1 = transcriptFramesOf(log1);
+		expect(frames1.length).toBeGreaterThan(0);
+		expect(frames1[0].entrySeq).toBe(1n);
+		expect(frames1.some((f) => f.checkpoint)).toBe(true);
+
+		// ── Reconstruct the body the way T5 does: latest checkpoint body + later
+		// delta lines by entry_seq. The checkpoint's entryJson IS the full body. ──
+		const body = reconstructSessionBody(frames1);
+
+		// ── Run 2: resume from the reconstructed body. ────────────────────────
+		const cwd = process.cwd();
+		const sessionDir = SessionManager.getDefaultSessionDir(cwd);
+		mkdirSync(sessionDir, { recursive: true });
+		const resumeFile = join(sessionDir, "20260101-000000_resumed.jsonl");
+		writeFileSync(resumeFile, body);
+
+		const log2 = emptyLog();
+		const session2 = fakeSession();
+		let entriesAtCreate: unknown[] = [];
+		let framesAtCreate = 0;
+		await main(
+			{ HOME: process.env.HOME, COMPASS_RESUME_SESSION_FILE: resumeFile },
+			{
+				createSession: async (options) => {
+					const m = options.sessionManager;
+					if (!m) throw new Error("run 2: main passed no sessionManager");
+					// Snapshot BEFORE any post-resume write: the load already ran
+					// (setSessionFile precedes createSession).
+					entriesAtCreate = m.getEntries();
+					framesAtCreate = transcriptFramesOf(log2).length;
+					// A post-resume turn emits fresh deltas.
+					m.appendMessage(userMsg("post-resume question"));
+					m.appendMessage(assistantMsg("post-resume answer"));
+					await m.flush();
+					return { session: session2 as unknown as AgentSession };
+				},
+				createTransport: () =>
+					fakeCarrier(log2, { control: emptyControlStream }),
+			},
+		);
+
+		// The resumed session carries the first run's turns (loaded via
+		// setSessionFile before createSession ran).
+		const resumedTexts = textsOf(entriesAtCreate);
+		expect(resumedTexts).toContain("first question");
+		expect(resumedTexts).toContain("second question");
+
+		// NO TranscriptEntry frames were emitted during the load — reads never
+		// tee, and the current-version fixture triggers no migration rewrite.
+		expect(framesAtCreate).toBe(0);
+
+		// The post-resume turn's deltas carry a FRESH per-lifetime entry_seq
+		// starting at 1n (the server rebases per session, T4).
+		const frames2 = transcriptFramesOf(log2);
+		expect(frames2.length).toBeGreaterThan(0);
+		expect(frames2[0].entrySeq).toBe(1n);
+	});
+
+	// A compaction round-trip: a fixture body whose file contains a superseded
+	// compaction loads through the SDK's own elision — proving the T5
+	// reconstruction needs no compaction awareness beyond T4's supersession.
+	test("a superseded-compaction fixture loads via the SDK's own elision", async () => {
+		const session = fakeSession();
+		const cwd = process.cwd();
+		const sessionDir = SessionManager.getDefaultSessionDir(cwd);
+		mkdirSync(sessionDir, { recursive: true });
+		const resumeFile = join(sessionDir, "20260101-000000_compacted.jsonl");
+		// Two compactions on the active branch; the earlier one is superseded and
+		// the SDK's elideSupersededCompactionEntries collapses its summary on load.
+		writeFileSync(
+			resumeFile,
+			sessionFixture([
+				compactionLine("c1", null, "first compaction summary"),
+				compactionLine("c2", "c1", "second compaction summary"),
+				userLine("after compaction", "e-after", "c2"),
+			]),
+		);
+
+		let entriesAtCreate: unknown[] = [];
+		await main(
+			{ HOME: process.env.HOME, COMPASS_RESUME_SESSION_FILE: resumeFile },
+			{
+				createSession: (options) => {
+					const m = options.sessionManager;
+					if (!m) throw new Error("main passed no sessionManager");
+					entriesAtCreate = m.getEntries();
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		// The session loaded (post-compaction entry present) and the superseded
+		// compaction's summary was elided by the SDK loader.
+		const summaries = compactionSummariesOf(entriesAtCreate);
+		expect(summaries).toHaveLength(2);
+		expect(summaries[0]).toBe(
+			"[Superseded compaction summary elided during session load]",
+		);
+		expect(summaries[1]).toBe("second compaction summary");
+		expect(textsOf(entriesAtCreate)).toContain("after compaction");
+	});
 });
 
 // A Control stream that closes cleanly with no ops — the shortest complete run.
@@ -830,4 +1126,169 @@ function nextEventLoopTurn(): Promise<void> {
 	const { promise, resolve } = Promise.withResolvers<void>();
 	setImmediate(resolve);
 	return promise;
+}
+
+// ── SEA-1570 session-JSONL fixtures ──────────────────────────────────────────
+//
+// Build a current-version (v3) session body the SDK loader accepts verbatim: a
+// 256-byte title slot, a session header, then one JSONL line per entry. Current
+// version means setSessionFile loads it without a migration rewrite — so the
+// resume path emits NO checkpoint frame (reads never tee). These mirror the
+// bytes the tee backend commits, so a T3 reconstruction feeds this exact shape.
+let fixtureSeq = 0;
+
+function titleSlot(): string {
+	// The SDK's own fixed-width 256-byte title slot serializer — the exact bytes
+	// a real session file's first line carries, so the fixture is byte-faithful.
+	return `${serializeTitleSlot({ updatedAt: "2026-01-01T00:00:00.000Z" })}`;
+}
+
+function sessionHeader(): string {
+	fixtureSeq += 1;
+	return `${JSON.stringify({
+		type: "session",
+		version: 3,
+		id: `fixture-${fixtureSeq}`,
+		timestamp: "2026-01-01T00:00:00.000Z",
+		cwd: process.cwd(),
+	})}\n`;
+}
+
+// One user-message entry line — content the resumed manager exposes via
+// getEntries()[i].message.content.
+function userLine(
+	content: string,
+	id = `e${fixtureSeq}-${content}`,
+	parentId: string | null = null,
+): string {
+	return `${JSON.stringify({
+		type: "message",
+		id,
+		parentId,
+		timestamp: "2026-01-01T00:00:01.000Z",
+		message: { role: "user", content },
+	})}\n`;
+}
+
+// One compaction entry line, for the superseded-compaction round-trip.
+function compactionLine(
+	id: string,
+	parentId: string | null,
+	summary: string,
+): string {
+	return `${JSON.stringify({
+		type: "compaction",
+		id,
+		parentId,
+		timestamp: "2026-01-01T00:00:02.000Z",
+		summary,
+		shortSummary: `${summary} (short)`,
+		firstKeptEntryId: id,
+		tokensBefore: 1000,
+	})}\n`;
+}
+
+// A full current-version session body: title slot + header + the given entry
+// lines (already newline-terminated).
+function sessionFixture(entryLines: string[]): string {
+	return `${titleSlot()}${sessionHeader()}${entryLines.join("")}`;
+}
+
+// A user / assistant Message to drive through the real SessionManager. Only the
+// fields the persistence path reads (role + content) matter; the wide pi-ai
+// Message surface is never touched, so the cast names exactly what is used.
+function userMsg(
+	content: string,
+): Parameters<SessionManager["appendMessage"]>[0] {
+	return { role: "user", content } as Parameters<
+		SessionManager["appendMessage"]
+	>[0];
+}
+
+function assistantMsg(
+	content: string,
+): Parameters<SessionManager["appendMessage"]>[0] {
+	return {
+		role: "assistant",
+		content: [{ type: "text", text: content }],
+	} as Parameters<SessionManager["appendMessage"]>[0];
+}
+
+// The committed transcript frames (entry_json + checkpoint + entry_seq) that
+// reached the carrier on the durable unary, in commit order.
+function transcriptFramesOf(
+	log: CarrierLog,
+): { entryJson: string; checkpoint: boolean; entrySeq: bigint }[] {
+	const out: { entryJson: string; checkpoint: boolean; entrySeq: bigint }[] =
+		[];
+	for (const req of log.durableFrames) {
+		const inner = req.frame?.frame;
+		if (inner?.case !== "transcriptEntry") continue;
+		out.push({
+			entryJson: inner.value.entryJson,
+			checkpoint: inner.value.checkpoint,
+			entrySeq: inner.value.entrySeq,
+		});
+	}
+	return out;
+}
+
+// Reconstruct the session-JSONL body the way T5 does: take the latest checkpoint
+// (a full-body snapshot, entryJson IS the whole file), then append every delta
+// line committed AFTER it, ordered by entry_seq. A pure function over the frames.
+function reconstructSessionBody(
+	frames: { entryJson: string; checkpoint: boolean; entrySeq: bigint }[],
+): string {
+	let latestCheckpoint: { entryJson: string; entrySeq: bigint } | undefined;
+	for (const f of frames) {
+		if (
+			f.checkpoint &&
+			(!latestCheckpoint || f.entrySeq > latestCheckpoint.entrySeq)
+		) {
+			latestCheckpoint = { entryJson: f.entryJson, entrySeq: f.entrySeq };
+		}
+	}
+	if (!latestCheckpoint)
+		throw new Error("no checkpoint frame to reconstruct from");
+	const laterDeltas = frames
+		.filter((f) => !f.checkpoint && f.entrySeq > latestCheckpoint.entrySeq)
+		.sort((l, r) =>
+			l.entrySeq < r.entrySeq ? -1 : l.entrySeq > r.entrySeq ? 1 : 0,
+		);
+	return (
+		latestCheckpoint.entryJson + laterDeltas.map((f) => f.entryJson).join("")
+	);
+}
+
+// The message-entry contents from a getEntries() array, narrowing each entry
+// with `in`/`typeof` (no fabricated inline shape).
+function textsOf(entries: unknown[]): string[] {
+	const out: string[] = [];
+	for (const entry of entries) {
+		if (!entry || typeof entry !== "object") continue;
+		if (!("type" in entry) || entry.type !== "message") continue;
+		if (
+			!("message" in entry) ||
+			!entry.message ||
+			typeof entry.message !== "object"
+		)
+			continue;
+		const message = entry.message;
+		if (!("content" in message) || typeof message.content !== "string")
+			continue;
+		out.push(message.content);
+	}
+	return out;
+}
+
+// The compaction-entry summaries from a getEntries() array, in order.
+function compactionSummariesOf(entries: unknown[]): string[] {
+	const out: string[] = [];
+	for (const entry of entries) {
+		if (!entry || typeof entry !== "object") continue;
+		if (!("type" in entry) || entry.type !== "compaction") continue;
+		if (!("summary" in entry) || typeof entry.summary !== "string") continue;
+		out.push(entry.summary);
+	}
+	return out;
 }

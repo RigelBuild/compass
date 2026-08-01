@@ -66,6 +66,13 @@ export {
 	SessionFrameSchema,
 	type SteerControl,
 	SteerControlSchema,
+	// The `transcript_entry` variant's payload: one committed SDK session entry
+	// (entry_json + checkpoint + entry_seq) the tee backend commits locally and
+	// tees upstream as a durable frame (SEA-1570). Constructed with
+	// `create(TranscriptEntrySchema, …)` so the branded message satisfies the
+	// AgentFrame oneof.
+	type TranscriptEntry,
+	TranscriptEntrySchema,
 	type TranscriptReplay,
 	TranscriptReplaySchema,
 } from "./gen/compass/v1/agent_pb";
