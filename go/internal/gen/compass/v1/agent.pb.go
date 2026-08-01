@@ -411,15 +411,16 @@ func (x *SessionFrame) GetTypedEvent() *v1.SessionEvent {
 //
 // Payload FIELDS: only the variants representable with existing compass.v1
 // scalars carry fields here (PromptControl.input, AskAnswerControl,
-// DeliverControl.message). The SteerControl / TranscriptReplay / ConfigControl
-// payloads stay empty shells — their fields carry an inbound SDK `AgentMessage`
-// (a four-way union with an opaque provider payload) and a tool set (whose SDK
-// representation includes a non-serializable `execute` handle), neither of
-// which any existing compass.v1 message represents. That payload-shape decision
-// is parked (SEA-1310); the shells keep the oneof complete on the wire and are
-// populated by a stacked PR once the shapes settle (DeliverControl was so
-// populated by SEA-1569, carrying a comms Message). Defining the empty shells
-// now is additive and buf-breaking-safe (field additions to a proto3 message).
+// DeliverControl.message, SteerControl.message). The TranscriptReplay /
+// ConfigControl payloads stay empty shells — their fields carry an inbound SDK
+// `AgentMessage` (a four-way union with an opaque provider payload) and a tool
+// set (whose SDK representation includes a non-serializable `execute` handle),
+// neither of which any existing compass.v1 message represents. That payload-
+// shape decision is parked (SEA-1310); the shells keep the oneof complete on
+// the wire and are populated by a stacked PR once the shapes settle
+// (DeliverControl and the channel-borne SteerControl were so populated by
+// SEA-1569, each carrying a comms Message). Defining the empty shells now is
+// additive and buf-breaking-safe (field additions to a proto3 message).
 type AgentControl struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Runner-assigned, monotonic per session: the retention/redelivery cursor
@@ -736,13 +737,17 @@ func (*ReplayComplete) Descriptor() ([]byte, []int) {
 	return file_compass_v1_agent_proto_rawDescGZIP(), []int{6}
 }
 
-// Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
-// oneof is complete on the wire; populated by a stacked PR.
-//
-//	SteerControl / TranscriptReplay carry an inbound SDK AgentMessage;
-//	ConfigControl carries a tool set.
+// SteerControl carries a comms Message: a channel `@`-mention routed into the
+// agent's live session as a steer (SEA-1569), sourced from a channel
+// PostMessage, wrapped in an AgentControl and relayed via the runner control
+// seam (DispatchControl) — the same path DeliverControl rides, carrying the
+// same single first-party Message (DL-073; no seq, the id is in the Message).
+// The generic SDK-AgentMessage steer (Runner-originated, outside any channel)
+// stays parked under SEA-1310.
 type SteerControl struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The mention message to steer into the session.
+	Message       *v1.Message `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -777,6 +782,18 @@ func (*SteerControl) Descriptor() ([]byte, []int) {
 	return file_compass_v1_agent_proto_rawDescGZIP(), []int{7}
 }
 
+func (x *SteerControl) GetMessage() *v1.Message {
+	if x != nil {
+		return x.Message
+	}
+	return nil
+}
+
+// Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
+// oneof is complete on the wire; populated by a stacked PR.
+//
+//	TranscriptReplay carries an inbound SDK AgentMessage;
+//	ConfigControl carries a tool set.
 type TranscriptReplay struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1088,8 +1105,9 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\x10AskAnswerControl\x12\x15\n" +
 	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x127\n" +
 	"\aanswers\x18\x02 \x03(\v2\x1d.compass.v1.AskQuestionAnswerR\aanswers\"\x10\n" +
-	"\x0eReplayComplete\"\x0e\n" +
-	"\fSteerControl\"\x12\n" +
+	"\x0eReplayComplete\"=\n" +
+	"\fSteerControl\x12-\n" +
+	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\"\x12\n" +
 	"\x10TranscriptReplay\"\x0f\n" +
 	"\rConfigControl\"?\n" +
 	"\x0eDeliverControl\x12-\n" +
@@ -1156,12 +1174,13 @@ var file_compass_v1_agent_proto_depIdxs = []int32{
 	8,  // 14: compass.v1.AgentControl.replay:type_name -> compass.v1.TranscriptReplay
 	6,  // 15: compass.v1.AgentControl.replay_complete:type_name -> compass.v1.ReplayComplete
 	18, // 16: compass.v1.AskAnswerControl.answers:type_name -> compass.v1.AskQuestionAnswer
-	19, // 17: compass.v1.DeliverControl.message:type_name -> compass.v1.Message
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	19, // 17: compass.v1.SteerControl.message:type_name -> compass.v1.Message
+	19, // 18: compass.v1.DeliverControl.message:type_name -> compass.v1.Message
+	19, // [19:19] is the sub-list for method output_type
+	19, // [19:19] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_agent_proto_init() }
