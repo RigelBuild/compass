@@ -19,8 +19,9 @@ import (
 	"errors"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
+
+	"connectrpc.com/connect"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
@@ -561,10 +562,12 @@ func TestStartFetchesSecretsByContainer(t *testing.T) {
 	}
 }
 
-// TestStartAttachesEnvFileToAgentExec pins that the agent's own exec carries
-// --env-file pointing at the aggregate env-secret file, so env-delivery secrets
-// reach the agent process.
-func TestStartAttachesEnvFileToAgentExec(t *testing.T) {
+// TestStartAgentExecCarriesNoEnvFile pins that the agent's own exec does NOT
+// carry an --env-file: env-delivery secrets are materialized to the in-container
+// $HOME/.compass/env and sourced by the agent, never passed on the exec (podman
+// resolves --env-file host-side, where the container file does not exist). The
+// streaming spec still carries HOME so the agent can locate that file.
+func TestStartAgentExecCarriesNoEnvFile(t *testing.T) {
 	spec := liveSpec()
 	spec.Workspace.HomeDir = "/home/scoped"
 	specs := &fakeSpecBuilder{spec: spec}
@@ -581,11 +584,33 @@ func TestStartAttachesEnvFileToAgentExec(t *testing.T) {
 	t.Cleanup(func() { _ = host.Stop(context.Background(), sessionID) })
 
 	got := onlyStreamingSpec(t, engine)
-	want := runtime.AgentEnvFilePath("/home/scoped")
-	if got.EnvFile == nil || *got.EnvFile != want {
-		t.Fatalf("agent exec --env-file = %v, want %q", derefOr(got.EnvFile), want)
+	// The StreamingExecSpec no longer has an EnvFile field at all — the compiler
+	// enforces that env-delivery cannot ride --env-file. What remains to check is
+	// that HOME still rides the exec so the agent can locate $HOME/.compass/env
+	// to source it.
+	if got.Env["HOME"] != "/home/scoped" {
+		t.Fatalf("agent exec HOME = %q, want /home/scoped", got.Env["HOME"])
 	}
-	if !strings.HasSuffix(want, "/.compass/env") {
-		t.Fatalf("env-file path %q is not the aggregate $HOME/.compass/env", want)
+}
+
+// TestStartToleratesNoSecretsSurface pins that a Server with no secrets surface
+// (FetchSecrets → CodeUnavailable) does not block agent start: the agent must
+// still come up when there is simply nothing to materialize.
+func TestStartToleratesNoSecretsSurface(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine, pub := newHostFixtureWithPublish(t, specs)
+	pub.setFetchErr(connect.NewError(connect.CodeUnavailable, errors.New("no secret resolver wired")))
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("Provision = %v", err)
 	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	if err != nil {
+		t.Fatalf("Start with no secrets surface = %v, want the agent to start anyway", err)
+	}
+	t.Cleanup(func() { _ = host.Stop(context.Background(), sessionID) })
+
+	// The agent exec still ran despite the unavailable secrets surface.
+	onlyStreamingSpec(t, engine)
 }

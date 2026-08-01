@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"sync"
 
+	"connectrpc.com/connect"
+
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/runner/gateway"
 	"github.com/sealedsecurity/compass/go/internal/runtime"
@@ -221,14 +223,26 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	// provision step, but the Server binds the container→account entry only
 	// after the relay-Provision returns, so the earliest point the by-container
 	// fetch is authorizable is here in Start, still strictly before StartAgent.
-	// A fetch/materialize failure fails the Start: the agent must not come up
-	// without its secrets. Rotation (T6) rides the async SecretsVersion signal.
+	//
+	// A Server built with NO secrets surface (nil resolver) answers
+	// FetchSecrets with CodeUnavailable — a legitimate deployment, not a
+	// failure: such a server has no secrets to inject, so the agent must still
+	// start. That one code is tolerated (skip the materialize, start the agent);
+	// every other fetch error — a real transport fault, an authz denial — fails
+	// the Start, because there the agent would otherwise come up without secrets
+	// that DO exist. Rotation (T6) rides the async SecretsVersion signal.
 	resolved, err := h.link.FetchSecretsByContainer(ctx, name)
-	if err != nil {
+	switch {
+	case err == nil:
+		if err := h.materializer.Install(ctx, handle.ID(), handle.HomeDir(), handle.WorkspaceUID(), resolved); err != nil {
+			return "", fmt.Errorf("materializing secrets before agent start for container %q: %w", name, err)
+		}
+	case connect.CodeOf(err) == connect.CodeUnavailable:
+		// No secrets surface on this Server: nothing to materialize. Start the
+		// agent anyway. Logged at debug so a secrets-less deployment is not noisy.
+		h.log.Debug("no secrets surface; starting agent without materialized secrets", "container", name)
+	default:
 		return "", fmt.Errorf("fetching secrets before agent start for container %q: %w", name, err)
-	}
-	if err := h.materializer.Install(ctx, handle.ID(), handle.HomeDir(), handle.WorkspaceUID(), resolved); err != nil {
-		return "", fmt.Errorf("materializing secrets before agent start for container %q: %w", name, err)
 	}
 
 	stream, err := h.link.StartAgent(ctx, sessionID, handle.ID(), h.engine, h.agentEnv(handle), h.log)
@@ -346,6 +360,15 @@ func (h *agentHost) Status(_ context.Context, sessionID string) ([]*compassv1.Ag
 // only ever driven for a bound session. The container's $HOME and agent uid come
 // from its resolved handle, so the materialize runs as the agent user in its own
 // home, the git-credential posture.
+//
+// Rotation reach differs by delivery. Provider-seed, gh, and generic file
+// secrets are re-read from disk per use, so rewriting them here rotates them
+// into a live agent. ENV-delivery secrets do NOT: the agent sources
+// $HOME/.compass/env once at startup, and a process's environment is fixed at
+// exec, so a rewritten env file never reaches a running agent — an env-secret
+// rotation is picked up only on the agent's next start. This re-materialize
+// keeps the on-disk file current for that next start; it does not, and cannot,
+// mutate the live process env.
 func (h *agentHost) RefreshSecrets(ctx context.Context, sessionID string) error {
 	h.mu.Lock()
 	s, ok := h.sessions[sessionID]

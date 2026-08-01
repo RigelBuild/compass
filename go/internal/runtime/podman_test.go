@@ -102,10 +102,11 @@ func TestExecStreamingArgsMinimalOmitsUserAndWorkdir(t *testing.T) {
 	}
 }
 
-// The env-file rides before the -e vars, so an -e key still wins on collision
-// (podman applies -e after --env-file). The agent exec always carries one.
-func TestExecStreamingArgsCarriesEnvFileBeforeInlineEnv(t *testing.T) {
-	spec := NewStreamingExecSpec("omp", "acp").AsUser("1000").InDir("/work").WithEnvFile("/home/agent/.compass/env")
+// execStreamingArgs carries -e vars but never --env-file: env-delivery secrets
+// are not passed on the exec at all (podman resolves --env-file host-side, where
+// the container-internal file does not exist; the agent sources the file itself).
+func TestExecStreamingArgsCarriesInlineEnvNotEnvFile(t *testing.T) {
+	spec := NewStreamingExecSpec("omp", "acp").AsUser("1000").InDir("/work")
 	spec.Env["HOME"] = "/home/agent"
 
 	args := execStreamingArgs(ContainerID("ctr123"), spec)
@@ -114,24 +115,14 @@ func TestExecStreamingArgsCarriesEnvFileBeforeInlineEnv(t *testing.T) {
 		"exec", "--interactive",
 		"--user", "1000",
 		"--workdir", "/work",
-		"--env-file", "/home/agent/.compass/env",
 		"-e", "HOME=/home/agent",
 		"ctr123", "omp", "acp",
 	}
 	if !slices.Equal(args, want) {
 		t.Fatalf("execStreamingArgs = %q, want %q", args, want)
 	}
-}
-
-// An empty env-file path (WithEnvFile("")) adds no flag — the no-op guard.
-func TestExecStreamingArgsOmitsEmptyEnvFile(t *testing.T) {
-	spec := NewStreamingExecSpec("omp").WithEnvFile("")
-
-	args := execStreamingArgs(ContainerID("c"), spec)
-
-	want := []string{"exec", "--interactive", "c", "omp"}
-	if !slices.Equal(args, want) {
-		t.Fatalf("execStreamingArgs with empty env-file = %q, want %q", args, want)
+	if slices.Contains(args, "--env-file") {
+		t.Fatalf("execStreamingArgs emitted --env-file; env-delivery must not use it: %q", args)
 	}
 }
 
