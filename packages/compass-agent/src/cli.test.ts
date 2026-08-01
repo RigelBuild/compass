@@ -36,8 +36,10 @@ import {
 	AGENT_SOCKET_PATH,
 	authSeedPath,
 	createSeedApiKeyResolver,
+	envFilePath,
 	type MainDeps,
 	main,
+	parseEnvFile,
 	resolveModelSelector,
 	resolvePersona,
 } from "./cli";
@@ -159,6 +161,60 @@ describe("authSeedPath", () => {
 		expect(authSeedPath("/home/agent")).toBe(
 			"/home/agent/.compass/auth-seed.json",
 		);
+	});
+});
+
+// The env-file path is the frozen SEA-1327 T5 placement: a 0600
+// `$HOME/.compass/env` written by the Runner's materializer, beside the seed.
+describe("envFilePath", () => {
+	test("resolves under the supplied HOME", () => {
+		expect(envFilePath("/home/agent")).toBe("/home/agent/.compass/env");
+	});
+});
+
+// The pure parser of the materialized `KEY=VALUE` file. Split on the FIRST `=`
+// (values may contain `=`), value literal to EOL (only a trailing \r stripped),
+// tolerant of blank/`=`-less/empty-key lines, and the four reserved Runner-set
+// keys excluded so a file KEY can never clobber them. No IO, no process.env.
+describe("parseEnvFile", () => {
+	test("parses basic KEY=VALUE lines", () => {
+		expect(parseEnvFile("A=1\nB=2")).toEqual({ A: "1", B: "2" });
+	});
+
+	test("splits on the FIRST `=` so a value may contain `=`", () => {
+		expect(parseEnvFile("TOKEN=ab=cd=ef")).toEqual({ TOKEN: "ab=cd=ef" });
+	});
+
+	test("an empty file yields no entries", () => {
+		expect(parseEnvFile("")).toEqual({});
+	});
+
+	test("blank lines are skipped", () => {
+		expect(parseEnvFile("\nA=1\n\n")).toEqual({ A: "1" });
+	});
+
+	test("a line with no `=` is skipped", () => {
+		expect(parseEnvFile("NOEQ\nA=1")).toEqual({ A: "1" });
+	});
+
+	test("a line with an empty key is skipped", () => {
+		expect(parseEnvFile("=orphan\nA=1")).toEqual({ A: "1" });
+	});
+
+	test("the value is literal to EOL — never trimmed", () => {
+		expect(parseEnvFile("A= spaced ")).toEqual({ A: " spaced " });
+	});
+
+	test("a CRLF-written file is tolerated (trailing \\r stripped)", () => {
+		expect(parseEnvFile("A=1\r\nB=2\r\n")).toEqual({ A: "1", B: "2" });
+	});
+
+	test("the four reserved Runner-set keys are excluded", () => {
+		expect(
+			parseEnvFile(
+				"HOME=/evil\nCOMPASS_MODEL=x\nCOMPASS_WORKDIR=y\nCOMPASS_PERSONA=z\nOK=1",
+			),
+		).toEqual({ OK: "1" });
 	});
 });
 
@@ -1087,6 +1143,81 @@ describe("main", () => {
 		);
 		expect(summaries[1]).toBe("second compaction summary");
 		expect(textsOf(entriesAtCreate)).toContain("after compaction");
+	});
+});
+
+// ── main(): sourcing $HOME/.compass/env into process.env ─────────────────────
+//
+// The materialized env-secret file (SEA-1327 T5) must reach `process.env` before
+// createAgentSession, so the session's extensions/MCP/tools inherit the secrets.
+// These run over the same composition seam as the `main` tests above, writing
+// the env file under the per-test scratch HOME (pinned in beforeEach). Every
+// process.env KEY a test writes is saved+restored so the suite stays isolated
+// and full-suite safe — mirroring the savedHome pattern.
+function writeEnvFile(home: string, body: string): void {
+	const dir = join(home, ".compass");
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, "env"), body, { mode: 0o600 });
+}
+
+describe("main sources $HOME/.compass/env into process.env", () => {
+	// The test-only keys these tests write into process.env, saved before and
+	// restored after so a leaked key can never flake a later test.
+	const TOUCHED_KEYS = ["SOME_TEST_KEY", "COMPASS_MODEL"] as const;
+	let savedEnv: Record<string, string | undefined> = {};
+	beforeEach(() => {
+		savedEnv = {};
+		for (const key of TOUCHED_KEYS) savedEnv[key] = process.env[key];
+	});
+	afterEach(() => {
+		for (const key of TOUCHED_KEYS) {
+			const prev = savedEnv[key];
+			if (prev === undefined) delete process.env[key];
+			else process.env[key] = prev;
+		}
+	});
+
+	test("a written env file's KEYs reach process.env", async () => {
+		const home = process.env.HOME as string;
+		writeEnvFile(home, "SOME_TEST_KEY=secretval\n");
+		delete process.env.SOME_TEST_KEY;
+		// Non-vacuity: without the merge loop the key is never set → red.
+		await main(
+			{ HOME: home },
+			deps(
+				fakeSession(),
+				fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			),
+		);
+		expect(process.env.SOME_TEST_KEY as string | undefined).toBe("secretval");
+	});
+
+	test("a missing env file is tolerated — main resolves without throwing", async () => {
+		const home = process.env.HOME as string;
+		// No .compass/env written under this scratch home.
+		await expect(
+			main(
+				{ HOME: home },
+				deps(
+					fakeSession(),
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				),
+			),
+		).resolves.toBeUndefined();
+	});
+
+	test("a reserved var in the file never clobbers process.env", async () => {
+		const home = process.env.HOME as string;
+		process.env.COMPASS_MODEL = "from-process";
+		writeEnvFile(home, "COMPASS_MODEL=from-file\n");
+		await main(
+			{ HOME: home },
+			deps(
+				fakeSession(),
+				fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			),
+		);
+		expect(process.env.COMPASS_MODEL).toBe("from-process");
 	});
 });
 

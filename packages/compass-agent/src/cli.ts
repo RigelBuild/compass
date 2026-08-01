@@ -11,7 +11,10 @@
 //   - the persona identity overlay from `COMPASS_PERSONA`, appended to the
 //     agent's default system prompt;
 //   - the provider credential from the 0600 `$HOME/.compass/auth-seed.json` the
-//     Runner's materializer writes (design §T5).
+//     Runner's materializer writes (design §T5);
+//   - the materialized tool/MCP secrets from the 0600 `$HOME/.compass/env` the
+//     Runner's materializer writes as `KEY=VALUE` lines (SEA-1327 T5), sourced
+//     into the process environment before the session is built.
 //
 // It composes three things and runs them: an `AgentSession` from
 // `createAgentSession` (which loads extensions/MCP/skills/tools/the model
@@ -56,6 +59,40 @@ export const AGENT_SOCKET_PATH = "/run/compass/agent.sock";
 /** The 0600 provider-credential seed the Runner materializes (design §T5). */
 export function authSeedPath(home: string): string {
 	return `${home}/.compass/auth-seed.json`;
+}
+
+/** The 0600 aggregate env-secret file the Runner materializes (SEA-1327 T5). */
+export function envFilePath(home: string): string {
+	return `${home}/.compass/env`;
+}
+
+/** Reserved vars the Runner sets via `-e`; a file KEY never clobbers these. */
+const RESERVED_ENV_KEYS: Record<string, true> = {
+	HOME: true,
+	COMPASS_WORKDIR: true,
+	COMPASS_MODEL: true,
+	COMPASS_PERSONA: true,
+};
+
+/**
+ * Parse the materialized env file's `KEY=VALUE` lines. Split on the FIRST `=`
+ * (a value may contain `=`); the value is literal to end-of-line, only a
+ * trailing `\r` stripped so a CRLF-written file is tolerated. Blank lines,
+ * `=`-less lines, and empty-key lines are skipped. The four reserved
+ * Runner-set keys are excluded so a file KEY can never clobber them. Pure — the
+ * IO + the merge into `process.env` live in `main`.
+ */
+export function parseEnvFile(contents: string): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const rawLine of contents.split("\n")) {
+		const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+		const eq = line.indexOf("=");
+		if (eq < 1) continue; // no `=`, or an empty key (eq === 0)
+		const key = line.slice(0, eq).trim();
+		if (key === "" || RESERVED_ENV_KEYS[key]) continue;
+		out[key] = line.slice(eq + 1);
+	}
+	return out;
 }
 
 /**
@@ -141,6 +178,20 @@ async function readSeed(path: string): Promise<Seed | undefined> {
 }
 
 /**
+ * Read + parse the materialized env-secret file. Absent/empty/unreadable yields
+ * no secrets (`{}`), never throws — the same tolerant posture as `readSeed`; an
+ * empty file is normal (the writer always writes it, even with zero secrets).
+ */
+async function readEnvFile(path: string): Promise<Record<string, string>> {
+	try {
+		return parseEnvFile(await Bun.file(path).text());
+	} catch {
+		// Absent/unreadable: no env secrets right now (same posture as readSeed).
+		return {};
+	}
+}
+
+/**
  * The two outside-world constructors `main` reaches through. Overridable ONLY so
  * a test can compose the entrypoint over a fake carrier; both default to the
  * production factories, so the Runner's call path — `main()` with no second
@@ -188,6 +239,20 @@ export async function main(
 		throw new Error(
 			"compass-agent: HOME is unset — the Runner launches the agent with its scoped home; without it the provider seed cannot be located",
 		);
+	}
+
+	// Materialized tool/MCP secrets (SEA-1327 T5): the Runner writes a 0600
+	// aggregate KEY=VALUE file inside the container; source it into the process
+	// environment so createAgentSession's extensions/MCP/tools — and any
+	// subprocess they spawn — inherit the secrets. The merge target is
+	// `process.env`, NOT the `env` param (that is only compass-agent's own config
+	// reader): createAgentSession reads process.env, so the secrets must land
+	// there. File wins for the keys it defines; the four reserved Runner-set vars
+	// are never clobbered (filtered parse-side).
+	for (const [key, value] of Object.entries(
+		await readEnvFile(envFilePath(home)),
+	)) {
+		process.env[key] = value;
 	}
 
 	// The identity overlay; undefined when unset or whitespace-only. What omits
