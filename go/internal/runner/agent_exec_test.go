@@ -460,3 +460,40 @@ func TestStopArmsTheStoppingDiscriminator(t *testing.T) {
 		t.Fatal("Stop did not arm stopping — the reap's os.ErrClosed would be reported as `drain ended early` on every stop")
 	}
 }
+
+// A self-exiting agent must release the drain ctx node without a Stop. Stop is
+// the only caller of endDrains, so before the StartAgent reaper existed a
+// session whose agent died on its own (pipes reach EOF, both drains return, no
+// Stop/Reload/Close) left its context.WithCancel node attached to the Runner's
+// long-lived ctx until Runner shutdown — a bounded leak of one node per
+// self-exited session that go vet's lostcancel cannot see, because the
+// CancelFunc is stored on the struct rather than dropped in scope.
+//
+// The exit is driven by closing both pipe writers (the fake's stdout/stderr):
+// each drain reads EOF and returns, the reaper joins them and cancels. The
+// observable is drainsReleased (drainCtx.Done()) closing — with no reaper it
+// never closes on this path and the test fails on the deadline, exactly the
+// leak. Stop is never called, so nothing else could release the node.
+func TestSelfExitReleasesTheDrainCtx(t *testing.T) {
+	engine := newPipeRuntime()
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+
+	// context.Background() as the test root — the rule's explicit test exemption.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	stream, err := link.StartAgent(ctx, "sess-selfexit", runtime.ContainerID("c1"), engine, testAgentEnv(), discardLoggerRunner())
+	if err != nil {
+		t.Fatalf("StartAgent = %v", err)
+	}
+
+	// The agent self-exits: both pipes reach EOF, no Stop is ever called.
+	_ = engine.stderrW.Close()
+	engine.closeStdout()
+
+	select {
+	case <-stream.drainsReleased:
+	case <-timeAfter():
+		t.Fatal("drain ctx never released after self-exit: the WithCancel node leaks on the Runner ctx for every session that exits without a Stop")
+	}
+}

@@ -94,6 +94,13 @@ type AgentStream struct {
 	// must Terminate before it cancels (see Stop), so the reap's ErrClosed
 	// always arrives while drainCtx is still live.
 	stopping atomic.Bool
+	// drainsReleased mirrors drainCtx.Done(): it closes when the drain context
+	// is cancelled, whichever path ends the exec — Stop's endDrains on
+	// deliberate teardown, or StartAgent's reaper once both drains return on a
+	// self-exit. Held as a channel rather than the context itself, which
+	// containedctx forbids in shipped state, so the ctx-node release is
+	// observable without re-rooting a context on the struct.
+	drainsReleased <-chan struct{}
 }
 
 // SessionID returns the Server-side session id this stream carries.
@@ -117,7 +124,7 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 	// Derived from the caller's ctx, never re-rooted: a Runner shutdown reaches
 	// the drains, and Stop can end them on its own.
 	drainCtx, stopDrains := context.WithCancel(ctx)
-	stream := &AgentStream{sessionID: sessionID, exec: xs, stopDrains: stopDrains}
+	stream := &AgentStream{sessionID: sessionID, exec: xs, stopDrains: stopDrains, drainsReleased: drainCtx.Done()}
 
 	// Drain both pipes continuously so a full OS pipe buffer can never stall the
 	// agent. Neither carries protocol traffic now, but an undrained pipe blocks
@@ -130,6 +137,19 @@ func (l *ServerLink) StartAgent(ctx context.Context, sessionID string, id runtim
 	go func() {
 		defer stream.drains.Done()
 		stream.drainToLog(drainCtx, xs.IO.Stdout, "agent stdout", log)
+	}()
+
+	// Release the ctx node whichever way the exec ends. Stop cancels drainCtx
+	// on the deliberate-teardown path, but a self-exiting agent (pipes reach
+	// EOF, both drains return, no Stop/Reload/Close) would otherwise leave the
+	// context.WithCancel node attached to the caller's long-lived ctx until
+	// Runner shutdown. Waiting on the same drains and cancelling once they
+	// finish covers that path; it is idempotent with Stop's endDrains, since a
+	// CancelFunc is safe to call more than once. This reaper exits the moment
+	// the drains do, so it adds no lifetime of its own.
+	go func() {
+		stream.drains.Wait()
+		stopDrains()
 	}()
 
 	return stream, nil
