@@ -69,6 +69,9 @@ const (
 	// RunnerServiceRelayCommsCallProcedure is the fully-qualified name of the RunnerService's
 	// RelayCommsCall RPC.
 	RunnerServiceRelayCommsCallProcedure = "/compass.v1.RunnerService/RelayCommsCall"
+	// RunnerServiceRelayLifecycleCallProcedure is the fully-qualified name of the RunnerService's
+	// RelayLifecycleCall RPC.
+	RunnerServiceRelayLifecycleCallProcedure = "/compass.v1.RunnerService/RelayLifecycleCall"
 	// RunnerServiceCommitConversationFrameProcedure is the fully-qualified name of the RunnerService's
 	// CommitConversationFrame RPC.
 	RunnerServiceCommitConversationFrameProcedure = "/compass.v1.RunnerService/CommitConversationFrame"
@@ -120,6 +123,19 @@ type RunnerServiceClient interface {
 	// agent_gateway.proto) cannot express RespondToAsk — the no-answer-ask
 	// constraint is structural, not a runtime check.
 	RelayCommsCall(context.Context, *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error)
+	// RelayLifecycleCall (unary, Runner->Server): relay one agent-initiated
+	// lifecycle call (spawn/despawn a peer) under the agent account the session
+	// resolves to. Same pure-forwarder shape as RelayCommsCall: the Runner sends
+	// the session_id it structurally owns (the per-container AgentGateway socket
+	// the call arrived on, 1:1 with the session) and the LifecycleCallRequest, and
+	// asserts NO account. The Server resolves session_id -> agent account from its
+	// own Provision-originated hub binding, then resolves that agent's owner to
+	// scope spawn (owner-inherited) and despawn (same-owner) authority,
+	// fail-closed: an unknown/stopped session is CodeNotFound, never a stale
+	// account or the bootstrap admin. Additive to the frozen dial-out shape (the
+	// Runner still initiates; the Server gains no inbound route); merging the
+	// spawn/despawn record ratifies it.
+	RelayLifecycleCall(context.Context, *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error)
 	// CommitConversationFrame (unary, Runner->Server): durably commit one
 	// agent-authored conversation frame and return the commit outcome. This is
 	// the DURABLE counterpart to PublishEvents: conversation_posted /
@@ -189,6 +205,12 @@ func NewRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(runnerServiceMethods.ByName("RelayCommsCall")),
 			connect.WithClientOptions(opts...),
 		),
+		relayLifecycleCall: connect.NewClient[v1.RelayLifecycleCallRequest, v1.RelayLifecycleCallResponse](
+			httpClient,
+			baseURL+RunnerServiceRelayLifecycleCallProcedure,
+			connect.WithSchema(runnerServiceMethods.ByName("RelayLifecycleCall")),
+			connect.WithClientOptions(opts...),
+		),
 		commitConversationFrame: connect.NewClient[v1.CommitConversationFrameRequest, v1.CommitConversationFrameResponse](
 			httpClient,
 			baseURL+RunnerServiceCommitConversationFrameProcedure,
@@ -210,6 +232,7 @@ type runnerServiceClient struct {
 	sessions                *connect.Client[v1.SessionsRequest, v1.SessionsResponse]
 	publishEvents           *connect.Client[v1.PublishEventsRequest, v1.PublishEventsResponse]
 	relayCommsCall          *connect.Client[v1.RelayCommsCallRequest, v1.RelayCommsCallResponse]
+	relayLifecycleCall      *connect.Client[v1.RelayLifecycleCallRequest, v1.RelayLifecycleCallResponse]
 	commitConversationFrame *connect.Client[v1.CommitConversationFrameRequest, v1.CommitConversationFrameResponse]
 	fetchSecrets            *connect.Client[v1.FetchSecretsRequest, v1.FetchSecretsResponse]
 }
@@ -232,6 +255,11 @@ func (c *runnerServiceClient) PublishEvents(ctx context.Context) *connect.Client
 // RelayCommsCall calls compass.v1.RunnerService.RelayCommsCall.
 func (c *runnerServiceClient) RelayCommsCall(ctx context.Context, req *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error) {
 	return c.relayCommsCall.CallUnary(ctx, req)
+}
+
+// RelayLifecycleCall calls compass.v1.RunnerService.RelayLifecycleCall.
+func (c *runnerServiceClient) RelayLifecycleCall(ctx context.Context, req *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error) {
+	return c.relayLifecycleCall.CallUnary(ctx, req)
 }
 
 // CommitConversationFrame calls compass.v1.RunnerService.CommitConversationFrame.
@@ -287,6 +315,19 @@ type RunnerServiceHandler interface {
 	// agent_gateway.proto) cannot express RespondToAsk — the no-answer-ask
 	// constraint is structural, not a runtime check.
 	RelayCommsCall(context.Context, *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error)
+	// RelayLifecycleCall (unary, Runner->Server): relay one agent-initiated
+	// lifecycle call (spawn/despawn a peer) under the agent account the session
+	// resolves to. Same pure-forwarder shape as RelayCommsCall: the Runner sends
+	// the session_id it structurally owns (the per-container AgentGateway socket
+	// the call arrived on, 1:1 with the session) and the LifecycleCallRequest, and
+	// asserts NO account. The Server resolves session_id -> agent account from its
+	// own Provision-originated hub binding, then resolves that agent's owner to
+	// scope spawn (owner-inherited) and despawn (same-owner) authority,
+	// fail-closed: an unknown/stopped session is CodeNotFound, never a stale
+	// account or the bootstrap admin. Additive to the frozen dial-out shape (the
+	// Runner still initiates; the Server gains no inbound route); merging the
+	// spawn/despawn record ratifies it.
+	RelayLifecycleCall(context.Context, *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error)
 	// CommitConversationFrame (unary, Runner->Server): durably commit one
 	// agent-authored conversation frame and return the commit outcome. This is
 	// the DURABLE counterpart to PublishEvents: conversation_posted /
@@ -352,6 +393,12 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(runnerServiceMethods.ByName("RelayCommsCall")),
 		connect.WithHandlerOptions(opts...),
 	)
+	runnerServiceRelayLifecycleCallHandler := connect.NewUnaryHandler(
+		RunnerServiceRelayLifecycleCallProcedure,
+		svc.RelayLifecycleCall,
+		connect.WithSchema(runnerServiceMethods.ByName("RelayLifecycleCall")),
+		connect.WithHandlerOptions(opts...),
+	)
 	runnerServiceCommitConversationFrameHandler := connect.NewUnaryHandler(
 		RunnerServiceCommitConversationFrameProcedure,
 		svc.CommitConversationFrame,
@@ -374,6 +421,8 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 			runnerServicePublishEventsHandler.ServeHTTP(w, r)
 		case RunnerServiceRelayCommsCallProcedure:
 			runnerServiceRelayCommsCallHandler.ServeHTTP(w, r)
+		case RunnerServiceRelayLifecycleCallProcedure:
+			runnerServiceRelayLifecycleCallHandler.ServeHTTP(w, r)
 		case RunnerServiceCommitConversationFrameProcedure:
 			runnerServiceCommitConversationFrameHandler.ServeHTTP(w, r)
 		case RunnerServiceFetchSecretsProcedure:
@@ -401,6 +450,10 @@ func (UnimplementedRunnerServiceHandler) PublishEvents(context.Context, *connect
 
 func (UnimplementedRunnerServiceHandler) RelayCommsCall(context.Context, *connect.Request[v1.RelayCommsCallRequest]) (*connect.Response[v1.RelayCommsCallResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.RelayCommsCall is not implemented"))
+}
+
+func (UnimplementedRunnerServiceHandler) RelayLifecycleCall(context.Context, *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.RelayLifecycleCall is not implemented"))
 }
 
 func (UnimplementedRunnerServiceHandler) CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error) {

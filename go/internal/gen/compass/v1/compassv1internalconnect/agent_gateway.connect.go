@@ -65,6 +65,8 @@ const (
 const (
 	// AgentGatewayCommsProcedure is the fully-qualified name of the AgentGateway's Comms RPC.
 	AgentGatewayCommsProcedure = "/compass.v1.AgentGateway/Comms"
+	// AgentGatewayLifecycleProcedure is the fully-qualified name of the AgentGateway's Lifecycle RPC.
+	AgentGatewayLifecycleProcedure = "/compass.v1.AgentGateway/Lifecycle"
 	// AgentGatewayPublishProcedure is the fully-qualified name of the AgentGateway's Publish RPC.
 	AgentGatewayPublishProcedure = "/compass.v1.AgentGateway/Publish"
 	// AgentGatewayPostConversationFrameProcedure is the fully-qualified name of the AgentGateway's
@@ -77,6 +79,13 @@ const (
 // AgentGatewayClient is a client for the compass.v1.AgentGateway service.
 type AgentGatewayClient interface {
 	Comms(context.Context, *connect.Request[v1.CommsCallRequest]) (*connect.Response[v1.CommsCallResult], error)
+	// Lifecycle (unary, agent -> Runner): spawn or despawn a peer agent. A
+	// sibling call family to Comms (DL-049 shape) — the LifecycleCallRequest /
+	// LifecycleCallResult envelopes are reused verbatim as the
+	// RelayLifecycleCallRequest.call / RelayLifecycleCallResponse.result payloads
+	// on the Runner->Server leg (runner.proto RelayLifecycleCall). One shared
+	// envelope across both hops. INTERNAL surface (never public gen).
+	Lifecycle(context.Context, *connect.Request[v1.LifecycleCallRequest]) (*connect.Response[v1.LifecycleCallResult], error)
 	// agent -> Runner, client-stream: the loss-tolerable telemetry spine. Every
 	// TRACE and SESSION AgentFrame rides it in emission order. Replaces the
 	// stdout relay's trace/session half. The Runner assigns the upstream sequence
@@ -111,6 +120,12 @@ func NewAgentGatewayClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(agentGatewayMethods.ByName("Comms")),
 			connect.WithClientOptions(opts...),
 		),
+		lifecycle: connect.NewClient[v1.LifecycleCallRequest, v1.LifecycleCallResult](
+			httpClient,
+			baseURL+AgentGatewayLifecycleProcedure,
+			connect.WithSchema(agentGatewayMethods.ByName("Lifecycle")),
+			connect.WithClientOptions(opts...),
+		),
 		publish: connect.NewClient[v1.PublishFrameRequest, v1.PublishFrameResponse](
 			httpClient,
 			baseURL+AgentGatewayPublishProcedure,
@@ -135,6 +150,7 @@ func NewAgentGatewayClient(httpClient connect.HTTPClient, baseURL string, opts .
 // agentGatewayClient implements AgentGatewayClient.
 type agentGatewayClient struct {
 	comms                 *connect.Client[v1.CommsCallRequest, v1.CommsCallResult]
+	lifecycle             *connect.Client[v1.LifecycleCallRequest, v1.LifecycleCallResult]
 	publish               *connect.Client[v1.PublishFrameRequest, v1.PublishFrameResponse]
 	postConversationFrame *connect.Client[v1.PostConversationFrameRequest, v1.PostConversationFrameResponse]
 	control               *connect.Client[v1.ControlSubscribeRequest, v1.AgentControl]
@@ -143,6 +159,11 @@ type agentGatewayClient struct {
 // Comms calls compass.v1.AgentGateway.Comms.
 func (c *agentGatewayClient) Comms(ctx context.Context, req *connect.Request[v1.CommsCallRequest]) (*connect.Response[v1.CommsCallResult], error) {
 	return c.comms.CallUnary(ctx, req)
+}
+
+// Lifecycle calls compass.v1.AgentGateway.Lifecycle.
+func (c *agentGatewayClient) Lifecycle(ctx context.Context, req *connect.Request[v1.LifecycleCallRequest]) (*connect.Response[v1.LifecycleCallResult], error) {
+	return c.lifecycle.CallUnary(ctx, req)
 }
 
 // Publish calls compass.v1.AgentGateway.Publish.
@@ -163,6 +184,13 @@ func (c *agentGatewayClient) Control(ctx context.Context, req *connect.Request[v
 // AgentGatewayHandler is an implementation of the compass.v1.AgentGateway service.
 type AgentGatewayHandler interface {
 	Comms(context.Context, *connect.Request[v1.CommsCallRequest]) (*connect.Response[v1.CommsCallResult], error)
+	// Lifecycle (unary, agent -> Runner): spawn or despawn a peer agent. A
+	// sibling call family to Comms (DL-049 shape) — the LifecycleCallRequest /
+	// LifecycleCallResult envelopes are reused verbatim as the
+	// RelayLifecycleCallRequest.call / RelayLifecycleCallResponse.result payloads
+	// on the Runner->Server leg (runner.proto RelayLifecycleCall). One shared
+	// envelope across both hops. INTERNAL surface (never public gen).
+	Lifecycle(context.Context, *connect.Request[v1.LifecycleCallRequest]) (*connect.Response[v1.LifecycleCallResult], error)
 	// agent -> Runner, client-stream: the loss-tolerable telemetry spine. Every
 	// TRACE and SESSION AgentFrame rides it in emission order. Replaces the
 	// stdout relay's trace/session half. The Runner assigns the upstream sequence
@@ -193,6 +221,12 @@ func NewAgentGatewayHandler(svc AgentGatewayHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(agentGatewayMethods.ByName("Comms")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentGatewayLifecycleHandler := connect.NewUnaryHandler(
+		AgentGatewayLifecycleProcedure,
+		svc.Lifecycle,
+		connect.WithSchema(agentGatewayMethods.ByName("Lifecycle")),
+		connect.WithHandlerOptions(opts...),
+	)
 	agentGatewayPublishHandler := connect.NewClientStreamHandler(
 		AgentGatewayPublishProcedure,
 		svc.Publish,
@@ -215,6 +249,8 @@ func NewAgentGatewayHandler(svc AgentGatewayHandler, opts ...connect.HandlerOpti
 		switch r.URL.Path {
 		case AgentGatewayCommsProcedure:
 			agentGatewayCommsHandler.ServeHTTP(w, r)
+		case AgentGatewayLifecycleProcedure:
+			agentGatewayLifecycleHandler.ServeHTTP(w, r)
 		case AgentGatewayPublishProcedure:
 			agentGatewayPublishHandler.ServeHTTP(w, r)
 		case AgentGatewayPostConversationFrameProcedure:
@@ -232,6 +268,10 @@ type UnimplementedAgentGatewayHandler struct{}
 
 func (UnimplementedAgentGatewayHandler) Comms(context.Context, *connect.Request[v1.CommsCallRequest]) (*connect.Response[v1.CommsCallResult], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Comms is not implemented"))
+}
+
+func (UnimplementedAgentGatewayHandler) Lifecycle(context.Context, *connect.Request[v1.LifecycleCallRequest]) (*connect.Response[v1.LifecycleCallResult], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Lifecycle is not implemented"))
 }
 
 func (UnimplementedAgentGatewayHandler) Publish(context.Context, *connect.ClientStream[v1.PublishFrameRequest]) (*connect.Response[v1.PublishFrameResponse], error) {

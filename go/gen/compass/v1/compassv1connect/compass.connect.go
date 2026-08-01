@@ -58,6 +58,9 @@ const (
 	// CompassServiceStopAgentSessionProcedure is the fully-qualified name of the CompassService's
 	// StopAgentSession RPC.
 	CompassServiceStopAgentSessionProcedure = "/compass.v1.CompassService/StopAgentSession"
+	// CompassServiceRemoveAgentWorkspaceProcedure is the fully-qualified name of the CompassService's
+	// RemoveAgentWorkspace RPC.
+	CompassServiceRemoveAgentWorkspaceProcedure = "/compass.v1.CompassService/RemoveAgentWorkspace"
 	// CompassServiceReloadAgentSessionProcedure is the fully-qualified name of the CompassService's
 	// ReloadAgentSession RPC.
 	CompassServiceReloadAgentSessionProcedure = "/compass.v1.CompassService/ReloadAgentSession"
@@ -106,6 +109,14 @@ type CompassServiceClient interface {
 	// release the session. Idempotent — stopping an unknown/already-stopped
 	// session succeeds.
 	StopAgentSession(context.Context, *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error)
+	// Remove a per-agent container and release its durable placement: the
+	// teardown counterpart to ProvisionAgentWorkspace, keyed by the same
+	// container_name. Admin-gated on this public door (like IssueToken); the
+	// agent-facing despawn reaches the same teardown over the Runner relay with
+	// its own owner-scoped check, never this door. Idempotent — removing an
+	// unknown/already-removed container succeeds. Routes Client -> Server ->
+	// RunnerHub -> Runner.
+	RemoveAgentWorkspace(context.Context, *connect.Request[v1.RemoveAgentWorkspaceRequest]) (*connect.Response[v1.RemoveAgentWorkspaceResponse], error)
 	// Reload a live agent session in place: tear down the current agent exec and
 	// start a fresh one against the same container, reusing the session id so the
 	// board entry is continuous. The agent reloads from workspace state
@@ -178,6 +189,12 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("StopAgentSession")),
 			connect.WithClientOptions(opts...),
 		),
+		removeAgentWorkspace: connect.NewClient[v1.RemoveAgentWorkspaceRequest, v1.RemoveAgentWorkspaceResponse](
+			httpClient,
+			baseURL+CompassServiceRemoveAgentWorkspaceProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("RemoveAgentWorkspace")),
+			connect.WithClientOptions(opts...),
+		),
 		reloadAgentSession: connect.NewClient[v1.ReloadAgentSessionRequest, v1.ReloadAgentSessionResponse](
 			httpClient,
 			baseURL+CompassServiceReloadAgentSessionProcedure,
@@ -212,6 +229,7 @@ type compassServiceClient struct {
 	provisionAgentWorkspace *connect.Client[v1.ProvisionAgentWorkspaceRequest, v1.ProvisionAgentWorkspaceResponse]
 	startAgentSession       *connect.Client[v1.StartAgentSessionRequest, v1.StartAgentSessionResponse]
 	stopAgentSession        *connect.Client[v1.StopAgentSessionRequest, v1.StopAgentSessionResponse]
+	removeAgentWorkspace    *connect.Client[v1.RemoveAgentWorkspaceRequest, v1.RemoveAgentWorkspaceResponse]
 	reloadAgentSession      *connect.Client[v1.ReloadAgentSessionRequest, v1.ReloadAgentSessionResponse]
 	getAgentStatus          *connect.Client[v1.GetAgentStatusRequest, v1.GetAgentStatusResponse]
 	subscribeAgentSession   *connect.Client[v1.SubscribeAgentSessionRequest, v1.AgentSessionFrame]
@@ -241,6 +259,11 @@ func (c *compassServiceClient) StartAgentSession(ctx context.Context, req *conne
 // StopAgentSession calls compass.v1.CompassService.StopAgentSession.
 func (c *compassServiceClient) StopAgentSession(ctx context.Context, req *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error) {
 	return c.stopAgentSession.CallUnary(ctx, req)
+}
+
+// RemoveAgentWorkspace calls compass.v1.CompassService.RemoveAgentWorkspace.
+func (c *compassServiceClient) RemoveAgentWorkspace(ctx context.Context, req *connect.Request[v1.RemoveAgentWorkspaceRequest]) (*connect.Response[v1.RemoveAgentWorkspaceResponse], error) {
+	return c.removeAgentWorkspace.CallUnary(ctx, req)
 }
 
 // ReloadAgentSession calls compass.v1.CompassService.ReloadAgentSession.
@@ -288,6 +311,14 @@ type CompassServiceHandler interface {
 	// release the session. Idempotent — stopping an unknown/already-stopped
 	// session succeeds.
 	StopAgentSession(context.Context, *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error)
+	// Remove a per-agent container and release its durable placement: the
+	// teardown counterpart to ProvisionAgentWorkspace, keyed by the same
+	// container_name. Admin-gated on this public door (like IssueToken); the
+	// agent-facing despawn reaches the same teardown over the Runner relay with
+	// its own owner-scoped check, never this door. Idempotent — removing an
+	// unknown/already-removed container succeeds. Routes Client -> Server ->
+	// RunnerHub -> Runner.
+	RemoveAgentWorkspace(context.Context, *connect.Request[v1.RemoveAgentWorkspaceRequest]) (*connect.Response[v1.RemoveAgentWorkspaceResponse], error)
 	// Reload a live agent session in place: tear down the current agent exec and
 	// start a fresh one against the same container, reusing the session id so the
 	// board entry is continuous. The agent reloads from workspace state
@@ -356,6 +387,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("StopAgentSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServiceRemoveAgentWorkspaceHandler := connect.NewUnaryHandler(
+		CompassServiceRemoveAgentWorkspaceProcedure,
+		svc.RemoveAgentWorkspace,
+		connect.WithSchema(compassServiceMethods.ByName("RemoveAgentWorkspace")),
+		connect.WithHandlerOptions(opts...),
+	)
 	compassServiceReloadAgentSessionHandler := connect.NewUnaryHandler(
 		CompassServiceReloadAgentSessionProcedure,
 		svc.ReloadAgentSession,
@@ -392,6 +429,8 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceStartAgentSessionHandler.ServeHTTP(w, r)
 		case CompassServiceStopAgentSessionProcedure:
 			compassServiceStopAgentSessionHandler.ServeHTTP(w, r)
+		case CompassServiceRemoveAgentWorkspaceProcedure:
+			compassServiceRemoveAgentWorkspaceHandler.ServeHTTP(w, r)
 		case CompassServiceReloadAgentSessionProcedure:
 			compassServiceReloadAgentSessionHandler.ServeHTTP(w, r)
 		case CompassServiceGetAgentStatusProcedure:
@@ -427,6 +466,10 @@ func (UnimplementedCompassServiceHandler) StartAgentSession(context.Context, *co
 
 func (UnimplementedCompassServiceHandler) StopAgentSession(context.Context, *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.StopAgentSession is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) RemoveAgentWorkspace(context.Context, *connect.Request[v1.RemoveAgentWorkspaceRequest]) (*connect.Response[v1.RemoveAgentWorkspaceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.RemoveAgentWorkspace is not implemented"))
 }
 
 func (UnimplementedCompassServiceHandler) ReloadAgentSession(context.Context, *connect.Request[v1.ReloadAgentSessionRequest]) (*connect.Response[v1.ReloadAgentSessionResponse], error) {

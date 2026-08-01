@@ -46,6 +46,14 @@ import "compass/v1/agent.proto";
 // INTERNAL surface (never public gen).
 service AgentGateway {
   rpc Comms(CommsCallRequest) returns (CommsCallResult);  // frozen T1, unchanged
+
+  // Lifecycle (unary, agent -> Runner): spawn or despawn a peer agent. A
+  // sibling call family to Comms (DL-049 shape) — the LifecycleCallRequest /
+  // LifecycleCallResult envelopes are reused verbatim as the
+  // RelayLifecycleCallRequest.call / RelayLifecycleCallResponse.result payloads
+  // on the Runner->Server leg (runner.proto RelayLifecycleCall). One shared
+  // envelope across both hops. INTERNAL surface (never public gen).
+  rpc Lifecycle(LifecycleCallRequest) returns (LifecycleCallResult);
   // agent -> Runner, client-stream: the loss-tolerable telemetry spine. Every
   // TRACE and SESSION AgentFrame rides it in emission order. Replaces the
   // stdout relay's trace/session half. The Runner assigns the upstream sequence
@@ -91,6 +99,63 @@ message CommsCallResult {
 // never a stream teardown. `code` is a short stable token (e.g. "not_found");
 // `message` is human-readable detail.
 message CommsCallError {
+  string code = 1;
+  string message = 2;
+}
+
+// One agent-initiated lifecycle call (spawn/despawn a peer). `call_id` is the
+// agent-minted correlation id (the SDK toolCallId); the `call` oneof selects the
+// operation. Mirrors CommsCallRequest — the same message is the
+// RelayLifecycleCallRequest.call payload on the Runner->Server leg, one shared
+// envelope across both hops.
+message LifecycleCallRequest {
+  string call_id = 1;
+  oneof call {
+    SpawnPeerRequest spawn = 2;
+    DespawnPeerRequest despawn = 3;
+  }
+}
+
+// Spawn a peer agent, owned by the caller agent's owner (F2 ownership frame).
+// Names the new agent's identity and its initial prompt — never a repo/ref
+// (spawn carries no repo, Matt 2026-07-29; the peer self-clones after launch).
+message SpawnPeerRequest {
+  string handle = 1;               // the new agent's account handle (unique)
+  string display_name = 2;
+  string initial_prompt = 3;       // threaded to StartAgentSessionRequest.initial_prompt
+  string client_request_id = 4;    // whole-chain idempotency key (handler-level join + Provision dedup)
+}
+message SpawnPeerResponse {
+  string agent_account_id = 1;
+  string container_name = 2;
+  string session_id = 3;
+}
+
+// Despawn a peer: tear down its container and release its durable placement.
+// Same-owner authority (F2); the account row, home channel, and history survive
+// (despawn tears down compute, not identity).
+message DespawnPeerRequest {
+  string agent_account_id = 1;     // the peer to tear down
+}
+message DespawnPeerResponse {}
+
+// The result of one lifecycle call, correlated by `call_id`. A successful call
+// sets `spawn`/`despawn`; an in-band tool failure sets `error` (same shape as
+// CommsCallError), which is NOT a transport teardown. The same message is the
+// RelayLifecycleCallResponse.result payload on the Runner->Server leg.
+message LifecycleCallResult {
+  string call_id = 1;
+  oneof result {
+    SpawnPeerResponse spawn = 2;
+    DespawnPeerResponse despawn = 3;
+    LifecycleCallError error = 4;
+  }
+}
+
+// An in-band lifecycle-call failure: a tool error the agent renders to the
+// model, never a stream teardown. `code` is a short stable token (e.g.
+// "not_found", "already_exists", "invalid_argument"); `message` is detail.
+message LifecycleCallError {
   string code = 1;
   string message = 2;
 }

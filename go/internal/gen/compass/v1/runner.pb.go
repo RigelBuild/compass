@@ -228,6 +228,7 @@ type SessionsRequest struct {
 	//	*SessionsRequest_Status
 	//	*SessionsRequest_Provision
 	//	*SessionsRequest_Error
+	//	*SessionsRequest_Remove
 	Result        isSessionsRequest_Result `protobuf_oneof:"result"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -331,6 +332,15 @@ func (x *SessionsRequest) GetError() *RunnerError {
 	return nil
 }
 
+func (x *SessionsRequest) GetRemove() *v1.RemoveAgentWorkspaceResponse {
+	if x != nil {
+		if x, ok := x.Result.(*SessionsRequest_Remove); ok {
+			return x.Remove
+		}
+	}
+	return nil
+}
+
 type isSessionsRequest_Result interface {
 	isSessionsRequest_Result()
 }
@@ -359,6 +369,10 @@ type SessionsRequest_Error struct {
 	Error *RunnerError `protobuf:"bytes,7,opt,name=error,proto3,oneof"`
 }
 
+type SessionsRequest_Remove struct {
+	Remove *v1.RemoveAgentWorkspaceResponse `protobuf:"bytes,8,opt,name=remove,proto3,oneof"`
+}
+
 func (*SessionsRequest_Start) isSessionsRequest_Result() {}
 
 func (*SessionsRequest_Stop) isSessionsRequest_Result() {}
@@ -370,6 +384,8 @@ func (*SessionsRequest_Status) isSessionsRequest_Result() {}
 func (*SessionsRequest_Provision) isSessionsRequest_Result() {}
 
 func (*SessionsRequest_Error) isSessionsRequest_Result() {}
+
+func (*SessionsRequest_Remove) isSessionsRequest_Result() {}
 
 // A session command, pushed Server->Runner on the Sessions response stream (the
 // inversion: the Server's response half carries commands — see the RPC comment).
@@ -390,6 +406,7 @@ type SessionsResponse struct {
 	//	*SessionsResponse_Provision
 	//	*SessionsResponse_SecretsVersion
 	//	*SessionsResponse_DeliverControl
+	//	*SessionsResponse_Remove
 	Command isSessionsResponse_Command `protobuf_oneof:"command"`
 	// resume_body — the INTERNAL resume-body carrier, a TOP-LEVEL sibling of
 	// request_id OUTSIDE the command oneof (SEA-1570): the Server attaches it on
@@ -510,6 +527,15 @@ func (x *SessionsResponse) GetDeliverControl() *DispatchControl {
 	return nil
 }
 
+func (x *SessionsResponse) GetRemove() *v1.RemoveAgentWorkspaceRequest {
+	if x != nil {
+		if x, ok := x.Command.(*SessionsResponse_Remove); ok {
+			return x.Remove
+		}
+	}
+	return nil
+}
+
 func (x *SessionsResponse) GetResumeBody() *ResumeBody {
 	if x != nil {
 		return x.ResumeBody
@@ -550,14 +576,24 @@ type SessionsResponse_SecretsVersion struct {
 }
 
 type SessionsResponse_DeliverControl struct {
-	// deliver_control (tag 11; tags 9 config_version / 10 remove reserved
-	// between): the Server relays a control op — for SEA-1569, a message
+	// deliver_control (tag 11; tag 9 config_version reserved, 8 secrets_version /
+	// 10 remove / 11 deliver_control landed): the Server relays a control op — for SEA-1569, a message
 	// delivery — down to the Runner, which writes it to the session's
 	// per-container socket. Carries the op as payload (DispatchControl). No
 	// SUCCESS result variant: the delivery receipt rides AgentFrame.delivery_ack
 	// (RT-3); a refusal rides the RunnerError result (error = 7), correlated by
 	// request_id.
 	DeliverControl *DispatchControl `protobuf:"bytes,11,opt,name=deliver_control,json=deliverControl,proto3,oneof"`
+}
+
+type SessionsResponse_Remove struct {
+	// remove (tag 10; tags 7 forge_notification / 9 config_version reserved,
+	// 8 secrets_version / 11 deliver_control landed): the Server relays a
+	// container-teardown command (RemoveAgentWorkspace) down to the Runner,
+	// reusing the public payload verbatim like the other command variants. Its
+	// result rides SessionsRequest.result.remove (tag 8); a refusal rides the
+	// RunnerError result (error = 7), correlated by request_id.
+	Remove *v1.RemoveAgentWorkspaceRequest `protobuf:"bytes,10,opt,name=remove,proto3,oneof"`
 }
 
 func (*SessionsResponse_Start) isSessionsResponse_Command() {}
@@ -573,6 +609,8 @@ func (*SessionsResponse_Provision) isSessionsResponse_Command() {}
 func (*SessionsResponse_SecretsVersion) isSessionsResponse_Command() {}
 
 func (*SessionsResponse_DeliverControl) isSessionsResponse_Command() {}
+
+func (*SessionsResponse_Remove) isSessionsResponse_Command() {}
 
 // ResumeBody — the INTERNAL resume-body carrier attached to SessionsResponse on
 // an authorized resume (SEA-1570). Additive, INTERNAL-ONLY: rides the
@@ -1247,6 +1285,115 @@ func (x *RelayCommsCallResponse) GetResult() *CommsCallResult {
 	return nil
 }
 
+// RelayLifecycleCall request: the Runner forwards one agent-initiated lifecycle
+// call to the Server. `session_id` is the session the Runner structurally owns
+// for this call (which per-container AgentGateway socket it arrived on — 1:1
+// with the session, agent_gateway.proto). `call` is the agent's request
+// verbatim. The Runner asserts NO account here; the Server resolves
+// session_id -> account from its own binding, fail-closed CodeNotFound for an
+// unknown/stopped/dropped session — never a stale account, never the bootstrap
+// admin.
+type RelayLifecycleCallRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Call          *LifecycleCallRequest  `protobuf:"bytes,2,opt,name=call,proto3" json:"call,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RelayLifecycleCallRequest) Reset() {
+	*x = RelayLifecycleCallRequest{}
+	mi := &file_compass_v1_runner_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RelayLifecycleCallRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RelayLifecycleCallRequest) ProtoMessage() {}
+
+func (x *RelayLifecycleCallRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_runner_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RelayLifecycleCallRequest.ProtoReflect.Descriptor instead.
+func (*RelayLifecycleCallRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_runner_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *RelayLifecycleCallRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *RelayLifecycleCallRequest) GetCall() *LifecycleCallRequest {
+	if x != nil {
+		return x.Call
+	}
+	return nil
+}
+
+// RelayLifecycleCall response: the result of the executed lifecycle call,
+// correlated by the same call_id the agent minted. A successful call carries its
+// spawn/despawn result; an in-band tool failure (unknown target, duplicate
+// handle, self-despawn) carries the LifecycleCallError variant — NOT a Connect
+// stream error, so a single failed call never tears down the transport.
+type RelayLifecycleCallResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Result        *LifecycleCallResult   `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RelayLifecycleCallResponse) Reset() {
+	*x = RelayLifecycleCallResponse{}
+	mi := &file_compass_v1_runner_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RelayLifecycleCallResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RelayLifecycleCallResponse) ProtoMessage() {}
+
+func (x *RelayLifecycleCallResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_runner_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RelayLifecycleCallResponse.ProtoReflect.Descriptor instead.
+func (*RelayLifecycleCallResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_runner_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *RelayLifecycleCallResponse) GetResult() *LifecycleCallResult {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
 // CommitConversationFrame request: one durable conversation frame the Runner
 // forwards for commit. `session_id` is the session the Runner structurally owns
 // (resolved to an account Server-side, fail-closed — see the RPC comment).
@@ -1266,7 +1413,7 @@ type CommitConversationFrameRequest struct {
 
 func (x *CommitConversationFrameRequest) Reset() {
 	*x = CommitConversationFrameRequest{}
-	mi := &file_compass_v1_runner_proto_msgTypes[15]
+	mi := &file_compass_v1_runner_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1278,7 +1425,7 @@ func (x *CommitConversationFrameRequest) String() string {
 func (*CommitConversationFrameRequest) ProtoMessage() {}
 
 func (x *CommitConversationFrameRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_runner_proto_msgTypes[15]
+	mi := &file_compass_v1_runner_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1291,7 +1438,7 @@ func (x *CommitConversationFrameRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitConversationFrameRequest.ProtoReflect.Descriptor instead.
 func (*CommitConversationFrameRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_runner_proto_rawDescGZIP(), []int{15}
+	return file_compass_v1_runner_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CommitConversationFrameRequest) GetSessionId() string {
@@ -1355,7 +1502,7 @@ type CommitConversationFrameResponse struct {
 
 func (x *CommitConversationFrameResponse) Reset() {
 	*x = CommitConversationFrameResponse{}
-	mi := &file_compass_v1_runner_proto_msgTypes[16]
+	mi := &file_compass_v1_runner_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1367,7 +1514,7 @@ func (x *CommitConversationFrameResponse) String() string {
 func (*CommitConversationFrameResponse) ProtoMessage() {}
 
 func (x *CommitConversationFrameResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_runner_proto_msgTypes[16]
+	mi := &file_compass_v1_runner_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1380,7 +1527,7 @@ func (x *CommitConversationFrameResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitConversationFrameResponse.ProtoReflect.Descriptor instead.
 func (*CommitConversationFrameResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_runner_proto_rawDescGZIP(), []int{16}
+	return file_compass_v1_runner_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CommitConversationFrameResponse) GetCommitted() bool {
@@ -1415,7 +1562,7 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\x0eEnrollResponse\x12\x1e\n" +
 	"\n" +
 	"reattached\x18\x01 \x01(\bR\n" +
-	"reattached\"\xb3\x03\n" +
+	"reattached\"\xf7\x03\n" +
 	"\x0fSessionsRequest\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12=\n" +
@@ -1424,8 +1571,9 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\x06reload\x18\x04 \x01(\v2&.compass.v1.ReloadAgentSessionResponseH\x00R\x06reload\x12<\n" +
 	"\x06status\x18\x05 \x01(\v2\".compass.v1.GetAgentStatusResponseH\x00R\x06status\x12K\n" +
 	"\tprovision\x18\x06 \x01(\v2+.compass.v1.ProvisionAgentWorkspaceResponseH\x00R\tprovision\x12/\n" +
-	"\x05error\x18\a \x01(\v2\x17.compass.v1.RunnerErrorH\x00R\x05errorB\b\n" +
-	"\x06result\"\xc7\x04\n" +
+	"\x05error\x18\a \x01(\v2\x17.compass.v1.RunnerErrorH\x00R\x05error\x12B\n" +
+	"\x06remove\x18\b \x01(\v2(.compass.v1.RemoveAgentWorkspaceResponseH\x00R\x06removeB\b\n" +
+	"\x06result\"\x8a\x05\n" +
 	"\x10SessionsResponse\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\tR\trequestId\x12<\n" +
@@ -1435,7 +1583,9 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\x06status\x18\x05 \x01(\v2!.compass.v1.GetAgentStatusRequestH\x00R\x06status\x12J\n" +
 	"\tprovision\x18\x06 \x01(\v2*.compass.v1.ProvisionAgentWorkspaceRequestH\x00R\tprovision\x12E\n" +
 	"\x0fsecrets_version\x18\b \x01(\v2\x1a.compass.v1.SecretsVersionH\x00R\x0esecretsVersion\x12F\n" +
-	"\x0fdeliver_control\x18\v \x01(\v2\x1b.compass.v1.DispatchControlH\x00R\x0edeliverControl\x127\n" +
+	"\x0fdeliver_control\x18\v \x01(\v2\x1b.compass.v1.DispatchControlH\x00R\x0edeliverControl\x12A\n" +
+	"\x06remove\x18\n" +
+	" \x01(\v2'.compass.v1.RemoveAgentWorkspaceRequestH\x00R\x06remove\x127\n" +
 	"\vresume_body\x18\r \x01(\v2\x16.compass.v1.ResumeBodyR\n" +
 	"resumeBodyB\t\n" +
 	"\acommand\"/\n" +
@@ -1480,7 +1630,13 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x120\n" +
 	"\x04call\x18\x02 \x01(\v2\x1c.compass.v1.CommsCallRequestR\x04call\"M\n" +
 	"\x16RelayCommsCallResponse\x123\n" +
-	"\x06result\x18\x01 \x01(\v2\x1b.compass.v1.CommsCallResultR\x06result\"\x96\x01\n" +
+	"\x06result\x18\x01 \x01(\v2\x1b.compass.v1.CommsCallResultR\x06result\"p\n" +
+	"\x19RelayLifecycleCallRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x124\n" +
+	"\x04call\x18\x02 \x01(\v2 .compass.v1.LifecycleCallRequestR\x04call\"U\n" +
+	"\x1aRelayLifecycleCallResponse\x127\n" +
+	"\x06result\x18\x01 \x01(\v2\x1f.compass.v1.LifecycleCallResultR\x06result\"\x96\x01\n" +
 	"\x1eCommitConversationFrameRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12,\n" +
@@ -1496,12 +1652,13 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"!RUNNER_ERROR_CODE_ALREADY_RUNNING\x10\x01\x12\x1f\n" +
 	"\x1bRUNNER_ERROR_CODE_NOT_FOUND\x10\x02\x12\x1e\n" +
 	"\x1aRUNNER_ERROR_CODE_INTERNAL\x10\x03\x12(\n" +
-	"$RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED\x10\x042\x93\x04\n" +
+	"$RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED\x10\x042\xf8\x04\n" +
 	"\rRunnerService\x12?\n" +
 	"\x06Enroll\x12\x19.compass.v1.EnrollRequest\x1a\x1a.compass.v1.EnrollResponse\x12I\n" +
 	"\bSessions\x12\x1b.compass.v1.SessionsRequest\x1a\x1c.compass.v1.SessionsResponse(\x010\x01\x12V\n" +
 	"\rPublishEvents\x12 .compass.v1.PublishEventsRequest\x1a!.compass.v1.PublishEventsResponse(\x01\x12W\n" +
-	"\x0eRelayCommsCall\x12!.compass.v1.RelayCommsCallRequest\x1a\".compass.v1.RelayCommsCallResponse\x12r\n" +
+	"\x0eRelayCommsCall\x12!.compass.v1.RelayCommsCallRequest\x1a\".compass.v1.RelayCommsCallResponse\x12c\n" +
+	"\x12RelayLifecycleCall\x12%.compass.v1.RelayLifecycleCallRequest\x1a&.compass.v1.RelayLifecycleCallResponse\x12r\n" +
 	"\x17CommitConversationFrame\x12*.compass.v1.CommitConversationFrameRequest\x1a+.compass.v1.CommitConversationFrameResponse\x12Q\n" +
 	"\fFetchSecrets\x12\x1f.compass.v1.FetchSecretsRequest\x1a .compass.v1.FetchSecretsResponseb\x06proto3"
 
@@ -1518,7 +1675,7 @@ func file_compass_v1_runner_proto_rawDescGZIP() []byte {
 }
 
 var file_compass_v1_runner_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_compass_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_compass_v1_runner_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_compass_v1_runner_proto_goTypes = []any{
 	(RunnerErrorCode)(0),                       // 0: compass.v1.RunnerErrorCode
 	(*EnrollRequest)(nil),                      // 1: compass.v1.EnrollRequest
@@ -1536,66 +1693,78 @@ var file_compass_v1_runner_proto_goTypes = []any{
 	(*PublishEventsResponse)(nil),              // 13: compass.v1.PublishEventsResponse
 	(*RelayCommsCallRequest)(nil),              // 14: compass.v1.RelayCommsCallRequest
 	(*RelayCommsCallResponse)(nil),             // 15: compass.v1.RelayCommsCallResponse
-	(*CommitConversationFrameRequest)(nil),     // 16: compass.v1.CommitConversationFrameRequest
-	(*CommitConversationFrameResponse)(nil),    // 17: compass.v1.CommitConversationFrameResponse
-	(*v1.StartAgentSessionResponse)(nil),       // 18: compass.v1.StartAgentSessionResponse
-	(*v1.StopAgentSessionResponse)(nil),        // 19: compass.v1.StopAgentSessionResponse
-	(*v1.ReloadAgentSessionResponse)(nil),      // 20: compass.v1.ReloadAgentSessionResponse
-	(*v1.GetAgentStatusResponse)(nil),          // 21: compass.v1.GetAgentStatusResponse
-	(*v1.ProvisionAgentWorkspaceResponse)(nil), // 22: compass.v1.ProvisionAgentWorkspaceResponse
-	(*v1.StartAgentSessionRequest)(nil),        // 23: compass.v1.StartAgentSessionRequest
-	(*v1.StopAgentSessionRequest)(nil),         // 24: compass.v1.StopAgentSessionRequest
-	(*v1.ReloadAgentSessionRequest)(nil),       // 25: compass.v1.ReloadAgentSessionRequest
-	(*v1.GetAgentStatusRequest)(nil),           // 26: compass.v1.GetAgentStatusRequest
-	(*v1.ProvisionAgentWorkspaceRequest)(nil),  // 27: compass.v1.ProvisionAgentWorkspaceRequest
-	(*AgentControl)(nil),                       // 28: compass.v1.AgentControl
-	(v1.SecretDelivery)(0),                     // 29: compass.v1.SecretDelivery
-	(v1.SecretKind)(0),                         // 30: compass.v1.SecretKind
-	(*AgentFrame)(nil),                         // 31: compass.v1.AgentFrame
-	(*CommsCallRequest)(nil),                   // 32: compass.v1.CommsCallRequest
-	(*CommsCallResult)(nil),                    // 33: compass.v1.CommsCallResult
+	(*RelayLifecycleCallRequest)(nil),          // 16: compass.v1.RelayLifecycleCallRequest
+	(*RelayLifecycleCallResponse)(nil),         // 17: compass.v1.RelayLifecycleCallResponse
+	(*CommitConversationFrameRequest)(nil),     // 18: compass.v1.CommitConversationFrameRequest
+	(*CommitConversationFrameResponse)(nil),    // 19: compass.v1.CommitConversationFrameResponse
+	(*v1.StartAgentSessionResponse)(nil),       // 20: compass.v1.StartAgentSessionResponse
+	(*v1.StopAgentSessionResponse)(nil),        // 21: compass.v1.StopAgentSessionResponse
+	(*v1.ReloadAgentSessionResponse)(nil),      // 22: compass.v1.ReloadAgentSessionResponse
+	(*v1.GetAgentStatusResponse)(nil),          // 23: compass.v1.GetAgentStatusResponse
+	(*v1.ProvisionAgentWorkspaceResponse)(nil), // 24: compass.v1.ProvisionAgentWorkspaceResponse
+	(*v1.RemoveAgentWorkspaceResponse)(nil),    // 25: compass.v1.RemoveAgentWorkspaceResponse
+	(*v1.StartAgentSessionRequest)(nil),        // 26: compass.v1.StartAgentSessionRequest
+	(*v1.StopAgentSessionRequest)(nil),         // 27: compass.v1.StopAgentSessionRequest
+	(*v1.ReloadAgentSessionRequest)(nil),       // 28: compass.v1.ReloadAgentSessionRequest
+	(*v1.GetAgentStatusRequest)(nil),           // 29: compass.v1.GetAgentStatusRequest
+	(*v1.ProvisionAgentWorkspaceRequest)(nil),  // 30: compass.v1.ProvisionAgentWorkspaceRequest
+	(*v1.RemoveAgentWorkspaceRequest)(nil),     // 31: compass.v1.RemoveAgentWorkspaceRequest
+	(*AgentControl)(nil),                       // 32: compass.v1.AgentControl
+	(v1.SecretDelivery)(0),                     // 33: compass.v1.SecretDelivery
+	(v1.SecretKind)(0),                         // 34: compass.v1.SecretKind
+	(*AgentFrame)(nil),                         // 35: compass.v1.AgentFrame
+	(*CommsCallRequest)(nil),                   // 36: compass.v1.CommsCallRequest
+	(*CommsCallResult)(nil),                    // 37: compass.v1.CommsCallResult
+	(*LifecycleCallRequest)(nil),               // 38: compass.v1.LifecycleCallRequest
+	(*LifecycleCallResult)(nil),                // 39: compass.v1.LifecycleCallResult
 }
 var file_compass_v1_runner_proto_depIdxs = []int32{
-	18, // 0: compass.v1.SessionsRequest.start:type_name -> compass.v1.StartAgentSessionResponse
-	19, // 1: compass.v1.SessionsRequest.stop:type_name -> compass.v1.StopAgentSessionResponse
-	20, // 2: compass.v1.SessionsRequest.reload:type_name -> compass.v1.ReloadAgentSessionResponse
-	21, // 3: compass.v1.SessionsRequest.status:type_name -> compass.v1.GetAgentStatusResponse
-	22, // 4: compass.v1.SessionsRequest.provision:type_name -> compass.v1.ProvisionAgentWorkspaceResponse
+	20, // 0: compass.v1.SessionsRequest.start:type_name -> compass.v1.StartAgentSessionResponse
+	21, // 1: compass.v1.SessionsRequest.stop:type_name -> compass.v1.StopAgentSessionResponse
+	22, // 2: compass.v1.SessionsRequest.reload:type_name -> compass.v1.ReloadAgentSessionResponse
+	23, // 3: compass.v1.SessionsRequest.status:type_name -> compass.v1.GetAgentStatusResponse
+	24, // 4: compass.v1.SessionsRequest.provision:type_name -> compass.v1.ProvisionAgentWorkspaceResponse
 	11, // 5: compass.v1.SessionsRequest.error:type_name -> compass.v1.RunnerError
-	23, // 6: compass.v1.SessionsResponse.start:type_name -> compass.v1.StartAgentSessionRequest
-	24, // 7: compass.v1.SessionsResponse.stop:type_name -> compass.v1.StopAgentSessionRequest
-	25, // 8: compass.v1.SessionsResponse.reload:type_name -> compass.v1.ReloadAgentSessionRequest
-	26, // 9: compass.v1.SessionsResponse.status:type_name -> compass.v1.GetAgentStatusRequest
-	27, // 10: compass.v1.SessionsResponse.provision:type_name -> compass.v1.ProvisionAgentWorkspaceRequest
-	10, // 11: compass.v1.SessionsResponse.secrets_version:type_name -> compass.v1.SecretsVersion
-	6,  // 12: compass.v1.SessionsResponse.deliver_control:type_name -> compass.v1.DispatchControl
-	5,  // 13: compass.v1.SessionsResponse.resume_body:type_name -> compass.v1.ResumeBody
-	28, // 14: compass.v1.DispatchControl.op:type_name -> compass.v1.AgentControl
-	9,  // 15: compass.v1.FetchSecretsResponse.secrets:type_name -> compass.v1.ResolvedSecret
-	29, // 16: compass.v1.ResolvedSecret.delivery:type_name -> compass.v1.SecretDelivery
-	30, // 17: compass.v1.ResolvedSecret.kind:type_name -> compass.v1.SecretKind
-	0,  // 18: compass.v1.RunnerError.code:type_name -> compass.v1.RunnerErrorCode
-	31, // 19: compass.v1.PublishEventsRequest.frame:type_name -> compass.v1.AgentFrame
-	32, // 20: compass.v1.RelayCommsCallRequest.call:type_name -> compass.v1.CommsCallRequest
-	33, // 21: compass.v1.RelayCommsCallResponse.result:type_name -> compass.v1.CommsCallResult
-	31, // 22: compass.v1.CommitConversationFrameRequest.frame:type_name -> compass.v1.AgentFrame
-	1,  // 23: compass.v1.RunnerService.Enroll:input_type -> compass.v1.EnrollRequest
-	3,  // 24: compass.v1.RunnerService.Sessions:input_type -> compass.v1.SessionsRequest
-	12, // 25: compass.v1.RunnerService.PublishEvents:input_type -> compass.v1.PublishEventsRequest
-	14, // 26: compass.v1.RunnerService.RelayCommsCall:input_type -> compass.v1.RelayCommsCallRequest
-	16, // 27: compass.v1.RunnerService.CommitConversationFrame:input_type -> compass.v1.CommitConversationFrameRequest
-	7,  // 28: compass.v1.RunnerService.FetchSecrets:input_type -> compass.v1.FetchSecretsRequest
-	2,  // 29: compass.v1.RunnerService.Enroll:output_type -> compass.v1.EnrollResponse
-	4,  // 30: compass.v1.RunnerService.Sessions:output_type -> compass.v1.SessionsResponse
-	13, // 31: compass.v1.RunnerService.PublishEvents:output_type -> compass.v1.PublishEventsResponse
-	15, // 32: compass.v1.RunnerService.RelayCommsCall:output_type -> compass.v1.RelayCommsCallResponse
-	17, // 33: compass.v1.RunnerService.CommitConversationFrame:output_type -> compass.v1.CommitConversationFrameResponse
-	8,  // 34: compass.v1.RunnerService.FetchSecrets:output_type -> compass.v1.FetchSecretsResponse
-	29, // [29:35] is the sub-list for method output_type
-	23, // [23:29] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	25, // 6: compass.v1.SessionsRequest.remove:type_name -> compass.v1.RemoveAgentWorkspaceResponse
+	26, // 7: compass.v1.SessionsResponse.start:type_name -> compass.v1.StartAgentSessionRequest
+	27, // 8: compass.v1.SessionsResponse.stop:type_name -> compass.v1.StopAgentSessionRequest
+	28, // 9: compass.v1.SessionsResponse.reload:type_name -> compass.v1.ReloadAgentSessionRequest
+	29, // 10: compass.v1.SessionsResponse.status:type_name -> compass.v1.GetAgentStatusRequest
+	30, // 11: compass.v1.SessionsResponse.provision:type_name -> compass.v1.ProvisionAgentWorkspaceRequest
+	10, // 12: compass.v1.SessionsResponse.secrets_version:type_name -> compass.v1.SecretsVersion
+	6,  // 13: compass.v1.SessionsResponse.deliver_control:type_name -> compass.v1.DispatchControl
+	31, // 14: compass.v1.SessionsResponse.remove:type_name -> compass.v1.RemoveAgentWorkspaceRequest
+	5,  // 15: compass.v1.SessionsResponse.resume_body:type_name -> compass.v1.ResumeBody
+	32, // 16: compass.v1.DispatchControl.op:type_name -> compass.v1.AgentControl
+	9,  // 17: compass.v1.FetchSecretsResponse.secrets:type_name -> compass.v1.ResolvedSecret
+	33, // 18: compass.v1.ResolvedSecret.delivery:type_name -> compass.v1.SecretDelivery
+	34, // 19: compass.v1.ResolvedSecret.kind:type_name -> compass.v1.SecretKind
+	0,  // 20: compass.v1.RunnerError.code:type_name -> compass.v1.RunnerErrorCode
+	35, // 21: compass.v1.PublishEventsRequest.frame:type_name -> compass.v1.AgentFrame
+	36, // 22: compass.v1.RelayCommsCallRequest.call:type_name -> compass.v1.CommsCallRequest
+	37, // 23: compass.v1.RelayCommsCallResponse.result:type_name -> compass.v1.CommsCallResult
+	38, // 24: compass.v1.RelayLifecycleCallRequest.call:type_name -> compass.v1.LifecycleCallRequest
+	39, // 25: compass.v1.RelayLifecycleCallResponse.result:type_name -> compass.v1.LifecycleCallResult
+	35, // 26: compass.v1.CommitConversationFrameRequest.frame:type_name -> compass.v1.AgentFrame
+	1,  // 27: compass.v1.RunnerService.Enroll:input_type -> compass.v1.EnrollRequest
+	3,  // 28: compass.v1.RunnerService.Sessions:input_type -> compass.v1.SessionsRequest
+	12, // 29: compass.v1.RunnerService.PublishEvents:input_type -> compass.v1.PublishEventsRequest
+	14, // 30: compass.v1.RunnerService.RelayCommsCall:input_type -> compass.v1.RelayCommsCallRequest
+	16, // 31: compass.v1.RunnerService.RelayLifecycleCall:input_type -> compass.v1.RelayLifecycleCallRequest
+	18, // 32: compass.v1.RunnerService.CommitConversationFrame:input_type -> compass.v1.CommitConversationFrameRequest
+	7,  // 33: compass.v1.RunnerService.FetchSecrets:input_type -> compass.v1.FetchSecretsRequest
+	2,  // 34: compass.v1.RunnerService.Enroll:output_type -> compass.v1.EnrollResponse
+	4,  // 35: compass.v1.RunnerService.Sessions:output_type -> compass.v1.SessionsResponse
+	13, // 36: compass.v1.RunnerService.PublishEvents:output_type -> compass.v1.PublishEventsResponse
+	15, // 37: compass.v1.RunnerService.RelayCommsCall:output_type -> compass.v1.RelayCommsCallResponse
+	17, // 38: compass.v1.RunnerService.RelayLifecycleCall:output_type -> compass.v1.RelayLifecycleCallResponse
+	19, // 39: compass.v1.RunnerService.CommitConversationFrame:output_type -> compass.v1.CommitConversationFrameResponse
+	8,  // 40: compass.v1.RunnerService.FetchSecrets:output_type -> compass.v1.FetchSecretsResponse
+	34, // [34:41] is the sub-list for method output_type
+	27, // [27:34] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_runner_proto_init() }
@@ -1612,6 +1781,7 @@ func file_compass_v1_runner_proto_init() {
 		(*SessionsRequest_Status)(nil),
 		(*SessionsRequest_Provision)(nil),
 		(*SessionsRequest_Error)(nil),
+		(*SessionsRequest_Remove)(nil),
 	}
 	file_compass_v1_runner_proto_msgTypes[3].OneofWrappers = []any{
 		(*SessionsResponse_Start)(nil),
@@ -1621,6 +1791,7 @@ func file_compass_v1_runner_proto_init() {
 		(*SessionsResponse_Provision)(nil),
 		(*SessionsResponse_SecretsVersion)(nil),
 		(*SessionsResponse_DeliverControl)(nil),
+		(*SessionsResponse_Remove)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1628,7 +1799,7 @@ func file_compass_v1_runner_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compass_v1_runner_proto_rawDesc), len(file_compass_v1_runner_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

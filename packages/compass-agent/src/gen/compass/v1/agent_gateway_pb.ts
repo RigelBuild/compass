@@ -44,7 +44,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/agent_gateway.proto.
  */
 export const file_compass_v1_agent_gateway: GenFile = /*@__PURE__*/
-  fileDesc("Ch5jb21wYXNzL3YxL2FnZW50X2dhdGV3YXkucHJvdG8SCmNvbXBhc3MudjEijAEKEENvbW1zQ2FsbFJlcXVlc3QSDwoHY2FsbF9pZBgBIAEoCRIuCgRwb3N0GAIgASgLMh4uY29tcGFzcy52MS5Qb3N0TWVzc2FnZVJlcXVlc3RIABIvCgRsaXN0GAMgASgLMh8uY29tcGFzcy52MS5MaXN0TWVzc2FnZXNSZXF1ZXN0SABCBgoEY2FsbCK8AQoPQ29tbXNDYWxsUmVzdWx0Eg8KB2NhbGxfaWQYASABKAkSLwoEcG9zdBgCIAEoCzIfLmNvbXBhc3MudjEuUG9zdE1lc3NhZ2VSZXNwb25zZUgAEjAKBGxpc3QYAyABKAsyIC5jb21wYXNzLnYxLkxpc3RNZXNzYWdlc1Jlc3BvbnNlSAASKwoFZXJyb3IYBCABKAsyGi5jb21wYXNzLnYxLkNvbW1zQ2FsbEVycm9ySABCCAoGcmVzdWx0Ii8KDkNvbW1zQ2FsbEVycm9yEgwKBGNvZGUYASABKAkSDwoHbWVzc2FnZRgCIAEoCSI8ChNQdWJsaXNoRnJhbWVSZXF1ZXN0EiUKBWZyYW1lGAEgASgLMhYuY29tcGFzcy52MS5BZ2VudEZyYW1lIhYKFFB1Ymxpc2hGcmFtZVJlc3BvbnNlIl4KHFBvc3RDb252ZXJzYXRpb25GcmFtZVJlcXVlc3QSJQoFZnJhbWUYASABKAsyFi5jb21wYXNzLnYxLkFnZW50RnJhbWUSFwoPaWRlbXBvdGVuY3lfa2V5GAIgASgJIh8KHVBvc3RDb252ZXJzYXRpb25GcmFtZVJlc3BvbnNlIhkKF0NvbnRyb2xTdWJzY3JpYmVSZXF1ZXN0MtwCCgxBZ2VudEdhdGV3YXkSQgoFQ29tbXMSHC5jb21wYXNzLnYxLkNvbW1zQ2FsbFJlcXVlc3QaGy5jb21wYXNzLnYxLkNvbW1zQ2FsbFJlc3VsdBJOCgdQdWJsaXNoEh8uY29tcGFzcy52MS5QdWJsaXNoRnJhbWVSZXF1ZXN0GiAuY29tcGFzcy52MS5QdWJsaXNoRnJhbWVSZXNwb25zZSgBEmwKFVBvc3RDb252ZXJzYXRpb25GcmFtZRIoLmNvbXBhc3MudjEuUG9zdENvbnZlcnNhdGlvbkZyYW1lUmVxdWVzdBopLmNvbXBhc3MudjEuUG9zdENvbnZlcnNhdGlvbkZyYW1lUmVzcG9uc2USSgoHQ29udHJvbBIjLmNvbXBhc3MudjEuQ29udHJvbFN1YnNjcmliZVJlcXVlc3QaGC5jb21wYXNzLnYxLkFnZW50Q29udHJvbDABYgZwcm90bzM", [file_compass_v1_comms, file_compass_v1_agent]);
+  fileDesc("Ch5jb21wYXNzL3YxL2FnZW50X2dhdGV3YXkucHJvdG8SCmNvbXBhc3MudjEijAEKEENvbW1zQ2FsbFJlcXVlc3QSDwoHY2FsbF9pZBgBIAEoCRIuCgRwb3N0GAIgASgLMh4uY29tcGFzcy52MS5Qb3N0TWVzc2FnZVJlcXVlc3RIABIvCgRsaXN0GAMgASgLMh8uY29tcGFzcy52MS5MaXN0TWVzc2FnZXNSZXF1ZXN0SABCBgoEY2FsbCK8AQoPQ29tbXNDYWxsUmVzdWx0Eg8KB2NhbGxfaWQYASABKAkSLwoEcG9zdBgCIAEoCzIfLmNvbXBhc3MudjEuUG9zdE1lc3NhZ2VSZXNwb25zZUgAEjAKBGxpc3QYAyABKAsyIC5jb21wYXNzLnYxLkxpc3RNZXNzYWdlc1Jlc3BvbnNlSAASKwoFZXJyb3IYBCABKAsyGi5jb21wYXNzLnYxLkNvbW1zQ2FsbEVycm9ySABCCAoGcmVzdWx0Ii8KDkNvbW1zQ2FsbEVycm9yEgwKBGNvZGUYASABKAkSDwoHbWVzc2FnZRgCIAEoCSKRAQoUTGlmZWN5Y2xlQ2FsbFJlcXVlc3QSDwoHY2FsbF9pZBgBIAEoCRItCgVzcGF3bhgCIAEoCzIcLmNvbXBhc3MudjEuU3Bhd25QZWVyUmVxdWVzdEgAEjEKB2Rlc3Bhd24YAyABKAsyHi5jb21wYXNzLnYxLkRlc3Bhd25QZWVyUmVxdWVzdEgAQgYKBGNhbGwiawoQU3Bhd25QZWVyUmVxdWVzdBIOCgZoYW5kbGUYASABKAkSFAoMZGlzcGxheV9uYW1lGAIgASgJEhYKDmluaXRpYWxfcHJvbXB0GAMgASgJEhkKEWNsaWVudF9yZXF1ZXN0X2lkGAQgASgJIlkKEVNwYXduUGVlclJlc3BvbnNlEhgKEGFnZW50X2FjY291bnRfaWQYASABKAkSFgoOY29udGFpbmVyX25hbWUYAiABKAkSEgoKc2Vzc2lvbl9pZBgDIAEoCSIuChJEZXNwYXduUGVlclJlcXVlc3QSGAoQYWdlbnRfYWNjb3VudF9pZBgBIAEoCSIVChNEZXNwYXduUGVlclJlc3BvbnNlIsUBChNMaWZlY3ljbGVDYWxsUmVzdWx0Eg8KB2NhbGxfaWQYASABKAkSLgoFc3Bhd24YAiABKAsyHS5jb21wYXNzLnYxLlNwYXduUGVlclJlc3BvbnNlSAASMgoHZGVzcGF3bhgDIAEoCzIfLmNvbXBhc3MudjEuRGVzcGF3blBlZXJSZXNwb25zZUgAEi8KBWVycm9yGAQgASgLMh4uY29tcGFzcy52MS5MaWZlY3ljbGVDYWxsRXJyb3JIAEIICgZyZXN1bHQiMwoSTGlmZWN5Y2xlQ2FsbEVycm9yEgwKBGNvZGUYASABKAkSDwoHbWVzc2FnZRgCIAEoCSI8ChNQdWJsaXNoRnJhbWVSZXF1ZXN0EiUKBWZyYW1lGAEgASgLMhYuY29tcGFzcy52MS5BZ2VudEZyYW1lIhYKFFB1Ymxpc2hGcmFtZVJlc3BvbnNlIl4KHFBvc3RDb252ZXJzYXRpb25GcmFtZVJlcXVlc3QSJQoFZnJhbWUYASABKAsyFi5jb21wYXNzLnYxLkFnZW50RnJhbWUSFwoPaWRlbXBvdGVuY3lfa2V5GAIgASgJIh8KHVBvc3RDb252ZXJzYXRpb25GcmFtZVJlc3BvbnNlIhkKF0NvbnRyb2xTdWJzY3JpYmVSZXF1ZXN0MqwDCgxBZ2VudEdhdGV3YXkSQgoFQ29tbXMSHC5jb21wYXNzLnYxLkNvbW1zQ2FsbFJlcXVlc3QaGy5jb21wYXNzLnYxLkNvbW1zQ2FsbFJlc3VsdBJOCglMaWZlY3ljbGUSIC5jb21wYXNzLnYxLkxpZmVjeWNsZUNhbGxSZXF1ZXN0Gh8uY29tcGFzcy52MS5MaWZlY3ljbGVDYWxsUmVzdWx0Ek4KB1B1Ymxpc2gSHy5jb21wYXNzLnYxLlB1Ymxpc2hGcmFtZVJlcXVlc3QaIC5jb21wYXNzLnYxLlB1Ymxpc2hGcmFtZVJlc3BvbnNlKAESbAoVUG9zdENvbnZlcnNhdGlvbkZyYW1lEiguY29tcGFzcy52MS5Qb3N0Q29udmVyc2F0aW9uRnJhbWVSZXF1ZXN0GikuY29tcGFzcy52MS5Qb3N0Q29udmVyc2F0aW9uRnJhbWVSZXNwb25zZRJKCgdDb250cm9sEiMuY29tcGFzcy52MS5Db250cm9sU3Vic2NyaWJlUmVxdWVzdBoYLmNvbXBhc3MudjEuQWdlbnRDb250cm9sMAFiBnByb3RvMw", [file_compass_v1_comms, file_compass_v1_agent]);
 
 /**
  * One agent-initiated comms call. `call_id` is the agent-minted correlation id
@@ -156,6 +156,222 @@ export const CommsCallErrorSchema: GenMessage<CommsCallError> = /*@__PURE__*/
   messageDesc(file_compass_v1_agent_gateway, 2);
 
 /**
+ * One agent-initiated lifecycle call (spawn/despawn a peer). `call_id` is the
+ * agent-minted correlation id (the SDK toolCallId); the `call` oneof selects the
+ * operation. Mirrors CommsCallRequest — the same message is the
+ * RelayLifecycleCallRequest.call payload on the Runner->Server leg, one shared
+ * envelope across both hops.
+ *
+ * @generated from message compass.v1.LifecycleCallRequest
+ */
+export type LifecycleCallRequest = Message<"compass.v1.LifecycleCallRequest"> & {
+  /**
+   * @generated from field: string call_id = 1;
+   */
+  callId: string;
+
+  /**
+   * @generated from oneof compass.v1.LifecycleCallRequest.call
+   */
+  call: {
+    /**
+     * @generated from field: compass.v1.SpawnPeerRequest spawn = 2;
+     */
+    value: SpawnPeerRequest;
+    case: "spawn";
+  } | {
+    /**
+     * @generated from field: compass.v1.DespawnPeerRequest despawn = 3;
+     */
+    value: DespawnPeerRequest;
+    case: "despawn";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message compass.v1.LifecycleCallRequest.
+ * Use `create(LifecycleCallRequestSchema)` to create a new message.
+ */
+export const LifecycleCallRequestSchema: GenMessage<LifecycleCallRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 3);
+
+/**
+ * Spawn a peer agent, owned by the caller agent's owner (F2 ownership frame).
+ * Names the new agent's identity and its initial prompt — never a repo/ref
+ * (spawn carries no repo, Matt 2026-07-29; the peer self-clones after launch).
+ *
+ * @generated from message compass.v1.SpawnPeerRequest
+ */
+export type SpawnPeerRequest = Message<"compass.v1.SpawnPeerRequest"> & {
+  /**
+   * the new agent's account handle (unique)
+   *
+   * @generated from field: string handle = 1;
+   */
+  handle: string;
+
+  /**
+   * @generated from field: string display_name = 2;
+   */
+  displayName: string;
+
+  /**
+   * threaded to StartAgentSessionRequest.initial_prompt
+   *
+   * @generated from field: string initial_prompt = 3;
+   */
+  initialPrompt: string;
+
+  /**
+   * whole-chain idempotency key (handler-level join + Provision dedup)
+   *
+   * @generated from field: string client_request_id = 4;
+   */
+  clientRequestId: string;
+};
+
+/**
+ * Describes the message compass.v1.SpawnPeerRequest.
+ * Use `create(SpawnPeerRequestSchema)` to create a new message.
+ */
+export const SpawnPeerRequestSchema: GenMessage<SpawnPeerRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 4);
+
+/**
+ * @generated from message compass.v1.SpawnPeerResponse
+ */
+export type SpawnPeerResponse = Message<"compass.v1.SpawnPeerResponse"> & {
+  /**
+   * @generated from field: string agent_account_id = 1;
+   */
+  agentAccountId: string;
+
+  /**
+   * @generated from field: string container_name = 2;
+   */
+  containerName: string;
+
+  /**
+   * @generated from field: string session_id = 3;
+   */
+  sessionId: string;
+};
+
+/**
+ * Describes the message compass.v1.SpawnPeerResponse.
+ * Use `create(SpawnPeerResponseSchema)` to create a new message.
+ */
+export const SpawnPeerResponseSchema: GenMessage<SpawnPeerResponse> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 5);
+
+/**
+ * Despawn a peer: tear down its container and release its durable placement.
+ * Same-owner authority (F2); the account row, home channel, and history survive
+ * (despawn tears down compute, not identity).
+ *
+ * @generated from message compass.v1.DespawnPeerRequest
+ */
+export type DespawnPeerRequest = Message<"compass.v1.DespawnPeerRequest"> & {
+  /**
+   * the peer to tear down
+   *
+   * @generated from field: string agent_account_id = 1;
+   */
+  agentAccountId: string;
+};
+
+/**
+ * Describes the message compass.v1.DespawnPeerRequest.
+ * Use `create(DespawnPeerRequestSchema)` to create a new message.
+ */
+export const DespawnPeerRequestSchema: GenMessage<DespawnPeerRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 6);
+
+/**
+ * @generated from message compass.v1.DespawnPeerResponse
+ */
+export type DespawnPeerResponse = Message<"compass.v1.DespawnPeerResponse"> & {
+};
+
+/**
+ * Describes the message compass.v1.DespawnPeerResponse.
+ * Use `create(DespawnPeerResponseSchema)` to create a new message.
+ */
+export const DespawnPeerResponseSchema: GenMessage<DespawnPeerResponse> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 7);
+
+/**
+ * The result of one lifecycle call, correlated by `call_id`. A successful call
+ * sets `spawn`/`despawn`; an in-band tool failure sets `error` (same shape as
+ * CommsCallError), which is NOT a transport teardown. The same message is the
+ * RelayLifecycleCallResponse.result payload on the Runner->Server leg.
+ *
+ * @generated from message compass.v1.LifecycleCallResult
+ */
+export type LifecycleCallResult = Message<"compass.v1.LifecycleCallResult"> & {
+  /**
+   * @generated from field: string call_id = 1;
+   */
+  callId: string;
+
+  /**
+   * @generated from oneof compass.v1.LifecycleCallResult.result
+   */
+  result: {
+    /**
+     * @generated from field: compass.v1.SpawnPeerResponse spawn = 2;
+     */
+    value: SpawnPeerResponse;
+    case: "spawn";
+  } | {
+    /**
+     * @generated from field: compass.v1.DespawnPeerResponse despawn = 3;
+     */
+    value: DespawnPeerResponse;
+    case: "despawn";
+  } | {
+    /**
+     * @generated from field: compass.v1.LifecycleCallError error = 4;
+     */
+    value: LifecycleCallError;
+    case: "error";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message compass.v1.LifecycleCallResult.
+ * Use `create(LifecycleCallResultSchema)` to create a new message.
+ */
+export const LifecycleCallResultSchema: GenMessage<LifecycleCallResult> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 8);
+
+/**
+ * An in-band lifecycle-call failure: a tool error the agent renders to the
+ * model, never a stream teardown. `code` is a short stable token (e.g.
+ * "not_found", "already_exists", "invalid_argument"); `message` is detail.
+ *
+ * @generated from message compass.v1.LifecycleCallError
+ */
+export type LifecycleCallError = Message<"compass.v1.LifecycleCallError"> & {
+  /**
+   * @generated from field: string code = 1;
+   */
+  code: string;
+
+  /**
+   * @generated from field: string message = 2;
+   */
+  message: string;
+};
+
+/**
+ * Describes the message compass.v1.LifecycleCallError.
+ * Use `create(LifecycleCallErrorSchema)` to create a new message.
+ */
+export const LifecycleCallErrorSchema: GenMessage<LifecycleCallError> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 9);
+
+/**
  * Publish stream element: one trace/session AgentFrame, in emission order. No
  * seq field — the Runner assigns the upstream PublishEvents RunnerSeq. The
  * durable conversation frames do NOT ride this stream; they take the correlated
@@ -177,7 +393,7 @@ export type PublishFrameRequest = Message<"compass.v1.PublishFrameRequest"> & {
  * Use `create(PublishFrameRequestSchema)` to create a new message.
  */
 export const PublishFrameRequestSchema: GenMessage<PublishFrameRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent_gateway, 3);
+  messageDesc(file_compass_v1_agent_gateway, 10);
 
 /**
  * Acked at stream close, mirroring RunnerService.PublishEvents' PublishEventsResponse.
@@ -192,7 +408,7 @@ export type PublishFrameResponse = Message<"compass.v1.PublishFrameResponse"> & 
  * Use `create(PublishFrameResponseSchema)` to create a new message.
  */
 export const PublishFrameResponseSchema: GenMessage<PublishFrameResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent_gateway, 4);
+  messageDesc(file_compass_v1_agent_gateway, 11);
 
 /**
  * The durable-frame unary carries the SAME AgentFrame message, constrained by
@@ -225,7 +441,7 @@ export type PostConversationFrameRequest = Message<"compass.v1.PostConversationF
  * Use `create(PostConversationFrameRequestSchema)` to create a new message.
  */
 export const PostConversationFrameRequestSchema: GenMessage<PostConversationFrameRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent_gateway, 5);
+  messageDesc(file_compass_v1_agent_gateway, 12);
 
 /**
  * Returned only after the upstream PublishEvents forward is accepted.
@@ -240,7 +456,7 @@ export type PostConversationFrameResponse = Message<"compass.v1.PostConversation
  * Use `create(PostConversationFrameResponseSchema)` to create a new message.
  */
 export const PostConversationFrameResponseSchema: GenMessage<PostConversationFrameResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent_gateway, 6);
+  messageDesc(file_compass_v1_agent_gateway, 13);
 
 /**
  * The Control subscribe request carries no session id: the per-container socket
@@ -256,7 +472,7 @@ export type ControlSubscribeRequest = Message<"compass.v1.ControlSubscribeReques
  * Use `create(ControlSubscribeRequestSchema)` to create a new message.
  */
 export const ControlSubscribeRequestSchema: GenMessage<ControlSubscribeRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent_gateway, 7);
+  messageDesc(file_compass_v1_agent_gateway, 14);
 
 /**
  * agent -> Runner, unary. The agent emits a correlated comms call; the Runner
@@ -279,6 +495,21 @@ export const AgentGateway: GenService<{
     methodKind: "unary";
     input: typeof CommsCallRequestSchema;
     output: typeof CommsCallResultSchema;
+  },
+  /**
+   * Lifecycle (unary, agent -> Runner): spawn or despawn a peer agent. A
+   * sibling call family to Comms (DL-049 shape) — the LifecycleCallRequest /
+   * LifecycleCallResult envelopes are reused verbatim as the
+   * RelayLifecycleCallRequest.call / RelayLifecycleCallResponse.result payloads
+   * on the Runner->Server leg (runner.proto RelayLifecycleCall). One shared
+   * envelope across both hops. INTERNAL surface (never public gen).
+   *
+   * @generated from rpc compass.v1.AgentGateway.Lifecycle
+   */
+  lifecycle: {
+    methodKind: "unary";
+    input: typeof LifecycleCallRequestSchema;
+    output: typeof LifecycleCallResultSchema;
   },
   /**
    * agent -> Runner, client-stream: the loss-tolerable telemetry spine. Every

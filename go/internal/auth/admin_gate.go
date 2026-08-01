@@ -46,8 +46,13 @@ func (authenticatedOpen) isPrivilege() {}
 // method as open.
 func classifyProcedure(procedure string) (privilege, bool) {
 	switch procedure {
-	// Privileged CompassService agent-session RPCs + token issuance: admin only.
+	// Privileged CompassService agent-session RPCs + token issuance + container
+	// teardown: admin only. RemoveAgentWorkspace is the operator-door teardown
+	// counterpart to ProvisionAgentWorkspace, admin-gated like it (the
+	// agent-facing despawn reaches the same teardown over the Runner relay with
+	// its own owner-scoped check, never this door).
 	case compassv1connect.CompassServiceProvisionAgentWorkspaceProcedure,
+		compassv1connect.CompassServiceRemoveAgentWorkspaceProcedure,
 		compassv1connect.CompassServiceStartAgentSessionProcedure,
 		compassv1connect.CompassServiceStopAgentSessionProcedure,
 		compassv1connect.CompassServiceReloadAgentSessionProcedure,

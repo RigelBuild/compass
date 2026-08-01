@@ -40,6 +40,15 @@ service CompassService {
   // session succeeds.
   rpc StopAgentSession(StopAgentSessionRequest) returns (StopAgentSessionResponse);
 
+  // Remove a per-agent container and release its durable placement: the
+  // teardown counterpart to ProvisionAgentWorkspace, keyed by the same
+  // container_name. Admin-gated on this public door (like IssueToken); the
+  // agent-facing despawn reaches the same teardown over the Runner relay with
+  // its own owner-scoped check, never this door. Idempotent — removing an
+  // unknown/already-removed container succeeds. Routes Client -> Server ->
+  // RunnerHub -> Runner.
+  rpc RemoveAgentWorkspace(RemoveAgentWorkspaceRequest) returns (RemoveAgentWorkspaceResponse);
+
   // Reload a live agent session in place: tear down the current agent exec and
   // start a fresh one against the same container, reusing the session id so the
   // board entry is continuous. The agent reloads from workspace state
@@ -422,6 +431,20 @@ message ProvisionAgentWorkspaceResponse {
   // cursor for the container's lifecycle.
   string container_name = 1;
 }
+
+// RemoveAgentWorkspace: tear down the per-agent container and release its
+// durable placement. Symmetric with ProvisionAgentWorkspace (the container it
+// tears down), keyed by container_name, same idempotency contract.
+message RemoveAgentWorkspaceRequest {
+  // The container to remove — the handle ProvisionAgentWorkspace returned.
+  string container_name = 1;
+  // Idempotency key, same retry contract as ProvisionAgentWorkspaceRequest:
+  // a timeout-retry with the same id dedups rather than re-dispatching. Empty
+  // = no dedup.
+  string client_request_id = 2;
+}
+
+message RemoveAgentWorkspaceResponse {}
 
 // StartAgentSession: bring the first-party agent in a provisioned container
 // online over the Runner streaming-exec bridge.
