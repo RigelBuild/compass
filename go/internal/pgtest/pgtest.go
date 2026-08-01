@@ -188,6 +188,11 @@ func containerCLI() string {
 
 // startContainer launches a throwaway Postgres container, waits for it to accept
 // connections, and returns its DSN. The container is force-removed on cleanup.
+//
+// This path is reached only when COMPASS_TEST_USE_CONTAINER is set (see
+// RequireDSN), so a failure to start the container is an infrastructure failure
+// on an explicitly opted-in run: it fails loudly rather than skipping into a
+// green suite, which would hide a broken local container runtime.
 func startContainer(t *testing.T, cli string) string {
 	t.Helper()
 	name := "compass-test-" + strconv.Itoa(os.Getpid()) + "-" + strconv.FormatInt(time.Now().UnixNano(), 36)
@@ -205,7 +210,7 @@ func startContainer(t *testing.T, cli string) string {
 		pgImage,
 	).CombinedOutput()
 	if err != nil {
-		t.Skipf("cannot start postgres container (%s): %v\n%s", cli, err, out)
+		t.Fatalf("pgtest: COMPASS_TEST_USE_CONTAINER is set but the postgres container failed to start (%s): %v\n%s", cli, err, out)
 	}
 	t.Cleanup(func() { _ = exec.Command(cli, "rm", "--force", name).Run() })
 
