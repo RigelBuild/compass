@@ -146,3 +146,45 @@ func (s *Store) ListAgentPlacementsForRunner(ctx context.Context, runnerID strin
 	}
 	return placements, nil
 }
+
+// DeleteAgentPlacement releases the placement for containerName — the release
+// path RecordAgentPlacement's godoc flagged as missing. Despawn (SEA-1618) tears
+// down a container and must free its placement so the unique container_name is
+// available again for a future spawn. It is IDEMPOTENT: a despawn may be retried,
+// and a second despawn of an already-removed container must succeed, so deleting
+// an absent row is not an error. Keyed by container_name to match the teardown
+// input, which names the container being removed.
+func (s *Store) DeleteAgentPlacement(ctx context.Context, containerName string) error {
+	if containerName == "" {
+		return fmt.Errorf("%w: container name is required", ErrInvalidArgument)
+	}
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM agent_placements WHERE container_name = $1`,
+		containerName,
+	); err != nil {
+		return fmt.Errorf("store: delete agent placement: %w", err)
+	}
+	return nil
+}
+
+// PlacementForAgent returns the Runner and container an agent is placed on. It is
+// the reverse of AgentForContainer: despawn is keyed by agent id (the authority
+// check resolves the agent), but Remove and DeleteAgentPlacement are keyed by
+// container_name — so despawn needs this read to turn the agent it holds into the
+// container name it must tear down. An unknown OR unplaced agent is ErrNotFound:
+// there is nothing to despawn either way, and the caller treats both alike.
+func (s *Store) PlacementForAgent(ctx context.Context, agentAccountID AccountID) (runnerID, containerName string, err error) {
+	if agentAccountID == "" {
+		return "", "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+	}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT runner_id, container_name FROM agent_placements WHERE agent_account_id = $1`,
+		string(agentAccountID),
+	).Scan(&runnerID, &containerName); err != nil {
+		if noRows(err) {
+			return "", "", fmt.Errorf("%w: agent %q is not placed", ErrNotFound, agentAccountID)
+		}
+		return "", "", fmt.Errorf("store: resolve placement for agent: %w", err)
+	}
+	return runnerID, containerName, nil
+}

@@ -207,3 +207,89 @@ func TestListAgentPlacementsForRunnerEmptyForUnknownRunner(t *testing.T) {
 		t.Fatalf("unknown runner placements = %+v, want empty", got)
 	}
 }
+
+// TestDeleteAgentPlacementReleasesContainerName is the load-bearing property of
+// the despawn release path: deleting a placement frees its unique container_name
+// so a future spawn can reuse it. If DeleteAgentPlacement failed to remove the
+// row (or left the unique name claimed), a re-spawn onto that container would hit
+// ErrConflict and the name would be owned forever with no way back — exactly the
+// leak RecordAgentPlacement's godoc warned a missing release path would cause.
+func TestDeleteAgentPlacementReleasesContainerName(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	a := mustAgent(t, s, owner.ID, "agent-a")
+	b := mustAgent(t, s, owner.ID, "agent-b")
+
+	if err := s.RecordAgentPlacement(ctx, a.ID, "runner-1", "cont-x"); err != nil {
+		t.Fatalf("place agent A: %v", err)
+	}
+	if err := s.DeleteAgentPlacement(ctx, "cont-x"); err != nil {
+		t.Fatalf("DeleteAgentPlacement: %v", err)
+	}
+
+	// The container resolves to no owner: the placement is gone.
+	if _, err := s.AgentForContainer(ctx, "cont-x"); err == nil {
+		t.Fatal("AgentForContainer(cont-x) = nil error after delete, want ErrNotFound")
+	} else {
+		sentinelIs(t, err, ErrNotFound, "released container lookup")
+	}
+
+	// The freed name is reusable: a DIFFERENT agent may now claim it without
+	// hitting the unique-index conflict.
+	if err := s.RecordAgentPlacement(ctx, b.ID, "runner-1", "cont-x"); err != nil {
+		t.Fatalf("re-placing the freed container name: %v (want nil — the name was released)", err)
+	}
+}
+
+// TestDeleteAgentPlacementAbsentRowSucceeds pins idempotency: despawn may be
+// retried, so deleting a container that was never placed (or already removed)
+// must succeed. If it errored on zero rows, a retried despawn would fail on its
+// second pass and strand the teardown mid-way.
+func TestDeleteAgentPlacementAbsentRowSucceeds(t *testing.T) {
+	s := newTestStore(t)
+
+	if err := s.DeleteAgentPlacement(t.Context(), "never-placed"); err != nil {
+		t.Fatalf("DeleteAgentPlacement(never-placed) = %v, want nil (idempotent)", err)
+	}
+}
+
+// TestPlacementForAgentRoundTrips pins the reverse read despawn depends on:
+// given the agent id its authority check resolved, it returns the runner and
+// container name the teardown must act on. A bug swapping the two columns, or
+// reading the wrong row, would tear down the wrong container.
+func TestPlacementForAgentRoundTrips(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+
+	if err := s.RecordAgentPlacement(ctx, agent.ID, "runner-1", "cont-a"); err != nil {
+		t.Fatalf("RecordAgentPlacement: %v", err)
+	}
+
+	runnerID, containerName, err := s.PlacementForAgent(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("PlacementForAgent: %v", err)
+	}
+	if runnerID != "runner-1" || containerName != "cont-a" {
+		t.Fatalf("PlacementForAgent = (%q, %q), want (runner-1, cont-a)", runnerID, containerName)
+	}
+}
+
+// TestPlacementForAgentUnknownIsNotFound pins the fail-closed path: both an
+// unknown agent and a known-but-unplaced agent resolve to ErrNotFound. Despawn
+// treats the two alike — there is nothing to tear down either way — so the same
+// sentinel must cover both rather than leaking a distinction the caller ignores.
+func TestPlacementForAgentUnknownIsNotFound(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+
+	_, _, err := s.PlacementForAgent(ctx, AccountID("ghost"))
+	sentinelIs(t, err, ErrNotFound, "unknown agent placement lookup")
+
+	owner := mustUser(t, s, "owner")
+	unplaced := mustAgent(t, s, owner.ID, "unplaced")
+	_, _, err = s.PlacementForAgent(ctx, unplaced.ID)
+	sentinelIs(t, err, ErrNotFound, "known-but-unplaced agent placement lookup")
+}

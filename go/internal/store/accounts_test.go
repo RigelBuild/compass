@@ -327,3 +327,89 @@ func accountIDSet(accts []Account) map[AccountID]bool {
 	}
 	return set
 }
+
+// TestAgentOwnerRoundTrips pins the projection the despawn authority check reads:
+// AgentOwner returns the user that owns the agent, which is the identity despawn
+// compares the caller against. A bug reading the wrong column would hand back an
+// id that is not the owner and either block the real owner or admit an impostor.
+func TestAgentOwnerRoundTrips(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "bot")
+
+	got, err := s.AgentOwner(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("AgentOwner: %v", err)
+	}
+	if got != owner.ID {
+		t.Fatalf("AgentOwner = %q, want owner %q", got, owner.ID)
+	}
+}
+
+// TestAgentOwnerUnknownIsNotFound pins the fail-closed path for an id that names
+// no account: the despawn authority check must get ErrNotFound (nothing to
+// authorize against), never an empty owner it might treat as a match.
+func TestAgentOwnerUnknownIsNotFound(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.AgentOwner(t.Context(), AccountID("ghost"))
+	sentinelIs(t, err, ErrNotFound, "unknown agent owner lookup")
+}
+
+// TestAgentOwnerUserAccountIsNotFound pins the no-existence-probe semantics: a
+// plain user account has no agent_accounts row, so resolving its owner misses
+// and returns ErrNotFound — a user id is indistinguishable from an unknown one.
+// This is what lets the despawn path merge not-found and not-an-agent without a
+// separate probe that would leak which ids exist.
+func TestAgentOwnerUserAccountIsNotFound(t *testing.T) {
+	s := newTestStore(t)
+	user := mustUser(t, s, "human")
+	_, err := s.AgentOwner(t.Context(), user.ID)
+	sentinelIs(t, err, ErrNotFound, "agent owner lookup for a non-agent account")
+}
+
+// TestAgentByHandleRoundTrips pins the owner-checkable handle lookup the crash-
+// recovery resume path needs: it returns the full agent Account — including the
+// owner the caller then checks against — resolved from the handle. A bug that
+// dropped the Agent subtype or the owner would break the resume path's ability
+// to owner-check the recovered agent.
+func TestAgentByHandleRoundTrips(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "bot")
+
+	got, err := s.AgentByHandle(ctx, "bot")
+	if err != nil {
+		t.Fatalf("AgentByHandle: %v", err)
+	}
+	if !got.IsAgent() {
+		t.Fatalf("AgentByHandle returned a non-agent: %+v", got)
+	}
+	if got.ID != agent.ID {
+		t.Fatalf("AgentByHandle id = %q, want %q", got.ID, agent.ID)
+	}
+	if got.Agent.OwnerUserID != owner.ID {
+		t.Fatalf("AgentByHandle owner = %q, want %q", got.Agent.OwnerUserID, owner.ID)
+	}
+}
+
+// TestAgentByHandleUnknownIsNotFound pins the fail-closed path for a handle that
+// names no account: ErrNotFound, so the resume path resolves nothing to elevate.
+func TestAgentByHandleUnknownIsNotFound(t *testing.T) {
+	s := newTestStore(t)
+	_, err := s.AgentByHandle(t.Context(), "nobody")
+	sentinelIs(t, err, ErrNotFound, "unknown agent handle lookup")
+}
+
+// TestAgentByHandleUserHandleIsNotFound pins that a user handle never resolves
+// through the agent lookup: a plain user account with that handle is ErrNotFound,
+// indistinguishable from unknown. This is the never-elevates guarantee — the
+// resume path must not turn a user handle into an owner-checkable agent, so a
+// user handle fails closed exactly as an unknown one does.
+func TestAgentByHandleUserHandleIsNotFound(t *testing.T) {
+	s := newTestStore(t)
+	user := mustUser(t, s, "human")
+	_, err := s.AgentByHandle(t.Context(), user.Handle)
+	sentinelIs(t, err, ErrNotFound, "agent handle lookup for a user handle")
+}
