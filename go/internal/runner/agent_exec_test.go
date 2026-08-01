@@ -487,10 +487,19 @@ func TestSelfExitReleasesTheDrainCtx(t *testing.T) {
 		t.Fatalf("StartAgent = %v", err)
 	}
 
-	// The agent self-exits: both pipes reach EOF, no Stop is ever called.
+	// The agent self-exits one pipe at a time. The reaper waits on BOTH drains
+	// (drains.Wait), so closing only stderr must NOT release the node yet —
+	// asserting drainsReleased stays open across a grace pins the wait-for-both
+	// semantics, which a wait-for-either regression would break. Closing stdout
+	// too then reaches EOF on both drains and the reaper releases.
 	_ = engine.stderrW.Close()
-	engine.closeStdout()
+	select {
+	case <-stream.drainsReleased:
+		t.Fatal("drain ctx released after only one pipe closed: the reaper released early instead of waiting for both drains")
+	case <-time.After(100 * time.Millisecond):
+	}
 
+	engine.closeStdout()
 	select {
 	case <-stream.drainsReleased:
 	case <-timeAfter():
