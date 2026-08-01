@@ -104,6 +104,14 @@ var errCallerNotAgent = errors.New("resolved caller is not an agent account")
 // re-provisioned and started against the existing account rather than creating a
 // second. A handle owned by a DIFFERENT user (or a non-agent account) is
 // CodeAlreadyExists and never resumes/steals it.
+//
+// Concurrent-spawn window. Two truly-concurrent same-handle+same-owner spawns
+// bearing DISTINCT client_request_ids can both reach provisionAndStart before
+// either records placement. The window is bounded to at most a redundant session
+// row: NO duplicate container (the container name is derived from the accountID,
+// so both target the same idempotent name) and NO authz breach (both spawns
+// carry the same store-resolved owner). Serializing this further is a design
+// decision tied to this PR's parked Open Question.
 func (l *lifecycleService) SpawnAsAccount(
 	ctx context.Context,
 	caller store.AccountID,
@@ -163,22 +171,33 @@ func (l *lifecycleService) DespawnAsAccount(
 		return nil, connect.NewError(connect.CodeInvalidArgument, errCannotDespawnSelf)
 	}
 
-	// Owner check, fail-closed and indistinguishable. An unknown or non-agent
-	// target is ErrNotFound from AgentOwner; a foreign-owner target collapses to
-	// the identical CodeNotFound so neither can be told apart from the other.
-	targetOwner, err := l.store.AgentOwner(ctx, target)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errPeerNotFound)
-		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving target owner: %w", err))
-	}
+	// Owner check, fail-closed and indistinguishable — and caller-FIRST to close
+	// a latency side-channel. Resolving the caller before the target means both
+	// the unknown-target and foreign-owner paths run exactly two AgentOwner
+	// queries (the caller always resolves — the hub only delegates for a resolved
+	// agent caller — then the target either hits or misses), so the two outcomes
+	// differ only by an O(1) string compare, never by round-trip count. Were the
+	// target resolved first, an unknown target would return after one query while
+	// a foreign-but-existing one ran two, and the latency itself would distinguish
+	// "foreign peer exists" from "no such id" — the exact existence-probe the
+	// indistinguishable merge exists to prevent. This mirrors the constant-shape
+	// bar of RequireAgentSessionSubscriber (agent_sessions.go:58), which folds
+	// unknown and forbidden into one error in one round-trip for the same reason.
+	// Resolving the caller first also correctly authenticates the caller
+	// (fail-closed errCallerNotAgent) before it probes the target at all.
 	callerOwner, err := l.store.AgentOwner(ctx, caller)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeInternal, errCallerNotAgent)
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller owner: %w", err))
+	}
+	targetOwner, err := l.store.AgentOwner(ctx, target)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound, errPeerNotFound)
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving target owner: %w", err))
 	}
 	if targetOwner != callerOwner {
 		// A peer the caller's owner does not own: indistinguishable from unknown.

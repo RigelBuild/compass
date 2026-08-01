@@ -23,6 +23,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -317,6 +318,9 @@ func TestDespawnDifferentOwnerIsIndistinguishableNotFound(t *testing.T) {
 	if fc, uc := connect.CodeOf(foreignErr), connect.CodeOf(unknownErr); fc != uc || fc != connect.CodeNotFound {
 		t.Fatalf("foreign code = %v, unknown code = %v, want both CodeNotFound (indistinguishable)", fc, uc)
 	}
+	if fm, um := foreignErr.Error(), unknownErr.Error(); fm != um {
+		t.Fatalf("foreign message = %q, unknown message = %q, want identical (indistinguishable even by text)", fm, um)
+	}
 }
 
 // TestDespawnSelfIsInvalidArgument pins the self-despawn refusal through the real
@@ -470,5 +474,72 @@ func TestRemoveAgentWorkspaceWithoutRunnerHubIsUnavailable(t *testing.T) {
 	}
 	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
 		t.Fatalf("RemoveAgentWorkspace code = %v, want CodeUnavailable", got)
+	}
+}
+
+// TestDespawnCallerNotAnAgentIsInternal pins the caller-first fail-closed check:
+// after the caller is resolved BEFORE the target, a caller that is NOT an agent
+// account (a plain user) deterministically hits errCallerNotAgent -> CodeInternal
+// regardless of the target — the wiring-invariant violation the hub should never
+// delegate.
+//
+// Mutation: resolving the target before the caller (the old ordering) would let a
+// non-agent caller against an unknown target return CodeNotFound instead, and also
+// reintroduce the latency side-channel — reddening the CodeInternal assertion.
+func TestDespawnCallerNotAnAgentIsInternal(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx := context.Background()
+
+	// A plain USER account — NOT an agent — used as the caller.
+	user, err := f.store.CreateUser(ctx, store.NewUser{Handle: "not-an-agent", DisplayName: "Not An Agent"})
+	if err != nil {
+		t.Fatalf("CreateUser(not-an-agent) = %v", err)
+	}
+
+	// Target differs from the caller so the self-despawn guard does not fire first.
+	_, err = f.lc.DespawnAsAccount(ctx, user.ID, &compassv1internal.DespawnPeerRequest{
+		AgentAccountId: "acct-some-other-id",
+	})
+	if err == nil {
+		t.Fatal("despawn by a non-agent caller = success, want CodeInternal (errCallerNotAgent)")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("non-agent-caller despawn code = %v, want CodeInternal", got)
+	}
+	if !errors.Is(err, errCallerNotAgent) {
+		t.Fatalf("non-agent-caller despawn err = %v, want wrapping errCallerNotAgent", err)
+	}
+}
+
+// TestSpawnHandleCollidesWithUserAccountIsAlreadyExists pins that a spawn Handle
+// colliding with a NON-agent (user) account collapses to CodeAlreadyExists —
+// NOT a resume, and NOT a leak that the handle belongs to a user. CreateAgent
+// conflicts on the taken handle, AgentByHandle fails closed to ErrNotFound for a
+// non-agent handle, and resumeOrReject maps that to errHandleTaken — the same
+// answer a human gets for any taken handle.
+//
+// Mutation: revealing the account kind (e.g. a distinct code for a user-held
+// handle) or resuming against a non-agent account reddens this.
+func TestSpawnHandleCollidesWithUserAccountIsAlreadyExists(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx := context.Background()
+
+	// A plain USER holds the handle the spawn will request.
+	if _, err := f.store.CreateUser(ctx, store.NewUser{Handle: "taken-handle", DisplayName: "Human"}); err != nil {
+		t.Fatalf("CreateUser(taken-handle) = %v", err)
+	}
+
+	_, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+		Handle:          "taken-handle",
+		ClientRequestId: "spawn-collides-user",
+	})
+	if err == nil {
+		t.Fatal("spawn onto a user-held handle = success, want CodeAlreadyExists (never resume/steal, never leak account kind)")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
+		t.Fatalf("user-handle-collision spawn code = %v, want CodeAlreadyExists", got)
+	}
+	if !errors.Is(err, errHandleTaken) {
+		t.Fatalf("user-handle-collision spawn err = %v, want wrapping errHandleTaken", err)
 	}
 }
