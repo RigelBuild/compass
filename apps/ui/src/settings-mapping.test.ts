@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mergeFromTracker } from "./components/SettingsView";
-import type { WorkstreamState } from "./stub-data";
+import type { WorkingIssueState } from "./stub-data";
 import { LINEAR_STATUS_MAPPING } from "./tracker";
 
 // `mergeFromTracker` (SettingsView) is the pure reverse-map merge Save runs
@@ -60,7 +60,7 @@ describe("mergeFromTracker (reverse-map preservation)", () => {
 	test("adds new statuses at the first lifecycle-order state targeting them", () => {
 		const merged = mergeFromTracker(
 			LINEAR_STATUS_MAPPING.toTracker,
-			{} as Record<string, WorkstreamState>,
+			{} as Record<string, WorkingIssueState>,
 		);
 
 		// Single-target statuses are added to their sole state.

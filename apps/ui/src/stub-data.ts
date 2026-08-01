@@ -16,25 +16,34 @@
 // ── Enums ──────────────────────────────────────────────────────────────────
 
 /**
- * Where a workstream sits in its lifecycle (design D1):
- * Backlog → Todo → Queued → Blocked ⇄ In Progress → In Review → Done. The board
- * shows the active subset (constants `BOARD_LANES`); Backlog + Todo are the
- * pre-active tier surfaced in the Backlog view.
+ * Where an issue sits in its Compass lifecycle (DL-033 + DL-071):
+ * Backlog → Todo → Queued → Blocked ⇄ In Progress → In Review → Done, plus a
+ * terminal `archived` sink past Done. The board shows the active subset
+ * (constants `BOARD_LANES`); Backlog + Todo are the pre-active tier surfaced in
+ * the Backlog view; `archived` is off the board, listed only in the Done view's
+ * Archived section. Server-authoritative (DL-070): computed and streamed by the
+ * server projection, mutated only through the write-path RPC.
  */
-export type WorkstreamState =
+export type IssueState =
 	| "backlog"
 	| "todo"
 	| "queued"
 	| "blocked"
 	| "in_progress"
 	| "in_review"
-	| "done";
+	| "done"
+	| "archived";
+
+/** The seven WORKING states — the lifecycle domain the tracker projection and
+ *  the Settings mapping editor are total over. `archived` is a terminal sink
+ *  that carries no tracker status (DL-071), so it is excluded here. */
+export type WorkingIssueState = Exclude<IssueState, "archived">;
 
 /** What the running agent process is doing — the dot beside the agent icon
  *  (design D9). A UI projection over the daemon's coarse `AgentSessionState`
  *  (#443) plus event-stream refinements; `waiting`/`done`/`paused` are UI-only
- *  (see agent-state.ts). This is the *process* axis, distinct from a
- *  workstream's `blocked` (the *task* axis). */
+ *  (see agent-state.ts). This is the *process* axis, distinct from an issue's
+ *  `blocked` (the *task* axis). */
 export type AgentState =
 	| "working"
 	| "idle"
@@ -48,29 +57,137 @@ export type AgentState =
 /** The kind of agent — the moat agents plus leveraged worker agents. */
 export type AgentRole = "supervisor" | "warden" | "worker";
 
-/** Priority of a workstream, drives the card accent. */
+/** Priority of an issue, drives the card accent. */
 export type Priority = "urgent" | "high" | "medium" | "low";
 
-/** An issue tracker Compass projects workstream state onto (D2). Linear first;
+/** An issue tracker Compass projects issue state onto (D2). Linear first;
  *  the shape is tracker-agnostic for Jira/GitHub later. */
 export type TrackerKind = "linear" | "jira" | "github";
 
 // ── Board ──────────────────────────────────────────────────────────────────
 
-/** A pull request attached to a workstream, for the right-sidebar PR pane. */
-export interface PullRequest {
-	number: number;
-	title: string;
-	state: "draft" | "open" | "merged" | "closed";
-	/** CI check-runs, newest per workflow. */
-	checks: { name: string; status: "success" | "failure" | "pending" }[];
-	/** Review-thread resolution, across all bots + humans. */
-	threads: { resolved: number; total: number };
-	/** Bot reviews, for the PR pane summary. */
-	reviews: { bot: string; verdict: "approved" | "changes" | "commented" }[];
+// The canonical Compass board types — the forge artifact's fields PLUS the
+// Compass agent attribution PLUS the Compass machinery, translated from raw
+// forge data at server ingestion (DL-069). The raw forge shape is never a wire
+// type. Fixture-typed here until `@compass/client` generates them, then the
+// import flips to the generated type (the seam). camelCase field names mirror
+// the protobuf-es codegen convention; the proto is snake_case.
+
+/** Which forge (and host, for self-hosted instances) an artifact lives on.
+ *  Carried on both Issue and PullRequest so multi-forge artifacts never collide
+ *  on `repo` alone (DL-071). A tracker-as-forge (Linear) uses its constant
+ *  service host. */
+export type ForgeProvider = "github" | "gitlab" | "forgejo" | "linear";
+export interface ForgeRef {
+	provider: ForgeProvider;
+	/** "github.com", a self-hosted host like "git.acme.internal", or the
+	 *  constant service host for a tracker-as-forge ("linear.app"). */
+	host: string;
 }
 
-/** A commit on a workstream's branch, for the VCS pane's commit history. */
+/** The agent attribution parsed from the owner header at ingestion (DL-050,
+ *  #995 Decision 2). UNTRUSTED display metadata — never reaches an authz,
+ *  routing, or ownership decision, and is never derived into `assignee`. It
+ *  carries handles plus a server-set trust bit, no account/session ids. */
+export interface AgentAttribution {
+	/** The agent handle CLAIMED by the header; not proof. */
+	agentHandle: string;
+	/** The owning user's handle CLAIMED by the header. */
+	ownerHandle: string;
+	/** Server-set at ingestion from the forge-login cross-check (#995 OQ-1):
+	 *  true only when the artifact's forge author login equals Compass's own
+	 *  forge identity. The UI hedges the claim unless verified (DL-068). */
+	verified: boolean;
+}
+
+/** A PR diffstat (files/additions/deletions), carried on PullRequest — a diff
+ *  is a PR fact, not an issue fact (DL-071 correction #4). */
+export interface ChangedStats {
+	files: number;
+	additions: number;
+	deletions: number;
+}
+
+/** One CI/status check on a PR head — the 6-valued forge `state`, mapped to a
+ *  3-valued pip class at the render sites (the shared 6→3 map). */
+export interface Check {
+	name: string;
+	state:
+		| "queued"
+		| "in_progress"
+		| "success"
+		| "failure"
+		| "neutral"
+		| "cancelled";
+	url: string;
+	required: boolean;
+}
+
+/** The rolled-up CI + status-check state on a PR head, translated at ingestion.
+ *  The pips render `checks` (one per check), NOT the roll-up `state`. */
+export interface ChecksSummary {
+	headSha: string;
+	/** The roll-up: "pending" | "success" | "failure". */
+	state: "pending" | "success" | "failure";
+	checks: Check[];
+}
+
+/** One comment within a review thread; `isBot` flags a bot author. */
+export interface Comment {
+	author: string;
+	isBot: boolean;
+	body: string;
+}
+
+/** A review thread with its comments and resolution — the "N/M threads
+ *  resolved" derivation counts these. */
+export interface ReviewThread {
+	/** The file the thread anchors to; empty for a PR-level thread. */
+	path: string;
+	resolved: boolean;
+	comments: Comment[];
+}
+
+/** A submitted review (human or bot). `reviews` is submission-ordered so a
+ *  reviewer's CURRENT verdict is its last entry; the bot chips take the
+ *  latest-per-author. The canonical `verdict` is the forge's vocabulary; the UI
+ *  maps "changes_requested"→"changes" at the chip site. */
+export interface Review {
+	/** The reviewer's forge account, or a Compass agent handle. */
+	author: string;
+	isBot: boolean;
+	verdict: "approved" | "changes_requested" | "commented";
+	/** The review's summary comment (may be empty). */
+	body: string;
+}
+
+/** A Compass pull request: the forge PR's fields plus the Compass agent
+ *  attribution plus this PR's diffstat plus the full review state. */
+export interface PullRequest {
+	forge: ForgeRef;
+	repo: string;
+	number: number;
+	title: string;
+	/** Forge truth: "open" | "closed" | "merged". The badge derives from this
+	 *  plus `draft`. */
+	forgeState: "open" | "closed" | "merged";
+	url: string;
+	headRef: string;
+	baseRef: string;
+	/** Compass agent attribution; unset for a non-Compass author. */
+	agent?: AgentAttribution;
+	/** The native forge account that opened the PR; always set. */
+	forgeAccount: string;
+	draft: boolean;
+	/** THIS PR's diffstat; unset for no diff. */
+	changed?: ChangedStats;
+	/** Rolled-up CI state; unset for a PR with no CI. */
+	checks?: ChecksSummary;
+	reviews: Review[];
+	threads: ReviewThread[];
+}
+
+/** A commit on an issue's branch, for the VCS pane's commit history. */
 export interface Commit {
 	/** Short SHA. */
 	sha: string;
@@ -80,39 +197,58 @@ export interface Commit {
 	at: string;
 }
 
-/** A single unit of work on the Bridge board: an issue promoted to a workstream. */
-export interface Workstream {
+/** The board unit: a Compass Issue — the forge issue's fields PLUS the Compass
+ *  agent attribution PLUS the Compass machinery (DL-069). */
+export interface Issue {
+	/** Compass-local stable id — the projection/mutation join key and the store
+	 *  key; never a display fallback. */
 	id: string;
-	/** The source issue reference (tracker id). */
-	issue: string;
+
+	// ── Forge fields (translated from the raw forge payload at ingestion) ──
+	/** Which forge + host — multi-forge disambiguation. */
+	forge: ForgeRef;
+	/** "<owner>/<name>" on GitHub, project key on Linear. */
+	repo: string;
+	/** The forge issue number. */
+	number: number;
 	title: string;
-	state: WorkstreamState;
+	/** Owner header STRIPPED at ingestion (DL-050). */
+	body: string;
+	/** Forge truth: "open" | "closed" — NOT the Compass lifecycle. */
+	forgeState: "open" | "closed";
+	url: string;
+	/** Compass agent attribution; unset for a non-Compass (human) author. */
+	agent?: AgentAttribution;
+	/** The native forge account that authored the artifact; always set. */
+	forgeAccount: string;
+	labels: string[];
+
+	// ── Compass machinery (Compass-owned; none of this is on the forge) ──
+	/** The canonical lifecycle (DL-033 + `archived`), server-authoritative. */
+	state: IssueState;
 	priority: Priority;
 	/** The agent id currently on it, or null when unassigned. */
 	assignee: string | null;
 	/** A one-line summary of the latest activity, for the card. */
 	summary: string;
-	/** The feature branch, for the VCS pane + branch dropdown. */
+	/** The working head branch name (may exist before any PR). */
 	branch: string;
-	/** Files-touched / diff size, for a quick sense of scope. */
-	changed: { files: number; additions: number; deletions: number };
-	/** The attached PR, or null before one is opened. */
-	pr: PullRequest | null;
-	/** Recent commits on `branch`, newest first, for the VCS pane's commit
-	 *  history (design D5's "history = commits menu at the bottom of VCS"). */
-	commits?: Commit[];
+	/** Every PR opened for this issue, discovery order (newest last); empty
+	 *  before the first. The card/Done/PR pane render the primary PR. */
+	prs: PullRequest[];
 	/** The linked tracker issue (D2), if any — the projection target. */
 	tracker?: TrackerRef;
-	/** Set by the archive action (T5) when a Done workstream is cleared; a
-	 *  marker, not a delete — the Done view still lists it. */
-	archivedAt?: string;
+	/** Fixture-side commit-history side-channel for the VCS pane, carved out to
+	 *  a future repo/worktree surface (DL-071 §Global constraints); NOT a
+	 *  canonical field. */
+	commits?: Commit[];
 }
 
-/** The tracker issue a workstream is linked to — the projection target (D2).
+/** The tracker issue an issue is linked to — the projection target (D2).
  *  Compass state is canonical; this carries the tracker's *native* status. */
 export interface TrackerRef {
 	kind: TrackerKind;
-	/** The tracker's native issue id, e.g. "SEA-1042" (mirrors `issue`). */
+	/** The tracker's native issue id, e.g. "SEA-1042". */
 	id: string;
 	/** The tracker's native status name in the user's org. */
 	status: string;
@@ -120,14 +256,16 @@ export interface TrackerRef {
 }
 
 /** A user-editable projection between Compass state and a tracker's native
- *  statuses (D2). `toTracker` is total over Compass states; `fromTracker` is
- *  many-to-one (e.g. Linear's Cancelled + Duplicate both read back as Done). */
+ *  statuses (D2). `toTracker` is total over the seven WORKING states;
+ *  `fromTracker` is many-to-one (e.g. Linear's Cancelled + Duplicate both read
+ *  back as Done). `archived` carries no tracker status (DL-071), so the domain
+ *  is `WorkingIssueState`. */
 export interface TrackerStatusMapping {
 	kind: TrackerKind;
-	/** Compass state → the tracker's status name in this org. */
-	toTracker: Record<WorkstreamState, string>;
-	/** Tracker status name → Compass state (many-to-one). */
-	fromTracker: Record<string, WorkstreamState>;
+	/** Compass working state → the tracker's status name in this org. */
+	toTracker: Record<WorkingIssueState, string>;
+	/** Tracker status name → Compass working state (many-to-one). */
+	fromTracker: Record<string, WorkingIssueState>;
 }
 
 /** The user's tracker wiring (design T11): which tracker, the user's identity
@@ -487,33 +625,103 @@ export const STUB_AGENTS: Agent[] = [
 	},
 ];
 
-export const STUB_WORKSTREAMS: Workstream[] = [
+// ── Canonical-shape fixture helpers ──────────────────────────────────────────
+// Every board item is forge-backed (DL-071 §Global constraints). The agents'
+// work lives in the sealed monorepo on GitHub; the attribution owner is the
+// human "matt". These builders keep the seeded rows compact and honest.
+
+const GITHUB: ForgeRef = { provider: "github", host: "github.com" };
+const SEALED_REPO = "sealedsecurity/sealed";
+
+/** Agent attribution parsed from the owner header (DL-050) — a claim, hedged
+ *  in the UI unless `verified`. */
+function attrib(handle: string, verified = true): AgentAttribution {
+	return { agentHandle: handle, ownerHandle: "matt", verified };
+}
+
+/** A single 6-valued CI check on a PR head. */
+function chk(name: string, state: Check["state"]): Check {
+	return { name, state, url: "", required: false };
+}
+
+/** Roll a per-check list up into a ChecksSummary — failure dominates, then
+ *  pending, else success — mirroring the server's ingestion roll-up. */
+function checksOf(headSha: string, runs: Check[]): ChecksSummary {
+	const state: ChecksSummary["state"] = runs.some(
+		(c) => c.state === "failure" || c.state === "cancelled",
+	)
+		? "failure"
+		: runs.some(
+					(c) =>
+						c.state === "queued" ||
+						c.state === "in_progress" ||
+						c.state === "neutral",
+				)
+			? "pending"
+			: "success";
+	return { headSha, state, checks: runs };
+}
+
+/** A bot review with the canonical (forge) verdict vocabulary. */
+function botReview(author: string, verdict: Review["verdict"]): Review {
+	return { author, isBot: true, verdict, body: "" };
+}
+
+/** `total` review threads, `resolved` of them resolved — the "N/M threads
+ *  resolved" derivation counts these entries. */
+function threadsOf(total: number, resolved: number): ReviewThread[] {
+	return Array.from({ length: total }, (_, i) => ({
+		path: "",
+		resolved: i < resolved,
+		comments: [],
+	}));
+}
+
+export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-1022",
-		issue: "SEA-1022",
+		forge: GITHUB,
+		repo: SEALED_REPO,
+		number: 1022,
 		title: "Tauri desktop shell — window + daemon spawn/attach",
+		body: "",
+		forgeState: "open",
+		url: "https://github.com/sealedsecurity/sealed/issues/1022",
+		agent: attrib("cook"),
+		forgeAccount: "compass-bot",
+		labels: [],
 		state: "in_review",
 		priority: "high",
 		assignee: "acc-cook",
 		summary: "Bridge transport + daemon lifecycle landed; in bot review.",
 		branch: "cook-1022-tauri-shell",
-		changed: { files: 24, additions: 1180, deletions: 96 },
-		pr: {
-			number: 453,
-			title: "feat(compass): explorable Bridge dev UI on stub data",
-			state: "open",
-			checks: [
-				{ name: "CI (pr)", status: "success" },
-				{ name: "compass-ui:ci", status: "success" },
-				{ name: "root:lint", status: "success" },
-			],
-			threads: { resolved: 12, total: 12 },
-			reviews: [
-				{ bot: "greptile", verdict: "approved" },
-				{ bot: "cubic", verdict: "approved" },
-				{ bot: "CodeRabbit", verdict: "commented" },
-			],
-		},
+		prs: [
+			{
+				forge: GITHUB,
+				repo: SEALED_REPO,
+				number: 453,
+				title: "feat(compass): explorable Bridge dev UI on stub data",
+				forgeState: "open",
+				url: "https://github.com/sealedsecurity/sealed/pull/453",
+				headRef: "cook-1022-tauri-shell",
+				baseRef: "main",
+				agent: attrib("cook"),
+				forgeAccount: "compass-bot",
+				draft: false,
+				changed: { files: 24, additions: 1180, deletions: 96 },
+				checks: checksOf("91722da2", [
+					chk("CI (pr)", "success"),
+					chk("compass-ui:ci", "success"),
+					chk("root:lint", "success"),
+				]),
+				reviews: [
+					botReview("greptile", "approved"),
+					botReview("cubic", "approved"),
+					botReview("CodeRabbit", "commented"),
+				],
+				threads: threadsOf(12, 12),
+			},
+		],
 		tracker: {
 			kind: "linear",
 			id: "SEA-1022",
@@ -543,15 +751,22 @@ export const STUB_WORKSTREAMS: Workstream[] = [
 	},
 	{
 		id: "ws-965",
-		issue: "SEA-965",
+		forge: GITHUB,
+		repo: SEALED_REPO,
+		number: 965,
 		title: "compass-client — gRPC-Web transport polish + reconnect",
+		body: "",
+		forgeState: "open",
+		url: "https://github.com/sealedsecurity/sealed/issues/965",
+		agent: attrib("cook"),
+		forgeAccount: "compass-bot",
+		labels: [],
 		state: "in_progress",
 		priority: "medium",
 		assignee: "acc-cook",
 		summary: "Resubscribe cursor + backoff; wiring to the dev endpoint.",
 		branch: "cook-965-client-transport",
-		changed: { files: 6, additions: 214, deletions: 40 },
-		pr: null,
+		prs: [],
 		tracker: {
 			kind: "linear",
 			id: "SEA-965",
@@ -575,29 +790,47 @@ export const STUB_WORKSTREAMS: Workstream[] = [
 	},
 	{
 		id: "ws-1023",
-		issue: "SEA-1023",
+		forge: GITHUB,
+		repo: SEALED_REPO,
+		number: 1023,
 		title: "Agent process management + ACP session over compass.v1",
+		body: "",
+		forgeState: "open",
+		url: "https://github.com/sealedsecurity/sealed/issues/1023",
+		agent: attrib("livingstone"),
+		forgeAccount: "compass-bot",
+		labels: [],
 		state: "in_progress",
 		priority: "high",
 		assignee: "acc-livingstone",
 		summary: "Fixing 5 P1s from the compass-owner seam review on #443.",
 		branch: "livingstone-1023-acp-session",
-		changed: { files: 18, additions: 921, deletions: 63 },
-		pr: {
-			number: 443,
-			title: "feat(compass): agent process management + ACP over compass.v1",
-			state: "open",
-			checks: [
-				{ name: "compass-daemon:ci", status: "success" },
-				{ name: "compass-proto:ci", status: "success" },
-				{ name: "CI (pr)", status: "pending" },
-			],
-			threads: { resolved: 1, total: 6 },
-			reviews: [
-				{ bot: "greptile", verdict: "changes" },
-				{ bot: "CodeRabbit", verdict: "commented" },
-			],
-		},
+		prs: [
+			{
+				forge: GITHUB,
+				repo: SEALED_REPO,
+				number: 443,
+				title: "feat(compass): agent process management + ACP over compass.v1",
+				forgeState: "open",
+				url: "https://github.com/sealedsecurity/sealed/pull/443",
+				headRef: "livingstone-1023-acp-session",
+				baseRef: "main",
+				agent: attrib("livingstone"),
+				forgeAccount: "compass-bot",
+				draft: false,
+				changed: { files: 18, additions: 921, deletions: 63 },
+				checks: checksOf("5d8b1e73", [
+					chk("compass-daemon:ci", "success"),
+					chk("compass-proto:ci", "success"),
+					chk("CI (pr)", "in_progress"),
+				]),
+				reviews: [
+					botReview("greptile", "changes_requested"),
+					botReview("CodeRabbit", "commented"),
+				],
+				threads: threadsOf(6, 1),
+			},
+		],
 		tracker: {
 			kind: "linear",
 			id: "SEA-1023",
@@ -621,22 +854,42 @@ export const STUB_WORKSTREAMS: Workstream[] = [
 	},
 	{
 		id: "ws-864",
-		issue: "SEA-864",
+		forge: GITHUB,
+		repo: SEALED_REPO,
+		number: 864,
 		title: "Cloudflare Pulumi — restore the investors Access gate",
+		body: "",
+		forgeState: "open",
+		url: "https://github.com/sealedsecurity/sealed/issues/864",
+		agent: attrib("cousteau", false),
+		forgeAccount: "cousteau-dev",
+		labels: [],
 		state: "blocked",
 		priority: "urgent",
 		assignee: "acc-cousteau",
 		summary: "Access app deleted out-of-band; recreate + `up` pending Matt.",
 		branch: "cousteau-864-cf-investors-gate",
-		changed: { files: 3, additions: 142, deletions: 18 },
-		pr: {
-			number: 444,
-			title: "fix(pulumi): recreate investors Access gate",
-			state: "draft",
-			checks: [{ name: "pulumi-preview-cloudflare", status: "failure" }],
-			threads: { resolved: 0, total: 2 },
-			reviews: [],
-		},
+		prs: [
+			{
+				forge: GITHUB,
+				repo: SEALED_REPO,
+				number: 444,
+				title: "fix(pulumi): recreate investors Access gate",
+				forgeState: "open",
+				url: "https://github.com/sealedsecurity/sealed/pull/444",
+				headRef: "cousteau-864-cf-investors-gate",
+				baseRef: "main",
+				agent: attrib("cousteau", false),
+				forgeAccount: "cousteau-dev",
+				draft: true,
+				changed: { files: 3, additions: 142, deletions: 18 },
+				checks: checksOf("d1a4f207", [
+					chk("pulumi-preview-cloudflare", "failure"),
+				]),
+				reviews: [],
+				threads: threadsOf(2, 0),
+			},
+		],
 		tracker: {
 			kind: "linear",
 			id: "SEA-864",
@@ -646,29 +899,47 @@ export const STUB_WORKSTREAMS: Workstream[] = [
 	},
 	{
 		id: "ws-1085",
-		issue: "SEA-1085",
+		forge: GITHUB,
+		repo: SEALED_REPO,
+		number: 1085,
 		title: "Per-boot instance epoch forces resync for stale cursors",
+		body: "",
+		forgeState: "open",
+		url: "https://github.com/sealedsecurity/sealed/issues/1085",
+		agent: attrib("ross"),
+		forgeAccount: "compass-bot",
+		labels: [],
 		state: "in_review",
 		priority: "medium",
 		assignee: "acc-ross",
 		summary: "Lockfile refreshed after restack; CI re-running.",
 		branch: "ross-1085-instance-epoch",
-		changed: { files: 9, additions: 410, deletions: 32 },
-		pr: {
-			number: 332,
-			title: "feat(compass): per-boot instance epoch",
-			state: "open",
-			checks: [
-				{ name: "compass-daemon:ci", status: "success" },
-				{ name: "CI (pr)", status: "success" },
-			],
-			threads: { resolved: 3, total: 3 },
-			reviews: [
-				{ bot: "greptile", verdict: "approved" },
-				{ bot: "cubic", verdict: "approved" },
-				{ bot: "CodeRabbit", verdict: "approved" },
-			],
-		},
+		prs: [
+			{
+				forge: GITHUB,
+				repo: SEALED_REPO,
+				number: 332,
+				title: "feat(compass): per-boot instance epoch",
+				forgeState: "open",
+				url: "https://github.com/sealedsecurity/sealed/pull/332",
+				headRef: "ross-1085-instance-epoch",
+				baseRef: "main",
+				agent: attrib("ross"),
+				forgeAccount: "compass-bot",
+				draft: false,
+				changed: { files: 9, additions: 410, deletions: 32 },
+				checks: checksOf("bb31c700", [
+					chk("compass-daemon:ci", "success"),
+					chk("CI (pr)", "success"),
+				]),
+				reviews: [
+					botReview("greptile", "approved"),
+					botReview("cubic", "approved"),
+					botReview("CodeRabbit", "approved"),
+				],
+				threads: threadsOf(3, 3),
+			},
+		],
 		tracker: {
 			kind: "linear",
 			id: "SEA-1085",
@@ -678,29 +949,47 @@ export const STUB_WORKSTREAMS: Workstream[] = [
 	},
 	{
 		id: "ws-847",
-		issue: "SEA-847",
+		forge: GITHUB,
+		repo: SEALED_REPO,
+		number: 847,
 		title: "renovate-preflight — fail the cron fast with a token diagnosis",
+		body: "",
+		forgeState: "open",
+		url: "https://github.com/sealedsecurity/sealed/issues/847",
+		agent: attrib("erikson"),
+		forgeAccount: "compass-bot",
+		labels: [],
 		state: "in_review",
 		priority: "low",
 		assignee: "acc-erikson",
 		summary: "Findings fixed; re-run pending on the saturated fleet.",
 		branch: "erikson-847-renovate-preflight",
-		changed: { files: 7, additions: 302, deletions: 11 },
-		pr: {
-			number: 400,
-			title: "feat(ci): renovate-preflight token diagnosis",
-			state: "open",
-			checks: [
-				{ name: "root:lint", status: "success" },
-				{ name: "seal:test", status: "pending" },
-				{ name: "CI (pr)", status: "pending" },
-			],
-			threads: { resolved: 5, total: 5 },
-			reviews: [
-				{ bot: "greptile", verdict: "approved" },
-				{ bot: "cubic", verdict: "approved" },
-			],
-		},
+		prs: [
+			{
+				forge: GITHUB,
+				repo: SEALED_REPO,
+				number: 400,
+				title: "feat(ci): renovate-preflight token diagnosis",
+				forgeState: "open",
+				url: "https://github.com/sealedsecurity/sealed/pull/400",
+				headRef: "erikson-847-renovate-preflight",
+				baseRef: "main",
+				agent: attrib("erikson"),
+				forgeAccount: "compass-bot",
+				draft: false,
+				changed: { files: 7, additions: 302, deletions: 11 },
+				checks: checksOf("7c02a9de", [
+					chk("root:lint", "success"),
+					chk("seal:test", "in_progress"),
+					chk("CI (pr)", "in_progress"),
+				]),
+				reviews: [
+					botReview("greptile", "approved"),
+					botReview("cubic", "approved"),
+				],
+				threads: threadsOf(5, 5),
+			},
+		],
 		tracker: {
 			kind: "linear",
 			id: "SEA-847",
@@ -710,25 +999,43 @@ export const STUB_WORKSTREAMS: Workstream[] = [
 	},
 	{
 		id: "ws-888",
-		issue: "SEA-888",
+		forge: GITHUB,
+		repo: SEALED_REPO,
+		number: 888,
 		title: "Pulumi GCP + GitHub providers — bootstrap the prod stack",
+		body: "",
+		forgeState: "open",
+		url: "https://github.com/sealedsecurity/sealed/issues/888",
+		agent: attrib("magellan"),
+		forgeAccount: "compass-bot",
+		labels: [],
 		state: "in_progress",
 		priority: "medium",
 		assignee: "acc-magellan",
 		summary: "Rebased onto clean main; one ESC provisioning gate each.",
 		branch: "magellan-888-pulumi-providers",
-		changed: { files: 12, additions: 560, deletions: 44 },
-		pr: {
-			number: 180,
-			title: "feat(pulumi): GCP + GitHub provider stacks",
-			state: "open",
-			checks: [
-				{ name: "root:lint", status: "success" },
-				{ name: "pulumi-preview-gcp", status: "failure" },
-			],
-			threads: { resolved: 4, total: 4 },
-			reviews: [{ bot: "greptile", verdict: "approved" }],
-		},
+		prs: [
+			{
+				forge: GITHUB,
+				repo: SEALED_REPO,
+				number: 180,
+				title: "feat(pulumi): GCP + GitHub provider stacks",
+				forgeState: "open",
+				url: "https://github.com/sealedsecurity/sealed/pull/180",
+				headRef: "magellan-888-pulumi-providers",
+				baseRef: "main",
+				agent: attrib("magellan"),
+				forgeAccount: "compass-bot",
+				draft: false,
+				changed: { files: 12, additions: 560, deletions: 44 },
+				checks: checksOf("2fa10b8c", [
+					chk("root:lint", "success"),
+					chk("pulumi-preview-gcp", "failure"),
+				]),
+				reviews: [botReview("greptile", "approved")],
+				threads: threadsOf(4, 4),
+			},
+		],
 		tracker: {
 			kind: "linear",
 			id: "SEA-888",
@@ -738,15 +1045,22 @@ export const STUB_WORKSTREAMS: Workstream[] = [
 	},
 	{
 		id: "ws-1128",
-		issue: "SEA-1128",
+		forge: GITHUB,
+		repo: SEALED_REPO,
+		number: 1128,
 		title: "root:lint gate — actually run biome, fail on drift",
+		body: "",
+		forgeState: "open",
+		url: "https://github.com/sealedsecurity/sealed/issues/1128",
+		agent: attrib("drake"),
+		forgeAccount: "compass-bot",
+		labels: [],
 		state: "queued",
 		priority: "high",
 		assignee: "acc-drake",
 		summary: "Design frozen; cache-key invalidation is the core fix.",
 		branch: "drake-1128-rootlint-gate",
-		changed: { files: 0, additions: 0, deletions: 0 },
-		pr: null,
+		prs: [],
 		tracker: {
 			kind: "linear",
 			id: "SEA-1128",
@@ -756,22 +1070,40 @@ export const STUB_WORKSTREAMS: Workstream[] = [
 	},
 	{
 		id: "ws-1145",
-		issue: "SEA-1145",
+		forge: GITHUB,
+		repo: SEALED_REPO,
+		number: 1145,
 		title: "seal e2e — de-flake the rpc budget asserts (virtual time)",
+		body: "",
+		forgeState: "closed",
+		url: "https://github.com/sealedsecurity/sealed/issues/1145",
+		agent: attrib("shackleton"),
+		forgeAccount: "compass-bot",
+		labels: [],
 		state: "done",
 		priority: "high",
 		assignee: "acc-shackleton",
 		summary: "Merged (d45d9160); seal:test deterministic fleet-wide.",
 		branch: "shackleton-1145-seal-deflake",
-		changed: { files: 5, additions: 88, deletions: 74 },
-		pr: {
-			number: 436,
-			title: "fix(seal): virtual-time rpc budgets",
-			state: "merged",
-			checks: [{ name: "CI (pr)", status: "success" }],
-			threads: { resolved: 2, total: 2 },
-			reviews: [{ bot: "CodeRabbit", verdict: "approved" }],
-		},
+		prs: [
+			{
+				forge: GITHUB,
+				repo: SEALED_REPO,
+				number: 436,
+				title: "fix(seal): virtual-time rpc budgets",
+				forgeState: "merged",
+				url: "https://github.com/sealedsecurity/sealed/pull/436",
+				headRef: "shackleton-1145-seal-deflake",
+				baseRef: "main",
+				agent: attrib("shackleton"),
+				forgeAccount: "compass-bot",
+				draft: false,
+				changed: { files: 5, additions: 88, deletions: 74 },
+				checks: checksOf("d45d9160", [chk("CI (pr)", "success")]),
+				reviews: [botReview("CodeRabbit", "approved")],
+				threads: threadsOf(2, 2),
+			},
+		],
 		tracker: {
 			kind: "linear",
 			id: "SEA-1145",
@@ -781,22 +1113,40 @@ export const STUB_WORKSTREAMS: Workstream[] = [
 	},
 	{
 		id: "ws-1130",
-		issue: "SEA-1130",
+		forge: GITHUB,
+		repo: SEALED_REPO,
+		number: 1130,
 		title: "Cotal connector — stop subagents joining the mesh",
+		body: "",
+		forgeState: "closed",
+		url: "https://github.com/sealedsecurity/sealed/issues/1130",
+		agent: attrib("shackleton"),
+		forgeAccount: "compass-bot",
+		labels: [],
 		state: "done",
 		priority: "medium",
 		assignee: "acc-shackleton",
 		summary: "Gates mesh-join on an interactive session; rebuilt live.",
 		branch: "shackleton-1130-cotal-connector",
-		changed: { files: 4, additions: 61, deletions: 29 },
-		pr: {
-			number: 228,
-			title: "fix(cotal): gate mesh-join on hasUI",
-			state: "merged",
-			checks: [{ name: "CI", status: "success" }],
-			threads: { resolved: 0, total: 0 },
-			reviews: [{ bot: "CodeRabbit", verdict: "approved" }],
-		},
+		prs: [
+			{
+				forge: GITHUB,
+				repo: SEALED_REPO,
+				number: 228,
+				title: "fix(cotal): gate mesh-join on hasUI",
+				forgeState: "merged",
+				url: "https://github.com/sealedsecurity/sealed/pull/228",
+				headRef: "shackleton-1130-cotal-connector",
+				baseRef: "main",
+				agent: attrib("shackleton"),
+				forgeAccount: "compass-bot",
+				draft: false,
+				changed: { files: 4, additions: 61, deletions: 29 },
+				checks: checksOf("e0b7712a", [chk("CI", "success")]),
+				reviews: [botReview("CodeRabbit", "approved")],
+				threads: threadsOf(0, 0),
+			},
+		],
 		tracker: {
 			kind: "linear",
 			id: "SEA-1130",
@@ -806,15 +1156,21 @@ export const STUB_WORKSTREAMS: Workstream[] = [
 	},
 	{
 		id: "ws-1146",
-		issue: "SEA-1146",
+		forge: GITHUB,
+		repo: SEALED_REPO,
+		number: 1146,
 		title: "Bucketer design — pooled review-token routing",
+		body: "",
+		forgeState: "open",
+		url: "https://github.com/sealedsecurity/sealed/issues/1146",
+		forgeAccount: "matt",
+		labels: [],
 		state: "backlog",
 		priority: "low",
 		assignee: null,
 		summary: "Design not yet dispatched; awaiting a free worker.",
 		branch: "—",
-		changed: { files: 0, additions: 0, deletions: 0 },
-		pr: null,
+		prs: [],
 		tracker: {
 			kind: "linear",
 			id: "SEA-1146",
@@ -826,20 +1182,29 @@ export const STUB_WORKSTREAMS: Workstream[] = [
 
 // The current user's own tracker-assigned issues, for the Backlog view (D3) —
 // the human's personal queue, shown alongside the fleet's board. Distinct from
-// STUB_WORKSTREAMS (the agents' work): these are unassigned to any agent and
-// carry the tracker's native status. Read through the TrackerSeam (tracker.ts).
-export const STUB_ASSIGNED_ISSUES: Workstream[] = [
+// STUB_ISSUES (the agents' work): these are unassigned to any agent and carry
+// the tracker's native status. Linear-origin (DL-051's issues-only forge), so
+// their forge is Linear with the project key as `repo`. Read through the
+// TrackerSeam (tracker.ts).
+const LINEAR_FORGE: ForgeRef = { provider: "linear", host: "linear.app" };
+export const STUB_ASSIGNED_ISSUES: Issue[] = [
 	{
 		id: "ws-1201",
-		issue: "SEA-1201",
+		forge: LINEAR_FORGE,
+		repo: "SEA",
+		number: 1201,
 		title: "Warden audit-log retention policy — design",
+		body: "",
+		forgeState: "open",
+		url: "https://linear.app/sealed/issue/SEA-1201",
+		forgeAccount: "matt",
+		labels: [],
 		state: "todo",
 		priority: "high",
 		assignee: null,
 		summary: "Assigned to you in Linear; not yet dispatched to an agent.",
 		branch: "—",
-		changed: { files: 0, additions: 0, deletions: 0 },
-		pr: null,
+		prs: [],
 		tracker: {
 			kind: "linear",
 			id: "SEA-1201",
@@ -849,15 +1214,21 @@ export const STUB_ASSIGNED_ISSUES: Workstream[] = [
 	},
 	{
 		id: "ws-1180",
-		issue: "SEA-1180",
+		forge: LINEAR_FORGE,
+		repo: "SEA",
+		number: 1180,
 		title: "Compass daemon — graceful shutdown on SIGTERM",
+		body: "",
+		forgeState: "open",
+		url: "https://linear.app/sealed/issue/SEA-1180",
+		forgeAccount: "matt",
+		labels: [],
 		state: "backlog",
 		priority: "medium",
 		assignee: null,
 		summary: "In your Linear backlog; needs triage before dispatch.",
 		branch: "—",
-		changed: { files: 0, additions: 0, deletions: 0 },
-		pr: null,
+		prs: [],
 		tracker: {
 			kind: "linear",
 			id: "SEA-1180",
@@ -953,7 +1324,7 @@ export const STUB_USAGE: UsageAccount[] = [
 	},
 ];
 
-/** The worktree file tree per branch, keyed by workstream id, for the file
+/** The worktree file tree per branch, keyed by Compass issue id, for the file
  *  explorer. Only a representative slice — enough to show status decoration. */
 export const STUB_FILES: Record<string, FileNode[]> = {
 	"ws-1022": [

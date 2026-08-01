@@ -1,7 +1,11 @@
 import { type Component, createMemo, createSignal, For } from "solid-js";
 import { createStore, reconcile, unwrap } from "solid-js/store";
 import { useStore } from "../context";
-import type { TrackerConfig, TrackerKind, WorkstreamState } from "../stub-data";
+import type {
+	TrackerConfig,
+	TrackerKind,
+	WorkingIssueState,
+} from "../stub-data";
 
 /** The tracker kinds selectable in the identity picker. Linear is the live one;
  *  Jira/GitHub are wired shapes but not yet backed by a real seam. */
@@ -11,10 +15,11 @@ const TRACKER_KINDS: readonly { value: TrackerKind; label: string }[] = [
 	{ value: "github", label: "GitHub" },
 ];
 
-/** Compass states in lifecycle order, with human labels — one status-mapping
- *  row each. Keyed on the full `WorkstreamState` union so a new state can't ship
- *  without a mapping row here. */
-const STATE_ROWS: readonly { state: WorkstreamState; label: string }[] = [
+/** Compass working states in lifecycle order, with human labels — one
+ *  status-mapping row each. Keyed on `WorkingIssueState` (the seven working
+ *  states) so a new working state can't ship without a mapping row here;
+ *  `archived` carries no tracker status (DL-071) and is excluded. */
+const STATE_ROWS: readonly { state: WorkingIssueState; label: string }[] = [
 	{ state: "backlog", label: "Backlog" },
 	{ state: "todo", label: "Todo" },
 	{ state: "queued", label: "Queued" },
@@ -34,10 +39,10 @@ const STATE_ROWS: readonly { state: WorkstreamState; label: string }[] = [
  *  targets but the reverse map doesn't yet cover — first writer in lifecycle
  *  order wins (e.g. `Todo` reads back as `todo`, not the later `queued`). */
 export function mergeFromTracker(
-	toTracker: Record<WorkstreamState, string>,
-	committed: Record<string, WorkstreamState>,
-): Record<string, WorkstreamState> {
-	const fromTracker: Record<string, WorkstreamState> = { ...committed };
+	toTracker: Record<WorkingIssueState, string>,
+	committed: Record<string, WorkingIssueState>,
+): Record<string, WorkingIssueState> {
+	const fromTracker: Record<string, WorkingIssueState> = { ...committed };
 	for (const { state } of STATE_ROWS) {
 		const status = toTracker[state];
 		if (status && !(status in fromTracker)) fromTracker[status] = state;
@@ -50,9 +55,9 @@ export function mergeFromTracker(
  *  real many-to-one projection, aliases included (e.g. `Done, Cancelled,
  *  Duplicate → Done`), matching exactly what Save persists. */
 function reverseGroups(
-	fromTracker: Record<string, WorkstreamState>,
+	fromTracker: Record<string, WorkingIssueState>,
 ): { label: string; statuses: string[] }[] {
-	const byState = new Map<WorkstreamState, string[]>();
+	const byState = new Map<WorkingIssueState, string[]>();
 	for (const [status, state] of Object.entries(fromTracker)) {
 		const statuses = byState.get(state);
 		if (statuses) statuses.push(status);
@@ -111,7 +116,7 @@ export const SettingsView: Component = () => {
 		);
 	};
 
-	// A blank mapping input would persist a WorkstreamState → "" gap that breaks
+	// A blank mapping input would persist a WorkingIssueState → "" gap that breaks
 	// status-sync once the seam is backed by a real tracker, so Save is blocked
 	// (Reset stays live to recover). fromTracker's empty-string skip already
 	// keeps the reverse map clean; this closes the forward hole.

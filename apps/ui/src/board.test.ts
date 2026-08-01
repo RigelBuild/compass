@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
 	ACTIVE_STATES,
-	activeWorkstreams,
-	backlogWorkstreams,
+	activeIssues,
+	backlogIssues,
 	boardAgents,
 	cellItems,
 	isActiveState,
@@ -10,18 +10,21 @@ import {
 	laneTotal,
 } from "./board";
 import { BOARD_LANES } from "./constants";
-import type { Agent, Workstream, WorkstreamState } from "./stub-data";
+import type { Agent, Issue, IssueState } from "./stub-data";
 
-// board.ts is the pure core of the D1 workstream state model: it partitions the
-// 7-state lifecycle into the active board columns vs the pre-active Backlog tier,
-// and derives every board query (lanes, swimlane rows, cells, counts) from that
-// one partition. These tests defend the partition invariants against a future
-// union edit or lane reorder silently desyncing the surfaces that read it.
+// board.ts is the pure core of the D1 issue state model: it partitions the
+// lifecycle into the active board columns vs the pre-active Backlog tier vs the
+// terminal `archived` sink (off-board), and derives every board query (lanes,
+// swimlane rows, cells, counts) from that one partition. These tests defend the
+// partition invariants against a future union edit or lane reorder silently
+// desyncing the surfaces that read it.
 
-// The complete lifecycle (stub-data WorkstreamState). Enumerated here on purpose:
-// if the union grows an 8th state, TypeScript reddens this literal against the
+// The complete lifecycle (stub-data IssueState). Enumerated here on purpose: if
+// the union grows a state, TypeScript reddens this literal against the
 // exhaustiveness assertion below, forcing the new state to be classified.
-const ALL_STATES: readonly WorkstreamState[] = [
+// `archived` (DL-071) is the terminal, off-board third tier — neither active
+// nor backlog.
+const ALL_STATES: readonly IssueState[] = [
 	"backlog",
 	"todo",
 	"queued",
@@ -29,23 +32,28 @@ const ALL_STATES: readonly WorkstreamState[] = [
 	"in_progress",
 	"in_review",
 	"done",
+	"archived",
 ];
 
-// Minimal valid Workstream — only the fields board.ts reads (state, assignee)
-// carry meaning; the rest are present to satisfy the interface and are held
-// constant so a fixture-shape change never perturbs a partition assertion.
-function ws(
-	over: Partial<Workstream> & Pick<Workstream, "id" | "state">,
-): Workstream {
+// Minimal valid Issue — only the fields board.ts reads (state, assignee) carry
+// meaning; the rest are present to satisfy the interface and are held constant
+// so a fixture-shape change never perturbs a partition assertion.
+function ws(over: Partial<Issue> & Pick<Issue, "id" | "state">): Issue {
 	return {
-		issue: "SEA-0",
+		forge: { provider: "github", host: "github.com" },
+		repo: "acme/repo",
+		number: 0,
 		title: "t",
+		body: "",
+		forgeState: "open",
+		forgeAccount: "acct",
+		url: "https://example.test/i",
+		labels: [],
 		priority: "medium",
 		assignee: null,
 		summary: "s",
 		branch: "b",
-		changed: { files: 0, additions: 0, deletions: 0 },
-		pr: null,
+		prs: [],
 		...over,
 	};
 }
@@ -68,20 +76,30 @@ function agent(id: string): Agent {
 	};
 }
 
-describe("state partition (D1)", () => {
-	// Invariant 1 — the core D1 contract. Every lifecycle state is classified by
-	// exactly one predicate: active XOR backlog. A future edit that adds a state
-	// to the union, or moves one between the tiers, without updating both
-	// predicates would break exhaustiveness or disjointness here.
-	test("active/backlog partition is exhaustive and disjoint over all 7 states", () => {
+describe("state partition (D1 + DL-071)", () => {
+	// Invariant 1 — the core partition contract. Every working lifecycle state is
+	// classified by exactly one predicate: active XOR backlog. The terminal
+	// `archived` tier is off-board — neither active nor backlog — so it is
+	// excluded from the XOR and checked separately below. A future edit that adds
+	// a working state without updating both predicates would break exhaustiveness
+	// or disjointness here.
+	test("active/backlog partition is exhaustive and disjoint over the 7 working states", () => {
 		for (const state of ALL_STATES) {
+			if (state === "archived") continue;
 			const active = isActiveState(state);
 			const backlog = isBacklogState(state);
 			// exactly one is true (XOR): never both, never neither.
 			expect(active !== backlog).toBe(true);
 		}
-		// exactly 7 states enumerated, no duplicates.
-		expect(new Set(ALL_STATES).size).toBe(7);
+		// exactly 8 states enumerated, no duplicates.
+		expect(new Set(ALL_STATES).size).toBe(8);
+	});
+
+	// Invariant 1b — the terminal tier. `archived` (DL-071) is off-board: neither
+	// an active column nor a pre-active backlog state. It is the third tier.
+	test("archived is off-board — neither active nor backlog", () => {
+		expect(isActiveState("archived")).toBe(false);
+		expect(isBacklogState("archived")).toBe(false);
 	});
 
 	// Invariant 2a — the red→green flip. `backlog` and `todo` were board columns
@@ -120,9 +138,9 @@ describe("ACTIVE_STATES", () => {
 	});
 });
 
-describe("activeWorkstreams / backlogWorkstreams", () => {
+describe("activeIssues / backlogIssues", () => {
 	// A list spanning every tier, deliberately interleaved so an order bug shows.
-	const list: Workstream[] = [
+	const list: Issue[] = [
 		ws({ id: "w-done", state: "done" }),
 		ws({ id: "w-backlog", state: "backlog" }),
 		ws({ id: "w-inprog", state: "in_progress" }),
@@ -130,11 +148,12 @@ describe("activeWorkstreams / backlogWorkstreams", () => {
 		ws({ id: "w-queued", state: "queued" }),
 		ws({ id: "w-blocked", state: "blocked" }),
 		ws({ id: "w-review", state: "in_review" }),
+		ws({ id: "w-archived", state: "archived" }),
 	];
 
-	// Invariant 4 — the two views partition the input and preserve input order.
+	// Invariant 4 — the two views select their tiers and preserve input order.
 	test("select the active states in input order", () => {
-		expect(activeWorkstreams(list).map((w) => w.id)).toEqual([
+		expect(activeIssues(list).map((w) => w.id)).toEqual([
 			"w-done",
 			"w-inprog",
 			"w-queued",
@@ -144,26 +163,30 @@ describe("activeWorkstreams / backlogWorkstreams", () => {
 	});
 
 	test("select the backlog states in input order", () => {
-		expect(backlogWorkstreams(list).map((w) => w.id)).toEqual([
+		expect(backlogIssues(list).map((w) => w.id)).toEqual([
 			"w-backlog",
 			"w-todo",
 		]);
 	});
 
-	// Invariant 4 (partition) — together the two views cover every workstream
-	// exactly once, dropping none and duplicating none. Here every state is
-	// active-or-backlog, so the union is the whole list.
-	test("together cover every workstream exactly once (no drop, no dup)", () => {
-		const active = activeWorkstreams(list).map((w) => w.id);
-		const backlog = backlogWorkstreams(list).map((w) => w.id);
-		const union = [...active, ...backlog];
+	// Invariant 4 (partition) — active ∪ backlog ∪ archived cover every issue
+	// exactly once, dropping none and duplicating none. `archived` is the
+	// off-board third tier (DL-071), so the two on-board views leave it out and
+	// the three-way union is the whole list.
+	test("active ∪ backlog ∪ archived cover every issue exactly once (no drop, no dup)", () => {
+		const active = activeIssues(list).map((w) => w.id);
+		const backlog = backlogIssues(list).map((w) => w.id);
+		const archived = list
+			.filter((w) => w.state === "archived")
+			.map((w) => w.id);
+		const union = [...active, ...backlog, ...archived];
 		expect(new Set(union).size).toBe(union.length); // disjoint: no id twice
 		expect(new Set(union)).toEqual(new Set(list.map((w) => w.id))); // exhaustive
 	});
 });
 
 describe("cellItems", () => {
-	const list: Workstream[] = [
+	const list: Issue[] = [
 		ws({ id: "a1", state: "in_progress", assignee: "agent-a" }),
 		ws({ id: "b1", state: "in_progress", assignee: "agent-b" }),
 		ws({ id: "a2", state: "in_progress", assignee: "agent-a" }),
@@ -171,8 +194,8 @@ describe("cellItems", () => {
 	];
 
 	// Invariant 5 — a non-active state never yields a cell, even when matching
-	// workstreams exist. The board must not render backlog/todo columns.
-	test("returns [] for a non-active state even when a matching workstream exists", () => {
+	// issues exist. The board must not render backlog/todo columns.
+	test("returns [] for a non-active state even when a matching issue exists", () => {
 		expect(cellItems(list, null, "todo")).toEqual([]);
 		expect(cellItems(list, "agent-a", "todo")).toEqual([]);
 		expect(cellItems(list, null, "backlog")).toEqual([]);
@@ -198,14 +221,14 @@ describe("cellItems", () => {
 
 describe("boardAgents", () => {
 	// Invariant 6 — a swimlane row exists only for an agent holding ≥1 active
-	// workstream. A backlog/todo-only agent, and an agent with zero workstreams,
-	// get no row; an agent with an in_progress workstream does.
-	test("includes only agents holding an active workstream", () => {
+	// issue. A backlog/todo-only agent, and an agent with zero issues, get no
+	// row; an agent with an in_progress issue does.
+	test("includes only agents holding an active issue", () => {
 		const agents = [agent("active-a"), agent("todo-only"), agent("empty")];
-		const list: Workstream[] = [
+		const list: Issue[] = [
 			ws({ id: "w1", state: "in_progress", assignee: "active-a" }),
 			ws({ id: "w2", state: "todo", assignee: "todo-only" }),
-			// "empty" holds no workstream at all.
+			// "empty" holds no issue at all.
 			// unassigned active work belongs to no agent row.
 			ws({ id: "w3", state: "in_progress", assignee: null }),
 		];
@@ -224,7 +247,7 @@ describe("boardAgents", () => {
 			agent("backlog-only"),
 			agent("todo-only"),
 		];
-		const list: Workstream[] = [
+		const list: Issue[] = [
 			ws({ id: "d1", state: "done", assignee: "done-only" }),
 			ws({ id: "bk1", state: "backlog", assignee: "backlog-only" }),
 			ws({ id: "td1", state: "todo", assignee: "todo-only" }),
@@ -233,12 +256,22 @@ describe("boardAgents", () => {
 			"done-only",
 		]);
 	});
+
+	// Invariant 6 — an archived-only agent gets NO row: `archived` is off-board
+	// (DL-071), so its card sits in no active column.
+	test("excludes an archived-only agent (archived is off-board)", () => {
+		const agents = [agent("archived-only")];
+		const list: Issue[] = [
+			ws({ id: "ar1", state: "archived", assignee: "archived-only" }),
+		];
+		expect(boardAgents(agents, list)).toEqual([]);
+	});
 });
 
 describe("laneTotal", () => {
 	// Invariant 7 — the lane-head badge counts a state across ALL agents.
-	test("counts workstreams in a state across every agent", () => {
-		const list: Workstream[] = [
+	test("counts issues in a state across every agent", () => {
+		const list: Issue[] = [
 			ws({ id: "w1", state: "in_progress", assignee: "a" }),
 			ws({ id: "w2", state: "in_progress", assignee: "b" }),
 			ws({ id: "w3", state: "in_progress", assignee: null }),

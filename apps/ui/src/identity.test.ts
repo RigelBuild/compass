@@ -10,7 +10,7 @@ import {
 import { STUB_SESSION_EVENTS } from "./session-events-stub";
 import { type AppStore, CALLER_ID, createAppStore } from "./store";
 import type { Account, Agent } from "./stub-data";
-import { STUB_AGENTS, STUB_WORKSTREAMS } from "./stub-data";
+import { STUB_AGENTS, STUB_ISSUES } from "./stub-data";
 
 // T1 — Agent identity: separate co-addressed types + fixture reconciliation
 // (design record `docs/designs/product/compass-0.7-channel-workspace/design.md`,
@@ -18,7 +18,7 @@ import { STUB_AGENTS, STUB_WORKSTREAMS } from "./stub-data";
 // — the account-kind `Agent`/`Account` in stub-data.ts (design.md:325-362), the
 // cached `account.homeChannelId` (:339,367-369), the derived `STUB_ACCOUNTS`
 // (:365-367), `store.agentView(id)` (:370-372), and the re-keyed comms/session/
-// workstream fixtures (:294-317) — none of which exist yet. Every test here MUST
+// issue fixtures (:294-317) — none of which exist yet. Every test here MUST
 // fail now and pass once T1 lands. It asserts fixture invariants + the composed
 // view-model contract, never plumbing; no test restates an implementation detail.
 //
@@ -312,12 +312,12 @@ describe("comms reference integrity", () => {
 });
 
 // ── 8. Assignee migration (design.md:317, :400) ───────────────────────────────
-describe("workstream assignee migration", () => {
-	// Every assigned workstream must name a surviving agent id (old ids were
-	// `agent-<handle>`); an unassigned workstream (null) is left untouched.
-	test("every workstream assignee resolves to a surviving agent id", () => {
+describe("issue assignee migration", () => {
+	// Every assigned issue must name a surviving agent id (old ids were
+	// `agent-<handle>`); an unassigned issue (null) is left untouched.
+	test("every issue assignee resolves to a surviving agent id", () => {
 		const surviving = survivingAgentIds();
-		const assignees = STUB_WORKSTREAMS.map((w) => w.assignee).filter(
+		const assignees = STUB_ISSUES.map((w) => w.assignee).filter(
 			(a): a is string => a !== null,
 		);
 		expect(assignees.length).toBeGreaterThan(0); // non-vacuous

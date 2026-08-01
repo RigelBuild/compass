@@ -18,7 +18,7 @@ import {
 import { STUB_AGENTS, STUB_ASSIGNED_ISSUES } from "./stub-data";
 
 // The store exposes SolidJS `createMemo` accessors (selectedAgent,
-// selectedWorkstream, agentRepos, agentSession) that only
+// selectedIssue, agentRepos, agentSession) that only
 // compute inside a reactive root. `withStore` builds a fresh store inside its own
 // `createRoot`, runs the body, then disposes. Actions are synchronous and memo
 // reads recompute on demand within the root, so every assertion runs inside the
@@ -109,9 +109,9 @@ describe("initial state", () => {
 		withStore((s) => {
 			expect(s.view()).toBe("bridge");
 			expect(s.selectedAgentId()).toBeNull();
-			expect(s.selectedWorkstreamId()).toBe("ws-1022");
-			// The seeded workstream resolves through the memo to a real object.
-			expect(s.selectedWorkstream()?.id).toBe("ws-1022");
+			expect(s.selectedIssueId()).toBe("ws-1022");
+			// The seeded issue resolves through the memo to a real object.
+			expect(s.selectedIssue()?.id).toBe("ws-1022");
 			// No agent selected -> the resolved-agent memo is empty.
 			expect(s.selectedAgent()).toBeUndefined();
 			// No agent selected → the repo derivations return their empty guards.
@@ -169,10 +169,10 @@ describe("view routing", () => {
 });
 
 describe("openAgent", () => {
-	// Selecting a new agent routes to its view and syncs the workstream selection
-	// to that agent's primary (first-assigned) workstream and the repo pick to the
+	// Selecting a new agent routes to its view and syncs the issue selection
+	// to that agent's primary (first-assigned) issue and the repo pick to the
 	// agent's clone.
-	test("opens the agent view and syncs selection to the primary workstream + repo", () => {
+	test("opens the agent view and syncs selection to the primary issue + repo", () => {
 		withStore((s) => {
 			s.openAgent("acc-cook");
 
@@ -183,7 +183,7 @@ describe("openAgent", () => {
 			expect(s.selectedAgent()?.account.handle).toBe("cook");
 			// cook owns ws-1022 (listed first = primary) then ws-965; the primary
 			// drives the selection.
-			expect(s.selectedWorkstreamId()).toBe("ws-1022");
+			expect(s.selectedIssueId()).toBe("ws-1022");
 			// The repo pick jumps to the agent's clone id.
 			expect(s.activeRepoId()).toBe("acc-cook-repo");
 		});
@@ -232,8 +232,8 @@ describe("openAgent", () => {
 	});
 
 	// Switching to a *different* agent resets the per-agent view state: repo pick
-	// and workstream selection fall back to the new agent's defaults. An agent that
-	// owns nothing (warden) clears the workstream selection and exposes no clone.
+	// and issue selection fall back to the new agent's defaults. An agent that
+	// owns nothing (warden) clears the issue selection and exposes no clone.
 	test("switching agents resets selection and clears surfaces for an agent that owns none", () => {
 		withStore((s) => {
 			// Build up per-agent state on cook so the switch has something to reset.
@@ -241,13 +241,13 @@ describe("openAgent", () => {
 			s.setActiveBranch("cook-965-client-transport");
 			expect(s.activeRepo()?.currentBranch).toBe("cook-965-client-transport");
 
-			// agent-warden is assigned zero workstreams.
+			// agent-warden is assigned zero issues.
 			s.openAgent("acc-warden");
 
 			expect(s.view()).toBe("agent");
 			expect(s.selectedAgentId()).toBe("acc-warden");
-			// No owned workstreams → no selection and no repo clone.
-			expect(s.selectedWorkstreamId()).toBeNull();
+			// No owned issues → no selection and no repo clone.
+			expect(s.selectedIssueId()).toBeNull();
 			expect(s.agentRepos()).toEqual([]);
 			expect(s.activeRepo()).toBeUndefined();
 		});
@@ -273,7 +273,7 @@ describe("openAgent", () => {
 		});
 	});
 
-	// A board roster move (selectWorkstream) sets selectedAgentId to a new agent
+	// A board roster move (selectIssue) sets selectedAgentId to a new agent
 	// WITHOUT initializing that agent's view. Opening that agent must still reset
 	// the selection — the reset keys on agentViewAgentId, not selectedAgentId, so a
 	// move can't suppress it and leak the previous agent's selection (PR #467).
@@ -281,31 +281,31 @@ describe("openAgent", () => {
 		withStore((s) => {
 			s.openAgent("acc-cook");
 
-			// Board move to livingstone's workstream: selects the agent, no init.
-			s.selectWorkstream("ws-1023");
+			// Board move to livingstone's issue: selects the agent, no init.
+			s.selectIssue("ws-1023");
 			expect(s.selectedAgentId()).toBe("acc-livingstone");
 
 			s.openAgent("acc-livingstone");
 
 			// The reset keys on agentViewAgentId — the move didn't suppress it.
-			expect(s.selectedWorkstreamId()).toBe("ws-1023");
+			expect(s.selectedIssueId()).toBe("ws-1023");
 		});
 	});
 
-	// A board card double-click selects the card's workstream first, then opens its
-	// agent. For a NON-primary owned workstream, opening the agent must preserve
+	// A board card double-click selects the card's issue first, then opens its
+	// agent. For a NON-primary owned issue, opening the agent must preserve
 	// that pick — the anchoring keeps a currently-selected owned ws over the
 	// primary fallback. Pre-fix, openAgent snapped to the primary (ws-1022).
-	test("openAgent keeps a non-primary workstream picked just before opening (card jump)", () => {
+	test("openAgent keeps a non-primary issue picked just before opening (card jump)", () => {
 		withStore((s) => {
 			// Card double-click: select the card's ws first, then open its agent.
-			s.selectWorkstream("ws-965"); // cook's non-primary workstream
+			s.selectIssue("ws-965"); // cook's non-primary issue
 			expect(s.selectedAgentId()).toBe("acc-cook");
 
 			s.openAgent("acc-cook");
 
 			// The non-primary pick survives — not snapped to ws-1022.
-			expect(s.selectedWorkstreamId()).toBe("ws-965");
+			expect(s.selectedIssueId()).toBe("ws-965");
 			expect(s.activeRepo()?.currentBranch).toBe("cook-965-client-transport");
 		});
 	});
@@ -313,20 +313,20 @@ describe("openAgent", () => {
 	// A cross-agent roster move sets selectedAgentId to another agent WITHOUT
 	// initializing the view — agentViewAgentId stays on the opened agent. Re-opening
 	// the agent-view agent hits the early-return path, which must re-anchor to an
-	// OWNED workstream — the other agent's ws must not leak (greptile's finding).
-	test("re-opening the agent-view agent after a cross-agent roster move re-anchors the workstream", () => {
+	// OWNED issue — the other agent's ws must not leak (greptile's finding).
+	test("re-opening the agent-view agent after a cross-agent roster move re-anchors the issue", () => {
 		withStore((s) => {
 			s.openAgent("acc-cook"); // agentViewAgentId = cook
-			expect(s.selectedWorkstreamId()).toBe("ws-1022");
+			expect(s.selectedIssueId()).toBe("ws-1022");
 
-			s.selectWorkstream("ws-1023"); // livingstone's ws; view still cook
+			s.selectIssue("ws-1023"); // livingstone's ws; view still cook
 			expect(s.selectedAgentId()).toBe("acc-livingstone");
 
 			s.openAgent("acc-cook"); // early-return path (cook is still agentViewAgentId)
 
 			// Re-anchored to a cook-owned ws — livingstone's ws-1023 did NOT leak.
 			expect(s.selectedAgentId()).toBe("acc-cook");
-			expect(s.selectedWorkstreamId()).toBe("ws-1022");
+			expect(s.selectedIssueId()).toBe("ws-1022");
 		});
 	});
 
@@ -390,7 +390,7 @@ describe("openAgent", () => {
 
 describe("agentRepos memo (T6)", () => {
 	// The repo/branch dropdown derives one clone per agent from that agent's
-	// assigned workstreams, in fixture order. Order is the contract: the first
+	// assigned issues, in fixture order. Order is the contract: the first
 	// branch is the repo's default currentBranch.
 	test("derives the selected agent's clone with branches in fixture order", () => {
 		withStore((s) => {
@@ -405,7 +405,7 @@ describe("agentRepos memo (T6)", () => {
 				"cook-1022-tauri-shell",
 				"cook-965-client-transport",
 			]);
-			// Selection is the primary workstream (ws-1022) → currentBranch is its branch, the first.
+			// Selection is the primary issue (ws-1022) → currentBranch is its branch, the first.
 			expect(repo?.currentBranch).toBe("cook-1022-tauri-shell");
 		});
 	});
@@ -419,39 +419,39 @@ describe("agentRepos memo (T6)", () => {
 	});
 });
 
-describe("selectWorkstream", () => {
-	// Clicking a card on the board syncs the roster to that workstream's
+describe("selectIssue", () => {
+	// Clicking a card on the board syncs the roster to that issue's
 	// assignee but stays on the board — it never jumps into the agent view.
-	test("selects a workstream and syncs the roster without leaving the board", () => {
+	test("selects an issue and syncs the roster without leaving the board", () => {
 		withStore((s) => {
 			s.showBridge();
 			expect(s.view()).toBe("bridge");
 
-			s.selectWorkstream("ws-1023");
+			s.selectIssue("ws-1023");
 
-			expect(s.selectedWorkstreamId()).toBe("ws-1023");
+			expect(s.selectedIssueId()).toBe("ws-1023");
 			// ws-1023 is assigned to livingstone; the roster follows.
 			expect(s.selectedAgentId()).toBe("acc-livingstone");
-			// The memo resolves the actual workstream object.
-			expect(s.selectedWorkstream()?.id).toBe("ws-1023");
-			expect(s.selectedWorkstream()?.assignee).toBe("acc-livingstone");
+			// The memo resolves the actual issue object.
+			expect(s.selectedIssue()?.id).toBe("ws-1023");
+			expect(s.selectedIssue()?.assignee).toBe("acc-livingstone");
 			// Crucially, the view does not change.
 			expect(s.view()).toBe("bridge");
 		});
 	});
 
-	// An unassigned workstream clears the roster rather than leaving a stale
+	// An unassigned issue clears the roster rather than leaving a stale
 	// agent highlighted.
-	test("clears the roster when the workstream has no assignee", () => {
+	test("clears the roster when the issue has no assignee", () => {
 		withStore((s) => {
 			// Seed a real agent selection to prove it gets cleared.
-			s.selectWorkstream("ws-1023");
+			s.selectIssue("ws-1023");
 			expect(s.selectedAgentId()).toBe("acc-livingstone");
 
 			// ws-1146 is in the backlog with assignee null.
-			s.selectWorkstream("ws-1146");
+			s.selectIssue("ws-1146");
 
-			expect(s.selectedWorkstreamId()).toBe("ws-1146");
+			expect(s.selectedIssueId()).toBe("ws-1146");
 			expect(s.selectedAgentId()).toBeNull();
 		});
 	});
@@ -504,11 +504,11 @@ describe("pane toggles", () => {
 
 describe("right sidebar tab (dock-in-sidebar T1)", () => {
 	// The active-tab setter must round-trip any member of the widened union
-	// (fleet + workstream). Exercising one fleet value ("warden") and one
-	// workstream value ("vcs") proves the signal accepts both halves of the union
-	// — a setter narrowed back to the old workstream-only type, or one stuck on
+	// (fleet + issue). Exercising one fleet value ("warden") and one
+	// issue value ("vcs") proves the signal accepts both halves of the union
+	// — a setter narrowed back to the old issue-only type, or one stuck on
 	// its boot value, would fail one leg.
-	test("setActiveRightTab round-trips a fleet and a workstream value", () => {
+	test("setActiveRightTab round-trips a fleet and an issue value", () => {
 		withStore((s) => {
 			s.setActiveRightTab("warden");
 			expect(s.activeRightTab()).toBe("warden");
@@ -547,80 +547,80 @@ describe("folder collapse", () => {
 });
 
 describe("repo + branch selection (T6)", () => {
-	// Picking a branch in the dropdown is a workstream navigator (design "Option
-	// A"): it selects the workstream that OWNS that branch, so the dropdown label
-	// and the Files/VCS/PR panes (which read the selected workstream) move as one.
+	// Picking a branch in the dropdown is an issue navigator (design "Option
+	// A"): it selects the issue that OWNS that branch, so the dropdown label
+	// and the Files/VCS/PR panes (which read the selected issue) move as one.
 	// There is no independent per-repo branch pick to drift from the panes.
-	test("setActiveBranch selects the workstream that owns the branch, moving the panes with the dropdown", () => {
+	test("setActiveBranch selects the issue that owns the branch, moving the panes with the dropdown", () => {
 		withStore((s) => {
 			s.openAgent("acc-cook");
 			expect(s.activeRepo()?.currentBranch).toBe("cook-1022-tauri-shell");
 
 			s.setActiveBranch("cook-965-client-transport");
 
-			// The dropdown label follows the newly-selected workstream's branch.
+			// The dropdown label follows the newly-selected issue's branch.
 			expect(s.activeRepo()?.currentBranch).toBe("cook-965-client-transport");
 			// And the selection itself moved — this is the whole point: the pick
-			// re-targets the selected workstream, not a private branch override.
-			expect(s.selectedWorkstreamId()).toBe("ws-965");
-			expect(s.selectedWorkstream()?.branch).toBe("cook-965-client-transport");
+			// re-targets the selected issue, not a private branch override.
+			expect(s.selectedIssueId()).toBe("ws-965");
+			expect(s.selectedIssue()?.branch).toBe("cook-965-client-transport");
 		});
 	});
 
 	// The anti-drift invariant (the bug three review bots flagged, now fixed):
 	// the dropdown label (activeRepo().currentBranch) and the pane source
-	// (selectedWorkstream().branch) resolve to the SAME workstream, so the
-	// Files/VCS/PR panes can never show a different workstream than the dropdown.
+	// (selectedIssue().branch) resolve to the SAME issue, so the
+	// Files/VCS/PR panes can never show a different issue than the dropdown.
 	// TEETH: under the OLD per-repo override model, setActiveBranch only wrote a
-	// private branchOverrides map and left selectedWorkstreamId at the primary —
-	// so here it would still be "ws-1022", and the selectedWorkstreamId() /
-	// selectedWorkstream().branch assertions below would fail (the dropdown shows
+	// private branchOverrides map and left selectedIssueId at the primary —
+	// so here it would still be "ws-1022", and the selectedIssueId() /
+	// selectedIssue().branch assertions below would fail (the dropdown shows
 	// cook-965 while the panes still show ws-1022).
-	test("the dropdown and the detail panes resolve to one workstream (no drift)", () => {
+	test("the dropdown and the detail panes resolve to one issue (no drift)", () => {
 		withStore((s) => {
 			s.openAgent("acc-cook"); // primary = ws-1022
 			s.setActiveBranch("cook-965-client-transport");
 
 			const dropdownBranch = s.activeRepo()?.currentBranch;
-			const paneBranch = s.selectedWorkstream()?.branch;
+			const paneBranch = s.selectedIssue()?.branch;
 			expect(dropdownBranch).toBe("cook-965-client-transport");
 			expect(paneBranch).toBe("cook-965-client-transport");
 			// The one-source-of-truth invariant: label === pane source.
 			expect(dropdownBranch).toBe(paneBranch);
-			expect(s.selectedWorkstreamId()).toBe("ws-965");
+			expect(s.selectedIssueId()).toBe("ws-965");
 		});
 	});
 
-	// The guard: a branch no workstream of the selected agent owns is rejected,
+	// The guard: a branch no issue of the selected agent owns is rejected,
 	// leaving BOTH the dropdown label and the selection untouched — so a
 	// stale/foreign branch can't move the panes.
-	test("setActiveBranch is a no-op for a branch no workstream of the agent owns", () => {
+	test("setActiveBranch is a no-op for a branch no issue of the agent owns", () => {
 		withStore((s) => {
 			s.openAgent("acc-cook");
 			s.setActiveBranch("cook-965-client-transport");
 
 			s.setActiveBranch("not-a-branch");
 
-			// Unchanged: the guard found no owning workstream, so both the label
+			// Unchanged: the guard found no owning issue, so both the label
 			// and the selection stay on ws-965 / cook-965.
 			expect(s.activeRepo()?.currentBranch).toBe("cook-965-client-transport");
-			expect(s.selectedWorkstreamId()).toBe("ws-965");
+			expect(s.selectedIssueId()).toBe("ws-965");
 		});
 	});
 
-	// A branch owned by a DIFFERENT agent's workstream is also rejected: the
+	// A branch owned by a DIFFERENT agent's issue is also rejected: the
 	// guard requires `w.assignee === selectedAgentId()`, so picking livingstone's
 	// branch while cook is selected can't hijack the selection.
 	// TEETH: drop the `assignee === id` half of the guard and this would select
 	// ws-1023 (livingstone's), moving cook's panes onto another agent's work —
-	// selectedWorkstreamId() would become "ws-1023" and this assertion fails.
+	// selectedIssueId() would become "ws-1023" and this assertion fails.
 	test("setActiveBranch is a no-op for a branch owned by a different agent", () => {
 		withStore((s) => {
 			s.openAgent("acc-cook"); // selects ws-1022
 			s.setActiveBranch("livingstone-1023-acp-session");
 
 			// livingstone's branch belongs to agent-livingstone, not cook → ignored.
-			expect(s.selectedWorkstreamId()).toBe("ws-1022");
+			expect(s.selectedIssueId()).toBe("ws-1022");
 			expect(s.activeRepo()?.currentBranch).toBe("cook-1022-tauri-shell");
 		});
 	});
@@ -640,32 +640,32 @@ describe("repo + branch selection (T6)", () => {
 	});
 
 	// Opening an agent resets the selection to that agent's primary (first-owned)
-	// workstream — the branch follows the selected workstream, and there is no
+	// issue — the branch follows the selected issue, and there is no
 	// remembered per-agent branch to restore. So navigating to cook-965, away to
 	// livingstone, and back to cook lands on cook's primary (ws-1022), NOT the
 	// previously-navigated cook-965.
-	test("openAgent resets the selection to the agent's primary workstream", () => {
+	test("openAgent resets the selection to the agent's primary issue", () => {
 		withStore((s) => {
 			s.openAgent("acc-cook");
-			// Primary workstream first: ws-1022 / cook-1022-tauri-shell.
-			expect(s.selectedWorkstreamId()).toBe("ws-1022");
+			// Primary issue first: ws-1022 / cook-1022-tauri-shell.
+			expect(s.selectedIssueId()).toBe("ws-1022");
 			expect(s.activeRepo()?.currentBranch).toBe("cook-1022-tauri-shell");
 
-			// Navigate to cook's other workstream via the dropdown.
+			// Navigate to cook's other issue via the dropdown.
 			s.setActiveBranch("cook-965-client-transport");
-			expect(s.selectedWorkstreamId()).toBe("ws-965");
+			expect(s.selectedIssueId()).toBe("ws-965");
 
-			// Switch to livingstone: its only workstream (ws-1023) is selected.
+			// Switch to livingstone: its only issue (ws-1023) is selected.
 			s.openAgent("acc-livingstone");
-			expect(s.selectedWorkstreamId()).toBe("ws-1023");
+			expect(s.selectedIssueId()).toBe("ws-1023");
 			expect(s.activeRepo()?.currentBranch).toBe(
 				"livingstone-1023-acp-session",
 			);
 
-			// Back to cook: openAgent re-selects the primary workstream — NOT the
+			// Back to cook: openAgent re-selects the primary issue — NOT the
 			// previously-navigated cook-965.
 			s.openAgent("acc-cook");
-			expect(s.selectedWorkstreamId()).toBe("ws-1022");
+			expect(s.selectedIssueId()).toBe("ws-1022");
 			expect(s.activeRepo()?.currentBranch).toBe("cook-1022-tauri-shell");
 		});
 	});
@@ -1460,35 +1460,33 @@ describe("comms fixture preconditions", () => {
 });
 
 describe("promoteToTodo (PR3)", () => {
-	// The one contract of promote: a workstream that is *currently* `backlog`
+	// The one contract of promote: an issue that is *currently* `backlog`
 	// moves to `todo`. ws-1146 is the fixture's only backlog row. A regression
 	// that promoted to the wrong state, or moved the wrong row, reddens here.
-	test("moves a backlog workstream to todo", () => {
+	test("moves a backlog issue to todo", () => {
 		withStore((s) => {
-			const before = s.workstreams().find((w) => w.id === "ws-1146");
+			const before = s.issues().find((w) => w.id === "ws-1146");
 			expect(before?.state).toBe("backlog");
 
 			s.promoteToTodo("ws-1146");
 
-			expect(s.workstreams().find((w) => w.id === "ws-1146")?.state).toBe(
-				"todo",
-			);
+			expect(s.issues().find((w) => w.id === "ws-1146")?.state).toBe("todo");
 		});
 	});
 
-	// The no-op branch (`w.state === "backlog"` guard). Promoting a workstream
+	// The no-op branch (`w.state === "backlog"` guard). Promoting an issue
 	// that is NOT backlog must leave it untouched — this is what makes a
 	// double-click on an already-promoted card safe. ws-965 is `in_progress`.
-	test("is a no-op on a non-backlog workstream", () => {
+	test("is a no-op on a non-backlog issue", () => {
 		withStore((s) => {
-			expect(s.workstreams().find((w) => w.id === "ws-965")?.state).toBe(
+			expect(s.issues().find((w) => w.id === "ws-965")?.state).toBe(
 				"in_progress",
 			);
 
 			s.promoteToTodo("ws-965");
 
 			// State unchanged: the guard rejected the transition.
-			expect(s.workstreams().find((w) => w.id === "ws-965")?.state).toBe(
+			expect(s.issues().find((w) => w.id === "ws-965")?.state).toBe(
 				"in_progress",
 			);
 		});
@@ -1500,14 +1498,10 @@ describe("promoteToTodo (PR3)", () => {
 	test("is idempotent — a second promote keeps it at todo", () => {
 		withStore((s) => {
 			s.promoteToTodo("ws-1146");
-			expect(s.workstreams().find((w) => w.id === "ws-1146")?.state).toBe(
-				"todo",
-			);
+			expect(s.issues().find((w) => w.id === "ws-1146")?.state).toBe("todo");
 
 			s.promoteToTodo("ws-1146");
-			expect(s.workstreams().find((w) => w.id === "ws-1146")?.state).toBe(
-				"todo",
-			);
+			expect(s.issues().find((w) => w.id === "ws-1146")?.state).toBe("todo");
 		});
 	});
 
@@ -1515,83 +1509,75 @@ describe("promoteToTodo (PR3)", () => {
 	// throw or corrupt the list length.
 	test("leaves the list intact for an unknown id", () => {
 		withStore((s) => {
-			const len = s.workstreams().length;
-			const snapshot = s.workstreams().map((w) => `${w.id}:${w.state}`);
+			const len = s.issues().length;
+			const snapshot = s.issues().map((w) => `${w.id}:${w.state}`);
 
 			s.promoteToTodo("ws-does-not-exist");
 
-			expect(s.workstreams().length).toBe(len);
-			expect(s.workstreams().map((w) => `${w.id}:${w.state}`)).toEqual(
-				snapshot,
-			);
+			expect(s.issues().length).toBe(len);
+			expect(s.issues().map((w) => `${w.id}:${w.state}`)).toEqual(snapshot);
 		});
 	});
 });
 
-describe("archiveWorkstream (PR3)", () => {
-	// Archive stamps an ISO `archivedAt` on a `done` row — and, crucially, the
-	// row STAYS in workstreams() with state still `done` (a marker, not a
-	// delete; the Done view still lists it). ws-1145 is a `done` fixture row.
-	test("stamps archivedAt on a done workstream without removing it or changing state", () => {
+describe("archiveIssue (DL-071)", () => {
+	// Archive is a lifecycle transition (DL-071): a `done` row moves to the
+	// terminal `archived` state and STAYS in issues() (a state change, not a
+	// delete; the Done view's Archived section still lists it). ws-1145 is a
+	// `done` fixture row.
+	test("moves a done issue to the archived state without removing it", () => {
 		withStore((s) => {
-			const lenBefore = s.workstreams().length;
-			const before = s.workstreams().find((w) => w.id === "ws-1145");
+			const lenBefore = s.issues().length;
+			const before = s.issues().find((w) => w.id === "ws-1145");
 			expect(before?.state).toBe("done");
-			expect(before?.archivedAt).toBeUndefined();
 
-			s.archiveWorkstream("ws-1145");
+			s.archiveIssue("ws-1145");
 
-			const after = s.workstreams().find((w) => w.id === "ws-1145");
-			// Still present, still done — archive is a marker, not a delete.
-			expect(s.workstreams().length).toBe(lenBefore);
-			expect(after?.state).toBe("done");
-			// Stamped with a real ISO-8601 instant that round-trips through Date.
-			expect(typeof after?.archivedAt).toBe("string");
-			expect(after?.archivedAt).toBe(
-				new Date(after?.archivedAt as string).toISOString(),
-			);
+			const after = s.issues().find((w) => w.id === "ws-1145");
+			// Still present — archive is a state transition, not a delete.
+			expect(s.issues().length).toBe(lenBefore);
+			expect(after?.state).toBe("archived");
 		});
 	});
 
-	// The no-op branch (`w.state === "done"` guard). A non-done workstream is
-	// never archivable; ws-965 (`in_progress`) must gain no stamp.
-	test("is a no-op on a non-done workstream", () => {
+	// The no-op branch (`w.state === "done"` guard). A non-done issue is never
+	// archivable; ws-965 (`in_progress`) must not move to archived.
+	test("is a no-op on a non-done issue", () => {
 		withStore((s) => {
-			s.archiveWorkstream("ws-965");
+			s.archiveIssue("ws-965");
 
-			const ws = s.workstreams().find((w) => w.id === "ws-965");
+			const ws = s.issues().find((w) => w.id === "ws-965");
 			expect(ws?.state).toBe("in_progress");
-			expect(ws?.archivedAt).toBeUndefined();
 		});
 	});
 
-	// Idempotency: re-archiving an already-archived row keeps the ORIGINAL
-	// stamp (the `!w.archivedAt` guard rejects the second stamp), so a
-	// double-click can't rewrite the archive instant.
-	test("preserves the original stamp when archived twice", () => {
+	// Idempotency: re-archiving an already-archived row is a no-op — the
+	// done-only guard rejects the second call (the row is now `archived`, not
+	// `done`), so a double-click can't churn the state.
+	test("stays archived when archived twice", () => {
 		withStore((s) => {
-			s.archiveWorkstream("ws-1145");
-			const first = s.workstreams().find((w) => w.id === "ws-1145")?.archivedAt;
-			expect(first).toBeDefined();
+			s.archiveIssue("ws-1145");
+			expect(s.issues().find((w) => w.id === "ws-1145")?.state).toBe(
+				"archived",
+			);
 
-			s.archiveWorkstream("ws-1145");
-			const second = s
-				.workstreams()
-				.find((w) => w.id === "ws-1145")?.archivedAt;
-			expect(second).toBe(first);
+			s.archiveIssue("ws-1145");
+			expect(s.issues().find((w) => w.id === "ws-1145")?.state).toBe(
+				"archived",
+			);
 		});
 	});
 });
 
-describe("reactive workstreams (PR3)", () => {
-	// The core PR3 reactivity contract: workstreams() is a signal, so a derived
-	// read (createMemo) recomputes after promote/archive within the same root.
-	// If the list were a frozen array captured once, the memo would keep the
+describe("reactive issues (DL-071)", () => {
+	// The core reactivity contract: issues() is a signal, so a derived read
+	// (createMemo) recomputes after promote/archive within the same root. If the
+	// list were a frozen array captured once, the memo would keep the
 	// pre-mutation value and these re-reads would fail.
 	test("a derived memo observes a promote", () => {
 		withStore((s) => {
 			const state1146 = createMemo(
-				() => s.workstreams().find((w) => w.id === "ws-1146")?.state,
+				() => s.issues().find((w) => w.id === "ws-1146")?.state,
 			);
 			expect(state1146()).toBe("backlog");
 
@@ -1602,19 +1588,19 @@ describe("reactive workstreams (PR3)", () => {
 		});
 	});
 
-	test("a derived memo observes an archive stamp", () => {
+	test("a derived memo observes an archive transition", () => {
 		withStore((s) => {
 			const archivedCount = createMemo(
-				() => s.workstreams().filter((w) => w.archivedAt).length,
+				() => s.issues().filter((w) => w.state === "archived").length,
 			);
 			expect(archivedCount()).toBe(0);
 
-			s.archiveWorkstream("ws-1145");
+			s.archiveIssue("ws-1145");
 			expect(archivedCount()).toBe(1);
 
 			// A second, distinct done row archives independently — the memo
 			// tracks the growing set, not a one-shot flag.
-			s.archiveWorkstream("ws-1130");
+			s.archiveIssue("ws-1130");
 			expect(archivedCount()).toBe(2);
 		});
 	});

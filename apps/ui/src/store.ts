@@ -41,11 +41,11 @@ import { STUB_SESSION_EVENTS } from "./session-events-stub";
 import {
 	type Agent,
 	type DaemonInfo,
+	type Issue,
 	STUB_AGENTS,
 	STUB_DAEMON,
-	STUB_WORKSTREAMS,
+	STUB_ISSUES,
 	type TrackerConfig,
-	type Workstream,
 } from "./stub-data";
 import {
 	createFixtureTrackerSeam,
@@ -75,13 +75,13 @@ export type View =
 /** Right-sidebar tabs (design dock-in-sidebar D1/T1/T2). Fleet tabs are
  *  always-on agent conversations (Supervisor, Warden) plus the Status pane
  *  (fleet metrics), grouped above the
- *  card-scoped workstream tabs (Files with a search box, VCS with commit
+ *  card-scoped issue tabs (Files with a search box, VCS with commit
  *  history, PR with its checks). Split into named subsets so the grouped
  *  activity bar and the chrome-hiding rule (D5) key off types, not string
  *  lists. */
 export type FleetTab = "supervisor" | "warden" | "status";
-export type WorkstreamTab = "files" | "vcs" | "pr";
-export type RightSidebarTab = FleetTab | WorkstreamTab;
+export type IssueTab = "files" | "vcs" | "pr";
+export type RightSidebarTab = FleetTab | IssueTab;
 
 /** A repo clone present in the selected agent's container (T6). Multi-repo
  *  capable now; the fixture derives a single clone per agent until the daemon
@@ -240,8 +240,8 @@ export interface AppStore {
 	// ── Selection ──
 	/** The selected agent id, or null. Drives the agent view + roster highlight. */
 	selectedAgentId: Accessor<string | null>;
-	/** The selected workstream id, or null. Drives the detail + right sidebar. */
-	selectedWorkstreamId: Accessor<string | null>;
+	/** The selected issue id, or null. Drives the detail + right sidebar. */
+	selectedIssueId: Accessor<string | null>;
 	/** The resolved selected agent, or undefined. */
 	selectedAgent: Accessor<Agent | undefined>;
 	/** The composed roster view-model for an account id — account + optional
@@ -250,15 +250,15 @@ export interface AppStore {
 	 *  the SubscribeComms/SubscribeEvents join lands; today every render surface
 	 *  resolves the agent through `selectedAgent()`. */
 	agentView: (id: string) => Agent | undefined;
-	/** The resolved selected workstream, or undefined. */
-	selectedWorkstream: Accessor<Workstream | undefined>;
+	/** The resolved selected issue, or undefined. */
+	selectedIssue: Accessor<Issue | undefined>;
 	/** Select an agent and switch to its view; re-selecting is a no-op. */
 	openAgent: (agentId: string) => void;
 	/** Select a channel and route to its view — UNLESS it's a 1:1 agent DM, in
 	 *  which case delegate to openAgent (the workspace is the DM's surface). */
 	openChannel: (channelId: string) => void;
-	/** Select a workstream (card / swimlane cell) and sync the roster to it. */
-	selectWorkstream: (workstreamId: string) => void;
+	/** Select an issue (card / swimlane cell) and sync the roster to it. */
+	selectIssue: (issueId: string) => void;
 
 	// ── Panes ──
 	/** Whether the left sidebar (folder tree) is shown. */
@@ -275,7 +275,7 @@ export interface AppStore {
 
 	// ── Right sidebar: activity-bar tabs + repos (T6; dock-in-sidebar D1) ──
 	/** The active right-sidebar tab: a fleet conversation (Supervisor / Warden)
-	 *  or a workstream tab (Files / VCS / PR). */
+	 *  or an issue tab (Files / VCS / PR). */
 	activeRightTab: Accessor<RightSidebarTab>;
 	setActiveRightTab: (tab: RightSidebarTab) => void;
 	/** Repo clones present in the selected agent's container, for the repo/branch
@@ -286,9 +286,9 @@ export interface AppStore {
 	/** The resolved active repo, or undefined. */
 	activeRepo: Accessor<RepoClone | undefined>;
 	setActiveRepo: (repoId: string) => void;
-	/** Switch the current branch by selecting the workstream that owns it, so the
+	/** Switch the current branch by selecting the issue that owns it, so the
 	 *  dropdown and the Files/VCS/PR panes move together. No-op unless the branch
-	 *  belongs to a workstream of the selected agent. */
+	 *  belongs to an issue of the selected agent. */
 	setActiveBranch: (branch: string) => void;
 
 	// ── Daemon: server liveness/version banner ──
@@ -457,23 +457,23 @@ export interface AppStore {
 	isSectionCollapsed: (section: "channels" | "agents") => boolean;
 	toggleSection: (section: "channels" | "agents") => void;
 
-	// ── Workstreams (reactive board data) ──
-	/** All workstreams — the reactive source every board surface reads, so a
+	// ── Issues (reactive board data) ──
+	/** All issues — the reactive source every board surface reads, so a
 	 *  promote/archive is visible everywhere at once (design "read through the
 	 *  store accessors"). */
-	workstreams: Accessor<Workstream[]>;
-	/** Promote a Backlog workstream to Todo (D1/D3) and mirror to the tracker
+	issues: Accessor<Issue[]>;
+	/** Promote a Backlog issue to Todo (D1/D3) and mirror to the tracker
 	 *  through the mapping. No-op if it isn't currently `backlog`. */
-	promoteToTodo: (workstreamId: string) => void;
-	/** Archive a Done workstream (D4): stamps `archivedAt`, dropping it from the
-	 *  active surfaces. A marker, not a delete — the Done view still lists it.
+	promoteToTodo: (issueId: string) => void;
+	/** Archive a Done issue (DL-071): sets `state` to `archived`, dropping it
+	 *  from the active board. Listed in the Done view's Archived section.
 	 *  No-op if it isn't currently `done`. */
-	archiveWorkstream: (workstreamId: string) => void;
+	archiveIssue: (issueId: string) => void;
 
 	// ── Backlog view (D3) ──
 	/** The current user's tracker-assigned issues (their personal queue), read
 	 *  through the TrackerSeam for the Backlog view. */
-	assignedIssues: Accessor<Workstream[]>;
+	assignedIssues: Accessor<Issue[]>;
 
 	// ── Tracker config (T11) ──
 	/** The user's tracker wiring (kind + handle + Compass↔tracker mapping). */
@@ -527,21 +527,20 @@ export interface AppStoreOptions {
 export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	const callerId = options.callerId ?? CALLER_ID;
 	const agents = STUB_AGENTS;
-	// The workstream list is reactive so promote/archive (below) are visible on
+	// The issue list is reactive so promote/archive (below) are visible on
 	// every surface at once. Seeded from the fixture; the real @compass/client
 	// stream replaces the seed later (the accessor stays the seam).
-	const [workstreams, setWorkstreams] =
-		createSignal<Workstream[]>(STUB_WORKSTREAMS);
+	const [issues, setIssues] = createSignal<Issue[]>(STUB_ISSUES);
 
 	const [view, setView] = createSignal<View>("bridge");
 	const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(
 		null,
 	);
-	// Default to the first workstream so the seam survives swapping the fixture
+	// Default to the first issue so the seam survives swapping the fixture
 	// for the real @compass/client (no hardcoded stub id).
-	const [selectedWorkstreamId, setSelectedWorkstreamId] = createSignal<
-		string | null
-	>(STUB_WORKSTREAMS[0]?.id ?? null);
+	const [selectedIssueId, setSelectedIssueId] = createSignal<string | null>(
+		STUB_ISSUES[0]?.id ?? null,
+	);
 
 	// The tracker wiring (T11) + the seam it drives. assignedIssues (D3) is the
 	// user's personal queue, loaded once from the seam; re-loads when the handle
@@ -550,7 +549,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		DEFAULT_TRACKER_CONFIG,
 	);
 	let seam: TrackerSeam = createFixtureTrackerSeam(DEFAULT_TRACKER_CONFIG);
-	const [assignedIssues, setAssignedIssues] = createSignal<Workstream[]>([]);
+	const [assignedIssues, setAssignedIssues] = createSignal<Issue[]>([]);
 	const loadAssignedIssues = () => {
 		seam
 			.listAssignedIssues(trackerConfig().handle)
@@ -581,7 +580,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	const [activeRightTab, setActiveRightTab] =
 		createSignal<RightSidebarTab>("supervisor");
 	// The active repo id (T6). The current branch is derived from the selected
-	// workstream (see agentRepos), so there's no separate branch-pick signal to
+	// issue (see agentRepos), so there's no separate branch-pick signal to
 	// drift from the panes.
 	const [activeRepoId, setActiveRepoId] = createSignal<string | null>(null);
 
@@ -702,7 +701,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		null,
 	);
 	// The agent id the agent-view state (tabs/split/branch) was last initialized
-	// for — distinct from `selectedAgentId`, which the board's `selectWorkstream`
+	// for — distinct from `selectedAgentId`, which the board's `selectIssue`
 	// moves without initializing the view. `openAgent` keys its reset on THIS, so
 	// a roster move followed by opening that agent still initializes the view.
 	const [agentViewAgentId, setAgentViewAgentId] = createSignal<string | null>(
@@ -723,25 +722,25 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// lifecycle is already carried on the view-model, so this is a lookup.
 	const agentView = (id: string): Agent | undefined =>
 		agents.find((a) => a.account.id === id);
-	const selectedWorkstream = createMemo(() =>
-		workstreams().find((w) => w.id === selectedWorkstreamId()),
+	const selectedIssue = createMemo(() =>
+		issues().find((w) => w.id === selectedIssueId()),
 	);
 	// The selected agent's repo clones (T6). The fixture models one clone per
 	// agent — the monorepo — with the branches drawn from that agent's assigned
-	// workstreams (design "single clone until the daemon reports more"). The
+	// issues (design "single clone until the daemon reports more"). The
 	// accessor returns an array so a multi-clone daemon is a fixture change, not
-	// a shape change. `currentBranch` is derived from the selected workstream
-	// (each workstream owns one branch) — so the dropdown, the detail panes, and
+	// a shape change. `currentBranch` is derived from the selected issue
+	// (each issue owns one branch) — so the dropdown, the detail panes, and
 	// the board selection are one source of truth and can't drift apart.
 	const agentRepos = createMemo<RepoClone[]>(() => {
 		const id = selectedAgentId();
 		if (!id) return [];
-		const owned = workstreams().filter((w) => w.assignee === id);
+		const owned = issues().filter((w) => w.assignee === id);
 		if (owned.length === 0) return [];
 		const branches = owned.map((w) => w.branch);
-		// The current branch is the selected workstream's branch when it belongs
+		// The current branch is the selected issue's branch when it belongs
 		// to this agent, else the primary (first) — never a stale independent pick.
-		const selected = owned.find((w) => w.id === selectedWorkstreamId());
+		const selected = owned.find((w) => w.id === selectedIssueId());
 		return [
 			{
 				id: `${id}-repo`,
@@ -806,12 +805,12 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	);
 
 	// Opening an agent switches to its per-agent workspace and, for an agent whose
-	// workspace isn't yet initialized, syncs the workstream selection to the
-	// agent's primary (first-assigned) workstream and resets the workspace state:
+	// workspace isn't yet initialized, syncs the issue selection to the
+	// agent's primary (first-assigned) issue and resets the workspace state:
 	// tabs reset to the lone chat tab, the chat pane centers on the agent's home
 	// DM channel, the repo pick resets to the agent's clone, and the log panel
 	// re-opens. The guard keys on `agentViewAgentId` — the id the workspace was
-	// initialized for — NOT `selectedAgentId`, which `selectWorkstream` moves from
+	// initialized for — NOT `selectedAgentId`, which `selectIssue` moves from
 	// the board without initializing the workspace; keying on it would let a
 	// roster move suppress the reset. Re-opening the already-initialized agent
 	// only re-asserts the selection (the contract: re-selecting is a no-op) and
@@ -820,24 +819,22 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		// Entering an agent workspace drops the channel-scoped open-thread state.
 		setOpenThreadRootId(null);
 		setView("agent");
-		// Anchor the workstream selection to this agent: keep the currently
-		// selected workstream when this agent owns it (a card double-click selects
-		// the card's workstream just before opening — often a non-primary one),
+		// Anchor the issue selection to this agent: keep the currently
+		// selected issue when this agent owns it (a card double-click selects
+		// the card's issue just before opening — often a non-primary one),
 		// else fall back to the agent's primary (first-owned). This holds on BOTH
 		// paths so a roster move that pointed the selection at another agent's
-		// workstream can't leak into this view.
-		const owned = workstreams().filter((w) => w.assignee === agentId);
+		// issue can't leak into this view.
+		const owned = issues().filter((w) => w.assignee === agentId);
 		const anchored =
-			owned.find((w) => w.id === selectedWorkstreamId())?.id ??
-			owned[0]?.id ??
-			null;
+			owned.find((w) => w.id === selectedIssueId())?.id ?? owned[0]?.id ?? null;
 		if (agentId === agentViewAgentId()) {
 			setSelectedAgentId(agentId);
-			setSelectedWorkstreamId(anchored);
+			setSelectedIssueId(anchored);
 			return;
 		}
 		setSelectedAgentId(agentId);
-		setSelectedWorkstreamId(anchored);
+		setSelectedIssueId(anchored);
 		setActiveRepoId(`${agentId}-repo`);
 		// Reset the tab group to the lone permanent chat tab. The chat pane's
 		// channel is derived from the selected agent (`workspaceChannel`), not
@@ -867,12 +864,12 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		setView("channel");
 	};
 
-	// Selecting a workstream (a board card or a swimlane cell) syncs the roster
+	// Selecting an issue (a board card or a swimlane cell) syncs the roster
 	// to its assignee but stays on the board — it does not jump into the agent
 	// view, so the board stays the working surface while you scan cards.
-	const selectWorkstream = (workstreamId: string) => {
-		setSelectedWorkstreamId(workstreamId);
-		const ws = workstreams().find((w) => w.id === workstreamId);
+	const selectIssue = (issueId: string) => {
+		setSelectedIssueId(issueId);
+		const ws = issues().find((w) => w.id === issueId);
 		setSelectedAgentId(ws?.assignee ?? null);
 	};
 
@@ -1498,33 +1495,35 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	const showDone = () => setView("done");
 	const showSettings = () => setView("settings");
 
-	// Promote a Backlog workstream to Todo (D1/D3): the human moves it into the
+	// Promote a Backlog issue to Todo (D1/D3): the human moves it into the
 	// global unassigned pool the Dispatcher assigns from, and the change mirrors
 	// to the tracker. A no-op unless it's currently `backlog`, so the action is
 	// idempotent against a double-click.
-	const promoteToTodo = (workstreamId: string) => {
-		const ws = workstreams().find((w) => w.id === workstreamId);
+	const promoteToTodo = (issueId: string) => {
+		const ws = issues().find((w) => w.id === issueId);
 		if (ws?.state !== "backlog") return;
-		setWorkstreams((prev) =>
+		setIssues((prev) =>
 			prev.map((w) =>
-				w.id === workstreamId ? { ...w, state: "todo" as const } : w,
+				w.id === issueId ? { ...w, state: "todo" as const } : w,
 			),
 		);
 		// Mirror to the tracker only when the transition actually happened, so a
 		// rejected promote never writes Todo to the tracker (the local guard and
 		// the seam write stay in lockstep). The seam addresses the tracker's
-		// native issue id (`issue`), not the Compass workstream id.
-		void seam.updateIssueStatus(ws.issue, "todo");
+		// native issue id, not the Compass issue id.
+		void seam.updateIssueStatus(ws.tracker?.id ?? ws.id, "todo");
 	};
 
-	// Archive a Done workstream (D4): stamp `archivedAt` so it drops off the
-	// active surfaces but the Done view still lists it. A no-op unless it's
-	// currently `done`, and idempotent (an already-archived one keeps its stamp).
-	const archiveWorkstream = (workstreamId: string) => {
-		setWorkstreams((prev) =>
+	// Archive a Done issue (DL-071): move it to the terminal `archived` state so
+	// it drops off the active board; the Done view's Archived section still lists
+	// it. A no-op unless it's currently `done` — the local UI affordance keeps
+	// the done-only guard even though the server RPC is any-to-any. Locally until
+	// S1, then an `UpdateIssueState(archived)` call.
+	const archiveIssue = (issueId: string) => {
+		setIssues((prev) =>
 			prev.map((w) =>
-				w.id === workstreamId && w.state === "done" && !w.archivedAt
-					? { ...w, archivedAt: new Date().toISOString() }
+				w.id === issueId && w.state === "done"
+					? { ...w, state: "archived" as const }
 					: w,
 			),
 		);
@@ -1567,17 +1566,15 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	const setActiveRepo = (repoId: string) => {
 		if (agentRepos().some((r) => r.id === repoId)) setActiveRepoId(repoId);
 	};
-	// Switch the current branch within the active repo by selecting the workstream
+	// Switch the current branch within the active repo by selecting the issue
 	// that owns it — so the dropdown, the detail panes (Files/VCS/PR), and the
-	// board selection all move together (each branch is one workstream's branch).
-	// A no-op unless the branch belongs to a workstream of the selected agent.
+	// board selection all move together (each branch is one issue's branch).
+	// A no-op unless the branch belongs to an issue of the selected agent.
 	const setActiveBranch = (branch: string) => {
 		const id = selectedAgentId();
 		if (!id) return;
-		const ws = workstreams().find(
-			(w) => w.assignee === id && w.branch === branch,
-		);
-		if (ws) setSelectedWorkstreamId(ws.id);
+		const ws = issues().find((w) => w.assignee === id && w.branch === branch);
+		if (ws) setSelectedIssueId(ws.id);
 	};
 
 	return {
@@ -1587,13 +1584,13 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		showDone,
 		showSettings,
 		selectedAgentId,
-		selectedWorkstreamId,
+		selectedIssueId,
 		selectedAgent,
 		agentView,
-		selectedWorkstream,
+		selectedIssue,
 		openAgent,
 		openChannel,
-		selectWorkstream,
+		selectIssue,
 		leftOpen,
 		toggleLeft,
 		rightOpen,
@@ -1644,9 +1641,9 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		toggleLog,
 		isSectionCollapsed,
 		toggleSection,
-		workstreams,
+		issues,
 		promoteToTodo,
-		archiveWorkstream,
+		archiveIssue,
 		assignedIssues,
 		trackerConfig,
 		setTrackerConfig,

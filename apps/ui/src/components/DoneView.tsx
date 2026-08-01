@@ -1,91 +1,106 @@
 import { type Component, For, Show } from "solid-js";
+import {
+	checkPip,
+	isMultiForge,
+	issueKey,
+	prBadge,
+	primaryPr,
+} from "../board-render";
 import { useStore } from "../context";
-import type { Workstream } from "../stub-data";
+import type { Issue } from "../stub-data";
 
-/** A single Done/Archived row. Mirrors the WorkstreamCard shape but laid out as
- *  a wide list row: issue id, title, priority accent, PR summary, and the
- *  merge/branch line. Clicking selects the workstream (syncs the roster) without
- *  leaving the board surface. When `archived` is false an Archive button stamps
- *  `archivedAt`; when true the row shows the archive marker instead. */
-const DoneRow: Component<{ ws: Workstream; archived: boolean }> = (props) => {
+/** A single Done/Archived row. Mirrors the IssueCard shape but laid out as a
+ *  wide list row: issue id, title, priority accent, PR summary, and the
+ *  merge/branch line. Clicking selects the issue (syncs the roster) without
+ *  leaving the board surface. When `archived` is false an Archive button moves
+ *  the issue to the terminal `archived` state; when true the row is marker-only. */
+const DoneRow: Component<{ issue: Issue; archived: boolean }> = (props) => {
 	const store = useStore();
+	const pr = () => primaryPr(props.issue);
+	const key = () => issueKey(props.issue, isMultiForge(store.issues()));
 	return (
-		<li class="done-row" data-priority={props.ws.priority}>
+		<li class="done-row" data-priority={props.issue.priority}>
 			<button
 				type="button"
 				class="done-row-main"
-				classList={{ selected: props.ws.id === store.selectedWorkstreamId() }}
-				onClick={() => store.selectWorkstream(props.ws.id)}
+				classList={{ selected: props.issue.id === store.selectedIssueId() }}
+				onClick={() => store.selectIssue(props.issue.id)}
 			>
 				<span class="done-row-top">
-					<span class="card-issue">{props.ws.issue}</span>
-					<span class="done-row-priority">{props.ws.priority}</span>
-					<Show when={props.ws.pr}>
-						{(pr) => (
-							<span class="card-pr" data-pr-state={pr().state}>
-								<span class="check-pips">
-									<For each={pr().checks}>
-										{(c) => <span class="check-pip" data-status={c.status} />}
-									</For>
-								</span>
-								#{pr().number} {pr().state}
+					<span class="card-issue">{key()}</span>
+					<span class="done-row-priority">{props.issue.priority}</span>
+					<Show when={pr()}>
+						{(p) => (
+							<span class="card-pr" data-pr-state={prBadge(p())}>
+								<Show when={p().checks}>
+									{(checks) => (
+										<span class="check-pips">
+											<For each={checks().checks}>
+												{(c) => (
+													<span
+														class="check-pip"
+														data-status={checkPip(c.state)}
+													/>
+												)}
+											</For>
+										</span>
+									)}
+								</Show>
+								#{p().number} {prBadge(p())}
 							</span>
 						)}
 					</Show>
 				</span>
-				<span class="done-row-title">{props.ws.title}</span>
+				<span class="done-row-title">{props.issue.title}</span>
 				<span class="done-row-foot">
-					<span class="done-row-branch">{props.ws.branch}</span>
+					<span class="done-row-branch">{props.issue.branch}</span>
 					<Show
-						when={props.ws.pr}
+						when={pr()}
 						fallback={<span class="done-row-merge">no PR</span>}
 					>
-						{(pr) => (
+						{(p) => (
 							<span class="done-row-merge">
-								{pr().state === "merged" ? "merged" : `PR ${pr().state}`} ·{" "}
-								{pr().threads.resolved}/{pr().threads.total} threads
+								{prBadge(p()) === "merged" ? "merged" : `PR ${prBadge(p())}`} ·{" "}
+								{p().threads.filter((t) => t.resolved).length}/
+								{p().threads.length} threads
 							</span>
 						)}
 					</Show>
-					<Show when={props.ws.changed.files > 0}>
-						<span class="card-diff">
-							<span class="add">+{props.ws.changed.additions}</span>
-							<span class="del">−{props.ws.changed.deletions}</span>
-						</span>
+					<Show when={pr()?.changed} keyed>
+						{(changed) => (
+							<Show when={changed.files > 0}>
+								<span class="card-diff">
+									<span class="add">+{changed.additions}</span>
+									<span class="del">−{changed.deletions}</span>
+								</span>
+							</Show>
+						)}
 					</Show>
 				</span>
 			</button>
-			<Show
-				when={props.archived}
-				fallback={
-					<button
-						type="button"
-						class="done-archive-btn"
-						onClick={() => store.archiveWorkstream(props.ws.id)}
-					>
-						Archive
-					</button>
-				}
-			>
-				<span class="done-archived-mark" title={props.ws.archivedAt}>
-					archived {props.ws.archivedAt?.slice(0, 10)}
-				</span>
+			<Show when={!props.archived}>
+				<button
+					type="button"
+					class="done-archive-btn"
+					onClick={() => store.archiveIssue(props.issue.id)}
+				>
+					Archive
+				</button>
 			</Show>
 		</li>
 	);
 };
 
 /** The Done / archive view (T5 / D4). Two sections read reactively off the
- *  board: Done (active) — `done` and not yet archived, each with an Archive
- *  action — and Archived — the `archivedAt`-stamped ones, marker only. Archive
- *  is a marker, not a delete, so a workstream stays listed here after archiving,
- *  moving from the first section to the second. */
+ *  board, partitioned by `state` (DL-071): Done — `state === "done"`, each with
+ *  an Archive action — and Archived — `state === "archived"`, marker only.
+ *  Archive is a lifecycle transition, not a delete, so an issue stays listed
+ *  here after archiving, moving from the first section to the second. */
 export const DoneView: Component = () => {
 	const store = useStore();
 
-	const done = () =>
-		store.workstreams().filter((w) => w.state === "done" && !w.archivedAt);
-	const archived = () => store.workstreams().filter((w) => w.archivedAt);
+	const done = () => store.issues().filter((w) => w.state === "done");
+	const archived = () => store.issues().filter((w) => w.state === "archived");
 
 	return (
 		<section class="done-view" aria-label="Done">
@@ -100,7 +115,7 @@ export const DoneView: Component = () => {
 				>
 					<ul class="done-list">
 						<For each={done()}>
-							{(ws) => <DoneRow ws={ws} archived={false} />}
+							{(ws) => <DoneRow issue={ws} archived={false} />}
 						</For>
 					</ul>
 				</Show>
@@ -113,11 +128,11 @@ export const DoneView: Component = () => {
 				</div>
 				<Show
 					when={archived().length > 0}
-					fallback={<p class="done-empty">No archived workstreams yet.</p>}
+					fallback={<p class="done-empty">No archived issues yet.</p>}
 				>
 					<ul class="done-list">
 						<For each={archived()}>
-							{(ws) => <DoneRow ws={ws} archived={true} />}
+							{(ws) => <DoneRow issue={ws} archived={true} />}
 						</For>
 					</ul>
 				</Show>

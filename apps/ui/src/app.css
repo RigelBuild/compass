@@ -1,7 +1,7 @@
 /* Compass ADE — dev UI styling. Dark, dense, board-first. An Orca-inspired
  * shell: a left folder tree of agents, a central Bridge (swimlane board) or
  * agent (ACP + terminals) view, and a right sidebar carrying the fleet
- * conversations (Supervisor · Warden · Status) above the workstream files/VCS/PR
+ * conversations (Supervisor · Warden · Status) above the issue files/VCS/PR
  * tabs, plus a bottom usage bar. All read one store. */
 
 :root {
@@ -664,7 +664,7 @@ button {
 	background: color-mix(in srgb, var(--bg) 60%, transparent);
 }
 
-/* ── Workstream card ────────────────────────────────────────────────────── */
+/* ── Issue card ─────────────────────────────────────────────────────────── */
 
 .card {
 	display: flex;
@@ -744,6 +744,14 @@ button {
 	justify-content: space-between;
 	font-size: 10px;
 	color: var(--text-dim);
+}
+
+.card-author {
+	font-size: 10px;
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .card-diff {
@@ -1442,6 +1450,12 @@ button {
 	margin-bottom: 10px;
 }
 
+.pr-agent {
+	font-size: 11px;
+	color: var(--text-faint);
+	margin-bottom: 10px;
+}
+
 .pr-checks {
 	display: flex;
 	flex-direction: column;
@@ -2121,7 +2135,7 @@ button {
 	padding: 6px 4px;
 }
 
-/* Workstream detail header: issue + title, plus the "Open agent" action (D10). */
+/* Issue detail header: issue + title, plus the "Open agent" action (D10). */
 .r-detail-head {
 	display: flex;
 	align-items: center;
@@ -2262,7 +2276,7 @@ button {
 	background: var(--bg-panel);
 }
 
-/* Divider between the fleet group (top) and the workstream group
+/* Divider between the fleet group (top) and the issue group
  * (dock-in-sidebar D2). */
 .r-activity-divider {
 	height: 1px;

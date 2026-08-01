@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { RIGHT_SIDEBAR_TAB_GROUPS } from "../constants";
-import type { FileNode, Workstream, WorkstreamState } from "../stub-data";
+import type { FileNode, Issue, IssueState } from "../stub-data";
 import { STUB_AGENTS } from "../stub-data";
 import type { FleetMetrics } from "./RightSidebar";
 import { filterFileTree, fleetMetrics } from "./RightSidebar";
@@ -105,19 +105,19 @@ describe("filterFileTree", () => {
 
 describe("RIGHT_SIDEBAR_TAB_GROUPS", () => {
 	// The activity bar renders groups top-to-bottom with a divider between them;
-	// fleet (always-on agent conversations) must sit ABOVE workstream (D2). A
+	// fleet (always-on agent conversations) must sit ABOVE issue (D2). A
 	// swapped or renamed group order would render the bar upside-down, so pin the
 	// exact sequence.
-	test("orders the groups fleet-first, workstream-second", () => {
+	test("orders the groups fleet-first, issue-second", () => {
 		expect(RIGHT_SIDEBAR_TAB_GROUPS.map((g) => g.group)).toEqual([
 			"fleet",
-			"workstream",
+			"issue",
 		]);
 	});
 
 	// The groups must PARTITION the full RightSidebarTab union: every tab appears
 	// exactly once across all groups (fleet ids in declaration order, then
-	// workstream), with nothing missing, duplicated, or invented. A tab that
+	// issue), with nothing missing, duplicated, or invented. A tab that
 	// slipped out of both groups, or landed in two, would render either an
 	// unreachable pane or a doubled icon — this catches both.
 	test("partitions the union exactly, no id missing or repeated", () => {
@@ -138,20 +138,18 @@ describe("RIGHT_SIDEBAR_TAB_GROUPS", () => {
 		expect(new Set(ids).size).toBe(ids.length);
 	});
 
-	// The fleet/workstream split decides which tabs badge an agent StateDot.
-	// Workstream panes never carry an agentId. Among fleet tabs, the
+	// The fleet/issue split decides which tabs badge an agent StateDot.
+	// Issue panes never carry an agentId. Among fleet tabs, the
 	// agent-conversation tabs (supervisor, warden) carry one; the Status tab is
 	// a fleet PANE, not a conversation, so it carries none. Pin exactly which
 	// fleet ids badge an agent so a stray or missing agentId can't slip through.
-	test("fleet items carry an agentId; workstream items do not", () => {
+	test("fleet items carry an agentId; issue items do not", () => {
 		const fleet = RIGHT_SIDEBAR_TAB_GROUPS.find((g) => g.group === "fleet");
-		const workstream = RIGHT_SIDEBAR_TAB_GROUPS.find(
-			(g) => g.group === "workstream",
-		);
+		const issue = RIGHT_SIDEBAR_TAB_GROUPS.find((g) => g.group === "issue");
 		expect(fleet).toBeDefined();
-		expect(workstream).toBeDefined();
-		// Every workstream pane is agent-less.
-		for (const item of workstream?.items ?? []) {
+		expect(issue).toBeDefined();
+		// Every issue pane is agent-less.
+		for (const item of issue?.items ?? []) {
 			expect(item.agentId).toBeUndefined();
 		}
 		// The fleet tabs that DO carry an agentId are exactly the conversation
@@ -184,15 +182,15 @@ describe("RIGHT_SIDEBAR_TAB_GROUPS", () => {
 });
 
 // `fleetMetrics` is the pure count salvaged from the old BottomDock `countState`
-// (dock-in-sidebar T2): it projects a workstream list into the four numbers the
+// (dock-in-sidebar T2): it projects an issue list into the four numbers the
 // Status pane renders. The routing of each state to a bucket — and which states
 // are ignored — is the contract; these tests pin it against a miscount.
 describe("fleetMetrics", () => {
-	// fleetMetrics reads only `.state`; every other Workstream field is
+	// fleetMetrics reads only `.state`; every other Issue field is
 	// irrelevant to the count, so a state-keyed factory (cast past the full
 	// interface) is the right fixture — building all fields would only couple
 	// the test to shape.
-	const ws = (state: WorkstreamState): Workstream => ({ state }) as Workstream;
+	const ws = (state: IssueState): Issue => ({ state }) as Issue;
 
 	// `active` is the sum of BOTH in_progress and in_review (salvaged
 	// countState("in_progress","in_review")); queued/todo/blocked are single
@@ -238,7 +236,7 @@ describe("fleetMetrics", () => {
 		expect(fleetMetrics(withNoise)).toEqual(fleetMetrics(counted));
 	});
 
-	// The empty-list boundary: no workstreams → every bucket zero (an empty
+	// The empty-list boundary: no issues → every bucket zero (an empty
 	// reduce, not a throw or a NaN).
 	test("returns all zeros for an empty list", () => {
 		const expected: FleetMetrics = {
@@ -254,7 +252,7 @@ describe("fleetMetrics", () => {
 	// puts a 1 in its own bucket and 0 everywhere else. Catches a swapped
 	// mapping (e.g. todo counted as queued) and confirms in_review joins
 	// `active` rather than getting a bucket of its own.
-	const routing: { state: WorkstreamState; bucket: keyof FleetMetrics }[] = [
+	const routing: { state: IssueState; bucket: keyof FleetMetrics }[] = [
 		{ state: "in_progress", bucket: "active" },
 		{ state: "in_review", bucket: "active" },
 		{ state: "queued", bucket: "queued" },
@@ -262,7 +260,7 @@ describe("fleetMetrics", () => {
 		{ state: "blocked", bucket: "blocked" },
 	];
 	for (const { state, bucket } of routing) {
-		test(`routes a lone ${state} workstream to the ${bucket} bucket`, () => {
+		test(`routes a lone ${state} issue to the ${bucket} bucket`, () => {
 			const expected: FleetMetrics = {
 				active: 0,
 				queued: 0,

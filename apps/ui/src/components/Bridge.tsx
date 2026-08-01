@@ -1,40 +1,38 @@
 import { type Component, createSignal, For, Show } from "solid-js";
 import {
-	activeWorkstreams,
+	activeIssues,
 	boardAgents as boardAgentsOf,
 	cellItems as cellItemsOf,
 	laneTotal as laneTotalOf,
 } from "../board";
 import { BOARD_LANES } from "../constants";
 import { useStore } from "../context";
-import { STUB_AGENTS, type WorkstreamState } from "../stub-data";
+import { type IssueState, STUB_AGENTS } from "../stub-data";
+import { IssueCard } from "./IssueCard";
 import { StateDot } from "./StateDot";
-import { WorkstreamCard } from "./WorkstreamCard";
 
 /** How the board groups rows. Swimlane = one row per agent (default); status =
  *  a plain column board with no agent rows. */
 type BoardMode = "swimlane" | "status";
 
 /** The Bridge: the full kanban board, swimlane-by-agent by default. Columns are
- *  the workstream lifecycle states; each agent is a row; a cell holds that
+ *  the issue lifecycle states; each agent is a row; a cell holds that
  *  agent's cards in that state. Clicking an agent gutter opens the agent view. */
 export const Bridge: Component = () => {
 	const store = useStore();
 	const [mode, setMode] = createSignal<BoardMode>("swimlane");
 
-	// The board reads the store's reactive workstream list (design "one source
+	// The board reads the store's reactive issue list (design "one source
 	// of truth") through the pure board.ts partition, so a promote/archive shows
 	// here immediately. STUB_AGENTS stays direct — agents aren't mutated here.
-	const boardAgents = () => boardAgentsOf(STUB_AGENTS, store.workstreams());
-	const cellItems = (agentId: string | null, state: WorkstreamState) =>
-		cellItemsOf(store.workstreams(), agentId, state);
-	const laneTotal = (state: WorkstreamState) =>
-		laneTotalOf(store.workstreams(), state);
+	const boardAgents = () => boardAgentsOf(STUB_AGENTS, store.issues());
+	const cellItems = (agentId: string | null, state: IssueState) =>
+		cellItemsOf(store.issues(), agentId, state);
+	const laneTotal = (state: IssueState) => laneTotalOf(store.issues(), state);
 	const inFlight = () =>
-		activeWorkstreams(store.workstreams()).filter((w) => w.state !== "done")
-			.length;
+		activeIssues(store.issues()).filter((w) => w.state !== "done").length;
 	const agentItemCount = (agentId: string) =>
-		store.workstreams().filter((w) => w.assignee === agentId).length;
+		store.issues().filter((w) => w.assignee === agentId).length;
 
 	// Grid columns: the agent gutter (only in swimlane mode) + one per lane.
 	const gridColumns = () =>
@@ -47,7 +45,7 @@ export const Bridge: Component = () => {
 			<div class="bridge-toolbar">
 				<span class="heading">Bridge</span>
 				<span class="sub">
-					{boardAgents().length} agents · {inFlight()} in-flight workstreams
+					{boardAgents().length} agents · {inFlight()} in-flight issues
 				</span>
 				<div class="seg" role="toolbar" aria-label="Board grouping">
 					<button
@@ -93,7 +91,7 @@ export const Bridge: Component = () => {
 										each={cellItems(null, lane.state)}
 										fallback={<span class="term-empty">—</span>}
 									>
-										{(ws) => <WorkstreamCard ws={ws} />}
+										{(ws) => <IssueCard issue={ws} />}
 									</For>
 								</div>
 							)}
@@ -129,7 +127,7 @@ export const Bridge: Component = () => {
 												classList={{ dim: items.length === 0 }}
 											>
 												<For each={items}>
-													{(ws) => <WorkstreamCard ws={ws} />}
+													{(ws) => <IssueCard issue={ws} />}
 												</For>
 											</div>
 										);
