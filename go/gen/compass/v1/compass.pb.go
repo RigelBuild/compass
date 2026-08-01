@@ -2273,8 +2273,14 @@ type StartAgentSessionRequest struct {
 	// Optional initial prompt to send once the session is ready. Empty = start
 	// idle, awaiting a later prompt.
 	InitialPrompt string `protobuf:"bytes,2,opt,name=initial_prompt,json=initialPrompt,proto3" json:"initial_prompt,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// When set, the session in this container resumes the identified persisted
+	// logical session: the Server (subscriber-authz gated) reconstructs the
+	// stored transcript into a session-JSONL body the Runner materializes into
+	// the new container at provision. Empty = fresh. No storage locator ever
+	// rides any request — storage is Server-internal (SEA-1570).
+	ResumeSessionId string `protobuf:"bytes,3,opt,name=resume_session_id,json=resumeSessionId,proto3" json:"resume_session_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *StartAgentSessionRequest) Reset() {
@@ -2317,6 +2323,13 @@ func (x *StartAgentSessionRequest) GetContainerName() string {
 func (x *StartAgentSessionRequest) GetInitialPrompt() string {
 	if x != nil {
 		return x.InitialPrompt
+	}
+	return ""
+}
+
+func (x *StartAgentSessionRequest) GetResumeSessionId() string {
+	if x != nil {
+		return x.ResumeSessionId
 	}
 	return ""
 }
@@ -2853,10 +2866,11 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"remote_urlR\n" +
 	"local_pathR\x03ref\"H\n" +
 	"\x1fProvisionAgentWorkspaceResponse\x12%\n" +
-	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\"h\n" +
+	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\"\x94\x01\n" +
 	"\x18StartAgentSessionRequest\x12%\n" +
 	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\x12%\n" +
-	"\x0einitial_prompt\x18\x02 \x01(\tR\rinitialPrompt\":\n" +
+	"\x0einitial_prompt\x18\x02 \x01(\tR\rinitialPrompt\x12*\n" +
+	"\x11resume_session_id\x18\x03 \x01(\tR\x0fresumeSessionId\":\n" +
 	"\x19StartAgentSessionResponse\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\"8\n" +

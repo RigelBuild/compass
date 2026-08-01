@@ -70,7 +70,41 @@ message AgentFrame {
     //     receipt for a delivery rides this frame, not the Runner result
     //     stream (RT-3); the Server advances the delivery cursor on it.
     DeliveryAck delivery_ack = 6;
+    //   transcript_entry — one committed SDK session entry, teed upstream on
+    //     the DURABLE conversation-frame lane (PostConversationFrame →
+    //     CommitConversationFrame), not the loss-tolerable Publish spine
+    //     (SEA-1570). The Server persists it; the agent's local copy is
+    //     container-ephemeral. Reconstructed into a session-JSONL body on
+    //     resume (T4/T5).
+    TranscriptEntry transcript_entry = 7;
   }
+}
+
+// The `transcript_entry` variant's payload: one committed SDK session entry,
+// teed upstream by the agent's session-storage backend as a durable frame
+// (SEA-1570). `append` → a delta entry (checkpoint = false); `writeFull` (an
+// SDK compaction/title rewrite) → a checkpoint entry (checkpoint = true, the
+// full body as one payload). INTERNAL-only, like the rest of this file.
+message TranscriptEntry {
+  // One SDK session entry, verbatim in the SDK's own session-JSONL encoding
+  // (the exact bytes the tee backend committed locally). Opaque to the proto
+  // layer by design — the entry union embeds provider-specific payloads no
+  // compass.v1 message represents, and the only consumers are the Server store
+  // and the SDK's own session loader (via the Server-reconstructed resume
+  // file).
+  string entry_json = 1;
+  // Full-snapshot-vs-delta discriminator: true = this entry is a complete
+  // full-body snapshot (an SDK compaction/title rewrite via the backend's
+  // writeFull) that SUPERSEDES every prior stored entry for the session; the
+  // Server's supersession keys on this (T4). False = a plain delta append.
+  bool checkpoint = 2;
+  // Agent-stamped, monotonic from 1 PER CONTAINER LIFETIME (the agent has no
+  // durable memory across restarts). The Server gap-checks this per-lifetime
+  // sequence and REBASES it onto the session's stored maximum at lifetime
+  // bind, so the persisted entry_seq is monotonic per SESSION and
+  // (session_id, entry_seq) keys the store across resumes (T4). The
+  // idempotency key on the durable envelope dedups retries.
+  uint64 entry_seq = 3;
 }
 
 // The `session` variant's payload: a typed OMP-native session event plus the

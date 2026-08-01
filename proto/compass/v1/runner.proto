@@ -189,6 +189,27 @@ message SessionsResponse {
     // request_id.
     DispatchControl deliver_control = 11;
   }
+  // resume_body — the INTERNAL resume-body carrier, a TOP-LEVEL sibling of
+  // request_id OUTSIDE the command oneof (SEA-1570): the Server attaches it on
+  // an authorized resume start beside the verbatim public `start` request,
+  // which itself carries only the authz-checked resume_session_id (no locator,
+  // = 8 and deliver_control = 11, and 12 is skipped (the design-abandoned
+  // ResumeContext resume, DL-065 — never wired, so nothing serialized it). A
+  // fresh tag, never a reused one.
+  ResumeBody resume_body = 13;
+}
+
+// ResumeBody — the INTERNAL resume-body carrier attached to SessionsResponse on
+// an authorized resume (SEA-1570). Additive, INTERNAL-ONLY: rides the
+// path-filtered internal gen lane, never the public client surface. The Server
+// attaches it; no client can supply it, and the public `start` request is
+// relayed verbatim (T6).
+message ResumeBody {
+  // The reconstructed post-supersession session-JSONL body (T5) — string,
+  // consistent with TranscriptEntry.entry_json.
+  string session_body = 1;
+  // Inline-image blob bytes are OUT of MVP scope (SEA-1582): no grounded
+  // agent-side capture seam exists, so the carrier holds only the JSONL body.
 }
 
 // DispatchControl — the Server->Runner relay envelope for a control op
@@ -326,7 +347,8 @@ message RelayCommsCallResponse {
 // forwards for commit. `session_id` is the session the Runner structurally owns
 // (resolved to an account Server-side, fail-closed — see the RPC comment).
 // `frame` is constrained by the agent side to a conversation_posted /
-// conversation_updated AgentFrame variant (the same C4 constraint Publish
+// conversation_updated / transcript_entry AgentFrame variant (the durable lane
+// carries the SEA-1570 transcript entry too; the same C4 constraint Publish
 // telemetry frames are held to). `idempotency_key` is the agent-minted envelope
 // key reused verbatim from AgentGateway.PostConversationFrameRequest.
 message CommitConversationFrameRequest {
