@@ -136,7 +136,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -147,7 +147,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -672,7 +672,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "tracing",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -1040,16 +1040,6 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-link 0.2.1",
-]
-
-[[package]]
-name = "chrono-tz"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
-dependencies = [
- "chrono",
- "phf 0.12.1",
 ]
 
 [[package]]
@@ -1810,8 +1800,8 @@ dependencies = [
  "rkyv",
  "rustls",
  "sec1",
- "sha1",
- "sha2",
+ "sha1 0.10.7",
+ "sha2 0.10.9",
  "thiserror 1.0.69",
  "tokio",
  "webrtc-util",
@@ -1955,7 +1945,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2756,7 +2746,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -3435,11 +3425,12 @@ dependencies = [
 
 [[package]]
 name = "keccak"
-version = "0.1.6"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
+checksum = "9e24a010dd405bd7ed803e5253182815b41bf2e6a80cc3bfc066658e03a198aa"
 dependencies = [
- "cpufeatures 0.2.17",
+ "cfg-if",
+ "cpufeatures 0.3.0",
 ]
 
 [[package]]
@@ -3676,6 +3667,16 @@ checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
 dependencies = [
  "cfg-if",
  "digest 0.10.7",
+]
+
+[[package]]
+name = "md-5"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69b6441f590336821bb897fb28fc622898ccceb1d6cea3fde5ea86b090c4de98"
+dependencies = [
+ "cfg-if",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -3978,7 +3979,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4025,12 +4026,6 @@ dependencies = [
  "autocfg",
  "libm",
 ]
-
-[[package]]
-name = "number_prefix"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "objc2"
@@ -4397,7 +4392,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4415,7 +4410,7 @@ dependencies = [
  "ecdsa",
  "elliptic-curve",
  "primeorder",
- "sha2",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -4427,7 +4422,7 @@ dependencies = [
  "ecdsa",
  "elliptic-curve",
  "primeorder",
- "sha2",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -4632,15 +4627,6 @@ dependencies = [
 
 [[package]]
 name = "phf"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
-dependencies = [
- "phf_shared 0.12.1",
-]
-
-[[package]]
-name = "phf"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
@@ -4708,15 +4694,6 @@ name = "phf_shared"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
-dependencies = [
- "siphasher",
-]
-
-[[package]]
-name = "phf_shared"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
 dependencies = [
  "siphasher",
 ]
@@ -5740,7 +5717,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5753,7 +5730,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5951,6 +5928,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5962,13 +5950,36 @@ dependencies = [
 ]
 
 [[package]]
-name = "sha3"
-version = "0.10.9"
+name = "sha2"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77fd7028345d415a4034cf8777cd4f8ab1851274233b45f84e3d955502d93874"
+checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
 dependencies = [
- "digest 0.10.7",
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "digest 0.11.3",
+]
+
+[[package]]
+name = "sha3"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc9bad02c26382724b2d2692c6f179285e4b54eeecd7968f52a50059c3c11759"
+dependencies = [
+ "digest 0.11.3",
  "keccak",
+ "sponge-cursor",
+]
+
+[[package]]
+name = "shake"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09057cb2149ad4cbd2da1e26b351f9a4c354219421229c69c3063e6f61947c4a"
+dependencies = [
+ "digest 0.11.3",
+ "keccak",
+ "sponge-cursor",
 ]
 
 [[package]]
@@ -6102,7 +6113,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -6129,6 +6140,12 @@ dependencies = [
  "base64ct",
  "der",
 ]
+
+[[package]]
+name = "sponge-cursor"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 
 [[package]]
 name = "stable_deref_trait"
@@ -6205,7 +6222,7 @@ dependencies = [
  "base64",
  "crc",
  "lazy_static",
- "md-5",
+ "md-5 0.10.6",
  "rand 0.9.5",
  "ring",
  "subtle",
@@ -6314,10 +6331,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6345,7 +6362,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7237,7 +7254,7 @@ dependencies = [
  "base64",
  "futures",
  "log",
- "md-5",
+ "md-5 0.10.6",
  "portable-atomic",
  "rand 0.9.5",
  "ring",
@@ -7283,7 +7300,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset 0.9.1",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7408,7 +7425,7 @@ dependencies = [
  "clap",
  "pi-uutils-ctx",
  "uu_checksum_common",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7417,7 +7434,7 @@ version = "0.8.0"
 dependencies = [
  "clap",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7429,7 +7446,7 @@ dependencies = [
  "pi-uutils-ctx",
  "tempfile",
  "uu_base32",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7438,7 +7455,7 @@ version = "0.8.0"
 dependencies = [
  "clap",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7449,7 +7466,7 @@ dependencies = [
  "memchr",
  "pi-uutils-ctx",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7461,7 +7478,7 @@ dependencies = [
  "hex",
  "os_display",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7470,7 +7487,7 @@ version = "0.8.0"
 dependencies = [
  "clap",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7481,7 +7498,7 @@ dependencies = [
  "clap",
  "memchr",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7496,7 +7513,7 @@ dependencies = [
  "regex",
  "rustix 1.1.4",
  "tempfile",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7506,7 +7523,7 @@ dependencies = [
  "clap",
  "parking_lot",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7525,7 +7542,7 @@ dependencies = [
  "pi-walker",
  "regex",
  "tempfile",
- "uucore 0.0.30",
+ "uucore",
 ]
 
 [[package]]
@@ -7536,7 +7553,7 @@ dependencies = [
  "memchr",
  "pi-uutils-ctx",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7548,7 +7565,7 @@ dependencies = [
  "hostname",
  "parking_lot",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
  "windows-sys 0.61.2",
 ]
 
@@ -7561,7 +7578,7 @@ dependencies = [
  "pi-uutils-ctx",
  "tempfile",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7576,7 +7593,7 @@ dependencies = [
  "pi-uutils-ctx",
  "rustc-hash 2.1.3",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
  "uutils_term_grid",
 ]
 
@@ -7586,7 +7603,7 @@ version = "0.8.0"
 dependencies = [
  "clap",
  "uu_checksum_common",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7596,7 +7613,7 @@ dependencies = [
  "clap",
  "pi-uutils-ctx",
  "rustix 1.1.4",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7609,7 +7626,7 @@ dependencies = [
  "rand 0.10.2",
  "tempfile",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7623,7 +7640,7 @@ dependencies = [
  "pi-uutils-ctx",
  "rustc-hash 2.1.3",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
  "windows-sys 0.61.2",
 ]
 
@@ -7635,7 +7652,7 @@ dependencies = [
  "libc",
  "parking_lot",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7644,7 +7661,7 @@ version = "0.8.0"
 dependencies = [
  "clap",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7654,7 +7671,7 @@ dependencies = [
  "clap",
  "parking_lot",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7665,7 +7682,7 @@ dependencies = [
  "parking_lot",
  "pi-uutils-ctx",
  "tempfile",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7676,7 +7693,7 @@ dependencies = [
  "parking_lot",
  "pi-uutils-ctx",
  "tempfile",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7688,7 +7705,7 @@ dependencies = [
  "libc",
  "pi-uutils-ctx",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
  "windows-sys 0.61.2",
 ]
 
@@ -7704,7 +7721,7 @@ dependencies = [
  "pi-uutils-ctx",
  "regex",
  "tempfile",
- "uucore 0.9.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7718,7 +7735,7 @@ dependencies = [
  "parking_lot",
  "pi-uutils-ctx",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7728,7 +7745,7 @@ dependencies = [
  "clap",
  "pi-uutils-ctx",
  "uu_checksum_common",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7738,7 +7755,7 @@ dependencies = [
  "clap",
  "pi-uutils-ctx",
  "uu_checksum_common",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7748,7 +7765,7 @@ dependencies = [
  "clap",
  "pi-uutils-ctx",
  "uu_checksum_common",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7758,7 +7775,7 @@ dependencies = [
  "clap",
  "pi-uutils-ctx",
  "uu_checksum_common",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7768,7 +7785,7 @@ dependencies = [
  "clap",
  "pi-uutils-ctx",
  "uu_checksum_common",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7790,7 +7807,7 @@ dependencies = [
  "self_cell",
  "tempfile",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7802,7 +7819,7 @@ dependencies = [
  "pi-uutils-ctx",
  "tempfile",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
  "windows-sys 0.61.2",
 ]
 
@@ -7818,7 +7835,7 @@ dependencies = [
  "regex",
  "tempfile",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7835,7 +7852,7 @@ dependencies = [
  "rustix 1.1.4",
  "tempfile",
  "uu_tac",
- "uucore 0.8.0",
+ "uucore",
  "windows-sys 0.61.2",
 ]
 
@@ -7845,7 +7862,7 @@ version = "0.8.0"
 dependencies = [
  "clap",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7862,7 +7879,7 @@ dependencies = [
  "rustix 1.1.4",
  "tempfile",
  "thiserror 2.0.19",
- "uucore 0.8.0",
+ "uucore",
  "windows-sys 0.61.2",
 ]
 
@@ -7874,7 +7891,7 @@ dependencies = [
  "clap",
  "nom 8.0.0",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7885,7 +7902,7 @@ dependencies = [
  "parking_lot",
  "pi-uutils-ctx",
  "tempfile",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7896,7 +7913,7 @@ dependencies = [
  "parking_lot",
  "pi-uutils-ctx",
  "platform-info",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7905,7 +7922,7 @@ version = "0.8.0"
 dependencies = [
  "clap",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7919,7 +7936,7 @@ dependencies = [
  "rustix 1.1.4",
  "thiserror 2.0.19",
  "unicode-width 0.2.2",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
@@ -7929,7 +7946,7 @@ dependencies = [
  "clap",
  "parking_lot",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
  "windows-sys 0.61.2",
 ]
 
@@ -7952,36 +7969,14 @@ dependencies = [
  "itertools 0.14.0",
  "parking_lot",
  "pi-uutils-ctx",
- "uucore 0.8.0",
+ "uucore",
 ]
 
 [[package]]
 name = "uucore"
-version = "0.0.30"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71f4e82877d06de779c611a3d54720f56f1e68b228fb30a5b6c66ef07e68263d"
-dependencies = [
- "chrono",
- "chrono-tz",
- "clap",
- "dunce",
- "glob",
- "iana-time-zone",
- "libc",
- "nix 0.29.0",
- "number_prefix",
- "os_display",
- "uucore_procs 0.0.30",
- "wild",
- "winapi-util",
- "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "uucore"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07d779636d827cde4100f0e65ff3fd23b0b1f1195055475c6e6813d425f30c8e"
+checksum = "069b34217c27f611e1589f540f58118dbf226a9e407d38ab472052ff075a1dc2"
 dependencies = [
  "base64-simd",
  "bigdecimal",
@@ -7992,10 +7987,9 @@ dependencies = [
  "crc-fast",
  "data-encoding",
  "data-encoding-macro",
- "digest 0.10.7",
+ "digest 0.11.3",
  "dunce",
  "fluent",
- "fluent-bundle",
  "fluent-syntax",
  "glob",
  "hex",
@@ -8009,7 +8003,7 @@ dependencies = [
  "jiff",
  "jiff-icu",
  "libc",
- "md-5",
+ "md-5 0.11.0",
  "memchr",
  "nix 0.31.3",
  "num-traits",
@@ -8017,60 +8011,20 @@ dependencies = [
  "procfs",
  "rustc-hash 2.1.3",
  "rustix 1.1.4",
- "sha1",
- "sha2",
+ "sha1 0.11.0",
+ "sha2 0.11.0",
  "sha3",
+ "shake",
  "sm3",
  "thiserror 2.0.19",
  "unic-langid",
  "unit-prefix",
- "uucore_procs 0.8.0",
+ "uucore_procs",
  "wild",
  "winapi-util",
  "windows-sys 0.61.2",
  "xattr",
  "z85",
-]
-
-[[package]]
-name = "uucore"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "069b34217c27f611e1589f540f58118dbf226a9e407d38ab472052ff075a1dc2"
-dependencies = [
- "clap",
- "fluent",
- "fluent-syntax",
- "libc",
- "nix 0.31.3",
- "os_display",
- "rustc-hash 2.1.3",
- "rustix 1.1.4",
- "thiserror 2.0.19",
- "unic-langid",
- "uucore_procs 0.9.0",
- "wild",
-]
-
-[[package]]
-name = "uucore_procs"
-version = "0.0.30"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c72435859e812e602e225dea48d014abb6b1072220a8d44f2fe0565553b1f7e4"
-dependencies = [
- "proc-macro2",
- "quote",
- "uuhelp_parser",
-]
-
-[[package]]
-name = "uucore_procs"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da865e8a648b260dbd89fca76d0801995877ab27a4e259b6dec30ba9743b86ab"
-dependencies = [
- "proc-macro2",
- "quote",
 ]
 
 [[package]]
@@ -8082,12 +8036,6 @@ dependencies = [
  "proc-macro2",
  "quote",
 ]
-
-[[package]]
-name = "uuhelp_parser"
-version = "0.0.30"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bb6d972f580f8223cb7052d8580aea2b7061e368cf476de32ea9457b19459ed"
 
 [[package]]
 name = "uuid"
@@ -8379,7 +8327,7 @@ dependencies = [
  "sdp",
  "serde",
  "serde_json",
- "sha2",
+ "sha2 0.10.9",
  "smol_str",
  "stun",
  "thiserror 1.0.69",
@@ -8497,7 +8445,7 @@ dependencies = [
  "log",
  "rtcp",
  "rtp",
- "sha1",
+ "sha1 0.10.7",
  "subtle",
  "thiserror 1.0.69",
  "tokio",
@@ -8590,7 +8538,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9073,7 +9021,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

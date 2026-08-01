@@ -214,7 +214,7 @@ features = [
 ]
 
 [target."cfg(any(unix, windows))".dependencies.uucore]
-version = "0.8.0"
+version = "0.9.0"
 features = ["format"]
 default-features = false
 
