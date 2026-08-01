@@ -88,7 +88,12 @@ func workspaceToWire(w store.AgentWorkspace) *compassv1.AgentWorkspace {
 	}
 }
 
-func messageToWire(m store.Message) *compassv1.Message {
+// MessageToWire maps a store.Message onto the compass.v1 wire Message. Exported
+// so the delivery consumer (internal/delivery, SEA-1569 T3) dispatches a
+// re-read settled message through the ONE store->wire mapper rather than a
+// second convention (the settle gate and the no-live-author path both re-read
+// the message's current blocks from the store before dispatch).
+func MessageToWire(m store.Message) *compassv1.Message {
 	out := &compassv1.Message{
 		Id:              string(m.ID),
 		Container:       &compassv1.Message_ChannelId{ChannelId: string(m.Container.ChannelID)},
@@ -103,7 +108,7 @@ func messageToWire(m store.Message) *compassv1.Message {
 func messagesToWire(ms []store.Message) []*compassv1.Message {
 	out := make([]*compassv1.Message, len(ms))
 	for i, m := range ms {
-		out[i] = messageToWire(m)
+		out[i] = MessageToWire(m)
 	}
 	return out
 }
@@ -366,7 +371,7 @@ func (c *Comms) publishAgentWorkspaceChanged(w store.AgentWorkspace) {
 func (c *Comms) publishMessagePosted(m store.Message) {
 	c.bus.Publish(&compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_MessagePosted{
-			MessagePosted: &compassv1.MessagePosted{Message: messageToWire(m)},
+			MessagePosted: &compassv1.MessagePosted{Message: MessageToWire(m)},
 		},
 	})
 }
@@ -374,7 +379,7 @@ func (c *Comms) publishMessagePosted(m store.Message) {
 func (c *Comms) publishMessageUpdated(m store.Message) {
 	c.bus.Publish(&compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_MessageUpdated{
-			MessageUpdated: &compassv1.MessageUpdated{Message: messageToWire(m)},
+			MessageUpdated: &compassv1.MessageUpdated{Message: MessageToWire(m)},
 		},
 	})
 }

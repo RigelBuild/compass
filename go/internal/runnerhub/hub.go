@@ -106,6 +106,42 @@ type LifecycleSink interface {
 	PublishSessionStatus(status *compassv1.AgentSessionStatus)
 }
 
+// SettleSink is notified of an agent session's lifecycle transition at the SAME
+// hub arm that extracts it for the LifecycleSink (deliverSession) — the direct,
+// non-bus edge the delivery consumer (SEA-1569 T3) subscribes to for the
+// author's turn-settle (design.md:155-160). The consumer holds agent-authored
+// messages until their author's session settles (WORKING->READY) or reaches a
+// terminal state, then fires the held delivers from the message's current
+// (settled) blocks. It is wired via SetSettleSink AFTER both the hub and the
+// consumer exist (breaking the construction cycle), and is nil-safe: a hub with
+// no settle sink is today's behavior, so every existing hub test is unchanged.
+//
+// A DIRECT edge, not the board bus: the settle signal fires through the board
+// bus for the liveness surface, but the delivery consumer tails the COMMS bus, a
+// different bus. Routing the settle edge through the board stream would couple
+// two bus spaces; the hub calling the sink directly at the arm keeps the edge
+// where the design puts it (design.md:76-84 of the T3 brief).
+type SettleSink interface {
+	// OnSessionSettled reports that sessionID transitioned to state, called at
+	// the hub's deliverSession arm right after the LifecycleSink publish.
+	OnSessionSettled(sessionID string, state compassv1.AgentSessionState)
+}
+
+// DeliveryStore is the durable delivery-cursor surface the hub's ack arm needs
+// (SEA-1569 T3 §6): resolve a delivered message's channel and advance the
+// per-(agent, channel) cursor on the recipient's ack. *store.Store implements
+// it; the hub depends only on this narrow surface (pattern: ConversationSink).
+// Wired via SetDeliveryStore after construction so no NewHub caller signature
+// changes, and nil-safe: a hub with no delivery store simply drops delivery_ack
+// frames (a Deliver-only test hub never receives one).
+type DeliveryStore interface {
+	// MessageChannel resolves a message id to its channel — the ack carries only
+	// message_id, but AckDelivery is keyed (agent, channel, message_id).
+	MessageChannel(ctx context.Context, messageID string) (store.ChannelID, error)
+	// AckDelivery advances the (agent, channel) cursor across the acked message.
+	AckDelivery(ctx context.Context, agent store.AccountID, channel store.ChannelID, messageID string) error
+}
+
 // SessionTailSink relays an opaque OMP-native session frame to the dedicated
 // session-tail stream (the observation pane). In T4 this is a minimal sink so a
 // session frame's trace body is never dropped; T5 wires SubscribeAgentSession
@@ -152,6 +188,16 @@ type Hub struct {
 	tail         SessionTailSink
 	comms        CommsCaller
 	log          *slog.Logger
+	// settle is the delivery consumer's settle-edge sink (SEA-1569 T3), notified
+	// at deliverSession right after the LifecycleSink publish. Nil until
+	// SetSettleSink wires it (after both hub and consumer exist), and read under
+	// mu so the setter and the arm never race. Nil-safe: a hub with no settle
+	// sink is today's behavior.
+	settle SettleSink
+	// delivery is the durable delivery-cursor store the ack arm advances (SEA-1569
+	// T3). Nil until SetDeliveryStore wires it; read under mu. Nil-safe: a hub
+	// with no delivery store drops delivery_ack frames.
+	delivery DeliveryStore
 
 	mu sync.Mutex
 	// runner is the single attached Runner (single-Runner MVP, OQ6
@@ -171,6 +217,15 @@ type Hub struct {
 	// stale account (OQ-2, ratified). Single-Runner MVP: every binding belongs
 	// to the one enrolled Runner, so reconnect clears the whole map.
 	sessionAccounts map[string]store.AccountID
+	// accountSessions is the REVERSE of sessionAccounts (account -> live
+	// session_id), maintained wherever sessionAccounts is so the two never drift:
+	// promoteSession adds, unbindSession removes, enroll clears. The delivery
+	// consumer (SEA-1569 T3) resolves a subscribed agent account to its live
+	// session to dispatch a deliver — the reverse direction RelayCommsCall never
+	// needs. Single-Runner MVP: an account has at most one live session, so this
+	// is a plain 1:1 map; a future multi-session-per-agent change would widen the
+	// value to a set.
+	accountSessions map[store.AccountID]string
 	// lastSeq is the highest RunnerSeq Deliver has accepted, for gap detection.
 	lastSeq uint64
 	// seenGap records whether a sequence gap was ever observed (in-transit
@@ -225,7 +280,30 @@ func NewHub(conversation ConversationSink, lifecycle LifecycleSink, tail Session
 		log:               log,
 		containerAccounts: make(map[string]store.AccountID),
 		sessionAccounts:   make(map[string]store.AccountID),
+		accountSessions:   make(map[store.AccountID]string),
 	}
+}
+
+// SetSettleSink wires the delivery consumer as the hub's settle-edge sink,
+// AFTER both exist — the post-construction setter that breaks the consumer<->hub
+// construction cycle (the consumer takes the hub as its ControlDispatcher, the
+// hub takes the consumer as its SettleSink). Mirrors the LifecycleSink wiring
+// pattern but as a setter, so no NewHub caller signature changes. Called once at
+// server assembly; safe to leave unset (a hub with no settle sink is today's
+// behavior).
+func (h *Hub) SetSettleSink(settle SettleSink) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.settle = settle
+}
+
+// SetDeliveryStore wires the durable delivery-cursor store the ack arm advances,
+// after construction so no NewHub caller signature changes. Called once at
+// server assembly; nil-safe (a hub with no delivery store drops delivery_ack).
+func (h *Hub) SetDeliveryStore(delivery DeliveryStore) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.delivery = delivery
 }
 
 // Deliver is the sole entry point a relayed Runner event takes into the Server.
@@ -250,6 +328,9 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 		return h.deliverConversation(ctx, ev, nil, f.ConversationUpdated)
 	case *compassv1internal.AgentFrame_Session:
 		h.deliverSession(ev.SessionID, f.Session)
+		return nil
+	case *compassv1internal.AgentFrame_DeliveryAck:
+		h.deliverAck(ctx, ev, f.DeliveryAck)
 		return nil
 	default:
 		// Unset or unrecognized oneof — the "unknown frame". Log + count so a
@@ -451,11 +532,70 @@ func (h *Hub) deliverConversation(
 // transition, or both; UNSPECIFIED means "trace only, no transition".
 func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFrame) {
 	h.tail.RelaySessionFrame(sessionID, sf)
-	if state := sf.GetState(); state != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
-		h.lifecycle.PublishSessionStatus(&compassv1.AgentSessionStatus{
-			SessionId: sessionID,
-			State:     state,
-		})
+	state := sf.GetState()
+	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
+		return
+	}
+	h.lifecycle.PublishSessionStatus(&compassv1.AgentSessionStatus{
+		SessionId: sessionID,
+		State:     state,
+	})
+	// Same arm, right after the lifecycle publish: notify the delivery consumer
+	// of the author's settle edge so it can fire any agent-authored messages held
+	// for this session (SEA-1569 T3 §2, design.md:155-160). Read the sink under
+	// mu so the setter and this arm never race; nil-safe (a hub with no settle
+	// sink is today's behavior). The sink enqueues into the consumer's own loop
+	// and returns promptly — it does not block Deliver on store work.
+	h.mu.Lock()
+	settle := h.settle
+	h.mu.Unlock()
+	if settle != nil {
+		settle.OnSessionSettled(sessionID, state)
+	}
+}
+
+// deliverAck advances the durable delivery cursor for a recipient's
+// delivery_ack (SEA-1569 T3 §6): the Runner->Server receipt that a relayed
+// deliver reached the session. It resolves session->agent from the hub's own
+// binding (the SAME binding deliverConversation resolves against), resolves the
+// acked message's channel through the delivery store (the ack carries only
+// message_id, but AckDelivery is keyed (agent, channel, message_id)), then
+// advances the cursor. Fail-closed and non-fatal throughout, mirroring the
+// existing frame handlers: an unbound session, an unknown/foreign message, or a
+// store fault is logged + counted and dropped, NEVER a stream teardown — a bad
+// ack must not kill the Runner's whole event stream. A nil delivery store (a
+// Deliver-only hub) drops the ack silently: no cursor exists to advance.
+func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1internal.DeliveryAck) {
+	h.mu.Lock()
+	delivery := h.delivery
+	h.mu.Unlock()
+	if delivery == nil {
+		return
+	}
+	messageID := ack.GetMessageId()
+	if messageID == "" {
+		h.countRefused(ev, "delivery_ack carries no message id")
+		return
+	}
+	agent, ok := h.accountForSession(ev.SessionID)
+	if !ok {
+		h.countRefused(ev, "no agent account bound to the acking session")
+		return
+	}
+	channel, err := delivery.MessageChannel(ctx, messageID)
+	if err != nil {
+		// An unknown or foreign message id: fail-closed no-op, never a teardown.
+		// A fabricated id cannot advance a cursor; the resolution IS the guard.
+		h.countRefused(ev, "delivery_ack for an unresolvable message: "+err.Error())
+		return
+	}
+	if err := delivery.AckDelivery(ctx, agent, channel, messageID); err != nil {
+		// A store fault advancing the cursor: log + count and drop. A missed ack
+		// costs only a redundant redeliver on the recipient's next reconnect
+		// sweep (the cursor stays where it was), so it never justifies tearing
+		// down the relay.
+		h.countRefused(ev, "delivery_ack cursor advance failed: "+err.Error())
+		return
 	}
 }
 
@@ -548,7 +688,9 @@ func (h *Hub) enroll(id string, subject store.Subject) (reattached bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	reattached = h.runner != nil
-	h.runner = &attachedRunner{id: id, subject: subject, router: newCommandRouter()}
+	router := newCommandRouter()
+	router.log = h.log
+	h.runner = &attachedRunner{id: id, subject: subject, router: router}
 	clear(h.containerAccounts)
 	clear(h.sessionAccounts)
 	return reattached

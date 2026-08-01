@@ -1,0 +1,331 @@
+//go:build unix
+
+package runnerhub
+
+// The RunnerHub's SEA-1569 T3 arms: the send-only DispatchControl relay (§5, the
+// crux: a successful deliver must NOT block on a result), the delivery_ack cursor
+// arm (§6), and the settle-edge sink fired at deliverSession (§2). Each test pins
+// the observable contract a plausible regression would break, with a fake
+// DeliveryStore / settle recorder mirroring the seam fakes in helpers_test.go.
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+
+	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/store"
+)
+
+// ackCall is one recorded AckDelivery: the (agent, channel, message) the arm
+// resolved and advanced the cursor for.
+type ackCall struct {
+	agent     store.AccountID
+	channel   store.ChannelID
+	messageID string
+}
+
+// fakeDeliveryStore records the ack arm's channel resolution + cursor advance.
+// channels maps message id -> channel (the ack-arm resolution); an id absent
+// from it resolves ErrNotFound (a foreign/fabricated ack). Concurrency-safe for
+// parity with the real store.
+type fakeDeliveryStore struct {
+	mu       sync.Mutex
+	channels map[string]store.ChannelID
+	acks     []ackCall
+	ackErr   error // if set, AckDelivery returns it (a store fault)
+}
+
+func newFakeDeliveryStore() *fakeDeliveryStore {
+	return &fakeDeliveryStore{channels: map[string]store.ChannelID{}}
+}
+
+func (f *fakeDeliveryStore) MessageChannel(_ context.Context, messageID string) (store.ChannelID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ch, ok := f.channels[messageID]
+	if !ok {
+		return "", store.ErrNotFound
+	}
+	return ch, nil
+}
+
+func (f *fakeDeliveryStore) AckDelivery(_ context.Context, agent store.AccountID, channel store.ChannelID, messageID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.ackErr != nil {
+		return f.ackErr
+	}
+	f.acks = append(f.acks, ackCall{agent: agent, channel: channel, messageID: messageID})
+	return nil
+}
+
+func (f *fakeDeliveryStore) ackSnapshot() []ackCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]ackCall, len(f.acks))
+	copy(out, f.acks)
+	return out
+}
+
+// settleRecord is one recorded settle edge.
+type settleRecord struct {
+	sessionID string
+	state     compassv1.AgentSessionState
+}
+
+// fakeSettleSink records OnSessionSettled calls — the hub's settle-edge sink.
+type fakeSettleSink struct {
+	mu      sync.Mutex
+	settles []settleRecord
+}
+
+func (f *fakeSettleSink) OnSessionSettled(sessionID string, state compassv1.AgentSessionState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.settles = append(f.settles, settleRecord{sessionID: sessionID, state: state})
+}
+
+func (f *fakeSettleSink) snapshot() []settleRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]settleRecord, len(f.settles))
+	copy(out, f.settles)
+	return out
+}
+
+// deliveryAckFrame wraps a DeliveryAck variant carrying messageID.
+func deliveryAckFrame(messageID string) *compassv1internal.AgentFrame {
+	return &compassv1internal.AgentFrame{
+		Frame: &compassv1internal.AgentFrame_DeliveryAck{
+			DeliveryAck: &compassv1internal.DeliveryAck{MessageId: messageID},
+		},
+	}
+}
+
+// Case 14: the ack arm resolves the channel and calls AckDelivery with the right
+// (agent, channel, message_id); an ack for an unknown message is a fail-closed
+// no-op (no cursor advance, no teardown).
+func TestDeliveryAckAdvancesCursor(t *testing.T) {
+	hub := newHubOnly()
+	del := newFakeDeliveryStore()
+	hub.SetDeliveryStore(del)
+	bindSession(hub, "sess-1") // binds sess-1 -> testAgentAccount
+	del.channels["m1"] = "chan-1"
+
+	// A valid ack: resolve channel, advance the cursor for the bound agent.
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 1, SessionID: "sess-1", Frame: deliveryAckFrame("m1"),
+	}); err != nil {
+		t.Fatalf("Deliver(delivery_ack) = %v, want nil (never a teardown)", err)
+	}
+	acks := del.ackSnapshot()
+	if len(acks) != 1 {
+		t.Fatalf("acks = %d, want 1", len(acks))
+	}
+	if acks[0].agent != testAgentAccount || acks[0].channel != "chan-1" || acks[0].messageID != "m1" {
+		t.Fatalf("ack = %+v, want {%s, chan-1, m1}", acks[0], testAgentAccount)
+	}
+
+	// An ack for an unknown message: fail-closed no-op, no advance, no teardown.
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 2, SessionID: "sess-1", Frame: deliveryAckFrame("ghost"),
+	}); err != nil {
+		t.Fatalf("Deliver(unknown ack) = %v, want nil (fail-closed no-op)", err)
+	}
+	if got := len(del.ackSnapshot()); got != 1 {
+		t.Fatalf("acks after unknown = %d, want still 1 (no advance on a foreign ack)", got)
+	}
+}
+
+// Case 14 (unbound half): an ack for a session with no bound agent is a
+// fail-closed no-op — never a cursor advance under a wrong/absent account.
+func TestDeliveryAckUnboundSessionIsNoOp(t *testing.T) {
+	hub := newHubOnly()
+	del := newFakeDeliveryStore()
+	hub.SetDeliveryStore(del)
+	del.channels["m1"] = "chan-1"
+
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 1, SessionID: "never-bound", Frame: deliveryAckFrame("m1"),
+	}); err != nil {
+		t.Fatalf("Deliver(ack, unbound) = %v, want nil", err)
+	}
+	if got := len(del.ackSnapshot()); got != 0 {
+		t.Fatalf("acks = %d, want 0 (unbound session advances nothing)", got)
+	}
+}
+
+// Case 2/§2: the hub fires its settle-edge sink at the deliverSession arm, right
+// after the lifecycle publish, with the transition's session + state — and does
+// NOT fire on a trace-only frame (UNSPECIFIED). Nil-safe: a hub with no settle
+// sink (every pre-existing test) is unchanged, covered by the existing suite.
+func TestDeliverSessionFiresSettleSink(t *testing.T) {
+	hub, _, life, _ := newHub()
+	settle := &fakeSettleSink{}
+	hub.SetSettleSink(settle)
+
+	// A lifecycle transition fires both the lifecycle publish and the settle sink.
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 1, SessionID: "sess-1",
+		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
+	}); err != nil {
+		t.Fatalf("Deliver(session READY) = %v, want nil", err)
+	}
+	if got := len(life.snapshot()); got != 1 {
+		t.Fatalf("lifecycle publishes = %d, want 1 (settle must not replace the lifecycle publish)", got)
+	}
+	got := settle.snapshot()
+	if len(got) != 1 || got[0].sessionID != "sess-1" || got[0].state != compassv1.AgentSessionState_AGENT_SESSION_STATE_READY {
+		t.Fatalf("settle = %+v, want one {sess-1, READY}", got)
+	}
+
+	// A trace-only frame (UNSPECIFIED) is not a settle edge: no settle fires.
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 2, SessionID: "sess-1", Frame: sessionTraceFrame("trace"),
+	}); err != nil {
+		t.Fatalf("Deliver(trace) = %v, want nil", err)
+	}
+	if got := len(settle.snapshot()); got != 1 {
+		t.Fatalf("settles after trace = %d, want still 1 (trace is not a settle edge)", got)
+	}
+}
+
+// Case 13: DispatchControl is SEND-ONLY — a successful deliver returns PROMPTLY
+// with no synchronous result (success rides a later delivery_ack). A bug reusing
+// dispatch/relay would register an inflight call and block on waitCall for a
+// result that never comes, hanging until ctx timeout. The test drives a live
+// Sessions stream whose Send succeeds but returns NO result, and asserts
+// DispatchControl returns without blocking.
+func TestDispatchControlSendOnlyDoesNotBlock(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	router, _, err := hub.routerFor("sess-1")
+	if err != nil {
+		t.Fatalf("routerFor: %v", err)
+	}
+	// A live stream that accepts the push and returns NO result (a successful
+	// deliver sends no SessionsRequest back).
+	sent := make(chan *compassv1internal.SessionsResponse, 1)
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		sent <- cmd
+		return nil
+	})
+
+	op := &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_Deliver{
+			Deliver: &compassv1internal.DeliverControl{Message: &compassv1.Message{Id: "m1"}},
+		},
+	}
+	// If DispatchControl blocked on a result, this call would not return; the test
+	// would hang and fail at the -timeout deadline. It returning at all is the
+	// proof of the send-only contract.
+	done := make(chan error, 1)
+	go func() { done <- hub.DispatchControl(context.Background(), "sess-1", op) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("DispatchControl (send-only, live stream) = %v, want nil", err)
+		}
+	case <-timeAfter():
+		t.Fatal("DispatchControl blocked on a send-only deliver — it must not wait for a result")
+	}
+
+	// The command reached the stream, wrapped as a deliver.
+	select {
+	case cmd := <-sent:
+		if cmd.GetDeliverControl().GetOp().GetDeliver().GetMessage().GetId() != "m1" {
+			t.Fatalf("pushed command = %+v, want a deliver for m1", cmd)
+		}
+	case <-timeAfter():
+		t.Fatal("DispatchControl pushed nothing to the live stream")
+	}
+}
+
+// Case 4 (companion): a synchronous refusal — no live Sessions stream — returns
+// an error to the consumer (which falls to the sweep), and the cursor is never
+// advanced by DispatchControl (it advances only on delivery_ack). A send-only
+// deliver registers no inflight call, so a LATER RunnerError refusal for its id
+// is observed (counted), not dropped as unknown.
+func TestDispatchControlNoLiveStreamRefuses(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	// No stream attached: send is nil.
+	op := &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_Deliver{
+			Deliver: &compassv1internal.DeliverControl{Message: &compassv1.Message{Id: "m1"}},
+		},
+	}
+	if err := hub.DispatchControl(context.Background(), "sess-1", op); err == nil {
+		t.Fatal("DispatchControl with no live stream = nil, want an error so the consumer falls to the sweep")
+	}
+}
+
+// Case 4/5 (refusal observability): a RunnerError result correlated to a
+// send-only deliver's request id is COUNTED (observed), not dropped as unknown —
+// the cursor stays unadvanced and the sweep redelivers. A successful deliver
+// (no result) is never counted a refusal.
+func TestSendOnlyRefusalIsObservedNotDropped(t *testing.T) {
+	r := newCommandRouter()
+	var captured *compassv1internal.SessionsResponse
+	r.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		captured = cmd
+		return nil
+	})
+	deliverCmd := &compassv1internal.SessionsResponse{
+		RequestId: "req-deliver",
+		Command: &compassv1internal.SessionsResponse_DeliverControl{
+			DeliverControl: &compassv1internal.DispatchControl{SessionId: "sess-1"},
+		},
+	}
+	if err := r.send1(deliverCmd); err != nil {
+		t.Fatalf("send1 = %v, want nil", err)
+	}
+	if captured.GetRequestId() != "req-deliver" {
+		t.Fatalf("send1 pushed %q, want req-deliver", captured.GetRequestId())
+	}
+	if got := r.RefusedDelivers(); got != 0 {
+		t.Fatalf("RefusedDelivers before any refusal = %d, want 0", got)
+	}
+
+	// A RunnerError result for the deliver's id: complete observes it as a refusal.
+	r.complete(&compassv1internal.SessionsRequest{
+		RequestId: "req-deliver",
+		Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
+			Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED,
+		}},
+	})
+	if got := r.RefusedDelivers(); got != 1 {
+		t.Fatalf("RefusedDelivers after a refusal = %d, want 1 (observed, not dropped)", got)
+	}
+
+	// A truly-unknown id is still ignored (the original contract), not counted.
+	r.complete(&compassv1internal.SessionsRequest{
+		RequestId: "ghost",
+		Result:    &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{}},
+	})
+	if got := r.RefusedDelivers(); got != 1 {
+		t.Fatalf("RefusedDelivers after an unknown id = %d, want still 1", got)
+	}
+}
+
+// The ack arm tolerates a store fault advancing the cursor: it is a non-fatal
+// drop (a missed ack costs a redundant redeliver on the next sweep), never a
+// teardown.
+func TestDeliveryAckStoreFaultIsNonFatal(t *testing.T) {
+	hub := newHubOnly()
+	del := newFakeDeliveryStore()
+	del.channels["m1"] = "chan-1"
+	del.ackErr = errors.New("transient store fault")
+	hub.SetDeliveryStore(del)
+	bindSession(hub, "sess-1")
+
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 1, SessionID: "sess-1", Frame: deliveryAckFrame("m1"),
+	}); err != nil {
+		t.Fatalf("Deliver(ack, store fault) = %v, want nil (non-fatal drop, not a teardown)", err)
+	}
+}
