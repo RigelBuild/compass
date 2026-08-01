@@ -50,9 +50,9 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	account, ok := h.containerAccounts[containerName]
 	if !ok {
+		h.mu.Unlock()
 		return
 	}
 	h.sessionAccounts[sessionID] = account
@@ -62,6 +62,17 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 	// Runner's life cannot resurrect a stale account (reconnect clears both maps
 	// anyway; this keeps the pre-Start map tight in the meantime).
 	delete(h.containerAccounts, containerName)
+	// Read the session-start sink under mu so the setter and this arm never race,
+	// then release BEFORE firing: the sink enqueues the reconnect sweep into the
+	// consumer's own loop and returns promptly, so promoteSession never blocks on
+	// the sweep's store work and never holds h.mu across it (mirrors the settle
+	// edge at deliverSession). Nil-safe (a hub with no session-start sink is
+	// today's behavior — SEA-1569 T6).
+	sessionStart := h.sessionStart
+	h.mu.Unlock()
+	if sessionStart != nil {
+		sessionStart.OnSessionStarted(sessionID, account)
+	}
 }
 
 // unbindSession removes a session's account binding. Called from Stop, so a

@@ -67,6 +67,30 @@ func (c *Consumer) waitSettleDrained(t *testing.T) {
 	}
 }
 
+// waitStartsDrained blocks until the session-start queue is empty, or fails at
+// the deadline. Paired with an OnSessionStarted for a throwaway session (with no
+// owed messages), it is a deterministic barrier that a prior start edge was fully
+// swept — the SEA-1569 T6 counterpart of waitSettleDrained.
+func (c *Consumer) waitStartsDrained(t *testing.T) {
+	t.Helper()
+	deadline := time.After(testTimeout)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		c.mu.Lock()
+		empty := len(c.startQueue) == 0
+		c.mu.Unlock()
+		if empty {
+			return
+		}
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatal("start queue never drained")
+		}
+	}
+}
+
 // waitForMessage reports whether messageID was dispatched before the deadline.
 func (d *fakeDispatcher) waitForMessage(t *testing.T, messageID string) bool {
 	t.Helper()

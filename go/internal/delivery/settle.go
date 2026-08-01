@@ -33,6 +33,33 @@ func (c *Consumer) OnSessionSettled(sessionID string, state compassv1.AgentSessi
 	}
 }
 
+// OnSessionStarted is the hub's SessionStartSink hook (SEA-1569 T6), called from
+// promoteSession right after the hub binds account->session at StartAgentSession
+// (and, in the single-Runner MVP, on the re-promotion each session takes after a
+// Runner re-enroll clears the bindings). Like OnSessionSettled it must NOT block
+// the hub's Start goroutine on store work and must NOT store the caller's ctx
+// (the loop owns the serve ctx), so it only enqueues the start edge and wakes the
+// loop; the loop drains it under its own ctx by running the reconnect sweep for
+// the freshly-live session. A fresh-start session needs no replay barrier — it
+// has no in-flight replay to hold delivers behind — so the MVP path is safe
+// without HoldForReplay (design.md:370-372); the barrier is a gated cross-lane
+// dependency (control.go:426-429, no production caller yet), out of T6's scope.
+func (c *Consumer) OnSessionStarted(sessionID string, account store.AccountID) {
+	if sessionID == "" || account == "" {
+		return
+	}
+	c.mu.Lock()
+	c.startQueue = append(c.startQueue, startEvent{sessionID: sessionID, account: account})
+	c.mu.Unlock()
+	// Coalescing wakeup, shared with the settle queue: a full buffer already
+	// signals a pending drain, so a dropped send loses nothing (the loop drains
+	// both queues on every wakeup).
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
+
 // firesHeldDelivers reports whether a settle to state fires an author's held
 // delivers (design.md:148-168, 312-315):
 //   - READY (agent_end, the normal WORKING->READY turn-end) fires from the
@@ -72,6 +99,28 @@ func (c *Consumer) drainSettles(ctx context.Context) {
 		c.settleQueue = c.settleQueue[1:]
 		c.mu.Unlock()
 		c.fireHeld(ctx, ev.sessionID)
+	}
+}
+
+// drainStarts sweeps every queued session-start edge under the loop's ctx. Each
+// edge redelivers the freshly-live session's owed messages via the EXISTING
+// sweepSession (holding the recipient session's dispatch gate for the whole
+// ordered re-dispatch, so live bus events for that session queue behind the
+// sweep — design.md:220-225). The sweep is at-least-once; agent-side message_id
+// dedup (T5) makes an already-acked message a no-op, and the contiguous+sparse
+// cursor omits it from UndeliveredMessages, so a message is not re-swept after
+// ack (design.md:360-365).
+func (c *Consumer) drainStarts(ctx context.Context) {
+	for {
+		c.mu.Lock()
+		if len(c.startQueue) == 0 {
+			c.mu.Unlock()
+			return
+		}
+		ev := c.startQueue[0]
+		c.startQueue = c.startQueue[1:]
+		c.mu.Unlock()
+		c.sweepSession(ctx, ev.account, ev.sessionID)
 	}
 }
 

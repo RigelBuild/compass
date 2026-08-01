@@ -127,6 +127,33 @@ type SettleSink interface {
 	OnSessionSettled(sessionID string, state compassv1.AgentSessionState)
 }
 
+// SessionStartSink is notified when the hub binds a live agent session at its
+// StartAgentSession promotion (promoteSession) — the direct, non-bus edge the
+// delivery consumer (SEA-1569 T6) subscribes to for the reconnect sweep. On a
+// session start the consumer sweeps that session's owed messages
+// (UndeliveredMessages) and re-dispatches them ascending-seq through the
+// recipient's dispatch gate, so a message posted while the agent had no live
+// session is delivered on its next start (design.md:340-346, 816-824). It is
+// wired via SetSessionStartSink AFTER both the hub and the consumer exist
+// (breaking the construction cycle, exactly as SetSettleSink does), and is
+// nil-safe: a hub with no session-start sink is today's behavior, so every
+// existing hub test is unchanged.
+//
+// Single-Runner MVP: a Runner re-enroll clears every binding (enroll) and each
+// session re-promotes through promoteSession, so the re-enroll sweep the design
+// names (design.md:341) rides the SAME promotion edge — no separate enroll-time
+// hook is wired.
+//
+// Like SettleSink this is a DIRECT edge, not the board bus, and the sink method
+// takes NO ctx: it only enqueues the start edge into the consumer's own loop and
+// returns promptly, so promoteSession never blocks on the sweep's store work and
+// the loop owns the serve ctx the sweep runs under.
+type SessionStartSink interface {
+	// OnSessionStarted reports that sessionID was bound to agent account at the
+	// hub's promoteSession, called right after the binding is recorded.
+	OnSessionStarted(sessionID string, account store.AccountID)
+}
+
 // DeliveryStore is the durable delivery-cursor surface the hub's ack arm needs
 // (SEA-1569 T3 §6): resolve a delivered message's channel and advance the
 // per-(agent, channel) cursor on the recipient's ack. *store.Store implements
@@ -194,6 +221,12 @@ type Hub struct {
 	// mu so the setter and the arm never race. Nil-safe: a hub with no settle
 	// sink is today's behavior.
 	settle SettleSink
+	// sessionStart is the delivery consumer's session-start-edge sink (SEA-1569
+	// T6), notified at promoteSession right after the account->session binding is
+	// recorded. Nil until SetSessionStartSink wires it (after both hub and
+	// consumer exist), and read under mu so the setter and promoteSession never
+	// race. Nil-safe: a hub with no session-start sink is today's behavior.
+	sessionStart SessionStartSink
 	// delivery is the durable delivery-cursor store the ack arm advances (SEA-1569
 	// T3). Nil until SetDeliveryStore wires it; read under mu. Nil-safe: a hub
 	// with no delivery store drops delivery_ack frames.
@@ -302,6 +335,18 @@ func (h *Hub) SetSettleSink(settle SettleSink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.settle = settle
+}
+
+// SetSessionStartSink wires the delivery consumer as the hub's session-start-edge
+// sink, AFTER both exist — the post-construction setter that breaks the
+// consumer<->hub construction cycle, exactly as SetSettleSink does. Mirrors the
+// SettleSink wiring so no NewHub caller signature changes. Called once at server
+// assembly; safe to leave unset (a hub with no session-start sink is today's
+// behavior).
+func (h *Hub) SetSessionStartSink(sessionStart SessionStartSink) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sessionStart = sessionStart
 }
 
 // SetDeliveryStore wires the durable delivery-cursor store the ack arm advances,
