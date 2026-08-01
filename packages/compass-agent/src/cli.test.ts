@@ -1042,6 +1042,50 @@ describe("main", () => {
 		expect(frames2[0].entrySeq).toBe(1n);
 	});
 
+	// A v2 (older-version) fixture resumed via COMPASS_RESUME_SESSION_FILE: the
+	// SDK runs a v2→v3 load migration, but that only sets #rewriteRequired as a
+	// DEFERRED flag (session-manager.ts:1007) — it does NOT rewrite the non-empty
+	// file during load, so the load tees ZERO frames. This is a regression guard
+	// on the cli.ts "the load never tees" invariant for the migrated-resume path.
+	// Non-vacuity: if a future SDK revision (or a tee change) rewrote the file
+	// during a migrated load, a checkpoint frame would land → framesAtCreate > 0
+	// → red.
+	test("a v2-fixture resume stays migration-deferred and tees no frames on load", async () => {
+		const session = fakeSession();
+		const cwd = process.cwd();
+		const sessionDir = SessionManager.getDefaultSessionDir(cwd);
+		mkdirSync(sessionDir, { recursive: true });
+		const resumeFile = join(sessionDir, "20260101-000000_v2resume.jsonl");
+		writeFileSync(resumeFile, sessionFixtureV2([userLine("v2 turn", "e-v2")]));
+
+		const log = emptyLog();
+		let entriesAtCreate: unknown[] = [];
+		let framesAtCreate = 0;
+		await main(
+			{ HOME: process.env.HOME, COMPASS_RESUME_SESSION_FILE: resumeFile },
+			{
+				createSession: (options) => {
+					const m = options.sessionManager as SessionManager;
+					// Snapshot BEFORE any post-resume write: the load already ran
+					// (setSessionFile precedes createSession).
+					entriesAtCreate = m.getEntries();
+					framesAtCreate = transcriptFramesOf(log).length;
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(log, { control: emptyControlStream }),
+			},
+		);
+
+		// The resumed manager carries the fixture's turn (loaded via the SDK's own
+		// migrating loader).
+		expect(textsOf(entriesAtCreate)).toContain("v2 turn");
+		// Migration stayed deferred: no checkpoint (or any) frame teed on load.
+		expect(framesAtCreate).toBe(0);
+	});
+
 	// A compaction round-trip: a fixture body whose file contains a superseded
 	// compaction loads through the SDK's own elision — proving the T5
 	// reconstruction needs no compaction awareness beyond T4's supersession.
@@ -1192,6 +1236,28 @@ function compactionLine(
 // lines (already newline-terminated).
 function sessionFixture(entryLines: string[]): string {
 	return `${titleSlot()}${sessionHeader()}${entryLines.join("")}`;
+}
+
+// An older-version (v2) session header. Resuming this triggers a v2→v3 load
+// migration in the SDK — which sets #rewriteRequired as a DEFERRED flag and does
+// NOT rewrite a non-empty file during load (session-manager.ts:1007), so the
+// load still tees ZERO frames.
+function sessionHeaderV2(): string {
+	fixtureSeq += 1;
+	return `${JSON.stringify({
+		type: "session",
+		version: 2,
+		id: `fixture-${fixtureSeq}`,
+		timestamp: "2026-01-01T00:00:00.000Z",
+		cwd: process.cwd(),
+	})}\n`;
+}
+
+// A full v2 session body: title slot + v2 header + entries. v2→v3 migration only
+// renames hookMessage roles (session-migrations.ts), so a plain user line (which
+// already carries the v2 id/parentId shape) migrates cleanly.
+function sessionFixtureV2(entryLines: string[]): string {
+	return `${titleSlot()}${sessionHeaderV2()}${entryLines.join("")}`;
 }
 
 // A user / assistant Message to drive through the real SessionManager. Only the

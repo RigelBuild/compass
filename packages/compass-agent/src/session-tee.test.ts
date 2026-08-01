@@ -20,9 +20,20 @@
 // controls, not a wall-clock wait.
 
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SESSION_TITLE_SLOT_BYTES } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import {
+	parseTitleSlotFromContent,
+	serializeTitleSlot,
+} from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import type { OutboundFrame } from "./frame";
 import { createTeeSessionStorage, TranscriptTeeBackend } from "./session-tee";
 
@@ -448,6 +459,129 @@ describe("TranscriptTeeBackend erred emit — buffer + retry + fatal at cap (R4)
 			warnSpy.mockRestore();
 			errSpy.mockRestore();
 		}
+	});
+});
+
+describe("TranscriptTeeBackend local-only + latch on the remaining methods", () => {
+	// A semantic title update, the exact shape the SDK write vector carries.
+	const titleUpdate = {
+		title: "t",
+		updatedAt: "2026-01-01T00:00:00.000Z",
+	} satisfies NonNullable<
+		Parameters<TranscriptTeeBackend["updateSessionTitle"]>[1]
+	>;
+
+	// (1a) The fatal latch is enforced by EVERY op, not just append/writeFull.
+	// Mirror the 434-462 pattern: latch via a failAll append at cap, snapshot
+	// attempts, clear failAll, then assert each remaining method re-throws the
+	// latched error AND makes NO new durable-send attempt (the latch
+	// short-circuits BEFORE the sink). Non-vacuity: a method missing its
+	// #throwIfFatal() would run its local fs mutation and resolve → red.
+	test("truncate/remove/move/updateSessionTitle re-throw the latched fatal after the cap", async () => {
+		const dir = scratch();
+		const file = join(dir, "s.jsonl");
+		const file2 = join(dir, "s2.jsonl");
+		const sink = recordingSink();
+		sink.failAll = new Error("unary give-up");
+		const backend = new TranscriptTeeBackend(sink, dir, { emitBackoffMs: [0] });
+		const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+		const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+		try {
+			await expect(backend.append(file, "x\n", 1)).rejects.toThrow(
+				"unary give-up",
+			);
+			const attemptsAtLatch = sink.attempts;
+			// Sink would work now — but the latch stands for every op.
+			sink.failAll = undefined;
+
+			await expect(backend.truncate(file, 2)).rejects.toThrow("unary give-up");
+			await expect(backend.remove([file])).rejects.toThrow("unary give-up");
+			await expect(backend.move(file, file2, 3)).rejects.toThrow(
+				"unary give-up",
+			);
+			await expect(
+				backend.updateSessionTitle(file, titleUpdate, 4),
+			).rejects.toThrow("unary give-up");
+
+			// The latch short-circuits BEFORE the sink: no new emitDurable attempts.
+			expect(sink.attempts).toBe(attemptsAtLatch);
+		} finally {
+			warnSpy.mockRestore();
+			errSpy.mockRestore();
+		}
+	});
+
+	// (1b) updateSessionTitle overwrites the fixed-width title slot IN PLACE:
+	// the first 256 bytes decode to the new title, and every byte after 256
+	// (header + entries) is byte-identical to the original. Non-vacuity: a wrong
+	// write offset (e.g. writing past the slot) reds the "bytes after 256"
+	// assert; a no-op write reds the decoded-title assert.
+	test("updateSessionTitle round-trips the slot in place, leaving bytes after 256 untouched", async () => {
+		const dir = scratch();
+		const file = join(dir, "s.jsonl");
+		const sink = recordingSink();
+		const backend = new TranscriptTeeBackend(sink, dir);
+
+		// Build a full body directly (node fs, not writeFull — no tee): a 256-byte
+		// title slot carrying "old", then a header + one entry line.
+		const original = Buffer.from(
+			`${serializeTitleSlot({ title: "old", updatedAt: "2026-01-01T00:00:00.000Z" })}` +
+				`{"type":"session","version":3,"id":"f1"}\n` +
+				`{"type":"message","id":"e1","message":{"role":"user","content":"hi"}}\n`,
+			"utf-8",
+		);
+		writeFileSync(file, original);
+
+		await backend.updateSessionTitle(
+			file,
+			{ title: "new", updatedAt: "2026-01-01T00:00:00.000Z" },
+			1,
+		);
+
+		const after = readFileSync(file);
+		// (i) the first 256 bytes decode to a title slot carrying "new".
+		const slot = parseTitleSlotFromContent(
+			after.subarray(0, SESSION_TITLE_SLOT_BYTES).toString("utf-8"),
+		);
+		expect(slot?.title).toBe("new");
+		// (ii) all bytes AFTER byte 256 are byte-identical to the original.
+		expect(
+			after
+				.subarray(SESSION_TITLE_SLOT_BYTES)
+				.equals(original.subarray(SESSION_TITLE_SLOT_BYTES)),
+		).toBe(true);
+		// The slot write emits NO durable frame (local-only).
+		expect(sink.frames).toHaveLength(0);
+	});
+
+	// (1c) truncate/move/remove are local-only: they mutate the file on disk AND
+	// emit NO durable frame. Non-vacuity: a method that teed a frame would bump
+	// the durable-send count → red.
+	test("truncate/move/remove mutate locally and emit no durable frame", async () => {
+		const dir = scratch();
+		const file = join(dir, "s.jsonl");
+		const moved = join(dir, "moved.jsonl");
+		const sink = recordingSink();
+		const backend = new TranscriptTeeBackend(sink, dir);
+
+		// Create the file directly (fs, NOT writeFull — that tees a checkpoint).
+		writeFileSync(file, "body\n");
+		const durableSendsBefore = sink.attempts;
+
+		await backend.truncate(file, 1);
+		expect(readFileSync(file, "utf-8")).toBe("");
+
+		await backend.move(file, moved, 2);
+		expect(existsSync(file)).toBe(false);
+		expect(existsSync(moved)).toBe(true);
+
+		await backend.remove([moved]);
+		expect(existsSync(moved)).toBe(false);
+
+		// None of the three teed a frame.
+		expect(sink.attempts).toBe(durableSendsBefore);
+		expect(sink.frames).toHaveLength(0);
 	});
 });
 

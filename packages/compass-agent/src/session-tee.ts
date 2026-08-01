@@ -18,7 +18,11 @@
 //     un-indexed paths, so the Runner-materialized file must appear in the scan.
 //   - the rest (`updateSessionTitle`/`truncate`/`move`/`remove`) → local-only
 //     (titles are a Server-side rendering concern; nothing durable depends on
-//     them).
+//     them). Safe because no SDK write path invokes `truncate`/`move`/`remove`
+//     on the ACTIVE session file — the active-file write path is exclusively
+//     `append` + `writeFull` (`#rewriteAtomically`), verified vs
+//     session-manager.ts; if a future SDK compacts/relocates the active session
+//     via these, they would have to tee.
 //
 // ORDERING (design R-Ordering). The backend AWAITS each frame's durable send
 // inside the storage op the SDK's per-path tail chain serializes
@@ -247,17 +251,24 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 			const headLen = prefixBytes > 0 ? Math.min(prefixBytes, size) : 0;
 			const tailLen = suffixBytes > 0 ? Math.min(suffixBytes, size) : 0;
 			const head = headLen > 0 ? Buffer.allocUnsafe(headLen) : Buffer.alloc(0);
-			if (headLen > 0) await handle.read(head, 0, headLen, 0);
-			if (tailLen <= 0) return [head.toString("utf-8"), ""];
+			// Slice to bytesRead so a short read never surfaces uninitialized heap
+			// (allocUnsafe) or trailing zeros — only the bytes actually read decode.
+			const headBytes =
+				headLen > 0 ? (await handle.read(head, 0, headLen, 0)).bytesRead : 0;
+			const headStr = head.subarray(0, headBytes).toString("utf-8");
+			if (tailLen <= 0) return [headStr, ""];
 			if (size <= headLen) {
 				return [
-					head.toString("utf-8"),
-					head.subarray(Math.max(0, head.length - tailLen)).toString("utf-8"),
+					headStr,
+					head
+						.subarray(Math.max(0, headBytes - tailLen), headBytes)
+						.toString("utf-8"),
 				];
 			}
 			const tail = Buffer.allocUnsafe(tailLen);
-			await handle.read(tail, 0, tailLen, size - tailLen);
-			return [head.toString("utf-8"), tail.toString("utf-8")];
+			const tailBytes = (await handle.read(tail, 0, tailLen, size - tailLen))
+				.bytesRead;
+			return [headStr, tail.subarray(0, tailBytes).toString("utf-8")];
 		} finally {
 			await handle.close();
 		}
@@ -279,6 +290,10 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 			dir,
 			`.${path.basename(filePath)}.${process.pid}.${this.#seq}.tmp`,
 		);
+		// Temp-name uniqueness rests on PATH-uniqueness: the SDK wrapper serializes
+		// same-path ops (indexed-session-storage.ts tail chain), so no two writeFull
+		// on this path overlap. NOT on `#seq` — it is read here BEFORE `#nextFrame`
+		// increments it, so it is stale and shared, never a per-op discriminator.
 		try {
 			await fs.writeFile(tempPath, content);
 			await fs.rename(tempPath, filePath);
@@ -313,12 +328,22 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 		// upstream frame — titles are a Server-side rendering concern.
 		const handle = await fs.open(filePath, "r+");
 		try {
-			await handle.write(
-				Buffer.from(serializeTitleSlot(title), "utf-8"),
-				0,
-				undefined,
-				0,
-			);
+			// Loop on bytesWritten so a short write can never leave the fixed-width
+			// slot partially overwritten (faithful to the SDK mirror, which loops).
+			const buf = Buffer.from(serializeTitleSlot(title), "utf-8");
+			let offset = 0;
+			while (offset < buf.length) {
+				const { bytesWritten } = await handle.write(
+					buf,
+					offset,
+					buf.length - offset,
+					offset,
+				);
+				if (bytesWritten === 0) {
+					throw new Error("compass-agent: session title slot short write");
+				}
+				offset += bytesWritten;
+			}
 		} finally {
 			await handle.close();
 		}
