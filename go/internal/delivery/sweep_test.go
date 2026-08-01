@@ -63,14 +63,26 @@ func TestSessionStartSweepsOwedMessages(t *testing.T) {
 // Case T6-2: a message already acked is NOT re-swept. The cursor is the source of
 // truth: an acked message advances past the cursor (or lands in the above-set),
 // so UndeliveredMessages omits it — the sweep never re-issues it. This drives two
-// start edges: the first sweeps the one owed message; between them the owed set is
-// emptied (modeling the recipient acking it, cursor advanced); the second start
+// real start edges: the first sweeps the one owed message; between them the owed
+// set is emptied (modeling the recipient acking it, cursor advanced); the second
 // must dispatch NOTHING more.
+//
+// The barrier is a SENTINEL start edge, not queue-emptiness. drainStarts pops and
+// empties the queue slice under c.mu BEFORE it runs the sweep's store-read +
+// gate-held re-dispatch (settle.go:120-123), so waitStartsDrained returns the
+// instant the edge is DEQUEUED — before that edge's sweep completes. A snapshot
+// gated on it would race a bad re-dispatch. Instead: enqueue a THIRD edge for a
+// sentinel session owed exactly one distinct message, then block until that
+// message ARRIVES (disp.waitForMessage). Because drainStarts drains FIFO in a
+// SINGLE loop goroutine, one sweep at a time, the sentinel's message dispatching
+// proves every earlier edge's sweep — including the second sess-recip edge — has
+// already run to completion. That arrival is the true post-sweep barrier.
 func TestSessionStartDoesNotResweepAckedMessages(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
 	const author store.AccountID = "human-1"
 	const recipient store.AccountID = "agent-recip"
+	const sentinel store.AccountID = "agent-sentinel"
 
 	reads.owed[recipient] = map[store.ChannelID][]store.Message{
 		ch: {textMessage("owed-1", author, "first")},
@@ -86,15 +98,38 @@ func TestSessionStartDoesNotResweepAckedMessages(t *testing.T) {
 	// set (UndeliveredMessages omits it — design.md:360-365).
 	reads.mu.Lock()
 	reads.owed[recipient] = map[store.ChannelID][]store.Message{}
+	// Seed the sentinel: a distinct session owed exactly one distinct message. Its
+	// arrival is the post-sweep barrier for the second sess-recip edge.
+	reads.owed[sentinel] = map[store.ChannelID][]store.Message{
+		ch: {textMessage("sentinel-1", author, "barrier")},
+	}
 	reads.mu.Unlock()
+	res.bind(sentinel, "sess-sentinel")
 
-	// Second start: nothing owed now, so nothing re-sweeps. A throwaway drained
-	// barrier proves the second edge was processed without a re-dispatch.
+	// Second start: nothing owed now, so nothing re-sweeps. Then the sentinel edge,
+	// which drains strictly after it (FIFO, single goroutine).
 	c.OnSessionStarted("sess-recip", recipient)
-	c.waitStartsDrained(t)
+	c.OnSessionStarted("sess-sentinel", sentinel)
 
-	if got := disp.snapshot(); len(got) != 1 {
-		t.Fatalf("dispatches = %d, want 1 (an acked message is not re-swept)", len(got))
+	if !disp.waitForMessage(t, "sentinel-1") {
+		t.Fatal("sentinel-1 never dispatched (barrier: its sweep drains after the second sess-recip edge)")
+	}
+
+	// owed-1 was swept exactly once (never re-swept) and sentinel-1 exactly once.
+	var owed1, sent1 int
+	for _, d := range disp.snapshot() {
+		switch d.messageID {
+		case "owed-1":
+			owed1++
+		case "sentinel-1":
+			sent1++
+		}
+	}
+	if owed1 != 1 {
+		t.Fatalf("owed-1 dispatched %d times, want 1 (an acked message is not re-swept)", owed1)
+	}
+	if sent1 != 1 {
+		t.Fatalf("sentinel-1 dispatched %d times, want 1 (barrier message)", sent1)
 	}
 }
 

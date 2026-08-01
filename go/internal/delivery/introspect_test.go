@@ -68,9 +68,12 @@ func (c *Consumer) waitSettleDrained(t *testing.T) {
 }
 
 // waitStartsDrained blocks until the session-start queue is empty, or fails at
-// the deadline. Paired with an OnSessionStarted for a throwaway session (with no
-// owed messages), it is a deterministic barrier that a prior start edge was fully
-// swept — the SEA-1569 T6 counterpart of waitSettleDrained.
+// the deadline. It proves only that a prior start edge was DEQUEUED — drainStarts
+// pops and empties the queue slice under c.mu (settle.go:120-121) BEFORE it runs
+// that edge's sweep (store-read + gate-held re-dispatch, settle.go:123), so the
+// queue reaches len==0 before the sweep completes. It MUST NOT be relied on as a
+// post-sweep-completion barrier: for that, gate on an observable dispatch (e.g.
+// disp.waitForMessage). Sound only where the drained edges sweep nothing.
 func (c *Consumer) waitStartsDrained(t *testing.T) {
 	t.Helper()
 	deadline := time.After(testTimeout)
