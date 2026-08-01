@@ -179,6 +179,9 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 	); err != nil {
 		return Account{}, fmt.Errorf("store: seed home channel members: %w", err)
 	}
+	if err := seedDeliveryCursor(ctx, tx, AccountID(accountID), ChannelID(channelID)); err != nil {
+		return Account{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Account{}, fmt.Errorf("store: commit create agent: %w", err)
 	}
