@@ -431,6 +431,12 @@ message StartAgentSessionRequest {
   // Optional initial prompt to send once the session is ready. Empty = start
   // idle, awaiting a later prompt.
   string initial_prompt = 2;
+  // When set, the session in this container resumes the identified persisted
+  // logical session: the Server (subscriber-authz gated) reconstructs the
+  // stored transcript into a session-JSONL body the Runner materializes into
+  // the new container at provision. Empty = fresh. No storage locator ever
+  // rides any request — storage is Server-internal (SEA-1570).
+  string resume_session_id = 3;
 }
 
 message StartAgentSessionResponse {
