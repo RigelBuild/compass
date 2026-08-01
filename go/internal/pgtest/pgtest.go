@@ -59,16 +59,7 @@ const DSNEnvVar = "COMPASS_TEST_DATABASE_DSN"
 // changes what the suite measures, so it is opt-in rather than a fallback.
 const UseContainerEnvVar = "COMPASS_TEST_USE_CONTAINER"
 
-// RequireDSN returns a DSN addressing a freshly-created, empty schema, ready for
-// a caller to migrate by opening its store against it. It uses
-// COMPASS_TEST_DATABASE_DSN when set — giving each test its OWN uniquely-named
-// schema on that shared database (via search_path), dropped on cleanup, so
-// parallel tests and packages are fully isolated. With no DSN set, it SKIPS the
-// test when no container runtime is available, so the suite stays green in a
-// container-less sandbox. When a runtime IS present but no DSN is set, it FAILS
-// LOUDLY unless COMPASS_TEST_USE_CONTAINER is set: the ~500x-slower throwaway
-// container path is opt-in, never a silent fallback that changes what the suite
-// measures.
+// dsnSource is which of the four database-acquisition paths RequireDSN takes.
 type dsnSource int
 
 const (
@@ -93,6 +84,16 @@ func decideDSNSource(dsn, useContainer, cli string) dsnSource {
 	return sourceContainer
 }
 
+// RequireDSN returns a DSN addressing a freshly-created, empty schema, ready for
+// a caller to migrate by opening its store against it. It uses
+// COMPASS_TEST_DATABASE_DSN when set — giving each test its OWN uniquely-named
+// schema on that shared database (via search_path), dropped on cleanup, so
+// parallel tests and packages are fully isolated. With no DSN set, it SKIPS the
+// test when no container runtime is available, so the suite stays green in a
+// container-less sandbox. When a runtime IS present but no DSN is set, it FAILS
+// LOUDLY unless COMPASS_TEST_USE_CONTAINER is set: the ~500x-slower throwaway
+// container path is opt-in, never a silent fallback that changes what the suite
+// measures.
 func RequireDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv(DSNEnvVar)
