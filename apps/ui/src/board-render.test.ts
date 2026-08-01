@@ -179,17 +179,20 @@ describe("issueKey + isMultiForge", () => {
 // guards that copy — any re-introduction of the owner suffix or a hedge reddens
 // here.
 describe("authorLabel", () => {
-	const agent = (verified: boolean): AgentAttribution => ({
-		agentHandle: "atlas",
+	const agent = (agentHandle: string, verified: boolean): AgentAttribution => ({
+		agentHandle,
 		ownerHandle: "matt",
 		verified,
 	});
 
 	test("renders the agent handle as @handle, with no owner text or hedge", () => {
-		expect(authorLabel(agent(true))).toBe("@atlas");
+		expect(authorLabel(agent("atlas", true))).toBe("@atlas");
 	});
 
-	test("the label is independent of the verified bit (no hedge either way)", () => {
-		expect(authorLabel(agent(false))).toBe("@atlas");
+	// A different handle with verified=false proves the label is DERIVED from
+	// agentHandle (not a hardcoded "@atlas") AND is independent of the verified
+	// bit — one assertion carrying both facts.
+	test("tracks agentHandle and ignores the verified bit", () => {
+		expect(authorLabel(agent("nemo", false))).toBe("@nemo");
 	});
 });
