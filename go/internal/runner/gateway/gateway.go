@@ -97,6 +97,16 @@ type CommsRelay interface {
 	RelayCommsCall(ctx context.Context, req *connect.Request[compassv1internal.RelayCommsCallRequest]) (*connect.Response[compassv1internal.RelayCommsCallResponse], error)
 }
 
+// LifecycleRelay forwards one agent-initiated lifecycle call (spawn/despawn a
+// peer) to the Server under the resolved session. Sibling of CommsRelay: the
+// same pure-forwarder shape over the generated RunnerServiceClient's
+// RelayLifecycleCall, narrowed to the one method the gateway needs. The real
+// client satisfies it; a test supplies a fake. The Runner sends the session_id
+// it structurally owns and the agent's call verbatim, and asserts no account.
+type LifecycleRelay interface {
+	RelayLifecycleCall(ctx context.Context, req *connect.Request[compassv1internal.RelayLifecycleCallRequest]) (*connect.Response[compassv1internal.RelayLifecycleCallResponse], error)
+}
+
 // ConversationCommitter is the narrow slice of the generated RunnerServiceClient
 // the durable conversation path needs — just CommitConversationFrame. The real
 // client satisfies it; a test supplies a fake. Mirrors CommsRelay's narrowing of
@@ -121,6 +131,11 @@ type Gateway struct {
 	containerName string
 	sessions      SessionForContainer
 	relay         CommsRelay
+	// lifecycle forwards ONE agent-initiated lifecycle call (spawn/despawn a
+	// peer) to the Server (RelayLifecycleCall), the sibling of relay's comms
+	// forward. Same pure-forwarder posture: no account, session id the Runner
+	// structurally owns.
+	lifecycle LifecycleRelay
 	// committer forwards ONE durable conversation frame to the Server for commit
 	// (CommitConversationFrame, the delivered-or-erred unary) and returns the
 	// commit outcome. Durable conversation frames leave the loss-tolerant Publish
@@ -205,12 +220,13 @@ var _ compassv1internalconnect.AgentGatewayHandler = (*Gateway)(nil)
 // cancels it): the shared upstream PublishEvents stream is opened against it so
 // the stream outlives any one agent request. A caller with no distinct socket
 // scope (a hermetic test) passes context.Background().
-func NewGateway(baseCtx context.Context, containerName string, sessions SessionForContainer, relay CommsRelay, events EventRelay, committer ConversationCommitter) *Gateway {
+func NewGateway(baseCtx context.Context, containerName string, sessions SessionForContainer, relay CommsRelay, lifecycle LifecycleRelay, events EventRelay, committer ConversationCommitter) *Gateway {
 	return &Gateway{
 		baseCtx:       baseCtx,
 		containerName: containerName,
 		sessions:      sessions,
 		relay:         relay,
+		lifecycle:     lifecycle,
 		events:        events,
 		committer:     committer,
 		control:       noopControlRouter{},
@@ -231,14 +247,14 @@ func (g *Gateway) SetControlRouter(r ControlRouter) {
 // Serve creates the per-container agent socket at path and serves this
 // container's AgentGateway over it, returning the live listener. It composes the
 // container's Gateway (containerName bound to the socket, sessions resolving it
-// to the live session, relay + events forwarding to the Server, committer
-// committing durable conversation frames) onto the
+// to the live session, relay + lifecycle + events forwarding to the Server,
+// committer committing durable conversation frames) onto the
 // owner-only Unix socket the SocketListener owns, with an explicit ReadMaxBytes
 // bound on every method (Global Constraints: a large agent-buffered message is a
 // stream/unary error, not an OOM). Called at Provision, before `podman run`, so
 // the bind-mount source is live when the container starts; the returned
 // listener's Close tears the socket down at container teardown.
-func Serve(ctx context.Context, path, containerName string, sessions SessionForContainer, relay CommsRelay, events EventRelay, committer ConversationCommitter) (*SocketListener, error) {
+func Serve(ctx context.Context, path, containerName string, sessions SessionForContainer, relay CommsRelay, lifecycle LifecycleRelay, events EventRelay, committer ConversationCommitter) (*SocketListener, error) {
 	// The socket-lifetime context: it outlives any one agent request and is
 	// cancelled when the listener closes at container teardown (listenAgentSocket
 	// hands socketCancel to the listener). The shared upstream PublishEvents
@@ -246,7 +262,7 @@ func Serve(ctx context.Context, path, containerName string, sessions SessionForC
 	// opens the stream does not tie the stream's life to its own request.
 	socketCtx, socketCancel := context.WithCancel(ctx)
 	mux := http.NewServeMux()
-	g := NewGateway(socketCtx, containerName, sessions, relay, events, committer)
+	g := NewGateway(socketCtx, containerName, sessions, relay, lifecycle, events, committer)
 	// The real producer in production: without this the Gateway would serve
 	// Control against the ack-only no-op default, so the session lifecycle could
 	// never reach the agent. Set before Serve accepts calls, per

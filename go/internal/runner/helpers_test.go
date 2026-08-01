@@ -136,6 +136,7 @@ type stubStreamingRuntime struct {
 	calls     []string
 	execSpecs []runtime.StreamingExecSpec
 	cli       *runtime.PodmanCLI
+	stopErr   error // when set, engine Stop fails — models a Teardown partial failure
 }
 
 func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
@@ -170,7 +171,7 @@ func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.Con
 }
 func (f *stubStreamingRuntime) Stop(context.Context, runtime.ContainerID, time.Duration) error {
 	f.record("stop")
-	return nil
+	return f.stopErr
 }
 func (f *stubStreamingRuntime) Remove(context.Context, runtime.ContainerID) error {
 	f.record("remove")

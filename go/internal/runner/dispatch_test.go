@@ -32,12 +32,14 @@ type fakeSessionHost struct {
 	startCalls     int
 	provisionCalls int
 	stopCalls      int
+	removeCalls    int
 	reloadCalls    int
 	statusCalls    int
 
 	startErr     error
 	provisionErr error
 	stopErr      error
+	removeErr    error
 	reloadErr    error
 	statusErr    error
 
@@ -45,9 +47,10 @@ type fakeSessionHost struct {
 	containerName string
 	statuses      []*compassv1.AgentSessionStatus
 
-	lastStopID   string
-	lastReloadID string
-	lastStatusID string
+	lastStopID     string
+	lastRemoveName string
+	lastReloadID   string
+	lastStatusID   string
 
 	refreshCalls  int
 	lastRefreshID string
@@ -74,6 +77,14 @@ func (f *fakeSessionHost) Stop(_ context.Context, sessionID string) error {
 	f.stopCalls++
 	f.lastStopID = sessionID
 	return f.stopErr
+}
+
+func (f *fakeSessionHost) Remove(_ context.Context, containerName string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removeCalls++
+	f.lastRemoveName = containerName
+	return f.removeErr
 }
 
 func (f *fakeSessionHost) Reload(_ context.Context, sessionID string) error {
@@ -145,7 +156,7 @@ func TestHandleDistinctIdsExecuteEach(t *testing.T) {
 }
 
 // Each command variant maps to the right typed result, and carries the request
-// id back. Table-driven over all five variants.
+// id back. Table-driven over all six variants.
 func TestExecuteMapsEachVariantToItsResult(t *testing.T) {
 	statuses := []*compassv1.AgentSessionStatus{{SessionId: "s1", State: compassv1.AgentSessionState_AGENT_SESSION_STATE_READY}}
 	host := &fakeSessionHost{sessionID: "sess-x", containerName: "cont-x", statuses: statuses}
@@ -221,6 +232,22 @@ func TestExecuteMapsEachVariantToItsResult(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "remove",
+			cmd: &compassv1internal.SessionsResponse{
+				RequestId: "r6",
+				Command:   &compassv1internal.SessionsResponse_Remove{Remove: &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "cont-rm"}},
+			},
+			check: func(t *testing.T, res *compassv1internal.SessionsRequest) {
+				t.Helper()
+				if res.GetRemove() == nil {
+					t.Fatalf("remove result = nil, want a RemoveAgentWorkspaceResponse")
+				}
+				if host.lastRemoveName != "cont-rm" {
+					t.Fatalf("host.Remove got container %q, want cont-rm (the command's container name)", host.lastRemoveName)
+				}
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -268,6 +295,30 @@ func TestExecuteMapsHostSentinelsToCodes(t *testing.T) {
 				t.Fatalf("%s error carried an empty message", tc.name)
 			}
 		})
+	}
+}
+
+// A Remove teardown failure returns a plain (non-sentinel) wrapped error, which
+// errorResult maps to RUNNER_ERROR_CODE_INTERNAL — the sensible code for an
+// engine/Runner teardown fault (nothing the Server can retry into a different
+// outcome). A bug that swallowed the host error would answer a lying success.
+func TestExecuteRemoveErrorMapsToInternal(t *testing.T) {
+	host := &fakeSessionHost{removeErr: errors.New("engine remove failed")}
+	d := newDispatcher(host, discardLoggerRunner())
+	cmd := &compassv1internal.SessionsResponse{
+		RequestId: "r",
+		Command:   &compassv1internal.SessionsResponse_Remove{Remove: &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "cont-rm"}},
+	}
+	res := d.execute(context.Background(), "r", cmd)
+	re := res.GetError()
+	if re == nil {
+		t.Fatal("Remove teardown failure did not produce an error result")
+	}
+	if re.GetCode() != compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL {
+		t.Fatalf("Remove error code = %v, want INTERNAL", re.GetCode())
+	}
+	if re.GetMessage() == "" {
+		t.Fatal("Remove error carried an empty message")
 	}
 }
 
