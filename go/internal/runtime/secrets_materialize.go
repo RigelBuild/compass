@@ -35,8 +35,10 @@ const providerCredentialAPIKey = "api_key"
 
 // compassDirName is the per-agent config subdir under $HOME, and envFileName is
 // the aggregate env-secret file within it. Env-delivery secrets are written here
-// as KEY=VALUE lines and read at spawn via `podman exec --env-file` (SEA-1327
-// T5) — never `-e KEY=VALUE`, which is host-process-list visible.
+// as KEY=VALUE lines (SEA-1327 T5) and sourced by the agent from its own
+// namespace at startup — never `-e KEY=VALUE` (host-process-list visible) nor
+// `podman exec --env-file` (podman resolves that path host-side, where this
+// container-internal file does not exist).
 const (
 	compassDirName = ".compass"
 	envFileName    = "env"
@@ -44,8 +46,8 @@ const (
 
 // AgentEnvFilePath is the in-container path of the aggregate env-secret file for
 // an agent whose scoped $HOME is homeDir. The materializer writes it and the
-// agent exec reads it via --env-file, so both derive the path from here and
-// cannot drift.
+// agent sources it at startup, so both derive the path from here and cannot
+// drift.
 func AgentEnvFilePath(homeDir string) string {
 	return filepath.Join(homeDir, compassDirName, envFileName)
 }
@@ -121,7 +123,7 @@ func (f SecretFile) GoString() string { return f.String() }
 
 // SecretEnv is one env-delivery secret: a validated name (an env-var key) and
 // its value. Value is the secret and redacts. Env secrets aggregate into the
-// 0600 $HOME/.compass/env file read at spawn via --env-file.
+// 0600 $HOME/.compass/env file the agent sources at startup.
 type SecretEnv struct {
 	Name  string
 	Value string
@@ -320,8 +322,8 @@ func SecretSetupScript(homeDir string, files []SecretFile) (string, error) {
 // grammar), and a value carrying a newline or NUL is rejected — the env-file
 // line grammar is one KEY=VALUE per line, so such a value cannot be represented
 // and must fail loudly rather than silently truncate. Fed to `sh -s`. Always
-// writes the file — an empty set yields a 0600 empty file — because the agent
-// exec attaches --env-file unconditionally and podman requires the path exist.
+// writes the file — an empty set yields a 0600 empty file — so the agent can
+// unconditionally source it at startup without a missing-file special case.
 func EnvFileScript(homeDir string, envs []SecretEnv) (string, error) {
 	var payload strings.Builder
 	for _, e := range envs {
@@ -351,7 +353,7 @@ func EnvFileScript(homeDir string, envs []SecretEnv) (string, error) {
 
 // Install materializes the resolved secret set into the container, routing each
 // secret by delivery then Kind: DeliveryEnv secrets aggregate into the 0600
-// $HOME/.compass/env file (read at spawn via --env-file); otherwise
+// $HOME/.compass/env file (sourced by the agent at startup); otherwise
 // SecretProvider entries aggregate into one provider seed, SecretGH secrets
 // install per host, and generic file-delivery secrets write to
 // $HOME/.compass/secrets/<NAME>. Each setup script is fed to `sh -s` over stdin
@@ -364,8 +366,8 @@ func (m *SecretMaterializer) Install(ctx context.Context, id ContainerID, homeDi
 
 	for _, s := range resolved {
 		if s.Delivery == secrets.DeliveryEnv {
-			// Env delivery: aggregate into the 0600 $HOME/.compass/env file read
-			// at spawn via --env-file. The name is re-validated (env-var-key
+			// Env delivery: aggregate into the 0600 $HOME/.compass/env file the
+			// agent sources at startup. The name is re-validated (env-var-key
 			// grammar) in EnvFileScript; a newline/NUL value is rejected there.
 			envs = append(envs, SecretEnv{Name: s.Name, Value: s.Value})
 			continue
@@ -414,8 +416,8 @@ func (m *SecretMaterializer) Install(ctx context.Context, id ContainerID, homeDi
 			return err
 		}
 	}
-	// Always install the env file — even with no env secrets — because the agent
-	// exec attaches --env-file unconditionally and the path must exist.
+	// Always install the env file — even with no env secrets — so the agent can
+	// unconditionally source $HOME/.compass/env without a missing-file case.
 	envScript, err := EnvFileScript(homeDir, envs)
 	if err != nil {
 		return fmt.Errorf("building env-file script: %w", err)

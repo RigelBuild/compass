@@ -372,7 +372,7 @@ func TestEnvFileScriptRejectsNewlineValue(t *testing.T) {
 }
 
 // TestEnvFileScriptEmptySetWritesEmptyFile: an empty set still produces a script
-// (the file must exist because the agent exec attaches --env-file always).
+// (the file must exist so the agent can unconditionally source it at startup).
 func TestEnvFileScriptEmptySetWritesEmptyFile(t *testing.T) {
 	script, err := EnvFileScript("/home/agent", nil)
 	if err != nil {
@@ -519,7 +519,7 @@ func TestInstallMultipleProvidersAllLand(t *testing.T) {
 
 // TestInstallEmptySetWritesOnlyTheEmptyEnvFile: an empty resolved set writes no
 // seed/gh/file secrets, but still materializes the aggregate env file (empty) —
-// the agent exec attaches --env-file unconditionally, so the path must exist.
+// the agent sources $HOME/.compass/env unconditionally, so the path must exist.
 func TestInstallEmptySetWritesOnlyTheEmptyEnvFile(t *testing.T) {
 	home := t.TempDir()
 	rt := &scriptRunner{}

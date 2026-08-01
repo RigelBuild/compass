@@ -58,13 +58,16 @@ type AgentEnv struct {
 }
 
 // execSpec builds the streaming exec that starts the agent: unprivileged, in
-// the checkout, carrying exactly the vars the agent reads plus the aggregate
-// env-secret file via --env-file (materialized before this exec, SEA-1327 T5).
+// the checkout, carrying exactly the vars the agent reads. Env-delivery secrets
+// are NOT passed on this exec: the Runner's materializer writes them to the
+// 0600 in-container $HOME/.compass/env (SEA-1327 T5), and the agent sources that
+// file from its own namespace at startup. They are deliberately not `-e
+// KEY=VALUE` here (host-process-list visible) nor `--env-file` (podman resolves
+// that path host-side, where the container-internal file does not exist).
 func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 	spec := runtime.NewStreamingExecSpec(agentCommand...).
 		AsUser(strconv.FormatUint(uint64(e.UID), 10)).
-		InDir(e.Workdir).
-		WithEnvFile(runtime.AgentEnvFilePath(e.HomeDir))
+		InDir(e.Workdir)
 	spec.Env["HOME"] = e.HomeDir
 	spec.Env["COMPASS_WORKDIR"] = e.Workdir
 	if e.Model != "" {

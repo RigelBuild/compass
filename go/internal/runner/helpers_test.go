@@ -212,10 +212,13 @@ type capturePublish struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 	frames chan *compassv1internal.PublishEventsRequest
 	opened atomic.Uint64
-	// secrets is the set FetchSecrets returns (default empty); fetchReqs records
-	// each request so a test can assert the pre-exec by-container fetch.
+	// secrets is the set FetchSecrets returns (default empty); fetchErr, when
+	// set, is returned instead (e.g. a CodeUnavailable no-secrets-surface
+	// server); fetchReqs records each request so a test can assert the pre-exec
+	// by-container fetch.
 	mu        sync.Mutex
 	secrets   []*compassv1internal.ResolvedSecret
+	fetchErr  error
 	fetchReqs []*compassv1internal.FetchSecretsRequest
 }
 
@@ -240,8 +243,11 @@ func (c *capturePublish) PublishEvents(_ context.Context, stream *connect.Client
 func (c *capturePublish) FetchSecrets(_ context.Context, req *connect.Request[compassv1internal.FetchSecretsRequest]) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
 	c.mu.Lock()
 	c.fetchReqs = append(c.fetchReqs, req.Msg)
-	secrets := c.secrets
+	secrets, fetchErr := c.secrets, c.fetchErr
 	c.mu.Unlock()
+	if fetchErr != nil {
+		return nil, fetchErr
+	}
 	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{Secrets: secrets}), nil
 }
 
@@ -253,6 +259,14 @@ func (c *capturePublish) streamOpens() uint64 { return c.opened.Load() }
 func (c *capturePublish) setSecrets(secrets ...*compassv1internal.ResolvedSecret) {
 	c.mu.Lock()
 	c.secrets = secrets
+	c.mu.Unlock()
+}
+
+// setFetchErr makes FetchSecrets return err (e.g. a CodeUnavailable
+// no-secrets-surface server) instead of a resolved set.
+func (c *capturePublish) setFetchErr(err error) {
+	c.mu.Lock()
+	c.fetchErr = err
 	c.mu.Unlock()
 }
 
