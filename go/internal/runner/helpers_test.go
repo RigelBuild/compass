@@ -213,7 +213,7 @@ type capturePublish struct {
 	frames chan *compassv1internal.PublishEventsRequest
 	opened atomic.Uint64
 	// secrets is the set FetchSecrets returns (default empty); fetchErr, when
-	// set, is returned instead (e.g. a CodeUnavailable no-secrets-surface
+	// set, is returned instead (e.g. a CodeFailedPrecondition no-secrets-surface
 	// server); fetchReqs records each request so a test can assert the pre-exec
 	// by-container fetch.
 	mu        sync.Mutex
@@ -262,7 +262,7 @@ func (c *capturePublish) setSecrets(secrets ...*compassv1internal.ResolvedSecret
 	c.mu.Unlock()
 }
 
-// setFetchErr makes FetchSecrets return err (e.g. a CodeUnavailable
+// setFetchErr makes FetchSecrets return err (e.g. a CodeFailedPrecondition
 // no-secrets-surface server) instead of a resolved set.
 func (c *capturePublish) setFetchErr(err error) {
 	c.mu.Lock()
