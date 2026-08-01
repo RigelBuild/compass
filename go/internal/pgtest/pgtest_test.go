@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -60,16 +61,13 @@ func TestDecideDSNSource(t *testing.T) {
 // guard that runs even without a container runtime; TestThrowawayContainerLeavesNoDanglingVolume
 // proves the end-to-end reclaim against a real runtime.
 func TestRemoveContainerArgsCarriesVolumesFlag(t *testing.T) {
-	args := removeContainerArgs("some-container")
-	var hasVolumes bool
-	for _, a := range args {
-		if a == "--volumes" || a == "-v" {
-			hasVolumes = true
-			break
-		}
-	}
-	if !hasVolumes {
-		t.Fatalf("removeContainerArgs = %v, want it to carry --volumes so the anonymous data volume is removed with the container", args)
+	got := removeContainerArgs("some-container")
+	// Assert the exact argv, not just the presence of --volumes: this also
+	// catches an accidentally dropped --force or a reordering, not only a
+	// missing volumes flag.
+	want := []string{"rm", "--force", "--volumes", "some-container"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("removeContainerArgs = %v, want %v (must carry --force --volumes so the anonymous data volume is removed with the container)", got, want)
 	}
 }
 
@@ -89,6 +87,7 @@ func TestThrowawayContainerLeavesNoDanglingVolume(t *testing.T) {
 	out, err := exec.Command(cli, "run", "-d", "--rm",
 		"--name", name,
 		"-e", "POSTGRES_PASSWORD=compass-test",
+		"-e", "POSTGRES_DB=compass",
 		"-P",
 		pgImage,
 	).CombinedOutput()
@@ -139,21 +138,30 @@ func anonymousVolumeName(t *testing.T, cli, name string) string {
 // volumeExists reports whether a volume with the given name is present. It uses
 // `volume inspect`, which exists on both podman and docker (unlike podman's
 // podman-only `volume exists`), so the end-to-end test stays valid on the docker
-// fallback containerCLI advertises. inspect exits 0 when the volume is present
-// and nonzero when it is absent — podman returns 125 for a missing volume, not
-// 1, so the check keys on ran-and-exited-nonzero (an *exec.ExitError), never a
-// specific code. A failure to launch the CLI at all (not an ExitError) is a real
-// error and fails the test.
+// fallback containerCLI advertises. inspect exits 0 when the volume is present;
+// when it is absent it exits nonzero AND names a not-found condition on stderr.
+// The absence classification keys on that message, not merely on a nonzero exit:
+// podman uses 125 as a generic catch-all (daemon hiccup, permission error,
+// malformed name), so treating any nonzero exit as "absent" could misread a
+// transient failure as "volume gone" and let the post-removal assertion pass
+// falsely green. Anything that ran-and-failed without a not-found message, or a
+// failure to launch the CLI at all, is a real error and fails the test loudly.
 func volumeExists(t *testing.T, cli, vol string) bool {
 	t.Helper()
-	err := exec.Command(cli, "volume", "inspect", vol).Run()
+	out, err := exec.Command(cli, "volume", "inspect", vol).CombinedOutput()
 	if err == nil {
 		return true
 	}
+	// Both engines name a missing volume in stderr ("no such volume" on podman,
+	// "no such volume"/"not found" on docker); match either, case-insensitively,
+	// so the classification is a genuine absence and not a catch-all 125.
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
-		return false
+		lower := strings.ToLower(string(out))
+		if strings.Contains(lower, "no such volume") || strings.Contains(lower, "not found") {
+			return false
+		}
 	}
-	t.Fatalf("volume inspect %s: %v", vol, err)
+	t.Fatalf("volume inspect %s: %v\n%s", vol, err, out)
 	return false
 }
