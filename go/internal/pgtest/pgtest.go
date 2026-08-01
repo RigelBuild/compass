@@ -187,7 +187,8 @@ func containerCLI() string {
 }
 
 // startContainer launches a throwaway Postgres container, waits for it to accept
-// connections, and returns its DSN. The container is force-removed on cleanup.
+// connections, and returns its DSN. The container and its anonymous data volume
+// are force-removed on cleanup.
 //
 // This path is reached only when COMPASS_TEST_USE_CONTAINER is set (see
 // RequireDSN), so a failure to start the container is an infrastructure failure
@@ -212,12 +213,30 @@ func startContainer(t *testing.T, cli string) string {
 	if err != nil {
 		t.Fatalf("pgtest: COMPASS_TEST_USE_CONTAINER is set but the postgres container failed to start (%s): %v\n%s", cli, err, out)
 	}
-	t.Cleanup(func() { _ = exec.Command(cli, "rm", "--force", name).Run() })
+	// removeContainerArgs adds --volumes so the container's anonymous data volume
+	// is removed with it (see removeContainerArgs for why a bare rm --force
+	// leaks).
+	t.Cleanup(func() { _ = exec.Command(cli, removeContainerArgs(name)...).Run() })
 
 	hostPort := publishedPort(t, cli, name, port)
 	dsn := fmt.Sprintf("postgres://postgres:%s@127.0.0.1:%s/compass?sslmode=disable", password, hostPort)
 	waitReady(t, dsn)
 	return dsn
+}
+
+// removeContainerArgs is the argv (after the CLI binary) that force-removes a
+// throwaway container AND its anonymous volumes. The --volumes flag is
+// load-bearing: the postgres image declares VOLUME /var/lib/postgresql/data, so
+// every throwaway spawns an anonymous volume, and a bare `rm --force` (no
+// --volumes) leaves it dangling. Across thousands of fleet test runs those
+// orphans accumulate until podman's num_locks pool is exhausted and no new
+// volume — hence no new container — can be allocated, which surfaces downstream
+// as a pgtest "hang" (the socket never binds, so the test waits out its
+// deadline). --rm alone does not cover this: it does not remove anonymous
+// volumes on an explicit force-remove. Shared with the harness's own regression
+// test so the flag that keeps the pool bounded cannot be dropped unnoticed.
+func removeContainerArgs(name string) []string {
+	return []string{"rm", "--force", "--volumes", name}
 }
 
 // publishedPort reads the ephemeral host port the container's Postgres port maps
