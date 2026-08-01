@@ -221,6 +221,62 @@ func (s *Store) GetAccount(ctx context.Context, id AccountID) (Account, error) {
 	return acc, nil
 }
 
+// AgentOwner returns the owning user of an agent account. It is a thin
+// projection over agent_accounts.owner_user_id, resolving an agent's owner for
+// the despawn authority check (only the owner may despawn) and spawn inheritance.
+// ErrNotFound covers BOTH an unknown id AND an id that names a non-agent account:
+// querying agent_accounts directly means a user id simply misses the row, so
+// there is no separate existence probe — the not-found/forbidden merge (D9) the
+// store's sentinel semantics require.
+func (s *Store) AgentOwner(ctx context.Context, agentAccountID AccountID) (AccountID, error) {
+	if agentAccountID == "" {
+		return "", fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+	}
+	var ownerUserID string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT owner_user_id FROM agent_accounts WHERE account_id = $1`,
+		string(agentAccountID),
+	).Scan(&ownerUserID); err != nil {
+		if noRows(err) {
+			return "", fmt.Errorf("%w: agent %q", ErrNotFound, agentAccountID)
+		}
+		return "", fmt.Errorf("store: resolve agent owner: %w", err)
+	}
+	return AccountID(ownerUserID), nil
+}
+
+// AgentByHandle returns the agent account with the given handle. The crash-
+// recovery resume path needs an owner-checkable handle lookup, and the private
+// adminByHandle cannot be reused because it asserts admin — this one never
+// asserts or elevates. It returns the full Account so the caller owner-checks the
+// result itself. A handle that is unknown, or that names a non-agent account, is
+// ErrNotFound: a user handle is deliberately indistinguishable from an unknown
+// one, so this fails closed and never resolves or elevates a non-agent.
+func (s *Store) AgentByHandle(ctx context.Context, handle string) (Account, error) {
+	if handle == "" {
+		return Account{}, fmt.Errorf("%w: handle is required", ErrInvalidArgument)
+	}
+	const q = `
+		SELECT a.id, a.handle, a.display_name,
+		       u.role,
+		       ag.owner_user_id, ag.home_channel_id, ag.persona
+		FROM accounts a
+		LEFT JOIN user_accounts u ON u.account_id = a.id
+		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
+		WHERE a.handle = $1`
+	acc, err := scanAccount(s.pool.QueryRow(ctx, q, handle))
+	if err != nil {
+		if noRows(err) {
+			return Account{}, fmt.Errorf("%w: handle %q", ErrNotFound, handle)
+		}
+		return Account{}, fmt.Errorf("store: resolve agent by handle: %w", err)
+	}
+	if !acc.IsAgent() {
+		return Account{}, fmt.Errorf("%w: handle %q is not an agent", ErrNotFound, handle)
+	}
+	return acc, nil
+}
+
 // accountVisibleFromWhere is the FROM + JOINs + visibility predicate shared by
 // ListAccounts and AccountVisibleTo, so the stream edge's per-event account
 // filter cannot drift from the ListAccounts read (the anti-drift guarantee the
