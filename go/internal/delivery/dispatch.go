@@ -50,10 +50,19 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 	}
 
 	// Agent-authored. If the author has a live session, HOLD until it settles;
-	// otherwise deliver now from stored blocks (no live turn to wait on).
+	// otherwise deliver now, re-reading the settled blocks from the store (no
+	// live turn to wait on) — mirroring fireHeld, never the posted (possibly
+	// partial) wire message (design.md:177-178, :306).
 	authorSession, live := c.resolver.SessionForAccount(author)
 	if !live {
-		c.fanOut(ctx, channel, author, msg)
+		wire, m, err := c.storeMessageToWire(ctx, messageID)
+		if err != nil {
+			// The message vanished between post and deliver (unexpected): skip it;
+			// the cursor never advanced, so the sweep still redelivers.
+			c.log.ErrorContext(ctx, "delivery: re-read message for dead-author deliver", "error", err, "message_id", messageID)
+			return
+		}
+		c.fanOut(ctx, m.Container.ChannelID, m.AuthorAccountID, wire)
 		return
 	}
 	c.hold(authorSession, messageID)

@@ -170,6 +170,13 @@ type fakeReads struct {
 	agents      map[store.AccountID]bool
 	messages    map[string]store.Message
 	owed        map[store.AccountID]map[store.ChannelID][]store.Message
+
+	// beforeUndelivered, when set, is called with the swept agent id at the TOP
+	// of UndeliveredMessages BEFORE f.mu is acquired — a TEST-ONLY seam (nil in
+	// production) so a test can block a sweep's owed-read mid-flight and publish
+	// a message INTO the sweep/subscribe window without deadlocking other reads
+	// on the fake's lock.
+	beforeUndelivered func(store.AccountID)
 }
 
 func newFakeReads() *fakeReads {
@@ -211,6 +218,9 @@ func (f *fakeReads) MessageByID(_ context.Context, messageID string) (store.Mess
 }
 
 func (f *fakeReads) UndeliveredMessages(_ context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error) {
+	if f.beforeUndelivered != nil {
+		f.beforeUndelivered(agent)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.owed[agent], nil

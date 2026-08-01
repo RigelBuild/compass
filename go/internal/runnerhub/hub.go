@@ -248,6 +248,13 @@ type Hub struct {
 	// all. Counted separately from refusedFrames precisely so total loss cannot
 	// masquerade as a healthy relay refusing the occasional frame.
 	contractDefects uint64
+	// droppedAcks counts delivery_ack frames dropped — an empty or unresolvable
+	// message id, an unbound acking session, or a cursor-advance store fault. A
+	// delivery_ack is NOT a conversation frame, so it stays out of refusedFrames:
+	// folding it in would muddy that bucket and mislead an operator scanning for
+	// authz boundaries. A missed ack costs only a redundant redeliver on the
+	// recipient's next reconnect sweep, never a teardown.
+	droppedAcks uint64
 	// secretsVersion is the monotonic set-change token minted for the
 	// SecretsVersion signal (mintSecretsVersion). An atomic counter, not a
 	// content hash: see mintSecretsVersion for the load-bearing invariant.
@@ -414,6 +421,18 @@ func (h *Hub) ContractDefects() uint64 {
 	return h.contractDefects
 }
 
+// DroppedAcks reports the count of delivery_ack frames dropped — an empty or
+// unresolvable message id, an unbound acking session, or a cursor-advance store
+// fault. Kept out of RefusedFrames on purpose: an ack is not a conversation
+// frame, and a missed ack costs only a redundant redeliver on the recipient's
+// next reconnect sweep, so folding it into the conversation-frame bucket would
+// mislead an operator reading that count.
+func (h *Hub) DroppedAcks() uint64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.droppedAcks
+}
+
 // FrameDiagnostics is the hub's frame-loss snapshot: every way a relayed frame
 // fails to reach its surface, plus the in-transit gap flag, read together under
 // one lock so the four values describe the same instant. Reading the accessors
@@ -430,6 +449,9 @@ type FrameDiagnostics struct {
 	// ContractDefects counts conversation frames dropped for relay wiring skew.
 	// Non-zero and rising is the loud one: the relay is committing nothing.
 	ContractDefects uint64
+	// DroppedAcks counts delivery_ack frames dropped — separate from
+	// RefusedFrames because an ack is not a conversation frame.
+	DroppedAcks uint64
 }
 
 // FrameDiagnostics returns the frame-loss snapshot. It exists because the three
@@ -446,6 +468,7 @@ func (h *Hub) FrameDiagnostics() FrameDiagnostics {
 		UnknownFrames:   h.unknownFrames,
 		RefusedFrames:   h.refusedFrames,
 		ContractDefects: h.contractDefects,
+		DroppedAcks:     h.droppedAcks,
 	}
 }
 
@@ -574,19 +597,25 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 	}
 	messageID := ack.GetMessageId()
 	if messageID == "" {
-		h.countRefused(ev, "delivery_ack carries no message id")
+		h.countDroppedAck(ev, "delivery_ack carries no message id")
 		return
 	}
 	agent, ok := h.accountForSession(ev.SessionID)
 	if !ok {
-		h.countRefused(ev, "no agent account bound to the acking session")
+		h.countDroppedAck(ev, "no agent account bound to the acking session")
 		return
 	}
+	// MessageChannel only resolves ANY message's channel; it is NOT the
+	// membership/owed clamp. store.AckDelivery is the clamp: it resolves
+	// messageID WHERE id=$1 AND channel_id=$2 and only UPDATEs an existing
+	// seeded cursor (never inserts), so the message must resolve for this
+	// (agent, channel) there or the ack is a no-op — a future reader must not
+	// mistake MessageChannel for the guard.
 	channel, err := delivery.MessageChannel(ctx, messageID)
 	if err != nil {
 		// An unknown or foreign message id: fail-closed no-op, never a teardown.
 		// A fabricated id cannot advance a cursor; the resolution IS the guard.
-		h.countRefused(ev, "delivery_ack for an unresolvable message: "+err.Error())
+		h.countDroppedAck(ev, "delivery_ack for an unresolvable message: "+err.Error())
 		return
 	}
 	if err := delivery.AckDelivery(ctx, agent, channel, messageID); err != nil {
@@ -594,7 +623,7 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 		// costs only a redundant redeliver on the recipient's next reconnect
 		// sweep (the cursor stays where it was), so it never justifies tearing
 		// down the relay.
-		h.countRefused(ev, "delivery_ack cursor advance failed: "+err.Error())
+		h.countDroppedAck(ev, "delivery_ack cursor advance failed: "+err.Error())
 		return
 	}
 }
@@ -642,6 +671,25 @@ func (h *Hub) countRefused(ev RunnerEvent, reason string) {
 		slog.Uint64("runner_seq", ev.RunnerSeq),
 		slog.String("reason", reason),
 		slog.Uint64("refused_total", n))
+}
+
+// countDroppedAck records and logs a dropped delivery_ack — the ack-arm
+// counterpart of countRefused, and the same non-fatal posture: the ack is
+// dropped, the drop is COUNTED and LOGGED so it is observable, and the stream
+// lives. Kept distinct from countRefused because a delivery_ack is not a
+// conversation frame: folding it into refusedFrames would muddy that bucket and
+// emit a misleading "conversation frame" line. A missed ack costs only a
+// redundant redeliver on the recipient's next reconnect sweep, never a teardown.
+func (h *Hub) countDroppedAck(ev RunnerEvent, reason string) {
+	h.mu.Lock()
+	h.droppedAcks++
+	n := h.droppedAcks
+	h.mu.Unlock()
+	h.log.Warn("dropped delivery ack (stream continues)",
+		slog.String("session_id", ev.SessionID),
+		slog.Uint64("runner_seq", ev.RunnerSeq),
+		slog.String("reason", reason),
+		slog.Uint64("dropped_ack_total", n))
 }
 
 // countContractDefect records and logs a conversation frame dropped for relay
@@ -693,6 +741,7 @@ func (h *Hub) enroll(id string, subject store.Subject) (reattached bool) {
 	h.runner = &attachedRunner{id: id, subject: subject, router: router}
 	clear(h.containerAccounts)
 	clear(h.sessionAccounts)
+	clear(h.accountSessions)
 	return reattached
 }
 

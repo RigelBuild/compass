@@ -11,9 +11,13 @@ package delivery
 
 import (
 	"context"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/sealedsecurity/compass/go/events"
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
@@ -246,7 +250,9 @@ func TestAgentAuthoredNoLiveAuthorDeliversNow(t *testing.T) {
 
 	reads.subscribers[ch] = []store.AccountID{recipient}
 	reads.agents[authorAgent] = true
-	// Author agent is NOT bound to a live session (already stopped at post).
+	// Author agent is NOT bound to a live session (already stopped at post), so
+	// the deliver re-reads the settled blocks from the store (FIX 3).
+	reads.seedMessage(textMessage("m1", authorAgent, "stored body"))
 	res.bind(recipient, "sess-recip")
 	startConsumer(t, c)
 
@@ -388,5 +394,240 @@ func TestRefusedDispatchIsNonFatalNoAdvance(t *testing.T) {
 		if d.sessionID == "sess-refused" {
 			t.Fatalf("a refused dispatch was recorded as delivered: %+v", d)
 		}
+	}
+}
+
+// FIX 1 (SEA-1569 T3 review): a bus-lag overrun must RE-SUBSCRIBE and keep
+// delivering, not terminate the singleton consumer goroutine. design.md:227-231
+// rules a resync "a latency blip, never a loss" and says the consumer "treats a
+// resync exactly as SubscribeComms clients do" — a client re-subscribes and
+// continues. The pre-fix code ran the sweep then `return nil`, so after one
+// transient overrun NO message was ever delivered live again for the server's
+// whole life. This drives an overrun (mirroring Case 7), then publishes a NEW
+// message AFTER the sweep and asserts it is delivered live — proof the loop is
+// still running and still fanning out.
+func TestBusLagResubscribesAndKeepsDelivering(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const liveAgent store.AccountID = "agent-live"
+	const sweptAgent store.AccountID = "agent-swept"
+
+	reads.subscribers[ch] = []store.AccountID{liveAgent}
+	res.bind(liveAgent, "sess-live")
+	res.bind(sweptAgent, "sess-swept")
+	// The swept agent is owed a message only the sweep can deliver, so its
+	// arrival proves the overrun swept before the loop resumed.
+	reads.owed[sweptAgent] = map[store.ChannelID][]store.Message{
+		ch: {textMessage("swept-only", author, "owed")},
+	}
+
+	// A deterministic signal that the lag branch re-subscribed: without it a
+	// post-sweep publish could race into the (deliberately un-drained) replay
+	// snapshot rather than the fresh live tail. Under the pre-fix code the branch
+	// returns instead of re-subscribing, so this never fires — the RED.
+	resubscribed := make(chan struct{})
+	c.afterResubscribe = func() { close(resubscribed) }
+
+	disp.armFirstBlock()
+	startConsumer(t, c)
+
+	// First event consumed off Live, then stalls in the armed dispatch.
+	c.bus.Publish(postedResponse(wireText("m0", author, "first")))
+	<-disp.enteredFirst
+
+	// Overrun the live buffer (capacity 1024) so the channel closes lagged.
+	for range 1100 {
+		c.bus.Publish(postedResponse(wireText("flood", author, "x")))
+	}
+	// Release the stall: the consumer drains its buffer, reads the lagged-closed
+	// channel, sweeps, then re-subscribes and continues.
+	close(disp.releaseFirst)
+
+	if !disp.waitForMessage(t, "swept-only") {
+		t.Fatal("owed message never redelivered after bus lag: the lag path lost it instead of sweeping")
+	}
+	select {
+	case <-resubscribed:
+	case <-time.After(testTimeout):
+		t.Fatal("consumer never re-subscribed after the lag overrun: the loop returned instead of continuing (permanent live-delivery death)")
+	}
+
+	// A NEW message published after the sweep+resubscribe must be delivered live —
+	// proof the singleton loop is still running and still fanning out.
+	c.bus.Publish(postedResponse(wireText("post-sweep-1", author, "alive")))
+	if !disp.waitForMessage(t, "post-sweep-1") {
+		t.Fatal("post-sweep message never delivered: the consumer stopped after the overrun instead of re-subscribing and continuing")
+	}
+}
+
+// FIX A (SEA-1569 T3 round-2 review): a bus-lag resync must SUBSCRIBE before it
+// sweeps, or a message committed+published in the window between the sweep's
+// owed-read and the fresh Subscribe's lock-acquire is delivered to no one until
+// the recipient reconnects. The post path commits the store row before
+// publishing MessagePosted (comms.go:270-271), so such a window message M is
+// absent from the already-read owed set AND, under a sweep-first order, only in
+// the fresh Replay (deliberately not drained) and NOT on a Live that predates
+// its registration (events.go:216-219) — a live-delivery seam.
+//
+// This drives the overrun exactly as TestBusLagResubscribesAndKeepsDelivering,
+// but blocks the consumer INSIDE the resync sweep (via a beforeUndelivered seam
+// on the reads fake), publishes M during that block, and asserts M reaches a
+// live subscriber with an EMPTY owed set — so M can ONLY have arrived via live
+// delivery, never the sweep. With the subscribe-first order M lands on the fresh
+// Live and is delivered after the sweep drains; with the pre-fix sweep-first
+// order M is published before the fresh Subscribe, lands in the skipped Replay,
+// and never reaches the window agent (the RED).
+func TestBusLagResubscribeDeliversWindowMessageLive(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const windowAgent store.AccountID = "agent-window"
+
+	// windowAgent is the sole live subscriber of chan-1 and is owed NOTHING, so
+	// the resync sweep dispatches it nothing — a clean discriminator: the window
+	// message can reach sess-window ONLY via live delivery, never the sweep.
+	reads.subscribers[ch] = []store.AccountID{windowAgent}
+	res.bind(windowAgent, "sess-window")
+
+	// Block the resync sweep mid-flight so the test can publish M while the
+	// consumer is between subscribe and the tail resume. On the FIRST owed-read
+	// (any agent), signal entry then block until released.
+	enteredSweep := make(chan struct{})
+	releaseSweep := make(chan struct{})
+	var once sync.Once
+	reads.beforeUndelivered = func(store.AccountID) {
+		once.Do(func() {
+			close(enteredSweep)
+			<-releaseSweep
+		})
+	}
+
+	disp.armFirstBlock()
+	startConsumer(t, c)
+
+	// First event consumed off Live, then stalls in the armed dispatch.
+	c.bus.Publish(postedResponse(wireText("m0", author, "first")))
+	<-disp.enteredFirst
+
+	// Overrun the live buffer (capacity 1024) so the channel closes lagged.
+	for range 1100 {
+		c.bus.Publish(postedResponse(wireText("flood", author, "x")))
+	}
+	// The window publish must happen once the consumer is inside the resync sweep,
+	// but the recorder channel has to keep draining meanwhile (the flood fills it
+	// during the Live-buffer drain), so run the coordination in a goroutine and
+	// let waitForMessage below drain the recorder.
+	go func() {
+		<-enteredSweep
+		// The consumer is inside the resync sweep. With the subscribe-first order
+		// the fresh subscription is already live, so M lands on the new Live; with
+		// the pre-fix sweep-first order the subscribe has not happened yet, so M
+		// falls into the (skipped) fresh Replay and is never delivered live.
+		c.bus.Publish(postedResponse(wireText("window-m", author, "in the window")))
+		close(releaseSweep)
+	}()
+
+	// Release the stall: the consumer drains its buffer, reads the lagged-closed
+	// channel, and runs the resync (subscribe + sweep), blocking in the sweep's
+	// beforeUndelivered until the goroutine above releases it.
+	close(disp.releaseFirst)
+
+	// M must be delivered live to sess-window. Its owed set is empty, so a sweep
+	// could never have carried it — arrival proves subscribe-first closed the seam.
+	if !disp.waitForMessage(t, "window-m") {
+		t.Fatal("window message never delivered live to sess-window: the resync swept before it subscribed, so M fell into the skipped replay and was lost until reconnect")
+	}
+}
+
+// blockRecord is one observed deliver: the session it targeted plus the delivered
+// message's first text block, so a test can assert WHICH block set was sent (not
+// just the message id).
+type blockRecord struct {
+	sessionID string
+	messageID string
+	firstText string
+}
+
+// blockCapturingDispatcher records the delivered block content of every dispatch,
+// so a test can distinguish a deliver carrying the STORED blocks from one
+// carrying the POSTED (stale) blocks — the shared fakeDispatcher captures only
+// the message id, which cannot tell the two apart.
+type blockCapturingDispatcher struct {
+	mu       sync.Mutex
+	calls    []blockRecord
+	recorded chan struct{}
+}
+
+func newBlockCapturingDispatcher() *blockCapturingDispatcher {
+	return &blockCapturingDispatcher{recorded: make(chan struct{}, 1024)}
+}
+
+func (d *blockCapturingDispatcher) DispatchControl(_ context.Context, sessionID string, op *compassv1internal.AgentControl) error {
+	msg := op.GetDeliver().GetMessage()
+	var first string
+	if b := msg.GetBlocks(); len(b) > 0 {
+		first = b[0].GetText()
+	}
+	d.mu.Lock()
+	d.calls = append(d.calls, blockRecord{sessionID: sessionID, messageID: msg.GetId(), firstText: first})
+	d.mu.Unlock()
+	d.recorded <- struct{}{}
+	return nil
+}
+
+func (d *blockCapturingDispatcher) waitFor(t *testing.T, messageID string) blockRecord {
+	t.Helper()
+	deadline := time.After(testTimeout)
+	for {
+		d.mu.Lock()
+		for _, rec := range d.calls {
+			if rec.messageID == messageID {
+				d.mu.Unlock()
+				return rec
+			}
+		}
+		d.mu.Unlock()
+		select {
+		case <-d.recorded:
+		case <-deadline:
+			t.Fatalf("waited for a deliver of %q, none recorded", messageID)
+		}
+	}
+}
+
+// FIX 3 (SEA-1569 T3 review): the no-live-author path must deliver from the
+// STORED block set, not the posted (possibly partial) wire message. The branch
+// comment and design.md:177-178,:306 both specify "from its stored block set";
+// the pre-fix code fanned out the raw bus `msg`. This seeds the store with a
+// GROWN block set distinct from the posted one and asserts the dispatched deliver
+// carries the stored blocks.
+func TestAgentAuthoredNoLiveAuthorDeliversStoredBlocks(t *testing.T) {
+	disp := newBlockCapturingDispatcher()
+	res := newFakeResolver()
+	reads := newFakeReads()
+	c := NewConsumer(events.NewBus[*compassv1.SubscribeCommsResponse](), reads, disp, res, discardLogger())
+
+	const ch store.ChannelID = "chan-1"
+	const authorAgent store.AccountID = "agent-author"
+	const recipient store.AccountID = "agent-recip"
+
+	reads.subscribers[ch] = []store.AccountID{recipient}
+	reads.agents[authorAgent] = true
+	// Author agent is NOT live (already stopped at post). The store holds the
+	// SETTLED, grown block set; the posted wire message carries the stale partial.
+	reads.seedMessage(textMessage("m1", authorAgent, "stored grown body"))
+	res.bind(recipient, "sess-recip")
+	startConsumer(t, c)
+
+	c.bus.Publish(postedResponse(wireText("m1", authorAgent, "posted partial body")))
+
+	rec := disp.waitFor(t, "m1")
+	if rec.sessionID != "sess-recip" {
+		t.Fatalf("no-live-author deliver session = %q, want sess-recip", rec.sessionID)
+	}
+	if rec.firstText != "stored grown body" {
+		t.Fatalf("no-live-author deliver carried %q, want the STORED blocks %q — the branch fanned out the posted (stale) message instead of re-reading the store",
+			rec.firstText, "stored grown body")
 	}
 }

@@ -329,3 +329,43 @@ func TestDeliveryAckStoreFaultIsNonFatal(t *testing.T) {
 		t.Fatalf("Deliver(ack, store fault) = %v, want nil (non-fatal drop, not a teardown)", err)
 	}
 }
+
+// FIX 4 (SEA-1569 T3 review): an ack drop must increment the dedicated
+// DroppedAcks counter, NOT the conversation-frame RefusedFrames counter. A
+// delivery_ack is not a conversation frame; the pre-fix code routed every ack
+// failure through countRefused, muddying FrameDiagnostics.RefusedFrames and
+// emitting a misleading "conversation frame" log line. The hub deliberately
+// separates counters (hub.go:362-372) so operators can tell buckets apart. This
+// drives two ack drops — an unbound acking session and an unknown message — and
+// asserts DroppedAcks counts them while RefusedFrames stays zero.
+func TestDeliveryAckDropsCountSeparatelyFromRefusedFrames(t *testing.T) {
+	hub := newHubOnly()
+	del := newFakeDeliveryStore()
+	hub.SetDeliveryStore(del)
+	del.channels["m1"] = "chan-1"
+
+	// Drop 1: an ack for a session with no bound agent.
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 1, SessionID: "never-bound", Frame: deliveryAckFrame("m1"),
+	}); err != nil {
+		t.Fatalf("Deliver(ack, unbound) = %v, want nil", err)
+	}
+	// Drop 2: an ack for an unknown message under a bound session.
+	bindSession(hub, "sess-1")
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 2, SessionID: "sess-1", Frame: deliveryAckFrame("ghost"),
+	}); err != nil {
+		t.Fatalf("Deliver(ack, unknown message) = %v, want nil", err)
+	}
+
+	if got := hub.DroppedAcks(); got != 2 {
+		t.Fatalf("DroppedAcks = %d, want 2 (both ack drops land in the dedicated counter)", got)
+	}
+	if got := hub.RefusedFrames(); got != 0 {
+		t.Fatalf("RefusedFrames = %d, want 0 — an ack drop is not a conversation frame and must not muddy the refusal bucket", got)
+	}
+	// And the snapshot mirrors the accessors under one lock.
+	if diag := hub.FrameDiagnostics(); diag.DroppedAcks != 2 || diag.RefusedFrames != 0 {
+		t.Fatalf("FrameDiagnostics = {DroppedAcks:%d, RefusedFrames:%d}, want {2, 0}", diag.DroppedAcks, diag.RefusedFrames)
+	}
+}

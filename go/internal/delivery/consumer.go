@@ -87,7 +87,12 @@ type Consumer struct {
 	// still streams is HELD here until that author's session settles
 	// (WORKING->READY) or reaches a terminal frame. The value is the ordered set
 	// of message ids held for that author, in post order, so a settle fires them
-	// ascending.
+	// ascending. A no-frame author death (no settle edge ever enqueues) leaves
+	// its entry here: it is NOT reaped in-process — no next-enroll reap is wired
+	// (hub.enroll clears only the hub's own session maps, never this map) — so
+	// the entry persists until process restart. Delivery correctness (no-loss) is
+	// unaffected: the recipient still receives the message via the reconnect
+	// cursor sweep — the design's "no-loss, not no-leak" guarantee.
 	held map[string][]string
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel
@@ -108,6 +113,13 @@ type Consumer struct {
 	// (nil in production) that lets a test deterministically observe a live
 	// deliver reaching the gate while a sweep holds it (the case-6 ordering gate).
 	beforeGate func(sessionID string)
+
+	// afterResubscribe, when set, is called right after the lag-overrun branch
+	// re-subscribes to the bus and before it resumes the tail — a TEST-ONLY seam
+	// (nil in production) that lets a test observe that the fresh subscription is
+	// live, so a post-sweep publish is guaranteed to land on the new tail rather
+	// than racing into the (deliberately un-drained) replay snapshot.
+	afterResubscribe func()
 }
 
 // NewConsumer constructs the fan-out consumer. It takes the hub as dispatch and
@@ -134,10 +146,10 @@ func NewConsumer(bus *events.Bus[*compassv1.SubscribeCommsResponse], st Delivery
 // Run tails the comms bus and dispatches until ctx is cancelled (serve shutdown)
 // or the bus closes. It mirrors comms.forwardComms: drain the replay snapshot
 // oldest-first, then select on ctx, the live tail, and the settle queue. On the
-// live channel closing, sub.Lagged() distinguishes an overrun — run the D2
-// recipient sweep, not a loss (design.md:227-231) — from a clean bus shutdown
-// (end silently). ctx threads from the serve group into every store read and
-// dispatch below; the loop never re-roots it.
+// live channel closing, sub.Lagged() distinguishes an overrun — re-subscribe
+// then run the D2 recipient sweep, not a loss (design.md:227-231) — from a clean
+// bus shutdown (end silently). ctx threads from the serve group into every store
+// read and dispatch below; the loop never re-roots it.
 func (c *Consumer) Run(ctx context.Context) error {
 	sub, err := c.bus.Subscribe(0, c.bus.InstanceEpoch())
 	if err != nil {
@@ -145,7 +157,10 @@ func (c *Consumer) Run(ctx context.Context) error {
 		// error here is a genuine subscribe fault the caller should see.
 		return err
 	}
-	defer sub.Cancel()
+	// Closure over sub (not defer sub.Cancel()): the lagged branch reassigns sub
+	// to a fresh subscription, and only a closure cancels whichever one is
+	// current at return, not the value captured at defer time.
+	defer func() { sub.Cancel() }()
 
 	for _, event := range sub.Replay {
 		select {
@@ -166,9 +181,48 @@ func (c *Consumer) Run(ctx context.Context) error {
 			if !ok {
 				if sub.Lagged() {
 					// Overrun: bus events were dropped. Not a loss — the cursor
-					// defines exactly what is undelivered, so sweep every live
-					// recipient rather than re-snapshotting (design.md:227-231).
+					// defines exactly what is undelivered, so RE-SUBSCRIBE, then
+					// sweep every live recipient (design.md:227-231): a resync is
+					// a latency blip, never a stop, exactly as SubscribeComms
+					// clients treat one (re-subscribe and carry on).
+					//
+					// Subscribe FIRST, sweep SECOND — the order closes a
+					// delivery seam. The post path commits the store row BEFORE
+					// publishing MessagePosted (comms.go:270-271), so a message M
+					// committed+published in the window between an owed-read and
+					// the fresh Subscribe's lock-acquire would be missed by a
+					// sweep-first order: absent from the already-read owed set,
+					// only in the fresh Replay (deliberately not drained), and
+					// NOT on a Live that predates its registration
+					// (events.go:216-219). Subscribing first makes the fresh Live
+					// cover [T_sub, ∞) and the sweep cover [0, T_sweep] with
+					// T_sweep ≥ T_sub, so a boundary message lands on BOTH. The
+					// only cost is a benign double-deliver of the thin boundary
+					// set, which at-least-once deliver-ack already tolerates (the
+					// per-recipient dispatch gate + the store cursor's
+					// above_seqs/duplicate-ack no-op dedupe). No seam, no loss.
+					fresh, err := c.bus.Subscribe(0, c.bus.InstanceEpoch())
+					if err != nil {
+						// A fresh subscription at since_seq=0 on a live bus cannot
+						// underflow; any error here is a genuine subscribe fault
+						// the caller should see (mirrors the top-of-Run subscribe).
+						c.log.ErrorContext(ctx, "delivery: re-subscribe after bus-lag overrun", "error", err)
+						return err
+					}
+					// Cancel the old lagged sub and adopt the fresh one; the
+					// deferred closure then cancels whichever is current at
+					// return. The fresh Replay is deliberately NOT drained — the
+					// sweep below is the replay-equivalent for the owed set, and
+					// re-draining the retained ring would double-deliver every
+					// message in it (the boundary overlap above is the tolerated
+					// exception, not a re-drain).
+					sub.Cancel()
+					sub = fresh
 					c.sweepAllLive(ctx)
+					if c.afterResubscribe != nil {
+						c.afterResubscribe()
+					}
+					continue
 				}
 				return nil
 			}
