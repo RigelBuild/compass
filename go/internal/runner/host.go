@@ -225,22 +225,27 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	// fetch is authorizable is here in Start, still strictly before StartAgent.
 	//
 	// A Server built with NO secrets surface (nil resolver) answers
-	// FetchSecrets with CodeUnavailable — a legitimate deployment, not a
+	// FetchSecrets with CodeFailedPrecondition — a legitimate deployment, not a
 	// failure: such a server has no secrets to inject, so the agent must still
-	// start. That one code is tolerated (skip the materialize, start the agent);
-	// every other fetch error — a real transport fault, an authz denial — fails
-	// the Start, because there the agent would otherwise come up without secrets
-	// that DO exist. Rotation (T6) rides the async SecretsVersion signal.
+	// start. That one code is tolerated (skip the materialize, start the agent).
+	// It is deliberately distinct from CodeUnavailable: connect-go synthesizes
+	// CodeUnavailable for a transient transport fault (conn reset, GOAWAY, server
+	// restart), and a blip on this fetch against a Server that DOES have secrets
+	// must NOT be read as "no secrets" — the agent would otherwise come up
+	// silently missing credentials that exist. So every other fetch error — a
+	// transient Unavailable, an authz denial — fails the Start. Rotation (T6)
+	// rides the async SecretsVersion signal.
 	resolved, err := h.link.FetchSecretsByContainer(ctx, name)
 	switch {
 	case err == nil:
 		if err := h.materializer.Install(ctx, handle.ID(), handle.HomeDir(), handle.WorkspaceUID(), resolved); err != nil {
 			return "", fmt.Errorf("materializing secrets before agent start for container %q: %w", name, err)
 		}
-	case connect.CodeOf(err) == connect.CodeUnavailable:
+	case connect.CodeOf(err) == connect.CodeFailedPrecondition:
 		// No secrets surface on this Server: nothing to materialize. Start the
-		// agent anyway. Logged at debug so a secrets-less deployment is not noisy.
-		h.log.Debug("no secrets surface; starting agent without materialized secrets", "container", name)
+		// agent anyway. Logged at Warn so a secrets-less start is visible — it is
+		// a degraded posture even when intended.
+		h.log.Warn("no secrets surface; starting agent without materialized secrets", "container", name)
 	default:
 		return "", fmt.Errorf("fetching secrets before agent start for container %q: %w", name, err)
 	}
@@ -362,8 +367,11 @@ func (h *agentHost) Status(_ context.Context, sessionID string) ([]*compassv1.Ag
 // home, the git-credential posture.
 //
 // Rotation reach differs by delivery. Provider-seed, gh, and generic file
-// secrets are re-read from disk per use, so rewriting them here rotates them
-// into a live agent. ENV-delivery secrets do NOT: the agent sources
+// secrets rotate into a live agent for any consumer that re-reads the file per
+// use — git's credential helper is invoked per git op, so it does; the provider
+// seed rotates live only if its consumer re-reads it rather than caching at
+// startup (that is a property of the consumer, which lives in a sibling repo).
+// ENV-delivery secrets never rotate live: the agent sources
 // $HOME/.compass/env once at startup, and a process's environment is fixed at
 // exec, so a rewritten env file never reaches a running agent — an env-secret
 // rotation is picked up only on the agent's next start. This re-materialize

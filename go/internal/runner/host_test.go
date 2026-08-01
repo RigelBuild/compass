@@ -594,12 +594,12 @@ func TestStartAgentExecCarriesNoEnvFile(t *testing.T) {
 }
 
 // TestStartToleratesNoSecretsSurface pins that a Server with no secrets surface
-// (FetchSecrets → CodeUnavailable) does not block agent start: the agent must
-// still come up when there is simply nothing to materialize.
+// (FetchSecrets → CodeFailedPrecondition) does not block agent start: the agent
+// must still come up when there is simply nothing to materialize.
 func TestStartToleratesNoSecretsSurface(t *testing.T) {
 	specs := &fakeSpecBuilder{spec: liveSpec()}
 	host, engine, pub := newHostFixtureWithPublish(t, specs)
-	pub.setFetchErr(connect.NewError(connect.CodeUnavailable, errors.New("no secret resolver wired")))
+	pub.setFetchErr(connect.NewError(connect.CodeFailedPrecondition, errors.New("no secret resolver wired")))
 	ctx := context.Background()
 
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
@@ -613,4 +613,42 @@ func TestStartToleratesNoSecretsSurface(t *testing.T) {
 
 	// The agent exec still ran despite the unavailable secrets surface.
 	onlyStreamingSpec(t, engine)
+}
+
+// TestStartFailsClosedOnFetchError pins the security-critical other arm of the
+// fetch switch: any fetch error EXCEPT the no-secrets-surface
+// CodeFailedPrecondition fails the Start, so the agent never comes up silently
+// missing secrets that exist. The transient-transport case (CodeUnavailable) is
+// the one that matters most — it is deliberately NOT tolerated, because a blip
+// against a Server that DOES have secrets must not be read as "no secrets".
+func TestStartFailsClosedOnFetchError(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code connect.Code
+	}{
+		{"transient transport blip", connect.CodeUnavailable},
+		{"authz denial", connect.CodePermissionDenied},
+		{"resolver fault", connect.CodeInternal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			specs := &fakeSpecBuilder{spec: liveSpec()}
+			host, engine, pub := newHostFixtureWithPublish(t, specs)
+			pub.setFetchErr(connect.NewError(tc.code, errors.New(tc.name)))
+			ctx := context.Background()
+
+			if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+				t.Fatalf("Provision = %v", err)
+			}
+			if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}); err == nil {
+				t.Fatalf("Start with a %v fetch error = nil, want the Start to fail closed", tc.code)
+			}
+
+			// The agent exec must NOT have run: only the no-secrets-surface
+			// CodeFailedPrecondition tolerates a missing set; every other code
+			// fails before StartAgent.
+			if execs := engine.streamingSpecs(); len(execs) != 0 {
+				t.Fatalf("ExecStreaming ran %d times on a fail-closed Start, want 0", len(execs))
+			}
+		})
+	}
 }

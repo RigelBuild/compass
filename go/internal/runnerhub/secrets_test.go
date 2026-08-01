@@ -212,10 +212,13 @@ func TestFetchSecretsBothSelectorsInvalidArgument(t *testing.T) {
 	}
 }
 
-// TestFetchSecretsNoResolverUnavailable: a handler with no resolver wired fails
-// closed Unavailable rather than returning an empty set as if there were no
-// secrets — a wiring bug must be loud.
-func TestFetchSecretsNoResolverUnavailable(t *testing.T) {
+// TestFetchSecretsNoResolverFailedPrecondition: a handler with no resolver wired
+// fails closed with CodeFailedPrecondition rather than returning an empty set as
+// if there were no secrets — a wiring bug must be loud. The code is deliberately
+// distinct from the CodeUnavailable connect-go synthesizes for a transport
+// fault, so the Runner can tolerate a genuine no-secrets-surface server at Start
+// without also tolerating a transient outage as "no secrets".
+func TestFetchSecretsNoResolverFailedPrecondition(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
 	bindSession(hub, "sess-1")
@@ -223,8 +226,8 @@ func TestFetchSecretsNoResolverUnavailable(t *testing.T) {
 	client := newRawRunnerClient(t, url, "runner-tok")
 
 	_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{SessionId: "sess-1"}))
-	if got := connect.CodeOf(err); got != connect.CodeUnavailable {
-		t.Fatalf("FetchSecrets with no resolver code = %v, want Unavailable", got)
+	if got := connect.CodeOf(err); got != connect.CodeFailedPrecondition {
+		t.Fatalf("FetchSecrets with no resolver code = %v, want FailedPrecondition", got)
 	}
 }
 
