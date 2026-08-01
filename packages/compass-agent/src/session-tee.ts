@@ -253,6 +253,10 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 			const head = headLen > 0 ? Buffer.allocUnsafe(headLen) : Buffer.alloc(0);
 			// Slice to bytesRead so a short read never surfaces uninitialized heap
 			// (allocUnsafe) or trailing zeros — only the bytes actually read decode.
+			// Belt-and-suspenders: headLen/tailLen are clamped to the file size, so
+			// a regular-file read of an in-bounds range always fully populates the
+			// buffer (bytesRead === requested); there is no deterministic short-read
+			// to test here, which is why no test exercises these bytesRead branches.
 			const headBytes =
 				headLen > 0 ? (await handle.read(head, 0, headLen, 0)).bytesRead : 0;
 			const headStr = head.subarray(0, headBytes).toString("utf-8");

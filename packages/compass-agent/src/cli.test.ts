@@ -1061,6 +1061,8 @@ describe("main", () => {
 		const log = emptyLog();
 		let entriesAtCreate: unknown[] = [];
 		let framesAtCreate = 0;
+		let headerVersionAtCreate: number | undefined;
+		let needsRewriteAtCreate = false;
 		await main(
 			{ HOME: process.env.HOME, COMPASS_RESUME_SESSION_FILE: resumeFile },
 			{
@@ -1070,6 +1072,12 @@ describe("main", () => {
 					// (setSessionFile precedes createSession).
 					entriesAtCreate = m.getEntries();
 					framesAtCreate = transcriptFramesOf(log).length;
+					// captureState() exposes the post-load header + the deferred
+					// rewrite flag (session-manager.ts:919-936), proving the v2→v3
+					// migration actually RAN (not "no migration was needed").
+					const state = m.captureState();
+					headerVersionAtCreate = state.header.version;
+					needsRewriteAtCreate = state.needsRewrite;
 					return Promise.resolve({
 						session: session as unknown as AgentSession,
 					});
@@ -1082,7 +1090,16 @@ describe("main", () => {
 		// The resumed manager carries the fixture's turn (loaded via the SDK's own
 		// migrating loader).
 		expect(textsOf(entriesAtCreate)).toContain("v2 turn");
-		// Migration stayed deferred: no checkpoint (or any) frame teed on load.
+		// The v2→v3 migration actually RAN: the in-memory header was upgraded to 3
+		// (migrateV2ToV3, session-migrations.ts:46) and the rewrite was flagged as
+		// required — this distinguishes "migration ran but stayed deferred" from
+		// "no migration was needed", so the zero-frames assertion below is a real
+		// guard on the migrated-resume path, not a vacuous current-version pass.
+		expect(headerVersionAtCreate).toBe(3);
+		expect(needsRewriteAtCreate).toBe(true);
+		// Migration stayed deferred: no checkpoint (or any) frame teed on load
+		// (setSessionFile sets #rewriteRequired = migrated as a flag,
+		// session-manager.ts:1007; it does NOT #rewriteAtomically a non-empty file).
 		expect(framesAtCreate).toBe(0);
 	});
 
