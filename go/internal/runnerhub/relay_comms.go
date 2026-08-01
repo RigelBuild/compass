@@ -137,6 +137,22 @@ func (h *Hub) HasLiveSession(sessionID string) bool {
 	return ok
 }
 
+// HasContainerBinding reports whether containerName has a recorded
+// container→account binding — the Provision..Start window binding (bindContainer,
+// cleared by promoteSession at Start and by clear() on re-enroll). It is the
+// PROVISION-time analogue of HasLiveSession: FetchSecrets authorizes an initial
+// pre-exec materialize against it, because no live session exists until Start.
+// Under the inject-all + single-Runner MVP a recorded binding IS a container
+// provisioned on the one enrolled Runner, so membership is the whole authz check
+// (the per-Runner differentiation is the same future multi-Runner seam,
+// record §761-762).
+func (h *Hub) HasContainerBinding(containerName string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, ok := h.containerAccounts[containerName]
+	return ok
+}
+
 // errCommsUnavailable is the fail-closed cause when a hub with no CommsCaller
 // wired receives a RelayCommsCall (a Deliver-only hub). It maps to
 // CodeUnavailable — the comms leg is not mounted, never a silent success.

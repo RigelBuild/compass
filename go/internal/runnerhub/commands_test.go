@@ -147,3 +147,33 @@ func TestStartRelayReturnsSessionIdOnSuccess(t *testing.T) {
 		t.Fatalf("Start session id = %q, want sess-ok", got)
 	}
 }
+
+// TestStartEmitsNoInitialSignal: the initial secret materialize is pre-exec on
+// the Runner (host.Start, FetchSecretsByContainer), so a bound Start pushes NO
+// SecretsVersion frame. Signalling here would drive a redundant second
+// materialize over the T6 rotation path — the race Start was conformed away
+// from. A non-zero count means the initial-signal path was re-introduced.
+func TestStartEmitsNoInitialSignal(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.bindContainer("c1", testAgentAccount)
+	router, _, _ := hub.routerFor("any")
+	rec := newRecordingSend()
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		_ = rec.send(cmd)
+		if cmd.GetStart() != nil {
+			go router.complete(&compassv1internal.SessionsRequest{
+				RequestId: cmd.GetRequestId(),
+				Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: "sess-ok"}},
+			})
+		}
+		return nil
+	})
+
+	if _, err := hub.Start(context.Background(), "req-1", &compassv1.StartAgentSessionRequest{ContainerName: "c1"}); err != nil {
+		t.Fatalf("Start = %v, want success", err)
+	}
+	if pushed := secretsVersionsPushed(t, rec); len(pushed) != 0 {
+		t.Fatalf("bound Start pushed %d SecretsVersion frames, want 0 (initial materialize is pre-exec)", len(pushed))
+	}
+}

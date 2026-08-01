@@ -55,6 +55,15 @@ type recordingRelay struct {
 	startOnce sync.Once
 }
 
+// FetchSecrets serves the Runner's pre-exec by-container fetch with an empty set
+// — these transport tests do not exercise secret delivery, they only need Start
+// to get past the materialize step.
+func (r *recordingRelay) FetchSecrets(
+	context.Context, *connect.Request[compassv1internal.FetchSecretsRequest],
+) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
+	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{}), nil
+}
+
 func (r *recordingRelay) RelayCommsCall(
 	ctx context.Context, req *connect.Request[compassv1internal.RelayCommsCallRequest],
 ) (*connect.Response[compassv1internal.RelayCommsCallResponse], error) {

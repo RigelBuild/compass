@@ -192,6 +192,15 @@ func (f *stubStreamingRuntime) streamingSpecs() []runtime.StreamingExecSpec {
 	return append([]runtime.StreamingExecSpec(nil), f.execSpecs...)
 }
 
+// callsSnapshot returns the ordered lifecycle calls the stub has seen — used to
+// assert the materialize exec ("exec") ran before the agent launch
+// ("exec_streaming").
+func (f *stubStreamingRuntime) callsSnapshot() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
 // --- capturing PublishEvents server ------------------------------------------
 
 // capturePublish is a RunnerService handler backing newLink's client. Post-C5
@@ -203,6 +212,11 @@ type capturePublish struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
 	frames chan *compassv1internal.PublishEventsRequest
 	opened atomic.Uint64
+	// secrets is the set FetchSecrets returns (default empty); fetchReqs records
+	// each request so a test can assert the pre-exec by-container fetch.
+	mu        sync.Mutex
+	secrets   []*compassv1internal.ResolvedSecret
+	fetchReqs []*compassv1internal.FetchSecretsRequest
 }
 
 func newCapturePublish() *capturePublish {
@@ -220,9 +234,34 @@ func (c *capturePublish) PublishEvents(_ context.Context, stream *connect.Client
 	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
 }
 
+// FetchSecrets serves the Runner's pre-exec (by-container) and rotation
+// (by-session) fetch, returning the configured set and recording the request
+// so a test can assert which selector the Runner used. Default set is empty.
+func (c *capturePublish) FetchSecrets(_ context.Context, req *connect.Request[compassv1internal.FetchSecretsRequest]) (*connect.Response[compassv1internal.FetchSecretsResponse], error) {
+	c.mu.Lock()
+	c.fetchReqs = append(c.fetchReqs, req.Msg)
+	secrets := c.secrets
+	c.mu.Unlock()
+	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{Secrets: secrets}), nil
+}
+
 // streamOpens reports how many PublishEvents streams were opened against this
 // handler.
 func (c *capturePublish) streamOpens() uint64 { return c.opened.Load() }
+
+// setSecrets sets the resolved set FetchSecrets returns.
+func (c *capturePublish) setSecrets(secrets ...*compassv1internal.ResolvedSecret) {
+	c.mu.Lock()
+	c.secrets = secrets
+	c.mu.Unlock()
+}
+
+// fetchRequests returns a copy of the FetchSecrets requests seen so far.
+func (c *capturePublish) fetchRequests() []*compassv1internal.FetchSecretsRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]*compassv1internal.FetchSecretsRequest(nil), c.fetchReqs...)
+}
 
 // --- capturing diagnostic log ------------------------------------------------
 

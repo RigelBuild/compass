@@ -134,6 +134,84 @@ func TestFetchSecretsResolveErrorInternal(t *testing.T) {
 	}
 }
 
+// TestFetchSecretsByBoundContainerReturnsResolvedSet pins the pre-exec path: a
+// container with a recorded container→account binding (the Provision..Start
+// window, before any session) resolves the set via the container_name selector.
+func TestFetchSecretsByBoundContainerReturnsResolvedSet(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.bindContainer("cont-1", testAgentAccount)
+	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v", Version: "v1"}}}
+	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
+	client := newRawRunnerClient(t, url, "runner-tok")
+
+	resp, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{ContainerName: "cont-1"}))
+	if err != nil {
+		t.Fatalf("FetchSecrets for a bound container = %v, want the resolved set", err)
+	}
+	if got := resp.Msg.GetSecrets(); len(got) != 1 || got[0].GetName() != "A" {
+		t.Fatalf("resolved set = %+v, want the single secret A", got)
+	}
+}
+
+// TestFetchSecretsUnboundContainerPermissionDenied: a container_name with no
+// recorded binding is rejected CodePermissionDenied, and the resolver is never
+// reached — the pre-exec analogue of the unbound-session rejection.
+func TestFetchSecretsUnboundContainerPermissionDenied(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v"}}}
+	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
+	client := newRawRunnerClient(t, url, "runner-tok")
+
+	_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{ContainerName: "cont-unbound"}))
+	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
+		t.Fatalf("FetchSecrets unbound container code = %v, want PermissionDenied", got)
+	}
+	if resolver.resolveCalls != 0 {
+		t.Fatalf("resolver.Resolve called %d times on a rejected fetch, want 0", resolver.resolveCalls)
+	}
+}
+
+// TestFetchSecretsMissingSelectorInvalidArgument: a request with no selector set
+// is CodeInvalidArgument — a contract skew, never a silent empty set.
+func TestFetchSecretsMissingSelectorInvalidArgument(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v"}}}
+	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
+	client := newRawRunnerClient(t, url, "runner-tok")
+
+	_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{}))
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("FetchSecrets with no selector code = %v, want InvalidArgument", got)
+	}
+	if resolver.resolveCalls != 0 {
+		t.Fatalf("resolver.Resolve called %d times on a rejected fetch, want 0", resolver.resolveCalls)
+	}
+}
+
+// TestFetchSecretsBothSelectorsInvalidArgument: the flat selector shape lets a
+// caller set both fields on the wire, so the handler must reject that as an
+// ambiguous request (CodeInvalidArgument) rather than silently preferring one.
+func TestFetchSecretsBothSelectorsInvalidArgument(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.bindContainer("cont-1", testAgentAccount)
+	bindSession(hub, "sess-1")
+	resolver := &fakeResolverSecrets{set: []secrets.ResolvedSecret{{Name: "A", Value: "v"}}}
+	url := newMountedH2CServerWithResolver(t, hub, runnerResolverForFetch().resolve, resolver)
+	client := newRawRunnerClient(t, url, "runner-tok")
+
+	_, err := client.FetchSecrets(context.Background(), connect.NewRequest(&compassv1internal.FetchSecretsRequest{SessionId: "sess-1", ContainerName: "cont-1"}))
+	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
+		t.Fatalf("FetchSecrets with both selectors code = %v, want InvalidArgument", got)
+	}
+	if resolver.resolveCalls != 0 {
+		t.Fatalf("resolver.Resolve called %d times on a rejected fetch, want 0", resolver.resolveCalls)
+	}
+}
+
 // TestFetchSecretsNoResolverUnavailable: a handler with no resolver wired fails
 // closed Unavailable rather than returning an empty set as if there were no
 // secrets — a wiring bug must be loud.

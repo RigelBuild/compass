@@ -57,10 +57,11 @@ type agentHost struct {
 	// empty leaves the agent on its own default.
 	model string
 
-	mu       sync.Mutex
-	sessions map[string]*liveSession
-	sockets  map[string]*gateway.SocketListener
-	nextID   func() string
+	mu           sync.Mutex
+	sessions     map[string]*liveSession
+	sockets      map[string]*gateway.SocketListener
+	nextID       func() string
+	materializer *runtime.SecretMaterializer
 }
 
 // liveSession is one running agent session: its container and the relay stream
@@ -97,17 +98,18 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		newID = monotonicIDs()
 	}
 	return &agentHost{
-		link:       link,
-		runtime:    rt,
-		registry:   registry,
-		engine:     engine,
-		specs:      specs,
-		log:        log,
-		runtimeDir: cfg.RuntimeDir,
-		model:      cfg.AgentModel,
-		sessions:   map[string]*liveSession{},
-		sockets:    map[string]*gateway.SocketListener{},
-		nextID:     newID,
+		link:         link,
+		runtime:      rt,
+		registry:     registry,
+		engine:       engine,
+		specs:        specs,
+		log:          log,
+		runtimeDir:   cfg.RuntimeDir,
+		model:        cfg.AgentModel,
+		sessions:     map[string]*liveSession{},
+		sockets:      map[string]*gateway.SocketListener{},
+		nextID:       newID,
+		materializer: runtime.NewSecretMaterializer(engine, log),
 	}
 }
 
@@ -209,6 +211,25 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	// so only one lifecycle op is ever in flight against this host. A per-session
 	// transition lock is deferred to T9, where in-process reattach against a
 	// persistent host first makes concurrent callers reachable (go-toolchain-default.md:979).
+
+	// Materialize the agent's secrets into the container BEFORE exec'ing the
+	// agent, so its first provider/gh/env read never races an empty seed
+	// (SEA-1327 T5: materialize before the agent runs). The fetch authorizes on
+	// the container→account binding the Server recorded at Provision — not the
+	// session, which is only being minted now — so it is FetchSecretsByContainer,
+	// keyed on the container name. The frozen record placed this in the
+	// provision step, but the Server binds the container→account entry only
+	// after the relay-Provision returns, so the earliest point the by-container
+	// fetch is authorizable is here in Start, still strictly before StartAgent.
+	// A fetch/materialize failure fails the Start: the agent must not come up
+	// without its secrets. Rotation (T6) rides the async SecretsVersion signal.
+	resolved, err := h.link.FetchSecretsByContainer(ctx, name)
+	if err != nil {
+		return "", fmt.Errorf("fetching secrets before agent start for container %q: %w", name, err)
+	}
+	if err := h.materializer.Install(ctx, handle.ID(), handle.HomeDir(), handle.WorkspaceUID(), resolved); err != nil {
+		return "", fmt.Errorf("materializing secrets before agent start for container %q: %w", name, err)
+	}
 
 	stream, err := h.link.StartAgent(ctx, sessionID, handle.ID(), h.engine, h.agentEnv(handle), h.log)
 	if err != nil {
@@ -314,6 +335,40 @@ func (h *agentHost) Status(_ context.Context, sessionID string) ([]*compassv1.Ag
 		out = append(out, &compassv1.AgentSessionStatus{SessionId: s.sessionID, State: s.state})
 	}
 	return out, nil
+}
+
+// RefreshSecrets re-fetches the resolved secret set bound to sessionID and
+// materializes it into the session's container over the stdin-exec channel — the
+// SecretsVersion-driven ROTATION path (T6). The initial materialize is done
+// synchronously in Start before the agent exec (by-container fetch); this signal
+// path only re-materializes a live session after a rotation. An unknown session
+// errors; the fetch is authz'd server-side on the live session binding, so it is
+// only ever driven for a bound session. The container's $HOME and agent uid come
+// from its resolved handle, so the materialize runs as the agent user in its own
+// home, the git-credential posture.
+func (h *agentHost) RefreshSecrets(ctx context.Context, sessionID string) error {
+	h.mu.Lock()
+	s, ok := h.sessions[sessionID]
+	h.mu.Unlock()
+	if !ok {
+		return errSessionUnknown
+	}
+	// The map read above and the Resolve/FetchSecrets below are deliberately not
+	// atomic: holding h.mu across the network FetchSecrets would serialize every
+	// session. A session torn down in the gap resolves to errSessionUnknown here,
+	// which the best-effort dispatch hook logs and recovers on the next signal.
+	handle, ok := h.registry.Resolve(s.containerName)
+	if !ok {
+		return errSessionUnknown
+	}
+	resolved, err := h.link.FetchSecrets(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("fetching secrets for session %q: %w", sessionID, err)
+	}
+	if err := h.materializer.Install(ctx, handle.ID(), handle.HomeDir(), handle.WorkspaceUID(), resolved); err != nil {
+		return fmt.Errorf("materializing secrets for session %q: %w", sessionID, err)
+	}
+	return nil
 }
 
 // agentEnv derives the agent exec's identity and configuration from the
