@@ -19,3 +19,29 @@ updates:
       actions:
         patterns:
           - '*'
+
+  # The JS workspace is Bun, not npm: one root `bun.lock` drives a hoisted
+  # workspace (packages/*, apps/*, tools/*). Dependabot resolves `bun.lock`
+  # under its own `bun` ecosystem — the `npm` ecosystem does not parse it and
+  # would silently update nothing. Root directory covers the whole workspace
+  # because the lockfile is single and hoisted.
+  - package-ecosystem: bun
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      bun:
+        patterns:
+          - '*'
+
+  # The Go backend is a single module rooted at /go (go.mod + go.sum). Vendored
+  # forks under /forks carry their own go.mod and are deliberately left out —
+  # they track upstream, not our bumps.
+  - package-ecosystem: gomod
+    directory: /go
+    schedule:
+      interval: weekly
+    groups:
+      gomod:
+        patterns:
+          - '*'
