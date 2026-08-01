@@ -4,15 +4,17 @@ package runtime
 
 // Real-podman coverage for env-delivery secret materialization (SEA-1327 T5).
 //
-// This is the test that would have caught the shipped host-vs-container defect:
-// the materializer writes the aggregate env file INSIDE the container over
-// `sh -s`, and the agent sources it from its own namespace — it is NOT passed on
-// the agent exec via `podman exec --env-file` (podman resolves that path
-// host-side, where the container-internal file does not exist, so the exec fails
-// at spawn). Every stub-runtime test necessarily misses that mismatch; only a
-// real container exercises the actual write-then-read path. Build-tagged
-// (`podman`) so it stays out of the hermetic gate, skipped when podman is
-// unusable.
+// This test defends the write-then-read contract the broken `podman exec
+// --env-file` channel could never satisfy: the materializer writes the
+// aggregate env file INSIDE the container over `sh -s`, and the agent sources
+// it from its own namespace — it is NOT passed on the agent exec via `podman
+// exec --env-file` (podman resolves that path host-side, where the
+// container-internal file does not exist, so that exec failed at spawn). This
+// asserts the file is readable in-container at AgentEnvFilePath, the place the
+// host-side --env-file resolution never reached. Every stub-runtime test
+// necessarily misses that mismatch; only a real container exercises the actual
+// write-then-read path. Build-tagged (`podman`) so it stays out of the hermetic
+// gate, skipped when podman is unusable.
 
 import (
 	"context"

@@ -35,8 +35,10 @@ type Handler struct {
 
 // NewHandler constructs the RunnerService handler over the hub and the secret
 // resolver. resolver may be nil on a server built with no secrets surface, in
-// which case FetchSecrets fails closed (CodeUnavailable) rather than panicking —
-// the same posture the service takes for a nil hub.
+// which case FetchSecrets fails with CodeFailedPrecondition rather than
+// panicking. That code is distinct from the CodeUnavailable connect-go
+// synthesizes for transport faults, so the Runner can tolerate a genuine
+// no-secrets-surface server without also tolerating a transient outage.
 func NewHandler(hub *Hub, resolver secrets.Resolver) *Handler {
 	return &Handler{hub: hub, resolver: resolver}
 }
@@ -196,7 +198,7 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 		return nil, errUnauthenticated
 	}
 	if h.resolver == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errNoResolver)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errNoResolver)
 	}
 	// Authorize against whichever binding the selector names, then resolve the
 	// same inject-all set for either (no per-agent differentiation in the MVP).
@@ -231,7 +233,10 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 
 // errNoResolver is the fail-closed cause when FetchSecrets reaches a handler
 // built with no resolver (a server with no secrets surface). It maps to
-// CodeUnavailable — the secrets leg is not mounted, never a silent empty set.
+// CodeFailedPrecondition — distinct from the CodeUnavailable of a transport
+// fault, so the Runner tolerates a no-secrets-surface server (skip materialize,
+// start the agent) without tolerating a transient outage. Never a silent empty
+// set.
 var errNoResolver = errors.New("runnerhub: no secret resolver wired to serve FetchSecrets")
 
 // resolvedSecretToProto maps a secrets.ResolvedSecret to the wire ResolvedSecret,
