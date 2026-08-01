@@ -148,6 +148,24 @@ func (h *Handler) RelayCommsCall(ctx context.Context, req *connect.Request[compa
 	return connect.NewResponse(resp), nil
 }
 
+// RelayLifecycleCall forwards one agent-initiated lifecycle call (spawn/despawn a
+// peer) into the hub, which resolves the relayed session_id to its bound agent
+// account (the caller) and delegates under that account, fail-closed
+// (relay_lifecycle.go). The bearer interceptor has already Kind-gated the caller
+// to a SubjectRunner subject; the defense-in-depth check rejects a context with
+// none. An unresolved session is a Connect CodeNotFound; a tool failure is the
+// in-band LifecycleCallError variant (never a stream teardown).
+func (h *Handler) RelayLifecycleCall(ctx context.Context, req *connect.Request[compassv1internal.RelayLifecycleCallRequest]) (*connect.Response[compassv1internal.RelayLifecycleCallResponse], error) {
+	if _, ok := runnerSubjectFrom(ctx); !ok {
+		return nil, errUnauthenticated
+	}
+	resp, err := h.hub.RelayLifecycleCall(ctx, req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(resp), nil
+}
+
 // CommitConversationFrame durably commits one agent-authored conversation frame
 // and returns the commit outcome — the DURABLE counterpart to PublishEvents. The
 // hub resolves the relayed session_id to its bound agent account and commits the

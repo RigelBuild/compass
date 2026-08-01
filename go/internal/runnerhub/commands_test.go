@@ -177,3 +177,69 @@ func TestStartEmitsNoInitialSignal(t *testing.T) {
 		t.Fatalf("bound Start pushed %d SecretsVersion frames, want 0 (initial materialize is pre-exec)", len(pushed))
 	}
 }
+
+// A successful Remove relay sends a RemoveAgentWorkspace command down the
+// Sessions stream and returns the Runner's RemoveAgentWorkspaceResponse — the
+// container-teardown counterpart to Provision. This drives the mapping through
+// the real router (like the Start-relay happy path) so the wiring, not just the
+// pure function, is proven: the command variant the Runner sees is the Remove
+// variant, and the typed result flows back.
+func TestRemoveRelayReturnsResponseOnSuccess(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	router, _, _ := hub.routerFor("any")
+	var sawRemove bool
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		if cmd.GetRemove() != nil {
+			sawRemove = true
+		}
+		go router.complete(&compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result:    &compassv1internal.SessionsRequest_Remove{Remove: &compassv1.RemoveAgentWorkspaceResponse{}},
+		})
+		return nil
+	})
+
+	resp, err := hub.Remove(context.Background(), "req-rm", &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "c1"})
+	if err != nil {
+		t.Fatalf("Remove = %v, want success", err)
+	}
+	if resp == nil {
+		t.Fatal("Remove returned a nil response, want the Runner's RemoveAgentWorkspaceResponse")
+	}
+	if !sawRemove {
+		t.Fatal("Runner did not receive a RemoveAgentWorkspace command variant")
+	}
+}
+
+// Remove clears the container's provisioned account binding — the teardown
+// counterpart to Provision's bindContainer. On a Provision->Remove path that
+// never reached Start (promoteSession clears it there), a lingering binding would
+// keep authorizing a pre-exec FetchSecrets materialize (HasContainerBinding) for
+// a container that no longer exists.
+//
+// Mutation: dropping the unbindContainer call in Remove leaves HasContainerBinding
+// true after teardown and reddens this.
+func TestRemoveClearsContainerBinding(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.bindContainer("c1", testAgentAccount)
+	if !hub.HasContainerBinding("c1") {
+		t.Fatal("precondition: container c1 should be bound after bindContainer")
+	}
+	router, _, _ := hub.routerFor("any")
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		go router.complete(&compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result:    &compassv1internal.SessionsRequest_Remove{Remove: &compassv1.RemoveAgentWorkspaceResponse{}},
+		})
+		return nil
+	})
+
+	if _, err := hub.Remove(context.Background(), "req-rm", &compassv1.RemoveAgentWorkspaceRequest{ContainerName: "c1"}); err != nil {
+		t.Fatalf("Remove = %v, want success", err)
+	}
+	if hub.HasContainerBinding("c1") {
+		t.Fatal("container c1 still bound after Remove, want the binding cleared (stale binding authorizes pre-exec secrets materialize)")
+	}
+}
