@@ -66,20 +66,25 @@ export function envFilePath(home: string): string {
 	return `${home}/.compass/env`;
 }
 
-/** Reserved vars the Runner sets via `-e`; a file KEY never clobbers these. */
-const RESERVED_ENV_KEYS: Record<string, true> = {
-	HOME: true,
-	COMPASS_WORKDIR: true,
-	COMPASS_MODEL: true,
-	COMPASS_PERSONA: true,
-};
+/**
+ * Keys a file may never set: `HOME` (the agent's Runner-scoped home) and the
+ * entire `COMPASS_*` control-var namespace. Only the Runner/agent populate
+ * `COMPASS_*` (model/persona/workdir/resume-file, …), so any file-supplied
+ * `COMPASS_`-prefixed key is illegitimate and dropped — a prefix rule rather
+ * than a list so a control var added later (e.g. `COMPASS_RESUME_SESSION_FILE`)
+ * is reserved without editing this filter.
+ */
+function isReservedEnvKey(key: string): boolean {
+	return key === "HOME" || key.startsWith("COMPASS_");
+}
 
 /**
  * Parse the materialized env file's `KEY=VALUE` lines. Split on the FIRST `=`
  * (a value may contain `=`); the value is literal to end-of-line, only a
  * trailing `\r` stripped so a CRLF-written file is tolerated. Blank lines,
- * `=`-less lines, and empty-key lines are skipped. The four reserved
- * Runner-set keys are excluded so a file KEY can never clobber them. Pure — the
+ * `=`-less lines, and empty-key lines are skipped. Reserved keys (`HOME` and
+ * the whole `COMPASS_*` namespace) are excluded so a file KEY can never clobber
+ * a Runner-set var — see `isReservedEnvKey`. Pure — the
  * IO + the merge into `process.env` live in `main`.
  */
 export function parseEnvFile(contents: string): Record<string, string> {
@@ -89,7 +94,7 @@ export function parseEnvFile(contents: string): Record<string, string> {
 		const eq = line.indexOf("=");
 		if (eq < 1) continue; // no `=`, or an empty key (eq === 0)
 		const key = line.slice(0, eq).trim();
-		if (key === "" || RESERVED_ENV_KEYS[key]) continue;
+		if (key === "" || isReservedEnvKey(key)) continue;
 		out[key] = line.slice(eq + 1);
 	}
 	return out;
@@ -247,8 +252,8 @@ export async function main(
 	// subprocess they spawn — inherit the secrets. The merge target is
 	// `process.env`, NOT the `env` param (that is only compass-agent's own config
 	// reader): createAgentSession reads process.env, so the secrets must land
-	// there. File wins for the keys it defines; the four reserved Runner-set vars
-	// are never clobbered (filtered parse-side).
+	// there. File wins for the keys it defines; `HOME` and the whole `COMPASS_*`
+	// control-var namespace are never clobbered (filtered parse-side).
 	for (const [key, value] of Object.entries(
 		await readEnvFile(envFilePath(home)),
 	)) {

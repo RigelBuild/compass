@@ -174,8 +174,9 @@ describe("envFilePath", () => {
 
 // The pure parser of the materialized `KEY=VALUE` file. Split on the FIRST `=`
 // (values may contain `=`), value literal to EOL (only a trailing \r stripped),
-// tolerant of blank/`=`-less/empty-key lines, and the four reserved Runner-set
-// keys excluded so a file KEY can never clobber them. No IO, no process.env.
+// tolerant of blank/`=`-less/empty-key lines, and reserved keys (`HOME` + the
+// whole `COMPASS_*` namespace) excluded so a file KEY can never clobber a
+// Runner-set var. No IO, no process.env.
 describe("parseEnvFile", () => {
 	test("parses basic KEY=VALUE lines", () => {
 		expect(parseEnvFile("A=1\nB=2")).toEqual({ A: "1", B: "2" });
@@ -209,10 +210,13 @@ describe("parseEnvFile", () => {
 		expect(parseEnvFile("A=1\r\nB=2\r\n")).toEqual({ A: "1", B: "2" });
 	});
 
-	test("the four reserved Runner-set keys are excluded", () => {
+	test("HOME and the whole COMPASS_* namespace are excluded", () => {
 		expect(
 			parseEnvFile(
-				"HOME=/evil\nCOMPASS_MODEL=x\nCOMPASS_WORKDIR=y\nCOMPASS_PERSONA=z\nOK=1",
+				// The ratified four, plus a COMPASS_ control var the four-key list
+				// predated (COMPASS_RESUME_SESSION_FILE, SEA-1570 T8): the prefix
+				// rule reserves it too, so a file can never hijack the resume path.
+				"HOME=/evil\nCOMPASS_MODEL=x\nCOMPASS_WORKDIR=y\nCOMPASS_PERSONA=z\nCOMPASS_RESUME_SESSION_FILE=/evil\nCOMPASS_FUTURE_VAR=nope\nOK=1",
 			),
 		).toEqual({ OK: "1" });
 	});
@@ -1180,8 +1184,10 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 	test("a written env file's KEYs reach process.env", async () => {
 		const home = process.env.HOME as string;
 		writeEnvFile(home, "SOME_TEST_KEY=secretval\n");
-		delete process.env.SOME_TEST_KEY;
-		// Non-vacuity: without the merge loop the key is never set → red.
+		process.env.SOME_TEST_KEY = "from-process";
+		// Non-vacuity + ratified precedence: without the merge loop the key keeps
+		// its process value → red; the assertion pins "file wins" over an
+		// already-present key, not merely "a new key lands".
 		await main(
 			{ HOME: home },
 			deps(
