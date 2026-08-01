@@ -134,8 +134,11 @@ tasks:
     # (RunnerService/RunnerError + the SEA-1570 ResumeBody carrier) +
     # agent_gateway.proto
     # (AgentGateway + the CommsCall* envelopes it defines: CommsCallRequest/
-    # CommsCallResult/CommsCallError; plus the C1 wire messages
-    # PublishFrame*/PostConversationFrame*/ControlSubscribe*). `compassv1internal`
+    # CommsCallResult/CommsCallError; the LifecycleCall* / SpawnPeer* /
+    # DespawnPeer* envelopes it defines for the spawn/despawn family; plus the C1
+    # wire messages PublishFrame*/PostConversationFrame*/ControlSubscribe*).
+    # RelayLifecycleCall* (like RelayCommsCall*) is a runner.proto internal
+    # envelope. `compassv1internal`
     # catches any Go-package leak regardless of message name.
     #
     # Each of the whole-type symbols is word-bounded (\b…\b) so the fence matches
@@ -151,7 +154,7 @@ tasks:
     # symbols. Internal symbols only ever leak as whole identifiers (a generated
     # type name or a `compassv1internal.` package ref), never as a substring, so
     # this mix still catches every real leak.
-    script: 'if grep -rlE "\bAgentFrame\b|\bAgentControl\b|\bSessionFrame\b|\bReplayCompleteAck\b|\bControlAck\b|\bDeliveryAck\b|\bTranscriptEntry\b|\bPromptControl\b|\bAskAnswerControl\b|\bReplayComplete\b|\bSteerControl\b|\bDeliverControl\b|\bDispatchControl\b|\bResumeBody\b|\bTranscriptReplay\b|\bConfigControl\b|\bRunnerService\b|\bRunnerError\b|AgentGateway|CommsCall|PublishFrame|PostConversationFrame|ControlSubscribe|\bcompassv1internal\b" packages/compass-client/src/gen go/gen; then echo "SEA-1267 FENCE VIOLATION: internal-only symbol found in a PUBLIC gen tree above — an internal proto leaked past buf.gen.yaml exclude_paths"; exit 1; fi; echo "gen-fence ok: no internal symbols in public gen"'
+    script: 'if grep -rlE "\bAgentFrame\b|\bAgentControl\b|\bSessionFrame\b|\bReplayCompleteAck\b|\bControlAck\b|\bDeliveryAck\b|\bTranscriptEntry\b|\bPromptControl\b|\bAskAnswerControl\b|\bReplayComplete\b|\bSteerControl\b|\bDeliverControl\b|\bDispatchControl\b|\bResumeBody\b|\bTranscriptReplay\b|\bConfigControl\b|\bRunnerService\b|\bRunnerError\b|AgentGateway|CommsCall|LifecycleCall|SpawnPeer|DespawnPeer|RelayLifecycleCall|PublishFrame|PostConversationFrame|ControlSubscribe|\bcompassv1internal\b" packages/compass-client/src/gen go/gen; then echo "SEA-1267 FENCE VIOLATION: internal-only symbol found in a PUBLIC gen tree above — an internal proto leaked past buf.gen.yaml exclude_paths"; exit 1; fi; echo "gen-fence ok: no internal symbols in public gen"'
     options:
       runFromWorkspaceRoot: true
       cache: false

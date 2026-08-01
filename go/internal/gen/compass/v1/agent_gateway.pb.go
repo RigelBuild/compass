@@ -310,6 +310,480 @@ func (x *CommsCallError) GetMessage() string {
 	return ""
 }
 
+// One agent-initiated lifecycle call (spawn/despawn a peer). `call_id` is the
+// agent-minted correlation id (the SDK toolCallId); the `call` oneof selects the
+// operation. Mirrors CommsCallRequest — the same message is the
+// RelayLifecycleCallRequest.call payload on the Runner->Server leg, one shared
+// envelope across both hops.
+type LifecycleCallRequest struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	CallId string                 `protobuf:"bytes,1,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
+	// Types that are valid to be assigned to Call:
+	//
+	//	*LifecycleCallRequest_Spawn
+	//	*LifecycleCallRequest_Despawn
+	Call          isLifecycleCallRequest_Call `protobuf_oneof:"call"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LifecycleCallRequest) Reset() {
+	*x = LifecycleCallRequest{}
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LifecycleCallRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LifecycleCallRequest) ProtoMessage() {}
+
+func (x *LifecycleCallRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LifecycleCallRequest.ProtoReflect.Descriptor instead.
+func (*LifecycleCallRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *LifecycleCallRequest) GetCallId() string {
+	if x != nil {
+		return x.CallId
+	}
+	return ""
+}
+
+func (x *LifecycleCallRequest) GetCall() isLifecycleCallRequest_Call {
+	if x != nil {
+		return x.Call
+	}
+	return nil
+}
+
+func (x *LifecycleCallRequest) GetSpawn() *SpawnPeerRequest {
+	if x != nil {
+		if x, ok := x.Call.(*LifecycleCallRequest_Spawn); ok {
+			return x.Spawn
+		}
+	}
+	return nil
+}
+
+func (x *LifecycleCallRequest) GetDespawn() *DespawnPeerRequest {
+	if x != nil {
+		if x, ok := x.Call.(*LifecycleCallRequest_Despawn); ok {
+			return x.Despawn
+		}
+	}
+	return nil
+}
+
+type isLifecycleCallRequest_Call interface {
+	isLifecycleCallRequest_Call()
+}
+
+type LifecycleCallRequest_Spawn struct {
+	Spawn *SpawnPeerRequest `protobuf:"bytes,2,opt,name=spawn,proto3,oneof"`
+}
+
+type LifecycleCallRequest_Despawn struct {
+	Despawn *DespawnPeerRequest `protobuf:"bytes,3,opt,name=despawn,proto3,oneof"`
+}
+
+func (*LifecycleCallRequest_Spawn) isLifecycleCallRequest_Call() {}
+
+func (*LifecycleCallRequest_Despawn) isLifecycleCallRequest_Call() {}
+
+// Spawn a peer agent, owned by the caller agent's owner (F2 ownership frame).
+// Names the new agent's identity and its initial prompt — never a repo/ref
+// (spawn carries no repo, Matt 2026-07-29; the peer self-clones after launch).
+type SpawnPeerRequest struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Handle          string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"` // the new agent's account handle (unique)
+	DisplayName     string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
+	InitialPrompt   string                 `protobuf:"bytes,3,opt,name=initial_prompt,json=initialPrompt,proto3" json:"initial_prompt,omitempty"`         // threaded to StartAgentSessionRequest.initial_prompt
+	ClientRequestId string                 `protobuf:"bytes,4,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"` // whole-chain idempotency key (handler-level join + Provision dedup)
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *SpawnPeerRequest) Reset() {
+	*x = SpawnPeerRequest{}
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SpawnPeerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SpawnPeerRequest) ProtoMessage() {}
+
+func (x *SpawnPeerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SpawnPeerRequest.ProtoReflect.Descriptor instead.
+func (*SpawnPeerRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SpawnPeerRequest) GetHandle() string {
+	if x != nil {
+		return x.Handle
+	}
+	return ""
+}
+
+func (x *SpawnPeerRequest) GetDisplayName() string {
+	if x != nil {
+		return x.DisplayName
+	}
+	return ""
+}
+
+func (x *SpawnPeerRequest) GetInitialPrompt() string {
+	if x != nil {
+		return x.InitialPrompt
+	}
+	return ""
+}
+
+func (x *SpawnPeerRequest) GetClientRequestId() string {
+	if x != nil {
+		return x.ClientRequestId
+	}
+	return ""
+}
+
+type SpawnPeerResponse struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	AgentAccountId string                 `protobuf:"bytes,1,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
+	ContainerName  string                 `protobuf:"bytes,2,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
+	SessionId      string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *SpawnPeerResponse) Reset() {
+	*x = SpawnPeerResponse{}
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SpawnPeerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SpawnPeerResponse) ProtoMessage() {}
+
+func (x *SpawnPeerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SpawnPeerResponse.ProtoReflect.Descriptor instead.
+func (*SpawnPeerResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *SpawnPeerResponse) GetAgentAccountId() string {
+	if x != nil {
+		return x.AgentAccountId
+	}
+	return ""
+}
+
+func (x *SpawnPeerResponse) GetContainerName() string {
+	if x != nil {
+		return x.ContainerName
+	}
+	return ""
+}
+
+func (x *SpawnPeerResponse) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+// Despawn a peer: tear down its container and release its durable placement.
+// Same-owner authority (F2); the account row, home channel, and history survive
+// (despawn tears down compute, not identity).
+type DespawnPeerRequest struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	AgentAccountId string                 `protobuf:"bytes,1,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"` // the peer to tear down
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *DespawnPeerRequest) Reset() {
+	*x = DespawnPeerRequest{}
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DespawnPeerRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DespawnPeerRequest) ProtoMessage() {}
+
+func (x *DespawnPeerRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DespawnPeerRequest.ProtoReflect.Descriptor instead.
+func (*DespawnPeerRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *DespawnPeerRequest) GetAgentAccountId() string {
+	if x != nil {
+		return x.AgentAccountId
+	}
+	return ""
+}
+
+type DespawnPeerResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DespawnPeerResponse) Reset() {
+	*x = DespawnPeerResponse{}
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DespawnPeerResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DespawnPeerResponse) ProtoMessage() {}
+
+func (x *DespawnPeerResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DespawnPeerResponse.ProtoReflect.Descriptor instead.
+func (*DespawnPeerResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{7}
+}
+
+// The result of one lifecycle call, correlated by `call_id`. A successful call
+// sets `spawn`/`despawn`; an in-band tool failure sets `error` (same shape as
+// CommsCallError), which is NOT a transport teardown. The same message is the
+// RelayLifecycleCallResponse.result payload on the Runner->Server leg.
+type LifecycleCallResult struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	CallId string                 `protobuf:"bytes,1,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
+	// Types that are valid to be assigned to Result:
+	//
+	//	*LifecycleCallResult_Spawn
+	//	*LifecycleCallResult_Despawn
+	//	*LifecycleCallResult_Error
+	Result        isLifecycleCallResult_Result `protobuf_oneof:"result"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LifecycleCallResult) Reset() {
+	*x = LifecycleCallResult{}
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LifecycleCallResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LifecycleCallResult) ProtoMessage() {}
+
+func (x *LifecycleCallResult) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LifecycleCallResult.ProtoReflect.Descriptor instead.
+func (*LifecycleCallResult) Descriptor() ([]byte, []int) {
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *LifecycleCallResult) GetCallId() string {
+	if x != nil {
+		return x.CallId
+	}
+	return ""
+}
+
+func (x *LifecycleCallResult) GetResult() isLifecycleCallResult_Result {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
+func (x *LifecycleCallResult) GetSpawn() *SpawnPeerResponse {
+	if x != nil {
+		if x, ok := x.Result.(*LifecycleCallResult_Spawn); ok {
+			return x.Spawn
+		}
+	}
+	return nil
+}
+
+func (x *LifecycleCallResult) GetDespawn() *DespawnPeerResponse {
+	if x != nil {
+		if x, ok := x.Result.(*LifecycleCallResult_Despawn); ok {
+			return x.Despawn
+		}
+	}
+	return nil
+}
+
+func (x *LifecycleCallResult) GetError() *LifecycleCallError {
+	if x != nil {
+		if x, ok := x.Result.(*LifecycleCallResult_Error); ok {
+			return x.Error
+		}
+	}
+	return nil
+}
+
+type isLifecycleCallResult_Result interface {
+	isLifecycleCallResult_Result()
+}
+
+type LifecycleCallResult_Spawn struct {
+	Spawn *SpawnPeerResponse `protobuf:"bytes,2,opt,name=spawn,proto3,oneof"`
+}
+
+type LifecycleCallResult_Despawn struct {
+	Despawn *DespawnPeerResponse `protobuf:"bytes,3,opt,name=despawn,proto3,oneof"`
+}
+
+type LifecycleCallResult_Error struct {
+	Error *LifecycleCallError `protobuf:"bytes,4,opt,name=error,proto3,oneof"`
+}
+
+func (*LifecycleCallResult_Spawn) isLifecycleCallResult_Result() {}
+
+func (*LifecycleCallResult_Despawn) isLifecycleCallResult_Result() {}
+
+func (*LifecycleCallResult_Error) isLifecycleCallResult_Result() {}
+
+// An in-band lifecycle-call failure: a tool error the agent renders to the
+// model, never a stream teardown. `code` is a short stable token (e.g.
+// "not_found", "already_exists", "invalid_argument"); `message` is detail.
+type LifecycleCallError struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Code          string                 `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LifecycleCallError) Reset() {
+	*x = LifecycleCallError{}
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LifecycleCallError) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LifecycleCallError) ProtoMessage() {}
+
+func (x *LifecycleCallError) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LifecycleCallError.ProtoReflect.Descriptor instead.
+func (*LifecycleCallError) Descriptor() ([]byte, []int) {
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *LifecycleCallError) GetCode() string {
+	if x != nil {
+		return x.Code
+	}
+	return ""
+}
+
+func (x *LifecycleCallError) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 // Publish stream element: one trace/session AgentFrame, in emission order. No
 // seq field — the Runner assigns the upstream PublishEvents RunnerSeq. The
 // durable conversation frames do NOT ride this stream; they take the correlated
@@ -323,7 +797,7 @@ type PublishFrameRequest struct {
 
 func (x *PublishFrameRequest) Reset() {
 	*x = PublishFrameRequest{}
-	mi := &file_compass_v1_agent_gateway_proto_msgTypes[3]
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -335,7 +809,7 @@ func (x *PublishFrameRequest) String() string {
 func (*PublishFrameRequest) ProtoMessage() {}
 
 func (x *PublishFrameRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_gateway_proto_msgTypes[3]
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -348,7 +822,7 @@ func (x *PublishFrameRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishFrameRequest.ProtoReflect.Descriptor instead.
 func (*PublishFrameRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{3}
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *PublishFrameRequest) GetFrame() *AgentFrame {
@@ -367,7 +841,7 @@ type PublishFrameResponse struct {
 
 func (x *PublishFrameResponse) Reset() {
 	*x = PublishFrameResponse{}
-	mi := &file_compass_v1_agent_gateway_proto_msgTypes[4]
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -379,7 +853,7 @@ func (x *PublishFrameResponse) String() string {
 func (*PublishFrameResponse) ProtoMessage() {}
 
 func (x *PublishFrameResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_gateway_proto_msgTypes[4]
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -392,7 +866,7 @@ func (x *PublishFrameResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublishFrameResponse.ProtoReflect.Descriptor instead.
 func (*PublishFrameResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{4}
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{11}
 }
 
 // The durable-frame unary carries the SAME AgentFrame message, constrained by
@@ -414,7 +888,7 @@ type PostConversationFrameRequest struct {
 
 func (x *PostConversationFrameRequest) Reset() {
 	*x = PostConversationFrameRequest{}
-	mi := &file_compass_v1_agent_gateway_proto_msgTypes[5]
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -426,7 +900,7 @@ func (x *PostConversationFrameRequest) String() string {
 func (*PostConversationFrameRequest) ProtoMessage() {}
 
 func (x *PostConversationFrameRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_gateway_proto_msgTypes[5]
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -439,7 +913,7 @@ func (x *PostConversationFrameRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostConversationFrameRequest.ProtoReflect.Descriptor instead.
 func (*PostConversationFrameRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{5}
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *PostConversationFrameRequest) GetFrame() *AgentFrame {
@@ -465,7 +939,7 @@ type PostConversationFrameResponse struct {
 
 func (x *PostConversationFrameResponse) Reset() {
 	*x = PostConversationFrameResponse{}
-	mi := &file_compass_v1_agent_gateway_proto_msgTypes[6]
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -477,7 +951,7 @@ func (x *PostConversationFrameResponse) String() string {
 func (*PostConversationFrameResponse) ProtoMessage() {}
 
 func (x *PostConversationFrameResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_gateway_proto_msgTypes[6]
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -490,7 +964,7 @@ func (x *PostConversationFrameResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostConversationFrameResponse.ProtoReflect.Descriptor instead.
 func (*PostConversationFrameResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{6}
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{13}
 }
 
 // The Control subscribe request carries no session id: the per-container socket
@@ -503,7 +977,7 @@ type ControlSubscribeRequest struct {
 
 func (x *ControlSubscribeRequest) Reset() {
 	*x = ControlSubscribeRequest{}
-	mi := &file_compass_v1_agent_gateway_proto_msgTypes[7]
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -515,7 +989,7 @@ func (x *ControlSubscribeRequest) String() string {
 func (*ControlSubscribeRequest) ProtoMessage() {}
 
 func (x *ControlSubscribeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_gateway_proto_msgTypes[7]
+	mi := &file_compass_v1_agent_gateway_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -528,7 +1002,7 @@ func (x *ControlSubscribeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlSubscribeRequest.ProtoReflect.Descriptor instead.
 func (*ControlSubscribeRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{7}
+	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{14}
 }
 
 var File_compass_v1_agent_gateway_proto protoreflect.FileDescriptor
@@ -550,6 +1024,33 @@ const file_compass_v1_agent_gateway_proto_rawDesc = "" +
 	"\x06result\">\n" +
 	"\x0eCommsCallError\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\xa9\x01\n" +
+	"\x14LifecycleCallRequest\x12\x17\n" +
+	"\acall_id\x18\x01 \x01(\tR\x06callId\x124\n" +
+	"\x05spawn\x18\x02 \x01(\v2\x1c.compass.v1.SpawnPeerRequestH\x00R\x05spawn\x12:\n" +
+	"\adespawn\x18\x03 \x01(\v2\x1e.compass.v1.DespawnPeerRequestH\x00R\adespawnB\x06\n" +
+	"\x04call\"\xa0\x01\n" +
+	"\x10SpawnPeerRequest\x12\x16\n" +
+	"\x06handle\x18\x01 \x01(\tR\x06handle\x12!\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12%\n" +
+	"\x0einitial_prompt\x18\x03 \x01(\tR\rinitialPrompt\x12*\n" +
+	"\x11client_request_id\x18\x04 \x01(\tR\x0fclientRequestId\"\x83\x01\n" +
+	"\x11SpawnPeerResponse\x12(\n" +
+	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12%\n" +
+	"\x0econtainer_name\x18\x02 \x01(\tR\rcontainerName\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x03 \x01(\tR\tsessionId\">\n" +
+	"\x12DespawnPeerRequest\x12(\n" +
+	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\"\x15\n" +
+	"\x13DespawnPeerResponse\"\xe4\x01\n" +
+	"\x13LifecycleCallResult\x12\x17\n" +
+	"\acall_id\x18\x01 \x01(\tR\x06callId\x125\n" +
+	"\x05spawn\x18\x02 \x01(\v2\x1d.compass.v1.SpawnPeerResponseH\x00R\x05spawn\x12;\n" +
+	"\adespawn\x18\x03 \x01(\v2\x1f.compass.v1.DespawnPeerResponseH\x00R\adespawn\x126\n" +
+	"\x05error\x18\x04 \x01(\v2\x1e.compass.v1.LifecycleCallErrorH\x00R\x05errorB\b\n" +
+	"\x06result\"B\n" +
+	"\x12LifecycleCallError\x12\x12\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\"C\n" +
 	"\x13PublishFrameRequest\x12,\n" +
 	"\x05frame\x18\x01 \x01(\v2\x16.compass.v1.AgentFrameR\x05frame\"\x16\n" +
@@ -558,9 +1059,10 @@ const file_compass_v1_agent_gateway_proto_rawDesc = "" +
 	"\x05frame\x18\x01 \x01(\v2\x16.compass.v1.AgentFrameR\x05frame\x12'\n" +
 	"\x0fidempotency_key\x18\x02 \x01(\tR\x0eidempotencyKey\"\x1f\n" +
 	"\x1dPostConversationFrameResponse\"\x19\n" +
-	"\x17ControlSubscribeRequest2\xdc\x02\n" +
+	"\x17ControlSubscribeRequest2\xac\x03\n" +
 	"\fAgentGateway\x12B\n" +
 	"\x05Comms\x12\x1c.compass.v1.CommsCallRequest\x1a\x1b.compass.v1.CommsCallResult\x12N\n" +
+	"\tLifecycle\x12 .compass.v1.LifecycleCallRequest\x1a\x1f.compass.v1.LifecycleCallResult\x12N\n" +
 	"\aPublish\x12\x1f.compass.v1.PublishFrameRequest\x1a .compass.v1.PublishFrameResponse(\x01\x12l\n" +
 	"\x15PostConversationFrame\x12(.compass.v1.PostConversationFrameRequest\x1a).compass.v1.PostConversationFrameResponse\x12J\n" +
 	"\aControl\x12#.compass.v1.ControlSubscribeRequest\x1a\x18.compass.v1.AgentControl0\x01b\x06proto3"
@@ -577,44 +1079,58 @@ func file_compass_v1_agent_gateway_proto_rawDescGZIP() []byte {
 	return file_compass_v1_agent_gateway_proto_rawDescData
 }
 
-var file_compass_v1_agent_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_compass_v1_agent_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_compass_v1_agent_gateway_proto_goTypes = []any{
 	(*CommsCallRequest)(nil),              // 0: compass.v1.CommsCallRequest
 	(*CommsCallResult)(nil),               // 1: compass.v1.CommsCallResult
 	(*CommsCallError)(nil),                // 2: compass.v1.CommsCallError
-	(*PublishFrameRequest)(nil),           // 3: compass.v1.PublishFrameRequest
-	(*PublishFrameResponse)(nil),          // 4: compass.v1.PublishFrameResponse
-	(*PostConversationFrameRequest)(nil),  // 5: compass.v1.PostConversationFrameRequest
-	(*PostConversationFrameResponse)(nil), // 6: compass.v1.PostConversationFrameResponse
-	(*ControlSubscribeRequest)(nil),       // 7: compass.v1.ControlSubscribeRequest
-	(*v1.PostMessageRequest)(nil),         // 8: compass.v1.PostMessageRequest
-	(*v1.ListMessagesRequest)(nil),        // 9: compass.v1.ListMessagesRequest
-	(*v1.PostMessageResponse)(nil),        // 10: compass.v1.PostMessageResponse
-	(*v1.ListMessagesResponse)(nil),       // 11: compass.v1.ListMessagesResponse
-	(*AgentFrame)(nil),                    // 12: compass.v1.AgentFrame
-	(*AgentControl)(nil),                  // 13: compass.v1.AgentControl
+	(*LifecycleCallRequest)(nil),          // 3: compass.v1.LifecycleCallRequest
+	(*SpawnPeerRequest)(nil),              // 4: compass.v1.SpawnPeerRequest
+	(*SpawnPeerResponse)(nil),             // 5: compass.v1.SpawnPeerResponse
+	(*DespawnPeerRequest)(nil),            // 6: compass.v1.DespawnPeerRequest
+	(*DespawnPeerResponse)(nil),           // 7: compass.v1.DespawnPeerResponse
+	(*LifecycleCallResult)(nil),           // 8: compass.v1.LifecycleCallResult
+	(*LifecycleCallError)(nil),            // 9: compass.v1.LifecycleCallError
+	(*PublishFrameRequest)(nil),           // 10: compass.v1.PublishFrameRequest
+	(*PublishFrameResponse)(nil),          // 11: compass.v1.PublishFrameResponse
+	(*PostConversationFrameRequest)(nil),  // 12: compass.v1.PostConversationFrameRequest
+	(*PostConversationFrameResponse)(nil), // 13: compass.v1.PostConversationFrameResponse
+	(*ControlSubscribeRequest)(nil),       // 14: compass.v1.ControlSubscribeRequest
+	(*v1.PostMessageRequest)(nil),         // 15: compass.v1.PostMessageRequest
+	(*v1.ListMessagesRequest)(nil),        // 16: compass.v1.ListMessagesRequest
+	(*v1.PostMessageResponse)(nil),        // 17: compass.v1.PostMessageResponse
+	(*v1.ListMessagesResponse)(nil),       // 18: compass.v1.ListMessagesResponse
+	(*AgentFrame)(nil),                    // 19: compass.v1.AgentFrame
+	(*AgentControl)(nil),                  // 20: compass.v1.AgentControl
 }
 var file_compass_v1_agent_gateway_proto_depIdxs = []int32{
-	8,  // 0: compass.v1.CommsCallRequest.post:type_name -> compass.v1.PostMessageRequest
-	9,  // 1: compass.v1.CommsCallRequest.list:type_name -> compass.v1.ListMessagesRequest
-	10, // 2: compass.v1.CommsCallResult.post:type_name -> compass.v1.PostMessageResponse
-	11, // 3: compass.v1.CommsCallResult.list:type_name -> compass.v1.ListMessagesResponse
+	15, // 0: compass.v1.CommsCallRequest.post:type_name -> compass.v1.PostMessageRequest
+	16, // 1: compass.v1.CommsCallRequest.list:type_name -> compass.v1.ListMessagesRequest
+	17, // 2: compass.v1.CommsCallResult.post:type_name -> compass.v1.PostMessageResponse
+	18, // 3: compass.v1.CommsCallResult.list:type_name -> compass.v1.ListMessagesResponse
 	2,  // 4: compass.v1.CommsCallResult.error:type_name -> compass.v1.CommsCallError
-	12, // 5: compass.v1.PublishFrameRequest.frame:type_name -> compass.v1.AgentFrame
-	12, // 6: compass.v1.PostConversationFrameRequest.frame:type_name -> compass.v1.AgentFrame
-	0,  // 7: compass.v1.AgentGateway.Comms:input_type -> compass.v1.CommsCallRequest
-	3,  // 8: compass.v1.AgentGateway.Publish:input_type -> compass.v1.PublishFrameRequest
-	5,  // 9: compass.v1.AgentGateway.PostConversationFrame:input_type -> compass.v1.PostConversationFrameRequest
-	7,  // 10: compass.v1.AgentGateway.Control:input_type -> compass.v1.ControlSubscribeRequest
-	1,  // 11: compass.v1.AgentGateway.Comms:output_type -> compass.v1.CommsCallResult
-	4,  // 12: compass.v1.AgentGateway.Publish:output_type -> compass.v1.PublishFrameResponse
-	6,  // 13: compass.v1.AgentGateway.PostConversationFrame:output_type -> compass.v1.PostConversationFrameResponse
-	13, // 14: compass.v1.AgentGateway.Control:output_type -> compass.v1.AgentControl
-	11, // [11:15] is the sub-list for method output_type
-	7,  // [7:11] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	4,  // 5: compass.v1.LifecycleCallRequest.spawn:type_name -> compass.v1.SpawnPeerRequest
+	6,  // 6: compass.v1.LifecycleCallRequest.despawn:type_name -> compass.v1.DespawnPeerRequest
+	5,  // 7: compass.v1.LifecycleCallResult.spawn:type_name -> compass.v1.SpawnPeerResponse
+	7,  // 8: compass.v1.LifecycleCallResult.despawn:type_name -> compass.v1.DespawnPeerResponse
+	9,  // 9: compass.v1.LifecycleCallResult.error:type_name -> compass.v1.LifecycleCallError
+	19, // 10: compass.v1.PublishFrameRequest.frame:type_name -> compass.v1.AgentFrame
+	19, // 11: compass.v1.PostConversationFrameRequest.frame:type_name -> compass.v1.AgentFrame
+	0,  // 12: compass.v1.AgentGateway.Comms:input_type -> compass.v1.CommsCallRequest
+	3,  // 13: compass.v1.AgentGateway.Lifecycle:input_type -> compass.v1.LifecycleCallRequest
+	10, // 14: compass.v1.AgentGateway.Publish:input_type -> compass.v1.PublishFrameRequest
+	12, // 15: compass.v1.AgentGateway.PostConversationFrame:input_type -> compass.v1.PostConversationFrameRequest
+	14, // 16: compass.v1.AgentGateway.Control:input_type -> compass.v1.ControlSubscribeRequest
+	1,  // 17: compass.v1.AgentGateway.Comms:output_type -> compass.v1.CommsCallResult
+	8,  // 18: compass.v1.AgentGateway.Lifecycle:output_type -> compass.v1.LifecycleCallResult
+	11, // 19: compass.v1.AgentGateway.Publish:output_type -> compass.v1.PublishFrameResponse
+	13, // 20: compass.v1.AgentGateway.PostConversationFrame:output_type -> compass.v1.PostConversationFrameResponse
+	20, // 21: compass.v1.AgentGateway.Control:output_type -> compass.v1.AgentControl
+	17, // [17:22] is the sub-list for method output_type
+	12, // [12:17] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_agent_gateway_proto_init() }
@@ -632,13 +1148,22 @@ func file_compass_v1_agent_gateway_proto_init() {
 		(*CommsCallResult_List)(nil),
 		(*CommsCallResult_Error)(nil),
 	}
+	file_compass_v1_agent_gateway_proto_msgTypes[3].OneofWrappers = []any{
+		(*LifecycleCallRequest_Spawn)(nil),
+		(*LifecycleCallRequest_Despawn)(nil),
+	}
+	file_compass_v1_agent_gateway_proto_msgTypes[8].OneofWrappers = []any{
+		(*LifecycleCallResult_Spawn)(nil),
+		(*LifecycleCallResult_Despawn)(nil),
+		(*LifecycleCallResult_Error)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compass_v1_agent_gateway_proto_rawDesc), len(file_compass_v1_agent_gateway_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

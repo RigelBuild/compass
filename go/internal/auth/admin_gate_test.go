@@ -122,6 +122,7 @@ func TestAdminGateGatesFrozenAdminOnlyRPCs(t *testing.T) {
 		{"ReloadAgentSession", compassv1connect.CompassServiceReloadAgentSessionProcedure},
 		{"GetAgentStatus", compassv1connect.CompassServiceGetAgentStatusProcedure},
 		{"IssueToken", compassv1connect.CompassServiceIssueTokenProcedure},
+		{"RemoveAgentWorkspace", compassv1connect.CompassServiceRemoveAgentWorkspaceProcedure},
 	}
 
 	for _, tc := range frozen {
@@ -198,6 +199,7 @@ func TestClassifyProcedureClassifiesKnownAndUnknownProcedures(t *testing.T) {
 		{"ReloadAgentSession", compassv1connect.CompassServiceReloadAgentSessionProcedure, true, true},
 		{"GetAgentStatus", compassv1connect.CompassServiceGetAgentStatusProcedure, true, true},
 		{"IssueToken", compassv1connect.CompassServiceIssueTokenProcedure, true, true},
+		{"RemoveAgentWorkspace", compassv1connect.CompassServiceRemoveAgentWorkspaceProcedure, true, true},
 		{"GetServerInfo", compassv1connect.CompassServiceGetServerInfoProcedure, false, true},
 		{"SubscribeEvents", compassv1connect.CompassServiceSubscribeEventsProcedure, false, true},
 		{"SubscribeAgentSession", compassv1connect.CompassServiceSubscribeAgentSessionProcedure, false, true},
