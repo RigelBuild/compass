@@ -8,6 +8,8 @@ import {
 	isActiveState,
 	isBacklogState,
 	laneTotal,
+	subtreeAgentIds,
+	treeOrder,
 } from "./board";
 import { BOARD_LANES } from "./constants";
 import type { Agent, Issue, IssueState } from "./stub-data";
@@ -58,15 +60,16 @@ function ws(over: Partial<Issue> & Pick<Issue, "id" | "state">): Issue {
 	};
 }
 
-// Minimal valid Agent — board.ts only reads `account.id`; the rest satisfies the
-// shape.
-function agent(id: string): Agent {
+// Minimal valid Agent — board.ts only reads `account.id` and, for the tree
+// helpers, `account.parentAgentId`; the rest satisfies the shape.
+function agent(id: string, parentAgentId?: string): Agent {
 	return {
 		account: {
 			id,
 			handle: id,
 			displayName: id,
 			kind: "agent",
+			parentAgentId,
 		},
 		lifecycle: "idle",
 		role: "worker",
@@ -281,5 +284,119 @@ describe("laneTotal", () => {
 		expect(laneTotal(list, "in_progress")).toBe(3);
 		expect(laneTotal(list, "blocked")).toBe(1);
 		expect(laneTotal(list, "queued")).toBe(0);
+	});
+});
+
+// Helper: the account ids of an agent list, in order.
+const orderIds = (list: readonly Agent[]): string[] =>
+	list.map((a) => a.account.id);
+
+describe("treeOrder", () => {
+	// Depth-first flatten over agentTree: parent before its children, siblings
+	// and roots in stable input order (no sort), every agent exactly once.
+	test("a flat set (all roots) keeps input order", () => {
+		const agents = [agent("c"), agent("a"), agent("b")];
+		expect(orderIds(treeOrder(agents))).toEqual(["c", "a", "b"]);
+	});
+
+	test("a parent appears immediately before its children (subtree contiguous)", () => {
+		const agents = [
+			agent("root"),
+			agent("child1", "root"),
+			agent("child2", "root"),
+		];
+		expect(orderIds(treeOrder(agents))).toEqual(["root", "child1", "child2"]);
+	});
+
+	test("depth-first: a nested subtree is contiguous", () => {
+		// root -> child -> grandchild, plus a sibling root after.
+		const agents = [
+			agent("root"),
+			agent("child", "root"),
+			agent("grandchild", "child"),
+			agent("other"),
+		];
+		expect(orderIds(treeOrder(agents))).toEqual([
+			"root",
+			"child",
+			"grandchild",
+			"other",
+		]);
+	});
+
+	test("multi-root: roots in input order, each subtree contiguous", () => {
+		const agents = [
+			agent("r1"),
+			agent("r1a", "r1"),
+			agent("r2"),
+			agent("r2a", "r2"),
+		];
+		expect(orderIds(treeOrder(agents))).toEqual(["r1", "r1a", "r2", "r2a"]);
+	});
+
+	test("siblings follow input order, not alphabetical (no sort)", () => {
+		const agents = [
+			agent("root"),
+			agent("zeta", "root"),
+			agent("alpha", "root"),
+		];
+		expect(orderIds(treeOrder(agents))).toEqual(["root", "zeta", "alpha"]);
+	});
+
+	test("every agent appears exactly once", () => {
+		const agents = [
+			agent("root"),
+			agent("a", "root"),
+			agent("b", "a"),
+			agent("c"),
+			agent("d", "c"),
+		];
+		const out = treeOrder(agents);
+		expect(out).toHaveLength(agents.length);
+		expect(new Set(orderIds(out))).toEqual(
+			new Set(agents.map((a) => a.account.id)),
+		);
+	});
+});
+
+describe("subtreeAgentIds", () => {
+	// The subtree membership set: root id + all transitive descendants; the root
+	// itself is included; a missing root yields an empty set.
+	test("a root with children returns {root, all descendants}", () => {
+		const agents = [
+			agent("root"),
+			agent("child1", "root"),
+			agent("child2", "root"),
+			agent("grandchild", "child1"),
+			agent("other"),
+		];
+		expect(subtreeAgentIds(agents, "root")).toEqual(
+			new Set(["root", "child1", "child2", "grandchild"]),
+		);
+	});
+
+	test("a leaf root returns just itself", () => {
+		const agents = [agent("root"), agent("leaf", "root")];
+		expect(subtreeAgentIds(agents, "leaf")).toEqual(new Set(["leaf"]));
+	});
+
+	test("a deep chain includes every level", () => {
+		const agents = [
+			agent("a"),
+			agent("b", "a"),
+			agent("c", "b"),
+			agent("d", "c"),
+		];
+		expect(subtreeAgentIds(agents, "a")).toEqual(new Set(["a", "b", "c", "d"]));
+	});
+
+	test("a missing rootAgentId returns an empty set", () => {
+		const agents = [agent("a"), agent("b", "a")];
+		expect(subtreeAgentIds(agents, "nope")).toEqual(new Set<string>());
+	});
+
+	test("the set includes the root itself", () => {
+		const agents = [agent("root"), agent("child", "root")];
+		expect(subtreeAgentIds(agents, "root").has("root")).toBe(true);
 	});
 });
