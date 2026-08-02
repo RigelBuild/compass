@@ -30,6 +30,7 @@ func accountToWire(a store.Account) *compassv1.Account {
 		out.Kind = &compassv1.Account_Agent{Agent: &compassv1.AgentAccount{
 			OwnerUserId:   string(a.Agent.OwnerUserID),
 			HomeChannelId: string(a.Agent.HomeChannelID),
+			ParentAgentId: string(a.Agent.ParentAgentID),
 		}}
 	}
 	return out

@@ -139,6 +139,10 @@ func (l *lifecycleService) SpawnAsAccount(
 		Handle:      req.GetHandle(),
 		DisplayName: req.GetDisplayName(),
 		Persona:     "",
+		// Set-at-creation: the spawned peer's parent in the agent tree is its
+		// spawner (§T3). A new account has no descendants, so this edge cannot
+		// form a cycle — the cycle check lives only on the mutable ReparentAgent.
+		ParentAgentID: caller,
 	})
 	switch {
 	case err == nil:

@@ -106,7 +106,7 @@ func (s *Store) adminByHandle(ctx context.Context, handle string) (Account, erro
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.parent_agent_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
@@ -154,12 +154,18 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
-		"INSERT INTO agent_accounts (account_id, owner_user_id, home_channel_id, persona) VALUES ($1, $2, $3, $4)",
-		accountID, string(ownerUserID), channelID, a.Persona,
+		"INSERT INTO agent_accounts (account_id, owner_user_id, home_channel_id, persona, parent_agent_id) VALUES ($1, $2, $3, $4, NULLIF($5, ''))",
+		accountID, string(ownerUserID), channelID, a.Persona, string(a.ParentAgentID),
 	); err != nil {
-		// owner_user_id references user_accounts; an unknown owner is a caller
-		// error, not a store fault.
+		// Both FKs on agent_accounts land here: parent_agent_id (a supplied
+		// parent that does not resolve to an agent) and owner_user_id (an
+		// unknown owner). ConstraintName tells them apart — the parent FK is a
+		// missing referent (ErrNotFound), an unknown owner a caller error
+		// (ErrInvalidArgument), not a store fault.
 		if pgErrIs(err, pgForeignKeyViolation) {
+			if pgConstraintName(err) == "agent_accounts_parent_agent_id_fkey" {
+				return Account{}, fmt.Errorf("%w: parent agent %q", ErrNotFound, a.ParentAgentID)
+			}
 			return Account{}, fmt.Errorf("%w: unknown owner user %q", ErrInvalidArgument, ownerUserID)
 		}
 		return Account{}, fmt.Errorf("store: insert agent_account: %w", err)
@@ -194,6 +200,7 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 			OwnerUserID:   ownerUserID,
 			HomeChannelID: ChannelID(channelID),
 			Persona:       a.Persona,
+			ParentAgentID: a.ParentAgentID,
 		},
 	}, nil
 }
@@ -206,7 +213,7 @@ func (s *Store) GetAccount(ctx context.Context, id AccountID) (Account, error) {
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.parent_agent_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
@@ -245,6 +252,179 @@ func (s *Store) AgentOwner(ctx context.Context, agentAccountID AccountID) (Accou
 	return AccountID(ownerUserID), nil
 }
 
+// ReparentAgent moves an agent to a new parent in the agent tree, or promotes it
+// to a root (empty newParentAgentID), as the serialized validate-and-write the
+// agent-trees record §Server validation requires. The whole check-then-write
+// runs in ONE transaction that first takes a per-owner-tree advisory lock
+// (pg_advisory_xact_lock keyed on the moved agent's owner), so two concurrent
+// individually-acyclic re-parents under the same owner cannot interleave into a
+// persisted cycle — each serializes behind the lock, sees the other's write, and
+// re-checks. The mutated account is re-read inside the txn and returned.
+//
+// Validation, each mapped to a distinct sentinel the edge turns into a gRPC code:
+//   - (0) caller authority — the caller must be the moved agent's owner, or an
+//     agent of that owner (its resolved owner equals the agent's owner). An
+//     unknown moved agent is indistinguishable from a foreign one here: both
+//     fail this clause. → ErrPermissionDenied.
+//   - (1) same-owner — a non-empty new parent's owner must equal the moved
+//     agent's owner. → ErrPermissionDenied.
+//   - (2) no cycle — the new parent must be neither the agent itself nor any of
+//     its transitive descendants; walk the parent chain up from the proposed
+//     parent and reject if the agent is reached. The walk carries a visited set
+//     so a pre-existing bad cycle cannot spin it. → ErrFailedPrecondition.
+//   - (3) existence — a non-empty new parent must resolve to an existing agent
+//     account. → ErrNotFound.
+//
+// Set-at-creation cannot cycle (a new account has no descendants), so the cycle
+// check and its serialization live only here, on the mutable edge.
+func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newParentAgentID AccountID) (Account, error) {
+	if caller == "" {
+		return Account{}, fmt.Errorf("%w: caller is required", ErrInvalidArgument)
+	}
+	if agentAccountID == "" {
+		return Account{}, fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Account{}, fmt.Errorf("store: begin reparent agent: %w", err)
+	}
+	// Rolled back on every path that does not commit; a rollback after a
+	// successful commit is a no-op the driver ignores, so the discard is safe.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Resolve the moved agent's owner. Missing row = the id is unknown or names a
+	// non-agent; either way clause 0 cannot hold, so it is folded into the
+	// authority failure below rather than surfaced as a distinct existence error.
+	var agentOwner string
+	agentExists := true
+	if err := tx.QueryRow(ctx,
+		`SELECT owner_user_id FROM agent_accounts WHERE account_id = $1`,
+		string(agentAccountID),
+	).Scan(&agentOwner); err != nil {
+		if noRows(err) {
+			agentExists = false
+		} else {
+			return Account{}, fmt.Errorf("store: resolve moved agent owner: %w", err)
+		}
+	}
+
+	// Per-owner-tree lock: serialize every re-parent under this owner's tree so
+	// the cycle check below reads a stable tree and no concurrent acyclic move
+	// can interleave into a persisted cycle. hashtext -> int4 widens to the
+	// bigint the advisory lock takes; the lock auto-releases at txn end. An
+	// unknown agent has no owner to key on, so its (already-doomed) request locks
+	// on its own id — never colliding with a real owner's tree. Two distinct
+	// owners can hash-collide on the int4 hashtext key and spuriously serialize
+	// each other's reparents — a benign liveness/throughput cost (a redundant
+	// wait), never a wrong result, acceptable at expected fleet size.
+	lockKey := agentOwner
+	if !agentExists {
+		lockKey = string(agentAccountID)
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+		return Account{}, fmt.Errorf("store: lock owner tree: %w", err)
+	}
+
+	// (0) Caller authority: the caller's resolved owner (its owner_user_id if it
+	// is an agent, else itself) must equal the moved agent's owner.
+	var callerOwner string
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)`,
+		string(caller),
+	).Scan(&callerOwner); err != nil {
+		return Account{}, fmt.Errorf("store: resolve caller owner: %w", err)
+	}
+	if !agentExists || callerOwner != agentOwner {
+		return Account{}, fmt.Errorf("%w: caller may not re-parent agent %q", ErrPermissionDenied, agentAccountID)
+	}
+
+	if err := validateNewParent(ctx, tx, agentAccountID, newParentAgentID, AccountID(agentOwner)); err != nil {
+		return Account{}, err
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE agent_accounts SET parent_agent_id = NULLIF($2, '') WHERE account_id = $1`,
+		string(agentAccountID), string(newParentAgentID),
+	); err != nil {
+		return Account{}, fmt.Errorf("store: update parent: %w", err)
+	}
+
+	const q = `
+		SELECT a.id, a.handle, a.display_name,
+		       u.role,
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.parent_agent_id
+		FROM accounts a
+		LEFT JOIN user_accounts u ON u.account_id = a.id
+		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
+		WHERE a.id = $1`
+	acc, err := scanAccount(tx.QueryRow(ctx, q, string(agentAccountID)))
+	if err != nil {
+		return Account{}, fmt.Errorf("store: re-read reparented account: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Account{}, fmt.Errorf("store: commit reparent agent: %w", err)
+	}
+	return acc, nil
+}
+
+// validateNewParent runs clauses 1–3 of the re-parent validation against a
+// proposed non-empty parent, inside the caller's transaction (which already
+// holds the per-owner-tree lock). An empty newParentAgentID is a promote-to-root
+// with no parent to check, so it returns nil immediately. agentOwner is the
+// moved agent's already-resolved owner.
+func validateNewParent(ctx context.Context, tx pgx.Tx, agentAccountID, newParentAgentID, agentOwner AccountID) error {
+	if newParentAgentID == "" {
+		return nil
+	}
+
+	// (1)+(3) existence and same-owner for the proposed parent.
+	var parentOwner string
+	if err := tx.QueryRow(ctx,
+		`SELECT owner_user_id FROM agent_accounts WHERE account_id = $1`,
+		string(newParentAgentID),
+	).Scan(&parentOwner); err != nil {
+		if noRows(err) {
+			return fmt.Errorf("%w: parent agent %q", ErrNotFound, newParentAgentID)
+		}
+		return fmt.Errorf("store: resolve new parent owner: %w", err)
+	}
+	if AccountID(parentOwner) != agentOwner {
+		return fmt.Errorf("%w: parent agent %q has a different owner", ErrPermissionDenied, newParentAgentID)
+	}
+
+	// (2) No cycle: walk up the parent chain from the proposed parent; if the
+	// moved agent is reached, the move would make it its own ancestor. The
+	// visited set bounds the walk so a pre-existing cycle in the data cannot spin
+	// it forever.
+	cur := newParentAgentID
+	visited := map[AccountID]bool{}
+	for cur != "" {
+		if cur == agentAccountID {
+			return fmt.Errorf("%w: re-parenting agent %q under %q would form a cycle", ErrFailedPrecondition, agentAccountID, newParentAgentID)
+		}
+		if visited[cur] {
+			break
+		}
+		visited[cur] = true
+		var next *string
+		if err := tx.QueryRow(ctx,
+			`SELECT parent_agent_id FROM agent_accounts WHERE account_id = $1`,
+			string(cur),
+		).Scan(&next); err != nil {
+			if noRows(err) {
+				break
+			}
+			return fmt.Errorf("store: walk parent chain: %w", err)
+		}
+		if next == nil {
+			break
+		}
+		cur = AccountID(*next)
+	}
+	return nil
+}
+
 // AgentByHandle returns the agent account with the given handle. The crash-
 // recovery resume path needs an owner-checkable handle lookup, and the private
 // adminByHandle cannot be reused because it asserts admin — this one never
@@ -259,7 +439,7 @@ func (s *Store) AgentByHandle(ctx context.Context, handle string) (Account, erro
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.parent_agent_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
@@ -317,7 +497,7 @@ func (s *Store) ListAccounts(ctx context.Context, visibleTo AccountID) ([]Accoun
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona` +
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.parent_agent_id` +
 		accountVisibleFromWhere + `
 		ORDER BY a.handle`
 	rows, err := s.pool.Query(ctx, q, string(visibleTo))
@@ -369,8 +549,9 @@ func scanAccount(row pgx.Row) (Account, error) {
 		ownerUserID   *string
 		homeChannelID *string
 		persona       *string
+		parentAgentID *string
 	)
-	if err := row.Scan(&id, &handle, &displayName, &role, &ownerUserID, &homeChannelID, &persona); err != nil {
+	if err := row.Scan(&id, &handle, &displayName, &role, &ownerUserID, &homeChannelID, &persona, &parentAgentID); err != nil {
 		return Account{}, err
 	}
 	acc.ID = AccountID(id)
@@ -386,6 +567,9 @@ func scanAccount(row pgx.Row) (Account, error) {
 		}
 		if persona != nil {
 			agent.Persona = *persona
+		}
+		if parentAgentID != nil {
+			agent.ParentAgentID = AccountID(*parentAgentID)
 		}
 		acc.Agent = agent
 	}

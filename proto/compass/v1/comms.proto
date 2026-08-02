@@ -64,6 +64,13 @@ service CommsService {
   // covers join, subscribe-toggle, DM-expansion, and share-replacement.
   rpc UpdateChannelMembers(UpdateChannelMembersRequest) returns (UpdateChannelMembersResponse);
 
+  // Re-parent an agent in the agent tree, or promote it to a root (empty
+  // new_parent_agent_id) — caller-authorized against the agent's owner. The
+  // server validates the move (caller authority, same-owner, no cycle) and
+  // emits AccountChanged; surfaces re-derive the tree from the changed
+  // parent_agent_id with no surface-specific plumbing.
+  rpc ReparentAgent(ReparentAgentRequest) returns (ReparentAgentResponse);
+
   // Open (or fetch) the caller's agent workspace for an agent — its ACP surface
   // (D5). Idempotent: created on first open, returned after. Authorized: the
   // caller must be a member of the agent's channel.
@@ -139,6 +146,11 @@ message AgentAccount {
   // subscribed to it (implicit, not a togglable row); turn-end delivery and the
   // observation-pane ACL scope to it. Server-set.
   string home_channel_id = 3;
+  // The agent's parent in the agent tree; empty = root. Set at creation (to the
+  // spawning agent's account id, or a user-supplied parent on CreateAgent) and
+  // editable via ReparentAgent. Mirrors ChannelGroup.parent_group_id. The
+  // server validates same-owner and no-cycle on every write.
+  string parent_agent_id = 4;
 }
 
 // ── Channel groups + channels (D9) ─────────────────────────────────────────
@@ -479,6 +491,10 @@ message CreateAgentRequest {
   // carry.
   reserved 3;
   reserved "harness";
+  // Optional parent in the agent tree; empty = root. The server validates it
+  // (must resolve to an existing agent under the caller's resolved owner) before
+  // set-at-creation.
+  string parent_agent_id = 4;
 }
 
 message CreateAgentResponse {
@@ -557,6 +573,17 @@ message UpdateChannelMembersRequest {
 
 message UpdateChannelMembersResponse {
   Channel channel = 1;
+}
+
+message ReparentAgentRequest {
+  // The agent to move.
+  string agent_account_id = 1;
+  // The new parent; empty promotes the agent to a root.
+  string new_parent_agent_id = 2;
+}
+
+message ReparentAgentResponse {
+  Account account = 1;
 }
 
 message OpenAgentWorkspaceRequest {

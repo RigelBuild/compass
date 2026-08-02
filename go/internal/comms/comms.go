@@ -17,6 +17,7 @@ package comms
 
 import (
 	"context"
+	"fmt"
 
 	"connectrpc.com/connect"
 
@@ -83,9 +84,30 @@ func (c *Comms) CreateAgent(
 	req *connect.Request[compassv1.CreateAgentRequest],
 ) (*connect.Response[compassv1.CreateAgentResponse], error) {
 	owner := c.actorFromContext(ctx)
+	// CreateAgent is a user-caller API: `owner` is the caller's own id, used
+	// directly both as the new agent's owner and as the parent same-owner
+	// comparison key below. This matches the store only for user callers — the
+	// store's ReparentAgent resolves an agent caller to its owner via COALESCE,
+	// but no such resolution is applied here.
+	// A supplied parent is validated before the account is minted (§Server
+	// validation, applied on creation too): it must exist (clause 3 → NotFound)
+	// and belong to the creating caller's owner (clauses 0/1 → PermissionDenied,
+	// since the creator owns what it creates). Clause 2 (cycle) cannot arise on
+	// create — a new account has no descendants.
+	if parent := req.Msg.GetParentAgentId(); parent != "" {
+		parentOwner, err := c.store.AgentOwner(ctx, store.AccountID(parent))
+		if err != nil {
+			return nil, edgeError(err) // ErrNotFound → NotFound
+		}
+		if parentOwner != owner {
+			return nil, connect.NewError(connect.CodePermissionDenied,
+				fmt.Errorf("parent agent %q has a different owner", parent))
+		}
+	}
 	acc, err := c.store.CreateAgent(ctx, owner, store.NewAgent{
-		Handle:      req.Msg.GetHandle(),
-		DisplayName: req.Msg.GetDisplayName(),
+		Handle:        req.Msg.GetHandle(),
+		DisplayName:   req.Msg.GetDisplayName(),
+		ParentAgentID: store.AccountID(req.Msg.GetParentAgentId()),
 	})
 	if err != nil {
 		return nil, edgeError(err)
@@ -200,6 +222,30 @@ func (c *Comms) UpdateChannelMembers(
 	}
 	c.publishChannelChanged(ch, removed)
 	return connect.NewResponse(&compassv1.UpdateChannelMembersResponse{Channel: channelToWire(ch)}), nil
+}
+
+// ReparentAgent moves an agent to a new parent in the agent tree, or promotes it
+// to a root (empty new_parent_agent_id) — caller-authorized against the agent's
+// owner; emits AccountChanged (the existing account event, so every surface
+// re-derives the tree from the changed parent_agent_id with no new plumbing).
+// The store runs the serialized validate-and-write (§Server validation); its
+// sentinel errors map to PERMISSION_DENIED / FAILED_PRECONDITION / NOT_FOUND at
+// the edge (edgeError).
+func (c *Comms) ReparentAgent(
+	ctx context.Context,
+	req *connect.Request[compassv1.ReparentAgentRequest],
+) (*connect.Response[compassv1.ReparentAgentResponse], error) {
+	acc, err := c.store.ReparentAgent(
+		ctx,
+		c.actorFromContext(ctx),
+		store.AccountID(req.Msg.GetAgentAccountId()),
+		store.AccountID(req.Msg.GetNewParentAgentId()),
+	)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.publishAccountChanged(acc)
+	return connect.NewResponse(&compassv1.ReparentAgentResponse{Account: accountToWire(acc)}), nil
 }
 
 // ---- agent workspace RPC (D5) ----

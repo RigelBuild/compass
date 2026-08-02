@@ -137,6 +137,9 @@ type AgentAccount struct {
 	// Persona is the agent's system-prompt text, baked at creation (SEA-1571);
 	// empty means no persona override.
 	Persona string
+	// ParentAgentID is the agent's parent in the agent tree; empty = root. Set
+	// at creation and editable via ReparentAgent (comms.proto).
+	ParentAgentID AccountID
 }
 
 // ChannelGroup is a namespace node holding channels and nested groups

@@ -41,6 +41,20 @@ var (
 	// the door can tell a withdrawn credential from an unknown one.
 	ErrTokenRevoked = errors.New("store: token revoked")
 
+	// ErrPermissionDenied is returned when the caller is not authorized to
+	// perform an operation on a row it can address: a ReparentAgent where the
+	// caller is neither the moved agent's owner nor an agent of that owner
+	// (clause 0), or where the proposed parent belongs to a different owner
+	// (clause 1). Distinct from ErrNotFound so the edge can map it to
+	// PERMISSION_DENIED (agent-trees record §Server validation).
+	ErrPermissionDenied = errors.New("store: permission denied")
+
+	// ErrFailedPrecondition is returned when an operation is well-formed and
+	// authorized but would violate a structural invariant: a ReparentAgent that
+	// would make an agent its own ancestor (a cycle, clause 2). Distinct so the
+	// edge maps it to FAILED_PRECONDITION.
+	ErrFailedPrecondition = errors.New("store: failed precondition")
+
 	// ErrSchemaVersion is returned by Open when the database's applied schema
 	// version does not match the version this binary's embedded migrations
 	// define — the refuse-to-serve guard (design.md:1136-1137). A newer
