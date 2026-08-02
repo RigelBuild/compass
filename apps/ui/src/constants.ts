@@ -1,8 +1,8 @@
 // Shared display constants for the Compass ADE UI: the board lane order and the
 // label/color lookups every surface reads. Static string-keyed tables → Record.
 
-import type { RightSidebarTab } from "./store";
-import type { AgentState, IssueState } from "./stub-data";
+import type { IssueTab, RightSidebarTab } from "./store";
+import type { Agent, AgentState, IssueState } from "./stub-data";
 
 /** Board columns, left to right — the ACTIVE subset of the issue lifecycle
  *  (design D1). Backlog + Todo are the pre-active tier and live in the Backlog
@@ -60,49 +60,45 @@ export interface ActivityBarItem {
 	agentId?: string;
 }
 
-/** The right-sidebar tabs in activity-bar order (design dock-in-sidebar
- *  D2/D3): the fleet group first (Supervisor · Warden — always-on agent
- *  conversations — then Status, the fleet metrics pane), then
- *  the issue group (Files with a search box, VCS with commit history, PR
- *  with its checks). Keyed on the full `RightSidebarTab` union in a mapped
- *  object, so TypeScript rejects the module unless EVERY tab has an
- *  activity-bar entry (an array of `ActivityBarItem` only validates the ids
- *  that are present — it can't enforce that none is missing). Exported for the
- *  D5 chrome-hiding predicate. */
+/** The STATIC right-sidebar tabs — the ones present regardless of the pin set:
+ *  `status` (the fleet metrics pane) in the fleet group, and the card-scoped
+ *  issue tabs (Files / VCS / PR). The agent conversation tabs are no longer
+ *  hardcoded here — they are derived per pin from the store's pin set
+ *  (`rightTabGroups()`), so the fleet group is a configurable pin layer, not a
+ *  fixed Supervisor · Warden pair (Record A §T2). */
+export type StaticRightTab = "status" | IssueTab;
+
+/** The static tabs in activity-bar order, keyed on the static-tab union in a
+ *  mapped object so TypeScript rejects the module unless EVERY static tab has an
+ *  activity-bar entry. The dynamic pin items are built at the store from the pin
+ *  set (`fleetItemForAgent`), so the mapped object keys the STATIC ids only —
+ *  the open `agent:${string}` arm of `RightSidebarTab` can't be enumerated. */
 export const RIGHT_SIDEBAR_TAB_BY_ID: {
-	[K in RightSidebarTab]: ActivityBarItem & { id: K };
+	[K in StaticRightTab]: ActivityBarItem & { id: K };
 } = {
-	supervisor: {
-		id: "supervisor",
-		icon: "◆",
-		title: "Supervisor",
-		group: "fleet",
-		agentId: "acc-supervisor",
-	},
-	warden: {
-		id: "warden",
-		icon: "🛡",
-		title: "Warden",
-		group: "fleet",
-		agentId: "acc-warden",
-	},
 	status: { id: "status", icon: "▦", title: "Fleet status", group: "fleet" },
 	files: { id: "files", icon: "🗀", title: "Files", group: "issue" },
 	vcs: { id: "vcs", icon: "⎇", title: "Version control", group: "issue" },
 	pr: { id: "pr", icon: "⇄", title: "Pull request", group: "issue" },
 };
 
-/** The activity bar as ordered groups (design dock-in-sidebar D2): fleet first,
- *  issue second, each carrying its items in declaration order (JS
- *  preserves string-key insertion order). One source of truth — adding a tab to
- *  the union forces an entry above, and it appears in its group here
- *  automatically. The activity-bar nav renders a divider between groups. */
-export const RIGHT_SIDEBAR_TAB_GROUPS: readonly {
-	group: RightTabGroup;
-	items: readonly ActivityBarItem[];
-}[] = (["fleet", "issue"] as const).map((group) => ({
-	group,
-	items: Object.values(RIGHT_SIDEBAR_TAB_BY_ID).filter(
-		(t) => t.group === group,
-	),
-}));
+/** The static issue-group items, in declaration order — the card-scoped tabs the
+ *  activity bar renders below the divider (design dock-in-sidebar D2). */
+export const RIGHT_SIDEBAR_ISSUE_ITEMS: readonly ActivityBarItem[] =
+	Object.values(RIGHT_SIDEBAR_TAB_BY_ID).filter((t) => t.group === "issue");
+
+/** Build the fleet activity-bar item for a pinned agent (Record A §T2). The tab
+ *  id is the `agent:`-prefixed account id (the open arm of `RightSidebarTab`);
+ *  the icon is the agent handle's initial (matching the UI's glyph-icon
+ *  convention — a per-agent glyph, no hardcoded Supervisor ◆ / Warden 🛡), and
+ *  the title is the agent handle. Only called for pins that resolve to a visible
+ *  agent, so `agentId` always badges a real StateDot. */
+export function fleetItemForAgent(agent: Agent): ActivityBarItem {
+	return {
+		id: `agent:${agent.account.id}`,
+		icon: (agent.account.handle.at(0) ?? "?").toUpperCase(),
+		title: agent.account.handle,
+		group: "fleet",
+		agentId: agent.account.id,
+	};
+}

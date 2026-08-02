@@ -502,20 +502,189 @@ describe("pane toggles", () => {
 	}
 });
 
-describe("right sidebar tab (dock-in-sidebar T1)", () => {
-	// The active-tab setter must round-trip any member of the widened union
-	// (fleet + issue). Exercising one fleet value ("warden") and one
-	// issue value ("vcs") proves the signal accepts both halves of the union
-	// — a setter narrowed back to the old issue-only type, or one stuck on
-	// its boot value, would fail one leg.
-	test("setActiveRightTab round-trips a fleet and an issue value", () => {
+describe("right sidebar tab (dock-in-sidebar T1; Record A §T2)", () => {
+	// The active-tab setter must round-trip any member of the widened union: an
+	// `agent:`-prefixed pin tab and an issue value — a setter narrowed back to the
+	// old issue-only type, or one stuck on its boot value, would fail one leg.
+	test("setActiveRightTab round-trips a fleet pin and an issue value", () => {
 		withStore((s) => {
-			s.setActiveRightTab("warden");
-			expect(s.activeRightTab()).toBe("warden");
+			s.setActiveRightTab("agent:acc-warden");
+			expect(s.activeRightTab()).toBe("agent:acc-warden");
 
 			s.setActiveRightTab("vcs");
 			expect(s.activeRightTab()).toBe("vcs");
 		});
+	});
+});
+
+describe("agent pins (Record A §T2/T3/T5)", () => {
+	// STUB_AGENTS fixture ids used across these tests. Both resolve to visible
+	// agents (so they surface in rightTabGroups()); "acc-ghost" resolves to none.
+	const SUP = "acc-supervisor";
+	const WARDEN = "acc-warden";
+	const COOK = "acc-cook";
+	const GHOST = "acc-ghost";
+	const key = (workspace: string) => `compass.pinnedAgents.${workspace}`;
+
+	// localStorage is a process-wide global (happy-dom); clear it around each
+	// case so a seeded key or a write-through can't leak between tests.
+	const clearStorage = () => globalThis.localStorage.clear();
+
+	// A store bound to an explicit workspace key, built in a reactive root the
+	// body runs inside then disposes — so createEffect persistence fires.
+	const withPinStore = (
+		workspace: string,
+		body: (store: AppStore) => void,
+	): void => {
+		createRoot((dispose) => {
+			const store = createAppStore({
+				initialComms: STUB_COMMS_STATE,
+				workspaceKey: workspace,
+			});
+			try {
+				body(store);
+			} finally {
+				dispose();
+			}
+		});
+	};
+
+	// pin/unpin/isPinned round-trip: pinning records membership, unpinning drops
+	// it, and isPinned tracks both — a no-op setter or a missing filter fails.
+	test("pin/unpin/isPinned round-trip", () => {
+		clearStorage();
+		withPinStore("ws-a", (s) => {
+			expect(s.isPinned(SUP)).toBe(false);
+			s.pinAgent(SUP);
+			expect(s.isPinned(SUP)).toBe(true);
+			expect(s.pinnedAgentIds()).toEqual([SUP]);
+			s.unpinAgent(SUP);
+			expect(s.isPinned(SUP)).toBe(false);
+			expect(s.pinnedAgentIds()).toEqual([]);
+		});
+		clearStorage();
+	});
+
+	// Ordered append-on-pin (OQ1: no reorder). Pinning in a sequence preserves
+	// insertion order; a re-pin is a no-op, not a move-to-end.
+	test("pins append in order; a re-pin is a no-op", () => {
+		clearStorage();
+		withPinStore("ws-a", (s) => {
+			s.pinAgent(WARDEN);
+			s.pinAgent(SUP);
+			s.pinAgent(COOK);
+			expect(s.pinnedAgentIds()).toEqual([WARDEN, SUP, COOK]);
+			// Re-pinning an existing id neither duplicates nor reorders.
+			s.pinAgent(WARDEN);
+			expect(s.pinnedAgentIds()).toEqual([WARDEN, SUP, COOK]);
+		});
+		clearStorage();
+	});
+
+	// Hydration: a store built on a workspace with a seeded key starts with those
+	// pins in order.
+	test("hydrates the pin order from a seeded localStorage key", () => {
+		clearStorage();
+		globalThis.localStorage.setItem(
+			key("ws-seed"),
+			JSON.stringify([SUP, COOK]),
+		);
+		withPinStore("ws-seed", (s) => {
+			expect(s.pinnedAgentIds()).toEqual([SUP, COOK]);
+		});
+		clearStorage();
+	});
+
+	// Write-through: pinning persists to the workspace-namespaced key, so a fresh
+	// store on the same workspace re-hydrates the pin.
+	test("writes pins through to localStorage on pin", () => {
+		clearStorage();
+		withPinStore("ws-wt", (s) => {
+			s.pinAgent(SUP);
+		});
+		expect(
+			JSON.parse(globalThis.localStorage.getItem(key("ws-wt")) ?? "null"),
+		).toEqual([SUP]);
+		clearStorage();
+	});
+
+	// Workspace-namespacing: two workspaces keep separate pin sets — one's key
+	// never hydrates on the other.
+	test("two workspace keys do not cross-hydrate", () => {
+		clearStorage();
+		globalThis.localStorage.setItem(key("ws-1"), JSON.stringify([SUP]));
+		globalThis.localStorage.setItem(key("ws-2"), JSON.stringify([WARDEN]));
+		withPinStore("ws-1", (s) => {
+			expect(s.pinnedAgentIds()).toEqual([SUP]);
+		});
+		withPinStore("ws-2", (s) => {
+			expect(s.pinnedAgentIds()).toEqual([WARDEN]);
+		});
+		clearStorage();
+	});
+
+	// Unpinning the ACTIVE tab falls back to status (§T3).
+	test("unpinning the active tab falls back to status", () => {
+		clearStorage();
+		withPinStore("ws-a", (s) => {
+			s.pinAgent(SUP);
+			s.setActiveRightTab("agent:acc-supervisor");
+			expect(s.activeRightTab()).toBe("agent:acc-supervisor");
+			s.unpinAgent(SUP);
+			expect(s.activeRightTab()).toBe("status");
+		});
+		clearStorage();
+	});
+
+	// The symmetric fallback: an ACTIVE agent tab whose id resolves to no visible
+	// agent (a ghost pin, or a visibility fluctuation) is moved to status by the
+	// resolvability guard — a live-active tab never strands an unresolvable pane.
+	test("an unresolvable active tab falls back to status", () => {
+		clearStorage();
+		withPinStore("ws-a", (s) => {
+			s.setActiveRightTab("agent:acc-ghost");
+			// The guard effect runs synchronously inside the root.
+			expect(s.activeRightTab()).toBe("status");
+		});
+		clearStorage();
+	});
+
+	// Boot default (§T5): the first hydrated pin that resolves to a visible agent
+	// becomes the active tab.
+	test("boots onto the first resolvable hydrated pin", () => {
+		clearStorage();
+		globalThis.localStorage.setItem(
+			key("ws-boot"),
+			JSON.stringify([SUP, COOK]),
+		);
+		withPinStore("ws-boot", (s) => {
+			expect(s.activeRightTab()).toBe("agent:acc-supervisor");
+		});
+		clearStorage();
+	});
+
+	// Boot default skips an unresolvable leading pin and lands on the first
+	// RESOLVABLE one (matching the T2 derivation's filter).
+	test("boot skips an unresolvable leading pin", () => {
+		clearStorage();
+		globalThis.localStorage.setItem(
+			key("ws-boot2"),
+			JSON.stringify([GHOST, WARDEN]),
+		);
+		withPinStore("ws-boot2", (s) => {
+			expect(s.activeRightTab()).toBe("agent:acc-warden");
+		});
+		clearStorage();
+	});
+
+	// Boot default with no resolvable pin (empty or all-ghost) falls to status.
+	test("boots onto status when no pin resolves", () => {
+		clearStorage();
+		globalThis.localStorage.setItem(key("ws-boot3"), JSON.stringify([GHOST]));
+		withPinStore("ws-boot3", (s) => {
+			expect(s.activeRightTab()).toBe("status");
+		});
+		clearStorage();
 	});
 });
 

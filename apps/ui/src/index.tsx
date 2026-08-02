@@ -46,6 +46,10 @@ const store = createRoot(() =>
 		comms: clients.comms,
 		compass: clients.compass,
 		callerId: connection.callerId,
+		// Namespace persisted UI prefs (the pinned-agent set) to this deployment,
+		// so one server/workspace's account ids never hydrate as pins on another
+		// (Record A §T3). The door URL + caller identity is the stable key.
+		workspaceKey: `${connection.baseUrl}#${connection.callerId}`,
 		// The one failure funnel: a comms stream/write error AND a refused
 		// StopAgentSession (Runner-backed — `Unavailable` when the server has no
 		// RunnerHub attached) land here, so neither is swallowed.

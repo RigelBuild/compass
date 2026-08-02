@@ -15,11 +15,7 @@ import {
 	primaryPr,
 } from "../board-render";
 import type { Channel } from "../comms-stub";
-import {
-	type ActivityBarItem,
-	RIGHT_SIDEBAR_TAB_BY_ID,
-	RIGHT_SIDEBAR_TAB_GROUPS,
-} from "../constants";
+import { type ActivityBarItem, fleetItemForAgent } from "../constants";
 import { useStore } from "../context";
 import {
 	type Agent,
@@ -538,9 +534,24 @@ export const RightSidebar: Component = () => {
 	};
 	// D5: the card-scoped chrome (detail head + repo/branch dropdown) is
 	// meaningless above a fleet conversation, so it hides when a fleet tab is
-	// active. The predicate derives from the tab table — no parallel list.
-	const fleetActive = (): boolean =>
-		RIGHT_SIDEBAR_TAB_BY_ID[store.activeRightTab()].group === "fleet";
+	// active. The active tab is fleet iff it's `status` or an `agent:`-prefixed
+	// pin (the RIGHT_SIDEBAR_TAB_BY_ID index can't key the open `agent:` arm, so
+	// this reads the shape, matching the rightTabGroups() partition).
+	const fleetActive = (): boolean => {
+		const active = store.activeRightTab();
+		return active === "status" || active.startsWith("agent:");
+	};
+	// The active tab's fleet pane item, when it's an `agent:`-prefixed pin that
+	// RESOLVES to a visible agent (Record A §T2). Gating on resolvability — not
+	// the bare prefix — makes "no pane while unresolvable" hold for the ACTIVE
+	// tab: an unresolvable active pin yields undefined, the Match doesn't fire,
+	// and the pane falls through to `status`.
+	const activeFleetItem = (): ActivityBarItem | undefined => {
+		const active = store.activeRightTab();
+		if (!active.startsWith("agent:")) return undefined;
+		const agent = STUB_AGENTS.find((a) => a.account.id === active.slice(6));
+		return agent ? fleetItemForAgent(agent) : undefined;
+	};
 
 	return (
 		<aside class="right" aria-label="Issue detail">
@@ -552,12 +563,8 @@ export const RightSidebar: Component = () => {
 					</Show>
 					<div class="r-pane" classList={{ fleet: fleetActive() }}>
 						<Switch>
-							<Match when={store.activeRightTab() === "supervisor"}>
-								<FleetPane item={RIGHT_SIDEBAR_TAB_BY_ID.supervisor} />
-							</Match>
-
-							<Match when={store.activeRightTab() === "warden"}>
-								<FleetPane item={RIGHT_SIDEBAR_TAB_BY_ID.warden} />
+							<Match when={activeFleetItem()}>
+								{(item) => <FleetPane item={item()} />}
 							</Match>
 
 							<Match when={store.activeRightTab() === "status"}>
@@ -597,7 +604,7 @@ export const RightSidebar: Component = () => {
 				</div>
 
 				<nav class="r-activity" aria-label="Right sidebar tabs">
-					<For each={RIGHT_SIDEBAR_TAB_GROUPS}>
+					<For each={store.rightTabGroups()}>
 						{(group, groupIndex) => (
 							<>
 								<Show when={groupIndex() > 0}>

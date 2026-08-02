@@ -20,35 +20,64 @@ import {
 } from "../stub-data";
 import { StateDot } from "./StateDot";
 
-/** An agent leaf row in the tree — the per-agent select button. Renders the
- *  same StateDot / handle / non-worker role-pip (SEA-1623: pip left alone) for
- *  both a childless leaf and a parent agent's own row. An optional descendant
- *  badge trails the row when the agent has children. */
+/** An agent leaf row in the tree — the per-agent select button, plus a hover
+ *  pin/unpin affordance on the right (Record A §T4). Renders the same StateDot /
+ *  handle / non-worker role-pip (SEA-1623: pip left alone) for both a childless
+ *  leaf and a parent agent's own row. An optional descendant badge trails the
+ *  row when the agent has children. The pin toggle sits as a sibling BUTTON
+ *  outside the select button (a button can't nest a button), calling
+ *  pinAgent/unpinAgent with state from isPinned. */
 const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 	const store = useStore();
 	const a = () => props.agent;
+	const pinned = () => store.isPinned(a().account.id);
 	return (
-		<button
-			type="button"
-			class="tree-agent"
-			classList={{
-				selected:
-					store.selectedAgentId() === a().account.id &&
-					store.view() === "agent",
-			}}
-			onClick={() => store.openAgent(a().account.id)}
-		>
-			<StateDot state={a().lifecycle ?? "idle"} />
-			<span class="name">{a().account.handle}</span>
-			<Show when={a().role !== "worker"}>
-				<span class="role-pip" data-role={a().role} title={a().role}>
-					{a().role === "supervisor" ? "◆" : "🛡"}
-				</span>
-			</Show>
-			<Show when={props.badge !== undefined}>
-				<span class="folder-badge">{props.badge}</span>
-			</Show>
-		</button>
+		<div class="tree-agent-row">
+			<button
+				type="button"
+				class="tree-agent"
+				classList={{
+					selected:
+						store.selectedAgentId() === a().account.id &&
+						store.view() === "agent",
+				}}
+				onClick={() => store.openAgent(a().account.id)}
+			>
+				<StateDot state={a().lifecycle ?? "idle"} />
+				<span class="name">{a().account.handle}</span>
+				<Show when={a().role !== "worker"}>
+					<span class="role-pip" data-role={a().role} title={a().role}>
+						{a().role === "supervisor" ? "◆" : "🛡"}
+					</span>
+				</Show>
+				<Show when={props.badge !== undefined}>
+					<span class="folder-badge">{props.badge}</span>
+				</Show>
+			</button>
+			<button
+				type="button"
+				class="tree-agent-pin"
+				classList={{ pinned: pinned() }}
+				aria-pressed={pinned()}
+				title={
+					pinned()
+						? `Unpin ${a().account.handle} from the fleet sidebar`
+						: `Pin ${a().account.handle} to the fleet sidebar`
+				}
+				aria-label={
+					pinned()
+						? `Unpin ${a().account.handle} from the fleet sidebar`
+						: `Pin ${a().account.handle} to the fleet sidebar`
+				}
+				onClick={() =>
+					pinned()
+						? store.unpinAgent(a().account.id)
+						: store.pinAgent(a().account.id)
+				}
+			>
+				{pinned() ? "★" : "☆"}
+			</button>
+		</div>
 	);
 };
 
