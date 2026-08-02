@@ -193,6 +193,123 @@ func TestDeliverSessionFiresSettleSink(t *testing.T) {
 	}
 }
 
+// lifecycleRecord is one recorded OnSessionLifecycle call.
+type lifecycleRecord struct {
+	account   store.AccountID
+	sessionID string
+	state     compassv1.AgentSessionState
+}
+
+// promotedRecord is one recorded OnSessionPromoted call.
+type promotedRecord struct {
+	account   store.AccountID
+	sessionID string
+}
+
+// fakePresenceSink records the hub's presence-edge calls — the SEA-1569 T8
+// lifecycle + reconciliation sink. Concurrency-safe for parity with the real
+// component, which is fed from the hub's goroutine.
+type fakePresenceSink struct {
+	mu        sync.Mutex
+	lifecycle []lifecycleRecord
+	promoted  []promotedRecord
+}
+
+func (f *fakePresenceSink) OnSessionLifecycle(account store.AccountID, sessionID string, state compassv1.AgentSessionState) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lifecycle = append(f.lifecycle, lifecycleRecord{account: account, sessionID: sessionID, state: state})
+}
+
+func (f *fakePresenceSink) OnSessionPromoted(account store.AccountID, sessionID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.promoted = append(f.promoted, promotedRecord{account: account, sessionID: sessionID})
+}
+
+func (f *fakePresenceSink) lifecycleSnapshot() []lifecycleRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]lifecycleRecord, len(f.lifecycle))
+	copy(out, f.lifecycle)
+	return out
+}
+
+func (f *fakePresenceSink) promotedSnapshot() []promotedRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]promotedRecord, len(f.promoted))
+	copy(out, f.promoted)
+	return out
+}
+
+// T8: the hub fires its presence-edge sink at deliverSession (a lifecycle
+// transition, with the RESOLVED account) and at promoteSession (the
+// reconciliation edge). A trace-only frame (UNSPECIFIED) is not a lifecycle
+// edge, and a lifecycle transition on a session with no bound account publishes
+// no presence (nothing to attribute). Nil-safe: a hub with no presence sink is
+// today's behavior, covered by every other test.
+func TestDeliverSessionFiresPresenceSink(t *testing.T) {
+	hub := newHubOnly()
+	pres := &fakePresenceSink{}
+	hub.SetPresenceSink(pres)
+	// bindSession promotes sess-1 -> testAgentAccount, which itself fires the
+	// reconciliation edge once.
+	bindSession(hub, "sess-1")
+	if got := pres.promotedSnapshot(); len(got) != 1 || got[0].account != testAgentAccount || got[0].sessionID != "sess-1" {
+		t.Fatalf("promoted = %+v, want one {%s, sess-1} from bindSession's promote", pres.promotedSnapshot(), testAgentAccount)
+	}
+
+	// A lifecycle transition on the bound session fires the lifecycle edge with
+	// the resolved account.
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 1, SessionID: "sess-1",
+		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING),
+	}); err != nil {
+		t.Fatalf("Deliver(session WORKING) = %v, want nil", err)
+	}
+	life := pres.lifecycleSnapshot()
+	if len(life) != 1 || life[0].account != testAgentAccount || life[0].sessionID != "sess-1" ||
+		life[0].state != compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
+		t.Fatalf("lifecycle = %+v, want one {%s, sess-1, WORKING}", life, testAgentAccount)
+	}
+
+	// A trace-only frame is not a lifecycle edge: no further presence call.
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 2, SessionID: "sess-1", Frame: sessionTraceFrame("trace"),
+	}); err != nil {
+		t.Fatalf("Deliver(trace) = %v, want nil", err)
+	}
+	if got := len(pres.lifecycleSnapshot()); got != 1 {
+		t.Fatalf("lifecycle after trace = %d, want still 1 (trace is not a lifecycle edge)", got)
+	}
+
+	// A lifecycle transition on an UNBOUND session publishes no presence (no
+	// account to attribute it to).
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 3, SessionID: "never-bound",
+		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
+	}); err != nil {
+		t.Fatalf("Deliver(unbound session) = %v, want nil", err)
+	}
+	if got := len(pres.lifecycleSnapshot()); got != 1 {
+		t.Fatalf("lifecycle after unbound transition = %d, want still 1 (no account, no presence)", got)
+	}
+}
+
+// T8 nil-safe: a hub with no presence sink handles a lifecycle transition and a
+// promotion without panicking.
+func TestDeliverSessionNilPresenceSinkIsSafe(t *testing.T) {
+	hub := newHubOnly()
+	bindSession(hub, "sess-1") // promoteSession with a nil presence sink
+	if err := hub.Deliver(context.Background(), RunnerEvent{
+		RunnerSeq: 1, SessionID: "sess-1",
+		Frame: sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
+	}); err != nil {
+		t.Fatalf("Deliver with nil presence sink = %v, want nil (nil-safe)", err)
+	}
+}
+
 // Case 13: DispatchControl is SEND-ONLY — a successful deliver returns PROMPTLY
 // with no synchronous result (success rides a later delivery_ack). A bug reusing
 // dispatch/relay would register an inflight call and block on waitCall for a

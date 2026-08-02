@@ -62,16 +62,27 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 	// Runner's life cannot resurrect a stale account (reconnect clears both maps
 	// anyway; this keeps the pre-Start map tight in the meantime).
 	delete(h.containerAccounts, containerName)
-	// Read the session-start sink under mu so the setter and this arm never race,
-	// then release BEFORE firing: the sink enqueues the reconnect sweep into the
-	// consumer's own loop and returns promptly, so promoteSession never blocks on
-	// the sweep's store work and never holds h.mu across it (mirrors the settle
-	// edge at deliverSession). Nil-safe (a hub with no session-start sink is
-	// today's behavior — SEA-1569 T6).
+	// Read both after-binding sinks under mu so a setter and this arm never race,
+	// then release BEFORE firing either: each sink only enqueues into its own
+	// consumer/component loop and returns promptly, so promoteSession never blocks
+	// on store work and never holds h.mu across a sink call (mirrors the settle
+	// edge at deliverSession). Both nil-safe (a hub with neither wired is today's
+	// behavior — SEA-1569 T6 session-start, T8 presence).
 	sessionStart := h.sessionStart
+	presence := h.presence
 	h.mu.Unlock()
 	if sessionStart != nil {
 		sessionStart.OnSessionStarted(sessionID, account)
+	}
+
+	// The reconciliation edge (SEA-1569 T8, design.md:494-503): a Runner
+	// re-enroll clears bindings and each session re-promotes here, so presence is
+	// reconstructed on this edge. Notify AFTER releasing the lock and only once
+	// the binding is recorded, nil-safe; the sink enqueues into the component's
+	// own loop and returns promptly (the loop resolves the live state via the
+	// Status relay + the open-ask overlay, so it must not run under h.mu).
+	if presence != nil {
+		presence.OnSessionPromoted(account, sessionID)
 	}
 }
 

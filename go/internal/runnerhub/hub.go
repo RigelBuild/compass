@@ -154,6 +154,31 @@ type SessionStartSink interface {
 	OnSessionStarted(sessionID string, account store.AccountID)
 }
 
+// PresenceSink is notified of the two hub-side edges the SEA-1569 T8 presence
+// projection (design record D4) is fed by: a session lifecycle transition at the
+// deliverSession arm (the SAME arm SettleSink rides, right after the
+// LifecycleSink publish) and a session promotion at promoteSession (the
+// restart-reconciliation edge — a Runner re-enroll clears bindings and each
+// session re-promotes, so presence is reconstructed there). The presence
+// component (internal/presence) implements it; the hub depends only on this
+// narrow surface. Wired via SetPresenceSink AFTER both exist (breaking the
+// construction cycle), and nil-safe: a hub with no presence sink is today's
+// behavior, so every existing hub test is unchanged.
+//
+// Both methods only enqueue + wake the component's own loop — they must NOT
+// block the hub's goroutine on store work and must NOT store the caller's ctx
+// (the component's Run(ctx) owns the serve ctx). The account is resolved
+// in-package by the hub before each call (presence is per-account;
+// accountForSession is private and stays so).
+type PresenceSink interface {
+	// OnSessionLifecycle reports that account's session transitioned to state,
+	// called at deliverSession right after the LifecycleSink publish.
+	OnSessionLifecycle(account store.AccountID, sessionID string, state compassv1.AgentSessionState)
+	// OnSessionPromoted reports that account's session (re-)promoted onto its
+	// binding, called at promoteSession — the reconciliation edge.
+	OnSessionPromoted(account store.AccountID, sessionID string)
+}
+
 // DeliveryStore is the durable delivery-cursor surface the hub's ack arm needs
 // (SEA-1569 T3 §6): resolve a delivered message's channel and advance the
 // per-(agent, channel) cursor on the recipient's ack. *store.Store implements
@@ -227,6 +252,12 @@ type Hub struct {
 	// consumer exist), and read under mu so the setter and promoteSession never
 	// race. Nil-safe: a hub with no session-start sink is today's behavior.
 	sessionStart SessionStartSink
+	// presence is the SEA-1569 T8 presence projection's sink, notified at
+	// deliverSession (lifecycle transition) and promoteSession (reconciliation).
+	// Nil until SetPresenceSink wires it (after both hub and the presence
+	// component exist), and read under mu so the setter and the arms never race.
+	// Nil-safe: a hub with no presence sink is today's behavior.
+	presence PresenceSink
 	// delivery is the durable delivery-cursor store the ack arm advances (SEA-1569
 	// T3). Nil until SetDeliveryStore wires it; read under mu. Nil-safe: a hub
 	// with no delivery store drops delivery_ack frames.
@@ -354,6 +385,18 @@ func (h *Hub) SetSessionStartSink(sessionStart SessionStartSink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.sessionStart = sessionStart
+}
+
+// SetPresenceSink wires the SEA-1569 T8 presence component as the hub's presence
+// sink, AFTER both exist — the post-construction setter that breaks the
+// component<->hub construction cycle (the component takes the hub as its Status
+// relay; the hub takes the component as its PresenceSink). Mirrors SetSettleSink.
+// Called once at server assembly; safe to leave unset (a hub with no presence
+// sink is today's behavior).
+func (h *Hub) SetPresenceSink(presence PresenceSink) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.presence = presence
 }
 
 // SetDeliveryStore wires the durable delivery-cursor store the ack arm advances,
@@ -638,6 +681,22 @@ func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFram
 	h.mu.Unlock()
 	if settle != nil {
 		settle.OnSessionSettled(sessionID, state)
+	}
+	// Same arm: notify the presence projection of the lifecycle transition so it
+	// recomputes + republishes-on-change the session's agent presence (SEA-1569
+	// T8, design.md:472-479). Resolve the account in-package and pass it (the sink
+	// is per-account; accountForSession stays private). Read the sink under mu,
+	// nil-safe, exactly as the settle sink above; the sink enqueues into the
+	// component's own loop and returns promptly (no store work on Deliver). A
+	// session with no bound account (a transition before Start's promote) has no
+	// presence to publish, so it is simply skipped.
+	h.mu.Lock()
+	presence := h.presence
+	h.mu.Unlock()
+	if presence != nil {
+		if account, ok := h.accountForSession(sessionID); ok {
+			presence.OnSessionLifecycle(account, sessionID, state)
+		}
 	}
 }
 

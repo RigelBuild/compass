@@ -149,6 +149,34 @@ func (h *Hub) Status(ctx context.Context, requestID string, req *compassv1.GetAg
 	return result.GetStatus(), nil
 }
 
+// SessionState resolves a live session's lifecycle state through the Runner
+// Status relay (GetAgentStatus) — the reconciliation input the SEA-1569 T8
+// presence projection rebuilds from at a session promotion (design.md:494-503).
+// The Runner is authoritative for live session truth, so a restart reconstructs
+// presence from its answer rather than from any lost in-memory state. ok is
+// false when the relay fails or returns no status for the session (the
+// reconstruction falls to OFFLINE): a reconciliation edge must never tear
+// anything down, so a relay error is a soft "unknown", not a propagated failure.
+// Satisfies presence.LifecycleStatusResolver.
+func (h *Hub) SessionState(ctx context.Context, sessionID string) (compassv1.AgentSessionState, bool) {
+	resp, err := h.Status(ctx, "", &compassv1.GetAgentStatusRequest{SessionId: sessionID})
+	if err != nil {
+		return compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED, false
+	}
+	for _, st := range resp.GetStatuses() {
+		if st.GetSessionId() == sessionID {
+			return st.GetState(), true
+		}
+	}
+	// A single-session Status request returns that session's status; if none
+	// matched by id, take the sole status when present (the relay answered for
+	// this session). Absent any status, the session has no resolvable live state.
+	if len(resp.GetStatuses()) == 1 {
+		return resp.GetStatuses()[0].GetState(), true
+	}
+	return compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED, false
+}
+
 // relay dispatches one built command through the owning Runner's router and maps
 // the outcome to a Connect status: a RunnerError result becomes the mapped
 // Connect code; a transport failure (no Runner, stream drop) becomes
