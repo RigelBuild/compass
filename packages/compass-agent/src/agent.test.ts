@@ -10,7 +10,11 @@
 // until ReplayComplete lifts it.
 
 import { describe, expect, test } from "bun:test";
-import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
+import {
+	AgentBusyError,
+	type AgentMessage,
+	type AgentTool,
+} from "@oh-my-pi/pi-agent-core";
 import type {
 	AgentSession,
 	AgentSessionEvent,
@@ -20,6 +24,8 @@ import { CompassAgent, formatDeliversForPrompt } from "./agent";
 import {
 	AgentSessionState,
 	AskQuestionAnswerSchema,
+	AskQuestionSchema,
+	AskSchema,
 	create,
 	type Message,
 	MessageBlockSchema,
@@ -42,8 +48,11 @@ interface RecordingAgent {
 	readonly toolSets: AgentTool[][];
 	// The live SDK-shaped state CompassAgent reads its native tool set from at
 	// construction. Mirrors `Agent.state` (which returns the live object), so a
-	// test can assert the snapshot is a copy and not this array.
-	readonly state: { tools: AgentTool[] };
+	// test can assert the snapshot is a copy and not this array. `isStreaming`
+	// mirrors `Agent.state.isStreaming` (pi-agent-core agent.ts:1072) — mutable so
+	// a test can model the control-prompt spin-up window (streaming true before
+	// any agent_start event) that the idle-deliver race hinges on.
+	readonly state: { tools: AgentTool[]; isStreaming: boolean };
 }
 
 // A recording fake for AgentSession — the external boundary CompassAgent
@@ -55,6 +64,11 @@ interface RecordingSession {
 	subscribed: number;
 	unsubscribed: number;
 	listener: AgentSessionEventListener | undefined;
+	// The authoritative "a turn is live" signal CompassAgent's idle-flush gate
+	// consults (pi-coding-agent agent-session.ts:6469). Here it reflects the
+	// inner agent's `state.isStreaming` (minus the in-flight count the real getter
+	// also folds in — irrelevant to this fake's synchronous drive).
+	readonly isStreaming: boolean;
 }
 
 function recordingSession(natives: AgentTool[] = []): RecordingSession {
@@ -64,10 +78,18 @@ function recordingSession(natives: AgentTool[] = []): RecordingSession {
 		appended: [],
 		systemPrompts: [],
 		toolSets: [],
-		state: { tools: natives },
+		state: { tools: natives, isStreaming: false },
 	};
 	const agentImpl = {
 		prompt(input: string): Promise<void> {
+			// Mirror the real `Agent.prompt` guard (pi-agent-core agent.ts:985): a
+			// prompt issued while already streaming is refused with AgentBusyError,
+			// as a promise REJECTION (prompt is async — it never throws sync). This
+			// is what lets a test reproduce the injection-refused case the flush
+			// belt must survive, using the real error shape.
+			if (agent.state.isStreaming) {
+				return Promise.reject(new AgentBusyError());
+			}
 			agent.prompts.push(input);
 			return Promise.resolve();
 		},
@@ -90,6 +112,9 @@ function recordingSession(natives: AgentTool[] = []): RecordingSession {
 		subscribed: 0,
 		unsubscribed: 0,
 		listener: undefined,
+		get isStreaming(): boolean {
+			return agent.state.isStreaming;
+		},
 	};
 	const sessionImpl = {
 		subscribe(fn: AgentSessionEventListener): () => void {
@@ -575,6 +600,17 @@ function ackIds(frames: OutboundFrame[]): string[] {
 	);
 }
 
+// Drain the microtask queue: the delivery ack is emitted on the microtask right
+// after `#flushDelivers` issues its prompt (the injection-accepted point — see
+// the method comment in agent.ts), so a test asserting on acks must let that
+// microtask run first. Awaiting a resolved promise yields one microtask turn,
+// which is enough: the flush's ack microtask and any settled-rejection `.catch`
+// were both scheduled synchronously by the `deliver`/`agent_end` call, ahead of
+// this await.
+async function tick(): Promise<void> {
+	await Promise.resolve();
+}
+
 describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", () => {
 	test("mid-turn delivers coalesce into ONE turn-end prompt", async () => {
 		const h = startDeliverAgent();
@@ -606,6 +642,9 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 		h.agent.deliver(deliverMsg("m1", "one"));
 		h.agent.deliver(deliverMsg("m2", "two"));
 		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// The ack is emitted at injection time — the microtask after the flush
+		// issues its prompt (ack-at-injection, gated on injection-accepted).
+		await tick();
 		// Two acks, one per injected message, in delivery order.
 		expect(ackIds(h.frames)).toEqual(["m1", "m2"]);
 		await h.close();
@@ -620,6 +659,7 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 		// deduped by message_id, never injected again.
 		h.agent.deliver(deliverMsg("m1", "once"));
 		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
 		expect(ackIds(h.frames)).toEqual(["m1"]);
 		const dup = h.unmapped.find(
 			(u) => u.eventType === "deliver" && u.reason.includes("duplicate"),
@@ -649,6 +689,127 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 			(u) => u.eventType === "deliver" && u.reason.includes("missing"),
 		);
 		expect(missing).toBeDefined();
+		await h.close();
+	});
+
+	// The high-severity race (SEA-1310 §8): a control-driven prompt sets the inner
+	// agent streaming SYNCHRONOUSLY (pi-agent-core agent.ts:1072) but flips
+	// `#turnActive` only later, off the async `agent_start` event. A deliver that
+	// lands in that window must NOT be flushed — flushing would inject into a
+	// streaming agent, the prompt would reject (AgentBusyError), and the message
+	// would be acked-and-dropped: a false receipt for a never-injected message,
+	// the exact frozen-contract violation this gate closes. Modeled by setting the
+	// fake's `state.isStreaming = true` WITHOUT firing `agent_start`.
+	test("a deliver during the control-prompt spin-up window is queued, not acked-and-dropped", async () => {
+		const h = startDeliverAgent();
+		// A control prompt has spun up the inner agent: streaming true, but no
+		// agent_start event has propagated, so #turnActive is still false.
+		h.session.agent.state.isStreaming = true;
+		h.agent.deliver(deliverMsg("m1", "channel msg"));
+		await tick();
+		// The message rode neither an injection nor an ack — it stayed queued.
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(ackIds(h.frames)).toEqual([]);
+		// The turn settles: streaming clears (as the inner loop clears it at
+		// agent_end, agent.ts:1254) and the agent_end edge flushes the queue once.
+		h.session.agent.state.isStreaming = false;
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("channel msg");
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		await h.close();
+	});
+
+	// Rejection-safety belt (SEA-1310 §8): if a flush's prompt is REFUSED (the
+	// only prompt-rejection shape — a not-injected batch, see #flushDelivers), the
+	// batch must not be acked (no false receipt) and its ids must leave the
+	// processed set so the Server's redelivery re-injects them. Forced by driving
+	// the agent_end flush while the fake is still streaming, so its prompt guard
+	// rejects with AgentBusyError.
+	test("a refused flush prompt emits no ack, un-dedups the batch, and surfaces it", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("m1", "refused"));
+		// The agent is (pathologically) still streaming when agent_end fires, so
+		// the flush's prompt is refused. #turnActive is cleared by the edge, so the
+		// flush is attempted.
+		h.session.agent.state.isStreaming = true;
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		// No injection recorded (the guard refused it), and crucially NO ack.
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(ackIds(h.frames)).toEqual([]);
+		// The refusal is surfaced, never a silent drop.
+		const refused = h.unmapped.find(
+			(u) =>
+				u.eventType === "deliver:prompt" && u.reason.includes("not injected"),
+		);
+		expect(refused).toBeDefined();
+		// The id left the processed set: the Server's redelivery (streaming now
+		// clear) is NOT deduped away — it injects exactly once.
+		h.session.agent.state.isStreaming = false;
+		h.agent.deliver(deliverMsg("m1", "refused"));
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("refused");
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		await h.close();
+	});
+
+	// Multi-turn coalescing: each turn flushes only the delivers queued for it —
+	// the queue does not leak a prior turn's batch into the next, and acks
+	// accumulate one per injected message across turns.
+	test("delivers coalesce per turn across multiple turns", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("m1", "first turn"));
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("first turn");
+		// A second turn's deliver flushes on its own agent_end — not carrying the
+		// first turn's already-flushed message.
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("m2", "second turn"));
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(2);
+		expect(h.session.agent.prompts[1]).toContain("second turn");
+		expect(h.session.agent.prompts[1]).not.toContain("first turn");
+		expect(ackIds(h.frames)).toEqual(["m1", "m2"]);
+		await h.close();
+	});
+
+	// Ask-only message: a delivered Message whose only block is an `ask` (no text)
+	// still injects (its empty slot rides the coalesced prompt) and is acked once
+	// by id — deliver carries a receipt per Message, independent of block kind.
+	test("an ask-only message is injected and acked exactly once", async () => {
+		const h = startDeliverAgent();
+		const askOnly = create(MessageSchema, {
+			id: "ask1",
+			blocks: [
+				create(MessageBlockSchema, {
+					block: {
+						case: "ask",
+						value: create(AskSchema, {
+							askId: "ask1-ask",
+							questions: [
+								create(AskQuestionSchema, {
+									questionId: "q1",
+									question: "proceed?",
+								}),
+							],
+						}),
+					},
+				}),
+			],
+		});
+		h.agent.deliver(askOnly);
+		await tick();
+		// It flushed idle: exactly one prompt (its empty text slot) and one ack.
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(ackIds(h.frames)).toEqual(["ask1"]);
 		await h.close();
 	});
 });

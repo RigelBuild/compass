@@ -87,13 +87,18 @@ export class CompassAgent {
 	// `#turnActive` — true between a turn-start edge (agent_start/turn_start/
 	// message_start) and `agent_end`, tracked off the same session event stream
 	// the mapper reads. The flush trigger is the `agent_end` edge: it is safe to
-	// call `session.agent.prompt` synchronously there because AgentSession defers
-	// forwarding `agent_end` to its subscribers until in-flight prompts unwind
-	// (agent-session.ts:3799-3802) AND the inner Agent clears `isStreaming` in the
-	// `agent_end` case of its own loop before emitting (agent.ts:1254) — so by the
-	// time this listener sees the edge the inner `prompt` guard (agent.ts:985,
-	// reads `#state.isStreaming`) is already open, no AgentBusyError. No deferral,
-	// no timer: the flush is synchronous and deterministic under test.
+	// call `session.agent.prompt` synchronously there because the inner Agent
+	// clears `isStreaming` in the `agent_end` case of its own loop BEFORE emitting
+	// (pi-agent-core agent.ts:1254) — so by the time this listener sees the edge
+	// the inner `prompt` guard (agent.ts:985, reads `#state.isStreaming`) is
+	// already open, no AgentBusyError. (The AgentSession-level deferral of
+	// `agent_end` until in-flight prompts unwind, agent-session.ts:3799-3802, does
+	// NOT bear on this path: it is gated on `#promptInFlightCount`, which only
+	// session-level prompts bump — CompassAgent drives the inner `session.agent`
+	// directly, so that count stays 0 for these flushes.) No deferral, no timer:
+	// the flush is synchronous and deterministic under test. The idle-deliver
+	// trigger additionally gates on `#session.isStreaming` (see `deliver`), which
+	// closes the control-prompt spin-up race the event-derived flag alone cannot.
 	#turnActive = false;
 	// The coalescing queue: messages delivered mid-turn, drained into one prompt
 	// at the next flush.
@@ -200,8 +205,18 @@ export class CompassAgent {
 		this.#processedMessageIds.add(msg.id);
 		this.#deliverQueue.push(msg);
 		// Idle deliver starts a turn immediately (frozen :799/:810); a mid-turn
-		// deliver waits for the `agent_end` flush.
-		if (!this.#turnActive) this.#flushDelivers();
+		// deliver waits for the `agent_end` flush. "Idle" consults BOTH the
+		// event-derived `#turnActive` AND the authoritative `#session.isStreaming`
+		// (pi-coding-agent agent-session.ts:6469, the inner Agent's real streaming
+		// state): a control-driven prompt (`#applyControl` case "prompt") sets the
+		// inner agent streaming SYNCHRONOUSLY (pi-agent-core agent.ts:1072) but
+		// only flips `#turnActive` later, off the async `agent_start` event
+		// (:1214/:1260). In that window `#turnActive` is still false while a turn
+		// is genuinely live; flushing there would inject into a streaming agent,
+		// the prompt would reject with AgentBusyError, and the message would be
+		// acked-and-dropped. Gating on `isStreaming` too keeps the message queued
+		// to ride the live turn's `agent_end` flush.
+		if (!this.#turnActive && !this.#session.isStreaming) this.#flushDelivers();
 	}
 
 	// Steer arm (SEA-1310) — parked. SteerControl is still an empty shell on the
@@ -238,33 +253,63 @@ export class CompassAgent {
 	}
 
 	// Flush the coalesced deliver queue: drain it, format the batch into ONE
-	// prompt, issue that single prompt, and emit one delivery ack per injected
-	// message. The ack means "injected into the agent", NOT "the resulting turn
-	// finished" (frozen :800): it is emitted at the point the prompt is issued,
-	// never gated behind the prompt's completion — so a crash mid-turn does not
-	// lose the receipt for a message that WAS injected. The prompt promise is not
-	// awaited (the flush runs from a sync listener); a rejection is surfaced
-	// through #onUnmapped, never left as an unhandled rejection.
+	// prompt, issue that single prompt, and emit one delivery ack per message —
+	// but ONLY once injection is known-accepted. The ack means "injected into the
+	// agent", NOT "the resulting turn finished" (frozen :800): it is emitted at
+	// injection time (the microtask right after the synchronous `prompt` call, by
+	// which point injection has happened), never gated behind the prompt's
+	// completion — so a crash mid-turn does not lose the receipt for a message
+	// that WAS injected.
+	//
+	// Rejection-safety belt (SEA-1310 §8): `Agent.prompt` injects SYNCHRONOUSLY up
+	// to its first await (pi-agent-core agent.ts:1072) and can only signal refusal
+	// as a promise REJECTION — a synchronous throw at its very top: the
+	// AgentBusyError streaming guard (:985) or the "No model" check (:990), both
+	// BEFORE any injection. A genuine mid-turn failure does NOT reject — the loop
+	// swallows it, emits `agent_end`, and RESOLVES (:1279-1332). So a rejection
+	// here means the batch was NOT injected. We therefore emit the acks on the
+	// next microtask, gated on the prompt not having synchronously-rejected: a
+	// settled-rejected promise schedules its `.catch` microtask BEFORE this
+	// `queueMicrotask`, so the guard flag is observed deterministically — no
+	// timer, no race. On rejection we fail closed: no ack, and the ids are
+	// un-deduped so the Server (which never saw an ack, so its delivery cursor
+	// never advanced — agent_pb.ts:483) redelivers and re-injects them. The batch
+	// is NOT locally re-enqueued: the Server is the single redelivery authority,
+	// so re-enqueueing on top of its resend would double-inject.
 	#flushDelivers(): void {
 		if (this.#deliverQueue.length === 0) return;
 		const batch = this.#deliverQueue;
 		this.#deliverQueue = [];
 		const input = formatDeliversForPrompt(batch);
-		// Emit the acks at INJECTION time (synchronously), before/independent of
-		// the prompt resolving.
-		for (const msg of batch) {
-			const value: DeliveryAck = create(DeliveryAckSchema, {
-				messageId: msg.id,
-			});
-			this.#sink.emit({ kind: "deliveryAck", value });
-		}
+		// Optimistically mark a turn active — an idle flush starts one; the
+		// rejection path below clears it, since a refused prompt starts no turn.
 		this.#turnActive = true;
-		void this.#session.agent.prompt(input).catch((err) => {
+		let rejected = false;
+		let acked = false;
+		this.#session.agent.prompt(input).catch((err) => {
+			// Reached ONLY on a settled-rejected prompt, i.e. a not-injected batch
+			// (see the method comment). If the acks already went out this is the
+			// SDK-impossible post-injection rejection — leave the injected batch
+			// alone rather than un-dedup a message that WAS delivered.
+			if (acked) return;
+			rejected = true;
+			this.#turnActive = false;
+			for (const msg of batch) this.#processedMessageIds.delete(msg.id);
 			this.#onUnmapped({
 				kind: "unmapped",
 				eventType: "deliver:prompt",
-				reason: String(err),
+				reason: `deliver flush prompt rejected — batch not injected, un-acked for redelivery: ${String(err)}`,
 			});
+		});
+		queueMicrotask(() => {
+			if (rejected) return;
+			acked = true;
+			for (const msg of batch) {
+				const value: DeliveryAck = create(DeliveryAckSchema, {
+					messageId: msg.id,
+				});
+				this.#sink.emit({ kind: "deliveryAck", value });
+			}
 		});
 	}
 
