@@ -179,3 +179,81 @@ func TestMessageByID(t *testing.T) {
 		t.Fatalf("MessageByID(unknown) err = %v, want ErrNotFound", err)
 	}
 }
+
+// Case: ChannelAgentMembers returns exactly the non-author AGENT members,
+// regardless of subscribe state, and never a human member or the author. This is
+// the mention→steer routing set (design.md:526-527): membership, not subscription.
+func TestChannelAgentMembersResolvesAllAgentMembersAuthorExcluded(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner") // a human member (pulled in on create)
+	author := mustAgent(t, s, owner.ID, "author")
+	a1 := mustAgent(t, s, owner.ID, "a1")
+	a2 := mustAgent(t, s, owner.ID, "a2")
+	// A channel with the author + two other agents as members. The human owner is
+	// added as a member on create. Subscribe only ONE agent to prove subscribe
+	// state is irrelevant to this set.
+	ch := mustNamedChannelWith(t, s, owner.ID, "shared", author.ID, a1.ID, a2.ID)
+	subscribeAgent(t, s, owner.ID, ch, a1.ID)
+
+	members, err := s.ChannelAgentMembers(ctx, ch, author.ID)
+	if err != nil {
+		t.Fatalf("ChannelAgentMembers: %v", err)
+	}
+	// Expect exactly {a1, a2}: author excluded, human owner excluded (no
+	// agent_accounts row), both agents present regardless of subscribed flag.
+	want := map[AccountID]bool{a1.ID: true, a2.ID: true}
+	if len(members) != len(want) {
+		t.Fatalf("ChannelAgentMembers = %v, want the 2 non-author agent members %v", members, want)
+	}
+	for _, m := range members {
+		if !want[m] {
+			t.Fatalf("ChannelAgentMembers returned unexpected member %s (want only %v: author + human excluded)", m, want)
+		}
+		if m == author.ID || m == owner.ID {
+			t.Fatalf("ChannelAgentMembers included an excluded account %s", m)
+		}
+	}
+}
+
+// Case: an agent member with subscribed=false (and not its home channel) is STILL
+// returned by ChannelAgentMembers — the property that distinguishes it from
+// SubscribedAgents (which filters subscribed-or-home). Uses flipSubscribed to set
+// subscribed=false and asserts the member is still present.
+func TestChannelAgentMembersIncludesUnsubscribed(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	author := mustAgent(t, s, owner.ID, "author")
+	unsub := mustAgent(t, s, owner.ID, "unsub")
+	// unsub is a member of this (non-home) channel; flip it explicitly to
+	// subscribed=false so SubscribedAgents would exclude it.
+	ch := mustNamedChannelWith(t, s, owner.ID, "shared", author.ID, unsub.ID)
+	flipSubscribed(t, s, ch, unsub.ID, false)
+
+	// SubscribedAgents excludes it (the contrast that makes the property load-bearing).
+	subs, err := s.SubscribedAgents(ctx, ch, author.ID)
+	if err != nil {
+		t.Fatalf("SubscribedAgents: %v", err)
+	}
+	for _, a := range subs {
+		if a == unsub.ID {
+			t.Fatalf("precondition failed: SubscribedAgents included the unsubscribed %s", unsub.ID)
+		}
+	}
+
+	// ChannelAgentMembers still returns it: membership, not subscription.
+	members, err := s.ChannelAgentMembers(ctx, ch, author.ID)
+	if err != nil {
+		t.Fatalf("ChannelAgentMembers: %v", err)
+	}
+	found := false
+	for _, m := range members {
+		if m == unsub.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("ChannelAgentMembers(%s) = %v, want it to include the unsubscribed member %s (membership, not subscription)", ch, members, unsub.ID)
+	}
+}

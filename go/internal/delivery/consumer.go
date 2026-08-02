@@ -20,6 +20,8 @@ package delivery
 import (
 	"context"
 	"log/slog"
+	"regexp"
+	"strings"
 	"sync"
 
 	comms "github.com/sealedsecurity/compass/go/internal/comms"
@@ -54,13 +56,21 @@ type SessionResolver interface {
 }
 
 // DeliveryReads is the store surface the consumer reads: subscriber resolution,
-// the author agent/human split, the settled-message re-read, and the sweep.
+// the author agent/human split, the settled-message re-read, the sweep, and the
+// mention→steer routing set (channel agent members + handle resolution, D5).
 // *store.Store implements it.
 type DeliveryReads interface {
 	SubscribedAgents(ctx context.Context, channel store.ChannelID, author store.AccountID) ([]store.AccountID, error)
 	IsAgentAccount(ctx context.Context, account store.AccountID) (bool, error)
 	MessageByID(ctx context.Context, messageID string) (store.Message, error)
 	UndeliveredMessages(ctx context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error)
+	// ChannelAgentMembers resolves every agent MEMBER of a channel (subscribe
+	// state irrelevant), author excluded — the mention→steer routing set (D5,
+	// design.md:526-527), distinct from SubscribedAgents' deliver set.
+	ChannelAgentMembers(ctx context.Context, channel store.ChannelID, author store.AccountID) ([]store.AccountID, error)
+	// AgentByHandle resolves a mention handle to its agent account; an unknown or
+	// non-agent (human) handle is store.ErrNotFound (a mention no-op, D5).
+	AgentByHandle(ctx context.Context, handle string) (store.Account, error)
 }
 
 // settleEvent is one queued author-settle edge handed from the hub's Deliver
@@ -251,6 +261,82 @@ func deliverOp(msg *compassv1.Message) *compassv1internal.AgentControl {
 			Deliver: &compassv1internal.DeliverControl{Message: msg},
 		},
 	}
+}
+
+// steerOp wraps a wire message in the AgentControl steer op the relay carries
+// (mirror of deliverOp; agent.proto steer = 2). D5 routes an `@`-mention to a
+// channel agent member as a steer (mid-turn interrupt) rather than a deliver
+// (turn-end coalesced) — the only deliver-vs-steer difference is recipient-side
+// (design.md:558-562). SteerControl carries the same single first-party Message
+// as DeliverControl (DL-073).
+func steerOp(msg *compassv1.Message) *compassv1internal.AgentControl {
+	return &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_Steer{
+			Steer: &compassv1internal.SteerControl{Message: msg},
+		},
+	}
+}
+
+// mentionRE matches one `@`-mention token: `@` then a handle. The handle is
+// [a-z0-9][a-z0-9._-]* — the leading char must be a letter/digit, so a bare `@`
+// or `@.` does not match. This is the client grammar ported verbatim for parity
+// (apps/ui/src/comms.ts:265 MENTION_RE = /@([a-z0-9][a-z0-9._-]*)/gi); keep the
+// two in sync — a drift here silently diverges server routing from what the
+// composer shows. Go RE2 has no inline /i, so the (?i) prefix carries the flag;
+// no backrefs are needed. Group 1 is the handle without `@`.
+var mentionRE = regexp.MustCompile(`(?i)@([a-z0-9][a-z0-9._-]*)`)
+
+// reservedMentions are the broadcast ping targets that expand to a channel's
+// member sets server-side (apps/ui/src/comms-stub.ts:182 RESERVED_MENTIONS).
+// Matched case-insensitively against the lowercased handle (comms.ts:279-281).
+// For steer routing, @everyone / @agents expand to the channel's agent members;
+// @users expands to human members (no agent session to steer) (design.md:532-534).
+var reservedMentions = map[string]bool{"everyone": true, "agents": true, "users": true}
+
+// parseMentions returns the distinct lowercased handles mentioned in text, in
+// first-appearance order. Lowercasing folds the case-insensitive grammar into a
+// single dedup key for both reserved-ping matching and handle resolution
+// (account handles are stored lowercase). The `@` is stripped; group 1 is the
+// handle.
+func parseMentions(text string) []string {
+	matches := mentionRE.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(matches))
+	var out []string
+	for _, m := range matches {
+		h := strings.ToLower(m[1])
+		if seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	return out
+}
+
+// mentionHandles parses the distinct mentioned handles across all of msg's text
+// blocks (design.md:516: the mention parse reads the block set). Blocks are
+// scanned in order and deduped globally, so a handle mentioned in two blocks
+// steers once.
+func mentionHandles(msg *compassv1.Message) []string {
+	blocks := msg.GetBlocks()
+	if len(blocks) == 0 {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, b := range blocks {
+		for _, h := range parseMentions(b.GetText()) {
+			if seen[h] {
+				continue
+			}
+			seen[h] = true
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // gateFor returns the per-session dispatch gate, creating it on first use.

@@ -53,6 +53,42 @@ func (s *Store) SubscribedAgents(ctx context.Context, channel ChannelID, author 
 	return agents, nil
 }
 
+// ChannelAgentMembers resolves every AGENT member of a channel, author excluded,
+// regardless of subscribe state — the mention→steer routing set (design.md:526-527:
+// membership, not subscription). Distinct from SubscribedAgents, which is the plain
+// deliver set (subscribed-or-home): this query is the same JOIN shape MINUS the
+// `(cm.subscribed OR home_channel)` disjunct, so an unsubscribed non-home agent
+// member is STILL returned. The JOIN to agent_accounts scopes the result to agent
+// members (a human member has no agent_accounts row); $1 is the channel, $2 the
+// author excluded (an agent's own `@agents` / self-mention never steers itself).
+func (s *Store) ChannelAgentMembers(ctx context.Context, channel ChannelID, author AccountID) ([]AccountID, error) {
+	const q = `
+		SELECT aa.account_id
+		FROM channel_members cm
+		JOIN agent_accounts aa ON aa.account_id = cm.account_id
+		WHERE cm.channel_id = $1
+		  AND cm.account_id <> $2
+		ORDER BY aa.account_id`
+	rows, err := s.pool.Query(ctx, q, string(channel), string(author))
+	if err != nil {
+		return nil, fmt.Errorf("store: resolve channel agent members: %w", err)
+	}
+	defer rows.Close()
+
+	var agents []AccountID
+	for rows.Next() {
+		var acct string
+		if err := rows.Scan(&acct); err != nil {
+			return nil, fmt.Errorf("store: scan channel agent member: %w", err)
+		}
+		agents = append(agents, AccountID(acct))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate channel agent members: %w", err)
+	}
+	return agents, nil
+}
+
 // IsAgentAccount reports whether account is an owned agent (has an agent_accounts
 // row). The delivery settle gate (design.md:139-168) splits on it: a
 // human-authored message is settled at post and delivers immediately, while an
