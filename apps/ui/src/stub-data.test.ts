@@ -109,10 +109,13 @@ describe("agentTree", () => {
 
 	test("a two-node cycle survives: both members become roots", () => {
 		// x.parent = y and y.parent = x. Neither can be a child without
-		// dropping the other, so the total derivation promotes both to roots.
+		// dropping the other, so the total derivation promotes both to roots —
+		// collected in the same input-order loop as any other root, so the
+		// input order [x, y] is preserved (the C-T5 determinism contract holds
+		// for cycle-promoted roots too).
 		const agents = [agent("x", "y"), agent("y", "x")];
 		const tree = agentTree(agents);
-		expect(ids(tree).sort()).toEqual(["x", "y"]);
+		expect(ids(tree)).toEqual(["x", "y"]);
 		expect(tree.every((n) => n.children.length === 0)).toBe(true);
 	});
 
