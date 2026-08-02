@@ -140,11 +140,13 @@ func (l *ServerLink) RunSessions(ctx context.Context, host SessionHost, log *slo
 // handle executes one command (or returns the recorded result for a retried
 // request id) and builds the correlated result message.
 func (d *dispatcher) handle(ctx context.Context, cmd *compassv1internal.SessionsResponse) *compassv1internal.SessionsRequest {
-	// A signal-only command (SecretsVersion) carries no request id and has no
-	// result variant — it must never enter the request-id dedup map, or the
-	// empty-id key would collapse every signal to one and a later rotation would
-	// never re-materialize. Execute it directly and return no result frame.
-	if _, ok := cmd.GetCommand().(*compassv1internal.SessionsResponse_SecretsVersion); ok {
+	// A signal-only command (SecretsVersion, ConfigVersion) carries no request id
+	// and has no result variant — it must never enter the request-id dedup map, or
+	// the empty-id key would collapse every signal to one and a later rotation or
+	// config update would never re-materialize. Execute it directly and return no
+	// result frame.
+	switch cmd.GetCommand().(type) {
+	case *compassv1internal.SessionsResponse_SecretsVersion, *compassv1internal.SessionsResponse_ConfigVersion:
 		return d.execute(ctx, "", cmd)
 	}
 	id := cmd.GetRequestId()
@@ -233,6 +235,15 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 			d.log.ErrorContext(ctx, "refreshing secrets on SecretsVersion signal failed; will retry on next signal",
 				slog.String("session_id", sessionID), slog.Any("error", err))
 		}
+		return nil
+	case *compassv1internal.SessionsResponse_ConfigVersion:
+		// Signal-only: the fleet config bundle changed. T3 lands the wire surface
+		// and recognizes the signal so it is never a contract-skew error; the
+		// coalesced re-fetch → re-materialize → in-place Reload loop is T6
+		// (SEA-1629), which replaces this body. Fleet-wide (no session id), not
+		// request_id-correlated, no result frame.
+		d.log.InfoContext(ctx, "received ConfigVersion signal",
+			slog.String("version", c.ConfigVersion.GetVersion()))
 		return nil
 	default:
 		// An unset/unrecognized command variant — a contract skew. Return an

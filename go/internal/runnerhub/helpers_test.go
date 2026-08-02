@@ -506,7 +506,22 @@ func newMountedH2CServer(t *testing.T, hub *Hub, resolve TokenResolver) string {
 // the real wire.
 func newMountedH2CServerWithResolver(t *testing.T, hub *Hub, resolve TokenResolver, resolver secrets.Resolver) string {
 	t.Helper()
-	path, handler := NewMountedHandler(hub, resolve, resolver)
+	return newMountedH2CServerWith(t, hub, resolve, resolver, nil)
+}
+
+// newMountedH2CServerWithConfig is newMountedH2CServer with a config store
+// threaded into the handler, so a FetchAgentConfig test drives the delegate path
+// over the real wire.
+func newMountedH2CServerWithConfig(t *testing.T, hub *Hub, resolve TokenResolver, configStore AgentConfigStore) string {
+	t.Helper()
+	return newMountedH2CServerWith(t, hub, resolve, nil, configStore)
+}
+
+// newMountedH2CServerWith mounts the handler with both delegate surfaces (either
+// may be nil) on an httptest h2c server and returns its base URL.
+func newMountedH2CServerWith(t *testing.T, hub *Hub, resolve TokenResolver, resolver secrets.Resolver, configStore AgentConfigStore) string {
+	t.Helper()
+	path, handler := NewMountedHandler(hub, resolve, resolver, configStore)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	srv := httptest.NewUnstartedServer(mux)

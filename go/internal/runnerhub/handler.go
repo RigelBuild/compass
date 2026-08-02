@@ -21,26 +21,43 @@ import (
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 	"github.com/sealedsecurity/compass/go/internal/secrets"
+	"github.com/sealedsecurity/compass/go/internal/store"
 )
+
+// AgentConfigStore is the Server-side fleet config-bundle resolve surface that
+// FetchAgentConfig delegates to — the SEA-1568 T1 store (`*store.Store` satisfies
+// it via CurrentAgentConfig). Narrow by design, the secrets.Resolver pattern: the
+// handler depends on this one method, not the whole store, and a server built
+// with no config surface passes nil.
+type AgentConfigStore interface {
+	// CurrentAgentConfig returns the fleet's current bundle version (content hash)
+	// and raw tarball bytes, or store.ErrNotFound when no bundle is declared (a
+	// valid unconfigured state, never an error at the fetch edge).
+	CurrentAgentConfig(ctx context.Context) (version string, bundle []byte, err error)
+}
 
 // Handler implements compassv1internalconnect.RunnerServiceHandler over the hub.
 // The hub owns the registry, router, and Deliver seam; the resolver is the
-// Server-side secret resolve surface FetchSecrets delegates to. The handler is
+// Server-side secret resolve surface FetchSecrets delegates to, and configStore
+// the fleet config-bundle surface FetchAgentConfig delegates to. The handler is
 // the wire-termination shell that drives them.
 type Handler struct {
 	compassv1internalconnect.UnimplementedRunnerServiceHandler
-	hub      *Hub
-	resolver secrets.Resolver
+	hub         *Hub
+	resolver    secrets.Resolver
+	configStore AgentConfigStore
 }
 
-// NewHandler constructs the RunnerService handler over the hub and the secret
-// resolver. resolver may be nil on a server built with no secrets surface, in
-// which case FetchSecrets fails with CodeFailedPrecondition rather than
-// panicking. That code is distinct from the CodeUnavailable connect-go
-// synthesizes for transport faults, so the Runner can tolerate a genuine
-// no-secrets-surface server without also tolerating a transient outage.
-func NewHandler(hub *Hub, resolver secrets.Resolver) *Handler {
-	return &Handler{hub: hub, resolver: resolver}
+// NewHandler constructs the RunnerService handler over the hub, the secret
+// resolver, and the config store. resolver may be nil on a server built with no
+// secrets surface (FetchSecrets then fails CodeFailedPrecondition rather than
+// panicking); configStore may be nil on a server built with no config surface
+// (FetchAgentConfig fails the same way). That code is distinct from the
+// CodeUnavailable connect-go synthesizes for transport faults, so the Runner can
+// tolerate a genuine no-surface server without also tolerating a transient
+// outage.
+func NewHandler(hub *Hub, resolver secrets.Resolver, configStore AgentConfigStore) *Handler {
+	return &Handler{hub: hub, resolver: resolver, configStore: configStore}
 }
 
 // Ensure Handler satisfies the generated interface at compile time.
@@ -257,6 +274,70 @@ func (h *Handler) FetchSecrets(ctx context.Context, req *connect.Request[compass
 // set.
 var errNoResolver = errors.New("runnerhub: no secret resolver wired to serve FetchSecrets")
 
+// configChunkBytes bounds each FetchAgentConfig tarball chunk frame. Well under
+// the connect/gRPC ~4 MiB default recv cap, so a bundle of any size streams in
+// fixed-size frames the Runner reassembles in receive order.
+const configChunkBytes = 512 * 1024
+
+// errNoConfigStore is the fail-closed cause when FetchAgentConfig reaches a
+// handler built with no config store (a server with no config surface). Like
+// errNoResolver it maps to CodeFailedPrecondition — distinct from the transport
+// CodeUnavailable — so the Runner tolerates a genuine no-config-surface server
+// (materialize an empty dir, provision anyway) without tolerating a transient
+// outage.
+var errNoConfigStore = errors.New("runnerhub: no config store wired to serve FetchAgentConfig")
+
+// FetchAgentConfig streams the fleet config bundle to the Runner: the first frame
+// carries the version, subsequent frames carry the tarball in fixed-size chunks
+// (server-streaming so the bundle never rides the unary recv cap). Authenticated
+// by the per-Runner token exactly as the other RunnerService RPCs (the bearer
+// interceptor Kind-gated the subject; the runnerSubjectFrom check is defense in
+// depth). The fleet bundle is unkeyed, so no per-account authz applies.
+//
+// if_version is a reconnect optimization: when it matches the current version the
+// Server sends only the version frame (no chunks). An unconfigured fleet
+// (store.ErrNotFound) is not an error — it sends a version frame with an empty
+// version and no chunks, so the Runner materializes an empty config dir and
+// provisions anyway.
+func (h *Handler) FetchAgentConfig(ctx context.Context, req *connect.Request[compassv1internal.FetchAgentConfigRequest], stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
+	if _, ok := runnerSubjectFrom(ctx); !ok {
+		return errUnauthenticated
+	}
+	if h.configStore == nil {
+		return connect.NewError(connect.CodeFailedPrecondition, errNoConfigStore)
+	}
+	version, bundle, err := h.configStore.CurrentAgentConfig(ctx)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("reading current agent config: %w", err))
+	}
+	// ErrNotFound → empty version, no bundle: the valid unconfigured state.
+	if errors.Is(err, store.ErrNotFound) {
+		version, bundle = "", nil
+	}
+	// The version frame is always first — the Runner keys reassembly on it.
+	if err := stream.Send(&compassv1internal.FetchAgentConfigResponse{
+		Frame: &compassv1internal.FetchAgentConfigResponse_Version{Version: version},
+	}); err != nil {
+		return err
+	}
+	// if_version match: the Runner already holds this bundle. End after the
+	// version frame, no chunks (the version-only reconnect fetch). A non-empty
+	// version that matches short-circuits; an empty version never "matches" a
+	// held version (the Runner sends if_version empty on a cold fetch).
+	if v := req.Msg.GetIfVersion(); v != "" && v == version {
+		return nil
+	}
+	for off := 0; off < len(bundle); off += configChunkBytes {
+		end := min(off+configChunkBytes, len(bundle))
+		if err := stream.Send(&compassv1internal.FetchAgentConfigResponse{
+			Frame: &compassv1internal.FetchAgentConfigResponse_Chunk{Chunk: bundle[off:end]},
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // resolvedSecretToProto maps a secrets.ResolvedSecret to the wire ResolvedSecret,
 // translating the resolve-surface delivery/kind enums to the public proto enums
 // at this edge (the same store↔proto enum discipline the secrets package uses at
@@ -301,11 +382,13 @@ func kindToProto(k secrets.SecretKind) compassv1.SecretKind {
 // to Handle on the network mux. resolve is the shared credential resolver
 // (auth.ResolveToken with the store closed over); the door authenticates every
 // RPC through it for a SubjectRunner token. resolver is the Server-side secret
-// resolve surface FetchSecrets delegates to.
-func NewMountedHandler(hub *Hub, resolve TokenResolver, resolver secrets.Resolver) (string, http.Handler) {
+// resolve surface FetchSecrets delegates to; configStore the fleet config-bundle
+// surface FetchAgentConfig delegates to (either may be nil on a server built
+// without that surface).
+func NewMountedHandler(hub *Hub, resolve TokenResolver, resolver secrets.Resolver, configStore AgentConfigStore) (string, http.Handler) {
 	auth := &bearerAuth{resolve: resolve}
 	return compassv1internalconnect.NewRunnerServiceHandler(
-		NewHandler(hub, resolver),
+		NewHandler(hub, resolver, configStore),
 		connect.WithInterceptors(auth.unaryInterceptor(), auth.streamInterceptor()),
 	)
 }

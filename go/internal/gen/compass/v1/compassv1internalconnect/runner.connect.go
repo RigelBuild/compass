@@ -78,6 +78,9 @@ const (
 	// RunnerServiceFetchSecretsProcedure is the fully-qualified name of the RunnerService's
 	// FetchSecrets RPC.
 	RunnerServiceFetchSecretsProcedure = "/compass.v1.RunnerService/FetchSecrets"
+	// RunnerServiceFetchAgentConfigProcedure is the fully-qualified name of the RunnerService's
+	// FetchAgentConfig RPC.
+	RunnerServiceFetchAgentConfigProcedure = "/compass.v1.RunnerService/FetchAgentConfig"
 )
 
 // RunnerServiceClient is a client for the compass.v1.RunnerService service.
@@ -168,6 +171,21 @@ type RunnerServiceClient interface {
 	// interceptor must never dump resolved values. Additive to the frozen dial-out
 	// shape (the Runner still initiates; the Server gains no inbound route).
 	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
+	// FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
+	// fleet config bundle to materialize into the agent container at provision
+	// (SEA-1568 T3/T4). Server-streaming so the bundle is never bounded by the
+	// connect/gRPC unary recv cap: the first response frame carries the version,
+	// subsequent frames carry the tarball bytes in chunks. The security caps
+	// (decompressed size, file count) live at unpack (T1's door, re-enforced at
+	// the Runner's ConfigMaterializer), not in the transport. if_version is an
+	// optional reconnect optimization: on a match the Server ends the stream after
+	// the version frame with no chunks (the version-only fetch). The fleet bundle
+	// is unkeyed — no per-account binding — so, like the other RunnerService RPCs,
+	// it is authenticated by the per-Runner token alone (account-subject tokens
+	// rejected). An unconfigured fleet returns a version frame with an empty
+	// version and no chunks, never an error. Additive to the frozen dial-out shape
+	// (the Runner still initiates; the Server gains no inbound route).
+	FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest]) (*connect.ServerStreamForClient[v1.FetchAgentConfigResponse], error)
 }
 
 // NewRunnerServiceClient constructs a client for the compass.v1.RunnerService service. By default,
@@ -223,6 +241,12 @@ func NewRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(runnerServiceMethods.ByName("FetchSecrets")),
 			connect.WithClientOptions(opts...),
 		),
+		fetchAgentConfig: connect.NewClient[v1.FetchAgentConfigRequest, v1.FetchAgentConfigResponse](
+			httpClient,
+			baseURL+RunnerServiceFetchAgentConfigProcedure,
+			connect.WithSchema(runnerServiceMethods.ByName("FetchAgentConfig")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -235,6 +259,7 @@ type runnerServiceClient struct {
 	relayLifecycleCall      *connect.Client[v1.RelayLifecycleCallRequest, v1.RelayLifecycleCallResponse]
 	commitConversationFrame *connect.Client[v1.CommitConversationFrameRequest, v1.CommitConversationFrameResponse]
 	fetchSecrets            *connect.Client[v1.FetchSecretsRequest, v1.FetchSecretsResponse]
+	fetchAgentConfig        *connect.Client[v1.FetchAgentConfigRequest, v1.FetchAgentConfigResponse]
 }
 
 // Enroll calls compass.v1.RunnerService.Enroll.
@@ -270,6 +295,11 @@ func (c *runnerServiceClient) CommitConversationFrame(ctx context.Context, req *
 // FetchSecrets calls compass.v1.RunnerService.FetchSecrets.
 func (c *runnerServiceClient) FetchSecrets(ctx context.Context, req *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error) {
 	return c.fetchSecrets.CallUnary(ctx, req)
+}
+
+// FetchAgentConfig calls compass.v1.RunnerService.FetchAgentConfig.
+func (c *runnerServiceClient) FetchAgentConfig(ctx context.Context, req *connect.Request[v1.FetchAgentConfigRequest]) (*connect.ServerStreamForClient[v1.FetchAgentConfigResponse], error) {
+	return c.fetchAgentConfig.CallServerStream(ctx, req)
 }
 
 // RunnerServiceHandler is an implementation of the compass.v1.RunnerService service.
@@ -360,6 +390,21 @@ type RunnerServiceHandler interface {
 	// interceptor must never dump resolved values. Additive to the frozen dial-out
 	// shape (the Runner still initiates; the Server gains no inbound route).
 	FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error)
+	// FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
+	// fleet config bundle to materialize into the agent container at provision
+	// (SEA-1568 T3/T4). Server-streaming so the bundle is never bounded by the
+	// connect/gRPC unary recv cap: the first response frame carries the version,
+	// subsequent frames carry the tarball bytes in chunks. The security caps
+	// (decompressed size, file count) live at unpack (T1's door, re-enforced at
+	// the Runner's ConfigMaterializer), not in the transport. if_version is an
+	// optional reconnect optimization: on a match the Server ends the stream after
+	// the version frame with no chunks (the version-only fetch). The fleet bundle
+	// is unkeyed — no per-account binding — so, like the other RunnerService RPCs,
+	// it is authenticated by the per-Runner token alone (account-subject tokens
+	// rejected). An unconfigured fleet returns a version frame with an empty
+	// version and no chunks, never an error. Additive to the frozen dial-out shape
+	// (the Runner still initiates; the Server gains no inbound route).
+	FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest], *connect.ServerStream[v1.FetchAgentConfigResponse]) error
 }
 
 // NewRunnerServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -411,6 +456,12 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(runnerServiceMethods.ByName("FetchSecrets")),
 		connect.WithHandlerOptions(opts...),
 	)
+	runnerServiceFetchAgentConfigHandler := connect.NewServerStreamHandler(
+		RunnerServiceFetchAgentConfigProcedure,
+		svc.FetchAgentConfig,
+		connect.WithSchema(runnerServiceMethods.ByName("FetchAgentConfig")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/compass.v1.RunnerService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case RunnerServiceEnrollProcedure:
@@ -427,6 +478,8 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 			runnerServiceCommitConversationFrameHandler.ServeHTTP(w, r)
 		case RunnerServiceFetchSecretsProcedure:
 			runnerServiceFetchSecretsHandler.ServeHTTP(w, r)
+		case RunnerServiceFetchAgentConfigProcedure:
+			runnerServiceFetchAgentConfigHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -462,4 +515,8 @@ func (UnimplementedRunnerServiceHandler) CommitConversationFrame(context.Context
 
 func (UnimplementedRunnerServiceHandler) FetchSecrets(context.Context, *connect.Request[v1.FetchSecretsRequest]) (*connect.Response[v1.FetchSecretsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.FetchSecrets is not implemented"))
+}
+
+func (UnimplementedRunnerServiceHandler) FetchAgentConfig(context.Context, *connect.Request[v1.FetchAgentConfigRequest], *connect.ServerStream[v1.FetchAgentConfigResponse]) error {
+	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.FetchAgentConfig is not implemented"))
 }
