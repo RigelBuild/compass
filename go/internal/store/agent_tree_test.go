@@ -12,6 +12,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // mustAgentWithParent creates an owned agent whose parent is set at creation, or
@@ -214,4 +215,105 @@ func TestReparentAgentUnknownAgentRejected(t *testing.T) {
 	// distinct existence probe).
 	_, err := s.ReparentAgent(ctx, owner.ID, "no-such-agent", "")
 	sentinelIs(t, err, ErrPermissionDenied, "unknown moved agent")
+}
+
+func TestReparentAgentConcurrentCycleSerialized(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	a := mustAgent(t, s, owner.ID, "a")
+	b := mustAgent(t, s, owner.ID, "b")
+
+	// tx1: hold the per-owner advisory lock and stage the A-under-B move, but do
+	// not commit — the "first" reparent, mid-flight under the lock. lockKey is
+	// the owner id (A/B are both owned by owner), matching ReparentAgent's key.
+	tx1, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin tx1: %v", err)
+	}
+	// Rollback is a no-op after the Commit below; discarded because this cleanup
+	// path only runs if the test fails before committing.
+	defer func() { _ = tx1.Rollback(ctx) }()
+	if _, err := tx1.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, string(owner.ID)); err != nil {
+		t.Fatalf("tx1 acquire advisory lock: %v", err)
+	}
+	if _, err := tx1.Exec(ctx,
+		"UPDATE agent_accounts SET parent_agent_id=$2 WHERE account_id=$1",
+		string(a.ID), string(b.ID),
+	); err != nil {
+		t.Fatalf("tx1 move a under b: %v", err)
+	}
+
+	// tx2: the concurrent public reparent (B under A). With the advisory lock in
+	// ReparentAgent present, this BLOCKS at the lock acquire until tx1 commits;
+	// without it, tx2 races ahead and both moves persist into a cycle.
+	type result struct {
+		acc Account
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		acc, err := s.ReparentAgent(ctx, owner.ID, b.ID, a.ID)
+		done <- result{acc, err}
+	}()
+
+	// Readiness gate (bounded poll-until, not a fixed sleep): wait until tx2 is
+	// actually parked on the advisory lock — an ungranted advisory lock row in
+	// pg_locks. If it never appears within the deadline (the RED case where the
+	// lock line was removed, so tx2 never waits), fall through and commit anyway.
+	deadline := time.After(5 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+waitLoop:
+	for {
+		var waiters int
+		if err := s.pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+		).Scan(&waiters); err != nil {
+			t.Fatalf("poll pg_locks: %v", err)
+		}
+		if waiters >= 1 {
+			break waitLoop
+		}
+		select {
+		case <-deadline:
+			break waitLoop
+		case <-tick.C:
+		}
+	}
+
+	// Release the lock: tx2 unblocks, re-reads under READ COMMITTED, now sees
+	// A.parent = B, and its cycle walk from new-parent A reaches moved-agent B.
+	if err := tx1.Commit(ctx); err != nil {
+		t.Fatalf("commit tx1: %v", err)
+	}
+
+	res := <-done
+	sentinelIs(t, res.err, ErrFailedPrecondition, "concurrent cycle")
+
+	// The tree stayed acyclic: A-under-B persisted (tx1), B stayed a root because
+	// tx2's cyclic move was rejected.
+	if got := readParent(t, s, a.ID); got != string(b.ID) {
+		t.Fatalf("a parent = %q, want %q (tx1's move persisted)", got, b.ID)
+	}
+	if got := readParent(t, s, b.ID); got != "" {
+		t.Fatalf("b parent = %q, want empty (B stayed root, cyclic move rejected)", got)
+	}
+}
+
+func TestCreateAgentUnknownParentIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+
+	// A valid owner but a parent id that does not resolve to an agent account:
+	// the parent FK fires and the store maps it to ErrNotFound (distinct from the
+	// owner FK's ErrInvalidArgument). This exercises the store contract directly;
+	// the comms pre-validation makes it unreachable via RPC.
+	_, err := s.CreateAgent(ctx, owner.ID, NewAgent{
+		Handle:        "orphan",
+		DisplayName:   "orphan",
+		ParentAgentID: "no-such-agent",
+	})
+	sentinelIs(t, err, ErrNotFound, "unknown parent")
 }

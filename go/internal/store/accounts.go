@@ -157,9 +157,15 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 		"INSERT INTO agent_accounts (account_id, owner_user_id, home_channel_id, persona, parent_agent_id) VALUES ($1, $2, $3, $4, NULLIF($5, ''))",
 		accountID, string(ownerUserID), channelID, a.Persona, string(a.ParentAgentID),
 	); err != nil {
-		// owner_user_id references user_accounts; an unknown owner is a caller
-		// error, not a store fault.
+		// Both FKs on agent_accounts land here: parent_agent_id (a supplied
+		// parent that does not resolve to an agent) and owner_user_id (an
+		// unknown owner). ConstraintName tells them apart — the parent FK is a
+		// missing referent (ErrNotFound), an unknown owner a caller error
+		// (ErrInvalidArgument), not a store fault.
 		if pgErrIs(err, pgForeignKeyViolation) {
+			if pgConstraintName(err) == "agent_accounts_parent_agent_id_fkey" {
+				return Account{}, fmt.Errorf("%w: parent agent %q", ErrNotFound, a.ParentAgentID)
+			}
 			return Account{}, fmt.Errorf("%w: unknown owner user %q", ErrInvalidArgument, ownerUserID)
 		}
 		return Account{}, fmt.Errorf("store: insert agent_account: %w", err)

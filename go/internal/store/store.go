@@ -302,6 +302,17 @@ func pgErrIs(err error, code string) bool {
 	return false
 }
 
+// pgConstraintName returns the name of the violated constraint when err is a
+// Postgres error, or "" otherwise — so a foreign-key handler can tell which of
+// several FKs on a table fired (the parent-agent FK vs the owner-user FK).
+func pgConstraintName(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.ConstraintName
+	}
+	return ""
+}
+
 // noRows reports whether err is pgx's no-rows sentinel, which a lookup maps to
 // ErrNotFound.
 func noRows(err error) bool {

@@ -13,6 +13,6 @@
 -- owner and no-cycle are validated server-side on every write, not by the
 -- schema — the FK only guarantees the referent exists and is an agent account.
 ALTER TABLE agent_accounts
-    ADD COLUMN parent_agent_id TEXT REFERENCES agent_accounts (account_id) ON DELETE RESTRICT;
+    ADD COLUMN parent_agent_id TEXT CONSTRAINT agent_accounts_parent_agent_id_fkey REFERENCES agent_accounts (account_id) ON DELETE RESTRICT;
 
 CREATE INDEX agent_accounts_parent_idx ON agent_accounts (parent_agent_id);

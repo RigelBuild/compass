@@ -84,6 +84,11 @@ func (c *Comms) CreateAgent(
 	req *connect.Request[compassv1.CreateAgentRequest],
 ) (*connect.Response[compassv1.CreateAgentResponse], error) {
 	owner := c.actorFromContext(ctx)
+	// CreateAgent is a user-caller API: `owner` is the caller's own id, used
+	// directly both as the new agent's owner and as the parent same-owner
+	// comparison key below. This matches the store only for user callers — the
+	// store's ReparentAgent resolves an agent caller to its owner via COALESCE,
+	// but no such resolution is applied here.
 	// A supplied parent is validated before the account is minted (§Server
 	// validation, applied on creation too): it must exist (clause 3 → NotFound)
 	// and belong to the creating caller's owner (clauses 0/1 → PermissionDenied,
