@@ -1,7 +1,7 @@
 //go:build unix
 
-// The SEA-1577 ask-answer wake arm: the fourth rider on the SEA-1569 T3 control
-// dispatch rail (after deliver / steer / the T6 sweep). When a participant
+// The SEA-1577 ask-answer wake arm: another rider on the SEA-1569 T3 control
+// dispatch rail, alongside deliver / steer / the T6 sweep. When a participant
 // answers an agent's Ask (comms.RespondToAsk), the hub resolves the asking
 // agent's live session and pushes an AgentControl.ask_answer op carrying the
 // answers, correlated by ask_id. It satisfies comms.AskAnswerWaker structurally

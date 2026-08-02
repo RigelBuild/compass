@@ -389,7 +389,13 @@ func TestWakeAskAnswerLiveSessionDispatchesAskAnswerOp(t *testing.T) {
 		return nil
 	})
 
-	answers := []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}}
+	// Two answers, the second custom-text-only with an empty ChosenOptionIds, to
+	// pin the "no remap" passthrough at the boundary: the slice reaches the op
+	// byte-for-byte (SEA-1577 forwards req.Msg.GetAnswers() straight through).
+	answers := []*compassv1.AskQuestionAnswer{
+		{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}},
+		{QuestionId: "q2", CustomText: "freeform"},
+	}
 	hub.WakeAskAnswer(context.Background(), testAgentAccount, "ask-1", answers)
 
 	select {
@@ -403,9 +409,16 @@ func TestWakeAskAnswerLiveSessionDispatchesAskAnswerOp(t *testing.T) {
 			t.Fatalf("ask_answer op ask_id = %q, want ask-1", aa.GetAskId())
 		}
 		got := aa.GetAnswers()
-		if len(got) != 1 || got[0].GetQuestionId() != "q1" ||
+		if len(got) != 2 {
+			t.Fatalf("ask_answer op answers len = %d, want 2", len(got))
+		}
+		if got[0].GetQuestionId() != "q1" ||
 			len(got[0].GetChosenOptionIds()) != 1 || got[0].GetChosenOptionIds()[0] != "opt-a" {
-			t.Fatalf("ask_answer op answers = %+v, want [{q1 [opt-a]}]", got)
+			t.Fatalf("ask_answer op answers[0] = %+v, want {q1 [opt-a]}", got[0])
+		}
+		if got[1].GetQuestionId() != "q2" || got[1].GetCustomText() != "freeform" ||
+			len(got[1].GetChosenOptionIds()) != 0 {
+			t.Fatalf("ask_answer op answers[1] = %+v, want {q2 custom_text=freeform, no chosen ids}", got[1])
 		}
 	case <-timeAfter():
 		t.Fatal("WakeAskAnswer pushed nothing to the live stream")
