@@ -35,9 +35,12 @@ var agentCommand = []string{"compass-agent"}
 // process at exec time. The agent reads each as an environment variable
 // (packages/compass-agent/src/cli.ts): HOME locates the provider seed,
 // COMPASS_WORKDIR is the session cwd, COMPASS_MODEL selects the model,
-// COMPASS_PERSONA is the identity overlay appended to the system prompt. Empty
-// Model or Persona is omitted rather than exported blank, so the agent falls
-// back to its SDK default instead of receiving a value it must special-case.
+// COMPASS_PERSONA is the identity overlay appended to the system prompt,
+// COMPASS_RESUME_SESSION_FILE is the absolute in-container path of a
+// server-reconstructed session file the agent loads to resume. Empty Model,
+// Persona, or ResumeSessionFile is omitted rather than exported blank, so the
+// agent falls back to its SDK default (or a fresh session) instead of receiving
+// a value it must special-case.
 type AgentEnv struct {
 	// UID is the agent user the exec runs as. Set explicitly because podman
 	// strips the container's ambient capabilities only when --user is passed:
@@ -55,6 +58,9 @@ type AgentEnv struct {
 	Model string
 	// Persona is the server-authoritative identity overlay, or empty for none.
 	Persona string
+	// ResumeSessionFile is the absolute in-container path of the materialized
+	// resume session file, or empty for a fresh start.
+	ResumeSessionFile string
 }
 
 // execSpec builds the streaming exec that starts the agent: unprivileged, in
@@ -75,6 +81,9 @@ func (e AgentEnv) execSpec() runtime.StreamingExecSpec {
 	}
 	if e.Persona != "" {
 		spec.Env["COMPASS_PERSONA"] = e.Persona
+	}
+	if e.ResumeSessionFile != "" {
+		spec.Env["COMPASS_RESUME_SESSION_FILE"] = e.ResumeSessionFile
 	}
 	return spec
 }

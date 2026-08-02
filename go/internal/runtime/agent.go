@@ -15,6 +15,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"time"
 )
@@ -215,6 +216,28 @@ func (r *AgentRuntime) Teardown(ctx context.Context, handle *AgentHandle) error 
 		r.registry.Deregister(handle.Name())
 	}
 	return nil
+}
+
+// WriteAgentFile materializes a Runner-supplied file into the agent's $HOME as
+// the agent user, creating parent dirs. Two invariants match every sibling
+// materializer in this package (installCredentials, the secrets materializers):
+// the body is fed over stdin, never argv — argv is visible in the container's
+// process list while stdin is not; and the file lands 0600 under umask 077 (the
+// created dir 0700), because a reconstructed session transcript is as sensitive
+// as the aggregate env file. The path components are positional args to a fixed
+// sh script, never interpolated into the script text, so a crafted path cannot
+// inject shell.
+func (r *AgentRuntime) WriteAgentFile(ctx context.Context, id ContainerID, uid uint32, homeDir, relPath, body string) error {
+	script := `set -eu; umask 077; dir=$(dirname "$1"); mkdir -p "$dir"; cat > "$1"; chmod 600 "$1"`
+	spec := NewExecSpec("sh", "-c", script, "sh", filepath.Join(homeDir, relPath)).
+		AsUser(strconv.FormatUint(uint64(uid), 10)).
+		InDir(homeDir).
+		WithStdin(body)
+	out, err := r.runtime.Exec(ctx, id, spec)
+	if err != nil {
+		return atStage("write agent file", err)
+	}
+	return requireSuccess("write agent file", out)
 }
 
 // createAndStart creates then starts the container, cleaning up a created but

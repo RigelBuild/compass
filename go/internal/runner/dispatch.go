@@ -28,8 +28,10 @@ import (
 type SessionHost interface {
 	// Start brings a session online: resolves the container and starts the agent
 	// relay. Returns the live session id. A start for a container already running
-	// a session returns errAlreadyRunning.
-	Start(ctx context.Context, req *compassv1.StartAgentSessionRequest) (sessionID string, err error)
+	// a session returns errAlreadyRunning. resumeBody is the server-reconstructed
+	// session-JSONL body materialized into the container before the agent starts;
+	// empty means a fresh (non-resume) start.
+	Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody string) (sessionID string, err error)
 	// Provision creates the isolated per-agent container for a workstream via the
 	// AgentRuntime façade, returning its stable container_name. Provision and
 	// start are separate: a container can exist idle before a session runs in it.
@@ -173,7 +175,7 @@ func (d *dispatcher) handle(ctx context.Context, cmd *compassv1internal.Sessions
 func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1internal.SessionsResponse) *compassv1internal.SessionsRequest {
 	switch c := cmd.GetCommand().(type) {
 	case *compassv1internal.SessionsResponse_Start:
-		sessionID, err := d.host.Start(ctx, c.Start)
+		sessionID, err := d.host.Start(ctx, c.Start, cmd.GetResumeBody().GetSessionBody())
 		if err != nil {
 			return errorResult(id, err)
 		}
