@@ -246,7 +246,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	hubLog := slog.Default()
 	hub := newRunnerHub(brd, tail, commsSvc, hubLog)
 	svc := newService(cfg.Version, bus, st, hub, brd, tail)
-
+	// SEA-1618 T5: lifecycleService serves RelayLifecycleCall; setter breaks the hub<->service cycle (sinks.go).
+	hub.SetLifecycleCaller(newLifecycleService(st, hub))
 	// The SecretsService is an account-facing sibling of CompassService/CommsService:
 	// it mounts on every account door (socket, dev, network) behind the same bearer +
 	// admin-gate chain, which classifies its three procedures authenticatedOpen — the

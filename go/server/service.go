@@ -239,6 +239,34 @@ func (s *service) ReloadAgentSession(
 	return connect.NewResponse(resp), nil
 }
 
+// RemoveAgentWorkspace tears down a provisioned per-agent container — the
+// operator-door teardown counterpart to ProvisionAgentWorkspace — by relaying to
+// the owning Runner, then releasing the durable placement so the container name
+// is free for a future provision. This is the ADMIN-gated operator door (the
+// AdminGate classifies RemoveAgentWorkspace as adminOnly); the agent-facing
+// despawn reaches teardown through lifecycleService.DespawnAsAccount, not here.
+// Idempotent end to end per the frozen contract (compass.proto): the Runner
+// returns success for an unknown/already-removed container, and
+// DeleteAgentPlacement treats an absent row as success — so a retried Remove
+// succeeds. hub is nil only on a server built with no Runner door, where the RPC
+// is Unavailable rather than a panic.
+func (s *service) RemoveAgentWorkspace(
+	ctx context.Context,
+	req *connect.Request[compassv1.RemoveAgentWorkspaceRequest],
+) (*connect.Response[compassv1.RemoveAgentWorkspaceResponse], error) {
+	if s.hub == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
+	}
+	resp, err := s.hub.Remove(ctx, req.Msg.GetClientRequestId(), req.Msg)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.DeleteAgentPlacement(ctx, req.Msg.GetContainerName()); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("releasing agent placement: %w", err))
+	}
+	return connect.NewResponse(resp), nil
+}
+
 // GetAgentStatus returns the Bridge board's snapshot of agent-session state: one
 // session when session_id is set, else every live session. It reads the
 // Server-side projection, not a live relay to the Runner. A nil board (never the

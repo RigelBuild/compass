@@ -64,6 +64,7 @@ const (
 type placementFixture struct {
 	dsn    string
 	store  *store.Store
+	hub    *runnerhub.Hub
 	client compassv1connect.CompassServiceClient
 	runner *recordingRunner
 	// agentID is a real agent account (with its home channel) that every
@@ -117,6 +118,7 @@ func newPlacementFixtureWith(t *testing.T, withholdStop bool) placementFixture {
 	return placementFixture{
 		dsn:     dsn,
 		store:   st,
+		hub:     hub,
 		client:  newH2CClient(t, newH2CTestServer(t, svc)),
 		runner:  attachFakeRunner(t, st, hub, withholdStop),
 		agentID: agent.ID,
@@ -563,6 +565,12 @@ type recordingRunner struct {
 	// the wedged-but-connected Runner that hangs an unbounded rollback Stop.
 	withholdStop bool
 
+	// failStart, when set, makes the loop answer every Start with a RunnerError
+	// (ALREADY_RUNNING) instead of a session id — the mid-chain failure the
+	// spawn-rollback test drives (SEA-1618 T5). Set under mu before the command
+	// is driven, read under mu in serve, so -race sees a clean handoff.
+	failStart bool
+
 	mu   sync.Mutex
 	seen []*compassv1internal.SessionsResponse
 }
@@ -594,6 +602,21 @@ func (r *recordingRunner) serve(
 		r.record(cmd)
 		if r.withholdStop && cmd.GetStop() != nil {
 			continue // record it, but never answer: the wedged-Runner shape
+		}
+		if cmd.GetStart() != nil && r.failStarted() {
+			// Answer Start with a RunnerError instead of a session id: the
+			// mid-chain spawn failure the rollback test drives.
+			if err := stream.Send(&compassv1internal.SessionsRequest{
+				RequestId: cmd.GetRequestId(),
+				Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
+					Code:    compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING,
+					Message: "start refused (test)",
+				}},
+			}); err != nil {
+				done <- err
+				return
+			}
+			continue
 		}
 		if err := stream.Send(answer(cmd)); err != nil {
 			done <- err
@@ -648,6 +671,35 @@ func (r *recordingRunner) sawStop(sessionID string) bool {
 	return false
 }
 
+// failStarted reports whether the loop should refuse Start (read under mu in
+// serve, so -race sees a clean handoff from setFailStart).
+func (r *recordingRunner) failStarted() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.failStart
+}
+
+// setFailStart flips the Start-refusal mode. Set before the command it should
+// affect is driven.
+func (r *recordingRunner) setFailStart(v bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failStart = v
+}
+
+// sawRemove reports whether the Server pushed a Remove for containerName — the
+// despawn/rollback teardown observed on the wire.
+func (r *recordingRunner) sawRemove(containerName string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.seen {
+		if rm := c.GetRemove(); rm != nil && rm.GetContainerName() == containerName {
+			return true
+		}
+	}
+	return false
+}
+
 // answer builds the correlated result for one command: a fixed container name
 // for Provision, a fixed session id for Start, success for Stop, and an explicit
 // error for anything this suite does not drive, so an unexpected command is a
@@ -667,6 +719,8 @@ func answer(cmd *compassv1internal.SessionsResponse) *compassv1internal.Sessions
 		out.Result = &compassv1internal.SessionsRequest_Status{Status: &compassv1.GetAgentStatusResponse{}}
 	case *compassv1internal.SessionsResponse_Stop:
 		out.Result = &compassv1internal.SessionsRequest_Stop{Stop: &compassv1.StopAgentSessionResponse{}}
+	case *compassv1internal.SessionsResponse_Remove:
+		out.Result = &compassv1internal.SessionsRequest_Remove{Remove: &compassv1.RemoveAgentWorkspaceResponse{}}
 	default:
 		out.Result = &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
 			Code:    compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL,
