@@ -78,9 +78,12 @@ export interface TranscriptTeeOptions {
 	/** Override the escalating retry schedule (tests inject a fast one). */
 	readonly emitBackoffMs?: readonly number[];
 	/** An extra absolute session-file path to index beyond the scanned session dir
-	    (the Runner-materialized resume file; SEA-1570 T8/T2). Indexed so the SDK
-	    wrapper's statSync/readText gate (indexed-session-storage.ts:177-179/205-206)
-	    does not ENOENT a resume file that lives outside `sessionDir`. */
+	    (the Runner-materialized resume file; SEA-1570 T8/T2). Canonicalized with
+	    `path.resolve` and indexed under that resolved key so the SDK wrapper's
+	    lookup gate (statSync ~:177 / readText ~:205 / readTextSlices ~:213 in
+	    indexed-session-storage.ts, all keyed on `setSessionFile`'s
+	    `path.resolve(sessionFile)`, session-manager.ts:969) does not ENOENT a
+	    resume file that lives outside `sessionDir` or is passed non-canonically. */
 	readonly resumeFile?: string;
 }
 
@@ -130,7 +133,14 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 		this.#sink = sink;
 		this.#sessionDir = sessionDir;
 		this.#backoffMs = options?.emitBackoffMs ?? TEE_EMIT_BACKOFF_MS;
-		this.#resumeFile = options?.resumeFile;
+		// Canonicalize once at the trust boundary: the SDK looks the resume file
+		// up under `path.resolve(sessionFile)` (session-manager.ts:969), and the
+		// index is an exact-string Map, so the index key MUST be the resolved
+		// path or a non-canonical-but-absolute env value silently misses the gate.
+		this.#resumeFile =
+			options?.resumeFile !== undefined
+				? path.resolve(options.resumeFile)
+				: undefined;
 	}
 
 	#nextFrame(entryJson: string, checkpoint: boolean): OutboundFrame {

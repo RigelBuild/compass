@@ -28,7 +28,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { SESSION_TITLE_SLOT_BYTES } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import {
 	parseTitleSlotFromContent,
@@ -304,6 +304,37 @@ describe("TranscriptTeeBackend reads", () => {
 
 		const index = [...(await backend.loadIndex())];
 		expect(index.map((e) => e.path)).toEqual([join(dir, "a.jsonl")]);
+	});
+
+	// The SDK looks the resume file up under `path.resolve(sessionFile)`
+	// (session-manager.ts:969 → statSync/readText/readTextSlices keyed on the
+	// RESOLVED path, indexed-session-storage.ts:178/205/215), and the #index is a
+	// plain exact-string Map. "Absolute" is not "canonical": an env value with a
+	// `.`/`..` segment, trailing slash, or doubled slash resolves to a different
+	// string than the raw one. loadIndex must key the entry by the resolved path
+	// so the gate matches. Non-vacuity: raw-string keying → entry path is the
+	// non-canonical string → lookup under resolve() misses → red.
+	test("loadIndex keys an out-of-dir resumeFile by its resolved path", async () => {
+		const dirA = scratch();
+		const dirB = scratch();
+		const sink = recordingSink();
+		const canonical = join(dirB, "r.jsonl");
+		writeFileSync(canonical, "rrrrrr");
+		// A non-canonical but absolute path to the same file, built by string
+		// concat so the embedded `.` segment survives (join/normalize would strip
+		// it). This models an env value that is absolute but not canonical.
+		const nonCanonical = `${dirB}/./r.jsonl`;
+		expect(nonCanonical).not.toBe(canonical);
+		const backend = new TranscriptTeeBackend(sink, dirA, {
+			resumeFile: nonCanonical,
+		});
+
+		const index = [...(await backend.loadIndex())];
+		// The entry must be keyed by the resolved path the SDK will stat/read,
+		// NOT by the raw non-canonical string.
+		expect(resolve(nonCanonical)).toBe(canonical);
+		expect(index.map((e) => e.path)).toContain(canonical);
+		expect(index.map((e) => e.path)).not.toContain(nonCanonical);
 	});
 
 	test("loadIndex is empty for a fresh dir", async () => {
