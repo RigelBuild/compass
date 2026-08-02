@@ -67,6 +67,33 @@ func (c *Consumer) waitSettleDrained(t *testing.T) {
 	}
 }
 
+// waitStartsDrained blocks until the session-start queue is empty, or fails at
+// the deadline. It proves only that a prior start edge was DEQUEUED — drainStarts
+// pops and empties the queue slice under c.mu (settle.go:120-121) BEFORE it runs
+// that edge's sweep (store-read + gate-held re-dispatch, settle.go:123), so the
+// queue reaches len==0 before the sweep completes. It MUST NOT be relied on as a
+// post-sweep-completion barrier: for that, gate on an observable dispatch (e.g.
+// disp.waitForMessage). Sound only where the drained edges sweep nothing.
+func (c *Consumer) waitStartsDrained(t *testing.T) {
+	t.Helper()
+	deadline := time.After(testTimeout)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		c.mu.Lock()
+		empty := len(c.startQueue) == 0
+		c.mu.Unlock()
+		if empty {
+			return
+		}
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatal("start queue never drained")
+		}
+	}
+}
+
 // waitForMessage reports whether messageID was dispatched before the deadline.
 func (d *fakeDispatcher) waitForMessage(t *testing.T, messageID string) bool {
 	t.Helper()

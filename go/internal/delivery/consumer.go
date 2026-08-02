@@ -70,6 +70,14 @@ type settleEvent struct {
 	state     compassv1.AgentSessionState
 }
 
+// startEvent is one queued session-start edge handed from the hub's Start (or
+// re-enroll re-promotion) goroutine (OnSessionStarted) to the consumer's
+// ctx-rooted loop, which sweeps the freshly-live session's owed messages.
+type startEvent struct {
+	sessionID string
+	account   store.AccountID
+}
+
 // Consumer tails the comms bus and fans posted messages out to subscribed live
 // agent sessions. Safe for concurrent use: the pending-deliver registry, the
 // settle queue, and the per-session dispatch gates mutate under mu; the bus loop,
@@ -98,9 +106,14 @@ type Consumer struct {
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel
 	// (coalescing wakeups): the hook appends and signals without blocking Deliver.
 	settleQueue []settleEvent
-	// notify wakes the loop when settleQueue grows. Buffered(1) with a
-	// non-blocking send, so many settles between drains collapse to one wakeup and
-	// the hook never blocks.
+	// startQueue buffers session-start edges the hook enqueues, drained by the
+	// loop under its ctx into the reconnect sweep (SEA-1569 T6). Same shape as
+	// settleQueue: a slice (never lost) plus the shared notify wakeup, so the
+	// hook appends and signals without blocking the hub's Start goroutine.
+	startQueue []startEvent
+	// notify wakes the loop when settleQueue OR startQueue grows. Buffered(1)
+	// with a non-blocking send, so many edges between drains collapse to one
+	// wakeup and the hook never blocks.
 	notify chan struct{}
 	// gates serializes dispatch per RECIPIENT session (design.md:212-225): a
 	// session's live delivers and its reconnect-sweep re-dispatch drain through
@@ -177,6 +190,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 			return nil
 		case <-c.notify:
 			c.drainSettles(ctx)
+			c.drainStarts(ctx)
 		case event, ok := <-sub.Live:
 			if !ok {
 				if sub.Lagged() {

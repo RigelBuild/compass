@@ -144,13 +144,15 @@ func newRunnerHub(brd *board.Projection, tail runnerhub.SessionTailSink, commsSv
 // startDeliveryConsumer builds the SEA-1569 T3 fan-out consumer over the comms
 // bus, wires the consumer<->hub construction cycle (the consumer takes hub as
 // its ControlDispatcher + SessionResolver; the hub takes the consumer as its
-// SettleSink with st as its delivery-cursor store — the post-construction
+// SettleSink AND its SessionStartSink — the reconnect sweep edge (SEA-1569 T6) —
+// with st as its delivery-cursor store, the post-construction
 // setters that break the cycle), and starts its bus-tail goroutine on the serve
 // group rooted on gctx (so it cancels at shutdown; it also ends when the comms
 // bus closes in drainDoors, so shutdown reaches it two ways).
 func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
 	c := delivery.NewConsumer(commsBus, st, hub, hub, log)
 	hub.SetSettleSink(c)
+	hub.SetSessionStartSink(c)
 	hub.SetDeliveryStore(st)
 	g.Go(func() error { return c.Run(gctx) })
 }
