@@ -137,6 +137,7 @@ type stubStreamingRuntime struct {
 	execSpecs []runtime.StreamingExecSpec
 	cli       *runtime.PodmanCLI
 	stopErr   error // when set, engine Stop fails — models a Teardown partial failure
+	created   []runtime.ContainerSpec
 }
 
 func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
@@ -150,8 +151,11 @@ func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
 	return &stubStreamingRuntime{cli: runtime.NewPodmanCLI().WithProgram(prog)}
 }
 
-func (f *stubStreamingRuntime) Create(context.Context, runtime.ContainerSpec) (runtime.ContainerID, error) {
-	f.record("create")
+func (f *stubStreamingRuntime) Create(_ context.Context, spec runtime.ContainerSpec) (runtime.ContainerID, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, "create")
+	f.created = append(f.created, spec)
+	f.mu.Unlock()
 	return runtime.ContainerID("fake-id"), nil
 }
 func (f *stubStreamingRuntime) Start(context.Context, runtime.ContainerID) error {
@@ -202,6 +206,14 @@ func (f *stubStreamingRuntime) callsSnapshot() []string {
 	return append([]string(nil), f.calls...)
 }
 
+// createdSpecs returns a copy of the ContainerSpecs the host has created
+// containers with so far, taken under the lock.
+func (f *stubStreamingRuntime) createdSpecs() []runtime.ContainerSpec {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]runtime.ContainerSpec(nil), f.created...)
+}
+
 // --- capturing PublishEvents server ------------------------------------------
 
 // capturePublish is a RunnerService handler backing newLink's client. Post-C5
@@ -221,6 +233,11 @@ type capturePublish struct {
 	secrets   []*compassv1internal.ResolvedSecret
 	fetchErr  error
 	fetchReqs []*compassv1internal.FetchSecretsRequest
+	// configBundle is the bundle FetchAgentConfig returns (default the empty,
+	// unconfigured-fleet bundle); configErr, when set, is returned instead so a
+	// test can force the config-materialize path to fail.
+	configBundle AgentConfigBundle
+	configErr    error
 }
 
 func newCapturePublish() *capturePublish {
@@ -250,6 +267,44 @@ func (c *capturePublish) FetchSecrets(_ context.Context, req *connect.Request[co
 		return nil, fetchErr
 	}
 	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{Secrets: secrets}), nil
+}
+
+// FetchAgentConfig serves the Runner's config fetch as a server stream: it sends
+// the configured bundle's version frame followed by its tarball as one chunk, or
+// returns configErr before any frame so a test can force the materialize path to
+// fail. The default (zero) bundle streams an empty version frame — the
+// unconfigured-fleet path Materialize accepts with no error.
+func (c *capturePublish) FetchAgentConfig(_ context.Context, _ *connect.Request[compassv1internal.FetchAgentConfigRequest], stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
+	c.mu.Lock()
+	bundle, err := c.configBundle, c.configErr
+	c.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if err := stream.Send(versionFrame(bundle.Version)); err != nil {
+		return err
+	}
+	if len(bundle.Tarball) > 0 {
+		if err := stream.Send(chunkFrame(bundle.Tarball)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendEmptyAgentConfig streams the unconfigured-fleet bundle (a lone empty
+// version frame) — the FetchAgentConfig response the provision-path fixtures
+// that don't exercise config need so Materialize succeeds with an empty mount.
+func sendEmptyAgentConfig(stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
+	return stream.Send(versionFrame(""))
+}
+
+// setConfigErr makes FetchAgentConfig return err instead of a bundle, so a test
+// can force the config-materialize path to fail.
+func (c *capturePublish) setConfigErr(err error) {
+	c.mu.Lock()
+	c.configErr = err
+	c.mu.Unlock()
 }
 
 // streamOpens reports how many PublishEvents streams were opened against this

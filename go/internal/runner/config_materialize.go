@@ -28,6 +28,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"connectrpc.com/connect"
 )
 
 const (
@@ -112,6 +114,22 @@ type ConfigMount struct {
 func (m *ConfigMaterializer) Materialize(ctx context.Context, mcsLabel string) (ConfigMount, error) {
 	bundle, err := m.fetch.FetchAgentConfig(ctx, "")
 	if err != nil {
+		// CodeFailedPrecondition is the Server's "no config surface" signal — no
+		// config store is wired to serve FetchAgentConfig (runnerhub handler
+		// contract). It is deliberately distinct from the CodeUnavailable of a
+		// transient transport fault: the Runner reads it as "no config to inject"
+		// and provisions anyway, exactly as it treats an unconfigured fleet. Any
+		// other error (transport CodeUnavailable, store CodeInternal, a contract
+		// skew) is a genuine fault that must abort provision, so it propagates.
+		if connect.CodeOf(err) == connect.CodeFailedPrecondition {
+			// Logged at Warn so a config-less provision is visible — it is a
+			// degraded posture even when intended, mirroring the secrets path.
+			m.log.WarnContext(ctx, "no config surface; provisioning without materialized config")
+			if rootErr := m.ensureRoot(); rootErr != nil {
+				return ConfigMount{}, rootErr
+			}
+			return ConfigMount{HostPath: m.root, Version: ""}, nil
+		}
 		return ConfigMount{}, fmt.Errorf("fetching agent config: %w", err)
 	}
 

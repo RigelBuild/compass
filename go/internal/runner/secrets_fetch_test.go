@@ -39,6 +39,12 @@ func (f *fakeFetchServer) FetchSecrets(_ context.Context, req *connect.Request[c
 	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{Secrets: f.secrets}), nil
 }
 
+// FetchAgentConfig serves the unconfigured-fleet bundle so the provision path
+// (used by secrets_refresh_test's host fixture) gets past its config materialize.
+func (f *fakeFetchServer) FetchAgentConfig(_ context.Context, _ *connect.Request[compassv1internal.FetchAgentConfigRequest], stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
+	return sendEmptyAgentConfig(stream)
+}
+
 // TestFetchSecretsMapsWireToResolveSurface pins the reverse edge mapping: each
 // wire ResolvedSecret's delivery/kind enums are translated to the secrets-package
 // enums, and value/version/host/provider ride through, so the materializer routes
