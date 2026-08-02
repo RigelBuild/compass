@@ -196,16 +196,23 @@ func (r *AgentRuntime) ExecAsAgent(ctx context.Context, handle *AgentHandle, com
 // Teardown stops and removes an agent container, releasing the workstream's
 // isolation.
 func (r *AgentRuntime) Teardown(ctx context.Context, handle *AgentHandle) error {
-	// Deregister first so the session RPCs stop resolving a container that's
-	// about to be gone (no-op without a registry).
-	if r.registry != nil {
-		r.registry.Deregister(handle.Name())
-	}
 	if err := r.runtime.Stop(ctx, handle.id, stopTimeout); err != nil {
 		return atStage("stop", err)
 	}
 	if err := r.runtime.Remove(ctx, handle.id); err != nil {
 		return atStage("remove", err)
+	}
+	// Deregister LAST — only after the container is stopped and removed. A
+	// Teardown that fails partway leaves the handle resolvable, so the caller's
+	// idempotency gate (agentHost.Remove resolves the handle before tearing
+	// down) re-runs teardown on retry rather than answering a lying success over
+	// a container that leaked. Deregister-first would orphan the container: the
+	// handle would be gone but the engine container still present and now
+	// unreachable. The "stop resolving an about-to-be-gone container" window is
+	// moot under the sequential dispatch that is the only registry resolver.
+	// No-op without a registry.
+	if r.registry != nil {
+		r.registry.Deregister(handle.Name())
 	}
 	return nil
 }

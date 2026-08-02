@@ -341,6 +341,53 @@ func TestRemoveClosesSocketWhenTeardownFails(t *testing.T) {
 	}
 }
 
+// SEA-1635: a Teardown that fails partway (engine Stop errors) must leave the
+// container's registry handle RESOLVABLE, so a Remove retry re-runs Teardown
+// rather than answering a lying success over a leaked container. This pins the
+// deregister-LAST ordering: AgentRuntime.Teardown deregisters only after Stop
+// and Remove both succeed. Under the old deregister-first ordering the first
+// failed Remove would already have dropped the handle, so the retry's
+// registry.Resolve would miss, Teardown would be skipped, and Remove would
+// return nil while the engine container leaked forever — the exact bug this
+// guards. The retry (with Stop healed) both re-resolves and succeeds.
+func TestFailedTeardownLeavesContainerResolvableForRetry(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine, registry := newHostFixture(t, specs)
+	ctx := context.Background()
+
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+
+	// First Remove: engine Stop fails, so Teardown returns partway.
+	engine.stopErr = errors.New("engine stop failed")
+	if err := host.Remove(ctx, name); err == nil {
+		t.Fatal("Remove = nil, want the Teardown error surfaced on a failed stop")
+	}
+	// The handle must still resolve — deregister-last means a failed Stop never
+	// dropped it. Deregister-first would have orphaned the container here.
+	if _, ok := registry.Resolve(name); !ok {
+		t.Fatal("container handle not resolvable after a failed Teardown; a Remove retry would skip teardown and leak the container")
+	}
+
+	// Retry with Stop healed: Teardown re-runs (the handle still resolved),
+	// tears the container down, and only now deregisters.
+	engine.stopErr = nil
+	if err := host.Remove(ctx, name); err != nil {
+		t.Fatalf("Remove retry = %v, want success once the engine recovers", err)
+	}
+	if _, ok := registry.Resolve(name); ok {
+		t.Fatal("container handle still resolvable after a successful Remove; teardown must deregister once Stop+Remove succeed")
+	}
+	// The successful retry actually drove the engine teardown (stop then remove),
+	// proving the retry re-ran Teardown rather than short-circuiting.
+	assertRecorded(t, engine.calls, "remove")
+}
+
 // OQ6 row 5: Status is answered from the Runner's own live session set — a
 // started session appears with its live state, and a stopped one is gone. The
 // Runner is authoritative for live truth. A bug that answered from a stale or
