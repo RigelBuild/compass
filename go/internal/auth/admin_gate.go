@@ -47,27 +47,33 @@ func (authenticatedOpen) isPrivilege() {}
 func classifyProcedure(procedure string) (privilege, bool) {
 	switch procedure {
 	// Privileged CompassService agent-session RPCs + token issuance + container
-	// teardown: admin only. RemoveAgentWorkspace is the operator-door teardown
-	// counterpart to ProvisionAgentWorkspace, admin-gated like it (the
-	// agent-facing despawn reaches the same teardown over the Runner relay with
-	// its own owner-scoped check, never this door).
+	// teardown + fleet config writes: admin only. RemoveAgentWorkspace is the
+	// operator-door teardown counterpart to ProvisionAgentWorkspace, admin-gated
+	// like it (the agent-facing despawn reaches the same teardown over the Runner
+	// relay with its own owner-scoped check, never this door). PutAgentConfig and
+	// DeleteAgentConfig are the operator-scoped fleet config writes (record §520-522).
 	case compassv1connect.CompassServiceProvisionAgentWorkspaceProcedure,
 		compassv1connect.CompassServiceRemoveAgentWorkspaceProcedure,
 		compassv1connect.CompassServiceStartAgentSessionProcedure,
 		compassv1connect.CompassServiceStopAgentSessionProcedure,
 		compassv1connect.CompassServiceReloadAgentSessionProcedure,
 		compassv1connect.CompassServiceGetAgentStatusProcedure,
-		compassv1connect.CompassServiceIssueTokenProcedure:
+		compassv1connect.CompassServiceIssueTokenProcedure,
+		compassv1connect.CompassServicePutAgentConfigProcedure,
+		compassv1connect.CompassServiceDeleteAgentConfigProcedure:
 		return adminOnly{}, true
 
-	// The connect-time probe and the two event streams: open to any authenticated
-	// account. SubscribeAgentSession carries its own per-account authorization in
-	// the handler (session-ownership → home-channel membership), like the other
-	// open streams, so the network-door gate must let its intended non-admin
-	// channel members through to that check.
+	// The connect-time probe, the two event streams, and the value-free config
+	// info view: open to any authenticated account. SubscribeAgentSession carries
+	// its own per-account authorization in the handler (session-ownership →
+	// home-channel membership), like the other open streams, so the network-door
+	// gate must let its intended non-admin channel members through to that check.
+	// GetAgentConfigInfo returns names only, never content (record §525-526), so
+	// it is open like the other read surfaces.
 	case compassv1connect.CompassServiceGetServerInfoProcedure,
 		compassv1connect.CompassServiceSubscribeEventsProcedure,
-		compassv1connect.CompassServiceSubscribeAgentSessionProcedure:
+		compassv1connect.CompassServiceSubscribeAgentSessionProcedure,
+		compassv1connect.CompassServiceGetAgentConfigInfoProcedure:
 		return authenticatedOpen{}, true
 
 	// Every CommsService method: open to any authenticated account (the service

@@ -73,6 +73,15 @@ const (
 	// CompassServiceIssueTokenProcedure is the fully-qualified name of the CompassService's IssueToken
 	// RPC.
 	CompassServiceIssueTokenProcedure = "/compass.v1.CompassService/IssueToken"
+	// CompassServicePutAgentConfigProcedure is the fully-qualified name of the CompassService's
+	// PutAgentConfig RPC.
+	CompassServicePutAgentConfigProcedure = "/compass.v1.CompassService/PutAgentConfig"
+	// CompassServiceGetAgentConfigInfoProcedure is the fully-qualified name of the CompassService's
+	// GetAgentConfigInfo RPC.
+	CompassServiceGetAgentConfigInfoProcedure = "/compass.v1.CompassService/GetAgentConfigInfo"
+	// CompassServiceDeleteAgentConfigProcedure is the fully-qualified name of the CompassService's
+	// DeleteAgentConfig RPC.
+	CompassServiceDeleteAgentConfigProcedure = "/compass.v1.CompassService/DeleteAgentConfig"
 	// SecretsServiceSetSecretProcedure is the fully-qualified name of the SecretsService's SetSecret
 	// RPC.
 	SecretsServiceSetSecretProcedure = "/compass.v1.SecretsService/SetSecret"
@@ -146,6 +155,27 @@ type CompassServiceClient interface {
 	// non-bootstrap account's token (the bootstrap admin token is issued
 	// out-of-band at first start).
 	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
+	// Declare the fleet agent-config bundle: the gzip tarball of skills/,
+	// extensions/, and mcp/ material every agent materializes into its scoped
+	// config dir. Whole-bundle replace (current-only): the new bundle supersedes
+	// the prior one, keyed by nothing but the fleet singleton, and its canonical
+	// content version is returned. Admin-gated operator write on this public door
+	// (like IssueToken); the bundle is validated at the store door (whitelisted
+	// top dirs, no path escapes, decompressed-size + file-count caps, valid mcp
+	// JSON) before a row is written, and a success signals every live Runner to
+	// re-fetch. Credential-free by rule — secrets ride the separate resolve path.
+	PutAgentConfig(context.Context, *connect.Request[v1.PutAgentConfigRequest]) (*connect.Response[v1.PutAgentConfigResponse], error)
+	// Report the current fleet config bundle's version and the NAMES of its
+	// declared members, bucketed by top dir (skills / extensions / mcp) — names
+	// only, never content, mirroring the value-free secrets status view. An
+	// unconfigured fleet is a valid state: the response is empty (empty version,
+	// empty name lists), never an error.
+	GetAgentConfigInfo(context.Context, *connect.Request[v1.GetAgentConfigInfoRequest]) (*connect.Response[v1.GetAgentConfigInfoResponse], error)
+	// Clear the fleet config bundle back to the unconfigured state — the explicit
+	// return-to-empty path. Admin-gated like PutAgentConfig. Idempotent: deleting
+	// when already empty succeeds. On success every live Runner is signalled with
+	// an empty config version so it re-materializes the empty config dir.
+	DeleteAgentConfig(context.Context, *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error)
 }
 
 // NewCompassServiceClient constructs a client for the compass.v1.CompassService service. By
@@ -219,6 +249,24 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("IssueToken")),
 			connect.WithClientOptions(opts...),
 		),
+		putAgentConfig: connect.NewClient[v1.PutAgentConfigRequest, v1.PutAgentConfigResponse](
+			httpClient,
+			baseURL+CompassServicePutAgentConfigProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("PutAgentConfig")),
+			connect.WithClientOptions(opts...),
+		),
+		getAgentConfigInfo: connect.NewClient[v1.GetAgentConfigInfoRequest, v1.GetAgentConfigInfoResponse](
+			httpClient,
+			baseURL+CompassServiceGetAgentConfigInfoProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("GetAgentConfigInfo")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteAgentConfig: connect.NewClient[v1.DeleteAgentConfigRequest, v1.DeleteAgentConfigResponse](
+			httpClient,
+			baseURL+CompassServiceDeleteAgentConfigProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("DeleteAgentConfig")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -234,6 +282,9 @@ type compassServiceClient struct {
 	getAgentStatus          *connect.Client[v1.GetAgentStatusRequest, v1.GetAgentStatusResponse]
 	subscribeAgentSession   *connect.Client[v1.SubscribeAgentSessionRequest, v1.AgentSessionFrame]
 	issueToken              *connect.Client[v1.IssueTokenRequest, v1.IssueTokenResponse]
+	putAgentConfig          *connect.Client[v1.PutAgentConfigRequest, v1.PutAgentConfigResponse]
+	getAgentConfigInfo      *connect.Client[v1.GetAgentConfigInfoRequest, v1.GetAgentConfigInfoResponse]
+	deleteAgentConfig       *connect.Client[v1.DeleteAgentConfigRequest, v1.DeleteAgentConfigResponse]
 }
 
 // GetServerInfo calls compass.v1.CompassService.GetServerInfo.
@@ -284,6 +335,21 @@ func (c *compassServiceClient) SubscribeAgentSession(ctx context.Context, req *c
 // IssueToken calls compass.v1.CompassService.IssueToken.
 func (c *compassServiceClient) IssueToken(ctx context.Context, req *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error) {
 	return c.issueToken.CallUnary(ctx, req)
+}
+
+// PutAgentConfig calls compass.v1.CompassService.PutAgentConfig.
+func (c *compassServiceClient) PutAgentConfig(ctx context.Context, req *connect.Request[v1.PutAgentConfigRequest]) (*connect.Response[v1.PutAgentConfigResponse], error) {
+	return c.putAgentConfig.CallUnary(ctx, req)
+}
+
+// GetAgentConfigInfo calls compass.v1.CompassService.GetAgentConfigInfo.
+func (c *compassServiceClient) GetAgentConfigInfo(ctx context.Context, req *connect.Request[v1.GetAgentConfigInfoRequest]) (*connect.Response[v1.GetAgentConfigInfoResponse], error) {
+	return c.getAgentConfigInfo.CallUnary(ctx, req)
+}
+
+// DeleteAgentConfig calls compass.v1.CompassService.DeleteAgentConfig.
+func (c *compassServiceClient) DeleteAgentConfig(ctx context.Context, req *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error) {
+	return c.deleteAgentConfig.CallUnary(ctx, req)
 }
 
 // CompassServiceHandler is an implementation of the compass.v1.CompassService service.
@@ -348,6 +414,27 @@ type CompassServiceHandler interface {
 	// non-bootstrap account's token (the bootstrap admin token is issued
 	// out-of-band at first start).
 	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
+	// Declare the fleet agent-config bundle: the gzip tarball of skills/,
+	// extensions/, and mcp/ material every agent materializes into its scoped
+	// config dir. Whole-bundle replace (current-only): the new bundle supersedes
+	// the prior one, keyed by nothing but the fleet singleton, and its canonical
+	// content version is returned. Admin-gated operator write on this public door
+	// (like IssueToken); the bundle is validated at the store door (whitelisted
+	// top dirs, no path escapes, decompressed-size + file-count caps, valid mcp
+	// JSON) before a row is written, and a success signals every live Runner to
+	// re-fetch. Credential-free by rule — secrets ride the separate resolve path.
+	PutAgentConfig(context.Context, *connect.Request[v1.PutAgentConfigRequest]) (*connect.Response[v1.PutAgentConfigResponse], error)
+	// Report the current fleet config bundle's version and the NAMES of its
+	// declared members, bucketed by top dir (skills / extensions / mcp) — names
+	// only, never content, mirroring the value-free secrets status view. An
+	// unconfigured fleet is a valid state: the response is empty (empty version,
+	// empty name lists), never an error.
+	GetAgentConfigInfo(context.Context, *connect.Request[v1.GetAgentConfigInfoRequest]) (*connect.Response[v1.GetAgentConfigInfoResponse], error)
+	// Clear the fleet config bundle back to the unconfigured state — the explicit
+	// return-to-empty path. Admin-gated like PutAgentConfig. Idempotent: deleting
+	// when already empty succeeds. On success every live Runner is signalled with
+	// an empty config version so it re-materializes the empty config dir.
+	DeleteAgentConfig(context.Context, *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error)
 }
 
 // NewCompassServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -417,6 +504,24 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("IssueToken")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServicePutAgentConfigHandler := connect.NewUnaryHandler(
+		CompassServicePutAgentConfigProcedure,
+		svc.PutAgentConfig,
+		connect.WithSchema(compassServiceMethods.ByName("PutAgentConfig")),
+		connect.WithHandlerOptions(opts...),
+	)
+	compassServiceGetAgentConfigInfoHandler := connect.NewUnaryHandler(
+		CompassServiceGetAgentConfigInfoProcedure,
+		svc.GetAgentConfigInfo,
+		connect.WithSchema(compassServiceMethods.ByName("GetAgentConfigInfo")),
+		connect.WithHandlerOptions(opts...),
+	)
+	compassServiceDeleteAgentConfigHandler := connect.NewUnaryHandler(
+		CompassServiceDeleteAgentConfigProcedure,
+		svc.DeleteAgentConfig,
+		connect.WithSchema(compassServiceMethods.ByName("DeleteAgentConfig")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/compass.v1.CompassService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case CompassServiceGetServerInfoProcedure:
@@ -439,6 +544,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceSubscribeAgentSessionHandler.ServeHTTP(w, r)
 		case CompassServiceIssueTokenProcedure:
 			compassServiceIssueTokenHandler.ServeHTTP(w, r)
+		case CompassServicePutAgentConfigProcedure:
+			compassServicePutAgentConfigHandler.ServeHTTP(w, r)
+		case CompassServiceGetAgentConfigInfoProcedure:
+			compassServiceGetAgentConfigInfoHandler.ServeHTTP(w, r)
+		case CompassServiceDeleteAgentConfigProcedure:
+			compassServiceDeleteAgentConfigHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -486,6 +597,18 @@ func (UnimplementedCompassServiceHandler) SubscribeAgentSession(context.Context,
 
 func (UnimplementedCompassServiceHandler) IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.IssueToken is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) PutAgentConfig(context.Context, *connect.Request[v1.PutAgentConfigRequest]) (*connect.Response[v1.PutAgentConfigResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.PutAgentConfig is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) GetAgentConfigInfo(context.Context, *connect.Request[v1.GetAgentConfigInfoRequest]) (*connect.Response[v1.GetAgentConfigInfoResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.GetAgentConfigInfo is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) DeleteAgentConfig(context.Context, *connect.Request[v1.DeleteAgentConfigRequest]) (*connect.Response[v1.DeleteAgentConfigResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.DeleteAgentConfig is not implemented"))
 }
 
 // SecretsServiceClient is a client for the compass.v1.SecretsService service.

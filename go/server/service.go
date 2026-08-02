@@ -91,10 +91,25 @@ type service struct {
 	// a server built with no Runner door (SubscribeAgentSession then Unavailable,
 	// like the other Runner-backed RPCs).
 	tail *sessionTail
+	// signaler emits a ConfigVersion signal to every live session after a
+	// successful config write (PutAgentConfig / DeleteAgentConfig), so live
+	// Runners re-fetch the bundle. *runnerhub.Hub satisfies it; the service
+	// depends on the narrow interface (not the concrete hub) so a test drives the
+	// emit path with a recorder, mirroring secretsService's secretsSignaler. nil
+	// on a server built with no Runner door (socket-only) — a write then completes
+	// without a signal, there being no live session to notify.
+	signaler configSignaler
 }
 
 func newService(version string, bus *events.Bus[busPayload], st *store.Store, hub *runnerhub.Hub, brd *board.Projection, tail *sessionTail) *service {
-	return &service{version: version, bus: bus, store: st, hub: hub, board: brd, tail: tail}
+	// A nil *runnerhub.Hub must land in the interface field as a nil interface,
+	// not a non-nil interface wrapping a nil pointer, so the handler's nil check
+	// fires on the socket-only path. Assign through the concrete-nil guard.
+	var sig configSignaler
+	if hub != nil {
+		sig = hub
+	}
+	return &service{version: version, bus: bus, store: st, hub: hub, board: brd, tail: tail, signaler: sig}
 }
 
 // ProvisionAgentWorkspace creates the isolated per-agent container for a
