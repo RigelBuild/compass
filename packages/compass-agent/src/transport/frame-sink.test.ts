@@ -38,8 +38,12 @@ import {
 	PublishFrameResponseSchema,
 } from "../gen/compass/v1/agent_gateway_pb";
 import { createSocketFrameSink, DURABLE_RETRY_BACKOFF_MS } from "./frame-sink";
-import { createUnixSocketTransport } from "./index";
-import { PUBLISH_BATCH_MAX, TRACE_QUEUE_CAP } from "./publish-spine";
+import { createUnixSocketTransport, type RunnerTransport } from "./index";
+import {
+	PUBLISH_BATCH_MAX,
+	type PublishSpine,
+	TRACE_QUEUE_CAP,
+} from "./publish-spine";
 
 // One server + socket per test, torn down in afterEach so a failing case never
 // leaks the socket file or a listening server into the next test.
@@ -527,4 +531,74 @@ test("a deliveryAck rides the Publish PRIORITY lane, not the durable unary", asy
 	// It NEVER touched the durable unary.
 	expect(rec.durableAttempts.length).toBe(0);
 	expect(rec.durableFrames.length).toBe(0);
+});
+
+// A PublishSpine spy with SEPARATE priority/trace recorders, so a test can
+// distinguish the two Publish sub-lanes the socket recorder cannot (it sees both
+// as `publishFrames`). Mirrors the recordingSpine pattern in
+// control/ack-cursor.test.ts:22-37.
+function spySpine(): {
+	spine: PublishSpine;
+	priorityFrames: PublishFrameRequest[];
+	traceFrames: PublishFrameRequest[];
+} {
+	const priorityFrames: PublishFrameRequest[] = [];
+	const traceFrames: PublishFrameRequest[] = [];
+	return {
+		priorityFrames,
+		traceFrames,
+		spine: {
+			enqueueTrace: (f) => traceFrames.push(f),
+			enqueuePriority: (f) => priorityFrames.push(f),
+			droppedTraceCount: () => 0,
+			failedPriorityCount: () => 0,
+			drain: () => Promise.resolve(),
+		},
+	};
+}
+
+// A fake RunnerTransport whose publishSpine() hands back the injected spy. emit()
+// reaches its spine only through transport.publishSpine() (frame-sink.ts:82), so
+// this is the whole seam. The other RPCs are never touched by a deliveryAck
+// emit; they throw so a mistaken call is loud. Member shape grounded against the
+// fake carriers in control-source.test.ts / cli.test.ts:357.
+function spineTransport(spine: PublishSpine): RunnerTransport {
+	return {
+		comms: () => Promise.reject(new Error("comms not used by this test")),
+		publishSpine: () => spine,
+		postConversationFrame: () =>
+			Promise.reject(new Error("postConversationFrame not used by this test")),
+		control: () => {
+			throw new Error("control not used by this test");
+		},
+		close: () => {},
+	};
+}
+
+test("a deliveryAck rides the Publish PRIORITY sub-lane, never the drop-oldest trace queue", () => {
+	// SEA-1310 §8 (re-review MEDIUM): the socket-level test above pins
+	// Publish-not-durable but CANNOT distinguish enqueuePriority from
+	// enqueueTrace (both land on publishFrames). A future edit flipping emit()'s
+	// deliveryAck arm (frame-sink.ts:178) to enqueueTrace would compile and pass
+	// every socket test while silently downgrading acks to the bounded,
+	// drop-oldest, loss-tolerable trace queue — reintroducing the MEDIUM #1
+	// cursor-strand class. This spy-spine test pins the priority-vs-trace choice
+	// the socket recorder is blind to. Non-vacuity: flip the source arm to
+	// enqueueTrace → the priority assertion reddens (0) and the trace assertion
+	// reddens (1).
+	const { spine, priorityFrames, traceFrames } = spySpine();
+	const sink = createSocketFrameSink(spineTransport(spine));
+	sink.emit({
+		kind: "deliveryAck",
+		value: create(DeliveryAckSchema, { messageId: "m-1" }),
+	});
+	// Exactly one priority frame, carrying the deliveryAck oneof case + id.
+	expect(priorityFrames.length).toBe(1);
+	const inner = priorityFrames[0]?.frame?.frame;
+	expect(inner?.case).toBe("deliveryAck");
+	expect(
+		inner?.case === "deliveryAck" ? inner.value.messageId : undefined,
+	).toBe("m-1");
+	// It never touched the loss-tolerable trace lane.
+	expect(traceFrames.length).toBe(0);
 });

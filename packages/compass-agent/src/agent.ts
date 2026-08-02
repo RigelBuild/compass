@@ -194,7 +194,32 @@ export class CompassAgent {
 		// Sweep-redelivery safety: a message already processed this session is
 		// dropped (counted), independent of the control-source's control_seq dedup
 		// (frozen record :811-812).
+		//
+		// Re-ack subtlety (SEA-1310 §8 review MEDIUM): `#processedMessageIds` holds
+		// ids from ENQUEUE time (:205, before injection), not injection time. The
+		// Publish PRIORITY lane an ack rides is never-drop only within its retry
+		// budget (publish-spine.ts:156-158) — a Runner restart or a >~1s socket
+		// outage during the ack flush can still lose an ack for a message that WAS
+		// injected. Its id stays in the processed set (the un-dedup at :297 fires
+		// only on prompt REJECTION = not-injected), so the Server's redelivery sweep
+		// re-arrives here and would strand the delivery cursor forever with no ack.
+		// The frozen record's intent is that "the message_id dedup absorbs" a lost
+		// ack (design.md:405-406) and "a duplicate ack is a no-op" on the Server
+		// (:338) — so we RE-EMIT the ack to recover the cursor. But only when the id
+		// is ALREADY INJECTED, i.e. NOT still pending in `#deliverQueue`: because the
+		// set is populated at enqueue-time, a mid-turn duplicate of a message still
+		// QUEUED (not yet flushed) must NOT be acked — "ack means injected"
+		// (:257-262), and acking a still-queued message then losing it to a
+		// crash-before-flush would strand it the other way. A still-queued duplicate
+		// keeps the current behavior (counted, no re-ack); the queued copy is acked
+		// when the queue flushes.
 		if (this.#processedMessageIds.has(msg.id)) {
+			if (!this.#deliverQueue.some((queued) => queued.id === msg.id)) {
+				const value: DeliveryAck = create(DeliveryAckSchema, {
+					messageId: msg.id,
+				});
+				this.#sink.emit({ kind: "deliveryAck", value });
+			}
 			this.#onUnmapped({
 				kind: "unmapped",
 				eventType: "deliver",

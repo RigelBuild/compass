@@ -650,21 +650,53 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 		await h.close();
 	});
 
-	test("a swept duplicate under a fresh control_seq is dropped by message_id dedup", async () => {
+	test("a duplicate deliver of an ALREADY-INJECTED message re-acks (cursor recovery for a lost priority-lane ack)", async () => {
 		const h = startDeliverAgent();
-		// First deliver flushes immediately (idle).
-		h.agent.deliver(deliverMsg("m1", "once"));
-		expect(h.session.agent.prompts).toHaveLength(1);
-		// The SAME message id, redelivered (a sweep under a fresh control_seq):
-		// deduped by message_id, never injected again.
+		// First deliver flushes immediately (idle) and injects m1.
 		h.agent.deliver(deliverMsg("m1", "once"));
 		expect(h.session.agent.prompts).toHaveLength(1);
 		await tick();
 		expect(ackIds(h.frames)).toEqual(["m1"]);
+		// The SAME id, redelivered after its ack was lost on the "never-drop"
+		// PRIORITY lane (its retry budget exhausted on a >~1s socket outage, or a
+		// Runner restart mid-flush — publish-spine.ts:156-158). m1 is ALREADY
+		// injected (not in #deliverQueue), so the dedup-drop path RE-ACKS to
+		// recover the stranded Server delivery cursor, and does NOT re-inject.
+		h.agent.deliver(deliverMsg("m1", "once"));
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		// A SECOND ack for m1 — the guarded re-ack (frozen design.md:405-406 "the
+		// dedup absorbs the lost ack"; :338 a duplicate ack is a no-op on the
+		// Server). Non-vacuity: revert the re-ack → this goes ["m1"] vs ["m1","m1"].
+		expect(ackIds(h.frames)).toEqual(["m1", "m1"]);
 		const dup = h.unmapped.find(
 			(u) => u.eventType === "deliver" && u.reason.includes("duplicate"),
 		);
 		expect(dup).toBeDefined();
+		await h.close();
+	});
+
+	test("a duplicate deliver of a STILL-QUEUED (not-yet-injected) message does NOT re-ack, and acks once at turn end", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		// Mid-turn: m2 queues (not flushed → not injected → not acked).
+		h.agent.deliver(deliverMsg("m2", "pending"));
+		// Redelivered BEFORE the turn-end flush: m2 is still in #deliverQueue, so
+		// the queue-membership guard holds — no re-ack for a message that is NOT
+		// yet injected ("ack means injected", agent.ts:257-262). Acking it here
+		// then losing it to a crash-before-flush would strand it the other way.
+		h.agent.deliver(deliverMsg("m2", "pending"));
+		await tick();
+		// No ack for the still-queued duplicate. Non-vacuity: drop the
+		// #deliverQueue-membership guard (re-ack unconditionally) → this reddens
+		// (a not-yet-injected message gets acked).
+		expect(ackIds(h.frames)).toEqual([]);
+		// Turn ends → the queued m2 flushes, injects once, and is acked EXACTLY
+		// once.
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(ackIds(h.frames)).toEqual(["m2"]);
 		await h.close();
 	});
 
