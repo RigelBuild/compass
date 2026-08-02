@@ -418,6 +418,45 @@ func TestExecuteSecretsVersionRefreshErrorLoggedAndContinues(t *testing.T) {
 	}
 }
 
+// configVersionCommand builds a signal-only ConfigVersion command. Fleet-wide (no
+// session id), no request id, expects no result on the request half.
+func configVersionCommand(version string) *compassv1internal.SessionsResponse {
+	return &compassv1internal.SessionsResponse{
+		Command: &compassv1internal.SessionsResponse_ConfigVersion{
+			ConfigVersion: &compassv1internal.ConfigVersion{Version: version},
+		},
+	}
+}
+
+// A ConfigVersion signal is RECOGNIZED (not a contract-skew error) and produces
+// NO result frame on the request half — T3 lands the wire surface; the
+// re-materialize+Reload loop is T6. A bug that fell through to the default arm
+// would return an "unrecognized variant" error result, desyncing the Server's
+// request-id correlation with a frame for a signal that has none.
+func TestExecuteConfigVersionRecognizedNoResult(t *testing.T) {
+	host := &fakeSessionHost{}
+	d := newDispatcher(host, discardLoggerRunner())
+	res := d.execute(context.Background(), "", configVersionCommand("v-1"))
+	if res != nil {
+		t.Fatalf("ConfigVersion produced a result frame %+v, want nil (signal-only)", res)
+	}
+}
+
+// A ConfigVersion signal is NOT deduped on request id: like SecretsVersion it
+// bypasses the request-id map (both carry an empty id), so two signals each
+// dispatch. A bug that ran it through the dedup would collapse every config
+// update to one, and a later bundle change would never re-materialize.
+func TestHandleConfigVersionNotDeduped(t *testing.T) {
+	host := &fakeSessionHost{}
+	d := newDispatcher(host, discardLoggerRunner())
+	if r := d.handle(context.Background(), configVersionCommand("v-1")); r != nil {
+		t.Fatalf("first ConfigVersion signal returned a result %+v, want nil", r)
+	}
+	if r := d.handle(context.Background(), configVersionCommand("v-2")); r != nil {
+		t.Fatalf("second ConfigVersion signal returned a result %+v, want nil", r)
+	}
+}
+
 // errWrap wraps an error so the sentinel mapping is proven to use errors.Is
 // (unwrap), not identity — a wrapped errAlreadyRunning must still map to
 // ALREADY_RUNNING.

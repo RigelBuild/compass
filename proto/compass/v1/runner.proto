@@ -140,6 +140,22 @@ service RunnerService {
   // interceptor must never dump resolved values. Additive to the frozen dial-out
   // shape (the Runner still initiates; the Server gains no inbound route).
   rpc FetchSecrets(FetchSecretsRequest) returns (FetchSecretsResponse);
+
+  // FetchAgentConfig (server-streaming, Runner->Server): the Runner fetches the
+  // fleet config bundle to materialize into the agent container at provision
+  // (SEA-1568 T3/T4). Server-streaming so the bundle is never bounded by the
+  // connect/gRPC unary recv cap: the first response frame carries the version,
+  // subsequent frames carry the tarball bytes in chunks. The security caps
+  // (decompressed size, file count) live at unpack (T1's door, re-enforced at
+  // the Runner's ConfigMaterializer), not in the transport. if_version is an
+  // optional reconnect optimization: on a match the Server ends the stream after
+  // the version frame with no chunks (the version-only fetch). The fleet bundle
+  // is unkeyed — no per-account binding — so, like the other RunnerService RPCs,
+  // it is authenticated by the per-Runner token alone (account-subject tokens
+  // rejected). An unconfigured fleet returns a version frame with an empty
+  // version and no chunks, never an error. Additive to the frozen dial-out shape
+  // (the Runner still initiates; the Server gains no inbound route).
+  rpc FetchAgentConfig(FetchAgentConfigRequest) returns (stream FetchAgentConfigResponse);
 }
 
 // Enroll request: the Runner announces its stable identity at connect. The id
@@ -198,16 +214,24 @@ message SessionsResponse {
     // re-fetches via FetchSecrets. Signal-only — never carries values, no result
     // variant on the request stream.
     SecretsVersion secrets_version = 8;
-    // deliver_control (tag 11; tag 9 config_version reserved, 8 secrets_version /
-    // 10 remove / 11 deliver_control landed): the Server relays a control op — for SEA-1569, a message
+    // config_version (tag 9): the Server signals the fleet that the config
+    // bundle changed; the Runner re-fetches via FetchAgentConfig, re-materializes
+    // the new version dir, and Reloads live agents in place (SEA-1568 T3/T6).
+    // Fleet-wide, no per-account key. Signal-only — never carries bytes, and,
+    // like secrets_version, is NOT request_id-correlated and has NO
+    // SessionsRequest result variant: it is a notification, not a command, so the
+    // Runner sends no result frame for it. Sibling to secrets_version (tag 8).
+    ConfigVersion config_version = 9;
+    // deliver_control (tag 11; 8 secrets_version / 9 config_version / 10 remove /
+    // 11 deliver_control landed): the Server relays a control op — for SEA-1569, a message
     // delivery — down to the Runner, which writes it to the session's
     // per-container socket. Carries the op as payload (DispatchControl). No
     // SUCCESS result variant: the delivery receipt rides AgentFrame.delivery_ack
     // (RT-3); a refusal rides the RunnerError result (error = 7), correlated by
     // request_id.
     DispatchControl deliver_control = 11;
-    // remove (tag 10; tags 7 forge_notification / 9 config_version reserved,
-    // 8 secrets_version / 11 deliver_control landed): the Server relays a
+    // remove (tag 10; tag 7 reserved for forge_notification; 8 secrets_version /
+    // 9 config_version / 11 deliver_control landed): the Server relays a
     // container-teardown command (RemoveAgentWorkspace) down to the Runner,
     // reusing the public payload verbatim like the other command variants. Its
     // result rides SessionsRequest.result.remove (tag 8); a refusal rides the
@@ -299,6 +323,38 @@ message SecretsVersion {
   // confirmation oracle for zero benefit. Its only job is "re-fetch now", so it
   // carries no value entropy and is deliberately un-redacted.
   string version = 2;
+}
+
+// FetchAgentConfig request: an optional reconnect optimization. if_version, when
+// set to the version the Runner already holds, lets the Server end the stream
+// after the version frame with no chunks (the version-only fetch); empty means
+// "send the full bundle". The fleet bundle is unkeyed, so no session/container
+// selector rides here — the per-Runner token alone authorizes.
+message FetchAgentConfigRequest {
+  string if_version = 1;
+}
+// FetchAgentConfig response: a stream of frames. The FIRST frame carries the
+// bundle version; every subsequent frame carries a tarball byte chunk. Splitting
+// the bundle across chunk frames keeps its size off the connect/gRPC unary recv
+// cap. On an if_version match the Server sends only the version frame (no
+// chunks); an unconfigured fleet sends a version frame with an empty version and
+// no chunks. The Runner reassembles the chunks in receive order.
+message FetchAgentConfigResponse {
+  oneof frame {
+    // The bundle version (content hash). Always the first frame.
+    string version = 1;
+    // One tarball byte chunk. Reassembled in receive order.
+    bytes chunk = 2;
+  }
+}
+// ConfigVersion: a Server->Runner signal that the fleet config bundle changed.
+// Signal only — carries no bytes; the Runner re-fetches via FetchAgentConfig on
+// it. Fleet-wide, no per-account key. Mirrors SecretsVersion: not
+// request_id-correlated, no result variant.
+message ConfigVersion {
+  // The new bundle version (content hash). An empty version means the fleet was
+  // cleared to no config — the Runner re-fetches and materializes an empty dir.
+  string version = 1;
 }
 
 // An in-band command failure carried in a SessionsRequest result oneof. The
