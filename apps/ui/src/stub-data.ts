@@ -325,6 +325,9 @@ export interface Account {
 	ownerUserId?: string;
 	/** Agent kind: the agent's home DM (RT-2). */
 	homeChannelId?: string;
+	/** Agent kind: the parent agent's account id in the derived tree.
+	 *  Empty/absent = a root. (Record C / DL-095, §T4.) */
+	parentAgentId?: string;
 }
 
 /** The agent's ephemeral lifecycle — SubscribeEvents.AgentSessionStatus.state
@@ -353,21 +356,68 @@ export interface Agent {
 
 // ── Left-sidebar organization ────────────────────────────────────────────
 
-/** A user-defined folder grouping agents; folders nest arbitrarily. */
-export interface Folder {
-	id: string;
-	name: string;
-	/** Accent color (hex) the user picks. */
-	color: string;
-	/** A single-glyph icon the user picks. */
-	icon: string;
-	children: TreeNode[];
+/** A node in the derived left-sidebar agent tree: an agent plus its children,
+ *  nested by parentAgentId. */
+export interface AgentTreeNode {
+	agent: Agent;
+	children: AgentTreeNode[];
 }
 
-/** A node in the left-sidebar tree: a folder or a leaf agent reference. */
-export type TreeNode =
-	| { kind: "folder"; folder: Folder }
-	| { kind: "agent"; agentId: string };
+/** Derive the nested agent tree from parentAgentId. Roots = accounts with
+ *  empty/absent parentAgentId; children nested under their parent. ORDERING:
+ *  roots, and each parent's children, preserve the STABLE INPUT ORDER of the
+ *  `agents` array — depth-first alone is not a total order, so this
+ *  sibling/root tie-break is what makes the derivation deterministic for a
+ *  fixed input (the contract board.ts treeOrder consumes, C-T5). A DANGLING
+ *  parentAgentId (referencing an account not in `agents` — e.g. filtered by
+ *  visibility) is treated as a root: promote the child to top-level rather
+ *  than drop it, so no agent is ever unreachable. A parentAgentId that would
+ *  close a CYCLE (a self-parent, or a link back to a descendant) is likewise
+ *  treated as a root, so the derivation is total against any input and never
+ *  silently drops a cycle member. The server rejects persisted cycles at the
+ *  mutation boundary (compass-agent-trees §T3: same-owner-tree lock + ancestor
+ *  walk), so this client guard is belt-and-suspenders against unresolved or
+ *  inconsistent live data rather than an expected shape. */
+export function agentTree(agents: readonly Agent[]): AgentTreeNode[] {
+	// One node per agent, in input order, indexed by account id.
+	const byId = new Map<string, AgentTreeNode>();
+	for (const agent of agents) {
+		byId.set(agent.account.id, { agent, children: [] });
+	}
+	// Would attaching `id` under `parentId` close a cycle? Walk parentId's
+	// ancestor chain; a back-edge to `id` (incl. a self-parent) means yes. The
+	// visited set bounds the walk so a pre-existing cycle cannot spin it.
+	const wouldCycle = (id: string, parentId: string): boolean => {
+		const seen = new Set<string>();
+		let cursor: string | undefined = parentId;
+		while (cursor) {
+			if (cursor === id) return true;
+			if (seen.has(cursor)) return false;
+			seen.add(cursor);
+			cursor = byId.get(cursor)?.agent.account.parentAgentId;
+		}
+		return false;
+	};
+	// Second pass, still in input order: each node joins its parent's children
+	// (present parent, no cycle) or the roots (empty/absent, dangling, or a
+	// parentAgentId that would close a cycle — promoted, never dropped).
+	const roots: AgentTreeNode[] = [];
+	for (const agent of agents) {
+		const node = byId.get(agent.account.id);
+		if (!node) continue;
+		const parentId = agent.account.parentAgentId;
+		const parent =
+			parentId && !wouldCycle(agent.account.id, parentId)
+				? byId.get(parentId)
+				: undefined;
+		if (parent) {
+			parent.children.push(node);
+		} else {
+			roots.push(node);
+		}
+	}
+	return roots;
+}
 
 // ── Daemon / usage / supervisor ──────────────────────────────────────────
 
@@ -446,6 +496,7 @@ export const STUB_AGENTS: Agent[] = [
 			kind: "agent",
 			ownerUserId: "acc-matt",
 			homeChannelId: "dm-cook",
+			parentAgentId: "acc-supervisor",
 		},
 		lifecycle: "working",
 		role: "worker",
@@ -488,6 +539,7 @@ export const STUB_AGENTS: Agent[] = [
 			kind: "agent",
 			ownerUserId: "acc-matt",
 			homeChannelId: "dm-livingstone",
+			parentAgentId: "acc-supervisor",
 		},
 		lifecycle: "working",
 		role: "worker",
@@ -559,6 +611,7 @@ export const STUB_AGENTS: Agent[] = [
 			kind: "agent",
 			ownerUserId: "acc-matt",
 			homeChannelId: "dm-shackleton",
+			parentAgentId: "acc-erikson",
 		},
 		lifecycle: "done",
 		role: "worker",
@@ -601,6 +654,7 @@ export const STUB_AGENTS: Agent[] = [
 			kind: "agent",
 			ownerUserId: "acc-matt",
 			homeChannelId: "dm-drake",
+			parentAgentId: "acc-erikson",
 		},
 		lifecycle: "idle",
 		role: "worker",
@@ -616,6 +670,7 @@ export const STUB_AGENTS: Agent[] = [
 			kind: "agent",
 			ownerUserId: "acc-matt",
 			homeChannelId: "dm-magellan",
+			parentAgentId: "acc-cousteau",
 		},
 		lifecycle: "working",
 		role: "worker",
@@ -1236,73 +1291,6 @@ export const STUB_ASSIGNED_ISSUES: Issue[] = [
 			url: "https://linear.app/sealed/issue/SEA-1180",
 		},
 	},
-];
-
-// The user-defined left-sidebar organization: nested folders with color + icon,
-// grouping the worker agents. The moat agents are not tree leaves: the
-// supervisor is baked into its own pinned pane, and the warden lives in the
-// right sidebar's fleet tabs (constants.ts RIGHT_SIDEBAR_TAB_BY_ID) — the
-// always-on agent conversations belong there, not in the folder tree.
-export const STUB_TREE: TreeNode[] = [
-	{
-		kind: "folder",
-		folder: {
-			id: "f-compass",
-			name: "Compass",
-			color: "#58a6ff",
-			icon: "◇",
-			children: [
-				{
-					kind: "folder",
-					folder: {
-						id: "f-compass-ui",
-						name: "UI",
-						color: "#79c0ff",
-						icon: "▤",
-						children: [{ kind: "agent", agentId: "acc-cook" }],
-					},
-				},
-				{
-					kind: "folder",
-					folder: {
-						id: "f-compass-runtime",
-						name: "Runtime",
-						color: "#a5d6ff",
-						icon: "⚙",
-						children: [{ kind: "agent", agentId: "acc-livingstone" }],
-					},
-				},
-			],
-		},
-	},
-	{
-		kind: "folder",
-		folder: {
-			id: "f-infra",
-			name: "Infrastructure",
-			color: "#d29922",
-			icon: "☁",
-			children: [
-				{ kind: "agent", agentId: "acc-cousteau" },
-				{ kind: "agent", agentId: "acc-magellan" },
-			],
-		},
-	},
-	{
-		kind: "folder",
-		folder: {
-			id: "f-ci",
-			name: "CI & Build",
-			color: "#3fb950",
-			icon: "⬢",
-			children: [
-				{ kind: "agent", agentId: "acc-erikson" },
-				{ kind: "agent", agentId: "acc-drake" },
-				{ kind: "agent", agentId: "acc-shackleton" },
-			],
-		},
-	},
-	{ kind: "agent", agentId: "acc-ross" },
 ];
 
 export const STUB_USAGE: UsageAccount[] = [

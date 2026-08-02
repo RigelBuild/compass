@@ -268,10 +268,10 @@ export interface AppStore {
 	rightOpen: Accessor<boolean>;
 	toggleRight: () => void;
 
-	// ── Left-sidebar folders ──
-	/** Whether a folder id is collapsed in the tree. */
-	isFolderCollapsed: (folderId: string) => boolean;
-	toggleFolder: (folderId: string) => void;
+	// ── Left-sidebar agent tree ──
+	/** Whether a parent agent's subtree is collapsed in the derived tree. */
+	isAgentCollapsed: (agentId: string) => boolean;
+	toggleAgent: (agentId: string) => void;
 
 	// ── Right sidebar: activity-bar tabs + repos (T6; dock-in-sidebar D1) ──
 	/** The active right-sidebar tab: a fleet conversation (Supervisor / Warden)
@@ -1538,11 +1538,11 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	const toggleLeft = () => setLeftOpen((v) => !v);
 	const toggleRight = () => setRightOpen((v) => !v);
 
-	const isFolderCollapsed = (folderId: string) => collapsed().has(folderId);
-	const toggleFolder = (folderId: string) =>
+	const isAgentCollapsed = (agentId: string) => collapsed().has(agentId);
+	const toggleAgent = (agentId: string) =>
 		setCollapsed((prev) => {
 			const next = new Set(prev);
-			next.has(folderId) ? next.delete(folderId) : next.add(folderId);
+			next.has(agentId) ? next.delete(agentId) : next.add(agentId);
 			return next;
 		});
 
@@ -1595,8 +1595,8 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		toggleLeft,
 		rightOpen,
 		toggleRight,
-		isFolderCollapsed,
-		toggleFolder,
+		isAgentCollapsed,
+		toggleAgent,
 		activeRightTab,
 		setActiveRightTab,
 		agentRepos,
