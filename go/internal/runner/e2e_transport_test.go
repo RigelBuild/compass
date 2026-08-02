@@ -171,7 +171,7 @@ func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name})
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -264,7 +264,7 @@ func TestE2EInFlightCallForceClosedAtTeardown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name})
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}

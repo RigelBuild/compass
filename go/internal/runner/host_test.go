@@ -19,6 +19,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -148,7 +149,7 @@ func TestStartTwiceSameContainerIsAlreadyRunning(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	first, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	first, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("first Start = %v, want success", err)
 	}
@@ -156,7 +157,7 @@ func TestStartTwiceSameContainerIsAlreadyRunning(t *testing.T) {
 		t.Fatal("first Start returned an empty session id")
 	}
 
-	_, err = host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	_, err = host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if !errors.Is(err, errAlreadyRunning) {
 		t.Fatalf("second Start on the same container = %v, want errAlreadyRunning", err)
 	}
@@ -171,7 +172,7 @@ func TestStartTwiceSameContainerIsAlreadyRunning(t *testing.T) {
 func TestStartUnknownContainerIsSessionUnknown(t *testing.T) {
 	specs := &fakeSpecBuilder{spec: liveSpec()}
 	host, _, _ := newHostFixture(t, specs)
-	_, err := host.Start(context.Background(), &compassv1.StartAgentSessionRequest{ContainerName: "never-launched"})
+	_, err := host.Start(context.Background(), &compassv1.StartAgentSessionRequest{ContainerName: "never-launched"}, "")
 	if !errors.Is(err, errSessionUnknown) {
 		t.Fatalf("Start of an unlaunched container = %v, want errSessionUnknown", err)
 	}
@@ -217,7 +218,7 @@ func TestRemoveTearsDownContainerAndRetiresSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -255,7 +256,7 @@ func TestRemoveIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}); err != nil {
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, ""); err != nil {
 		t.Fatalf("Start = %v", err)
 	}
 	if err := host.Remove(ctx, name); err != nil {
@@ -327,7 +328,7 @@ func TestRemoveClosesSocketWhenTeardownFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}); err != nil {
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, ""); err != nil {
 		t.Fatalf("Start = %v", err)
 	}
 	engine.stopErr = errors.New("engine stop failed")
@@ -359,7 +360,7 @@ func TestFailedTeardownLeavesContainerResolvableForRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}); err != nil {
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, ""); err != nil {
 		t.Fatalf("Start = %v", err)
 	}
 
@@ -400,7 +401,7 @@ func TestStatusIsAnsweredFromLiveSet(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -454,7 +455,7 @@ func TestReloadReusesSessionId(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -513,7 +514,7 @@ func TestStartExecsAgentWithTheContainersOwnIdentity(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -550,7 +551,7 @@ func TestStartOmitsModelWhenRunnerHasNoneConfigured(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -578,7 +579,7 @@ func TestReloadRelaunchesWithTheSameAgentEnv(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -622,7 +623,7 @@ func TestReloadWithDeregisteredContainerIsSessionUnknown(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -713,7 +714,7 @@ func TestStartMaterializesSecretsBeforeExec(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -744,7 +745,7 @@ func TestStartFetchesSecretsByContainer(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -777,7 +778,7 @@ func TestStartAgentExecCarriesNoEnvFile(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -805,7 +806,7 @@ func TestStartToleratesNoSecretsSurface(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("Start with no secrets surface = %v, want the agent to start anyway", err)
 	}
@@ -839,7 +840,7 @@ func TestStartFailsClosedOnFetchError(t *testing.T) {
 			if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 				t.Fatalf("Provision = %v", err)
 			}
-			if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}); err == nil {
+			if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, ""); err == nil {
 				t.Fatalf("Start with a %v fetch error = nil, want the Start to fail closed", tc.code)
 			}
 
@@ -848,6 +849,271 @@ func TestStartFailsClosedOnFetchError(t *testing.T) {
 			// fails before StartAgent.
 			if execs := engine.streamingSpecs(); len(execs) != 0 {
 				t.Fatalf("ExecStreaming ran %d times on a fail-closed Start, want 0", len(execs))
+			}
+		})
+	}
+}
+
+// newHostFixtureWithRecordingExec mirrors newHostFixtureWithModel but wires a
+// recordingExecRuntime as the engine, so BOTH the agent-launch ExecStreaming and
+// the one-shot Exec (the resume-write) are captured — the default
+// stubStreamingRuntime.Exec is a recording no-op that keeps no spec, so a resume
+// write would be invisible to an assertion.
+func newHostFixtureWithRecordingExec(t *testing.T, specs SpecBuilder) (SessionHost, *recordingExecRuntime) {
+	t.Helper()
+	engine := newRecordingExecRuntime(t)
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	link := newLink(newRunnerServiceServer(t, newCapturePublish()))
+	var n int
+	newID := func() string { n++; return "sess-" + string(rune('0'+n)) }
+	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
+	host := NewSessionHost(link, rt, registry, engine, specs, cfg, discardLoggerRunner(), newID)
+	return host, engine
+}
+
+// TestStartWithResumeBodyMaterializesSessionFile: a Start carrying a non-empty
+// resume_session_id + body writes that body into the container at
+// $HOME/.compass/resume/<id>.jsonl over a one-shot Exec running as the agent uid,
+// with the body on stdin (never argv), and exports COMPASS_RESUME_SESSION_FILE
+// on the agent launch pointing at that same absolute path. The agent's first
+// read of a resumed session must find the reconstructed file.
+func TestStartWithResumeBodyMaterializesSessionFile(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine := newHostFixtureWithRecordingExec(t, specs)
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	const resumeID = "sess-abc123"
+	const body = "{\"type\":\"user\"}\n{\"type\":\"assistant\"}\n"
+	wantPath := "/home/agent/.compass/resume/" + resumeID + ".jsonl"
+
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1", ResumeSessionId: resumeID}, body); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+
+	// The resume-write one-shot Exec: body on stdin, path as the sh positional
+	// arg, as the agent uid.
+	var write *runtime.ExecSpec
+	for _, spec := range engine.execSnapshot() {
+		if spec.Stdin != nil && *spec.Stdin == body {
+			s := spec
+			write = &s
+			break
+		}
+	}
+	if write == nil {
+		t.Fatal("no resume-write Exec whose Stdin == the resume body ran")
+	}
+	if !slices.Contains(write.Command, wantPath) {
+		t.Fatalf("resume-write Command = %v, want it to carry the path %q as a positional arg", write.Command, wantPath)
+	}
+	if write.Command[0] != "sh" {
+		t.Fatalf("resume-write Command[0] = %q, want the sh script shell", write.Command[0])
+	}
+	// The write must land 0600 under umask 077, matching every sibling $HOME
+	// materializer (a session transcript is as sensitive as the env file).
+	if script := strings.Join(write.Command, " "); !strings.Contains(script, "umask 077") || !strings.Contains(script, "chmod 600") {
+		t.Fatalf("resume-write script = %q, want it to set umask 077 + chmod 600", script)
+	}
+	if write.User == nil || *write.User != "1000" {
+		t.Fatalf("resume-write User = %v, want the agent uid 1000", derefOr(write.User))
+	}
+
+	// The agent launch carries COMPASS_RESUME_SESSION_FILE == the same absolute
+	// path the file was written to.
+	launch := onlyStreamingSpec(t, engine.stubStreamingRuntime)
+	if got := launch.Env["COMPASS_RESUME_SESSION_FILE"]; got != wantPath {
+		t.Fatalf("launch COMPASS_RESUME_SESSION_FILE = %q, want %q", got, wantPath)
+	}
+}
+
+// TestStartWithoutResumeDoesNotMaterializeOrSetEnv: a fresh Start (empty
+// resume_session_id) writes no resume file and exports no
+// COMPASS_RESUME_SESSION_FILE, so a non-resume start never materializes stale
+// state nor points the agent at a file that does not exist.
+func TestStartWithoutResumeDoesNotMaterializeOrSetEnv(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine := newHostFixtureWithRecordingExec(t, specs)
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, ""); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+
+	for _, spec := range engine.execSnapshot() {
+		if spec.Stdin == nil {
+			continue
+		}
+		for _, arg := range spec.Command {
+			if strings.Contains(arg, "/.compass/resume/") {
+				t.Fatalf("a resume-write Exec ran on a fresh start; Command %v", spec.Command)
+			}
+		}
+	}
+	launch := onlyStreamingSpec(t, engine.stubStreamingRuntime)
+	if _, ok := launch.Env["COMPASS_RESUME_SESSION_FILE"]; ok {
+		t.Fatalf("launch env carries COMPASS_RESUME_SESSION_FILE on a fresh start, want it unset")
+	}
+}
+
+// TestStartResumeBodyWithoutIDStartsFresh: a resume body with an EMPTY
+// resume_session_id is a Server-side skew — the id is the sole discriminator, so
+// the body is dropped and the Start proceeds as a fresh (non-resume) launch: no
+// resume-write Exec, no COMPASS_RESUME_SESSION_FILE, and the agent still comes
+// up. This pins the symmetric drop-and-warn path (host.go else-if) so a future
+// change can't silently start materializing off a body without an authorized id.
+func TestStartResumeBodyWithoutIDStartsFresh(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine := newHostFixtureWithRecordingExec(t, specs)
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	// Body set, id empty: the body must be dropped, not materialized.
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "body"); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+
+	for _, spec := range engine.execSnapshot() {
+		if spec.Stdin != nil && *spec.Stdin == "body" {
+			t.Fatalf("a resume-write Exec ran for a body without an id; Command %v", spec.Command)
+		}
+	}
+	launch := onlyStreamingSpec(t, engine.stubStreamingRuntime)
+	if _, ok := launch.Env["COMPASS_RESUME_SESSION_FILE"]; ok {
+		t.Fatalf("launch env carries COMPASS_RESUME_SESSION_FILE for a body without an id, want it unset")
+	}
+}
+
+// TestStartResumeWriteFailureFailsStart: when the resume-write Exec fails, Start
+// fails wrapping the error and never launches the agent — the write runs strictly
+// before StartAgent, so the agent must not come up over a missing/partial resume
+// file.
+func TestStartResumeWriteFailureFailsStart(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine := newHostFixtureWithRecordingExec(t, specs)
+	ctx := context.Background()
+
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	// Fail ONLY the resume-write Exec. The secrets env-file materialize also
+	// runs an Exec in Start (always, even with no secrets) strictly before the
+	// resume write, so a global execErr would trip THAT one first and this test
+	// would pass without ever exercising the resume-write path. Select the
+	// resume write by its stdin — it is the one Exec fed the raw resume body.
+	engine.mu.Lock()
+	engine.execErr = errors.New("write failed inside container")
+	engine.execErrStdin = "body"
+	engine.mu.Unlock()
+	_, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1", ResumeSessionId: "sess-x"}, "body")
+	if err == nil {
+		t.Fatal("Start with a failing resume-write = nil, want the Start to fail closed")
+	}
+	// Pin the failure to the resume stage, not a coincidental earlier Exec: the
+	// error must be the resume-materialize wrap AND carry the injected cause.
+	if !strings.Contains(err.Error(), "materializing resume session file") {
+		t.Fatalf("Start error = %v, want the resume-materialize stage wrap", err)
+	}
+	if !strings.Contains(err.Error(), "write failed inside container") {
+		t.Fatalf("Start error = %v, want it to wrap the write failure", err)
+	}
+	// The resume-write Exec actually ran (stdin == the resume body).
+	sawResumeWrite := false
+	for _, spec := range engine.execSnapshot() {
+		if spec.Stdin != nil && *spec.Stdin == "body" {
+			sawResumeWrite = true
+		}
+	}
+	if !sawResumeWrite {
+		t.Fatal("no resume-write Exec ran; the failure was injected on the wrong stage")
+	}
+	if execs := engine.streamingSpecs(); len(execs) != 0 {
+		t.Fatalf("ExecStreaming ran %d times after a failed resume-write, want 0 (write precedes StartAgent)", len(execs))
+	}
+}
+
+// TestStartRejectsResumeIDTraversal: a resume_session_id that is not a bare path
+// element (a separator, a parent ref) fails the Start closed and writes nothing.
+// The id becomes a filename component in the container, and the Runner is a
+// distinct trust boundary from the authz-gating Server: a crafted id must never
+// redirect the materialize write outside .compass/resume/.
+func TestStartRejectsResumeIDTraversal(t *testing.T) {
+	cases := map[string]string{
+		"parent refs":   "../../etc/cron.d/x",
+		"nested subdir": "sub/dir",
+		"absolute path": "/abs/path",
+		"trailing sep":  "sess/",
+	}
+	for name, id := range cases {
+		t.Run(name, func(t *testing.T) {
+			specs := &fakeSpecBuilder{spec: liveSpec()}
+			host, engine := newHostFixtureWithRecordingExec(t, specs)
+			ctx := context.Background()
+
+			if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+				t.Fatalf("Provision = %v", err)
+			}
+			_, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1", ResumeSessionId: id}, "body")
+			if err == nil {
+				t.Fatalf("Start with resume_session_id %q = nil, want the Start to fail closed", id)
+			}
+			if !strings.Contains(err.Error(), "invalid resume_session_id") {
+				t.Fatalf("Start error = %v, want it to reject the invalid resume_session_id", err)
+			}
+			// Nothing materialized: no resume-write Exec, no agent launch.
+			for _, spec := range engine.execSnapshot() {
+				if spec.Stdin != nil && *spec.Stdin == "body" {
+					t.Fatalf("a resume-write Exec ran for a rejected id %q; Command %v", id, spec.Command)
+				}
+			}
+			if execs := engine.streamingSpecs(); len(execs) != 0 {
+				t.Fatalf("ExecStreaming ran %d times for a rejected id %q, want 0", len(execs), id)
+			}
+		})
+	}
+}
+
+// TestStartResumeIDDotStaysInResumeDir: a bare "." or ".." passes the
+// element-shape guard (each equals its own filepath.Base and has no separator)
+// and is safe ONLY because the ".jsonl" suffix turns it into an inert in-dir
+// filename. This pins that the materialized path still resolves directly inside
+// .compass/resume/ — a future change to the suffix or the guard that reintroduced
+// a "." / ".." traversal would redden here.
+func TestStartResumeIDDotStaysInResumeDir(t *testing.T) {
+	for _, id := range []string{".", ".."} {
+		t.Run(id, func(t *testing.T) {
+			specs := &fakeSpecBuilder{spec: liveSpec()}
+			host, engine := newHostFixtureWithRecordingExec(t, specs)
+			ctx := context.Background()
+
+			if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+				t.Fatalf("Provision = %v", err)
+			}
+			if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1", ResumeSessionId: id}, "body"); err != nil {
+				t.Fatalf("Start with resume_session_id %q = %v, want it to succeed (suffix neutralizes the dot)", id, err)
+			}
+			var write *runtime.ExecSpec
+			for _, spec := range engine.execSnapshot() {
+				if spec.Stdin != nil && *spec.Stdin == "body" {
+					s := spec
+					write = &s
+					break
+				}
+			}
+			if write == nil {
+				t.Fatalf("no resume-write Exec ran for id %q", id)
+			}
+			wantPath := "/home/agent/.compass/resume/" + id + ".jsonl"
+			if !slices.Contains(write.Command, wantPath) {
+				t.Fatalf("resume-write Command = %v, want the path %q inside .compass/resume/", write.Command, wantPath)
 			}
 		})
 	}

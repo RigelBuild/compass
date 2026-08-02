@@ -66,7 +66,7 @@ func TestRefreshSecretsMaterializesForBoundSession(t *testing.T) {
 	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
-	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"})
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")
 	if err != nil {
 		t.Fatalf("Start = %v", err)
 	}
@@ -104,6 +104,8 @@ func TestRefreshSecretsMaterializesForBoundSession(t *testing.T) {
 type recordingExecRuntime struct {
 	*stubStreamingRuntime
 	execSpecsOneShot []runtime.ExecSpec
+	execErr          error  // when set, the one-shot Exec fails after recording the spec
+	execErrStdin     string // when set alongside execErr, fail ONLY the exec whose stdin equals it (selects one stage)
 }
 
 func newRecordingExecRuntime(t *testing.T) *recordingExecRuntime {
@@ -114,8 +116,17 @@ func newRecordingExecRuntime(t *testing.T) *recordingExecRuntime {
 func (r *recordingExecRuntime) Exec(_ context.Context, _ runtime.ContainerID, spec runtime.ExecSpec) (runtime.ExecOutput, error) {
 	r.mu.Lock()
 	r.execSpecsOneShot = append(r.execSpecsOneShot, spec)
+	err := r.execErr
+	// When execErrStdin is set, fail only the exec that feeds exactly that body
+	// over stdin — this selects a single materialize stage (e.g. the resume
+	// write, whose stdin is the raw resume body) instead of every one-shot Exec.
+	if err != nil && r.execErrStdin != "" {
+		if spec.Stdin == nil || *spec.Stdin != r.execErrStdin {
+			err = nil
+		}
+	}
 	r.mu.Unlock()
-	return runtime.ExecOutput{}, nil
+	return runtime.ExecOutput{}, err
 }
 
 func (r *recordingExecRuntime) execSnapshot() []runtime.ExecSpec {

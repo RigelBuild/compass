@@ -14,6 +14,7 @@ import (
 	"maps"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 
 	"connectrpc.com/connect"
@@ -187,7 +188,7 @@ func (h *agentHost) Close(ctx context.Context) {
 // it. A container already hosting a live session returns errAlreadyRunning (a
 // genuine double start; the dispatcher's request-id dedup handles idempotent
 // retries before this is reached).
-func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionRequest) (string, error) {
+func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody string) (string, error) {
 	name := req.GetContainerName()
 	handle, ok := h.registry.Resolve(name)
 	if !ok {
@@ -250,7 +251,52 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 		return "", fmt.Errorf("fetching secrets before agent start for container %q: %w", name, err)
 	}
 
-	stream, err := h.link.StartAgent(ctx, sessionID, handle.ID(), h.engine, h.agentEnv(handle), h.log)
+	// On an authorized resume, materialize the server-reconstructed session
+	// file into the container BEFORE exec'ing the agent, so the agent's first
+	// read finds it (SEA-1570 T8). The absolute in-container path is exported to
+	// the agent as COMPASS_RESUME_SESSION_FILE. A fresh (non-resume) start does
+	// nothing here. The discriminator is a non-empty resume_session_id.
+	env := h.agentEnv(handle)
+	if id := req.GetResumeSessionId(); id != "" {
+		// The resume_session_id becomes a filename component below. The Server
+		// authz-gates it and never sends a locator, but the Runner is a distinct
+		// trust boundary: reject anything that is not a bare path element so a
+		// crafted id can never redirect the write outside .compass/resume/.
+		if id != filepath.Base(id) || strings.ContainsRune(id, filepath.Separator) {
+			return "", fmt.Errorf("materializing resume session file for container %q: invalid resume_session_id", name)
+		}
+		resumeDir := filepath.Join(".compass", "resume")
+		relPath := filepath.Join(resumeDir, id+".jsonl")
+		// Belt-and-suspenders on the guard above: a bare "." or ".." passes the
+		// element check and is neutralized only by the ".jsonl" suffix, so assert
+		// the cleaned path still lands directly in the resume dir. This pins that
+		// invariant explicitly rather than leaving it emergent from the suffix.
+		if filepath.Dir(relPath) != resumeDir {
+			return "", fmt.Errorf("materializing resume session file for container %q: invalid resume_session_id", name)
+		}
+		if resumeBody == "" {
+			// An authorized id with no reconstructed body is a Server-side skew
+			// (authz passed but reconstruction produced nothing); materialize the
+			// empty file per the id-is-the-discriminator contract, but surface it
+			// so the reconstruction bug is visible here, not only as an agent that
+			// resumes from an empty transcript.
+			h.log.Warn("resume_session_id set with empty body; materializing empty resume file", "container", name, "resume_session_id", id)
+		}
+		h.log.Info("materializing resume session file", "container", name, "resume_session_id", id)
+		if err := h.runtime.WriteAgentFile(ctx, handle.ID(), handle.WorkspaceUID(), handle.HomeDir(), relPath, resumeBody); err != nil {
+			return "", fmt.Errorf("materializing resume session file for container %q: %w", name, err)
+		}
+		env.ResumeSessionFile = filepath.Join(handle.HomeDir(), relPath)
+	} else if resumeBody != "" {
+		// The inverse skew: a Server sent a reconstructed body with no
+		// resume_session_id. The id is the sole discriminator, so this start is
+		// treated as fresh and the body is dropped — surface it so the skew is
+		// visible symmetrically with the empty-body warning above, rather than an
+		// agent silently starting without the transcript the Server tried to send.
+		h.log.Warn("resume body supplied without resume_session_id; dropping", "container", name)
+	}
+
+	stream, err := h.link.StartAgent(ctx, sessionID, handle.ID(), h.engine, env, h.log)
 	if err != nil {
 		return "", err
 	}

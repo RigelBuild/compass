@@ -57,7 +57,7 @@ type fakeSessionHost struct {
 	refreshErr    error
 }
 
-func (f *fakeSessionHost) Start(_ context.Context, _ *compassv1.StartAgentSessionRequest) (string, error) {
+func (f *fakeSessionHost) Start(_ context.Context, _ *compassv1.StartAgentSessionRequest, _ string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.startCalls++
