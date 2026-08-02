@@ -86,8 +86,9 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 
 // PutAgentConfig validates a fleet config bundle at the store door and, if it
 // passes, upserts it as the single current bundle (SEA-1624 T1). It returns the
-// bundle's canonical content version (canonicalConfigVersion): the sha256 over
-// the DECOMPRESSED, metadata-zeroed (path, bytes) content, so tar member
+// bundle's canonical content version (the content hash computed by
+// validateAndHashConfigBundle): the sha256 over the DECOMPRESSED,
+// metadata-zeroed (path, bytes) content, so tar member
 // ordering, mtimes/uid/gid, and gzip framing never perturb it — a re-put of
 // byte-identical CONTENT yields the same version and replaces the row in place
 // (current-only retention via the singleton PK upsert).
@@ -112,7 +113,7 @@ func (s *Store) PutAgentConfig(ctx context.Context, actor AccountID, bundle []by
 		`INSERT INTO agent_config_bundle (singleton, version, bundle)
 		 VALUES (TRUE, $1, $2)
 		 ON CONFLICT (singleton)
-		 DO UPDATE SET version = EXCLUDED.version, bundle = EXCLUDED.bundle, created_at = now()`,
+		 DO UPDATE SET version = EXCLUDED.version, bundle = EXCLUDED.bundle, updated_at = now()`,
 		version, bundle,
 	); err != nil {
 		return "", fmt.Errorf("store: put agent config: %w", err)
@@ -168,6 +169,9 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 	}
 	var members []member
 	fileCount := 0
+	// seen tracks regular-member names to reject duplicates at the door (M1);
+	// see the dedup comment in the loop for why version-stability requires it.
+	seen := make(map[string]bool)
 
 	tr := tar.NewReader(&cappedReader{r: gz})
 	for {
@@ -198,11 +202,40 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 			return "", err
 		}
 
-		if !hdr.FileInfo().Mode().IsRegular() {
-			// A directory (or other non-escape typeflag) contributes no content
-			// and no host file; its path has already passed the escape +
-			// whitelist checks in configMemberParts, which is all that matters.
+		// The member typeflag must be exactly a regular file or a directory —
+		// an explicit ALLOWLIST, not a catch-all skip. A directory contributes
+		// no content and no host file (its path already passed the escape +
+		// whitelist checks above), so it is skipped. Every other typeflag
+		// (char/block device, FIFO, contiguous, and any future flag) is
+		// REJECTED: such a member would ride into the verbatim-persisted bundle
+		// bytes yet contribute nothing to the version hash, so two bundles with
+		// identical regular files but a differing device member would share a
+		// version while differing on disk (M2).
+		if hdr.Typeflag == tar.TypeDir {
 			continue
+		}
+		if !hdr.FileInfo().Mode().IsRegular() {
+			return "", fmt.Errorf("%w: bundle member %q has unsupported typeflag %d (only regular files and directories are allowed)", ErrInvalidArgument, hdr.Name, hdr.Typeflag)
+		}
+
+		// Reject duplicate regular-member names at the door (M1). Tar permits
+		// duplicate entries, so two regular members at the same path with
+		// different content would leave two equal-keyed members whose relative
+		// order an unstable sort cannot normalize — the same logical bundle
+		// re-packed in a different tar order could then hash to a different
+		// version. Rejecting duplicates closes that ambiguity and keeps every
+		// sort key unique. Only regular files are tracked: directories feed no
+		// content/hash and persist no host file, so a duplicate dir is harmless.
+		if seen[hdr.Name] {
+			return "", fmt.Errorf("%w: bundle contains duplicate member %q", ErrInvalidArgument, hdr.Name)
+		}
+		seen[hdr.Name] = true
+
+		// Count-before-read (L1): enforce the file-count cap before reading the
+		// member body, so the (maxFileCount+1)th body is never read into memory.
+		fileCount++
+		if fileCount > maxFileCount {
+			return "", fmt.Errorf("%w: bundle exceeds file-count cap of %d files", ErrInvalidArgument, maxFileCount)
 		}
 
 		content, err := validateRegularMember(parts, tr)
@@ -212,14 +245,11 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 			}
 			return "", err
 		}
-
-		fileCount++
-		if fileCount > maxFileCount {
-			return "", fmt.Errorf("%w: bundle exceeds file-count cap of %d files", ErrInvalidArgument, maxFileCount)
-		}
 		members = append(members, member{name: hdr.Name, content: content})
 	}
 
+	// Sort by name. Duplicate regular names are rejected above, so keys are
+	// unique and this ordering is total — sort stability is moot.
 	sort.Slice(members, func(i, j int) bool { return members[i].name < members[j].name })
 
 	h := sha256.New()

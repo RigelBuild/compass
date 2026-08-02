@@ -135,6 +135,22 @@ func TestValidateConfigBundleRejects(t *testing.T) {
 			name:    "mcp non-json extension",
 			entries: []tarEntry{{name: "mcp/thing.txt", content: "{}"}},
 		},
+		{
+			name:    "mcp nested path",
+			entries: []tarEntry{{name: "mcp/sub/a.json", content: "{}"}},
+		},
+		{
+			name:    "mcp extra segment after .json",
+			entries: []tarEntry{{name: "mcp/a.json/b", content: "{}"}},
+		},
+		{
+			name:    "mcp empty base name",
+			entries: []tarEntry{{name: "mcp/.json", content: "{}"}},
+		},
+		{
+			name:    "mcp uppercase extension",
+			entries: []tarEntry{{name: "mcp/thing.JSON", content: "{}"}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -256,6 +272,61 @@ func TestCanonicalVersionDiffersOnName(t *testing.T) {
 	}
 	if va == vb {
 		t.Fatal("length-prefixed framing failed: name/content shift collided")
+	}
+}
+
+// TestValidateConfigBundleRejectsDuplicateMember defends version-stability
+// (M1): tar permits duplicate entries, so two regular members at the SAME path
+// with DIFFERENT content leave two equal-keyed members whose relative order an
+// unstable sort cannot normalize — the same logical bundle re-packed in a
+// different tar order could hash to a different version. The door rejects the
+// duplicate outright, which both closes that ambiguity and keeps every sort key
+// unique.
+func TestValidateConfigBundleRejectsDuplicateMember(t *testing.T) {
+	b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+		tarEntry{name: "skills/a/f", content: "one"},
+		tarEntry{name: "skills/a/f", content: "two"},
+	)
+	_, err := validateAndHashConfigBundle(b)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("want ErrInvalidArgument for duplicate member, got %v", err)
+	}
+}
+
+// TestValidateConfigBundleRejectsDeviceTypeflag defends version-coverage (M2):
+// a non-regular/non-dir typeflag (here a character device) passes the path
+// check and contributes nothing to the version hash, yet the store persists the
+// original bundle bytes verbatim — so it would ride into the stored row while
+// the version excludes it. The door's explicit allowlist rejects it.
+func TestValidateConfigBundleRejectsDeviceTypeflag(t *testing.T) {
+	b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+		tarEntry{name: "skills/a/dev", typeflag: tar.TypeChar},
+	)
+	_, err := validateAndHashConfigBundle(b)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("want ErrInvalidArgument for device typeflag, got %v", err)
+	}
+}
+
+// TestValidateConfigBundleEmpty proves a zero-member bundle is accepted with a
+// non-empty, stable version — the framing hashes the (empty) member set, so two
+// empty bundles hash identically.
+func TestValidateConfigBundleEmpty(t *testing.T) {
+	a := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0))
+	va, err := validateAndHashConfigBundle(a)
+	if err != nil {
+		t.Fatalf("empty bundle rejected: %v", err)
+	}
+	if va == "" {
+		t.Fatal("empty bundle produced empty version")
+	}
+	b := buildBundle(t, gzip.BestCompression, time.Unix(9999, 0))
+	vb, err := validateAndHashConfigBundle(b)
+	if err != nil {
+		t.Fatalf("empty bundle (repack): %v", err)
+	}
+	if va != vb {
+		t.Fatalf("empty bundle version unstable: %s vs %s", va, vb)
 	}
 }
 

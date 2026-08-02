@@ -18,7 +18,7 @@
 --     named FUTURE seam (a versions table), not a gap here.
 --   * version IS the content hash — not a monotonic counter. It is the canonical
 --     sha256 over the bundle's DECOMPRESSED, metadata-zeroed (path, bytes)
---     content (see agent_config.go canonicalConfigVersion): tar member ordering,
+--     content (see agent_config.go validateAndHashConfigBundle): tar member ordering,
 --     mtimes/uid/gid, and gzip framing never perturb it, so a re-put of
 --     byte-identical CONTENT yields a stable version and agents can skip a
 --     redundant re-materialize by comparing versions.
@@ -39,5 +39,8 @@ CREATE TABLE agent_config_bundle (
     -- dirs, no path escapes, size/count caps, valid mcp JSON) before it can
     -- reach this row. BYTEA: this is the Postgres store (see 0002_secrets).
     bundle     BYTEA NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    -- created_at: first-creation time, STABLE across re-puts (the upsert never
+    -- touches it). updated_at is refreshed on every put (see PutAgentConfig).
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
