@@ -34,6 +34,9 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
 import {
 	AgentSessionState,
 	create,
+	type DeliveryAck,
+	DeliveryAckSchema,
+	type Message,
 	type SessionFrame,
 	SessionFrameSchema,
 } from "./compassv1";
@@ -77,6 +80,28 @@ export class CompassAgent {
 	// are applied as replay (context), and live prompt/steer are refused until
 	// `#replayComplete` — a belt-and-suspenders on the frozen replay barrier.
 	#replayComplete = false;
+	// SEA-1310 §8 — RT-3 turn-end delivery (DELIVER arm). A delivered channel
+	// message is coalesced to a turn-end prompt: mid-turn delivers queue and flush
+	// as ONE prompt when the turn settles; an idle deliver starts a turn at once.
+	//
+	// `#turnActive` — true between a turn-start edge (agent_start/turn_start/
+	// message_start) and `agent_end`, tracked off the same session event stream
+	// the mapper reads. The flush trigger is the `agent_end` edge: it is safe to
+	// call `session.agent.prompt` synchronously there because AgentSession defers
+	// forwarding `agent_end` to its subscribers until in-flight prompts unwind
+	// (agent-session.ts:3799-3802) AND the inner Agent clears `isStreaming` in the
+	// `agent_end` case of its own loop before emitting (agent.ts:1254) — so by the
+	// time this listener sees the edge the inner `prompt` guard (agent.ts:985,
+	// reads `#state.isStreaming`) is already open, no AgentBusyError. No deferral,
+	// no timer: the flush is synchronous and deterministic under test.
+	#turnActive = false;
+	// The coalescing queue: messages delivered mid-turn, drained into one prompt
+	// at the next flush.
+	#deliverQueue: Message[] = [];
+	// Session-lifetime dedup set keyed on `Message.id`. A sweep redelivery under a
+	// fresh control_seq (independent of the control-source's seq dedup) is dropped
+	// here so a message is injected at most once (frozen record :811-812).
+	readonly #processedMessageIds = new Set<string>();
 
 	constructor(opts: CompassAgentOptions) {
 		this.#session = opts.session;
@@ -101,6 +126,11 @@ export class CompassAgent {
 	// re-throws (error).
 	async run(): Promise<void> {
 		const unsubscribe = this.#session.subscribe((event) => {
+			// Turn-tracking (SEA-1310 §8): an ADDITIONAL read of the same event,
+			// beside the mapper fan-out below — never disturbing it. A turn-start
+			// edge marks the session active; `agent_end` settles it and flushes any
+			// coalesced delivers into one turn-end prompt.
+			this.#trackTurn(event.type);
 			for (const out of this.#mapper.map(event)) {
 				if (out.kind === "unmapped") {
 					this.#onUnmapped(out);
@@ -138,6 +168,104 @@ export class CompassAgent {
 	#emitStatus(state: AgentSessionState): void {
 		const value: SessionFrame = create(SessionFrameSchema, { state });
 		this.#sink.emit({ kind: "session", value });
+	}
+
+	// SEA-1310 §8 — deliver a channel message into the live session (RT-3). The
+	// entry the immediate handle calls when a `DeliverControl.message` decodes.
+	// The replay barrier is enforced UPSTREAM at the control source (a
+	// pre-ReplayComplete immediate op is refused-and-counted before it reaches
+	// this handle, control-source.ts), so this method does not re-check it.
+	deliver(msg: Message): void {
+		// A message with no id cannot be acked or deduped — fail-visible, never a
+		// silent drop (and never injected, since there would be no receipt for it).
+		if (msg.id === "") {
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "deliver",
+				reason: "deliver missing Message.id — cannot ack or dedup",
+			});
+			return;
+		}
+		// Sweep-redelivery safety: a message already processed this session is
+		// dropped (counted), independent of the control-source's control_seq dedup
+		// (frozen record :811-812).
+		if (this.#processedMessageIds.has(msg.id)) {
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "deliver",
+				reason: "duplicate deliver — message_id already processed",
+			});
+			return;
+		}
+		this.#processedMessageIds.add(msg.id);
+		this.#deliverQueue.push(msg);
+		// Idle deliver starts a turn immediately (frozen :799/:810); a mid-turn
+		// deliver waits for the `agent_end` flush.
+		if (!this.#turnActive) this.#flushDelivers();
+	}
+
+	// Steer arm (SEA-1310) — parked. SteerControl is still an empty shell on the
+	// wire (no `message` field), so the control source never dispatches a steer
+	// payload through the immediate handle; this entry exists so the handle's
+	// `steer` forward has a target and the interface is faithful. When a later
+	// ticket populates SteerControl, this is where the mid-turn steer lands.
+	steer(msg: Message): void {
+		this.#onUnmapped({
+			kind: "unmapped",
+			eventType: "steer",
+			reason:
+				"channel-borne steer staged — SteerControl payload not yet on the wire",
+		});
+		void msg;
+	}
+
+	// Track a session turn edge (SEA-1310 §8). A turn-start edge marks the session
+	// active; `agent_end` settles it and flushes the coalesced deliver queue as
+	// one turn-end prompt. See the `#turnActive` field comment for why the flush
+	// is safe synchronously on the `agent_end` edge.
+	#trackTurn(eventType: string): void {
+		switch (eventType) {
+			case "agent_start":
+			case "turn_start":
+			case "message_start":
+				this.#turnActive = true;
+				return;
+			case "agent_end":
+				this.#turnActive = false;
+				this.#flushDelivers();
+				return;
+		}
+	}
+
+	// Flush the coalesced deliver queue: drain it, format the batch into ONE
+	// prompt, issue that single prompt, and emit one delivery ack per injected
+	// message. The ack means "injected into the agent", NOT "the resulting turn
+	// finished" (frozen :800): it is emitted at the point the prompt is issued,
+	// never gated behind the prompt's completion — so a crash mid-turn does not
+	// lose the receipt for a message that WAS injected. The prompt promise is not
+	// awaited (the flush runs from a sync listener); a rejection is surfaced
+	// through #onUnmapped, never left as an unhandled rejection.
+	#flushDelivers(): void {
+		if (this.#deliverQueue.length === 0) return;
+		const batch = this.#deliverQueue;
+		this.#deliverQueue = [];
+		const input = formatDeliversForPrompt(batch);
+		// Emit the acks at INJECTION time (synchronously), before/independent of
+		// the prompt resolving.
+		for (const msg of batch) {
+			const value: DeliveryAck = create(DeliveryAckSchema, {
+				messageId: msg.id,
+			});
+			this.#sink.emit({ kind: "deliveryAck", value });
+		}
+		this.#turnActive = true;
+		void this.#session.agent.prompt(input).catch((err) => {
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "deliver:prompt",
+				reason: String(err),
+			});
+		});
 	}
 
 	// Apply one decoded control frame. Discriminated on the frozen AgentControl
@@ -265,4 +393,23 @@ export class CompassAgent {
 		}
 		return merged ?? tools;
 	}
+}
+
+// Coalesce a batch of delivered channel messages into ONE prompt input string
+// (SEA-1310 §8). Pure + exported so it is unit-testable. Each message's `text`-
+// case blocks are concatenated (ask-case blocks are ignored — deliver carries
+// channel text; asks are a separate surface), and the batch is joined so the
+// order is stable and each message's text is greppable in the result. A blank
+// text (a message with no text blocks) still contributes its slot so the join
+// is a faithful 1:1 with the batch.
+export function formatDeliversForPrompt(batch: readonly Message[]): string {
+	return batch
+		.map((msg) =>
+			msg.blocks
+				.flatMap((block) =>
+					block.block.case === "text" ? [block.block.value] : [],
+				)
+				.join("\n"),
+		)
+		.join("\n\n");
 }

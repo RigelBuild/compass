@@ -32,11 +32,17 @@ import {
 import {
 	AgentControlSchema,
 	type ControlAck,
+	DeliverControlSchema,
 	PromptControlSchema,
 	ReplayCompleteSchema,
 	SteerControlSchema,
 	type AgentControl as WireAgentControl,
 } from "../gen/compass/v1/agent_pb";
+import {
+	type Message,
+	MessageBlockSchema,
+	MessageSchema,
+} from "../gen/compass/v1/comms_pb";
 import type { UnmappedEvent } from "../mapping";
 import {
 	CONTROL_RECONNECT_NO_PROGRESS_MAX,
@@ -142,6 +148,24 @@ function steerOp(seq: bigint): WireAgentControl {
 	return create(AgentControlSchema, {
 		controlSeq: seq,
 		control: { case: "steer", value: create(SteerControlSchema, {}) },
+	});
+}
+
+// A populated deliver op: a DeliverControl carrying a comms Message with an id
+// and one text block (SEA-1310 §8 — the wire is no longer an empty shell).
+function deliverOp(seq: bigint, id: string, text: string): WireAgentControl {
+	const message: Message = create(MessageSchema, {
+		id,
+		blocks: [
+			create(MessageBlockSchema, { block: { case: "text", value: text } }),
+		],
+	});
+	return create(AgentControlSchema, {
+		controlSeq: seq,
+		control: {
+			case: "deliver",
+			value: create(DeliverControlSchema, { message }),
+		},
 	});
 }
 
@@ -309,6 +333,39 @@ test("an empty-shell steer is counted-unmapped, not yielded, and immediate.* is 
 	// It IS surfaced as a counted unmapped op (staged, not dropped).
 	const steerUnmapped = unmapped.find((u) => u.eventType === "control:steer");
 	expect(steerUnmapped?.reason).toContain("payload staged");
+});
+
+test("a populated deliver decodes its Message and dispatches it through immediate.deliver (SEA-1310 §8)", async () => {
+	// Non-vacuity: if decodeImmediatePayload still returned undefined for a
+	// deliver, delivers would be empty and the op counted "payload staged" → red;
+	// if the deliver were yielded on the iterable instead of dispatched
+	// immediately, ops would carry it → red.
+	const rec = emptyRecorder();
+	const socketPath = await serve(rec, {
+		control: async function* () {
+			yield replayCompleteOp(1n);
+			yield deliverOp(2n, "msg-abc", "channel text");
+			yield promptOp(3n, "after");
+		},
+	});
+	const unmapped: UnmappedEvent[] = [];
+	const { immediate, delivers } = recordingImmediate();
+	const source = createSocketControlSource(
+		createUnixSocketTransport(socketPath),
+		immediate,
+		{ onUnmapped: (u) => unmapped.push(u) },
+	);
+	const ops = await collect(source);
+	// The deliver is dispatched immediately, never yielded on the iterable.
+	expect(ops.map((o) => o.kind)).toEqual(["replayComplete", "prompt"]);
+	// The decoded comms Message (id intact) reached immediate.deliver.
+	expect(delivers).toHaveLength(1);
+	expect((delivers[0] as Message).id).toBe("msg-abc");
+	// A populated deliver is NOT counted "payload staged" — it decoded fine.
+	const staged = unmapped.find(
+		(u) => u.eventType === "control:deliver" && u.reason.includes("staged"),
+	);
+	expect(staged).toBeUndefined();
 });
 
 test("a pre-ReplayComplete immediate op is refused by the barrier and counted (invariant 1)", async () => {

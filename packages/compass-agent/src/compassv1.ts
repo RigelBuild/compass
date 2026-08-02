@@ -52,6 +52,11 @@ export {
 	ControlAckSchema,
 	type DeliverControl,
 	DeliverControlSchema,
+	// The agent's per-message delivery receipt (SEA-1569), an AgentFrame oneof
+	// variant riding the Publish spine — correlates to the delivered message by
+	// id. Emitted by the CompassAgent at injection time (SEA-1310 §8 deliver arm).
+	type DeliveryAck,
+	DeliveryAckSchema,
 	type PromptControl,
 	PromptControlSchema,
 	type ReplayComplete,

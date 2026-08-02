@@ -13,13 +13,17 @@ import { describe, expect, test } from "bun:test";
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type {
 	AgentSession,
+	AgentSessionEvent,
 	AgentSessionEventListener,
 } from "@oh-my-pi/pi-coding-agent";
-import { CompassAgent } from "./agent";
+import { CompassAgent, formatDeliversForPrompt } from "./agent";
 import {
 	AgentSessionState,
 	AskQuestionAnswerSchema,
 	create,
+	type Message,
+	MessageBlockSchema,
+	MessageSchema,
 } from "./compassv1";
 import type { AgentControl, ControlSource } from "./control";
 import type { OutboundFrame } from "./frame";
@@ -489,5 +493,186 @@ describe("CompassAgent — terminal status distinguishes failure from clean stop
 			f.kind === "session" ? [f.value.state] : [],
 		);
 		expect(states.at(-1)).toBe(AgentSessionState.STOPPED);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// SEA-1310 §8 — RT-3 turn-end delivery (DELIVER arm).
+//
+// deliver() rides the immediate handle (not the control script), so these tests
+// construct CompassAgent directly and call `agent.deliver(msg)`, driving turn
+// edges through the recorded `session.listener`. run() is started (not awaited)
+// so the subscribe listener is registered; a held-open control source keeps the
+// run loop parked until the test closes it, so nothing races the assertions.
+
+// A comms Message fixture: id + a single text block. The id is load-bearing
+// (dedup + ack key); the text is what the coalesced prompt must contain.
+function deliverMsg(id: string, text: string): Message {
+	return create(MessageSchema, {
+		id,
+		blocks: [
+			create(MessageBlockSchema, { block: { case: "text", value: text } }),
+		],
+	});
+}
+
+// Start a CompassAgent with the recording harness and a held-open control
+// source, so `run()` registers the turn-tracking listener but never terminates
+// on its own. Returns the agent, the captured frames/unmapped, a `drive` to
+// push session turn edges, and a `close` that ends the run loop cleanly.
+function startDeliverAgent(natives: AgentTool[] = []) {
+	const session = recordingSession(natives);
+	const frames: OutboundFrame[] = [];
+	const unmapped: UnmappedEvent[] = [];
+	let releaseControl!: () => void;
+	const controlClosed = new Promise<void>((resolve) => {
+		releaseControl = resolve;
+	});
+	// A held-open control source: it yields NO ops and resolves (ends the
+	// iterable) only when `close()` releases it, so run() registers the turn
+	// listener but the control loop parks until the test is done. Expressed as an
+	// async iterator whose `next()` resolves once (to done) after the release —
+	// no `yield`, mirroring `dropsImmediately` in control-source.test.ts.
+	const control: ControlSource = {
+		[Symbol.asyncIterator]() {
+			return {
+				async next(): Promise<IteratorResult<AgentControl>> {
+					await controlClosed;
+					return { done: true, value: undefined };
+				},
+			};
+		},
+	};
+	const agent = new CompassAgent({
+		session: session as unknown as AgentSession,
+		sink: {
+			emit: (f) => {
+				frames.push(f);
+			},
+			emitDurable: (f) => {
+				frames.push(f);
+				return Promise.resolve();
+			},
+		},
+		control,
+		onUnmapped: (u) => unmapped.push(u),
+	});
+	const done = agent.run();
+	const drive = (event: AgentSessionEvent): void => {
+		session.listener?.(event);
+	};
+	const close = async (): Promise<void> => {
+		releaseControl();
+		await done;
+	};
+	return { agent, session, frames, unmapped, drive, close };
+}
+
+// The delivery-ack frames captured, in order, with their message ids.
+function ackIds(frames: OutboundFrame[]): string[] {
+	return frames.flatMap((f) =>
+		f.kind === "deliveryAck" ? [f.value.messageId] : [],
+	);
+}
+
+describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", () => {
+	test("mid-turn delivers coalesce into ONE turn-end prompt", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("m1", "hello one"));
+		h.agent.deliver(deliverMsg("m2", "hello two"));
+		// No prompt while the turn is active — the deliveries are queued.
+		expect(h.session.agent.prompts).toEqual([]);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// Exactly one prompt, coalescing both messages' text.
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("hello one");
+		expect(h.session.agent.prompts[0]).toContain("hello two");
+		await h.close();
+	});
+
+	test("an idle deliver starts a turn immediately", async () => {
+		const h = startDeliverAgent();
+		// No active turn: the deliver flushes at once.
+		h.agent.deliver(deliverMsg("m1", "urgent"));
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("urgent");
+		await h.close();
+	});
+
+	test("one ack per injected message, carrying its message_id", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("m1", "one"));
+		h.agent.deliver(deliverMsg("m2", "two"));
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// Two acks, one per injected message, in delivery order.
+		expect(ackIds(h.frames)).toEqual(["m1", "m2"]);
+		await h.close();
+	});
+
+	test("a swept duplicate under a fresh control_seq is dropped by message_id dedup", async () => {
+		const h = startDeliverAgent();
+		// First deliver flushes immediately (idle).
+		h.agent.deliver(deliverMsg("m1", "once"));
+		expect(h.session.agent.prompts).toHaveLength(1);
+		// The SAME message id, redelivered (a sweep under a fresh control_seq):
+		// deduped by message_id, never injected again.
+		h.agent.deliver(deliverMsg("m1", "once"));
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		const dup = h.unmapped.find(
+			(u) => u.eventType === "deliver" && u.reason.includes("duplicate"),
+		);
+		expect(dup).toBeDefined();
+		await h.close();
+	});
+
+	test("a crash between enqueue and injection re-receives on reconnect (no ack was emitted)", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		// Enqueued while the turn is active — NOT flushed, so NOT injected.
+		h.agent.deliver(deliverMsg("m1", "pending"));
+		// No prompt and, crucially, NO ack yet: the ack is emitted at injection,
+		// so an unflushed message leaves no receipt and the Server redelivers it.
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(ackIds(h.frames)).toEqual([]);
+		await h.close();
+	});
+
+	test("a deliver with empty Message.id is counted-unmapped, with no ack and no injection", async () => {
+		const h = startDeliverAgent();
+		h.agent.deliver(deliverMsg("", "no id"));
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(ackIds(h.frames)).toEqual([]);
+		const missing = h.unmapped.find(
+			(u) => u.eventType === "deliver" && u.reason.includes("missing"),
+		);
+		expect(missing).toBeDefined();
+		await h.close();
+	});
+});
+
+describe("formatDeliversForPrompt — coalescing format (SEA-1310 §8)", () => {
+	test("renders each message's text, in order, into one stable string", () => {
+		const batch = [deliverMsg("m1", "first"), deliverMsg("m2", "second")];
+		const out = formatDeliversForPrompt(batch);
+		expect(out).toContain("first");
+		expect(out).toContain("second");
+		// Order is preserved: first appears before second.
+		expect(out.indexOf("first")).toBeLessThan(out.indexOf("second"));
+	});
+
+	test("concatenates multiple text blocks and ignores ask blocks", () => {
+		const msg = create(MessageSchema, {
+			id: "m1",
+			blocks: [
+				create(MessageBlockSchema, { block: { case: "text", value: "alpha" } }),
+				create(MessageBlockSchema, { block: { case: "text", value: "beta" } }),
+			],
+		});
+		const out = formatDeliversForPrompt([msg]);
+		expect(out).toContain("alpha");
+		expect(out).toContain("beta");
 	});
 });
