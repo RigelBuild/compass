@@ -255,6 +255,57 @@ describe("TranscriptTeeBackend reads", () => {
 		expect(index.map((e) => e.size)).toEqual([2, 4]);
 	});
 
+	// loadIndex ALSO indexes an explicit out-of-dir resumeFile (SEA-1570 T2,
+	// Option B): the Runner-materialized resume file lives outside sessionDir, so
+	// the SDK wrapper would ENOENT it unless the scan surfaces it. Non-vacuity: a
+	// backend that only scanned the dir would omit the B file → red.
+	test("loadIndex includes an out-of-dir resumeFile passed via options", async () => {
+		const dirA = scratch();
+		const dirB = scratch();
+		const sink = recordingSink();
+		writeFileSync(join(dirA, "a.jsonl"), "aa");
+		const resumeFile = join(dirB, "r.jsonl");
+		writeFileSync(resumeFile, "rrrrrr");
+		const backend = new TranscriptTeeBackend(sink, dirA, { resumeFile });
+
+		const index = [...(await backend.loadIndex())].sort((l, r) =>
+			l.path.localeCompare(r.path),
+		);
+		const resumeEntry = index.find((e) => e.path === resumeFile);
+		expect(resumeEntry).toBeDefined();
+		expect(resumeEntry?.size).toBe(6);
+		expect(resumeEntry?.mtimeMs).toBeGreaterThan(0);
+		expect(index.map((e) => e.path)).toContain(join(dirA, "a.jsonl"));
+	});
+
+	// Dedup: a resumeFile that happens to live inside sessionDir is already
+	// surfaced by the dir scan, so it must appear exactly once. Non-vacuity: a
+	// naive unconditional push → two entries → red.
+	test("loadIndex does not double-list a resumeFile already in the session dir", async () => {
+		const dir = scratch();
+		const sink = recordingSink();
+		const resumeFile = join(dir, "r.jsonl");
+		writeFileSync(resumeFile, "rr");
+		const backend = new TranscriptTeeBackend(sink, dir, { resumeFile });
+
+		const index = [...(await backend.loadIndex())];
+		expect(index.filter((e) => e.path === resumeFile)).toHaveLength(1);
+	});
+
+	// A resumeFile that does not exist yet (a valid fresh start) is skipped, not
+	// thrown: loadIndex returns the dir entries with no phantom entry. Non-vacuity:
+	// an unguarded stat throws → red.
+	test("loadIndex tolerates a missing resumeFile (ENOENT -> skipped)", async () => {
+		const dir = scratch();
+		const sink = recordingSink();
+		writeFileSync(join(dir, "a.jsonl"), "aa");
+		const resumeFile = join(scratch(), "nonexistent.jsonl");
+		const backend = new TranscriptTeeBackend(sink, dir, { resumeFile });
+
+		const index = [...(await backend.loadIndex())];
+		expect(index.map((e) => e.path)).toEqual([join(dir, "a.jsonl")]);
+	});
+
 	test("loadIndex is empty for a fresh dir", async () => {
 		const dir = scratch();
 		const sink = recordingSink();

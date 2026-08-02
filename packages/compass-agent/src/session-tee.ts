@@ -16,6 +16,9 @@
 //     for resume, since `setSessionFile` reads the resume file back through the
 //     wrapper (session-manager.ts:973-974) and the wrapper throws ENOENT for
 //     un-indexed paths, so the Runner-materialized file must appear in the scan.
+//     loadIndex therefore ALSO indexes an explicit `resumeFile` (options,
+//     SEA-1570 T2 Option B) by its exact absolute path, so a resume file that
+//     lives OUTSIDE `sessionDir` is discoverable and need not live under it.
 //   - the rest (`updateSessionTitle`/`truncate`/`move`/`remove`) → local-only
 //     (titles are a Server-side rendering concern; nothing durable depends on
 //     them). Safe because no SDK write path invokes `truncate`/`move`/`remove`
@@ -74,6 +77,11 @@ export const TEE_EMIT_BACKOFF_MS: readonly number[] = [100, 500, 2000, 5000];
 export interface TranscriptTeeOptions {
 	/** Override the escalating retry schedule (tests inject a fast one). */
 	readonly emitBackoffMs?: readonly number[];
+	/** An extra absolute session-file path to index beyond the scanned session dir
+	    (the Runner-materialized resume file; SEA-1570 T8/T2). Indexed so the SDK
+	    wrapper's statSync/readText gate (indexed-session-storage.ts:177-179/205-206)
+	    does not ENOENT a resume file that lives outside `sessionDir`. */
+	readonly resumeFile?: string;
 }
 
 function enoent(p: string): NodeJS.ErrnoException {
@@ -112,6 +120,7 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 	// (mirrors the SDK's #diskFailure fatal-by-design latch, session-manager.ts:674).
 	#fatalError: Error | undefined;
 	readonly #backoffMs: readonly number[];
+	readonly #resumeFile: string | undefined;
 
 	constructor(
 		sink: FrameSink,
@@ -121,6 +130,7 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 		this.#sink = sink;
 		this.#sessionDir = sessionDir;
 		this.#backoffMs = options?.emitBackoffMs ?? TEE_EMIT_BACKOFF_MS;
+		this.#resumeFile = options?.resumeFile;
 	}
 
 	#nextFrame(entryJson: string, checkpoint: boolean): OutboundFrame {
@@ -206,8 +216,8 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 		try {
 			names = await fs.readdir(this.#sessionDir);
 		} catch (err) {
-			if (isEnoent(err)) return [];
-			throw err;
+			if (isEnoent(err)) names = [];
+			else throw err;
 		}
 		const out: SessionStorageIndexEntry[] = [];
 		for (const name of names) {
@@ -220,6 +230,25 @@ export class TranscriptTeeBackend implements SessionStorageBackend {
 			} catch (err) {
 				if (isEnoent(err)) continue;
 				throw err;
+			}
+		}
+		// SEA-1570 T2 (Option B): also index the explicit Runner-materialized
+		// resume file, which lives OUTSIDE the scanned session dir. Dedup by exact
+		// path (a resume file that happens to live in sessionDir is already
+		// listed). A not-yet-materialized resume file (ENOENT) is a valid fresh
+		// start → skip silently.
+		if (this.#resumeFile && !out.some((e) => e.path === this.#resumeFile)) {
+			try {
+				const stat = await fs.stat(this.#resumeFile);
+				if (stat.isFile()) {
+					out.push({
+						path: this.#resumeFile,
+						size: stat.size,
+						mtimeMs: stat.mtimeMs,
+					});
+				}
+			} catch (err) {
+				if (!isEnoent(err)) throw err;
 			}
 		}
 		return out;

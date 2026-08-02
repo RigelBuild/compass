@@ -957,6 +957,48 @@ describe("main", () => {
 		expect(texts).toContain("resumed turn");
 	});
 
+	// The real Option-B shape (SEA-1570 T2): the Runner materializes the resume
+	// file at an absolute path OUTSIDE the SDK default session dir. On the unfixed
+	// code loadIndex scans only sessionDir → the file is un-indexed → setSessionFile's
+	// statSync gate ENOENTs → silent fresh session → entriesAtCreate empty → RED.
+	// After the fix (resumeFile threaded into the tee backend and indexed at
+	// initialize()) → GREEN. This is the exact silent-degradation this task prevents.
+	test("resumes a COMPASS_RESUME_SESSION_FILE that lives OUTSIDE the session dir", async () => {
+		const session = fakeSession();
+		// A scratch dir that is NOT the SDK default session dir for this cwd —
+		// mirrors the Runner's $HOME/.compass/resume/<id>.jsonl (Option B, T2).
+		const resumeDir = mkdtempSync(join(tmpdir(), "compass-resume-"));
+		const resumeFile = join(resumeDir, "r.jsonl");
+		writeFileSync(resumeFile, sessionFixture([userLine("resumed turn")]));
+
+		let entriesAtCreate: unknown[] | undefined;
+		await main(
+			{ HOME: process.env.HOME, COMPASS_RESUME_SESSION_FILE: resumeFile },
+			{
+				createSession: (options) => {
+					entriesAtCreate = (
+						options.sessionManager as SessionManager
+					).getEntries();
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		rmSync(resumeDir, { recursive: true, force: true });
+		// The resume file lived outside sessionDir yet its turn is loaded — the
+		// out-of-dir indexing worked. Non-vacuity: un-indexed → empty → red.
+		const texts = (entriesAtCreate ?? [])
+			.filter((e): e is { type: "message"; message: { content: string } } => {
+				const entry = e as { type?: string };
+				return entry.type === "message";
+			})
+			.map((e) => e.message.content);
+		expect(texts).toContain("resumed turn");
+	});
+
 	// The storage drain is in the same `finally` as the sink drain, so it runs on
 	// the ERROR path too — a crashed session must still flush its queued append
 	// tee-sends before teardown. This pins that main awaits storage.drain() even
