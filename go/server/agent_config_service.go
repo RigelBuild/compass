@@ -77,6 +77,10 @@ func (s *service) GetAgentConfigInfo(
 		if errors.Is(err, store.ErrNotFound) {
 			return connect.NewResponse(&compassv1.GetAgentConfigInfoResponse{}), nil
 		}
+		// Unreachable-by-construction for a Put-validated bundle: the Info walk
+		// (configBundleMemberNames) applies a strict SUBSET of the Put door's
+		// validation (validateAndHashConfigBundle), so a bundle already stored via
+		// Put can never fail it. Kept as defense-in-depth, not a reachable path.
 		if errors.Is(err, store.ErrInvalidArgument) {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}

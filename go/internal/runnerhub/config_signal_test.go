@@ -37,9 +37,10 @@ func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
 		t.Fatalf("SignalConfigVersion = %v, want nil", err)
 	}
 	pushed := configVersionsPushed(t, rec)
-	// One signal per live session.
-	if len(pushed) != 2 {
-		t.Fatalf("pushed %d ConfigVersion frames, want 2 (one per live session)", len(pushed))
+	// One fleet-wide frame per stream, regardless of how many sessions are live —
+	// ConfigVersion carries no session_id (record §527-528, §563).
+	if len(pushed) != 1 {
+		t.Fatalf("pushed %d ConfigVersion frames, want 1 (one fleet-wide frame per stream regardless of live session count)", len(pushed))
 	}
 	for _, cv := range pushed {
 		if cv.GetVersion() != version {

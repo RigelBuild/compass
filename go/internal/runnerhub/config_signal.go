@@ -14,10 +14,10 @@ import (
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 )
 
-// SignalConfigVersion pushes a ConfigVersion signal carrying the given bundle
-// version to every live session bound in the hub. The whole fleet shares one
-// current bundle, so any config write changes it for all live sessions; each is
-// signalled to re-fetch.
+// SignalConfigVersion pushes ONE ConfigVersion frame per attached Runner stream,
+// carrying the given bundle version. The signal is fleet-wide — it carries no
+// per-account/session key (record §563) — so a single push on the stream
+// notifies the whole fleet to re-fetch. Single-Runner MVP: one router = one push.
 //
 // SEMANTIC DIFFERENCE from SignalSecretsVersion: the config version is NOT a
 // freshly-minted opaque counter — it is the STORE's canonical content version
@@ -44,23 +44,24 @@ func (h *Hub) SignalConfigVersion(version string) error {
 	if router == nil {
 		return nil
 	}
-	// Single-Runner MVP: every live session pushes through the same router/stream
-	// (hub.go), so a push failure is stream-wide — the unpushed remainder would
-	// fail identically, making this early return total by construction, not a
-	// partial best-effort. A future multi-Runner change giving sessions distinct
-	// routers MUST switch this to accumulate-and-continue (errors.Join) so it does
-	// not silently under-notify — the same posture as SignalSecretsVersion.
-	for range sessionIDs {
-		cmd := &compassv1internal.SessionsResponse{
-			Command: &compassv1internal.SessionsResponse_ConfigVersion{
-				ConfigVersion: &compassv1internal.ConfigVersion{
-					Version: version,
-				},
-			},
-		}
-		if err := router.router.push(cmd); err != nil {
-			return err
-		}
+	if len(sessionIDs) == 0 {
+		return nil
 	}
-	return nil
+	// ConfigVersion is fleet-wide (record §527-528, §563), so ONE push per distinct
+	// attached router carries it to the whole fleet on that stream; single-Runner
+	// MVP = one router = one push. The len(sessionIDs) == 0 gate above keeps a
+	// Runner with no live sessions a clean no-op (nothing to reload; it reconciles
+	// via the version-only fetch on next Sessions (re)establishment, record
+	// §677-685). A future multi-Runner change giving sessions distinct routers MUST
+	// push once PER DISTINCT ROUTER and accumulate-and-continue (errors.Join)
+	// across routers so a wedged stream does not silently under-notify the rest of
+	// the fleet — the per-ROUTER analogue of SignalSecretsVersion's per-session loop.
+	cmd := &compassv1internal.SessionsResponse{
+		Command: &compassv1internal.SessionsResponse_ConfigVersion{
+			ConfigVersion: &compassv1internal.ConfigVersion{
+				Version: version,
+			},
+		},
+	}
+	return router.router.push(cmd)
 }
