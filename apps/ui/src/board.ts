@@ -8,7 +8,8 @@
 // and the @compass/client stream later.
 
 import { BOARD_LANES } from "./constants";
-import type { Agent, Issue, IssueState } from "./stub-data";
+import type { Agent, AgentTreeNode, Issue, IssueState } from "./stub-data";
+import { agentTree } from "./stub-data";
 
 /** The active states, in board display order — derived from the one lane list
  *  so a lane edit can never desync the predicate. */
@@ -38,10 +39,10 @@ export function backlogIssues(all: readonly Issue[]): Issue[] {
 }
 
 /** The agents that hold at least one active board issue — the swimlane rows.
- *  Moat agents (supervisor/warden) own no board lanes, so an agent with no
- *  active issue is excluded, as is one whose only work is pre-active
- *  (Backlog/Todo). `done` is an active column, so a done-only agent still gets
- *  a row (its card sits in the Done column). */
+ *  An agent is excluded when it has no active issue (its only work is
+ *  pre-active — Backlog/Todo — or it has none at all); exclusion is by
+ *  no-active-issue, never by role. `done` is an active column, so a done-only
+ *  agent still gets a row (its card sits in the Done column). */
 export function boardAgents(
 	agents: readonly Agent[],
 	all: readonly Issue[],
@@ -68,4 +69,47 @@ export function cellItems(
 /** The count in a board column across all agents (the lane-head badge). */
 export function laneTotal(all: readonly Issue[], state: IssueState): number {
 	return all.filter((w) => w.state === state).length;
+}
+
+/** The swimlane ordering: every agent in depth-first tree order (parent before
+ *  its children, a subtree contiguous), siblings and roots in the stable input
+ *  order `agentTree` fixes (no sort). Orders the FULL agent set — filtering to
+ *  agents with active issues stays `boardAgents`' separate concern, applied
+ *  after ordering. Total: `agentTree` surfaces every agent exactly once (cycle
+ *  members and dangling parents are promoted to roots), so each appears once. */
+export function treeOrder(agents: readonly Agent[]): Agent[] {
+	const ordered: Agent[] = [];
+	const visit = (node: AgentTreeNode): void => {
+		ordered.push(node.agent);
+		for (const child of node.children) visit(child);
+	};
+	for (const root of agentTree(agents)) visit(root);
+	return ordered;
+}
+
+/** The subtree membership set for `rootAgentId` — its own id plus every
+ *  transitive descendant (a subtree includes its own root, so scoping the board
+ *  to a subtree keeps the root's lane). The board's subtree-filter predicate.
+ *  Precondition: `rootAgentId` is a real agent; a root not present in `agents`
+ *  has no subtree to scope to, so this returns an empty set. */
+export function subtreeAgentIds(
+	agents: readonly Agent[],
+	rootAgentId: string,
+): ReadonlySet<string> {
+	const ids = new Set<string>();
+	const collect = (node: AgentTreeNode): void => {
+		ids.add(node.agent.account.id);
+		for (const child of node.children) collect(child);
+	};
+	const find = (nodes: readonly AgentTreeNode[]): AgentTreeNode | undefined => {
+		for (const node of nodes) {
+			if (node.agent.account.id === rootAgentId) return node;
+			const hit = find(node.children);
+			if (hit) return hit;
+		}
+		return undefined;
+	};
+	const root = find(agentTree(agents));
+	if (root) collect(root);
+	return ids;
 }
