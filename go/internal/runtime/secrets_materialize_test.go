@@ -74,6 +74,9 @@ func (r *scriptRunner) ExecStreaming(context.Context, ContainerID, StreamingExec
 func (r *scriptRunner) Stop(context.Context, ContainerID, time.Duration) error { return nil }
 func (r *scriptRunner) Remove(context.Context, ContainerID) error              { return nil }
 func (r *scriptRunner) Exists(context.Context, string) (bool, error)           { return false, nil }
+func (r *scriptRunner) MountLabel(context.Context, ContainerID) (string, error) {
+	return "", nil
+}
 
 func (r *scriptRunner) specsSnapshot() []ExecSpec {
 	r.mu.Lock()

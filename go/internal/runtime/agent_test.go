@@ -84,6 +84,10 @@ func (f *fakeRuntime) Exists(_ context.Context, _ string) (bool, error) {
 	return false, nil
 }
 
+func (f *fakeRuntime) MountLabel(_ context.Context, _ ContainerID) (string, error) {
+	return "", nil
+}
+
 func (f *fakeRuntime) record(call string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -56,6 +56,13 @@ type SessionHost interface {
 	// unknown session errors; a fetch/materialize failure is returned for the
 	// caller to log and recover from on the next signal.
 	RefreshSecrets(ctx context.Context, sessionID string) error
+	// RefreshConfig re-materializes the current fleet config bundle into every
+	// live session's per-container root and Reloads each agent whose config
+	// version actually moved — the fleet-wide ConfigVersion-driven update path
+	// (contrast RefreshSecrets, which is per-session). Per-session failures are
+	// logged and swallowed inside; the returned error is reserved for a
+	// fleet-level fault the caller logs and recovers from on the next signal.
+	RefreshConfig(ctx context.Context) error
 }
 
 // Sentinel errors the host returns, mapped to RunnerErrorCode on the wire.
@@ -79,13 +86,65 @@ type dispatcher struct {
 	// Runner needs bounded eviction + in-flight-sentinel dedup here; deferred to
 	// T9 (go-toolchain-default.md:979).
 	handled map[string]*compassv1internal.SessionsRequest
+
+	// configSignal coalesces ConfigVersion signals into a single pending
+	// re-materialize+Reload pass. It is buffered with capacity 1 and written by a
+	// non-blocking send (signalConfig): a signal arriving while a pass is already
+	// pending is dropped, so N signals collapse to at most one queued pass on top
+	// of the one in flight — never N queued Reload fan-outs. The background config
+	// worker (runConfigWorker) drains it. The ConfigVersion signal is fleet-wide,
+	// so the pass itself (agentHost.RefreshConfig) fans out over every live
+	// session; the dispatch receive loop must not block on that slow fan-out, so
+	// it only ever signals here.
+	configSignal chan struct{}
+	// configWorkerDone is closed when the config worker goroutine has exited, so
+	// RunSessions can join it on shutdown (no leaked goroutine) and a test can
+	// assert a clean exit on ctx cancel.
+	configWorkerDone chan struct{}
 }
 
 func newDispatcher(host SessionHost, log *slog.Logger) *dispatcher {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &dispatcher{host: host, log: log, handled: map[string]*compassv1internal.SessionsRequest{}}
+	return &dispatcher{
+		host:             host,
+		log:              log,
+		handled:          map[string]*compassv1internal.SessionsRequest{},
+		configSignal:     make(chan struct{}, 1),
+		configWorkerDone: make(chan struct{}),
+	}
+}
+
+// signalConfig marks a config re-materialize pass pending without blocking the
+// caller: the buffered configSignal collapses repeated signals to one queued
+// pass, so the sequential dispatch receive loop never stalls on the fan-out.
+func (d *dispatcher) signalConfig() {
+	select {
+	case d.configSignal <- struct{}{}:
+	default:
+		// A pass is already pending; this signal coalesces into it.
+	}
+}
+
+// runConfigWorker drains configSignal and runs one RefreshConfig pass per drained
+// signal until ctx is cancelled. Because configSignal is a coalescing buffer of
+// one, a burst of signals during an in-flight pass results in exactly one
+// follow-up pass, never one per signal. It exits on ctx cancel, closing
+// configWorkerDone so the caller can join it leak-free.
+func (d *dispatcher) runConfigWorker(ctx context.Context) {
+	defer close(d.configWorkerDone)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-d.configSignal:
+			if err := d.host.RefreshConfig(ctx); err != nil {
+				d.log.ErrorContext(ctx, "refreshing config on ConfigVersion signal failed; will retry on next signal",
+					slog.Any("error", err))
+			}
+		}
+	}
 }
 
 // RunSessions opens the Sessions bidi stream on the link and runs the dispatch
@@ -107,7 +166,15 @@ func (l *ServerLink) RunSessions(ctx context.Context, host SessionHost, log *slo
 	// Derive a cancelable ctx so the watcher goroutine below always exits when
 	// RunSessions returns — on ctx cancel, EOF, or error alike — never leaking.
 	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// The config worker runs the coalesced re-materialize+Reload passes off the
+	// sequential receive loop. On return, cancel it and join its goroutine so it
+	// never outlives RunSessions (deferred as one step so cancel precedes the
+	// join regardless of return path).
+	go d.runConfigWorker(ctx)
+	defer func() {
+		cancel()
+		<-d.configWorkerDone
+	}()
 	stream := l.client.Sessions(ctx)
 	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil {
 		return err
@@ -239,13 +306,16 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 		}
 		return nil
 	case *compassv1internal.SessionsResponse_ConfigVersion:
-		// Signal-only: the fleet config bundle changed. T3 lands the wire surface
-		// and recognizes the signal so it is never a contract-skew error; the
-		// coalesced re-fetch → re-materialize → in-place Reload loop is T6
-		// (SEA-1629), which replaces this body. Fleet-wide (no session id), not
-		// request_id-correlated, no result frame.
+		// Signal-only, fleet-wide: the config bundle changed. Fan-out over every
+		// live session (re-materialize + in-place Reload) is slow and would block
+		// this sequential receive loop from reading further commands, so the arm
+		// only marks a pass pending on the coalescing config worker and returns.
+		// Best-effort like SecretsVersion: the worker logs and swallows any
+		// failure, recovering on the next signal or reconnect. No result frame
+		// (no session id, not request_id-correlated).
 		d.log.InfoContext(ctx, "received ConfigVersion signal",
 			slog.String("version", c.ConfigVersion.GetVersion()))
+		d.signalConfig()
 		return nil
 	default:
 		// An unset/unrecognized command variant — a contract skew. Return an

@@ -66,6 +66,15 @@ type agentHost struct {
 	sockets      map[string]*gateway.SocketListener
 	nextID       func() string
 	materializer *runtime.SecretMaterializer
+	// configVersions is the last config bundle version materialized into each
+	// container's per-container root, keyed by container name — the
+	// last-materialized-version tracking the ConfigVersion update path compares
+	// against so it only Reloads an agent when the version actually moved.
+	// Recorded at Provision (initial materialize) and on each RefreshConfig pass.
+	// Keyed by container, not session: config lifecycle is container-scoped
+	// (SEA-1659 per-container roots), and it must survive a Reload (which reuses
+	// the session but keeps the container).
+	configVersions map[string]string
 }
 
 // liveSession is one running agent session: its container and the relay stream
@@ -102,18 +111,19 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		newID = monotonicIDs()
 	}
 	return &agentHost{
-		link:         link,
-		runtime:      rt,
-		registry:     registry,
-		engine:       engine,
-		specs:        specs,
-		log:          log,
-		runtimeDir:   cfg.RuntimeDir,
-		model:        cfg.AgentModel,
-		sessions:     map[string]*liveSession{},
-		sockets:      map[string]*gateway.SocketListener{},
-		nextID:       newID,
-		materializer: runtime.NewSecretMaterializer(engine, log),
+		link:           link,
+		runtime:        rt,
+		registry:       registry,
+		engine:         engine,
+		specs:          specs,
+		log:            log,
+		runtimeDir:     cfg.RuntimeDir,
+		model:          cfg.AgentModel,
+		sessions:       map[string]*liveSession{},
+		sockets:        map[string]*gateway.SocketListener{},
+		nextID:         newID,
+		materializer:   runtime.NewSecretMaterializer(engine, log),
+		configVersions: map[string]string{},
 	}
 }
 
@@ -161,6 +171,13 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 		h.closeSocket(ctx, spec.Name)
 		return "", err
 	}
+	// Record the version materialized into this container's root, so the first
+	// ConfigVersion signal only Reloads the agent if the bundle actually moved
+	// past what Provision already installed. Container-keyed and set under h.mu
+	// so a concurrent RefreshConfig pass observes a consistent map.
+	h.mu.Lock()
+	h.configVersions[spec.Name] = mount.Version
+	h.mu.Unlock()
 	return handle.Name(), nil
 }
 
@@ -390,6 +407,11 @@ func (h *agentHost) Remove(ctx context.Context, containerName string) error {
 			break
 		}
 	}
+	// Forget this container's materialized config version — the container is
+	// being torn down, so its per-container root and its version tracking go
+	// with it. A later re-Provision of the name re-records from a fresh
+	// materialize.
+	delete(h.configVersions, containerName)
 	h.mu.Unlock()
 
 	// Close the container's agent socket once teardown returns, whatever the
@@ -519,6 +541,85 @@ func (h *agentHost) RefreshSecrets(ctx context.Context, sessionID string) error 
 	}
 	if err := h.materializer.Install(ctx, handle.ID(), handle.HomeDir(), handle.WorkspaceUID(), resolved); err != nil {
 		return fmt.Errorf("materializing secrets for session %q: %w", sessionID, err)
+	}
+	return nil
+}
+
+// RefreshConfig re-materializes the current fleet config bundle into every live
+// session's per-container root and Reloads each agent whose config version
+// actually moved — the fleet-wide ConfigVersion-driven update path (contrast
+// RefreshSecrets, which is per-session). Unlike a secret rotation, config is
+// visible to a live agent only through the read-only parent-dir mount and the
+// `current` symlink, so the update is: read the container's live MCS label,
+// re-materialize (which unpacks the new version, chcon's it into that label, and
+// flips `current`), and Reload the agent so it re-reads current — but only when
+// the version changed, since Reload interrupts the agent mid-turn.
+//
+// The pass snapshots the live set under h.mu, releases the lock, then does the
+// per-container slow work (a `podman inspect` exec, a fetch+unpack, a Reload)
+// unlocked — never holding h.mu across an exec/network call. A per-session
+// error (MountLabel, Materialize, or Reload) is logged and swallowed so one bad
+// container never blocks the rest of the fleet; the pass always completes.
+//
+// Reload here runs off the config worker goroutine, so this pass is a SECOND
+// source of a lifecycle op against a session, concurrent with the dispatch
+// receive loop. That weakens the "only one lifecycle op is ever in flight"
+// MVP invariant Reload/Start document (host.go — sequential dispatch +
+// single-shot Run): a ConfigVersion Reload can now overlap a dispatch-driven
+// Stop/Remove/Reload of the same session in the window each holds h.mu open.
+// Accepted for the MVP (ruled 2026-08-03): the Server does not issue a
+// ConfigVersion pass and a per-session Stop/Reload for the same session
+// concurrently, and the per-session transition lock that closes the window is
+// the same T9 work the Reload/Start comments already defer to.
+func (h *agentHost) RefreshConfig(ctx context.Context) error {
+	type target struct {
+		sessionID     string
+		containerName string
+		containerID   runtime.ContainerID
+		lastVersion   string
+	}
+	h.mu.Lock()
+	targets := make([]target, 0, len(h.sessions))
+	for _, s := range h.sessions {
+		targets = append(targets, target{
+			sessionID:     s.sessionID,
+			containerName: s.containerName,
+			containerID:   s.containerID,
+			lastVersion:   h.configVersions[s.containerName],
+		})
+	}
+	h.mu.Unlock()
+
+	for _, t := range targets {
+		mcsLabel, err := h.engine.MountLabel(ctx, t.containerID)
+		if err != nil {
+			h.log.ErrorContext(ctx, "reading container mount label on ConfigVersion signal failed; skipping container this pass",
+				slog.String("container", t.containerName), slog.Any("error", err))
+			continue
+		}
+		mount, err := h.configMaterializerFor(t.containerName).Materialize(ctx, mcsLabel)
+		if err != nil {
+			h.log.ErrorContext(ctx, "re-materializing agent config on ConfigVersion signal failed; will retry on next signal",
+				slog.String("container", t.containerName), slog.Any("error", err))
+			continue
+		}
+		// Record the newly materialized version regardless of whether a Reload
+		// follows: Materialize always re-flips `current`, so the on-disk state
+		// is now this version and the tracking must match it.
+		h.mu.Lock()
+		h.configVersions[t.containerName] = mount.Version
+		h.mu.Unlock()
+		if mount.Version == t.lastVersion {
+			// Version unchanged: the re-materialize was idempotent and the agent
+			// already reads this config. Do not Reload — it would interrupt the
+			// agent mid-turn for no config change.
+			continue
+		}
+		if err := h.Reload(ctx, t.sessionID); err != nil {
+			h.log.ErrorContext(ctx, "reloading agent after config update failed; will retry on next signal",
+				slog.String("container", t.containerName), slog.String("session_id", t.sessionID), slog.Any("error", err))
+			continue
+		}
 	}
 	return nil
 }
