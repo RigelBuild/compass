@@ -412,6 +412,28 @@ button {
 	border-left: 1px solid var(--border);
 }
 
+/* A parent agent's row: a caret sub-button (collapse) beside the agent's own
+ *  select button (the .tree-agent leaf), so selecting the agent and toggling
+ *  its children are distinct affordances. */
+.tree-branch {
+	display: flex;
+	align-items: center;
+}
+
+.tree-branch-caret {
+	display: inline-flex;
+	align-items: center;
+	padding: 5px 2px 5px 5px;
+	background: transparent;
+	border: none;
+	border-radius: 4px;
+	cursor: pointer;
+}
+
+.tree-branch-caret:hover {
+	background: var(--bg-hover);
+}
+
 /* An agent leaf in the tree. */
 .tree-agent {
 	display: flex;

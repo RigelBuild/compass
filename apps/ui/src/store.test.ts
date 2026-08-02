@@ -519,29 +519,30 @@ describe("right sidebar tab (dock-in-sidebar T1)", () => {
 	});
 });
 
-describe("folder collapse", () => {
-	// The collapse state is a Set: multiple folders collapse independently, and
-	// collapsing one must not collapse a sibling. A boolean-per-nothing or a
-	// single-slot implementation would fail the "both stay collapsed" assertion.
-	test("collapses folders independently via the underlying Set", () => {
+describe("agent collapse", () => {
+	// The collapse state is a Set: multiple agent subtrees collapse
+	// independently, and collapsing one must not collapse a sibling. A
+	// boolean-per-nothing or a single-slot implementation would fail the "both
+	// stay collapsed" assertion.
+	test("collapses agent subtrees independently via the underlying Set", () => {
 		withStore((s) => {
-			expect(s.isFolderCollapsed("folder-a")).toBe(false);
-			expect(s.isFolderCollapsed("folder-b")).toBe(false);
+			expect(s.isAgentCollapsed("acc-cook")).toBe(false);
+			expect(s.isAgentCollapsed("acc-livingstone")).toBe(false);
 
-			s.toggleFolder("folder-a");
-			expect(s.isFolderCollapsed("folder-a")).toBe(true);
-			// Collapsing A leaves B expanded.
-			expect(s.isFolderCollapsed("folder-b")).toBe(false);
+			s.toggleAgent("acc-cook");
+			expect(s.isAgentCollapsed("acc-cook")).toBe(true);
+			// Collapsing cook leaves livingstone expanded.
+			expect(s.isAgentCollapsed("acc-livingstone")).toBe(false);
 
-			s.toggleFolder("folder-b");
+			s.toggleAgent("acc-livingstone");
 			// Both now collapsed simultaneously — the Set holds both.
-			expect(s.isFolderCollapsed("folder-a")).toBe(true);
-			expect(s.isFolderCollapsed("folder-b")).toBe(true);
+			expect(s.isAgentCollapsed("acc-cook")).toBe(true);
+			expect(s.isAgentCollapsed("acc-livingstone")).toBe(true);
 
-			s.toggleFolder("folder-a");
-			// Re-toggling A expands only A; B remains collapsed.
-			expect(s.isFolderCollapsed("folder-a")).toBe(false);
-			expect(s.isFolderCollapsed("folder-b")).toBe(true);
+			s.toggleAgent("acc-cook");
+			// Re-toggling cook expands only cook; livingstone remains collapsed.
+			expect(s.isAgentCollapsed("acc-cook")).toBe(false);
+			expect(s.isAgentCollapsed("acc-livingstone")).toBe(true);
 		});
 	});
 });
@@ -681,7 +682,7 @@ describe("store isolation", () => {
 			try {
 				a.openAgent("acc-cook");
 				a.toggleLeft();
-				a.toggleFolder("folder-x");
+				a.toggleAgent("acc-cook");
 
 				// Store A moved into an agent view.
 				expect(a.view()).toBe("agent");
@@ -692,7 +693,7 @@ describe("store isolation", () => {
 				expect(b.selectedAgentId()).toBeNull();
 				expect(b.leftOpen()).toBe(true);
 				expect(b.agentRepos()).toEqual([]);
-				expect(b.isFolderCollapsed("folder-x")).toBe(false);
+				expect(b.isAgentCollapsed("acc-cook")).toBe(false);
 			} finally {
 				dispose();
 			}

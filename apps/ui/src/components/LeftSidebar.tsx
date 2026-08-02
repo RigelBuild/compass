@@ -1,11 +1,4 @@
-import {
-	type Component,
-	createSignal,
-	For,
-	Match,
-	Show,
-	Switch,
-} from "solid-js";
+import { type Component, createSignal, For, Show } from "solid-js";
 import { activeIssues, backlogIssues } from "../board";
 import {
 	agentDmAccountId,
@@ -21,96 +14,98 @@ import type { Channel } from "../comms-stub";
 import { useStore } from "../context";
 import {
 	type Agent,
+	type AgentTreeNode,
+	agentTree,
 	STUB_AGENTS,
-	STUB_TREE,
-	type TreeNode,
 } from "../stub-data";
 import { StateDot } from "./StateDot";
 
-const agentById = (id: string): Agent | undefined =>
-	STUB_AGENTS.find((a) => a.account.id === id);
-
-/** An agent leaf row in the tree. */
-const AgentLeaf: Component<{ agentId: string }> = (props) => {
+/** An agent leaf row in the tree — the per-agent select button. Renders the
+ *  same StateDot / handle / non-worker role-pip (SEA-1623: pip left alone) for
+ *  both a childless leaf and a parent agent's own row. An optional descendant
+ *  badge trails the row when the agent has children. */
+const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 	const store = useStore();
-	const agent = () => agentById(props.agentId);
+	const a = () => props.agent;
 	return (
-		<Show when={agent()}>
-			{(a) => (
-				<button
-					type="button"
-					class="tree-agent"
-					classList={{
-						selected:
-							store.selectedAgentId() === a().account.id &&
-							store.view() === "agent",
-					}}
-					onClick={() => store.openAgent(a().account.id)}
-				>
-					<StateDot state={a().lifecycle ?? "idle"} />
-					<span class="name">{a().account.handle}</span>
-					<Show when={a().role !== "worker"}>
-						<span class="role-pip" data-role={a().role} title={a().role}>
-							{a().role === "supervisor" ? "◆" : "🛡"}
-						</span>
-					</Show>
-				</button>
-			)}
-		</Show>
+		<button
+			type="button"
+			class="tree-agent"
+			classList={{
+				selected:
+					store.selectedAgentId() === a().account.id &&
+					store.view() === "agent",
+			}}
+			onClick={() => store.openAgent(a().account.id)}
+		>
+			<StateDot state={a().lifecycle ?? "idle"} />
+			<span class="name">{a().account.handle}</span>
+			<Show when={a().role !== "worker"}>
+				<span class="role-pip" data-role={a().role} title={a().role}>
+					{a().role === "supervisor" ? "◆" : "🛡"}
+				</span>
+			</Show>
+			<Show when={props.badge !== undefined}>
+				<span class="folder-badge">{props.badge}</span>
+			</Show>
+		</button>
 	);
 };
 
-/** A folder row + its recursively-rendered children. */
-const FolderRow: Component<{ node: Extract<TreeNode, { kind: "folder" }> }> = (
-	props,
-) => {
+/** A parent agent's row + its recursively-rendered children. The agent's own
+ *  row selects (openAgent); a dedicated caret sub-button toggles collapse — the
+ *  expand/collapse + descendant count a folder row carried today, re-keyed to
+ *  the parent agent id. */
+const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 	const store = useStore();
-	const folder = () => props.node.folder;
-	const collapsed = () => store.isFolderCollapsed(folder().id);
-	const agentCount = () => countAgents(props.node);
+	const agentId = () => props.node.agent.account.id;
+	const collapsed = () => store.isAgentCollapsed(agentId());
 	return (
 		<div class="folder">
-			<button
-				type="button"
-				class="folder-row"
-				aria-expanded={!collapsed()}
-				onClick={() => store.toggleFolder(folder().id)}
-			>
-				<span class="folder-caret" classList={{ collapsed: collapsed() }}>
-					▼
-				</span>
-				<span class="folder-icon" style={{ color: folder().color }}>
-					{folder().icon}
-				</span>
-				<span class="folder-name">{folder().name}</span>
-				<span class="folder-badge">{agentCount()}</span>
-			</button>
+			<div class="tree-branch">
+				<button
+					type="button"
+					class="tree-branch-caret"
+					aria-expanded={!collapsed()}
+					onClick={() => store.toggleAgent(agentId())}
+				>
+					<span class="folder-caret" classList={{ collapsed: collapsed() }}>
+						▼
+					</span>
+				</button>
+				<AgentLeaf
+					agent={props.node.agent}
+					badge={countDescendants(props.node)}
+				/>
+			</div>
 			<Show when={!collapsed()}>
 				<div class="folder-children">
-					<For each={folder().children}>{(child) => <Node node={child} />}</For>
+					<For each={props.node.children}>
+						{(child) => <Node node={child} />}
+					</For>
 				</div>
 			</Show>
 		</div>
 	);
 };
 
-/** Dispatch a tree node to the right row renderer. The `when` callbacks narrow
- *  the TreeNode union on its `kind` discriminant, so no cast is needed. */
-const Node: Component<{ node: TreeNode }> = (props) => (
-	<Switch>
-		<Match when={props.node.kind === "folder" ? props.node : null}>
-			{(folderNode) => <FolderRow node={folderNode()} />}
-		</Match>
-		<Match when={props.node.kind === "agent" ? props.node : null}>
-			{(agentNode) => <AgentLeaf agentId={agentNode().agentId} />}
-		</Match>
-	</Switch>
+/** Dispatch a derived-tree node: a node with children renders the parent form
+ *  (caret + badge + collapsible children); a childless node renders the plain
+ *  agent leaf. */
+const Node: Component<{ node: AgentTreeNode }> = (props) => (
+	<Show
+		when={props.node.children.length > 0}
+		fallback={<AgentLeaf agent={props.node.agent} />}
+	>
+		<Branch node={props.node} />
+	</Show>
 );
 
-/** Count agent leaves under a node (recursively), for the folder badge. */
-function countAgents(node: TreeNode): number {
-	if (node.kind === "agent") return 1;
-	return node.folder.children.reduce((n, c) => n + countAgents(c), 0);
+/** Count descendant agents under a node (recursively, not counting itself) —
+ *  the parent-agent badge, matching the old folder badge's leaf-count
+ *  semantics. */
+function countDescendants(node: AgentTreeNode): number {
+	return node.children.reduce((n, c) => n + 1 + countDescendants(c), 0);
 }
 
 /** One rail row — a channel/DM the caller is a member of. The select button
@@ -322,7 +317,9 @@ const AgentsSection: Component = () => {
 			</button>
 			<Show when={!collapsed()}>
 				<div class="tree ws-section-body">
-					<For each={STUB_TREE}>{(node) => <Node node={node} />}</For>
+					<For each={agentTree(STUB_AGENTS)}>
+						{(node) => <Node node={node} />}
+					</For>
 				</div>
 			</Show>
 		</div>
