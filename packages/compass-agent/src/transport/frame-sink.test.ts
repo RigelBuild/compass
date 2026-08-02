@@ -23,6 +23,7 @@ import { create } from "@bufbuild/protobuf";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import {
 	AgentSessionState,
+	DeliveryAckSchema,
 	MessagePostedSchema,
 	SessionEventSchema,
 	SessionFrameSchema,
@@ -493,4 +494,37 @@ test("STOPPED leads across cycled batches with a live consumer and loses no trac
 		.filter((n): n is number => n !== undefined);
 	expect(traceOrdinals.length).toBe(traceCount);
 	expect(new Set(traceOrdinals).size).toBe(traceCount);
+});
+
+test("a deliveryAck rides the Publish PRIORITY lane, not the durable unary", async () => {
+	// SEA-1310 §8: a per-message delivery receipt is a control-plane ack. Per the
+	// spine contract (publish-spine.ts:24-26,62) it rides the Publish spine's
+	// never-drop PRIORITY lane, NOT the durable PostConversationFrame unary — the
+	// Runner gateway's isConversationFrame guard REJECTS an ack on that unary, so
+	// a deliveryAck routed durable 400s and is silently swallowed (the delivery
+	// cursor never advances). Non-vacuity: with the pre-fix emit() the ack falls
+	// through to launchDurable → it lands in durableAttempts and publishFrames is
+	// empty → red. The priority (vs trace) choice is covered by emit() calling
+	// enqueuePriority in source (publish-spine.ts:24-26); the socket recorder does
+	// not distinguish the two Publish sub-lanes, so the observable contract here
+	// is Publish-not-durable.
+	const rec = emptyRecorder();
+	const sink = createSocketFrameSink(
+		createUnixSocketTransport(await serve(rec, {})),
+	);
+	sink.emit({
+		kind: "deliveryAck",
+		value: create(DeliveryAckSchema, { messageId: "m-1" }),
+	});
+	await sink.drain?.();
+	// The ack arrived on the Publish spine carrying the delivery_ack oneof case.
+	expect(rec.publishFrames.length).toBe(1);
+	expect(rec.publishFrames[0]?.frame?.frame.case).toBe("deliveryAck");
+	const inner = rec.publishFrames[0]?.frame?.frame;
+	expect(
+		inner?.case === "deliveryAck" ? inner.value.messageId : undefined,
+	).toBe("m-1");
+	// It NEVER touched the durable unary.
+	expect(rec.durableAttempts.length).toBe(0);
+	expect(rec.durableFrames.length).toBe(0);
 });
