@@ -67,6 +67,7 @@ const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 					type="button"
 					class="tree-branch-caret"
 					aria-expanded={!collapsed()}
+					aria-label={`${collapsed() ? "Expand" : "Collapse"} ${props.node.agent.account.handle}'s agents`}
 					onClick={() => store.toggleAgent(agentId())}
 				>
 					<span class="folder-caret" classList={{ collapsed: collapsed() }}>
@@ -101,9 +102,8 @@ const Node: Component<{ node: AgentTreeNode }> = (props) => (
 	</Show>
 );
 
-/** Count descendant agents under a node (recursively, not counting itself) —
- *  the parent-agent badge, matching the old folder badge's leaf-count
- *  semantics. */
+/** Count descendant agents under a node — the parent-agent badge: every agent
+ *  in the subtree below it (all descendants, recursive), not counting itself. */
 function countDescendants(node: AgentTreeNode): number {
 	return node.children.reduce((n, c) => n + 1 + countDescendants(c), 0);
 }

@@ -354,26 +354,6 @@ button {
 	margin: 4px 4px 8px;
 }
 
-/* A folder row + its nested children. */
-.folder-row {
-	display: flex;
-	align-items: center;
-	gap: 6px;
-	width: 100%;
-	padding: 5px 7px;
-	background: transparent;
-	border: none;
-	border-radius: 4px;
-	color: var(--text);
-	text-align: left;
-	font-size: 12px;
-	font-weight: 500;
-}
-
-.folder-row:hover {
-	background: var(--bg-hover);
-}
-
 .folder-caret {
 	color: var(--text-faint);
 	font-size: 9px;
@@ -385,19 +365,6 @@ button {
 
 .folder-caret.collapsed {
 	transform: rotate(-90deg);
-}
-
-.folder-icon {
-	font-size: 13px;
-	width: 16px;
-	text-align: center;
-}
-
-.folder-name {
-	flex: 1;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .folder-badge {
@@ -434,12 +401,17 @@ button {
 	background: var(--bg-hover);
 }
 
-/* An agent leaf in the tree. */
+/* An agent leaf in the tree. Inside a branch it shares the flex row with the
+ *  caret, so flex:1 + min-width:0 let it absorb the remaining width and shrink
+ *  below its content (a fixed-size caret never forces overflow); as a plain
+ *  leaf outside a flex row those are inert and width:100% fills the row. */
 .tree-agent {
 	display: flex;
 	align-items: center;
 	gap: 8px;
 	width: 100%;
+	flex: 1;
+	min-width: 0;
 	padding: 5px 7px;
 	background: transparent;
 	border: 1px solid transparent;

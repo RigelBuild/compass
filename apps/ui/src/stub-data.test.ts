@@ -7,7 +7,9 @@ import { type Agent, agentTree } from "./stub-data";
 // children nested under their parent, and — the point C-T5's treeOrder
 // consumes — roots and siblings preserve the stable INPUT ORDER of the agents
 // array. Depth-first alone is not a total order, so this tie-break is the
-// determinism guarantee for a fixed input.
+// determinism guarantee for a fixed input. The derivation is also total: a
+// cycle (self-parent or a link back to a descendant) promotes its members to
+// roots rather than silently dropping them.
 
 // A minimal Agent fixture: only account.id and account.parentAgentId matter to
 // the derivation, so the other fields are filled with inert stubs.
@@ -83,6 +85,34 @@ describe("agentTree", () => {
 		const agents = [agent("kept"), agent("orphan", "acc-missing")];
 		const tree = agentTree(agents);
 		expect(ids(tree)).toEqual(["kept", "orphan"]);
+		expect(tree.every((n) => n.children.length === 0)).toBe(true);
+	});
+
+	test("depth-3 nesting keeps each generation under its parent", () => {
+		const agents = [
+			agent("gen0"),
+			agent("gen1", "gen0"),
+			agent("gen2", "gen1"),
+		];
+		const tree = agentTree(agents);
+		expect(ids(tree)).toEqual(["gen0"]);
+		expect(ids(tree[0].children)).toEqual(["gen1"]);
+		expect(ids(tree[0].children[0].children)).toEqual(["gen2"]);
+	});
+
+	test("a self-parent is promoted to a root, not dropped", () => {
+		const agents = [agent("kept"), agent("selfie", "selfie")];
+		const tree = agentTree(agents);
+		expect(ids(tree)).toEqual(["kept", "selfie"]);
+		expect(tree.every((n) => n.children.length === 0)).toBe(true);
+	});
+
+	test("a two-node cycle survives: both members become roots", () => {
+		// x.parent = y and y.parent = x. Neither can be a child without
+		// dropping the other, so the total derivation promotes both to roots.
+		const agents = [agent("x", "y"), agent("y", "x")];
+		const tree = agentTree(agents);
+		expect(ids(tree).sort()).toEqual(["x", "y"]);
 		expect(tree.every((n) => n.children.length === 0)).toBe(true);
 	});
 

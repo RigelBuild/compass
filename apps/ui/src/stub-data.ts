@@ -371,21 +371,45 @@ export interface AgentTreeNode {
  *  fixed input (the contract board.ts treeOrder consumes, C-T5). A DANGLING
  *  parentAgentId (referencing an account not in `agents` — e.g. filtered by
  *  visibility) is treated as a root: promote the child to top-level rather
- *  than drop it, so no agent is ever unreachable. */
+ *  than drop it, so no agent is ever unreachable. A parentAgentId that would
+ *  close a CYCLE (a self-parent, or a link back to a descendant) is likewise
+ *  treated as a root, so the derivation is total against any input and never
+ *  silently drops a cycle member. The server rejects persisted cycles at the
+ *  mutation boundary (compass-agent-trees §T3: same-owner-tree lock + ancestor
+ *  walk), so this client guard is belt-and-suspenders against unresolved or
+ *  inconsistent live data rather than an expected shape. */
 export function agentTree(agents: readonly Agent[]): AgentTreeNode[] {
 	// One node per agent, in input order, indexed by account id.
 	const byId = new Map<string, AgentTreeNode>();
 	for (const agent of agents) {
 		byId.set(agent.account.id, { agent, children: [] });
 	}
+	// Would attaching `id` under `parentId` close a cycle? Walk parentId's
+	// ancestor chain; a back-edge to `id` (incl. a self-parent) means yes. The
+	// visited set bounds the walk so a pre-existing cycle cannot spin it.
+	const wouldCycle = (id: string, parentId: string): boolean => {
+		const seen = new Set<string>();
+		let cursor: string | undefined = parentId;
+		while (cursor) {
+			if (cursor === id) return true;
+			if (seen.has(cursor)) return false;
+			seen.add(cursor);
+			cursor = byId.get(cursor)?.agent.account.parentAgentId;
+		}
+		return false;
+	};
 	// Second pass, still in input order: each node joins its parent's children
-	// (present parent) or the roots (empty/absent or dangling parentAgentId).
+	// (present parent, no cycle) or the roots (empty/absent, dangling, or a
+	// parentAgentId that would close a cycle — promoted, never dropped).
 	const roots: AgentTreeNode[] = [];
 	for (const agent of agents) {
 		const node = byId.get(agent.account.id);
 		if (!node) continue;
 		const parentId = agent.account.parentAgentId;
-		const parent = parentId ? byId.get(parentId) : undefined;
+		const parent =
+			parentId && !wouldCycle(agent.account.id, parentId)
+				? byId.get(parentId)
+				: undefined;
 		if (parent) {
 			parent.children.push(node);
 		} else {
