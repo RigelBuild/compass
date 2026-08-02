@@ -32,6 +32,13 @@ import type {
 	ConvBlock,
 	Message,
 } from "./comms-stub";
+import {
+	type ActivityBarItem,
+	fleetItemForAgent,
+	RIGHT_SIDEBAR_ISSUE_ITEMS,
+	RIGHT_SIDEBAR_TAB_BY_ID,
+	type RightTabGroup,
+} from "./constants";
 import { adaptMessage } from "./live/adapt";
 import { probeServer } from "./live/client";
 import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
@@ -72,16 +79,16 @@ export type View =
 	| "done"
 	| "settings";
 
-/** Right-sidebar tabs (design dock-in-sidebar D1/T1/T2). Fleet tabs are
- *  always-on agent conversations (Supervisor, Warden) plus the Status pane
- *  (fleet metrics), grouped above the
- *  card-scoped issue tabs (Files with a search box, VCS with commit
- *  history, PR with its checks). Split into named subsets so the grouped
- *  activity bar and the chrome-hiding rule (D5) key off types, not string
- *  lists. */
-export type FleetTab = "supervisor" | "warden" | "status";
+/** Right-sidebar tabs (design dock-in-sidebar D1/T1/T2; Record A §T2). The
+ *  fleet group is a CONFIGURABLE PIN SET, not a hardcoded agent pair: a pinned
+ *  agent's tab id is `agent:${accountId}` (the open arm), alongside the static
+ *  `status` fleet pane and the card-scoped issue tabs (Files / VCS / PR). No
+ *  agent is special-cased — pinning is a separate presentation layer (moat
+ *  retired, Matt's ruling). Split so the grouped activity bar and the
+ *  chrome-hiding rule (D5) key off shape, not string lists. */
+type PinnedAgentTab = `agent:${string}`;
 export type IssueTab = "files" | "vcs" | "pr";
-export type RightSidebarTab = FleetTab | IssueTab;
+export type RightSidebarTab = PinnedAgentTab | "status" | IssueTab;
 
 /** A repo clone present in the selected agent's container (T6). Multi-repo
  *  capable now; the fixture derives a single clone per agent until the daemon
@@ -273,11 +280,31 @@ export interface AppStore {
 	isAgentCollapsed: (agentId: string) => boolean;
 	toggleAgent: (agentId: string) => void;
 
-	// ── Right sidebar: activity-bar tabs + repos (T6; dock-in-sidebar D1) ──
-	/** The active right-sidebar tab: a fleet conversation (Supervisor / Warden)
-	 *  or an issue tab (Files / VCS / PR). */
+	// ── Right sidebar: activity-bar tabs + pins + repos (T6; dock-in-sidebar D1;
+	//    Record A §T2/T3) ──
+	/** The active right-sidebar tab: a pinned agent conversation
+	 *  (`agent:${accountId}`), the `status` fleet pane, or an issue tab (Files /
+	 *  VCS / PR). */
 	activeRightTab: Accessor<RightSidebarTab>;
 	setActiveRightTab: (tab: RightSidebarTab) => void;
+	/** The pinned agent account ids, in pin order (append-on-pin; reorder is
+	 *  deferred, OQ1). Persisted per workspace in `localStorage`; a pin that
+	 *  resolves to no visible agent is RETAINED here (visibility fluctuates) but
+	 *  filtered out of `rightTabGroups()`. */
+	pinnedAgentIds: Accessor<readonly string[]>;
+	/** Pin an agent's conversation to the fleet activity bar (append if new). */
+	pinAgent: (accountId: string) => void;
+	/** Unpin an agent; if its tab is active, fall back to `status`. */
+	unpinAgent: (accountId: string) => void;
+	/** Whether an agent id is in the pin set. */
+	isPinned: (accountId: string) => boolean;
+	/** The activity bar as ordered groups (Record A §T2): the fleet group is the
+	 *  RESOLVABLE pins (one item per pin whose agent is visible, in pin order)
+	 *  plus the static `status` item; the issue group is the static issue items.
+	 *  A retained-but-unresolvable pin produces no item (and no pane). */
+	rightTabGroups: Accessor<
+		readonly { group: RightTabGroup; items: readonly ActivityBarItem[] }[]
+	>;
 	/** Repo clones present in the selected agent's container, for the repo/branch
 	 *  dropdown. Empty when no agent is selected. */
 	agentRepos: Accessor<RepoClone[]>;
@@ -495,6 +522,13 @@ export interface AppStoreOptions {
 	 *  the account the bearer authenticates as (live/connection.ts:28-35). The
 	 *  fixture default keeps the offline store on the fixture's owner. */
 	readonly callerId?: string;
+	/** The workspace/connection identity used to namespace per-deployment UI
+	 *  prefs in `localStorage` — the pinned-agent set (Record A §T3). index.tsx
+	 *  derives it from the live `Connection` (baseUrl + caller) so one
+	 *  deployment's account ids never hydrate as pins on another. Absent (offline
+	 *  / tests) → the pin key falls back to `callerId`, so two stores built with
+	 *  distinct caller/workspace identities keep separate pin sets. */
+	readonly workspaceKey?: string;
 	/** The comms state the store starts from before any stream push. Defaults to
 	 *  EMPTY — tests that need populated comms pass the fixture explicitly. */
 	readonly initialComms?: CommsState;
@@ -516,6 +550,46 @@ export interface AppStoreOptions {
 	 *  `postMessage`/`postReply` reject to their caller instead (the composer
 	 *  must keep the user's text) and do NOT route here. */
 	readonly onCommsError?: (error: unknown) => void;
+}
+
+/** The `localStorage` handle, or undefined where it is absent or throwing (SSR,
+ *  a privacy-locked context). Persistence is best-effort: a missing store means
+ *  pins live only for the session, never a crash. */
+function safeLocalStorage(): Storage | undefined {
+	try {
+		return globalThis.localStorage;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Hydrate the persisted pin order for a workspace. The key is namespaced by the
+ *  workspace/connection identity (Record A §T3) so one deployment's account ids
+ *  never hydrate as pins on another. Tolerates a missing key, bad JSON, and a
+ *  non-string-array payload — any of which yields an empty set. */
+function loadPinnedAgentIds(workspace: string): readonly string[] {
+	const store = safeLocalStorage();
+	if (!store) return [];
+	try {
+		const raw = store.getItem(`compass.pinnedAgents.${workspace}`);
+		if (!raw) return [];
+		const parsed: unknown = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter((id): id is string => typeof id === "string");
+	} catch {
+		return [];
+	}
+}
+
+/** Write the pin order through to the workspace-namespaced key (best-effort). */
+function savePinnedAgentIds(workspace: string, ids: readonly string[]): void {
+	const store = safeLocalStorage();
+	if (!store) return;
+	try {
+		store.setItem(`compass.pinnedAgents.${workspace}`, JSON.stringify(ids));
+	} catch {
+		// Best-effort: a quota / privacy-locked write failure is non-fatal.
+	}
 }
 
 /**
@@ -574,11 +648,39 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// The bottom log panel (D2): open by default; reset open on workspace entry.
 	const [logOpen, setLogOpen] = createSignal(true);
 
-	// ── Right sidebar (T6; dock-in-sidebar D1/D6): active tab + repo/branch ──
-	// Boots onto the Supervisor conversation (D6) so the shell opens with the
-	// Bridge board + a full-height Supervisor chat side by side.
-	const [activeRightTab, setActiveRightTab] =
-		createSignal<RightSidebarTab>("supervisor");
+	// ── Right sidebar (T6; dock-in-sidebar D1/D6; Record A §T2/T3/T5): active
+	//    tab + pin set + repo/branch ──
+	// The pinned agent set (Record A §T3): ordered, append-on-pin, persisted per
+	// workspace so one deployment's account ids never hydrate on another. A pin
+	// that resolves to no visible agent is RETAINED here (visibility fluctuates —
+	// the pin survives the agent returning) while the derivation below filters it
+	// out. Falls back to `callerId` when no workspace identity is supplied.
+	const workspaceKey = options.workspaceKey ?? callerId;
+	const [pinnedAgentIds, setPinnedAgentIds] = createSignal<readonly string[]>(
+		loadPinnedAgentIds(workspaceKey),
+	);
+	// Whether a pin resolves to a visible agent — the layer that filters
+	// unresolvable pins from the activity bar and the pane (Record A §T2).
+	const agentIsVisible = (accountId: string): boolean =>
+		agents.some((a) => a.account.id === accountId);
+	// Boot default (Record A §T5): the first hydrated pin that resolves to a
+	// visible agent (unresolvable pins skipped, matching the T2 derivation), else
+	// the static `status` pane. The D6 no-auto-switch rule is unchanged.
+	const firstResolvablePin = pinnedAgentIds().find(agentIsVisible);
+	const [activeRightTab, setActiveRightTabRaw] = createSignal<RightSidebarTab>(
+		firstResolvablePin ? `agent:${firstResolvablePin}` : "status",
+	);
+	// The resolvability guard (Record A §T2/§T3), applied synchronously on every
+	// set: an `agent:`-prefixed tab whose agent is NOT visible falls to `status`,
+	// so a live-active tab whose agent vanished never strands a pane and the
+	// activity-bar selection agrees with the T2 Switch's resolvability gate. This
+	// is the single seam that both explicit sets and the unpin fallback route
+	// through, so the guard can't be bypassed.
+	const setActiveRightTab = (tab: RightSidebarTab) => {
+		if (tab.startsWith("agent:") && !agentIsVisible(tab.slice(6)))
+			setActiveRightTabRaw("status");
+		else setActiveRightTabRaw(tab);
+	};
 	// The active repo id (T6). The current branch is derived from the selected
 	// issue (see agentRepos), so there's no separate branch-pick signal to
 	// drift from the panes.
@@ -1566,6 +1668,47 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	const setActiveRepo = (repoId: string) => {
 		if (agentRepos().some((r) => r.id === repoId)) setActiveRepoId(repoId);
 	};
+
+	// ── Pins (Record A §T2/T3) ──
+	const isPinned = (accountId: string) => pinnedAgentIds().includes(accountId);
+	// Append-on-pin, order-preserving; a re-pin is a no-op (no reorder — OQ1).
+	// Persistence is synchronous (write-through) so a pin survives a page reload
+	// with no dependence on effect scheduling (§T3).
+	const pinAgent = (accountId: string) =>
+		setPinnedAgentIds((prev) => {
+			if (prev.includes(accountId)) return prev;
+			const next = [...prev, accountId];
+			savePinnedAgentIds(workspaceKey, next);
+			return next;
+		});
+	// Unpinning drops the id, persists, and falls the active tab back to the
+	// static `status` pane if it was this agent's tab (§T3).
+	const unpinAgent = (accountId: string) => {
+		setPinnedAgentIds((prev) => {
+			const next = prev.filter((id) => id !== accountId);
+			savePinnedAgentIds(workspaceKey, next);
+			return next;
+		});
+		if (activeRightTab() === `agent:${accountId}`) setActiveRightTab("status");
+	};
+	// The T2 derivation: the fleet group is the RESOLVABLE pins (one item per pin
+	// whose agent is visible, in pin order) built via `fleetItemForAgent`, then
+	// the static `status` item; the issue group is the static issue items. An
+	// unresolvable pin contributes no item — no activity-bar entry, no pane.
+	const rightTabGroups = createMemo<
+		readonly { group: RightTabGroup; items: readonly ActivityBarItem[] }[]
+	>(() => {
+		const fleetItems: ActivityBarItem[] = [];
+		for (const id of pinnedAgentIds()) {
+			const agent = agents.find((a) => a.account.id === id);
+			if (agent) fleetItems.push(fleetItemForAgent(agent));
+		}
+		fleetItems.push(RIGHT_SIDEBAR_TAB_BY_ID.status);
+		return [
+			{ group: "fleet", items: fleetItems },
+			{ group: "issue", items: RIGHT_SIDEBAR_ISSUE_ITEMS },
+		];
+	});
 	// Switch the current branch within the active repo by selecting the issue
 	// that owns it — so the dropdown, the detail panes (Files/VCS/PR), and the
 	// board selection all move together (each branch is one issue's branch).
@@ -1599,6 +1742,11 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		toggleAgent,
 		activeRightTab,
 		setActiveRightTab,
+		pinnedAgentIds,
+		pinAgent,
+		unpinAgent,
+		isPinned,
+		rightTabGroups,
 		agentRepos,
 		activeRepoId,
 		activeRepo,

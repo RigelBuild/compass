@@ -6,7 +6,6 @@ import {
 	STUB_COMMS_STATE,
 	STUB_MESSAGES,
 } from "../comms-stub";
-import { RIGHT_SIDEBAR_TAB_BY_ID } from "../constants";
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
 import { RightSidebar } from "./RightSidebar";
@@ -27,8 +26,9 @@ import { RightSidebar } from "./RightSidebar";
 //   3. the "Open workspace" button routes via the store (openAgent's observable
 //      effect: view → "agent", selectedAgentId → the tab's agent).
 // The pane is exercised through the exported RightSidebar (FleetPane is
-// module-private): driving store.setActiveRightTab("supervisor"|"warden") makes
-// the RightSidebar Switch render the FleetPane, the honest integration path.
+// module-private): driving store.setActiveRightTab("agent:<accountId>") makes
+// the RightSidebar Switch render the FleetPane for any resolvable pin, the
+// honest integration path.
 //
 // FleetPane is module-PRIVATE, so we mount the exported RightSidebar and drive
 // the store's tab signal — the same seam a real click on the activity bar uses.
@@ -48,16 +48,12 @@ function mountRightSidebar(): { store: AppStore; container: HTMLElement } {
 	return { store, container };
 }
 
-// The agent id each fleet tab resolves to — read from the tab table the impl
-// itself indexes (RightSidebar passes RIGHT_SIDEBAR_TAB_BY_ID.<tab> to
-// FleetPane), so the test tracks whatever the table declares rather than a
-// copied literal. agentId is optional on ActivityBarItem; a fleet tab must have
-// one, so we assert it and narrow.
-function agentIdForTab(tab: "supervisor" | "warden"): string {
-	const id = RIGHT_SIDEBAR_TAB_BY_ID[tab].agentId;
-	if (!id) throw new Error(`fleet tab ${tab} has no agentId in the tab table`);
-	return id;
-}
+// The two visible fixture agents whose home-DM the fleet pane renders. The fleet
+// tabs are now CONFIGURABLE PINS keyed `agent:${accountId}` (Record A §T2), not a
+// hardcoded Supervisor · Warden pair — but the pane arm resolves any visible
+// agent's tab regardless of the pin set, so the test drives the tab id directly.
+// Both ids resolve in the fixture, so the pane renders their home-DM inline.
+const FLEET_TABS = ["acc-supervisor", "acc-warden"] as const;
 
 // The agent account's home-DM channel id — resolved through the SAME account set
 // the store exposes (STUB_ACCOUNTS carries agent accounts with homeChannelId),
@@ -78,10 +74,10 @@ function handleFor(accountId: string): string {
 	return account.handle;
 }
 
-// The home-DM messages for a fleet tab, straight from the fixture. The DMs are
+// The home-DM messages for a fleet agent, straight from the fixture. The DMs are
 // flat (no parentMessageId), so each message is its own thread → one .msg row.
-function homeDmMessages(tab: "supervisor" | "warden") {
-	const channelId = homeChannelForAgent(agentIdForTab(tab));
+function homeDmMessages(agentId: string) {
+	const channelId = homeChannelForAgent(agentId);
 	return STUB_MESSAGES.filter((m) => m.channelId === channelId);
 }
 
@@ -89,8 +85,6 @@ const msgRoles = (container: HTMLElement): string[] =>
 	[...container.querySelectorAll<HTMLElement>(".conv-stream .msg-role")].map(
 		(el) => el.textContent ?? "",
 	);
-
-const FLEET_TABS = ["supervisor", "warden"] as const;
 
 describe("RightSidebar fleet pane (compass-0.7)", () => {
 	// The inline conversation leg, one case per fleet tab. Against the OLD
@@ -101,7 +95,7 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 	for (const tab of FLEET_TABS) {
 		test(`${tab} tab renders the agent's home-DM conversation inline`, () => {
 			const { store, container } = mountRightSidebar();
-			store.setActiveRightTab(tab);
+			store.setActiveRightTab(`agent:${tab}`);
 
 			const messages = homeDmMessages(tab);
 			// Non-triviality: the fixture DM actually carries a multi-message
@@ -151,7 +145,7 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 
 	test("the supervisor fleet pane renders a home-DM ask answerable in place", () => {
 		const { store, container } = mountRightSidebar();
-		store.setActiveRightTab("supervisor");
+		store.setActiveRightTab("agent:acc-supervisor");
 
 		// The ask actually rendered inside the pane's conversation stream.
 		const askBlock = container.querySelector(".conv-stream .block-ask");
@@ -193,7 +187,7 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 	// routing so a refactor of the button can't silently break navigation.
 	test("the Open workspace button routes to the agent's workspace", () => {
 		const { store, container } = mountRightSidebar();
-		store.setActiveRightTab("supervisor");
+		store.setActiveRightTab("agent:acc-supervisor");
 
 		// Precondition: we start on the board with no agent selected.
 		expect(store.view()).toBe("bridge");
@@ -205,7 +199,7 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 		fireEvent.click(button as HTMLButtonElement);
 
 		expect(store.view()).toBe("agent");
-		expect(store.selectedAgentId()).toBe(agentIdForTab("supervisor"));
+		expect(store.selectedAgentId()).toBe("acc-supervisor");
 	});
 
 	// Fallback: an unresolved agent id yields the "Agent not found." empty state,
@@ -215,7 +209,7 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 	// observable inverse and reddens if agentFor ever stops resolving.
 	test("a resolved fleet tab renders the pane, not the not-found fallback", () => {
 		const { store, container } = mountRightSidebar();
-		store.setActiveRightTab("warden");
+		store.setActiveRightTab("agent:acc-warden");
 
 		expect(container.querySelector(".fleet-pane")).not.toBeNull();
 		expect(container.querySelector(".term-empty")).toBeNull();

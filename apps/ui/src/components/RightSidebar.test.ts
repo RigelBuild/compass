@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { RIGHT_SIDEBAR_TAB_GROUPS } from "../constants";
+import { createRoot } from "solid-js";
+import { type AppStore, createAppStore } from "../store";
 import type { FileNode, Issue, IssueState } from "../stub-data";
 import { STUB_AGENTS } from "../stub-data";
 import type { FleetMetrics } from "./RightSidebar";
@@ -103,81 +104,126 @@ describe("filterFileTree", () => {
 	});
 });
 
-describe("RIGHT_SIDEBAR_TAB_GROUPS", () => {
-	// The activity bar renders groups top-to-bottom with a divider between them;
-	// fleet (always-on agent conversations) must sit ABOVE issue (D2). A
-	// swapped or renamed group order would render the bar upside-down, so pin the
-	// exact sequence.
+describe("rightTabGroups() derivation (Record A §T2)", () => {
+	// The activity-bar groups are a STORE derivation now (rightTabGroups()), not a
+	// static table: the fleet group is the resolvable pins in pin order + the
+	// static status item; the issue group is the static issue items. Build a store
+	// inside a reactive root, pin agents, and assert the derived partition.
+	const withGroups = (
+		body: (
+			groups: readonly {
+				group: string;
+				items: readonly { id: string; agentId?: string }[];
+			}[],
+			store: AppStore,
+		) => void,
+		pins: readonly string[] = [],
+	): void => {
+		// A unique workspace key per call, cleared around the body, so the
+		// process-wide localStorage can't leak pins between cases.
+		const workspaceKey = `rtg-${Math.random().toString(36).slice(2)}`;
+		globalThis.localStorage.removeItem(`compass.pinnedAgents.${workspaceKey}`);
+		createRoot((dispose) => {
+			const store = createAppStore({ workspaceKey });
+			for (const id of pins) store.pinAgent(id);
+			try {
+				body(store.rightTabGroups(), store);
+			} finally {
+				dispose();
+			}
+		});
+		globalThis.localStorage.removeItem(`compass.pinnedAgents.${workspaceKey}`);
+	};
+
+	// The two visible fixture agents to pin — both resolve in STUB_AGENTS, so the
+	// derivation must surface a fleet item for each, in pin order.
+	const SUP = "acc-supervisor";
+	const WARDEN = "acc-warden";
+
+	// Fleet must sit ABOVE issue (D2). A swapped order renders the bar upside-down.
 	test("orders the groups fleet-first, issue-second", () => {
-		expect(RIGHT_SIDEBAR_TAB_GROUPS.map((g) => g.group)).toEqual([
-			"fleet",
-			"issue",
-		]);
+		withGroups((groups) => {
+			expect(groups.map((g) => g.group)).toEqual(["fleet", "issue"]);
+		});
 	});
 
-	// The groups must PARTITION the full RightSidebarTab union: every tab appears
-	// exactly once across all groups (fleet ids in declaration order, then
-	// issue), with nothing missing, duplicated, or invented. A tab that
-	// slipped out of both groups, or landed in two, would render either an
-	// unreachable pane or a doubled icon — this catches both.
-	test("partitions the union exactly, no id missing or repeated", () => {
-		const ids = RIGHT_SIDEBAR_TAB_GROUPS.flatMap((g) =>
-			g.items.map((item) => item.id),
+	// Resolvable pins → fleet items in pin order, then the static status item;
+	// issue items are the static Files/VCS/PR. Nothing missing, duplicated, or
+	// invented across the partition.
+	test("resolvable pins yield fleet items in pin order + status; issue items static", () => {
+		withGroups(
+			(groups) => {
+				const ids = groups.flatMap((g) => g.items.map((item) => item.id));
+				expect(ids).toEqual([
+					`agent:${SUP}`,
+					`agent:${WARDEN}`,
+					"status",
+					"files",
+					"vcs",
+					"pr",
+				]);
+				// No duplicate, independent of order.
+				expect(new Set(ids).size).toBe(ids.length);
+			},
+			[SUP, WARDEN],
 		);
-		expect(ids).toEqual([
-			"supervisor",
-			"warden",
-			"status",
-			"files",
-			"vcs",
-			"pr",
-		]);
-		// Ordered-equality above already forbids extras/gaps; this pins "no
-		// duplicate" independently of order so a reordering refactor can't mask a
-		// repeat.
-		expect(new Set(ids).size).toBe(ids.length);
 	});
 
-	// The fleet/issue split decides which tabs badge an agent StateDot.
-	// Issue panes never carry an agentId. Among fleet tabs, the
-	// agent-conversation tabs (supervisor, warden) carry one; the Status tab is
-	// a fleet PANE, not a conversation, so it carries none. Pin exactly which
-	// fleet ids badge an agent so a stray or missing agentId can't slip through.
-	test("fleet items carry an agentId; issue items do not", () => {
-		const fleet = RIGHT_SIDEBAR_TAB_GROUPS.find((g) => g.group === "fleet");
-		const issue = RIGHT_SIDEBAR_TAB_GROUPS.find((g) => g.group === "issue");
-		expect(fleet).toBeDefined();
-		expect(issue).toBeDefined();
-		// Every issue pane is agent-less.
-		for (const item of issue?.items ?? []) {
-			expect(item.agentId).toBeUndefined();
-		}
-		// The fleet tabs that DO carry an agentId are exactly the conversation
-		// tabs — Status is not among them.
-		const withAgent = (fleet?.items ?? [])
-			.filter((item) => item.agentId !== undefined)
-			.map((item) => item.id);
-		expect(withAgent).toEqual(["supervisor", "warden"]);
-		// Status is present as a fleet tab, and carries no agentId.
-		const status = (fleet?.items ?? []).find((item) => item.id === "status");
-		expect(status).toBeDefined();
-		expect(status?.agentId).toBeUndefined();
-	});
-
-	// A fleet agentId is only useful if it resolves a real stub agent (the D3
-	// `agentFor` lookup badges the tab from STUB_AGENTS). Only conversation tabs
-	// carry one — the Status tab, having none, is skipped, not a failure — so
-	// iterate the fleet tabs that DO carry an agentId and assert each resolves.
-	test("every fleet agentId resolves a real stub agent", () => {
-		const fleet = RIGHT_SIDEBAR_TAB_GROUPS.find((g) => g.group === "fleet");
-		const agentTabs = (fleet?.items ?? []).filter(
-			(item) => item.agentId !== undefined,
+	// An unresolvable pin (no visible agent for the id) produces NO activity-bar
+	// item — the derivation is the filter layer (§T2). The resolvable pin beside
+	// it still surfaces, so the filter is selective, not all-or-nothing.
+	test("an unresolvable pin yields no fleet item", () => {
+		withGroups(
+			(groups) => {
+				const fleet = groups.find((g) => g.group === "fleet");
+				const fleetIds = (fleet?.items ?? []).map((item) => item.id);
+				// The resolvable pin surfaces; the ghost id does not.
+				expect(fleetIds).toContain(`agent:${SUP}`);
+				expect(fleetIds).not.toContain("agent:acc-ghost");
+				// Exactly the resolvable pin + status.
+				expect(fleetIds).toEqual([`agent:${SUP}`, "status"]);
+			},
+			[SUP, "acc-ghost"],
 		);
-		// Guard against a vacuous pass if the filter ever empties the set.
-		expect(agentTabs.length).toBeGreaterThan(0);
-		for (const item of agentTabs) {
-			expect(STUB_AGENTS.some((a) => a.account.id === item.agentId)).toBe(true);
-		}
+	});
+
+	// With no pins, the fleet group is just the static status item; the issue
+	// group is unchanged. Each fleet PIN item carries an agentId that resolves a
+	// real stub agent; status and every issue item carry none.
+	test("fleet pin items carry a resolving agentId; status and issue items do not", () => {
+		withGroups(
+			(groups) => {
+				const fleet = groups.find((g) => g.group === "fleet");
+				const issue = groups.find((g) => g.group === "issue");
+				expect(fleet).toBeDefined();
+				expect(issue).toBeDefined();
+				// Every issue pane is agent-less.
+				for (const item of issue?.items ?? []) {
+					expect(item.agentId).toBeUndefined();
+				}
+				// The fleet items with an agentId are exactly the pins, and each
+				// resolves a real stub agent.
+				const withAgent = (fleet?.items ?? []).filter(
+					(item) => item.agentId !== undefined,
+				);
+				expect(withAgent.map((item) => item.id)).toEqual([
+					`agent:${SUP}`,
+					`agent:${WARDEN}`,
+				]);
+				for (const item of withAgent) {
+					expect(STUB_AGENTS.some((a) => a.account.id === item.agentId)).toBe(
+						true,
+					);
+				}
+				// Status is present as a fleet item and carries no agentId.
+				const status = (fleet?.items ?? []).find(
+					(item) => item.id === "status",
+				);
+				expect(status).toBeDefined();
+				expect(status?.agentId).toBeUndefined();
+			},
+			[SUP, WARDEN],
+		);
 	});
 });
 

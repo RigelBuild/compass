@@ -401,6 +401,46 @@ button {
 	background: var(--bg-hover);
 }
 
+/* The agent-leaf row: the select button (.tree-agent) plus its hover pin/unpin
+ *  affordance (Record A §T4). Flex:1 + min-width:0 so it absorbs the remaining
+ *  width inside a branch row (beside the caret) and shrinks below its content;
+ *  as a plain leaf it fills the row. The pin button reveals on row hover, so the
+ *  tree stays calm — except a pinned row, which shows a filled star always. */
+.tree-agent-row {
+	display: flex;
+	align-items: center;
+	flex: 1;
+	min-width: 0;
+	width: 100%;
+}
+
+.tree-agent-pin {
+	flex: 0 0 auto;
+	border: none;
+	background: transparent;
+	color: var(--text-faint);
+	font-size: 12px;
+	line-height: 1;
+	padding: 4px 6px;
+	border-radius: 4px;
+	cursor: pointer;
+	opacity: 0;
+}
+
+.tree-agent-row:hover .tree-agent-pin {
+	opacity: 1;
+}
+
+.tree-agent-pin:hover {
+	background: var(--bg-hover);
+	color: var(--text);
+}
+
+.tree-agent-pin.pinned {
+	opacity: 1;
+	color: var(--accent);
+}
+
 /* An agent leaf in the tree. Inside a branch it shares the flex row with the
  *  caret, so flex:1 + min-width:0 let it absorb the remaining width and shrink
  *  below its content (a fixed-size caret never forces overflow); as a plain
