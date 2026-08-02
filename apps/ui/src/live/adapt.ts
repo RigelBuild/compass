@@ -56,12 +56,12 @@ const GROUP_VISIBILITY: Record<ChannelGroupVisibility, DomainVisibility> = {
 } satisfies Record<ChannelGroupVisibility, DomainVisibility>;
 
 /** Map a wire Account to the domain Account, flattening the `kind` oneof and
- *  lifting the agent arm's `homeChannelId`/`ownerUserId` onto the flat domain
- *  shape (the domain models an agent's home DM + owner inline, not in a nested
- *  message). An unset `kind` oneof (`case: undefined`) is a malformed wire
- *  account; it maps to a `user` with no agent fields rather than throwing, so a
- *  single bad row never blanks the whole roster — the missing agent fields make
- *  it inert (no home DM, no ownership) rather than wrong. */
+ *  lifting the agent arm's `homeChannelId`/`ownerUserId`/`parentAgentId` onto
+ *  the flat domain shape (the domain models an agent's home DM + owner inline,
+ *  not in a nested message). An unset `kind` oneof (`case: undefined`) is a
+ *  malformed wire account; it maps to a `user` with no agent fields rather than
+ *  throwing, so a single bad row never blanks the whole roster — the missing
+ *  agent fields make it inert (no home DM, no ownership) rather than wrong. */
 export function adaptAccount(w: WireAccount): Account {
 	const base = {
 		id: w.id,
@@ -77,6 +77,10 @@ export function adaptAccount(w: WireAccount): Account {
 			// CreateAgent); an empty string is nonetheless normalized to undefined
 			// so the domain's "absent = no home DM" contract holds.
 			homeChannelId: w.kind.value.homeChannelId || undefined,
+			// The wire encodes "root" (no parent agent) as an empty string;
+			// normalize it to undefined so the domain's "absent = a root" contract
+			// holds and agentTree derives it as top-level.
+			parentAgentId: w.kind.value.parentAgentId || undefined,
 		};
 	}
 	return { ...base, kind: "user" };
