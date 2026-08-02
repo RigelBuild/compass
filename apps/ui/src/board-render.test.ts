@@ -2,10 +2,13 @@ import { describe, expect, test } from "bun:test";
 import {
 	authorLabel,
 	checkPip,
+	ciBadge,
 	isMultiForge,
 	issueKey,
+	openPrs,
 	prBadge,
 	primaryPr,
+	reviewBadge,
 } from "./board-render";
 import type {
 	AgentAttribution,
@@ -13,6 +16,7 @@ import type {
 	ForgeRef,
 	Issue,
 	PullRequest,
+	Review,
 } from "./stub-data";
 
 const GITHUB: ForgeRef = { provider: "github", host: "github.com" };
@@ -194,5 +198,140 @@ describe("authorLabel", () => {
 	// bit — one assertion carrying both facts.
 	test("tracks agentHandle and ignores the verified bit", () => {
 		expect(authorLabel(agent("nemo", false))).toBe("@nemo");
+	});
+});
+
+// reviewBadge rolls the review set to one display verdict: latest-per-author
+// over the submission-ordered `reviews` (bots INCLUDED), then precedence
+// changes_requested > approved > commented, with changes_requested mapped to the
+// display word "changes" INSIDE the helper (its one owner). Empty → undefined.
+describe("reviewBadge", () => {
+	const review = (
+		author: string,
+		verdict: Review["verdict"],
+		isBot = false,
+	): Review => ({ author, isBot, verdict, body: "" });
+
+	test("empty reviews → undefined (no badge)", () => {
+		expect(reviewBadge(pr({ reviews: [] }))).toBeUndefined();
+	});
+
+	test("a lone changes_requested maps to the display word 'changes'", () => {
+		expect(
+			reviewBadge(pr({ reviews: [review("a", "changes_requested")] })),
+		).toBe("changes");
+	});
+
+	// Same-author supersession, favorable direction: a later approved beats the
+	// same author's earlier changes_requested — only the LAST entry per author
+	// counts, so the block clears.
+	test("same author: later approved supersedes earlier changes_requested", () => {
+		expect(
+			reviewBadge(
+				pr({
+					reviews: [review("a", "changes_requested"), review("a", "approved")],
+				}),
+			),
+		).toBe("approved");
+	});
+
+	// Same-author supersession, UNFLATTERING direction: a later commented
+	// supersedes the same author's earlier approved — the badge DROPS to
+	// commented (not stickily "approved"). Pins the latest-wins rule where it
+	// costs a green signal.
+	test("same author: later commented supersedes earlier approved (badge drops)", () => {
+		expect(
+			reviewBadge(
+				pr({
+					reviews: [review("a", "approved"), review("a", "commented")],
+				}),
+			),
+		).toBe("commented");
+	});
+
+	// Cross-author precedence: one blocking reviewer dominates the others'
+	// approvals regardless of submission order.
+	test("cross-author: changes_requested dominates approved", () => {
+		expect(
+			reviewBadge(
+				pr({
+					reviews: [review("a", "approved"), review("b", "changes_requested")],
+				}),
+			),
+		).toBe("changes");
+	});
+
+	// With no block, an approval beats a bare comment.
+	test("cross-author: approved beats commented", () => {
+		expect(
+			reviewBadge(
+				pr({
+					reviews: [review("a", "commented"), review("b", "approved")],
+				}),
+			),
+		).toBe("approved");
+	});
+
+	// Bots are INCLUDED in the roll-up — a bot's block blocks.
+	test("a bot review counts (changes_requested from a bot blocks)", () => {
+		expect(
+			reviewBadge(
+				pr({
+					reviews: [
+						review("human", "approved"),
+						review("ci-bot", "changes_requested", true),
+					],
+				}),
+			),
+		).toBe("changes");
+	});
+});
+
+// ciBadge is the thin total accessor for the roll-up CI state — pr.checks?.state
+// read through one named seam. No checks → undefined (no badge).
+describe("ciBadge", () => {
+	test("no checks → undefined", () => {
+		expect(ciBadge(pr({ checks: undefined }))).toBeUndefined();
+	});
+
+	test("reads the roll-up state directly", () => {
+		expect(
+			ciBadge(pr({ checks: { headSha: "a", state: "failure", checks: [] } })),
+		).toBe("failure");
+		expect(
+			ciBadge(pr({ checks: { headSha: "a", state: "success", checks: [] } })),
+		).toBe("success");
+		expect(
+			ciBadge(pr({ checks: { headSha: "a", state: "pending", checks: [] } })),
+		).toBe("pending");
+	});
+});
+
+// openPrs keeps only the OPEN PRs of an issue (forgeState === "open"), in `prs`
+// order — the PRs-tab row source. Merged/closed drop; draft-open stays (draft
+// is a separate axis from forgeState).
+describe("openPrs", () => {
+	test("keeps only open PRs, dropping merged and closed", () => {
+		const open1 = pr({ number: 1, forgeState: "open" });
+		const merged = pr({ number: 2, forgeState: "merged" });
+		const open2 = pr({ number: 3, forgeState: "open" });
+		const closed = pr({ number: 4, forgeState: "closed" });
+		expect(openPrs(issue({ prs: [open1, merged, open2, closed] }))).toEqual([
+			open1,
+			open2,
+		]);
+	});
+
+	test("preserves prs order and includes a draft-open PR", () => {
+		const draftOpen = pr({ number: 1, forgeState: "open", draft: true });
+		const open = pr({ number: 2, forgeState: "open" });
+		expect(openPrs(issue({ prs: [draftOpen, open] }))).toEqual([
+			draftOpen,
+			open,
+		]);
+	});
+
+	test("an empty prs list → []", () => {
+		expect(openPrs(issue({ prs: [] }))).toEqual([]);
 	});
 });

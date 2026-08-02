@@ -8,11 +8,14 @@ import {
 	isActiveState,
 	isBacklogState,
 	laneTotal,
+	prCount,
+	prRowGroups,
+	prRows,
 	subtreeAgentIds,
 	treeOrder,
 } from "./board";
 import { BOARD_LANES } from "./constants";
-import type { Agent, Issue, IssueState } from "./stub-data";
+import type { Agent, Issue, IssueState, PullRequest } from "./stub-data";
 
 // board.ts is the pure core of the D1 issue state model: it partitions the
 // lifecycle into the active board columns vs the pre-active Backlog tier vs the
@@ -422,5 +425,211 @@ describe("subtreeAgentIds", () => {
 	test("the set includes the root itself", () => {
 		const agents = [agent("root"), agent("child", "root")];
 		expect(subtreeAgentIds(agents, "root").has("root")).toBe(true);
+	});
+});
+
+// A minimal PullRequest — only forgeState (the openPrs predicate) and number
+// (row identity in assertions) carry meaning; the rest are inert defaults.
+function prOf(over: Partial<PullRequest>): PullRequest {
+	return {
+		forge: { provider: "github", host: "github.com" },
+		repo: "acme/repo",
+		number: 0,
+		title: "t",
+		forgeState: "open",
+		url: "https://example.test/pr",
+		headRef: "h",
+		baseRef: "b",
+		forgeAccount: "acct",
+		draft: false,
+		reviews: [],
+		threads: [],
+		...over,
+	};
+}
+
+// prRows / prRowGroups / prCount build the PRs-tab partition: one row per OPEN
+// PR (any issue lifecycle state), grouped by assignee in treeOrder with an
+// Unassigned group last, and a count that honors an optional subtree scope.
+describe("prRows", () => {
+	test("an issue with two open PRs yields two rows in prs order", () => {
+		const a = prOf({ number: 1 });
+		const b = prOf({ number: 2 });
+		const rows = prRows([ws({ id: "i1", state: "in_review", prs: [a, b] })]);
+		expect(rows).toHaveLength(2);
+		expect(rows.map((r) => r.pr.number)).toEqual([1, 2]);
+		expect(rows.every((r) => r.issue.id === "i1")).toBe(true);
+	});
+
+	test("merged and closed PRs are excluded", () => {
+		const open = prOf({ number: 1, forgeState: "open" });
+		const merged = prOf({ number: 2, forgeState: "merged" });
+		const closed = prOf({ number: 3, forgeState: "closed" });
+		const rows = prRows([
+			ws({ id: "i1", state: "in_review", prs: [open, merged, closed] }),
+		]);
+		expect(rows.map((r) => r.pr.number)).toEqual([1]);
+	});
+
+	test("issue order then prs order is preserved across issues", () => {
+		const rows = prRows([
+			ws({ id: "i1", state: "in_progress", prs: [prOf({ number: 1 })] }),
+			ws({
+				id: "i2",
+				state: "in_review",
+				prs: [prOf({ number: 2 }), prOf({ number: 3 })],
+			}),
+		]);
+		expect(rows.map((r) => `${r.issue.id}:${r.pr.number}`)).toEqual([
+			"i1:1",
+			"i2:2",
+			"i2:3",
+		]);
+	});
+
+	test("a pre-active issue with an open PR still contributes (predicate is on the PR)", () => {
+		const rows = prRows([
+			ws({ id: "i1", state: "backlog", prs: [prOf({ number: 9 })] }),
+		]);
+		expect(rows.map((r) => r.pr.number)).toEqual([9]);
+	});
+});
+
+describe("prRowGroups", () => {
+	test("groups follow treeOrder (parent before child), each with its rows", () => {
+		const agents = [agent("root"), agent("child", "root")];
+		const all = [
+			ws({
+				id: "c1",
+				state: "in_review",
+				assignee: "child",
+				prs: [prOf({ number: 2 })],
+			}),
+			ws({
+				id: "r1",
+				state: "in_review",
+				assignee: "root",
+				prs: [prOf({ number: 1 })],
+			}),
+		];
+		const groups = prRowGroups(agents, all);
+		expect(groups.map((g) => g.agent?.account.id)).toEqual(["root", "child"]);
+		expect(groups[0]?.rows.map((r) => r.pr.number)).toEqual([1]);
+		expect(groups[1]?.rows.map((r) => r.pr.number)).toEqual([2]);
+	});
+
+	test("an agent with no open-PR rows is omitted from the sequence", () => {
+		const agents = [agent("a"), agent("b")];
+		const all = [
+			ws({
+				id: "i1",
+				state: "in_review",
+				assignee: "b",
+				prs: [prOf({ number: 1 })],
+			}),
+		];
+		const groups = prRowGroups(agents, all);
+		expect(groups.map((g) => g.agent?.account.id)).toEqual(["b"]);
+	});
+
+	test("the Unassigned group is last when present", () => {
+		const agents = [agent("a")];
+		const all = [
+			ws({
+				id: "u1",
+				state: "in_review",
+				assignee: null,
+				prs: [prOf({ number: 2 })],
+			}),
+			ws({
+				id: "a1",
+				state: "in_review",
+				assignee: "a",
+				prs: [prOf({ number: 1 })],
+			}),
+		];
+		const groups = prRowGroups(agents, all);
+		expect(groups.map((g) => g.agent?.account.id ?? "UNASSIGNED")).toEqual([
+			"a",
+			"UNASSIGNED",
+		]);
+		expect(groups[1]?.rows.map((r) => r.pr.number)).toEqual([2]);
+	});
+
+	test("no unassigned rows → no Unassigned group", () => {
+		const agents = [agent("a")];
+		const all = [
+			ws({
+				id: "a1",
+				state: "in_review",
+				assignee: "a",
+				prs: [prOf({ number: 1 })],
+			}),
+		];
+		const groups = prRowGroups(agents, all);
+		expect(groups.every((g) => g.agent !== null)).toBe(true);
+	});
+});
+
+describe("prCount", () => {
+	test("unscoped: total open-PR rows across issues (unassigned included)", () => {
+		const all = [
+			ws({
+				id: "a1",
+				state: "in_review",
+				assignee: "a",
+				prs: [prOf({ number: 1 }), prOf({ number: 2 })],
+			}),
+			ws({
+				id: "u1",
+				state: "in_review",
+				assignee: null,
+				prs: [prOf({ number: 3 })],
+			}),
+			ws({
+				id: "m1",
+				state: "done",
+				assignee: "a",
+				prs: [prOf({ number: 4, forgeState: "merged" })],
+			}),
+		];
+		expect(prCount(all)).toBe(3);
+	});
+
+	test("scoped: counts only rows whose assignee is in scope, unassigned excluded", () => {
+		const all = [
+			ws({
+				id: "a1",
+				state: "in_review",
+				assignee: "a",
+				prs: [prOf({ number: 1 })],
+			}),
+			ws({
+				id: "b1",
+				state: "in_review",
+				assignee: "b",
+				prs: [prOf({ number: 2 })],
+			}),
+			ws({
+				id: "u1",
+				state: "in_review",
+				assignee: null,
+				prs: [prOf({ number: 3 })],
+			}),
+		];
+		expect(prCount(all, new Set(["a"]))).toBe(1);
+		expect(prCount(all, new Set(["a", "b"]))).toBe(2);
+	});
+
+	test("an empty scope set counts nothing", () => {
+		const all = [
+			ws({
+				id: "a1",
+				state: "in_review",
+				assignee: "a",
+				prs: [prOf({ number: 1 })],
+			}),
+		];
+		expect(prCount(all, new Set<string>())).toBe(0);
 	});
 });

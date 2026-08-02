@@ -1,13 +1,24 @@
-import { type Component, For, Show } from "solid-js";
-import { checkPip, isMultiForge, issueKey, primaryPr } from "../board-render";
+import { type Component, Show } from "solid-js";
+import {
+	ciBadge,
+	isMultiForge,
+	issueKey,
+	primaryPr,
+	reviewBadge,
+} from "../board-render";
 import { useStore } from "../context";
 import type { Issue } from "../stub-data";
 
 /** A single issue card — used in the Bridge swimlane cells. Single-click selects
  *  the issue (syncing the roster) without leaving the board; double-click jumps
  *  into the assigned agent's view (design D10). A card with no assignee has no
- *  jump target, so double-click falls back to select. */
-export const IssueCard: Component<{ issue: Issue }> = (props) => {
+ *  jump target, so double-click falls back to select. When `onOpenPr` is passed
+ *  (by the Bridge), the PR chip becomes an interactive cross-link to the PRs
+ *  tab; without it the chip stays inert (a card rendered elsewhere). */
+export const IssueCard: Component<{
+	issue: Issue;
+	onOpenPr?: () => void;
+}> = (props) => {
 	const store = useStore();
 	const openAssignedAgent = () => {
 		const agentId = props.issue.assignee;
@@ -42,19 +53,34 @@ export const IssueCard: Component<{ issue: Issue }> = (props) => {
 				<span class="card-issue">{key()}</span>
 				<Show when={pr()}>
 					{(p) => (
-						<span class="card-pr">
+						/* biome-ignore lint/a11y/noStaticElementInteractions: the chip lives inside
+						   the card <button>, so a nested button/link is disallowed — a role="link"
+						   span with keyboard + stopPropagation is the content-model compromise
+						   (DL-097 §2); inert when onOpenPr is absent. */
+						<span
+							class="card-pr"
+							classList={{ link: props.onOpenPr !== undefined }}
+							role={props.onOpenPr ? "link" : undefined}
+							tabIndex={props.onOpenPr ? 0 : undefined}
+							onClick={(e) => {
+								if (!props.onOpenPr) return;
+								e.stopPropagation();
+								props.onOpenPr();
+							}}
+							onKeyDown={(e) => {
+								if (!props.onOpenPr) return;
+								if (e.key !== "Enter" && e.key !== " ") return;
+								e.preventDefault();
+								e.stopPropagation();
+								props.onOpenPr();
+							}}
+						>
 							<Show when={p().checks}>
-								{(checks) => (
-									<span class="check-pips">
-										<For each={checks().checks}>
-											{(c) => (
-												<span
-													class="check-pip"
-													data-status={checkPip(c.state)}
-												/>
-											)}
-										</For>
-									</span>
+								<span class="ci-badge" data-status={ciBadge(p())} />
+							</Show>
+							<Show when={reviewBadge(p())}>
+								{(verdict) => (
+									<span class="review-badge" data-verdict={verdict()} />
 								)}
 							</Show>
 							#{p().number}
