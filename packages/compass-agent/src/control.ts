@@ -4,9 +4,9 @@
 // The control CONTRACT is frozen (design compass-0.6 §T5, ratified additive
 // message `AgentControl`):
 //   oneof control {
-//     PromptControl prompt; SteerControl steer; AskAnswerControl ask_answer;
-//     ConfigControl config; TranscriptReplay replay; ReplayComplete
-//     replay_complete }
+//     PromptControl prompt; SteerControl steer; DeliverControl deliver;
+//     AskAnswerControl ask_answer; ConfigControl config; TranscriptReplay replay;
+//     ReplayComplete replay_complete }
 // Replay barrier (frozen): TranscriptReplay is applied to context (never live
 // input); the Runner holds live prompt/steer/ask_answer until the agent acks
 // ReplayComplete. The set oneof field is the discriminator.

@@ -329,9 +329,16 @@ export async function main(
 	// type-safe path to the same per-call resolution semantics.
 	session.agent.getApiKey = createSeedApiKeyResolver(home);
 
+	// Construction cycle (SEA-1310 §8): createSocketControlSource needs the
+	// ImmediateControl handle at construction, but the handle must forward into
+	// the CompassAgent — which is constructed AFTER (it takes `control` as a ctor
+	// arg). A mutable holder resolves it: the handle closes over `agent` and the
+	// source's pump only dispatches AFTER `run()` starts consuming, by which point
+	// `agent` is assigned — so the `agent?.` guard never actually sees undefined.
+	let agent: CompassAgent | undefined;
 	const control = createSocketControlSource(transport, {
-		steer: (msg) => session.agent.steer(msg),
-		deliver: (msg) => session.agent.appendMessage(msg),
+		steer: (msg) => agent?.steer(msg),
+		deliver: (msg) => agent?.deliver(msg),
 	});
 
 	// Drain in `finally`, on both the clean and error paths. `run()` emits its
@@ -355,7 +362,8 @@ export async function main(
 	// broke it a skipped `close()` would leak the session, which is the exact
 	// defect `close()` was added to fix.
 	try {
-		await new CompassAgent({ session, sink, control }).run();
+		agent = new CompassAgent({ session, sink, control });
+		await agent.run();
 	} finally {
 		try {
 			// Belt for the APPEND vector: `writeTextSync` tracks drain

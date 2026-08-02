@@ -34,6 +34,9 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
 import {
 	AgentSessionState,
 	create,
+	type DeliveryAck,
+	DeliveryAckSchema,
+	type Message,
 	type SessionFrame,
 	SessionFrameSchema,
 } from "./compassv1";
@@ -77,6 +80,33 @@ export class CompassAgent {
 	// are applied as replay (context), and live prompt/steer are refused until
 	// `#replayComplete` — a belt-and-suspenders on the frozen replay barrier.
 	#replayComplete = false;
+	// SEA-1310 §8 — RT-3 turn-end delivery (DELIVER arm). A delivered channel
+	// message is coalesced to a turn-end prompt: mid-turn delivers queue and flush
+	// as ONE prompt when the turn settles; an idle deliver starts a turn at once.
+	//
+	// `#turnActive` — true between a turn-start edge (agent_start/turn_start/
+	// message_start) and `agent_end`, tracked off the same session event stream
+	// the mapper reads. The flush trigger is the `agent_end` edge: it is safe to
+	// call `session.agent.prompt` synchronously there because the inner Agent
+	// clears `isStreaming` in the `agent_end` case of its own loop BEFORE emitting
+	// (pi-agent-core agent.ts:1254) — so by the time this listener sees the edge
+	// the inner `prompt` guard (agent.ts:985, reads `#state.isStreaming`) is
+	// already open, no AgentBusyError. (The AgentSession-level deferral of
+	// `agent_end` until in-flight prompts unwind, agent-session.ts:3799-3802, does
+	// NOT bear on this path: it is gated on `#promptInFlightCount`, which only
+	// session-level prompts bump — CompassAgent drives the inner `session.agent`
+	// directly, so that count stays 0 for these flushes.) No deferral, no timer:
+	// the flush is synchronous and deterministic under test. The idle-deliver
+	// trigger additionally gates on `#session.isStreaming` (see `deliver`), which
+	// closes the control-prompt spin-up race the event-derived flag alone cannot.
+	#turnActive = false;
+	// The coalescing queue: messages delivered mid-turn, drained into one prompt
+	// at the next flush.
+	#deliverQueue: Message[] = [];
+	// Session-lifetime dedup set keyed on `Message.id`. A sweep redelivery under a
+	// fresh control_seq (independent of the control-source's seq dedup) is dropped
+	// here so a message is injected at most once (frozen record :811-812).
+	readonly #processedMessageIds = new Set<string>();
 
 	constructor(opts: CompassAgentOptions) {
 		this.#session = opts.session;
@@ -101,6 +131,11 @@ export class CompassAgent {
 	// re-throws (error).
 	async run(): Promise<void> {
 		const unsubscribe = this.#session.subscribe((event) => {
+			// Turn-tracking (SEA-1310 §8): an ADDITIONAL read of the same event,
+			// beside the mapper fan-out below — never disturbing it. A turn-start
+			// edge marks the session active; `agent_end` settles it and flushes any
+			// coalesced delivers into one turn-end prompt.
+			this.#trackTurn(event.type);
 			for (const out of this.#mapper.map(event)) {
 				if (out.kind === "unmapped") {
 					this.#onUnmapped(out);
@@ -138,6 +173,169 @@ export class CompassAgent {
 	#emitStatus(state: AgentSessionState): void {
 		const value: SessionFrame = create(SessionFrameSchema, { state });
 		this.#sink.emit({ kind: "session", value });
+	}
+
+	// SEA-1310 §8 — deliver a channel message into the live session (RT-3). The
+	// entry the immediate handle calls when a `DeliverControl.message` decodes.
+	// The replay barrier is enforced UPSTREAM at the control source (a
+	// pre-ReplayComplete immediate op is refused-and-counted before it reaches
+	// this handle, control-source.ts), so this method does not re-check it.
+	deliver(msg: Message): void {
+		// A message with no id cannot be acked or deduped — fail-visible, never a
+		// silent drop (and never injected, since there would be no receipt for it).
+		if (msg.id === "") {
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "deliver",
+				reason: "deliver missing Message.id — cannot ack or dedup",
+			});
+			return;
+		}
+		// Sweep-redelivery safety: a message already processed this session is
+		// dropped (counted), independent of the control-source's control_seq dedup
+		// (frozen record :811-812).
+		//
+		// Re-ack subtlety (SEA-1310 §8 review MEDIUM): `#processedMessageIds` holds
+		// ids from ENQUEUE time (:205, before injection), not injection time. The
+		// Publish PRIORITY lane an ack rides is never-drop only within its retry
+		// budget (publish-spine.ts:156-158) — a Runner restart or a >~1s socket
+		// outage during the ack flush can still lose an ack for a message that WAS
+		// injected. Its id stays in the processed set (the un-dedup at :297 fires
+		// only on prompt REJECTION = not-injected), so the Server's redelivery sweep
+		// re-arrives here and would strand the delivery cursor forever with no ack.
+		// The frozen record's intent is that "the message_id dedup absorbs" a lost
+		// ack (design.md:405-406) and "a duplicate ack is a no-op" on the Server
+		// (:338) — so we RE-EMIT the ack to recover the cursor. But only when the id
+		// is ALREADY INJECTED, i.e. NOT still pending in `#deliverQueue`: because the
+		// set is populated at enqueue-time, a mid-turn duplicate of a message still
+		// QUEUED (not yet flushed) must NOT be acked — "ack means injected"
+		// (:257-262), and acking a still-queued message then losing it to a
+		// crash-before-flush would strand it the other way. A still-queued duplicate
+		// keeps the current behavior (counted, no re-ack); the queued copy is acked
+		// when the queue flushes.
+		if (this.#processedMessageIds.has(msg.id)) {
+			if (!this.#deliverQueue.some((queued) => queued.id === msg.id)) {
+				const value: DeliveryAck = create(DeliveryAckSchema, {
+					messageId: msg.id,
+				});
+				this.#sink.emit({ kind: "deliveryAck", value });
+			}
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "deliver",
+				reason: "duplicate deliver — message_id already processed",
+			});
+			return;
+		}
+		this.#processedMessageIds.add(msg.id);
+		this.#deliverQueue.push(msg);
+		// Idle deliver starts a turn immediately (frozen :799/:810); a mid-turn
+		// deliver waits for the `agent_end` flush. "Idle" consults BOTH the
+		// event-derived `#turnActive` AND the authoritative `#session.isStreaming`
+		// (pi-coding-agent agent-session.ts:6469, the inner Agent's real streaming
+		// state): a control-driven prompt (`#applyControl` case "prompt") sets the
+		// inner agent streaming SYNCHRONOUSLY (pi-agent-core agent.ts:1072) but
+		// only flips `#turnActive` later, off the async `agent_start` event
+		// (:1214/:1260). In that window `#turnActive` is still false while a turn
+		// is genuinely live; flushing there would inject into a streaming agent,
+		// the prompt would reject with AgentBusyError, and the message would be
+		// acked-and-dropped. Gating on `isStreaming` too keeps the message queued
+		// to ride the live turn's `agent_end` flush.
+		if (!this.#turnActive && !this.#session.isStreaming) this.#flushDelivers();
+	}
+
+	// Steer arm (SEA-1310) — parked. SteerControl is still an empty shell on the
+	// wire (no `message` field), so the control source never dispatches a steer
+	// payload through the immediate handle; this entry exists so the handle's
+	// `steer` forward has a target and the interface is faithful. When a later
+	// ticket populates SteerControl, this is where the mid-turn steer lands.
+	steer(msg: Message): void {
+		this.#onUnmapped({
+			kind: "unmapped",
+			eventType: "steer",
+			reason:
+				"channel-borne steer staged — SteerControl payload not yet on the wire",
+		});
+		void msg;
+	}
+
+	// Track a session turn edge (SEA-1310 §8). A turn-start edge marks the session
+	// active; `agent_end` settles it and flushes the coalesced deliver queue as
+	// one turn-end prompt. See the `#turnActive` field comment for why the flush
+	// is safe synchronously on the `agent_end` edge.
+	#trackTurn(eventType: string): void {
+		switch (eventType) {
+			case "agent_start":
+			case "turn_start":
+			case "message_start":
+				this.#turnActive = true;
+				return;
+			case "agent_end":
+				this.#turnActive = false;
+				this.#flushDelivers();
+				return;
+		}
+	}
+
+	// Flush the coalesced deliver queue: drain it, format the batch into ONE
+	// prompt, issue that single prompt, and emit one delivery ack per message —
+	// but ONLY once injection is known-accepted. The ack means "injected into the
+	// agent", NOT "the resulting turn finished" (frozen :800): it is emitted at
+	// injection time (the microtask right after the synchronous `prompt` call, by
+	// which point injection has happened), never gated behind the prompt's
+	// completion — so a crash mid-turn does not lose the receipt for a message
+	// that WAS injected.
+	//
+	// Rejection-safety belt (SEA-1310 §8): `Agent.prompt` injects SYNCHRONOUSLY up
+	// to its first await (pi-agent-core agent.ts:1072) and can only signal refusal
+	// as a promise REJECTION — a synchronous throw at its very top: the
+	// AgentBusyError streaming guard (:985) or the "No model" check (:990), both
+	// BEFORE any injection. A genuine mid-turn failure does NOT reject — the loop
+	// swallows it, emits `agent_end`, and RESOLVES (:1279-1332). So a rejection
+	// here means the batch was NOT injected. We therefore emit the acks on the
+	// next microtask, gated on the prompt not having synchronously-rejected: a
+	// settled-rejected promise schedules its `.catch` microtask BEFORE this
+	// `queueMicrotask`, so the guard flag is observed deterministically — no
+	// timer, no race. On rejection we fail closed: no ack, and the ids are
+	// un-deduped so the Server (which never saw an ack, so its delivery cursor
+	// never advanced — agent_pb.ts:483) redelivers and re-injects them. The batch
+	// is NOT locally re-enqueued: the Server is the single redelivery authority,
+	// so re-enqueueing on top of its resend would double-inject.
+	#flushDelivers(): void {
+		if (this.#deliverQueue.length === 0) return;
+		const batch = this.#deliverQueue;
+		this.#deliverQueue = [];
+		const input = formatDeliversForPrompt(batch);
+		// Optimistically mark a turn active — an idle flush starts one; the
+		// rejection path below clears it, since a refused prompt starts no turn.
+		this.#turnActive = true;
+		let rejected = false;
+		let acked = false;
+		this.#session.agent.prompt(input).catch((err) => {
+			// Reached ONLY on a settled-rejected prompt, i.e. a not-injected batch
+			// (see the method comment). If the acks already went out this is the
+			// SDK-impossible post-injection rejection — leave the injected batch
+			// alone rather than un-dedup a message that WAS delivered.
+			if (acked) return;
+			rejected = true;
+			this.#turnActive = false;
+			for (const msg of batch) this.#processedMessageIds.delete(msg.id);
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "deliver:prompt",
+				reason: `deliver flush prompt rejected — batch not injected, un-acked for redelivery: ${String(err)}`,
+			});
+		});
+		queueMicrotask(() => {
+			if (rejected) return;
+			acked = true;
+			for (const msg of batch) {
+				const value: DeliveryAck = create(DeliveryAckSchema, {
+					messageId: msg.id,
+				});
+				this.#sink.emit({ kind: "deliveryAck", value });
+			}
+		});
 	}
 
 	// Apply one decoded control frame. Discriminated on the frozen AgentControl
@@ -265,4 +463,23 @@ export class CompassAgent {
 		}
 		return merged ?? tools;
 	}
+}
+
+// Coalesce a batch of delivered channel messages into ONE prompt input string
+// (SEA-1310 §8). Pure + exported so it is unit-testable. Each message's `text`-
+// case blocks are concatenated (ask-case blocks are ignored — deliver carries
+// channel text; asks are a separate surface), and the batch is joined so the
+// order is stable and each message's text is greppable in the result. A blank
+// text (a message with no text blocks) still contributes its slot so the join
+// is a faithful 1:1 with the batch.
+export function formatDeliversForPrompt(batch: readonly Message[]): string {
+	return batch
+		.map((msg) =>
+			msg.blocks
+				.flatMap((block) =>
+					block.block.case === "text" ? [block.block.value] : [],
+				)
+				.join("\n"),
+		)
+		.join("\n\n");
 }

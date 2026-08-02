@@ -14,6 +14,12 @@
 //     backoff until delivered-or-erred, carrying an agent-minted idempotency_key
 //     so a lost-response retry is deduped by the Runner (C2), never duplicated.
 //     It is NEVER dropped on a reconnect.
+//   - a "deliveryAck" frame is a control-plane ack (SEA-1310 §8): it rides the
+//     Publish spine's never-drop PRIORITY lane, ahead of the trace backlog. It
+//     is NOT durable — the Runner's isConversationFrame guard REJECTS an ack on
+//     the PostConversationFrame unary; the Runner consumes it off the
+//     PublishEvents spine to advance the delivery cursor. Control-plane acks are
+//     never-drop by the spine contract, so it always enqueuePriority.
 //
 // emit() stays synchronous/void (CompassAgent's shape is unchanged): a durable
 // send is launched as a tracked in-flight promise, retained behind drain() the
@@ -155,6 +161,21 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 				} else {
 					spine.enqueueTrace(request);
 				}
+				return;
+			}
+			if (frame.kind === "deliveryAck") {
+				// A per-message delivery receipt is a control-plane ack (SEA-1310 §8):
+				// it rides the Publish spine's never-drop PRIORITY lane, NOT the durable
+				// unary. The Runner's isConversationFrame guard REJECTS an ack on the
+				// PostConversationFrame unary (post_conversation_frame.go:94-108), and
+				// its consume side ingests the ack off the PublishEvents spine
+				// (runnerhub/hub.go:358-360). Control-plane acks are never-drop by the
+				// spine's own contract (publish-spine.ts:24-26,62), so enqueuePriority
+				// unconditionally — never enqueueTrace, never launchDurable.
+				const request = create(PublishFrameRequestSchema, {
+					frame: toAgentFrame(frame),
+				});
+				spine.enqueuePriority(request);
 				return;
 			}
 			// Durable conversation frame: launch the tracked, retried send. emit()

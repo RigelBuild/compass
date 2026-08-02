@@ -5,7 +5,8 @@
 // extended by SEA-1570 with the transcript-tee lane):
 //   - stdout: `AgentFrame` — oneof frame {
 //         MessagePosted conversation_posted; MessageUpdated conversation_updated;
-//         SessionFrame session; TranscriptEntry transcript_entry }
+//         SessionFrame session; TranscriptEntry transcript_entry;
+//         DeliveryAck delivery_ack }
 //     The set oneof field IS the type discriminator; an unset/unrecognized
 //     field is the "unknown frame" the Runner logs + counts. CONVERSATION
 //     (text/ask) rides MessagePosted/MessageUpdated (each wraps a Message of
@@ -18,9 +19,9 @@
 //     can reconstruct the session on resume. Dual-surface split: the Runner
 //     write-throughs each variant to the surface that owns it.
 //   - stdin: `AgentControl` — oneof control {
-//         PromptControl prompt; SteerControl steer; AskAnswerControl ask_answer;
-//         ConfigControl config; TranscriptReplay replay; ReplayComplete
-//         replay_complete }.
+//         PromptControl prompt; SteerControl steer; DeliverControl deliver;
+//         AskAnswerControl ask_answer; ConfigControl config; TranscriptReplay
+//         replay; ReplayComplete replay_complete }.
 //
 // `AgentFrame` is an internal-only additive proto message generated with the
 // agent's proto via the path-filtered gen lane (not the public client surface);
@@ -36,6 +37,7 @@ import {
 	type AgentFrame,
 	AgentFrameSchema,
 	create,
+	type DeliveryAck,
 	type MessagePosted,
 	type MessageUpdated,
 	type SessionFrame,
@@ -53,7 +55,12 @@ export type OutboundFrame =
 	// SEA-1570: one committed SDK session entry, teed upstream. `value` is a
 	// branded generated message (`create(TranscriptEntrySchema, …)`), and `kind`
 	// matches the generated oneof case name 1:1 like every other variant.
-	| { readonly kind: "transcriptEntry"; readonly value: TranscriptEntry };
+	| { readonly kind: "transcriptEntry"; readonly value: TranscriptEntry }
+	// SEA-1310 §8: the agent's per-message delivery receipt for a turn-end
+	// delivery. `value` is a branded generated message (`create(DeliveryAckSchema,
+	// …)`) and `kind` matches the generated oneof case name 1:1 like every other
+	// variant, so the sink stamps it generically (no ProtojsonLineSink change).
+	| { readonly kind: "deliveryAck"; readonly value: DeliveryAck };
 
 // The sink the agent writes outbound frames to. The wire envelope lives
 // entirely behind this interface.

@@ -19,12 +19,14 @@
 //     start of each `next()`, never on mere receipt (P1 #6).
 //   - `steer` / `deliver` are the IMMEDIATE-dispatch class (mid-turn interrupt /
 //     turn-end delivery): processed on the event loop at decode, ahead of any
-//     queued iterator op. C1 ships them as empty shells (OQ-1) — no representable
-//     `AgentMessage` — so per Matt's OQ-2(A) ruling they are counted-unmapped
-//     here WITHOUT fabricating a payload for `immediate.*`; the SEA-1310 stacked
-//     PR decodes the real payload and dispatches it through the `immediate`
-//     handle threaded here. Barrier-enforced (invariant 1): a pre-ReplayComplete
-//     immediate op is refused-and-counted, never applied.
+//     queued iterator op. As of SEA-1310 §8 `deliver` carries the comms Message
+//     on the wire (`DeliverControl.message`) — decoded here and dispatched
+//     through `immediate.deliver`, where the CompassAgent dedups + coalesces it
+//     to a turn-end prompt. `steer` is still an empty shell (OQ-1) — no
+//     `message` field on the wire — so it is counted-unmapped without fabricating
+//     a payload (OQ-2(A)) until a later PR populates SteerControl.
+//     Barrier-enforced (invariant 1): a pre-ReplayComplete immediate op is
+//     refused-and-counted, never applied.
 //   - `replay` / `config` are also empty shells in C1 (OQ-1) — no payload to seed
 //     context / configure the session — so they too are counted-unmapped at
 //     decode until SEA-1310 populates them (then yielded like `prompt`).
@@ -51,7 +53,7 @@
 // never-dropped priority lane.
 
 import { create } from "@bufbuild/protobuf";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { Message } from "./../compassv1";
 import type { AgentControl, ControlSource } from "./../control";
 import { ControlSubscribeRequestSchema } from "./../gen/compass/v1/agent_gateway_pb";
 import type {
@@ -147,24 +149,29 @@ export const CONTROL_RECONNECT_NO_PROGRESS_MAX = 10;
 
 // The immediate-dispatch handle: the SDK actions a mid-turn `steer` / turn-end
 // `deliver` drives without waiting for the iterator's next pull. Frozen C4
-// signature (design.md C4 Interfaces). Not invoked in C4b — the wire carries
-// empty shells (OQ-1) so there is no `AgentMessage` to pass (OQ-2(A)); SEA-1310
-// populates the payload and this handle carries the real message.
+// signature (design.md C4 Interfaces). As of SEA-1310 §8 the handle carries the
+// full comms `Message` (`.id` intact) — no longer the empty shell of C4b: the
+// deliver arm decodes `DeliverControl.message` and forwards it here, where the
+// CompassAgent dedups on `msg.id`, coalesces to a turn-end prompt, and acks per
+// message. The steer arm stays parked (SteerControl is still an empty shell on
+// the wire — no `message` field — so the source never calls `steer` with a
+// payload until a later ticket populates it).
 export interface ImmediateControl {
-	steer(msg: AgentMessage): void;
-	deliver(msg: AgentMessage): void;
+	steer(msg: Message): void; // compass.v1.Message — .id intact (steer arm parked)
+	deliver(msg: Message): void; // compass.v1.Message — .id intact
 }
 
-// Decode the immediate-op payload into the SDK `AgentMessage` the `immediate`
-// handle applies. `SteerControl` / `DeliverControl` are empty shells on the wire
-// (OQ-1) — they carry no `AgentMessage` fields yet (SEA-1310 owns the payload
-// shape) — so there is nothing to decode and the caller counts the op unmapped
-// without fabricating a payload (OQ-2(A)). When SEA-1310 populates the payload
-// this reads it and returns the message to dispatch.
+// Decode the immediate-op payload into the comms `Message` the `immediate`
+// handle applies. `DeliverControl.message` (SEA-1310 §8) carries the full comms
+// Message with its `.id` — return it when present. `SteerControl` is still an
+// empty shell on the wire (no `message` field), so a steer value has nothing to
+// read and yields `undefined` → counted-unmapped (staged) at the caller, exactly
+// as before. A deliver whose `message` is absent is malformed → also `undefined`
+// → counted-unmapped. The caller never fabricates a payload.
 function decodeImmediatePayload(
-	_shell: SteerControl | DeliverControl,
-): AgentMessage | undefined {
-	return undefined;
+	shell: SteerControl | DeliverControl,
+): Message | undefined {
+	return "message" in shell ? shell.message : undefined;
 }
 
 // Wait `ms`, or wake early if `signal` aborts — whichever comes first. The
@@ -354,9 +361,10 @@ export function createSocketControlSource(
 			case "deliver": {
 				// Immediate-dispatch class. Barrier-enforced (invariant 1): a live
 				// immediate op before ReplayComplete is refused-and-counted. Otherwise
-				// the empty-shell payload (OQ-1) yields no AgentMessage, so per OQ-2(A)
-				// it is counted-unmapped without fabricating a payload for immediate.*;
-				// SEA-1310 populates the payload and dispatches through `immediate`.
+				// decode the payload: DELIVER carries the comms Message (SEA-1310 §8)
+				// and dispatches through `immediate.deliver`; STEER is still an empty
+				// shell on the wire (no `message` field) so it decodes to undefined and
+				// is counted-unmapped (staged) without fabricating a payload (OQ-2(A)).
 				const msg = replayComplete
 					? decodeImmediatePayload(wire.control.value)
 					: undefined;
