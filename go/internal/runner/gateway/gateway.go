@@ -75,9 +75,10 @@ var (
 )
 
 // errNotConversationFrame is the cause when PostConversationFrame receives a
-// frame whose variant is not conversation_posted / conversation_updated — the
-// durable unary carries only durable conversation frames (CodeInvalidArgument).
-var errNotConversationFrame = errors.New("gateway: PostConversationFrame requires a conversation_posted or conversation_updated frame")
+// frame whose variant the durable unary does not carry — not one of
+// conversation_posted / conversation_updated / transcript_entry
+// (CodeInvalidArgument).
+var errNotConversationFrame = errors.New("gateway: PostConversationFrame requires a conversation_posted, conversation_updated, or transcript_entry frame")
 
 // SessionForContainer resolves the one session bound to a container (1:1, fixed
 // at Start, immutable thereafter — no dynamic "current-session" remap). The

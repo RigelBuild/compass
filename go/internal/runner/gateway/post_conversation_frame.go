@@ -4,7 +4,8 @@ package gateway
 
 // post_conversation_frame.go is the durable-frame ingest: the delivered-or-
 // erred handler that carries a conversation_posted / conversation_updated frame
-// off the lossy Publish spine (transport-consolidation record OQ-2(c), P1 #1).
+// (and the SEA-1570 transcript_entry tee variant) off the lossy Publish spine
+// (transport-consolidation record OQ-2(c), P1 #1).
 // It commits the frame request/response via the dedicated
 // RunnerService.CommitConversationFrame unary — the durable counterpart to the
 // loss-tolerant PublishEvents stream — and returns success ONLY after the Server
@@ -35,8 +36,9 @@ import (
 // spine, this does NOT ride the shared PublishEvents publisher: a durable frame
 // leaves that spine entirely and commits request/response, so a Server-side loss
 // is a Connect error the agent retries, never a silent gapless drop. It rejects
-// a non-conversation frame with CodeInvalidArgument (the durable unary carries
-// only conversation_posted / conversation_updated), and fails closed
+// a frame the durable unary does not carry with CodeInvalidArgument (the lane
+// carries conversation_posted / conversation_updated and the SEA-1570
+// transcript_entry tee variant), and fails closed
 // CodePermissionDenied when no session is bound. Dedups on idempotency_key: a
 // key already committed in this process returns success without re-committing
 // (advisory fast-path); the durable boundary is the store's atomic at-most-once
@@ -89,16 +91,18 @@ func (g *Gateway) PostConversationFrame(
 	return connect.NewResponse(&compassv1internal.PostConversationFrameResponse{}), nil
 }
 
-// isConversationFrame reports whether frame is a durable conversation variant
-// (conversation_posted / conversation_updated) — the only frames the durable
-// unary carries. A session frame, an ack, or an unset oneof is rejected.
+// isConversationFrame reports whether frame is a durable frame the
+// CommitConversationFrame unary carries: a conversation variant
+// (conversation_posted / conversation_updated) or the SEA-1570 tee variant
+// (transcript_entry). A session frame, an ack, or an unset oneof is rejected.
 func isConversationFrame(frame *compassv1internal.AgentFrame) bool {
 	if frame == nil {
 		return false
 	}
 	switch frame.GetFrame().(type) {
 	case *compassv1internal.AgentFrame_ConversationPosted,
-		*compassv1internal.AgentFrame_ConversationUpdated:
+		*compassv1internal.AgentFrame_ConversationUpdated,
+		*compassv1internal.AgentFrame_TranscriptEntry:
 		return true
 	default:
 		return false
