@@ -357,6 +357,16 @@ describe("treeOrder", () => {
 			new Set(agents.map((a) => a.account.id)),
 		);
 	});
+
+	test("a cycle promotes both members to roots, each exactly once", () => {
+		// x.parent=y, y.parent=x — agentTree severs the cycle by promoting both
+		// to roots; treeOrder must surface each exactly once (the doc-comment's
+		// totality claim, pinned at this layer).
+		const agents = [agent("x", "y"), agent("y", "x")];
+		const out = treeOrder(agents);
+		expect(out).toHaveLength(2);
+		expect(new Set(orderIds(out))).toEqual(new Set(["x", "y"]));
+	});
 });
 
 describe("subtreeAgentIds", () => {
@@ -388,6 +398,20 @@ describe("subtreeAgentIds", () => {
 			agent("d", "c"),
 		];
 		expect(subtreeAgentIds(agents, "a")).toEqual(new Set(["a", "b", "c", "d"]));
+	});
+
+	test("a mid-tree node returns its own subtree, excluding its ancestor", () => {
+		// Querying an intermediate node must include its descendant and EXCLUDE
+		// its ancestor — a collect() that wrongly started from the tree root
+		// would pass every other test but fail this one.
+		const agents = [
+			agent("root"),
+			agent("child", "root"),
+			agent("grandchild", "child"),
+		];
+		expect(subtreeAgentIds(agents, "child")).toEqual(
+			new Set(["child", "grandchild"]),
+		);
 	});
 
 	test("a missing rootAgentId returns an empty set", () => {
