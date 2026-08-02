@@ -15,7 +15,7 @@ import {
 	MessageSchema,
 	UserAccountSchema,
 } from "@compass/client";
-import type { Account } from "../stub-data";
+import { type Account, type Agent, agentTree } from "../stub-data";
 import {
 	adaptAccount,
 	adaptAsk,
@@ -52,6 +52,7 @@ function wireAgent(
 	displayName: string,
 	ownerUserId: string,
 	homeChannelId: string,
+	parentAgentId?: string,
 ) {
 	return create(AccountSchema, {
 		id,
@@ -59,7 +60,11 @@ function wireAgent(
 		displayName,
 		kind: {
 			case: "agent",
-			value: create(AgentAccountSchema, { ownerUserId, homeChannelId }),
+			value: create(AgentAccountSchema, {
+				ownerUserId,
+				homeChannelId,
+				parentAgentId,
+			}),
 		},
 	});
 }
@@ -103,6 +108,64 @@ describe("adaptAccount", () => {
 		expect(r.homeChannelId).not.toBe("");
 		// ownerUserId is unaffected by the home-channel normalization.
 		expect(r.ownerUserId).toBe("acc-matt");
+	});
+
+	test("agent account lifts parentAgentId from the agent arm", () => {
+		const r = adaptAccount(
+			wireAgent(
+				"acc-cook",
+				"cook",
+				"Cook",
+				"acc-matt",
+				"chan-home-cook",
+				"acc-supervisor",
+			),
+		);
+		expect(r.kind).toBe("agent");
+		expect(r.parentAgentId).toBe("acc-supervisor");
+	});
+
+	test("agent with empty-string parentAgentId normalizes to undefined", () => {
+		const r = adaptAccount(
+			wireAgent("acc-cook", "cook", "Cook", "acc-matt", "chan-home-cook", ""),
+		);
+		expect(r.kind).toBe("agent");
+		// Empty-string wire "unset" → domain absent (a root), NOT the literal "".
+		expect(r.parentAgentId).toBeUndefined();
+		expect(r.parentAgentId).not.toBe("");
+	});
+
+	test("user account carries no parentAgentId", () => {
+		const r = adaptAccount(wireUser("acc-matt", "matt", "Matt W"));
+		expect(r).not.toHaveProperty("parentAgentId");
+	});
+
+	test("lifted parentAgentId nests the agent under its parent in agentTree", () => {
+		const parent = adaptAccount(
+			wireAgent("acc-sup", "sup", "Supervisor", "acc-matt", "chan-home-sup"),
+		);
+		const child = adaptAccount(
+			wireAgent(
+				"acc-cook",
+				"cook",
+				"Cook",
+				"acc-matt",
+				"chan-home-cook",
+				"acc-sup",
+			),
+		);
+		const asAgent = (account: Account): Agent => ({
+			account,
+			role: "worker",
+			model: "test-model",
+			cwd: "/tmp",
+			terminals: [],
+		});
+		const tree = agentTree([asAgent(parent), asAgent(child)]);
+		expect(tree.map((n) => n.agent.account.id)).toEqual(["acc-sup"]);
+		expect(tree[0].children.map((n) => n.agent.account.id)).toEqual([
+			"acc-cook",
+		]);
 	});
 
 	test("malformed account with unset kind oneof falls back to an inert user", () => {
