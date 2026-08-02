@@ -175,18 +175,13 @@ func traceFrame(text string) *compassv1internal.AgentFrame {
 	}
 }
 
-// conversationFrame builds a durable conversation_posted AgentFrame — one of the
-// variants PostConversationFrame accepts.
-func conversationFrame(text string) *compassv1internal.AgentFrame {
-	return &compassv1internal.AgentFrame{
-		Frame: &compassv1internal.AgentFrame_ConversationPosted{
-			ConversationPosted: &compassv1.MessagePosted{
-				Message: &compassv1.Message{
-					Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
-				},
-			},
-		},
-	}
+// durableFrame builds an admitted durable frame for the generic durable-path
+// tests (delivered-or-erred, retryability, dedup, advisory-set loss, eviction)
+// that only need SOME frame PostConversationFrame accepts. Post-T7 the only
+// admitted variant is transcript_entry, so this builds that; the tests assert
+// forwarding/dedup behavior, not the frame's inner shape.
+func durableFrame(text string) *compassv1internal.AgentFrame {
+	return transcriptEntryFrame(text, false, 0)
 }
 
 // transcriptEntryFrame builds a durable transcript_entry AgentFrame — the
@@ -389,43 +384,6 @@ func TestPublishOrdersThreeTraceFrames(t *testing.T) {
 
 // --- Case 2 ------------------------------------------------------------------
 
-// PostConversationFrame commits ONE durable frame via CommitConversationFrame:
-// the commit RPC is called exactly once with the bound SessionId, the frame
-// verbatim, and the idempotency key; the unary returns success. The durable path
-// no longer rides the publisher, so there is no RunnerSeq to assert.
-// RED: drop the g.committer.CommitConversationFrame call (or return success
-// without committing) -> the fake records no call -> the count assertion goes RED.
-func TestPostConversationFrameForwardsSequencedWithKey(t *testing.T) {
-	committer := &fakeCommitter{}
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
-
-	resp, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-		Frame:          conversationFrame("durable body"),
-		IdempotencyKey: "key-2",
-	}))
-	if err != nil {
-		t.Fatalf("PostConversationFrame: %v", err)
-	}
-	if resp == nil {
-		t.Fatal("nil response on success")
-	}
-
-	calls := committer.snapshot()
-	if len(calls) != 1 {
-		t.Fatalf("commit calls = %d, want exactly 1 for one post", len(calls))
-	}
-	c := calls[0]
-	if c.sessionID != "sess-1" {
-		t.Fatalf("commit SessionId = %q, want sess-1 (the Runner sends the session it structurally owns)", c.sessionID)
-	}
-	if c.idempotencyKey != "key-2" {
-		t.Fatalf("commit IdempotencyKey = %q, want key-2 (must ride the request)", c.idempotencyKey)
-	}
-	if got := c.frame.GetConversationPosted().GetMessage().GetBlocks()[0].GetText(); got != "durable body" {
-		t.Fatalf("committed body = %q, want %q (verbatim)", got, "durable body")
-	}
-}
-
 // A transcript_entry frame (the SEA-1570 tee variant) rides the same durable
 // unary as the conversation frames: it must reach the committer byte-identical
 // under the request's session and idempotency key. Guards T7's guard widening.
@@ -484,7 +442,7 @@ func TestPostConversationFrameDeliveredOrErred(t *testing.T) {
 	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
 
 	resp, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-		Frame:          conversationFrame("boom"),
+		Frame:          durableFrame("boom"),
 		IdempotencyKey: "key-3",
 	}))
 	if err == nil {
@@ -524,7 +482,7 @@ func TestPostConversationFrameAtLeastOnceRetryability(t *testing.T) {
 			committer := &fakeCommitter{err: connect.NewError(tc.code, errors.New("commit failed"))}
 			g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
 			_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-				Frame:          conversationFrame("f"),
+				Frame:          durableFrame("f"),
 				IdempotencyKey: "retry-key",
 			}))
 			if got := connect.CodeOf(err); got != tc.code {
@@ -545,7 +503,7 @@ func TestPostConversationFrameAtLeastOnceRetryability(t *testing.T) {
 	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
 	post := func() error {
 		_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-			Frame:          conversationFrame("f"),
+			Frame:          durableFrame("f"),
 			IdempotencyKey: "k",
 		}))
 		return err
@@ -839,7 +797,7 @@ func TestPostConversationFrameDedupOnKey(t *testing.T) {
 	post := func(key string) {
 		t.Helper()
 		if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-			Frame:          conversationFrame("dur"),
+			Frame:          durableFrame("dur"),
 			IdempotencyKey: key,
 		})); err != nil {
 			t.Fatalf("post key=%q: %v", key, err)
@@ -868,7 +826,7 @@ func TestPostConversationFrameEmptyKeyNeverDedups(t *testing.T) {
 
 	for range 2 {
 		if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-			Frame:          conversationFrame("dur"),
+			Frame:          durableFrame("dur"),
 			IdempotencyKey: "",
 		})); err != nil {
 			t.Fatalf("empty-key post: %v", err)
@@ -880,10 +838,9 @@ func TestPostConversationFrameEmptyKeyNeverDedups(t *testing.T) {
 	}
 }
 
-// A non-conversation frame fails closed CodeInvalidArgument BEFORE the commit
-// RPC — the durable unary carries only conversation_posted / conversation_updated
-// / transcript_entry, so a trace/session frame, an empty AgentFrame with an unset
-// oneof, and a nil
+// A non-transcript frame fails closed CodeInvalidArgument BEFORE the commit RPC
+// — post-T7 the durable unary carries only the SEA-1570 transcript_entry variant,
+// so a trace/session frame, an empty AgentFrame with an unset oneof, and a nil
 // frame must each be rejected without ever reaching the committer.
 // RED: drop the isConversationFrame guard -> a non-conversation frame reaches the
 // commit RPC -> the commit-count assertion goes RED.
@@ -932,7 +889,7 @@ func TestPostConversationFrameAdvisorySetLossReforwards(t *testing.T) {
 
 	g1 := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
 	if _, err := g1.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-		Frame:          conversationFrame("dur"),
+		Frame:          durableFrame("dur"),
 		IdempotencyKey: "same-key",
 	})); err != nil {
 		t.Fatalf("g1 post: %v", err)
@@ -941,7 +898,7 @@ func TestPostConversationFrameAdvisorySetLossReforwards(t *testing.T) {
 	// Advisory-set loss: a fresh Gateway with an empty committedKeys map.
 	g2 := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
 	resp, err := g2.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-		Frame:          conversationFrame("dur"),
+		Frame:          durableFrame("dur"),
 		IdempotencyKey: "same-key",
 	}))
 	if err != nil {
@@ -1035,7 +992,7 @@ func TestNoSessionFailsClosedBothHandlers(t *testing.T) {
 	client := newAgentGatewayServer(t, g)
 
 	_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-		Frame:          conversationFrame("nope"),
+		Frame:          durableFrame("nope"),
 		IdempotencyKey: "k",
 	}))
 	if got := connect.CodeOf(err); got != connect.CodePermissionDenied {
@@ -1198,7 +1155,7 @@ func TestCommittedKeysBounded(t *testing.T) {
 	// Eviction is SAFE: a re-post of an evicted key misses the fast-path and
 	// re-commits. The committer records the re-commit under that key.
 	if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
-		Frame:          conversationFrame("re"),
+		Frame:          durableFrame("re"),
 		IdempotencyKey: key(0),
 	})); err != nil {
 		t.Fatalf("re-post of evicted key: %v", err)

@@ -91,18 +91,17 @@ func (g *Gateway) PostConversationFrame(
 	return connect.NewResponse(&compassv1internal.PostConversationFrameResponse{}), nil
 }
 
-// isConversationFrame reports whether frame is a durable frame the
-// CommitConversationFrame unary carries: a conversation variant
-// (conversation_posted / conversation_updated) or the SEA-1570 tee variant
-// (transcript_entry). A session frame, an ack, or an unset oneof is rejected.
+// isConversationFrame reports whether frame is the durable transcript frame the
+// CommitConversationFrame unary carries: the SEA-1570 transcript_entry variant.
+// A conversation frame, a session frame, an ack, or an unset oneof is rejected.
+// (The conversation_posted / conversation_updated write-through was removed with
+// the Zulip threading model; only the transcript lane survives.)
 func isConversationFrame(frame *compassv1internal.AgentFrame) bool {
 	if frame == nil {
 		return false
 	}
 	switch frame.GetFrame().(type) {
-	case *compassv1internal.AgentFrame_ConversationPosted,
-		*compassv1internal.AgentFrame_ConversationUpdated,
-		*compassv1internal.AgentFrame_TranscriptEntry:
+	case *compassv1internal.AgentFrame_TranscriptEntry:
 		return true
 	default:
 		return false
