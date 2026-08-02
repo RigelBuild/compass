@@ -565,6 +565,8 @@ function spySpine(): {
 function spineTransport(spine: PublishSpine): RunnerTransport {
 	return {
 		comms: () => Promise.reject(new Error("comms not used by this test")),
+		lifecycle: () =>
+			Promise.reject(new Error("lifecycle not used by this test")),
 		publishSpine: () => spine,
 		postConversationFrame: () =>
 			Promise.reject(new Error("postConversationFrame not used by this test")),

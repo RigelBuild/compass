@@ -375,6 +375,7 @@ function fakeCarrier(
 			: { ...real, drain: () => Promise.reject(hooks.drainError) };
 	return {
 		comms: () => Promise.reject(new Error("comms is not used by main")),
+		lifecycle: () => Promise.reject(new Error("lifecycle is not used by main")),
 		publishSpine: () => spine,
 		postConversationFrame: async (req) => {
 			if (hooks.onDurable) await hooks.onDurable(req);
