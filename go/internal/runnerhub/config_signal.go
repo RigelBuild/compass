@@ -35,22 +35,19 @@ import (
 func (h *Hub) SignalConfigVersion(version string) error {
 	h.mu.Lock()
 	router := h.runner
-	sessionIDs := make([]string, 0, len(h.sessionAccounts))
-	for sessionID := range h.sessionAccounts {
-		sessionIDs = append(sessionIDs, sessionID)
-	}
+	hasLiveSessions := len(h.sessionAccounts) > 0
 	h.mu.Unlock()
 
 	if router == nil {
 		return nil
 	}
-	if len(sessionIDs) == 0 {
+	if !hasLiveSessions {
 		return nil
 	}
 	// ConfigVersion is fleet-wide (record §527-528, §563), so ONE push per distinct
 	// attached router carries it to the whole fleet on that stream; single-Runner
-	// MVP = one router = one push. The len(sessionIDs) == 0 gate above keeps a
-	// Runner with no live sessions a clean no-op (nothing to reload; it reconciles
+	// MVP = one router = one push. The !hasLiveSessions gate above keeps a Runner
+	// with no live sessions a clean no-op (nothing to reload; it reconciles
 	// via the version-only fetch on next Sessions (re)establishment, record
 	// §677-685). A future multi-Runner change giving sessions distinct routers MUST
 	// push once PER DISTINCT ROUTER and accumulate-and-continue (errors.Join)

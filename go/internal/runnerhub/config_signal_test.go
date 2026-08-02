@@ -4,8 +4,9 @@ package runnerhub
 
 // The ConfigVersion emit seam (config_signal.go). Every case pins a behavior a
 // plausible bug would break:
-//   - SignalConfigVersion pushes a ConfigVersion to every live session carrying
-//     the store's version verbatim (NOT minted) — a Put emits the content hash.
+//   - SignalConfigVersion pushes ONE fleet-wide ConfigVersion frame per stream
+//     (regardless of live-session count) carrying the store's version verbatim
+//     (NOT minted) — a Put emits the content hash.
 //   - An empty version (the Delete/cleared marker) rides through unchanged.
 //   - No live sessions, and no Runner enrolled, are clean no-op successes.
 
@@ -17,9 +18,10 @@ import (
 )
 
 // TestSignalConfigVersionPushesStoreVersion pins the emit seam: after binding two
-// live sessions and attaching a live send, SignalConfigVersion pushes a
-// ConfigVersion to EACH, and the version is exactly the caller-supplied string
-// (the store's content version), never a minted token.
+// live sessions and attaching a live send, SignalConfigVersion pushes exactly ONE
+// fleet-wide ConfigVersion frame (the count is independent of live-session count),
+// and the version is exactly the caller-supplied string (the store's content
+// version), never a minted token.
 func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
 	hub := newHubOnly()
 	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
@@ -50,7 +52,7 @@ func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
 }
 
 // TestSignalConfigVersionEmptyVersionIsTheClearedMarker pins the Delete path: an
-// empty version rides through to every live session unchanged — the
+// empty version rides through the single fleet-wide frame unchanged — the
 // fleet-cleared marker the Runner reads as "materialize an empty dir".
 func TestSignalConfigVersionEmptyVersionIsTheClearedMarker(t *testing.T) {
 	hub := newHubOnly()
