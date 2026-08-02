@@ -17,6 +17,8 @@ package runner
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -135,6 +137,133 @@ func TestProvisionSpecBuilderErrorAborts(t *testing.T) {
 	}
 	if len(engine.calls) != 0 {
 		t.Fatalf("engine touched (%v) despite a spec-build failure; Launch must not run", engine.calls)
+	}
+}
+
+// Provision materializes the fleet config and bind-mounts it read-only into the
+// launched container BEFORE launch, at agentConfigMountPath, with the config
+// root as its host path. On an unconfigured fleet (the fixture's empty bundle)
+// Materialize still creates the root and returns it, so the mount is always
+// present. A bug that skipped the config mount, mounted a version dir instead of
+// the parent root, or mounted it writable would redden here.
+func TestProvisionMaterializesConfigAndMountsBeforeLaunch(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine, _ := newHostFixture(t, specs)
+
+	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{})
+	if err != nil {
+		t.Fatalf("Provision = %v, want success", err)
+	}
+
+	created := engine.createdSpecs()
+	if len(created) != 1 {
+		t.Fatalf("engine created %d containers, want 1", len(created))
+	}
+	agentHost, ok := host.(*agentHost)
+	if !ok {
+		t.Fatalf("host is %T, want *agentHost", host)
+	}
+	wantRoot := filepath.Join(agentHost.runtimeDir, "config")
+	var found *runtime.Mount
+	for i := range created[0].Mounts {
+		if created[0].Mounts[i].ContainerPath == agentConfigMountPath {
+			found = &created[0].Mounts[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("launched spec for %q has no config mount at %q; mounts=%+v", name, agentConfigMountPath, created[0].Mounts)
+	}
+	if found.HostPath != wantRoot {
+		t.Fatalf("config mount host path = %q, want the config root %q", found.HostPath, wantRoot)
+	}
+	if !found.ReadOnly {
+		t.Fatal("config mount is writable, want read-only")
+	}
+	if info, statErr := os.Stat(wantRoot); statErr != nil || !info.IsDir() {
+		t.Fatalf("config root %q not created on disk: err=%v", wantRoot, statErr)
+	}
+}
+
+// A GENUINE config-fetch fault (CodeUnavailable — a transient transport failure)
+// aborts Provision before Launch: a container must never come up when config
+// delivery is actually broken. The socket served for the container is torn down
+// (mirroring the Launch-failure cleanup) so it does not leak. This is the
+// counterpart to TestProvisionToleratesNoConfigSurface: that a no-config-SURFACE
+// server (CodeFailedPrecondition) provisions anyway, but a genuine fault does
+// not. A bug that launched anyway, or left the socket behind, would redden here.
+func TestProvisionConfigMaterializeErrorAborts(t *testing.T) {
+	engine := newStubStreamingRuntime(t)
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	pub := newCapturePublish()
+	pub.setConfigErr(connect.NewError(connect.CodeUnavailable, errors.New("config fetch down")))
+	link := newLink(newRunnerServiceServer(t, pub))
+	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner(), nil)
+
+	_, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{})
+	if err == nil {
+		t.Fatal("Provision with a failing config materialize = nil, want the materialize error")
+	}
+	if slices.Contains(engine.callsSnapshot(), "create") || slices.Contains(engine.callsSnapshot(), "start") {
+		t.Fatalf("engine touched (%v) despite a materialize failure; Launch must not run", engine.callsSnapshot())
+	}
+	if socketServed(t, host, liveSpec().Name) {
+		t.Fatal("agent socket left served after an aborted provision; it must be torn down")
+	}
+}
+
+// TestProvisionToleratesNoConfigSurface pins the no-config-SURFACE contract: a
+// Server with no config store wired returns CodeFailedPrecondition from
+// FetchAgentConfig, and the Runner reads that as "no config to inject" and
+// provisions anyway — the mirror of TestStartToleratesNoSecretsSurface, and the
+// posture today's production Server ships (its handler is built with a nil
+// config store). The container still comes up and still gets the config mount,
+// pointing at the ensured (empty) config root. A bug that aborted on
+// CodeFailedPrecondition — conflating a no-surface server with a genuine fetch
+// fault — would break provisioning fleet-wide and redden here.
+func TestProvisionToleratesNoConfigSurface(t *testing.T) {
+	engine := newStubStreamingRuntime(t)
+	registry := runtime.NewAgentRegistry()
+	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
+	pub := newCapturePublish()
+	pub.setConfigErr(connect.NewError(connect.CodeFailedPrecondition, errors.New("no config store wired")))
+	link := newLink(newRunnerServiceServer(t, pub))
+	cfg := AgentHostConfig{RuntimeDir: t.TempDir()}
+	host := NewSessionHost(link, rt, registry, engine, &fakeSpecBuilder{spec: liveSpec()}, cfg, discardLoggerRunner(), nil)
+
+	name, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{})
+	if err != nil {
+		t.Fatalf("Provision with no config surface = %v, want success (provision anyway)", err)
+	}
+	created := engine.createdSpecs()
+	if len(created) != 1 {
+		t.Fatalf("engine created %d containers, want 1 (provision must proceed)", len(created))
+	}
+	agentHost, ok := host.(*agentHost)
+	if !ok {
+		t.Fatalf("host is %T, want *agentHost", host)
+	}
+	wantRoot := filepath.Join(agentHost.runtimeDir, "config")
+	var found *runtime.Mount
+	for i := range created[0].Mounts {
+		if created[0].Mounts[i].ContainerPath == agentConfigMountPath {
+			found = &created[0].Mounts[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("launched spec for %q has no config mount at %q; mounts=%+v", name, agentConfigMountPath, created[0].Mounts)
+	}
+	if found.HostPath != wantRoot {
+		t.Fatalf("config mount host path = %q, want the ensured config root %q", found.HostPath, wantRoot)
+	}
+	if !found.ReadOnly {
+		t.Fatal("config mount is writable, want read-only")
+	}
+	if info, statErr := os.Stat(wantRoot); statErr != nil || !info.IsDir() {
+		t.Fatalf("config root %q not created on disk: err=%v", wantRoot, statErr)
 	}
 }
 

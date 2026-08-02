@@ -64,6 +64,15 @@ func (r *recordingRelay) FetchSecrets(
 	return connect.NewResponse(&compassv1internal.FetchSecretsResponse{}), nil
 }
 
+// FetchAgentConfig serves the unconfigured-fleet bundle so Provision's config
+// materialize succeeds — these transport tests do not exercise config delivery.
+func (r *recordingRelay) FetchAgentConfig(
+	_ context.Context, _ *connect.Request[compassv1internal.FetchAgentConfigRequest],
+	stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse],
+) error {
+	return sendEmptyAgentConfig(stream)
+}
+
 func (r *recordingRelay) RelayCommsCall(
 	ctx context.Context, req *connect.Request[compassv1internal.RelayCommsCallRequest],
 ) (*connect.Response[compassv1internal.RelayCommsCallResponse], error) {

@@ -34,6 +34,7 @@ const (
 	agentSocketDir       = "containers"
 	agentSocketFile      = "agent.sock"
 	agentSocketMountPath = "/run/compass/agent.sock"
+	agentConfigMountPath = "/run/compass/agent-config"
 )
 
 // SpecBuilder maps a provision request to a complete runtime.AgentSpec — the
@@ -60,11 +61,12 @@ type agentHost struct {
 	// empty leaves the agent on its own default.
 	model string
 
-	mu           sync.Mutex
-	sessions     map[string]*liveSession
-	sockets      map[string]*gateway.SocketListener
-	nextID       func() string
-	materializer *runtime.SecretMaterializer
+	mu                 sync.Mutex
+	sessions           map[string]*liveSession
+	sockets            map[string]*gateway.SocketListener
+	nextID             func() string
+	materializer       *runtime.SecretMaterializer
+	configMaterializer *ConfigMaterializer
 }
 
 // liveSession is one running agent session: its container and the relay stream
@@ -101,18 +103,19 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		newID = monotonicIDs()
 	}
 	return &agentHost{
-		link:         link,
-		runtime:      rt,
-		registry:     registry,
-		engine:       engine,
-		specs:        specs,
-		log:          log,
-		runtimeDir:   cfg.RuntimeDir,
-		model:        cfg.AgentModel,
-		sessions:     map[string]*liveSession{},
-		sockets:      map[string]*gateway.SocketListener{},
-		nextID:       newID,
-		materializer: runtime.NewSecretMaterializer(engine, log),
+		link:               link,
+		runtime:            rt,
+		registry:           registry,
+		engine:             engine,
+		specs:              specs,
+		log:                log,
+		runtimeDir:         cfg.RuntimeDir,
+		model:              cfg.AgentModel,
+		sessions:           map[string]*liveSession{},
+		sockets:            map[string]*gateway.SocketListener{},
+		nextID:             newID,
+		materializer:       runtime.NewSecretMaterializer(engine, log),
+		configMaterializer: NewConfigMaterializer(filepath.Join(cfg.RuntimeDir, "config"), link, log),
 	}
 }
 
@@ -137,6 +140,22 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 		return "", err
 	}
 	spec.Mounts = append(spec.Mounts, listener.Mount(agentSocketMountPath))
+	// Materialize the fleet config into a host tree and bind-mount it read-only.
+	// The mount target is the PARENT config dir (not the resolved version dir),
+	// so a later `current/` symlink flip by an update becomes visible inside the
+	// live container with no remount. It is read-only because the agent only
+	// reads config, never writes it. The mcsLabel is empty on this provision
+	// path: Materialize runs before the container exists, so there is no MCS
+	// category to target — the create-time :Z relabel covers the whole tree.
+	mount, err := h.configMaterializer.Materialize(ctx, "")
+	if err != nil {
+		// Config could not be materialized; abort provision rather than launch a
+		// container with no config. Tear the socket down (mirror the Launch-
+		// failure cleanup) so it does not leak until host shutdown.
+		h.closeSocket(ctx, spec.Name)
+		return "", fmt.Errorf("materializing agent config: %w", err)
+	}
+	spec.Mounts = append(spec.Mounts, runtime.Mount{HostPath: mount.HostPath, ContainerPath: agentConfigMountPath, ReadOnly: true})
 	handle, err := h.runtime.Launch(ctx, spec)
 	if err != nil {
 		// Launch failed, so no container will ever mount this socket; tear it
