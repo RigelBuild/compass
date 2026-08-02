@@ -39,12 +39,12 @@ import "compass/v1/compass.proto";
 // "unknown frame" the Runner logs and counts — never silently dropped.
 message AgentFrame {
   oneof frame {
-    // Conversation: a newly posted durable message (wraps a Message of
-    // MessageBlocks) → comms Message rows + SubscribeComms.
-    MessagePosted conversation_posted = 1;
-    // Conversation: an existing message changed — a streaming turn appended a
-    // block (carries the full current block set) → comms + SubscribeComms.
-    MessageUpdated conversation_updated = 2;
+    // Fields 1 (conversation_posted) and 2 (conversation_updated) are REMOVED,
+    // not reserved (F9): the streaming conversation write-through is gone — a
+    // streamed turn no longer commits comms rows (T7). The durable conversation
+    // frame now rides only the transcript lane (transcript_entry, field 7 →
+    // PostConversationFrame/CommitConversationFrame), and the session trace
+    // rides `session` below. Pre-dogfood, zero stored payloads, so no reserve.
     // Session: an opaque OMP-native execution-trace event and/or a board
     // lifecycle transition → the session-tail stream (+ the extracted state →
     // SubscribeEvents). Replaces the former typed status/plan/tool_call

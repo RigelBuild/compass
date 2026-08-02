@@ -23,7 +23,7 @@
 
 import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { AskQuestionAnswer, Message as Message$1, MessagePosted, MessageUpdated } from "./comms_pb";
+import type { AskQuestionAnswer, Message as Message$1 } from "./comms_pb";
 import { file_compass_v1_comms } from "./comms_pb";
 import type { AgentSessionState, SessionEvent } from "./compass_pb";
 import { file_compass_v1_compass } from "./compass_pb";
@@ -33,7 +33,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/agent.proto.
  */
 export const file_compass_v1_agent: GenFile = /*@__PURE__*/
-  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIo8DCgpBZ2VudEZyYW1lEjgKE2NvbnZlcnNhdGlvbl9wb3N0ZWQYASABKAsyGS5jb21wYXNzLnYxLk1lc3NhZ2VQb3N0ZWRIABI6ChRjb252ZXJzYXRpb25fdXBkYXRlZBgCIAEoCzIaLmNvbXBhc3MudjEuTWVzc2FnZVVwZGF0ZWRIABIrCgdzZXNzaW9uGAMgASgLMhguY29tcGFzcy52MS5TZXNzaW9uRnJhbWVIABI8ChNyZXBsYXlfY29tcGxldGVfYWNrGAQgASgLMh0uY29tcGFzcy52MS5SZXBsYXlDb21wbGV0ZUFja0gAEi0KC2NvbnRyb2xfYWNrGAUgASgLMhYuY29tcGFzcy52MS5Db250cm9sQWNrSAASLwoMZGVsaXZlcnlfYWNrGAYgASgLMhcuY29tcGFzcy52MS5EZWxpdmVyeUFja0gAEjcKEHRyYW5zY3JpcHRfZW50cnkYByABKAsyGy5jb21wYXNzLnYxLlRyYW5zY3JpcHRFbnRyeUgAQgcKBWZyYW1lIkwKD1RyYW5zY3JpcHRFbnRyeRISCgplbnRyeV9qc29uGAEgASgJEhIKCmNoZWNrcG9pbnQYAiABKAgSEQoJZW50cnlfc2VxGAMgASgEIngKDFNlc3Npb25GcmFtZRIsCgVzdGF0ZRgCIAEoDjIdLmNvbXBhc3MudjEuQWdlbnRTZXNzaW9uU3RhdGUSLQoLdHlwZWRfZXZlbnQYAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25FdmVudEoECAEQAlIFZXZlbnQi/QIKDEFnZW50Q29udHJvbBITCgtjb250cm9sX3NlcRgIIAEoBBIrCgZwcm9tcHQYASABKAsyGS5jb21wYXNzLnYxLlByb21wdENvbnRyb2xIABIpCgVzdGVlchgCIAEoCzIYLmNvbXBhc3MudjEuU3RlZXJDb250cm9sSAASLQoHZGVsaXZlchgDIAEoCzIaLmNvbXBhc3MudjEuRGVsaXZlckNvbnRyb2xIABIyCgphc2tfYW5zd2VyGAQgASgLMhwuY29tcGFzcy52MS5Bc2tBbnN3ZXJDb250cm9sSAASKwoGY29uZmlnGAUgASgLMhkuY29tcGFzcy52MS5Db25maWdDb250cm9sSAASLgoGcmVwbGF5GAYgASgLMhwuY29tcGFzcy52MS5UcmFuc2NyaXB0UmVwbGF5SAASNQoPcmVwbGF5X2NvbXBsZXRlGAcgASgLMhouY29tcGFzcy52MS5SZXBsYXlDb21wbGV0ZUgAQgkKB2NvbnRyb2wiHgoNUHJvbXB0Q29udHJvbBINCgVpbnB1dBgBIAEoCSJSChBBc2tBbnN3ZXJDb250cm9sEg4KBmFza19pZBgBIAEoCRIuCgdhbnN3ZXJzGAIgAygLMh0uY29tcGFzcy52MS5Bc2tRdWVzdGlvbkFuc3dlciIQCg5SZXBsYXlDb21wbGV0ZSI0CgxTdGVlckNvbnRyb2wSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZSISChBUcmFuc2NyaXB0UmVwbGF5Ig8KDUNvbmZpZ0NvbnRyb2wiNgoORGVsaXZlckNvbnRyb2wSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZSIhCgtEZWxpdmVyeUFjaxISCgptZXNzYWdlX2lkGAEgASgJIhMKEVJlcGxheUNvbXBsZXRlQWNrIjYKCkNvbnRyb2xBY2sSEQoJYWNrZWRfc2VxGAEgASgEEhUKDWFwcGxpZWRfYWJvdmUYAiADKARiBnByb3RvMw", [file_compass_v1_comms, file_compass_v1_compass]);
+  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIpkCCgpBZ2VudEZyYW1lEisKB3Nlc3Npb24YAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25GcmFtZUgAEjwKE3JlcGxheV9jb21wbGV0ZV9hY2sYBCABKAsyHS5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlQWNrSAASLQoLY29udHJvbF9hY2sYBSABKAsyFi5jb21wYXNzLnYxLkNvbnRyb2xBY2tIABIvCgxkZWxpdmVyeV9hY2sYBiABKAsyFy5jb21wYXNzLnYxLkRlbGl2ZXJ5QWNrSAASNwoQdHJhbnNjcmlwdF9lbnRyeRgHIAEoCzIbLmNvbXBhc3MudjEuVHJhbnNjcmlwdEVudHJ5SABCBwoFZnJhbWUiTAoPVHJhbnNjcmlwdEVudHJ5EhIKCmVudHJ5X2pzb24YASABKAkSEgoKY2hlY2twb2ludBgCIAEoCBIRCgllbnRyeV9zZXEYAyABKAQieAoMU2Vzc2lvbkZyYW1lEiwKBXN0YXRlGAIgASgOMh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25TdGF0ZRItCgt0eXBlZF9ldmVudBgDIAEoCzIYLmNvbXBhc3MudjEuU2Vzc2lvbkV2ZW50SgQIARACUgVldmVudCL9AgoMQWdlbnRDb250cm9sEhMKC2NvbnRyb2xfc2VxGAggASgEEisKBnByb21wdBgBIAEoCzIZLmNvbXBhc3MudjEuUHJvbXB0Q29udHJvbEgAEikKBXN0ZWVyGAIgASgLMhguY29tcGFzcy52MS5TdGVlckNvbnRyb2xIABItCgdkZWxpdmVyGAMgASgLMhouY29tcGFzcy52MS5EZWxpdmVyQ29udHJvbEgAEjIKCmFza19hbnN3ZXIYBCABKAsyHC5jb21wYXNzLnYxLkFza0Fuc3dlckNvbnRyb2xIABIrCgZjb25maWcYBSABKAsyGS5jb21wYXNzLnYxLkNvbmZpZ0NvbnRyb2xIABIuCgZyZXBsYXkYBiABKAsyHC5jb21wYXNzLnYxLlRyYW5zY3JpcHRSZXBsYXlIABI1Cg9yZXBsYXlfY29tcGxldGUYByABKAsyGi5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlSABCCQoHY29udHJvbCIeCg1Qcm9tcHRDb250cm9sEg0KBWlucHV0GAEgASgJIlIKEEFza0Fuc3dlckNvbnRyb2wSDgoGYXNrX2lkGAEgASgJEi4KB2Fuc3dlcnMYAiADKAsyHS5jb21wYXNzLnYxLkFza1F1ZXN0aW9uQW5zd2VyIhAKDlJlcGxheUNvbXBsZXRlIjQKDFN0ZWVyQ29udHJvbBIkCgdtZXNzYWdlGAEgASgLMhMuY29tcGFzcy52MS5NZXNzYWdlIhIKEFRyYW5zY3JpcHRSZXBsYXkiDwoNQ29uZmlnQ29udHJvbCI2Cg5EZWxpdmVyQ29udHJvbBIkCgdtZXNzYWdlGAEgASgLMhMuY29tcGFzcy52MS5NZXNzYWdlIiEKC0RlbGl2ZXJ5QWNrEhIKCm1lc3NhZ2VfaWQYASABKAkiEwoRUmVwbGF5Q29tcGxldGVBY2siNgoKQ29udHJvbEFjaxIRCglhY2tlZF9zZXEYASABKAQSFQoNYXBwbGllZF9hYm92ZRgCIAMoBGIGcHJvdG8z", [file_compass_v1_comms, file_compass_v1_compass]);
 
 /**
  * The agent's stdout envelope: one discriminated frame per newline-delimited
@@ -58,24 +58,12 @@ export type AgentFrame = Message<"compass.v1.AgentFrame"> & {
    */
   frame: {
     /**
-     * Conversation: a newly posted durable message (wraps a Message of
-     * MessageBlocks) → comms Message rows + SubscribeComms.
-     *
-     * @generated from field: compass.v1.MessagePosted conversation_posted = 1;
-     */
-    value: MessagePosted;
-    case: "conversationPosted";
-  } | {
-    /**
-     * Conversation: an existing message changed — a streaming turn appended a
-     * block (carries the full current block set) → comms + SubscribeComms.
-     *
-     * @generated from field: compass.v1.MessageUpdated conversation_updated = 2;
-     */
-    value: MessageUpdated;
-    case: "conversationUpdated";
-  } | {
-    /**
+     * Fields 1 (conversation_posted) and 2 (conversation_updated) are REMOVED,
+     * not reserved (F9): the streaming conversation write-through is gone — a
+     * streamed turn no longer commits comms rows (T7). The durable conversation
+     * frame now rides only the transcript lane (transcript_entry, field 7 →
+     * PostConversationFrame/CommitConversationFrame), and the session trace
+     * rides `session` below. Pre-dogfood, zero stored payloads, so no reserve.
      * Session: an opaque OMP-native execution-trace event and/or a board
      * lifecycle transition → the session-tail stream (+ the extracted state →
      * SubscribeEvents). Replaces the former typed status/plan/tool_call
