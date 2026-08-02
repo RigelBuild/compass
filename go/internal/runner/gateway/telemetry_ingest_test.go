@@ -175,8 +175,8 @@ func traceFrame(text string) *compassv1internal.AgentFrame {
 	}
 }
 
-// conversationFrame builds a durable conversation_posted AgentFrame — the only
-// variant PostConversationFrame accepts.
+// conversationFrame builds a durable conversation_posted AgentFrame — one of the
+// variants PostConversationFrame accepts.
 func conversationFrame(text string) *compassv1internal.AgentFrame {
 	return &compassv1internal.AgentFrame{
 		Frame: &compassv1internal.AgentFrame_ConversationPosted{
@@ -184,6 +184,21 @@ func conversationFrame(text string) *compassv1internal.AgentFrame {
 				Message: &compassv1.Message{
 					Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
 				},
+			},
+		},
+	}
+}
+
+// transcriptEntryFrame builds a durable transcript_entry AgentFrame — the
+// SEA-1570 tee variant PostConversationFrame carries beside the conversation
+// frames.
+func transcriptEntryFrame(entryJSON string, checkpoint bool, seq uint64) *compassv1internal.AgentFrame {
+	return &compassv1internal.AgentFrame{
+		Frame: &compassv1internal.AgentFrame_TranscriptEntry{
+			TranscriptEntry: &compassv1internal.TranscriptEntry{
+				EntryJson:  entryJSON,
+				Checkpoint: checkpoint,
+				EntrySeq:   seq,
 			},
 		},
 	}
@@ -408,6 +423,50 @@ func TestPostConversationFrameForwardsSequencedWithKey(t *testing.T) {
 	}
 	if got := c.frame.GetConversationPosted().GetMessage().GetBlocks()[0].GetText(); got != "durable body" {
 		t.Fatalf("committed body = %q, want %q (verbatim)", got, "durable body")
+	}
+}
+
+// A transcript_entry frame (the SEA-1570 tee variant) rides the same durable
+// unary as the conversation frames: it must reach the committer byte-identical
+// under the request's session and idempotency key. Guards T7's guard widening.
+// RED before the isConversationFrame widening: transcript_entry is rejected
+// CodeInvalidArgument at :54 and never reaches the committer -> the count and
+// verbatim-payload assertions go RED.
+func TestPostConversationFrameForwardsTranscriptEntry(t *testing.T) {
+	committer := &fakeCommitter{}
+	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
+
+	resp, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
+		Frame:          transcriptEntryFrame(`{"role":"assistant"}`, true, 7),
+		IdempotencyKey: "key-te",
+	}))
+	if err != nil {
+		t.Fatalf("PostConversationFrame: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("nil response on success")
+	}
+
+	calls := committer.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("commit calls = %d, want exactly 1 for one post", len(calls))
+	}
+	c := calls[0]
+	if c.sessionID != "sess-1" {
+		t.Fatalf("commit SessionId = %q, want sess-1 (the Runner sends the session it structurally owns)", c.sessionID)
+	}
+	if c.idempotencyKey != "key-te" {
+		t.Fatalf("commit IdempotencyKey = %q, want key-te (must ride the request)", c.idempotencyKey)
+	}
+	te := c.frame.GetTranscriptEntry()
+	if te == nil {
+		t.Fatal("committed frame is not a transcript_entry — the tee variant was not forwarded verbatim")
+	}
+	if got := te.GetEntryJson(); got != `{"role":"assistant"}` {
+		t.Fatalf("committed entry_json = %q, want verbatim", got)
+	}
+	if !te.GetCheckpoint() || te.GetEntrySeq() != 7 {
+		t.Fatalf("committed checkpoint/seq = %v/%d, want true/7 (verbatim)", te.GetCheckpoint(), te.GetEntrySeq())
 	}
 }
 
@@ -822,8 +881,9 @@ func TestPostConversationFrameEmptyKeyNeverDedups(t *testing.T) {
 }
 
 // A non-conversation frame fails closed CodeInvalidArgument BEFORE the commit
-// RPC — the durable unary carries only conversation_posted / conversation_updated,
-// so a trace/session frame, an empty AgentFrame with an unset oneof, and a nil
+// RPC — the durable unary carries only conversation_posted / conversation_updated
+// / transcript_entry, so a trace/session frame, an empty AgentFrame with an unset
+// oneof, and a nil
 // frame must each be rejected without ever reaching the committer.
 // RED: drop the isConversationFrame guard -> a non-conversation frame reaches the
 // commit RPC -> the commit-count assertion goes RED.
