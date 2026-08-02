@@ -46,6 +46,7 @@ import (
 	"log/slog"
 	"maps"
 	"sync"
+	"time"
 
 	"github.com/sealedsecurity/compass/go/events"
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
@@ -70,6 +71,13 @@ type PresenceReads interface {
 type LifecycleStatusResolver interface {
 	SessionState(ctx context.Context, sessionID string) (compassv1.AgentSessionState, bool)
 }
+
+// presenceStatusTimeout bounds the remote Runner Status resolve at a session
+// promotion (applyPromoted). It runs on the single presence loop goroutine, so a
+// wedged Runner must not freeze the loop: past this deadline the resolve returns
+// ok=false and the session degrades to OFFLINE. A DEGRADE bound, not a retry
+// (rule://no-retries) — one bounded call per promotion, no loop, no backoff.
+const presenceStatusTimeout = 5 * time.Second
 
 // edgeKind tags a hub-fed edge queued for the loop to drain under its own ctx.
 type edgeKind int
@@ -124,6 +132,11 @@ type Publisher struct {
 	// send, so many edges between drains collapse to one wakeup and no sink ever
 	// blocks.
 	notify chan struct{}
+	// statusTimeout bounds the remote Status resolve in applyPromoted. Defaults
+	// to presenceStatusTimeout; an unexported field so a test can shorten it to
+	// exercise the degrade-to-OFFLINE-on-timeout path without a real wait. Never
+	// exposed publicly.
+	statusTimeout time.Duration
 }
 
 // NewPublisher constructs the presence publisher over the comms bus (it both
@@ -142,13 +155,14 @@ func NewPublisher(
 		log = slog.Default()
 	}
 	return &Publisher{
-		bus:       bus,
-		st:        st,
-		status:    status,
-		log:       log,
-		last:      make(map[store.AccountID]compassv1.AgentPresence),
-		lastState: make(map[store.AccountID]compassv1.AgentSessionState),
-		notify:    make(chan struct{}, 1),
+		bus:           bus,
+		st:            st,
+		status:        status,
+		log:           log,
+		last:          make(map[store.AccountID]compassv1.AgentPresence),
+		lastState:     make(map[store.AccountID]compassv1.AgentSessionState),
+		notify:        make(chan struct{}, 1),
+		statusTimeout: presenceStatusTimeout,
 	}
 }
 
@@ -175,8 +189,9 @@ func presenceFor(state compassv1.AgentSessionState, openAsk bool) compassv1.Agen
 }
 
 // PresenceSnapshot returns the last-published presence per agent — the snapshot
-// a ListAccounts reader gets (presence is ephemeral; there is no durable table).
-// A copy under the lock, so the caller iterates without holding publisher state.
+// surface a future ListAccounts reader will consume (presence is ephemeral;
+// there is no durable table). No such reader is wired yet. A copy under the
+// lock, so the caller iterates without holding publisher state.
 func (p *Publisher) PresenceSnapshot() map[store.AccountID]compassv1.AgentPresence {
 	p.mu.Lock()
 	defer p.mu.Unlock()

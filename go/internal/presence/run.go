@@ -150,16 +150,29 @@ func hasAsk(msg *compassv1.Message) bool {
 // recomputeFromStore recomputes an agent's presence from its last-known
 // lifecycle state layered with the store's current open-ask overlay, and
 // publishes-on-change. The ask arm uses it: the overlay flipped, the lifecycle
-// did not, so the state comes from lastState (OFFLINE if unknown).
+// did not, so the state comes from lastState.
+//
+// Gated on the account having a recorded lifecycle state: the ask overlay only
+// applies to an agent the lifecycle arm has already seen. An agent records a
+// lastState entry at its first lifecycle/promotion edge BEFORE it can author
+// anything (it must be live to post), while a HUMAN ask author never receives a
+// lifecycle edge and so has no entry. Skipping accounts with no recorded state
+// keeps a human ask author out of this AGENT-presence projection — without the
+// gate, presenceFor(UNSPECIFIED, openAsk) = OFFLINE would publish a spurious
+// AgentPresenceChanged naming a non-agent. The store read is deferred to after
+// the gate so a human ask author costs no query.
 func (p *Publisher) recomputeFromStore(ctx context.Context, account store.AccountID) {
+	p.mu.Lock()
+	state, ok := p.lastState[account]
+	p.mu.Unlock()
+	if !ok {
+		return // no lifecycle state ever recorded → not a live agent (e.g. a human ask author)
+	}
 	openAsk, err := p.st.AgentHasOpenAsk(ctx, account)
 	if err != nil {
 		p.log.ErrorContext(ctx, "presence: resolve open ask", "error", err, "account", string(account))
 		return
 	}
-	p.mu.Lock()
-	state := p.lastState[account]
-	p.mu.Unlock()
 	p.publishIfChanged(account, presenceFor(state, openAsk))
 }
 
@@ -205,8 +218,16 @@ func (p *Publisher) applyLifecycle(ctx context.Context, account store.AccountID,
 // a WAITING agent would rebuild as IDLE) and layers the store's open-ask overlay,
 // then records the state and publishes-on-change. A session with no resolvable
 // live status reconstructs OFFLINE.
+//
+// The Status resolve is a REMOTE Runner round-trip on the single loop goroutine,
+// so it is bounded by a deadline (statusTimeout, default presenceStatusTimeout):
+// a wedged Runner degrades this session to ok=false → OFFLINE rather than
+// freezing the loop (and starving the ask arm) until the Runner answers or serve
+// shuts down. A DEADLINE, not a retry — one bounded call, no loop, no backoff.
 func (p *Publisher) applyPromoted(ctx context.Context, account store.AccountID, sessionID string) {
-	state, ok := p.status.SessionState(ctx, sessionID)
+	rctx, cancel := context.WithTimeout(ctx, p.statusTimeout)
+	state, ok := p.status.SessionState(rctx, sessionID)
+	cancel()
 	if !ok {
 		state = compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED
 	}

@@ -169,10 +169,13 @@ func (h *Hub) SessionState(ctx context.Context, sessionID string) (compassv1.Age
 		}
 	}
 	// A single-session Status request returns that session's status; if none
-	// matched by id, take the sole status when present (the relay answered for
-	// this session). Absent any status, the session has no resolvable live state.
-	if len(resp.GetStatuses()) == 1 {
-		return resp.GetStatuses()[0].GetState(), true
+	// matched by id, adopt the sole status ONLY when it carries no session id
+	// (the "Runner answered without echoing the id" case). A sole status with a
+	// non-empty MISMATCHED id is NOT this session's state — a Runner bug echoing
+	// a wrong id must not reconstruct a wrong presence — so it is unresolved
+	// (ok=false → OFFLINE). Absent any status, likewise unresolved.
+	if s := resp.GetStatuses(); len(s) == 1 && s[0].GetSessionId() == "" {
+		return s[0].GetState(), true
 	}
 	return compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED, false
 }

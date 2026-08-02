@@ -22,6 +22,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
@@ -89,18 +90,44 @@ func (h *Hub) promoteSession(containerName, sessionID string) {
 // unbindSession removes a session's account binding. Called from Stop, so a
 // RelayCommsCall for a stopped session_id fails closed CodeNotFound — the same
 // answer as a never-seen session, never a stale reuse.
+//
+// It also drives presence to OFFLINE (SEA-1569 T8): a clean Stop tears the
+// session down, but a STOPPED/DISCONNECTED frame arriving after the unbind can
+// no longer resolve the account at deliverSession, so without an edge here the
+// account's presence would stay WORKING/IDLE/WAITING forever. Fire a terminal
+// (DISCONNECTED → OFFLINE) presence edge — but ONLY when THIS session was the
+// account's live session (the reverse entry actually got deleted). If
+// promoteSession already re-pointed the account onto a NEWER session, the
+// account is not offline and no edge fires. publishIfChanged dedups, so an
+// OFFLINE already driven by a terminal frame makes this a no-op second publish.
+// Capture the account under mu, release, then fire the sink — the exact
+// lock-then-release-then-fire discipline promoteSession uses, so the sink (which
+// enqueues into the presence loop) never runs under h.mu.
 func (h *Hub) unbindSession(sessionID string) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if account, ok := h.sessionAccounts[sessionID]; ok {
+	var (
+		account     store.AccountID
+		wentOffline bool
+	)
+	if a, ok := h.sessionAccounts[sessionID]; ok {
 		// Drop the reverse entry only if it still points at THIS session — a
 		// promoteSession for the account onto a newer session would have already
 		// repointed it, and a stale delete would then unbind the live one.
-		if h.accountSessions[account] == sessionID {
-			delete(h.accountSessions, account)
+		if h.accountSessions[a] == sessionID {
+			delete(h.accountSessions, a)
+			account = a
+			wentOffline = true
 		}
 	}
 	delete(h.sessionAccounts, sessionID)
+	presence := h.presence
+	h.mu.Unlock()
+
+	// The account now has NO live session: drive its presence OFFLINE. Skipped
+	// when the account was re-pointed to a newer session (wentOffline is false).
+	if wentOffline && presence != nil {
+		presence.OnSessionLifecycle(account, sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
+	}
 }
 
 // unbindContainer drops a container's provisioned account binding. Called from

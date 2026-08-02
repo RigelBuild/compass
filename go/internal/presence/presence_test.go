@@ -12,6 +12,7 @@ package presence
 
 import (
 	"testing"
+	"time"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/store"
@@ -215,4 +216,147 @@ func TestSnapshotReturnsLastPublished(t *testing.T) {
 	if p.PresenceSnapshot()[agentA] != compassv1.AgentPresence_AGENT_PRESENCE_WORKING {
 		t.Fatalf("snapshot mutation leaked into publisher state")
 	}
+}
+
+// TestTerminalLifecycleEdgeGoesOfflineThenDedups is M1 on the presence side: a
+// bound agent driven to WORKING, then a terminal (DISCONNECTED) lifecycle edge —
+// the edge the hub's teardown paths (unbindSession/enroll) now fire — publishes
+// exactly one OFFLINE; a repeat terminal edge publishes nothing (publish-on-
+// change dedup). RED against pre-fix: pre-fix the hub never fired a terminal edge
+// on teardown, so presence stayed WORKING; this test drives the edge directly
+// into the publisher, so it reddens only if presenceFor stops mapping
+// DISCONNECTED→OFFLINE or dedup breaks. Its runnerhub sibling proves the hub
+// actually fires it.
+func TestTerminalLifecycleEdgeGoesOfflineThenDedups(t *testing.T) {
+	p, _, _, bus := newTestPublisher(t)
+	rec := startRecorder(t, bus)
+	startPublisher(t, p)
+	const agent store.AccountID = "agent-a"
+
+	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+	rec.waitForPublishes(t, 1)
+	if got := rec.snapshot()[0]; got.presence != compassv1.AgentPresence_AGENT_PRESENCE_WORKING {
+		t.Fatalf("first publish = %+v, want WORKING", got)
+	}
+
+	// Terminal edge from teardown → OFFLINE (one publish).
+	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
+	rec.waitForPublishes(t, 2)
+	if got := rec.snapshot()[1]; got.presence != compassv1.AgentPresence_AGENT_PRESENCE_OFFLINE {
+		t.Fatalf("terminal-edge publish = %+v, want OFFLINE", got)
+	}
+
+	// A second terminal edge recomputes OFFLINE again — no change, so no publish.
+	// A following distinct edge (WORKING) proves nothing published in between.
+	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
+	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING)
+	rec.waitForPublishes(t, 3)
+
+	got := rec.snapshot()
+	if len(got) != 3 {
+		t.Fatalf("publishes = %d, want 3 (WORKING, OFFLINE, WORKING; the repeat DISCONNECTED must not republish)", len(got))
+	}
+	if got[2].presence != compassv1.AgentPresence_AGENT_PRESENCE_WORKING {
+		t.Fatalf("third publish = %+v, want WORKING", got[2])
+	}
+}
+
+// TestAskFromUnknownAuthorPublishesNothing is M2: an ask authored by an account
+// with NO recorded lifecycle state (a human ask author never receives a
+// lifecycle edge, so is never in lastState) publishes NOTHING — the ask overlay
+// applies only to agents the lifecycle arm has seen. RED against pre-fix: the
+// pre-fix recomputeFromStore read lastState with a plain map read, so an absent
+// key yielded UNSPECIFIED → presenceFor(UNSPECIFIED, open)=OFFLINE and published
+// one spurious AgentPresenceChanged naming the human OFFLINE. The gate flips that
+// to zero. Contrast: an agent WITH a recorded state authoring an ask DOES publish
+// WAITING (the TestAskOpen... test above).
+func TestAskFromUnknownAuthorPublishesNothing(t *testing.T) {
+	p, reads, _, bus := newTestPublisher(t)
+	rec := startRecorder(t, bus)
+	startPublisher(t, p)
+	const human store.AccountID = "human-a"
+	const agent store.AccountID = "agent-a"
+
+	// The human has an open ask in the store but NO lifecycle state recorded.
+	reads.setOpen(human, true)
+	bus.Publish(askPosted(human))
+
+	// Drive a real agent ask right after; when THAT publish lands, a spurious
+	// human-triggered publish (if any) would already be recorded before it. The
+	// agent is established live READY (→ IDLE) first so it has a lastState entry.
+	p.OnSessionLifecycle(agent, "sess-a", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	rec.waitForPublishes(t, 1)
+	reads.setOpen(agent, true)
+	bus.Publish(askPosted(agent))
+	rec.waitForPublishes(t, 2)
+
+	got := rec.snapshot()
+	if len(got) != 2 {
+		t.Fatalf("publishes = %d, want 2 (agent IDLE then WAITING; the human ask must not publish): %+v", len(got), got)
+	}
+	for _, r := range got {
+		if r.account == human {
+			t.Fatalf("published presence for a human ask author %+v; a non-agent must never appear in the projection", r)
+		}
+	}
+	if got[1].account != agent || got[1].presence != compassv1.AgentPresence_AGENT_PRESENCE_WAITING {
+		t.Fatalf("second publish = %+v, want {agent-a, WAITING}", got[1])
+	}
+}
+
+// TestBlockingResolveDoesNotWedgeFollowingEdges is M3: a wedged Runner Status
+// resolve on a promotion edge must not freeze the single loop goroutine and
+// starve the ask arm. With a blocking resolver and a SHORT statusTimeout, a
+// promotion degrades to OFFLINE at the deadline (ok=false), and a concurrently
+// enqueued ask event for a live agent is still serviced. RED against pre-fix:
+// pre-fix applyPromoted called SessionState(ctx, ...) with the unbounded serve
+// ctx, so the resolve never returned and drainEdges (hence the loop) blocked
+// forever — the ask publish would never land and this test times out. The
+// bounded resolve unblocks the loop.
+func TestBlockingResolveDoesNotWedgeFollowingEdges(t *testing.T) {
+	blocker := newBlockingStatus(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	p, reads, bus := newTestPublisherWithStatus(t, blocker)
+	p.statusTimeout = 20 * time.Millisecond // a DEADLINE, not a sync device; short so the wedge degrades fast
+	rec := startRecorder(t, bus)
+	startPublisher(t, p)
+	const wedged store.AccountID = "agent-wedged"
+	const live store.AccountID = "agent-live"
+
+	// Establish the live agent so its ask has a recorded lifecycle state to layer
+	// on (M2 gate); this publish lands before the wedged promotion is enqueued.
+	p.OnSessionLifecycle(live, "sess-live", compassv1.AgentSessionState_AGENT_SESSION_STATE_READY)
+	rec.waitForPublishes(t, 1)
+
+	// Enqueue the wedged promotion; the loop enters the blocking resolve.
+	p.OnSessionPromoted(wedged, "sess-wedged")
+	select {
+	case <-blocker.entered:
+	case <-time.After(testTimeout):
+		t.Fatal("resolver never entered; the promotion edge was not applied")
+	}
+
+	// The wedged resolve degrades to OFFLINE at the deadline (one publish), and
+	// the loop is free again — a following ask edge for the live agent is
+	// serviced (→ WAITING). If the loop were frozen (pre-fix), neither lands.
+	reads.setOpen(live, true)
+	bus.Publish(askPosted(live))
+	rec.waitForPublishes(t, 3)
+
+	var sawWedgedOffline, sawLiveWaiting bool
+	for _, r := range rec.snapshot() {
+		if r.account == wedged && r.presence == compassv1.AgentPresence_AGENT_PRESENCE_OFFLINE {
+			sawWedgedOffline = true
+		}
+		if r.account == live && r.presence == compassv1.AgentPresence_AGENT_PRESENCE_WAITING {
+			sawLiveWaiting = true
+		}
+	}
+	if !sawWedgedOffline {
+		t.Fatalf("wedged promotion did not degrade to OFFLINE at the deadline: %+v", rec.snapshot())
+	}
+	if !sawLiveWaiting {
+		t.Fatalf("live agent's ask was not serviced — the loop was wedged by the blocking resolve: %+v", rec.snapshot())
+	}
+
+	close(blocker.release) // let any late resolve return cleanly before teardown
 }

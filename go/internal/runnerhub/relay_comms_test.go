@@ -458,3 +458,114 @@ func TestEnrollClearsReverseAccountSessions(t *testing.T) {
 		t.Fatalf("LiveAgentSessions = %v after re-enroll, want empty — the sweep would hand dead sessions a deliver", live)
 	}
 }
+
+// M1 (SEA-1569 T8 review): unbindSession (the clean-Stop teardown path) fires
+// exactly one terminal (DISCONNECTED → OFFLINE) presence edge for the account
+// whose live session was torn down. Pre-fix the hub fired the presence edge only
+// at deliverSession while the session was still bound, so a Stop left the
+// account's presence stuck at its last live state forever. This binds a session,
+// unbinds it, and asserts one DISCONNECTED edge for that account.
+func TestUnbindSessionFiresTerminalPresenceEdge(t *testing.T) {
+	hub := newHubOnly()
+	pres := &fakePresenceSink{}
+	hub.SetPresenceSink(pres)
+	hub.bindContainer("c1", "acct-a")
+	hub.promoteSession("c1", "sess-a") // fires one promoted edge, not a lifecycle one
+
+	hub.unbindSession("sess-a")
+
+	life := pres.lifecycleSnapshot()
+	if len(life) != 1 {
+		t.Fatalf("lifecycle edges after unbind = %d, want 1 (the terminal OFFLINE edge): %+v", len(life), life)
+	}
+	if life[0].account != "acct-a" || life[0].sessionID != "sess-a" ||
+		life[0].state != compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED {
+		t.Fatalf("terminal edge = %+v, want {acct-a, sess-a, DISCONNECTED}", life[0])
+	}
+}
+
+// M1 (SEA-1569 T8 review): unbindSession must NOT fire a terminal edge when the
+// account was already re-pointed to a NEWER session — the account is not offline,
+// its newer session is live. This binds acct-a to sess-old, re-points it to
+// sess-new via a second promoteSession, then unbinds the STALE sess-old; the
+// stale unbind must not delete the live reverse entry nor drive OFFLINE.
+func TestUnbindStaleSessionFiresNoTerminalEdgeWhenRepointed(t *testing.T) {
+	hub := newHubOnly()
+	pres := &fakePresenceSink{}
+	hub.SetPresenceSink(pres)
+	hub.bindContainer("c1", "acct-a")
+	hub.promoteSession("c1", "sess-old")
+	// A new container/session promotes onto the SAME account, re-pointing the
+	// reverse entry to sess-new (the newer live session).
+	hub.bindContainer("c2", "acct-a")
+	hub.promoteSession("c2", "sess-new")
+
+	// Unbind the stale session: its forward entry is dropped, but the reverse
+	// entry now points at sess-new, so no terminal edge fires.
+	hub.unbindSession("sess-old")
+
+	if life := pres.lifecycleSnapshot(); len(life) != 0 {
+		t.Fatalf("lifecycle edges after stale unbind = %d, want 0 (account re-pointed, not offline): %+v", len(life), life)
+	}
+	// The live session's reverse binding survives the stale unbind.
+	if sess, ok := hub.SessionForAccount("acct-a"); !ok || sess != "sess-new" {
+		t.Fatalf("SessionForAccount(acct-a) = %q ok=%v after stale unbind, want sess-new (live binding must survive)", sess, ok)
+	}
+}
+
+// M1 (SEA-1569 T8 review): enroll (the Runner-reconnect teardown path) fires one
+// terminal (DISCONNECTED → OFFLINE) presence edge per PREVIOUSLY-bound account
+// before clearing every binding, and the maps are cleared. Pre-fix enroll emitted
+// no lifecycle frames at all, so a reconnect left every agent's presence stuck at
+// its last live state. This binds two accounts, re-enrolls, and asserts one edge
+// per account plus empty maps.
+func TestEnrollFiresTerminalPresenceEdgePerBoundAccountAndClears(t *testing.T) {
+	hub := newHubOnly()
+	pres := &fakePresenceSink{}
+	hub.SetPresenceSink(pres)
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	hub.bindContainer("c1", "acct-a")
+	hub.promoteSession("c1", "sess-a")
+	hub.bindContainer("c2", "acct-b")
+	hub.promoteSession("c2", "sess-b")
+
+	// A Runner reconnect: enroll drops every binding and drives each previously-
+	// bound account OFFLINE.
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+
+	life := pres.lifecycleSnapshot()
+	if len(life) != 2 {
+		t.Fatalf("lifecycle edges after re-enroll = %d, want 2 (one OFFLINE per bound account): %+v", len(life), life)
+	}
+	got := map[store.AccountID]compassv1.AgentSessionState{}
+	for _, r := range life {
+		if r.state != compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED {
+			t.Fatalf("edge for %s = %v, want DISCONNECTED", r.account, r.state)
+		}
+		got[r.account] = r.state
+	}
+	if _, ok := got["acct-a"]; !ok {
+		t.Fatalf("no terminal edge for acct-a: %+v", life)
+	}
+	if _, ok := got["acct-b"]; !ok {
+		t.Fatalf("no terminal edge for acct-b: %+v", life)
+	}
+	// The maps are cleared: no account resolves a live session after re-enroll.
+	if live := hub.LiveAgentSessions(); len(live) != 0 {
+		t.Fatalf("LiveAgentSessions = %v after re-enroll, want empty", live)
+	}
+}
+
+// M1 (SEA-1569 T8 review): a first-ever enroll (no prior bindings) fires no
+// terminal presence edge — there is nothing bound to drive offline.
+func TestFirstEnrollFiresNoTerminalPresenceEdge(t *testing.T) {
+	hub := newHubOnly()
+	pres := &fakePresenceSink{}
+	hub.SetPresenceSink(pres)
+
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+
+	if life := pres.lifecycleSnapshot(); len(life) != 0 {
+		t.Fatalf("lifecycle edges after first enroll = %d, want 0 (nothing was bound): %+v", len(life), life)
+	}
+}

@@ -243,3 +243,77 @@ func TestRemoveClearsContainerBinding(t *testing.T) {
 		t.Fatal("container c1 still bound after Remove, want the binding cleared (stale binding authorizes pre-exec secrets materialize)")
 	}
 }
+
+// attachStatusResponder enrolls a Runner and binds its router to answer every
+// GetAgentStatus command with a canned response carrying statuses, correlated by
+// the pushed request id — the seam the SessionState fallback tests drive.
+func attachStatusResponder(t *testing.T, hub *Hub, statuses []*compassv1.AgentSessionStatus) {
+	t.Helper()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	router, _, err := hub.routerFor("any")
+	if err != nil {
+		t.Fatalf("routerFor after enroll = %v, want a router", err)
+	}
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		go router.complete(&compassv1internal.SessionsRequest{
+			RequestId: cmd.GetRequestId(),
+			Result: &compassv1internal.SessionsRequest_Status{
+				Status: &compassv1.GetAgentStatusResponse{Statuses: statuses},
+			},
+		})
+		return nil
+	})
+}
+
+// L2 (SEA-1569 T8 review): SessionState adopts the SOLE status as this session's
+// state only when that status carries NO session id (the "Runner answered without
+// echoing the id" case). A sole status echoing an EMPTY id resolves ok=true.
+func TestSessionStateSoleStatusEmptyIDResolves(t *testing.T) {
+	hub := newHubOnly()
+	attachStatusResponder(t, hub, []*compassv1.AgentSessionStatus{
+		{SessionId: "", State: compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING},
+	})
+
+	state, ok := hub.SessionState(context.Background(), "sess-1")
+	if !ok {
+		t.Fatal("SessionState with a sole empty-id status = ok=false, want ok=true (adopt the id-less answer)")
+	}
+	if state != compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING {
+		t.Fatalf("SessionState = %v, want WORKING (the sole status's state)", state)
+	}
+}
+
+// L2 (SEA-1569 T8 review): a sole status echoing a NON-EMPTY MISMATCHED id is NOT
+// this session's state — a Runner bug echoing a wrong id must not reconstruct a
+// wrong presence — so it is unresolved (ok=false → UNSPECIFIED). RED against
+// pre-fix: the pre-fix fallback adopted the sole status unconditionally, so this
+// returned ok=true with the wrong session's state.
+func TestSessionStateSoleStatusMismatchedIDIsUnresolved(t *testing.T) {
+	hub := newHubOnly()
+	attachStatusResponder(t, hub, []*compassv1.AgentSessionStatus{
+		{SessionId: "some-other-session", State: compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING},
+	})
+
+	state, ok := hub.SessionState(context.Background(), "sess-1")
+	if ok {
+		t.Fatalf("SessionState with a sole MISMATCHED-id status = ok=true (state %v), want ok=false — a wrong-id echo must not resolve this session", state)
+	}
+	if state != compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
+		t.Fatalf("SessionState unresolved state = %v, want UNSPECIFIED", state)
+	}
+}
+
+// L2 companion: a status whose id MATCHES the requested session resolves ok=true
+// through the id-match loop (the primary path, unchanged by the fix) — so the
+// tightened fallback did not regress the matched case.
+func TestSessionStateMatchedIDResolves(t *testing.T) {
+	hub := newHubOnly()
+	attachStatusResponder(t, hub, []*compassv1.AgentSessionStatus{
+		{SessionId: "sess-1", State: compassv1.AgentSessionState_AGENT_SESSION_STATE_READY},
+	})
+
+	state, ok := hub.SessionState(context.Background(), "sess-1")
+	if !ok || state != compassv1.AgentSessionState_AGENT_SESSION_STATE_READY {
+		t.Fatalf("SessionState(sess-1) = %v ok=%v, want READY ok=true (id-match path)", state, ok)
+	}
+}

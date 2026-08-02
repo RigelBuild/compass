@@ -843,6 +843,13 @@ func (h *Hub) countContractDefect(ev RunnerEvent, reason string) {
 		slog.Uint64("contract_defect_total", n))
 }
 
+// promotedPair is one (account -> session) binding snapshotted under h.mu so its
+// terminal presence edge can be fired after the lock is released (enroll).
+type promotedPair struct {
+	account   store.AccountID
+	sessionID string
+}
+
 // enroll registers (or re-attaches) a Runner under its authenticated subject,
 // returning whether it re-attached an existing Runner (OQ6 duplicate enrollment:
 // a second enrollment re-attaches the same Runner rather than registering a
@@ -857,14 +864,36 @@ func (h *Hub) countContractDefect(ev RunnerEvent, reason string) {
 // to the one enrolled Runner, so a reconnect clears the whole map.
 func (h *Hub) enroll(id string, subject store.Subject) (reattached bool) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	reattached = h.runner != nil
 	router := newCommandRouter()
 	router.log = h.log
 	h.runner = &attachedRunner{id: id, subject: subject, router: router}
+	// Snapshot the live (account -> session) bindings BEFORE clearing them: each
+	// previously-bound account loses its live session on this re-enroll and must
+	// be driven to presence OFFLINE (SEA-1569 T8). enroll emits no lifecycle
+	// frames of its own, so without this a long-WORKING agent whose Runner
+	// reconnected would stay WORKING in the projection forever. A first-ever
+	// enroll (empty maps) snapshots nothing and fires nothing.
+	offline := make([]promotedPair, 0, len(h.accountSessions))
+	for account, sessionID := range h.accountSessions {
+		offline = append(offline, promotedPair{account: account, sessionID: sessionID})
+	}
+	presence := h.presence
 	clear(h.containerAccounts)
 	clear(h.sessionAccounts)
 	clear(h.accountSessions)
+	h.mu.Unlock()
+
+	// Fire the terminal edges AFTER releasing the lock (the sink enqueues into
+	// the presence loop and returns promptly, so it must not run under h.mu) —
+	// the exact lock-then-release-then-fire discipline promoteSession uses.
+	// Order among distinct accounts is irrelevant. publishIfChanged dedups, so a
+	// terminal frame already having driven OFFLINE makes this a no-op re-publish.
+	if presence != nil {
+		for _, p := range offline {
+			presence.OnSessionLifecycle(p.account, p.sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
+		}
+	}
 	return reattached
 }
 

@@ -79,6 +79,39 @@ func (f *fakeStatus) set(sessionID string, state compassv1.AgentSessionState) {
 	f.states[sessionID] = state
 }
 
+// blockingStatus is a LifecycleStatusResolver whose SessionState blocks until
+// either its release channel is closed or the caller's ctx is cancelled — the
+// wedged-Runner model for the M3 loop-freeze tests. It signals entered when a
+// resolve begins, so a test can gate on "the loop is now inside applyPromoted"
+// without a sleep. On ctx cancellation (the bounded-resolve deadline firing) it
+// returns ok=false, modeling the degrade-to-OFFLINE path.
+type blockingStatus struct {
+	entered chan string
+	release chan struct{}
+	state   compassv1.AgentSessionState
+}
+
+func newBlockingStatus(state compassv1.AgentSessionState) *blockingStatus {
+	return &blockingStatus{
+		entered: make(chan string, 8),
+		release: make(chan struct{}),
+		state:   state,
+	}
+}
+
+func (b *blockingStatus) SessionState(ctx context.Context, sessionID string) (compassv1.AgentSessionState, bool) {
+	select {
+	case b.entered <- sessionID:
+	default:
+	}
+	select {
+	case <-b.release:
+		return b.state, true
+	case <-ctx.Done():
+		return compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED, false
+	}
+}
+
 // presenceRecord is one observed AgentPresenceChanged publish.
 type presenceRecord struct {
 	account  store.AccountID
@@ -173,6 +206,19 @@ func newTestPublisher(t *testing.T) (*Publisher, *fakeReads, *fakeStatus, *event
 	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	p := NewPublisher(bus, reads, status, discardLogger())
 	return p, reads, status, bus
+}
+
+// newTestPublisherWithStatus builds a publisher over a caller-supplied
+// LifecycleStatusResolver (e.g. a blockingStatus) and fresh reads + real bus, so
+// the M3 reconciliation-resolve tests can drive a wedged Runner. The status
+// timeout defaults to presenceStatusTimeout; a test overrides p.statusTimeout
+// directly before starting the loop.
+func newTestPublisherWithStatus(t *testing.T, status LifecycleStatusResolver) (*Publisher, *fakeReads, *events.Bus[*compassv1.SubscribeCommsResponse]) {
+	t.Helper()
+	reads := newFakeReads()
+	bus := events.NewBus[*compassv1.SubscribeCommsResponse]()
+	p := NewPublisher(bus, reads, status, discardLogger())
+	return p, reads, bus
 }
 
 // startPublisher runs p.Run in the background on a cancelable child of the test
