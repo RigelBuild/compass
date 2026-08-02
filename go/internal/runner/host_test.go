@@ -163,7 +163,7 @@ func TestProvisionMaterializesConfigAndMountsBeforeLaunch(t *testing.T) {
 	if !ok {
 		t.Fatalf("host is %T, want *agentHost", host)
 	}
-	wantRoot := filepath.Join(agentHost.runtimeDir, "config")
+	wantRoot := filepath.Join(agentHost.runtimeDir, "containers", liveSpec().Name, "config")
 	var found *runtime.Mount
 	for i := range created[0].Mounts {
 		if created[0].Mounts[i].ContainerPath == agentConfigMountPath {
@@ -245,7 +245,7 @@ func TestProvisionToleratesNoConfigSurface(t *testing.T) {
 	if !ok {
 		t.Fatalf("host is %T, want *agentHost", host)
 	}
-	wantRoot := filepath.Join(agentHost.runtimeDir, "config")
+	wantRoot := filepath.Join(agentHost.runtimeDir, "containers", liveSpec().Name, "config")
 	var found *runtime.Mount
 	for i := range created[0].Mounts {
 		if created[0].Mounts[i].ContainerPath == agentConfigMountPath {
@@ -264,6 +264,83 @@ func TestProvisionToleratesNoConfigSurface(t *testing.T) {
 	}
 	if info, statErr := os.Stat(wantRoot); statErr != nil || !info.IsDir() {
 		t.Fatalf("config root %q not created on disk: err=%v", wantRoot, statErr)
+	}
+}
+
+// seqSpecBuilder yields a distinct-named AgentSpec per BuildSpec call, cycling
+// through the scripted specs in order — so two provisions on one host launch two
+// differently-named containers, exercising per-container config-root isolation.
+type seqSpecBuilder struct {
+	specs []runtime.AgentSpec
+	n     int
+}
+
+func (b *seqSpecBuilder) BuildSpec(*compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {
+	spec := b.specs[b.n%len(b.specs)]
+	b.n++
+	return spec, nil
+}
+
+// Two containers provisioned on ONE host must each get their OWN config root at
+// <RuntimeDir>/containers/<name>/config — never a shared tree. A shared root is
+// the SEA-1659 bug: every bind mount is :Z-relabeled into the container's
+// private SELinux MCS category, so a second container provisioning against a
+// shared root re-steals it from the first. This test reddens against the
+// pre-reshape shared-root code (both mounts resolve to the same
+// <RuntimeDir>/config) and passes once each container roots its own subtree.
+func TestProvisionPerContainerConfigRootsAreDistinct(t *testing.T) {
+	specA := liveSpec()
+	specA.Name = "cont-a"
+	specB := liveSpec()
+	specB.Name = "cont-b"
+	specs := &seqSpecBuilder{specs: []runtime.AgentSpec{specA, specB}}
+	host, engine, _ := newHostFixture(t, specs)
+
+	if _, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
+		t.Fatalf("Provision A = %v, want success", err)
+	}
+	if _, err := host.Provision(context.Background(), &compassv1.ProvisionAgentWorkspaceRequest{}); err != nil {
+		t.Fatalf("Provision B = %v, want success", err)
+	}
+
+	agentHost, ok := host.(*agentHost)
+	if !ok {
+		t.Fatalf("host is %T, want *agentHost", host)
+	}
+	created := engine.createdSpecs()
+	if len(created) != 2 {
+		t.Fatalf("engine created %d containers, want 2", len(created))
+	}
+
+	configMount := func(spec runtime.ContainerSpec) *runtime.Mount {
+		for i := range spec.Mounts {
+			if spec.Mounts[i].ContainerPath == agentConfigMountPath {
+				return &spec.Mounts[i]
+			}
+		}
+		return nil
+	}
+
+	hostPaths := make([]string, 0, len(created))
+	for i := range created {
+		mount := configMount(created[i])
+		if mount == nil {
+			t.Fatalf("launched spec %q has no config mount at %q; mounts=%+v", created[i].Name, agentConfigMountPath, created[i].Mounts)
+		}
+		wantRoot := filepath.Join(agentHost.runtimeDir, "containers", created[i].Name, "config")
+		if mount.HostPath != wantRoot {
+			t.Fatalf("container %q config mount host path = %q, want per-container root %q", created[i].Name, mount.HostPath, wantRoot)
+		}
+		if !mount.ReadOnly {
+			t.Fatalf("container %q config mount is writable, want read-only", created[i].Name)
+		}
+		if info, statErr := os.Stat(mount.HostPath); statErr != nil || !info.IsDir() {
+			t.Fatalf("config root %q not created on disk: err=%v", mount.HostPath, statErr)
+		}
+		hostPaths = append(hostPaths, mount.HostPath)
+	}
+	if hostPaths[0] == hostPaths[1] {
+		t.Fatalf("both containers share config root %q; per-container roots must be distinct", hostPaths[0])
 	}
 }
 

@@ -61,12 +61,11 @@ type agentHost struct {
 	// empty leaves the agent on its own default.
 	model string
 
-	mu                 sync.Mutex
-	sessions           map[string]*liveSession
-	sockets            map[string]*gateway.SocketListener
-	nextID             func() string
-	materializer       *runtime.SecretMaterializer
-	configMaterializer *ConfigMaterializer
+	mu           sync.Mutex
+	sessions     map[string]*liveSession
+	sockets      map[string]*gateway.SocketListener
+	nextID       func() string
+	materializer *runtime.SecretMaterializer
 }
 
 // liveSession is one running agent session: its container and the relay stream
@@ -103,19 +102,18 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		newID = monotonicIDs()
 	}
 	return &agentHost{
-		link:               link,
-		runtime:            rt,
-		registry:           registry,
-		engine:             engine,
-		specs:              specs,
-		log:                log,
-		runtimeDir:         cfg.RuntimeDir,
-		model:              cfg.AgentModel,
-		sessions:           map[string]*liveSession{},
-		sockets:            map[string]*gateway.SocketListener{},
-		nextID:             newID,
-		materializer:       runtime.NewSecretMaterializer(engine, log),
-		configMaterializer: NewConfigMaterializer(filepath.Join(cfg.RuntimeDir, "config"), link, log),
+		link:         link,
+		runtime:      rt,
+		registry:     registry,
+		engine:       engine,
+		specs:        specs,
+		log:          log,
+		runtimeDir:   cfg.RuntimeDir,
+		model:        cfg.AgentModel,
+		sessions:     map[string]*liveSession{},
+		sockets:      map[string]*gateway.SocketListener{},
+		nextID:       newID,
+		materializer: runtime.NewSecretMaterializer(engine, log),
 	}
 }
 
@@ -147,7 +145,7 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	// reads config, never writes it. The mcsLabel is empty on this provision
 	// path: Materialize runs before the container exists, so there is no MCS
 	// category to target — the create-time :Z relabel covers the whole tree.
-	mount, err := h.configMaterializer.Materialize(ctx, "")
+	mount, err := h.configMaterializerFor(spec.Name).Materialize(ctx, "")
 	if err != nil {
 		// Config could not be materialized; abort provision rather than launch a
 		// container with no config. Tear the socket down (mirror the Launch-
@@ -536,6 +534,16 @@ func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
 		Model:   h.model,
 		Persona: handle.Persona(),
 	}
+}
+
+// configMaterializerFor builds a ConfigMaterializer rooted at the container's
+// own config subtree, <RuntimeDir>/containers/<container>/config — mirroring
+// the per-container agent-socket layout (serveSocket). A per-container root is
+// required because every bind mount is relabeled into the container's PRIVATE
+// SELinux MCS category (:Z, podman.go mountArg); a shared root would be
+// re-stolen by each new container's relabel on an enforcing host.
+func (h *agentHost) configMaterializerFor(containerName string) *ConfigMaterializer {
+	return NewConfigMaterializer(filepath.Join(h.runtimeDir, agentSocketDir, containerName, "config"), h.link, h.log)
 }
 
 // serveSocket creates and serves the per-container agent socket for
