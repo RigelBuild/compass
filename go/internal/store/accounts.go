@@ -314,7 +314,10 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 	// can interleave into a persisted cycle. hashtext -> int4 widens to the
 	// bigint the advisory lock takes; the lock auto-releases at txn end. An
 	// unknown agent has no owner to key on, so its (already-doomed) request locks
-	// on its own id — never colliding with a real owner's tree.
+	// on its own id — never colliding with a real owner's tree. Two distinct
+	// owners can hash-collide on the int4 hashtext key and spuriously serialize
+	// each other's reparents — a benign liveness/throughput cost (a redundant
+	// wait), never a wrong result, acceptable at expected fleet size.
 	lockKey := agentOwner
 	if !agentExists {
 		lockKey = string(agentAccountID)

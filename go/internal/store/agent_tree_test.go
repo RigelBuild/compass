@@ -258,9 +258,12 @@ func TestReparentAgentConcurrentCycleSerialized(t *testing.T) {
 	}()
 
 	// Readiness gate (bounded poll-until, not a fixed sleep): wait until tx2 is
-	// actually parked on the advisory lock — an ungranted advisory lock row in
-	// pg_locks. If it never appears within the deadline (the RED case where the
-	// lock line was removed, so tx2 never waits), fall through and commit anyway.
+	// actually parked on THIS owner's advisory lock — an ungranted advisory lock
+	// row in pg_locks whose key matches hashtext(owner.ID). The poll is scoped to
+	// this exact lock key so an unrelated concurrent test's ungranted advisory
+	// lock cannot spuriously satisfy the gate. If it never appears within the
+	// deadline (the RED case where the lock line was removed, so tx2 never waits),
+	// fall through and commit anyway.
 	deadline := time.After(5 * time.Second)
 	tick := time.NewTicker(10 * time.Millisecond)
 	defer tick.Stop()
@@ -268,7 +271,12 @@ waitLoop:
 	for {
 		var waiters int
 		if err := s.pool.QueryRow(ctx,
-			`SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+			`WITH k AS (SELECT hashtext($1)::bigint AS key)
+			 SELECT count(*) FROM pg_locks, k
+			 WHERE locktype = 'advisory' AND NOT granted
+			   AND classid = ((k.key >> 32) & 4294967295)::oid
+			   AND objid = (k.key & 4294967295)::oid`,
+			string(owner.ID),
 		).Scan(&waiters); err != nil {
 			t.Fatalf("poll pg_locks: %v", err)
 		}
