@@ -188,6 +188,159 @@ func TestStopUnknownSessionSucceeds(t *testing.T) {
 	}
 }
 
+// socketServed reports whether the host still holds an open agent socket for the
+// container — white-box, under h.mu, mirroring e2e_transport_test.go's
+// listenerPath. Remove must leave none behind.
+func socketServed(t *testing.T, host SessionHost, container string) bool {
+	t.Helper()
+	h, ok := host.(*agentHost)
+	if !ok {
+		t.Fatalf("fixture host is %T, want *agentHost for white-box socket assertion", host)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, served := h.sockets[container]
+	return served
+}
+
+// Remove tears a container down and everything bound to it: the live session is
+// retired (gone from the Runner's live set), the container is torn down through
+// the AgentRuntime (engine stop + remove; deregistered so it no longer
+// resolves), and the agent socket is closed. A bug that skipped any of these
+// would leak a session, a container, or a socket past the teardown.
+func TestRemoveTearsDownContainerAndRetiresSession(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine, registry := newHostFixture(t, specs)
+	ctx := context.Background()
+
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name})
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+
+	if err := host.Remove(ctx, name); err != nil {
+		t.Fatalf("Remove = %v, want success", err)
+	}
+
+	// The session is gone from the Runner's live set.
+	if _, err := host.Status(ctx, sessionID); !errors.Is(err, errSessionUnknown) {
+		t.Fatalf("Status(session after Remove) = %v, want errSessionUnknown (session retired)", err)
+	}
+	// The container was torn down (engine stop + remove) and deregistered.
+	assertRecorded(t, engine.calls, "stop")
+	assertRecorded(t, engine.calls, "remove")
+	if _, ok := registry.Resolve(name); ok {
+		t.Fatal("container still registered after Remove; Teardown must deregister it")
+	}
+	// The agent socket is closed — no listener outlives the container.
+	if socketServed(t, host, name) {
+		t.Fatal("agent socket still served after Remove; the socket must be closed")
+	}
+}
+
+// Remove is idempotent, like Stop: a second Remove of an already-removed
+// container is a no-op success and does not tear a container down again, and a
+// Remove of a never-provisioned container simply succeeds. A bug that errored on
+// an unknown container would break a teardown retry after a successful remove.
+func TestRemoveIsIdempotent(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine, _ := newHostFixture(t, specs)
+	ctx := context.Background()
+
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	if err := host.Remove(ctx, name); err != nil {
+		t.Fatalf("first Remove = %v, want success", err)
+	}
+	callsAfterFirst := len(engine.calls)
+
+	// A second Remove of the same container is a no-op success: nothing left to
+	// resolve, so no further engine teardown runs.
+	if err := host.Remove(ctx, name); err != nil {
+		t.Fatalf("second Remove = %v, want nil (idempotent)", err)
+	}
+	if got := len(engine.calls); got != callsAfterFirst {
+		t.Fatalf("second Remove drove %d more engine calls, want 0 (no double teardown): %v", got-callsAfterFirst, engine.calls)
+	}
+
+	// A Remove of a never-provisioned container succeeds too.
+	if err := host.Remove(ctx, "never-provisioned"); err != nil {
+		t.Fatalf("Remove(unknown) = %v, want nil (idempotent)", err)
+	}
+}
+
+// A container whose registry handle is already gone (crash-reclaimed, or removed
+// underneath) but whose agent socket still lingers still has its socket closed
+// by Remove — so a Remove always leaves no socket behind, even when there is no
+// container left to tear down. A bug that only closed the socket after a
+// successful Teardown would leak the socket in this path.
+func TestRemoveClosesSocketWhenHandleAlreadyGone(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine, registry := newHostFixture(t, specs)
+	ctx := context.Background()
+
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	if !socketServed(t, host, name) {
+		t.Fatal("Provision did not serve an agent socket")
+	}
+	// Model the container handle gone while the socket lingers.
+	registry.Deregister(name)
+	callsBefore := len(engine.calls)
+
+	if err := host.Remove(ctx, name); err != nil {
+		t.Fatalf("Remove = %v, want success", err)
+	}
+	// No Teardown ran (no handle to resolve), so the engine is untouched.
+	if got := len(engine.calls); got != callsBefore {
+		t.Fatalf("Remove drove %d engine calls with no handle to resolve, want 0: %v", got-callsBefore, engine.calls)
+	}
+	// The lingering socket is closed regardless.
+	if socketServed(t, host, name) {
+		t.Fatal("agent socket still served after Remove; a lingering socket must be closed even when the handle is gone")
+	}
+}
+
+// A Teardown that fails partway (the engine Stop errors, so the container is
+// deregistered but not removed) still closes the agent socket and surfaces the
+// error: Remove leaves no socket behind on ANY path, and never answers a lying
+// success while the teardown failed. A bug that closed the socket only on the
+// success path (e.g. after the Teardown call rather than in a defer) would leak
+// the socket here and hand the Server a false success.
+func TestRemoveClosesSocketWhenTeardownFails(t *testing.T) {
+	specs := &fakeSpecBuilder{spec: liveSpec()}
+	host, engine, _ := newHostFixture(t, specs)
+	ctx := context.Background()
+
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	if _, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}); err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	engine.stopErr = errors.New("engine stop failed")
+
+	if err := host.Remove(ctx, name); err == nil {
+		t.Fatal("Remove = nil, want the Teardown error surfaced (never a lying success on a failed teardown)")
+	}
+	// The socket is closed regardless of the teardown failure — no listener leaks.
+	if socketServed(t, host, name) {
+		t.Fatal("agent socket still served after a failed-teardown Remove; the socket must be closed on every path")
+	}
+}
+
 // OQ6 row 5: Status is answered from the Runner's own live session set — a
 // started session appears with its live state, and a stopped one is gone. The
 // Runner is authoritative for live truth. A bug that answered from a stale or

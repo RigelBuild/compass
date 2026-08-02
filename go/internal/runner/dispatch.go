@@ -37,6 +37,12 @@ type SessionHost interface {
 	// Stop tears a session down. Stopping an unknown/already-stopped session
 	// succeeds (idempotent, matching the frozen StopAgentSession semantics).
 	Stop(ctx context.Context, sessionID string) error
+	// Remove tears down a container and everything bound to it: it retires any
+	// live session on the container, tears the container down (stop + remove +
+	// deregister), and closes the container's agent socket. An unknown container
+	// (never provisioned, or already removed) succeeds as a no-op — the
+	// teardown-symmetric counterpart to Provision, idempotent like Stop.
+	Remove(ctx context.Context, containerName string) error
 	// Reload restarts a session's agent in place, reusing the session id.
 	Reload(ctx context.Context, sessionID string) error
 	// Status returns the live status of one session, or every live session when
@@ -189,6 +195,14 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 		return &compassv1internal.SessionsRequest{
 			RequestId: id,
 			Result:    &compassv1internal.SessionsRequest_Stop{Stop: &compassv1.StopAgentSessionResponse{}},
+		}
+	case *compassv1internal.SessionsResponse_Remove:
+		if err := d.host.Remove(ctx, c.Remove.GetContainerName()); err != nil {
+			return errorResult(id, err)
+		}
+		return &compassv1internal.SessionsRequest{
+			RequestId: id,
+			Result:    &compassv1internal.SessionsRequest_Remove{Remove: &compassv1.RemoveAgentWorkspaceResponse{}},
 		}
 	case *compassv1internal.SessionsResponse_Reload:
 		sessionID := c.Reload.GetSessionId()

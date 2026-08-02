@@ -299,6 +299,64 @@ func (h *agentHost) Stop(_ context.Context, sessionID string) error {
 	return s.stream.Stop()
 }
 
+// Remove tears a container down and everything bound to it: it retires the live
+// session the container hosts (if any), stops that session's agent exec, tears
+// the container down through the AgentRuntime (deregister + stop + remove), and
+// closes the container's agent socket. It is the teardown-symmetric counterpart
+// to Provision (which serves the socket and launches the container).
+//
+// Idempotent, like Stop: an unknown container — never provisioned, or already
+// removed — is a no-op success. A container whose registry handle is already
+// gone but whose socket still lingers (a crash-reclaimed or post-Stop container)
+// still has its socket closed, so a Remove always leaves no socket behind.
+func (h *agentHost) Remove(ctx context.Context, containerName string) error {
+	// Retire the live session bound to this container under h.mu — the mirror of
+	// Stop's retirement — so a concurrent lifecycle op cannot observe a
+	// half-torn state. The socket is closed unconditionally below, so it is not
+	// retired here (RetireSession only quiesces the control producer for a live
+	// session; a container with no bound session has nothing to retire).
+	h.mu.Lock()
+	var retired *liveSession
+	for id, s := range h.sessions {
+		if s.containerName == containerName {
+			delete(h.sessions, id)
+			if listener, served := h.sockets[containerName]; served {
+				listener.RetireSession(id)
+			}
+			retired = s
+			break
+		}
+	}
+	h.mu.Unlock()
+
+	// Close the container's agent socket once teardown returns, whatever the
+	// outcome, so a Remove never leaves a listener behind — not even when the
+	// container teardown below fails. Deferred, so it still runs last (after the
+	// container is stopped and removed) on the success path.
+	defer h.closeSocket(ctx, containerName)
+
+	// Stop the retired session's agent exec outside the lock (it terminates a
+	// child and joins its drains). A stop error is logged, never returned: the
+	// container teardown below is the operation that must complete, and a failed
+	// exec-stop must not leave the container running.
+	if retired != nil {
+		if err := retired.stream.Stop(); err != nil {
+			h.log.Warn("stopping agent exec during container remove",
+				slog.String("container", containerName), slog.String("session_id", retired.sessionID), slog.Any("error", err))
+		}
+	}
+
+	// Tear the container down through the AgentRuntime (stop + remove +
+	// deregister). A container the registry no longer resolves is already gone —
+	// an idempotent no-op; its socket is still closed by the deferred close above.
+	if handle, ok := h.registry.Resolve(containerName); ok {
+		if err := h.runtime.Teardown(ctx, handle); err != nil {
+			return fmt.Errorf("tearing down container %q: %w", containerName, err)
+		}
+	}
+	return nil
+}
+
 // Reload restarts a session's agent in place, reusing the session id so the
 // board entry is continuous.
 func (h *agentHost) Reload(ctx context.Context, sessionID string) error {
@@ -429,7 +487,7 @@ func (h *agentHost) serveSocket(ctx context.Context, containerName string) (*gat
 	}
 	h.mu.Unlock()
 	path := filepath.Join(h.runtimeDir, agentSocketDir, containerName, agentSocketFile)
-	listener, err := gateway.Serve(ctx, path, containerName, h, h.link.client, h.link.client, h.link.client)
+	listener, err := gateway.Serve(ctx, path, containerName, h, h.link.client, h.link.client, h.link.client, h.link.client)
 	if err != nil {
 		return nil, fmt.Errorf("serving agent socket for container %q: %w", containerName, err)
 	}
