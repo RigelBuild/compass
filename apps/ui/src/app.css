@@ -815,6 +815,127 @@ button {
 	background: var(--warn);
 }
 
+/* CI + review roll-up badges — the board-distance collapse of the per-check pip
+ * strip (DL-097). The RightSidebar CheckRuns pane keeps .check-pip above; these
+ * are the card / Done / PR-row summary dots on the shared --add/--del/--warn. */
+.ci-badge,
+.review-badge {
+	width: 8px;
+	height: 8px;
+	border-radius: 2px;
+	background: var(--text-faint);
+}
+.ci-badge[data-status="success"] {
+	background: var(--add);
+}
+.ci-badge[data-status="failure"] {
+	background: var(--del);
+}
+.ci-badge[data-status="pending"] {
+	background: var(--warn);
+}
+.review-badge {
+	border-radius: 50%;
+}
+.review-badge[data-verdict="approved"] {
+	background: var(--add);
+}
+.review-badge[data-verdict="changes"] {
+	background: var(--del);
+}
+.review-badge[data-verdict="commented"] {
+	background: var(--warn);
+}
+.card-pr.link {
+	cursor: pointer;
+}
+.card-pr.link:hover {
+	color: var(--text);
+}
+
+/* ── Bridge PRs tab ────────────────────────────────────────────────────── */
+
+.pr-tab {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 12px;
+	overflow: auto;
+}
+
+.pr-group {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.pr-group-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-dim);
+	padding: 4px 6px;
+}
+.pr-group-head.unassigned {
+	color: var(--text-faint);
+}
+
+.pr-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	text-align: left;
+	background: var(--bg-panel);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 6px 10px;
+	color: var(--text);
+	cursor: pointer;
+}
+.pr-row:hover {
+	background: var(--bg-hover);
+}
+.pr-row.selected {
+	border-color: var(--accent);
+}
+
+.pr-row-state {
+	font-size: 10px;
+	text-transform: uppercase;
+	color: var(--text-faint);
+}
+.pr-row-coord {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	color: var(--text-dim);
+}
+.pr-row-title {
+	flex: 1;
+	font-size: 12px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.pr-row-threads {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	color: var(--text-faint);
+}
+.pr-row-issue {
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--accent);
+	cursor: pointer;
+}
+.pr-empty {
+	padding: 24px;
+	color: var(--text-faint);
+	font-size: 12px;
+}
+
 .add {
 	color: var(--add);
 }

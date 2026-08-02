@@ -1,10 +1,11 @@
 import { type Component, For, Show } from "solid-js";
 import {
-	checkPip,
+	ciBadge,
 	isMultiForge,
 	issueKey,
 	prBadge,
 	primaryPr,
+	reviewBadge,
 } from "../board-render";
 import { useStore } from "../context";
 import type { Issue } from "../stub-data";
@@ -33,17 +34,11 @@ const DoneRow: Component<{ issue: Issue; archived: boolean }> = (props) => {
 						{(p) => (
 							<span class="card-pr" data-pr-state={prBadge(p())}>
 								<Show when={p().checks}>
-									{(checks) => (
-										<span class="check-pips">
-											<For each={checks().checks}>
-												{(c) => (
-													<span
-														class="check-pip"
-														data-status={checkPip(c.state)}
-													/>
-												)}
-											</For>
-										</span>
+									<span class="ci-badge" data-status={ciBadge(p())} />
+								</Show>
+								<Show when={reviewBadge(p())}>
+									{(verdict) => (
+										<span class="review-badge" data-verdict={verdict()} />
 									)}
 								</Show>
 								#{p().number} {prBadge(p())}

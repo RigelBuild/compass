@@ -8,7 +8,14 @@
 // author, so a reassigned issue names its current holder on the card and its
 // original author in the PR pane. That divergence is intended, not drift.
 
-import type { AgentAttribution, Check, Issue, PullRequest } from "./stub-data";
+import type {
+	AgentAttribution,
+	Check,
+	ChecksSummary,
+	Issue,
+	PullRequest,
+	Review,
+} from "./stub-data";
 
 /** The primary PR the card / Done row / PR pane renders for an issue (DL-071).
  *  Total, precedence frozen: the first OPEN pr in `prs` order, else the first
@@ -84,4 +91,39 @@ export function isMultiForge(issues: readonly Issue[]): boolean {
  *  (AgentAccount.owner_user_id), never restated per artifact. */
 export function authorLabel(agent: AgentAttribution): string {
 	return `@${agent.agentHandle}`;
+}
+
+/** The one review verdict a board surface shows for a PR: latest-per-author over
+ *  the submission-ordered `reviews` (a reviewer's CURRENT verdict is its last
+ *  entry, DL-069; bots INCLUDED), rolled by precedence
+ *  `changes_requested` > `approved` > `commented`. Empty `reviews` → `undefined`
+ *  (no badge). This helper is the ONE owner of the `changes_requested`→`changes`
+ *  copy rule, returning the display vocabulary so no chip site repeats it. */
+export function reviewBadge(
+	pr: PullRequest,
+): "changes" | "approved" | "commented" | undefined {
+	const latest = new Map<string, Review["verdict"]>();
+	for (const r of pr.reviews) latest.set(r.author, r.verdict);
+	const verdicts = [...latest.values()];
+	if (verdicts.length === 0) return undefined;
+	if (verdicts.includes("changes_requested")) return "changes";
+	if (verdicts.includes("approved")) return "approved";
+	return "commented";
+}
+
+/** The CI badge for a PR: the roll-up `ChecksSummary.state` read directly — it
+ *  is already the 3-valued roll-up ("pending" | "success" | "failure"), so no
+ *  new mapping is invented. Exported so every badge site reads the roll-up
+ *  through one named seam (the inverse of `checkPip`, which iterates the
+ *  per-check list). No `checks` → `undefined` (no badge). */
+export function ciBadge(pr: PullRequest): ChecksSummary["state"] | undefined {
+	return pr.checks?.state;
+}
+
+/** The open PRs of an issue — `forgeState === "open"` (drafts included), `prs`
+ *  order preserved. The PRs-tab row source: unlike `primaryPr` (a card-level
+ *  compression to one chip), this keeps every open PR so a second open PR is not
+ *  invisible. */
+export function openPrs(issue: Issue): PullRequest[] {
+	return issue.prs.filter((p) => p.forgeState === "open");
 }

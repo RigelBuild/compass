@@ -7,8 +7,15 @@
 // D1 contract is unit-testable and the same functions serve the fixture today
 // and the @compass/client stream later.
 
+import { openPrs } from "./board-render";
 import { BOARD_LANES } from "./constants";
-import type { Agent, AgentTreeNode, Issue, IssueState } from "./stub-data";
+import type {
+	Agent,
+	AgentTreeNode,
+	Issue,
+	IssueState,
+	PullRequest,
+} from "./stub-data";
 import { agentTree } from "./stub-data";
 
 /** The active states, in board display order — derived from the one lane list
@@ -112,4 +119,49 @@ export function subtreeAgentIds(
 	const root = find(agentTree(agents));
 	if (root) collect(root);
 	return ids;
+}
+
+/** One PRs-tab row: an OPEN PR paired with its owning issue. `Issue.prs` holds
+ *  every PR opened for an issue, so an issue with two open PRs yields two rows —
+ *  the PRs tab is the surface where `primaryPr`'s single-chip compression must
+ *  NOT apply (a second open PR would otherwise be invisible). */
+export type PrRow = { issue: Issue; pr: PullRequest };
+
+/** Every open-PR row, across issues in ANY lifecycle state — the predicate is on
+ *  the PR (`openPrs`), not the issue. Issue order then `prs` order preserved. */
+export function prRows(all: readonly Issue[]): PrRow[] {
+	return all.flatMap((issue) => openPrs(issue).map((pr) => ({ issue, pr })));
+}
+
+/** The PRs-tab groups: `prRows` grouped by `issue.assignee`, group sequence =
+ *  `treeOrder(agents)` (C's contract) filtered to agents with ≥1 row, then one
+ *  `agent: null` ("Unassigned") group LAST iff it has rows. */
+export function prRowGroups(
+	agents: readonly Agent[],
+	all: readonly Issue[],
+): { agent: Agent | null; rows: PrRow[] }[] {
+	const rows = prRows(all);
+	const groups: { agent: Agent | null; rows: PrRow[] }[] = [];
+	for (const agent of treeOrder(agents)) {
+		const owned = rows.filter((r) => r.issue.assignee === agent.account.id);
+		if (owned.length > 0) groups.push({ agent, rows: owned });
+	}
+	const unassigned = rows.filter((r) => r.issue.assignee === null);
+	if (unassigned.length > 0) groups.push({ agent: null, rows: unassigned });
+	return groups;
+}
+
+/** The PRs-tab count badge — the number of rows the tab shows, so it equals the
+ *  visible row count. Unscoped: `prRows(all).length`. With C's `subtreeAgentIds`
+ *  scope, counts only rows whose `issue.assignee` is in scope (unassigned rows
+ *  are excluded when scoped, matching the filtered tab). */
+export function prCount(
+	all: readonly Issue[],
+	scope?: ReadonlySet<string>,
+): number {
+	const rows = prRows(all);
+	if (!scope) return rows.length;
+	return rows.filter(
+		(r) => r.issue.assignee !== null && scope.has(r.issue.assignee),
+	).length;
 }
