@@ -632,4 +632,28 @@ describe("prCount", () => {
 		];
 		expect(prCount(all, new Set<string>())).toBe(0);
 	});
+
+	// Frozen-contract edge (Record B §T2): unscoped prCount is prRows(all).length —
+	// it counts every open-PR row and is deliberately NOT agent-aware (the signature
+	// takes no agent set). prRowGroups, by contrast, only emits rows whose assignee
+	// is null or matches a known agent, so an issue with a non-null assignee that is
+	// absent from the agent set is counted by the badge yet dropped from the render.
+	// This is out of contract for real data — assignee is a trusted account id and a
+	// miss is a store bug — but the asymmetry is intentional and pinned here so a
+	// future change to either side is a conscious one.
+	test("unscoped: an orphan (unknown) assignee is still counted (== prRows length)", () => {
+		const all = [
+			ws({
+				id: "o1",
+				state: "in_review",
+				assignee: "ghost",
+				prs: [prOf({ number: 1 })],
+			}),
+		];
+		expect(prCount(all)).toBe(prRows(all).length);
+		expect(prCount(all)).toBe(1);
+		// The same orphan row is dropped from the grouped render (no matching agent).
+		const groups = prRowGroups([agent("a")], all);
+		expect(groups.flatMap((g) => g.rows)).toHaveLength(0);
+	});
 });

@@ -95,6 +95,44 @@ describe("Bridge Issues/PRs tabs (DL-097)", () => {
 		expect(container.querySelectorAll(".pr-row").length).toBeGreaterThan(0);
 		expect(groupingSeg(container)).toBeNull();
 	});
+
+	test("the issueKey chip activates on Enter (keyboard a11y, DL-097)", () => {
+		const { store, container } = mountBridge();
+		clickTab(container, "PRs");
+		const firstRowIssueId = prRows(STUB_ISSUES)[0]?.issue.id;
+		const chip = container.querySelector<HTMLElement>(".pr-row-issue");
+		if (!chip) throw new Error("no issueKey chip");
+		// Enter activates the chip: same effect as a click (select + flip to Issues).
+		fireEvent.keyDown(chip, { key: "Enter" });
+		expect(store.selectedIssueId()).toBe(firstRowIssueId);
+		expect(groupingSeg(container)).not.toBeNull();
+	});
+
+	test("the issueKey chip activates on Space and consumes the default page scroll", () => {
+		const { store, container } = mountBridge();
+		clickTab(container, "PRs");
+		const firstRowIssueId = prRows(STUB_ISSUES)[0]?.issue.id;
+		const chip = container.querySelector<HTMLElement>(".pr-row-issue");
+		if (!chip) throw new Error("no issueKey chip");
+		// Space activates AND is consumed: preventDefault makes dispatchEvent return
+		// false, so the space key never scrolls the page.
+		const notDefaulted = fireEvent.keyDown(chip, { key: " " });
+		expect(notDefaulted).toBe(false);
+		expect(store.selectedIssueId()).toBe(firstRowIssueId);
+		expect(groupingSeg(container)).not.toBeNull();
+	});
+
+	test("the issueKey chip ignores non-activation keys (stays on the PRs tab)", () => {
+		const { container } = mountBridge();
+		clickTab(container, "PRs");
+		const chip = container.querySelector<HTMLElement>(".pr-row-issue");
+		if (!chip) throw new Error("no issueKey chip");
+		// The guard early-returns on any key but Enter/Space: no activation, so no
+		// flip — still on the PRs tab (grouping seg absent, rows present).
+		fireEvent.keyDown(chip, { key: "a" });
+		expect(groupingSeg(container)).toBeNull();
+		expect(container.querySelectorAll(".pr-row").length).toBeGreaterThan(0);
+	});
 });
 
 describe("Bridge card badges (Record B §3)", () => {
@@ -118,5 +156,42 @@ describe("Bridge card badges (Record B §3)", () => {
 		// Flipped to the PRs tab: grouping seg hidden, PR rows shown.
 		expect(groupingSeg(container)).toBeNull();
 		expect(container.querySelectorAll(".pr-row").length).toBeGreaterThan(0);
+	});
+
+	test("a card PR chip activates on Enter (keyboard a11y, DL-097)", () => {
+		const { store, container } = mountBridge();
+		const chip = container.querySelector<HTMLElement>('.card-pr[role="link"]');
+		if (!chip) throw new Error("no interactive card PR chip");
+		// Enter activates: same effect as the click test (select + flip to PRs).
+		fireEvent.keyDown(chip, { key: "Enter" });
+		expect(store.selectedIssueId()).not.toBeNull();
+		expect(groupingSeg(container)).toBeNull();
+		expect(container.querySelectorAll(".pr-row").length).toBeGreaterThan(0);
+	});
+
+	test("a card PR chip activates on Space and consumes the default page scroll", () => {
+		const { store, container } = mountBridge();
+		const chip = container.querySelector<HTMLElement>('.card-pr[role="link"]');
+		if (!chip) throw new Error("no interactive card PR chip");
+		// Space activates AND is consumed: preventDefault makes dispatchEvent return
+		// false (no page scroll), and the chip selects + flips to the PRs tab.
+		const notDefaulted = fireEvent.keyDown(chip, { key: " " });
+		expect(notDefaulted).toBe(false);
+		expect(store.selectedIssueId()).not.toBeNull();
+		expect(groupingSeg(container)).toBeNull();
+		expect(container.querySelectorAll(".pr-row").length).toBeGreaterThan(0);
+	});
+
+	test("a card PR chip ignores non-activation keys", () => {
+		const { store, container } = mountBridge();
+		const chip = container.querySelector<HTMLElement>('.card-pr[role="link"]');
+		if (!chip) throw new Error("no interactive card PR chip");
+		// The guard early-returns on any key but Enter/Space: selection unchanged
+		// (the store seeds a selection) and no flip to the PRs tab.
+		const before = store.selectedIssueId();
+		fireEvent.keyDown(chip, { key: "a" });
+		expect(store.selectedIssueId()).toBe(before);
+		expect(groupingSeg(container)).not.toBeNull();
+		expect(container.querySelectorAll(".pr-row")).toHaveLength(0);
 	});
 });
