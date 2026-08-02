@@ -332,6 +332,22 @@ func wireText(id string, author store.AccountID, body string) *compassv1.Message
 	}
 }
 
+// wireTextBlocks builds a wire Message with one text block per body on the
+// shared test channel ("chan-1"), so a test can mention the same @handle across
+// separate blocks and assert global dedup.
+func wireTextBlocks(id string, author store.AccountID, bodies ...string) *compassv1.Message {
+	blocks := make([]*compassv1.MessageBlock, 0, len(bodies))
+	for _, body := range bodies {
+		blocks = append(blocks, &compassv1.MessageBlock{Block: &compassv1.MessageBlock_Text{Text: body}})
+	}
+	return &compassv1.Message{
+		Id:              id,
+		Container:       &compassv1.Message_ChannelId{ChannelId: "chan-1"},
+		AuthorAccountId: string(author),
+		Blocks:          blocks,
+	}
+}
+
 // newTestConsumer builds a consumer over fresh fakes and returns them. The bus
 // is a real events.Bus so the tests exercise the true Subscribe/Publish tail.
 func newTestConsumer(t *testing.T) (*Consumer, *fakeDispatcher, *fakeResolver, *fakeReads) {

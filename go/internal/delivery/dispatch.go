@@ -113,10 +113,15 @@ func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author s
 // full set of mentioned agent members (live or not) so fanOut can exclude them
 // from the plain deliver — steer-only precedence (OQ-3). A mentioned agent with
 // no live session is skipped: a steer is a mid-turn interrupt and there is no
-// turn to interrupt, so the cursor+sweep delivers it later as a plain deliver
-// (design.md:546-548) — it is NOT added to the deliver fan-out either. A mention
-// routing failure is logged and the mention(s) dropped, never returned up: a
-// mention must never fail a post (design.md:522-523).
+// turn to interrupt, and it is NOT added to the deliver fan-out either. A
+// subscribed-or-home member picks the message up on its next start via the D2
+// sweep (design.md:546-548). An UNSUBSCRIBED non-home member has no sweep
+// redelivery (UndeliveredMessages is subscription-gated,
+// store/delivery_cursors.go:212), so a mention reaches it only while it is live:
+// offline + unsubscribed = nothing this cycle, by design (SEA-1641 tracks
+// whether that gap should become recoverable). A mention routing failure is
+// logged and the mention(s) dropped, never returned up: a mention must never
+// fail a post (design.md:522-523).
 func (c *Consumer) routeMentions(ctx context.Context, channel store.ChannelID, author store.AccountID, msg *compassv1.Message) map[store.AccountID]bool {
 	handles := mentionHandles(msg)
 	if len(handles) == 0 {
@@ -126,7 +131,7 @@ func (c *Consumer) routeMentions(ctx context.Context, channel store.ChannelID, a
 	for agent := range mentioned {
 		sessionID, live := c.resolver.SessionForAccount(agent)
 		if !live {
-			continue // no live turn to interrupt: the cursor+sweep delivers later
+			continue // no live turn to interrupt; redelivery only if subscribed-or-home (SEA-1641)
 		}
 		c.dispatchSteerTo(ctx, sessionID, msg)
 	}

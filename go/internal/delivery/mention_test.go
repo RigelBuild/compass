@@ -294,3 +294,171 @@ func TestStreamedMentionAtSettleEdgeSteers(t *testing.T) {
 		t.Fatalf("dispatch = %+v, want {sess-a, m8, steer}", got[0])
 	}
 }
+
+// Case 9 (design.md:507-562): a `@users` reserved ping is a no-op on the steer
+// path — it expands to human members only (no agent session to interrupt), so no
+// agent member is steered. Two live subscribed agent members each get their plain
+// DELIVER of the post; ZERO steers. This fails if `@users` were ever wired into
+// the everyone/agents expansion. (Grounding: dispatch.go:159-166 — `@users` hits
+// the reserved branch but is neither "everyone" nor "agents", so it adds nothing.)
+func TestReservedUsersIsNoop(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const agentA, agentB store.AccountID = "agent-a", "agent-b"
+
+	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
+	reads.members[ch] = []store.AccountID{agentA, agentB}
+	res.bind(agentA, "sess-a")
+	res.bind(agentB, "sess-b")
+	startConsumer(t, c)
+
+	c.bus.Publish(postedResponse(wireText("m1", author, "@users ping")))
+	disp.waitForDispatches(t, 2)
+
+	got := disp.snapshot()
+	if len(got) != 2 {
+		t.Fatalf("dispatches = %d, want 2 (a deliver to each subscriber; @users steers no one)", len(got))
+	}
+	for _, sess := range []string{"sess-a", "sess-b"} {
+		r := recordsFor(got, sess)
+		if len(r) != 1 || r[0].kind != opDeliver {
+			t.Fatalf("%s records = %+v, want one deliver (never a steer from @users)", sess, r)
+		}
+	}
+}
+
+// Case 10 (design.md:850-851): `@everyone` expands to the channel's agent members
+// ONLY, author excluded — the sibling arm to Case 5's `@agents`. Two live agent
+// members distinct from the author each get a steer; the author — itself a member
+// — is excluded by ChannelAgentMembers. Proves the `h == "everyone"` arm of the
+// shared reserved branch (dispatch.go:160), not just `@agents`.
+func TestReservedEveryoneExpandsToAgentMembersAuthorExcluded(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const authorAgent store.AccountID = "agent-author"
+	const agentA, agentB store.AccountID = "agent-a", "agent-b"
+
+	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
+	reads.members[ch] = []store.AccountID{authorAgent, agentA, agentB}
+	reads.agents[authorAgent] = true
+	// Author has NO live session, so its message delivers at post from the stored
+	// (settled) blocks — no hold needed. It is still excluded from @everyone.
+	reads.seedMessage(textMessage("m1", authorAgent, "@everyone sync"))
+	res.bind(agentA, "sess-a")
+	res.bind(agentB, "sess-b")
+	startConsumer(t, c)
+
+	c.bus.Publish(postedResponse(wireText("m1", authorAgent, "@everyone sync")))
+	disp.waitForDispatches(t, 2)
+
+	got := disp.snapshot()
+	if len(got) != 2 {
+		t.Fatalf("dispatches = %d, want 2 (steer to A and B; author excluded from @everyone)", len(got))
+	}
+	for _, sess := range []string{"sess-a", "sess-b"} {
+		r := recordsFor(got, sess)
+		if len(r) != 1 || r[0].kind != opSteer {
+			t.Fatalf("%s records = %+v, want one steer", sess, r)
+		}
+	}
+}
+
+// Case 11 (design.md:849): a mention whose handle resolves to NOTHING (unknown or
+// human handle → store.ErrNotFound) is a no-op on the steer path. `@nobody` is not
+// seeded in reads.handles, so AgentByHandle returns ErrNotFound and the mention is
+// dropped; the one live subscribed member still gets its plain DELIVER, ZERO
+// steers. Proves the ErrNotFound → no-op arm (dispatch.go:170-171) directly; Case 3
+// only covers a resolvable-but-non-member handle.
+func TestUnknownHandleMentionIsNoop(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const agentA store.AccountID = "agent-a"
+
+	reads.subscribers[ch] = []store.AccountID{agentA}
+	reads.members[ch] = []store.AccountID{agentA}
+	// @nobody is deliberately NOT seeded in reads.handles → AgentByHandle ErrNotFound.
+	res.bind(agentA, "sess-a")
+	startConsumer(t, c)
+
+	c.bus.Publish(postedResponse(wireText("m1", author, "@nobody ping")))
+	disp.waitForDispatches(t, 1)
+
+	got := disp.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("dispatches = %d, want 1 (only the subscriber's deliver; the unknown handle is a no-op)", len(got))
+	}
+	if got[0].sessionID != "sess-a" || got[0].kind != opDeliver {
+		t.Fatalf("dispatch = %+v, want {sess-a, deliver}", got[0])
+	}
+}
+
+// Case 12 (design.md:516, consumer.go:319-340): a handle mentioned in TWO separate
+// text blocks steers exactly ONCE. mentionHandles dedupes globally across the block
+// set, so the mentioned member's session receives a single steer, not one per block.
+func TestMultiBlockMentionDedupsToOneSteer(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const agentA store.AccountID = "agent-a"
+
+	reads.subscribers[ch] = []store.AccountID{agentA}
+	reads.members[ch] = []store.AccountID{agentA}
+	reads.handles["aa"] = agentAccount(agentA, "aa")
+	res.bind(agentA, "sess-a")
+	startConsumer(t, c)
+
+	// Same @aa in two distinct blocks: global dedup must collapse to one steer.
+	c.bus.Publish(postedResponse(wireTextBlocks("m1", author, "hey @aa", "again @aa")))
+	disp.waitForDispatches(t, 1)
+
+	got := disp.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("dispatches = %d, want 1 (@aa across two blocks steers once)", len(got))
+	}
+	if got[0].sessionID != "sess-a" || got[0].messageID != "m1" || got[0].kind != opSteer {
+		t.Fatalf("dispatch = %+v, want {sess-a, m1, steer}", got[0])
+	}
+}
+
+// Case 13 (SEA-1641): a mentioned agent member that is NOT subscribed AND has NO
+// live session gets NOTHING this cycle — no steer (no turn to interrupt) and it is
+// NOT folded into the plain deliver fan-out (it is the mentioned agent, not a
+// subscriber). Only the subscribed live member gets its deliver.
+//
+// This pins the accept-by-design behavior the SEA-1641 medium tracks: an
+// unsubscribed agent is reachable by a mention ONLY while live, so a mentioned
+// unsubscribed-offline member's redelivery is intentionally deferred to SEA-1641 —
+// there is no subscription for the cursor+sweep to redeliver against, so nothing
+// redelivers. Contrast Case 6, whose mentioned-offline agent WAS subscribed (so the
+// sweep redelivers later); THIS agent is unsubscribed, so nothing does — the
+// intentional gap SEA-1641 tracks.
+func TestUnsubscribedOfflineMentionedMemberGetsNothing(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const agentA, agentB store.AccountID = "agent-a", "agent-b"
+
+	// agentA is a member (so mention-resolvable + a steer target when live) but is
+	// NOT subscribed and is offline; agentB is subscribed and live.
+	reads.members[ch] = []store.AccountID{agentA, agentB}
+	reads.subscribers[ch] = []store.AccountID{agentB}
+	reads.handles["aa"] = agentAccount(agentA, "aa")
+	res.bind(agentB, "sess-b") // agentA is offline — never bound.
+	startConsumer(t, c)
+
+	c.bus.Publish(postedResponse(wireText("m1", author, "@aa ping")))
+	disp.waitForDispatches(t, 1)
+
+	got := disp.snapshot()
+	if len(got) != 1 {
+		t.Fatalf("dispatches = %d, want 1 (only B's deliver; the unsubscribed-offline mentioned member gets nothing)", len(got))
+	}
+	if a := recordsFor(got, "sess-a"); len(a) != 0 {
+		t.Fatalf("sess-a records = %+v, want none (offline mentioned member must not steer)", a)
+	}
+	if got[0].sessionID != "sess-b" || got[0].kind != opDeliver {
+		t.Fatalf("dispatch = %+v, want {sess-b, deliver} (agentA folded into neither steer nor deliver)", got[0])
+	}
+}

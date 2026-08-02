@@ -281,9 +281,11 @@ func steerOp(msg *compassv1.Message) *compassv1internal.AgentControl {
 // [a-z0-9][a-z0-9._-]* — the leading char must be a letter/digit, so a bare `@`
 // or `@.` does not match. This is the client grammar ported verbatim for parity
 // (apps/ui/src/comms.ts:265 MENTION_RE = /@([a-z0-9][a-z0-9._-]*)/gi); keep the
-// two in sync — a drift here silently diverges server routing from what the
-// composer shows. Go RE2 has no inline /i, so the (?i) prefix carries the flag;
-// no backrefs are needed. Group 1 is the handle without `@`.
+// two grammars in sync. Parity is GRAMMAR-level only: the server routes from raw
+// block text, so an @handle inside a code span or link label DOES route here,
+// whereas the client renderer never chips a mention inside code or a link label
+// (MarkdownText.tsx:389-398). Go RE2 has no inline /i, so the (?i) prefix
+// carries the flag; no backrefs are needed. Group 1 is the handle without `@`.
 var mentionRE = regexp.MustCompile(`(?i)@([a-z0-9][a-z0-9._-]*)`)
 
 // reservedMentions are the broadcast ping targets that expand to a channel's
