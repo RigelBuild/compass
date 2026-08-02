@@ -33,7 +33,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/agent.proto.
  */
 export const file_compass_v1_agent: GenFile = /*@__PURE__*/
-  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIo8DCgpBZ2VudEZyYW1lEjgKE2NvbnZlcnNhdGlvbl9wb3N0ZWQYASABKAsyGS5jb21wYXNzLnYxLk1lc3NhZ2VQb3N0ZWRIABI6ChRjb252ZXJzYXRpb25fdXBkYXRlZBgCIAEoCzIaLmNvbXBhc3MudjEuTWVzc2FnZVVwZGF0ZWRIABIrCgdzZXNzaW9uGAMgASgLMhguY29tcGFzcy52MS5TZXNzaW9uRnJhbWVIABI8ChNyZXBsYXlfY29tcGxldGVfYWNrGAQgASgLMh0uY29tcGFzcy52MS5SZXBsYXlDb21wbGV0ZUFja0gAEi0KC2NvbnRyb2xfYWNrGAUgASgLMhYuY29tcGFzcy52MS5Db250cm9sQWNrSAASLwoMZGVsaXZlcnlfYWNrGAYgASgLMhcuY29tcGFzcy52MS5EZWxpdmVyeUFja0gAEjcKEHRyYW5zY3JpcHRfZW50cnkYByABKAsyGy5jb21wYXNzLnYxLlRyYW5zY3JpcHRFbnRyeUgAQgcKBWZyYW1lIkwKD1RyYW5zY3JpcHRFbnRyeRISCgplbnRyeV9qc29uGAEgASgJEhIKCmNoZWNrcG9pbnQYAiABKAgSEQoJZW50cnlfc2VxGAMgASgEIngKDFNlc3Npb25GcmFtZRIsCgVzdGF0ZRgCIAEoDjIdLmNvbXBhc3MudjEuQWdlbnRTZXNzaW9uU3RhdGUSLQoLdHlwZWRfZXZlbnQYAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25FdmVudEoECAEQAlIFZXZlbnQi/QIKDEFnZW50Q29udHJvbBITCgtjb250cm9sX3NlcRgIIAEoBBIrCgZwcm9tcHQYASABKAsyGS5jb21wYXNzLnYxLlByb21wdENvbnRyb2xIABIpCgVzdGVlchgCIAEoCzIYLmNvbXBhc3MudjEuU3RlZXJDb250cm9sSAASLQoHZGVsaXZlchgDIAEoCzIaLmNvbXBhc3MudjEuRGVsaXZlckNvbnRyb2xIABIyCgphc2tfYW5zd2VyGAQgASgLMhwuY29tcGFzcy52MS5Bc2tBbnN3ZXJDb250cm9sSAASKwoGY29uZmlnGAUgASgLMhkuY29tcGFzcy52MS5Db25maWdDb250cm9sSAASLgoGcmVwbGF5GAYgASgLMhwuY29tcGFzcy52MS5UcmFuc2NyaXB0UmVwbGF5SAASNQoPcmVwbGF5X2NvbXBsZXRlGAcgASgLMhouY29tcGFzcy52MS5SZXBsYXlDb21wbGV0ZUgAQgkKB2NvbnRyb2wiHgoNUHJvbXB0Q29udHJvbBINCgVpbnB1dBgBIAEoCSJSChBBc2tBbnN3ZXJDb250cm9sEg4KBmFza19pZBgBIAEoCRIuCgdhbnN3ZXJzGAIgAygLMh0uY29tcGFzcy52MS5Bc2tRdWVzdGlvbkFuc3dlciIQCg5SZXBsYXlDb21wbGV0ZSIOCgxTdGVlckNvbnRyb2wiEgoQVHJhbnNjcmlwdFJlcGxheSIPCg1Db25maWdDb250cm9sIjYKDkRlbGl2ZXJDb250cm9sEiQKB21lc3NhZ2UYASABKAsyEy5jb21wYXNzLnYxLk1lc3NhZ2UiIQoLRGVsaXZlcnlBY2sSEgoKbWVzc2FnZV9pZBgBIAEoCSITChFSZXBsYXlDb21wbGV0ZUFjayI2CgpDb250cm9sQWNrEhEKCWFja2VkX3NlcRgBIAEoBBIVCg1hcHBsaWVkX2Fib3ZlGAIgAygEYgZwcm90bzM", [file_compass_v1_comms, file_compass_v1_compass]);
+  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIo8DCgpBZ2VudEZyYW1lEjgKE2NvbnZlcnNhdGlvbl9wb3N0ZWQYASABKAsyGS5jb21wYXNzLnYxLk1lc3NhZ2VQb3N0ZWRIABI6ChRjb252ZXJzYXRpb25fdXBkYXRlZBgCIAEoCzIaLmNvbXBhc3MudjEuTWVzc2FnZVVwZGF0ZWRIABIrCgdzZXNzaW9uGAMgASgLMhguY29tcGFzcy52MS5TZXNzaW9uRnJhbWVIABI8ChNyZXBsYXlfY29tcGxldGVfYWNrGAQgASgLMh0uY29tcGFzcy52MS5SZXBsYXlDb21wbGV0ZUFja0gAEi0KC2NvbnRyb2xfYWNrGAUgASgLMhYuY29tcGFzcy52MS5Db250cm9sQWNrSAASLwoMZGVsaXZlcnlfYWNrGAYgASgLMhcuY29tcGFzcy52MS5EZWxpdmVyeUFja0gAEjcKEHRyYW5zY3JpcHRfZW50cnkYByABKAsyGy5jb21wYXNzLnYxLlRyYW5zY3JpcHRFbnRyeUgAQgcKBWZyYW1lIkwKD1RyYW5zY3JpcHRFbnRyeRISCgplbnRyeV9qc29uGAEgASgJEhIKCmNoZWNrcG9pbnQYAiABKAgSEQoJZW50cnlfc2VxGAMgASgEIngKDFNlc3Npb25GcmFtZRIsCgVzdGF0ZRgCIAEoDjIdLmNvbXBhc3MudjEuQWdlbnRTZXNzaW9uU3RhdGUSLQoLdHlwZWRfZXZlbnQYAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25FdmVudEoECAEQAlIFZXZlbnQi/QIKDEFnZW50Q29udHJvbBITCgtjb250cm9sX3NlcRgIIAEoBBIrCgZwcm9tcHQYASABKAsyGS5jb21wYXNzLnYxLlByb21wdENvbnRyb2xIABIpCgVzdGVlchgCIAEoCzIYLmNvbXBhc3MudjEuU3RlZXJDb250cm9sSAASLQoHZGVsaXZlchgDIAEoCzIaLmNvbXBhc3MudjEuRGVsaXZlckNvbnRyb2xIABIyCgphc2tfYW5zd2VyGAQgASgLMhwuY29tcGFzcy52MS5Bc2tBbnN3ZXJDb250cm9sSAASKwoGY29uZmlnGAUgASgLMhkuY29tcGFzcy52MS5Db25maWdDb250cm9sSAASLgoGcmVwbGF5GAYgASgLMhwuY29tcGFzcy52MS5UcmFuc2NyaXB0UmVwbGF5SAASNQoPcmVwbGF5X2NvbXBsZXRlGAcgASgLMhouY29tcGFzcy52MS5SZXBsYXlDb21wbGV0ZUgAQgkKB2NvbnRyb2wiHgoNUHJvbXB0Q29udHJvbBINCgVpbnB1dBgBIAEoCSJSChBBc2tBbnN3ZXJDb250cm9sEg4KBmFza19pZBgBIAEoCRIuCgdhbnN3ZXJzGAIgAygLMh0uY29tcGFzcy52MS5Bc2tRdWVzdGlvbkFuc3dlciIQCg5SZXBsYXlDb21wbGV0ZSI0CgxTdGVlckNvbnRyb2wSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZSISChBUcmFuc2NyaXB0UmVwbGF5Ig8KDUNvbmZpZ0NvbnRyb2wiNgoORGVsaXZlckNvbnRyb2wSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZSIhCgtEZWxpdmVyeUFjaxISCgptZXNzYWdlX2lkGAEgASgJIhMKEVJlcGxheUNvbXBsZXRlQWNrIjYKCkNvbnRyb2xBY2sSEQoJYWNrZWRfc2VxGAEgASgEEhUKDWFwcGxpZWRfYWJvdmUYAiADKARiBnByb3RvMw", [file_compass_v1_comms, file_compass_v1_compass]);
 
 /**
  * The agent's stdout envelope: one discriminated frame per newline-delimited
@@ -249,15 +249,16 @@ export const SessionFrameSchema: GenMessage<SessionFrame> = /*@__PURE__*/
  *
  * Payload FIELDS: only the variants representable with existing compass.v1
  * scalars carry fields here (PromptControl.input, AskAnswerControl,
- * DeliverControl.message). The SteerControl / TranscriptReplay / ConfigControl
- * payloads stay empty shells — their fields carry an inbound SDK `AgentMessage`
- * (a four-way union with an opaque provider payload) and a tool set (whose SDK
- * representation includes a non-serializable `execute` handle), neither of
- * which any existing compass.v1 message represents. That payload-shape decision
- * is parked (SEA-1310); the shells keep the oneof complete on the wire and are
- * populated by a stacked PR once the shapes settle (DeliverControl was so
- * populated by SEA-1569, carrying a comms Message). Defining the empty shells
- * now is additive and buf-breaking-safe (field additions to a proto3 message).
+ * DeliverControl.message, SteerControl.message). The TranscriptReplay /
+ * ConfigControl payloads stay empty shells — their fields carry an inbound SDK
+ * `AgentMessage` (a four-way union with an opaque provider payload) and a tool
+ * set (whose SDK representation includes a non-serializable `execute` handle),
+ * neither of which any existing compass.v1 message represents. That payload-
+ * shape decision is parked (SEA-1310); the shells keep the oneof complete on
+ * the wire and are populated by a stacked PR once the shapes settle
+ * (DeliverControl and the channel-borne SteerControl were so populated by
+ * SEA-1569, each carrying a comms Message). Defining the empty shells now is
+ * additive and buf-breaking-safe (field additions to a proto3 message).
  *
  * @generated from message compass.v1.AgentControl
  */
@@ -395,14 +396,23 @@ export const ReplayCompleteSchema: GenMessage<ReplayComplete> = /*@__PURE__*/
   messageDesc(file_compass_v1_agent, 6);
 
 /**
- * Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
- * oneof is complete on the wire; populated by a stacked PR.
- *   SteerControl / TranscriptReplay carry an inbound SDK AgentMessage;
- *   ConfigControl carries a tool set.
+ * SteerControl carries a comms Message: a channel `@`-mention routed into the
+ * agent's live session as a steer (SEA-1569), sourced from a channel
+ * PostMessage, wrapped in an AgentControl and relayed via the runner control
+ * seam (DispatchControl) — the same path DeliverControl rides, carrying the
+ * same single first-party Message (DL-073; no seq, the id is in the Message).
+ * The generic SDK-AgentMessage steer (Runner-originated, outside any channel)
+ * stays parked under SEA-1310.
  *
  * @generated from message compass.v1.SteerControl
  */
 export type SteerControl = Message<"compass.v1.SteerControl"> & {
+  /**
+   * The mention message to steer into the session.
+   *
+   * @generated from field: compass.v1.Message message = 1;
+   */
+  message?: Message$1 | undefined;
 };
 
 /**
@@ -413,6 +423,11 @@ export const SteerControlSchema: GenMessage<SteerControl> = /*@__PURE__*/
   messageDesc(file_compass_v1_agent, 7);
 
 /**
+ * Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
+ * oneof is complete on the wire; populated by a stacked PR.
+ *   TranscriptReplay carries an inbound SDK AgentMessage;
+ *   ConfigControl carries a tool set.
+ *
  * @generated from message compass.v1.TranscriptReplay
  */
 export type TranscriptReplay = Message<"compass.v1.TranscriptReplay"> & {
