@@ -12,6 +12,7 @@ package comms
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -286,6 +287,189 @@ func TestRespondToAskHappyPathEmitsMessageUpdated(t *testing.T) {
 	// not only on the ListMessages read.
 	if !answered {
 		t.Fatal("MessageUpdated ask reads answered=false, want true")
+	}
+}
+
+// wakeCall is one recorded WakeAskAnswer: the agent the handler resolved to wake
+// (the ask author), the ask id, and the answers it forwarded.
+type wakeCall struct {
+	agent   store.AccountID
+	askID   string
+	answers []*compassv1.AskQuestionAnswer
+}
+
+// fakeAskWaker records WakeAskAnswer invocations so a test can assert the
+// handler woke the right agent with the right answers exactly once — the
+// event-gated recorder pattern (no sleeps), mirroring the delivery consumer's
+// fake dispatcher. Concurrency-safe for parity, though RespondToAsk calls it
+// inline.
+type fakeAskWaker struct {
+	mu    sync.Mutex
+	calls []wakeCall
+}
+
+func (f *fakeAskWaker) WakeAskAnswer(_ context.Context, agent store.AccountID, askID string, answers []*compassv1.AskQuestionAnswer) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, wakeCall{agent: agent, askID: askID, answers: answers})
+}
+
+func (f *fakeAskWaker) snapshot() []wakeCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]wakeCall(nil), f.calls...)
+}
+
+// SEA-1577: a successful answer wakes the ask's AUTHOR exactly once, with the
+// ask id and the answers passed straight through. The author is the agent that
+// emitted the ask; the participant answering it is a different account.
+func TestRespondToAskWakesAskAuthorOnce(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	waker := &fakeAskWaker{}
+	svc.SetAskWaker(waker)
+
+	author := mustUser(t, st, "author")
+	ch, err := st.CreateChannel(ctx, author.ID, store.NewChannel{Name: "room", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if _, _, err := st.AppendMessage(ctx, store.Message{
+		Container: store.ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
+		Blocks: []store.MessageBlock{pendingAskStore("ask-1")},
+	}, ""); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+		AskId:   "ask-1",
+		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
+	})); err != nil {
+		t.Fatalf("RespondToAsk: %v", err)
+	}
+
+	calls := waker.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("WakeAskAnswer call count = %d, want 1", len(calls))
+	}
+	if calls[0].agent != author.ID {
+		t.Fatalf("woke agent = %q, want the ask author %q", calls[0].agent, author.ID)
+	}
+	if calls[0].askID != "ask-1" {
+		t.Fatalf("woke ask id = %q, want ask-1", calls[0].askID)
+	}
+	if len(calls[0].answers) != 1 || calls[0].answers[0].GetQuestionId() != "q1" ||
+		len(calls[0].answers[0].GetChosenOptionIds()) != 1 || calls[0].answers[0].GetChosenOptionIds()[0] != "opt-a" {
+		t.Fatalf("woke answers = %+v, want [{q1 [opt-a]}]", calls[0].answers)
+	}
+}
+
+// SEA-1577: the "second RespondToAsk is a no-op" acceptance. AnswerAsk's
+// answer-once guard rejects the second answer, and because the wake fires AFTER
+// the err short-circuit, no second wake is recorded (count stays 1).
+func TestRespondToAskSecondAnswerRecordsNoSecondWake(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	waker := &fakeAskWaker{}
+	svc.SetAskWaker(waker)
+
+	author := mustUser(t, st, "author")
+	ch, err := st.CreateChannel(ctx, author.ID, store.NewChannel{Name: "room", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if _, _, err := st.AppendMessage(ctx, store.Message{
+		Container: store.ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
+		Blocks: []store.MessageBlock{pendingAskStore("ask-1")},
+	}, ""); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	req := func() *connect.Request[compassv1.RespondToAskRequest] {
+		return connect.NewRequest(&compassv1.RespondToAskRequest{
+			AskId:   "ask-1",
+			Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
+		})
+	}
+	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), req()); err != nil {
+		t.Fatalf("first RespondToAsk: %v", err)
+	}
+	// The second answer is rejected by the answer-once guard.
+	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), req()); err == nil {
+		t.Fatal("second RespondToAsk = nil error, want the answer-once guard to reject it")
+	}
+
+	if got := len(waker.snapshot()); got != 1 {
+		t.Fatalf("WakeAskAnswer call count after a rejected second answer = %d, want 1 (no second wake)", got)
+	}
+}
+
+// SEA-1577: a store error (a non-member answering, collapsing to NotFound; a
+// nonexistent ask) records NO wake — the wake is after the err short-circuit.
+func TestRespondToAskStoreErrorRecordsNoWake(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	waker := &fakeAskWaker{}
+	svc.SetAskWaker(waker)
+
+	alice := mustUser(t, st, "alice")
+	bob := mustUser(t, st, "bob")
+	chA, err := st.CreateChannel(ctx, alice.ID, store.NewChannel{Name: "alice-room", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if _, _, err := st.AppendMessage(ctx, store.Message{
+		Container: store.ContainerRef{ChannelID: chA.ID}, AuthorAccountID: alice.ID,
+		Blocks: []store.MessageBlock{pendingAskStore("ask-secret")},
+	}, ""); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	// bob (non-member) answering collapses to NotFound at the store edge.
+	if _, err := svc.RespondToAsk(WithActor(ctx, bob.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+		AskId:   "ask-secret",
+		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
+	})); err == nil {
+		t.Fatal("RespondToAsk by a non-member = nil error, want a store edge error")
+	}
+	// A genuinely nonexistent ask.
+	if _, err := svc.RespondToAsk(WithActor(ctx, bob.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+		AskId:   "ask-nonexistent",
+		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
+	})); err == nil {
+		t.Fatal("RespondToAsk for a nonexistent ask = nil error, want a store edge error")
+	}
+
+	if got := len(waker.snapshot()); got != 0 {
+		t.Fatalf("WakeAskAnswer call count on store errors = %d, want 0 (no wake before the answer lands)", got)
+	}
+}
+
+// SEA-1577: a Comms with no waker wired (SetAskWaker never called) answers an
+// ask without panicking — the nil-safe guard holds (today's un-wired behavior,
+// and every non-wake test path).
+func TestRespondToAskNilWakerDoesNotPanic(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	// Deliberately no SetAskWaker: c.askWaker stays nil.
+
+	author := mustUser(t, st, "author")
+	ch, err := st.CreateChannel(ctx, author.ID, store.NewChannel{Name: "room", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	if _, _, err := st.AppendMessage(ctx, store.Message{
+		Container: store.ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
+		Blocks: []store.MessageBlock{pendingAskStore("ask-1")},
+	}, ""); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	if _, err := svc.RespondToAsk(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+		AskId:   "ask-1",
+		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
+	})); err != nil {
+		t.Fatalf("RespondToAsk with a nil waker: %v", err)
 	}
 }
 

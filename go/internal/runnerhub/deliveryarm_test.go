@@ -369,3 +369,89 @@ func TestDeliveryAckDropsCountSeparatelyFromRefusedFrames(t *testing.T) {
 		t.Fatalf("FrameDiagnostics = {DroppedAcks:%d, RefusedFrames:%d}, want {2, 0}", diag.DroppedAcks, diag.RefusedFrames)
 	}
 }
+
+// SEA-1577 ask-answer wake arm: WakeAskAnswer with a live bound session
+// dispatches an AgentControl.ask_answer op down the T3 rail carrying the askID
+// and answers. Mirrors TestDispatchControlSendOnlyDoesNotBlock's live-stream
+// fake; the binding is the real Provision->Start promotion (bindSession ->
+// testAgentAccount).
+func TestWakeAskAnswerLiveSessionDispatchesAskAnswerOp(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	bindSession(hub, "sess-1")
+	router, _, err := hub.routerFor("sess-1")
+	if err != nil {
+		t.Fatalf("routerFor: %v", err)
+	}
+	sent := make(chan *compassv1internal.SessionsResponse, 1)
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		sent <- cmd
+		return nil
+	})
+
+	answers := []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}}
+	hub.WakeAskAnswer(context.Background(), testAgentAccount, "ask-1", answers)
+
+	select {
+	case cmd := <-sent:
+		op := cmd.GetDeliverControl().GetOp()
+		aa := op.GetAskAnswer()
+		if aa == nil {
+			t.Fatalf("pushed op = %T, want an AgentControl_AskAnswer", op.GetControl())
+		}
+		if aa.GetAskId() != "ask-1" {
+			t.Fatalf("ask_answer op ask_id = %q, want ask-1", aa.GetAskId())
+		}
+		got := aa.GetAnswers()
+		if len(got) != 1 || got[0].GetQuestionId() != "q1" ||
+			len(got[0].GetChosenOptionIds()) != 1 || got[0].GetChosenOptionIds()[0] != "opt-a" {
+			t.Fatalf("ask_answer op answers = %+v, want [{q1 [opt-a]}]", got)
+		}
+	case <-timeAfter():
+		t.Fatal("WakeAskAnswer pushed nothing to the live stream")
+	}
+}
+
+// SEA-1577: WakeAskAnswer for an account with no bound live session is a silent
+// no-op — nothing is dispatched, nothing panics. The agent reads the answer on
+// its next turn via the normal delivery path.
+func TestWakeAskAnswerNoLiveSessionIsSilentNoOp(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	router, _, err := hub.routerFor("sess-1")
+	if err != nil {
+		t.Fatalf("routerFor: %v", err)
+	}
+	sent := make(chan *compassv1internal.SessionsResponse, 1)
+	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
+		sent <- cmd
+		return nil
+	})
+
+	// No bindSession: testAgentAccount has no live session -> SessionForAccount
+	// ok=false -> nothing dispatched.
+	hub.WakeAskAnswer(context.Background(), testAgentAccount, "ask-1",
+		[]*compassv1.AskQuestionAnswer{{QuestionId: "q1"}})
+
+	select {
+	case cmd := <-sent:
+		t.Fatalf("WakeAskAnswer with no live session pushed %+v, want nothing", cmd)
+	case <-timeAfter():
+		// nothing dispatched — the no-op contract holds.
+	}
+}
+
+// SEA-1577: a synchronous dispatch refusal (a bound session but no live Sessions
+// stream) is swallowed — WakeAskAnswer is void and must not panic or surface the
+// error, so the RPC path (comms.RespondToAsk) never fails on a wake fault. The
+// answer is already durably recorded + fanned out.
+func TestWakeAskAnswerRefusedDispatchIsSwallowed(t *testing.T) {
+	hub := newHubOnly()
+	hub.enroll("runner-1", store.Subject{Kind: store.SubjectRunner, ID: "runner-1"})
+	bindSession(hub, "sess-1")
+	// No router.attach: DispatchControl finds no live stream and refuses; the
+	// refusal must be logged and swallowed, not surfaced.
+	hub.WakeAskAnswer(context.Background(), testAgentAccount, "ask-1",
+		[]*compassv1.AskQuestionAnswer{{QuestionId: "q1"}})
+	// Reaching here without a panic is the void-swallow contract.
+}

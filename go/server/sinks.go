@@ -141,6 +141,23 @@ func newRunnerHub(brd *board.Projection, tail runnerhub.SessionTailSink, commsSv
 	)
 }
 
+// SEA-1577: *runnerhub.Hub structurally satisfies the comms-defined
+// AskAnswerWaker (comms defines the narrow interface it needs; runnerhub never
+// imports comms). The assertion lives here in the server package, which imports
+// both — the same direction the other sink wiring is proven, mirroring how comms
+// satisfies the runnerhub-defined CommsCaller.
+var _ comms.AskAnswerWaker = (*runnerhub.Hub)(nil)
+
+// wireHubServiceCycles breaks the two post-construction cycles between the hub
+// and the account-facing services that are built before it (the hub relays
+// through them, so they cannot take the hub at construction): the hub<->lifecycle
+// cycle (SEA-1618 T5, RelayLifecycleCall) and the comms<->hub ask-answer wake
+// cycle (SEA-1577). Called once at assembly before any RPC is served.
+func wireHubServiceCycles(hub *runnerhub.Hub, commsSvc *comms.Comms, st *store.Store) {
+	hub.SetLifecycleCaller(newLifecycleService(st, hub))
+	commsSvc.SetAskWaker(hub)
+}
+
 // startDeliveryConsumer builds the SEA-1569 T3 fan-out consumer over the comms
 // bus, wires the consumer<->hub construction cycle (the consumer takes hub as
 // its ControlDispatcher + SessionResolver; the hub takes the consumer as its
