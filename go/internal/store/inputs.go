@@ -24,6 +24,10 @@ type NewAgent struct {
 	// Empty means no persona override; the caller supplies it and the server
 	// stores it verbatim, never synthesizing one.
 	Persona string
+	// ParentAgentID is the agent's parent in the agent tree; empty = root. The
+	// server validates it (same resolved owner, must exist) before insert; an
+	// empty value inserts SQL NULL, satisfying the FK.
+	ParentAgentID AccountID
 }
 
 // ChannelGroup input for CreateChannelGroup. OwnerUserID is the authenticated

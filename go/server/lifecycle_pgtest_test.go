@@ -113,6 +113,40 @@ func TestSpawnInheritsCallerOwner(t *testing.T) {
 	}
 }
 
+// TestSpawnSetsParentToCaller pins the T3 set-at-creation edge: a peer spawned
+// by the fixture caller agent has its parent_agent_id set to the CALLER'S
+// account id (its spawner), so the agent tree records who spawned whom.
+//
+// Mutation: dropping ParentAgentID from the SpawnAsAccount NewAgent (or setting
+// it to callerOwner instead of caller) leaves the spawned account a root and
+// reddens the parent assertion below.
+func TestSpawnSetsParentToCaller(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx := context.Background()
+
+	resp, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+		Handle:          "peer-parent",
+		DisplayName:     "Peer Parent",
+		InitialPrompt:   "go",
+		ClientRequestId: "spawn-parent",
+	})
+	if err != nil {
+		t.Fatalf("SpawnAsAccount = %v, want success", err)
+	}
+	newID := store.AccountID(resp.GetAgentAccountId())
+
+	acc, err := f.store.GetAccount(ctx, newID)
+	if err != nil {
+		t.Fatalf("GetAccount(spawned) = %v", err)
+	}
+	if acc.Agent == nil {
+		t.Fatalf("spawned account is not an agent: %+v", acc)
+	}
+	if acc.Agent.ParentAgentID != f.agentID {
+		t.Fatalf("spawned peer parent = %q, want the spawning caller %q", acc.Agent.ParentAgentID, f.agentID)
+	}
+}
+
 // TestSpawnSameClientRequestIdRetryJoins pins the idempotent-resume contract: a
 // second SpawnAsAccount for the SAME handle by the SAME owner, once the first is
 // live and placed, returns the SAME container/session and creates NO second agent
