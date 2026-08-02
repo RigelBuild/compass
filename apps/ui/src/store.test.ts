@@ -531,7 +531,8 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 	const clearStorage = () => globalThis.localStorage.clear();
 
 	// A store bound to an explicit workspace key, built in a reactive root the
-	// body runs inside then disposes — so createEffect persistence fires.
+	// body runs inside then disposes — so the store's signals have an owner and
+	// are cleaned up per case.
 	const withPinStore = (
 		workspace: string,
 		body: (store: AppStore) => void,
@@ -643,7 +644,8 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		clearStorage();
 		withPinStore("ws-a", (s) => {
 			s.setActiveRightTab("agent:acc-ghost");
-			// The guard effect runs synchronously inside the root.
+			// The guard coerces synchronously inside setActiveRightTab, before the
+			// signal is set.
 			expect(s.activeRightTab()).toBe("status");
 		});
 		clearStorage();
