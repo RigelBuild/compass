@@ -301,7 +301,7 @@ func (h *agentHost) Stop(_ context.Context, sessionID string) error {
 
 // Remove tears a container down and everything bound to it: it retires the live
 // session the container hosts (if any), stops that session's agent exec, tears
-// the container down through the AgentRuntime (deregister + stop + remove), and
+// the container down through the AgentRuntime (stop + remove + deregister), and
 // closes the container's agent socket. It is the teardown-symmetric counterpart
 // to Provision (which serves the socket and launches the container).
 //
