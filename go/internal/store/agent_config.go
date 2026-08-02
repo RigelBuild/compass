@@ -202,11 +202,14 @@ func validateAndHashConfigBundle(bundle []byte) (string, error) {
 			return "", err
 		}
 
-		// The member typeflag must be exactly a regular file or a directory —
+		// The member typeflag must resolve to a regular file or a directory —
 		// an explicit ALLOWLIST, not a catch-all skip. A directory contributes
 		// no content and no host file (its path already passed the escape +
-		// whitelist checks above), so it is skipped. Every other typeflag
-		// (char/block device, FIFO, contiguous, and any future flag) is
+		// whitelist checks above), so it is skipped. A contiguous-file member
+		// (tar.TypeCont) is reported as a regular file by archive/tar and is
+		// treated as one: its content is hashed and it materializes to a regular
+		// host file, so the version covers it. Every remaining typeflag
+		// (char/block device, FIFO, socket, and any future non-regular flag) is
 		// REJECTED: such a member would ride into the verbatim-persisted bundle
 		// bytes yet contribute nothing to the version hash, so two bundles with
 		// identical regular files but a differing device member would share a
