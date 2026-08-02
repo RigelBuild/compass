@@ -41,6 +41,7 @@ import type { FrameSink } from "./frame";
 import {
 	createTeeSessionStorage,
 	type TranscriptTeeBackend,
+	type TranscriptTeeOptions,
 } from "./session-tee";
 import { createSocketControlSource } from "./transport/control-source";
 import { createSocketFrameSink } from "./transport/frame-sink";
@@ -225,6 +226,7 @@ export interface MainDeps {
 	createSessionStorage?: (
 		sink: FrameSink,
 		sessionDir: string,
+		options?: TranscriptTeeOptions,
 	) => Promise<{
 		storage: IndexedSessionStorage;
 		backend: TranscriptTeeBackend;
@@ -288,19 +290,25 @@ export async function main(
 	// not a populated repo; sealed#1019 no-auto-clone), mirroring the auth-seed
 	// anchoring above.
 	const sessionDir = SessionManager.getDefaultSessionDir(cwd);
+	// Resume (SEA-1570): T8 exports COMPASS_RESUME_SESSION_FILE on the agent exec.
+	// Resolve it BEFORE the storage is built so it can be threaded into the tee
+	// backend and indexed at initialize()→loadIndex() — the resume file lives at
+	// an absolute path OUTSIDE sessionDir (Option B, T2), so setSessionFile's
+	// statSync gate (indexed-session-storage.ts:177) would ENOENT it otherwise.
+	const resumeFile = env.COMPASS_RESUME_SESSION_FILE?.trim();
 	const { storage } = await (
 		deps.createSessionStorage ?? createTeeSessionStorage
-	)(sink, sessionDir);
+	)(sink, sessionDir, resumeFile ? { resumeFile } : undefined);
 	// SYNCHRONOUS (session-manager.ts:1839 returns SessionManager, not a Promise):
 	// do NOT await. The wrapped IndexedSessionStorage is the 3rd arg.
 	const manager = SessionManager.create(cwd, sessionDir, storage);
 
-	// Resume (SEA-1570): T8 exports COMPASS_RESUME_SESSION_FILE on the agent exec.
 	// When set, load it through the SDK-native path (setSessionFile → drain →
 	// loadEntriesFromFile → migrate → resolveBlobRefs → apply) BEFORE creating
 	// the session — reads flow through the tee backend's readFull/loadIndex, no
 	// replay code. The reconstructed body is authoritative; the load never tees.
-	const resumeFile = env.COMPASS_RESUME_SESSION_FILE?.trim();
+	// The resume file is now also indexed at initialize() (above) so this
+	// statSync gate passes for a file outside sessionDir.
 	if (resumeFile) await manager.setSessionFile(resumeFile);
 
 	const { session } = await (deps.createSession ?? createAgentSession)({
