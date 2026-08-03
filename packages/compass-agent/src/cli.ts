@@ -36,7 +36,13 @@ import {
 	type IndexedSessionStorage,
 	SessionManager,
 } from "@oh-my-pi/pi-coding-agent";
+import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp";
 import { CompassAgent } from "./agent";
+import {
+	AGENT_CONFIG_MOUNT_PATH,
+	loadMountedConfig,
+	type MountedMcp,
+} from "./config-reader";
 import type { FrameSink } from "./frame";
 import {
 	createTeeSessionStorage,
@@ -198,6 +204,44 @@ async function readEnvFile(path: string): Promise<Record<string, string>> {
 }
 
 /**
+ * The connected MCP tools + a teardown handle, for the mount's servers (design
+ * §CD-3). Built + connected here rather than handed to `createAgentSession` as
+ * an `mcpManager`: a provided manager is stored on the tool session but its
+ * `getTools()` is NEVER harvested into the tool registry (the population block
+ * runs only in the SDK's `!mcpManager` discovery branch, sdk.ts:1739/1818), so
+ * the tools would silently never surface. Instead we connect the manager
+ * ourselves and pass `manager.getTools()` as `customTools` with
+ * `enableMCP: false` (so the SDK does not ALSO discover a cwd `.mcp.json`).
+ *
+ * OWN the lifecycle: the SDK is not the owner, so it never disconnects. `main`
+ * calls `disconnect` in its teardown. Credential-free by MVP rule — the servers
+ * read tokens from `process.env`, which `main` has already sourced from the
+ * aggregate env file above; the connector resolves no credentials.
+ *
+ * An empty config set skips building a manager entirely: no connect, and a
+ * no-op disconnect — the unconfigured→none guarantee, with no teardown work.
+ */
+interface ConnectedMcp {
+	tools: NonNullable<CreateAgentSessionOptions["customTools"]>;
+	disconnect: () => Promise<void>;
+}
+
+async function connectMountedMcp(
+	cwd: string,
+	mcp: MountedMcp,
+): Promise<ConnectedMcp> {
+	if (Object.keys(mcp.configs).length === 0) {
+		return { tools: [], disconnect: () => Promise.resolve() };
+	}
+	const manager = new MCPManager(cwd, null);
+	await manager.connectServers(mcp.configs, mcp.sources);
+	return {
+		tools: manager.getTools(),
+		disconnect: () => manager.disconnectAll(),
+	};
+}
+
+/**
  * The two outside-world constructors `main` reaches through. Overridable ONLY so
  * a test can compose the entrypoint over a fake carrier; both default to the
  * production factories, so the Runner's call path — `main()` with no second
@@ -231,6 +275,23 @@ export interface MainDeps {
 		storage: IndexedSessionStorage;
 		backend: TranscriptTeeBackend;
 	}>;
+	/**
+	 * The agent-config mount root the reader reads through (design §CD-3).
+	 * Defaults to the fixed `AGENT_CONFIG_MOUNT_PATH`. Overridable ONLY so a test
+	 * can point the reader at a tempdir fixture instead of the container path
+	 * (`/run/compass/agent-config`), which does not exist off-container — the same
+	 * tempfile posture the seed/env tests use.
+	 */
+	configMount?: string;
+	/**
+	 * MCP connector for the mount's servers. Defaults to `connectMountedMcp`,
+	 * which builds a real `MCPManager` and dials each server (a stdio subprocess
+	 * or HTTP endpoint). A seam for the same unfakeable reason as `createSession`:
+	 * a test cannot spawn real MCP servers, so it composes `main` over a
+	 * connector that returns recorded tools + a recording disconnect — the only
+	 * way to reach the customTools wiring and the teardown-disconnect barrier.
+	 */
+	connectMcp?: (cwd: string, mcp: MountedMcp) => Promise<ConnectedMcp>;
 }
 
 /**
@@ -311,12 +372,53 @@ export async function main(
 	// statSync gate passes for a file outside sessionDir.
 	if (resumeFile) await manager.setSessionFile(resumeFile);
 
+	// The Runner-mounted agent-config bundle (design §CD-3): read the mount and
+	// map it to the createAgentSession option surfaces below. Unconfigured — no
+	// `current` symlink, or the mount absent — yields every field empty, so the
+	// session constructs with NONE injected. process.env is already sourced
+	// (above), so a connected MCP server inherits its credentials (credential-
+	// free configs by MVP rule; the reader resolves none).
+	const mounted = await loadMountedConfig(
+		deps.configMount ?? AGENT_CONFIG_MOUNT_PATH,
+	);
+	// The bundle hash, for one observability line. Non load-bearing: absent → no
+	// line, and nothing gates on it.
+	if (mounted.version) {
+		console.error(`[compass-agent] config version: ${mounted.version}`);
+	}
+	// Connect the mount's MCP servers now, before construction, so their tools
+	// reach createAgentSession as customTools. `main` OWNS the manager — the SDK
+	// never disconnects a manager it did not build — so its `disconnect` is added
+	// to the teardown finally below.
+	const mcp = await (deps.connectMcp ?? connectMountedMcp)(cwd, mounted.mcp);
+
 	const { session } = await (deps.createSession ?? createAgentSession)({
 		cwd,
 		modelPattern: resolveModelSelector(env),
 		// The tee-backed manager, so every session write teems upstream and the
 		// resumed history (if any) is already loaded.
 		sessionManager: manager,
+		// The Runner-mounted agent-config (design §CD-3). Each field is passed
+		// UNCONDITIONALLY, empty when unconfigured, so "unconfigured → none" is a
+		// guarantee, not an accident of discovery:
+		//   - `skills` provided (even `[]`) SKIPS discovery entirely
+		//     (sdk.ts:1417) — no ambient skills leak in.
+		//   - `additionalExtensionPaths` are concrete entry FILES the reader
+		//     enumerated; `disableExtensionDiscovery: true` passes them verbatim
+		//     (sdk.ts:695) and runs no native/plugin/cwd discovery.
+		//   - `customTools` are the connected MCP tools; `enableMCP: false` stops
+		//     the SDK ALSO discovering a cwd `.mcp.json`. A provided `mcpManager`
+		//     would NOT surface its tools (sdk.ts:1739/1818), so we pass tools.
+		// Scope: the guarantee covers the mount's three surfaces (skills,
+		// extensions, MCP). It does NOT suppress cwd custom-TOOL discovery —
+		// sdk.ts:1861 runs discoverCustomToolPaths([], cwd) unconditionally, so a
+		// `.omp/tools/` tree in the workdir still loads. Orthogonal to this
+		// mount contract; noted so nobody over-reads it as "zero ambient tools".
+		skills: mounted.skills,
+		additionalExtensionPaths: mounted.additionalExtensionPaths,
+		disableExtensionDiscovery: mounted.disableExtensionDiscovery,
+		customTools: mcp.tools,
+		enableMCP: false,
 		// Persona is an identity OVERLAY, not a replacement: append it after the
 		// default prompt so block-0 base instructions + project footer survive.
 		...(persona
@@ -373,20 +475,32 @@ export async function main(
 		agent = new CompassAgent({ session, sink, control });
 		await agent.run();
 	} finally {
+		// The load-bearing drain→close chain is UNTOUCHED — storage.drain →
+		// sink.drain → transport.close, in that exact order (see above). The MCP
+		// disconnect wraps it as its OWN outer finally so it runs unconditionally
+		// (clean and error paths) AFTER the frame barrier, without reordering it:
+		// the MCP connections are independent of the send spine, so tearing them
+		// down last cannot abandon a frame the drain exists to commit. `main` owns
+		// the manager (the SDK never disconnects one it did not build), so without
+		// this the container would leak every MCP subprocess/HTTP session on exit.
 		try {
-			// Belt for the APPEND vector: `writeTextSync` tracks drain
-			// (indexed-session-storage.ts:143 trackDrain:true) so a queued append's
-			// tee send is awaited here; the compaction `writeTextAtomic` checkpoint
-			// vector does NOT track drain (:270), but the sink drain below covers
-			// its durable send. Storage drain precedes sink drain so a late append's
-			// emitDurable is in the sink's in-flight set before it is awaited.
-			await storage.drain();
-		} finally {
 			try {
-				await sink.drain?.();
+				// Belt for the APPEND vector: `writeTextSync` tracks drain
+				// (indexed-session-storage.ts:143 trackDrain:true) so a queued append's
+				// tee send is awaited here; the compaction `writeTextAtomic` checkpoint
+				// vector does NOT track drain (:270), but the sink drain below covers
+				// its durable send. Storage drain precedes sink drain so a late append's
+				// emitDurable is in the sink's in-flight set before it is awaited.
+				await storage.drain();
 			} finally {
-				transport.close();
+				try {
+					await sink.drain?.();
+				} finally {
+					transport.close();
+				}
 			}
+		} finally {
+			await mcp.disconnect();
 		}
 	}
 }
