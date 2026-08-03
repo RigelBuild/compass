@@ -9,6 +9,7 @@ describe("safeHref", () => {
 		"https://example.com/safe",
 		"http://localhost:5173/x",
 		"mailto:hello@example.com",
+		"HTTPS://Example.com",
 	])("keeps a safe href verbatim: %s", (href) => {
 		expect(safeHref(href)).toBe(href);
 	});
@@ -22,6 +23,10 @@ describe("safeHref", () => {
 		"data:text/html,<script>alert(1)</script>",
 		"vbscript:msgbox(1)",
 		"file:///etc/passwd",
+		"blob:https://evil.com/uuid",
+		"//evil.com",
+		"about:blank",
+		"ht\u0001tps://example.com",
 	])("rejects a dangerous scheme: %s", (href) => {
 		expect(safeHref(href)).toBeNull();
 	});

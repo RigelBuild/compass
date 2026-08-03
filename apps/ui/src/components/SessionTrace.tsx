@@ -63,7 +63,12 @@ const NoticeRow: Component<{ item: Extract<TraceItem, { kind: "notice" }> }> = (
 			<span class="notice-text">{notice()?.text ?? ""}</span>
 			<Show when={safeLink()}>
 				{(href) => (
-					<a class="notice-link" href={href()} target="_blank" rel="noreferrer">
+					<a
+						class="notice-link"
+						href={href()}
+						target="_blank"
+						rel="noreferrer noopener"
+					>
 						open ↗
 					</a>
 				)}

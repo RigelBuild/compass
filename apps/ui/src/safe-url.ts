@@ -26,8 +26,13 @@ export function safeHref(href: string | undefined): string | null {
 	if (!href) return null;
 	const sanitized = sanitizeUrl(href);
 	try {
-		return SAFE_LINK_SCHEMES.has(new URL(sanitized).protocol) ? href : null;
+		if (!SAFE_LINK_SCHEMES.has(new URL(sanitized).protocol)) return null;
 	} catch {
 		return null;
 	}
+	// The scheme was validated on the SANITIZED form, which strips control
+	// characters the browser leaves intact. Require the ORIGINAL to parse as an
+	// absolute URL too, so an href that only becomes valid after sanitizing
+	// (e.g. an embedded null byte) can never reach the rendered attribute.
+	return URL.canParse(href) ? href : null;
 }
