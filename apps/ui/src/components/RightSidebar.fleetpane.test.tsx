@@ -271,6 +271,9 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 		const { store, container } = mountRightSidebar();
 		store.setActiveRightTab("agent:acc-ghost");
 
+		// Anchor to the unreachable pane so the assertion can't drift onto a
+		// same-classed control added elsewhere later.
+		expect(container.querySelector(".fleet-unreachable")).not.toBeNull();
 		const unpin = container.querySelector<HTMLButtonElement>(".r-unpin-agent");
 		expect(unpin).not.toBeNull();
 		expect(unpin?.textContent).toContain("ghosthandle");
