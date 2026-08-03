@@ -9,6 +9,7 @@
 		"@compass/client": "workspace:*",
 		"@shikijs/langs": "4.3.1",
 		"@shikijs/themes": "4.3.1",
+		"@solidjs/router": "^1.0.0",
 		"@tanstack/solid-virtual": "3.13.33",
 		"@tauri-apps/api": "^2",
 		"@tauri-apps/plugin-opener": "^2",

@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { render } from "@solidjs/testing-library";
-import App from "./App";
-import { STUB_CHANNELS, STUB_COMMS_STATE, STUB_MESSAGES } from "./comms-stub";
-import { StoreContext } from "./context";
-import { type AppStore, createAppStore } from "./store";
+import { STUB_CHANNELS, STUB_MESSAGES } from "./comms-stub";
 import { STUB_AGENTS } from "./stub-data";
+import { flush, mountApp } from "./test-router";
 
 // RED acceptance spec for T7 (design.md §643-664): restore App.tsx from the
 // current mid-reshape "Channels|Board swap" layout back to the board-primary
@@ -75,24 +72,11 @@ const AGENT_NAME = (() => {
 	return agent.account.displayName ?? agent.account.handle; // "cook"
 })();
 
-// Mount the real App over a real store through the app's StoreContext (index.tsx
-// wires it as `<StoreContext.Provider value={store}>`; App calls useStore() and
-// takes NO props). The store is built inside render's reactive root so its memos
-// are owned and disposed on the library's per-test cleanup; the reference is
-// captured so tests drive routing (showBridge/openChannel/openAgent/toggleLeft)
-// and re-read the live DOM.
-function mountApp(): { store: AppStore; container: HTMLElement } {
-	let store!: AppStore;
-	const { container } = render(() => {
-		store = createAppStore({ initialComms: STUB_COMMS_STATE });
-		return (
-			<StoreContext.Provider value={store}>
-				<App />
-			</StoreContext.Provider>
-		);
-	});
-	return { store, container };
-}
+// Mount the real App shell over a fixture-backed store on the shared
+// MemoryRouter (test-router.tsx) — the same route table index.tsx renders in
+// HashRouter, so these tests exercise the production routing. Navigation is
+// async under the router: tests await `flush()` between an action and a routed
+// read (record A2/A4).
 
 // The top-nav surface view-tabs — the single tab strip the board-primary shell
 // exposes (Bridge +, when an agent is selected, the agent tab). Scoped to
@@ -134,9 +118,10 @@ describe("App shell (T7)", () => {
 	// <ChannelSidebar/> and drops the LeftSidebar → two RED legs. Mutation-check:
 	// re-adding the ChannelSidebar reddens the rail leg; gating LeftSidebar behind
 	// the board branch reddens the sidebar leg.
-	test("opening a channel routes to the channel surface inside the board shell", () => {
+	test("opening a channel routes to the channel surface inside the board shell", async () => {
 		const { store, container } = mountApp();
 		store.openChannel(STANDALONE_CHANNEL_ID);
+		await flush();
 
 		// Precondition: the channel surface really mounted — ChannelView's root is
 		// inside the center main.main and has real threaded content.
@@ -145,13 +130,11 @@ describe("App shell (T7)", () => {
 		expect(conv).not.toBeNull();
 		expect(container.querySelectorAll(".thread").length).toBeGreaterThan(0);
 
-		// RED today: LeftSidebar is view-independent (leftOpen defaults true), so
-		// it stays present on the channel surface. Today it's board-branch-only →
-		// absent here.
+		// LeftSidebar is view-independent (leftOpen defaults true), so it stays
+		// present on the channel surface.
 		expect(container.querySelector("aside.left")).not.toBeNull();
 
-		// RED today: no ChannelSidebar anywhere. Today the channel branch mounts
-		// <ChannelSidebar/> → `.channel-rail` present.
+		// No ChannelSidebar anywhere.
 		expect(container.querySelectorAll(".channel-rail").length).toBe(0);
 	});
 
@@ -160,17 +143,16 @@ describe("App shell (T7)", () => {
 	// is a single Board tab with no agent tab → RED on the second tab / its
 	// StateDot. Mutation-check: dropping the agent tab, its StateDot, or the name
 	// each reddens the tab assertion.
-	test("selecting an agent adds the agent view-tab with a StateDot", () => {
+	test("selecting an agent adds the agent view-tab with a StateDot", async () => {
 		const { store, container } = mountApp();
 		store.openAgent(AGENT_ID);
+		await flush();
 
 		// Precondition: routed to the agent workspace and AgentView mounted.
 		expect(store.view()).toBe("agent");
 		expect(container.querySelector(".agent-view")).not.toBeNull();
 
-		// RED today: a second nav view-tab carries the agent name AND a StateDot.
-		// Today the nav holds only the single "Board" tab (no agent tab, no
-		// state-dot in the nav).
+		// A second nav view-tab carries the agent name AND a StateDot.
 		const tabs = navViewTabs(container);
 		const agentTab = tabs.find(
 			(t) =>
@@ -186,23 +168,22 @@ describe("App shell (T7)", () => {
 	// on the channel view regardless of leftOpen → the "present" legs redden.
 	// Mutation-check: gating the sidebar behind the board branch reddens both
 	// present legs; the toggled-off leg guards against always-rendering it.
-	test("the always-present left sidebar toggles on the channel surface", () => {
+	test("the always-present left sidebar toggles on the channel surface", async () => {
 		const { store, container } = mountApp();
 		store.openChannel(STANDALONE_CHANNEL_ID);
+		await flush();
 		expect(store.view()).toBe("channel");
 
 		const leftPresent = () => container.querySelector("aside.left") !== null;
 
-		// RED today: leftOpen defaults true → the sidebar shows on the channel
-		// surface. Today it's board-branch-only → absent.
+		// leftOpen defaults true → the sidebar shows on the channel surface.
 		expect(leftPresent()).toBe(true);
 
-		// Toggling off hides it (holds today too — the guard against the impl
-		// always-rendering the sidebar).
+		// Toggling off hides it (a synchronous pane action, not routed).
 		store.toggleLeft();
 		expect(leftPresent()).toBe(false);
 
-		// RED today: toggling back on restores it on the channel surface.
+		// Toggling back on restores it on the channel surface.
 		store.toggleLeft();
 		expect(leftPresent()).toBe(true);
 	});

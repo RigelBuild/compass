@@ -18,6 +18,7 @@
 import type { CommsClient, CompassClient } from "@compass/client";
 import {
 	type Accessor,
+	createEffect,
 	createMemo,
 	createSignal,
 	getOwner,
@@ -255,6 +256,15 @@ export interface AppStore {
 	showDone: () => void;
 	/** Show the Settings view (tracker mapping + handle, T11). */
 	showSettings: () => void;
+	/** Inject the router seam (record A3). Called once from App (inside the
+	 *  router tree): supplies the real navigate + a reactive currentPath and
+	 *  installs the single-writer route-sync effect. The store stays
+	 *  router-import-free; before this the actions route through an in-memory
+	 *  default so createAppStore is constructible with no router. */
+	bindRouter: (r: {
+		navigate: (path: string) => void;
+		currentPath: () => string;
+	}) => void;
 
 	// ── Selection ──
 	/** The selected agent id, or null. Drives the agent view + roster highlight. */
@@ -661,6 +671,52 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		STUB_ISSUES[0]?.id ?? null,
 	);
 
+	// ── Router seam (record A3): routes are the source of truth ──────────────
+	// The routed dimension — view + the surface's identifying param — is driven
+	// by the URL, not set imperatively. The store lives outside the router tree
+	// (index.tsx's app-lifetime createRoot), so the router is INJECTED as a seam
+	// rather than imported: createAppStore stays router-free and constructible
+	// with no router. Until App binds the real router, a default in-memory seam
+	// applies routes SYNCHRONOUSLY, so an offline store (unit/fragment tests, no
+	// <App>) drives openChannel/openAgent/show* and reads the routed state in the
+	// same tick — "test-constructible exactly as today". App swaps in the real
+	// @solidjs/router navigate + a reactive currentPath via bindRouter, after
+	// which navigation is asynchronous (navigate → location → route-sync effect
+	// → applyRoute), the ratified routes-as-truth contract.
+	const [inMemoryPath, setInMemoryPath] = createSignal("/");
+	let routerNavigate = (path: string): void => {
+		// Pre-bind navigation: nothing in production navigates before App binds
+		// (the only pre-bind action sources — the async comms stream and
+		// loadAssignedIssues — never navigate), so reaching here in a dev build
+		// signals a future violation where the URL would silently diverge from
+		// the in-memory path. Warn loudly rather than fail silent. Offline tests
+		// (run outside vite, import.meta.env.DEV undefined) drive this path by
+		// design and stay quiet.
+		if (import.meta.env?.DEV) {
+			console.warn(
+				`compass: navigate("${path}") before bindRouter — the URL will not ` +
+					"update until App wires the router",
+			);
+		}
+		setInMemoryPath(path);
+		applyRoute(path);
+	};
+	let routerCurrentPath = (): string => inMemoryPath();
+	const navigateTo = (path: string): void => routerNavigate(path);
+	const currentPath = (): string => routerCurrentPath();
+	// Wire the real router (called once from App, inside the router tree + a
+	// reactive root). The route-sync effect is the SINGLE writer of the routed
+	// dimension under the real router: the location drives applyRoute. Created
+	// here so App's owner disposes it on unmount.
+	const bindRouter = (r: {
+		navigate: (path: string) => void;
+		currentPath: () => string;
+	}): void => {
+		routerNavigate = r.navigate;
+		routerCurrentPath = r.currentPath;
+		createEffect(() => applyRoute(r.currentPath()));
+	};
+
 	// The tracker wiring (T11) + the seam it drives. assignedIssues (D3) is the
 	// user's personal queue, loaded once from the seam; re-loads when the handle
 	// changes so the Backlog view tracks a reconfigured tracker.
@@ -774,6 +830,11 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	const [selectedChannelId, setSelectedChannelId] = createSignal<string | null>(
 		firstChannelId(comms()),
 	);
+	// True once the first comms snapshot has arrived from the stream. The
+	// pending-aware route fallback (applyChannelRoute) reads it: before the first
+	// snapshot an absent channel id is merely not-yet-loaded (held, not bounced);
+	// after it, an absent id is genuinely unknown (redirected).
+	const [firstSnapshotArrived, setFirstSnapshotArrived] = createSignal(false);
 	// Adopt a state pushed by the stream and settle the selection onto it: the
 	// user's explicit pick wins as long as the channel is still visible, so a
 	// later snapshot/event can never yank the surface out from under them; an
@@ -784,9 +845,19 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// `preserveLocalAsks`.
 	const adoptComms = (next: CommsState) => {
 		setComms((prev) => preserveLocalAsks(prev, next));
+		setFirstSnapshotArrived(true);
 		const current = selectedChannelId();
 		if (current && next.channels.some((c) => c.id === current)) return;
-		setSelectedChannelId(firstChannelId(next));
+		// The selection is absent from the pushed snapshot (vanished, or the boot
+		// null). Under routes-as-truth the channel surface is a route: if the
+		// current route names a channel, re-point it through navigate so the URL
+		// and selection stay one authority; then re-seed the signal as the
+		// "last visited channel" fallback for any other surface.
+		const fallback = firstChannelId(next);
+		if (currentPath().startsWith("/channel/")) {
+			navigateTo(fallback ? `/channel/${fallback}` : "/");
+		}
+		setSelectedChannelId(fallback);
 	};
 	// The root id of the open thread on the standalone channel surface, or null.
 	// Channel-scoped: openChannel/openAgent clear it (T-T1).
@@ -962,27 +1033,74 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		agentTabs().find((t) => t.id === activeAgentTabId()),
 	);
 
-	// Opening an agent switches to its per-agent workspace and, for an agent whose
-	// workspace isn't yet initialized, syncs the issue selection to the
-	// agent's primary (first-assigned) issue and resets the workspace state:
-	// tabs reset to the lone chat tab, the chat pane centers on the agent's home
-	// DM channel, the repo pick resets to the agent's clone, and the log panel
-	// re-opens. The guard keys on `agentViewAgentId` — the id the workspace was
-	// initialized for — NOT `selectedAgentId`, which `selectIssue` moves from
-	// the board without initializing the workspace; keying on it would let a
-	// roster move suppress the reset. Re-opening the already-initialized agent
-	// only re-asserts the selection (the contract: re-selecting is a no-op) and
-	// preserves the tabs the user has since opened.
-	const openAgent = (agentId: string) => {
-		// Entering an agent workspace drops the channel-scoped open-thread state.
-		setOpenThreadRootId(null);
+	// ── Route application (record A3): the single writer of the routed
+	// dimension (view + selectedChannelId/selectedAgentId). Invoked
+	// synchronously by the default seam (offline) or by the bound route-sync
+	// effect (real router). It parses currentPath itself — the store is outside
+	// the router tree and cannot call useParams.
+	function applyRoute(path: string): void {
+		const segs = path.split("/").filter((s) => s.length > 0);
+		const [head, param] = segs;
+		switch (head) {
+			case undefined:
+				setView("bridge");
+				return;
+			case "channel":
+				if (param) applyChannelRoute(param);
+				else setView("bridge");
+				return;
+			case "agent":
+				if (param) applyAgentRoute(param);
+				else setView("bridge");
+				return;
+			case "backlog":
+				setView("backlog");
+				return;
+			case "done":
+				setView("done");
+				return;
+			case "settings":
+				setView("settings");
+				return;
+			default:
+				// Unknown path — the router's `*` route redirects to "/"; leave the
+				// routed state untouched until that navigation lands (no blank
+				// surface, no wrong-view write).
+				return;
+		}
+	}
+	// Apply a `/channel/:channelId` route. Pending-aware: an id merely not-yet-
+	// loaded is HELD (ChannelView renders its empty state), NOT bounced — a valid
+	// deep-link into an async-loaded channel must survive boot. Only once the
+	// first snapshot has arrived is an absent id treated as genuinely unknown and
+	// redirected off (gating on first-snapshot arrival, never non-emptiness: a
+	// genuinely empty workspace is a valid resolved state).
+	function applyChannelRoute(channelId: string): void {
+		setView("channel");
+		if (channels().some((c) => c.id === channelId)) {
+			setSelectedChannelId(channelId);
+			return;
+		}
+		if (firstSnapshotArrived()) {
+			const fallback = firstChannelId(comms());
+			navigateTo(fallback ? `/channel/${fallback}` : "/");
+			return;
+		}
+		setSelectedChannelId(channelId);
+	}
+	// Apply an `/agent/:agentId` route — the workspace anchoring lifted verbatim
+	// from the old openAgent so the click path and a direct deep-link run the
+	// SAME code once. Anchor the issue selection to this agent: keep the current
+	// selection when this agent owns it (a card double-click selects the card's
+	// issue just before opening — often a non-primary one), else the agent's
+	// primary (first-owned). The reset guard keys on `agentViewAgentId` (the id
+	// the workspace was initialized for) — NOT `selectedAgentId`, which
+	// `selectIssue` moves from the board without initializing the workspace — so
+	// a roster move followed by opening that agent still initializes the view,
+	// and re-opening the already-initialized agent only re-asserts the selection
+	// and preserves the tabs the user has since opened.
+	function applyAgentRoute(agentId: string): void {
 		setView("agent");
-		// Anchor the issue selection to this agent: keep the currently
-		// selected issue when this agent owns it (a card double-click selects
-		// the card's issue just before opening — often a non-primary one),
-		// else fall back to the agent's primary (first-owned). This holds on BOTH
-		// paths so a roster move that pointed the selection at another agent's
-		// issue can't leak into this view.
 		const owned = issues().filter((w) => w.assignee === agentId);
 		const anchored =
 			owned.find((w) => w.id === selectedIssueId())?.id ?? owned[0]?.id ?? null;
@@ -994,14 +1112,18 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		setSelectedAgentId(agentId);
 		setSelectedIssueId(anchored);
 		setActiveRepoId(`${agentId}-repo`);
-		// Reset the tab group to the lone permanent chat tab. The chat pane's
-		// channel is derived from the selected agent (`workspaceChannel`), not
-		// written here — so `selectedChannelId` stays the standalone surface's
-		// own state and can never re-point the workspace pane.
 		setTabs([chatTab()]);
 		setActiveAgentTabId(CHAT_TAB_ID);
 		setLogOpen(true);
 		setAgentViewAgentId(agentId);
+	}
+
+	// Open an agent's workspace: drop the channel-scoped open-thread state, then
+	// navigate — the route-sync effect (applyAgentRoute) runs the anchoring, so
+	// the click path and a `/agent/:agentId` deep-link share one home.
+	const openAgent = (agentId: string) => {
+		setOpenThreadRootId(null);
+		navigateTo(`/agent/${agentId}`);
 	};
 
 	// Open a channel: route to the channel view with it selected — unless it's a
@@ -1018,8 +1140,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 			openAgent(agentId);
 			return;
 		}
-		setSelectedChannelId(channelId);
-		setView("channel");
+		navigateTo(`/channel/${channelId}`);
 	};
 
 	// Selecting an issue (a board card or a swimlane cell) syncs the roster
@@ -1648,10 +1769,10 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 			refuseStop(error);
 		}
 	};
-	const showBridge = () => setView("bridge");
-	const showBacklog = () => setView("backlog");
-	const showDone = () => setView("done");
-	const showSettings = () => setView("settings");
+	const showBridge = () => navigateTo("/");
+	const showBacklog = () => navigateTo("/backlog");
+	const showDone = () => navigateTo("/done");
+	const showSettings = () => navigateTo("/settings");
 
 	// Promote a Backlog issue to Todo (D1/D3): the human moves it into the
 	// global unassigned pool the Dispatcher assigns from, and the change mirrors
@@ -1786,6 +1907,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 
 	return {
 		view,
+		bindRouter,
 		showBridge,
 		showBacklog,
 		showDone,
