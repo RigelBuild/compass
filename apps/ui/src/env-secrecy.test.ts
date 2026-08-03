@@ -55,7 +55,7 @@ async function isIgnored(file: string): Promise<boolean> {
 	return exitCode === 0;
 }
 
-describe("env-secrecy gate (no committable .env ships a baked VITE_* secret)", () => {
+describe("env-secrecy gate (no new committable .env; tracked env set pinned to dev defaults)", () => {
 	test.each(MUST_BE_IGNORED)(
 		"%s is covered by the .gitignore rules",
 		async (file) => {
