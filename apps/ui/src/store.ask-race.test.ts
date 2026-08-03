@@ -9,6 +9,7 @@ import {
 	wireTextMessage,
 } from "./live/comms-fake";
 import { type AppStore, createAppStore } from "./store";
+import { testQueryClient } from "./test-support";
 
 // The race between a MULTI-question ask being answered and the stream pushing a
 // new state under it.
@@ -100,7 +101,11 @@ async function withLiveStore(
 	let dispose!: () => void;
 	const store = createRoot((d) => {
 		dispose = d;
-		return createAppStore({ comms: fake.client, callerId: CALLER });
+		return createAppStore({
+			comms: fake.client,
+			callerId: CALLER,
+			queryClient: testQueryClient(),
+		});
 	});
 	// Every hop of the driver's snapshot round-trip is a resolved promise, so a
 	// bounded microtask drain is deterministic — no timers, no wall-clock wait.

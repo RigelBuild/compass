@@ -4,6 +4,7 @@ import { prCount, prRows } from "../board";
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_ISSUES } from "../stub-data";
+import { testQueryClient } from "../test-support";
 import { Bridge } from "./Bridge";
 
 // Render acceptance spec for the Bridge Issues/PRs tabs (Record B / DL-097). The
@@ -17,7 +18,7 @@ import { Bridge } from "./Bridge";
 function mountBridge(): { store: AppStore; container: HTMLElement } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore();
+		store = createAppStore({ queryClient: testQueryClient() });
 		return (
 			<StoreContext.Provider value={store}>
 				<Bridge />

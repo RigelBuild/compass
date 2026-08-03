@@ -11,6 +11,7 @@ import { STUB_SESSION_EVENTS } from "./session-events-stub";
 import { type AppStore, CALLER_ID, createAppStore } from "./store";
 import type { Account, Agent } from "./stub-data";
 import { STUB_AGENTS, STUB_ISSUES } from "./stub-data";
+import { testQueryClient } from "./test-support";
 
 // T1 — Agent identity: separate co-addressed types + fixture reconciliation
 // (design record `docs/designs/product/compass-0.7-channel-workspace/design.md`,
@@ -33,7 +34,10 @@ import { STUB_AGENTS, STUB_ISSUES } from "./stub-data";
 // composed `agentView`/`agentSession` memos only compute inside an owner.
 function withStore(body: (store: AppStore) => void): void {
 	createRoot((dispose) => {
-		const store = createAppStore({ initialComms: STUB_COMMS_STATE });
+		const store = createAppStore({
+			initialComms: STUB_COMMS_STATE,
+			queryClient: testQueryClient(),
+		});
 		try {
 			body(store);
 		} finally {

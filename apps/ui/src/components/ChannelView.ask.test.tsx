@@ -10,6 +10,7 @@ import {
 	wireTopic,
 } from "../live/comms-fake";
 import { type AppStore, createAppStore } from "../store";
+import { testQueryClient } from "../test-support";
 import { TopicView } from "./TopicView";
 
 // The MULTI-question ask surface, over the live wire. The single-question ask
@@ -65,7 +66,11 @@ async function mountAsk(fake: FakeComms): Promise<{
 }> {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore({ comms: fake.client, callerId: CALLER });
+		store = createAppStore({
+			comms: fake.client,
+			callerId: CALLER,
+			queryClient: testQueryClient(),
+		});
 		return (
 			<StoreContext.Provider value={store}>
 				<TopicView />

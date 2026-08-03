@@ -16,6 +16,7 @@ import {
 	type View,
 } from "./store";
 import { STUB_AGENTS, STUB_ASSIGNED_ISSUES } from "./stub-data";
+import { testQueryClient } from "./test-support";
 
 // The store exposes SolidJS `createMemo` accessors (selectedAgent,
 // selectedIssue, agentRepos, agentSession) that only
@@ -31,7 +32,10 @@ import { STUB_AGENTS, STUB_ASSIGNED_ISSUES } from "./stub-data";
 // store's reduction over a populated comms state, whatever its origin.
 function withStore(body: (store: AppStore) => void): void {
 	createRoot((dispose) => {
-		const store = createAppStore({ initialComms: STUB_COMMS_STATE });
+		const store = createAppStore({
+			initialComms: STUB_COMMS_STATE,
+			queryClient: testQueryClient(),
+		});
 		try {
 			body(store);
 		} finally {
@@ -52,7 +56,10 @@ async function withStoreAsync(
 	let dispose!: () => void;
 	const store = createRoot((d) => {
 		dispose = d;
-		return createAppStore({ initialComms: STUB_COMMS_STATE });
+		return createAppStore({
+			initialComms: STUB_COMMS_STATE,
+			queryClient: testQueryClient(),
+		});
 	});
 	try {
 		await body(store);
@@ -540,6 +547,7 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		createRoot((dispose) => {
 			const store = createAppStore({
 				initialComms: STUB_COMMS_STATE,
+				queryClient: testQueryClient(),
 				workspaceKey: workspace,
 			});
 			try {
@@ -939,8 +947,14 @@ describe("store isolation", () => {
 	// shared signals). Mutating one store leaves another untouched.
 	test("two stores do not share state", () => {
 		createRoot((dispose) => {
-			const a = createAppStore({ initialComms: STUB_COMMS_STATE });
-			const b = createAppStore({ initialComms: STUB_COMMS_STATE });
+			const a = createAppStore({
+				initialComms: STUB_COMMS_STATE,
+				queryClient: testQueryClient(),
+			});
+			const b = createAppStore({
+				initialComms: STUB_COMMS_STATE,
+				queryClient: testQueryClient(),
+			});
 			try {
 				a.openAgent("acc-cook");
 				a.toggleLeft();
@@ -1870,15 +1884,30 @@ describe("reactive issues (DL-071)", () => {
 });
 
 describe("assignedIssues async load (PR3)", () => {
-	// At init the store fires loadAssignedIssues; after the seam's microtask
-	// settles, assignedIssues() holds the fixture queue for the default
-	// (non-empty) handle. Before the tick it is []; this pins the resolution.
+	// Drain the microtask queue until the assigned-issues query reaches the
+	// expected size — no wall-clock timer, just the reactive state we're waiting
+	// on. The loader is now a solid-query query (keyed on the tracker handle), so
+	// it settles across a few microtask hops rather than the single tick the old
+	// promise-into-signal loader took; the drain polls that real state.
+	const drainUntil = async (
+		read: () => number,
+		want: (n: number) => boolean,
+	): Promise<void> => {
+		for (let i = 0; i < 50 && !want(read()); i++) await Promise.resolve();
+	};
+
+	// At init the store fires the assigned-issues query; after it settles,
+	// assignedIssues() holds the fixture queue for the default (non-empty) handle.
+	// Before any tick it is [] (the query is pending); this pins the resolution.
 	test("loads the fixture queue for the default handle after a tick", async () => {
 		await withStoreAsync(async (s) => {
-			// Synchronously (pre-microtask) the signal is still its empty seed.
+			// Synchronously (pre-microtask) the query is pending → the empty fallback.
 			expect(s.assignedIssues()).toEqual([]);
 
-			await Promise.resolve();
+			await drainUntil(
+				() => s.assignedIssues().length,
+				(n) => n > 0,
+			);
 
 			expect(s.assignedIssues().map((w) => w.id)).toEqual(
 				STUB_ASSIGNED_ISSUES.map((w) => w.id),
@@ -1886,16 +1915,22 @@ describe("assignedIssues async load (PR3)", () => {
 		});
 	});
 
-	// Reconfiguring to an empty handle reloads through the seam, which yields []
-	// for a blank handle (tracker-not-configured). Proves setTrackerConfig
-	// rebuilds the seam AND reloads, not just swaps the config signal.
+	// Reconfiguring to an empty handle re-keys the query, which yields [] for a
+	// blank handle (tracker-not-configured). Proves setTrackerConfig re-keys AND
+	// refetches with no manual reload — the handle is part of the query key.
 	test("clears the queue after setTrackerConfig with an empty handle", async () => {
 		await withStoreAsync(async (s) => {
-			await Promise.resolve();
+			await drainUntil(
+				() => s.assignedIssues().length,
+				(n) => n > 0,
+			);
 			expect(s.assignedIssues().length).toBeGreaterThan(0);
 
 			s.setTrackerConfig({ ...s.trackerConfig(), handle: "" });
-			await Promise.resolve();
+			await drainUntil(
+				() => s.assignedIssues().length,
+				(n) => n === 0,
+			);
 
 			expect(s.assignedIssues()).toEqual([]);
 		});

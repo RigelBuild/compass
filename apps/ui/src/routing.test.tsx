@@ -18,6 +18,7 @@ import {
 import { AppRoutes } from "./routes";
 import { type AppStore, createAppStore } from "./store";
 import { flush, mountApp } from "./test-router";
+import { testQueryClient } from "./test-support";
 
 // Route-behavior tests (record A4 / T3): the URL is the source of truth. These
 // exercise the shared route table (routes.tsx) on a MemoryRouter — the same
@@ -124,7 +125,11 @@ describe("pending-aware channel deep-link (record A3)", () => {
 		const history = createMemoryHistory();
 		history.set({ value: initialPath });
 		const { container } = render(() => {
-			store = createAppStore({ comms: fake.client, callerId: CALLER });
+			store = createAppStore({
+				comms: fake.client,
+				callerId: CALLER,
+				queryClient: testQueryClient(),
+			});
 			return (
 				<StoreContext.Provider value={store}>
 					<MemoryRouter history={history} root={App}>
@@ -207,7 +212,11 @@ describe("pending-aware topic deep-link (record A3)", () => {
 		const history = createMemoryHistory();
 		history.set({ value: initialPath });
 		const { container } = render(() => {
-			store = createAppStore({ comms: fake.client, callerId: CALLER });
+			store = createAppStore({
+				comms: fake.client,
+				callerId: CALLER,
+				queryClient: testQueryClient(),
+			});
 			return (
 				<StoreContext.Provider value={store}>
 					<MemoryRouter history={history} root={App}>
@@ -271,7 +280,10 @@ describe("route-sync seam (no router)", () => {
 	// Kept intentionally light — the transition matrix lives in store.test.ts;
 	// this only asserts the default seam applies a route without a bound router.
 	test("show* navigate the view synchronously through the default seam", () => {
-		const store = createAppStore({ initialComms: STUB_COMMS_STATE });
+		const store = createAppStore({
+			initialComms: STUB_COMMS_STATE,
+			queryClient: testQueryClient(),
+		});
 		store.showBacklog();
 		expect(store.view()).toBe("backlog");
 		store.showSettings();

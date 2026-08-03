@@ -4,6 +4,7 @@ import { createSignal } from "solid-js";
 import type { Account, Message } from "../comms-stub";
 import { StoreContext } from "../context";
 import { createAppStore } from "../store";
+import { testQueryClient } from "../test-support";
 import {
 	CONV_ESTIMATE_BASE,
 	CONV_SCROLL_END_THRESHOLD,
@@ -163,7 +164,7 @@ function mountStream(initial: Message[]): {
 } {
 	const [messages, setMessages] = createSignal<Message[]>(initial);
 	const [scopeId, setScopeId] = createSignal("top-x");
-	const store = createAppStore();
+	const store = createAppStore({ queryClient: testQueryClient() });
 	const { container } = render(() => (
 		<StoreContext.Provider value={store}>
 			<MessageStream
@@ -302,7 +303,7 @@ describe("MessageStream scroll contract", () => {
 			makeMessages(200, 1_000),
 		);
 		const [scopeId, setScopeId] = createSignal("top-a");
-		const store = createAppStore();
+		const store = createAppStore({ queryClient: testQueryClient() });
 		const { container } = render(() => (
 			<StoreContext.Provider value={store}>
 				<MessageStream

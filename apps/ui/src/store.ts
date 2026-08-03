@@ -16,6 +16,8 @@
 // network client.
 
 import type { CommsClient, CompassClient } from "@compass/client";
+import type { QueryClient } from "@tanstack/solid-query";
+import { useQuery } from "@tanstack/solid-query";
 import {
 	type Accessor,
 	createEffect,
@@ -544,11 +546,21 @@ export interface AppStore {
 	setTrackerConfig: (cfg: TrackerConfig) => void;
 }
 
-/** What `createAppStore` is handed at boot. Everything is optional so a unit
- *  test constructs the store with NO network client at all: the comms surface
- *  then holds `initialComms` (the fixture, in tests) and every write rejects.
- *  index.tsx supplies the real `Connection`-derived client + caller. */
+/** What `createAppStore` is handed at boot. The network clients and seeds are
+ *  optional so a unit test constructs the store with NO network client at all:
+ *  the comms surface then holds `initialComms` (the fixture, in tests) and every
+ *  write rejects. `queryClient` is the one REQUIRED field — the store holds it
+ *  explicitly to run its query-backed reads (§A3), since its createRoot owner
+ *  never sits under a `QueryClientProvider` (index.tsx builds the store before
+ *  render() mounts the provider). index.tsx supplies the real
+ *  `Connection`-derived client + caller alongside it. */
 export interface AppStoreOptions {
+	/** The server-state cache the store's query-backed reads key against — the
+	 *  SAME instance components read through `QueryClientProvider`, so both paths
+	 *  are one cache (§A1). REQUIRED and passed EXPLICITLY (never context): the
+	 *  store's owner has no provider ancestor, so a context read would throw
+	 *  `No QueryClient set` at boot (§A3). */
+	readonly queryClient: QueryClient;
 	/** The live comms client. Present → the store runs `runCommsStream` over it
 	 *  for its lifetime and every comms write is a real RPC. Absent → offline. */
 	readonly comms?: CommsClient;
@@ -657,7 +669,7 @@ function savePinnedAgents(
  * live SubscribeComms stream, which runs until the store's reactive owner is
  * disposed (index.tsx's root lives for the app's lifetime).
  */
-export function createAppStore(options: AppStoreOptions = {}): AppStore {
+export function createAppStore(options: AppStoreOptions): AppStore {
 	const callerId = options.callerId ?? CALLER_ID;
 	const agents = STUB_AGENTS;
 	// The issue list is reactive so promote/archive (below) are visible on
@@ -722,20 +734,31 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	};
 
 	// The tracker wiring (T11) + the seam it drives. assignedIssues (D3) is the
-	// user's personal queue, loaded once from the seam; re-loads when the handle
-	// changes so the Backlog view tracks a reconfigured tracker.
+	// user's personal queue, read through a query keyed on the tracker handle: a
+	// handle change re-keys and refetches with no manual reload (§A3). The tracker
+	// seam is NOT yet a Connect RPC (tracker.ts is the fixture contract), so this
+	// is a plain solid-query key + queryFn over the seam — the store-internal
+	// query pattern (explicit `queryClient`, no provider ancestor), swappable to a
+	// connect-query-core descriptor when the daemon RPC lands.
 	const [trackerConfig, setTrackerConfigSignal] = createSignal<TrackerConfig>(
 		DEFAULT_TRACKER_CONFIG,
 	);
 	let seam: TrackerSeam = createFixtureTrackerSeam(DEFAULT_TRACKER_CONFIG);
-	const [assignedIssues, setAssignedIssues] = createSignal<Issue[]>([]);
-	const loadAssignedIssues = () => {
-		seam
-			.listAssignedIssues(trackerConfig().handle)
-			.then(setAssignedIssues)
-			.catch(() => setAssignedIssues([]));
-	};
-	loadAssignedIssues();
+	const issuesQuery = useQuery(
+		() => ({
+			// The handle is part of the key, so a `setTrackerConfig` that changes it
+			// re-keys and refetches — the old manual re-load dance is gone.
+			queryKey: ["assignedIssues", trackerConfig().handle] as const,
+			queryFn: (): Promise<Issue[]> =>
+				seam.listAssignedIssues(trackerConfig().handle),
+		}),
+		// Explicit client — the store's owner has no QueryClientProvider ancestor
+		// (§A3), so this must never resolve from context.
+		() => options.queryClient,
+	);
+	// Today's fallback preserved: no data yet (pre-fetch) or a failed read both
+	// read as the empty queue, exactly as the catch-to-`[]` loader did.
+	const assignedIssues: Accessor<Issue[]> = () => issuesQuery.data ?? [];
 
 	const [leftOpen, setLeftOpen] = createSignal(true);
 	const [rightOpen, setRightOpen] = createSignal(true);
@@ -1853,8 +1876,10 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 
 	const setTrackerConfig = (cfg: TrackerConfig) => {
 		setTrackerConfigSignal(cfg);
+		// Rebuild the seam against the new config (the queryFn reads it at fetch
+		// time). No manual reload: the handle is part of the query key, so a
+		// changed handle re-keys and refetches automatically (§A3).
 		seam = createFixtureTrackerSeam(cfg);
-		loadAssignedIssues();
 	};
 
 	const toggleLeft = () => setLeftOpen((v) => !v);

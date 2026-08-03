@@ -44,9 +44,36 @@ export function createCompassClient(transport: Transport): CompassClient {
 	return createClient(CompassService, transport);
 }
 
+/**
+ * Build one gRPC-Web `Transport` at `baseUrl` — the shared transport both the
+ * comms and compass clients dial over, and the same instance the query layer
+ * keys and calls by (`@connectrpc/connect-query-core` embeds a Transport
+ * reference in every query key, so cache identity requires ONE instance).
+ * When `token` is set, every request carries `authorization: Bearer <token>`,
+ * exactly as the per-client web factories install it. Exposed so callers that
+ * need cache-coherent queries build clients + queries over one transport rather
+ * than the per-client transports each web factory buries.
+ */
+export function createCompassWebTransport(
+	baseUrl: string,
+	token?: string,
+): Transport {
+	return createGrpcWebTransport({
+		baseUrl,
+		interceptors: bearerInterceptors(token),
+	});
+}
+
 // Re-exported so non-web consumers can type a custom transport without
 // importing @connectrpc/connect directly (the fence blocks that import).
 export type { Transport } from "@connectrpc/connect";
+
+// Re-exported so test fixtures build an in-memory fake server through the one
+// door (a `createRouterTransport` handler serving compass.v1 methods), without
+// importing @connectrpc/connect directly — the fence blocks that import, and a
+// fake transport is the vendor's documented no-HTTP test path for the query
+// layer. Dev/test-only; the shipped app dials `createCompassWebTransport`.
+export { createRouterTransport } from "@connectrpc/connect";
 
 /**
  * Create a compass.v1 client over gRPC-Web at `baseUrl` — the door the web UI
@@ -188,5 +215,7 @@ export type {
 export {
 	AgentSessionState,
 	CompassService,
+	GetServerInfoRequestSchema,
+	GetServerInfoResponseSchema,
 	ServerState,
 } from "./gen/compass/v1/compass_pb";

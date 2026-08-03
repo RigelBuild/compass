@@ -1,4 +1,5 @@
 import { HashRouter } from "@solidjs/router";
+import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import { createRoot } from "solid-js";
 import { render } from "solid-js/web";
 import App from "./App";
@@ -34,6 +35,17 @@ if (!connection) {
 }
 const clients = createLiveClients(connection);
 
+// One app-lifetime QueryClient — the server-state cache the query layer keys
+// against (query record §A1). Built BEFORE the store so the store can hold it
+// explicitly: the store's createRoot owner never sits under QueryClientProvider
+// (that mounts inside render(), below), so store-internal queries pass this
+// client directly rather than resolving it from context (§A3). Components read
+// the SAME instance through the provider — two access paths, one cache, so
+// invalidations and setQueryData from either side are one source of truth.
+const queryClient = new QueryClient({
+	defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
+});
+
 // The store is an app-lifetime singleton; createRoot gives its memos a stable
 // owner (intentionally never disposed) so Solid doesn't warn about computations
 // created before render() establishes a root. One unified store drives every
@@ -47,6 +59,7 @@ const store = createRoot(() =>
 	createAppStore({
 		comms: clients.comms,
 		compass: clients.compass,
+		queryClient,
 		callerId: connection.callerId,
 		// Namespace persisted UI prefs (the pinned-agent set) to this deployment,
 		// so one server/workspace's account ids never hydrate as pins on another
@@ -67,9 +80,11 @@ const store = createRoot(() =>
 render(
 	() => (
 		<StoreContext.Provider value={store}>
-			<HashRouter root={App}>
-				<AppRoutes />
-			</HashRouter>
+			<QueryClientProvider client={queryClient}>
+				<HashRouter root={App}>
+					<AppRoutes />
+				</HashRouter>
+			</QueryClientProvider>
 		</StoreContext.Provider>
 	),
 	root,

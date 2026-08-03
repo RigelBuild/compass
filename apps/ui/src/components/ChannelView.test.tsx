@@ -10,6 +10,7 @@ import {
 } from "../comms-stub";
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
+import { testQueryClient } from "../test-support";
 import { ChannelView } from "./ChannelView";
 import { TopicView } from "./TopicView";
 
@@ -104,7 +105,10 @@ function mountTopicView(): {
 } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore({ initialComms: STUB_COMMS_STATE });
+		store = createAppStore({
+			initialComms: STUB_COMMS_STATE,
+			queryClient: testQueryClient(),
+		});
 		return (
 			<StoreContext.Provider value={store}>
 				<TopicView />
@@ -338,7 +342,10 @@ describe("ChannelView is a composerless topic index (T5 model boundary)", () => 
 	function mountChannelView(): { store: AppStore; container: HTMLElement } {
 		let store!: AppStore;
 		const { container } = render(() => {
-			store = createAppStore({ initialComms: STUB_COMMS_STATE });
+			store = createAppStore({
+				initialComms: STUB_COMMS_STATE,
+				queryClient: testQueryClient(),
+			});
 			return (
 				<StoreContext.Provider value={store}>
 					<ChannelView />
