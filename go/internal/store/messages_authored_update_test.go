@@ -31,10 +31,7 @@ import (
 // the row the authorizing-update cases then try to edit under various actors.
 func authoredMessage(t *testing.T, ctx context.Context, s *Store, author AccountID, ch ChannelID, text string) Message {
 	t.Helper()
-	msg, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch}, AuthorAccountID: author,
-		Blocks: []MessageBlock{textBlock(text)},
-	}, "")
+	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author, Blocks: []MessageBlock{textBlock(text)}}, string(ch), TopicRef{Name: "general"}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -64,8 +61,8 @@ func TestUpdateMessageBlocksAsAuthorEditsInPlaceAndReturnsRow(t *testing.T) {
 	if updated.ID != msg.ID {
 		t.Fatalf("returned message id = %q, want the edited row %q", updated.ID, msg.ID)
 	}
-	if updated.Container.ChannelID != ch.ID {
-		t.Fatalf("returned channel = %q, want %q", updated.Container.ChannelID, ch.ID)
+	if got := messageChannel(t, ctx, s, updated.ID); got != ch.ID {
+		t.Fatalf("returned message channel = %q, want %q", got, ch.ID)
 	}
 	if updated.AuthorAccountID != author.ID {
 		t.Fatalf("returned author = %q, want %q", updated.AuthorAccountID, author.ID)
@@ -73,7 +70,7 @@ func TestUpdateMessageBlocksAsAuthorEditsInPlaceAndReturnsRow(t *testing.T) {
 	assertBlocksEqual(t, updated.Blocks, replacement)
 
 	// Durable: a re-read through the normal visibility path sees the new set.
-	got, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	got, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -117,7 +114,7 @@ func TestUpdateMessageBlocksAsAuthorCrossAccountIsNotFound(t *testing.T) {
 	}
 
 	// The rejected edit left no trace: the row carries the author's own text.
-	got, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	got, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -158,7 +155,7 @@ func TestUpdateMessageBlocksAsAuthorRevokedMemberIsNotFound(t *testing.T) {
 	sentinelIs(t, err, ErrNotFound, "a revoked member editing its own past message")
 
 	// The revoked edit left no trace: the owner still reads the pre-revoke text.
-	got, err := s.ListMessages(ctx, owner.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	got, err := s.ListMessages(ctx, ListMessagesQuery{Actor: owner.ID, ChannelID: ch.ID, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -217,7 +214,7 @@ func TestUpdateMessageBlocksAsAuthorRejectsMalformedInput(t *testing.T) {
 	})
 
 	// None of the three wrote anything.
-	got, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	got, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -240,10 +237,7 @@ func TestMessageAskIDsReturnsStoredIDsInOrder(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	msg, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{askBlockID("ask-first"), textBlock("between"), askBlockID("ask-second")},
-	}, "")
+	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{askBlockID("ask-first"), textBlock("between"), askBlockID("ask-second")}}, string(ch.ID), TopicRef{Name: "general"}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -284,10 +278,7 @@ func TestAnswerAskStillWorksForANonAuthorMember(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: asker.ID,
-		Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-1", false)},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: asker.ID, Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 

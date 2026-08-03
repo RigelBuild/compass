@@ -198,10 +198,7 @@ func TestSpawnDespawnOverTheWire(t *testing.T) {
 		client := w.dialPeer(t, peerContainer)
 		resp, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
 			CallId: "peer-post-1",
-			Call: &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{
-				Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerHome)},
-				Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: peerPostText}}},
-			}},
+			Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerHome)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: peerPostText}}}}},
 		}))
 		if err != nil {
 			t.Fatalf("Comms(post) over the peer socket = %v, want the round-trip result", err)
@@ -215,7 +212,7 @@ func TestSpawnDespawnOverTheWire(t *testing.T) {
 		}
 
 		// Committed to the REAL store under the peer account.
-		msgs, err := w.store.ListMessages(ctx, peerID, store.ContainerRef{ChannelID: peerHome}, store.Page{Limit: 10})
+		msgs, err := w.store.ListMessages(ctx, store.ListMessagesQuery{Actor: peerID, ChannelID: peerHome, Page: store.Page{Limit: 10}})
 		if err != nil {
 			t.Fatalf("ListMessages(peer home) = %v", err)
 		}
@@ -294,10 +291,7 @@ func TestSpawnDespawnOverTheWire(t *testing.T) {
 		client := w.dialPeer(t, peerContainer)
 		_, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
 			CallId: "peer-post-after-despawn",
-			Call: &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{
-				Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerHome)},
-				Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "should never commit"}}},
-			}},
+			Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerHome)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "should never commit"}}}}},
 		}))
 		if err == nil {
 			t.Fatal("peer comms post after despawn SUCCEEDED, want a fail-closed error (container + socket torn down)")
@@ -305,7 +299,7 @@ func TestSpawnDespawnOverTheWire(t *testing.T) {
 
 		// And nothing committed: the peer's home channel still holds only the one
 		// pre-despawn message.
-		msgs, err := w.store.ListMessages(ctx, peerID, store.ContainerRef{ChannelID: peerHome}, store.Page{Limit: 10})
+		msgs, err := w.store.ListMessages(ctx, store.ListMessagesQuery{Actor: peerID, ChannelID: peerHome, Page: store.Page{Limit: 10}})
 		if err != nil {
 			t.Fatalf("ListMessages(peer home) after despawn = %v", err)
 		}
@@ -421,10 +415,7 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	clientB := w.dialPeer(t, peerBContainer)
 	postResp, err := clientB.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
 		CallId: "peer-b-post-1",
-		Call: &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{
-			Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerBHome)},
-			Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "peer B still alive"}}},
-		}},
+		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerBHome)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "peer B still alive"}}}}},
 	}))
 	if err != nil {
 		t.Fatalf("Comms(post) over peer B socket after the foreign despawn = %v, want success (peer B untouched)", err)

@@ -9,24 +9,32 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// AppendMessage stores a new message in its channel, assigning the row id and
-// timestamp (comms.proto:463-479). The blocks are serialized to JSONB and their
-// text content extracted for the full-text index. When m carries a non-empty
-// client_request_id, a retry with the same key returns the already-stored
-// message rather than duplicating (idempotency, comms.proto:470-474). The
-// returned bool reports whether a row was genuinely inserted: it is false on the
-// idempotent-retry return, so the caller suppresses a duplicate MessagePosted
-// fan-out for a row that did not change. A message with no blocks is
-// ErrInvalidArgument, as is an unknown channel or a parent_message_id that
-// names a message outside this channel. The membership check and the
-// insert run in one transaction, so a membership revoked between them cannot
-// slip a message into a channel the author can no longer read.
-func (s *Store) AppendMessage(ctx context.Context, m Message, clientRequestID string) (Message, bool, error) {
-	if m.Container.ChannelID == "" {
+// AppendMessage stores a new message under a topic in channelID, assigning the
+// row id and timestamp (comms.proto:463-479). The topic is resolved inside the
+// insert tx: a TopicRef.Name is get-or-created on (channel_id, lower(name)); a
+// TopicRef.ID names an existing topic, validated to live under channelID. The
+// blocks are serialized to JSONB and their text content extracted for the
+// full-text index. When clientRequestID is non-empty, a retry with the same key
+// returns the already-stored message rather than duplicating (idempotency,
+// comms.proto:470-474). The returned bool reports whether a row was genuinely
+// inserted: it is false on the idempotent-retry return, so the caller
+// suppresses a duplicate MessagePosted fan-out for a row that did not change. A
+// message with no blocks, a TopicRef that is neither exactly-id nor
+// exactly-name, or a TopicRef.ID naming a topic in another channel (or no
+// topic) is ErrInvalidArgument. The membership check, topic resolution, insert,
+// and last_seq denormalization all run in one transaction, so a membership
+// revoked between them cannot slip a message into a channel the author can no
+// longer read, and a get-or-created topic never outlives a rolled-back insert.
+func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, topic TopicRef, clientRequestID string) (Message, bool, error) {
+	if channelID == "" {
 		return Message{}, false, fmt.Errorf("%w: message channel is required", ErrInvalidArgument)
 	}
 	if len(m.Blocks) == 0 {
 		return Message{}, false, fmt.Errorf("%w: message has no blocks", ErrInvalidArgument)
+	}
+	// Exactly one of id / name identifies the target topic.
+	if (topic.ID == "") == (topic.Name == "") {
+		return Message{}, false, fmt.Errorf("%w: exactly one of topic id or name is required", ErrInvalidArgument)
 	}
 	mintAskIDs(m.Blocks)
 	blocksJSON, err := marshalBlocks(m.Blocks)
@@ -38,7 +46,7 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, clientRequestID st
 	if err != nil {
 		return Message{}, false, fmt.Errorf("store: begin append message: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
 	// D9 write-authz: the author must be a member of the target channel, so a
 	// non-member cannot persist (and fan out) into a private channel it can't
@@ -46,70 +54,126 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, clientRequestID st
 	// non-member gets ErrNotFound (the not-found/forbidden merge), never a hint
 	// that the channel exists. Checked in the same tx as the insert so a
 	// concurrent removal cannot race between the gate and the write.
-	if err := requireChannelMember(ctx, tx, m.AuthorAccountID, m.Container.ChannelID); err != nil {
+	if err := requireChannelMember(ctx, tx, m.AuthorAccountID, ChannelID(channelID)); err != nil {
 		return Message{}, false, err
 	}
 
-	// Same-channel threading: a reply's parent must live in the same channel as
-	// the reply (spec: a message threads under an existing message in the
-	// channel). Resolve the parent's channel in-tx and reject a cross-channel
-	// OR unknown parent with one indistinguishable ErrInvalidArgument — the
-	// author is already a verified member here, so a valid parent is necessarily
-	// one they can see, and collapsing the two cases closes both a dangling
-	// cross-channel thread reference and the existence oracle a bare FK check
-	// would leave (whether the id exists in some other channel never leaks).
-	if m.ParentMessageID != "" {
-		var parentChannelID string
-		switch err := tx.QueryRow(ctx,
-			`SELECT channel_id FROM messages WHERE id = $1`,
-			string(m.ParentMessageID),
-		).Scan(&parentChannelID); {
-		case noRows(err):
-			return Message{}, false, fmt.Errorf("%w: parent message %q is not in this channel", ErrInvalidArgument, m.ParentMessageID)
-		case err != nil:
-			return Message{}, false, fmt.Errorf("store: resolve parent message: %w", err)
-		}
-		if parentChannelID != string(m.Container.ChannelID) {
-			return Message{}, false, fmt.Errorf("%w: parent message %q is not in this channel", ErrInvalidArgument, m.ParentMessageID)
-		}
+	at := time.Now().UTC()
+	topicID, err := resolveTopicForAppend(ctx, tx, channelID, topic, m.AuthorAccountID, at.UnixMilli())
+	if err != nil {
+		return Message{}, false, err
 	}
 
 	id := newID()
-	at := time.Now().UTC()
 	const q = `
-		INSERT INTO messages (id, channel_id, author_account_id, at_unix_ms, blocks, text_content, client_request_id, parent_message_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''))
+		INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, text_content, client_request_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (author_account_id, client_request_id) WHERE client_request_id <> ''
 		DO NOTHING
-		RETURNING id, at_unix_ms`
+		RETURNING id, at_unix_ms, seq`
 	var (
 		storedID string
 		atMS     int64
+		seq      int64
 	)
 	err = tx.QueryRow(ctx, q,
-		id, string(m.Container.ChannelID), string(m.AuthorAccountID),
-		at.UnixMilli(), blocksJSON, textContent(m.Blocks), clientRequestID, string(m.ParentMessageID),
-	).Scan(&storedID, &atMS)
+		id, topicID, string(m.AuthorAccountID),
+		at.UnixMilli(), blocksJSON, textContent(m.Blocks), clientRequestID,
+	).Scan(&storedID, &atMS, &seq)
 	switch {
 	case noRows(err):
 		// ON CONFLICT DO NOTHING suppressed the insert: a message with this
 		// idempotency key already exists (a retry). Nothing was written, so the
-		// tx rolls back; return the already-committed row with inserted=false so
-		// the handler suppresses a duplicate MessagePosted.
+		// tx rolls back (unwinding the topic get-or-create too); return the
+		// already-committed row with inserted=false so the handler suppresses a
+		// duplicate MessagePosted.
 		stored, err := s.getMessageByRequestID(ctx, m.AuthorAccountID, clientRequestID)
 		return stored, false, err
 	case pgErrIs(err, pgForeignKeyViolation):
-		return Message{}, false, fmt.Errorf("%w: unknown channel %q or author %q", ErrInvalidArgument, m.Container.ChannelID, m.AuthorAccountID)
+		return Message{}, false, fmt.Errorf("%w: unknown author %q", ErrInvalidArgument, m.AuthorAccountID)
 	case err != nil:
 		return Message{}, false, fmt.Errorf("store: insert message: %w", err)
+	}
+
+	// Maintain the topic's denormalized activity marker in the same tx. GREATEST
+	// so two concurrent appends to one topic converge on the higher seq
+	// regardless of commit order (the row-lock serializes the two updates).
+	if _, err := tx.Exec(ctx,
+		`UPDATE topics SET last_seq = GREATEST(last_seq, $2) WHERE id = $1`,
+		topicID, seq,
+	); err != nil {
+		return Message{}, false, fmt.Errorf("store: update topic last_seq: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return Message{}, false, fmt.Errorf("store: commit append message: %w", err)
 	}
 	m.ID = MessageID(storedID)
+	m.TopicID = topicID
 	m.At = time.UnixMilli(atMS).UTC()
 	return m, true, nil
+}
+
+// resolveTopicForAppend resolves the target topic for an append inside the
+// insert tx, returning the resolved topics.id. An id-ref is validated to live
+// under channelID: a topic in another channel — or an unknown id — is one
+// indistinguishable ErrInvalidArgument, so the existence of a foreign topic
+// never leaks (the same oracle-closing collapse the old same-channel-parent
+// check applied). A name-ref is get-or-created on (channel_id, lower(name)) via
+// ON CONFLICT DO NOTHING + re-SELECT, so two racing posts converge on one topic
+// row with neither surfacing a unique-violation; resolving to an archived topic
+// clears its archived flag in the same tx (archive is a tidiness flag, not a
+// lock — a post at a tidied-away name revives the conversation).
+func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, topic TopicRef, author AccountID, atMS int64) (string, error) {
+	if topic.ID != "" {
+		var topicChannelID string
+		switch err := tx.QueryRow(ctx,
+			`SELECT channel_id FROM topics WHERE id = $1`, topic.ID,
+		).Scan(&topicChannelID); {
+		case noRows(err):
+			return "", fmt.Errorf("%w: topic %q is not in this channel", ErrInvalidArgument, topic.ID)
+		case err != nil:
+			return "", fmt.Errorf("store: resolve topic: %w", err)
+		}
+		if topicChannelID != channelID {
+			return "", fmt.Errorf("%w: topic %q is not in this channel", ErrInvalidArgument, topic.ID)
+		}
+		return topic.ID, nil
+	}
+
+	// Name get-or-create: settle a concurrent create by the unique index, never
+	// a naive SELECT-then-INSERT. A concurrent inserter's uncommitted row makes
+	// this INSERT block until it commits, after which DO NOTHING fires and the
+	// re-SELECT below reads the surviving row.
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO topics (id, channel_id, name, created_by_account_id, created_at_unix_ms)
+		 VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (channel_id, lower(name)) DO NOTHING`,
+		newID(), channelID, topic.Name, string(author), atMS,
+	); err != nil {
+		if pgErrIs(err, pgForeignKeyViolation) {
+			return "", fmt.Errorf("%w: unknown channel %q or author %q", ErrInvalidArgument, channelID, author)
+		}
+		return "", fmt.Errorf("store: get-or-create topic: %w", err)
+	}
+	var (
+		topicID  string
+		archived bool
+	)
+	if err := tx.QueryRow(ctx,
+		`SELECT id, archived FROM topics WHERE channel_id = $1 AND lower(name) = lower($2)`,
+		channelID, topic.Name,
+	).Scan(&topicID, &archived); err != nil {
+		return "", fmt.Errorf("store: resolve get-or-create topic: %w", err)
+	}
+	if archived {
+		if _, err := tx.Exec(ctx,
+			`UPDATE topics SET archived = FALSE WHERE id = $1`, topicID,
+		); err != nil {
+			return "", fmt.Errorf("store: revive archived topic: %w", err)
+		}
+	}
+	return topicID, nil
 }
 
 // MessagesHeadSeq returns the current head of the message sequence — the
@@ -244,13 +308,15 @@ func (s *Store) UpdateMessageBlocksAsAuthor(ctx context.Context, actor AccountID
 	const q = `
 		UPDATE messages m
 		SET blocks = $1, text_content = $2
+		FROM topics t
 		WHERE m.id = $3
+		  AND t.id = m.topic_id
 		  AND m.author_account_id = $4
 		  AND EXISTS (
 		    SELECT 1 FROM channel_members cm
-		    WHERE cm.channel_id = m.channel_id AND cm.account_id = $4
+		    WHERE cm.channel_id = t.channel_id AND cm.account_id = $4
 		  )
-		RETURNING m.id, m.channel_id, m.author_account_id, m.at_unix_ms, m.blocks, COALESCE(m.parent_message_id, '')`
+		RETURNING m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks`
 	rows, err := s.pool.Query(ctx, q, blocksJSON, textContent(blocks), string(id), string(actor))
 	if err != nil {
 		return Message{}, fmt.Errorf("store: update message blocks as author: %w", err)
@@ -310,37 +376,43 @@ func (s *Store) MessageAskIDs(ctx context.Context, id MessageID) ([]string, erro
 
 // ListMessages pages a channel's messages newest-first, clamped to the store's
 // page bounds (comms.proto:446-461). Ordering keys on the monotonic seq (a
-// stable total order even under equal timestamps); BeforeMessageID pages
+// stable total order even under equal timestamps); Page.BeforeMessageID pages
 // strictly before a given message. An unknown BeforeMessageID is
-// ErrInvalidArgument (a cursor that isn't a real message).
+// ErrInvalidArgument (a cursor that isn't a real message). An optional
+// q.TopicID narrows the read to one topic; empty reads the whole channel across
+// every topic.
 //
-// Visibility is enforced in SQL: the channel must be one the actor is a member
-// of (JOIN channel_members), so a non-member — or a caller naming a channel it
-// cannot see — reads nothing rather than leaking a private channel's history by
-// id (the D9 not-found/forbidden merge, matching SearchMessages). The visibility
-// gate is the store's, not the RPC edge's.
-func (s *Store) ListMessages(ctx context.Context, actor AccountID, container ContainerRef, page Page) ([]Message, error) {
-	if container.ChannelID == "" {
-		return nil, fmt.Errorf("%w: list container channel is required", ErrInvalidArgument)
+// The channel is resolved THROUGH the topic join now that a message carries no
+// channel_id: messages JOIN topics ON topic_id, filtered by topics.channel_id.
+// Visibility is enforced in SQL — the channel must be one the actor is a member
+// of (JOIN channel_members on the topic's channel), so a non-member — or a
+// caller naming a channel it cannot see — reads nothing rather than leaking a
+// private channel's history by id (the D9 not-found/forbidden merge, matching
+// SearchMessages). The visibility gate is the store's, not the RPC edge's.
+func (s *Store) ListMessages(ctx context.Context, q ListMessagesQuery) ([]Message, error) {
+	if q.ChannelID == "" {
+		return nil, fmt.Errorf("%w: list channel is required", ErrInvalidArgument)
 	}
-	limit := clampLimit(page.Limit)
+	limit := clampLimit(q.Page.Limit)
 
 	var beforeSeq int64
-	if page.BeforeMessageID != "" {
+	if q.Page.BeforeMessageID != "" {
 		// Scope the cursor probe to the actor's membership too, so a non-member
 		// naming a real message in a channel it cannot see gets the same
 		// "not in channel" result as a fake id — no existence oracle across the
 		// visibility boundary (the D9 not-found/forbidden merge the main query and
-		// AnswerAsk also apply).
+		// AnswerAsk also apply). The channel is the cursor message's topic's
+		// channel.
 		err := s.pool.QueryRow(ctx,
 			`SELECT m.seq FROM messages m
-			 JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.account_id = $1
-			 WHERE m.id = $2 AND m.channel_id = $3`,
-			string(actor), string(page.BeforeMessageID), string(container.ChannelID),
+			 JOIN topics t ON t.id = m.topic_id
+			 JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
+			 WHERE m.id = $2 AND t.channel_id = $3`,
+			string(q.Actor), string(q.Page.BeforeMessageID), string(q.ChannelID),
 		).Scan(&beforeSeq)
 		if err != nil {
 			if noRows(err) {
-				return nil, fmt.Errorf("%w: before-cursor %q not in channel", ErrInvalidArgument, page.BeforeMessageID)
+				return nil, fmt.Errorf("%w: before-cursor %q not in channel", ErrInvalidArgument, q.Page.BeforeMessageID)
 			}
 			return nil, fmt.Errorf("store: resolve page cursor: %w", err)
 		}
@@ -348,9 +420,11 @@ func (s *Store) ListMessages(ctx context.Context, actor AccountID, container Con
 
 	// A zero beforeSeq (no cursor) reads the newest page; a positive one pages
 	// strictly older. seq is BIGSERIAL starting at 1, so 0 is below every row.
-	// The membership JOIN scopes the read to the actor's visible set. A non-zero
-	// page.SnapshotSeq bounds the read to the point-in-time snapshot the client
-	// captured on subscribe (seq <= SnapshotSeq, comms.proto:353-368,
+	// The topic join resolves each message's channel, and the membership JOIN on
+	// that channel scopes the read to the actor's visible set. An empty $6
+	// TopicID reads the whole channel; a non-empty one narrows to that topic. A
+	// non-zero SnapshotSeq bounds the read to the point-in-time snapshot the
+	// client captured on subscribe (seq <= SnapshotSeq, comms.proto:353-368,
 	// design.md:807-817); zero reads the latest, no boundary.
 	// The boundary is point-in-time on set membership (which messages the page
 	// returns, by insert seq), not on content: a blocks update mutates m.blocks in
@@ -360,19 +434,21 @@ func (s *Store) ListMessages(ctx context.Context, actor AccountID, container Con
 	// id-deduping client converges to current content (last-write-wins).
 	// Freezing content too would need an update/change-seq and a larger schema
 	// change; membership-only is the ratified scope (SEA-1333 OQ5).
-	const q = `
-		SELECT m.id, m.channel_id, m.author_account_id, m.at_unix_ms, m.blocks, COALESCE(m.parent_message_id, '')
+	const query = `
+		SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
 		FROM messages m
-		JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.account_id = $1
-		WHERE m.channel_id = $2 AND ($3 = 0 OR m.seq < $3) AND ($5 = 0 OR m.seq <= $5)
+		JOIN topics t ON t.id = m.topic_id
+		JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
+		WHERE t.channel_id = $2 AND ($3 = 0 OR m.seq < $3) AND ($5 = 0 OR m.seq <= $5)
+		  AND ($6 = '' OR m.topic_id = $6)
 		ORDER BY m.seq DESC
 		LIMIT $4`
 	// seq is BIGSERIAL (the int64 domain) and SnapshotSeq is a server-issued
 	// boundary the client echoes back, so the value is in range by construction;
 	// an out-of-range client value degrades to an empty page (m.seq <= a negative
 	// bound matches nothing), never a fault.
-	snap := int64(page.SnapshotSeq) //nolint:gosec // G115: see the note above — server-issued seq, int64 domain
-	rows, err := s.pool.Query(ctx, q, string(actor), string(container.ChannelID), beforeSeq, int64(limit), snap)
+	snap := int64(q.Page.SnapshotSeq) //nolint:gosec // G115: see the note above — server-issued seq, int64 domain
+	rows, err := s.pool.Query(ctx, query, string(q.Actor), string(q.ChannelID), beforeSeq, int64(limit), snap, q.TopicID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list messages: %w", err)
 	}
@@ -395,14 +471,16 @@ func (s *Store) SearchMessages(ctx context.Context, actor AccountID, scope Searc
 
 	// websearch_to_tsquery parses a human query string (quoted phrases, OR, -)
 	// safely — no query-syntax injection, and an all-stopword query yields no
-	// rows rather than erroring. Visibility: the message's channel must be one
-	// the actor is a member of; the optional scope narrows within that set.
+	// rows rather than erroring. Visibility: the message's channel (resolved
+	// through the topic join) must be one the actor is a member of; the optional
+	// scope narrows within that set.
 	const q = `
-		SELECT m.id, m.channel_id, m.author_account_id, m.at_unix_ms, m.blocks, COALESCE(m.parent_message_id, '')
+		SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
 		FROM messages m
-		JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.account_id = $1
+		JOIN topics t ON t.id = m.topic_id
+		JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 		WHERE m.search_tsv @@ websearch_to_tsquery('english', $2)
-		  AND ($3 = '' OR m.channel_id = $3)
+		  AND ($3 = '' OR t.channel_id = $3)
 		  AND ($5 = 0 OR m.seq <= $5)
 		ORDER BY ts_rank(m.search_tsv, websearch_to_tsquery('english', $2)) DESC, m.seq DESC
 		LIMIT $4`
@@ -462,9 +540,10 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 	// existence cannot leak across a membership boundary. FOR UPDATE OF m locks
 	// the message row (not the membership row) for the transaction's duration.
 	const q = `
-		SELECT m.id, m.channel_id, m.author_account_id, m.at_unix_ms, m.blocks, COALESCE(m.parent_message_id, '')
+		SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks
 		FROM messages m
-		JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.account_id = $1
+		JOIN topics t ON t.id = m.topic_id
+		JOIN channel_members cm ON cm.channel_id = t.channel_id AND cm.account_id = $1
 		WHERE m.blocks @> $2::jsonb
 		FOR UPDATE OF m`
 	filter, err := askIDContainmentFilter(askID)
@@ -604,7 +683,7 @@ func validateQuestionAnswer(q *AskQuestion, a AskAnswer, askID string) error {
 // key — the dedup path for a retried AppendMessage.
 func (s *Store) getMessageByRequestID(ctx context.Context, author AccountID, clientRequestID string) (Message, error) {
 	const q = `
-		SELECT id, channel_id, author_account_id, at_unix_ms, blocks, COALESCE(parent_message_id, '')
+		SELECT id, topic_id, author_account_id, at_unix_ms, blocks
 		FROM messages
 		WHERE author_account_id = $1 AND client_request_id = $2`
 	rows, err := s.pool.Query(ctx, q, string(author), clientRequestID)
@@ -628,12 +707,11 @@ func scanMessages(rows pgx.Rows) ([]Message, error) {
 	var msgs []Message
 	for rows.Next() {
 		var (
-			id, channelID, author string
-			atMS                  int64
-			blocksJSON            []byte
-			parentID              string
+			id, topicID, author string
+			atMS                int64
+			blocksJSON          []byte
 		)
-		if err := rows.Scan(&id, &channelID, &author, &atMS, &blocksJSON, &parentID); err != nil {
+		if err := rows.Scan(&id, &topicID, &author, &atMS, &blocksJSON); err != nil {
 			return nil, fmt.Errorf("store: scan message: %w", err)
 		}
 		blocks, err := unmarshalBlocks(blocksJSON)
@@ -642,11 +720,10 @@ func scanMessages(rows pgx.Rows) ([]Message, error) {
 		}
 		msgs = append(msgs, Message{
 			ID:              MessageID(id),
-			Container:       ContainerRef{ChannelID: ChannelID(channelID)},
+			TopicID:         topicID,
 			AuthorAccountID: AccountID(author),
 			At:              time.UnixMilli(atMS).UTC(),
 			Blocks:          blocks,
-			ParentMessageID: MessageID(parentID),
 		})
 	}
 	if err := rows.Err(); err != nil {

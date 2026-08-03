@@ -32,13 +32,11 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 	if msg == nil {
 		return
 	}
-	channel := store.ChannelID(msg.GetChannelId())
 	author := store.AccountID(msg.GetAuthorAccountId())
 	messageID := msg.GetId()
-	if channel == "" || messageID == "" {
+	if msg.GetTopicId() == "" || messageID == "" {
 		return
 	}
-
 	authorIsAgent, err := c.st.IsAgentAccount(ctx, author)
 	if err != nil {
 		c.log.ErrorContext(ctx, "delivery: resolve author kind", "error", err, "message_id", messageID)
@@ -47,6 +45,13 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 
 	if !authorIsAgent {
 		// Human-authored: settled at post, deliver immediately from posted blocks.
+		// A wire message carries only its topic; resolve the channel it lives in
+		// through topics.channel_id (the frozen record's topic->channel resolution).
+		channel, err := c.st.MessageChannel(ctx, messageID)
+		if err != nil {
+			c.log.ErrorContext(ctx, "delivery: resolve message channel", "error", err, "message_id", messageID)
+			return
+		}
 		c.fanOut(ctx, channel, author, msg)
 		return
 	}
@@ -57,14 +62,14 @@ func (c *Consumer) onMessagePosted(ctx context.Context, msg *compassv1.Message) 
 	// partial) wire message (design.md:177-178, :306).
 	authorSession, live := c.resolver.SessionForAccount(author)
 	if !live {
-		wire, m, err := c.storeMessageToWire(ctx, messageID)
+		wire, channel, author, err := c.storeMessageToWire(ctx, messageID)
 		if err != nil {
 			// The message vanished between post and deliver (unexpected): skip it;
 			// the cursor never advanced, so the sweep still redelivers.
 			c.log.ErrorContext(ctx, "delivery: re-read message for dead-author deliver", "error", err, "message_id", messageID)
 			return
 		}
-		c.fanOut(ctx, m.Container.ChannelID, m.AuthorAccountID, wire)
+		c.fanOut(ctx, channel, author, wire)
 		return
 	}
 	c.hold(authorSession, messageID)

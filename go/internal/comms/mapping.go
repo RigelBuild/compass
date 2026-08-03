@@ -97,11 +97,10 @@ func workspaceToWire(w store.AgentWorkspace) *compassv1.AgentWorkspace {
 func MessageToWire(m store.Message) *compassv1.Message {
 	out := &compassv1.Message{
 		Id:              string(m.ID),
-		Container:       &compassv1.Message_ChannelId{ChannelId: string(m.Container.ChannelID)},
+		TopicId:         m.TopicID,
 		AuthorAccountId: string(m.AuthorAccountID),
 		AtUnixMs:        m.At.UnixMilli(),
 		Blocks:          blocksToWire(m.Blocks),
-		ParentMessageId: string(m.ParentMessageID),
 	}
 	return out
 }
@@ -110,6 +109,28 @@ func messagesToWire(ms []store.Message) []*compassv1.Message {
 	out := make([]*compassv1.Message, len(ms))
 	for i, m := range ms {
 		out[i] = MessageToWire(m)
+	}
+	return out
+}
+
+// topicToWire maps a store.Topic onto the compass.v1 wire Topic — the ONE
+// store->wire topic mapper, shared by the ListTopics/UpdateTopic responses and
+// the TopicUpserted fan-out (design.md's live topic index).
+func topicToWire(t store.Topic) *compassv1.Topic {
+	return &compassv1.Topic{
+		Id:                 t.ID,
+		ChannelId:          t.ChannelID,
+		Name:               t.Name,
+		CreatedAtUnixMs:    t.CreatedAtUnixMS,
+		CreatedByAccountId: t.CreatedByAccountID,
+		Archived:           t.Archived,
+	}
+}
+
+func topicsToWire(ts []store.Topic) []*compassv1.Topic {
+	out := make([]*compassv1.Topic, len(ts))
+	for i, t := range ts {
+		out[i] = topicToWire(t)
 	}
 	return out
 }
@@ -381,6 +402,18 @@ func (c *Comms) publishMessageUpdated(m store.Message) {
 	c.bus.Publish(&compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_MessageUpdated{
 			MessageUpdated: &compassv1.MessageUpdated{Message: MessageToWire(m)},
+		},
+	})
+}
+
+// publishTopicUpserted emits a TopicUpserted carrying the topic's current state
+// after a topic create/rename/merge/archive commit (write-through fan-out), so
+// a live topic index stays current without re-reading (design.md: the new event
+// covers the topic namespace the way MessagePosted covers messages).
+func (c *Comms) publishTopicUpserted(t store.Topic) {
+	c.bus.Publish(&compassv1.SubscribeCommsResponse{
+		Payload: &compassv1.SubscribeCommsResponse_TopicUpserted{
+			TopicUpserted: &compassv1.TopicUpserted{Topic: topicToWire(t)},
 		},
 	})
 }

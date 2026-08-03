@@ -54,10 +54,7 @@ func TestAppendMessageAssignsIDAndTimestamp(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	msg, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("hello")},
-	}, "")
+	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("hello")}}, string(ch.ID), TopicRef{Name: "general"}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -74,9 +71,7 @@ func TestAppendMessageNoBlocksInvalid(t *testing.T) {
 	s := newTestStore(t)
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
-	_, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-	}, "")
+	_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID}, string(ch.ID), TopicRef{Name: "general"}, "")
 	sentinelIs(t, err, ErrInvalidArgument, "message with no blocks")
 }
 
@@ -90,10 +85,7 @@ func TestAppendMessageUnknownChannelNotFound(t *testing.T) {
 	// collapse to ErrNotFound (the not-found/forbidden merge), never a hint the
 	// channel exists. Pre-gate this reached the insert and the FK surfaced
 	// ErrInvalidArgument.
-	_, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: "ghost"}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("hi")},
-	}, "")
+	_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("hi")}}, string("ghost"), TopicRef{Name: "general"}, "")
 	sentinelIs(t, err, ErrNotFound, "unknown channel")
 }
 
@@ -104,17 +96,11 @@ func TestAppendMessageIdempotency(t *testing.T) {
 	ch := mustChannel(t, s, author.ID)
 
 	// Same non-empty request id + author → the same stored message, no duplicate.
-	first, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("only once")},
-	}, "req-idem")
+	first, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("only once")}}, string(ch.ID), TopicRef{Name: "general"}, "req-idem")
 	if err != nil {
 		t.Fatalf("AppendMessage(first): %v", err)
 	}
-	second, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("different body, same key")},
-	}, "req-idem")
+	second, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("different body, same key")}}, string(ch.ID), TopicRef{Name: "general"}, "req-idem")
 	if err != nil {
 		t.Fatalf("AppendMessage(retry): %v", err)
 	}
@@ -130,16 +116,10 @@ func TestAppendMessageIdempotency(t *testing.T) {
 	}
 
 	// An empty request id never dedups: two empty-key appends are two messages.
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("a")},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("a")}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage(empty key a): %v", err)
 	}
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("b")},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("b")}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage(empty key b): %v", err)
 	}
 	if got := messageCount(t, ctx, s, ch.ID); got != 3 {
@@ -158,10 +138,7 @@ func TestAppendMessageInsertedFlag(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	_, inserted, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("first")},
-	}, "req-inserted")
+	_, inserted, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("first")}}, string(ch.ID), TopicRef{Name: "general"}, "req-inserted")
 	if err != nil {
 		t.Fatalf("AppendMessage(first): %v", err)
 	}
@@ -171,10 +148,7 @@ func TestAppendMessageInsertedFlag(t *testing.T) {
 
 	// A retry with the SAME key writes no row: inserted=false, so the handler
 	// suppresses a duplicate MessagePosted.
-	_, inserted, err = s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("retry, same key")},
-	}, "req-inserted")
+	_, inserted, err = s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("retry, same key")}}, string(ch.ID), TopicRef{Name: "general"}, "req-inserted")
 	if err != nil {
 		t.Fatalf("AppendMessage(retry): %v", err)
 	}
@@ -183,10 +157,7 @@ func TestAppendMessageInsertedFlag(t *testing.T) {
 	}
 
 	// An empty key never dedups: it is always a genuine insert.
-	_, inserted, err = s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("empty key")},
-	}, "")
+	_, inserted, err = s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("empty key")}}, string(ch.ID), TopicRef{Name: "general"}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(empty key): %v", err)
 	}
@@ -195,102 +166,84 @@ func TestAppendMessageInsertedFlag(t *testing.T) {
 	}
 }
 
-// TestAppendMessageParentThreading pins the L2 threading contract: a message
-// posted with ParentMessageID naming an existing message in the SAME channel
-// persists it and round-trips through ListMessages; a root message (empty
-// ParentMessageID) round-trips as ""; a ParentMessageID naming no message is
-// ErrInvalidArgument; and a ParentMessageID naming a real message in a
-// DIFFERENT channel (even one the author can see) is the SAME indistinguishable
-// ErrInvalidArgument — the parent must be same-channel and the existence oracle
-// stays closed (a caller cannot tell "in another channel" from "does not
-// exist").
-func TestAppendMessageParentThreading(t *testing.T) {
+// TestAppendMessageTopicRouting pins the T2 topic-routing contract: a message
+// posted naming a topic by name is get-or-created under the post's channel and
+// round-trips its resolved TopicID through ListMessages; a second post naming
+// the same name lands in the same topic (get-or-create, not a new row); a post
+// naming a topic by ID that lives in ANOTHER channel is ErrInvalidArgument —
+// the topic-under-channel validation, with the existence oracle held shut (the
+// error names only the topic id, never the other channel); and a TopicRef that
+// is neither exactly-id nor exactly-name is ErrInvalidArgument.
+func TestAppendMessageTopicRouting(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	// A root message threads under nothing and reads back with ParentMessageID "".
-	root, inserted, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("root")},
-	}, "")
+	// A post naming a topic by name creates it and records the resolved topic id.
+	first, inserted, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("root")}}, string(ch.ID), TopicRef{Name: "retry policy"}, "")
 	if err != nil {
-		t.Fatalf("AppendMessage(root): %v", err)
+		t.Fatalf("AppendMessage(first): %v", err)
 	}
 	if !inserted {
-		t.Fatal("root insert returned inserted=false, want true")
+		t.Fatal("first insert returned inserted=false, want true")
 	}
-	if root.ParentMessageID != "" {
-		t.Fatalf("root ParentMessageID = %q, want \"\"", root.ParentMessageID)
+	if first.TopicID == "" {
+		t.Fatal("AppendMessage did not resolve a topic id")
 	}
 
-	// A reply threads under the root, persisting the parent id.
-	reply, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("reply")}, ParentMessageID: root.ID,
-	}, "")
+	// A second post naming the SAME topic name lands in the same topic — the
+	// get-or-create resolves the existing row, never a duplicate.
+	second, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("follow-up")}}, string(ch.ID), TopicRef{Name: "retry policy"}, "")
 	if err != nil {
-		t.Fatalf("AppendMessage(reply): %v", err)
+		t.Fatalf("AppendMessage(second): %v", err)
 	}
-	if reply.ParentMessageID != root.ID {
-		t.Fatalf("reply ParentMessageID = %q, want the root %q", reply.ParentMessageID, root.ID)
+	if second.TopicID != first.TopicID {
+		t.Fatalf("second post topic = %q, want the same topic %q (get-or-create)", second.TopicID, first.TopicID)
+	}
+	topics, err := s.ListTopics(ctx, string(author.ID), string(ch.ID), false)
+	if err != nil {
+		t.Fatalf("ListTopics: %v", err)
+	}
+	if len(topics) != 1 {
+		t.Fatalf("channel holds %d topics after two posts to one name, want 1", len(topics))
 	}
 
-	// It round-trips through the read path: ListMessages returns the reply with
-	// its parent id and the root with an empty one.
-	msgs, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	// It round-trips through the read path: every listed message carries the
+	// resolved topic id.
+	msgs, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
-	parents := map[MessageID]MessageID{}
 	for _, m := range msgs {
-		parents[m.ID] = m.ParentMessageID
-	}
-	if got := parents[reply.ID]; got != root.ID {
-		t.Fatalf("listed reply ParentMessageID = %q, want the root %q", got, root.ID)
-	}
-	if got := parents[root.ID]; got != "" {
-		t.Fatalf("listed root ParentMessageID = %q, want \"\"", got)
+		if m.TopicID != first.TopicID {
+			t.Fatalf("listed message topic = %q, want %q", m.TopicID, first.TopicID)
+		}
 	}
 
-	// A ParentMessageID naming no message is rejected with ErrInvalidArgument.
-	_, _, nonexistentErr := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("orphan reply")}, ParentMessageID: MessageID("no-such-message"),
-	}, "")
-	sentinelIs(t, nonexistentErr, ErrInvalidArgument, "reply under a nonexistent parent")
-
-	// Cross-channel parent: the author is a member of a second channel and posts
-	// a root there, then tries to reply in this channel naming that other
-	// channel's root as the parent. Same-channel is required, so this is
-	// rejected even though the FK would pass (the parent row exists).
+	// Cross-channel topic: the author posts in a second channel (minting a topic
+	// there), then tries to post in THIS channel naming that other channel's
+	// topic by id. Topic-under-channel validation rejects it even though the FK
+	// would pass (the topic row exists).
 	other := mustNamedChannel(t, s, author.ID, "other-room")
-	otherRoot, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: other.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("root in the other channel")},
-	}, "")
+	otherPost, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("root in the other channel")}}, string(other.ID), TopicRef{Name: "deploy friday"}, "")
 	if err != nil {
-		t.Fatalf("AppendMessage(other-channel root): %v", err)
+		t.Fatalf("AppendMessage(other-channel): %v", err)
 	}
-	_, _, crossChannelErr := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("cross-channel reply")}, ParentMessageID: otherRoot.ID,
-	}, "")
-	sentinelIs(t, crossChannelErr, ErrInvalidArgument, "reply under a cross-channel parent")
+	_, _, crossChannelErr := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("cross-channel post")}}, string(ch.ID), TopicRef{ID: otherPost.TopicID}, "")
+	sentinelIs(t, crossChannelErr, ErrInvalidArgument, "post naming a topic in another channel")
 
-	// Existence oracle closed: the cross-channel rejection and the
-	// nonexistent-parent rejection are the SAME sentinel, so a caller cannot
-	// distinguish "the parent lives in another channel" from "the parent does
-	// not exist at all".
-	if !errors.Is(crossChannelErr, ErrInvalidArgument) || !errors.Is(nonexistentErr, ErrInvalidArgument) {
-		t.Fatalf("cross-channel err %v and nonexistent err %v must both be ErrInvalidArgument", crossChannelErr, nonexistentErr)
-	}
-	// Neither message may disclose the other channel's id — both name only the
-	// parent message id, keeping the oracle shut.
+	// The existence oracle stays shut: the error names only the topic id, never
+	// the other channel's id.
 	if strings.Contains(crossChannelErr.Error(), string(other.ID)) {
 		t.Fatalf("cross-channel error %q leaks the other channel id %q", crossChannelErr, other.ID)
 	}
+
+	// A TopicRef that sets neither — or both — id and name is ErrInvalidArgument.
+	_, _, noneErr := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("no topic")}}, string(ch.ID), TopicRef{}, "")
+	sentinelIs(t, noneErr, ErrInvalidArgument, "post with neither topic id nor name")
+	_, _, bothErr := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("two topics")}}, string(ch.ID), TopicRef{ID: first.TopicID, Name: "retry policy"}, "")
+	sentinelIs(t, bothErr, ErrInvalidArgument, "post with both topic id and name")
 }
 
 func TestAppendMessageMintsAskID(t *testing.T) {
@@ -303,10 +256,7 @@ func TestAppendMessageMintsAskID(t *testing.T) {
 	// owns the ask_id (comms.proto:278-280); a caller-supplied empty id must be
 	// filled so the ask is addressable by RespondToAsk.
 	empty := askBlockID("")
-	appended, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("choose one"), empty},
-	}, "req-mint")
+	appended, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("choose one"), empty}}, string(ch.ID), TopicRef{Name: "general"}, "req-mint")
 	if err != nil {
 		t.Fatalf("AppendMessage(empty ask id): %v", err)
 	}
@@ -336,10 +286,7 @@ func TestAppendMessageMintsAskID(t *testing.T) {
 	}
 
 	// Case 3: a caller-supplied ask_id is preserved verbatim, never overwritten.
-	supplied, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{askBlockID("ask-fixed-123")},
-	}, "req-fixed")
+	supplied, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{askBlockID("ask-fixed-123")}}, string(ch.ID), TopicRef{Name: "general"}, "req-fixed")
 	if err != nil {
 		t.Fatalf("AppendMessage(fixed ask id): %v", err)
 	}
@@ -365,10 +312,7 @@ func TestListMessagesNewestFirstAndPaging(t *testing.T) {
 	bodies := []string{"m0", "m1", "m2", "m3"}
 	ids := make([]MessageID, 0, len(bodies))
 	for _, body := range bodies {
-		m, _, err := s.AppendMessage(ctx, Message{
-			Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-			Blocks: []MessageBlock{textBlock(body)},
-		}, "")
+		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general"}, "")
 		if err != nil {
 			t.Fatalf("AppendMessage(%s): %v", body, err)
 		}
@@ -376,7 +320,7 @@ func TestListMessagesNewestFirstAndPaging(t *testing.T) {
 	}
 	newest, oldest := ids[3], ids[0]
 
-	page, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{Limit: 2})
+	page, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{Limit: 2}})
 	if err != nil {
 		t.Fatalf("ListMessages(first page): %v", err)
 	}
@@ -391,7 +335,7 @@ func TestListMessagesNewestFirstAndPaging(t *testing.T) {
 	}
 
 	// Page strictly before the last item of page one — returns the older half.
-	next, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{Limit: 2, BeforeMessageID: page[1].ID})
+	next, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{Limit: 2, BeforeMessageID: page[1].ID}})
 	if err != nil {
 		t.Fatalf("ListMessages(next page): %v", err)
 	}
@@ -403,7 +347,7 @@ func TestListMessagesNewestFirstAndPaging(t *testing.T) {
 	}
 
 	// A zero limit falls back to the default page size (not zero results).
-	all, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{Limit: 0})
+	all, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{Limit: 0}})
 	if err != nil {
 		t.Fatalf("ListMessages(default limit): %v", err)
 	}
@@ -417,14 +361,69 @@ func TestListMessagesUnknownCursorInvalid(t *testing.T) {
 	s := newTestStore(t)
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("m")},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("m")}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
-	_, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{BeforeMessageID: "not-a-real-id"})
+	_, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{BeforeMessageID: "not-a-real-id"}})
 	sentinelIs(t, err, ErrInvalidArgument, "unknown before-cursor")
+}
+
+// TestListMessagesChannelLevelSpansTopics pins §Red-first (f): channel-level
+// ListMessages (no topic filter) pages newest-first ACROSS every topic in the
+// channel via the topic join — the table-monotonic seq stays the total order,
+// one join wider. It also pins the topic filter: a query narrowed to one topic
+// returns only that topic's messages, still newest-first.
+func TestListMessagesChannelLevelSpansTopics(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	author := mustUser(t, s, "author")
+	ch := mustChannel(t, s, author.ID)
+
+	// Interleave posts across two topics in a known order; seq orders them
+	// globally regardless of topic.
+	post := func(topic, body string) MessageID {
+		t.Helper()
+		m, _, err := s.AppendMessage(ctx, Message{
+			AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)},
+		}, string(ch.ID), TopicRef{Name: topic}, "")
+		if err != nil {
+			t.Fatalf("AppendMessage(%s/%s): %v", topic, body, err)
+		}
+		return m.ID
+	}
+	aOld := post("alpha", "a-old")
+	bMid := post("beta", "b-mid")
+	aNew := post("alpha", "a-new")
+	bNew := post("beta", "b-new")
+
+	// Channel-level read: all four, newest-first across BOTH topics.
+	all, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
+	if err != nil {
+		t.Fatalf("ListMessages(channel): %v", err)
+	}
+	gotOrder := make([]MessageID, len(all))
+	for i, m := range all {
+		gotOrder[i] = m.ID
+	}
+	wantOrder := []MessageID{bNew, aNew, bMid, aOld}
+	if len(gotOrder) != 4 {
+		t.Fatalf("channel read len = %d, want 4", len(gotOrder))
+	}
+	for i := range wantOrder {
+		if gotOrder[i] != wantOrder[i] {
+			t.Fatalf("channel read order = %v, want newest-first across topics %v", gotOrder, wantOrder)
+		}
+	}
+
+	// Topic-filtered read: only the alpha topic's messages, newest-first.
+	alphaTopic := all[1].TopicID // aNew's topic
+	alpha, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, TopicID: alphaTopic, Page: Page{}})
+	if err != nil {
+		t.Fatalf("ListMessages(alpha topic): %v", err)
+	}
+	if len(alpha) != 2 || alpha[0].ID != aNew || alpha[1].ID != aOld {
+		t.Fatalf("alpha-topic read = %v, want [%q %q] newest-first", topicIDsOf(alpha), aNew, aOld)
+	}
 }
 
 func TestClampLimitBounds(t *testing.T) {
@@ -457,10 +456,7 @@ func TestUpdateMessageBlocksReplaces(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	msg, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("original")},
-	}, "")
+	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("original")}}, string(ch.ID), TopicRef{Name: "general"}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -469,7 +465,7 @@ func TestUpdateMessageBlocksReplaces(t *testing.T) {
 	if err := updateMessageBlocksExec(ctx, s.pool, msg.ID, replacement); err != nil {
 		t.Fatalf("updateMessageBlocksExec: %v", err)
 	}
-	got, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	got, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -485,10 +481,7 @@ func TestUpdateMessageBlocksRejectsEmptyAskID(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	msg, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("original")},
-	}, "")
+	msg, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("original")}}, string(ch.ID), TopicRef{Name: "general"}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -501,7 +494,7 @@ func TestUpdateMessageBlocksRejectsEmptyAskID(t *testing.T) {
 
 	// The rejected update must not have persisted: the message still reads back
 	// its original single text block, unchanged.
-	got, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	got, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -514,7 +507,7 @@ func TestUpdateMessageBlocksRejectsEmptyAskID(t *testing.T) {
 	if err := updateMessageBlocksExec(ctx, s.pool, msg.ID, replacement); err != nil {
 		t.Fatalf("updateMessageBlocksExec(non-empty ask id): %v", err)
 	}
-	after, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	after, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages(after update): %v", err)
 	}
@@ -537,12 +530,10 @@ func TestMessageBlocksRoundTrip(t *testing.T) {
 	ch := mustChannel(t, s, author.ID)
 
 	want := sampleBlocks()
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID, Blocks: want,
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: want}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
-	got, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	got, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -565,24 +556,15 @@ func TestSearchMessages(t *testing.T) {
 	chB := mustNamedChannel(t, s, bob.ID, "room-b")
 
 	// alice posts a matching and a non-matching message in chA.
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: chA.ID}, AuthorAccountID: alice.ID,
-		Blocks: []MessageBlock{textBlock("the peregrine falcon dives fast")},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: alice.ID, Blocks: []MessageBlock{textBlock("the peregrine falcon dives fast")}}, string(chA.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("append match: %v", err)
 	}
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: chA.ID}, AuthorAccountID: alice.ID,
-		Blocks: []MessageBlock{textBlock("an unrelated grocery list")},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: alice.ID, Blocks: []MessageBlock{textBlock("an unrelated grocery list")}}, string(chA.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("append nonmatch: %v", err)
 	}
 	// bob posts a message that also contains "falcon" but in chB, which alice
 	// is not a member of.
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: chB.ID}, AuthorAccountID: bob.ID,
-		Blocks: []MessageBlock{textBlock("falcon heavy launch scheduled")},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: bob.ID, Blocks: []MessageBlock{textBlock("falcon heavy launch scheduled")}}, string(chB.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("append bob: %v", err)
 	}
 
@@ -594,8 +576,8 @@ func TestSearchMessages(t *testing.T) {
 	if len(hits) != 1 {
 		t.Fatalf("alice found %d messages for 'falcon', want 1 (her own; bob's is not visible)", len(hits))
 	}
-	if hits[0].Container.ChannelID != chA.ID {
-		t.Fatalf("alice's hit is in %q, want her channel %q", hits[0].Container.ChannelID, chA.ID)
+	if got := messageChannel(t, ctx, s, hits[0].ID); got != chA.ID {
+		t.Fatalf("alice's hit is in %q, want her channel %q", got, chA.ID)
 	}
 
 	// A word present in no visible message returns nothing.
@@ -613,8 +595,8 @@ func TestSearchMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchMessages(bob, falcon): %v", err)
 	}
-	if len(bobHits) != 1 || bobHits[0].Container.ChannelID != chB.ID {
-		t.Fatalf("bob found %d hits (%v), want exactly his chB message", len(bobHits), channelIDsOf(bobHits))
+	if len(bobHits) != 1 || messageChannel(t, ctx, s, bobHits[0].ID) != chB.ID {
+		t.Fatalf("bob found %d hits (%v), want exactly his chB message", len(bobHits), topicIDsOf(bobHits))
 	}
 
 	// Scope narrows to one channel: alice scoping to chB (which she cannot see)
@@ -689,7 +671,7 @@ func pendingMultiQ(id string) MessageBlock {
 // asserts what was durably persisted per-question, not just the return value.
 func askByID(t *testing.T, ctx context.Context, s *Store, actor AccountID, ch ChannelID, askID string) *Ask {
 	t.Helper()
-	msgs, err := s.ListMessages(ctx, actor, ContainerRef{ChannelID: ch}, Page{})
+	msgs, err := s.ListMessages(ctx, ListMessagesQuery{Actor: actor, ChannelID: ch, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -722,10 +704,7 @@ func TestAnswerAskHappyPath(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-1", false)},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("choose one"), pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -751,10 +730,7 @@ func TestAnswerAskVisibilityCollapse(t *testing.T) {
 
 	// alice posts an ask in a channel bob is not a member of.
 	chA := mustNamedChannel(t, s, actorA.ID, "alice-room")
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: chA.ID}, AuthorAccountID: actorA.ID,
-		Blocks: []MessageBlock{pendingAsk("ask-secret", false)},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: actorA.ID, Blocks: []MessageBlock{pendingAsk("ask-secret", false)}}, string(chA.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -790,10 +766,7 @@ func TestAnswerAskNonexistentNotFound(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 	// A real member with a real message, but no ask carries this id.
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{textBlock("no ask here")},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("no ask here")}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 	_, err := s.AnswerAsk(ctx, author.ID, "ask-ghost", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
@@ -816,10 +789,7 @@ func TestAnswerAskValidation(t *testing.T) {
 	// A single-select ask, a multi-select ask, and a two-question ask, one
 	// message each.
 	for _, b := range []MessageBlock{pendingAsk("ask-single", false), pendingAsk("ask-multi", true), pendingMultiQ("ask-mq")} {
-		if _, _, err := s.AppendMessage(ctx, Message{
-			Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-			Blocks: []MessageBlock{b},
-		}, ""); err != nil {
+		if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{b}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 			t.Fatalf("AppendMessage(%s): %v", b.Ask.AskID, err)
 		}
 	}
@@ -882,10 +852,7 @@ func TestAnswerAskEmptySkipSatisfiesCoverage(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{pendingMultiQ("ask-mq")},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingMultiQ("ask-mq")}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -927,10 +894,7 @@ func TestAnswerAskRejectsReAnswer(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{pendingAsk("ask-1", false)},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-1", false)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -967,10 +931,7 @@ func TestAnswerAskRejectsReAnswerAfterSkip(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{pendingAsk("ask-skip", false)},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-skip", false)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1000,10 +961,7 @@ func TestAnswerAskMultiSelect(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{pendingAsk("ask-multi", true)},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-multi", true)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1027,10 +985,7 @@ func TestAnswerAskRejectsDuplicateOption(t *testing.T) {
 	author := mustUser(t, s, "author")
 	ch := mustChannel(t, s, author.ID)
 
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{pendingAsk("ask-dup", true)},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-dup", true)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1067,10 +1022,7 @@ func TestAnswerAskConcurrentDistinctAsksSerialize(t *testing.T) {
 	ch := mustChannel(t, s, author.ID)
 
 	// One message carrying two independent pending asks.
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{pendingAsk("ask-x", false), pendingAsk("ask-y", false)},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-x", false), pendingAsk("ask-y", false)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1120,10 +1072,7 @@ func TestAnswerAskConcurrentSameAskOneConflict(t *testing.T) {
 	ch := mustChannel(t, s, author.ID)
 
 	// One message carrying one pending single-select ask (q1: opt-a / opt-b).
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{pendingAsk("ask-race", false)},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-race", false)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1209,10 +1158,7 @@ func TestAppendMessageRejectsMalformedAsk(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := s.AppendMessage(ctx, Message{
-				Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-				Blocks: []MessageBlock{{Ask: tc.ask}},
-			}, "")
+			_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{{Ask: tc.ask}}}, string(ch.ID), TopicRef{Name: "general"}, "")
 			sentinelIs(t, err, ErrInvalidArgument, tc.name)
 		})
 	}
@@ -1241,14 +1187,15 @@ func TestListMessagesFailsLoudOnZeroQuestionAsk(t *testing.T) {
 	// question/options keys and no "questions" array. marshalBlocks would reject
 	// this, so it is inserted straight into the table to simulate a legacy row.
 	const staleBlocks = `[{"kind":"ask","ask":{"ask_id":"stale-1","question":"Which environment?","options":[{"id":"opt-a","label":"staging"}]}}]`
+	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, "general")
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO messages (id, channel_id, author_account_id, at_unix_ms, blocks) VALUES ($1, $2, $3, $4, $5)`,
-		newID(), string(ch.ID), string(author.ID), int64(1), staleBlocks,
+		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks) VALUES ($1, $2, $3, $4, $5)`,
+		newID(), topicID, string(author.ID), int64(1), staleBlocks,
 	); err != nil {
 		t.Fatalf("inject stale row: %v", err)
 	}
 
-	_, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	_, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
 	if err == nil {
 		t.Fatal("ListMessages decoded a zero-question ask silently, want a fail-loud error")
 	}
@@ -1278,14 +1225,15 @@ func TestListMessagesFailsLoudOnEmptyQuestionID(t *testing.T) {
 	// A stored ask with one question whose question_id is "". Everything else is
 	// valid, so the empty id is the sole corruption.
 	const blankQIDBlocks = `[{"kind":"ask","ask":{"ask_id":"blank-qid-1","questions":[{"question_id":"","question":"Which environment?","options":[{"id":"opt-a","label":"staging"}]}]}}]`
+	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, "general")
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO messages (id, channel_id, author_account_id, at_unix_ms, blocks) VALUES ($1, $2, $3, $4, $5)`,
-		newID(), string(ch.ID), string(author.ID), int64(1), blankQIDBlocks,
+		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks) VALUES ($1, $2, $3, $4, $5)`,
+		newID(), topicID, string(author.ID), int64(1), blankQIDBlocks,
 	); err != nil {
 		t.Fatalf("inject empty-question_id row: %v", err)
 	}
 
-	_, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	_, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
 	if err == nil {
 		t.Fatal("ListMessages decoded an ask with an empty question_id silently, want a fail-loud error")
 	}
@@ -1312,14 +1260,15 @@ func TestListMessagesFailsLoudOnDuplicateQuestionID(t *testing.T) {
 	// A stored ask with two questions sharing question_id "dup-1"; each is
 	// otherwise valid, so the shared id is the sole corruption.
 	const dupQIDBlocks = `[{"kind":"ask","ask":{"ask_id":"dup-qid-1","questions":[{"question_id":"dup-1","question":"Which environment?","options":[{"id":"opt-a","label":"staging"}]},{"question_id":"dup-1","question":"Which region?","options":[{"id":"opt-b","label":"us-east"}]}]}}]`
+	topicID := mustTopic(t, ctx, s, ch.ID, author.ID, "general")
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO messages (id, channel_id, author_account_id, at_unix_ms, blocks) VALUES ($1, $2, $3, $4, $5)`,
-		newID(), string(ch.ID), string(author.ID), int64(1), dupQIDBlocks,
+		`INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks) VALUES ($1, $2, $3, $4, $5)`,
+		newID(), topicID, string(author.ID), int64(1), dupQIDBlocks,
 	); err != nil {
 		t.Fatalf("inject duplicate-question_id row: %v", err)
 	}
 
-	_, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	_, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{}})
 	if err == nil {
 		t.Fatal("ListMessages decoded an ask with a duplicate question_id silently, want a fail-loud error")
 	}
@@ -1362,10 +1311,7 @@ func TestAnswerAskRecordsCustomText(t *testing.T) {
 			},
 		},
 	}}
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{freeTextAsk},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{freeTextAsk}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1407,10 +1353,7 @@ func TestAnswerAskRejectsOptionPlusCustomTextOnSingleSelect(t *testing.T) {
 	ch := mustChannel(t, s, author.ID)
 
 	// A single-select ask: q1 offers opt-a/opt-b, AllowMultiple=false.
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{pendingAsk("ask-single", false)},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{pendingAsk("ask-single", false)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -1460,12 +1403,9 @@ func TestAppendMessageRejectsRecommendedOutOfRange(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := s.AppendMessage(ctx, Message{
-				Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-				Blocks: []MessageBlock{{Ask: &Ask{AskID: "ask-oob", Questions: []AskQuestion{{
-					QuestionID: "q1", Question: "Which environment?", Options: twoOpts, Recommended: tc.recommended,
-				}}}}},
-			}, "")
+			_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{{Ask: &Ask{AskID: "ask-oob", Questions: []AskQuestion{{
+				QuestionID: "q1", Question: "Which environment?", Options: twoOpts, Recommended: tc.recommended,
+			}}}}}}, string(ch.ID), TopicRef{Name: "general"}, "")
 			sentinelIs(t, err, ErrInvalidArgument, tc.name)
 			if err == nil || !strings.Contains(err.Error(), "recommended index") || !strings.Contains(err.Error(), "out of range") {
 				t.Fatalf("AppendMessage error = %v, want it to name the out-of-range recommended index", err)
@@ -1480,12 +1420,9 @@ func TestAppendMessageRejectsRecommendedOutOfRange(t *testing.T) {
 
 	// Happy path: an in-range Recommended (index 1 of a 2-option question) is
 	// accepted and persists a row.
-	if _, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []MessageBlock{{Ask: &Ask{AskID: "ask-in-range", Questions: []AskQuestion{{
-			QuestionID: "q1", Question: "Which environment?", Options: twoOpts, Recommended: ptr(int32(1)),
-		}}}}},
-	}, ""); err != nil {
+	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{{Ask: &Ask{AskID: "ask-in-range", Questions: []AskQuestion{{
+		QuestionID: "q1", Question: "Which environment?", Options: twoOpts, Recommended: ptr(int32(1)),
+	}}}}}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage(in-range recommended): %v", err)
 	}
 	if n := messageCount(t, ctx, s, ch.ID); n != 1 {
@@ -1508,22 +1445,54 @@ func mustNamedChannel(t *testing.T, s *Store, actor AccountID, name string) Chan
 	return ch
 }
 
-// messageCount reads how many message rows a channel holds.
+// mustTopic creates a topic row in ch and returns its id — for tests that
+// inject message rows directly (bypassing AppendMessage) and so must supply a
+// valid topic_id FK themselves.
+func mustTopic(t *testing.T, ctx context.Context, s *Store, ch ChannelID, author AccountID, name string) string {
+	t.Helper()
+	id := newID()
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO topics (id, channel_id, name, created_by_account_id, created_at_unix_ms) VALUES ($1, $2, $3, $4, $5)`,
+		id, string(ch), name, string(author), int64(1),
+	); err != nil {
+		t.Fatalf("create topic %q: %v", name, err)
+	}
+	return id
+}
+
+// messageCount reads how many message rows a channel holds, resolving the
+// channel through the topic join (a message row no longer carries channel_id).
 func messageCount(t *testing.T, ctx context.Context, s *Store, ch ChannelID) int {
 	t.Helper()
 	var n int
 	if err := s.pool.QueryRow(ctx,
-		"SELECT count(*) FROM messages WHERE channel_id = $1", string(ch),
+		`SELECT count(*) FROM messages m JOIN topics t ON t.id = m.topic_id WHERE t.channel_id = $1`, string(ch),
 	).Scan(&n); err != nil {
 		t.Fatalf("count messages: %v", err)
 	}
 	return n
 }
 
-func channelIDsOf(msgs []Message) []ChannelID {
-	ids := make([]ChannelID, len(msgs))
+// messageChannel resolves a message's channel through its topic, so a read-path
+// test can assert which channel a returned message lives in now that the row
+// carries only topic_id.
+func messageChannel(t *testing.T, ctx context.Context, s *Store, id MessageID) ChannelID {
+	t.Helper()
+	var ch string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT t.channel_id FROM messages m JOIN topics t ON t.id = m.topic_id WHERE m.id = $1`, string(id),
+	).Scan(&ch); err != nil {
+		t.Fatalf("resolve message channel: %v", err)
+	}
+	return ChannelID(ch)
+}
+
+// topicIDsOf lists the topic id of each message, for a debug-friendly failure
+// message (the row no longer carries a channel id).
+func topicIDsOf(msgs []Message) []string {
+	ids := make([]string, len(msgs))
 	for i, m := range msgs {
-		ids[i] = m.Container.ChannelID
+		ids[i] = m.TopicID
 	}
 	return ids
 }

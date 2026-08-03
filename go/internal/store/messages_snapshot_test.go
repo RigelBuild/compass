@@ -32,10 +32,7 @@ func TestListMessagesSnapshotSeqBoundsPage(t *testing.T) {
 
 	append1 := func(body string) MessageID {
 		t.Helper()
-		m, _, err := s.AppendMessage(ctx, Message{
-			Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-			Blocks: []MessageBlock{textBlock(body)},
-		}, "")
+		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general"}, "")
 		if err != nil {
 			t.Fatalf("AppendMessage(%s): %v", body, err)
 		}
@@ -77,7 +74,7 @@ func TestListMessagesSnapshotSeqBoundsPage(t *testing.T) {
 
 	// Single bounded page: only m1..m3 (seq <= 3), newest-first [m3,m2,m1].
 	// RED today: the boundary is ignored → all 7 rows come back.
-	page, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{Limit: 100, SnapshotSeq: snap})
+	page, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{Limit: 100, SnapshotSeq: snap}})
 	if err != nil {
 		t.Fatalf("ListMessages(bounded): %v", err)
 	}
@@ -85,19 +82,19 @@ func TestListMessagesSnapshotSeqBoundsPage(t *testing.T) {
 
 	// Boundary holds ACROSS pages: first page [m3,m2], then before-m2 → [m1].
 	// A leak would surface m4..m7 on either page.
-	p1, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{Limit: 2, SnapshotSeq: snap})
+	p1, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{Limit: 2, SnapshotSeq: snap}})
 	if err != nil {
 		t.Fatalf("ListMessages(bounded page 1): %v", err)
 	}
 	wantOrder(t, p1, m3, m2)
-	p2, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{Limit: 2, SnapshotSeq: snap, BeforeMessageID: m2})
+	p2, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{Limit: 2, SnapshotSeq: snap, BeforeMessageID: m2}})
 	if err != nil {
 		t.Fatalf("ListMessages(bounded page 2): %v", err)
 	}
 	wantOrder(t, p2, m1)
 
 	// SnapshotSeq:0 means "latest / no boundary" — every current row (all 7).
-	all, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{Limit: 100, SnapshotSeq: 0})
+	all, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{Limit: 100, SnapshotSeq: 0}})
 	if err != nil {
 		t.Fatalf("ListMessages(unbounded): %v", err)
 	}
@@ -128,10 +125,7 @@ func TestListMessagesSnapshotSeqExcludesConcurrentWrites(t *testing.T) {
 
 	append1 := func(body string) MessageID {
 		t.Helper()
-		m, _, err := s.AppendMessage(ctx, Message{
-			Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-			Blocks: []MessageBlock{textBlock(body)},
-		}, "")
+		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general"}, "")
 		if err != nil {
 			t.Fatalf("AppendMessage(%s): %v", body, err)
 		}
@@ -171,7 +165,7 @@ func TestListMessagesSnapshotSeqExcludesConcurrentWrites(t *testing.T) {
 		defer wg.Done()
 		<-start
 		<-written
-		p1, err := s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{Limit: 2, SnapshotSeq: snap})
+		p1, err := s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{Limit: 2, SnapshotSeq: snap}})
 		if err != nil {
 			readErr = err
 			return
@@ -179,7 +173,7 @@ func TestListMessagesSnapshotSeqExcludesConcurrentWrites(t *testing.T) {
 		// Cursor from the last row of page one; empty page → no second page.
 		var p2 []Message
 		if len(p1) > 0 {
-			p2, err = s.ListMessages(ctx, author.ID, ContainerRef{ChannelID: ch.ID}, Page{Limit: 2, SnapshotSeq: snap, BeforeMessageID: p1[len(p1)-1].ID})
+			p2, err = s.ListMessages(ctx, ListMessagesQuery{Actor: author.ID, ChannelID: ch.ID, Page: Page{Limit: 2, SnapshotSeq: snap, BeforeMessageID: p1[len(p1)-1].ID}})
 			if err != nil {
 				readErr = err
 				return
@@ -192,10 +186,7 @@ func TestListMessagesSnapshotSeqExcludesConcurrentWrites(t *testing.T) {
 		defer wg.Done()
 		<-start
 		for _, body := range []string{"c1", "c2", "c3", "c4"} {
-			if _, _, err := s.AppendMessage(ctx, Message{
-				Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-				Blocks: []MessageBlock{textBlock(body)},
-			}, ""); err != nil {
+			if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 				t.Errorf("concurrent AppendMessage(%s): %v", body, err)
 				close(written)
 				return
@@ -271,10 +262,7 @@ func TestSearchMessagesSnapshotSeqBoundsResults(t *testing.T) {
 
 	append1 := func(body string) MessageID {
 		t.Helper()
-		m, _, err := s.AppendMessage(ctx, Message{
-			Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-			Blocks: []MessageBlock{textBlock(body)},
-		}, "")
+		m, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock(body)}}, string(ch.ID), TopicRef{Name: "general"}, "")
 		if err != nil {
 			t.Fatalf("AppendMessage(%s): %v", body, err)
 		}

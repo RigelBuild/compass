@@ -57,6 +57,25 @@ func isChannelMember(ctx context.Context, q querier, actor AccountID, channelID 
 	return member, nil
 }
 
+// IsTopicChannelMember reports whether actor is a member of the channel that
+// owns topicID. It is the topic-scoped form the SubscribeComms stream edge uses
+// to gate MessagePosted/MessageUpdated now that a wire message carries only a
+// topic, not a channel: the channel is resolved through topics.channel_id (the
+// frozen record's "a consumer that needs the channel resolves it through the
+// topic"), so the per-event filter stays at read-parity with ListMessages
+// (which JOINs channel_members on the topic's channel). An unknown topic yields
+// false (not visible) — the not-found/forbidden merge extended to the stream.
+func (s *Store) IsTopicChannelMember(ctx context.Context, actor AccountID, topicID string) (bool, error) {
+	var member bool
+	if err := s.pool.QueryRow(ctx,
+		"SELECT EXISTS (SELECT 1 FROM topics t JOIN channel_members cm ON cm.channel_id = t.channel_id WHERE t.id = $1 AND cm.account_id = $2)",
+		topicID, string(actor),
+	).Scan(&member); err != nil {
+		return false, fmt.Errorf("store: check topic channel membership: %w", err)
+	}
+	return member, nil
+}
+
 // requireGroupCreateAuthz authorizes creating a channel inside groupID. The
 // actor is authorized when it owns the group, when it is an agent whose owning
 // user owns the group (an agent acts within its owner's space — Matt's ruling),

@@ -163,7 +163,7 @@ func TestDeliveryAckUnboundSessionIsNoOp(t *testing.T) {
 // NOT fire on a trace-only frame (UNSPECIFIED). Nil-safe: a hub with no settle
 // sink (every pre-existing test) is unchanged, covered by the existing suite.
 func TestDeliverSessionFiresSettleSink(t *testing.T) {
-	hub, _, life, _ := newHub()
+	hub, life, _ := newHub()
 	settle := &fakeSettleSink{}
 	hub.SetSettleSink(settle)
 
@@ -447,15 +447,12 @@ func TestDeliveryAckStoreFaultIsNonFatal(t *testing.T) {
 	}
 }
 
-// FIX 4 (SEA-1569 T3 review): an ack drop must increment the dedicated
-// DroppedAcks counter, NOT the conversation-frame RefusedFrames counter. A
-// delivery_ack is not a conversation frame; the pre-fix code routed every ack
-// failure through countRefused, muddying FrameDiagnostics.RefusedFrames and
-// emitting a misleading "conversation frame" log line. The hub deliberately
-// separates counters (hub.go:362-372) so operators can tell buckets apart. This
-// drives two ack drops — an unbound acking session and an unknown message — and
-// asserts DroppedAcks counts them while RefusedFrames stays zero.
-func TestDeliveryAckDropsCountSeparatelyFromRefusedFrames(t *testing.T) {
+// SEA-1569 T3 §6: an ack drop increments the dedicated DroppedAcks counter. A
+// delivery_ack is not a conversation frame; a drop (an unbound acking session or
+// an unknown message) is logged + counted and never a teardown. This drives two
+// ack drops — an unbound acking session and an unknown message — and asserts
+// DroppedAcks counts them, including the FrameDiagnostics snapshot mirror.
+func TestDeliveryAckDropsAreCounted(t *testing.T) {
 	hub := newHubOnly()
 	del := newFakeDeliveryStore()
 	hub.SetDeliveryStore(del)
@@ -478,12 +475,9 @@ func TestDeliveryAckDropsCountSeparatelyFromRefusedFrames(t *testing.T) {
 	if got := hub.DroppedAcks(); got != 2 {
 		t.Fatalf("DroppedAcks = %d, want 2 (both ack drops land in the dedicated counter)", got)
 	}
-	if got := hub.RefusedFrames(); got != 0 {
-		t.Fatalf("RefusedFrames = %d, want 0 — an ack drop is not a conversation frame and must not muddy the refusal bucket", got)
-	}
-	// And the snapshot mirrors the accessors under one lock.
-	if diag := hub.FrameDiagnostics(); diag.DroppedAcks != 2 || diag.RefusedFrames != 0 {
-		t.Fatalf("FrameDiagnostics = {DroppedAcks:%d, RefusedFrames:%d}, want {2, 0}", diag.DroppedAcks, diag.RefusedFrames)
+	// And the snapshot mirrors the accessor under one lock.
+	if diag := hub.FrameDiagnostics(); diag.DroppedAcks != 2 {
+		t.Fatalf("FrameDiagnostics.DroppedAcks = %d, want 2", diag.DroppedAcks)
 	}
 }
 

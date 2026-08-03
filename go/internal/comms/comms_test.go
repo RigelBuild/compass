@@ -160,10 +160,7 @@ func TestSearchMessagesAuthorizationScoped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{
-		Container: store.ContainerRef{ChannelID: chA.ID}, AuthorAccountID: alice.ID,
-		Blocks: []store.MessageBlock{{Text: ptr("peregrine falcon")}},
-	}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: ptr("peregrine falcon")}}}, string(chA.ID), store.TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -206,10 +203,7 @@ func TestListMessagesVisibilityScopedAtEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{
-		Container: store.ContainerRef{ChannelID: chA.ID}, AuthorAccountID: alice.ID,
-		Blocks: []store.MessageBlock{{Text: ptr("private plans")}},
-	}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{{Text: ptr("private plans")}}}, string(chA.ID), store.TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -245,10 +239,7 @@ func TestRespondToAskHappyPathEmitsMessageUpdated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := h.store.AppendMessage(ctx, store.Message{
-		Container: store.ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []store.MessageBlock{pendingAskStore("ask-1")},
-	}, ""); err != nil {
+	if _, _, err := h.store.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -334,10 +325,7 @@ func TestRespondToAskWakesAskAuthorOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{
-		Container: store.ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []store.MessageBlock{pendingAskStore("ask-1")},
-	}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -378,10 +366,7 @@ func TestRespondToAskSecondAnswerRecordsNoSecondWake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{
-		Container: store.ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []store.MessageBlock{pendingAskStore("ask-1")},
-	}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -418,10 +403,7 @@ func TestRespondToAskStoreErrorRecordsNoWake(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{
-		Container: store.ContainerRef{ChannelID: chA.ID}, AuthorAccountID: alice.ID,
-		Blocks: []store.MessageBlock{pendingAskStore("ask-secret")},
-	}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-secret")}}, string(chA.ID), store.TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -458,10 +440,7 @@ func TestRespondToAskNilWakerDoesNotPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{
-		Container: store.ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []store.MessageBlock{pendingAskStore("ask-1")},
-	}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -504,6 +483,7 @@ func TestPostMessageDropsCallerSuppliedAnswerState(t *testing.T) {
 	recommended := int32(1)
 	posted, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
 		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
+		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
 		Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{
 			AskId:    "forged-ask-id",
 			Answered: true,
@@ -619,10 +599,7 @@ func TestAskAnsweredFlagReachesTheWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{
-		Container: store.ContainerRef{ChannelID: ch.ID}, AuthorAccountID: author.ID,
-		Blocks: []store.MessageBlock{pendingAskStore("ask-1")},
-	}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: author.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
@@ -663,12 +640,14 @@ func TestAskAnsweredFlagReachesTheWire(t *testing.T) {
 	}
 }
 
-// TestPostMessageThreadsParentMessageIDOverWire is the L2 mapping regression: a
-// PostMessage carrying parent_message_id (wire field 5) echoes it on the
-// response Message.parent_message_id (field 7) and it survives the ListMessages
-// read — proving messageToWire copies ParentMessageID → ParentMessageId end to
-// end, not just that the store persists it. A root message round-trips as "".
-func TestPostMessageThreadsParentMessageIDOverWire(t *testing.T) {
+// TestPostMessageRoutesTopicOverWire is the L2 mapping regression for the topic
+// model: a PostMessage naming a topic echoes the resolved topic_id on the
+// response Message.topic_id (field 2) and it survives the ListMessages read —
+// proving MessageToWire copies TopicID → TopicId end to end, not just that the
+// store persists it. Two posts to the same topic_name resolve to the SAME
+// topic_id (get-or-create), and a topic-scoped ListMessages returns only that
+// topic's messages.
+func TestPostMessageRoutesTopicOverWire(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 	author := mustUser(t, st, "author")
@@ -677,50 +656,54 @@ func TestPostMessageThreadsParentMessageIDOverWire(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	// A root post round-trips with an empty parent id on the wire.
-	root, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+	// A post naming a topic echoes the resolved topic id on the wire.
+	first, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
 		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "root"}}},
+		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "planning"},
+		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "first"}}},
 	}))
 	if err != nil {
-		t.Fatalf("PostMessage(root): %v", err)
+		t.Fatalf("PostMessage(first): %v", err)
 	}
-	rootID := root.Msg.GetMessage().GetId()
-	if got := root.Msg.GetMessage().GetParentMessageId(); got != "" {
-		t.Fatalf("root response ParentMessageId = %q, want \"\"", got)
+	firstID := first.Msg.GetMessage().GetId()
+	topicID := first.Msg.GetMessage().GetTopicId()
+	if topicID == "" {
+		t.Fatal("first response TopicId = \"\", want the resolved topic id")
 	}
 
-	// A reply carrying parent_message_id echoes it on the response Message.
-	reply, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container:       &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Blocks:          []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "reply"}}},
-		ParentMessageId: rootID,
+	// A second post to the SAME topic_name resolves to the same topic id
+	// (get-or-create), so the two messages share a topic.
+	second, err := svc.PostMessage(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
+		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "planning"},
+		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "second"}}},
 	}))
 	if err != nil {
-		t.Fatalf("PostMessage(reply): %v", err)
+		t.Fatalf("PostMessage(second): %v", err)
 	}
-	replyID := reply.Msg.GetMessage().GetId()
-	if got := reply.Msg.GetMessage().GetParentMessageId(); got != rootID {
-		t.Fatalf("reply response ParentMessageId = %q, want the root %q", got, rootID)
+	secondID := second.Msg.GetMessage().GetId()
+	if got := second.Msg.GetMessage().GetTopicId(); got != topicID {
+		t.Fatalf("second response TopicId = %q, want the same topic %q (get-or-create on topic_name)", got, topicID)
 	}
 
-	// It survives the read path: ListMessages carries each message's parent id
-	// on the wire (the mapping copies it on reads too).
+	// It survives the read path: a topic-scoped ListMessages carries each
+	// message's topic id on the wire and returns exactly this topic's messages.
 	listed, err := svc.ListMessages(WithActor(ctx, author.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
 		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(ch.ID)},
+		TopicId:   topicID,
 	}))
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
-	parents := map[string]string{}
+	seen := map[string]string{}
 	for _, m := range listed.Msg.GetMessages() {
-		parents[m.GetId()] = m.GetParentMessageId()
+		seen[m.GetId()] = m.GetTopicId()
 	}
-	if got := parents[replyID]; got != rootID {
-		t.Fatalf("listed reply ParentMessageId = %q, want the root %q", got, rootID)
+	if got := seen[firstID]; got != topicID {
+		t.Fatalf("listed first TopicId = %q, want the topic %q", got, topicID)
 	}
-	if got := parents[rootID]; got != "" {
-		t.Fatalf("listed root ParentMessageId = %q, want \"\"", got)
+	if got := seen[secondID]; got != topicID {
+		t.Fatalf("listed second TopicId = %q, want the topic %q", got, topicID)
 	}
 }
 
@@ -756,6 +739,7 @@ func TestPostMessageStripsCallerAskID(t *testing.T) {
 	postMinted := func(ctx string) string {
 		resp, err := svc.PostMessage(WithActor(context.Background(), author.ID), connect.NewRequest(&compassv1.PostMessageRequest{
 			Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
+			Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
 			Blocks:    []*compassv1.MessageBlock{forgedBlock()},
 		}))
 		if err != nil {
@@ -822,10 +806,7 @@ func TestRespondToAskVisibilityCollapseNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	if _, _, err := st.AppendMessage(ctx, store.Message{
-		Container: store.ContainerRef{ChannelID: chA.ID}, AuthorAccountID: alice.ID,
-		Blocks: []store.MessageBlock{pendingAskStore("ask-secret")},
-	}, ""); err != nil {
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: alice.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-secret")}}, string(chA.ID), store.TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 

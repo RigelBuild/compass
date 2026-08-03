@@ -72,42 +72,6 @@ const testTimeout = 15 * time.Second
 
 func timeAfter() <-chan time.Time { return time.After(testTimeout) }
 
-// convCall is one recorded PostAgentMessage: the account the hub resolved the
-// session to, the session id it resolved from, and exactly one of
-// posted/updated — mirroring the ConversationSink contract. The account is the
-// fake's proof of WHICH attribution the hub applied, the same security
-// invariant the RelayCommsCall tests defend through commsCall.
-type convCall struct {
-	account        store.AccountID
-	sessionID      string
-	idempotencyKey string
-	posted         *compassv1.MessagePosted
-	updated        *compassv1.MessageUpdated
-}
-
-// fakeConversationSink records the conversation write-throughs Deliver drives so
-// a test can assert which variant reached the comms surface, under which account
-// and session id. Concurrency-safe: Deliver can run from a PublishEvents handler
-// goroutine.
-type fakeConversationSink struct {
-	mu    sync.Mutex
-	calls []convCall
-	err   error // returned by PostAgentMessage when set (a write-through failure)
-}
-
-func (f *fakeConversationSink) PostAgentMessage(_ context.Context, account store.AccountID, sessionID string, idempotencyKey string, posted *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, convCall{account: account, sessionID: sessionID, idempotencyKey: idempotencyKey, posted: posted, updated: updated})
-	return f.err
-}
-
-func (f *fakeConversationSink) snapshot() []convCall {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]convCall(nil), f.calls...)
-}
-
 // fakeLifecycleSink records the AgentSessionStatus values extracted onto
 // SubscribeEvents.
 type fakeLifecycleSink struct {
@@ -152,20 +116,19 @@ func (f *fakeTailSink) snapshot() []tailCall {
 	return append([]tailCall(nil), f.calls...)
 }
 
-// newHub builds a hub over three fresh fake sinks and returns them, so a test
+// newHub builds a hub over two fresh fake sinks and returns them, so a test
 // asserts on exactly the sink it targets.
-func newHub() (*Hub, *fakeConversationSink, *fakeLifecycleSink, *fakeTailSink) {
-	conv := &fakeConversationSink{}
+func newHub() (*Hub, *fakeLifecycleSink, *fakeTailSink) {
 	life := &fakeLifecycleSink{}
 	tail := &fakeTailSink{}
-	return NewHub(conv, life, tail, nil, discardLogger()), conv, life, tail
+	return NewHub(life, tail, nil, discardLogger()), life, tail
 }
 
-// newHubOnly builds a hub over three fresh fake sinks and returns just the hub,
+// newHubOnly builds a hub over two fresh fake sinks and returns just the hub,
 // for a test that drives Deliver/enroll/routing and asserts through the wire or
 // the hub's own accessors rather than reaching into a specific sink.
 func newHubOnly() *Hub {
-	return NewHub(&fakeConversationSink{}, &fakeLifecycleSink{}, &fakeTailSink{}, nil, discardLogger())
+	return NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, nil, discardLogger())
 }
 
 // testAgentAccount is the account every conversation test binds its session to.
@@ -195,11 +158,6 @@ type commsCall struct {
 	account store.AccountID
 	post    *compassv1.PostMessageRequest
 	list    *compassv1.ListMessagesRequest
-	// Keyed-commit invocations (CommitConversationFrame path): exactly one of
-	// commitPost/commitUpdate is set, alongside the forwarded idempotency key.
-	commitPost   *compassv1.MessagePosted
-	commitUpdate *compassv1.MessageUpdated
-	commitKey    string
 }
 
 // fakeCommsCaller is a hand-written CommsCaller: it records every call (account
@@ -216,13 +174,6 @@ type fakeCommsCaller struct {
 	postErr  error
 	listResp *compassv1.ListMessagesResponse
 	listErr  error
-
-	// Keyed-commit canned responses (CommitConversationFrame path). commitPost
-	// / commitUpdate drive the fresh-commit id; commitErr drives the
-	// Connect-coded refusal both keyed methods return.
-	commitPost   *compassv1.PostMessageResponse
-	commitUpdate *compassv1.MessageUpdated
-	commitErr    error
 }
 
 func (f *fakeCommsCaller) PostAsAccount(_ context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error) {
@@ -245,26 +196,6 @@ func (f *fakeCommsCaller) ListAsAccount(_ context.Context, account store.Account
 	return f.listResp, nil
 }
 
-func (f *fakeCommsCaller) CommitAgentPostKeyed(_ context.Context, account store.AccountID, posted *compassv1.MessagePosted, idempotencyKey string) (*compassv1.PostMessageResponse, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, commsCall{account: account, commitPost: posted, commitKey: idempotencyKey})
-	if f.commitErr != nil {
-		return nil, f.commitErr
-	}
-	return f.commitPost, nil
-}
-
-func (f *fakeCommsCaller) CommitAgentUpdateKeyed(_ context.Context, account store.AccountID, updated *compassv1.MessageUpdated, idempotencyKey string) (*compassv1.MessageUpdated, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.calls = append(f.calls, commsCall{account: account, commitUpdate: updated, commitKey: idempotencyKey})
-	if f.commitErr != nil {
-		return nil, f.commitErr
-	}
-	return f.commitUpdate, nil
-}
-
 func (f *fakeCommsCaller) snapshot() []commsCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -273,11 +204,11 @@ func (f *fakeCommsCaller) snapshot() []commsCall {
 
 // newHubWithComms builds a hub whose CommsCaller is the returned fake, so a
 // RelayCommsCall test drives the resolve->attribute->execute path and asserts on
-// the account the fake was called with. Like newHubOnly otherwise (the three
+// the account the fake was called with. Like newHubOnly otherwise (the two
 // write-through sinks are unused stubs).
 func newHubWithComms() (*Hub, *fakeCommsCaller) {
 	comms := &fakeCommsCaller{}
-	return NewHub(&fakeConversationSink{}, &fakeLifecycleSink{}, &fakeTailSink{}, comms, discardLogger()), comms
+	return NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, comms, discardLogger()), comms
 }
 
 // lifecycleCall records one LifecycleCaller invocation: the account the hub
@@ -413,56 +344,6 @@ func sessionTraceFrame(event string) *compassv1internal.AgentFrame {
 	}
 }
 
-// convPostedFrame wraps a ConversationPosted variant carrying one text block.
-func convPostedFrame(text string) *compassv1internal.AgentFrame {
-	return &compassv1internal.AgentFrame{
-		Frame: &compassv1internal.AgentFrame_ConversationPosted{
-			ConversationPosted: &compassv1.MessagePosted{
-				Message: &compassv1.Message{
-					Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
-				},
-			},
-		},
-	}
-}
-
-// convUpdatedFrame wraps a ConversationUpdated variant carrying one text block
-// and an ADDRESSED message id — the shape an update must have to name the row it
-// edits. No production emitter produces this yet (see convUpdatedFrameIDLess
-// below); it is the shape the relay will carry once Runner-side id
-// reconciliation lands, and the shape every test that expects a commit needs.
-func convUpdatedFrame(text string) *compassv1internal.AgentFrame {
-	return &compassv1internal.AgentFrame{
-		Frame: &compassv1internal.AgentFrame_ConversationUpdated{
-			ConversationUpdated: &compassv1.MessageUpdated{
-				Message: &compassv1.Message{
-					Id:     "msg-addressed",
-					Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
-				},
-			},
-		},
-	}
-}
-
-// convUpdatedFrameIDLess wraps a ConversationUpdated variant carrying one text
-// block and NO message id — byte-for-byte the frame the first-party agent
-// actually emits today (EventMapper.#appendBlock,
-// packages/compass-agent/src/mapping.ts:386-393, which builds a Message from
-// `blocks` alone because the agent has no server id to mint). Nothing between
-// the agent and this hub stamps one, so this — not convUpdatedFrame — is the
-// production shape on the current base.
-func convUpdatedFrameIDLess(text string) *compassv1internal.AgentFrame {
-	return &compassv1internal.AgentFrame{
-		Frame: &compassv1internal.AgentFrame_ConversationUpdated{
-			ConversationUpdated: &compassv1.MessageUpdated{
-				Message: &compassv1.Message{
-					Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: text}}},
-				},
-			},
-		},
-	}
-}
-
 // --- h2c transport (the shipped cleartext-HTTP/2 door, minus the socket) -----
 
 // cleartextHTTP2 enables HTTP/1.1 and prior-knowledge cleartext HTTP/2 (h2c),
@@ -579,16 +460,6 @@ func (h staticHeader) Get(key string) string { return h[key] }
 // bearerHeader builds a staticHeader carrying "Authorization: Bearer <token>".
 func bearerHeader(token string) staticHeader {
 	return staticHeader{"Authorization": "Bearer " + token}
-}
-
-// firstTextBlock returns the text of a wire Message's first text block, or "".
-func firstTextBlock(m *compassv1.Message) string {
-	for _, b := range m.GetBlocks() {
-		if t := b.GetText(); t != "" {
-			return t
-		}
-	}
-	return ""
 }
 
 // mustContain fails the test unless haystack contains needle.

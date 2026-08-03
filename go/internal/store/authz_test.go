@@ -30,26 +30,20 @@ func TestAppendMessageNonMemberRefusedNoRow(t *testing.T) {
 	ch := mustChannel(t, s, member.ID) // member is the sole founding member
 
 	// A non-member author is refused, and nothing is written.
-	_, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: outsider.ID,
-		Blocks: []MessageBlock{textBlock("intrusion")},
-	}, "")
+	_, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: outsider.ID, Blocks: []MessageBlock{textBlock("intrusion")}}, string(ch.ID), TopicRef{Name: "general"}, "")
 	sentinelIs(t, err, ErrNotFound, "non-member append")
 	if n := messageCount(t, ctx, s, ch.ID); n != 0 {
 		t.Fatalf("non-member append persisted %d rows, want 0 (refusal must not write)", n)
 	}
 
 	// The member author still succeeds — the gate admits the visible set.
-	posted, _, err := s.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: ch.ID}, AuthorAccountID: member.ID,
-		Blocks: []MessageBlock{textBlock("legitimate")},
-	}, "")
+	posted, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: member.ID, Blocks: []MessageBlock{textBlock("legitimate")}}, string(ch.ID), TopicRef{Name: "general"}, "")
 	if err != nil {
 		t.Fatalf("member append: %v", err)
 	}
 	// The member's post is the only row, so a member's read sees exactly it and
 	// nothing the outsider tried to write.
-	msgs, err := s.ListMessages(ctx, member.ID, ContainerRef{ChannelID: ch.ID}, Page{})
+	msgs, err := s.ListMessages(ctx, ListMessagesQuery{Actor: member.ID, ChannelID: ch.ID, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -186,5 +180,59 @@ func TestOpenAgentWorkspaceNonMemberRefused(t *testing.T) {
 	}
 	if ws.AgentAccountID != agent.ID {
 		t.Fatalf("opened workspace agent = %q, want %q", ws.AgentAccountID, agent.ID)
+	}
+}
+
+// TestIsTopicChannelMember pins the topic-scoped stream-edge gate: a member of
+// the topic's channel resolves true and a non-member resolves false, with the
+// channel resolved THROUGH the topic (topics.channel_id) — the read-parity
+// resolver the SubscribeComms fan-out uses to gate MessagePosted/MessageUpdated
+// now that a wire message carries only its topic. An unknown topic resolves
+// false (the not-found/forbidden merge extended to the stream). A mutation that
+// dropped the channel_members join (matching any topic) would redden the
+// non-member and unknown-topic cases.
+func TestIsTopicChannelMember(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	member := mustUser(t, s, "member")
+	outsider := mustUser(t, s, "outsider")
+	ch := mustChannel(t, s, member.ID) // member is the sole founding member
+
+	// Seed a message so a topic exists under the channel; its TopicID is the
+	// topic the gate resolves through.
+	posted, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: member.ID, Blocks: []MessageBlock{textBlock("seed")}}, string(ch.ID), TopicRef{Name: "general"}, "")
+	if err != nil {
+		t.Fatalf("AppendMessage(seed): %v", err)
+	}
+	topicID := posted.TopicID
+	if topicID == "" {
+		t.Fatal("seeded message has no TopicID, want the get-or-created topic")
+	}
+
+	// The channel member resolves true.
+	ok, err := s.IsTopicChannelMember(ctx, member.ID, topicID)
+	if err != nil {
+		t.Fatalf("IsTopicChannelMember(member): %v", err)
+	}
+	if !ok {
+		t.Fatal("IsTopicChannelMember(member) = false, want true (a member of the topic's channel)")
+	}
+
+	// A non-member of the topic's channel resolves false.
+	ok, err = s.IsTopicChannelMember(ctx, outsider.ID, topicID)
+	if err != nil {
+		t.Fatalf("IsTopicChannelMember(outsider): %v", err)
+	}
+	if ok {
+		t.Fatal("IsTopicChannelMember(outsider) = true, want false (not a member of the topic's channel)")
+	}
+
+	// An unknown topic resolves false, not an error.
+	ok, err = s.IsTopicChannelMember(ctx, member.ID, "topic-does-not-exist")
+	if err != nil {
+		t.Fatalf("IsTopicChannelMember(unknown topic): %v", err)
+	}
+	if ok {
+		t.Fatal("IsTopicChannelMember(unknown topic) = true, want false")
 	}
 }

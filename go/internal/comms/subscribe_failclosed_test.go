@@ -50,23 +50,28 @@ import (
 const testActor store.AccountID = "actor-1"
 
 // errUnexpectedVisCall fails a test loudly if forwardComms routes a MessagePosted
-// event to any predicate other than IsChannelMember (visibleToActor's dispatch,
-// subscribe.go:228-229). Every event these tests publish is a MessagePosted, so
-// only IsChannelMember should ever be consulted.
+// event to any predicate other than IsTopicChannelMember (visibleToActor's
+// dispatch). Every event these tests publish is a MessagePosted, whose channel is
+// resolved through its topic now, so only IsTopicChannelMember should ever be
+// consulted.
 var errUnexpectedVisCall = errors.New("fakeVisibility: unexpected predicate call")
 
-// fakeVisibility is a no-DB eventVisibility whose IsChannelMember verdict is
-// supplied per channel id, so one fake drives every case: (false, errBoom) for a
+// fakeVisibility is a no-DB eventVisibility whose IsTopicChannelMember verdict is
+// supplied per topic id, so one fake drives every case: (false, errBoom) for a
 // fault, (false, wrapped-context-error) for a cancellation, (true, nil) for a
-// delivery, (false, nil) for a skip. The other four predicates return
+// delivery, (false, nil) for a skip. The other predicates return
 // errUnexpectedVisCall — they are never exercised by a MessagePosted, and a
 // dispatch regression that routed one elsewhere would redden immediately.
 type fakeVisibility struct {
-	isMember func(channelID store.ChannelID) (bool, error)
+	isMember func(topicID string) (bool, error)
 }
 
-func (f fakeVisibility) IsChannelMember(_ context.Context, _ store.AccountID, channelID store.ChannelID) (bool, error) {
-	return f.isMember(channelID)
+func (f fakeVisibility) IsTopicChannelMember(_ context.Context, _ store.AccountID, topicID string) (bool, error) {
+	return f.isMember(topicID)
+}
+
+func (f fakeVisibility) IsChannelMember(context.Context, store.AccountID, store.ChannelID) (bool, error) {
+	return false, errUnexpectedVisCall
 }
 
 func (f fakeVisibility) ChannelVisibleTo(context.Context, store.AccountID, store.ChannelID) (bool, error) {
@@ -92,14 +97,15 @@ func (f fakeVisibility) SharesVisibleChannel(context.Context, store.AccountID, s
 // compile-time proof the fake satisfies the seam forwardComms consults.
 var _ eventVisibility = fakeVisibility{}
 
-// messagePostedOn is a MessagePosted response for channelID, the shape the bus
-// fans out and forwardComms filters via IsChannelMember (subscribe.go:228-229).
-func messagePostedOn(channelID string) *compassv1.SubscribeCommsResponse {
+// messagePostedOn is a MessagePosted response on topicID, the shape the bus fans
+// out and forwardComms filters via IsTopicChannelMember (the channel is resolved
+// through the topic now).
+func messagePostedOn(topicID string) *compassv1.SubscribeCommsResponse {
 	return &compassv1.SubscribeCommsResponse{
 		Payload: &compassv1.SubscribeCommsResponse_MessagePosted{
 			MessagePosted: &compassv1.MessagePosted{
 				Message: &compassv1.Message{
-					Container: &compassv1.Message_ChannelId{ChannelId: channelID},
+					TopicId: topicID,
 				},
 			},
 		},
@@ -202,7 +208,7 @@ func TestForwardCommsFailsClosedOnStoreFault(t *testing.T) {
 	t.Parallel()
 
 	errBoom := errors.New("boom: private channel 42 membership row")
-	vis := fakeVisibility{isMember: func(store.ChannelID) (bool, error) {
+	vis := fakeVisibility{isMember: func(string) (bool, error) {
 		return false, errBoom
 	}}
 	sub := subscriptionOf(t, messagePostedOn("private-42"))
@@ -257,7 +263,7 @@ func TestForwardCommsCleanEndOnCancellation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			vis := fakeVisibility{isMember: func(store.ChannelID) (bool, error) {
+			vis := fakeVisibility{isMember: func(string) (bool, error) {
 				return false, tc.err
 			}}
 			sub := subscriptionOf(t, messagePostedOn("chan-x"))
@@ -287,7 +293,7 @@ func TestForwardCommsCleanEndOnCancellation(t *testing.T) {
 func TestForwardCommsDeliversVisibleEvent(t *testing.T) {
 	t.Parallel()
 
-	vis := fakeVisibility{isMember: func(store.ChannelID) (bool, error) {
+	vis := fakeVisibility{isMember: func(string) (bool, error) {
 		return true, nil
 	}}
 	sub := subscriptionOf(t, messagePostedOn("chan-visible"))
@@ -304,7 +310,7 @@ func TestForwardCommsDeliversVisibleEvent(t *testing.T) {
 	if len(got.received) != 1 {
 		t.Fatalf("delivered %d event(s), want exactly 1", len(got.received))
 	}
-	if ch := got.received[0].GetMessagePosted().GetMessage().GetChannelId(); ch != "chan-visible" {
+	if ch := got.received[0].GetMessagePosted().GetMessage().GetTopicId(); ch != "chan-visible" {
 		t.Fatalf("delivered channel = %q, want %q", ch, "chan-visible")
 	}
 	if seq := got.received[0].GetSeq(); seq != wantSeq {
@@ -325,8 +331,8 @@ func TestForwardCommsDeliversVisibleEvent(t *testing.T) {
 func TestForwardCommsSkipsNonVisibleEventAndContinues(t *testing.T) {
 	t.Parallel()
 
-	vis := fakeVisibility{isMember: func(channelID store.ChannelID) (bool, error) {
-		return channelID == "chan-visible", nil
+	vis := fakeVisibility{isMember: func(topicID string) (bool, error) {
+		return topicID == "chan-visible", nil
 	}}
 	sub := subscriptionOf(t,
 		messagePostedOn("chan-hidden"),
@@ -344,7 +350,7 @@ func TestForwardCommsSkipsNonVisibleEventAndContinues(t *testing.T) {
 	if len(got.received) != 1 {
 		t.Fatalf("delivered %d event(s), want exactly 1 (the visible one)", len(got.received))
 	}
-	if ch := got.received[0].GetMessagePosted().GetMessage().GetChannelId(); ch != "chan-visible" {
+	if ch := got.received[0].GetMessagePosted().GetMessage().GetTopicId(); ch != "chan-visible" {
 		t.Fatalf("delivered channel = %q, want the visible %q (hidden one must be skipped)", ch, "chan-visible")
 	}
 }

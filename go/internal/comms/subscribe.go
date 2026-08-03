@@ -238,8 +238,15 @@ func commsSnapshotBoundary(snapshotSeq, instanceEpoch uint64) *compassv1.Subscri
 // (the frozen record's anti-drift requirement). *store.Store satisfies it; a
 // test can substitute a fake to drive the filter without a database.
 type eventVisibility interface {
-	// IsChannelMember gates MessagePosted/MessageUpdated (ListMessages is a pure
-	// channel_members JOIN).
+	// IsTopicChannelMember gates MessagePosted/MessageUpdated: a wire message
+	// carries only its topic, so the channel is resolved through topics.channel_id
+	// (the frozen record's topic->channel resolution), keeping the per-event
+	// filter at read-parity with ListMessages (a channel_members JOIN on the
+	// topic's channel).
+	IsTopicChannelMember(ctx context.Context, actor store.AccountID, topicID string) (bool, error)
+	// IsChannelMember gates TopicUpserted: a topic carries its channel_id, so a
+	// topic event reaches only members of its channel (read-parity with
+	// ListTopics).
 	IsChannelMember(ctx context.Context, actor store.AccountID, channelID store.ChannelID) (bool, error)
 	// ChannelVisibleTo gates ChannelChanged (ListChannels: member OR
 	// SHARED-grouped — bare membership would wrongly drop a SHARED channel's
@@ -279,9 +286,9 @@ func visibleToActor(
 ) (bool, error) {
 	switch p := resp.GetPayload().(type) {
 	case *compassv1.SubscribeCommsResponse_MessagePosted:
-		return vis.IsChannelMember(ctx, actor, store.ChannelID(p.MessagePosted.GetMessage().GetChannelId()))
+		return vis.IsTopicChannelMember(ctx, actor, p.MessagePosted.GetMessage().GetTopicId())
 	case *compassv1.SubscribeCommsResponse_MessageUpdated:
-		return vis.IsChannelMember(ctx, actor, store.ChannelID(p.MessageUpdated.GetMessage().GetChannelId()))
+		return vis.IsTopicChannelMember(ctx, actor, p.MessageUpdated.GetMessage().GetTopicId())
 	case *compassv1.SubscribeCommsResponse_ChannelChanged:
 		// A member this change removed is no longer in the channel's set, so it
 		// would never see its own removal — deliver this one final event to a
@@ -309,6 +316,11 @@ func visibleToActor(
 		return vis.IsAgentWorkspaceVisible(ctx, actor, store.AccountID(p.AgentWorkspaceChanged.GetWorkspace().GetAgentAccountId()))
 	case *compassv1.SubscribeCommsResponse_AgentPresenceChanged:
 		return vis.SharesVisibleChannel(ctx, actor, store.AccountID(p.AgentPresenceChanged.GetAgentAccountId()))
+	case *compassv1.SubscribeCommsResponse_TopicUpserted:
+		// A topic event only reaches members of its channel: the topic carries
+		// its channel_id, so gate on plain channel membership (read-parity with
+		// ListTopics, which requires the caller be a member of the channel).
+		return vis.IsChannelMember(ctx, actor, store.ChannelID(p.TopicUpserted.GetTopic().GetChannelId()))
 	default:
 		// ResyncRequired and any unset payload: control frames, always delivered.
 		return true, nil

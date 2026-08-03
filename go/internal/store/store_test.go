@@ -83,9 +83,7 @@ func TestRestartDurabilityReadsBackFullGraph(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 	wantBlocks := sampleBlocks()
-	msg, _, err := s1.AppendMessage(ctx, Message{
-		Container: ContainerRef{ChannelID: channel.ID}, AuthorAccountID: user.ID, Blocks: wantBlocks,
-	}, "req-durable")
+	msg, _, err := s1.AppendMessage(ctx, Message{AuthorAccountID: user.ID, Blocks: wantBlocks}, string(channel.ID), TopicRef{Name: "general"}, "req-durable")
 	if err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
@@ -154,7 +152,7 @@ func TestRestartDurabilityReadsBackFullGraph(t *testing.T) {
 	}
 
 	// The message and its blocks round-trip byte-for-byte through JSONB.
-	msgs, err := s2.ListMessages(ctx, user.ID, ContainerRef{ChannelID: channel.ID}, Page{})
+	msgs, err := s2.ListMessages(ctx, ListMessagesQuery{Actor: user.ID, ChannelID: channel.ID, Page: Page{}})
 	if err != nil {
 		t.Fatalf("ListMessages after restart: %v", err)
 	}

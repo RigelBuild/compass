@@ -169,8 +169,8 @@ func TestMessageByID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MessageByID(%s): %v", id, err)
 	}
-	if string(m.ID) != id || m.Container.ChannelID != ch {
-		t.Fatalf("MessageByID = id=%s channel=%s, want id=%s channel=%s", m.ID, m.Container.ChannelID, id, ch)
+	if string(m.ID) != id || messageChannel(t, ctx, s, m.ID) != ch {
+		t.Fatalf("MessageByID = id=%s channel=%s, want id=%s channel=%s", m.ID, messageChannel(t, ctx, s, m.ID), id, ch)
 	}
 	if len(m.Blocks) != 1 || m.Blocks[0].Text == nil || *m.Blocks[0].Text != "current body" {
 		t.Fatalf("MessageByID blocks = %+v, want one text block 'current body'", m.Blocks)

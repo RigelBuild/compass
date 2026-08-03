@@ -63,6 +63,11 @@ type DeliveryReads interface {
 	SubscribedAgents(ctx context.Context, channel store.ChannelID, author store.AccountID) ([]store.AccountID, error)
 	IsAgentAccount(ctx context.Context, account store.AccountID) (bool, error)
 	MessageByID(ctx context.Context, messageID string) (store.Message, error)
+	// MessageChannel resolves the channel a message lives in through its topic
+	// (topics.channel_id) — a wire/store message carries only its topic now, so
+	// the fan-out resolves the channel it delivers to through this join (the
+	// frozen record's topic->channel resolution).
+	MessageChannel(ctx context.Context, messageID string) (store.ChannelID, error)
 	UndeliveredMessages(ctx context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error)
 	// ChannelAgentMembers resolves every agent MEMBER of a channel (subscribe
 	// state irrelevant), author excluded — the mention→steer routing set (D5,
@@ -367,14 +372,21 @@ func (c *Consumer) gateFor(sessionID string) *sync.Mutex {
 	return g
 }
 
-// storeMessageToWire re-reads a message from the store and maps it to the wire
-// shape via the ONE store->wire mapper (comms.MessageToWire) — the settled-block
-// re-read the settle gate and the no-live-author / sweep paths dispatch from
-// (design.md:158-161), never a stale in-memory copy.
-func (c *Consumer) storeMessageToWire(ctx context.Context, messageID string) (*compassv1.Message, store.Message, error) {
+// storeMessageToWire re-reads a message from the store, maps it to the wire shape
+// via the ONE store->wire mapper (comms.MessageToWire), and resolves the channel
+// it lives in through its topic — the settled-block re-read the settle gate and
+// the no-live-author / sweep paths dispatch from (design.md:158-161), never a
+// stale in-memory copy. The channel is returned alongside because a wire/store
+// message no longer carries it: the fan-out gate needs the channel, resolved
+// through topics.channel_id (the frozen record's topic->channel resolution).
+func (c *Consumer) storeMessageToWire(ctx context.Context, messageID string) (*compassv1.Message, store.ChannelID, store.AccountID, error) {
 	m, err := c.st.MessageByID(ctx, messageID)
 	if err != nil {
-		return nil, store.Message{}, err
+		return nil, "", "", err
 	}
-	return comms.MessageToWire(m), m, nil
+	channel, err := c.st.MessageChannel(ctx, messageID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	return comms.MessageToWire(m), channel, m.AuthorAccountID, nil
 }
