@@ -187,6 +187,31 @@ type TranscriptStore interface {
 	AppendTranscriptEntry(ctx context.Context, sessionID string, lifetimeSeq uint64, checkpoint bool, entryJSON, idempotencyKey string) error
 }
 
+// TranscriptReader is the durable transcript READ surface T5's resume-body
+// reconstructor (ReconstructSessionBody) reads through — the read counterpart to
+// the write-only TranscriptStore. *store.Store implements it; the hub depends
+// only on this narrow surface (pattern: TranscriptStore). Wired via
+// SetTranscriptReader after construction so no NewHub caller signature changes,
+// and nil-safe: a hub with no reader wired fails ReconstructSessionBody closed
+// CodeUnavailable (the resume read leg is not mounted — a Deliver-only test hub
+// never resumes). The resume read is taken as ONE atomic snapshot (the PG
+// hot-tail and the safety-valve manifest together), plus a segment body by
+// object key when the valve fired.
+type TranscriptReader interface {
+	// SessionResumeSnapshot returns the PG hot-tail (latest checkpoint if any,
+	// then every later delta in entry_seq order) AND the safety_valve manifest
+	// rows, taken as ONE atomic read-only snapshot so a concurrent safety-valve
+	// flush cannot commit between the two reads and corrupt the reconstructed
+	// body. An unknown/empty session is ErrNotFound (segments are not read once
+	// the tail is empty). Empty segments means the resume never touches the
+	// object store — the discriminator for a normal vs S3-fallback resume.
+	SessionResumeSnapshot(ctx context.Context, sessionID string) ([]store.TranscriptEntryRow, []store.ArchiveSegmentRow, error)
+	// ReadArchiveSegment fetches one safety_valve segment's verbatim-JSONL body
+	// by its manifest ObjectKey. Called ONLY when the snapshot's segments are
+	// non-empty (the valve fired), never on a normal resume.
+	ReadArchiveSegment(ctx context.Context, objectKey string) ([]byte, error)
+}
+
 // SessionTailSink relays an opaque OMP-native session frame to the dedicated
 // session-tail stream (the observation pane). In T4 this is a minimal sink so a
 // session frame's trace body is never dropped; T5 wires SubscribeAgentSession
@@ -254,6 +279,12 @@ type Hub struct {
 	// it; read under mu. Nil-safe: a hub with no transcript store fails a
 	// transcript commit closed CodeUnavailable.
 	transcripts TranscriptStore
+	// reader is the durable transcript READ store T5's resume-body reconstructor
+	// (ReconstructSessionBody) reads through. Nil until SetTranscriptReader wires
+	// it; read under mu. Nil-safe: a hub with no reader fails
+	// ReconstructSessionBody closed CodeUnavailable — the resume read leg is not
+	// mounted.
+	reader TranscriptReader
 	// lifecycleCaller is the spawn/despawn execution seam RelayLifecycleCall
 	// delegates a resolved lifecycle call to (spawn/despawn record T4). Nil until
 	// SetLifecycleCaller wires it (after both hub and lifecycleService exist,
@@ -397,6 +428,17 @@ func (h *Hub) SetTranscriptStore(transcripts TranscriptStore) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.transcripts = transcripts
+}
+
+// SetTranscriptReader wires the durable transcript READ store T5's resume-body
+// reconstructor reads through (SEA-1667), after construction so no NewHub caller
+// signature changes. Called once at server assembly; nil-safe (a hub with no
+// reader fails ReconstructSessionBody closed CodeUnavailable). Wired under mu;
+// read under mu — the exact posture SetTranscriptStore uses for the write seam.
+func (h *Hub) SetTranscriptReader(reader TranscriptReader) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.reader = reader
 }
 
 // SetLifecycleCaller wires the lifecycle execution seam after construction, so
