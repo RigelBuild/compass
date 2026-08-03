@@ -70,7 +70,7 @@ func TestExecOutputSuccessTracksExitCode(t *testing.T) {
 // workdir, and every env key the agent reads. Env is emitted in sorted key
 // order, so the expectation is exact rather than order-tolerant.
 func TestExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
-	spec := NewStreamingExecSpec("omp", "acp").AsUser("1000").InDir("/work")
+	spec := NewStreamingExecSpec("compass-agent").AsUser("1000").InDir("/work")
 	spec.Env["HOME"] = "/home/agent"
 	spec.Env["COMPASS_WORKDIR"] = "/work"
 	spec.Env["COMPASS_MODEL"] = "test-model"
@@ -84,7 +84,7 @@ func TestExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
 		"-e", "COMPASS_MODEL=test-model",
 		"-e", "COMPASS_WORKDIR=/work",
 		"-e", "HOME=/home/agent",
-		"ctr123", "omp", "acp",
+		"ctr123", "compass-agent",
 	}
 	if !slices.Equal(args, want) {
 		t.Fatalf("execStreamingArgs = %q, want %q", args, want)
@@ -92,11 +92,11 @@ func TestExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
 }
 
 func TestExecStreamingArgsMinimalOmitsUserAndWorkdir(t *testing.T) {
-	spec := NewStreamingExecSpec("omp", "acp")
+	spec := NewStreamingExecSpec("compass-agent")
 
 	args := execStreamingArgs(ContainerID("c"), spec)
 
-	want := []string{"exec", "--interactive", "c", "omp", "acp"}
+	want := []string{"exec", "--interactive", "c", "compass-agent"}
 	if !slices.Equal(args, want) {
 		t.Fatalf("execStreamingArgs = %q, want %q", args, want)
 	}
@@ -119,7 +119,7 @@ func TestInspectMountLabelArgsPinsFormat(t *testing.T) {
 // are not passed on the exec at all (podman resolves --env-file host-side, where
 // the container-internal file does not exist; the agent sources the file itself).
 func TestExecStreamingArgsCarriesInlineEnvNotEnvFile(t *testing.T) {
-	spec := NewStreamingExecSpec("omp", "acp").AsUser("1000").InDir("/work")
+	spec := NewStreamingExecSpec("compass-agent").AsUser("1000").InDir("/work")
 	spec.Env["HOME"] = "/home/agent"
 
 	args := execStreamingArgs(ContainerID("ctr123"), spec)
@@ -129,7 +129,7 @@ func TestExecStreamingArgsCarriesInlineEnvNotEnvFile(t *testing.T) {
 		"--user", "1000",
 		"--workdir", "/work",
 		"-e", "HOME=/home/agent",
-		"ctr123", "omp", "acp",
+		"ctr123", "compass-agent",
 	}
 	if !slices.Equal(args, want) {
 		t.Fatalf("execStreamingArgs = %q, want %q", args, want)
@@ -262,7 +262,7 @@ func TestChildHandleTerminateKillsAndReaps(t *testing.T) {
 	cli := NewPodmanCLI().WithProgram(prog)
 	ctx := t.Context()
 
-	se, err := cli.ExecStreaming(ctx, ContainerID("c"), NewStreamingExecSpec("omp", "acp"))
+	se, err := cli.ExecStreaming(ctx, ContainerID("c"), NewStreamingExecSpec("compass-agent"))
 	if err != nil {
 		t.Fatalf("ExecStreaming: %v", err)
 	}

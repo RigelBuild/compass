@@ -139,9 +139,9 @@ func (o ExecOutput) Success() bool { return o.ExitCode == 0 }
 
 // StreamingExecSpec is how to run a long-lived, streaming command inside a
 // container. Unlike ExecSpec it carries no stdin script: a streaming exec's
-// whole purpose is a live stdin/stdout pipe pair (an ACP session's
-// newline-delimited JSON-RPC channel), for which a one-shot stdin feed is
-// meaningless — so it is omitted here rather than silently ignored.
+// whole purpose is a live stdin/stdout pipe pair for a long-running process
+// (the agent), for which a one-shot stdin feed is meaningless — so it is
+// omitted here rather than silently ignored.
 type StreamingExecSpec struct {
 	Command []string
 	// User is the --user value. Nil runs as the image's default user (root);
@@ -222,8 +222,9 @@ func (h *ChildHandle) Terminate() error {
 }
 
 // StreamingExec is a long-lived streaming exec: its live StreamingIO plus a
-// ChildHandle for kill/wait. The ACP bridge speaks JSON-RPC over IO for the
-// session's life and uses Process to terminate or await the in-container agent.
+// ChildHandle for kill/wait. The Runner drains IO for the process's life (the
+// agent's pipes carry diagnostics) and uses Process to terminate or await the
+// in-container agent.
 type StreamingExec struct {
 	IO      StreamingIO
 	Process *ChildHandle
@@ -288,11 +289,12 @@ type ContainerRuntime interface {
 
 	// ExecStreaming starts a long-lived streaming command in a running
 	// container, returning its live stdio pipes plus a kill/wait handle rather
-	// than awaiting completion. The transport for an ACP session: the caller
-	// speaks newline-delimited JSON-RPC over the returned stdin/stdout for the
-	// session's life. Unlike Exec there is no wall-clock timeout — a session is
-	// meant to run indefinitely — but the exec is still bound to ctx, so
-	// cancelling it terminates the session.
+	// than awaiting completion. The transport for the long-running agent
+	// process: its stdin/stdout stay open for the process's life (the agent's
+	// protocol rides the per-container socket, so the pipes carry diagnostics).
+	// Unlike Exec there is no wall-clock timeout — the process is meant to run
+	// indefinitely — but the exec is still bound to ctx, so cancelling it
+	// terminates the process.
 	ExecStreaming(ctx context.Context, id ContainerID, spec StreamingExecSpec) (*StreamingExec, error)
 
 	// Stop stops a running container, allowing timeout for graceful exit before

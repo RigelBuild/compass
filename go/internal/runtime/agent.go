@@ -65,7 +65,7 @@ func (h *AgentHandle) Name() string { return h.spec.Name }
 // work.
 func (h *AgentHandle) WorkspaceUID() uint32 { return h.spec.Workspace.UID }
 
-// CheckoutDir returns the in-container checkout directory (the ACP session's
+// CheckoutDir returns the in-container checkout directory (the agent session's
 // cwd).
 func (h *AgentHandle) CheckoutDir() string { return h.spec.Workspace.CheckoutDir }
 
