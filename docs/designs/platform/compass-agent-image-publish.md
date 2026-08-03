@@ -88,7 +88,7 @@ container copy` exposes only `--registry` and `--copy-args`
    image-spec store path to stdout (`forks/devenv/devenv/src/main.rs:910-912`
    emits it as `CommandResult::Print`, a bare `print!` after UI cleanup,
    `main.rs:830-832`; `container copy` calls the same `container_build`
-   internally, `forks/devenv/devenv/src/devenv/container.rs:57`), so this is
+   internally, `forks/devenv/devenv/src/devenv/container.rs:55`), so this is
    byte-for-byte the derivation the dogfood task loads into `containers-storage:`
    — the reproducibility constraint holds by construction: one derivation, two
    copy destinations. Capture hygiene: nix/devenv tracing goes to stderr, but
@@ -268,8 +268,9 @@ nothing to provision.
 Consequences folded through this record: the pull side needs no credential (the
 DL-109 keychain flow is a private-visibility contingency only, kept in the note
 below for the record); the one-time package-visibility setting after first push
-is "set public"; T3's anonymous-pull check becomes a real acceptance signal
-(an unauthenticated inspect exercises the actual consumer path). A public
+is "set public"; and an unauthenticated `skopeo inspect` becomes a meaningful
+acceptance signal (a T3 follow-up — it exercises the actual anonymous consumer
+path, and is not folded into T3's write-token-scoped automated coverage). A public
 package must not be flipped private later without a migration — that would break
 every installed consumer's pull.
 
@@ -297,7 +298,7 @@ visibility ever changes.
   large").
 - Reproducibility: the published `:git-<sha>` and the local dogfood load are
   copies of the SAME nix derivation — both flow through
-  `container_build agent` (`forks/devenv/devenv/src/devenv/container.rs:57`)
+  `container_build agent` (`forks/devenv/devenv/src/devenv/container.rs:55`)
   and diverge only in skopeo destination.
 - `:git-<sha>` tags are immutable: the publish script refuses to overwrite a
   tag whose remote config digest differs from the local spec's, and a
@@ -353,6 +354,17 @@ locally (with a PAT-backed `skopeo login`) and from CI identically.
   detected, not silently accepted).
 - Auth: `--authfile "$REGISTRY_AUTH_FILE"` on every skopeo call (never an
   ambient-only login — see the auth-file pin above).
+- **Verify the guard's linchpin first.** The whole guard (local-digest read,
+  compare, post-copy re-inspect) rests on `skopeo inspect --raw nix:$SPEC`
+  working as a standalone inspect through the fork's `nix:` transport — the one
+  claim resting on a build-time-fetched patch (`forks/nix2container/default.nix`
+  pulls the transport from `github.com/nlewo/container-libs`) rather than an
+  in-tree file. The first implementation spike must confirm `skopeo inspect
+  --raw nix:$SPEC | jq -r .config.digest` succeeds against the patched skopeo
+  before the guard is built on it, so a broken assumption fails at T1, not at
+  first publish. (Strongly expected to hold — the same `nix:` ImageSource
+  already backs `skopeo copy`, `containers.nix:307` — but out-of-tree, so
+  verify.)
 
 Interfaces:
 
