@@ -150,6 +150,46 @@ func TestPutAgentConfigCurrentOnlyRetention(t *testing.T) {
 	}
 }
 
+// TestDeleteAgentConfigRoundTrip proves the return-to-unconfigured path (SEA-1625
+// T2): after a Put, DeleteAgentConfig clears the singleton so CurrentAgentConfig
+// reports ErrNotFound (the empty-config state), and the table holds zero rows.
+func TestDeleteAgentConfigRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	actor := mustUser(t, s, "operator")
+
+	if _, err := s.PutAgentConfig(ctx, actor.ID,
+		mkBundle(t, map[string]string{"skills/review/SKILL.md": "# review"})); err != nil {
+		t.Fatalf("PutAgentConfig: %v", err)
+	}
+	if err := s.DeleteAgentConfig(ctx); err != nil {
+		t.Fatalf("DeleteAgentConfig: %v", err)
+	}
+	if _, _, err := s.CurrentAgentConfig(ctx); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("CurrentAgentConfig after delete: want ErrNotFound, got %v", err)
+	}
+	if n := countConfigRows(t, s); n != 0 {
+		t.Fatalf("agent_config_bundle has %d rows after delete, want 0", n)
+	}
+}
+
+// TestDeleteAgentConfigIdempotent proves the idempotency contract: deleting when
+// the fleet is already unconfigured (never Put, or Put-then-Delete) is a no-op
+// success, not an error.
+func TestDeleteAgentConfigIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	// Delete on a never-configured fleet.
+	if err := s.DeleteAgentConfig(ctx); err != nil {
+		t.Fatalf("DeleteAgentConfig on empty store: want nil, got %v", err)
+	}
+	// And a second Delete after the state is already empty.
+	if err := s.DeleteAgentConfig(ctx); err != nil {
+		t.Fatalf("second DeleteAgentConfig: want nil, got %v", err)
+	}
+}
+
 func countConfigRows(t *testing.T, s *Store) int {
 	t.Helper()
 	var n int

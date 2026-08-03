@@ -2829,6 +2829,283 @@ func (x *IssueTokenResponse) GetToken() string {
 	return ""
 }
 
+// PutAgentConfig: declare the fleet config bundle. The caller's identity is the
+// authenticated connection, never a field here.
+type PutAgentConfigRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The config bundle as a gzip tarball — skills/, extensions/, and mcp/
+	// material. Decompressed-size and file-count capped at the store door.
+	Bundle        []byte `protobuf:"bytes,1,opt,name=bundle,proto3" json:"bundle,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PutAgentConfigRequest) Reset() {
+	*x = PutAgentConfigRequest{}
+	mi := &file_compass_v1_compass_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutAgentConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutAgentConfigRequest) ProtoMessage() {}
+
+func (x *PutAgentConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_compass_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutAgentConfigRequest.ProtoReflect.Descriptor instead.
+func (*PutAgentConfigRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_compass_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *PutAgentConfigRequest) GetBundle() []byte {
+	if x != nil {
+		return x.Bundle
+	}
+	return nil
+}
+
+type PutAgentConfigResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The bundle's canonical content version (sha256 hex over the decompressed,
+	// metadata-zeroed content): stable across transport re-packing of identical
+	// content, the fleet's cache key.
+	Version       string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PutAgentConfigResponse) Reset() {
+	*x = PutAgentConfigResponse{}
+	mi := &file_compass_v1_compass_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PutAgentConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PutAgentConfigResponse) ProtoMessage() {}
+
+func (x *PutAgentConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_compass_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PutAgentConfigResponse.ProtoReflect.Descriptor instead.
+func (*PutAgentConfigResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_compass_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *PutAgentConfigResponse) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+type GetAgentConfigInfoRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAgentConfigInfoRequest) Reset() {
+	*x = GetAgentConfigInfoRequest{}
+	mi := &file_compass_v1_compass_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAgentConfigInfoRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAgentConfigInfoRequest) ProtoMessage() {}
+
+func (x *GetAgentConfigInfoRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_compass_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAgentConfigInfoRequest.ProtoReflect.Descriptor instead.
+func (*GetAgentConfigInfoRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_compass_proto_rawDescGZIP(), []int{44}
+}
+
+// GetAgentConfigInfo: the current bundle's version and member names by top dir —
+// names only, NEVER content. An unconfigured fleet reports every field empty.
+type GetAgentConfigInfoResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The current bundle's content version, or empty when no bundle is declared.
+	Version string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	// The declared skill names (the <name> in skills/<name>/...).
+	Skills []string `protobuf:"bytes,2,rep,name=skills,proto3" json:"skills,omitempty"`
+	// The declared extension names (the <name> in extensions/<name>/...).
+	Extensions []string `protobuf:"bytes,3,rep,name=extensions,proto3" json:"extensions,omitempty"`
+	// The declared mcp server names (the <name> in mcp/<name>.json).
+	McpServers    []string `protobuf:"bytes,4,rep,name=mcp_servers,json=mcpServers,proto3" json:"mcp_servers,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAgentConfigInfoResponse) Reset() {
+	*x = GetAgentConfigInfoResponse{}
+	mi := &file_compass_v1_compass_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAgentConfigInfoResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAgentConfigInfoResponse) ProtoMessage() {}
+
+func (x *GetAgentConfigInfoResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_compass_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAgentConfigInfoResponse.ProtoReflect.Descriptor instead.
+func (*GetAgentConfigInfoResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_compass_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *GetAgentConfigInfoResponse) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *GetAgentConfigInfoResponse) GetSkills() []string {
+	if x != nil {
+		return x.Skills
+	}
+	return nil
+}
+
+func (x *GetAgentConfigInfoResponse) GetExtensions() []string {
+	if x != nil {
+		return x.Extensions
+	}
+	return nil
+}
+
+func (x *GetAgentConfigInfoResponse) GetMcpServers() []string {
+	if x != nil {
+		return x.McpServers
+	}
+	return nil
+}
+
+type DeleteAgentConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteAgentConfigRequest) Reset() {
+	*x = DeleteAgentConfigRequest{}
+	mi := &file_compass_v1_compass_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteAgentConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteAgentConfigRequest) ProtoMessage() {}
+
+func (x *DeleteAgentConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_compass_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteAgentConfigRequest.ProtoReflect.Descriptor instead.
+func (*DeleteAgentConfigRequest) Descriptor() ([]byte, []int) {
+	return file_compass_v1_compass_proto_rawDescGZIP(), []int{46}
+}
+
+type DeleteAgentConfigResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteAgentConfigResponse) Reset() {
+	*x = DeleteAgentConfigResponse{}
+	mi := &file_compass_v1_compass_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteAgentConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteAgentConfigResponse) ProtoMessage() {}
+
+func (x *DeleteAgentConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_compass_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteAgentConfigResponse.ProtoReflect.Descriptor instead.
+func (*DeleteAgentConfigResponse) Descriptor() ([]byte, []int) {
+	return file_compass_v1_compass_proto_rawDescGZIP(), []int{47}
+}
+
 var File_compass_v1_compass_proto protoreflect.FileDescriptor
 
 const file_compass_v1_compass_proto_rawDesc = "" +
@@ -2992,7 +3269,22 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\n" +
 	"account_id\x18\x01 \x01(\tR\taccountId\"*\n" +
 	"\x12IssueTokenResponse\x12\x14\n" +
-	"\x05token\x18\x01 \x01(\tR\x05token*d\n" +
+	"\x05token\x18\x01 \x01(\tR\x05token\"/\n" +
+	"\x15PutAgentConfigRequest\x12\x16\n" +
+	"\x06bundle\x18\x01 \x01(\fR\x06bundle\"2\n" +
+	"\x16PutAgentConfigResponse\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\tR\aversion\"\x1b\n" +
+	"\x19GetAgentConfigInfoRequest\"\x8f\x01\n" +
+	"\x1aGetAgentConfigInfoResponse\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
+	"\x06skills\x18\x02 \x03(\tR\x06skills\x12\x1e\n" +
+	"\n" +
+	"extensions\x18\x03 \x03(\tR\n" +
+	"extensions\x12\x1f\n" +
+	"\vmcp_servers\x18\x04 \x03(\tR\n" +
+	"mcpServers\"\x1a\n" +
+	"\x18DeleteAgentConfigRequest\"\x1b\n" +
+	"\x19DeleteAgentConfigResponse*d\n" +
 	"\x0eSecretDelivery\x12\x1f\n" +
 	"\x1bSECRET_DELIVERY_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14SECRET_DELIVERY_FILE\x10\x01\x12\x17\n" +
@@ -3024,7 +3316,7 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"#AGENT_PLAN_ENTRY_STATUS_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fAGENT_PLAN_ENTRY_STATUS_PENDING\x10\x01\x12'\n" +
 	"#AGENT_PLAN_ENTRY_STATUS_IN_PROGRESS\x10\x02\x12%\n" +
-	"!AGENT_PLAN_ENTRY_STATUS_COMPLETED\x10\x032\xd3\a\n" +
+	"!AGENT_PLAN_ENTRY_STATUS_COMPLETED\x10\x032\xf3\t\n" +
 	"\x0eCompassService\x12T\n" +
 	"\rGetServerInfo\x12 .compass.v1.GetServerInfoRequest\x1a!.compass.v1.GetServerInfoResponse\x12\\\n" +
 	"\x0fSubscribeEvents\x12\".compass.v1.SubscribeEventsRequest\x1a#.compass.v1.SubscribeEventsResponse0\x01\x12r\n" +
@@ -3036,7 +3328,10 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\x0eGetAgentStatus\x12!.compass.v1.GetAgentStatusRequest\x1a\".compass.v1.GetAgentStatusResponse\x12b\n" +
 	"\x15SubscribeAgentSession\x12(.compass.v1.SubscribeAgentSessionRequest\x1a\x1d.compass.v1.AgentSessionFrame0\x01\x12K\n" +
 	"\n" +
-	"IssueToken\x12\x1d.compass.v1.IssueTokenRequest\x1a\x1e.compass.v1.IssueTokenResponse2\xfd\x01\n" +
+	"IssueToken\x12\x1d.compass.v1.IssueTokenRequest\x1a\x1e.compass.v1.IssueTokenResponse\x12W\n" +
+	"\x0ePutAgentConfig\x12!.compass.v1.PutAgentConfigRequest\x1a\".compass.v1.PutAgentConfigResponse\x12c\n" +
+	"\x12GetAgentConfigInfo\x12%.compass.v1.GetAgentConfigInfoRequest\x1a&.compass.v1.GetAgentConfigInfoResponse\x12`\n" +
+	"\x11DeleteAgentConfig\x12$.compass.v1.DeleteAgentConfigRequest\x1a%.compass.v1.DeleteAgentConfigResponse2\xfd\x01\n" +
 	"\x0eSecretsService\x12H\n" +
 	"\tSetSecret\x12\x1c.compass.v1.SetSecretRequest\x1a\x1d.compass.v1.SetSecretResponse\x12N\n" +
 	"\vListSecrets\x12\x1e.compass.v1.ListSecretsRequest\x1a\x1f.compass.v1.ListSecretsResponse\x12Q\n" +
@@ -3055,7 +3350,7 @@ func file_compass_v1_compass_proto_rawDescGZIP() []byte {
 }
 
 var file_compass_v1_compass_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_compass_v1_compass_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_compass_v1_compass_proto_msgTypes = make([]protoimpl.MessageInfo, 48)
 var file_compass_v1_compass_proto_goTypes = []any{
 	(SecretDelivery)(0),                     // 0: compass.v1.SecretDelivery
 	(SecretKind)(0),                         // 1: compass.v1.SecretKind
@@ -3105,6 +3400,12 @@ var file_compass_v1_compass_proto_goTypes = []any{
 	(*GetAgentStatusResponse)(nil),          // 45: compass.v1.GetAgentStatusResponse
 	(*IssueTokenRequest)(nil),               // 46: compass.v1.IssueTokenRequest
 	(*IssueTokenResponse)(nil),              // 47: compass.v1.IssueTokenResponse
+	(*PutAgentConfigRequest)(nil),           // 48: compass.v1.PutAgentConfigRequest
+	(*PutAgentConfigResponse)(nil),          // 49: compass.v1.PutAgentConfigResponse
+	(*GetAgentConfigInfoRequest)(nil),       // 50: compass.v1.GetAgentConfigInfoRequest
+	(*GetAgentConfigInfoResponse)(nil),      // 51: compass.v1.GetAgentConfigInfoResponse
+	(*DeleteAgentConfigRequest)(nil),        // 52: compass.v1.DeleteAgentConfigRequest
+	(*DeleteAgentConfigResponse)(nil),       // 53: compass.v1.DeleteAgentConfigResponse
 }
 var file_compass_v1_compass_proto_depIdxs = []int32{
 	0,  // 0: compass.v1.SetSecretRequest.delivery:type_name -> compass.v1.SecretDelivery
@@ -3146,24 +3447,30 @@ var file_compass_v1_compass_proto_depIdxs = []int32{
 	44, // 36: compass.v1.CompassService.GetAgentStatus:input_type -> compass.v1.GetAgentStatusRequest
 	32, // 37: compass.v1.CompassService.SubscribeAgentSession:input_type -> compass.v1.SubscribeAgentSessionRequest
 	46, // 38: compass.v1.CompassService.IssueToken:input_type -> compass.v1.IssueTokenRequest
-	6,  // 39: compass.v1.SecretsService.SetSecret:input_type -> compass.v1.SetSecretRequest
-	8,  // 40: compass.v1.SecretsService.ListSecrets:input_type -> compass.v1.ListSecretsRequest
-	11, // 41: compass.v1.SecretsService.DeleteSecret:input_type -> compass.v1.DeleteSecretRequest
-	14, // 42: compass.v1.CompassService.GetServerInfo:output_type -> compass.v1.GetServerInfoResponse
-	16, // 43: compass.v1.CompassService.SubscribeEvents:output_type -> compass.v1.SubscribeEventsResponse
-	35, // 44: compass.v1.CompassService.ProvisionAgentWorkspace:output_type -> compass.v1.ProvisionAgentWorkspaceResponse
-	39, // 45: compass.v1.CompassService.StartAgentSession:output_type -> compass.v1.StartAgentSessionResponse
-	41, // 46: compass.v1.CompassService.StopAgentSession:output_type -> compass.v1.StopAgentSessionResponse
-	37, // 47: compass.v1.CompassService.RemoveAgentWorkspace:output_type -> compass.v1.RemoveAgentWorkspaceResponse
-	43, // 48: compass.v1.CompassService.ReloadAgentSession:output_type -> compass.v1.ReloadAgentSessionResponse
-	45, // 49: compass.v1.CompassService.GetAgentStatus:output_type -> compass.v1.GetAgentStatusResponse
-	33, // 50: compass.v1.CompassService.SubscribeAgentSession:output_type -> compass.v1.AgentSessionFrame
-	47, // 51: compass.v1.CompassService.IssueToken:output_type -> compass.v1.IssueTokenResponse
-	7,  // 52: compass.v1.SecretsService.SetSecret:output_type -> compass.v1.SetSecretResponse
-	9,  // 53: compass.v1.SecretsService.ListSecrets:output_type -> compass.v1.ListSecretsResponse
-	12, // 54: compass.v1.SecretsService.DeleteSecret:output_type -> compass.v1.DeleteSecretResponse
-	42, // [42:55] is the sub-list for method output_type
-	29, // [29:42] is the sub-list for method input_type
+	48, // 39: compass.v1.CompassService.PutAgentConfig:input_type -> compass.v1.PutAgentConfigRequest
+	50, // 40: compass.v1.CompassService.GetAgentConfigInfo:input_type -> compass.v1.GetAgentConfigInfoRequest
+	52, // 41: compass.v1.CompassService.DeleteAgentConfig:input_type -> compass.v1.DeleteAgentConfigRequest
+	6,  // 42: compass.v1.SecretsService.SetSecret:input_type -> compass.v1.SetSecretRequest
+	8,  // 43: compass.v1.SecretsService.ListSecrets:input_type -> compass.v1.ListSecretsRequest
+	11, // 44: compass.v1.SecretsService.DeleteSecret:input_type -> compass.v1.DeleteSecretRequest
+	14, // 45: compass.v1.CompassService.GetServerInfo:output_type -> compass.v1.GetServerInfoResponse
+	16, // 46: compass.v1.CompassService.SubscribeEvents:output_type -> compass.v1.SubscribeEventsResponse
+	35, // 47: compass.v1.CompassService.ProvisionAgentWorkspace:output_type -> compass.v1.ProvisionAgentWorkspaceResponse
+	39, // 48: compass.v1.CompassService.StartAgentSession:output_type -> compass.v1.StartAgentSessionResponse
+	41, // 49: compass.v1.CompassService.StopAgentSession:output_type -> compass.v1.StopAgentSessionResponse
+	37, // 50: compass.v1.CompassService.RemoveAgentWorkspace:output_type -> compass.v1.RemoveAgentWorkspaceResponse
+	43, // 51: compass.v1.CompassService.ReloadAgentSession:output_type -> compass.v1.ReloadAgentSessionResponse
+	45, // 52: compass.v1.CompassService.GetAgentStatus:output_type -> compass.v1.GetAgentStatusResponse
+	33, // 53: compass.v1.CompassService.SubscribeAgentSession:output_type -> compass.v1.AgentSessionFrame
+	47, // 54: compass.v1.CompassService.IssueToken:output_type -> compass.v1.IssueTokenResponse
+	49, // 55: compass.v1.CompassService.PutAgentConfig:output_type -> compass.v1.PutAgentConfigResponse
+	51, // 56: compass.v1.CompassService.GetAgentConfigInfo:output_type -> compass.v1.GetAgentConfigInfoResponse
+	53, // 57: compass.v1.CompassService.DeleteAgentConfig:output_type -> compass.v1.DeleteAgentConfigResponse
+	7,  // 58: compass.v1.SecretsService.SetSecret:output_type -> compass.v1.SetSecretResponse
+	9,  // 59: compass.v1.SecretsService.ListSecrets:output_type -> compass.v1.ListSecretsResponse
+	12, // 60: compass.v1.SecretsService.DeleteSecret:output_type -> compass.v1.DeleteSecretResponse
+	45, // [45:61] is the sub-list for method output_type
+	29, // [29:45] is the sub-list for method input_type
 	29, // [29:29] is the sub-list for extension type_name
 	29, // [29:29] is the sub-list for extension extendee
 	0,  // [0:29] is the sub-list for field type_name
@@ -3198,7 +3505,7 @@ func file_compass_v1_compass_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compass_v1_compass_proto_rawDesc), len(file_compass_v1_compass_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   42,
+			NumMessages:   48,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

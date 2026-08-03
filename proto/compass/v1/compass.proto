@@ -81,6 +81,30 @@ service CompassService {
   // non-bootstrap account's token (the bootstrap admin token is issued
   // out-of-band at first start).
   rpc IssueToken(IssueTokenRequest) returns (IssueTokenResponse);
+
+  // Declare the fleet agent-config bundle: the gzip tarball of skills/,
+  // extensions/, and mcp/ material every agent materializes into its scoped
+  // config dir. Whole-bundle replace (current-only): the new bundle supersedes
+  // the prior one, keyed by nothing but the fleet singleton, and its canonical
+  // content version is returned. Admin-gated operator write on this public door
+  // (like IssueToken); the bundle is validated at the store door (whitelisted
+  // top dirs, no path escapes, decompressed-size + file-count caps, valid mcp
+  // JSON) before a row is written, and a success signals every live Runner to
+  // re-fetch. Credential-free by rule — secrets ride the separate resolve path.
+  rpc PutAgentConfig(PutAgentConfigRequest) returns (PutAgentConfigResponse);
+
+  // Report the current fleet config bundle's version and the NAMES of its
+  // declared members, bucketed by top dir (skills / extensions / mcp) — names
+  // only, never content, mirroring the value-free secrets status view. An
+  // unconfigured fleet is a valid state: the response is empty (empty version,
+  // empty name lists), never an error.
+  rpc GetAgentConfigInfo(GetAgentConfigInfoRequest) returns (GetAgentConfigInfoResponse);
+
+  // Clear the fleet config bundle back to the unconfigured state — the explicit
+  // return-to-empty path. Admin-gated like PutAgentConfig. Idempotent: deleting
+  // when already empty succeeds. On success every live Runner is signalled with
+  // an empty config version so it re-materializes the empty config dir.
+  rpc DeleteAgentConfig(DeleteAgentConfigRequest) returns (DeleteAgentConfigResponse);
 }
 
 // How a resolved secret is delivered into the agent container. Mirrors
@@ -507,3 +531,36 @@ message IssueTokenResponse {
   // subsequent requests; the server retains only its hash.
   string token = 1;
 }
+
+// PutAgentConfig: declare the fleet config bundle. The caller's identity is the
+// authenticated connection, never a field here.
+message PutAgentConfigRequest {
+  // The config bundle as a gzip tarball — skills/, extensions/, and mcp/
+  // material. Decompressed-size and file-count capped at the store door.
+  bytes bundle = 1;
+}
+
+message PutAgentConfigResponse {
+  // The bundle's canonical content version (sha256 hex over the decompressed,
+  // metadata-zeroed content): stable across transport re-packing of identical
+  // content, the fleet's cache key.
+  string version = 1;
+}
+
+message GetAgentConfigInfoRequest {}
+
+// GetAgentConfigInfo: the current bundle's version and member names by top dir —
+// names only, NEVER content. An unconfigured fleet reports every field empty.
+message GetAgentConfigInfoResponse {
+  // The current bundle's content version, or empty when no bundle is declared.
+  string version = 1;
+  // The declared skill names (the <name> in skills/<name>/...).
+  repeated string skills = 2;
+  // The declared extension names (the <name> in extensions/<name>/...).
+  repeated string extensions = 3;
+  // The declared mcp server names (the <name> in mcp/<name>.json).
+  repeated string mcp_servers = 4;
+}
+
+message DeleteAgentConfigRequest {}
+message DeleteAgentConfigResponse {}

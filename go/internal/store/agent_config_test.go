@@ -330,6 +330,50 @@ func TestValidateConfigBundleEmpty(t *testing.T) {
 	}
 }
 
+// TestConfigBundleMemberNames pins the value-free info view: member NAMES bucketed
+// by top dir, deduplicated and sorted, never content. A skill spreading many files
+// under skills/<name>/ contributes <name> once; mcp/<name>.json contributes
+// <name> without the .json suffix; directory members declare no name.
+func TestConfigBundleMemberNames(t *testing.T) {
+	b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+		tarEntry{name: "skills/", typeflag: tar.TypeDir},
+		tarEntry{name: "skills/review/SKILL.md", content: "# review"},
+		tarEntry{name: "skills/review/ref.md", content: "ref"},
+		tarEntry{name: "skills/triage/SKILL.md", content: "# triage"},
+		tarEntry{name: "extensions/cotal/main.js", content: "x"},
+		tarEntry{name: "mcp/linear.json", content: `{"a":1}`},
+		tarEntry{name: "mcp/github.json", content: `{"b":2}`},
+	)
+	skills, extensions, mcpServers, err := configBundleMemberNames(b)
+	if err != nil {
+		t.Fatalf("configBundleMemberNames: %v", err)
+	}
+	// review appears in two files but the name set collapses it; sorted order.
+	if got, want := strings.Join(skills, ","), "review,triage"; got != want {
+		t.Errorf("skills = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(extensions, ","), "cotal"; got != want {
+		t.Errorf("extensions = %q, want %q", got, want)
+	}
+	// sorted, .json stripped.
+	if got, want := strings.Join(mcpServers, ","), "github,linear"; got != want {
+		t.Errorf("mcp_servers = %q, want %q", got, want)
+	}
+}
+
+// TestConfigBundleMemberNamesEmpty: an empty bundle declares no members — every
+// bucket is empty, not an error.
+func TestConfigBundleMemberNamesEmpty(t *testing.T) {
+	skills, extensions, mcpServers, err := configBundleMemberNames(
+		buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0)))
+	if err != nil {
+		t.Fatalf("configBundleMemberNames(empty): %v", err)
+	}
+	if len(skills) != 0 || len(extensions) != 0 || len(mcpServers) != 0 {
+		t.Fatalf("empty bundle names = %v/%v/%v, want all empty", skills, extensions, mcpServers)
+	}
+}
+
 // itoa avoids strconv churn in the file-count fixture loop.
 func itoa(n int) string {
 	if n == 0 {

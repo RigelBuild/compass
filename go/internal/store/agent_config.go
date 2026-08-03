@@ -26,14 +26,22 @@ import (
 // identical content is version-stable. The bundle is credential-free by MVP
 // rule (CD-3) — secrets ride the separate resolve path, never this bundle.
 
-// configBundleTopDirs is the whitelist of allowed top-level directories in a
-// config bundle. Every tar member must live under one of these; each becomes a
-// host directory when the bundle is materialized into an agent's config dir
-// (T4), so the set is closed at the store door, not filtered downstream.
+// Config-bundle top-dir names — the whitelisted top-level directories a bundle
+// member may live under. Each becomes a host directory when the bundle is
+// materialized into an agent's config dir (T4), so the set is closed at the
+// store door, not filtered downstream.
+const (
+	topDirSkills     = "skills"
+	topDirExtensions = "extensions"
+	topDirMCP        = "mcp"
+)
+
+// configBundleTopDirs is the whitelist as a set, for the O(1) membership check in
+// configMemberParts.
 var configBundleTopDirs = map[string]bool{
-	"skills":     true,
-	"extensions": true,
-	"mcp":        true,
+	topDirSkills:     true,
+	topDirExtensions: true,
+	topDirMCP:        true,
 }
 
 // configNamePattern is the grammar for a config entry's <name> segment —
@@ -135,6 +143,111 @@ func (s *Store) CurrentAgentConfig(ctx context.Context) (version string, bundle 
 		return "", nil, fmt.Errorf("store: read agent config: %w", err)
 	}
 	return version, bundle, nil
+}
+
+// DeleteAgentConfig clears the fleet config bundle, returning the store to the
+// unconfigured state (CurrentAgentConfig then reports ErrNotFound — a valid
+// downstream state, the empty-config door). Idempotent: deleting when the
+// singleton is already absent is a no-op success, not ErrNotFound — the caller's
+// intent (no bundle) already holds, so a repeated Delete or a Delete on a
+// never-configured fleet both succeed. This is the operator's explicit
+// return-to-unconfigured path (SEA-1625 T2), chosen over blessing an
+// empty-tarball push.
+func (s *Store) DeleteAgentConfig(ctx context.Context) error {
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM agent_config_bundle WHERE singleton = TRUE`,
+	); err != nil {
+		return fmt.Errorf("store: delete agent config: %w", err)
+	}
+	return nil
+}
+
+// AgentConfigInfo reports the current bundle's version and the NAMES of its
+// declared members, bucketed by top dir (skills / extensions / mcp) — names
+// only, never content (SEA-1625 T2). Each bucket is deduplicated and sorted: a
+// skill spreads many files under skills/<name>/, but the operator-facing view is
+// the set of declared <name>s. ErrNotFound when no bundle is declared (the
+// caller decides empty-is-ok, mirroring CurrentAgentConfig).
+//
+// It re-walks the stored bundle with the SAME grammar the store door enforced at
+// Put (configMemberParts + the decompressed cap via cappedReader), so it reuses
+// the door's path validation rather than re-inventing a tar walk. The bundle was
+// already validated at Put, so this walk is over trusted content; re-applying the
+// cap is the cheap defense-in-depth posture every unpack re-enforces.
+func (s *Store) AgentConfigInfo(ctx context.Context) (version string, skills, extensions, mcpServers []string, err error) {
+	version, bundle, err := s.CurrentAgentConfig(ctx)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	skills, extensions, mcpServers, err = configBundleMemberNames(bundle)
+	if err != nil {
+		return "", nil, nil, nil, err
+	}
+	return version, skills, extensions, mcpServers, nil
+}
+
+// configBundleMemberNames walks a stored config bundle and returns the declared
+// member names bucketed by top dir, each deduplicated and sorted. It never reads
+// member CONTENT — only the tar HEADERS — so it decompresses (bounded by the
+// same cappedReader gzip-bomb guard as the store door) without materializing any
+// file body. skills/<name>/... and extensions/<name>/... contribute <name> (the
+// second path component); mcp/<name>.json contributes <name> (the base without
+// the .json suffix). Directory members and any name-less top-dir-only entry are
+// skipped — they declare no member.
+func configBundleMemberNames(bundle []byte) (skills, extensions, mcpServers []string, err error) {
+	gz, err := gzip.NewReader(bytes.NewReader(bundle))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%w: bundle is not a valid gzip stream: %w", ErrInvalidArgument, err)
+	}
+	// Read-only gunzip: Close only releases the decompressor, so its error is
+	// not actionable here (nothing was written to flush).
+	defer func() { _ = gz.Close() }()
+
+	skillSet := make(map[string]bool)
+	extSet := make(map[string]bool)
+	mcpSet := make(map[string]bool)
+
+	tr := tar.NewReader(&cappedReader{r: gz})
+	for {
+		hdr, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			if errors.Is(err, errBundleTooLarge) {
+				return nil, nil, nil, errBundleTooLarge
+			}
+			return nil, nil, nil, fmt.Errorf("%w: bundle is not a valid tar stream: %w", ErrInvalidArgument, err)
+		}
+		parts, err := configMemberParts(hdr.Name)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		// A directory or a top-dir-only entry declares no member name.
+		if hdr.Typeflag == tar.TypeDir || len(parts) < 2 {
+			continue
+		}
+		switch parts[0] {
+		case topDirSkills:
+			skillSet[parts[1]] = true
+		case topDirExtensions:
+			extSet[parts[1]] = true
+		case topDirMCP:
+			mcpSet[strings.TrimSuffix(parts[1], ".json")] = true
+		}
+	}
+	return sortedKeys(skillSet), sortedKeys(extSet), sortedKeys(mcpSet), nil
+}
+
+// sortedKeys returns a set's keys as a sorted slice — the stable, deduplicated
+// name list AgentConfigInfo reports per bucket.
+func sortedKeys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // validateAndHashConfigBundle is the security-critical store door: a SINGLE
@@ -303,7 +416,7 @@ func configMemberParts(name string) ([]string, error) {
 // if the decompressed cap is crossed mid-file.
 func validateRegularMember(parts []string, r io.Reader) ([]byte, error) {
 	joined := strings.Join(parts, "/")
-	if parts[0] == "mcp" {
+	if parts[0] == topDirMCP {
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("%w: mcp member %q must be mcp/<name>.json", ErrInvalidArgument, joined)
 		}
