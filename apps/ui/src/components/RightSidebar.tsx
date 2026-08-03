@@ -466,7 +466,13 @@ const AgentUnreachable: Component<{ item: ActivityBarItem }> = (props) => {
 			<button
 				type="button"
 				class="r-unpin-agent"
-				onClick={() => store.unpinAgent(props.item.agentId ?? "")}
+				// Both item builders (fleetItemForAgent, unreachableFleetItem) always set
+				// agentId, and AgentUnreachable only renders for a pinned item read out of
+				// rightTabGroups(), so it is never undefined here. Asserting (rather than
+				// `?? ""`) surfaces a genuinely-empty agentId as a bug instead of silently
+				// no-op-ing through unpinAgent("").
+				// biome-ignore lint/style/noNonNullAssertion: guaranteed by both builders (see above)
+				onClick={() => store.unpinAgent(props.item.agentId!)}
 			>
 				Unpin {props.item.title}
 			</button>
@@ -591,6 +597,16 @@ export const RightSidebar: Component = () => {
 										<FleetPane item={item()} />
 									</Show>
 								)}
+							</Match>
+
+							{/* Defensive close (SEA-1645 P2): an `agent:` tab that matches no
+							    pin in rightTabGroups() lands on status rather than a blank
+							    pane. Unreachable via the current UI — setActiveRightTab is
+							    only ever called with a pinned bar-item id, "status", or an
+							    issue tab — but a future caller (or the live-agents migration)
+							    that sets an unpinned agent tab can't strand the Switch. */}
+							<Match when={store.activeRightTab().startsWith("agent:")}>
+								<StatusPane />
 							</Match>
 
 							<Match when={store.activeRightTab() === "status"}>
