@@ -58,8 +58,6 @@ type AgentFrame struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Frame:
 	//
-	//	*AgentFrame_ConversationPosted
-	//	*AgentFrame_ConversationUpdated
 	//	*AgentFrame_Session
 	//	*AgentFrame_ReplayCompleteAck
 	//	*AgentFrame_ControlAck
@@ -103,24 +101,6 @@ func (*AgentFrame) Descriptor() ([]byte, []int) {
 func (x *AgentFrame) GetFrame() isAgentFrame_Frame {
 	if x != nil {
 		return x.Frame
-	}
-	return nil
-}
-
-func (x *AgentFrame) GetConversationPosted() *v1.MessagePosted {
-	if x != nil {
-		if x, ok := x.Frame.(*AgentFrame_ConversationPosted); ok {
-			return x.ConversationPosted
-		}
-	}
-	return nil
-}
-
-func (x *AgentFrame) GetConversationUpdated() *v1.MessageUpdated {
-	if x != nil {
-		if x, ok := x.Frame.(*AgentFrame_ConversationUpdated); ok {
-			return x.ConversationUpdated
-		}
 	}
 	return nil
 }
@@ -174,19 +154,13 @@ type isAgentFrame_Frame interface {
 	isAgentFrame_Frame()
 }
 
-type AgentFrame_ConversationPosted struct {
-	// Conversation: a newly posted durable message (wraps a Message of
-	// MessageBlocks) → comms Message rows + SubscribeComms.
-	ConversationPosted *v1.MessagePosted `protobuf:"bytes,1,opt,name=conversation_posted,json=conversationPosted,proto3,oneof"`
-}
-
-type AgentFrame_ConversationUpdated struct {
-	// Conversation: an existing message changed — a streaming turn appended a
-	// block (carries the full current block set) → comms + SubscribeComms.
-	ConversationUpdated *v1.MessageUpdated `protobuf:"bytes,2,opt,name=conversation_updated,json=conversationUpdated,proto3,oneof"`
-}
-
 type AgentFrame_Session struct {
+	// Fields 1 (conversation_posted) and 2 (conversation_updated) are REMOVED,
+	// not reserved (F9): the streaming conversation write-through is gone — a
+	// streamed turn no longer commits comms rows (T7). The durable conversation
+	// frame now rides only the transcript lane (transcript_entry, field 7 →
+	// PostConversationFrame/CommitConversationFrame), and the session trace
+	// rides `session` below. Pre-dogfood, zero stored payloads, so no reserve.
 	// Session: an opaque OMP-native execution-trace event and/or a board
 	// lifecycle transition → the session-tail stream (+ the extracted state →
 	// SubscribeEvents). Replaces the former typed status/plan/tool_call
@@ -236,10 +210,6 @@ type AgentFrame_TranscriptEntry struct {
 	//	resume (T4/T5).
 	TranscriptEntry *TranscriptEntry `protobuf:"bytes,7,opt,name=transcript_entry,json=transcriptEntry,proto3,oneof"`
 }
-
-func (*AgentFrame_ConversationPosted) isAgentFrame_Frame() {}
-
-func (*AgentFrame_ConversationUpdated) isAgentFrame_Frame() {}
 
 func (*AgentFrame_Session) isAgentFrame_Frame() {}
 
@@ -1065,11 +1035,9 @@ var File_compass_v1_agent_proto protoreflect.FileDescriptor
 const file_compass_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"\x16compass/v1/agent.proto\x12\n" +
-	"compass.v1\x1a\x16compass/v1/comms.proto\x1a\x18compass/v1/compass.proto\"\xfe\x03\n" +
+	"compass.v1\x1a\x16compass/v1/comms.proto\x1a\x18compass/v1/compass.proto\"\xdf\x02\n" +
 	"\n" +
-	"AgentFrame\x12L\n" +
-	"\x13conversation_posted\x18\x01 \x01(\v2\x19.compass.v1.MessagePostedH\x00R\x12conversationPosted\x12O\n" +
-	"\x14conversation_updated\x18\x02 \x01(\v2\x1a.compass.v1.MessageUpdatedH\x00R\x13conversationUpdated\x124\n" +
+	"AgentFrame\x124\n" +
 	"\asession\x18\x03 \x01(\v2\x18.compass.v1.SessionFrameH\x00R\asession\x12O\n" +
 	"\x13replay_complete_ack\x18\x04 \x01(\v2\x1d.compass.v1.ReplayCompleteAckH\x00R\x11replayCompleteAck\x129\n" +
 	"\vcontrol_ack\x18\x05 \x01(\v2\x16.compass.v1.ControlAckH\x00R\n" +
@@ -1149,38 +1117,34 @@ var file_compass_v1_agent_proto_goTypes = []any{
 	(*DeliveryAck)(nil),          // 11: compass.v1.DeliveryAck
 	(*ReplayCompleteAck)(nil),    // 12: compass.v1.ReplayCompleteAck
 	(*ControlAck)(nil),           // 13: compass.v1.ControlAck
-	(*v1.MessagePosted)(nil),     // 14: compass.v1.MessagePosted
-	(*v1.MessageUpdated)(nil),    // 15: compass.v1.MessageUpdated
-	(v1.AgentSessionState)(0),    // 16: compass.v1.AgentSessionState
-	(*v1.SessionEvent)(nil),      // 17: compass.v1.SessionEvent
-	(*v1.AskQuestionAnswer)(nil), // 18: compass.v1.AskQuestionAnswer
-	(*v1.Message)(nil),           // 19: compass.v1.Message
+	(v1.AgentSessionState)(0),    // 14: compass.v1.AgentSessionState
+	(*v1.SessionEvent)(nil),      // 15: compass.v1.SessionEvent
+	(*v1.AskQuestionAnswer)(nil), // 16: compass.v1.AskQuestionAnswer
+	(*v1.Message)(nil),           // 17: compass.v1.Message
 }
 var file_compass_v1_agent_proto_depIdxs = []int32{
-	14, // 0: compass.v1.AgentFrame.conversation_posted:type_name -> compass.v1.MessagePosted
-	15, // 1: compass.v1.AgentFrame.conversation_updated:type_name -> compass.v1.MessageUpdated
-	2,  // 2: compass.v1.AgentFrame.session:type_name -> compass.v1.SessionFrame
-	12, // 3: compass.v1.AgentFrame.replay_complete_ack:type_name -> compass.v1.ReplayCompleteAck
-	13, // 4: compass.v1.AgentFrame.control_ack:type_name -> compass.v1.ControlAck
-	11, // 5: compass.v1.AgentFrame.delivery_ack:type_name -> compass.v1.DeliveryAck
-	1,  // 6: compass.v1.AgentFrame.transcript_entry:type_name -> compass.v1.TranscriptEntry
-	16, // 7: compass.v1.SessionFrame.state:type_name -> compass.v1.AgentSessionState
-	17, // 8: compass.v1.SessionFrame.typed_event:type_name -> compass.v1.SessionEvent
-	4,  // 9: compass.v1.AgentControl.prompt:type_name -> compass.v1.PromptControl
-	7,  // 10: compass.v1.AgentControl.steer:type_name -> compass.v1.SteerControl
-	10, // 11: compass.v1.AgentControl.deliver:type_name -> compass.v1.DeliverControl
-	5,  // 12: compass.v1.AgentControl.ask_answer:type_name -> compass.v1.AskAnswerControl
-	9,  // 13: compass.v1.AgentControl.config:type_name -> compass.v1.ConfigControl
-	8,  // 14: compass.v1.AgentControl.replay:type_name -> compass.v1.TranscriptReplay
-	6,  // 15: compass.v1.AgentControl.replay_complete:type_name -> compass.v1.ReplayComplete
-	18, // 16: compass.v1.AskAnswerControl.answers:type_name -> compass.v1.AskQuestionAnswer
-	19, // 17: compass.v1.SteerControl.message:type_name -> compass.v1.Message
-	19, // 18: compass.v1.DeliverControl.message:type_name -> compass.v1.Message
-	19, // [19:19] is the sub-list for method output_type
-	19, // [19:19] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	2,  // 0: compass.v1.AgentFrame.session:type_name -> compass.v1.SessionFrame
+	12, // 1: compass.v1.AgentFrame.replay_complete_ack:type_name -> compass.v1.ReplayCompleteAck
+	13, // 2: compass.v1.AgentFrame.control_ack:type_name -> compass.v1.ControlAck
+	11, // 3: compass.v1.AgentFrame.delivery_ack:type_name -> compass.v1.DeliveryAck
+	1,  // 4: compass.v1.AgentFrame.transcript_entry:type_name -> compass.v1.TranscriptEntry
+	14, // 5: compass.v1.SessionFrame.state:type_name -> compass.v1.AgentSessionState
+	15, // 6: compass.v1.SessionFrame.typed_event:type_name -> compass.v1.SessionEvent
+	4,  // 7: compass.v1.AgentControl.prompt:type_name -> compass.v1.PromptControl
+	7,  // 8: compass.v1.AgentControl.steer:type_name -> compass.v1.SteerControl
+	10, // 9: compass.v1.AgentControl.deliver:type_name -> compass.v1.DeliverControl
+	5,  // 10: compass.v1.AgentControl.ask_answer:type_name -> compass.v1.AskAnswerControl
+	9,  // 11: compass.v1.AgentControl.config:type_name -> compass.v1.ConfigControl
+	8,  // 12: compass.v1.AgentControl.replay:type_name -> compass.v1.TranscriptReplay
+	6,  // 13: compass.v1.AgentControl.replay_complete:type_name -> compass.v1.ReplayComplete
+	16, // 14: compass.v1.AskAnswerControl.answers:type_name -> compass.v1.AskQuestionAnswer
+	17, // 15: compass.v1.SteerControl.message:type_name -> compass.v1.Message
+	17, // 16: compass.v1.DeliverControl.message:type_name -> compass.v1.Message
+	17, // [17:17] is the sub-list for method output_type
+	17, // [17:17] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_agent_proto_init() }
@@ -1189,8 +1153,6 @@ func file_compass_v1_agent_proto_init() {
 		return
 	}
 	file_compass_v1_agent_proto_msgTypes[0].OneofWrappers = []any{
-		(*AgentFrame_ConversationPosted)(nil),
-		(*AgentFrame_ConversationUpdated)(nil),
 		(*AgentFrame_Session)(nil),
 		(*AgentFrame_ReplayCompleteAck)(nil),
 		(*AgentFrame_ControlAck)(nil),

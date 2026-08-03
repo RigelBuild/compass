@@ -72,14 +72,41 @@ breaking:
   # stays guarded (MESSAGE_NO_DELETE / RPC_NO_DELETE stay armed on it). REMOVE
   # these exemptions at launch — once a live client exists, any deletion is a real
   # break again.
+  #
+  # A sixth record ratifies the Zulip threading model (frozen:
+  # docs/designs/product/compass-zulip-threading-model/design.md, §T1/F9,
+  # Status: Active). It reshapes comms.proto Message/PostMessageRequest for
+  # topic-addressed posting: Message's `oneof container { channel_id = 2 }` is
+  # removed and field 2 is REUSED as a bare `string topic_id` (same `string`
+  # wire type), and PostMessageRequest.parent_message_id (field 5) +
+  # Message.parent_message_id (field 7) are removed (topic-level threading
+  # replaces per-message parenting). Removing the oneof and reusing its field
+  # number is the textbook field-number-reuse collision buf breaking exists to
+  # catch: on comms.proto it trips ONEOF_NO_DELETE (the deleted `container`
+  # oneof) plus the field-2-reuse family FIELD_SAME_NAME / FIELD_SAME_JSON_NAME
+  # / FIELD_SAME_CARDINALITY / FIELD_SAME_ONEOF (channel_id → topic_id in place).
+  # Safe ONLY under the same pre-dogfood invariant as every removal above: zero
+  # stored pre-dogfood payloads exist, so no old `channel_id=2` bytes can decode
+  # into `topic_id`. The pure field removals (parent_message_id on both messages;
+  # the agent.proto AgentFrame conversation variants that ride this chain per §T7)
+  # trip FIELD_NO_DELETE, already exempted below. REMOVE these at launch.
   ignore_only:
     FIELD_NO_DELETE:
       - proto/compass/v1/comms.proto
       - proto/compass/v1/agent.proto
       - proto/compass/v1/compass.proto
+    FIELD_SAME_NAME:
+      - proto/compass/v1/comms.proto
+    FIELD_SAME_JSON_NAME:
+      - proto/compass/v1/comms.proto
+    FIELD_SAME_CARDINALITY:
+      - proto/compass/v1/comms.proto
+    FIELD_SAME_ONEOF:
+      - proto/compass/v1/comms.proto
     MESSAGE_NO_DELETE:
       - proto/compass/v1/comms.proto
     ONEOF_NO_DELETE:
       - proto/compass/v1/compass.proto
+      - proto/compass/v1/comms.proto
     RPC_NO_DELETE:
       - proto/compass/v1/comms.proto

@@ -85,6 +85,11 @@ const (
 	// CommsServicePostMessageProcedure is the fully-qualified name of the CommsService's PostMessage
 	// RPC.
 	CommsServicePostMessageProcedure = "/compass.v1.CommsService/PostMessage"
+	// CommsServiceListTopicsProcedure is the fully-qualified name of the CommsService's ListTopics RPC.
+	CommsServiceListTopicsProcedure = "/compass.v1.CommsService/ListTopics"
+	// CommsServiceUpdateTopicProcedure is the fully-qualified name of the CommsService's UpdateTopic
+	// RPC.
+	CommsServiceUpdateTopicProcedure = "/compass.v1.CommsService/UpdateTopic"
 	// CommsServiceRespondToAskProcedure is the fully-qualified name of the CommsService's RespondToAsk
 	// RPC.
 	CommsServiceRespondToAskProcedure = "/compass.v1.CommsService/RespondToAsk"
@@ -138,6 +143,13 @@ type CommsServiceClient interface {
 	// Post a message to a channel: a human turn, or a human prompt into an agent's
 	// channel.
 	PostMessage(context.Context, *connect.Request[v1.PostMessageRequest]) (*connect.Response[v1.PostMessageResponse], error)
+	// List the topics in a channel the caller may see — the topic index the UI's
+	// two-level drill-in renders. Archived topics are included only when asked.
+	ListTopics(context.Context, *connect.Request[v1.ListTopicsRequest]) (*connect.Response[v1.ListTopicsResponse], error)
+	// Rename or archive/unarchive a topic (id-stable). A rename to an existing
+	// (case-insensitive) name in the same channel MERGES into that topic (D1).
+	// Emits TopicUpserted.
+	UpdateTopic(context.Context, *connect.Request[v1.UpdateTopicRequest]) (*connect.Response[v1.UpdateTopicResponse], error)
 	// Answer a pending structured ask (D5). Authorized: the caller must be a
 	// member of the channel the ask belongs to.
 	RespondToAsk(context.Context, *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error)
@@ -235,6 +247,18 @@ func NewCommsServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(commsServiceMethods.ByName("PostMessage")),
 			connect.WithClientOptions(opts...),
 		),
+		listTopics: connect.NewClient[v1.ListTopicsRequest, v1.ListTopicsResponse](
+			httpClient,
+			baseURL+CommsServiceListTopicsProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("ListTopics")),
+			connect.WithClientOptions(opts...),
+		),
+		updateTopic: connect.NewClient[v1.UpdateTopicRequest, v1.UpdateTopicResponse](
+			httpClient,
+			baseURL+CommsServiceUpdateTopicProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("UpdateTopic")),
+			connect.WithClientOptions(opts...),
+		),
 		respondToAsk: connect.NewClient[v1.RespondToAskRequest, v1.RespondToAskResponse](
 			httpClient,
 			baseURL+CommsServiceRespondToAskProcedure,
@@ -270,6 +294,8 @@ type commsServiceClient struct {
 	openAgentWorkspace   *connect.Client[v1.OpenAgentWorkspaceRequest, v1.OpenAgentWorkspaceResponse]
 	listMessages         *connect.Client[v1.ListMessagesRequest, v1.ListMessagesResponse]
 	postMessage          *connect.Client[v1.PostMessageRequest, v1.PostMessageResponse]
+	listTopics           *connect.Client[v1.ListTopicsRequest, v1.ListTopicsResponse]
+	updateTopic          *connect.Client[v1.UpdateTopicRequest, v1.UpdateTopicResponse]
 	respondToAsk         *connect.Client[v1.RespondToAskRequest, v1.RespondToAskResponse]
 	searchMessages       *connect.Client[v1.SearchMessagesRequest, v1.SearchMessagesResponse]
 	subscribeComms       *connect.Client[v1.SubscribeCommsRequest, v1.SubscribeCommsResponse]
@@ -335,6 +361,16 @@ func (c *commsServiceClient) PostMessage(ctx context.Context, req *connect.Reque
 	return c.postMessage.CallUnary(ctx, req)
 }
 
+// ListTopics calls compass.v1.CommsService.ListTopics.
+func (c *commsServiceClient) ListTopics(ctx context.Context, req *connect.Request[v1.ListTopicsRequest]) (*connect.Response[v1.ListTopicsResponse], error) {
+	return c.listTopics.CallUnary(ctx, req)
+}
+
+// UpdateTopic calls compass.v1.CommsService.UpdateTopic.
+func (c *commsServiceClient) UpdateTopic(ctx context.Context, req *connect.Request[v1.UpdateTopicRequest]) (*connect.Response[v1.UpdateTopicResponse], error) {
+	return c.updateTopic.CallUnary(ctx, req)
+}
+
 // RespondToAsk calls compass.v1.CommsService.RespondToAsk.
 func (c *commsServiceClient) RespondToAsk(ctx context.Context, req *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error) {
 	return c.respondToAsk.CallUnary(ctx, req)
@@ -392,6 +428,13 @@ type CommsServiceHandler interface {
 	// Post a message to a channel: a human turn, or a human prompt into an agent's
 	// channel.
 	PostMessage(context.Context, *connect.Request[v1.PostMessageRequest]) (*connect.Response[v1.PostMessageResponse], error)
+	// List the topics in a channel the caller may see — the topic index the UI's
+	// two-level drill-in renders. Archived topics are included only when asked.
+	ListTopics(context.Context, *connect.Request[v1.ListTopicsRequest]) (*connect.Response[v1.ListTopicsResponse], error)
+	// Rename or archive/unarchive a topic (id-stable). A rename to an existing
+	// (case-insensitive) name in the same channel MERGES into that topic (D1).
+	// Emits TopicUpserted.
+	UpdateTopic(context.Context, *connect.Request[v1.UpdateTopicRequest]) (*connect.Response[v1.UpdateTopicResponse], error)
 	// Answer a pending structured ask (D5). Authorized: the caller must be a
 	// member of the channel the ask belongs to.
 	RespondToAsk(context.Context, *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error)
@@ -485,6 +528,18 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(commsServiceMethods.ByName("PostMessage")),
 		connect.WithHandlerOptions(opts...),
 	)
+	commsServiceListTopicsHandler := connect.NewUnaryHandler(
+		CommsServiceListTopicsProcedure,
+		svc.ListTopics,
+		connect.WithSchema(commsServiceMethods.ByName("ListTopics")),
+		connect.WithHandlerOptions(opts...),
+	)
+	commsServiceUpdateTopicHandler := connect.NewUnaryHandler(
+		CommsServiceUpdateTopicProcedure,
+		svc.UpdateTopic,
+		connect.WithSchema(commsServiceMethods.ByName("UpdateTopic")),
+		connect.WithHandlerOptions(opts...),
+	)
 	commsServiceRespondToAskHandler := connect.NewUnaryHandler(
 		CommsServiceRespondToAskProcedure,
 		svc.RespondToAsk,
@@ -529,6 +584,10 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 			commsServiceListMessagesHandler.ServeHTTP(w, r)
 		case CommsServicePostMessageProcedure:
 			commsServicePostMessageHandler.ServeHTTP(w, r)
+		case CommsServiceListTopicsProcedure:
+			commsServiceListTopicsHandler.ServeHTTP(w, r)
+		case CommsServiceUpdateTopicProcedure:
+			commsServiceUpdateTopicHandler.ServeHTTP(w, r)
 		case CommsServiceRespondToAskProcedure:
 			commsServiceRespondToAskHandler.ServeHTTP(w, r)
 		case CommsServiceSearchMessagesProcedure:
@@ -590,6 +649,14 @@ func (UnimplementedCommsServiceHandler) ListMessages(context.Context, *connect.R
 
 func (UnimplementedCommsServiceHandler) PostMessage(context.Context, *connect.Request[v1.PostMessageRequest]) (*connect.Response[v1.PostMessageResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.PostMessage is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) ListTopics(context.Context, *connect.Request[v1.ListTopicsRequest]) (*connect.Response[v1.ListTopicsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.ListTopics is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) UpdateTopic(context.Context, *connect.Request[v1.UpdateTopicRequest]) (*connect.Response[v1.UpdateTopicResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.UpdateTopic is not implemented"))
 }
 
 func (UnimplementedCommsServiceHandler) RespondToAsk(context.Context, *connect.Request[v1.RespondToAskRequest]) (*connect.Response[v1.RespondToAskResponse], error) {

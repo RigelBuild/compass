@@ -84,6 +84,15 @@ service CommsService {
   // channel.
   rpc PostMessage(PostMessageRequest) returns (PostMessageResponse);
 
+  // List the topics in a channel the caller may see — the topic index the UI's
+  // two-level drill-in renders. Archived topics are included only when asked.
+  rpc ListTopics(ListTopicsRequest) returns (ListTopicsResponse);
+
+  // Rename or archive/unarchive a topic (id-stable). A rename to an existing
+  // (case-insensitive) name in the same channel MERGES into that topic (D1).
+  // Emits TopicUpserted.
+  rpc UpdateTopic(UpdateTopicRequest) returns (UpdateTopicResponse);
+
   // Answer a pending structured ask (D5). Authorized: the caller must be a
   // member of the channel the ask belongs to.
   rpc RespondToAsk(RespondToAskRequest) returns (RespondToAskResponse);
@@ -238,6 +247,27 @@ message AgentWorkspace {
   reserved "participant_user_ids";
 }
 
+// ── Topics (Zulip threading model) ─────────────────────────────────────────
+
+// A topic: a named thread within a channel — the sole message container in the
+// two-level channel→topic model (D1). Every message belongs to exactly one
+// topic, and a topic to exactly one channel. A channel always has a home topic
+// for un-topic-addressed posts. Names are unique per channel (case-insensitive);
+// a rename onto an existing name merges (UpdateTopic).
+message Topic {
+  // Server-assigned stable id (survives rename).
+  string id = 1;
+  // The channel this topic lives in.
+  string channel_id = 2;
+  // Display name, unique (case-insensitive) within the channel.
+  string name = 3;
+  int64 created_at_unix_ms = 4;
+  // The account that first addressed the topic (created it).
+  string created_by_account_id = 5;
+  // Archived topics are hidden from the default index but keep their messages.
+  bool archived = 6;
+}
+
 // ── Messages + content blocks (D5) ─────────────────────────────────────────
 
 // A message in a channel — the persisted unit of the comms layer, held in the
@@ -246,10 +276,12 @@ message AgentWorkspace {
 message Message {
   // Server-assigned stable id.
   string id = 1;
-  // The channel this message belongs to.
-  oneof container {
-    string channel_id = 2;
-  }
+  // The topic this message belongs to; the message's channel is the topic's
+  // channel (a topic is scoped to exactly one channel). Field 2 was the
+  // `oneof container { string channel_id = 2; }` — the oneof and field 7
+  // parent_message_id are both REMOVED, not reserved (F9: pre-dogfood, zero
+  // stored payloads); field 2 is reused as topic_id, same `string` wire type.
+  string topic_id = 2;
   reserved 3;
   reserved "workspace_id";
   // The posting account (a user or an agent).
@@ -257,9 +289,6 @@ message Message {
   int64 at_unix_ms = 5;
   // Ordered content; mirrors ACP session/update blocks (D5).
   repeated MessageBlock blocks = 6;
-  // The message this one replies to, threading it under its parent; unset for a
-  // root message.
-  string parent_message_id = 7;
 }
 
 // One content block in a message: the durable conversation the comms layer
@@ -403,6 +432,9 @@ message SubscribeCommsResponse {
     // A live agent's presence changed (SEA-1569). Derived from the session
     // lifecycle (not a heartbeat); PUBLIC — UI board state consumes it.
     AgentPresenceChanged agent_presence_changed = 17;
+    // A topic was created, renamed, merged, or archived (Zulip threading model)
+    // — keeps the UI topic index live without a refetch.
+    TopicUpserted topic_upserted = 18;
   }
 }
 
@@ -416,6 +448,14 @@ message MessagePosted {
 // block-level deltas are a later optimization that needs no contract change).
 message MessageUpdated {
   Message message = 1;
+}
+
+// A topic was created, renamed, merged, or archived — the fan-out that keeps
+// the UI's topic index live without a refetch. On a merge (a rename onto an
+// existing name), subscribers see the surviving target topic upserted; the
+// source topic disappears from ListTopics.
+message TopicUpserted {
+  Topic topic = 1;
 }
 
 // A channel was created, or its membership changed. On a membership change, a
@@ -609,6 +649,10 @@ message ListMessagesRequest {
   // Point-in-time snapshot cursor (see SubscribeCommsResponse.snapshot_seq).
   // 0 = latest.
   uint64 snapshot_seq = 5;
+  // Optional topic filter within the channel — a bare field, NOT a selector in
+  // a oneof: empty pages the whole channel newest-first; set narrows to one
+  // topic's messages.
+  string topic_id = 6;
 }
 
 message ListMessagesResponse {
@@ -617,17 +661,25 @@ message ListMessagesResponse {
 }
 
 message PostMessageRequest {
-  // The channel to post to.
+  // The channel whose topic namespace the post addresses. KEPT as a single-arm
+  // oneof (not a bare string): the oneof gives unset (→ the channel's home
+  // topic) vs empty presence, which a bare proto3 string could not — so
+  // omit→home would break if collapsed.
   oneof container {
     string channel_id = 1;
   }
   reserved 2;
   reserved "workspace_id";
   repeated MessageBlock blocks = 3;
-  // The message this post replies to, threading it under its parent; unset for
-  // a root message. Persisted and echoed back on the stored Message
-  // (Message.parent_message_id). The parent must be an existing message.
-  string parent_message_id = 5;
+  // The topic to post into, within the channel above (orthogonal to container;
+  // the two oneofs coexist legally). topic_name = get-or-create by name;
+  // topic_id = post to an exact existing topic. Unset posts to the channel's
+  // home topic. parent_message_id (field 5) is REMOVED (F9: threading is now
+  // topic-level, not per-message).
+  oneof topic {
+    string topic_id = 6;
+    string topic_name = 7;
+  }
   // Client-supplied idempotency key: a caller-unique id for this post. The
   // server deduplicates retries of the same key (at-least-once transport over a
   // store of record, D12), returning the already-stored message rather than
@@ -637,6 +689,31 @@ message PostMessageRequest {
 
 message PostMessageResponse {
   Message message = 1;
+}
+
+message ListTopicsRequest {
+  // The channel whose topics to list.
+  string channel_id = 1;
+  // Include archived topics; default lists only active ones.
+  bool include_archived = 2;
+}
+
+message ListTopicsResponse {
+  repeated Topic topics = 1;
+}
+
+message UpdateTopicRequest {
+  // The topic to update (id-stable across a rename).
+  string topic_id = 1;
+  // Rename the topic. A rename onto an existing (case-insensitive) name in the
+  // same channel MERGES this topic into that one (D1). Unset leaves the name.
+  optional string name = 2;
+  // Archive (true) or unarchive (false) the topic. Unset leaves the state.
+  optional bool archived = 3;
+}
+
+message UpdateTopicResponse {
+  Topic topic = 1;
 }
 
 message RespondToAskRequest {
