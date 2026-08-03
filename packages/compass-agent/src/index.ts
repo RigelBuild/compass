@@ -13,6 +13,11 @@ export { CompassAgent, type CompassAgentOptions } from "./agent";
 export { CommsBroker, type CommsTransport, createCommsTools } from "./comms";
 export type { AgentControl, ControlSource } from "./control";
 export { type FrameSink, type OutboundFrame, ProtojsonLineSink } from "./frame";
+export {
+	createLifecycleTools,
+	LifecycleBroker,
+	type LifecycleTransport,
+} from "./lifecycle";
 export { EventMapper, type MapOutput, type UnmappedEvent } from "./mapping";
 export { createSocketControlSource } from "./transport/control-source";
 export { createSocketFrameSink } from "./transport/frame-sink";

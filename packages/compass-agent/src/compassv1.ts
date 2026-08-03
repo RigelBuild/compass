@@ -28,6 +28,26 @@ export {
 	CommsCallRequestSchema,
 	type CommsCallResult,
 	CommsCallResultSchema,
+	// The agent-initiated lifecycle call envelopes (internal-only AgentGateway
+	// gen). One `LifecycleCallRequest` carries the SDK toolCallId as `call_id`
+	// plus a oneof over spawn/despawn; the `LifecycleCallResult` mirrors it with a
+	// third `error` case — an in-band domain failure, NOT a transport teardown.
+	// The same two messages are reused verbatim as the RelayLifecycleCall payloads
+	// on the Runner->Server leg, so this is the one wire shape for both hops.
+	type DespawnPeerRequest,
+	DespawnPeerRequestSchema,
+	type DespawnPeerResponse,
+	DespawnPeerResponseSchema,
+	type LifecycleCallError,
+	LifecycleCallErrorSchema,
+	type LifecycleCallRequest,
+	LifecycleCallRequestSchema,
+	type LifecycleCallResult,
+	LifecycleCallResultSchema,
+	type SpawnPeerRequest,
+	SpawnPeerRequestSchema,
+	type SpawnPeerResponse,
+	SpawnPeerResponseSchema,
 } from "./gen/compass/v1/agent_gateway_pb";
 export {
 	// The inbound control envelope (internal-only §T5): a oneof over the control

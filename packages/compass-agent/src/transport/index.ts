@@ -21,6 +21,8 @@ import type {
 	CommsCallRequest,
 	CommsCallResult,
 	ControlSubscribeRequest,
+	LifecycleCallRequest,
+	LifecycleCallResult,
 	PostConversationFrameRequest,
 	PostConversationFrameResponse,
 } from "../gen/compass/v1/agent_gateway_pb";
@@ -53,6 +55,7 @@ import { createPublishSpine, type PublishSpine } from "./publish-spine";
  */
 export interface RunnerTransport {
 	comms(req: CommsCallRequest): Promise<CommsCallResult>;
+	lifecycle(req: LifecycleCallRequest): Promise<LifecycleCallResult>;
 	publishSpine(): PublishSpine;
 	postConversationFrame(
 		req: PostConversationFrameRequest,
@@ -98,6 +101,7 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 	let spine: PublishSpine | undefined;
 	return {
 		comms: (req) => client.comms(req),
+		lifecycle: (req) => client.lifecycle(req),
 		publishSpine: () => {
 			spine ??= createPublishSpine((stream) => client.publish(stream));
 			return spine;
