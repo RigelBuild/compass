@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
 import {
 	type Ask,
@@ -88,6 +88,14 @@ const msgRoles = (container: HTMLElement): string[] =>
 	);
 
 describe("RightSidebar fleet pane (compass-0.7)", () => {
+	// pinAgent write-throughs to the default-workspace localStorage key
+	// (compass.pinnedAgents.acc-matt), and happy-dom's localStorage is
+	// process-wide, so clear it around every case — otherwise pins accumulate
+	// across tests and leak into other default-workspace suites (store.test.ts's
+	// clearStorage discipline).
+	beforeEach(() => globalThis.localStorage.clear());
+	afterEach(() => globalThis.localStorage.clear());
+
 	// The inline conversation leg, one case per fleet tab. Against the OLD
 	// control-only FleetPane (a button, no ChannelView) there is no .conv-stream
 	// and zero .msg rows — every assertion below reddens. Mutation-check: dropping
@@ -247,5 +255,25 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 		expect(store.isPinned("acc-ghost")).toBe(false);
 		expect(store.activeRightTab()).toBe("status");
 		expect(container.querySelector(".fleet-unreachable")).toBeNull();
+	});
+
+	// The unreachable pane shows the HUMAN HANDLE cached at pin time (OQ-2), not
+	// the opaque id — a regression that dropped item().title from the pane (or
+	// rendered the raw id) would stay green at store level but reddens here. Seed
+	// a {id,handle} pin with a DISTINCTIVE handle into the default-workspace key
+	// before mount so the store hydrates it (mountRightSidebar has no workspaceKey
+	// hook), then assert the handle reaches the pane's unpin control.
+	test("the unreachable pane renders the cached handle, not the raw id", () => {
+		globalThis.localStorage.setItem(
+			"compass.pinnedAgents.acc-matt",
+			JSON.stringify([{ id: "acc-ghost", handle: "ghosthandle" }]),
+		);
+		const { store, container } = mountRightSidebar();
+		store.setActiveRightTab("agent:acc-ghost");
+
+		const unpin = container.querySelector<HTMLButtonElement>(".r-unpin-agent");
+		expect(unpin).not.toBeNull();
+		expect(unpin?.textContent).toContain("ghosthandle");
+		expect(unpin?.textContent).not.toContain("acc-ghost");
 	});
 });

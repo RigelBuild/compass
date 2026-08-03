@@ -2464,6 +2464,13 @@ button {
 	color: var(--text);
 }
 
+/* An unreachable pin's tab is dimmed (SEA-1645 P2) so the activity bar itself
+ * distinguishes a dead pin from a live one — the affirmative visual mark that
+ * pairs with the title's "(unreachable)" suffix and the absent StateDot. */
+.r-tab.unreachable {
+	opacity: 0.55;
+}
+
 .r-tab .r-tab-icon {
 	font-size: 15px;
 	line-height: 1;
