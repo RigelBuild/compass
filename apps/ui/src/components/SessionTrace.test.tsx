@@ -250,6 +250,58 @@ describe("SessionTrace (T-U2)", () => {
 		expect(anchor).not.toBeNull();
 		expect(anchor?.getAttribute("href")).toBe(href);
 	});
+
+	// A notice whose link carries a dangerous scheme (javascript:/data:) must
+	// render NO navigable anchor. Once the live session-event stream feeds these
+	// links (SEA-1342), the link is untrusted agent input; an unhardened
+	// `href={link}` would make it clickable (stored-XSS-adjacent). The scheme
+	// allow-list (safe-url.ts) gates the anchor. Pre-fix (`href={href()}` with no
+	// gate) the anchor renders → red.
+	for (const link of [
+		"javascript:alert(document.domain)",
+		"data:text/html,<script>alert(1)</script>",
+		"jAvAsCrIpT:alert(1)",
+	]) {
+		test(`notice item with a ${link.split(":")[0]} link renders no navigable anchor`, () => {
+			const container = mountTrace([
+				{
+					kind: "notice",
+					event: {
+						id: "se-n-danger",
+						atUnixMs: 1_753_000_000_000,
+						kind: "notice",
+						text: "malicious notice",
+						link,
+					},
+				},
+			]);
+			// text still renders; no anchor at all.
+			expect(container.textContent).toContain("malicious notice");
+			expect(container.querySelector("a")).toBeNull();
+		});
+	}
+
+	// Companion: a safe https link is unaffected — the anchor renders with the
+	// exact original href (safe-url returns the source string, not sanitize-url's
+	// normalized form). Pins that the gate is scheme-based, not link-neutering.
+	test("notice item with a safe https link keeps its exact href", () => {
+		const link = "https://github.com/sealedsecurity/sealed/pull/814";
+		const container = mountTrace([
+			{
+				kind: "notice",
+				event: {
+					id: "se-n-safe",
+					atUnixMs: 1_753_000_000_000,
+					kind: "notice",
+					text: "PR opened",
+					link,
+				},
+			},
+		]);
+		const anchor = container.querySelector<HTMLAnchorElement>("a[href]");
+		expect(anchor).not.toBeNull();
+		expect(anchor?.getAttribute("href")).toBe(link);
+	});
 });
 
 // RED acceptance spec for T2 (design record §341-379): DiffBlock's line

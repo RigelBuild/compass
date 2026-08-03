@@ -1,5 +1,6 @@
 import { type Component, For, Show } from "solid-js";
 import { type DiffRow, diffRows } from "../line-diff";
+import { safeHref } from "../safe-url";
 import type { FileDiff, TraceItem } from "../session-events";
 
 const DiffBlock: Component<{ diff: FileDiff }> = (props) => {
@@ -56,10 +57,11 @@ const NoticeRow: Component<{ item: Extract<TraceItem, { kind: "notice" }> }> = (
 		const e = props.item.event;
 		return e.kind === "notice" ? e : undefined;
 	};
+	const safeLink = () => safeHref(notice()?.link);
 	return (
 		<div class="block-notice">
 			<span class="notice-text">{notice()?.text ?? ""}</span>
-			<Show when={notice()?.link}>
+			<Show when={safeLink()}>
 				{(href) => (
 					<a class="notice-link" href={href()} target="_blank" rel="noreferrer">
 						open ↗

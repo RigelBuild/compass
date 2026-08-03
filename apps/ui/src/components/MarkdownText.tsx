@@ -19,6 +19,7 @@ import { SolidMarkdown, type SolidMarkdownComponents } from "solid-markdown";
 import type { Account } from "../comms-stub";
 import { highlightToHtml } from "../markdown/highlighter";
 import { mentionRuns } from "../markdown/mention-runs";
+import { safeHref } from "../safe-url";
 
 /** solid-markdown pipes `remarkRehype` with `allowDangerousHtml: true`
  *  (solid-markdown/dist/index.jsx:307), so any `<…>` in a message becomes a hast
@@ -355,25 +356,6 @@ function CodeBlock(props: {
 			</Show>
 		</Show>
 	);
-}
-
-/** Link schemes safe to render as a live `href` and hand to the external opener.
- *  solid-markdown's default `transformLinkUri` is `null` (it does NOT strip
- *  dangerous schemes like react-markdown does), so agent-authored
- *  `[x](javascript:…)` / `data:` / `file:` would otherwise reach the DOM and
- *  `openUrl` verbatim. `new URL` parses `javascript:` fine — the protocol check,
- *  not the throw, is the gate; the catch drops relative/malformed hrefs. */
-const SAFE_LINK_SCHEMES = new Set(["http:", "https:", "mailto:"]);
-
-/** `href` if its scheme is safe to render and open externally, else null (the
- *  link renders inert: `href="#"` + a no-op click). */
-function safeHref(href: string | undefined): string | null {
-	if (!href) return null;
-	try {
-		return SAFE_LINK_SCHEMES.has(new URL(href).protocol) ? href : null;
-	} catch {
-		return null;
-	}
 }
 
 /** The markdown-first renderer. */

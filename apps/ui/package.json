@@ -5,6 +5,7 @@
 	"private": true,
 	"type": "module",
 	"dependencies": {
+		"@braintree/sanitize-url": "7.1.2",
 		"@compass/client": "workspace:*",
 		"@shikijs/langs": "4.3.1",
 		"@shikijs/themes": "4.3.1",
