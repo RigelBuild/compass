@@ -151,6 +151,29 @@ function steerOp(seq: bigint): WireAgentControl {
 	});
 }
 
+// A populated steer op: a SteerControl carrying a comms Message with an id and
+// one text block (SEA-1310 §8 / SEA-1569 — the channel `@`-mention wire is no
+// longer an empty shell). Mirrors deliverOp.
+function populatedSteerOp(
+	seq: bigint,
+	id: string,
+	text: string,
+): WireAgentControl {
+	const message: Message = create(MessageSchema, {
+		id,
+		blocks: [
+			create(MessageBlockSchema, { block: { case: "text", value: text } }),
+		],
+	});
+	return create(AgentControlSchema, {
+		controlSeq: seq,
+		control: {
+			case: "steer",
+			value: create(SteerControlSchema, { message }),
+		},
+	});
+}
+
 // A populated deliver op: a DeliverControl carrying a comms Message with an id
 // and one text block (SEA-1310 §8 — the wire is no longer an empty shell).
 function deliverOp(seq: bigint, id: string, text: string): WireAgentControl {
@@ -364,6 +387,39 @@ test("a populated deliver decodes its Message and dispatches it through immediat
 	// A populated deliver is NOT counted "payload staged" — it decoded fine.
 	const staged = unmapped.find(
 		(u) => u.eventType === "control:deliver" && u.reason.includes("staged"),
+	);
+	expect(staged).toBeUndefined();
+});
+
+test("a populated steer decodes its Message and dispatches it through immediate.steer (SEA-1310 §8)", async () => {
+	// Non-vacuity: if decodeImmediatePayload returned undefined for a steer,
+	// steers would be empty and the op counted "payload staged" → red; if the
+	// steer were yielded on the iterable instead of dispatched immediately, ops
+	// would carry it → red.
+	const rec = emptyRecorder();
+	const socketPath = await serve(rec, {
+		control: async function* () {
+			yield replayCompleteOp(1n);
+			yield populatedSteerOp(2n, "steer-abc", "mention text");
+			yield promptOp(3n, "after");
+		},
+	});
+	const unmapped: UnmappedEvent[] = [];
+	const { immediate, steers } = recordingImmediate();
+	const source = createSocketControlSource(
+		createUnixSocketTransport(socketPath),
+		immediate,
+		{ onUnmapped: (u) => unmapped.push(u) },
+	);
+	const ops = await collect(source);
+	// The steer is dispatched immediately, never yielded on the iterable.
+	expect(ops.map((o) => o.kind)).toEqual(["replayComplete", "prompt"]);
+	// The decoded comms Message (id intact) reached immediate.steer.
+	expect(steers).toHaveLength(1);
+	expect((steers[0] as Message).id).toBe("steer-abc");
+	// A populated steer is NOT counted "payload staged" — it decoded fine.
+	const staged = unmapped.find(
+		(u) => u.eventType === "control:steer" && u.reason.includes("staged"),
 	);
 	expect(staged).toBeUndefined();
 });

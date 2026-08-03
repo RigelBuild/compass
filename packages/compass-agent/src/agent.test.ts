@@ -53,6 +53,23 @@ interface RecordingAgent {
 	// a test can model the control-prompt spin-up window (streaming true before
 	// any agent_start event) that the idle-deliver race hinges on.
 	readonly state: { tools: AgentTool[]; isStreaming: boolean };
+	// How many times CompassAgent.steer woke an idle turn via `agent.continue()`.
+	// A mid-turn steer must leave this at 0 (it interrupts the running loop, never
+	// starts a turn); an idle steer bumps it to 1 (it wakes a turn to drain the
+	// injected steer).
+	continueCount: number;
+	// Forces the next `continue()` to reject with the empty-history Error
+	// ("No messages to continue from"), INDEPENDENT of `state.isStreaming`. Models
+	// the genuinely reachable idle-steer rejection: `CompassAgent.steer` is fully
+	// synchronous from the idle gate to the `continue()` call, so `isStreaming`
+	// cannot change between them and an AgentBusyError spin-up race CANNOT fire on
+	// the idle path (pi-agent-core agent.ts:1029 vs :1035). The reachable
+	// synchronous rejection is `continue`'s empty-history throw when the inner
+	// agent reached ReplayComplete with zero replayed messages. Setting
+	// `state.isStreaming` true instead would flip the idle gate to the mid-turn
+	// path, so the rejection belt (idle-only) would never run — hence a dedicated
+	// trigger.
+	continueRejectsEmptyHistory: boolean;
 }
 
 // A recording fake for AgentSession — the external boundary CompassAgent
@@ -79,6 +96,8 @@ function recordingSession(natives: AgentTool[] = []): RecordingSession {
 		systemPrompts: [],
 		toolSets: [],
 		state: { tools: natives, isStreaming: false },
+		continueCount: 0,
+		continueRejectsEmptyHistory: false,
 	};
 	const agentImpl = {
 		prompt(input: string): Promise<void> {
@@ -94,7 +113,40 @@ function recordingSession(natives: AgentTool[] = []): RecordingSession {
 			return Promise.resolve();
 		},
 		steer(m: AgentMessage): void {
+			// `agent.steers` models the inner Agent's live steering queue (LIFO):
+			// `steer` pushes (pi-agent-core agent.ts:864) and `popLastSteer` pops
+			// the tail (:942-943). Keeping it live — not append-only — is what lets
+			// a test observe the rollback removing exactly the orphaned steer.
 			agent.steers.push(m);
+		},
+		popLastSteer(): AgentMessage | undefined {
+			// Mirror the real LIFO pop (pi-agent-core agent.ts:942-943): remove and
+			// return the last-enqueued steer. The rejection belt calls this to roll
+			// back the steer it pre-pushed when the idle `continue()` rejected.
+			return agent.steers.pop();
+		},
+		continue(): Promise<void> {
+			// Mirror the real `Agent.continue()` contract minimally (pi-agent-core
+			// agent.ts:1028-1036): it resumes a turn to drain queued (steering)
+			// messages. Two rejection shapes it can surface as a promise REJECTION:
+			// an AgentBusyError if already streaming (:1029) — unreachable on the
+			// idle path but kept for fidelity — and the empty-history Error
+			// ("No messages to continue from", :1035) when the inner agent reached
+			// ReplayComplete with zero replayed messages. The empty-history throw is
+			// the reachable idle-steer rejection the belt must survive; it fires
+			// BEFORE any steering dequeue (:1038), so the pre-pushed steer is still
+			// at the queue tail when the belt's `popLastSteer` rolls it back.
+			// Otherwise it records the wake and resolves; the drain of the steering
+			// queue itself is the inner loop's job, so the fake models the resolving
+			// `continue` as a no-op beyond the count.
+			agent.continueCount++;
+			if (agent.state.isStreaming) {
+				return Promise.reject(new AgentBusyError());
+			}
+			if (agent.continueRejectsEmptyHistory) {
+				return Promise.reject(new Error("No messages to continue from"));
+			}
+			return Promise.resolve();
 		},
 		appendMessage(m: AgentMessage): void {
 			agent.appended.push(m);
@@ -600,6 +652,19 @@ function ackIds(frames: OutboundFrame[]): string[] {
 	);
 }
 
+// The `content` string of a recorded steer AgentMessage. CompassAgent.steer
+// injects a UserMessage ({ role:"user", content: <formatted text> }), but the
+// recorded type is the wide AgentMessage union (whose custom arms — e.g.
+// BranchSummaryMessage — have no `content`), so a test asserting on the injected
+// text must narrow first. Fails loud if the recorded steer is not the expected
+// user-message shape rather than silently reading undefined.
+function steerContent(m: AgentMessage): string {
+	if (!("content" in m) || typeof m.content !== "string") {
+		throw new Error("recorded steer is not a string-content user message");
+	}
+	return m.content;
+}
+
 // Drain the microtask queue: the delivery ack is emitted on the microtask right
 // after `#flushDelivers` issues its prompt (the injection-accepted point — see
 // the method comment in agent.ts), so a test asserting on acks must let that
@@ -842,6 +907,178 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 		// It flushed idle: exactly one prompt (its empty text slot) and one ack.
 		expect(h.session.agent.prompts).toHaveLength(1);
 		expect(ackIds(h.frames)).toEqual(["ask1"]);
+		await h.close();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// SEA-1310 §8 — channel-borne steer arm.
+//
+// steer() rides the same immediate handle deliver does (not the control script),
+// so these tests reuse startDeliverAgent()/deliverMsg()/ackIds()/tick() and call
+// `agent.steer(msg)`. Unlike deliver, a steer is an @-mention interrupt: mid-turn
+// it injects via `session.agent.steer` (drained by the running loop, no turn
+// started); idle it injects AND wakes a turn via `session.agent.continue()` to
+// drain the injected steer (compass-0.6 :399-408).
+describe("CompassAgent — channel-borne steer (SEA-1310 §8 steer arm)", () => {
+	test("a mid-turn steer injects via session.agent.steer and does NOT start a turn", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.steer(deliverMsg("s1", "hey"));
+		// Injected onto the steering queue (the running loop drains it), and NO
+		// turn was woken — a live turn interrupts in place. Non-vacuity: drop the
+		// `session.agent.steer` inject → steers is empty.
+		expect(h.session.agent.steers).toHaveLength(1);
+		expect(steerContent(h.session.agent.steers[0] as AgentMessage)).toContain(
+			"hey",
+		);
+		expect(h.session.agent.continueCount).toBe(0);
+		// The ack (means "injected") rides the next microtask.
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["s1"]);
+		await h.close();
+	});
+
+	test("an idle steer injects AND starts a turn via continue", async () => {
+		const h = startDeliverAgent();
+		// No agent_start: the session is idle, so the steer wakes a turn to drain
+		// the injected steer.
+		h.agent.steer(deliverMsg("s1", "hey"));
+		expect(h.session.agent.steers).toHaveLength(1);
+		expect(steerContent(h.session.agent.steers[0] as AgentMessage)).toContain(
+			"hey",
+		);
+		// Non-vacuity: drop the idle `continue()` → continueCount stays 0.
+		expect(h.session.agent.continueCount).toBe(1);
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["s1"]);
+		await h.close();
+	});
+
+	test("one ack per injected steer, carrying its message_id", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.steer(deliverMsg("s1", "one"));
+		await tick();
+		// One ack, carrying the steer's id. Non-vacuity: drop the mid-turn ack
+		// microtask → this goes [] vs ["s1"].
+		expect(ackIds(h.frames)).toEqual(["s1"]);
+		await h.close();
+	});
+
+	test("a duplicate steer of an already-injected message re-acks and does NOT re-inject", async () => {
+		const h = startDeliverAgent();
+		// First steer (idle) injects s1 and acks it.
+		h.agent.steer(deliverMsg("s1", "once"));
+		expect(h.session.agent.steers).toHaveLength(1);
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["s1"]);
+		// The SAME id, redelivered after its priority-lane ack was lost. s1 is
+		// already injected (steer is never queued), so the dedup path RE-ACKS to
+		// recover the Server cursor and does NOT re-inject. Non-vacuity: drop the
+		// dedup guard → steers length goes to 2 (re-inject).
+		h.agent.steer(deliverMsg("s1", "once"));
+		expect(h.session.agent.steers).toHaveLength(1);
+		await tick();
+		// A SECOND ack for s1 — the guarded re-ack. Non-vacuity: drop the re-ack →
+		// ["s1"] vs ["s1","s1"].
+		expect(ackIds(h.frames)).toEqual(["s1", "s1"]);
+		const dup = h.unmapped.find(
+			(u) => u.eventType === "steer" && u.reason.includes("duplicate"),
+		);
+		expect(dup).toBeDefined();
+		await h.close();
+	});
+
+	test("a steer with empty Message.id is counted-unmapped, with no ack and no injection", async () => {
+		const h = startDeliverAgent();
+		h.agent.steer(deliverMsg("", "no id"));
+		// No inject, no wake, no ack. Non-vacuity: drop the empty-id guard → the
+		// steer injects (steers length 1) and acks.
+		expect(h.session.agent.steers).toEqual([]);
+		expect(h.session.agent.continueCount).toBe(0);
+		expect(ackIds(h.frames)).toEqual([]);
+		const missing = h.unmapped.find(
+			(u) => u.eventType === "steer" && u.reason.includes("missing Message.id"),
+		);
+		expect(missing).toBeDefined();
+		await h.close();
+	});
+
+	// Idle-steer rejection belt (MEDIUM-1): an idle steer PRE-PUSHES onto the
+	// inner steering queue, then wakes a turn with `continue()`, which can REJECT.
+	// The reachable idle-path rejection is `continue`'s synchronous empty-history
+	// throw ("No messages to continue from") when the inner agent reached
+	// ReplayComplete with zero replayed messages — NOT an AgentBusyError spin-up
+	// race, which cannot fire because steer() is synchronous from the idle gate to
+	// the call. On rejection the turn did not start: the belt rolls back the
+	// pre-pushed steer (popLastSteer, LIFO), un-dedups the id, and emits no ack
+	// (no false receipt), so the Server's redelivery re-injects EXACTLY ONE copy.
+	// Modeled by `continueRejectsEmptyHistory` (not `state.isStreaming`, which
+	// would flip the idle gate to the mid-turn path and skip the belt entirely).
+	test("an idle continue rejection rolls back the orphan, un-dedups the id, and emits no ack; redelivery re-injects exactly one copy", async () => {
+		const h = startDeliverAgent();
+		h.session.agent.continueRejectsEmptyHistory = true;
+		h.agent.steer(deliverMsg("s1", "refused"));
+		await tick();
+		// The wake refused — so NO ack, and the pre-pushed orphan was rolled back
+		// off the inner steering queue (nothing left to be drained later).
+		// Non-vacuity: drop the `popLastSteer` rollback → this steer stays on the
+		// queue and the redelivery below leaves it at length 2.
+		expect(ackIds(h.frames)).toEqual([]);
+		expect(h.session.agent.steers).toHaveLength(0);
+		// The refusal is surfaced, never a silent drop.
+		const refused = h.unmapped.find(
+			(u) =>
+				u.eventType === "steer:continue" && u.reason.includes("not injected"),
+		);
+		expect(refused).toBeDefined();
+		// The id left the processed set: the Server's redelivery of the same id
+		// injects again (not deduped away), and this time the wake succeeds. The
+		// inner steering queue holds EXACTLY ONE copy — the rollback prevented the
+		// double-inject the orphan would have caused.
+		h.session.agent.continueRejectsEmptyHistory = false;
+		h.agent.steer(deliverMsg("s1", "refused"));
+		expect(h.session.agent.steers).toHaveLength(1);
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["s1"]);
+		await h.close();
+	});
+
+	// Cross-type re-ack guard (MEDIUM-2): `#processedMessageIds` is SHARED between
+	// the deliver and steer arms, and an id can cross-arrive as the other type. A
+	// steer duplicate of an id still pending in `#deliverQueue` (queued mid-turn by
+	// deliver, NOT yet injected) must NOT be re-acked — "ack means injected", and
+	// acking a still-queued message then losing it to a crash-before-flush would
+	// strand it. Mirrors the deliver duplicate-of-a-queued-message test.
+	test("a steer duplicate of a still-QUEUED deliver is not re-acked (only the queued copy acks, when it flushes)", async () => {
+		const h = startDeliverAgent();
+		// A turn is live, so a deliver of X is QUEUED (not flushed) — X enters
+		// #processedMessageIds AND stays in #deliverQueue awaiting agent_end.
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("x1", "queued"));
+		expect(h.session.agent.prompts).toEqual([]);
+		// Now a steer of the SAME id arrives (cross-type sweep). It is a duplicate
+		// (id already processed) BUT X is still queued/un-injected, so NO ack is
+		// emitted — only the "duplicate steer" unmapped surface. Non-vacuity: drop
+		// the #deliverQueue-membership guard (re-ack unconditionally) → this reddens
+		// (a not-yet-injected message gets acked).
+		h.agent.steer(deliverMsg("x1", "dup"));
+		await tick();
+		expect(ackIds(h.frames)).toEqual([]);
+		const dup = h.unmapped.find(
+			(u) => u.eventType === "steer" && u.reason.includes("duplicate"),
+		);
+		expect(dup).toBeDefined();
+		// The steer did NOT inject (it is a duplicate) — the queued deliver is the
+		// single live copy.
+		expect(h.session.agent.steers).toEqual([]);
+		// The turn ends → the queued x1 flushes, injects once, and is acked EXACTLY
+		// once — the deferred ack the guard protected.
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["x1"]);
 		await h.close();
 	});
 });
