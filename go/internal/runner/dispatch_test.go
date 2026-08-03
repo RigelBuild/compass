@@ -55,6 +55,15 @@ type fakeSessionHost struct {
 	refreshCalls  int
 	lastRefreshID string
 	refreshErr    error
+
+	refreshConfigCalls int
+	refreshConfigErr   error
+	// refreshConfigEntered, when non-nil, receives one value at the START of
+	// each RefreshConfig call; refreshConfigRelease, when non-nil, blocks the
+	// call until a value is sent on it. Together they let a test hold a config
+	// pass in flight to exercise coalescing, deterministically — no sleeps.
+	refreshConfigEntered chan struct{}
+	refreshConfigRelease chan struct{}
 }
 
 func (f *fakeSessionHost) Start(_ context.Context, _ *compassv1.StartAgentSessionRequest, _ string) (string, error) {
@@ -109,6 +118,36 @@ func (f *fakeSessionHost) RefreshSecrets(_ context.Context, sessionID string) er
 	f.refreshCalls++
 	f.lastRefreshID = sessionID
 	return f.refreshErr
+}
+
+func (f *fakeSessionHost) RefreshConfig(ctx context.Context) error {
+	f.mu.Lock()
+	f.refreshConfigCalls++
+	entered, release, err := f.refreshConfigEntered, f.refreshConfigRelease, f.refreshConfigErr
+	f.mu.Unlock()
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return err
+}
+
+// configRefreshCount reads the RefreshConfig call count under the lock, so a test
+// can gate on the worker's async pass without racing the counter.
+func (f *fakeSessionHost) configRefreshCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.refreshConfigCalls
 }
 
 // startCommand builds a Start command carrying a request id.
@@ -442,6 +481,31 @@ func TestExecuteConfigVersionRecognizedNoResult(t *testing.T) {
 	}
 }
 
+// A ConfigVersion signal drives exactly one RefreshConfig pass on the background
+// worker (fleet-wide, so no session id is threaded) and produces no result
+// frame. A bug that logged the signal without signalling the worker would never
+// re-materialize; one that ran the fan-out inline would block the receive loop.
+func TestConfigVersionSignalDrivesRefreshConfig(t *testing.T) {
+	host := &fakeSessionHost{refreshConfigEntered: make(chan struct{}, 1)}
+	d := newDispatcher(host, discardLoggerRunner())
+	ctx, cancel := context.WithCancel(context.Background())
+	go d.runConfigWorker(ctx)
+	defer func() {
+		cancel()
+		<-d.configWorkerDone
+	}()
+
+	res := d.execute(ctx, "", configVersionCommand("v-1"))
+	if res != nil {
+		t.Fatalf("ConfigVersion produced a result frame %+v, want nil (signal-only)", res)
+	}
+	select {
+	case <-host.refreshConfigEntered:
+	case <-timeAfter():
+		t.Fatal("ConfigVersion signal did not drive a RefreshConfig pass within the deadline")
+	}
+}
+
 // A ConfigVersion signal is NOT deduped on request id: like SecretsVersion it
 // bypasses the request-id map (both carry an empty id), so two signals each
 // dispatch. A bug that ran it through the dedup would collapse every config
@@ -454,6 +518,85 @@ func TestHandleConfigVersionNotDeduped(t *testing.T) {
 	}
 	if r := d.handle(context.Background(), configVersionCommand("v-2")); r != nil {
 		t.Fatalf("second ConfigVersion signal returned a result %+v, want nil", r)
+	}
+}
+
+// Coalescing: two ConfigVersion signals arriving DURING an in-flight pass
+// collapse to exactly ONE follow-up pass — two extra signals do not queue two
+// extra passes. Deterministic via the fake's entered/release gates: pass 1 is
+// held mid-flight while both extra signals are delivered, so they can only
+// coalesce into the single buffered slot. A bug that queued per-signal would run
+// three passes total (2N Reloads at the host level); the coalescer runs two.
+func TestConfigWorkerCoalescesSignalsMidPass(t *testing.T) {
+	host := &fakeSessionHost{
+		refreshConfigEntered: make(chan struct{}),
+		refreshConfigRelease: make(chan struct{}),
+	}
+	d := newDispatcher(host, discardLoggerRunner())
+	ctx, cancel := context.WithCancel(context.Background())
+	go d.runConfigWorker(ctx)
+	defer func() {
+		cancel()
+		<-d.configWorkerDone
+	}()
+
+	recvEntered := func(what string) {
+		t.Helper()
+		select {
+		case <-host.refreshConfigEntered:
+		case <-timeAfter():
+			t.Fatalf("%s did not begin within the deadline", what)
+		}
+	}
+	release := func(what string) {
+		t.Helper()
+		select {
+		case host.refreshConfigRelease <- struct{}{}:
+		case <-timeAfter():
+			t.Fatalf("%s did not reach its release point within the deadline", what)
+		}
+	}
+
+	// Pass 1 begins and blocks mid-flight. The worker is now parked inside the
+	// pass, NOT draining the signal buffer — so the buffer state below is stable
+	// and the assertion is race-free.
+	d.signalConfig()
+	recvEntered("first pass")
+	// Two more signals arrive while pass 1 is in flight. They must coalesce into
+	// the single pending slot: a coalescing buffer holds exactly ONE, so N
+	// mid-pass signals yield exactly one follow-up pass, never N. A per-signal
+	// queue (the regression) would hold 2 here and later run 2N passes.
+	d.signalConfig()
+	d.signalConfig()
+	if n := len(d.configSignal); n != 1 {
+		t.Fatalf("config signal buffer holds %d pending passes after two mid-pass signals, want exactly 1 (coalesced)", n)
+	}
+
+	// Let pass 1 finish; the single coalesced signal drives exactly ONE follow-up
+	// pass, after which the buffer is drained and the worker parks.
+	release("first pass")
+	recvEntered("coalesced follow-up pass")
+	release("follow-up pass")
+
+	cancel()
+	<-d.configWorkerDone
+	if n := host.configRefreshCount(); n != 2 {
+		t.Fatalf("RefreshConfig ran %d times, want 2 (one in-flight + one coalesced from two mid-pass signals)", n)
+	}
+}
+
+// The config worker exits on ctx cancel, closing configWorkerDone — no leaked
+// goroutine. A bug that ignored ctx.Done() would hang the join forever.
+func TestConfigWorkerExitsOnContextCancel(t *testing.T) {
+	host := &fakeSessionHost{}
+	d := newDispatcher(host, discardLoggerRunner())
+	ctx, cancel := context.WithCancel(context.Background())
+	go d.runConfigWorker(ctx)
+	cancel()
+	select {
+	case <-d.configWorkerDone:
+	case <-timeAfter():
+		t.Fatal("config worker did not exit on ctx cancel; goroutine leaked")
 	}
 }
 

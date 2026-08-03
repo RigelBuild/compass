@@ -406,6 +406,9 @@ func (f *integStubRuntime) Stop(context.Context, runtime.ContainerID, time.Durat
 }
 func (f *integStubRuntime) Remove(context.Context, runtime.ContainerID) error { return nil }
 func (f *integStubRuntime) Exists(context.Context, string) (bool, error)      { return false, nil }
+func (f *integStubRuntime) MountLabel(context.Context, runtime.ContainerID) (string, error) {
+	return "", nil
+}
 
 // --- helpers -----------------------------------------------------------------
 

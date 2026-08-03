@@ -304,6 +304,12 @@ type ContainerRuntime interface {
 
 	// Exists reports whether a container with name currently exists (any state).
 	Exists(ctx context.Context, name string) (bool, error)
+
+	// MountLabel reports the container's SELinux mount label (its private MCS
+	// category), read from `podman inspect`. The config-update path relabels a
+	// freshly materialized version dir into this category so a confined agent
+	// can read it (agentHost.RefreshConfig -> ConfigMaterializer relabel).
+	MountLabel(ctx context.Context, id ContainerID) (string, error)
 }
 
 // defaultCommandTimeout is the default per-command wall-clock cap. A hung podman
@@ -507,6 +513,17 @@ func (p *PodmanCLI) Exists(ctx context.Context, name string) (bool, error) {
 	}
 }
 
+// MountLabel reads the container's SELinux mount label via `podman inspect`,
+// trimming the trailing newline the CLI prints. A one-shot fire-and-check like
+// Start/Remove: a non-zero exit becomes a CommandError through run.
+func (p *PodmanCLI) MountLabel(ctx context.Context, id ContainerID) (string, error) {
+	out, err := p.run(ctx, "podman inspect", inspectMountLabelArgs(id))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // spawnCapture spawns `podman <args>`, optionally writing stdin, and captures
 // output under the command timeout. The single subprocess seam: a spawn
 // failure, a timeout, and a captured non-zero exit are all mapped here. summary
@@ -597,6 +614,13 @@ func execStreamingArgs(id ContainerID, spec StreamingExecSpec) []string {
 	args = append(args, id.String())
 	args = append(args, spec.Command...)
 	return args
+}
+
+// inspectMountLabelArgs assembles the argv for reading a container's SELinux
+// mount label. Split out so the argv assembly is unit-testable without spawning
+// podman, mirroring execStreamingArgs.
+func inspectMountLabelArgs(id ContainerID) []string {
+	return []string{"inspect", "--format", "{{.MountLabel}}", id.String()}
 }
 
 // mountArg assembles a `-v host:container[:ro],Z` argument. SELinux relabelling

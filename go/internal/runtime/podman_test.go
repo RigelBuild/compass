@@ -102,6 +102,19 @@ func TestExecStreamingArgsMinimalOmitsUserAndWorkdir(t *testing.T) {
 	}
 }
 
+// inspectMountLabelArgs pins the exact `podman inspect` argv the config-update
+// path reads a container's SELinux mount label with. A dropped --format or a
+// wrong Go template would silently read the wrong field (or the whole inspect
+// JSON), so the relabel would target the wrong MCS category.
+func TestInspectMountLabelArgsPinsFormat(t *testing.T) {
+	args := inspectMountLabelArgs(ContainerID("ctr123"))
+
+	want := []string{"inspect", "--format", "{{.MountLabel}}", "ctr123"}
+	if !slices.Equal(args, want) {
+		t.Fatalf("inspectMountLabelArgs = %q, want %q", args, want)
+	}
+}
+
 // execStreamingArgs carries -e vars but never --env-file: env-delivery secrets
 // are not passed on the exec at all (podman resolves --env-file host-side, where
 // the container-internal file does not exist; the agent sources the file itself).

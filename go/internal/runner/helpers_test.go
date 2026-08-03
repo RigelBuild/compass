@@ -112,6 +112,9 @@ func (f *pipeRuntime) Remove(context.Context, runtime.ContainerID) error {
 	return nil
 }
 func (f *pipeRuntime) Exists(context.Context, string) (bool, error) { return false, nil }
+func (f *pipeRuntime) MountLabel(context.Context, runtime.ContainerID) (string, error) {
+	return "", nil
+}
 
 func (f *pipeRuntime) record(call string) {
 	f.mu.Lock()
@@ -182,6 +185,9 @@ func (f *stubStreamingRuntime) Remove(context.Context, runtime.ContainerID) erro
 	return nil
 }
 func (f *stubStreamingRuntime) Exists(context.Context, string) (bool, error) { return false, nil }
+func (f *stubStreamingRuntime) MountLabel(context.Context, runtime.ContainerID) (string, error) {
+	return "", nil
+}
 
 func (f *stubStreamingRuntime) record(call string) {
 	f.mu.Lock()
@@ -297,6 +303,14 @@ func (c *capturePublish) FetchAgentConfig(_ context.Context, _ *connect.Request[
 // that don't exercise config need so Materialize succeeds with an empty mount.
 func sendEmptyAgentConfig(stream *connect.ServerStream[compassv1internal.FetchAgentConfigResponse]) error {
 	return stream.Send(versionFrame(""))
+}
+
+// setConfigBundle sets the bundle FetchAgentConfig streams, so a test can move
+// the fleet config version between materialize passes.
+func (c *capturePublish) setConfigBundle(bundle AgentConfigBundle) {
+	c.mu.Lock()
+	c.configBundle = bundle
+	c.mu.Unlock()
 }
 
 // setConfigErr makes FetchAgentConfig return err instead of a bundle, so a test
