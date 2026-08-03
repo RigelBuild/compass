@@ -6,7 +6,7 @@
 // and an exfiltrated one — and review is exactly what missed it the first time
 // (SEA-1539). This gate gives the `.gitignore` rules teeth so they cannot
 // silently re-widen, and — the property that actually matters — pins the real
-// tracked set so it can never grow past the one secret-free dev-defaults file.
+// tracked set so it can never grow past the one dev-defaults file.
 //
 // Two layers, because `git check-ignore` and `git ls-files` answer different
 // questions and each alone has a hole:
@@ -18,6 +18,12 @@
 //   2. ls-files — what is ACTUALLY tracked, regardless of the rules? This is the
 //      only ground truth about what leaves in the bundle, and it closes the
 //      force-add / pre-rule blind spot layer 1 cannot see.
+//
+// Scope boundary: this gate covers WHICH files are tracked, not their CONTENTS.
+// A VITE_* secret pasted into the one allowed tracked file (`.env.development`)
+// still ships and passes both layers; that file's secret-freedom rests on
+// convention and review, not this gate. Closing that hole needs a content-scan
+// layer, tracked as a follow-up.
 
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
@@ -61,19 +67,28 @@ describe("env-secrecy gate (no committable .env ships a baked VITE_* secret)", (
 		expect(await isIgnored(DEV_DEFAULTS)).toBe(false);
 	});
 
-	test("the only tracked apps/ui env file is the secret-free dev defaults", async () => {
+	test("the only tracked apps/ui env file is the dev defaults", async () => {
 		// Ground truth for what ships: what git actually tracks under apps/ui,
 		// regardless of the ignore rules. `git ls-files` from apps/ui lists tracked
 		// paths relative to that dir; filter to env-shaped basenames (`.env`,
-		// `.env.<mode>`, and any nested one) and assert the set is exactly the
-		// dev-defaults file. A force-added or pre-rule secret lands here as a new
-		// entry and reddens this test even though layer 1 would still pass.
+		// `.env.<mode>`, and any nested one, but not a `.env.d.ts` type stub) and
+		// assert the set is exactly the dev-defaults file. A force-added or pre-rule
+		// secret lands here as a new entry and reddens this test even though layer 1
+		// would still pass. (Its CONTENTS are out of scope — see the header.)
 		const tracked = (await $`git ls-files`.cwd(UI_DIR).quiet().text())
 			.split("\n")
 			.filter((line) => line.length > 0);
 		const envFiles = tracked
-			.filter((path) => /(^|\/)\.env(\.|$)/.test(path))
+			.filter(
+				(path) => /(^|\/)\.env(\.|$)/.test(path) && !path.endsWith(".d.ts"),
+			)
 			.sort();
-		expect(envFiles).toEqual([DEV_DEFAULTS]);
+		const unexpected = envFiles.filter((f) => f !== DEV_DEFAULTS);
+		expect(
+			envFiles,
+			unexpected.length > 0
+				? `Unexpected tracked env file(s) under apps/ui: [${unexpected.join(", ")}]. A VITE_* value in any tracked env file is baked into dist/ and shipped to every browser (SEA-1539). Untrack it (git rm --cached <file>); only ${DEV_DEFAULTS} (loopback dev defaults, no secret) may be tracked.`
+				: "",
+		).toEqual([DEV_DEFAULTS]);
 	});
 });
