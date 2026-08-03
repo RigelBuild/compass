@@ -29,7 +29,7 @@
 // never touches wire bytes, so the pending gen of those internal proto messages
 // changes only the sink/source impls, not this class.
 
-import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
 import {
 	AgentSessionState,
@@ -244,19 +244,112 @@ export class CompassAgent {
 		if (!this.#turnActive && !this.#session.isStreaming) this.#flushDelivers();
 	}
 
-	// Steer arm (SEA-1310) — parked. SteerControl is still an empty shell on the
-	// wire (no `message` field), so the control source never dispatches a steer
-	// payload through the immediate handle; this entry exists so the handle's
-	// `steer` forward has a target and the interface is faithful. When a later
-	// ticket populates SteerControl, this is where the mid-turn steer lands.
+	// SEA-1310 §8 — channel-borne steer arm. The entry the immediate handle calls
+	// when a `SteerControl.message` decodes (populated by SEA-1631). Unlike
+	// deliver (which coalesces to a turn-end prompt), a steer is an @-mention
+	// interrupt: mid-turn it injects into the running loop (interrupt at the next
+	// tool boundary); idle it starts a fresh turn to drain the injected steer
+	// (frozen record :788-814, precedence :537-562; compass-0.6 amendment
+	// :399-408 — "a frame arriving while the agent is idle starts a new turn;
+	// only the @-mention steer interrupts a turn in progress"). The `message_id`
+	// dedup shares deliver's `#processedMessageIds` set (a message is steer XOR
+	// deliver per D5, but a lost-ack sweep can re-arrive it as the other; the
+	// shared set + guarded re-ack recovers the Server cursor). The ack means
+	// "injected", emitted at injection time (frozen :540-546, :283). The replay
+	// barrier is enforced UPSTREAM at the control source (control-source.ts), so
+	// this method does not re-check it — same as `deliver`.
 	steer(msg: Message): void {
-		this.#onUnmapped({
-			kind: "unmapped",
-			eventType: "steer",
-			reason:
-				"channel-borne steer staged — SteerControl payload not yet on the wire",
+		// A message with no id cannot be acked or deduped — fail-visible, never a
+		// silent drop (and never injected, since there would be no receipt for it).
+		// Mirrors deliver's empty-id guard.
+		if (msg.id === "") {
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "steer",
+				reason: "steer missing Message.id — cannot ack or dedup",
+			});
+			return;
+		}
+		// Sweep-redelivery safety: a message already processed this session is not
+		// re-injected. Unlike deliver there is no queue-membership check — steer is
+		// never queued, so a processed steer is ALREADY injected and is always
+		// re-acked (guarded re-ack to recover a stranded Server cursor when the
+		// priority-lane ack was lost; frozen design.md:405-406, a duplicate ack is
+		// a no-op on the Server :338).
+		if (this.#processedMessageIds.has(msg.id)) {
+			const value: DeliveryAck = create(DeliveryAckSchema, {
+				messageId: msg.id,
+			});
+			this.#sink.emit({ kind: "deliveryAck", value });
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "steer",
+				reason: "duplicate steer — message_id already processed",
+			});
+			return;
+		}
+		this.#processedMessageIds.add(msg.id);
+		// Build the AgentMessage the inner `agent.steer` accepts, reusing the
+		// single deliver formatter (single-element batch — no new formatter). The
+		// `steering` flag is what the agent's pre-LLM transform reads to wrap the
+		// message as a mid-turn interrupt (pi-ai types.d.ts:490). Timestamp is a
+		// fixed 0 — never asserted, and a wall-clock read would make tests
+		// non-deterministic.
+		const agentMsg: AgentMessage = {
+			role: "user",
+			content: formatDeliversForPrompt([msg]),
+			steering: true,
+			attribution: "user",
+			timestamp: 0,
+		};
+		// Idle is computed exactly as deliver does: the event-derived `#turnActive`
+		// AND the authoritative `#session.isStreaming` (closes the control-prompt
+		// spin-up race the event flag alone cannot — see the deliver comment).
+		const idle = !this.#turnActive && !this.#session.isStreaming;
+		// Inject: `agent.steer` only ENQUEUES the steer onto the steering queue; a
+		// running loop drains it at the next injection boundary (interrupt).
+		this.#session.agent.steer(agentMsg);
+		if (!idle) {
+			// Mid-turn: the running loop will drain the enqueued steer. `agent.steer`
+			// is synchronous void and cannot reject, so the ack (means "injected")
+			// rides the next microtask, mirroring deliver's ack-at-injection timing.
+			queueMicrotask(() => {
+				const value: DeliveryAck = create(DeliveryAckSchema, {
+					messageId: msg.id,
+				});
+				this.#sink.emit({ kind: "deliveryAck", value });
+			});
+			return;
+		}
+		// Idle: `agent.steer` alone only enqueues, so nothing drains it — wake a
+		// turn with `agent.continue()` to drain the injected steer. Apply the same
+		// rejection-safety belt as `#flushDelivers`: `continue` injects
+		// synchronously up to its first await and can only signal refusal (e.g. an
+		// AgentBusyError from a spin-up race) as a settled REJECTION. On rejection
+		// the turn did not start: un-dedup the id (so the Server redelivers) and
+		// surface it, no ack. Otherwise ack on the microtask. The settled-rejection
+		// `.catch` is scheduled before this `queueMicrotask`, so the `rejected` flag
+		// is observed deterministically under `tick()` — no timer, no race.
+		let rejected = false;
+		let acked = false;
+		this.#session.agent.continue().catch((err) => {
+			if (acked) return;
+			rejected = true;
+			this.#processedMessageIds.delete(msg.id);
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "steer:continue",
+				reason: `steer continue rejected — not injected, un-acked for redelivery: ${String(err)}`,
+			});
 		});
-		void msg;
+		queueMicrotask(() => {
+			if (rejected) return;
+			acked = true;
+			const value: DeliveryAck = create(DeliveryAckSchema, {
+				messageId: msg.id,
+			});
+			this.#sink.emit({ kind: "deliveryAck", value });
+		});
 	}
 
 	// Track a session turn edge (SEA-1310 §8). A turn-start edge marks the session

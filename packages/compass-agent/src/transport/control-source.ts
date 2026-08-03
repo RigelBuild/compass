@@ -19,12 +19,14 @@
 //     start of each `next()`, never on mere receipt (P1 #6).
 //   - `steer` / `deliver` are the IMMEDIATE-dispatch class (mid-turn interrupt /
 //     turn-end delivery): processed on the event loop at decode, ahead of any
-//     queued iterator op. As of SEA-1310 §8 `deliver` carries the comms Message
-//     on the wire (`DeliverControl.message`) — decoded here and dispatched
-//     through `immediate.deliver`, where the CompassAgent dedups + coalesces it
-//     to a turn-end prompt. `steer` is still an empty shell (OQ-1) — no
-//     `message` field on the wire — so it is counted-unmapped without fabricating
-//     a payload (OQ-2(A)) until a later PR populates SteerControl.
+//     queued iterator op. As of SEA-1310 §8 BOTH carry the comms Message on the
+//     wire (`SteerControl.message` / `DeliverControl.message`, the latter added
+//     by SEA-1631) — decoded here and dispatched through `immediate.steer` /
+//     `immediate.deliver`, where the CompassAgent dedups on `msg.id`, injects
+//     (steer as a mid-turn interrupt / idle-start turn; deliver coalesced to a
+//     turn-end prompt), and acks per message. An empty SteerControl (no `message`
+//     field) still decodes to undefined and is counted-unmapped without
+//     fabricating a payload (OQ-2(A)).
 //     Barrier-enforced (invariant 1): a pre-ReplayComplete immediate op is
 //     refused-and-counted, never applied.
 //   - `replay` / `config` are also empty shells in C1 (OQ-1) — no payload to seed
@@ -150,24 +152,23 @@ export const CONTROL_RECONNECT_NO_PROGRESS_MAX = 10;
 // The immediate-dispatch handle: the SDK actions a mid-turn `steer` / turn-end
 // `deliver` drives without waiting for the iterator's next pull. Frozen C4
 // signature (design.md C4 Interfaces). As of SEA-1310 §8 the handle carries the
-// full comms `Message` (`.id` intact) — no longer the empty shell of C4b: the
-// deliver arm decodes `DeliverControl.message` and forwards it here, where the
-// CompassAgent dedups on `msg.id`, coalesces to a turn-end prompt, and acks per
-// message. The steer arm stays parked (SteerControl is still an empty shell on
-// the wire — no `message` field — so the source never calls `steer` with a
-// payload until a later ticket populates it).
+// full comms `Message` (`.id` intact) — no longer the empty shell of C4b: BOTH
+// arms decode their `message` field (`SteerControl.message`, populated by
+// SEA-1631; `DeliverControl.message`) and forward it here, where the CompassAgent
+// dedups on `msg.id`, injects (steer as a mid-turn interrupt / idle-start turn;
+// deliver coalesced to a turn-end prompt), and acks per message.
 export interface ImmediateControl {
-	steer(msg: Message): void; // compass.v1.Message — .id intact (steer arm parked)
+	steer(msg: Message): void; // compass.v1.Message — .id intact
 	deliver(msg: Message): void; // compass.v1.Message — .id intact
 }
 
 // Decode the immediate-op payload into the comms `Message` the `immediate`
 // handle applies. `DeliverControl.message` (SEA-1310 §8) carries the full comms
-// Message with its `.id` — return it when present. `SteerControl` is still an
-// empty shell on the wire (no `message` field), so a steer value has nothing to
-// read and yields `undefined` → counted-unmapped (staged) at the caller, exactly
-// as before. A deliver whose `message` is absent is malformed → also `undefined`
-// → counted-unmapped. The caller never fabricates a payload.
+// Message with its `.id` — return it when present. `SteerControl.message` (added
+// by SEA-1631) likewise carries the comms Message. An empty SteerControl (no
+// `message` field) has nothing to read and yields `undefined` → counted-unmapped
+// (staged) at the caller; a deliver whose `message` is absent is malformed → also
+// `undefined` → counted-unmapped. The caller never fabricates a payload.
 function decodeImmediatePayload(
 	shell: SteerControl | DeliverControl,
 ): Message | undefined {
@@ -361,10 +362,11 @@ export function createSocketControlSource(
 			case "deliver": {
 				// Immediate-dispatch class. Barrier-enforced (invariant 1): a live
 				// immediate op before ReplayComplete is refused-and-counted. Otherwise
-				// decode the payload: DELIVER carries the comms Message (SEA-1310 §8)
-				// and dispatches through `immediate.deliver`; STEER is still an empty
-				// shell on the wire (no `message` field) so it decodes to undefined and
-				// is counted-unmapped (staged) without fabricating a payload (OQ-2(A)).
+				// decode the payload: both STEER and DELIVER carry the comms Message
+				// (SEA-1310 §8; steer's `message` field populated by SEA-1631) and
+				// dispatch through `immediate.steer` / `immediate.deliver`. An empty
+				// SteerControl (no `message` field) decodes to undefined and is
+				// counted-unmapped (staged) without fabricating a payload (OQ-2(A)).
 				const msg = replayComplete
 					? decodeImmediatePayload(wire.control.value)
 					: undefined;
