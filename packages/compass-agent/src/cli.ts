@@ -409,6 +409,11 @@ export async function main(
 		//   - `customTools` are the connected MCP tools; `enableMCP: false` stops
 		//     the SDK ALSO discovering a cwd `.mcp.json`. A provided `mcpManager`
 		//     would NOT surface its tools (sdk.ts:1739/1818), so we pass tools.
+		// Scope: the guarantee covers the mount's three surfaces (skills,
+		// extensions, MCP). It does NOT suppress cwd custom-TOOL discovery —
+		// sdk.ts:1861 runs discoverCustomToolPaths([], cwd) unconditionally, so a
+		// `.omp/tools/` tree in the workdir still loads. Orthogonal to this
+		// mount contract; noted so nobody over-reads it as "zero ambient tools".
 		skills: mounted.skills,
 		additionalExtensionPaths: mounted.additionalExtensionPaths,
 		disableExtensionDiscovery: mounted.disableExtensionDiscovery,

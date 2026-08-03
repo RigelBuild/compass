@@ -80,8 +80,8 @@ describe("readMountedSkills", () => {
 
 		const skills = await readMountedSkills(currentConfigDir(mount));
 		expect(skills.map((s) => s.name).sort()).toEqual(["alpha", "beta"]);
-		// The source tag is the compass-config user-level provenance, so an
-		// authored skill of the same name would still win over the mount's.
+		// The source tag is the compass-config user-level provenance (discovery is
+		// skipped, so it is provenance metadata only — no precedence contest).
 		expect(skills.every((s) => s.source === "compass-config:user")).toBe(true);
 	});
 

@@ -46,8 +46,10 @@ export const AGENT_CONFIG_MOUNT_PATH = "/run/compass/agent-config";
 
 /**
  * The source tag stamped on skills loaded from the mount, in the
- * `provider:level` shape `loadSkillsFromDir` splits (skills.ts) — user-level,
- * so an authored skill of the same name would still win.
+ * `provider:level` shape `loadSkillsFromDir` splits (skills.ts). Provenance
+ * only: `main()` passes these skills to `createAgentSession`, which SKIPS
+ * discovery (sdk.ts:1417), so the mount is the sole skill source and no
+ * same-name discovered skill exists for the tag to win precedence against.
  */
 const SKILL_SOURCE = "compass-config:user";
 
