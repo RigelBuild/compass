@@ -279,7 +279,6 @@ func TestCommitConversationFrameMapsStoreErrorCodes(t *testing.T) {
 	}{
 		{"invalid argument is terminal invalid_argument", store.ErrInvalidArgument, connect.CodeInvalidArgument},
 		{"conflict is terminal already_exists", store.ErrConflict, connect.CodeAlreadyExists},
-		{"not found is terminal not_found", store.ErrNotFound, connect.CodeNotFound},
 		{"other store fault is transient internal", errors.New("transient store fault"), connect.CodeInternal},
 	}
 	for _, tc := range cases {

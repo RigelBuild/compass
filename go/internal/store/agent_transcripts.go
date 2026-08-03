@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 )
 
@@ -154,6 +155,9 @@ func (s *Store) AppendTranscriptEntry(ctx context.Context, sessionID string, lif
 	if err != nil {
 		return err
 	}
+	if lifetimeSeq > math.MaxInt64 || base > uint64(math.MaxInt64)-lifetimeSeq {
+		return fmt.Errorf("%w: entry_seq %d out of range", ErrInvalidArgument, lifetimeSeq)
+	}
 	entrySeq := base + lifetimeSeq
 
 	tag, err := s.pool.Exec(ctx,
@@ -179,7 +183,11 @@ func (s *Store) AppendTranscriptEntry(ctx context.Context, sessionID string, lif
 	if tag.RowsAffected() == 0 {
 		// Duplicate idempotency_key: the retry dedup. Silent success, and NO
 		// flush — a retried checkpoint frame must not re-invoke the PRIMARY
-		// flush (design.md T4: it short-circuits before it).
+		// flush (design.md T4: it short-circuits before it). If the ORIGINAL
+		// checkpoint committed its row but its primaryFlush then failed, this
+		// retried commit also skips the flush — safe, because the next
+		// checkpoint's primaryFlush (or the session-end flush) re-covers that
+		// pre-checkpoint range, and the PG-only read view stays correct throughout.
 		return nil
 	}
 
@@ -336,16 +344,34 @@ func (s *Store) primaryFlush(ctx context.Context, sessionID string, checkpointSe
 }
 
 // maybeSafetyValve is the high-size-cap check on the same AppendTranscriptEntry
-// path. If the post-checkpoint hot-tail (entry_json octet length summed over
-// entries after the latest checkpoint) exceeds the cap, it evicts the oldest
-// post-checkpoint chunk as a safety_valve segment and prunes it, always
-// retaining the newest entry. A no-op in normal operation (the cap sits above
-// the compaction window).
+// path. Two-phase: a CHEAP single-scalar aggregate sums the post-checkpoint
+// hot-tail bytes in ONE query and returns early when under the cap (the common
+// path — the valve sits above the compaction window, so it never engages in
+// normal operation, and no per-row materialization happens). ONLY when the
+// scalar exceeds the cap does it run the per-row query to pick the eviction cut
+// point, evict the oldest post-checkpoint chunk as a safety_valve segment, and
+// prune it, always retaining the newest entry.
 func (s *Store) maybeSafetyValve(ctx context.Context, sessionID string) error {
 	cpSeq, err := s.latestCheckpointSeq(ctx, sessionID)
 	if err != nil {
 		return err
 	}
+	// Cheap gate: sum the post-checkpoint byte total in ONE scalar (no per-row
+	// materialization on the common path). The valve sits above the compaction
+	// window, so in normal operation this scalar is under the cap and returns here.
+	var tailBytes int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE(SUM(octet_length(entry_json)), 0)
+		   FROM agent_session_transcript_entries
+		  WHERE session_id = $1 AND entry_seq > $2`,
+		sessionID, toInt64(cpSeq),
+	).Scan(&tailBytes); err != nil {
+		return fmt.Errorf("store: measure hot tail: %w", err)
+	}
+	if tailBytes <= int64(s.safetyValveCapBytes) {
+		return nil
+	}
+	// Over the cap: NOW materialize the rows to pick the eviction cut point.
 	rows, err := s.pool.Query(ctx,
 		`SELECT entry_seq, octet_length(entry_json)
 		   FROM agent_session_transcript_entries
@@ -573,10 +599,11 @@ func segmentKey(sessionID string, minSeq, maxSeq uint64) string {
 	return fmt.Sprintf("sessions/%s/%d-%d.jsonl", sessionID, minSeq, maxSeq)
 }
 
-// toInt64 narrows a server-controlled entry_seq to the BIGINT domain for a query
-// parameter.
+// toInt64 narrows an entry_seq to the BIGINT domain for a query parameter.
+// AppendTranscriptEntry rejects any seq > math.MaxInt64 before it reaches here,
+// so the narrowing never wraps negative.
 func toInt64(seq uint64) int64 {
-	return int64(seq) //nolint:gosec // G115: entry_seq is a server-controlled positive sequence within the int64 domain
+	return int64(seq) //nolint:gosec // G115: callers guard seq <= math.MaxInt64 before narrowing (AppendTranscriptEntry range check)
 }
 
 // toUint64 widens a stored BIGINT entry_seq (always positive) back to uint64.

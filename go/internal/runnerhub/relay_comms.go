@@ -344,8 +344,6 @@ func transcriptCommitError(err error) error {
 		return nil
 	case errors.Is(err, store.ErrInvalidArgument):
 		return connect.NewError(connect.CodeInvalidArgument, err)
-	case errors.Is(err, store.ErrNotFound):
-		return connect.NewError(connect.CodeNotFound, err)
 	case errors.Is(err, store.ErrConflict):
 		return connect.NewError(connect.CodeAlreadyExists, err)
 	default:

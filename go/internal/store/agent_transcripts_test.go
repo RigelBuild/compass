@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -179,6 +180,20 @@ func TestAppendTranscriptEntryUnknownSessionInvalidArgument(t *testing.T) {
 	s, _ := storeWithFake(t)
 	err := s.AppendTranscriptEntry(t.Context(), "ghost-session", 1, false, `{"e":1}`, "idem-1")
 	sentinelIs(t, err, ErrInvalidArgument, "append to unknown session")
+}
+
+// TestAppendTranscriptEntryRejectsOutOfRangeSeq pins the entry_seq range guard:
+// a lifetimeSeq above math.MaxInt64 (which would wrap negative under the int64
+// narrowing and break the monotonic-positive (session_id, entry_seq) PK) is
+// rejected as ErrInvalidArgument before it reaches the insert.
+func TestAppendTranscriptEntryRejectsOutOfRangeSeq(t *testing.T) {
+	s, _ := storeWithFake(t)
+	sess := seedSession(t, s, "oor", "sess-oor")
+	if _, err := s.BindLifetime(t.Context(), sess); err != nil {
+		t.Fatalf("BindLifetime: %v", err)
+	}
+	err := s.AppendTranscriptEntry(t.Context(), sess, uint64(math.MaxInt64)+1, false, `{"e":1}`, "idem-oor")
+	sentinelIs(t, err, ErrInvalidArgument, "append with out-of-range seq")
 }
 
 // TestAppendTranscriptEntryIdempotentDuplicateKey pins the at-most-once contract:
