@@ -15,7 +15,7 @@ import {
 	primaryPr,
 } from "../board-render";
 import type { Channel } from "../comms-stub";
-import { type ActivityBarItem, fleetItemForAgent } from "../constants";
+import type { ActivityBarItem } from "../constants";
 import { useStore } from "../context";
 import {
 	type Agent,
@@ -24,7 +24,6 @@ import {
 	type Issue,
 	type IssueState,
 	type PullRequest,
-	STUB_AGENTS,
 	STUB_FILES,
 } from "../stub-data";
 import { ChannelView } from "./ChannelView";
@@ -416,26 +415,18 @@ const RepoBranchDropdown: Component = () => {
 	);
 };
 
-// Resolve a tab's agent — fleet tabs carry an agentId, issue tabs don't;
-// mirrors the dock's STUB_AGENTS.find, no new store surface. Shared by the
-// fleet panes and the activity-bar StateDot badge.
-const agentFor = (item: ActivityBarItem): Agent | undefined =>
-	item.agentId
-		? STUB_AGENTS.find((a) => a.account.id === item.agentId)
-		: undefined;
-
 /** A fleet tab's pane (design compass-0.7). Renders the agent's home-DM
  *  conversation inline (asks answerable in place — first-responder-wins, per
  *  the ask-in-channel record), above a compact header control that opens the
- *  agent's full workspace via store.openAgent. Fallback covers an unresolved
- *  agentId. */
+ *  agent's full workspace via store.openAgent. Only rendered for a RESOLVABLE
+ *  pin (SEA-1645 P2): the pane arm resolves reachability before choosing this
+ *  vs the unreachable block, so there is no unresolved-agentId fallback here. */
 const FleetPane: Component<{ item: ActivityBarItem }> = (props) => {
 	const store = useStore();
+	const agent = (): Agent | undefined =>
+		props.item.agentId ? store.agentById(props.item.agentId) : undefined;
 	return (
-		<Show
-			when={agentFor(props.item)}
-			fallback={<p class="term-empty">Agent not found.</p>}
-		>
+		<Show when={agent()}>
 			{(a) => {
 				const homeDm = (): Channel | undefined =>
 					store.channels().find((c) => c.id === a().account.homeChannelId);
@@ -456,6 +447,30 @@ const FleetPane: Component<{ item: ActivityBarItem }> = (props) => {
 				);
 			}}
 		</Show>
+	);
+};
+
+/** An unreachable pin's pane (SEA-1645 P2): the pinned agent no longer resolves
+ *  (dead / despawned / filtered out). Shows an empty-state message styled like
+ *  the other `term-empty` panes and a WORKING unpin control — the only unpin
+ *  affordance for an unreachable pin, whose left-tree row is gone (the tree
+ *  renders the VISIBLE set). Unpinning routes through `store.unpinAgent`, which
+ *  drops the pin and falls the active tab back to `status`. */
+const AgentUnreachable: Component<{ item: ActivityBarItem }> = (props) => {
+	const store = useStore();
+	return (
+		<div class="fleet-pane fleet-unreachable">
+			<p class="term-empty">
+				This pinned agent is unreachable — dead, despawned, or filtered out.
+			</p>
+			<button
+				type="button"
+				class="r-unpin-agent"
+				onClick={() => store.unpinAgent(props.item.agentId ?? "")}
+			>
+				Unpin {props.item.title}
+			</button>
+		</div>
 	);
 };
 
@@ -541,16 +556,20 @@ export const RightSidebar: Component = () => {
 		const active = store.activeRightTab();
 		return active === "status" || active.startsWith("agent:");
 	};
-	// The active tab's fleet pane item, when it's an `agent:`-prefixed pin that
-	// RESOLVES to a visible agent (Record A §T2). Gating on resolvability — not
-	// the bare prefix — makes "no pane while unresolvable" hold for the ACTIVE
-	// tab: an unresolvable active pin yields undefined, the Match doesn't fire,
-	// and the pane falls through to `status`.
+	// The active tab's fleet pane item, for any `agent:`-prefixed pin (SEA-1645
+	// P2). The P1 `rightTabGroups()` memo already emits an item for EVERY pin
+	// (marked unreachable or not) with the cached-handle title; read it out rather
+	// than resolving/rebuilding a second time — this is the SINGLE
+	// item-construction site. Never undefined for a pinned `agent:` tab (that was
+	// the blank-pane gap); undefined only for a non-`agent:` tab or an `agent:`
+	// tab with no matching pin (which falls through to `status`).
 	const activeFleetItem = (): ActivityBarItem | undefined => {
 		const active = store.activeRightTab();
 		if (!active.startsWith("agent:")) return undefined;
-		const agent = STUB_AGENTS.find((a) => a.account.id === active.slice(6));
-		return agent ? fleetItemForAgent(agent) : undefined;
+		return store
+			.rightTabGroups()
+			.flatMap((g) => g.items)
+			.find((i) => i.id === active);
 	};
 
 	return (
@@ -564,7 +583,14 @@ export const RightSidebar: Component = () => {
 					<div class="r-pane" classList={{ fleet: fleetActive() }}>
 						<Switch>
 							<Match when={activeFleetItem()}>
-								{(item) => <FleetPane item={item()} />}
+								{(item) => (
+									<Show
+										when={!item().unreachable}
+										fallback={<AgentUnreachable item={item()} />}
+									>
+										<FleetPane item={item()} />
+									</Show>
+								)}
 							</Match>
 
 							<Match when={store.activeRightTab() === "status"}>
@@ -612,23 +638,33 @@ export const RightSidebar: Component = () => {
 								</Show>
 								<For each={group.items}>
 									{(tab) => {
-										const agent = agentFor(tab);
+										const agent = (): Agent | undefined =>
+											tab.agentId ? store.agentById(tab.agentId) : undefined;
 										return (
 											<button
 												type="button"
 												class="r-tab"
 												classList={{
 													active: store.activeRightTab() === tab.id,
+													unreachable: tab.unreachable === true,
 												}}
-												title={tab.title}
-												aria-label={tab.title}
+												title={
+													tab.unreachable === true
+														? `${tab.title} (unreachable)`
+														: tab.title
+												}
+												aria-label={
+													tab.unreachable === true
+														? `${tab.title} (unreachable)`
+														: tab.title
+												}
 												aria-pressed={store.activeRightTab() === tab.id}
 												onClick={() => store.setActiveRightTab(tab.id)}
 											>
 												<span class="r-tab-icon" aria-hidden="true">
 													{tab.icon}
 												</span>
-												<Show when={agent}>
+												<Show when={agent()}>
 													{(a) => <StateDot state={a().lifecycle ?? "idle"} />}
 												</Show>
 											</button>

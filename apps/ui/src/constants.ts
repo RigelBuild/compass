@@ -1,7 +1,7 @@
 // Shared display constants for the Compass ADE UI: the board lane order and the
 // label/color lookups every surface reads. Static string-keyed tables → Record.
 
-import type { IssueTab, RightSidebarTab } from "./store";
+import type { IssueTab, PinnedAgent, RightSidebarTab } from "./store";
 import type { Agent, AgentState, IssueState } from "./stub-data";
 
 /** Board columns, left to right — the ACTIVE subset of the issue lifecycle
@@ -56,8 +56,15 @@ export interface ActivityBarItem {
 	title: string;
 	/** Activity-bar group: fleet renders above the divider, issue below. */
 	group: RightTabGroup;
-	/** Fleet agent tabs: the agent whose `StateDot` badges the tab icon. */
+	/** Fleet agent tabs: the agent whose `StateDot` badges the tab icon. On an
+	 *  unreachable pin this is the pinned id that resolves to no visible agent, so
+	 *  it carries no live `StateDot` (SEA-1645). */
 	agentId?: string;
+	/** Fleet agent tabs (SEA-1645): true when the pinned agent no longer resolves
+	 *  to a visible agent (dead / despawned / filtered out). Absent/false = live.
+	 *  The activity bar and the pane render the unreachable state for a marked
+	 *  item. */
+	unreachable?: boolean;
 }
 
 /** The STATIC right-sidebar tabs — the ones present regardless of the pin set:
@@ -87,12 +94,14 @@ export const RIGHT_SIDEBAR_TAB_BY_ID: {
 export const RIGHT_SIDEBAR_ISSUE_ITEMS: readonly ActivityBarItem[] =
 	Object.values(RIGHT_SIDEBAR_TAB_BY_ID).filter((t) => t.group === "issue");
 
-/** Build the fleet activity-bar item for a pinned agent (Record A §T2). The tab
- *  id is the `agent:`-prefixed account id (the open arm of `RightSidebarTab`);
- *  the icon is the agent handle's initial (matching the UI's glyph-icon
- *  convention — a per-agent glyph, no hardcoded Supervisor ◆ / Warden 🛡), and
- *  the title is the agent handle. Only called for pins that resolve to a visible
- *  agent, so `agentId` always badges a real StateDot. */
+/** Build the fleet activity-bar item for a RESOLVABLE pinned agent (Record A
+ *  §T2; SEA-1645 P1). The tab id is the `agent:`-prefixed account id (the open
+ *  arm of `RightSidebarTab`); the icon is the agent handle's initial (matching
+ *  the UI's glyph-icon convention — a per-agent glyph, no hardcoded Supervisor
+ *  ◆ / Warden 🛡), and the title is the LIVE agent handle. The item is left
+ *  unmarked (`unreachable` absent) so its `agentId` badges a real `StateDot`.
+ *  An unresolvable pin is built by `unreachableFleetItem` instead — so a
+ *  marked item can carry an `agentId` that resolves no agent. */
 export function fleetItemForAgent(agent: Agent): ActivityBarItem {
 	return {
 		id: `agent:${agent.account.id}`,
@@ -100,5 +109,23 @@ export function fleetItemForAgent(agent: Agent): ActivityBarItem {
 		title: agent.account.handle,
 		group: "fleet",
 		agentId: agent.account.id,
+	};
+}
+
+/** Build the fleet activity-bar item for an UNRESOLVABLE pin (SEA-1645 P1): its
+ *  agent no longer resolves to a visible agent (dead / despawned / filtered
+ *  out). The label is the handle cached at pin time (P0), so the item shows the
+ *  human name the user pinned rather than an opaque id (a legacy `{ id, handle:
+ *  id }` fallback pin degrades to the id). The item is marked `unreachable` so
+ *  the activity bar and the pane render the unreachable state; its `agentId`
+ *  intentionally resolves no agent (no live `StateDot`). */
+export function unreachableFleetItem(pin: PinnedAgent): ActivityBarItem {
+	return {
+		id: `agent:${pin.id}`,
+		icon: (pin.handle.at(0) ?? "?").toUpperCase(),
+		title: pin.handle,
+		group: "fleet",
+		agentId: pin.id,
+		unreachable: true,
 	};
 }

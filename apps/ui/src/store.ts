@@ -38,6 +38,7 @@ import {
 	RIGHT_SIDEBAR_ISSUE_ITEMS,
 	RIGHT_SIDEBAR_TAB_BY_ID,
 	type RightTabGroup,
+	unreachableFleetItem,
 } from "./constants";
 import { adaptMessage } from "./live/adapt";
 import { probeServer } from "./live/client";
@@ -89,6 +90,17 @@ export type View =
 type PinnedAgentTab = `agent:${string}`;
 export type IssueTab = "files" | "vcs" | "pr";
 export type RightSidebarTab = PinnedAgentTab | "status" | IssueTab;
+
+/** A persisted pin: the agent's account id plus the handle cached at pin time
+ *  (SEA-1645). The cached handle is the degraded label an unreachable pin renders
+ *  when its agent no longer resolves — so a dropped/despawned pin still shows the
+ *  human name the user pinned, not an opaque id. A resolvable pin always renders
+ *  its LIVE handle (via `fleetItemForAgent`), so the cache only ever surfaces
+ *  once a pin is already unreachable. */
+export interface PinnedAgent {
+	id: string;
+	handle: string;
+}
 
 /** A repo clone present in the selected agent's container (T6). Multi-repo
  *  capable now; the fixture derives a single clone per agent until the daemon
@@ -281,7 +293,7 @@ export interface AppStore {
 	toggleAgent: (agentId: string) => void;
 
 	// ── Right sidebar: activity-bar tabs + pins + repos (T6; dock-in-sidebar D1;
-	//    Record A §T2/T3) ──
+	//    Record A §T2/T3; unreachable-pin amendment SEA-1645) ──
 	/** The active right-sidebar tab: a pinned agent conversation
 	 *  (`agent:${accountId}`), the `status` fleet pane, or an issue tab (Files /
 	 *  VCS / PR). */
@@ -289,19 +301,29 @@ export interface AppStore {
 	setActiveRightTab: (tab: RightSidebarTab) => void;
 	/** The pinned agent account ids, in pin order (append-on-pin; reorder is
 	 *  deferred, OQ1). Persisted per workspace in `localStorage`; a pin that
-	 *  resolves to no visible agent is RETAINED here (visibility fluctuates) but
-	 *  filtered out of `rightTabGroups()`. */
+	 *  resolves to no visible agent is RETAINED here (visibility fluctuates) and
+	 *  still emits a (marked-unreachable) item from `rightTabGroups()`. Derived
+	 *  id-valued view of `pinnedAgents()` for its existing consumers. */
 	pinnedAgentIds: Accessor<readonly string[]>;
+	/** The pinned agents as `{ id, handle }` pairs, in pin order — the handle is
+	 *  cached at pin time (SEA-1645) so an unreachable pin renders the name the
+	 *  user pinned. Persisted per workspace in `localStorage`. */
+	pinnedAgents: Accessor<readonly PinnedAgent[]>;
 	/** Pin an agent's conversation to the fleet activity bar (append if new). */
 	pinAgent: (accountId: string) => void;
 	/** Unpin an agent; if its tab is active, fall back to `status`. */
 	unpinAgent: (accountId: string) => void;
 	/** Whether an agent id is in the pin set. */
 	isPinned: (accountId: string) => boolean;
-	/** The activity bar as ordered groups (Record A §T2): the fleet group is the
-	 *  RESOLVABLE pins (one item per pin whose agent is visible, in pin order)
-	 *  plus the static `status` item; the issue group is the static issue items.
-	 *  A retained-but-unresolvable pin produces no item (and no pane). */
+	/** Resolve an account id to its visible agent, or undefined — the single
+	 *  agent-resolution seam (SEA-1645 P5). A REACTIVE read: consumers that call
+	 *  it (`rightTabGroups`, and transitively `activeFleetItem`) re-run when the
+	 *  agent set changes. Backed today by the static `agents` seed. */
+	agentById: (accountId: string) => Agent | undefined;
+	/** The activity bar as ordered groups (unreachable-pin amendment SEA-1645):
+	 *  the fleet group is EVERY pin (one item per pin, in pin order) plus the
+	 *  static `status` item; a pin that resolves to no visible agent contributes
+	 *  an item marked `unreachable`. The issue group is the static issue items. */
 	rightTabGroups: Accessor<
 		readonly { group: RightTabGroup; items: readonly ActivityBarItem[] }[]
 	>;
@@ -563,11 +585,16 @@ function safeLocalStorage(): Storage | undefined {
 	}
 }
 
-/** Hydrate the persisted pin order for a workspace. The key is namespaced by the
+/** Hydrate the persisted pin set for a workspace. The key is namespaced by the
  *  workspace/connection identity (Record A §T3) so one deployment's account ids
- *  never hydrate as pins on another. Tolerates a missing key, bad JSON, and a
- *  non-string-array payload — any of which yields an empty set. */
-function loadPinnedAgentIds(workspace: string): readonly string[] {
+ *  never hydrate as pins on another.
+ *
+ *  Self-healing per-element hydration (SEA-1645, no version flag): a bare
+ *  `string` element is a LEGACY (pre-`{id,handle}`) pin and hydrates as
+ *  `{ id, handle: id }`; an object carrying string `id`/`handle` hydrates as-is;
+ *  anything else is dropped. A missing key, bad JSON, or a non-array payload
+ *  yields the empty set. */
+function loadPinnedAgents(workspace: string): readonly PinnedAgent[] {
 	const store = safeLocalStorage();
 	if (!store) return [];
 	try {
@@ -575,18 +602,36 @@ function loadPinnedAgentIds(workspace: string): readonly string[] {
 		if (!raw) return [];
 		const parsed: unknown = JSON.parse(raw);
 		if (!Array.isArray(parsed)) return [];
-		return parsed.filter((id): id is string => typeof id === "string");
+		const pins: PinnedAgent[] = [];
+		for (const entry of parsed) {
+			if (typeof entry === "string") {
+				pins.push({ id: entry, handle: entry });
+			} else if (
+				typeof entry === "object" &&
+				entry !== null &&
+				"id" in entry &&
+				"handle" in entry &&
+				typeof entry.id === "string" &&
+				typeof entry.handle === "string"
+			) {
+				pins.push({ id: entry.id, handle: entry.handle });
+			}
+		}
+		return pins;
 	} catch {
 		return [];
 	}
 }
 
-/** Write the pin order through to the workspace-namespaced key (best-effort). */
-function savePinnedAgentIds(workspace: string, ids: readonly string[]): void {
+/** Write the pin set through to the workspace-namespaced key (best-effort). */
+function savePinnedAgents(
+	workspace: string,
+	pins: readonly PinnedAgent[],
+): void {
 	const store = safeLocalStorage();
 	if (!store) return;
 	try {
-		store.setItem(`compass.pinnedAgents.${workspace}`, JSON.stringify(ids));
+		store.setItem(`compass.pinnedAgents.${workspace}`, JSON.stringify(pins));
 	} catch {
 		// Best-effort: a quota / privacy-locked write failure is non-fatal.
 	}
@@ -648,38 +693,49 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// The bottom log panel (D2): open by default; reset open on workspace entry.
 	const [logOpen, setLogOpen] = createSignal(true);
 
-	// ── Right sidebar (T6; dock-in-sidebar D1/D6; Record A §T2/T3/T5): active
-	//    tab + pin set + repo/branch ──
-	// The pinned agent set (Record A §T3): ordered, append-on-pin, persisted per
-	// workspace so one deployment's account ids never hydrate on another. A pin
-	// that resolves to no visible agent is RETAINED here (visibility fluctuates —
-	// the pin survives the agent returning) while the derivation below filters it
-	// out. Falls back to `callerId` when no workspace identity is supplied.
+	// ── Right sidebar (T6; dock-in-sidebar D1/D6; Record A §T2/T3/T5;
+	//    unreachable-pin amendment SEA-1645): active tab + pin set + repo/branch ──
+	// The pinned agent set: ordered, append-on-pin, persisted per workspace so one
+	// deployment's account ids never hydrate on another. Held as `{ id, handle }`
+	// pairs (SEA-1645 P0) — the handle cached at pin time is the degraded label an
+	// unreachable pin renders. A pin that resolves to no visible agent is RETAINED
+	// here (visibility fluctuates — the pin survives the agent returning) and still
+	// emits a marked item from the derivation below. Falls back to `callerId` when
+	// no workspace identity is supplied.
 	const workspaceKey = options.workspaceKey ?? callerId;
-	const [pinnedAgentIds, setPinnedAgentIds] = createSignal<readonly string[]>(
-		loadPinnedAgentIds(workspaceKey),
+	const [pinnedAgents, setPinnedAgents] = createSignal<readonly PinnedAgent[]>(
+		loadPinnedAgents(workspaceKey),
 	);
-	// Whether a pin resolves to a visible agent — the layer that filters
-	// unresolvable pins from the activity bar and the pane (Record A §T2).
-	const agentIsVisible = (accountId: string): boolean =>
-		agents.some((a) => a.account.id === accountId);
+	const pinnedAgentIds = createMemo<readonly string[]>(() =>
+		pinnedAgents().map((p) => p.id),
+	);
+	// The single agent-resolution seam (SEA-1645 P5): resolve an account id to its
+	// visible agent. A REACTIVE read — a closure over the `agents` source, so every
+	// consumer (`rightTabGroups`, transitively `activeFleetItem`) re-runs when the
+	// agent set changes. `agents` is a static const today, so this cannot flip
+	// live→unreachable yet; the live-agents migration owes converting `agents` to a
+	// signal/store read flowing through this one seam (not a non-reactive snapshot).
+	const agentById = (accountId: string): Agent | undefined =>
+		agents.find((a) => a.account.id === accountId);
 	// Boot default (Record A §T5): the first hydrated pin that resolves to a
-	// visible agent (unresolvable pins skipped, matching the T2 derivation), else
-	// the static `status` pane. The D6 no-auto-switch rule is unchanged.
-	const firstResolvablePin = pinnedAgentIds().find(agentIsVisible);
+	// visible agent, else the static `status` pane. Boot has no mid-view state to
+	// preserve, so it lands on a live pane rather than an unreachable one (SEA-1645
+	// P4, OQ-1 ruled kept). An unresolvable leading pin is skipped here but still
+	// shows its (marked) bar item. The D6 no-auto-switch rule is unchanged.
+	const firstResolvablePin = pinnedAgentIds().find(
+		(id) => agentById(id) !== undefined,
+	);
 	const [activeRightTab, setActiveRightTabRaw] = createSignal<RightSidebarTab>(
 		firstResolvablePin ? `agent:${firstResolvablePin}` : "status",
 	);
-	// The resolvability guard (Record A §T2/§T3), applied synchronously on every
-	// set: an `agent:`-prefixed tab whose agent is NOT visible falls to `status`,
-	// so a live-active tab whose agent vanished never strands a pane and the
-	// activity-bar selection agrees with the T2 Switch's resolvability gate. This
-	// is the single seam that both explicit sets and the unpin fallback route
-	// through, so the guard can't be bypassed.
+	// The single public set seam (SEA-1645 P3): a plain pass-through. The old
+	// resolvability guard (coerce an unresolvable `agent:` tab to `status`) is
+	// retired — selecting or keeping an unresolvable agent tab is now valid and
+	// renders the unreachable pane, so an `agent:` tab no longer requires a visible
+	// agent. The unpin-active→status fallback (a user gesture) still routes through
+	// here. No fluctuation-watcher: a visibility change never coerces the tab.
 	const setActiveRightTab = (tab: RightSidebarTab) => {
-		if (tab.startsWith("agent:") && !agentIsVisible(tab.slice(6)))
-			setActiveRightTabRaw("status");
-		else setActiveRightTabRaw(tab);
+		setActiveRightTabRaw(tab);
 	};
 	// The active repo id (T6). The current branch is derived from the selected
 	// issue (see agentRepos), so there's no separate branch-pick signal to
@@ -1669,39 +1725,47 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		if (agentRepos().some((r) => r.id === repoId)) setActiveRepoId(repoId);
 	};
 
-	// ── Pins (Record A §T2/T3) ──
-	const isPinned = (accountId: string) => pinnedAgentIds().includes(accountId);
+	// ── Pins (Record A §T2/T3; unreachable-pin amendment SEA-1645) ──
+	const isPinned = (accountId: string) =>
+		pinnedAgents().some((p) => p.id === accountId);
 	// Append-on-pin, order-preserving; a re-pin is a no-op (no reorder — OQ1).
-	// Persistence is synchronous (write-through) so a pin survives a page reload
-	// with no dependence on effect scheduling (§T3).
+	// The handle is cached at pin time (SEA-1645 P0) via the resolution seam,
+	// falling back to the id if somehow unresolvable at pin time. Persistence is
+	// synchronous (write-through) so a pin survives a page reload with no
+	// dependence on effect scheduling (§T3).
 	const pinAgent = (accountId: string) =>
-		setPinnedAgentIds((prev) => {
-			if (prev.includes(accountId)) return prev;
-			const next = [...prev, accountId];
-			savePinnedAgentIds(workspaceKey, next);
+		setPinnedAgents((prev) => {
+			if (prev.some((p) => p.id === accountId)) return prev;
+			const handle = agentById(accountId)?.account.handle ?? accountId;
+			const next = [...prev, { id: accountId, handle }];
+			savePinnedAgents(workspaceKey, next);
 			return next;
 		});
-	// Unpinning drops the id, persists, and falls the active tab back to the
-	// static `status` pane if it was this agent's tab (§T3).
+	// Unpinning drops the pin, persists, and falls the active tab back to the
+	// static `status` pane if it was this agent's tab — a deliberate user gesture
+	// (§T3; retained by SEA-1645, the only removal path).
 	const unpinAgent = (accountId: string) => {
-		setPinnedAgentIds((prev) => {
-			const next = prev.filter((id) => id !== accountId);
-			savePinnedAgentIds(workspaceKey, next);
+		setPinnedAgents((prev) => {
+			const next = prev.filter((p) => p.id !== accountId);
+			savePinnedAgents(workspaceKey, next);
 			return next;
 		});
 		if (activeRightTab() === `agent:${accountId}`) setActiveRightTab("status");
 	};
-	// The T2 derivation: the fleet group is the RESOLVABLE pins (one item per pin
-	// whose agent is visible, in pin order) built via `fleetItemForAgent`, then
-	// the static `status` item; the issue group is the static issue items. An
-	// unresolvable pin contributes no item — no activity-bar entry, no pane.
+	// The derivation (SEA-1645 P1): the fleet group is EVERY pin, in pin order —
+	// a pin that resolves to a visible agent via the P5 seam builds a live
+	// `fleetItemForAgent`, an unresolvable one builds a marked `unreachableFleetItem`
+	// (cached-handle label). Then the static `status` item; the issue group is the
+	// static issue items. Nothing is filtered — an unreachable pin keeps its item.
 	const rightTabGroups = createMemo<
 		readonly { group: RightTabGroup; items: readonly ActivityBarItem[] }[]
 	>(() => {
 		const fleetItems: ActivityBarItem[] = [];
-		for (const id of pinnedAgentIds()) {
-			const agent = agents.find((a) => a.account.id === id);
-			if (agent) fleetItems.push(fleetItemForAgent(agent));
+		for (const pin of pinnedAgents()) {
+			const agent = agentById(pin.id);
+			fleetItems.push(
+				agent ? fleetItemForAgent(agent) : unreachableFleetItem(pin),
+			);
 		}
 		fleetItems.push(RIGHT_SIDEBAR_TAB_BY_ID.status);
 		return [
@@ -1743,9 +1807,11 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		activeRightTab,
 		setActiveRightTab,
 		pinnedAgentIds,
+		pinnedAgents,
 		pinAgent,
 		unpinAgent,
 		isPinned,
+		agentById,
 		rightTabGroups,
 		agentRepos,
 		activeRepoId,

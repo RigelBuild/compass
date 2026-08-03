@@ -113,7 +113,11 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 		body: (
 			groups: readonly {
 				group: string;
-				items: readonly { id: string; agentId?: string }[];
+				items: readonly {
+					id: string;
+					agentId?: string;
+					unreachable?: boolean;
+				}[];
 			}[],
 			store: AppStore,
 		) => void,
@@ -169,19 +173,22 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 		);
 	});
 
-	// An unresolvable pin (no visible agent for the id) produces NO activity-bar
-	// item — the derivation is the filter layer (§T2). The resolvable pin beside
-	// it still surfaces, so the filter is selective, not all-or-nothing.
-	test("an unresolvable pin yields no fleet item", () => {
+	// An unresolvable pin (no visible agent for the id) now surfaces a MARKED
+	// activity-bar item (SEA-1645) — the derivation no longer filters. The
+	// resolvable pin beside it is unmarked, so the marking is selective.
+	test("an unresolvable pin surfaces a marked fleet item", () => {
 		withGroups(
 			(groups) => {
 				const fleet = groups.find((g) => g.group === "fleet");
-				const fleetIds = (fleet?.items ?? []).map((item) => item.id);
-				// The resolvable pin surfaces; the ghost id does not.
-				expect(fleetIds).toContain(`agent:${SUP}`);
-				expect(fleetIds).not.toContain("agent:acc-ghost");
-				// Exactly the resolvable pin + status.
-				expect(fleetIds).toEqual([`agent:${SUP}`, "status"]);
+				const items = fleet?.items ?? [];
+				const fleetIds = items.map((item) => item.id);
+				// Both pins surface, in pin order, before status.
+				expect(fleetIds).toEqual([`agent:${SUP}`, "agent:acc-ghost", "status"]);
+				// The ghost item is marked; the resolvable pin is not.
+				const ghost = items.find((item) => item.id === "agent:acc-ghost");
+				expect(ghost?.unreachable).toBe(true);
+				const sup = items.find((item) => item.id === `agent:${SUP}`);
+				expect(sup?.unreachable).toBeUndefined();
 			},
 			[SUP, "acc-ghost"],
 		);
@@ -201,10 +208,11 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 				for (const item of issue?.items ?? []) {
 					expect(item.agentId).toBeUndefined();
 				}
-				// The fleet items with an agentId are exactly the pins, and each
-				// resolves a real stub agent.
+				// The UNMARKED fleet items with an agentId are exactly the resolvable
+				// pins, each resolving a real stub agent. A marked (unreachable) item
+				// may carry an agentId that resolves no stub (SEA-1645), so exclude it.
 				const withAgent = (fleet?.items ?? []).filter(
-					(item) => item.agentId !== undefined,
+					(item) => item.agentId !== undefined && item.unreachable !== true,
 				);
 				expect(withAgent.map((item) => item.id)).toEqual([
 					`agent:${SUP}`,
