@@ -1,0 +1,137 @@
+//go:build unix
+
+package main
+
+import (
+	"strings"
+	"testing"
+)
+
+// baseFlags returns a configFlags with the two required fields set to valid
+// values rooted at dir, so each test can mutate exactly the field under test.
+func baseFlags(dir string) configFlags {
+	return configFlags{
+		stateDir: dir,
+		image:    "example.com/agent:latest",
+	}
+}
+
+func TestResolveConfig(t *testing.T) {
+	// Pin XDG_RUNTIME_DIR to a short, absolute dir so the RuntimeDir default is
+	// deterministic and within the sun_path budget regardless of the host env.
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+
+	t.Run("state-dir required", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.stateDir = ""
+		if _, err := resolveConfig(f); err == nil {
+			t.Fatal("expected error when --state-dir is absent, got nil")
+		}
+	})
+
+	t.Run("image required", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.image = ""
+		if _, err := resolveConfig(f); err == nil {
+			t.Fatal("expected error when --image is absent, got nil")
+		}
+	})
+
+	t.Run("defaults applied", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg, err := resolveConfig(baseFlags(dir))
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.SocketPath == "" {
+			t.Error("SocketPath default is empty")
+		}
+		if cfg.ListenAddr != defaultListenAddr {
+			t.Errorf("ListenAddr = %q, want %q", cfg.ListenAddr, defaultListenAddr)
+		}
+		if !strings.Contains(cfg.DatabaseDSN, dir) {
+			t.Errorf("DatabaseDSN %q does not reference the state dir %q", cfg.DatabaseDSN, dir)
+		}
+		if cfg.RuntimeDir == "" {
+			t.Error("RuntimeDir default is empty")
+		}
+		if cfg.AgentImage != "example.com/agent:latest" {
+			t.Errorf("AgentImage = %q, want the flag value", cfg.AgentImage)
+		}
+		// Validate must pass with the defaults (RuntimeDir within the sun_path
+		// budget); resolveConfig already ran it, so reaching here proves it.
+	})
+
+	t.Run("listen :0 rejected", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.listen = "127.0.0.1:0"
+		if _, err := resolveConfig(f); err == nil {
+			t.Fatal("expected Validate to reject an ephemeral :0 listen addr, got nil")
+		}
+	})
+
+	t.Run("DSN default references state dir", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg, err := resolveConfig(baseFlags(dir))
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if !strings.Contains(cfg.DatabaseDSN, dir) {
+			t.Errorf("default DSN %q does not reference state dir %q", cfg.DatabaseDSN, dir)
+		}
+		if !strings.Contains(cfg.DatabaseDSN, "dbname=compass") {
+			t.Errorf("default DSN %q is not the expected keyword/value form", cfg.DatabaseDSN)
+		}
+	})
+
+	t.Run("COMPASS_DATABASE_DSN honored, flag wins", func(t *testing.T) {
+		t.Setenv("COMPASS_DATABASE_DSN", "host=/env/sock dbname=compass")
+
+		// Env used when the flag is empty.
+		cfg, err := resolveConfig(baseFlags(t.TempDir()))
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.DatabaseDSN != "host=/env/sock dbname=compass" {
+			t.Errorf("DatabaseDSN = %q, want the env value", cfg.DatabaseDSN)
+		}
+
+		// Flag wins over env.
+		f := baseFlags(t.TempDir())
+		f.database = "host=/flag/sock dbname=compass"
+		cfg, err = resolveConfig(f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.DatabaseDSN != "host=/flag/sock dbname=compass" {
+			t.Errorf("DatabaseDSN = %q, want the flag value (flag wins over env)", cfg.DatabaseDSN)
+		}
+	})
+}
+
+func TestRunDispatch(t *testing.T) {
+	t.Run("unknown subcommand names the three", func(t *testing.T) {
+		err := run([]string{"bogus"})
+		if err == nil {
+			t.Fatal("expected error for unknown subcommand, got nil")
+		}
+		for _, want := range []string{"up", "down", "status"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not name subcommand %q", err.Error(), want)
+			}
+		}
+	})
+
+	t.Run("empty args is a usage error", func(t *testing.T) {
+		if err := run(nil); err == nil {
+			t.Fatal("expected a usage error for no subcommand, got nil")
+		}
+	})
+
+	t.Run("--version prints version", func(t *testing.T) {
+		if err := run([]string{"--version"}); err != nil {
+			t.Fatalf("run --version: %v", err)
+		}
+	})
+}
