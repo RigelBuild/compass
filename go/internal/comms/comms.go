@@ -46,6 +46,14 @@ type Comms struct {
 	// interceptor yet). The T3 interceptor overrides this per-request by setting
 	// a caller on the context; adminID is the fallback when none is set.
 	adminID store.AccountID
+	// askWaker pushes an ask-answer wake to the asking agent's live session when
+	// a participant answers (SEA-1577), over the runnerhub T3 rail. Nil until
+	// SetAskWaker wires it (comms<->hub is a construction cycle, broken by a
+	// post-construction setter exactly like hub.SetSettleSink). Set once at
+	// server assembly BEFORE any RPC is served, so it needs no lock: the write
+	// happens-before the first concurrent read. Nil-safe: a Comms with no waker
+	// (a unit test, or today's un-wired path) still answers asks.
+	askWaker AskAnswerWaker
 }
 
 // NewComms constructs the CommsService handler over store and bus. adminID is the
@@ -53,6 +61,17 @@ type Comms struct {
 // T3 interceptor sets a real identity (design.md:1219-1222).
 func NewComms(st *store.Store, bus commsBus, adminID store.AccountID) *Comms {
 	return &Comms{store: st, bus: bus, adminID: adminID}
+}
+
+// SetAskWaker wires the ask-answer wake sink (runnerhub) AFTER both Comms and the
+// hub exist — the post-construction setter that breaks the comms<->hub
+// construction cycle (comms is built before the hub because the hub's
+// RelayCommsCall executes through the comms handler; serve.go:228,247). Mirrors
+// hub.SetSettleSink. Called once at server assembly before serving; no lock
+// because the write happens-before the first RPC. Nil-safe to leave unset (a
+// hub-less handler does not wake — today's behavior).
+func (c *Comms) SetAskWaker(w AskAnswerWaker) {
+	c.askWaker = w
 }
 
 // Ensure Comms satisfies the generated handler interface at compile time.
@@ -344,6 +363,16 @@ func (c *Comms) RespondToAsk(
 		return nil, edgeError(err)
 	}
 	c.publishMessageUpdated(msg)
+	// SEA-1577: wake the asking agent's live session with the answer, after the
+	// AnswerAsk err short-circuit — so a second RespondToAsk (rejected by the
+	// answer-once guard) never wakes. The ask is authored by the AGENT; the
+	// human/participant answers it, so the account to wake is the ask message's
+	// author. Best-effort and nil-safe: a wake failure is swallowed in the rail
+	// layer (the answer is already durably recorded + fanned out), never failing
+	// the RPC.
+	if c.askWaker != nil {
+		c.askWaker.WakeAskAnswer(ctx, msg.AuthorAccountID, req.Msg.GetAskId(), req.Msg.GetAnswers())
+	}
 	return connect.NewResponse(&compassv1.RespondToAskResponse{}), nil
 }
 
