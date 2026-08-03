@@ -194,6 +194,10 @@ func TestAppendTranscriptEntryRejectsOutOfRangeSeq(t *testing.T) {
 	}
 	err := s.AppendTranscriptEntry(t.Context(), sess, uint64(math.MaxInt64)+1, false, `{"e":1}`, "idem-oor")
 	sentinelIs(t, err, ErrInvalidArgument, "append with out-of-range seq")
+	// The guard returns before the INSERT: a rejected seq writes nothing.
+	if got := hotTailSeqs(t, s, sess); len(got) != 0 {
+		t.Fatalf("hot tail = %v, want empty (out-of-range seq must write no row)", got)
+	}
 }
 
 // TestAppendTranscriptEntryIdempotentDuplicateKey pins the at-most-once contract:

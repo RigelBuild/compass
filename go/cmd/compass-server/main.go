@@ -74,7 +74,8 @@ func run() error {
 	s3RegionFlag := flag.String("s3-region", "",
 		"S3 region (e.g. us-east-1, or \"garage\" for Garage). Defaults to $COMPASS_S3_REGION.")
 	s3UseTLSFlag := flag.Bool("s3-use-tls", false,
-		"Use https to the S3 endpoint. Defaults to $COMPASS_S3_USE_TLS (\"1\"/\"true\" = on).")
+		"Use https to the S3 endpoint. Defaults to $COMPASS_S3_USE_TLS "+
+			"(\"1\"/\"true\"/\"yes\"/\"on\" = on).")
 	showVersion := flag.Bool("version", false, "Print the version and exit.")
 	flag.Parse()
 

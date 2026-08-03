@@ -17,9 +17,16 @@
 -- each lifetime's agent-stamped sequence onto the session's stored maximum at
 -- lifetime bind — see agent_sessions.base_entry_seq below); idempotency_key
 -- carries the durable lane's at-most-once guarantee into this table (a duplicate
--- key is a silent retry dedup); checkpoint marks a full-body snapshot that
--- supersedes all prior entries for the session (the read view starts at the
--- latest checkpoint).
+-- key is a silent retry dedup). The UNIQUE is GLOBAL, not (session_id,
+-- idempotency_key) scoped like the comms Message path (0001_init.sql:133-138):
+-- the agent mints each key from a per-sink random nonce + a monotonic counter
+-- (design.md:135-136), so a key is unique across sessions AND agent restarts by
+-- construction. A per-session scope would be strictly weaker here — a
+-- non-globally-unique key scheme would silently drop a colliding entry via the
+-- ON CONFLICT DO NOTHING dedup, so global uniqueness is the load-bearing
+-- invariant that keeps that dedup collision-free. checkpoint marks a full-body
+-- snapshot that supersedes all prior entries for the session (the read view
+-- starts at the latest checkpoint).
 CREATE TABLE agent_session_transcript_entries (
     session_id      TEXT   NOT NULL REFERENCES agent_sessions (session_id) ON DELETE RESTRICT,
     entry_seq       BIGINT NOT NULL,
