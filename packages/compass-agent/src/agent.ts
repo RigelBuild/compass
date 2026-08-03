@@ -245,7 +245,7 @@ export class CompassAgent {
 	}
 
 	// SEA-1310 §8 — channel-borne steer arm. The entry the immediate handle calls
-	// when a `SteerControl.message` decodes (populated by SEA-1631). Unlike
+	// when a `SteerControl.message` decodes (populated by SEA-1569 (T7)). Unlike
 	// deliver (which coalesces to a turn-end prompt), a steer is an @-mention
 	// interrupt: mid-turn it injects into the running loop (interrupt at the next
 	// tool boundary); idle it starts a fresh turn to drain the injected steer
@@ -271,16 +271,25 @@ export class CompassAgent {
 			return;
 		}
 		// Sweep-redelivery safety: a message already processed this session is not
-		// re-injected. Unlike deliver there is no queue-membership check — steer is
-		// never queued, so a processed steer is ALREADY injected and is always
-		// re-acked (guarded re-ack to recover a stranded Server cursor when the
-		// priority-lane ack was lost; frozen design.md:405-406, a duplicate ack is
-		// a no-op on the Server :338).
+		// re-injected. `#processedMessageIds` is SHARED with deliver, and an id can
+		// cross-arrive as the other type (a message is steer XOR deliver per D5,
+		// but a lost-ack sweep can re-arrive it as the other — :254-257). So the
+		// re-ack must carry deliver's SAME queue-membership guard (:217): a
+		// processed id still pending in `#deliverQueue` was only QUEUED by a
+		// mid-turn deliver, NOT injected — re-acking it would break "ack means
+		// injected" and expose the crash-before-flush data loss the deliver guard
+		// prevents (the queued copy acks when it flushes). Only an id NOT in
+		// `#deliverQueue` is genuinely already injected, so only then do we re-ack
+		// (to recover a stranded Server cursor when the priority-lane ack was lost;
+		// frozen design.md:405-406, a duplicate ack is a no-op on the Server :338).
+		// The "duplicate steer" unmapped surface stays UNCONDITIONAL.
 		if (this.#processedMessageIds.has(msg.id)) {
-			const value: DeliveryAck = create(DeliveryAckSchema, {
-				messageId: msg.id,
-			});
-			this.#sink.emit({ kind: "deliveryAck", value });
+			if (!this.#deliverQueue.some((queued) => queued.id === msg.id)) {
+				const value: DeliveryAck = create(DeliveryAckSchema, {
+					messageId: msg.id,
+				});
+				this.#sink.emit({ kind: "deliveryAck", value });
+			}
 			this.#onUnmapped({
 				kind: "unmapped",
 				eventType: "steer",
@@ -324,16 +333,32 @@ export class CompassAgent {
 		// Idle: `agent.steer` alone only enqueues, so nothing drains it — wake a
 		// turn with `agent.continue()` to drain the injected steer. Apply the same
 		// rejection-safety belt as `#flushDelivers`: `continue` injects
-		// synchronously up to its first await and can only signal refusal (e.g. an
-		// AgentBusyError from a spin-up race) as a settled REJECTION. On rejection
-		// the turn did not start: un-dedup the id (so the Server redelivers) and
-		// surface it, no ack. Otherwise ack on the microtask. The settled-rejection
-		// `.catch` is scheduled before this `queueMicrotask`, so the `rejected` flag
-		// is observed deterministically under `tick()` — no timer, no race.
+		// synchronously up to its first await and can only signal refusal as a
+		// settled REJECTION. On the idle path the reachable synchronous rejection
+		// is `continue`'s empty-history throw ("No messages to continue from",
+		// pi-agent-core agent.ts:1035) when the inner agent reaches ReplayComplete
+		// with zero replayed messages; an AgentBusyError spin-up race CANNOT fire
+		// here because steer() is fully synchronous from the idle gate (:308) to
+		// this call, so `isStreaming` cannot change between them. (An async-settled
+		// rejection from inside the run loop — e.g. "No model configured" — is also
+		// handled here, exactly as deliver's prompt() equally is.) On rejection the
+		// turn did not start: roll back the steer this method pre-pushed onto the
+		// inner steering queue (so no orphan survives to be drained by a later turn
+		// or double-injected by the Server's redelivery), un-dedup the id (so the
+		// Server redelivers), and surface it, no ack. Otherwise ack on the
+		// microtask. The settled-rejection `.catch` is scheduled before this
+		// `queueMicrotask`, so the `rejected` flag is observed deterministically
+		// under `tick()` — no timer, no race.
 		let rejected = false;
 		let acked = false;
 		this.#session.agent.continue().catch((err) => {
 			if (acked) return;
+			// Roll back the steer pre-pushed at the top of the idle path: the
+			// empty-history throw (pi-agent-core agent.ts:1035) fires BEFORE any
+			// steering dequeue (:1038), so the orphan is still at the queue tail and
+			// this LIFO pop removes exactly it. Placed after the `if (acked)` guard
+			// so a post-injection settled-rejection never pops an injected steer.
+			this.#session.agent.popLastSteer();
 			rejected = true;
 			this.#processedMessageIds.delete(msg.id);
 			this.#onUnmapped({
