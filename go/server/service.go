@@ -183,9 +183,26 @@ func (s *service) StartAgentSession(
 	if s.hub == nil {
 		return nil, connect.NewError(connect.CodeUnavailable, errNoRunnerHub)
 	}
-	resp, err := s.hub.Start(ctx, "", req.Msg)
-	if err != nil {
-		return nil, err
+	// The resume branch: a non-empty resume_session_id relays through the resume
+	// handoff (authz-gate the caller, bind the lifetime, reconstruct the body,
+	// attach it to the INTERNAL start envelope), all BEFORE any Runner call for
+	// the authz + bind. A fresh start (empty id) takes the verbatim relay,
+	// attaching nothing and binding nothing (its first-lifetime base defaults to
+	// 0 per migration 0009). Either way resp is the started session the ownership
+	// chain below records.
+	var resp *compassv1.StartAgentSessionResponse
+	if resumeID := req.Msg.GetResumeSessionId(); resumeID != "" {
+		var err error
+		resp, err = s.startResumeSession(ctx, resumeID, req.Msg)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		resp, err = s.hub.Start(ctx, "", req.Msg)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// Complete the durable ownership chain now that the Runner has started the
 	// session: session_id (the server-minted response) -> agent_account_id, the
@@ -443,6 +460,57 @@ func (s *service) SubscribeAgentSession(
 			}
 		}
 	}
+}
+
+// startResumeSession is the resume leg of StartAgentSession (T6, SEA-1667). It
+// runs BEFORE any Runner call for the parts that must: (1) authorize the caller
+// on the resumed session via RequireAgentSessionSubscriber — an unknown or
+// foreign resume_session_id is one indistinguishable NotFound (the
+// not-found/forbidden merge, D9), so a caller holding a foreign id cannot probe
+// existence and NO Start is ever relayed; (2) BindLifetime write-once to
+// snapshot the entry_seq rebase base for the new lifetime onto the stable
+// logical session, so the new lifetime's agent-stamped frames rebase onto the
+// stored maximum (a re-resume re-reads the same max — idempotent); (3)
+// reconstruct the resume body from the durable transcript (T5); (4) relay the
+// verbatim public start request with the reconstructed body attached to the
+// INTERNAL envelope (hub.StartResume). The public request carries only the
+// authz-checked resume_session_id — no locator, no body a client could forge.
+func (s *service) startResumeSession(
+	ctx context.Context,
+	resumeSessionID string,
+	req *compassv1.StartAgentSessionRequest,
+) (*compassv1.StartAgentSessionResponse, error) {
+	caller, ok := auth.CallerFrom(ctx)
+	if !ok {
+		// No caller in context is a door-wiring bug (an interceptor must attach
+		// one on both doors); fail closed rather than resume unauthorized.
+		return nil, connect.NewError(connect.CodeUnauthenticated, errNoCaller)
+	}
+	if err := s.store.RequireAgentSessionSubscriber(ctx, caller, resumeSessionID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Unknown session OR non-member — indistinguishable by contract, so
+			// the caller cannot tell "exists but forbidden" from "does not exist".
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("agent session %q", resumeSessionID))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("authorizing resume: %w", err))
+	}
+	// Snapshot the rebase base for the new lifetime BEFORE the Runner emits any
+	// frame for it. Write-once within a lifetime; a re-resume re-reads the same
+	// stored max, so this is safe to call on every resume.
+	if _, err := s.store.BindLifetime(ctx, resumeSessionID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// TOCTOU: the session vanished between the authz check and the bind.
+			// Surface the same indistinguishable NotFound as the authz branch
+			// above, not a 500.
+			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("agent session %q", resumeSessionID))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("binding resume lifetime: %w", err))
+	}
+	body, err := s.hub.ReconstructSessionBody(ctx, resumeSessionID)
+	if err != nil {
+		return nil, err
+	}
+	return s.hub.StartResume(ctx, "", req, body)
 }
 
 // abandonStartedSession tears down a session StartAgentSession already started

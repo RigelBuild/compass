@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // The durable TWO-TIER transcript store (SEA-1667 T4). A Postgres HOT TAIL
@@ -97,6 +99,15 @@ type ObjectStore interface {
 // loudly rather than silently dropping the archive.
 func (s *Store) SetObjectStore(os ObjectStore) {
 	s.objectStore = os
+}
+
+// SetSafetyValveCapBytesForTest lowers the safety-valve size cap so a test can
+// trip the valve without writing a huge transcript. The ForTest suffix marks it
+// test-only: production tunes the cap at Open via defaultSafetyValveCapBytes, and
+// this setter exists solely so out-of-package tests (e.g. the server resume
+// pgtest) can exercise the S3 fallback leg end-to-end.
+func (s *Store) SetSafetyValveCapBytesForTest(n int) {
+	s.safetyValveCapBytes = n
 }
 
 // BindLifetime snapshots the session's rebase base ONCE at lifetime bind: it
@@ -220,7 +231,20 @@ func (s *Store) SessionTranscript(ctx context.Context, sessionID string) ([]Tran
 		return nil, fmt.Errorf("store: read session transcript: %w", err)
 	}
 	defer rows.Close()
+	out, err := scanTranscriptRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("%w: session %q", ErrNotFound, sessionID)
+	}
+	return out, nil
+}
 
+// scanTranscriptRows scans hot-tail rows into TranscriptEntryRow values. Shared
+// by SessionTranscript (pool read) and SessionResumeSnapshot (tx read) so the
+// column list and scan live in one place.
+func scanTranscriptRows(rows pgx.Rows) ([]TranscriptEntryRow, error) {
 	var out []TranscriptEntryRow
 	for rows.Next() {
 		var (
@@ -239,9 +263,6 @@ func (s *Store) SessionTranscript(ctx context.Context, sessionID string) ([]Tran
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("store: iterate transcript entries: %w", err)
-	}
-	if len(out) == 0 {
-		return nil, fmt.Errorf("%w: session %q", ErrNotFound, sessionID)
 	}
 	return out, nil
 }
@@ -290,7 +311,13 @@ func (s *Store) SafetyValveSegments(ctx context.Context, sessionID string) ([]Ar
 		return nil, fmt.Errorf("store: read safety valve segments: %w", err)
 	}
 	defer rows.Close()
+	return scanSegmentRows(rows)
+}
 
+// scanSegmentRows scans safety_valve manifest rows into ArchiveSegmentRow
+// values. Shared by SafetyValveSegments (pool read) and SessionResumeSnapshot
+// (tx read) so the column list and scan live in one place.
+func scanSegmentRows(rows pgx.Rows) ([]ArchiveSegmentRow, error) {
 	var out []ArchiveSegmentRow
 	for rows.Next() {
 		var (
@@ -313,6 +340,97 @@ func (s *Store) SafetyValveSegments(ctx context.Context, sessionID string) ([]Ar
 		return nil, fmt.Errorf("store: iterate archive segments: %w", err)
 	}
 	return out, nil
+}
+
+// SessionResumeSnapshot is the ATOMIC two-tier read the T5 resume reconstructor
+// (runnerhub.ReconstructSessionBody) uses: it takes the PG hot-tail and the
+// safety_valve manifest inside ONE read-only REPEATABLE READ snapshot
+// transaction, so a concurrent safety-valve flush (which prunes PG rows and
+// inserts a manifest row in one tx) can never commit BETWEEN the two reads and
+// corrupt the reconstructed body (double-count an entry, or drop one). Under the
+// snapshot the at-rest disjointness invariant — safety_valve seqs are disjoint
+// from PG-tail seqs — is observed as a single consistent DB state, closing the
+// flush-between-reads race.
+//
+// It preserves SessionTranscript's ErrNotFound-on-empty-tail behavior and
+// short-circuits before reading segments, mirroring the reconstructor's normal
+// path. Returns (tail, segments, err).
+func (s *Store) SessionResumeSnapshot(ctx context.Context, sessionID string) ([]TranscriptEntryRow, []ArchiveSegmentRow, error) {
+	if sessionID == "" {
+		return nil, nil, fmt.Errorf("%w: session id is required", ErrInvalidArgument)
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: begin resume snapshot: %w", err)
+	}
+	// Rollback is a no-op after the successful Commit below (the store's
+	// rollback-after-commit convention); on any early return it aborts the tx.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tailRows, err := tx.Query(ctx,
+		`SELECT entry_seq, checkpoint, entry_json
+		   FROM agent_session_transcript_entries
+		  WHERE session_id = $1
+		    AND entry_seq >= COALESCE(
+		            (SELECT MAX(entry_seq)
+		               FROM agent_session_transcript_entries
+		              WHERE session_id = $1 AND checkpoint), 0)
+		  ORDER BY entry_seq`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: read session transcript: %w", err)
+	}
+	tail, err := scanTranscriptRows(tailRows)
+	tailRows.Close()
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(tail) == 0 {
+		return nil, nil, fmt.Errorf("%w: session %q", ErrNotFound, sessionID)
+	}
+
+	segRows, err := tx.Query(ctx,
+		`SELECT object_key, min_entry_seq, max_entry_seq, kind
+		   FROM agent_session_archive_segments
+		  WHERE session_id = $1 AND kind = $2
+		  ORDER BY min_entry_seq`,
+		sessionID, string(SegmentKindSafetyValve),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("store: read safety valve segments: %w", err)
+	}
+	segments, err := scanSegmentRows(segRows)
+	segRows.Close()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf("store: commit resume snapshot: %w", err)
+	}
+	return tail, segments, nil
+}
+
+// ReadArchiveSegment fetches one archive segment's verbatim-JSONL body from the
+// object store by its manifest ObjectKey — the thin read T5's resume
+// reconstructor uses to pull back a safety_valve segment (SafetyValveSegments
+// yields the keys). The store holds the injected ObjectStore seam; this exposes
+// a read over it WITHOUT widening the seam the store depends on. A nil object
+// store fails loudly rather than returning an empty body a resume would silently
+// load as a truncated transcript, mirroring flushUpto's nil guard.
+func (s *Store) ReadArchiveSegment(ctx context.Context, objectKey string) ([]byte, error) {
+	if objectKey == "" {
+		return nil, fmt.Errorf("%w: object key is required", ErrInvalidArgument)
+	}
+	if s.objectStore == nil {
+		return nil, errors.New("store: object store not configured for archive read")
+	}
+	body, err := s.objectStore.GetSegment(ctx, objectKey)
+	if err != nil {
+		return nil, fmt.Errorf("store: read archive segment: %w", err)
+	}
+	return body, nil
 }
 
 // sessionBase reads the write-once rebase base for a session. An unknown session

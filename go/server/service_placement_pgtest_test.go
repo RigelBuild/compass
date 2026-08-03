@@ -573,6 +573,11 @@ type recordingRunner struct {
 
 	mu   sync.Mutex
 	seen []*compassv1internal.SessionsResponse
+	// startIDs, when non-empty, overrides the fixed answer() Start session id one
+	// per Start (FIFO) — so a test driving several Starts (e.g. two resumes of one
+	// logical session) gets distinct live ids. Empty falls back to answer()'s
+	// fixed fakeSessionID. Read/popped under mu.
+	startIDs []string
 }
 
 // serve runs the dispatch loop. Like the seam test's loop it opens with one
@@ -617,6 +622,18 @@ func (r *recordingRunner) serve(
 				return
 			}
 			continue
+		}
+		if cmd.GetStart() != nil {
+			if id, ok := r.nextStartID(); ok {
+				if err := stream.Send(&compassv1internal.SessionsRequest{
+					RequestId: cmd.GetRequestId(),
+					Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: id}},
+				}); err != nil {
+					done <- err
+					return
+				}
+				continue
+			}
 		}
 		if err := stream.Send(answer(cmd)); err != nil {
 			done <- err
@@ -685,6 +702,27 @@ func (r *recordingRunner) setFailStart(v bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.failStart = v
+}
+
+// nextStartID pops the next overriding Start session id (FIFO), returning
+// ok=false once the queue is empty (the loop then falls back to answer()).
+func (r *recordingRunner) nextStartID() (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.startIDs) == 0 {
+		return "", false
+	}
+	id := r.startIDs[0]
+	r.startIDs = r.startIDs[1:]
+	return id, true
+}
+
+// setStartIDs queues the session ids the loop answers successive Starts with.
+// Set before the Starts it should affect are driven.
+func (r *recordingRunner) setStartIDs(ids ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.startIDs = append([]string(nil), ids...)
 }
 
 // sawRemove reports whether the Server pushed a Remove for containerName — the

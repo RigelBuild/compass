@@ -144,6 +144,10 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 		log,
 	)
 	hub.SetTranscriptStore(st)
+	// SEA-1667 T5: the same store backs the resume-body reconstructor's read
+	// seam (SessionResumeSnapshot + ReadArchiveSegment), wired here beside the
+	// write seam so the one store instance serves both legs.
+	hub.SetTranscriptReader(st)
 	return hub
 }
 
