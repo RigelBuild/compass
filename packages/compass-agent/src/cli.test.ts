@@ -1555,3 +1555,256 @@ function compactionSummariesOf(entries: unknown[]): string[] {
 	}
 	return out;
 }
+
+// ── main(): wiring the Runner-mounted agent-config into createAgentSession ────
+//
+// The reader (config-reader.ts) maps the mount at COMPASS's fixed path into the
+// three createAgentSession option surfaces. These run over the same MainDeps
+// composition seam as the `main` tests above, but add two seams the reader
+// needs: `configMount` points the reader at a tempdir fixture (the real
+// /run/compass/agent-config does not exist off-container), and `connectMcp`
+// stands in for the real MCPManager dial (a test cannot spawn MCP servers). What
+// reaches createAgentSession is asserted via the createSession spy, mirroring
+// the modelPattern/persona option tests.
+
+// Write a file under `<mount>/current/<rel>`, creating parents — the layout the
+// Runner materializes. Returns nothing; the caller holds the mount root.
+function writeMount(mount: string, rel: string, body: string): void {
+	const path = join(mount, "current", rel);
+	mkdirSync(join(path, ".."), { recursive: true });
+	writeFileSync(path, body);
+}
+
+function mountSkill(name: string): string {
+	return `---\nname: ${name}\ndescription: ${name} skill\n---\n# ${name}\n`;
+}
+
+// The option fields the reader populates, captured off the createSession spy.
+interface SeenConfig {
+	skills?: unknown[];
+	additionalExtensionPaths?: string[];
+	disableExtensionDiscovery?: boolean;
+	customTools?: unknown[];
+	enableMCP?: boolean;
+}
+
+// The `name` of each captured skill, narrowing with `in`/`typeof` (no fabricated
+// inline cast) — mirrors the textsOf/compactionSummariesOf narrowing above.
+function skillNames(skills: unknown[] | undefined): string[] {
+	const out: string[] = [];
+	for (const skill of skills ?? []) {
+		if (!skill || typeof skill !== "object") continue;
+		if (!("name" in skill) || typeof skill.name !== "string") continue;
+		out.push(skill.name);
+	}
+	return out;
+}
+
+describe("main wires the mounted agent-config into createAgentSession", () => {
+	test("a populated mount → skills, extension paths, and MCP tools all reach the options", async () => {
+		const mount = scratch();
+		writeMount(mount, "skills/alpha/SKILL.md", mountSkill("alpha"));
+		writeMount(mount, "extensions/ext.ts", "export default {};\n");
+		writeMount(
+			mount,
+			"mcp/srv.json",
+			JSON.stringify({ mcpServers: { db: { command: "db-mcp" } } }),
+		);
+
+		const session = fakeSession();
+		const mcpTools = [{ name: "db.query" }];
+		let connectedWith: Record<string, unknown> | undefined;
+		const seen: SeenConfig[] = [];
+		await main(
+			{ HOME: scratch() },
+			{
+				configMount: mount,
+				connectMcp: (_cwd, mcp) => {
+					connectedWith = mcp.configs;
+					return Promise.resolve({
+						tools: mcpTools as never,
+						disconnect: () => Promise.resolve(),
+					});
+				},
+				createSession: (options) => {
+					seen.push({
+						skills: options.skills,
+						additionalExtensionPaths: options.additionalExtensionPaths,
+						disableExtensionDiscovery: options.disableExtensionDiscovery,
+						customTools: options.customTools,
+						enableMCP: options.enableMCP,
+					});
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+
+		expect(seen).toHaveLength(1);
+		const opts = seen[0];
+		// skills: the mount's skill reached options.skills (a defined array skips
+		// discovery). Non-vacuity: dropping `skills: mounted.skills` from cli.ts
+		// leaves this undefined → red.
+		expect(skillNames(opts.skills)).toEqual(["alpha"]);
+		// extensions: the enumerated entry FILE reached additionalExtensionPaths,
+		// with disableExtensionDiscovery pinning "exactly these, none else".
+		expect(opts.additionalExtensionPaths).toEqual([
+			join(mount, "current", "extensions", "ext.ts"),
+		]);
+		expect(opts.disableExtensionDiscovery).toBe(true);
+		// MCP: the parsed config reached the connector, and its tools reached
+		// customTools with enableMCP:false (never a passed mcpManager, which would
+		// not surface its tools).
+		expect(connectedWith).toEqual({ db: { command: "db-mcp" } });
+		expect(opts.customTools).toBe(mcpTools);
+		expect(opts.enableMCP).toBe(false);
+	});
+
+	test("an UNCONFIGURED mount → skills [], no extension paths, no MCP tools, and main resolves", async () => {
+		// A present-but-empty mount root (no current/). The default connectMcp runs
+		// (empty configs → no dial, empty tools), so this exercises the real
+		// connect path's empty branch too, not just a fake.
+		const mount = scratch();
+		const session = fakeSession();
+		const seen: SeenConfig[] = [];
+		await expect(
+			main(
+				{ HOME: scratch() },
+				{
+					configMount: mount,
+					createSession: (options) => {
+						seen.push({
+							skills: options.skills,
+							additionalExtensionPaths: options.additionalExtensionPaths,
+							disableExtensionDiscovery: options.disableExtensionDiscovery,
+							customTools: options.customTools,
+							enableMCP: options.enableMCP,
+						});
+						return Promise.resolve({
+							session: session as unknown as AgentSession,
+						});
+					},
+					createTransport: () =>
+						fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				},
+			),
+		).resolves.toBeUndefined();
+
+		expect(seen).toHaveLength(1);
+		// The unconfigured→none guarantee: an explicit empty skills array (skips
+		// discovery), no extension paths, no MCP tools. Non-vacuity: a reader that
+		// left skills undefined would let the SDK discover ambient skills → red.
+		expect(seen[0].skills).toEqual([]);
+		expect(seen[0].additionalExtensionPaths).toEqual([]);
+		expect(seen[0].disableExtensionDiscovery).toBe(true);
+		expect(seen[0].customTools).toEqual([]);
+		expect(seen[0].enableMCP).toBe(false);
+	});
+
+	test("a partial mount (skills only) → only skills populated", async () => {
+		const mount = scratch();
+		writeMount(mount, "skills/only/SKILL.md", mountSkill("only"));
+		const session = fakeSession();
+		const seen: SeenConfig[] = [];
+		await main(
+			{ HOME: scratch() },
+			{
+				configMount: mount,
+				createSession: (options) => {
+					seen.push({
+						skills: options.skills,
+						additionalExtensionPaths: options.additionalExtensionPaths,
+						customTools: options.customTools,
+					});
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		expect(skillNames(seen[0].skills)).toEqual(["only"]);
+		expect(seen[0].additionalExtensionPaths).toEqual([]);
+		expect(seen[0].customTools).toEqual([]);
+	});
+
+	// The MCP manager teardown — what main() alone owns (the SDK never
+	// disconnects a manager it did not build). disconnect must run on BOTH the
+	// clean and error paths, or the container leaks every MCP subprocess/HTTP
+	// session on exit.
+	test("disconnects the MCP manager on the clean teardown path", async () => {
+		const mount = scratch();
+		writeMount(
+			mount,
+			"mcp/srv.json",
+			JSON.stringify({ mcpServers: { db: { command: "db-mcp" } } }),
+		);
+		let disconnected = false;
+		const session = fakeSession();
+		await main(
+			{ HOME: scratch() },
+			{
+				configMount: mount,
+				connectMcp: () =>
+					Promise.resolve({
+						tools: [],
+						disconnect: () => {
+							disconnected = true;
+							return Promise.resolve();
+						},
+					}),
+				createSession: () =>
+					Promise.resolve({ session: session as unknown as AgentSession }),
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		// Non-vacuity: dropping `await mcp.disconnect()` from the teardown leaves
+		// this false → red.
+		expect(disconnected).toBe(true);
+	});
+
+	test("disconnects the MCP manager on the error teardown path (and still propagates)", async () => {
+		const mount = scratch();
+		writeMount(
+			mount,
+			"mcp/srv.json",
+			JSON.stringify({ mcpServers: { db: { command: "db-mcp" } } }),
+		);
+		const boom = new Error("SDK prompt failed mid-turn");
+		let disconnected = false;
+		const session = fakeSession({ promptError: boom });
+		const carrier = fakeCarrier(emptyLog(), {
+			control: async function* () {
+				yield replayCompleteOp(1n);
+				yield promptOp(2n, "go");
+			},
+		});
+		await expect(
+			main(
+				{ HOME: scratch() },
+				{
+					configMount: mount,
+					connectMcp: () =>
+						Promise.resolve({
+							tools: [],
+							disconnect: () => {
+								disconnected = true;
+								return Promise.resolve();
+							},
+						}),
+					createSession: () =>
+						Promise.resolve({ session: session as unknown as AgentSession }),
+					createTransport: () => carrier,
+				},
+			),
+		).rejects.toBe(boom);
+		// Non-vacuity: a disconnect that only ran on the clean path leaves this
+		// false → red.
+		expect(disconnected).toBe(true);
+	});
+});
