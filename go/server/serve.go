@@ -383,10 +383,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return classifyServe(netServer.ServeTLS(netListener, "", ""), "compass.v1 network door")
 		})
 	}
-	// The delivery fan-out consumer (SEA-1569 T3): tails the comms bus and
-	// dispatches a `deliver` to each subscribed live agent session, its bus-tail
-	// goroutine on the serve group rooted on gctx (cancels at shutdown).
-	startDeliveryConsumer(gctx, g, commsBus, st, hub, hubLog)
+	// The comms-bus consumers (SEA-1569): the T3 delivery fan-out consumer and
+	// the T8 presence projection, both tailing the comms bus with their bus-tail
+	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
+	// ends when the comms bus closes in drainDoors).
+	startCommsBusConsumers(gctx, g, commsBus, st, hub, hubLog)
 	// Drain member of the same group: wake on gctx cancellation (parent shutdown
 	// or a server erroring), then hand off to drainDoors. A drain that overruns
 	// (a handler still wedged — e.g. a stream stuck mid replay to a stalled

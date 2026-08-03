@@ -319,6 +319,77 @@ func TestSubscribeCommsPostDeliversMessagePosted(t *testing.T) {
 	}
 }
 
+// TestSubscribeCommsAgentPresenceSharedChannelScoping is the SEA-1569 T8
+// visibility arm: an AgentPresenceChanged is delivered to an actor sharing a
+// visible channel with the agent and filtered from an actor sharing none — the
+// shared-channel rule the subscribe edge enforces (design.md:487-491). The
+// event is published straight onto the bus (the presence publisher's arm), so
+// this test drives the subscribe-edge filter directly.
+func TestSubscribeCommsAgentPresenceSharedChannelScoping(t *testing.T) {
+	h := newStreamHarness(t)
+	ctx := context.Background()
+
+	owner := mustUser(t, h.store, "owner")
+	agent := mustAgent(t, h.store, owner.ID, "agent")
+	sharer := mustUser(t, h.store, "sharer")
+	stranger := mustUser(t, h.store, "stranger")
+
+	// A channel co-inhabited by the agent and the sharer; the stranger is not a
+	// member, so it shares no channel with the agent.
+	if _, err := h.store.CreateChannel(ctx, owner.ID, store.NewChannel{
+		Name: "shared", Kind: store.ChannelKindChannel,
+		MemberAccountIDs: []store.AccountID{agent.ID, sharer.ID},
+	}); err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	presence := &compassv1.SubscribeCommsResponse{
+		Payload: &compassv1.SubscribeCommsResponse_AgentPresenceChanged{
+			AgentPresenceChanged: &compassv1.AgentPresenceChanged{
+				AgentAccountId: string(agent.ID),
+				Presence:       compassv1.AgentPresence_AGENT_PRESENCE_WAITING,
+			},
+		},
+	}
+
+	// The sharer receives the agent's presence (shares a channel with it).
+	sharerEvents := firstEventAfterBoundary(t, h, sharer.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	h.bus.Publish(presence)
+	got := awaitFirst(t, sharerEvents)
+	pc := got.GetAgentPresenceChanged()
+	if pc == nil {
+		t.Fatalf("sharer first event = %T, want AgentPresenceChanged", got.GetPayload())
+	}
+	if pc.GetAgentAccountId() != string(agent.ID) || pc.GetPresence() != compassv1.AgentPresence_AGENT_PRESENCE_WAITING {
+		t.Fatalf("sharer presence = %+v, want {%s, WAITING}", pc, agent.ID)
+	}
+
+	// The stranger shares no channel with the agent: the presence is filtered, so
+	// the stranger sees only the snapshot boundary and then nothing. A concurrent
+	// post to a channel the stranger CAN see is the positive control that proves
+	// the stream is live and the presence was filtered, not merely delayed.
+	strangerCh, err := h.store.CreateChannel(ctx, stranger.ID, store.NewChannel{Name: "stranger-room", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel(stranger): %v", err)
+	}
+	strangerEvents := firstEventAfterBoundary(t, h, stranger.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
+	h.bus.Publish(presence)
+	posted, err := h.svc.PostMessage(WithActor(ctx, stranger.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(strangerCh.ID)},
+		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible to me"}}},
+	}))
+	if err != nil {
+		t.Fatalf("PostMessage(stranger): %v", err)
+	}
+	first := awaitFirst(t, strangerEvents)
+	if first.GetAgentPresenceChanged() != nil {
+		t.Fatalf("stranger received AgentPresenceChanged for an agent it shares no channel with; want it filtered")
+	}
+	if mp := first.GetMessagePosted(); mp == nil || mp.GetMessage().GetId() != posted.Msg.GetMessage().GetId() {
+		t.Fatalf("stranger first event = %T, want its own MessagePosted (the presence must have been filtered, not delayed)", first.GetPayload())
+	}
+}
+
 // TestPostMessageIdempotentRetrySuppressesDuplicatePublish is the M3 handler
 // regression: a first PostMessage carrying a client_request_id delivers exactly
 // one MessagePosted, and a SECOND PostMessage with the SAME id returns the

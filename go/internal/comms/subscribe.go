@@ -254,6 +254,11 @@ type eventVisibility interface {
 	// IsAgentWorkspaceVisible gates AgentWorkspaceChanged (OpenAgentWorkspace:
 	// home-channel membership).
 	IsAgentWorkspaceVisible(ctx context.Context, actor store.AccountID, agentAccountID store.AccountID) (bool, error)
+	// SharesVisibleChannel gates AgentPresenceChanged (SEA-1569 T8): the actor
+	// receives an agent's presence only when it shares at least one channel with
+	// that agent — the shared-channel rule matching the fan-out's per-actor
+	// scoping (design.md:487-491).
+	SharesVisibleChannel(ctx context.Context, actor store.AccountID, agent store.AccountID) (bool, error)
 }
 
 // visibleToActor reports whether actor may receive resp — the per-event D9 gate
@@ -302,6 +307,8 @@ func visibleToActor(
 		return vis.AccountVisibleTo(ctx, actor, store.AccountID(p.AccountChanged.GetAccount().GetId()))
 	case *compassv1.SubscribeCommsResponse_AgentWorkspaceChanged:
 		return vis.IsAgentWorkspaceVisible(ctx, actor, store.AccountID(p.AgentWorkspaceChanged.GetWorkspace().GetAgentAccountId()))
+	case *compassv1.SubscribeCommsResponse_AgentPresenceChanged:
+		return vis.SharesVisibleChannel(ctx, actor, store.AccountID(p.AgentPresenceChanged.GetAgentAccountId()))
 	default:
 		// ResyncRequired and any unset payload: control frames, always delivered.
 		return true, nil

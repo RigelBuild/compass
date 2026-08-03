@@ -28,6 +28,7 @@ import (
 	"github.com/sealedsecurity/compass/go/internal/board"
 	"github.com/sealedsecurity/compass/go/internal/comms"
 	"github.com/sealedsecurity/compass/go/internal/delivery"
+	"github.com/sealedsecurity/compass/go/internal/presence"
 	"github.com/sealedsecurity/compass/go/internal/runnerhub"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
@@ -160,6 +161,30 @@ func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, commsBus *ev
 	hub.SetSessionStartSink(c)
 	hub.SetDeliveryStore(st)
 	g.Go(func() error { return c.Run(gctx) })
+}
+
+// startPresencePublisher builds the SEA-1569 T8 presence projection over the
+// comms bus (it both tails and publishes onto it) + the store's open-ask read
+// surface + the hub's Status relay for reconciliation, wires the
+// component<->hub construction cycle (the hub takes the component as its
+// PresenceSink; the component takes the hub as its Status relay — the
+// post-construction setter that breaks the cycle), and starts its bus-tail
+// goroutine on the serve group rooted on gctx (so it cancels at shutdown; it
+// also ends when the comms bus closes in drainDoors, so shutdown reaches it two
+// ways). Mirrors startDeliveryConsumer verbatim in shape.
+func startPresencePublisher(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
+	p := presence.NewPublisher(commsBus, st, hub, log)
+	hub.SetPresenceSink(p)
+	g.Go(func() error { return p.Run(gctx) })
+}
+
+// startCommsBusConsumers starts both comms-bus consumers (SEA-1569): the T3
+// delivery fan-out consumer and the T8 presence projection. Serve calls this one
+// helper so the two starts, which share the same construction inputs (comms bus,
+// store, hub, serve group, gctx), stay one statement at the call site.
+func startCommsBusConsumers(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
+	startDeliveryConsumer(gctx, g, commsBus, st, hub, log)
+	startPresencePublisher(gctx, g, commsBus, st, hub, log)
 }
 
 // logFrameDiagnostics emits the hub's frame-loss snapshot as one line. Serve
