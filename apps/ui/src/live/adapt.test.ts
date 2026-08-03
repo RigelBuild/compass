@@ -13,6 +13,7 @@ import {
 	create,
 	MessageBlockSchema,
 	MessageSchema,
+	TopicSchema,
 	UserAccountSchema,
 } from "@compass/client";
 import { type Account, type Agent, agentTree } from "../stub-data";
@@ -22,6 +23,7 @@ import {
 	adaptChannel,
 	adaptChannelGroup,
 	adaptMessage,
+	adaptTopic,
 	agentHomeChannelIds,
 	deriveMembership,
 } from "./adapt";
@@ -541,18 +543,18 @@ describe("adaptAsk", () => {
 });
 
 describe("adaptMessage", () => {
-	test("maps the scalar fields and flattens the container oneof to channelId", () => {
+	test("maps the scalar fields and the topicId", () => {
 		const r = adaptMessage(
 			create(MessageSchema, {
 				id: "msg-1",
-				container: { case: "channelId", value: "chan-1" },
+				topicId: "top-1",
 				authorAccountId: "acc-matt",
 				atUnixMs: 1_700_000_000_000n,
 				blocks: [textBlock("hello")],
 			}),
 		);
 		expect(r.id).toBe("msg-1");
-		expect(r.channelId).toBe("chan-1");
+		expect(r.topicId).toBe("top-1");
 		expect(r.authorAccountId).toBe("acc-matt");
 	});
 
@@ -620,27 +622,31 @@ describe("adaptMessage", () => {
 		expect(r.blocks).toEqual([]);
 	});
 
-	test("parentMessageId empty-string wire unset maps to undefined", () => {
-		const r = adaptMessage(
-			create(MessageSchema, { id: "msg-1", parentMessageId: "" }),
-		);
-		// The threading seam: comms.ts treats a falsy parent as a root, and the
-		// wire round-trip pins "" — the conversion must land on undefined, not "".
-		expect(r.parentMessageId).toBeUndefined();
-		expect(r.parentMessageId).not.toBe("");
-	});
-
-	test("a real parentMessageId round-trips verbatim", () => {
-		const r = adaptMessage(
-			create(MessageSchema, { id: "msg-2", parentMessageId: "msg-1" }),
-		);
-		expect(r.parentMessageId).toBe("msg-1");
-	});
-
-	test("an unset container oneof maps to an empty channelId rather than throwing", () => {
+	test("an unset topicId maps to an empty string rather than throwing", () => {
 		const w = create(MessageSchema, { id: "msg-1" });
-		expect(w.container.case).toBeUndefined();
+		expect(w.topicId).toBe("");
 		expect(() => adaptMessage(w)).not.toThrow();
-		expect(adaptMessage(w).channelId).toBe("");
+		expect(adaptMessage(w).topicId).toBe("");
+	});
+});
+
+describe("adaptTopic", () => {
+	test("maps the scalar fields and converts createdAtUnixMs to a number", () => {
+		const r = adaptTopic(
+			create(TopicSchema, {
+				id: "top-1",
+				channelId: "chan-1",
+				name: "T3a review",
+				createdAtUnixMs: 1_700_000_000_000n,
+				createdByAccountId: "acc-cook",
+			}),
+		);
+		expect(r.id).toBe("top-1");
+		expect(r.channelId).toBe("chan-1");
+		expect(r.name).toBe("T3a review");
+		expect(r.createdByAccountId).toBe("acc-cook");
+		// A number, not a bigint: the domain sorts topics with `<`.
+		expect(typeof r.createdAtUnixMs).toBe("number");
+		expect(r.createdAtUnixMs).toBe(1_700_000_000_000);
 	});
 });

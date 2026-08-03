@@ -34,6 +34,7 @@ import { type AppStore, createAppStore } from "./store";
 
 const CALLER = "acc-me";
 const CHANNEL = "chan-1";
+const TOPIC = "top-1";
 
 const wireChannel = (id: string) => buildWireChannel(id, CALLER);
 /** The ask as the SERVER holds it, with whatever answers it has recorded and
@@ -53,7 +54,7 @@ const askMessage = (
 ) =>
 	wireAskMessage({
 		id: "m-ask",
-		channelId: CHANNEL,
+		topicId: TOPIC,
 		authorAccountId: CALLER,
 		askId: "ask-1",
 		questionIds,
@@ -561,7 +562,7 @@ describe("adoptComms vs an in-progress ask", () => {
 					value: {
 						message: wireTextMessage({
 							id: "m-2",
-							channelId: CHANNEL,
+							topicId: TOPIC,
 							authorAccountId: CALLER,
 							atUnixMs: 2000,
 							text: "unrelated",

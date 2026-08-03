@@ -14,6 +14,7 @@ import type {
 	ChannelGroup,
 	ConvBlock,
 	Message,
+	Topic,
 } from "./comms-stub";
 import { RESERVED_MENTIONS } from "./comms-stub";
 
@@ -145,104 +146,90 @@ export function agentDmChannel(
 	return channels.find((c) => agentDmAccountId(c, callerId, byId) === agentId);
 }
 
-// ── Threading (the conversation center) ──────────────────────────────────────
+// ── Topics (the two-level Zulip conversation model) ──────────────────────────
 
-/** A message plus its direct replies — one thread in the conversation. Replies
- *  are one level deep (a reply to a reply still attaches to the top-level
- *  parent), matching a flat Discord-style thread under a parent. */
-export interface Thread {
-	root: Message;
-	replies: Message[];
+/** A topic plus its messages, chronological — one thread of the channel's
+ *  two-level model. The channel index renders one row per group; the topic view
+ *  renders a group's `messages`. */
+export interface TopicGroup {
+	topic: Topic;
+	messages: Message[];
 }
 
-/** The messages in one channel, chronological by post time then id (a stable
+/** The messages in one topic, chronological by post time then id (a stable
  *  tiebreak for equal timestamps). */
-export function channelMessages(
+export function topicMessages(
 	messages: readonly Message[],
-	channelId: string,
+	topicId: string,
 ): Message[] {
 	return messages
-		.filter((m) => m.channelId === channelId)
+		.filter((m) => m.topicId === topicId)
 		.sort(
 			(a, b) =>
 				a.atUnixMs - b.atUnixMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
 		);
 }
 
-/** Resolve a message's top-level root id: follow `parentMessageId` up until a
- *  message with no parent (or an unresolved parent — treated as a root so an
- *  orphaned reply still threads somewhere rather than vanishing). Bounded by the
- *  message count so a malformed cycle can't loop forever. */
-function rootIdOf(
-	msg: Message,
-	byId: Map<string, Message>,
-	bound: number,
-): string {
-	let cur = msg;
-	for (let i = 0; i < bound; i++) {
-		if (cur.parentMessageId === undefined) return cur.id;
-		const parent = byId.get(cur.parentMessageId);
-		if (parent === undefined) return cur.id; // orphan → its own root
-		cur = parent;
-	}
-	return cur.id; // cycle guard: treat the last seen as root
+/** The last-activity time of a topic group: its newest message's post time, or
+ *  the topic's own creation time when it holds no messages (so a fresh, empty
+ *  topic still sorts sensibly rather than sinking to the epoch). */
+function lastActivityOf(group: TopicGroup): number {
+	const last = group.messages[group.messages.length - 1];
+	return last ? last.atUnixMs : group.topic.createdAtUnixMs;
 }
 
-/** Group a channel's messages into threads: top-level messages (roots) in
- *  chronological order, each carrying its replies (also chronological). A reply
- *  whose parent isn't in the channel becomes its own root, so nothing is
- *  dropped. Message order within `messages` need not be pre-sorted. */
-export function threadsOf(
+/** Group a channel's topics into ordered TopicGroups: every ACTIVE topic in the
+ *  channel (in `topics`, archived excluded), each carrying its own messages
+ *  chronological, ordered by last activity DESCENDING (most-recently-active
+ *  topic first). Archived topics are hidden from the index (matching the
+ *  snapshot loader's listTopics{includeArchived:false}) but keep their messages,
+ *  so a deep-link into an archived topic still renders in TopicView. The server
+ *  guarantees every message has a topic, so there is NO client root-chasing and
+ *  nothing is dropped: each message lands in exactly the group of its `topicId`.
+ *  Ties break by topic id so the order is stable. Message order within
+ *  `messages` need not be pre-sorted. */
+export function topicsOf(
+	topics: readonly Topic[],
 	messages: readonly Message[],
 	channelId: string,
-): Thread[] {
-	const inChannel = channelMessages(messages, channelId);
-	const byId = new Map(inChannel.map((m) => [m.id, m]));
-	const bound = inChannel.length + 1;
-
-	const roots: Message[] = [];
-	const repliesByRoot = new Map<string, Message[]>();
-	for (const m of inChannel) {
-		const rootId = rootIdOf(m, byId, bound);
-		if (rootId === m.id) {
-			roots.push(m);
-		} else {
-			const list = repliesByRoot.get(rootId);
-			if (list) list.push(m);
-			else repliesByRoot.set(rootId, [m]);
-		}
-	}
-	return roots.map((root) => ({
-		root,
-		replies: repliesByRoot.get(root.id) ?? [],
-	}));
+): TopicGroup[] {
+	const groups = topics
+		.filter((t) => t.channelId === channelId && !t.archived)
+		.map((topic) => ({ topic, messages: topicMessages(messages, topic.id) }));
+	return groups.sort(
+		(a, b) =>
+			lastActivityOf(b) - lastActivityOf(a) ||
+			(a.topic.id < b.topic.id ? -1 : a.topic.id > b.topic.id ? 1 : 0),
+	);
 }
 
-/** The stream-facing derivation the Slack-model ThreadView reads: reply count,
- *  the DISTINCT reply authors in first-reply order (root author included only
- *  if they also reply), and the latest reply time (0 when there are none). One
- *  pass over `thread.replies`; pure — no store or component dependency. */
-export interface ThreadSummary {
-	replyCount: number;
+/** A compact activity summary for a topic-index row: message count, the DISTINCT
+ *  author ids in first-post order, and the last-activity time (0 when the topic
+ *  is empty). One pass over the group's messages; pure — no store or component
+ *  dependency. */
+export interface TopicSummary {
+	messageCount: number;
 	participantIds: string[];
-	lastReplyAtUnixMs: number;
+	lastActivityAtUnixMs: number;
 }
 
-export function threadSummary(thread: Thread): ThreadSummary {
+export function topicSummary(group: TopicGroup): TopicSummary {
 	const participantIds: string[] = [];
 	const seen = new Set<string>();
-	let lastReplyAtUnixMs = 0;
-	for (const reply of thread.replies) {
-		if (!seen.has(reply.authorAccountId)) {
-			seen.add(reply.authorAccountId);
-			participantIds.push(reply.authorAccountId);
+	let lastActivityAtUnixMs = 0;
+	for (const message of group.messages) {
+		if (!seen.has(message.authorAccountId)) {
+			seen.add(message.authorAccountId);
+			participantIds.push(message.authorAccountId);
 		}
-		if (reply.atUnixMs > lastReplyAtUnixMs) lastReplyAtUnixMs = reply.atUnixMs;
+		if (message.atUnixMs > lastActivityAtUnixMs) {
+			lastActivityAtUnixMs = message.atUnixMs;
+		}
 	}
 	return {
-		replyCount: thread.replies.length,
+		messageCount: group.messages.length,
 		participantIds,
-		lastReplyAtUnixMs,
+		lastActivityAtUnixMs,
 	};
 }
 

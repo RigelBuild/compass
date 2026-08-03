@@ -12,9 +12,9 @@ import {
 	dmLabel,
 	handleOf,
 	isDm,
-	type Thread,
-	threadSummary,
-	threadsOf,
+	type TopicGroup,
+	topicSummary,
+	topicsOf,
 } from "../comms";
 import type {
 	Account,
@@ -26,8 +26,6 @@ import type {
 } from "../comms-stub";
 import { useStore } from "../context";
 import { MarkdownText } from "./MarkdownText";
-import { ThreadPanel } from "./ThreadPanel";
-import { ThreadStream } from "./ThreadStream";
 
 /** UTC HH:MM for a message timestamp — deterministic, locale-independent (the
  *  fixture pins atUnixMs to a fixed clock; formatting to local time would make
@@ -204,74 +202,6 @@ export const MessageRow: Component<{
 	);
 };
 
-/** One thread's stream row (Slack model): the root message, then EITHER a
- *  "reply" affordance (zero-reply roots stay startable) OR a compact
- *  `.thread-summary` pill (count · people pile · last-reply time) that opens the
- *  thread panel. Reply bodies never render inline — they live in the panel. */
-export const ThreadView: Component<{
-	thread: Thread;
-	byId: Map<string, Account>;
-	byHandle: Map<string, Account>;
-}> = (props) => {
-	const store = useStore();
-	const summary = createMemo(() => threadSummary(props.thread));
-	return (
-		<div class="thread">
-			<div class="thread-root">
-				<MessageRow
-					msg={props.thread.root}
-					byId={props.byId}
-					byHandle={props.byHandle}
-				/>
-				<Show when={props.thread.replies.length === 0}>
-					<button
-						type="button"
-						class="thread-reply"
-						onClick={() => store.openThread(props.thread.root.id)}
-					>
-						reply
-					</button>
-				</Show>
-			</div>
-			<Show when={props.thread.replies.length > 0}>
-				<button
-					type="button"
-					class="thread-summary"
-					onClick={() => store.openThread(props.thread.root.id)}
-				>
-					<span class="thread-summary-count">
-						{summary().replyCount === 1
-							? "1 reply"
-							: `${summary().replyCount} replies`}
-					</span>
-					<span class="thread-summary-people">
-						<For each={summary().participantIds.slice(0, 5)}>
-							{(id) => (
-								<span
-									role="img"
-									class="thread-summary-avatar"
-									title={`@${handleOf(props.byId, id)}`}
-									aria-label={`@${handleOf(props.byId, id)}`}
-								>
-									{handleOf(props.byId, id).charAt(0).toUpperCase()}
-								</span>
-							)}
-						</For>
-						<Show when={summary().participantIds.length > 5}>
-							<span class="thread-summary-overflow">
-								{`+${summary().participantIds.length - 5}`}
-							</span>
-						</Show>
-					</span>
-					<span class="thread-summary-time">
-						{`last ${hhmm(summary().lastReplyAtUnixMs)}`}
-					</span>
-				</button>
-			</Show>
-		</div>
-	);
-};
-
 /** The channel header: glyph + name/topic, the caller's membership state, and
  *  (for a channel the caller hasn't joined) a join prompt over the conversation. */
 const ChannelHeader: Component<{
@@ -300,8 +230,10 @@ const ChannelHeader: Component<{
 	);
 };
 
-/** The composer: posts a root message to the channel through the wire
- *  `PostMessage` (store.postMessage). NOTHING is inserted locally — the stored
+/** The composer: posts a message through the wire `PostMessage`
+ *  (store.postMessage) into the given `topic` oneof — an existing topic by id
+ *  (the topic view) or a new topic by name (the channel index's "new topic"
+ *  affordance). NOTHING is inserted locally — the stored
  *  message arrives on the SubscribeComms echo, deduped by id, so it renders
  *  exactly once.
  *
@@ -313,35 +245,40 @@ const ChannelHeader: Component<{
  *  input frees up immediately, and restored verbatim if the post rejects (with
  *  the error rendered beside the field). A later keystroke wins over the
  *  restore — the user's in-flight typing is never clobbered by a stale reject. */
-const Composer: Component<{ channel: Channel }> = (props) => {
+export const Composer: Component<{
+	channel: Channel;
+	topic:
+		| { case: "topicId"; value: string }
+		| { case: "topicName"; value: string };
+	placeholder: string;
+}> = (props) => {
 	const store = useStore();
 	const [draft, setDraft] = createSignal("");
 	const [error, setError] = createSignal<string | null>(null);
-	const placeholder = () => {
-		if (props.channel.membership === "none") return "Join to post…";
-		const target = isDm(props.channel)
-			? `@${props.channel.name}`
-			: `#${props.channel.name}`;
-		return `Message ${target} — @ to mention or steer an agent`;
-	};
 	const send = () => {
 		const text = draft().trim();
 		if (!text || props.channel.membership === "none") return;
 		setError(null);
 		setDraft("");
-		store.postMessage(props.channel.id, text).catch((e: unknown) => {
-			setError(e instanceof Error ? e.message : String(e));
-			// Restore only into an empty field: if the user has started typing the
-			// next message, their text stands and the failed one is theirs to
-			// recover from the error, not something we splice in mid-word.
-			setDraft((current) => (current === "" ? text : current));
-		});
+		store
+			.postMessage(props.channel.id, props.topic, text)
+			.catch((e: unknown) => {
+				setError(e instanceof Error ? e.message : String(e));
+				// Restore only into an empty field: if the user has started typing the
+				// next message, their text stands and the failed one is theirs to
+				// recover from the error, not something we splice in mid-word.
+				setDraft((current) => (current === "" ? text : current));
+			});
 	};
 	return (
 		<div class="conv-composer">
 			<input
 				class="field"
-				placeholder={placeholder()}
+				placeholder={
+					props.channel.membership === "none"
+						? "Join to post…"
+						: props.placeholder
+				}
 				value={draft()}
 				disabled={props.channel.membership === "none"}
 				onInput={(e) => setDraft(e.currentTarget.value)}
@@ -373,10 +310,176 @@ const Composer: Component<{ channel: Channel }> = (props) => {
 	);
 };
 
-/** The conversation center — a channel's threaded text+ask conversation, with
- *  the composer pinned at the bottom. This is where user-directed communication
- *  lives: a surface *within* the board-primary shell (the standalone `channel`
- *  view or the agent workspace's chat pane), not a replacement for the board.
+/** One topic-index row: the topic name + a compact activity summary (message
+ *  count · people pile · last-activity time). Clicking drills into the topic's
+ *  message view (store.openTopic). Read-only — the channel index posts nothing;
+ *  the composer lives only in the topic view. */
+const TopicRow: Component<{
+	group: TopicGroup;
+	byId: Map<string, Account>;
+}> = (props) => {
+	const store = useStore();
+	const summary = createMemo(() => topicSummary(props.group));
+	return (
+		<button
+			type="button"
+			class="topic-row"
+			onClick={() => store.openTopic(props.group.topic.id)}
+		>
+			<span class="topic-name">{props.group.topic.name}</span>
+			<span class="topic-summary">
+				<span class="topic-summary-count">
+					{summary().messageCount === 1
+						? "1 message"
+						: `${summary().messageCount} messages`}
+				</span>
+				<span class="topic-summary-people">
+					<For each={summary().participantIds.slice(0, 5)}>
+						{(id) => (
+							<span
+								role="img"
+								class="topic-summary-avatar"
+								title={`@${handleOf(props.byId, id)}`}
+								aria-label={`@${handleOf(props.byId, id)}`}
+							>
+								{handleOf(props.byId, id).charAt(0).toUpperCase()}
+							</span>
+						)}
+					</For>
+					<Show when={summary().participantIds.length > 5}>
+						<span class="topic-summary-overflow">
+							{`+${summary().participantIds.length - 5}`}
+						</span>
+					</Show>
+				</span>
+				<Show when={summary().messageCount > 0}>
+					<span class="topic-summary-time">
+						{`last ${hhmm(summary().lastActivityAtUnixMs)}`}
+					</span>
+				</Show>
+			</span>
+		</button>
+	);
+};
+
+/** The "new topic" affordance: a topic-name field + a first-message field that
+ *  posts the message into a get-or-create topic (PostMessage topic:topicName).
+ *  It is the ONLY write path on the channel index — you cannot post into a
+ *  channel, only a topic; naming a topic and posting its first message is one
+ *  atomic act (the server creates the topic on the post). Failure keeps both the
+ *  typed name and message (same restore contract as the composer). */
+const NewTopic: Component<{ channel: Channel }> = (props) => {
+	const store = useStore();
+	const [name, setName] = createSignal("");
+	const [message, setMessage] = createSignal("");
+	const [error, setError] = createSignal<string | null>(null);
+	const canStart = () =>
+		props.channel.membership !== "none" &&
+		name().trim().length > 0 &&
+		message().trim().length > 0;
+	const start = () => {
+		const topicName = name().trim();
+		const text = message().trim();
+		if (!topicName || !text || props.channel.membership === "none") return;
+		setError(null);
+		setName("");
+		setMessage("");
+		store
+			.postMessage(
+				props.channel.id,
+				{ case: "topicName", value: topicName },
+				text,
+			)
+			.catch((e: unknown) => {
+				setError(e instanceof Error ? e.message : String(e));
+				setName((current) => (current === "" ? topicName : current));
+				setMessage((current) => (current === "" ? text : current));
+			});
+	};
+	return (
+		<div class="new-topic">
+			<input
+				class="new-topic-name field"
+				placeholder="New topic name…"
+				value={name()}
+				disabled={props.channel.membership === "none"}
+				onInput={(e) => setName(e.currentTarget.value)}
+			/>
+			<input
+				class="new-topic-message field"
+				placeholder="First message…"
+				value={message()}
+				disabled={props.channel.membership === "none"}
+				onInput={(e) => setMessage(e.currentTarget.value)}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" && !e.shiftKey) {
+						e.preventDefault();
+						start();
+					}
+				}}
+			/>
+			<button
+				type="button"
+				class="new-topic-start"
+				disabled={!canStart()}
+				onClick={start}
+			>
+				new topic
+			</button>
+			<Show when={error()}>
+				{(msg) => (
+					<span class="new-topic-error" role="alert">
+						{msg()}
+					</span>
+				)}
+			</Show>
+		</div>
+	);
+};
+
+/** The channel's topic index (two-level Zulip model): the channel's topics as
+ *  rows ordered last-activity-desc, each a name + activity summary, plus the
+ *  "new topic" affordance. NO composer — you post into a topic, never a channel;
+ *  clicking a row drills into that topic's message view. */
+const TopicIndex: Component<{
+	channel: Channel;
+	byId: Map<string, Account>;
+}> = (props) => {
+	const store = useStore();
+	const groups = createMemo(() =>
+		topicsOf(store.topics(), store.messages(), props.channel.id),
+	);
+	return (
+		<div class="conv-body-row">
+			<div class="conv-main">
+				<div class="topic-index">
+					<Show
+						when={groups().length > 0}
+						fallback={
+							<div class="conv-empty">
+								{props.channel.membership === "none"
+									? "Join to read this channel."
+									: "No topics yet — start one."}
+							</div>
+						}
+					>
+						<For each={groups()}>
+							{(group) => <TopicRow group={group} byId={props.byId} />}
+						</For>
+					</Show>
+					<NewTopic channel={props.channel} />
+				</div>
+			</div>
+		</div>
+	);
+};
+
+/** The channel surface — ALWAYS a channel's TOPIC INDEX (topics + "new topic",
+ *  no composer), for plain channels AND DMs alike. The model is uniform (Matt's
+ *  ruling): a DM is topics too, and steering an agent means replying in a topic
+ *  or starting a new one. You post into a topic, never a channel/DM directly, so
+ *  this surface carries no composer; clicking a topic row drills into its
+ *  message view (TopicView), which owns the composer.
  *
  *  The channel source is either an explicit `channel` prop (the agent
  *  workspace passes its bound home DM, so the pane can never drift onto the
@@ -396,12 +499,6 @@ export const ChannelView: Component<{
 	const channel = (): Channel | undefined =>
 		"channel" in props ? props.channel : store.selectedChannel();
 	const byId = () => new Map(store.accounts().map((a) => [a.id, a]));
-	const byHandle = () =>
-		new Map(store.accounts().map((a) => [a.handle.toLowerCase(), a]));
-	const threads = () => {
-		const chan = channel();
-		return chan ? threadsOf(store.messages(), chan.id) : [];
-	};
 
 	return (
 		<section class="conversation">
@@ -412,42 +509,7 @@ export const ChannelView: Component<{
 				{(chan) => (
 					<>
 						<ChannelHeader channel={chan()} byId={byId()} />
-						<div class="conv-body-row">
-							<div class="conv-main">
-								<ThreadStream
-									threads={threads()}
-									channelId={chan().id}
-									byId={byId()}
-									byHandle={byHandle()}
-									emptyMessage={
-										chan().membership === "none"
-											? "Join to read this channel."
-											: "No messages yet."
-									}
-								/>
-								{/* A FRESH composer per channel. The enclosing `<Show>` is
-								    unkeyed — Solid memoizes its condition on truthiness, so
-								    switching between two truthy channels does NOT re-run these
-								    children — which would leave one Composer instance holding
-								    channel A's draft/error while `props.channel` points at B,
-								    posting a private draft into the wrong channel. Keying on
-								    the id remounts the composer (fresh signals) and nothing
-								    else: the stream above keeps its scroll position.
-
-								    The child MUST declare its parameter: `Show` only invokes a
-								    children function of arity > 0, and returns a zero-arg one
-								    as a reactive getter instead — which re-renders in place
-								    and defeats the keying. */}
-								<Show when={chan().id} keyed>
-									{(_channelId) => <Composer channel={chan()} />}
-								</Show>
-							</div>
-							<ThreadPanel
-								channel={chan()}
-								byId={byId()}
-								byHandle={byHandle()}
-							/>
-						</div>
+						<TopicIndex channel={chan()} byId={byId()} />
 					</>
 				)}
 			</Show>

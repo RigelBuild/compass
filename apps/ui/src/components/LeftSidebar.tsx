@@ -9,6 +9,7 @@ import {
 	dmLabel,
 	isDm,
 	railChannels,
+	topicsOf,
 } from "../comms";
 import type { Channel } from "../comms-stub";
 import { useStore } from "../context";
@@ -137,9 +138,15 @@ function countDescendants(node: AgentTreeNode): number {
 	return node.children.reduce((n, c) => n + 1 + countDescendants(c), 0);
 }
 
+/** The number of most-recent topics a channel row surfaces as deep-nav
+ *  sub-rows — a UI constant (the sidebar hint, not the full index). */
+const RECENT_TOPIC_COUNT = 3;
+
 /** One rail row — a channel/DM the caller is a member of. The select button
  *  routes to the channel view via openChannel (a 1:1 agent DM delegates to the
- *  workspace); an unread badge and the subscribe toggle sit on the right. */
+ *  workspace); an unread badge and the subscribe toggle sit on the right. A
+ *  non-DM channel also surfaces its ≤3 most-recent topics as deep-nav sub-rows
+ *  routing straight to a topic view (openTopic). */
 const ChannelRow: Component<{ channel: Channel }> = (props) => {
 	const store = useStore();
 	const channel = () => props.channel;
@@ -155,58 +162,89 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 	// always-subscribed-to-own is implicit + non-togglable (design.md:416): render
 	// the control fixed, never a toggle that claims you can unsubscribe.
 	const fixed = () => channel().alwaysSubscribed === true;
+	// The channel's most-recent topics (last-activity-desc), capped — a DM has no
+	// topic index (it is a flat conversation), so it surfaces none.
+	const recentTopics = () =>
+		isDm(channel())
+			? []
+			: topicsOf(store.topics(), store.messages(), channel().id).slice(
+					0,
+					RECENT_TOPIC_COUNT,
+				);
 
 	return (
-		<div class="ch-row" classList={{ selected: selected() }}>
-			<button
-				type="button"
-				class="ch-row-select"
-				onClick={() => store.openChannel(channel().id)}
-			>
-				<span class="ch-glyph" aria-hidden="true">
-					{channelGlyph(channel().kind)}
-				</span>
-				<span class="ch-name">{label()}</span>
-
-				<Show when={(channel().unread ?? 0) > 0}>
-					<span class="ch-unread">{channel().unread}</span>
-				</Show>
-			</button>
-
-			{/* Subscribe toggle (only meaningful once joined, which every rail row
-			    is). Fixed where the subscription is implicit; DISABLED everywhere
-			    else until the subscribe RPC lands — the wire has none, and the
-			    local-only toggle this used to drive silently reverted on the next
-			    SubscribeComms snapshot. It still shows the real membership, it
-			    just can't change it yet. */}
-			<Show
-				when={!fixed()}
-				fallback={
-					<span
-						class="ch-sub fixed"
-						role="img"
-						title="Always subscribed — this subscription is implicit and can't be turned off."
-						aria-label="Always subscribed"
-					>
-						◉
-					</span>
-				}
-			>
+		<div class="ch-row-group">
+			<div class="ch-row" classList={{ selected: selected() }}>
 				<button
 					type="button"
-					class="ch-sub"
-					classList={{ on: subscribed() }}
-					disabled
-					title={
-						subscribed()
-							? "Subscribed — new messages are pushed to you. Unsubscribing is not wired up yet."
-							: "Joined, not subscribed. Subscribing is not wired up yet."
-					}
-					aria-pressed={subscribed()}
+					class="ch-row-select"
+					onClick={() => store.openChannel(channel().id)}
 				>
-					{subscribed() ? "◉" : "○"}
+					<span class="ch-glyph" aria-hidden="true">
+						{channelGlyph(channel().kind)}
+					</span>
+					<span class="ch-name">{label()}</span>
+
+					<Show when={(channel().unread ?? 0) > 0}>
+						<span class="ch-unread">{channel().unread}</span>
+					</Show>
 				</button>
-			</Show>
+
+				{/* Subscribe toggle (only meaningful once joined, which every rail row
+				    is). Fixed where the subscription is implicit; DISABLED everywhere
+				    else until the subscribe RPC lands — the wire has none, and the
+				    local-only toggle this used to drive silently reverted on the next
+				    SubscribeComms snapshot. It still shows the real membership, it
+				    just can't change it yet. */}
+				<Show
+					when={!fixed()}
+					fallback={
+						<span
+							class="ch-sub fixed"
+							role="img"
+							title="Always subscribed — this subscription is implicit and can't be turned off."
+							aria-label="Always subscribed"
+						>
+							◉
+						</span>
+					}
+				>
+					<button
+						type="button"
+						class="ch-sub"
+						classList={{ on: subscribed() }}
+						disabled
+						title={
+							subscribed()
+								? "Subscribed — new messages are pushed to you. Unsubscribing is not wired up yet."
+								: "Joined, not subscribed. Subscribing is not wired up yet."
+						}
+						aria-pressed={subscribed()}
+					>
+						{subscribed() ? "◉" : "○"}
+					</button>
+				</Show>
+			</div>
+
+			{/* The channel's ≤3 most-recent topics as deep-nav sub-rows — a straight
+			    jump into that topic's message view (openTopic). Not `.ch-row`, so the
+			    rail's channel-row count is unaffected. */}
+			<For each={recentTopics()}>
+				{(group) => (
+					<button
+						type="button"
+						class="ch-topic-row"
+						classList={{
+							selected:
+								store.selectedTopicId() === group.topic.id &&
+								store.view() === "topic",
+						}}
+						onClick={() => store.openTopic(group.topic.id)}
+					>
+						<span class="ch-topic-name">{group.topic.name}</span>
+					</button>
+				)}
+			</For>
 		</div>
 	);
 };

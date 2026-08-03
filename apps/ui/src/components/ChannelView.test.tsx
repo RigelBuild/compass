@@ -6,10 +6,12 @@ import {
 	STUB_CHANNELS,
 	STUB_COMMS_STATE,
 	STUB_MESSAGES,
+	STUB_TOPICS,
 } from "../comms-stub";
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
 import { ChannelView } from "./ChannelView";
+import { TopicView } from "./TopicView";
 
 // Acceptance spec for the standalone channel view's asks (design.md §219-256):
 // asks are answerable wherever they are, no rerouting, first-responder-wins is
@@ -42,17 +44,23 @@ import { ChannelView } from "./ChannelView";
 // reshuffle can't stale it: finds whatever standalone-channel ask exists.
 function standaloneChannelAsk(): {
 	channelId: string;
+	topicId: string;
 	messageId: string;
 	ask: Ask;
 	authorAccountId: string;
 } {
 	const channelKind = new Map(STUB_CHANNELS.map((c) => [c.id, c.kind]));
+	const topicChannel = new Map(STUB_TOPICS.map((t) => [t.id, t.channelId]));
 	for (const m of STUB_MESSAGES) {
-		if (channelKind.get(m.channelId) !== "channel") continue;
+		const channelId = topicChannel.get(m.topicId);
+		if (channelId === undefined || channelKind.get(channelId) !== "channel") {
+			continue;
+		}
 		for (const b of m.blocks) {
 			if (b.kind === "ask") {
 				return {
-					channelId: m.channelId,
+					channelId,
+					topicId: m.topicId,
 					messageId: m.id,
 					ask: b.ask,
 					authorAccountId: m.authorAccountId,
@@ -81,30 +89,25 @@ const AUTHOR_HANDLE = (() => {
 	return account.handle; // "livingstone" for ask-s4-integration
 })();
 
-// Mount ChannelView over a real store through the app's StoreContext (index.tsx
+// Mount TopicView over a real store through the app's StoreContext (index.tsx
 // wires it as `<StoreContext.Provider value={store}>`; there is no separate
 // provider wrapper). The store is built inside render's reactive root so its
 // memos are owned and disposed on the library's per-test cleanup; the reference
-// is captured so tests drive `openChannel` and re-read `messages()`.
+// is captured so tests drive `openTopic` and re-read `messages()`.
 //
-// The `readonly` param is vestigial: the read-only gate it once selected is gone,
-// so both mounts render identically — a `true` mount spreads a now-unknown
-// `readonlyAsks` key that ChannelView ignores. It is kept only so the
-// interactive-guard test can mount "the same view twice" for its identical-render
-// comparison; collapsing it is parked for Matt (see the PR's Open Questions).
-function mountChannelView(readonly: boolean): {
+// Asks live in the topic message view (the two-level model — a topic IS the
+// thread), so these ask-surface tests mount TopicView and drill into the ask's
+// topic. There is no read-only gate: an ask is answerable wherever it renders.
+function mountTopicView(): {
 	store: AppStore;
 	container: HTMLElement;
 } {
 	let store!: AppStore;
 	const { container } = render(() => {
 		store = createAppStore({ initialComms: STUB_COMMS_STATE });
-		const extra: Record<string, unknown> = readonly
-			? { readonlyAsks: true }
-			: {};
 		return (
 			<StoreContext.Provider value={store}>
-				<ChannelView {...extra} />
+				<TopicView />
 			</StoreContext.Provider>
 		);
 	});
@@ -135,8 +138,8 @@ describe("ChannelView (T6)", () => {
 	// re-introducing a `disabled` gate arm reddens the enabled loop; a resurrected
 	// hint block reddens the hint-absence check.
 	test("an ask in a standalone channel renders answerable (options enabled, no read-only hint)", () => {
-		const { store, container } = mountChannelView(true);
-		store.openChannel(STANDALONE_ASK.channelId);
+		const { store, container } = mountTopicView();
+		store.openTopic(STANDALONE_ASK.topicId);
 
 		const options = askOptions(container);
 		// Precondition: the ask block actually rendered (proves the red is an
@@ -163,8 +166,8 @@ describe("ChannelView (T6)", () => {
 	// aria-pressed="true" and the `chosen` class. Mutation-check: re-introducing a
 	// gate early-return that swallows the click reddens all three post-click legs.
 	test("an ask in a standalone channel records the answer on click", () => {
-		const { store, container } = mountChannelView(true);
-		store.openChannel(STANDALONE_ASK.channelId);
+		const { store, container } = mountTopicView();
+		store.openTopic(STANDALONE_ASK.topicId);
 
 		const options = askOptions(container);
 		expect(options.length).toBeGreaterThan(0);
@@ -187,8 +190,8 @@ describe("ChannelView (T6)", () => {
 	// `locked()`/`chosen` (options enabled after settle, or a missing highlight)
 	// reddens either way.
 	test("a settled single-select ask on the standalone surface renders locked (all disabled, winner chosen)", () => {
-		const { store, container } = mountChannelView(true);
-		store.openChannel(STANDALONE_ASK.channelId);
+		const { store, container } = mountTopicView();
+		store.openTopic(STANDALONE_ASK.topicId);
 
 		const question = STANDALONE_ASK.ask.questions[0];
 		const winningId = question.options[0].id;
@@ -219,14 +222,14 @@ describe("ChannelView (T6)", () => {
 	// design §620-621: the standalone surface behaves as the ordinary interactive
 	// view. Guards against a regression that makes one mount over-disable or drop
 	// content relative to the other.
-	test("the same ask stays answerable in the default (interactive) mount, and threads render identically", () => {
+	test("the same ask stays answerable in a second (interactive) mount, and messages render identically", () => {
 		// A second mount of the same channel — for the identical-render comparison.
-		const secondMount = mountChannelView(true);
-		secondMount.store.openChannel(STANDALONE_ASK.channelId);
+		const secondMount = mountTopicView();
+		secondMount.store.openTopic(STANDALONE_ASK.topicId);
 
 		// Default (interactive) mount.
-		const { store, container } = mountChannelView(false);
-		store.openChannel(STANDALONE_ASK.channelId);
+		const { store, container } = mountTopicView();
+		store.openTopic(STANDALONE_ASK.topicId);
 
 		const options = askOptions(container);
 		expect(options.length).toBeGreaterThan(0);
@@ -242,17 +245,14 @@ describe("ChannelView (T6)", () => {
 			STANDALONE_ASK.ask.questions[0].options[0].id,
 		]);
 
-		// Threads render identically in both mounts: same message + thread count.
-		// The ask block never differs in structure between mounts.
+		// Messages render identically in both mounts: same message-row count. The
+		// ask block never differs in structure between mounts.
 		const count = (root: HTMLElement, sel: string): number =>
 			root.querySelectorAll(sel).length;
-		expect(count(container, ".thread")).toBe(
-			count(secondMount.container, ".thread"),
-		);
 		expect(count(container, ".msg")).toBe(count(secondMount.container, ".msg"));
-		// Non-triviality: the channel actually has threaded content to compare,
-		// so an "identical" pass can't be two empty renders agreeing.
-		expect(count(container, ".msg")).toBeGreaterThan(1);
+		// Non-triviality: the topic actually has message content to compare, so an
+		// "identical" pass can't be two empty renders agreeing.
+		expect(count(container, ".msg")).toBeGreaterThan(0);
 	});
 });
 
@@ -266,8 +266,8 @@ describe("ChannelView settled-state lock (T3)", () => {
 	// ignored chosenOptionIds (options stay enabled) or dropped the `chosen`
 	// highlight reddens.
 	test("a settled single-select ask renders all options disabled with the winner chosen", () => {
-		const { store, container } = mountChannelView(false);
-		store.openChannel(STANDALONE_ASK.channelId);
+		const { store, container } = mountTopicView();
+		store.openTopic(STANDALONE_ASK.topicId);
 
 		const question = STANDALONE_ASK.ask.questions[0];
 		const winningId = question.options[0].id;
@@ -295,8 +295,8 @@ describe("ChannelView settled-state lock (T3)", () => {
 	// backs it. Mutation-check: a store that re-answered (dropping first-wins)
 	// reddens the chosenIds equality; a lost winner highlight reddens the DOM legs.
 	test("clicking a losing option on a settled ask is a no-op (first-wins holds)", () => {
-		const { store, container } = mountChannelView(false);
-		store.openChannel(STANDALONE_ASK.channelId);
+		const { store, container } = mountTopicView();
+		store.openTopic(STANDALONE_ASK.topicId);
 
 		const question = STANDALONE_ASK.ask.questions[0];
 		const winningId = question.options[0].id;
@@ -321,5 +321,45 @@ describe("ChannelView settled-state lock (T3)", () => {
 		// The clicked loser never became chosen.
 		expect(options[1].classList.contains("chosen")).toBe(false);
 		expect(options[1].getAttribute("aria-pressed")).toBe("false");
+	});
+});
+
+// The load-bearing model boundary (record §F11/§D5, Matt's uniform-DM ruling):
+// the channel surface is a composerless TOPIC INDEX — you post into a topic,
+// never a channel/DM directly. The ONLY channel-level write affordance is the
+// "new topic" name+first-message input (NewTopic, `.new-topic`), not a message
+// composer (`.conv-composer`, which lives ONLY in TopicView). Nothing else in
+// the slice pins the ABSENCE of a composer here, so a mutation re-adding a
+// Composer to TopicIndex (or a DM flat-branch) would otherwise ship green.
+describe("ChannelView is a composerless topic index (T5 model boundary)", () => {
+	// Mount the real ChannelView over the offline stub store on a standalone
+	// channel (openChannel routes a kind:"channel" to its topic index; the
+	// default in-memory seam applies the route synchronously).
+	function mountChannelView(): { store: AppStore; container: HTMLElement } {
+		let store!: AppStore;
+		const { container } = render(() => {
+			store = createAppStore({ initialComms: STUB_COMMS_STATE });
+			return (
+				<StoreContext.Provider value={store}>
+					<ChannelView />
+				</StoreContext.Provider>
+			);
+		});
+		return { store, container };
+	}
+
+	test("the channel surface renders topic rows + new-topic but NO message composer", () => {
+		const { store, container } = mountChannelView();
+		store.openChannel(STANDALONE_ASK.channelId);
+
+		const index = container.querySelector(".topic-index");
+		expect(index).not.toBeNull();
+		// Precondition: the index actually rendered rows (proves the composer-
+		// absence assertion below is meaningful, not an empty-render false pass).
+		expect(index?.querySelectorAll(".topic-row").length).toBeGreaterThan(0);
+		// The sole channel-level write affordance is present…
+		expect(index?.querySelector(".new-topic")).not.toBeNull();
+		// …and NO message composer leaks onto the channel surface.
+		expect(container.querySelector(".conv-composer")).toBeNull();
 	});
 });

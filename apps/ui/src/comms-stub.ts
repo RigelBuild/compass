@@ -19,14 +19,13 @@
 //    blocks (thought/tool_call/plan/diff) do NOT appear in the channel — they
 //    live in the session observation panel, rendered by OMP's own renderer over
 //    opaque session frames.
-//  - threading is carried by `parentMessageId` (the channel-model amendment
-//    compass is folding into the contract — not yet in the frozen proto). SEAM:
-//    expect the field to settle in the proto.
+//  - threading is TWO-LEVEL (Zulip model): a channel holds named `Topic`s, and
+//    each `Message` belongs to exactly one topic (`Message.topicId`). There is
+//    no per-message parent — a topic IS the thread. (comms.proto Message.topic_id
+//    + Topic; field 2 reused as topic_id, parent_message_id removed.)
 //  - per-channel membership (joined / subscribed) is a still-in-design contract
 //    carrier — modeled here as a UI-side field. SEAM: expect the field name to
 //    settle.
-//  - `Message.container` is channel-only here; the proto's `workspace_id`
-//    container arm is being dropped (channel-only containment).
 
 // ── Accounts (comms.proto Account) ───────────────────────────────────────────
 
@@ -156,20 +155,36 @@ export type ConvBlock =
 	| { kind: "text"; text: string }
 	| { kind: "ask"; ask: Ask };
 
+/** A named topic within a channel — the thread of the two-level Zulip model
+ *  (comms.proto Topic). A channel holds many topics; each message belongs to
+ *  exactly one. */
+export interface Topic {
+	/** Server-assigned stable id (survives rename). */
+	id: string;
+	/** The channel this topic lives in (comms.proto Topic.channel_id). */
+	channelId: string;
+	/** Display name, unique (case-insensitive) within the channel. */
+	name: string;
+	/** Creation time, ms since epoch (comms.proto Topic.created_at_unix_ms). */
+	createdAtUnixMs: number;
+	/** The account that first addressed the topic (created it). */
+	createdByAccountId: string;
+	/** Archived topics are hidden from the default index but keep their messages. */
+	archived: boolean;
+}
+
 /** A message in a channel — the persisted unit of the comms layer (comms.proto
- *  Message, container narrowed to channel-only). */
+ *  Message). Scoped to exactly one topic; the message's channel is the topic's
+ *  channel. */
 export interface Message {
 	/** Server-assigned stable id. */
 	id: string;
-	/** The channel this message belongs to (comms.proto Message.channel_id). */
-	channelId: string;
+	/** The topic this message belongs to (comms.proto Message.topic_id). */
+	topicId: string;
 	/** The posting account (a user or an agent). */
 	authorAccountId: string;
 	/** Post time, ms since epoch (comms.proto Message.at_unix_ms). */
 	atUnixMs: number;
-	/** SEAM (channel-model amendment): the message this one replies to, forming a
-	 *  thread; absent for a top-level message. */
-	parentMessageId?: string;
 	/** Ordered durable content (text + ask only). */
 	blocks: ConvBlock[];
 }
@@ -295,11 +310,75 @@ export const STUB_CHANNELS: Channel[] = [
 const T0 = Date.UTC(2026, 6, 18, 17, 0, 0);
 const min = (m: number): number => T0 + m * 60_000;
 
+// The channel's named topics — the two-level Zulip model's thread layer. Each
+// message below carries a `topicId` into one of these; the channel index renders
+// them ordered by last activity. `ch-svc-compass` carries TWO topics so the
+// index shows a real multi-topic channel; DMs carry a single home topic (a DM is
+// a flat conversation, one implicit topic).
+export const STUB_TOPICS: Topic[] = [
+	{
+		id: "top-ann-posture",
+		channelId: "ch-announcements",
+		name: "posture",
+		createdAtUnixMs: min(1),
+		createdByAccountId: "acc-supervisor",
+		archived: false,
+	},
+	{
+		id: "top-compass-t3a",
+		channelId: "ch-svc-compass",
+		name: "T3a review",
+		createdAtUnixMs: min(9),
+		createdByAccountId: "acc-cook",
+		archived: false,
+	},
+	{
+		id: "top-compass-integration",
+		channelId: "ch-svc-compass",
+		name: "integration CI",
+		createdAtUnixMs: min(30),
+		createdByAccountId: "acc-livingstone",
+		archived: false,
+	},
+	{
+		id: "top-dm-livingstone",
+		channelId: "dm-livingstone",
+		name: "general",
+		createdAtUnixMs: min(14),
+		createdByAccountId: MATT,
+		archived: false,
+	},
+	{
+		id: "top-dm-cook",
+		channelId: "dm-cook",
+		name: "general",
+		createdAtUnixMs: min(49),
+		createdByAccountId: "acc-cook",
+		archived: false,
+	},
+	{
+		id: "top-dm-supervisor",
+		channelId: "dm-supervisor",
+		name: "general",
+		createdAtUnixMs: min(59),
+		createdByAccountId: "acc-supervisor",
+		archived: false,
+	},
+	{
+		id: "top-dm-warden",
+		channelId: "dm-warden",
+		name: "general",
+		createdAtUnixMs: min(69),
+		createdByAccountId: "acc-warden",
+		archived: false,
+	},
+];
+
 export const STUB_MESSAGES: Message[] = [
-	// ── #announcements ──
+	// ── #announcements / posture ──
 	{
 		id: "msg-a1",
-		channelId: "ch-announcements",
+		topicId: "top-ann-posture",
 		authorAccountId: "acc-supervisor",
 		atUnixMs: min(2),
 		blocks: [
@@ -311,7 +390,7 @@ export const STUB_MESSAGES: Message[] = [
 	},
 	{
 		id: "msg-a2",
-		channelId: "ch-announcements",
+		topicId: "top-ann-posture",
 		authorAccountId: "acc-supervisor",
 		atUnixMs: min(41),
 		blocks: [
@@ -322,10 +401,10 @@ export const STUB_MESSAGES: Message[] = [
 		],
 	},
 
-	// ── #svc.compass (a threaded exchange) ──
+	// ── #svc.compass / T3a review (a multi-message topic exchange) ──
 	{
 		id: "msg-c1",
-		channelId: "ch-svc-compass",
+		topicId: "top-compass-t3a",
 		authorAccountId: "acc-cook",
 		atUnixMs: min(10),
 		blocks: [
@@ -337,10 +416,9 @@ export const STUB_MESSAGES: Message[] = [
 	},
 	{
 		id: "msg-c2",
-		channelId: "ch-svc-compass",
+		topicId: "top-compass-t3a",
 		authorAccountId: "acc-livingstone",
 		atUnixMs: min(24),
-		parentMessageId: "msg-c1",
 		blocks: [
 			{
 				kind: "text",
@@ -350,10 +428,9 @@ export const STUB_MESSAGES: Message[] = [
 	},
 	{
 		id: "msg-c3",
-		channelId: "ch-svc-compass",
+		topicId: "top-compass-t3a",
 		authorAccountId: "acc-cook",
 		atUnixMs: min(27),
-		parentMessageId: "msg-c1",
 		blocks: [
 			{
 				kind: "text",
@@ -361,9 +438,11 @@ export const STUB_MESSAGES: Message[] = [
 			},
 		],
 	},
+
+	// ── #svc.compass / integration CI (an ask topic) ──
 	{
 		id: "msg-c4",
-		channelId: "ch-svc-compass",
+		topicId: "top-compass-integration",
 		authorAccountId: "acc-livingstone",
 		atUnixMs: min(33),
 		blocks: [
@@ -402,7 +481,7 @@ export const STUB_MESSAGES: Message[] = [
 	// ── DM: matt <-> livingstone ──
 	{
 		id: "msg-dm1",
-		channelId: "dm-livingstone",
+		topicId: "top-dm-livingstone",
 		authorAccountId: "acc-livingstone",
 		atUnixMs: min(15),
 		blocks: [
@@ -414,7 +493,7 @@ export const STUB_MESSAGES: Message[] = [
 	},
 	{
 		id: "msg-dm2",
-		channelId: "dm-livingstone",
+		topicId: "top-dm-livingstone",
 		authorAccountId: MATT,
 		atUnixMs: min(18),
 		blocks: [
@@ -425,7 +504,7 @@ export const STUB_MESSAGES: Message[] = [
 	// ── DM: matt <-> cook ──
 	{
 		id: "msg-dm-f1",
-		channelId: "dm-cook",
+		topicId: "top-dm-cook",
 		authorAccountId: "acc-cook",
 		atUnixMs: min(50),
 		blocks: [
@@ -437,7 +516,7 @@ export const STUB_MESSAGES: Message[] = [
 	},
 	{
 		id: "msg-dm-f2",
-		channelId: "dm-cook",
+		topicId: "top-dm-cook",
 		authorAccountId: "acc-cook",
 		atUnixMs: min(52),
 		blocks: [
@@ -475,7 +554,7 @@ export const STUB_MESSAGES: Message[] = [
 	// ── DM: matt <-> supervisor ──
 	{
 		id: "msg-dm-sup1",
-		channelId: "dm-supervisor",
+		topicId: "top-dm-supervisor",
 		authorAccountId: "acc-supervisor",
 		atUnixMs: min(60),
 		blocks: [
@@ -487,7 +566,7 @@ export const STUB_MESSAGES: Message[] = [
 	},
 	{
 		id: "msg-dm-sup2",
-		channelId: "dm-supervisor",
+		topicId: "top-dm-supervisor",
 		authorAccountId: MATT,
 		atUnixMs: min(63),
 		blocks: [
@@ -499,7 +578,7 @@ export const STUB_MESSAGES: Message[] = [
 	},
 	{
 		id: "msg-dm-sup3",
-		channelId: "dm-supervisor",
+		topicId: "top-dm-supervisor",
 		authorAccountId: "acc-supervisor",
 		atUnixMs: min(65),
 		blocks: [
@@ -511,7 +590,7 @@ export const STUB_MESSAGES: Message[] = [
 	},
 	{
 		id: "msg-dm-sup4",
-		channelId: "dm-supervisor",
+		topicId: "top-dm-supervisor",
 		authorAccountId: "acc-supervisor",
 		atUnixMs: min(67),
 		blocks: [
@@ -551,7 +630,7 @@ export const STUB_MESSAGES: Message[] = [
 	// ── DM: matt <-> warden ──
 	{
 		id: "msg-dm-war1",
-		channelId: "dm-warden",
+		topicId: "top-dm-warden",
 		authorAccountId: "acc-warden",
 		atUnixMs: min(70),
 		blocks: [
@@ -563,7 +642,7 @@ export const STUB_MESSAGES: Message[] = [
 	},
 	{
 		id: "msg-dm-war2",
-		channelId: "dm-warden",
+		topicId: "top-dm-warden",
 		authorAccountId: MATT,
 		atUnixMs: min(73),
 		blocks: [
@@ -572,7 +651,7 @@ export const STUB_MESSAGES: Message[] = [
 	},
 	{
 		id: "msg-dm-war3",
-		channelId: "dm-warden",
+		topicId: "top-dm-warden",
 		authorAccountId: "acc-warden",
 		atUnixMs: min(75),
 		blocks: [
@@ -594,5 +673,6 @@ export const STUB_COMMS_STATE = {
 	accounts: STUB_ACCOUNTS,
 	channelGroups: STUB_CHANNEL_GROUPS,
 	channels: STUB_CHANNELS,
+	topics: STUB_TOPICS,
 	messages: STUB_MESSAGES,
 };

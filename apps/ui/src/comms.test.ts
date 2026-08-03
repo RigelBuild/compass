@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Thread } from "./comms";
+import type { TopicGroup } from "./comms";
 import {
 	agentDmAccountId,
 	agentDmChannel,
@@ -12,8 +12,8 @@ import {
 	isDm,
 	parseMentions,
 	railChannels,
-	threadSummary,
-	threadsOf,
+	topicSummary,
+	topicsOf,
 } from "./comms";
 import type {
 	Account,
@@ -23,8 +23,9 @@ import type {
 	ChannelKind,
 	ConvBlock,
 	Message,
+	Topic,
 } from "./comms-stub";
-import { STUB_MESSAGES } from "./comms-stub";
+import { STUB_MESSAGES, STUB_TOPICS } from "./comms-stub";
 
 // comms.ts is the pure core of the comms model: it partitions channels
 // into the rail's sections/DMs/browse list, threads a channel's flat message
@@ -58,9 +59,18 @@ function grp(
 	return { name: over.id, visibility: "owner", ...over };
 }
 function msg(
-	over: Partial<Message> & Pick<Message, "id" | "channelId" | "atUnixMs">,
+	over: Partial<Message> & Pick<Message, "id" | "topicId" | "atUnixMs">,
 ): Message {
 	return { authorAccountId: "acc-author", blocks: [], ...over };
+}
+function top(over: Partial<Topic> & Pick<Topic, "id" | "channelId">): Topic {
+	return {
+		name: over.id,
+		createdAtUnixMs: 0,
+		createdByAccountId: "acc-author",
+		archived: false,
+		...over,
+	};
 }
 const textBlock = (text: string): ConvBlock => ({ kind: "text", text });
 const askBlock = (): ConvBlock => ({
@@ -81,314 +91,197 @@ const askBlock = (): ConvBlock => ({
 });
 const CH = "ch-x";
 
-describe("threadsOf", () => {
-	// The center-column contract: roots chronological, each carrying its replies
-	// chronological, regardless of input order. Input is deliberately shuffled and
-	// reply times interleaved so a sort or grouping regression shows.
-	test("returns roots chronologically, each with its replies chronologically", () => {
-		const r1 = msg({ id: "r1", channelId: CH, atUnixMs: 100 });
-		const r2 = msg({ id: "r2", channelId: CH, atUnixMs: 300 });
-		const a = msg({
-			id: "a",
-			channelId: CH,
-			atUnixMs: 500,
-			parentMessageId: "r1",
-		});
-		const b = msg({
-			id: "b",
-			channelId: CH,
-			atUnixMs: 200,
-			parentMessageId: "r1",
-		});
-		const c = msg({
-			id: "c",
-			channelId: CH,
-			atUnixMs: 400,
-			parentMessageId: "r2",
-		});
+describe("topicsOf", () => {
+	// The channel index contract: every topic in the channel becomes a group,
+	// each carrying its own messages chronological, groups ordered by last
+	// activity DESCENDING (most-recently-active topic first). Input is shuffled so
+	// a sort or grouping regression shows.
+	test("groups a channel's topics, messages chronological, ordered by last activity desc", () => {
+		const tA = top({ id: "top-a", channelId: CH });
+		const tB = top({ id: "top-b", channelId: CH });
+		// top-a's newest message is at 500; top-b's newest is at 300 → a before b.
+		const a1 = msg({ id: "a1", topicId: "top-a", atUnixMs: 100 });
+		const a2 = msg({ id: "a2", topicId: "top-a", atUnixMs: 500 });
+		const b1 = msg({ id: "b1", topicId: "top-b", atUnixMs: 300 });
+		const b2 = msg({ id: "b2", topicId: "top-b", atUnixMs: 200 });
 
-		const threads = threadsOf([a, r2, b, r1, c], CH);
+		const groups = topicsOf([tB, tA], [a2, b1, a1, b2], CH);
 
-		expect(threads.map((t) => t.root.id)).toEqual(["r1", "r2"]);
-		// r1's replies by time: b(200) then a(500) — NOT input order (a before b).
-		expect(threads[0].replies.map((m) => m.id)).toEqual(["b", "a"]);
-		expect(threads[1].replies.map((m) => m.id)).toEqual(["c"]);
+		expect(groups.map((g) => g.topic.id)).toEqual(["top-a", "top-b"]);
+		// Each group's messages are chronological, not input order.
+		expect(groups[0].messages.map((m) => m.id)).toEqual(["a1", "a2"]);
+		expect(groups[1].messages.map((m) => m.id)).toEqual(["b2", "b1"]);
 	});
 
-	// Equal timestamps fall back to an id tiebreak, so the order is stable rather
-	// than input-order-dependent. Input is id-descending to prove the tiebreak
-	// reorders it.
-	test("breaks equal-timestamp ties by id (stable order)", () => {
-		const mb = msg({ id: "m-b", channelId: CH, atUnixMs: 100 });
-		const ma = msg({ id: "m-a", channelId: CH, atUnixMs: 100 });
+	// A topic in a DIFFERENT channel is excluded; only the requested channel's
+	// topics group.
+	test("excludes topics from other channels", () => {
+		const here = top({ id: "here", channelId: CH });
+		const elsewhere = top({ id: "elsewhere", channelId: "ch-other" });
+		const m1 = msg({ id: "m1", topicId: "here", atUnixMs: 100 });
+		const m2 = msg({ id: "m2", topicId: "elsewhere", atUnixMs: 200 });
 
-		const threads = threadsOf([mb, ma], CH);
+		const groups = topicsOf([here, elsewhere], [m1, m2], CH);
 
-		expect(threads.map((t) => t.root.id)).toEqual(["m-a", "m-b"]);
+		expect(groups.map((g) => g.topic.id)).toEqual(["here"]);
 	});
 
-	// A reply whose parent isn't in the channel must surface as its own root —
-	// nothing is dropped just because the parent is missing.
-	test("a reply with an unresolved parent becomes its own root (nothing dropped)", () => {
-		const root = msg({ id: "root", channelId: CH, atUnixMs: 100 });
-		const orphan = msg({
-			id: "orphan",
-			channelId: CH,
-			atUnixMs: 200,
-			parentMessageId: "ghost",
-		});
+	// An empty topic (no messages) still appears — sorted by its creation time,
+	// not sunk to the epoch. A fresh topic created after an older active one sorts
+	// FIRST (its createdAtUnixMs beats the older topic's last message time).
+	test("an empty topic sorts by its creation time and is never dropped", () => {
+		const older = top({ id: "older", channelId: CH, createdAtUnixMs: 10 });
+		const fresh = top({ id: "fresh", channelId: CH, createdAtUnixMs: 400 });
+		const m1 = msg({ id: "m1", topicId: "older", atUnixMs: 100 });
 
-		const threads = threadsOf([root, orphan], CH);
+		const groups = topicsOf([older, fresh], [m1], CH);
 
-		expect(threads.map((t) => t.root.id)).toEqual(["root", "orphan"]);
-		expect(threads.find((t) => t.root.id === "orphan")?.replies).toEqual([]);
-		expect(
-			new Set(
-				threads.flatMap((t) => [t.root.id, ...t.replies.map((r) => r.id)]),
-			),
-		).toEqual(new Set(["root", "orphan"]));
+		expect(groups.map((g) => g.topic.id)).toEqual(["fresh", "older"]);
+		expect(groups.find((g) => g.topic.id === "fresh")?.messages).toEqual([]);
 	});
 
-	// A parent that lives in a DIFFERENT channel is not visible to this channel's
-	// threading, so the reply roots in its own channel rather than vanishing. This
-	// bites if byId were built from all messages instead of the channel's own.
-	test("a message whose parent is in another channel roots in its own channel", () => {
-		const A = "ch-a";
-		const B = "ch-b";
-		const inA = msg({ id: "in-a", channelId: A, atUnixMs: 100 });
-		const inB = msg({
-			id: "in-b",
-			channelId: B,
-			atUnixMs: 200,
-			parentMessageId: "in-a",
-		});
+	// Never drops a message: every message whose topic is in the channel lands in
+	// exactly one group, and the union of grouped messages equals the input.
+	test("every channel message lands in exactly one group (nothing dropped)", () => {
+		const tA = top({ id: "top-a", channelId: CH });
+		const tB = top({ id: "top-b", channelId: CH });
+		const a1 = msg({ id: "a1", topicId: "top-a", atUnixMs: 100 });
+		const a2 = msg({ id: "a2", topicId: "top-a", atUnixMs: 200 });
+		const b1 = msg({ id: "b1", topicId: "top-b", atUnixMs: 150 });
 
-		const threads = threadsOf([inA, inB], B);
+		const groups = topicsOf([tA, tB], [a1, a2, b1], CH);
 
-		expect(threads.map((t) => t.root.id)).toEqual(["in-b"]);
-		expect(threads[0].replies).toEqual([]);
+		const grouped = groups.flatMap((g) => g.messages.map((m) => m.id));
+		expect(new Set(grouped)).toEqual(new Set(["a1", "a2", "b1"]));
+		expect(grouped.length).toBe(3); // no duplication
 	});
 
-	// Cycle guard: a mutual parent cycle must not loop forever and must not
-	// corrupt or duplicate the well-formed threads around it. (The resolver drops
-	// a pure even cycle rather than rooting it — that drop is an implementation
-	// detail we deliberately do NOT pin; the load-bearing contract is: it
-	// terminates, the normal thread is intact, and nothing is emitted twice.)
-	test("a mutual parent cycle terminates without corrupting or duplicating other threads", () => {
-		const R = msg({ id: "R", channelId: CH, atUnixMs: 100 });
-		const rep = msg({
-			id: "rep",
-			channelId: CH,
-			atUnixMs: 150,
-			parentMessageId: "R",
-		});
-		const x = msg({
-			id: "x",
-			channelId: CH,
-			atUnixMs: 200,
-			parentMessageId: "y",
-		});
-		const y = msg({
-			id: "y",
-			channelId: CH,
-			atUnixMs: 300,
-			parentMessageId: "x",
-		});
-
-		const threads = threadsOf([R, rep, x, y], CH); // must return, not hang
-
-		expect(threads.map((t) => t.root.id)).toEqual(["R"]);
-		expect(threads[0].replies.map((m) => m.id)).toEqual(["rep"]);
-		const emitted = threads.flatMap((t) => [
-			t.root.id,
-			...t.replies.map((r) => r.id),
-		]);
-		expect(emitted.length).toBe(new Set(emitted).size); // no duplication
+	// Fixture ground truth: ch-svc-compass carries two topics (top-compass-t3a,
+	// top-compass-integration). Derived from the stub so a reshuffle can't stale
+	// the assertion.
+	test("fixture: ch-svc-compass groups its two topics", () => {
+		const groups = topicsOf(STUB_TOPICS, STUB_MESSAGES, "ch-svc-compass");
+		expect(new Set(groups.map((g) => g.topic.id))).toEqual(
+			new Set(["top-compass-t3a", "top-compass-integration"]),
+		);
 	});
 
-	// A self-referential parent must terminate and surface the message as a root
-	// (an unresolved/cyclic parent still threads somewhere). Without the bound in
-	// rootIdOf this hangs.
-	test("a self-referential parent terminates and surfaces as a root", () => {
-		const s = msg({
-			id: "s",
-			channelId: CH,
-			atUnixMs: 100,
-			parentMessageId: "s",
-		});
+	// An ARCHIVED topic is hidden from the channel index (matching the snapshot
+	// loader's listTopics{includeArchived:false}), even though its messages are
+	// retained in the flat message set — a live `topicUpserted` archive event
+	// must not leave the archived topic showing as an index row. Its sibling
+	// active topic still groups, and the archived topic's messages are simply not
+	// surfaced through the index (TopicView reads them directly by id).
+	test("excludes an archived topic from the index but keeps the active sibling", () => {
+		const active = top({ id: "active", channelId: CH });
+		const gone = top({ id: "gone", channelId: CH, archived: true });
+		const a1 = msg({ id: "a1", topicId: "active", atUnixMs: 100 });
+		const g1 = msg({ id: "g1", topicId: "gone", atUnixMs: 200 });
 
-		const threads = threadsOf([s], CH);
+		const groups = topicsOf([active, gone], [a1, g1], CH);
 
-		expect(threads.map((t) => t.root.id)).toEqual(["s"]);
-		expect(threads[0].replies).toEqual([]);
+		expect(groups.map((g) => g.topic.id)).toEqual(["active"]);
+		expect(groups[0].messages.map((m) => m.id)).toEqual(["a1"]);
 	});
 });
 
-describe("threadSummary", () => {
-	// threadSummary is the pure stream-facing derivation the Slack-model
-	// ThreadView reads: replies.length, the distinct reply authors in
-	// first-reply order, and the latest reply time. These pin the three
-	// observable numbers a summary renders — nothing here restates threadsOf.
+describe("topicSummary", () => {
+	// topicSummary is the pure index-row derivation: message count, the DISTINCT
+	// author ids in first-post order, and the last-activity time. These pin the
+	// three observable numbers an index row renders — nothing here restates
+	// topicsOf.
 
-	// Zero replies is the render-nothing case (callers only draw a summary when
-	// replyCount > 0): the whole record must be the neutral shape, exactly.
-	test("zero replies → neutral summary (count 0, no participants, time 0)", () => {
-		const root = msg({ id: "r0", channelId: CH, atUnixMs: 100 });
-		const thread: Thread = { root, replies: [] };
-
-		expect(threadSummary(thread)).toEqual({
-			replyCount: 0,
+	// An empty topic is the neutral shape, exactly (count 0, no participants,
+	// time 0).
+	test("empty topic → neutral summary (count 0, no participants, time 0)", () => {
+		const group: TopicGroup = {
+			topic: top({ id: "t0", channelId: CH }),
+			messages: [],
+		};
+		expect(topicSummary(group)).toEqual({
+			messageCount: 0,
 			participantIds: [],
-			lastReplyAtUnixMs: 0,
+			lastActivityAtUnixMs: 0,
 		});
 	});
 
-	// The fixture thread (msg-c1): two replies, msg-c2 by acc-livingstone at
-	// min(24) then msg-c3 by acc-cook at min(27). replyCount counts replies;
-	// participantIds are the DISTINCT reply authors in first-reply order
-	// (livingstone replied first, then cook); lastReplyAtUnixMs is the max reply
-	// time. Derived from threadsOf over the stub so a fixture reshuffle can't
-	// stale it.
-	test("fixture thread: count, distinct participants in first-reply order, max reply time", () => {
-		const thread = threadsOf(STUB_MESSAGES, "ch-svc-compass").find(
-			(t) => t.root.id === "msg-c1",
+	// The fixture topic (top-compass-t3a): three messages, cook(10)/livingstone(24)/
+	// cook(27). messageCount counts messages; participantIds are the DISTINCT
+	// authors in first-post order (cook posted first, then livingstone);
+	// lastActivityAtUnixMs is the max post time. Derived from topicsOf over the
+	// stub so a fixture reshuffle can't stale it.
+	test("fixture topic: count, distinct participants in first-post order, max time", () => {
+		const group = topicsOf(STUB_TOPICS, STUB_MESSAGES, "ch-svc-compass").find(
+			(g) => g.topic.id === "top-compass-t3a",
 		);
-		if (!thread) throw new Error("fixture thread msg-c1 not found");
-		const c3 = thread.replies.find((r) => r.id === "msg-c3");
-		if (!c3) throw new Error("fixture reply msg-c3 not found");
+		if (!group) throw new Error("fixture topic top-compass-t3a not found");
+		const last = group.messages[group.messages.length - 1];
 
-		const summary = threadSummary(thread);
+		const summary = topicSummary(group);
 
-		expect(summary.replyCount).toBe(2);
-		expect(summary.participantIds).toEqual(["acc-livingstone", "acc-cook"]);
-		expect(summary.lastReplyAtUnixMs).toBe(c3.atUnixMs);
+		expect(summary.messageCount).toBe(3);
+		expect(summary.participantIds).toEqual(["acc-cook", "acc-livingstone"]);
+		expect(summary.lastActivityAtUnixMs).toBe(last.atUnixMs);
 	});
 
-	// A duplicate reply author collapses to one participant entry, kept at its
-	// FIRST appearance. Two replies by the same author then one by another →
-	// [first-author, second-author], not three entries.
-	test("a repeated reply author appears once, at its first-reply position", () => {
-		const root = msg({ id: "rd", channelId: CH, atUnixMs: 100 });
-		const thread: Thread = {
-			root,
-			replies: [
+	// A repeated author collapses to one participant entry, kept at its FIRST
+	// appearance.
+	test("a repeated author appears once, at its first-post position", () => {
+		const group: TopicGroup = {
+			topic: top({ id: "td", channelId: CH }),
+			messages: [
 				msg({
 					id: "d1",
-					channelId: CH,
+					topicId: "td",
 					atUnixMs: 200,
 					authorAccountId: "acc-a",
 				}),
 				msg({
 					id: "d2",
-					channelId: CH,
+					topicId: "td",
 					atUnixMs: 300,
 					authorAccountId: "acc-b",
 				}),
 				msg({
 					id: "d3",
-					channelId: CH,
+					topicId: "td",
 					atUnixMs: 400,
 					authorAccountId: "acc-a",
 				}),
 			],
 		};
 
-		expect(threadSummary(thread).participantIds).toEqual(["acc-a", "acc-b"]);
-		expect(threadSummary(thread).replyCount).toBe(3);
+		expect(topicSummary(group).participantIds).toEqual(["acc-a", "acc-b"]);
+		expect(topicSummary(group).messageCount).toBe(3);
 	});
 
-	// lastReplyAtUnixMs is the MAX reply time, not the last array element. Replies
-	// deliberately out of time order [300, 100, 200] → 300, so a "return the last
-	// reply's time" regression reddens.
-	test("lastReplyAtUnixMs is the max reply time, not the last-in-array", () => {
-		const root = msg({ id: "ro", channelId: CH, atUnixMs: 50 });
-		const thread: Thread = {
-			root,
-			replies: [
+	// lastActivityAtUnixMs is the MAX post time, not the last array element.
+	test("lastActivityAtUnixMs is the max post time, not the last-in-array", () => {
+		const group: TopicGroup = {
+			topic: top({ id: "to", channelId: CH }),
+			messages: [
 				msg({
 					id: "o1",
-					channelId: CH,
+					topicId: "to",
 					atUnixMs: 300,
 					authorAccountId: "acc-a",
 				}),
 				msg({
 					id: "o2",
-					channelId: CH,
+					topicId: "to",
 					atUnixMs: 100,
 					authorAccountId: "acc-b",
 				}),
 				msg({
 					id: "o3",
-					channelId: CH,
+					topicId: "to",
 					atUnixMs: 200,
 					authorAccountId: "acc-c",
 				}),
 			],
 		};
 
-		expect(threadSummary(thread).lastReplyAtUnixMs).toBe(300);
-	});
-
-	// participantIds derives from REPLIES only: a root author who never replies is
-	// absent. Root by acc-root, sole reply by acc-other → [acc-other], and
-	// acc-root is not present.
-	test("a root author who never replies is absent from participantIds", () => {
-		const root = msg({
-			id: "rr",
-			channelId: CH,
-			atUnixMs: 100,
-			authorAccountId: "acc-root",
-		});
-		const thread: Thread = {
-			root,
-			replies: [
-				msg({
-					id: "rp",
-					channelId: CH,
-					atUnixMs: 200,
-					authorAccountId: "acc-other",
-				}),
-			],
-		};
-
-		const ids = threadSummary(thread).participantIds;
-		expect(ids).toEqual(["acc-other"]);
-		expect(ids).not.toContain("acc-root");
-	});
-
-	// The inverse: a root author who ALSO replies IS a participant — via the
-	// reply, not the root. The fixture root (acc-cook) authored msg-c3, so cook
-	// appears; the entry is earned by the reply.
-	test("a root author who also replies is a participant (via the reply)", () => {
-		const thread = threadsOf(STUB_MESSAGES, "ch-svc-compass").find(
-			(t) => t.root.id === "msg-c1",
-		);
-		if (!thread) throw new Error("fixture thread msg-c1 not found");
-
-		expect(thread.root.authorAccountId).toBe("acc-cook");
-		expect(threadSummary(thread).participantIds).toContain("acc-cook");
-	});
-
-	// The overflow model: with ≥6 distinct reply authors, threadSummary returns
-	// the FULL distinct list (the 5-badge view cap is a ThreadView concern, not a
-	// model one). Six distinct authors → six participantIds, in first-reply order.
-	test("keeps the full distinct participant list past the view's 5-badge cap", () => {
-		const root = msg({ id: "rc", channelId: CH, atUnixMs: 100 });
-		const authors = ["acc-1", "acc-2", "acc-3", "acc-4", "acc-5", "acc-6"];
-		const thread: Thread = {
-			root,
-			replies: authors.map((a, i) =>
-				msg({
-					id: `c-${i}`,
-					channelId: CH,
-					atUnixMs: 200 + i * 10,
-					authorAccountId: a,
-				}),
-			),
-		};
-
-		expect(threadSummary(thread).participantIds).toEqual(authors);
-		expect(threadSummary(thread).replyCount).toBe(6);
+		expect(topicSummary(group).lastActivityAtUnixMs).toBe(300);
 	});
 });
 

@@ -151,9 +151,13 @@ export type {
 	AskQuestion,
 	Channel,
 	ChannelGroup,
+	ListTopicsRequest,
+	ListTopicsResponse,
 	Message,
 	MessageBlock,
 	SubscribeCommsResponse,
+	Topic,
+	TopicUpserted,
 	UserAccount,
 } from "./gen/compass/v1/comms_pb";
 export {
@@ -169,6 +173,7 @@ export {
 	CommsService,
 	MessageBlockSchema,
 	MessageSchema,
+	TopicSchema,
 	UserAccountSchema,
 } from "./gen/compass/v1/comms_pb";
 export type {

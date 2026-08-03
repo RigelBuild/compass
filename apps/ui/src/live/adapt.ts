@@ -23,6 +23,7 @@ import type {
 	Channel as WireChannel,
 	ChannelGroup as WireChannelGroup,
 	Message as WireMessage,
+	Topic as WireTopic,
 } from "@compass/client";
 import { ChannelGroupVisibility, ChannelKind } from "@compass/client";
 import type {
@@ -35,6 +36,7 @@ import type {
 	ChannelGroupVisibility as DomainVisibility,
 	Membership,
 	Message,
+	Topic,
 } from "../comms-stub";
 import type { Account } from "../stub-data";
 import type { MapMessage } from "./comms-state";
@@ -211,23 +213,34 @@ function adaptBlock(w: WireMessage["blocks"][number]): ConvBlock | undefined {
 	}
 }
 
-/** Map a wire Message to the domain Message. Three bridges beyond the verbatim
+/** Map a wire Topic to the domain Topic: the verbatim scalars plus the int64
+ *  `created_at_unix_ms` bigint → a JS `number` (explicit — implicit coercion on
+ *  a bigint throws). All fields are required on the wire, so there is no
+ *  empty-string→absent seam here. */
+export function adaptTopic(w: WireTopic): Topic {
+	return {
+		id: w.id,
+		channelId: w.channelId,
+		name: w.name,
+		createdAtUnixMs: Number(w.createdAtUnixMs),
+		createdByAccountId: w.createdByAccountId,
+		archived: w.archived,
+	};
+}
+
+/** Map a wire Message to the domain Message. Two bridges beyond the verbatim
  *  scalars:
- *   - `container` is a oneof; the domain is channel-only, so the channel arm
- *     flattens to `channelId` and an unset oneof yields "" (an inert, unplaceable
- *     message) rather than a throw, matching adaptAccount's malformed-row policy.
+ *   - `topic_id` is the message's sole containment (the two-level Zulip model —
+ *     a topic is scoped to one channel, and the message's channel is the topic's
+ *     channel); copied verbatim, no oneof flattening.
  *   - `at_unix_ms` is an int64 → a JS `bigint` on the wire; the domain wants a
- *     `number`, so convert EXPLICITLY (implicit coercion on a bigint throws).
- *   - `parent_message_id` uses the wire's empty-string "unset"; the domain's
- *     parent is optional and `comms.ts` threading treats a falsy parent as a
- *     root, so "" normalizes to undefined here — this is the single seam. */
+ *     `number`, so convert EXPLICITLY (implicit coercion on a bigint throws). */
 function adaptWireMessage(w: WireMessage): Message {
 	return {
 		id: w.id,
-		channelId: w.container.case === "channelId" ? w.container.value : "",
+		topicId: w.topicId,
 		authorAccountId: w.authorAccountId,
 		atUnixMs: Number(w.atUnixMs),
-		parentMessageId: w.parentMessageId || undefined,
 		blocks: w.blocks
 			.map(adaptBlock)
 			.filter((b): b is ConvBlock => b !== undefined),
