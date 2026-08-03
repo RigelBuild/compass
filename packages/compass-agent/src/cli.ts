@@ -28,15 +28,26 @@
 // seam — the two unfakeable constructors (session, socket carrier) are
 // injectable, everything between them is the real thing.
 
+import type { Stats } from "node:fs";
+import { lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
+import { join } from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
 import {
 	type AgentSession,
 	type CreateAgentSessionOptions,
 	createAgentSession,
+	discoverContextFiles,
 	type IndexedSessionStorage,
 	SessionManager,
+	Settings,
 } from "@oh-my-pi/pi-coding-agent";
+import { loadCapability } from "@oh-my-pi/pi-coding-agent/capability";
+import {
+	type Rule,
+	ruleCapability,
+} from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp";
+import { YAML } from "bun";
 import { CompassAgent } from "./agent";
 import {
 	AGENT_CONFIG_MOUNT_PATH,
@@ -242,6 +253,152 @@ async function connectMountedMcp(
 }
 
 /**
+ * The user-level agent dir the SDK's native discovery anchors on inside the
+ * container: `$HOME/.omp/agent` (`getAgentDir()` default, dirs.ts). The
+ * filesystem-based members are symlinked here so the SDK finds them at USER
+ * level, composing additively with the checkout's own project-level config.
+ */
+function agentDirPath(home: string): string {
+	return join(home, ".omp", "agent");
+}
+
+/**
+ * Idempotently reconcile one user-level agent-dir entry against its mounted
+ * target. Used ONLY for the two members the runtime SDK (16.5.2) has no object
+ * seam for and must load by path:
+ *   - `agents` (CP-4): subagent defs, discovered by `discoverAgents` walking the
+ *     agent dir — no `createAgentSession` param injects them.
+ *   - `models.yml` (CP-4): loaded by the ModelRegistry from
+ *     `getAgentDir()/models.yml` — object injection is a flagged gap.
+ * (settings, rules, and AGENTS.md now inject as OBJECTS — see `main`.)
+ *
+ * `target` is the member's `current/`-relative mount path (the T3 reader's
+ * field, e.g. `<mount>/current/agents`) — a CONSTANT pointing THROUGH `current/`,
+ * so a ConfigVersion flip + Reload re-resolves fresh content with zero extra
+ * wiring, or `undefined` when the bundle omits the member.
+ *
+ * The contract, verbatim from the record:
+ *   - `mkdir -p $HOME/.omp/agent`.
+ *   - target SET: when `$HOME/.omp/agent/<entry>` is ABSENT or an existing
+ *     SYMLINK, (re)point it at `target`. A pre-existing REGULAR FILE or REAL
+ *     DIRECTORY is NEVER clobbered — log and leave it (it wins).
+ *   - target UNSET: remove a Compass-owned SYMLINK if present; never a real
+ *     file/dir a user placed.
+ *   - Every failure logs and continues — a tolerant boot never crashes on a
+ *     link it could not place.
+ */
+export async function ensureAgentDirLink(
+	home: string,
+	entry: string,
+	target: string | undefined,
+): Promise<void> {
+	const dir = agentDirPath(home);
+	const linkPath = join(dir, entry);
+	try {
+		await mkdir(dir, { recursive: true });
+		// lstat, NOT stat: we must distinguish a Compass-owned symlink (which we
+		// may repoint/remove) from a user-placed real file/dir (which always wins)
+		// WITHOUT following the link.
+		let existing: Stats | undefined;
+		try {
+			existing = await lstat(linkPath);
+		} catch {
+			existing = undefined; // absent
+		}
+
+		if (target === undefined) {
+			// Unconfigured member: reclaim only a link WE could have written.
+			if (existing?.isSymbolicLink()) {
+				await rm(linkPath);
+			} else if (existing) {
+				console.error(
+					`[compass-agent] leaving user-placed ${entry} at ${linkPath} in place (no fleet member to link)`,
+				);
+			}
+			return;
+		}
+
+		if (existing && !existing.isSymbolicLink()) {
+			// A real file or dir the user placed: it wins, never clobbered.
+			console.error(
+				`[compass-agent] not linking fleet ${entry}: ${linkPath} is a user-placed ${existing.isDirectory() ? "directory" : "file"} (it wins)`,
+			);
+			return;
+		}
+
+		// Absent or an existing symlink: (re)point idempotently. If the link is
+		// already correct, skip the rewrite; otherwise remove the stale link and
+		// recreate — `symlink` fails EEXIST on any existing path.
+		if (existing?.isSymbolicLink()) {
+			const current = await readlink(linkPath).catch(() => undefined);
+			if (current === target) return;
+			await rm(linkPath);
+		}
+		await symlink(target, linkPath);
+	} catch (error) {
+		// Tolerant boot: a link we could not place is logged, never fatal.
+		console.error(
+			`[compass-agent] failed to reconcile agent-dir link ${linkPath}:`,
+			error,
+		);
+	}
+}
+
+/**
+ * Build the fleet `Settings` for injection as `createAgentSession({ settingsManager })`
+ * (CP-1) — object injection, parse-guarded, fail-open (OQ-7).
+ *
+ * `Settings.init({ cwd, agentDir, configFiles: [settingsPath] })` loads the
+ * fleet member as a read-only OVERLAY layer (deepMerged AFTER global+project, so
+ * fleet policy beats the checkout's project settings and loses only to runtime
+ * overrides — settings.ts `#loadConfigOverlays`→`#rebuildMerged`). `configFiles`
+ * is the seam the runtime SDK (16.5.2) actually reads; the design's
+ * `PI_CONFIG_FILES` env path is inert against it, so this replaces it.
+ *
+ * The overlay loader is STRICT — a missing/malformed member is a HARD error at
+ * `Settings.init` (settings.ts:801-823). So a member the Go door admitted but
+ * Bun rejects would crash EVERY agent at boot, a crash the Reload path cannot
+ * see, leaving the fleet dead until an operator pushes a fixed bundle. Guard:
+ * Bun-parse the member FIRST; on failure log loudly and build Settings WITHOUT
+ * the overlay — fail-open to SDK defaults.
+ *
+ * Returns `undefined` when there is no fleet member (or it failed the guard),
+ * so `main` omits `settingsManager` and the SDK inits its own default Settings.
+ */
+export async function buildFleetSettings(
+	cwd: string,
+	agentDir: string,
+	settingsPath: string | undefined,
+): Promise<Settings | undefined> {
+	if (settingsPath === undefined) return undefined;
+	try {
+		// Parse guard (OQ-7): the same Bun parser the strict overlay loader uses.
+		YAML.parse(await Bun.file(settingsPath).text());
+	} catch (error) {
+		console.error(
+			`[compass-agent] fleet settings ${settingsPath} failed Bun YAML.parse — ignoring, booting on SDK defaults:`,
+			error,
+		);
+		return undefined;
+	}
+	try {
+		return await Settings.loadIsolated({
+			cwd,
+			agentDir,
+			configFiles: [settingsPath],
+		});
+	} catch (error) {
+		// Belt for any residual overlay-load divergence past the Bun guard: still
+		// fail-open rather than crash the boot.
+		console.error(
+			`[compass-agent] fleet settings ${settingsPath} failed to load as an overlay — booting on SDK defaults:`,
+			error,
+		);
+		return undefined;
+	}
+}
+
+/**
  * The two outside-world constructors `main` reaches through. Overridable ONLY so
  * a test can compose the entrypoint over a fake carrier; both default to the
  * production factories, so the Runner's call path — `main()` with no second
@@ -386,11 +543,67 @@ export async function main(
 	if (mounted.version) {
 		console.error(`[compass-agent] config version: ${mounted.version}`);
 	}
+
+	// Fleet OMP config passthrough (SEA-1678, design compass-agent-config-passthrough
+	// §CP-1/CP-2/CP-4), applied AFTER loadMountedConfig and BEFORE
+	// createAgentSession. Matt's pivot: the mount stays the delivery vehicle, but
+	// the agent CONSUMES it by OBJECT INJECTION wherever the runtime SDK (16.5.2)
+	// exposes a `createAgentSession` object seam — the env-var/symlink paths the
+	// original design named are inert or absent against this SDK:
+	//   - settings (CP-1): built into a `Settings` overlay here, injected as
+	//     `settingsManager` below (the SDK reads `configFiles`, NOT PI_CONFIG_FILES).
+	//   - rules (CP-4) + AGENTS.md (CP-2): injected as `rules` / `contextFiles`
+	//     objects below (from the reader), each short-circuiting SDK discovery.
+	// Only the two members with NO object seam stay filesystem-based, symlinked
+	// into $HOME/.omp/agent so the SDK's getAgentDir()-anchored load finds them,
+	// each pointing through the mount's `current/` so a ConfigVersion flip stays
+	// live:
+	//   - agents (CP-4): subagent defs, discovered by walking the agent dir.
+	//   - models.yml (CP-4): loaded by the ModelRegistry (object seam is a gap).
+	// All real-FS over the injectable mount, so MainDeps needs no new member.
+	const fleetSettings = await buildFleetSettings(
+		cwd,
+		agentDirPath(home),
+		mounted.settingsPath,
+	);
+	await Promise.all([
+		ensureAgentDirLink(home, "agents", mounted.agentsDir),
+		ensureAgentDirLink(home, "models.yml", mounted.modelsPath),
+	]);
 	// Connect the mount's MCP servers now, before construction, so their tools
 	// reach createAgentSession as customTools. `main` OWNS the manager — the SDK
 	// never disconnects a manager it did not build — so its `disconnect` is added
 	// to the teardown finally below.
 	const mcp = await (deps.connectMcp ?? connectMountedMcp)(cwd, mounted.mcp);
+
+	// Fleet AGENTS.md compose (CP-2, Matt-decided): the fleet AGENTS.md is a
+	// GLOBAL/user-level working-conventions file, so it must COMPOSE with — never
+	// REPLACE — the checkout's own project-level AGENTS.md chain. Providing
+	// `contextFiles` short-circuits the SDK's discovery entirely (sdk.ts:1177-1179
+	// → discoverContextFiles skipped), and that discovery is PROJECT scope only
+	// (the cwd walk-up, sdk.ts:136 loadProjectContextFiles alias). So when the
+	// fleet file is present we run that same discovery OURSELVES and prepend the
+	// fleet global: it goes FIRST (least prominent — discoverContextFiles sorts
+	// farther-from-cwd first so closer files stay last/more-prominent, and a
+	// user-level global is less prominent than any project file). When ABSENT we
+	// OMIT the key so the SDK runs its own discovery and project files load
+	// automatically — identical effect, simpler.
+	const contextFiles = mounted.agentsMd
+		? [
+				mounted.agentsMd,
+				...(await discoverContextFiles(cwd, agentDirPath(home))),
+			]
+		: undefined;
+
+	// Fleet rules compose (CP-4, Matt-decided): the fleet rules/ is a GLOBAL/user-level
+	// set that must COMPOSE with — never REPLACE — the checkout's own discovered rules.
+	// Providing `rules` short-circuits the SDK's rule discovery entirely
+	// (sdk.ts:1434-1436), so we run that discovery OURSELVES and prepend the fleet
+	// rules: they go FIRST (least prominent), the checkout's discovered rules follow.
+	const discoveredRules = (
+		await loadCapability<Rule>(ruleCapability.id, { cwd })
+	).items;
+	const rules = [...mounted.rules, ...discoveredRules];
 
 	const { session } = await (deps.createSession ?? createAgentSession)({
 		cwd,
@@ -419,6 +632,20 @@ export async function main(
 		disableExtensionDiscovery: mounted.disableExtensionDiscovery,
 		customTools: mcp.tools,
 		enableMCP: false,
+		// Fleet config object injection (SEA-1678 pivot):
+		//   - `rules` (CP-4): the fleet rules COMPOSED with the checkout's
+		//     discovered rules (both load; fleet-first), computed above. Passed
+		//     unconditionally — empty fleet set still composes cleanly.
+		//   - `contextFiles` (CP-2): [fleet global AGENTS.md, ...project-discovered],
+		//     computed above — passed ONLY when the fleet file is present (it
+		//     COMPOSES with, never replaces, the checkout's project AGENTS.md).
+		//     When absent, `contextFiles` is undefined so the key is omitted and
+		//     the SDK runs its own project discovery.
+		//   - `settingsManager` (CP-1): the prebuilt fleet Settings overlay, ONLY
+		//     when built — omitted lets the SDK init its own default Settings.
+		rules,
+		...(contextFiles ? { contextFiles } : {}),
+		...(fleetSettings ? { settingsManager: fleetSettings } : {}),
 		// Persona is an identity OVERLAY, not a replacement: append it after the
 		// default prompt so block-0 base instructions + project footer survive.
 		...(persona
