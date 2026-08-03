@@ -138,10 +138,10 @@ type ExecOutput struct {
 func (o ExecOutput) Success() bool { return o.ExitCode == 0 }
 
 // StreamingExecSpec is how to run a long-lived, streaming command inside a
-// container. Unlike ExecSpec it carries no stdin script: a streaming exec's
-// whole purpose is a live stdin/stdout pipe pair for a long-running process
-// (the agent), for which a one-shot stdin feed is meaningless — so it is
-// omitted here rather than silently ignored.
+// container. Unlike ExecSpec it carries no stdin script: a streaming exec keeps
+// live stdio pipes for a long-running process (the agent), for which a one-shot
+// stdin feed is meaningless — so it is omitted here rather than silently
+// ignored.
 type StreamingExecSpec struct {
 	Command []string
 	// User is the --user value. Nil runs as the image's default user (root);
@@ -290,8 +290,8 @@ type ContainerRuntime interface {
 	// ExecStreaming starts a long-lived streaming command in a running
 	// container, returning its live stdio pipes plus a kill/wait handle rather
 	// than awaiting completion. The transport for the long-running agent
-	// process: its stdin/stdout stay open for the process's life (the agent's
-	// protocol rides the per-container socket, so the pipes carry diagnostics).
+	// process: its stdout/stderr stay open and are drained as diagnostics for
+	// the process's life (the agent's protocol rides the per-container socket).
 	// Unlike Exec there is no wall-clock timeout — the process is meant to run
 	// indefinitely — but the exec is still bound to ctx, so cancelling it
 	// terminates the process.
@@ -599,9 +599,9 @@ func (p *PodmanCLI) run(ctx context.Context, summary string, args []string) ([]b
 
 // execStreamingArgs assembles the argv for a streaming `podman exec -i`. Split
 // out so the argv assembly is unit-testable without spawning podman.
-// --interactive keeps stdin open for the live JSON-RPC channel; there is
-// deliberately no --tty (the stream is newline-delimited JSON-RPC, not a
-// terminal).
+// --interactive keeps stdin open for the process's life; there is deliberately
+// no --tty (the agent is a headless process draining diagnostic pipes, not a
+// terminal session).
 func execStreamingArgs(id ContainerID, spec StreamingExecSpec) []string {
 	args := []string{argExec, argInteractive}
 	if spec.User != nil {
