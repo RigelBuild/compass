@@ -596,16 +596,20 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		clearStorage();
 	});
 
-	// Write-through: pinning persists to the workspace-namespaced key, so a fresh
-	// store on the same workspace re-hydrates the pin.
+	// Write-through: pinning persists to the workspace-namespaced key as
+	// `{ id, handle }` pairs (SEA-1645 P0), so a fresh store on the same workspace
+	// re-hydrates the pin with its cached handle.
 	test("writes pins through to localStorage on pin", () => {
 		clearStorage();
+		const supHandle = STUB_AGENTS.find((a) => a.account.id === SUP)?.account
+			.handle;
+		if (supHandle === undefined) throw new Error("SUP has no fixture handle");
 		withPinStore("ws-wt", (s) => {
 			s.pinAgent(SUP);
 		});
 		expect(
 			JSON.parse(globalThis.localStorage.getItem(key("ws-wt")) ?? "null"),
-		).toEqual([SUP]);
+		).toEqual([{ id: SUP, handle: supHandle }]);
 		clearStorage();
 	});
 
@@ -637,16 +641,16 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		clearStorage();
 	});
 
-	// The symmetric fallback: an ACTIVE agent tab whose id resolves to no visible
-	// agent (a ghost pin, or a visibility fluctuation) is moved to status by the
-	// resolvability guard — a live-active tab never strands an unresolvable pane.
-	test("an unresolvable active tab falls back to status", () => {
+	// SEA-1645: an ACTIVE agent tab whose id resolves to no visible agent (a ghost
+	// pin, or a visibility fluctuation) is NOT coerced — the resolvability guard is
+	// retired. The tab stays put and the pane renders the unreachable state; only a
+	// deliberate unpin removes it.
+	test("an unresolvable active tab is not coerced to status", () => {
 		clearStorage();
 		withPinStore("ws-a", (s) => {
 			s.setActiveRightTab("agent:acc-ghost");
-			// The guard coerces synchronously inside setActiveRightTab, before the
-			// signal is set.
-			expect(s.activeRightTab()).toBe("status");
+			// No coercion — the tab is kept as set.
+			expect(s.activeRightTab()).toBe("agent:acc-ghost");
 		});
 		clearStorage();
 	});
@@ -685,6 +689,93 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		globalThis.localStorage.setItem(key("ws-boot3"), JSON.stringify([GHOST]));
 		withPinStore("ws-boot3", (s) => {
 			expect(s.activeRightTab()).toBe("status");
+		});
+		clearStorage();
+	});
+
+	// ── SEA-1645 unreachable pins (ghost pin: an id resolving to no fixture
+	//    agent) ──
+	// A ghost pin KEEPS its bar item, marked unreachable, in pin order, and its
+	// title is the handle cached at pin time — not filtered out.
+	test("a ghost pin keeps a marked bar item, in pin order, titled by its cached handle", () => {
+		clearStorage();
+		// Seed a resolvable pin then a ghost with a cached handle, so both order
+		// and the cached-handle label are asserted.
+		globalThis.localStorage.setItem(
+			key("ws-ghost1"),
+			JSON.stringify([
+				{ id: SUP, handle: "sup" },
+				{ id: GHOST, handle: "ghosthandle" },
+			]),
+		);
+		withPinStore("ws-ghost1", (s) => {
+			const fleet = s.rightTabGroups().find((g) => g.group === "fleet");
+			const ids = (fleet?.items ?? []).map((i) => i.id);
+			// Both pins surface, in pin order, before the static status item.
+			expect(ids).toEqual([`agent:${SUP}`, `agent:${GHOST}`, "status"]);
+			const ghost = (fleet?.items ?? []).find((i) => i.id === `agent:${GHOST}`);
+			expect(ghost?.unreachable).toBe(true);
+			expect(ghost?.title).toBe("ghosthandle");
+			// The resolvable pin is NOT marked.
+			const sup = (fleet?.items ?? []).find((i) => i.id === `agent:${SUP}`);
+			expect(sup?.unreachable).toBeUndefined();
+		});
+		clearStorage();
+	});
+
+	// Unpinning a ghost pin removes its item AND falls the active tab back to
+	// status when the ghost tab was active — the only removal path.
+	test("unpinning a ghost pin removes its item and falls active to status", () => {
+		clearStorage();
+		globalThis.localStorage.setItem(
+			key("ws-ghost2"),
+			JSON.stringify([{ id: GHOST, handle: "ghosthandle" }]),
+		);
+		withPinStore("ws-ghost2", (s) => {
+			s.setActiveRightTab("agent:acc-ghost");
+			expect(s.activeRightTab()).toBe("agent:acc-ghost");
+			s.unpinAgent(GHOST);
+			const fleet = s.rightTabGroups().find((g) => g.group === "fleet");
+			const ids = (fleet?.items ?? []).map((i) => i.id);
+			expect(ids).toEqual(["status"]);
+			expect(s.activeRightTab()).toBe("status");
+		});
+		clearStorage();
+	});
+
+	// The pin set round-trips as `{ id, handle }` (P0): pinning a resolvable agent
+	// then re-hydrating a fresh store on the same workspace preserves the LIVE
+	// handle cached at pin time.
+	test("the pin set round-trips { id, handle } with the cached handle", () => {
+		clearStorage();
+		const supHandle = STUB_AGENTS.find((a) => a.account.id === SUP)?.account
+			.handle;
+		if (supHandle === undefined) throw new Error("SUP has no fixture handle");
+		withPinStore("ws-rt", (s) => {
+			s.pinAgent(SUP);
+			expect(s.pinnedAgents()).toEqual([{ id: SUP, handle: supHandle }]);
+		});
+		// A fresh store re-hydrates the same pair from the persisted key.
+		withPinStore("ws-rt", (s) => {
+			expect(s.pinnedAgents()).toEqual([{ id: SUP, handle: supHandle }]);
+		});
+		clearStorage();
+	});
+
+	// Legacy hydration (P0): a stored bare-`string[]` payload self-heals to
+	// `{ id, handle: id }` with no version flag.
+	test("a legacy string[] payload hydrates as { id, handle: id }", () => {
+		clearStorage();
+		globalThis.localStorage.setItem(
+			key("ws-legacy"),
+			JSON.stringify([SUP, GHOST]),
+		);
+		withPinStore("ws-legacy", (s) => {
+			expect(s.pinnedAgents()).toEqual([
+				{ id: SUP, handle: SUP },
+				{ id: GHOST, handle: GHOST },
+			]);
+			expect(s.pinnedAgentIds()).toEqual([SUP, GHOST]);
 		});
 		clearStorage();
 	});

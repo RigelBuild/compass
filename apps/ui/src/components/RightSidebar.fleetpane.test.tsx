@@ -49,10 +49,11 @@ function mountRightSidebar(): { store: AppStore; container: HTMLElement } {
 }
 
 // The two visible fixture agents whose home-DM the fleet pane renders. The fleet
-// tabs are now CONFIGURABLE PINS keyed `agent:${accountId}` (Record A §T2), not a
-// hardcoded Supervisor · Warden pair — but the pane arm resolves any visible
-// agent's tab regardless of the pin set, so the test drives the tab id directly.
-// Both ids resolve in the fixture, so the pane renders their home-DM inline.
+// tabs are CONFIGURABLE PINS keyed `agent:${accountId}` (Record A §T2), not a
+// hardcoded Supervisor · Warden pair. The pane arm reads the active tab's item
+// out of `rightTabGroups()` (SEA-1645 P2), which emits only PINNED agents, so a
+// test must pin the agent before activating its tab. Both ids resolve in the
+// fixture, so once pinned the pane renders their home-DM inline.
 const FLEET_TABS = ["acc-supervisor", "acc-warden"] as const;
 
 // The agent account's home-DM channel id — resolved through the SAME account set
@@ -95,6 +96,7 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 	for (const tab of FLEET_TABS) {
 		test(`${tab} tab renders the agent's home-DM conversation inline`, () => {
 			const { store, container } = mountRightSidebar();
+			store.pinAgent(tab);
 			store.setActiveRightTab(`agent:${tab}`);
 
 			const messages = homeDmMessages(tab);
@@ -145,6 +147,7 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 
 	test("the supervisor fleet pane renders a home-DM ask answerable in place", () => {
 		const { store, container } = mountRightSidebar();
+		store.pinAgent("acc-supervisor");
 		store.setActiveRightTab("agent:acc-supervisor");
 
 		// The ask actually rendered inside the pane's conversation stream.
@@ -187,6 +190,7 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 	// routing so a refactor of the button can't silently break navigation.
 	test("the Open workspace button routes to the agent's workspace", () => {
 		const { store, container } = mountRightSidebar();
+		store.pinAgent("acc-supervisor");
 		store.setActiveRightTab("agent:acc-supervisor");
 
 		// Precondition: we start on the board with no agent selected.
@@ -202,16 +206,46 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 		expect(store.selectedAgentId()).toBe("acc-supervisor");
 	});
 
-	// Fallback: an unresolved agent id yields the "Agent not found." empty state,
-	// never a crash or an empty pane. Both real fleet tabs resolve, so this guards
-	// the Show fallback arm — but we can only drive it through a real tab, so we
-	// assert the resolved tabs render a fleet-pane (not the fallback), which is the
-	// observable inverse and reddens if agentFor ever stops resolving.
-	test("a resolved fleet tab renders the pane, not the not-found fallback", () => {
+	// A resolved fleet tab renders the live pane, not the unreachable block: the
+	// pane arm resolves reachability first (SEA-1645). Both real fleet tabs
+	// resolve, so this asserts the resolved tab renders a fleet-pane with no
+	// in-pane unpin control — the observable inverse that reddens if the arm ever
+	// stops resolving a live agent.
+	test("a resolved fleet tab renders the live pane, not the unreachable block", () => {
 		const { store, container } = mountRightSidebar();
+		store.pinAgent("acc-warden");
 		store.setActiveRightTab("agent:acc-warden");
 
 		expect(container.querySelector(".fleet-pane")).not.toBeNull();
-		expect(container.querySelector(".term-empty")).toBeNull();
+		expect(container.querySelector(".fleet-unreachable")).toBeNull();
+		expect(container.querySelector(".r-unpin-agent")).toBeNull();
+	});
+
+	// An active GHOST pin (an id resolving to no fixture agent) renders the "agent
+	// unreachable" pane — the message and a working in-pane unpin control — not
+	// FleetPane and not StatusPane (SEA-1645 P2/P6). The pin must exist for the
+	// pane arm to read its item out of rightTabGroups(), so pin then activate.
+	test("an active ghost pin renders the unreachable pane with a working unpin", () => {
+		const { store, container } = mountRightSidebar();
+		store.pinAgent("acc-ghost");
+		store.setActiveRightTab("agent:acc-ghost");
+
+		// The unreachable block renders — message + unpin control.
+		const block = container.querySelector(".fleet-unreachable");
+		expect(block).not.toBeNull();
+		expect(block?.querySelector(".term-empty")).not.toBeNull();
+		const unpin = container.querySelector<HTMLButtonElement>(".r-unpin-agent");
+		expect(unpin).not.toBeNull();
+
+		// It is NOT the live fleet pane (no conversation) and NOT the status pane.
+		expect(container.querySelector(".conv-stream")).toBeNull();
+		expect(container.querySelector(".r-status")).toBeNull();
+
+		// The unpin control works: it drops the pin and falls the active tab back
+		// to status, so the unreachable pane is gone.
+		fireEvent.click(unpin as HTMLButtonElement);
+		expect(store.isPinned("acc-ghost")).toBe(false);
+		expect(store.activeRightTab()).toBe("status");
+		expect(container.querySelector(".fleet-unreachable")).toBeNull();
 	});
 });
