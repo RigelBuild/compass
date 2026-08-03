@@ -70,7 +70,9 @@ type agentHost struct {
 	// container's per-container root, keyed by container name — the
 	// last-materialized-version tracking the ConfigVersion update path compares
 	// against so it only Reloads an agent when the version actually moved.
-	// Recorded at Provision (initial materialize) and on each RefreshConfig pass.
+	// Recorded at Provision (initial materialize) and, on a RefreshConfig pass,
+	// only after the agent's Reload succeeds — so a swallowed Reload failure
+	// leaves it unmoved and the next signal retries that container.
 	// Keyed by container, not session: config lifecycle is container-scoped
 	// (SEA-1659 per-container roots), and it must survive a Reload (which reuses
 	// the session but keeps the container).
@@ -559,7 +561,19 @@ func (h *agentHost) RefreshSecrets(ctx context.Context, sessionID string) error 
 // per-container slow work (a `podman inspect` exec, a fetch+unpack, a Reload)
 // unlocked — never holding h.mu across an exec/network call. A per-session
 // error (MountLabel, Materialize, or Reload) is logged and swallowed so one bad
-// container never blocks the rest of the fleet; the pass always completes.
+// container never blocks the rest of the fleet; the pass always completes. A
+// container's tracked version advances only after its Reload SUCCEEDS (or when
+// the version was already current), so a swallowed Reload failure leaves the
+// version unmoved and the next signal retries that container — the "will retry
+// on next signal" the error log promises is real, not aspirational.
+//
+// The fetch is per-container, not per-fleet: each configMaterializerFor issues
+// its own FetchAgentConfig, so one pass makes N round-trips for one fleet bundle
+// and is not atomic across the fleet — a bundle bump mid-pass can hand two
+// containers different versions within the same pass. Each container is still
+// self-consistent and the next coalesced signal reconciles the laggard; the
+// N-fetch cost is the accepted MVP trade (fleet sizes are small), matching the
+// per-provision re-fetch the config-delivery design already accepts.
 //
 // Reload here runs off the config worker goroutine, so this pass is a SECOND
 // source of a lifecycle op against a session, concurrent with the dispatch
@@ -603,24 +617,33 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 				slog.String("container", t.containerName), slog.Any("error", err))
 			continue
 		}
-		// Record the newly materialized version regardless of whether a Reload
-		// follows: Materialize always re-flips `current`, so the on-disk state
-		// is now this version and the tracking must match it.
-		h.mu.Lock()
-		h.configVersions[t.containerName] = mount.Version
-		h.mu.Unlock()
 		if mount.Version == t.lastVersion {
 			// Version unchanged: the re-materialize was idempotent and the agent
 			// already reads this config. Do not Reload — it would interrupt the
-			// agent mid-turn for no config change.
+			// agent mid-turn for no config change. The tracked version already
+			// matches, so there is nothing to record.
 			continue
 		}
 		if err := h.Reload(ctx, t.sessionID); err != nil {
+			// Reload failed: do NOT advance the tracked version, so the next
+			// ConfigVersion signal still sees a version change and retries the
+			// Reload. Materialize already flipped `current` to this version on
+			// disk (idempotently), so the retry re-materializes for free and
+			// only re-runs the Reload.
 			h.log.ErrorContext(ctx, "reloading agent after config update failed; will retry on next signal",
 				slog.String("container", t.containerName), slog.String("session_id", t.sessionID), slog.Any("error", err))
 			continue
 		}
+		// Reload succeeded: record the version now so a same-version signal does
+		// not Reload the agent again. Materialize re-flips `current` on every
+		// pass, so tracking the version only after a successful Reload — not the
+		// on-disk state — is what gates the mid-turn interrupt.
+		h.mu.Lock()
+		h.configVersions[t.containerName] = mount.Version
+		h.mu.Unlock()
 	}
+	// Always nil today: every per-container fault is swallowed above. The error
+	// return is reserved for a future fleet-level fault (see the interface doc).
 	return nil
 }
 

@@ -259,6 +259,92 @@ func TestRefreshConfigBestEffortSwallowsPerContainerError(t *testing.T) {
 	}
 }
 
+// A Reload that fails must be retried on the next signal: the tracked config
+// version must NOT advance past the last SUCCESSFULLY reloaded version, or the
+// container is silently stranded on old config until an unrelated version bump
+// (there is no in-process reconnect until T9). Pass 1 bumps the fleet to v-2 but
+// the container's Reload fails; pass 2 (same v-2) must therefore still see a
+// version change and retry the Reload.
+func TestRefreshConfigReloadFailureRetriesOnNextSignal(t *testing.T) {
+	host, engine, pub := newConfigRefreshFixture(t)
+	ctx := context.Background()
+
+	pub.setConfigBundle(configBundleAt(t, "v-1"))
+	name := provisionAndStart(t, host, "a")
+
+	pub.setConfigBundle(configBundleAt(t, "v-2"))
+	engine.labels[name] = "system_u:object_r:container_file_t:s0:c10,c20"
+	_ = stubRelabelAnyRoot(t)
+
+	// Force this pass's Reload to fail cleanly: deregister the container's handle
+	// so Reload rejects at handle re-resolution, BEFORE it stops the live agent
+	// stream — the container stays live so the next pass can retry.
+	handle, ok := host.registry.Resolve(name)
+	if !ok {
+		t.Fatalf("container %s not registered after start", name)
+	}
+	host.registry.Deregister(name)
+
+	if err := host.RefreshConfig(ctx); err != nil {
+		t.Fatalf("RefreshConfig (pass 1) = %v, want nil (Reload failure swallowed)", err)
+	}
+	// The failed Reload launched no new agent (it rejected before StartAgent).
+	if got := engine.launchCount(name); got != 1 {
+		t.Fatalf("after failed Reload, container %s launched %d times, want 1 (Start only)", name, got)
+	}
+
+	// Restore the handle so the retry's Reload can succeed, and drive the SAME
+	// version again. If the failed pass had advanced the tracked version, this
+	// pass would suppress the Reload and the launch count would stay at 1.
+	host.registry.Register(handle)
+	if err := host.RefreshConfig(ctx); err != nil {
+		t.Fatalf("RefreshConfig (pass 2) = %v, want nil", err)
+	}
+	if got := engine.launchCount(name); got != 2 {
+		t.Fatalf("same-version retry after a failed Reload launched %d times, want 2 (Start + retried Reload); a failed Reload must not advance the tracked version", got)
+	}
+}
+
+// Best-effort across the OTHER failure branch: a container whose Materialize
+// fails (here a relabel error) is swallowed and a healthy sibling still updates
+// and Reloads. The existing best-effort test fails at MountLabel, before
+// Materialize; this one proves the Materialize `continue` is an independent path
+// a `return err` regression would not survive.
+func TestRefreshConfigBestEffortSwallowsMaterializeError(t *testing.T) {
+	host, engine, pub := newConfigRefreshFixture(t)
+	ctx := context.Background()
+
+	pub.setConfigBundle(configBundleAt(t, "v-1"))
+	nameA := provisionAndStart(t, host, "a")
+	nameB := provisionAndStart(t, host, "b")
+
+	pub.setConfigBundle(configBundleAt(t, "v-2"))
+	engine.labels[nameA] = "system_u:object_r:container_file_t:s0:c10,c20"
+	engine.labels[nameB] = "system_u:object_r:container_file_t:s0:c30,c40"
+
+	// Fail the relabel (hence Materialize) for cont-A only; cont-B relabels fine.
+	old := relabel
+	relabel = func(_ context.Context, _ string, destDir string) error {
+		if strings.Contains(destDir, nameA) {
+			return errors.New("chcon exploded")
+		}
+		return nil
+	}
+	t.Cleanup(func() { relabel = old })
+
+	if err := host.RefreshConfig(ctx); err != nil {
+		t.Fatalf("RefreshConfig = %v, want nil (per-container Materialize error swallowed)", err)
+	}
+	// cont-A's Materialize failed → no Reload.
+	if got := engine.launchCount(nameA); got != 1 {
+		t.Fatalf("container %s with failed Materialize launched %d times, want 1 (Start only)", nameA, got)
+	}
+	// cont-B still updated despite cont-A's Materialize failure.
+	if got := engine.launchCount(nameB); got != 2 {
+		t.Fatalf("healthy container %s launched %d times, want 2 (Start + Reload); a sibling's Materialize failure must not block it", nameB, got)
+	}
+}
+
 // stubRelabelAnyRoot swaps the package relabel var and records every call,
 // resolving no shared root (the fan-out spans several container roots). It
 // records the destDir and label so per-root/per-label isolation can be asserted.
