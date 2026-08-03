@@ -35,6 +35,14 @@ const migrationLockKey int64 = 0x0C0A_5500_0000_0001
 // it with Open and release it with Close.
 type Store struct {
 	pool *pgxpool.Pool
+	// objectStore is the archive-tier object-store seam (SEA-1667 T4), injected
+	// via SetObjectStore. nil until slice B wires a real client (store tests
+	// inject an in-memory fake); a flush against a nil store fails loudly.
+	objectStore ObjectStore
+	// safetyValveCapBytes is the high size cap on the post-checkpoint hot-tail
+	// that triggers a safety_valve eviction; defaultSafetyValveCapBytes at Open,
+	// tunable (lowered by tests to exercise the valve).
+	safetyValveCapBytes int
 }
 
 // querier is the read surface shared by the pool and a transaction, so a scan
@@ -69,7 +77,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("store: ping: %w", err)
 	}
 
-	s := &Store{pool: pool}
+	s := &Store{pool: pool, safetyValveCapBytes: defaultSafetyValveCapBytes}
 	if err := s.migrate(ctx); err != nil {
 		pool.Close()
 		return nil, err

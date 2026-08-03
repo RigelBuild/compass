@@ -234,6 +234,25 @@ func (s *service) StopAgentSession(
 	if err != nil {
 		return nil, err
 	}
+	// SEA-1667 T4 session-end flush (the third flush trigger, design.md §1040-1046):
+	// archive the remaining hot-tail as one session_end segment so history is
+	// COMPLETE for analytics. It does NOT prune the PG tail and is NEVER read on
+	// resume. BEST-EFFORT: the Stop relay already irreversibly killed the agent, so
+	// a flush failure must NEVER convert a successful Stop into a failure (the same
+	// anti-stranding invariant abandonStartedSession honors on Start). A nil object
+	// store (a socket-only dev server with no S3) surfaces here as a plain error and
+	// hits the same log-and-continue path, so Stop stays clean.
+	sessionID := req.Msg.GetSessionId()
+	if maxSeq, seqErr := s.store.SessionMaxEntrySeq(ctx, sessionID); seqErr != nil {
+		slog.ErrorContext(ctx, "session-end transcript flush skipped: could not read max entry seq",
+			"session_id", sessionID, "error", seqErr)
+	} else if maxSeq > 0 {
+		// maxSeq == 0 means no transcript rows: nothing to archive, skip the flush.
+		if flushErr := s.store.FlushSuperseded(ctx, sessionID, maxSeq, store.SegmentKindSessionEnd); flushErr != nil {
+			slog.ErrorContext(ctx, "session-end transcript flush failed; Stop still succeeded",
+				"session_id", sessionID, "upto_entry_seq", maxSeq, "error", flushErr)
+		}
+	}
 	return connect.NewResponse(resp), nil
 }
 
