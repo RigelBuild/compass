@@ -14,6 +14,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -288,6 +289,96 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// notifies live sessions to re-fetch); it shares the one resolver with FetchSecrets.
 	secretsSvc := newSecretsService(st, resolver, hub)
 
+	// Assemble the three compass.v1 doors (shipped Unix socket, optional dev
+	// loopback, optional authenticated network). On a net-door build error the
+	// listeners this Serve bound are still ours to close.
+	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, resolver,
+		commsPath, commsHandler, devListener, netListener, netTLS)
+	if err != nil {
+		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
+		listeners.close()
+		return err
+	}
+
+	// Run every door under one scoped group. errgroup.WithContext gives the
+	// listener/drain coordination scoped lifecycle, first-error-wins, and sibling
+	// cancellation in one audited primitive: gctx is cancelled when the parent ctx
+	// is cancelled (normal shutdown) or when a server self-terminates with an
+	// error (the first exit tears down the peers). The UDS door is primary; its
+	// error — recorded first by the group — wins over the drain result below.
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return classifyServe(doors.uds.Serve(udsListener), "compass.v1 UDS server") })
+	if doors.dev != nil {
+		g.Go(func() error { return classifyServe(doors.dev.Serve(devListener), "dev gRPC-Web server") })
+	}
+	if doors.net != nil {
+		// ServeTLS wraps the pre-bound listener with the configured keypair
+		// (already in TLSConfig, so the empty cert/key args skip a file load) and
+		// advertises ALPN h2 from Protocols. A clean shutdown returns
+		// ErrServerClosed, mapped to nil by classifyServe.
+		g.Go(func() error {
+			return classifyServe(doors.net.ServeTLS(netListener, "", ""), "compass.v1 network door")
+		})
+	}
+	// The comms-bus consumers (SEA-1569): the T3 delivery fan-out consumer and
+	// the T8 presence projection, both tailing the comms bus with their bus-tail
+	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
+	// ends when the comms bus closes in drainDoors).
+	startCommsBusConsumers(gctx, g, commsBus, st, hub, hubLog)
+	// Drain member of the same group: wake on gctx cancellation (parent shutdown
+	// or a server erroring), then hand off to drainDoors. A drain that overruns
+	// (a handler still wedged — e.g. a stream stuck mid replay to a stalled
+	// client) surfaces as the error rather than being swallowed into a false
+	// clean shutdown; because the group keeps the first error, a real serve error
+	// still wins over this drain.
+	g.Go(func() error {
+		<-gctx.Done()
+		return drainDoors(drainSet{ //nolint:contextcheck // drainDoors deliberately takes no ctx: the inherited one is already cancelled (that cancellation is what woke this drain), so a bounded shutdown needs the fresh ctx drainDoors makes internally, not the dead one
+			bus:      bus,
+			commsBus: commsBus,
+			uds:      doors.uds,
+			dev:      doors.dev,
+			net:      doors.net,
+			hub:      hub,
+			log:      hubLog,
+		})
+	})
+
+	return g.Wait()
+}
+
+// serveDoors holds the three compass.v1 doors Serve drives: the shipped Unix
+// socket (always built), the optional dev loopback browser door, and the
+// optional authenticated network door. dev and net are nil when their listener
+// is off (dev unless --dev-http, network unless --listen).
+type serveDoors struct {
+	uds *http.Server
+	dev *http.Server
+	net *http.Server
+}
+
+// buildDoors assembles the three compass.v1 doors off the already-built service
+// graph and pre-bound listeners. It is split out of Serve so the door assembly —
+// whose interceptor ordering is security-critical (see the dev door below) —
+// reads as one unit. It does not serve; the returned servers are driven by the
+// caller's errgroup. On a net-door build error it returns the error and the
+// caller owns listener cleanup (nothing here is registered for teardown).
+func buildDoors(
+	ctx context.Context,
+	cfg ServeConfig,
+	svc *service,
+	commsSvc *comms.Comms,
+	secretsSvc *secretsService,
+	hub *runnerhub.Hub,
+	st *store.Store,
+	adminID store.AccountID,
+	resolver secrets.Resolver,
+	commsPath string,
+	commsHandler http.Handler,
+	devListener net.Listener,
+	netListener net.Listener,
+	netTLS *tls.Config,
+) (serveDoors, error) {
 	// Shipped door: the Unix socket serves native gRPC (cleartext HTTP/2),
 	// gRPC-Web, and Connect off the one connect-go handler. No CORS — the socket
 	// is same-origin (the shell's webview / a native client). The 0600 socket is
@@ -297,12 +388,12 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// natively (http.Protocols); these connections are tracked by
 	// http.Server.Shutdown and drain with the rest on shutdown.
 	socketPath, socketHandler := compassv1connect.NewCompassServiceHandler(svc,
-		connect.WithInterceptors(auth.AmbientIdentity(admin.ID), auth.AmbientStreamInterceptor(admin.ID)))
+		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 	// SecretsService rides the same ambient-identity pair so its handler reads a
 	// caller via CallerFrom (the bootstrap admin, a user): the socket's 0600 mode
 	// is the credential, and admin being a user satisfies the user-only writes.
 	secretsSocketPath, secretsSocketHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
-		connect.WithInterceptors(auth.AmbientIdentity(admin.ID), auth.AmbientStreamInterceptor(admin.ID)))
+		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 	udsMux := http.NewServeMux()
 	udsMux.Handle(socketPath, socketHandler)
 	udsMux.Handle(commsPath, commsHandler)
@@ -333,13 +424,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	var devServer *http.Server
 	if devListener != nil {
 		devPath, devHandler := compassv1connect.NewCompassServiceHandler(svc,
-			connect.WithInterceptors(auth.NewAdminGate(admin.ID), auth.AmbientIdentity(admin.ID), auth.AmbientStreamInterceptor(admin.ID)))
+			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 		// SecretsService on the dev door: same admin-gate + ambient chain as
 		// CompassService. The gate classifies its 3 procedures authenticatedOpen,
 		// so it passes them, then the ambient pair attaches the bootstrap admin
 		// (a user) the handler reads for the user-only write authz.
 		devSecretsPath, devSecretsHandler := compassv1connect.NewSecretsServiceHandler(secretsSvc,
-			connect.WithInterceptors(auth.NewAdminGate(admin.ID), auth.AmbientIdentity(admin.ID), auth.AmbientStreamInterceptor(admin.ID)))
+			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 		devMux := http.NewServeMux()
 		devMux.Handle(devPath, devHandler)
 		devMux.Handle(commsPath, commsHandler)
@@ -355,60 +446,14 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// On a build error the listeners this Serve bound are still ours to close.
 	var netServer *http.Server
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, netTLS, resolver)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, resolver)
 		if err != nil {
-			udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
-			listeners.close()
-			return err
+			return serveDoors{}, err
 		}
 		netServer = s
 	}
 
-	// Run every door under one scoped group. errgroup.WithContext gives the
-	// listener/drain coordination scoped lifecycle, first-error-wins, and sibling
-	// cancellation in one audited primitive: gctx is cancelled when the parent ctx
-	// is cancelled (normal shutdown) or when a server self-terminates with an
-	// error (the first exit tears down the peers). The UDS door is primary; its
-	// error — recorded first by the group — wins over the drain result below.
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return classifyServe(udsServer.Serve(udsListener), "compass.v1 UDS server") })
-	if devServer != nil {
-		g.Go(func() error { return classifyServe(devServer.Serve(devListener), "dev gRPC-Web server") })
-	}
-	if netServer != nil {
-		// ServeTLS wraps the pre-bound listener with the configured keypair
-		// (already in TLSConfig, so the empty cert/key args skip a file load) and
-		// advertises ALPN h2 from Protocols. A clean shutdown returns
-		// ErrServerClosed, mapped to nil by classifyServe.
-		g.Go(func() error {
-			return classifyServe(netServer.ServeTLS(netListener, "", ""), "compass.v1 network door")
-		})
-	}
-	// The comms-bus consumers (SEA-1569): the T3 delivery fan-out consumer and
-	// the T8 presence projection, both tailing the comms bus with their bus-tail
-	// goroutines on the serve group rooted on gctx (cancels at shutdown; each also
-	// ends when the comms bus closes in drainDoors).
-	startCommsBusConsumers(gctx, g, commsBus, st, hub, hubLog)
-	// Drain member of the same group: wake on gctx cancellation (parent shutdown
-	// or a server erroring), then hand off to drainDoors. A drain that overruns
-	// (a handler still wedged — e.g. a stream stuck mid replay to a stalled
-	// client) surfaces as the error rather than being swallowed into a false
-	// clean shutdown; because the group keeps the first error, a real serve error
-	// still wins over this drain.
-	g.Go(func() error {
-		<-gctx.Done()
-		return drainDoors(drainSet{ //nolint:contextcheck // drainDoors deliberately takes no ctx: the inherited one is already cancelled (that cancellation is what woke this drain), so a bounded shutdown needs the fresh ctx drainDoors makes internally, not the dead one
-			bus:      bus,
-			commsBus: commsBus,
-			uds:      udsServer,
-			dev:      devServer,
-			net:      netServer,
-			hub:      hub,
-			log:      hubLog,
-		})
-	})
-
-	return g.Wait()
+	return serveDoors{uds: udsServer, dev: devServer, net: netServer}, nil
 }
 
 // drainSet is the shutdown-side view of what Serve built: the two buses whose
