@@ -14,7 +14,7 @@ package runtime
 //     already-running container with no remount and no restart — the Runner
 //     mounts the PARENT dir (never the resolved version dir), so a later
 //     ConfigMaterializer flip is picked up without re-mounting,
-//  4. (SELinux-enforcing only) the mount carries a per-container MCS label.
+//  4. (only where SELinux labels mounts) the mount carries a per-container MCS label.
 //
 // The runner-half Go wiring (Provision -> Start -> RefreshConfig -> Reload) is
 // already proven end-to-end by config_refresh_test with the podman binary
@@ -25,8 +25,8 @@ package runtime
 // that). No agent binary is needed — a shell in the container observes the mount.
 //
 // Skipped (not failed) when podman isn't usable, matching lifecycle_test; the
-// MCS-label assertion is additionally skipped where SELinux is not enforcing
-// (e.g. a NixOS host with SELinux disabled), so it is real wherever SELinux is.
+// MCS-label assertion is additionally skipped where SELinux does not label
+// mounts (e.g. a NixOS host with SELinux disabled), so it is real wherever it does.
 // Build-tagged (podman) so it is not part of the hermetic gate.
 
 import (
@@ -54,9 +54,25 @@ func writeConfigTree(t *testing.T, versions []string, initial string) string {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir version dir %q: %v", v, err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "config.txt"), []byte(v), 0o644); err != nil {
+		// 0o666, not 0o644: the sentinel and the root mode must move together.
+		// The root is pinned 0o755 below so the agent (uid 1000 under
+		// --userns=keep-id) can traverse it regardless of the invoking host uid;
+		// were the sentinel left 0o644, on a box where the invoker uid != 1000
+		// the agent (mapped as "other") could not write it even absent the ro
+		// mount, so assertion 2's write-rejection would come from file perms, not
+		// the read-only mount — a vacuous green. 0o666 keeps the ro mount the sole
+		// write barrier for any invoker uid.
+		if err := os.WriteFile(filepath.Join(dir, "config.txt"), []byte(v), 0o666); err != nil {
 			t.Fatalf("write config.txt for %q: %v", v, err)
 		}
+	}
+	// Pin the root 0o755, mirroring ConfigMaterializer.ensureRoot
+	// (config_materialize.go:180-186): t.TempDir defaults to 0o700, which only
+	// the owner can traverse, so a confined agent whose in-userns uid differs
+	// from the root owner could not resolve current/ into the tree. Production
+	// pins 0o755 for exactly this reason.
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatalf("pin config root %q mode: %v", root, err)
 	}
 	flipCurrentSymlink(t, root, initial)
 	return root
@@ -80,11 +96,14 @@ func flipCurrentSymlink(t *testing.T, root, version string) {
 	}
 }
 
-// selinuxEnforcing reports whether this host runs SELinux in a mode where
+// selinuxLabelsMounts reports whether this host runs SELinux in a mode where
 // podman stamps bind mounts with a per-container MCS label. Both the kernel
 // selinuxfs must be present AND podman must report SELinux enabled — a host with
 // selinuxfs but podman's SELinux support off still yields an empty MountLabel.
-func selinuxEnforcing() bool {
+// It detects SELinux *enabled* (not specifically enforcing) on purpose: podman
+// labels mounts in permissive mode too, so "enabled" is the right predicate for
+// the MountLabel assertion.
+func selinuxLabelsMounts() bool {
 	if _, err := os.Stat("/sys/fs/selinux"); err != nil {
 		return false
 	}
@@ -121,7 +140,9 @@ func TestConfigMountIsReadOnlyAndFlipVisibleLive(t *testing.T) {
 	t.Cleanup(func() { _ = exec.Command("podman", "rm", "--force", name).Run() })
 
 	// The exact production mount contract (host.go:152-168): parent root ->
-	// agentConfigMountPath, read-only.
+	// agentConfigMountPath, read-only. Keep this literal in sync with
+	// runner.agentConfigMountPath (host.go:37) — it is unexported across the
+	// package boundary, so a production path change will not propagate here.
 	const configMountPath = "/run/compass/agent-config"
 	spec := AgentSpec{
 		Name:  name,
@@ -165,19 +186,21 @@ func TestConfigMountIsReadOnlyAndFlipVisibleLive(t *testing.T) {
 		t.Fatalf("after host-side current flip, config inside container = %q, want %q (live flip not visible — is the parent dir mounted?)", afterFlip, "v2")
 	}
 
-	// 4. SELinux MCS label: only meaningful where SELinux is enforcing. Where it
-	// is disabled (e.g. this NixOS box) MountLabel is empty and :Z is a no-op, so
-	// skip the sub-assertion with a note rather than fail.
-	if selinuxEnforcing() {
+	// 4. SELinux MCS label: only meaningful where SELinux labels mounts. Where
+	// it is disabled (e.g. this NixOS box) MountLabel is empty and :Z is a no-op,
+	// so skip the sub-assertion with a note rather than fail. This branch is
+	// compile-checked only in the disabled case; its runtime path (the
+	// MountLabel read + non-empty check) is unverified pending an SELinux host.
+	if selinuxLabelsMounts() {
 		label, err := NewPodmanCLI().MountLabel(ctx, handle.ID())
 		if err != nil {
-			t.Fatalf("read MountLabel on an SELinux-enforcing host: %v", err)
+			t.Fatalf("read MountLabel on an SELinux host: %v", err)
 		}
 		if strings.TrimSpace(label) == "" {
-			t.Fatal("on an SELinux-enforcing host the container must carry a non-empty MCS mount label")
+			t.Fatal("on an SELinux host the container must carry a non-empty MCS mount label")
 		}
 	} else {
-		t.Log("SELinux not enforcing here; skipping the MCS mount-label assertion (real only on an enforcing host)")
+		t.Log("SELinux does not label mounts here; skipping the MCS mount-label assertion (real only where SELinux is enabled)")
 	}
 
 	// 5. Teardown removes the container.
