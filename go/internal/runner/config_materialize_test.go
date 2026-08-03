@@ -562,3 +562,111 @@ func TestConfigMaterializeProvisionPathDoesNotRelabel(t *testing.T) {
 		t.Fatalf("relabel calls = %d, want 0 on the provision path", len(*calls))
 	}
 }
+
+// yamlMap is a minimal valid YAML-mapping body for a settings/models member.
+var yamlMap = []byte("compaction:\n  enabled: true\n")
+
+// TestConfigMaterializeLandsNewMembers pins the SEA-1678 T2 unpack of all five
+// new members: settings/config.yml, top-level AGENTS.md + models.yml, flat
+// rules/*.md|.mdc, and flat agents/*.md all land under <root>/<version>/ with
+// pinned modes (0644 files, 0755 dirs).
+func TestConfigMaterializeLandsNewMembers(t *testing.T) {
+	root := t.TempDir()
+	tarball := buildConfigTarball(t, map[string][]byte{
+		"settings/config.yml": yamlMap,
+		"AGENTS.md":           []byte("# fleet conventions\n"),
+		"models.yml":          []byte("providers:\n  x:\n    baseUrl: https://y\n"),
+		"rules/red-green.md":  []byte("# red-green\n"),
+		"rules/hold-lane.mdc": []byte("# hold lane\n"),
+		"agents/design.md":    []byte("# design agent\n"),
+	})
+	f := &fakeConfigFetcher{bundle: AgentConfigBundle{Version: "v1", Tarball: tarball}}
+	m := NewConfigMaterializer(root, f, nil)
+	if _, err := m.Materialize(context.Background(), ""); err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	versionDir := filepath.Join(root, "v1")
+
+	files := map[string]string{
+		filepath.Join("settings", "config.yml"): string(yamlMap),
+		"AGENTS.md":                             "# fleet conventions\n",
+		"models.yml":                            "providers:\n  x:\n    baseUrl: https://y\n",
+		filepath.Join("rules", "red-green.md"):  "# red-green\n",
+		filepath.Join("rules", "hold-lane.mdc"): "# hold lane\n",
+		filepath.Join("agents", "design.md"):    "# design agent\n",
+	}
+	for rel, want := range files {
+		p := filepath.Join(versionDir, rel)
+		got, err := os.ReadFile(p)
+		if err != nil || string(got) != want {
+			t.Fatalf("%s = %q err=%v, want %q", rel, got, err, want)
+		}
+		fi, err := os.Stat(p)
+		if err != nil || fi.Mode().Perm() != 0o644 {
+			t.Fatalf("%s mode = %v err=%v, want 0644", rel, fi.Mode().Perm(), err)
+		}
+	}
+	for _, dir := range []string{"settings", "rules", "agents"} {
+		di, err := os.Stat(filepath.Join(versionDir, dir))
+		if err != nil || di.Mode().Perm() != 0o755 {
+			t.Fatalf("%s dir mode = %v err=%v, want 0755", dir, di.Mode().Perm(), err)
+		}
+	}
+}
+
+// TestConfigMaterializeRejectsNewMemberStructure pins T1's STRUCTURAL rejection
+// matrix at unpack (the credential denylist is store-door-only, NOT mirrored
+// here): each malformed new member must fail closed, writing no version dir and
+// no current symlink.
+func TestConfigMaterializeRejectsNewMemberStructure(t *testing.T) {
+	cases := map[string][]byte{
+		"settings .yaml variant": buildConfigTarball(t, map[string][]byte{"settings/config.yaml": yamlMap}),
+		"settings .json variant": buildConfigTarball(t, map[string][]byte{"settings/config.json": []byte("{}")}),
+		"settings other name":    buildConfigTarball(t, map[string][]byte{"settings/other.yml": yamlMap}),
+		"settings nested":        buildConfigTarball(t, map[string][]byte{"settings/a/b.yml": yamlMap}),
+		"settings non-mapping":   buildConfigTarball(t, map[string][]byte{"settings/config.yml": []byte("- a\n- b\n")}),
+		"rules nested":           buildConfigTarball(t, map[string][]byte{"rules/nested/a.md": []byte("x")}),
+		"rules wrong ext":        buildConfigTarball(t, map[string][]byte{"rules/a.txt": []byte("x")}),
+		"agents non-md":          buildConfigTarball(t, map[string][]byte{"agents/a.txt": []byte("x")}),
+		"agents nested":          buildConfigTarball(t, map[string][]byte{"agents/sub/a.md": []byte("x")}),
+		"top-level other file":   buildConfigTarball(t, map[string][]byte{"README.md": []byte("x")}),
+		"models non-mapping":     buildConfigTarball(t, map[string][]byte{"models.yml": []byte("- a\n")}),
+	}
+	for name, tarball := range cases {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			f := &fakeConfigFetcher{bundle: AgentConfigBundle{Version: "vbad", Tarball: tarball}}
+			m := NewConfigMaterializer(root, f, nil)
+			if _, err := m.Materialize(context.Background(), ""); err == nil {
+				t.Fatalf("expected rejection, got nil error")
+			}
+			if _, err := os.Stat(filepath.Join(root, "vbad")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("version dir must not be written, stat err = %v", err)
+			}
+			if _, err := os.Lstat(filepath.Join(root, "current")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("current must not exist, lstat err = %v", err)
+			}
+		})
+	}
+}
+
+// TestConfigMaterializeCredentialNotMirrored pins the defense-in-depth boundary:
+// the credential denylist is the store door's job (T1), NOT the Runner's. A
+// settings/config.yml or models.yml carrying a credential-marked value is
+// STRUCTURALLY valid, so the Runner unpacks it without complaint — the store
+// door already rejected it before it could ever reach a bundle.
+func TestConfigMaterializeCredentialNotMirrored(t *testing.T) {
+	root := t.TempDir()
+	tarball := buildConfigTarball(t, map[string][]byte{
+		"settings/config.yml": []byte("auth:\n  broker:\n    token: sekret\n"),
+		"models.yml":          []byte("providers:\n  x:\n    apiKey: sk-live-123\n"),
+	})
+	f := &fakeConfigFetcher{bundle: AgentConfigBundle{Version: "v1", Tarball: tarball}}
+	m := NewConfigMaterializer(root, f, nil)
+	if _, err := m.Materialize(context.Background(), ""); err != nil {
+		t.Fatalf("Materialize must not enforce the credential denylist (store-door only), got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "v1", "settings", "config.yml")); err != nil {
+		t.Fatalf("settings/config.yml should have landed: %v", err)
+	}
+}

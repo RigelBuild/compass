@@ -2971,7 +2971,17 @@ type GetAgentConfigInfoResponse struct {
 	// The declared extension names (the <name> in extensions/<name>/...).
 	Extensions []string `protobuf:"bytes,3,rep,name=extensions,proto3" json:"extensions,omitempty"`
 	// The declared mcp server names (the <name> in mcp/<name>.json).
-	McpServers    []string `protobuf:"bytes,4,rep,name=mcp_servers,json=mcpServers,proto3" json:"mcp_servers,omitempty"`
+	McpServers []string `protobuf:"bytes,4,rep,name=mcp_servers,json=mcpServers,proto3" json:"mcp_servers,omitempty"`
+	// Whether the bundle carries a fleet settings document (settings/config.yml).
+	HasSettings bool `protobuf:"varint,5,opt,name=has_settings,json=hasSettings,proto3" json:"has_settings,omitempty"`
+	// Whether the bundle carries a fleet AGENTS.md.
+	HasAgentsMd bool `protobuf:"varint,6,opt,name=has_agents_md,json=hasAgentsMd,proto3" json:"has_agents_md,omitempty"`
+	// Names of the bundle's rule files (rules/<name>.md|.mdc), names only.
+	Rules []string `protobuf:"bytes,7,rep,name=rules,proto3" json:"rules,omitempty"`
+	// Names of the bundle's subagent definitions (agents/<name>.md), names only.
+	Subagents []string `protobuf:"bytes,8,rep,name=subagents,proto3" json:"subagents,omitempty"`
+	// Whether the bundle carries a fleet models.yml.
+	HasModels     bool `protobuf:"varint,9,opt,name=has_models,json=hasModels,proto3" json:"has_models,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3032,6 +3042,41 @@ func (x *GetAgentConfigInfoResponse) GetMcpServers() []string {
 		return x.McpServers
 	}
 	return nil
+}
+
+func (x *GetAgentConfigInfoResponse) GetHasSettings() bool {
+	if x != nil {
+		return x.HasSettings
+	}
+	return false
+}
+
+func (x *GetAgentConfigInfoResponse) GetHasAgentsMd() bool {
+	if x != nil {
+		return x.HasAgentsMd
+	}
+	return false
+}
+
+func (x *GetAgentConfigInfoResponse) GetRules() []string {
+	if x != nil {
+		return x.Rules
+	}
+	return nil
+}
+
+func (x *GetAgentConfigInfoResponse) GetSubagents() []string {
+	if x != nil {
+		return x.Subagents
+	}
+	return nil
+}
+
+func (x *GetAgentConfigInfoResponse) GetHasModels() bool {
+	if x != nil {
+		return x.HasModels
+	}
+	return false
 }
 
 type DeleteAgentConfigRequest struct {
@@ -3274,7 +3319,7 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\x06bundle\x18\x01 \x01(\fR\x06bundle\"2\n" +
 	"\x16PutAgentConfigResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\"\x1b\n" +
-	"\x19GetAgentConfigInfoRequest\"\x8f\x01\n" +
+	"\x19GetAgentConfigInfoRequest\"\xa9\x02\n" +
 	"\x1aGetAgentConfigInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06skills\x18\x02 \x03(\tR\x06skills\x12\x1e\n" +
@@ -3282,7 +3327,13 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"extensions\x18\x03 \x03(\tR\n" +
 	"extensions\x12\x1f\n" +
 	"\vmcp_servers\x18\x04 \x03(\tR\n" +
-	"mcpServers\"\x1a\n" +
+	"mcpServers\x12!\n" +
+	"\fhas_settings\x18\x05 \x01(\bR\vhasSettings\x12\"\n" +
+	"\rhas_agents_md\x18\x06 \x01(\bR\vhasAgentsMd\x12\x14\n" +
+	"\x05rules\x18\a \x03(\tR\x05rules\x12\x1c\n" +
+	"\tsubagents\x18\b \x03(\tR\tsubagents\x12\x1d\n" +
+	"\n" +
+	"has_models\x18\t \x01(\bR\thasModels\"\x1a\n" +
 	"\x18DeleteAgentConfigRequest\"\x1b\n" +
 	"\x19DeleteAgentConfigResponse*d\n" +
 	"\x0eSecretDelivery\x12\x1f\n" +

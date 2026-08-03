@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
+	yaml "go.yaml.in/yaml/v3"
 )
 
 const (
@@ -53,12 +54,37 @@ const (
 // land safely contained under its version dir.
 var configTopLevelName = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// Config-bundle top-dir names — kept textually in lockstep with the store door's
+// (T1). Named constants (not bare strings) so the switch arms and the whitelist
+// share one spelling.
+const (
+	topDirSkills     = "skills"
+	topDirExtensions = "extensions"
+	topDirMCP        = "mcp"
+	topDirSettings   = "settings"
+	topDirRules      = "rules"
+	topDirAgents     = "agents"
+)
+
 // configTopDirs are the only permitted top-level directories in a config bundle.
 var configTopDirs = map[string]struct{}{
-	"skills":     {},
-	"extensions": {},
-	"mcp":        {},
+	topDirSkills:     {},
+	topDirExtensions: {},
+	topDirMCP:        {},
+	topDirSettings:   {},
+	topDirRules:      {},
+	topDirAgents:     {},
 }
+
+// Top-level regular-file members admitted by exact filename (SEA-1678 T2), and
+// the one file admitted under settings/ (yml-only, OQ-1). Any other top-level
+// file or settings variant stays rejected — the structural twin of the store
+// door (the credential denylist is store-door-only, never mirrored here).
+const (
+	memberAgentsMD = "AGENTS.md"
+	memberModels   = "models.yml"
+	settingsMember = "settings/config.yml"
+)
 
 // configFetcher is the T3 fetch seam the materializer pulls through. *ServerLink
 // satisfies it; tests supply a fake. (Runner-internal, not a wire contract.)
@@ -399,6 +425,14 @@ func validateAndUnpack(tarball []byte, destDir string) error {
 				return fmt.Errorf("config bundle mcp member %q is not valid JSON", hdr.Name)
 			}
 		}
+		// settings/config.yml and top-level models.yml must parse as a YAML
+		// mapping — the structural twin of the store door (T1). Best-effort:
+		// T4's container-side Bun-parse guard is the authoritative backstop.
+		if clean == settingsMember || clean == memberModels {
+			if err := requireYAMLMapping(buf); err != nil {
+				return fmt.Errorf("config bundle member %q: %w", hdr.Name, err)
+			}
+		}
 
 		if err := os.WriteFile(target, buf, 0o644); err != nil { //nolint:gosec // G306: unpacked config files must be 0644 so the confined agent can read them from the mounted tree
 			return fmt.Errorf("writing member %q: %w", target, err)
@@ -420,7 +454,9 @@ func readCapped(r io.Reader, limit int64) ([]byte, int64, error) {
 
 // validateMemberPath enforces traversal + layout rules on a tar member name and
 // returns the cleaned relative path. It rejects absolute paths, `..` segments,
-// and anything not under a permitted top-level dir with a safe name.
+// and anything not under a permitted top-level dir (or one of the two admitted
+// top-level files) with a safe name. Structural twin of the store door (T1);
+// the credential denylist is store-door-only and NOT mirrored here.
 func validateMemberPath(name string, typeflag byte) (string, error) {
 	if name == "" {
 		return "", errors.New("config bundle member has an empty name")
@@ -439,26 +475,64 @@ func validateMemberPath(name string, typeflag byte) (string, error) {
 
 	parts := strings.Split(strings.TrimSuffix(clean, "/"), "/")
 	top := parts[0]
-	if _, ok := configTopDirs[top]; !ok {
-		return "", fmt.Errorf("config bundle member %q is not under skills/, extensions/, or mcp/", name)
-	}
 
-	// A bare top-level dir entry (e.g. "skills/") is allowed as a container dir.
 	if len(parts) == 1 {
-		if typeflag != tar.TypeDir {
-			return "", fmt.Errorf("config bundle top-level %q must be a directory", name)
-		}
-		return clean, nil
+		return validateTopLevelMember(name, clean, top, typeflag)
 	}
+	if _, ok := configTopDirs[top]; !ok {
+		return "", fmt.Errorf("config bundle member %q is not under skills/, extensions/, mcp/, settings/, rules/, or agents/", name)
+	}
+	return validateNestedMember(name, clean, top, parts, typeflag)
+}
 
-	entry := parts[1]
-	if top == "mcp" {
-		// mcp/<name>.json — validate the base name sans .json, require suffix on files.
-		if typeflag == tar.TypeReg {
-			if !strings.HasSuffix(entry, ".json") {
+// validateTopLevelMember validates a single-component member: a regular file
+// named exactly AGENTS.md or models.yml, or a bare top-dir container directory.
+func validateTopLevelMember(name, clean, top string, typeflag byte) (string, error) {
+	if typeflag == tar.TypeReg {
+		if clean == memberAgentsMD || clean == memberModels {
+			return clean, nil
+		}
+		return "", fmt.Errorf("config bundle top-level file %q must be %s or %s", name, memberAgentsMD, memberModels)
+	}
+	if _, ok := configTopDirs[top]; !ok {
+		return "", fmt.Errorf("config bundle member %q is not under a permitted top dir and is not a top-level %s or %s", name, memberAgentsMD, memberModels)
+	}
+	if typeflag != tar.TypeDir {
+		return "", fmt.Errorf("config bundle top-level %q must be a directory", name)
+	}
+	return clean, nil
+}
+
+// validateNestedMember validates a member with two or more path components under
+// a whitelisted top dir. Directory members (and skills/extensions files) require
+// only a safe first-level name; regular files under settings/rules/agents/mcp
+// carry per-dir grammar.
+func validateNestedMember(name, clean, top string, parts []string, typeflag byte) (string, error) {
+	if typeflag == tar.TypeReg {
+		switch top {
+		case topDirSettings:
+			// Exactly settings/config.yml — yml-only (OQ-1).
+			if clean != settingsMember {
+				return "", fmt.Errorf("config bundle settings member %q must be exactly %s", name, settingsMember)
+			}
+			return clean, nil
+		case topDirRules:
+			if err := validateFlatRunnerMember(topDirRules, name, parts, ".md", ".mdc"); err != nil {
+				return "", err
+			}
+			return clean, nil
+		case topDirAgents:
+			if err := validateFlatRunnerMember(topDirAgents, name, parts, ".md"); err != nil {
+				return "", err
+			}
+			return clean, nil
+		case topDirMCP:
+			// mcp/<name>.json — safe base name, required .json suffix.
+			entry := parts[1]
+			base, ok := strings.CutSuffix(entry, ".json")
+			if !ok {
 				return "", fmt.Errorf("config bundle mcp member %q must have a .json suffix", name)
 			}
-			base := strings.TrimSuffix(entry, ".json")
 			if !configTopLevelName.MatchString(base) {
 				return "", fmt.Errorf("config bundle mcp member name %q is not a safe name", entry)
 			}
@@ -466,8 +540,46 @@ func validateMemberPath(name string, typeflag byte) (string, error) {
 		}
 	}
 
-	if !configTopLevelName.MatchString(entry) {
-		return "", fmt.Errorf("config bundle member name %q is not a safe name", entry)
+	// skills/ or extensions/ (and directory entries under any top dir): the
+	// first-level name must be safe; deeper segments rely on the traversal +
+	// containment guards.
+	if !configTopLevelName.MatchString(parts[1]) {
+		return "", fmt.Errorf("config bundle member name %q is not a safe name", parts[1])
 	}
 	return clean, nil
+}
+
+// validateFlatRunnerMember enforces a flat top/<name><ext> member: exactly two
+// path components, and <name> (with an allowed <ext> stripped) is a safe name.
+func validateFlatRunnerMember(top, name string, parts []string, exts ...string) error {
+	if len(parts) != 2 {
+		return fmt.Errorf("config bundle %s member %q must be flat %s/<name>%s", top, name, top, exts[0])
+	}
+	entry := parts[1]
+	for _, ext := range exts {
+		if base, ok := strings.CutSuffix(entry, ext); ok {
+			if !configTopLevelName.MatchString(base) {
+				return fmt.Errorf("config bundle %s member name %q is not a safe name", top, base)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("config bundle %s member %q must end in one of %s", top, name, strings.Join(exts, ", "))
+}
+
+// requireYAMLMapping parses content as YAML and requires it to be a mapping
+// (rejecting a scalar or sequence). Structural twin of the store door's
+// parseYAMLMapping; an empty document (YAML null) counts as an empty mapping.
+func requireYAMLMapping(content []byte) error {
+	var doc any
+	if err := yaml.Unmarshal(content, &doc); err != nil {
+		return fmt.Errorf("not valid YAML: %w", err)
+	}
+	if doc == nil {
+		return nil
+	}
+	if _, ok := doc.(map[string]any); !ok {
+		return errors.New("must be a YAML mapping")
+	}
+	return nil
 }

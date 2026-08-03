@@ -344,33 +344,37 @@ func TestConfigBundleMemberNames(t *testing.T) {
 		tarEntry{name: "mcp/linear.json", content: `{"a":1}`},
 		tarEntry{name: "mcp/github.json", content: `{"b":2}`},
 	)
-	skills, extensions, mcpServers, err := configBundleMemberNames(b)
+	info, err := configBundleMemberNames(b)
 	if err != nil {
 		t.Fatalf("configBundleMemberNames: %v", err)
 	}
 	// review appears in two files but the name set collapses it; sorted order.
-	if got, want := strings.Join(skills, ","), "review,triage"; got != want {
+	if got, want := strings.Join(info.Skills, ","), "review,triage"; got != want {
 		t.Errorf("skills = %q, want %q", got, want)
 	}
-	if got, want := strings.Join(extensions, ","), "cotal"; got != want {
+	if got, want := strings.Join(info.Extensions, ","), "cotal"; got != want {
 		t.Errorf("extensions = %q, want %q", got, want)
 	}
 	// sorted, .json stripped.
-	if got, want := strings.Join(mcpServers, ","), "github,linear"; got != want {
+	if got, want := strings.Join(info.McpServers, ","), "github,linear"; got != want {
 		t.Errorf("mcp_servers = %q, want %q", got, want)
 	}
 }
 
 // TestConfigBundleMemberNamesEmpty: an empty bundle declares no members — every
-// bucket is empty, not an error.
+// bucket is empty and every presence flag false, not an error.
 func TestConfigBundleMemberNamesEmpty(t *testing.T) {
-	skills, extensions, mcpServers, err := configBundleMemberNames(
+	info, err := configBundleMemberNames(
 		buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0)))
 	if err != nil {
 		t.Fatalf("configBundleMemberNames(empty): %v", err)
 	}
-	if len(skills) != 0 || len(extensions) != 0 || len(mcpServers) != 0 {
-		t.Fatalf("empty bundle names = %v/%v/%v, want all empty", skills, extensions, mcpServers)
+	if len(info.Skills) != 0 || len(info.Extensions) != 0 || len(info.McpServers) != 0 ||
+		len(info.Rules) != 0 || len(info.Subagents) != 0 {
+		t.Fatalf("empty bundle names = %+v, want all empty", info)
+	}
+	if info.HasSettings || info.HasAgentsMD || info.HasModels {
+		t.Fatalf("empty bundle flags = settings:%v agents:%v models:%v, want all false", info.HasSettings, info.HasAgentsMD, info.HasModels)
 	}
 }
 
@@ -387,4 +391,158 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(b[i:])
+}
+
+// mkYAMLMap is a minimal valid YAML mapping body for a settings/models member.
+const mkYAMLMap = "compaction:\n  enabled: true\n"
+
+// TestValidateConfigBundleAcceptsNewMembers pins the SEA-1678 grammar accepts:
+// settings/config.yml (YAML mapping), flat rules/*.md|.mdc, flat agents/*.md,
+// and the two top-level files AGENTS.md and models.yml (models YAML-mapping).
+func TestValidateConfigBundleAcceptsNewMembers(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []tarEntry
+	}{
+		{"settings/config.yml mapping", []tarEntry{{name: "settings/config.yml", content: mkYAMLMap}}},
+		{"rules .md", []tarEntry{{name: "rules/a.md", content: "# rule a"}}},
+		{"rules .mdc", []tarEntry{{name: "rules/b.mdc", content: "# rule b"}}},
+		{"agents .md", []tarEntry{{name: "agents/design.md", content: "# design agent"}}},
+		{"top-level AGENTS.md", []tarEntry{{name: "AGENTS.md", content: "# fleet conventions"}}},
+		{"top-level models.yml mapping", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    baseUrl: https://y\n"}}},
+		{"models.yml headers env reference", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers:\n      X-Org: MY_ORG_ENV\n"}}},
+		{"models.yml headers !command indirection", []tarEntry{{name: "models.yml", content: "providers:\n  x:\n    headers:\n      Authorization: \"!op read secret\"\n"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tc.entries...)
+			if _, err := validateAndHashConfigBundle(b); err != nil {
+				t.Fatalf("valid new member rejected: %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateConfigBundleRejectsNewMembers pins the structural rejection matrix
+// for the SEA-1678 grammar: settings variants/nesting/non-mapping, nested rules,
+// non-.md agents, and a top-level file other than AGENTS.md/models.yml.
+func TestValidateConfigBundleRejectsNewMembers(t *testing.T) {
+	cases := []struct {
+		name    string
+		entries []tarEntry
+	}{
+		{"settings/config.yaml variant", []tarEntry{{name: "settings/config.yaml", content: mkYAMLMap}}},
+		{"settings/config.json variant", []tarEntry{{name: "settings/config.json", content: "{}"}}},
+		{"settings other name", []tarEntry{{name: "settings/other.yml", content: mkYAMLMap}}},
+		{"settings nested", []tarEntry{{name: "settings/a/b.yml", content: mkYAMLMap}}},
+		{"settings non-mapping scalar", []tarEntry{{name: "settings/config.yml", content: "just a scalar\n"}}},
+		{"settings non-mapping sequence", []tarEntry{{name: "settings/config.yml", content: "- a\n- b\n"}}},
+		{"rules nested", []tarEntry{{name: "rules/nested/a.md", content: "x"}}},
+		{"rules wrong ext", []tarEntry{{name: "rules/a.txt", content: "x"}}},
+		{"agents non-md", []tarEntry{{name: "agents/a.txt", content: "x"}}},
+		{"agents nested", []tarEntry{{name: "agents/sub/a.md", content: "x"}}},
+		{"top-level other file", []tarEntry{{name: "README.md", content: "x"}}},
+		{"models non-mapping", []tarEntry{{name: "models.yml", content: "- a\n"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tc.entries...)
+			if _, err := validateAndHashConfigBundle(b); !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("want ErrInvalidArgument, got %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateConfigBundleRejectsCredentialKeys pins the credential denylist at
+// the store door: a settings/config.yml setting a credential-marked key, a
+// models.yml with providers.<name>.apiKey, and a models.yml with a
+// providers.<name>.headers.* literal secret are each rejected with the offending
+// key path named in the error; an env-referenced header value passes.
+func TestValidateConfigBundleRejectsCredentialKeys(t *testing.T) {
+	cases := []struct {
+		name    string
+		member  tarEntry
+		wantSub string // substring the error must name
+	}{
+		{
+			name:    "settings credential key",
+			member:  tarEntry{name: "settings/config.yml", content: "auth:\n  broker:\n    token: sekret\n"},
+			wantSub: "auth.broker.token",
+		},
+		{
+			name:    "settings credential key nested searxng",
+			member:  tarEntry{name: "settings/config.yml", content: "searxng:\n  token: sk-abc\n"},
+			wantSub: "searxng.token",
+		},
+		{
+			name:    "models apiKey",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    apiKey: sk-live-123\n"},
+			wantSub: "providers.x.apiKey",
+		},
+		{
+			name:    "models header literal secret",
+			member:  tarEntry{name: "models.yml", content: "providers:\n  x:\n    headers:\n      Authorization: \"Bearer sk-live-123\"\n"},
+			wantSub: "providers.x.headers.Authorization",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0), tc.member)
+			_, err := validateAndHashConfigBundle(b)
+			if !errors.Is(err, ErrInvalidArgument) {
+				t.Fatalf("want ErrInvalidArgument, got %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantSub) {
+				t.Fatalf("error %q does not name offending key %q", err, tc.wantSub)
+			}
+		})
+	}
+}
+
+// TestCredentialKeysMatchSchema is a change-detector on the generated denylist:
+// the seven SDK isCredential paths (settings-schema.ts) are the load-bearing
+// door policy, so a fork bump that adds or drops one must be caught. If this
+// reds, regenerate credential_keys_gen.go (`go generate ./...`) and re-review.
+func TestCredentialKeysMatchSchema(t *testing.T) {
+	want := []string{
+		"auth.broker.token",
+		"dev.autoqaPush.token",
+		"hindsight.apiToken",
+		"mnemopi.embeddingApiKey",
+		"mnemopi.llmApiKey",
+		"searxng.basicPassword",
+		"searxng.token",
+	}
+	if got := strings.Join(credentialKeys, ","); got != strings.Join(want, ",") {
+		t.Fatalf("credentialKeys = %v, want %v (regenerate credential_keys_gen.go if the schema changed)", credentialKeys, want)
+	}
+}
+
+// TestConfigBundleMemberNamesNewMembers pins the info view over the new members:
+// rules/subagents name lists (sorted, extension-stripped) and the three presence
+// flags for the singleton members.
+func TestConfigBundleMemberNamesNewMembers(t *testing.T) {
+	b := buildBundle(t, gzip.DefaultCompression, time.Unix(1000, 0),
+		tarEntry{name: "settings/config.yml", content: mkYAMLMap},
+		tarEntry{name: "AGENTS.md", content: "# conventions"},
+		tarEntry{name: "models.yml", content: "providers:\n  x:\n    baseUrl: https://y\n"},
+		tarEntry{name: "rules/red-green.md", content: "x"},
+		tarEntry{name: "rules/hold-lane.mdc", content: "x"},
+		tarEntry{name: "agents/design.md", content: "x"},
+		tarEntry{name: "agents/review.md", content: "x"},
+	)
+	info, err := configBundleMemberNames(b)
+	if err != nil {
+		t.Fatalf("configBundleMemberNames: %v", err)
+	}
+	if !info.HasSettings || !info.HasAgentsMD || !info.HasModels {
+		t.Errorf("flags = settings:%v agents:%v models:%v, want all true", info.HasSettings, info.HasAgentsMD, info.HasModels)
+	}
+	if got, want := strings.Join(info.Rules, ","), "hold-lane,red-green"; got != want {
+		t.Errorf("rules = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(info.Subagents, ","), "design,review"; got != want {
+		t.Errorf("subagents = %q, want %q", got, want)
+	}
 }

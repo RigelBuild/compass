@@ -560,6 +560,16 @@ message GetAgentConfigInfoResponse {
   repeated string extensions = 3;
   // The declared mcp server names (the <name> in mcp/<name>.json).
   repeated string mcp_servers = 4;
+  // Whether the bundle carries a fleet settings document (settings/config.yml).
+  bool has_settings = 5;
+  // Whether the bundle carries a fleet AGENTS.md.
+  bool has_agents_md = 6;
+  // Names of the bundle's rule files (rules/<name>.md|.mdc), names only.
+  repeated string rules = 7;
+  // Names of the bundle's subagent definitions (agents/<name>.md), names only.
+  repeated string subagents = 8;
+  // Whether the bundle carries a fleet models.yml.
+  bool has_models = 9;
 }
 
 message DeleteAgentConfigRequest {}
