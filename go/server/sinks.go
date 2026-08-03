@@ -127,18 +127,23 @@ var errNoConversationVariant = connect.NewError(
 // which executes an agent-initiated comms call under the account a session
 // resolves to (RelayCommsCall). The one CommsService instance serves both comms
 // legs: the conversation write-through and RelayCommsCall. log carries the hub's
-// gap/unknown/refused-frame diagnostics; nil falls back to slog.Default().
-func newRunnerHub(brd *board.Projection, tail runnerhub.SessionTailSink, commsSvc *comms.Comms, log *slog.Logger) *runnerhub.Hub {
+// gap/unknown/refused-frame diagnostics; nil falls back to slog.Default(). st is
+// the store of record: the hub's durable transcript lane (SEA-1667 T4)
+// write-throughs a relayed transcript_entry to it via SetTranscriptStore, wired
+// here so the one store instance backs the transcript commit path.
+func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.SessionTailSink, commsSvc *comms.Comms, log *slog.Logger) *runnerhub.Hub {
 	if log == nil {
 		log = slog.Default()
 	}
-	return runnerhub.NewHub(
+	hub := runnerhub.NewHub(
 		commsConversationSink{comms: commsSvc},
 		brd,
 		tail,
 		commsSvc,
 		log,
 	)
+	hub.SetTranscriptStore(st)
+	return hub
 }
 
 // startDeliveryConsumer builds the SEA-1569 T3 fan-out consumer over the comms

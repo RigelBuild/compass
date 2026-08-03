@@ -182,6 +182,12 @@ func (h *Hub) HasContainerBinding(containerName string) bool {
 // CodeUnavailable — the comms leg is not mounted, never a silent success.
 var errCommsUnavailable = errors.New("runnerhub: no comms caller wired to serve RelayCommsCall")
 
+// errTranscriptsUnavailable is the fail-closed cause when a hub with no
+// TranscriptStore wired receives a CommitConversationFrame (a Deliver-only hub).
+// It maps to CodeUnavailable — the durable transcript leg is not mounted, never
+// a silent success.
+var errTranscriptsUnavailable = errors.New("runnerhub: no transcript store wired to serve CommitConversationFrame")
+
 // RelayCommsCall executes one agent-initiated comms call under the agent account
 // the relayed session resolves to. The Runner asserts no account; this resolves
 // session_id -> account from the hub's own binding and runs the call through the
@@ -225,40 +231,53 @@ func (h *Hub) RelayCommsCall(
 	return &compassv1internal.RelayCommsCallResponse{Result: result}, nil
 }
 
-// CommitConversationFrame durably commits one agent-authored conversation frame
-// under the agent account the relayed session resolves to, at most once keyed on
-// the agent-minted idempotency_key — the DURABLE counterpart to the loss-
-// tolerant Deliver/PublishEvents path (#24 / OQ-3). The Runner asserts no
-// account; this resolves session_id -> account from the hub's own binding,
-// exactly as RelayCommsCall does, and runs the commit through the CommsCaller
-// under that account.
+// CommitConversationFrame durably commits one relayed transcript_entry frame to
+// the transcript store, keyed at most once on the agent-minted idempotency_key —
+// the DURABLE counterpart to the loss-tolerant Deliver/PublishEvents path (#24 /
+// OQ-3, SEA-1667 T4). The Runner asserts no account; this resolves session_id ->
+// account from the hub's own binding purely as the fail-closed liveness gate
+// (exactly as RelayCommsCall does), then writes the entry to the transcript
+// store under the session id. The transcript row is keyed by session_id, not by
+// account — the resolved account is the "is this a live session bound to this
+// Runner" check, not an attribution written into the row.
+//
+// The conversation_posted / conversation_updated write-through was removed with
+// the Zulip threading model, so the durable lane now carries ONLY the SEA-1570
+// transcript_entry variant — the exact frame the Runner's Gateway forwards
+// (runner/gateway/post_conversation_frame.go). The method name and the request/
+// response messages keep the frozen CommitConversationFrame shape.
 //
 // Contract (ratified — do not redesign):
 //   - An unresolved session fails closed CodeNotFound — never a stale account,
 //     never the bootstrap admin. Same fail-closed shape as RelayCommsCall.
-//   - A hub with no CommsCaller wired fails CodeUnavailable (a Deliver-only hub).
+//   - A hub with no transcript store wired fails CodeUnavailable (the durable
+//     transcript leg is not mounted — a Deliver-only hub). Checked BEFORE
+//     session resolution, so even a bound session gets Unavailable.
 //   - committed=true on a fresh commit AND on an idempotent replay of an
-//     already-committed key; the returned message_id is the ORIGINAL row's id,
-//     stable across the replay. A non-commit is NEVER committed=false with a nil
-//     error — it is ALWAYS a Connect status error, because the Runner drives
+//     already-committed key (the store dedups a duplicate idempotency_key as a
+//     silent success). A non-commit is NEVER committed=false with a nil error —
+//     it is ALWAYS a Connect status error, because the Runner drives
 //     at-least-once purely off the Connect code (err==nil => committed).
-//   - Comms errors are propagated AS-IS: the *AsAccount/CommitAgent* methods
-//     already map through edgeError to proper Connect codes (InvalidArgument /
-//     NotFound / FailedPrecondition), and the Runner splits retryable
-//     (transient) from terminal (permanent) on that code. Never return a bare
-//     error connect.CodeOf would report as CodeUnknown — that would wrongly read
-//     as a retryable teardown.
-//   - seq is deferred: shipped as 0 (the downstream consumer reads neither
-//     message_id nor seq today), never widened into the store write path.
+//   - Store errors are mapped to Connect codes (transcriptCommitError, mirroring
+//     the comms edgeError): ErrInvalidArgument -> InvalidArgument (a malformed or
+//     unknown-session frame, terminal), ErrConflict -> AlreadyExists (a genuine
+//     entry_seq collision, terminal), any other -> Internal (a transient store
+//     fault the relay should retry). Never a bare error connect.CodeOf would read
+//     as CodeUnknown — that would wrongly present as a retryable teardown.
+//   - message_id and seq are not meaningful for a transcript entry (the Runner
+//     reads neither): shipped as "" and 0.
 func (h *Hub) CommitConversationFrame(
 	ctx context.Context,
 	req *compassv1internal.CommitConversationFrameRequest,
 ) (*compassv1internal.CommitConversationFrameResponse, error) {
-	if h.comms == nil {
-		return nil, connect.NewError(connect.CodeUnavailable, errCommsUnavailable)
+	h.mu.Lock()
+	transcripts := h.transcripts
+	h.mu.Unlock()
+	if transcripts == nil {
+		return nil, connect.NewError(connect.CodeUnavailable, errTranscriptsUnavailable)
 	}
-	account, ok := h.accountForSession(req.GetSessionId())
-	if !ok {
+	sessionID := req.GetSessionId()
+	if _, ok := h.accountForSession(sessionID); !ok {
 		// Fail closed: no live session maps to this id. Never a stale account,
 		// never the bootstrap admin — a hard CodeNotFound the Runner surfaces.
 		return nil, connect.NewError(
@@ -267,49 +286,68 @@ func (h *Hub) CommitConversationFrame(
 		)
 	}
 
-	key := req.GetIdempotencyKey()
-	messageID, err := h.commitFrame(ctx, account, req.GetFrame(), key)
-	if err != nil {
-		// Already Connect-coded by the comms layer (edgeError). Propagate as-is
-		// so the Runner's retryable/terminal split reads the right code.
+	if err := h.commitFrame(ctx, transcripts, sessionID, req.GetFrame(), req.GetIdempotencyKey()); err != nil {
+		// Already Connect-coded (commitFrame maps the store sentinel or minted the
+		// malformed-frame status). Propagate as-is so the Runner's retryable/
+		// terminal split reads the right code.
 		return nil, err
 	}
 	return &compassv1internal.CommitConversationFrameResponse{
 		Committed: true,
-		MessageId: messageID,
-		Seq:       0, // Deferred (#24 contract): the consumer reads neither id nor seq today.
+		MessageId: "", // No message id for a transcript entry; the Runner reads none.
+		Seq:       0,  // Deferred (#24 contract): the consumer reads neither id nor seq today.
 	}, nil
 }
 
-// commitFrame dispatches one conversation frame to the keyed commit path by its
-// set oneof variant, returning the committed row's id (original and stable on an
-// idempotent replay). A frame with neither the posted nor updated variant set is
-// CodeInvalidArgument — the terminal "malformed frame" the Runner does not
-// retry. Any comms error is returned as-is (already Connect-coded).
+// commitFrame dispatches one durable frame to the transcript store by its set
+// oneof variant. The durable lane carries only the SEA-1570 transcript_entry
+// variant (the conversation_posted / conversation_updated write-through was
+// removed with the Zulip threading model), so a frame with any other variant —
+// or none — is CodeInvalidArgument, the terminal "malformed frame" the Runner
+// does not retry. A store error is mapped through transcriptCommitError. entryJSON
+// is opaque and forwarded verbatim (never parsed here).
 func (h *Hub) commitFrame(
 	ctx context.Context,
-	account store.AccountID,
+	transcripts TranscriptStore,
+	sessionID string,
 	frame *compassv1internal.AgentFrame,
 	idempotencyKey string,
-) (string, error) {
-	switch frame.GetFrame().(type) {
-	case *compassv1internal.AgentFrame_ConversationPosted:
-		resp, err := h.comms.CommitAgentPostKeyed(ctx, account, frame.GetConversationPosted(), idempotencyKey)
-		if err != nil {
-			return "", err
+) error {
+	switch f := frame.GetFrame().(type) {
+	case *compassv1internal.AgentFrame_TranscriptEntry:
+		te := f.TranscriptEntry
+		if err := transcripts.AppendTranscriptEntry(
+			ctx, sessionID, te.GetEntrySeq(), te.GetCheckpoint(), te.GetEntryJson(), idempotencyKey,
+		); err != nil {
+			return transcriptCommitError(err)
 		}
-		return resp.GetMessage().GetId(), nil
-	case *compassv1internal.AgentFrame_ConversationUpdated:
-		updated, err := h.comms.CommitAgentUpdateKeyed(ctx, account, frame.GetConversationUpdated(), idempotencyKey)
-		if err != nil {
-			return "", err
-		}
-		return updated.GetMessage().GetId(), nil
+		return nil
 	default:
-		return "", connect.NewError(
+		return connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: conversation frame has no conversation_posted/conversation_updated variant set"),
+			errors.New("runnerhub: durable frame has no transcript_entry variant set"),
 		)
+	}
+}
+
+// transcriptCommitError maps a transcript-store sentinel error onto the Connect
+// code the durable lane's contract expects, mirroring the comms edgeError
+// (comms/context.go): the store's sentinels are the vocabulary, and anything
+// unrecognized is an internal fault the relay should retry, never leaked as a
+// bare CodeUnknown. ErrInvalidArgument (a malformed or unknown-session entry) and
+// ErrConflict (a genuine entry_seq collision) are terminal; any other store
+// error is a transient fault (CodeInternal) the Runner retries under the same
+// key.
+func transcriptCommitError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, store.ErrInvalidArgument):
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	case errors.Is(err, store.ErrConflict):
+		return connect.NewError(connect.CodeAlreadyExists, err)
+	default:
+		return connect.NewError(connect.CodeInternal, err)
 	}
 }
 

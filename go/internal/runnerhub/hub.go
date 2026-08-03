@@ -169,6 +169,24 @@ type DeliveryStore interface {
 	AckDelivery(ctx context.Context, agent store.AccountID, channel store.ChannelID, messageID string) error
 }
 
+// TranscriptStore is the durable transcript surface the hub's commit arm writes
+// a relayed transcript_entry frame to (SEA-1667 T4, the durable counterpart to
+// the loss-tolerant Deliver path). *store.Store implements it; the hub depends
+// only on this narrow surface (pattern: DeliveryStore). Wired via
+// SetTranscriptStore after construction so no NewHub caller signature changes,
+// and nil-safe: a hub with no transcript store fails a transcript commit closed
+// CodeUnavailable (the durable transcript leg is not mounted — a Deliver-only
+// test hub never receives one).
+type TranscriptStore interface {
+	// AppendTranscriptEntry persists one relayed SDK session entry at-most-once
+	// on idempotencyKey; entryJSON is opaque and never parsed. The store rebases
+	// lifetimeSeq onto the session's bound base and embeds the primary + safety-
+	// valve flushes internally (agent_transcripts.go). An unknown session is
+	// ErrInvalidArgument (the FK); a genuine (session_id, entry_seq) collision is
+	// ErrConflict.
+	AppendTranscriptEntry(ctx context.Context, sessionID string, lifetimeSeq uint64, checkpoint bool, entryJSON, idempotencyKey string) error
+}
+
 // SessionTailSink relays an opaque OMP-native session frame to the dedicated
 // session-tail stream (the observation pane). In T4 this is a minimal sink so a
 // session frame's trace body is never dropped; T5 wires SubscribeAgentSession
@@ -231,6 +249,11 @@ type Hub struct {
 	// T3). Nil until SetDeliveryStore wires it; read under mu. Nil-safe: a hub
 	// with no delivery store drops delivery_ack frames.
 	delivery DeliveryStore
+	// transcripts is the durable transcript store the commit arm writes a relayed
+	// transcript_entry frame to (SEA-1667 T4). Nil until SetTranscriptStore wires
+	// it; read under mu. Nil-safe: a hub with no transcript store fails a
+	// transcript commit closed CodeUnavailable.
+	transcripts TranscriptStore
 	// lifecycleCaller is the spawn/despawn execution seam RelayLifecycleCall
 	// delegates a resolved lifecycle call to (spawn/despawn record T4). Nil until
 	// SetLifecycleCaller wires it (after both hub and lifecycleService exist,
@@ -363,6 +386,17 @@ func (h *Hub) SetDeliveryStore(delivery DeliveryStore) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.delivery = delivery
+}
+
+// SetTranscriptStore wires the durable transcript store the commit arm writes a
+// relayed transcript_entry frame to (SEA-1667 T4), after construction so no
+// NewHub caller signature changes. Called once at server assembly; nil-safe (a
+// hub with no transcript store fails a transcript commit closed CodeUnavailable).
+// Wired under mu; read under mu.
+func (h *Hub) SetTranscriptStore(transcripts TranscriptStore) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.transcripts = transcripts
 }
 
 // SetLifecycleCaller wires the lifecycle execution seam after construction, so

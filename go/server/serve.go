@@ -47,6 +47,10 @@ type TLSConfig struct {
 	KeyPath  string
 }
 
+// S3Config is the object-store archive tier configuration, re-exported from the
+// store package so the CLI builds it without importing internal/store directly.
+type S3Config = store.S3Config
+
 // ServeConfig configures the serve loop.
 type ServeConfig struct {
 	// SocketPath is the Unix domain socket the server binds and serves on.
@@ -63,6 +67,11 @@ type ServeConfig struct {
 	// (T1). Required: the comms vertical is store-backed, so Serve opens the
 	// store at startup and refuses to serve without it.
 	DatabaseDSN string
+	// S3 is the object-store archive tier config (SEA-1667 T4). Optional: when
+	// unset (no endpoint/bucket) the server boots without an archive tier and the
+	// store's nil object-store guard fails a flush loudly only if one is ever
+	// attempted. Mirrors the DATABASE_DSN flag/env precedence at the CLI.
+	S3 S3Config
 	// Listen, when set, is the TCP address the authenticated network door binds
 	// (e.g. "0.0.0.0:8443"). Empty on the socket-only shipped path. When set, TLS
 	// is required — a bearer token over cleartext is credential disclosure.
@@ -100,6 +109,27 @@ func secretsStateDir(cfg ServeConfig) string {
 		}
 	}
 	return filepath.Join(base, "secrets")
+}
+
+// openStore opens the store of record and wires the SEA-1667 T4 object-store
+// archive seam onto it. When the S3 config is ABSENT (no endpoint/bucket) the
+// seam is left nil and the server boots socket-only — the store's nil-guard
+// fails a flush loudly only if one is ever attempted, so a dev server with no
+// archive configured still starts. A present-but-invalid S3 config fails here.
+func openStore(ctx context.Context, cfg ServeConfig) (*store.Store, error) {
+	st, err := store.Open(ctx, cfg.DatabaseDSN)
+	if err != nil {
+		return nil, fmt.Errorf("opening store: %w", err)
+	}
+	if cfg.S3.Endpoint != "" && cfg.S3.Bucket != "" {
+		objStore, err := store.NewS3ObjectStore(cfg.S3)
+		if err != nil {
+			st.Close()
+			return nil, fmt.Errorf("constructing s3 object store: %w", err)
+		}
+		st.SetObjectStore(objStore)
+	}
+	return st, nil
 }
 
 // Serve binds the compass.v1 service to cfg.SocketPath and drives it until ctx
@@ -181,14 +211,15 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	defer bus.Close()
 	publishReady(bus)
 
-	// The store of record (T1) backs the comms vertical and the token store. Open
-	// it before serving so a bad DSN or a failed migration fails startup here, not
+	// The store of record (T1) backs the comms vertical and the token store, and
+	// carries the SEA-1667 T4 object-store archive seam. Open it before serving so
+	// a bad DSN, a failed migration, or a bad S3 config fails startup here, not
 	// mid-request.
-	st, err := store.Open(ctx, cfg.DatabaseDSN)
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
 		listeners.close()
-		return fmt.Errorf("opening store: %w", err)
+		return err
 	}
 	defer st.Close()
 
@@ -244,7 +275,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// One logger for the hub's per-frame diagnostics and for the frame-loss
 	// summary the drain logs, so both land on the same sink.
 	hubLog := slog.Default()
-	hub := newRunnerHub(brd, tail, commsSvc, hubLog)
+	hub := newRunnerHub(st, brd, tail, commsSvc, hubLog)
 	svc := newService(cfg.Version, bus, st, hub, brd, tail)
 	// SEA-1618 T5: lifecycleService serves RelayLifecycleCall; setter breaks the hub<->service cycle (sinks.go).
 	hub.SetLifecycleCaller(newLifecycleService(st, hub))

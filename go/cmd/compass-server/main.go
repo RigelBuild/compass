@@ -61,6 +61,21 @@ func run() error {
 	databaseFlag := flag.String("database", "",
 		"Postgres DSN for the store of record (e.g. postgres://user:pass@host/compass). "+
 			"Defaults to $COMPASS_DATABASE_DSN.")
+	s3EndpointFlag := flag.String("s3-endpoint", "",
+		"S3-compatible object-store endpoint host[:port] (no scheme) for the "+
+			"transcript archive tier (Garage/R2/MinIO/AWS). Defaults to "+
+			"$COMPASS_S3_ENDPOINT. Absent = no archive tier (dev server still boots).")
+	s3BucketFlag := flag.String("s3-bucket", "",
+		"Bucket archive segments are written under. Defaults to $COMPASS_S3_BUCKET.")
+	s3AccessKeyFlag := flag.String("s3-access-key", "",
+		"S3 access key. Defaults to $COMPASS_S3_ACCESS_KEY.")
+	s3SecretKeyFlag := flag.String("s3-secret-key", "",
+		"S3 secret key. Defaults to $COMPASS_S3_SECRET_KEY.")
+	s3RegionFlag := flag.String("s3-region", "",
+		"S3 region (e.g. us-east-1, or \"garage\" for Garage). Defaults to $COMPASS_S3_REGION.")
+	s3UseTLSFlag := flag.Bool("s3-use-tls", false,
+		"Use https to the S3 endpoint. Defaults to $COMPASS_S3_USE_TLS "+
+			"(\"1\"/\"true\"/\"yes\"/\"on\" = on).")
 	showVersion := flag.Bool("version", false, "Print the version and exit.")
 	flag.Parse()
 
@@ -109,6 +124,19 @@ func run() error {
 		return errors.New("a Postgres DSN is required: pass --database or set $COMPASS_DATABASE_DSN")
 	}
 
+	// S3 archive tier: each flag falls back to its $COMPASS_S3_* env, mirroring
+	// the DATABASE_DSN precedence. All-optional: an absent endpoint/bucket leaves
+	// the archive tier unconfigured and the server boots socket-only (the store's
+	// nil object-store guard fails a flush loudly only if one is ever attempted).
+	s3Config := server.S3Config{
+		Endpoint:  firstNonEmpty(*s3EndpointFlag, os.Getenv("COMPASS_S3_ENDPOINT")),
+		Bucket:    firstNonEmpty(*s3BucketFlag, os.Getenv("COMPASS_S3_BUCKET")),
+		AccessKey: firstNonEmpty(*s3AccessKeyFlag, os.Getenv("COMPASS_S3_ACCESS_KEY")),
+		SecretKey: firstNonEmpty(*s3SecretKeyFlag, os.Getenv("COMPASS_S3_SECRET_KEY")),
+		Region:    firstNonEmpty(*s3RegionFlag, os.Getenv("COMPASS_S3_REGION")),
+		UseTLS:    *s3UseTLSFlag || envTrue(os.Getenv("COMPASS_S3_USE_TLS")),
+	}
+
 	slog.Info("compass-server starting",
 		"version", version,
 		"api", apiVersion,
@@ -140,6 +168,7 @@ func run() error {
 		Listen:      listen,
 		TLS:         tlsConfig,
 		DatabaseDSN: databaseDSN,
+		S3:          s3Config,
 	})
 }
 
@@ -179,5 +208,24 @@ func resolveNetworkDoor(listen, tlsCert, tlsKey string) (string, *server.TLSConf
 			"the network door needs --listen, --tls-cert, and --tls-key together "+
 				"(missing %s); pass all three to enable it or none for the "+
 				"socket-only default", strings.Join(missing, ", "))
+	}
+}
+
+// firstNonEmpty returns a if it is non-empty, else b — the flag-then-env
+// precedence used across the server config.
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// envTrue reports whether an env value is a truthy toggle ("1"/"true", any case).
+func envTrue(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }

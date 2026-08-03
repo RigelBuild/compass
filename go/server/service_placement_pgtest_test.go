@@ -112,7 +112,7 @@ func newPlacementFixtureWith(t *testing.T, withholdStop bool) placementFixture {
 	t.Cleanup(bus.Close)
 	brd := board.NewProjection(bus)
 	tail := newSessionTail()
-	hub := newRunnerHub(brd, tail, nil, slog.New(slog.DiscardHandler))
+	hub := newRunnerHub(st, brd, tail, nil, slog.New(slog.DiscardHandler))
 	svc := newService("test", bus, st, hub, brd, tail)
 
 	return placementFixture{
