@@ -410,13 +410,21 @@ func TestRespondToAskIsChannelScopedAcrossTopics(t *testing.T) {
 	}
 
 	// answerer establishes presence ONLY in topic B — never in the ask's topic A.
-	s := "in topic B"
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: answerer.ID, Blocks: []store.MessageBlock{{Text: &s}}}, string(ch.ID), store.TopicRef{Name: "topic-b"}, ""); err != nil {
+	topicBText := "in topic B"
+	bMsg, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: answerer.ID, Blocks: []store.MessageBlock{{Text: &topicBText}}}, string(ch.ID), store.TopicRef{Name: "topic-b"}, "")
+	if err != nil {
 		t.Fatalf("AppendMessage(topic-b): %v", err)
 	}
 	// asker posts the ask into topic A.
-	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: asker.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "topic-a"}, ""); err != nil {
+	aMsg, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: asker.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "topic-a"}, "")
+	if err != nil {
 		t.Fatalf("AppendMessage(topic-a): %v", err)
+	}
+	// The whole cross-topic contract rests on these being two DISTINCT topics; if
+	// get-or-create ever collapsed them the answerer's message would sit in the
+	// ask's own topic and the test would pass for the wrong reason. Lock it.
+	if aMsg.TopicID == bMsg.TopicID {
+		t.Fatalf("topic-a and topic-b resolved to the same topic %q; the cross-topic contract needs two distinct topics", aMsg.TopicID)
 	}
 
 	// Positive (the T6 contract): answerer, only ever in topic B, answers the
