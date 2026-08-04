@@ -389,6 +389,90 @@ func TestRespondToAskSecondAnswerRecordsNoSecondWake(t *testing.T) {
 	}
 }
 
+// SEA-1707 T6/D6: an ask is carried by a message, a message lives in a topic, so
+// an ask is visible in its topic yet answerable channel-wide (first-responder-
+// wins). Topic scoping changes WHERE the ask renders, not WHO may answer it.
+// This locks channel-scoped (not topic-scoped) answerability: the answerer has
+// only posted in topic B yet answers an ask in topic A. Reddening mutation:
+// route AnswerAsk's membership JOIN to also require the actor to have a message
+// in the ask's own topic → the positive (answerer only in topic B) reddens. The
+// outsider control shows the boundary is the CHANNEL, not the topic.
+func TestRespondToAskIsChannelScopedAcrossTopics(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+
+	asker := mustUser(t, st, "asker")
+	answerer := mustUser(t, st, "answerer")
+
+	ch, err := st.CreateChannel(ctx, asker.ID, store.NewChannel{Name: "room", Kind: store.ChannelKindChannel, MemberAccountIDs: []store.AccountID{answerer.ID}})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+
+	// answerer establishes presence ONLY in topic B — never in the ask's topic A.
+	s := "in topic B"
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: answerer.ID, Blocks: []store.MessageBlock{{Text: &s}}}, string(ch.ID), store.TopicRef{Name: "topic-b"}, ""); err != nil {
+		t.Fatalf("AppendMessage(topic-b): %v", err)
+	}
+	// asker posts the ask into topic A.
+	if _, _, err := st.AppendMessage(ctx, store.Message{AuthorAccountID: asker.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-1")}}, string(ch.ID), store.TopicRef{Name: "topic-a"}, ""); err != nil {
+		t.Fatalf("AppendMessage(topic-a): %v", err)
+	}
+
+	// Positive (the T6 contract): answerer, only ever in topic B, answers the
+	// ask in topic A and SUCCEEDS.
+	if _, err := svc.RespondToAsk(WithActor(ctx, answerer.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+		AskId:   "ask-1",
+		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
+	})); err != nil {
+		t.Fatalf("a channel member who has only read topic B cannot answer an ask in topic A: %v (D6: answerable channel-wide, not topic-scoped)", err)
+	}
+
+	// Durability: re-read off the wire and assert the ask records the answer, so
+	// the positive can't pass vacuously.
+	list, err := svc.ListMessages(WithActor(ctx, asker.ID), connect.NewRequest(&compassv1.ListMessagesRequest{
+		Container: &compassv1.ListMessagesRequest_ChannelId{ChannelId: string(ch.ID)},
+	}))
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	var chosen []string
+	var answered bool
+	found := false
+	for _, m := range list.Msg.GetMessages() {
+		for _, b := range m.GetBlocks() {
+			if a := b.GetAsk(); a != nil && a.GetAskId() == "ask-1" {
+				found = true
+				answered = a.GetAnswered()
+				for _, q := range a.GetQuestions() {
+					if q.GetQuestionId() == "q1" {
+						chosen = q.GetChosenOptionIds()
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("ask-1 not found on the wire after the answer")
+	}
+	if !answered {
+		t.Fatal("ask-1 reads answered=false after a successful cross-topic answer, want true")
+	}
+	if len(chosen) != 1 || chosen[0] != "opt-a" {
+		t.Fatalf("ask-1 chosen = %v, want [opt-a]", chosen)
+	}
+
+	// Negative control, in the same multi-topic channel: an outsider (no
+	// membership, no topic) is refused with the D9 not-found collapse — the
+	// boundary is the CHANNEL, not the topic.
+	outsider := mustUser(t, st, "outsider")
+	_, err = svc.RespondToAsk(WithActor(ctx, outsider.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
+		AskId:   "ask-1",
+		Answers: []*compassv1.AskQuestionAnswer{{QuestionId: "q1", ChosenOptionIds: []string{"opt-a"}}},
+	}))
+	connectCodeIs(t, err, connect.CodeNotFound, "outsider (no membership, no topic) cannot answer")
+}
+
 // SEA-1577: a store error (a non-member answering, collapsing to NotFound; a
 // nonexistent ask) records NO wake — the wake is after the err short-circuit.
 func TestRespondToAskStoreErrorRecordsNoWake(t *testing.T) {
