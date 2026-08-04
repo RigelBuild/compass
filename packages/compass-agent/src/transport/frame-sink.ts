@@ -9,11 +9,11 @@
 //     terminal STOPPED) is a PRIORITY frame the spine never drops and flushes
 //     ahead of the trace backlog; a trace-only frame (state UNSPECIFIED) rides
 //     the bounded, drop-oldest trace queue.
-//   - a "conversationPosted"/"conversationUpdated" frame is DURABLE: it is sent
-//     on the PostConversationFrame UNARY, awaited, and retried with bounded
-//     backoff until delivered-or-erred, carrying an agent-minted idempotency_key
-//     so a lost-response retry is deduped by the Runner (C2), never duplicated.
-//     It is NEVER dropped on a reconnect.
+//   - a "transcriptEntry" frame is DURABLE (SEA-1570): it is sent on the
+//     PostConversationFrame UNARY via emitDurable(), awaited, and retried with
+//     bounded backoff until delivered-or-erred, carrying an agent-minted
+//     idempotency_key so a lost-response retry is deduped by the Runner (C2),
+//     never duplicated. It is NEVER dropped on a reconnect.
 //   - a "deliveryAck" frame is a control-plane ack (SEA-1310 §8): it rides the
 //     Publish spine's never-drop PRIORITY lane, ahead of the trace backlog. It
 //     is NOT durable — the Runner's isConversationFrame guard REJECTS an ack on
@@ -21,10 +21,10 @@
 //     PublishEvents spine to advance the delivery cursor. Control-plane acks are
 //     never-drop by the spine contract, so it always enqueuePriority.
 //
-// emit() stays synchronous/void (CompassAgent's shape is unchanged): a durable
-// send is launched as a tracked in-flight promise, retained behind drain() the
-// teardown path awaits (bounded by the shutdown deadline), so shutdown cannot
-// abandon an uncommitted conversation frame.
+// emit() stays synchronous/void (CompassAgent's shape is unchanged): the durable
+// transcript send (emitDurable) is launched as a tracked in-flight promise,
+// retained behind drain() the teardown path awaits (bounded by the shutdown
+// deadline), so shutdown cannot abandon an uncommitted transcript frame.
 
 import { randomUUID } from "node:crypto";
 import { create } from "@bufbuild/protobuf";
@@ -81,7 +81,7 @@ function isLifecycle(frame: OutboundFrame): boolean {
 export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	const spine = transport.publishSpine();
 	// In-flight durable sends, retained so drain() awaits every uncommitted
-	// conversation frame. Each entry removes itself on settle.
+	// transcript frame. Each entry removes itself on settle.
 	const inflight = new Set<Promise<void>>();
 	// Per-sink random nonce + monotonic counter feed the idempotency key. The key
 	// must be STABLE across retries of one logical frame (one key minted per
@@ -100,8 +100,8 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	// bounded backoff schedule. The idempotency key is minted ONCE and reused
 	// across retries so the Runner dedups a lost-response retry. On retry-cap
 	// exhaustion this REJECTS with the last error — the definitive give-up
-	// signal. `emit()` swallows that reject (loss-tolerable conversation/session
-	// telemetry, unchanged); `emitDurable()` propagates it so the transcript tee
+	// signal. `emit()` swallows that reject (loss-tolerable session telemetry,
+	// unchanged); `emitDurable()` propagates it so the transcript tee
 	// backend can buffer/retry/fatal (SEA-1570 R4).
 	async function sendDurable(req: OutboundFrame): Promise<void> {
 		const idempotencyKey = `${nonce}-${seq++}`;
@@ -178,11 +178,8 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 				spine.enqueuePriority(request);
 				return;
 			}
-			// Durable conversation frame: launch the tracked, retried send. emit()
-			// stays void + silent-give-up — the retained promise SWALLOWS the
-			// definitive-error reject (loss-tolerable telemetry; the give-up is the
-			// Runner's problem via gap-detection, never an unhandled rejection).
-			launchDurable(frame, () => {});
+			// No other kind rides emit(): `transcriptEntry` (the surviving durable
+			// rider) is sent via emitDurable(), never here.
 		},
 
 		emitDurable(frame: OutboundFrame): Promise<void> {
@@ -190,15 +187,15 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 			// emit(), but the definitive-error reject PROPAGATES to the caller so the
 			// tee backend can buffer/retry/fatal (R4). The backend awaits this inside
 			// the per-path storage op, so per-session emit order == send order.
-			// `session` frames never reach here (transcript rides the durable unary
-			// by fallthrough, exactly like conversation).
+			// `session` frames never reach here (transcript is the only durable
+			// rider on this lane).
 			const { promise, resolve, reject } = Promise.withResolvers<void>();
 			launchDurable(frame, (err) => reject(err)).then(resolve, () => {});
 			return promise;
 		},
 
 		async drain(): Promise<void> {
-			// Await every in-flight durable commit first, so no conversation frame is
+			// Await every in-flight durable commit first, so no transcript frame is
 			// abandoned uncommitted. New durable sends are not expected during
 			// teardown, but a snapshot-and-await loop covers any launched by a late
 			// emit before the caller stops feeding the sink.
