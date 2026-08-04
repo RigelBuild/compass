@@ -213,6 +213,13 @@ message ConfigControl {}
 message DeliverControl {
   // The message to deliver into the session.
   Message message = 1;
+  // The name of the message's topic, denormalized onto the deliver op so the
+  // agent's turn-end coalescing queue can group held deliveries per topic
+  // ("3 messages in 'retry policy'") without a topic lookup per delivery
+  // (compass-zulip-threading-model design.md D3/T3). The topic *id* is already
+  // carried transitively by `message.topic_id`; only the name is denormalized
+  // here.
+  string topic_name = 2;
 }
 
 // DeliveryAck — the agent's per-message delivery receipt (SEA-1569), an

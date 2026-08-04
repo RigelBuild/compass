@@ -843,7 +843,14 @@ func (*ConfigControl) Descriptor() ([]byte, []int) {
 type DeliverControl struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The message to deliver into the session.
-	Message       *v1.Message `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	Message *v1.Message `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// The name of the message's topic, denormalized onto the deliver op so the
+	// agent's turn-end coalescing queue can group held deliveries per topic
+	// ("3 messages in 'retry policy'") without a topic lookup per delivery
+	// (compass-zulip-threading-model design.md D3/T3). The topic *id* is already
+	// carried transitively by `message.topic_id`; only the name is denormalized
+	// here.
+	TopicName     string `protobuf:"bytes,2,opt,name=topic_name,json=topicName,proto3" json:"topic_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -883,6 +890,13 @@ func (x *DeliverControl) GetMessage() *v1.Message {
 		return x.Message
 	}
 	return nil
+}
+
+func (x *DeliverControl) GetTopicName() string {
+	if x != nil {
+		return x.TopicName
+	}
+	return ""
 }
 
 // DeliveryAck — the agent's per-message delivery receipt (SEA-1569), an
@@ -1077,9 +1091,11 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\fSteerControl\x12-\n" +
 	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\"\x12\n" +
 	"\x10TranscriptReplay\"\x0f\n" +
-	"\rConfigControl\"?\n" +
+	"\rConfigControl\"^\n" +
 	"\x0eDeliverControl\x12-\n" +
-	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\",\n" +
+	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\x12\x1d\n" +
+	"\n" +
+	"topic_name\x18\x02 \x01(\tR\ttopicName\",\n" +
 	"\vDeliveryAck\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\"\x13\n" +
