@@ -6,7 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -23,9 +25,10 @@ import (
 // local door, short enough that a wedged connection fails visibly.
 const rpcTimeout = 60 * time.Second
 
-// bearerToken stamps the admin bearer credential on every outbound unary RPC so
-// the Server door authenticates it. The CLI is unary-only, so streaming wraps
-// are pass-through (mirrors internal/runner/runner.go:71-94).
+// bearerToken stamps the admin bearer credential on every outbound RPC (unary
+// and streaming) so the Server door authenticates it (mirrors
+// internal/runner/runner.go:71-94). Streaming is stamped too so a future
+// streaming operator RPC cannot silently go out unauthenticated.
 type bearerToken struct {
 	token string
 }
@@ -38,7 +41,11 @@ func (b *bearerToken) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
 }
 
 func (b *bearerToken) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
+	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
+		conn := next(ctx, spec)
+		conn.RequestHeader().Set("Authorization", "Bearer "+b.token)
+		return conn
+	}
 }
 
 func (b *bearerToken) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
@@ -77,6 +84,9 @@ func resolveConn(cmd *cobra.Command) (connConfig, error) {
 		return connConfig{}, errors.New(
 			"a server address is required: pass --server-addr, set $COMPASS_SERVER_ADDR, or supply it in --config")
 	}
+	if err := checkServerAddrScheme(addr); err != nil {
+		return connConfig{}, err
+	}
 
 	ca := layered(cmd, "ca", "COMPASS_ADMIN_CA", file)
 
@@ -85,6 +95,41 @@ func resolveConn(cmd *cobra.Command) (connConfig, error) {
 		return connConfig{}, err
 	}
 	return connConfig{serverAddr: addr, token: token, caPath: ca}, nil
+}
+
+// checkServerAddrScheme rejects a remote http:// server address so the admin
+// bearer token the interceptor stamps on every call is never sent in cleartext.
+// http is allowed only for a loopback host (localhost, 127.0.0.1, [::1]) so the
+// local dogfood door still works; any other host must be https://.
+func checkServerAddrScheme(addr string) error {
+	u, err := url.Parse(addr)
+	if err != nil {
+		return fmt.Errorf("parsing server address %q: %w", addr, err)
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" && isLoopbackHost(u.Hostname()) {
+		return nil
+	}
+	return fmt.Errorf(
+		"server address %q must be https:// so the admin token is not sent in cleartext (http is allowed only for localhost)",
+		addr)
+}
+
+// isLoopbackHost reports whether host is a loopback name/address for which
+// cleartext http is acceptable (the local dogfood door). It accepts the name
+// "localhost" case-insensitively and any loopback IP (127.0.0.0/8, ::1, and
+// their equivalent forms) via net.ParseIP; a non-loopback host is never treated
+// as loopback, so a suffix spoof like 127.0.0.1.evil.com cannot bypass it.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // layered resolves a non-secret connection value with the ratified precedence:

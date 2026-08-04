@@ -28,6 +28,20 @@ const (
 	topDirMCP        = "mcp"
 )
 
+// maxBundleFileCount and maxBundleContentBytes are a fail-fast client-side check
+// so a too-large bundle is rejected here with a named cap rather than as an
+// opaque server InvalidArgument. The file-count cap equals the store door's
+// maxFileCount (internal/store/agent_config.go). The byte cap is an APPROXIMATE
+// lower-bound on the door's maxDecompressedBytes: the client sums member file
+// content only, while the door bounds the whole decompressed tar stream
+// (content + 512-byte headers + block padding + trailer), so a bundle just
+// under this cap can still be rejected at the door. The door is authoritative;
+// this check only shortens the common failure path.
+const (
+	maxBundleFileCount          = 4096
+	maxBundleContentBytes int64 = 64 << 20 // 64 MiB
+)
+
 // bundleTopDirs is the whitelisted set of top-level directories a member may
 // live under (store door: configBundleTopDirs).
 var bundleTopDirs = map[string]bool{
@@ -52,6 +66,8 @@ func buildBundle(dir string) ([]byte, error) {
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 
+	var fileCount int
+	var contentBytes int64
 	root := filepath.Clean(dir)
 	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -75,10 +91,22 @@ func buildBundle(dir string) ([]byte, error) {
 		if !d.Type().IsRegular() {
 			return fmt.Errorf("bundle member %q is not a regular file; only regular files and directories are allowed", name)
 		}
-		return addRegularMember(tw, root, name)
+		n, err := addRegularMember(tw, root, name)
+		if err != nil {
+			return err
+		}
+		fileCount++
+		contentBytes += n
+		if err := checkBundleCaps(fileCount, contentBytes); err != nil {
+			return err
+		}
+		return nil
 	})
 	if walkErr != nil {
 		return nil, walkErr
+	}
+	if fileCount == 0 {
+		return nil, fmt.Errorf("bundle directory %q contains no skills/, extensions/, or mcp/ members; use `agent-config delete` to clear the fleet config", dir)
 	}
 	if err := tw.Close(); err != nil {
 		return nil, fmt.Errorf("finalizing tar: %w", err)
@@ -87,6 +115,20 @@ func buildBundle(dir string) ([]byte, error) {
 		return nil, fmt.Errorf("finalizing gzip: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// checkBundleCaps enforces the client-side file-count and content-byte caps
+// that mirror the store door (maxBundleFileCount, maxBundleContentBytes),
+// naming the exceeded cap. Extracted so a test can drive the cap boundary
+// directly rather than materialize a door-sized bundle on disk.
+func checkBundleCaps(fileCount int, contentBytes int64) error {
+	if fileCount > maxBundleFileCount {
+		return fmt.Errorf("bundle exceeds the %d-file limit", maxBundleFileCount)
+	}
+	if contentBytes > maxBundleContentBytes {
+		return fmt.Errorf("bundle exceeds the %d-byte content limit", maxBundleContentBytes)
+	}
+	return nil
 }
 
 // validateDirMember checks a directory member's top dir is whitelisted and, for
@@ -105,41 +147,43 @@ func validateDirMember(name string) error {
 }
 
 // addRegularMember validates a regular file against the door grammar and writes
-// it to the tar with a clean relative header name. mcp/ members must be exactly
-// mcp/<name>.json with a grammar-valid <name> and valid JSON content; skills/
-// and extensions/ members must carry a grammar-valid <name> second component.
-func addRegularMember(tw *tar.Writer, root, name string) error {
+// it to the tar with a clean relative header name, returning the member's
+// content byte count so the caller can enforce the cumulative size cap. mcp/
+// members must be exactly mcp/<name>.json with a grammar-valid <name> and valid
+// JSON content; skills/ and extensions/ members must carry a grammar-valid
+// <name> second component.
+func addRegularMember(tw *tar.Writer, root, name string) (int64, error) {
 	parts := strings.Split(name, "/")
 	if !bundleTopDirs[parts[0]] {
-		return fmt.Errorf("bundle member %q is not under skills/, extensions/, or mcp/", name)
+		return 0, fmt.Errorf("bundle member %q is not under skills/, extensions/, or mcp/", name)
 	}
 
 	content, err := readMember(root, name)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	switch parts[0] {
 	case topDirMCP:
 		if len(parts) != 2 {
-			return fmt.Errorf("mcp member %q must be mcp/<name>.json", name)
+			return 0, fmt.Errorf("mcp member %q must be mcp/<name>.json", name)
 		}
 		base, ok := strings.CutSuffix(parts[1], ".json")
 		if !ok {
-			return fmt.Errorf("mcp member %q must be a .json file", name)
+			return 0, fmt.Errorf("mcp member %q must be a .json file", name)
 		}
 		if !bundleNamePattern.MatchString(base) {
-			return fmt.Errorf("mcp member name %q must match %s", base, bundleNamePattern.String())
+			return 0, fmt.Errorf("mcp member name %q must match %s", base, bundleNamePattern.String())
 		}
 		if !json.Valid(content) {
-			return fmt.Errorf("mcp member %q is not valid JSON", name)
+			return 0, fmt.Errorf("mcp member %q is not valid JSON", name)
 		}
 	default:
 		if len(parts) < 2 {
-			return fmt.Errorf("bundle member %q must live under %s/<name>", name, parts[0])
+			return 0, fmt.Errorf("bundle member %q must live under %s/<name>", name, parts[0])
 		}
 		if !bundleNamePattern.MatchString(parts[1]) {
-			return fmt.Errorf("bundle member name %q must match %s", parts[1], bundleNamePattern.String())
+			return 0, fmt.Errorf("bundle member name %q must match %s", parts[1], bundleNamePattern.String())
 		}
 	}
 
@@ -150,12 +194,12 @@ func addRegularMember(tw *tar.Writer, root, name string) error {
 		Size:     int64(len(content)),
 	}
 	if err := tw.WriteHeader(hdr); err != nil {
-		return fmt.Errorf("writing tar header for %q: %w", name, err)
+		return 0, fmt.Errorf("writing tar header for %q: %w", name, err)
 	}
 	if _, err := tw.Write(content); err != nil {
-		return fmt.Errorf("writing tar content for %q: %w", name, err)
+		return 0, fmt.Errorf("writing tar content for %q: %w", name, err)
 	}
-	return nil
+	return int64(len(content)), nil
 }
 
 // readMember reads a member file's content from disk. root+name is rejoined

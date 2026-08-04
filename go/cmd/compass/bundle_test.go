@@ -13,6 +13,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
 // writeBundleDir materializes a map of relative-path -> content under a fresh
@@ -33,10 +35,12 @@ func writeBundleDir(t *testing.T, files map[string]string) string {
 }
 
 // TestBuildBundleValidDir asserts a well-formed dir produces a tarball whose
-// members carry exactly the expected clean relative paths, and — the real
-// contract — that the store door (the same validator PutAgentConfig runs) accepts
-// it. We assert against the door, not a hand-rolled grammar, so the builder and
-// the door can never drift.
+// members carry exactly the expected clean relative paths, and that the tar
+// obeys the grammar invariants. Note: assertBundleGrammar here asserts a
+// PARALLEL copy of the door's invariants (regular-file typeflag, clean relative
+// path, whitelisted top dir), not the door itself — it can drift from the real
+// door. TestBuildBundleDoorParity is the real door-parity check: it feeds the
+// built bytes through store.ValidateConfigBundle.
 func TestBuildBundleValidDir(t *testing.T) {
 	root := writeBundleDir(t, map[string]string{
 		"skills/alpha/SKILL.md":     "# alpha",
@@ -65,9 +69,9 @@ func TestBuildBundleValidDir(t *testing.T) {
 	}
 
 	// Structurally assert every written member is a regular file with a clean,
-	// relative, whitelisted path — the grammar the store door enforces. (The door
-	// validator lives in an internal package we do not import here; we assert the
-	// same invariants the door checks against the tar we produced.)
+	// relative, whitelisted path. This is a PARALLEL hand-rolled copy of the
+	// door's structural invariants, not the door validator itself; see
+	// TestBuildBundleDoorParity for the real door check.
 	assertBundleGrammar(t, bundle)
 }
 
@@ -154,5 +158,80 @@ func assertBundleGrammar(t *testing.T, bundle []byte) {
 		if !tops[parts[0]] {
 			t.Errorf("member %q top dir %q is not whitelisted", hdr.Name, parts[0])
 		}
+	}
+}
+
+// TestBuildBundleEmpty asserts a dir with no regular-file members (empty, or
+// only empty subdirs under a valid top dir) is a hard error, not a silently
+// valid empty bundle that would replace the fleet config — `agent-config
+// delete` is the sanctioned clear path.
+func TestBuildBundleEmpty(t *testing.T) {
+	t.Run("empty dir", func(t *testing.T) {
+		root := t.TempDir()
+		_, err := buildBundle(root)
+		if err == nil {
+			t.Fatal("buildBundle(empty dir) = nil error, want rejection")
+		}
+		if !strings.Contains(err.Error(), "contains no skills/, extensions/, or mcp/ members") {
+			t.Errorf("buildBundle(empty) error %q does not name the no-members condition", err)
+		}
+	})
+
+	t.Run("only empty subdir", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "skills", "alpha"), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		_, err := buildBundle(root)
+		if err == nil {
+			t.Fatal("buildBundle(only empty subdir) = nil error, want rejection")
+		}
+		if !strings.Contains(err.Error(), "contains no skills/, extensions/, or mcp/ members") {
+			t.Errorf("buildBundle(empty subdir) error %q does not name the no-members condition", err)
+		}
+	})
+}
+
+// TestBundleCaps asserts the client-side caps fire when the file-count or
+// content-byte limit is crossed, each naming its cap. The caps mirror the store
+// door and hitting 4096 files or 64 MiB on disk in a test is wasteful, so the
+// pure cap check is driven directly at its boundary.
+func TestBundleCaps(t *testing.T) {
+	if err := checkBundleCaps(maxBundleFileCount, 0); err != nil {
+		t.Errorf("checkBundleCaps at file limit = %v, want nil", err)
+	}
+	if err := checkBundleCaps(maxBundleFileCount+1, 0); err == nil {
+		t.Error("checkBundleCaps over file limit = nil error, want rejection")
+	} else if !strings.Contains(err.Error(), "file limit") {
+		t.Errorf("file-cap error %q does not name the file limit", err)
+	}
+	if err := checkBundleCaps(1, maxBundleContentBytes+1); err == nil {
+		t.Error("checkBundleCaps over byte limit = nil error, want rejection")
+	} else if !strings.Contains(err.Error(), "content limit") {
+		t.Errorf("byte-cap error %q does not name the content limit", err)
+	}
+}
+
+// TestBuildBundleDoorParity is the REAL door-parity check: it builds a valid
+// bundle and feeds the bytes through the exported store door validator
+// (store.ValidateConfigBundle, the pure check PutAgentConfig runs), so any drift
+// between the builder's output and the door's grammar is caught here.
+func TestBuildBundleDoorParity(t *testing.T) {
+	root := writeBundleDir(t, map[string]string{
+		"skills/alpha/SKILL.md":     "# alpha",
+		"skills/alpha/ref/notes.md": "notes",
+		"extensions/beta/main.go":   "package beta",
+		"mcp/gamma.json":            `{"ok":true}`,
+	})
+	bundle, err := buildBundle(root)
+	if err != nil {
+		t.Fatalf("buildBundle(valid) = %v, want nil", err)
+	}
+	version, err := store.ValidateConfigBundle(bundle)
+	if err != nil {
+		t.Fatalf("store.ValidateConfigBundle(built bundle) = %v, want nil (builder/door drift)", err)
+	}
+	if version == "" {
+		t.Error("store.ValidateConfigBundle returned an empty version, want a content hash")
 	}
 }

@@ -13,6 +13,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
@@ -20,6 +21,33 @@ import (
 
 func TestNoTokenFlag(t *testing.T) {
 	root := newRootCmd()
+
+	// Exact-set guard: the root's persistent flags must be EXACTLY this
+	// known-good set. Any newly-added credential-bearing flag (--admin-token,
+	// --bearer, --token) at the root trips this — the bearer token must never
+	// be a flag (it would leak into the process table).
+	wantFlags := map[string]bool{
+		"server-addr": true,
+		"ca":          true,
+		"token-file":  true,
+		"config":      true,
+	}
+	got := map[string]bool{}
+	root.PersistentFlags().VisitAll(func(f *pflag.Flag) {
+		got[f.Name] = true
+	})
+	for name := range got {
+		if !wantFlags[name] {
+			t.Errorf("root registers unexpected persistent flag %q; a credential-bearing flag must never be added", name)
+		}
+	}
+	for name := range wantFlags {
+		if !got[name] {
+			t.Errorf("root is missing expected persistent flag %q", name)
+		}
+	}
+
+	// Belt and suspenders: no command anywhere in the tree names a --token flag.
 	check := func(name string, has bool) {
 		if has {
 			t.Errorf("command %q registers a --token flag; the bearer token must never be a flag", name)
@@ -129,6 +157,50 @@ func TestServerAddrPrecedence(t *testing.T) {
 			t.Fatal("resolveConn with no addr = nil error, want a rejection")
 		}
 	})
+}
+
+// TestServerAddrScheme asserts resolveConn rejects a remote http:// address (so
+// the admin bearer token is never sent in cleartext), accepts https://, and
+// allows http:// only for a loopback host (the local dogfood door).
+func TestServerAddrScheme(t *testing.T) {
+	t.Setenv("COMPASS_ADMIN_TOKEN", "tok") // so token resolution never blocks addr resolution
+
+	cases := []struct {
+		name    string
+		addr    string
+		wantErr bool
+	}{
+		{"remote http rejected", "http://server.example:443", true},
+		{"https accepted", "https://server.example:443", false},
+		{"http localhost accepted", "http://localhost:8080", false},
+		{"http 127.0.0.1 accepted", "http://127.0.0.1:8080", false},
+		{"http ipv6 loopback accepted", "http://[::1]:8080", false},
+		{"http loopback with userinfo accepted", "http://u:p@127.0.0.1:8080", false},
+		{"uppercase scheme remote rejected", "HTTP://server.example:443", true},
+		{"loopback suffix spoof rejected", "http://127.0.0.1.evil.com:8080", true},
+		{"localhost suffix spoof rejected", "http://localhost.evil:8080", true},
+		{"userinfo host spoof rejected", "http://127.0.0.1@evil.com:8080", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("COMPASS_SERVER_ADDR", tc.addr)
+			cmd := newShowCmd()
+			mountPersistent(cmd)
+			_, err := resolveConn(cmd)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveConn(%q) = nil error, want a cleartext-token rejection", tc.addr)
+				}
+				if !strings.Contains(err.Error(), "cleartext") {
+					t.Errorf("resolveConn(%q) error %q does not name the cleartext risk", tc.addr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveConn(%q) = %v, want nil", tc.addr, err)
+			}
+		})
+	}
 }
 
 // TestTokenResolution asserts the env token wins, the file is the fallback, and
