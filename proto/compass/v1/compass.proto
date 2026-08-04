@@ -16,6 +16,16 @@ service CompassService {
   // round-trip a UI makes after connecting over the local transport.
   rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
 
+  // Return the caller's own account id, resolved server-side from the
+  // authenticated credential — the socket's ambient-admin identity for an
+  // embedded client, the bearer subject for a native client. A UI calls it at
+  // boot to learn who it is connected as; the caller's display fields
+  // (handle/display_name/kind) are resolved separately from the comms account
+  // roster keyed by this id, so they are deliberately not echoed here.
+  // authenticatedOpen: any authenticated caller may learn its OWN identity
+  // (not admin-gated). account_id is server-derived, never client-supplied.
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
+
   // The event channel: board, agent, and audit updates as a server stream
   // (compass.md §7.2). Each response carries a server-assigned monotonic `seq`;
   // reconnect with `since_seq` for a gap-free resubscribe. The sole push path
@@ -177,6 +187,14 @@ message GetServerInfoResponse {
   string version = 1;
   // The contract version this server serves, e.g. "compass.v1".
   string api_version = 2;
+}
+
+message WhoAmIRequest {}
+
+message WhoAmIResponse {
+  // The caller's account id, derived server-side from the authenticated
+  // credential — never a client-supplied field.
+  string account_id = 1;
 }
 
 // Subscribe to the server event stream.
