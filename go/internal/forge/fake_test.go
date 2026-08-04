@@ -10,6 +10,7 @@ package forge
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 )
 
@@ -124,5 +125,40 @@ func TestFakeScriptedUnsupported(t *testing.T) {
 	_, err := f.CreatePullRequest(ctx, "org/repo", CreatePR{Title: "t"})
 	if !errors.Is(err, ErrUnsupported) {
 		t.Errorf("err = %v, want ErrUnsupported recoverable via errors.Is", err)
+	}
+}
+
+// TestFakeConcurrentUse exercises the "safe for concurrent use" contract: many
+// goroutines drive record-mutating methods while others read Calls() and mutate
+// SetError(). It relies on `go test -race` to catch an unsynchronized access;
+// the deterministic assertion is that the final call count equals the exact
+// number of record-driving invocations (each worker drives 4).
+func TestFakeConcurrentUse(t *testing.T) {
+	ctx := context.Background() // test root — sanctioned exemption to F-ttsr.
+	f := NewFakeProvider("test-forge")
+
+	const workers = 50
+	const drivesPerWorker = 4
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := range workers {
+		go func(i uint64) {
+			defer wg.Done()
+			// Four record-driving calls, interleaved with reads and error
+			// scripting to exercise every lock path concurrently.
+			_, _ = f.CreateIssue(ctx, "org/repo", CreateIssue{Title: "t"})
+			_ = f.Calls()
+			_, _ = f.CommentOnIssue(ctx, "org/repo", i, "hi")
+			f.SetError("GetIssue", nil)
+			_, _ = f.GetPullRequest(ctx, "org/repo", i)
+			_ = f.Calls()
+			_, _ = f.Checks(ctx, "org/repo", i)
+		}(uint64(i))
+	}
+	wg.Wait()
+
+	if got := len(f.Calls()); got != workers*drivesPerWorker {
+		t.Errorf("recorded %d calls, want %d", got, workers*drivesPerWorker)
 	}
 }

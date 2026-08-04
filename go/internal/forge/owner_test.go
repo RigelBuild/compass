@@ -304,6 +304,53 @@ func TestOwnerSentinelSingleChokepoint(t *testing.T) {
 	}
 }
 
+// 12. CRLF round trip: a forge that normalizes bodies to CRLF must still be
+// fully stripped. The load-bearing assertion is that the 'clean' body handed to
+// the model contains NO residual attribution scaffold (🧭, sentinel, or rule).
+func TestStripOwnerCRLFRoundTrip(t *testing.T) {
+	stamped := mustStamp(t, goldenBody, goldenAuthor)
+	crlf := strings.ReplaceAll(stamped, "\n", "\r\n")
+
+	clean, author, ok := StripOwner(crlf)
+	if !ok {
+		t.Fatalf("StripOwner(CRLF) ok = false, want true")
+	}
+	if author != goldenAuthor {
+		t.Errorf("author = %+v, want %+v", author, goldenAuthor)
+	}
+	if want := strings.ReplaceAll(goldenBody, "\n", "\r\n"); clean != want {
+		t.Errorf("clean mismatch\n got: %q\nwant: %q", clean, want)
+	}
+	// Load-bearing: no residual attribution scaffold leaks into the clean body.
+	if strings.Contains(clean, "🧭") {
+		t.Errorf("clean still contains the 🧭 attribution line: %q", clean)
+	}
+	if strings.Contains(clean, "<!-- compass:owner") {
+		t.Errorf("clean still contains the owner sentinel comment: %q", clean)
+	}
+	if strings.Contains(clean, "---") {
+		t.Errorf("clean still contains the '---' rule line: %q", clean)
+	}
+}
+
+// 13. CRLF idempotence: re-stamping a CRLF-stamped body leaves EXACTLY ONE
+// header — no stale accumulated block survives the strip on CRLF line endings.
+func TestStampOwnerCRLFIdempotent(t *testing.T) {
+	stamped := mustStamp(t, goldenBody, goldenAuthor)
+	crlf := strings.ReplaceAll(stamped, "\n", "\r\n")
+
+	got, err := StampOwner(crlf, goldenAuthor, 0)
+	if err != nil {
+		t.Fatalf("StampOwner(CRLF): %v", err)
+	}
+	if n := strings.Count(got, "<!-- compass:owner"); n != 1 {
+		t.Errorf("owner comment count = %d, want 1 (stale block accumulated): %q", n, got)
+	}
+	if n := strings.Count(got, "🧭 Written by"); n != 1 {
+		t.Errorf("attribution line count = %d, want 1 (stale block accumulated): %q", n, got)
+	}
+}
+
 func mustStamp(t *testing.T, body string, a Author) string {
 	t.Helper()
 	out, err := StampOwner(body, a, 0)

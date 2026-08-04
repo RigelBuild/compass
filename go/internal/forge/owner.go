@@ -47,12 +47,16 @@ var commentRe = regexp.MustCompile(`<!-- compass:owner [^\n]*?-->`)
 // fullBlockRe matches the complete stamped scaffold: the comment line, the
 // human-readable attribution line, the blank line, the "---" rule, and the
 // trailing blank line — everything StampOwner prepends before the agent body.
-var fullBlockRe = regexp.MustCompile(`<!-- compass:owner [^\n]*?-->\n🧭 Written by [^\n]*\n\n---\n\n`)
+// The `\r?\n` separators tolerate both LF and CRLF line endings, because forge
+// bodies arrive CRLF (GitHub returns issue/PR bodies with CRLF); an LF-only
+// pattern would miss the block and leak the scaffold into the stripped body.
+var fullBlockRe = regexp.MustCompile(`<!-- compass:owner [^\n]*?-->\r?\n🧭 Written by [^\n]*\r?\n\r?\n---\r?\n\r?\n`)
 
 // bareCommentRe matches a lone owner-header comment (a forged or human-mangled
 // one without the scaffold) plus an immediately following newline, so removing
-// it leaves no dangling blank line.
-var bareCommentRe = regexp.MustCompile(`<!-- compass:owner [^\n]*?-->\n?`)
+// it leaves no dangling blank line. The `\r?\n?` trailer tolerates both LF and
+// CRLF line endings (forge bodies arrive CRLF).
+var bareCommentRe = regexp.MustCompile(`<!-- compass:owner [^\n]*?-->\r?\n?`)
 
 // parseRe extracts the version and the three fields from a single well-formed
 // comment. Fields are captured as non-space runs; a field carrying a space (a
@@ -99,7 +103,10 @@ func removeBlocks(body string) (clean string, count int) {
 // Refuses (returns an error + EMPTY string) rather than escaping when a field
 // violates its grammar. This strip-then-stamp is THE load-bearing security
 // property: an agent cannot forge attribution (last stamp wins, only the Server
-// stamps).
+// stamps). A consequence of this one-chokepoint / refuse-to-choose design: any
+// `<!-- compass:owner ... -->` comment appearing in the agent's own content is
+// also removed by the strip — the Server never distinguishes a forged header
+// from a coincidental one, it simply strips all of them and writes its own.
 func StampOwner(body string, author Author, bodyLimit int) (string, error) {
 	if err := validateField("agent", author.AgentHandle); err != nil {
 		return "", err
