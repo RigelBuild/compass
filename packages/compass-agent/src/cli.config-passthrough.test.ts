@@ -507,3 +507,192 @@ describe("(g) the SDK resolves a mounted subagent by name (subprocess, HOME-froz
 		expect(result.subagentFound).toBe(false);
 	});
 });
+
+// ── SEA-1678 T6: the Reload RE-READ (the record's load-bearing acceptance) ─────
+//
+// The record's acceptance is that the update path is proven on the agent's
+// OBSERVED value, not just a flipped symlink: after a ConfigVersion Reload the
+// re-exec'd `main()` must build its createAgentSession objects from the NEW mount
+// content — a fresh Settings overlay resolving the updated value, recomposed
+// rules carrying the updated body, updated contextFiles. A Reload re-execs
+// `main()`, and the reader reads through the mount's `current/` view, so the
+// faithful model is: boot once over the mount, capture the injected objects,
+// CHANGE a member's content in `current/` (the re-materialized new version the
+// Runner flips `current` to), re-run `main()` over the SAME mount + HOME + cwd,
+// and assert the SECOND createAgentSession call carries the new content. A stale
+// object (a cached read, a boot-once assumption) would carry the old value → red.
+
+// Run `main` twice over the same mount/home/cwd, applying `mutate` to the mount
+// between the two boots (the ConfigVersion re-materialize). Returns both captured
+// createAgentSession option sets so a test can assert the second observed the
+// mutation. HOME + cwd are stable across both boots — a Reload keeps the
+// container (and its scoped HOME) and re-execs the agent against the same cwd.
+async function runMainAcrossReload(
+	mount: string,
+	mutate: () => void,
+	env: Record<string, string | undefined> = {},
+): Promise<{
+	before: CreateAgentSessionOptions;
+	after: CreateAgentSessionOptions;
+}> {
+	const home = scratch();
+	const boot = async (): Promise<CreateAgentSessionOptions> => {
+		process.env.HOME = home;
+		let captured: CreateAgentSessionOptions | undefined;
+		const deps: MainDeps = {
+			configMount: mount,
+			createSession: (options) => {
+				captured = options;
+				return Promise.resolve({ session: fakeSession() });
+			},
+			createTransport: () => fakeCarrier(),
+		};
+		await main({ HOME: home, ...env }, deps);
+		if (captured === undefined) {
+			throw new Error("main never called createSession");
+		}
+		return captured;
+	};
+	const before = await boot();
+	mutate();
+	const after = await boot();
+	return { before, after };
+}
+
+describe("main re-reads the mount on a ConfigVersion Reload (SEA-1678 T6)", () => {
+	// The load-bearing acceptance: after a Reload the agent OBSERVES the updated
+	// settings value. Boot resolves the fleet overlay (222) over the project
+	// value (111); a version flip changes the fleet member to 333; the re-exec'd
+	// session's settingsManager must now resolve 333, not the stale 222.
+	test("a changed settings member is observed on the next boot's overlay", async () => {
+		const mount = scratch();
+		const cwd = scratch();
+		mkdirSync(join(cwd, ".omp"), { recursive: true });
+		writeFileSync(
+			join(cwd, ".omp", "config.yml"),
+			"compaction:\n  keepRecentTokens: 111\n",
+		);
+		writeMember(
+			mount,
+			"settings/config.yml",
+			"compaction:\n  keepRecentTokens: 222\n",
+		);
+		const { before, after } = await runMainAcrossReload(
+			mount,
+			() => {
+				// The ConfigVersion re-materialize: current/ now serves 333.
+				writeMember(
+					mount,
+					"settings/config.yml",
+					"compaction:\n  keepRecentTokens: 333\n",
+				);
+			},
+			{ COMPASS_WORKDIR: cwd },
+		);
+		const resolvedBefore = (await before.settingsManager) as Settings;
+		expect(resolvedBefore.get("compaction.keepRecentTokens")).toBe(222);
+		const resolvedAfter = (await after.settingsManager) as Settings;
+		// The re-read observes the NEW value. Non-vacuity: a boot-once/stale
+		// object would carry 222 here → red.
+		expect(resolvedAfter.get("compaction.keepRecentTokens")).toBe(333);
+	});
+
+	// A changed rule body is recomposed on the next boot: the fleet rule's
+	// content is re-read, so the session's `rules` carries the updated body while
+	// still composing with the checkout's discovered rule.
+	test("a changed rule member is recomposed on the next boot", async () => {
+		const mount = scratch();
+		const cwd = scratch();
+		writeMember(
+			mount,
+			"rules/alpha.md",
+			"---\ndescription: alpha\n---\noriginal alpha body\n",
+		);
+		mkdirSync(join(cwd, ".omp", "rules"), { recursive: true });
+		writeFileSync(
+			join(cwd, ".omp", "rules", "checkout.md"),
+			"---\ndescription: checkout\n---\ncheckout body\n",
+		);
+		const { before, after } = await runMainAcrossReload(
+			mount,
+			() => {
+				writeMember(
+					mount,
+					"rules/alpha.md",
+					"---\ndescription: alpha\n---\nupdated alpha body\n",
+				);
+			},
+			{ COMPASS_WORKDIR: cwd },
+		);
+		const alphaBefore = before.rules?.find((r) => r.name === "alpha");
+		expect(alphaBefore?.content).toContain("original alpha body");
+		const alphaAfter = after.rules?.find((r) => r.name === "alpha");
+		// The re-read observes the NEW rule body, and still composes with the
+		// checkout rule. Non-vacuity: a stale rule set carries the original body.
+		expect(alphaAfter?.content).toContain("updated alpha body");
+		expect(alphaAfter?.content).not.toContain("original alpha body");
+		expect(after.rules?.map((r) => r.name)).toContain("checkout");
+	});
+
+	// A rule ADDED on the flip is discovered on the next boot: the fleet rule set
+	// is re-enumerated, not frozen at first boot.
+	test("a rule added on the flip appears on the next boot", async () => {
+		const mount = scratch();
+		const cwd = scratch();
+		writeMember(
+			mount,
+			"rules/alpha.md",
+			"---\ndescription: alpha\n---\nalpha\n",
+		);
+		const { before, after } = await runMainAcrossReload(
+			mount,
+			() => {
+				writeMember(
+					mount,
+					"rules/beta.md",
+					"---\ndescription: beta\n---\nbeta\n",
+				);
+			},
+			{ COMPASS_WORKDIR: cwd },
+		);
+		expect(before.rules?.map((r) => r.name)).not.toContain("beta");
+		expect(after.rules?.map((r) => r.name)).toContain("beta");
+	});
+
+	// A changed AGENTS.md body is re-read into contextFiles on the next boot: the
+	// fleet global's content is re-read (still first/least-prominent), composing
+	// with the checkout's project AGENTS.md.
+	test("a changed AGENTS.md is re-read into contextFiles on the next boot", async () => {
+		const mount = scratch();
+		const cwd = scratch();
+		mkdirSync(join(cwd, ".omp"), { recursive: true });
+		const projectAgents = join(cwd, ".omp", "AGENTS.md");
+		writeFileSync(projectAgents, "# project conventions\n");
+		const fleetAgents = writeMember(
+			mount,
+			"AGENTS.md",
+			"# fleet conventions v1\n",
+		);
+		const { before, after } = await runMainAcrossReload(
+			mount,
+			() => {
+				writeMember(mount, "AGENTS.md", "# fleet conventions v2\n");
+			},
+			{ COMPASS_WORKDIR: cwd },
+		);
+		const fleetBefore = (before.contextFiles ?? []).find(
+			(f) => f.path === fleetAgents,
+		);
+		expect(fleetBefore?.content).toBe("# fleet conventions v1\n");
+		const fleetAfter = (after.contextFiles ?? []).find(
+			(f) => f.path === fleetAgents,
+		);
+		// The re-read observes the NEW AGENTS.md body. Non-vacuity: a stale
+		// context file carries v1 here. Compose survives: project file still present.
+		expect(fleetAfter?.content).toBe("# fleet conventions v2\n");
+		expect((after.contextFiles ?? []).map((f) => f.path)).toContain(
+			projectAgents,
+		);
+		expect((after.contextFiles ?? [])[0]?.path).toBe(fleetAgents);
+	});
+});

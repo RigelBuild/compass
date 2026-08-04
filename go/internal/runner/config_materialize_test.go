@@ -113,6 +113,22 @@ func validBundle() map[string][]byte {
 	}
 }
 
+// fullBundle is validBundle plus all five SEA-1678 config categories
+// (settings/config.yml, top-level AGENTS.md + models.yml, a flat rules/ member,
+// and a flat agents/ member), so a provision/refresh fixture can prove the
+// update path carries every delivered category end-to-end — not just the
+// skills/extensions/mcp validBundle covers. Callers may mutate the returned map
+// (it is freshly built each call) to model a changed-member new version.
+func fullBundle() map[string][]byte {
+	b := validBundle()
+	b["settings/config.yml"] = []byte("compaction:\n  keepRecentTokens: 111\n")
+	b["AGENTS.md"] = []byte("# fleet conventions\n")
+	b["models.yml"] = []byte("providers:\n  x:\n    baseUrl: https://y\n")
+	b["rules/red-green.md"] = []byte("# red-green\n")
+	b["agents/design.md"] = []byte("# design agent\n")
+	return b
+}
+
 func TestConfigMaterializeHappyPath(t *testing.T) {
 	root := t.TempDir()
 	tarball := buildConfigTarball(t, validBundle())
