@@ -584,20 +584,33 @@ export class CompassAgent {
 }
 
 // Coalesce a batch of delivered channel messages into ONE prompt input string
-// (SEA-1310 §8). Pure + exported so it is unit-testable. Each message's `text`-
-// case blocks are concatenated (ask-case blocks are ignored — deliver carries
-// channel text; asks are a separate surface), and the batch is joined so the
-// order is stable and each message's text is greppable in the result. A blank
-// text (a message with no text blocks) still contributes its slot so the join
-// is a faithful 1:1 with the batch.
+// (SEA-1310 §8). Pure + exported so it is unit-testable. The batch is GROUPED
+// per topic (`msg.topicId`) at format time: a topic belongs to exactly one
+// channel, so topic-grouping is per-(channel, topic), one digest section per
+// topic within the channel batch (D3/D4). This is FORMAT-TIME only — the flush
+// still emits one coalesced prompt and one ack per message (`#flushDelivers`),
+// so the SEA-1310 §8 ack-safety belt is untouched.
+//
+// Topic order is first-seen; message order within a topic is preserved. Each
+// message's `text`-case blocks are concatenated (ask-case blocks are ignored —
+// deliver carries channel text; asks are a separate surface), so each message's
+// text stays greppable in its section. A blank text (a message with no text
+// blocks) still contributes its slot so a section is a faithful 1:1 with its
+// group.
 export function formatDeliversForPrompt(batch: readonly Message[]): string {
-	return batch
-		.map((msg) =>
-			msg.blocks
-				.flatMap((block) =>
-					block.block.case === "text" ? [block.block.value] : [],
-				)
-				.join("\n"),
-		)
-		.join("\n\n");
+	const groups = new Map<string, string[]>();
+	for (const msg of batch) {
+		const text = msg.blocks
+			.flatMap((block) =>
+				block.block.case === "text" ? [block.block.value] : [],
+			)
+			.join("\n");
+		const existing = groups.get(msg.topicId);
+		if (existing) existing.push(text);
+		else groups.set(msg.topicId, [text]);
+	}
+	return Array.from(
+		groups,
+		([topicId, texts]) => `Topic ${topicId}:\n${texts.join("\n\n")}`,
+	).join("\n\n");
 }

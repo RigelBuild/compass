@@ -582,11 +582,14 @@ describe("CompassAgent — terminal status distinguishes failure from clean stop
 // so the subscribe listener is registered; a held-open control source keeps the
 // run loop parked until the test closes it, so nothing races the assertions.
 
-// A comms Message fixture: id + a single text block. The id is load-bearing
-// (dedup + ack key); the text is what the coalesced prompt must contain.
-function deliverMsg(id: string, text: string): Message {
+// A comms Message fixture: id + a single text block, and its topic. The id is
+// load-bearing (dedup + ack key); the text is what the coalesced prompt must
+// contain; the topicId is the per-topic digest grouping key (defaults empty,
+// as an untopic'd fixture rides one section).
+function deliverMsg(id: string, text: string, topicId = ""): Message {
 	return create(MessageSchema, {
 		id,
+		topicId,
 		blocks: [
 			create(MessageBlockSchema, { block: { case: "text", value: text } }),
 		],
@@ -1084,25 +1087,79 @@ describe("CompassAgent — channel-borne steer (SEA-1310 §8 steer arm)", () => 
 });
 
 describe("formatDeliversForPrompt — coalescing format (SEA-1310 §8)", () => {
-	test("renders each message's text, in order, into one stable string", () => {
-		const batch = [deliverMsg("m1", "first"), deliverMsg("m2", "second")];
+	test("renders each message's text, in order, within its topic section", () => {
+		const batch = [
+			deliverMsg("m1", "first", "t-1"),
+			deliverMsg("m2", "second", "t-1"),
+		];
 		const out = formatDeliversForPrompt(batch);
 		expect(out).toContain("first");
 		expect(out).toContain("second");
 		// Order is preserved: first appears before second.
 		expect(out.indexOf("first")).toBeLessThan(out.indexOf("second"));
+		// One topic, so one section header.
+		expect(out.match(/Topic /g)).toHaveLength(1);
 	});
 
 	test("concatenates multiple text blocks and ignores ask blocks", () => {
 		const msg = create(MessageSchema, {
 			id: "m1",
+			topicId: "t-1",
 			blocks: [
 				create(MessageBlockSchema, { block: { case: "text", value: "alpha" } }),
+				create(MessageBlockSchema, {
+					block: {
+						case: "ask",
+						value: create(AskSchema, {
+							askId: "a-1",
+							questions: [
+								create(AskQuestionSchema, {
+									questionId: "q1",
+									question: "ignored?",
+								}),
+							],
+						}),
+					},
+				}),
 				create(MessageBlockSchema, { block: { case: "text", value: "beta" } }),
 			],
 		});
 		const out = formatDeliversForPrompt([msg]);
 		expect(out).toContain("alpha");
 		expect(out).toContain("beta");
+		// The ask block is ignored — deliver carries channel text only.
+		expect(out).not.toContain("ignored?");
+	});
+
+	// Two delivers in different topics render as two distinct per-topic sections,
+	// first-seen topic order, message order preserved within a section (D4).
+	test("groups two topics into two distinct per-topic sections", () => {
+		const batch = [
+			deliverMsg("m1", "alpha msg", "t-alpha"),
+			deliverMsg("m2", "beta msg", "t-beta"),
+		];
+		const out = formatDeliversForPrompt(batch);
+
+		expect(out).toContain("Topic t-alpha:");
+		expect(out).toContain("Topic t-beta:");
+		// Two distinct sections.
+		expect(out.match(/^Topic /gm)).toHaveLength(2);
+		// First-seen order: t-alpha before t-beta.
+		expect(out.indexOf("Topic t-alpha:")).toBeLessThan(
+			out.indexOf("Topic t-beta:"),
+		);
+		expect(out.indexOf("alpha msg")).toBeLessThan(out.indexOf("beta msg"));
+	});
+
+	// Two delivers in the SAME topic stay in one section, message order kept.
+	test("keeps same-topic delivers in one section, in order", () => {
+		const batch = [
+			deliverMsg("m1", "one", "t-1"),
+			deliverMsg("m2", "two", "t-1"),
+		];
+		const out = formatDeliversForPrompt(batch);
+
+		expect(out.match(/^Topic /gm)).toHaveLength(1);
+		expect(out.indexOf("one")).toBeLessThan(out.indexOf("two"));
 	});
 });
