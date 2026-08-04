@@ -530,11 +530,11 @@ func TestRefreshConfigChangedRuleMemberRematerializesAndReloads(t *testing.T) {
 }
 
 // Partially-configured bundles keep the tolerant-empty contract on the update
-// path: a settings-only bundle and a rules-only bundle each materialize and
-// Reload once on a version bump without crashing, and an UNCHANGED partial
-// bundle Reloads nothing (never interrupts a live agent for config that did not
-// move). RED if a missing category faulted the materialize, or the unchanged
-// pass spuriously Reloaded.
+// path: a settings-only, a rules-only, and a skills-only bundle each
+// materialize and Reload once on a version bump without crashing, and an
+// UNCHANGED partial bundle Reloads nothing (never interrupts a live agent for
+// config that did not move). RED if a missing category faulted the materialize,
+// or the unchanged pass spuriously Reloaded.
 func TestRefreshConfigPartialBundlesAreTolerant(t *testing.T) {
 	cases := map[string]map[string][]byte{
 		"settings only": {"settings/config.yml": []byte("compaction:\n  keepRecentTokens: 1\n")},
