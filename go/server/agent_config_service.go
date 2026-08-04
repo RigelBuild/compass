@@ -72,7 +72,7 @@ func (s *service) GetAgentConfigInfo(
 	ctx context.Context,
 	_ *connect.Request[compassv1.GetAgentConfigInfoRequest],
 ) (*connect.Response[compassv1.GetAgentConfigInfoResponse], error) {
-	version, skills, extensions, mcpServers, err := s.store.AgentConfigInfo(ctx)
+	info, err := s.store.AgentConfigInfo(ctx)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return connect.NewResponse(&compassv1.GetAgentConfigInfoResponse{}), nil
@@ -87,10 +87,15 @@ func (s *service) GetAgentConfigInfo(
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
 	return connect.NewResponse(&compassv1.GetAgentConfigInfoResponse{
-		Version:    version,
-		Skills:     skills,
-		Extensions: extensions,
-		McpServers: mcpServers,
+		Version:     info.Version,
+		Skills:      info.Skills,
+		Extensions:  info.Extensions,
+		McpServers:  info.McpServers,
+		HasSettings: info.HasSettings,
+		HasAgentsMd: info.HasAgentsMD,
+		Rules:       info.Rules,
+		Subagents:   info.Subagents,
+		HasModels:   info.HasModels,
 	}), nil
 }
 
