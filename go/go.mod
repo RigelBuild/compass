@@ -17,7 +17,7 @@ go 1.25.0
 require (
 	connectrpc.com/connect v1.20.0
 	connectrpc.com/cors v0.1.0
-	github.com/cachix/secretspec/secretspec-go v0.15.0
+	github.com/cachix/secretspec/secretspec-go v0.17.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/minio/minio-go/v7 v7.2.1
