@@ -7,12 +7,11 @@ import { describe, expect, test } from "bun:test";
 import {
 	AgentSessionState,
 	create,
-	MessagePostedSchema,
-	MessageSchema,
-	MessageUpdatedSchema,
+	DeliveryAckSchema,
 	SessionAssistantTextSchema,
 	SessionEventSchema,
 	SessionFrameSchema,
+	TranscriptEntrySchema,
 } from "./compassv1";
 import { type OutboundFrame, ProtojsonLineSink } from "./frame";
 
@@ -39,33 +38,29 @@ describe("ProtojsonLineSink — one line, frozen oneof key per frame kind", () =
 	// canonical proto3-JSON camelCase (the cross-language interop default; Go
 	// protojson agrees), so the emitted top-level key is the generated `case`
 	// name. A drifted key silently breaks the Runner's oneof classification, so
-	// these strings are asserted literally: conversationPosted /
-	// conversationUpdated / session.
-	const posted = create(MessagePostedSchema, {
-		message: create(MessageSchema, { id: "m-1", blocks: [] }),
-	});
-	const updated = create(MessageUpdatedSchema, {
-		message: create(MessageSchema, { id: "m-1", blocks: [] }),
-	});
+	// these strings are asserted literally: session / transcriptEntry /
+	// deliveryAck.
 	const session = create(SessionFrameSchema, {
 		state: AgentSessionState.WORKING,
 	});
+	const transcriptEntry = create(TranscriptEntrySchema, { entrySeq: 1n });
+	const deliveryAck = create(DeliveryAckSchema, {});
 
 	const rows: { name: string; frame: OutboundFrame; field: string }[] = [
-		{
-			name: "conversationPosted",
-			frame: { kind: "conversationPosted", value: posted },
-			field: "conversationPosted",
-		},
-		{
-			name: "conversationUpdated",
-			frame: { kind: "conversationUpdated", value: updated },
-			field: "conversationUpdated",
-		},
 		{
 			name: "session",
 			frame: { kind: "session", value: session },
 			field: "session",
+		},
+		{
+			name: "transcriptEntry",
+			frame: { kind: "transcriptEntry", value: transcriptEntry },
+			field: "transcriptEntry",
+		},
+		{
+			name: "deliveryAck",
+			frame: { kind: "deliveryAck", value: deliveryAck },
+			field: "deliveryAck",
 		},
 	];
 
@@ -139,20 +134,24 @@ describe("ProtojsonLineSink — payload round-trips through protojson", () => {
 		expect(payload.state).toBeUndefined();
 	});
 
-	test("conversationUpdated payload carries the message blocks (text block value)", () => {
-		const message = create(MessageSchema, {
-			id: "m-7",
-			blocks: [{ block: { case: "text", value: "hi there" } }],
-		});
+	test("transcriptEntry payload round-trips the entry json + seq (uint64 → JSON string)", () => {
 		const frame: OutboundFrame = {
-			kind: "conversationUpdated",
-			value: create(MessageUpdatedSchema, { message }),
+			kind: "transcriptEntry",
+			value: create(TranscriptEntrySchema, {
+				entryJson: '{"role":"assistant"}',
+				entrySeq: 42n,
+				checkpoint: true,
+			}),
 		};
-		const payload = parseLine(frame).conversationUpdated as {
-			message: { id: string; blocks: { text: string }[] };
+		const payload = parseLine(frame).transcriptEntry as {
+			entryJson: string;
+			entrySeq: string;
+			checkpoint: boolean;
 		};
-		expect(payload.message.id).toBe("m-7");
-		expect(payload.message.blocks).toHaveLength(1);
-		expect(payload.message.blocks[0].text).toBe("hi there");
+		expect(payload.entryJson).toBe('{"role":"assistant"}');
+		// uint64 serializes to a JSON string in proto3 JSON, not a number.
+		expect(payload.entrySeq).toBe("42");
+		expect(typeof payload.entrySeq).toBe("string");
+		expect(payload.checkpoint).toBe(true);
 	});
 });

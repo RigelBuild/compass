@@ -1,9 +1,7 @@
 // EventMapper: the SDK `AgentSessionEvent` stream → compass.v1 frame map (§T5's
 // "own testable surface", spine-inversion + compass-0.8 typed session renderer).
 // Each test defends an observable translation contract — what compass.v1 payload
-// a given SDK event produces — never the mapper's internals. Two payload classes:
-//   - CONVERSATION (durable, typed): assistant text settles to a MessageUpdated
-//     block on `text_end`.
+// a given SDK event produces — never the mapper's internals. One payload class:
 //   - SESSION (typed trace): assistant-text / thinking chunks, tool calls + their
 //     updates (with diffs), and plans ride `SessionFrame.typed_event` as a typed
 //     `SessionEvent`; board lifecycle rides `SessionFrame.state`.
@@ -154,30 +152,6 @@ function typedEvents(out: MapOutput[]): SessionEvent[] {
 	);
 }
 
-// Narrow a single-frame result to a `conversationUpdated` frame's sole block.
-function soleBlock(out: MapOutput[]) {
-	expect(out).toHaveLength(1);
-	const frame = out[0];
-	if (frame.kind !== "conversationUpdated")
-		throw new Error(`expected conversationUpdated frame, got ${frame.kind}`);
-	const blocks = defined(frame.value.message, "conversation message").blocks;
-	expect(blocks).toHaveLength(1);
-	return blocks[0].block;
-}
-
-// Narrow a single `conversationUpdated` frame to its FULL current block set —
-// every block on the wrapped Message (parallel to soleBlock). Defends the
-// "MessageUpdated carries the full current block set" contract (comms.proto:332).
-function blocksOf(out: MapOutput[]) {
-	expect(out).toHaveLength(1);
-	const frame = out[0];
-	if (frame.kind !== "conversationUpdated")
-		throw new Error(`expected conversationUpdated frame, got ${frame.kind}`);
-	return defined(frame.value.message, "conversation message").blocks.map(
-		(b) => b.block,
-	);
-}
-
 describe("EventMapper — session lifecycle state derivation", () => {
 	// Each lifecycle event derives exactly one `session` frame in a specific
 	// board state (SessionFrame.state; typed_event unset). A flipped mapping
@@ -270,69 +244,35 @@ describe("EventMapper — monotonic event_id across the stream", () => {
 	});
 });
 
-describe("EventMapper — streamed text is dual-surfaced (session chunk + comms settle)", () => {
-	// A text_delta emits ONE session assistant_text chunk (live trace) and NO
-	// comms frame; a text_end settles ONE comms conversationUpdated and NO
-	// session event. The split is the core compass-0.8 behavior — a delta that
-	// leaked a comms frame, or a settle that leaked a session event, reddens.
-	test("text_delta → one session assistantText chunk (no comms frame)", () => {
+describe("EventMapper — streamed text is session-only (live chunk, no comms settle)", () => {
+	// A text_delta emits ONE session assistant_text chunk (live trace); text_end
+	// settles NO frame (SEA-1708 removed the comms write-through). The session
+	// chunk is the only text surface — a delta that stopped emitting, or a
+	// text_end that leaked any frame, reddens.
+	test("text_delta → one session assistantText chunk", () => {
 		const ev = soleTyped(mapper().map(textDelta("foo")));
 		if (ev.event.case !== "assistantText")
 			throw new Error(`expected assistantText, got ${ev.event.case}`);
 		expect(ev.event.value.text).toBe("foo");
 	});
 
-	test("text_end → one comms conversationUpdated block (no session event)", () => {
-		const block = soleBlock(mapper().map(textEnd("hello")));
-		expect(block.case).toBe("text");
-		if (block.case === "text") expect(block.value).toBe("hello");
+	test("text_end → no frame (comms write-through removed)", () => {
+		expect(mapper().map(textEnd("hello"))).toEqual([]);
 	});
 
 	test("an empty text_delta emits nothing (no empty chunk to coalesce)", () => {
 		expect(mapper().map(textDelta(""))).toEqual([]);
 	});
 
-	test("text_end with empty content → no frame (never emit an empty block)", () => {
+	test("text_end with empty content → no frame", () => {
 		expect(mapper().map(textEnd(""))).toEqual([]);
 	});
 
-	test("text_end without content falls back to the accumulated delta buffer", () => {
+	test("text_end after a delta run still emits no frame", () => {
 		const m = mapper();
 		m.map(textDelta("foo"));
 		m.map(textDelta("bar"));
-		const block = soleBlock(m.map(textEndNoContent()));
-		expect(block.case).toBe("text");
-		if (block.case === "text") expect(block.value).toBe("foobar");
-	});
-
-	test("settled content wins over the buffer when both are present", () => {
-		const m = mapper();
-		m.map(textDelta("ignored-buffer"));
-		const block = soleBlock(m.map(textEnd("settled")));
-		expect(block.case).toBe("text");
-		if (block.case === "text") expect(block.value).toBe("settled");
-	});
-
-	test("the text buffer resets after each settle (no cross-message bleed)", () => {
-		const m = mapper();
-		m.map(textDelta("first"));
-		m.map(textEnd("first"));
-		// Next stream starts with no deltas; a leaked buffer would re-emit "first".
 		expect(m.map(textEndNoContent())).toEqual([]);
-	});
-
-	// REGRESSION: `message_start` resets the in-flight #textBuf, not just
-	// #blocks. If a text_delta run is never closed by a text_end before the next
-	// `message_start`, the stale deltas must NOT survive into the next message
-	// and resurface through the `inner.content ?? #textBuf` settle fallback.
-	test("an unclosed text_delta run does not bleed across message_start (buffer reset)", () => {
-		const m = mapper();
-		m.map(textDelta("leaked")); // message 1: never settled
-		m.map(messageStart()); // the reset under test
-		m.map(textDelta("real")); // message 2: its own delta
-		const block = soleBlock(m.map(textEndNoContent()));
-		expect(block.case).toBe("text");
-		if (block.case === "text") expect(block.value).toBe("real");
 	});
 });
 
@@ -822,100 +762,6 @@ describe("EventMapper — todo_reminder / todo_auto_clear map to plans", () => {
 		if (ev.event.case !== "plan")
 			throw new Error(`expected plan, got ${ev.event.case}`);
 		expect(ev.event.value.entries).toEqual([]);
-	});
-});
-
-describe("EventMapper — MessageUpdated carries the full current block set (comms.proto:332)", () => {
-	// Each settle within one assistant message re-emits every block settled so
-	// far, in settle order; a new message_start resets the set. Only `text`
-	// survives as a durable conversation block now.
-	test("two text settles in one message → second update carries BOTH blocks in order", () => {
-		const m = mapper();
-		expect(blocksOf(m.map(textEnd("alpha")))).toEqual([
-			{ case: "text", value: "alpha" },
-		]);
-		expect(blocksOf(m.map(textEnd("beta")))).toEqual([
-			{ case: "text", value: "alpha" },
-			{ case: "text", value: "beta" },
-		]);
-	});
-
-	test("a new message_start resets the block set (no cross-message bleed)", () => {
-		const m = mapper();
-		m.map(textEnd("alpha"));
-		expect(blocksOf(m.map(textEnd("beta")))).toEqual([
-			{ case: "text", value: "alpha" },
-			{ case: "text", value: "beta" },
-		]);
-		// A new assistant message begins → the set is cleared (message_start also
-		// emits a WORKING lifecycle frame).
-		expect(soleSessionState(m.map(messageStart()))).toBe(
-			AgentSessionState.WORKING,
-		);
-		expect(blocksOf(m.map(textEnd("gamma")))).toEqual([
-			{ case: "text", value: "gamma" },
-		]);
-	});
-
-	test("a single settled block still emits a one-block set", () => {
-		expect(blocksOf(mapper().map(textEnd("solo")))).toEqual([
-			{ case: "text", value: "solo" },
-		]);
-	});
-});
-
-describe("EventMapper — an emitted frame's block set is immutable across later settles (comms.proto:332)", () => {
-	// #appendBlock passes `this.#blocks` directly to `create(MessageSchema, …)`,
-	// relying on protobuf-es `create()` snapshotting the repeated field into the
-	// message's OWN array. The existing "full current block set" suite checks each
-	// frame's blocks INLINE at emission, so it cannot catch a frame whose array is
-	// retroactively mutated by a LATER settle. This pins that regression: the
-	// FIRST emitted frame's `message.blocks` must be frozen at length 1 even after
-	// a second settle pushes onto the mapper's live `#blocks`.
-	test("a second settle does not retroactively append to the first emitted frame", () => {
-		const m = mapper();
-		m.map(messageStart());
-
-		const firstOut = m.map(textEnd("alpha"));
-		expect(firstOut).toHaveLength(1);
-		const firstFrame = firstOut[0];
-		if (firstFrame.kind !== "conversationUpdated")
-			throw new Error(
-				`expected conversationUpdated frame, got ${firstFrame.kind}`,
-			);
-		// Hold the actual repeated-field array of the already-emitted frame.
-		const firstBlocks = defined(
-			firstFrame.value.message,
-			"conversation message",
-		).blocks;
-		expect(firstBlocks).toHaveLength(1);
-
-		// A later settle within the SAME message pushes onto the mapper's live set.
-		expect(blocksOf(m.map(textEnd("beta")))).toEqual([
-			{ case: "text", value: "alpha" },
-			{ case: "text", value: "beta" },
-		]);
-
-		// The first frame's block set is UNCHANGED — the second settle mutated the
-		// mapper's `#blocks`, not the array captured in the first emitted frame.
-		expect(firstBlocks).toHaveLength(1);
-		expect(firstBlocks.map((b) => b.block)).toEqual([
-			{ case: "text", value: "alpha" },
-		]);
-	});
-});
-
-describe("EventMapper — conversation Message.id is server-assigned, not stamped by the agent (comms.proto:230)", () => {
-	// comms.proto:230 freezes Message.id as "Server-assigned stable id". The
-	// emitted conversation frame must NOT stamp one — proto default "" for an
-	// unstamped string field.
-	test("emitted conversationUpdated carries no agent-stamped message id", () => {
-		const out = mapper().map(textEnd("hi"));
-		expect(out).toHaveLength(1);
-		const frame = out[0];
-		if (frame.kind !== "conversationUpdated")
-			throw new Error(`expected conversationUpdated frame, got ${frame.kind}`);
-		expect(defined(frame.value.message, "conversation message").id).toBe("");
 	});
 });
 

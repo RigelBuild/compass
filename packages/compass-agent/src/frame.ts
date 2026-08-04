@@ -4,20 +4,16 @@
 // The frame CONTRACT is frozen (design compass-0.6 §T5, spine-inversion;
 // extended by SEA-1570 with the transcript-tee lane):
 //   - stdout: `AgentFrame` — oneof frame {
-//         MessagePosted conversation_posted; MessageUpdated conversation_updated;
 //         SessionFrame session; TranscriptEntry transcript_entry;
 //         DeliveryAck delivery_ack }
 //     The set oneof field IS the type discriminator; an unset/unrecognized
-//     field is the "unknown frame" the Runner logs + counts. CONVERSATION
-//     (text/ask) rides MessagePosted/MessageUpdated (each wraps a Message of
-//     MessageBlocks) → comms; the opaque OMP-native execution trace + board
-//     lifecycle ride the single `session` variant (SessionFrame) → the
-//     session-tail stream. TRANSCRIPT (SEA-1570) rides the single
-//     `transcript_entry` variant (TranscriptEntry): one committed SDK session
-//     entry the tee backend commits locally and forwards on the DURABLE
-//     conversation-frame lane (never the droppable Publish spine) so the Server
-//     can reconstruct the session on resume. Dual-surface split: the Runner
-//     write-throughs each variant to the surface that owns it.
+//     field is the "unknown frame" the Runner logs + counts. The opaque
+//     OMP-native execution trace + board lifecycle ride the single `session`
+//     variant (SessionFrame) → the session-tail Publish spine. TRANSCRIPT
+//     (SEA-1570) rides the single `transcript_entry` variant (TranscriptEntry):
+//     one committed SDK session entry the tee backend commits locally and
+//     forwards on the DURABLE conversation-frame lane (never the droppable
+//     Publish spine) so the Server can reconstruct the session on resume.
 //   - stdin: `AgentControl` — oneof control {
 //         PromptControl prompt; SteerControl steer; DeliverControl deliver;
 //         AskAnswerControl ask_answer; ConfigControl config; TranscriptReplay
@@ -38,8 +34,6 @@ import {
 	AgentFrameSchema,
 	create,
 	type DeliveryAck,
-	type MessagePosted,
-	type MessageUpdated,
 	type SessionFrame,
 	type TranscriptEntry,
 	toJson,
@@ -49,8 +43,6 @@ import {
 // variant. A discriminated union so the envelope has a single place to stamp the
 // oneof field, and the reader a single field to classify on.
 export type OutboundFrame =
-	| { readonly kind: "conversationPosted"; readonly value: MessagePosted }
-	| { readonly kind: "conversationUpdated"; readonly value: MessageUpdated }
 	| { readonly kind: "session"; readonly value: SessionFrame }
 	// SEA-1570: one committed SDK session entry, teed upstream. `value` is a
 	// branded generated message (`create(TranscriptEntrySchema, …)`), and `kind`

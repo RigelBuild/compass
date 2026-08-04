@@ -24,10 +24,10 @@ import { connectNodeAdapter } from "@connectrpc/connect-node";
 import {
 	AgentSessionState,
 	DeliveryAckSchema,
-	MessagePostedSchema,
 	SessionEventSchema,
 	SessionFrameSchema,
 	SessionNoticeSchema,
+	TranscriptEntrySchema,
 } from "../compassv1";
 import type { OutboundFrame } from "../frame";
 import {
@@ -171,10 +171,12 @@ function lifecycleFrame(state: AgentSessionState): OutboundFrame {
 	return { kind: "session", value: create(SessionFrameSchema, { state }) };
 }
 
-function conversationFrame(id: string): OutboundFrame {
+// A durable transcript frame — the surviving rider on the PostConversationFrame
+// unary (SEA-1570). `seq` disambiguates frames within a test.
+function transcriptFrame(seq: bigint): OutboundFrame {
 	return {
-		kind: "conversationPosted",
-		value: create(MessagePostedSchema, { message: { id, blocks: [] } }),
+		kind: "transcriptEntry",
+		value: create(TranscriptEntrySchema, { entrySeq: seq }),
 	};
 }
 
@@ -206,7 +208,7 @@ test("session frames ride the Publish client-stream in emission order", async ()
 	expect(rec.durableFrames.length).toBe(0);
 });
 
-test("a conversation frame rides the PostConversationFrame unary, not Publish, with an idempotency key", async () => {
+test("a transcript frame rides the PostConversationFrame unary, not Publish, with an idempotency key", async () => {
 	// Non-vacuity: routing durable → Publish leaves durableFrames empty → red; a
 	// missing idempotency key leaves the field "" → red.
 	const rec = emptyRecorder();
@@ -217,13 +219,13 @@ test("a conversation frame rides the PostConversationFrame unary, not Publish, w
 		},
 	});
 	const sink = createSocketFrameSink(createUnixSocketTransport(socketPath));
-	sink.emit(conversationFrame("m-1"));
+	void sink.emitDurable(transcriptFrame(1n));
 	await got.promise;
 	// durableAttempts is recorded before the gate resolves (race-free).
 	expect(rec.durableAttempts.length).toBe(1);
 	expect(rec.publishFrames.length).toBe(0);
 	expect(rec.durableAttempts[0]?.idempotencyKey).toBeTruthy();
-	expect(rec.durableAttempts[0]?.frame?.frame.case).toBe("conversationPosted");
+	expect(rec.durableAttempts[0]?.frame?.frame.case).toBe("transcriptEntry");
 });
 
 test("a durable frame is retried across a transient error and reuses its idempotency key", async () => {
@@ -243,7 +245,7 @@ test("a durable frame is retried across a transient error and reuses its idempot
 		},
 	});
 	const sink = createSocketFrameSink(createUnixSocketTransport(socketPath));
-	sink.emit(conversationFrame("m-retry"));
+	void sink.emitDurable(transcriptFrame(2n));
 	await succeeded.promise;
 	// seenKeys is recorded inside the hook (before the gate resolves), so it is
 	// race-free; assert on it and on durableAttempts (also pre-hook). A single
@@ -269,7 +271,7 @@ test("drain() awaits an outstanding durable commit before resolving", async () =
 		},
 	});
 	const sink = createSocketFrameSink(createUnixSocketTransport(socketPath));
-	sink.emit(conversationFrame("m-drain"));
+	void sink.emitDurable(transcriptFrame(3n));
 	// Start draining while the server still holds the unary open.
 	let drained = false;
 	const drainP = (sink.drain?.() ?? Promise.resolve()).then(() => {
@@ -387,12 +389,14 @@ test("a failed batch drops its trace frames but never its priority frames", asyn
 	expect(transport.publishSpine().failedPriorityCount()).toBe(0);
 });
 
-test("a durable send gives up after the retry budget without an unhandled rejection", async () => {
+test("a durable send gives up after the retry budget, rejecting emitDurable", async () => {
 	// M4(b): the retry-exhaustion branch. onDurable always throws, so the send
-	// exhausts DURABLE_RETRY_BACKOFF_MS and returns (never throwing off the void
-	// emit() path). Assert the exact attempt count and that drain() still
-	// resolves within the retry budget. Non-vacuity: an off-by-one give-up or an
-	// unbounded retry would make the attempt count wrong or hang drain().
+	// exhausts DURABLE_RETRY_BACKOFF_MS and gives up. emitDurable PROPAGATES the
+	// definitive error to its caller (the tee backend buffers/retries/fatals),
+	// so the returned promise rejects — handled here, never an unhandled
+	// rejection. Assert the exact attempt count and that drain() still resolves
+	// within the retry budget. Non-vacuity: an off-by-one give-up or an unbounded
+	// retry would make the attempt count wrong or hang drain().
 	const rec = emptyRecorder();
 	let attempts = 0;
 	let unhandled = false;
@@ -408,10 +412,16 @@ test("a durable send gives up after the retry budget without an unhandled reject
 			},
 		});
 		const sink = createSocketFrameSink(createUnixSocketTransport(socketPath));
-		sink.emit(conversationFrame("m-exhaust"));
+		let rejected = false;
+		const durable = sink.emitDurable(transcriptFrame(4n)).catch(() => {
+			rejected = true;
+		});
 		// drain() awaits the in-flight durable; it must resolve once the send has
 		// exhausted its budget and given up (not hang, not throw).
 		await sink.drain?.();
+		await durable;
+		// The definitive give-up surfaced to the emitDurable caller as a reject.
+		expect(rejected).toBe(true);
 		// One initial try + one per backoff delay = BACKOFF.length + 1 attempts.
 		expect(attempts).toBe(DURABLE_RETRY_BACKOFF_MS.length + 1);
 		// Let any stray microtask-scheduled rejection surface before asserting.

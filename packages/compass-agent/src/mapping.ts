@@ -11,26 +11,19 @@
 // narrowed (`typeof`/`in`, via the `isRecord` guard and the extractors below),
 // never an inline cast.
 //
-// Dual-surface split (§T5, spine-inversion + compass-0.8 typed renderer). Two
-// payload classes, two owners:
-//   - CONVERSATION (typed, Compass-owned): an agent `text` reply. Rides the
-//     conversation variants (MessagePosted/MessageUpdated wrapping a Message of
-//     MessageBlocks). Text streams as MessageUpdated block appends and settles to
-//     a durable comms Message; there is no bare-block frame. Unchanged from v0.6.
-//   - SESSION (typed, compass-0.8): the execution trace — assistant-text chunks,
-//     thinking chunks, tool calls + their updates (with file diffs), plans, and
-//     notices — rides `SessionFrame.typed_event` as a typed `SessionEvent`, which
-//     Compass renders in its first-party session pane. This supersedes v0.6's
-//     opaque `bytes event` passthrough: the mapper now TYPES the trace (design
-//     compass-0.8 §"First-party typed session renderer"), it does not
-//     relay opaque bytes. Board lifecycle transitions ride the same variant as
-//     `SessionFrame.state` (typed_event empty).
+// Session-surface mapping (§T5, spine-inversion + compass-0.8 typed renderer).
+// The execution trace — assistant-text chunks, thinking chunks, tool calls +
+// their updates (with file diffs), plans, and notices — rides
+// `SessionFrame.typed_event` as a typed `SessionEvent`, which Compass renders in
+// its first-party session pane. This supersedes v0.6's opaque `bytes event`
+// passthrough: the mapper now TYPES the trace (design compass-0.8 §"First-party
+// typed session renderer"), it does not relay opaque bytes. Board lifecycle
+// transitions ride the same variant as `SessionFrame.state` (typed_event empty).
 //
-// Dual-surfacing of text: a streamed assistant `text_delta` produces BOTH a
-// session `assistant_text` chunk (per delta, live) AND — on `text_end` — a
-// settled comms MessageUpdated. The session pane tails the fine-grained stream;
-// comms holds the durable settled block. Thinking is session-only (no comms
-// counterpart).
+// The streaming conversation write-through (MessagePosted/MessageUpdated → comms)
+// is REMOVED (SEA-1708): a streamed assistant `text_delta` produces only a live
+// session `assistant_text` chunk per delta; `text_end` settles no comms block.
+// Thinking is session-only (no comms counterpart).
 //
 // Dumb emitter. The emitter sets `message_id` per
 // streamed assistant message and `event_id` per event, and does NOT buffer or
@@ -49,12 +42,6 @@ import {
 	AgentSessionState,
 	AgentToolCallStatus,
 	create,
-	type Message,
-	type MessageBlock,
-	MessageBlockSchema,
-	MessageSchema,
-	type MessageUpdated,
-	MessageUpdatedSchema,
 	SessionAssistantTextSchema,
 	type SessionEvent,
 	SessionEventSchema,
@@ -91,23 +78,11 @@ export type Clock = () => number;
 // string on the wire. The session renderer shows a disclosure, not the full blob.
 const OUTPUT_TEXT_LIMIT = 4_000;
 
-// Maps the agent's session-event stream to compass.v1 frames. Stateful on two
-// axes:
-//   - Conversation: streaming text arrives as `text_delta` runs inside
-//     `message_update` and settles on `text_end`; the mapper accumulates the delta
-//     run and emits a conversation MessageUpdated at settle (durable comms).
-//   - Session ids: a monotonic message counter (bumped per `message_start`) labels
-//     the assistant-text / thinking chunks of one logical message so `foldSession`
-//     coalesces them; a monotonic event counter labels every SessionEvent.
+// Maps the agent's session-event stream to compass.v1 frames. Stateful on the
+// session ids: a monotonic message counter (bumped per `message_start`) labels
+// the assistant-text / thinking chunks of one logical message so `foldSession`
+// coalesces them; a monotonic event counter labels every SessionEvent.
 export class EventMapper {
-	// Accumulator for the in-flight streamed text block (one assistant message
-	// streams at a time within a turn). Settles to a comms block on `text_end`.
-	#textBuf = "";
-	// The conversation blocks settled so far within the current assistant message,
-	// in settle order. MessageUpdated carries the full current block set
-	// (comms.proto:332), so each settle re-emits every block accumulated here;
-	// reset at `message_start` (a new assistant message begins a fresh set).
-	#blocks: MessageBlock[] = [];
 	// Monotonic per-message counter → the `message_id` on assistant-text/thinking
 	// session chunks. Bumped at `message_start`; the pre-first-message value labels
 	// any stray chunk that arrives before a `message_start` (defensive, never
@@ -133,13 +108,8 @@ export class EventMapper {
 			case "turn_start":
 				return [this.#sessionState(AgentSessionState.WORKING)];
 			case "message_start":
-				// A new assistant message begins — clear the settled-block set AND
-				// the in-flight text buffer so its first settle carries only its own
-				// content (no cross-message bleed if a prior message's text_delta run
-				// was never closed by a text_end), bump the message id so its chunks
+				// A new assistant message begins — bump the message id so its chunks
 				// coalesce under a fresh id, then signal WORKING.
-				this.#blocks = [];
-				this.#textBuf = "";
 				this.#messageSeq++;
 				return [this.#sessionState(AgentSessionState.WORKING)];
 			case "agent_end":
@@ -277,12 +247,10 @@ export class EventMapper {
 	#onMessageUpdate(inner: AssistantMessageEvent): MapOutput[] {
 		// `inner` is a pi-ai AssistantMessageEvent — a discriminated union on
 		// `type`. Narrow on the discriminant; read `delta`/`content` only in the
-		// arms the union guarantees them. Text is dual-surfaced (a live session
-		// chunk per delta AND a settled comms block at text_end); thinking is
-		// session-only.
+		// arms the union guarantees them. Text streams as a live session chunk per
+		// delta; thinking is session-only.
 		switch (inner.type) {
 			case "text_delta": {
-				this.#textBuf += inner.delta;
 				// Session surface: one assistant_text chunk per delta (dumb emitter).
 				// Skip an empty delta — nothing to render, and it would only add an
 				// empty row for foldSession to coalesce away.
@@ -290,19 +258,11 @@ export class EventMapper {
 				return [this.#assistantText(inner.delta)];
 			}
 			case "text_end": {
-				// Comms surface: settle the accumulated run to a durable block. The
-				// SDK's `content` is the authoritative full text of the block; fall
-				// back to the accumulated buffer if absent.
-				const text = inner.content ?? this.#textBuf;
-				this.#textBuf = "";
-				if (text === "") return [];
-				return [
-					this.#appendBlock(
-						create(MessageBlockSchema, {
-							block: { case: "text", value: text },
-						}),
-					),
-				];
+				// Comms surface removed (SEA-1708): the streaming conversation
+				// write-through is gone, so a settled block emits no frame. The live
+				// session `assistant_text` chunks (per delta) are the only text
+				// surface.
+				return [];
 			}
 			case "thinking_delta": {
 				// Session surface only: one thinking chunk per delta, correlated by
@@ -371,25 +331,6 @@ export class EventMapper {
 	// expected) is labelled "0".
 	#messageId(): string {
 		return String(this.#messageSeq);
-	}
-
-	// Append one settled block to the current message's set and emit a
-	// MessageUpdated carrying the FULL set so far (comms.proto:332), in settle
-	// order. The Message's id/container/author are server-assigned on the Runner
-	// write-through against the session (comms.proto:230 — "Server-assigned stable
-	// id"); the agent has no server id to mint, so it supplies only the blocks and
-	// never stamps an id. `create` snapshots the repeated field into the message's
-	// own array (it does not retain the passed array by reference), so passing
-	// `this.#blocks` directly is safe: a later settle's `push` mutates `#blocks`,
-	// never the array already captured in an emitted frame. An explicit `[...]`
-	// copy here would just be a redundant second snapshot.
-	#appendBlock(block: MessageBlock): OutboundFrame {
-		this.#blocks.push(block);
-		const message: Message = create(MessageSchema, {
-			blocks: this.#blocks,
-		});
-		const updated: MessageUpdated = create(MessageUpdatedSchema, { message });
-		return { kind: "conversationUpdated", value: updated };
 	}
 }
 

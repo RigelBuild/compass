@@ -390,6 +390,27 @@ function fakeCarrier(
 	};
 }
 
+// Like `deps`, but captures the tee-backed SessionManager `main` builds — the
+// surviving durable rider (SEA-1570) is a transcript frame, launched when a
+// session write teems onto the sink's durable lane. A test resolves the gate,
+// then drives an `appendMessage` through the captured manager to put a durable
+// TranscriptEntry send in flight (the way the removed conversation write-through
+// used to, before SEA-1708). The real tee storage is used (default
+// createSessionStorage), so the full sink → tee → durable-unary path runs.
+function depsCapturingManager(
+	session: FakeSession,
+	transport: RunnerTransport,
+	gate: { resolve: (m: SessionManager) => void },
+): MainDeps {
+	return {
+		createSession: (options) => {
+			gate.resolve(options.sessionManager as unknown as SessionManager);
+			return Promise.resolve({ session: session as unknown as AgentSession });
+		},
+		createTransport: () => transport,
+	};
+}
+
 // The recording AgentSession `main` composes over: `subscribe` hands the listener
 // to a gate (so a test can push a session event through the REAL EventMapper the
 // way the SDK would, once the run loop has wired it) and `agent` carries the
@@ -518,19 +539,19 @@ describe("main", () => {
 		]);
 	});
 
-	// The other half of the sink's teardown contract: a conversation frame is
-	// DURABLE (delivered-or-erred on the unary, frame-sink.ts:141-144), and
-	// `emit()` is void — it launches the send and returns. A frame emitted during
-	// the run is therefore still in flight when `run()` resolves. `drain()` awaits
-	// those in-flight commits (frame-sink.ts:152-154); without the barrier `main`
-	// resolves — and `import.meta.main` calls `process.exit` — abandoning an
-	// uncommitted conversation frame. This is the exact defect the drain fixed.
+	// The other half of the sink's teardown contract: a transcript frame is
+	// DURABLE (delivered-or-erred on the unary, frame-sink.ts:141-144). A session
+	// write teemed during the run launches a durable send that is still in flight
+	// when `run()` resolves. `drain()` awaits those in-flight commits; without the
+	// barrier `main` resolves — and `import.meta.main` calls `process.exit` —
+	// abandoning an uncommitted transcript frame. This is the exact defect the
+	// drain fixed.
 	//
 	// The assertion is an ORDERING, which is the contract itself: the commit
 	// strictly precedes main's resolution. The commit is parked one event-loop turn
 	// out (never a duration — see nextEventLoopTurn), and `main` without the drain
 	// resolves entirely within the microtask phase, so the order inverts.
-	test("a conversation frame in flight at teardown is COMMITTED before main resolves", async () => {
+	test("a transcript frame in flight at teardown is COMMITTED before main resolves", async () => {
 		const log = emptyLog();
 		const session = fakeSession();
 		const order: string[] = [];
@@ -538,6 +559,7 @@ describe("main", () => {
 		// Holds the control stream open so `run()` cannot end before the frame is
 		// emitted — the interleaving is gated, never raced.
 		const closeControl = Promise.withResolvers<void>();
+		const managerGate = Promise.withResolvers<SessionManager>();
 		const carrier = fakeCarrier(log, {
 			control: async function* () {
 				yield replayCompleteOp(1n);
@@ -549,11 +571,15 @@ describe("main", () => {
 				order.push("committed");
 			},
 		});
-		const runP = main({ HOME: scratch() }, deps(session, carrier));
-		// The session emitted a settled assistant text block mid-run: the REAL
-		// EventMapper turns it into a durable conversationUpdated frame, which the
-		// REAL socket sink launches on the unary.
-		await settledText(session, "the answer");
+		const runP = main(
+			{ HOME: scratch() },
+			depsCapturingManager(session, carrier, managerGate),
+		);
+		// A session write teems onto the durable lane mid-run: the REAL tee-backed
+		// SessionManager turns an appendMessage into a durable TranscriptEntry
+		// frame, which the REAL socket sink launches on the unary.
+		const manager = await managerGate.promise;
+		manager.appendMessage(assistantMsg("the answer"));
 		// Gate on the carrier having ENTERED the unary — the send is provably in
 		// flight right now, and provably uncommitted.
 		await inFlight.promise;
@@ -562,12 +588,12 @@ describe("main", () => {
 		await runP;
 		order.push("main-resolved");
 		expect(order).toEqual(["committed", "main-resolved"]);
-		expect(log.durableFrames[0]?.frame?.frame.case).toBe("conversationUpdated");
+		expect(log.durableFrames[0]?.frame?.frame.case).toBe("transcriptEntry");
 	});
 
 	// The barrier is in `finally`, so it holds on the ERROR path too — which is
 	// where it matters most: a session that died is exactly when the board needs
-	// its terminal transition and its last conversation frame. `run()` emits
+	// its terminal transition and its last transcript frame. `run()` emits
 	// ERRORED (agent.ts:113) and re-throws; main must still drain, then propagate
 	// the ORIGINAL error (a `finally` that swallowed it would hide the crash).
 	//
@@ -585,6 +611,7 @@ describe("main", () => {
 		const inFlight = Promise.withResolvers<void>();
 		// Holds the crashing op back until the durable send is in flight.
 		const crash = Promise.withResolvers<void>();
+		const managerGate = Promise.withResolvers<SessionManager>();
 		const carrier = fakeCarrier(log, {
 			control: async function* () {
 				yield replayCompleteOp(1n);
@@ -597,8 +624,12 @@ describe("main", () => {
 				order.push("committed");
 			},
 		});
-		const runP = main({ HOME: scratch() }, deps(session, carrier));
-		await settledText(session, "half an answer");
+		const runP = main(
+			{ HOME: scratch() },
+			depsCapturingManager(session, carrier, managerGate),
+		);
+		const manager = await managerGate.promise;
+		manager.appendMessage(assistantMsg("half an answer"));
 		await inFlight.promise;
 		crash.resolve();
 		await expect(runP).rejects.toBe(boom);
@@ -627,6 +658,7 @@ describe("main", () => {
 		const order: string[] = [];
 		const inFlight = Promise.withResolvers<void>();
 		const closeControl = Promise.withResolvers<void>();
+		const managerGate = Promise.withResolvers<SessionManager>();
 		const carrier = fakeCarrier(log, {
 			control: async function* () {
 				yield replayCompleteOp(1n);
@@ -639,8 +671,12 @@ describe("main", () => {
 			},
 			onClose: () => order.push("closed"),
 		});
-		const runP = main({ HOME: scratch() }, deps(session, carrier));
-		await settledText(session, "the answer");
+		const runP = main(
+			{ HOME: scratch() },
+			depsCapturingManager(session, carrier, managerGate),
+		);
+		const manager = await managerGate.promise;
+		manager.appendMessage(assistantMsg("the answer"));
 		await inFlight.promise;
 		expect(order).toEqual([]);
 		closeControl.resolve();
@@ -662,6 +698,7 @@ describe("main", () => {
 		const order: string[] = [];
 		const inFlight = Promise.withResolvers<void>();
 		const crash = Promise.withResolvers<void>();
+		const managerGate = Promise.withResolvers<SessionManager>();
 		const carrier = fakeCarrier(log, {
 			control: async function* () {
 				yield replayCompleteOp(1n);
@@ -675,8 +712,12 @@ describe("main", () => {
 			},
 			onClose: () => order.push("closed"),
 		});
-		const runP = main({ HOME: scratch() }, deps(session, carrier));
-		await settledText(session, "half an answer");
+		const runP = main(
+			{ HOME: scratch() },
+			depsCapturingManager(session, carrier, managerGate),
+		);
+		const manager = await managerGate.promise;
+		manager.appendMessage(assistantMsg("half an answer"));
 		await inFlight.promise;
 		crash.resolve();
 		await expect(runP).rejects.toBe(boom);
@@ -1333,28 +1374,6 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 
 // A Control stream that closes cleanly with no ops — the shortest complete run.
 async function* emptyControlStream(): AsyncGenerator<WireAgentControl> {}
-
-// Push a settled assistant text block through the session's subscribed listener,
-// the way the SDK's event stream would. `main` wired that listener to the REAL
-// EventMapper, whose `text_end` arm settles the text to a durable
-// conversationUpdated frame — so this is the honest way to make the composition
-// produce a conversation frame, rather than reaching into the sink.
-//
-// The mapper reads only `type`, `assistantMessageEvent.type` and `.content` on
-// this path (mapping.ts:147, :292-305); the SDK's event types require a full
-// `AssistantMessage` on `message`/`partial` that is never read, so the cast names
-// exactly the fields under test.
-async function settledText(
-	session: FakeSession,
-	content: string,
-): Promise<void> {
-	// Event gate: resolves when run() subscribed. No polling, no timer.
-	const listener = await session.subscribed;
-	listener({
-		type: "message_update",
-		assistantMessageEvent: { type: "text_end", contentIndex: 0, content },
-	} as unknown as Parameters<AgentSessionEventListener>[0]);
-}
 
 // Park the caller until the next MACROtask turn — a single `setImmediate`, not a
 // duration and not a poll. It is the coarsest thing that is still not a sleep:
