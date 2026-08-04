@@ -11,6 +11,7 @@ package runner
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -238,6 +239,67 @@ func TestDrainToLogReportsGenuineReadFault(t *testing.T) {
 	if !slices.ContainsFunc(msgs, func(m string) bool { return strings.Contains(m, "drain ended early") }) {
 		t.Fatalf("genuine read fault was swallowed: records = %v", msgs)
 	}
+}
+
+// The masking shape this closes: a line over the cap whose overrun read
+// ALSO faults comes back as errors.Join(errLineTruncated, fault), and the very
+// next read is a clean EOF. The truncated arm used errors.Is, which the join
+// satisfies, so it took the `continue` and the fault never reached the WARN —
+// then EOF ended the drain as a clean exit, leaving the pipe undrained with no
+// diagnostic. An immediate EOF is what makes it bite: a fault that re-yields on
+// the next read is caught by the WARN arm anyway, so this is the one sequence
+// that swallows. The identity test (err == errLineTruncated) keeps draining on
+// pure truncation but lets the fault-carrying join fall through to the WARN.
+func TestDrainToLogReportsFaultOnATruncatedLine(t *testing.T) {
+	logs := newCaptureLog()
+
+	// One over-cap chunk that faults on that same read (so readBoundedLine sees
+	// truncation AND a non-EOF fault together), then EOF. errReadFailed stands
+	// in for the pipe fault, exactly as the propagation test injects it.
+	over := bytes.Repeat([]byte("x"), maxLoggedLine+1) // no '\n': forces the cap overrun
+	src := &truncatedFaultReader{chunk: over, err: errReadFailed}
+
+	// context.Background() as the test root — the rule's explicit test exemption.
+	s := &AgentStream{sessionID: "sess-trunc-fault"}
+	s.drainToLog(context.Background(), src, "agent stdout", logs.logger())
+
+	var msgs []string
+	for draining := true; draining; {
+		select {
+		case l := <-logs.lines:
+			msgs = append(msgs, l.msg)
+		default:
+			draining = false
+		}
+	}
+	if !slices.ContainsFunc(msgs, func(m string) bool { return strings.Contains(m, "drain ended early") }) {
+		t.Fatalf("a genuine fault on a truncated line was swallowed as a clean exit: records = %v", msgs)
+	}
+}
+
+// truncatedFaultReader serves chunk across as many reads as the caller's buffer
+// needs, and returns the non-EOF err together with the read that delivers the
+// final bytes (the io.Reader contract permits n>0 with a non-nil err). So a
+// caller that runs past the cap sees truncation AND the fault on the same read;
+// every read after is a clean EOF. failingReader can't reach this shape — it
+// faults only on a read AFTER its data, and serves one buffer, so it can neither
+// exceed the cap nor carry the fault on the truncated line itself.
+type truncatedFaultReader struct {
+	chunk []byte
+	err   error
+	off   int
+}
+
+func (r *truncatedFaultReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.chunk) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.chunk[r.off:])
+	r.off += n
+	if r.off >= len(r.chunk) {
+		return n, r.err // the read that finishes the over-cap line also faults
+	}
+	return n, nil
 }
 
 // The counterpart: a cancelled ctx is teardown, not a fault, so it stays quiet.
