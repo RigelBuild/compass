@@ -295,14 +295,15 @@ func (c *Comms) ListMessages(
 	ctx context.Context,
 	req *connect.Request[compassv1.ListMessagesRequest],
 ) (*connect.Response[compassv1.ListMessagesResponse], error) {
-	// Container is channel-only (OQ-C). Visibility is enforced in the store's
-	// read path, scoped to the actor (D9 not-found/forbidden merge).
-	msgs, err := c.store.ListMessages(ctx, c.actorFromContext(ctx), store.ContainerRef{
+	msgs, err := c.store.ListMessages(ctx, store.ListMessagesQuery{
+		Actor:     c.actorFromContext(ctx),
 		ChannelID: store.ChannelID(req.Msg.GetChannelId()),
-	}, store.Page{
-		Limit:           req.Msg.GetLimit(),
-		BeforeMessageID: store.MessageID(req.Msg.GetBeforeMessageId()),
-		SnapshotSeq:     req.Msg.GetSnapshotSeq(),
+		TopicID:   req.Msg.GetTopicId(),
+		Page: store.Page{
+			Limit:           req.Msg.GetLimit(),
+			BeforeMessageID: store.MessageID(req.Msg.GetBeforeMessageId()),
+			SnapshotSeq:     req.Msg.GetSnapshotSeq(),
+		},
 	})
 	if err != nil {
 		return nil, edgeError(err)
@@ -321,10 +322,11 @@ func (c *Comms) PostMessage(
 		return nil, err
 	}
 	msg, inserted, err := c.store.AppendMessage(ctx, store.Message{
-		Container:       store.ContainerRef{ChannelID: store.ChannelID(req.Msg.GetChannelId())},
 		AuthorAccountID: c.actorFromContext(ctx),
 		Blocks:          blocks,
-		ParentMessageID: store.MessageID(req.Msg.GetParentMessageId()),
+	}, req.Msg.GetChannelId(), store.TopicRef{
+		ID:   req.Msg.GetTopicId(),
+		Name: req.Msg.GetTopicName(),
 	}, req.Msg.GetClientRequestId())
 	if err != nil {
 		return nil, edgeError(err)
@@ -393,6 +395,37 @@ func (c *Comms) SearchMessages(
 		return nil, edgeError(err)
 	}
 	return connect.NewResponse(&compassv1.SearchMessagesResponse{Messages: messagesToWire(msgs)}), nil
+}
+
+// ---- topic RPCs (D5) ----
+
+// ListTopics lists the topics of a channel visible to the caller (store-scoped:
+// the caller must be a member of the channel). includeArchived controls whether
+// the tidiness-archived topics are returned.
+func (c *Comms) ListTopics(
+	ctx context.Context,
+	req *connect.Request[compassv1.ListTopicsRequest],
+) (*connect.Response[compassv1.ListTopicsResponse], error) {
+	topics, err := c.store.ListTopics(ctx, string(c.actorFromContext(ctx)), req.Msg.GetChannelId(), req.Msg.GetIncludeArchived())
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	return connect.NewResponse(&compassv1.ListTopicsResponse{Topics: topicsToWire(topics)}), nil
+}
+
+// UpdateTopic renames and/or archives a topic, caller-authorized against the
+// topic's channel by the store; emits TopicUpserted (write-through, only on a
+// successful commit) so the live topic index stays current.
+func (c *Comms) UpdateTopic(
+	ctx context.Context,
+	req *connect.Request[compassv1.UpdateTopicRequest],
+) (*connect.Response[compassv1.UpdateTopicResponse], error) {
+	topic, err := c.store.UpdateTopic(ctx, string(c.actorFromContext(ctx)), req.Msg.GetTopicId(), req.Msg.Name, req.Msg.Archived)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.publishTopicUpserted(topic)
+	return connect.NewResponse(&compassv1.UpdateTopicResponse{Topic: topicToWire(topic)}), nil
 }
 
 // SubscribeComms is implemented in subscribe.go.

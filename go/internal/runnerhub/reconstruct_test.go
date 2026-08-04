@@ -76,7 +76,7 @@ func (f *fakeTranscriptReader) ReadArchiveSegment(_ context.Context, objectKey s
 // newHubWithReader builds a hub whose TranscriptReader is the returned fake
 // (wired post-construction via SetTranscriptReader, the real wiring path).
 func newHubWithReader(r *fakeTranscriptReader) *Hub {
-	hub := NewHub(&fakeConversationSink{}, &fakeLifecycleSink{}, &fakeTailSink{}, &fakeCommsCaller{}, discardLogger())
+	hub := NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, &fakeCommsCaller{}, discardLogger())
 	hub.SetTranscriptReader(r)
 	return hub
 }

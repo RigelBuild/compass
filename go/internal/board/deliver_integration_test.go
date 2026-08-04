@@ -20,17 +20,7 @@ import (
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/runnerhub"
-	"github.com/sealedsecurity/compass/go/internal/store"
 )
-
-// noopConversationSink is a do-nothing ConversationSink: this seam test targets
-// only the lifecycle + tail path, so the comms sink must exist but record
-// nothing.
-type noopConversationSink struct{}
-
-func (noopConversationSink) PostAgentMessage(_ context.Context, _ store.AccountID, _ string, _ string, _ *compassv1.MessagePosted, _ *compassv1.MessageUpdated) error {
-	return nil
-}
 
 // noopTailSink is a do-nothing SessionTailSink: a session frame is also a trace
 // frame, so the hub relays it here; the seam under test does not assert on it.
@@ -57,7 +47,7 @@ func stateFrame(state compassv1.AgentSessionState) *compassv1internal.AgentFrame
 // independently.
 func TestDeliverStateFrameRecordsAndFans(t *testing.T) {
 	brd, bus := newBoard(t)
-	hub := runnerhub.NewHub(noopConversationSink{}, brd, noopTailSink{}, nil, nil)
+	hub := runnerhub.NewHub(brd, noopTailSink{}, nil, nil)
 
 	sub, err := bus.Subscribe(0, bus.InstanceEpoch())
 	if err != nil {
@@ -95,7 +85,7 @@ func TestDeliverStateFrameRecordsAndFans(t *testing.T) {
 // an AgentSessionStatus for an UNSPECIFIED frame reddens both halves.
 func TestDeliverUnspecifiedFrameNeitherRecordsNorFans(t *testing.T) {
 	brd, bus := newBoard(t)
-	hub := runnerhub.NewHub(noopConversationSink{}, brd, noopTailSink{}, nil, nil)
+	hub := runnerhub.NewHub(brd, noopTailSink{}, nil, nil)
 
 	sub, err := bus.Subscribe(0, bus.InstanceEpoch())
 	if err != nil {

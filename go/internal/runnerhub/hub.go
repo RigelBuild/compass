@@ -21,8 +21,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"connectrpc.com/connect"
-
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/store"
@@ -41,60 +39,6 @@ type RunnerEvent struct {
 	SessionID string
 	// Frame is the relayed agent stdout frame, verbatim.
 	Frame *compassv1internal.AgentFrame
-	// IdempotencyKey is the agent-minted key for a durable conversation frame
-	// (the durable PostConversationFrame path), populated from
-	// PublishEventsRequest.idempotency_key. Empty for trace/session frames. The
-	// Runner's gateway carries it (SEA-1364 C2); the hub threads it into the
-	// ConversationSink so the conversation write-through commits KEYED at the
-	// comms store's (author_account_id, client_request_id) unique constraint —
-	// the frozen at-most-once invariant. The sink-ack swap (SEA-1561) later
-	// retires this Publish-spine Deliver path for the CommitConversationFrame
-	// unary, at which point the key rides that unary instead.
-	IdempotencyKey string
-}
-
-// ConversationSink write-throughs a durable conversation frame (an agent text
-// reply or an ask) to the comms store of record and the comms event bus — the
-// same write-through PostMessage performs, so a conversation the agent emits is
-// indistinguishable downstream from one a human posted. The comms package
-// implements it; the hub depends only on this narrow surface so it does not pull
-// the whole CommsService in.
-//
-// The sink takes the RESOLVED account, not just the session id: the hub owns the
-// session->account binding and resolves it once at the Deliver site, exactly as
-// RelayCommsCall does (relay_comms.go). Handing the sink a session id to resolve
-// for itself would put the binding in two places, which is how attribution
-// drifts — so the account is resolved here and passed, and the sink never looks
-// a session up.
-type ConversationSink interface {
-	// PostAgentMessage commits a conversation posted/updated event to the store
-	// and fans it out on the comms bus, under account — the agent account the
-	// hub resolved the frame's session to. Exactly one of posted/updated is
-	// non-nil: posted is a new message (MessagePosted), updated an edit to one
-	// being composed (MessageUpdated). sessionID is carried for diagnostics
-	// only; account is the authority.
-	//
-	// ERROR VOCABULARY — REQUIRED OF EVERY IMPLEMENTATION. Deliver classifies a
-	// returned error by its CONNECT CODE alone (isFrameRefusal,
-	// isContractDefect), so an implementation MUST return connect errors whose
-	// codes carry the intended meaning — in practice by routing every store
-	// error through the comms package's edgeError mapping, exactly as a human
-	// caller's RPC does. The code decides the frame's fate:
-	//
-	//   - NotFound / InvalidArgument → a per-frame refusal: the frame is
-	//     dropped and counted, and the relay stream carries on.
-	//   - FailedPrecondition → a contract defect: also dropped and counted, but
-	//     against a separate counter and logged as a systemic misconfiguration,
-	//     because a defect afflicts every frame rather than this one.
-	//   - anything else, INCLUDING an unmapped bare error → an infrastructure
-	//     fault: it ENDS the Runner's PublishEvents stream so the relay retries.
-	//
-	// That last clause is the fail-safe and it is deliberate: connect.CodeOf
-	// reports CodeUnknown for a plain errors.New, so a sink that forgets the
-	// mapping tears the stream down loudly instead of having its errors silently
-	// reinterpreted as "the frame was bad". Never return a bare error to mean a
-	// refusal — say it with a code.
-	PostAgentMessage(ctx context.Context, account store.AccountID, sessionID string, idempotencyKey string, msg *compassv1.MessagePosted, updated *compassv1.MessageUpdated) error
 }
 
 // LifecycleSink publishes an extracted agent-session lifecycle transition onto
@@ -182,7 +126,7 @@ type PresenceSink interface {
 // DeliveryStore is the durable delivery-cursor surface the hub's ack arm needs
 // (SEA-1569 T3 §6): resolve a delivered message's channel and advance the
 // per-(agent, channel) cursor on the recipient's ack. *store.Store implements
-// it; the hub depends only on this narrow surface (pattern: ConversationSink).
+// it; the hub depends only on this narrow surface (pattern: LifecycleSink).
 // Wired via SetDeliveryStore after construction so no NewHub caller signature
 // changes, and nil-safe: a hub with no delivery store simply drops delivery_ack
 // frames (a Deliver-only test hub never receives one).
@@ -253,24 +197,13 @@ type SessionTailSink interface {
 // account. The comms package implements it over the same PostMessage /
 // ListMessages handler paths a human caller takes, so authz (D9), idempotency,
 // and event fan-out are identical — the hub depends only on this narrow surface
-// so it does not pull the whole CommsService in (pattern: ConversationSink). It
+// so it does not pull the whole CommsService in (pattern: LifecycleSink). It
 // is the safe Runner->Server leg: the account is resolved Server-side from the
 // hub's own binding, never asserted by the Runner (transport design Decision #3
 // / OQ-2, comms-tools design T2).
 type CommsCaller interface {
 	PostAsAccount(ctx context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error)
 	ListAsAccount(ctx context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error)
-	// CommitAgentPostKeyed / CommitAgentUpdateKeyed serve CommitConversationFrame
-	// AND the Deliver-path ConversationSink — the DURABLE, at-most-once commit.
-	// They take the agent-minted idempotency_key the Runner forwards and thread it
-	// (POST) or deliberately do not (UPDATE, idempotent by replacement — see the
-	// comms implementation) so a retried frame commits at most once.
-	// CommitAgentUpdateKeyed is a thin pass-through to the unkeyed CommitAgentUpdate
-	// (which stays the live update implementation); CommitAgentPostKeyed posts
-	// directly, so the unkeyed CommitAgentPost survives only as a test helper
-	// (agent_caller.go).
-	CommitAgentPostKeyed(ctx context.Context, account store.AccountID, posted *compassv1.MessagePosted, idempotencyKey string) (*compassv1.PostMessageResponse, error)
-	CommitAgentUpdateKeyed(ctx context.Context, account store.AccountID, updated *compassv1.MessageUpdated, idempotencyKey string) (*compassv1.MessageUpdated, error)
 }
 
 // Hub is the Server-side seam: enrollment registry + command router + the
@@ -278,11 +211,10 @@ type CommsCaller interface {
 // concurrent use — the registry and bindings mutate under a mutex and the sinks
 // are each concurrency-safe.
 type Hub struct {
-	conversation ConversationSink
-	lifecycle    LifecycleSink
-	tail         SessionTailSink
-	comms        CommsCaller
-	log          *slog.Logger
+	lifecycle LifecycleSink
+	tail      SessionTailSink
+	comms     CommsCaller
+	log       *slog.Logger
 	// settle is the delivery consumer's settle-edge sink (SEA-1569 T3), notified
 	// at deliverSession right after the LifecycleSink publish. Nil until
 	// SetSettleSink wires it (after both hub and consumer exist), and read under
@@ -359,26 +291,10 @@ type Hub struct {
 	// unknownFrames counts frames whose oneof variant was unset or unrecognized
 	// — logged and counted, never silently dropped (agent.proto:38-39).
 	unknownFrames uint64
-	// refusedFrames counts conversation frames the write-through refused as ONE
-	// bad frame — an unresolvable session, or a per-frame rejection from the
-	// comms layer (cross-account, revoked member, malformed frame). Each is a
-	// non-fatal drop: logged and counted, never silently swallowed, and never a
-	// stream teardown (that is reserved for store/transaction faults).
-	refusedFrames uint64
-	// contractDefects counts conversation frames dropped because the agent and
-	// the Server disagree about the frame's SHAPE — a relayed update carrying no
-	// message id, or a session bound to a non-agent account. These are wiring
-	// skew, not per-frame garbage: unlike a refusal, EVERY frame carries the
-	// same defect, so a non-zero count means the relay is committing nothing at
-	// all. Counted separately from refusedFrames precisely so total loss cannot
-	// masquerade as a healthy relay refusing the occasional frame.
-	contractDefects uint64
 	// droppedAcks counts delivery_ack frames dropped — an empty or unresolvable
 	// message id, an unbound acking session, or a cursor-advance store fault. A
-	// delivery_ack is NOT a conversation frame, so it stays out of refusedFrames:
-	// folding it in would muddy that bucket and mislead an operator scanning for
-	// authz boundaries. A missed ack costs only a redundant redeliver on the
-	// recipient's next reconnect sweep, never a teardown.
+	// missed ack costs only a redundant redeliver on the recipient's next
+	// reconnect sweep, never a teardown.
 	droppedAcks uint64
 	// secretsVersion is the monotonic set-change token minted for the
 	// SecretsVersion signal (mintSecretsVersion). An atomic counter, not a
@@ -394,18 +310,17 @@ type attachedRunner struct {
 	router  *commandRouter
 }
 
-// NewHub constructs a hub over the three write-through sinks and the agent-comms
+// NewHub constructs a hub over the two write-through sinks and the agent-comms
 // caller. comms executes agent-initiated comms calls under the account a session
 // resolves to (RelayCommsCall); it may be nil for a hub that never serves comms
 // (e.g. a Deliver-only test), in which case RelayCommsCall fails closed. log is
 // used for unknown-frame and gap diagnostics; a nil log falls back to
 // slog.Default.
-func NewHub(conversation ConversationSink, lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, log *slog.Logger) *Hub {
+func NewHub(lifecycle LifecycleSink, tail SessionTailSink, comms CommsCaller, log *slog.Logger) *Hub {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &Hub{
-		conversation:      conversation,
 		lifecycle:         lifecycle,
 		tail:              tail,
 		comms:             comms,
@@ -499,23 +414,15 @@ func (h *Hub) SetLifecycleCaller(c LifecycleCaller) {
 // Deliver is the sole entry point a relayed Runner event takes into the Server.
 // It records the Runner sequence (detecting gaps), classifies the frame by its
 // set oneof variant, and write-throughs each variant to the surface that owns
-// it: a conversation frame → the comms store + bus; a session frame → the
-// session-tail stream, plus its extracted lifecycle state → SubscribeEvents; a
-// frame whose variant is unset or unrecognized is logged and counted, never
-// silently dropped (design.md:1427-1434, agent.proto:38-39).
-//
-// A returned error ENDS the Runner's PublishEvents stream (handler.go:99-104),
-// so only a fault the relay should retry is returned: a per-frame refusal is a
-// non-fatal drop (deliverConversation), never a teardown.
+// it: a session frame → the session-tail stream, plus its extracted lifecycle
+// state → SubscribeEvents; a delivery_ack → the durable delivery cursor; a frame
+// whose variant is unset or unrecognized is logged and counted, never silently
+// dropped (design.md:1427-1434, agent.proto:38-39).
 func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	h.recordSeq(ev.RunnerSeq)
 
 	frame := ev.Frame
 	switch f := frame.GetFrame().(type) {
-	case *compassv1internal.AgentFrame_ConversationPosted:
-		return h.deliverConversation(ctx, ev, f.ConversationPosted, nil)
-	case *compassv1internal.AgentFrame_ConversationUpdated:
-		return h.deliverConversation(ctx, ev, nil, f.ConversationUpdated)
 	case *compassv1internal.AgentFrame_Session:
 		h.deliverSession(ev.SessionID, f.Session)
 		return nil
@@ -529,39 +436,6 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 		h.countUnknown(ev)
 		return nil
 	}
-}
-
-// isFrameRefusal reports whether err is a per-frame rejection rather than an
-// infrastructure fault. The write-through surfaces comms/store errors through
-// the same edgeError mapping a human caller gets, so the Connect code IS the
-// classification: NotFound is the D9 collapse (an unknown message, a foreign
-// one, or one whose channel membership was revoked) and InvalidArgument a
-// malformed frame (empty block set, an ask missing its immutable id). Neither is
-// retriable and neither implicates the transport. Everything else — notably
-// CodeInternal from a failed transaction — is a real fault the relay should
-// retry, so it is NOT swallowed.
-func isFrameRefusal(err error) bool {
-	switch connect.CodeOf(err) {
-	case connect.CodeNotFound, connect.CodeInvalidArgument:
-		return true
-	default:
-		return false
-	}
-}
-
-// isContractDefect reports whether err is a structural skew between the relay's
-// ends rather than one bad frame: CodeFailedPrecondition is the vocabulary a
-// sink uses for a request that is impossible as posed, not merely refused — a
-// session bound to a NON-AGENT account (comms/agent_caller.go homeChannel), which
-// no retry and no other frame can fix.
-//
-// The distinction matters because the two buckets answer different operator
-// questions. A rising refusedFrames says "an authz boundary is being hit"; a
-// rising contractDefects says "this relay is committing nothing, go fix the
-// wiring". Collapsing them, as the pre-review code did, made those two states
-// indistinguishable.
-func isContractDefect(err error) bool {
-	return connect.CodeOf(err) == connect.CodeFailedPrecondition
 }
 
 // SeenGap reports whether Deliver ever observed a Runner-sequence gap. For the
@@ -579,37 +453,10 @@ func (h *Hub) UnknownFrames() uint64 {
 	return h.unknownFrames
 }
 
-// RefusedFrames reports the count of conversation frames the write-through
-// refused — an unresolvable session, or a per-frame rejection from the comms
-// layer. Non-zero is meaningful: a healthy relay refuses nothing, so a rising
-// count is either a real authz boundary being hit or a wiring skew worth
-// investigating (the diagnostic sibling of UnknownFrames).
-func (h *Hub) RefusedFrames() uint64 {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.refusedFrames
-}
-
-// ContractDefects reports the count of conversation frames dropped because the
-// relay's two ends disagree about the frame's shape — an id-less relayed update,
-// or a session bound to a non-agent account. It reads differently from
-// RefusedFrames on purpose: a refusal is one bad frame, a defect is a broken
-// relay, and on the current base EVERY agent turn is a defect (the agent emits
-// id-less updates and no hop stamps an id — see deliverConversation's shape
-// check). So a defect count that tracks the frame count means nothing is
-// committing at all.
-func (h *Hub) ContractDefects() uint64 {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.contractDefects
-}
-
 // DroppedAcks reports the count of delivery_ack frames dropped — an empty or
 // unresolvable message id, an unbound acking session, or a cursor-advance store
-// fault. Kept out of RefusedFrames on purpose: an ack is not a conversation
-// frame, and a missed ack costs only a redundant redeliver on the recipient's
-// next reconnect sweep, so folding it into the conversation-frame bucket would
-// mislead an operator reading that count.
+// fault. A missed ack costs only a redundant redeliver on the recipient's next
+// reconnect sweep.
 func (h *Hub) DroppedAcks() uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -618,26 +465,20 @@ func (h *Hub) DroppedAcks() uint64 {
 
 // FrameDiagnostics is the hub's frame-loss snapshot: every way a relayed frame
 // fails to reach its surface, plus the in-transit gap flag, read together under
-// one lock so the four values describe the same instant. Reading the accessors
-// one by one would interleave with Deliver and could report a gap without the
-// drop that accompanied it.
+// one lock so the values describe the same instant. Reading the accessors one by
+// one would interleave with Deliver and could report a gap without the drop that
+// accompanied it.
 type FrameDiagnostics struct {
 	// SeenGap is true once a Runner-sequence gap was observed (in-transit loss
 	// the Client bus resync recovers).
 	SeenGap bool
 	// UnknownFrames counts frames whose oneof variant was unset or unrecognized.
 	UnknownFrames uint64
-	// RefusedFrames counts conversation frames refused as one bad frame.
-	RefusedFrames uint64
-	// ContractDefects counts conversation frames dropped for relay wiring skew.
-	// Non-zero and rising is the loud one: the relay is committing nothing.
-	ContractDefects uint64
-	// DroppedAcks counts delivery_ack frames dropped — separate from
-	// RefusedFrames because an ack is not a conversation frame.
+	// DroppedAcks counts delivery_ack frames dropped.
 	DroppedAcks uint64
 }
 
-// FrameDiagnostics returns the frame-loss snapshot. It exists because the three
+// FrameDiagnostics returns the frame-loss snapshot. It exists because the
 // counters had no non-test reader: total frame loss was observable only by
 // reading warn logs, which is no way to answer "is this relay committing
 // anything". serve.go logs this snapshot on shutdown (sinks.go,
@@ -647,89 +488,10 @@ func (h *Hub) FrameDiagnostics() FrameDiagnostics {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return FrameDiagnostics{
-		SeenGap:         h.seenGap,
-		UnknownFrames:   h.unknownFrames,
-		RefusedFrames:   h.refusedFrames,
-		ContractDefects: h.contractDefects,
-		DroppedAcks:     h.droppedAcks,
+		SeenGap:       h.seenGap,
+		UnknownFrames: h.unknownFrames,
+		DroppedAcks:   h.droppedAcks,
 	}
-}
-
-// deliverConversation resolves the frame's session to its agent account and
-// write-throughs the frame under that account, classifying any failure.
-//
-// Resolution is the SAME binding RelayCommsCall resolves against
-// (accountForSession, relay_comms.go:78) and it happens HERE, once, rather than
-// inside the sink: the hub owns the session->account binding, and a second
-// resolution site is how attribution drifts.
-//
-// Fail closed on an unbound session. The account is the agent's IDENTITY on a
-// durable, fanned-out row — there is no safe default, so an unresolvable session
-// is refused outright rather than committed under a fallback. This mirrors
-// errNoActor (comms/agent_caller.go): a missing actor is a hard refusal
-// precisely so a wiring bug cannot quietly attribute an agent's words to the
-// bootstrap admin. The refusal is a DROP, not a teardown — one frame the Server
-// cannot attribute must not kill the Runner's whole event stream.
-//
-// KNOWN CONSEQUENCE, deliberate — do not "fix" it with a fallback. enroll()
-// (:269) calls clear(h.sessionAccounts) on every Runner re-enroll, because
-// session ids are Runner-minted and a restarted Runner can re-mint an id still
-// bound here; clearing is what stops the new session's words being attributed to
-// the previous account. So a frame in flight across a Runner reconnect resolves
-// to nothing and lands on this refusal path. That is the ruled behavior (OQ-2,
-// ratified). Reintroducing any fallback here — a default account, a retained
-// stale binding — would reopen exactly the misattribution the clear() exists to
-// close. The right fix is Runner-side session resume, which is another lane's
-// work; it re-binds the session and this path then resolves normally.
-func (h *Hub) deliverConversation(
-	ctx context.Context,
-	ev RunnerEvent,
-	posted *compassv1.MessagePosted,
-	updated *compassv1.MessageUpdated,
-) error {
-	account, ok := h.accountForSession(ev.SessionID)
-	if !ok {
-		h.countRefused(ev, "no agent account bound to the frame's session")
-		return nil
-	}
-	// Frame-shape check BEFORE the sink. An update names the row it edits by
-	// message.id, so an id-less one addresses nothing and there is no write to
-	// attempt — the comms layer would reject it as InvalidArgument, which is
-	// indistinguishable here from an ordinary malformed frame. Checking the shape
-	// at the seam is what lets the hub name the real cause, and this is the
-	// SOLE frame shape the production agent emits today (see contractDefect's
-	// doc and contract_defect_test.go), so misclassifying it would report 100%
-	// frame loss as routine refusals.
-	if updated != nil && updated.GetMessage().GetId() == "" {
-		h.countContractDefect(ev, "relayed conversation_updated carries no message.id, so it addresses no row and nothing can commit")
-		return nil
-	}
-	if err := h.conversation.PostAgentMessage(ctx, account, ev.SessionID, ev.IdempotencyKey, posted, updated); err != nil {
-		switch {
-		case isContractDefect(err):
-			// Not this frame's fault: the relay is wired wrong (a session bound
-			// to a non-agent account, a Server-side dispatch skew). Still a
-			// drop, because every frame carries the same defect and a teardown
-			// would kill the relay outright — but counted and logged as the
-			// systemic fault it is.
-			h.countContractDefect(ev, err.Error())
-			return nil
-		case isFrameRefusal(err):
-			// One frame the comms layer rejected — a cross-account or revoked
-			// -member edit, or a malformed frame. It is specific to this frame,
-			// so retrying the relay would only replay the same rejection: drop
-			// and count it, and let the stream carry the next frame.
-			h.countRefused(ev, err.Error())
-			return nil
-		}
-		// Not frame-specific (a store or transaction fault), or unclassified
-		// (an error that never met edgeError, which connect.CodeOf reports as
-		// CodeUnknown): end the stream so the Runner retries the relay rather
-		// than losing the frame. An error the Server cannot classify is never
-		// assumed to be the frame's fault.
-		return err
-	}
-	return nil
 }
 
 // deliverSession routes a session frame to the observation-pane tail and, when
@@ -779,7 +541,7 @@ func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFram
 // deliverAck advances the durable delivery cursor for a recipient's
 // delivery_ack (SEA-1569 T3 §6): the Runner->Server receipt that a relayed
 // deliver reached the session. It resolves session->agent from the hub's own
-// binding (the SAME binding deliverConversation resolves against), resolves the
+// binding (the SAME binding RelayCommsCall resolves against), resolves the
 // acked message's channel through the delivery store (the ack carries only
 // message_id, but AckDelivery is keyed (agent, channel, message_id)), then
 // advances the cursor. Fail-closed and non-fatal throughout, mirroring the
@@ -855,30 +617,10 @@ func (h *Hub) countUnknown(ev RunnerEvent) {
 		slog.Uint64("unknown_total", n))
 }
 
-// countRefused records and logs a refused conversation frame — the write-through
-// counterpart of countUnknown, and the same posture: the frame is dropped, but
-// the drop is COUNTED and LOGGED so it is observable. A refusal is never silent,
-// because silence here would hide both a real authz boundary being hit and a
-// binding/wiring skew that is losing an agent's words.
-func (h *Hub) countRefused(ev RunnerEvent, reason string) {
-	h.mu.Lock()
-	h.refusedFrames++
-	n := h.refusedFrames
-	h.mu.Unlock()
-	h.log.Warn("refused relayed conversation frame (dropped, stream continues)",
-		slog.String("session_id", ev.SessionID),
-		slog.Uint64("runner_seq", ev.RunnerSeq),
-		slog.String("reason", reason),
-		slog.Uint64("refused_total", n))
-}
-
-// countDroppedAck records and logs a dropped delivery_ack — the ack-arm
-// counterpart of countRefused, and the same non-fatal posture: the ack is
-// dropped, the drop is COUNTED and LOGGED so it is observable, and the stream
-// lives. Kept distinct from countRefused because a delivery_ack is not a
-// conversation frame: folding it into refusedFrames would muddy that bucket and
-// emit a misleading "conversation frame" line. A missed ack costs only a
-// redundant redeliver on the recipient's next reconnect sweep, never a teardown.
+// countDroppedAck records and logs a dropped delivery_ack: the ack is dropped,
+// the drop is COUNTED and LOGGED so it is observable, and the stream lives. A
+// missed ack costs only a redundant redeliver on the recipient's next reconnect
+// sweep, never a teardown.
 func (h *Hub) countDroppedAck(ev RunnerEvent, reason string) {
 	h.mu.Lock()
 	h.droppedAcks++
@@ -889,34 +631,6 @@ func (h *Hub) countDroppedAck(ev RunnerEvent, reason string) {
 		slog.Uint64("runner_seq", ev.RunnerSeq),
 		slog.String("reason", reason),
 		slog.Uint64("dropped_ack_total", n))
-}
-
-// countContractDefect records and logs a conversation frame dropped for relay
-// wiring skew. Same non-fatal posture as countRefused — the frame is dropped and
-// the stream lives — but a deliberately louder line, because the two say very
-// different things to whoever reads them.
-//
-// countRefused's line means "one frame was rejected"; a reader can reasonably
-// ignore it. THIS line means the relay's two ends disagree structurally, so every
-// frame is being lost and no retry, redeploy, or next frame will change that.
-// The message therefore states the consequence outright rather than naming the
-// frame: an operator scanning logs must not have to infer total data loss from a
-// counter they were never told to watch.
-//
-// Error, not Warn: a refusal is expected traffic on a healthy system, a contract
-// defect never is. It stays non-fatal all the same — returning an error here
-// would end the Runner's PublishEvents stream on the FIRST agent turn, since on
-// the current base every turn carries the defect.
-func (h *Hub) countContractDefect(ev RunnerEvent, reason string) {
-	h.mu.Lock()
-	h.contractDefects++
-	n := h.contractDefects
-	h.mu.Unlock()
-	h.log.Error("agent conversation relay is misconfigured: NOTHING is being committed to comms",
-		slog.String("session_id", ev.SessionID),
-		slog.Uint64("runner_seq", ev.RunnerSeq),
-		slog.String("defect", reason),
-		slog.Uint64("contract_defect_total", n))
 }
 
 // promotedPair is one (account -> session) binding snapshotted under h.mu so its

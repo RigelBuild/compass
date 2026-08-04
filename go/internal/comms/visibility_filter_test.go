@@ -98,26 +98,38 @@ func drainReplayAsActor(t *testing.T, h streamHarness, actor store.AccountID, ca
 	}
 }
 
-// messagePostedChannels / messageUpdatedChannels / channelChanges /
-// channelGroupChanges / accountChanges pull the channel/group/account ids out of
-// one variant of a collected event slice, so a case asserts on presence/absence
-// of exactly the variant it means to.
+// messagePostedTopics / messageUpdatedTopics / channelChanges /
+// channelGroupChanges / accountChanges pull the topic/channel/group/account ids
+// out of one variant of a collected event slice, so a case asserts on
+// presence/absence of exactly the variant it means to. A message carries only
+// its topic now, so the message variants key on topic id (the channel is
+// resolved through the topic server-side).
 
-func messagePostedChannels(evts []*compassv1.SubscribeCommsResponse) []string {
+func messagePostedTopics(evts []*compassv1.SubscribeCommsResponse) []string {
 	var out []string
 	for _, e := range evts {
 		if mp := e.GetMessagePosted(); mp != nil {
-			out = append(out, mp.GetMessage().GetChannelId())
+			out = append(out, mp.GetMessage().GetTopicId())
 		}
 	}
 	return out
 }
 
-func messageUpdatedChannels(evts []*compassv1.SubscribeCommsResponse) []string {
+func messageUpdatedTopics(evts []*compassv1.SubscribeCommsResponse) []string {
 	var out []string
 	for _, e := range evts {
 		if mu := e.GetMessageUpdated(); mu != nil {
-			out = append(out, mu.GetMessage().GetChannelId())
+			out = append(out, mu.GetMessage().GetTopicId())
+		}
+	}
+	return out
+}
+
+func topicUpsertedIDs(evts []*compassv1.SubscribeCommsResponse) []string {
+	var out []string
+	for _, e := range evts {
+		if tu := e.GetTopicUpserted(); tu != nil {
+			out = append(out, tu.GetTopic().GetId())
 		}
 	}
 	return out
@@ -174,21 +186,24 @@ func TestSubscribeCommsPrivateMessageLeakBlocked(t *testing.T) {
 		t.Fatalf("CreateChannel(private): %v", err)
 	}
 
-	// A posts a plain message (MessagePosted) ...
-	if _, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+	// A posts a plain message (MessagePosted) into a named topic ...
+	posted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{
 		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)},
+		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
 		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}},
-	})); err != nil {
+	}))
+	if err != nil {
 		t.Fatalf("PostMessage: %v", err)
 	}
+	// The private topic both the post and the ask land in: a message carries only
+	// its topic now, so the leak assertion correlates on this topic id (the
+	// channel is resolved through it server-side).
+	privTopic := posted.Msg.GetMessage().GetTopicId()
 	// ... and answers a pending ask so the same channel also emits a
 	// MessageUpdated (the second gated variant). The ask message is seeded
 	// directly in the store (no event needed for it); RespondToAsk through the
 	// handler publishes the MessageUpdated.
-	if _, _, err := h.store.AppendMessage(ctx, store.Message{
-		Container: store.ContainerRef{ChannelID: priv.ID}, AuthorAccountID: memberA.ID,
-		Blocks: []store.MessageBlock{pendingAskStore("ask-leak")},
-	}, ""); err != nil {
+	if _, _, err := h.store.AppendMessage(ctx, store.Message{AuthorAccountID: memberA.ID, Blocks: []store.MessageBlock{pendingAskStore("ask-leak")}}, string(priv.ID), store.TopicRef{ID: privTopic}, ""); err != nil {
 		t.Fatalf("AppendMessage(ask): %v", err)
 	}
 	if _, err := h.svc.RespondToAsk(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.RespondToAskRequest{
@@ -202,20 +217,79 @@ func TestSubscribeCommsPrivateMessageLeakBlocked(t *testing.T) {
 
 	// The member sees both the post and the update for the private channel.
 	memberEvts := drainReplayAsActor(t, h, memberA.ID, canary)
-	if got := messagePostedChannels(memberEvts); !containsString(got, string(priv.ID)) {
-		t.Fatalf("member did not receive MessagePosted for its own channel; posted-channels = %v", got)
+	if got := messagePostedTopics(memberEvts); !containsString(got, privTopic) {
+		t.Fatalf("member did not receive MessagePosted for its own topic; posted-topics = %v", got)
 	}
-	if got := messageUpdatedChannels(memberEvts); !containsString(got, string(priv.ID)) {
-		t.Fatalf("member did not receive MessageUpdated for its own channel; updated-channels = %v", got)
+	if got := messageUpdatedTopics(memberEvts); !containsString(got, privTopic) {
+		t.Fatalf("member did not receive MessageUpdated for its own topic; updated-topics = %v", got)
 	}
 
 	// The non-member sees NEITHER — the leak the filter defends.
 	outsiderEvts := drainReplayAsActor(t, h, outsiderB.ID, canary)
-	if got := messagePostedChannels(outsiderEvts); containsString(got, string(priv.ID)) {
-		t.Fatalf("LEAK: non-member received MessagePosted for a private channel; posted-channels = %v", got)
+	if got := messagePostedTopics(outsiderEvts); containsString(got, privTopic) {
+		t.Fatalf("LEAK: non-member received MessagePosted for a private topic; posted-topics = %v", got)
 	}
-	if got := messageUpdatedChannels(outsiderEvts); containsString(got, string(priv.ID)) {
-		t.Fatalf("LEAK: non-member received MessageUpdated for a private channel; updated-channels = %v", got)
+	if got := messageUpdatedTopics(outsiderEvts); containsString(got, privTopic) {
+		t.Fatalf("LEAK: non-member received MessageUpdated for a private topic; updated-topics = %v", got)
+	}
+}
+
+// TestSubscribeCommsPrivateTopicUpsertedLeakBlocked is the third gated-variant
+// leak regression (after the MessagePosted/MessageUpdated and ChannelChanged
+// cases): a non-member of a private channel MUST NOT receive its TopicUpserted
+// over SubscribeComms, while a member MUST. A topic rename fans a TopicUpserted
+// carrying the topic's name to the shared bus; only visibleToActor's
+// IsChannelMember gate (resolving the topic's channel) stops the private topic's
+// name/rename leaking to a non-member. Against a regressed forwardComms that
+// drops the TopicUpserted branch the event reaches the non-member — this reddens
+// on B's collected set, at read-parity with ListTopics.
+func TestSubscribeCommsPrivateTopicUpsertedLeakBlocked(t *testing.T) {
+	h := newStreamHarness(t)
+	ctx := context.Background()
+
+	memberA := mustUser(t, h.store, "member-a")
+	outsiderB := mustUser(t, h.store, "outsider-b")
+
+	// A private, ungrouped channel: A is the sole founding member, B is not.
+	priv, err := h.store.CreateChannel(ctx, memberA.ID, store.NewChannel{Name: "private", Kind: store.ChannelKindChannel})
+	if err != nil {
+		t.Fatalf("CreateChannel(private): %v", err)
+	}
+
+	// A posts a message into a named topic, creating the topic (no TopicUpserted
+	// yet — get-or-create does not emit one).
+	posted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{
+		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)},
+		Topic:     &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
+		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}},
+	}))
+	if err != nil {
+		t.Fatalf("PostMessage: %v", err)
+	}
+	privTopic := posted.Msg.GetMessage().GetTopicId()
+
+	// A renames the topic (A is the founding member, so store-authorized) — this
+	// is the event under test: UpdateTopic publishes the TopicUpserted.
+	newName := "renamed"
+	if _, err := h.svc.UpdateTopic(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.UpdateTopicRequest{
+		TopicId: privTopic,
+		Name:    &newName,
+	})); err != nil {
+		t.Fatalf("UpdateTopic(rename): %v", err)
+	}
+
+	canary := mkCanary(t, h, "canary")
+
+	// The member sees the TopicUpserted for its own topic.
+	memberEvts := drainReplayAsActor(t, h, memberA.ID, canary)
+	if got := topicUpsertedIDs(memberEvts); !containsString(got, privTopic) {
+		t.Fatalf("member did not receive TopicUpserted for its own topic; topic-upserted-ids = %v", got)
+	}
+
+	// The non-member sees NONE — the leak the filter defends.
+	outsiderEvts := drainReplayAsActor(t, h, outsiderB.ID, canary)
+	if got := topicUpsertedIDs(outsiderEvts); containsString(got, privTopic) {
+		t.Fatalf("LEAK: non-member received TopicUpserted for a private topic; topic-upserted-ids = %v", got)
 	}
 }
 
@@ -461,20 +535,14 @@ func TestSubscribeCommsPrivateMessageLeakBlockedLiveTail(t *testing.T) {
 	outsiderEvents := firstEventAfterBoundary(t, h, outsiderB.ID, &compassv1.SubscribeCommsRequest{SinceSeq: 0})
 
 	// The private post: member entitled, non-member not.
-	privPosted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}},
-	}))
+	privPosted, err := h.svc.PostMessage(WithActor(ctx, memberA.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(priv.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "secret"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage(private): %v", err)
 	}
 	privID := privPosted.Msg.GetMessage().GetId()
 
 	// The canary post into a channel the non-member CAN see: its high-water mark.
-	canaryPosted, err := h.svc.PostMessage(WithActor(ctx, outsiderB.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(canaryCh.ID)},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible canary"}}},
-	}))
+	canaryPosted, err := h.svc.PostMessage(WithActor(ctx, outsiderB.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(canaryCh.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "visible canary"}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage(canary): %v", err)
 	}

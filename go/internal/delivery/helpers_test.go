@@ -277,6 +277,16 @@ func (f *fakeReads) MessageByID(_ context.Context, messageID string) (store.Mess
 	return m, nil
 }
 
+// MessageChannel resolves a message's channel through its topic. Every delivery
+// test drives the single shared channel ("chan-1", the const ch each declares),
+// so the fake returns it for any message id — mirroring the store's topic->channel
+// join without a database. A message that was never seeded still resolves (the
+// live-post path calls this before any re-read), matching the real store where a
+// committed message always has a topic and therefore a channel.
+func (f *fakeReads) MessageChannel(_ context.Context, _ string) (store.ChannelID, error) {
+	return "chan-1", nil
+}
+
 func (f *fakeReads) UndeliveredMessages(_ context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error) {
 	if f.beforeUndelivered != nil {
 		f.beforeUndelivered(agent)
@@ -306,7 +316,7 @@ func agentAccount(id store.AccountID, handle string) store.Account {
 func textMessage(id string, author store.AccountID, body string) store.Message {
 	return store.Message{
 		ID:              store.MessageID(id),
-		Container:       store.ContainerRef{ChannelID: "chan-1"},
+		TopicID:         "topic-1",
 		AuthorAccountID: author,
 		Blocks:          []store.MessageBlock{{Text: &body}},
 	}
@@ -326,7 +336,7 @@ func postedResponse(msg *compassv1.Message) *compassv1.SubscribeCommsResponse {
 func wireText(id string, author store.AccountID, body string) *compassv1.Message {
 	return &compassv1.Message{
 		Id:              id,
-		Container:       &compassv1.Message_ChannelId{ChannelId: "chan-1"},
+		TopicId:         "topic-1",
 		AuthorAccountId: string(author),
 		Blocks:          []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: body}}},
 	}
@@ -342,7 +352,7 @@ func wireTextBlocks(id string, author store.AccountID, bodies ...string) *compas
 	}
 	return &compassv1.Message{
 		Id:              id,
-		Container:       &compassv1.Message_ChannelId{ChannelId: "chan-1"},
+		TopicId:         "topic-1",
 		AuthorAccountId: string(author),
 		Blocks:          blocks,
 	}

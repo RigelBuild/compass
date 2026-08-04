@@ -206,22 +206,53 @@ type SearchScope struct {
 	ChannelID ChannelID
 }
 
+// Topic is a named thread within a channel — the unit of the Zulip-style
+// threading model (compass-zulip-threading-model design.md D2). A channel's
+// messages are partitioned into topics; every message lives in exactly one.
+// Topics are born via a post naming a topic (get-or-create), so there is no
+// separate create path. LastSeq is the denormalized highest messages.seq under
+// the topic — the activity marker a topic index orders by. Archived is a
+// tidiness flag, not a lock: a post naming an archived topic revives it.
+type Topic struct {
+	ID                 string
+	ChannelID          string
+	Name               string
+	CreatedByAccountID string
+	// CreatedAtUnixMS is the server-assigned birth time in unix milliseconds.
+	CreatedAtUnixMS int64
+	// Archived is the tidiness flag; a get-or-create on an archived name clears it.
+	Archived bool
+	// LastSeq is the highest messages.seq under this topic, maintained in the
+	// append tx so a topic index can order by recency without scanning messages.
+	LastSeq int64
+}
+
+// TopicRef addresses the topic a message targets: exactly one of ID or Name is
+// set. A Name is get-or-created inside the append tx (agents address topics by
+// name, the unit they can produce without a lookup); an ID names an existing
+// topic, validated to live under the post's channel.
+type TopicRef struct {
+	ID   string
+	Name string
+}
+
 // Message is the persisted unit of the comms layer: the durable human↔agent
 // conversation (comms.proto:229-242, narrowed by superseded decision 4). The
 // trace variants of the block oneof leave the comms surface entirely, so blocks
-// carry only text and ask (OQ-A). The container is channel-only (OQ-C).
+// carry only text and ask (OQ-A). A message records only its topic; the channel
+// is topics.channel_id, one join away (design.md D2/F10).
 type Message struct {
-	ID        MessageID
-	Container ContainerRef
+	ID MessageID
+	// TopicID is the topic this message lives in (topics.id). It replaces the
+	// former channel_id + parent_message_id: the channel is resolved through the
+	// topic, and threading is by topic membership, not a parent pointer.
+	TopicID string
 	// AuthorAccountID is the posting account, a user or an agent.
 	AuthorAccountID AccountID
 	// At is the server-assigned post time.
 	At time.Time
 	// Blocks is the ordered content: text and ask blocks only.
 	Blocks []MessageBlock
-	// ParentMessageID threads this message under the one it replies to; empty
-	// for a root message. Persisted as a nullable FK to messages(id).
-	ParentMessageID MessageID
 }
 
 // MessageBlock is one content block, narrowed to the two durable-conversation
@@ -316,4 +347,21 @@ type Page struct {
 	// back on each read RPC. Zero means "latest" (no boundary) — the pre-catch-up
 	// default and the value every non-resync caller sends.
 	SnapshotSeq uint64
+}
+
+// ListMessagesQuery is the input to ListMessages: a channel-scoped, clamped,
+// cursor-paginated read window over messages, newest-first, optionally narrowed
+// to one topic. The channel is required and gates visibility (membership,
+// resolved through the topic join now that a message carries no channel); an
+// empty TopicID reads the whole channel across every topic.
+type ListMessagesQuery struct {
+	// Actor is the reading account; the read is scoped to its visible set.
+	Actor AccountID
+	// ChannelID is the channel to page; required.
+	ChannelID ChannelID
+	// TopicID optionally narrows the read to one topic; empty reads the whole
+	// channel via the topic join.
+	TopicID string
+	// Page is the clamped, cursor-paginated window (newest-first).
+	Page Page
 }

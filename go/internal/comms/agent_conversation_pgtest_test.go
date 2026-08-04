@@ -91,15 +91,19 @@ func TestCommitAgentPostLandsOnHomeChannelAsTheAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CommitAgentPost: %v", err)
 	}
-	if got := resp.GetMessage().GetChannelId(); got != string(agent.Agent.HomeChannelID) {
-		t.Fatalf("committed message channel = %q, want the agent's home channel %q (the Container oneof must be left unset)", got, agent.Agent.HomeChannelID)
+	// A message carries only its topic now; that it landed in the HOME channel is
+	// proven by the home-scoped read-back below (the channel is resolved through
+	// the topic server-side). The unset Container+Topic must route it to the home
+	// channel's home topic.
+	if got := resp.GetMessage().GetTopicId(); got == "" {
+		t.Fatal("committed message TopicId = \"\", want the home channel's home topic id")
 	}
 	if got := resp.GetMessage().GetAuthorAccountId(); got != string(agent.ID) {
 		t.Fatalf("committed message author = %q, want the agent account %q (never the bootstrap admin)", got, agent.ID)
 	}
 
 	// Durable: the row is readable back out of the store of record.
-	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: agent.ID, ChannelID: agent.Agent.HomeChannelID})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -162,10 +166,9 @@ func TestCommitAgentUpdateEditsInPlaceAndFansOut(t *testing.T) {
 	// MessageUpdated this test is about.
 	seedText := "partial"
 	seed, _, err := h.store.AppendMessage(ctx, store.Message{
-		Container:       store.ContainerRef{ChannelID: agent.Agent.HomeChannelID},
 		AuthorAccountID: agent.ID,
 		Blocks:          []store.MessageBlock{{Text: &seedText}},
-	}, "")
+	}, string(agent.Agent.HomeChannelID), store.TopicRef{Name: "general"}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(seed): %v", err)
 	}
@@ -189,7 +192,7 @@ func TestCommitAgentUpdateEditsInPlaceAndFansOut(t *testing.T) {
 	}
 
 	// Exactly one row, carrying the new text.
-	msgs, err := h.store.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	msgs, err := h.store.ListMessages(ctx, store.ListMessagesQuery{Actor: agent.ID, ChannelID: agent.Agent.HomeChannelID})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -227,10 +230,7 @@ func TestCommitAgentUpdateCrossAccountIsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	postedA, err := svc.PostAsAccount(ctx, agentA.ID, &compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Blocks:    textBlocks("agent A's words"),
-	})
+	postedA, err := svc.PostAsAccount(ctx, agentA.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: textBlocks("agent A's words")})
 	if err != nil {
 		t.Fatalf("PostAsAccount(A): %v", err)
 	}
@@ -244,7 +244,7 @@ func TestCommitAgentUpdateCrossAccountIsNotFound(t *testing.T) {
 		t.Fatalf("agent A cannot edit its own message: %v", err)
 	}
 
-	msgs, err := st.ListMessages(ctx, agentA.ID, store.ContainerRef{ChannelID: ch.ID}, store.Page{})
+	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: agentA.ID, ChannelID: ch.ID})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -269,10 +269,7 @@ func TestCommitAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
 	}
-	posted, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Blocks:    textBlocks("posted while a member"),
-	})
+	posted, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: textBlocks("posted while a member")})
 	if err != nil {
 		t.Fatalf("PostAsAccount: %v", err)
 	}
@@ -290,7 +287,7 @@ func TestCommitAgentUpdateRevokedMemberIsNotFound(t *testing.T) {
 	_, err = svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame(id, textBlocks("edited after the revoke")))
 	connectCodeIs(t, err, connect.CodeNotFound, "CommitAgentUpdate(revoked member)")
 
-	msgs, err := st.ListMessages(ctx, owner.ID, store.ContainerRef{ChannelID: ch.ID}, store.Page{})
+	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: owner.ID, ChannelID: ch.ID})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -336,7 +333,7 @@ func TestCommitAgentUpdateRejectsMalformedFrames(t *testing.T) {
 	})
 
 	// Neither refusal wrote anything: the original row is intact.
-	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: agent.ID, ChannelID: agent.Agent.HomeChannelID})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -372,7 +369,7 @@ func TestCommitAgentFramesEmptyAccountFailsClosed(t *testing.T) {
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate(empty account)")
 
 	// Nothing was written or altered under any fallback identity.
-	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: agent.ID, ChannelID: agent.Agent.HomeChannelID})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -404,6 +401,7 @@ func TestCommitAgentPostRequestIsDedupedByClientRequestID(t *testing.T) {
 	// unset Container), plus the key T2 will thread onto it.
 	post := func(text string) (*compassv1.PostMessageResponse, error) {
 		return svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
+			Topic:           &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
 			Blocks:          textBlocks(text),
 			ClientRequestId: "relayed-frame-1",
 		})
@@ -420,7 +418,7 @@ func TestCommitAgentPostRequestIsDedupedByClientRequestID(t *testing.T) {
 		t.Fatalf("retry stored a new message %q, want the first's %q (dedup on (author, client_request_id))", retry.GetMessage().GetId(), first.GetMessage().GetId())
 	}
 
-	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: agent.ID, ChannelID: agent.Agent.HomeChannelID})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -429,60 +427,54 @@ func TestCommitAgentPostRequestIsDedupedByClientRequestID(t *testing.T) {
 	}
 }
 
-// A relayed frame that names a parent keeps it: the committed row is threaded
-// under the message it replies to. parent_message_id is plumbed end to end on
-// both the wire Message (comms.proto:250) and PostMessageRequest
-// (comms.proto:565), so the write-through dropping it would silently flatten
-// every threaded agent reply to a root message — a data loss that no error
-// reports and that reads, downstream, as the agent simply never having replied
-// in-thread.
+// A relayed frame with no topic routing lands in the agent's home channel's home
+// topic: the committed row records that topic, and two frames from the same agent
+// share it. Threading is by topic now, not a parent pointer — a frame carries no
+// parent and no topic, so CommitAgentPost's unset Container+Topic route it to the
+// home topic (store.AppendMessage), which is what keeps a relayed agent's turns
+// in one conversation.
 //
-// Mutation: drop ParentMessageId from the request CommitAgentPost builds → the
-// committed message comes back with an empty parent and this reddens twice (the
-// response echo and the store read-back).
-func TestCommitAgentPostThreadsTheFramesParentMessageID(t *testing.T) {
+// Mutation: route CommitAgentPost's request to a non-home channel/topic → the two
+// frames land in different topics and the shared-topic assertion reddens.
+func TestCommitAgentPostLandsInHomeTopic(t *testing.T) {
 	svc, st := newHandler(t)
 	ctx := context.Background()
 
 	owner := mustUser(t, st, "owner")
 	agent := mustAgent(t, st, owner.ID, "agent")
 
-	root, err := svc.CommitAgentPost(ctx, agent.ID, postedFrame(textBlocks("the question")))
+	first, err := svc.CommitAgentPost(ctx, agent.ID, postedFrame(textBlocks("the question")))
 	if err != nil {
-		t.Fatalf("CommitAgentPost(root): %v", err)
+		t.Fatalf("CommitAgentPost(first): %v", err)
 	}
-	rootID := root.GetMessage().GetId()
-	if got := root.GetMessage().GetParentMessageId(); got != "" {
-		t.Fatalf("root committed message ParentMessageId = %q, want \"\" (a frame with no parent must stay a root)", got)
+	topicID := first.GetMessage().GetTopicId()
+	if topicID == "" {
+		t.Fatal("first committed message TopicId = \"\", want the home topic id")
 	}
 
-	// The frame the agent relays for an in-thread reply: same shape as any
-	// posted frame, plus the parent it answers.
-	reply := postedFrame(textBlocks("the threaded answer"))
-	reply.Message.ParentMessageId = rootID
-
-	committed, err := svc.CommitAgentPost(ctx, agent.ID, reply)
+	second, err := svc.CommitAgentPost(ctx, agent.ID, postedFrame(textBlocks("the follow-up")))
 	if err != nil {
-		t.Fatalf("CommitAgentPost(threaded reply): %v", err)
+		t.Fatalf("CommitAgentPost(second): %v", err)
 	}
-	if got := committed.GetMessage().GetParentMessageId(); got != rootID {
-		t.Fatalf("committed reply ParentMessageId = %q, want the root %q — the relayed frame's parent must survive the write-through", got, rootID)
+	if got := second.GetMessage().GetTopicId(); got != topicID {
+		t.Fatalf("second committed message TopicId = %q, want the same home topic %q", got, topicID)
 	}
 
-	// Durable, not merely echoed: the store of record holds the threading.
-	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	// Durable, not merely echoed: the store of record holds both rows under the
+	// one home topic.
+	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: agent.ID, ChannelID: agent.Agent.HomeChannelID})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
-	parents := map[store.MessageID]store.MessageID{}
+	topics := map[store.MessageID]string{}
 	for _, m := range msgs {
-		parents[m.ID] = m.ParentMessageID
+		topics[m.ID] = m.TopicID
 	}
-	if got := parents[store.MessageID(committed.GetMessage().GetId())]; got != store.MessageID(rootID) {
-		t.Fatalf("stored reply ParentMessageID = %q, want the root %q", got, rootID)
+	if got := topics[store.MessageID(first.GetMessage().GetId())]; got != topicID {
+		t.Fatalf("stored first TopicID = %q, want the home topic %q", got, topicID)
 	}
-	if got := parents[store.MessageID(rootID)]; got != "" {
-		t.Fatalf("stored root ParentMessageID = %q, want \"\"", got)
+	if got := topics[store.MessageID(second.GetMessage().GetId())]; got != topicID {
+		t.Fatalf("stored second TopicID = %q, want the home topic %q", got, topicID)
 	}
 }
 
@@ -569,7 +561,7 @@ func TestCommitAgentUpdatePersistsAskBlock(t *testing.T) {
 
 	// Durable: the row on the home channel carries the updated set and the same
 	// ask_id, so a pending RespondToAsk still correlates.
-	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: agent.ID, ChannelID: agent.Agent.HomeChannelID})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -621,7 +613,7 @@ func TestCommitAgentUpdateRejectsAskIDMismatch(t *testing.T) {
 
 	// The forged update left no trace: the row still carries the original ask
 	// with its minted id, so RespondToAsk against that id still resolves.
-	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: agent.ID, ChannelID: agent.Agent.HomeChannelID})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -675,7 +667,7 @@ func TestCommitAgentUpdateRejectsSurplusForgedAsk(t *testing.T) {
 
 	// The forged surplus left no trace: the row still carries only the original
 	// ask with its minted id, and the forged id was never persisted.
-	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: agent.Agent.HomeChannelID}, store.Page{})
+	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: agent.ID, ChannelID: agent.Agent.HomeChannelID})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}

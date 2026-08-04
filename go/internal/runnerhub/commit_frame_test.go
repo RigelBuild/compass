@@ -38,7 +38,6 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
@@ -90,7 +89,7 @@ func (f *fakeTranscriptStore) snapshot() []transcriptAppend {
 // entry the fake was called with. comms is a stub fake (the durable lane no longer
 // touches the CommsCaller).
 func newHubWithTranscripts() (*Hub, *fakeTranscriptStore) {
-	hub := NewHub(&fakeConversationSink{}, &fakeLifecycleSink{}, &fakeTailSink{}, &fakeCommsCaller{}, discardLogger())
+	hub := NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, &fakeCommsCaller{}, discardLogger())
 	ts := &fakeTranscriptStore{}
 	hub.SetTranscriptStore(ts)
 	return hub, ts
@@ -130,7 +129,7 @@ func unsetFrameReq(sessionID, idempotencyKey string) *compassv1internal.CommitCo
 // gets Unavailable on a Deliver-only hub.
 func TestCommitConversationFrameNilTranscriptStoreIsUnavailable(t *testing.T) {
 	// A Deliver-only hub: no transcript store wired.
-	hub := NewHub(&fakeConversationSink{}, &fakeLifecycleSink{}, &fakeTailSink{}, &fakeCommsCaller{}, discardLogger())
+	hub := NewHub(&fakeLifecycleSink{}, &fakeTailSink{}, &fakeCommsCaller{}, discardLogger())
 	bindLiveSession(hub)
 
 	_, err := hub.CommitConversationFrame(context.Background(), transcriptReq("sess-1", "key-1", 1, false, `{"e":1}`))
@@ -183,38 +182,6 @@ func TestCommitConversationFrameNoTranscriptVariantIsInvalidArgument(t *testing.
 	}
 	if calls := ts.snapshot(); len(calls) != 0 {
 		t.Fatalf("store was written %d times for a malformed frame, want 0", len(calls))
-	}
-}
-
-// 3b. A now-dead conversation variant (conversation_posted, removed with the Zulip
-// threading model) is rejected as a malformed frame too — CodeInvalidArgument. The
-// durable lane carries ONLY transcript_entry, so a leftover conversation frame is
-// terminal, never silently committed. Pins that the removed variants are not still
-// wired to a commit path.
-func TestCommitConversationFrameDeadConversationVariantIsInvalidArgument(t *testing.T) {
-	hub, ts := newHubWithTranscripts()
-	bindLiveSession(hub)
-
-	req := &compassv1internal.CommitConversationFrameRequest{
-		SessionId: "sess-1",
-		Frame: &compassv1internal.AgentFrame{
-			Frame: &compassv1internal.AgentFrame_ConversationPosted{
-				ConversationPosted: &compassv1.MessagePosted{Message: &compassv1.Message{
-					Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "stale"}}},
-				}},
-			},
-		},
-		IdempotencyKey: "key-1",
-	}
-	_, err := hub.CommitConversationFrame(context.Background(), req)
-	if err == nil {
-		t.Fatal("CommitConversationFrame with a dead conversation_posted variant = nil error, want CodeInvalidArgument")
-	}
-	if got := connect.CodeOf(err); got != connect.CodeInvalidArgument {
-		t.Fatalf("dead-variant error code = %v, want InvalidArgument", got)
-	}
-	if calls := ts.snapshot(); len(calls) != 0 {
-		t.Fatalf("store was written %d times for a dead conversation variant, want 0", len(calls))
 	}
 }
 

@@ -24,11 +24,7 @@ import (
 // and store-space seq. The author must already be a channel member.
 func postAs(t *testing.T, s *Store, ch ChannelID, author AccountID, body string) (string, int64) {
 	t.Helper()
-	m, _, err := s.AppendMessage(context.Background(), Message{
-		Container:       ContainerRef{ChannelID: ch},
-		AuthorAccountID: author,
-		Blocks:          []MessageBlock{textBlock(body)},
-	}, "")
+	m, _, err := s.AppendMessage(context.Background(), Message{AuthorAccountID: author, Blocks: []MessageBlock{textBlock(body)}}, string(ch), TopicRef{Name: "general"}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(%q): %v", body, err)
 	}
@@ -403,7 +399,7 @@ func firstOwed(t *testing.T, s *Store, ch ChannelID, author AccountID) (string, 
 		seq int64
 	)
 	if err := s.pool.QueryRow(context.Background(),
-		`SELECT id, seq FROM messages WHERE channel_id = $1 AND author_account_id = $2 ORDER BY seq ASC LIMIT 1`,
+		`SELECT m.id, m.seq FROM messages m JOIN topics t ON t.id = m.topic_id WHERE t.channel_id = $1 AND m.author_account_id = $2 ORDER BY m.seq ASC LIMIT 1`,
 		string(ch), string(author),
 	).Scan(&id, &seq); err != nil {
 		t.Fatalf("firstOwed(%s,%s): %v", ch, author, err)

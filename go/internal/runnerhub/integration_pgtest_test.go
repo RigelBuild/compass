@@ -92,9 +92,9 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	// comms is the hub's CommsCaller — the real agent-comms execution leg over
 	// the real store + bus. Deliver never runs on this path (the stdout relay
 	// #16 retired is gone, so no relayed frame reaches the write-through sinks),
-	// so the three write-through sinks are no-ops; only the RelayCommsCall leg is
+	// so the two write-through sinks are no-ops; only the RelayCommsCall leg is
 	// exercised.
-	hub := runnerhub.NewHub(noopConversationSink{}, noopLifecycleSink{}, noopTail{}, commsSvc, discardLog())
+	hub := runnerhub.NewHub(noopLifecycleSink{}, noopTail{}, commsSvc, discardLog())
 
 	// Mount the RunnerService door on an h2c server, accepting one Runner token.
 	resolver := &integResolver{token: "runner-tok", subj: store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}}
@@ -160,10 +160,7 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	resp, err := client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{
 		CallId: "call-1",
 		Call: &compassv1internal.CommsCallRequest_Post{
-			Post: &compassv1.PostMessageRequest{
-				Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(homeChannel)},
-				Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: relayText}}},
-			},
+			Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(homeChannel)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: relayText}}}},
 		},
 	}))
 	if err != nil {
@@ -186,7 +183,7 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	}
 
 	// Committed to the REAL store: read it back under the agent account.
-	msgs, err := st.ListMessages(ctx, agent.ID, store.ContainerRef{ChannelID: homeChannel}, store.Page{Limit: 10})
+	msgs, err := st.ListMessages(ctx, store.ListMessagesQuery{Actor: agent.ID, ChannelID: homeChannel, Page: store.Page{Limit: 10}})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
@@ -205,8 +202,11 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	// no replacement Runner trigger, so the post's own bus event IS the seam's
 	// live-fan coverage). Gate on the live event.
 	fanned := waitMessagePosted(t, commsSub)
-	if got := fanned.GetMessage().GetChannelId(); got != string(homeChannel) {
-		t.Fatalf("fanned MessagePosted channel = %q, want the agent home channel %q", got, homeChannel)
+	// A message carries only its topic now; that it landed in the home channel is
+	// proven by the home-scoped store read-back above (the channel is resolved
+	// through the topic server-side, not echoed on the wire message).
+	if got := fanned.GetMessage().GetTopicId(); got == "" {
+		t.Fatal("fanned MessagePosted TopicId = \"\", want the home channel's home topic id")
 	}
 	if got := firstText(fanned.GetMessage()); got != relayText {
 		t.Fatalf("fanned MessagePosted text = %q, want the posted body", got)
@@ -331,18 +331,8 @@ func openStoreFixture(t *testing.T, ctx context.Context, dsn string) (*store.Sto
 	return st, agent, commsSvc, sub
 }
 
-// noopConversationSink is the hub's ConversationSink stub. Deliver never runs on
-// this path (the stdout→PublishEvents relay #16 retired is gone), so no relayed
-// conversation frame reaches it — the agent's conversation is a socket Post the
-// CommsCaller leg handles instead.
-type noopConversationSink struct{}
-
-func (noopConversationSink) PostAgentMessage(context.Context, store.AccountID, string, string, *compassv1.MessagePosted, *compassv1.MessageUpdated) error {
-	return nil
-}
-
-// noopLifecycleSink is the hub's LifecycleSink stub — see noopConversationSink;
-// no relayed lifecycle frame reaches Deliver on this path.
+// noopLifecycleSink is the hub's LifecycleSink stub; no relayed lifecycle frame
+// reaches Deliver on this path.
 type noopLifecycleSink struct{}
 
 func (noopLifecycleSink) PublishSessionStatus(*compassv1.AgentSessionStatus) {}

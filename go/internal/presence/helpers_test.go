@@ -248,7 +248,7 @@ func askPosted(author store.AccountID) *compassv1.SubscribeCommsResponse {
 		Payload: &compassv1.SubscribeCommsResponse_MessagePosted{
 			MessagePosted: &compassv1.MessagePosted{Message: &compassv1.Message{
 				Id:              "msg-ask",
-				Container:       &compassv1.Message_ChannelId{ChannelId: "chan-1"},
+				TopicId:         "topic-1",
 				AuthorAccountId: string(author),
 				Blocks: []*compassv1.MessageBlock{{
 					Block: &compassv1.MessageBlock_Ask{Ask: &compassv1.Ask{AskId: "ask-1"}},
@@ -267,7 +267,7 @@ func askAnsweredUpdate(author store.AccountID) *compassv1.SubscribeCommsResponse
 		Payload: &compassv1.SubscribeCommsResponse_MessageUpdated{
 			MessageUpdated: &compassv1.MessageUpdated{Message: &compassv1.Message{
 				Id:              "msg-ask",
-				Container:       &compassv1.Message_ChannelId{ChannelId: "chan-1"},
+				TopicId:         "topic-1",
 				AuthorAccountId: string(author),
 			}},
 		},
@@ -281,7 +281,7 @@ func textPosted(author store.AccountID) *compassv1.SubscribeCommsResponse {
 		Payload: &compassv1.SubscribeCommsResponse_MessagePosted{
 			MessagePosted: &compassv1.MessagePosted{Message: &compassv1.Message{
 				Id:              "msg-text",
-				Container:       &compassv1.Message_ChannelId{ChannelId: "chan-1"},
+				TopicId:         "topic-1",
 				AuthorAccountId: string(author),
 				Blocks:          []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "hi"}}},
 			}},

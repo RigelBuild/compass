@@ -8,15 +8,11 @@
 //
 //   - PostAsAccount / ListAsAccount serve RelayCommsCall — a comms call the
 //     agent made deliberately, as a tool.
-//   - CommitAgentPostKeyed / CommitAgentUpdateKeyed serve the ConversationSink —
-//     the write-through that turns a relayed conversation FRAME (the agent's own
-//     turn, streamed out as it speaks) into a durable comms row (SEA-1364 T3),
-//     keyed at-most-once on the agent-minted idempotency_key. The two differ:
-//     CommitAgentUpdateKeyed is a thin pass-through to the unkeyed
-//     CommitAgentUpdate (which stays the live update implementation, idempotent
-//     by row-replacement); CommitAgentPostKeyed is a parallel post path (calling
-//     PostAsAccount directly with the key), so the unkeyed CommitAgentPost now
-//     has no production caller and survives only as a test helper.
+//   - CommitAgentPost / CommitAgentUpdate turn a relayed conversation FRAME (the
+//     agent's own turn, streamed out as it speaks) into a durable comms row
+//     (SEA-1364 T3). They survive only as test helpers now: their production
+//     caller (the ConversationSink write-through) was removed with the sink, so
+//     no non-test path reaches them.
 //
 // These are deliberately NOT new CommsService RPCs: an agent-initiated call
 // never reaches a network door (it rides the per-container socket to the Runner,
@@ -44,6 +40,13 @@ import (
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
+
+// agentConversationTopic is the topic name a relayed agent conversation frame is
+// committed under (CommitAgentPost, a test-only helper). The landed store has no
+// home-topic default, so an append must name a topic; a relayed frame carries no
+// routing of its own, so its turns collect under this one get-or-created topic in
+// the agent's channel. "general" matches the store's own test convention.
+const agentConversationTopic = "general"
 
 // errNoActor is the fail-closed cause when PostAsAccount/ListAsAccount is called
 // without a resolved account. It maps to CodeInvalidArgument — a server-side
@@ -174,38 +177,24 @@ func (c *Comms) ListAsAccount(
 }
 
 // CommitAgentPost commits one relayed MessagePosted frame as a durable comms row
-// under account — the write-through the RunnerHub's ConversationSink drives
-// (SEA-1364 T3). It builds a PostMessageRequest from the frame's blocks and
+// under account. It builds a PostMessageRequest from the frame's blocks and
 // delegates to PostAsAccount, so this is the SAME PostMessage handler path a
 // human takes: same store calls, same D9 write-authz, same idempotency, same
 // MessagePosted fan-out. No new authz code exists here to drift from the human
 // path.
 //
-// The Container oneof is deliberately left UNSET. defaultChannel (:109) fills an
-// empty channel_id from the account's home channel, so a relayed frame routes to
-// the agent's own channel for free — the agent mints no server ids and the
-// Runner plumbs no channel id, which is exactly the contract (the frame's
-// Message.id / channel are server-assigned, comms.proto:234-242, so any value
-// the frame carried would be meaningless here).
+// The Container is deliberately left UNSET — defaultChannel fills an empty
+// channel_id from the account's home channel, so a relayed frame lands in the
+// agent's own channel for free (the agent mints no server ids and the Runner
+// plumbs no channel). The topic, by contrast, MUST be named: the landed store
+// requires exactly one of topic id or name on every append (there is no
+// home-topic default), so this routes the frame to the agent channel's
+// conversation topic by name.
 //
-// parent_message_id IS threaded, unlike the two fields above. It is plumbed end
-// to end on both the wire Message (comms.proto:250) and PostMessageRequest
-// (comms.proto:565), and it is the ONE piece of routing the frame legitimately
-// carries: the id it names is a SERVER id, from a row that already committed, so
-// forwarding it asserts nothing the agent minted. Dropping it would silently
-// flatten every threaded agent reply to a root message — no error, no log, just
-// a conversation that lost its shape. The store validates the parent exists, and
-// AppendMessage's membership gate applies to it exactly as it does for a human
-// reply, so a frame naming a parent it may not see is refused, not honored.
-//
-// Idempotency: this unkeyed post sets no ClientRequestId. It is the pre-key
-// commit form; since the conversation Deliver sink was flipped to
-// CommitAgentPostKeyed (server/sinks.go) it has no production caller and
-// survives only as a test helper. The durable, at-most-once path is its
-// sibling CommitAgentPostKeyed, which sets ClientRequestId to the
-// agent-minted idempotency_key so the store's (author_account_id,
-// client_request_id) unique constraint (messages.go:82) dedups a retried
-// frame to one row.
+// This unkeyed post sets no ClientRequestId, so it is loss-tolerant, not
+// at-most-once. It has no production caller — the ConversationSink write-through
+// that drove it was removed — and survives only as a test helper for the
+// PostMessage-through-an-agent-account path.
 func (c *Comms) CommitAgentPost(
 	ctx context.Context,
 	account store.AccountID,
@@ -215,9 +204,11 @@ func (c *Comms) CommitAgentPost(
 		return nil, errNoActor
 	}
 	return c.PostAsAccount(ctx, account, &compassv1.PostMessageRequest{
-		// Container unset on purpose — see the home-channel note above.
-		Blocks:          posted.GetMessage().GetBlocks(),
-		ParentMessageId: posted.GetMessage().GetParentMessageId(),
+		// Container unset: routes to the agent's home channel (defaultChannel).
+		// Topic named: the store has no home-topic default, so the frame's
+		// conversation is addressed by topic name.
+		Topic:  &compassv1.PostMessageRequest_TopicName{TopicName: agentConversationTopic},
+		Blocks: posted.GetMessage().GetBlocks(),
 	})
 }
 
@@ -274,67 +265,6 @@ func (c *Comms) CommitAgentUpdate(
 	// not commit.
 	c.publishMessageUpdated(stored)
 	return &compassv1.MessageUpdated{Message: MessageToWire(stored)}, nil
-}
-
-// CommitAgentPostKeyed is CommitAgentPost with the agent-minted idempotency_key
-// threaded into ClientRequestId — the DURABLE, at-most-once commit path
-// CommitConversationFrame drives (#24 / OQ-3), as opposed to the loss-tolerant
-// unkeyed Deliver-path CommitAgentPost above.
-//
-// The key rides the request all the way to AppendMessage's
-// (author_account_id, client_request_id) unique index (store/messages.go:82):
-// a first send inserts the row and fans out MessagePosted; a retry with the SAME
-// key hits ON CONFLICT DO NOTHING, writes nothing, does NOT re-fan the event,
-// and re-reads the already-committed row — so the returned message_id is the
-// ORIGINAL, stable across the replay, which is exactly what lets the ack report
-// committed=true with the first commit's id on a retry. An empty key leaves
-// ClientRequestId unset and this behaves identically to CommitAgentPost (no
-// dedup), so a caller that forwards no key is not silently deduped against the
-// empty string — the store's unique constraint is predicated on a non-empty
-// client_request_id.
-//
-// Everything else — home-channel default via an unset Container, threaded
-// parent_message_id, the shared PostMessage handler path and its D9 write-authz
-// — is exactly CommitAgentPost's contract; see its doc for the rationale.
-func (c *Comms) CommitAgentPostKeyed(
-	ctx context.Context,
-	account store.AccountID,
-	posted *compassv1.MessagePosted,
-	idempotencyKey string,
-) (*compassv1.PostMessageResponse, error) {
-	if account == "" {
-		return nil, errNoActor
-	}
-	return c.PostAsAccount(ctx, account, &compassv1.PostMessageRequest{
-		// Container unset on purpose — routes to the agent's home channel.
-		Blocks:          posted.GetMessage().GetBlocks(),
-		ParentMessageId: posted.GetMessage().GetParentMessageId(),
-		ClientRequestId: idempotencyKey,
-	})
-}
-
-// CommitAgentUpdateKeyed is the UPDATE counterpart on the durable
-// CommitConversationFrame path. It deliberately IGNORES idempotencyKey and is a
-// straight pass-through to CommitAgentUpdate.
-//
-// An UPDATE is idempotent by construction, so it needs no dedup key. It
-// addresses an existing row by message.id and REPLACES its block set
-// (store.UpdateMessageBlocksAsAuthor is an UPDATE ... SET blocks = $1), so
-// re-applying the same frame writes the same bytes to the same row and yields
-// the same message_id — a replay is a no-op-equivalent, not a second row.
-// Threading the key would require widening UpdateMessageBlocksAsAuthor with a
-// client_request_id column and constraint (a store-write-signature change that
-// is a stated non-goal here), and would buy nothing the addressing already
-// gives. The parameter is accepted so the hub dispatches both frame variants
-// through one keyed surface, and named with a leading underscore to mark the
-// intent explicit rather than an oversight.
-func (c *Comms) CommitAgentUpdateKeyed(
-	ctx context.Context,
-	account store.AccountID,
-	updated *compassv1.MessageUpdated,
-	_ string,
-) (*compassv1.MessageUpdated, error) {
-	return c.CommitAgentUpdate(ctx, account, updated)
 }
 
 // reconcileUpdateAskIDs makes the ask blocks of a relayed UPDATE frame carry the
@@ -418,7 +348,7 @@ func (c *Comms) defaultChannel(
 	return &compassv1.PostMessageRequest{
 		Container:       &compassv1.PostMessageRequest_ChannelId{ChannelId: home},
 		Blocks:          req.GetBlocks(),
-		ParentMessageId: req.GetParentMessageId(),
+		Topic:           req.GetTopic(),
 		ClientRequestId: req.GetClientRequestId(),
 	}, nil
 }

@@ -136,14 +136,14 @@ func (c *Consumer) fireHeld(ctx context.Context, authorSession string) {
 	c.mu.Unlock()
 
 	for _, messageID := range held {
-		wire, m, err := c.storeMessageToWire(ctx, messageID)
+		wire, channel, author, err := c.storeMessageToWire(ctx, messageID)
 		if err != nil {
 			// The message vanished between hold and fire (unexpected): skip it;
 			// the cursor never advanced, so the sweep still redelivers.
 			c.log.ErrorContext(ctx, "delivery: re-read held message", "error", err, "message_id", messageID)
 			continue
 		}
-		c.fanOut(ctx, m.Container.ChannelID, m.AuthorAccountID, wire)
+		c.fanOut(ctx, channel, author, wire)
 	}
 }
 

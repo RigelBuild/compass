@@ -74,17 +74,11 @@ func TestSupervisorAssignsToTwoWorkersAuditable(t *testing.T) {
 
 	// The supervisor posts each assignment as a channel message, authored as the
 	// supervisor account.
-	postedA, err := svc.PostMessage(WithActor(ctx, supervisor.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: assignA}}},
-	}))
+	postedA, err := svc.PostMessage(WithActor(ctx, supervisor.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: assignA}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage(assign A): %v", err)
 	}
-	postedB, err := svc.PostMessage(WithActor(ctx, supervisor.ID), connect.NewRequest(&compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID},
-		Blocks:    []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: assignB}}},
-	}))
+	postedB, err := svc.PostMessage(WithActor(ctx, supervisor.ID), connect.NewRequest(&compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: chID}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: assignB}}}}))
 	if err != nil {
 		t.Fatalf("PostMessage(assign B): %v", err)
 	}

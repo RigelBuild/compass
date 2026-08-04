@@ -33,7 +33,7 @@ import (
 )
 
 func TestSeamEnrollSessionsRoundTripAndPublishEvents(t *testing.T) {
-	hub, conv, _, tail := newHub()
+	hub, _, tail := newHub()
 	resolver := &fakeResolver{tokens: map[string]resolverEntry{
 		"runner-tok": {subj: store.Subject{Kind: store.SubjectRunner, ID: "runner-1"}},
 	}}
@@ -90,46 +90,34 @@ func TestSeamEnrollSessionsRoundTripAndPublishEvents(t *testing.T) {
 		t.Fatalf("runner sessions loop ended with %v, want clean EOF", err)
 	}
 
-	// Bind the relayed session to an agent account. Deliver's conversation arms
-	// resolve session->account and fail closed on an unbound session (hub.go,
-	// deliverConversation), so without a binding the frame below would be a
-	// counted refusal rather than reaching the sink. Production binds this at
-	// Provision->Start; this seam test drives PublishEvents directly, so it
-	// binds through the same promotion path the command handlers use.
+	// Bind the relayed session to an agent account through the same
+	// Provision->Start promotion path the command handlers drive. Production
+	// binds this at Provision->Start; this seam test drives PublishEvents
+	// directly, so it binds here.
 	bindSession(hub, "sess-wire")
 
-	// --- PublishEvents: one relayed frame must reach Hub.Deliver (a fake sink
-	// observes it). This is the event path terminating the wire. -----------------
+	// --- PublishEvents: one relayed session trace frame must reach Hub.Deliver
+	// and terminate at the tail sink (the surviving Deliver arm). This is the
+	// event path terminating the wire. ------------------------------------------
 	pub := client.PublishEvents(ctx)
 	if err := pub.Send(&compassv1internal.PublishEventsRequest{
 		RunnerSeq: 1,
 		SessionId: "sess-wire",
-		Frame:     convPostedFrame("relayed over the wire"),
+		Frame:     sessionTraceFrame("relayed over the wire"),
 	}); err != nil {
 		t.Fatalf("PublishEvents.Send = %v", err)
-	}
-	if err := pub.Send(&compassv1internal.PublishEventsRequest{
-		RunnerSeq: 2,
-		SessionId: "sess-wire",
-		Frame:     sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
-	}); err != nil {
-		t.Fatalf("PublishEvents.Send(session) = %v", err)
 	}
 	if _, err := pub.CloseAndReceive(); err != nil {
 		t.Fatalf("PublishEvents.CloseAndReceive = %v", err)
 	}
 
-	// The conversation frame reached the comms sink through Deliver, verbatim.
-	calls := conv.snapshot()
+	// The session trace frame reached the tail sink through Deliver, verbatim.
+	calls := tail.snapshot()
 	if len(calls) != 1 {
-		t.Fatalf("conversation sink saw %d frames after PublishEvents, want 1 (the frame must terminate the wire at Deliver)", len(calls))
+		t.Fatalf("tail sink saw %d frames after PublishEvents, want 1 (the frame must terminate the wire at Deliver)", len(calls))
 	}
-	if got := firstTextBlock(calls[0].posted.GetMessage()); got != "relayed over the wire" {
-		t.Fatalf("relayed message text = %q, want the frame body", got)
-	}
-	// The session frame reached the tail sink through Deliver.
-	if got := len(tail.snapshot()); got != 1 {
-		t.Fatalf("tail sink saw %d frames, want 1 (the session frame must reach Deliver)", got)
+	if got := calls[0].frame.GetTypedEvent().GetAssistantText().GetText(); got != "relayed over the wire" {
+		t.Fatalf("relayed trace text = %q, want the frame body", got)
 	}
 }
 

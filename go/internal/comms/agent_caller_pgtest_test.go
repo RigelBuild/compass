@@ -60,10 +60,7 @@ func TestPostAsAccountAttributesToAgentAccount(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	resp, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Blocks:    textBlocks("from the agent"),
-	})
+	resp, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: textBlocks("from the agent")})
 	if err != nil {
 		t.Fatalf("PostAsAccount: %v", err)
 	}
@@ -109,10 +106,7 @@ func TestPostAsAccountNonMemberChannelIsNotFound(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	_, err = svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Blocks:    textBlocks("sneaking in"),
-	})
+	_, err = svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: textBlocks("sneaking in")})
 	connectCodeIs(t, err, connect.CodeNotFound, "PostAsAccount(non-member)")
 }
 
@@ -128,13 +122,17 @@ func TestPostAsAccountEmptyChannelDefaultsToHome(t *testing.T) {
 
 	resp, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
 		// No channel_id set — defaults to the agent's home channel.
+		Topic:  &compassv1.PostMessageRequest_TopicName{TopicName: "general"},
 		Blocks: textBlocks("home post"),
 	})
 	if err != nil {
 		t.Fatalf("PostAsAccount(empty channel): %v", err)
 	}
-	if got := resp.GetMessage().GetChannelId(); got != string(agent.Agent.HomeChannelID) {
-		t.Fatalf("posted message channel = %q, want the agent's home channel %q", got, agent.Agent.HomeChannelID)
+	// A message carries only its topic now; that it landed in the HOME channel is
+	// proven by reading it back through the home channel below (the channel is
+	// resolved through the topic server-side, not echoed on the wire message).
+	if got := resp.GetMessage().GetTopicId(); got == "" {
+		t.Fatal("posted message TopicId = \"\", want the home channel's home topic id")
 	}
 
 	// The home channel now holds exactly this message.
@@ -184,10 +182,7 @@ func TestPostAsAccountEmptyAccountFailsClosedNoAdminWrite(t *testing.T) {
 		t.Fatalf("CreateChannel: %v", err)
 	}
 
-	_, err = svc.PostAsAccount(ctx, "", &compassv1.PostMessageRequest{
-		Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)},
-		Blocks:    textBlocks("should never be written"),
-	})
+	_, err = svc.PostAsAccount(ctx, "", &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(ch.ID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: textBlocks("should never be written")})
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "PostAsAccount(empty account)")
 
 	// No message was written as admin: the admin's own channel is empty.
@@ -213,21 +208,13 @@ func TestPostAsAccountIdempotentByClientRequestID(t *testing.T) {
 	owner := mustUser(t, st, "owner")
 	agent := mustAgent(t, st, owner.ID, "agent")
 
-	req := &compassv1.PostMessageRequest{
-		Container:       &compassv1.PostMessageRequest_ChannelId{ChannelId: string(agent.Agent.HomeChannelID)},
-		Blocks:          textBlocks("once"),
-		ClientRequestId: "agent-req-1",
-	}
+	req := &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(agent.Agent.HomeChannelID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: textBlocks("once"), ClientRequestId: "agent-req-1"}
 	first, err := svc.PostAsAccount(ctx, agent.ID, req)
 	if err != nil {
 		t.Fatalf("PostAsAccount(first): %v", err)
 	}
 	// A retry with the same id (even a different body) returns the stored row.
-	retry, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{
-		Container:       &compassv1.PostMessageRequest_ChannelId{ChannelId: string(agent.Agent.HomeChannelID)},
-		Blocks:          textBlocks("different body, same id"),
-		ClientRequestId: "agent-req-1",
-	})
+	retry, err := svc.PostAsAccount(ctx, agent.ID, &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(agent.Agent.HomeChannelID)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: textBlocks("different body, same id"), ClientRequestId: "agent-req-1"})
 	if err != nil {
 		t.Fatalf("PostAsAccount(retry): %v", err)
 	}

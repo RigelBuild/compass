@@ -114,7 +114,7 @@ func (s *Store) IsAgentAccount(ctx context.Context, account AccountID) (bool, er
 // unknown id is ErrNotFound.
 func (s *Store) MessageByID(ctx context.Context, messageID string) (Message, error) {
 	const q = `
-		SELECT id, channel_id, author_account_id, at_unix_ms, blocks, COALESCE(parent_message_id, '')
+		SELECT id, topic_id, author_account_id, at_unix_ms, blocks
 		FROM messages
 		WHERE id = $1`
 	rows, err := s.pool.Query(ctx, q, messageID)
@@ -143,7 +143,7 @@ func (s *Store) MessageByID(ctx context.Context, messageID string) (Message, err
 func (s *Store) MessageChannel(ctx context.Context, messageID string) (ChannelID, error) {
 	var channel string
 	if err := s.pool.QueryRow(ctx,
-		`SELECT channel_id FROM messages WHERE id = $1`, messageID,
+		`SELECT t.channel_id FROM messages m JOIN topics t ON t.id = m.topic_id WHERE m.id = $1`, messageID,
 	).Scan(&channel); err != nil {
 		if noRows(err) {
 			return "", fmt.Errorf("%w: message %q", ErrNotFound, messageID)

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -16,7 +17,7 @@ import (
 // resets an existing cursor. $1 is the agent account id, $2 the channel id.
 const seedDeliveryCursorSQL = `
 	INSERT INTO agent_delivery_cursors (agent_account_id, channel_id, acked_seq)
-	SELECT $1, $2, COALESCE((SELECT MAX(seq) FROM messages WHERE channel_id = $2), 0)
+	SELECT $1, $2, COALESCE((SELECT MAX(m.seq) FROM messages m JOIN topics t ON t.id = m.topic_id WHERE t.channel_id = $2), 0)
 	WHERE EXISTS (SELECT 1 FROM agent_accounts WHERE account_id = $1)
 	ON CONFLICT (agent_account_id, channel_id) DO NOTHING`
 
@@ -71,7 +72,7 @@ func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel Channe
 	// to no row: the overshoot clamp — a fabricated id cannot advance the cursor.
 	var seq int64
 	switch err := tx.QueryRow(ctx,
-		`SELECT seq FROM messages WHERE id = $1 AND channel_id = $2`,
+		`SELECT m.seq FROM messages m JOIN topics t ON t.id = m.topic_id WHERE m.id = $1 AND t.channel_id = $2`,
 		messageID, string(channel),
 	).Scan(&seq); {
 	case noRows(err):
@@ -124,8 +125,8 @@ func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel Channe
 	// rather than draining. That boundedness gap is the parked design question
 	// (PR #55 Open Questions); correctness (no message loss) is unaffected.
 	rows, err := tx.Query(ctx,
-		`SELECT seq FROM messages
-		 WHERE channel_id = $1 AND seq > $2 AND author_account_id = $3`,
+		`SELECT m.seq FROM messages m JOIN topics t ON t.id = m.topic_id
+		 WHERE t.channel_id = $1 AND m.seq > $2 AND m.author_account_id = $3`,
 		string(channel), ackedSeq, string(agent),
 	)
 	if err != nil {
@@ -202,10 +203,11 @@ func (s *Store) UndeliveredMessages(ctx context.Context, agent AccountID) (map[C
 	// <> agent excludes the agent's own posts; the array predicate excludes the
 	// retained above-set.
 	const q = `
-		SELECT m.id, m.channel_id, m.author_account_id, m.at_unix_ms, m.blocks, COALESCE(m.parent_message_id, '')
+		SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, m.at_unix_ms, m.blocks
 		FROM channel_members cm
 		JOIN agent_accounts aa ON aa.account_id = cm.account_id
-		JOIN messages m ON m.channel_id = cm.channel_id
+		JOIN topics t ON t.channel_id = cm.channel_id
+		JOIN messages m ON m.topic_id = t.id
 		LEFT JOIN agent_delivery_cursors dc
 		       ON dc.agent_account_id = cm.account_id AND dc.channel_id = cm.channel_id
 		WHERE cm.account_id = $1
@@ -213,25 +215,41 @@ func (s *Store) UndeliveredMessages(ctx context.Context, agent AccountID) (map[C
 		  AND m.author_account_id <> $1
 		  AND m.seq > COALESCE(
 		        dc.acked_seq,
-		        (SELECT COALESCE(MAX(mh.seq), 0) FROM messages mh WHERE mh.channel_id = cm.channel_id))
+		        (SELECT COALESCE(MAX(mh.seq), 0) FROM messages mh JOIN topics th ON th.id = mh.topic_id WHERE th.channel_id = cm.channel_id))
 		  AND m.seq <> ALL(COALESCE(dc.above_seqs, '{}'::BIGINT[]))
-		ORDER BY m.channel_id, m.seq ASC`
+		ORDER BY t.channel_id, m.seq ASC`
 	rows, err := s.pool.Query(ctx, q, string(agent))
 	if err != nil {
 		return nil, fmt.Errorf("store: sweep undelivered messages: %w", err)
 	}
 	defer rows.Close()
 
-	msgs, err := scanMessages(rows)
-	if err != nil {
-		return nil, err
-	}
-	if len(msgs) == 0 {
-		return map[ChannelID][]Message{}, nil
-	}
+	// Scan channel alongside each message (the message row no longer carries it);
+	// the channel keys the returned map.
 	out := make(map[ChannelID][]Message)
-	for _, m := range msgs {
-		out[m.Container.ChannelID] = append(out[m.Container.ChannelID], m)
+	for rows.Next() {
+		var (
+			id, topicID, channelID, author string
+			atMS                           int64
+			blocksJSON                     []byte
+		)
+		if err := rows.Scan(&id, &topicID, &channelID, &author, &atMS, &blocksJSON); err != nil {
+			return nil, fmt.Errorf("store: scan undelivered message: %w", err)
+		}
+		blocks, err := unmarshalBlocks(blocksJSON)
+		if err != nil {
+			return nil, err
+		}
+		out[ChannelID(channelID)] = append(out[ChannelID(channelID)], Message{
+			ID:              MessageID(id),
+			TopicID:         topicID,
+			AuthorAccountID: AccountID(author),
+			At:              time.UnixMilli(atMS).UTC(),
+			Blocks:          blocks,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate undelivered messages: %w", err)
 	}
 	return out, nil
 }

@@ -5,10 +5,9 @@ package runnerhub
 // Deliver classification + the OQ6 rows the hub owns. Every test names the
 // observable contract a plausible regression would break: a session frame's
 // DISCONNECTED state must reach the lifecycle sink verbatim (not collapse to
-// ERRORED); a conversation frame must reach ONLY the comms sink and a session
-// frame ONLY the tail+lifecycle (mis-routing is silent data loss); an unknown
-// frame must be counted, never dropped or errored; and a Runner-sequence gap
-// must be flagged (in-transit loss the board surfaces).
+// ERRORED); a session frame reaches the tail+lifecycle; an unknown frame must be
+// counted, never dropped or errored; and a Runner-sequence gap must be flagged
+// (in-transit loss the board surfaces).
 
 import (
 	"context"
@@ -24,7 +23,7 @@ import (
 // A bug that mapped a Runner disconnect straight to ERRORED (skipping the bounded
 // reattach window) would redden the state assertion.
 func TestDeliverSessionDisconnectedIsNotErrored(t *testing.T) {
-	hub, _, life, tail := newHub()
+	hub, life, tail := newHub()
 
 	err := hub.Deliver(context.Background(), RunnerEvent{
 		RunnerSeq: 1,
@@ -56,7 +55,7 @@ func TestDeliverSessionDisconnectedIsNotErrored(t *testing.T) {
 // published a bogus UNSPECIFIED status onto SubscribeEvents would redden the
 // zero-status assertion.
 func TestDeliverSessionTraceOnlyPublishesNoLifecycle(t *testing.T) {
-	hub, _, life, tail := newHub()
+	hub, life, tail := newHub()
 
 	if err := hub.Deliver(context.Background(), RunnerEvent{
 		RunnerSeq: 1,
@@ -78,143 +77,11 @@ func TestDeliverSessionTraceOnlyPublishesNoLifecycle(t *testing.T) {
 	}
 }
 
-// Routing: a conversation-posted frame hits ONLY the ConversationSink (as a
-// posted message), and NOT the tail or lifecycle. Mis-routing a conversation to
-// the tail would silently drop it from the comms store of record. The frame
-// reaches the sink under the account the hub resolved the session to — the
-// attribution the write-through commits under.
-func TestDeliverConversationPostedRoutesToCommsOnly(t *testing.T) {
-	hub, conv, life, tail := newHub()
-	bindSession(hub, "sess-conv")
-
-	if err := hub.Deliver(context.Background(), RunnerEvent{
-		RunnerSeq: 1,
-		SessionID: "sess-conv",
-		Frame:     convPostedFrame("hello from agent"),
-	}); err != nil {
-		t.Fatalf("Deliver = %v, want nil", err)
-	}
-
-	calls := conv.snapshot()
-	if len(calls) != 1 {
-		t.Fatalf("conversation sink saw %d calls, want 1", len(calls))
-	}
-	c := calls[0]
-	if c.account != "acct-agent" {
-		t.Fatalf("conversation account = %q, want the bound acct-agent (the hub resolves session->account before the sink)", c.account)
-	}
-	if c.sessionID != "sess-conv" {
-		t.Fatalf("conversation session id = %q, want sess-conv", c.sessionID)
-	}
-	if c.posted == nil {
-		t.Fatalf("conversation posted arg was nil; a posted frame must arrive as the posted arg")
-	}
-	if c.updated != nil {
-		t.Fatalf("conversation updated arg was non-nil; a posted frame must leave updated nil")
-	}
-	if got := firstTextBlock(c.posted.GetMessage()); got != "hello from agent" {
-		t.Fatalf("posted message text = %q, want the relayed text", got)
-	}
-	// The comms surface owns it exclusively.
-	if got := len(tail.snapshot()); got != 0 {
-		t.Fatalf("tail sink saw %d frames, want 0 (a conversation frame must not reach the tail)", got)
-	}
-	if got := len(life.snapshot()); got != 0 {
-		t.Fatalf("lifecycle sink saw %d statuses, want 0", got)
-	}
-}
-
-// Keying: the agent-minted idempotency_key on the RunnerEvent reaches the
-// ConversationSink verbatim, so the write-through can commit KEYED at the comms
-// store's (author_account_id, client_request_id) unique constraint — the frozen
-// at-most-once invariant a retried durable frame relies on. A hub that dropped
-// the key (the pre-flip keyless sink) would commit unkeyed and a replay would
-// double-write; this reddens the moment the key stops threading through.
-func TestDeliverConversationThreadsIdempotencyKeyToSink(t *testing.T) {
-	hub, conv, _, _ := newHub()
-	bindSession(hub, "sess-conv")
-
-	if err := hub.Deliver(context.Background(), RunnerEvent{
-		RunnerSeq:      1,
-		SessionID:      "sess-conv",
-		Frame:          convPostedFrame("hello from agent"),
-		IdempotencyKey: "key-42",
-	}); err != nil {
-		t.Fatalf("Deliver = %v, want nil", err)
-	}
-
-	calls := conv.snapshot()
-	if len(calls) != 1 {
-		t.Fatalf("conversation sink saw %d calls, want 1", len(calls))
-	}
-	if got := calls[0].idempotencyKey; got != "key-42" {
-		t.Fatalf("conversation idempotency key = %q, want key-42 — the hub must thread RunnerEvent.IdempotencyKey to the sink so the commit is keyed at-most-once", got)
-	}
-}
-
-// A conversation-updated frame arrives on the ConversationSink as the UPDATED
-// arg (posted nil) — the streaming-turn path — under the same resolved account.
-// A bug that swapped the posted and updated args would redden the nil checks.
-func TestDeliverConversationUpdatedRoutesAsUpdated(t *testing.T) {
-	hub, conv, _, _ := newHub()
-	bindSession(hub, "sess-conv")
-
-	if err := hub.Deliver(context.Background(), RunnerEvent{
-		RunnerSeq: 1,
-		SessionID: "sess-conv",
-		Frame:     convUpdatedFrame("streaming turn"),
-	}); err != nil {
-		t.Fatalf("Deliver = %v, want nil", err)
-	}
-
-	calls := conv.snapshot()
-	if len(calls) != 1 {
-		t.Fatalf("conversation sink saw %d calls, want 1", len(calls))
-	}
-	if calls[0].account != "acct-agent" {
-		t.Fatalf("conversation account = %q, want the bound acct-agent", calls[0].account)
-	}
-	if calls[0].updated == nil {
-		t.Fatalf("updated arg was nil; an updated frame must arrive as the updated arg")
-	}
-	if calls[0].posted != nil {
-		t.Fatalf("posted arg was non-nil; an updated frame must leave posted nil")
-	}
-	if got := firstTextBlock(calls[0].updated.GetMessage()); got != "streaming turn" {
-		t.Fatalf("updated message text = %q, want the relayed text", got)
-	}
-}
-
-// Routing: a session frame hits the tail + lifecycle and NOT the ConversationSink.
-// The mirror of the conversation-routing test — the two together pin the full
-// classification, so no bug can route a session frame into the comms store.
-func TestDeliverSessionFrameDoesNotReachConversationSink(t *testing.T) {
-	hub, conv, life, tail := newHub()
-
-	if err := hub.Deliver(context.Background(), RunnerEvent{
-		RunnerSeq: 1,
-		SessionID: "sess-1",
-		Frame:     sessionStateFrame(compassv1.AgentSessionState_AGENT_SESSION_STATE_READY),
-	}); err != nil {
-		t.Fatalf("Deliver = %v, want nil", err)
-	}
-
-	if got := len(conv.snapshot()); got != 0 {
-		t.Fatalf("conversation sink saw %d calls, want 0 (a session frame must not reach comms)", got)
-	}
-	if got := len(tail.snapshot()); got != 1 {
-		t.Fatalf("tail sink saw %d frames, want 1", got)
-	}
-	if got := len(life.snapshot()); got != 1 {
-		t.Fatalf("lifecycle sink saw %d statuses, want 1 (READY is a transition)", got)
-	}
-}
-
 // An unset/unrecognized oneof variant is the "unknown frame": counted, not
 // dropped, and NOT an error. A bug that errored (tearing down the relay) or
 // silently dropped it (losing a contract-skew signal) would redden this.
 func TestDeliverUnknownFrameIsCountedNotDroppedNotError(t *testing.T) {
-	hub, conv, life, tail := newHub()
+	hub, life, tail := newHub()
 
 	// An AgentFrame with no oneof variant set.
 	if got := hub.UnknownFrames(); got != 0 {
@@ -234,7 +101,7 @@ func TestDeliverUnknownFrameIsCountedNotDroppedNotError(t *testing.T) {
 		t.Fatalf("UnknownFrames = %d, want 3 (each unknown frame counted, none dropped)", got)
 	}
 	// It reached no sink — it is neither conversation nor session.
-	if got := len(conv.snapshot()) + len(life.snapshot()) + len(tail.snapshot()); got != 0 {
+	if got := len(life.snapshot()) + len(tail.snapshot()); got != 0 {
 		t.Fatalf("an unknown frame reached a sink (%d total); it must be counted only", got)
 	}
 }
