@@ -492,6 +492,13 @@ func (p *PodmanCLI) Remove(ctx context.Context, id ContainerID) error {
 	return err
 }
 
+// Pull fetches image from its registry. A one-shot fire-and-check like
+// Start/Remove: a non-zero exit becomes a CommandError through run.
+func (p *PodmanCLI) Pull(ctx context.Context, image string) error {
+	_, err := p.run(ctx, "podman pull", []string{"pull", image})
+	return err
+}
+
 // Exists reports whether a container with name exists in any state. `container
 // exists` encodes the answer in its exit code (0 present, 1 absent), so it can't
 // go through run (which treats non-zero as an error); anything other than 0/1 is
