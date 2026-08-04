@@ -221,6 +221,13 @@ message SubscribeEventsResponse {
     AgentMessageChunk agent_message_chunk = 13;
     AgentToolCall agent_tool_call = 14;
     AgentPlan agent_plan = 15;
+    // The canonical board unit, pushed on every change: snapshot-as-events on
+    // connect plus live tailing off the one projection source of truth
+    // (compass-issue-model delivery surface, DL-032). v1 carries upserts only —
+    // an archived issue drops off the active surfaces via `state =
+    // ISSUE_STATE_ARCHIVED`; a removed/tombstone variant is a
+    // backward-compatible additive when a later milestone needs it.
+    Issue issue = 16;
   }
 }
 
@@ -574,3 +581,169 @@ message GetAgentConfigInfoResponse {
 
 message DeleteAgentConfigRequest {}
 message DeleteAgentConfigResponse {}
+
+// ── The canonical Compass issue/PR type family (compass-issue-model, #1018,
+// Active) ── One owned wire family: the server translates raw forge data into
+// these types at ingestion; the raw forge shape is NEVER a proto/wire type
+// (DL-069). Codegen emits plain-`number` coordinates.
+
+// The Compass issue lifecycle, server-owned (DL-032/DL-033 + terminal ARCHIVED,
+// DL-091). These are the Compass-side states that do NOT exist on the forge
+// tracker — the reason the model is Compass-owned. The lifecycle is a MANUAL
+// board: a forge `closed`/`merged` badge is "consistent with" DONE but never
+// auto-advances Compass state.
+enum IssueState {
+  ISSUE_STATE_UNSPECIFIED = 0;
+  ISSUE_STATE_BACKLOG = 1;
+  ISSUE_STATE_TODO = 2;
+  ISSUE_STATE_QUEUED = 3;
+  ISSUE_STATE_BLOCKED = 4;
+  ISSUE_STATE_IN_PROGRESS = 5;
+  ISSUE_STATE_IN_REVIEW = 6;
+  ISSUE_STATE_DONE = 7;
+  ISSUE_STATE_ARCHIVED = 8;  // terminal: past Done; dropped from the active
+                             // board, listed in the Done view's Archived section
+}
+
+// The Compass agent attribution parsed from the owner header at ingestion — a
+// plain display fact (DL-094, compass-attribution-simplification, Active). If a
+// header names an agent, that is the displayed author: NO forge-login
+// cross-check, NO verified bit, NO population gating. It never reaches an authz,
+// routing, or ownership decision (DL-050). Owner is a property of the agent
+// account (AgentAccount.owner_user_id, comms.proto:131-133), resolved
+// server-side, never restated per artifact — so no owner_handle. Fields 2-3 and
+// the names owner_handle/verified are reserved forever (DL-094): the frozen
+// #1018 shape burned those numbers even though no wire build shipped them.
+message AgentAttribution {
+  string agent_handle = 1;  // the authoring agent's handle, from the header
+  reserved 2, 3;
+  reserved "owner_handle", "verified";
+}
+
+// Which forge (and which host, for self-hosted instances) an artifact lives on.
+// Carried on both Issue and PullRequest so a user with multiple connected forges
+// never sees two artifacts collide on `repo` alone (DL-091).
+enum ForgeProvider {
+  FORGE_PROVIDER_UNSPECIFIED = 0;
+  FORGE_PROVIDER_GITHUB = 1;
+  FORGE_PROVIDER_GITLAB = 2;
+  FORGE_PROVIDER_FORGEJO = 3;
+  FORGE_PROVIDER_LINEAR = 4;  // DL-051's issues-only forge source: a
+                              // Linear-origin Issue whose repo is the project key
+}
+message ForgeRef {
+  ForgeProvider provider = 1;
+  string host = 2;  // "github.com", "gitlab.com", or a self-hosted host like
+                    // "git.acme.internal"; disambiguates two instances of the
+                    // same provider. For a SaaS-only tracker-as-forge (Linear)
+                    // it is the constant service host, "linear.app"
+}
+
+// The board unit: a Compass Issue — the forge issue's fields PLUS the Compass
+// agent attribution PLUS the Compass machinery, translated from raw forge data
+// at server ingestion.
+message Issue {
+  // Compass-local id: the stable server-side key the projection addresses (and
+  // the lifecycle-mutation write path will address, once its design amendment
+  // lands). Every issue is forge-backed; this id is a join key, not a "no forge
+  // yet" placeholder.
+  string id = 1;
+
+  // ── Forge fields (translated from the raw forge payload at ingestion) ──
+  ForgeRef forge = 2;           // which forge + host — multi-forge disambiguation
+  string repo = 3;              // "<owner>/<name>" on GitHub, project key on Linear
+  uint32 number = 4;            // the forge issue number; narrowed server-side
+  string title = 5;
+  string body = 6;              // owner header STRIPPED at ingestion (DL-050)
+  string forge_state = 7;       // "open" | "closed" — forge truth, NOT the lifecycle
+  string url = 8;
+  AgentAttribution agent = 9;   // the Compass agent attribution parsed from the
+                                // owner header; UNSET for a non-Compass (human) author
+  string forge_account = 10;    // the native forge account that authored the
+                                // artifact (e.g. the GitHub login); always set
+  repeated string labels = 11;
+
+  // ── Compass machinery (Compass-owned; none of this is on the forge) ──
+  IssueState state = 12;        // the canonical lifecycle, server-authoritative
+  string priority = 13;         // "urgent" | "high" | "medium" | "low"; string in v1
+  string assignee = 14;         // agent account id working it; empty = unassigned
+  string summary = 15;          // latest-activity line for the card
+  string branch = 16;           // the working head branch NAME (may exist before any PR)
+  repeated PullRequest prs = 17; // every PR opened for this issue; empty before the first
+  TrackerRef tracker = 18;      // the tracker projection target (DL-032); unset when unlinked
+}
+
+// A Compass pull request: the forge PR's fields plus the Compass agent
+// attribution plus this PR's diffstat plus the full review state (reviews,
+// threads, comments) the right-sidebar PR pane shows.
+message PullRequest {
+  ForgeRef forge = 1;           // which forge + host — multi-forge disambiguation
+  string repo = 2;
+  uint32 number = 3;
+  string title = 4;
+  string forge_state = 5;       // "open" | "closed" | "merged"
+  string url = 6;
+  string head_ref = 7;
+  string base_ref = 8;
+  AgentAttribution agent = 9;   // Compass agent attribution; unset for a non-Compass author
+  string forge_account = 10;    // the native forge account that opened the PR; always set
+  bool draft = 11;
+  ChangedStats changed = 12;    // THIS PR's diffstat (a diff is a PR fact); unset for no diff
+  ChecksSummary checks = 13;    // rolled-up CI state, translated at ingestion; unset for no CI
+  repeated Review reviews = 14; // submitted reviews (approve/request-changes/comment), each flagged is_bot
+  repeated ReviewThread threads = 15; // review threads with their comments and resolution
+}
+
+// The rolled-up CI + status-check state on a PR head — Compass-owned, populated
+// by the ingestion translation from the forge's check runs.
+message ChecksSummary {
+  string head_sha = 1;
+  string state = 2;             // "pending" | "success" | "failure" — the roll-up
+  repeated Check checks = 3;
+}
+message Check {
+  string name = 1;
+  string state = 2;             // "queued" | "in_progress" | "success" | "failure" | "neutral" | "cancelled"
+  string url = 3;
+  bool required = 4;
+}
+
+// A PR diffstat (files/additions/deletions), carried on PullRequest — a
+// forge/VCS fact translated at ingestion.
+message ChangedStats {
+  uint32 files = 1;
+  uint32 additions = 2;
+  uint32 deletions = 3;
+}
+
+// The linked tracker issue — the projection target (DL-032); the
+// no-write-to-self elision keys off `kind`+`id`.
+message TrackerRef {
+  string kind = 1;              // "linear" | "jira" | "github" — the tracker family
+  string id = 2;                // the tracker's native issue id, e.g. "SEA-1042"
+  string status = 3;            // the tracker's native status name in the user's org
+  string url = 4;
+}
+
+// The full review state the right-sidebar PR pane shows — every submitted review
+// (human and bot) plus the review threads and their comments, translated from
+// the forge at ingestion. Wire contract: `reviews` is submission-ordered
+// (ingestion appends, newest last), so a reviewer's CURRENT verdict is its last
+// entry; chip derivation takes the latest-per-author. The `verdict` vocabulary
+// is the forge's ("changes_requested"); the UI maps it to the chip key.
+message Review {
+  string author = 1;    // the reviewer's forge account, or a Compass agent handle
+  bool is_bot = 2;      // true when the reviewer is a bot
+  string verdict = 3;   // "approved" | "changes_requested" | "commented"
+  string body = 4;      // the review's summary comment (may be empty)
+}
+message ReviewThread {
+  string path = 1;      // the file the thread anchors to; empty for a PR-level thread
+  bool resolved = 2;
+  repeated Comment comments = 3;
+}
+message Comment {
+  string author = 1;
+  bool is_bot = 2;
+  string body = 3;
+}
