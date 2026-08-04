@@ -2,9 +2,19 @@ import { describe, expect, test } from "bun:test";
 import { createMemoryHistory, MemoryRouter } from "@solidjs/router";
 import { render } from "@solidjs/testing-library";
 import App from "./App";
-import { STUB_CHANNELS, STUB_COMMS_STATE, STUB_MESSAGES } from "./comms-stub";
+import {
+	STUB_CHANNELS,
+	STUB_COMMS_STATE,
+	STUB_MESSAGES,
+	STUB_TOPICS,
+} from "./comms-stub";
 import { StoreContext } from "./context";
-import { createFakeComms, wireAccount, wireChannel } from "./live/comms-fake";
+import {
+	createFakeComms,
+	wireAccount,
+	wireChannel,
+	wireTopic,
+} from "./live/comms-fake";
 import { AppRoutes } from "./routes";
 import { type AppStore, createAppStore } from "./store";
 import { flush, mountApp } from "./test-router";
@@ -20,13 +30,15 @@ import { flush, mountApp } from "./test-router";
 // of an in-app openChannel. Derived so a fixture reshuffle can't stale it.
 function standaloneChannelId(): string {
 	const kindById = new Map(STUB_CHANNELS.map((c) => [c.id, c.kind]));
-	const found = STUB_MESSAGES.find(
-		(m) =>
-			kindById.get(m.channelId) === "channel" &&
-			m.blocks.some((b) => b.kind === "ask"),
-	);
-	if (!found) throw new Error("fixture has no ask in a standalone channel");
-	return found.channelId;
+	const topicChannel = new Map(STUB_TOPICS.map((t) => [t.id, t.channelId]));
+	for (const m of STUB_MESSAGES) {
+		const channelId = topicChannel.get(m.topicId);
+		if (channelId === undefined || kindById.get(channelId) !== "channel") {
+			continue;
+		}
+		if (m.blocks.some((b) => b.kind === "ask")) return channelId;
+	}
+	throw new Error("fixture has no ask in a standalone channel");
 }
 const CHANNEL_ID = standaloneChannelId(); // "ch-svc-compass"
 
@@ -161,6 +173,91 @@ describe("pending-aware channel deep-link (record A3)", () => {
 		await flush();
 
 		expect(store.selectedChannelId()).toBe(DEEP);
+
+		fake.close();
+	});
+});
+
+// The topic deep-link (/channel/:channelId/topic/:topicId) carries the SAME
+// pending-aware pattern as the channel route, plus a topic-specific second
+// fallback: an absent-after-snapshot topic drops back to the channel index
+// rather than stranding on a blank topic view (store.ts applyTopicRoute). A LIVE
+// store is required for both — the topic set arrives asynchronously via the
+// snapshot, so a valid topic deep-link must be HELD across the empty first run.
+describe("pending-aware topic deep-link (record A3)", () => {
+	const CALLER = "acc-me";
+	const CHAN = "chan-deep";
+	const TOPIC = "top-deep";
+
+	// Mount the App shell over a LIVE store on a topic deep-link. The channel is
+	// carried in the snapshot; `snapshotTopics` names the topic ids ListTopics
+	// serves for CHAN, so a test controls whether the deep-linked topic resolves.
+	function mountLive(initialPath: string, snapshotTopics: string[]) {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER)],
+			channels: [wireChannel(CHAN, CALLER)],
+			topicsByChannel: {
+				[CHAN]: snapshotTopics.map((id) =>
+					wireTopic({ id, channelId: CHAN, name: id }),
+				),
+			},
+			messagesByChannel: {},
+		});
+		let store!: AppStore;
+		const history = createMemoryHistory();
+		history.set({ value: initialPath });
+		const { container } = render(() => {
+			store = createAppStore({ comms: fake.client, callerId: CALLER });
+			return (
+				<StoreContext.Provider value={store}>
+					<MemoryRouter history={history} root={App}>
+						<AppRoutes />
+					</MemoryRouter>
+				</StoreContext.Provider>
+			);
+		});
+		return { store, container, fake };
+	}
+
+	// A deep-link to a valid topic the first snapshot carries: held on the topic
+	// surface with the id through the empty first run, then resolves once the
+	// snapshot lands. Mutation-check: omitting the first-snapshot guard would
+	// bounce it to the channel index on the empty first effect run.
+	test("a valid topic deep-link is held until the snapshot, then resolves", async () => {
+		const { store, fake } = mountLive(`/channel/${CHAN}/topic/${TOPIC}`, [
+			TOPIC,
+		]);
+
+		// Before the snapshot the topic dimension is HELD — view "topic", the id
+		// carried through, not dropped to the channel index.
+		await flush();
+		expect(store.view()).toBe("topic");
+		expect(store.selectedTopicId()).toBe(TOPIC);
+
+		// After the snapshot the topic resolves against the loaded set.
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		await flush();
+		expect(store.view()).toBe("topic");
+		expect(store.selectedChannelId()).toBe(CHAN);
+		expect(store.selectedTopicId()).toBe(TOPIC);
+
+		fake.close();
+	});
+
+	// A deep-link to a topic absent from the loaded set (its channel valid) drops
+	// back to the channel's index once the first snapshot has arrived — genuinely
+	// unknown, not merely pending — rather than stranding on a blank topic view.
+	test("an absent topic deep-link falls back to the channel index after the snapshot", async () => {
+		const { store, fake } = mountLive(`/channel/${CHAN}/topic/top-gone`, [
+			TOPIC,
+		]);
+
+		for (let i = 0; i < 30; i++) await Promise.resolve();
+		await flush();
+
+		expect(store.view()).toBe("channel");
+		expect(store.selectedChannelId()).toBe(CHAN);
+		expect(store.selectedTopicId()).toBeNull();
 
 		fake.close();
 	});

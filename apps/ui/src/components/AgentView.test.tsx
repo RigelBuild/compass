@@ -28,13 +28,9 @@ import { AgentView, nextFreeTerminalPane } from "./AgentView";
 // The fixture agent whose home DM carries a visible message + an interactive ask.
 const AGENT_ID = "acc-cook";
 
-// dm-cook `msg-dm-f1` block text — the home-DM message the chat pane must show.
-const HOME_DM_MESSAGE =
-	"Comms-in-workspace shell is up — board primary, channels/DMs in the left rail, chat folded into the agent workspace. Want to walk the layout?";
-
-// dm-cook `msg-dm-f2` ask (`ask-cook-layout`) option labels (single-select).
-const ASK_OPTION_KEEP = "Keep top-bar tab";
-const ASK_OPTION_MOVE = "Move to left rail";
+// dm-cook's home topic (`top-dm-cook`) name — the topic row the chat pane's
+// topic index must show. A DM is topics too (Matt's ruling): one home topic.
+const HOME_DM_TOPIC = "general";
 
 // cook's two terminals, as the terminal panes `openTab`/`splitActivePane` place.
 // `t-c1`'s scrollback carries this line — proof the right terminal rendered.
@@ -103,55 +99,46 @@ describe("AgentView (T3)", () => {
 	});
 
 	// Contract: the chat pane renders the agent's home DM through ChannelView,
-	// inside the active tab's split tree — so the fixture home-DM message text is
-	// visible within `.av-tree` (not merely somewhere on screen).
-	test("chat pane renders the home-DM conversation in the tab tree", () => {
+	// inside the active tab's split tree. In the uniform two-level model a DM is
+	// topics too (Matt's ruling), so the pane shows the DM's TOPIC INDEX — the
+	// home DM's topic row is visible within `.av-tree` (not merely somewhere on
+	// screen).
+	test("chat pane renders the home-DM topic index in the tab tree", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent(AGENT_ID);
 
 		const tree = container.querySelector(".av-tree");
 		expect(tree).not.toBeNull();
 
-		const shown = [...container.querySelectorAll(".av-tree .msg-text")].map(
+		const topics = [...container.querySelectorAll(".av-tree .topic-name")].map(
 			(n) => n.textContent,
 		);
-		expect(shown.some((t) => t?.includes(HOME_DM_MESSAGE))).toBe(true);
+		expect(topics.some((t) => t?.includes(HOME_DM_TOPIC))).toBe(true);
 	});
 
-	// Contract (design D3: asks are fully interactive in the workspace chat pane):
-	// the home-DM ask renders its options as enabled `.ask-option` buttons inside
-	// the chat pane; clicking one records the answer through the store, and the
-	// re-rendered ask is `.answered` with every option now disabled.
-	test("home-DM ask is answerable in the chat pane: click settles + disables it", () => {
+	// Contract (Matt's ruling: steering an agent means opening/starting a topic):
+	// the DM's topic index in the chat pane drills into a topic on click. Clicking
+	// the home-DM topic row routes to that topic's message view (openTopic → the
+	// `/channel/:channelId/topic/:topicId` route), where the ask is answered.
+	test("home-DM topic row drills into the topic on click", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent(AGENT_ID);
 
 		const tree = container.querySelector(".av-tree");
 		expect(tree).not.toBeNull();
 
-		const options = () => [
-			...container.querySelectorAll<HTMLButtonElement>(".av-tree .ask-option"),
-		];
-		const keep = options().find((o) =>
-			o.textContent?.includes(ASK_OPTION_KEEP),
-		);
-		const move = options().find((o) =>
-			o.textContent?.includes(ASK_OPTION_MOVE),
-		);
-		expect(keep).toBeDefined();
-		expect(move).toBeDefined();
-		// A single-select ask starts unsettled: its options are live.
-		expect(keep?.disabled).toBe(false);
+		const row = [
+			...container.querySelectorAll<HTMLButtonElement>(".av-tree .topic-row"),
+		].find((r) => r.textContent?.includes(HOME_DM_TOPIC));
+		expect(row).toBeDefined();
+		if (!row) throw new Error("home-DM topic row not rendered");
 
-		if (!keep) throw new Error("ask option not rendered");
-		fireEvent.click(keep);
+		fireEvent.click(row);
 
-		// The store mutation is reflected in the re-rendered chat pane: the ask is
-		// settled (answered) and every option is now locked.
-		const ask = container.querySelector(".av-tree .block-ask");
-		expect(ask?.classList.contains("answered")).toBe(true);
-		expect(options().length).toBeGreaterThan(0);
-		expect(options().every((o) => o.disabled)).toBe(true);
+		// The click drilled into the topic: the store now selects it and the view
+		// flipped to the topic message surface.
+		expect(store.view()).toBe("topic");
+		expect(store.selectedTopic()?.name).toBe(HOME_DM_TOPIC);
 	});
 
 	// Contract: opening a terminal adds it as a second tab and makes it active;

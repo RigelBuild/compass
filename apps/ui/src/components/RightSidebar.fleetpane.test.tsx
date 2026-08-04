@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
 import {
-	type Ask,
 	STUB_ACCOUNTS,
 	STUB_COMMS_STATE,
 	STUB_MESSAGES,
+	STUB_TOPICS,
 } from "../comms-stub";
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
@@ -67,25 +67,19 @@ function homeChannelForAgent(agentId: string): string {
 	return account.homeChannelId;
 }
 
-// The handle a message author renders as (the .msg-role text). Resolved through
-// the fixture accounts, so a fixture reshuffle can't stale a hardcoded handle.
-function handleFor(accountId: string): string {
-	const account = STUB_ACCOUNTS.find((a) => a.id === accountId);
-	if (!account) throw new Error(`no account for author ${accountId}`);
-	return account.handle;
-}
+// The home-DM home topic name a fleet agent's DM renders as a topic row. A DM is
+// topics too (Matt's ruling): one home topic, named "general" in the fixture.
+const HOME_DM_TOPIC = "general";
 
-// The home-DM messages for a fleet agent, straight from the fixture. The DMs are
-// flat (no parentMessageId), so each message is its own thread → one .msg row.
+// The home-DM messages for a fleet agent, straight from the fixture — used only
+// for the non-triviality check that the DM is a real, active conversation.
 function homeDmMessages(agentId: string) {
 	const channelId = homeChannelForAgent(agentId);
-	return STUB_MESSAGES.filter((m) => m.channelId === channelId);
-}
-
-const msgRoles = (container: HTMLElement): string[] =>
-	[...container.querySelectorAll<HTMLElement>(".conv-stream .msg-role")].map(
-		(el) => el.textContent ?? "",
+	const topicIds = new Set(
+		STUB_TOPICS.filter((t) => t.channelId === channelId).map((t) => t.id),
 	);
+	return STUB_MESSAGES.filter((m) => topicIds.has(m.topicId));
+}
 
 describe("RightSidebar fleet pane (compass-0.7)", () => {
 	// pinAgent write-throughs to the default-workspace localStorage key
@@ -96,98 +90,70 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 	beforeEach(() => globalThis.localStorage.clear());
 	afterEach(() => globalThis.localStorage.clear());
 
-	// The inline conversation leg, one case per fleet tab. Against the OLD
-	// control-only FleetPane (a button, no ChannelView) there is no .conv-stream
-	// and zero .msg rows — every assertion below reddens. Mutation-check: dropping
-	// the inline ChannelView, or binding the wrong channel, changes the .msg count
-	// and the rendered author handles, so each reddens independently.
+	// The inline topic-index leg, one case per fleet tab. In the uniform
+	// two-level model a DM is topics too (Matt's ruling), so the pane renders the
+	// DM's ChannelView TOPIC INDEX — the home topic as a row — not a flat message
+	// stream. Against the OLD control-only FleetPane (a button, no ChannelView)
+	// there is no `.topic-index` and zero `.topic-row`. Mutation-check: dropping
+	// the inline ChannelView, or binding the wrong channel, changes the rendered
+	// topic rows so each reddens independently.
 	for (const tab of FLEET_TABS) {
-		test(`${tab} tab renders the agent's home-DM conversation inline`, () => {
+		test(`${tab} tab renders the agent's home-DM topic index inline`, () => {
 			const { store, container } = mountRightSidebar();
 			store.pinAgent(tab);
 			store.setActiveRightTab(`agent:${tab}`);
 
-			const messages = homeDmMessages(tab);
-			// Non-triviality: the fixture DM actually carries a multi-message
-			// exchange, so an "it rendered" pass can't be an empty agreement.
-			expect(messages.length).toBeGreaterThan(1);
+			// Non-triviality: the fixture DM actually carries messages, so the home
+			// topic is a real, active topic — an "it rendered" pass can't be an
+			// empty agreement.
+			expect(homeDmMessages(tab).length).toBeGreaterThan(1);
 
-			// The conversation surface exists and holds exactly the DM's messages
-			// (flat DM → one .msg per message). Old control-only pane: 0.
-			const stream = container.querySelector(".conv-stream");
-			expect(stream).not.toBeNull();
-			expect(container.querySelectorAll(".conv-stream .msg").length).toBe(
-				messages.length,
+			// The topic index exists and holds the DM's home topic row. Old
+			// control-only pane: 0.
+			const index = container.querySelector(".topic-index");
+			expect(index).not.toBeNull();
+			const rows = [
+				...container.querySelectorAll<HTMLElement>(".topic-index .topic-row"),
+			];
+			expect(rows.length).toBeGreaterThan(0);
+			// The home topic ("general") is one of the rendered rows — proves the
+			// pane bound THIS agent's home DM, not some other channel.
+			const names = rows.map(
+				(r) => r.querySelector(".topic-name")?.textContent ?? "",
 			);
-
-			// Every distinct author in the DM appears as a rendered message role —
-			// proves the pane bound THIS agent's home DM, not some other channel.
-			const roles = msgRoles(container);
-			const expectedHandles = new Set(
-				messages.map((m) => handleFor(m.authorAccountId)),
-			);
-			expect(expectedHandles.size).toBeGreaterThan(0);
-			for (const handle of expectedHandles) {
-				expect(roles).toContain(handle);
-			}
+			expect(names).toContain(HOME_DM_TOPIC);
 		});
 	}
 
-	// The supervisor home DM carries a single-select ask (`ask-sup-lane`). Per
-	// Matt's kill-the-gate ruling, the fleet pane renders it ANSWERABLE in place:
-	// options enabled, no owner-routing hint, and a click settles it through the
-	// store. This is the leg the review flagged as missing (M2). It REDDENS if a
-	// read-only gate (`readonlyAsks`) is re-introduced on the fleet mount — the
-	// options would go `disabled` and an `.ask-readonly-hint` would render — and
-	// it reddens if the click stops reaching `store.answerAsk`.
-	const SUP_ASK_ID = "ask-sup-lane";
-	// The supervisor ask's block, read out of the store's reactive message list
-	// (not the fixture) so a click's mutation is observable and the option order
-	// matches what `<For each={ask().options}>` renders.
-	const supAskIn = (store: AppStore): Ask => {
-		for (const m of store.messages()) {
-			for (const b of m.blocks) {
-				if (b.kind === "ask" && b.ask.askId === SUP_ASK_ID) return b.ask;
-			}
-		}
-		throw new Error(`no message in the store carries ask ${SUP_ASK_ID}`);
-	};
-
-	test("the supervisor fleet pane renders a home-DM ask answerable in place", () => {
+	// The supervisor home DM carries a single-select ask (`ask-sup-lane`) in its
+	// home topic. In the uniform two-level model the fleet pane shows the DM's
+	// TOPIC INDEX (Matt's ruling: steering = open/start a topic), so the ask is
+	// answered by drilling into its topic, not inline in the pane. This leg pins
+	// that the pane's topic row drills into the ask's topic. It REDDENS if the
+	// pane stops rendering the topic index or the row stops routing to the topic.
+	test("the supervisor fleet pane's home-DM topic row drills into the topic", () => {
 		const { store, container } = mountRightSidebar();
 		store.pinAgent("acc-supervisor");
 		store.setActiveRightTab("agent:acc-supervisor");
 
-		// The ask actually rendered inside the pane's conversation stream.
-		const askBlock = container.querySelector(".conv-stream .block-ask");
-		expect(askBlock).not.toBeNull();
-
-		// Its options are present and NOT disabled — a fresh single-select ask,
-		// `locked()` is false and there is no read-only gate on the fleet mount.
-		const options = [
+		// The topic index rendered inside the pane, with the home topic row.
+		const row = [
 			...container.querySelectorAll<HTMLButtonElement>(
-				".conv-stream .block-ask .ask-option",
+				".topic-index .topic-row",
 			),
-		];
-		expect(options.length).toBeGreaterThan(0);
-		for (const opt of options) {
-			expect(opt.disabled).toBe(false);
-		}
+		].find((r) => r.textContent?.includes(HOME_DM_TOPIC));
+		expect(row).toBeDefined();
+		if (!row) throw new Error("home-DM topic row not rendered");
 
 		// No owner-routing hint anywhere — the "answer in @X's workspace" gate is
-		// gone. This is the teeth that reddens if a read-only gate returns.
+		// gone. This reddens if a read-only gate returns.
 		expect(container.querySelector(".ask-readonly-hint")).toBeNull();
 
-		// Interaction teeth: clicking the first option records that option's id in
-		// the store, proving the pane's ask is wired to answerAsk (not just visually
-		// enabled). The rendered option order matches the store ask's options, so
-		// the first button carries the first option id.
-		const firstOptionId = supAskIn(store).questions[0].options[0].id;
-		expect(supAskIn(store).questions[0].chosenOptionIds).toEqual([]);
-		fireEvent.click(options[0]);
-		expect(supAskIn(store).questions[0].chosenOptionIds).toEqual([
-			firstOptionId,
-		]);
+		// Clicking the row drills into the topic's message view (openTopic), where
+		// the ask is answered.
+		fireEvent.click(row);
+		expect(store.view()).toBe("topic");
+		expect(store.selectedTopic()?.name).toBe(HOME_DM_TOPIC);
 	});
 
 	// The "Open workspace" control routes via the store. openAgent's observable

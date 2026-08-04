@@ -16,8 +16,7 @@ import { STUB_DAEMON } from "./stub-data";
 
 // The store's LIVE comms path: `createAppStore({ comms })` runs the
 // SubscribeComms driver and mirrors each reduced CommsState into the four comms
-// accessors, and the three comms writes (postMessage / postReply / answerAsk)
-// issue real RPCs. These tests drive it against the hand-written CommsClient
+// accessors, and the two comms writes (postMessage / answerAsk) issue real RPCs.
 // double (live/comms-fake.ts) — no network, no timers — and defend the contracts
 // that make the dogfood loop correct:
 //
@@ -26,7 +25,6 @@ import { STUB_DAEMON } from "./stub-data";
 //     no-optimistic-update design rests on),
 //   - postMessage issues a PostMessage carrying a clientRequestId and inserts
 //     NOTHING locally (the stream echo is what renders it),
-//   - postReply carries parentMessageId,
 //   - answerAsk keeps clicks LOCAL until every question in the ask has an
 //     answer and then issues exactly ONE complete RespondToAsk (the ask is
 //     answerable once, server-side), submitAsk is the skip affordance, and a
@@ -42,19 +40,14 @@ const CHANNEL = "chan-1";
 // Channel/message builders bound to this suite's caller + channel, so each test
 // names only what it asserts on.
 const wireChannel = (id: string) => buildWireChannel(id, CALLER);
-const wireTextMessage = (
-	id: string,
-	atUnixMs: number,
-	text: string,
-	parentMessageId = "",
-) =>
+const TOPIC = "top-1";
+const wireTextMessage = (id: string, atUnixMs: number, text: string) =>
 	buildWireTextMessage({
 		id,
-		channelId: CHANNEL,
+		topicId: TOPIC,
 		authorAccountId: CALLER,
 		atUnixMs,
 		text,
-		parentMessageId,
 	});
 // A TWO-question ask: the wire is atomic (one AskQuestionAnswer per question),
 // so a one-question fixture could not tell "sent every question" from "sent
@@ -62,7 +55,7 @@ const wireTextMessage = (
 const askMessage = (id: string, askId: string) =>
 	wireAskMessage({
 		id,
-		channelId: CHANNEL,
+		topicId: TOPIC,
 		authorAccountId: CALLER,
 		askId,
 		questionIds: ["q-1", "q-2"],
@@ -72,7 +65,7 @@ const askMessage = (id: string, askId: string) =>
 const singleQuestionAskMessage = (id: string, askId: string) =>
 	wireAskMessage({
 		id,
-		channelId: CHANNEL,
+		topicId: TOPIC,
 		authorAccountId: CALLER,
 		askId,
 		questionIds: ["q-only"],
@@ -203,8 +196,8 @@ describe("store live read path", () => {
 
 describe("store live write path", () => {
 	// postMessage issues a real PostMessage to the named channel with the typed
-	// text as a single text block, an EMPTY parentMessageId (a root post) and a
-	// non-empty clientRequestId (the server's idempotency key). And — the
+	// text as a single text block, the topic oneof (here an existing topic by id)
+	// and a non-empty clientRequestId (the server's idempotency key). And — the
 	// architecture ruling — it inserts NOTHING locally: messages() is unchanged
 	// until the stream echoes the stored message back.
 	test("postMessage issues a PostMessage with a clientRequestId and does not insert locally", async () => {
@@ -216,14 +209,18 @@ describe("store live write path", () => {
 		await withLiveStore(fake, async (store, settled) => {
 			expect(store.messages()).toEqual([]);
 
-			await store.postMessage(CHANNEL, "a live post");
+			await store.postMessage(
+				CHANNEL,
+				{ case: "topicId", value: TOPIC },
+				"a live post",
+			);
 			await settled();
 
 			expect(fake.posts.length).toBe(1);
 			const [post] = fake.posts;
 			expect(post.channelId).toBe(CHANNEL);
 			expect(post.text).toBe("a live post");
-			expect(post.parentMessageId).toBe("");
+			expect(post.topic).toEqual({ case: "topicId", value: TOPIC });
 			expect(post.clientRequestId.length).toBeGreaterThan(0);
 
 			// No local insert — the echo is what renders it.
@@ -252,8 +249,16 @@ describe("store live write path", () => {
 		});
 
 		await withLiveStore(fake, async (store) => {
-			await store.postMessage(CHANNEL, "first");
-			await store.postMessage(CHANNEL, "second");
+			await store.postMessage(
+				CHANNEL,
+				{ case: "topicId", value: TOPIC },
+				"first",
+			);
+			await store.postMessage(
+				CHANNEL,
+				{ case: "topicId", value: TOPIC },
+				"second",
+			);
 
 			expect(fake.posts.length).toBe(2);
 			expect(fake.posts[0].clientRequestId).not.toBe(
@@ -262,25 +267,29 @@ describe("store live write path", () => {
 		});
 	});
 
-	// postReply is postMessage plus the wire's parentMessageId — the field that
-	// threads the reply under its root. Same no-local-insert contract.
-	test("postReply sends parentMessageId and does not insert locally", async () => {
+	// A "new topic" post carries the topic oneof as `topicName` (get-or-create is
+	// server-side) rather than a topicId. Same no-local-insert contract.
+	test("postMessage with a topicName starts a new topic and does not insert locally", async () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
 			channels: [wireChannel(CHANNEL)],
-			messagesByChannel: {
-				[CHANNEL]: [wireTextMessage("m-root", 100, "root")],
-			},
 		});
 
 		await withLiveStore(fake, async (store) => {
-			await store.postReply(CHANNEL, "m-root", "a threaded reply");
+			await store.postMessage(
+				CHANNEL,
+				{ case: "topicName", value: "deploy plan" },
+				"first message in a new topic",
+			);
 
 			expect(fake.posts.length).toBe(1);
-			expect(fake.posts[0].parentMessageId).toBe("m-root");
-			expect(fake.posts[0].text).toBe("a threaded reply");
-			// Only the snapshot's root is present — no minted local reply.
-			expect(store.messages().map((m) => m.id)).toEqual(["m-root"]);
+			expect(fake.posts[0].topic).toEqual({
+				case: "topicName",
+				value: "deploy plan",
+			});
+			expect(fake.posts[0].text).toBe("first message in a new topic");
+			// No minted local message — the echo renders it.
+			expect(store.messages()).toEqual([]);
 		});
 	});
 
@@ -295,9 +304,9 @@ describe("store live write path", () => {
 		await withLiveStore(fake, async (store) => {
 			fake.failNextPost(new Error("server said no"));
 
-			await expect(store.postMessage(CHANNEL, "doomed")).rejects.toThrow(
-				"server said no",
-			);
+			await expect(
+				store.postMessage(CHANNEL, { case: "topicId", value: TOPIC }, "doomed"),
+			).rejects.toThrow("server said no");
 		});
 	});
 
@@ -520,7 +529,7 @@ describe("store live write path", () => {
 						value: {
 							message: wireAskMessage({
 								id: "m-one",
-								channelId: CHANNEL,
+								topicId: TOPIC,
 								authorAccountId: CALLER,
 								askId: "ask-one",
 								questionIds: ["q-only"],
@@ -667,9 +676,9 @@ describe("store offline construction", () => {
 			return createAppStore();
 		});
 		try {
-			await expect(store.postMessage("chan-x", "hi")).rejects.toThrow(
-				/no comms client/,
-			);
+			await expect(
+				store.postMessage("chan-x", { case: "topicId", value: TOPIC }, "hi"),
+			).rejects.toThrow(/no comms client/);
 		} finally {
 			dispose();
 		}

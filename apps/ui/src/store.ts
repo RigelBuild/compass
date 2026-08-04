@@ -24,7 +24,7 @@ import {
 	getOwner,
 	onCleanup,
 } from "solid-js";
-import { agentDmAccountId, threadsOf } from "./comms";
+import { agentDmAccountId } from "./comms";
 import type {
 	Account,
 	Ask,
@@ -32,6 +32,7 @@ import type {
 	ChannelGroup,
 	ConvBlock,
 	Message,
+	Topic,
 } from "./comms-stub";
 import {
 	type ActivityBarItem,
@@ -70,11 +71,12 @@ export const CALLER_ID = "acc-matt";
 
 /** The top-level surface the shell routes between. `bridge`/`backlog`/`done`/
  *  `settings` are the board-family surfaces (the default is `bridge`), still
- *  primary, reachable from the top bar; they swap the whole UI. `channel` is
- *  the standalone channel conversation; `agent` is the per-agent workspace —
- *  the agent's channel plus its tab/split panes. */
+ *  primary, reachable from the top bar; they swap the whole UI. `channel` is the
+ *  channel's topic index; `topic` is one topic's messages + composer; `agent` is
+ *  the per-agent workspace — the agent's channel plus its tab/split panes. */
 export type View =
 	| "channel"
+	| "topic"
 	| "agent"
 	| "bridge"
 	| "backlog"
@@ -370,10 +372,22 @@ export interface AppStore {
 	channels: Accessor<readonly Channel[]>;
 	/** All messages visible to the caller — the reactive conversation source. */
 	messages: Accessor<readonly Message[]>;
+	/** All topics visible to the caller — the reactive topic-index source. */
+	topics: Accessor<readonly Topic[]>;
 	/** The selected channel id, or null (the empty state before a pick). */
 	selectedChannelId: Accessor<string | null>;
 	/** The resolved selected channel, or undefined. */
 	selectedChannel: Accessor<Channel | undefined>;
+	/** The selected topic id, or null (no topic drilled into). Set by the
+	 *  `/channel/:channelId/topic/:topicId` route via applyTopicRoute. */
+	selectedTopicId: Accessor<string | null>;
+	/** The resolved selected topic, or undefined. */
+	selectedTopic: Accessor<Topic | undefined>;
+	/** Drill into a topic's message view — navigate to
+	 *  `/channel/<channelId>/topic/<topicId>`; the route-sync effect
+	 *  (applyTopicRoute) writes view + selection. Resolves the topic's channel
+	 *  off the topic set; a no-op on an unknown topic id. */
+	openTopic: (topicId: string) => void;
 	/** The agent workspace's chat channel — the selected agent's home DM,
 	 *  derived off the account, independent of `selectedChannel` so the
 	 *  standalone surface can't re-point the workspace pane. Undefined when no
@@ -420,29 +434,19 @@ export interface AppStore {
 	 *  block can say what went wrong instead of leaving the user's click to
 	 *  vanish into a console line. Cleared when the user answers the ask again. */
 	askError: (askId: string) => string | undefined;
-	/** The root id of the currently open thread on the standalone channel
-	 *  surface, or null when no thread is open. Channel-scoped: a selection
-	 *  change (openChannel/openAgent) clears it. */
-	openThreadRootId: Accessor<string | null>;
-	/** Open the thread rooted at `rootMessageId`. Callers pass a ROOT id; the
-	 *  store guards by resolving through `threadsOf(messages(), channelId)` and
-	 *  no-ops on a reply id or an unknown id (record §321-324). */
-	openThread: (rootMessageId: string) => void;
-	/** Close the open thread, resetting `openThreadRootId` to null. */
-	closeThread: () => void;
-	/** Post a root message to `channelId` through the wire `PostMessage`, with a
-	 *  single text block and a fresh `clientRequestId` (the server dedups a
-	 *  retry). Does NOT insert locally: the stored message arrives through the
-	 *  SubscribeComms echo, which `upsertMessage` dedups by id — so the sent
-	 *  message renders exactly once. Rejects when the post fails (or when the
-	 *  store has no client) so the composer can keep the user's text. */
-	postMessage: (channelId: string, text: string) => Promise<void>;
-	/** Post a reply under `parentMessageId` in `channelId` — `postMessage` with
-	 *  the wire's `parentMessageId` set. Same no-local-insert contract: the
-	 *  stream echo renders it. */
-	postReply: (
+	/** Post a message through the wire `PostMessage`: `container` = the channel,
+	 *  `topic` = the topic oneof (post into an existing topic by id, or
+	 *  get-or-create a topic by name — the "new topic" affordance), a single text
+	 *  block, and a fresh `clientRequestId` (the server dedups a retry). Does NOT
+	 *  insert locally: the stored message arrives through the SubscribeComms echo,
+	 *  which `upsertMessage` dedups by id — so the sent message renders exactly
+	 *  once. Rejects when the post fails (or when the store has no client) so the
+	 *  composer can keep the user's text. */
+	postMessage: (
 		channelId: string,
-		parentMessageId: string,
+		topic:
+			| { case: "topicId"; value: string }
+			| { case: "topicName"; value: string },
 		text: string,
 	) => Promise<void>;
 
@@ -579,8 +583,8 @@ export interface AppStoreOptions {
 	/** Observes a comms failure — a stream error the driver retries past, a
 	 *  rejected `RespondToAsk`, a refused `StopAgentSession`, or a failed boot
 	 *  `GetServerInfo` probe (the banner stays on the stub, offline).
-	 *  `postMessage`/`postReply` reject to their caller instead (the composer
-	 *  must keep the user's text) and do NOT route here. */
+	 *  `postMessage` rejects to its caller instead (the composer must keep the
+	 *  user's text) and does NOT route here. */
 	readonly onCommsError?: (error: unknown) => void;
 }
 
@@ -820,6 +824,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	const channelGroups = createMemo(() => comms().channelGroups);
 	const channels = createMemo(() => comms().channels);
 	const messages = createMemo(() => comms().messages);
+	const topics = createMemo(() => comms().topics);
 	// Open on the first subscribed channel so the shell boots into a live
 	// conversation, not the empty state — no hardcoded id, and null before the
 	// first snapshot arrives (the components render their empty state).
@@ -859,9 +864,10 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		}
 		setSelectedChannelId(fallback);
 	};
-	// The root id of the open thread on the standalone channel surface, or null.
-	// Channel-scoped: openChannel/openAgent clear it (T-T1).
-	const [openThreadRootId, setOpenThreadRootId] = createSignal<string | null>(
+	// The selected topic id on the topic view, or null. Written solely by the
+	// route-sync (applyTopicRoute), the single writer of the routed dimension —
+	// openTopic navigates, it does not set this directly.
+	const [selectedTopicId, setSelectedTopicId] = createSignal<string | null>(
 		null,
 	);
 	// The live read path: run the SubscribeComms driver for the store's lifetime,
@@ -1000,6 +1006,9 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	const selectedChannel = createMemo(() =>
 		channels().find((c) => c.id === selectedChannelId()),
 	);
+	const selectedTopic = createMemo(() =>
+		topics().find((t) => t.id === selectedTopicId()),
+	);
 	// The agent workspace's chat channel: the selected agent's home DM, resolved
 	// O(1) off the account — NOT `selectedChannel`. Deriving it from the agent
 	// (not the shared selection signal) is what keeps the standalone channel
@@ -1040,14 +1049,21 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// the router tree and cannot call useParams.
 	function applyRoute(path: string): void {
 		const segs = path.split("/").filter((s) => s.length > 0);
-		const [head, param] = segs;
+		const [head, param, sub, subParam] = segs;
 		switch (head) {
 			case undefined:
 				setView("bridge");
 				return;
 			case "channel":
-				if (param) applyChannelRoute(param);
-				else setView("bridge");
+				// `/channel/:channelId/topic/:topicId` drills into a topic; the plain
+				// `/channel/:channelId` shows the topic index.
+				if (param && sub === "topic" && subParam) {
+					applyTopicRoute(param, subParam);
+				} else if (param) {
+					applyChannelRoute(param);
+				} else {
+					setView("bridge");
+				}
 				return;
 			case "agent":
 				if (param) applyAgentRoute(param);
@@ -1074,7 +1090,11 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	// deep-link into an async-loaded channel must survive boot. Only once the
 	// first snapshot has arrived is an absent id treated as genuinely unknown and
 	// redirected off (gating on first-snapshot arrival, never non-emptiness: a
-	// genuinely empty workspace is a valid resolved state).
+	// genuinely empty workspace is a valid resolved state). Deliberately does NOT
+	// clear selectedTopicId — the topic dimension has exactly one writer
+	// (applyTopicRoute); a stale id left here is inert because every read of
+	// selectedTopicId()/selectedTopic() is view()-guarded (TopicView unmounts and
+	// the sidebar's selected class gates on view() === "topic").
 	function applyChannelRoute(channelId: string): void {
 		setView("channel");
 		if (channels().some((c) => c.id === channelId)) {
@@ -1087,6 +1107,36 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 			return;
 		}
 		setSelectedChannelId(channelId);
+	}
+	// Apply a `/channel/:channelId/topic/:topicId` route — the topic message view.
+	// The SOLE writer of the topic dimension, following applyChannelRoute's
+	// pending-aware pattern: the channel selection is set the same way (held while
+	// not-yet-loaded, bounced to the fallback channel once the snapshot has
+	// arrived and it is genuinely absent), and the topic id is held on the signal
+	// so a deep-link into an async-loaded topic survives boot. An absent topic
+	// after the snapshot has arrived falls back to the channel's index rather than
+	// a blank topic view.
+	function applyTopicRoute(channelId: string, topicId: string): void {
+		setView("topic");
+		const channelKnown = channels().some((c) => c.id === channelId);
+		if (!channelKnown && firstSnapshotArrived()) {
+			const fallback = firstChannelId(comms());
+			navigateTo(fallback ? `/channel/${fallback}` : "/");
+			return;
+		}
+		setSelectedChannelId(channelId);
+		if (topics().some((t) => t.id === topicId)) {
+			setSelectedTopicId(topicId);
+			return;
+		}
+		if (firstSnapshotArrived()) {
+			// The topic is genuinely unknown — drop back to the channel's index.
+			setView("channel");
+			setSelectedTopicId(null);
+			navigateTo(`/channel/${channelId}`);
+			return;
+		}
+		setSelectedTopicId(topicId);
 	}
 	// Apply an `/agent/:agentId` route — the workspace anchoring lifted verbatim
 	// from the old openAgent so the click path and a direct deep-link run the
@@ -1118,20 +1168,18 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		setAgentViewAgentId(agentId);
 	}
 
-	// Open an agent's workspace: drop the channel-scoped open-thread state, then
-	// navigate — the route-sync effect (applyAgentRoute) runs the anchoring, so
-	// the click path and a `/agent/:agentId` deep-link share one home.
+	// Open an agent's workspace: navigate — the route-sync effect (applyAgentRoute)
+	// runs the anchoring, so the click path and a `/agent/:agentId` deep-link share
+	// one home.
 	const openAgent = (agentId: string) => {
-		setOpenThreadRootId(null);
 		navigateTo(`/agent/${agentId}`);
 	};
 
-	// Open a channel: route to the channel view with it selected — unless it's a
-	// 1:1 agent DM, in which case its surface is the agent workspace, so delegate
-	// to openAgent (one entry point, no dead-end DM view). Unknown id is a no-op.
+	// Open a channel: route to the channel's topic index with it selected — unless
+	// it's a 1:1 agent DM, in which case its surface is the agent workspace, so
+	// delegate to openAgent (one entry point, no dead-end DM view). Unknown id is a
+	// no-op.
 	const openChannel = (channelId: string) => {
-		// Switching the standalone channel surface drops the open-thread state.
-		setOpenThreadRootId(null);
 		const chan = channels().find((c) => c.id === channelId);
 		if (!chan) return;
 		const byId = new Map(accounts().map((a) => [a.id, a]));
@@ -1141,6 +1189,18 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 			return;
 		}
 		navigateTo(`/channel/${channelId}`);
+	};
+
+	// Drill into a topic's message view: navigate to
+	// `/channel/<channelId>/topic/<topicId>` — the route-sync effect
+	// (applyTopicRoute) is the single writer that sets view + selection, so the
+	// click path and a topic deep-link share one home. Resolves the topic's
+	// channel off the topic set; a no-op on an unknown topic id (nothing to route
+	// to). NEVER setView — navigation is the sole entry.
+	const openTopic = (topicId: string) => {
+		const topic = topics().find((t) => t.id === topicId);
+		if (!topic) return;
+		navigateTo(`/channel/${topic.channelId}/topic/${topicId}`);
 	};
 
 	// Selecting an issue (a board card or a swimlane cell) syncs the roster
@@ -1557,22 +1617,10 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		// still unsent, still retryable.
 		sendAsk(messageId, ask);
 	};
-	// ── Thread actions (T-T1) ──
-	// Guarded open: callers pass a ROOT id; resolve the message's channel and
-	// verify it is a thread root before setting. A reply id or an unknown id
-	// no-ops (record §321-324).
-	const openThread = (rootMessageId: string) => {
-		const msg = messages().find((m) => m.id === rootMessageId);
-		if (!msg) return;
-		const isRoot = threadsOf(messages(), msg.channelId).some(
-			(t) => t.root.id === rootMessageId,
-		);
-		if (isRoot) setOpenThreadRootId(rootMessageId);
-	};
-	const closeThread = () => setOpenThreadRootId(null);
-	// The one write path for both a root post and a threaded reply: PostMessage
-	// with a single text block and a fresh clientRequestId (the server dedups a
-	// retry of the same key and suppresses the duplicate fan-out).
+	// The one write path: PostMessage with the channel `container`, the `topic`
+	// oneof (post into an existing topic by id, or get-or-create by name), a
+	// single text block and a fresh clientRequestId (the server dedups a retry of
+	// the same key and suppresses the duplicate fan-out).
 	//
 	// NOTHING is inserted locally. PostMessage returns the stored Message AND
 	// SubscribeComms echoes it; comms-state's upsertMessage dedups by message id
@@ -1582,10 +1630,12 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 	//
 	// Rejects rather than swallowing: the composer must be able to keep the
 	// user's typed text when a post fails.
-	const post = async (
+	const postMessage = async (
 		channelId: string,
+		topic:
+			| { case: "topicId"; value: string }
+			| { case: "topicName"; value: string },
 		text: string,
-		parentMessageId: string,
 	): Promise<void> => {
 		const client = options.comms;
 		if (!client) {
@@ -1595,18 +1645,11 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		}
 		await client.postMessage({
 			container: { case: "channelId", value: channelId },
+			topic,
 			blocks: [{ block: { case: "text", value: text } }],
-			parentMessageId,
 			clientRequestId: `${requestIdPrefix}-${++requestCount}`,
 		});
 	};
-	const postMessage = (channelId: string, text: string): Promise<void> =>
-		post(channelId, text, "");
-	const postReply = (
-		channelId: string,
-		parentMessageId: string,
-		text: string,
-	): Promise<void> => post(channelId, text, parentMessageId);
 
 	// ── Agent view actions (T7) ──
 	const setActiveAgentTab = (tabId: string) => {
@@ -1946,8 +1989,12 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		channelGroups,
 		channels,
 		messages,
+		topics,
 		selectedChannelId,
 		selectedChannel,
+		selectedTopicId,
+		selectedTopic,
+		openTopic,
 		workspaceChannel,
 		joinChannel,
 		toggleSubscribe,
@@ -1955,11 +2002,7 @@ export function createAppStore(options: AppStoreOptions = {}): AppStore {
 		submitAsk,
 		isAskSubmitted,
 		askError,
-		openThreadRootId,
-		openThread,
-		closeThread,
 		postMessage,
-		postReply,
 		agentSession,
 		agentTabs,
 		activeAgentTabId,

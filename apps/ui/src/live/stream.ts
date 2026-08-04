@@ -41,6 +41,7 @@ import {
 	adaptAccount,
 	adaptChannel,
 	adaptChannelGroup,
+	adaptTopic,
 	agentHomeChannelIds,
 } from "./adapt";
 import {
@@ -96,21 +97,33 @@ export async function fetchSnapshot(
 		client.listChannels({ snapshotSeq }, opts),
 	]);
 
-	// Messages page per channel (ListMessages.container = channelId). The store's
-	// `messages()` accessor is the flat caller-visible list, so the snapshot
-	// loads every visible channel's messages eagerly — preserving that seam.
-	// (Lazy per-channel load would change the accessor contract; out of scope.)
-	const perChannel = await Promise.all(
-		channelsResp.channels.map((channel) =>
-			fetchChannelMessages(client, channel.id, snapshotSeq, signal),
+	// Topics + messages page per channel. Topics list per channel (ListTopics is
+	// channel-scoped); messages page the whole channel (ListMessages topic filter
+	// empty), so the store's flat `messages()` accessor stays the whole visible
+	// list. (Lazy per-topic load would change the accessor contract; out of
+	// scope.)
+	const [perChannelTopics, perChannelMessages] = await Promise.all([
+		Promise.all(
+			channelsResp.channels.map((channel) =>
+				client
+					.listTopics({ channelId: channel.id, includeArchived: false }, opts)
+					.then((resp) => resp.topics),
+			),
 		),
-	);
-	const messages = perChannel.flat().map(mapMessage);
+		Promise.all(
+			channelsResp.channels.map((channel) =>
+				fetchChannelMessages(client, channel.id, snapshotSeq, signal),
+			),
+		),
+	]);
+	const topics = perChannelTopics.flat();
+	const messages = perChannelMessages.flat().map(mapMessage);
 
 	return {
 		accounts: accountsResp.accounts,
 		channelGroups: groupsResp.groups,
 		channels: channelsResp.channels,
+		topics,
 		messages,
 	};
 }
@@ -198,6 +211,15 @@ function decodeEvent(
 			return {
 				kind: "accountChanged",
 				account: adaptAccount(payload.value.account),
+			};
+		case "topicUpserted":
+			// A topic created/renamed/merged/archived — keeps the topic index live
+			// without a refetch. Singular field carries proto3 presence; a body-less
+			// event is malformed, so skip rather than fabricate a topic.
+			if (!payload.value.topic) return null;
+			return {
+				kind: "topicUpserted",
+				topic: adaptTopic(payload.value.topic),
 			};
 		default:
 			// Boundary-only, agentWorkspaceChanged (observation pane, not comms

@@ -7,9 +7,10 @@ import {
 	wireAccount,
 	wireAskMessage,
 	wireChannel,
+	wireTopic,
 } from "../live/comms-fake";
 import { type AppStore, createAppStore } from "../store";
-import { ChannelView } from "./ChannelView";
+import { TopicView } from "./TopicView";
 
 // The MULTI-question ask surface, over the live wire. The single-question ask
 // (the only shape in the offline fixture) is covered in ChannelView.test.tsx;
@@ -32,16 +33,20 @@ import { ChannelView } from "./ChannelView";
 
 const CALLER = "acc-me";
 const CHANNEL = "chan-live";
+const TOPIC = "top-live";
 
-/** A server whose one channel carries one TWO-question ask. */
+/** A server whose one channel has one topic carrying one TWO-question ask. */
 const snapshot = () => ({
 	accounts: [wireAccount(CALLER)],
 	channels: [wireChannel(CHANNEL, CALLER)],
+	topicsByChannel: {
+		[CHANNEL]: [wireTopic({ id: TOPIC, channelId: CHANNEL, name: "primary" })],
+	},
 	messagesByChannel: {
 		[CHANNEL]: [
 			wireAskMessage({
 				id: "m-ask",
-				channelId: CHANNEL,
+				topicId: TOPIC,
 				authorAccountId: CALLER,
 				askId: "ask-1",
 				questionIds: ["q-1", "q-2"],
@@ -50,8 +55,8 @@ const snapshot = () => ({
 	},
 });
 
-/** Mount the standalone ChannelView over a live store and wait out the driver's
- *  snapshot round-trip, so the ask has rendered before the body runs. Every hop
+/** Mount TopicView over a live store, wait out the driver's snapshot round-trip,
+ *  then open the topic so its ask has rendered before the body runs. Every hop
  *  is a resolved promise, so the bounded microtask drain is deterministic. */
 async function mountAsk(fake: FakeComms): Promise<{
 	store: AppStore;
@@ -63,13 +68,15 @@ async function mountAsk(fake: FakeComms): Promise<{
 		store = createAppStore({ comms: fake.client, callerId: CALLER });
 		return (
 			<StoreContext.Provider value={store}>
-				<ChannelView />
+				<TopicView />
 			</StoreContext.Provider>
 		);
 	});
 	const settled = async () => {
 		for (let i = 0; i < 20; i++) await Promise.resolve();
 	};
+	await settled();
+	store.openTopic(TOPIC);
 	await settled();
 	return { store, container, settled };
 }
@@ -226,6 +233,11 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 		const fake = createFakeComms({
 			accounts: [wireAccount(CALLER)],
 			channels: [wireChannel(CHANNEL, CALLER)],
+			topicsByChannel: {
+				[CHANNEL]: [
+					wireTopic({ id: TOPIC, channelId: CHANNEL, name: "primary" }),
+				],
+			},
 			messagesByChannel: {
 				[CHANNEL]: [
 					// Another participant answered q-1; the server recorded their id
@@ -233,7 +245,7 @@ describe("multi-question ask (live RespondToAsk gate)", () => {
 					// chosen ids, which is exactly when the skip control would show.
 					wireAskMessage({
 						id: "m-ask",
-						channelId: CHANNEL,
+						topicId: TOPIC,
 						authorAccountId: CALLER,
 						askId: "ask-1",
 						questionIds: ["q-1", "q-2"],

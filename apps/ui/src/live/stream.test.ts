@@ -52,7 +52,7 @@ const mapMessage: MapMessage = (w) => {
 		"atUnixMs" in w && typeof w.atUnixMs === "number" ? w.atUnixMs : 0;
 	return {
 		id: w.id,
-		channelId: "chan-1",
+		topicId: "top-1",
 		authorAccountId: CALLER,
 		atUnixMs,
 		blocks: [{ kind: "text", text: w.id }],
@@ -192,6 +192,8 @@ interface FakeConfig {
 	readonly accounts?: WireAccount[];
 	readonly groups?: WireChannelGroup[];
 	readonly channels?: WireChannel[];
+	/** Per-channel topic list — what ListTopics serves for that channel. */
+	readonly topicsByChannel?: Record<string, unknown[]>;
 	/** Per-channel, newest-first full message list; paging is simulated over it. */
 	readonly messagesByChannel?: Record<string, FakeWireMessage[]>;
 	/** Simulate a server whose effective page size is SMALLER than the requested
@@ -244,6 +246,9 @@ function createFakeClient(
 			calls.listChannelsSeqs.push(snapshotSeq);
 			return { channels: config.channels ?? [] };
 		},
+		listTopics: async (req: { channelId: string }) => ({
+			topics: config.topicsByChannel?.[req.channelId] ?? [],
+		}),
 		listMessages: async (req: {
 			container: { case: "channelId"; value: string };
 			limit: number;

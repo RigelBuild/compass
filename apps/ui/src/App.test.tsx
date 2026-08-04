@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { STUB_CHANNELS, STUB_MESSAGES } from "./comms-stub";
+import { STUB_CHANNELS, STUB_MESSAGES, STUB_TOPICS } from "./comms-stub";
 import { STUB_AGENTS } from "./stub-data";
 import { flush, mountApp } from "./test-router";
 
@@ -45,10 +45,14 @@ import { flush, mountApp } from "./test-router";
 // ask exists) so a reshuffle can't stale it; lands on `ch-svc-compass`.
 function standaloneChannelId(): string {
 	const channelKind = new Map(STUB_CHANNELS.map((c) => [c.id, c.kind]));
+	const topicChannel = new Map(STUB_TOPICS.map((t) => [t.id, t.channelId]));
 	for (const m of STUB_MESSAGES) {
-		if (channelKind.get(m.channelId) !== "channel") continue;
+		const channelId = topicChannel.get(m.topicId);
+		if (channelId === undefined || channelKind.get(channelId) !== "channel") {
+			continue;
+		}
 		for (const b of m.blocks) {
-			if (b.kind === "ask") return m.channelId;
+			if (b.kind === "ask") return channelId;
 		}
 	}
 	throw new Error(
@@ -124,11 +128,13 @@ describe("App shell (T7)", () => {
 		await flush();
 
 		// Precondition: the channel surface really mounted — ChannelView's root is
-		// inside the center main.main and has real threaded content.
+		// inside the center main.main and renders the channel's topic index.
 		expect(store.view()).toBe("channel");
 		const conv = container.querySelector("main.main .conversation");
 		expect(conv).not.toBeNull();
-		expect(container.querySelectorAll(".thread").length).toBeGreaterThan(0);
+		expect(
+			container.querySelectorAll(".topic-index .topic-row").length,
+		).toBeGreaterThan(0);
 
 		// LeftSidebar is view-independent (leftOpen defaults true), so it stays
 		// present on the channel surface.

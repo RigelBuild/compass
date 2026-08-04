@@ -27,18 +27,24 @@ import {
 	create,
 	MessageBlockSchema,
 	MessageSchema,
+	TopicSchema,
 	UserAccountSchema,
 	type Account as WireAccount,
 	type Channel as WireChannel,
 	type Message as WireMessage,
+	type Topic as WireTopic,
 } from "@compass/client";
 
 /** One recorded PostMessage — the fields the UI is contractually required to
- *  set. `parentMessageId` is "" for a root post (the wire's unset convention). */
+ *  set. `topic` is the topic oneof (post into an existing topic by id, or
+ *  get-or-create by name). */
 export interface RecordedPost {
 	readonly channelId: string;
 	readonly text: string;
-	readonly parentMessageId: string;
+	readonly topic:
+		| { case: "topicId"; value: string }
+		| { case: "topicName"; value: string }
+		| { case: undefined };
 	readonly clientRequestId: string;
 }
 
@@ -101,6 +107,8 @@ export interface FakeCommsSnapshot {
 	readonly accounts?: readonly unknown[];
 	readonly channelGroups?: readonly unknown[];
 	readonly channels?: readonly unknown[];
+	/** Per channel id — what ListTopics serves for that channel. */
+	readonly topicsByChannel?: Readonly<Record<string, readonly unknown[]>>;
 	/** Per channel id, newest-first — what ListMessages pages over. */
 	readonly messagesByChannel?: Readonly<Record<string, readonly unknown[]>>;
 }
@@ -175,16 +183,32 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 		listAccounts: async () => ({ accounts: snapshot.accounts ?? [] }),
 		listChannelGroups: async () => ({ groups: snapshot.channelGroups ?? [] }),
 		listChannels: async () => ({ channels: snapshot.channels ?? [] }),
+		listTopics: async (req: { channelId: string }) => ({
+			topics: snapshot.topicsByChannel?.[req.channelId] ?? [],
+		}),
 		listMessages: async (req: {
 			container: { case: "channelId"; value: string };
+			topicId: string;
 			beforeMessageId: string;
 		}) => {
 			const all = snapshot.messagesByChannel?.[req.container.value] ?? [];
+			// A topic-scoped read filters to that topic; an empty topicId reads
+			// the whole channel (the snapshot's flat page). Filtering here keeps
+			// the double honest about the topic-scoped ListMessages contract.
+			const scoped = req.topicId
+				? all.filter(
+						(m) =>
+							typeof m === "object" &&
+							m !== null &&
+							"topicId" in m &&
+							m.topicId === req.topicId,
+					)
+				: all;
 			// Paged backward by beforeMessageId (exclusive), newest-first — one
 			// page is enough here, so a second call past the end returns empty and
 			// terminates the driver's paging loop.
 			if (req.beforeMessageId) return { messages: [] };
-			return { messages: all };
+			return { messages: scoped };
 		},
 		subscribeComms: (
 			_req: unknown,
@@ -192,8 +216,11 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 		): AsyncGenerator<unknown> => subscribe(opts?.signal),
 		postMessage: async (req: {
 			container: { case: "channelId"; value: string };
+			topic:
+				| { case: "topicId"; value: string }
+				| { case: "topicName"; value: string }
+				| { case: undefined };
 			blocks: Array<{ block: { case?: string; value?: unknown } }>;
-			parentMessageId: string;
 			clientRequestId: string;
 		}) => {
 			if (postFailure) {
@@ -216,7 +243,12 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 			posts.push({
 				channelId: req.container.value,
 				text: first?.case === "text" ? String(first.value) : "",
-				parentMessageId: req.parentMessageId,
+				topic:
+					req.topic.case === "topicId"
+						? { case: "topicId", value: req.topic.value }
+						: req.topic.case === "topicName"
+							? { case: "topicName", value: req.topic.value }
+							: { case: undefined },
 				clientRequestId: req.clientRequestId,
 			});
 			const response = { message: undefined as WireMessage | undefined };
@@ -351,22 +383,37 @@ export function wireChannel(id: string, callerId: string): WireChannel {
 	});
 }
 
-/** A single-text-block message. `parentMessageId` "" is the wire's unset
- *  convention for a thread root. */
-export function wireTextMessage(opts: {
+/** A topic on the wire — the channel-scoped bucket a message lives in. */
+export function wireTopic(opts: {
 	id: string;
 	channelId: string;
+	name: string;
+	createdAtUnixMs?: number;
+	createdByAccountId?: string;
+}): WireTopic {
+	return create(TopicSchema, {
+		id: opts.id,
+		channelId: opts.channelId,
+		name: opts.name,
+		createdAtUnixMs: BigInt(opts.createdAtUnixMs ?? 0),
+		createdByAccountId: opts.createdByAccountId ?? "",
+	});
+}
+
+/** A single-text-block message, scoped to `topicId` (the two-level model's
+ *  leaf — a message belongs to a topic, not a channel directly). */
+export function wireTextMessage(opts: {
+	id: string;
+	topicId: string;
 	authorAccountId: string;
 	atUnixMs: number;
 	text: string;
-	parentMessageId?: string;
 }): WireMessage {
 	return create(MessageSchema, {
 		id: opts.id,
-		container: { case: "channelId", value: opts.channelId },
+		topicId: opts.topicId,
 		authorAccountId: opts.authorAccountId,
 		atUnixMs: BigInt(opts.atUnixMs),
-		parentMessageId: opts.parentMessageId ?? "",
 		blocks: [
 			create(MessageBlockSchema, {
 				block: { case: "text", value: opts.text },
@@ -409,7 +456,7 @@ export function wireTextMessage(opts: {
  *  that push. */
 export function wireAskMessage(opts: {
 	id: string;
-	channelId: string;
+	topicId: string;
 	authorAccountId: string;
 	askId: string;
 	questionIds: readonly string[];
@@ -428,7 +475,7 @@ export function wireAskMessage(opts: {
 	}
 	return create(MessageSchema, {
 		id: opts.id,
-		container: { case: "channelId", value: opts.channelId },
+		topicId: opts.topicId,
 		authorAccountId: opts.authorAccountId,
 		atUnixMs: 1000n,
 		blocks: [

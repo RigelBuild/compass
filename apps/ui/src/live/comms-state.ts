@@ -17,12 +17,20 @@ import type {
 	Account as WireAccount,
 	Channel as WireChannel,
 	ChannelGroup as WireChannelGroup,
+	Topic as WireTopic,
 } from "@compass/client";
-import type { Account, Channel, ChannelGroup, Message } from "../comms-stub";
+import type {
+	Account,
+	Channel,
+	ChannelGroup,
+	Message,
+	Topic,
+} from "../comms-stub";
 import {
 	adaptAccount,
 	adaptChannel,
 	adaptChannelGroup,
+	adaptTopic,
 	agentHomeChannelIds,
 } from "./adapt";
 
@@ -47,6 +55,7 @@ export interface CommsState {
 	readonly accounts: readonly Account[];
 	readonly channelGroups: readonly ChannelGroup[];
 	readonly channels: readonly Channel[];
+	readonly topics: readonly Topic[];
 	readonly messages: readonly Message[];
 }
 
@@ -55,20 +64,23 @@ export const EMPTY_COMMS_STATE: CommsState = {
 	accounts: [],
 	channelGroups: [],
 	channels: [],
+	topics: [],
 	messages: [],
 };
 
 /** A raw snapshot from the read RPCs (ListAccounts/ListChannelGroups/
- *  ListChannels/ListMessages) taken at one snapshot boundary — the since_seq=0
- *  recovery path and the resync re-snapshot both produce this, then it is
- *  reduced into a fresh CommsState. Messages arrive already domain-mapped (the
- *  driver applies the injected MapMessage) so this module needs no message
- *  shape. The boundary token is NOT here: it is the opaque read-RPC cursor the
- *  driver passes verbatim to each list call, never reduced into domain state. */
+ *  ListChannels/ListTopics/ListMessages) taken at one snapshot boundary — the
+ *  since_seq=0 recovery path and the resync re-snapshot both produce this, then
+ *  it is reduced into a fresh CommsState. Messages arrive already domain-mapped
+ *  (the driver applies the injected MapMessage) so this module needs no message
+ *  shape; topics arrive wire-typed (reduceSnapshot adapts them, like channels).
+ *  The boundary token is NOT here: it is the opaque read-RPC cursor the driver
+ *  passes verbatim to each list call, never reduced into domain state. */
 export interface CommsSnapshot {
 	readonly accounts: readonly WireAccount[];
 	readonly channelGroups: readonly WireChannelGroup[];
 	readonly channels: readonly WireChannel[];
+	readonly topics: readonly WireTopic[];
 	readonly messages: readonly Message[];
 }
 
@@ -86,13 +98,14 @@ export function reduceSnapshot(
 	const homeIds = agentHomeChannelIds(accounts);
 	const channels = snap.channels.map((c) => adaptChannel(c, callerId, homeIds));
 	const channelGroups = snap.channelGroups.map(adaptChannelGroup);
+	const topics = snap.topics.map(adaptTopic);
 	const messages = [...snap.messages].sort(byPostOrder);
-	return { accounts, channelGroups, channels, messages };
+	return { accounts, channelGroups, channels, topics, messages };
 }
 
 /** Chronological by post time, then id — the stable tiebreak the pure comms
- *  core (`channelMessages`) uses, kept identical here so the live message list
- *  and the threading read agree on order. */
+ *  core (`topicMessages`) uses, kept identical here so the live message list
+ *  and the topic read agree on order. */
 function byPostOrder(a: Message, b: Message): number {
 	if (a.atUnixMs !== b.atUnixMs) return a.atUnixMs - b.atUnixMs;
 	return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
@@ -174,6 +187,7 @@ export type CommsEvent =
 	| { readonly kind: "channelChanged"; readonly channel: Channel }
 	| { readonly kind: "channelGroupChanged"; readonly group: ChannelGroup }
 	| { readonly kind: "accountChanged"; readonly account: Account }
+	| { readonly kind: "topicUpserted"; readonly topic: Topic }
 	| { readonly kind: "channelRemoved"; readonly channelId: string };
 
 /** Apply one decoded event to the state, returning the next state. Pure: upserts
@@ -210,6 +224,11 @@ export function applyEvent(state: CommsState, event: CommsEvent): CommsState {
 		// upsert avoids coupling the reducer to the adapt-layer projection.
 		case "accountChanged":
 			return { ...state, accounts: upsertById(state.accounts, event.account) };
+		// A topic created/renamed/merged/archived: upsert by id, keeping the topic
+		// index live without a refetch. Order within `topics` is server order; the
+		// pure `topicsOf` re-sorts by last activity, so append-on-new is fine.
+		case "topicUpserted":
+			return { ...state, topics: upsertById(state.topics, event.topic) };
 		case "channelRemoved":
 			return {
 				...state,

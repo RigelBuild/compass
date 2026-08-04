@@ -37,7 +37,7 @@ const CALLER = "acc-me";
 function msg(id: string, atUnixMs: number, text = id): Message {
 	return {
 		id,
-		channelId: "chan-1",
+		topicId: "top-1",
 		authorAccountId: CALLER,
 		atUnixMs,
 		blocks: [{ kind: "text", text }],
@@ -67,6 +67,7 @@ function baseState(): CommsState {
 		accounts: [account("acc-a")],
 		channelGroups: [group("grp-a")],
 		channels: [chan("chan-a")],
+		topics: [],
 		messages: [msg("m-mid", 100)],
 	};
 }
@@ -108,6 +109,7 @@ describe("reduceSnapshot", () => {
 					subscriberAccountIds: [CALLER, "acc-cook"],
 				}),
 			],
+			topics: [],
 			// Deliberately out of (atUnixMs,id) order so the sort is observable.
 			messages: [msg("m2", 200), msg("m1", 100), msg("m3", 100)],
 		};
