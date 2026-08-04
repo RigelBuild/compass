@@ -143,14 +143,22 @@ func (p *process) Wait(ctx context.Context) error {
 		}
 		return err
 	case <-ctx.Done():
-		// Hard-kill the whole group: negative PID targets the process group set
-		// up via Setpgid, so forked workers die too. A kill error here means the
-		// child already exited (ESRCH) — not actionable, since the reap below is
-		// what guarantees no zombie — so it is deliberately discarded.
-		_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
-		// Reap the child so it is not left a zombie; the SIGKILL guarantees the
-		// waiter returns promptly.
-		<-done
+		// If the child already exited and was reaped in the tiny window before we
+		// observed cancellation, its pid may be recycled — a group SIGKILL to
+		// -pid would then target an unrelated process group. Only escalate the
+		// kill when the child has not already returned.
+		select {
+		case <-done:
+		default:
+			// Hard-kill the whole group: negative PID targets the process group set
+			// up via Setpgid, so forked workers die too. A kill error is not
+			// actionable (the child may have exited after our check); the reap below
+			// guarantees no zombie regardless, so it is deliberately discarded.
+			_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
+			// Reap the child so it is not left a zombie; the SIGKILL guarantees the
+			// waiter returns promptly.
+			<-done
+		}
 		return fmt.Errorf("waiting for %s: %w", p.cmd.Path, ctx.Err())
 	}
 }

@@ -185,3 +185,49 @@ func TestClusterInitialized(t *testing.T) {
 		}
 	})
 }
+
+func TestClassifyCreatedbOutput(t *testing.T) {
+	tests := []struct {
+		name string
+		out  string
+		want createdbOutcome
+	}{
+		{
+			name: "already exists is idempotent success",
+			out:  `createdb: error: database creation failed: ERROR:  database "compass" already exists`,
+			want: createdbAlreadyExists,
+		},
+		{
+			name: "could not connect is transient",
+			out:  `createdb: error: connection to server on socket "/tmp/s/.s.PGSQL.5432" failed: No such file or directory`,
+			want: createdbTransient,
+		},
+		{
+			name: "libpq could not connect phrasing is transient",
+			out:  "createdb: error: could not connect to server: Connection refused",
+			want: createdbTransient,
+		},
+		{
+			name: "starting up is transient",
+			out:  `createdb: error: the database system is starting up`,
+			want: createdbTransient,
+		},
+		{
+			name: "a real error is fatal",
+			out:  `createdb: error: permission denied to create database`,
+			want: createdbFatal,
+		},
+		{
+			name: "empty output is fatal",
+			out:  "",
+			want: createdbFatal,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyCreatedbOutput(tt.out); got != tt.want {
+				t.Fatalf("classifyCreatedbOutput(%q) = %d, want %d", tt.out, got, tt.want)
+			}
+		})
+	}
+}

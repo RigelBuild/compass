@@ -203,6 +203,7 @@ func serve(ctx context.Context, cfg pgConfig) error {
 		"-k", cfg.SocketDir,
 		"-p", cfg.Port,
 		"-c", "listen_addresses=",
+		"-c", "lc_messages=C", // C server messages → deterministic createdb classification
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -324,22 +325,26 @@ func ensureDatabase(ctx context.Context, cfg pgConfig) error {
 	for {
 		cmd := exec.CommandContext(ctx, createdbBin, //nolint:gosec // G204: the embedded-postgres seam — createdbBin is LookPath-resolved and args are wrapper-built from pgConfig, neither user-controlled
 			"-h", cfg.SocketDir, "-p", cfg.Port, cfg.DBName)
+		// Pin the client message locale to C so the classification below is
+		// deterministic across desktop locales (server messages are pinned via
+		// `-c lc_messages=C` at start); otherwise a translated "could not connect"
+		// on a non-English desktop is misread as fatal and the database is never
+		// created.
+		cmd.Env = append(os.Environ(), "LC_MESSAGES=C")
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			slog.Info("created database", "dbname", cfg.DBName)
 			return nil
 		}
-		// createdb exits non-zero when the database already exists; that is the
-		// steady-state restart case, not a failure.
-		if strings.Contains(string(out), "already exists") {
+		switch classifyCreatedbOutput(string(out)) {
+		case createdbAlreadyExists:
+			// The database already exists — the steady-state restart case, not a
+			// failure — so creation is idempotently complete.
 			return nil
-		}
-		// A connection failure means postgres is not accepting yet: retry until
-		// it is. Any other createdb error is a real failure — return it now.
-		if !strings.Contains(string(out), "could not connect") &&
-			!strings.Contains(string(out), "No such file or directory") &&
-			!strings.Contains(string(out), "the database system is") {
+		case createdbFatal:
 			return fmt.Errorf("running createdb %q: %w: %s", cfg.DBName, err, strings.TrimSpace(string(out)))
+		case createdbTransient:
+			// postgres is not accepting yet: fall through to the retry gate below.
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("running createdb %q: postgres did not accept connections within %s: %w: %s",
@@ -350,5 +355,37 @@ func ensureDatabase(ctx context.Context, cfg pgConfig) error {
 			return ctx.Err()
 		case <-ticker.C:
 		}
+	}
+}
+
+// createdbOutcome classifies a failed createdb invocation's combined output so
+// the retry loop can tell "not accepting yet" (retry) from a real error (fail)
+// from an idempotent "already exists" (success).
+type createdbOutcome int
+
+const (
+	// createdbFatal is a real failure that retrying will not resolve.
+	createdbFatal createdbOutcome = iota
+	// createdbTransient means postgres is not yet accepting connections, so the
+	// call should be retried until it is (or the budget elapses).
+	createdbTransient
+	// createdbAlreadyExists means the database is already present — the
+	// idempotent restart case, which counts as success.
+	createdbAlreadyExists
+)
+
+// classifyCreatedbOutput maps createdb's combined output to an outcome by
+// matching C-locale message text; callers pin LC_MESSAGES=C (client) and
+// lc_messages=C (server) so the match holds on any desktop locale.
+func classifyCreatedbOutput(out string) createdbOutcome {
+	switch {
+	case strings.Contains(out, "already exists"):
+		return createdbAlreadyExists
+	case strings.Contains(out, "could not connect"),
+		strings.Contains(out, "No such file or directory"),
+		strings.Contains(out, "the database system is"):
+		return createdbTransient
+	default:
+		return createdbFatal
 	}
 }
