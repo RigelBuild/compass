@@ -19,7 +19,12 @@ import {
 	enumerateMountedExtensions,
 	loadMountedConfig,
 	readConfigVersion,
+	readMountedAgentsDir,
+	readMountedAgentsMd,
 	readMountedMcpConfigs,
+	readMountedModelsPath,
+	readMountedRules,
+	readMountedSettingsPath,
 	readMountedSkills,
 } from "./config-reader";
 
@@ -43,6 +48,12 @@ function writeCurrent(mount: string, rel: string, body: string): void {
 	const path = join(currentConfigDir(mount), rel);
 	mkdirSync(join(path, ".."), { recursive: true });
 	writeFileSync(path, body);
+}
+
+// Create a directory under `<mount>/current/<rel>`, creating parents — the
+// dir-shaped members (rules/, agents/) the Runner materializes.
+function mkdirCurrent(mount: string, rel: string): void {
+	mkdirSync(join(currentConfigDir(mount), rel), { recursive: true });
 }
 
 function skillMd(name: string, description: string): string {
@@ -229,6 +240,151 @@ describe("readConfigVersion", () => {
 	});
 });
 
+// The five CP-1/CP-4 path accessors: EXISTENCE only, no parsing. Each returns
+// the absolute member path when it is the right filesystem KIND (regular file
+// for settings/AGENTS.md/models.yml; directory for rules/agents), and undefined
+// otherwise — present-wrong-kind is undefined, not a throw, so a malformed mount
+// still boots. Parsing is the SDK's job through the T4 overlay/symlinks.
+describe("readMountedSettingsPath", () => {
+	test("returns the absolute path when settings/config.yml is a regular file", async () => {
+		const mount = scratch();
+		writeCurrent(
+			mount,
+			"settings/config.yml",
+			"compaction:\n  enabled: true\n",
+		);
+		expect(await readMountedSettingsPath(currentConfigDir(mount))).toBe(
+			join(currentConfigDir(mount), "settings", "config.yml"),
+		);
+	});
+
+	test("returns undefined when absent", async () => {
+		const mount = scratch();
+		expect(
+			await readMountedSettingsPath(currentConfigDir(mount)),
+		).toBeUndefined();
+	});
+
+	test("returns undefined when settings/config.yml is a directory, not a file", async () => {
+		const mount = scratch();
+		mkdirCurrent(mount, "settings/config.yml");
+		expect(
+			await readMountedSettingsPath(currentConfigDir(mount)),
+		).toBeUndefined();
+	});
+});
+
+describe("readMountedAgentsMd", () => {
+	test("returns {path, content} when AGENTS.md is a regular file", async () => {
+		const mount = scratch();
+		writeCurrent(mount, "AGENTS.md", "# fleet conventions\n");
+		expect(await readMountedAgentsMd(currentConfigDir(mount))).toEqual({
+			path: join(currentConfigDir(mount), "AGENTS.md"),
+			content: "# fleet conventions\n",
+		});
+	});
+
+	test("returns undefined when absent", async () => {
+		const mount = scratch();
+		expect(await readMountedAgentsMd(currentConfigDir(mount))).toBeUndefined();
+	});
+
+	test("returns undefined when AGENTS.md is a directory, not a file", async () => {
+		const mount = scratch();
+		mkdirCurrent(mount, "AGENTS.md");
+		expect(await readMountedAgentsMd(currentConfigDir(mount))).toBeUndefined();
+	});
+});
+
+describe("readMountedModelsPath", () => {
+	test("returns the absolute path when models.yml is a regular file", async () => {
+		const mount = scratch();
+		writeCurrent(mount, "models.yml", "providers:\n  openai: {}\n");
+		expect(await readMountedModelsPath(currentConfigDir(mount))).toBe(
+			join(currentConfigDir(mount), "models.yml"),
+		);
+	});
+
+	test("returns undefined when absent", async () => {
+		const mount = scratch();
+		expect(
+			await readMountedModelsPath(currentConfigDir(mount)),
+		).toBeUndefined();
+	});
+
+	test("returns undefined when models.yml is a directory, not a file", async () => {
+		const mount = scratch();
+		mkdirCurrent(mount, "models.yml");
+		expect(
+			await readMountedModelsPath(currentConfigDir(mount)),
+		).toBeUndefined();
+	});
+});
+
+describe("readMountedRules", () => {
+	test("builds Rule[] from flat .md/.mdc files, sorted by name", async () => {
+		const mount = scratch();
+		writeCurrent(
+			mount,
+			"rules/b.md",
+			"---\ndescription: rule b\n---\nbody b\n",
+		);
+		writeCurrent(
+			mount,
+			"rules/a.mdc",
+			"---\ndescription: rule a\n---\nbody a\n",
+		);
+		const rules = await readMountedRules(currentConfigDir(mount));
+		expect(rules.map((r) => r.name)).toEqual(["a", "b"]);
+		// Content is the body after frontmatter (buildRuleFromMarkdown).
+		const a = rules.find((r) => r.name === "a");
+		expect(a?.content.trim()).toBe("body a");
+		expect(a?.description).toBe("rule a");
+		expect(a?.path).toBe(join(currentConfigDir(mount), "rules", "a.mdc"));
+	});
+
+	test("returns [] when the rules dir is absent", async () => {
+		const mount = scratch();
+		expect(await readMountedRules(currentConfigDir(mount))).toEqual([]);
+	});
+
+	test("returns [] when rules is a regular file, not a directory", async () => {
+		const mount = scratch();
+		writeCurrent(mount, "rules", "not a dir\n");
+		expect(await readMountedRules(currentConfigDir(mount))).toEqual([]);
+	});
+
+	test("ignores non-.md/.mdc files and keeps the valid rules", async () => {
+		const mount = scratch();
+		writeCurrent(mount, "rules/keep.md", "---\ndescription: keep\n---\nkeep\n");
+		writeCurrent(mount, "rules/ignore.txt", "not a rule\n");
+		writeCurrent(mount, "rules/README", "not a rule\n");
+		const rules = await readMountedRules(currentConfigDir(mount));
+		expect(rules.map((r) => r.name)).toEqual(["keep"]);
+	});
+});
+
+describe("readMountedAgentsDir", () => {
+	test("returns the absolute path when agents/ is a directory", async () => {
+		const mount = scratch();
+		writeCurrent(mount, "agents/design.md", "---\nname: design\n---\n");
+		expect(await readMountedAgentsDir(currentConfigDir(mount))).toBe(
+			join(currentConfigDir(mount), "agents"),
+		);
+	});
+
+	test("returns undefined when absent", async () => {
+		const mount = scratch();
+		expect(await readMountedAgentsDir(currentConfigDir(mount))).toBeUndefined();
+	});
+
+	test("returns undefined when agents is a regular file, not a directory", async () => {
+		const mount = scratch();
+		writeCurrent(mount, "agents", "not a dir\n");
+		expect(await readMountedAgentsDir(currentConfigDir(mount))).toBeUndefined();
+	});
+});
+
 // loadMountedConfig composes the four readers into the one shape main() spreads.
 // disableExtensionDiscovery is always true — the choice-A guarantee.
 describe("loadMountedConfig", () => {
@@ -242,15 +398,34 @@ describe("loadMountedConfig", () => {
 			JSON.stringify({ mcpServers: { srv: { command: "s" } } }),
 		);
 		writeCurrent(mount, "version", "v1\n");
+		writeCurrent(
+			mount,
+			"settings/config.yml",
+			"compaction:\n  enabled: true\n",
+		);
+		writeCurrent(mount, "AGENTS.md", "# fleet\n");
+		writeCurrent(mount, "models.yml", "providers: {}\n");
+		writeCurrent(mount, "rules/r.md", "# rule\n");
+		writeCurrent(mount, "agents/design.md", "---\nname: design\n---\n");
 
 		const cfg = await loadMountedConfig(mount);
+		const current = currentConfigDir(mount);
 		expect(cfg.skills.map((s) => s.name)).toEqual(["s"]);
 		expect(cfg.additionalExtensionPaths).toEqual([
-			join(currentConfigDir(mount), "extensions", "e.ts"),
+			join(current, "extensions", "e.ts"),
 		]);
 		expect(cfg.disableExtensionDiscovery).toBe(true);
 		expect(Object.keys(cfg.mcp.configs)).toEqual(["srv"]);
 		expect(cfg.version).toBe("v1");
+		// The CP-1/CP-2/CP-4 fields, all carried by loadMountedConfig.
+		expect(cfg.settingsPath).toBe(join(current, "settings", "config.yml"));
+		expect(cfg.modelsPath).toBe(join(current, "models.yml"));
+		expect(cfg.agentsDir).toBe(join(current, "agents"));
+		expect(cfg.agentsMd).toEqual({
+			path: join(current, "AGENTS.md"),
+			content: "# fleet\n",
+		});
+		expect(cfg.rules.map((r) => r.name)).toEqual(["r"]);
 	});
 
 	test("a partial mount (skills only) leaves the other surfaces empty", async () => {
@@ -262,6 +437,12 @@ describe("loadMountedConfig", () => {
 		expect(cfg.additionalExtensionPaths).toEqual([]);
 		expect(cfg.mcp.configs).toEqual({});
 		expect(cfg.version).toBeUndefined();
+		// The CP-1/CP-2/CP-4 fields are empty when their members are absent.
+		expect(cfg.settingsPath).toBeUndefined();
+		expect(cfg.modelsPath).toBeUndefined();
+		expect(cfg.agentsDir).toBeUndefined();
+		expect(cfg.agentsMd).toBeUndefined();
+		expect(cfg.rules).toEqual([]);
 	});
 
 	test("an unconfigured mount (no current/) yields every surface empty", async () => {

@@ -31,6 +31,11 @@ import { readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { loadSkillsFromDir, type Skill } from "@oh-my-pi/pi-coding-agent";
 import type { SourceMeta } from "@oh-my-pi/pi-coding-agent/capability";
+import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
+import {
+	buildRuleFromMarkdown,
+	createSourceMeta,
+} from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import type {
 	MCPConfigFile,
 	MCPServerConfig,
@@ -56,6 +61,9 @@ const SKILL_SOURCE = "compass-config:user";
 /** Source metadata stamped on every server parsed from the mount. */
 const MCP_PROVIDER = "compass-config";
 const MCP_PROVIDER_NAME = "Compass config";
+
+/** Provenance tag stamped on every rule built from the mount (createSourceMeta). */
+const RULE_PROVIDER = "compass-config";
 
 /** The `current/` view the Runner flips; the agent only ever reads through it. */
 export function currentConfigDir(mount: string): string {
@@ -271,6 +279,143 @@ export async function readConfigVersion(
 }
 
 /**
+ * The absolute path of a mount member when it exists AND is a REGULAR FILE
+ * (symlinks resolved by `stat`), else `undefined`. Existence only — no parsing;
+ * the SDK's own strict loaders own the content. Tolerant: any read failure
+ * (absent/unreadable) yields `undefined`, never throws — the module's
+ * absent→empty posture.
+ */
+async function readMountedFilePath(
+	currentDir: string,
+	rel: string,
+): Promise<string | undefined> {
+	const path = join(currentDir, rel);
+	try {
+		return (await stat(path)).isFile() ? path : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The absolute path of a mount member when it exists AND is a DIRECTORY
+ * (symlinks resolved by `stat`), else `undefined`. Existence only — the SDK's
+ * own discovery loads the directory's contents through the CP-4 symlinks.
+ * Tolerant: any read failure yields `undefined`, never throws.
+ */
+async function readMountedDirPath(
+	currentDir: string,
+	rel: string,
+): Promise<string | undefined> {
+	const path = join(currentDir, rel);
+	try {
+		return (await stat(path)).isDirectory() ? path : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The fleet OMP settings document `settings/config.yml` (CP-1), when present as
+ * a regular file. `main()` sets `PI_CONFIG_FILES` to this path (after its own
+ * Bun-parse guard, T4) so the SDK's `Settings` loads it as a read-only overlay.
+ * Existence only — the strict overlay loader (settings.ts) parses it.
+ */
+export async function readMountedSettingsPath(
+	currentDir: string,
+): Promise<string | undefined> {
+	return readMountedFilePath(currentDir, join("settings", "config.yml"));
+}
+
+/** A fleet context file as the SDK's `contextFiles` option takes it. */
+export interface MountedContextFile {
+	path: string;
+	content: string;
+}
+
+/**
+ * The fleet `AGENTS.md` context file (CP-2), read as a `{path, content}` object
+ * for direct injection via `createAgentSession({ contextFiles })` — providing
+ * the array short-circuits the SDK's cwd walk-up discovery (sdk.ts:1177-1179),
+ * so the fleet file lands as a USER-level context file composing with the
+ * checkout's own AGENTS.md chain. Absent/unreadable → `undefined` (tolerant).
+ */
+export async function readMountedAgentsMd(
+	currentDir: string,
+): Promise<MountedContextFile | undefined> {
+	const path = join(currentDir, "AGENTS.md");
+	try {
+		if (!(await stat(path)).isFile()) return undefined;
+		return { path, content: await Bun.file(path).text() };
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The fleet `models.yml` (CP-4), when present as a top-level regular file.
+ * `main()` symlinks it to the user-level agent dir so the SDK's `ModelRegistry`
+ * loads it (`config-file.ts` `getAgentDir()/models.yml`). Existence only.
+ */
+export async function readMountedModelsPath(
+	currentDir: string,
+): Promise<string | undefined> {
+	return readMountedFilePath(currentDir, "models.yml");
+}
+
+/**
+ * The fleet rules (CP-4), read as SDK `Rule[]` for direct injection via
+ * `createAgentSession({ rules })` — providing the array SHORT-CIRCUITS the SDK's
+ * rule discovery (sdk.ts:1434-1435), so the fleet rules are the sole injected
+ * set. Globs flat `rules/*.md`/`*.mdc` (the discovery grammar: flat, those two
+ * extensions) and builds each with the SDK's own `buildRuleFromMarkdown` — the
+ * same construction the builtin provider uses, so frontmatter (globs,
+ * alwaysApply, description, conditions) is parsed identically. Absent dir → `[]`;
+ * an unreadable file is skipped, never fatal (tolerant, mirrors the MCP arm).
+ */
+export async function readMountedRules(currentDir: string): Promise<Rule[]> {
+	const rulesDir = join(currentDir, "rules");
+	let entries: Dirent[];
+	try {
+		entries = await readdir(rulesDir, { withFileTypes: true });
+	} catch {
+		return []; // absent/unreadable dir: no rules right now
+	}
+	const rules: Rule[] = [];
+	for (const entry of entries) {
+		if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+		if (!entry.name.endsWith(".md") && !entry.name.endsWith(".mdc")) continue;
+		const filePath = join(rulesDir, entry.name);
+		try {
+			const content = await Bun.file(filePath).text();
+			rules.push(
+				buildRuleFromMarkdown(
+					entry.name,
+					content,
+					filePath,
+					createSourceMeta(RULE_PROVIDER, filePath, "user"),
+				),
+			);
+		} catch {
+			// One unreadable/malformed rule file must not sink the rest or the boot.
+		}
+	}
+	rules.sort((a, b) => a.name.localeCompare(b.name));
+	return rules;
+}
+
+/**
+ * The fleet `agents/` subagent-definitions directory (CP-4), when present as a
+ * directory. `main()` symlinks it to the user-level agent dir so the `task`
+ * tool resolves the mounted subagent defs by name. Existence only.
+ */
+export async function readMountedAgentsDir(
+	currentDir: string,
+): Promise<string | undefined> {
+	return readMountedDirPath(currentDir, "agents");
+}
+
+/**
  * The mount mapped to the `createAgentSession` option surfaces, in one call so
  * `main()` reads the bundle once. `disableExtensionDiscovery` is fixed `true`:
  * with the enumerated entry paths it makes "the mount's extensions and nothing
@@ -284,15 +429,60 @@ export interface MountedConfig {
 	disableExtensionDiscovery: true;
 	mcp: MountedMcp;
 	version: string | undefined;
+	/**
+	 * `settings/config.yml` (CP-1), absolute path when present. `main()` builds a
+	 * `Settings` from it via `Settings.init({ configFiles: [settingsPath] })` and
+	 * passes it as `settingsManager` — object injection, the seam the runtime SDK
+	 * actually reads (`configFiles`), not the inert `PI_CONFIG_FILES` env path.
+	 */
+	settingsPath: string | undefined;
+	/**
+	 * Fleet `AGENTS.md` (CP-2) as a `{path, content}` context file, injected via
+	 * `createAgentSession({ contextFiles })`. `undefined` when absent.
+	 */
+	agentsMd: MountedContextFile | undefined;
+	/**
+	 * Fleet rules (CP-4) as SDK `Rule[]`, injected via `createAgentSession({ rules })`.
+	 * Empty when the `rules/` dir is absent.
+	 */
+	rules: Rule[];
+	/**
+	 * Top-level `models.yml` (CP-4), absolute path when present. Stays
+	 * FILESYSTEM-based: `main()` symlinks it into `$HOME/.omp/agent/models.yml`
+	 * (no `createAgentSession` object seam for the ModelRegistry yet — flagged gap).
+	 */
+	modelsPath: string | undefined;
+	/**
+	 * `agents/` subagent-definitions dir (CP-4), absolute path when present. Stays
+	 * FILESYSTEM-based: the SDK discovers subagent defs by walking the agent dir
+	 * (`discoverAgents`), with NO object seam, so `main()` symlinks it into
+	 * `$HOME/.omp/agent/agents`.
+	 */
+	agentsDir: string | undefined;
 }
 
 export async function loadMountedConfig(mount: string): Promise<MountedConfig> {
 	const currentDir = currentConfigDir(mount);
-	const [skills, additionalExtensionPaths, mcp, version] = await Promise.all([
+	const [
+		skills,
+		additionalExtensionPaths,
+		mcp,
+		version,
+		settingsPath,
+		agentsMd,
+		rules,
+		modelsPath,
+		agentsDir,
+	] = await Promise.all([
 		readMountedSkills(currentDir),
 		enumerateMountedExtensions(currentDir),
 		readMountedMcpConfigs(currentDir),
 		readConfigVersion(currentDir),
+		readMountedSettingsPath(currentDir),
+		readMountedAgentsMd(currentDir),
+		readMountedRules(currentDir),
+		readMountedModelsPath(currentDir),
+		readMountedAgentsDir(currentDir),
 	]);
 	return {
 		skills,
@@ -300,5 +490,10 @@ export async function loadMountedConfig(mount: string): Promise<MountedConfig> {
 		disableExtensionDiscovery: true,
 		mcp,
 		version,
+		settingsPath,
+		agentsMd,
+		rules,
+		modelsPath,
+		agentsDir,
 	};
 }
