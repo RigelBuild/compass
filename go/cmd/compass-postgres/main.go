@@ -325,12 +325,13 @@ func ensureDatabase(ctx context.Context, cfg pgConfig) error {
 	for {
 		cmd := exec.CommandContext(ctx, createdbBin, //nolint:gosec // G204: the embedded-postgres seam — createdbBin is LookPath-resolved and args are wrapper-built from pgConfig, neither user-controlled
 			"-h", cfg.SocketDir, "-p", cfg.Port, cfg.DBName)
-		// Pin the client message locale to C so the classification below is
+		// Force the client message locale to C so the classification below is
 		// deterministic across desktop locales (server messages are pinned via
-		// `-c lc_messages=C` at start); otherwise a translated "could not connect"
-		// on a non-English desktop is misread as fatal and the database is never
-		// created.
-		cmd.Env = append(os.Environ(), "LC_MESSAGES=C")
+		// `-c lc_messages=C` at start). A translated "could not connect" on a
+		// non-English desktop would otherwise be misread as fatal and the
+		// database never created. cLocaleEnv sets LC_ALL=C authoritatively —
+		// top of POSIX precedence, so an inherited LC_ALL/LC_MESSAGES cannot win.
+		cmd.Env = cLocaleEnv(os.Environ())
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			slog.Info("created database", "dbname", cfg.DBName)
@@ -375,8 +376,9 @@ const (
 )
 
 // classifyCreatedbOutput maps createdb's combined output to an outcome by
-// matching C-locale message text; callers pin LC_MESSAGES=C (client) and
-// lc_messages=C (server) so the match holds on any desktop locale.
+// matching C-locale message text; callers run createdb with cLocaleEnv (client
+// LC_ALL=C) and pass `-c lc_messages=C` (server) so the match holds on any
+// desktop locale.
 func classifyCreatedbOutput(out string) createdbOutcome {
 	switch {
 	case strings.Contains(out, "already exists"):
@@ -388,4 +390,24 @@ func classifyCreatedbOutput(out string) createdbOutcome {
 	default:
 		return createdbFatal
 	}
+}
+
+// cLocaleEnv returns env with every message-affecting locale variable removed
+// and LC_ALL=C appended, so createdb emits C-locale diagnostics regardless of
+// the inherited environment. Appending LC_MESSAGES=C is not enough: POSIX
+// precedence is LC_ALL > LC_MESSAGES > LANG, so an inherited LC_ALL would win,
+// and a duplicate LC_MESSAGES key resolves to the first (inherited) value. We
+// therefore drop LC_ALL/LC_MESSAGES/LANG and set the top-of-precedence LC_ALL=C
+// as the single authoritative entry.
+func cLocaleEnv(env []string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "LC_ALL=") ||
+			strings.HasPrefix(kv, "LC_MESSAGES=") ||
+			strings.HasPrefix(kv, "LANG=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "LC_ALL=C")
 }
