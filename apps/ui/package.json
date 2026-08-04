@@ -10,7 +10,7 @@
 		"@shikijs/langs": "4.3.1",
 		"@shikijs/themes": "4.3.1",
 		"@solidjs/router": "^1.0.0",
-		"@tanstack/solid-virtual": "3.13.33",
+		"@tanstack/solid-virtual": "3.13.36",
 		"@tauri-apps/api": "^2",
 		"@tauri-apps/plugin-opener": "^2",
 		"diff": "^9.0.0",
@@ -32,6 +32,6 @@
 		"happy-dom": "20.11.1",
 		"typescript": "catalog:",
 		"vite": "^8.1.0",
-		"vite-plugin-solid": "^2.11.12"
+		"vite-plugin-solid": "^2.11.14"
 	}
 }
