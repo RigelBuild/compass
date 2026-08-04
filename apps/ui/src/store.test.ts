@@ -45,7 +45,7 @@ function withStore(body: (store: AppStore) => void): void {
 }
 
 // The async cousin of `withStore` for the seam-backed accessors. `assignedIssues`
-// loads through the TrackerSeam on a microtask (store.ts `loadAssignedIssues`), so
+// loads through the TrackerSeam via a solid-query query on a microtask, so
 // its tests must await a tick INSIDE the live root before disposing. The store is
 // built inside `createRoot` (createMemo needs an owner); the body then runs and
 // awaits outside the callback but before dispose, so the reactive owner stays

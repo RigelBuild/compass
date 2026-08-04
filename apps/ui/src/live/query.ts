@@ -34,6 +34,7 @@ import type {
 	CreateInfiniteQueryResult,
 	CreateQueryResult,
 	GetNextPageParamFunction,
+	InfiniteData,
 	QueryClient,
 	SkipToken,
 } from "@tanstack/solid-query";
@@ -87,7 +88,7 @@ export function createConnectInfiniteQuery<
 			MessageShape<O>
 		>;
 	},
-): CreateInfiniteQueryResult<MessageShape<O>> {
+): CreateInfiniteQueryResult<InfiniteData<MessageShape<O>>> {
 	return useInfiniteQuery(
 		() => ({
 			...createInfiniteQueryOptions(schema, input(), {

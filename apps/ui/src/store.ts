@@ -702,8 +702,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const [inMemoryPath, setInMemoryPath] = createSignal("/");
 	let routerNavigate = (path: string): void => {
 		// Pre-bind navigation: nothing in production navigates before App binds
-		// (the only pre-bind action sources — the async comms stream and
-		// loadAssignedIssues — never navigate), so reaching here in a dev build
+		// (the only pre-bind action sources — the async comms stream and the
+		// assigned-issues query — never navigate), so reaching here in a dev build
 		// signals a future violation where the URL would silently diverge from
 		// the in-memory path. Warn loudly rather than fail silent. Offline tests
 		// (run outside vite, import.meta.env.DEV undefined) drive this path by

@@ -198,6 +198,7 @@ export {
 	ChannelKind,
 	ChannelSchema,
 	CommsService,
+	ListMessagesResponseSchema,
 	MessageBlockSchema,
 	MessageSchema,
 	TopicSchema,
@@ -215,7 +216,6 @@ export type {
 export {
 	AgentSessionState,
 	CompassService,
-	GetServerInfoRequestSchema,
 	GetServerInfoResponseSchema,
 	ServerState,
 } from "./gen/compass/v1/compass_pb";
