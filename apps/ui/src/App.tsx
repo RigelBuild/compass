@@ -1,13 +1,9 @@
-import { type Component, Match, Show, Switch } from "solid-js";
+import type { RouteSectionProps } from "@solidjs/router";
+import { useLocation, useNavigate } from "@solidjs/router";
+import { type Component, Show } from "solid-js";
 import "./app.css";
-import { AgentView } from "./components/AgentView";
-import { BacklogView } from "./components/BacklogView";
-import { Bridge } from "./components/Bridge";
-import { ChannelView } from "./components/ChannelView";
-import { DoneView } from "./components/DoneView";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { RightSidebar } from "./components/RightSidebar";
-import { SettingsView } from "./components/SettingsView";
 import { StateDot } from "./components/StateDot";
 import { UsageBar } from "./components/UsageBar";
 import { useStore } from "./context";
@@ -26,8 +22,20 @@ import { useStore } from "./context";
 // accessors swap the fixture for the generated @compass/client and the
 // components stay as-is.
 
-const App: Component = () => {
+// App is the router ROOT LAYOUT (record A1): the shell chrome (topbar,
+// sidebars, UsageBar) stays outside the routed region, and the `<main>` center
+// renders `props.children` — the surface the matched route mounts. App lives
+// inside the router tree, so it wires the store's router seam here: it feeds
+// `useNavigate()` + a reactive `useLocation().pathname` into `bindRouter`,
+// which installs the single-writer route-sync effect (store.ts applyRoute).
+const App: Component<RouteSectionProps> = (props) => {
 	const store = useStore();
+	const navigate = useNavigate();
+	const location = useLocation();
+	store.bindRouter({
+		navigate: (path) => navigate(path),
+		currentPath: () => location.pathname,
+	});
 	return (
 		<div class="app">
 			<header class="topbar">
@@ -106,25 +114,7 @@ const App: Component = () => {
 				<LeftSidebar />
 			</Show>
 
-			<main class="main">
-				<Switch fallback={<AgentView />}>
-					<Match when={store.view() === "bridge"}>
-						<Bridge />
-					</Match>
-					<Match when={store.view() === "channel"}>
-						<ChannelView />
-					</Match>
-					<Match when={store.view() === "backlog"}>
-						<BacklogView />
-					</Match>
-					<Match when={store.view() === "done"}>
-						<DoneView />
-					</Match>
-					<Match when={store.view() === "settings"}>
-						<SettingsView />
-					</Match>
-				</Switch>
-			</main>
+			<main class="main">{props.children}</main>
 
 			<Show when={store.rightOpen()}>
 				<RightSidebar />

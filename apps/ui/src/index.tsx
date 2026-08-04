@@ -1,3 +1,4 @@
+import { HashRouter } from "@solidjs/router";
 import { createRoot } from "solid-js";
 import { render } from "solid-js/web";
 import App from "./App";
@@ -5,6 +6,7 @@ import { bootConnection } from "./boot";
 import { StoreContext } from "./context";
 import { createLiveClients } from "./live/client";
 import { connectionFromEnv } from "./live/connection";
+import { AppRoutes } from "./routes";
 import { createAppStore } from "./store";
 
 const root = document.getElementById("root");
@@ -65,7 +67,9 @@ const store = createRoot(() =>
 render(
 	() => (
 		<StoreContext.Provider value={store}>
-			<App />
+			<HashRouter root={App}>
+				<AppRoutes />
+			</HashRouter>
 		</StoreContext.Provider>
 	),
 	root,
