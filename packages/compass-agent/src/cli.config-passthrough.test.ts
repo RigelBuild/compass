@@ -491,7 +491,11 @@ describe("(g) the SDK resolves a mounted subagent by name (subprocess, HOME-froz
 			PROBE_SUBAGENT_NAME: "probeagent",
 		});
 		expect(result.subagentFound).toBe(true);
-	});
+		// The probe forks a subprocess that cold-imports the SDK to run the real
+		// discoverAgents walk (no object seam for agents/, per §CP-4). Warm that
+		// is ~1.3s, but a cold, contended CI runner blows the 5s default; a
+		// generous hard bound absorbs the cold-start variance without a retry.
+	}, 20_000);
 
 	// The remove path, end-to-end: an unconfigured mount leaves nothing for
 	// discovery to find (no dangling link, no stale content).
@@ -505,7 +509,7 @@ describe("(g) the SDK resolves a mounted subagent by name (subprocess, HOME-froz
 			PROBE_SUBAGENT_NAME: "probeagent",
 		});
 		expect(result.subagentFound).toBe(false);
-	});
+	}, 20_000);
 });
 
 // ── SEA-1678 T6: the Reload RE-READ (the record's load-bearing acceptance) ─────
