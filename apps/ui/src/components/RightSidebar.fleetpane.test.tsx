@@ -8,6 +8,7 @@ import {
 } from "../comms-stub";
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
+import { testQueryClient } from "../test-support";
 import { RightSidebar } from "./RightSidebar";
 
 // Render acceptance spec for the compass-0.7 fleet pane (design compass-0.7,
@@ -38,7 +39,10 @@ import { RightSidebar } from "./RightSidebar";
 function mountRightSidebar(): { store: AppStore; container: HTMLElement } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore({ initialComms: STUB_COMMS_STATE });
+		store = createAppStore({
+			initialComms: STUB_COMMS_STATE,
+			queryClient: testQueryClient(),
+		});
 		return (
 			<StoreContext.Provider value={store}>
 				<RightSidebar />

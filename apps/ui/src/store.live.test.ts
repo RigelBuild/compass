@@ -13,6 +13,7 @@ import type { AgentSession } from "./session-events";
 import { STUB_SESSION_EVENTS } from "./session-events-stub";
 import { type AppStore, createAppStore } from "./store";
 import { STUB_DAEMON } from "./stub-data";
+import { testQueryClient } from "./test-support";
 
 // The store's LIVE comms path: `createAppStore({ comms })` runs the
 // SubscribeComms driver and mirrors each reduced CommsState into the four comms
@@ -102,6 +103,7 @@ async function withLiveStore(
 	const store = createRoot((d) => {
 		dispose = d;
 		return createAppStore({
+			queryClient: testQueryClient(),
 			comms: fake.client,
 			callerId: CALLER,
 			onCommsError,
@@ -629,7 +631,11 @@ describe("store stream lifetime", () => {
 		let dispose!: () => void;
 		createRoot((d) => {
 			dispose = d;
-			return createAppStore({ comms: fake.client, callerId: CALLER });
+			return createAppStore({
+				comms: fake.client,
+				callerId: CALLER,
+				queryClient: testQueryClient(),
+			});
 		});
 		const settled = async () => {
 			for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -654,7 +660,7 @@ describe("store offline construction", () => {
 	// rather than half-populated. Every other suite depends on this.
 	test("a store built with no client has empty comms and a null selection", () => {
 		createRoot((dispose) => {
-			const store = createAppStore();
+			const store = createAppStore({ queryClient: testQueryClient() });
 			try {
 				expect(store.accounts()).toEqual([]);
 				expect(store.channels()).toEqual([]);
@@ -673,7 +679,7 @@ describe("store offline construction", () => {
 		let dispose!: () => void;
 		const store = createRoot((d) => {
 			dispose = d;
-			return createAppStore();
+			return createAppStore({ queryClient: testQueryClient() });
 		});
 		try {
 			await expect(
@@ -727,6 +733,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		const store = createRoot((d) => {
 			dispose = d;
 			return createAppStore({
+				queryClient: testQueryClient(),
 				compass: compass.client,
 				onCommsError: (error) => errors.push(error),
 			});
@@ -754,6 +761,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		const store = createRoot((d) => {
 			dispose = d;
 			return createAppStore({
+				queryClient: testQueryClient(),
 				compass: compass.client,
 				sessions: { [agentId]: serverSession(agentId) },
 			});
@@ -779,7 +787,10 @@ describe("store stopAgent (StopAgentSession)", () => {
 		let dispose!: () => void;
 		const store = createRoot((d) => {
 			dispose = d;
-			return createAppStore({ compass: compass.client });
+			return createAppStore({
+				compass: compass.client,
+				queryClient: testQueryClient(),
+			});
 		});
 		try {
 			await store.stopAgent();
@@ -800,6 +811,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		const store = createRoot((d) => {
 			dispose = d;
 			return createAppStore({
+				queryClient: testQueryClient(),
 				compass: compass.client,
 				sessions: { [agentId]: serverSession(agentId) },
 				onCommsError: (error) => errors.push(error),
@@ -831,6 +843,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		const store = createRoot((d) => {
 			dispose = d;
 			return createAppStore({
+				queryClient: testQueryClient(),
 				sessions: { [agentId]: serverSession(agentId) },
 				onCommsError: (error) => errors.push(error),
 			});
@@ -858,6 +871,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		const store = createRoot((d) => {
 			dispose = d;
 			return createAppStore({
+				queryClient: testQueryClient(),
 				compass: compass.client,
 				sessions: { [agentId]: serverSession(agentId) },
 				onCommsError: (error) => errors.push(error),
@@ -888,7 +902,10 @@ describe("store stopAgent (StopAgentSession)", () => {
 		let disposeFixture!: () => void;
 		const fixtureStore = createRoot((d) => {
 			disposeFixture = d;
-			return createAppStore({ compass: compass.client });
+			return createAppStore({
+				compass: compass.client,
+				queryClient: testQueryClient(),
+			});
 		});
 		try {
 			fixtureStore.openAgent(agentId);
@@ -902,6 +919,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		const offlineStore = createRoot((d) => {
 			disposeOffline = d;
 			return createAppStore({
+				queryClient: testQueryClient(),
 				sessions: { [agentId]: serverSession(agentId) },
 			});
 		});
@@ -924,6 +942,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		const store = createRoot((d) => {
 			dispose = d;
 			return createAppStore({
+				queryClient: testQueryClient(),
 				compass: compass.client,
 				sessions: { [agentId]: serverSession(agentId) },
 			});
@@ -969,7 +988,10 @@ describe("daemon banner (live GetServerInfo)", () => {
 		let dispose!: () => void;
 		const store = createRoot((d) => {
 			dispose = d;
-			return createAppStore({ compass: compass.client });
+			return createAppStore({
+				compass: compass.client,
+				queryClient: testQueryClient(),
+			});
 		});
 		try {
 			await tick();
@@ -990,7 +1012,7 @@ describe("daemon banner (live GetServerInfo)", () => {
 		let dispose!: () => void;
 		const store = createRoot((d) => {
 			dispose = d;
-			return createAppStore({});
+			return createAppStore({ queryClient: testQueryClient() });
 		});
 		try {
 			await tick();
@@ -1013,6 +1035,7 @@ describe("daemon banner (live GetServerInfo)", () => {
 		const store = createRoot((d) => {
 			dispose = d;
 			return createAppStore({
+				queryClient: testQueryClient(),
 				compass: compass.client,
 				onCommsError: (error) => errors.push(error),
 			});

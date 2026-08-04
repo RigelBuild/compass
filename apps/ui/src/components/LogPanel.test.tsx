@@ -7,6 +7,7 @@ import { createFakeCompass } from "../live/compass-fake";
 import { type AgentSession, foldSession } from "../session-events";
 import { STUB_SESSION_EVENTS } from "../session-events-stub";
 import { type AppStore, createAppStore } from "../store";
+import { testQueryClient } from "../test-support";
 import { LogPanel } from "./LogPanel";
 
 // Acceptance spec for T-U2 (design.md §440-478): LogPanel's `TracePane` is
@@ -64,7 +65,11 @@ function mountLogPanel(
 } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore({ sessions, compass });
+		store = createAppStore({
+			sessions,
+			compass,
+			queryClient: testQueryClient(),
+		});
 		store.openAgent(agentId);
 		return (
 			<StoreContext.Provider value={store}>

@@ -9,6 +9,7 @@ import {
 	type Pane,
 } from "../store";
 import { STUB_AGENTS } from "../stub-data";
+import { testQueryClient } from "../test-support";
 import { AgentView, nextFreeTerminalPane } from "./AgentView";
 
 // RED acceptance spec for T3 (design.md §504-545): the rebuilt AgentView — a
@@ -59,7 +60,10 @@ function mountAgentView(): {
 } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore({ initialComms: STUB_COMMS_STATE });
+		store = createAppStore({
+			initialComms: STUB_COMMS_STATE,
+			queryClient: testQueryClient(),
+		});
 		return (
 			<StoreContext.Provider value={store}>
 				<AgentView />

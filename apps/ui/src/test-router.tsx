@@ -21,6 +21,7 @@ import { STUB_COMMS_STATE } from "./comms-stub";
 import { StoreContext } from "./context";
 import { AppRoutes } from "./routes";
 import { type AppStore, createAppStore } from "./store";
+import { testQueryClient } from "./test-support";
 
 /** Drain the microtask queue so the route-sync effect runs before a read.
  *  Bounded and timer-free, so it stays deterministic. */
@@ -39,7 +40,10 @@ export function mountApp(initialPath = "/"): {
 	const history = createMemoryHistory();
 	history.set({ value: initialPath });
 	const { container } = render(() => {
-		store = createAppStore({ initialComms: STUB_COMMS_STATE });
+		store = createAppStore({
+			initialComms: STUB_COMMS_STATE,
+			queryClient: testQueryClient(),
+		});
 		return (
 			<StoreContext.Provider value={store}>
 				<MemoryRouter history={history} root={App}>

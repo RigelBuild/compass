@@ -3,6 +3,7 @@ import { createRoot } from "solid-js";
 import { type AppStore, createAppStore } from "../store";
 import type { FileNode, Issue, IssueState } from "../stub-data";
 import { STUB_AGENTS } from "../stub-data";
+import { testQueryClient } from "../test-support";
 import type { FleetMetrics } from "./RightSidebar";
 import { filterFileTree, fleetMetrics } from "./RightSidebar";
 
@@ -128,7 +129,10 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 		const workspaceKey = `rtg-${Math.random().toString(36).slice(2)}`;
 		globalThis.localStorage.removeItem(`compass.pinnedAgents.${workspaceKey}`);
 		createRoot((dispose) => {
-			const store = createAppStore({ workspaceKey });
+			const store = createAppStore({
+				workspaceKey,
+				queryClient: testQueryClient(),
+			});
 			for (const id of pins) store.pinAgent(id);
 			try {
 				body(store.rightTabGroups(), store);

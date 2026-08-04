@@ -4,6 +4,7 @@ import { STUB_CHANNELS, STUB_COMMS_STATE } from "../comms-stub";
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_AGENTS } from "../stub-data";
+import { testQueryClient } from "../test-support";
 import { LeftSidebar } from "./LeftSidebar";
 
 // RED acceptance spec for T5 (design.md §578-613): the reshaped LeftSidebar —
@@ -43,7 +44,10 @@ const AGENT_DM_ROWS = STUB_CHANNELS.filter((c) => c.kind === "dm").length;
 function mountSidebar(): { store: AppStore; container: HTMLElement } {
 	let store!: AppStore;
 	const { container } = render(() => {
-		store = createAppStore({ initialComms: STUB_COMMS_STATE });
+		store = createAppStore({
+			initialComms: STUB_COMMS_STATE,
+			queryClient: testQueryClient(),
+		});
 		return (
 			<StoreContext.Provider value={store}>
 				<LeftSidebar />
