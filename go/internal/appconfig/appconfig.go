@@ -78,8 +78,16 @@ type fileConfig struct {
 //   - any other mode value is an error naming the two valid modes.
 func Parse(data []byte) (Config, error) {
 	var fc fileConfig
-	if err := toml.Unmarshal(data, &fc); err != nil {
+	md, err := toml.Decode(string(data), &fc)
+	if err != nil {
 		return Config{}, fmt.Errorf("appconfig: parsing app.toml: %w", err)
+	}
+	// Reject unknown/typo'd keys rather than silently dropping them: a
+	// mistyped ca_cert would otherwise vanish and the client would fall back
+	// to system roots, surfacing later as an opaque TLS failure instead of a
+	// legible config error.
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		return Config{}, fmt.Errorf("appconfig: unknown key(s) in app.toml: %v", undecoded)
 	}
 
 	switch strings.TrimSpace(fc.Mode) {
@@ -125,6 +133,11 @@ func validateServerURL(raw string) error {
 	}
 	if u.Host == "" {
 		return fmt.Errorf("appconfig: server_url %q must be absolute with a host (e.g. https://host:8443)", raw)
+	}
+	if u.User != nil {
+		return fmt.Errorf(
+			"appconfig: server_url %q must not embed credentials; the bearer token is entered in the connect screen and stored in the OS keychain (DL-109)",
+			raw)
 	}
 	return nil
 }

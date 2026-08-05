@@ -51,7 +51,7 @@ func TestRunAllPass(t *testing.T) {
 			t.Errorf("check %q failed: %s", r.Name, r.Detail)
 		}
 	}
-	if err := FirstFailure(rs); err != nil {
+	if err := rs.Err(); err != nil {
 		t.Errorf("want nil error when all pass, got %v", err)
 	}
 }
@@ -69,7 +69,7 @@ func TestRunWrongGOOS(t *testing.T) {
 			t.Errorf("os detail %q missing token %q", got.Detail, tok)
 		}
 	}
-	assertErrContains(t, FirstFailure(rs), "darwin")
+	assertErrContains(t, rs.Err(), "darwin")
 }
 
 func TestRunWrongUID(t *testing.T) {
@@ -86,7 +86,7 @@ func TestRunWrongUID(t *testing.T) {
 			t.Errorf("uid detail %q missing uid token %q", got.Detail, tok)
 		}
 	}
-	assertErrContains(t, FirstFailure(rs), "501")
+	assertErrContains(t, rs.Err(), "501")
 }
 
 func TestRunPodmanProbeFails(t *testing.T) {
@@ -104,7 +104,7 @@ func TestRunPodmanProbeFails(t *testing.T) {
 	if !strings.Contains(got.Detail, "podman socket not found") {
 		t.Errorf("podman detail %q missing probe error", got.Detail)
 	}
-	assertErrContains(t, FirstFailure(rs), "rootless podman")
+	assertErrContains(t, rs.Err(), "rootless podman")
 }
 
 func TestRunImageAbsent(t *testing.T) {
@@ -122,7 +122,7 @@ func TestRunImageAbsent(t *testing.T) {
 	if !strings.Contains(got.Detail, testParams.AgentImage) {
 		t.Errorf("image detail %q missing image ref %q", got.Detail, testParams.AgentImage)
 	}
-	assertErrContains(t, FirstFailure(rs), testParams.AgentImage)
+	assertErrContains(t, rs.Err(), testParams.AgentImage)
 }
 
 func TestRunDBUnreachable(t *testing.T) {
@@ -140,7 +140,7 @@ func TestRunDBUnreachable(t *testing.T) {
 	if !strings.Contains(got.Detail, "connection refused") {
 		t.Errorf("db detail %q missing probe error", got.Detail)
 	}
-	assertErrContains(t, FirstFailure(rs), "connection refused")
+	assertErrContains(t, rs.Err(), "connection refused")
 }
 
 // TestRunMultipleFailures asserts Run does not short-circuit: every failing
@@ -163,7 +163,7 @@ func TestRunMultipleFailures(t *testing.T) {
 		}
 	}
 
-	err := FirstFailure(rs)
+	err := rs.Err()
 	if err == nil {
 		t.Fatal("want aggregated error for multiple failures, got nil")
 	}

@@ -65,6 +65,29 @@ func TestParse(t *testing.T) {
 			wantErr:    true,
 			errSubstrs: []string{"app.toml"},
 		},
+		{
+			name: "whitespace-only mode → embedded",
+			data: `mode = "  "`,
+			want: Config{Mode: ModeEmbedded},
+		},
+		{
+			name:       "client whitespace-only server_url → error",
+			data:       "mode = \"client\"\nserver_url = \"   \"\n",
+			wantErr:    true,
+			errSubstrs: []string{"server_url", "client"},
+		},
+		{
+			name:       "client server_url with embedded credentials → error",
+			data:       "mode = \"client\"\nserver_url = \"https://user:pass@host:8443\"\n",
+			wantErr:    true,
+			errSubstrs: []string{"credentials", "keychain"},
+		},
+		{
+			name:       "unknown key → error",
+			data:       "mode = \"client\"\nserver_url = \"https://host:8443\"\ncacert = \"/etc/anchor.pem\"\n",
+			wantErr:    true,
+			errSubstrs: []string{"unknown key", "cacert"},
+		},
 	}
 
 	for _, tc := range tests {

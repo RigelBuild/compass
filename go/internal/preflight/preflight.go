@@ -2,6 +2,7 @@ package preflight
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -66,9 +67,10 @@ const (
 
 // Run executes every host precondition in order and returns one Result per
 // check. It does NOT short-circuit: an operator should see every failing
-// precondition at once, so all checks run even after an earlier failure.
-func (d Deps) Run(ctx context.Context, p Params) []Result {
-	results := make([]Result, 0, 5)
+// precondition at once, so all checks run even after an earlier failure. Call
+// the returned Results' Err method to fold the failures into one legible error.
+func (d Deps) Run(ctx context.Context, p Params) Results {
+	results := make(Results, 0, 5)
 
 	// (1) OS is Linux (Global Constraint; devenv.nix:157-158).
 	osRes := Result{Name: checkOS, OK: d.GOOS == "linux"}
@@ -144,12 +146,5 @@ func (rs Results) Err() error {
 		b.WriteString("\n  - ")
 		b.WriteString(r.Detail)
 	}
-	return fmt.Errorf("%s", b.String())
-}
-
-// FirstFailure aggregates the failed checks of a plain []Result into one error,
-// or nil if all passed. It is a convenience wrapper over Results.Err for callers
-// holding the []Result returned by Run.
-func FirstFailure(rs []Result) error {
-	return Results(rs).Err()
+	return errors.New(b.String())
 }
