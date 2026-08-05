@@ -76,8 +76,10 @@ func TestBuildBundleValidDir(t *testing.T) {
 }
 
 // TestBuildBundleRejects covers the client-side grammar rejections: a bad top
-// dir, a bad <name>, a non-JSON mcp member, and a symlink. Each must fail at
-// build with a message naming the offending member — before any RPC.
+// dir, a bad <name>, a non-JSON mcp member, a symlink, and the settings/rules/
+// agents/models grammar branches (wrong settings filename, non-mapping settings
+// or models, bad rules/agents extension or name, and nested rules/agents). Each
+// must fail at build with a message naming the offending member — before any RPC.
 func TestBuildBundleRejects(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -88,6 +90,15 @@ func TestBuildBundleRejects(t *testing.T) {
 		{"bad skill name", map[string]string{"skills/bad name/f": "y"}, "must match"},
 		{"non-json mcp", map[string]string{"mcp/svc.json": "not json"}, "not valid JSON"},
 		{"mcp not json ext", map[string]string{"mcp/svc.txt": "hi"}, "must be a .json file"},
+		{"bad settings filename", map[string]string{"settings/other.yml": "a: 1"}, "must be exactly settings/config.yml"},
+		{"non-mapping settings", map[string]string{"settings/config.yml": "just a scalar"}, "must be a YAML mapping"},
+		{"non-mapping models", map[string]string{"models.yml": "- a\n- b"}, "must be a YAML mapping"},
+		{"bad rules ext", map[string]string{"rules/foo.txt": "x"}, "must end in one of .md, .mdc"},
+		{"bad rules name", map[string]string{"rules/bad name.md": "x"}, "must match"},
+		{"nested rules", map[string]string{"rules/sub/foo.md": "x"}, "must be flat"},
+		{"bad agents ext", map[string]string{"agents/foo.txt": "x"}, "must end in one of .md"},
+		{"bad agents name", map[string]string{"agents/bad name.md": "x"}, "must match"},
+		{"nested agents", map[string]string{"agents/sub/foo.md": "x"}, "must be flat"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
