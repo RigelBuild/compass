@@ -245,7 +245,7 @@ Repeatable rules applied by the migration task and binding on future records:
    Compass component or public OSS; it is de-linked (kept as prose, link
    dropped) when the referent is a private sealed artifact.
 2. **Private tracker links (SEA-####, linear.app).** *Keep the ID, strip the
-   link.* 48 distinct SEA IDs are load-bearing provenance (records cite each
+   link.* ~50 distinct SEA IDs are load-bearing provenance (records cite each
    other through them); a dead `linear.app/sealedsecurity/...` URL is worse
    than no URL. Rewrite BOTH link forms to plain `SEA-1234`: the inline
    `[SEA-1234](https://linear.app/…)` AND the reference-definition
@@ -257,8 +257,8 @@ Repeatable rules applied by the migration task and binding on future records:
 3. **`oss/compass/**` path rewrite.** *Strip the prefix.* 19 records cite
    `oss/compass/<path>` paths from sealed's vendored era; the public repo's
    layout is the same tree without the prefix — e.g.
-   `oss/compass/go/internal/runtime/agent.go`
-   (`compass-agent-container-runtime.md:56`) is `go/internal/runtime/agent.go`
+   `oss/compass/go/internal/runtime/image.go`
+   (`compass-agent-container-runtime.md:54`) is `go/internal/runtime/image.go`
    here, `oss/compass/apps/ui/src/stub-data.ts`
    (`compass-ade-shell/design.md:16`) is `apps/ui/src/stub-data.ts` (top-level
    `go/ packages/ apps/ proto/` confirmed this session against the compass
@@ -348,7 +348,7 @@ checklist for future records.
 
 Interfaces:
 
-- Consumes: the sealed corpus enumerated this session — 38 dirs/files matching `sealed/docs/designs/product/compass-*`, `sealed/docs/designs/platform/compass-dogfood-loop/design.md`, `sealed/docs/specs/product/compass.md`, `sealed/docs/specs/product/README.md`.
+- Consumes: the sealed corpus enumerated this session — the 38 product design records (37 matching `sealed/docs/designs/product/compass-*` plus `sealed/docs/designs/product/compass.md`, the v0.3 base record whose name has no hyphen and so is not matched by the `compass-*` glob), `sealed/docs/designs/platform/compass-dogfood-loop/design.md`, `sealed/docs/specs/product/compass.md`, `sealed/docs/specs/product/README.md`.
 - Produces: `tools/docs-migrate/migrate.ts` (one-shot, deleted after wave 2) applying, per file: (1) linear.app link strip — BOTH the inline `[SEA-<n>](https://linear.app/…)` and the reference-definition `[SEA-<n>]: https://linear.app/…` forms → `SEA-<n>`; (2) `oss/compass/` prefix strip in paths/links/code spans; (3) link-to-private-record conversion for `seal-*.md` targets → plain prose; (4) NO edits to security sections. Emits a per-file diff summary for review. Editorial brackets (the self-referential internal-record claims, Approach (c) class 3) are applied by hand in the same PR, listed in the PR body.
 - Produces: `docs/designs/CONTRIBUTING.md` (or a section in root `CONTRIBUTING.md`) stating the four rules as the standing policy for records authored here.
 - Test cycle: `bun test tools/docs-migrate` over fixture snippets for each class (including the reference-definition link form); post-run grep gates (authoritative over the rewrite regexes — the run fails if any form slipped): zero `linear.app` matches, zero `oss/compass` matches under `docs/designs/**` + `docs/specs/**`; `markdownlint-cli2` clean.
