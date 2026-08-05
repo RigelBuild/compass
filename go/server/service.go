@@ -346,6 +346,23 @@ func (s *service) GetServerInfo(
 	}), nil
 }
 
+// WhoAmI reflects the caller's own account id, resolved server-side from its
+// authenticated credential (DL-111) — embedded (socket) yields the ambient-admin
+// identity, native-client (network door) the bearer's subject. The id is never a
+// client-supplied field; it comes solely from the caller identity the door's
+// interceptors attached. A missing caller means an interceptor-wiring bug (both
+// doors must attach one): fail closed with Unauthenticated.
+func (s *service) WhoAmI(
+	ctx context.Context,
+	_ *connect.Request[compassv1.WhoAmIRequest],
+) (*connect.Response[compassv1.WhoAmIResponse], error) {
+	caller, ok := auth.CallerFrom(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errNoCaller)
+	}
+	return connect.NewResponse(&compassv1.WhoAmIResponse{AccountId: string(caller)}), nil
+}
+
 // IssueToken mints a bearer token for an existing account. On the network door it
 // is admin-only: the AdminGate classifies IssueToken as adminOnly, so only the
 // bootstrap admin reaches this handler. On the shipped socket door it is served

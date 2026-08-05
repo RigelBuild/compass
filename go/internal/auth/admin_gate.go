@@ -69,8 +69,11 @@ func classifyProcedure(procedure string) (privilege, bool) {
 	// home-channel membership), like the other open streams, so the network-door
 	// gate must let its intended non-admin channel members through to that check.
 	// GetAgentConfigInfo returns names only, never content (record §525-526), so
-	// it is open like the other read surfaces.
+	// it is open like the other read surfaces. WhoAmI is authenticatedOpen because
+	// it reflects the caller's OWN identity (identity reflection; native-client
+	// non-admin accounts must reach it), resolved server-side from the credential.
 	case compassv1connect.CompassServiceGetServerInfoProcedure,
+		compassv1connect.CompassServiceWhoAmIProcedure,
 		compassv1connect.CompassServiceSubscribeEventsProcedure,
 		compassv1connect.CompassServiceSubscribeAgentSessionProcedure,
 		compassv1connect.CompassServiceGetAgentConfigInfoProcedure:
