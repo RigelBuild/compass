@@ -46,6 +46,8 @@ const (
 	// CompassServiceGetServerInfoProcedure is the fully-qualified name of the CompassService's
 	// GetServerInfo RPC.
 	CompassServiceGetServerInfoProcedure = "/compass.v1.CompassService/GetServerInfo"
+	// CompassServiceWhoAmIProcedure is the fully-qualified name of the CompassService's WhoAmI RPC.
+	CompassServiceWhoAmIProcedure = "/compass.v1.CompassService/WhoAmI"
 	// CompassServiceSubscribeEventsProcedure is the fully-qualified name of the CompassService's
 	// SubscribeEvents RPC.
 	CompassServiceSubscribeEventsProcedure = "/compass.v1.CompassService/SubscribeEvents"
@@ -98,6 +100,15 @@ type CompassServiceClient interface {
 	// Liveness probe plus the server's build + contract version. The first
 	// round-trip a UI makes after connecting over the local transport.
 	GetServerInfo(context.Context, *connect.Request[v1.GetServerInfoRequest]) (*connect.Response[v1.GetServerInfoResponse], error)
+	// Return the caller's own account id, resolved server-side from the
+	// authenticated credential — the socket's ambient-admin identity for an
+	// embedded client, the bearer subject for a native client. A UI calls it at
+	// boot to learn who it is connected as; the caller's display fields
+	// (handle/display_name/kind) are resolved separately from the comms account
+	// roster keyed by this id, so they are deliberately not echoed here.
+	// authenticatedOpen: any authenticated caller may learn its OWN identity
+	// (not admin-gated). account_id is server-derived, never client-supplied.
+	WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error)
 	// The event channel: board, agent, and audit updates as a server stream
 	// (compass.md §7.2). Each response carries a server-assigned monotonic `seq`;
 	// reconnect with `since_seq` for a gap-free resubscribe. The sole push path
@@ -195,6 +206,12 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("GetServerInfo")),
 			connect.WithClientOptions(opts...),
 		),
+		whoAmI: connect.NewClient[v1.WhoAmIRequest, v1.WhoAmIResponse](
+			httpClient,
+			baseURL+CompassServiceWhoAmIProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("WhoAmI")),
+			connect.WithClientOptions(opts...),
+		),
 		subscribeEvents: connect.NewClient[v1.SubscribeEventsRequest, v1.SubscribeEventsResponse](
 			httpClient,
 			baseURL+CompassServiceSubscribeEventsProcedure,
@@ -273,6 +290,7 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 // compassServiceClient implements CompassServiceClient.
 type compassServiceClient struct {
 	getServerInfo           *connect.Client[v1.GetServerInfoRequest, v1.GetServerInfoResponse]
+	whoAmI                  *connect.Client[v1.WhoAmIRequest, v1.WhoAmIResponse]
 	subscribeEvents         *connect.Client[v1.SubscribeEventsRequest, v1.SubscribeEventsResponse]
 	provisionAgentWorkspace *connect.Client[v1.ProvisionAgentWorkspaceRequest, v1.ProvisionAgentWorkspaceResponse]
 	startAgentSession       *connect.Client[v1.StartAgentSessionRequest, v1.StartAgentSessionResponse]
@@ -290,6 +308,11 @@ type compassServiceClient struct {
 // GetServerInfo calls compass.v1.CompassService.GetServerInfo.
 func (c *compassServiceClient) GetServerInfo(ctx context.Context, req *connect.Request[v1.GetServerInfoRequest]) (*connect.Response[v1.GetServerInfoResponse], error) {
 	return c.getServerInfo.CallUnary(ctx, req)
+}
+
+// WhoAmI calls compass.v1.CompassService.WhoAmI.
+func (c *compassServiceClient) WhoAmI(ctx context.Context, req *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error) {
+	return c.whoAmI.CallUnary(ctx, req)
 }
 
 // SubscribeEvents calls compass.v1.CompassService.SubscribeEvents.
@@ -357,6 +380,15 @@ type CompassServiceHandler interface {
 	// Liveness probe plus the server's build + contract version. The first
 	// round-trip a UI makes after connecting over the local transport.
 	GetServerInfo(context.Context, *connect.Request[v1.GetServerInfoRequest]) (*connect.Response[v1.GetServerInfoResponse], error)
+	// Return the caller's own account id, resolved server-side from the
+	// authenticated credential — the socket's ambient-admin identity for an
+	// embedded client, the bearer subject for a native client. A UI calls it at
+	// boot to learn who it is connected as; the caller's display fields
+	// (handle/display_name/kind) are resolved separately from the comms account
+	// roster keyed by this id, so they are deliberately not echoed here.
+	// authenticatedOpen: any authenticated caller may learn its OWN identity
+	// (not admin-gated). account_id is server-derived, never client-supplied.
+	WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error)
 	// The event channel: board, agent, and audit updates as a server stream
 	// (compass.md §7.2). Each response carries a server-assigned monotonic `seq`;
 	// reconnect with `since_seq` for a gap-free resubscribe. The sole push path
@@ -450,6 +482,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("GetServerInfo")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServiceWhoAmIHandler := connect.NewUnaryHandler(
+		CompassServiceWhoAmIProcedure,
+		svc.WhoAmI,
+		connect.WithSchema(compassServiceMethods.ByName("WhoAmI")),
+		connect.WithHandlerOptions(opts...),
+	)
 	compassServiceSubscribeEventsHandler := connect.NewServerStreamHandler(
 		CompassServiceSubscribeEventsProcedure,
 		svc.SubscribeEvents,
@@ -526,6 +564,8 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		switch r.URL.Path {
 		case CompassServiceGetServerInfoProcedure:
 			compassServiceGetServerInfoHandler.ServeHTTP(w, r)
+		case CompassServiceWhoAmIProcedure:
+			compassServiceWhoAmIHandler.ServeHTTP(w, r)
 		case CompassServiceSubscribeEventsProcedure:
 			compassServiceSubscribeEventsHandler.ServeHTTP(w, r)
 		case CompassServiceProvisionAgentWorkspaceProcedure:
@@ -561,6 +601,10 @@ type UnimplementedCompassServiceHandler struct{}
 
 func (UnimplementedCompassServiceHandler) GetServerInfo(context.Context, *connect.Request[v1.GetServerInfoRequest]) (*connect.Response[v1.GetServerInfoResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.GetServerInfo is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.WhoAmI is not implemented"))
 }
 
 func (UnimplementedCompassServiceHandler) SubscribeEvents(context.Context, *connect.Request[v1.SubscribeEventsRequest], *connect.ServerStream[v1.SubscribeEventsResponse]) error {
