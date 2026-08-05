@@ -92,3 +92,34 @@ export function bootConnection(
 		return undefined;
 	}
 }
+
+/** Resolve the caller's account id, or paint the failure into `root` and return
+ *  undefined — the async mirror of `bootConnection` for the one post-connect
+ *  step that must complete before render(). `resolve` is a thunk over the live
+ *  compass client (index.tsx passes `() => resolveCaller(clients.compass)`), so
+ *  this stays pure over its inputs (a root + a thunk) and unit-testable without
+ *  a real transport. A rejection means the server answered but we could not
+ *  learn "me" — a different boundary from the env-resolve throw above, so its
+ *  screen names that distinct cause, but both render through `renderBootError`.
+ *  Undefined is the same stop signal `bootConnection` returns: the app must NOT
+ *  come up without a caller (it scopes every listing and drives rail
+ *  membership). */
+export async function bootCaller(
+	root: HTMLElement,
+	resolve: () => Promise<string>,
+): Promise<string | undefined> {
+	try {
+		return await resolve();
+	} catch (error) {
+		const detail = error instanceof Error ? error.message : String(error);
+		renderBootError(
+			root,
+			"Compass UI cannot start: could not learn the caller identity",
+			detail,
+			"The server was reached but the WhoAmI request failed, so the UI " +
+				"cannot determine which account it is connected as. Check that the " +
+				"server is healthy and the bearer token is valid, then reload.",
+		);
+		return undefined;
+	}
+}

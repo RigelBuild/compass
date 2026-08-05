@@ -67,8 +67,16 @@ export async function probeServer(client: CompassClient): Promise<ServerInfo> {
  *  credential (compass.proto WhoAmI). Called right after the transport is up,
  *  the same post-connect round-trip family as probeServer; the returned id
  *  scopes every listing and drives rail membership, so boot cannot proceed
- *  without it. */
+ *  without it — an empty/blank id the server didn't resolve is rejected, not
+ *  returned, so an unknown "me" never silently scopes the store to no caller. */
 export async function resolveCaller(client: CompassClient): Promise<string> {
 	const resp = await client.whoAmI({});
-	return resp.accountId;
+	const accountId = resp.accountId?.trim();
+	if (!accountId) {
+		throw new Error(
+			"WhoAmI returned an empty account id: the server did not resolve a " +
+				"caller for this connection's credential.",
+		);
+	}
+	return accountId;
 }

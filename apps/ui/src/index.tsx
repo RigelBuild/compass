@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import { createRoot } from "solid-js";
 import { render } from "solid-js/web";
 import App from "./App";
-import { bootConnection, renderBootError } from "./boot";
+import { bootCaller, bootConnection, renderBootError } from "./boot";
 import { StoreContext } from "./context";
 import { createLiveClients, resolveCaller } from "./live/client";
 import { type Connection, connectionFromEnv } from "./live/connection";
@@ -31,33 +31,37 @@ if (!root) {
 // error screen is the whole UI.
 const connection = bootConnection(root, connectionFromEnv);
 if (connection) {
-	void main(root, connection);
+	// A post-caller boot failure (createRoot/createAppStore/render throwing) is
+	// not an expected runtime condition, but routing the rejection to the same
+	// painter keeps a swallowed `void` promise from leaving a blank #root.
+	void main(root, connection).catch((error) => {
+		renderBootError(
+			root,
+			"Compass UI cannot start",
+			error instanceof Error ? error.message : String(error),
+			"An unexpected error interrupted boot after the connection was " +
+				"established. Reload; if it persists, check the console for the " +
+				"full stack.",
+		);
+	});
 }
 
 // The post-connect boot sequence, async because learning the caller requires a
-// round-trip: build the clients, ask the server who we are (WhoAmI), then build
-// the store and render. A WhoAmI rejection means the server answered but we
-// could not learn "me" — the app genuinely cannot come up (the caller scopes
-// every listing and drives rail membership), so it paints the boot-error screen
-// through the SAME painter the env-resolve failure uses and returns without
-// rendering. This failure is distinct from a misconfigured env: the connection
-// resolved fine; the identity round-trip is what failed.
+// round-trip: build the clients, ask the server who we are (WhoAmI via
+// bootCaller), then build the store and render. bootCaller owns the failure
+// boundary — a WhoAmI rejection or an empty id means the server answered but we
+// could not learn "me", so it paints the boot-error screen and returns
+// undefined; the app genuinely cannot come up (the caller scopes every listing
+// and drives rail membership), so undefined stops boot here without rendering.
+// This boundary is distinct from a misconfigured env: the connection resolved
+// fine; the identity round-trip is what failed.
 async function main(root: HTMLElement, connection: Connection): Promise<void> {
 	const clients = createLiveClients(connection);
 
-	let callerId: string;
-	try {
-		callerId = await resolveCaller(clients.compass);
-	} catch (error) {
-		const detail = error instanceof Error ? error.message : String(error);
-		renderBootError(
-			root,
-			"Compass UI cannot start: could not learn the caller identity",
-			detail,
-			"The server was reached but the WhoAmI request failed, so the UI " +
-				"cannot determine which account it is connected as. Check that the " +
-				"server is healthy and the bearer token is valid, then reload.",
-		);
+	const callerId = await bootCaller(root, () => resolveCaller(clients.compass));
+	// Undefined is bootCaller's stop signal — it already painted the WhoAmI
+	// failure screen, so the app must not come up (no caller to scope it).
+	if (!callerId) {
 		return;
 	}
 

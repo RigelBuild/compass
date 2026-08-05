@@ -56,4 +56,21 @@ describe("resolveCaller (WhoAmI boot probe)", () => {
 
 		expect(await resolveCaller(client)).toBe("acc-x");
 	});
+
+	// The empty-id guard the deleted env path used to own (connection.ts threw on
+	// a blank VITE_COMPASS_CALLER_ID): a server that answers WhoAmI with no
+	// account id (no-auth door, unauthenticated bearer) must reject, not return
+	// "", so an unknown "me" never silently scopes the store to an empty caller.
+	for (const [label, value] of [
+		["empty", ""],
+		["whitespace-only", "  \t"],
+	] as const) {
+		test(`throws when the server returns a ${label} account id`, async () => {
+			const client = {
+				whoAmI: async (_req: Record<string, never>) => ({ accountId: value }),
+			} as unknown as CompassClient;
+
+			await expect(resolveCaller(client)).rejects.toThrow(/empty account id/);
+		});
+	}
 });

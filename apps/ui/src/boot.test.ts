@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { bootConnection, renderBootError } from "./boot";
+import { bootCaller, bootConnection, renderBootError } from "./boot";
+import { resolveCaller } from "./live/client";
+import { createFakeCompass, type FakeCompass } from "./live/compass-fake";
 import { resolveConnection } from "./live/connection";
 
 // boot.ts guards the one unrecoverable step that runs BEFORE render(): resolving
@@ -122,4 +124,57 @@ describe("renderBootError (shared boot-failure painter)", () => {
 		expect(el.childNodes.length).toBe(1);
 		expect(el.querySelector("span")).toBeNull();
 	});
+});
+
+describe("bootCaller (post-connect caller-identity guard)", () => {
+	test("returns the caller id the server resolves and leaves the root untouched", async () => {
+		const el = document.createElement("div");
+		const fake = createFakeCompass();
+		fake.whoAmIAccountId.accountId = "acc-x";
+
+		const callerId = await bootCaller(el, () => resolveCaller(fake.client));
+
+		// The id main() threads into the store + workspaceKey is exactly what the
+		// server resolved, and the happy path writes nothing — the real render()
+		// owns the root.
+		expect(callerId).toBe("acc-x");
+		expect(el.childNodes.length).toBe(0);
+	});
+
+	// The load-bearing failure contract this PR exists to hold: an unlearnable
+	// "me" must paint the boot screen and STOP boot (return undefined, so main()
+	// returns without rendering) rather than boot the app against no caller. Two
+	// ways it fails — the RPC rejects, or the server answers with an empty id
+	// resolveCaller rejects (live/client.ts) — must both stop here, through the
+	// fake's own scaffolding.
+	for (const [label, arm, detail] of [
+		[
+			"the WhoAmI RPC rejects",
+			(f: FakeCompass) => f.failNextWhoAmI(new Error("boom-unavailable")),
+			"boom-unavailable",
+		],
+		[
+			"the server returns an empty account id",
+			(f: FakeCompass) => {
+				f.whoAmIAccountId.accountId = "";
+			},
+			"empty account id",
+		],
+	] as const) {
+		test(`paints the boot-error screen and returns undefined when ${label}`, async () => {
+			const el = document.createElement("div");
+			const fake = createFakeCompass();
+			arm(fake);
+
+			const callerId = await bootCaller(el, () => resolveCaller(fake.client));
+
+			// Undefined is the stop signal — main() returns without rendering.
+			expect(callerId).toBeUndefined();
+			// Visible, not blank, naming the caller-identity boundary, and
+			// carrying the specific cause (the thrown message / the empty-id guard).
+			expect(el.childNodes.length).toBeGreaterThan(0);
+			expect(el.textContent).toContain("could not learn the caller identity");
+			expect(el.textContent).toContain(detail);
+		});
+	}
 });
