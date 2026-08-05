@@ -324,3 +324,172 @@ func hasHeaderPair(pairs [][2]string, name, value string) bool {
 	}
 	return false
 }
+
+func TestPumpMidStreamErrorAfterHead(t *testing.T) {
+	// The server declares more body than it writes: Content-Length is far larger
+	// than the bytes it flushes, then it returns. The h2c client detects the
+	// short stream and resp.Body.Read returns a non-EOF, non-cancel error AFTER
+	// the head (and partial body) have already been emitted — the Head->Error
+	// terminus. This is the one contract branch the UI adapter routes distinctly
+	// (headSeen ? controller.error : rejectHead). No panic, no hijack: the short
+	// body is deterministically classified as an error by the transport.
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Errorf("ResponseWriter is not a Flusher")
+			return
+		}
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("partial")) // 7 bytes, far short of the declared 1024
+		flusher.Flush()
+		// Returning here ends the stream short of the declared length.
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	frames := collect(ctx, NewUnixTarget(socket), Call{Path: "/stream"})
+
+	if len(frames) < 2 {
+		t.Fatalf("got %d frames, want at least head + error: %#v", len(frames), frames)
+	}
+	if _, ok := frames[0].(HeadFrame); !ok {
+		t.Fatalf("frame[0] = %T, want HeadFrame", frames[0])
+	}
+	// Terminal frame is exactly one ErrorFrame with a non-empty message, and
+	// nothing follows it; no EndFrame anywhere (the stream never completed).
+	last := frames[len(frames)-1]
+	errFrame, ok := last.(ErrorFrame)
+	if !ok {
+		t.Fatalf("final frame = %T, want ErrorFrame", last)
+	}
+	if errFrame.Message == "" {
+		t.Error("error frame message is empty")
+	}
+	for i, f := range frames {
+		switch f.(type) {
+		case HeadFrame:
+			if i != 0 {
+				t.Errorf("frame[%d]: HeadFrame after position 0", i)
+			}
+		case BodyFrame:
+			// zero or more, between head and error
+		case EndFrame:
+			t.Errorf("frame[%d]: spurious EndFrame on mid-stream error", i)
+		case ErrorFrame:
+			if i != len(frames)-1 {
+				t.Errorf("frame[%d]: ErrorFrame is not terminal (%d frames follow)", i, len(frames)-1-i)
+			}
+		}
+	}
+}
+
+func TestPumpRepeatedHeaders(t *testing.T) {
+	// The Frame contract carries headers as ordered [name,value] pairs (not a
+	// map) specifically to preserve repeated headers. Verify both directions:
+	// a request header appearing twice is forwarded in order, and a response
+	// header with two values flattens to two separate pairs.
+	var gotReqValues []string
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotReqValues = r.Header.Values("X-Meta")
+		w.Header().Add("X-Multi", "one")
+		w.Header().Add("X-Multi", "two")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	call := Call{
+		Path: "/x",
+		Headers: [][2]string{
+			{"X-Meta", "a"},
+			{"X-Meta", "b"},
+		},
+	}
+	frames := collect(ctx, NewUnixTarget(socket), call)
+
+	// Request side: both values forwarded in order.
+	if len(gotReqValues) != 2 || gotReqValues[0] != "a" || gotReqValues[1] != "b" {
+		t.Errorf("stub X-Meta values = %v, want [a b]", gotReqValues)
+	}
+	// Response side: both values surface as separate pairs.
+	if len(frames) < 1 {
+		t.Fatal("no frames emitted")
+	}
+	head, ok := frames[0].(HeadFrame)
+	if !ok {
+		t.Fatalf("frame[0] = %T, want HeadFrame", frames[0])
+	}
+	if !hasHeaderPair(head.Headers, "X-Multi", "one") || !hasHeaderPair(head.Headers, "X-Multi", "two") {
+		t.Errorf("head headers %v missing both X-Multi pairs", head.Headers)
+	}
+}
+
+func TestPumpEmptyResponseBody(t *testing.T) {
+	// A bodyless success emits exactly head -> end, with no BodyFrame between.
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	frames := collect(ctx, NewUnixTarget(socket), Call{Path: "/x"})
+
+	if len(frames) != 2 {
+		t.Fatalf("got %d frames, want exactly head + end: %#v", len(frames), frames)
+	}
+	if _, ok := frames[0].(HeadFrame); !ok {
+		t.Fatalf("frame[0] = %T, want HeadFrame", frames[0])
+	}
+	if _, ok := frames[1].(EndFrame); !ok {
+		t.Fatalf("frame[1] = %T, want EndFrame", frames[1])
+	}
+}
+
+func TestPumpLargeBodyMultipleReads(t *testing.T) {
+	// A payload larger than the 32KiB read buffer must be chunked across multiple
+	// reads, each chunk owning its bytes (buf is reused), and the concatenation
+	// must equal the payload with no chunk exceeding the buffer.
+	const payloadLen = 100 * 1024 // > 3x the 32KiB buffer
+	payload := make([]byte, payloadLen)
+	for i := range payload {
+		payload[i] = byte(i % 251) // deterministic, non-trivial pattern
+	}
+
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	frames := collect(ctx, NewUnixTarget(socket), Call{Path: "/big"})
+
+	if len(frames) < 3 {
+		t.Fatalf("got %d frames, want head + (>=1 body) + end: %#v", len(frames), frames)
+	}
+	if _, ok := frames[0].(HeadFrame); !ok {
+		t.Fatalf("frame[0] = %T, want HeadFrame", frames[0])
+	}
+	if _, ok := frames[len(frames)-1].(EndFrame); !ok {
+		t.Fatalf("final frame = %T, want EndFrame", frames[len(frames)-1])
+	}
+	var got []byte
+	for i, f := range frames[1 : len(frames)-1] {
+		body, ok := f.(BodyFrame)
+		if !ok {
+			t.Fatalf("frame[%d] = %T, want BodyFrame", i+1, f)
+		}
+		if len(body.Chunk) > 32*1024 {
+			t.Errorf("chunk %d len %d exceeds the 32KiB buffer", i, len(body.Chunk))
+		}
+		got = append(got, body.Chunk...)
+	}
+	if string(got) != string(payload) {
+		t.Errorf("reassembled body (%d bytes) != payload (%d bytes)", len(got), len(payload))
+	}
+}
