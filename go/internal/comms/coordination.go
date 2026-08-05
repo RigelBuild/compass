@@ -183,13 +183,14 @@ func (c *Comms) EnsureCoordinationChannel(ctx context.Context, managerAgentID st
 	}); err != nil {
 		return "", edgeError(err)
 	}
-	c.emitCoordChanges(ctx, changes)
 	if len(changes.pending) == 0 {
 		// The reconcile always records exactly one change on success; a missing
 		// record is an internal invariant break, surfaced rather than returning
-		// an empty id.
+		// an empty id. Checked BEFORE the emit so the fault is not masked by a
+		// best-effort emit step that would iterate an empty buffer.
 		return "", edgeError(fmt.Errorf("%w: coordination reconcile recorded no channel", store.ErrNotFound))
 	}
+	c.emitCoordChanges(ctx, changes)
 	return changes.pending[0].channelID, nil
 }
 

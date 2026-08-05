@@ -17,6 +17,7 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/jackc/pgx/v5"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/store"
@@ -163,6 +164,69 @@ func TestEnsureCoordinationChannelManualBackfill(t *testing.T) {
 	}
 	if first == "" || first != second {
 		t.Fatalf("manual backfill not idempotent: first=%q second=%q", first, second)
+	}
+}
+
+// TestCreateAgentSuffixesAroundUserChannelWithoutWedge pins the never-adopt +
+// never-wedge invariants through the REAL registered reconcile closure
+// (reconcileCoordinationTx, fired by the CreateAgent-with-parent RPC hook), not
+// the store helper: a user-owned `<handle>-coordination` channel pre-exists in
+// the owner's coordination group, and the manager's provisioning must (a) land
+// at the `-2` suffix without adopting the user's channel, AND (b) leave the
+// CreateAgent RPC succeeding (the parent-edge write is NOT wedged by the
+// collision). This closes the loop on the registered closure end to end.
+func TestCreateAgentSuffixesAroundUserChannelWithoutWedge(t *testing.T) {
+	h := newStreamHarness(t)
+	h.svc.RegisterCoordinationHook(h.store)
+	ctx := context.Background() // test root context (legitimate per go-thread-context test exemption)
+
+	owner := mustUser(t, h.store, "owner")
+	manager := mustAgent(t, h.store, owner.ID, "manager")
+
+	// The user pre-creates the coordination group and a channel with the exact
+	// name the manager's channel would take, owned by the USER (mirrors the store
+	// test TestCollisionUserOwnedSuffixes setup, via UpsertCoordinationChannelTx).
+	if err := h.store.WithTx(ctx, func(tx pgx.Tx) error {
+		gid, err := h.store.EnsureOwnerCoordinationGroupTx(ctx, tx, owner.ID)
+		if err != nil {
+			return err
+		}
+		_, err = h.store.UpsertCoordinationChannelTx(ctx, tx, store.CoordinationChannelSpec{
+			GroupID:        gid,
+			BaseName:       "manager-coordination",
+			OwnerAccountID: owner.ID, // user owns it
+			Policy:         store.ChannelPolicy{OwnerAccountID: owner.ID},
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("pre-create user channel: %v", err)
+	}
+
+	// The real RPC that fires the hook: a first report under the manager.
+	if _, err := h.svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+		Handle: "report", DisplayName: "r", ParentAgentId: string(manager.ID),
+	})); err != nil {
+		// (b) The parent-edge write must NOT be wedged by the name collision.
+		t.Fatalf("CreateAgent(report) wedged by coordination collision: %v", err)
+	}
+
+	// (a) The manager's channel landed at -2 (never adopted the user's), and the
+	// manager is a member of the -2 channel, not the user's.
+	chs := coordChannelsFor(t, h.store, manager.ID)
+	var mgrCh store.Channel
+	for _, ch := range chs {
+		if ch.Name == "manager-coordination-2" {
+			mgrCh = ch
+		}
+		if ch.Name == "manager-coordination" {
+			t.Fatalf("manager adopted the user's channel: %+v", ch)
+		}
+	}
+	if mgrCh.ID == "" {
+		t.Fatalf("manager's channel not suffixed to -2: %v", chs)
+	}
+	if mgrCh.Policy.OwnerAccountID != manager.ID || !mgrCh.Policy.MandatorySubscription || mgrCh.Policy.PostPolicy != store.ChannelPostPolicyOwnerOnly {
+		t.Fatalf("suffixed channel not manager-owned+mandatory+owner-only: %+v", mgrCh.Policy)
 	}
 }
 

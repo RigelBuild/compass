@@ -85,16 +85,29 @@ func (s *Store) EnsureOwnerCoordinationGroupTx(ctx context.Context, tx pgx.Tx, o
 		return "", fmt.Errorf("%w: owner user id is required", ErrInvalidArgument)
 	}
 	// A fixed reserved name scoped to the owner — deterministic, so every
-	// reconcile for this owner resolves the identical group. The name is an
-	// internal reserved segment; it never collides with a user-created group
-	// because those are created only through CreateChannelGroup with a
-	// caller-supplied name and this segment is not offered there.
+	// reconcile for this owner resolves the identical group. The get-half is
+	// VISIBILITY-DISCRIMINATED (AND visibility = $3, bound to VisibilityOwner):
+	// CreateChannelGroup has no reserved-name guard, so a user CAN plant a
+	// top-level group named __coordination__ at any visibility. A wider
+	// (VisibilityShared) planted group must NEVER be adopted — inserting the
+	// OWNER_ONLY coordination channel into a SHARED group would make an
+	// owner-private channel visible to every account (channelVisiblePredicate),
+	// a cross-tenant leak (decision 1 owner-private, decision 3 never-adopt). The
+	// discriminator excludes it, so the create-half then INSERTs the correct
+	// owner-visible group. Adopting an owner-VISIBILITY, owner-matched,
+	// correctly-named top-level planted group is harmless: it has the exact shape
+	// the reconcile would itself create. The caller holds the per-owner advisory
+	// lock (LockOwnerCoordinationTx), so the get-then-create cannot race a
+	// concurrent reconcile for the same owner into two groups; channel_groups has
+	// no unique index on (name, owner, parent), and the only unguarded writer
+	// (the user's CreateChannelGroup) cannot produce an owner-visibility row the
+	// discriminated SELECT would wrongly adopt.
 	const coordinationGroupName = "__coordination__"
 
 	var existing string
 	switch err := tx.QueryRow(ctx,
-		`SELECT id FROM channel_groups WHERE owner_user_id = $1 AND name = $2 AND parent_group_id IS NULL`,
-		string(ownerUserID), coordinationGroupName,
+		`SELECT id FROM channel_groups WHERE owner_user_id = $1 AND name = $2 AND parent_group_id IS NULL AND visibility = $3`,
+		string(ownerUserID), coordinationGroupName, int32(VisibilityOwner),
 	).Scan(&existing); {
 	case err == nil:
 		return ChannelGroupID(existing), nil
@@ -118,9 +131,10 @@ func (s *Store) EnsureOwnerCoordinationGroupTx(ctx context.Context, tx pgx.Tx, o
 // comms closure owns spec's name + policy.
 //
 // Resolution (the caller holds the per-owner advisory lock, so no concurrent
-// writer can interleave a second row for the same (group, name)):
+// RECONCILE for the same owner can interleave a second row for the same (group,
+// name) — but a concurrent USER CreateChannel is NOT under this lock and can):
 //   - No channel named spec.BaseName in spec.GroupID: INSERT it with spec.Policy
-//     (born OWNER_ONLY + mandatory + owner=manager).
+//     (born OWNER_ONLY + mandatory + owner=manager), poison-free.
 //   - A channel named spec.BaseName exists AND its owner_account_id == the
 //     manager: RESUME it — return its id (idempotent re-provision; policy already
 //     correct from a prior insert, never re-forced).
@@ -131,9 +145,19 @@ func (s *Store) EnsureOwnerCoordinationGroupTx(ctx context.Context, tx pgx.Tx, o
 //     probed in increasing integer order and the manager owns at most finitely
 //     many, so a free name is always reached.
 //
-// Because every branch is a SELECT-guided INSERT-or-resume under the lock, the
-// partial unique index channels_group_name_key is never violated — the method
-// cannot raise a unique-violation that would poison the outer parent-edge tx.
+// The INSERT is `ON CONFLICT (group_id, name) WHERE group_id IS NOT NULL DO
+// NOTHING` — index-inference on the PARTIAL unique index channels_group_name_key.
+// This is what makes the "never poisons the outer parent-edge tx" invariant TRUE
+// BY CONSTRUCTION rather than by an unenforced assumption about who else writes:
+// a user's concurrent CreateChannel can commit the same (group, name) between our
+// SELECT and our INSERT, but ON CONFLICT DO NOTHING yields zero rows (NOT a raised
+// unique-violation), so the tx is never poisoned (there is no savepoint,
+// design.md:554, so a raised violation would abort the whole parent-edge write —
+// wedging report creation, decision 2). On the DO-NOTHING zero-row case we loop:
+// the next iteration re-SELECTs, sees the now-present row, and either resumes
+// (manager-owned) or suffixes (user-owned, never-adopt, decision 3) — the same
+// SELECT-guided resolution above. Termination still holds: each committed row is
+// resolved to resume-or-suffix, and the manager owns finitely many names.
 func (s *Store) UpsertCoordinationChannelTx(ctx context.Context, tx pgx.Tx, spec CoordinationChannelSpec) (ChannelID, error) {
 	if spec.GroupID == "" {
 		return "", fmt.Errorf("%w: coordination channel group is required", ErrInvalidArgument)
@@ -168,17 +192,38 @@ func (s *Store) UpsertCoordinationChannelTx(ctx context.Context, tx pgx.Tx, spec
 			return "", fmt.Errorf("store: resolve coordination channel: %w", err)
 		}
 
-		// Free name: INSERT the channel born with the coordination policy.
+		// Free name (as of our SELECT): INSERT the channel born with the
+		// coordination policy, poison-free. ON CONFLICT DO NOTHING on the partial
+		// unique index absorbs a row a concurrent user CreateChannel committed
+		// between our SELECT and this INSERT: instead of a raised unique-violation
+		// (which, with no savepoint, would poison the parent-edge tx and wedge
+		// report creation), the INSERT affects zero rows and RETURNING yields no
+		// row. On that no-row case we loop back to the SELECT, which now sees the
+		// concurrently-committed row and resumes-or-suffixes it.
 		id := newID()
-		if _, err := tx.Exec(ctx,
+		switch err := tx.QueryRow(ctx,
 			`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription) `+
-				`VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)`,
+				`VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7) `+
+				`ON CONFLICT (group_id, name) WHERE group_id IS NOT NULL DO NOTHING `+
+				`RETURNING id`,
 			id, name, string(spec.GroupID), int32(ChannelKindChannel),
 			int32(spec.Policy.PostPolicy), string(spec.Policy.OwnerAccountID), spec.Policy.MandatorySubscription,
-		); err != nil {
+		).Scan(&id); {
+		case err == nil:
+			return ChannelID(id), nil
+		case noRows(err):
+			// A concurrent writer won the (group, name) race between our SELECT
+			// and this INSERT. Re-resolve the SAME name (undo the loop's suffix
+			// advance): the next iteration's SELECT now sees the committed row and
+			// resumes-or-suffixes it. Under the per-owner lock the only concurrent
+			// writer is a user CreateChannel (user-owned), so this re-resolve
+			// suffixes; keeping it a re-SELECT rather than a blind advance leaves
+			// the resume branch correct should that invariant ever weaken.
+			suffix--
+			continue
+		default:
 			return "", fmt.Errorf("store: insert coordination channel: %w", err)
 		}
-		return ChannelID(id), nil
 	}
 }
 

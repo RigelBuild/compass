@@ -14,6 +14,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -62,9 +63,9 @@ func (h *recordingHook) reconcile(ctx context.Context, tx pgx.Tx, manager Accoun
 	return err
 }
 
-// coordChannelByOwner returns the single coordination channel owned by manager
-// in manager's owner's coordination group, or fails when the count is not want.
-// Returns the channel row (id + policy + members) for further assertions.
+// coordChannels returns all coordination channels in owner's __coordination__
+// group, ordered by name (no count assertion — callers assert the count they
+// expect). Each row carries id + policy + members for further assertions.
 func coordChannels(t *testing.T, s *Store, owner AccountID) []Channel {
 	t.Helper()
 	ctx := context.Background()
@@ -337,5 +338,228 @@ func TestCollisionUserOwnedSuffixes(t *testing.T) {
 	// The parent-edge write still succeeded: the report account exists.
 	if _, err := s.AgentByHandle(ctx, "report"); err != nil {
 		t.Fatalf("report account not created (parent-edge write wedged by collision): %v", err)
+	}
+}
+
+// TestReconcileIgnoresMisVisibilityUserGroup pins MED #1 (owner-private +
+// never-adopt): a user can plant a top-level group named __coordination__ at
+// VisibilityShared (CreateChannelGroup has no reserved-name guard). The
+// visibility-discriminated get-half must NOT adopt it — adopting it would insert
+// the OWNER_ONLY coordination channel into a SHARED group, making an
+// owner-private channel visible to every account (a cross-tenant leak). The
+// reconcile instead creates its own owner-visibility __coordination__ group, and
+// an unrelated third account cannot see the channel.
+//
+// Red-first: drop `AND visibility = $3` from EnsureOwnerCoordinationGroupTx's
+// get-half SELECT -> the shared group is adopted -> the channel's group is
+// VisibilityShared -> the stranger CAN see it -> both assertions below fail.
+func TestReconcileIgnoresMisVisibilityUserGroup(t *testing.T) {
+	ctx := context.Background() // test root context (legitimate per go-thread-context test exemption)
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	stranger := mustUser(t, s, "stranger") // an unrelated third account (different owner)
+	h := &recordingHook{s: s}
+	s.SetCoordinationHook(h.reconcile)
+	manager := mustAgent(t, s, owner.ID, "manager")
+
+	// The user plants a top-level SHARED group named __coordination__ (the
+	// reserved segment is not guarded at the CreateChannelGroup boundary).
+	if _, err := s.CreateChannelGroup(ctx, owner.ID, NewChannelGroup{
+		Name: "__coordination__", Visibility: VisibilityShared,
+	}); err != nil {
+		t.Fatalf("plant shared __coordination__ group: %v", err)
+	}
+
+	// A first report triggers the reconcile.
+	if _, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "report", DisplayName: "r", ParentAgentID: manager.ID}); err != nil {
+		t.Fatalf("CreateAgent(report): %v", err)
+	}
+
+	chs := coordChannels(t, s, owner.ID)
+	if len(chs) != 1 {
+		t.Fatalf("provisioned %d coordination channels, want exactly 1", len(chs))
+	}
+	ch := chs[0]
+
+	// The channel's hosting group must be OWNER visibility — the reconcile did
+	// NOT adopt the planted shared group.
+	var vis int32
+	if err := s.pool.QueryRow(ctx,
+		`SELECT g.visibility FROM channels c JOIN channel_groups g ON g.id = c.group_id WHERE c.id = $1`,
+		string(ch.ID),
+	).Scan(&vis); err != nil {
+		t.Fatalf("read coordination channel group visibility: %v", err)
+	}
+	if ChannelGroupVisibility(vis) != VisibilityOwner {
+		t.Fatalf("coordination channel landed in a %d-visibility group, want VisibilityOwner (mis-visibility group was adopted)", vis)
+	}
+
+	// The cross-tenant leak the discriminator prevents: an unrelated account must
+	// NOT be able to see the owner-private coordination channel.
+	visible, err := s.ChannelVisibleTo(ctx, stranger.ID, ch.ID)
+	if err != nil {
+		t.Fatalf("ChannelVisibleTo(stranger): %v", err)
+	}
+	if visible {
+		t.Fatalf("owner-private coordination channel is visible to an unrelated account (cross-tenant leak)")
+	}
+}
+
+// TestUpsertConcurrentUserInsertSuffixesWithoutWedge pins MED #2 (never-wedge +
+// never-adopt + poison-free, no savepoint): a user's concurrent CreateChannel
+// commits the same (group, name) AFTER the reconcile's SELECT missed it but
+// BEFORE the reconcile's INSERT — the exact window a plain INSERT would hit a
+// unique-violation on the partial index channels_group_name_key, poisoning the
+// savepoint-less parent-edge tx and wedging report creation. The ON CONFLICT DO
+// NOTHING INSERT absorbs it: the INSERT affects zero rows (no raised error), the
+// reconcile re-SELECTs, sees the user's now-committed row, and suffixes to -2.
+//
+// The race is deterministic: an uncommitted user insert in txUser holds the
+// (group, name) unique-index tuple; the reconcile's INSERT blocks on txUser
+// (speculative insertion waits for the concurrent inserter under both the ON
+// CONFLICT and the plain-INSERT forms); a pg_blocking_pids gate — scoped to
+// txUser's own backend pid, so no parallel test can spuriously satisfy it —
+// confirms the block before txUser commits and unblocks the reconcile.
+//
+// Red-first: revert the reconcile INSERT to a plain `INSERT ... VALUES (...)`
+// (no ON CONFLICT) -> when txUser commits, the blocked INSERT raises
+// unique-violation -> WithTx rolls back -> the reconcile returns a non-nil error
+// -> the "returned no error" assertion below fails.
+func TestUpsertConcurrentUserInsertSuffixesWithoutWedge(t *testing.T) {
+	ctx := context.Background() // test root context (legitimate per go-thread-context test exemption)
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	manager := mustAgent(t, s, owner.ID, "manager")
+
+	// Pre-create (committed) the shared coordination group both transactions
+	// resolve, so the race is purely on the channel row.
+	var groupID ChannelGroupID
+	if err := s.WithTx(ctx, func(tx pgx.Tx) error {
+		gid, err := s.EnsureOwnerCoordinationGroupTx(ctx, tx, owner.ID)
+		groupID = gid
+		return err
+	}); err != nil {
+		t.Fatalf("pre-create coordination group: %v", err)
+	}
+
+	// txUser: a concurrent USER channel of the same (group, name), left
+	// uncommitted so the reconcile's SELECT misses it (READ COMMITTED) but its
+	// INSERT collides on the partial unique index.
+	txUser, err := s.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin user tx: %v", err)
+	}
+	// Rollback is a no-op after the Commit below; the discard is deliberate test
+	// cleanup for the failure path (mirrors TestReparentAgentConcurrentCycleSerialized).
+	defer func() { _ = txUser.Rollback(ctx) }()
+
+	var userPID int
+	if err := txUser.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&userPID); err != nil {
+		t.Fatalf("read user tx backend pid: %v", err)
+	}
+	userChID := newID()
+	if _, err := txUser.Exec(ctx,
+		`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription) `+
+			`VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		userChID, "manager-coordination", string(groupID), int32(ChannelKindChannel),
+		int32(ChannelPostPolicyOpen), string(owner.ID), false,
+	); err != nil {
+		t.Fatalf("user tx insert channel: %v", err)
+	}
+
+	// The reconcile runs on its OWN tx: its SELECT misses the uncommitted user
+	// row, then its INSERT blocks on txUser until txUser commits below.
+	type result struct {
+		id  ChannelID
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		var id ChannelID
+		err := s.WithTx(ctx, func(tx pgx.Tx) error {
+			var e error
+			id, e = s.UpsertCoordinationChannelTx(ctx, tx, CoordinationChannelSpec{
+				GroupID:        groupID,
+				BaseName:       "manager-coordination",
+				OwnerAccountID: manager.ID,
+				Policy: ChannelPolicy{
+					PostPolicy:            ChannelPostPolicyOwnerOnly,
+					OwnerAccountID:        manager.ID,
+					MandatorySubscription: true,
+				},
+			})
+			return e
+		})
+		done <- result{id, err}
+	}()
+
+	// Readiness gate (bounded poll, not a fixed sleep): wait until some backend
+	// is blocked BY txUser — precisely the reconcile's INSERT parked on the
+	// uncommitted unique-index tuple. Scoped to txUser's own pid so a parallel
+	// test's lock wait cannot satisfy it. On timeout, fall through and commit
+	// anyway (the RED case may block identically, so the assertion still fires).
+	deadline := time.After(5 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+gate:
+	for {
+		var blocked bool
+		if err := s.pool.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))`,
+			userPID,
+		).Scan(&blocked); err != nil {
+			t.Fatalf("poll pg_blocking_pids: %v", err)
+		}
+		if blocked {
+			break gate
+		}
+		select {
+		case <-deadline:
+			break gate
+		case <-tick.C:
+		}
+	}
+
+	// Commit txUser: the reconcile's INSERT unblocks. ON CONFLICT DO NOTHING ->
+	// zero rows -> re-SELECT sees the user's committed row -> suffix to -2.
+	if err := txUser.Commit(ctx); err != nil {
+		t.Fatalf("commit user tx: %v", err)
+	}
+
+	var r result
+	select {
+	case r = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("reconcile did not complete: likely deadlocked on the (group, name) tuple")
+	}
+
+	// Never-wedge: the reconcile returned NO error (a plain INSERT would have
+	// raised unique-violation here and rolled back the parent-edge tx).
+	if r.err != nil {
+		t.Fatalf("reconcile returned error under concurrent user insert (parent-edge would wedge): %v", r.err)
+	}
+
+	// Never-adopt: the manager's channel suffixed to -2, manager-owned + mandatory.
+	chs := coordChannels(t, s, owner.ID)
+	byName := map[string]Channel{}
+	for _, ch := range chs {
+		byName[ch.Name] = ch
+	}
+	userCh, ok := byName["manager-coordination"]
+	if !ok || userCh.ID != ChannelID(userChID) {
+		t.Fatalf("user's channel gone or changed id: %v", chs)
+	}
+	if userCh.Policy.OwnerAccountID == manager.ID || userCh.Policy.MandatorySubscription {
+		t.Fatalf("user's channel was adopted/forced: policy=%+v", userCh.Policy)
+	}
+	mgrCh, ok := byName["manager-coordination-2"]
+	if !ok {
+		t.Fatalf("manager's channel not suffixed to -2: %v", chs)
+	}
+	if mgrCh.ID != r.id {
+		t.Fatalf("reconcile returned id %q, want the -2 channel %q", r.id, mgrCh.ID)
+	}
+	if mgrCh.Policy.OwnerAccountID != manager.ID || !mgrCh.Policy.MandatorySubscription {
+		t.Fatalf("suffixed channel not manager-owned+mandatory: %+v", mgrCh.Policy)
 	}
 }
