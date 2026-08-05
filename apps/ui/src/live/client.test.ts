@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, type Mock, spyOn, test } from "bun:test";
+import type { CompassClient } from "@compass/client";
 import * as compassClient from "@compass/client";
-import { createLiveClients } from "./client";
+import { createLiveClients, resolveCaller } from "./client";
 import type { Connection } from "./connection";
 
 // createLiveClients must build ONE gRPC-Web transport and dial both clients over
@@ -16,7 +17,6 @@ describe("createLiveClients (query record T1)", () => {
 	const conn: Connection = {
 		baseUrl: "https://compass.example:8443",
 		token: "tok",
-		callerId: "acc-me",
 	};
 
 	const spies: Mock<(...args: never[]) => unknown>[] = [];
@@ -43,4 +43,34 @@ describe("createLiveClients (query record T1)", () => {
 		expect(compassTransport).toBe(clients.transport);
 		expect(commsTransport).toBe(compassTransport);
 	});
+});
+
+describe("resolveCaller (WhoAmI boot probe)", () => {
+	test("returns the accountId the server reports for the caller", async () => {
+		// A fake whose whoAmI resolves a known account id — resolveCaller must
+		// hand back exactly that string (the caller learned from the connection's
+		// credential, the boot source that replaced the env var).
+		const client = {
+			whoAmI: async (_req: Record<string, never>) => ({ accountId: "acc-x" }),
+		} as unknown as CompassClient;
+
+		expect(await resolveCaller(client)).toBe("acc-x");
+	});
+
+	// The empty-id guard the deleted env path used to own (connection.ts threw on
+	// a blank VITE_COMPASS_CALLER_ID): a server that answers WhoAmI with no
+	// account id (no-auth door, unauthenticated bearer) must reject, not return
+	// "", so an unknown "me" never silently scopes the store to an empty caller.
+	for (const [label, value] of [
+		["empty", ""],
+		["whitespace-only", "  \t"],
+	] as const) {
+		test(`throws when the server returns a ${label} account id`, async () => {
+			const client = {
+				whoAmI: async (_req: Record<string, never>) => ({ accountId: value }),
+			} as unknown as CompassClient;
+
+			await expect(resolveCaller(client)).rejects.toThrow(/empty account id/);
+		});
+	}
 });

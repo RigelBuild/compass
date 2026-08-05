@@ -564,11 +564,12 @@ export interface AppStoreOptions {
 	/** The live comms client. Present → the store runs `runCommsStream` over it
 	 *  for its lifetime and every comms write is a real RPC. Absent → offline. */
 	readonly comms?: CommsClient;
-	/** The caller's account id, from the Connection (`VITE_COMPASS_CALLER_ID`).
+	/** The caller's account id — whose visibility scopes every listing and whose
+	 *  membership the rail reflects.
 	 *
-	 *  SEAM (caller-identity): there is no `WhoAmI` RPC, so the operator supplies
-	 *  the account the bearer authenticates as (live/connection.ts:28-35). The
-	 *  fixture default keeps the offline store on the fixture's owner. */
+	 *  index.tsx learns it from the server via the compass.v1 WhoAmI RPC right
+	 *  after the transport is up (live/client.ts resolveCaller) and feeds it here.
+	 *  The fixture default keeps the offline store on the fixture's owner. */
 	readonly callerId?: string;
 	/** The workspace/connection identity used to namespace per-deployment UI
 	 *  prefs in `localStorage` — the pinned-agent set (Record A §T3). index.tsx
