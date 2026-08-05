@@ -60,7 +60,18 @@ func (s *Store) PinMessage(ctx context.Context, ch ChannelID, msg MessageID, rep
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
-	if err := lockChannelForPins(ctx, tx, ch); err != nil {
+	postPolicy, ownerAcct, err := lockChannelForPins(ctx, tx, ch)
+	if err != nil {
+		return nil, err
+	}
+
+	// Board-mutation authz, enforced IN this tx under the FOR UPDATE lock the
+	// lock helper just took, BEFORE the pin write: `by` must be a member and,
+	// on OWNER_ONLY, the owner — the SAME two-gate no-oracle check PostMessage
+	// runs (store/messages.go:80-82). Under the row lock the who-may-act
+	// decision is serialized against a concurrent membership/policy change, so a
+	// just-removed member or now-unauthorized non-owner cannot race the write.
+	if err := requireBoardMutator(ctx, tx, ch, by, postPolicy, ownerAcct); err != nil {
 		return nil, err
 	}
 
@@ -92,17 +103,27 @@ func (s *Store) PinMessage(ctx context.Context, ch ChannelID, msg MessageID, rep
 }
 
 // UnpinMessage removes the (ch, msg) pin under ch's channels-row lock and returns
-// the remaining board ordered by position (design.md T6). Unpinning a message
-// that is not pinned is a no-op: the delete affects zero rows and the unchanged
-// board is returned (never an error), so a duplicate or racing unpin is benign.
-func (s *Store) UnpinMessage(ctx context.Context, ch ChannelID, msg MessageID) ([]PinnedEntry, error) {
+// the remaining board ordered by position (design.md T6). `by` must be authorized
+// to mutate the board (a member, and the owner on OWNER_ONLY) — the same in-tx,
+// under-lock authz PinMessage enforces. Unpinning a message that is not pinned is
+// a no-op: the delete affects zero rows and the unchanged board is returned
+// (never an error), so a duplicate or racing unpin is benign.
+func (s *Store) UnpinMessage(ctx context.Context, ch ChannelID, msg MessageID, by AccountID) ([]PinnedEntry, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("store: begin unpin message: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
-	if err := lockChannelForPins(ctx, tx, ch); err != nil {
+	postPolicy, ownerAcct, err := lockChannelForPins(ctx, tx, ch)
+	if err != nil {
+		return nil, err
+	}
+
+	// Same in-tx, under-lock authz as PinMessage: `by` must be a member and, on
+	// OWNER_ONLY, the owner — refused with the no-oracle ErrNotFound otherwise,
+	// serialized by the row lock against a concurrent membership/policy change.
+	if err := requireBoardMutator(ctx, tx, ch, by, postPolicy, ownerAcct); err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx,
@@ -130,16 +151,38 @@ func (s *Store) PinnedEntries(ctx context.Context, ch ChannelID) ([]PinnedEntry,
 }
 
 // lockChannelForPins takes the channels-row FOR UPDATE lock that serializes every
-// mutating board op on ch (the cap race and the repoint CAS both ride it). An
-// unknown channel matches zero rows and is ErrNotFound.
-func lockChannelForPins(ctx context.Context, tx pgx.Tx, ch ChannelID) error {
-	var one int
-	err := tx.QueryRow(ctx, `SELECT 1 FROM channels WHERE id = $1 FOR UPDATE`, string(ch)).Scan(&one)
+// mutating board op on ch (the cap race, the repoint CAS, and the board-mutation
+// authz all ride it) and, in the same locking round-trip, reads the row's
+// post_policy and owner so the caller can gate the mutator under the lock without
+// a second query. An unknown channel matches zero rows and is ErrNotFound.
+func lockChannelForPins(ctx context.Context, tx pgx.Tx, ch ChannelID) (postPolicy int32, ownerAcct string, err error) {
+	err = tx.QueryRow(ctx,
+		`SELECT post_policy, COALESCE(owner_account_id, '') FROM channels WHERE id = $1 FOR UPDATE`,
+		string(ch),
+	).Scan(&postPolicy, &ownerAcct)
 	if err != nil {
 		if noRows(err) {
-			return fmt.Errorf("%w: channel %q", ErrNotFound, ch)
+			return 0, "", fmt.Errorf("%w: channel %q", ErrNotFound, ch)
 		}
-		return fmt.Errorf("store: lock channel for pins: %w", err)
+		return 0, "", fmt.Errorf("store: lock channel for pins: %w", err)
+	}
+	return postPolicy, ownerAcct, nil
+}
+
+// requireBoardMutator enforces board-mutation authz for `by` under the caller's
+// held channels-row FOR UPDATE lock, mirroring PostMessage's two-gate no-oracle
+// check (store/messages.go:80-82): `by` must be a member of ch (else ErrNotFound,
+// the not-found/forbidden merge), and on an OWNER_ONLY channel only the owner may
+// mutate — a non-owner member is refused with the SAME ErrNotFound a non-member
+// gets, so the policy leaks no existence oracle. postPolicy/ownerAcct come from
+// the locking SELECT lockChannelForPins already ran, so the check is serialized
+// against a concurrent membership/policy change committing between gate and write.
+func requireBoardMutator(ctx context.Context, tx pgx.Tx, ch ChannelID, by AccountID, postPolicy int32, ownerAcct string) error {
+	if err := requireChannelMember(ctx, tx, by, ch); err != nil {
+		return err
+	}
+	if ChannelPostPolicy(postPolicy) == ChannelPostPolicyOwnerOnly && string(by) != ownerAcct {
+		return fmt.Errorf("%w: channel %q", ErrNotFound, ch)
 	}
 	return nil
 }

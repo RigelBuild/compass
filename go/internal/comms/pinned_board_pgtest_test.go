@@ -291,3 +291,106 @@ func TestUpdatePinnedBoardEmitsChannelChangedWithBoard(t *testing.T) {
 		t.Fatalf("ChannelChanged board = %v, want [%s]", board, msg)
 	}
 }
+
+// TestUpdatePinnedBoardMembershipRevokedMidFlightIsNotFound: a member removed
+// from the channel (membership revoked and committed) can no longer mutate the
+// board — the pin is refused with CodeNotFound. This pins the in-tx membership
+// gate the store now enforces under the FOR UPDATE lock (mirroring PostMessage):
+// the who-may-act decision is made inside the board txn against the committed
+// membership, so a just-removed member cannot slip a mutation through on a stale
+// edge snapshot (the closed TOCTOU). Reverting the store's in-tx
+// requireBoardMutator membership gate lets the pin succeed → this test fails.
+func TestUpdatePinnedBoardMembershipRevokedMidFlightIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	other := mustUser(t, st, "other")
+
+	ch, err := st.CreateChannel(ctx, owner.ID, store.NewChannel{
+		Name: "room", Kind: store.ChannelKindChannel,
+		MemberAccountIDs: []store.AccountID{other.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	msg := pinnableMessage(t, st, ch.ID, owner.ID, "target")
+
+	// `other` is a member first — a pin would succeed. Now revoke and commit.
+	if _, _, err := st.UpdateChannelMembers(ctx, owner.ID, ch.ID, []store.MemberUpdate{
+		{AccountID: other.ID, Remove: true},
+	}); err != nil {
+		t.Fatalf("UpdateChannelMembers(remove other): %v", err)
+	}
+
+	// The removed member's pin is refused with the same NotFound a non-member
+	// gets — the in-tx membership gate, not a stale edge snapshot, decides.
+	_, err = svc.UpdatePinnedBoard(WithActor(ctx, other.ID), connect.NewRequest(pinReq(string(ch.ID), msg, "")))
+	connectCodeIs(t, err, connect.CodeNotFound, "pin by a member whose membership was revoked")
+}
+
+// TestUpdatePinnedBoardOwnerOnlyNonOwnerInTxIsNotFound: on an OWNER_ONLY channel
+// a non-owner member's pin is refused with CodeNotFound by the store's in-tx
+// post_policy gate (read under the FOR UPDATE lock, mirroring PostMessage), the
+// in-tx analogue of the edge-authz OWNER_ONLY test. Reverting the store's in-tx
+// post_policy check lets the non-owner pin succeed → this test fails.
+func TestUpdatePinnedBoardOwnerOnlyNonOwnerInTxIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	other := mustUser(t, st, "other")
+
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+		MemberAccountIds: []string{string(other.ID)},
+	}))
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chID := created.Msg.GetChannel().GetId()
+	msg := pinnableMessage(t, st, store.ChannelID(chID), owner.ID, "target")
+
+	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
+		ChannelId:      chID,
+		PostPolicy:     compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
+		OwnerAccountId: string(owner.ID),
+	})); err != nil {
+		t.Fatalf("SetChannelPolicy: %v", err)
+	}
+
+	// The non-owner member is refused by the in-tx post_policy gate.
+	_, err = svc.UpdatePinnedBoard(WithActor(ctx, other.ID), connect.NewRequest(pinReq(chID, msg, "")))
+	connectCodeIs(t, err, connect.CodeNotFound, "non-owner pin on OWNER_ONLY channel (in-tx gate)")
+}
+
+// TestUpdatePinnedBoardNonOwnerMemberOnOpenSucceeds: on an OPEN channel any
+// member — not only the owner — may mutate the board. A second member `other`
+// pins a message and the returned board contains the pin. This pins the OPEN
+// half of the store's in-tx gate (member, not owner-only): a regression that
+// narrowed board authz to owner-only on OPEN would fail here (every other
+// success test pins as the owner, so none would catch that narrowing).
+func TestUpdatePinnedBoardNonOwnerMemberOnOpenSucceeds(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	other := mustUser(t, st, "other")
+
+	ch, err := st.CreateChannel(ctx, owner.ID, store.NewChannel{
+		Name: "room", Kind: store.ChannelKindChannel,
+		MemberAccountIDs: []store.AccountID{other.ID},
+	})
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	msg := pinnableMessage(t, st, ch.ID, owner.ID, "target")
+
+	// `other` is a plain member of an OPEN channel (default policy): the pin
+	// succeeds and the returned board carries it.
+	resp, err := svc.UpdatePinnedBoard(WithActor(ctx, other.ID), connect.NewRequest(pinReq(string(ch.ID), msg, "")))
+	if err != nil {
+		t.Fatalf("non-owner member pin on OPEN channel: %v", err)
+	}
+	got := wireBoardIDs(resp.Msg.GetChannel().GetPinnedEntries())
+	if len(got) != 1 || got[0] != msg {
+		t.Fatalf("board = %v, want [%s] (non-owner member's pin present)", got, msg)
+	}
+}

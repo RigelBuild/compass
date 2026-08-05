@@ -312,7 +312,7 @@ func TestUnpinMessageRemoves(t *testing.T) {
 		t.Fatalf("PinMessage(m2): %v", err)
 	}
 
-	remaining, err := s.UnpinMessage(ctx, ch, m1)
+	remaining, err := s.UnpinMessage(ctx, ch, m1, owner.ID)
 	if err != nil {
 		t.Fatalf("UnpinMessage(m1): %v", err)
 	}
@@ -322,7 +322,7 @@ func TestUnpinMessageRemoves(t *testing.T) {
 	}
 
 	// Unpinning a message that is not pinned is a no-op: same board back.
-	afterNoop, err := s.UnpinMessage(ctx, ch, m1)
+	afterNoop, err := s.UnpinMessage(ctx, ch, m1, owner.ID)
 	if err != nil {
 		t.Fatalf("UnpinMessage(non-pinned): %v", err)
 	}

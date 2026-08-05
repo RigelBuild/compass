@@ -19,7 +19,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 
 	"connectrpc.com/connect"
 
@@ -521,27 +520,19 @@ func (c *Comms) GetRoster(
 // owner_account_id may mutate the board; on OPEN any member may. A non-owner on
 // an OWNER_ONLY channel is refused with the SAME CodeNotFound a non-member gets
 // — the no-oracle in-band rejection, consistent with PostMessage's OWNER_ONLY
-// enforcement (messages.go:79-82) so the policy leaks no existence signal. The
-// store's own board txn re-checks the channel row under FOR UPDATE, so this
-// edge authz races nothing it must serialize; it only decides who may attempt.
+// enforcement (store/messages.go:80-82) so the policy leaks no existence signal.
+// The authoritative who-may-act decision is made in the store's board txn, under
+// the channels-row FOR UPDATE lock (membership + post_policy, mirroring
+// PostMessage), so it is serialized against a concurrent membership/policy change
+// — no TOCTOU. The handler does not pre-check authz on a non-tx snapshot; it
+// relies on the store call returning ErrNotFound (mapped to CodeNotFound via
+// edgeError), which preserves the exact no-oracle client contract.
 func (c *Comms) UpdatePinnedBoard(
 	ctx context.Context,
 	req *connect.Request[compassv1.UpdatePinnedBoardRequest],
 ) (*connect.Response[compassv1.UpdatePinnedBoardResponse], error) {
 	actor := c.actorFromContext(ctx)
 	channelID := store.ChannelID(req.Msg.GetChannelId())
-
-	// D9 + policy authz at the edge. An unknown channel and a non-member both
-	// collapse to CodeNotFound (the not-found/forbidden merge), and on an
-	// OWNER_ONLY channel a non-owner member collapses to the same code — a board
-	// mutator who may not act is indistinguishable from a non-member.
-	ch, err := c.store.GetChannel(ctx, channelID)
-	if err != nil {
-		return nil, edgeError(err)
-	}
-	if !c.mayMutateBoard(ch, actor) {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("%w: channel %q", store.ErrNotFound, channelID))
-	}
 
 	entries, err := c.applyBoardOp(ctx, channelID, actor, req.Msg)
 	if err != nil {
@@ -550,7 +541,7 @@ func (c *Comms) UpdatePinnedBoard(
 
 	// Re-read the channel so ChannelChanged and the response carry the current
 	// member/policy projection alongside the updated board.
-	ch, err = c.store.GetChannel(ctx, channelID)
+	ch, err := c.store.GetChannel(ctx, channelID)
 	if err != nil {
 		return nil, edgeError(err)
 	}
@@ -565,19 +556,6 @@ func (c *Comms) UpdatePinnedBoard(
 		},
 	})
 	return connect.NewResponse(&compassv1.UpdatePinnedBoardResponse{Channel: wire}), nil
-}
-
-// mayMutateBoard reports whether actor may mutate ch's pinned board under the
-// channel's post policy: any member on OPEN, only the owner on OWNER_ONLY. A
-// non-member is never a mutator regardless of policy.
-func (c *Comms) mayMutateBoard(ch store.Channel, actor store.AccountID) bool {
-	if !slices.Contains(ch.MemberAccountIDs, actor) {
-		return false
-	}
-	if ch.Policy.PostPolicy == store.ChannelPostPolicyOwnerOnly {
-		return actor == ch.Policy.OwnerAccountID
-	}
-	return true
 }
 
 // applyBoardOp maps the request's op oneof to its store call: a plain pin
@@ -605,7 +583,7 @@ func (c *Comms) applyBoardOp(
 		}
 		return entries, nil
 	case *compassv1.UpdatePinnedBoardRequest_UnpinMessageId:
-		entries, err := c.store.UnpinMessage(ctx, channelID, store.MessageID(op.UnpinMessageId))
+		entries, err := c.store.UnpinMessage(ctx, channelID, store.MessageID(op.UnpinMessageId), actor)
 		if err != nil {
 			return nil, edgeError(err)
 		}
