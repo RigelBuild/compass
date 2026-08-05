@@ -63,18 +63,22 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CompassServiceDeleteAgentConfigProcedure:
 		return adminOnly{}, true
 
-	// The connect-time probe, the two event streams, and the value-free config
-	// info view: open to any authenticated account. SubscribeAgentSession carries
-	// its own per-account authorization in the handler (session-ownership →
-	// home-channel membership), like the other open streams, so the network-door
-	// gate must let its intended non-admin channel members through to that check.
-	// GetAgentConfigInfo returns names only, never content (record §525-526), so
-	// it is open like the other read surfaces. WhoAmI is authenticatedOpen because
-	// it reflects the caller's OWN identity (identity reflection; native-client
-	// non-admin accounts must reach it), resolved server-side from the credential.
+	// The connect-time probe, the two event streams, the board catch-up read, and
+	// the value-free config info view: open to any authenticated account.
+	// SubscribeAgentSession carries its own per-account authorization in the
+	// handler (session-ownership → home-channel membership), like the other open
+	// streams, so the network-door gate must let its intended non-admin channel
+	// members through to that check. GetAgentConfigInfo returns names only, never
+	// content (record §525-526), so it is open like the other read surfaces.
+	// WhoAmI is authenticatedOpen because it reflects the caller's OWN identity
+	// (identity reflection; native-client non-admin accounts must reach it),
+	// resolved server-side from the credential. ListBoardIssues is the durable
+	// board re-snapshot read — the same access class as the SubscribeEvents tail
+	// it pairs with: the whole board is repo-scoped, with no per-account filter.
 	case compassv1connect.CompassServiceGetServerInfoProcedure,
 		compassv1connect.CompassServiceWhoAmIProcedure,
 		compassv1connect.CompassServiceSubscribeEventsProcedure,
+		compassv1connect.CompassServiceListBoardIssuesProcedure,
 		compassv1connect.CompassServiceSubscribeAgentSessionProcedure,
 		compassv1connect.CompassServiceGetAgentConfigInfoProcedure:
 		return authenticatedOpen{}, true

@@ -32,6 +32,19 @@ service CompassService {
   // from the server to the UI.
   rpc SubscribeEvents(SubscribeEventsRequest) returns (stream SubscribeEventsResponse);
 
+  // The durable board catch-up read: at `since_seq = 0` a UI re-snapshots the
+  // whole board (every issue in all lifecycle states) from the projection store,
+  // then unions the result with the SubscribeEvents live tail (deduping by issue
+  // `id`) to reach a gap-free view — the read counterpart to the
+  // snapshot-as-events connect burst on the stream. v1 board is unversioned, so
+  // the union + id-dedup is what closes the gap, not a sequence bound; the
+  // `snapshot_seq` marker is carried as 0 and reserved (see
+  // SubscribeEventsResponse.snapshot_seq). authenticatedOpen: any authenticated
+  // account may read the board, the same access class as the SubscribeEvents
+  // tail it re-snapshots — the whole board is repo-scoped, with no per-account
+  // filter, exactly like that tail.
+  rpc ListBoardIssues(ListBoardIssuesRequest) returns (ListBoardIssuesResponse);
+
   // Provision a per-agent container for a workstream: build the image, create
   // and start the isolated container, arm egress, and clone the repo — the
   // built lifecycle façade (internal/runtime/agent.go). Returns the stable
@@ -227,6 +240,23 @@ message SubscribeEventsResponse {
   // so the server can tell a live cursor from a prior-instance one. Distinct
   // across restarts; never 0.
   uint64 instance_epoch = 3;
+  // The snapshot boundary for a `since_seq = 0` re-snapshot: the point-in-time
+  // marker the client passes to `ListBoardIssues` so the durable catch-up read
+  // and the live tail compose into one gap-free board view.
+  //
+  // v1 board is unversioned: issues are id-keyed (a `newID()` surrogate, no
+  // store sequence) and the board is read whole in one shot, so this carries 0
+  // and the field is reserved for a future paginated/unbounded board that would
+  // need a real store-space cursor (as comms' message history does). What makes
+  // the re-snapshot gap-free in v1 is NOT a sequence bound but the union
+  // contract: a client MUST union the `ListBoardIssues` read with the *full*
+  // live tail and dedup by issue `id`, and it MUST NOT seq-filter or drop tail
+  // events by `snapshot_seq`. Issue upserts are idempotent and id-keyed, so an
+  // issue that lands in both the read and the tail dedups to one; there is no
+  // cross-page window to miss. Set to 0 on the leading frame of a
+  // `since_seq = 0` subscription; also 0 on a live-tail-only (`since_seq > 0`)
+  // resubscribe, which needs no re-snapshot.
+  uint64 snapshot_seq = 4;
   // Later milestones add board/agent/audit payloads here; new variants are
   // backward-compatible additions behind the buf breaking gate.
   oneof payload {
@@ -247,6 +277,31 @@ message SubscribeEventsResponse {
     // backward-compatible additive when a later milestone needs it.
     Issue issue = 16;
   }
+}
+
+// The durable board re-snapshot read request. Single-shot by design: the read
+// returns every issue for the repo in all lifecycle states — including
+// `ISSUE_STATE_ARCHIVED`, which the active board hides but the Done view's
+// Archived section needs (compass.proto IssueState:670-671) — so the set is
+// bounded by total-issues-ever, not the active count. That is comfortably
+// bounded for the single-Runner/one-repo MVP horizon (low thousands, well under
+// the message-size ceiling), so v1 reads it whole in one call, no page cursor.
+// limit + a page cursor is a backward-compatible additive if a repo's lifetime
+// issue count ever approaches the ceiling.
+message ListBoardIssuesRequest {
+  // Reserved: v1 board is unversioned (see SubscribeEventsResponse.snapshot_seq),
+  // so this carries the boundary frame's 0 and the handler returns the current
+  // whole board regardless. Present so a future paginated/unbounded board can
+  // pin a read to a store-space cursor without a wire-breaking change.
+  uint64 snapshot_seq = 1;
+}
+
+// The board as of the requested snapshot: every Compass Issue for the repo in
+// all lifecycle states (the active set plus the ARCHIVED issues the Done view
+// needs), each the same canonical unit SubscribeEvents fans as `issue = 16`.
+// The client unions these with the live tail and dedups by `id`.
+message ListBoardIssuesResponse {
+  repeated Issue issues = 1;
 }
 
 // The server's liveness state, pushed on connect and whenever it changes.
