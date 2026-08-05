@@ -18,7 +18,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/compass.proto.
  */
 export const file_compass_v1_compass: GenFile = /*@__PURE__*/
-  fileDesc("Chhjb21wYXNzL3YxL2NvbXBhc3MucHJvdG8SCmNvbXBhc3MudjEiqAEKEFNldFNlY3JldFJlcXVlc3QSDAoEbmFtZRgBIAEoCRISCgV2YWx1ZRgCIAEoCUIDgAEBEiwKCGRlbGl2ZXJ5GAMgASgOMhouY29tcGFzcy52MS5TZWNyZXREZWxpdmVyeRIkCgRraW5kGAQgASgOMhYuY29tcGFzcy52MS5TZWNyZXRLaW5kEhAKCHByb3ZpZGVyGAUgASgJEgwKBGhvc3QYBiABKAkiEwoRU2V0U2VjcmV0UmVzcG9uc2UiFAoSTGlzdFNlY3JldHNSZXF1ZXN0IkAKE0xpc3RTZWNyZXRzUmVzcG9uc2USKQoHc2VjcmV0cxgBIAMoCzIYLmNvbXBhc3MudjEuU2VjcmV0U3RhdHVzIqABCgxTZWNyZXRTdGF0dXMSDAoEbmFtZRgBIAEoCRIOCgZpc19zZXQYAiABKAgSLAoIZGVsaXZlcnkYAyABKA4yGi5jb21wYXNzLnYxLlNlY3JldERlbGl2ZXJ5EiQKBGtpbmQYBCABKA4yFi5jb21wYXNzLnYxLlNlY3JldEtpbmQSEAoIcHJvdmlkZXIYBSABKAkSDAoEaG9zdBgGIAEoCSIjChNEZWxldGVTZWNyZXRSZXF1ZXN0EgwKBG5hbWUYASABKAkiFgoURGVsZXRlU2VjcmV0UmVzcG9uc2UiFgoUR2V0U2VydmVySW5mb1JlcXVlc3QiPQoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSEwoLYXBpX3ZlcnNpb24YAiABKAkiQwoWU3Vic2NyaWJlRXZlbnRzUmVxdWVzdBIRCglzaW5jZV9zZXEYASABKAQSFgoOaW5zdGFuY2VfZXBvY2gYAiABKAQiqAMKF1N1YnNjcmliZUV2ZW50c1Jlc3BvbnNlEgsKA3NlcRgBIAEoBBISCgphdF91bml4X21zGAIgASgDEhYKDmluc3RhbmNlX2Vwb2NoGAMgASgEEjEKDXNlcnZlcl9zdGF0dXMYCiABKAsyGC5jb21wYXNzLnYxLlNlcnZlclN0YXR1c0gAEjUKD3Jlc3luY19yZXF1aXJlZBgLIAEoCzIaLmNvbXBhc3MudjEuUmVzeW5jUmVxdWlyZWRIABI+ChRhZ2VudF9zZXNzaW9uX3N0YXR1cxgMIAEoCzIeLmNvbXBhc3MudjEuQWdlbnRTZXNzaW9uU3RhdHVzSAASPAoTYWdlbnRfbWVzc2FnZV9jaHVuaxgNIAEoCzIdLmNvbXBhc3MudjEuQWdlbnRNZXNzYWdlQ2h1bmtIABI0Cg9hZ2VudF90b29sX2NhbGwYDiABKAsyGS5jb21wYXNzLnYxLkFnZW50VG9vbENhbGxIABIrCgphZ2VudF9wbGFuGA8gASgLMhUuY29tcGFzcy52MS5BZ2VudFBsYW5IAEIJCgdwYXlsb2FkIjYKDFNlcnZlclN0YXR1cxImCgVzdGF0ZRgBIAEoDjIXLmNvbXBhc3MudjEuU2VydmVyU3RhdGUiEAoOUmVzeW5jUmVxdWlyZWQiVgoSQWdlbnRTZXNzaW9uU3RhdHVzEhIKCnNlc3Npb25faWQYASABKAkSLAoFc3RhdGUYAiABKA4yHS5jb21wYXNzLnYxLkFnZW50U2Vzc2lvblN0YXRlIkkKEUFnZW50TWVzc2FnZUNodW5rEhIKCnNlc3Npb25faWQYASABKAkSDAoEdGV4dBgCIAEoCRISCgppc190aG91Z2h0GAMgASgIInkKDUFnZW50VG9vbENhbGwSEgoKc2Vzc2lvbl9pZBgBIAEoCRIUCgx0b29sX2NhbGxfaWQYAiABKAkSDQoFdGl0bGUYAyABKAkSLwoGc3RhdHVzGAQgASgOMh8uY29tcGFzcy52MS5BZ2VudFRvb2xDYWxsU3RhdHVzIkwKCUFnZW50UGxhbhISCgpzZXNzaW9uX2lkGAEgASgJEisKB2VudHJpZXMYAiADKAsyGi5jb21wYXNzLnYxLkFnZW50UGxhbkVudHJ5IlMKDkFnZW50UGxhbkVudHJ5Eg8KB2NvbnRlbnQYASABKAkSMAoGc3RhdHVzGAIgASgOMiAuY29tcGFzcy52MS5BZ2VudFBsYW5FbnRyeVN0YXR1cyLxAgoMU2Vzc2lvbkV2ZW50EhAKCGV2ZW50X2lkGAEgASgJEhIKCmF0X3VuaXhfbXMYAiABKAMSOgoOYXNzaXN0YW50X3RleHQYAyABKAsyIC5jb21wYXNzLnYxLlNlc3Npb25Bc3Npc3RhbnRUZXh0SAASLwoIdGhpbmtpbmcYBCABKAsyGy5jb21wYXNzLnYxLlNlc3Npb25UaGlua2luZ0gAEjAKCXRvb2xfY2FsbBgFIAEoCzIbLmNvbXBhc3MudjEuU2Vzc2lvblRvb2xDYWxsSAASPQoQdG9vbF9jYWxsX3VwZGF0ZRgGIAEoCzIhLmNvbXBhc3MudjEuU2Vzc2lvblRvb2xDYWxsVXBkYXRlSAASJwoEcGxhbhgHIAEoCzIXLmNvbXBhc3MudjEuU2Vzc2lvblBsYW5IABIrCgZub3RpY2UYCCABKAsyGS5jb21wYXNzLnYxLlNlc3Npb25Ob3RpY2VIAEIHCgVldmVudCI4ChRTZXNzaW9uQXNzaXN0YW50VGV4dBIMCgR0ZXh0GAEgASgJEhIKCm1lc3NhZ2VfaWQYAiABKAkiMwoPU2Vzc2lvblRoaW5raW5nEgwKBHRleHQYASABKAkSEgoKbWVzc2FnZV9pZBgCIAEoCSJnCg9TZXNzaW9uVG9vbENhbGwSFAoMdG9vbF9jYWxsX2lkGAEgASgJEg0KBXRpdGxlGAIgASgJEi8KBnN0YXR1cxgDIAEoDjIfLmNvbXBhc3MudjEuQWdlbnRUb29sQ2FsbFN0YXR1cyKaAQoVU2Vzc2lvblRvb2xDYWxsVXBkYXRlEhQKDHRvb2xfY2FsbF9pZBgBIAEoCRIvCgZzdGF0dXMYAiABKA4yHy5jb21wYXNzLnYxLkFnZW50VG9vbENhbGxTdGF0dXMSDgoGb3V0cHV0GAMgASgJEioKBWRpZmZzGAQgAygLMhsuY29tcGFzcy52MS5TZXNzaW9uRmlsZURpZmYiVQoPU2Vzc2lvbkZpbGVEaWZmEgwKBHBhdGgYASABKAkSFQoIb2xkX3RleHQYAiABKAlIAIgBARIQCghuZXdfdGV4dBgDIAEoCUILCglfb2xkX3RleHQiOgoLU2Vzc2lvblBsYW4SKwoHZW50cmllcxgBIAMoCzIaLmNvbXBhc3MudjEuQWdlbnRQbGFuRW50cnkiOQoNU2Vzc2lvbk5vdGljZRIMCgR0ZXh0GAEgASgJEhEKBGxpbmsYAiABKAlIAIgBAUIHCgVfbGluayIyChxTdWJzY3JpYmVBZ2VudFNlc3Npb25SZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkifgoRQWdlbnRTZXNzaW9uRnJhbWUSEgoKc2Vzc2lvbl9pZBgBIAEoCRInCgVldmVudBgCIAEoCzIYLmNvbXBhc3MudjEuU2Vzc2lvbkV2ZW50EiwKBXN0YXRlGAMgASgOMh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25TdGF0ZSKVAQoeUHJvdmlzaW9uQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0EhgKEGFnZW50X2FjY291bnRfaWQYASABKAkSGQoRY2xpZW50X3JlcXVlc3RfaWQYBSABKAkSDwoHcGVyc29uYRgGIAEoCUoECAIQA0oECAMQBEoECAQQBVIKcmVtb3RlX3VybFIKbG9jYWxfcGF0aFIDcmVmIjkKH1Byb3Zpc2lvbkFnZW50V29ya3NwYWNlUmVzcG9uc2USFgoOY29udGFpbmVyX25hbWUYASABKAkiUAobUmVtb3ZlQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0EhYKDmNvbnRhaW5lcl9uYW1lGAEgASgJEhkKEWNsaWVudF9yZXF1ZXN0X2lkGAIgASgJIh4KHFJlbW92ZUFnZW50V29ya3NwYWNlUmVzcG9uc2UiZQoYU3RhcnRBZ2VudFNlc3Npb25SZXF1ZXN0EhYKDmNvbnRhaW5lcl9uYW1lGAEgASgJEhYKDmluaXRpYWxfcHJvbXB0GAIgASgJEhkKEXJlc3VtZV9zZXNzaW9uX2lkGAMgASgJIi8KGVN0YXJ0QWdlbnRTZXNzaW9uUmVzcG9uc2USEgoKc2Vzc2lvbl9pZBgBIAEoCSItChdTdG9wQWdlbnRTZXNzaW9uUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJIhoKGFN0b3BBZ2VudFNlc3Npb25SZXNwb25zZSIvChlSZWxvYWRBZ2VudFNlc3Npb25SZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiMAoaUmVsb2FkQWdlbnRTZXNzaW9uUmVzcG9uc2USEgoKc2Vzc2lvbl9pZBgBIAEoCSIrChVHZXRBZ2VudFN0YXR1c1JlcXVlc3QSEgoKc2Vzc2lvbl9pZBgBIAEoCSJKChZHZXRBZ2VudFN0YXR1c1Jlc3BvbnNlEjAKCHN0YXR1c2VzGAEgAygLMh4uY29tcGFzcy52MS5BZ2VudFNlc3Npb25TdGF0dXMiJwoRSXNzdWVUb2tlblJlcXVlc3QSEgoKYWNjb3VudF9pZBgBIAEoCSIjChJJc3N1ZVRva2VuUmVzcG9uc2USDQoFdG9rZW4YASABKAkiJwoVUHV0QWdlbnRDb25maWdSZXF1ZXN0Eg4KBmJ1bmRsZRgBIAEoDCIpChZQdXRBZ2VudENvbmZpZ1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkiGwoZR2V0QWdlbnRDb25maWdJbmZvUmVxdWVzdCLJAQoaR2V0QWdlbnRDb25maWdJbmZvUmVzcG9uc2USDwoHdmVyc2lvbhgBIAEoCRIOCgZza2lsbHMYAiADKAkSEgoKZXh0ZW5zaW9ucxgDIAMoCRITCgttY3Bfc2VydmVycxgEIAMoCRIUCgxoYXNfc2V0dGluZ3MYBSABKAgSFQoNaGFzX2FnZW50c19tZBgGIAEoCBINCgVydWxlcxgHIAMoCRIRCglzdWJhZ2VudHMYCCADKAkSEgoKaGFzX21vZGVscxgJIAEoCCIaChhEZWxldGVBZ2VudENvbmZpZ1JlcXVlc3QiGwoZRGVsZXRlQWdlbnRDb25maWdSZXNwb25zZSpkCg5TZWNyZXREZWxpdmVyeRIfChtTRUNSRVRfREVMSVZFUllfVU5TUEVDSUZJRUQQABIYChRTRUNSRVRfREVMSVZFUllfRklMRRABEhcKE1NFQ1JFVF9ERUxJVkVSWV9FTlYQAipwCgpTZWNyZXRLaW5kEhsKF1NFQ1JFVF9LSU5EX1VOU1BFQ0lGSUVEEAASFwoTU0VDUkVUX0tJTkRfR0VORVJJQxABEhgKFFNFQ1JFVF9LSU5EX1BST1ZJREVSEAISEgoOU0VDUkVUX0tJTkRfR0gQAypDCgtTZXJ2ZXJTdGF0ZRIcChhTRVJWRVJfU1RBVEVfVU5TUEVDSUZJRUQQABIWChJTRVJWRVJfU1RBVEVfUkVBRFkQASqCAgoRQWdlbnRTZXNzaW9uU3RhdGUSIwofQUdFTlRfU0VTU0lPTl9TVEFURV9VTlNQRUNJRklFRBAAEiAKHEFHRU5UX1NFU1NJT05fU1RBVEVfU1RBUlRJTkcQARIdChlBR0VOVF9TRVNTSU9OX1NUQVRFX1JFQURZEAISHwobQUdFTlRfU0VTU0lPTl9TVEFURV9XT1JLSU5HEAMSHwobQUdFTlRfU0VTU0lPTl9TVEFURV9TVE9QUEVEEAQSHwobQUdFTlRfU0VTU0lPTl9TVEFURV9FUlJPUkVEEAUSJAogQUdFTlRfU0VTU0lPTl9TVEFURV9ESVNDT05ORUNURUQQBirSAQoTQWdlbnRUb29sQ2FsbFN0YXR1cxImCiJBR0VOVF9UT09MX0NBTExfU1RBVFVTX1VOU1BFQ0lGSUVEEAASIgoeQUdFTlRfVE9PTF9DQUxMX1NUQVRVU19QRU5ESU5HEAESJgoiQUdFTlRfVE9PTF9DQUxMX1NUQVRVU19JTl9QUk9HUkVTUxACEiQKIEFHRU5UX1RPT0xfQ0FMTF9TVEFUVVNfQ09NUExFVEVEEAMSIQodQUdFTlRfVE9PTF9DQUxMX1NUQVRVU19GQUlMRUQQBCq0AQoUQWdlbnRQbGFuRW50cnlTdGF0dXMSJwojQUdFTlRfUExBTl9FTlRSWV9TVEFUVVNfVU5TUEVDSUZJRUQQABIjCh9BR0VOVF9QTEFOX0VOVFJZX1NUQVRVU19QRU5ESU5HEAESJwojQUdFTlRfUExBTl9FTlRSWV9TVEFUVVNfSU5fUFJPR1JFU1MQAhIlCiFBR0VOVF9QTEFOX0VOVFJZX1NUQVRVU19DT01QTEVURUQQAzLzCQoOQ29tcGFzc1NlcnZpY2USVAoNR2V0U2VydmVySW5mbxIgLmNvbXBhc3MudjEuR2V0U2VydmVySW5mb1JlcXVlc3QaIS5jb21wYXNzLnYxLkdldFNlcnZlckluZm9SZXNwb25zZRJcCg9TdWJzY3JpYmVFdmVudHMSIi5jb21wYXNzLnYxLlN1YnNjcmliZUV2ZW50c1JlcXVlc3QaIy5jb21wYXNzLnYxLlN1YnNjcmliZUV2ZW50c1Jlc3BvbnNlMAEScgoXUHJvdmlzaW9uQWdlbnRXb3Jrc3BhY2USKi5jb21wYXNzLnYxLlByb3Zpc2lvbkFnZW50V29ya3NwYWNlUmVxdWVzdBorLmNvbXBhc3MudjEuUHJvdmlzaW9uQWdlbnRXb3Jrc3BhY2VSZXNwb25zZRJgChFTdGFydEFnZW50U2Vzc2lvbhIkLmNvbXBhc3MudjEuU3RhcnRBZ2VudFNlc3Npb25SZXF1ZXN0GiUuY29tcGFzcy52MS5TdGFydEFnZW50U2Vzc2lvblJlc3BvbnNlEl0KEFN0b3BBZ2VudFNlc3Npb24SIy5jb21wYXNzLnYxLlN0b3BBZ2VudFNlc3Npb25SZXF1ZXN0GiQuY29tcGFzcy52MS5TdG9wQWdlbnRTZXNzaW9uUmVzcG9uc2USaQoUUmVtb3ZlQWdlbnRXb3Jrc3BhY2USJy5jb21wYXNzLnYxLlJlbW92ZUFnZW50V29ya3NwYWNlUmVxdWVzdBooLmNvbXBhc3MudjEuUmVtb3ZlQWdlbnRXb3Jrc3BhY2VSZXNwb25zZRJjChJSZWxvYWRBZ2VudFNlc3Npb24SJS5jb21wYXNzLnYxLlJlbG9hZEFnZW50U2Vzc2lvblJlcXVlc3QaJi5jb21wYXNzLnYxLlJlbG9hZEFnZW50U2Vzc2lvblJlc3BvbnNlElcKDkdldEFnZW50U3RhdHVzEiEuY29tcGFzcy52MS5HZXRBZ2VudFN0YXR1c1JlcXVlc3QaIi5jb21wYXNzLnYxLkdldEFnZW50U3RhdHVzUmVzcG9uc2USYgoVU3Vic2NyaWJlQWdlbnRTZXNzaW9uEiguY29tcGFzcy52MS5TdWJzY3JpYmVBZ2VudFNlc3Npb25SZXF1ZXN0Gh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25GcmFtZTABEksKCklzc3VlVG9rZW4SHS5jb21wYXNzLnYxLklzc3VlVG9rZW5SZXF1ZXN0Gh4uY29tcGFzcy52MS5Jc3N1ZVRva2VuUmVzcG9uc2USVwoOUHV0QWdlbnRDb25maWcSIS5jb21wYXNzLnYxLlB1dEFnZW50Q29uZmlnUmVxdWVzdBoiLmNvbXBhc3MudjEuUHV0QWdlbnRDb25maWdSZXNwb25zZRJjChJHZXRBZ2VudENvbmZpZ0luZm8SJS5jb21wYXNzLnYxLkdldEFnZW50Q29uZmlnSW5mb1JlcXVlc3QaJi5jb21wYXNzLnYxLkdldEFnZW50Q29uZmlnSW5mb1Jlc3BvbnNlEmAKEURlbGV0ZUFnZW50Q29uZmlnEiQuY29tcGFzcy52MS5EZWxldGVBZ2VudENvbmZpZ1JlcXVlc3QaJS5jb21wYXNzLnYxLkRlbGV0ZUFnZW50Q29uZmlnUmVzcG9uc2Uy/QEKDlNlY3JldHNTZXJ2aWNlEkgKCVNldFNlY3JldBIcLmNvbXBhc3MudjEuU2V0U2VjcmV0UmVxdWVzdBodLmNvbXBhc3MudjEuU2V0U2VjcmV0UmVzcG9uc2USTgoLTGlzdFNlY3JldHMSHi5jb21wYXNzLnYxLkxpc3RTZWNyZXRzUmVxdWVzdBofLmNvbXBhc3MudjEuTGlzdFNlY3JldHNSZXNwb25zZRJRCgxEZWxldGVTZWNyZXQSHy5jb21wYXNzLnYxLkRlbGV0ZVNlY3JldFJlcXVlc3QaIC5jb21wYXNzLnYxLkRlbGV0ZVNlY3JldFJlc3BvbnNlYgZwcm90bzM");
+  fileDesc("Chhjb21wYXNzL3YxL2NvbXBhc3MucHJvdG8SCmNvbXBhc3MudjEiqAEKEFNldFNlY3JldFJlcXVlc3QSDAoEbmFtZRgBIAEoCRISCgV2YWx1ZRgCIAEoCUIDgAEBEiwKCGRlbGl2ZXJ5GAMgASgOMhouY29tcGFzcy52MS5TZWNyZXREZWxpdmVyeRIkCgRraW5kGAQgASgOMhYuY29tcGFzcy52MS5TZWNyZXRLaW5kEhAKCHByb3ZpZGVyGAUgASgJEgwKBGhvc3QYBiABKAkiEwoRU2V0U2VjcmV0UmVzcG9uc2UiFAoSTGlzdFNlY3JldHNSZXF1ZXN0IkAKE0xpc3RTZWNyZXRzUmVzcG9uc2USKQoHc2VjcmV0cxgBIAMoCzIYLmNvbXBhc3MudjEuU2VjcmV0U3RhdHVzIqABCgxTZWNyZXRTdGF0dXMSDAoEbmFtZRgBIAEoCRIOCgZpc19zZXQYAiABKAgSLAoIZGVsaXZlcnkYAyABKA4yGi5jb21wYXNzLnYxLlNlY3JldERlbGl2ZXJ5EiQKBGtpbmQYBCABKA4yFi5jb21wYXNzLnYxLlNlY3JldEtpbmQSEAoIcHJvdmlkZXIYBSABKAkSDAoEaG9zdBgGIAEoCSIjChNEZWxldGVTZWNyZXRSZXF1ZXN0EgwKBG5hbWUYASABKAkiFgoURGVsZXRlU2VjcmV0UmVzcG9uc2UiFgoUR2V0U2VydmVySW5mb1JlcXVlc3QiPQoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSEwoLYXBpX3ZlcnNpb24YAiABKAkiQwoWU3Vic2NyaWJlRXZlbnRzUmVxdWVzdBIRCglzaW5jZV9zZXEYASABKAQSFgoOaW5zdGFuY2VfZXBvY2gYAiABKAQizAMKF1N1YnNjcmliZUV2ZW50c1Jlc3BvbnNlEgsKA3NlcRgBIAEoBBISCgphdF91bml4X21zGAIgASgDEhYKDmluc3RhbmNlX2Vwb2NoGAMgASgEEjEKDXNlcnZlcl9zdGF0dXMYCiABKAsyGC5jb21wYXNzLnYxLlNlcnZlclN0YXR1c0gAEjUKD3Jlc3luY19yZXF1aXJlZBgLIAEoCzIaLmNvbXBhc3MudjEuUmVzeW5jUmVxdWlyZWRIABI+ChRhZ2VudF9zZXNzaW9uX3N0YXR1cxgMIAEoCzIeLmNvbXBhc3MudjEuQWdlbnRTZXNzaW9uU3RhdHVzSAASPAoTYWdlbnRfbWVzc2FnZV9jaHVuaxgNIAEoCzIdLmNvbXBhc3MudjEuQWdlbnRNZXNzYWdlQ2h1bmtIABI0Cg9hZ2VudF90b29sX2NhbGwYDiABKAsyGS5jb21wYXNzLnYxLkFnZW50VG9vbENhbGxIABIrCgphZ2VudF9wbGFuGA8gASgLMhUuY29tcGFzcy52MS5BZ2VudFBsYW5IABIiCgVpc3N1ZRgQIAEoCzIRLmNvbXBhc3MudjEuSXNzdWVIAEIJCgdwYXlsb2FkIjYKDFNlcnZlclN0YXR1cxImCgVzdGF0ZRgBIAEoDjIXLmNvbXBhc3MudjEuU2VydmVyU3RhdGUiEAoOUmVzeW5jUmVxdWlyZWQiVgoSQWdlbnRTZXNzaW9uU3RhdHVzEhIKCnNlc3Npb25faWQYASABKAkSLAoFc3RhdGUYAiABKA4yHS5jb21wYXNzLnYxLkFnZW50U2Vzc2lvblN0YXRlIkkKEUFnZW50TWVzc2FnZUNodW5rEhIKCnNlc3Npb25faWQYASABKAkSDAoEdGV4dBgCIAEoCRISCgppc190aG91Z2h0GAMgASgIInkKDUFnZW50VG9vbENhbGwSEgoKc2Vzc2lvbl9pZBgBIAEoCRIUCgx0b29sX2NhbGxfaWQYAiABKAkSDQoFdGl0bGUYAyABKAkSLwoGc3RhdHVzGAQgASgOMh8uY29tcGFzcy52MS5BZ2VudFRvb2xDYWxsU3RhdHVzIkwKCUFnZW50UGxhbhISCgpzZXNzaW9uX2lkGAEgASgJEisKB2VudHJpZXMYAiADKAsyGi5jb21wYXNzLnYxLkFnZW50UGxhbkVudHJ5IlMKDkFnZW50UGxhbkVudHJ5Eg8KB2NvbnRlbnQYASABKAkSMAoGc3RhdHVzGAIgASgOMiAuY29tcGFzcy52MS5BZ2VudFBsYW5FbnRyeVN0YXR1cyLxAgoMU2Vzc2lvbkV2ZW50EhAKCGV2ZW50X2lkGAEgASgJEhIKCmF0X3VuaXhfbXMYAiABKAMSOgoOYXNzaXN0YW50X3RleHQYAyABKAsyIC5jb21wYXNzLnYxLlNlc3Npb25Bc3Npc3RhbnRUZXh0SAASLwoIdGhpbmtpbmcYBCABKAsyGy5jb21wYXNzLnYxLlNlc3Npb25UaGlua2luZ0gAEjAKCXRvb2xfY2FsbBgFIAEoCzIbLmNvbXBhc3MudjEuU2Vzc2lvblRvb2xDYWxsSAASPQoQdG9vbF9jYWxsX3VwZGF0ZRgGIAEoCzIhLmNvbXBhc3MudjEuU2Vzc2lvblRvb2xDYWxsVXBkYXRlSAASJwoEcGxhbhgHIAEoCzIXLmNvbXBhc3MudjEuU2Vzc2lvblBsYW5IABIrCgZub3RpY2UYCCABKAsyGS5jb21wYXNzLnYxLlNlc3Npb25Ob3RpY2VIAEIHCgVldmVudCI4ChRTZXNzaW9uQXNzaXN0YW50VGV4dBIMCgR0ZXh0GAEgASgJEhIKCm1lc3NhZ2VfaWQYAiABKAkiMwoPU2Vzc2lvblRoaW5raW5nEgwKBHRleHQYASABKAkSEgoKbWVzc2FnZV9pZBgCIAEoCSJnCg9TZXNzaW9uVG9vbENhbGwSFAoMdG9vbF9jYWxsX2lkGAEgASgJEg0KBXRpdGxlGAIgASgJEi8KBnN0YXR1cxgDIAEoDjIfLmNvbXBhc3MudjEuQWdlbnRUb29sQ2FsbFN0YXR1cyKaAQoVU2Vzc2lvblRvb2xDYWxsVXBkYXRlEhQKDHRvb2xfY2FsbF9pZBgBIAEoCRIvCgZzdGF0dXMYAiABKA4yHy5jb21wYXNzLnYxLkFnZW50VG9vbENhbGxTdGF0dXMSDgoGb3V0cHV0GAMgASgJEioKBWRpZmZzGAQgAygLMhsuY29tcGFzcy52MS5TZXNzaW9uRmlsZURpZmYiVQoPU2Vzc2lvbkZpbGVEaWZmEgwKBHBhdGgYASABKAkSFQoIb2xkX3RleHQYAiABKAlIAIgBARIQCghuZXdfdGV4dBgDIAEoCUILCglfb2xkX3RleHQiOgoLU2Vzc2lvblBsYW4SKwoHZW50cmllcxgBIAMoCzIaLmNvbXBhc3MudjEuQWdlbnRQbGFuRW50cnkiOQoNU2Vzc2lvbk5vdGljZRIMCgR0ZXh0GAEgASgJEhEKBGxpbmsYAiABKAlIAIgBAUIHCgVfbGluayIyChxTdWJzY3JpYmVBZ2VudFNlc3Npb25SZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkifgoRQWdlbnRTZXNzaW9uRnJhbWUSEgoKc2Vzc2lvbl9pZBgBIAEoCRInCgVldmVudBgCIAEoCzIYLmNvbXBhc3MudjEuU2Vzc2lvbkV2ZW50EiwKBXN0YXRlGAMgASgOMh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25TdGF0ZSKVAQoeUHJvdmlzaW9uQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0EhgKEGFnZW50X2FjY291bnRfaWQYASABKAkSGQoRY2xpZW50X3JlcXVlc3RfaWQYBSABKAkSDwoHcGVyc29uYRgGIAEoCUoECAIQA0oECAMQBEoECAQQBVIKcmVtb3RlX3VybFIKbG9jYWxfcGF0aFIDcmVmIjkKH1Byb3Zpc2lvbkFnZW50V29ya3NwYWNlUmVzcG9uc2USFgoOY29udGFpbmVyX25hbWUYASABKAkiUAobUmVtb3ZlQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0EhYKDmNvbnRhaW5lcl9uYW1lGAEgASgJEhkKEWNsaWVudF9yZXF1ZXN0X2lkGAIgASgJIh4KHFJlbW92ZUFnZW50V29ya3NwYWNlUmVzcG9uc2UiZQoYU3RhcnRBZ2VudFNlc3Npb25SZXF1ZXN0EhYKDmNvbnRhaW5lcl9uYW1lGAEgASgJEhYKDmluaXRpYWxfcHJvbXB0GAIgASgJEhkKEXJlc3VtZV9zZXNzaW9uX2lkGAMgASgJIi8KGVN0YXJ0QWdlbnRTZXNzaW9uUmVzcG9uc2USEgoKc2Vzc2lvbl9pZBgBIAEoCSItChdTdG9wQWdlbnRTZXNzaW9uUmVxdWVzdBISCgpzZXNzaW9uX2lkGAEgASgJIhoKGFN0b3BBZ2VudFNlc3Npb25SZXNwb25zZSIvChlSZWxvYWRBZ2VudFNlc3Npb25SZXF1ZXN0EhIKCnNlc3Npb25faWQYASABKAkiMAoaUmVsb2FkQWdlbnRTZXNzaW9uUmVzcG9uc2USEgoKc2Vzc2lvbl9pZBgBIAEoCSIrChVHZXRBZ2VudFN0YXR1c1JlcXVlc3QSEgoKc2Vzc2lvbl9pZBgBIAEoCSJKChZHZXRBZ2VudFN0YXR1c1Jlc3BvbnNlEjAKCHN0YXR1c2VzGAEgAygLMh4uY29tcGFzcy52MS5BZ2VudFNlc3Npb25TdGF0dXMiJwoRSXNzdWVUb2tlblJlcXVlc3QSEgoKYWNjb3VudF9pZBgBIAEoCSIjChJJc3N1ZVRva2VuUmVzcG9uc2USDQoFdG9rZW4YASABKAkiJwoVUHV0QWdlbnRDb25maWdSZXF1ZXN0Eg4KBmJ1bmRsZRgBIAEoDCIpChZQdXRBZ2VudENvbmZpZ1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkiGwoZR2V0QWdlbnRDb25maWdJbmZvUmVxdWVzdCLJAQoaR2V0QWdlbnRDb25maWdJbmZvUmVzcG9uc2USDwoHdmVyc2lvbhgBIAEoCRIOCgZza2lsbHMYAiADKAkSEgoKZXh0ZW5zaW9ucxgDIAMoCRITCgttY3Bfc2VydmVycxgEIAMoCRIUCgxoYXNfc2V0dGluZ3MYBSABKAgSFQoNaGFzX2FnZW50c19tZBgGIAEoCBINCgVydWxlcxgHIAMoCRIRCglzdWJhZ2VudHMYCCADKAkSEgoKaGFzX21vZGVscxgJIAEoCCIaChhEZWxldGVBZ2VudENvbmZpZ1JlcXVlc3QiGwoZRGVsZXRlQWdlbnRDb25maWdSZXNwb25zZSJMChBBZ2VudEF0dHJpYnV0aW9uEhQKDGFnZW50X2hhbmRsZRgBIAEoCUoECAIQA0oECAMQBFIMb3duZXJfaGFuZGxlUgh2ZXJpZmllZCJFCghGb3JnZVJlZhIrCghwcm92aWRlchgBIAEoDjIZLmNvbXBhc3MudjEuRm9yZ2VQcm92aWRlchIMCgRob3N0GAIgASgJIqQDCgVJc3N1ZRIKCgJpZBgBIAEoCRIjCgVmb3JnZRgCIAEoCzIULmNvbXBhc3MudjEuRm9yZ2VSZWYSDAoEcmVwbxgDIAEoCRIOCgZudW1iZXIYBCABKA0SDQoFdGl0bGUYBSABKAkSDAoEYm9keRgGIAEoCRITCgtmb3JnZV9zdGF0ZRgHIAEoCRILCgN1cmwYCCABKAkSKwoFYWdlbnQYCSABKAsyHC5jb21wYXNzLnYxLkFnZW50QXR0cmlidXRpb24SFQoNZm9yZ2VfYWNjb3VudBgKIAEoCRIOCgZsYWJlbHMYCyADKAkSJQoFc3RhdGUYDCABKA4yFi5jb21wYXNzLnYxLklzc3VlU3RhdGUSEAoIcHJpb3JpdHkYDSABKAkSEAoIYXNzaWduZWUYDiABKAkSDwoHc3VtbWFyeRgPIAEoCRIOCgZicmFuY2gYECABKAkSJAoDcHJzGBEgAygLMhcuY29tcGFzcy52MS5QdWxsUmVxdWVzdBInCgd0cmFja2VyGBIgASgLMhYuY29tcGFzcy52MS5UcmFja2VyUmVmIp4DCgtQdWxsUmVxdWVzdBIjCgVmb3JnZRgBIAEoCzIULmNvbXBhc3MudjEuRm9yZ2VSZWYSDAoEcmVwbxgCIAEoCRIOCgZudW1iZXIYAyABKA0SDQoFdGl0bGUYBCABKAkSEwoLZm9yZ2Vfc3RhdGUYBSABKAkSCwoDdXJsGAYgASgJEhAKCGhlYWRfcmVmGAcgASgJEhAKCGJhc2VfcmVmGAggASgJEisKBWFnZW50GAkgASgLMhwuY29tcGFzcy52MS5BZ2VudEF0dHJpYnV0aW9uEhUKDWZvcmdlX2FjY291bnQYCiABKAkSDQoFZHJhZnQYCyABKAgSKQoHY2hhbmdlZBgMIAEoCzIYLmNvbXBhc3MudjEuQ2hhbmdlZFN0YXRzEikKBmNoZWNrcxgNIAEoCzIZLmNvbXBhc3MudjEuQ2hlY2tzU3VtbWFyeRIjCgdyZXZpZXdzGA4gAygLMhIuY29tcGFzcy52MS5SZXZpZXcSKQoHdGhyZWFkcxgPIAMoCzIYLmNvbXBhc3MudjEuUmV2aWV3VGhyZWFkIlMKDUNoZWNrc1N1bW1hcnkSEAoIaGVhZF9zaGEYASABKAkSDQoFc3RhdGUYAiABKAkSIQoGY2hlY2tzGAMgAygLMhEuY29tcGFzcy52MS5DaGVjayJDCgVDaGVjaxIMCgRuYW1lGAEgASgJEg0KBXN0YXRlGAIgASgJEgsKA3VybBgDIAEoCRIQCghyZXF1aXJlZBgEIAEoCCJDCgxDaGFuZ2VkU3RhdHMSDQoFZmlsZXMYASABKA0SEQoJYWRkaXRpb25zGAIgASgNEhEKCWRlbGV0aW9ucxgDIAEoDSJDCgpUcmFja2VyUmVmEgwKBGtpbmQYASABKAkSCgoCaWQYAiABKAkSDgoGc3RhdHVzGAMgASgJEgsKA3VybBgEIAEoCSJHCgZSZXZpZXcSDgoGYXV0aG9yGAEgASgJEg4KBmlzX2JvdBgCIAEoCBIPCgd2ZXJkaWN0GAMgASgJEgwKBGJvZHkYBCABKAkiVQoMUmV2aWV3VGhyZWFkEgwKBHBhdGgYASABKAkSEAoIcmVzb2x2ZWQYAiABKAgSJQoIY29tbWVudHMYAyADKAsyEy5jb21wYXNzLnYxLkNvbW1lbnQiNwoHQ29tbWVudBIOCgZhdXRob3IYASABKAkSDgoGaXNfYm90GAIgASgIEgwKBGJvZHkYAyABKAkqZAoOU2VjcmV0RGVsaXZlcnkSHwobU0VDUkVUX0RFTElWRVJZX1VOU1BFQ0lGSUVEEAASGAoUU0VDUkVUX0RFTElWRVJZX0ZJTEUQARIXChNTRUNSRVRfREVMSVZFUllfRU5WEAIqcAoKU2VjcmV0S2luZBIbChdTRUNSRVRfS0lORF9VTlNQRUNJRklFRBAAEhcKE1NFQ1JFVF9LSU5EX0dFTkVSSUMQARIYChRTRUNSRVRfS0lORF9QUk9WSURFUhACEhIKDlNFQ1JFVF9LSU5EX0dIEAMqQwoLU2VydmVyU3RhdGUSHAoYU0VSVkVSX1NUQVRFX1VOU1BFQ0lGSUVEEAASFgoSU0VSVkVSX1NUQVRFX1JFQURZEAEqggIKEUFnZW50U2Vzc2lvblN0YXRlEiMKH0FHRU5UX1NFU1NJT05fU1RBVEVfVU5TUEVDSUZJRUQQABIgChxBR0VOVF9TRVNTSU9OX1NUQVRFX1NUQVJUSU5HEAESHQoZQUdFTlRfU0VTU0lPTl9TVEFURV9SRUFEWRACEh8KG0FHRU5UX1NFU1NJT05fU1RBVEVfV09SS0lORxADEh8KG0FHRU5UX1NFU1NJT05fU1RBVEVfU1RPUFBFRBAEEh8KG0FHRU5UX1NFU1NJT05fU1RBVEVfRVJST1JFRBAFEiQKIEFHRU5UX1NFU1NJT05fU1RBVEVfRElTQ09OTkVDVEVEEAYq0gEKE0FnZW50VG9vbENhbGxTdGF0dXMSJgoiQUdFTlRfVE9PTF9DQUxMX1NUQVRVU19VTlNQRUNJRklFRBAAEiIKHkFHRU5UX1RPT0xfQ0FMTF9TVEFUVVNfUEVORElORxABEiYKIkFHRU5UX1RPT0xfQ0FMTF9TVEFUVVNfSU5fUFJPR1JFU1MQAhIkCiBBR0VOVF9UT09MX0NBTExfU1RBVFVTX0NPTVBMRVRFRBADEiEKHUFHRU5UX1RPT0xfQ0FMTF9TVEFUVVNfRkFJTEVEEAQqtAEKFEFnZW50UGxhbkVudHJ5U3RhdHVzEicKI0FHRU5UX1BMQU5fRU5UUllfU1RBVFVTX1VOU1BFQ0lGSUVEEAASIwofQUdFTlRfUExBTl9FTlRSWV9TVEFUVVNfUEVORElORxABEicKI0FHRU5UX1BMQU5fRU5UUllfU1RBVFVTX0lOX1BST0dSRVNTEAISJQohQUdFTlRfUExBTl9FTlRSWV9TVEFUVVNfQ09NUExFVEVEEAMq8QEKCklzc3VlU3RhdGUSGwoXSVNTVUVfU1RBVEVfVU5TUEVDSUZJRUQQABIXChNJU1NVRV9TVEFURV9CQUNLTE9HEAESFAoQSVNTVUVfU1RBVEVfVE9ETxACEhYKEklTU1VFX1NUQVRFX1FVRVVFRBADEhcKE0lTU1VFX1NUQVRFX0JMT0NLRUQQBBIbChdJU1NVRV9TVEFURV9JTl9QUk9HUkVTUxAFEhkKFUlTU1VFX1NUQVRFX0lOX1JFVklFVxAGEhQKEElTU1VFX1NUQVRFX0RPTkUQBxIYChRJU1NVRV9TVEFURV9BUkNISVZFRBAIKpwBCg1Gb3JnZVByb3ZpZGVyEh4KGkZPUkdFX1BST1ZJREVSX1VOU1BFQ0lGSUVEEAASGQoVRk9SR0VfUFJPVklERVJfR0lUSFVCEAESGQoVRk9SR0VfUFJPVklERVJfR0lUTEFCEAISGgoWRk9SR0VfUFJPVklERVJfRk9SR0VKTxADEhkKFUZPUkdFX1BST1ZJREVSX0xJTkVBUhAEMvMJCg5Db21wYXNzU2VydmljZRJUCg1HZXRTZXJ2ZXJJbmZvEiAuY29tcGFzcy52MS5HZXRTZXJ2ZXJJbmZvUmVxdWVzdBohLmNvbXBhc3MudjEuR2V0U2VydmVySW5mb1Jlc3BvbnNlElwKD1N1YnNjcmliZUV2ZW50cxIiLmNvbXBhc3MudjEuU3Vic2NyaWJlRXZlbnRzUmVxdWVzdBojLmNvbXBhc3MudjEuU3Vic2NyaWJlRXZlbnRzUmVzcG9uc2UwARJyChdQcm92aXNpb25BZ2VudFdvcmtzcGFjZRIqLmNvbXBhc3MudjEuUHJvdmlzaW9uQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0GisuY29tcGFzcy52MS5Qcm92aXNpb25BZ2VudFdvcmtzcGFjZVJlc3BvbnNlEmAKEVN0YXJ0QWdlbnRTZXNzaW9uEiQuY29tcGFzcy52MS5TdGFydEFnZW50U2Vzc2lvblJlcXVlc3QaJS5jb21wYXNzLnYxLlN0YXJ0QWdlbnRTZXNzaW9uUmVzcG9uc2USXQoQU3RvcEFnZW50U2Vzc2lvbhIjLmNvbXBhc3MudjEuU3RvcEFnZW50U2Vzc2lvblJlcXVlc3QaJC5jb21wYXNzLnYxLlN0b3BBZ2VudFNlc3Npb25SZXNwb25zZRJpChRSZW1vdmVBZ2VudFdvcmtzcGFjZRInLmNvbXBhc3MudjEuUmVtb3ZlQWdlbnRXb3Jrc3BhY2VSZXF1ZXN0GiguY29tcGFzcy52MS5SZW1vdmVBZ2VudFdvcmtzcGFjZVJlc3BvbnNlEmMKElJlbG9hZEFnZW50U2Vzc2lvbhIlLmNvbXBhc3MudjEuUmVsb2FkQWdlbnRTZXNzaW9uUmVxdWVzdBomLmNvbXBhc3MudjEuUmVsb2FkQWdlbnRTZXNzaW9uUmVzcG9uc2USVwoOR2V0QWdlbnRTdGF0dXMSIS5jb21wYXNzLnYxLkdldEFnZW50U3RhdHVzUmVxdWVzdBoiLmNvbXBhc3MudjEuR2V0QWdlbnRTdGF0dXNSZXNwb25zZRJiChVTdWJzY3JpYmVBZ2VudFNlc3Npb24SKC5jb21wYXNzLnYxLlN1YnNjcmliZUFnZW50U2Vzc2lvblJlcXVlc3QaHS5jb21wYXNzLnYxLkFnZW50U2Vzc2lvbkZyYW1lMAESSwoKSXNzdWVUb2tlbhIdLmNvbXBhc3MudjEuSXNzdWVUb2tlblJlcXVlc3QaHi5jb21wYXNzLnYxLklzc3VlVG9rZW5SZXNwb25zZRJXCg5QdXRBZ2VudENvbmZpZxIhLmNvbXBhc3MudjEuUHV0QWdlbnRDb25maWdSZXF1ZXN0GiIuY29tcGFzcy52MS5QdXRBZ2VudENvbmZpZ1Jlc3BvbnNlEmMKEkdldEFnZW50Q29uZmlnSW5mbxIlLmNvbXBhc3MudjEuR2V0QWdlbnRDb25maWdJbmZvUmVxdWVzdBomLmNvbXBhc3MudjEuR2V0QWdlbnRDb25maWdJbmZvUmVzcG9uc2USYAoRRGVsZXRlQWdlbnRDb25maWcSJC5jb21wYXNzLnYxLkRlbGV0ZUFnZW50Q29uZmlnUmVxdWVzdBolLmNvbXBhc3MudjEuRGVsZXRlQWdlbnRDb25maWdSZXNwb25zZTL9AQoOU2VjcmV0c1NlcnZpY2USSAoJU2V0U2VjcmV0EhwuY29tcGFzcy52MS5TZXRTZWNyZXRSZXF1ZXN0Gh0uY29tcGFzcy52MS5TZXRTZWNyZXRSZXNwb25zZRJOCgtMaXN0U2VjcmV0cxIeLmNvbXBhc3MudjEuTGlzdFNlY3JldHNSZXF1ZXN0Gh8uY29tcGFzcy52MS5MaXN0U2VjcmV0c1Jlc3BvbnNlElEKDERlbGV0ZVNlY3JldBIfLmNvbXBhc3MudjEuRGVsZXRlU2VjcmV0UmVxdWVzdBogLmNvbXBhc3MudjEuRGVsZXRlU2VjcmV0UmVzcG9uc2ViBnByb3RvMw");
 
 /**
  * @generated from message compass.v1.SetSecretRequest
@@ -336,6 +336,19 @@ export type SubscribeEventsResponse = Message<"compass.v1.SubscribeEventsRespons
      */
     value: AgentPlan;
     case: "agentPlan";
+  } | {
+    /**
+     * The canonical board unit, pushed on every change: snapshot-as-events on
+     * connect plus live tailing off the one projection source of truth
+     * (compass-issue-model delivery surface, DL-032). v1 carries upserts only —
+     * an archived issue drops off the active surfaces via `state =
+     * ISSUE_STATE_ARCHIVED`; a removed/tombstone variant is a
+     * backward-compatible additive when a later milestone needs it.
+     *
+     * @generated from field: compass.v1.Issue issue = 16;
+     */
+    value: Issue;
+    case: "issue";
   } | { case: undefined; value?: undefined };
 };
 
@@ -1339,6 +1352,553 @@ export const DeleteAgentConfigResponseSchema: GenMessage<DeleteAgentConfigRespon
   messageDesc(file_compass_v1_compass, 47);
 
 /**
+ * The Compass agent attribution parsed from the owner header at ingestion — a
+ * plain display fact (DL-094, compass-attribution-simplification, Active). If a
+ * header names an agent, that is the displayed author: NO forge-login
+ * cross-check, NO verified bit, NO population gating. It never reaches an authz,
+ * routing, or ownership decision (DL-050). Owner is a property of the agent
+ * account (AgentAccount.owner_user_id, comms.proto:131-133), resolved
+ * server-side, never restated per artifact — so no owner_handle. Fields 2-3 and
+ * the names owner_handle/verified are reserved forever (DL-094): the frozen
+ * #1018 shape burned those numbers even though no wire build shipped them.
+ *
+ * @generated from message compass.v1.AgentAttribution
+ */
+export type AgentAttribution = Message<"compass.v1.AgentAttribution"> & {
+  /**
+   * the authoring agent's handle, from the header
+   *
+   * @generated from field: string agent_handle = 1;
+   */
+  agentHandle: string;
+};
+
+/**
+ * Describes the message compass.v1.AgentAttribution.
+ * Use `create(AgentAttributionSchema)` to create a new message.
+ */
+export const AgentAttributionSchema: GenMessage<AgentAttribution> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 48);
+
+/**
+ * @generated from message compass.v1.ForgeRef
+ */
+export type ForgeRef = Message<"compass.v1.ForgeRef"> & {
+  /**
+   * @generated from field: compass.v1.ForgeProvider provider = 1;
+   */
+  provider: ForgeProvider;
+
+  /**
+   * "github.com", "gitlab.com", or a self-hosted host like
+   *
+   * @generated from field: string host = 2;
+   */
+  host: string;
+};
+
+/**
+ * Describes the message compass.v1.ForgeRef.
+ * Use `create(ForgeRefSchema)` to create a new message.
+ */
+export const ForgeRefSchema: GenMessage<ForgeRef> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 49);
+
+/**
+ * The board unit: a Compass Issue — the forge issue's fields PLUS the Compass
+ * agent attribution PLUS the Compass machinery, translated from raw forge data
+ * at server ingestion.
+ *
+ * @generated from message compass.v1.Issue
+ */
+export type Issue = Message<"compass.v1.Issue"> & {
+  /**
+   * Compass-local id: the stable server-side key the projection addresses (and
+   * the lifecycle-mutation write path will address, once its design amendment
+   * lands). Every issue is forge-backed; this id is a join key, not a "no forge
+   * yet" placeholder.
+   *
+   * @generated from field: string id = 1;
+   */
+  id: string;
+
+  /**
+   * ── Forge fields (translated from the raw forge payload at ingestion) ──
+   *
+   * which forge + host — multi-forge disambiguation
+   *
+   * @generated from field: compass.v1.ForgeRef forge = 2;
+   */
+  forge?: ForgeRef | undefined;
+
+  /**
+   * "<owner>/<name>" on GitHub, project key on Linear
+   *
+   * @generated from field: string repo = 3;
+   */
+  repo: string;
+
+  /**
+   * the forge issue number; narrowed server-side
+   *
+   * @generated from field: uint32 number = 4;
+   */
+  number: number;
+
+  /**
+   * @generated from field: string title = 5;
+   */
+  title: string;
+
+  /**
+   * owner header STRIPPED at ingestion (DL-050)
+   *
+   * @generated from field: string body = 6;
+   */
+  body: string;
+
+  /**
+   * "open" | "closed" — forge truth, NOT the lifecycle
+   *
+   * @generated from field: string forge_state = 7;
+   */
+  forgeState: string;
+
+  /**
+   * @generated from field: string url = 8;
+   */
+  url: string;
+
+  /**
+   * the Compass agent attribution parsed from the
+   *
+   * @generated from field: compass.v1.AgentAttribution agent = 9;
+   */
+  agent?: AgentAttribution | undefined;
+
+  /**
+   * owner header; UNSET for a non-Compass (human) author
+   *
+   * the native forge account that authored the
+   *
+   * @generated from field: string forge_account = 10;
+   */
+  forgeAccount: string;
+
+  /**
+   * artifact (e.g. the GitHub login); always set
+   *
+   * @generated from field: repeated string labels = 11;
+   */
+  labels: string[];
+
+  /**
+   * ── Compass machinery (Compass-owned; none of this is on the forge) ──
+   *
+   * the canonical lifecycle, server-authoritative
+   *
+   * @generated from field: compass.v1.IssueState state = 12;
+   */
+  state: IssueState;
+
+  /**
+   * "urgent" | "high" | "medium" | "low"; string in v1
+   *
+   * @generated from field: string priority = 13;
+   */
+  priority: string;
+
+  /**
+   * agent account id working it; empty = unassigned
+   *
+   * @generated from field: string assignee = 14;
+   */
+  assignee: string;
+
+  /**
+   * latest-activity line for the card
+   *
+   * @generated from field: string summary = 15;
+   */
+  summary: string;
+
+  /**
+   * the working head branch NAME (may exist before any PR)
+   *
+   * @generated from field: string branch = 16;
+   */
+  branch: string;
+
+  /**
+   * every PR opened for this issue; empty before the first
+   *
+   * @generated from field: repeated compass.v1.PullRequest prs = 17;
+   */
+  prs: PullRequest[];
+
+  /**
+   * the tracker projection target (DL-032); unset when unlinked
+   *
+   * @generated from field: compass.v1.TrackerRef tracker = 18;
+   */
+  tracker?: TrackerRef | undefined;
+};
+
+/**
+ * Describes the message compass.v1.Issue.
+ * Use `create(IssueSchema)` to create a new message.
+ */
+export const IssueSchema: GenMessage<Issue> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 50);
+
+/**
+ * A Compass pull request: the forge PR's fields plus the Compass agent
+ * attribution plus this PR's diffstat plus the full review state (reviews,
+ * threads, comments) the right-sidebar PR pane shows.
+ *
+ * @generated from message compass.v1.PullRequest
+ */
+export type PullRequest = Message<"compass.v1.PullRequest"> & {
+  /**
+   * which forge + host — multi-forge disambiguation
+   *
+   * @generated from field: compass.v1.ForgeRef forge = 1;
+   */
+  forge?: ForgeRef | undefined;
+
+  /**
+   * @generated from field: string repo = 2;
+   */
+  repo: string;
+
+  /**
+   * @generated from field: uint32 number = 3;
+   */
+  number: number;
+
+  /**
+   * @generated from field: string title = 4;
+   */
+  title: string;
+
+  /**
+   * "open" | "closed" | "merged"
+   *
+   * @generated from field: string forge_state = 5;
+   */
+  forgeState: string;
+
+  /**
+   * @generated from field: string url = 6;
+   */
+  url: string;
+
+  /**
+   * @generated from field: string head_ref = 7;
+   */
+  headRef: string;
+
+  /**
+   * @generated from field: string base_ref = 8;
+   */
+  baseRef: string;
+
+  /**
+   * Compass agent attribution; unset for a non-Compass author
+   *
+   * @generated from field: compass.v1.AgentAttribution agent = 9;
+   */
+  agent?: AgentAttribution | undefined;
+
+  /**
+   * the native forge account that opened the PR; always set
+   *
+   * @generated from field: string forge_account = 10;
+   */
+  forgeAccount: string;
+
+  /**
+   * @generated from field: bool draft = 11;
+   */
+  draft: boolean;
+
+  /**
+   * THIS PR's diffstat (a diff is a PR fact); unset for no diff
+   *
+   * @generated from field: compass.v1.ChangedStats changed = 12;
+   */
+  changed?: ChangedStats | undefined;
+
+  /**
+   * rolled-up CI state, translated at ingestion; unset for no CI
+   *
+   * @generated from field: compass.v1.ChecksSummary checks = 13;
+   */
+  checks?: ChecksSummary | undefined;
+
+  /**
+   * submitted reviews (approve/request-changes/comment), each flagged is_bot
+   *
+   * @generated from field: repeated compass.v1.Review reviews = 14;
+   */
+  reviews: Review[];
+
+  /**
+   * review threads with their comments and resolution
+   *
+   * @generated from field: repeated compass.v1.ReviewThread threads = 15;
+   */
+  threads: ReviewThread[];
+};
+
+/**
+ * Describes the message compass.v1.PullRequest.
+ * Use `create(PullRequestSchema)` to create a new message.
+ */
+export const PullRequestSchema: GenMessage<PullRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 51);
+
+/**
+ * The rolled-up CI + status-check state on a PR head — Compass-owned, populated
+ * by the ingestion translation from the forge's check runs.
+ *
+ * @generated from message compass.v1.ChecksSummary
+ */
+export type ChecksSummary = Message<"compass.v1.ChecksSummary"> & {
+  /**
+   * @generated from field: string head_sha = 1;
+   */
+  headSha: string;
+
+  /**
+   * "pending" | "success" | "failure" — the roll-up
+   *
+   * @generated from field: string state = 2;
+   */
+  state: string;
+
+  /**
+   * @generated from field: repeated compass.v1.Check checks = 3;
+   */
+  checks: Check[];
+};
+
+/**
+ * Describes the message compass.v1.ChecksSummary.
+ * Use `create(ChecksSummarySchema)` to create a new message.
+ */
+export const ChecksSummarySchema: GenMessage<ChecksSummary> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 52);
+
+/**
+ * @generated from message compass.v1.Check
+ */
+export type Check = Message<"compass.v1.Check"> & {
+  /**
+   * @generated from field: string name = 1;
+   */
+  name: string;
+
+  /**
+   * "queued" | "in_progress" | "success" | "failure" | "neutral" | "cancelled"
+   *
+   * @generated from field: string state = 2;
+   */
+  state: string;
+
+  /**
+   * @generated from field: string url = 3;
+   */
+  url: string;
+
+  /**
+   * @generated from field: bool required = 4;
+   */
+  required: boolean;
+};
+
+/**
+ * Describes the message compass.v1.Check.
+ * Use `create(CheckSchema)` to create a new message.
+ */
+export const CheckSchema: GenMessage<Check> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 53);
+
+/**
+ * A PR diffstat (files/additions/deletions), carried on PullRequest — a
+ * forge/VCS fact translated at ingestion.
+ *
+ * @generated from message compass.v1.ChangedStats
+ */
+export type ChangedStats = Message<"compass.v1.ChangedStats"> & {
+  /**
+   * @generated from field: uint32 files = 1;
+   */
+  files: number;
+
+  /**
+   * @generated from field: uint32 additions = 2;
+   */
+  additions: number;
+
+  /**
+   * @generated from field: uint32 deletions = 3;
+   */
+  deletions: number;
+};
+
+/**
+ * Describes the message compass.v1.ChangedStats.
+ * Use `create(ChangedStatsSchema)` to create a new message.
+ */
+export const ChangedStatsSchema: GenMessage<ChangedStats> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 54);
+
+/**
+ * The linked tracker issue — the projection target (DL-032); the
+ * no-write-to-self elision keys off `kind`+`id`.
+ *
+ * @generated from message compass.v1.TrackerRef
+ */
+export type TrackerRef = Message<"compass.v1.TrackerRef"> & {
+  /**
+   * "linear" | "jira" | "github" — the tracker family
+   *
+   * @generated from field: string kind = 1;
+   */
+  kind: string;
+
+  /**
+   * the tracker's native issue id, e.g. "SEA-1042"
+   *
+   * @generated from field: string id = 2;
+   */
+  id: string;
+
+  /**
+   * the tracker's native status name in the user's org
+   *
+   * @generated from field: string status = 3;
+   */
+  status: string;
+
+  /**
+   * @generated from field: string url = 4;
+   */
+  url: string;
+};
+
+/**
+ * Describes the message compass.v1.TrackerRef.
+ * Use `create(TrackerRefSchema)` to create a new message.
+ */
+export const TrackerRefSchema: GenMessage<TrackerRef> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 55);
+
+/**
+ * The full review state the right-sidebar PR pane shows — every submitted review
+ * (human and bot) plus the review threads and their comments, translated from
+ * the forge at ingestion. Wire contract: `reviews` is submission-ordered
+ * (ingestion appends, newest last), so a reviewer's CURRENT verdict is its last
+ * entry; chip derivation takes the latest-per-author. The `verdict` vocabulary
+ * is the forge's ("changes_requested"); the UI maps it to the chip key.
+ *
+ * @generated from message compass.v1.Review
+ */
+export type Review = Message<"compass.v1.Review"> & {
+  /**
+   * the reviewer's forge account, or a Compass agent handle
+   *
+   * @generated from field: string author = 1;
+   */
+  author: string;
+
+  /**
+   * true when the reviewer is a bot
+   *
+   * @generated from field: bool is_bot = 2;
+   */
+  isBot: boolean;
+
+  /**
+   * "approved" | "changes_requested" | "commented"
+   *
+   * @generated from field: string verdict = 3;
+   */
+  verdict: string;
+
+  /**
+   * the review's summary comment (may be empty)
+   *
+   * @generated from field: string body = 4;
+   */
+  body: string;
+};
+
+/**
+ * Describes the message compass.v1.Review.
+ * Use `create(ReviewSchema)` to create a new message.
+ */
+export const ReviewSchema: GenMessage<Review> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 56);
+
+/**
+ * @generated from message compass.v1.ReviewThread
+ */
+export type ReviewThread = Message<"compass.v1.ReviewThread"> & {
+  /**
+   * the file the thread anchors to; empty for a PR-level thread
+   *
+   * @generated from field: string path = 1;
+   */
+  path: string;
+
+  /**
+   * @generated from field: bool resolved = 2;
+   */
+  resolved: boolean;
+
+  /**
+   * @generated from field: repeated compass.v1.Comment comments = 3;
+   */
+  comments: Comment[];
+};
+
+/**
+ * Describes the message compass.v1.ReviewThread.
+ * Use `create(ReviewThreadSchema)` to create a new message.
+ */
+export const ReviewThreadSchema: GenMessage<ReviewThread> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 57);
+
+/**
+ * @generated from message compass.v1.Comment
+ */
+export type Comment = Message<"compass.v1.Comment"> & {
+  /**
+   * @generated from field: string author = 1;
+   */
+  author: string;
+
+  /**
+   * @generated from field: bool is_bot = 2;
+   */
+  isBot: boolean;
+
+  /**
+   * @generated from field: string body = 3;
+   */
+  body: string;
+};
+
+/**
+ * Describes the message compass.v1.Comment.
+ * Use `create(CommentSchema)` to create a new message.
+ */
+export const CommentSchema: GenMessage<Comment> = /*@__PURE__*/
+  messageDesc(file_compass_v1_compass, 58);
+
+/**
  * How a resolved secret is delivered into the agent container. Mirrors
  * secrets.DeliveryKind (go/internal/secrets/secrets.go:34-46), mapped at the
  * handler edge.
@@ -1565,6 +2125,112 @@ export enum AgentPlanEntryStatus {
  */
 export const AgentPlanEntryStatusSchema: GenEnum<AgentPlanEntryStatus> = /*@__PURE__*/
   enumDesc(file_compass_v1_compass, 5);
+
+/**
+ * The Compass issue lifecycle, server-owned (DL-032/DL-033 + terminal ARCHIVED,
+ * DL-091). These are the Compass-side states that do NOT exist on the forge
+ * tracker — the reason the model is Compass-owned. The lifecycle is a MANUAL
+ * board: a forge `closed`/`merged` badge is "consistent with" DONE but never
+ * auto-advances Compass state.
+ *
+ * @generated from enum compass.v1.IssueState
+ */
+export enum IssueState {
+  /**
+   * @generated from enum value: ISSUE_STATE_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: ISSUE_STATE_BACKLOG = 1;
+   */
+  BACKLOG = 1,
+
+  /**
+   * @generated from enum value: ISSUE_STATE_TODO = 2;
+   */
+  TODO = 2,
+
+  /**
+   * @generated from enum value: ISSUE_STATE_QUEUED = 3;
+   */
+  QUEUED = 3,
+
+  /**
+   * @generated from enum value: ISSUE_STATE_BLOCKED = 4;
+   */
+  BLOCKED = 4,
+
+  /**
+   * @generated from enum value: ISSUE_STATE_IN_PROGRESS = 5;
+   */
+  IN_PROGRESS = 5,
+
+  /**
+   * @generated from enum value: ISSUE_STATE_IN_REVIEW = 6;
+   */
+  IN_REVIEW = 6,
+
+  /**
+   * @generated from enum value: ISSUE_STATE_DONE = 7;
+   */
+  DONE = 7,
+
+  /**
+   * terminal: past Done; dropped from the active
+   *
+   * @generated from enum value: ISSUE_STATE_ARCHIVED = 8;
+   */
+  ARCHIVED = 8,
+}
+
+/**
+ * Describes the enum compass.v1.IssueState.
+ */
+export const IssueStateSchema: GenEnum<IssueState> = /*@__PURE__*/
+  enumDesc(file_compass_v1_compass, 6);
+
+/**
+ * Which forge (and which host, for self-hosted instances) an artifact lives on.
+ * Carried on both Issue and PullRequest so a user with multiple connected forges
+ * never sees two artifacts collide on `repo` alone (DL-091).
+ *
+ * @generated from enum compass.v1.ForgeProvider
+ */
+export enum ForgeProvider {
+  /**
+   * @generated from enum value: FORGE_PROVIDER_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: FORGE_PROVIDER_GITHUB = 1;
+   */
+  GITHUB = 1,
+
+  /**
+   * @generated from enum value: FORGE_PROVIDER_GITLAB = 2;
+   */
+  GITLAB = 2,
+
+  /**
+   * @generated from enum value: FORGE_PROVIDER_FORGEJO = 3;
+   */
+  FORGEJO = 3,
+
+  /**
+   * DL-051's issues-only forge source: a
+   *
+   * @generated from enum value: FORGE_PROVIDER_LINEAR = 4;
+   */
+  LINEAR = 4,
+}
+
+/**
+ * Describes the enum compass.v1.ForgeProvider.
+ */
+export const ForgeProviderSchema: GenEnum<ForgeProvider> = /*@__PURE__*/
+  enumDesc(file_compass_v1_compass, 7);
 
 /**
  * The Compass server service.
