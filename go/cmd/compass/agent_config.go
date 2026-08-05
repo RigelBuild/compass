@@ -126,7 +126,10 @@ func runShow(ctx context.Context, client compassv1connect.CompassServiceClient, 
 	return renderConfigInfo(out, msg)
 }
 
-// renderConfigInfo prints the version and each populated bucket.
+// renderConfigInfo prints the version and each populated bucket: the multi-member
+// name buckets (skills/extensions/mcp + rules/subagents) as count + indented
+// names, and the singleton presence flags (settings, AGENTS.md, models.yml) as a
+// clear present/absent line each.
 func renderConfigInfo(out io.Writer, msg *compassv1.GetAgentConfigInfoResponse) error {
 	if _, err := fmt.Fprintf(out, "version: %s\n", msg.GetVersion()); err != nil {
 		return err
@@ -138,6 +141,8 @@ func renderConfigInfo(out io.Writer, msg *compassv1.GetAgentConfigInfoResponse) 
 		{"skills", msg.GetSkills()},
 		{"extensions", msg.GetExtensions()},
 		{"mcp", msg.GetMcpServers()},
+		{"rules", msg.GetRules()},
+		{"subagents", msg.GetSubagents()},
 	}
 	for _, b := range buckets {
 		if _, err := fmt.Fprintf(out, "%s (%d):\n", b.label, len(b.names)); err != nil {
@@ -147,6 +152,23 @@ func renderConfigInfo(out io.Writer, msg *compassv1.GetAgentConfigInfoResponse) 
 			if _, err := fmt.Fprintf(out, "  - %s\n", n); err != nil {
 				return err
 			}
+		}
+	}
+	presence := []struct {
+		label   string
+		present bool
+	}{
+		{topDirSettings, msg.GetHasSettings()},
+		{memberAgentsMD, msg.GetHasAgentsMd()},
+		{memberModels, msg.GetHasModels()},
+	}
+	for _, p := range presence {
+		state := "absent"
+		if p.present {
+			state = "present"
+		}
+		if _, err := fmt.Fprintf(out, "%s: %s\n", p.label, state); err != nil {
+			return err
 		}
 	}
 	return nil

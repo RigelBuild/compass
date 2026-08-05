@@ -355,6 +355,58 @@ func TestRunShow(t *testing.T) {
 	})
 }
 
+// TestRenderConfigInfoAllBuckets asserts renderConfigInfo surfaces every
+// category the door accepts: the multi-member name buckets (rules, subagents)
+// and the singleton presence flags (settings, AGENTS.md, models.yml), alongside
+// the existing skills/extensions/mcp buckets. It asserts the EXACT present/absent
+// rendering for the singleton flags across both branches.
+func TestRenderConfigInfoAllBuckets(t *testing.T) {
+	t.Run("all present", func(t *testing.T) {
+		msg := &compassv1.GetAgentConfigInfoResponse{
+			Version:     "v9",
+			Skills:      []string{"alpha"},
+			Extensions:  []string{"beta"},
+			McpServers:  []string{"gamma"},
+			Rules:       []string{"delta", "epsilon"},
+			Subagents:   []string{"zeta"},
+			HasSettings: true,
+			HasAgentsMd: true,
+			HasModels:   true,
+		}
+		var out strings.Builder
+		if err := renderConfigInfo(&out, msg); err != nil {
+			t.Fatalf("renderConfigInfo: %v", err)
+		}
+		for _, want := range []string{"v9", "alpha", "beta", "gamma", "delta", "epsilon", "zeta"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("render output %q missing %q", out.String(), want)
+			}
+		}
+		for _, want := range []string{"settings: present", "AGENTS.md: present", "models.yml: present"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("render output %q missing line %q", out.String(), want)
+			}
+		}
+	})
+	t.Run("all absent", func(t *testing.T) {
+		msg := &compassv1.GetAgentConfigInfoResponse{
+			Version:     "v9",
+			HasSettings: false,
+			HasAgentsMd: false,
+			HasModels:   false,
+		}
+		var out strings.Builder
+		if err := renderConfigInfo(&out, msg); err != nil {
+			t.Fatalf("renderConfigInfo: %v", err)
+		}
+		for _, want := range []string{"settings: absent", "AGENTS.md: absent", "models.yml: absent"} {
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("render output %q missing line %q", out.String(), want)
+			}
+		}
+	})
+}
+
 // TestRunDelete asserts delete calls DeleteAgentConfig and confirms.
 func TestRunDelete(t *testing.T) {
 	fake := &fakeCompass{}
