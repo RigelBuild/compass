@@ -62,3 +62,13 @@ export async function probeServer(client: CompassClient): Promise<ServerInfo> {
 	const resp = await client.getServerInfo({});
 	return { version: resp.version, apiVersion: resp.apiVersion };
 }
+
+/** The caller's own account id, resolved server-side from the connection's
+ *  credential (compass.proto WhoAmI). Called right after the transport is up,
+ *  the same post-connect round-trip family as probeServer; the returned id
+ *  scopes every listing and drives rail membership, so boot cannot proceed
+ *  without it. */
+export async function resolveCaller(client: CompassClient): Promise<string> {
+	const resp = await client.whoAmI({});
+	return resp.accountId;
+}

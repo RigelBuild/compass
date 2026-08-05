@@ -37,6 +37,14 @@ export interface FakeCompass {
 	/** Reject the next GetServerInfo with `error` (one-shot) — the server-down /
 	 *  RPC-error path the boot probe must leave the banner offline for. */
 	failNextProbe: (error: Error) => void;
+	/** The account id WhoAmI returns — the caller the UI learns from the server
+	 *  at boot (compass.proto WhoAmI), the boot source that replaced the env var.
+	 *  Defaults to the fixture caller so boot/store tests resolve a caller with no
+	 *  setup. Set before boot to drive an alternate identity. */
+	whoAmIAccountId: { accountId: string };
+	/** Reject the next WhoAmI with `error` (one-shot) — the server-answered-but-
+	 *  identity-unlearnable path a boot guard must surface. */
+	failNextWhoAmI: (error: Error) => void;
 }
 
 /** Build the fake. Pure and synchronous apart from the RPC's promise. */
@@ -44,7 +52,11 @@ export function createFakeCompass(): FakeCompass {
 	const stops: RecordedStop[] = [];
 	let stopFailure: Error | undefined;
 	let probeFailure: Error | undefined;
+	let whoAmIFailure: Error | undefined;
 	const serverInfo = { version: "9.9.9-test", apiVersion: "compass.v1" };
+	// Defaults to the fixture caller (store.ts CALLER_ID) so boot/store tests
+	// resolve a caller with no per-test setup.
+	const whoAmIAccountId = { accountId: "acc-matt" };
 
 	const client = {
 		stopAgentSession: async (req: { sessionId: string }) => {
@@ -67,6 +79,14 @@ export function createFakeCompass(): FakeCompass {
 				apiVersion: serverInfo.apiVersion,
 			};
 		},
+		whoAmI: async (_req: Record<string, never>) => {
+			if (whoAmIFailure) {
+				const err = whoAmIFailure;
+				whoAmIFailure = undefined;
+				throw err;
+			}
+			return { accountId: whoAmIAccountId.accountId };
+		},
 	};
 
 	return {
@@ -81,6 +101,10 @@ export function createFakeCompass(): FakeCompass {
 		serverInfo,
 		failNextProbe: (error) => {
 			probeFailure = error;
+		},
+		whoAmIAccountId,
+		failNextWhoAmI: (error) => {
+			whoAmIFailure = error;
 		},
 	};
 }
