@@ -131,7 +131,8 @@ func assertBundleGrammar(t *testing.T, bundle []byte) {
 	}
 	defer func() { _ = gz.Close() }() // read-only decompress; close error not actionable
 	tr := tar.NewReader(gz)
-	tops := map[string]bool{"skills": true, "extensions": true, "mcp": true}
+	tops := map[string]bool{"skills": true, "extensions": true, "mcp": true, "settings": true, "rules": true, "agents": true}
+	topLevel := map[string]bool{"AGENTS.md": true, "models.yml": true}
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -155,7 +156,11 @@ func assertBundleGrammar(t *testing.T, bundle []byte) {
 				t.Errorf("member %q has an illegal path component %q", hdr.Name, p)
 			}
 		}
-		if !tops[parts[0]] {
+		if len(parts) == 1 {
+			if !topLevel[parts[0]] {
+				t.Errorf("member %q top-level file %q is not admitted", hdr.Name, parts[0])
+			}
+		} else if !tops[parts[0]] {
 			t.Errorf("member %q top dir %q is not whitelisted", hdr.Name, parts[0])
 		}
 	}
@@ -172,7 +177,7 @@ func TestBuildBundleEmpty(t *testing.T) {
 		if err == nil {
 			t.Fatal("buildBundle(empty dir) = nil error, want rejection")
 		}
-		if !strings.Contains(err.Error(), "contains no skills/, extensions/, or mcp/ members") {
+		if !strings.Contains(err.Error(), "contains no members under skills/, extensions/, mcp/, settings/, rules/, or agents/") {
 			t.Errorf("buildBundle(empty) error %q does not name the no-members condition", err)
 		}
 	})
@@ -186,7 +191,7 @@ func TestBuildBundleEmpty(t *testing.T) {
 		if err == nil {
 			t.Fatal("buildBundle(only empty subdir) = nil error, want rejection")
 		}
-		if !strings.Contains(err.Error(), "contains no skills/, extensions/, or mcp/ members") {
+		if !strings.Contains(err.Error(), "contains no members under skills/, extensions/, mcp/, settings/, rules/, or agents/") {
 			t.Errorf("buildBundle(empty subdir) error %q does not name the no-members condition", err)
 		}
 	})
@@ -222,6 +227,12 @@ func TestBuildBundleDoorParity(t *testing.T) {
 		"skills/alpha/ref/notes.md": "notes",
 		"extensions/beta/main.go":   "package beta",
 		"mcp/gamma.json":            `{"ok":true}`,
+		"settings/config.yml":       "autoCompact: true\n",
+		"rules/delta.md":            "# delta rule",
+		"rules/epsilon.mdc":         "# epsilon rule",
+		"agents/zeta.md":            "# zeta agent",
+		"AGENTS.md":                 "# fleet context",
+		"models.yml":                "models:\n  main: anthropic/claude\n",
 	})
 	bundle, err := buildBundle(root)
 	if err != nil {
@@ -233,5 +244,27 @@ func TestBuildBundleDoorParity(t *testing.T) {
 	}
 	if version == "" {
 		t.Error("store.ValidateConfigBundle returned an empty version, want a content hash")
+	}
+
+	// The tar must carry every new-category member header, else the builder
+	// silently dropped a category the door accepts.
+	names, err := bundleMemberNames(bundle)
+	if err != nil {
+		t.Fatalf("bundleMemberNames: %v", err)
+	}
+	want := []string{
+		"AGENTS.md",
+		"agents/zeta.md",
+		"extensions/beta/main.go",
+		"mcp/gamma.json",
+		"models.yml",
+		"rules/delta.md",
+		"rules/epsilon.mdc",
+		"settings/config.yml",
+		"skills/alpha/SKILL.md",
+		"skills/alpha/ref/notes.md",
+	}
+	if !slices.Equal(names, want) {
+		t.Errorf("bundle members = %v, want %v", names, want)
 	}
 }
