@@ -479,6 +479,7 @@ func TestPumpLargeBodyMultipleReads(t *testing.T) {
 		t.Fatalf("final frame = %T, want EndFrame", frames[len(frames)-1])
 	}
 	var got []byte
+	bodyFrames := 0
 	for i, f := range frames[1 : len(frames)-1] {
 		body, ok := f.(BodyFrame)
 		if !ok {
@@ -487,7 +488,13 @@ func TestPumpLargeBodyMultipleReads(t *testing.T) {
 		if len(body.Chunk) > 32*1024 {
 			t.Errorf("chunk %d len %d exceeds the 32KiB buffer", i, len(body.Chunk))
 		}
+		bodyFrames++
 		got = append(got, body.Chunk...)
+	}
+	// A 100KiB payload over a 32KiB read buffer forces at least 4 reads, so the
+	// "multiple reads" contract is asserted, not left implicit.
+	if bodyFrames < 4 {
+		t.Errorf("got %d body frames, want >= 4 (100KiB over a 32KiB buffer)", bodyFrames)
 	}
 	if string(got) != string(payload) {
 		t.Errorf("reassembled body (%d bytes) != payload (%d bytes)", len(got), len(payload))
