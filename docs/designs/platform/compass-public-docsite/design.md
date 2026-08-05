@@ -353,31 +353,58 @@ Interfaces:
 - Produces: `docs/designs/CONTRIBUTING.md` (or a section in root `CONTRIBUTING.md`) stating the four rules as the standing policy for records authored here.
 - Test cycle: `bun test tools/docs-migrate` over fixture snippets for each class (including the reference-definition link form); post-run grep gates (authoritative over the rewrite regexes — the run fails if any form slipped): zero `linear.app` matches, zero `oss/compass` matches under `docs/designs/**` + `docs/specs/**`; `markdownlint-cli2` clean.
 
-### T5 — Wave-1 content migration + sealed-side removal (gated on Q1, Q2, Q5)
+### T5 — Full-corpus migration + sealed-side removal (Q1/Q2/Q5 ruled)
 
-Land the settled corpus in compass; remove it from sealed.
-
-Interfaces:
-
-- Consumes: T4's script output over the wave-1 set (all records at sealed `main` at branch-cut; the in-flight set — sealed PRs #1096/#1095/#1087/#1089/#1075 — excluded).
-- Produces (compass PR): `docs/designs/product/**` (the 38 product records), `docs/designs/platform/compass-dogfood-loop/design.md`, `docs/specs/product/{compass.md,README.md}`; if Q1 rules "move": `docs/designs/product/DECISIONS.md` + `tools/design-ledger-gate/**` (ported; `PRODUCT_DIR` stays `docs/designs/product`, `index.ts:45`) + a `design-ledger-gate` moon project registered in `.moon/workspace.yml` with a `ci` task.
-- Produces (sealed PR, sequenced after the compass PR merges): delete the migrated trees; leave `sealed/docs/designs/product/README.md` pointing at the public repo; sealed's ledger keeps (or splits out, per Q1) the seal-product rows DL-045/DL-046; sealed's gather needs no change (deleted files simply stop being gathered).
-- Test cycle: compass `moon run :ci` green (docsite builds the full corpus; ledger gate green if moved); site renders the ledger and both spec pages; sealed `moon run docs-site:build` green post-removal.
-
-### T6 — Wave-2 straggler sweep (gated on the in-flight PRs freezing)
+Land the whole Compass corpus in compass in a single PR (Q5: all at once);
+remove it from sealed. compass is the source of truth going forward (Q2), so
+design review continues here, not in sealed.
 
 Interfaces:
 
-- Consumes: the records from sealed PRs #1096/#1095/#1087/#1089/#1075 once merged/closed, run through T4's script.
-- Produces: one compass PR per convenient batch adding them under the same trees; the sealed counterpart deletions.
-- Test cycle: same gates as T5; then delete `tools/docs-migrate/`.
+- Consumes: T4's script output over the full corpus at sealed `main` at
+  branch-cut — the 38 product design records,
+  `compass-dogfood-loop/design.md`, and both product specs. Any sealed design
+  PR still open at migration time is reconciled to compass rather than split
+  into a later wave (executor sequences: merge-in-sealed-first then migrate, or
+  re-target the PR to compass — both keep the corpus whole); the
+  wave-1/wave-2 split is dropped per Q5.
+- Produces (compass PR): `docs/designs/product/**` (the 38 product records),
+  `docs/designs/platform/compass-dogfood-loop/design.md`,
+  `docs/specs/product/{compass.md,README.md}`, plus (Q1 ruled MOVE)
+  `docs/designs/product/DECISIONS.md` + `tools/design-ledger-gate/**` (ported;
+  `PRODUCT_DIR` stays `docs/designs/product`, `index.ts:45`) + a
+  `design-ledger-gate` moon project registered in `.moon/workspace.yml` with a
+  `ci` task.
+- Produces (sealed PR, sequenced after the compass PR merges): delete the
+  migrated trees; leave `sealed/docs/designs/product/README.md` pointing at the
+  public repo; sealed's residual ledger keeps the seal-product rows
+  DL-045/DL-046 (Q1); sealed's gather needs no change (deleted files simply
+  stop being gathered).
+- Test cycle: compass `moon run :ci` green (docsite builds the full corpus;
+  ledger gate green after the move); site renders the ledger and both spec
+  pages; sealed `moon run docs-site:build` green post-removal;
+  `tools/docs-migrate/` deleted after the one-shot run.
 
-### T7 — Cloudflare Pages project provisioning (gated on Q4)
+### T6 — Wave-2 straggler sweep — DROPPED (Q5 ruled all at once)
+
+Q5 ruled "all at once", so there is no separate wave-2 sweep: T5 migrates the
+whole corpus in one PR and deletes `tools/docs-migrate/` at the end. Any sealed
+design PR still open at migration time is reconciled to compass by T5 (see T5
+Consumes), not deferred to a later wave.
+
+### T7 — Cloudflare Pages project provisioning (Q4 ruled)
 
 Interfaces:
 
-- Consumes: Matt's Q4 ruling (project name, custom domain, who provisions).
-- Produces: the `compass-docs` Pages project (dashboard or sealed's Pulumi IaC — sealed precedent: the docsite got "its OWN Pages:Edit-scoped token once SEA-1119 provisions the project", `sealed/ci/pipeline.ts:334-336`); repo secrets `CLOUDFLARE_API_TOKEN` (Pages:Edit-scoped, least-privilege per `pipeline.ts:321-324`) + `CLOUDFLARE_ACCOUNT_ID` on `sealedsecurity/compass`; production branch set to `main`.
+- Consumes: Q4 ruling (below) — project `compass-docs`, custom domain
+  `docs.compass.sealedsecurity.com`, provisioned via sealed's Pulumi IaC lane.
+- Produces: the `compass-docs` Pages project via sealed's Pulumi IaC (sealed
+  precedent: the docsite got "its OWN Pages:Edit-scoped token once SEA-1119
+  provisions the project", `sealed/ci/pipeline.ts:334-336`); repo secrets
+  `CLOUDFLARE_API_TOKEN` (Pages:Edit-scoped, least-privilege per
+  `pipeline.ts:321-324`) + `CLOUDFLARE_ACCOUNT_ID` on `sealedsecurity/compass`;
+  production branch set to `main`. NOTE: creating the Pages project + seeding
+  the two repo secrets is an operator step (not agent-executable).
 - Test cycle: T3's scratch-PR preview + main production deploy succeed end to end.
 
 ## Tasks
@@ -386,14 +413,14 @@ Interfaces:
 - [ ] T2 — `gather.ts`/`gather.test.ts` ported to the compass taxonomy; this record renders.
 - [ ] T3 — `deploy.ts` on GHA env + `.github/workflows/docs-deploy.yml` with the fork guard.
 - [ ] T4 — sanitization migration script + standing policy doc (Q3 ruled; classes final).
-- [ ] T5 — wave-1 corpus migration + sealed-side removal (gated: Q1, Q2, Q5).
-- [ ] T6 — wave-2 straggler sweep after in-flight sealed PRs freeze.
-- [ ] T7 — Cloudflare Pages project + secrets provisioned (gated: Q4).
+- [ ] T5 — full-corpus migration (all records, one PR) + sealed-side removal; ledger + ledger-gate moved to compass (Q1/Q2/Q5 ruled).
+- [ ] T6 — DROPPED: Q5 ruled all-at-once; wave-2 sweep folded into T5.
+- [ ] T7 — Cloudflare Pages `compass-docs` + `docs.compass.sealedsecurity.com` + secrets provisioned via Pulumi (Q4 ruled).
 
 ## Open Questions
 
-Batched for Matt; each with a recommendation. Q3 is RULED (below). T5-T7 are
-gated on Q1/Q2/Q4/Q5.
+Batched for Matt — ALL RULED (below): Q1/Q2/Q4/Q5 ruled 2026-08-05, Q3 ruled
+earlier. T5 and T7 execute against these rulings; T6 is dropped (Q5).
 
 - **Q1 — Does the design-ledger + ledger-gate + gather tooling move to
   compass, or stay in sealed?** The ledger is Compass-titled and
@@ -401,7 +428,7 @@ gated on Q1/Q2/Q4/Q5.
   `sealed/docs/designs/product/DECISIONS.md:1`) and the gate hardcodes
   `PRODUCT_DIR = "docs/designs/product"`
   (`sealed/tools/design-ledger-gate/index.ts:45`), so it follows the corpus.
-  **Recommendation: MOVE ledger + ledger-gate to compass** (the gate ports
+  **RULED (Matt): MOVE ledger + ledger-gate to compass** (the gate ports
   with its path constant unchanged); the two seal-product rows (DL-045,
   DL-046, `DECISIONS.md:197-198`) stay behind in a small sealed-side residual
   ledger next to the seal records they cite. `gather.ts` is NOT shared — each
@@ -415,7 +442,7 @@ gated on Q1/Q2/Q4/Q5.
   security model" but that is not a ledger EDGE). Q1 is the most defensible
   choice, not the weakest.
 - **Q2 — Is compass the SOURCE OF TRUTH for Compass records going forward, or
-  a published mirror gathered from sealed?** **Recommendation: SOURCE OF
+  a published mirror gathered from sealed?** **RULED (Matt): SOURCE OF
   TRUTH.** A mirror keeps every design PR in the private repo, defeating
   build-in-the-open (readers see outputs, not the review process); it also
   needs a cross-repo sync job that can silently drift. Authoring here means
@@ -450,16 +477,19 @@ gated on Q1/Q2/Q4/Q5.
 - **Q4 — Cloudflare Pages project + custom domain: does one exist, who
   provisions?** No compass Pages project exists (sealed's pipeline knows only
   `sealed-docs` + the marketing site, `sealed/ci/pipeline.ts:333-343`).
-  **Recommendation:** provision a new `compass-docs` project + a
+  **RULED (Matt):** provision a new `compass-docs` project + a
   Pages:Edit-scoped token via sealed's existing Pulumi IaC lane (the SEA-1119
-  precedent, `pipeline.ts:334-336`), production branch `main`; suggested
-  domain `docs.compass.sealedsecurity.com` (or the product's own apex when
-  one exists — Matt's call); until the domain lands the site ships on
+  precedent, `pipeline.ts:334-336`), production branch `main`; custom domain
+  `docs.compass.sealedsecurity.com` (Matt ruled). Until the domain lands the
+  site ships on
   `compass-docs.pages.dev`. Analytics (PostHog snippet, minus sealed's
   Access-cookie inheritance) rides the domain decision.
 - **Q5 — Migration scope: all 39 at once vs settled-now + in-flight-after
-  freeze?** **Recommendation: settled-now (wave 1), in-flight after freeze
-  (wave 2)** — the five in-flight sealed PRs (#1096, #1095, #1087, #1089,
-  #1075) keep their review context where it started; migrating mid-review
-  would strand threads and force re-review. Wave 2 is small and mechanical
-  (T6).
+  freeze?** **RULED (Matt): all at once** — migrate the full corpus in one PR,
+  no two-wave split (supersedes the wave recommendation). Coherent with Q2:
+  because compass is the source of truth, design review continues in the public
+  repo, so the "strands review threads" cost the two-wave split was meant to
+  avoid is instead accepted — any sealed design PR still open at migration time
+  is reconciled to compass by T5 (merge-in-sealed-first then migrate, or
+  re-target to compass — executor sequences), not deferred to a later wave.
+  T6 is therefore dropped.
