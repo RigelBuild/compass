@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -90,6 +91,15 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 		return Channel{}, fmt.Errorf("%w: OWNER_ONLY requires an owner account", ErrInvalidArgument)
 	}
 
+	// Coherence: OPEN admits every member as an author, so an owner account is
+	// meaningless there — and a non-empty owner on an OPEN channel would let a
+	// member silently claim the operator slot (locking future policy changes to
+	// itself). owner-empty is the only legal state when OPEN, so reject a
+	// non-empty owner outright.
+	if c.Policy.PostPolicy == ChannelPostPolicyOpen && c.Policy.OwnerAccountID != "" {
+		return Channel{}, fmt.Errorf("%w: OPEN channel must not name an owner account", ErrInvalidArgument)
+	}
+
 	id := newID()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -128,6 +138,15 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 	members, err := expandOwnerMembership(ctx, tx, actor, c.MemberAccountIDs)
 	if err != nil {
 		return Channel{}, err
+	}
+	// Coherence facet 1: an OWNER_ONLY channel whose owner is not itself a member
+	// is unpostable from birth — the post gate demands the author be BOTH a member
+	// AND the owner, so a non-member owner fails its own membership gate and no
+	// account can ever post. The owner MUST be among the channel's members. The
+	// expansion above is the authoritative final member set (actor + requested +
+	// transitive owners), so check the resolved owner against it before the insert.
+	if c.Policy.OwnerAccountID != "" && !slices.Contains(members, c.Policy.OwnerAccountID) {
+		return Channel{}, fmt.Errorf("%w: owner account %q must be a channel member", ErrInvalidArgument, c.Policy.OwnerAccountID)
 	}
 	for _, m := range members {
 		if _, err := tx.Exec(ctx,
@@ -408,14 +427,20 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 	// subscription there); (2) a plain add to a mandatory channel must seed the
 	// new member's delivery cursor (below), because a mandatory channel makes
 	// every member a delivery target regardless of the subscribed flag. The read
-	// is deliberately UNLOCKED (no FOR UPDATE): the D1 read-side mandatory
-	// disjunct tolerates a racing stale subscribed=false row (no delivery loss),
-	// so a concurrent policy flip need not serialize against this read.
+	// is FOR UPDATE so it serializes against a concurrent SetChannelPolicy
+	// mandatory flip, which takes the same channels-row lock before seeding all
+	// current members. Without the lock a member added concurrently with a flip
+	// can be dropped by both writers — B's seed-all runs before A inserts M, and
+	// A reads the stale mandatory=false and skips M — leaving M an unseeded
+	// member of a mandatory channel (the absent cursor coalesces to live head,
+	// so M is permanently caught-up and silently receives nothing). The lock
+	// guarantees the seed-presence invariant: whichever writer commits first is
+	// observed by the second, so M is seeded by exactly one of them, never zero.
 	// owner_account_id/policy fields are server-set and never mutated through
 	// this path — UpdateChannelMembers only ever touches membership rows.
 	var mandatory bool
 	if err := tx.QueryRow(ctx,
-		"SELECT mandatory_subscription FROM channels WHERE id = $1", string(channelID),
+		"SELECT mandatory_subscription FROM channels WHERE id = $1 FOR UPDATE", string(channelID),
 	).Scan(&mandatory); err != nil {
 		return Channel{}, nil, fmt.Errorf("store: read channel mandatory flag: %w", err)
 	}
@@ -595,6 +620,9 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 		"SELECT mandatory_subscription, COALESCE(owner_account_id, '') FROM channels WHERE id = $1 FOR UPDATE",
 		string(channelID),
 	).Scan(&wasMandatory, &currentOwner); err != nil {
+		// Defensive/unreachable: requireChannelMember above already proved the
+		// channel exists (a nonexistent channel has no members), so this
+		// FOR UPDATE cannot return no-rows. Kept for symmetry with messages.go.
 		if noRows(err) {
 			return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
 		}
@@ -620,6 +648,37 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 	// owner-empty is the only legal state when OPEN.)
 	if p.PostPolicy == ChannelPostPolicyOwnerOnly && p.OwnerAccountID == "" {
 		return Channel{}, fmt.Errorf("%w: OWNER_ONLY requires an owner account", ErrInvalidArgument)
+	}
+
+	// Coherence facet 2: owner-empty is the only legal state when OPEN — OPEN
+	// admits every member as an author, so an owner account is meaningless there,
+	// and a non-empty owner would let a member silently claim the operator slot
+	// (locking future policy changes to itself). Reject a non-empty owner on OPEN.
+	// This is InvalidArgument and MUST stay after the no-oracle owner gate above:
+	// a non-owner already collapsed to ErrNotFound and never reaches here, so no
+	// InvalidArgument signal leaks channel existence to an unauthorized caller.
+	if p.PostPolicy == ChannelPostPolicyOpen && p.OwnerAccountID != "" {
+		return Channel{}, fmt.Errorf("%w: OPEN channel must not name an owner account", ErrInvalidArgument)
+	}
+
+	// Coherence facet 1: the owner MUST be a member of the channel. An OWNER_ONLY
+	// channel whose owner is a non-member is unpostable — the post gate demands
+	// the author be BOTH a member AND the owner, so a non-member owner fails its
+	// own membership gate and no account can ever post. Reject before the write.
+	// Only the authorized actor (establishing on an ownerless channel, or the
+	// existing owner) reaches this after the owner gate, so the membership EXISTS
+	// reveals nothing an authorized caller should not already know.
+	if p.OwnerAccountID != "" {
+		var ownerIsMember bool
+		if err := tx.QueryRow(ctx,
+			"SELECT EXISTS (SELECT 1 FROM channel_members WHERE channel_id = $1 AND account_id = $2)",
+			string(channelID), string(p.OwnerAccountID),
+		).Scan(&ownerIsMember); err != nil {
+			return Channel{}, fmt.Errorf("store: check owner membership: %w", err)
+		}
+		if !ownerIsMember {
+			return Channel{}, fmt.Errorf("%w: owner account %q must be a channel member", ErrInvalidArgument, p.OwnerAccountID)
+		}
 	}
 
 	if _, err := tx.Exec(ctx,
