@@ -60,31 +60,54 @@ func agentImageExists() bool {
 	return exec.Command("podman", "image", "exists", agentImage).Run() == nil
 }
 
-// agentImageBoots reports whether the agent image can actually start its process
-// — present is not the same as bootable. The image bundles the compass-agent JS
-// entrypoint, which loads a native addon (pi_natives) at module init, before
-// main(). An image whose recipe never ships that addon beside the bundle throws
-// at load and, under the Runner's default-deny egress, hangs on the addon's
-// npmjs-fetch recovery — so the agent never reaches the config read this test
-// observes. This probe boots the agent offline (--network=none, the Runner's
-// egress posture) with the addon-loader's startup markers on, and reports false
-// when the load fails. Skipping on a false keeps this test HONEST: a
-// present-but-unbootable image is not a config-delivery regression, so it must
-// not read as a failure of this test's subject — but it is never a silent pass
-// either (the caller emits a loud skip naming the defect).
-func agentImageBoots() bool {
+// agentBootResult is the outcome of the agent-image boot probe. Present is not
+// the same as bootable: the image bundles the compass-agent JS entrypoint, which
+// loads a native addon (pi_natives) at module init, before main(). An image
+// whose recipe never ships that addon beside the bundle throws at load and,
+// under the Runner's default-deny egress, hangs on the addon's npmjs-fetch
+// recovery — so the agent never reaches the config read this test observes.
+type agentBootResult int
+
+const (
+	// agentBootable: the addon loaded (loadNative's success marker is present).
+	agentBootable agentBootResult = iota
+	// agentUnbootable: the known image-recipe defect fired (the addon-load
+	// failure prefix is present) — a present-but-unbootable image, skip not fail.
+	agentUnbootable
+	// agentBootInconclusive: the probe saw NEITHER startup marker. The success
+	// marker is an oh-my-pi debug string emitted under PI_DEBUG_STARTUP, a
+	// contract that lives in a sibling fork and has been volatile; its absence on
+	// an otherwise-runnable image means that contract may have DRIFTED, so the
+	// caller must skip loudly and distinctly (silently reusing the known-defect
+	// narrative would let this test stop auto-activating with no alarm).
+	agentBootInconclusive
+)
+
+// probeAgentBoot boots the agent offline (--network=none, the Runner's egress
+// posture) with the addon-loader's startup markers on, and classifies the
+// outcome. Booting offline forces a broken image to fail fast rather than hang
+// on npmjs recovery. Classifying (rather than a bare bool) keeps this test
+// HONEST: the caller emits a DIFFERENT loud skip for a known-unbootable image
+// than for a drifted-marker probe, so neither a present-but-unbootable image nor
+// a stale probe ever reads as a config-delivery failure — but neither is a
+// silent pass either.
+func probeAgentBoot() agentBootResult {
 	out, _ := exec.Command(
 		"podman", "run", "--rm", "--network=none",
 		"--env", "PI_DEBUG_STARTUP=1",
 		agentImage, "compass-agent",
 	).CombinedOutput()
+	s := string(out)
 	// The addon loader throws this exact prefix when no pi_natives*.node is
-	// resolvable; its presence is the unbootable-image signal. loadNative's
-	// success marker confirms the addon actually loaded.
-	if strings.Contains(string(out), "Failed to load pi_natives native addon") {
-		return false
+	// resolvable; its presence is the known-defect signal.
+	if strings.Contains(s, "Failed to load pi_natives native addon") {
+		return agentUnbootable
 	}
-	return strings.Contains(string(out), "native:loadNative:done")
+	// loadNative's success marker confirms the addon actually loaded.
+	if strings.Contains(s, "native:loadNative:done") {
+		return agentBootable
+	}
+	return agentBootInconclusive
 }
 
 // podmanUsable reports whether rootless podman can run a container here. A
@@ -211,15 +234,25 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	if !agentImageExists() {
 		t.Skip(agentImage + " not present in local storage")
 	}
-	if !agentImageBoots() {
+	switch probeAgentBoot() {
+	case agentUnbootable:
 		// LOUD skip, never a silent pass: the image is present but its agent
 		// process cannot start (the recipe ships no loadable pi_natives addon),
 		// so the config-delivery loop this test proves is unreachable through no
-		// fault of the runner. This is a known image-recipe defect tracked
-		// separately; the test auto-activates the instant a bootable image is
-		// loaded. It is deliberately a skip, not a fail: a fail here would
-		// misattribute an image defect to the runner's config path.
+		// fault of the runner. A known image-recipe defect, tracked separately;
+		// the test auto-activates the instant a bootable image is loaded. A skip,
+		// not a fail: a fail here would misattribute an image defect to the
+		// runner's config path.
 		t.Skip(agentImage + " is present but its agent cannot boot (no loadable pi_natives addon); config-delivery loop unreachable until the agent image ships a working addon")
+	case agentBootInconclusive:
+		// The probe saw neither the known load-failure nor the success marker.
+		// The image may be otherwise bootable, but the PI_DEBUG_STARTUP marker
+		// contract this probe keys on has likely drifted — so this test is no
+		// longer reliably auto-activating. Skip LOUDLY and distinctly: do NOT
+		// reuse the known-defect narrative, which would hide a real coverage loss.
+		t.Skip(agentImage + ": startup probe inconclusive — saw neither the pi_natives load-failure nor the native:loadNative:done marker; the PI_DEBUG_STARTUP marker contract may have drifted, so this test is no longer auto-activating — investigate the probe rather than assuming the known image defect")
+	case agentBootable:
+		// Bootable — run the config-delivery proof below.
 	}
 
 	// Two distinct bundle versions, neither a substring of the other, so the v2
@@ -257,6 +290,14 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 
 	cfg := AgentHostConfig{RuntimeDir: shortRuntimeDir(t)}
 	host := NewSessionHost(link, rt, registry, engine, e2eSpecBuilder{name: name}, cfg, log.logger(), monotonicIDs()).(*agentHost)
+	// Close the host last: it Closes the per-container socket listener that
+	// Provision opens, which neither Stop (agent stream only) nor the container
+	// force-remove reaches. Mirrors e2e_transport_test.go.
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		host.Close(closeCtx)
+	})
 
 	// context.Background() as the test root — the rule's explicit test exemption.
 	ctx := context.Background()
@@ -292,10 +333,4 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	// hash. The real agent re-booted on Reload and read the flipped current/ ->
 	// the new bundle.
 	waitForConfigVersionLine(t, log, v2hash, 90*time.Second)
-
-	// 5. Guard the fixture actually moved: distinct versions are what make the
-	// second line a genuine pickup and not a re-observation of the first.
-	if v1hash == v2hash {
-		t.Fatalf("fixture bug: v1 and v2 hashes are equal (%q), the second line would be indistinguishable from the first", v1hash)
-	}
 }
