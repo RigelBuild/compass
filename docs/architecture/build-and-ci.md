@@ -133,6 +133,72 @@ Skipping what it cannot verify would make its green mean nothing.
 - **A live UI↔server path.** Every `compass-ui` task runs against fixtures, so
   no check exercises the UI against a running server.
 
+## Publishing the agent image
+
+The `compass-agent` runtime image (the base every agent workstream runs in) is
+published to GHCR by a workflow separate from the gate above. For the full
+rationale see the design record
+`docs/designs/platform/compass-agent-image-publish.md`; the durable operational
+shape is here.
+
+**Ref and tags.** The image is `ghcr.io/sealedsecurity/compass-agent`. Every
+closure-affecting main build publishes two tags:
+
+- `:git-<sha12>` — the 12-hex short commit sha, **immutable**. This is the pin
+  the native app bakes in and hands the runner via `--image` /
+  `$COMPASS_AGENT_IMAGE`; it is the real consumption path. The publish refuses
+  to overwrite an existing `:git-<sha>` whose content differs and re-inspects
+  after each push to assert the digest landed, so the tag is immutable by
+  enforcement, not convention.
+- `:latest` — moving, documented **first-run fallback only**, never the default.
+
+The git-sha tag is pushed before `:latest`, so the immutable pin always exists
+before the moving tag moves. Platform is `linux/amd64` single-arch (the dogfood
+milestone target; macOS/`aarch64` multi-arch is a GA follow-up). The package is
+**public** — compass is open-source, the image payload is public source, and it
+carries no runtime secrets (those are runner-supplied per-exec) — so the
+first-run pull needs no credential anywhere.
+
+**One derivation, two destinations.** The published `:git-<sha>` and the local
+`dogfood:agent-image` load are copies of the *same* nix derivation — both flow
+through the fork's `container build agent`. They diverge only in the skopeo
+destination (a registry ref versus `containers-storage:`), so what CI publishes
+is byte-for-byte what a developer loads locally.
+
+**A separate least-privilege workflow.** Publishing lives in
+`.github/workflows/publish-agent-image.yml`, **not** a step in the `CI` gate and
+**not** a required check. It runs main-only plus `workflow_dispatch`,
+path-filtered to the image's nix closure, with its own concurrency group set to
+`cancel-in-progress: false` (publishes serialize rather than tear a tag pair
+mid-push) and a `packages: write` token the gate job never gets. This is a
+principled exception to the [ONE-JOB doctrine](#ci): the doctrine exists to stop
+a second source of truth for *what the gate covers*, and this workflow
+enumerates no moon projects (`agent-image/` is a standalone devenv, not a moon
+project) — so it recreates none of the silent-staleness failure the doctrine
+guards against. A published tag is the source of truth; a missing one (paths
+filtered it out, or a superseding push skipped it under the serialized
+concurrency group) is **not** a failure — `workflow_dispatch` republishes any
+HEAD on demand.
+
+**Smoke.** On a runner host, pull the immutable tag and drive the consumer seam:
+
+```sh
+podman pull ghcr.io/sealedsecurity/compass-agent:git-<sha12>
+compass-runner --image ghcr.io/sealedsecurity/compass-agent:git-<sha12>
+# then drive one provision
+```
+
+**One-time setup.** The first `GITHUB_TOKEN` push creates the package
+private-by-default (and only if the org policy permits `GITHUB_TOKEN`-created
+packages, else the push 403s and an owner must pre-create it). An owner sets the
+package **public** once in its settings after that first push; the repo linkage
+grants the workflow write access thereafter. Pre-creating the empty package
+also settles the immutability guard's first-publish edge: the guard inspects
+`:git-<sha>` *before* the creating copy and only an authoritative
+`manifest unknown` frees the tag, so an owner-pre-created (hence
+authenticatable) package guarantees the absent-tag inspect classifies cleanly
+rather than on a not-yet-existent repository's error shape.
+
 ## Caching
 
 **moon task cache** — whole-task-output caching, keyed by an inputs hash.
