@@ -176,6 +176,29 @@ func (c *Comms) ListAsAccount(
 	return resp.Msg, nil
 }
 
+// UpdatePinnedBoardAsAccount executes one agent-initiated UpdatePinnedBoard as
+// account, mirroring PostAsAccount: WithActor + the shared UpdatePinnedBoard
+// handler path, so the board authz (post_policy), the pure-pointer store ops,
+// and the ChannelChanged fan-out are identical to a human caller's. A non-member
+// or non-owner (on OWNER_ONLY) channel collapses to the same CodeNotFound a
+// human gets — the agent never learns a board it cannot mutate exists. The pin
+// request always names its channel explicitly (the board is not the agent's home
+// channel by default), so there is no home-channel defaulting here.
+func (c *Comms) UpdatePinnedBoardAsAccount(
+	ctx context.Context,
+	account store.AccountID,
+	req *compassv1.UpdatePinnedBoardRequest,
+) (*compassv1.UpdatePinnedBoardResponse, error) {
+	if account == "" {
+		return nil, errNoActor
+	}
+	resp, err := c.UpdatePinnedBoard(WithActor(ctx, account), connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // CommitAgentPost commits one relayed MessagePosted frame as a durable comms row
 // under account. It builds a PostMessageRequest from the frame's blocks and
 // delegates to PostAsAccount, so this is the SAME PostMessage handler path a

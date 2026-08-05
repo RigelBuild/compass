@@ -107,6 +107,28 @@ func channelPostPolicyFromWire(p compassv1.ChannelPostPolicy) store.ChannelPostP
 	}
 }
 
+// pinnedEntriesToWire maps the store-native pinned board onto the wire
+// PinnedEntry repeated field (T6), mirroring the store-native->wire edge every
+// other projection uses (the store depends on no generated code). Order is
+// preserved: the store returns entries sorted ascending by position, and the
+// wire slice keeps that order. Nil in, nil out (an empty board is an unset
+// repeated field, not an empty non-nil slice).
+func pinnedEntriesToWire(entries []store.PinnedEntry) []*compassv1.PinnedEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	wire := make([]*compassv1.PinnedEntry, len(entries))
+	for i, e := range entries {
+		wire[i] = &compassv1.PinnedEntry{
+			MessageId:         string(e.MessageID),
+			Position:          e.Position,
+			PinnedAtUnixMs:    e.PinnedAtUnixMs,
+			PinnedByAccountId: string(e.PinnedByAccountID),
+		}
+	}
+	return wire
+}
+
 func workspaceToWire(w store.AgentWorkspace) *compassv1.AgentWorkspace {
 	return &compassv1.AgentWorkspace{
 		Id:             string(w.ID),

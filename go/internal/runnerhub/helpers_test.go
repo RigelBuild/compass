@@ -160,6 +160,7 @@ type commsCall struct {
 	list      *compassv1.ListMessagesRequest
 	roster    *compassv1.GetRosterRequest
 	setStatus string
+	pin       *compassv1.UpdatePinnedBoardRequest
 }
 
 // fakeCommsCaller is a hand-written CommsCaller: it records every call (account
@@ -186,6 +187,8 @@ type fakeCommsCaller struct {
 	setStatusErr        error
 	setStatusTruncateTo int
 	setStatusReturned   string
+	pinResp             *compassv1.UpdatePinnedBoardResponse
+	pinErr              error
 }
 
 func (f *fakeCommsCaller) PostAsAccount(_ context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error) {
@@ -235,6 +238,16 @@ func (f *fakeCommsCaller) SetStatusAsAccount(_ context.Context, account store.Ac
 	}
 	f.setStatusReturned = truncated
 	return truncated, nil
+}
+
+func (f *fakeCommsCaller) UpdatePinnedBoardAsAccount(_ context.Context, account store.AccountID, req *compassv1.UpdatePinnedBoardRequest) (*compassv1.UpdatePinnedBoardResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, pin: req})
+	if f.pinErr != nil {
+		return nil, f.pinErr
+	}
+	return f.pinResp, nil
 }
 
 func (f *fakeCommsCaller) snapshot() []commsCall {
