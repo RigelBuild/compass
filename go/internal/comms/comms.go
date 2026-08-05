@@ -142,6 +142,10 @@ func (c *Comms) CreateAgent(
 				fmt.Errorf("parent agent %q has a different owner", parent))
 		}
 	}
+	// Install the coordination emit buffer so the store's in-tx coordination hook
+	// (fired inside CreateAgent when this agent has a parent) records its channel
+	// change here; drained + emitted post-commit below (SEA-1722 T5).
+	ctx, coordChanges := withCoordChanges(ctx)
 	acc, err := c.store.CreateAgent(ctx, owner, store.NewAgent{
 		Handle:        req.Msg.GetHandle(),
 		DisplayName:   req.Msg.GetDisplayName(),
@@ -151,6 +155,7 @@ func (c *Comms) CreateAgent(
 		return nil, edgeError(err)
 	}
 	c.publishAccountChanged(acc)
+	c.emitCoordChanges(ctx, coordChanges)
 	return connect.NewResponse(&compassv1.CreateAgentResponse{Account: accountToWire(acc)}), nil
 }
 
@@ -273,6 +278,10 @@ func (c *Comms) ReparentAgent(
 	ctx context.Context,
 	req *connect.Request[compassv1.ReparentAgentRequest],
 ) (*connect.Response[compassv1.ReparentAgentResponse], error) {
+	// Install the coordination emit buffer so the store's in-tx coordination hook
+	// (fired inside ReparentAgent for both the new and old managers) records its
+	// channel changes here; drained + emitted post-commit below (SEA-1722 T5).
+	ctx, coordChanges := withCoordChanges(ctx)
 	acc, err := c.store.ReparentAgent(
 		ctx,
 		c.actorFromContext(ctx),
@@ -283,6 +292,7 @@ func (c *Comms) ReparentAgent(
 		return nil, edgeError(err)
 	}
 	c.publishAccountChanged(acc)
+	c.emitCoordChanges(ctx, coordChanges)
 	return connect.NewResponse(&compassv1.ReparentAgentResponse{Account: accountToWire(acc)}), nil
 }
 

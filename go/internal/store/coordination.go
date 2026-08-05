@@ -1,0 +1,354 @@
+package store
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// CoordinationHook is the manager-comms coordination-channel reconcile the comms
+// layer registers on the store (SEA-1722 T5, design.md:542-551). The two
+// parent-edge writers (CreateAgent, ReparentAgent) invoke it on their OWN pgx.Tx
+// right after writing agent_accounts.parent_agent_id, so the reconcile runs in
+// the SAME transaction as the parent-edge write WITHOUT the store importing
+// comms/channel types — the store owns the tx; the hook is an injected callback,
+// never a *Comms method reached from inside *Store. managerAgentID is the
+// manager whose coordination channel must be reconciled (the PARENT of the agent
+// whose edge just changed): its membership resyncs against the manager's current
+// reports. A hook returning an error aborts the writer's whole tx (the whole
+// parent-edge write rolls back) — fail-loud on a genuine store fault; the comms
+// reconcile is written so its only EXPECTED outcome (a name collision) never
+// errors (design.md:579-585), so a returned error is always a real fault.
+type CoordinationHook func(ctx context.Context, tx pgx.Tx, managerAgentID AccountID) error
+
+// SetCoordinationHook registers the coordination-channel reconcile hook, wired
+// once at server assembly before serving (mirrors comms.SetAskWaker /
+// hub.SetSettleSink). No lock: the write happens-before the first concurrent
+// parent-edge write. A nil hook (the store-only test path) leaves the writers a
+// no-op. The comms layer owns the closure; the store only invokes it.
+func (s *Store) SetCoordinationHook(h CoordinationHook) {
+	s.coordinationHook = h
+}
+
+// invokeCoordinationHook runs the registered coordination hook on tx for
+// managerAgentID, a no-op if unregistered. The two parent-edge writers call it
+// right after writing parent_agent_id, INSIDE their tx, so the reconcile commits
+// atomically with the tree edge (design.md:554). managerAgentID is the empty
+// string when the just-written edge has no parent (a root agent has no manager,
+// so there is no coordination channel to reconcile); the caller must skip the
+// call in that case rather than pass empty.
+func (s *Store) invokeCoordinationHook(ctx context.Context, tx pgx.Tx, managerAgentID AccountID) error {
+	if s.coordinationHook == nil {
+		return nil
+	}
+	return s.coordinationHook(ctx, tx, managerAgentID)
+}
+
+// CoordinationChannelSpec is the resolved identity + policy for one manager's
+// coordination channel, computed by the comms reconcile (which owns the NAME and
+// the policy values, design.md:543-544) and handed to UpsertCoordinationChannelTx
+// (which owns the SQL). Keeping the split here means the store never encodes the
+// `<handle>-coordination` naming or the OWNER_ONLY/mandatory policy — it only
+// persists what the comms edge decides.
+type CoordinationChannelSpec struct {
+	// GroupID is the manager's owner's per-owner coordination namespace group,
+	// get-or-created by EnsureOwnerCoordinationGroupTx. The channel is always
+	// GROUPED so the partial unique index channels_group_name_key applies
+	// (design.md:570-573).
+	GroupID ChannelGroupID
+	// BaseName is the un-suffixed channel name (`<manager-handle>-coordination`);
+	// UpsertCoordinationChannelTx resolves the final name, suffixing on an
+	// owner-mismatch collision (design.md:579-585).
+	BaseName string
+	// OwnerAccountID is the manager account that owns/operates the channel; it is
+	// the resume-vs-suffix discriminator (resume only when an existing same-named
+	// channel's owner_account_id matches this).
+	OwnerAccountID AccountID
+	// Policy is the fixed coordination policy (OWNER_ONLY + mandatory_subscription
+	// + owner = the manager). Seeded at insert so the channel is born correct.
+	Policy ChannelPolicy
+}
+
+// EnsureOwnerCoordinationGroupTx get-or-creates the single per-owner namespace
+// group that hosts every one of ownerUserID's coordination channels, on tx, and
+// returns its id. Deterministic + idempotent: keyed on owner_user_id + a fixed
+// reserved name, so re-provisioning any manager under the same owner resolves the
+// SAME group — the invariant the same-owner collision analysis depends on
+// (design.md:570-585: all of an owner's coordination channels must share one
+// group or the collision could never occur). The group is VisibilityOwner
+// (coordination is owner-private, never shared) and un-parented (a top-level
+// per-owner namespace). The caller holds the per-owner advisory lock, so the
+// SELECT-then-INSERT cannot race a concurrent first-report for the same owner.
+func (s *Store) EnsureOwnerCoordinationGroupTx(ctx context.Context, tx pgx.Tx, ownerUserID AccountID) (ChannelGroupID, error) {
+	if ownerUserID == "" {
+		return "", fmt.Errorf("%w: owner user id is required", ErrInvalidArgument)
+	}
+	// A fixed reserved name scoped to the owner — deterministic, so every
+	// reconcile for this owner resolves the identical group. The name is an
+	// internal reserved segment; it never collides with a user-created group
+	// because those are created only through CreateChannelGroup with a
+	// caller-supplied name and this segment is not offered there.
+	const coordinationGroupName = "__coordination__"
+
+	var existing string
+	switch err := tx.QueryRow(ctx,
+		`SELECT id FROM channel_groups WHERE owner_user_id = $1 AND name = $2 AND parent_group_id IS NULL`,
+		string(ownerUserID), coordinationGroupName,
+	).Scan(&existing); {
+	case err == nil:
+		return ChannelGroupID(existing), nil
+	case !noRows(err):
+		return "", fmt.Errorf("store: resolve coordination group: %w", err)
+	}
+
+	id := newID()
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO channel_groups (id, name, parent_group_id, owner_user_id, visibility) VALUES ($1, $2, NULL, $3, $4)`,
+		id, coordinationGroupName, string(ownerUserID), int32(VisibilityOwner),
+	); err != nil {
+		return "", fmt.Errorf("store: insert coordination group: %w", err)
+	}
+	return ChannelGroupID(id), nil
+}
+
+// UpsertCoordinationChannelTx get-or-creates spec's coordination channel on tx
+// and returns its id, resolving the one EXPECTED collision without ever erroring
+// the tx (design.md:579-585). It is the store SQL half of the reconcile; the
+// comms closure owns spec's name + policy.
+//
+// Resolution (the caller holds the per-owner advisory lock, so no concurrent
+// writer can interleave a second row for the same (group, name)):
+//   - No channel named spec.BaseName in spec.GroupID: INSERT it with spec.Policy
+//     (born OWNER_ONLY + mandatory + owner=manager).
+//   - A channel named spec.BaseName exists AND its owner_account_id == the
+//     manager: RESUME it — return its id (idempotent re-provision; policy already
+//     correct from a prior insert, never re-forced).
+//   - A channel named spec.BaseName exists with a DIFFERENT owner (a user's
+//     manual channel): NEVER adopt. Deterministically suffix `-2`, `-3`, … and
+//     retry the same resolution on the suffixed name until a free name or a
+//     manager-owned resume is found. The suffix search terminates: names are
+//     probed in increasing integer order and the manager owns at most finitely
+//     many, so a free name is always reached.
+//
+// Because every branch is a SELECT-guided INSERT-or-resume under the lock, the
+// partial unique index channels_group_name_key is never violated — the method
+// cannot raise a unique-violation that would poison the outer parent-edge tx.
+func (s *Store) UpsertCoordinationChannelTx(ctx context.Context, tx pgx.Tx, spec CoordinationChannelSpec) (ChannelID, error) {
+	if spec.GroupID == "" {
+		return "", fmt.Errorf("%w: coordination channel group is required", ErrInvalidArgument)
+	}
+	if spec.BaseName == "" {
+		return "", fmt.Errorf("%w: coordination channel name is required", ErrInvalidArgument)
+	}
+
+	for suffix := 1; ; suffix++ {
+		name := spec.BaseName
+		if suffix > 1 {
+			name = fmt.Sprintf("%s-%d", spec.BaseName, suffix)
+		}
+
+		var (
+			existingID    string
+			existingOwner string
+		)
+		switch err := tx.QueryRow(ctx,
+			`SELECT id, COALESCE(owner_account_id, '') FROM channels WHERE group_id = $1 AND name = $2`,
+			string(spec.GroupID), name,
+		).Scan(&existingID, &existingOwner); {
+		case err == nil:
+			// A channel with this name already exists. Resume only when the
+			// manager owns it; otherwise it is a user's channel we must never
+			// adopt — advance to the next suffix.
+			if AccountID(existingOwner) == spec.OwnerAccountID {
+				return ChannelID(existingID), nil
+			}
+			continue
+		case !noRows(err):
+			return "", fmt.Errorf("store: resolve coordination channel: %w", err)
+		}
+
+		// Free name: INSERT the channel born with the coordination policy.
+		id := newID()
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription) `+
+				`VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)`,
+			id, name, string(spec.GroupID), int32(ChannelKindChannel),
+			int32(spec.Policy.PostPolicy), string(spec.Policy.OwnerAccountID), spec.Policy.MandatorySubscription,
+		); err != nil {
+			return "", fmt.Errorf("store: insert coordination channel: %w", err)
+		}
+		return ChannelID(id), nil
+	}
+}
+
+// SetCoordinationMembersTx resyncs channelID's membership to exactly want on tx:
+// it adds every wanted member missing a row (seeding each agent member's D2
+// delivery cursor to channel head IN THIS TX, so a mandatory channel never mints
+// an un-seeded delivery target — the fail-DANGEROUS D2 hazard), and removes every
+// current member not in want, returning the accounts a removal actually deleted
+// so the comms edge can carry them in the final ChannelChanged.removed_account_ids
+// (design.md:567-568). Membership-set reconcile, idempotent: a re-run with the
+// same want adds and removes nothing. want is the manager + its current reports;
+// the caller holds the per-owner advisory lock, so the read-then-write of the
+// member set is race-free against a concurrent reconcile for the same owner.
+func (s *Store) SetCoordinationMembersTx(ctx context.Context, tx pgx.Tx, channelID ChannelID, want []AccountID) ([]AccountID, error) {
+	wantSet := make(map[AccountID]bool, len(want))
+	for _, m := range want {
+		wantSet[m] = true
+	}
+
+	rows, err := tx.Query(ctx,
+		`SELECT account_id FROM channel_members WHERE channel_id = $1`, string(channelID))
+	if err != nil {
+		return nil, fmt.Errorf("store: list coordination members: %w", err)
+	}
+	current := make(map[AccountID]bool)
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: scan coordination member: %w", err)
+		}
+		current[AccountID(m)] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate coordination members: %w", err)
+	}
+
+	// Add every wanted member missing a row, seeding its delivery cursor in this
+	// tx. seedDeliveryCursor is self-guarding (agent-only) and idempotent, so a
+	// human member (the owner is a user) yields no cursor row and an existing
+	// cursor is untouched.
+	for _, m := range want {
+		if current[m] {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, FALSE) `+
+				`ON CONFLICT (channel_id, account_id) DO NOTHING`,
+			string(channelID), string(m),
+		); err != nil {
+			if pgErrIs(err, pgForeignKeyViolation) {
+				return nil, fmt.Errorf("%w: unknown coordination member %q", ErrInvalidArgument, m)
+			}
+			return nil, fmt.Errorf("store: insert coordination member: %w", err)
+		}
+		if err := seedDeliveryCursor(ctx, tx, m, channelID); err != nil {
+			return nil, err
+		}
+	}
+
+	// Remove every current member not wanted, collecting the deletions for the
+	// final ChannelChanged. Iterate `current` in no particular order; the caller
+	// treats removed as a set.
+	var removed []AccountID
+	for m := range current {
+		if wantSet[m] {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM channel_members WHERE channel_id = $1 AND account_id = $2`,
+			string(channelID), string(m),
+		); err != nil {
+			return nil, fmt.Errorf("store: remove coordination member: %w", err)
+		}
+		removed = append(removed, m)
+	}
+	return removed, nil
+}
+
+// CoordinationReports returns managerAgentID + every agent whose parent_agent_id
+// is managerAgentID (its direct reports), on tx — the wanted member set for the
+// manager's coordination channel. The manager is always included (it owns and
+// posts to the channel). Reports are the DIRECT children only (the coordination
+// channel is one manager's report set, not a subtree). Ordered by account id for
+// a stable set. Runs on the passed tx so it reads the tree state the parent-edge
+// write just committed within this same transaction.
+func (s *Store) CoordinationReports(ctx context.Context, tx pgx.Tx, managerAgentID AccountID) ([]AccountID, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT account_id FROM agent_accounts WHERE parent_agent_id = $1 ORDER BY account_id`,
+		string(managerAgentID))
+	if err != nil {
+		return nil, fmt.Errorf("store: list coordination reports: %w", err)
+	}
+	defer rows.Close()
+	members := []AccountID{managerAgentID}
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, fmt.Errorf("store: scan coordination report: %w", err)
+		}
+		members = append(members, AccountID(m))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate coordination reports: %w", err)
+	}
+	return members, nil
+}
+
+// ResolveCoordinationManagerTx resolves the manager's handle and its owning user
+// on tx — the two facts the comms reconcile needs to build the channel spec (the
+// name derives from the handle; the group from the owner). An id that names no
+// agent account is ErrNotFound. Runs on the passed tx (mid-parent-edge-write).
+func (s *Store) ResolveCoordinationManagerTx(ctx context.Context, tx pgx.Tx, managerAgentID AccountID) (handle string, ownerUserID AccountID, err error) {
+	var owner string
+	switch scanErr := tx.QueryRow(ctx,
+		`SELECT a.handle, ag.owner_user_id
+		   FROM accounts a
+		   JOIN agent_accounts ag ON ag.account_id = a.id
+		  WHERE a.id = $1`,
+		string(managerAgentID),
+	).Scan(&handle, &owner); {
+	case scanErr == nil:
+		return handle, AccountID(owner), nil
+	case noRows(scanErr):
+		return "", "", fmt.Errorf("%w: coordination manager %q", ErrNotFound, managerAgentID)
+	default:
+		return "", "", fmt.Errorf("store: resolve coordination manager: %w", scanErr)
+	}
+}
+
+// LockOwnerCoordinationTx takes the per-owner advisory lock that serializes every
+// coordination reconcile under one owner's namespace, on tx (auto-released at tx
+// end). It keys on the owner so the group get-or-create and the channel provision
+// for two concurrent first-reports of DIFFERENT managers under the SAME owner
+// cannot race into two groups or two channels. hashtext widens the text key to
+// the int the advisory lock takes; a hash collision across two owners is a benign
+// redundant wait, never a wrong result (mirrors ReparentAgent's per-owner-tree
+// lock, accounts.go).
+func LockOwnerCoordinationTx(ctx context.Context, tx pgx.Tx, ownerUserID AccountID) error {
+	// Namespace the key against ReparentAgent's per-owner-tree lock (which keys on
+	// the bare owner) so the two locks never spuriously serialize each other: a
+	// reconcile runs INSIDE a parent-edge write that may itself hold the tree
+	// lock, and a distinct key avoids a self-deadlock-adjacent double-take while
+	// still serializing coordination reconciles against each other.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('coordination:' || $1))`, string(ownerUserID)); err != nil {
+		return fmt.Errorf("store: lock owner coordination: %w", err)
+	}
+	return nil
+}
+
+// WithTx runs fn inside a single store transaction, committing on success and
+// rolling back on error (or panic). It is the store's transaction seam for the
+// comms coordination manual/backfill entrypoints (EnsureCoordinationChannel,
+// ReconcileCoordinationMembership, design.md:558-559), which must run the same
+// in-tx reconcile the hook runs but under a tx they own (the hook path rides the
+// parent-edge writer's tx). Keeping the seam here means the comms layer never
+// touches the pgx pool directly. fn must confine all its reads/writes to the
+// passed tx.
+func (s *Store) WithTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after a successful commit.
+	if err := fn(tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit tx: %w", err)
+	}
+	return nil
+}

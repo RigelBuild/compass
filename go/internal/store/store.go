@@ -43,6 +43,14 @@ type Store struct {
 	// that triggers a safety_valve eviction; defaultSafetyValveCapBytes at Open,
 	// tunable (lowered by tests to exercise the valve).
 	safetyValveCapBytes int
+	// coordinationHook is the manager-comms coordination-channel reconcile
+	// (SEA-1722 T5), registered by the comms layer via SetCoordinationHook at
+	// server assembly and invoked by the two parent-edge writers (CreateAgent,
+	// ReparentAgent) on their own tx right after writing parent_agent_id. nil
+	// until wired (a store with no hook — every store-only test — is a no-op).
+	// No lock: set once before serving, so the write happens-before the first
+	// concurrent parent-edge write (mirrors comms.SetAskWaker / hub.SetSettleSink).
+	coordinationHook CoordinationHook
 }
 
 // querier is the read surface shared by the pool and a transaction, so a scan

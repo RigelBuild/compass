@@ -171,6 +171,18 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 		return Account{}, fmt.Errorf("store: insert agent_account: %w", err)
 	}
 
+	// INVARIANT: every write of agent_accounts.parent_agent_id must invoke the
+	// registered coordination hook. The INSERT above just wrote it; invoke the
+	// hook on THIS tx for the new agent's PARENT (the manager that gains this
+	// report), so the coordination-channel reconcile commits atomically with the
+	// tree edge (SEA-1722 T5, design.md:550-551). Skipped when parent is empty: a
+	// root agent has no manager, so there is no coordination channel to reconcile.
+	if a.ParentAgentID != "" {
+		if err := s.invokeCoordinationHook(ctx, tx, a.ParentAgentID); err != nil {
+			return Account{}, err
+		}
+	}
+
 	// Mint the home channel: named for the agent, ungrouped (owner-scoped), with
 	// the owner and the agent as members and the agent always-subscribed.
 	if _, err := tx.Exec(ctx,
@@ -343,11 +355,44 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 		return Account{}, err
 	}
 
+	// Capture the CURRENT parent before the UPDATE overwrites it: reparent-out
+	// must reconcile the OLD manager's coordination channel too (its report set
+	// loses this agent), per design.md:567 "reparent-out removes it". NULL parent
+	// (a root) scans to empty — no old manager to reconcile.
+	var oldParent *string
+	if err := tx.QueryRow(ctx,
+		`SELECT parent_agent_id FROM agent_accounts WHERE account_id = $1`,
+		string(agentAccountID),
+	).Scan(&oldParent); err != nil {
+		return Account{}, fmt.Errorf("store: resolve old parent: %w", err)
+	}
+
 	if _, err := tx.Exec(ctx,
 		`UPDATE agent_accounts SET parent_agent_id = NULLIF($2, '') WHERE account_id = $1`,
 		string(agentAccountID), string(newParentAgentID),
 	); err != nil {
 		return Account{}, fmt.Errorf("store: update parent: %w", err)
+	}
+
+	// INVARIANT: every write of agent_accounts.parent_agent_id must invoke the
+	// registered coordination hook. The UPDATE above rewrote it, so reconcile
+	// BOTH affected managers' coordination channels on THIS tx (SEA-1722 T5,
+	// design.md:550-551,567): the NEW parent gains this report (reparent-in adds
+	// it) and the OLD parent loses it (reparent-out removes it). The reconcile is
+	// a per-manager membership resync (idempotent), so invoking it for each with
+	// a full resync naturally adds-on-new and removes-on-old. A promote-to-root
+	// (empty new parent) or a former-root move (empty old parent) skips the empty
+	// side — that manager does not exist. Skip the old side when it equals the
+	// new (a no-op move) to avoid a redundant second resync of the same channel.
+	if newParentAgentID != "" {
+		if err := s.invokeCoordinationHook(ctx, tx, newParentAgentID); err != nil {
+			return Account{}, err
+		}
+	}
+	if oldParent != nil && *oldParent != "" && AccountID(*oldParent) != newParentAgentID {
+		if err := s.invokeCoordinationHook(ctx, tx, AccountID(*oldParent)); err != nil {
+			return Account{}, err
+		}
 	}
 
 	const q = `

@@ -259,6 +259,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	defer commsBus.Close()
 	commsSvc := comms.NewComms(st, commsBus, admin.ID)
 	commsPath, commsHandler := compassv1connect.NewCommsServiceHandler(commsSvc)
+	// Register the coordination-channel reconcile as the store's in-tx hook, so
+	// the two parent-edge writers auto-provision/reconcile a manager's
+	// coordination channel atomically with the tree edge (SEA-1722 T5). Wired here
+	// before serving; the store invokes it on its own tx.
+	commsSvc.RegisterCoordinationHook(st)
 
 	// The Server-side secret resolver: reads the store's names registry, generates
 	// the SecretSpec manifest under a Server-owned state dir, and resolves values

@@ -1,0 +1,197 @@
+//go:build pgtest
+
+package comms
+
+// Coordination-channel handler contracts (SEA-1722 T5, design.md:530-592): the
+// CreateAgent-with-parent and ReparentAgent RPC paths fire the store's in-tx
+// coordination hook (registered here via RegisterCoordinationHook) and emit the
+// coordination ChannelChanged post-commit, and the manual entrypoints
+// (EnsureCoordinationChannel, ReconcileCoordinationMembership) run the same
+// reconcile in their own tx. Reparent-out's removal rides
+// ChannelChanged.removed_account_ids. Driven in-process against a real store +
+// bus.
+
+import (
+	"context"
+	"slices"
+	"testing"
+
+	"connectrpc.com/connect"
+
+	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/store"
+)
+
+// coordChannelsFor reads the coordination channels visible to viewer (a member —
+// the coordination group is VisibilityOwner, so only members see the channel,
+// never the owning user), filtered to those with the coordination policy shape.
+func coordChannelsFor(t *testing.T, st *store.Store, viewer store.AccountID) []store.Channel {
+	t.Helper()
+	chs, err := st.ListChannels(context.Background(), viewer)
+	if err != nil {
+		t.Fatalf("ListChannels: %v", err)
+	}
+	var out []store.Channel
+	for _, ch := range chs {
+		if ch.Policy.OwnerAccountID != "" && ch.Policy.MandatorySubscription && ch.Policy.PostPolicy == store.ChannelPostPolicyOwnerOnly {
+			out = append(out, ch)
+		}
+	}
+	return out
+}
+
+// TestCreateAgentWithParentProvisionsCoordinationChannel pins the public
+// CreateAgent-with-parent RPC path: the first report provisions the manager's
+// coordination channel through the registered store hook, and a ChannelChanged
+// is emitted (post-commit) carrying the coordination channel.
+func TestCreateAgentWithParentProvisionsCoordinationChannel(t *testing.T) {
+	h := newStreamHarness(t)
+	h.svc.RegisterCoordinationHook(h.store)
+	ctx := context.Background()
+
+	owner := mustUser(t, h.store, "owner")
+	manager := mustAgent(t, h.store, owner.ID, "manager")
+
+	// A subscriber (the owner) draining the stream will see the coordination
+	// ChannelChanged emitted after the report's create commits.
+	_, err := h.svc.CreateAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+		Handle: "report1", DisplayName: "r1", ParentAgentId: string(manager.ID),
+	}))
+	if err != nil {
+		t.Fatalf("CreateAgent(report1): %v", err)
+	}
+
+	chs := coordChannelsFor(t, h.store, manager.ID)
+	if len(chs) != 1 {
+		t.Fatalf("provisioned %d coordination channels, want 1", len(chs))
+	}
+	if chs[0].Name != "manager-coordination" {
+		t.Fatalf("coordination channel name = %q, want manager-coordination", chs[0].Name)
+	}
+
+	// The coordination ChannelChanged reached a member's stream (post-commit
+	// emit). The manager is a member (the owner user is NOT — the group is
+	// VisibilityOwner), so drain as the manager. Use the canary to bound the set.
+	canary := mkCanary(t, h, "canary1")
+	evts := drainReplayAsActor(t, h, manager.ID, canary)
+	if !hasChannelChangedFor(evts, string(chs[0].ID)) {
+		t.Fatalf("no coordination ChannelChanged emitted for %s", chs[0].ID)
+	}
+}
+
+// TestReparentInEmitsMembershipMove pins the reparent path: moving a report from
+// manager A to manager B adds it to B's channel (reparent-in) and removes it from
+// A's, with the removal carried in A's ChannelChanged.removed_account_ids
+// (design.md:567-568).
+func TestReparentInEmitsMembershipMove(t *testing.T) {
+	h := newStreamHarness(t)
+	h.svc.RegisterCoordinationHook(h.store)
+	ctx := context.Background()
+
+	owner := mustUser(t, h.store, "owner")
+	mgrA := mustAgent(t, h.store, owner.ID, "mgra")
+	mgrB := mustAgent(t, h.store, owner.ID, "mgrb")
+	report, err := h.store.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "report", DisplayName: "r", ParentAgentID: mgrA.ID})
+	if err != nil {
+		t.Fatalf("CreateAgent(report): %v", err)
+	}
+	if _, err := h.store.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "bseed", DisplayName: "bs", ParentAgentID: mgrB.ID}); err != nil {
+		t.Fatalf("CreateAgent(bseed): %v", err)
+	}
+
+	if _, err := h.svc.ReparentAgent(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.ReparentAgentRequest{
+		AgentAccountId:   string(report.ID),
+		NewParentAgentId: string(mgrB.ID),
+	})); err != nil {
+		t.Fatalf("ReparentAgent: %v", err)
+	}
+	aChans := coordChannelsFor(t, h.store, mgrA.ID)
+	bChans := coordChannelsFor(t, h.store, mgrB.ID)
+	var aCh, bCh store.Channel
+	for _, ch := range aChans {
+		if ch.Name == "mgra-coordination" {
+			aCh = ch
+		}
+	}
+	for _, ch := range bChans {
+		if ch.Name == "mgrb-coordination" {
+			bCh = ch
+		}
+	}
+	if aCh.ID == "" || bCh.ID == "" {
+		t.Fatalf("missing coordination channels: A=%q B=%q", aCh.ID, bCh.ID)
+	}
+	if containsAccount(aCh.MemberAccountIDs, report.ID) {
+		t.Fatalf("report still in A's channel after move: %v", aCh.MemberAccountIDs)
+	}
+	if !containsAccount(bCh.MemberAccountIDs, report.ID) {
+		t.Fatalf("report not in B's channel after move: %v", bCh.MemberAccountIDs)
+	}
+
+	// The departing member (report) gets its final ChannelChanged for A's channel
+	// carrying itself in removed_account_ids (the removed-member carve-out,
+	// design.md:567-568). Drain as the report.
+	canary := mkCanary(t, h, "canary2")
+	evts := drainReplayAsActor(t, h, report.ID, canary)
+	if !hasRemoval(evts, string(aCh.ID), string(report.ID)) {
+		t.Fatalf("no ChannelChanged carrying report %s in removed_account_ids for A's channel %s", report.ID, aCh.ID)
+	}
+}
+
+// TestEnsureCoordinationChannelManualBackfill pins the manual entrypoint: it runs
+// the reconcile in its own tx and returns the channel id, idempotently (a second
+// call resumes the same channel).
+func TestEnsureCoordinationChannelManualBackfill(t *testing.T) {
+	h := newStreamHarness(t)
+	h.svc.RegisterCoordinationHook(h.store)
+	ctx := context.Background()
+
+	owner := mustUser(t, h.store, "owner")
+	manager := mustAgent(t, h.store, owner.ID, "manager")
+	// A report exists but suppose provisioning was somehow skipped; backfill it.
+	if _, err := h.store.CreateAgent(ctx, owner.ID, store.NewAgent{Handle: "report", DisplayName: "r", ParentAgentID: manager.ID}); err != nil {
+		t.Fatalf("CreateAgent(report): %v", err)
+	}
+
+	first, err := h.svc.EnsureCoordinationChannel(ctx, manager.ID)
+	if err != nil {
+		t.Fatalf("EnsureCoordinationChannel: %v", err)
+	}
+	second, err := h.svc.EnsureCoordinationChannel(ctx, manager.ID)
+	if err != nil {
+		t.Fatalf("EnsureCoordinationChannel (2nd): %v", err)
+	}
+	if first == "" || first != second {
+		t.Fatalf("manual backfill not idempotent: first=%q second=%q", first, second)
+	}
+}
+
+// hasChannelChangedFor reports whether any event is a ChannelChanged for chID.
+func hasChannelChangedFor(evts []*compassv1.SubscribeCommsResponse, chID string) bool {
+	for _, e := range evts {
+		if cc := e.GetChannelChanged(); cc != nil && cc.GetChannel().GetId() == chID {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRemoval reports whether any ChannelChanged for chID carries account in its
+// removed_account_ids.
+func hasRemoval(evts []*compassv1.SubscribeCommsResponse, chID, account string) bool {
+	for _, e := range evts {
+		cc := e.GetChannelChanged()
+		if cc == nil || cc.GetChannel().GetId() != chID {
+			continue
+		}
+		if slices.Contains(cc.GetRemovedAccountIds(), account) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsAccount reports whether ids contains want.
+func containsAccount(ids []store.AccountID, want store.AccountID) bool {
+	return slices.Contains(ids, want)
+}
