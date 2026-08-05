@@ -148,6 +148,16 @@ func (s *Store) PutAgentConfig(ctx context.Context, actor AccountID, bundle []by
 	return version, nil
 }
 
+// ValidateConfigBundle validates a config bundle against the store door's
+// grammar and returns its canonical content version, without touching the
+// database. It is the pure door check PutAgentConfig runs before the row
+// write, exported so a bundle producer (the operator CLI builder) can prove
+// its output against the real door in tests, closing the builder/door drift
+// gap a parallel hand-rolled grammar leaves open.
+func ValidateConfigBundle(bundle []byte) (version string, err error) {
+	return validateAndHashConfigBundle(bundle)
+}
+
 // CurrentAgentConfig returns the single current config bundle and its canonical
 // content version. ErrNotFound when no bundle has been declared — a valid state
 // downstream (the fetch path then materializes an empty config dir), but the

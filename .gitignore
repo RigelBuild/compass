@@ -27,6 +27,10 @@ result-*
 *.log
 .DS_Store
 
+# Go build artifacts: `go build ./cmd/compass` emits the binary into go/.
+# The binary is built by moon/CI into the task cache, never committed.
+/go/compass
+
 # NOTE: generated clients (go/gen, packages/compass-client/src/gen)
 # are intentionally committed and CI drift-gated — do not ignore them.
 
