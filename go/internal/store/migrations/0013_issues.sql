@@ -29,7 +29,7 @@ CREATE TABLE issues (
     -- forge coordinate: the idempotency key. A re-poll of the same coordinate
     -- updates the existing row rather than minting a second board item (#1018
     -- "one board item keyed by its Compass issue id, not two").
-    forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (0, 1, 2, 3)),
+    forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3)),  -- GitHub/GitLab/Forgejo; never UNSPECIFIED(0) — every issue is forge-backed with a real provider
     forge_host     TEXT     NOT NULL,
     repo           TEXT     NOT NULL,
     number         BIGINT   NOT NULL,  -- canonical uint32; BIGINT holds the clamped MaxUint32

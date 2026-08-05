@@ -222,6 +222,21 @@ func TestUpsertEmptyRepoInvalid(t *testing.T) {
 	}
 }
 
+func TestUpsertEmptyForgeHostInvalid(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	// A non-empty Repo clears the first guard, so this reaches and trips the
+	// ForgeHost guard specifically (the empty-Repo case above short-circuits
+	// before ForgeHost is ever evaluated).
+	in := forgeFields(1)
+	in.ForgeHost = ""
+	_, err := s.UpsertIssueForgeFields(ctx, in)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("empty forge host err = %v, want ErrInvalidArgument", err)
+	}
+}
+
 func TestListIssuesEmptyAndOrdered(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
