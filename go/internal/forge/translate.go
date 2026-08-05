@@ -28,6 +28,16 @@ func narrowNumber(n uint64) uint32 {
 	return uint32(n)
 }
 
+// nilIfEmpty returns nil for an empty (or nil) slice so an empty-but-non-nil
+// forge slice maps to a nil canonical slice, matching the per-element helpers
+// below and the module's "empty inputs yield nil slices" contract.
+func nilIfEmpty[T any](s []T) []T {
+	if len(s) == 0 {
+		return nil
+	}
+	return s
+}
+
 // TranslateIssue maps a raw forge Issue to the forge-subset canonical Issue,
 // filling only forge-derived fields plus the passed-in agent attribution
 // (nil ⇒ non-Compass author, left unset).
@@ -39,7 +49,7 @@ func TranslateIssue(in Issue, attr *compassv1.AgentAttribution) *compassv1.Issue
 		ForgeState:   in.State,
 		Url:          in.URL,
 		ForgeAccount: in.ForgeAccount,
-		Labels:       in.Labels,
+		Labels:       nilIfEmpty(in.Labels),
 		Agent:        attr,
 	}
 }

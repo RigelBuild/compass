@@ -107,6 +107,13 @@ func TestTranslateIssueNilLabelsStayNil(t *testing.T) {
 	}
 }
 
+func TestTranslateIssueEmptyLabelsBecomeNil(t *testing.T) {
+	got := TranslateIssue(Issue{Number: 1, Labels: []string{}}, nil)
+	if got.Labels != nil {
+		t.Errorf("Labels = %v (len %d), want nil for empty-but-non-nil source", got.Labels, len(got.Labels))
+	}
+}
+
 func TestNarrowNumber(t *testing.T) {
 	tests := []struct {
 		name string
