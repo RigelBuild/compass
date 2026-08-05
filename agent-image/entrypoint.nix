@@ -20,8 +20,13 @@
 # resolving package '@oh-my-pi/pi-coding-agent'` — so the container's headline
 # entrypoint could not start at all.
 #
-# `bun build --target=bun` resolves the whole graph ahead of time and emits one
-# self-contained file, which is exactly the single-file shape the store wants.
+# `bun build --compile` resolves the whole graph ahead of time and emits a
+# STANDALONE executable (bun runtime + bundled graph). It is NOT a lone file:
+# the native addon loader needs its prebuilt `.node` at runtime, so the bundle
+# derivation ships the compiled binary WITH its `pi_natives.*.node` siblings in
+# the same store dir. In compiled mode the loader resolves the addon from
+# execDir = `dirname(process.execPath)`, which is exactly that dir — so a cold
+# container with no node_modules and no network still loads the native addon.
 let
   # The package's dependency closure, fetched once as a fixed-output derivation
   # (the only derivation here allowed network access). `--frozen-lockfile` pins
@@ -113,7 +118,7 @@ let
     dontFixup = true;
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-dRbN1BetBtmdC8GPrD/pJ1znnZwjSdh1s8izxOQVQzM=";
+    outputHash = "sha256-HjRWz8xklL6GwJTf0zmB7iOBnCueYtvbjNDicPhnPCc=";
   };
 
   # The package's own source. A BARE path here (`${../packages/…}`) would copy
@@ -174,12 +179,38 @@ let
     # runtime and absent from our dependency closure. Left external so the
     # bundler does not fail resolving a module the code already tolerates
     # missing.
+    #
+    # `--compile` emits a STANDALONE executable (bun runtime + the whole
+    # resolved graph baked in), not an interpreted `cli.js`. This is what lets
+    # the runtime native-addon loader find its `.node` beside the binary: in
+    # compiled mode the loader's candidate list includes execDir =
+    # `dirname(process.execPath)` (pi-natives native/loader-state.js), so a
+    # `.node` copied next to the binary resolves cold, with no node_modules,
+    # no network, and from any cwd.
     bun build $pkgDir/src/cli.ts \
-      --target=bun \
+      --compile \
       --external omp-legacy-pi-modules \
-      --outfile=$out/cli.js
+      --outfile=$out/compass-agent
+
+    # Ship the prebuilt native addon BESIDE the compiled binary. It is not
+    # inside `@oh-my-pi/pi-natives`; it ships in the platform optionalDependency
+    # `@oh-my-pi/pi-natives-linux-x64` (pinned in bun.lock, so present in the
+    # FOD tree). bun's isolated install keeps the platform package in its `.bun`
+    # virtual store and hoists it through the version-independent symlink
+    # `node_modules/.bun/node_modules/@oh-my-pi/pi-natives-linux-x64` (it is NOT
+    # hoisted to the plain top-level `node_modules/@oh-my-pi/`). It carries two
+    # CPU variants; the loader picks `modern` when the host has AVX2 else
+    # `baseline` (loader-state.js), so BOTH must be present for either host to
+    # resolve. `cp` follows the hoist symlink to copy the real files.
+    natives=node_modules/.bun/node_modules/@oh-my-pi/pi-natives-linux-x64
+    cp $natives/pi_natives.linux-x64-modern.node $out/
+    cp $natives/pi_natives.linux-x64-baseline.node $out/
   '';
 in
+# The bundle is now a STANDALONE compiled binary, not an interpreted `cli.js`,
+# so the wrapper execs it directly — no `bun run` at runtime. The compiled
+# binary carries its own bun runtime, and finds its native addon from the
+# `.node` siblings copied beside it in the same store dir.
 pkgs.writeShellScriptBin "compass-agent" ''
-  exec ${lib.getExe pkgs.bun} run ${bundle}/cli.js "$@"
+  exec ${bundle}/compass-agent "$@"
 ''
