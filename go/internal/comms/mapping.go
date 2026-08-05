@@ -86,17 +86,25 @@ func channelKindToWire(k store.ChannelKind) compassv1.ChannelKind {
 }
 
 func channelPostPolicyToWire(p store.ChannelPostPolicy) compassv1.ChannelPostPolicy {
-	if p == store.ChannelPostPolicyOwnerOnly {
+	switch p {
+	case store.ChannelPostPolicyOpen:
+		return compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OPEN
+	case store.ChannelPostPolicyOwnerOnly:
 		return compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY
+	default:
+		return compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OPEN
 	}
-	return compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OPEN
 }
 
 func channelPostPolicyFromWire(p compassv1.ChannelPostPolicy) store.ChannelPostPolicy {
-	if p == compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY {
+	switch p {
+	case compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY:
 		return store.ChannelPostPolicyOwnerOnly
+	case compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OPEN:
+		return store.ChannelPostPolicyOpen
+	default:
+		return store.ChannelPostPolicyOpen
 	}
-	return store.ChannelPostPolicyOpen
 }
 
 func workspaceToWire(w store.AgentWorkspace) *compassv1.AgentWorkspace {
