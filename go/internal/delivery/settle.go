@@ -8,6 +8,7 @@ import (
 	comms "github.com/sealedsecurity/compass/go/internal/comms"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
@@ -133,9 +134,10 @@ func (c *Consumer) drainStarts(ctx context.Context) {
 // agent sweeps (SweepChannels, the D1 disjunct), each PinnedEntry's message is
 // re-read and dispatched as a DeliverControl REGARDLESS of cursor position, so a
 // pin below the delivery cursor (acked_seq ≥ its seq) still reaches a fresh
-// session. The re-dispatch runs under the recipient session's dispatch gate held
-// across the whole ordered set, mirroring sweepSession, so live bus events for
-// the session queue behind it (design.md:220-225).
+// session. All reads (SweepChannels, PinnedEntries, message re-reads) happen
+// BEFORE the gate is taken; the recipient session's dispatch gate is then held
+// only across the ordered dispatch of the pre-built ops, mirroring sweepSession,
+// so live bus events for the session queue behind it (design.md:220-225).
 //
 // It does NOT change cursor-advance semantics: a pin-sweep deliver is acked like
 // any deliver (an ack for an already-below-cursor seq is the existing no-op,
@@ -151,9 +153,11 @@ func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, session
 	if err != nil {
 		return err
 	}
-	gate := c.gateFor(sessionID)
-	gate.Lock()
-	defer gate.Unlock()
+	type pinOp struct {
+		op        *compassv1internal.AgentControl
+		messageID store.MessageID
+	}
+	var ops []pinOp
 	for _, channel := range channels {
 		entries, err := c.st.PinnedEntries(ctx, channel)
 		if err != nil {
@@ -168,10 +172,16 @@ func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, session
 					"channel", string(channel), "message_id", string(entry.MessageID))
 				continue
 			}
-			if err := c.dispatch.DispatchControl(ctx, sessionID, deliverOp(wire)); err != nil {
-				c.log.WarnContext(ctx, "delivery: pin sweep dispatch failed, leaving to next sweep",
-					"error", err, "session_id", sessionID, "message_id", string(entry.MessageID))
-			}
+			ops = append(ops, pinOp{op: deliverOp(wire), messageID: entry.MessageID})
+		}
+	}
+	gate := c.gateFor(sessionID)
+	gate.Lock()
+	defer gate.Unlock()
+	for _, po := range ops {
+		if err := c.dispatch.DispatchControl(ctx, sessionID, po.op); err != nil {
+			c.log.WarnContext(ctx, "delivery: pin sweep dispatch failed, leaving to next sweep",
+				"error", err, "session_id", sessionID, "message_id", string(po.messageID))
 		}
 	}
 	return nil

@@ -57,13 +57,13 @@ func TestPinSweepDeliversCurrentPinsWhenCursorCaughtUp(t *testing.T) {
 	}
 }
 
-// Case T7-2: an EDITED board rides D1 unchanged. A board edit mints a NEW message
-// via PostMessage → a normal MessagePosted on the bus → normal fan-out to live
-// subscribers (design.md:642-645). The pin sweep is the SESSION-START path only:
-// it must NOT double-handle the live edit. Here NO session-start edge fires; a
-// live MessagePosted for the edit's new message id fans out to the live
-// subscriber exactly ONCE via the D1 path, and the pin sweep (which never ran)
-// contributes nothing. This pins that the live edit path is untouched by T7.
+// Case T7-2: pins the D1 live-edit path in isolation. A board edit mints a NEW
+// message via PostMessage → a normal MessagePosted on the bus → normal fan-out
+// to live subscribers (design.md:642-645). Here NO session-start edge fires, so
+// sweepPins is deliberately NOT exercised in this case: it only asserts that the
+// pre-existing D1 live path emits the edit's message exactly ONCE. The
+// sweep-side double-dispatch (a pin also owed by the cursor sweep) is covered
+// separately by TestPinSweepIsUnconditionalWhenAlsoOwed.
 func TestPinSweepDoesNotDoubleHandleLiveEdit(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"

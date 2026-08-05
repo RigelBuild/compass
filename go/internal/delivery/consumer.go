@@ -76,8 +76,9 @@ type DeliveryReads interface {
 	// AgentByHandle resolves a mention handle to its agent account; an unknown or
 	// non-agent (human) handle is store.ErrNotFound (a mention no-op, D5).
 	AgentByHandle(ctx context.Context, handle string) (store.Account, error)
-	// SweepChannels resolves the D1 disjunct channel set an agent sweeps (every
-	// subscribed channel PLUS its home channel) — the pin sweep's channel
+	// SweepChannels resolves the D1 disjunct channel set an agent sweeps: every
+	// subscribed channel, PLUS its home channel, PLUS any mandatory_subscription
+	// channel it is a member of (T4 policy) — the pin sweep's channel
 	// enumeration (design.md T7). Distinct from UndeliveredMessages, whose map
 	// omits channels with no owed messages: the pin sweep must visit every
 	// subscribed channel to inject its current pins regardless of cursor.
