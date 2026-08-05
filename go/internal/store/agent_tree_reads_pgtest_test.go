@@ -110,6 +110,32 @@ func TestAgentNeighborhood(t *testing.T) {
 	}
 }
 
+// TestAgentNeighborhoodOfRoot pins the deliberately BROAD raw behavior of a root
+// seed: a root's parent is NULL, so the sibling clause (IS NOT DISTINCT FROM NULL)
+// matches every root across ALL owners. AgentNeighborhood(a) therefore returns
+// a's children (b, c) AND the other-owner root x — cross-owner breadth by design,
+// which the roster handler removes with its accountVisibleFromWhere clip. This
+// test documents that contract at the store layer: it would redden if the
+// root-sibling clause were narrowed (e.g. owner-scoped) so the clip decision is
+// not silently moved into the store.
+func TestAgentNeighborhoodOfRoot(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	_, a, b, c, d, _, x := buildTree(t, s)
+
+	// a is a root (parent NULL); x is a root under a DIFFERENT owner.
+	nbr, err := s.AgentNeighborhood(ctx, a)
+	if err != nil {
+		t.Fatalf("AgentNeighborhood(a): %v", err)
+	}
+	// a's children b, c + a itself, plus x (all roots are co-siblings on the raw
+	// read). d (a grandchild, not a's child and not a root) is NOT included.
+	assertIDs(t, "AgentNeighborhood(a)", nbr, a, b, c, x)
+	if idSet(nbr)[d] {
+		t.Fatalf("AgentNeighborhood(a) included grandchild d")
+	}
+}
+
 func TestAgentsByOwner(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
