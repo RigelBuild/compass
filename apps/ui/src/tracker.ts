@@ -5,10 +5,10 @@
 // is computed and streamed by the server projection, and the tracker is a
 // projection OF it (DL-032), mirrored server-side on real working-state
 // transitions. This module is the UI-side client seam over that model; the
-// fixture implements it in-memory until the daemon's board projection and
-// write-path RPC land, when `listAssignedIssues`/`updateIssueStatus` become
-// `@compass/client` calls — a one-module swap. The projection domain is the
-// seven WORKING states; `archived` carries no tracker status (DL-071).
+// fixture implements it in-memory until the daemon's board projection lands,
+// when `listAssignedIssues` becomes a `@compass/client` call — a one-module
+// swap. The projection domain is the seven WORKING states; `archived` carries
+// no tracker status (DL-071).
 
 import type {
 	Issue,
@@ -20,16 +20,13 @@ import type {
 import { STUB_ASSIGNED_ISSUES } from "./stub-data";
 
 /**
- * The thin async contract the store calls to read/write the linked tracker. The
+ * The thin async contract the store calls to read the linked tracker. The
  * fixture implements it in-memory now (`createFixtureTrackerSeam`); the real
  * `@compass/client` implements it against the daemon later — a one-module swap.
  */
 export interface TrackerSeam {
 	/** The user's tracker-assigned issues, for the Backlog view (D3). */
 	listAssignedIssues(handle: string): Promise<Issue[]>;
-	/** Mirror a Compass state change onto the tracker (D2), mapping through
-	 *  `TrackerStatusMapping.toTracker` before the write. */
-	updateIssueStatus(id: string, compassState: WorkingIssueState): Promise<void>;
 }
 
 /**
@@ -88,12 +85,11 @@ export function fromTrackerStatus(
 
 /**
  * The in-memory fixture seam. `listAssignedIssues` returns the user's fixture
- * issues; `updateIssueStatus` maps the state through the config and resolves
- * (the fixture *is* the tracker, so there's nothing to POST). The store swaps
- * this for a `@compass/client`-backed seam when the daemon grows the contract.
+ * issues (the fixture *is* the tracker). The store swaps this for a
+ * `@compass/client`-backed seam when the daemon grows the contract.
  */
 export function createFixtureTrackerSeam(
-	config: TrackerConfig = DEFAULT_TRACKER_CONFIG,
+	_config: TrackerConfig = DEFAULT_TRACKER_CONFIG,
 ): TrackerSeam {
 	return {
 		listAssignedIssues(handle: string): Promise<Issue[]> {
@@ -101,15 +97,6 @@ export function createFixtureTrackerSeam(
 			// queries the tracker for `handle`'s assigned issues. An empty handle
 			// (tracker not configured) yields nothing.
 			return Promise.resolve(handle ? STUB_ASSIGNED_ISSUES : []);
-		},
-		updateIssueStatus(
-			_id: string,
-			compassState: WorkingIssueState,
-		): Promise<void> {
-			// Map before the (no-op) write so the mapping is exercised, matching
-			// the real write path's shape.
-			void toTrackerStatus(compassState, config.mapping);
-			return Promise.resolve();
 		},
 	};
 }

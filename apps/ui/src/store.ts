@@ -47,6 +47,7 @@ import {
 import { adaptMessage } from "./live/adapt";
 import { probeServer } from "./live/client";
 import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
+import { runEventStream } from "./live/events";
 import { runCommsStream } from "./live/stream";
 import type { AgentSession } from "./session-events";
 import { STUB_SESSION_EVENTS } from "./session-events-stub";
@@ -524,16 +525,9 @@ export interface AppStore {
 
 	// ── Issues (reactive board data) ──
 	/** All issues — the reactive source every board surface reads, so a
-	 *  promote/archive is visible everywhere at once (design "read through the
-	 *  store accessors"). */
+	 *  streamed lifecycle update is visible everywhere at once (design "read
+	 *  through the store accessors"). */
 	issues: Accessor<Issue[]>;
-	/** Promote a Backlog issue to Todo (D1/D3) and mirror to the tracker
-	 *  through the mapping. No-op if it isn't currently `backlog`. */
-	promoteToTodo: (issueId: string) => void;
-	/** Archive a Done issue (DL-071): sets `state` to `archived`, dropping it
-	 *  from the active board. Listed in the Done view's Archived section.
-	 *  No-op if it isn't currently `done`. */
-	archiveIssue: (issueId: string) => void;
 
 	// ── Backlog view (D3) ──
 	/** The current user's tracker-assigned issues (their personal queue), read
@@ -929,6 +923,23 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		const client = options.compass;
 		let disposed = false;
 		if (getOwner()) onCleanup(() => (disposed = true));
+		// The live board read path: run the SubscribeEvents driver for the store's
+		// lifetime, replacing the STUB_ISSUES seed with the server's snapshot-as-
+		// events then live upserts. Aborted on teardown (a test root's dispose
+		// stops it; the app root never disposes). Reuses `options.compass` — the
+		// same client the daemon probe dials. `runEventStream` resolves only on
+		// abort and retries internally, so nothing awaits it; a rejection routes
+		// through onCommsError rather than being swallowed.
+		const eventsAbort = new AbortController();
+		if (getOwner()) onCleanup(() => eventsAbort.abort());
+		void runEventStream({
+			client,
+			onIssues: setIssues,
+			signal: eventsAbort.signal,
+			onError: (error) => options.onCommsError?.(error),
+		}).catch((error) => {
+			if (!eventsAbort.signal.aborted) options.onCommsError?.(error);
+		});
 		void probeServer(client)
 			.then((info) => {
 				if (!disposed)
@@ -1841,40 +1852,6 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const showDone = () => navigateTo("/done");
 	const showSettings = () => navigateTo("/settings");
 
-	// Promote a Backlog issue to Todo (D1/D3): the human moves it into the
-	// global unassigned pool the Dispatcher assigns from, and the change mirrors
-	// to the tracker. A no-op unless it's currently `backlog`, so the action is
-	// idempotent against a double-click.
-	const promoteToTodo = (issueId: string) => {
-		const ws = issues().find((w) => w.id === issueId);
-		if (ws?.state !== "backlog") return;
-		setIssues((prev) =>
-			prev.map((w) =>
-				w.id === issueId ? { ...w, state: "todo" as const } : w,
-			),
-		);
-		// Mirror to the tracker only when the transition actually happened, so a
-		// rejected promote never writes Todo to the tracker (the local guard and
-		// the seam write stay in lockstep). The seam addresses the tracker's
-		// native issue id, not the Compass issue id.
-		void seam.updateIssueStatus(ws.tracker?.id ?? ws.id, "todo");
-	};
-
-	// Archive a Done issue (DL-071): move it to the terminal `archived` state so
-	// it drops off the active board; the Done view's Archived section still lists
-	// it. A no-op unless it's currently `done` — the local UI affordance keeps
-	// the done-only guard even though the server RPC is any-to-any. Locally until
-	// S1, then an `UpdateIssueState(archived)` call.
-	const archiveIssue = (issueId: string) => {
-		setIssues((prev) =>
-			prev.map((w) =>
-				w.id === issueId && w.state === "done"
-					? { ...w, state: "archived" as const }
-					: w,
-			),
-		);
-	};
-
 	const setTrackerConfig = (cfg: TrackerConfig) => {
 		setTrackerConfigSignal(cfg);
 		// Rebuild the seam against the new config (the queryFn reads it at fetch
@@ -2047,8 +2024,6 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		isSectionCollapsed,
 		toggleSection,
 		issues,
-		promoteToTodo,
-		archiveIssue,
 		assignedIssues,
 		trackerConfig,
 		setTrackerConfig,

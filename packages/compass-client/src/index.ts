@@ -220,17 +220,32 @@ export {
 	UserAccountSchema,
 } from "./gen/compass/v1/comms_pb";
 export type {
+	AgentAttribution,
 	AgentSessionStatus,
+	ChangedStats,
+	Check,
+	ChecksSummary,
+	ForgeRef,
 	GetServerInfoRequest,
 	GetServerInfoResponse,
+	Issue,
+	PullRequest,
 	ResyncRequired,
+	Review,
+	ReviewThread,
 	ServerStatus,
 	SubscribeEventsRequest,
 	SubscribeEventsResponse,
+	TrackerRef,
 } from "./gen/compass/v1/compass_pb";
 export {
 	AgentSessionState,
 	CompassService,
+	ForgeProvider,
 	GetServerInfoResponseSchema,
+	IssueSchema,
+	IssueState,
+	PullRequestSchema,
 	ServerState,
+	SubscribeEventsResponseSchema,
 } from "./gen/compass/v1/compass_pb";

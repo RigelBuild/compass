@@ -12,18 +12,25 @@ import {
 	ChannelPostPolicy,
 	ChannelSchema,
 	create,
+	ForgeProvider,
+	IssueSchema,
+	IssueState,
 	MessageBlockSchema,
 	MessageSchema,
+	PullRequestSchema,
 	TopicSchema,
 	UserAccountSchema,
 } from "@compass/client";
+import type { IssueState as DomainIssueState } from "../stub-data";
 import { type Account, type Agent, agentTree } from "../stub-data";
 import {
 	adaptAccount,
 	adaptAsk,
 	adaptChannel,
 	adaptChannelGroup,
+	adaptIssue,
 	adaptMessage,
+	adaptPullRequest,
 	adaptTopic,
 	agentHomeChannelIds,
 	deriveMembership,
@@ -719,5 +726,190 @@ describe("adaptTopic", () => {
 		// A number, not a bigint: the domain sorts topics with `<`.
 		expect(typeof r.createdAtUnixMs).toBe("number");
 		expect(r.createdAtUnixMs).toBe(1_700_000_000_000);
+	});
+});
+
+// ── Board (SEA-1729 read slice): adaptIssue / adaptPullRequest ───────────────
+// These defend the wire→domain bridges the board read path depends on: the
+// total IssueState/ForgeProvider enum maps, the empty-string→null assignee seam,
+// the forge-truth string narrowing, and the nested PR/review/thread mapping.
+// The maps are asserted MEMBER-BY-MEMBER so a mis-wired entry fails loudly.
+
+describe("ISSUE_STATE map (adaptIssue)", () => {
+	// The wire enum member → the domain lifecycle string it must map to. Every
+	// member is asserted so a swapped or dropped entry fails; UNSPECIFIED (the
+	// proto zero / malformed row) degrades to the earliest stage, "backlog".
+	const cases: ReadonlyArray<[IssueState, DomainIssueState]> = [
+		[IssueState.UNSPECIFIED, "backlog"],
+		[IssueState.BACKLOG, "backlog"],
+		[IssueState.TODO, "todo"],
+		[IssueState.QUEUED, "queued"],
+		[IssueState.BLOCKED, "blocked"],
+		[IssueState.IN_PROGRESS, "in_progress"],
+		[IssueState.IN_REVIEW, "in_review"],
+		[IssueState.DONE, "done"],
+		[IssueState.ARCHIVED, "archived"],
+	];
+	for (const [wire, domain] of cases) {
+		test(`maps IssueState ${IssueState[wire]} → "${domain}"`, () => {
+			const r = adaptIssue(create(IssueSchema, { id: "i1", state: wire }));
+			expect(r.state).toBe(domain);
+		});
+	}
+});
+
+describe("adaptPullRequest", () => {
+	test("maps every field, the provider enum, and nested reviews/threads", () => {
+		const r = adaptPullRequest(
+			create(PullRequestSchema, {
+				forge: { provider: ForgeProvider.GITHUB, host: "github.com" },
+				repo: "sealedsecurity/sealed",
+				number: 42,
+				title: "wire the board",
+				forgeState: "open",
+				url: "https://github.com/x/42",
+				headRef: "feat/x",
+				baseRef: "main",
+				agent: { agentHandle: "cook" },
+				forgeAccount: "matt",
+				draft: true,
+				changed: { files: 3, additions: 10, deletions: 2 },
+				checks: {
+					headSha: "abc",
+					state: "success",
+					checks: [{ name: "ci", state: "success", url: "u", required: true }],
+				},
+				reviews: [
+					{ author: "bot", isBot: true, verdict: "approved", body: "lgtm" },
+				],
+				threads: [
+					{
+						path: "a.ts",
+						resolved: false,
+						comments: [{ author: "bot", isBot: true, body: "nit" }],
+					},
+				],
+			}),
+		);
+		expect(r.forge).toEqual({ provider: "github", host: "github.com" });
+		expect(r.repo).toBe("sealedsecurity/sealed");
+		expect(r.number).toBe(42);
+		expect(r.title).toBe("wire the board");
+		expect(r.forgeState).toBe("open");
+		expect(r.url).toBe("https://github.com/x/42");
+		expect(r.headRef).toBe("feat/x");
+		expect(r.baseRef).toBe("main");
+		// The wire attribution carries only agentHandle; ownerHandle/verified have
+		// no wire source and take honest hedged defaults.
+		expect(r.agent).toEqual({
+			agentHandle: "cook",
+			ownerHandle: "",
+			verified: false,
+		});
+		expect(r.forgeAccount).toBe("matt");
+		expect(r.draft).toBe(true);
+		expect(r.changed).toEqual({ files: 3, additions: 10, deletions: 2 });
+		expect(r.checks).toEqual({
+			headSha: "abc",
+			state: "success",
+			checks: [{ name: "ci", state: "success", url: "u", required: true }],
+		});
+		expect(r.reviews).toEqual([
+			{ author: "bot", isBot: true, verdict: "approved", body: "lgtm" },
+		]);
+		expect(r.threads).toEqual([
+			{
+				path: "a.ts",
+				resolved: false,
+				comments: [{ author: "bot", isBot: true, body: "nit" }],
+			},
+		]);
+	});
+
+	test("absent optional messages map to absent domain fields", () => {
+		const r = adaptPullRequest(
+			create(PullRequestSchema, { repo: "r", number: 1 }),
+		);
+		// Unset wire forge degrades to a github/empty-host ref (domain requires it).
+		expect(r.forge).toEqual({ provider: "github", host: "" });
+		expect(r.agent).toBeUndefined();
+		expect(r.changed).toBeUndefined();
+		expect(r.checks).toBeUndefined();
+		expect(r.reviews).toEqual([]);
+		expect(r.threads).toEqual([]);
+	});
+});
+
+describe("adaptIssue", () => {
+	test("maps every field, the assignee seam, and nested PRs", () => {
+		const r = adaptIssue(
+			create(IssueSchema, {
+				id: "issue-1",
+				forge: { provider: ForgeProvider.LINEAR, host: "linear.app" },
+				repo: "SEA",
+				number: 1729,
+				title: "read slice",
+				body: "stripped",
+				forgeState: "open",
+				url: "https://linear.app/SEA-1729",
+				agent: { agentHandle: "cook" },
+				forgeAccount: "matt",
+				labels: ["p1", "ui"],
+				state: IssueState.IN_PROGRESS,
+				priority: "high",
+				assignee: "agent-7",
+				summary: "wiring",
+				branch: "feat/1729",
+				prs: [
+					create(PullRequestSchema, {
+						repo: "SEA",
+						number: 1,
+						forgeState: "open",
+					}),
+				],
+				tracker: {
+					kind: "linear",
+					id: "SEA-1729",
+					status: "In Progress",
+					url: "https://linear.app/SEA-1729",
+				},
+			}),
+		);
+		expect(r.id).toBe("issue-1");
+		expect(r.forge).toEqual({ provider: "linear", host: "linear.app" });
+		expect(r.repo).toBe("SEA");
+		expect(r.number).toBe(1729);
+		expect(r.title).toBe("read slice");
+		expect(r.body).toBe("stripped");
+		expect(r.forgeState).toBe("open");
+		expect(r.url).toBe("https://linear.app/SEA-1729");
+		expect(r.agent).toEqual({
+			agentHandle: "cook",
+			ownerHandle: "",
+			verified: false,
+		});
+		expect(r.forgeAccount).toBe("matt");
+		expect(r.labels).toEqual(["p1", "ui"]);
+		expect(r.state).toBe("in_progress");
+		expect(r.priority).toBe("high");
+		expect(r.assignee).toBe("agent-7");
+		expect(r.summary).toBe("wiring");
+		expect(r.branch).toBe("feat/1729");
+		expect(r.prs).toHaveLength(1);
+		expect(r.prs[0].repo).toBe("SEA");
+		expect(r.tracker).toEqual({
+			kind: "linear",
+			id: "SEA-1729",
+			status: "In Progress",
+			url: "https://linear.app/SEA-1729",
+		});
+	});
+
+	test("empty-string assignee maps to null; absent tracker/agent absent", () => {
+		const r = adaptIssue(create(IssueSchema, { id: "i2", assignee: "" }));
+		expect(r.assignee).toBeNull();
+		expect(r.agent).toBeUndefined();
+		expect(r.tracker).toBeUndefined();
+		expect(r.prs).toEqual([]);
 	});
 });
