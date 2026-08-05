@@ -200,6 +200,13 @@ type fakeReads struct {
 	handles     map[string]store.Account // lowercased handle -> resolved account (unknown -> ErrNotFound)
 	messages    map[string]store.Message
 	owed        map[store.AccountID]map[store.ChannelID][]store.Message
+	// sweepChannels is the D1 disjunct channel set per agent the pin sweep
+	// enumerates (SweepChannels). A test seeds the channels a fresh session must
+	// visit for pins, independent of owed (which omits channels with no owed
+	// messages).
+	sweepChannels map[store.AccountID][]store.ChannelID
+	// pins is the pinned board per channel (PinnedEntries), ordered as seeded.
+	pins map[store.ChannelID][]store.PinnedEntry
 
 	// beforeUndelivered, when set, is called with the swept agent id at the TOP
 	// of UndeliveredMessages BEFORE f.mu is acquired — a TEST-ONLY seam (nil in
@@ -211,13 +218,30 @@ type fakeReads struct {
 
 func newFakeReads() *fakeReads {
 	return &fakeReads{
-		subscribers: map[store.ChannelID][]store.AccountID{},
-		members:     map[store.ChannelID][]store.AccountID{},
-		agents:      map[store.AccountID]bool{},
-		handles:     map[string]store.Account{},
-		messages:    map[string]store.Message{},
-		owed:        map[store.AccountID]map[store.ChannelID][]store.Message{},
+		subscribers:   map[store.ChannelID][]store.AccountID{},
+		members:       map[store.ChannelID][]store.AccountID{},
+		agents:        map[store.AccountID]bool{},
+		handles:       map[string]store.Account{},
+		messages:      map[string]store.Message{},
+		owed:          map[store.AccountID]map[store.ChannelID][]store.Message{},
+		sweepChannels: map[store.AccountID][]store.ChannelID{},
+		pins:          map[store.ChannelID][]store.PinnedEntry{},
 	}
+}
+
+// SweepChannels returns the seeded D1 disjunct channel set for agent — the pin
+// sweep's channel enumeration, mirroring the store read.
+func (f *fakeReads) SweepChannels(_ context.Context, agent store.AccountID) ([]store.ChannelID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sweepChannels[agent], nil
+}
+
+// PinnedEntries returns the seeded pinned board for channel, ordered as seeded.
+func (f *fakeReads) PinnedEntries(_ context.Context, channel store.ChannelID) ([]store.PinnedEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.pins[channel], nil
 }
 
 func (f *fakeReads) SubscribedAgents(_ context.Context, channel store.ChannelID, author store.AccountID) ([]store.AccountID, error) {

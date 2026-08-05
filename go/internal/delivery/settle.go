@@ -121,7 +121,60 @@ func (c *Consumer) drainStarts(ctx context.Context) {
 		c.startQueue = c.startQueue[1:]
 		c.mu.Unlock()
 		c.sweepSession(ctx, ev.account, ev.sessionID)
+		if err := c.sweepPins(ctx, ev.account, ev.sessionID); err != nil {
+			c.log.ErrorContext(ctx, "delivery: sweep pins on session start", "error", err,
+				"account", string(ev.account), "session_id", ev.sessionID)
+		}
 	}
+}
+
+// sweepPins injects a freshly-live session's current pins — the session-start
+// pin step (design.md T7), a sibling of sweepSession. For every channel the
+// agent sweeps (SweepChannels, the D1 disjunct), each PinnedEntry's message is
+// re-read and dispatched as a DeliverControl REGARDLESS of cursor position, so a
+// pin below the delivery cursor (acked_seq ≥ its seq) still reaches a fresh
+// session. The re-dispatch runs under the recipient session's dispatch gate held
+// across the whole ordered set, mirroring sweepSession, so live bus events for
+// the session queue behind it (design.md:220-225).
+//
+// It does NOT change cursor-advance semantics: a pin-sweep deliver is acked like
+// any deliver (an ack for an already-below-cursor seq is the existing no-op,
+// design.md:338, :658-660). Per-session message_id dedup (agent-side, DL-073/T5)
+// absorbs the overlap when the cursor sweep already delivered the same message
+// this session, so no server-side dedup is applied here.
+//
+// Errors resolving the channel set are returned (the caller logs them); a single
+// unreadable pin (its message vanished) is logged and skipped so the rest of the
+// board still injects.
+func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, sessionID string) error {
+	channels, err := c.st.SweepChannels(ctx, agent)
+	if err != nil {
+		return err
+	}
+	gate := c.gateFor(sessionID)
+	gate.Lock()
+	defer gate.Unlock()
+	for _, channel := range channels {
+		entries, err := c.st.PinnedEntries(ctx, channel)
+		if err != nil {
+			c.log.ErrorContext(ctx, "delivery: read pinned board for pin sweep", "error", err,
+				"channel", string(channel))
+			continue
+		}
+		for _, entry := range entries {
+			wire, _, _, err := c.storeMessageToWire(ctx, string(entry.MessageID))
+			if err != nil {
+				c.log.ErrorContext(ctx, "delivery: re-read pinned message for pin sweep", "error", err,
+					"channel", string(channel), "message_id", string(entry.MessageID))
+				continue
+			}
+			if err := c.dispatch.DispatchControl(ctx, sessionID, deliverOp(wire)); err != nil {
+				c.log.WarnContext(ctx, "delivery: pin sweep dispatch failed, leaving to next sweep",
+					"error", err, "session_id", sessionID, "message_id", string(entry.MessageID))
+			}
+		}
+	}
+	return nil
 }
 
 // fireHeld dispatches every message held for authorSession, ascending, and

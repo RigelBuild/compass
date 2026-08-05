@@ -76,6 +76,16 @@ type DeliveryReads interface {
 	// AgentByHandle resolves a mention handle to its agent account; an unknown or
 	// non-agent (human) handle is store.ErrNotFound (a mention no-op, D5).
 	AgentByHandle(ctx context.Context, handle string) (store.Account, error)
+	// SweepChannels resolves the D1 disjunct channel set an agent sweeps (every
+	// subscribed channel PLUS its home channel) — the pin sweep's channel
+	// enumeration (design.md T7). Distinct from UndeliveredMessages, whose map
+	// omits channels with no owed messages: the pin sweep must visit every
+	// subscribed channel to inject its current pins regardless of cursor.
+	SweepChannels(ctx context.Context, agent store.AccountID) ([]store.ChannelID, error)
+	// PinnedEntries returns a channel's pinned board ordered by position (the
+	// channel_pins store, T6). The pin sweep dispatches a deliver for each pinned
+	// message regardless of cursor position (design.md T7).
+	PinnedEntries(ctx context.Context, channel store.ChannelID) ([]store.PinnedEntry, error)
 }
 
 // settleEvent is one queued author-settle edge handed from the hub's Deliver

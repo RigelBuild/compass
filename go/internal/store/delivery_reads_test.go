@@ -28,16 +28,17 @@ func mustNamedChannelWith(t *testing.T, s *Store, actor AccountID, name string, 
 	return ch.ID
 }
 
-// flipSubscribed sets a member's subscribed flag directly, modeling the
-// addOrUpdateMember DO UPDATE that can flip a home row to subscribed=false — the
-// exact state the D1 disjunct must still deliver through.
-func flipSubscribed(t *testing.T, s *Store, ch ChannelID, acct AccountID, subscribed bool) {
+// unsubscribeMember flips a member's channel_members row to subscribed=false
+// directly, modeling the addOrUpdateMember DO UPDATE that can flip a home or
+// mandatory-subscription row to subscribed=false — the exact state the D1/T4
+// disjuncts must still deliver through.
+func unsubscribeMember(t *testing.T, s *Store, ch ChannelID, acct AccountID) {
 	t.Helper()
 	if _, err := s.pool.Exec(context.Background(),
-		"UPDATE channel_members SET subscribed = $3 WHERE channel_id = $1 AND account_id = $2",
-		string(ch), string(acct), subscribed,
+		"UPDATE channel_members SET subscribed = false WHERE channel_id = $1 AND account_id = $2",
+		string(ch), string(acct),
 	); err != nil {
-		t.Fatalf("flip subscribed (%s,%s): %v", ch, acct, err)
+		t.Fatalf("unsubscribe member (%s,%s): %v", ch, acct, err)
 	}
 }
 
@@ -100,7 +101,7 @@ func TestSubscribedAgentsHomeChannelDisjunct(t *testing.T) {
 	// The owner is a member of the agent's home channel (added at CreateAgent), so
 	// it can post there. Flip the AGENT's own home row to subscribed=false and
 	// assert it still delivers.
-	flipSubscribed(t, s, home, agent.ID, false)
+	unsubscribeMember(t, s, home, agent.ID)
 
 	agents, err := s.SubscribedAgents(ctx, home, owner.ID)
 	if err != nil {
@@ -218,8 +219,8 @@ func TestChannelAgentMembersResolvesAllAgentMembersAuthorExcluded(t *testing.T) 
 
 // Case: an agent member with subscribed=false (and not its home channel) is STILL
 // returned by ChannelAgentMembers — the property that distinguishes it from
-// SubscribedAgents (which filters subscribed-or-home). Uses flipSubscribed to set
-// subscribed=false and asserts the member is still present.
+// SubscribedAgents (which filters subscribed-or-home). Uses unsubscribeMember to
+// set subscribed=false and asserts the member is still present.
 func TestChannelAgentMembersIncludesUnsubscribed(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -229,7 +230,7 @@ func TestChannelAgentMembersIncludesUnsubscribed(t *testing.T) {
 	// unsub is a member of this (non-home) channel; flip it explicitly to
 	// subscribed=false so SubscribedAgents would exclude it.
 	ch := mustNamedChannelWith(t, s, owner.ID, "shared", author.ID, unsub.ID)
-	flipSubscribed(t, s, ch, unsub.ID, false)
+	unsubscribeMember(t, s, ch, unsub.ID)
 
 	// SubscribedAgents excludes it (the contrast that makes the property load-bearing).
 	subs, err := s.SubscribedAgents(ctx, ch, author.ID)
@@ -255,5 +256,60 @@ func TestChannelAgentMembersIncludesUnsubscribed(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("ChannelAgentMembers(%s) = %v, want it to include the unsubscribed member %s (membership, not subscription)", ch, members, unsub.ID)
+	}
+}
+
+// TestSweepChannelsResolvesDisjunctSet pins the pin sweep's channel enumeration
+// (design.md T7): SweepChannels returns exactly the D1 disjunct set — every
+// channel the agent is subscribed to, PLUS its home channel, PLUS any
+// mandatory_subscription channel it is a member of — mirroring the
+// UndeliveredMessages/SubscribedAgents disjunct. The home channel is included
+// EVEN WHEN its subscribed flag is flipped false (the RT-2 guarantee); a
+// mandatory channel is included EVEN WHEN the member's subscribed flag is false
+// (the T4 policy disjunct); and a channel the agent is not a member of is
+// excluded.
+func TestSweepChannelsResolvesDisjunctSet(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	home := agent.Agent.HomeChannelID
+
+	// A second channel the agent is subscribed to.
+	subbed := mustNamedChannelWith(t, s, owner.ID, "subbed", agent.ID)
+	subscribeAgent(t, s, owner.ID, subbed, agent.ID)
+	// A mandatory-subscription channel the agent is a MEMBER of but whose row is
+	// NOT subscribed — the T4 policy disjunct must still sweep it. mustPolicyChannel
+	// seeds it with MandatorySubscription; flip the agent's row subscribed=false so
+	// only the mandatory disjunct (not cm.subscribed) can admit it.
+	mand := mustPolicyChannel(t, s, owner.ID, "mandatory", ChannelPolicy{
+		MandatorySubscription: true,
+	}, agent.ID)
+	unsubscribeMember(t, s, mand.ID, agent.ID)
+	// A channel the agent is NOT a member of — must be excluded.
+	mustNamedChannelWith(t, s, owner.ID, "foreign")
+	// Flip the agent's home row subscribed=false: the home channel must still be
+	// in the sweep set (RT-2 disjunct), independent of the flag.
+	unsubscribeMember(t, s, home, agent.ID)
+
+	channels, err := s.SweepChannels(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("SweepChannels: %v", err)
+	}
+	got := map[ChannelID]bool{}
+	for _, ch := range channels {
+		got[ch] = true
+	}
+	if !got[home] {
+		t.Fatalf("SweepChannels = %v, want it to include the home channel %s despite subscribed=false (RT-2 disjunct)", channels, home)
+	}
+	if !got[subbed] {
+		t.Fatalf("SweepChannels = %v, want it to include the subscribed channel %s", channels, subbed)
+	}
+	if !got[mand.ID] {
+		t.Fatalf("SweepChannels = %v, want it to include the mandatory-subscription channel %s despite subscribed=false (T4 policy disjunct)", channels, mand.ID)
+	}
+	if len(channels) != 3 {
+		t.Fatalf("SweepChannels = %v, want exactly [home, subbed, mandatory] (a non-member channel is excluded)", channels)
 	}
 }
