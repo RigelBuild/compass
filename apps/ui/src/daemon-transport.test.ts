@@ -1,81 +1,71 @@
 /// <reference types="bun" />
 // Contracts defended here (the webview→daemon fetch adapter, daemon-transport.ts):
-//  - daemonFetch forwards the request the gRPC-Web transport built to the
-//    `compass_rpc` command: HTTP method, the URL's *path+query only* (origin
-//    dropped), the headers, and the body as a byte array.
-//  - the ordered head→body→end Channel frames reassemble into a `Response` whose
+//  - createDaemonFetch(ipc) forwards the request the gRPC-Web transport built to
+//    the ShellIpc `rpc` call: the URL's *path+query only* (origin dropped), the
+//    headers, and the body as a byte array.
+//  - the ordered head→body→end frames reassemble into a `Response` whose
 //    status/headers come from the head frame and whose streamed body is the
 //    base64-decoded body chunks concatenated in order; `end` closes the stream.
-//  - an `error` frame *before* the head rejects the returned fetch promise; an
-//    `error` frame *after* the head errors the response's body stream instead.
-//  - a caller-minted `requestId` correlates the `compass_rpc` call with the
-//    Rust proxy task; cancelling the response stream, or aborting the request's
-//    signal, fires `compass_rpc_cancel` with that *same* id — exactly once (a
-//    `canceled` guard), after which late Channel frames are dropped. An
-//    already-aborted signal cancels up front and never delivers a body.
+//    A multi-body stream yields each decoded chunk in order (SubscribeEvents).
+//  - a caller-minted `requestId` correlates the `rpc` call with the proxy task;
+//    cancelling the response stream, or aborting the request's signal, fires
+//    `ipc.cancel` with that *same* id.
 //
-// The real `@tauri-apps/api/core` `Channel`/`invoke` reach for
-// `window.__TAURI_INTERNALS__` (a webview global absent under bun), so the module
-// is swapped for hand-written fakes: `invoke` captures the payload and hands the
-// test the `Channel` instance so it can drive response frames, exactly the way
-// the Rust bridge would.
+// The seam is driven by a hand-written fake `ShellIpc` — no Tauri, no
+// `window.__TAURI_INTERNALS__`, no network — exactly the way any shell binding
+// would drive it: it captures the `rpc` args + the `onFrame` callback so the
+// test can push response frames, and records `cancel(requestId)` calls.
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+import {
+	createDaemonFetch,
+	type ResponseFrame,
+	type ShellIpc,
+} from "./daemon-transport";
 
-// Mirrors the Rust `ResponseFrame` wire (bridge.rs) — the frames the daemon
-// sends over the Channel and this adapter reassembles.
-type ResponseFrame =
-	| { kind: "head"; status: number; headers: [string, string][] }
-	| { kind: "body"; chunk: string }
-	| { kind: "end" }
-	| { kind: "error"; message: string };
-
-// The exact argument shape daemonFetch passes to invoke("compass_rpc", …).
-type CompassRpcArgs = {
-	requestId: string;
-	method: string;
-	url: string;
-	headers: { name: string; value: string }[];
-	body: number[];
-	channel: FakeChannel<ResponseFrame>;
+/** The captured state of a single `ipc.rpc(...)` invocation. */
+type RpcCall = {
+	args: {
+		requestId: string;
+		path: string;
+		headers: { name: string; value: string }[];
+		body: number[];
+	};
+	onFrame: (frame: ResponseFrame) => void;
 };
 
-type InvokeCall = { cmd: string; args: CompassRpcArgs };
+/** A stand-in for a shell's IPC binding: `rpc` captures its args + `onFrame`
+ *  (which the test drives) and resolves `rpcMade` so the test can grab them;
+ *  `cancel` records the requestId it was called with. `rpc` returns a promise
+ *  that never settles on its own — the frames the test pushes via `onFrame`
+ *  drive the Response, exactly as a real shell binding behaves. */
+class FakeShellIpc implements ShellIpc {
+	rpcCalls: RpcCall[] = [];
+	cancelCalls: string[] = [];
+	private readonly made = Promise.withResolvers<RpcCall>();
+	/** Resolves once `rpc` has been called, handing the test the captured call. */
+	readonly rpcMade = this.made.promise;
 
-/** A stand-in for the Tauri `Channel`: daemonFetch sets `onmessage`, the test
- *  drives it. No `window.__TAURI_INTERNALS__` dependency, unlike the real one. */
-class FakeChannel<T = unknown> {
-	onmessage: (message: T) => void = () => {};
+	rpc(
+		args: RpcCall["args"],
+		onFrame: (frame: ResponseFrame) => void,
+	): Promise<void> {
+		const call: RpcCall = { args, onFrame };
+		this.rpcCalls.push(call);
+		this.made.resolve(call);
+		// Never settles on its own: the transport stays open until frames end it.
+		return new Promise<void>(() => {});
+	}
+
+	cancel(requestId: string): void {
+		this.cancelCalls.push(requestId);
+	}
 }
 
-// Reset per test; the mock closure reads the live bindings.
-let invokeCalls: InvokeCall[] = [];
-let invokeMade: Promise<InvokeCall>;
-let resolveInvokeMade: (call: InvokeCall) => void;
-
-mock.module("@tauri-apps/api/core", () => ({
-	Channel: FakeChannel,
-	invoke: (cmd: string, args: CompassRpcArgs) => {
-		const call: InvokeCall = { cmd, args };
-		invokeCalls.push(call);
-		resolveInvokeMade(call);
-		// The real invoke resolves when the command returns (after End); the
-		// adapter drives the body off the Channel, not this promise, so resolving
-		// success here is faithful and never triggers the pre-head `.catch`.
-		return Promise.resolve();
-	},
-}));
-
-// Loaded after the mock is installed: a static import would hoist above
-// mock.module and bind the real `@tauri-apps/api/core`. (Sanctioned
-// dynamic-import exception: exercising the module-mock boundary.)
-const { daemonFetch } = await import("./daemon-transport");
+let ipc: FakeShellIpc;
 
 beforeEach(() => {
-	invokeCalls = [];
-	invokeMade = new Promise<InvokeCall>((resolve) => {
-		resolveInvokeMade = resolve;
-	});
+	ipc = new FakeShellIpc();
 });
 
 /** Standard-base64 of a byte sequence, for building body-frame chunks. */
@@ -93,194 +83,178 @@ function present<T>(value: T | null | undefined, what: string): T {
 
 /** Read a response body stream fully into a flat byte array. */
 async function readAllBytes(response: Response): Promise<number[]> {
-	const reader = present(response.body, "a response body stream").getReader();
-	const out: number[] = [];
+	const reader = present(response.body, "response body").getReader();
+	const chunks: number[] = [];
 	for (;;) {
 		const { done, value } = await reader.read();
 		if (done) break;
-		out.push(...value);
+		if (value) chunks.push(...value);
 	}
-	return out;
+	return chunks;
 }
 
-describe("daemonFetch", () => {
-	test("forwards method, path+query, headers, and body bytes to compass_rpc", async () => {
+describe("createDaemonFetch", () => {
+	test("forwards path+query, headers, and body bytes to ipc.rpc, then a unary head→body→end resolves a Response", async () => {
+		const daemonFetch = createDaemonFetch(ipc);
 		// A high byte (250) guards against sign/charcode mangling of the body.
 		const body = new Uint8Array([1, 2, 3, 250]);
 		const fetched = daemonFetch(
 			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo?a=1&b=two",
 			{
 				method: "POST",
-				headers: {
-					"content-type": "application/grpc-web+proto",
-					"x-grpc-web": "1",
-				},
+				headers: { "content-type": "application/grpc-web+proto", "x-k": "v" },
 				body,
 			},
 		);
 
-		const call = await invokeMade;
-		expect(call.cmd).toBe("compass_rpc");
-		expect(call.args.method).toBe("POST");
-		// Origin dropped; only the daemon-relative path + query is forwarded.
-		expect(call.args.url).toBe(
+		const { args, onFrame } = await ipc.rpcMade;
+
+		// path+query only (origin dropped), headers forwarded, body as byte array.
+		expect(args.path).toBe(
 			"/compass.v1.CompassService/GetDaemonInfo?a=1&b=two",
 		);
-		const header = (name: string) =>
-			call.args.headers.find((h) => h.name === name)?.value;
-		expect(header("content-type")).toBe("application/grpc-web+proto");
-		expect(header("x-grpc-web")).toBe("1");
-		expect(call.args.body).toEqual([1, 2, 3, 250]);
+		const headerMap = new Map(args.headers.map((h) => [h.name, h.value]));
+		expect(headerMap.get("content-type")).toBe("application/grpc-web+proto");
+		expect(headerMap.get("x-k")).toBe("v");
+		expect(args.body).toEqual([1, 2, 3, 250]);
+		expect(typeof args.requestId).toBe("string");
+		expect(args.requestId.length).toBeGreaterThan(0);
 
-		// Close out the fetch so it doesn't dangle.
-		call.args.channel.onmessage({ kind: "head", status: 200, headers: [] });
-		call.args.channel.onmessage({ kind: "end" });
-		await fetched;
+		// Unary: one head + one body + end.
+		onFrame({ kind: "head", status: 200, headers: [["grpc-status", "0"]] });
+		onFrame({ kind: "body", chunk: b64([9, 8, 7]) });
+		onFrame({ kind: "end" });
+
+		const response = await fetched;
+		expect(response.status).toBe(200);
+		expect(response.headers.get("grpc-status")).toBe("0");
+		expect(await readAllBytes(response)).toEqual([9, 8, 7]);
 	});
 
-	test("reassembles head→body→end into a streaming Response with the decoded body", async () => {
+	test("multi-frame stream: head + multiple body frames + end yield each decoded chunk in order", async () => {
+		const daemonFetch = createDaemonFetch(ipc);
 		const fetched = daemonFetch(
 			"https://daemon.invalid/compass.v1.CompassService/SubscribeEvents",
 		);
-		const { channel } = (await invokeMade).args;
+		const { onFrame } = await ipc.rpcMade;
 
-		channel.onmessage({
-			kind: "head",
-			status: 201,
-			headers: [
-				["content-type", "application/grpc-web+proto"],
-				["x-frame", "one"],
-			],
-		});
+		onFrame({ kind: "head", status: 200, headers: [] });
+		onFrame({ kind: "body", chunk: b64([1, 2]) });
+		onFrame({ kind: "body", chunk: b64([3, 4, 5]) });
+		onFrame({ kind: "body", chunk: b64([250]) });
+		onFrame({ kind: "end" });
 
 		const response = await fetched;
-		expect(response.status).toBe(201);
-		expect(response.headers.get("content-type")).toBe(
-			"application/grpc-web+proto",
-		);
-		expect(response.headers.get("x-frame")).toBe("one");
-
-		// Two chunks, one carrying a 0xFF byte, must decode and concatenate in the
-		// order received; `end` then closes the stream so the read completes.
-		channel.onmessage({ kind: "body", chunk: b64([104, 105, 255]) });
-		channel.onmessage({ kind: "body", chunk: b64([0, 1, 2]) });
-		channel.onmessage({ kind: "end" });
-
-		expect(await readAllBytes(response)).toEqual([104, 105, 255, 0, 1, 2]);
+		// Concatenated in arrival order across the three body frames.
+		expect(await readAllBytes(response)).toEqual([1, 2, 3, 4, 5, 250]);
 	});
 
-	test("rejects the fetch when an error frame arrives before the head", async () => {
+	test("mid-stream cancel of the response body fires ipc.cancel with the same requestId", async () => {
+		const daemonFetch = createDaemonFetch(ipc);
+		const fetched = daemonFetch(
+			"https://daemon.invalid/compass.v1.CompassService/SubscribeEvents",
+		);
+		const { args, onFrame } = await ipc.rpcMade;
+
+		onFrame({ kind: "head", status: 200, headers: [] });
+		onFrame({ kind: "body", chunk: b64([1, 2, 3]) });
+
+		const response = await fetched;
+		const reader = present(response.body, "response body").getReader();
+		// Consume the first chunk, then drop the subscription mid-stream.
+		const first = await reader.read();
+		expect(first.value && [...first.value]).toEqual([1, 2, 3]);
+		await reader.cancel();
+
+		// The upstream proxy is torn down with the same id the rpc was issued under.
+		expect(ipc.cancelCalls).toEqual([args.requestId]);
+	});
+
+	test("aborting the request's signal mid-stream fires ipc.cancel with the same requestId", async () => {
+		const daemonFetch = createDaemonFetch(ipc);
+		const controller = new AbortController();
+		const fetched = daemonFetch(
+			"https://daemon.invalid/compass.v1.CompassService/SubscribeEvents",
+			{ signal: controller.signal },
+		);
+		const { args, onFrame } = await ipc.rpcMade;
+
+		onFrame({ kind: "head", status: 200, headers: [] });
+		const response = await fetched;
+		const reader = present(response.body, "response body").getReader();
+
+		controller.abort(new DOMException("gone", "AbortError"));
+		expect(ipc.cancelCalls).toEqual([args.requestId]);
+		// The in-flight read rejects with the abort reason.
+		await expect(reader.read()).rejects.toThrow("gone");
+	});
+
+	test("an error frame before the head rejects the fetch promise", async () => {
+		const daemonFetch = createDaemonFetch(ipc);
 		const fetched = daemonFetch(
 			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
 		);
-		const { channel } = (await invokeMade).args;
-
-		channel.onmessage({ kind: "error", message: "daemon socket refused" });
-
-		await expect(fetched).rejects.toThrow("daemon socket refused");
+		const { onFrame } = await ipc.rpcMade;
+		onFrame({ kind: "error", message: "boom" });
+		await expect(fetched).rejects.toThrow("boom");
 	});
 
-	test("errors the response body stream when an error frame arrives after the head", async () => {
+	test("an already-aborted signal rejects the fetch up front without issuing the rpc", async () => {
+		const daemonFetch = createDaemonFetch(ipc);
+		const controller = new AbortController();
+		controller.abort(new DOMException("gone before start", "AbortError"));
+		const fetched = daemonFetch(
+			"https://daemon.invalid/compass.v1.CompassService/GetDaemonInfo",
+			{ signal: controller.signal },
+		);
+		// The head rejects with the abort reason, and the doomed RPC is never
+		// fired: starting a call we would immediately cancel — or omitting the
+		// early return so `head` never settles — is the regression this pins.
+		await expect(fetched).rejects.toThrow("gone before start");
+		expect(ipc.rpcCalls).toEqual([]);
+	});
+
+	test("an error frame after the head surfaces through the body stream, leaving the resolved Response intact", async () => {
+		const daemonFetch = createDaemonFetch(ipc);
 		const fetched = daemonFetch(
 			"https://daemon.invalid/compass.v1.CompassService/SubscribeEvents",
 		);
-		const { channel } = (await invokeMade).args;
+		const { onFrame } = await ipc.rpcMade;
 
-		// Head first: the fetch resolves, so a later failure can no longer reject
-		// it — it must surface through the body stream instead.
-		channel.onmessage({ kind: "head", status: 200, headers: [] });
+		onFrame({ kind: "head", status: 200, headers: [] });
+		onFrame({ kind: "body", chunk: b64([1, 2]) });
+		// The fetch promise already resolved on the head frame...
 		const response = await fetched;
-
-		channel.onmessage({ kind: "body", chunk: b64([9, 9]) });
-		channel.onmessage({ kind: "error", message: "mid-stream daemon failure" });
-
+		expect(response.status).toBe(200);
+		// ...so a later error frame is bimodal-routed to the stream (controller
+		// .error), not the already-settled fetch promise: inverting the headSeen
+		// check would surface the failure on the wrong channel.
+		onFrame({ kind: "error", message: "mid-stream daemon failure" });
 		await expect(readAllBytes(response)).rejects.toThrow(
 			"mid-stream daemon failure",
 		);
 	});
 
-	// (a) The gRPC-Web transport dropping a subscription cancels the reader; that
-	// must tear down the upstream proxy, keyed by the very id the rpc was sent with.
-	test("(a) cancelling the response stream fires compass_rpc_cancel with the same requestId", async () => {
-		const fetched = daemonFetch(
-			"https://daemon.invalid/compass.v1.CompassService/SubscribeEvents",
-		);
-		const { channel } = (await invokeMade).args;
-		channel.onmessage({ kind: "head", status: 200, headers: [] });
-		const response = await fetched;
-
-		const rpc = present(
-			invokeCalls.find((c) => c.cmd === "compass_rpc"),
-			"a compass_rpc call",
-		);
-		// Consumer stops reading: reader.cancel() runs the stream's cancel hook.
-		await present(response.body, "a response body stream").getReader().cancel();
-
-		const cancels = invokeCalls.filter((c) => c.cmd === "compass_rpc_cancel");
-		expect(cancels).toHaveLength(1);
-		expect(cancels[0].args.requestId).toBe(rpc.args.requestId);
-	});
-
-	// (b) An abort after the head is live must both stop the proxy (once) and
-	// surface the abort reason through the already-resolved response's stream.
-	test("(b) a signal aborted mid-stream fires cancel once and errors the stream", async () => {
+	test("a concurrent stream-cancel and signal-abort collapse to exactly one ipc.cancel", async () => {
+		const daemonFetch = createDaemonFetch(ipc);
 		const controller = new AbortController();
 		const fetched = daemonFetch(
 			"https://daemon.invalid/compass.v1.CompassService/SubscribeEvents",
 			{ signal: controller.signal },
 		);
-		const { channel } = (await invokeMade).args;
-		channel.onmessage({ kind: "head", status: 200, headers: [] });
+		const { args, onFrame } = await ipc.rpcMade;
+
+		onFrame({ kind: "head", status: 200, headers: [] });
 		const response = await fetched;
+		const reader = present(response.body, "response body").getReader();
 
-		const rpc = present(
-			invokeCalls.find((c) => c.cmd === "compass_rpc"),
-			"a compass_rpc call",
-		);
-		controller.abort(new DOMException("navigated away", "AbortError"));
-
-		const cancels = invokeCalls.filter((c) => c.cmd === "compass_rpc_cancel");
-		expect(cancels).toHaveLength(1);
-		expect(cancels[0].args.requestId).toBe(rpc.args.requestId);
-		// The stream carries the abort reason to the consumer.
-		await expect(readAllBytes(response)).rejects.toThrow("navigated away");
-	});
-
-	// (c) Aborted before the call even starts: the fetch contract says reject
-	// immediately with the abort reason, and don't start the RPC at all (no point
-	// firing a call we'd cancel on the same tick). A bare cancel-without-reject
-	// would leave the promise hanging forever, so this pins the reject.
-	test("(c) an already-aborted signal rejects up front without starting the RPC", async () => {
-		const controller = new AbortController();
+		// Both teardown paths fire: dropping the reader tears down the stream,
+		// then aborting the signal would tear it down again.
+		await reader.cancel();
 		controller.abort(new DOMException("gone", "AbortError"));
-		const fetched = daemonFetch(
-			"https://daemon.invalid/compass.v1.CompassService/SubscribeEvents",
-			{ signal: controller.signal },
-		);
 
-		// The returned promise rejects with the signal's abort reason.
-		await expect(fetched).rejects.toThrow("gone");
-		// No RPC is started for an already-dead request — neither the proxy call
-		// nor a cancel for a request the Rust side never registered.
-		expect(invokeCalls).toHaveLength(0);
-	});
-
-	// (d) Two independent teardown paths racing at once must still hit the daemon
-	// with a single cancel — the `canceled` flag collapses the duplicate.
-	test("(d) stream-cancel and signal-abort together fire compass_rpc_cancel exactly once", async () => {
-		const controller = new AbortController();
-		const fetched = daemonFetch(
-			"https://daemon.invalid/compass.v1.CompassService/SubscribeEvents",
-			{ signal: controller.signal },
-		);
-		const { channel } = (await invokeMade).args;
-		channel.onmessage({ kind: "head", status: 200, headers: [] });
-		const response = await fetched;
-
-		await present(response.body, "a response body stream").getReader().cancel();
-		controller.abort(new DOMException("also aborted", "AbortError"));
-
-		const cancels = invokeCalls.filter((c) => c.cmd === "compass_rpc_cancel");
-		expect(cancels).toHaveLength(1);
+		// The fire-once `canceled` guard means the upstream proxy is torn down
+		// exactly once — removing it would fire cancel twice against the daemon.
+		expect(ipc.cancelCalls).toEqual([args.requestId]);
 	});
 });

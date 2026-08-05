@@ -9,6 +9,7 @@ import {
 	createCompassClient,
 	createCompassClientOverFetch,
 	createCompassWebClient,
+	createCompassWebTransport,
 	type Transport,
 } from "./index";
 
@@ -198,6 +199,36 @@ test("createCompassWebClient exposes the compass.v1 surface over gRPC-Web", () =
 	const client: CompassClient = createCompassWebClient("http://localhost");
 	expect(typeof client.getServerInfo).toBe("function");
 	expect(typeof client.subscribeEvents).toBe("function");
+});
+
+describe("createCompassWebTransport injects an optional fetch", () => {
+	test("with no opts the transport is built as before (platform fetch)", () => {
+		// The default (browser dev) path: no opts, so the transport carries the
+		// compass.v1 surface exactly as today. The existing web-client/factory
+		// tests above pin the no-opts wire behavior; this asserts the transport
+		// builds and serves a client.
+		const transport: Transport = createCompassWebTransport("http://localhost");
+		const client = createCompassClient(transport);
+		expect(typeof client.getServerInfo).toBe("function");
+	});
+
+	test("with opts.fetch the injected fetch is the one the transport calls", async () => {
+		const { url, authorization } = await captureRequest((fetch) =>
+			createCompassClient(
+				createCompassWebTransport("http://compass.localhost", "s3cret", {
+					// FetchLike is the request/response call signature the transport
+					// uses; the opts shape names the full DOM `fetch`, so cast here.
+					fetch: fetch as typeof globalThis.fetch,
+				}),
+			).getServerInfo({}),
+		);
+		// The capture is populated only if the transport called the injected
+		// fetch: the shell-provided fetch is the seam the native app drives.
+		expect(url).toBe(
+			"http://compass.localhost/compass.v1.CompassService/GetServerInfo",
+		);
+		expect(authorization).toBe("Bearer s3cret");
+	});
 });
 
 describe("empty token fails loud (misconfigured credential)", () => {

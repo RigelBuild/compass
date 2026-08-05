@@ -53,13 +53,25 @@ export function createCompassClient(transport: Transport): CompassClient {
  * exactly as the per-client web factories install it. Exposed so callers that
  * need cache-coherent queries build clients + queries over one transport rather
  * than the per-client transports each web factory buries.
+ *
+ * `opts.fetch` injects the transport's `fetch`: absent (the browser dev path)
+ * the transport uses the platform `fetch`, byte-for-byte as before; supplied
+ * (the native desktop shell) it routes every request through a shell-provided
+ * fetch that tunnels over IPC — the one seam that lets the same clients dial
+ * either transport with nothing above the boundary knowing the mode.
  */
 export function createCompassWebTransport(
 	baseUrl: string,
 	token?: string,
+	opts?: { fetch?: typeof globalThis.fetch },
 ): Transport {
 	return createGrpcWebTransport({
 		baseUrl,
+		// `opts.fetch` is already `typeof globalThis.fetch` — the exact type the
+		// transport's `fetch` option takes — so it threads through directly; the
+		// truthiness guard keeps the browser dev path (no injected fetch) building
+		// the same `{ baseUrl, interceptors }` config as before.
+		...(opts?.fetch ? { fetch: opts.fetch } : {}),
 		interceptors: bearerInterceptors(token),
 	});
 }

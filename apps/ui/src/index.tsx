@@ -6,7 +6,10 @@ import App from "./App";
 import { bootCaller, bootConnection, renderBootError } from "./boot";
 import { StoreContext } from "./context";
 import { createLiveClients, resolveCaller } from "./live/client";
-import { type Connection, connectionFromEnv } from "./live/connection";
+import {
+	envConnectionProvider,
+	type ResolvedConnection,
+} from "./live/provider";
 import { AppRoutes } from "./routes";
 import { createAppStore } from "./store";
 
@@ -15,26 +18,24 @@ if (!root) {
 	throw new Error("missing #root element");
 }
 
-// The live connection, resolved once at boot from the Vite env (baseUrl +
-// bearer only), and the typed compass.v1 clients built over it. Client
-// construction is pure — no request is sent until the store opens the
-// SubscribeComms stream. The caller's own account id is NOT in the env: it is
-// learned from the server via the WhoAmI RPC once the transport is up (below),
-// then fed to the store alongside the connection.
-//
-// Connection resolution is required and can fail: a missing VITE_COMPASS_BASE_URL
-// throws by design (live/connection.ts). bootConnection catches that at the
-// boundary and paints the resolver's own message into #root, so a misconfigured
-// env is a readable screen naming the variable rather than the blank page a
-// throw escaping module init used to leave. Undefined means there is nothing
-// valid to dial — we stop rather than boot against a wrong default, and the
-// error screen is the whole UI.
-const connection = bootConnection(root, connectionFromEnv);
-if (connection) {
-	// A post-caller boot failure (createRoot/createAppStore/render throwing) is
-	// not an expected runtime condition, but routing the rejection to the same
-	// painter keeps a swallowed `void` promise from leaving a blank #root.
-	void main(root, connection).catch((error) => {
+// Boot resolves the connection through a ConnectionProvider (the default env
+// provider in the browser dev build; a shell-provided provider in the native
+// app). resolve() is async, so the whole boot sequence runs inside a single
+// async chain: bootConnection catches a resolve throw at the boundary and paints
+// the resolver's own message into #root — a missing VITE_COMPASS_BASE_URL still
+// throws by design (live/connection.ts) and still lands on the same failure
+// screen — and main() carries on only when a connection resolved. Undefined
+// means there is nothing valid to dial, so we stop rather than boot against a
+// wrong default, and the error screen is the whole UI. A post-connection boot
+// failure (createRoot/createAppStore/render throwing) routes to the same painter
+// so a swallowed `void` promise never leaves a blank #root.
+void bootConnection(root, () => envConnectionProvider().resolve())
+	.then((connection) => {
+		if (connection) {
+			return main(root, connection);
+		}
+	})
+	.catch((error) => {
 		renderBootError(
 			root,
 			"Compass UI cannot start",
@@ -44,7 +45,6 @@ if (connection) {
 				"full stack.",
 		);
 	});
-}
 
 // The post-connect boot sequence, async because learning the caller requires a
 // round-trip: build the clients, ask the server who we are (WhoAmI via
@@ -55,7 +55,10 @@ if (connection) {
 // and drives rail membership), so undefined stops boot here without rendering.
 // This boundary is distinct from a misconfigured env: the connection resolved
 // fine; the identity round-trip is what failed.
-async function main(root: HTMLElement, connection: Connection): Promise<void> {
+async function main(
+	root: HTMLElement,
+	connection: ResolvedConnection,
+): Promise<void> {
 	const clients = createLiveClients(connection);
 
 	const callerId = await bootCaller(root, () => resolveCaller(clients.compass));
