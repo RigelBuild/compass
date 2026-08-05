@@ -77,13 +77,12 @@ in
     # curl in current-system — not only one whose current-system ships curl.
     curl
 
-    # pkg-config: the Compass native app (Wails v3) links the Linux
-    # GTK3/WebKitGTK stack through cgo, and pkg-config is how that cgo build
-    # discovers the libraries' `.pc` files — via PKG_CONFIG_PATH, set in `env`
-    # below over the frozen SEA-1172 closure. Kept in this parsed list (not the
-    # Linux-guarded env block) because it has a bin the toolchain-parity gate
-    # resolves, is cheap, and is cross-platform: on macOS the app links the
-    # system WebKit framework, so pkg-config is simply unused there.
+    # pkg-config: the Wails v3 cgo link needs it to discover the GTK3/WebKitGTK
+    # `.pc` files (via PKG_CONFIG_PATH, set over the frozen SEA-1172 closure in
+    # `env` below, which owns that rationale). Kept in this parsed list, not the
+    # Linux-guarded env block, because it has a bin the toolchain-parity gate
+    # resolves and is cross-platform — harmless on macOS, where the app links
+    # the system WebKit framework and pkg-config goes unused.
     pkg-config
   ];
 
