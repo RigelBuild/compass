@@ -155,9 +155,11 @@ func bindSession(hub *Hub, sessionID string) {
 // the fake's proof of WHICH account attribution the hub applied — the security
 // invariant the RelayCommsCall tests defend.
 type commsCall struct {
-	account store.AccountID
-	post    *compassv1.PostMessageRequest
-	list    *compassv1.ListMessagesRequest
+	account   store.AccountID
+	post      *compassv1.PostMessageRequest
+	list      *compassv1.ListMessagesRequest
+	roster    *compassv1.GetRosterRequest
+	setStatus string
 }
 
 // fakeCommsCaller is a hand-written CommsCaller: it records every call (account
@@ -174,6 +176,16 @@ type fakeCommsCaller struct {
 	postErr  error
 	listResp *compassv1.ListMessagesResponse
 	listErr  error
+
+	rosterResp *compassv1.GetRosterResponse
+	rosterErr  error
+	// setStatusTruncateTo, when >0, truncates the recorded activity to that many
+	// runes, modeling the real server-side cap so a relay test asserts the
+	// PUBLISHED value equals the truncated one. setStatusReturned captures what
+	// SetStatusAsAccount returned (the value the relay arm publishes).
+	setStatusErr        error
+	setStatusTruncateTo int
+	setStatusReturned   string
 }
 
 func (f *fakeCommsCaller) PostAsAccount(_ context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error) {
@@ -194,6 +206,35 @@ func (f *fakeCommsCaller) ListAsAccount(_ context.Context, account store.Account
 		return nil, f.listErr
 	}
 	return f.listResp, nil
+}
+
+func (f *fakeCommsCaller) RosterAsAccount(_ context.Context, account store.AccountID, req *compassv1.GetRosterRequest) (*compassv1.GetRosterResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, roster: req})
+	if f.rosterErr != nil {
+		return nil, f.rosterErr
+	}
+	return f.rosterResp, nil
+}
+
+func (f *fakeCommsCaller) SetStatusAsAccount(_ context.Context, account store.AccountID, activity string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, commsCall{account: account, setStatus: activity})
+	if f.setStatusErr != nil {
+		return "", f.setStatusErr
+	}
+	// Mirror the real truncation so a relay test asserts the published value.
+	truncated := activity
+	if f.setStatusTruncateTo > 0 {
+		r := []rune(activity)
+		if len(r) > f.setStatusTruncateTo {
+			truncated = string(r[:f.setStatusTruncateTo])
+		}
+	}
+	f.setStatusReturned = truncated
+	return truncated, nil
 }
 
 func (f *fakeCommsCaller) snapshot() []commsCall {
