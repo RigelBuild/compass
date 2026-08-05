@@ -126,11 +126,15 @@ jobs:
       - name: Log in to GHCR
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pass the actor through env rather than interpolating ${{ }} into the
+          # shell — behavior-identical here (GitHub usernames carry no shell
+          # metacharacters), but keeps context values off the run: command line.
+          ACTOR: ${{ github.actor }}
         # The fork's patched skopeo understands the `nix:` transport used by the
         # publish; use it for login too so one skopeo backs the whole lane.
         run: |
           nix run path:../forks/nix2container#skopeo-nix2container -- \
-            login ghcr.io -u ${{ github.actor }} --password-stdin \
+            login ghcr.io -u "$ACTOR" --password-stdin \
             --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
 
       - name: Build and publish the two-tag set
@@ -147,14 +151,15 @@ jobs:
           set -euo pipefail
           sha12="$(git rev-parse --short=12 HEAD)"
           ref="docker://ghcr.io/sealedsecurity/compass-agent"
+          inspect_json="$RUNNER_TEMP/git-inspect.json"
 
           # Resolvable from GHCR at the immutable tag.
           skopeo() { nix run path:../forks/nix2container#skopeo-nix2container -- "$@"; }
-          skopeo inspect --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$sha12" > /tmp/git-inspect.json
+          skopeo inspect --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$sha12" > "$inspect_json"
 
           # Cheapest platform-contract-regression tripwire.
-          arch="$(jq -r .Architecture /tmp/git-inspect.json)"
-          os="$(jq -r .Os /tmp/git-inspect.json)"
+          arch="$(jq -r .Architecture "$inspect_json")"
+          os="$(jq -r .Os "$inspect_json")"
           if [ "$arch" != "amd64" ] || [ "$os" != "linux" ]; then
             echo "platform contract violated: got $os/$arch, want linux/amd64" >&2
             exit 1

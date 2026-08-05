@@ -92,13 +92,15 @@ guard_immutable() {
     return 1
   fi
 
-  # inspect failed — classify. Only an unambiguous manifest-unknown / 404 means
-  # the tag is genuinely free; anything else (401/403 auth, 5xx, rate-limit) is
-  # ambiguous and must abort.
+  # inspect failed — classify. Only GHCR's authoritative "manifest unknown"
+  # (the absent-tag response to an authenticated, write-scoped request) frees
+  # the tag. A bare gateway/CDN 404 with no manifest token, and every auth /
+  # 5xx / rate-limit error, is ambiguous and must abort — a transient must
+  # NEVER be read as "tag absent, safe to overwrite".
   local msg
   msg="$(cat "$remote_err")"
   rm -f "$remote_err"
-  if printf '%s' "$msg" | grep -qiE 'manifest unknown|http.*404|manifest.*not.*found'; then
+  if printf '%s' "$msg" | grep -qiE 'manifest unknown|manifest.*not.*found'; then
     log "Tag ${tag} absent on GHCR — free to publish"
     return 0
   fi

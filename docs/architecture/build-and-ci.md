@@ -192,7 +192,12 @@ compass-runner --image ghcr.io/sealedsecurity/compass-agent:git-<sha12>
 private-by-default (and only if the org policy permits `GITHUB_TOKEN`-created
 packages, else the push 403s and an owner must pre-create it). An owner sets the
 package **public** once in its settings after that first push; the repo linkage
-grants the workflow write access thereafter.
+grants the workflow write access thereafter. Pre-creating the empty package
+also settles the immutability guard's first-publish edge: the guard inspects
+`:git-<sha>` *before* the creating copy and only an authoritative
+`manifest unknown` frees the tag, so an owner-pre-created (hence
+authenticatable) package guarantees the absent-tag inspect classifies cleanly
+rather than on a not-yet-existent repository's error shape.
 
 ## Caching
 
