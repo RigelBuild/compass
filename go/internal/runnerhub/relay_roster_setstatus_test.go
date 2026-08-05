@@ -12,6 +12,7 @@ package runnerhub
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
@@ -126,5 +127,33 @@ func TestRelayCommsCallSetStatusArmNoPresenceSourceStillSucceeds(t *testing.T) {
 	}
 	if calls := comms.snapshot(); len(calls) != 1 {
 		t.Fatalf("caller invoked %d times, want 1 (the durable write still ran)", len(calls))
+	}
+}
+
+// TestRelayCommsCallSetStatusArmWriteErrorDoesNotPublish: when the durable
+// SetStatusAsAccount write fails, the set_status arm returns before
+// PublishActivity — never publishing a status that did not land in the table.
+// The failure surfaces in-band as a CommsCallError (the transport survives);
+// asserting that error is rendered AND the presence source published NOTHING
+// proves the publish is gated behind a successful write.
+//
+// Mutation: publish before checking the write error → src.published gains an
+// entry; this test fails.
+func TestRelayCommsCallSetStatusArmWriteErrorDoesNotPublish(t *testing.T) {
+	hub, comms := newHubWithComms()
+	comms.setStatusErr = errors.New("write failed")
+	src := &fakePresenceSourceHub{presence: map[store.AccountID]compassv1.AgentPresence{}}
+	hub.SetPresenceSource(src)
+	bindLiveSession(hub)
+
+	resp, err := hub.RelayCommsCall(context.Background(), relaySetStatus("sess-1", "tc-s", "status"))
+	if err != nil {
+		t.Fatalf("RelayCommsCall(set_status, write error) = %v, want the failure rendered in-band", err)
+	}
+	if resp.GetResult().GetError() == nil {
+		t.Fatalf("result oneof = %T, want an in-band CommsCallError for the failed write", resp.GetResult().GetResult())
+	}
+	if len(src.published) != 0 {
+		t.Fatalf("published count = %d, want 0 (no publish of an unpersisted status)", len(src.published))
 	}
 }

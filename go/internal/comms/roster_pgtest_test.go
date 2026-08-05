@@ -333,3 +333,60 @@ func TestSetStatusAsAccountTruncatesOverCap(t *testing.T) {
 		t.Errorf("table value %q != returned truncated value %q", landed, returned)
 	}
 }
+
+// TestRosterAsAccountEmptyAccountFailsClosed: an empty account is a hard
+// CodeInvalidArgument (errNoActor) and enumerates NOTHING — the fail-closed
+// guard that refuses to attribute an unresolved caller to the bootstrap-admin
+// fallback. Without the guard the call falls through to c.roster with an empty
+// caller: the SUBTREE read runs and the D9 clip's ListAccounts(ctx, "") matches
+// every account, so the call returns a (non-nil) response with a nil error
+// instead of failing closed. Asserting the call errors AND returns a nil
+// response proves the guard short-circuited before any tree read or enumeration.
+//
+// Mutation: remove `if account == ""` in RosterAsAccount → the call falls
+// through to a non-nil response with a nil error; this test fails.
+func TestRosterAsAccountEmptyAccountFailsClosed(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+
+	// Seed accounts that a missing guard's enumeration would reach.
+	owner := mustUser(t, st, "owner")
+	mustAgent(t, st, owner.ID, "agent")
+
+	resp, err := svc.RosterAsAccount(ctx, "", &compassv1.GetRosterRequest{
+		Scope: compassv1.RosterScope_ROSTER_SCOPE_SUBTREE,
+	})
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "RosterAsAccount(empty account)")
+	if resp != nil {
+		t.Fatalf("RosterAsAccount(empty account) returned a non-nil response (%d entries), want nil (no enumeration)", len(resp.GetEntries()))
+	}
+}
+
+// TestSetStatusAsAccountEmptyAccountFailsClosedNoWrite: an empty account is a
+// hard CodeInvalidArgument (errNoActor) and writes NOTHING — without the guard
+// the call falls through to Store.SetActivity keyed on the empty account id,
+// planting an orphan agent_activity row. Asserting the error AND that
+// ActivityFor([""]) reads back no row proves the guard short-circuited before
+// the write.
+//
+// Mutation: remove `if account == ""` in SetStatusAsAccount → the call commits a
+// row for the empty id and returns nil error; this test fails twice.
+func TestSetStatusAsAccountEmptyAccountFailsClosedNoWrite(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+
+	returned, err := svc.SetStatusAsAccount(ctx, "", "some status")
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "SetStatusAsAccount(empty account)")
+	if returned != "" {
+		t.Fatalf("SetStatusAsAccount(empty account) returned %q, want empty (no write)", returned)
+	}
+
+	// No agent_activity row landed for the empty id.
+	got, err := st.ActivityFor(ctx, []store.AccountID{""})
+	if err != nil {
+		t.Fatalf("ActivityFor: %v", err)
+	}
+	if _, ok := got[""]; ok {
+		t.Fatalf("agent_activity holds a row for the empty account id, want none (no write)")
+	}
+}
