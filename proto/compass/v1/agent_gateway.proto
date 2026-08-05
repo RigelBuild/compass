@@ -79,6 +79,9 @@ message CommsCallRequest {
   oneof call {
     PostMessageRequest post = 2;
     ListMessagesRequest list = 3;
+    GetRosterRequest roster = 4;
+    SetAgentStatusRequest set_status = 5;
+    UpdatePinnedBoardRequest pin = 6;
   }
 }
 
@@ -92,6 +95,9 @@ message CommsCallResult {
     PostMessageResponse post = 2;
     ListMessagesResponse list = 3;
     CommsCallError error = 4;
+    GetRosterResponse roster = 5;
+    SetAgentStatusResponse set_status = 6;
+    UpdatePinnedBoardResponse pin = 7;
   }
 }
 
@@ -102,6 +108,16 @@ message CommsCallError {
   string code = 1;
   string message = 2;
 }
+
+// Set the calling agent's activity note (agent-only, via the relay — no public
+// CommsService RPC). The presence enum stays session-derived; this carries only
+// the human-readable activity string the roster and live streams surface.
+message SetAgentStatusRequest {
+  string activity = 1;
+}
+
+// Empty: the activity write is acknowledged by a non-error result.
+message SetAgentStatusResponse {}
 
 // One agent-initiated lifecycle call (spawn/despawn a peer). `call_id` is the
 // agent-minted correlation id (the SDK toolCallId); the `call` oneof selects the
