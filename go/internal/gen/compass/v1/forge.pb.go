@@ -162,8 +162,9 @@ func (ForgeNotificationKind) EnumDescriptor() ([]byte, []int) {
 }
 
 // A reference to a forge comment, carried on a comment write result and on a
-// COMMENT notification (DL-092 §Resolved decisions OQ-B). #995 used a forge-shaped
-// `IssueComment` domain message in two carriers; per DL-069 no forge domain type
+// COMMENT notification. The reference shape is the one ruled in the amendment
+// record (§Resolved decisions OQ-B). #995 used a forge-shaped
+// `IssueComment` domain message in two carriers; per DL-069/DL-092 no forge domain type
 // is a wire type, so both carriers take this one reference instead. Its authorship
 // mirrors the canonical Issue one grain down: `forge_account` is the commenter's
 // native forge login (always set on a notification); `agent` is the Compass agent
