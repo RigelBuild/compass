@@ -18,18 +18,18 @@ import (
 	"testing"
 )
 
-// mustPinnableMessage appends a real message under (ch, topicName) and returns
+// mustPinnableMessage appends a real message under (ch, "general") and returns
 // its id — a valid pin target living in ch. Pins point at existing messages, so
 // the tests need genuine message rows (not fabricated ids).
-func mustPinnableMessage(t *testing.T, s *Store, ch ChannelID, author AccountID, topicName, body string) MessageID {
+func mustPinnableMessage(t *testing.T, s *Store, ch ChannelID, author AccountID, body string) MessageID {
 	t.Helper()
 	msg, _, err := s.AppendMessage(context.Background(),
 		Message{AuthorAccountID: author, Blocks: []MessageBlock{textBlock(body)}},
-		string(ch), TopicRef{Name: topicName}, "")
+		string(ch), TopicRef{Name: "general"}, "")
 	if err != nil {
 		t.Fatalf("AppendMessage(%q): %v", body, err)
 	}
-	return MessageID(msg.ID)
+	return msg.ID
 }
 
 // pinnedIDs projects the ordered message ids of a board, for order/membership
@@ -52,7 +52,7 @@ func TestPinMessageRejectsMessageFromAnotherChannel(t *testing.T) {
 	chA := mustNamedChannel(t, s, owner.ID, "room-a").ID
 	chB := mustNamedChannel(t, s, owner.ID, "room-b").ID
 	// A message that lives in chB's topic — not in chA.
-	msgB := mustPinnableMessage(t, s, chB, owner.ID, "general", "over in B")
+	msgB := mustPinnableMessage(t, s, chB, owner.ID, "over in B")
 
 	_, err := s.PinMessage(ctx, chA, msgB, MessageID(""), owner.ID)
 	sentinelIs(t, err, ErrNotFound, "message from another channel")
@@ -73,8 +73,8 @@ func TestPinMessageFreshPinAppends(t *testing.T) {
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
 	ch := mustNamedChannel(t, s, owner.ID, "room").ID
-	m1 := mustPinnableMessage(t, s, ch, owner.ID, "general", "first")
-	m2 := mustPinnableMessage(t, s, ch, owner.ID, "general", "second")
+	m1 := mustPinnableMessage(t, s, ch, owner.ID, "first")
+	m2 := mustPinnableMessage(t, s, ch, owner.ID, "second")
 
 	if _, err := s.PinMessage(ctx, ch, m1, MessageID(""), owner.ID); err != nil {
 		t.Fatalf("PinMessage(m1): %v", err)
@@ -95,6 +95,35 @@ func TestPinMessageFreshPinAppends(t *testing.T) {
 	}
 }
 
+// TestPinMessageDuplicateFreshPinConflicts pins the documented dup-pin contract
+// (PinMessage doc): a fresh pin of an already-pinned message surfaces the
+// (channel_id, message_id) primary-key conflict as ErrConflict, and the board is
+// left unchanged (the failed insert rolls back with the whole tx). Without the
+// pgUniqueViolation→ErrConflict mapping this would leak a raw wrapped error.
+func TestPinMessageDuplicateFreshPinConflicts(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	ch := mustNamedChannel(t, s, owner.ID, "room").ID
+	m1 := mustPinnableMessage(t, s, ch, owner.ID, "first")
+
+	if _, err := s.PinMessage(ctx, ch, m1, MessageID(""), owner.ID); err != nil {
+		t.Fatalf("PinMessage(m1): %v", err)
+	}
+	// Pinning m1 again as a fresh pin hits the PK conflict.
+	_, err := s.PinMessage(ctx, ch, m1, MessageID(""), owner.ID)
+	sentinelIs(t, err, ErrConflict, "a duplicate fresh pin of an already-pinned message")
+
+	entries, err := s.PinnedEntries(ctx, ch)
+	if err != nil {
+		t.Fatalf("PinnedEntries: %v", err)
+	}
+	got := pinnedIDs(entries)
+	if len(got) != 1 || got[0] != m1 {
+		t.Fatalf("board = %v after a rejected duplicate pin, want [%s] unchanged", got, m1)
+	}
+}
+
 // TestPinMessageRepointPreservesPosition pins the repoint CAS success path: a
 // replace naming a currently-pinned id atomically swaps in the new message at the
 // SAME position — old id gone, new id present, order preserved, count unchanged.
@@ -103,9 +132,9 @@ func TestPinMessageRepointPreservesPosition(t *testing.T) {
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
 	ch := mustNamedChannel(t, s, owner.ID, "room").ID
-	m1 := mustPinnableMessage(t, s, ch, owner.ID, "general", "one")
-	m2 := mustPinnableMessage(t, s, ch, owner.ID, "general", "two")
-	m3 := mustPinnableMessage(t, s, ch, owner.ID, "general", "three")
+	m1 := mustPinnableMessage(t, s, ch, owner.ID, "one")
+	m2 := mustPinnableMessage(t, s, ch, owner.ID, "two")
+	m3 := mustPinnableMessage(t, s, ch, owner.ID, "three")
 
 	if _, err := s.PinMessage(ctx, ch, m1, MessageID(""), owner.ID); err != nil {
 		t.Fatalf("PinMessage(m1): %v", err)
@@ -157,9 +186,9 @@ func TestPinMessageRepointStaleFailsCAS(t *testing.T) {
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
 	ch := mustNamedChannel(t, s, owner.ID, "room").ID
-	m1 := mustPinnableMessage(t, s, ch, owner.ID, "general", "one")
-	m2 := mustPinnableMessage(t, s, ch, owner.ID, "general", "two")
-	m3 := mustPinnableMessage(t, s, ch, owner.ID, "general", "three")
+	m1 := mustPinnableMessage(t, s, ch, owner.ID, "one")
+	m2 := mustPinnableMessage(t, s, ch, owner.ID, "two")
+	m3 := mustPinnableMessage(t, s, ch, owner.ID, "three")
 
 	if _, err := s.PinMessage(ctx, ch, m1, MessageID(""), owner.ID); err != nil {
 		t.Fatalf("PinMessage(m1): %v", err)
@@ -188,12 +217,12 @@ func TestPinMessageCapRejectsSixth(t *testing.T) {
 	ch := mustNamedChannel(t, s, owner.ID, "room").ID
 
 	for i := range maxChannelPins {
-		m := mustPinnableMessage(t, s, ch, owner.ID, "general", "msg")
+		m := mustPinnableMessage(t, s, ch, owner.ID, "msg")
 		if _, err := s.PinMessage(ctx, ch, m, MessageID(""), owner.ID); err != nil {
 			t.Fatalf("PinMessage(#%d): %v", i+1, err)
 		}
 	}
-	over := mustPinnableMessage(t, s, ch, owner.ID, "general", "over cap")
+	over := mustPinnableMessage(t, s, ch, owner.ID, "over cap")
 	_, err := s.PinMessage(ctx, ch, over, MessageID(""), owner.ID)
 	sentinelIs(t, err, ErrFailedPrecondition, "pinning past the cap")
 
@@ -218,14 +247,14 @@ func TestPinMessageConcurrentCapEdge(t *testing.T) {
 	ch := mustNamedChannel(t, s, owner.ID, "room").ID
 
 	for i := range maxChannelPins - 1 {
-		m := mustPinnableMessage(t, s, ch, owner.ID, "general", "seed")
+		m := mustPinnableMessage(t, s, ch, owner.ID, "seed")
 		if _, err := s.PinMessage(ctx, ch, m, MessageID(""), owner.ID); err != nil {
 			t.Fatalf("seed PinMessage(#%d): %v", i+1, err)
 		}
 	}
 	// Two candidate messages, pre-created so the pin ops race only on the board.
-	c1 := mustPinnableMessage(t, s, ch, owner.ID, "general", "cand1")
-	c2 := mustPinnableMessage(t, s, ch, owner.ID, "general", "cand2")
+	c1 := mustPinnableMessage(t, s, ch, owner.ID, "cand1")
+	c2 := mustPinnableMessage(t, s, ch, owner.ID, "cand2")
 
 	var wg sync.WaitGroup
 	start := make(chan struct{})
@@ -273,8 +302,8 @@ func TestUnpinMessageRemoves(t *testing.T) {
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
 	ch := mustNamedChannel(t, s, owner.ID, "room").ID
-	m1 := mustPinnableMessage(t, s, ch, owner.ID, "general", "one")
-	m2 := mustPinnableMessage(t, s, ch, owner.ID, "general", "two")
+	m1 := mustPinnableMessage(t, s, ch, owner.ID, "one")
+	m2 := mustPinnableMessage(t, s, ch, owner.ID, "two")
 
 	if _, err := s.PinMessage(ctx, ch, m1, MessageID(""), owner.ID); err != nil {
 		t.Fatalf("PinMessage(m1): %v", err)

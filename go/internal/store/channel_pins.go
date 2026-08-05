@@ -136,7 +136,7 @@ func lockChannelForPins(ctx context.Context, tx pgx.Tx, ch ChannelID) error {
 	var one int
 	err := tx.QueryRow(ctx, `SELECT 1 FROM channels WHERE id = $1 FOR UPDATE`, string(ch)).Scan(&one)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if noRows(err) {
 			return fmt.Errorf("%w: channel %q", ErrNotFound, ch)
 		}
 		return fmt.Errorf("store: lock channel for pins: %w", err)
@@ -157,7 +157,7 @@ func requireMessageInChannel(ctx context.Context, tx pgx.Tx, ch ChannelID, msg M
 		string(msg), string(ch),
 	).Scan(&one)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if noRows(err) {
 			return fmt.Errorf("%w: message %q not in channel %q", ErrNotFound, msg, ch)
 		}
 		return fmt.Errorf("store: check message in channel: %w", err)
@@ -202,7 +202,7 @@ func pinRepoint(ctx context.Context, tx pgx.Tx, ch ChannelID, msg, replace Messa
 		string(ch), string(replace),
 	).Scan(&pos)
 	if err != nil {
-		if err == pgx.ErrNoRows {
+		if noRows(err) {
 			return fmt.Errorf("%w: pin %q is no longer on channel %q's board, re-read", ErrConflict, replace, ch)
 		}
 		return fmt.Errorf("store: repoint delete channel pin: %w", err)
