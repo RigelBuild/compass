@@ -72,6 +72,9 @@ const (
 	// RunnerServiceRelayLifecycleCallProcedure is the fully-qualified name of the RunnerService's
 	// RelayLifecycleCall RPC.
 	RunnerServiceRelayLifecycleCallProcedure = "/compass.v1.RunnerService/RelayLifecycleCall"
+	// RunnerServiceRelayForgeCallProcedure is the fully-qualified name of the RunnerService's
+	// RelayForgeCall RPC.
+	RunnerServiceRelayForgeCallProcedure = "/compass.v1.RunnerService/RelayForgeCall"
 	// RunnerServiceCommitConversationFrameProcedure is the fully-qualified name of the RunnerService's
 	// CommitConversationFrame RPC.
 	RunnerServiceCommitConversationFrameProcedure = "/compass.v1.RunnerService/CommitConversationFrame"
@@ -139,6 +142,20 @@ type RunnerServiceClient interface {
 	// Runner still initiates; the Server gains no inbound route); merging the
 	// spawn/despawn record ratifies it.
 	RelayLifecycleCall(context.Context, *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error)
+	// RelayForgeCall (unary, Runner->Server): relay one agent-initiated forge call
+	// (create/comment/read an issue or PR, subscribe/unsubscribe an artifact) under
+	// the agent account the session resolves to. Same pure-forwarder shape as
+	// RelayCommsCall: the Runner sends the session_id it structurally owns (the
+	// per-container AgentGateway socket the call arrived on, 1:1 with the session)
+	// and the ForgeCallRequest, and asserts NO account. The Server resolves
+	// session_id -> agent account from its own Provision-originated hub binding,
+	// stamps the owner header (DL-050) and makes the forge call with its own
+	// credential (DL-052), fail-closed: an unknown/stopped session is CodeNotFound,
+	// never a stale account or the bootstrap admin. Read ops are answered from the
+	// projection/store, not a live forge proxy (DL-069 amendment OQ-A). Additive to
+	// the frozen dial-out shape (the Runner still initiates; the Server gains no
+	// inbound route); merging the ownership-layer record ratifies it.
+	RelayForgeCall(context.Context, *connect.Request[v1.RelayForgeCallRequest]) (*connect.Response[v1.RelayForgeCallResponse], error)
 	// CommitConversationFrame (unary, Runner->Server): durably commit one
 	// agent-authored conversation frame and return the commit outcome. This is
 	// the DURABLE counterpart to PublishEvents: conversation_posted /
@@ -229,6 +246,12 @@ func NewRunnerServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(runnerServiceMethods.ByName("RelayLifecycleCall")),
 			connect.WithClientOptions(opts...),
 		),
+		relayForgeCall: connect.NewClient[v1.RelayForgeCallRequest, v1.RelayForgeCallResponse](
+			httpClient,
+			baseURL+RunnerServiceRelayForgeCallProcedure,
+			connect.WithSchema(runnerServiceMethods.ByName("RelayForgeCall")),
+			connect.WithClientOptions(opts...),
+		),
 		commitConversationFrame: connect.NewClient[v1.CommitConversationFrameRequest, v1.CommitConversationFrameResponse](
 			httpClient,
 			baseURL+RunnerServiceCommitConversationFrameProcedure,
@@ -257,6 +280,7 @@ type runnerServiceClient struct {
 	publishEvents           *connect.Client[v1.PublishEventsRequest, v1.PublishEventsResponse]
 	relayCommsCall          *connect.Client[v1.RelayCommsCallRequest, v1.RelayCommsCallResponse]
 	relayLifecycleCall      *connect.Client[v1.RelayLifecycleCallRequest, v1.RelayLifecycleCallResponse]
+	relayForgeCall          *connect.Client[v1.RelayForgeCallRequest, v1.RelayForgeCallResponse]
 	commitConversationFrame *connect.Client[v1.CommitConversationFrameRequest, v1.CommitConversationFrameResponse]
 	fetchSecrets            *connect.Client[v1.FetchSecretsRequest, v1.FetchSecretsResponse]
 	fetchAgentConfig        *connect.Client[v1.FetchAgentConfigRequest, v1.FetchAgentConfigResponse]
@@ -285,6 +309,11 @@ func (c *runnerServiceClient) RelayCommsCall(ctx context.Context, req *connect.R
 // RelayLifecycleCall calls compass.v1.RunnerService.RelayLifecycleCall.
 func (c *runnerServiceClient) RelayLifecycleCall(ctx context.Context, req *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error) {
 	return c.relayLifecycleCall.CallUnary(ctx, req)
+}
+
+// RelayForgeCall calls compass.v1.RunnerService.RelayForgeCall.
+func (c *runnerServiceClient) RelayForgeCall(ctx context.Context, req *connect.Request[v1.RelayForgeCallRequest]) (*connect.Response[v1.RelayForgeCallResponse], error) {
+	return c.relayForgeCall.CallUnary(ctx, req)
 }
 
 // CommitConversationFrame calls compass.v1.RunnerService.CommitConversationFrame.
@@ -358,6 +387,20 @@ type RunnerServiceHandler interface {
 	// Runner still initiates; the Server gains no inbound route); merging the
 	// spawn/despawn record ratifies it.
 	RelayLifecycleCall(context.Context, *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error)
+	// RelayForgeCall (unary, Runner->Server): relay one agent-initiated forge call
+	// (create/comment/read an issue or PR, subscribe/unsubscribe an artifact) under
+	// the agent account the session resolves to. Same pure-forwarder shape as
+	// RelayCommsCall: the Runner sends the session_id it structurally owns (the
+	// per-container AgentGateway socket the call arrived on, 1:1 with the session)
+	// and the ForgeCallRequest, and asserts NO account. The Server resolves
+	// session_id -> agent account from its own Provision-originated hub binding,
+	// stamps the owner header (DL-050) and makes the forge call with its own
+	// credential (DL-052), fail-closed: an unknown/stopped session is CodeNotFound,
+	// never a stale account or the bootstrap admin. Read ops are answered from the
+	// projection/store, not a live forge proxy (DL-069 amendment OQ-A). Additive to
+	// the frozen dial-out shape (the Runner still initiates; the Server gains no
+	// inbound route); merging the ownership-layer record ratifies it.
+	RelayForgeCall(context.Context, *connect.Request[v1.RelayForgeCallRequest]) (*connect.Response[v1.RelayForgeCallResponse], error)
 	// CommitConversationFrame (unary, Runner->Server): durably commit one
 	// agent-authored conversation frame and return the commit outcome. This is
 	// the DURABLE counterpart to PublishEvents: conversation_posted /
@@ -444,6 +487,12 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(runnerServiceMethods.ByName("RelayLifecycleCall")),
 		connect.WithHandlerOptions(opts...),
 	)
+	runnerServiceRelayForgeCallHandler := connect.NewUnaryHandler(
+		RunnerServiceRelayForgeCallProcedure,
+		svc.RelayForgeCall,
+		connect.WithSchema(runnerServiceMethods.ByName("RelayForgeCall")),
+		connect.WithHandlerOptions(opts...),
+	)
 	runnerServiceCommitConversationFrameHandler := connect.NewUnaryHandler(
 		RunnerServiceCommitConversationFrameProcedure,
 		svc.CommitConversationFrame,
@@ -474,6 +523,8 @@ func NewRunnerServiceHandler(svc RunnerServiceHandler, opts ...connect.HandlerOp
 			runnerServiceRelayCommsCallHandler.ServeHTTP(w, r)
 		case RunnerServiceRelayLifecycleCallProcedure:
 			runnerServiceRelayLifecycleCallHandler.ServeHTTP(w, r)
+		case RunnerServiceRelayForgeCallProcedure:
+			runnerServiceRelayForgeCallHandler.ServeHTTP(w, r)
 		case RunnerServiceCommitConversationFrameProcedure:
 			runnerServiceCommitConversationFrameHandler.ServeHTTP(w, r)
 		case RunnerServiceFetchSecretsProcedure:
@@ -507,6 +558,10 @@ func (UnimplementedRunnerServiceHandler) RelayCommsCall(context.Context, *connec
 
 func (UnimplementedRunnerServiceHandler) RelayLifecycleCall(context.Context, *connect.Request[v1.RelayLifecycleCallRequest]) (*connect.Response[v1.RelayLifecycleCallResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.RelayLifecycleCall is not implemented"))
+}
+
+func (UnimplementedRunnerServiceHandler) RelayForgeCall(context.Context, *connect.Request[v1.RelayForgeCallRequest]) (*connect.Response[v1.RelayForgeCallResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.RunnerService.RelayForgeCall is not implemented"))
 }
 
 func (UnimplementedRunnerServiceHandler) CommitConversationFrame(context.Context, *connect.Request[v1.CommitConversationFrameRequest]) (*connect.Response[v1.CommitConversationFrameResponse], error) {

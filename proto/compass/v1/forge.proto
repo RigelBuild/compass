@@ -1,0 +1,93 @@
+// The compass.v1 forge notification + shared carrier leaf (SEA-1731 A1, design
+// docs/designs/product/compass-server-ownership-layer-amendment/design.md §A1).
+//
+// INTERNAL-ONLY surface. Like agent.proto / agent_gateway.proto / runner.proto,
+// and unlike compass.proto / comms.proto (the public generated-client door
+// between a UI and the Server), this file is spoken only between our own
+// binaries. It is generated ONLY into the internal lanes (the Go handler via
+// buf.gen.internal-go.yaml; the agent TS client via buf.gen.agent-ts.yaml),
+// never onto the public client surface (buf.gen.yaml excludes it), so the
+// `@compass/client` server-door fence stays intact.
+//
+// WHY A SEPARATE LEAF. The forge notification is delivered to the agent as an
+// AgentControl variant (agent.proto AgentControl.forge_notification), and it is
+// also relayed Server->Runner on runner.proto (SessionsResponse.forge_notification)
+// and carried on the agent->Runner call results in agent_gateway.proto. If
+// ForgeNotification lived in agent_gateway.proto (the #995/amendment draft
+// placement), agent.proto would have to import agent_gateway.proto to reference
+// it — but agent_gateway.proto ALREADY imports agent.proto (for AgentFrame /
+// AgentControl), so that back-reference is a circular import buf rejects
+// ("detected cyclic import"). Every other AgentControl payload type is defined
+// in agent.proto for exactly this reason; forge is the first agent_gateway call
+// family that also needs an AgentControl notification, so its shared types move
+// down here into a pure leaf that imports only compass.proto. agent.proto,
+// agent_gateway.proto, and runner.proto then all import this leaf without a
+// cycle (Matt-ruled, 2026-08-05).
+//
+// Additive and buf-breaking-safe: a new file in the owned `compass.v1` package,
+// not a change to the public messages. `buf lint`/`buf breaking` still cover it
+// (they glob `compass/**/*.proto`).
+
+syntax = "proto3";
+
+package compass.v1;
+
+import "compass/v1/compass.proto";
+
+// A reference to a forge comment, carried on a comment write result and on a
+// COMMENT notification (DL-092 §Resolved decisions OQ-B). #995 used a forge-shaped
+// `IssueComment` domain message in two carriers; per DL-069 no forge domain type
+// is a wire type, so both carriers take this one reference instead. Its authorship
+// mirrors the canonical Issue one grain down: `forge_account` is the commenter's
+// native forge login (always set on a notification); `agent` is the Compass agent
+// attribution, set only when the commenter is a Compass agent, unset for a human.
+// A write ack sets only `url` + `comment_id` (a write tool needs an ack + link);
+// a notification additionally sets `body` + `forge_account` + (for a Compass
+// commenter) `agent`.
+message CommentRef {
+  string url = 1;                        // the forge comment permalink
+  uint64 comment_id = 2;                 // the forge comment id
+  string body = 3;                       // the comment text; unset on a write ack
+  string forge_account = 4;              // the commenter's forge login; always set on a notification
+  compass.v1.AgentAttribution agent = 5; // set only when the commenter is a Compass agent; unset for a human
+}
+
+// Which forge artifact a subscription and a notification address. Zero is the
+// _UNSPECIFIED sentinel: this file is NOT in buf.yaml's ENUM_ZERO_VALUE_SUFFIX
+// exemption (that covers comms.proto only), so the sentinel is required. An
+// unspecified kind is a CodeInvalidArgument at the service edge, never a
+// defaulted "issue".
+enum ForgeArtifactKind {
+  FORGE_ARTIFACT_KIND_UNSPECIFIED = 0;
+  FORGE_ARTIFACT_KIND_ISSUE = 1;
+  FORGE_ARTIFACT_KIND_PULL_REQUEST = 2;
+}
+
+// A forge change on a subscribed artifact, pushed to the agent (DL-053
+// subscriptions, DL-054 notifications v1). Carried identically on both hops: the
+// Server->Runner relay (runner.proto SessionsResponse.forge_notification) and the
+// Runner->agent control lane (agent.proto AgentControl.forge_notification). The
+// per-kind payload fields are set by `change`: COMMENT sets `comment`; CHECKS
+// sets `checks`; STATE sets `state`.
+message ForgeNotification {
+  string subscription_id = 1;
+  ForgeRef forge = 2;             // which forge + host (DL-091 multi-forge disambiguation)
+  string repo = 3;
+  ForgeArtifactKind kind = 4;
+  uint64 number = 5;
+  string url = 6;
+  ForgeNotificationKind change = 7;
+  // Set for COMMENT: the new comment, header-stripped, author-attributed.
+  CommentRef comment = 8;
+  // Set for CHECKS: the rolled-up CI/status state after the change.
+  ChecksSummary checks = 9;
+  // Set for STATE: the new forge state string ("closed", "merged", …).
+  string state = 10;
+}
+enum ForgeNotificationKind {
+  FORGE_NOTIFICATION_KIND_UNSPECIFIED = 0;
+  FORGE_NOTIFICATION_KIND_COMMENT = 1;   // a new comment on the issue/PR
+  FORGE_NOTIFICATION_KIND_STATE = 2;     // opened/closed/merged/reopened
+  FORGE_NOTIFICATION_KIND_UPDATE = 3;    // title/body/labels edited
+  FORGE_NOTIFICATION_KIND_CHECKS = 4;    // CI or status-check state changed
+}

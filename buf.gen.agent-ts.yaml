@@ -22,6 +22,7 @@ inputs:
     paths:
       - proto/compass/v1/agent.proto
       - proto/compass/v1/agent_gateway.proto
+      - proto/compass/v1/forge.proto
 plugins:
   - local: protoc-gen-es
     out: packages/compass-agent/src/gen

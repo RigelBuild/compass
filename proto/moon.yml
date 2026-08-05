@@ -141,6 +141,16 @@ tasks:
     # RelayLifecycleCall* (like RelayCommsCall*) is a runner.proto internal
     # envelope. `compassv1internal`
     # catches any Go-package leak regardless of message name.
+    # forge.proto (SEA-1731 A1): the ForgeCall* carrier family + RelayForgeCall*
+    # (the ForgeCallRequest/Result/Error envelopes, agent_gateway.proto, and the
+    # runner.proto relay pair), the seven forge op requests + ListIssuesResponse +
+    # Subscribe/UnsubscribeForge*, and the forge.proto leaf itself
+    # (ForgeNotification*/ForgeArtifactKind/CommentRef). NOT fenced: the canonical
+    # compass.proto symbols the result arms retype to — Issue, PullRequest,
+    # ChecksSummary, Check, AgentAttribution, ForgeRef — are PUBLIC and MUST
+    # generate into the public trees, so no forge pattern prefixes them (ForgeCall/
+    # ForgeNotification share only the "Forge" stem with the public ForgeRef/
+    # ForgeProvider, no full-pattern match).
     #
     # Each of the whole-type symbols is word-bounded (\b…\b) so the fence matches
     # a WHOLE internal identifier, never a substring of a larger public one. This
@@ -155,7 +165,7 @@ tasks:
     # symbols. Internal symbols only ever leak as whole identifiers (a generated
     # type name or a `compassv1internal.` package ref), never as a substring, so
     # this mix still catches every real leak.
-    script: 'if grep -rlE "\bAgentFrame\b|\bAgentControl\b|\bSessionFrame\b|\bReplayCompleteAck\b|\bControlAck\b|\bDeliveryAck\b|\bTranscriptEntry\b|\bPromptControl\b|\bAskAnswerControl\b|\bReplayComplete\b|\bSteerControl\b|\bDeliverControl\b|\bDispatchControl\b|\bResumeBody\b|\bTranscriptReplay\b|\bConfigControl\b|\bConfigVersion\b|\bRunnerService\b|\bRunnerError\b|AgentGateway|CommsCall|LifecycleCall|SpawnPeer|DespawnPeer|RelayLifecycleCall|FetchAgentConfig|PublishFrame|PostConversationFrame|ControlSubscribe|\bcompassv1internal\b" packages/compass-client/src/gen go/gen; then echo "SEA-1267 FENCE VIOLATION: internal-only symbol found in a PUBLIC gen tree above — an internal proto leaked past buf.gen.yaml exclude_paths"; exit 1; fi; echo "gen-fence ok: no internal symbols in public gen"'
+    script: 'if grep -rlE "\bAgentFrame\b|\bAgentControl\b|\bSessionFrame\b|\bReplayCompleteAck\b|\bControlAck\b|\bDeliveryAck\b|\bTranscriptEntry\b|\bPromptControl\b|\bAskAnswerControl\b|\bReplayComplete\b|\bSteerControl\b|\bDeliverControl\b|\bDispatchControl\b|\bResumeBody\b|\bTranscriptReplay\b|\bConfigControl\b|\bConfigVersion\b|\bRunnerService\b|\bRunnerError\b|AgentGateway|CommsCall|LifecycleCall|SpawnPeer|DespawnPeer|RelayLifecycleCall|FetchAgentConfig|PublishFrame|PostConversationFrame|ControlSubscribe|ForgeCall|ForgeNotification|\bForgeArtifactKind\b|SubscribeForge|UnsubscribeForge|\bCommentRef\b|\bCreateIssueRequest\b|\bCommentOnIssueRequest\b|\bGetIssueRequest\b|\bListIssuesRequest\b|\bListIssuesResponse\b|\bCreatePullRequestRequest\b|\bCommentOnPullRequestRequest\b|\bGetPullRequestRequest\b|\bcompassv1internal\b" packages/compass-client/src/gen go/gen; then echo "SEA-1267 FENCE VIOLATION: internal-only symbol found in a PUBLIC gen tree above — an internal proto leaked past buf.gen.yaml exclude_paths"; exit 1; fi; echo "gen-fence ok: no internal symbols in public gen"'
     options:
       runFromWorkspaceRoot: true
       cache: false

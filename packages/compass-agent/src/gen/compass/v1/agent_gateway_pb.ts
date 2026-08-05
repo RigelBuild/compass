@@ -38,13 +38,17 @@ import type { GetRosterRequest, GetRosterResponse, ListMessagesRequest, ListMess
 import { file_compass_v1_comms } from "./comms_pb";
 import type { AgentControlSchema, AgentFrame } from "./agent_pb";
 import { file_compass_v1_agent } from "./agent_pb";
+import type { Issue, PullRequest } from "./compass_pb";
+import { file_compass_v1_compass } from "./compass_pb";
+import type { CommentRef, ForgeArtifactKind } from "./forge_pb";
+import { file_compass_v1_forge } from "./forge_pb";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file compass/v1/agent_gateway.proto.
  */
 export const file_compass_v1_agent_gateway: GenFile = /*@__PURE__*/
-  fileDesc("Ch5jb21wYXNzL3YxL2FnZW50X2dhdGV3YXkucHJvdG8SCmNvbXBhc3MudjEiqgIKEENvbW1zQ2FsbFJlcXVlc3QSDwoHY2FsbF9pZBgBIAEoCRIuCgRwb3N0GAIgASgLMh4uY29tcGFzcy52MS5Qb3N0TWVzc2FnZVJlcXVlc3RIABIvCgRsaXN0GAMgASgLMh8uY29tcGFzcy52MS5MaXN0TWVzc2FnZXNSZXF1ZXN0SAASLgoGcm9zdGVyGAQgASgLMhwuY29tcGFzcy52MS5HZXRSb3N0ZXJSZXF1ZXN0SAASNwoKc2V0X3N0YXR1cxgFIAEoCzIhLmNvbXBhc3MudjEuU2V0QWdlbnRTdGF0dXNSZXF1ZXN0SAASMwoDcGluGAYgASgLMiQuY29tcGFzcy52MS5VcGRhdGVQaW5uZWRCb2FyZFJlcXVlc3RIAEIGCgRjYWxsIt0CCg9Db21tc0NhbGxSZXN1bHQSDwoHY2FsbF9pZBgBIAEoCRIvCgRwb3N0GAIgASgLMh8uY29tcGFzcy52MS5Qb3N0TWVzc2FnZVJlc3BvbnNlSAASMAoEbGlzdBgDIAEoCzIgLmNvbXBhc3MudjEuTGlzdE1lc3NhZ2VzUmVzcG9uc2VIABIrCgVlcnJvchgEIAEoCzIaLmNvbXBhc3MudjEuQ29tbXNDYWxsRXJyb3JIABIvCgZyb3N0ZXIYBSABKAsyHS5jb21wYXNzLnYxLkdldFJvc3RlclJlc3BvbnNlSAASOAoKc2V0X3N0YXR1cxgGIAEoCzIiLmNvbXBhc3MudjEuU2V0QWdlbnRTdGF0dXNSZXNwb25zZUgAEjQKA3BpbhgHIAEoCzIlLmNvbXBhc3MudjEuVXBkYXRlUGlubmVkQm9hcmRSZXNwb25zZUgAQggKBnJlc3VsdCIvCg5Db21tc0NhbGxFcnJvchIMCgRjb2RlGAEgASgJEg8KB21lc3NhZ2UYAiABKAkiKQoVU2V0QWdlbnRTdGF0dXNSZXF1ZXN0EhAKCGFjdGl2aXR5GAEgASgJIhgKFlNldEFnZW50U3RhdHVzUmVzcG9uc2UikQEKFExpZmVjeWNsZUNhbGxSZXF1ZXN0Eg8KB2NhbGxfaWQYASABKAkSLQoFc3Bhd24YAiABKAsyHC5jb21wYXNzLnYxLlNwYXduUGVlclJlcXVlc3RIABIxCgdkZXNwYXduGAMgASgLMh4uY29tcGFzcy52MS5EZXNwYXduUGVlclJlcXVlc3RIAEIGCgRjYWxsImsKEFNwYXduUGVlclJlcXVlc3QSDgoGaGFuZGxlGAEgASgJEhQKDGRpc3BsYXlfbmFtZRgCIAEoCRIWCg5pbml0aWFsX3Byb21wdBgDIAEoCRIZChFjbGllbnRfcmVxdWVzdF9pZBgEIAEoCSJZChFTcGF3blBlZXJSZXNwb25zZRIYChBhZ2VudF9hY2NvdW50X2lkGAEgASgJEhYKDmNvbnRhaW5lcl9uYW1lGAIgASgJEhIKCnNlc3Npb25faWQYAyABKAkiLgoSRGVzcGF3blBlZXJSZXF1ZXN0EhgKEGFnZW50X2FjY291bnRfaWQYASABKAkiFQoTRGVzcGF3blBlZXJSZXNwb25zZSLFAQoTTGlmZWN5Y2xlQ2FsbFJlc3VsdBIPCgdjYWxsX2lkGAEgASgJEi4KBXNwYXduGAIgASgLMh0uY29tcGFzcy52MS5TcGF3blBlZXJSZXNwb25zZUgAEjIKB2Rlc3Bhd24YAyABKAsyHy5jb21wYXNzLnYxLkRlc3Bhd25QZWVyUmVzcG9uc2VIABIvCgVlcnJvchgEIAEoCzIeLmNvbXBhc3MudjEuTGlmZWN5Y2xlQ2FsbEVycm9ySABCCAoGcmVzdWx0IjMKEkxpZmVjeWNsZUNhbGxFcnJvchIMCgRjb2RlGAEgASgJEg8KB21lc3NhZ2UYAiABKAkiPAoTUHVibGlzaEZyYW1lUmVxdWVzdBIlCgVmcmFtZRgBIAEoCzIWLmNvbXBhc3MudjEuQWdlbnRGcmFtZSIWChRQdWJsaXNoRnJhbWVSZXNwb25zZSJeChxQb3N0Q29udmVyc2F0aW9uRnJhbWVSZXF1ZXN0EiUKBWZyYW1lGAEgASgLMhYuY29tcGFzcy52MS5BZ2VudEZyYW1lEhcKD2lkZW1wb3RlbmN5X2tleRgCIAEoCSIfCh1Qb3N0Q29udmVyc2F0aW9uRnJhbWVSZXNwb25zZSIZChdDb250cm9sU3Vic2NyaWJlUmVxdWVzdDKsAwoMQWdlbnRHYXRld2F5EkIKBUNvbW1zEhwuY29tcGFzcy52MS5Db21tc0NhbGxSZXF1ZXN0GhsuY29tcGFzcy52MS5Db21tc0NhbGxSZXN1bHQSTgoJTGlmZWN5Y2xlEiAuY29tcGFzcy52MS5MaWZlY3ljbGVDYWxsUmVxdWVzdBofLmNvbXBhc3MudjEuTGlmZWN5Y2xlQ2FsbFJlc3VsdBJOCgdQdWJsaXNoEh8uY29tcGFzcy52MS5QdWJsaXNoRnJhbWVSZXF1ZXN0GiAuY29tcGFzcy52MS5QdWJsaXNoRnJhbWVSZXNwb25zZSgBEmwKFVBvc3RDb252ZXJzYXRpb25GcmFtZRIoLmNvbXBhc3MudjEuUG9zdENvbnZlcnNhdGlvbkZyYW1lUmVxdWVzdBopLmNvbXBhc3MudjEuUG9zdENvbnZlcnNhdGlvbkZyYW1lUmVzcG9uc2USSgoHQ29udHJvbBIjLmNvbXBhc3MudjEuQ29udHJvbFN1YnNjcmliZVJlcXVlc3QaGC5jb21wYXNzLnYxLkFnZW50Q29udHJvbDABYgZwcm90bzM", [file_compass_v1_comms, file_compass_v1_agent]);
+  fileDesc("Ch5jb21wYXNzL3YxL2FnZW50X2dhdGV3YXkucHJvdG8SCmNvbXBhc3MudjEiqgIKEENvbW1zQ2FsbFJlcXVlc3QSDwoHY2FsbF9pZBgBIAEoCRIuCgRwb3N0GAIgASgLMh4uY29tcGFzcy52MS5Qb3N0TWVzc2FnZVJlcXVlc3RIABIvCgRsaXN0GAMgASgLMh8uY29tcGFzcy52MS5MaXN0TWVzc2FnZXNSZXF1ZXN0SAASLgoGcm9zdGVyGAQgASgLMhwuY29tcGFzcy52MS5HZXRSb3N0ZXJSZXF1ZXN0SAASNwoKc2V0X3N0YXR1cxgFIAEoCzIhLmNvbXBhc3MudjEuU2V0QWdlbnRTdGF0dXNSZXF1ZXN0SAASMwoDcGluGAYgASgLMiQuY29tcGFzcy52MS5VcGRhdGVQaW5uZWRCb2FyZFJlcXVlc3RIAEIGCgRjYWxsIt0CCg9Db21tc0NhbGxSZXN1bHQSDwoHY2FsbF9pZBgBIAEoCRIvCgRwb3N0GAIgASgLMh8uY29tcGFzcy52MS5Qb3N0TWVzc2FnZVJlc3BvbnNlSAASMAoEbGlzdBgDIAEoCzIgLmNvbXBhc3MudjEuTGlzdE1lc3NhZ2VzUmVzcG9uc2VIABIrCgVlcnJvchgEIAEoCzIaLmNvbXBhc3MudjEuQ29tbXNDYWxsRXJyb3JIABIvCgZyb3N0ZXIYBSABKAsyHS5jb21wYXNzLnYxLkdldFJvc3RlclJlc3BvbnNlSAASOAoKc2V0X3N0YXR1cxgGIAEoCzIiLmNvbXBhc3MudjEuU2V0QWdlbnRTdGF0dXNSZXNwb25zZUgAEjQKA3BpbhgHIAEoCzIlLmNvbXBhc3MudjEuVXBkYXRlUGlubmVkQm9hcmRSZXNwb25zZUgAQggKBnJlc3VsdCIvCg5Db21tc0NhbGxFcnJvchIMCgRjb2RlGAEgASgJEg8KB21lc3NhZ2UYAiABKAkiKQoVU2V0QWdlbnRTdGF0dXNSZXF1ZXN0EhAKCGFjdGl2aXR5GAEgASgJIhgKFlNldEFnZW50U3RhdHVzUmVzcG9uc2UikQEKFExpZmVjeWNsZUNhbGxSZXF1ZXN0Eg8KB2NhbGxfaWQYASABKAkSLQoFc3Bhd24YAiABKAsyHC5jb21wYXNzLnYxLlNwYXduUGVlclJlcXVlc3RIABIxCgdkZXNwYXduGAMgASgLMh4uY29tcGFzcy52MS5EZXNwYXduUGVlclJlcXVlc3RIAEIGCgRjYWxsImsKEFNwYXduUGVlclJlcXVlc3QSDgoGaGFuZGxlGAEgASgJEhQKDGRpc3BsYXlfbmFtZRgCIAEoCRIWCg5pbml0aWFsX3Byb21wdBgDIAEoCRIZChFjbGllbnRfcmVxdWVzdF9pZBgEIAEoCSJZChFTcGF3blBlZXJSZXNwb25zZRIYChBhZ2VudF9hY2NvdW50X2lkGAEgASgJEhYKDmNvbnRhaW5lcl9uYW1lGAIgASgJEhIKCnNlc3Npb25faWQYAyABKAkiLgoSRGVzcGF3blBlZXJSZXF1ZXN0EhgKEGFnZW50X2FjY291bnRfaWQYASABKAkiFQoTRGVzcGF3blBlZXJSZXNwb25zZSLFAQoTTGlmZWN5Y2xlQ2FsbFJlc3VsdBIPCgdjYWxsX2lkGAEgASgJEi4KBXNwYXduGAIgASgLMh0uY29tcGFzcy52MS5TcGF3blBlZXJSZXNwb25zZUgAEjIKB2Rlc3Bhd24YAyABKAsyHy5jb21wYXNzLnYxLkRlc3Bhd25QZWVyUmVzcG9uc2VIABIvCgVlcnJvchgEIAEoCzIeLmNvbXBhc3MudjEuTGlmZWN5Y2xlQ2FsbEVycm9ySABCCAoGcmVzdWx0IjMKEkxpZmVjeWNsZUNhbGxFcnJvchIMCgRjb2RlGAEgASgJEg8KB21lc3NhZ2UYAiABKAkizgQKEEZvcmdlQ2FsbFJlcXVlc3QSDwoHY2FsbF9pZBgBIAEoCRI2CgxjcmVhdGVfaXNzdWUYAiABKAsyHi5jb21wYXNzLnYxLkNyZWF0ZUlzc3VlUmVxdWVzdEgAEj0KEGNvbW1lbnRfb25faXNzdWUYAyABKAsyIS5jb21wYXNzLnYxLkNvbW1lbnRPbklzc3VlUmVxdWVzdEgAEjAKCWdldF9pc3N1ZRgEIAEoCzIbLmNvbXBhc3MudjEuR2V0SXNzdWVSZXF1ZXN0SAASNAoLbGlzdF9pc3N1ZXMYBSABKAsyHS5jb21wYXNzLnYxLkxpc3RJc3N1ZXNSZXF1ZXN0SAASQwoTY3JlYXRlX3B1bGxfcmVxdWVzdBgGIAEoCzIkLmNvbXBhc3MudjEuQ3JlYXRlUHVsbFJlcXVlc3RSZXF1ZXN0SAASSgoXY29tbWVudF9vbl9wdWxsX3JlcXVlc3QYByABKAsyJy5jb21wYXNzLnYxLkNvbW1lbnRPblB1bGxSZXF1ZXN0UmVxdWVzdEgAEj0KEGdldF9wdWxsX3JlcXVlc3QYCCABKAsyIS5jb21wYXNzLnYxLkdldFB1bGxSZXF1ZXN0UmVxdWVzdEgAEjYKCXN1YnNjcmliZRgJIAEoCzIhLmNvbXBhc3MudjEuU3Vic2NyaWJlRm9yZ2VSZXF1ZXN0SAASOgoLdW5zdWJzY3JpYmUYCiABKAsyIy5jb21wYXNzLnYxLlVuc3Vic2NyaWJlRm9yZ2VSZXF1ZXN0SABCBgoEY2FsbCK3AwoPRm9yZ2VDYWxsUmVzdWx0Eg8KB2NhbGxfaWQYASABKAkSIgoFaXNzdWUYAiABKAsyES5jb21wYXNzLnYxLklzc3VlSAASLwoNaXNzdWVfY29tbWVudBgDIAEoCzIWLmNvbXBhc3MudjEuQ29tbWVudFJlZkgAEjAKBmlzc3VlcxgEIAEoCzIeLmNvbXBhc3MudjEuTGlzdElzc3Vlc1Jlc3BvbnNlSAASLwoMcHVsbF9yZXF1ZXN0GAUgASgLMhcuY29tcGFzcy52MS5QdWxsUmVxdWVzdEgAEiwKCnByX2NvbW1lbnQYBiABKAsyFi5jb21wYXNzLnYxLkNvbW1lbnRSZWZIABI4CgpzdWJzY3JpYmVkGAcgASgLMiIuY29tcGFzcy52MS5TdWJzY3JpYmVGb3JnZVJlc3BvbnNlSAASPAoMdW5zdWJzY3JpYmVkGAggASgLMiQuY29tcGFzcy52MS5VbnN1YnNjcmliZUZvcmdlUmVzcG9uc2VIABIrCgVlcnJvchgJIAEoCzIaLmNvbXBhc3MudjEuRm9yZ2VDYWxsRXJyb3JIAEIICgZyZXN1bHQiRwoORm9yZ2VDYWxsRXJyb3ISDAoEY29kZRgBIAEoCRIPCgdtZXNzYWdlGAIgASgJEhYKDnJldHJ5X2FmdGVyX21zGAMgASgNIk8KEkNyZWF0ZUlzc3VlUmVxdWVzdBIMCgRyZXBvGAEgASgJEg0KBXRpdGxlGAIgASgJEgwKBGJvZHkYAyABKAkSDgoGbGFiZWxzGAQgAygJIkkKFUNvbW1lbnRPbklzc3VlUmVxdWVzdBIMCgRyZXBvGAEgASgJEhQKDGlzc3VlX251bWJlchgCIAEoBBIMCgRib2R5GAMgASgJIjUKD0dldElzc3VlUmVxdWVzdBIMCgRyZXBvGAEgASgJEhQKDGlzc3VlX251bWJlchgCIAEoBCJPChFMaXN0SXNzdWVzUmVxdWVzdBIMCgRyZXBvGAEgASgJEg0KBXN0YXRlGAIgASgJEg4KBmxhYmVscxgDIAMoCRINCgVsaW1pdBgEIAEoDSI3ChJMaXN0SXNzdWVzUmVzcG9uc2USIQoGaXNzdWVzGAEgAygLMhEuY29tcGFzcy52MS5Jc3N1ZSJ4ChhDcmVhdGVQdWxsUmVxdWVzdFJlcXVlc3QSDAoEcmVwbxgBIAEoCRINCgV0aXRsZRgCIAEoCRIMCgRib2R5GAMgASgJEhAKCGhlYWRfcmVmGAQgASgJEhAKCGJhc2VfcmVmGAUgASgJEg0KBWRyYWZ0GAYgASgIIk4KG0NvbW1lbnRPblB1bGxSZXF1ZXN0UmVxdWVzdBIMCgRyZXBvGAEgASgJEhMKC3B1bGxfbnVtYmVyGAIgASgEEgwKBGJvZHkYAyABKAkiOgoVR2V0UHVsbFJlcXVlc3RSZXF1ZXN0EgwKBHJlcG8YASABKAkSEwoLcHVsbF9udW1iZXIYAiABKAQiYgoVU3Vic2NyaWJlRm9yZ2VSZXF1ZXN0EgwKBHJlcG8YASABKAkSKwoEa2luZBgCIAEoDjIdLmNvbXBhc3MudjEuRm9yZ2VBcnRpZmFjdEtpbmQSDgoGbnVtYmVyGAMgASgEIjEKFlN1YnNjcmliZUZvcmdlUmVzcG9uc2USFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJIjIKF1Vuc3Vic2NyaWJlRm9yZ2VSZXF1ZXN0EhcKD3N1YnNjcmlwdGlvbl9pZBgBIAEoCSIaChhVbnN1YnNjcmliZUZvcmdlUmVzcG9uc2UiPAoTUHVibGlzaEZyYW1lUmVxdWVzdBIlCgVmcmFtZRgBIAEoCzIWLmNvbXBhc3MudjEuQWdlbnRGcmFtZSIWChRQdWJsaXNoRnJhbWVSZXNwb25zZSJeChxQb3N0Q29udmVyc2F0aW9uRnJhbWVSZXF1ZXN0EiUKBWZyYW1lGAEgASgLMhYuY29tcGFzcy52MS5BZ2VudEZyYW1lEhcKD2lkZW1wb3RlbmN5X2tleRgCIAEoCSIfCh1Qb3N0Q29udmVyc2F0aW9uRnJhbWVSZXNwb25zZSIZChdDb250cm9sU3Vic2NyaWJlUmVxdWVzdDLwAwoMQWdlbnRHYXRld2F5EkIKBUNvbW1zEhwuY29tcGFzcy52MS5Db21tc0NhbGxSZXF1ZXN0GhsuY29tcGFzcy52MS5Db21tc0NhbGxSZXN1bHQSTgoJTGlmZWN5Y2xlEiAuY29tcGFzcy52MS5MaWZlY3ljbGVDYWxsUmVxdWVzdBofLmNvbXBhc3MudjEuTGlmZWN5Y2xlQ2FsbFJlc3VsdBJOCgdQdWJsaXNoEh8uY29tcGFzcy52MS5QdWJsaXNoRnJhbWVSZXF1ZXN0GiAuY29tcGFzcy52MS5QdWJsaXNoRnJhbWVSZXNwb25zZSgBEmwKFVBvc3RDb252ZXJzYXRpb25GcmFtZRIoLmNvbXBhc3MudjEuUG9zdENvbnZlcnNhdGlvbkZyYW1lUmVxdWVzdBopLmNvbXBhc3MudjEuUG9zdENvbnZlcnNhdGlvbkZyYW1lUmVzcG9uc2USSgoHQ29udHJvbBIjLmNvbXBhc3MudjEuQ29udHJvbFN1YnNjcmliZVJlcXVlc3QaGC5jb21wYXNzLnYxLkFnZW50Q29udHJvbDABEkIKBUZvcmdlEhwuY29tcGFzcy52MS5Gb3JnZUNhbGxSZXF1ZXN0GhsuY29tcGFzcy52MS5Gb3JnZUNhbGxSZXN1bHRiBnByb3RvMw", [file_compass_v1_comms, file_compass_v1_agent, file_compass_v1_compass, file_compass_v1_forge]);
 
 /**
  * One agent-initiated comms call. `call_id` is the agent-minted correlation id
@@ -444,6 +448,540 @@ export const LifecycleCallErrorSchema: GenMessage<LifecycleCallError> = /*@__PUR
   messageDesc(file_compass_v1_agent_gateway, 11);
 
 /**
+ * One agent-initiated forge call. `call_id` is the agent-minted correlation id
+ * (the SDK toolCallId); the `call` oneof selects the forge operation. Mirrors
+ * CommsCallRequest / LifecycleCallRequest — the same message is the
+ * RelayForgeCallRequest.call payload on the Runner->Server leg, one shared
+ * envelope across both hops (DL-049).
+ *
+ * @generated from message compass.v1.ForgeCallRequest
+ */
+export type ForgeCallRequest = Message<"compass.v1.ForgeCallRequest"> & {
+  /**
+   * @generated from field: string call_id = 1;
+   */
+  callId: string;
+
+  /**
+   * @generated from oneof compass.v1.ForgeCallRequest.call
+   */
+  call: {
+    /**
+     * @generated from field: compass.v1.CreateIssueRequest create_issue = 2;
+     */
+    value: CreateIssueRequest;
+    case: "createIssue";
+  } | {
+    /**
+     * @generated from field: compass.v1.CommentOnIssueRequest comment_on_issue = 3;
+     */
+    value: CommentOnIssueRequest;
+    case: "commentOnIssue";
+  } | {
+    /**
+     * @generated from field: compass.v1.GetIssueRequest get_issue = 4;
+     */
+    value: GetIssueRequest;
+    case: "getIssue";
+  } | {
+    /**
+     * @generated from field: compass.v1.ListIssuesRequest list_issues = 5;
+     */
+    value: ListIssuesRequest;
+    case: "listIssues";
+  } | {
+    /**
+     * @generated from field: compass.v1.CreatePullRequestRequest create_pull_request = 6;
+     */
+    value: CreatePullRequestRequest;
+    case: "createPullRequest";
+  } | {
+    /**
+     * @generated from field: compass.v1.CommentOnPullRequestRequest comment_on_pull_request = 7;
+     */
+    value: CommentOnPullRequestRequest;
+    case: "commentOnPullRequest";
+  } | {
+    /**
+     * @generated from field: compass.v1.GetPullRequestRequest get_pull_request = 8;
+     */
+    value: GetPullRequestRequest;
+    case: "getPullRequest";
+  } | {
+    /**
+     * DL-053
+     *
+     * @generated from field: compass.v1.SubscribeForgeRequest subscribe = 9;
+     */
+    value: SubscribeForgeRequest;
+    case: "subscribe";
+  } | {
+    /**
+     * DL-053
+     *
+     * @generated from field: compass.v1.UnsubscribeForgeRequest unsubscribe = 10;
+     */
+    value: UnsubscribeForgeRequest;
+    case: "unsubscribe";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message compass.v1.ForgeCallRequest.
+ * Use `create(ForgeCallRequestSchema)` to create a new message.
+ */
+export const ForgeCallRequestSchema: GenMessage<ForgeCallRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 12);
+
+/**
+ * The result of one forge call, correlated by `call_id`. Per DL-069 no raw forge
+ * shape is a wire type: the domain result arms retype to the canonical compass.v1
+ * types (DL-092 supersedes #995's forge-shaped Issue/PullRequest domain messages),
+ * and the comment arms take the CommentRef reference (forge.proto). A successful
+ * call sets one domain/ack arm; an in-band failure (a tool error — not_found,
+ * rate limit, bad input) sets `error`, which is NOT a transport teardown.
+ *
+ * @generated from message compass.v1.ForgeCallResult
+ */
+export type ForgeCallResult = Message<"compass.v1.ForgeCallResult"> & {
+  /**
+   * @generated from field: string call_id = 1;
+   */
+  callId: string;
+
+  /**
+   * @generated from oneof compass.v1.ForgeCallResult.result
+   */
+  result: {
+    /**
+     * create_issue / get_issue
+     *
+     * @generated from field: compass.v1.Issue issue = 2;
+     */
+    value: Issue;
+    case: "issue";
+  } | {
+    /**
+     * comment_on_issue (write ack: url + comment_id)
+     *
+     * @generated from field: compass.v1.CommentRef issue_comment = 3;
+     */
+    value: CommentRef;
+    case: "issueComment";
+  } | {
+    /**
+     * list_issues
+     *
+     * @generated from field: compass.v1.ListIssuesResponse issues = 4;
+     */
+    value: ListIssuesResponse;
+    case: "issues";
+  } | {
+    /**
+     * create_pull_request / get_pull_request
+     *
+     * @generated from field: compass.v1.PullRequest pull_request = 5;
+     */
+    value: PullRequest;
+    case: "pullRequest";
+  } | {
+    /**
+     * comment_on_pull_request (write ack)
+     *
+     * @generated from field: compass.v1.CommentRef pr_comment = 6;
+     */
+    value: CommentRef;
+    case: "prComment";
+  } | {
+    /**
+     * @generated from field: compass.v1.SubscribeForgeResponse subscribed = 7;
+     */
+    value: SubscribeForgeResponse;
+    case: "subscribed";
+  } | {
+    /**
+     * @generated from field: compass.v1.UnsubscribeForgeResponse unsubscribed = 8;
+     */
+    value: UnsubscribeForgeResponse;
+    case: "unsubscribed";
+  } | {
+    /**
+     * @generated from field: compass.v1.ForgeCallError error = 9;
+     */
+    value: ForgeCallError;
+    case: "error";
+  } | { case: undefined; value?: undefined };
+};
+
+/**
+ * Describes the message compass.v1.ForgeCallResult.
+ * Use `create(ForgeCallResultSchema)` to create a new message.
+ */
+export const ForgeCallResultSchema: GenMessage<ForgeCallResult> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 13);
+
+/**
+ * An in-band forge-call failure: a tool error the agent renders to the model,
+ * never a transport teardown. Mirrors CommsCallError and adds `retry_after_ms`
+ * because a forge, unlike the in-process comms handler, rate-limits.
+ *
+ * @generated from message compass.v1.ForgeCallError
+ */
+export type ForgeCallError = Message<"compass.v1.ForgeCallError"> & {
+  /**
+   * Connect status token, e.g. "not_found", "resource_exhausted"
+   *
+   * @generated from field: string code = 1;
+   */
+  code: string;
+
+  /**
+   * @generated from field: string message = 2;
+   */
+  message: string;
+
+  /**
+   * 0 when the forge gave no hint
+   *
+   * @generated from field: uint32 retry_after_ms = 3;
+   */
+  retryAfterMs: number;
+};
+
+/**
+ * Describes the message compass.v1.ForgeCallError.
+ * Use `create(ForgeCallErrorSchema)` to create a new message.
+ */
+export const ForgeCallErrorSchema: GenMessage<ForgeCallError> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 14);
+
+/**
+ * The seven forge operation requests. Every field is a scalar — no forge domain
+ * type appears in any request shape, so the request wire is identical under
+ * either forge read model. `repo` is "<owner>/<name>" on GitHub and the project
+ * key on Linear, REQUIRED on every call — an empty `repo` is an invalid_argument
+ * ForgeCallError, never a default (an agent is bound to no single repo, so there
+ * is nothing to infer). Request addressing is single-forge for a GitHub-first v1
+ * (repo unambiguous); an optional ForgeRef is a named additive follow-up. The
+ * write requests carry the body WITHOUT the owner header — the Server stamps it.
+ *
+ * @generated from message compass.v1.CreateIssueRequest
+ */
+export type CreateIssueRequest = Message<"compass.v1.CreateIssueRequest"> & {
+  /**
+   * REQUIRED; empty is invalid_argument
+   *
+   * @generated from field: string repo = 1;
+   */
+  repo: string;
+
+  /**
+   * @generated from field: string title = 2;
+   */
+  title: string;
+
+  /**
+   * WITHOUT the owner header; the Server stamps it
+   *
+   * @generated from field: string body = 3;
+   */
+  body: string;
+
+  /**
+   * @generated from field: repeated string labels = 4;
+   */
+  labels: string[];
+};
+
+/**
+ * Describes the message compass.v1.CreateIssueRequest.
+ * Use `create(CreateIssueRequestSchema)` to create a new message.
+ */
+export const CreateIssueRequestSchema: GenMessage<CreateIssueRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 15);
+
+/**
+ * @generated from message compass.v1.CommentOnIssueRequest
+ */
+export type CommentOnIssueRequest = Message<"compass.v1.CommentOnIssueRequest"> & {
+  /**
+   * @generated from field: string repo = 1;
+   */
+  repo: string;
+
+  /**
+   * @generated from field: uint64 issue_number = 2;
+   */
+  issueNumber: bigint;
+
+  /**
+   * WITHOUT the owner header
+   *
+   * @generated from field: string body = 3;
+   */
+  body: string;
+};
+
+/**
+ * Describes the message compass.v1.CommentOnIssueRequest.
+ * Use `create(CommentOnIssueRequestSchema)` to create a new message.
+ */
+export const CommentOnIssueRequestSchema: GenMessage<CommentOnIssueRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 16);
+
+/**
+ * @generated from message compass.v1.GetIssueRequest
+ */
+export type GetIssueRequest = Message<"compass.v1.GetIssueRequest"> & {
+  /**
+   * @generated from field: string repo = 1;
+   */
+  repo: string;
+
+  /**
+   * @generated from field: uint64 issue_number = 2;
+   */
+  issueNumber: bigint;
+};
+
+/**
+ * Describes the message compass.v1.GetIssueRequest.
+ * Use `create(GetIssueRequestSchema)` to create a new message.
+ */
+export const GetIssueRequestSchema: GenMessage<GetIssueRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 17);
+
+/**
+ * @generated from message compass.v1.ListIssuesRequest
+ */
+export type ListIssuesRequest = Message<"compass.v1.ListIssuesRequest"> & {
+  /**
+   * @generated from field: string repo = 1;
+   */
+  repo: string;
+
+  /**
+   * "" = open
+   *
+   * @generated from field: string state = 2;
+   */
+  state: string;
+
+  /**
+   * @generated from field: repeated string labels = 3;
+   */
+  labels: string[];
+
+  /**
+   * 0 = server default (30), capped at 100
+   *
+   * @generated from field: uint32 limit = 4;
+   */
+  limit: number;
+};
+
+/**
+ * Describes the message compass.v1.ListIssuesRequest.
+ * Use `create(ListIssuesRequestSchema)` to create a new message.
+ */
+export const ListIssuesRequestSchema: GenMessage<ListIssuesRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 18);
+
+/**
+ * @generated from message compass.v1.ListIssuesResponse
+ */
+export type ListIssuesResponse = Message<"compass.v1.ListIssuesResponse"> & {
+  /**
+   * @generated from field: repeated compass.v1.Issue issues = 1;
+   */
+  issues: Issue[];
+};
+
+/**
+ * Describes the message compass.v1.ListIssuesResponse.
+ * Use `create(ListIssuesResponseSchema)` to create a new message.
+ */
+export const ListIssuesResponseSchema: GenMessage<ListIssuesResponse> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 19);
+
+/**
+ * @generated from message compass.v1.CreatePullRequestRequest
+ */
+export type CreatePullRequestRequest = Message<"compass.v1.CreatePullRequestRequest"> & {
+  /**
+   * @generated from field: string repo = 1;
+   */
+  repo: string;
+
+  /**
+   * @generated from field: string title = 2;
+   */
+  title: string;
+
+  /**
+   * WITHOUT the owner header
+   *
+   * @generated from field: string body = 3;
+   */
+  body: string;
+
+  /**
+   * the branch the agent already pushed with ITS OWN git creds
+   *
+   * @generated from field: string head_ref = 4;
+   */
+  headRef: string;
+
+  /**
+   * empty = the repo default branch
+   *
+   * @generated from field: string base_ref = 5;
+   */
+  baseRef: string;
+
+  /**
+   * @generated from field: bool draft = 6;
+   */
+  draft: boolean;
+};
+
+/**
+ * Describes the message compass.v1.CreatePullRequestRequest.
+ * Use `create(CreatePullRequestRequestSchema)` to create a new message.
+ */
+export const CreatePullRequestRequestSchema: GenMessage<CreatePullRequestRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 20);
+
+/**
+ * @generated from message compass.v1.CommentOnPullRequestRequest
+ */
+export type CommentOnPullRequestRequest = Message<"compass.v1.CommentOnPullRequestRequest"> & {
+  /**
+   * @generated from field: string repo = 1;
+   */
+  repo: string;
+
+  /**
+   * @generated from field: uint64 pull_number = 2;
+   */
+  pullNumber: bigint;
+
+  /**
+   * WITHOUT the owner header
+   *
+   * @generated from field: string body = 3;
+   */
+  body: string;
+};
+
+/**
+ * Describes the message compass.v1.CommentOnPullRequestRequest.
+ * Use `create(CommentOnPullRequestRequestSchema)` to create a new message.
+ */
+export const CommentOnPullRequestRequestSchema: GenMessage<CommentOnPullRequestRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 21);
+
+/**
+ * @generated from message compass.v1.GetPullRequestRequest
+ */
+export type GetPullRequestRequest = Message<"compass.v1.GetPullRequestRequest"> & {
+  /**
+   * @generated from field: string repo = 1;
+   */
+  repo: string;
+
+  /**
+   * @generated from field: uint64 pull_number = 2;
+   */
+  pullNumber: bigint;
+};
+
+/**
+ * Describes the message compass.v1.GetPullRequestRequest.
+ * Use `create(GetPullRequestRequestSchema)` to create a new message.
+ */
+export const GetPullRequestRequestSchema: GenMessage<GetPullRequestRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 22);
+
+/**
+ * Subscribe/unsubscribe a forge artifact for change notifications (DL-053). The
+ * notification payload is ForgeNotification (forge.proto), delivered on the
+ * Sessions -> AgentGateway.Control push path.
+ *
+ * @generated from message compass.v1.SubscribeForgeRequest
+ */
+export type SubscribeForgeRequest = Message<"compass.v1.SubscribeForgeRequest"> & {
+  /**
+   * @generated from field: string repo = 1;
+   */
+  repo: string;
+
+  /**
+   * @generated from field: compass.v1.ForgeArtifactKind kind = 2;
+   */
+  kind: ForgeArtifactKind;
+
+  /**
+   * @generated from field: uint64 number = 3;
+   */
+  number: bigint;
+};
+
+/**
+ * Describes the message compass.v1.SubscribeForgeRequest.
+ * Use `create(SubscribeForgeRequestSchema)` to create a new message.
+ */
+export const SubscribeForgeRequestSchema: GenMessage<SubscribeForgeRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 23);
+
+/**
+ * @generated from message compass.v1.SubscribeForgeResponse
+ */
+export type SubscribeForgeResponse = Message<"compass.v1.SubscribeForgeResponse"> & {
+  /**
+   * @generated from field: string subscription_id = 1;
+   */
+  subscriptionId: string;
+};
+
+/**
+ * Describes the message compass.v1.SubscribeForgeResponse.
+ * Use `create(SubscribeForgeResponseSchema)` to create a new message.
+ */
+export const SubscribeForgeResponseSchema: GenMessage<SubscribeForgeResponse> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 24);
+
+/**
+ * @generated from message compass.v1.UnsubscribeForgeRequest
+ */
+export type UnsubscribeForgeRequest = Message<"compass.v1.UnsubscribeForgeRequest"> & {
+  /**
+   * @generated from field: string subscription_id = 1;
+   */
+  subscriptionId: string;
+};
+
+/**
+ * Describes the message compass.v1.UnsubscribeForgeRequest.
+ * Use `create(UnsubscribeForgeRequestSchema)` to create a new message.
+ */
+export const UnsubscribeForgeRequestSchema: GenMessage<UnsubscribeForgeRequest> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 25);
+
+/**
+ * @generated from message compass.v1.UnsubscribeForgeResponse
+ */
+export type UnsubscribeForgeResponse = Message<"compass.v1.UnsubscribeForgeResponse"> & {
+};
+
+/**
+ * Describes the message compass.v1.UnsubscribeForgeResponse.
+ * Use `create(UnsubscribeForgeResponseSchema)` to create a new message.
+ */
+export const UnsubscribeForgeResponseSchema: GenMessage<UnsubscribeForgeResponse> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent_gateway, 26);
+
+/**
  * Publish stream element: one trace/session AgentFrame, in emission order. No
  * seq field — the Runner assigns the upstream PublishEvents RunnerSeq. The
  * durable conversation frames do NOT ride this stream; they take the correlated
@@ -465,7 +1003,7 @@ export type PublishFrameRequest = Message<"compass.v1.PublishFrameRequest"> & {
  * Use `create(PublishFrameRequestSchema)` to create a new message.
  */
 export const PublishFrameRequestSchema: GenMessage<PublishFrameRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent_gateway, 12);
+  messageDesc(file_compass_v1_agent_gateway, 27);
 
 /**
  * Acked at stream close, mirroring RunnerService.PublishEvents' PublishEventsResponse.
@@ -480,7 +1018,7 @@ export type PublishFrameResponse = Message<"compass.v1.PublishFrameResponse"> & 
  * Use `create(PublishFrameResponseSchema)` to create a new message.
  */
 export const PublishFrameResponseSchema: GenMessage<PublishFrameResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent_gateway, 13);
+  messageDesc(file_compass_v1_agent_gateway, 28);
 
 /**
  * The durable-frame unary carries the SAME AgentFrame message, constrained by
@@ -513,7 +1051,7 @@ export type PostConversationFrameRequest = Message<"compass.v1.PostConversationF
  * Use `create(PostConversationFrameRequestSchema)` to create a new message.
  */
 export const PostConversationFrameRequestSchema: GenMessage<PostConversationFrameRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent_gateway, 14);
+  messageDesc(file_compass_v1_agent_gateway, 29);
 
 /**
  * Returned only after the upstream PublishEvents forward is accepted.
@@ -528,7 +1066,7 @@ export type PostConversationFrameResponse = Message<"compass.v1.PostConversation
  * Use `create(PostConversationFrameResponseSchema)` to create a new message.
  */
 export const PostConversationFrameResponseSchema: GenMessage<PostConversationFrameResponse> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent_gateway, 15);
+  messageDesc(file_compass_v1_agent_gateway, 30);
 
 /**
  * The Control subscribe request carries no session id: the per-container socket
@@ -544,7 +1082,7 @@ export type ControlSubscribeRequest = Message<"compass.v1.ControlSubscribeReques
  * Use `create(ControlSubscribeRequestSchema)` to create a new message.
  */
 export const ControlSubscribeRequestSchema: GenMessage<ControlSubscribeRequest> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent_gateway, 16);
+  messageDesc(file_compass_v1_agent_gateway, 31);
 
 /**
  * agent -> Runner, unary. The agent emits a correlated comms call; the Runner
@@ -621,6 +1159,26 @@ export const AgentGateway: GenService<{
     methodKind: "server_streaming";
     input: typeof ControlSubscribeRequestSchema;
     output: typeof AgentControlSchema;
+  },
+  /**
+   * Forge (unary, agent -> Runner): create/comment/read a forge issue or PR, or
+   * subscribe/unsubscribe an artifact. A sibling call family to Comms and
+   * Lifecycle (DL-049 shape) — the ForgeCallRequest / ForgeCallResult envelopes
+   * are reused verbatim as the RelayForgeCallRequest.call /
+   * RelayForgeCallResponse.result payloads on the Runner->Server leg
+   * (runner.proto RelayForgeCall). One shared envelope across both hops. The
+   * Runner asserts NO account; the Server resolves session_id -> account and
+   * stamps the owner header itself (DL-050), holding the sole forge write
+   * credential (DL-052). Read ops are answered from the projection/store, not a
+   * live forge proxy (DL-069 amendment §Resolved decisions OQ-A). INTERNAL
+   * surface (never public gen).
+   *
+   * @generated from rpc compass.v1.AgentGateway.Forge
+   */
+  forge: {
+    methodKind: "unary";
+    input: typeof ForgeCallRequestSchema;
+    output: typeof ForgeCallResultSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_compass_v1_agent_gateway, 0);

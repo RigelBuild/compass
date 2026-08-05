@@ -36,6 +36,12 @@ import "compass/v1/comms.proto";
 // AgentFrame (Publish/PostConversationFrame payload) + AgentControl (the
 // Control server-stream message) live in agent.proto; the gateway carries them.
 import "compass/v1/agent.proto";
+// The forge carrier result arms retype to the canonical compass.v1 types
+// (Issue/PullRequest/ChecksSummary), and the shared CommentRef/ForgeArtifactKind
+// live in the forge.proto leaf (DL-069, DL-092). Importing forge.proto here is
+// acyclic: forge.proto imports only compass.proto, never this file.
+import "compass/v1/compass.proto";
+import "compass/v1/forge.proto";
 
 // agent -> Runner, unary. The agent emits a correlated comms call; the Runner
 // forwards it to the Server (RelayCommsCall) tagged with the session it
@@ -69,6 +75,19 @@ service AgentGateway {
   // the Runner pushes one AgentControl per message. Replaces the never-built
   // stdin decoder.
   rpc Control(ControlSubscribeRequest) returns (stream AgentControl);
+
+  // Forge (unary, agent -> Runner): create/comment/read a forge issue or PR, or
+  // subscribe/unsubscribe an artifact. A sibling call family to Comms and
+  // Lifecycle (DL-049 shape) — the ForgeCallRequest / ForgeCallResult envelopes
+  // are reused verbatim as the RelayForgeCallRequest.call /
+  // RelayForgeCallResponse.result payloads on the Runner->Server leg
+  // (runner.proto RelayForgeCall). One shared envelope across both hops. The
+  // Runner asserts NO account; the Server resolves session_id -> account and
+  // stamps the owner header itself (DL-050), holding the sole forge write
+  // credential (DL-052). Read ops are answered from the projection/store, not a
+  // live forge proxy (DL-069 amendment §Resolved decisions OQ-A). INTERNAL
+  // surface (never public gen).
+  rpc Forge(ForgeCallRequest) returns (ForgeCallResult);
 }
 
 // One agent-initiated comms call. `call_id` is the agent-minted correlation id
@@ -175,6 +194,121 @@ message LifecycleCallError {
   string code = 1;
   string message = 2;
 }
+
+// One agent-initiated forge call. `call_id` is the agent-minted correlation id
+// (the SDK toolCallId); the `call` oneof selects the forge operation. Mirrors
+// CommsCallRequest / LifecycleCallRequest — the same message is the
+// RelayForgeCallRequest.call payload on the Runner->Server leg, one shared
+// envelope across both hops (DL-049).
+message ForgeCallRequest {
+  string call_id = 1;
+  oneof call {
+    CreateIssueRequest create_issue = 2;
+    CommentOnIssueRequest comment_on_issue = 3;
+    GetIssueRequest get_issue = 4;
+    ListIssuesRequest list_issues = 5;
+    CreatePullRequestRequest create_pull_request = 6;
+    CommentOnPullRequestRequest comment_on_pull_request = 7;
+    GetPullRequestRequest get_pull_request = 8;
+    SubscribeForgeRequest subscribe = 9;      // DL-053
+    UnsubscribeForgeRequest unsubscribe = 10; // DL-053
+  }
+}
+
+// The result of one forge call, correlated by `call_id`. Per DL-069 no raw forge
+// shape is a wire type: the domain result arms retype to the canonical compass.v1
+// types (DL-092 supersedes #995's forge-shaped Issue/PullRequest domain messages),
+// and the comment arms take the CommentRef reference (forge.proto). A successful
+// call sets one domain/ack arm; an in-band failure (a tool error — not_found,
+// rate limit, bad input) sets `error`, which is NOT a transport teardown.
+message ForgeCallResult {
+  string call_id = 1;
+  oneof result {
+    compass.v1.Issue issue = 2;             // create_issue / get_issue
+    CommentRef issue_comment = 3;           // comment_on_issue (write ack: url + comment_id)
+    ListIssuesResponse issues = 4;          // list_issues
+    compass.v1.PullRequest pull_request = 5; // create_pull_request / get_pull_request
+    CommentRef pr_comment = 6;              // comment_on_pull_request (write ack)
+    SubscribeForgeResponse subscribed = 7;
+    UnsubscribeForgeResponse unsubscribed = 8;
+    ForgeCallError error = 9;
+  }
+}
+
+// An in-band forge-call failure: a tool error the agent renders to the model,
+// never a transport teardown. Mirrors CommsCallError and adds `retry_after_ms`
+// because a forge, unlike the in-process comms handler, rate-limits.
+message ForgeCallError {
+  string code = 1;            // Connect status token, e.g. "not_found", "resource_exhausted"
+  string message = 2;
+  uint32 retry_after_ms = 3;  // 0 when the forge gave no hint
+}
+
+// The seven forge operation requests. Every field is a scalar — no forge domain
+// type appears in any request shape, so the request wire is identical under
+// either forge read model. `repo` is "<owner>/<name>" on GitHub and the project
+// key on Linear, REQUIRED on every call — an empty `repo` is an invalid_argument
+// ForgeCallError, never a default (an agent is bound to no single repo, so there
+// is nothing to infer). Request addressing is single-forge for a GitHub-first v1
+// (repo unambiguous); an optional ForgeRef is a named additive follow-up. The
+// write requests carry the body WITHOUT the owner header — the Server stamps it.
+message CreateIssueRequest {
+  string repo = 1;               // REQUIRED; empty is invalid_argument
+  string title = 2;
+  string body = 3;               // WITHOUT the owner header; the Server stamps it
+  repeated string labels = 4;
+}
+message CommentOnIssueRequest {
+  string repo = 1;
+  uint64 issue_number = 2;
+  string body = 3;               // WITHOUT the owner header
+}
+message GetIssueRequest {
+  string repo = 1;
+  uint64 issue_number = 2;
+}
+message ListIssuesRequest {
+  string repo = 1;
+  string state = 2;              // "" = open
+  repeated string labels = 3;
+  uint32 limit = 4;              // 0 = server default (30), capped at 100
+}
+message ListIssuesResponse {
+  repeated compass.v1.Issue issues = 1;
+}
+message CreatePullRequestRequest {
+  string repo = 1;
+  string title = 2;
+  string body = 3;               // WITHOUT the owner header
+  string head_ref = 4;           // the branch the agent already pushed with ITS OWN git creds
+  string base_ref = 5;           // empty = the repo default branch
+  bool draft = 6;
+}
+message CommentOnPullRequestRequest {
+  string repo = 1;
+  uint64 pull_number = 2;
+  string body = 3;               // WITHOUT the owner header
+}
+message GetPullRequestRequest {
+  string repo = 1;
+  uint64 pull_number = 2;
+}
+
+// Subscribe/unsubscribe a forge artifact for change notifications (DL-053). The
+// notification payload is ForgeNotification (forge.proto), delivered on the
+// Sessions -> AgentGateway.Control push path.
+message SubscribeForgeRequest {
+  string repo = 1;
+  ForgeArtifactKind kind = 2;
+  uint64 number = 3;
+}
+message SubscribeForgeResponse {
+  string subscription_id = 1;
+}
+message UnsubscribeForgeRequest {
+  string subscription_id = 1;
+}
+message UnsubscribeForgeResponse {}
 
 // Publish stream element: one trace/session AgentFrame, in emission order. No
 // seq field — the Runner assigns the upstream PublishEvents RunnerSeq. The
