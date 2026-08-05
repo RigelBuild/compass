@@ -457,12 +457,32 @@ func (c *Comms) UpdateTopic(
 // asserts CommsServiceHandler with no Unimplemented embed) without pretending to
 // serve a surface whose store legs do not exist yet.
 
-// SetChannelPolicy is unimplemented until T4.
+// SetChannelPolicy sets a channel's post policy, owner/operator account, and
+// mandatory-subscription flag (T4) — the only mutation path for these fields
+// after creation. The store enforces D9 write-authz (a non-member and an
+// unknown channel both map to CodeNotFound via edgeError) and transactionally
+// seeds the D2 delivery cursor for every member a newly-set mandatory flag turns
+// into a delivery target. Emits ChannelChanged (write-through) so the live
+// projection carries the updated policy.
 func (c *Comms) SetChannelPolicy(
 	ctx context.Context,
 	req *connect.Request[compassv1.SetChannelPolicyRequest],
 ) (*connect.Response[compassv1.SetChannelPolicyResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.SetChannelPolicy is not implemented"))
+	ch, err := c.store.SetChannelPolicy(
+		ctx,
+		c.actorFromContext(ctx),
+		store.ChannelID(req.Msg.GetChannelId()),
+		store.ChannelPolicy{
+			PostPolicy:            channelPostPolicyFromWire(req.Msg.GetPostPolicy()),
+			OwnerAccountID:        store.AccountID(req.Msg.GetOwnerAccountId()),
+			MandatorySubscription: req.Msg.GetMandatorySubscription(),
+		},
+	)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	c.publishChannelChanged(ch, nil)
+	return connect.NewResponse(&compassv1.SetChannelPolicyResponse{Channel: channelToWire(ch)}), nil
 }
 
 // GetRoster joins the three roster sources for the vantage agent's scope: the

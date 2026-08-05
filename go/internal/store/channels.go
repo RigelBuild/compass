@@ -103,8 +103,10 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 	}
 
 	if _, err := tx.Exec(ctx,
-		"INSERT INTO channels (id, name, group_id, kind) VALUES ($1, $2, NULLIF($3, ''), $4)",
+		"INSERT INTO channels (id, name, group_id, kind, post_policy, owner_account_id, mandatory_subscription) "+
+			"VALUES ($1, $2, NULLIF($3, ''), $4, $5, NULLIF($6, ''), $7)",
 		id, c.Name, string(c.GroupID), int32(c.Kind),
+		int32(c.Policy.PostPolicy), string(c.Policy.OwnerAccountID), c.Policy.MandatorySubscription,
 	); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			return Channel{}, fmt.Errorf("%w: channel %q already exists in group %q", ErrConflict, c.Name, c.GroupID)
@@ -141,6 +143,7 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 		GroupID:          c.GroupID,
 		Kind:             c.Kind,
 		MemberAccountIDs: members,
+		Policy:           c.Policy,
 	}, nil
 }
 
@@ -309,7 +312,7 @@ func (s *Store) ChannelGroupVisibleTo(ctx context.Context, actor AccountID, grou
 // channelVisiblePredicate / effectiveVisibilityCTE for the rule).
 func (s *Store) ListChannels(ctx context.Context, visibleTo AccountID) ([]Channel, error) {
 	const q = effectiveVisibilityCTE + `
-		SELECT c.id, c.name, COALESCE(c.group_id, ''), c.kind
+		SELECT c.id, c.name, COALESCE(c.group_id, ''), c.kind, c.post_policy, COALESCE(c.owner_account_id, ''), c.mandatory_subscription
 		FROM channels c
 		WHERE ` + channelVisiblePredicate + `
 		ORDER BY c.name`
@@ -372,6 +375,27 @@ func (s *Store) UpdateChannelMembers(ctx context.Context, actor AccountID, chann
 	// channel exists.
 	if err := requireChannelMember(ctx, tx, actor, channelID); err != nil {
 		return Channel{}, nil, err
+	}
+
+	// T4: an explicit unsubscribe on a mandatory_subscription channel is refused
+	// with InvalidArgument — membership implies a non-togglable subscription
+	// there. Read the flag once under the tx (a plain add carrying Subscribed
+	// false is unaffected; only the explicit unsubscribe arm is rejected).
+	// owner_account_id/policy fields are server-set and never mutated through
+	// this path — UpdateChannelMembers only ever touches membership rows.
+	var mandatory bool
+	for _, u := range updates {
+		if u.Unsubscribe {
+			if err := tx.QueryRow(ctx,
+				"SELECT mandatory_subscription FROM channels WHERE id = $1", string(channelID),
+			).Scan(&mandatory); err != nil {
+				return Channel{}, nil, fmt.Errorf("store: read channel mandatory flag: %w", err)
+			}
+			if mandatory {
+				return Channel{}, nil, fmt.Errorf("%w: cannot unsubscribe from a mandatory-subscription channel", ErrInvalidArgument)
+			}
+			break
+		}
 	}
 
 	var removed []AccountID
@@ -486,10 +510,105 @@ func upsertMemberErr(err error, m AccountID) error {
 	return fmt.Errorf("store: upsert member: %w", err)
 }
 
+// SetChannelPolicy applies a channel-policy update (T4, the ONLY mutation path
+// for post_policy/owner_account_id/mandatory_subscription after creation) and
+// returns the updated channel. The actor must be a member of the channel
+// (D9 write-authz, mirroring UpdateChannelMembers): an unknown channel and a
+// non-member both collapse to ErrNotFound (the not-found/forbidden merge). All
+// of the following run in ONE transaction so a mandatory flip and its cursor
+// seeds commit atomically:
+//
+//   - The policy row update.
+//   - When the update NEWLY sets mandatory_subscription=true (was false, now
+//     true), the D2 delivery cursor is seeded (seed-to-head, no replay) for
+//     EVERY agent member — because a mandatory channel makes every member a
+//     delivery target regardless of its channel_members.subscribed flag (the D1
+//     read-side disjunct). An un-seeded delivery target is the fail-DANGEROUS
+//     hazard D2 names (compass-notification-delivery/design.md:293-311: seeds
+//     are transactional with the membership row), so the seed rides the same
+//     commit as the flag flip. seedDeliveryCursor is self-guarding (agent-only
+//     WHERE EXISTS) and idempotent (ON CONFLICT DO NOTHING), so an
+//     already-subscribed member whose cursor exists is a no-op and a human
+//     member yields no row.
+func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID ChannelID, p ChannelPolicy) (Channel, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Channel{}, fmt.Errorf("store: begin set channel policy: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
+
+	// D9 write-authz: the actor must be a member of the channel to set its
+	// policy. This subsumes the existence check — an unknown channel has no
+	// members — so a non-member and an unknown channel both collapse to
+	// ErrNotFound, never leaking that a private channel exists.
+	if err := requireChannelMember(ctx, tx, actor, channelID); err != nil {
+		return Channel{}, err
+	}
+
+	// Read the pre-update mandatory flag under the row lock so the newly-mandatory
+	// transition is computed against the committed state, serialized against a
+	// concurrent policy change on the same channel.
+	var wasMandatory bool
+	if err := tx.QueryRow(ctx,
+		"SELECT mandatory_subscription FROM channels WHERE id = $1 FOR UPDATE",
+		string(channelID),
+	).Scan(&wasMandatory); err != nil {
+		if noRows(err) {
+			return Channel{}, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+		}
+		return Channel{}, fmt.Errorf("store: lock channel for policy: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		"UPDATE channels SET post_policy = $2, owner_account_id = NULLIF($3, ''), mandatory_subscription = $4 WHERE id = $1",
+		string(channelID), int32(p.PostPolicy), string(p.OwnerAccountID), p.MandatorySubscription,
+	); err != nil {
+		if pgErrIs(err, pgForeignKeyViolation) {
+			return Channel{}, fmt.Errorf("%w: unknown owner account %q", ErrInvalidArgument, p.OwnerAccountID)
+		}
+		return Channel{}, fmt.Errorf("store: update channel policy: %w", err)
+	}
+
+	// Newly-mandatory: every member becomes a delivery target, so seed each
+	// agent member's cursor in this same txn. seedDeliveryCursor is self-guarding
+	// (agent-only) and idempotent, so seeding every member is safe.
+	if p.MandatorySubscription && !wasMandatory {
+		rows, err := tx.Query(ctx,
+			"SELECT account_id FROM channel_members WHERE channel_id = $1", string(channelID))
+		if err != nil {
+			return Channel{}, fmt.Errorf("store: list channel members for seed: %w", err)
+		}
+		var members []AccountID
+		for rows.Next() {
+			var m string
+			if err := rows.Scan(&m); err != nil {
+				rows.Close()
+				return Channel{}, fmt.Errorf("store: scan member for seed: %w", err)
+			}
+			members = append(members, AccountID(m))
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return Channel{}, fmt.Errorf("store: iterate members for seed: %w", err)
+		}
+		rows.Close()
+		for _, m := range members {
+			if err := seedDeliveryCursor(ctx, tx, m, channelID); err != nil {
+				return Channel{}, err
+			}
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Channel{}, fmt.Errorf("store: commit set channel policy: %w", err)
+	}
+	return s.getChannel(ctx, channelID)
+}
+
 // getChannel loads one channel with its member set, or ErrNotFound.
 func (s *Store) getChannel(ctx context.Context, id ChannelID) (Channel, error) {
 	rows, err := s.pool.Query(ctx,
-		"SELECT id, name, COALESCE(group_id, ''), kind FROM channels WHERE id = $1", string(id))
+		"SELECT id, name, COALESCE(group_id, ''), kind, post_policy, COALESCE(owner_account_id, ''), mandatory_subscription FROM channels WHERE id = $1", string(id))
 	if err != nil {
 		return Channel{}, fmt.Errorf("store: get channel: %w", err)
 	}
@@ -515,17 +634,25 @@ func scanChannels(ctx context.Context, q querier, rows pgx.Rows) ([]Channel, err
 	byID := make(map[ChannelID]int)
 	for rows.Next() {
 		var (
-			c                 Channel
-			id, name, groupID string
-			kind              int32
+			c                     Channel
+			id, name, groupID     string
+			kind                  int32
+			postPolicy            int32
+			ownerAccountID        string
+			mandatorySubscription bool
 		)
-		if err := rows.Scan(&id, &name, &groupID, &kind); err != nil {
+		if err := rows.Scan(&id, &name, &groupID, &kind, &postPolicy, &ownerAccountID, &mandatorySubscription); err != nil {
 			return nil, fmt.Errorf("store: scan channel: %w", err)
 		}
 		c.ID = ChannelID(id)
 		c.Name = name
 		c.GroupID = ChannelGroupID(groupID)
 		c.Kind = ChannelKind(kind)
+		c.Policy = ChannelPolicy{
+			PostPolicy:            ChannelPostPolicy(postPolicy),
+			OwnerAccountID:        AccountID(ownerAccountID),
+			MandatorySubscription: mandatorySubscription,
+		}
 		byID[c.ID] = len(channels)
 		channels = append(channels, c)
 		ids = append(ids, id)

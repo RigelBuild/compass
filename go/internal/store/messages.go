@@ -58,6 +58,29 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 		return Message{}, false, err
 	}
 
+	// T4 post policy: on an OWNER_ONLY channel, only owner_account_id may post.
+	// A non-owner is refused with the SAME ErrNotFound a non-member gets (the
+	// not-found/forbidden merge), so the policy leaks no oracle: a member who
+	// may not post is indistinguishable from a non-member. Checked in this same
+	// tx as the membership gate and the insert, under the committed policy.
+	var (
+		postPolicy int32
+		ownerAcct  string
+	)
+	if err := tx.QueryRow(ctx,
+		"SELECT post_policy, COALESCE(owner_account_id, '') FROM channels WHERE id = $1",
+		channelID,
+	).Scan(&postPolicy, &ownerAcct); err != nil {
+		if noRows(err) {
+			return Message{}, false, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+		}
+		return Message{}, false, fmt.Errorf("store: read channel post policy: %w", err)
+	}
+	if ChannelPostPolicy(postPolicy) == ChannelPostPolicyOwnerOnly &&
+		string(m.AuthorAccountID) != ownerAcct {
+		return Message{}, false, fmt.Errorf("%w: channel %q", ErrNotFound, channelID)
+	}
+
 	at := time.Now().UTC()
 	topicID, err := resolveTopicForAppend(ctx, tx, channelID, topic, m.AuthorAccountID, at.UnixMilli())
 	if err != nil {

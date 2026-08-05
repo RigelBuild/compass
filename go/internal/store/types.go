@@ -176,7 +176,38 @@ type Channel struct {
 	// subscribed channel is delivered at its turn end; a joined-but-unsubscribed
 	// member has read access only. A subset of MemberAccountIDs.
 	SubscriberAccountIDs []AccountID
+	// Policy carries the manager-comms channel-policy fields (T4): the post
+	// policy, the owner/operator account, and the mandatory-subscription flag.
+	// The zero value (PostPolicy OPEN, empty OwnerAccountID, MandatorySubscription
+	// false) is the pre-substrate default every channel is born with.
+	Policy ChannelPolicy
 }
+
+// ChannelPolicy is the manager-comms substrate's per-channel policy (T4,
+// design.md:496-502): who may post (PostPolicy), the owner/operator account for
+// policy operations (OwnerAccountID, empty when OPEN), and whether membership
+// implies a non-togglable subscription (MandatorySubscription). Set at creation
+// via NewChannel and thereafter mutated only through SetChannelPolicy.
+type ChannelPolicy struct {
+	PostPolicy            ChannelPostPolicy
+	OwnerAccountID        AccountID // empty when OPEN
+	MandatorySubscription bool
+}
+
+// ChannelPostPolicy is the store-native mirror of comms.proto's
+// ChannelPostPolicy enum: who may post to a channel. Kept store-native (like
+// ChannelKind) rather than the generated type so the store depends on no
+// generated code (types.go package doc) — store and wire evolve independently,
+// and the comms edge maps between them (channelPostPolicyToWire/FromWire). The
+// values match the proto: OPEN=0 (any member), OWNER_ONLY=1 (owner only).
+type ChannelPostPolicy int32
+
+const (
+	// ChannelPostPolicyOpen lets any channel member post — the default.
+	ChannelPostPolicyOpen ChannelPostPolicy = 0
+	// ChannelPostPolicyOwnerOnly restricts posting to the owner/operator.
+	ChannelPostPolicyOwnerOnly ChannelPostPolicy = 1
+)
 
 // AgentWorkspace is an agent's observation pane (comms.proto:213-221, narrowed
 // by superseded decision 4): it renders the live execution trace and the

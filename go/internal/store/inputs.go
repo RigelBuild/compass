@@ -50,6 +50,10 @@ type NewChannel struct {
 	// MemberAccountIDs are the accounts to seed the channel with; the store adds
 	// the required owner rows.
 	MemberAccountIDs []AccountID
+	// Policy is the channel's initial policy (T4). The zero value is the
+	// pre-substrate default: OPEN posting, no owner, per-member opt-in
+	// subscription. Thereafter mutated only through SetChannelPolicy.
+	Policy ChannelPolicy
 }
 
 // MemberUpdate is one add/remove/subscribe mutation for UpdateChannelMembers
@@ -62,4 +66,9 @@ type MemberUpdate struct {
 	Remove bool
 	// Subscribed sets the per-member subscribed flag (ignored when Remove).
 	Subscribed bool
+	// Unsubscribe marks this update as an explicit unsubscribe (the
+	// unsubscribe_account_ids arm), distinct from a plain add that leaves
+	// Subscribed false. The store rejects an explicit unsubscribe on a
+	// mandatory_subscription channel (T4) — a plain add is unaffected.
+	Unsubscribe bool
 }
