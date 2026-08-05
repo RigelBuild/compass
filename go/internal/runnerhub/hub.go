@@ -204,6 +204,14 @@ type SessionTailSink interface {
 type CommsCaller interface {
 	PostAsAccount(ctx context.Context, account store.AccountID, req *compassv1.PostMessageRequest) (*compassv1.PostMessageResponse, error)
 	ListAsAccount(ctx context.Context, account store.AccountID, req *compassv1.ListMessagesRequest) (*compassv1.ListMessagesResponse, error)
+	// RosterAsAccount executes an agent-initiated GetRoster under account (the
+	// caller AND, when the request names no vantage, the session-resolved
+	// vantage) — SEA-1721 T2.
+	RosterAsAccount(ctx context.Context, account store.AccountID, req *compassv1.GetRosterRequest) (*compassv1.GetRosterResponse, error)
+	// SetStatusAsAccount write-throughs the durable activity for account,
+	// returning the server-truncated value that landed in the table — the write
+	// half of the set_status ordered write-then-publish (SEA-1721 T2 / T3).
+	SetStatusAsAccount(ctx context.Context, account store.AccountID, activity string) (string, error)
 }
 
 // Hub is the Server-side seam: enrollment registry + command router + the
@@ -233,6 +241,14 @@ type Hub struct {
 	// component exist), and read under mu so the setter and the arms never race.
 	// Nil-safe: a hub with no presence sink is today's behavior.
 	presence PresenceSink
+	// presenceSource is the T8 presence projection's READ + publish-hook edge the
+	// roster leg (SEA-1721 T2) consumes: PresenceFor snapshots the enum map,
+	// PublishActivity fires the set_status live event. Distinct from `presence`
+	// (the write edge the hub FEEDS). Nil until SetPresenceSource wires it (after
+	// both hub and the presence component exist), and read under mu so the setter
+	// and the reads never race. Nil-safe: a hub with none wired reports OFFLINE
+	// and drops the activity publish.
+	presenceSource presenceSource
 	// delivery is the durable delivery-cursor store the ack arm advances (SEA-1569
 	// T3). Nil until SetDeliveryStore wires it; read under mu. Nil-safe: a hub
 	// with no delivery store drops delivery_ack frames.

@@ -55,6 +55,14 @@ type Comms struct {
 	// happens-before the first concurrent read. Nil-safe: a Comms with no waker
 	// (a unit test, or today's un-wired path) still answers asks.
 	askWaker AskAnswerWaker
+	// presence is the in-memory presence enum source GetRoster joins the durable
+	// tree + activity against (SEA-1721 T2). Nil until SetPresenceSource wires it
+	// (comms<->hub is a construction cycle, broken by a post-construction setter
+	// exactly like askWaker / hub.SetSettleSink). Set once at server assembly
+	// BEFORE any RPC is served, so it needs no lock. Nil-safe: a Comms with no
+	// presence source (a unit test, or an un-wired path) reports every agent
+	// OFFLINE.
+	presence PresenceSource
 }
 
 // NewComms constructs the CommsService handler over store and bus. adminID is the
@@ -73,6 +81,16 @@ func NewComms(st *store.Store, bus commsBus, adminID store.AccountID) *Comms {
 // hub-less handler does not wake — today's behavior).
 func (c *Comms) SetAskWaker(w AskAnswerWaker) {
 	c.askWaker = w
+}
+
+// SetPresenceSource wires the in-memory presence enum source GetRoster joins
+// against, AFTER both Comms and the hub exist — the same post-construction
+// setter that breaks the comms<->hub construction cycle as SetAskWaker. Called
+// once at server assembly before serving; no lock because the write
+// happens-before the first RPC. Nil-safe to leave unset (a hub-less handler
+// reports every agent OFFLINE — today's behavior).
+func (c *Comms) SetPresenceSource(src PresenceSource) {
+	c.presence = src
 }
 
 // Ensure Comms satisfies the generated handler interface at compile time.
@@ -447,12 +465,19 @@ func (c *Comms) SetChannelPolicy(
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.SetChannelPolicy is not implemented"))
 }
 
-// GetRoster is unimplemented until T2.
+// GetRoster joins the three roster sources for the vantage agent's scope: the
+// tree (durable store), the live presence enum (in-memory hub), and the durable
+// activity string (agent_activity table), clipped to the CALLER's account-
+// visible set (D9). Implemented in roster.go.
 func (c *Comms) GetRoster(
 	ctx context.Context,
 	req *connect.Request[compassv1.GetRosterRequest],
 ) (*connect.Response[compassv1.GetRosterResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.GetRoster is not implemented"))
+	entries, err := c.roster(ctx, c.actorFromContext(ctx), req.Msg.GetAgentAccountId(), req.Msg.GetScope())
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(&compassv1.GetRosterResponse{Entries: entries}), nil
 }
 
 // UpdatePinnedBoard is unimplemented until T6.

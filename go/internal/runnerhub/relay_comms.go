@@ -415,10 +415,33 @@ func (h *Hub) executeCall(
 		return &compassv1internal.CommsCallResult{
 			Result: &compassv1internal.CommsCallResult_List{List: resp},
 		}, nil
+	case *compassv1internal.CommsCallRequest_Roster:
+		resp, err := h.comms.RosterAsAccount(ctx, account, c.Roster)
+		if err != nil {
+			return nil, err
+		}
+		return &compassv1internal.CommsCallResult{
+			Result: &compassv1internal.CommsCallResult_Roster{Roster: resp},
+		}, nil
+	case *compassv1internal.CommsCallRequest_SetStatus:
+		// Ordered write-then-publish (design.md T3:473-486): the durable
+		// Store.SetActivity COMMITS first (returning the server-truncated value
+		// that landed in the table), THEN a best-effort PublishActivity fires the
+		// live event carrying exactly that truncated string. A lost publish
+		// self-heals on the next set_status; the table is the source of record,
+		// so the publish is never gated on and never errors the call.
+		truncated, err := h.comms.SetStatusAsAccount(ctx, account, c.SetStatus.GetActivity())
+		if err != nil {
+			return nil, err
+		}
+		h.PublishActivity(account, truncated)
+		return &compassv1internal.CommsCallResult{
+			Result: &compassv1internal.CommsCallResult_SetStatus{SetStatus: &compassv1internal.SetAgentStatusResponse{}},
+		}, nil
 	default:
 		return nil, connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: comms call has no post/list variant set"),
+			errors.New("runnerhub: comms call has no recognized variant set (post/list/roster/set_status)"),
 		)
 	}
 }

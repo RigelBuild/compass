@@ -87,6 +87,29 @@ var _ comms.AskAnswerWaker = (*runnerhub.Hub)(nil)
 func wireHubServiceCycles(hub *runnerhub.Hub, commsSvc *comms.Comms, st *store.Store) {
 	hub.SetLifecycleCaller(newLifecycleService(st, hub))
 	commsSvc.SetAskWaker(hub)
+	// The roster read (SEA-1721 T2) joins the hub's in-memory presence enum; the
+	// hub in turn reads it from the T8 presence projection wired at
+	// startPresencePublisher (hub.SetPresenceSource). comms->hub is set here (the
+	// hub is stable and delegates lazily), hub->publisher when the publisher
+	// starts — both before any RPC is served.
+	commsSvc.SetPresenceSource(hubPresenceSource{hub})
+}
+
+// hubPresenceSource adapts *runnerhub.Hub to the comms-defined PresenceSource:
+// the hub returns the enum wrapped in a runnerhub.PresenceSnapshot (leaving room
+// for a later live-only attribute), while comms consumes the bare enum. The
+// projection lives here in the server package, which imports both — the same
+// direction the AskAnswerWaker assertion above is proven, so neither comms nor
+// runnerhub depends on the other.
+type hubPresenceSource struct{ hub *runnerhub.Hub }
+
+func (h hubPresenceSource) PresenceFor(accountIDs []store.AccountID) map[store.AccountID]compassv1.AgentPresence {
+	snaps := h.hub.PresenceFor(accountIDs)
+	out := make(map[store.AccountID]compassv1.AgentPresence, len(snaps))
+	for id, snap := range snaps {
+		out[id] = snap.Presence
+	}
+	return out
 }
 
 // startDeliveryConsumer builds the SEA-1569 T3 fan-out consumer over the comms
@@ -117,6 +140,9 @@ func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, commsBus *ev
 func startPresencePublisher(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
 	p := presence.NewPublisher(commsBus, st, hub, log)
 	hub.SetPresenceSink(p)
+	// The roster read source (SEA-1721 T2): the hub reads the enum snapshot and
+	// fires the set_status activity publish through the same projection it feeds.
+	hub.SetPresenceSource(p)
 	g.Go(func() error { return p.Run(gctx) })
 }
 
