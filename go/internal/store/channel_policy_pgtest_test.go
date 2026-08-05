@@ -178,6 +178,30 @@ func TestSetChannelPolicySeedsCursorsForNewlyMandatory(t *testing.T) {
 	}
 }
 
+// TestCreateChannelBornMandatorySeedsCursors pins the create-with-policy path's
+// D2-hazard closure: a channel created with Policy.MandatorySubscription=true
+// makes every member a delivery target (D1 disjunct), so CreateChannel MUST seed
+// each agent member's cursor in the create txn — else the channel is born with
+// un-seeded delivery targets. Symmetric with the SetChannelPolicy flip.
+func TestCreateChannelBornMandatorySeedsCursors(t *testing.T) {
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	a1 := mustAgent(t, s, owner.ID, "a1")
+	a2 := mustAgent(t, s, owner.ID, "a2")
+
+	ch := mustPolicyChannel(t, s, owner.ID, "coord", ChannelPolicy{
+		MandatorySubscription: true,
+	}, a1.ID, a2.ID)
+
+	// Every agent member has a seeded cursor from birth — no un-seeded delivery
+	// target survives the mandatory create.
+	for _, a := range []AccountID{a1.ID, a2.ID} {
+		if _, _, ok := readCursor(t, s, a, ch.ID); !ok {
+			t.Fatalf("agent %s has no cursor after born-mandatory create — an un-seeded delivery target (the D2 hazard)", a)
+		}
+	}
+}
+
 // seedCursorNow seeds a delivery cursor for (agent, ch) to the current head in
 // its own txn — a test setup helper for the read-side delivery case.
 func seedCursorNow(t *testing.T, s *Store, agent AccountID, ch ChannelID) error {

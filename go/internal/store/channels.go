@@ -133,6 +133,23 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 			return Channel{}, fmt.Errorf("store: insert channel member: %w", err)
 		}
 	}
+	// A channel born mandatory_subscription=true makes every member a delivery
+	// target via the D1 disjunct regardless of the subscribed flag, so each
+	// agent member's delivery cursor MUST be seeded in this same tx — an
+	// un-seeded delivery target is the fail-DANGEROUS D2 hazard
+	// (compass-notification-delivery/design.md:293-311). Symmetric with
+	// SetChannelPolicy's newly-mandatory seed. seedDeliveryCursor is
+	// self-guarding (agent-only) and idempotent, so seeding every member is safe
+	// (a human member is a no-op). A non-mandatory channel seeds nothing here —
+	// its members seed at subscribe time (addOrUpdateMember), the pre-substrate
+	// behavior.
+	if c.Policy.MandatorySubscription {
+		for _, m := range members {
+			if err := seedDeliveryCursor(ctx, tx, m, ChannelID(id)); err != nil {
+				return Channel{}, err
+			}
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Channel{}, fmt.Errorf("store: commit create channel: %w", err)
 	}
