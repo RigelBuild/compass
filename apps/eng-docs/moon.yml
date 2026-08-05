@@ -1,0 +1,71 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# Public engineering docsite (SEA-1763). Astro Starlight rendering the reviewed
+# docs/ tree to a public Cloudflare Pages site. System tasks: bun/astro from the
+# devenv/proto toolchain on PATH. install/lint/format are inherited (bun tag →
+# root:install; biome + markdownlint are the root whole-repo sweep, which lints
+# the canonical docs/ sources — the generated src/content/docs/ mirror is
+# gitignored and exempt). Public counterpart to sealed/apps/docs: no Cloudflare
+# Access gate, no PostHog analytics.
+layer: 'application'
+language: 'typescript'
+tags: ['bun', 'oss']
+
+tasks:
+  # Mirror the monorepo's reviewed markdown into the gitignored
+  # src/content/docs/ and emit src/sidebar.generated.ts. The workspace-relative
+  # markdown inputs mean moon's affected graph rebuilds the site whenever any
+  # gathered source doc (or the canonical exclusion set) changes.
+  gather:
+    command: 'bun scripts/gather.ts'
+    deps: ['install']
+    inputs:
+      - 'scripts/gather.ts'
+      - '/**/*.md'
+      - '/.markdownlint-cli2.jsonc'
+    outputs: ['src/content/docs', 'src/sidebar.generated.ts']
+
+  build:
+    command: 'bunx astro build'
+    deps: ['gather']
+    inputs:
+      - 'scripts/**/*'
+      - 'src/**/*'
+      - 'astro.config.mjs'
+      - 'tsconfig.json'
+      - 'package.json'
+      - 'public/**/*'
+      - '/**/*.md'
+      - '/bun.lock'
+    outputs: ['dist']
+
+  # Type-check the site (astro + tsconfig strict). Depends on gather so the
+  # content collection it type-checks is present.
+  check:
+    command: 'bunx astro check'
+    deps: ['gather']
+    inputs:
+      - 'src/**/*'
+      - 'astro.config.mjs'
+      - 'tsconfig.json'
+      - 'package.json'
+      - '/**/*.md'
+      - '/bun.lock'
+
+  # Deploy dist/ to Cloudflare Pages. CD (runInCI:false): `deploy` on push:main
+  # (production), `deploy-preview` on pull_request (a per-branch preview URL).
+  # Both run deploy.ts, which is ported in T3 (SEA-1765); until then this task
+  # is declared for the graph shape but never runs (runInCI:false, and no local
+  # invocation in T1).
+  deploy: &deploy-task
+    command: 'bun scripts/deploy.ts'
+    deps: ['build']
+    options:
+      runInCI: false
+  deploy-preview: *deploy-task
+
+  # Aggregate CI gate so the project joins `moon ci :ci` via the affected graph.
+  ci:
+    deps: ['build', 'check']
+    options:
+      cache: false

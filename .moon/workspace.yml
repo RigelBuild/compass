@@ -21,6 +21,9 @@ projects:
   compass-agent: 'packages/compass-agent'
   # The SolidJS web UI.
   compass-ui: 'apps/ui'
+  # The public engineering docsite: Astro Starlight rendering the reviewed
+  # docs/ tree to a public Cloudflare Pages site (SEA-1763).
+  compass-eng-docs: 'apps/eng-docs'
   # The backend Go module: server + comms + the generated compass.v1 Go stubs.
   compass-go: 'go'
   # The toolchain version-parity gate: asserts CI's PATH holds the dev shell's
