@@ -288,7 +288,12 @@ func (s *AgentStream) drainToLog(ctx context.Context, pipe io.Reader, msg string
 			return // agent exit or teardown: the expected ends.
 		case errors.Is(err, os.ErrClosed) && s.stopping.Load():
 			return // the reap closed the pipe on the deliberate-stop path.
-		case err == nil, errors.Is(err, errLineTruncated):
+		// A truncated line comes back as the sentinel BY VALUE; only a truncated
+		// line that ALSO faulted joins the fault in, and the ends above have
+		// already peeled off the terminal faults — so an identity test keeps
+		// draining on pure truncation while a fault-carrying join falls through
+		// to the warn below rather than being swallowed as "keep going".
+		case err == nil, err == errLineTruncated: //nolint:errorlint // identity is the point: the by-value sentinel is pure truncation; a truncated line that also faulted is a *joinError, which must fall through to the warn — errors.Is would match that join and swallow the fault.
 			continue
 		default:
 			// Never silent: the pipe is no longer being drained, which stalls
