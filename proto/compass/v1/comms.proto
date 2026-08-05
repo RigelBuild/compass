@@ -102,6 +102,22 @@ service CommsService {
   // the caller's visible channels regardless of the scope field.
   rpc SearchMessages(SearchMessagesRequest) returns (SearchMessagesResponse);
 
+  // Set (create-or-update) a channel's post policy, owner, and mandatory-
+  // subscription flag — owner/operator authorized. Emits ChannelChanged. A
+  // mandatory flip seeds delivery cursors transactionally (T4) so it never
+  // mints un-seeded delivery targets.
+  rpc SetChannelPolicy(SetChannelPolicyRequest) returns (SetChannelPolicyResponse);
+
+  // Read a roster of agents around a vantage point: the caller's neighborhood
+  // (parent + siblings + children), its subtree, or an owner's whole set. Joins
+  // the live presence projection with the durable activity string.
+  rpc GetRoster(GetRosterRequest) returns (GetRosterResponse);
+
+  // Pin or unpin an EXISTING message on a channel's pinned board (no message
+  // minting; the message must already live in a topic of the channel). A pin
+  // may compare-and-swap a currently pinned entry. Emits ChannelChanged.
+  rpc UpdatePinnedBoard(UpdatePinnedBoardRequest) returns (UpdatePinnedBoardResponse);
+
   // The event stream: message, channel, group, account, and workspace updates,
   // scoped to the caller's visible set, with gap-free replay-on-join. The sole
   // push path for the comms surface, mirroring CompassService.SubscribeEvents'
@@ -218,6 +234,38 @@ message Channel {
   // turn end; a joined-but-unsubscribed member has read access only. An agent is
   // always subscribed to its home channel implicitly, independent of this list.
   repeated string subscriber_account_ids = 6;
+  // Who may post to this channel. OPEN (zero value) = any member; OWNER_ONLY =
+  // the owner/operator only. Set via SetChannelPolicy.
+  ChannelPostPolicy post_policy = 7;
+  // The owner/operator account for policy operations; empty = unowned.
+  string owner_account_id = 8;
+  // When true, membership implies a subscription that cannot be toggled off
+  // (the mandatory-subscription channel class). Flipped via SetChannelPolicy.
+  bool mandatory_subscription = 9;
+  // The channel's pinned board, ordered by PinnedEntry.position. Maintained via
+  // UpdatePinnedBoard; board changes ride the existing ChannelChanged event.
+  repeated PinnedEntry pinned_entries = 10;
+}
+
+// A channel's post policy: who may post. OPEN (default) lets any member post;
+// OWNER_ONLY restricts posting to the channel owner/operator.
+enum ChannelPostPolicy {
+  CHANNEL_POST_POLICY_OPEN = 0;
+  CHANNEL_POST_POLICY_OWNER_ONLY = 1;
+}
+
+// One entry on a channel's pinned board: an existing message promoted to the
+// board at a position. Pinning never mints a message — message_id must already
+// live in a topic of the channel.
+message PinnedEntry {
+  // The pinned message; must already exist in a topic of this channel.
+  string message_id = 1;
+  // Ordinal position on the board (0-based, ascending).
+  int32 position = 2;
+  // When the entry was pinned.
+  int64 pinned_at_unix_ms = 3;
+  // The account that pinned it.
+  string pinned_by_account_id = 4;
 }
 
 // A channel's kind. A plain channel is the default; a DM is a direct
@@ -500,6 +548,9 @@ message AgentPresenceChanged {
   string agent_account_id = 1;
   // The new presence.
   AgentPresence presence = 2;
+  // The agent's human-readable activity note, carried beside presence so live
+  // streams and the roster read one vocabulary (empty = none).
+  string activity = 3;
 }
 
 // The presence states a live agent projects (SEA-1569, OQ-1). MVP is four
@@ -624,6 +675,80 @@ message ReparentAgentRequest {
 
 message ReparentAgentResponse {
   Account account = 1;
+}
+
+message SetChannelPolicyRequest {
+  // The channel whose policy to set.
+  string channel_id = 1;
+  // The new post policy.
+  ChannelPostPolicy post_policy = 2;
+  // The owner/operator account for the channel; empty leaves it unowned.
+  string owner_account_id = 3;
+  // Whether membership implies a non-togglable subscription.
+  bool mandatory_subscription = 4;
+}
+
+message SetChannelPolicyResponse {
+  // The updated channel carrying the new policy fields.
+  Channel channel = 1;
+}
+
+message GetRosterRequest {
+  // The vantage the roster is computed around.
+  RosterScope scope = 1;
+  // The agent whose vantage to use. Optional for human/UI callers naming a
+  // vantage point; an agent caller gets it session-resolved server-side.
+  string agent_account_id = 2;
+}
+
+// The scope of a roster read, relative to a vantage agent.
+enum RosterScope {
+  // The vantage agent's parent, siblings, and children.
+  ROSTER_SCOPE_NEIGHBORHOOD = 0;
+  // The vantage agent and its entire descendant subtree.
+  ROSTER_SCOPE_SUBTREE = 1;
+  // The whole agent set owned by the vantage agent's owner.
+  ROSTER_SCOPE_OWNER = 2;
+}
+
+message GetRosterResponse {
+  repeated RosterEntry entries = 1;
+}
+
+// One agent in a roster: its identity, tree position, and joined presence +
+// activity (the live presence enum plus the durable activity string).
+message RosterEntry {
+  string agent_account_id = 1;
+  string handle = 2;
+  string display_name = 3;
+  string parent_agent_id = 4;
+  AgentPresence presence = 5;
+  string activity = 6;
+  int64 activity_at_unix_ms = 7;
+}
+
+message UpdatePinnedBoardRequest {
+  // The channel whose pinned board to mutate.
+  string channel_id = 1;
+  oneof op {
+    // Pin (or repoint) an existing message.
+    PinMessage pin = 2;
+    // Unpin the entry naming this message id.
+    string unpin_message_id = 3;
+  }
+}
+
+// Pin an existing message. message_id must already live in a topic of the
+// channel; replace_message_id, when set, names the currently pinned entry this
+// pin replaces (compare-and-swap, T6).
+message PinMessage {
+  string message_id = 1;
+  string replace_message_id = 2;
+}
+
+message UpdatePinnedBoardResponse {
+  // The updated channel carrying pinned_entries.
+  Channel channel = 1;
 }
 
 message OpenAgentWorkspaceRequest {

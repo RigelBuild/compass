@@ -96,6 +96,14 @@ const (
 	// CommsServiceSearchMessagesProcedure is the fully-qualified name of the CommsService's
 	// SearchMessages RPC.
 	CommsServiceSearchMessagesProcedure = "/compass.v1.CommsService/SearchMessages"
+	// CommsServiceSetChannelPolicyProcedure is the fully-qualified name of the CommsService's
+	// SetChannelPolicy RPC.
+	CommsServiceSetChannelPolicyProcedure = "/compass.v1.CommsService/SetChannelPolicy"
+	// CommsServiceGetRosterProcedure is the fully-qualified name of the CommsService's GetRoster RPC.
+	CommsServiceGetRosterProcedure = "/compass.v1.CommsService/GetRoster"
+	// CommsServiceUpdatePinnedBoardProcedure is the fully-qualified name of the CommsService's
+	// UpdatePinnedBoard RPC.
+	CommsServiceUpdatePinnedBoardProcedure = "/compass.v1.CommsService/UpdatePinnedBoard"
 	// CommsServiceSubscribeCommsProcedure is the fully-qualified name of the CommsService's
 	// SubscribeComms RPC.
 	CommsServiceSubscribeCommsProcedure = "/compass.v1.CommsService/SubscribeComms"
@@ -157,6 +165,19 @@ type CommsServiceClient interface {
 	// property served from the store of record (D1, D12). Results are scoped to
 	// the caller's visible channels regardless of the scope field.
 	SearchMessages(context.Context, *connect.Request[v1.SearchMessagesRequest]) (*connect.Response[v1.SearchMessagesResponse], error)
+	// Set (create-or-update) a channel's post policy, owner, and mandatory-
+	// subscription flag — owner/operator authorized. Emits ChannelChanged. A
+	// mandatory flip seeds delivery cursors transactionally (T4) so it never
+	// mints un-seeded delivery targets.
+	SetChannelPolicy(context.Context, *connect.Request[v1.SetChannelPolicyRequest]) (*connect.Response[v1.SetChannelPolicyResponse], error)
+	// Read a roster of agents around a vantage point: the caller's neighborhood
+	// (parent + siblings + children), its subtree, or an owner's whole set. Joins
+	// the live presence projection with the durable activity string.
+	GetRoster(context.Context, *connect.Request[v1.GetRosterRequest]) (*connect.Response[v1.GetRosterResponse], error)
+	// Pin or unpin an EXISTING message on a channel's pinned board (no message
+	// minting; the message must already live in a topic of the channel). A pin
+	// may compare-and-swap a currently pinned entry. Emits ChannelChanged.
+	UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error)
 	// The event stream: message, channel, group, account, and workspace updates,
 	// scoped to the caller's visible set, with gap-free replay-on-join. The sole
 	// push path for the comms surface, mirroring CompassService.SubscribeEvents'
@@ -271,6 +292,24 @@ func NewCommsServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(commsServiceMethods.ByName("SearchMessages")),
 			connect.WithClientOptions(opts...),
 		),
+		setChannelPolicy: connect.NewClient[v1.SetChannelPolicyRequest, v1.SetChannelPolicyResponse](
+			httpClient,
+			baseURL+CommsServiceSetChannelPolicyProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("SetChannelPolicy")),
+			connect.WithClientOptions(opts...),
+		),
+		getRoster: connect.NewClient[v1.GetRosterRequest, v1.GetRosterResponse](
+			httpClient,
+			baseURL+CommsServiceGetRosterProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("GetRoster")),
+			connect.WithClientOptions(opts...),
+		),
+		updatePinnedBoard: connect.NewClient[v1.UpdatePinnedBoardRequest, v1.UpdatePinnedBoardResponse](
+			httpClient,
+			baseURL+CommsServiceUpdatePinnedBoardProcedure,
+			connect.WithSchema(commsServiceMethods.ByName("UpdatePinnedBoard")),
+			connect.WithClientOptions(opts...),
+		),
 		subscribeComms: connect.NewClient[v1.SubscribeCommsRequest, v1.SubscribeCommsResponse](
 			httpClient,
 			baseURL+CommsServiceSubscribeCommsProcedure,
@@ -298,6 +337,9 @@ type commsServiceClient struct {
 	updateTopic          *connect.Client[v1.UpdateTopicRequest, v1.UpdateTopicResponse]
 	respondToAsk         *connect.Client[v1.RespondToAskRequest, v1.RespondToAskResponse]
 	searchMessages       *connect.Client[v1.SearchMessagesRequest, v1.SearchMessagesResponse]
+	setChannelPolicy     *connect.Client[v1.SetChannelPolicyRequest, v1.SetChannelPolicyResponse]
+	getRoster            *connect.Client[v1.GetRosterRequest, v1.GetRosterResponse]
+	updatePinnedBoard    *connect.Client[v1.UpdatePinnedBoardRequest, v1.UpdatePinnedBoardResponse]
 	subscribeComms       *connect.Client[v1.SubscribeCommsRequest, v1.SubscribeCommsResponse]
 }
 
@@ -381,6 +423,21 @@ func (c *commsServiceClient) SearchMessages(ctx context.Context, req *connect.Re
 	return c.searchMessages.CallUnary(ctx, req)
 }
 
+// SetChannelPolicy calls compass.v1.CommsService.SetChannelPolicy.
+func (c *commsServiceClient) SetChannelPolicy(ctx context.Context, req *connect.Request[v1.SetChannelPolicyRequest]) (*connect.Response[v1.SetChannelPolicyResponse], error) {
+	return c.setChannelPolicy.CallUnary(ctx, req)
+}
+
+// GetRoster calls compass.v1.CommsService.GetRoster.
+func (c *commsServiceClient) GetRoster(ctx context.Context, req *connect.Request[v1.GetRosterRequest]) (*connect.Response[v1.GetRosterResponse], error) {
+	return c.getRoster.CallUnary(ctx, req)
+}
+
+// UpdatePinnedBoard calls compass.v1.CommsService.UpdatePinnedBoard.
+func (c *commsServiceClient) UpdatePinnedBoard(ctx context.Context, req *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error) {
+	return c.updatePinnedBoard.CallUnary(ctx, req)
+}
+
 // SubscribeComms calls compass.v1.CommsService.SubscribeComms.
 func (c *commsServiceClient) SubscribeComms(ctx context.Context, req *connect.Request[v1.SubscribeCommsRequest]) (*connect.ServerStreamForClient[v1.SubscribeCommsResponse], error) {
 	return c.subscribeComms.CallServerStream(ctx, req)
@@ -442,6 +499,19 @@ type CommsServiceHandler interface {
 	// property served from the store of record (D1, D12). Results are scoped to
 	// the caller's visible channels regardless of the scope field.
 	SearchMessages(context.Context, *connect.Request[v1.SearchMessagesRequest]) (*connect.Response[v1.SearchMessagesResponse], error)
+	// Set (create-or-update) a channel's post policy, owner, and mandatory-
+	// subscription flag — owner/operator authorized. Emits ChannelChanged. A
+	// mandatory flip seeds delivery cursors transactionally (T4) so it never
+	// mints un-seeded delivery targets.
+	SetChannelPolicy(context.Context, *connect.Request[v1.SetChannelPolicyRequest]) (*connect.Response[v1.SetChannelPolicyResponse], error)
+	// Read a roster of agents around a vantage point: the caller's neighborhood
+	// (parent + siblings + children), its subtree, or an owner's whole set. Joins
+	// the live presence projection with the durable activity string.
+	GetRoster(context.Context, *connect.Request[v1.GetRosterRequest]) (*connect.Response[v1.GetRosterResponse], error)
+	// Pin or unpin an EXISTING message on a channel's pinned board (no message
+	// minting; the message must already live in a topic of the channel). A pin
+	// may compare-and-swap a currently pinned entry. Emits ChannelChanged.
+	UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error)
 	// The event stream: message, channel, group, account, and workspace updates,
 	// scoped to the caller's visible set, with gap-free replay-on-join. The sole
 	// push path for the comms surface, mirroring CompassService.SubscribeEvents'
@@ -552,6 +622,24 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(commsServiceMethods.ByName("SearchMessages")),
 		connect.WithHandlerOptions(opts...),
 	)
+	commsServiceSetChannelPolicyHandler := connect.NewUnaryHandler(
+		CommsServiceSetChannelPolicyProcedure,
+		svc.SetChannelPolicy,
+		connect.WithSchema(commsServiceMethods.ByName("SetChannelPolicy")),
+		connect.WithHandlerOptions(opts...),
+	)
+	commsServiceGetRosterHandler := connect.NewUnaryHandler(
+		CommsServiceGetRosterProcedure,
+		svc.GetRoster,
+		connect.WithSchema(commsServiceMethods.ByName("GetRoster")),
+		connect.WithHandlerOptions(opts...),
+	)
+	commsServiceUpdatePinnedBoardHandler := connect.NewUnaryHandler(
+		CommsServiceUpdatePinnedBoardProcedure,
+		svc.UpdatePinnedBoard,
+		connect.WithSchema(commsServiceMethods.ByName("UpdatePinnedBoard")),
+		connect.WithHandlerOptions(opts...),
+	)
 	commsServiceSubscribeCommsHandler := connect.NewServerStreamHandler(
 		CommsServiceSubscribeCommsProcedure,
 		svc.SubscribeComms,
@@ -592,6 +680,12 @@ func NewCommsServiceHandler(svc CommsServiceHandler, opts ...connect.HandlerOpti
 			commsServiceRespondToAskHandler.ServeHTTP(w, r)
 		case CommsServiceSearchMessagesProcedure:
 			commsServiceSearchMessagesHandler.ServeHTTP(w, r)
+		case CommsServiceSetChannelPolicyProcedure:
+			commsServiceSetChannelPolicyHandler.ServeHTTP(w, r)
+		case CommsServiceGetRosterProcedure:
+			commsServiceGetRosterHandler.ServeHTTP(w, r)
+		case CommsServiceUpdatePinnedBoardProcedure:
+			commsServiceUpdatePinnedBoardHandler.ServeHTTP(w, r)
 		case CommsServiceSubscribeCommsProcedure:
 			commsServiceSubscribeCommsHandler.ServeHTTP(w, r)
 		default:
@@ -665,6 +759,18 @@ func (UnimplementedCommsServiceHandler) RespondToAsk(context.Context, *connect.R
 
 func (UnimplementedCommsServiceHandler) SearchMessages(context.Context, *connect.Request[v1.SearchMessagesRequest]) (*connect.Response[v1.SearchMessagesResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.SearchMessages is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) SetChannelPolicy(context.Context, *connect.Request[v1.SetChannelPolicyRequest]) (*connect.Response[v1.SetChannelPolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.SetChannelPolicy is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) GetRoster(context.Context, *connect.Request[v1.GetRosterRequest]) (*connect.Response[v1.GetRosterResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.GetRoster is not implemented"))
+}
+
+func (UnimplementedCommsServiceHandler) UpdatePinnedBoard(context.Context, *connect.Request[v1.UpdatePinnedBoardRequest]) (*connect.Response[v1.UpdatePinnedBoardResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.UpdatePinnedBoard is not implemented"))
 }
 
 func (UnimplementedCommsServiceHandler) SubscribeComms(context.Context, *connect.Request[v1.SubscribeCommsRequest], *connect.ServerStream[v1.SubscribeCommsResponse]) error {

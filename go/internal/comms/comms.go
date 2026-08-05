@@ -17,6 +17,7 @@ package comms
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
@@ -426,6 +427,40 @@ func (c *Comms) UpdateTopic(
 	}
 	c.publishTopicUpserted(topic)
 	return connect.NewResponse(&compassv1.UpdateTopicResponse{Topic: topicToWire(topic)}), nil
+}
+
+// ---- manager-comms-substrate RPCs (SEA-1740 T1) ----
+//
+// GetRoster, SetChannelPolicy, and UpdatePinnedBoard are the T1 proto surface of
+// the manager-comms substrate. T1 lands the contract (proto + regen) proto-first;
+// the real handler bodies are the T1-gated legs (T2 roster read, T4 channel
+// policy, T6 pinned board) that replace these stubs. Until then they return
+// CodeUnimplemented so the handler satisfies the generated interface (comms.go
+// asserts CommsServiceHandler with no Unimplemented embed) without pretending to
+// serve a surface whose store legs do not exist yet.
+
+// SetChannelPolicy is unimplemented until T4.
+func (c *Comms) SetChannelPolicy(
+	ctx context.Context,
+	req *connect.Request[compassv1.SetChannelPolicyRequest],
+) (*connect.Response[compassv1.SetChannelPolicyResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.SetChannelPolicy is not implemented"))
+}
+
+// GetRoster is unimplemented until T2.
+func (c *Comms) GetRoster(
+	ctx context.Context,
+	req *connect.Request[compassv1.GetRosterRequest],
+) (*connect.Response[compassv1.GetRosterResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.GetRoster is not implemented"))
+}
+
+// UpdatePinnedBoard is unimplemented until T6.
+func (c *Comms) UpdatePinnedBoard(
+	ctx context.Context,
+	req *connect.Request[compassv1.UpdatePinnedBoardRequest],
+) (*connect.Response[compassv1.UpdatePinnedBoardResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.UpdatePinnedBoard is not implemented"))
 }
 
 // SubscribeComms is implemented in subscribe.go.
