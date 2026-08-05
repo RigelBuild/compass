@@ -12,8 +12,8 @@ This site is the **engineering** docs — the design records, specs, and
 architecture that document how Compass is built. It is deliberately named apart
 from the future **user-facing product docsite** (the end-user product
 documentation), which is a separate site that reserves the `docs.compass`
-naming and `docs.compass.sealedsecurity.com` domain. This site takes
-`eng.compass.sealedsecurity.com`.
+naming and `docs.compass.rigel.build` domain. This site takes
+`eng.compass.rigel.build`.
 
 This record is itself the first artifact under the new convention: it is
 authored in `sealedsecurity/compass` at
@@ -410,7 +410,7 @@ Consumes), not deferred to a later wave.
 Interfaces:
 
 - Consumes: Q4 ruling (below) — project `compass-eng-docs`, custom domain
-  `eng.compass.sealedsecurity.com`, provisioned via sealed's Pulumi IaC lane.
+  `eng.compass.rigel.build`, provisioned via sealed's Pulumi IaC lane.
 - Produces: the `compass-eng-docs` Pages project via sealed's Pulumi IaC (sealed
   precedent: the docsite got "its OWN Pages:Edit-scoped token once SEA-1119
   provisions the project", `sealed/ci/pipeline.ts:334-336`); repo secrets
@@ -428,7 +428,7 @@ Interfaces:
 - [ ] T4 — sanitization migration script + standing policy doc (Q3 ruled; classes final).
 - [ ] T5 — full-corpus migration (all records, one PR) + sealed-side removal; ledger + ledger-gate moved to compass (Q1/Q2/Q5 ruled).
 - [ ] T6 — DROPPED: Q5 ruled all-at-once; wave-2 sweep folded into T5.
-- [ ] T7 — Cloudflare Pages `compass-eng-docs` + `eng.compass.sealedsecurity.com` + secrets provisioned via Pulumi (Q4 ruled).
+- [ ] T7 — Cloudflare Pages `compass-eng-docs` + `eng.compass.rigel.build` + secrets provisioned via Pulumi (Q4 ruled).
 
 ## Open Questions
 
@@ -493,8 +493,8 @@ earlier. T5 and T7 execute against these rulings; T6 is dropped (Q5).
   **RULED (Matt):** provision a new `compass-eng-docs` project + a
   Pages:Edit-scoped token via sealed's existing Pulumi IaC lane (the SEA-1119
   precedent, `pipeline.ts:334-336`), production branch `main`; custom domain
-  `eng.compass.sealedsecurity.com` (Matt ruled). The `docs.compass` naming and
-  `docs.compass.sealedsecurity.com` domain are deliberately RESERVED for the
+  `eng.compass.rigel.build` (Matt ruled). The `docs.compass` naming and
+  `docs.compass.rigel.build` domain are deliberately RESERVED for the
   future user-facing product docsite (a separate site), so this engineering
   docs site takes the `eng.` subdomain. Until the domain lands the site ships
   on `compass-eng-docs.pages.dev`. Analytics (PostHog snippet, minus sealed's
