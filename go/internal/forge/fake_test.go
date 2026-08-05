@@ -150,7 +150,7 @@ func TestFakeConcurrentUse(t *testing.T) {
 			_, _ = f.CreateIssue(ctx, "org/repo", CreateIssue{Title: "t"})
 			_ = f.Calls()
 			_, _ = f.CommentOnIssue(ctx, "org/repo", i, "hi")
-			f.SetError("GetIssue", nil)
+			f.SetError("Checks", nil) // drive concurrent errors-map mutation on a key that IS read
 			_, _ = f.GetPullRequest(ctx, "org/repo", i)
 			_ = f.Calls()
 			_, _ = f.Checks(ctx, "org/repo", i)

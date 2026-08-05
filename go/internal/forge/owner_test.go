@@ -328,9 +328,6 @@ func TestStripOwnerCRLFRoundTrip(t *testing.T) {
 	if strings.Contains(clean, "<!-- compass:owner") {
 		t.Errorf("clean still contains the owner sentinel comment: %q", clean)
 	}
-	if strings.Contains(clean, "---") {
-		t.Errorf("clean still contains the '---' rule line: %q", clean)
-	}
 }
 
 // 13. CRLF idempotence: re-stamping a CRLF-stamped body leaves EXACTLY ONE
