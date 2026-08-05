@@ -1,16 +1,23 @@
-# Compass public docsite
+# Compass engineering docs site
 
 Design record for making Compass build-in-the-open: relocate the Compass design
 records + product specs into this PUBLIC repo (`sealedsecurity/compass`) and
-stand up an Astro Starlight docsite with production deploy on push:main and a
-per-PR Cloudflare Pages preview, driven by GitHub Actions. Matt's intent,
-verbatim: "build in the open — people can look through and see how we built
-Compass using all of these practices. I'm OK with exposing more than most
-products would."
+stand up a public Astro Starlight **engineering docs** site with production
+deploy on push:main and a per-PR Cloudflare Pages preview, driven by GitHub
+Actions. Matt's intent, verbatim: "build in the open — people can look through
+and see how we built Compass using all of these practices. I'm OK with exposing
+more than most products would."
+
+This site is the **engineering** docs — the design records, specs, and
+architecture that document how Compass is built. It is deliberately named apart
+from the future **user-facing product docsite** (the end-user product
+documentation), which is a separate site that reserves the `docs.compass`
+naming and `docs.compass.sealedsecurity.com` domain. This site takes
+`eng.compass.sealedsecurity.com`.
 
 This record is itself the first artifact under the new convention: it is
 authored in `sealedsecurity/compass` at
-`docs/designs/platform/compass-public-docsite/design.md`, not in sealed.
+`docs/designs/repo/compass-eng-docs/design.md`, not in sealed.
 
 ## Problem / Intent
 
@@ -19,8 +26,8 @@ The Compass design corpus (39 records + the living spec) lives in the PRIVATE
 built in the open for; the public `sealedsecurity/compass` repo has no docsite
 and no `docs/designs/` tree (only `docs/architecture/build-and-ci.md`, verified
 this session). Move the Compass records + specs here and publish them on a
-public Starlight docsite with sealed's per-PR-preview UX, re-based from
-Woodpecker onto GitHub Actions and with no Cloudflare Access gate.
+public Starlight engineering docs site with sealed's per-PR-preview UX,
+re-based from Woodpecker onto GitHub Actions and with no Cloudflare Access gate.
 
 ## Global Constraints
 
@@ -44,7 +51,7 @@ Woodpecker onto GitHub Actions and with no Cloudflare Access gate.
   (`compass/.prototools:6-8`). New shared JS deps ride the root catalog
   (`compass/package.json:5`: "pins shared dependency versions via the
   catalog"); app runtime deps (astro, @astrojs/starlight, github-slugger,
-  sharp) go in `apps/docs/package.json` following sealed's shape
+  sharp) go in `apps/eng-docs/package.json` following sealed's shape
   (`sealed/apps/docs/package.json:13-19`).
 - **One CI job, no matrix.** compass CI is deliberately a single job running
   `moon ci :ci` on PRs and `moon run :ci` on main
@@ -53,7 +60,7 @@ Woodpecker onto GitHub Actions and with no Cloudflare Access gate.
   gate as a new moon project; only the DEPLOY (CD, secret-bearing) is a
   separate workflow.
 - **moon projects are an explicit map.** "moon discovers projects from this
-  explicit map" (`compass/.moon/workspace.yml:37-38`); the new `apps/docs`
+  explicit map" (`compass/.moon/workspace.yml:37-38`); the new `apps/eng-docs`
   project MUST be registered in `.moon/workspace.yml` in the same change that
   adds the tree, or its CI tasks silently gate nothing
   (`workspace.yml:41-47`: "A `forks/<name>/moon.yml` with no entry below is
@@ -87,11 +94,11 @@ deploy script that pushes `dist/` to Cloudflare Pages and upserts a preview-URL
 PR comment — with two deliberate divergences: **CI is GitHub Actions, not
 Woodpecker**, and **the site is public with no Access gate**.
 
-### (a) The docsite: `apps/docs`, a compass-adapted mirror of sealed's
+### (a) The site: `apps/eng-docs`, a compass-adapted mirror of sealed's docsite
 
 sealed's shape, extracted at source this session:
 
-- **App layout** — `apps/docs/{astro.config.mjs,package.json,moon.yml,
+- **App layout** — `apps/eng-docs/{astro.config.mjs,package.json,moon.yml,
   tsconfig.json,src/,public/,scripts/{gather.ts,deploy.ts}}` with
   `src/content/docs/` + `src/sidebar.generated.ts` generated and gitignored.
 - **Gather** mirrors every tracked `*.md` (minus exclusions) into the content
@@ -138,7 +145,7 @@ The compass adaptation:
   the Access-identified apex; the compass site ships either no analytics or a
   plain PostHog snippet (Open Question Q4 covers the domain; analytics rides
   the same decision).
-- **moon registration**: `compass-docs: 'apps/docs'` added to
+- **moon registration**: `compass-eng-docs: 'apps/eng-docs'` added to
   `.moon/workspace.yml` projects. Its `build` + `check` tasks join `moon ci
   :ci` automatically ("a new project with a `ci` task is picked up the moment
   it is registered — no matrix entry to forget", `ci.yml:16-18`), so a
@@ -172,7 +179,7 @@ link + changed-page deep links via the gh CLI (`deploy.ts:41`,
 `COMMENT_MARKER = "<!-- docs-preview -->"`).
 
 The compass version keeps `deploy.ts` (adapted) and swaps the driver from
-Woodpecker to a dedicated GHA workflow, `.github/workflows/docs-deploy.yml`:
+Woodpecker to a dedicated GHA workflow, `.github/workflows/eng-docs-deploy.yml`:
 
 - **Triggers**: `push: branches: [main]` (production) and `pull_request`
   (preview). The deploy job guards `if: github.event_name == 'push' ||
@@ -183,8 +190,8 @@ Woodpecker to a dedicated GHA workflow, `.github/workflows/docs-deploy.yml`:
   the hermetic gate — the same split sealed makes (`runInCI: false`,
   `moon.yml:63-68`: "CD (runInCI:false): the Petrel policy … fans these out
   only when affected and gates the event"). The workflow runs
-  `moon run compass-docs:build` then `bun scripts/deploy.ts` (or
-  `moon run compass-docs:deploy` via `moon exec`-equivalent; the task keeps
+  `moon run compass-eng-docs:build` then `bun scripts/deploy.ts` (or
+  `moon run compass-eng-docs:deploy` via `moon exec`-equivalent; the task keeps
   `runInCI: false` so the CI gate never runs it).
 - **Env adaptation**: `deploy.ts` reads Woodpecker `CI_*` vars
   (`deploy.ts:21-31`: `CI_PIPELINE_EVENT`, `CI_COMMIT_SOURCE_BRANCH`,
@@ -213,7 +220,7 @@ Woodpecker to a dedicated GHA workflow, `.github/workflows/docs-deploy.yml`:
 **Alternative considered — Cloudflare Pages GitHub integration** (Pages builds
 the site itself on every push; automatic previews, zero workflow):
 rejected. The build would run outside moon (no toolchain pins, no affected
-graph, a second build definition drifting from `apps/docs/moon.yml`), the
+graph, a second build definition drifting from `apps/eng-docs/moon.yml`), the
 gather step's repo-wide markdown walk would need replicating in Pages' build
 config, and there is no seam for the changed-pages PR comment `deploy.ts`
 provides. Direct Upload keeps the build in the one pinned toolchain.
@@ -273,38 +280,41 @@ Repeatable rules applied by the migration task and binding on future records:
 
 ### (d) Migration timing
 
-Compass-record design PRs are in flight in sealed against the old convention
-(verified this session via the open-PR list): **#1096**
+Compass-record design PRs may be in flight in sealed against the old convention
+at migration time (as of this session's open-PR list: **#1096**
 (`docs/designs/platform/compass-dogfood-e2e/design.md`), **#1095** (edits a
 product compass record), **#1087** (platform compass-agent GHCR record), plus
-**#1089** and **#1075** (compass-ux). Rule: **relocate settled/merged records
-now; an in-flight record migrates only after its sealed PR freezes (merges or
-closes)**. The migration PR in compass therefore ships in two waves — wave 1
-is every record at sealed `main` when the migration branch cuts; wave 2 is a
-small follow-up sweeping the stragglers once their PRs land. New Compass
-records started AFTER this record merges are authored in compass directly
-(pending Q2's ratification).
+**#1089** and **#1075** (compass-ux)). **Q5 ruled all-at-once**, so the
+migration is a SINGLE PR carrying the full corpus at sealed `main` at
+branch-cut — no wave-1/wave-2 split. An individual sealed design PR still open
+when the migration branch cuts is reconciled into that one PR rather than
+deferred: the executor either lands it in sealed first and includes the merged
+record, or re-targets it to compass. This is coherent with Q2 (compass is the
+source of truth): review continues in the public repo, so migrating a
+still-under-review record does not strand its threads — they simply continue
+here. New Compass records started AFTER this record merges are authored in
+compass directly (Q2).
 
 ## Plan
 
 Executable by an implementing agent; every task carries its own test cycle.
-Tasks T4-T6 are gated on the Open Questions Matt must rule first (marked).
+Q1–Q5 are all RULED (see Open Questions); T6 is dropped per Q5.
 
-### T1 — Docsite scaffold + moon registration
+### T1 — Site scaffold + moon registration
 
-Create `apps/docs/` mirroring sealed's app shape, minus Access/PostHog,
+Create `apps/eng-docs/` mirroring sealed's app shape, minus Access/PostHog,
 and register the project.
 
 Interfaces:
 
 - Consumes: `sealed/apps/docs/{astro.config.mjs,package.json,moon.yml,tsconfig.json,src/styles/custom.css,src/content.config.ts,.gitignore,public/favicon.svg}` as templates (read from the sealed clone; do not import at build time).
 - Produces:
-  - `apps/docs/astro.config.mjs` — `site` set per Q4's ruling (placeholder `https://compass-docs.pages.dev` until the domain lands), `starlight({ title: "Compass", pagefind: true, sidebar, editLink: {}, lastUpdated: true, tableOfContents: {...}, expressiveCode: {...} })`; NO `head` PostHog block, NO Access assumptions.
-  - `apps/docs/package.json` — name `@compass/docs-site`, scripts `{ gather, dev, build, preview, check }` as sealed's (`sealed/apps/docs/package.json:6-12`); deps `astro`, `@astrojs/starlight`, `@astrojs/check`, `github-slugger`, `sharp` via `catalog:` entries added to the root `package.json` `workspaces.catalog`.
-  - `apps/docs/moon.yml` — tasks `gather` (command `bun scripts/gather.ts`, inputs `['scripts/gather.ts', '/**/*.md', '/.markdownlint-cli2.jsonc']`, outputs `['src/content/docs', 'src/sidebar.generated.ts']`), `build` (`bunx astro build`, deps `['gather']`, outputs `['dist']`), `check` (`bunx astro check`, deps `['gather']`), `deploy` + `deploy-preview` (`bun scripts/deploy.ts`, deps `['build']`, `options.runInCI: false`), and a `ci` task depending on `['build', 'check']` so the project joins `moon ci :ci`.
-  - `.moon/workspace.yml` — add `compass-docs: 'apps/docs'` under `projects`, same change (per `workspace.yml:41-47`'s silent-inert warning).
-  - `apps/docs/.gitignore` — `src/content/docs/`, `src/sidebar.generated.ts`, `dist/`, `.astro/`.
-- Test cycle: `moon run compass-docs:build` and `moon run compass-docs:check` green locally; `moon query projects` lists `compass-docs`; a scratch PR shows the CI job picking the project up via the affected graph.
+  - `apps/eng-docs/astro.config.mjs` — `site` set per Q4's ruling (placeholder `https://compass-eng-docs.pages.dev` until the domain lands), `starlight({ title: "Compass Engineering Docs", pagefind: true, sidebar, editLink: {}, lastUpdated: true, tableOfContents: {...}, expressiveCode: {...} })`; NO `head` PostHog block, NO Access assumptions.
+  - `apps/eng-docs/package.json` — name `@compass/eng-docs`, scripts `{ gather, dev, build, preview, check }` as sealed's (`sealed/apps/docs/package.json:6-12`); deps `astro`, `@astrojs/starlight`, `@astrojs/check`, `github-slugger`, `sharp` via `catalog:` entries added to the root `package.json` `workspaces.catalog`.
+  - `apps/eng-docs/moon.yml` — tasks `gather` (command `bun scripts/gather.ts`, inputs `['scripts/gather.ts', '/**/*.md', '/.markdownlint-cli2.jsonc']`, outputs `['src/content/docs', 'src/sidebar.generated.ts']`), `build` (`bunx astro build`, deps `['gather']`, outputs `['dist']`), `check` (`bunx astro check`, deps `['gather']`), `deploy` + `deploy-preview` (`bun scripts/deploy.ts`, deps `['build']`, `options.runInCI: false`), and a `ci` task depending on `['build', 'check']` so the project joins `moon ci :ci`.
+  - `.moon/workspace.yml` — add `compass-eng-docs: 'apps/eng-docs'` under `projects`, same change (per `workspace.yml:41-47`'s silent-inert warning).
+  - `apps/eng-docs/.gitignore` — `src/content/docs/`, `src/sidebar.generated.ts`, `dist/`, `.astro/`.
+- Test cycle: `moon run compass-eng-docs:build` and `moon run compass-eng-docs:check` green locally; `moon query projects` lists `compass-eng-docs`; a scratch PR shows the CI job picking the project up via the affected graph.
 
 ### T2 — Gather script adapted to the compass layout
 
@@ -313,7 +323,7 @@ Port `gather.ts` + `gather.test.ts` with the compass taxonomy.
 Interfaces:
 
 - Consumes: `sealed/apps/docs/scripts/gather.ts` (491 lines) + `gather.test.ts` as the port source.
-- Produces: `apps/docs/scripts/gather.ts` with:
+- Produces: `apps/eng-docs/scripts/gather.ts` with:
   - `const REPO_SLUG = "sealedsecurity/compass"` (editUrl base, mirrors `sealed gather.ts:25,203-205`).
   - `const DOMAINS = ["designs", "specs", "architecture"] as const` (replaces sealed's `["designs","specs","research","team"]`, `gather.ts:31`).
   - `SECTIONS` in sidebar order: Designs, Specs, Architecture, Packages, Contributing (drops sealed's Research/Team/Infra, `gather.ts:43-51`).
@@ -321,8 +331,8 @@ Interfaces:
   - `parseExclusions` returns `[...ignores, "**/outputs/**"]` (drops `"oss/seal/**"`, `sealed gather.ts:131-137`); ignores read from `compass/.markdownlint-cli2.jsonc` (currently `["forks/*/**"]`).
   - `CONTRIBUTING_FILES` = compass's root convention files: `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `forks/README.md`.
   - Everything else (frontmatter injection, H1 strip, link rewriting, sidebar generation, index page) ports unchanged.
-- Produces: `apps/docs/scripts/gather.test.ts` — the ported unit suite with fixtures updated to compass paths (classification of `docs/designs/platform/x.md`, `go/README.md` → packages, exclusion of `forks/oh-my-pi/**`).
-- Test cycle: `bun test apps/docs/scripts/gather.test.ts` green; `moon run compass-docs:gather` then `moon run compass-docs:build` renders this record at `/designs/platform/compass-public-docsite/design/` with a working editUrl.
+- Produces: `apps/eng-docs/scripts/gather.test.ts` — the ported unit suite with fixtures updated to compass paths (classification of `docs/designs/repo/x.md`, `go/README.md` → packages, exclusion of `forks/oh-my-pi/**`).
+- Test cycle: `bun test apps/eng-docs/scripts/gather.test.ts` green; `moon run compass-eng-docs:gather` then `moon run compass-eng-docs:build` renders this record at `/designs/repo/compass-eng-docs/design/` with a working editUrl.
 
 ### T3 — Deploy script + GHA workflow
 
@@ -331,15 +341,15 @@ Port `deploy.ts` to GHA env vars; add the CD workflow.
 Interfaces:
 
 - Consumes: `sealed/apps/docs/scripts/deploy.ts` (495 lines) + `deploy.test.ts` as the port source; Cloudflare Direct Upload docs (cited in Approach (b)).
-- Produces: `apps/docs/scripts/deploy.ts` with:
-  - `const PROJECT_NAME = "compass-docs"` (pending Q4), `COMMENT_MARKER = "<!-- compass-docs-preview -->"`, `SITE_LABEL = "Compass docs"`.
+- Produces: `apps/eng-docs/scripts/deploy.ts` with:
+  - `const PROJECT_NAME = "compass-eng-docs"` (Q4), `COMMENT_MARKER = "<!-- compass-eng-docs-preview -->"`, `SITE_LABEL = "Compass engineering docs"`.
   - `interface DeployEnv { GITHUB_EVENT_NAME?; GITHUB_HEAD_REF?; GITHUB_SHA?; PR_HEAD_SHA?; GITHUB_REPOSITORY?; PR_NUMBER?; GH_TOKEN?; CLOUDFLARE_API_TOKEN?; CLOUDFLARE_ACCOUNT_ID? }` — replaces the Woodpecker `CI_*` set (`sealed deploy.ts:21-31`). The recorded commit SHA is `PR_HEAD_SHA` on PRs (= `github.event.pull_request.head.sha`) and `GITHUB_SHA` on push; never `GITHUB_SHA` on a PR (it is the merge commit, not the branch head).
   - `isPullRequest(env)` → `env.GITHUB_EVENT_NAME === "pull_request"`; `deployBranch(env)` keeps the refuse-to-fall-back invariant on `GITHUB_HEAD_REF` (`sealed deploy.ts:68-79`); `wranglerArgs`, `parsePreviewUrl`, `commentBody`, `changedDocPages`, escape/encode helpers port unchanged.
-- Produces: `.github/workflows/docs-deploy.yml`:
-  - `on: { push: { branches: [main] }, pull_request: {} }`; `permissions: { contents: read, pull-requests: write }`; `concurrency: docs-deploy-${{ github.ref }}` with `cancel-in-progress: true`.
-  - One job `deploy`, `if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository` (fork guard); steps: checkout, setup-bun/node/moon from `.prototools` pins (reuse `ci.yml`'s pin-reading step, `ci.yml:154-196`), `moon run compass-docs:build`, then `bun scripts/deploy.ts` with `env: { CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}, CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}, GH_TOKEN: ${{ github.token }}, PR_NUMBER: ${{ github.event.pull_request.number }}, PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }} }`.
-- Produces: `apps/docs/scripts/deploy.test.ts` — ported pure-function suite (branch selection, fork of the env mapping, comment body, URL parse).
-- Test cycle: `bun test apps/docs/scripts/deploy.test.ts` green; after Q4's project exists, a scratch PR shows the preview comment with a live `*.pages.dev` URL, and a merge to main updates production.
+- Produces: `.github/workflows/eng-docs-deploy.yml`:
+  - `on: { push: { branches: [main] }, pull_request: {} }`; `permissions: { contents: read, pull-requests: write }`; `concurrency: eng-docs-deploy-${{ github.ref }}` with `cancel-in-progress: true`.
+  - One job `deploy`, `if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository` (fork guard); steps: checkout, setup-bun/node/moon from `.prototools` pins (reuse `ci.yml`'s pin-reading step, `ci.yml:154-196`), `moon run compass-eng-docs:build`, then `bun scripts/deploy.ts` with `env: { CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}, CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}, GH_TOKEN: ${{ github.token }}, PR_NUMBER: ${{ github.event.pull_request.number }}, PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }} }`.
+- Produces: `apps/eng-docs/scripts/deploy.test.ts` — ported pure-function suite (branch selection, fork of the env mapping, comment body, URL parse).
+- Test cycle: `bun test apps/eng-docs/scripts/deploy.test.ts` green; after Q4's project exists, a scratch PR shows the preview comment with a live `*.pages.dev` URL, and a merge to main updates production.
 
 ### T4 — Sanitization rewrite pass (Q3 ruled; policy classes final)
 
@@ -349,7 +359,7 @@ checklist for future records.
 Interfaces:
 
 - Consumes: the sealed corpus enumerated this session — the 38 product design records (37 matching `sealed/docs/designs/product/compass-*` plus `sealed/docs/designs/product/compass.md`, the v0.3 base record whose name has no hyphen and so is not matched by the `compass-*` glob), `sealed/docs/designs/platform/compass-dogfood-loop/design.md`, `sealed/docs/specs/product/compass.md`, `sealed/docs/specs/product/README.md`.
-- Produces: `tools/docs-migrate/migrate.ts` (one-shot, deleted after wave 2) applying, per file: (1) linear.app link strip — BOTH the inline `[SEA-<n>](https://linear.app/…)` and the reference-definition `[SEA-<n>]: https://linear.app/…` forms → `SEA-<n>`; (2) `oss/compass/` prefix strip in paths/links/code spans; (3) link-to-private-record conversion for `seal-*.md` targets → plain prose; (4) NO edits to security sections. Emits a per-file diff summary for review. Editorial brackets (the self-referential internal-record claims, Approach (c) class 3) are applied by hand in the same PR, listed in the PR body.
+- Produces: `tools/docs-migrate/migrate.ts` (one-shot, deleted at the end of the migration) applying, per file: (1) linear.app link strip — BOTH the inline `[SEA-<n>](https://linear.app/…)` and the reference-definition `[SEA-<n>]: https://linear.app/…` forms → `SEA-<n>`; (2) `oss/compass/` prefix strip in paths/links/code spans; (3) link-to-private-record conversion for `seal-*.md` targets → plain prose; (4) NO edits to security sections. Emits a per-file diff summary for review. Editorial brackets (the self-referential internal-record claims, Approach (c) class 3) are applied by hand in the same PR, listed in the PR body.
 - Produces: `docs/designs/CONTRIBUTING.md` (or a section in root `CONTRIBUTING.md`) stating the four rules as the standing policy for records authored here.
 - Test cycle: `bun test tools/docs-migrate` over fixture snippets for each class (including the reference-definition link form); post-run grep gates (authoritative over the rewrite regexes — the run fails if any form slipped): zero `linear.app` matches, zero `oss/compass` matches under `docs/designs/**` + `docs/specs/**`; `markdownlint-cli2` clean.
 
@@ -369,7 +379,10 @@ Interfaces:
   re-target the PR to compass — both keep the corpus whole); the
   wave-1/wave-2 split is dropped per Q5.
 - Produces (compass PR): `docs/designs/product/**` (the 38 product records),
-  `docs/designs/platform/compass-dogfood-loop/design.md`,
+  `docs/designs/product/compass-dogfood-loop/design.md` (a Compass
+  product-process design; `platform/` — a sealed-monorepo domain — does not
+  exist in compass, and repo-tooling records like THIS one live under
+  `docs/designs/repo/`),
   `docs/specs/product/{compass.md,README.md}`, plus (Q1 ruled MOVE)
   `docs/designs/product/DECISIONS.md` + `tools/design-ledger-gate/**` (ported;
   `PRODUCT_DIR` stays `docs/designs/product`, `index.ts:45`) + a
@@ -396,9 +409,9 @@ Consumes), not deferred to a later wave.
 
 Interfaces:
 
-- Consumes: Q4 ruling (below) — project `compass-docs`, custom domain
-  `docs.compass.sealedsecurity.com`, provisioned via sealed's Pulumi IaC lane.
-- Produces: the `compass-docs` Pages project via sealed's Pulumi IaC (sealed
+- Consumes: Q4 ruling (below) — project `compass-eng-docs`, custom domain
+  `eng.compass.sealedsecurity.com`, provisioned via sealed's Pulumi IaC lane.
+- Produces: the `compass-eng-docs` Pages project via sealed's Pulumi IaC (sealed
   precedent: the docsite got "its OWN Pages:Edit-scoped token once SEA-1119
   provisions the project", `sealed/ci/pipeline.ts:334-336`); repo secrets
   `CLOUDFLARE_API_TOKEN` (Pages:Edit-scoped, least-privilege per
@@ -409,13 +422,13 @@ Interfaces:
 
 ## Tasks
 
-- [ ] T1 — `apps/docs` scaffold + `compass-docs` moon registration; build/check green in `moon ci :ci`.
+- [ ] T1 — `apps/eng-docs` scaffold + `compass-eng-docs` moon registration; build/check green in `moon ci :ci`.
 - [ ] T2 — `gather.ts`/`gather.test.ts` ported to the compass taxonomy; this record renders.
-- [ ] T3 — `deploy.ts` on GHA env + `.github/workflows/docs-deploy.yml` with the fork guard.
+- [ ] T3 — `deploy.ts` on GHA env + `.github/workflows/eng-docs-deploy.yml` with the fork guard.
 - [ ] T4 — sanitization migration script + standing policy doc (Q3 ruled; classes final).
 - [ ] T5 — full-corpus migration (all records, one PR) + sealed-side removal; ledger + ledger-gate moved to compass (Q1/Q2/Q5 ruled).
 - [ ] T6 — DROPPED: Q5 ruled all-at-once; wave-2 sweep folded into T5.
-- [ ] T7 — Cloudflare Pages `compass-docs` + `docs.compass.sealedsecurity.com` + secrets provisioned via Pulumi (Q4 ruled).
+- [ ] T7 — Cloudflare Pages `compass-eng-docs` + `eng.compass.sealedsecurity.com` + secrets provisioned via Pulumi (Q4 ruled).
 
 ## Open Questions
 
@@ -477,12 +490,14 @@ earlier. T5 and T7 execute against these rulings; T6 is dropped (Q5).
 - **Q4 — Cloudflare Pages project + custom domain: does one exist, who
   provisions?** No compass Pages project exists (sealed's pipeline knows only
   `sealed-docs` + the marketing site, `sealed/ci/pipeline.ts:333-343`).
-  **RULED (Matt):** provision a new `compass-docs` project + a
+  **RULED (Matt):** provision a new `compass-eng-docs` project + a
   Pages:Edit-scoped token via sealed's existing Pulumi IaC lane (the SEA-1119
   precedent, `pipeline.ts:334-336`), production branch `main`; custom domain
-  `docs.compass.sealedsecurity.com` (Matt ruled). Until the domain lands the
-  site ships on
-  `compass-docs.pages.dev`. Analytics (PostHog snippet, minus sealed's
+  `eng.compass.sealedsecurity.com` (Matt ruled). The `docs.compass` naming and
+  `docs.compass.sealedsecurity.com` domain are deliberately RESERVED for the
+  future user-facing product docsite (a separate site), so this engineering
+  docs site takes the `eng.` subdomain. Until the domain lands the site ships
+  on `compass-eng-docs.pages.dev`. Analytics (PostHog snippet, minus sealed's
   Access-cookie inheritance) rides the domain decision.
 - **Q5 — Migration scope: all 39 at once vs settled-now + in-flight-after
   freeze?** **RULED (Matt): all at once** — migrate the full corpus in one PR,
