@@ -31,13 +31,17 @@ const VALID = {
 };
 
 describe("bootConnection", () => {
-	test("returns the resolved connection and leaves the root untouched", () => {
+	test("returns the resolved connection and leaves the root untouched", async () => {
 		const el = document.createElement("div");
-		const connection = bootConnection(el, () => resolveConnection(VALID));
+		const connection = await bootConnection(el, async () => ({
+			...resolveConnection(VALID),
+			fetchImpl: undefined,
+		}));
 
 		expect(connection).toEqual({
 			baseUrl: "http://127.0.0.1:50051",
 			token: undefined,
+			fetchImpl: undefined,
 		});
 		// Nothing rendered: the real render() owns the root on the happy path.
 		expect(el.childNodes.length).toBe(0);
@@ -47,7 +51,7 @@ describe("bootConnection", () => {
 	// resolver's OWN message (recomputed here from the same thrown Error, never a
 	// copied literal) — so rewording connection.ts's guidance can never silently
 	// leave the boot screen showing stale instructions.
-	test("renders the resolver's message into the root when baseUrl is missing", () => {
+	test("renders the resolver's message into the root when baseUrl is missing", async () => {
 		const el = document.createElement("div");
 		const env = { VITE_COMPASS_TOKEN: "tok" };
 		const thrown = (() => {
@@ -59,7 +63,10 @@ describe("bootConnection", () => {
 			throw new Error("resolveConnection(baseUrl-missing) did not throw");
 		})();
 
-		const connection = bootConnection(el, () => resolveConnection(env));
+		const connection = await bootConnection(el, async () => ({
+			...resolveConnection(env),
+			fetchImpl: undefined,
+		}));
 
 		// Requiredness preserved: no connection, so the caller cannot boot on.
 		expect(connection).toBeUndefined();
@@ -69,11 +76,11 @@ describe("bootConnection", () => {
 		expect(el.textContent).toContain(thrown.message);
 	});
 
-	test("renders a non-Error throw rather than blanking", () => {
+	test("renders a non-Error throw rather than blanking", async () => {
 		const el = document.createElement("div");
 
 		expect(
-			bootConnection(el, () => {
+			await bootConnection(el, async () => {
 				throw "env exploded";
 			}),
 		).toBeUndefined();
@@ -82,12 +89,18 @@ describe("bootConnection", () => {
 
 	// A second boot into a root that already holds content must REPLACE it, not
 	// append — otherwise a retry would stack error screens.
-	test("replaces existing root content instead of appending", () => {
+	test("replaces existing root content instead of appending", async () => {
 		const el = document.createElement("div");
 		el.append(document.createElement("span"));
 
-		bootConnection(el, () => resolveConnection({}));
-		bootConnection(el, () => resolveConnection({}));
+		await bootConnection(el, async () => ({
+			...resolveConnection({}),
+			fetchImpl: undefined,
+		}));
+		await bootConnection(el, async () => ({
+			...resolveConnection({}),
+			fetchImpl: undefined,
+		}));
 
 		// The child COUNT is the stacking assertion, and it comes first so the
 		// failure reads as `2 !== 1` rather than a serialized-DOM dump: `append`

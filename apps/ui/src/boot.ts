@@ -22,7 +22,7 @@
 // the env-resolve failure here and the WhoAmI failure in index.tsx — so the two
 // screens never drift in style, only in their (path-specific) wording.
 
-import type { Connection } from "./live/connection";
+import type { ResolvedConnection } from "./live/provider";
 
 // Inline styles, not a class from app.css: this screen is the failure path for
 // boot itself, so it must not depend on a stylesheet having loaded. Kept to the
@@ -66,18 +66,21 @@ export function renderBootError(
 	root.replaceChildren(screen);
 }
 
-/** Resolve the connection, or paint the failure into `root` and return
- *  undefined. Returning undefined rather than a fallback is the point: the
- *  caller has no connection to boot against, so the app must NOT come up. The
- *  rendered detail is the thrown error's OWN message — connection.ts owns the
- *  wording (which variable, what to set it to), and duplicating it here would
- *  let the two drift. */
-export function bootConnection(
+/** Resolve the connection through its provider, or paint the failure into `root`
+ *  and return undefined. The async mirror of `bootCaller`: `resolve` is a thunk
+ *  over a ConnectionProvider (index.tsx passes
+ *  `() => envConnectionProvider().resolve()`), so this stays pure over its inputs
+ *  (a root + a thunk) and unit-testable without `import.meta`. Returning
+ *  undefined rather than a fallback is the point: the caller has no connection to
+ *  boot against, so the app must NOT come up. The rendered detail is the thrown
+ *  error's OWN message — connection.ts owns the wording (which variable, what to
+ *  set it to), and duplicating it here would let the two drift. */
+export async function bootConnection(
 	root: HTMLElement,
-	connect: () => Connection,
-): Connection | undefined {
+	resolve: () => Promise<ResolvedConnection>,
+): Promise<ResolvedConnection | undefined> {
 	try {
-		return connect();
+		return await resolve();
 	} catch (error) {
 		// A non-Error throw still has to be legible — String() over silence.
 		const detail = error instanceof Error ? error.message : String(error);

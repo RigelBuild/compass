@@ -16,7 +16,7 @@ import {
 	createCompassClient,
 	createCompassWebTransport,
 } from "@compass/client";
-import type { Connection } from "./connection";
+import type { ResolvedConnection } from "./provider";
 
 /** The typed compass.v1 clients the app dials, built from one Connection. */
 export interface LiveClients {
@@ -33,13 +33,17 @@ export interface LiveClients {
 	readonly transport: Transport;
 }
 
-/** Build the live clients for a connection. Pure construction (no I/O): the
- *  gRPC-Web transport is created once here and shared by both clients, but no
+/** Build the live clients for a resolved connection. Pure construction (no I/O):
+ *  the gRPC-Web transport is created once here and shared by both clients, but no
  *  request is sent until a client method is called. The one place transport is
  *  chosen (see file header) — one instance, so the query layer's keys stay
- *  cache-coherent with the clients' calls. */
-export function createLiveClients(conn: Connection): LiveClients {
-	const transport = createCompassWebTransport(conn.baseUrl, conn.token);
+ *  cache-coherent with the clients' calls. `conn.fetchImpl` threads the resolved
+ *  transport fetch through: undefined (browser dev) uses the platform fetch; a
+ *  shell-provided fetch tunnels over IPC — the seam is invisible above here. */
+export function createLiveClients(conn: ResolvedConnection): LiveClients {
+	const transport = createCompassWebTransport(conn.baseUrl, conn.token, {
+		fetch: conn.fetchImpl,
+	});
 	return {
 		comms: createCommsClient(transport),
 		compass: createCompassClient(transport),
