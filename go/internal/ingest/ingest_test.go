@@ -101,6 +101,27 @@ func TestHumanAuthorNoAttribution(t *testing.T) {
 	}
 }
 
+func TestDuplicateHeaderNoAttributionStillStripped(t *testing.T) {
+	// Two owner headers → StripOwner returns ok=false (refuse to choose between
+	// competing claims) but STILL removes every block. Ingestion must yield no
+	// attribution yet still hand a scrubbed body to the sink — the ok=false
+	// contract at the layer that consumes it.
+	first := stamped(t, "real body", forge.Author{AgentHandle: "atlas", OwnerHandle: "matt", SessionID: "s1"})
+	second := stamped(t, "second", forge.Author{AgentHandle: "nomad", OwnerHandle: "alex", SessionID: "s2"})
+	_, sink, in := newHarness(t, []forge.Issue{{Number: 1, Body: first + "\n" + second}})
+
+	if err := in.Ingest(context.Background(), "owner/repo"); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if agent := sink.got[0].GetAgent(); agent != nil {
+		t.Fatalf("Agent = %v, want nil for a duplicate-header (ok=false) body", agent)
+	}
+	gotBody := sink.got[0].GetBody()
+	if strings.Contains(gotBody, "compass:owner") || strings.Contains(gotBody, "🧭") {
+		t.Errorf("Body still carries owner-header scaffold: %q", gotBody)
+	}
+}
+
 func TestStampsForgeCoordinate(t *testing.T) {
 	_, sink, in := newHarness(t, []forge.Issue{{Number: 1, Body: "body"}})
 
