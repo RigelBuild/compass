@@ -34,6 +34,9 @@ projects:
   # (SEA-1405). Separate from compass-proto because its subject is the plugin
   # rather than the schema.
   stamp-gate: 'tools/stamp-gate'
+  # The one-shot engineering-docs sanitization migration (SEA-1766, T4). Encodes
+  # the four-class rewrite policy; no standing run task, deleted after T5.
+  docs-migrate: 'tools/docs-migrate'
   # Vendored upstream fork subtrees (forks/<name>, SEA-1512). Each carries its
   # own nix-driven build as functional CI — so a fork-only change is gated by
   # the fork's own suite — while its tree stays exempt from the style gates

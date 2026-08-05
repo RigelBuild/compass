@@ -89,6 +89,11 @@ against it too if you prefer — colocate a fresh clone with
 - Keep PRs focused — one feature or fix per PR.
 - Include tests, and update docs when you change a public API or the contract.
 - Make sure `moon run :ci` is green before you open or update a PR.
+- Authoring or editing a design record under `docs/designs/`? Follow the
+  record policy in [`docs/designs/CONTRIBUTING.md`](./docs/designs/CONTRIBUTING.md)
+  — this repo is public, so records carry no `linear.app` links, no
+  `oss/compass/` path prefixes, no links to private `seal-*.md` records, and
+  never edit another author's security sections.
 
 ## Security
 

@@ -89,6 +89,13 @@
         "typescript": "catalog:",
       },
     },
+    "tools/docs-migrate": {
+      "name": "@compass/docs-migrate",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/stamp-gate": {
       "name": "@compass/stamp-gate",
       "devDependencies": {
@@ -240,6 +247,8 @@
     "@compass/agent": ["@compass/agent@workspace:packages/compass-agent"],
 
     "@compass/client": ["@compass/client@workspace:packages/compass-client"],
+
+    "@compass/docs-migrate": ["@compass/docs-migrate@workspace:tools/docs-migrate"],
 
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
 

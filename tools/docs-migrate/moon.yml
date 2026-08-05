@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# One-shot engineering-docs sanitization migration (SEA-1766, T4). See
+# migrate.ts for the four-class policy it encodes. Unlike stamp-gate there is
+# NO standing run task: the migration is invoked MANUALLY in T5 (over the real
+# corpus, with --write) and this tool is deleted afterward. This project exists
+# only to carry the pure core's unit tests and typecheck under `moon ci :ci`.
+#
+# TypeScript rather than a shell script (AGENTS.md): the four transforms have
+# real logic — a protected-section state machine and both linear link forms —
+# and the core is a pure function over its input, so `bun test` covers every
+# class including the byte-verbatim security-section case a sed pipeline would
+# botch.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'oss']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  test:
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false
