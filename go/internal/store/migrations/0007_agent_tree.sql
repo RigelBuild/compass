@@ -12,6 +12,12 @@
 -- user-supplied parent on CreateAgent) and editable via ReparentAgent; same-
 -- owner and no-cycle are validated server-side on every write, not by the
 -- schema — the FK only guarantees the referent exists and is an agent account.
+--
+-- INVARIANT: every write of agent_accounts.parent_agent_id must invoke the
+-- registered coordination hook (SEA-1722 T5) — the manager-comms coordination
+-- channel is auto-provisioned/reconciled from this edge, so a writer that sets
+-- parent_agent_id without invoking the hook (store.CreateAgent,
+-- store.ReparentAgent) would leave the tree and channel state divergent.
 ALTER TABLE agent_accounts
     ADD COLUMN parent_agent_id TEXT CONSTRAINT agent_accounts_parent_agent_id_fkey REFERENCES agent_accounts (account_id) ON DELETE RESTRICT;
 
