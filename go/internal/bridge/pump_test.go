@@ -1,0 +1,502 @@
+//go:build unix
+
+package bridge
+
+// The T3 bridge gate: the compass_rpc pump exercised against a REAL in-process
+// stub daemon served over cleartext-HTTP/2 (h2c) on a Unix domain socket — the
+// same door the shipped daemon serves. Deterministic + event-gated only: every
+// synchronization point is a channel/observed event, never a sleep, and there
+// are no retries. A short-deadline root context bounds each blocking wait so a
+// wedged pump fails fast instead of hanging.
+
+import (
+	"context"
+	"io"
+	"net"
+	"net/http"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+)
+
+const testTimeout = 5 * time.Second
+
+// stubServer is a real h2c http.Server on a UDS listener, torn down via
+// t.Cleanup. handler serves each request; socketPath is what NewUnixTarget dials.
+func stubServer(t *testing.T, handler http.HandlerFunc) (socketPath string) {
+	t.Helper()
+	socketPath = filepath.Join(t.TempDir(), "daemon.sock")
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	p := new(http.Protocols)
+	p.SetUnencryptedHTTP2(true)
+	srv := &http.Server{Handler: handler, Protocols: p}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+	return socketPath
+}
+
+// collect runs the pump synchronously and returns the frames it emitted in order.
+func collect(ctx context.Context, target *Target, call Call) []Frame {
+	var frames []Frame
+	NewPump(target).Do(ctx, call, func(f Frame) {
+		frames = append(frames, f)
+	})
+	return frames
+}
+
+func TestPumpUnaryHappyPath(t *testing.T) {
+	var (
+		gotPath   string
+		gotHeader string
+		gotBody   []byte
+	)
+	respBody := []byte("grpc-web-response-bytes")
+
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path + func() string {
+			if r.URL.RawQuery == "" {
+				return ""
+			}
+			return "?" + r.URL.RawQuery
+		}()
+		gotHeader = r.Header.Get("X-Grpc-Web")
+		b, _ := io.ReadAll(r.Body)
+		gotBody = b
+		w.Header().Set("Content-Type", "application/grpc-web+proto")
+		w.Header().Set("X-Daemon", "ok")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(respBody)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	call := Call{
+		Path: "/compass.v1.Service/Method?q=1",
+		Headers: [][2]string{
+			{"Content-Type", "application/grpc-web+proto"},
+			{"X-Grpc-Web", "1"},
+		},
+		Body: []byte("request-payload"),
+	}
+	frames := collect(ctx, NewUnixTarget(socket), call)
+
+	// The stub observed the request verbatim.
+	if gotPath != "/compass.v1.Service/Method?q=1" {
+		t.Errorf("stub path = %q, want the full path+query", gotPath)
+	}
+	if gotHeader != "1" {
+		t.Errorf("stub X-Grpc-Web = %q, want %q", gotHeader, "1")
+	}
+	if string(gotBody) != "request-payload" {
+		t.Errorf("stub body = %q, want %q", gotBody, "request-payload")
+	}
+
+	// Frames arrive head -> body(bytes) -> end.
+	if len(frames) != 3 {
+		t.Fatalf("got %d frames, want 3: %#v", len(frames), frames)
+	}
+	head, ok := frames[0].(HeadFrame)
+	if !ok {
+		t.Fatalf("frame[0] = %T, want HeadFrame", frames[0])
+	}
+	if head.Status != http.StatusOK {
+		t.Errorf("head status = %d, want %d", head.Status, http.StatusOK)
+	}
+	if !hasHeaderPair(head.Headers, "X-Daemon", "ok") {
+		t.Errorf("head headers %v missing X-Daemon: ok", head.Headers)
+	}
+	if !hasHeaderPair(head.Headers, "Content-Type", "application/grpc-web+proto") {
+		t.Errorf("head headers %v missing Content-Type", head.Headers)
+	}
+	body, ok := frames[1].(BodyFrame)
+	if !ok {
+		t.Fatalf("frame[1] = %T, want BodyFrame", frames[1])
+	}
+	if string(body.Chunk) != string(respBody) {
+		t.Errorf("body chunk = %q, want %q", body.Chunk, respBody)
+	}
+	if _, ok := frames[2].(EndFrame); !ok {
+		t.Fatalf("frame[2] = %T, want EndFrame", frames[2])
+	}
+}
+
+func TestPumpMultiFrameServerStream(t *testing.T) {
+	const nChunks = 4
+	// release[i] gates the server writing chunk i; closed by the client after it
+	// observes chunk i-1, proving each body frame is delivered before the next is
+	// even written (streaming is not buffered/coalesced).
+	release := make([]chan struct{}, nChunks)
+	for i := range release {
+		release[i] = make(chan struct{})
+	}
+
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Errorf("ResponseWriter is not a Flusher")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+		for i := range nChunks {
+			select {
+			case <-release[i]:
+			case <-r.Context().Done():
+				return
+			}
+			_, _ = w.Write([]byte{byte('a' + i)})
+			flusher.Flush()
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	frames := make(chan Frame, 2*nChunks+2)
+	done := make(chan struct{})
+	go func() {
+		NewPump(NewUnixTarget(socket)).Do(ctx, Call{Path: "/stream"}, func(f Frame) {
+			frames <- f
+		})
+		close(done)
+	}()
+
+	// head first.
+	if _, ok := recvFrame(t, frames).(HeadFrame); !ok {
+		t.Fatalf("first frame is not HeadFrame")
+	}
+
+	// Drive each chunk: release it, then require exactly that body frame arrives
+	// before releasing the next. If the pump buffered, we'd deadlock waiting for
+	// a body frame the server hasn't been unblocked to write.
+	for i := range nChunks {
+		close(release[i])
+		f := recvFrame(t, frames)
+		body, ok := f.(BodyFrame)
+		if !ok {
+			t.Fatalf("chunk %d: frame = %T, want BodyFrame", i, f)
+		}
+		if len(body.Chunk) != 1 || body.Chunk[0] != byte('a'+i) {
+			t.Fatalf("chunk %d = %q, want %q", i, body.Chunk, []byte{byte('a' + i)})
+		}
+	}
+
+	if _, ok := recvFrame(t, frames).(EndFrame); !ok {
+		t.Fatalf("final frame is not EndFrame")
+	}
+	select {
+	case <-done:
+	case <-time.After(testTimeout):
+		t.Fatal("pump did not return after end")
+	}
+}
+
+func TestPumpMidStreamCancel(t *testing.T) {
+	streaming := make(chan struct{}) // closed once server has flushed first chunk
+	serverGone := make(chan struct{})
+
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		defer close(serverGone)
+		flusher := w.(http.Flusher)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("first"))
+		flusher.Flush()
+		close(streaming)
+		// Block until the client cancels and tears down the request.
+		<-r.Context().Done()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	var frames []Frame
+	firstBody := make(chan struct{})
+	var once sync.Once
+	done := make(chan struct{})
+	go func() {
+		NewPump(NewUnixTarget(socket)).Do(ctx, Call{Path: "/stream"}, func(f Frame) {
+			mu.Lock()
+			frames = append(frames, f)
+			isBody := false
+			if _, ok := f.(BodyFrame); ok {
+				isBody = true
+			}
+			mu.Unlock()
+			if isBody {
+				once.Do(func() { close(firstBody) })
+			}
+		})
+		close(done)
+	}()
+
+	// Gate on observing the first body frame (event, not sleep), then cancel.
+	select {
+	case <-firstBody:
+	case <-time.After(testTimeout):
+		t.Fatal("never received first body frame")
+	}
+	cancel()
+
+	// Pump must return promptly and emit nothing further.
+	select {
+	case <-done:
+	case <-time.After(testTimeout):
+		t.Fatal("pump did not stop promptly after cancel")
+	}
+	<-serverGone
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Exactly head + one body; no EndFrame or ErrorFrame after cancel.
+	for i, f := range frames {
+		switch f.(type) {
+		case HeadFrame, BodyFrame:
+			// expected
+		case EndFrame:
+			t.Errorf("frame[%d]: spurious EndFrame after cancel", i)
+		case ErrorFrame:
+			t.Errorf("frame[%d]: spurious ErrorFrame after cancel (canceled subscription is not an error)", i)
+		default:
+			t.Errorf("frame[%d]: unexpected %T", i, f)
+		}
+	}
+	if len(frames) == 0 {
+		t.Fatal("expected at least head + body before cancel")
+	}
+}
+
+func TestPumpDialErrorBeforeHead(t *testing.T) {
+	// A socket path that nothing is listening on: the dial fails before any head.
+	socket := filepath.Join(t.TempDir(), "nonexistent.sock")
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	frames := collect(ctx, NewUnixTarget(socket), Call{Path: "/x"})
+
+	if len(frames) != 1 {
+		t.Fatalf("got %d frames, want exactly 1 error frame: %#v", len(frames), frames)
+	}
+	errFrame, ok := frames[0].(ErrorFrame)
+	if !ok {
+		t.Fatalf("frame[0] = %T, want ErrorFrame", frames[0])
+	}
+	if errFrame.Message == "" {
+		t.Error("error frame message is empty")
+	}
+	for _, f := range frames {
+		switch f.(type) {
+		case HeadFrame:
+			t.Error("unexpected HeadFrame on dial failure")
+		case EndFrame:
+			t.Error("unexpected EndFrame on dial failure")
+		}
+	}
+}
+
+// recvFrame receives one frame or fails on timeout (event-gated, no sleeps).
+func recvFrame(t *testing.T, ch <-chan Frame) Frame {
+	t.Helper()
+	select {
+	case f := <-ch:
+		return f
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for frame")
+		return nil
+	}
+}
+
+func hasHeaderPair(pairs [][2]string, name, value string) bool {
+	for _, kv := range pairs {
+		if kv[0] == name && kv[1] == value {
+			return true
+		}
+	}
+	return false
+}
+
+func TestPumpMidStreamErrorAfterHead(t *testing.T) {
+	// The server declares more body than it writes: Content-Length is far larger
+	// than the bytes it flushes, then it returns. The h2c client detects the
+	// short stream and resp.Body.Read returns a non-EOF, non-cancel error AFTER
+	// the head (and partial body) have already been emitted — the Head->Error
+	// terminus. This is the one contract branch the UI adapter routes distinctly
+	// (headSeen ? controller.error : rejectHead). No panic, no hijack: the short
+	// body is deterministically classified as an error by the transport.
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Errorf("ResponseWriter is not a Flusher")
+			return
+		}
+		w.Header().Set("Content-Length", "1024")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("partial")) // 7 bytes, far short of the declared 1024
+		flusher.Flush()
+		// Returning here ends the stream short of the declared length.
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	frames := collect(ctx, NewUnixTarget(socket), Call{Path: "/stream"})
+
+	if len(frames) < 2 {
+		t.Fatalf("got %d frames, want at least head + error: %#v", len(frames), frames)
+	}
+	if _, ok := frames[0].(HeadFrame); !ok {
+		t.Fatalf("frame[0] = %T, want HeadFrame", frames[0])
+	}
+	// Terminal frame is exactly one ErrorFrame with a non-empty message, and
+	// nothing follows it; no EndFrame anywhere (the stream never completed).
+	last := frames[len(frames)-1]
+	errFrame, ok := last.(ErrorFrame)
+	if !ok {
+		t.Fatalf("final frame = %T, want ErrorFrame", last)
+	}
+	if errFrame.Message == "" {
+		t.Error("error frame message is empty")
+	}
+	for i, f := range frames {
+		switch f.(type) {
+		case HeadFrame:
+			if i != 0 {
+				t.Errorf("frame[%d]: HeadFrame after position 0", i)
+			}
+		case BodyFrame:
+			// zero or more, between head and error
+		case EndFrame:
+			t.Errorf("frame[%d]: spurious EndFrame on mid-stream error", i)
+		case ErrorFrame:
+			if i != len(frames)-1 {
+				t.Errorf("frame[%d]: ErrorFrame is not terminal (%d frames follow)", i, len(frames)-1-i)
+			}
+		}
+	}
+}
+
+func TestPumpRepeatedHeaders(t *testing.T) {
+	// The Frame contract carries headers as ordered [name,value] pairs (not a
+	// map) specifically to preserve repeated headers. Verify both directions:
+	// a request header appearing twice is forwarded in order, and a response
+	// header with two values flattens to two separate pairs.
+	var gotReqValues []string
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotReqValues = r.Header.Values("X-Meta")
+		w.Header().Add("X-Multi", "one")
+		w.Header().Add("X-Multi", "two")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	call := Call{
+		Path: "/x",
+		Headers: [][2]string{
+			{"X-Meta", "a"},
+			{"X-Meta", "b"},
+		},
+	}
+	frames := collect(ctx, NewUnixTarget(socket), call)
+
+	// Request side: both values forwarded in order.
+	if len(gotReqValues) != 2 || gotReqValues[0] != "a" || gotReqValues[1] != "b" {
+		t.Errorf("stub X-Meta values = %v, want [a b]", gotReqValues)
+	}
+	// Response side: both values surface as separate pairs.
+	if len(frames) < 1 {
+		t.Fatal("no frames emitted")
+	}
+	head, ok := frames[0].(HeadFrame)
+	if !ok {
+		t.Fatalf("frame[0] = %T, want HeadFrame", frames[0])
+	}
+	if !hasHeaderPair(head.Headers, "X-Multi", "one") || !hasHeaderPair(head.Headers, "X-Multi", "two") {
+		t.Errorf("head headers %v missing both X-Multi pairs", head.Headers)
+	}
+}
+
+func TestPumpEmptyResponseBody(t *testing.T) {
+	// A bodyless success emits exactly head -> end, with no BodyFrame between.
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	frames := collect(ctx, NewUnixTarget(socket), Call{Path: "/x"})
+
+	if len(frames) != 2 {
+		t.Fatalf("got %d frames, want exactly head + end: %#v", len(frames), frames)
+	}
+	if _, ok := frames[0].(HeadFrame); !ok {
+		t.Fatalf("frame[0] = %T, want HeadFrame", frames[0])
+	}
+	if _, ok := frames[1].(EndFrame); !ok {
+		t.Fatalf("frame[1] = %T, want EndFrame", frames[1])
+	}
+}
+
+func TestPumpLargeBodyMultipleReads(t *testing.T) {
+	// A payload larger than the 32KiB read buffer must be chunked across multiple
+	// reads, each chunk owning its bytes (buf is reused), and the concatenation
+	// must equal the payload with no chunk exceeding the buffer.
+	const payloadLen = 100 * 1024 // > 3x the 32KiB buffer
+	payload := make([]byte, payloadLen)
+	for i := range payload {
+		payload[i] = byte(i % 251) // deterministic, non-trivial pattern
+	}
+
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+
+	frames := collect(ctx, NewUnixTarget(socket), Call{Path: "/big"})
+
+	if len(frames) < 3 {
+		t.Fatalf("got %d frames, want head + (>=1 body) + end: %#v", len(frames), frames)
+	}
+	if _, ok := frames[0].(HeadFrame); !ok {
+		t.Fatalf("frame[0] = %T, want HeadFrame", frames[0])
+	}
+	if _, ok := frames[len(frames)-1].(EndFrame); !ok {
+		t.Fatalf("final frame = %T, want EndFrame", frames[len(frames)-1])
+	}
+	var got []byte
+	bodyFrames := 0
+	for i, f := range frames[1 : len(frames)-1] {
+		body, ok := f.(BodyFrame)
+		if !ok {
+			t.Fatalf("frame[%d] = %T, want BodyFrame", i+1, f)
+		}
+		if len(body.Chunk) > 32*1024 {
+			t.Errorf("chunk %d len %d exceeds the 32KiB buffer", i, len(body.Chunk))
+		}
+		bodyFrames++
+		got = append(got, body.Chunk...)
+	}
+	// A 100KiB payload over a 32KiB read buffer forces at least 4 reads, so the
+	// "multiple reads" contract is asserted, not left implicit.
+	if bodyFrames < 4 {
+		t.Errorf("got %d body frames, want >= 4 (100KiB over a 32KiB buffer)", bodyFrames)
+	}
+	if string(got) != string(payload) {
+		t.Errorf("reassembled body (%d bytes) != payload (%d bytes)", len(got), len(payload))
+	}
+}
