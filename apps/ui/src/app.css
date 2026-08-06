@@ -373,6 +373,17 @@ button {
 	font-variant-numeric: tabular-nums;
 }
 
+/* Presence activity string on an agent leaf (T8): a small dim run after the
+ * badge, truncated so a long status never widens the tree row. */
+.agent-activity {
+	font-size: 10px;
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+
 .folder-children {
 	margin-left: 11px;
 	padding-left: 6px;
@@ -3185,6 +3196,46 @@ button {
 	background: color-mix(in srgb, var(--warn) 14%, transparent);
 }
 
+/* The pinned board (T8): an agent-managed strip of pinned messages rendered
+ * read-only below the channel header — a compact horizontal row of chips, not a
+ * bulleted list. Reset the default <ul> styling like every sibling list. */
+.pinned-board {
+	list-style: none;
+	margin: 0;
+	padding: 8px 16px;
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	flex: 0 0 auto;
+	border-bottom: 1px solid var(--border);
+	background: var(--bg-raised);
+}
+
+.pinned-item {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	max-width: 320px;
+	padding: 4px 10px;
+	border-radius: 999px;
+	background: var(--bg-card);
+	border: 1px solid var(--border);
+	font-size: 12px;
+}
+
+.pinned-item-author {
+	flex: 0 0 auto;
+	color: var(--accent);
+	font-weight: 600;
+}
+
+.pinned-item-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--text-dim);
+}
+
 .conv-stream {
 	flex: 1;
 	overflow-y: auto;
@@ -3318,6 +3369,14 @@ button {
 .new-topic-error {
 	flex-basis: 100%;
 	color: var(--warn);
+	font-size: 11px;
+}
+
+/* Owner-only post-policy hint beside the disabled new-topic affordance: its own
+ * wrapped row, like .new-topic-error. */
+.new-topic-policy-hint {
+	flex-basis: 100%;
+	color: var(--text-faint);
 	font-size: 11px;
 }
 
@@ -3524,6 +3583,14 @@ button {
 .conv-composer-error {
 	flex: 1 0 100%;
 	color: var(--danger, #f87171);
+	font-size: 12px;
+}
+
+/* Owner-only post-policy hint beside the disabled composer: its own wrapped row,
+ * like .conv-composer-error. */
+.conv-composer-policy-hint {
+	flex: 1 0 100%;
+	color: var(--text-faint);
 	font-size: 12px;
 }
 

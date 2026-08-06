@@ -5,12 +5,14 @@ import {
 	agentDmChannel,
 	blockText,
 	browsableChannels,
+	canPost,
 	channelSections,
 	dmChannels,
 	dmLabel,
 	handleOf,
 	isDm,
 	parseMentions,
+	pinnedMessages,
 	railChannels,
 	topicSummary,
 	topicsOf,
@@ -50,6 +52,7 @@ function ch(over: Partial<Channel> & Pick<Channel, "id">): Channel {
 		kind: "channel",
 		memberAccountIds: [],
 		membership: "joined",
+		postPolicy: "open",
 		...over,
 	};
 }
@@ -572,6 +575,79 @@ describe("railChannels / browsableChannels", () => {
 		];
 		expect(new Set(union).size).toBe(union.length);
 		expect(new Set(union)).toEqual(new Set(list.map((c) => c.id)));
+	});
+});
+
+describe("canPost (post-policy verdict)", () => {
+	const caller = "acc-me";
+
+	test("open channel admits any member", () => {
+		expect(canPost(ch({ id: "c", postPolicy: "open" }), caller)).toBe(true);
+	});
+
+	// The gate keys on the OWNER id, not merely on the owner_only policy: the
+	// owner posts, everyone else is refused.
+	test("owner_only admits the owner, refuses a non-owner", () => {
+		const owned = ch({
+			id: "c",
+			postPolicy: "owner_only",
+			ownerAccountId: caller,
+		});
+		expect(canPost(owned, caller)).toBe(true);
+		expect(canPost({ ...owned, ownerAccountId: "acc-other" }, caller)).toBe(
+			false,
+		);
+	});
+
+	// An owner_only channel with no owner set admits no one — a directive surface
+	// nobody may post to, never an open fallback.
+	test("owner_only with no owner refuses everyone", () => {
+		expect(canPost(ch({ id: "c", postPolicy: "owner_only" }), caller)).toBe(
+			false,
+		);
+	});
+});
+
+describe("pinnedMessages (board strip resolution)", () => {
+	const m = (id: string) => msg({ id, topicId: "t", atUnixMs: 0 });
+	const messages = [m("m-a"), m("m-b"), m("m-c")];
+
+	test("no board → empty", () => {
+		expect(pinnedMessages(ch({ id: "c" }), messages)).toEqual([]);
+		expect(
+			pinnedMessages(ch({ id: "c", pinnedEntries: [] }), messages),
+		).toEqual([]);
+	});
+
+	// Resolved in POSITION order, not entry order — the entries are shuffled so a
+	// resolution that returned entry order (or message order) reddens.
+	test("resolves entries in position order", () => {
+		const channel = ch({
+			id: "c",
+			pinnedEntries: [
+				{ messageId: "m-c", position: 2 },
+				{ messageId: "m-a", position: 0 },
+				{ messageId: "m-b", position: 1 },
+			],
+		});
+		expect(pinnedMessages(channel, messages).map((x) => x.id)).toEqual([
+			"m-a",
+			"m-b",
+			"m-c",
+		]);
+	});
+
+	// A pin pointing at a message not in the loaded set (paged below the window)
+	// is dropped, not a hole — the strip shows what it can resolve.
+	test("drops an entry whose message is not loaded", () => {
+		const channel = ch({
+			id: "c",
+			pinnedEntries: [
+				{ messageId: "m-a", position: 0 },
+				{ messageId: "m-missing", position: 1 },
+			],
+		});
+		expect(pinnedMessages(channel, messages).map((x) => x.id)).toEqual(["m-a"]);
 	});
 });
 

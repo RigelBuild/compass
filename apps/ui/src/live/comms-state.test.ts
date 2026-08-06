@@ -50,6 +50,7 @@ function chan(id: string, over: Partial<Channel> = {}): Channel {
 		kind: "channel",
 		memberAccountIds: [],
 		membership: "none",
+		postPolicy: "open",
 		...over,
 	};
 }

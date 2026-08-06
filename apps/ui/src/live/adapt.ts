@@ -23,9 +23,14 @@ import type {
 	Channel as WireChannel,
 	ChannelGroup as WireChannelGroup,
 	Message as WireMessage,
+	PinnedEntry as WirePinnedEntry,
 	Topic as WireTopic,
 } from "@compass/client";
-import { ChannelGroupVisibility, ChannelKind } from "@compass/client";
+import {
+	ChannelGroupVisibility,
+	ChannelKind,
+	ChannelPostPolicy,
+} from "@compass/client";
 import type {
 	Ask,
 	AskQuestion,
@@ -33,9 +38,11 @@ import type {
 	ChannelGroup,
 	ConvBlock,
 	ChannelKind as DomainChannelKind,
+	ChannelPostPolicy as DomainPostPolicy,
 	ChannelGroupVisibility as DomainVisibility,
 	Membership,
 	Message,
+	PinnedEntry,
 	Topic,
 } from "../comms-stub";
 import type { Account } from "../stub-data";
@@ -56,6 +63,23 @@ const GROUP_VISIBILITY: Record<ChannelGroupVisibility, DomainVisibility> = {
 	[ChannelGroupVisibility.OWNER]: "owner",
 	[ChannelGroupVisibility.SHARED]: "shared",
 } satisfies Record<ChannelGroupVisibility, DomainVisibility>;
+
+/** The wire `ChannelPostPolicy` enum → the domain's string literal. Total, same
+ *  rationale as CHANNEL_KIND — a new wire policy is a compile error here, never
+ *  a silently mis-gated composer. */
+const POST_POLICY: Record<ChannelPostPolicy, DomainPostPolicy> = {
+	[ChannelPostPolicy.OPEN]: "open",
+	[ChannelPostPolicy.OWNER_ONLY]: "owner_only",
+} satisfies Record<ChannelPostPolicy, DomainPostPolicy>;
+
+/** Map a wire PinnedEntry to the domain one: the board pointer (message id +
+ *  position) the strip renders. The wire's audit extras (`pinnedAtUnixMs`,
+ *  `pinnedByAccountId`) are not in the domain contract — the strip renders the
+ *  pinned MESSAGE, not who pinned it when — so they are dropped here rather than
+ *  carried unrendered. */
+function adaptPinnedEntry(w: WirePinnedEntry): PinnedEntry {
+	return { messageId: w.messageId, position: w.position };
+}
 
 /** Map a wire Account to the domain Account, flattening the `kind` oneof and
  *  lifting the agent arm's `homeChannelId`/`ownerUserId`/`parentAgentId` onto
@@ -144,6 +168,19 @@ export function adaptChannel(
 		alwaysSubscribed:
 			membership === "subscribed" && agentHomeChannelIds.has(w.id)
 				? true
+				: undefined,
+		postPolicy: POST_POLICY[w.postPolicy],
+		// Empty-string "unset" convention (matching groupId): an unowned channel
+		// carries "" on the wire, absent in the domain.
+		ownerAccountId: w.ownerAccountId || undefined,
+		// Absent when false so the domain's optional flag reads "no mandatory
+		// subscription" as absence, matching the fixture shape.
+		mandatorySubscription: w.mandatorySubscription || undefined,
+		// Ordered by position at the render seam (pinnedMessages); mapped verbatim
+		// here. Absent when empty so an unpinned channel carries no board.
+		pinnedEntries:
+			w.pinnedEntries.length > 0
+				? w.pinnedEntries.map(adaptPinnedEntry)
 				: undefined,
 	};
 }
