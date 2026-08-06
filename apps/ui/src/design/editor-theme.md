@@ -31,7 +31,7 @@ Conventions:
 | `--cx-ed-op` | support · operators | `--rigel-cyan` |
 | `--cx-ed-keyword` | keywords · tags | `--rigel-magenta` |
 | `--cx-ed-string` | strings | `--rigel-amber` |
-| `--cx-ed-number` | numbers · params | `--rigel-syntax-coral` |
+| `--cx-ed-number` | numbers · params · language constants | `--rigel-syntax-coral` |
 | `--cx-ed-attr` | attributes · warnings (working green) | `--rigel-green` |
 | `--cx-ed-comment` | comments · disabled | `--rigel-faint` |
 | `--cx-ed-diff-add` | diff-add · success (distinct green) | `--rigel-success` |
