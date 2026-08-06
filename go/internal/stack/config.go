@@ -40,6 +40,23 @@ type Config struct {
 	// running after the driving process exits. The Stack methods themselves
 	// always stop when Down is invoked; this only records the caller's intent.
 	Linger bool
+	// AgentModel is the model selector every agent this stack's runner starts
+	// is pinned to (the agent's COMPASS_MODEL). Empty leaves each agent on its
+	// own default — the core applies no default, the caller (CLI slice) resolves
+	// $COMPASS_AGENT_MODEL if it wants one.
+	AgentModel string
+	// EgressAllow is the default-deny egress allowlist (DNS names / IP literals)
+	// handed to every agent container. Empty (nil) is a valid default-deny
+	// policy — no host reachable. The core applies no default.
+	EgressAllow []string
+	// CheckoutDir is the in-container working directory the runner checks the
+	// agent's workspace out into (the agent session's cwd). Empty leaves the
+	// runner on its own default (/workspace) — the core applies no default. The
+	// real agent image ships /workspace non-writable (only $HOME is agent-owned),
+	// so a caller driving Provision against that image must set this to a path
+	// under $HOME (e.g. /home/agent/repo); the embedded supervisor and the
+	// compass-stack CLI leave it unset and keep the runner's default.
+	CheckoutDir string
 }
 
 // sunPathMax is the longest NUL-terminated path an AF_UNIX address holds on this
