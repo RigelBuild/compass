@@ -20,18 +20,20 @@ import (
 // re-pulls, and only the ensure path pays for the cold-pull headroom.
 const imagePullTimeout = 10 * time.Minute
 
-// imagePuller is the narrow surface the ensure logic needs from the container
-// CLI: pull an image by ref. *runtime.PodmanCLI satisfies it; a fake satisfies
-// it in tests, so the ensure logic is unit-testable without a real podman.
-type imagePuller interface {
+// imageCLI is the narrow surface the ensure logic needs from the container CLI:
+// check whether an image ref is already present, and pull it. *runtime.PodmanCLI
+// satisfies it; a fake satisfies it in tests, so the ensure logic is
+// unit-testable without a real podman.
+type imageCLI interface {
+	ImageExists(ctx context.Context, image string) (bool, error)
 	Pull(ctx context.Context, image string) error
 }
 
 // ImageEnsurer is the real stack.ImageEnsurer: it ensures the agent image ref
-// is present in the local container store by pulling it, so the runner (which
-// refuses to boot without the image, DL-112) can start.
+// is present in the local container store, so the runner (which refuses to boot
+// without the image, DL-112) can start.
 type ImageEnsurer struct {
-	puller imagePuller
+	cli imageCLI
 }
 
 // Compile-time proof the adapter satisfies the core seam.
@@ -44,21 +46,30 @@ func NewImageEnsurer() *ImageEnsurer {
 }
 
 // newImageEnsurer is the injection seam: it builds an ImageEnsurer over any
-// imagePuller, so both NewImageEnsurer and tests share one construction path.
-func newImageEnsurer(p imagePuller) *ImageEnsurer {
-	return &ImageEnsurer{puller: p}
+// imageCLI, so both NewImageEnsurer and tests share one construction path.
+func newImageEnsurer(cli imageCLI) *ImageEnsurer {
+	return &ImageEnsurer{cli: cli}
 }
 
-// EnsureImage pulls image into the local store. An empty ref is rejected early —
-// the runner can't boot without an image, and pulling "" would surface as an
-// opaque podman error. Otherwise it delegates to Pull: `podman pull` is
-// idempotent (a present image re-pulls cheaply against the registry digest), so
-// no pre-existence check is done by deliberate choice — the pull IS the ensure.
+// EnsureImage ensures image is present in the local store. An empty ref is
+// rejected early — the runner can't boot without an image, and pulling "" would
+// surface as an opaque podman error. A present-check precedes the pull: a
+// locally-built or -loaded image (e.g. the dogfood compass-agent:latest, which
+// lives only in containers-storage and is not registry-pullable) is already the
+// ensured state, so skip the pull. Only a genuinely absent image is pulled from
+// its registry.
 func (e *ImageEnsurer) EnsureImage(ctx context.Context, image string) error {
 	if image == "" {
 		return errors.New("ensure agent image: empty image ref (the runner cannot boot without an image)")
 	}
-	if err := e.puller.Pull(ctx, image); err != nil {
+	present, err := e.cli.ImageExists(ctx, image)
+	if err != nil {
+		return fmt.Errorf("checking agent image %q presence: %w", image, err)
+	}
+	if present {
+		return nil
+	}
+	if err := e.cli.Pull(ctx, image); err != nil {
 		return fmt.Errorf("pulling agent image %q: %w", image, err)
 	}
 	return nil

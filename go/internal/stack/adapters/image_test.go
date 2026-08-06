@@ -9,57 +9,86 @@ import (
 	"testing"
 )
 
-// fakePuller records the ref it was asked to pull and returns a configured
-// error, so the ensure logic can be exercised without a real podman.
-type fakePuller struct {
-	err     error
-	calls   int
-	lastRef string
+// fakeImageCLI records the ref it was asked about/pull and returns configured
+// results, so the ensure logic can be exercised without a real podman.
+type fakeImageCLI struct {
+	exists     bool
+	existsErr  error
+	pullErr    error
+	existsCall int
+	pullCalls  int
+	lastRef    string
 }
 
-func (f *fakePuller) Pull(_ context.Context, image string) error {
-	f.calls++
+func (f *fakeImageCLI) ImageExists(_ context.Context, image string) (bool, error) {
+	f.existsCall++
 	f.lastRef = image
-	return f.err
+	return f.exists, f.existsErr
+}
+
+func (f *fakeImageCLI) Pull(_ context.Context, image string) error {
+	f.pullCalls++
+	f.lastRef = image
+	return f.pullErr
 }
 
 func TestEnsureImage(t *testing.T) {
 	sentinel := errors.New("podman: manifest unknown")
+	existsSentinel := errors.New("podman: engine unreachable")
 
 	tests := []struct {
-		name       string
-		image      string
-		pullErr    error
-		wantCalls  int
-		wantErr    bool
-		wantInMsg  string
-		wantUnwrap error
+		name          string
+		image         string
+		exists        bool
+		existsErr     error
+		pullErr       error
+		wantPullCalls int
+		wantErr       bool
+		wantInMsg     string
+		wantUnwrap    error
 	}{
 		{
-			name:      "happy path pulls the exact ref once",
-			image:     "ghcr.io/x/agent:git-abc",
-			wantCalls: 1,
+			name:          "absent image is pulled once with the exact ref",
+			image:         "ghcr.io/x/agent:git-abc",
+			exists:        false,
+			wantPullCalls: 1,
 		},
 		{
-			name:      "empty image errors without pulling",
-			image:     "",
-			wantCalls: 0,
-			wantErr:   true,
+			name:          "present image skips the pull (the local-only image path)",
+			image:         "compass-agent:latest",
+			exists:        true,
+			wantPullCalls: 0,
 		},
 		{
-			name:       "pull error is wrapped with the ref",
-			image:      "ghcr.io/x/agent:git-abc",
-			pullErr:    sentinel,
-			wantCalls:  1,
-			wantErr:    true,
-			wantInMsg:  "ghcr.io/x/agent:git-abc",
-			wantUnwrap: sentinel,
+			name:          "empty image errors without checking or pulling",
+			image:         "",
+			wantPullCalls: 0,
+			wantErr:       true,
+		},
+		{
+			name:          "present-check error is wrapped with the ref and short-circuits the pull",
+			image:         "ghcr.io/x/agent:git-abc",
+			existsErr:     existsSentinel,
+			wantPullCalls: 0,
+			wantErr:       true,
+			wantInMsg:     "ghcr.io/x/agent:git-abc",
+			wantUnwrap:    existsSentinel,
+		},
+		{
+			name:          "pull error on an absent image is wrapped with the ref",
+			image:         "ghcr.io/x/agent:git-abc",
+			exists:        false,
+			pullErr:       sentinel,
+			wantPullCalls: 1,
+			wantErr:       true,
+			wantInMsg:     "ghcr.io/x/agent:git-abc",
+			wantUnwrap:    sentinel,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fake := &fakePuller{err: tt.pullErr}
+			fake := &fakeImageCLI{exists: tt.exists, existsErr: tt.existsErr, pullErr: tt.pullErr}
 			err := newImageEnsurer(fake).EnsureImage(t.Context(), tt.image)
 
 			if tt.wantErr && err == nil {
@@ -68,11 +97,8 @@ func TestEnsureImage(t *testing.T) {
 			if !tt.wantErr && err != nil {
 				t.Fatalf("EnsureImage(%q) = %v, want nil", tt.image, err)
 			}
-			if fake.calls != tt.wantCalls {
-				t.Fatalf("Pull calls = %d, want %d", fake.calls, tt.wantCalls)
-			}
-			if tt.wantCalls == 1 && fake.lastRef != tt.image {
-				t.Fatalf("Pull ref = %q, want %q", fake.lastRef, tt.image)
+			if fake.pullCalls != tt.wantPullCalls {
+				t.Fatalf("Pull calls = %d, want %d", fake.pullCalls, tt.wantPullCalls)
 			}
 			if tt.wantInMsg != "" && !strings.Contains(err.Error(), tt.wantInMsg) {
 				t.Fatalf("error %q does not contain ref %q", err, tt.wantInMsg)

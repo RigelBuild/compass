@@ -522,6 +522,29 @@ func (p *PodmanCLI) Exists(ctx context.Context, name string) (bool, error) {
 	}
 }
 
+// ImageExists reports whether an image ref is present in the local store.
+// `image exists` encodes the answer in its exit code (0 present, 1 absent), so
+// it can't go through run (which treats non-zero as an error); anything other
+// than 0/1 is a real engine failure. Mirrors Exists (the container variant).
+func (p *PodmanCLI) ImageExists(ctx context.Context, image string) (bool, error) {
+	_, stderr, exitCode, err := p.spawnCapture(ctx, "podman image exists", []string{"image", "exists", image}, nil)
+	if err != nil {
+		return false, err
+	}
+	switch exitCode {
+	case 0:
+		return true, nil
+	case 1:
+		return false, nil
+	default:
+		return false, &CommandError{
+			Summary:  "podman image exists",
+			ExitCode: exitCode,
+			Stderr:   strings.TrimSpace(string(stderr)),
+		}
+	}
+}
+
 // MountLabel reads the container's SELinux mount label via `podman inspect`,
 // trimming the trailing newline the CLI prints. A one-shot fire-and-check like
 // Start/Remove: a non-zero exit becomes a CommandError through run.

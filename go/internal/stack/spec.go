@@ -2,7 +2,10 @@
 
 package stack
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // tokenEnvVar is the environment variable the runner reads its enrollment token
 // from. It is passed via env only, never a flag, so it never reaches the process
@@ -37,15 +40,33 @@ func serverSpec(cfg Config, cert CertResult) ProcessSpec {
 // runs cfg.AgentImage, and mints per-container sockets under cfg.RuntimeDir. The
 // token rides in Env only.
 func runnerSpec(cfg Config, cert CertResult, token string) ProcessSpec {
+	// The five unconditional flags every runner spawn carries. The two A4 flags
+	// below are appended only when set, so a caller that leaves both zero (the
+	// embedded supervisor, the compass-stack CLI's resolveConfig) gets a
+	// byte-identical Args to before this feature existed.
+	args := []string{
+		"--runner-id", embeddedRunnerID,
+		"--server", "https://" + cfg.ListenAddr,
+		"--ca", cert.CertPath,
+		"--image", cfg.AgentImage,
+		"--runtime-dir", cfg.RuntimeDir,
+	}
+	// AgentModel: forward a single --agent-model only when pinned. Forwarding
+	// --agent-model "" would break an embedded supervisor that relies on the
+	// runner's own default, so an empty selector must omit the flag entirely.
+	if cfg.AgentModel != "" {
+		args = append(args, "--agent-model", cfg.AgentModel)
+	}
+	// EgressAllow: forward ONE comma-joined --egress-allow only when non-empty.
+	// The runner's parseEgress splits this single value on ",", so the allowlist
+	// travels as one flag, never repeated flags. Empty (nil) omits the flag and
+	// leaves the runner on its default-deny policy.
+	if len(cfg.EgressAllow) > 0 {
+		args = append(args, "--egress-allow", strings.Join(cfg.EgressAllow, ","))
+	}
 	return ProcessSpec{
 		Component: ComponentRunner,
-		Args: []string{
-			"--runner-id", embeddedRunnerID,
-			"--server", "https://" + cfg.ListenAddr,
-			"--ca", cert.CertPath,
-			"--image", cfg.AgentImage,
-			"--runtime-dir", cfg.RuntimeDir,
-		},
-		Env: []string{fmt.Sprintf("%s=%s", tokenEnvVar, token)},
+		Args:      args,
+		Env:       []string{fmt.Sprintf("%s=%s", tokenEnvVar, token)},
 	}
 }
