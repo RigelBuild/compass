@@ -270,11 +270,14 @@ Repeatable rules applied by the migration task and binding on future records:
    (`compass-ade-shell/design.md:16`) is `apps/ui/src/stub-data.ts` (top-level
    `go/ packages/ apps/ proto/` confirmed this session against the compass
    root). Mechanical rewrite: `oss/compass/` → `` (empty) in code spans,
-   links, and prose paths. One special case: self-referential internal-repo
-   claims (e.g. `compass-0.4/design.md:201-203`: "this is an internal design
-   record, not a published `oss/compass/` artifact") get a one-line editorial
-   bracket noting the record now IS published — never silent rewording of
-   frozen prose.
+   links, and prose paths; a bare `oss/compass` (the vendored root itself, no
+   trailing path — including quoted workspace literals like `["oss/seal",
+   "oss/compass"]`) → `compass`, since that root no longer exists in the
+   published tree and the repo itself now IS that tree. One special case:
+   self-referential internal-repo claims (e.g. `compass-0.4/design.md:201-203`:
+   "this is an internal design record, not a published `oss/compass/`
+   artifact") get a one-line editorial bracket noting the record now IS
+   published — never silent rewording of frozen prose.
 4. **Threat-model / security-boundary / egress sections.** *Keep, verbatim.*
    Matt's explicit ruling; 13 records carry them. Not blockers, not edited.
 
