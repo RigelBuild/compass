@@ -1,8 +1,9 @@
-/* Command palette — .cx-palette (D3, Kobalte combobox). CLASS SKELETON ONLY:
-   the full palette surface spec (results, groups, scoring, empty state) is T5.
-   This defines just the base class + data-* + the tokens it consumes, so T5
-   builds on a stable base. elev-3 float above the scrim at --cx-z-palette.
-   Consumes only --cx-* tiers. */
+/* Command palette — .cx-palette (D3/D5, Kobalte combobox). The full palette
+   surface: an elev-3 float above the scrim at --cx-z-palette, 560px wide in the
+   top third, a query input over a results list of groups and four-part result
+   rows (glyph · title · dim context · shortcut chip) at .cx-tree-row density,
+   plus empty and loading states. Loading hosts .cx-loader[data-topology="bar"]
+   by reference (the motion/keyframe is T8). Consumes only --cx-* tiers. */
 
 .cx-palette {
 	display: flex;
@@ -131,7 +132,8 @@
 }
 
 /* [4] Shortcut chip — the right-aligned key hint (a command's `shortcut`).
-   A quiet, non-interactive chip; mirrors the .cx-chip resting box. */
+   A quiet, non-interactive chip styled after the .cx-chip box (transparent
+   surface — it inherits the row wash rather than carrying its own). */
 .cx-palette-shortcut {
 	flex: none;
 	margin-left: auto;
@@ -146,7 +148,7 @@
 
 /* --- Hover: row wash (Kobalte drives keyboard highlight via the same tier) --- */
 .cx-palette-row:not([data-disabled]):hover,
-.cx-palette-row[data-highlighted] {
+.cx-palette-row:not([data-disabled])[data-highlighted] {
 	background: var(--cx-bg-hover);
 }
 
