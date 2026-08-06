@@ -1,0 +1,234 @@
+/* Rigel brand primitive tier — mirrored verbatim from sealedsecurity/sealed:apps/rigel.build/src/styles/tokens.css (frozen brand token set), 2026-08-06. Brand co-reviews any change to this block. The ONLY file where --rigel-* and raw hex may appear. */
+
+/* ==========================================================================
+   BLOCK 1 — Primitive tier (--rigel-*), brand-owned, mirrored VERBATIM.
+   Compass consumes this tier read-only; no additions, no renames.
+   ========================================================================== */
+:root {
+	/* --- Night Owl surfaces / text (from palette.md) --- */
+	--rigel-night: #011627;
+	--rigel-night-2: #0b2942;
+	--rigel-panel: #0e2a45;
+	--rigel-raised: #0b2942;
+	--rigel-fog: #d6deeb;
+	--rigel-bright: #c5e4fd; /* emphasis / active text (Night Owl "bright", 13.87:1 AAA) */
+	--rigel-mute: #5f7e97; /* low-emphasis meta (4.29:1) — decorative/large only */
+	--rigel-haze: #89a4bb; /* readable secondary text (7.06:1 AA) — nav, meta, prose */
+	--rigel-blue: #82aaff;
+	--rigel-green: #addb67;
+	--rigel-amber: #ecc48d;
+	--rigel-red: #ef5350;
+	--rigel-cyan: #7fdbca;
+
+	/* --- The one color accent --- */
+	--rigel-purple: #a66ef5; /* brand accent (icon + wordmark R only) */
+	--rigel-purple-hi: #d1aaff;
+	--rigel-purple-lit: #b57eff; /* phosphor / lit / loading only */
+
+	/* --- Compass motion tier (inherited, consumed as-is) --- */
+	--cx-motion-fast: 80ms; /* user-caused feedback */
+	--cx-motion-base: 140ms; /* system-caused change */
+
+	/* --- Brand motion tier (this layer) --- */
+	--rigel-motion-slow: 320ms; /* rare full-view morph */
+	--rigel-ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* "settle" */
+	--rigel-ease-morph: cubic-bezier(0.65, 0, 0.35, 1); /* shared-element */
+
+	/* the one motion accent: the phosphor pulse */
+	--rigel-pulse-color: var(--rigel-purple-lit);
+	--rigel-pulse-period: 1.6s;
+
+	/* streaming cadence (visual, decoupled from network) */
+	--rigel-stream-char-ms: 12ms;
+	--rigel-cursor-blink: 1s;
+
+	/* focus (single treatment). Blue — the interaction/flow colour — not purple:
+	   purple is reserved for the brand mark only (the /design one-accent rule). */
+	--cx-focus-ring: 2px solid var(--rigel-blue);
+
+	/* fonts (installed on this box).
+     Departure Mono is a bitmap pixel face with UPM 550 (= 11 × 50), so one
+     font-pixel = size/11 CSS px. It is razor-crisp only when (size/11) ×
+     devicePixelRatio is a whole number — so EVEN multiples of 11px
+     (22, 44, 66, 88…) stay crisp at 1.0/1.5/2.0 display scaling, while ODD
+     multiples like 33px smear at 125/150/175%. --rigel-display is therefore for
+     LARGE brand display at EVEN 11px multiples only (wordmark + h1 at 44px,
+     section titles at 22px); everything ≤16px and every off-grid size uses
+     --rigel-mono.
+     --rigel-mono is Space Mono (Colophon, OFL): retro-futurist body/UI face,
+     chosen over IBM Plex Mono (kept as the fallback) for brand character while
+     staying legible at 12px. Hinted TrueType, crisp at any size. */
+	--rigel-mono: "Space Mono", "IBM Plex Mono", ui-monospace, monospace;
+	--rigel-display: "Departure Mono", "Space Mono", monospace;
+
+	/* Q2 interim: values from brand color.md not yet tokenized upstream in brand
+	   tokens.css; carried as raw hex here until brand adds names, then this swap
+	   is mechanical. */
+	--rigel-selection: #1d3b53; /* text/board selection surface */
+	--rigel-faint: #637777; /* faintest readable meta */
+	--rigel-magenta: #c792ea; /* syntax ramp — magenta */
+	--rigel-success: #22da6e; /* syntax-tier success green (distinct from working green) */
+	--rigel-syntax-coral: #f78c6c; /* syntax ramp — coral (Q2 interim; named to avoid the banned old-draft --rigel-coral) */
+	--rigel-loading-empty: #0a2036; /* loading-track empty segment */
+}
+
+/* ==========================================================================
+   BLOCK 2 — Semantic tier (--cx-*), Compass-owned. Every UI rule consumes
+   ONLY this tier. Named by intent, not hue. Scoped to the night theme; a
+   [data-theme="day"] pair re-maps the same names later (D2 Theming).
+   ========================================================================== */
+[data-theme="night"] {
+	/* --- Surfaces --- */
+	--cx-bg: var(--rigel-night);
+	--cx-bg-raised: var(--rigel-raised);
+	--cx-bg-panel: var(--rigel-panel);
+	--cx-bg-hover: color-mix(in srgb, var(--rigel-panel) 88%, var(--rigel-fog));
+	--cx-bg-active: color-mix(in srgb, var(--rigel-panel) 80%, var(--rigel-fog));
+	/* interim derivation of the brand selection surface (Q2): low-alpha blue
+	   wash toward the brand selection primitive until brand tokenizes it. */
+	--cx-bg-selected: color-mix(
+		in srgb,
+		var(--rigel-blue) 18%,
+		var(--rigel-selection)
+	);
+
+	/* --- Scrim (modal/palette backdrop, ~60%) --- */
+	--cx-scrim: color-mix(in srgb, var(--rigel-night) 60%, transparent);
+
+	/* --- Text --- */
+	--cx-text: var(--rigel-fog);
+	--cx-text-bright: var(--rigel-bright);
+	--cx-text-dim: var(--rigel-haze);
+	--cx-text-faint: var(--rigel-mute);
+	--cx-text-accent: var(--rigel-blue);
+
+	/* --- Lines --- */
+	--cx-border: color-mix(in srgb, var(--rigel-panel) 70%, transparent);
+	--cx-border-strong: var(--rigel-panel);
+	--cx-border-focus: var(--rigel-blue);
+
+	/* --- Accent (blue; purple is NEVER aliased into --cx-*) --- */
+	--cx-accent: var(--rigel-blue);
+	--cx-accent-hover: color-mix(
+		in srgb,
+		var(--rigel-blue) 85%,
+		var(--rigel-bright)
+	);
+	--cx-accent-muted: color-mix(in srgb, var(--rigel-blue) 24%, transparent);
+
+	/* --- Status --- */
+	--cx-ok: var(
+		--rigel-success
+	); /* syntax-tier success green, distinct from working green */
+	--cx-warn: var(--rigel-amber);
+	--cx-error: var(--rigel-red);
+	--cx-info: var(--rigel-blue);
+
+	/* --- Agent state (process axis) — --cx-st-* (eight AgentState values) --- */
+	--cx-st-working: var(--rigel-green);
+	--cx-st-done: var(--rigel-cyan);
+	--cx-st-waiting: var(--rigel-amber);
+	--cx-st-disconnected: var(--rigel-amber);
+	--cx-st-error: var(--rigel-red);
+	--cx-st-idle: var(--rigel-mute);
+	--cx-st-paused: var(--rigel-mute);
+	--cx-st-stopped: var(--rigel-mute);
+
+	/* --- Issue lifecycle (task axis) — --cx-issue-* (five rendered lanes) --- */
+	--cx-issue-queued: var(--rigel-mute);
+	--cx-issue-blocked: var(--rigel-red);
+	--cx-issue-in_progress: var(--rigel-green);
+	--cx-issue-in_review: var(--rigel-amber);
+	--cx-issue-done: var(--rigel-cyan);
+
+	/* --- CI / review --- */
+	--cx-ci-pass: var(--cx-ok);
+	--cx-ci-fail: var(--cx-error);
+	--cx-ci-pending: var(--cx-warn);
+	--cx-review-approved: var(--cx-ok);
+	--cx-review-changes: var(--cx-error);
+	--cx-review-pending: var(--cx-text-faint);
+
+	/* --cx-ed-* editor-theme block: names reserved here, values authored by T7 (SEA-1817). */
+	/* background, selection, cursor, and the syntax ramp map from the semantic
+	   tier to the embedded editor/Shiki theme; T7 authors their values. */
+}
+
+/* ==========================================================================
+   BLOCK 3 — Scale tokens (--cx-*, non-color), Compass-owned, theme-independent.
+   ========================================================================== */
+:root {
+	/* --- Space (4px grid) --- */
+	--cx-space-1: 4px;
+	--cx-space-2: 8px;
+	--cx-space-3: 12px;
+	--cx-space-4: 16px;
+	--cx-space-5: 20px;
+	--cx-space-6: 24px;
+	--cx-space-7: 32px;
+	--cx-space-8: 40px;
+
+	/* --- Type --- */
+	--cx-font-ui: var(--rigel-mono);
+	--cx-font-display: var(--rigel-display);
+	--cx-text-xs: 11px;
+	--cx-text-sm: 12px; /* UI base */
+	--cx-text-md: 13px;
+	--cx-text-lg: 14px;
+	--cx-text-xl: 16px;
+	--cx-display-sm: 22px; /* even 11px multiple — the only sanctioned display sizes */
+	--cx-display-lg: 44px;
+
+	/* --- Radius --- */
+	--cx-radius-sm: 3px;
+	--cx-radius-md: 6px;
+	--cx-radius-lg: 10px;
+
+	/* --- Elevation (menu/dialog/palette layering; subtle low-alpha dark-surface
+	   shadows escalating 0→3) --- */
+	--cx-elev-0: none;
+	--cx-elev-1: 0 1px 2px color-mix(in srgb, var(--rigel-night) 60%, transparent);
+	--cx-elev-2: 0 4px 12px
+		color-mix(in srgb, var(--rigel-night) 55%, transparent);
+	--cx-elev-3: 0 12px 32px
+		color-mix(in srgb, var(--rigel-night) 50%, transparent);
+
+	/* --- Motion semantic aliases (component CSS never names --rigel-* motion) --- */
+	--cx-motion-slow: var(--rigel-motion-slow);
+	--cx-ease-out: var(--rigel-ease-out);
+	--cx-ease-morph: var(--rigel-ease-morph);
+	--cx-pulse-color: var(--rigel-pulse-color);
+	--cx-pulse-period: var(--rigel-pulse-period);
+	--cx-stream-char-ms: var(--rigel-stream-char-ms);
+	--cx-cursor-blink: var(--rigel-cursor-blink);
+	--cx-tooltip-delay: 400ms; /* Compass-owned; no brand primitive */
+
+	/* --- Z-index --- */
+	--cx-z-raised: 10;
+	--cx-z-overlay: 100;
+	--cx-z-modal: 200;
+	--cx-z-palette: 300;
+	--cx-z-toast: 400;
+}
+
+/* ==========================================================================
+   Reduced-motion — zeroing block + manual mirror, carried from brand tokens.css
+   (D9). Zeroes the motion/pulse tokens; kept as-is (this is the primitives file).
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+	:root {
+		--cx-motion-fast: 0ms;
+		--cx-motion-base: 0ms;
+		--rigel-motion-slow: 0ms;
+		--rigel-pulse-period: 0s;
+	}
+}
+
+/* A manual toggle so the mockup can DEMONSTRATE reduced-motion
+   without changing OS settings. data-reduce="on" mirrors the media query. */
+:root[data-reduce="on"] {
+	--cx-motion-fast: 0ms;
+	--cx-motion-base: 0ms;
+	--rigel-motion-slow: 0ms;
+	--rigel-pulse-period: 0s;
+}
