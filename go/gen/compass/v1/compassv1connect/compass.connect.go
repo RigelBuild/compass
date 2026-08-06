@@ -51,6 +51,9 @@ const (
 	// CompassServiceSubscribeEventsProcedure is the fully-qualified name of the CompassService's
 	// SubscribeEvents RPC.
 	CompassServiceSubscribeEventsProcedure = "/compass.v1.CompassService/SubscribeEvents"
+	// CompassServiceListBoardIssuesProcedure is the fully-qualified name of the CompassService's
+	// ListBoardIssues RPC.
+	CompassServiceListBoardIssuesProcedure = "/compass.v1.CompassService/ListBoardIssues"
 	// CompassServiceProvisionAgentWorkspaceProcedure is the fully-qualified name of the
 	// CompassService's ProvisionAgentWorkspace RPC.
 	CompassServiceProvisionAgentWorkspaceProcedure = "/compass.v1.CompassService/ProvisionAgentWorkspace"
@@ -114,6 +117,18 @@ type CompassServiceClient interface {
 	// reconnect with `since_seq` for a gap-free resubscribe. The sole push path
 	// from the server to the UI.
 	SubscribeEvents(context.Context, *connect.Request[v1.SubscribeEventsRequest]) (*connect.ServerStreamForClient[v1.SubscribeEventsResponse], error)
+	// The durable board catch-up read: at `since_seq = 0` a UI re-snapshots the
+	// whole board (every issue in all lifecycle states) from the projection store,
+	// then unions the result with the SubscribeEvents live tail (deduping by issue
+	// `id`) to reach a gap-free view — the read counterpart to the
+	// snapshot-as-events connect burst on the stream. v1 board is unversioned, so
+	// the union + id-dedup is what closes the gap, not a sequence bound; the
+	// `snapshot_seq` marker is carried as 0 and reserved (see
+	// SubscribeEventsResponse.snapshot_seq). authenticatedOpen: any authenticated
+	// account may read the board, the same access class as the SubscribeEvents
+	// tail it re-snapshots — the whole board is repo-scoped, with no per-account
+	// filter, exactly like that tail.
+	ListBoardIssues(context.Context, *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error)
 	// Provision a per-agent container for a workstream: build the image, create
 	// and start the isolated container, arm egress, and clone the repo — the
 	// built lifecycle façade (internal/runtime/agent.go). Returns the stable
@@ -218,6 +233,12 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("SubscribeEvents")),
 			connect.WithClientOptions(opts...),
 		),
+		listBoardIssues: connect.NewClient[v1.ListBoardIssuesRequest, v1.ListBoardIssuesResponse](
+			httpClient,
+			baseURL+CompassServiceListBoardIssuesProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("ListBoardIssues")),
+			connect.WithClientOptions(opts...),
+		),
 		provisionAgentWorkspace: connect.NewClient[v1.ProvisionAgentWorkspaceRequest, v1.ProvisionAgentWorkspaceResponse](
 			httpClient,
 			baseURL+CompassServiceProvisionAgentWorkspaceProcedure,
@@ -292,6 +313,7 @@ type compassServiceClient struct {
 	getServerInfo           *connect.Client[v1.GetServerInfoRequest, v1.GetServerInfoResponse]
 	whoAmI                  *connect.Client[v1.WhoAmIRequest, v1.WhoAmIResponse]
 	subscribeEvents         *connect.Client[v1.SubscribeEventsRequest, v1.SubscribeEventsResponse]
+	listBoardIssues         *connect.Client[v1.ListBoardIssuesRequest, v1.ListBoardIssuesResponse]
 	provisionAgentWorkspace *connect.Client[v1.ProvisionAgentWorkspaceRequest, v1.ProvisionAgentWorkspaceResponse]
 	startAgentSession       *connect.Client[v1.StartAgentSessionRequest, v1.StartAgentSessionResponse]
 	stopAgentSession        *connect.Client[v1.StopAgentSessionRequest, v1.StopAgentSessionResponse]
@@ -318,6 +340,11 @@ func (c *compassServiceClient) WhoAmI(ctx context.Context, req *connect.Request[
 // SubscribeEvents calls compass.v1.CompassService.SubscribeEvents.
 func (c *compassServiceClient) SubscribeEvents(ctx context.Context, req *connect.Request[v1.SubscribeEventsRequest]) (*connect.ServerStreamForClient[v1.SubscribeEventsResponse], error) {
 	return c.subscribeEvents.CallServerStream(ctx, req)
+}
+
+// ListBoardIssues calls compass.v1.CompassService.ListBoardIssues.
+func (c *compassServiceClient) ListBoardIssues(ctx context.Context, req *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error) {
+	return c.listBoardIssues.CallUnary(ctx, req)
 }
 
 // ProvisionAgentWorkspace calls compass.v1.CompassService.ProvisionAgentWorkspace.
@@ -394,6 +421,18 @@ type CompassServiceHandler interface {
 	// reconnect with `since_seq` for a gap-free resubscribe. The sole push path
 	// from the server to the UI.
 	SubscribeEvents(context.Context, *connect.Request[v1.SubscribeEventsRequest], *connect.ServerStream[v1.SubscribeEventsResponse]) error
+	// The durable board catch-up read: at `since_seq = 0` a UI re-snapshots the
+	// whole board (every issue in all lifecycle states) from the projection store,
+	// then unions the result with the SubscribeEvents live tail (deduping by issue
+	// `id`) to reach a gap-free view — the read counterpart to the
+	// snapshot-as-events connect burst on the stream. v1 board is unversioned, so
+	// the union + id-dedup is what closes the gap, not a sequence bound; the
+	// `snapshot_seq` marker is carried as 0 and reserved (see
+	// SubscribeEventsResponse.snapshot_seq). authenticatedOpen: any authenticated
+	// account may read the board, the same access class as the SubscribeEvents
+	// tail it re-snapshots — the whole board is repo-scoped, with no per-account
+	// filter, exactly like that tail.
+	ListBoardIssues(context.Context, *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error)
 	// Provision a per-agent container for a workstream: build the image, create
 	// and start the isolated container, arm egress, and clone the repo — the
 	// built lifecycle façade (internal/runtime/agent.go). Returns the stable
@@ -494,6 +533,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("SubscribeEvents")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServiceListBoardIssuesHandler := connect.NewUnaryHandler(
+		CompassServiceListBoardIssuesProcedure,
+		svc.ListBoardIssues,
+		connect.WithSchema(compassServiceMethods.ByName("ListBoardIssues")),
+		connect.WithHandlerOptions(opts...),
+	)
 	compassServiceProvisionAgentWorkspaceHandler := connect.NewUnaryHandler(
 		CompassServiceProvisionAgentWorkspaceProcedure,
 		svc.ProvisionAgentWorkspace,
@@ -568,6 +613,8 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceWhoAmIHandler.ServeHTTP(w, r)
 		case CompassServiceSubscribeEventsProcedure:
 			compassServiceSubscribeEventsHandler.ServeHTTP(w, r)
+		case CompassServiceListBoardIssuesProcedure:
+			compassServiceListBoardIssuesHandler.ServeHTTP(w, r)
 		case CompassServiceProvisionAgentWorkspaceProcedure:
 			compassServiceProvisionAgentWorkspaceHandler.ServeHTTP(w, r)
 		case CompassServiceStartAgentSessionProcedure:
@@ -609,6 +656,10 @@ func (UnimplementedCompassServiceHandler) WhoAmI(context.Context, *connect.Reque
 
 func (UnimplementedCompassServiceHandler) SubscribeEvents(context.Context, *connect.Request[v1.SubscribeEventsRequest], *connect.ServerStream[v1.SubscribeEventsResponse]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SubscribeEvents is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) ListBoardIssues(context.Context, *connect.Request[v1.ListBoardIssuesRequest]) (*connect.Response[v1.ListBoardIssuesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.ListBoardIssues is not implemented"))
 }
 
 func (UnimplementedCompassServiceHandler) ProvisionAgentWorkspace(context.Context, *connect.Request[v1.ProvisionAgentWorkspaceRequest]) (*connect.Response[v1.ProvisionAgentWorkspaceResponse], error) {
