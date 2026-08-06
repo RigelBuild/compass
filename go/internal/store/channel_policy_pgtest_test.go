@@ -118,7 +118,7 @@ func TestUndeliveredMessagesReachesUnsubscribedMandatoryMember(t *testing.T) {
 
 	// The agent's member row is explicitly NOT subscribed, and this is not its
 	// home channel — only the mandatory disjunct can carry the deliver.
-	flipSubscribed(t, s, ch.ID, recip.ID, false)
+	unsubscribeMember(t, s, ch.ID, recip.ID)
 	// Seed the cursor to head so the message posted after is genuinely owed.
 	if err := seedCursorNow(t, s, recip.ID, ch.ID); err != nil {
 		t.Fatalf("seed cursor: %v", err)
@@ -151,8 +151,8 @@ func TestSetChannelPolicySeedsCursorsForNewlyMandatory(t *testing.T) {
 	// the pre-flip head.
 	author := mustUser(t, s, "author")
 	ch := mustPolicyChannel(t, s, owner.ID, "coord", ChannelPolicy{}, author.ID, a1.ID, a2.ID)
-	flipSubscribed(t, s, ch.ID, a1.ID, false)
-	flipSubscribed(t, s, ch.ID, a2.ID, false)
+	unsubscribeMember(t, s, ch.ID, a1.ID)
+	unsubscribeMember(t, s, ch.ID, a2.ID)
 
 	// Precondition: no cursor rows exist for the agents on this channel.
 	for _, a := range []AccountID{a1.ID, a2.ID} {

@@ -155,3 +155,44 @@ func (s *Store) MessageChannel(ctx context.Context, messageID string) (ChannelID
 	}
 	return ChannelID(channel), nil
 }
+
+// SweepChannels returns the D1 disjunct channel set an agent sweeps: every
+// channel the agent is subscribed to, PLUS its home channel (in the set
+// regardless of its channel_members.subscribed flag), PLUS any channel with
+// mandatory_subscription set (T4 policy — a mandatory channel delivers to a
+// member even with subscribed=false), ordered by channel id. It is the pin
+// sweep's channel enumeration (design.md T7): the session-start pin injection
+// must visit EVERY swept channel to deliver its current pins, including channels
+// with no owed messages (which UndeliveredMessages omits from its map). The
+// disjunct mirrors UndeliveredMessages/SubscribedAgents EXACTLY
+// (design.md:118-120, :127-128, :343, :708) so the pin sweep's channel set and
+// the cursor sweep's cannot drift. $1 is always an agent, so the JOIN to
+// agent_accounts matches exactly one row and yields its home_channel_id.
+func (s *Store) SweepChannels(ctx context.Context, agent AccountID) ([]ChannelID, error) {
+	const q = `
+		SELECT cm.channel_id
+		FROM channel_members cm
+		JOIN agent_accounts aa ON aa.account_id = cm.account_id
+		JOIN channels ch ON ch.id = cm.channel_id
+		WHERE cm.account_id = $1
+		  AND (cm.subscribed OR cm.channel_id = aa.home_channel_id OR ch.mandatory_subscription)
+		ORDER BY cm.channel_id`
+	rows, err := s.pool.Query(ctx, q, string(agent))
+	if err != nil {
+		return nil, fmt.Errorf("store: resolve sweep channels: %w", err)
+	}
+	defer rows.Close()
+
+	var channels []ChannelID
+	for rows.Next() {
+		var ch string
+		if err := rows.Scan(&ch); err != nil {
+			return nil, fmt.Errorf("store: scan sweep channel: %w", err)
+		}
+		channels = append(channels, ChannelID(ch))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate sweep channels: %w", err)
+	}
+	return channels, nil
+}
