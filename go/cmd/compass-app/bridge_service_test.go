@@ -13,12 +13,15 @@ package main
 // each blocking wait so a wedged service fails fast instead of hanging.
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,7 +138,8 @@ func TestCompassRPCUnaryRoundTrip(t *testing.T) {
 	// emitted (buffered on the fake) and the in-flight entry is cleared, so the
 	// frame sequence and the "call finished" assertions are fully deterministic
 	// with no spin or sleep. CompassRPC is the same call on a goroutine.
-	svc.run(svc.register(context.Background(), requestID), req)
+	callCtx, call := svc.register(context.Background(), requestID)
+	svc.run(callCtx, call, req)
 	// head -> body(base64) -> end, all on the per-requestId event.
 	head := recv(t, emitter)
 	if head.name != "compass_rpc:"+requestID {
@@ -284,8 +288,11 @@ func TestCompassRPCMidStreamCancel(t *testing.T) {
 
 	// No further frame is emitted after cancel. The only frames ever emitted were
 	// the head + one body already drained above; a canceled subscription is a
-	// torn-down call, not an EndFrame or ErrorFrame. Non-blocking check (the
-	// pump provably emits nothing after ctx cancel, so this is deterministic).
+	// torn-down call, not an EndFrame or ErrorFrame. Non-blocking check: the pump
+	// emits nothing after it OBSERVES the ctx cancel, and this test's stub server
+	// writes no further bytes after "first" (it blocks on ctx.Done()), so no
+	// in-flight body races the cancel here. End-to-end late-frame safety is
+	// provided by the JS `canceled` guard in daemon-transport.ts.
 	select {
 	case ev := <-emitter.ch:
 		t.Fatalf("spurious frame after cancel: kind=%q (a canceled call must emit nothing further)", ev.frame.Kind)
@@ -307,7 +314,8 @@ func TestCompassRPCDialErrorBeforeHead(t *testing.T) {
 	// Synchronous drive: when run returns, the terminal error frame is the only
 	// frame emitted and the in-flight entry is cleared — so "exactly one error
 	// frame, nothing after" is deterministic without spinning on the map.
-	svc.run(svc.register(context.Background(), requestID), rpcRequest{RequestID: requestID, Path: "/x"})
+	callCtx, call := svc.register(context.Background(), requestID)
+	svc.run(callCtx, call, rpcRequest{RequestID: requestID, Path: "/x"})
 
 	ev := recv(t, emitter)
 	if ev.name != "compass_rpc:"+requestID {
@@ -329,10 +337,10 @@ func TestCompassRPCDialErrorBeforeHead(t *testing.T) {
 	assertNotInflight(t, svc, requestID)
 }
 
-// hasHeader reports whether pairs contains a {name, value} header.
-func hasHeader(pairs []headerPair, name, value string) bool {
+// hasHeader reports whether pairs contains a [name, value] header tuple.
+func hasHeader(pairs [][2]string, name, value string) bool {
 	for _, p := range pairs {
-		if p.Name == name && p.Value == value {
+		if p[0] == name && p[1] == value {
 			return true
 		}
 	}
@@ -348,4 +356,172 @@ func assertNotInflight(t *testing.T, svc *bridgeService, requestID string) {
 	if ok {
 		t.Errorf("requestId %q still in-flight, want cleared", requestID)
 	}
+}
+
+// TestResponseFrameWireContract locks the JSON wire shape of every ResponseFrame
+// kind against the JS contract (apps/ui/src/daemon-transport.ts:19-23). The
+// load-bearing assertion is that head headers marshal as [name,value] TUPLE
+// arrays ([["x","y"]]) — the JS consumer does new Headers(frame.headers), which
+// requires tuples and throws on {name,value} objects. This test fails against the
+// pre-fix object shape.
+func TestResponseFrameWireContract(t *testing.T) {
+	t.Run("head", func(t *testing.T) {
+		b, err := json.Marshal(frameToResponse(bridge.HeadFrame{Status: 200, Headers: [][2]string{{"x", "y"}}}))
+		if err != nil {
+			t.Fatalf("marshal head: %v", err)
+		}
+		s := string(b)
+		if !strings.Contains(s, `"kind":"head"`) {
+			t.Errorf("head JSON %s missing kind:head", s)
+		}
+		if !strings.Contains(s, `"status":200`) {
+			t.Errorf("head JSON %s missing status:200", s)
+		}
+		if !strings.Contains(s, `"headers":[["x","y"]]`) {
+			t.Errorf("head JSON %s: headers not rendered as tuple array [[\"x\",\"y\"]]", s)
+		}
+		if strings.Contains(s, `{"name"`) {
+			t.Errorf("head JSON %s: headers rendered as {name,value} objects, must be tuples", s)
+		}
+	})
+	t.Run("body", func(t *testing.T) {
+		b, err := json.Marshal(frameToResponse(bridge.BodyFrame{Chunk: []byte("hi")}))
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		s := string(b)
+		if !strings.Contains(s, `"kind":"body"`) {
+			t.Errorf("body JSON %s missing kind:body", s)
+		}
+		if !strings.Contains(s, `"chunk":"aGk="`) {
+			t.Errorf("body JSON %s: chunk not standard base64 of \"hi\"", s)
+		}
+	})
+	t.Run("end", func(t *testing.T) {
+		b, err := json.Marshal(frameToResponse(bridge.EndFrame{}))
+		if err != nil {
+			t.Fatalf("marshal end: %v", err)
+		}
+		if s := string(b); s != `{"kind":"end"}` {
+			t.Errorf("end JSON = %s, want {\"kind\":\"end\"}", s)
+		}
+	})
+	t.Run("error", func(t *testing.T) {
+		b, err := json.Marshal(frameToResponse(bridge.ErrorFrame{Message: "boom"}))
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+		s := string(b)
+		if !strings.Contains(s, `"kind":"error"`) {
+			t.Errorf("error JSON %s missing kind:error", s)
+		}
+		if !strings.Contains(s, `"message":"boom"`) {
+			t.Errorf("error JSON %s missing message:boom", s)
+		}
+	})
+}
+
+// TestRPCRequestBodyDecodesNumberArray locks the load-bearing contract that a JS
+// number[] body decodes element-wise into a Go []byte (json.Unmarshal maps a JSON
+// number array into []byte directly).
+func TestRPCRequestBodyDecodesNumberArray(t *testing.T) {
+	var req rpcRequest
+	if err := json.Unmarshal([]byte(`{"requestId":"r","path":"/x","body":[1,2,3,250]}`), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !bytes.Equal(req.Body, []byte{1, 2, 3, 250}) {
+		t.Errorf("req.Body = %v, want [1 2 3 250]", req.Body)
+	}
+}
+
+// TestCompassRPCConcurrentDistinctIDs proves per-requestId keying and call
+// independence: two concurrent calls with DISTINCT requestIds run against their
+// own isolated service+emitter+socket, each frame arrives on its OWN
+// compass_rpc:<id> event name (never cross-delivered), and cancelling one leaves
+// the other still streaming. Event-gated via release channels, no sleeps.
+func TestCompassRPCConcurrentDistinctIDs(t *testing.T) {
+	// releaseA gates server A writing its body chunk; serverBGone confirms B tore
+	// down on cancel. A keeps streaming after B is cancelled.
+	releaseA := make(chan struct{})
+	serverBGone := make(chan struct{})
+
+	socketA := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		flusher := w.(http.Flusher)
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
+		select {
+		case <-releaseA:
+		case <-r.Context().Done():
+			return
+		}
+		_, _ = w.Write([]byte("A"))
+		flusher.Flush()
+	})
+	socketB := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		defer close(serverBGone)
+		flusher := w.(http.Flusher)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("first"))
+		flusher.Flush()
+		<-r.Context().Done()
+	})
+
+	svcA, emitterA := newService(socketA)
+	svcB, emitterB := newService(socketB)
+	const idA = "req-A"
+	const idB = "req-B"
+
+	svcA.CompassRPC(context.Background(), rpcRequest{RequestID: idA, Path: "/a"})
+	svcB.CompassRPC(context.Background(), rpcRequest{RequestID: idB, Path: "/b"})
+
+	// Each call's head arrives on its OWN event name — proves per-id keying.
+	headA := recv(t, emitterA)
+	if headA.name != "compass_rpc:"+idA {
+		t.Errorf("A head event name = %q, want compass_rpc:%s", headA.name, idA)
+	}
+	if headA.frame.Kind != "head" {
+		t.Fatalf("A first frame kind = %q, want head", headA.frame.Kind)
+	}
+	headB := recv(t, emitterB)
+	if headB.name != "compass_rpc:"+idB {
+		t.Errorf("B head event name = %q, want compass_rpc:%s", headB.name, idB)
+	}
+	if headB.frame.Kind != "head" {
+		t.Fatalf("B first frame kind = %q, want head", headB.frame.Kind)
+	}
+
+	// Drain B's first body so the cancel targets a live stream.
+	if body := recv(t, emitterB); body.frame.Kind != "body" {
+		t.Fatalf("B second frame kind = %q, want body", body.frame.Kind)
+	}
+
+	// Cancel B; it tears down and stops silently. A is untouched.
+	svcB.CompassRPCCancel(context.Background(), cancelRequest{RequestID: idB})
+	select {
+	case <-serverBGone:
+	case <-time.After(testTimeout):
+		t.Fatal("server B was not torn down after cancel")
+	}
+
+	// A is still streaming: release its chunk and observe it arrive on A's event.
+	close(releaseA)
+	bodyA := recv(t, emitterA)
+	if bodyA.name != "compass_rpc:"+idA {
+		t.Errorf("A body event name = %q, want compass_rpc:%s", bodyA.name, idA)
+	}
+	if bodyA.frame.Kind != "body" {
+		t.Fatalf("A body frame kind = %q, want body", bodyA.frame.Kind)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(bodyA.frame.Chunk)
+	if err != nil {
+		t.Fatalf("A body chunk not base64: %v", err)
+	}
+	if string(decoded) != "A" {
+		t.Errorf("A body = %q, want %q", decoded, "A")
+	}
+	if end := recv(t, emitterA); end.frame.Kind != "end" {
+		t.Fatalf("A final frame kind = %q, want end", end.frame.Kind)
+	}
+
+	assertNotInflight(t, svcB, idB)
 }

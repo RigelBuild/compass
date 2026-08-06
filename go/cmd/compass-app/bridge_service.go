@@ -45,7 +45,15 @@ type bridgeService struct {
 	events eventEmitter
 
 	mu       sync.Mutex
-	inflight map[string]context.CancelFunc
+	inflight map[string]*inflightCall
+}
+
+// inflightCall is one live compass_rpc call's teardown handle. It is stored in
+// the in-flight map by requestId and compared by pointer identity so a call only
+// ever deletes/cancels its OWN entry — a re-registered id (same key, new call)
+// never has its live entry mis-deleted by a prior call's deferred finish.
+type inflightCall struct {
+	cancel context.CancelFunc
 }
 
 // newBridgeService builds a bridge service that forwards against pump and emits
@@ -54,7 +62,7 @@ func newBridgeService(pump *bridge.Pump, events eventEmitter) *bridgeService {
 	return &bridgeService{
 		pump:     pump,
 		events:   events,
-		inflight: make(map[string]context.CancelFunc),
+		inflight: make(map[string]*inflightCall),
 	}
 }
 
@@ -83,14 +91,16 @@ type cancelRequest struct {
 
 // responseFrame is the JS ResponseFrame payload emitted per pump frame
 // (daemon-transport.ts:19-23): a tagged head/body/end/error union. Kind selects
-// which of the optional fields is populated; body chunks are standard base64 so
-// they ride the JSON event channel as strings (the JS decodeChunk does atob).
+// which of the optional fields is populated; head headers are [name,value] tuple
+// arrays (marshalling to [["name","value"],...]) matching the JS [string,string][]
+// contract, and body chunks are standard base64 so they ride the JSON event
+// channel as strings (the JS decodeChunk does atob).
 type responseFrame struct {
-	Kind    string       `json:"kind"`
-	Status  int          `json:"status,omitempty"`
-	Headers []headerPair `json:"headers,omitempty"`
-	Chunk   string       `json:"chunk,omitempty"`
-	Message string       `json:"message,omitempty"`
+	Kind    string      `json:"kind"`
+	Status  int         `json:"status,omitempty"`
+	Headers [][2]string `json:"headers,omitempty"`
+	Chunk   string      `json:"chunk,omitempty"`
+	Message string      `json:"message,omitempty"`
 }
 
 // Frame kinds tag the JS ResponseFrame union emitted per pump frame — the shared
@@ -114,8 +124,8 @@ const (
 // Wails reclaiming the call context. WithCancel supplies the cancel stored for
 // compass_rpc_cancel.
 func (s *bridgeService) CompassRPC(ctx context.Context, req rpcRequest) {
-	callCtx := s.register(ctx, req.RequestID)
-	go s.run(callCtx, req)
+	callCtx, call := s.register(ctx, req.RequestID)
+	go s.run(callCtx, call, req)
 }
 
 // CompassRPCCancel cancels the in-flight call for a requestId and drops its
@@ -123,32 +133,34 @@ func (s *bridgeService) CompassRPC(ctx context.Context, req rpcRequest) {
 // contract. A cancel for an unknown or already-finished id is a no-op.
 func (s *bridgeService) CompassRPCCancel(_ context.Context, req cancelRequest) {
 	s.mu.Lock()
-	cancel, ok := s.inflight[req.RequestID]
+	call, ok := s.inflight[req.RequestID]
 	delete(s.inflight, req.RequestID)
 	s.mu.Unlock()
 	if ok {
-		cancel()
+		call.cancel()
 	}
 }
 
-// register derives the forwarding context for a call and records its cancel
-// under requestID, cancelling any prior call already under that id first (so a
-// stale forwarder can never keep emitting onto the same event). The context is
-// derived from the caller's ctx with WithoutCancel so request-scoped values
-// propagate, but detached from the bound-method invocation's lifetime — the
-// stream must outlive CompassRPC's return and is torn down only by a terminal
-// frame or an explicit compass_rpc_cancel, never by Wails reclaiming the call
-// context.
-func (s *bridgeService) register(ctx context.Context, requestID string) context.Context {
-	//nolint:gosec // G118: cancel is stored in s.inflight and invoked by CompassRPCCancel or finish; gosec's intraprocedural flow cannot see the keyed/deferred call
+// register derives the forwarding context for a call and records the call's
+// teardown handle under requestID, cancelling any prior call already under that
+// id first (so a stale forwarder can never keep emitting onto the same event).
+// It returns the created *inflightCall so run/finish can guard deletion by
+// pointer identity — a re-registered id never has its live entry mis-deleted by
+// a prior call's deferred finish. The context is derived from the caller's ctx
+// with WithoutCancel so request-scoped values propagate, but detached from the
+// bound-method invocation's lifetime — the stream must outlive CompassRPC's
+// return and is torn down only by a terminal frame or an explicit
+// compass_rpc_cancel, never by Wails reclaiming the call context.
+func (s *bridgeService) register(ctx context.Context, requestID string) (context.Context, *inflightCall) {
 	callCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	call := &inflightCall{cancel: cancel}
 	s.mu.Lock()
 	if prev, ok := s.inflight[requestID]; ok {
-		prev()
+		prev.cancel()
 	}
-	s.inflight[requestID] = cancel
+	s.inflight[requestID] = call
 	s.mu.Unlock()
-	return callCtx
+	return callCtx, call
 }
 
 // run forwards the call through the pump synchronously, emitting each ordered
@@ -157,31 +169,31 @@ func (s *bridgeService) register(ctx context.Context, requestID string) context.
 // on its own goroutine; it is called directly (synchronously) only by
 // deterministic single-shot tests, where its return means every frame is emitted
 // and the entry is cleared.
-func (s *bridgeService) run(callCtx context.Context, req rpcRequest) {
-	defer s.finish(req.RequestID)
+func (s *bridgeService) run(callCtx context.Context, call *inflightCall, req rpcRequest) {
+	defer s.finish(req.RequestID, call)
 	eventName := "compass_rpc:" + req.RequestID
-	call := bridge.Call{
+	rpc := bridge.Call{
 		Path:    req.Path,
 		Headers: headerSlice(req.Headers),
 		Body:    req.Body,
 	}
-	s.pump.Do(callCtx, call, func(f bridge.Frame) {
+	s.pump.Do(callCtx, rpc, func(f bridge.Frame) {
 		s.events.Emit(eventName, frameToResponse(f))
 	})
 }
 
-// finish drops the in-flight entry for a completed call. It runs after the pump
-// returns (terminal frame emitted, or silent stop on cancel); the guard avoids
-// racing a compass_rpc_cancel that already deleted and canceled this id.
-func (s *bridgeService) finish(requestID string) {
+// finish drops the in-flight entry for a completed call, then cancels its own
+// context (idempotent). Deletion is guarded by pointer identity: it removes the
+// entry only if the CURRENT entry under requestID is still THIS call, so a call
+// whose id was re-registered by a later call leaves the live entry untouched and
+// only cancels its own (already-finished) context.
+func (s *bridgeService) finish(requestID string, call *inflightCall) {
 	s.mu.Lock()
-	if cancel, ok := s.inflight[requestID]; ok {
+	if cur, ok := s.inflight[requestID]; ok && cur == call {
 		delete(s.inflight, requestID)
-		s.mu.Unlock()
-		cancel()
-		return
 	}
 	s.mu.Unlock()
+	call.cancel()
 }
 
 // headerSlice converts the JS {name,value} header objects into the pump's
@@ -197,26 +209,13 @@ func headerSlice(pairs []headerPair) [][2]string {
 	return out
 }
 
-// headerObjects converts the pump's ordered header pairs into the JS
-// {name,value} objects, preserving order.
-func headerObjects(pairs [][2]string) []headerPair {
-	if len(pairs) == 0 {
-		return nil
-	}
-	out := make([]headerPair, len(pairs))
-	for i, p := range pairs {
-		out[i] = headerPair{Name: p[0], Value: p[1]}
-	}
-	return out
-}
-
 // frameToResponse maps a pump frame to the JS ResponseFrame payload. The switch
 // is exhaustive over the sealed bridge.Frame union (exhaustive/gochecksumtype
 // gate); body chunk bytes become a standard-base64 string for the JSON channel.
 func frameToResponse(f bridge.Frame) responseFrame {
 	switch frame := f.(type) {
 	case bridge.HeadFrame:
-		return responseFrame{Kind: frameKindHead, Status: frame.Status, Headers: headerObjects(frame.Headers)}
+		return responseFrame{Kind: frameKindHead, Status: frame.Status, Headers: frame.Headers}
 	case bridge.BodyFrame:
 		return responseFrame{Kind: frameKindBody, Chunk: base64.StdEncoding.EncodeToString(frame.Chunk)}
 	case bridge.EndFrame:
