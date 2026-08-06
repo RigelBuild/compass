@@ -81,6 +81,22 @@ describe("scanCss", () => {
 		);
 	});
 
+	test("uppercase duration and easing literals are flagged (CSS is case-insensitive)", () => {
+		const fs = scanCss(
+			COMPONENT,
+			".btn { transition: color 140MS EASE-OUT; animation-duration: 1.6S; }",
+		);
+		expect(fs.some((f) => f.kind === "duration" && f.match === "140MS")).toBe(
+			true,
+		);
+		expect(fs.some((f) => f.kind === "duration" && f.match === "1.6S")).toBe(
+			true,
+		);
+		expect(fs.some((f) => f.kind === "easing" && f.match === "EASE-OUT")).toBe(
+			true,
+		);
+	});
+
 	test("linear-gradient does not trip the bare 'linear' easing keyword", () => {
 		const fs = scanCss(
 			COMPONENT,

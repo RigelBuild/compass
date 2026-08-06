@@ -63,21 +63,34 @@ export type Mode = "warn" | "error";
 // Pure detectors (exported for unit tests). Each returns its raw match text.
 // ---------------------------------------------------------------------------
 
-/** Raw hex colour literals: #rgb, #rgba, #rrggbb, #rrggbbaa. */
+/**
+ * Raw hex colour literals: #rgb, #rgba, #rrggbb, #rrggbbaa.
+ *
+ * Scope is deliberately hex-only: the frozen record's consumption rule
+ * (D2:295-301, D9) enumerates "raw hex" for colours, so a raw rgb()/hsl()/
+ * named colour is out of this gate's contract. Widening the colour ban is a
+ * scope decision that belongs to the record, not this detector.
+ */
 const HEX_RE = /#[0-9a-fA-F]{3,8}\b/g;
 /** Any primitive-tier reference. Captures the full custom-property name. */
 const RIGEL_RE = /--rigel-[a-z0-9-]+/g;
-/** Literal time values: 140ms, 12ms, 1.6s, 320ms. */
-const DURATION_RE = /\b\d+(?:\.\d+)?m?s\b/g;
+/**
+ * Literal time values: 140ms, 12ms, 1.6s, 320ms. Case-insensitive because CSS
+ * units are (`140MS` is a valid duration). The bare pattern can match a
+ * numeric-prefixed time token inside a `content:` string; that edge is rare,
+ * WARN-gated, and left as a known false positive rather than string-stripped.
+ */
+const DURATION_RE = /\b\d+(?:\.\d+)?m?s\b/gi;
 /**
  * Easing literals: the cubic-bezier() function and the named timing keywords.
  * The `(?<!-)` / `(?!-)` guards keep compound identifiers (`--cx-ease-out`,
  * `linear-gradient(`, `ease-…`) from tripping the bare-keyword match — only a
  * keyword that is not part of a longer hyphenated token is a timing literal.
+ * Case-insensitive because CSS keywords are (`EASE-OUT` is valid).
  */
-const CUBIC_RE = /cubic-bezier\(/g;
+const CUBIC_RE = /cubic-bezier\(/gi;
 const EASE_KEYWORD_RE =
-	/(?<!-)\b(?:ease-in-out|ease-out|ease-in|ease|linear)\b(?!-)/g;
+	/(?<!-)\b(?:ease-in-out|ease-out|ease-in|ease|linear)\b(?!-)/gi;
 
 /**
  * The mark-component allowlist: in a file whose basename matches `mark*.css`,
@@ -108,7 +121,10 @@ export function scanCss(relPath: string, text: string): Finding[] {
 		const raw = lines[i] ?? "";
 		// Strip a trailing line comment's noise? CSS has no // comments; block
 		// comments can span lines, but banned literals inside a comment are
-		// still a leak-in-waiting, so we scan the whole line verbatim.
+		// still a leak-in-waiting, so we scan the whole line verbatim. This does
+		// flag a provenance note like `/* was #45505f */`; harmless under the
+		// WARN default, but before the step-5 ERROR flip strip `/* */` bodies
+		// here so a legitimate provenance comment does not force its own removal.
 		const lineNo = i + 1;
 
 		for (const m of raw.matchAll(HEX_RE)) {
