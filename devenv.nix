@@ -76,6 +76,14 @@ in
     # works on any dev box — a non-NixOS nix/devenv host, or a NixOS box without
     # curl in current-system — not only one whose current-system ships curl.
     curl
+
+    # pkg-config: the Wails v3 cgo link needs it to discover the GTK3/WebKitGTK
+    # `.pc` files (via PKG_CONFIG_PATH, set over the frozen SEA-1172 closure in
+    # `env` below, which owns that rationale). Kept in this parsed list, not the
+    # Linux-guarded env block, because it has a bin the toolchain-parity gate
+    # resolves and is cross-platform — harmless on macOS, where the app links
+    # the system WebKit framework and pkg-config goes unused.
+    pkg-config
   ];
 
   env = {
@@ -98,6 +106,50 @@ in
     # (`go` comes straight from setup-go), the shimmed `go list` that emits the
     # banner never happens, and CI never had the bug.
     PROTO_REPORTER = "text";
+  }
+  # The Compass native app (Wails v3, go/cmd/compass-app) links the Linux
+  # GTK3/WebKitGTK stack through cgo. pkg-config (in `packages` above) finds each
+  # library's `.pc` file along PKG_CONFIG_PATH, built here over the transitive
+  # propagated-dependency closure of the GTK/WebKitGTK set so a `.pc`
+  # `Requires:` walk (gdk-3.0 → zlib, pango → freetype2/fontconfig, …) resolves.
+  # Both `.pc` install subdirs are searched: a dev output splits its `.pc` files
+  # across `lib/pkgconfig` and `share/pkgconfig` (zlib ships `zlib.pc` under
+  # `share/`, which gdk-3.0 requires), so searching only `lib/` fails the walk.
+  # The package set and subdir order are the frozen SEA-1172 shape
+  # (sealed docs/designs/platform/ci-toolchain-shared-defs.md): the sealed CI
+  # step image stages the same closure's `-dev` outputs, kept in step by hand.
+  #
+  # Linux-only, and set in `env` rather than `packages`: on macOS the app links
+  # the system WebKit framework, so the closure is Linux's alone; and keeping it
+  # out of the parsed `packages` list means the heavy WebKitGTK closure is never
+  # realized by the toolchain-parity gate on a CI runner — it is a dev-box build
+  # input, and compass CI does not compile the native app.
+  // lib.optionalAttrs pkgs.stdenv.isLinux {
+    PKG_CONFIG_PATH =
+      let
+        pcClosure = lib.closePropagation (
+          with pkgs;
+          [
+            dbus
+            openssl
+            glib
+            gtk3
+            webkitgtk_4_1
+            libsoup_3
+            cairo
+            pango
+            gdk-pixbuf
+            atk
+            harfbuzz
+            librsvg
+            gobject-introspection
+          ]
+        );
+      in
+      lib.concatStringsSep ":" [
+        (lib.makeSearchPathOutput "dev" "lib/pkgconfig" pcClosure)
+        (lib.makeSearchPathOutput "dev" "share/pkgconfig" pcClosure)
+      ];
   };
 
   enterShell = ''
