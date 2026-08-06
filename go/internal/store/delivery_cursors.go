@@ -208,10 +208,11 @@ func (s *Store) UndeliveredMessages(ctx context.Context, agent AccountID) (map[C
 		JOIN agent_accounts aa ON aa.account_id = cm.account_id
 		JOIN topics t ON t.channel_id = cm.channel_id
 		JOIN messages m ON m.topic_id = t.id
+		JOIN channels ch ON ch.id = cm.channel_id
 		LEFT JOIN agent_delivery_cursors dc
 		       ON dc.agent_account_id = cm.account_id AND dc.channel_id = cm.channel_id
 		WHERE cm.account_id = $1
-		  AND (cm.subscribed OR cm.channel_id = aa.home_channel_id)
+		  AND (cm.subscribed OR cm.channel_id = aa.home_channel_id OR ch.mandatory_subscription)
 		  AND m.author_account_id <> $1
 		  AND m.seq > COALESCE(
 		        dc.acked_seq,

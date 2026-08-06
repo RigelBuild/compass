@@ -62,12 +62,15 @@ func groupVisibilityToWire(v store.ChannelGroupVisibility) compassv1.ChannelGrou
 
 func channelToWire(c store.Channel) *compassv1.Channel {
 	return &compassv1.Channel{
-		Id:                   string(c.ID),
-		Name:                 c.Name,
-		GroupId:              string(c.GroupID),
-		Kind:                 channelKindToWire(c.Kind),
-		MemberAccountIds:     accountIDsToWire(c.MemberAccountIDs),
-		SubscriberAccountIds: accountIDsToWire(c.SubscriberAccountIDs),
+		Id:                    string(c.ID),
+		Name:                  c.Name,
+		GroupId:               string(c.GroupID),
+		Kind:                  channelKindToWire(c.Kind),
+		MemberAccountIds:      accountIDsToWire(c.MemberAccountIDs),
+		SubscriberAccountIds:  accountIDsToWire(c.SubscriberAccountIDs),
+		PostPolicy:            channelPostPolicyToWire(c.Policy.PostPolicy),
+		OwnerAccountId:        string(c.Policy.OwnerAccountID),
+		MandatorySubscription: c.Policy.MandatorySubscription,
 	}
 }
 
@@ -79,6 +82,28 @@ func channelKindToWire(k store.ChannelKind) compassv1.ChannelKind {
 		return compassv1.ChannelKind_CHANNEL_KIND_GROUP_DM
 	default:
 		return compassv1.ChannelKind_CHANNEL_KIND_CHANNEL
+	}
+}
+
+func channelPostPolicyToWire(p store.ChannelPostPolicy) compassv1.ChannelPostPolicy {
+	switch p {
+	case store.ChannelPostPolicyOpen:
+		return compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OPEN
+	case store.ChannelPostPolicyOwnerOnly:
+		return compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY
+	default:
+		return compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OPEN
+	}
+}
+
+func channelPostPolicyFromWire(p compassv1.ChannelPostPolicy) store.ChannelPostPolicy {
+	switch p {
+	case compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY:
+		return store.ChannelPostPolicyOwnerOnly
+	case compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OPEN:
+		return store.ChannelPostPolicyOpen
+	default:
+		return store.ChannelPostPolicyOpen
 	}
 }
 
@@ -244,6 +269,7 @@ func memberUpdatesFromWire(req *compassv1.UpdateChannelMembersRequest) []store.M
 	for _, id := range req.GetUnsubscribeAccountIds() {
 		u := touch(store.AccountID(id))
 		u.Subscribed = false
+		u.Unsubscribe = true
 	}
 	for _, id := range req.GetRemoveMemberAccountIds() {
 		touch(store.AccountID(id)).Remove = true

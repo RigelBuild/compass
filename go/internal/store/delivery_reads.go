@@ -14,23 +14,26 @@ import (
 
 // SubscribedAgents resolves the agent accounts that should receive a message
 // posted to channel, EXCLUDING the author (an agent never receives its own post
-// back as a deliver). It is D1's one subscriber-resolution query, with the home
-// channel as an explicit disjunct (design.md:116-137): a member delivers when it
-// is either flagged subscribed OR the channel is that agent's home channel. The
-// disjunct is a frozen-model-fidelity repair (RT-2), not an optimization — a
-// home-channel row flipped subscribed=false (addOrUpdateMember DO UPDATE) MUST
-// still deliver, so the query enforces the guarantee read-side, independent of
-// the stored flag. The JOIN to agent_accounts is what scopes the result to
-// AGENT members: a human member has no agent_accounts row and is excluded, so a
-// deliver is only ever dispatched to an agent session. $1 is the channel, $2 the
-// author account excluded from the result.
+// back as a deliver). It is D1's one subscriber-resolution query: a member
+// delivers when it
+// is flagged subscribed, OR the channel is that agent's home channel, OR the
+// channel is mandatory_subscription (T4, design.md:521-522) — every member of a
+// mandatory channel is a delivery target regardless of its stored subscribed
+// flag. The home-channel and mandatory disjuncts are frozen-model-fidelity
+// repairs, not optimizations — a member row flipped subscribed=false MUST still
+// deliver on a home or mandatory channel, so the query enforces the guarantee
+// read-side, independent of the stored flag. The JOIN to agent_accounts is what
+// scopes the result to AGENT members: a human member has no agent_accounts row
+// and is excluded, so a deliver is only ever dispatched to an agent session. $1
+// is the channel, $2 the author account excluded from the result.
 func (s *Store) SubscribedAgents(ctx context.Context, channel ChannelID, author AccountID) ([]AccountID, error) {
 	const q = `
 		SELECT aa.account_id
 		FROM channel_members cm
 		JOIN agent_accounts aa ON aa.account_id = cm.account_id
+		JOIN channels ch ON ch.id = cm.channel_id
 		WHERE cm.channel_id = $1
-		  AND (cm.subscribed OR cm.channel_id = aa.home_channel_id)
+		  AND (cm.subscribed OR cm.channel_id = aa.home_channel_id OR ch.mandatory_subscription)
 		  AND cm.account_id <> $2
 		ORDER BY aa.account_id`
 	rows, err := s.pool.Query(ctx, q, string(channel), string(author))
