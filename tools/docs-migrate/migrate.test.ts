@@ -190,10 +190,40 @@ describe("gate", () => {
 	});
 
 	test("residue lists both offenders", () => {
-		const g = gate("has linear.app and oss/compass");
+		// The linear offender is now the tracker-URL form, matching what the
+		// transforms strip — a bare `linear.app` hostname is not residue (below).
+		const g = gate("has https://linear.app/x/board and oss/compass");
 		expect(g.ok).toBe(false);
 		expect(g.residue).toContain("linear.app");
 		expect(g.residue).toContain("oss/compass");
+	});
+
+	test("a bare linear.app hostname literal is NOT residue (only tracker URLs are)", () => {
+		// Regression fixture drawn from compass-issue-model/design.md: a proto
+		// field comment documents the Linear-as-forge SaaS host as the bare
+		// string "linear.app". It is not a private tracker link, the transforms
+		// (line-local, fence-skipping) correctly leave it, and the gate must not
+		// red on it — else a legitimate corpus record can never pass migration.
+		const forgeRefComment = [
+			"```proto",
+			"message ForgeRef {",
+			'  string host = 2;  // "github.com" or, for a SaaS-only tracker-as-forge',
+			'                    // (Linear) the constant service host, "linear.app"',
+			"}",
+			"```",
+		].join("\n");
+		expect(gate(forgeRefComment).ok).toBe(true);
+		expect(gate(forgeRefComment).residue).not.toContain("linear.app");
+	});
+
+	test("a real tracker URL still reds even next to a bare hostname literal", () => {
+		// The other direction: proves the relaxation did not blind the gate to a
+		// genuine surviving private-tracker link.
+		const g = gate(
+			'host is "linear.app" but [SEA-9](https://linear.app/sealedsecurity/issue/SEA-9) leaked',
+		);
+		expect(g.ok).toBe(false);
+		expect(g.residue).toContain("linear.app");
 	});
 });
 

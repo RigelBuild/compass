@@ -89,6 +89,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/design-ledger-gate": {
+      "name": "@compass/design-ledger-gate",
+      "bin": {
+        "design-ledger-gate": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/docs-migrate": {
       "name": "@compass/docs-migrate",
       "devDependencies": {
@@ -247,6 +257,8 @@
     "@compass/agent": ["@compass/agent@workspace:packages/compass-agent"],
 
     "@compass/client": ["@compass/client@workspace:packages/compass-client"],
+
+    "@compass/design-ledger-gate": ["@compass/design-ledger-gate@workspace:tools/design-ledger-gate"],
 
     "@compass/docs-migrate": ["@compass/docs-migrate@workspace:tools/docs-migrate"],
 

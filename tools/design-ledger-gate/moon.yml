@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# design-ledger-gate (SEA-1187) — validate the Compass design-decision ledger
+# (docs/designs/product/DECISIONS.md), the per-record `Status:` headers, and
+# dangling supersession/Record pointers. A bun/TypeScript CLI; a hoisted
+# root-workspace member (`bun` tag): install is inherited via
+# .moon/tasks/tag-bun.yml (the shared root install) and lint/format are
+# whole-repo tasks on the root project (/moon.yml), so this leaf has no own
+# bun.lock and never runs its own install.
+#
+# Migrated from the sealed repo (SEA-1794): the Compass design corpus + ledger
+# now live here, so the gate that governs them lives here too. Compass CI is a
+# single moon-driven `CI` job (.github/workflows/ci.yml runs `moon run :ci`),
+# so the `ci` aggregate below is swept automatically — no separate meta.ts
+# wiring (unlike sealed's Woodpecker pipeline).
+layer: 'tool'
+language: 'typescript'
+tags: ['bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  test:
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  check:
+    # The snapshot gate: scan the whole repo's docs/designs/product/ tree for
+    # ledger/header/pointer integrity. Run from the workspace root so links and
+    # record paths resolve repo-relative (GATE_ROOT defaults to the git
+    # toplevel = workspace root). Distinct from `test`, which drives the pure
+    # core over fixtures; this observes the real ledger + records.
+    command: 'bun run tools/design-ledger-gate/index.ts'
+    deps: ['install']
+    options:
+      runFromWorkspaceRoot: true
+      # Never cache: the gate's subject is the live docs/designs tree, and a
+      # cached green from another checkout is the false-green a fail-closed
+      # gate exists to stop.
+      cache: false
+    inputs:
+      - '/docs/designs/product/**/*.md'
+      - '/docs/designs/platform/**/*.md'
+      - 'index.ts'
+  ci:
+    deps: ['typecheck', 'test', 'check']
+    options:
+      cache: false

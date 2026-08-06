@@ -1,0 +1,14 @@
+{
+	"name": "@compass/design-ledger-gate",
+	"private": true,
+	"type": "module",
+	"description": "CI gate (SEA-1187): validate the Compass design-decision ledger (DECISIONS.md), per-record Status: headers, and dangling supersession/Record pointers.",
+	"module": "index.ts",
+	"bin": {
+		"design-ledger-gate": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}
