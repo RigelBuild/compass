@@ -1,0 +1,21 @@
+# Astro build output.
+dist/
+.astro/
+
+# Generated docs content + sidebar — scripts/gather.ts mirrors the repo's
+# markdown here and emits the sidebar at build time. Edit the canonical sources
+# under the monorepo, never these copies. Kept out of git (and out of the root
+# markdownlint sweep, which lints the canonical sources).
+src/content/docs/
+src/sidebar.generated.ts
+
+# Node deps. Re-installable from bun.lock.
+node_modules/
+
+# Pagefind cache (regenerated on build).
+.pagefind/
+
+# Local editor state.
+.vscode/
+.idea/
+.DS_Store
