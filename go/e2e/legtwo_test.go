@@ -18,8 +18,8 @@ import (
 // (before agent_ops.go existed, this file did not compile).
 //
 // podmanUsable-guarded so a container-less sandbox SKIPS rather than fails. Each
-// primitive carries its own deterministic per-call deadline internally-free RPC
-// via the fixture clients; the outer ctx is the test root.
+// primitive derives its own deterministic per-call deadline internally from the
+// passed-in ctx via the fixture clients; the outer ctx is the test root.
 func TestLegTwoPrimitives(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
