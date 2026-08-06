@@ -42,7 +42,13 @@ export const resolveChord = (chord: string, platform: Platform): string =>
  *
  * `chord` is authored with the `Mod` token (see `MOD`/`resolveChord`).
  * `when` scopes the binding to a focus zone or `'global'` (the same
- * `CommandScope` a `Command` carries); an absent `when` means global.
+ * `CommandScope` a `Command` carries). An absent `when` means the binding is
+ * not zone-scoped: it is either window-global (e.g. the view/zone chords) or
+ * resolved against the active roving group at dispatch (the Lists block
+ * below). When the same chord is bound both with and without a `when`, the
+ * scoped entry takes precedence while its zone is active (D5's ranking rule:
+ * "scoped commands rank above global ones when their scope is active"); the
+ * consumer applies that precedence rather than double-firing.
  */
 export interface KeymapEntry {
 	readonly chord: string;
@@ -85,7 +91,10 @@ export const DEFAULT_KEYMAP: readonly KeymapEntry[] = [
 	{ chord: "Mod+Alt+ArrowRight", commandId: cmd("workspace.focusPaneRight") },
 
 	// Comms (D5:454-455). Enter send / Shift+Enter newline (kept);
-	// Ctrl+Enter send-and-stay variant reserved.
+	// Ctrl+Enter send-and-stay variant reserved. NOTE: `Enter` (and the
+	// group-relative list chords above) is also bound unscoped in the Lists
+	// block; in the main zone the scoped `comms.send` wins over the global
+	// `list.openOrSelect` per the precedence rule documented on KeymapEntry.
 	{ chord: "Enter", commandId: cmd("comms.send"), when: "main" },
 	{ chord: "Shift+Enter", commandId: cmd("comms.newline"), when: "main" },
 	{ chord: "Mod+Enter", commandId: cmd("comms.sendAndStay"), when: "main" },
