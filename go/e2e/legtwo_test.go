@@ -4,7 +4,7 @@ package e2e
 
 import (
 	"context"
-	"os"
+	"strings"
 	"testing"
 
 	"github.com/sealedsecurity/compass/go/internal/store"
@@ -64,28 +64,28 @@ func TestLegTwoPrimitives(t *testing.T) {
 
 // TestLegTwoRealTurn is the full leg-2 scenario: CreateAgent -> Provision ->
 // StartSession(initial_prompt) -> AwaitSessionSettled -> assert the session's
-// transcript is non-empty. It is PRESENT-BUT-SKIPPED on H2: the leg-2 turn
-// cannot complete without H3's canned model backend (SEA-1787). On H1's stack
-// the real agent has no deterministic model to drive a turn, so
-// AwaitSessionSettled would hang and the transcript would stay empty. The frozen
-// H2 decomposition gates this test's green on H3.
+// transcript is non-empty. On H2 it was PRESENT-BUT-SKIPPED: the leg-2 turn
+// cannot complete without a deterministic model backend, so on the bare stack
+// AwaitSessionSettled would hang and the transcript stay empty. H3 (SEA-1787)
+// lands that backend — the canned stub the fixture stands up via WithCannedModel
+// — so this same scenario now runs GREEN with zero live-model egress.
 //
-// It therefore t.Skips when the H3 canned-model sentinel is absent — never hangs,
-// never fails. Once H3 wires the canned backend and sets COMPASS_E2E_CANNED_MODEL,
-// this same test runs green. AwaitSessionSettled has no hermetic unit shape (it
-// needs a live settling session), so its proof rides this scenario — deliberately
-// NOT faking a frame stream.
+// The turn is driven entirely by the canned stub (a fixed scripted reply), and
+// the settle is event-gated on AwaitSessionSettled (the READY frame) — no
+// sleeps, no polling, no retries. AwaitSessionSettled has no hermetic unit shape
+// (it needs a live settling session), so its proof rides this scenario —
+// deliberately NOT faking a frame stream.
 func TestLegTwoRealTurn(t *testing.T) {
-	if os.Getenv("COMPASS_E2E_CANNED_MODEL") == "" {
-		t.Skip("leg-2 real turn needs the H3 canned model backend (SEA-1787); skipping until H3 lands")
-	}
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
 	}
 
 	ctx := context.Background() // test root, threaded into NewFixture + every primitive
 
-	f := NewFixture(ctx, t)
+	// The exact assistant reply the canned stub settles every turn on; asserted
+	// present in the persisted transcript below.
+	const cannedReply = "canned leg-2 turn settled OK"
+	f := NewFixture(ctx, t, WithCannedModel(cannedReply))
 
 	accountID, err := f.CreateAgent(ctx, "leg2-realturn", "Leg Two Real Turn")
 	if err != nil {
@@ -96,6 +96,14 @@ func TestLegTwoRealTurn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
+	// Reap the provisioned container (see TestLegTwoPrimitives): the reparented
+	// rootless conmon outlives stack Down, so without an explicit RemoveWorkspace
+	// the container leaks past every green run. Registered before StartSession so
+	// a StartSession failure still tears it down. Best-effort — teardown, not an
+	// assertion.
+	t.Cleanup(func() {
+		_ = f.RemoveWorkspace(ctx, containerName, "leg2-realturn-teardown")
+	})
 
 	sessionID, err := f.StartSession(ctx, containerName, "say hello and stop")
 	if err != nil {
@@ -118,5 +126,18 @@ func TestLegTwoRealTurn(t *testing.T) {
 	}
 	if len(transcript) == 0 {
 		t.Fatal("SessionTranscript returned an empty transcript; the completed turn was not persisted")
+	}
+	// The turn is deterministic: the canned stub settles on exactly cannedReply,
+	// so that text MUST appear verbatim in the persisted transcript. A bare
+	// non-empty check would pass on a misconfigured backend that logged only an
+	// error entry or echoed back the prompt; asserting the canned reply's
+	// presence is what proves the canned model actually drove the settled turn
+	// (the record's "final settled entry is present", design.md §H2).
+	var joined strings.Builder
+	for _, e := range transcript {
+		joined.WriteString(e.EntryJSON)
+	}
+	if !strings.Contains(joined.String(), cannedReply) {
+		t.Fatalf("transcript does not contain the canned reply %q; the settled turn was not driven by the canned model", cannedReply)
 	}
 }

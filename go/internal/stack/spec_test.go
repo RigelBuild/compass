@@ -45,6 +45,7 @@ func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 		agentModel  string
 		egressAllow []string
 		checkoutDir string
+		mounts      []string
 		wantExtra   []string // the flags appended after the base five
 	}{
 		{
@@ -78,11 +79,17 @@ func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 			wantExtra:   []string{"--checkout-dir", "/home/agent/repo"},
 		},
 		{
-			name:        "all three set forward in order: agent-model, egress, checkout-dir",
+			name:      "mounts set forward one --mount per spec, in order",
+			mounts:    []string{"/host/a:/home/agent/.omp/agent:ro", "/host/b:/cache"},
+			wantExtra: []string{"--mount", "/host/a:/home/agent/.omp/agent:ro", "--mount", "/host/b:/cache"},
+		},
+		{
+			name:        "all set forward in order: agent-model, egress, checkout-dir, mounts",
 			agentModel:  "anthropic/claude-opus",
 			egressAllow: []string{"api.anthropic.com", "10.0.0.1"},
 			checkoutDir: "/home/agent/repo",
-			wantExtra:   []string{"--agent-model", "anthropic/claude-opus", "--egress-allow", "api.anthropic.com,10.0.0.1", "--checkout-dir", "/home/agent/repo"},
+			mounts:      []string{"/host/a:/home/agent/.omp/agent:ro"},
+			wantExtra:   []string{"--agent-model", "anthropic/claude-opus", "--egress-allow", "api.anthropic.com,10.0.0.1", "--checkout-dir", "/home/agent/repo", "--mount", "/host/a:/home/agent/.omp/agent:ro"},
 		},
 	}
 
@@ -92,6 +99,7 @@ func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 			cfg.AgentModel = tt.agentModel
 			cfg.EgressAllow = tt.egressAllow
 			cfg.CheckoutDir = tt.checkoutDir
+			cfg.Mounts = tt.mounts
 
 			spec := runnerSpec(cfg, cert, token)
 

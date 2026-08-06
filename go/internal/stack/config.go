@@ -57,6 +57,14 @@ type Config struct {
 	// under $HOME (e.g. /home/agent/repo); the embedded supervisor and the
 	// compass-stack CLI leave it unset and keep the runner's default.
 	CheckoutDir string
+	// Mounts is the set of extra read-only/read-write host bind mounts handed to
+	// every agent container, each a raw `host:container[:ro]` spec the runner's
+	// --mount flag parses (cmd/compass-runner/main.go parseMount). Empty (nil)
+	// adds no extra mounts — the core applies no default, mirroring EgressAllow.
+	// The dogfood e2e harness uses it to deliver a canned-model models.yml into
+	// the agent's ~/.omp/agent (SEA-1787 H3); the embedded supervisor and the
+	// compass-stack CLI leave it unset.
+	Mounts []string
 }
 
 // sunPathMax is the longest NUL-terminated path an AF_UNIX address holds on this

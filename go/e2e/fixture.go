@@ -45,6 +45,37 @@ type Fixture struct {
 	// forwarded to the runner as --runtime-dir. Exposed so a process-table
 	// assertion can scope its match to this fixture's own runner.
 	runtimeDir string
+	// stub is the canned model backend when the fixture was built with
+	// WithCannedModel, else nil. Its lifecycle rides a t.Cleanup registered at
+	// startup, so a consumer never closes it directly.
+	stub *cannedModelServer
+}
+
+// fixtureConfig holds the optional knobs a caller flips through fixtureOption
+// before NewFixture stands the stack up. The zero value is the plain H1/H2
+// fixture (no canned model); WithCannedModel turns on the SEA-1787 H3 backend.
+type fixtureConfig struct {
+	canned      bool
+	cannedReply string
+}
+
+// fixtureOption mutates a fixtureConfig. Variadic options keep NewFixture's
+// existing two-arg call sites (H2's primitives test) byte-identical while
+// letting the real-turn test opt into canned mode.
+type fixtureOption func(*fixtureConfig)
+
+// WithCannedModel makes NewFixture stand up the deterministic canned model
+// backend (SEA-1787 H3): it starts the stub SSE server on the host's routable
+// interface, writes a models.yml custom openai-completions provider pointing at
+// it (through the pasta host-gateway) into a host dir bind-mounted at the
+// agent's ~/.omp/agent, and pins the fixture's AgentModel/EgressAllow so the
+// agent resolves that provider and its default-deny egress permits exactly the
+// stub. reply is the assistant text every scripted turn settles on.
+func WithCannedModel(reply string) fixtureOption {
+	return func(fc *fixtureConfig) {
+		fc.canned = true
+		fc.cannedReply = reply
+	}
 }
 
 // Compass is the authenticated CompassService client dialed at the loopback TLS
@@ -69,9 +100,17 @@ func (f *Fixture) DSN() string { return f.dsn }
 // A container-less sandbox is handled by the caller's podmanUsable() skip-guard
 // before NewFixture is reached; here podman and the real image are assumed
 // present.
-func NewFixture(ctx context.Context, t *testing.T) *Fixture {
+//
+// opts default to none — NewFixture(ctx, t) is the plain H1/H2 fixture. Pass
+// WithCannedModel to stand up the SEA-1787 H3 deterministic model backend so a
+// real agent turn can settle with no live-model egress.
+func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixture {
 	t.Helper()
 
+	var fc fixtureConfig
+	for _, opt := range opts {
+		opt(&fc)
+	}
 	// Compile the three stack child binaries from the module root and put them on
 	// PATH: the ProcessSupervisor resolves each Component to a bare binary name
 	// via exec.LookPath, so the stack only stands up if they are found.
@@ -116,6 +155,17 @@ func NewFixture(ctx context.Context, t *testing.T) *Fixture {
 		// image without a production or image change (mirrors
 		// runner/config_delivery_e2e_test.go).
 		CheckoutDir: "/home/agent/repo",
+	}
+
+	// Canned-model mode (SEA-1787 H3): stand up the deterministic stub, write a
+	// models.yml pointing the agent's custom openai-completions provider at it,
+	// and pin the three A4 knobs so the agent resolves that provider and its
+	// default-deny egress permits exactly the stub. Overrides the illustrative
+	// AgentModel/EgressAllow above (which only prove the forward path); a nil
+	// stub means plain mode and every canned field stays as set above.
+	var stub *cannedModelServer
+	if fc.canned {
+		stub = configureCannedModel(t, &cfg, root, fc.cannedReply)
 	}
 
 	deps := stack.Deps{
@@ -170,7 +220,94 @@ func NewFixture(ctx context.Context, t *testing.T) *Fixture {
 		caPath:     caPath,
 		serverURL:  serverURL,
 		runtimeDir: runtimeDir,
+		stub:       stub,
 	}
+}
+
+// cannedAgentDir is the in-container path the canned models.yml is delivered
+// to: the agent user's SDK agent dir ($HOME/.omp/agent, getAgentDir() default),
+// where the ModelRegistry auto-discovers models.yml. $HOME is the runner's
+// --home-dir (cmd/compass-runner/main.go default /home/agent), so this is
+// /home/agent/.omp/agent.
+const cannedAgentDir = "/home/agent/.omp/agent"
+
+// cannedProvider / cannedModelID name the custom openai-completions provider the
+// canned models.yml declares; cannedSelector is the provider/id form COMPASS_MODEL
+// carries, which resolveProviderModelReference matches exactly (model-resolver.ts
+// findExactModelReferenceMatch).
+const (
+	cannedProvider = "cannedci"
+	cannedModelID  = "canned"
+	cannedSelector = cannedProvider + "/" + cannedModelID
+)
+
+// pastaHostGateway is the in-container alias for the host under rootless podman's
+// pasta networking (== host.containers.internal). Grounded firsthand on this box
+// (podman 5.8.4, rootlessNetworkCmd=pasta): a container reaches a host-side
+// listener at this address, NOT at 10.0.2.2 (slirp4netns's gateway) nor at the
+// host's own loopback (pasta does not forward 127.0.0.1). It is the address the
+// agent's model client dials AND the exact egress-allow entry the firewall must
+// permit for that dial to clear default-deny.
+const pastaHostGateway = "169.254.1.2"
+
+// configureCannedModel starts the canned stub and rewrites cfg's three A4 knobs
+// so a real agent turn settles on the scripted reply with zero live egress:
+//   - the stub binds the host's routable interface (pasta forwards a container's
+//     host-gateway traffic there; a loopback bind is unreachable);
+//   - a models.yml declaring a custom openai-completions provider whose baseUrl
+//     is the stub reached THROUGH the pasta host-gateway is written to a host
+//     dir and bind-mounted read-write at the agent's ~/.omp/agent (rw, not ro:
+//     the SDK writes agent.db / sessions/ / models.db as siblings in that same
+//     dir — a ro mount over it would break boot; keep-id maps the host dir owner
+//     to the agent uid so the writes land);
+//   - AgentModel is the provider/id selector resolving to that entry, and
+//     EgressAllow is EXACTLY the host-gateway so default-deny permits only the
+//     stub.
+//
+// It returns the running stub; its Close rides a t.Cleanup so teardown never
+// leaks it. cfgRoot is the fixture's short root (the models.yml host dir lives
+// under it, short enough to stay clear of any path budget).
+func configureCannedModel(t *testing.T, cfg *stack.Config, cfgRoot, reply string) *cannedModelServer {
+	t.Helper()
+
+	hostAddr, err := hostRoutableAddr()
+	if err != nil {
+		t.Fatalf("resolve host routable address for canned model: %v", err)
+	}
+	stub, err := startCannedModelServer(hostAddr+":0", reply)
+	if err != nil {
+		t.Fatalf("start canned model server: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := stub.Close(); err != nil {
+			t.Errorf("canned model server Close: %v", err)
+		}
+	})
+
+	// The agent dials the stub through the pasta host-gateway, not the stub's
+	// bind address — a NAT sits between container and host.
+	baseURL := stub.BaseURL(pastaHostGateway)
+	modelsYML := "" +
+		"providers:\n" +
+		"  " + cannedProvider + ":\n" +
+		"    api: openai-completions\n" +
+		"    baseUrl: " + baseURL + "\n" +
+		"    auth: none\n" +
+		"    models:\n" +
+		"      - id: " + cannedModelID + "\n"
+
+	agentCfgDir := filepath.Join(cfgRoot, "agentcfg")
+	if err := os.MkdirAll(agentCfgDir, 0o700); err != nil {
+		t.Fatalf("mkdir canned agent-config dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentCfgDir, "models.yml"), []byte(modelsYML), 0o600); err != nil {
+		t.Fatalf("write canned models.yml: %v", err)
+	}
+
+	cfg.AgentModel = cannedSelector
+	cfg.EgressAllow = []string{pastaHostGateway}
+	cfg.Mounts = []string{agentCfgDir + ":" + cannedAgentDir}
+	return stub
 }
 
 // buildBinariesFromModuleRoot compiles the three stack child binaries from the
