@@ -39,6 +39,12 @@ projects:
   # dangling supersession/Record pointers (SEA-1187). Migrated from the sealed
   # repo with the corpus it governs (SEA-1794).
   design-ledger-gate: 'tools/design-ledger-gate'
+  # The cx-token consumption gate: scans apps/ui/src CSS for raw hex, --rigel-*
+  # primitives, and literal duration/easing values banned outside tokens.css
+  # (D2/D9 consumption rule; SEA-1812). Mirrors design-ledger-gate; the mark
+  # file's --rigel-purple is the one narrow allowlist. WARN until the adoption
+  # step-5 flip, then ERROR.
+  cx-token-gate: 'tools/cx-token-gate'
   # The one-shot engineering-docs sanitization migration (SEA-1766, T4). Encodes
   # the four-class rewrite policy; no standing run task, deleted after T5.
   docs-migrate: 'tools/docs-migrate'

@@ -1,0 +1,152 @@
+/* Compass global base layer (D7). Reset, body type ramp, scrollbar,
+   :focus-visible ring, and the `.cx-md` prose surface — all re-expressed
+   against the semantic + scale --cx-* tokens authored in tokens.css.
+   Consumption rule (D2): every value here is a --cx-* var() or a scale
+   token; no raw hex, no --rigel-*, no literal durations/easings. */
+
+/* --- Reset --- */
+* {
+	box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+	height: 100%;
+	margin: 0;
+}
+
+/* --- Body type: the Space Mono 12px UI ramp --- */
+body {
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	line-height: 1.5;
+	background: var(--cx-bg);
+	color: var(--cx-text);
+	overflow: hidden;
+	/* pixel-face hygiene: never synthesize bold/italic for the mono UI face
+	   (per brand tokens.css / D7). */
+	font-synthesis: none;
+}
+
+button {
+	font: inherit;
+	color: inherit;
+	cursor: pointer;
+}
+
+/* --- Thin, styled scrollbars everywhere --- */
+::-webkit-scrollbar {
+	width: 9px;
+	height: 9px;
+}
+::-webkit-scrollbar-thumb {
+	background: var(--cx-border-strong);
+	border-radius: var(--cx-radius-md);
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+	/* legacy used a raw grey; here the faint readable-meta text token. */
+	background: var(--cx-text-faint);
+	background-clip: padding-box;
+}
+
+/* --- Focus ring: keyboard-only via :focus-visible (pointer never paints) --- */
+:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: 2px;
+}
+
+/* ==========================================================================
+   .cx-md — rendered markdown/prose surface (trace output, doc blocks).
+   Compact but real; consumes only semantic + scale tokens.
+   ========================================================================== */
+.cx-md {
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-md);
+	line-height: 1.6;
+	color: var(--cx-text);
+}
+
+.cx-md > :first-child {
+	margin-top: 0;
+}
+.cx-md > :last-child {
+	margin-bottom: 0;
+}
+
+.cx-md h1,
+.cx-md h2,
+.cx-md h3,
+.cx-md h4 {
+	margin: var(--cx-space-5) 0 var(--cx-space-3);
+	color: var(--cx-text-bright);
+	line-height: 1.3;
+}
+.cx-md h1 {
+	font-size: var(--cx-text-xl);
+}
+.cx-md h2 {
+	font-size: var(--cx-text-lg);
+}
+.cx-md h3,
+.cx-md h4 {
+	font-size: var(--cx-text-md);
+}
+
+.cx-md p {
+	margin: var(--cx-space-3) 0;
+}
+
+.cx-md ul,
+.cx-md ol {
+	margin: var(--cx-space-3) 0;
+	padding-left: var(--cx-space-6);
+}
+.cx-md li {
+	margin: var(--cx-space-1) 0;
+}
+
+.cx-md a {
+	color: var(--cx-text-accent);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+.cx-md a:hover {
+	color: var(--cx-accent-hover);
+}
+
+.cx-md code {
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	background: var(--cx-bg-raised);
+	border-radius: var(--cx-radius-sm);
+	padding: 0 var(--cx-space-1);
+}
+
+.cx-md pre {
+	margin: var(--cx-space-3) 0;
+	padding: var(--cx-space-3);
+	background: var(--cx-bg-raised);
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-md);
+	overflow: auto;
+}
+.cx-md pre code {
+	background: none;
+	padding: 0;
+}
+
+.cx-md blockquote {
+	margin: var(--cx-space-3) 0;
+	padding-left: var(--cx-space-3);
+	border-left: 2px solid var(--cx-border-strong);
+	color: var(--cx-text-dim);
+}
+
+.cx-md hr {
+	margin: var(--cx-space-5) 0;
+	border: none;
+	border-top: 1px solid var(--cx-border);
+}
