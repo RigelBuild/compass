@@ -438,10 +438,18 @@ func (h *Hub) executeCall(
 		return &compassv1internal.CommsCallResult{
 			Result: &compassv1internal.CommsCallResult_SetStatus{SetStatus: &compassv1internal.SetAgentStatusResponse{}},
 		}, nil
+	case *compassv1internal.CommsCallRequest_Pin:
+		resp, err := h.comms.UpdatePinnedBoardAsAccount(ctx, account, c.Pin)
+		if err != nil {
+			return nil, err
+		}
+		return &compassv1internal.CommsCallResult{
+			Result: &compassv1internal.CommsCallResult_Pin{Pin: resp},
+		}, nil
 	default:
 		return nil, connect.NewError(
 			connect.CodeInvalidArgument,
-			errors.New("runnerhub: comms call has no recognized variant set (post/list/roster/set_status)"),
+			errors.New("runnerhub: comms call has no recognized variant set (post/list/roster/set_status/pin)"),
 		)
 	}
 }

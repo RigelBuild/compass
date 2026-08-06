@@ -510,12 +510,87 @@ func (c *Comms) GetRoster(
 	return connect.NewResponse(&compassv1.GetRosterResponse{Entries: entries}), nil
 }
 
-// UpdatePinnedBoard is unimplemented until T6.
+// UpdatePinnedBoard mutates a channel's pinned board (T6): a plain pin, a
+// compare-and-swap repoint (pin with replace), or an unpin. The board carries
+// only POINTERS to messages already in the channel — this RPC never writes a
+// Message row (DL-099). It emits ChannelChanged carrying the updated board so
+// the live projection stays current, mirroring SetChannelPolicy's write-through.
+//
+// Authz is the channel's post_policy (design.md:626-629): on OWNER_ONLY only
+// owner_account_id may mutate the board; on OPEN any member may. A non-owner on
+// an OWNER_ONLY channel is refused with the SAME CodeNotFound a non-member gets
+// — the no-oracle in-band rejection, consistent with PostMessage's OWNER_ONLY
+// enforcement (store/messages.go:80-82) so the policy leaks no existence signal.
+// The authoritative who-may-act decision is made in the store's board txn, under
+// the channels-row FOR UPDATE lock (membership + post_policy, mirroring
+// PostMessage), so it is serialized against a concurrent membership/policy change
+// — no TOCTOU. The handler does not pre-check authz on a non-tx snapshot; it
+// relies on the store call returning ErrNotFound (mapped to CodeNotFound via
+// edgeError), which preserves the exact no-oracle client contract.
 func (c *Comms) UpdatePinnedBoard(
 	ctx context.Context,
 	req *connect.Request[compassv1.UpdatePinnedBoardRequest],
 ) (*connect.Response[compassv1.UpdatePinnedBoardResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CommsService.UpdatePinnedBoard is not implemented"))
+	actor := c.actorFromContext(ctx)
+	channelID := store.ChannelID(req.Msg.GetChannelId())
+
+	entries, err := c.applyBoardOp(ctx, channelID, actor, req.Msg)
+	if err != nil {
+		return nil, err
+	}
+
+	// Re-read the channel so ChannelChanged and the response carry the current
+	// member/policy projection alongside the updated board.
+	ch, err := c.store.GetChannel(ctx, channelID)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	wire := channelToWire(ch)
+	wire.PinnedEntries = pinnedEntriesToWire(entries)
+	// ChannelChanged carries the updated board (design.md:637). channelToWire
+	// does not project pinned_entries (the board is maintained only here), so the
+	// event is published from the same board-carrying wire the response returns.
+	c.bus.Publish(&compassv1.SubscribeCommsResponse{
+		Payload: &compassv1.SubscribeCommsResponse_ChannelChanged{
+			ChannelChanged: &compassv1.ChannelChanged{Channel: wire},
+		},
+	})
+	return connect.NewResponse(&compassv1.UpdatePinnedBoardResponse{Channel: wire}), nil
+}
+
+// applyBoardOp maps the request's op oneof to its store call: a plain pin
+// (PinMessage, replace ""), a compare-and-swap repoint (PinMessage, replace set),
+// or an unpin (UnpinMessage). An unset oneof is a malformed request
+// (CodeInvalidArgument). Store errors map through edgeError to their Connect
+// codes: a message from another channel or a stale CAS surface in-band.
+func (c *Comms) applyBoardOp(
+	ctx context.Context,
+	channelID store.ChannelID,
+	actor store.AccountID,
+	msg *compassv1.UpdatePinnedBoardRequest,
+) ([]store.PinnedEntry, error) {
+	switch op := msg.GetOp().(type) {
+	case *compassv1.UpdatePinnedBoardRequest_Pin:
+		entries, err := c.store.PinMessage(
+			ctx,
+			channelID,
+			store.MessageID(op.Pin.GetMessageId()),
+			store.MessageID(op.Pin.GetReplaceMessageId()),
+			actor,
+		)
+		if err != nil {
+			return nil, edgeError(err)
+		}
+		return entries, nil
+	case *compassv1.UpdatePinnedBoardRequest_UnpinMessageId:
+		entries, err := c.store.UnpinMessage(ctx, channelID, store.MessageID(op.UnpinMessageId), actor)
+		if err != nil {
+			return nil, edgeError(err)
+		}
+		return entries, nil
+	default:
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("comms: UpdatePinnedBoard request has no pin/unpin op set"))
+	}
 }
 
 // SubscribeComms is implemented in subscribe.go.

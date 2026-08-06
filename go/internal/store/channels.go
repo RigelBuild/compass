@@ -727,10 +727,15 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 	return s.getChannel(ctx, channelID)
 }
 
-// GetChannel loads one channel with its member set by id, or ErrNotFound — the
-// exported form of getChannel, used by the comms coordination reconcile to read
-// a just-committed coordination channel for its post-commit ChannelChanged emit
-// (SEA-1722 T5). A pool read (post-commit), not a tx read.
+// GetChannel loads one channel with its member set and policy by id, or
+// ErrNotFound for an unknown id — the exported form of getChannel. It is a pool
+// read (post-commit), not a tx read, and applies no caller-visibility scoping;
+// the caller-facing not-found/forbidden merge is the caller's, layered on the
+// membership it reads from the returned channel. Two callers rely on it: the
+// comms coordination reconcile reads a just-committed coordination channel for
+// its post-commit ChannelChanged emit (SEA-1722 T5), and the UpdatePinnedBoard
+// handler reads the member set and post policy together to authorize a board
+// mutation against the channel's policy (SEA-1723 T6).
 func (s *Store) GetChannel(ctx context.Context, id ChannelID) (Channel, error) {
 	return s.getChannel(ctx, id)
 }

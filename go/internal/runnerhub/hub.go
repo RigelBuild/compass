@@ -212,6 +212,7 @@ type CommsCaller interface {
 	// returning the server-truncated value that landed in the table — the write
 	// half of the set_status ordered write-then-publish (SEA-1721 T2 / T3).
 	SetStatusAsAccount(ctx context.Context, account store.AccountID, activity string) (string, error)
+	UpdatePinnedBoardAsAccount(ctx context.Context, account store.AccountID, req *compassv1.UpdatePinnedBoardRequest) (*compassv1.UpdatePinnedBoardResponse, error)
 }
 
 // Hub is the Server-side seam: enrollment registry + command router + the
