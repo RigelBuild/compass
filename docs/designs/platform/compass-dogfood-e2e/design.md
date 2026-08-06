@@ -513,6 +513,22 @@ fixture reaches Ready with the REAL agent image configured, both clients
 answer an authenticated RPC, a configured `AgentModel`/`EgressAllow` reaches
 the runner's flags, and `Down` leaves no child processes.
 
+As-built delta (SEA-1785, #181): H1 shipped a THIRD additive `stack.Config`
+field beyond `{AgentModel, EgressAllow}` — `CheckoutDir string`
+(`go/internal/stack/config.go:52-59`), forwarded conditionally as
+`--checkout-dir` (`spec.go:67-71`, empty value omits the flag, same
+zero-value-omit pattern as the other two). The runner's `--checkout-dir`
+defaults to `/workspace` with no env fallback (`cmd/compass-runner/main.go`),
+but the real `compass-agent:latest` image ships `/workspace` non-writable
+(only `$HOME` is agent-owned), so Provision fails with a `mkdir … permission
+denied` unless the checkout dir is agent-writable. The fixture sets
+`CheckoutDir: "/home/agent/repo"` (`go/e2e/fixture.go:118`,
+matching `config_delivery_e2e_test.go`'s precedent). Every leg Provisions, so
+this field is load-bearing for H2/H4/H5/H6 too — a scenario that stands up its
+own `stack.Config` must set it or Provision fails. Same shared-seam cross-lane
+note as `{AgentModel, EgressAllow}`: compass-stack + compass-native consume the
+same `stack.Config`.
+
 ### H2 [harness] — leg-2 primitives + real-turn scenario
 
 The `CreateAgent → Provision → StartSession` primitive chain (A2 table) and
