@@ -41,6 +41,10 @@ type Fixture struct {
 	dsn       string
 	caPath    string
 	serverURL string
+	// runtimeDir is this fixture's unique runner runtime-dir (shortRoot/rt),
+	// forwarded to the runner as --runtime-dir. Exposed so a process-table
+	// assertion can scope its match to this fixture's own runner.
+	runtimeDir string
 }
 
 // Compass is the authenticated CompassService client dialed at the loopback TLS
@@ -105,6 +109,13 @@ func NewFixture(ctx context.Context, t *testing.T) *Fixture {
 		// runnerSpec unit test; here they exercise the real forward path).
 		AgentModel:  "anthropic/claude-opus",
 		EgressAllow: []string{"api.anthropic.com", "10.0.0.1"},
+		// The real compass-agent image ships /workspace (the runner's default
+		// checkout dir) non-writable — only $HOME is agent-owned — so Provision's
+		// in-container `mkdir` of the checkout dir fails there. Anchor the checkout
+		// under $HOME so every leg that Provisions is launchable against the real
+		// image without a production or image change (mirrors
+		// runner/config_delivery_e2e_test.go).
+		CheckoutDir: "/home/agent/repo",
 	}
 
 	deps := stack.Deps{
@@ -152,12 +163,13 @@ func NewFixture(ctx context.Context, t *testing.T) *Fixture {
 	}
 
 	return &Fixture{
-		compass:   compass,
-		comms:     comms,
-		stack:     st,
-		dsn:       dsn,
-		caPath:    caPath,
-		serverURL: serverURL,
+		compass:    compass,
+		comms:      comms,
+		stack:      st,
+		dsn:        dsn,
+		caPath:     caPath,
+		serverURL:  serverURL,
+		runtimeDir: runtimeDir,
 	}
 }
 

@@ -64,6 +64,12 @@ func runnerSpec(cfg Config, cert CertResult, token string) ProcessSpec {
 	if len(cfg.EgressAllow) > 0 {
 		args = append(args, "--egress-allow", strings.Join(cfg.EgressAllow, ","))
 	}
+	// CheckoutDir: forward --checkout-dir only when set. Empty keeps the runner
+	// on its own default (/workspace), so a caller that leaves it unset gets a
+	// byte-identical Args to before this field existed.
+	if cfg.CheckoutDir != "" {
+		args = append(args, "--checkout-dir", cfg.CheckoutDir)
+	}
 	return ProcessSpec{
 		Component: ComponentRunner,
 		Args:      args,

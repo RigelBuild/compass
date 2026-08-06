@@ -22,16 +22,16 @@ func baseRunnerArgs(cfg Config, cert CertResult) []string {
 	}
 }
 
-// TestRunnerSpecForwardsAgentModelAndEgressConditionally is the load-bearing
-// red→green for the A4 Config plumbing (SEA-1785 Part 1). It pins the hard
-// invariant a wrong diff violates: the two new Config fields reach the runner's
-// flags EXACTLY when set, and NEITHER flag appears when they are zero — an
-// embedded supervisor that leaves both unset must get a byte-identical Args to
-// today (forwarding `--agent-model ""` would break it).
+// TestRunnerSpecForwardsOptionalFlagsConditionally is the load-bearing red→green
+// for the A4 Config plumbing (SEA-1785). It pins the hard invariant a wrong diff
+// violates: the optional Config fields reach the runner's flags EXACTLY when set,
+// and NONE appears when they are zero — an embedded supervisor that leaves them
+// unset must get a byte-identical Args to today (forwarding `--agent-model ""`,
+// or a `--checkout-dir` the caller never asked for, would break it).
 //
 // EgressAllow is asserted comma-JOINED into ONE flag value, never repeated
 // flags: the runner's parseEgress splits a single --egress-allow on ",".
-func TestRunnerSpecForwardsAgentModelAndEgressConditionally(t *testing.T) {
+func TestRunnerSpecForwardsOptionalFlagsConditionally(t *testing.T) {
 	cfg := Config{
 		ListenAddr: "127.0.0.1:50052",
 		AgentImage: "compass-agent:latest",
@@ -44,10 +44,11 @@ func TestRunnerSpecForwardsAgentModelAndEgressConditionally(t *testing.T) {
 		name        string
 		agentModel  string
 		egressAllow []string
+		checkoutDir string
 		wantExtra   []string // the flags appended after the base five
 	}{
 		{
-			name:      "both zero forwards neither flag (the embedded-supervisor invariant)",
+			name:      "all zero forwards no optional flag (the embedded-supervisor invariant)",
 			wantExtra: nil,
 		},
 		{
@@ -71,6 +72,18 @@ func TestRunnerSpecForwardsAgentModelAndEgressConditionally(t *testing.T) {
 			egressAllow: []string{"api.anthropic.com"},
 			wantExtra:   []string{"--egress-allow", "api.anthropic.com"},
 		},
+		{
+			name:        "checkout dir set forwards a single --checkout-dir",
+			checkoutDir: "/home/agent/repo",
+			wantExtra:   []string{"--checkout-dir", "/home/agent/repo"},
+		},
+		{
+			name:        "all three set forward in order: agent-model, egress, checkout-dir",
+			agentModel:  "anthropic/claude-opus",
+			egressAllow: []string{"api.anthropic.com", "10.0.0.1"},
+			checkoutDir: "/home/agent/repo",
+			wantExtra:   []string{"--agent-model", "anthropic/claude-opus", "--egress-allow", "api.anthropic.com,10.0.0.1", "--checkout-dir", "/home/agent/repo"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -78,6 +91,7 @@ func TestRunnerSpecForwardsAgentModelAndEgressConditionally(t *testing.T) {
 			cfg := cfg
 			cfg.AgentModel = tt.agentModel
 			cfg.EgressAllow = tt.egressAllow
+			cfg.CheckoutDir = tt.checkoutDir
 
 			spec := runnerSpec(cfg, cert, token)
 

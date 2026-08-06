@@ -99,9 +99,9 @@ func TestHarnessCore(t *testing.T) {
 	// 5. The configured AgentModel/EgressAllow reached the runner's flags. The
 	// deterministic proof is the runnerSpec unit test (internal/stack); here we
 	// confirm end-to-end that the live runner process carries them, reading its
-	// argv from the process table. The runner is the child cfg.AgentModel /
-	// cfg.EgressAllow were forwarded to.
-	assertRunnerHasConfiguredFlags(t)
+	// argv from the process table. Scoped to THIS fixture's unique runtime-dir so
+	// a foreign compass-runner on this shared box cannot satisfy the assertion.
+	assertRunnerHasConfiguredFlags(t, f.runtimeDir)
 
 	// 6. Down drains cleanly and leaves no child processes. A successful Down is
 	// the explicit teardown (the t.Cleanup guard only covers a failed test); after
@@ -126,10 +126,18 @@ func TestHarnessCore(t *testing.T) {
 // --egress-allow to be present — end-to-end proof the A4 Config fields reached
 // the spawned runner, complementing the deterministic runnerSpec unit test.
 //
+// The match is scoped to runtimeDir — this fixture's unique
+// shortRoot(t,"h1")/rt path, forwarded to the runner as --runtime-dir. On a
+// shared box running a compass fleet, an unscoped scrape could match a foreign
+// compass-runner and either false-green (masking a real forward-path break in
+// THIS stack) or flaky-red on a concurrent runner with different flags; with
+// no-retries a flake has no net. Requiring the runtime-dir on the matched line
+// makes a foreign runner unable to satisfy it.
+//
 // It reads argv via `ps` rather than racing the runner's async enrollment; the
 // runner process exists as soon as spawnChain's final step returned, which is
 // before Up returned Ready, so the process is present by the time this runs.
-func assertRunnerHasConfiguredFlags(t *testing.T) {
+func assertRunnerHasConfiguredFlags(t *testing.T, runtimeDir string) {
 	t.Helper()
 	out, err := exec.Command("ps", "-eo", "args").CombinedOutput()
 	if err != nil {
@@ -137,13 +145,14 @@ func assertRunnerHasConfiguredFlags(t *testing.T) {
 	}
 	var runnerLine string
 	for _, line := range strings.Split(string(out), "\n") {
-		if strings.Contains(line, "compass-runner") && strings.Contains(line, "--runner-id") {
+		if strings.Contains(line, "compass-runner") &&
+			strings.Contains(line, "--runtime-dir "+runtimeDir) {
 			runnerLine = line
 			break
 		}
 	}
 	if runnerLine == "" {
-		t.Fatal("no live compass-runner process found in the process table")
+		t.Fatalf("no live compass-runner process for this fixture (--runtime-dir %s) in the process table", runtimeDir)
 	}
 	if !strings.Contains(runnerLine, "--agent-model anthropic/claude-opus") {
 		t.Fatalf("runner argv missing configured --agent-model: %q", runnerLine)

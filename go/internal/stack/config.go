@@ -49,6 +49,14 @@ type Config struct {
 	// handed to every agent container. Empty (nil) is a valid default-deny
 	// policy — no host reachable. The core applies no default.
 	EgressAllow []string
+	// CheckoutDir is the in-container working directory the runner checks the
+	// agent's workspace out into (the agent session's cwd). Empty leaves the
+	// runner on its own default (/workspace) — the core applies no default. The
+	// real agent image ships /workspace non-writable (only $HOME is agent-owned),
+	// so a caller driving Provision against that image must set this to a path
+	// under $HOME (e.g. /home/agent/repo); the embedded supervisor and the
+	// compass-stack CLI leave it unset and keep the runner's default.
+	CheckoutDir string
 }
 
 // sunPathMax is the longest NUL-terminated path an AF_UNIX address holds on this
