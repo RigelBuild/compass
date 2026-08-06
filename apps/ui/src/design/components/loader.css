@@ -60,29 +60,33 @@
 }
 
 /* Static comet (frame 0). Also the reduced-motion substitution: when the
-   animation is off, this ladder holds a legible directional comet — bright fog
-   head at the leading cell tapering across the next four. When the animation
-   runs it overrides these every frame. */
+   animation is off, this ladder holds the exact frame-0 of the chase — bright
+   fog head at the leading cell (--i:0), the four-step tail tapering across the
+   cells BEHIND it in clockwise travel (the highest --i, i.e. the last four
+   cells emitted). Same clockwise reading as the running comet. When the
+   animation runs it overrides these every frame. */
 .cx-loader[data-topology="spinner"] .cx-loader-cell {
 	fill: var(--cx-loader-body-color);
 	opacity: 0;
 	animation: cx-loader-chase var(--cx-pulse-period) steps(1, end) infinite;
-	animation-delay: calc(var(--cx-pulse-period) * (var(--i) / 24 - 1));
+	/* --i missing (a markup-contract slip) degrades to a single wrong-phase
+	   cell, never a whole-ring desync. */
+	animation-delay: calc(var(--cx-pulse-period) * (var(--i, 0) / 24 - 1));
 }
 .cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(1) {
 	fill: var(--cx-loader-head-color);
 	opacity: 1;
 }
-.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(2) {
+.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(24) {
 	opacity: 0.6;
 }
-.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(3) {
+.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(23) {
 	opacity: 0.4;
 }
-.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(4) {
+.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(22) {
 	opacity: 0.24;
 }
-.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(5) {
+.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(21) {
 	opacity: 0.12;
 }
 
