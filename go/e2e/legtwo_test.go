@@ -44,6 +44,14 @@ func TestLegTwoPrimitives(t *testing.T) {
 	if containerName == "" {
 		t.Fatal("Provision returned an empty container name")
 	}
+	// Reap the provisioned container: stack Down stops only the stack processes,
+	// and the rootless conmon holding this container is reparented, so without an
+	// explicit RemoveWorkspace it leaks past every green run. Registered before
+	// StartSession so a StartSession failure still tears the container down.
+	// Best-effort — teardown, not an assertion.
+	t.Cleanup(func() {
+		_ = f.RemoveWorkspace(ctx, containerName, "leg2-primitives-teardown")
+	})
 
 	sessionID, err := f.StartSession(ctx, containerName, "hello from leg-2 primitives")
 	if err != nil {

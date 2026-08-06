@@ -62,10 +62,15 @@ func (f *Fixture) StartSession(ctx context.Context, containerName, initialPrompt
 
 // AwaitSessionSettled subscribes to the session frame stream and returns once the
 // session has settled — the first frame reporting AGENT_SESSION_STATE_READY. It
-// is FULLY EVENT-GATED: it reads frames off the stream until READY or the ctx
-// deadline elapses — no sleeps, no polling, no retry loops. The caller bounds it
-// with a context deadline so a wedged stream fails visibly rather than hanging.
+// is FULLY EVENT-GATED: it reads frames off the stream until READY or the
+// deadline elapses — no sleeps, no polling, no retry loops. It derives its own
+// deadline from ctx (settleTimeout) so a wedged stream fails visibly rather than
+// blocking to the go-test timeout — the guarantee holds for every caller, not
+// just one that remembers to pass a bounded ctx.
 func (f *Fixture) AwaitSessionSettled(ctx context.Context, sessionID string) error {
+	ctx, cancel := context.WithTimeout(ctx, settleTimeout)
+	defer cancel()
+
 	stream, err := f.Compass().SubscribeAgentSession(ctx, connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{
 		SessionId: sessionID,
 	}))
@@ -83,4 +88,21 @@ func (f *Fixture) AwaitSessionSettled(ctx context.Context, sessionID string) err
 		return fmt.Errorf("SubscribeAgentSession stream: %w", err)
 	}
 	return fmt.Errorf("session %s frame stream ended before reaching READY", sessionID)
+}
+
+// RemoveWorkspace tears down a provisioned agent workspace container over
+// CompassService — the teardown counterpart to Provision. clientRequestID is the
+// idempotency key (same retry-dedup contract as Provision). Returns an error
+// rather than panicking so the caller (a test) decides fatality; a best-effort
+// t.Cleanup ignores it. The per-call deadline is threaded from ctx.
+func (f *Fixture) RemoveWorkspace(ctx context.Context, containerName, clientRequestID string) error {
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	if _, err := f.Compass().RemoveAgentWorkspace(rctx, connect.NewRequest(&compassv1.RemoveAgentWorkspaceRequest{
+		ContainerName:   containerName,
+		ClientRequestId: clientRequestID,
+	})); err != nil {
+		return fmt.Errorf("RemoveAgentWorkspace RPC: %w", err)
+	}
+	return nil
 }

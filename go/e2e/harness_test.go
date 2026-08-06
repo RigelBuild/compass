@@ -20,6 +20,13 @@ import (
 // hanging the test. Deterministic per-call deadline, never a retry loop.
 const rpcTimeout = 30 * time.Second
 
+// settleTimeout bounds AwaitSessionSettled: a real agent turn can run well past
+// a single RPC's rpcTimeout (model round-trips, tool calls), so this is
+// deliberately generous — but finite, so a session that never reaches READY
+// fails visibly here instead of blocking to the go-test timeout. A deterministic
+// deadline, never a retry loop.
+const settleTimeout = 2 * time.Minute
+
 // TestHarnessCore is the podman end-to-end proof of the H1 fixture substrate: a
 // real embedded stack (real compass-agent:latest) reaches Ready; both Connect
 // clients answer one AUTHENTICATED RPC each; an UNauthenticated call is rejected
