@@ -44,6 +44,14 @@ export {
 	LifecycleCallRequestSchema,
 	type LifecycleCallResult,
 	LifecycleCallResultSchema,
+	// The agent's activity-status upsert (internal-only AgentGateway gen): the
+	// `SetAgentStatusRequest` carries the human-readable activity string; the
+	// empty `SetAgentStatusResponse` is the non-error ack (a durable
+	// `agent_activity` upsert then a best-effort presence publish, both T2).
+	type SetAgentStatusRequest,
+	SetAgentStatusRequestSchema,
+	type SetAgentStatusResponse,
+	SetAgentStatusResponseSchema,
 	type SpawnPeerRequest,
 	SpawnPeerRequestSchema,
 	type SpawnPeerResponse,
@@ -102,6 +110,9 @@ export {
 	TranscriptReplaySchema,
 } from "./gen/compass/v1/agent_pb";
 export {
+	// The presence enum a RosterEntry carries (field 5) — session-derived
+	// server-side, rendered as a fixed label so it needs no render guard.
+	AgentPresence,
 	type Ask,
 	type AskOption,
 	AskOptionSchema,
@@ -113,6 +124,14 @@ export {
 	AskQuestionAnswerSchema,
 	AskQuestionSchema,
 	AskSchema,
+	// The roster read payloads the agent's `compass_roster` tool constructs: the
+	// request names a `scope` (RosterScope) and, for an agent caller, omits the
+	// session-resolved `agentAccountId`; the response carries the RosterEntry
+	// rows.
+	type GetRosterRequest,
+	GetRosterRequestSchema,
+	type GetRosterResponse,
+	GetRosterResponseSchema,
 	// The comms call payloads the agent tools construct: the post/list request
 	// pair (each with a `container` oneof whose unset case means "the agent's
 	// home channel", resolved server-side) and their responses.
@@ -138,6 +157,11 @@ export {
 	PostMessageRequestSchema,
 	type PostMessageResponse,
 	PostMessageResponseSchema,
+	// One roster row (id, tree position, presence, activity) plus the scope enum
+	// mapping the tool's string param onto the request.
+	type RosterEntry,
+	RosterEntrySchema,
+	RosterScope,
 } from "./gen/compass/v1/comms_pb";
 export {
 	// The plan entry the typed session plan reuses (content + status) and its
