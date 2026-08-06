@@ -67,6 +67,18 @@ const LINEAR_INLINE = /\[(SEA-\d+)\]\(https:\/\/linear\.app\/[^)]*\)/g;
  */
 const LINEAR_SHORTCUT = /\[(SEA-\d+)\](?![([:])/g;
 /**
+ * Gate backstop for class 1: a surviving tracker URL `https://linear.app/…`,
+ * the exact form BOTH transforms above strip (inline and ref-def). Matched as
+ * a URL, not a bare `linear.app` hostname: the policy target is a dead PRIVATE
+ * tracker LINK, and a bare `linear.app` literal in prose or a fenced code
+ * comment (e.g. a proto field's documented SaaS host string) is not a link and
+ * is no leak — flagging it would fail the gate on a legitimate literal the
+ * transforms correctly leave alone (they are line-local and skip fenced code).
+ * Symmetric with SEAL_RESIDUE / the oss/compass check: catches every form the
+ * sanitizer would have rewritten, nothing it deliberately preserves.
+ */
+const LINEAR_RESIDUE = /https:\/\/linear\.app\//;
+/**
  * A link whose target is a private seal-the-product record. Tolerates an
  * optional `./` prefix, a `#anchor`, and a trailing `"title"` attribute.
  */
@@ -284,7 +296,7 @@ export function gate(md: string): GateResult {
 	const body = scanned.join("\n");
 
 	const residue: string[] = [];
-	if (body.includes("linear.app")) {
+	if (LINEAR_RESIDUE.test(body)) {
 		residue.push("linear.app");
 	}
 	// Anchored to match the transform (line 124): a suffixed token like
