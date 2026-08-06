@@ -56,7 +56,7 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	svc := newService("cors-test", bus, st, nil, nil, nil)
+	svc := newService("cors-test", bus, st, nil, nil, nil, nil)
 
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	t.Cleanup(commsBus.Close)

@@ -92,7 +92,7 @@ func newAgentSessionFixture(t *testing.T) agentSessionFixture {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	tail := newSessionTail()
-	svc := newService("test", bus, st, nil, nil, tail)
+	svc := newService("test", bus, st, nil, nil, nil, tail)
 	url := newH2CTestServerWithInterceptors(t, svc,
 		auth.BearerInterceptor(st),
 		auth.BearerStreamInterceptor(st),

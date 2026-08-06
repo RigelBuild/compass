@@ -72,7 +72,7 @@ func TestSubscribeAgentSessionWithoutTailIsUnavailable(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	// nil tail (6th arg): the socket-only path with no Runner-backed fan-out.
-	svc := newService("test", bus, nil, nil, nil, nil)
+	svc := newService("test", bus, nil, nil, nil, nil, nil)
 	client := newH2CClient(t, newH2CTestServer(t, svc))
 
 	if code := subscribeAgentSessionCode(t, client, "sess-1"); code != connect.CodeUnavailable {
@@ -93,7 +93,7 @@ func TestSubscribeAgentSessionWithoutCallerIsUnauthenticated(t *testing.T) {
 	t.Cleanup(bus.Close)
 	// Tail present so branch 1 passes; nil store is never dereferenced because
 	// the missing-caller check returns first.
-	svc := newService("test", bus, nil, nil, nil, newSessionTail())
+	svc := newService("test", bus, nil, nil, nil, nil, newSessionTail())
 	client := newH2CClient(t, newH2CTestServer(t, svc))
 
 	if code := subscribeAgentSessionCode(t, client, "sess-1"); code != connect.CodeUnauthenticated {

@@ -489,12 +489,16 @@ func TestNetworkDoorBodyDeadlineDoesNotCutServerStreamResponse(t *testing.T) {
 	// replay below is also the proof the stream opened and delivered a frame.
 	bus.Publish(statusEvent())
 
-	url := startServerStreamDeadlineDoor(t, newService("test", bus, nil, nil, nil, nil), deadline)
+	url := startServerStreamDeadlineDoor(t, newService("test", bus, nil, nil, nil, nil, nil), deadline)
 	client := newH2CClient(t, url)
 
 	stream := subscribe(t, client, &compassv1.SubscribeEventsRequest{SinceSeq: 0})
 
-	// The snapshot frame proves the stream opened over the deadline-armed door.
+	// A since_seq==0 subscribe leads with the snapshot-boundary frame; the
+	// following snapshot frame proves the stream opened over the deadline door.
+	if b := recvOne(t, stream); b.GetSeq() != 0 || b.GetPayload() != nil {
+		t.Fatalf("boundary frame = seq %d payload %T, want seq 0 / nil", b.GetSeq(), b.GetPayload())
+	}
 	if snap := recvOne(t, stream); snap.GetSeq() != 1 {
 		t.Fatalf("snapshot seq = %d, want 1 (the primed pre-subscribe event)", snap.GetSeq())
 	}

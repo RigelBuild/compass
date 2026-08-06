@@ -72,7 +72,7 @@ func newConfigFixture(t *testing.T) configFixture {
 
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	svc := newService("config-test", bus, st, nil, nil, nil)
+	svc := newService("config-test", bus, st, nil, nil, nil, nil)
 	signaler := &recordingConfigSignaler{}
 	svc.signaler = signaler // white-box: inject the recorder as the emit sink
 

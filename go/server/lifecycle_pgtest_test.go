@@ -497,7 +497,7 @@ func TestRemoveAgentWorkspaceHandler(t *testing.T) {
 func TestRemoveAgentWorkspaceWithoutRunnerHubIsUnavailable(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	svc := newService("test", bus, nil, nil, nil, nil)
+	svc := newService("test", bus, nil, nil, nil, nil, nil)
 	client := newH2CClient(t, newH2CTestServer(t, svc))
 
 	_, err := client.RemoveAgentWorkspace(context.Background(), connect.NewRequest(&compassv1.RemoveAgentWorkspaceRequest{

@@ -92,7 +92,7 @@ func recvOne(t *testing.T, stream *connect.ServerStreamForClient[compassv1.Subsc
 func TestGetServerInfoReturnsConfiguredVersionAndApiVersion(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	url := newH2CTestServer(t, newService("9.9.9-test", bus, nil, nil, nil, nil))
+	url := newH2CTestServer(t, newService("9.9.9-test", bus, nil, nil, nil, nil, nil))
 	client := newH2CClient(t, url)
 
 	resp, err := client.GetServerInfo(context.Background(), connect.NewRequest(&compassv1.GetServerInfoRequest{}))
@@ -117,10 +117,20 @@ func TestSubscribeEventsSnapshotThenTail(t *testing.T) {
 	bus.Publish(statusEvent())
 	bus.Publish(statusEvent())
 
-	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil))
+	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil, nil))
 	client := newH2CClient(t, url)
 
 	stream := subscribe(t, client, &compassv1.SubscribeEventsRequest{SinceSeq: 0})
+
+	// A since_seq==0 subscribe leads with the snapshot-boundary frame (Seq=0, no
+	// payload, SnapshotSeq=0) before the replay — consume it first.
+	boundary := recvOne(t, stream)
+	if boundary.GetSeq() != 0 {
+		t.Fatalf("boundary seq = %d, want 0 (a control marker, not a cursor)", boundary.GetSeq())
+	}
+	if boundary.GetPayload() != nil {
+		t.Fatalf("boundary payload = %T, want nil (positional marker)", boundary.GetPayload())
+	}
 
 	// Snapshot: seqs 1 and 2, oldest first, each stamped with the bus epoch.
 	for wantSeq := uint64(1); wantSeq <= 2; wantSeq++ {
@@ -156,7 +166,7 @@ func TestSubscribeEventsUnderflowCursorYieldsSingleTerminalResync(t *testing.T) 
 	bus.Publish(statusEvent())
 	bus.Publish(statusEvent())
 
-	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil))
+	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil, nil))
 	client := newH2CClient(t, url)
 
 	// A positioned cursor with epoch 0 (an old/other-instance client) can't be
@@ -184,7 +194,7 @@ func TestSubscribeEventsLaggingSubscriberGetsTerminalResync(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 
-	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil))
+	url := newH2CTestServer(t, newService("test", bus, nil, nil, nil, nil, nil))
 	client := newH2CClient(t, url)
 
 	// Prime one small event before subscribing. connect flushes the stream's
@@ -285,7 +295,7 @@ func recvStreamOrTimeout(t *testing.T, stream *connect.ServerStreamForClient[com
 func TestAgentSessionRPCsWithoutRunnerHubAreUnavailable(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	svc := newService("test", bus, nil, nil, nil, nil)
+	svc := newService("test", bus, nil, nil, nil, nil, nil)
 	url := newH2CTestServer(t, svc)
 	client := newH2CClient(t, url)
 
