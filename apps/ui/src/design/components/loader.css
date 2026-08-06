@@ -1,0 +1,58 @@
+/* Loader — .cx-loader[data-topology] (D3, D9). The brand chase-light primitive,
+   pure CSS/SVG. Two topologies:
+   - spinner — closed square loop, indeterminate work.
+   - bar — open track, blue fill + fog head, determinate progress.
+   The non-purple loading palette (blue fill, fog head) per brand color.md; the
+   one sanctioned purple spinner is the brand-mark-in-motion moment and lives in
+   the mark component (mark*.css), not here — purple is never aliased into
+   --cx-*. This file owns the loader CLASS CONTRACT and consumes the D9 motion
+   tokens; the full keyframe/boot-sequence spec is T8. Consumes only --cx-*
+   tiers. */
+
+.cx-loader {
+	display: inline-block;
+	color: var(--cx-accent);
+}
+
+/* ==========================================================================
+   Spinner — a closed square loop (indeterminate). The chase-light travels the
+   loop at the base cadence; the lit head is the accent, the track is faint.
+   ========================================================================== */
+.cx-loader[data-topology="spinner"] {
+	width: var(--cx-space-4);
+	height: var(--cx-space-4);
+	border: 2px solid var(--cx-border);
+	border-top-color: var(--cx-accent);
+	border-radius: var(--cx-radius-sm);
+	animation: cx-loader-spin var(--cx-motion-slow) var(--cx-ease-out) infinite;
+}
+
+@keyframes cx-loader-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+/* ==========================================================================
+   Bar — an open track with a blue fill and a fog head (determinate). Progress
+   is driven by --cx-loader-value (0..1) the compass-ui side sets; no
+   indeterminate bar (brand surfaces.md).
+   ========================================================================== */
+.cx-loader[data-topology="bar"] {
+	display: block;
+	width: 100%;
+	height: var(--cx-space-1);
+	border-radius: var(--cx-radius-sm);
+	background: var(--cx-border);
+	overflow: hidden;
+}
+
+.cx-loader[data-topology="bar"] .cx-loader-fill {
+	display: block;
+	height: 100%;
+	width: calc(var(--cx-loader-value, 0) * 100%);
+	background: var(--cx-accent);
+	/* the fog write-head at the leading edge */
+	border-right: 2px solid var(--cx-text);
+	transition: width var(--cx-motion-base) var(--cx-ease-out);
+}

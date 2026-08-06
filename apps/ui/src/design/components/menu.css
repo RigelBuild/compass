@@ -1,0 +1,90 @@
+/* Menu + Dialog (Kobalte-driven; styled entirely by our classes, D3).
+   - .cx-menu — elev-2 float on the panel surface; keyboard per WAI-ARIA via
+     Kobalte. .cx-menu-item is the interactive row (six mandatory states).
+   - .cx-dialog — elev-3 float; scrim via --cx-scrim on the backdrop.
+   Consumes only --cx-* tiers. No Kobalte default styles ship. */
+
+/* ==========================================================================
+   Menu — a floating command list.
+   ========================================================================== */
+.cx-menu {
+	display: flex;
+	flex-direction: column;
+	min-width: var(--cx-space-8);
+	padding: var(--cx-space-1);
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-md);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	box-shadow: var(--cx-elev-2);
+	z-index: var(--cx-z-overlay);
+}
+
+.cx-menu-item {
+	display: flex;
+	align-items: center;
+	gap: var(--cx-space-2);
+	padding: var(--cx-space-1) var(--cx-space-2);
+	border-radius: var(--cx-radius-sm);
+	background: transparent;
+	color: var(--cx-text);
+	cursor: pointer;
+	transition: background var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+/* --- Hover / active-descendant highlight (Kobalte's data-highlighted) --- */
+.cx-menu-item:hover,
+.cx-menu-item[data-highlighted] {
+	background: var(--cx-bg-hover);
+}
+
+/* --- Active (pressed) --- */
+.cx-menu-item:active {
+	background: var(--cx-bg-active);
+}
+
+/* --- Selected (checked / current) --- */
+.cx-menu-item[data-selected] {
+	background: var(--cx-bg-selected);
+	color: var(--cx-text-bright);
+}
+
+/* --- Focus (keyboard) --- */
+.cx-menu-item:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: -2px;
+}
+
+/* --- Disabled: 45% opacity, default cursor --- */
+.cx-menu-item[data-disabled] {
+	opacity: 0.45;
+	cursor: default;
+}
+
+/* ==========================================================================
+   Dialog — a modal float above the scrim.
+   ========================================================================== */
+.cx-dialog {
+	display: flex;
+	flex-direction: column;
+	gap: var(--cx-space-4);
+	padding: var(--cx-space-5);
+	border: 1px solid var(--cx-border-strong);
+	border-radius: var(--cx-radius-lg);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	box-shadow: var(--cx-elev-3);
+	z-index: var(--cx-z-modal);
+}
+
+/* The scrim backdrop Kobalte renders behind the dialog. */
+.cx-dialog-backdrop {
+	position: fixed;
+	inset: 0;
+	background: var(--cx-scrim);
+	z-index: var(--cx-z-modal);
+}

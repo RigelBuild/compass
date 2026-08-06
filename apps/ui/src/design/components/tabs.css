@@ -1,0 +1,71 @@
+/* Tabs — .cx-tabs[data-orientation] (D3). Topbar view-tabs, right-sidebar
+   activity bar, workspace tab strip. Each .cx-tab is interactive with six
+   mandatory states; selection = accent underline (h) / left rule (v), never a
+   raised background. Consumes only --cx-* tiers. */
+
+.cx-tabs {
+	display: flex;
+	gap: var(--cx-space-1);
+}
+
+.cx-tabs[data-orientation="h"] {
+	flex-direction: row;
+	border-bottom: 1px solid var(--cx-border);
+}
+
+.cx-tabs[data-orientation="v"] {
+	flex-direction: column;
+	border-right: 1px solid var(--cx-border);
+}
+
+.cx-tab {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--cx-space-2);
+	padding: var(--cx-space-2) var(--cx-space-3);
+	border: 0;
+	background: transparent;
+	color: var(--cx-text-dim);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	line-height: 1;
+	cursor: pointer;
+	transition:
+		background var(--cx-motion-fast) var(--cx-ease-out),
+		color var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+/* --- Hover --- */
+.cx-tab:hover {
+	background: var(--cx-bg-hover);
+	color: var(--cx-text);
+}
+
+/* --- Active (pressed) --- */
+.cx-tab:active {
+	background: var(--cx-bg-active);
+}
+
+/* --- Selected: accent rule aligned to the strip orientation --- */
+.cx-tabs[data-orientation="h"] .cx-tab[data-selected] {
+	color: var(--cx-text-bright);
+	box-shadow: inset 0 -2px 0 0 var(--cx-accent);
+}
+
+.cx-tabs[data-orientation="v"] .cx-tab[data-selected] {
+	color: var(--cx-text-bright);
+	box-shadow: inset 2px 0 0 0 var(--cx-accent);
+}
+
+/* --- Focus (keyboard) --- */
+.cx-tab:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: -2px;
+}
+
+/* --- Disabled: 45% opacity, default cursor --- */
+.cx-tab:disabled,
+.cx-tab[data-disabled] {
+	opacity: 0.45;
+	cursor: default;
+}

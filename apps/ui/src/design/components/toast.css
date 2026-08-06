@@ -1,0 +1,36 @@
+/* Toast — .cx-toast[data-kind] (D3). Bottom-right stack at --cx-z-toast.
+   data-kind maps info | ok | warn | error to an accent left rule (status color)
+   without swapping the surface. Display surface (no interactive states beyond a
+   dismiss control, which is a .cx-btn). Consumes only --cx-* tiers. */
+
+.cx-toast {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--cx-space-2);
+	padding: var(--cx-space-3);
+	border: 1px solid var(--cx-border);
+	border-left: 2px solid var(--cx-border-strong);
+	border-radius: var(--cx-radius-md);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	box-shadow: var(--cx-elev-2);
+	z-index: var(--cx-z-toast);
+}
+
+.cx-toast[data-kind="info"] {
+	border-left-color: var(--cx-info);
+}
+
+.cx-toast[data-kind="ok"] {
+	border-left-color: var(--cx-ok);
+}
+
+.cx-toast[data-kind="warn"] {
+	border-left-color: var(--cx-warn);
+}
+
+.cx-toast[data-kind="error"] {
+	border-left-color: var(--cx-error);
+}

@@ -1,0 +1,99 @@
+/* Tree row — .cx-tree-row[data-depth][data-selected] (D3). Agent tree +
+   channel/topic rows: 26px height, caret, state dot, pin affordance. Rows sit
+   on the panel surface tier; selection = --cx-bg-selected + the accent left
+   rule. Six mandatory states. Consumes only --cx-* tiers. */
+
+.cx-tree-row {
+	display: flex;
+	align-items: center;
+	gap: var(--cx-space-2);
+	height: 26px;
+	padding: 0 var(--cx-space-2);
+	border-left: 2px solid transparent;
+	background: transparent;
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	line-height: 1;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: background var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+/* Depth indent: 12px per level, applied as leading padding. depth 0..5 cover
+   the rendered tree; deeper nesting reuses the last step. */
+.cx-tree-row[data-depth="0"] {
+	padding-left: var(--cx-space-2);
+}
+
+.cx-tree-row[data-depth="1"] {
+	padding-left: var(--cx-space-5);
+}
+
+.cx-tree-row[data-depth="2"] {
+	padding-left: var(--cx-space-7);
+}
+
+.cx-tree-row[data-depth="3"] {
+	padding-left: calc(var(--cx-space-7) + var(--cx-space-3));
+}
+
+.cx-tree-row[data-depth="4"] {
+	padding-left: calc(var(--cx-space-8) + var(--cx-space-4));
+}
+
+.cx-tree-row[data-depth="5"] {
+	padding-left: calc(var(--cx-space-8) + var(--cx-space-7));
+}
+
+/* Caret + pin affordances (visual boxes; toggle behaviour is compass-ui). */
+.cx-tree-row .cx-tree-caret {
+	flex: none;
+	width: var(--cx-space-3);
+	color: var(--cx-text-faint);
+}
+
+.cx-tree-row .cx-tree-pin {
+	flex: none;
+	margin-left: auto;
+	color: var(--cx-text-faint);
+	opacity: 0;
+	transition: opacity var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+/* --- Hover: row wash + reveal the pin affordance --- */
+.cx-tree-row:hover {
+	background: var(--cx-bg-hover);
+}
+
+.cx-tree-row:hover .cx-tree-pin {
+	opacity: 1;
+}
+
+/* --- Active (pressed) --- */
+.cx-tree-row:active {
+	background: var(--cx-bg-active);
+}
+
+/* --- Selected: selection surface + accent left rule --- */
+.cx-tree-row[data-selected] {
+	background: var(--cx-bg-selected);
+	border-left-color: var(--cx-accent);
+	color: var(--cx-text-bright);
+}
+
+.cx-tree-row[data-selected] .cx-tree-pin {
+	opacity: 1;
+}
+
+/* --- Focus (keyboard) --- */
+.cx-tree-row:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: -2px;
+}
+
+/* --- Disabled: 45% opacity, default cursor --- */
+.cx-tree-row[data-disabled] {
+	opacity: 0.45;
+	cursor: default;
+}

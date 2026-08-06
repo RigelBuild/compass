@@ -1,0 +1,19 @@
+/* Tooltip — .cx-tooltip (D3, Kobalte). Elev-1 float, open delay
+   --cx-tooltip-delay (the delay is Kobalte's timing prop — this owns the
+   visual box). Never load-bearing: the same info is reachable elsewhere.
+   Display surface (no interactive states). Consumes only --cx-* tiers. */
+
+.cx-tooltip {
+	display: block;
+	max-width: 280px;
+	padding: var(--cx-space-1) var(--cx-space-2);
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-sm);
+	background: var(--cx-bg-raised);
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-xs);
+	line-height: 1.4;
+	box-shadow: var(--cx-elev-1);
+	z-index: var(--cx-z-overlay);
+}

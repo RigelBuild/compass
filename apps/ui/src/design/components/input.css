@@ -1,0 +1,92 @@
+/* Input / Search / Select / Composer (D3). Text-entry surfaces sharing one
+   contract: border --cx-border, focus swaps to --cx-border-focus + ring.
+   Six mandatory states on each. Consumes only --cx-* tiers. */
+
+.cx-input,
+.cx-search,
+.cx-select,
+.cx-composer {
+	display: block;
+	width: 100%;
+	padding: var(--cx-space-2) var(--cx-space-3);
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-md);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	line-height: 1.4;
+	transition:
+		border-color var(--cx-motion-fast) var(--cx-ease-out),
+		background var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+.cx-input::placeholder,
+.cx-search::placeholder,
+.cx-composer::placeholder {
+	color: var(--cx-text-faint);
+}
+
+/* Search carries a leading-icon affordance via padding; select a caret gap. */
+.cx-search {
+	padding-left: var(--cx-space-6);
+}
+
+.cx-select {
+	cursor: pointer;
+	padding-right: var(--cx-space-6);
+}
+
+/* --- Composer: multi-line, grows to a cap; Enter/Shift-Enter is compass-ui
+   behaviour (this owns the visual box only). --- */
+.cx-composer {
+	min-height: var(--cx-space-8);
+	max-height: 40vh;
+	resize: none;
+	overflow-y: auto;
+}
+
+/* --- Hover --- */
+.cx-input:hover,
+.cx-search:hover,
+.cx-select:hover,
+.cx-composer:hover {
+	background: var(--cx-bg-hover);
+}
+
+/* --- Active (pressed, chiefly select) --- */
+.cx-select:active {
+	background: var(--cx-bg-active);
+}
+
+/* --- Selected (a chosen select value / active field) --- */
+.cx-input[data-selected],
+.cx-search[data-selected],
+.cx-select[data-selected] {
+	border-color: var(--cx-accent);
+	color: var(--cx-text-bright);
+}
+
+/* --- Focus: border swaps to focus color + the ring --- */
+.cx-input:focus-visible,
+.cx-search:focus-visible,
+.cx-select:focus-visible,
+.cx-composer:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: 1px;
+	border-color: var(--cx-border-focus);
+	background: var(--cx-bg-panel);
+}
+
+/* --- Disabled: 45% opacity, default cursor --- */
+.cx-input:disabled,
+.cx-search:disabled,
+.cx-select:disabled,
+.cx-composer:disabled,
+.cx-input[data-disabled],
+.cx-search[data-disabled],
+.cx-select[data-disabled],
+.cx-composer[data-disabled] {
+	opacity: 0.45;
+	cursor: default;
+}

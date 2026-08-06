@@ -1,0 +1,50 @@
+/* Command palette — .cx-palette (D3, Kobalte combobox). CLASS SKELETON ONLY:
+   the full palette surface spec (results, groups, scoring, empty state) is T5.
+   This defines just the base class + data-* + the tokens it consumes, so T5
+   builds on a stable base. elev-3 float above the scrim at --cx-z-palette.
+   Consumes only --cx-* tiers. */
+
+.cx-palette {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	max-width: 640px;
+	border: 1px solid var(--cx-border-strong);
+	border-radius: var(--cx-radius-lg);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	box-shadow: var(--cx-elev-3);
+	z-index: var(--cx-z-palette);
+	overflow: hidden;
+}
+
+/* The palette query field. Focus renders the ring; border swaps to focus. */
+.cx-palette-input {
+	padding: var(--cx-space-3) var(--cx-space-4);
+	border: 0;
+	border-bottom: 1px solid var(--cx-border);
+	background: transparent;
+	color: var(--cx-text-bright);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-lg);
+}
+
+.cx-palette-input::placeholder {
+	color: var(--cx-text-faint);
+}
+
+.cx-palette-input:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: -2px;
+	border-bottom-color: var(--cx-border-focus);
+}
+
+/* The palette scrim backdrop. */
+.cx-palette-backdrop {
+	position: fixed;
+	inset: 0;
+	background: var(--cx-scrim);
+	z-index: var(--cx-z-palette);
+}

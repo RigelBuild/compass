@@ -1,0 +1,77 @@
+/* State dot — .cx-state-dot[data-state] (D3). The frozen brand eight-glyph
+   agent-state vocabulary (brand/state-icons.md), rendered as a 9×9 1-bit bitmap
+   (glyph geometry lives in components.md; compass-ui emits the inline SVG on
+   this box). This file carries: the 9×9 sizing, per-state color via --cx-st-*,
+   the crispEdges 1-bit rendering rule, and the working-only pulse hook.
+
+   Mirrors the existing .state-dot[data-state=…] convention (app.css:490-514):
+   class + data-* variant modifiers, keyed off the AgentState enum. Only
+   `working` animates, in the working-state green (--cx-st-working), NEVER the
+   purple phosphor (--cx-pulse-color). The other seven are static, distinguished
+   by glyph + color alone (CVD-safe, reduced-motion-safe by brand contract). */
+
+.cx-state-dot {
+	display: inline-block;
+	width: 9px;
+	height: 9px;
+	flex: none;
+	color: var(--cx-st-idle);
+	/* 1-bit cells, hard edges — brand/spine.md §Rendering. The inline SVG the
+	   compass-ui side emits sets shape-rendering="crispEdges"; this mirrors it
+	   for any CSS-painted cell so nothing anti-aliases. */
+	image-rendering: pixelated;
+	shape-rendering: crispedges;
+}
+
+/* --- Per-state color (fill/stroke resolves from currentColor) --- */
+.cx-state-dot[data-state="working"] {
+	color: var(--cx-st-working);
+}
+
+.cx-state-dot[data-state="idle"] {
+	color: var(--cx-st-idle);
+}
+
+.cx-state-dot[data-state="waiting"] {
+	color: var(--cx-st-waiting);
+}
+
+.cx-state-dot[data-state="done"] {
+	color: var(--cx-st-done);
+}
+
+.cx-state-dot[data-state="paused"] {
+	color: var(--cx-st-paused);
+}
+
+.cx-state-dot[data-state="stopped"] {
+	color: var(--cx-st-stopped);
+}
+
+.cx-state-dot[data-state="error"] {
+	color: var(--cx-st-error);
+}
+
+.cx-state-dot[data-state="disconnected"] {
+	color: var(--cx-st-disconnected);
+}
+
+/* --- The working pulse: the ONLY animated state. data-alive="1" is set on
+   `working` alone. The pulse runs at the brand pulse cadence
+   (--cx-pulse-period) in the working-state green (--cx-st-working) — never the
+   purple phosphor. Reduced motion zeroes --cx-pulse-period upstream (tokens.css
+   + data-reduce="on"), collapsing this to a static glyph. --- */
+@keyframes cx-state-dot-pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.4;
+	}
+}
+
+.cx-state-dot[data-state="working"][data-alive="1"] {
+	animation: cx-state-dot-pulse var(--cx-pulse-period) var(--cx-ease-out)
+		infinite;
+}
