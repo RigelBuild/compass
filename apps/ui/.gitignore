@@ -2,8 +2,9 @@
 # credential cannot be committed by accident.
 #
 # `.env.local` is where a developer puts their own machine's
-# VITE_COMPASS_CALLER_ID (and a bearer, if they ever point the UI at a real
-# authenticated door); Vite loads it last, so it overrides `.env.development`.
+# VITE_COMPASS_BASE_URL (and an optional VITE_COMPASS_TOKEN bearer, if they
+# point the UI at a real authenticated door); Vite loads it last, so it
+# overrides `.env.development`.
 # A bare `.env` and `.env.production` are ignored for a sharper reason: Vite
 # loads `.env` in EVERY mode, production included, and bakes its VITE_* values
 # into the built bundle — so a token left there ships.

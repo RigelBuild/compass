@@ -48,8 +48,8 @@ describe("createLiveClients (query record T1)", () => {
 describe("resolveCaller (WhoAmI boot probe)", () => {
 	test("returns the accountId the server reports for the caller", async () => {
 		// A fake whose whoAmI resolves a known account id — resolveCaller must
-		// hand back exactly that string (the caller learned from the connection's
-		// credential, the boot source that replaced the env var).
+		// hand back exactly that string (the caller learned from the server via
+		// WhoAmI at boot).
 		const client = {
 			whoAmI: async (_req: Record<string, never>) => ({ accountId: "acc-x" }),
 		} as unknown as CompassClient;
@@ -57,10 +57,10 @@ describe("resolveCaller (WhoAmI boot probe)", () => {
 		expect(await resolveCaller(client)).toBe("acc-x");
 	});
 
-	// The empty-id guard the deleted env path used to own (connection.ts threw on
-	// a blank VITE_COMPASS_CALLER_ID): a server that answers WhoAmI with no
-	// account id (no-auth door, unauthenticated bearer) must reject, not return
-	// "", so an unknown "me" never silently scopes the store to an empty caller.
+	// resolveCaller must reject a blank identity: a server that answers WhoAmI
+	// with no account id (no-auth door, unauthenticated bearer) has to throw, not
+	// return "", so an unknown "me" never silently scopes the store to an empty
+	// caller.
 	for (const [label, value] of [
 		["empty", ""],
 		["whitespace-only", "  \t"],
