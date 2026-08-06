@@ -54,6 +54,11 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 				<Show when={props.badge !== undefined}>
 					<span class="folder-badge">{props.badge}</span>
 				</Show>
+				<Show when={a().activity}>
+					<span class="agent-activity" title={a().activity}>
+						{a().activity}
+					</span>
+				</Show>
 			</button>
 			<button
 				type="button"
@@ -162,6 +167,10 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 	// always-subscribed-to-own is implicit + non-togglable (design.md:416): render
 	// the control fixed, never a toggle that claims you can unsubscribe.
 	const fixed = () => channel().alwaysSubscribed === true;
+	// mandatory_subscription channels force-subscribe every member, so ANY
+	// subscribe affordance — even a disabled toggle or a fixed marker — would be a
+	// lie: the control is HIDDEN entirely (§T8).
+	const mandatory = () => channel().mandatorySubscription === true;
 	// The channel's most-recent topics (last-activity-desc), capped — a DM has no
 	// topic index (it is a flat conversation), so it surfaces none.
 	const recentTopics = () =>
@@ -195,34 +204,38 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 				    else until the subscribe RPC lands — the wire has none, and the
 				    local-only toggle this used to drive silently reverted on the next
 				    SubscribeComms snapshot. It still shows the real membership, it
-				    just can't change it yet. */}
-				<Show
-					when={!fixed()}
-					fallback={
-						<span
-							class="ch-sub fixed"
-							role="img"
-							title="Always subscribed — this subscription is implicit and can't be turned off."
-							aria-label="Always subscribed"
-						>
-							◉
-						</span>
-					}
-				>
-					<button
-						type="button"
-						class="ch-sub"
-						classList={{ on: subscribed() }}
-						disabled
-						title={
-							subscribed()
-								? "Subscribed — new messages are pushed to you. Unsubscribing is not wired up yet."
-								: "Joined, not subscribed. Subscribing is not wired up yet."
+				    just can't change it yet. On mandatory_subscription channels the
+				    control is HIDDEN entirely: every member is force-subscribed, so
+				    any affordance (toggle or fixed marker) would be a lie (§T8). */}
+				<Show when={!mandatory()}>
+					<Show
+						when={!fixed()}
+						fallback={
+							<span
+								class="ch-sub fixed"
+								role="img"
+								title="Always subscribed — this subscription is implicit and can't be turned off."
+								aria-label="Always subscribed"
+							>
+								◉
+							</span>
 						}
-						aria-pressed={subscribed()}
 					>
-						{subscribed() ? "◉" : "○"}
-					</button>
+						<button
+							type="button"
+							class="ch-sub"
+							classList={{ on: subscribed() }}
+							disabled
+							title={
+								subscribed()
+									? "Subscribed — new messages are pushed to you. Unsubscribing is not wired up yet."
+									: "Joined, not subscribed. Subscribing is not wired up yet."
+							}
+							aria-pressed={subscribed()}
+						>
+							{subscribed() ? "◉" : "○"}
+						</button>
+					</Show>
 				</Show>
 			</div>
 

@@ -14,6 +14,7 @@ import type {
 	ChannelGroup,
 	ConvBlock,
 	Message,
+	PinnedEntry,
 	Topic,
 } from "./comms-stub";
 import { RESERVED_MENTIONS } from "./comms-stub";
@@ -62,6 +63,40 @@ export function railChannels(channels: readonly Channel[]): Channel[] {
  *  (membership `none` → a join affordance lives here, not in the rail). */
 export function browsableChannels(channels: readonly Channel[]): Channel[] {
 	return channels.filter((c) => c.membership === "none");
+}
+
+// ── Channel post policy + pinned board (comms substrate §A2/§A3) ─────────────
+
+/** Whether `callerId` may post to `channel` under its post policy (comms
+ *  substrate §A2). An `open` channel takes any member; an `owner_only` channel
+ *  takes only its `ownerAccountId` — a one-way directive surface. Membership is
+ *  a SEPARATE gate the composer applies (a `none` channel takes no post
+ *  regardless), so this reports the POLICY verdict alone. An `owner_only`
+ *  channel with no owner set admits no one. */
+export function canPost(channel: Channel, callerId: string): boolean {
+	if (channel.postPolicy === "owner_only") {
+		return channel.ownerAccountId === callerId;
+	}
+	return true;
+}
+
+/** Resolve a channel's pinned board to its messages, in board order (comms
+ *  substrate §A3). Each `PinnedEntry` points at an existing message id; the
+ *  entry is ordered by `position`, and an id that resolves no loaded message is
+ *  dropped (a pin far below the loaded window, not yet paged in — the strip
+ *  shows what it can rather than a hole). Pure over the injected message set, so
+ *  a new `ChannelChanged` snapshot re-derives the strip with no refetch. */
+export function pinnedMessages(
+	channel: Channel,
+	messages: readonly Message[],
+): Message[] {
+	const entries = channel.pinnedEntries;
+	if (!entries || entries.length === 0) return [];
+	const byId = new Map(messages.map((m) => [m.id, m]));
+	return [...entries]
+		.sort((a, b) => a.position - b.position)
+		.map((e: PinnedEntry) => byId.get(e.messageId))
+		.filter((m): m is Message => m !== undefined);
 }
 
 /** A group of channels under one channel group, for the rail's grouped view.

@@ -344,6 +344,12 @@ type AgentLifecycle = AgentState;
 export interface Agent {
 	account: Account;
 	lifecycle?: AgentLifecycle;
+	/** The agent's human-readable activity note (comms substrate §A1;
+	 *  AgentPresenceChanged.activity), carried beside the lifecycle state so the
+	 *  presence renderings can show WHAT the agent is doing, not just its
+	 *  process state. Absent/empty = none (the presence render shows the state
+	 *  dot + handle alone, as today). */
+	activity?: string;
 	/** UI-only roster config. */
 	role: AgentRole;
 	/** UI-only (the model the OMP SDK is set with). */
@@ -468,6 +474,7 @@ export const STUB_AGENTS: Agent[] = [
 			homeChannelId: "dm-supervisor",
 		},
 		lifecycle: "working",
+		activity: "coordinating the wave — routing SEA-1795",
 		role: "supervisor",
 		model: "claude-opus-4",
 		cwd: "~/agents/workspaces/supervisor/sealed",
@@ -483,6 +490,7 @@ export const STUB_AGENTS: Agent[] = [
 			homeChannelId: "dm-warden",
 		},
 		lifecycle: "working",
+		activity: "auditing push-guard denials",
 		role: "warden",
 		model: "seal-wasm-runtime",
 		cwd: "(sandboxed)",
@@ -499,6 +507,7 @@ export const STUB_AGENTS: Agent[] = [
 			parentAgentId: "acc-supervisor",
 		},
 		lifecycle: "working",
+		activity: "T8 board strip — building the render",
 		role: "worker",
 		model: "claude-opus-4",
 		cwd: "~/agents/workspaces/cook/sealed",
@@ -542,6 +551,7 @@ export const STUB_AGENTS: Agent[] = [
 			parentAgentId: "acc-supervisor",
 		},
 		lifecycle: "working",
+		activity: "cargo test -p compass-daemon (green)",
 		role: "worker",
 		model: "claude-opus-4",
 		cwd: "~/agents/workspaces/livingstone/sealed",

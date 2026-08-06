@@ -273,4 +273,68 @@ describe("LeftSidebar (T5)", () => {
 		// No membership anywhere moved.
 		expect(store.channels().map((c) => c.membership)).toEqual(before);
 	});
+
+	// Contract (§T8): the subscribe toggle is HIDDEN entirely on
+	// mandatory_subscription channels — the model force-subscribes every member,
+	// so any unsubscribe affordance (even a disabled one, even a fixed marker)
+	// would be a lie. Fixture: ch-announcements and ch-coordination are both
+	// mandatorySubscription. Mutation-check: removing the hide reddens (a toggle
+	// or fixed marker reappears on a mandatory row).
+	test("hides the subscribe control on mandatory_subscription channels", () => {
+		const { container } = mountSidebar();
+
+		const rowByName = (name: string): HTMLElement | undefined =>
+			railRows(container).find(
+				(r) => r.querySelector(".ch-name")?.textContent === name,
+			);
+
+		// Precondition: the fixture channels we assert on are actually mandatory.
+		for (const id of ["ch-announcements", "ch-coordination"]) {
+			const ch = STUB_CHANNELS.find((c) => c.id === id);
+			expect(ch?.mandatorySubscription).toBe(true);
+		}
+
+		// Neither a toggle button nor a fixed marker renders on a mandatory row.
+		for (const name of ["announcements", "coordination"]) {
+			const row = rowByName(name);
+			expect(row).toBeDefined();
+			expect(row?.querySelectorAll(".ch-sub").length).toBe(0);
+		}
+
+		// Non-triviality: a NON-mandatory rail channel still renders its control.
+		const compass = rowByName("svc.compass");
+		expect(compass).toBeDefined();
+		expect(compass?.querySelector(".ch-sub")).not.toBeNull();
+	});
+
+	// Contract (§T8): an agent's presence render carries its human-readable
+	// activity note (Agent.activity, AgentPresenceChanged.activity) beside the
+	// process-state dot. Present → a `.agent-activity` with the fixture text;
+	// absent → nothing extra. Mutation-check: dropping the render reddens the
+	// present leg. Fixture: supervisor has an activity; cousteau has none.
+	test("renders an agent's activity note when present", () => {
+		const { container } = mountSidebar();
+
+		const leafByHandle = (handle: string): HTMLElement | undefined =>
+			[...container.querySelectorAll<HTMLElement>(".tree-agent-row")].find(
+				(r) => r.querySelector(".name")?.textContent === handle,
+			);
+
+		const supervisor = STUB_AGENTS.find(
+			(a) => a.account.id === "acc-supervisor",
+		);
+		expect(supervisor?.activity).toBeDefined();
+		const supRow = leafByHandle("supervisor");
+		expect(supRow).toBeDefined();
+		expect(supRow?.querySelector(".agent-activity")?.textContent).toBe(
+			supervisor?.activity,
+		);
+
+		// cousteau has no activity → no `.agent-activity` on its row.
+		const cousteau = STUB_AGENTS.find((a) => a.account.id === "acc-cousteau");
+		expect(cousteau?.activity).toBeUndefined();
+		const cousteauRow = leafByHandle("cousteau");
+		expect(cousteauRow).toBeDefined();
+		expect(cousteauRow?.querySelector(".agent-activity")).toBeNull();
+	});
 });

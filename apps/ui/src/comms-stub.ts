@@ -72,6 +72,28 @@ export type ChannelKind = "channel" | "dm" | "group_dm";
  *  - `subscribed` — joined and pushed new messages at turn-end. */
 export type Membership = "none" | "joined" | "subscribed";
 
+/** A channel's post policy (comms.proto ChannelPostPolicy). `open` — any member
+ *  may post (the zero value, today's behavior). `owner_only` — only the
+ *  channel's `ownerAccountId` may post; the coordination channel is provisioned
+ *  this way, a one-way directive surface (design compass-manager-comms-substrate
+ *  §A2). The composer renders disabled with an "owner-only channel" hint when
+ *  the caller fails the policy. */
+export type ChannelPostPolicy = "open" | "owner_only";
+
+/** One entry on a channel's pinned board (comms.proto PinnedEntry): an EXISTING
+ *  message promoted to the board at a position. Pinning mints no message — the
+ *  `messageId` already lives in a topic of the channel, so the strip resolves it
+ *  against the loaded message set. The board is authored by the channel owner
+ *  (agent-managed, Matt's ruling) and rides the `ChannelChanged` event; the
+ *  human client renders it, never edits it. Think of it as a permanent thread
+ *  headline on a channel whose messages otherwise live only in topics. */
+export interface PinnedEntry {
+	/** The pinned message id; already exists in a topic of this channel. */
+	messageId: string;
+	/** Ordinal position on the board (0-based, ascending). */
+	position: number;
+}
+
 /** A channel — a named conversation within a group (comms.proto Channel). */
 export interface Channel {
 	/** Server-assigned stable id. */
@@ -100,6 +122,26 @@ export interface Channel {
 	/** Unread message count for the rail badge (a UI projection; the real count
 	 *  derives from the caller's last-read cursor vs the message stream). */
 	unread?: number;
+	/** Who may post here (comms.proto post_policy). `open` — any member; the
+	 *  composer is gated only on membership. `owner_only` — only `ownerAccountId`
+	 *  may post, and the composer renders disabled with an "owner-only channel"
+	 *  hint for everyone else. Defaults to `open` (the wire zero value). */
+	postPolicy: ChannelPostPolicy;
+	/** The channel's owner/operator account for policy purposes (comms.proto
+	 *  owner_account_id); absent when unowned. On an `owner_only` channel this is
+	 *  the sole account permitted to post. */
+	ownerAccountId?: string;
+	/** When true, membership implies a subscription that cannot be toggled off
+	 *  (comms.proto mandatory_subscription — the coordination-channel class). The
+	 *  subscribe toggle is hidden entirely: the model says every member is
+	 *  force-subscribed, so offering an unsubscribe control would be a lie. */
+	mandatorySubscription?: boolean;
+	/** The channel's pinned board, ordered by `position` (comms.proto
+	 *  pinned_entries). A pure pointer set over existing messages; the strip in
+	 *  the channel header resolves each `messageId` against the loaded messages.
+	 *  Empty/absent = no board. Rides the `ChannelChanged` event, so a pin edit
+	 *  re-renders the strip with no refetch. */
+	pinnedEntries?: PinnedEntry[];
 }
 
 // ── Messages + content blocks (comms.proto Message / MessageBlock / Ask) ──────
@@ -240,6 +282,7 @@ const AGENT_HOME_DMS: Channel[] = STUB_AGENTS.map((a) => ({
 	kind: "dm",
 	memberAccountIds: [MATT, a.account.id],
 	membership: "subscribed",
+	postPolicy: "open",
 }));
 
 export const STUB_CHANNELS: Channel[] = [
@@ -253,6 +296,16 @@ export const STUB_CHANNELS: Channel[] = [
 		membership: "subscribed",
 		alwaysSubscribed: true,
 		unread: 2,
+		// A one-way directive surface: the supervisor owns it and is the only
+		// poster, every member is force-subscribed, and it carries a pinned board
+		// (the standing posture headlines) the human client renders read-only.
+		postPolicy: "owner_only",
+		ownerAccountId: "acc-supervisor",
+		mandatorySubscription: true,
+		pinnedEntries: [
+			{ messageId: "msg-a1", position: 0 },
+			{ messageId: "msg-a2", position: 1 },
+		],
 	},
 	{
 		id: "ch-coordination",
@@ -262,6 +315,12 @@ export const STUB_CHANNELS: Channel[] = [
 		memberAccountIds: EVERYONE,
 		topic: "Active hand-off + routing across the wave.",
 		membership: "subscribed",
+		// Owner-only + mandatory too, but owned by the caller (Matt) — so the
+		// composer is ENABLED here, the contrast that proves the gate keys on the
+		// owner id, not merely on the owner_only policy.
+		postPolicy: "owner_only",
+		ownerAccountId: MATT,
+		mandatorySubscription: true,
 	},
 	{
 		id: "ch-svc-compass",
@@ -272,6 +331,7 @@ export const STUB_CHANNELS: Channel[] = [
 		topic: "The compass service lane — seam reviews, contract rulings.",
 		membership: "subscribed",
 		unread: 5,
+		postPolicy: "open",
 	},
 	{
 		id: "ch-svc-ci-build",
@@ -281,6 +341,7 @@ export const STUB_CHANNELS: Channel[] = [
 		memberAccountIds: EVERYONE,
 		topic: "CI image + pipeline ownership.",
 		membership: "joined",
+		postPolicy: "open",
 	},
 	// A channel the caller can see but has not joined — exercises the discover /
 	// join affordance (membership seam).
@@ -292,6 +353,7 @@ export const STUB_CHANNELS: Channel[] = [
 		memberAccountIds: [MATT, "acc-supervisor"],
 		topic: "Off-topic.",
 		membership: "none",
+		postPolicy: "open",
 	},
 	{
 		id: "dm-cook-ross",
@@ -299,6 +361,7 @@ export const STUB_CHANNELS: Channel[] = [
 		kind: "group_dm",
 		memberAccountIds: [MATT, "acc-cook", "acc-ross"],
 		membership: "subscribed",
+		postPolicy: "open",
 	},
 	// The per-agent home DMs (one 1:1 DM per board agent) — the 1:1 surviving-
 	// roster DMs that replace the pre-reshape hand-listed set.

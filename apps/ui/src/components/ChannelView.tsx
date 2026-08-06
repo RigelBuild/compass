@@ -8,10 +8,12 @@ import {
 } from "solid-js";
 import {
 	blockText,
+	canPost,
 	channelGlyph,
 	dmLabel,
 	handleOf,
 	isDm,
+	pinnedMessages,
 	type TopicGroup,
 	topicSummary,
 	topicsOf,
@@ -213,20 +215,45 @@ const ChannelHeader: Component<{
 		isDm(props.channel)
 			? dmLabel(props.channel, store.caller().id, props.byId)
 			: props.channel.name;
+	// The channel's pinned board — the "permanent thread" headline the human
+	// client RENDERS (never edits/unpins/pins; pins are agent-managed). Resolved
+	// reactively from the loaded messages, so a new ChannelChanged snapshot (new
+	// pinnedEntries or new messages) re-derives the strip with no refetch.
+	const pinned = createMemo(() =>
+		pinnedMessages(props.channel, store.messages()),
+	);
 	return (
-		<header class="conv-head">
-			<span class="conv-glyph" aria-hidden="true">
-				{channelGlyph(props.channel.kind)}
-			</span>
-			<span class="conv-name">{label()}</span>
-			<Show when={props.channel.topic}>
-				<span class="conv-topic">{props.channel.topic}</span>
+		<>
+			<header class="conv-head">
+				<span class="conv-glyph" aria-hidden="true">
+					{channelGlyph(props.channel.kind)}
+				</span>
+				<span class="conv-name">{label()}</span>
+				<Show when={props.channel.topic}>
+					<span class="conv-topic">{props.channel.topic}</span>
+				</Show>
+				<span class="conv-spacer" />
+				<span class="conv-membership" data-m={props.channel.membership}>
+					{props.channel.membership}
+				</span>
+			</header>
+			<Show when={pinned().length > 0}>
+				<ul class="pinned-board" aria-label="Pinned board">
+					<For each={pinned()}>
+						{(msg) => (
+							<li class="pinned-item">
+								<span class="pinned-item-author">
+									{`@${handleOf(props.byId, msg.authorAccountId)}`}
+								</span>
+								<span class="pinned-item-text">
+									{msg.blocks.map(blockText).find((t) => t.length > 0) ?? ""}
+								</span>
+							</li>
+						)}
+					</For>
+				</ul>
 			</Show>
-			<span class="conv-spacer" />
-			<span class="conv-membership" data-m={props.channel.membership}>
-				{props.channel.membership}
-			</span>
-		</header>
+		</>
 	);
 };
 
@@ -255,9 +282,22 @@ export const Composer: Component<{
 	const store = useStore();
 	const [draft, setDraft] = createSignal("");
 	const [error, setError] = createSignal<string | null>(null);
+	// The post-policy gate (comms substrate §A2): an `owner_only` channel admits
+	// only its owner. Separate from the membership gate — the composer is
+	// disabled if EITHER fails. This is the honest-disabled pattern (mirroring
+	// LeftSidebar's fixed subscribe toggle): the control renders visibly disabled
+	// with a reason, never hidden and never offered.
+	const policyOk = () => canPost(props.channel, store.caller().id);
+	const blocked = () => props.channel.membership === "none" || !policyOk();
+	const hint = () =>
+		props.channel.membership === "none"
+			? "Join to post…"
+			: !policyOk()
+				? "Owner-only channel — only the channel owner may post here."
+				: props.placeholder;
 	const send = () => {
 		const text = draft().trim();
-		if (!text || props.channel.membership === "none") return;
+		if (!text || blocked()) return;
 		setError(null);
 		setDraft("");
 		store
@@ -274,13 +314,9 @@ export const Composer: Component<{
 		<div class="conv-composer">
 			<input
 				class="field"
-				placeholder={
-					props.channel.membership === "none"
-						? "Join to post…"
-						: props.placeholder
-				}
+				placeholder={hint()}
 				value={draft()}
-				disabled={props.channel.membership === "none"}
+				disabled={blocked()}
 				onInput={(e) => setDraft(e.currentTarget.value)}
 				onKeyDown={(e) => {
 					if (e.key === "Enter" && !e.shiftKey) {
@@ -292,13 +328,16 @@ export const Composer: Component<{
 			<button
 				type="button"
 				class="send"
-				disabled={
-					props.channel.membership === "none" || draft().trim().length === 0
-				}
+				disabled={blocked() || draft().trim().length === 0}
 				onClick={send}
 			>
 				send
 			</button>
+			<Show when={!policyOk() && props.channel.membership !== "none"}>
+				<span class="conv-composer-policy-hint">
+					Owner-only channel — only the channel owner may post here.
+				</span>
+			</Show>
 			<Show when={error()}>
 				{(msg) => (
 					<span class="conv-composer-error" role="alert">
@@ -373,14 +412,17 @@ const NewTopic: Component<{ channel: Channel }> = (props) => {
 	const [name, setName] = createSignal("");
 	const [message, setMessage] = createSignal("");
 	const [error, setError] = createSignal<string | null>(null);
+	// Same post-policy gate as the composer (comms substrate §A2): a non-owner
+	// cannot start a topic on an `owner_only` channel either, so the affordance
+	// renders disabled with the owner-only reason.
+	const policyOk = () => canPost(props.channel, store.caller().id);
+	const blocked = () => props.channel.membership === "none" || !policyOk();
 	const canStart = () =>
-		props.channel.membership !== "none" &&
-		name().trim().length > 0 &&
-		message().trim().length > 0;
+		!blocked() && name().trim().length > 0 && message().trim().length > 0;
 	const start = () => {
 		const topicName = name().trim();
 		const text = message().trim();
-		if (!topicName || !text || props.channel.membership === "none") return;
+		if (!topicName || !text || blocked()) return;
 		setError(null);
 		setName("");
 		setMessage("");
@@ -400,16 +442,20 @@ const NewTopic: Component<{ channel: Channel }> = (props) => {
 		<div class="new-topic">
 			<input
 				class="new-topic-name field"
-				placeholder="New topic name…"
+				placeholder={
+					!policyOk() && props.channel.membership !== "none"
+						? "Owner-only channel…"
+						: "New topic name…"
+				}
 				value={name()}
-				disabled={props.channel.membership === "none"}
+				disabled={blocked()}
 				onInput={(e) => setName(e.currentTarget.value)}
 			/>
 			<input
 				class="new-topic-message field"
 				placeholder="First message…"
 				value={message()}
-				disabled={props.channel.membership === "none"}
+				disabled={blocked()}
 				onInput={(e) => setMessage(e.currentTarget.value)}
 				onKeyDown={(e) => {
 					if (e.key === "Enter" && !e.shiftKey) {
@@ -426,6 +472,11 @@ const NewTopic: Component<{ channel: Channel }> = (props) => {
 			>
 				new topic
 			</button>
+			<Show when={!policyOk() && props.channel.membership !== "none"}>
+				<span class="new-topic-policy-hint">
+					Owner-only channel — only the channel owner may start a topic here.
+				</span>
+			</Show>
 			<Show when={error()}>
 				{(msg) => (
 					<span class="new-topic-error" role="alert">

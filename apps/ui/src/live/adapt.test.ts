@@ -9,6 +9,7 @@ import {
 	ChannelGroupSchema,
 	ChannelGroupVisibility,
 	ChannelKind,
+	ChannelPostPolicy,
 	ChannelSchema,
 	create,
 	MessageBlockSchema,
@@ -307,6 +308,10 @@ describe("adaptChannel", () => {
 		kind?: ChannelKind;
 		members?: string[];
 		subscribers?: string[];
+		postPolicy?: ChannelPostPolicy;
+		ownerAccountId?: string;
+		mandatorySubscription?: boolean;
+		pinnedEntries?: { messageId: string; position: number }[];
 	}) =>
 		create(ChannelSchema, {
 			id: over.id ?? "c",
@@ -315,6 +320,10 @@ describe("adaptChannel", () => {
 			kind: over.kind ?? ChannelKind.CHANNEL,
 			memberAccountIds: over.members ?? [],
 			subscriberAccountIds: over.subscribers ?? [],
+			postPolicy: over.postPolicy ?? ChannelPostPolicy.OPEN,
+			ownerAccountId: over.ownerAccountId ?? "",
+			mandatorySubscription: over.mandatorySubscription ?? false,
+			pinnedEntries: over.pinnedEntries ?? [],
 		});
 	const empty: ReadonlySet<string> = new Set();
 
@@ -392,6 +401,68 @@ describe("adaptChannel", () => {
 		);
 		expect(joinedHome.membership).toBe("joined");
 		expect(joinedHome.alwaysSubscribed).toBeUndefined();
+	});
+
+	// ── T8 policy + pinned-board fields (comms substrate §A2/§A3) ──
+	for (const [wire, expected] of [
+		[ChannelPostPolicy.OPEN, "open"],
+		[ChannelPostPolicy.OWNER_ONLY, "owner_only"],
+	] as const) {
+		test(`postPolicy ${ChannelPostPolicy[wire]} → "${expected}"`, () => {
+			expect(
+				adaptChannel(wireChannel({ postPolicy: wire }), caller, empty)
+					.postPolicy,
+			).toBe(expected);
+		});
+	}
+
+	test("empty ownerAccountId → undefined; non-empty passes through", () => {
+		expect(
+			adaptChannel(wireChannel({ ownerAccountId: "" }), caller, empty)
+				.ownerAccountId,
+		).toBeUndefined();
+		expect(
+			adaptChannel(wireChannel({ ownerAccountId: "acc-owner" }), caller, empty)
+				.ownerAccountId,
+		).toBe("acc-owner");
+	});
+
+	test("mandatorySubscription false → undefined; true passes through", () => {
+		expect(
+			adaptChannel(wireChannel({ mandatorySubscription: false }), caller, empty)
+				.mandatorySubscription,
+		).toBeUndefined();
+		expect(
+			adaptChannel(wireChannel({ mandatorySubscription: true }), caller, empty)
+				.mandatorySubscription,
+		).toBe(true);
+	});
+
+	test("empty pinnedEntries → undefined", () => {
+		expect(
+			adaptChannel(wireChannel({ pinnedEntries: [] }), caller, empty)
+				.pinnedEntries,
+		).toBeUndefined();
+	});
+
+	// Each wire entry maps to the domain pointer (messageId + position); the
+	// wire's audit extras are dropped. Verbatim order (position ordering is the
+	// render seam's job, pinnedMessages).
+	test("pinnedEntries map to the domain pointer, audit extras dropped", () => {
+		const channel = adaptChannel(
+			wireChannel({
+				pinnedEntries: [
+					{ messageId: "m-a", position: 0 },
+					{ messageId: "m-b", position: 1 },
+				],
+			}),
+			caller,
+			empty,
+		);
+		expect(channel.pinnedEntries).toEqual([
+			{ messageId: "m-a", position: 0 },
+			{ messageId: "m-b", position: 1 },
+		]);
 	});
 });
 
