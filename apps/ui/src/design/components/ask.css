@@ -31,10 +31,6 @@
 	color: var(--cx-text-dim);
 }
 
-.cx-ask[data-answered] .cx-ask-options {
+.cx-ask[data-answered] .cx-ask-options .cx-btn:not([data-selected]) {
 	opacity: 0.45;
-}
-
-.cx-ask[data-answered] .cx-btn[data-selected] {
-	opacity: 1;
 }

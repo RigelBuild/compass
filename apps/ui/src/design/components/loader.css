@@ -5,8 +5,10 @@
    The non-purple loading palette (blue fill, fog head) per brand color.md; the
    one sanctioned purple spinner is the brand-mark-in-motion moment and lives in
    the mark component (mark*.css), not here — purple is never aliased into
-   --cx-*. This file owns the loader CLASS CONTRACT and consumes the D9 motion
-   tokens; the full keyframe/boot-sequence spec is T8. Consumes only --cx-*
+   --cx-*. This file owns the loader CLASS CONTRACT + static geometry and
+   consumes the D9 motion tokens; the chase-light keyframe (spinner head-travel
+   + bar fog-head motion) and the full boot-sequence spec are T8. Consumes only
+   --cx-*
    tiers. */
 
 .cx-loader {
@@ -24,13 +26,6 @@
 	border: 2px solid var(--cx-border);
 	border-top-color: var(--cx-accent);
 	border-radius: var(--cx-radius-sm);
-	animation: cx-loader-spin var(--cx-motion-slow) var(--cx-ease-out) infinite;
-}
-
-@keyframes cx-loader-spin {
-	to {
-		transform: rotate(360deg);
-	}
 }
 
 /* ==========================================================================

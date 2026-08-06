@@ -16,9 +16,10 @@
 	height: 9px;
 	flex: none;
 	color: var(--cx-st-idle);
-	/* 1-bit cells, hard edges — brand/spine.md §Rendering. The inline SVG the
-	   compass-ui side emits sets shape-rendering="crispEdges"; this mirrors it
-	   for any CSS-painted cell so nothing anti-aliases. */
+	/* 1-bit cells, hard edges — brand/spine.md §Rendering. These are inherited
+	   backstops: compass-ui emits an inline SVG child inside this box, and these
+	   properties inherit into the child SVG's shapes so nothing anti-aliases —
+	   not a guarantee on the empty wrapper itself. */
 	image-rendering: pixelated;
 	shape-rendering: crispedges;
 }
@@ -26,10 +27,6 @@
 /* --- Per-state color (fill/stroke resolves from currentColor) --- */
 .cx-state-dot[data-state="working"] {
 	color: var(--cx-st-working);
-}
-
-.cx-state-dot[data-state="idle"] {
-	color: var(--cx-st-idle);
 }
 
 .cx-state-dot[data-state="waiting"] {

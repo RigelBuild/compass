@@ -66,7 +66,7 @@
 	min-width: var(--cx-space-4);
 	height: var(--cx-space-4);
 	padding: 0 var(--cx-space-1);
-	border-radius: var(--cx-space-4);
+	border-radius: 999px;
 	background: var(--cx-accent);
 	color: var(--cx-bg);
 	font-family: var(--cx-font-ui);
@@ -95,11 +95,11 @@
 		border-color var(--cx-motion-fast) var(--cx-ease-out);
 }
 
-.cx-chip:hover {
+.cx-chip:not([data-disabled]):hover {
 	background: var(--cx-bg-hover);
 }
 
-.cx-chip:active {
+.cx-chip:not([data-disabled]):active {
 	background: var(--cx-bg-active);
 }
 

@@ -103,9 +103,15 @@ plus the accent left rule, never a raised background.
 
 ### The eight frozen state glyphs (canonical 9×9 grids)
 
-`#` = lit cell, `.` = off. Each grid reads correctly at the 12px row-dot size
-(the reason `working` is a double-chevron, not a ring — `brand
-state-icons.md`).
+`#` = lit cell, `.` = off. The dot box is 9px (one CSS px per grid cell —
+razor-crisp per the brand 1-bit whole-cell rule); it sits within the ~12px
+agent-row height. Each grid reads correctly at that size (the reason `working`
+is a double-chevron, not a ring — `brand state-icons.md`).
+
+**Open question (for Matt):** Render size reconciliation: the frozen record T3
+phrases this as "the 12px row-dot render size"; shipped as a 9px crisp dot in a
+12px row. Confirm the 9px dot box is the intended shipped size (vs an 18px
+integer-multiple).
 
 `working` — double-chevron `»` (fast-forward); the ONLY animated state
 (`--cx-st-working`):

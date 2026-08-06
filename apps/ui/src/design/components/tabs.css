@@ -36,13 +36,13 @@
 }
 
 /* --- Hover --- */
-.cx-tab:hover {
+.cx-tab:not([data-disabled]):hover {
 	background: var(--cx-bg-hover);
 	color: var(--cx-text);
 }
 
 /* --- Active (pressed) --- */
-.cx-tab:active {
+.cx-tab:not([data-disabled]):active {
 	background: var(--cx-bg-active);
 }
 

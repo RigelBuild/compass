@@ -64,7 +64,7 @@
 }
 
 .cx-btn[data-variant="danger"]:hover {
-	background: color-mix(in srgb, var(--cx-error) 16%, transparent);
+	background: var(--cx-error-muted);
 }
 
 /* --- Active (pressed) --- */

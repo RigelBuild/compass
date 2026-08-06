@@ -43,7 +43,7 @@
 }
 
 .cx-tree-row[data-depth="5"] {
-	padding-left: calc(var(--cx-space-8) + var(--cx-space-7));
+	padding-left: calc(var(--cx-space-8) + var(--cx-space-6) + var(--cx-space-1));
 }
 
 /* Caret + pin affordances (visual boxes; toggle behaviour is compass-ui). */
@@ -62,7 +62,7 @@
 }
 
 /* --- Hover: row wash + reveal the pin affordance --- */
-.cx-tree-row:hover {
+.cx-tree-row:not([data-disabled]):hover {
 	background: var(--cx-bg-hover);
 }
 
@@ -71,7 +71,7 @@
 }
 
 /* --- Active (pressed) --- */
-.cx-tree-row:active {
+.cx-tree-row:not([data-disabled]):active {
 	background: var(--cx-bg-active);
 }
 

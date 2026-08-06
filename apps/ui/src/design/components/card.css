@@ -20,12 +20,12 @@
 }
 
 /* --- Hover --- */
-.cx-card:hover {
+.cx-card:not([data-disabled]):hover {
 	background: var(--cx-bg-hover);
 }
 
 /* --- Active (pressed) --- */
-.cx-card:active {
+.cx-card:not([data-disabled]):active {
 	background: var(--cx-bg-active);
 }
 
