@@ -242,7 +242,7 @@ supervised children** (containers scoped out — Open Question 0).
 4. Signal each **live, identity-matched** pgid `SIGTERM`, in **reverse start
    order** (runner → server → postgres) — the same order `drainChildren` uses
    (`stack.go:287-289`), so the server drains before its database goes away.
-   Signaling the server first also makes a surviving runner exit on its own
+   Signaling the server also makes a surviving runner exit on its own
    (its link drops — `run.go:115-119`), a belt-and-suspenders alongside directly
    signaling the runner group.
 5. Per-pgid bounded wait for group death (poll `kill(-pgid, 0)` re-checking
@@ -263,17 +263,24 @@ supervised children** (containers scoped out — Open Question 0).
      group leader is a zombie awaiting reap by init/subreaper, so a group can be
      genuinely killed yet non-ESRCH for a short window. `down` treats
      `SIGKILL-sent` + `socket dark (server/pg)` — or, for the runner, the group
-     transitioning toward ESRCH — as a **successful** teardown of that component,
-     and does NOT report failure merely because a just-SIGKILLed group has not
-     yet been reaped. Only a group still *answering* (server/pg socket live) or
-     still *live-and-non-zombie* at budget expiry is a real teardown failure.
+     going ESRCH — as a **successful** teardown of that component. Because
+     `SIGKILL` is unblockable, a runner group still non-ESRCH *after* the group
+     SIGKILL can only be zombies awaiting init's reap (a guaranteed-terminal
+     state), so it is treated as success; a live-and-non-zombie group can occur
+     only *before* SIGKILL escalation, never after. `down` does NOT report
+     failure merely because a just-SIGKILLed group has not yet been reaped. Only
+     a group still *answering* (server/pg socket live) or still
+     *live-and-non-zombie* at budget expiry is a real teardown failure.
 7. **Removal / partial-failure policy**: on a fully successful teardown (every
    recorded group confirmed gone), remove the pgid file and clear the lockfile.
    On a **partial** teardown (some groups torn, at least one still live at budget
    expiry), do NOT remove the pgid file — removing it would orphan the survivors
    with no on-disk record to retry against. Instead rewrite it to the surviving
-   set (same atomic temp+rename), leave the lockfile, and report which
-   components survived, so a retried `down` (or a human) can finish the job.
+   set (same atomic temp+rename) and report which components survived, so a
+   retried `down` (or a human) can finish the job. In the cross-process path the
+   lockfile holder (the `up` process) is already dead, so the survivor-rewritten
+   pgid file — not the lockfile — is the retry record; leaving the lockfile is
+   harmless but is not itself an interlock.
 
 ### Process-safety invariants (non-negotiable)
 
@@ -290,6 +297,12 @@ supervised children** (containers scoped out — Open Question 0).
   lockfile-staleness call costs a spurious lock reclaim; a wrong pgid-staleness
   call SIGKILLs an innocent process group — categorically worse, so the pgid
   path must be strictly more careful than the lockfile, not "the same exposure".)
+- **The verify→signal gap is an irreducible residual**, inherent to pgid
+  signaling (Linux has no pidfd for a process group, so no atomic
+  check-and-signal): the identity check and the `SIGTERM`/`SIGKILL` are separate
+  syscalls. The start-time token narrows the residual to a same-pid *and*
+  same-start-time collision inside that microsecond window — the accepted
+  irreducible floor, not a closable hole.
 - **Bounded escalation**: SIGTERM, per-child drain budget, then group SIGKILL —
   never an unbounded wait, never a first-resort SIGKILL.
 
