@@ -70,6 +70,14 @@ func runnerSpec(cfg Config, cert CertResult, token string) ProcessSpec {
 	if cfg.CheckoutDir != "" {
 		args = append(args, "--checkout-dir", cfg.CheckoutDir)
 	}
+	// Mounts: forward one --mount per spec only when set. The runner's --mount is
+	// a repeatable flag (cmd/compass-runner/main.go parseMount), so each spec
+	// travels as its own flag, in order. Empty (nil) appends nothing, so a caller
+	// that leaves it unset gets a byte-identical Args to before this field
+	// existed — the same additive/zero-value-omit guarantee as the three above.
+	for _, m := range cfg.Mounts {
+		args = append(args, "--mount", m)
+	}
 	return ProcessSpec{
 		Component: ComponentRunner,
 		Args:      args,
