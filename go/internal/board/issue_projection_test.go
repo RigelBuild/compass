@@ -11,7 +11,9 @@ package board
 
 import (
 	"testing"
+	"time"
 
+	"github.com/sealedsecurity/compass/go/events"
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
@@ -174,5 +176,60 @@ func TestRoundTripCoordinate(t *testing.T) {
 		t.Errorf("round-trip coordinate = {%v %q %q %d}, want {%v %q %q %d}",
 			back.ForgeProvider, back.ForgeHost, back.Repo, back.Number,
 			orig.ForgeProvider, orig.ForgeHost, orig.Repo, orig.Number)
+	}
+}
+
+// recordPublishTimeout bounds the live-fan-out wait; a safety net, never a sleep.
+const recordPublishTimeout = 2 * time.Second
+
+// TestRecordAndPublishFansAndRecordsCommittedState pins the STATE-ONLY
+// record+publish the write-path executor drives after it has committed and read
+// a transition back: a subscriber registered before the call receives the
+// committed issue as the issue=16 variant, AND a later Snapshot reads the same
+// recorded state. No store is touched (nil store here) — RecordAndPublish maps
+// the passed committed row and only records + fans it. A regression that reached
+// for the store would nil-panic; one that skipped the map-record would leave the
+// Snapshot empty.
+func TestRecordAndPublishFansAndRecordsCommittedState(t *testing.T) {
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	p := NewIssueProjection(bus, nil) // nil store: RecordAndPublish must not touch it
+
+	sub, err := bus.Subscribe(0, bus.InstanceEpoch())
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	t.Cleanup(sub.Cancel)
+
+	committed := store.Issue{
+		ID:            "iss-1",
+		ForgeProvider: store.ForgeProviderGitHub,
+		ForgeHost:     "github.com",
+		Repo:          "sealedsecurity/compass",
+		Number:        42,
+		State:         store.IssueStateInProgress,
+	}
+	p.RecordAndPublish(committed)
+
+	select {
+	case e, ok := <-sub.Live:
+		if !ok {
+			t.Fatal("live channel closed before an event arrived")
+		}
+		got := e.Payload.GetIssue()
+		if got == nil {
+			t.Fatalf("live event carried a non-Issue payload: %v", e.Payload)
+		}
+		if got.GetId() != "iss-1" || got.GetState() != compassv1.IssueState_ISSUE_STATE_IN_PROGRESS {
+			t.Fatalf("fanned issue = %s/%v, want iss-1/IN_PROGRESS", got.GetId(), got.GetState())
+		}
+	case <-time.After(recordPublishTimeout):
+		t.Fatal("timed out waiting for the fanned issue")
+	}
+
+	snap := p.Snapshot()
+	if len(snap) != 1 || snap[0].GetId() != "iss-1" ||
+		snap[0].GetState() != compassv1.IssueState_ISSUE_STATE_IN_PROGRESS {
+		t.Fatalf("Snapshot = %+v, want one iss-1/IN_PROGRESS entry", snap)
 	}
 }

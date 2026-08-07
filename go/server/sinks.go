@@ -79,13 +79,16 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 // satisfies the runnerhub-defined CommsCaller.
 var _ comms.AskAnswerWaker = (*runnerhub.Hub)(nil)
 
-// wireHubServiceCycles breaks the two post-construction cycles between the hub
-// and the account-facing services that are built before it (the hub relays
-// through them, so they cannot take the hub at construction): the hub<->lifecycle
-// cycle (SEA-1618 T5, RelayLifecycleCall) and the comms<->hub ask-answer wake
-// cycle (SEA-1577). Called once at assembly before any RPC is served.
-func wireHubServiceCycles(hub *runnerhub.Hub, commsSvc *comms.Comms, st *store.Store) {
+// wireHubServiceCycles breaks the post-construction cycles between the hub and
+// the account-facing services that are built before it (the hub relays through
+// them, so they cannot take the hub at construction): the hub<->lifecycle cycle
+// (SEA-1618 T5, RelayLifecycleCall), the hub<->board cycle (agent primary
+// lifecycle T3-a, RelayBoardCall — the board caller executes against the store +
+// the issue projection), and the comms<->hub ask-answer wake cycle (SEA-1577).
+// Called once at assembly before any RPC is served.
+func wireHubServiceCycles(hub *runnerhub.Hub, commsSvc *comms.Comms, st *store.Store, issueBrd *board.IssueProjection) {
 	hub.SetLifecycleCaller(newLifecycleService(st, hub))
+	hub.SetBoardCaller(newBoardService(st, issueBrd))
 	commsSvc.SetAskWaker(hub)
 	// The roster read (SEA-1721 T2) joins the hub's in-memory presence enum; the
 	// hub in turn reads it from the T8 presence projection wired at
