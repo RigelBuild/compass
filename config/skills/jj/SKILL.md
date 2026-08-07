@@ -133,12 +133,14 @@ jj-vine submit <issue>-<slug>                 # push (through the CI gate) + ope
   `user/` prefix. In multi-agent work, keep the name descriptive of the lane so
   peers can tell stacks apart.
 
-`[TODO]` The concrete push-authorization guard — the command that enforces the
-never-push-`main` and branch-allowlist invariant at push time — is not yet
-established for Compass. Until it lands, that invariant is **behavioral**: you
-enforce it; nothing blocks you. Do not invent or run a guarded-push wrapper that
-is not provisioned in your clone. `jj-vine submit` remains the push path, and the
-`hk` hook remains the CI gate.
+`[TODO SEA-1882]` The push-authorization guard that enforces the
+never-push-`main` and owner-allowlist invariant is a bundled OMP extension that
+intercepts your push/merge commands in-container and hard-blocks a violation —
+load-bearing, because Compass cannot rely on a user's own repo branch protection
+(recommended as a server-side backstop, never guaranteed). Until that extension
+ships, the invariant is **behavioral**: you enforce it; nothing blocks you. Do
+not invent or run a guarded-push wrapper that is not provisioned in your clone.
+`jj-vine submit` remains the push path, and the `hk` hook remains the CI gate.
 
 `[TODO SEA-1734]` Reading PR and review state (checks, threads, merge status) uses
 the Compass forge tools, which land pre-Dogfood as an operator-provisioned
