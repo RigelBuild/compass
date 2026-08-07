@@ -115,6 +115,7 @@ func TestParsePodmanVersion(t *testing.T) {
 		wantParseErr bool
 		wantRefused  bool
 	}{
+		{"below floor 3.4 (Ubuntu 22.04 LTS) is refused", "3.4.4", false, true},
 		{"below floor 4.2 is refused", "4.2.0", false, true},
 		{"at floor 4.3 is admitted", "4.3.1", false, false},
 		{"dev box 5.8.4 is admitted", "5.8.4", false, false},

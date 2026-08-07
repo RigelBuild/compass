@@ -99,9 +99,9 @@ type ContainerSpec struct {
 // ExecSpec is how to run a command inside a container.
 type ExecSpec struct {
 	Command []string
-	// User is the --user value. Nil runs as the image's default user (the image
-	// bakes uid 1000, not root); agent work always sets a uid explicitly so it
-	// runs unprivileged.
+	// User is the --user value. Nil runs as the image's default user (for the
+	// compass-agent image that is uid 1000, not root); agent work always sets a
+	// uid explicitly so it runs unprivileged.
 	User *string
 	// Workdir is the --workdir inside the container.
 	Workdir *string
@@ -152,9 +152,9 @@ func (o ExecOutput) Success() bool { return o.ExitCode == 0 }
 // ignored.
 type StreamingExecSpec struct {
 	Command []string
-	// User is the --user value. Nil runs as the image's default user (the image
-	// bakes uid 1000, not root); agent work always sets a uid so it runs
-	// unprivileged.
+	// User is the --user value. Nil runs as the image's default user (for the
+	// compass-agent image that is uid 1000, not root); agent work always sets a
+	// uid so it runs unprivileged.
 	User *string
 	// Workdir is the --workdir inside the container.
 	Workdir *string

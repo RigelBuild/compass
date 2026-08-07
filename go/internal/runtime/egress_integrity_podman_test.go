@@ -10,15 +10,14 @@ package runtime
 // flush or edit the ruleset even though the container nominally holds the
 // capability").
 //
-// The defect this pins: if an agent exec omitted --user it would run as the
-// container's default user and inherit the container's added CAP_NET_ADMIN,
-// letting a compromised agent `nft flush ruleset` to disarm its own egress. Every
-// agent-controllable exec sets --user (agent_exec.go, agent.go's ExecAsAgent /
-// credential / config / checkout execs); the only nil-user exec is the Runner's
-// own armEgress provisioning step, which legitimately needs the capability. This
-// test locks the two halves so a future refactor that drops an --user (e.g. a
-// rename moving an exec-spec construction) reddens rather than silently
-// reintroducing the escape.
+// What this pins: podman's own --user mechanism strips the container's ambient
+// CAP_NET_ADMIN from an exec pinned to the agent uid — the property the hermetic
+// spec tests (agentenv_test.go) cannot prove because they never spawn podman. It
+// does NOT prove any production call site sets --user: those are pinned
+// separately by agentenv_test.go TestExecSpecRunsAsWorkspaceUIDNotContainerRoot
+// (the streaming agent session) and lifecycle_test.go (ExecAsAgent's nft flush
+// is denied). Together the three lock both halves of the boundary: the call
+// sites set --user, and --user actually drops the capability.
 //
 // Skipped (not failed) when podman isn't usable, matching lifecycle_test /
 // config_mount_test. Build-tagged (podman) so it is not part of the hermetic gate.
