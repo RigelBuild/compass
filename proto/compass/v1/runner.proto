@@ -123,6 +123,19 @@ service RunnerService {
   // inbound route); merging the ownership-layer record ratifies it.
   rpc RelayForgeCall(RelayForgeCallRequest) returns (RelayForgeCallResponse);
 
+  // RelayBoardCall (unary, Runner->Server): relay one agent-initiated board call
+  // (write an issue's canonical lifecycle state) under the agent account the
+  // session resolves to. Same pure-forwarder shape as RelayCommsCall: the Runner
+  // sends the session_id it structurally owns (the per-container AgentGateway
+  // socket the call arrived on, 1:1 with the session) and the BoardCallRequest,
+  // and asserts NO account. The Server resolves session_id -> agent account from
+  // its own Provision-originated hub binding and runs the transition under that
+  // caller (single-trust-domain MVP, amendment §Resolved decisions 2),
+  // fail-closed: an unknown/stopped session is CodeNotFound, never a stale
+  // account or the bootstrap admin. Additive to the frozen dial-out shape (the
+  // Runner still initiates; the Server gains no inbound route).
+  rpc RelayBoardCall(RelayBoardCallRequest) returns (RelayBoardCallResponse);
+
   // CommitConversationFrame (unary, Runner->Server): durably commit one
   // agent-authored conversation frame and return the commit outcome. This is
   // the DURABLE counterpart to PublishEvents: conversation_posted /
@@ -503,6 +516,28 @@ message RelayForgeCallRequest {
 // never tears down the transport.
 message RelayForgeCallResponse {
   ForgeCallResult result = 1;  // defined in agent_gateway.proto
+}
+
+// RelayBoardCall request: the Runner forwards one agent-initiated board call to
+// the Server. `session_id` is the session the Runner structurally owns for this
+// call (which per-container AgentGateway socket it arrived on — 1:1 with the
+// session, agent_gateway.proto). `call` is the agent's request verbatim. The
+// Runner asserts NO account here; the Server resolves session_id -> account from
+// its own binding and runs the transition under that caller, fail-closed
+// CodeNotFound for an unknown/stopped/dropped session — never a stale account,
+// never the bootstrap admin.
+message RelayBoardCallRequest {
+  string session_id = 1;
+  BoardCallRequest call = 2;   // defined in agent_gateway.proto
+}
+
+// RelayBoardCall response: the result of the executed board call, correlated by
+// the same call_id the agent minted. A successful call carries its
+// set_issue_state result; an in-band tool failure (not_found, invalid_argument)
+// carries the BoardCallError variant — NOT a Connect stream error, so a single
+// failed call never tears down the transport.
+message RelayBoardCallResponse {
+  BoardCallResult result = 1;  // defined in agent_gateway.proto
 }
 
 // CommitConversationFrame request: one durable conversation frame the Runner

@@ -76,6 +76,8 @@ const (
 	AgentGatewayControlProcedure = "/compass.v1.AgentGateway/Control"
 	// AgentGatewayForgeProcedure is the fully-qualified name of the AgentGateway's Forge RPC.
 	AgentGatewayForgeProcedure = "/compass.v1.AgentGateway/Forge"
+	// AgentGatewayBoardProcedure is the fully-qualified name of the AgentGateway's Board RPC.
+	AgentGatewayBoardProcedure = "/compass.v1.AgentGateway/Board"
 )
 
 // AgentGatewayClient is a client for the compass.v1.AgentGateway service.
@@ -115,6 +117,15 @@ type AgentGatewayClient interface {
 	// live forge proxy (DL-069 amendment §Resolved decisions OQ-A). INTERNAL
 	// surface (never public gen).
 	Forge(context.Context, *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error)
+	// Board (unary, agent -> Runner): write an issue's canonical lifecycle state.
+	// A sibling call family to Comms/Lifecycle/Forge (DL-049 shape) — the
+	// BoardCallRequest / BoardCallResult envelopes are reused verbatim as the
+	// RelayBoardCallRequest.call / RelayBoardCallResponse.result payloads on the
+	// Runner->Server leg (runner.proto RelayBoardCall). One shared envelope across
+	// both hops. The Runner asserts NO account; the Server resolves session_id ->
+	// account and runs the transition under that caller (single-trust-domain MVP,
+	// amendment §Resolved decisions 2). INTERNAL surface (never public gen).
+	Board(context.Context, *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error)
 }
 
 // NewAgentGatewayClient constructs a client for the compass.v1.AgentGateway service. By default, it
@@ -164,6 +175,12 @@ func NewAgentGatewayClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(agentGatewayMethods.ByName("Forge")),
 			connect.WithClientOptions(opts...),
 		),
+		board: connect.NewClient[v1.BoardCallRequest, v1.BoardCallResult](
+			httpClient,
+			baseURL+AgentGatewayBoardProcedure,
+			connect.WithSchema(agentGatewayMethods.ByName("Board")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -175,6 +192,7 @@ type agentGatewayClient struct {
 	postConversationFrame *connect.Client[v1.PostConversationFrameRequest, v1.PostConversationFrameResponse]
 	control               *connect.Client[v1.ControlSubscribeRequest, v1.AgentControl]
 	forge                 *connect.Client[v1.ForgeCallRequest, v1.ForgeCallResult]
+	board                 *connect.Client[v1.BoardCallRequest, v1.BoardCallResult]
 }
 
 // Comms calls compass.v1.AgentGateway.Comms.
@@ -205,6 +223,11 @@ func (c *agentGatewayClient) Control(ctx context.Context, req *connect.Request[v
 // Forge calls compass.v1.AgentGateway.Forge.
 func (c *agentGatewayClient) Forge(ctx context.Context, req *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error) {
 	return c.forge.CallUnary(ctx, req)
+}
+
+// Board calls compass.v1.AgentGateway.Board.
+func (c *agentGatewayClient) Board(ctx context.Context, req *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error) {
+	return c.board.CallUnary(ctx, req)
 }
 
 // AgentGatewayHandler is an implementation of the compass.v1.AgentGateway service.
@@ -244,6 +267,15 @@ type AgentGatewayHandler interface {
 	// live forge proxy (DL-069 amendment §Resolved decisions OQ-A). INTERNAL
 	// surface (never public gen).
 	Forge(context.Context, *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error)
+	// Board (unary, agent -> Runner): write an issue's canonical lifecycle state.
+	// A sibling call family to Comms/Lifecycle/Forge (DL-049 shape) — the
+	// BoardCallRequest / BoardCallResult envelopes are reused verbatim as the
+	// RelayBoardCallRequest.call / RelayBoardCallResponse.result payloads on the
+	// Runner->Server leg (runner.proto RelayBoardCall). One shared envelope across
+	// both hops. The Runner asserts NO account; the Server resolves session_id ->
+	// account and runs the transition under that caller (single-trust-domain MVP,
+	// amendment §Resolved decisions 2). INTERNAL surface (never public gen).
+	Board(context.Context, *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error)
 }
 
 // NewAgentGatewayHandler builds an HTTP handler from the service implementation. It returns the
@@ -289,6 +321,12 @@ func NewAgentGatewayHandler(svc AgentGatewayHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(agentGatewayMethods.ByName("Forge")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentGatewayBoardHandler := connect.NewUnaryHandler(
+		AgentGatewayBoardProcedure,
+		svc.Board,
+		connect.WithSchema(agentGatewayMethods.ByName("Board")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/compass.v1.AgentGateway/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AgentGatewayCommsProcedure:
@@ -303,6 +341,8 @@ func NewAgentGatewayHandler(svc AgentGatewayHandler, opts ...connect.HandlerOpti
 			agentGatewayControlHandler.ServeHTTP(w, r)
 		case AgentGatewayForgeProcedure:
 			agentGatewayForgeHandler.ServeHTTP(w, r)
+		case AgentGatewayBoardProcedure:
+			agentGatewayBoardHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -334,4 +374,8 @@ func (UnimplementedAgentGatewayHandler) Control(context.Context, *connect.Reques
 
 func (UnimplementedAgentGatewayHandler) Forge(context.Context, *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Forge is not implemented"))
+}
+
+func (UnimplementedAgentGatewayHandler) Board(context.Context, *connect.Request[v1.BoardCallRequest]) (*connect.Response[v1.BoardCallResult], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Board is not implemented"))
 }
