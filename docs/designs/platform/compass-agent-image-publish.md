@@ -175,9 +175,10 @@ silent-staleness failure the doctrine targets. What it *does* buy:
   `agent-image/toolchain.nix:50-56`; an FOD-hash invalidation,
   `entrypoint.nix:116`) would otherwise sit unnoticed while a consumer waits on
   a tag. Publish failures are owned by compass-runner (this record's owner);
-  the main-branch Actions failure notification is the surfacing mechanism. A
-  cheap eval-only pre-merge check (`nix eval` the image drv without realising
-  it) is deferred hardening, noted in T4.
+  the main-branch Actions failure notification is the surfacing mechanism for a
+  push failure. The image BUILD is now gated pre-merge by the
+  `compass-agent-image` moon project (the deferred-hardening item below,
+  implemented), so a build break is caught on the PR rather than here.
 
 Triggers: `push: branches: [main]` with a `paths:` filter (next section), plus
 `workflow_dispatch` as the manual/backstop lane. No PR trigger — no secret or
@@ -483,9 +484,16 @@ Interfaces:
       `docs/architecture/build-and-ci.md`.
 - [ ] One-time (whoever lands T2): set the GHCR package **public** after the
       first push (Matt's ruling — compass is OSS).
-- [ ] Deferred hardening (T4-adjacent): a cheap eval-only pre-merge check
-      (`nix eval` the image drv without realising it) so an image-build break
-      is caught at PR time instead of in the post-merge publish.
+- [x] Deferred hardening (T4-adjacent): gate the image build pre-merge so an
+      image-build break is caught at PR time instead of in the post-merge
+      publish. Implemented as the `compass-agent-image` moon project
+      (`agent-image/moon.yml`), which realises the full image in the CI gate on
+      any PR affecting the image closure. An earlier eval-only variant (`nix
+      eval` the drv without realising) was superseded by Matt's ruling to build
+      the full image: eval-only caught only the eval-time bun-drift assert,
+      whereas the moon build also catches realise-time breaks (FOD-hash
+      invalidation, a broken bundle), and reuses the same nix-in-gate posture
+      the vendored forks already establish.
 
 ## Open Questions
 
