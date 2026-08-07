@@ -2349,7 +2349,8 @@ button {
 }
 
 .r-files-search:focus {
-	outline: none;
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
 	border-color: var(--accent);
 }
 
@@ -3520,7 +3521,8 @@ button {
 }
 
 .conv-composer .field:focus {
-	outline: none;
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
 	border-color: var(--accent);
 }
 
