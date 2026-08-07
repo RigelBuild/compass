@@ -44,10 +44,23 @@ plus the first real (non-fake) forge read client behind it.
 - **Error mapping:** every non-2xx forge response maps to
   `*forge.StatusError{Status, Message}` (`forge/provider.go:216-227`), so the
   Service layer can flatten statuses without inspecting the wire.
-- **Idempotency:** a failed or partial poll is safe to retry — "partial
-  progress is fine — a re-poll is idempotent on the coordinate"
+- **Idempotency (load-bearing):** a failed or partial poll is safe to retry —
+  "partial progress is fine — a re-poll is idempotent on the coordinate"
   (`ingest.go:48-52`; the coordinate is the store upsert key,
-  `board/issue_projection.go:69-71`).
+  `board/issue_projection.go:69-71`). This holds because `Ingester.Ingest`
+  stops at the first sink error (`ingest.go:60-62`) and the next pass
+  RE-FETCHES the full issue set, so a fetched-but-not-yet-sunk issue is retried
+  next tick. **The invariant therefore forbids any fetch-side optimization that
+  skips re-fetching an un-sunk issue** — a per-repo `since`/`updated` watermark
+  advanced on fetch success (not full-pass success) would strand every issue
+  below it whenever a mid-pass sink error fires, permanently absent from the
+  projection until re-touched upstream. An in-client watermark cannot see the
+  sink outcome (the client's sole seam is `ListIssues([]Issue, error)` and
+  `forge.Issue` carries no timestamp, `provider.go:37-53`), so v1 does NOT do
+  `since` incrementalism; steady-state cost is bounded by ETag/304 (Approach
+  step 2) instead, and a correct incremental cursor is homed in OQ-A Option 1.5
+  where a durable, poller-owned watermark can gate its advance on full-pass
+  success.
 - **No projection change:** `board.IssueProjection.PublishIssueUpdate(ctx,
   *compassv1.Issue) error` (`board/issue_projection.go:68`) ALREADY satisfies
   `ingest.issueSink` (`ingest.go:31-33`). This slice adds zero code to
@@ -89,29 +102,33 @@ Behavior, in order of the request lifecycle:
    request batch, not captured at construction, so a rotated `server_only`
    secret takes effect without a restart (composes with DL-052; see T3 for the
    resolve wiring).
-2. **Incremental fetch (`since` + conditional requests).** Two composed
-   mechanisms keep a steady-state tick cheap. (a) The client requests
-   `sort=updated&direction=desc&since=<watermark>`, where `<watermark>` is the
-   greatest `updated_at` seen for that repo on the prior successful pass;
-   GitHub then returns only issues touched at/after it, so a quiet repo costs
-   ~1 request regardless of size. The watermark is in-memory (per Option 1,
-   OQ-A); a restart drops it and the next boot pass does one full `state=all`
-   resync — bounded and self-healing. (OQ-A Option 1.5 would persist it.)
-   (b) On top of `since`, a per-URL in-memory ETag cache (keyed by
-   repo+filter+page) sends `If-None-Match`; a `304 Not Modified` returns the
-   cached parsed `[]forge.Issue` **and the cached `Link` chain for that key**
-   — a 304 need not re-send `Link`, so the next-page URLs MUST be cached
-   alongside the ETag or a multi-page repo cannot walk past page 1 — and, per
-   current GitHub docs, a 304 is not charged against the core rate limit.
-   **That last fact is load-bearing for the budget math below and MUST be
-   reverified against current GitHub REST docs at T1** (the rate-limit docs
-   have been revised before). `since` is the PRIMARY steady-state reducer
-   because ETags alone self-defeat under GitHub's default `created`-desc
-   order: one new issue shifts every page boundary and invalidates every
-   page's ETag, collapsing the "free 304" path to a full paid refetch of
-   `ceil(N/100)` pages; `sort=updated` + `since` sidesteps that. The ETag
-   cache is bounded by repos × pages with a fixed size cap (pages grow with
-   repo size) — no eviction policy beyond the cap at this scale.
+2. **Conditional requests (ETag/304) — the steady-state reducer.** A per-URL
+   in-memory ETag cache (keyed by repo+filter+page) sends `If-None-Match`; a
+   `304 Not Modified` returns the cached parsed `[]forge.Issue` **and the
+   cached `Link` chain for that key** — a 304 need not re-send `Link`, so the
+   next-page URLs MUST be cached alongside the ETag or a multi-page repo cannot
+   walk past page 1 — and, per current GitHub docs, a 304 is not charged
+   against the core rate limit. **That last fact is load-bearing for the budget
+   math below and MUST be reverified against current GitHub REST docs at T1**
+   (the rate-limit docs have been revised before). On a no-change tick every
+   page serves from cache: a quiet repo costs zero rate budget and the full
+   cached slice is re-sunk (idempotent on the coordinate). The ETag cache is
+   bounded by repos × pages with a fixed size cap (pages grow with repo size)
+   — no eviction policy beyond the cap at this scale.
+
+   A `since`/`sort=updated` incremental fetch — which would also shrink a
+   CHANGED tick, not just a no-change one — is deliberately NOT in v1. An
+   in-client watermark advanced on fetch success breaks the re-poll idempotency
+   invariant above (a mid-pass sink failure strands the issues below it), and
+   the client structurally cannot observe sink outcome to advance it correctly
+   (Global Constraints → Idempotency). So v1 relies on ETag/304 alone, which is
+   idempotency-safe: a 304 means nothing changed and nothing to sink, and a
+   changed page returns 200 and re-fetches that page's full set. The cost this
+   accepts: a repo with any new issue pays a full paid refetch of its changed
+   pages that tick (GitHub's default `created`-desc order shifts page
+   boundaries and invalidates page ETags on insert) — bounded, budget-gated
+   (step 3), and re-priced as the concrete tradeoff of deferring `since` to a
+   durable cursor (OQ-A Option 1.5, Alternatives (f)).
 3. **Rate budget.** After every response the client records
    `x-ratelimit-remaining` and `x-ratelimit-reset`. Before issuing a request,
    if `remaining <= reserve` (default reserve 10), it fails fast with a typed
@@ -121,12 +138,23 @@ Behavior, in order of the request lifecycle:
    exhaustion is an EXPECTED skip, not a failure — the poller detects
    `errors.Is(err, forge.ErrBudgetExhausted)` and logs it at `slog.Warn`, NOT
    the `slog.Error` path a real provider/sink error takes, so a rate-limited
-   window is not per-tick Error noise. A `403`/`429` carrying `retry-after` or
-   a zeroed `x-ratelimit-remaining` is treated the same way. The client never
-   sleeps holding the caller's poll slot — backoff is the poller's ticker, not
-   an in-client `time.Sleep`. (Under sustained pressure a skipped tick can
-   defer ingestion up to a full reset window (~60 min); acceptable given
-   idempotency, and `since` keeps steady-state spend far under the budget.)
+   window is not per-tick Error noise. **403 disambiguation (a single rule —
+   GitHub overloads 403 across rate-limit, bad-credentials, and
+   repo-permission causes):** a `403`/`429` carrying `retry-after` OR a zeroed
+   `x-ratelimit-remaining` → `forge.ErrBudgetExhausted` (Warn, budget-skip, NO
+   token re-resolve); a `401`, or a `403` whose body `message` is a
+   bad-credentials/permission error with NO rate-limit headers →
+   `*forge.StatusError` AND signals the caller to re-resolve the token (the T3
+   secret-resolve bullet); any other non-2xx → `*forge.StatusError` only
+   (step 7). The discriminator is the presence of `retry-after` / a zeroed
+   `x-ratelimit-remaining`, nothing else — so a dead token is never mistaken
+   for a rate-limit skip (which would retry forever with the dead token,
+   never re-resolving) and a rate-limit 403 never becomes per-tick Error spam.
+   The client never sleeps holding the caller's poll slot — backoff is the
+   poller's ticker, not an in-client `time.Sleep`. (Under sustained pressure a
+   skipped tick can defer ingestion up to a full reset window (~60 min);
+   acceptable given idempotency, and ETag/304 keeps steady-state spend near
+   zero.)
 4. **Pagination.** GitHub's list-issues endpoint pages; the client requests
    `per_page=100` and follows RFC-5988 `Link: rel="next"` headers,
    concatenating pages into one `[]forge.Issue` (the `Ingester` contract is
@@ -137,14 +165,18 @@ Behavior, in order of the request lifecycle:
    (`forge.IssueFilter{}`, `ingest.go:54`) — maps to **`state=all`**, this
    provider's documented default (`provider.go:183-184` delegates the empty
    case to "the provider's default"). Rationale: the board needs closed
-   tracker issues to flow so Done/reopen transitions ingest (DL-129: "a user
-   reopen un-archives via ingestion", `DECISIONS.md:173`); an open-only
-   default would silently freeze closed issues at their last-seen state.
+   tracker issues to flow so their `ForgeState` stays fresh on the row; an
+   open-only default would silently freeze closed issues at their last-seen
+   forge state. (The reopen→un-archive LIFECYCLE transition rides
+   tracker-STATUS ingestion — PR-C / OQ-A, DL-129 — not this slice, which
+   writes `ForgeState` but never `State`; `state=all` here only keeps
+   `ForgeState` current on closed rows.)
 6. **PR exclusion.** GitHub's issues API returns pull requests as issues
    (rows carrying a `pull_request` key); the client drops them — the board's
    PR surface is a separate lane, and `forge.Issue` (`provider.go:37-53`) is
    issue-shaped only.
-7. **Error mapping.** Any non-2xx/non-304 response becomes
+7. **Error mapping.** Any non-2xx/non-304 response that step 3's 403
+   disambiguation does NOT classify as a budget skip becomes
    `&forge.StatusError{Status: resp.StatusCode, Message: <GitHub message
    field>}` (`provider.go:216-227`), wrapped so `errors.As` finds it. Bodies
    are returned RAW — the owner-header strip belongs to ingestion
@@ -164,9 +196,9 @@ A small scheduler in the `ingest` package (it composes the package's own
 - **A failed poll is logged, never fatal.** `Ingest` stops at the first
   provider/sink error (`ingest.go:50-51`); the poller records it at
   `slog.Error` and moves to the next repo / next tick — the re-poll is
-  idempotent on the coordinate (`ingest.go:51-52`). The poller returns a
-  non-nil error only never — its sole exit is ctx cancellation, returning
-  `nil` so the errgroup drain (see wiring) treats shutdown as clean.
+  idempotent on the coordinate (`ingest.go:51-52`). `Run` never returns a
+  non-nil error — its sole exit is ctx cancellation, returning `nil` so the
+  errgroup drain (see wiring) treats shutdown as clean.
 - **Graceful shutdown:** `<-ctx.Done()` between passes and via the ctx
   threaded into `Ingest` mid-pass (both `ListIssues` and
   `PublishIssueUpdate` take ctx, `ingest.go:54,60`).
@@ -266,14 +298,17 @@ Mirrors the two established precedents exactly:
 - **(e) Per-repo goroutines in the poller — rejected.** One forge, one rate
   budget; sequential per-repo fetches serialize naturally against
   `x-ratelimit-*` and keep the poller a trivially testable single loop.
-- **(f) `since`-watermark incremental sync vs page ETags alone — chose
-  both, `since` primary.** GitHub's default `created`-desc list order means
-  one new issue shifts every page boundary and invalidates every page ETag,
-  so ETags alone collapse to a full paid refetch on any churn.
-  `sort=updated&since=<watermark>` returns only changed rows and reduces a
-  quiet tick to ~1 request independent of repo size; page ETags then ride on
-  top for the no-change case. `since` is folded into the request lifecycle
-  (Approach step 2), not rejected — the two compose.
+- **(f) `since`/`updated` incremental sync — deferred to OQ-A, ETag/304 alone
+  in v1.** A `since`-watermark would shrink a CHANGED tick (not just a
+  no-change one), but advancing it correctly requires observing the SINK
+  outcome, which an in-client watermark cannot do (`forge.Issue` carries no
+  timestamp and the client's sole seam is `ListIssues`, `provider.go:37-53`);
+  advancing on fetch success alone strands un-sunk issues on a mid-pass sink
+  failure and voids the re-poll idempotency invariant (Global Constraints →
+  Idempotency). v1 therefore uses ETag/304 alone — idempotency-safe, and
+  enough to make a quiet tick free. The correct home for an incremental cursor
+  is a DURABLE, poller-owned watermark that advances only on full-pass success
+  (OQ-A Option 1.5); it is priced there, not adopted here.
 
 ## Plan
 
@@ -281,7 +316,7 @@ Mirrors the two established precedents exactly:
 
 New file `go/internal/forge/github.go` (+ `github_test.go`). Implements the
 request lifecycle from the Approach: bearer auth via `TokenSource`,
-`sort=updated&since=<watermark>` incremental fetch, ETag conditional requests
+ETag conditional requests
 with a per-URL response+`Link`-chain cache, `x-ratelimit-*` budget gate with a
 typed budget error, `Link`-header pagination at `per_page=100`, `IssueFilter`
 → query-param mapping (empty `State` → `state=all`), `pull_request`-row
@@ -329,8 +364,12 @@ Test cycle (unit, stubbed `http.RoundTripper`; red-first per repo convention):
    request.
 5. Empty `IssueFilter.State` → `state=all` on the wire; labels join correctly.
 6. A `pull_request`-keyed row is dropped.
-7. 403/404/500 → `errors.As(..., *forge.StatusError)` with matching Status and
-   the GitHub `message` field.
+7. 404/500, and a 403 WITHOUT rate-limit headers (a bad-credentials/permission
+   `message`) → `errors.As(..., *forge.StatusError)` with matching Status and
+   the GitHub `message` field, AND the client signals a token re-resolve (the
+   401/bad-creds-403 discriminator of step 3 — asserted on the ABSENCE of
+   `retry-after`/zeroed `x-ratelimit-remaining`, so a rate-limit 403 does NOT
+   take this path).
 8. Token from `TokenSource` lands as `Authorization: Bearer …`; a TokenSource
    error propagates without a request.
 9. Multi-page 304: a two-page list is fetched, then a scripted 304 on page 1
@@ -390,6 +429,11 @@ Test cycle (unit, fake `Ingester` deps — the package's existing
 5. Log fields: capture a `slog` test handler and assert a happy pass logs at
    Info with `repo`/`issues`/`dur`, a budget-skip logs at Warn, and a genuine
    `Ingest` error logs at Error with `err`.
+6. Idempotency under mid-pass sink failure (defends the restored invariant):
+   a fake returns N issues but the sink fails on issue k on the first pass; on
+   the next tick the poller RE-FETCHES the full set (no `since` skip) and every
+   issue k..N sinks — none is stranded. Asserts the invariant the v1
+   no-`since` decision preserves.
 
 ### T3 — serve boot wiring + config surface + secret resolve
 
@@ -439,11 +483,17 @@ Test cycle:
    real projection and lands in `ListBoardIssues` — the end-to-end
    boot-wiring proof without touching live GitHub. (The fake satisfies the
    same structural `forgeReader`, `ingest.go:20-22`.)
-4. pgtest: a CLOSED-state issue from the fake sinks with `ForgeState` set and
-   the row's `State` left untouched — the no-clobber contract this driver
-   leans on (`issue_projection.go:207`, `protoToForgeFields` writes
-   `ForgeState` but never `State`), so board ingestion cannot overwrite a
-   human-set board column.
+4. pgtest (the no-clobber contract's runtime proof — the test MUST be able to
+   go RED): (1) ingest/create the issue via the projection, (2) set a
+   non-default lifecycle `State` through the part-5 write path
+   (`store.SetIssueState`, `issues.go:140`), (3) re-ingest a forge UPDATE for
+   the same coordinate (forge_state open→closed) via the fake, (4) assert
+   `ForgeState` is updated AND `State` is unchanged from the human-set value
+   (`issue_projection.go:207`, `protoToForgeFields` writes `ForgeState` but
+   never `State`). A regression adding `state = EXCLUDED.state` to the
+   `UpsertIssueForgeFields` SET clause (`issues.go:122-125`) MUST turn this
+   red — the as-worded "State left untouched" over a zero-value row would stay
+   green vacuously, so the human-set baseline in step 2 is load-bearing.
 5. Unit: the `TokenSource` re-resolves after its TTL and on a scripted auth
    failure, and a changed resolver value is used on the next fetch — the
    design's stated reason for a resolver closure rather than a captured token.
@@ -524,8 +574,16 @@ readings:
 as the hedge** if the convergence with PR-C/DL-053 must be designed now rather
 than deferred. If Matt rules Option 2, T2/T3 are re-cut (T1 survives nearly
 intact — the client is the shared fetch half either way). The PR-C
-double-fetch is the concrete thing each option resolves differently. PARKED
-for Matt; the freeze waits on this ruling.
+double-fetch is the concrete thing each option resolves differently.
+**A consequence surfaced by review that sharpens the fork:** a `since`/`updated`
+incremental fetch cannot be done correctly in an in-client watermark (it
+cannot observe the sink outcome, so it strands issues on a mid-pass sink
+failure — Global Constraints → Idempotency), so v1 Option 1 uses ETag/304
+ONLY and a changed tick pays a full refetch of its changed pages. Option 1.5's
+durable, poller-owned cursor is the ONLY place a correct incremental `since`
+lives — so if the changed-tick cost or the resync-on-restart matters, that is
+an argument FOR 1.5 now rather than deferring it. PARKED for Matt; the freeze
+waits on this ruling.
 
 ### OQ-B (non-load-bearing deferral): live-demo content
 
