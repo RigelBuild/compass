@@ -50,20 +50,14 @@ import {
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp";
 import { YAML } from "bun";
 import { CompassAgent } from "./agent";
-import {
-	CommsBroker,
-	createCommsTools,
-} from "./comms";
+import { CommsBroker, createCommsTools } from "./comms";
 import {
 	AGENT_CONFIG_MOUNT_PATH,
 	loadMountedConfig,
 	type MountedMcp,
 } from "./config-reader";
 import type { FrameSink } from "./frame";
-import {
-	createLifecycleTools,
-	LifecycleBroker,
-} from "./lifecycle";
+import { createLifecycleTools, LifecycleBroker } from "./lifecycle";
 import {
 	createTeeSessionStorage,
 	type TranscriptTeeBackend,
