@@ -1,0 +1,36 @@
+/* Ask block — .cx-ask[data-answered] (D3). The agent→human question card:
+   option buttons (.cx-btn) while open, locked when answered. Renders on the
+   panel surface tier; an unanswered ask draws an accent left rule to pull the
+   eye (it is the one thing awaiting the human). Consumes only --cx-* tiers. */
+
+.cx-ask {
+	display: flex;
+	flex-direction: column;
+	gap: var(--cx-space-3);
+	padding: var(--cx-space-4);
+	border: 1px solid var(--cx-border);
+	border-left: 2px solid var(--cx-accent);
+	border-radius: var(--cx-radius-md);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+}
+
+.cx-ask-options {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--cx-space-2);
+}
+
+/* --- Answered: the card locks. Drop the attention rule, dim the options,
+   surface the chosen answer via [data-selected] on its button. Disabled option
+   buttons follow the .cx-btn disabled contract (45% opacity). --- */
+.cx-ask[data-answered] {
+	border-left-color: var(--cx-border-strong);
+	color: var(--cx-text-dim);
+}
+
+.cx-ask[data-answered] .cx-ask-options .cx-btn:not([data-selected]) {
+	opacity: 0.45;
+}

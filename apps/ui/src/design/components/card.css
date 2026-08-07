@@ -1,0 +1,49 @@
+/* Card — .cx-card (D3). Issue / PR / backlog rows on the panel surface tier.
+   Selection = --cx-bg-selected + the accent left rule (never a raised bg).
+   Consumes only --cx-* tiers. */
+
+.cx-card {
+	position: relative;
+	display: block;
+	padding: var(--cx-space-3);
+	border: 1px solid var(--cx-border);
+	border-left: 2px solid transparent;
+	border-radius: var(--cx-radius-md);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	cursor: pointer;
+	transition:
+		background var(--cx-motion-fast) var(--cx-ease-out),
+		border-color var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+/* --- Hover --- */
+.cx-card:not([data-disabled]):hover {
+	background: var(--cx-bg-hover);
+}
+
+/* --- Active (pressed) --- */
+.cx-card:not([data-disabled]):active {
+	background: var(--cx-bg-active);
+}
+
+/* --- Selected: selection surface + the accent left rule --- */
+.cx-card[data-selected] {
+	background: var(--cx-bg-selected);
+	border-left-color: var(--cx-accent);
+	color: var(--cx-text-bright);
+}
+
+/* --- Focus (keyboard) --- */
+.cx-card:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: -1px;
+}
+
+/* --- Disabled: 45% opacity, default cursor --- */
+.cx-card[data-disabled] {
+	opacity: 0.45;
+	cursor: default;
+}

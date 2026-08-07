@@ -122,6 +122,7 @@
 	); /* syntax-tier success green, distinct from working green */
 	--cx-warn: var(--rigel-amber);
 	--cx-error: var(--rigel-red);
+	--cx-error-muted: color-mix(in srgb, var(--rigel-red) 16%, transparent);
 	--cx-info: var(--rigel-blue);
 
 	/* --- Agent state (process axis) — --cx-st-* (eight AgentState values) --- */

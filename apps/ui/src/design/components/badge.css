@@ -1,0 +1,121 @@
+/* Badge / Pip / Chip (D3).
+   - .cx-badge[data-status] — CI + review status labels (display).
+   - .cx-pip — unread-count / small numeric indicator (display).
+   - .cx-chip — tracker chips (interactive: selectable / removable).
+   Consumes only --cx-* tiers. */
+
+/* ==========================================================================
+   Badge — a small labelled status token. data-status maps CI + review states.
+   Non-interactive (display), so no hover/active/focus is required.
+   ========================================================================== */
+.cx-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--cx-space-1);
+	padding: 0 var(--cx-space-2);
+	height: var(--cx-space-5);
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-sm);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text-dim);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-xs);
+	line-height: 1;
+	white-space: nowrap;
+}
+
+/* CI status */
+.cx-badge[data-status="ci-pass"] {
+	color: var(--cx-ci-pass);
+	border-color: var(--cx-ci-pass);
+}
+
+.cx-badge[data-status="ci-fail"] {
+	color: var(--cx-ci-fail);
+	border-color: var(--cx-ci-fail);
+}
+
+.cx-badge[data-status="ci-pending"] {
+	color: var(--cx-ci-pending);
+	border-color: var(--cx-ci-pending);
+}
+
+/* Review status */
+.cx-badge[data-status="review-approved"] {
+	color: var(--cx-review-approved);
+	border-color: var(--cx-review-approved);
+}
+
+.cx-badge[data-status="review-changes"] {
+	color: var(--cx-review-changes);
+	border-color: var(--cx-review-changes);
+}
+
+.cx-badge[data-status="review-pending"] {
+	color: var(--cx-review-pending);
+	border-color: var(--cx-review-pending);
+}
+
+/* ==========================================================================
+   Pip — an unread-count / attention dot. Display only.
+   ========================================================================== */
+.cx-pip {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: var(--cx-space-4);
+	height: var(--cx-space-4);
+	padding: 0 var(--cx-space-1);
+	border-radius: 999px;
+	background: var(--cx-accent);
+	color: var(--cx-bg);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-xs);
+	line-height: 1;
+}
+
+/* ==========================================================================
+   Chip — interactive tracker chip. Six mandatory states.
+   ========================================================================== */
+.cx-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--cx-space-1);
+	padding: var(--cx-space-1) var(--cx-space-2);
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-sm);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-xs);
+	line-height: 1;
+	cursor: pointer;
+	transition:
+		background var(--cx-motion-fast) var(--cx-ease-out),
+		border-color var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+.cx-chip:not([data-disabled]):hover {
+	background: var(--cx-bg-hover);
+}
+
+.cx-chip:not([data-disabled]):active {
+	background: var(--cx-bg-active);
+}
+
+.cx-chip[data-selected] {
+	background: var(--cx-bg-selected);
+	border-color: var(--cx-accent);
+	color: var(--cx-text-bright);
+}
+
+.cx-chip:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: 1px;
+}
+
+.cx-chip:disabled,
+.cx-chip[data-disabled] {
+	opacity: 0.45;
+	cursor: default;
+}

@@ -1,0 +1,98 @@
+/* Button — .cx-btn (D3). Class + data-* visual contract; consumes only the
+   semantic + scale --cx-* tiers. Six mandatory states: rest / hover / active /
+   selected / disabled / focus (:focus-visible → --cx-focus-ring). */
+
+.cx-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: var(--cx-space-2);
+	padding: var(--cx-space-2) var(--cx-space-3);
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-md);
+	background: var(--cx-bg-panel);
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	line-height: 1;
+	cursor: pointer;
+	transition:
+		background var(--cx-motion-fast) var(--cx-ease-out),
+		border-color var(--cx-motion-fast) var(--cx-ease-out),
+		color var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+.cx-btn[data-size="sm"] {
+	padding: var(--cx-space-1) var(--cx-space-2);
+	font-size: var(--cx-text-xs);
+}
+
+.cx-btn[data-size="md"] {
+	padding: var(--cx-space-2) var(--cx-space-3);
+	font-size: var(--cx-text-sm);
+}
+
+/* --- Variant: primary (accent fill) --- */
+.cx-btn[data-variant="primary"] {
+	border-color: var(--cx-accent);
+	background: var(--cx-accent);
+	color: var(--cx-bg);
+}
+
+/* --- Variant: ghost (borderless, hover wash) --- */
+.cx-btn[data-variant="ghost"] {
+	border-color: transparent;
+	background: transparent;
+	color: var(--cx-text);
+}
+
+/* --- Variant: danger --- */
+.cx-btn[data-variant="danger"] {
+	border-color: var(--cx-error);
+	background: transparent;
+	color: var(--cx-error);
+}
+
+/* --- Hover --- */
+.cx-btn:hover {
+	background: var(--cx-bg-hover);
+}
+
+.cx-btn[data-variant="primary"]:hover {
+	background: var(--cx-accent-hover);
+	border-color: var(--cx-accent-hover);
+}
+
+.cx-btn[data-variant="danger"]:hover {
+	background: var(--cx-error-muted);
+}
+
+/* --- Active (pressed) --- */
+.cx-btn:active {
+	background: var(--cx-bg-active);
+}
+
+.cx-btn[data-variant="primary"]:active {
+	background: var(--cx-accent);
+	border-color: var(--cx-accent);
+}
+
+/* --- Selected (toggle / segmented) --- */
+.cx-btn[data-selected] {
+	background: var(--cx-bg-selected);
+	border-color: var(--cx-accent);
+	color: var(--cx-text-bright);
+}
+
+/* --- Focus (keyboard only) --- */
+.cx-btn:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: 2px;
+}
+
+/* --- Disabled: 45% opacity, default cursor; never a status color swap --- */
+.cx-btn:disabled,
+.cx-btn[data-disabled] {
+	opacity: 0.45;
+	cursor: default;
+}
