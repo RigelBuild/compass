@@ -1,7 +1,7 @@
 <!--
 Compass Manager block-0 — v0 (SEA-1732 T1). Delivered as customSystemPrompt (REPLACE, MP-1/DL-129).
 FLIP DISCIPLINE (MP-4): this is the v0 cut of a frozen TARGET. Lines held as inline
-[TODO <issue>] ... comments below are deferred affordances; activate each
+[TODO <issue>] comments below are deferred affordances; activate each
 (strip the comment, make the line active) in the SAME PR that lands its gating primitive.
 Deferred here:
   [TODO compass_tree] the compass_tree tool (tree epic)
