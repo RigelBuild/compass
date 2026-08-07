@@ -134,10 +134,9 @@ function lifecycleFailure(
 /**
  * The native lifecycle tool set. Exactly two tools: spawn and despawn a peer.
  *
- * NOT YET WIRED: there is no container entrypoint in this repo, so this has no
- * non-test caller. The registration leg is tracked separately (index.ts:13 is
- * the seam, beside createCommsTools) — until it lands, the end-to-end contract
- * is exercised only by this package's tests.
+ * Wired into the container entrypoint by `cli.ts main()` (SEA-1741): the tools
+ * are merged into the session's `customTools` and so register as `#withNatives`
+ * natives. This package's tests also exercise the end-to-end contract directly.
  */
 export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 	const spawnPeer: AgentTool<typeof spawnParameters> = {
