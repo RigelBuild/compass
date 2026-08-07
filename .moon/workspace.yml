@@ -26,6 +26,11 @@ projects:
   compass-eng-docs: 'apps/eng-docs'
   # The backend Go module: server + comms + the generated compass.v1 Go stubs.
   compass-go: 'go'
+  # The compass-agent runtime image: a standalone nix devenv whose build
+  # realises the exact artifact the publish lane ships. Registered here so the
+  # image build is in the gate — affected-detection runs it only on PRs that
+  # touch the image closure (see agent-image/moon.yml).
+  compass-agent-image: 'agent-image'
   # The toolchain version-parity gate: asserts CI's PATH holds the dev shell's
   # toolchain, and carries the unit tests for its own comparison logic.
   toolchain-parity: 'tools/toolchain'

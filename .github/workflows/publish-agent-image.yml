@@ -17,9 +17,11 @@
 #   - Off the hot path, not a required check. The image closure is the heavy
 #     nix build; keeping it here leaves PR latency untouched and a publish flake
 #     never reds the required merge gate.
-#   - Failure ownership. `agent-image/` is not a moon project, so the gate never
-#     builds it — the main-branch Actions failure notification is the surfacing
-#     mechanism for a red publish.
+#   - Failure ownership. The image BUILD is gated pre-merge by the
+#     `compass-agent-image` moon project (agent-image/moon.yml), so a build
+#     break is caught on the PR, not here. This workflow owns only the PUSH
+#     half — a GHCR/registry failure moving the two-tag set — surfaced by the
+#     main-branch Actions failure notification.
 #
 # It also enumerates NO moon projects, so it re-creates none of the
 # silent-staleness failure the ONE-JOB doctrine targets: the gate's coverage

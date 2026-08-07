@@ -199,6 +199,36 @@ also settles the immutability guard's first-publish edge: the guard inspects
 authenticatable) package guarantees the absent-tag inspect classifies cleanly
 rather than on a not-yet-existent repository's error shape.
 
+### Pre-merge build check
+
+`agent-image/` is registered as the `compass-agent-image` moon project
+(`.moon/workspace.yml`), so the CI gate builds the image on any PR that
+affects its closure. Before this the image was outside moon and had zero
+pre-merge coverage — an image-build break surfaced only post-merge in the
+publish workflow, while a consumer waited on a tag.
+
+The project's `build` task realises the image with the same fork-pinned
+derivation the publish lane ships
+(`nix run path:../forks/devenv#devenv -- container build agent`), so a green
+build proves the exact artifact that publishes still builds — both an
+eval-time break (a bun-pin drift against the `agent-image/toolchain.nix`
+assert) and a realise-time break (an `agent-image/entrypoint.nix` FOD-hash
+invalidation or a broken bundle), the full class.
+
+The build is heavy — the image closure is the dominant CI cost, the reason
+the gate's timeout is 90m — but it is not paid on every PR. `moon ci` runs a
+PR's *affected* projects only, and the task's `inputs` scope it to the image
+closure: the `agent-image/` tree, the two vendored forks, `packages/compass-agent/`,
+the root `package.json` and `bun.lock`, and `.prototools`. A PR that touches
+none of those never builds the image; every push to main runs it
+unconditionally in the full sweep. Its `inputs` mirror the publish workflow's
+`on.push.paths` — the reviewed source of truth for what changes the published
+artifact — plus `.prototools` (which publish excludes because a pin move there
+cannot change the output, but which reddens the toolchain assert, exactly what
+this gate exists to catch at PR time). As a project in the one-job gate it is a
+required check: a build break blocks merge, the same posture as the vendored
+forks' nix builds.
+
 ## Caching
 
 **moon task cache** — whole-task-output caching, keyed by an inputs hash.
