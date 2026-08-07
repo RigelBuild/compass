@@ -45,6 +45,15 @@ import (
 // at first run.
 const defaultAgentImage = "ghcr.io/sealedsecurity/compass-agent:latest"
 
+// The compass-stack CLI flag names the embedded pipeline drives. Shared by
+// stackUpArgs and stackDownArgs so the two argv builders cannot drift on a flag
+// spelling (and so the strings are named once rather than repeated inline).
+const (
+	flagStateDir = "--state-dir"
+	flagImage    = "--image"
+	flagSocket   = "--socket"
+)
+
 // errClientNotImplemented is the native-client (T5) mode's placeholder outcome.
 // Client mode is a later slice; embedded mode is this one. It is a sentinel so
 // the mode branch is assertable in tests without matching on a message string.
@@ -129,9 +138,9 @@ func (p embeddedPipeline) run(ctx context.Context, params embeddedParams) (strin
 func stackUpArgs(p embeddedParams) []string {
 	args := []string{
 		"up",
-		"--state-dir", p.stateDir,
-		"--image", p.image,
-		"--socket", p.socket,
+		flagStateDir, p.stateDir,
+		flagImage, p.image,
+		flagSocket, p.socket,
 	}
 	return args
 }
@@ -157,6 +166,48 @@ func runStackUp(bin string) func(ctx context.Context, args []string) error {
 				return fmt.Errorf("compass-stack up failed: %w: %s", err, msg)
 			}
 			return fmt.Errorf("compass-stack up failed: %w", err)
+		}
+		return nil
+	}
+}
+
+// stackDownArgs builds the `compass-stack down` argv from the resolved params.
+// It mirrors stackUpArgs (pure, no I/O, no exec) so the exact teardown
+// invocation is unit-testable without running anything. down parses the SAME
+// config flags as up, and its resolveConfig REQUIRES a non-empty --state-dir AND
+// --image (both rejected if empty), so --image is carried even though teardown
+// does not pull an image — it is the config key compass-stack keys the stack's
+// identity off. --database is omitted for the same reason as up (compass-stack
+// recomputes the identical default DSN from --state-dir), and --linger is
+// omitted because down is not lingerable (down's whole job is to tear the stack
+// down, so a linger flag would be nonsense — compass-stack rejects it).
+func stackDownArgs(p embeddedParams) []string {
+	args := []string{
+		"down",
+		flagStateDir, p.stateDir,
+		flagImage, p.image,
+		flagSocket, p.socket,
+	}
+	return args
+}
+
+// runStackDown is the real stackDown seam: it execs the compass-stack binary at
+// bin with the given argv and waits for it to exit 0 (down attaches to the live
+// stack, SIGTERMs the child tree, waits the server drain, and releases the
+// lock). A non-zero exit is surfaced with the captured stderr so the failure
+// copy is legible — mirroring runStackUp's shape exactly.
+func runStackDown(bin string) func(ctx context.Context, args []string) error {
+	return func(ctx context.Context, args []string) error {
+		//nolint:gosec // G204: bin is operator/PATH-resolved (resolveStackBin) and
+		// the argv is pipeline-assembled (stackDownArgs), not user input.
+		cmd := exec.CommandContext(ctx, bin, args...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			if msg := strings.TrimSpace(stderr.String()); msg != "" {
+				return fmt.Errorf("compass-stack down failed: %w: %s", err, msg)
+			}
+			return fmt.Errorf("compass-stack down failed: %w", err)
 		}
 		return nil
 	}
