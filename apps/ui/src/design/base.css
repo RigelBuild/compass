@@ -150,3 +150,77 @@ button {
 	border: none;
 	border-top: 1px solid var(--cx-border);
 }
+
+/* ==========================================================================
+   Streamed-text motion — the trace-surface signature (D9; brand motion.md
+   §"The one motion accent"). Agent token-streaming reveals characters at a
+   steady visual cadence (--cx-stream-char-ms, decoupled from the bursty
+   network): a freshly-revealed character IGNITES at the phosphor
+   --cx-pulse-color and COOLS to fog behind the write-head, and a block cursor
+   blinks at the write-head at --cx-cursor-blink.
+
+   This file owns the VISUAL contract + keyframes only. The network-buffer →
+   steady-drain decoupling, rate adaptation, and partial-markdown/code-fence
+   safety are compass-ui render-loop responsibilities; the streaming region is
+   aria-live / aria-busy so motion is never the sole "streaming" signal.
+   ========================================================================== */
+
+/* One freshly-revealed character. compass-ui wraps the bounded trailing window
+   of just-drained characters in .cx-stream-char; each ignites at the phosphor
+   then cools to fog over one step of the drain cadence. The settled prefix is a
+   plain text node (no span), so only a bounded trailing window animates. */
+.cx-stream-char {
+	animation: cx-stream-ignite var(--cx-stream-char-ms) var(--cx-ease-out) both;
+}
+
+@keyframes cx-stream-ignite {
+	0% {
+		color: var(--cx-pulse-color);
+	}
+	100% {
+		color: var(--cx-text);
+	}
+}
+
+/* The block write-head cursor: a solid caret riding the leading edge while the
+   region streams, blinking at --cx-cursor-blink. steps(2, start) is a hard 1-bit
+   on/off (no fade), matching the terminal-honest register. */
+.cx-stream-cursor {
+	display: inline-block;
+	width: 0.6ch;
+	height: 1em;
+	vertical-align: text-bottom;
+	background: var(--cx-pulse-color);
+	animation: cx-cursor-blink var(--cx-cursor-blink) steps(2, start) infinite;
+}
+
+@keyframes cx-cursor-blink {
+	0% {
+		opacity: 1;
+	}
+	100% {
+		opacity: 0;
+	}
+}
+
+/* Reduced-motion — substitution, not removal. Text reveals instantly (no
+   ignite→cool travel; it lands at fog) and the cursor holds solid (no blink).
+   The aria-live region still announces streaming, so meaning survives. */
+@media (prefers-reduced-motion: reduce) {
+	.cx-stream-char {
+		animation: none;
+		color: var(--cx-text);
+	}
+	.cx-stream-cursor {
+		animation: none;
+		opacity: 1;
+	}
+}
+:root[data-reduce="on"] .cx-stream-char {
+	animation: none;
+	color: var(--cx-text);
+}
+:root[data-reduce="on"] .cx-stream-cursor {
+	animation: none;
+	opacity: 1;
+}
