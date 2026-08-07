@@ -110,7 +110,7 @@ amendment:
 | 10 | The seven op requests (#995 :433-473): `CreateIssueRequest`, `CommentOnIssueRequest`, `GetIssueRequest`, `ListIssuesRequest`, `CreatePullRequestRequest`, `CommentOnPullRequestRequest`, `GetPullRequestRequest` | **SURVIVE** | Confirmed per-request this run: every field in all seven is a scalar (`string`/`uint64`/`uint32`/`bool`/`repeated string`) — no forge domain type appears in any request shape (#995 :433-473). Read-op requests (`GetIssueRequest`, `ListIssuesRequest`, `GetPullRequestRequest`) survive (OQ-A ruled option 3 — answered from the projection/store, §Resolved decisions). One width note: #995 keeps `uint64` issue/pull numbers in these requests (:444-446, :470-472) while the canonical result types carry `uint32 number` (#1018 :178); narrow the surviving request fields to `uint32` to match the canonical width — free now, buf-breaking after the surface ships. |
 | 11 | `ListIssuesResponse` (#995 :454-456) | **RECONCILED** | `repeated Issue issues = 1` retypes to `repeated compass.v1.Issue`; the read op is answered from the projection/store (OQ-A ruled option 3). |
 | 12 | `SubscribeForgeRequest`/`Response`, `UnsubscribeForgeRequest`/`Response`, `ForgeArtifactKind` (#995 :1027-1043) | **SURVIVE** | All scalar/enum fields (`repo`, `kind`, `number`, `subscription_id`); no domain type. |
-| 13 | `ForgeNotification`/`ForgeNotificationKind` (#995 :1191-1212) | **RECONCILED** | The message and kind enum survive; two arms retype: `ForgeChecksSummary checks = 9` → `compass.v1.ChecksSummary`; `IssueComment comment = 8` → the ruled `CommentRef` (§Resolved decisions OQ-B). Its `string provider = 2` (#995 :1193) stays a bare string — internal-only and tolerable, but a second forge-identity vocabulary vs `compass.v1.ForgeRef`; retype to `ForgeRef` in the same pass if the notification path should carry one vocabulary. |
+| 13 | `ForgeNotification`/`ForgeNotificationKind` (#995 :1191-1212) | **RECONCILED + RELOCATED (DL-161)** | The message and kind enum survive but move to the new leaf `forge.proto` (with `ForgeArtifactKind` + `CommentRef`) to break the notification-placement cycle. Three arms reconcile: `ForgeChecksSummary checks = 9` → `compass.v1.ChecksSummary`; `IssueComment comment = 8` → the ruled `CommentRef` (§Resolved decisions OQ-B); and `string provider = 2` (#995 :1193) is retyped to `compass.v1.ForgeRef forge = 2` — the shipped decision (forge.proto `ForgeRef forge = 2`), so the notification path carries the one `compass.v1` forge-identity vocabulary rather than a second bare-string one. |
 | 14 | `runner.proto`: `RelayForgeCall` + `RelayForgeCallRequest`/`Response` (#995 :485-493) | **SURVIVES** | Pure wrapper: `ForgeCallRequest call` / `ForgeCallResult result` by reference; reconciliation is inherited from items 2-3. |
 | 15 | `SessionsResponse.forge_notification = 7` (#995 :1633) | **SURVIVES** | Carries `ForgeNotification`, reconciled internally (item 13). |
 | 16 | `agent.proto`: `AgentControl.forge_notification = 9` (#995 :1633-1635) | **SURVIVES** | Same carrier logic as item 15. |
@@ -132,19 +132,33 @@ unambiguous); adding an optional `ForgeRef`/provider to the op requests and
 `SubscribeForgeRequest` is a named additive follow-up, free to add later
 without a buf-breaking change.
 
-### One structural consequence: a cross-file import
+### Two structural consequences: a cross-file import and a new leaf file
 
-The #995 record placed the domain messages in `agent_gateway.proto`
-(internal-only). The canonical family lives in `compass.proto` — public,
-package `compass.v1` (#1018 design.md:99-101). Retyping the result arms
-therefore makes `agent_gateway.proto` import `compass/v1/compass.proto`. This
-edge is already present transitively (`agent_gateway.proto` pulls `agent.proto`
-which imports `compass.proto`, `agent.proto:25`); making it direct changes no
-gen wiring the lanes don't already handle. The two internal gen lanes treat
-the canonical types differently — the TS lane regenerates them via
-`--include-imports`, the Go lane M-redirects them to the public `go/gen`
-package — and the gen-fence must keep the canonical symbols unfenced. Detail
-in Global Constraints below.
+**(1) The carrier imports the canonical family.** The #995 record placed the
+domain messages in `agent_gateway.proto` (internal-only). The canonical family
+lives in `compass.proto` — public, package `compass.v1` (#1018
+design.md:99-101). Retyping the result arms therefore makes
+`agent_gateway.proto` import `compass/v1/compass.proto`. This edge is already
+present transitively (`agent_gateway.proto` pulls `agent.proto` which imports
+`compass.proto`, `agent.proto:25`); making it direct changes no gen wiring the
+lanes don't already handle. The two internal gen lanes treat the canonical
+types differently — the TS lane regenerates them via `--include-imports`, the Go
+lane M-redirects them to the public `go/gen` package — and the gen-fence must
+keep the canonical symbols unfenced.
+
+**(2) A new internal leaf `forge.proto` (DL-161).** The types
+`AgentControl.forge_notification` reaches (`ForgeNotification`/
+`ForgeNotificationKind`, `ForgeArtifactKind`, `CommentRef`) do NOT live in
+`agent_gateway.proto` as #995 T1 first directed — that placement is a circular
+import, since `agent_gateway.proto` already imports `agent.proto` and
+`agent.proto` would then have to import back for the notification type. They
+move into a new internal-only leaf `proto/compass/v1/forge.proto` that imports
+only `compass.proto`; `agent.proto`, `agent_gateway.proto`, and `runner.proto`
+all import the leaf without a cycle. This adds one internal file to all three
+gen lanes (buf.gen.yaml exclude + both internal-lane inputs) and to the
+gen-fence symbol set. Wire contract, field numbers, and generated names are
+unchanged — only the source file each type lives in moves. Detail in Global
+Constraints below.
 
 ## Alternatives considered
 
@@ -197,13 +211,19 @@ amended proto work, confirmed against the live tree this run.
   task (`buf breaking … --against origin/main`, #995 design.md:1490-1491) with
   no new exemption. Nothing is ever removed from a shipped wire surface.
 - **Files touched** (amending #995 T1's list, design.md:1625-1639):
-  `proto/compass/v1/agent_gateway.proto` (carrier family + reconciled arms),
-  `proto/compass/v1/runner.proto` (`RelayForgeCall`,
-  `SessionsResponse.forge_notification = 7`), `proto/compass/v1/agent.proto`
-  (`AgentControl.forge_notification = 9`), and the `gen-fence` grep in
-  `proto/moon.yml`. Note a line-drift against #995's cite: the gen-fence grep
-  script now sits at `proto/moon.yml:151` (task `gen-fence` opens at :121),
-  not :141 as #995 recorded — confirmed by reading the live file this run.
+  the NEW leaf `proto/compass/v1/forge.proto` (`ForgeNotification`/
+  `ForgeNotificationKind`, `ForgeArtifactKind`, `CommentRef`; imports only
+  `compass.proto` — DL-161), `proto/compass/v1/agent_gateway.proto` (carrier
+  family + reconciled arms; imports the leaf), `proto/compass/v1/runner.proto`
+  (`RelayForgeCall`, `SessionsResponse.forge_notification = 7`; imports the
+  leaf), `proto/compass/v1/agent.proto` (`AgentControl.forge_notification = 9`;
+  imports the leaf), the `gen-fence` grep in `proto/moon.yml`, and the three gen
+  templates the new leaf is wired into — `buf.gen.yaml` (added to
+  `exclude_paths`), `buf.gen.internal-go.yaml` (added to `paths` + `M`-maps),
+  and `buf.gen.agent-ts.yaml` (added to `paths`). Note a line-drift against
+  #995's cite: the gen-fence grep script sits at `proto/moon.yml:151` (task
+  `gen-fence` opens at :121), not :141 as #995 recorded — confirmed by reading
+  the live file this run.
 - **The gen-fence extension fences the carrier family only.** Extend the grep
   with the unanchored `ForgeCall|RelayForgeCall|ForgeNotification|
   ForgeArtifactKind` family exactly as #995 T1 specifies (design.md:1636-1639)
@@ -232,7 +252,13 @@ amended proto work, confirmed against the live tree this run.
   deliberately M-maps `compass.proto` to the PUBLIC `go/gen` package and MUST
   NOT gain `--include-imports` — its header warns that doing so triggers a
   duplicate-registration init panic. A1 confirms this and that
-  `buf.gen.yaml`'s `exclude_paths` still excludes every internal file.
+  `buf.gen.yaml`'s `exclude_paths` still excludes every internal file. The
+  placement correction (DL-161) adds one more internal file to keep in that
+  fence: the new `proto/compass/v1/forge.proto` leaf is added to
+  `buf.gen.yaml`'s `exclude_paths`, and to the `paths` inputs of both internal
+  lanes (`buf.gen.internal-go.yaml` with its `M`-maps → `compassv1internal`,
+  and `buf.gen.agent-ts.yaml`). forge.proto imports only `compass.proto`, so it
+  introduces no new cross-package edge beyond the one described here.
 - **Enum sentinel rule.** Any surviving new enum (`ForgeArtifactKind`,
   `ForgeNotificationKind`) keeps its `_UNSPECIFIED = 0` sentinel: the
   `ENUM_ZERO_VALUE_SUFFIX` exemption covers `comms.proto` only (#995
@@ -253,12 +279,31 @@ task briefs below reflect those rulings.
 
 ### A1 — Proto: amend the T1 add-list to the reconciled surface
 
-Amends #995 T1 (design.md:1621-1651). Add to
+Amends #995 T1 (design.md:1621-1651). **Placement corrected (Matt, 2026-08-05):** #995 T1
+and this record's original draft directed `ForgeNotification` into
+`agent_gateway.proto` while also adding `AgentControl.forge_notification` to
+`agent.proto`. That is a **circular import** — `agent_gateway.proto` already
+imports `agent.proto` (for `AgentFrame`/`AgentControl`), so a back-reference
+from `agent.proto` to a type defined in `agent_gateway.proto` is a cycle buf
+rejects (`buf lint`: `compass/v1/agent.proto: detected cyclic import while
+importing "compass/v1/agent_gateway.proto"`). Every other `AgentControl`
+payload type is defined in `agent.proto`; forge is the first `agent_gateway.proto`
+call family that also needs an `AgentControl` notification variant, which is why
+the defect surfaced only here. The fix is a new internal-only leaf
+`proto/compass/v1/forge.proto` that imports **only** `compass/v1/compass.proto`
+and holds every type reachable from `AgentControl.forge_notification`
+(`ForgeNotification`, `ForgeNotificationKind`, `ForgeArtifactKind`, and the
+`CommentRef` reference); `agent.proto`, `agent_gateway.proto`, and `runner.proto`
+all import the leaf without a cycle. The wire contract, field numbers, and
+generated Go/TS names are identical to the shapes below — only the source file
+each type lives in changes (DL-161).
+
+Add to `proto/compass/v1/forge.proto` (new leaf): `ForgeNotification` /
+`ForgeNotificationKind`, `ForgeArtifactKind`, and `CommentRef`. Add to
 `proto/compass/v1/agent_gateway.proto`: the `Forge` RPC;
 `ForgeCallRequest`/`ForgeCallResult`/`ForgeCallError`; the seven operation
 requests and `ListIssuesResponse`; `SubscribeForgeRequest`/`Response`,
-`UnsubscribeForgeRequest`/`Response`, `ForgeArtifactKind`;
-`ForgeNotification`/`ForgeNotificationKind`. Do **NOT** add the six domain
+`UnsubscribeForgeRequest`/`Response`. Do **NOT** add the six domain
 messages (`Issue`, `IssueComment`, `PullRequest`, `ForgeAuthor`,
 `ForgeChecksSummary`, `ForgeCheck`) — instead import
 `compass/v1/compass.proto` and retype the carrier arms:
@@ -269,19 +314,26 @@ messages (`Issue`, `IssueComment`, `PullRequest`, `ForgeAuthor`,
   get_issue), `ListIssuesResponse issues = 4`, `compass.v1.PullRequest
   pull_request = 5` (create_pull_request / get_pull_request); the two former
   `IssueComment` arms (`issue_comment = 3`, `pr_comment = 6`) take the ruled
-  `CommentRef` (§Resolved decisions OQ-B) — a write ack sets `url` +
-  `comment_id`.
+  `CommentRef` (§Resolved decisions OQ-B; defined in the `forge.proto` leaf) — a
+  write ack sets `url` + `comment_id`.
 - `ListIssuesResponse { repeated compass.v1.Issue issues = 1; }`
-- `ForgeNotification`: `compass.v1.ChecksSummary checks = 9`; `comment = 8`
-  takes the same ruled `CommentRef`, with `body` + `forge_account` + (for a
-  Compass-agent commenter) `agent` set.
+- `ForgeNotification` (in `forge.proto`): `compass.v1.ChecksSummary checks = 9`;
+  `comment = 8` takes the same ruled `CommentRef`, with `body` + `forge_account` +
+  (for a Compass-agent commenter) `agent` set. Its `forge` field is a
+  `compass.v1.ForgeRef` (one forge-identity vocabulary, §item 13), not a bare
+  `string provider`.
 - `runner.proto`: `rpc RelayForgeCall(RelayForgeCallRequest) returns
   (RelayForgeCallResponse)` + `SessionsResponse.forge_notification = 7`;
-  `agent.proto`: `AgentControl.forge_notification = 9` — all verbatim from
-  #995 T1 (design.md:1631-1635).
-- `gen-fence` grep (`proto/moon.yml:151`) extended with unanchored
-  `ForgeCall|RelayForgeCall|ForgeNotification|ForgeArtifactKind`; canonical
-  `compass.v1` symbols NOT fenced.
+  `agent.proto`: `AgentControl.forge_notification = 9` (its type
+  `ForgeNotification` resolved through the `forge.proto` import) — field numbers
+  verbatim from #995 T1 (design.md:1631-1635).
+- `gen-fence` grep (`proto/moon.yml`) extended with unanchored
+  `ForgeCall|RelayForgeCall|ForgeNotification|ForgeArtifactKind` plus the
+  word-boundable internal-only requests (`CommentRef`, the op requests,
+  `SubscribeForge*`/`UnsubscribeForge*`); canonical `compass.v1` symbols NOT
+  fenced. The new `forge.proto` is wired into all three gen lanes: the public
+  `buf.gen.yaml` exclude, the `buf.gen.internal-go.yaml` inputs + `M`-maps
+  (→ `compassv1internal`), and the `buf.gen.agent-ts.yaml` inputs.
 - Read ops survive (OQ-A ruled option 3): `GetIssueRequest`,
   `ListIssuesRequest`, `GetPullRequestRequest`, `ListIssuesResponse`, and the
   `get_issue`/`list_issues`/`get_pull_request` oneof members + the `issues`
@@ -391,11 +443,17 @@ renumbered the duplicate DL-071 to DL-091) the highest allocated id is DL-091
 (DECISIONS.md:129), DL-082..089 are reserved for #1021 (SEA-1570, in flight),
 and DL-056..066 is an older unexplained gap. The next free id above the
 reserved band is **DL-092**, which this amendment proposes. (The single-writer
-owns the final id; only the id cell changes.)
+owns the final id; only the id cell changes.) The placement-correction row
+**DL-161** was allocated later, at correction time: after the design corpus
+migrated into this repo (#179), it takes the next free id above the whole
+reserved band (the compass-ux-foundation record #186 reserves DL-148..160), so
+it clears every declared block — ledger ids are non-sequential by convention,
+grouped by theme not issued in order.
 
 | ID | Decision | Status | Record |
 | --- | --- | --- | --- |
 | DL-092 | #995's forge-shaped proto domain family (`Issue`/`IssueComment`/`PullRequest`/`ForgeAuthor`/`ForgeChecksSummary`/`ForgeCheck` in `agent_gateway.proto`) is not built: per DL-069 the forge Provider layer's value types stay internal Go data at the ingestion boundary, the `ForgeCall*` carrier family survives with its result arms retyped to the canonical `compass.v1` types, and `AgentAttribution` supersedes `ForgeAuthor` (closing #995 OQ-1's field-set gate) | Active (Matt, 2026-07-31) | [ownership amendment §What this amendment asserts](compass-server-ownership-layer-amendment/design.md#what-this-amendment-asserts) |
+| DL-161 | The forge notification/carrier types that `AgentControl.forge_notification` reaches (`ForgeNotification`/`ForgeNotificationKind`, `ForgeArtifactKind`, `CommentRef`) live in a new internal-only leaf `proto/compass/v1/forge.proto` (imports only `compass.proto`), NOT in `agent_gateway.proto` as #995 T1 / this record's original §A1 add-list directed: that placement is a circular import (`agent_gateway.proto` already imports `agent.proto`, so `agent.proto` referencing an `agent_gateway.proto` type is a cycle buf rejects). The `ForgeCall*` carrier + op requests stay in `agent_gateway.proto`; the leaf is imported by `agent.proto`/`agent_gateway.proto`/`runner.proto` acyclically. Wire contract, field numbers, and generated names unchanged — placement only | Active (Matt, 2026-08-05) | [ownership amendment §A1](compass-server-ownership-layer-amendment/design.md#a1--proto-amend-the-t1-add-list-to-the-reconciled-surface) |
 
 No existing #995 row flips: DL-048 (ownership layer), DL-049 (`ForgeCall*`
 carrier on the gateway socket), DL-050 (owner header), DL-051 (`go/internal/
