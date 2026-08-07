@@ -86,11 +86,15 @@ func run() error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 	log := slog.Default()
 
-	// Ahead of every operator-input check: this validates the process's own
-	// identity, takes no configuration, and its failure is unconditional. Behind
-	// the flag checks, an operator on the wrong uid is told to set a token, fixes
-	// that, re-runs, and only then learns the process can never work as this user.
-	if err := verifyRunnerUID(os.Getuid()); err != nil {
+	// Ahead of every operator-input check: this validates an engine fact the
+	// whole launch path depends on — that podman is new enough for the
+	// container userns remap (--userns=keep-id:uid=,gid=, podman ≥ 4.3;
+	// docs/designs/platform/compass-runner-arbitrary-uid/design.md). It takes no
+	// operator configuration and its failure is unconditional. Behind the flag
+	// checks, an operator on too-old a podman is told to set a token, fixes
+	// that, re-runs, and only then learns the engine can never launch a
+	// container — so the legible startup refusal must come first.
+	if err := runtime.NewPodmanCLI().VerifyUsernsRemapSupport(context.Background()); err != nil {
 		return err
 	}
 
@@ -161,31 +165,6 @@ func run() error {
 // defaultAgentUID is the unprivileged uid the agent user runs as inside the
 // container, matching the runtime package's agent-user convention.
 const defaultAgentUID uint32 = 1000
-
-// verifyRunnerUID enforces the baked-uid invariant the agent image and the
-// container runtime jointly depend on. The image bakes the agent user, /nix and
-// $HOME as uid defaultAgentUID, and the containers are launched with podman's
-// plain --userns=keep-id, which maps the host uid through unchanged rather than
-// remapping it. A Runner running as any other uid therefore produces a container
-// whose agent is that uid and so does not own /nix or its own home — the
-// agent-managed devenv then fails deep inside the first nix build. Fail here
-// instead, where the cause is visible.
-//
-// The caller passes the REAL uid (os.Getuid), deliberately, not the effective
-// one: keep-id maps the invoking process's real uid into the container, so that
-// is the uid the agent ends up as. A setuid-style effective-uid difference must
-// therefore not satisfy this guard.
-func verifyRunnerUID(uid int) error {
-	if uid == int(defaultAgentUID) {
-		return nil
-	}
-	return fmt.Errorf(
-		"the runner must run as uid %d, but it is running as uid %d: the agent "+
-			"image bakes the agent user, /nix and $HOME as uid %d, and podman's "+
-			"--userns=keep-id maps the host uid into the container unchanged, so "+
-			"an agent launched by this runner would not own /nix",
-		defaultAgentUID, uid, defaultAgentUID)
-}
 
 // orEnv returns flagVal when non-empty, else the named environment variable.
 func orEnv(flagVal, envKey string) string {

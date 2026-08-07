@@ -248,6 +248,7 @@ func (r *AgentRuntime) createAndStart(ctx context.Context, spec AgentSpec) (Cont
 		Name:   spec.Name,
 		CapAdd: []string{capNetAdmin},
 		Mounts: spec.Mounts,
+		UID:    spec.Workspace.UID,
 		// Keep the container alive so the Runner can exec into it; the agent is
 		// driven via exec, not as the container's main process.
 		Command: []string{"sleep", "infinity"},
@@ -279,8 +280,9 @@ func (r *AgentRuntime) provision(ctx context.Context, id ContainerID, spec Agent
 	return r.ensureCheckoutDir(ctx, id, spec.Workspace)
 }
 
-// armEgress arms the egress firewall as root (needs NET_ADMIN). After this, the
-// agent user — with no capabilities — cannot alter the ruleset.
+// armEgress arms the egress firewall as the image's default user (uid 1000)
+// with CAP_NET_ADMIN. After this, an agent exec — run as the agent uid with no
+// capabilities — cannot alter the ruleset.
 func (r *AgentRuntime) armEgress(ctx context.Context, id ContainerID, egress EgressPolicy) error {
 	out, err := r.runtime.Exec(ctx, id, NewExecSpec("sh", "-c", egress.NftScript()))
 	if err != nil {

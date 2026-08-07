@@ -91,6 +91,55 @@ func TestExecStreamingArgsAssemblesInteractiveExec(t *testing.T) {
 	}
 }
 
+// createArgs must emit the userns remap token that maps the invoking host user
+// to the spec'd container uid (the baked agent uid). A regression to the bare
+// --userns=keep-id token silently reintroduces the arbitrary-host-uid defect
+// (the agent ends up as the host uid, not 1000, and cannot own /nix).
+func TestCreateArgsRemapsUserns(t *testing.T) {
+	args := createArgs(ContainerSpec{Name: "c", Image: "img", UID: 1000})
+	if !slices.Contains(args, "--userns=keep-id:uid=1000,gid=1000") {
+		t.Fatalf("createArgs = %q, want it to contain %q", args, "--userns=keep-id:uid=1000,gid=1000")
+	}
+}
+
+// parsePodmanVersion + the floor comparison together decide the startup gate:
+// the parse must yield the right major/minor (or an error on an unparseable
+// string), and the floor comparison (the same predicate VerifyUsernsRemapSupport
+// applies) must refuse below 4.3 and admit the floor and above. A wrong verdict
+// either refuses a capable engine or lets a too-old one through to fail deep in
+// the first create.
+func TestParsePodmanVersion(t *testing.T) {
+	tests := []struct {
+		name         string
+		in           string
+		wantParseErr bool
+		wantRefused  bool
+	}{
+		{"below floor 4.2 is refused", "4.2.0", false, true},
+		{"at floor 4.3 is admitted", "4.3.1", false, false},
+		{"dev box 5.8.4 is admitted", "5.8.4", false, false},
+		{"garbage is a parse error", "not-a-version", true, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			major, minor, err := parsePodmanVersion(tc.in)
+			if tc.wantParseErr {
+				if err == nil {
+					t.Fatalf("parsePodmanVersion(%q) = (%d, %d, nil), want a parse error", tc.in, major, minor)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parsePodmanVersion(%q) = unexpected error %v", tc.in, err)
+			}
+			refused := major < minUsernsRemapMajor || (major == minUsernsRemapMajor && minor < minUsernsRemapMinor)
+			if refused != tc.wantRefused {
+				t.Fatalf("floor verdict for %q (parsed %d.%d) = refused:%v, want refused:%v", tc.in, major, minor, refused, tc.wantRefused)
+			}
+		})
+	}
+}
+
 func TestExecStreamingArgsMinimalOmitsUserAndWorkdir(t *testing.T) {
 	spec := NewStreamingExecSpec("compass-agent")
 
