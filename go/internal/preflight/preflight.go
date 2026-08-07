@@ -65,6 +65,19 @@ const (
 	checkDB     = "database"
 )
 
+// Exported aliases of the check names, so callers can classify results by check
+// (e.g. the T4 wiring boundary hard-gates host-capability checks and treats the
+// image/DB checks as advisory). These are additive: the unexported names above
+// stay the values written into Result.Name, and these consts alias them so a
+// caller's classification cannot drift from the Run implementation.
+const (
+	CheckOS       = checkOS
+	CheckUID      = checkUID
+	CheckPodman   = checkPodman
+	CheckImage    = checkImage
+	CheckDatabase = checkDB
+)
+
 // Run executes every host precondition in order and returns one Result per
 // check. It does NOT short-circuit: an operator should see every failing
 // precondition at once, so all checks run even after an earlier failure. Call
