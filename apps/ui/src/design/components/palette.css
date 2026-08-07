@@ -1,14 +1,15 @@
-/* Command palette — .cx-palette (D3, Kobalte combobox). CLASS SKELETON ONLY:
-   the full palette surface spec (results, groups, scoring, empty state) is T5.
-   This defines just the base class + data-* + the tokens it consumes, so T5
-   builds on a stable base. elev-3 float above the scrim at --cx-z-palette.
-   Consumes only --cx-* tiers. */
+/* Command palette — .cx-palette (D3/D5, Kobalte combobox). The full palette
+   surface: an elev-3 float above the scrim at --cx-z-palette, 560px wide in the
+   top third, a query input over a results list of groups and four-part result
+   rows (glyph · title · dim context · shortcut chip) at .cx-tree-row density,
+   plus empty and loading states. Loading hosts .cx-loader[data-topology="bar"]
+   by reference (the motion/keyframe is T8). Consumes only --cx-* tiers. */
 
 .cx-palette {
 	display: flex;
 	flex-direction: column;
-	width: 100%;
-	max-width: 640px;
+	width: 560px;
+	max-width: 100%;
 	border: 1px solid var(--cx-border-strong);
 	border-radius: var(--cx-radius-lg);
 	background: var(--cx-bg-panel);
@@ -41,10 +42,149 @@
 	border-bottom-color: var(--cx-border-focus);
 }
 
-/* The palette scrim backdrop. */
+/* The palette scrim backdrop. It also positions the float: horizontally
+   centered, offset into the top third of the viewport (the palette is a
+   reach-for-it surface, not a modal — it sits high, not dead-center). */
 .cx-palette-backdrop {
 	position: fixed;
 	inset: 0;
+	display: flex;
+	justify-content: center;
+	align-items: flex-start;
+	padding: 20vh var(--cx-space-4) var(--cx-space-4);
 	background: var(--cx-scrim);
 	z-index: var(--cx-z-palette);
+}
+
+/* ==========================================================================
+   Results — the scroll region below the input. Rows mirror the .cx-tree-row
+   density contract (26px height, the same padding rhythm) so palette results
+   and tree rows read as one row system.
+   ========================================================================== */
+.cx-palette-list {
+	display: flex;
+	flex-direction: column;
+	max-height: 50vh;
+	padding: var(--cx-space-1);
+	overflow-y: auto;
+}
+
+/* Group/section header — action-mode command groups + navigation-mode
+   destination groupings. A dim, quiet label row; never selectable. */
+.cx-palette-group {
+	display: flex;
+	align-items: center;
+	height: 26px;
+	padding: 0 var(--cx-space-2);
+	color: var(--cx-text-faint);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-xs);
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	white-space: nowrap;
+}
+
+/* Result row — the four-part anatomy left→right: type glyph · title · dim
+   context · shortcut chip. Density mirrors .cx-tree-row. */
+.cx-palette-row {
+	display: flex;
+	align-items: center;
+	gap: var(--cx-space-2);
+	height: 26px;
+	padding: 0 var(--cx-space-2);
+	border-left: 2px solid transparent;
+	border-radius: var(--cx-radius-sm);
+	background: transparent;
+	color: var(--cx-text);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+	line-height: 1;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: background var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+/* [1] Type glyph — a 1-bit icon slot sized like the .cx-state-dot box (the
+   destination kind / command icon; compass-ui emits the inline SVG here). */
+.cx-palette-glyph {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 9px;
+	height: 9px;
+	flex: none;
+	color: var(--cx-text-dim);
+}
+
+/* [2] Title — the command / destination label; takes the free space and
+   truncates before the context + shortcut. */
+.cx-palette-title {
+	flex: 1 1 auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* [3] Context — dim secondary text (scope, path, the destination's parent). */
+.cx-palette-context {
+	flex: none;
+	color: var(--cx-text-dim);
+	font-size: var(--cx-text-xs);
+}
+
+/* [4] Shortcut chip — the right-aligned key hint (a command's `shortcut`).
+   A quiet, non-interactive chip styled after the .cx-chip box (transparent
+   surface — it inherits the row wash rather than carrying its own). */
+.cx-palette-shortcut {
+	flex: none;
+	margin-left: auto;
+	padding: var(--cx-space-1) var(--cx-space-2);
+	border: 1px solid var(--cx-border);
+	border-radius: var(--cx-radius-sm);
+	color: var(--cx-text-dim);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-xs);
+	line-height: 1;
+}
+
+/* --- Hover: row wash (Kobalte drives keyboard highlight via the same tier) --- */
+.cx-palette-row:not([data-disabled]):hover,
+.cx-palette-row:not([data-disabled])[data-highlighted] {
+	background: var(--cx-bg-hover);
+}
+
+/* --- Selected/active: selection surface + the accent left rule --- */
+.cx-palette-row[data-selected] {
+	background: var(--cx-bg-selected);
+	border-left-color: var(--cx-accent);
+	color: var(--cx-text-bright);
+}
+
+/* --- Focus (keyboard) --- */
+.cx-palette-row:focus-visible {
+	outline: var(--cx-focus-ring);
+	outline-offset: -2px;
+}
+
+/* --- Disabled: 45% opacity, default cursor --- */
+.cx-palette-row[data-disabled] {
+	opacity: 0.45;
+	cursor: default;
+}
+
+/* Empty state — a dim "no results" message row, same row rhythm. */
+.cx-palette-empty {
+	display: flex;
+	align-items: center;
+	height: 26px;
+	padding: 0 var(--cx-space-2);
+	color: var(--cx-text-faint);
+	font-family: var(--cx-font-ui);
+	font-size: var(--cx-text-sm);
+}
+
+/* Loading state — async destination providers in flight. The chase-light bar
+   (.cx-loader[data-topology="bar"], D9/T8) sits under the input as a thin
+   progress track; motion + keyframe are T8. */
+.cx-palette-loading {
+	padding: var(--cx-space-1) var(--cx-space-2);
 }

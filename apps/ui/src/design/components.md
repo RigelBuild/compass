@@ -289,16 +289,48 @@ Agent tree + channel/topic rows; caret, state dot, pin affordance.
 
 ## Command palette (Kobalte combobox)
 
-- **Class:** `.cx-palette`, with `.cx-palette-input`, `.cx-palette-backdrop`.
-- **Scope here:** the CLASS SKELETON only — the base class, its float, and the
-  query field. The full palette surface (results, groups, scoring, empty
-  state) is **T5**; this exists so T5 has a stable base.
-- **States:** the query input renders focus (`--cx-focus-ring` + focus
-  border); elev-3 above the scrim at `--cx-z-palette`.
-- **Tokens:** `--cx-bg-panel`, `--cx-scrim`, `--cx-border`,
-  `--cx-border-strong`, `--cx-border-focus`, `--cx-text`, `--cx-text-bright`,
-  `--cx-text-faint`, `--cx-font-ui`, `--cx-text-sm/-lg`, `--cx-space-3/-4`,
-  `--cx-radius-lg`, `--cx-elev-3`, `--cx-z-palette`, `--cx-focus-ring`.
+- **Classes:** `.cx-palette` (the float container), with `.cx-palette-input`
+  (query field), `.cx-palette-backdrop` (scrim + positioner),
+  `.cx-palette-list` (results scroll region), `.cx-palette-group` (section
+  header), `.cx-palette-row` (result row) · `data-selected`, `data-highlighted`,
+  `data-disabled`, and the row sub-parts `.cx-palette-glyph`,
+  `.cx-palette-title`, `.cx-palette-context`, `.cx-palette-shortcut`. Plus
+  `.cx-palette-empty` (no-results row) and `.cx-palette-loading` (loader host).
+- **One surface, two modes, prefix-free.** A single input over the command
+  registry with no mode sigil. **Action mode** fuzzy-searches registered
+  commands (`{ id, title, keywords, scope, shortcut?, run() }`); scoped
+  commands rank above global when their scope is active, and each shows its
+  shortcut chip. **Navigation mode** — bare typing, no `>` prefix — matches
+  both commands and destinations (`{ id, title, kind, navigate(), score? }`,
+  `kind ∈ agent | channel | topic | issue | pr | view`). Async destination
+  providers rank by recency + fuzzy score; the weighting is `compass-ui`'s and
+  is not encoded here.
+- **Result-row anatomy** (left→right): `.cx-palette-glyph` (a 9px 1-bit type
+  glyph — the command icon or destination `kind`) · `.cx-palette-title` (the
+  label, takes free space and truncates) · `.cx-palette-context` (dim secondary
+  text — scope / path / parent, `--cx-text-dim`) · `.cx-palette-shortcut` (the
+  right-aligned key-hint chip).
+- **States:** rest / hover (`--cx-bg-hover`, shared by Kobalte
+  `data-highlighted`) / selected (`--cx-bg-selected` + accent left rule) /
+  disabled (45%) / focus (`--cx-focus-ring`). `.cx-palette-group` is a dim
+  uppercase label row (`--cx-text-faint`), never selectable. Empty state is a
+  dim "no results" row (`.cx-palette-empty`); loading hosts the chase-light bar
+  `.cx-loader[data-topology="bar"]` (D9) under the input via
+  `.cx-palette-loading` — the keyframe is **T8**, referenced not authored here.
+- **Geometry:** panel is elev-3 on `--cx-bg-panel`, **560px wide** (fluid to
+  `100%` within the window), positioned in the **top third** of the viewport
+  by the backdrop (horizontally centered, `20vh` top offset — a reach-for-it
+  surface, not a dead-center modal). Rows mirror the `.cx-tree-row` density
+  (26px height, same padding rhythm) so palette and tree read as one row
+  system.
+- **Host:** a Kobalte combobox; `Cmd/Ctrl+K` opens it at `--cx-z-palette`.
+  ARIA + keyboard traversal are Kobalte's; this owns only the visual surface.
+- **Tokens:** `--cx-bg-panel`, `--cx-bg-hover`, `--cx-bg-selected`, `--cx-scrim`,
+  `--cx-accent`, `--cx-border`, `--cx-border-strong`, `--cx-border-focus`,
+  `--cx-text`, `--cx-text-bright`, `--cx-text-dim`, `--cx-text-faint`,
+  `--cx-font-ui`, `--cx-text-xs/-sm/-lg`, `--cx-space-1/-2/-3/-4`,
+  `--cx-radius-sm/-lg`, `--cx-elev-3`, `--cx-z-palette`, `--cx-motion-fast`,
+  `--cx-ease-out`, `--cx-focus-ring`.
 
 ## Tooltip (Kobalte)
 
