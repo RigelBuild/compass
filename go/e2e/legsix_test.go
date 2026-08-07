@@ -23,9 +23,11 @@ import (
 // Unlike legs 2-5, this leg goes GREEN on the bare stack TODAY: its red→green is
 // at the Provision/`podman create` boundary (the A6 preflight), independent of
 // the unmerged native-agent lane — no agent turn is driven, so no canned backend
-// is needed. podmanUsable() SKIPs it in a container-less sandbox. Every wait is a
-// bounded RPC (rpcTimeout, threaded from ctx) — no sleeps, no polling, no
-// retries.
+// is needed. podmanUsable() SKIPs it in a container-less sandbox. Every blocking
+// wait is a bounded RPC (rpcTimeout, threaded from ctx) — the Provision calls and
+// the store ops. The fire-once `podman container exists` presence probes are
+// dependency-free local shellouts (the podmanUsable convention, fixture.go:477),
+// not ctx-bounded RPC waits. No sleeps, no polling, no retries.
 func TestLegSixTeardownIdempotence(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
