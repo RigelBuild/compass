@@ -178,6 +178,12 @@ type sseTurn struct {
 		name string
 		args string
 	}
+	// rawFrames holds each SSE `data:` payload verbatim (minus the [DONE]
+	// sentinel), so a test can assert on the exact serialized wire shape — e.g.
+	// that a text turn's chunk carries no "tool_calls" key at all (the omitempty
+	// discipline), which the decoded struct alone cannot distinguish from an
+	// empty/null array.
+	rawFrames []string
 }
 
 // readCannedTurn POSTs one /chat/completions request the way the SDK transport
@@ -213,6 +219,7 @@ func readCannedTurn(ctx context.Context, t *testing.T, url string) sseTurn {
 			turn.sawDone = true
 			break
 		}
+		turn.rawFrames = append(turn.rawFrames, data)
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
@@ -302,6 +309,9 @@ func TestCannedModelServerEmitsToolCallTurn(t *testing.T) {
 	if turn.finish != "tool_calls" {
 		t.Fatalf("finish_reason = %q, want tool_calls", turn.finish)
 	}
+	if turn.content != "" {
+		t.Fatalf("tool-call turn carried assistant content %q, want none (a tool-call turn must not stamp text the SDK would append alongside the call)", turn.content)
+	}
 	if !turn.sawDone {
 		t.Fatal("stream never sent the [DONE] sentinel")
 	}
@@ -355,6 +365,17 @@ func TestCannedModelServerServesMultiTurnScript(t *testing.T) {
 	}
 	if second.finish != "stop" {
 		t.Fatalf("POST#2 finish_reason = %q, want stop", second.finish)
+	}
+	// Pin the omitempty wire discipline the cannedmodel.go ToolCalls tag claims:
+	// a text turn's frames must carry no "tool_calls" key at all — not an empty
+	// or null array. The decoded len==0 above cannot tell an absent key from a
+	// present-but-empty one, so assert on the raw serialized frame directly. If
+	// someone dropped the omitempty tag, a text chunk would emit "tool_calls":null
+	// and this reddens.
+	for _, frame := range second.rawFrames {
+		if strings.Contains(frame, "tool_calls") {
+			t.Fatalf("POST#2 (text turn) frame %q contains a tool_calls key; a text turn must omit it entirely (omitempty)", frame)
+		}
 	}
 }
 
