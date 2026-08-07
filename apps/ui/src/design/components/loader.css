@@ -1,15 +1,17 @@
 /* Loader — .cx-loader[data-topology] (D3, D9). The brand chase-light primitive,
    pure CSS/SVG. Two topologies:
-   - spinner — closed square loop, indeterminate work.
+   - spinner — closed square loop, indeterminate work. A genuine 1-bit
+     chase-light comet: an inline SVG grid of discrete perimeter cells whose
+     lit-ness FLOWS through them (the pixels never move), a staircase comet head
+     sweeping a 7×7 perimeter clockwise (brand spine.md §"The spine").
    - bar — open track, blue fill + fog head, determinate progress.
-   The non-purple loading palette (blue fill, fog head) per brand color.md; the
-   one sanctioned purple spinner is the brand-mark-in-motion moment and lives in
-   the mark component (mark*.css), not here — purple is never aliased into
-   --cx-*. This file owns the loader CLASS CONTRACT + static geometry and
-   consumes the D9 motion tokens; the chase-light keyframe (spinner head-travel
-   + bar fog-head motion) and the full boot-sequence spec are T8. Consumes only
-   --cx-*
-   tiers. */
+
+   The non-purple loading palette (blue fill --cx-accent, fog head --cx-text) is
+   the DEFAULT per brand color.md §"The loading palette"; the one sanctioned
+   purple spinner (data-accent="phosphor", the brand-mark-in-motion moment) opts
+   in to --cx-pulse-color — used at most once per surface and never adjacent to a
+   state-dot field. Purple is never aliased into a generic --cx-* token. Consumes
+   only --cx-* tiers + dimension literals. */
 
 .cx-loader {
 	display: inline-block;
@@ -17,21 +19,111 @@
 }
 
 /* ==========================================================================
-   Spinner — a closed square loop (indeterminate). The chase-light travels the
-   loop at the base cadence; the lit head is the accent, the track is faint.
+   Spinner — a 1-bit chase-light comet on a closed square loop (indeterminate).
+
+   Markup contract (compass-ui emits it): an inline
+   <svg viewBox="0 0 7 7" shape-rendering="crispEdges"> holding the 24 perimeter
+   cells of a 7×7 grid as 1×1 <rect class="cx-loader-cell">, emitted in CLOCKWISE
+   perimeter order and each carrying style="--i:<0..23>" (its clockwise step
+   index). The pixels are fixed; only their lit-ness animates.
+
+   The comet: every cell runs the same head→cool→off keyframe, phase-offset by
+   one step via --i, so at any instant the lowest-phase cell is the bright head
+   (fog, cooling to blue behind it) and the ~5 cells behind it are the tapering
+   staircase tail — a comet, not a uniform ring. The negative per-index delay
+   starts every cell already mid-cycle (no power-on sweep) and makes the head
+   sweep toward increasing --i, i.e. clockwise. One perimeter lap per
+   --cx-pulse-period (the sanctioned looping brand cadence; the seed reference's
+   short loop maps onto the tokenized pulse period), stepped hard
+   (steps(1, end))
+   to stay 1-bit — no sub-pixel fade between brightness levels.
    ========================================================================== */
 .cx-loader[data-topology="spinner"] {
+	/* default = the non-purple loading palette: fog head cooling to blue fill */
+	--cx-loader-head-color: var(--cx-text);
+	--cx-loader-body-color: var(--cx-accent);
+	display: inline-block;
 	width: var(--cx-space-4);
 	height: var(--cx-space-4);
-	border: 2px solid var(--cx-border);
-	border-top-color: var(--cx-accent);
-	border-radius: var(--cx-radius-sm);
+	/* 1-bit cells, hard edges — brand spine.md §Rendering. Inherited backstops
+	   into the emitted SVG's shapes so nothing anti-aliases. */
+	image-rendering: pixelated;
+	shape-rendering: crispedges;
+}
+
+/* The one sanctioned purple loader: the brand-mark-in-motion moment. Head and
+   body are the phosphor (--cx-pulse-color, the only purple-in-motion); the
+   keyframe's opacity taper alone shapes the comet. */
+.cx-loader[data-topology="spinner"][data-accent="phosphor"] {
+	--cx-loader-head-color: var(--cx-pulse-color);
+	--cx-loader-body-color: var(--cx-pulse-color);
+}
+
+/* Static comet (frame 0). Also the reduced-motion substitution: when the
+   animation is off, this ladder holds the exact frame-0 of the chase — bright
+   fog head at the leading cell (--i:0), the four-step tail tapering across the
+   cells BEHIND it in clockwise travel (the highest --i, i.e. the last four
+   cells emitted). Same clockwise reading as the running comet. When the
+   animation runs it overrides these every frame. */
+.cx-loader[data-topology="spinner"] .cx-loader-cell {
+	fill: var(--cx-loader-body-color);
+	opacity: 0;
+	animation: cx-loader-chase var(--cx-pulse-period) steps(1, end) infinite;
+	/* --i missing (a markup-contract slip) degrades to a single wrong-phase
+	   cell, never a whole-ring desync. */
+	animation-delay: calc(var(--cx-pulse-period) * (var(--i, 0) / 24 - 1));
+}
+.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(1) {
+	fill: var(--cx-loader-head-color);
+	opacity: 1;
+}
+.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(24) {
+	opacity: 0.6;
+}
+.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(23) {
+	opacity: 0.4;
+}
+.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(22) {
+	opacity: 0.24;
+}
+.cx-loader[data-topology="spinner"] .cx-loader-cell:nth-child(21) {
+	opacity: 0.12;
+}
+
+/* The head→cool→off life of a single cell over one lap. It fires bright (fog
+   head), cools to the blue body across the next four steps (the staircase tail),
+   then stays dark for the rest of the lap. 24 cells × one-step phase offset =
+   a comet ~5 cells long sweeping the perimeter. */
+@keyframes cx-loader-chase {
+	0% {
+		fill: var(--cx-loader-head-color);
+		opacity: 1;
+	}
+	4.16% {
+		fill: var(--cx-loader-body-color);
+		opacity: 0.6;
+	}
+	8.33% {
+		opacity: 0.4;
+	}
+	12.5% {
+		opacity: 0.24;
+	}
+	16.66% {
+		opacity: 0.12;
+	}
+	20.83%,
+	100% {
+		opacity: 0;
+	}
 }
 
 /* ==========================================================================
-   Bar — an open track with a blue fill and a fog head (determinate). Progress
-   is driven by --cx-loader-value (0..1) the compass-ui side sets; no
-   indeterminate bar (brand surfaces.md).
+   Bar — an open track with a blue fill and a fog write-head (determinate).
+   Progress is driven by --cx-loader-value (0..1) the compass-ui side sets; no
+   indeterminate bar (brand surfaces.md). The chase-light "head" here is the fog
+   leading edge riding the fill; it settles to each new value at the base
+   cadence, so growth reads as a write-head advancing along the track.
    ========================================================================== */
 .cx-loader[data-topology="bar"] {
 	display: block;
@@ -46,8 +138,24 @@
 	display: block;
 	height: 100%;
 	width: calc(var(--cx-loader-value, 0) * 100%);
-	background: var(--cx-accent);
+	background: var(--cx-loader-body-color, var(--cx-accent));
 	/* the fog write-head at the leading edge */
 	border-right: 2px solid var(--cx-text);
 	transition: width var(--cx-motion-base) var(--cx-ease-out);
+}
+
+/* ==========================================================================
+   Reduced-motion — substitution, not removal (brand motion.md). The spinner
+   holds frame 0 (the static comet ladder above stays painted); the bar's width
+   transition is already zeroed via the token block in tokens.css, so its fill
+   snaps to value with no travel. State survives: a comet glyph still reads
+   "loading", the bar still reads its value.
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+	.cx-loader[data-topology="spinner"] .cx-loader-cell {
+		animation: none;
+	}
+}
+:root[data-reduce="on"] .cx-loader[data-topology="spinner"] .cx-loader-cell {
+	animation: none;
 }
