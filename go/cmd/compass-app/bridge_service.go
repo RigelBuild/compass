@@ -44,6 +44,14 @@ type bridgeService struct {
 	pump   *bridge.Pump
 	events eventEmitter
 
+	// accountID is the caller account id resolved by the embedded launch
+	// pipeline via WhoAmI (DL-111), exposed to the JS/UI through the bound
+	// AccountID method so it can build the native ConnectionProvider. It is set
+	// once by the launch pipeline immediately after construction and before
+	// app.Run, and only read thereafter, so it needs no lock. Empty in client
+	// mode or when identity was not resolved.
+	accountID string
+
 	mu       sync.Mutex
 	inflight map[string]*inflightCall
 }
@@ -64,6 +72,17 @@ func newBridgeService(pump *bridge.Pump, events eventEmitter) *bridgeService {
 		events:   events,
 		inflight: make(map[string]*inflightCall),
 	}
+}
+
+// AccountID is the bound IPC getter the webview calls to learn the caller
+// account id the embedded launch resolved via WhoAmI (DL-111). The JS side
+// (compass-ui zone) reads it over Wails IPC to build the native
+// ConnectionProvider; the account id is server-derived, never client-supplied.
+// It returns the empty string when no identity was resolved (client mode, or a
+// shell started against a hand-run daemon), which the JS treats as "not yet
+// identified".
+func (s *bridgeService) AccountID(_ context.Context) string {
+	return s.accountID
 }
 
 // headerPair is one request/response header as the JS side models it: an ordered

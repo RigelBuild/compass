@@ -525,3 +525,18 @@ func TestCompassRPCConcurrentDistinctIDs(t *testing.T) {
 
 	assertNotInflight(t, svcB, idB)
 }
+
+// TestAccountIDBoundGetter: the bound AccountID method returns the account id
+// the embedded launch set on the service (the value the JS/UI reads over IPC to
+// build the native ConnectionProvider), and the empty string when none was
+// resolved. This is the T4.1 hand-off surface for the caller identity.
+func TestAccountIDBoundGetter(t *testing.T) {
+	svc, _ := newService("/unused.sock")
+	if got := svc.AccountID(context.Background()); got != "" {
+		t.Errorf("AccountID with no identity = %q, want empty", got)
+	}
+	svc.accountID = "acc-resolved"
+	if got := svc.AccountID(context.Background()); got != "acc-resolved" {
+		t.Errorf("AccountID = %q, want acc-resolved", got)
+	}
+}
