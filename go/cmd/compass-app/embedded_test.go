@@ -321,19 +321,21 @@ func TestRunStackUpReturnsWhileChildrenLinger(t *testing.T) {
 	defer cancel()
 
 	// A short-lived grandchild that outlives its parent and inherits stderr: the
-	// exact fire-and-return shape of `compass-stack up`. sleep 60 is far longer
-	// than any correct runStackUp (which returns at the parent's exit, ~ms) yet
-	// bounded so a REGRESSION leaves no minutes-long orphan.
+	// exact fire-and-return shape of `compass-stack up`. sleep 5 is far longer
+	// than any correct runStackUp (which returns at the parent's exit, ~ms) and
+	// well past the 1s assertion below, yet short enough that a regressed run's
+	// leaked grandchild self-reaps in seconds rather than a minute.
 	stackUp := runStackUp("/bin/sh")
 	start := time.Now()
-	err := stackUp(ctx, []string{"-c", "sleep 60 & exit 0"})
+	err := stackUp(ctx, []string{"-c", "sleep 5 & exit 0"})
 	elapsed := time.Since(start)
 
 	if err != nil {
 		t.Fatalf("stackUp with a lingering child err = %v, want nil", err)
 	}
-	// Generous bound: the fix returns in single-digit ms; the pre-fix hang is
-	// 60s. Anything under a second proves Run did not wait on the grandchild.
+	// Generous bound: the fix returns in single-digit ms, while a regressed Run
+	// blocks until the grandchild exits (~5s) — far past 1s. Anything under a
+	// second proves Run did not wait on the grandchild.
 	if elapsed > time.Second {
 		t.Fatalf("stackUp took %s with a lingering child — Run waited on the inherited stderr pipe (the fire-and-return hang regressed)", elapsed)
 	}

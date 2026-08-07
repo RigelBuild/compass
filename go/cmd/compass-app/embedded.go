@@ -156,17 +156,19 @@ func stackUpArgs(p embeddedParams) []string {
 // compass-stack itself exits; and the children write to a plain file that never
 // EPIPEs, so capturing this way never signals the very stack the app must keep
 // alive.
-func captureStderr(cmd *exec.Cmd) (func() string, func(), error) {
+func captureStderr(cmd *exec.Cmd) (read func() string, cleanup func(), err error) {
 	f, err := os.CreateTemp("", "compass-stack-stderr-*")
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating stderr capture file: %w", err)
 	}
 	cmd.Stderr = f
-	read := func() string {
+	read = func() string {
+		// Best-effort: an unreadable capture degrades to the generic
+		// "compass-stack ... failed" error, and never blocks surfacing.
 		b, _ := os.ReadFile(f.Name())
 		return strings.TrimSpace(string(b))
 	}
-	cleanup := func() {
+	cleanup = func() {
 		_ = f.Close()
 		_ = os.Remove(f.Name())
 	}
