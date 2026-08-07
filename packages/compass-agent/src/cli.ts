@@ -523,14 +523,28 @@ export async function main(
 	// The comms/lifecycle natives are authored as `AgentTool` (pi-agent-core)
 	// because CompassAgent's `#withNatives` mechanism (agent.ts) operates on
 	// `AgentTool[]`. `createAgentSession`'s `customTools` wants
-	// `(CustomTool | ToolDefinition)[]`. An `AgentTool` IS a structurally valid
-	// `ToolDefinition` at runtime: same `execute` param order (toolCallId, params,
-	// signal, onUpdate, ctx), and a non-`CustomTool` entry is passed through
-	// verbatim as its definition (pi-coding-agent sdk.ts:2258-2259). The only
-	// compile-time gap is generic variance on the OPTIONAL renderCall/renderResult
-	// (`AgentTool` TTheme=unknown vs `ToolDefinition` Theme/Component) — fields
-	// these headless tools never define — so the assertion to the `ToolDefinition`
-	// arm is sound.
+	// `(CustomTool | ToolDefinition)[]`, and the SDK exposes no dedicated native
+	// seam, so we register the `AgentTool[]` through `customTools` with a single
+	// documented assertion. The assertion to the `ToolDefinition` arm is
+	// TYPE-sound: the only compile-time gap is generic variance on the OPTIONAL
+	// renderCall/renderResult (`AgentTool` TTheme=unknown vs `ToolDefinition`
+	// Theme/Component) — fields these headless tools never define.
+	//
+	// RUNTIME mechanism (subtle — do not "simplify" the invariant below away):
+	// an `AgentTool` object literal carries no `__isToolDefinition` marker, so
+	// the SDK classifies it as a CustomTool (`isCustomTool`, sdk.ts:876) and runs
+	// it through `customToolToDefinition` (sdk.ts:915) — NOT the verbatim
+	// pass-through arm. That wrapper invokes `execute` with the CustomTool arg
+	// convention `(toolCallId, params, onUpdate, ctx, signal)` (sdk.ts:927),
+	// whereas `AgentTool.execute` is `(toolCallId, params, signal, onUpdate, ctx)`
+	// (pi-agent-core types.ts:612-616) — so args 3-5 arrive SHUFFLED. This is
+	// safe ONLY because every native's `execute` body reads solely
+	// `(toolCallId, params)` and ignores args 3-5 (comms.ts / lifecycle.ts). That
+	// invariant is enforced by a test in cli.test.ts (a sentinel in the signal
+	// position must not be observed); if a native ever needs its AbortSignal or
+	// onUpdate (e.g. wiring cancellation), it CANNOT go through this seam — the
+	// SDK must gain a real native-registration path, or the tool must be a true
+	// `ToolDefinition`. Do not consume args 3-5 here without falsifying that test.
 	const nativeTools = [
 		...createCommsTools(commsBroker),
 		...createLifecycleTools(lifecycleBroker),
@@ -676,7 +690,12 @@ export async function main(
 		// the container has NO human to answer an approval prompt, and the native
 		// comms/lifecycle tools declare approval:"write" — so without auto-approve
 		// a write-approval tool would block forever and never execute. Pin the
-		// yolo-default policy here in the entrypoint.
+		// yolo-default policy here in the entrypoint. Unconditional by design: the
+		// safety rests on an EXTERNAL invariant — this bin is exec'd only by the
+		// Runner as the in-container headless entrypoint (`if (import.meta.main)`,
+		// the sole createAgentSession call in the package), never interactively. If
+		// that ever changes, gate this on an explicit headless signal so the
+		// auto-approve posture fails safe outside a container.
 		autoApprove: true,
 		// Fleet config object injection (SEA-1678 pivot):
 		//   - `rules` (CP-4): the fleet rules COMPOSED with the checkout's

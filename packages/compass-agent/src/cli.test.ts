@@ -1752,6 +1752,36 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(seen[0].autoApprove).toBe(true);
 	});
 
+	test("every native's execute reads only (toolCallId, params) — locks the customToolToDefinition arg-shuffle invariant", () => {
+		// SEA-1741 seam invariant. The natives are `AgentTool`s registered through
+		// `customTools`; the SDK classifies a marker-less AgentTool as a CustomTool
+		// and runs it through `customToolToDefinition`, which invokes `execute`
+		// with the CustomTool arg order (toolCallId, params, onUpdate, ctx, signal)
+		// — NOT the AgentTool order (toolCallId, params, signal, onUpdate, ctx). So
+		// args 3-5 arrive SHUFFLED, and the wiring in cli.ts main() is sound ONLY
+		// while no native reads past `params`. These are arrow functions (no
+		// `arguments` object), so a body can reach a shuffled arg ONLY by declaring
+		// it as a formal parameter — which pushes `execute.length` past 2. Pin the
+		// arity so wiring cancellation (adding `signal` as a 3rd param) reddens here
+		// instead of silently receiving `onUpdate`. If a native must consume its
+		// AbortSignal, it cannot go through this seam — see the comment in cli.ts.
+		const fakeTransport = {
+			comms: async () => ({}) as never,
+			lifecycle: async () => ({}) as never,
+		};
+		const natives = [
+			...createCommsTools(new CommsBroker(fakeTransport)),
+			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
+		];
+		expect(natives).toHaveLength(6);
+		for (const tool of natives) {
+			expect({ name: tool.name, arity: tool.execute.length }).toEqual({
+				name: tool.name,
+				arity: 2,
+			});
+		}
+	});
+
 	test("an UNCONFIGURED mount → skills [], no extension paths, no MCP tools, and main resolves", async () => {
 		// A present-but-empty mount root (no current/). The default connectMcp runs
 		// (empty configs → no dial, empty tools), so this exercises the real
