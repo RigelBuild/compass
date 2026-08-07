@@ -57,6 +57,10 @@ type Fixture struct {
 type fixtureConfig struct {
 	canned       bool
 	cannedScript []CannedTurn
+	// site, when non-nil, makes NewFixture reuse a persistent root/stateDir/ports
+	// (WithSite) instead of minting fresh ephemeral ones — the SEA-1790 H6
+	// cross-restart substrate. nil is the default ephemeral fixture.
+	site *fixtureSite
 }
 
 // fixtureOption mutates a fixtureConfig. Variadic options keep NewFixture's
@@ -90,6 +94,20 @@ func WithCannedScript(script ...CannedTurn) fixtureOption {
 	return func(fc *fixtureConfig) {
 		fc.canned = true
 		fc.cannedScript = script
+	}
+}
+
+// WithSite makes NewFixture reuse a persistent site (root/stateDir/ports) rather
+// than minting fresh ephemeral ones — the SEA-1790 H6 cross-restart substrate.
+// Two NewFixture calls over the SAME site drive two stack lifecycles that share
+// the postgres data dir (under stateDir), so the second Up re-attaches the
+// persisted cluster and the same handle resolves to the same account. The site's
+// lifecycle (its RemoveAll) is owned by newPersistentSite's t.Cleanup, so
+// NewFixture registers only the per-Up Down, never a root RemoveAll, on this
+// path. Absent this option NewFixture behaves exactly as before.
+func WithSite(site fixtureSite) fixtureOption {
+	return func(fc *fixtureConfig) {
+		fc.site = &site
 	}
 }
 
@@ -132,7 +150,27 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	binDir := buildBinariesFromModuleRoot(t)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	root := shortRoot(t, "h1")
+	// Acquire the root/stateDir/ports either fresh (the default ephemeral
+	// fixture) or from a persistent site (WithSite — the H6 cross-restart
+	// substrate). The site path reuses one root/stateDir/ports across two Ups so
+	// the second re-attaches the persisted postgres cluster; the ephemeral path
+	// mints per-call state exactly as before. Only the acquisition differs — the
+	// downstream cfg build is shared.
+	var root, stateDir string
+	var listenPort, pgPort int
+	if fc.site != nil {
+		root = fc.site.root
+		stateDir = fc.site.stateDir
+		listenPort, pgPort = fc.site.listenPort, fc.site.pgPort
+	} else {
+		// shortRoot registers its own RemoveAll on t.Cleanup; the site path must
+		// NOT (else run1's cleanup would delete the persisted DB before run2), so
+		// newPersistentSite owns the site's single end-of-test RemoveAll instead.
+		root = shortRoot(t, "h1")
+		stateDir = t.TempDir() // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
+		ports := freePorts(t, 2)
+		listenPort, pgPort = ports[0], ports[1]
+	}
 	pgSockDir := filepath.Join(root, "pg")
 	runtimeDir := filepath.Join(root, "rt")
 	serverSock := filepath.Join(root, "s.sock")
@@ -143,16 +181,13 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		t.Fatalf("mkdir runtime dir: %v", err)
 	}
 
-	ports := freePorts(t, 2)
-	listenPort, pgPort := ports[0], ports[1]
-
 	// The DSN host is the socket DIRECTORY postgres -k listens on (libpq unix
 	// convention); the postgres wrapper creates it and binds
 	// SocketDir/.s.PGSQL.<port>.
 	dsn := "host=" + pgSockDir + " port=" + strconv.Itoa(pgPort) + " dbname=compass sslmode=disable"
 
 	cfg := stack.Config{
-		StateDir:    t.TempDir(), // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
+		StateDir:    stateDir, // TLS anchor (tls.crt/tls.key) + postgres data dir; not sun_path-budgeted
 		SocketPath:  serverSock,
 		ListenAddr:  "127.0.0.1:" + strconv.Itoa(listenPort),
 		DatabaseDSN: dsn,
@@ -389,6 +424,50 @@ func shortRoot(t *testing.T, suffix string) string {
 		_ = os.RemoveAll(root) // best-effort: the state here is this test's alone and its Down has drained the children
 	})
 	return root
+}
+
+// fixtureSite is a persistent stack substrate — the root, state dir, and two
+// ports — that outlives a single NewFixture call so two Ups (WithSite) can share
+// it: the postgres data dir lives under stateDir, so the second Up re-attaches
+// the cluster the first initialized. Produced by newPersistentSite, consumed via
+// WithSite. The SEA-1790 H6 cross-restart leg is its only user.
+type fixtureSite struct {
+	root       string
+	stateDir   string
+	listenPort int
+	pgPort     int
+}
+
+// newPersistentSite mints a persistent site whose lifetime spans a whole test —
+// two back-to-back Ups over it re-attach the same postgres cluster. It registers
+// exactly ONE end-of-test RemoveAll for the root (not per-Up), so run1's Down
+// cannot delete the persisted DB before run2; the state dir is a t.TempDir (the
+// framework reaps it after the test). The root stays short off shortRoot because
+// the runner's agent-socket path under it is sun_path-budgeted (run.go
+// validateRuntimeDir); the state dir is not budgeted, so a t.TempDir is fine
+// there. The two ports are allocated ONCE — run1's Down closes its listeners
+// before run2's Up rebinds them, so a single freePorts pair serves both.
+func newPersistentSite(t *testing.T) fixtureSite {
+	t.Helper()
+	// A short, unique root — NOT via shortRoot, whose t.Cleanup RemoveAll fires
+	// at the enclosing test's end but would be fine either way; the reason to
+	// inline it is to keep the site's single RemoveAll here, alongside the rest
+	// of the site's lifecycle, rather than split across helpers. suffix "h6"
+	// keeps it distinct from an ephemeral fixture's "h1" root in the same test.
+	root := filepath.Join("/tmp", "ce"+strconv.Itoa(os.Getpid())+"h6")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatalf("mkdir persistent site root: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(root) // best-effort end-of-test sweep: the site is this test's alone and both Downs have drained by now
+	})
+	ports := freePorts(t, 2)
+	return fixtureSite{
+		root:       root,
+		stateDir:   t.TempDir(),
+		listenPort: ports[0],
+		pgPort:     ports[1],
+	}
 }
 
 // podmanUsable reports whether rootless podman can run the real agent image
