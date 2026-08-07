@@ -150,9 +150,25 @@
 	--cx-review-changes: var(--cx-error);
 	--cx-review-pending: var(--cx-text-faint);
 
-	/* --cx-ed-* editor-theme block: names reserved here, values authored by T7 (SEA-1817). */
-	/* background, selection, cursor, and the syntax ramp map from the semantic
-	   tier to the embedded editor/Shiki theme; T7 authors their values. */
+	/* --- Editor theme (--cx-ed-*) — embedded editor/Shiki share the chrome palette (D8) --- */
+	--cx-ed-bg: var(--cx-bg); /* editor surface = chrome background (night sky) */
+	--cx-ed-text: var(--cx-text); /* primary editor text (fog) */
+	--cx-ed-selection: var(--rigel-selection); /* selection / highlight surface */
+	--cx-ed-cursor: var(--rigel-blue); /* caret = interaction color */
+	--cx-ed-gutter: var(--rigel-faint); /* line-number / gutter faint */
+	/* syntax ramp */
+	--cx-ed-fn: var(--rigel-blue); /* functions · links · interaction */
+	--cx-ed-op: var(--rigel-cyan); /* support · operators */
+	--cx-ed-keyword: var(--rigel-magenta); /* keywords · tags */
+	--cx-ed-string: var(--rigel-amber); /* strings */
+	--cx-ed-number: var(--rigel-syntax-coral); /* numbers · params */
+	--cx-ed-attr: var(--rigel-green); /* attributes · warnings (working green) */
+	--cx-ed-comment: var(--rigel-faint); /* comments · disabled */
+	--cx-ed-diff-add: var(
+		--rigel-success
+	); /* diff-add · success (distinct green) */
+	--cx-ed-diff-del: var(--rigel-red); /* diff-del */
+	--cx-ed-error: var(--rigel-red); /* errors */
 }
 
 /* ==========================================================================
