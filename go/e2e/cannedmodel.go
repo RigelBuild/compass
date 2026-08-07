@@ -39,6 +39,18 @@ import (
 // openai-completions provider appends to its configured baseUrl.
 const cannedChatPath = "/chat/completions"
 
+// The openai-completions SSE wire values the stub emits, named so the two turn
+// branches (text and tool-call) share one source of truth. chunkObject is the
+// `object` every chat.completion.chunk carries; finishStop and finishToolCall
+// are the two finish_reason values the SDK's mapStopReason keys on ("stop" is a
+// clean settle, "tool_calls" maps to stopReason toolUse the agent loop gates
+// tool execution on).
+const (
+	chunkObject    = "chat.completion.chunk"
+	finishStop     = "stop"
+	finishToolCall = "tool_calls"
+)
+
 // hostRoutableAddr returns the host's default-route source address — the
 // interface pasta forwards a container's host-gateway traffic to. A stub bound
 // to loopback (127.0.0.1) is unreachable from the container; it must bind THIS
@@ -61,28 +73,80 @@ func hostRoutableAddr() (string, error) {
 	return udpAddr.IP.String(), nil
 }
 
+// CannedTurn is one scripted model round-trip the canned backend serves: either
+// a pure-text turn (delta.content + finish_reason "stop") or a single-tool-call
+// turn (a one-element delta.tool_calls + finish_reason "tool_calls"). Build one
+// with CannedText or CannedToolCall — the zero value is not a valid turn. The
+// server serves an ordered script of these, one per request (request N serves
+// script[N]), so a multi-round agent scenario advances one scripted turn per
+// model round-trip.
+type CannedTurn struct {
+	// isToolCall selects the turn shape: false is a text turn, true a tool-call
+	// turn. Distinguishing on a bool (not "text != ''") lets a text turn script
+	// an empty reply without collapsing into the tool-call branch.
+	isToolCall bool
+	// text is the assistant reply a text turn settles on.
+	text string
+	// toolName / toolArgs script a tool-call turn: the function name and its
+	// arguments already serialized as a JSON string (the OpenAI contract — the
+	// SDK parser reads function.arguments as a string it JSON-parses in one shot,
+	// openai-completions.ts:1208-1220). The call id is assigned deterministically
+	// per served turn by the handler, not carried here.
+	toolName string
+	toolArgs string
+}
+
+// CannedText builds a pure-text scripted turn: the assistant settles on reply
+// with a clean finish_reason "stop". This is the pre-script single-reply
+// behavior, now expressed as one turn.
+func CannedText(reply string) CannedTurn {
+	return CannedTurn{text: reply}
+}
+
+// CannedToolCall builds a single-tool-call scripted turn: the assistant emits
+// one tool call naming toolName with argsJSON as its arguments (passed already
+// serialized as a JSON string, the OpenAI contract) and a finish_reason
+// "tool_calls" (which maps to stopReason toolUse the agent loop gates tool
+// execution on, openai-completions.ts:2364-2365). The server assigns a unique
+// deterministic call id per served turn.
+func CannedToolCall(toolName, argsJSON string) CannedTurn {
+	return CannedTurn{isToolCall: true, toolName: toolName, toolArgs: argsJSON}
+}
+
 // cannedModelServer is a running canned model backend. It owns its listener and
 // http.Server; Close stops both. The zero value is not usable — build one with
 // startCannedModelServer.
 type cannedModelServer struct {
 	srv      *http.Server
 	ln       net.Listener
-	reply    string
+	script   []CannedTurn
 	port     int
 	closeErr error
 	closeMu  sync.Mutex
 	closed   bool
+	// served counts requests handled so far; request N is served script[N]. It
+	// is read+incremented under servedMu so a pathological concurrent hit stays
+	// race-free (go test -race clean) — a real agent serializes its round-trips,
+	// but the stub guards the counter anyway.
+	servedMu sync.Mutex
+	served   int
 }
 
 // startCannedModelServer binds a listener on bindAddr (host:port; port 0 lets
-// the kernel assign a free one) and serves the canned streaming SSE turn on
-// /chat/completions until Close. reply is the exact assistant text every turn
-// settles on. bindAddr must be an interface the model client can reach: in the
-// container leg it is the host's routable address (pasta forwards the container
-// to it via the host-gateway); in the hermetic unit test it is loopback. It
-// returns an error rather than panicking (rule://go-no-panic-in-lib) so the
-// caller — a test — decides fatality.
-func startCannedModelServer(bindAddr, reply string) (*cannedModelServer, error) {
+// the kernel assign a free one) and serves the canned streaming SSE script on
+// /chat/completions until Close. script is the ordered per-request turn list:
+// request N settles on script[N] (a text or single-tool-call turn); a request
+// past the end is a test bug the handler answers with a loud 500. An empty
+// script is a construction error — a backend that can never settle a turn.
+// bindAddr must be an interface the model client can reach: in the container leg
+// it is the host's routable address (pasta forwards the container to it via the
+// host-gateway); in the hermetic unit test it is loopback. It returns an error
+// rather than panicking (rule://go-no-panic-in-lib) so the caller — a test —
+// decides fatality.
+func startCannedModelServer(bindAddr string, script []CannedTurn) (*cannedModelServer, error) {
+	if len(script) == 0 {
+		return nil, errors.New("canned model server requires a non-empty script")
+	}
 	ln, err := net.Listen("tcp", bindAddr)
 	if err != nil {
 		return nil, fmt.Errorf("canned model server listen on %q: %w", bindAddr, err)
@@ -92,7 +156,7 @@ func startCannedModelServer(bindAddr, reply string) (*cannedModelServer, error) 
 		_ = ln.Close() // failed construction; release the listener we just opened
 		return nil, fmt.Errorf("canned model server listener has unexpected addr type %T", ln.Addr())
 	}
-	c := &cannedModelServer{ln: ln, reply: reply, port: tcpAddr.Port}
+	c := &cannedModelServer{ln: ln, script: script, port: tcpAddr.Port}
 	mux := http.NewServeMux()
 	mux.HandleFunc(cannedChatPath, c.handleChatCompletions)
 	// ReadHeaderTimeout bounds a slow-header client (gosec G112); the canned
@@ -171,15 +235,42 @@ type chatChoice struct {
 type chatDelta struct {
 	Role    string `json:"role,omitempty"`
 	Content string `json:"content,omitempty"`
+	// ToolCalls is the streamed tool-call array on a tool-call turn. It is
+	// omitempty so a text-only chunk serializes exactly as before (no empty
+	// tool_calls array on a text turn — the SDK parser keys on its presence).
+	ToolCalls []chatToolCall `json:"tool_calls,omitempty"`
 }
 
-// handleChatCompletions serves the deterministic streaming turn. It rejects a
+// chatToolCall is one element of delta.tool_calls: the SDK reads index, id,
+// type ("function"), and the function name+arguments (openai-completions.ts
+// :1208-1220). A single chunk carrying the complete arguments string suffices —
+// parseStreamingJsonThrottled parses it in one shot, so no fragmentation.
+type chatToolCall struct {
+	Index    int                  `json:"index"`
+	ID       string               `json:"id"`
+	Type     string               `json:"type"`
+	Function chatToolCallFunction `json:"function"`
+}
+
+// chatToolCallFunction is the function name and its arguments serialized as a
+// JSON string (the OpenAI contract — arguments is a string the SDK JSON-parses,
+// not a nested object).
+type chatToolCallFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// handleChatCompletions serves one scripted turn per request. It rejects a
 // non-POST with 405 (the provider only ever POSTs) and writes an HTTP error —
-// never panics — on any failure (rule://go-no-panic-in-lib). The body is three
-// SSE events: a content chunk carrying the whole canned reply, a terminal chunk
-// with finish_reason "stop", and the literal `data: [DONE]` sentinel. Each event
-// is flushed immediately so the client's first-event watchdog sees bytes without
-// waiting on the handler to return.
+// never panics — on any failure (rule://go-no-panic-in-lib). It claims the next
+// script index under servedMu; a request past the end of the script is a test
+// bug answered with a loud 500 naming exhaustion (never a hang or a default
+// turn). The turn's body is either a text turn (a content chunk + a terminal
+// finish_reason "stop") or a single-tool-call turn (a chunk whose
+// delta.tool_calls carries one entry + a terminal finish_reason "tool_calls"),
+// then the literal `data: [DONE]` sentinel. Each event is flushed immediately so
+// the client's first-event watchdog sees bytes without waiting on the handler to
+// return.
 func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "canned model backend only serves POST", http.StatusMethodNotAllowed)
@@ -190,23 +281,67 @@ func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http
 		http.Error(w, "canned model backend requires a flushable ResponseWriter", http.StatusInternalServerError)
 		return
 	}
+
+	// Claim the next script index under the counter mutex so a pathological
+	// concurrent hit stays race-free. An index past the end is a test bug: fail
+	// loudly with a 500 naming exhaustion BEFORE writing the 200 stream header,
+	// so the client sees the error status rather than an empty stream.
+	c.servedMu.Lock()
+	idx := c.served
+	c.served++
+	c.servedMu.Unlock()
+	if idx >= len(c.script) {
+		http.Error(w, fmt.Sprintf("canned model backend script exhausted: request %d past the end of a %d-turn script (an unscripted turn is a test bug)", idx, len(c.script)), http.StatusInternalServerError)
+		return
+	}
+	turn := c.script[idx]
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 
 	const id = "canned-completion"
-	stop := "stop"
-	events := []chatChunk{
-		{ID: id, Object: "chat.completion.chunk", Choices: []chatChoice{{
-			Index: 0,
-			Delta: chatDelta{Role: "assistant", Content: c.reply},
-		}}},
-		{ID: id, Object: "chat.completion.chunk", Choices: []chatChoice{{
-			Index:        0,
-			Delta:        chatDelta{},
-			FinishReason: &stop,
-		}}},
+	var events []chatChunk
+	if turn.isToolCall {
+		// A single tool-call turn: one delta.tool_calls entry with a unique
+		// deterministic call id, then a terminal finish_reason "tool_calls" (maps
+		// to stopReason toolUse the agent loop gates tool execution on).
+		finish := finishToolCall
+		callID := fmt.Sprintf("call_%d", idx)
+		events = []chatChunk{
+			{ID: id, Object: chunkObject, Choices: []chatChoice{{
+				Index: 0,
+				Delta: chatDelta{Role: "assistant", ToolCalls: []chatToolCall{{
+					Index: 0,
+					ID:    callID,
+					Type:  "function",
+					Function: chatToolCallFunction{
+						Name:      turn.toolName,
+						Arguments: turn.toolArgs,
+					},
+				}}},
+			}}},
+			{ID: id, Object: chunkObject, Choices: []chatChoice{{
+				Index:        0,
+				Delta:        chatDelta{},
+				FinishReason: &finish,
+			}}},
+		}
+	} else {
+		// A pure-text turn: the content chunk then a clean finish_reason "stop".
+		stop := finishStop
+		events = []chatChunk{
+			{ID: id, Object: chunkObject, Choices: []chatChoice{{
+				Index: 0,
+				Delta: chatDelta{Role: "assistant", Content: turn.text},
+			}}},
+			{ID: id, Object: chunkObject, Choices: []chatChoice{{
+				Index:        0,
+				Delta:        chatDelta{},
+				FinishReason: &stop,
+			}}},
+		}
 	}
 	for _, ev := range events {
 		payload, err := json.Marshal(ev)

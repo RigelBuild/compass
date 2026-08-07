@@ -55,8 +55,8 @@ type Fixture struct {
 // before NewFixture stands the stack up. The zero value is the plain H1/H2
 // fixture (no canned model); WithCannedModel turns on the SEA-1787 H3 backend.
 type fixtureConfig struct {
-	canned      bool
-	cannedReply string
+	canned       bool
+	cannedScript []CannedTurn
 }
 
 // fixtureOption mutates a fixtureConfig. Variadic options keep NewFixture's
@@ -65,16 +65,31 @@ type fixtureConfig struct {
 type fixtureOption func(*fixtureConfig)
 
 // WithCannedModel makes NewFixture stand up the deterministic canned model
-// backend (SEA-1787 H3): it starts the stub SSE server on the host's routable
-// interface, writes a models.yml custom openai-completions provider pointing at
-// it (through the pasta host-gateway) into a host dir bind-mounted at the
-// agent's ~/.omp/agent, and pins the fixture's AgentModel/EgressAllow so the
-// agent resolves that provider and its default-deny egress permits exactly the
-// stub. reply is the assistant text every scripted turn settles on.
+// backend (SEA-1787 H3) with a single pure-text turn: it starts the stub SSE
+// server on the host's routable interface, writes a models.yml custom
+// openai-completions provider pointing at it (through the pasta host-gateway)
+// into a host dir bind-mounted at the agent's ~/.omp/agent, and pins the
+// fixture's AgentModel/EgressAllow so the agent resolves that provider and its
+// default-deny egress permits exactly the stub. reply is the assistant text the
+// single scripted turn settles on. For a multi-turn script (H4), use
+// WithCannedScript.
 func WithCannedModel(reply string) fixtureOption {
 	return func(fc *fixtureConfig) {
 		fc.canned = true
-		fc.cannedReply = reply
+		fc.cannedScript = []CannedTurn{CannedText(reply)}
+	}
+}
+
+// WithCannedScript makes NewFixture stand up the canned model backend serving an
+// ordered multi-turn script (SEA-1788 H4): the agent settles request N on
+// script[N], so a multi-round scenario (e.g. a tool-call turn then a closing
+// text turn) advances one scripted turn per model round-trip. It shares the same
+// underlying backend as WithCannedModel — the single-turn convenience is just a
+// one-CannedText script.
+func WithCannedScript(script ...CannedTurn) fixtureOption {
+	return func(fc *fixtureConfig) {
+		fc.canned = true
+		fc.cannedScript = script
 	}
 }
 
@@ -165,7 +180,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	// stub means plain mode and every canned field stays as set above.
 	var stub *cannedModelServer
 	if fc.canned {
-		stub = configureCannedModel(t, &cfg, root, fc.cannedReply)
+		stub = configureCannedModel(t, &cfg, root, fc.cannedScript)
 	}
 
 	deps := stack.Deps{
@@ -267,14 +282,14 @@ const pastaHostGateway = "169.254.1.2"
 // It returns the running stub; its Close rides a t.Cleanup so teardown never
 // leaks it. cfgRoot is the fixture's short root (the models.yml host dir lives
 // under it, short enough to stay clear of any path budget).
-func configureCannedModel(t *testing.T, cfg *stack.Config, cfgRoot, reply string) *cannedModelServer {
+func configureCannedModel(t *testing.T, cfg *stack.Config, cfgRoot string, script []CannedTurn) *cannedModelServer {
 	t.Helper()
 
 	hostAddr, err := hostRoutableAddr()
 	if err != nil {
 		t.Fatalf("resolve host routable address for canned model: %v", err)
 	}
-	stub, err := startCannedModelServer(hostAddr+":0", reply)
+	stub, err := startCannedModelServer(hostAddr+":0", script)
 	if err != nil {
 		t.Fatalf("start canned model server: %v", err)
 	}
