@@ -6,7 +6,7 @@ import (
 )
 
 // agentTreeProjection is the account column list + FROM/JOINs shared by the
-// three tree reads. It mirrors the ListAccounts projection (accounts.go:498-501)
+// three tree reads. It mirrors the ListAccounts projection (accounts.go:544-546)
 // exactly so a tree-read row scans through the same scanAccount helper and reads
 // identically to every other account read. The join to agent_accounts is INNER:
 // the tree is agents-only, so a user account can never appear in a tree read.
@@ -14,7 +14,7 @@ import (
 const agentTreeProjection = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.parent_agent_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		JOIN agent_accounts ag ON ag.account_id = a.id`
