@@ -123,8 +123,8 @@ button {
 	align-items: center;
 	gap: 14px;
 	padding: 0 12px;
-	background: var(--bg-raised);
-	border-bottom: 1px solid var(--border);
+	background: var(--cx-bg-raised);
+	border-bottom: 1px solid var(--cx-border);
 }
 
 .brand {
@@ -134,7 +134,7 @@ button {
 }
 
 .brand .logo {
-	color: var(--accent);
+	color: var(--cx-accent);
 	font-size: 16px;
 	align-self: center;
 }
@@ -146,7 +146,7 @@ button {
 }
 
 .brand .subtitle {
-	color: var(--text-dim);
+	color: var(--cx-text-dim);
 	font-size: 11px;
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
@@ -156,7 +156,7 @@ button {
 	width: 1px;
 	align-self: stretch;
 	margin: 10px 0;
-	background: var(--border);
+	background: var(--cx-border);
 }
 
 .view-tabs {
@@ -172,20 +172,20 @@ button {
 	border: 1px solid transparent;
 	border-radius: var(--radius-sm);
 	padding: 5px 11px;
-	color: var(--text-dim);
+	color: var(--cx-text-dim);
 	font-size: 12px;
 	font-weight: 500;
 }
 
 .view-tab:hover {
-	background: var(--bg-hover);
-	color: var(--text);
+	background: var(--cx-bg-hover);
+	color: var(--cx-text);
 }
 
 .view-tab.active {
-	background: var(--bg-active);
-	color: var(--text);
-	border-color: var(--border-strong);
+	background: var(--cx-bg-active);
+	color: var(--cx-text);
+	border-color: var(--cx-border-strong);
 }
 
 .view-tab .tab-glyph {
@@ -201,10 +201,10 @@ button {
 	align-items: center;
 	gap: 7px;
 	font-size: 11px;
-	color: var(--text-dim);
+	color: var(--cx-text-dim);
 	padding: 4px 9px;
-	background: var(--bg-panel);
-	border: 1px solid var(--border);
+	background: var(--cx-bg-panel);
+	border: 1px solid var(--cx-border);
 	border-radius: var(--radius-sm);
 }
 
@@ -222,7 +222,7 @@ button {
 }
 
 .daemon-ver {
-	color: var(--text-faint);
+	color: var(--cx-text-faint);
 	font-family: var(--font-mono);
 	font-size: 10px;
 }
@@ -241,18 +241,18 @@ button {
 	background: transparent;
 	border: 1px solid transparent;
 	border-radius: var(--radius-sm);
-	color: var(--text-faint);
+	color: var(--cx-text-faint);
 	font-size: 15px;
 	line-height: 1;
 }
 
 .pane-toggle:hover {
-	background: var(--bg-hover);
-	color: var(--text);
+	background: var(--cx-bg-hover);
+	color: var(--cx-text);
 }
 
 .pane-toggle.active {
-	color: var(--accent);
+	color: var(--cx-accent);
 }
 
 /* ── Left sidebar: folder tree ──────────────────────────────────────────── */
@@ -260,8 +260,8 @@ button {
 .left {
 	grid-area: left;
 	width: 244px;
-	background: var(--bg-raised);
-	border-right: 1px solid var(--border);
+	background: var(--cx-bg-raised);
+	border-right: 1px solid var(--cx-border);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
@@ -279,7 +279,7 @@ button {
 	font-weight: 600;
 	text-transform: uppercase;
 	letter-spacing: 0.07em;
-	color: var(--text-faint);
+	color: var(--cx-text-faint);
 }
 
 .icon-btn {
@@ -291,14 +291,14 @@ button {
 	background: transparent;
 	border: none;
 	border-radius: 4px;
-	color: var(--text-faint);
+	color: var(--cx-text-faint);
 	font-size: 14px;
 	line-height: 1;
 }
 
 .icon-btn:hover {
-	background: var(--bg-hover);
-	color: var(--text);
+	background: var(--cx-bg-hover);
+	color: var(--cx-text);
 }
 
 /* Bridge link — pinned at the top of the tree. */
@@ -311,7 +311,7 @@ button {
 	background: transparent;
 	border: 1px solid transparent;
 	border-radius: var(--radius-sm);
-	color: var(--text);
+	color: var(--cx-text);
 	font-weight: 600;
 	font-size: 13px;
 	width: calc(100% - 16px);
@@ -319,16 +319,16 @@ button {
 }
 
 .bridge-link:hover {
-	background: var(--bg-hover);
+	background: var(--cx-bg-hover);
 }
 
 .bridge-link.active {
-	background: var(--bg-active);
-	border-color: var(--accent-dim);
+	background: var(--cx-bg-active);
+	border-color: var(--cx-accent-muted);
 }
 
 .bridge-link .glyph {
-	color: var(--accent);
+	color: var(--cx-accent);
 	font-size: 15px;
 }
 
@@ -336,8 +336,8 @@ button {
 	margin-left: auto;
 	font-size: 11px;
 	font-weight: 500;
-	color: var(--text-dim);
-	background: var(--bg-card);
+	color: var(--cx-text-dim);
+	background: var(--cx-bg-panel);
 	border-radius: 10px;
 	padding: 1px 8px;
 }
@@ -350,12 +350,12 @@ button {
 
 .tree-sep {
 	height: 1px;
-	background: var(--border);
+	background: var(--cx-border);
 	margin: 4px 4px 8px;
 }
 
 .folder-caret {
-	color: var(--text-faint);
+	color: var(--cx-text-faint);
 	font-size: 9px;
 	width: 10px;
 	display: inline-flex;
@@ -369,7 +369,7 @@ button {
 
 .folder-badge {
 	font-size: 10px;
-	color: var(--text-faint);
+	color: var(--cx-text-faint);
 	font-variant-numeric: tabular-nums;
 }
 
@@ -377,7 +377,7 @@ button {
  * badge, truncated so a long status never widens the tree row. */
 .agent-activity {
 	font-size: 10px;
-	color: var(--text-faint);
+	color: var(--cx-text-faint);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -387,7 +387,7 @@ button {
 .folder-children {
 	margin-left: 11px;
 	padding-left: 6px;
-	border-left: 1px solid var(--border);
+	border-left: 1px solid var(--cx-border);
 }
 
 /* A parent agent's row: a caret sub-button (collapse) beside the agent's own
@@ -409,7 +409,7 @@ button {
 }
 
 .tree-branch-caret:hover {
-	background: var(--bg-hover);
+	background: var(--cx-bg-hover);
 }
 
 /* The agent-leaf row: the select button (.tree-agent) plus its hover pin/unpin
@@ -429,7 +429,7 @@ button {
 	flex: 0 0 auto;
 	border: none;
 	background: transparent;
-	color: var(--text-faint);
+	color: var(--cx-text-faint);
 	font-size: 12px;
 	line-height: 1;
 	padding: 4px 6px;
@@ -443,13 +443,13 @@ button {
 }
 
 .tree-agent-pin:hover {
-	background: var(--bg-hover);
-	color: var(--text);
+	background: var(--cx-bg-hover);
+	color: var(--cx-text);
 }
 
 .tree-agent-pin.pinned {
 	opacity: 1;
-	color: var(--accent);
+	color: var(--cx-accent);
 }
 
 /* An agent leaf in the tree. Inside a branch it shares the flex row with the
@@ -467,17 +467,17 @@ button {
 	background: transparent;
 	border: 1px solid transparent;
 	border-radius: 4px;
-	color: var(--text);
+	color: var(--cx-text);
 	text-align: left;
 }
 
 .tree-agent:hover {
-	background: var(--bg-hover);
+	background: var(--cx-bg-hover);
 }
 
 .tree-agent.selected {
-	background: var(--bg-active);
-	border-color: var(--border-strong);
+	background: var(--cx-bg-active);
+	border-color: var(--cx-border-strong);
 }
 
 .state-dot {
@@ -526,7 +526,7 @@ button {
 	flex: none;
 }
 .role-pip[data-role="supervisor"] {
-	color: var(--accent);
+	color: var(--cx-accent);
 }
 .role-pip[data-role="warden"] {
 	color: var(--purple);
@@ -1479,8 +1479,8 @@ button {
 .right {
 	grid-area: right;
 	width: var(--right-w);
-	background: var(--bg-raised);
-	border-left: 1px solid var(--border);
+	background: var(--cx-bg-raised);
+	border-left: 1px solid var(--cx-border);
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
@@ -1714,8 +1714,8 @@ button {
 	align-items: center;
 	gap: 16px;
 	padding: 0 12px;
-	background: var(--bg-panel);
-	border-top: 1px solid var(--border);
+	background: var(--cx-bg-panel);
+	border-top: 1px solid var(--cx-border);
 	font-size: 11px;
 }
 
@@ -1727,11 +1727,11 @@ button {
 
 .usage-item .u-provider {
 	font-weight: 600;
-	color: var(--text);
+	color: var(--cx-text);
 }
 
 .usage-item .u-plan {
-	color: var(--text-faint);
+	color: var(--cx-text-faint);
 	font-size: 10px;
 }
 
@@ -1739,27 +1739,27 @@ button {
 	width: 90px;
 	height: 5px;
 	border-radius: 3px;
-	background: var(--bg-card);
+	background: var(--cx-bg-panel);
 	overflow: hidden;
 }
 
 .usage-meter .fill {
 	height: 100%;
-	background: var(--accent);
+	background: var(--cx-accent);
 }
 
 .usage-meter .fill.hot {
-	background: var(--warn);
+	background: var(--cx-warn);
 }
 
 .usage-item .u-pct {
-	color: var(--text-dim);
+	color: var(--cx-text-dim);
 	font-family: var(--font-mono);
 	font-variant-numeric: tabular-nums;
 }
 
 .usage-item .u-reset {
-	color: var(--text-faint);
+	color: var(--cx-text-faint);
 	font-family: var(--font-mono);
 }
 
@@ -1771,7 +1771,7 @@ button {
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	color: var(--text-dim);
+	color: var(--cx-text-dim);
 	font-family: var(--font-mono);
 }
 
