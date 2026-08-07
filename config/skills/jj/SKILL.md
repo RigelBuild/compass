@@ -116,9 +116,9 @@ jj-vine submit <issue>-<slug>                 # push (through the CI gate) + ope
 - **Start every change with `jj new 'main@origin'`.** It bases you on the latest
   fetched `main` and it sidesteps the auto-amend hazard. Verify with
   `jj --no-pager diff --stat` before you submit — it must list only your files.
-- **Every push runs the local gate first.** An `hk` pre-push hook runs
-  `moon run :ci` (the affected subset) before a push completes — the same task
-  graph CI runs on the PR. A red gate blocks the push; get it green first.
+- **Every push runs the local gate first.** An `hk` pre-push hook runs `moon ci`
+  (the affected subset) before a push completes — the same task graph CI runs on
+  the PR. A red gate blocks the push; get it green first.
 - **`@` accumulates all your edits into one commit** — right for a single-purpose
   PR. To split a change into multiple commits, seal each step with
   `jj commit -m "…"` (describes `@`, starts a fresh `@` on top) rather than
