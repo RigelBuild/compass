@@ -38,7 +38,6 @@ const boardTestTimeout = 2 * time.Second
 type fakeIssueStore struct {
 	mu     sync.Mutex
 	issues map[string]store.Issue
-	getErr error // if set, GetIssue returns it verbatim
 	setErr error // if set, SetIssueState returns it verbatim
 	// readBackErr, if set, is returned by GetIssue only on the post-commit
 	// read-back (setWrites>0), leaving the pre-commit read unaffected.
@@ -57,9 +56,6 @@ func newFakeIssueStore(seed ...store.Issue) *fakeIssueStore {
 func (f *fakeIssueStore) GetIssue(_ context.Context, id string) (store.Issue, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.getErr != nil {
-		return store.Issue{}, f.getErr
-	}
 	if f.readBackErr != nil && f.setWrites > 0 {
 		return store.Issue{}, f.readBackErr
 	}
