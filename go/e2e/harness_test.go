@@ -7,18 +7,12 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
-	"time"
 
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/stack"
 )
-
-// rpcTimeout bounds a single authed RPC over the loopback door: generous for a
-// local call, short enough that a wedged connection fails visibly rather than
-// hanging the test. Deterministic per-call deadline, never a retry loop.
-const rpcTimeout = 30 * time.Second
 
 // TestHarnessCore is the podman end-to-end proof of the H1 fixture substrate: a
 // real embedded stack (real compass-agent:latest) reaches Ready; both Connect
