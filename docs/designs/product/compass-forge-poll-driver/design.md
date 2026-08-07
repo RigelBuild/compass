@@ -1,14 +1,19 @@
 # Compass forge-poll driver (SEA-1810)
 
-Status: Draft
+Status: Active
 Lane: compass-server
 Tracker: SEA
 
 OQ-A is RESOLVED — Matt ruled **Option 2** (2026-08-07): this driver is built
 ON the DL-053 forge-subscription machinery from day one, with the board as a
-distinguished subscriber. Freeze now waits on OQ-C and OQ-D (see Open
-Questions) — two shape calls inside the Option-2 build. This record designs
-the running driver that periodically drives the existing greenfield
+distinguished subscriber. OQ-C and OQ-D are RESOLVED (Matt, 2026-08-08): the
+board's poll targets are TABLE rows — a new `forge_repo_subscriptions` table,
+dynamically add/removable, with DL-053's spec'd `forge_subscriptions` landing
+RENAMED `agent_forge_subscriptions` — all four forge tables land
+unconditionally in migration 0015, and every provider CHECK admits the full
+declared enum `IN (1, 2, 3, 4)` (see Open Questions). Freeze now waits only
+on the human design review + the review-agent pass. This record designs the
+running driver that periodically drives the existing greenfield
 `go/internal/ingest` library against a real GitHub forge, so board issues
 ingested from the tracker appear live in the Compass server projection — and
 it instantiates the DL-053 fetch-cursor model (migration + store + poll
@@ -38,10 +43,11 @@ do not exist yet (migrations in `go/internal/store/migrations/` stop at
 `0006_delivery_cursors.sql` table is `agent_delivery_cursors`, the comms
 agent-notification fan-out, "how far an agent has confirmed delivery on a
 channel", a different subsystem entirely). This slice therefore builds the
-fetch half of that machinery: the migration, the cursor store, and the poll
-driver that PR-C (tracker-status ingestion, DL-129) and the later
-agent-notification slice both ride — one fetch path, no convergence refactor
-ever needed.
+fetch half of that machinery: the four-table migration (including the
+board's own target table, `forge_repo_subscriptions`), the target + cursor
+store layer, and the poll driver that PR-C (tracker-status ingestion,
+DL-129) and the later agent-notification slice both ride — one fetch path,
+no convergence refactor ever needed.
 
 ## Global Constraints
 
@@ -55,18 +61,41 @@ ever needed.
   accelerator), delivered by account on the existing `Sessions` →
   `AgentGateway.Control` push path." Full text + DDL:
   `compass-server-ownership-layer/design.md:942-1019` (Decision 5). This
-  record consumes that model — it never amends it. The genuine forks in
-  applying it to a repo-LIST board subscriber are PARKED for Matt as OQ-C (how
-  the board is represented as a subscriber) and OQ-D (whether the two spec'd
-  tables land in this migration at all, and if so which provider domain their
-  CHECK admits). What is NOT a fork: the repo-LIST fetch-cursor CLASS
-  (`forge_list_cursors`, Approach (a)) is author-adopted as the only coherent
-  shape for a LIST-granularity ETag — invariant under both OQ-C options, so
-  ratifying either ratifies the class — and the coordinate alignment to the
-  tree's 0013 convention (SMALLINT provider + `forge_host`) is the mechanical
-  application of an existing standard. The two spec'd tables are labeled
-  `0004_forge` in that (older) record; the tree's migrations reach `0014`, so
-  if they land they land here as part of `0015_forge_subscriptions.sql`.
+  record consumes that model — it never amends it. The two genuine forks in
+  applying it to a repo-LIST board subscriber are RESOLVED (Matt,
+  2026-08-08): the board's subscription set is a TABLE — the new
+  `forge_repo_subscriptions` (OQ-C) — and the spec'd tables land NOW with
+  the full provider domain (OQ-D). What was never a fork: the repo-LIST
+  fetch-cursor CLASS (`forge_list_cursors`, Approach (a)) is author-adopted
+  as the only coherent shape for a LIST-granularity ETag, and the coordinate
+  alignment to the tree's 0013 convention (SMALLINT provider + `forge_host`)
+  is the mechanical application of an existing standard. The two spec'd
+  tables are labeled `0004_forge` in that (older) record; the tree's
+  migrations reach `0014`, so they land here as part of
+  `0015_forge_subscriptions.sql`.
+- **The DL-053 `forge_subscriptions` table lands RENAMED
+  `agent_forge_subscriptions` (Matt's explicit option under OQ-C):** shape
+  and columns unchanged from the spec'd DDL
+  (`compass-server-ownership-layer/design.md:978-999`) — a NAMING
+  clarification, not a shape amendment — disambiguating the two subscription
+  concepts: `agent_forge_subscriptions` is the per-ARTIFACT, agent-owned
+  subscription (`agent_account_id TEXT NOT NULL REFERENCES agent_accounts`,
+  `:980`); `forge_repo_subscriptions` is the board's per-REPO poll target
+  (new, this record). A future reader maps `agent_forge_subscriptions` back
+  to DL-053's `forge_subscriptions`; recording the rename — BOTH a
+  DECISIONS.md ledger row AND a one-line annotation at the ownership-layer
+  DDL — is a proposed freeze-time delta (see Open Questions → OQ-C), not
+  part of this Draft PR.
+- **Provider domain `IN (1, 2, 3, 4)` on every 0015 table (OQ-D2, Matt
+  2026-08-08):** the proto enum already declares all four providers —
+  `FORGE_PROVIDER_GITHUB = 1 … FORGE_PROVIDER_LINEAR = 4`
+  (`proto/compass/v1/compass.proto:699-706`;
+  `gen/compass/v1/compass.pb.go:448-453`). The CHECK's job is "never
+  UNSPECIFIED(0)", NOT gating rollout — rollout is gated by which
+  `forge.Provider` has a real client (GitHub only, this slice). The
+  pre-existing `issues` CHECK `IN (1, 2, 3)` (`0013_issues.sql:32`) excludes
+  Linear and is a SEPARATE prerequisite for actually ingesting Linear
+  issues — out of scope here, documented as OQ-E.
 - **DL-129 (FROZEN, Matt 2026-08-04, `DECISIONS.md:173`):** tracker native
   status "is ingested into the DL-070 server projection through the reverse
   `TrackerStatusMapping` (DL-053 poll; echo-suppressed in tracker-status
@@ -119,18 +148,22 @@ ever needed.
   store. The proto->store mapping edge is part 4 (the sink's real
   implementation)" (`ingest.go:7-8`). The driver's durable-cursor dependency
   therefore enters `ingest` as a package-local structural interface
-  (`CursorStore`, T3), with the `*store.Store` adapter living in `server/`
+  (`PollStore`, T3), with the `*store.Store` adapter living in `server/`
   (T4) — the same narrow-seam pattern as `forgeReader`/`issueSink`
   (`ingest.go:20-33`).
 - **Non-goals:** the tracker-status ingestion itself (PR-C — the reverse
   `TrackerStatusMapping`, echo-suppression, recency guard; a separate slice
   that consumes the seam this record makes explicit); the tracker-status
   WRITE-back / outbound mirror (T3-b); the agent-notification DELIVERY half
-  of DL-053 (per-agent `forge_subscriptions` rows, `DetectChanges`,
+  of DL-053 (per-agent `agent_forge_subscriptions` rows, `DetectChanges`,
   per-artifact comment/check ETags, the `Sessions` → `AgentGateway.Control`
   push) — that slice adds subscribers and wire delivery ON the tables and
-  driver built here, it does not rebuild the fetch path. This record is the
-  BOARD-ingestion read poll plus the DL-053 fetch machinery it stands on.
+  driver built here, it does not rebuild the fetch path; and the dynamic
+  add/remove MUTATION surface (RPC or admin UI) for
+  `forge_repo_subscriptions` — this slice builds the table + the T4 boot
+  seed reconcile as its only writer; the mutation surface rides a later
+  slice. This record is the BOARD-ingestion read poll plus the DL-053 fetch
+  machinery it stands on.
 
 ## Approach
 
@@ -166,12 +199,15 @@ framings were weighed:
   the page-cursor advance (Global Constraints → Idempotency) and no
   `delivered_revision` row is needed — exactly the per-subscriber cursor
   DL-053 splits out for subscribers whose notify can fail independently of
-  the fetch, which the board's cannot (blessing this reading is OQ-C).
+  the fetch, which the board's cannot (OQ-C resolved this reading: the board
+  holds no delivery cursor and no per-artifact subscription row; its
+  repo-level poll targets are `forge_repo_subscriptions` rows — the table
+  model, Approach → the four forge tables).
 - **(b) The board subscribes to each issue individually, seeded by a repo
-  enumeration — REJECTED.** N `forge_subscriptions` rows per repo, and the
-  enumeration that seeds them IS a repo LIST fetch — so the LIST (and its
-  paging/ETag problem) remains, plus a per-issue row-churn loop on top. It
-  removes nothing and adds a reconcile.
+  enumeration — REJECTED.** N per-artifact `agent_forge_subscriptions` rows
+  per repo, and the enumeration that seeds them IS a repo LIST fetch — so the
+  LIST (and its paging/ETag problem) remains, plus a per-issue row-churn loop
+  on top. It removes nothing and adds a reconcile.
 - **(c) The LIST fetch feeds per-artifact state as it enumerates — ADOPTED as
   the sharing seam.** Every `/issues` LIST row carries the full issue payload
   including its forge state (`forge.Issue.State`, `provider.go:45-46`), so
@@ -203,60 +239,129 @@ T1; `state_reason` similarly, if the reopen mapping wants it). "One fetch
 path" is exact; "adds literally nothing" would not be, so the claim is stated
 as the former.
 
-### The DL-053 tables (`0015_forge_subscriptions.sql`)
+### The four forge tables (`0015_forge_subscriptions.sql`)
 
-This record's DESIGN lands all three tables in one migration — the two
-DL-053-spec'd tables plus the repo-LIST cursor class — adapted from the
-ownership-layer DDL (`compass-server-ownership-layer/design.md:976-1019`, there
-labeled "`0004_forge`"; the label predates the current migration count, so it
-lands as `0015`). Two calls in that adaptation are author-decided (mechanical
-application of an existing tree standard); one is a genuine fork PARKED for
-Matt as OQ-D.
+Migration 0015 lands FOUR tables unconditionally (OQ-D1, RESOLVED land-now,
+Matt 2026-08-08): the board's repo-level target set
+(`forge_repo_subscriptions`, new — OQ-C's table model), the repo-LIST fetch
+cursor (`forge_list_cursors`), and the two DL-053-spec'd tables
+(`agent_forge_subscriptions` — DL-053's `forge_subscriptions`, renamed — and
+`forge_artifact_cursors`), the latter two adapted from the ownership-layer
+DDL (`compass-server-ownership-layer/design.md:976-1019`, there labeled
+"`0004_forge`"; the label predates the current migration count, so it lands
+as `0015`). The division of labor:
 
-Author-decided:
+- **`forge_repo_subscriptions`** — the board's per-REPO poll targets,
+  dynamically add/removable: an operator adds a repo → a row; removes → the
+  row is deleted (or `enabled` flipped false — soft-disable that keeps
+  cursor history), and its `forge_list_cursors` rows go inert. This REPLACES
+  the pre-ruling config-declared `ForgeConfig.Repos`-IS-the-subscription-set
+  model throughout this record: the driver enumerates `WHERE enabled` at the
+  top of every pass (T3), and the `--forge-repos` flag becomes a declarative
+  SEED reconciled into the table at boot (T4). Keyed by the forge coordinate
+  MINUS artifact: `(forge_provider, forge_host, repo)`.
+- **`forge_list_cursors`** — the per-page fetch cursor of a target repo's
+  LIST walk (DDL below; the driver's own working table).
+- **`agent_forge_subscriptions` + `forge_artifact_cursors`** — the DL-053
+  per-artifact agent-notification machinery, writer-less this slice: nothing
+  this slice EXECUTES touches them; they land as anticipatory schema, shape
+  frozen + pgtest-covered (T2 test 7) before their writers (PR-C / the
+  agent-notification slice) exist.
 
-- **Coordinate alignment:** the spec'd DDL keys on `provider TEXT` and omits
-  the forge host; the tree's frozen issue coordinate is `(forge_provider
-  SMALLINT CHECK (forge_provider IN (1, 2, 3)), forge_host, repo, number)`
-  (`0013_issues.sql:29-35` — "forge coordinate: the idempotency key"). The
-  cursor and subscription keys adopt the 0013 convention (SMALLINT provider
-  enum + `forge_host TEXT NOT NULL`) so cursor rows join the `issues`
+Adaptations, now all settled (the two that were OQ-D's sub-forks are ruled;
+the rest are the mechanical application of existing tree standards):
+
+- **Coordinate alignment (author-decided):** the spec'd DDL keys on
+  `provider TEXT` and omits the forge host; the tree's frozen issue
+  coordinate is `(forge_provider SMALLINT, forge_host, repo, number)`
+  (`0013_issues.sql:29-35` — "forge coordinate: the idempotency key"). Every
+  0015 key adopts the 0013 convention (SMALLINT provider enum + `forge_host
+  TEXT NOT NULL`) so cursor and subscription rows join the `issues`
   coordinate without casts and GHES hosts never collide on `repo` alone.
-- **The new LIST-cursor class:** `forge_list_cursors` (below) is additive —
-  neither spec'd table changes shape, and it lands regardless of OQ-D (the
-  driver rides it directly).
+- **Provider domain (OQ-D2, RESOLVED, Matt 2026-08-08):** every provider
+  CHECK in 0015 admits the FULL declared proto enum — `CHECK (forge_provider
+  IN (1, 2, 3, 4))`, GitHub/GitLab/Forgejo/Linear
+  (`proto/compass/v1/compass.proto:699-706`). The CHECK's job is "never
+  UNSPECIFIED(0)", NOT gating rollout: rollout is gated by which
+  `forge.Provider` has a real client (GitHub only, this slice; Matt: "we
+  need linear for dogfood, linear and github. gitlab/forgejo can come later
+  in beta etc."). Admitting the whole declared domain — never a
+  non-contiguous subset — means the future Linear-ingestion slice needs no
+  CHECK-widening migration on any 0015 table. (An earlier draft of this
+  record recommended narrowing to `IN (1, 2, 3)` to match 0013; that was
+  WRONG — it dropped Linear, which dogfood needs, and mistook the CHECK for
+  a rollout gate. The 0013 `issues` CHECK itself is the separate OQ-E
+  prerequisite.)
+- **The rename (OQ-C):** `forge_subscriptions` → `agent_forge_subscriptions`
+  (Global Constraints; columns unchanged from
+  `compass-server-ownership-layer/design.md:978-999`).
 
-PARKED for Matt (OQ-D):
+The three tables beyond the driver's own working table:
 
-- **Whether the two spec'd tables land in THIS slice at all.** Nothing this
-  slice EXECUTES touches `forge_subscriptions` or `forge_artifact_cursors`: the
-  driver rides `forge_list_cursors` only, the T2 store methods cover only the
-  list cursor, and every downstream writer is out of this build. So they land
-  now purely as anticipatory schema. The design's default (what the DDL below
-  assumes) is land-now — one forge migration, the shape frozen + pgtest-covered
-  before its writers exist. The counter-position (defer each spec'd table to
-  the slice that first writes it) is real: an EMPTY table is the cheapest thing
-  to `ALTER`, so freezing its shape early buys little over landing it beside
-  its first writer with more information, and landing it now FORCES the OQ-D
-  provider-domain call (below) before PR-C or the agent-notification slice
-  exist to inform it. This is OQ-D's first sub-fork.
-- **If they land now: which provider domain their CHECK admits.** DL-053's
-  spec'd DDL keys `provider TEXT -- "github" | "linear"`
-  (`compass-server-ownership-layer/design.md:981`) — Linear is a first-class
-  provider of subscription/cursor rows in the frozen spec. Adopting the 0013
-  coordinate's `SMALLINT CHECK (... IN (1, 2, 3))` (GitHub/GitLab/Forgejo,
-  `0013_issues.sql:33`) consciously NARROWS that domain: it drops `linear`
-  until the `ForgeProvider` enum and the CHECK grow. This is not "no semantic
-  change" — DL-129 routes tracker-status ingestion through "the DL-053 poll"
-  (`DECISIONS.md:173`) and the tracker for MVP is GitHub, so the narrowing is
-  likely harmless FOR NOW, but a future Linear tracker needs the enum/CHECK
-  extended (cheap while the tables are empty). OQ-D's second sub-fork; moot if
-  the first resolves to defer.
+```sql
+-- The board's repo-level poll targets (OQ-C, the table model): one row per
+-- (provider, host, repo) the poll driver walks. enabled=FALSE soft-disables
+-- a target without deleting its cursor history. Populated in v1 by the T4
+-- boot seed reconcile (--forge-repos, bootstrap-only insert: ON CONFLICT DO
+-- NOTHING — the table is authoritative after the first insert); a mutation
+-- RPC/admin surface is a named non-goal of this slice. For GITHUB the repo
+-- string is lowercased at the seed/upsert boundary (GitHub owner/name is
+-- case-insensitive-but-case-preserving, so Owner/Name and owner/name must
+-- NOT mint two PK rows -> two poll targets -> two issues rows under the
+-- 0013 coordinate). updated_at is touched on every upsert/enable-flip,
+-- giving an operator a timestamp to correlate a state change against
+-- (the audit posture of advanced_at on forge_list_cursors).
+CREATE TABLE forge_repo_subscriptions (
+    forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
+    forge_host     TEXT     NOT NULL,
+    repo           TEXT     NOT NULL,
+    enabled        BOOLEAN  NOT NULL DEFAULT TRUE,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (forge_provider, forge_host, repo)
+);
 
-If OQ-D resolves to defer, this migration lands `forge_list_cursors` alone and
-the two spec'd tables ride their first writers; the rest of this record is
-unchanged (the driver never touched them). The DDL below is the driver's own
-working table either way.
+-- DL-053's forge_subscriptions, renamed agent_forge_subscriptions (OQ-C) and
+-- coordinate-aligned; columns otherwise per the spec'd DDL
+-- (compass-server-ownership-layer/design.md:978-999). Writer-less this
+-- slice — the agent-notification slice brings its writers.
+CREATE TABLE agent_forge_subscriptions (
+    id               TEXT PRIMARY KEY,
+    agent_account_id TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    forge_provider   SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
+    forge_host       TEXT NOT NULL,
+    repo             TEXT NOT NULL,
+    kind             SMALLINT NOT NULL CHECK (kind IN (1, 2)),
+    number           BIGINT NOT NULL,
+    delivered_revision TEXT NOT NULL DEFAULT '',
+    delivered_at     TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (agent_account_id, forge_provider, forge_host, repo, kind, number)
+);
+CREATE INDEX agent_forge_subscriptions_artifact_idx
+    ON agent_forge_subscriptions (forge_provider, forge_host, repo, kind, number);
+
+-- DL-053's per-artifact FETCH cursor, coordinate-aligned; columns otherwise
+-- per the spec'd DDL (compass-server-ownership-layer/design.md:1007-1019).
+-- Writer-less this slice — PR-C / the agent-notification slice bring its
+-- writers; its DL-053-spec'd garbage-collection ("collected when the
+-- artifact's last subscription is deleted") is likewise a writer-slice
+-- concern, deferred with the writers.
+CREATE TABLE forge_artifact_cursors (
+    forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
+    forge_host     TEXT NOT NULL,
+    repo           TEXT NOT NULL,
+    kind           SMALLINT NOT NULL CHECK (kind IN (1, 2)),
+    number         BIGINT NOT NULL,
+    etag           TEXT NOT NULL DEFAULT '',   -- issue/PR endpoint
+    comments_etag  TEXT NOT NULL DEFAULT '',   -- comments endpoint
+    checks_etag    TEXT NOT NULL DEFAULT '',   -- check-runs endpoint (PRs only)
+    revision       TEXT NOT NULL DEFAULT '',
+    snapshot       JSONB,                      -- last observed state, for DetectChanges
+    polled_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (forge_provider, forge_host, repo, kind, number)
+);
+```
 
 The driver's own working table:
 
@@ -278,7 +383,7 @@ The driver's own working table:
 -- advance (an etag-storing 200+sink), NOT the last poll: an all-304 tick reads
 -- the page but rewrites no row, so the column deliberately names "last change".
 CREATE TABLE forge_list_cursors (
-    forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3)),
+    forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
     forge_host     TEXT     NOT NULL,
     repo           TEXT     NOT NULL,
     page           INTEGER  NOT NULL CHECK (page >= 1),
@@ -399,17 +504,22 @@ The DL-053 poll loop, specialized to its first artifact class (the repo LIST)
 and its first subscriber (the board). It lives in the `ingest` package (it
 composes the package's own `Ingester`; a new package would be a second
 convention for no gain) and consumes the durable cursor through the
-package-local `CursorStore` structural interface (Global Constraints → ingest
+package-local `PollStore` structural interface (Global Constraints → ingest
 imports no store).
 
 - `Run(ctx)` performs one immediate pass at start (so a freshly booted demo
   server shows the board without waiting a full interval), then ticks on
   `time.Ticker(interval)`.
-- Each pass iterates the configured repos sequentially — one forge, one
-  budget; parallel per-repo fetches would just race the same rate limit.
+- Each pass first enumerates its targets — `PollStore.ListEnabledRepos`,
+  the `forge_repo_subscriptions WHERE enabled` read (OQ-C's table model) —
+  then iterates them sequentially: one forge, one budget; parallel per-repo
+  fetches would just race the same rate limit. A row added between ticks is
+  polled on the next pass; a disabled/deleted row simply stops being polled
+  (its `forge_list_cursors` rows are inert and its issues remain in the
+  projection). No restart either way.
 - **Per-repo pass = the DL-053 read-modify-advance cycle, page-wise:**
 
-  1. Read the repo's stored page cursors (`CursorStore.ListCursor` → page →
+  1. Read the repo's stored page cursors (`PollStore.ListCursor` → page →
      `{etag, hasNext}`).
   2. From page 1: `ListIssuesPage(ctx, repo, forge.IssueFilter{}, page,
      storedETag)`.
@@ -460,22 +570,26 @@ imports no store).
   in-process subscriber whose notify IS the synchronous sink inside the pass —
   there is no wire delivery to fail independently of the fetch, so its
   delivery state is fully encoded by the page-cursor advance and it holds no
-  `forge_subscriptions` row (OQ-C). Wire subscribers (agents) arrive with the
-  notification slice and bring their own `delivered_revision` rows, exactly
-  per spec.
+  `agent_forge_subscriptions` row — its membership is repo-level, a
+  `forge_repo_subscriptions` row (OQ-C, resolved). Wire subscribers (agents)
+  arrive with the notification slice and bring their own `delivered_revision`
+  rows, exactly per spec.
 - **The PR-C seam (downstream consumer, OUT of this build):** the per-pass
   raw batch (`[]forge.Issue` per 200 page) flows through one
   `Ingester.IngestIssues` call. PR-C composes its reverse
   `TrackerStatusMapping` sink onto that same batch (and its per-artifact
   `forge_artifact_cursors.revision`/`snapshot`/`polled_at` upserts, LIST-fed —
   no per-issue GET), in its own slice. Nothing in this record's build writes
-  `forge_subscriptions` or `forge_artifact_cursors`.
+  `agent_forge_subscriptions` or `forge_artifact_cursors`.
 - **Observability:** one `slog.Info` per completed repo pass with fields
   `repo`, `issues` (count sunk), `pages`, `not_modified` (bool: whole walk
   served 304s), `dur`, `ratelimit_remaining`; one `slog.Warn` per
   budget-skipped pass (an expected condition, never `Error`); one
   `slog.Error` only per genuinely failed pass (provider/sink error) with
-  `repo`, `err`. Boot logs one `slog.Info` with `repos`, `interval`. No
+  `repo`, `err`. Boot logs one `slog.Info` with `seed_repos` (the reconciled
+  seed count) and `interval`; the live target count is per-pass (`repos` on
+  the pass Info line would mislead — targets are table rows, not boot
+  state). No
   per-issue logging — a 500-issue repo must not emit 500 lines per minute.
 
 ### Boot wiring + config (`server/serve.go`, `cmd/compass-server/main.go`)
@@ -484,20 +598,61 @@ Mirrors the two established precedents exactly:
 
 - **Config surface:** `server.ServeConfig` (`serve.go:56-89`) gains an
   optional `Forge ForgeConfig` field, all-optional exactly like `S3`
-  (`serve.go:71-75`): absent repos → no driver, today's behavior, zero new
-  requirements on existing deployments (the 0015 tables exist but sit empty —
-  a migration is not a behavior change). The CLI (`main.go`) maps flags with
-  env fallback mirroring the `COMPASS_S3_*` precedence (`main.go:127-138`):
-  `--forge-repos` / `$COMPASS_FORGE_REPOS` (comma-separated `owner/name`),
-  `--forge-poll-interval` / `$COMPASS_FORGE_POLL_INTERVAL` (default `1m`),
+  (`serve.go:71-75`): forge polling disabled → no driver, today's behavior,
+  zero new requirements on existing deployments (the 0015 tables exist but
+  sit empty — a migration is not a behavior change). The CLI (`main.go`)
+  maps flags with env fallback mirroring the `COMPASS_S3_*` precedence
+  (`main.go:127-138`): `--forge-repos` / `$COMPASS_FORGE_REPOS`
+  (comma-separated `owner/name`) — now a declarative SEED for
+  `forge_repo_subscriptions`, NOT the live subscription set;
+  `--forge-poll-interval` / `$COMPASS_FORGE_POLL_INTERVAL` (default `1m`);
   `--forge-secret` / `$COMPASS_FORGE_SECRET` (the declared secret NAME,
-  default `GITHUB_FORGE_TOKEN`; the VALUE never crosses a flag), plus
+  default `GITHUB_FORGE_TOKEN`; the VALUE never crosses a flag);
   `--forge-host` / `$COMPASS_FORGE_HOST` (default `github.com`, for GHES
-  later; the API base URL derives from it). The configured repo list IS the
-  board's subscription set under this record's OQ-C recommendation —
-  declarative, reconciled implicitly every pass (a removed repo simply stops
-  being polled; its cursor rows are inert and its issues remain in the
-  projection).
+  later; the API base URL derives from it); plus `--forge-poll` /
+  `$COMPASS_FORGE_POLL` (bool, default false) to run the driver with an
+  EMPTY seed (targets already in the table). Polling is enabled iff
+  `--forge-poll` is set OR the seed list is non-empty; only then are the
+  driver, the startup secret resolve, and the seed reconcile built.
+- **Polling-disabled boot Warn:** when polling is DISABLED (`--forge-poll`
+  unset AND an empty seed) but `forge_repo_subscriptions` holds `enabled`
+  rows for the bound `(provider, host)`, boot emits ONE `slog.Warn` ("forge
+  polling disabled but N enabled targets exist; set --forge-poll") — one
+  query at boot (the store is already open at the gate decision), a warning
+  and never fail-fast (a deployment that lands 0015 plus a manual row insert
+  without the flag keeps today's no-driver behavior). The count covers ONLY
+  the bound `(provider, host)`'s enabled rows, so it gives no false comfort
+  about rows abandoned under a prior `--forge-host` (see the seed
+  reconcile).
+- **Seed reconcile (v1 population of `forge_repo_subscriptions`):** at boot,
+  before the driver's first pass, each seed repo is INSERTED into
+  `forge_repo_subscriptions` with `enabled = TRUE` under `ON CONFLICT … DO
+  NOTHING` — a bootstrap-only insert: the flag creates rows that do not yet
+  exist and leaves an existing row entirely untouched; the TABLE is
+  authoritative after the first insert (Matt's OQ-C ruling intent — "needs
+  to be easily able to add/remove repos" — read to its end: the table, not
+  the flag, is the source of truth, dynamically). The seed is ADDITIVE,
+  never destructive — doubly so: a repo present in the table but absent
+  from the flag is NOT deleted and NOT disabled, AND a row an operator
+  soft-disabled STAYS disabled across restarts regardless of the flag (the
+  flag never flips an existing row's `enabled` — this eliminates the
+  footgun where a repo soft-disabled during an incident, still listed in
+  the deploy's `--forge-repos`, is silently re-enabled by a routine
+  restart). Re-enabling, like removal, is a table operation
+  (`SetForgeRepoSubscriptionEnabled` / SQL, or the future mutation
+  surface). For GITHUB each seed repo string is lowercased before insert
+  (the normalization rule in the DDL comment); renamed/transferred-repo
+  drift (GitHub serves a 301 that `net/http` follows silently while the
+  coordinate keeps the stale name) is OUT OF SCOPE for this slice. Seed
+  rows are keyed under the configured `--forge-host`: changing
+  `--forge-host` between boots ABANDONS (does not migrate) the prior
+  host's rows — they stay present and enabled but are never polled (the
+  adapter binds one `(provider, host)`), and the polling-disabled boot
+  Warn above counts only the BOUND `(provider, host)`'s enabled rows. The
+  live target set is ALWAYS the table (`WHERE enabled`, read per pass,
+  T3); the flag only feeds it new rows. This keeps a zero-UI operational
+  path for the MVP while the table supports dynamic add/remove; the
+  mutation RPC/admin surface is a named non-goal (Global Constraints).
 - **Secret resolve:** the driver's `TokenSource` closes over the one
   `secrets.SpecResolver` built at `serve.go:287`, calls
   `Resolve(ctx, "forge poll")` (`secrets/resolver.go:135`), and selects the
@@ -530,8 +685,8 @@ Mirrors the two established precedents exactly:
   secret from degrading to silent forever-Error, the driver emits a distinct
   `slog.Error` "forge token unresolvable" the first time a resolve fails and
   on recovery — a minimal health surface without per-tick spam.
-- **Cursor-store adapter:** `serve.go` builds the small adapter satisfying
-  `ingest.CursorStore` over the already-open `*store.Store` (`st`), binding
+- **Poll-store adapter:** `serve.go` builds the small adapter satisfying
+  `ingest.PollStore` over the already-open `*store.Store` (`st`), binding
   the driver's `(provider, host)` so the ingest-side interface stays
   repo-keyed. This is the store seam the ingest package's no-store rule
   requires (Global Constraints), following the established
@@ -595,15 +750,30 @@ Mirrors the two established precedents exactly:
   is still NOT in this slice (v1 cost is bounded and budget-gated without
   it); it is recorded as the first cheap optimization the durable cursor
   unlocks, adoptable without design change.
-- **(g) Widening `forge_subscriptions` to hold the board as a row (nullable
-  `agent_account_id` + a subscriber-kind discriminator) — recommended
-  against; carried as the OQ-C alternative.** It would make "the board is a
-  subscriber" literal at the price of amending DL-053's spec'd shape
-  (`agent_account_id TEXT NOT NULL REFERENCES agent_accounts`,
+- **(g) Widening the DL-053 subscription table to hold the board as a row
+  (nullable `agent_account_id` + a subscriber-kind discriminator) —
+  REJECTED; OQ-C resolved to a separate repo-level table instead.** It would
+  make "the board is a subscriber" literal at the price of amending DL-053's
+  spec'd shape (`agent_account_id TEXT NOT NULL REFERENCES agent_accounts`,
   `compass-server-ownership-layer/design.md:980`) and forcing every future
   subscription query through a kind filter — for a subscriber that needs
   neither `delivered_revision` (its delivery is the in-pass sink) nor
-  Subscribe/Unsubscribe dynamics (its set is operator config). See OQ-C.
+  per-artifact granularity (its targets are whole repos). Matt's OQ-C ruling
+  keeps the two concepts in two tables: `agent_forge_subscriptions` (the
+  DL-053 per-artifact row, renamed) and `forge_repo_subscriptions` (the
+  board's repo-level targets). See OQ-C.
+- **(h) Seed conflict semantic `ON CONFLICT … DO UPDATE SET enabled = TRUE`
+  (flag-wins-for-its-members) — REJECTED in favor of `DO NOTHING`
+  (bootstrap-only insert).** Under DO-UPDATE the flag re-enables any
+  soft-disabled row still listed in `--forge-repos` at every boot, so
+  KEEPING a repo disabled requires a config edit AND a redeploy —
+  re-coupling the disable path to the deploy cycle, undoing exactly the
+  runtime mutability the OQ-C table ruling bought — and a repo an operator
+  soft-disabled during an incident is silently re-triggered by a routine
+  restart. Under DO NOTHING the flag only bootstraps rows that do not
+  exist; every subsequent state change is a table operation. Weighed here
+  explicitly so the DO NOTHING choice is ratified knowingly at design-PR
+  review (OQ-C).
 
 ## Plan
 
@@ -713,22 +883,35 @@ Test cycle (unit, stubbed `http.RoundTripper`; red-first per repo convention):
     against the core rate limit; record the doc URL + date in the client's
     doc comment (the budget math depends on it).
 
-### T2 — migration `0015_forge_subscriptions.sql` + the cursor store layer
+### T2 — migration `0015_forge_subscriptions.sql` + the target/cursor store layer
 
 New migration `go/internal/store/migrations/0015_forge_subscriptions.sql` and
 new file `go/internal/store/forge_cursors.go` (+
 `forge_cursors_pgtest_test.go`, build-tag gated like the sibling
-`*_pgtest_test.go` suites). The migration creates the repo-LIST cursor class
-`forge_list_cursors` (DDL in the Approach) unconditionally, and — if OQ-D
-resolves land-now — the two DL-053-spec'd tables (`forge_subscriptions`,
-`forge_artifact_cursors`, adapted from
+`*_pgtest_test.go` suites). The migration creates all FOUR tables
+unconditionally (OQ-D1 resolved land-now): `forge_repo_subscriptions` +
+`forge_list_cursors` (DDL in the Approach) + the two DL-053-spec'd tables
+(`agent_forge_subscriptions` — renamed from the spec's `forge_subscriptions`
+— and `forge_artifact_cursors`, adapted from
 `compass-server-ownership-layer/design.md:976-1019`, renumbered from that
 record's stale `0004_forge` label, keys aligned to the 0013 issue-coordinate
-convention: SMALLINT provider enum + `forge_host` in every key; the
-provider-domain CHECK is OQ-D's second sub-fork). Store methods cover ONLY the
-list cursor in this slice — `forge_subscriptions` / `forge_artifact_cursors`
-get their store surface with their writers (the agent-notification slice /
-PR-C), whenever they land.
+convention: SMALLINT provider enum + `forge_host` in every key; every
+provider CHECK admits `IN (1, 2, 3, 4)` per OQ-D2). Store methods cover the
+list cursor AND `forge_repo_subscriptions` in this slice — the driver reads
+targets from it and the T4 boot reconcile inserts new rows into it (`ON
+CONFLICT DO NOTHING`);
+`agent_forge_subscriptions` / `forge_artifact_cursors` get their store
+surface with their writers (the agent-notification slice / PR-C).
+
+One enum-constant note: `store.ForgeProvider` today stops at Forgejo —
+`ForgeProviderUnspecified=0, GitHub=1, GitLab=2, Forgejo=3`
+(`store/issues.go:30-35`), and its mirror comment (`issues.go:26-27`) omits
+Linear even though the proto declares `FORGE_PROVIDER_LINEAR = 4`
+(`gen/compass/v1/compass.pb.go:452`). T2 adds `ForgeProviderLinear
+ForgeProvider = 4` (and updates the mirror comment) so the Go domain matches
+the 0015 CHECK domain; no behavior change — no producer passes 4 this slice
+(the T4 wiring is GITHUB-only) — but a store-level constant must exist for a
+domain the schema admits.
 
 Interfaces:
 
@@ -739,7 +922,7 @@ Interfaces:
 // cursor (the DL-053 FETCH-cursor model at repo-LIST granularity). ETag ""
 // means never fetched (an unconditional GET).
 type ForgeListPageCursor struct {
-    Provider ForgeProvider // GITHUB(1)/GITLAB(2)/FORGEJO(3); never 0
+    Provider ForgeProvider // GITHUB(1)/GITLAB(2)/FORGEJO(3)/LINEAR(4); never 0
     Host     string
     Repo     string
     Page     int32 // 1-based
@@ -762,33 +945,74 @@ func (s *Store) UpsertForgeListCursorPage(ctx context.Context, cur ForgeListPage
 // PruneForgeListCursorPages deletes the repo's page rows with page > maxPage
 // (a repo whose walk shrank). maxPage < 1 -> ErrInvalidArgument.
 func (s *Store) PruneForgeListCursorPages(ctx context.Context, provider ForgeProvider, host, repo string, maxPage int32) error
+
+// ForgeRepoSubscription is one board poll target: a repo the poll driver
+// walks (OQ-C's table model). Enabled=false soft-disables the target without
+// deleting its cursor history.
+type ForgeRepoSubscription struct {
+    Provider ForgeProvider
+    Host     string
+    Repo     string
+    Enabled  bool
+}
+
+// EnsureForgeRepoSubscription inserts the target if absent; on conflict it
+// DOES NOTHING — the T4 seed reconcile is a bootstrap-only insert and the
+// table is authoritative after the first insert (the seed never deletes,
+// disables, or re-enables an existing row).
+// Zero/empty coordinate fields -> ErrInvalidArgument.
+func (s *Store) EnsureForgeRepoSubscription(ctx context.Context, sub ForgeRepoSubscription) error
+
+// ListEnabledForgeRepoSubscriptions reads the enabled targets for one
+// (provider, host), ascending repo — the driver's per-pass target
+// enumeration. No rows is a nil slice, not an error.
+func (s *Store) ListEnabledForgeRepoSubscriptions(ctx context.Context, provider ForgeProvider, host string) ([]ForgeRepoSubscription, error)
+
+// SetForgeRepoSubscriptionEnabled flips one target's enabled bit, touching
+// updated_at (the soft-disable path; the admin mutation surface is a later
+// slice's — this method exists for it, for operators via SQL parity, and
+// for tests).
+// Unknown coordinate -> ErrNotFound; zero/empty fields -> ErrInvalidArgument.
+func (s *Store) SetForgeRepoSubscriptionEnabled(ctx context.Context, provider ForgeProvider, host, repo string, enabled bool) error
 ```
 
 Consumes: the migration runner + `pgtest` harness the sibling suites use
-(`store/issues_pgtest_test.go` et al.), `ErrInvalidArgument` (the store's
-existing sentinel, `issues.go:103-108` pattern).
+(`store/issues_pgtest_test.go` et al.), `ErrInvalidArgument` /
+`ErrNotFound` (the store's existing sentinels — the `issues.go:103-108` and
+`issues.go:151-153` patterns).
 
 Test cycle (pgtest, isolated schema per case like `issues_pgtest_test.go`):
 
 1. Migration applies cleanly from empty AND from a 0014 database (the
-   sequential-migration harness proves both); `forge_list_cursors` exists with
-   its PK/CHECKs (provider CHECK rejects 0, page CHECK rejects 0), plus the two
-   spec'd tables if OQ-D resolves land-now.
-2. `ForgeListCursor` on a never-polled repo → nil, no error.
-3. Upsert page 1 then re-upsert with a new ETag → one row, new ETag,
+   sequential-migration harness proves both); all four tables exist with
+   their PKs and CHECKs (page CHECK rejects 0; kind CHECKs reject 0/3).
+2. Provider CHECK domain, proven on `forge_repo_subscriptions` AND
+   `forge_list_cursors`: providers 1..4 each insert cleanly; 0 and 5 are
+   each rejected — the CHECK admits the full declared enum and nothing else
+   (OQ-D2 at the schema).
+3. `ForgeListCursor` on a never-polled repo → nil, no error.
+4. Upsert page 1 then re-upsert with a new ETag → one row, new ETag,
    `advanced_at` advanced; rows come back ascending by page.
-4. Two hosts / two providers with the same `repo` string do not collide (the
-   OQ-D coordinate rationale, proven).
-5. `PruneForgeListCursorPages(maxPage=2)` on a 4-page repo leaves pages 1-2;
+5. Two hosts / two providers with the same `repo` string do not collide (the
+   coordinate rationale, proven).
+6. `PruneForgeListCursorPages(maxPage=2)` on a 4-page repo leaves pages 1-2;
    pruning a never-polled repo is a no-op.
-6. Invalid input: zero provider / empty host / empty repo / page 0 →
-   `ErrInvalidArgument` on each method.
-7. **(Only if OQ-D resolves land-now)** `forge_subscriptions` FK: inserting a
-   row with an unknown `agent_account_id` fails (RESTRICT, per the DL-053 DDL
-   and the 0006-established convention `0006_delivery_cursors.sql:6-9`) — the
-   table is writer-less this slice but its shape is proven here. If OQ-D
-   resolves defer, this case drops and test 1 asserts only `forge_list_cursors`
-   exists.
+7. `agent_forge_subscriptions` FK shape: inserting a row with an unknown
+   `agent_account_id` fails (RESTRICT, per the DL-053 DDL and the
+   0006-established convention `0006_delivery_cursors.sql:6-9`) — the table
+   is writer-less this slice but its shape is proven here. Unconditional
+   (OQ-D1 resolved land-now).
+8. Repo-subscription CRUD: ensure-insert creates the row enabled;
+   re-ensure of the same coordinate is idempotent (one row); ensure-insert
+   over a soft-disabled row leaves it DISABLED (`ON CONFLICT DO NOTHING` —
+   the bootstrap-only semantic; this leg goes RED against a DO-UPDATE
+   regression); `ListEnabledForgeRepoSubscriptions` returns only enabled
+   rows for the asked (provider, host), ascending repo, and nil for none;
+   `SetForgeRepoSubscriptionEnabled(false)` removes the row from the
+   enabled list WITHOUT deleting it and advances `updated_at` (the audit
+   column); unknown coordinate → `ErrNotFound`.
+9. Invalid input: zero provider / empty host / empty repo / page 0 →
+   `ErrInvalidArgument` on each method (cursor and subscription both).
 
 ### T3 — `ingest.Driver`: the DL-053 conditional-poll driver
 
@@ -797,7 +1021,11 @@ refactor inside `ingest.go`: extract the translate+sink loop of `Ingest`
 (`ingest.go:58-63`) into `IngestIssues(ctx, repo, raws)` so the driver can
 feed caller-fetched page batches through the existing per-issue pipeline;
 `Ingest` becomes `ListIssues` + `IngestIssues` (behavior unchanged — the
-existing `ingest_test.go` suite is the regression net). Pass algorithm,
+existing `ingest_test.go` suite is the regression net). Each pass begins
+with a fresh target enumeration (`PollStore.ListEnabledRepos` — the
+`forge_repo_subscriptions WHERE enabled` read, bound to the driver's
+provider+host by the T4 adapter), so a target added or disabled between
+ticks takes effect on the next pass with no restart. Pass algorithm,
 page-wise cursor advance, budget/error classification, logging per the
 Approach; `nil` return on ctx cancellation.
 
@@ -820,10 +1048,16 @@ type ListPageCursor struct {
     HasNext bool
 }
 
-// CursorStore is the durable FETCH-cursor surface the driver needs — a narrow,
-// repo-keyed structural seam (the server wiring adapts *store.Store and binds
-// provider+host), keeping this package's no-store property (ingest.go:7-8).
-type CursorStore interface {
+// PollStore is the durable target + FETCH-cursor surface the driver needs
+// — a narrow, repo-keyed structural seam (the server wiring adapts
+// *store.Store and binds provider+host), keeping this package's no-store
+// property (ingest.go:7-8). Named for the whole surface the poller uses:
+// its first method is target enumeration, not cursor state.
+// ListEnabledRepos is the per-pass target enumeration
+// (forge_repo_subscriptions WHERE enabled — OQ-C's table model); the three
+// cursor methods are the page-cursor surface.
+type PollStore interface {
+    ListEnabledRepos(ctx context.Context) ([]string, error)
     ListCursor(ctx context.Context, repo string) ([]ListPageCursor, error)
     UpsertListCursorPage(ctx context.Context, repo string, cur ListPageCursor) error
     PruneListCursorPages(ctx context.Context, repo string, maxPage int) error
@@ -835,14 +1069,15 @@ type pageLister interface {
     ListIssuesPage(ctx context.Context, repo string, f forge.IssueFilter, page int, etag string) (forge.ListPage, error)
 }
 
-// DriverConfig configures the board-ingestion poll driver.
+// DriverConfig configures the board-ingestion poll driver. The target repos
+// are NOT config — the driver reads them from PollStore.ListEnabledRepos
+// at the top of every pass.
 type DriverConfig struct {
-    Repos    []string      // "owner/name", non-empty (validated by the caller)
     Interval time.Duration // > 0; the caller defaults it
     Log      *slog.Logger  // nil -> slog.Default()
 }
 
-func NewDriver(client pageLister, ing *Ingester, cursors CursorStore, cfg DriverConfig) *Driver
+func NewDriver(client pageLister, ing *Ingester, cursors PollStore, cfg DriverConfig) *Driver
 
 // Run polls until ctx is cancelled, then returns nil (clean shutdown).
 // Per-repo errors are logged and retried next tick, never returned — a
@@ -853,11 +1088,12 @@ func (d *Driver) Run(ctx context.Context) error
 Consumes: `Ingester` (`ingest.go:35-46`), `forge.ListPage` /
 `forge.ErrBudgetExhausted` (T1), `time.Ticker`, `log/slog`.
 
-Test cycle (unit, fake `pageLister` + fake `CursorStore` + the package's
+Test cycle (unit, fake `pageLister` + fake `PollStore` + the package's
 existing `recordingSink` pattern, `ingest_test.go:13-27`):
 
-1. `Run` performs an immediate pass for every repo before the first tick
-   (short interval, assert call order/coverage).
+1. `Run` performs an immediate pass over every enabled target
+   (`ListEnabledRepos` faked) before the first tick (short interval, assert
+   call order/coverage).
 2. ctx cancel BETWEEN ticks → `Run` returns `nil` promptly, and ctx cancel
    DURING a pass also returns `nil` promptly — deadline-gated, never a sleep
    (the pgtest convention, `service_board_pgtest_test.go:15`). Assert `Run`
@@ -888,38 +1124,57 @@ existing `recordingSink` pattern, `ingest_test.go:13-27`):
     identically (existing `ingest_test.go` cases stay green unmodified), and
     `IngestIssues` on a batch stops at the first sink error with the same
     wrapped error shape (`ingest.go:60-62`).
+11. Per-pass target enumeration is live: a repo added to the fake
+    `ListEnabledRepos` result between ticks is polled on the next pass; a
+    repo removed/disabled between ticks is not; zero targets → an idle pass
+    (no fetch, no sink, no Error log).
+12. `ListEnabledRepos` returning an error → `slog.Error`, the pass is
+    skipped, `Run` keeps ticking (never fatal), and the next tick
+    re-enumerates.
 
 ### T4 — serve boot wiring + config surface + secret resolve
 
 Touches `server/serve.go`, `cmd/compass-server/main.go` (edits only, no new
 files beyond tests). `ServeConfig.Forge` all-optional like `S3`; CLI
-flags/env per the Approach; fail-fast on forge-config-present but
-secret-unresolvable; the `ingest.CursorStore` adapter over the open
+flags/env per the Approach; the boot seed reconcile that inserts
+`--forge-repos` into `forge_repo_subscriptions` (bootstrap-only, `ON
+CONFLICT DO NOTHING`, before the driver's first pass); the polling-disabled
+boot Warn (the Approach's boot-Warn bullet); fail-fast on
+forge-polling-enabled but secret-unresolvable; the `ingest.PollStore`
+adapter over the open
 `*store.Store`; driver under the existing errgroup.
 
 Interfaces:
 
 ```go
 // server.ForgeConfig configures the board-ingestion poll driver (SEA-1810).
-// All-optional: empty Repos leaves the driver off (today's behavior).
+// All-optional: polling disabled (empty SeedRepos, Poll false) leaves the
+// driver off (today's behavior).
 type ForgeConfig struct {
     Host         string        // default "github.com"
-    Repos        []string      // "owner/name"; empty -> no driver
+    SeedRepos    []string      // "owner/name" (--forge-repos): boot-reconciled
+                               // into forge_repo_subscriptions (bootstrap-only
+                               // insert, ON CONFLICT DO NOTHING; lowercased
+                               // for GITHUB) — a SEED, not the live target set
+    Poll         bool          // --forge-poll: run the driver even with an
+                               // empty seed (targets already in the table)
     SecretName   string        // declared server_only secret name; default "GITHUB_FORGE_TOKEN"
     PollInterval time.Duration // default time.Minute
 }
-// ServeConfig gains: Forge ForgeConfig
+// ServeConfig gains: Forge ForgeConfig; polling enabled iff
+// Poll || len(SeedRepos) > 0
 
-// unexported in server/: the ingest.CursorStore adapter binding the driver's
+// unexported in server/: the ingest.PollStore adapter binding the driver's
 // forge coordinate half, so the ingest-side seam stays repo-keyed.
-type forgeCursorStore struct {
+type forgePollStore struct {
     st       *store.Store
     provider store.ForgeProvider
     host     string
 }
-// satisfies ingest.CursorStore: ListCursor / UpsertListCursorPage /
-// PruneListCursorPages, each delegating to the T2 store methods with the
-// bound (provider, host).
+// satisfies ingest.PollStore: ListEnabledRepos (→ the T2
+// ListEnabledForgeRepoSubscriptions, mapped to repo strings) / ListCursor /
+// UpsertListCursorPage / PruneListCursorPages, each delegating to the T2
+// store methods with the bound (provider, host).
 ```
 
 Consumes: `secrets.SpecResolver.Resolve(ctx, reason) ([]ResolvedSecret, error)`
@@ -933,24 +1188,42 @@ methods, `ingest.NewDriver`/`Run` (T3), the errgroup at `serve.go:327`,
 
 Produces: a `TokenSource` closure over the resolver that re-resolves +
 selects `SecretName` on TTL expiry or auth failure (not per pass; see the
-Secret-resolve bullet); the cursor-store adapter; boot-time validation error
-text for missing-secret / bad-repo-format / non-positive interval.
+Secret-resolve bullet); the boot seed reconcile (each `SeedRepos` entry
+lowercased for GITHUB and inserted enabled into `forge_repo_subscriptions`
+via the T2 ensure-insert, `ON CONFLICT DO NOTHING`, before the driver's
+first pass); the polling-disabled boot Warn; the poll-store adapter;
+boot-time validation
+error text for missing-secret / bad-repo-format / non-positive interval.
 
 Test cycle:
 
-1. Unit: CLI flag/env precedence for the four forge knobs mirrors the S3
-   pattern (table test like `resolveNetworkDoor`'s, `main.go:184-212`);
-   repo-format validation (`owner/name`) rejects garbage at startup.
-2. Unit: empty `Forge.Repos` → `Serve` builds no driver (assert via config
+1. Unit: CLI flag/env precedence for the five forge knobs (repos seed, poll
+   enable, interval, secret name, host) mirrors the S3 pattern (table test
+   like `resolveNetworkDoor`'s, `main.go:184-212`); repo-format validation
+   (`owner/name`) rejects garbage at startup; case normalization: a seed of
+   `Owner/Name` reconciles to ONE lowercased `owner/name` row, never two PK
+   rows.
+2. Unit: forge polling disabled (empty `SeedRepos`, `Poll` false) → `Serve`
+   builds no driver and attempts no secret resolve (assert via config
    plumbing seam, no behavioral change to existing serve tests — the whole
    existing suite is the regression net; the 0015 migration alone must not
-   change any existing test's outcome).
+   change any existing test's outcome); `Poll` true with an empty seed →
+   the driver IS built (table-driven targets, idle passes until rows exist);
+   polling disabled with enabled `forge_repo_subscriptions` rows present
+   for the bound (provider, host) → boot emits exactly ONE `slog.Warn`
+   ("forge polling disabled but N enabled targets exist"; capture a slog
+   test handler), and no Warn when no enabled rows exist.
 3. pgtest (build-tag gated like the board suite): a `Serve`-assembled
    pipeline over a fake pager scripted with one issue page sinks to the real
    projection, lands in `ListBoardIssues`, AND leaves a
    `forge_list_cursors` page-1 row carrying the scripted ETag — the
    end-to-end boot-wiring + durable-cursor proof without touching live
-   GitHub.
+   GitHub. The target repo enters via the seed reconcile, and the ordering
+   assertion is DIRECT: assert the seeded `forge_repo_subscriptions` row is
+   visible BEFORE the fake pager's first call (instrument the fake pager to
+   snapshot the row at call time, or — if the harness can shrink the
+   interval — assert explicit call ordering), not merely inferred from a
+   1m-interval timeout.
 4. pgtest (restart-resync proof — the durable cursor's headline buy): after
    test 3, rebuild the pipeline over the SAME schema (a "restart") with the
    pager scripting a 304 for the stored ETag; assert the pass issues no
@@ -972,7 +1245,7 @@ Test cycle:
    the changed resolver value is used on the next fetch — the design's stated
    reason for a TTL-cache `TokenSource` with an invalidation seam rather than a
    captured token or a bare func.
-7. Startup failure, two distinct texts: (a) forge config present + secret NAME
+7. Startup failure, two distinct texts: (a) forge polling enabled + secret NAME
    absent from the resolved set → `Serve` returns `"forge secret %q not
    declared"`; (b) the resolve call itself ERRORS at boot → `Serve` returns
    `"forge secret resolve failed at startup: %w"`. Both follow the
@@ -980,6 +1253,18 @@ Test cycle:
    since the resolver is built after the UDS listener binds (`serve.go:287`);
    assert the two error strings are distinguishable so a permanent misconfig is
    not confused with a transient provider outage.
+8. pgtest (the seed-reconcile semantic — bootstrap-only insert, `ON
+   CONFLICT DO NOTHING`, never destructive and never mutating; this test
+   MUST be able to go RED against both a destructive-sync and a DO-UPDATE
+   regression): reconcile with seed `{a/b, c/d}` → both rows enabled;
+   insert `e/f` directly (the "table-added" repo) and re-run the reconcile
+   with seed `{a/b}` → `c/d` and `e/f` BOTH survive, still enabled (a repo
+   dropped from the flag is NOT auto-deleted or disabled); disable `c/d`
+   via `SetForgeRepoSubscriptionEnabled(false)` and re-run the reconcile
+   with `c/d` STILL in the seed → `c/d` STAYS disabled (the flag never
+   flips an existing row's `enabled`; this leg goes RED against a
+   DO-UPDATE-SET-enabled regression); disable `e/f` (absent from the seed)
+   and re-run → stays disabled.
 
 ## Tasks
 
@@ -989,20 +1274,27 @@ Test cycle:
   Invalidate` on bad-creds, `HasNext`/pagination, filter mapping incl.
   `state=all` default, PR exclusion, StatusError mapping, bearer auth,
   304-uncharged doc reverify).
-- [ ] **T2** — migration `0015_forge_subscriptions.sql` (`forge_list_cursors`
-  always; `forge_subscriptions` + `forge_artifact_cursors` per DL-053,
-  coordinate-aligned, IF OQ-D resolves land-now) + `store/forge_cursors.go`
-  list-cursor methods; pgtest-covered.
+- [ ] **T2** — migration `0015_forge_subscriptions.sql` (all four tables
+  unconditionally: `forge_repo_subscriptions` + `forge_list_cursors` +
+  `agent_forge_subscriptions` + `forge_artifact_cursors`,
+  coordinate-aligned, every provider CHECK `IN (1, 2, 3, 4)`) +
+  `store/forge_cursors.go` list-cursor + repo-subscription methods +
+  `store.ForgeProviderLinear = 4`; pgtest-covered (incl. the CHECK-domain
+  and FK-shape proofs).
 - [ ] **T3** — `ingest.Driver` conditional-poll driver (`driver.go` + the
   `IngestIssues` extraction in `ingest.go`; unit tests: immediate pass, ctx
-  cancel → nil, conditional walk over stored cursors, sink-gated cursor
-  advance, prune, per-repo error isolation, budget-skip classification,
-  interval discipline, slog fields).
-- [ ] **T4** — serve boot wiring: `ServeConfig.Forge`, CLI flags/env, DL-052
-  secret resolve via the existing `SpecResolver`, the `ingest.CursorStore`
-  adapter over `*store.Store`, errgroup membership, fail-fast validation;
-  unit + pgtest end-to-end incl. the durable-cursor restart proof and the
-  no-clobber proof.
+  cancel → nil, per-pass target enumeration via `ListEnabledRepos`,
+  conditional walk over stored cursors, sink-gated cursor advance, prune,
+  per-repo error isolation, budget-skip classification, interval
+  discipline, slog fields).
+- [ ] **T4** — serve boot wiring: `ServeConfig.Forge` (seed + poll-enable),
+  CLI flags/env, the boot seed reconcile into `forge_repo_subscriptions`
+  (bootstrap-only insert, `ON CONFLICT DO NOTHING`), the polling-disabled
+  boot Warn, DL-052 secret resolve via the existing `SpecResolver`,
+  the `ingest.PollStore` adapter over `*store.Store`, errgroup
+  membership, fail-fast validation; unit + pgtest end-to-end incl. the
+  durable-cursor restart proof, the no-clobber proof, and the
+  seed-reconcile semantic.
 
 ## Open Questions
 
@@ -1018,96 +1310,114 @@ shared fetch half either way; its one structural change — cursor state moves
 out of the client into `forge_list_cursors` — is the Approach's stateless-client
 bullet). The superseded Option 1 / Option 1.5 framings and their tradeoffs are
 retained in Alternatives (b) for the reasoning trail; the fork is closed and
-is not relitigated here. The follow-on shape calls INSIDE Option 2 are OQ-C
-and OQ-D below.
+is not relitigated here. The follow-on shape calls INSIDE Option 2 were OQ-C
+and OQ-D — both since RESOLVED (Matt, 2026-08-08), below.
 
-### OQ-C (LOAD-BEARING — blocks the freeze): how the board is represented as a subscriber
+### OQ-C — RESOLVED (Matt, 2026-08-08): the board's subscription set is a TABLE
 
-DL-053's subscription row is per-artifact and agent-owned
-(`agent_account_id TEXT NOT NULL REFERENCES agent_accounts`,
-`compass-server-ownership-layer/design.md:980`); the board subscribes to whole
-repos and is not an agent. Two representations:
+Matt: "needs to be easily able to add/remove repos, so I think it needs to
+be a table? It can be a different one than forge_subscriptions if needed, or
+that can be renamed to agent_forge_subscriptions, etc."
 
-- **Config-declared (RECOMMENDED, and what this record designs):** the
-  board's subscription set IS `ForgeConfig.Repos` — operator config, no
-  `forge_subscriptions` rows, no delivery cursor (the board's notify is the
-  synchronous in-pass projection sink, so sunk-ness is already encoded by the
-  sink-gated `forge_list_cursors` advance; a `delivered_revision` for it
-  would duplicate what the `issues` table already records). The repo-LIST
-  fetch state lives in the new sibling table `forge_list_cursors` (Approach);
-  DL-053's two spec'd tables land untouched in shape and gain their writers
-  in the later slices. Cost: when agent subscriptions arrive, the poll driver
-  enumerates targets from two sources (config repos for the LIST class,
-  subscription rows for the per-artifact class) — acceptable because the two
-  classes hit different endpoints with different cursor tables either way,
-  and both share the one client, budget gate, and pass scheduler.
-- **A widened subscription row (Alternatives (g)):** nullable
-  `agent_account_id` + a subscriber-kind discriminator + a repo-level
-  artifact kind, making the board a literal `forge_subscriptions` row. Buys a
-  single target-enumeration query; costs an amendment to DL-053's spec'd
-  shape and a kind-filter on every future subscription query, for a
-  subscriber with no delivery semantics and no Subscribe/Unsubscribe
-  dynamics.
+Resolution, as applied through this record:
 
-**Recommendation: config-declared.** It consumes DL-053 without amending it
-(the brief the ruling set), and the one-fetch-path property PR-C needs holds
-identically under both (it hangs on `forge_list_cursors` + the shared pass,
-not on how the board's membership is stored). PARKED for Matt; batched by the
-main agent.
+- **New table `forge_repo_subscriptions`** — the board's repo-level poll
+  targets, keyed `(forge_provider, forge_host, repo)`, with `enabled
+  BOOLEAN` for soft-disable (DDL in the Approach). The driver enumerates
+  `WHERE enabled` at the top of every pass (T3), so add/remove is a row
+  operation, live at the next tick, no restart and no deploy.
+- **DL-053's `forge_subscriptions` lands RENAMED
+  `agent_forge_subscriptions`** (Matt's explicit option) — shape unchanged;
+  the rename disambiguates the per-ARTIFACT, agent-owned subscription from
+  the board's per-REPO target (Global Constraints). Proposed freeze-time
+  delta, BOTH halves (prose only in this Draft PR): (a) a DECISIONS.md
+  ledger row recording the table model + the rename, AND (b) a one-line
+  annotation at the ownership-layer DDL
+  (`compass-server-ownership-layer/design.md:983`, the `CREATE TABLE
+  forge_subscriptions`) pointing forward — "lands as
+  `agent_forge_subscriptions`; see compass-forge-poll-driver" — so a reader
+  entering from the frozen ownership-layer record who greps
+  `forge_subscriptions` finds the mapping instead of nothing. No
+  DECISIONS.md or ownership-layer edit rides this Draft PR
+  (`Ledger-impact: none in this PR — Draft record`).
+- **v1 population is the T4 boot seed reconcile** — `--forge-repos`
+  inserted enabled where absent, `ON CONFLICT DO NOTHING`: additive, never
+  destructive, never mutating an existing row — and the dynamic mutation
+  RPC/admin surface is a named non-goal of this slice. The ON CONFLICT
+  semantic is author-resolved to DO NOTHING (the DO-UPDATE-SET-enabled
+  alternative is weighed and rejected in Alternatives (h)); flagged for
+  Matt's ratification at design-PR review.
 
-### OQ-D (LOAD-BEARING — blocks the freeze): whether (and how) the two spec'd DL-053 tables land in this slice
+For the trail: this record previously RECOMMENDED config-declared
+(`ForgeConfig.Repos` as the subscription set, no rows); Matt ruled it out
+because the target set must be mutable at runtime without a deploy. The
+widened-subscription-row alternative stays rejected (Alternatives (g)). The
+one-fetch-path guarantee is unaffected — it hangs on `forge_list_cursors` +
+the shared pass, not on where the target set lives. The board still holds NO
+delivery cursor: its notify is the synchronous in-pass sink, so that half of
+the original question resolves unchanged (Approach (a)).
 
-The coordinate alignment itself — SMALLINT provider enum + `forge_host` in
-every key, matching the tree's frozen 0013 issue coordinate
-(`0013_issues.sql:29-35`) rather than the ownership-layer DDL's `provider
-TEXT` + host-less key (`compass-server-ownership-layer/design.md:976-1019`) —
-is NOT the fork: it is the mechanical application of the tree's existing
-standard, author-decided (Approach → author-decided), because diverging would
-fork the coordinate vocabulary inside one schema and force casts/joins between
-cursor and issue rows. Two things about it ARE genuine forks:
+### OQ-D — RESOLVED (Matt, 2026-08-08): all four tables land now; CHECKs admit the full enum
 
-**D1 — land the two spec'd tables now, or defer them to their first writers.**
-Nothing this slice EXECUTES touches `forge_subscriptions` or
-`forge_artifact_cursors`: the driver rides `forge_list_cursors` only (Approach
-→ the DL-053 tables). So they land now purely as anticipatory schema.
+**D1 — land-now.** Migration 0015 unconditionally lands
+`forge_repo_subscriptions`, `forge_list_cursors`,
+`agent_forge_subscriptions`, and `forge_artifact_cursors` (Approach → the
+four forge tables). The defer alternative (each spec'd table rides its first
+writer) is closed; T2 test 7 — the FK-shape proof on the writer-less
+`agent_forge_subscriptions` — is unconditional. The coordinate alignment
+(SMALLINT provider + `forge_host` in every key, per `0013_issues.sql:29-35`)
+was never the fork and stands as author-decided.
 
-- **Land-now (what this record designs):** one forge migration; the DL-053
-  shape is frozen and pgtest-covered (T2 test 7) before its writers exist,
-  matching the ruling's "build on the DL-053 machinery from day one" read as
-  including the schema. Cost: it forces the D2 provider-domain call now.
-- **Defer:** `0015` lands `forge_list_cursors` alone; each spec'd table rides
-  the slice that first writes it (PR-C / agent-notification) with more
-  information. An EMPTY table is the cheapest thing to `ALTER`, so freezing its
-  shape early buys little, and deferring dodges D2 entirely until a writer
-  needs it. The driver is byte-identical either way (it never touches those
-  tables). Cost: a second forge migration two slices out.
+**D2 — every provider CHECK admits the FULL declared enum, `IN (1, 2, 3,
+4)`.** Matt: "why did we drop linear? we need linear for dogfood, linear and
+github. gitlab/forgejo can come later in beta etc." The earlier
+recommendation here — narrow to `{github, gitlab, forgejo}` to match the
+0013 coordinate — was WRONG and is corrected: it dropped Linear, which
+dogfood needs, and it mistook the CHECK for a rollout gate. The CHECK's job
+is "never UNSPECIFIED(0)"; rollout is gated by which `forge.Provider` has a
+real client (GitHub only, this slice — no producer for gitlab/forgejo/linear
+issues exists in the tree). The proto enum already declares all four
+providers (`FORGE_PROVIDER_LINEAR = 4`, `proto/compass/v1/compass.proto:704`
+— "DL-051's issues-only forge source: a Linear-origin Issue whose repo is
+the project key"), so the 0015 tables admit the whole declared domain (never
+a non-contiguous subset like `IN (1, 4)`) and the future Linear slice needs
+no CHECK-widening migration on any of them. The `issues` table's own
+`IN (1, 2, 3)` is the separate prerequisite documented as OQ-E.
 
-**Recommendation: land-now** — it is the most direct reading of the day-one
-ruling and one migration is tidier, but the buy is genuinely small, so this is
-a real call for Matt, not an author default dressed as one.
+### OQ-E (out of scope — the Linear-ingestion prerequisite; follow-up filed by the driver)
 
-**D2 — IF land-now, which provider domain the CHECK admits (moot if D1 =
-defer).** DL-053's spec'd DDL keys `provider TEXT -- "github" | "linear"`
-(`compass-server-ownership-layer/design.md:981`) — Linear is a first-class
-provider of subscription/cursor rows in the frozen spec. Adopting the 0013
-coordinate's `SMALLINT CHECK (forge_provider IN (1, 2, 3))`
-(GitHub/GitLab/Forgejo, `0013_issues.sql:33`) consciously NARROWS that domain:
-it drops `linear` until the `ForgeProvider` enum and the CHECK grow. This is
-NOT "no semantic change" (the pre-fold text's claim, now corrected). DL-129
-routes tracker-status ingestion through "the DL-053 poll" (`DECISIONS.md:173`)
-and the MVP tracker is GitHub, so the narrowing is likely harmless for now —
-but it is a real domain decision, cheap to make correctly while the tables are
-empty and expensive to discover wrong once a Linear tracker arrives.
+SEA-1810's new tables are Linear-ready (their CHECKs admit 4), but actually
+INGESTING Linear issues has three prerequisites, ALL out of scope for this
+GitHub-read slice and belonging to the future Linear-ingestion slice:
 
-- **Narrow to {github, gitlab, forgejo} (RECOMMENDED):** one coordinate
-  vocabulary across `issues` and the forge tables; a Linear tracker later
-  extends the enum + CHECK (a one-line migration on empty-or-small tables).
-- **Widen the CHECK to include a `linear` enum value now:** honors the DL-053
-  spec's stated domain literally, at the cost of introducing an enum value
-  with no producer this slice or the next.
+- **The `issues` CHECK:** `0013_issues.sql:32` is `forge_provider SMALLINT
+  NOT NULL CHECK (forge_provider IN (1, 2, 3))` — "GitHub/GitLab/Forgejo;
+  never UNSPECIFIED(0)". It EXCLUDES Linear(4): the projection cannot store
+  a Linear-provider issue today. Widening it to `IN (1, 2, 3, 4)` is one
+  migration on that ONE table.
+- **The store Go enum:** `store.ForgeProvider` constants stop at
+  `ForgeProviderForgejo = 3` (`store/issues.go:30-35`). T2 already adds
+  `ForgeProviderLinear = 4` so the Go domain matches the 0015 CHECK domain —
+  this half is closed by this slice; the future slice adds its producer.
+- **A Linear `forge.Provider` client** (DL-051, `DECISIONS.md:126`: the
+  forge adapter is "GitHub first, Linear issues-only"; `ForgeRef.host` for
+  Linear is the constant "linear.app", `compass.proto:711-712`).
 
-PARKED for Matt (both sub-forks); batched by the main agent. If D1 = defer,
-D2 does not need ruling now.
+Because the 0015 tables already admit 4, that future slice touches the ONE
+`issues` CHECK plus a client — not the whole forge-table set. The driver
+files the follow-up issue; this record only documents the prerequisite. Not
+load-bearing for this slice's freeze.
+
+Why the asymmetry (`issues` CHECK deferred in SQL, Go domain closed now) is
+deliberate: the Go constant `store.ForgeProviderLinear = 4` is required THIS
+slice because 0015's own store methods must be able to name domain value 4
+(the four new tables' CHECKs admit it), while the `issues` CHECK guards a
+table SEA-1810 never writes with provider=4 (the driver is bound to GITHUB;
+no Linear producer exists in the tree) — and widening a guard ahead of its
+producer would weaken 0013's "every issue is forge-backed" documentation, so
+the widening correctly waits for the Linear producer. This deferral is
+author-resolved pending Matt's review: he may tie-break to fold the
+`issues`-CHECK widening into 0015 if he prefers SQL/Go symmetry.
 
 ### OQ-B (non-load-bearing deferral): live-demo content
 
