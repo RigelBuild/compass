@@ -40,6 +40,7 @@ import {
 	type IndexedSessionStorage,
 	SessionManager,
 	Settings,
+	type ToolDefinition,
 } from "@oh-my-pi/pi-coding-agent";
 import { loadCapability } from "@oh-my-pi/pi-coding-agent/capability";
 import {
@@ -50,11 +51,19 @@ import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp";
 import { YAML } from "bun";
 import { CompassAgent } from "./agent";
 import {
+	CommsBroker,
+	createCommsTools,
+} from "./comms";
+import {
 	AGENT_CONFIG_MOUNT_PATH,
 	loadMountedConfig,
 	type MountedMcp,
 } from "./config-reader";
 import type { FrameSink } from "./frame";
+import {
+	createLifecycleTools,
+	LifecycleBroker,
+} from "./lifecycle";
 import {
 	createTeeSessionStorage,
 	type TranscriptTeeBackend,
@@ -501,6 +510,50 @@ export async function main(
 	);
 	const sink = createSocketFrameSink(transport);
 
+	// Native comms + lifecycle tools (SEA-1741 gap-1). The existing `transport`
+	// is reused directly: `RunnerTransport` structurally satisfies both
+	// `CommsTransport` and `LifecycleTransport` (each is a one-method subset —
+	// comms.ts:74 / lifecycle.ts), so the brokers wrap it with no adapter. Their
+	// tools are merged into `customTools` below, flowing through the same
+	// customTools→state.tools→#withNatives natives path as the MCP tools — so the
+	// container agent's `comms_post_message` / `agents_spawn_peer` emissions
+	// resolve as session natives rather than "unknown tool".
+	const commsBroker = new CommsBroker(transport);
+	const lifecycleBroker = new LifecycleBroker(transport);
+	// The comms/lifecycle natives are authored as `AgentTool` (pi-agent-core)
+	// because CompassAgent's `#withNatives` mechanism (agent.ts) operates on
+	// `AgentTool[]`. `createAgentSession`'s `customTools` wants
+	// `(CustomTool | ToolDefinition)[]`, and the SDK exposes no dedicated native
+	// seam, so we register the `AgentTool[]` through `customTools` with a single
+	// documented assertion. The assertion to the `ToolDefinition` arm is
+	// TYPE-sound: the only compile-time gap is generic variance on the OPTIONAL
+	// renderCall/renderResult (`AgentTool` TTheme=unknown vs `ToolDefinition`
+	// Theme/Component) — fields these headless tools never define.
+	//
+	// RUNTIME mechanism (subtle — do not "simplify" the invariant below away):
+	// an `AgentTool` object literal carries no `__isToolDefinition` marker, so
+	// the SDK classifies it as a CustomTool (`isCustomTool`, sdk.ts:876) and runs
+	// it through `customToolToDefinition` (sdk.ts:915) — NOT the verbatim
+	// pass-through arm. That wrapper invokes `execute` with the CustomTool arg
+	// convention `(toolCallId, params, onUpdate, ctx, signal)` (sdk.ts:927),
+	// whereas `AgentTool.execute` is `(toolCallId, params, signal, onUpdate, ctx)`
+	// (pi-agent-core types.ts:612-616) — so args 3-5 arrive SHUFFLED. This is
+	// safe ONLY because every native's `execute` body reads solely
+	// `(toolCallId, params)` and ignores args 3-5 (comms.ts / lifecycle.ts). A
+	// test in cli.test.ts is a TRIPWIRE on the likely regression: it pins each
+	// native's `execute.length === 2`, so adding a plain positional 3rd param
+	// (`signal`) to consume a shuffled arg reddens it. The pin is not a total
+	// guard — a rest (`...args`) or defaulted (`signal = …`) param reads arg 3
+	// while keeping `.length === 2` — so the load-bearing rule is this invariant
+	// itself, not the arity check. If a native ever needs its AbortSignal or
+	// onUpdate (e.g. wiring cancellation), it CANNOT go through this seam — the
+	// SDK must gain a real native-registration path, or the tool must be a true
+	// `ToolDefinition`. Do not consume args 3-5 here.
+	const nativeTools = [
+		...createCommsTools(commsBroker),
+		...createLifecycleTools(lifecycleBroker),
+	] as ToolDefinition[];
+
 	// The tee session storage, wrapped + initialize()d (its scan of the session
 	// dir must complete before SessionManager.create so synchronous resume
 	// lookups see the keyspace). SESSION_DIR is the SDK-default HOME-relative dir
@@ -630,8 +683,24 @@ export async function main(
 		skills: mounted.skills,
 		additionalExtensionPaths: mounted.additionalExtensionPaths,
 		disableExtensionDiscovery: mounted.disableExtensionDiscovery,
-		customTools: mcp.tools,
+		// The connected MCP tools MERGED with the native comms/lifecycle tools
+		// (SEA-1741 gap-1, constructed above): all reach the session as natives via
+		// the same customTools→state.tools→#withNatives path, so the container
+		// agent can spawn peers and post to channels.
+		customTools: [...mcp.tools, ...nativeTools],
 		enableMCP: false,
+		// Headless approval policy (SEA-1741, design compass-agent-comms-tools
+		// §"the container runs headless with write-approval tools auto-executing"):
+		// the container has NO human to answer an approval prompt, and the native
+		// comms/lifecycle tools declare approval:"write" — so without auto-approve
+		// a write-approval tool would block forever and never execute. Pin the
+		// yolo-default policy here in the entrypoint. Unconditional by design: the
+		// safety rests on an EXTERNAL invariant — this bin is exec'd only by the
+		// Runner as the in-container headless entrypoint (`if (import.meta.main)`,
+		// the sole createAgentSession call in the package), never interactively. If
+		// that ever changes, gate this on an explicit headless signal so the
+		// auto-approve posture fails safe outside a container.
+		autoApprove: true,
 		// Fleet config object injection (SEA-1678 pivot):
 		//   - `rules` (CP-4): the fleet rules COMPOSED with the checkout's
 		//     discovered rules (both load; fleet-first), computed above. Passed

@@ -43,6 +43,7 @@ import {
 	resolveModelSelector,
 	resolvePersona,
 } from "./cli";
+import { CommsBroker, createCommsTools } from "./comms";
 import {
 	AgentControlSchema,
 	AgentSessionState,
@@ -55,6 +56,7 @@ import {
 	PostConversationFrameResponseSchema,
 	type PublishFrameRequest,
 } from "./gen/compass/v1/agent_gateway_pb";
+import { createLifecycleTools, LifecycleBroker } from "./lifecycle";
 import { createTeeSessionStorage } from "./session-tee";
 import type { RunnerTransport } from "./transport/index";
 import { createPublishSpine } from "./transport/publish-spine";
@@ -1605,6 +1607,7 @@ interface SeenConfig {
 	disableExtensionDiscovery?: boolean;
 	customTools?: unknown[];
 	enableMCP?: boolean;
+	autoApprove?: boolean;
 }
 
 // The `name` of each captured skill, narrowing with `in`/`typeof` (no fabricated
@@ -1615,6 +1618,18 @@ function skillNames(skills: unknown[] | undefined): string[] {
 		if (!skill || typeof skill !== "object") continue;
 		if (!("name" in skill) || typeof skill.name !== "string") continue;
 		out.push(skill.name);
+	}
+	return out;
+}
+
+// The `name` of each captured custom tool — same `in`/`typeof` narrowing as
+// skillNames, over the customTools option array.
+function toolNames(tools: unknown[] | undefined): string[] {
+	const out: string[] = [];
+	for (const t of tools ?? []) {
+		if (!t || typeof t !== "object") continue;
+		if (!("name" in t) || typeof t.name !== "string") continue;
+		out.push(t.name);
 	}
 	return out;
 }
@@ -1676,10 +1691,96 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(opts.disableExtensionDiscovery).toBe(true);
 		// MCP: the parsed config reached the connector, and its tools reached
 		// customTools with enableMCP:false (never a passed mcpManager, which would
-		// not surface its tools).
+		// not surface its tools). The array now also carries the native
+		// comms/lifecycle tools (merged in main), so this is a containment check,
+		// not identity — the dedicated native-tools test below pins those.
 		expect(connectedWith).toEqual({ db: { command: "db-mcp" } });
-		expect(opts.customTools).toBe(mcpTools);
+		expect(opts.customTools).toEqual(expect.arrayContaining(mcpTools));
 		expect(opts.enableMCP).toBe(false);
+	});
+
+	test("the native comms + lifecycle tools reach customTools alongside the MCP tools", async () => {
+		// gap-1 (SEA-1741): main constructs the comms/lifecycle brokers from the
+		// existing transport and merges their tools into customTools so the
+		// container agent can spawn/post. Derive the EXPECTED names at runtime from
+		// the same factories main uses (a rename reddens here, never silently
+		// skips), rather than hardcode-guessing them. The brokers are never called
+		// during registration, so a stub transport whose bodies never run suffices.
+		const fakeTransport = {
+			comms: async () => ({}) as never,
+			lifecycle: async () => ({}) as never,
+		};
+		const expectedNames = [
+			...createCommsTools(new CommsBroker(fakeTransport)),
+			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
+		].map((t) => t.name);
+
+		const session = fakeSession();
+		const seen: SeenConfig[] = [];
+		await main(
+			{ HOME: scratch() },
+			{
+				configMount: scratch(),
+				connectMcp: () =>
+					Promise.resolve({
+						tools: [] as never,
+						disconnect: () => Promise.resolve(),
+					}),
+				createSession: (options) => {
+					seen.push({
+						customTools: options.customTools,
+						autoApprove: options.autoApprove,
+					});
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+
+		expect(seen).toHaveLength(1);
+		const names = toolNames(seen[0].customTools);
+		// Every native tool the factories produce reached customTools.
+		for (const name of expectedNames) expect(names).toContain(name);
+		// Discriminating anchor: the two confirmed lifecycle names (lifecycle.ts:144).
+		expect(names).toContain("agents_spawn_peer");
+		expect(names).toContain("agents_despawn_peer");
+		// Headless approval policy (SEA-1741): the entrypoint pins autoApprove so
+		// the write-approval natives auto-execute with no human in the container.
+		expect(seen[0].autoApprove).toBe(true);
+	});
+
+	test("every native's execute keeps arity 2 — tripwire on the customToolToDefinition arg-shuffle", () => {
+		// SEA-1741 seam invariant. The natives are `AgentTool`s registered through
+		// `customTools`; the SDK classifies a marker-less AgentTool as a CustomTool
+		// and runs it through `customToolToDefinition`, which invokes `execute`
+		// with the CustomTool arg order (toolCallId, params, onUpdate, ctx, signal)
+		// — NOT the AgentTool order (toolCallId, params, signal, onUpdate, ctx). So
+		// args 3-5 arrive SHUFFLED, and the wiring in cli.ts main() is sound ONLY
+		// while no native reads past `params`. This is a TRIPWIRE, not a total
+		// guard: pinning `execute.length === 2` reddens the LIKELY regression —
+		// adding a plain positional 3rd param (`signal`) to consume a shuffled arg.
+		// It does NOT catch a rest (`...args`) or defaulted (`signal = …`) param,
+		// which read arg 3 while keeping `.length === 2`; the load-bearing guard is
+		// the invariant itself (see cli.ts). If a native must consume its
+		// AbortSignal, it cannot go through this seam — see the comment in cli.ts.
+		const fakeTransport = {
+			comms: async () => ({}) as never,
+			lifecycle: async () => ({}) as never,
+		};
+		const natives = [
+			...createCommsTools(new CommsBroker(fakeTransport)),
+			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
+		];
+		expect(natives).toHaveLength(6);
+		for (const tool of natives) {
+			expect({ name: tool.name, arity: tool.execute.length }).toEqual({
+				name: tool.name,
+				arity: 2,
+			});
+		}
 	});
 
 	test("an UNCONFIGURED mount → skills [], no extension paths, no MCP tools, and main resolves", async () => {
@@ -1719,7 +1820,11 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(seen[0].skills).toEqual([]);
 		expect(seen[0].additionalExtensionPaths).toEqual([]);
 		expect(seen[0].disableExtensionDiscovery).toBe(true);
-		expect(seen[0].customTools).toEqual([]);
+		// No MCP tools (empty mount → empty connect), but the comms/lifecycle
+		// natives are ALWAYS merged in (SEA-1741) — so customTools carries exactly
+		// those, and never a discovered MCP tool.
+		expect(toolNames(seen[0].customTools)).toContain("agents_spawn_peer");
+		expect(seen[0].customTools).toHaveLength(6);
 		expect(seen[0].enableMCP).toBe(false);
 	});
 
@@ -1748,7 +1853,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		);
 		expect(skillNames(seen[0].skills)).toEqual(["only"]);
 		expect(seen[0].additionalExtensionPaths).toEqual([]);
-		expect(seen[0].customTools).toEqual([]);
+		// No MCP tools from a skills-only mount, but the natives always merge in
+		// (SEA-1741) — so customTools is exactly the six comms/lifecycle natives.
+		expect(toolNames(seen[0].customTools)).toContain("comms_post_message");
+		expect(seen[0].customTools).toHaveLength(6);
 	});
 
 	// The MCP manager teardown — what main() alone owns (the SDK never

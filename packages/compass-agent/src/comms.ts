@@ -255,9 +255,9 @@ function presenceLabel(presence: AgentPresence): string {
 /**
  * The native comms tool set. Four tools; never an ask-answering one.
  *
- * NOT YET WIRED: there is no container entrypoint in this repo, so this has no
- * non-test caller. The registration leg is tracked separately — until it lands,
- * the end-to-end contract is exercised only by this package's tests.
+ * Wired into the container entrypoint by `cli.ts main()` (SEA-1741): the tools
+ * are merged into the session's `customTools` and so register as `#withNatives`
+ * natives. This package's tests also exercise the end-to-end contract directly.
  */
 export function createCommsTools(broker: CommsBroker): AgentTool[] {
 	const postMessage: AgentTool<typeof postParameters> = {
