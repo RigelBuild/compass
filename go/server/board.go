@@ -206,6 +206,14 @@ func (b *boardService) SetIssueState(
 	// (design.md:438-439 / compass-issue-model:558-563). The mirror runs AFTER
 	// the state is durable + published; PR-C's real mirror owns echo-suppression,
 	// tracker-status mapping, and any retry/failure refinement (Resolved decision 1).
+	// PR-C deferrals (do NOT change behavior in this PR):
+	//   (a) error-after-commit ordering: the mirror runs AFTER the state is
+	//       committed AND published, so PR-C's real mirror must not surface a
+	//       mirror failure as the transition's failure code (outbox/async or
+	//       log-and-continue) — the transition already succeeded here.
+	//   (b) lock scope: the mirror runs under transitionMu; PR-C's real
+	//       (network) mirror must move this call after releasing the lock so a
+	//       round-trip does not serialize the whole board.
 	if b.mirror != nil && target != store.IssueStateArchived {
 		if err := b.mirror.MirrorIssueState(ctx, committed); err != nil {
 			return store.Issue{}, connect.NewError(connect.CodeInternal, fmt.Errorf("mirroring issue state: %w", err))

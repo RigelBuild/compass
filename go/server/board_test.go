@@ -14,6 +14,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -35,11 +36,14 @@ const boardTestTimeout = 2 * time.Second
 // full read->commit->read-back path without a database. It records how many
 // times SetIssueState was called so a no-op case can assert zero writes.
 type fakeIssueStore struct {
-	mu        sync.Mutex
-	issues    map[string]store.Issue
-	getErr    error // if set, GetIssue returns it verbatim
-	setErr    error // if set, SetIssueState returns it verbatim
-	setWrites int
+	mu     sync.Mutex
+	issues map[string]store.Issue
+	getErr error // if set, GetIssue returns it verbatim
+	setErr error // if set, SetIssueState returns it verbatim
+	// readBackErr, if set, is returned by GetIssue only on the post-commit
+	// read-back (setWrites>0), leaving the pre-commit read unaffected.
+	readBackErr error
+	setWrites   int
 }
 
 func newFakeIssueStore(seed ...store.Issue) *fakeIssueStore {
@@ -55,6 +59,9 @@ func (f *fakeIssueStore) GetIssue(_ context.Context, id string) (store.Issue, er
 	defer f.mu.Unlock()
 	if f.getErr != nil {
 		return store.Issue{}, f.getErr
+	}
+	if f.readBackErr != nil && f.setWrites > 0 {
+		return store.Issue{}, f.readBackErr
 	}
 	iss, ok := f.issues[id]
 	if !ok {
@@ -284,6 +291,117 @@ func TestSetIssueStateCallsNilSafeMirrorOnRealTransition(t *testing.T) {
 			t.Fatalf("mirror fired %d times for an ARCHIVED transition, want 0 (elided)", len(seen))
 		}
 	})
+}
+
+// TestSetIssueStateCommitErrorMapsThroughTransitionStoreError covers the
+// commit-failure branch (store.SetIssueState returns a non-sentinel error):
+// transitionStoreError's default arm maps it to CodeInternal and the failure is
+// before RecordAndPublish, so nothing fans out. Kills a mutant that dropped the
+// SetIssueState error check or mis-mapped the code.
+func TestSetIssueStateCommitErrorMapsThroughTransitionStoreError(t *testing.T) {
+	st := newFakeIssueStore(store.Issue{ID: "iss-1", State: store.IssueStateBacklog})
+	st.setErr = errors.New("boom commit") // non-sentinel -> default arm (CodeInternal)
+	b, bus := newBoardServiceForTest(t, st)
+
+	sub, err := bus.Subscribe(0, bus.InstanceEpoch())
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	t.Cleanup(sub.Cancel)
+
+	_, err = b.SetIssueState(context.Background(), "acct-agent", "iss-1", store.IssueStateInProgress, agentSource())
+	if err == nil {
+		t.Fatal("SetIssueState(commit error) = nil error, want CodeInternal")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("commit error code = %v, want Internal", got)
+	}
+	select {
+	case e := <-sub.Live:
+		t.Fatalf("a commit failure published a fan-out event %v, want none", e.Payload)
+	case <-time.After(50 * time.Millisecond):
+		// No event, as required (failure is before RecordAndPublish).
+	}
+}
+
+// TestSetIssueStateReadBackErrorMapsThroughTransitionStoreError covers the
+// post-commit read-back-failure branch (the SECOND GetIssue returns a
+// non-sentinel error): transitionStoreError maps it to CodeInternal. The commit
+// DID happen (setWrites==1) but RecordAndPublish is after the read-back, so no
+// event fans out — this pins the design's commit-then-read-back ordering. Kills
+// a mutant that dropped the read-back error check.
+func TestSetIssueStateReadBackErrorMapsThroughTransitionStoreError(t *testing.T) {
+	st := newFakeIssueStore(store.Issue{ID: "iss-1", State: store.IssueStateBacklog})
+	st.readBackErr = errors.New("boom readback") // non-sentinel -> default arm (CodeInternal)
+	b, bus := newBoardServiceForTest(t, st)
+
+	sub, err := bus.Subscribe(0, bus.InstanceEpoch())
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	t.Cleanup(sub.Cancel)
+
+	_, err = b.SetIssueState(context.Background(), "acct-agent", "iss-1", store.IssueStateInProgress, agentSource())
+	if err == nil {
+		t.Fatal("SetIssueState(read-back error) = nil error, want CodeInternal")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("read-back error code = %v, want Internal", got)
+	}
+	if st.setWrites != 1 {
+		t.Fatalf("store SetIssueState called %d times, want 1 (the commit did happen)", st.setWrites)
+	}
+	select {
+	case e := <-sub.Live:
+		t.Fatalf("a read-back failure published a fan-out event %v, want none", e.Payload)
+	case <-time.After(50 * time.Millisecond):
+		// No event: RecordAndPublish is after the read-back, so a read-back
+		// failure means no publish.
+	}
+}
+
+// TestSetIssueStateMirrorErrorSurfacesAsInternal covers the mirror-failure
+// branch: a wired mirror returning an error is wrapped as CodeInternal. The
+// mirror WAS called with the committed issue (snapshot len==1), and — the
+// low-severity ordering wart PR-C will resolve — RecordAndPublish runs BEFORE
+// the mirror, so the publish already fired even though the call reports failure.
+// Kills a mutant that swallowed the mirror error.
+func TestSetIssueStateMirrorErrorSurfacesAsInternal(t *testing.T) {
+	st := newFakeIssueStore(store.Issue{ID: "iss-1", State: store.IssueStateBacklog})
+	b, bus := newBoardServiceForTest(t, st)
+	mirror := &recordingMirror{err: errors.New("boom mirror")}
+	b.mirror = mirror
+
+	sub, err := bus.Subscribe(0, bus.InstanceEpoch())
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	t.Cleanup(sub.Cancel)
+
+	_, err = b.SetIssueState(context.Background(), "acct-agent", "iss-1", store.IssueStateInProgress, agentSource())
+	if err == nil {
+		t.Fatal("SetIssueState(mirror error) = nil error, want CodeInternal")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeInternal {
+		t.Fatalf("mirror error code = %v, want Internal", got)
+	}
+	if seen := mirror.snapshot(); len(seen) != 1 || seen[0].ID != "iss-1" || seen[0].State != store.IssueStateInProgress {
+		t.Fatalf("mirror saw %+v, want one committed iss-1/IN_PROGRESS", seen)
+	}
+	// The publish fires BEFORE the mirror (the error-after-commit ordering wart
+	// PR-C resolves): a mirror failure does not un-publish the transition.
+	select {
+	case e, ok := <-sub.Live:
+		if !ok {
+			t.Fatal("live channel closed before an event arrived")
+		}
+		if iss := e.Payload.GetIssue(); iss == nil || iss.GetId() != "iss-1" ||
+			iss.GetState() != compassv1.IssueState_ISSUE_STATE_IN_PROGRESS {
+			t.Fatalf("fanned payload = %v, want iss-1/IN_PROGRESS", e.Payload)
+		}
+	case <-time.After(boardTestTimeout):
+		t.Fatal("timed out waiting for the fanned transition (publish precedes the mirror)")
+	}
 }
 
 // TestSetIssueStateAsAccountMapsRequestAndAttributesActor pins the BoardCaller
