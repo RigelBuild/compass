@@ -32,7 +32,7 @@ func TestWhoAmIReflectsAmbientCallerIdentity(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	const account = "acct-whoami-42"
-	svc := newService("test", bus, nil, nil, nil, nil)
+	svc := newService("test", bus, nil, nil, nil, nil, nil)
 	// Ambient identity attaches account as the caller AFTER any gate — the same
 	// interceptor the socket and dev doors mount (serve.go). Built inline (rather
 	// than via the pgtest-lane newH2CTestServerWithInterceptors) so this stays in
@@ -63,7 +63,7 @@ func TestWhoAmIReflectsAmbientCallerIdentity(t *testing.T) {
 func TestWhoAmIWithoutCallerIsUnauthenticated(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	svc := newService("test", bus, nil, nil, nil, nil)
+	svc := newService("test", bus, nil, nil, nil, nil, nil)
 	client := newH2CClient(t, newH2CTestServer(t, svc))
 
 	_, err := client.WhoAmI(context.Background(), connect.NewRequest(&compassv1.WhoAmIRequest{}))

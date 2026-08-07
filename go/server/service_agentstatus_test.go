@@ -30,7 +30,7 @@ func newAgentStatusClient(t *testing.T) (compassv1connect.CompassServiceClient, 
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	brd := board.NewProjection(bus)
-	svc := newService("test", bus, nil, nil, brd, nil)
+	svc := newService("test", bus, nil, nil, brd, nil, nil)
 	url := newH2CTestServer(t, svc)
 	return newH2CClient(t, url), brd
 }
@@ -132,7 +132,7 @@ func TestGetAgentStatusUnseenEmpty(t *testing.T) {
 func TestGetAgentStatusNilBoardNoPanic(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	svc := newService("test", bus, nil, nil, nil, nil)
+	svc := newService("test", bus, nil, nil, nil, nil, nil)
 	client := newH2CClient(t, newH2CTestServer(t, svc))
 
 	resp, err := client.GetAgentStatus(context.Background(),

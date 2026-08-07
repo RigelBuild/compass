@@ -251,6 +251,18 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// TLS door, never the loopback socket.
 	brd := board.NewProjection(bus)
 
+	// The Server-authoritative issue board projection: the durable PG-rehydrated
+	// issue cache ListBoardIssues re-snapshots and the issue=16 live fan-out onto
+	// SubscribeEvents ride the same instance (part 4). Rehydrate seeds it from the
+	// store before serving so the first snapshot/fan-out is complete; nothing is
+	// subscribed yet at boot, so it does not publish.
+	issueBrd := board.NewIssueProjection(bus, st)
+	if err := issueBrd.Rehydrate(ctx); err != nil {
+		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
+		listeners.close()
+		return fmt.Errorf("rehydrating issue board: %w", err)
+	}
+
 	// The comms event stream rides a second bus instance — its own seq space and
 	// per-boot instance_epoch, distinct from the CompassService bus above. Built
 	// before the RunnerHub because the hub's RelayCommsCall leg executes
@@ -282,7 +294,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// summary the drain logs, so both land on the same sink.
 	hubLog := slog.Default()
 	hub := newRunnerHub(st, brd, tail, commsSvc, hubLog)
-	svc := newService(cfg.Version, bus, st, hub, brd, tail)
+	svc := newService(cfg.Version, bus, st, hub, brd, issueBrd, tail)
 	// Break the hub<->lifecycle (SEA-1618 T5) and comms<->hub ask-answer wake
 	// (SEA-1577) construction cycles; see wireHubServiceCycles in sinks.go.
 	wireHubServiceCycles(hub, commsSvc, st)

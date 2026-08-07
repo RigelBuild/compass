@@ -85,6 +85,11 @@ type service struct {
 	// The same instance is the RunnerHub's lifecycle sink (serve.go wires both),
 	// so the snapshot reflects exactly the transitions fanned onto SubscribeEvents.
 	board *board.Projection
+	// issueBrd is the Server-authoritative board issue projection ListBoardIssues
+	// reads its Snapshot from. The same instance is the ingestion sink (part 3's
+	// issueSink) and the issue=16 live fan-out onto SubscribeEvents, so the board
+	// the handler re-snapshots is exactly the state the tail unions against.
+	issueBrd *board.IssueProjection
 	// tail is the per-session SubscribeAgentSession fan-out (sessiontail.go). The
 	// same instance is the RunnerHub's session-tail sink (serve.go wires both),
 	// so a frame the hub relays reaches this service's stream subscribers. nil on
@@ -101,7 +106,7 @@ type service struct {
 	signaler configSignaler
 }
 
-func newService(version string, bus *events.Bus[busPayload], st *store.Store, hub *runnerhub.Hub, brd *board.Projection, tail *sessionTail) *service {
+func newService(version string, bus *events.Bus[busPayload], st *store.Store, hub *runnerhub.Hub, brd *board.Projection, issueBrd *board.IssueProjection, tail *sessionTail) *service {
 	// A nil *runnerhub.Hub must land in the interface field as a nil interface,
 	// not a non-nil interface wrapping a nil pointer, so the handler's nil check
 	// fires on the socket-only path. Assign through the concrete-nil guard.
@@ -109,7 +114,7 @@ func newService(version string, bus *events.Bus[busPayload], st *store.Store, hu
 	if hub != nil {
 		sig = hub
 	}
-	return &service{version: version, bus: bus, store: st, hub: hub, board: brd, tail: tail, signaler: sig}
+	return &service{version: version, bus: bus, store: st, hub: hub, board: brd, issueBrd: issueBrd, tail: tail, signaler: sig}
 }
 
 // ProvisionAgentWorkspace creates the isolated per-agent container for a
@@ -335,6 +340,25 @@ func (s *service) GetAgentStatus(
 	}), nil
 }
 
+// ListBoardIssues returns the whole issue board (all states incl. ARCHIVED,
+// sorted by id) from the Server-authoritative IssueProjection snapshot — the
+// connect-time re-snapshot a client reads once and then unions, id-keyed, with
+// the SubscribeEvents live tail. The board is unversioned in v1: the request's
+// snapshot_seq is RESERVED and IGNORED, the handler always returns the current
+// Snapshot(). A nil projection (never the real serving path — serve.go always
+// builds one) answers empty rather than panicking, mirroring GetAgentStatus.
+func (s *service) ListBoardIssues(
+	_ context.Context,
+	_ *connect.Request[compassv1.ListBoardIssuesRequest],
+) (*connect.Response[compassv1.ListBoardIssuesResponse], error) {
+	if s.issueBrd == nil {
+		return connect.NewResponse(&compassv1.ListBoardIssuesResponse{}), nil
+	}
+	return connect.NewResponse(&compassv1.ListBoardIssuesResponse{
+		Issues: s.issueBrd.Snapshot(),
+	}), nil
+}
+
 // GetServerInfo is the connect-time liveness/version probe.
 func (s *service) GetServerInfo(
 	_ context.Context,
@@ -421,6 +445,16 @@ func (s *service) SubscribeEvents(
 	// send error) rather than leaking it until an overrun or bus close. Safe
 	// after the bus has already closed the channel — Cancel is idempotent.
 	defer sub.Cancel()
+	// On a fresh subscribe (since_seq==0) send one leading snapshot-boundary
+	// frame before the tail: the subscribe-first ordering marker a client pairs
+	// with a ListBoardIssues read (register -> boundary -> tail, gap-free). The
+	// board is unversioned in v1 so the boundary carries snapshot_seq=0; the
+	// client unions the read with the full tail, id-keyed, to close the window.
+	if req.Msg.GetSinceSeq() == 0 {
+		if err := stream.Send(snapshotBoundary(s.bus.InstanceEpoch())); err != nil {
+			return err
+		}
+	}
 	return forward(ctx, sub, stream)
 }
 
@@ -624,5 +658,25 @@ func resyncRequired(instanceEpoch uint64) *compassv1.SubscribeEventsResponse {
 		Payload: &compassv1.SubscribeEventsResponse_ResyncRequired{
 			ResyncRequired: &compassv1.ResyncRequired{},
 		},
+	}
+}
+
+// snapshotBoundary is the leading control frame a since_seq==0 SubscribeEvents
+// subscribe receives before any tail event: the subscribe-first ordering marker
+// a client pairs with a ListBoardIssues read (register -> boundary -> tail,
+// gap-free), mirroring commsSnapshotBoundary. It is a control frame, not a
+// positioned event — Seq=0, no payload — so a client discriminates it from a
+// positioned event by its zero seq and absent payload, and from the terminal
+// resync (also Seq=0) by payload: this frame has none, the resync carries a
+// ResyncRequired. The board is unversioned in v1, so snapshot_seq is 0: the
+// client unions the read with the full tail id-keyed to close the window, not a
+// seq bound. instance_epoch is the bus epoch so a client pairs the boundary
+// with the seq space it belongs to.
+func snapshotBoundary(instanceEpoch uint64) *compassv1.SubscribeEventsResponse {
+	return &compassv1.SubscribeEventsResponse{
+		Seq:           resyncSeq,
+		AtUnixMs:      time.Now().UnixMilli(),
+		InstanceEpoch: instanceEpoch,
+		SnapshotSeq:   0,
 	}
 }

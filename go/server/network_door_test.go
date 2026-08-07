@@ -395,7 +395,7 @@ func TestNetworkDoorBearerAuthAcceptAndReject(t *testing.T) {
 
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	svc := newService("net-test", bus, st, nil, nil, nil)
+	svc := newService("net-test", bus, st, nil, nil, nil, nil)
 	client := networkDoorHandler(t, svc, st, admin)
 
 	// issue calls IssueToken (adminOnly) carrying the given bearer value (""
@@ -496,7 +496,7 @@ func TestNetworkDoorRejectionIsOracleSafe(t *testing.T) {
 
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	svc := newService("oracle-test", bus, st, nil, nil, nil)
+	svc := newService("oracle-test", bus, st, nil, nil, nil, nil)
 	client := networkDoorHandler(t, svc, st, admin)
 
 	// reject drives GetServerInfo (an authenticatedOpen RPC, so the ONLY gate is
@@ -559,7 +559,7 @@ func TestNetworkDoorStreamingBearerAuth(t *testing.T) {
 
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	svc := newService("net-test", bus, st, nil, nil, nil)
+	svc := newService("net-test", bus, st, nil, nil, nil, nil)
 	client := networkDoorHandler(t, svc, st, admin)
 
 	// rejectCode opens a SubscribeEvents stream carrying the given bearer ("" leaves
@@ -621,8 +621,16 @@ func TestNetworkDoorStreamingBearerAuth(t *testing.T) {
 		if !recvStreamOrTimeout(t, stream) {
 			t.Fatalf("valid non-admin bearer opened no stream: first Receive = false, err = %v", stream.Err())
 		}
+		// since_seq==0 leads with the boundary frame (seq 0, no payload); the
+		// primed Ready snapshot follows it.
+		if b := stream.Msg(); b.GetSeq() != 0 || b.GetPayload() != nil {
+			t.Fatalf("first frame = seq %d payload %T, want the boundary (seq 0 / nil)", b.GetSeq(), b.GetPayload())
+		}
+		if !recvStreamOrTimeout(t, stream) {
+			t.Fatalf("no snapshot after the boundary: Receive = false, err = %v", stream.Err())
+		}
 		if stream.Msg().GetServerStatus() == nil {
-			t.Fatalf("first event payload = %T, want the Ready snapshot (ServerStatus)", stream.Msg().GetPayload())
+			t.Fatalf("second event payload = %T, want the Ready snapshot (ServerStatus)", stream.Msg().GetPayload())
 		}
 		// Deferred cancel closes the stream: the handler's forward loop selects on
 		// ctx.Done, returns, and releases the bus subscriber — no goroutine leak.
@@ -644,7 +652,7 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 	st, admin, _ := newNetworkStore(t)
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
-	svc := newService("test", bus, st, nil, nil, nil)
+	svc := newService("test", bus, st, nil, nil, nil, nil)
 	client := newH2CClient(t, newH2CTestServer(t, svc))
 
 	t.Run("empty account id is InvalidArgument", func(t *testing.T) {

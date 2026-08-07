@@ -85,7 +85,7 @@ func newResumeFixture(t *testing.T) resumeFixture {
 	brd := board.NewProjection(bus)
 	tail := newSessionTail()
 	hub := newRunnerHub(st, brd, tail, nil, slog.New(slog.DiscardHandler))
-	svc := newService("test", bus, st, hub, brd, tail)
+	svc := newService("test", bus, st, hub, brd, nil, tail)
 
 	url := newH2CTestServerWithInterceptors(t, svc,
 		auth.BearerInterceptor(st),
