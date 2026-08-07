@@ -24,6 +24,12 @@ type NewAgent struct {
 	// Empty means no persona override; the caller supplies it and the server
 	// stores it verbatim, never synthesizing one.
 	Persona string
+	// Role is the agent's operator-set block-0 selector (SEA-1732 T10). Empty
+	// means no role (default OMP block-0); the caller supplies it and the server
+	// stores it verbatim, never synthesizing one. Unlike Persona (an append
+	// overlay), the label selects config/prompts/<role>/SYSTEM.md, delivered as
+	// the container's customSystemPrompt.
+	Role string
 	// ParentAgentID is the agent's parent in the agent tree; empty = root. The
 	// server validates it (same resolved owner, must exist) before insert; an
 	// empty value inserts SQL NULL, satisfying the FK.

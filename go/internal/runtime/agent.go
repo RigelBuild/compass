@@ -45,6 +45,10 @@ type AgentSpec struct {
 	// Persona is the server-authoritative identity overlay for this agent,
 	// appended to the agent's system prompt at boot. Empty means no overlay.
 	Persona string
+	// Role is the server-authoritative operator-set block-0 selector for this
+	// agent, delivered as the container's customSystemPrompt at boot. Empty
+	// means no role (default OMP block-0).
+	Role string
 }
 
 // AgentHandle is a live agent container: the resolved id plus the spec it was
@@ -75,6 +79,10 @@ func (h *AgentHandle) HomeDir() string { return h.spec.Workspace.HomeDir }
 // Persona returns the server-authoritative identity overlay for this agent, or
 // empty for none.
 func (h *AgentHandle) Persona() string { return h.spec.Persona }
+
+// Role returns the server-authoritative operator-set block-0 selector for this
+// agent, or empty for none.
+func (h *AgentHandle) Role() string { return h.spec.Role }
 
 // StageError wraps a container runtime error with the lifecycle stage it
 // failed at, so a failure is diagnosable without a container inspect.

@@ -14,6 +14,9 @@
 //   - `mcp/<name>.json`      — MCP server configs (credential-free by MVP rule;
 //                              servers read tokens from the aggregate env file
 //                              main() already sources into process.env)
+//   - `prompts/<role>/SYSTEM.md` — per-role block-0 system prompts; the
+//                              operator-set role label selects one, delivered as
+//                              `customSystemPrompt` (REPLACES block-0)
 //   - `version`              — bundle hash, observability only
 //
 // UNCONFIGURED — no `current` symlink, or the whole mount absent — is a VALID
@@ -347,6 +350,32 @@ export async function readMountedAgentsMd(
 	try {
 		if (!(await stat(path)).isFile()) return undefined;
 		return { path, content: await Bun.file(path).text() };
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * The role's block-0 system prompt `prompts/<role>/SYSTEM.md` (SEA-1732 T10),
+ * read as TEXT for direct injection via `createAgentSession({ customSystemPrompt })`
+ * — which REPLACES OMP's block-0 (routed through the SDK's custom-system-prompt
+ * template, sdk.ts:2727). The operator-set role label (COMPASS_ROLE) selects the
+ * subtree; `main()` reads it only when a role is set.
+ *
+ * Tolerant, mirroring the other per-surface readers: an absent file, an
+ * unreadable one, or an EMPTY/whitespace-only body → `undefined`, never throws —
+ * so an unconfigured role falls back to the default block-0 rather than injecting
+ * a blank customSystemPrompt (which would still route through the replace path).
+ */
+export async function readMountedRolePrompt(
+	currentDir: string,
+	role: string,
+): Promise<string | undefined> {
+	const path = join(currentDir, "prompts", role, "SYSTEM.md");
+	try {
+		if (!(await stat(path)).isFile()) return undefined;
+		const content = await Bun.file(path).text();
+		return content.trim() ? content : undefined;
 	} catch {
 		return undefined;
 	}

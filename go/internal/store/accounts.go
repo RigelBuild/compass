@@ -106,7 +106,7 @@ func (s *Store) adminByHandle(ctx context.Context, handle string) (Account, erro
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.parent_agent_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
@@ -154,8 +154,8 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
-		"INSERT INTO agent_accounts (account_id, owner_user_id, home_channel_id, persona, parent_agent_id) VALUES ($1, $2, $3, $4, NULLIF($5, ''))",
-		accountID, string(ownerUserID), channelID, a.Persona, string(a.ParentAgentID),
+		"INSERT INTO agent_accounts (account_id, owner_user_id, home_channel_id, persona, role, parent_agent_id) VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''))",
+		accountID, string(ownerUserID), channelID, a.Persona, a.Role, string(a.ParentAgentID),
 	); err != nil {
 		// Both FKs on agent_accounts land here: parent_agent_id (a supplied
 		// parent that does not resolve to an agent) and owner_user_id (an
@@ -212,6 +212,7 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 			OwnerUserID:   ownerUserID,
 			HomeChannelID: ChannelID(channelID),
 			Persona:       a.Persona,
+			Role:          a.Role,
 			ParentAgentID: a.ParentAgentID,
 		},
 	}, nil
@@ -225,7 +226,7 @@ func (s *Store) GetAccount(ctx context.Context, id AccountID) (Account, error) {
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.parent_agent_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
@@ -398,7 +399,7 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.parent_agent_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
@@ -484,7 +485,7 @@ func (s *Store) AgentByHandle(ctx context.Context, handle string) (Account, erro
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.parent_agent_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
@@ -542,7 +543,7 @@ func (s *Store) ListAccounts(ctx context.Context, visibleTo AccountID) ([]Accoun
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.parent_agent_id` +
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id` +
 		accountVisibleFromWhere + `
 		ORDER BY a.handle`
 	rows, err := s.pool.Query(ctx, q, string(visibleTo))
@@ -594,9 +595,10 @@ func scanAccount(row pgx.Row) (Account, error) {
 		ownerUserID   *string
 		homeChannelID *string
 		persona       *string
+		agRole        *string
 		parentAgentID *string
 	)
-	if err := row.Scan(&id, &handle, &displayName, &role, &ownerUserID, &homeChannelID, &persona, &parentAgentID); err != nil {
+	if err := row.Scan(&id, &handle, &displayName, &role, &ownerUserID, &homeChannelID, &persona, &agRole, &parentAgentID); err != nil {
 		return Account{}, err
 	}
 	acc.ID = AccountID(id)
@@ -612,6 +614,9 @@ func scanAccount(row pgx.Row) (Account, error) {
 		}
 		if persona != nil {
 			agent.Persona = *persona
+		}
+		if agRole != nil {
+			agent.Role = *agRole
 		}
 		if parentAgentID != nil {
 			agent.ParentAgentID = AccountID(*parentAgentID)

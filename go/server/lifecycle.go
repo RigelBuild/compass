@@ -131,14 +131,16 @@ func (l *lifecycleService) SpawnAsAccount(
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller owner: %w", err))
 	}
 
-	// Persona is server-authoritative and empty on spawn (SpawnPeerRequest
-	// carries none): the new account is created with no persona, and the value
-	// threaded to the Runner comes from the store account below, never the
-	// caller — a caller cannot inject a system prompt.
+	// Persona and role are server-authoritative and empty on spawn
+	// (SpawnPeerRequest carries neither): the new account is created with no
+	// persona and no role, and the values threaded to the Runner come from the
+	// store account below, never the caller — a caller cannot inject a system
+	// prompt or a role prompt.
 	created, err := l.store.CreateAgent(ctx, callerOwner, store.NewAgent{
 		Handle:      req.GetHandle(),
 		DisplayName: req.GetDisplayName(),
 		Persona:     "",
+		Role:        "",
 		// Set-at-creation: the spawned peer's parent in the agent tree is its
 		// spawner (§T3). A new account has no descendants, so this edge cannot
 		// form a cycle — the cycle check lives only on the mutable ReparentAgent.
@@ -146,7 +148,7 @@ func (l *lifecycleService) SpawnAsAccount(
 	})
 	switch {
 	case err == nil:
-		return l.provisionAndStart(ctx, created.ID, created.Agent.Persona, req)
+		return l.provisionAndStart(ctx, created.ID, created.Agent.Persona, created.Agent.Role, req)
 	case errors.Is(err, store.ErrConflict):
 		return l.resumeOrReject(ctx, callerOwner, req)
 	default:
@@ -280,7 +282,7 @@ func (l *lifecycleService) resumeOrReject(
 	case errors.Is(err, store.ErrNotFound):
 		// Unplaced: a spawn that crashed after CreateAgent (or was rolled back).
 		// Resume — re-provision and start the existing account, not a second.
-		return l.provisionAndStart(ctx, existing.ID, existing.Agent.Persona, req)
+		return l.provisionAndStart(ctx, existing.ID, existing.Agent.Persona, existing.Agent.Role, req)
 	default:
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving placement for existing agent: %w", err))
 	}
@@ -291,18 +293,21 @@ func (l *lifecycleService) resumeOrReject(
 // placement, Start, record the session ownership. On any post-Provision failure
 // it rolls the container back (bounded Stop + Remove + DeleteAgentPlacement) so
 // the account is left UNPLACED and the handle is not burned — a re-spawn of the
-// same handle then resumes. persona is the store's server-authoritative value
-// for the account, threaded to the Runner so no caller value is trusted.
+// same handle then resumes. persona and role are the store's server-
+// authoritative values for the account, threaded to the Runner so no caller
+// value is trusted.
 func (l *lifecycleService) provisionAndStart(
 	ctx context.Context,
 	agentID store.AccountID,
 	persona string,
+	role string,
 	req *compassv1internal.SpawnPeerRequest,
 ) (*compassv1internal.SpawnPeerResponse, error) {
 	resp, runnerID, err := l.hub.Provision(ctx, req.GetClientRequestId(), &compassv1.ProvisionAgentWorkspaceRequest{
 		AgentAccountId:  string(agentID),
 		ClientRequestId: req.GetClientRequestId(),
 		Persona:         persona,
+		Role:            role,
 	})
 	if err != nil {
 		// Already Connect-coded by the hub relay — return it for in-band render.

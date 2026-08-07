@@ -137,6 +137,11 @@ type AgentAccount struct {
 	// Persona is the agent's system-prompt text, baked at creation (SEA-1571);
 	// empty means no persona override.
 	Persona string
+	// Role is the agent's operator-set block-0 selector (SEA-1732 T10); empty
+	// means no role (default OMP block-0). Unlike Persona (an append overlay),
+	// the label selects config/prompts/<role>/SYSTEM.md, delivered as the
+	// container's customSystemPrompt.
+	Role string
 	// ParentAgentID is the agent's parent in the agent tree; empty = root. Set
 	// at creation and editable via ReparentAgent (comms.proto).
 	ParentAgentID AccountID

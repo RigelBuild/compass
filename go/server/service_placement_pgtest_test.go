@@ -394,6 +394,80 @@ func TestProvisionAgentWorkspaceClearsPersonaForNonAgentAccount(t *testing.T) {
 	}
 }
 
+// TestProvisionAgentWorkspaceOverwritesRoleFromStore pins the
+// server-authoritative role invariant: on the provision path the Server
+// populates the outgoing role from the store's AgentAccount.role and overwrites
+// any client-supplied value, so a caller cannot inject a role prompt (proto
+// compass.proto role=7). The client sends a bogus role; the Runner must receive
+// the store's value instead. Under the pre-fix handler the client value passes
+// straight through and the Runner sees "client-injected-evil".
+func TestProvisionAgentWorkspaceOverwritesRoleFromStore(t *testing.T) {
+	f := newPlacementFixture(t)
+	ctx := context.Background() // the test root context
+
+	// The fixture's default agent has an empty role, so seed a second agent
+	// under the same owner with a real role to prove the read-through.
+	seed, err := f.store.GetAccount(ctx, f.agentID)
+	if err != nil {
+		t.Fatalf("GetAccount(%q): %v", f.agentID, err)
+	}
+	const wantRole = "manager"
+	roleAgent, err := f.store.CreateAgent(ctx, seed.Agent.OwnerUserID, store.NewAgent{
+		Handle:      "withrole",
+		DisplayName: "R",
+		Role:        wantRole,
+	})
+	if err != nil {
+		t.Fatalf("CreateAgent(withrole): %v", err)
+	}
+
+	f.runner.forget() // discard the attach probe
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
+		AgentAccountId:  string(roleAgent.ID),
+		ClientRequestId: "prov-role",
+		Role:            "client-injected-evil",
+	})); err != nil {
+		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
+	}
+
+	if got := f.runner.provisionRole(t); got != wantRole {
+		t.Fatalf("Runner received role %q, want %q (server must overwrite the client value)", got, wantRole)
+	}
+}
+
+// TestProvisionAgentWorkspaceClearsRoleForNonAgentAccount pins the non-agent
+// branch of the server-authoritative role invariant: when a user-account id is
+// passed as agent_account_id, the store read-through finds a non-agent account
+// (acc.IsAgent()==false) and must clear the client-supplied role to empty, so a
+// caller cannot inject a role prompt via a non-agent account.
+func TestProvisionAgentWorkspaceClearsRoleForNonAgentAccount(t *testing.T) {
+	f := newPlacementFixture(t)
+	ctx := context.Background() // the test root context
+
+	// The admin (a user account, not an agent) is the fixture agent's owner.
+	seed, err := f.store.GetAccount(ctx, f.agentID)
+	if err != nil {
+		t.Fatalf("GetAccount(%q): %v", f.agentID, err)
+	}
+	adminID := seed.Agent.OwnerUserID
+
+	f.runner.forget() // discard the attach probe
+	// This call is EXPECTED to error: admin is a user account, absent from
+	// agent_accounts, so the placement write fails on its FK (CodeInternal). The
+	// role-clear is still observable because the Provision command is recorded
+	// (role cleared) before the placement write runs. The error is expected and
+	// not what this test pins, so it is deliberately discarded.
+	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
+		AgentAccountId:  string(adminID),
+		ClientRequestId: "prov-nonagent-role",
+		Role:            "client-injected-evil",
+	}))
+
+	if got := f.runner.provisionRole(t); got != "" {
+		t.Fatalf("Runner received role %q for a non-agent account, want empty (client value must be cleared)", got)
+	}
+}
+
 // TestProvisionAgentWorkspaceUnknownAccountIsNotFound pins that the persona
 // read-through fails closed: an unknown agent_account_id yields CodeNotFound,
 // short-circuiting container creation before any Provision or placement.
@@ -779,6 +853,23 @@ func (r *recordingRunner) provisionPersona(t *testing.T) string {
 		switch v := c.GetCommand().(type) {
 		case *compassv1internal.SessionsResponse_Provision:
 			return v.Provision.GetPersona()
+		}
+	}
+	t.Fatalf("no Provision command recorded, saw %v", r.commands())
+	return ""
+}
+
+// provisionRole returns the role on the recorded Provision command — the value
+// the Runner actually received on the wire. Fails if no Provision was seen, so
+// a silent miss cannot masquerade as an empty role.
+func (r *recordingRunner) provisionRole(t *testing.T) string {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.seen {
+		switch v := c.GetCommand().(type) {
+		case *compassv1internal.SessionsResponse_Provision:
+			return v.Provision.GetRole()
 		}
 	}
 	t.Fatalf("no Provision command recorded, saw %v", r.commands())

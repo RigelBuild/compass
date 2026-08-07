@@ -199,6 +199,72 @@ func TestCreateAgentPersonaDefaultsEmpty(t *testing.T) {
 	}
 }
 
+func TestCreateAgentRoleRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+
+	const role = "manager"
+	created, err := s.CreateAgent(ctx, owner.ID,
+		NewAgent{Handle: "agent", DisplayName: "Agent", Role: role})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	if created.Agent == nil || created.Agent.Role != role {
+		t.Fatalf("CreateAgent returned role = %q, want %q", created.Agent.Role, role)
+	}
+
+	got, err := s.GetAccount(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if !got.IsAgent() || got.Agent.Role != role {
+		t.Fatalf("GetAccount role = %q, want %q", got.Agent.Role, role)
+	}
+
+	// The third scanAccount-feeding SELECT: the role must also round-trip
+	// through the owner-scoped ListAccounts projection, not just the id reads.
+	listed, err := s.ListAccounts(ctx, owner.ID)
+	if err != nil {
+		t.Fatalf("ListAccounts(owner): %v", err)
+	}
+	var found *Account
+	for i := range listed {
+		if listed[i].ID == created.ID {
+			found = &listed[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("ListAccounts(owner) did not return created agent %s", created.ID)
+	}
+	if !found.IsAgent() || found.Agent.Role != role {
+		t.Fatalf("ListAccounts role = %q, want %q", found.Agent.Role, role)
+	}
+}
+
+func TestCreateAgentRoleDefaultsEmpty(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+
+	created, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "agent", DisplayName: "Agent"})
+	if err != nil {
+		t.Fatalf("CreateAgent: %v", err)
+	}
+	if created.Agent == nil || created.Agent.Role != "" {
+		t.Fatalf("CreateAgent default role = %q, want empty", created.Agent.Role)
+	}
+
+	got, err := s.GetAccount(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if !got.IsAgent() || got.Agent.Role != "" {
+		t.Fatalf("GetAccount default role = %q, want empty", got.Agent.Role)
+	}
+}
+
 func TestBootstrapAdminCreatesAdmin(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)

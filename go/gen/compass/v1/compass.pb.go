@@ -2525,7 +2525,19 @@ type ProvisionAgentWorkspaceRequest struct {
 	// provision path (not by this wire-settable field). The Runner materializes
 	// it into the container
 	// (compass-runner consumer). Empty = no persona baked (default).
-	Persona       string `protobuf:"bytes,6,opt,name=persona,proto3" json:"persona,omitempty"`
+	Persona string `protobuf:"bytes,6,opt,name=persona,proto3" json:"persona,omitempty"`
+	// The agent's operator-set role, selecting the container's block-0 system
+	// prompt at provision so it survives compaction (a system-prompt config block
+	// is not part of the message history a snapcompact archives). SERVER-
+	// AUTHORITATIVE: the Server is expected to populate this by reading
+	// AgentAccount.role from the store on the provision path and to overwrite any
+	// client-supplied value, so a caller cannot inject a role prompt — an
+	// invariant enforced by the server provision path (not by this wire-settable
+	// field). Where persona (field 6) is an APPEND overlay, role REPLACES block-0:
+	// the label selects config/prompts/<role>/SYSTEM.md, materialized by the
+	// Runner into the container's customSystemPrompt (compass-runner consumer).
+	// Empty = no role (default OMP block-0).
+	Role          string `protobuf:"bytes,7,opt,name=role,proto3" json:"role,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2577,6 +2589,13 @@ func (x *ProvisionAgentWorkspaceRequest) GetClientRequestId() string {
 func (x *ProvisionAgentWorkspaceRequest) GetPersona() string {
 	if x != nil {
 		return x.Persona
+	}
+	return ""
+}
+
+func (x *ProvisionAgentWorkspaceRequest) GetRole() string {
+	if x != nil {
+		return x.Role
 	}
 	return ""
 }
@@ -4559,11 +4578,12 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12.\n" +
 	"\x05event\x18\x02 \x01(\v2\x18.compass.v1.SessionEventR\x05event\x123\n" +
-	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\"\xbf\x01\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\"\xd3\x01\n" +
 	"\x1eProvisionAgentWorkspaceRequest\x12(\n" +
 	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12*\n" +
 	"\x11client_request_id\x18\x05 \x01(\tR\x0fclientRequestId\x12\x18\n" +
-	"\apersona\x18\x06 \x01(\tR\apersonaJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\n" +
+	"\apersona\x18\x06 \x01(\tR\apersona\x12\x12\n" +
+	"\x04role\x18\a \x01(\tR\x04roleJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\n" +
 	"remote_urlR\n" +
 	"local_pathR\x03ref\"H\n" +
 	"\x1fProvisionAgentWorkspaceResponse\x12%\n" +
