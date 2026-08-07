@@ -185,25 +185,14 @@ func TestLaunchByModeWhoAmIFails(t *testing.T) {
 	}
 }
 
-// TestStackUpArgsOmitsDatabaseAndListen: the pure argv builder omits --database
+// TestStackUpArgsOmitsDatabase: the pure argv builder omits --database
 // (compass-stack recomputes the identical default from --state-dir, so the app
-// carries no second DSN) and omits --listen when unset (the CLI defaults it).
-func TestStackUpArgsOmitsDatabaseAndListen(t *testing.T) {
+// carries no second DSN).
+func TestStackUpArgsOmitsDatabase(t *testing.T) {
 	args := stackUpArgs(baseParams)
 	if slices.Contains(args, "--database") {
 		t.Errorf("argv carries --database, want it omitted so compass-stack defaults the DSN: %v", args)
 	}
-	if slices.Contains(args, "--listen") {
-		t.Errorf("argv carries --listen when unset, want it omitted: %v", args)
-	}
-}
-
-// TestStackUpArgsIncludesListenWhenSet: a set listen addr rides the argv.
-func TestStackUpArgsIncludesListenWhenSet(t *testing.T) {
-	p := baseParams
-	p.listen = "127.0.0.1:50052"
-	args := stackUpArgs(p)
-	assertArgPair(t, args, "--listen", "127.0.0.1:50052")
 }
 
 // stubWhoAmIServer implements just the WhoAmI RPC over the generated
@@ -433,6 +422,176 @@ func TestClassifyPreflightHostCapFatalEvenWithAdvisoryUnmet(t *testing.T) {
 	if strings.Contains(err.Error(), "no image") || strings.Contains(err.Error(), "no db") {
 		t.Errorf("fatal error %q leaked an advisory failure into the fatal fold", err.Error())
 	}
+}
+
+// TestEmbeddedDatabaseDSNMatchesCompassStackDefault: the app-side DSN formula
+// must stay byte-identical to cmd/compass-stack's defaultDSN
+// (go/cmd/compass-stack/main.go defaultDSN — the source of truth). compass-stack
+// is package main and unimportable, so this asserts against the literal expected
+// value; a human changing one formula must update both, and this reddens if the
+// app-side formula drifts.
+func TestEmbeddedDatabaseDSNMatchesCompassStackDefault(t *testing.T) {
+	const want = "host=/tmp/st/postgres/sock port=5432 dbname=compass sslmode=disable"
+	if got := embeddedDatabaseDSN("/tmp/st"); got != want {
+		t.Errorf("embeddedDatabaseDSN = %q, want %q (must stay in lockstep with cmd/compass-stack defaultDSN)", got, want)
+	}
+}
+
+// TestRunStackUpDeadlineExceededNamesBringUpWindow: when the child fails because
+// the context deadline was exceeded, the error names the bring-up window (the
+// likely cause) rather than surfacing a bare deadline error. Driven with an
+// already-past deadline against a real binary so the classification is
+// deterministic (no wall-clock wait).
+func TestRunStackUpDeadlineExceededNamesBringUpWindow(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	stackUp := runStackUp("/bin/sh")
+	err := stackUp(ctx, []string{"-c", "exit 0"})
+	if err == nil {
+		t.Fatal("stackUp err = nil, want a deadline-exceeded error")
+	}
+	if !strings.Contains(err.Error(), "bring-up window") {
+		t.Errorf("stackUp error %q does not name the bring-up window", err.Error())
+	}
+}
+
+// TestWhoAmIOverUDSRejectsEmptyAccountID: a SUCCESSFUL WhoAmI that reports an
+// empty account id is rejected (non-nil error, empty id) rather than resolving
+// an empty identity downstream.
+func TestWhoAmIOverUDSRejectsEmptyAccountID(t *testing.T) {
+	socket := serveWhoAmI(t, &stubWhoAmIServer{accountID: ""})
+	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
+	defer cancel()
+
+	id, err := whoAmIOverUDS(ctx, socket)
+	if err == nil {
+		t.Fatal("whoAmIOverUDS err = nil, want an error on an empty account id")
+	}
+	if id != "" {
+		t.Errorf("account id = %q, want empty when WhoAmI returns an empty id", id)
+	}
+}
+
+// TestResolveStackBin: flag wins, then $COMPASS_STACK_BIN, then a not-found error
+// that names every place it looked. The executable-sibling branch is not covered
+// because os.Executable can't be overridden without mocking; the other three
+// legs are deterministic.
+func TestResolveStackBin(t *testing.T) {
+	t.Run("flag wins", func(t *testing.T) {
+		t.Setenv("COMPASS_STACK_BIN", "/env/compass-stack")
+		got, err := resolveStackBin("/flag/compass-stack")
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if got != "/flag/compass-stack" {
+			t.Errorf("got %q, want the flag value", got)
+		}
+	})
+	t.Run("env wins over PATH", func(t *testing.T) {
+		t.Setenv("COMPASS_STACK_BIN", "/env/compass-stack")
+		got, err := resolveStackBin("")
+		if err != nil {
+			t.Fatalf("err = %v, want nil", err)
+		}
+		if got != "/env/compass-stack" {
+			t.Errorf("got %q, want the env value", got)
+		}
+	})
+	t.Run("not found names all four locations", func(t *testing.T) {
+		t.Setenv("COMPASS_STACK_BIN", "")
+		t.Setenv("PATH", "")
+		_, err := resolveStackBin("")
+		if err == nil {
+			t.Fatal("err = nil, want a not-found error")
+		}
+		for _, want := range []string{"--compass-stack", "$COMPASS_STACK_BIN", "$PATH", "beside"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("not-found error %q does not name %q", err.Error(), want)
+			}
+		}
+	})
+}
+
+// TestResolveStateDir: flag wins, then $COMPASS_STATE_DIR, then an ABSOLUTE
+// $XDG_STATE_HOME/compass. A RELATIVE $XDG_STATE_HOME is treated as unset and
+// falls through to $HOME/.compass — the load-bearing determinism guard.
+func TestResolveStateDir(t *testing.T) {
+	t.Run("flag wins", func(t *testing.T) {
+		t.Setenv("COMPASS_STATE_DIR", "/env/state")
+		if got := resolveStateDir("/flag/state"); got != "/flag/state" {
+			t.Errorf("got %q, want the flag value", got)
+		}
+	})
+	t.Run("env wins", func(t *testing.T) {
+		t.Setenv("COMPASS_STATE_DIR", "/env/state")
+		t.Setenv("XDG_STATE_HOME", "/xdg/state")
+		if got := resolveStateDir(""); got != "/env/state" {
+			t.Errorf("got %q, want the env value", got)
+		}
+	})
+	t.Run("absolute XDG_STATE_HOME", func(t *testing.T) {
+		t.Setenv("COMPASS_STATE_DIR", "")
+		xdg := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", xdg)
+		if got := resolveStateDir(""); got != filepath.Join(xdg, "compass") {
+			t.Errorf("got %q, want %q", got, filepath.Join(xdg, "compass"))
+		}
+	})
+	t.Run("relative XDG_STATE_HOME falls through to HOME/.compass", func(t *testing.T) {
+		t.Setenv("COMPASS_STATE_DIR", "")
+		t.Setenv("XDG_STATE_HOME", "rel/state")
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		if got := resolveStateDir(""); got != filepath.Join(home, ".compass") {
+			t.Errorf("got %q, want %q (relative XDG_STATE_HOME must fall through)", got, filepath.Join(home, ".compass"))
+		}
+	})
+}
+
+// TestResolveImage: flag wins, then $COMPASS_AGENT_IMAGE, then the locked GHCR
+// default.
+func TestResolveImage(t *testing.T) {
+	t.Run("flag wins", func(t *testing.T) {
+		t.Setenv("COMPASS_AGENT_IMAGE", "env/image:tag")
+		if got := resolveImage("flag/image:tag"); got != "flag/image:tag" {
+			t.Errorf("got %q, want the flag value", got)
+		}
+	})
+	t.Run("env wins", func(t *testing.T) {
+		t.Setenv("COMPASS_AGENT_IMAGE", "env/image:tag")
+		if got := resolveImage(""); got != "env/image:tag" {
+			t.Errorf("got %q, want the env value", got)
+		}
+	})
+	t.Run("default", func(t *testing.T) {
+		t.Setenv("COMPASS_AGENT_IMAGE", "")
+		if got := resolveImage(""); got != defaultAgentImage {
+			t.Errorf("got %q, want defaultAgentImage %q", got, defaultAgentImage)
+		}
+	})
+}
+
+// TestResolveMode: flag wins, then $COMPASS_APP_MODE, then "" (no override).
+func TestResolveMode(t *testing.T) {
+	t.Run("flag wins", func(t *testing.T) {
+		t.Setenv("COMPASS_APP_MODE", "client")
+		if got := resolveMode("embedded"); got != "embedded" {
+			t.Errorf("got %q, want the flag value", got)
+		}
+	})
+	t.Run("env wins", func(t *testing.T) {
+		t.Setenv("COMPASS_APP_MODE", "client")
+		if got := resolveMode(""); got != "client" {
+			t.Errorf("got %q, want the env value", got)
+		}
+	})
+	t.Run("both empty", func(t *testing.T) {
+		t.Setenv("COMPASS_APP_MODE", "")
+		if got := resolveMode(""); got != "" {
+			t.Errorf("got %q, want empty (no override)", got)
+		}
+	})
 }
 
 // assertArg fails unless want appears as a token in args.

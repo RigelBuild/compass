@@ -47,8 +47,9 @@ type bridgeService struct {
 	// accountID is the caller account id resolved by the embedded launch
 	// pipeline via WhoAmI (DL-111), exposed to the JS/UI through the bound
 	// AccountID method so it can build the native ConnectionProvider. It is set
-	// once at construction (before app.Run) and only read thereafter, so it needs
-	// no lock. Empty in client mode or when identity was not resolved.
+	// once by the launch pipeline immediately after construction and before
+	// app.Run, and only read thereafter, so it needs no lock. Empty in client
+	// mode or when identity was not resolved.
 	accountID string
 
 	mu       sync.Mutex

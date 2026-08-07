@@ -80,9 +80,6 @@ type embeddedParams struct {
 	stateDir string
 	// image is the agent image ref passed to `--image`.
 	image string
-	// listen, when non-empty, is passed to `--listen`; empty lets compass-stack
-	// default it (127.0.0.1:50052).
-	listen string
 }
 
 // launchByMode dispatches the resolved app mode: embedded mode runs the
@@ -128,17 +125,13 @@ func (p embeddedPipeline) run(ctx context.Context, params embeddedParams) (strin
 // running anything — mirroring cmd/compass-stack's pure resolveConfig. --database
 // is deliberately omitted: compass-stack computes the identical default DSN from
 // --state-dir (cmd/compass-stack/main.go defaultDSN), so passing it would
-// duplicate that logic. --listen is omitted unless set (compass-stack defaults
-// it to 127.0.0.1:50052).
+// duplicate that logic.
 func stackUpArgs(p embeddedParams) []string {
 	args := []string{
 		"up",
 		"--state-dir", p.stateDir,
 		"--image", p.image,
 		"--socket", p.socket,
-	}
-	if p.listen != "" {
-		args = append(args, "--listen", p.listen)
 	}
 	return args
 }
@@ -156,6 +149,10 @@ func runStackUp(bin string) func(ctx context.Context, args []string) error {
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
+			if ctx.Err() == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("compass-stack up exceeded the %s bring-up window "+
+					"(a cold agent-image pull from GHCR can take longer on first run): %w", bringUpTimeout, err)
+			}
 			if msg := strings.TrimSpace(stderr.String()); msg != "" {
 				return fmt.Errorf("compass-stack up failed: %w: %s", err, msg)
 			}
@@ -187,7 +184,11 @@ func whoAmIOverUDS(ctx context.Context, socket string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return resp.Msg.GetAccountId(), nil
+	id := resp.Msg.GetAccountId()
+	if id == "" {
+		return "", errors.New("WhoAmI returned an empty account id")
+	}
+	return id, nil
 }
 
 // resolveMode resolves the --mode/$COMPASS_APP_MODE override to feed
@@ -255,11 +256,16 @@ func resolveImage(flagValue string) string {
 	return defaultAgentImage
 }
 
-// embeddedDatabaseDSN mirrors cmd/compass-stack's defaultDSN: the keyword/value
-// DSN for the private postgres reachable over a unix socket under the state dir.
-// It is resolved once here for the preflight DB probe; the compass-stack up argv
-// omits --database so the CLI recomputes this identical default — the app never
-// carries two DSN definitions that could drift.
+// embeddedDatabaseDSN is a DELIBERATE second copy of cmd/compass-stack's
+// defaultDSN (go/cmd/compass-stack/main.go defaultDSN — the source of truth):
+// the keyword/value DSN for the private postgres reachable over a unix socket
+// under the state dir. It is duplicated here because the app's preflight DB
+// probe needs the DSN BEFORE compass-stack runs; the compass-stack up argv
+// omits --database so the CLI recomputes this identical default from
+// --state-dir. The two formulas must stay in lockstep
+// (TestEmbeddedDatabaseDSNMatchesCompassStackDefault guards this side).
+// Consolidating both into one importable helper is a tracked follow-up
+// (SEA-1856).
 func embeddedDatabaseDSN(stateDir string) string {
 	sockDir := filepath.Join(stateDir, "postgres", "sock")
 	return fmt.Sprintf("host=%s port=5432 dbname=compass sslmode=disable", sockDir)
