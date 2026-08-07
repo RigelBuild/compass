@@ -141,7 +141,7 @@ implementation exists. Once the subagent has drafted the record into the repo:
 
 - **Its own branch/PR, separate from the implementation** — commit the record on
   its own so the design is reviewed as pure design with zero code noise. Follow
-  the jj-colocated, stacked-PR workflow (`skill://jj-stacking`).
+  the jj-colocated, stacked-PR workflow (`skill://jj`).
 - **Open the PR, then drive `skill://review`** — run the review, triage
   findings, iterate. The same `CI` check gates the design PR as any other.
 - **The merge is the freeze.** The design PR merging to `main` is what freezes

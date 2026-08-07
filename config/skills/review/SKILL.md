@@ -42,7 +42,7 @@ override, and it is the operator's to invoke.
 4. **Aggregate and act** — the driver's autonomy boundary:
    - **Auto-fix** clear, mechanical findings (a guard, a rename, a missing test,
      a dead-code removal) as a new commit on the PR tip. Delegate the fix work
-     to an `implement` subagent, then re-review.
+     to an `implementer` subagent, then re-review.
    - **Surface judgment calls** — a design fork, a contract change, a
      disagreement with a finding, anything security-sensitive, and every design
      or file-structure finding (structural, not mechanical) — to the operator on
