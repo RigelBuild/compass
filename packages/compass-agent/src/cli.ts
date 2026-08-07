@@ -539,12 +539,16 @@ export async function main(
 	// whereas `AgentTool.execute` is `(toolCallId, params, signal, onUpdate, ctx)`
 	// (pi-agent-core types.ts:612-616) — so args 3-5 arrive SHUFFLED. This is
 	// safe ONLY because every native's `execute` body reads solely
-	// `(toolCallId, params)` and ignores args 3-5 (comms.ts / lifecycle.ts). That
-	// invariant is enforced by a test in cli.test.ts (a sentinel in the signal
-	// position must not be observed); if a native ever needs its AbortSignal or
+	// `(toolCallId, params)` and ignores args 3-5 (comms.ts / lifecycle.ts). A
+	// test in cli.test.ts is a TRIPWIRE on the likely regression: it pins each
+	// native's `execute.length === 2`, so adding a plain positional 3rd param
+	// (`signal`) to consume a shuffled arg reddens it. The pin is not a total
+	// guard — a rest (`...args`) or defaulted (`signal = …`) param reads arg 3
+	// while keeping `.length === 2` — so the load-bearing rule is this invariant
+	// itself, not the arity check. If a native ever needs its AbortSignal or
 	// onUpdate (e.g. wiring cancellation), it CANNOT go through this seam — the
 	// SDK must gain a real native-registration path, or the tool must be a true
-	// `ToolDefinition`. Do not consume args 3-5 here without falsifying that test.
+	// `ToolDefinition`. Do not consume args 3-5 here.
 	const nativeTools = [
 		...createCommsTools(commsBroker),
 		...createLifecycleTools(lifecycleBroker),

@@ -1752,18 +1752,19 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(seen[0].autoApprove).toBe(true);
 	});
 
-	test("every native's execute reads only (toolCallId, params) — locks the customToolToDefinition arg-shuffle invariant", () => {
+	test("every native's execute keeps arity 2 — tripwire on the customToolToDefinition arg-shuffle", () => {
 		// SEA-1741 seam invariant. The natives are `AgentTool`s registered through
 		// `customTools`; the SDK classifies a marker-less AgentTool as a CustomTool
 		// and runs it through `customToolToDefinition`, which invokes `execute`
 		// with the CustomTool arg order (toolCallId, params, onUpdate, ctx, signal)
 		// — NOT the AgentTool order (toolCallId, params, signal, onUpdate, ctx). So
 		// args 3-5 arrive SHUFFLED, and the wiring in cli.ts main() is sound ONLY
-		// while no native reads past `params`. These are arrow functions (no
-		// `arguments` object), so a body can reach a shuffled arg ONLY by declaring
-		// it as a formal parameter — which pushes `execute.length` past 2. Pin the
-		// arity so wiring cancellation (adding `signal` as a 3rd param) reddens here
-		// instead of silently receiving `onUpdate`. If a native must consume its
+		// while no native reads past `params`. This is a TRIPWIRE, not a total
+		// guard: pinning `execute.length === 2` reddens the LIKELY regression —
+		// adding a plain positional 3rd param (`signal`) to consume a shuffled arg.
+		// It does NOT catch a rest (`...args`) or defaulted (`signal = …`) param,
+		// which read arg 3 while keeping `.length === 2`; the load-bearing guard is
+		// the invariant itself (see cli.ts). If a native must consume its
 		// AbortSignal, it cannot go through this seam — see the comment in cli.ts.
 		const fakeTransport = {
 			comms: async () => ({}) as never,
