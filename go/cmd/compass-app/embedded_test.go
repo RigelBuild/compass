@@ -300,6 +300,36 @@ func TestRunStackUpZeroExitSucceeds(t *testing.T) {
 	}
 }
 
+// TestRunStackDownNonZeroExitSurfacesStderr: the real stackDown seam surfaces a
+// non-zero exit as an error carrying the child's stderr, mirroring runStackUp.
+// Driven with /bin/sh printing to stderr and exiting 1 — no real compass-stack
+// (the argv is not compass-stack's; only the exec+stderr contract is tested).
+func TestRunStackDownNonZeroExitSurfacesStderr(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
+	defer cancel()
+
+	stackDown := runStackDown("/bin/sh")
+	err := stackDown(ctx, []string{"-c", "echo 'down boom on stderr' >&2; exit 1"})
+	if err == nil {
+		t.Fatal("stackDown err = nil, want a non-zero-exit error")
+	}
+	if !strings.Contains(err.Error(), "down boom on stderr") {
+		t.Errorf("stackDown error %q does not carry the child stderr", err.Error())
+	}
+}
+
+// TestRunStackDownZeroExitSucceeds: a zero-exit child (a clean teardown) returns
+// nil — the postcondition compass-stack down encodes.
+func TestRunStackDownZeroExitSucceeds(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
+	defer cancel()
+
+	stackDown := runStackDown("/bin/sh")
+	if err := stackDown(ctx, []string{"-c", "exit 0"}); err != nil {
+		t.Fatalf("stackDown on a zero exit err = %v, want nil", err)
+	}
+}
+
 // classifyDeps returns a preflight.Deps whose every injected effect passes (host
 // GOOS linux, uid the runner's expected uid) — mirroring preflight_test.go's
 // okDeps. Tests override individual fields to drive one failing check at a time

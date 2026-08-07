@@ -119,6 +119,26 @@ func run() error {
 	// wire it now that the app (and its EventManager) exists.
 	svc.events = app.Event
 
+	// Explicit "Quit and stop stack" (DL-108, T4.2). Plain quit (window close,
+	// OS quit) LINGERS by default — the stack children stay running and the app
+	// does nothing to them (relaunch re-attaches), so there is deliberately NO
+	// OnShutdown teardown here. Only this menu item tears the stack down.
+	quitter := quitController{
+		stackDown: runStackDown(stackBin),
+		params:    params,
+		quit:      app.Quit,
+		timeout:   stackDownTimeout,
+	}
+	menu := application.NewMenu()
+	fileMenu := menu.AddSubmenu("File")
+	fileMenu.Add("Quit and stop stack").OnClick(func(_ *application.Context) {
+		// A UI-event callback has no inherited context.Context, so this is the
+		// legitimate main-entrypoint root; stopStackAndQuit derives its bounded
+		// teardown deadline from it.
+		quitter.stopStackAndQuit(context.Background())
+	})
+	app.Menu.Set(menu)
+
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:  "Compass",
 		Width:  1280,
