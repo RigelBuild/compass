@@ -82,10 +82,10 @@ no convergence refactor ever needed.
   subscription (`agent_account_id TEXT NOT NULL REFERENCES agent_accounts`,
   `:980`); `forge_repo_subscriptions` is the board's per-REPO poll target
   (new, this record). A future reader maps `agent_forge_subscriptions` back
-  to DL-053's `forge_subscriptions`; recording the rename — BOTH a
-  DECISIONS.md ledger row AND a one-line annotation at the ownership-layer
-  DDL — is a proposed freeze-time delta (see Open Questions → OQ-C), not
-  part of this Draft PR.
+  to DL-053's `forge_subscriptions`. The rename is recorded in the ledger as
+  DL-163 (rides THIS PR); the paired one-line forward annotation at the frozen
+  ownership-layer DDL is deferred to SEA-1883 (editing a frozen record needs
+  Matt's call — see Open Questions → OQ-C).
 - **Provider domain `IN (1, 2, 3, 4)` on every 0015 table (OQ-D2, Matt
   2026-08-08):** the proto enum already declares all four providers —
   `FORGE_PROVIDER_GITHUB = 1 … FORGE_PROVIDER_LINEAR = 4`
@@ -96,7 +96,7 @@ no convergence refactor ever needed.
   pre-existing `issues` CHECK `IN (1, 2, 3)` (`0013_issues.sql:32`) excludes
   Linear and is a SEPARATE prerequisite for actually ingesting Linear
   issues — out of scope here, documented as OQ-E.
-- **DL-129 (FROZEN, Matt 2026-08-04, `DECISIONS.md:173`):** tracker native
+- **DL-129 (FROZEN, Matt 2026-08-04, `DECISIONS.md:176`):** tracker native
   status "is ingested into the DL-070 server projection through the reverse
   `TrackerStatusMapping` (DL-053 poll; echo-suppressed in tracker-status
   space, tracker-sourced transitions never mirror back, stale polls dropped
@@ -554,7 +554,11 @@ imports no store).
      A never-stored page is already an `etag=''` unconditional GET, so the
      mechanism exists — a `HasNext`/non-empty result there resumes the normal
      walk and re-anchors the tail; an empty 200 costs one request per hour on a
-     quiet repo. This is a documented probe rule, not a fork.
+     quiet repo. An empty probe page (`HasNext=false`, zero issues) writes NO
+     cursor row — the per-page upsert is skipped when the page has zero issues,
+     so the probe never persists an empty tail row that would then 304 forever
+     and sit outside `PruneListCursorPages`' post-walk `page > lastPage` drop.
+     This is a documented probe rule, not a fork.
 
 - **A failed poll is logged, never fatal.** `Run` never returns a non-nil
   error — its sole exit is ctx cancellation, returning `nil` so the errgroup
@@ -1329,17 +1333,19 @@ Resolution, as applied through this record:
 - **DL-053's `forge_subscriptions` lands RENAMED
   `agent_forge_subscriptions`** (Matt's explicit option) — shape unchanged;
   the rename disambiguates the per-ARTIFACT, agent-owned subscription from
-  the board's per-REPO target (Global Constraints). Proposed freeze-time
-  delta, BOTH halves (prose only in this Draft PR): (a) a DECISIONS.md
-  ledger row recording the table model + the rename, AND (b) a one-line
-  annotation at the ownership-layer DDL
-  (`compass-server-ownership-layer/design.md:983`, the `CREATE TABLE
-  forge_subscriptions`) pointing forward — "lands as
+  the board's per-REPO target (Global Constraints). The rename lands as a
+  two-half freeze-time delta, SPLIT across this PR and a follow-up: (a) a
+  DECISIONS.md ledger row recording the table model + the rename — this is
+  DL-163, and it RIDES THIS PR; and (b) a one-line forward annotation at the
+  ownership-layer DDL (`compass-server-ownership-layer/design.md:978`, above
+  the `CREATE TABLE forge_subscriptions`) — "lands as
   `agent_forge_subscriptions`; see compass-forge-poll-driver" — so a reader
   entering from the frozen ownership-layer record who greps
-  `forge_subscriptions` finds the mapping instead of nothing. No
-  DECISIONS.md or ownership-layer edit rides this Draft PR
-  (`Ledger-impact: none in this PR — Draft record`).
+  `forge_subscriptions` finds the mapping instead of nothing. Half (b) is
+  DEFERRED to SEA-1883, not folded here: it edits a frozen Active record,
+  which needs Matt's explicit call (flagged in OQ-C for his ratification at
+  this design-PR review). This PR's ledger delta is DL-161/DL-162/DL-163 in
+  DECISIONS.md.
 - **v1 population is the T4 boot seed reconcile** — `--forge-repos`
   inserted enabled where absent, `ON CONFLICT DO NOTHING`: additive, never
   destructive, never mutating an existing row — and the dynamic mutation
@@ -1399,7 +1405,7 @@ GitHub-read slice and belonging to the future Linear-ingestion slice:
   `ForgeProviderForgejo = 3` (`store/issues.go:30-35`). T2 already adds
   `ForgeProviderLinear = 4` so the Go domain matches the 0015 CHECK domain —
   this half is closed by this slice; the future slice adds its producer.
-- **A Linear `forge.Provider` client** (DL-051, `DECISIONS.md:126`: the
+- **A Linear `forge.Provider` client** (DL-051, `DECISIONS.md:129`: the
   forge adapter is "GitHub first, Linear issues-only"; `ForgeRef.host` for
   Linear is the constant "linear.app", `compass.proto:711-712`).
 
