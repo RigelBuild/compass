@@ -15,3 +15,11 @@ const rpcTimeout = 30 * time.Second
 // fails visibly here instead of blocking to the go-test timeout. A deterministic
 // deadline, never a retry loop.
 const settleTimeout = 2 * time.Minute
+
+// deliverTimeout bounds AwaitDelivery: a post's fan onto a subscription is a
+// single bus round-trip, but the observed post may trail a multi-turn agent
+// scenario (a scripted spawn + settle before the @mention post), so this is
+// generous relative to rpcTimeout — but finite, so a subscription that never
+// carries the matching MessagePosted fails visibly here instead of blocking to
+// the go-test timeout. A deterministic deadline, never a retry loop.
+const deliverTimeout = 1 * time.Minute
