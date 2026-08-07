@@ -1952,23 +1952,6 @@ button {
 	color: var(--purple);
 }
 
-.backlog-promote {
-	flex: none;
-	margin: 6px 10px;
-	padding: 0 10px;
-	border: 1px solid var(--border-strong);
-	border-radius: var(--radius-sm);
-	background: var(--bg-card);
-	color: var(--text);
-	font-size: 11px;
-	white-space: nowrap;
-}
-
-.backlog-promote:hover {
-	background: var(--accent-dim);
-	border-color: var(--accent);
-}
-
 /* ── Done / archive view (T5/D4) ─────────────────────────────────────────── */
 
 .done-section {
@@ -2077,23 +2060,6 @@ button {
 
 .done-row-merge {
 	color: var(--st-merged);
-}
-
-.done-archive-btn {
-	flex: none;
-	margin: 8px 10px;
-	padding: 0 12px;
-	border: 1px solid var(--border-strong);
-	border-radius: var(--radius-sm);
-	background: var(--bg-card);
-	color: var(--text);
-	font-size: 11px;
-	align-self: center;
-}
-
-.done-archive-btn:hover {
-	background: var(--bg-hover);
-	border-color: var(--accent);
 }
 
 .done-archived-mark {

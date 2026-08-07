@@ -13,9 +13,9 @@ import type { Issue } from "../stub-data";
 /** A single Done/Archived row. Mirrors the IssueCard shape but laid out as a
  *  wide list row: issue id, title, priority accent, PR summary, and the
  *  merge/branch line. Clicking selects the issue (syncs the roster) without
- *  leaving the board surface. When `archived` is false an Archive button moves
- *  the issue to the terminal `archived` state; when true the row is marker-only. */
-const DoneRow: Component<{ issue: Issue; archived: boolean }> = (props) => {
+ *  leaving the board surface. The board is read-only for state, so the row is
+ *  marker-only — no lifecycle action. */
+const DoneRow: Component<{ issue: Issue }> = (props) => {
 	const store = useStore();
 	const pr = () => primaryPr(props.issue);
 	const key = () => issueKey(props.issue, isMultiForge(store.issues()));
@@ -73,24 +73,14 @@ const DoneRow: Component<{ issue: Issue; archived: boolean }> = (props) => {
 					</Show>
 				</span>
 			</button>
-			<Show when={!props.archived}>
-				<button
-					type="button"
-					class="done-archive-btn"
-					onClick={() => store.archiveIssue(props.issue.id)}
-				>
-					Archive
-				</button>
-			</Show>
 		</li>
 	);
 };
 
 /** The Done / archive view (T5 / D4). Two sections read reactively off the
- *  board, partitioned by `state` (DL-071): Done — `state === "done"`, each with
- *  an Archive action — and Archived — `state === "archived"`, marker only.
- *  Archive is a lifecycle transition, not a delete, so an issue stays listed
- *  here after archiving, moving from the first section to the second. */
+ *  board, partitioned by `state` (DL-071): Done — `state === "done"` — and
+ *  Archived — `state === "archived"`. The board is read-only for state, so both
+ *  sections are marker-only; lifecycle transitions arrive via the stream. */
 export const DoneView: Component = () => {
 	const store = useStore();
 
@@ -106,12 +96,10 @@ export const DoneView: Component = () => {
 				</div>
 				<Show
 					when={done().length > 0}
-					fallback={<p class="done-empty">Nothing to archive.</p>}
+					fallback={<p class="done-empty">Nothing done yet.</p>}
 				>
 					<ul class="done-list">
-						<For each={done()}>
-							{(ws) => <DoneRow issue={ws} archived={false} />}
-						</For>
+						<For each={done()}>{(ws) => <DoneRow issue={ws} />}</For>
 					</ul>
 				</Show>
 			</div>
@@ -126,9 +114,7 @@ export const DoneView: Component = () => {
 					fallback={<p class="done-empty">No archived issues yet.</p>}
 				>
 					<ul class="done-list">
-						<For each={archived()}>
-							{(ws) => <DoneRow issue={ws} archived={true} />}
-						</For>
+						<For each={archived()}>{(ws) => <DoneRow issue={ws} />}</For>
 					</ul>
 				</Show>
 			</div>

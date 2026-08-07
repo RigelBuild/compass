@@ -87,6 +87,22 @@ export function createFakeCompass(): FakeCompass {
 			}
 			return { accountId: whoAmIAccountId.accountId };
 		},
+		// The board read stream (SEA-1729). This double drives only the
+		// agent-lifecycle + probe paths, so the event stream yields NOTHING and
+		// holds open until the caller aborts — mirroring the real transport (a
+		// gRPC-Web call ends its response stream on abort) and comms-fake's
+		// subscribe. A test that needs scripted board events uses
+		// events.test.ts's createRouterTransport fake instead.
+		subscribeEvents: async function* (
+			_req: unknown,
+			opts?: { signal?: AbortSignal },
+		): AsyncGenerator<unknown> {
+			const signal = opts?.signal;
+			if (signal?.aborted) return;
+			const { promise, resolve } = Promise.withResolvers<void>();
+			signal?.addEventListener("abort", () => resolve(), { once: true });
+			await promise;
+		},
 	};
 
 	return {

@@ -16,20 +16,30 @@
 //    string literals ("channel"). The maps below are total over the wire enum so
 //    an unhandled value is a compile error, never a silent default.
 
-import type {
-	Account as WireAccount,
-	Ask as WireAsk,
-	AskQuestion as WireAskQuestion,
-	Channel as WireChannel,
-	ChannelGroup as WireChannelGroup,
-	Message as WireMessage,
-	PinnedEntry as WirePinnedEntry,
-	Topic as WireTopic,
-} from "@compass/client";
 import {
 	ChannelGroupVisibility,
 	ChannelKind,
 	ChannelPostPolicy,
+	ForgeProvider,
+	IssueState,
+	type Account as WireAccount,
+	type AgentAttribution as WireAgentAttribution,
+	type Ask as WireAsk,
+	type AskQuestion as WireAskQuestion,
+	type ChangedStats as WireChangedStats,
+	type Channel as WireChannel,
+	type ChannelGroup as WireChannelGroup,
+	type Check as WireCheck,
+	type ChecksSummary as WireChecksSummary,
+	type ForgeRef as WireForgeRef,
+	type Issue as WireIssue,
+	type Message as WireMessage,
+	type PinnedEntry as WirePinnedEntry,
+	type PullRequest as WirePullRequest,
+	type Review as WireReview,
+	type ReviewThread as WireReviewThread,
+	type Topic as WireTopic,
+	type TrackerRef as WireTrackerRef,
 } from "@compass/client";
 import type {
 	Ask,
@@ -45,7 +55,22 @@ import type {
 	PinnedEntry,
 	Topic,
 } from "../comms-stub";
-import type { Account } from "../stub-data";
+import type {
+	Account,
+	AgentAttribution as DomainAgentAttribution,
+	ChangedStats as DomainChangedStats,
+	Check as DomainCheck,
+	ChecksSummary as DomainChecksSummary,
+	ForgeProvider as DomainForgeProvider,
+	ForgeRef as DomainForgeRef,
+	Issue as DomainIssue,
+	IssueState as DomainIssueState,
+	Priority as DomainPriority,
+	PullRequest as DomainPullRequest,
+	Review as DomainReview,
+	ReviewThread as DomainReviewThread,
+	TrackerRef as DomainTrackerRef,
+} from "../stub-data";
 import type { MapMessage } from "./comms-state";
 
 /** The wire `ChannelKind` enum → the domain's string-literal kind. Total over
@@ -290,3 +315,171 @@ function adaptWireMessage(w: WireMessage): Message {
  *  boundary, and the body stays typed against the generated wire message. */
 export const adaptMessage: MapMessage = (wire) =>
 	adaptWireMessage(wire as WireMessage);
+
+/** The wire `IssueState` numeric enum → the domain's string-literal lifecycle.
+ *  Total over the enum: a `satisfies Record<IssueState, DomainIssueState>` makes
+ *  a new wire variant a compile error here rather than a silently mis-mapped
+ *  card. `UNSPECIFIED` is the proto zero — a malformed/absent state on the wire;
+ *  it degrades to `"backlog"` (the earliest lifecycle stage) so one bad row
+ *  lands on the board inertly rather than blanking it. */
+const ISSUE_STATE: Record<IssueState, DomainIssueState> = {
+	[IssueState.UNSPECIFIED]: "backlog",
+	[IssueState.BACKLOG]: "backlog",
+	[IssueState.TODO]: "todo",
+	[IssueState.QUEUED]: "queued",
+	[IssueState.BLOCKED]: "blocked",
+	[IssueState.IN_PROGRESS]: "in_progress",
+	[IssueState.IN_REVIEW]: "in_review",
+	[IssueState.DONE]: "done",
+	[IssueState.ARCHIVED]: "archived",
+} satisfies Record<IssueState, DomainIssueState>;
+
+/** The wire `ForgeProvider` numeric enum → the domain's string-literal provider.
+ *  Total, same rationale as ISSUE_STATE. `UNSPECIFIED` degrades to `"github"`
+ *  (the default forge) so a malformed forge ref renders inertly. */
+const FORGE_PROVIDER: Record<ForgeProvider, DomainForgeProvider> = {
+	[ForgeProvider.UNSPECIFIED]: "github",
+	[ForgeProvider.GITHUB]: "github",
+	[ForgeProvider.GITLAB]: "gitlab",
+	[ForgeProvider.FORGEJO]: "forgejo",
+	[ForgeProvider.LINEAR]: "linear",
+} satisfies Record<ForgeProvider, DomainForgeProvider>;
+
+/** Map a wire ForgeRef to the domain one, mapping the provider enum. An unset
+ *  wire `forge` (optional on Issue/PullRequest) has no domain home — both domain
+ *  types require `forge` — so a missing ref degrades to a github/empty-host ref
+ *  rather than throwing, keeping a malformed row inert on the board. */
+function adaptForgeRef(w: WireForgeRef | undefined): DomainForgeRef {
+	return {
+		provider: w ? FORGE_PROVIDER[w.provider] : "github",
+		host: w?.host ?? "",
+	};
+}
+
+/** Map a wire AgentAttribution to the domain one. The frozen wire shape carries
+ *  only `agentHandle` (DL-094 burned owner_handle/verified as reserved); the
+ *  domain's `ownerHandle`/`verified` have no wire source, so they take honest
+ *  hedged defaults (`""` / `false` — an unverified claim with no owner) rather
+ *  than a fabricated value. */
+function adaptAgentAttribution(
+	w: WireAgentAttribution,
+): DomainAgentAttribution {
+	return { agentHandle: w.agentHandle, ownerHandle: "", verified: false };
+}
+
+/** Map a wire ChangedStats to the domain diffstat — verbatim scalars. */
+function adaptChangedStats(w: WireChangedStats): DomainChangedStats {
+	return { files: w.files, additions: w.additions, deletions: w.deletions };
+}
+
+/** Map a wire Check to the domain one. The wire `state` is a free string; the
+ *  domain narrows it to the 6-valued forge vocabulary — cast at the boundary
+ *  (the server emits exactly that vocabulary; comms_pb.ts:1703). */
+function adaptCheck(w: WireCheck): DomainCheck {
+	return {
+		name: w.name,
+		state: w.state as DomainCheck["state"],
+		url: w.url,
+		required: w.required,
+	};
+}
+
+/** Map a wire ChecksSummary to the domain roll-up, narrowing the roll-up state
+ *  string to the 3-valued domain union and mapping each check. */
+function adaptChecksSummary(w: WireChecksSummary): DomainChecksSummary {
+	return {
+		headSha: w.headSha,
+		state: w.state as DomainChecksSummary["state"],
+		checks: w.checks.map(adaptCheck),
+	};
+}
+
+/** Map a wire Review to the domain one, narrowing the forge `verdict` string to
+ *  the domain union. Structurally identical otherwise. */
+function adaptReview(w: WireReview): DomainReview {
+	return {
+		author: w.author,
+		isBot: w.isBot,
+		verdict: w.verdict as DomainReview["verdict"],
+		body: w.body,
+	};
+}
+
+/** Map a wire ReviewThread to the domain one. The nested `comments` are
+ *  structurally identical (author/isBot/body), copied verbatim. */
+function adaptReviewThread(w: WireReviewThread): DomainReviewThread {
+	return {
+		path: w.path,
+		resolved: w.resolved,
+		comments: w.comments.map((c) => ({
+			author: c.author,
+			isBot: c.isBot,
+			body: c.body,
+		})),
+	};
+}
+
+/** Map a wire TrackerRef to the domain one, narrowing `kind` to the tracker
+ *  union. All fields verbatim otherwise. */
+function adaptTrackerRef(w: WireTrackerRef): DomainTrackerRef {
+	return {
+		kind: w.kind as DomainTrackerRef["kind"],
+		id: w.id,
+		status: w.status,
+		url: w.url,
+	};
+}
+
+/** Map a wire PullRequest to the domain PullRequest: the verbatim scalars, the
+ *  provider/forge ref, the optional agent attribution, the optional diffstat and
+ *  checks roll-up (absent wire message → absent domain field), and the review /
+ *  thread lists. `forgeState` is a forge-truth string narrowed to the domain
+ *  union at the boundary (comms_pb.ts:1587). */
+export function adaptPullRequest(w: WirePullRequest): DomainPullRequest {
+	return {
+		forge: adaptForgeRef(w.forge),
+		repo: w.repo,
+		number: w.number,
+		title: w.title,
+		forgeState: w.forgeState as DomainPullRequest["forgeState"],
+		url: w.url,
+		headRef: w.headRef,
+		baseRef: w.baseRef,
+		agent: w.agent ? adaptAgentAttribution(w.agent) : undefined,
+		forgeAccount: w.forgeAccount,
+		draft: w.draft,
+		changed: w.changed ? adaptChangedStats(w.changed) : undefined,
+		checks: w.checks ? adaptChecksSummary(w.checks) : undefined,
+		reviews: w.reviews.map(adaptReview),
+		threads: w.threads.map(adaptReviewThread),
+	};
+}
+
+/** Map a wire Issue to the domain Issue: the verbatim scalars, the provider /
+ *  forge ref, the `state` lifecycle enum (total ISSUE_STATE map), the `priority`
+ *  and `forgeState` forge-truth strings narrowed to their domain unions, the
+ *  optional agent attribution, the empty-string→null `assignee` seam (the wire
+ *  encodes "unassigned" as an empty string; the domain uses null), the nested
+ *  PRs, and the optional tracker ref. Pure and total. */
+export function adaptIssue(w: WireIssue): DomainIssue {
+	return {
+		id: w.id,
+		forge: adaptForgeRef(w.forge),
+		repo: w.repo,
+		number: w.number,
+		title: w.title,
+		body: w.body,
+		forgeState: w.forgeState as DomainIssue["forgeState"],
+		url: w.url,
+		agent: w.agent ? adaptAgentAttribution(w.agent) : undefined,
+		forgeAccount: w.forgeAccount,
+		labels: w.labels,
+		state: ISSUE_STATE[w.state],
+		priority: w.priority as DomainPriority,
+		assignee: w.assignee || null,
+		summary: w.summary,
+		branch: w.branch,
+		prs: w.prs.map(adaptPullRequest),
+		tracker: w.tracker ? adaptTrackerRef(w.tracker) : undefined,
+	};
+}

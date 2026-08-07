@@ -4,9 +4,8 @@ import { useStore } from "../context";
 import type { Issue } from "../stub-data";
 
 /** A single Linear-style issue row: id · title · priority · state · tracker.
- *  Clicking the row selects the issue (staying on the view); Backlog rows also
- *  get a Promote → Todo action. Not the board `IssueCard` — that's a swimlane
- *  card and can't nest an action button. */
+ *  Clicking the row selects the issue (staying on the view). Not the board
+ *  `IssueCard` — that's a swimlane card and can't nest a list row. */
 const BacklogRow: Component<{ issue: Issue }> = (props) => {
 	const store = useStore();
 	return (
@@ -36,15 +35,6 @@ const BacklogRow: Component<{ issue: Issue }> = (props) => {
 					)}
 				</Show>
 			</button>
-			<Show when={props.issue.state === "backlog"}>
-				<button
-					type="button"
-					class="backlog-promote"
-					onClick={() => store.promoteToTodo(props.issue.id)}
-				>
-					Promote → Todo
-				</button>
-			</Show>
 		</li>
 	);
 };
