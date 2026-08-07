@@ -300,6 +300,45 @@ func TestRunStackUpZeroExitSucceeds(t *testing.T) {
 	}
 }
 
+// TestRunStackUpReturnsWhileChildrenLinger is the regression guard for the
+// fire-and-return hang: `compass-stack up` exits 0 once the stack is Ready while
+// its postgres/server/runner children keep running, and those children inherit
+// the exec'd command's stderr. If runStackUp captured stderr into a bytes.Buffer
+// (os/exec's pipe + copy-goroutine path), cmd.Wait would block until the pipe
+// hit EOF — which the lingering children hold open — so Run would hang for the
+// children's whole lifetime. Capturing to a temp *os.File (captureStderr) makes
+// Run return the instant the top-level child exits, regardless of survivors.
+//
+// Driven with /bin/sh that backgrounds a long sleep (a stand-in for the
+// reparented stack children) holding stderr, then exits 0. Pre-fix this blocks
+// for the sleep's 60s; the fix returns immediately. The assertion is that Run
+// completes well under the sleep — a plain wall-clock bound, but the pre-fix gap
+// (60s vs milliseconds) is enormous, so it is not flaky. The backgrounded sleep
+// is cleaned up via its own short lifetime; the test spawns nothing it must kill
+// (rule://process-safety — never pkill).
+func TestRunStackUpReturnsWhileChildrenLinger(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), embeddedTestTimeout)
+	defer cancel()
+
+	// A short-lived grandchild that outlives its parent and inherits stderr: the
+	// exact fire-and-return shape of `compass-stack up`. sleep 60 is far longer
+	// than any correct runStackUp (which returns at the parent's exit, ~ms) yet
+	// bounded so a REGRESSION leaves no minutes-long orphan.
+	stackUp := runStackUp("/bin/sh")
+	start := time.Now()
+	err := stackUp(ctx, []string{"-c", "sleep 60 & exit 0"})
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("stackUp with a lingering child err = %v, want nil", err)
+	}
+	// Generous bound: the fix returns in single-digit ms; the pre-fix hang is
+	// 60s. Anything under a second proves Run did not wait on the grandchild.
+	if elapsed > time.Second {
+		t.Fatalf("stackUp took %s with a lingering child — Run waited on the inherited stderr pipe (the fire-and-return hang regressed)", elapsed)
+	}
+}
+
 // TestRunStackDownNonZeroExitSurfacesStderr: the real stackDown seam surfaces a
 // non-zero exit as an error carrying the child's stderr, mirroring runStackUp.
 // Driven with /bin/sh printing to stderr and exiting 1 — no real compass-stack
