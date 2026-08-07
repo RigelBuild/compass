@@ -1,0 +1,14 @@
+{
+	"name": "@compass/cx-token-gate",
+	"private": true,
+	"type": "module",
+	"description": "CI gate (SEA T2): ban raw hex, --rigel-* references, and literal durations/easings in component/base CSS outside tokens.css (D2/D9 consumption rule), with a narrow allowlist for --rigel-purple in the mark component only.",
+	"module": "index.ts",
+	"bin": {
+		"cx-token-gate": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}
