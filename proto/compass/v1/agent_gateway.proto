@@ -88,6 +88,16 @@ service AgentGateway {
   // live forge proxy (DL-069 amendment §Resolved decisions OQ-A). INTERNAL
   // surface (never public gen).
   rpc Forge(ForgeCallRequest) returns (ForgeCallResult);
+
+  // Board (unary, agent -> Runner): write an issue's canonical lifecycle state.
+  // A sibling call family to Comms/Lifecycle/Forge (DL-049 shape) — the
+  // BoardCallRequest / BoardCallResult envelopes are reused verbatim as the
+  // RelayBoardCallRequest.call / RelayBoardCallResponse.result payloads on the
+  // Runner->Server leg (runner.proto RelayBoardCall). One shared envelope across
+  // both hops. The Runner asserts NO account; the Server resolves session_id ->
+  // account and runs the transition under that caller (single-trust-domain MVP,
+  // amendment §Resolved decisions 2). INTERNAL surface (never public gen).
+  rpc Board(BoardCallRequest) returns (BoardCallResult);
 }
 
 // One agent-initiated comms call. `call_id` is the agent-minted correlation id
@@ -309,6 +319,54 @@ message UnsubscribeForgeRequest {
   string subscription_id = 1;
 }
 message UnsubscribeForgeResponse {}
+
+// One agent-initiated board call. `call_id` is the agent-minted correlation id
+// (the SDK toolCallId); the `call` oneof selects the board operation. Mirrors
+// CommsCallRequest / ForgeCallRequest — the same message is the
+// RelayBoardCallRequest.call payload on the Runner->Server leg, one shared
+// envelope across both hops (DL-049).
+message BoardCallRequest {
+  string call_id = 1;
+  oneof call {
+    SetIssueStateRequest set_issue_state = 2;
+  }
+}
+
+// Set an issue's canonical lifecycle state. Carries the full frozen
+// UpdateIssueState semantics re-homed (compass-issue-model/design.md:474-511):
+// any of the eight real states is a legal target (any-to-any; DL-033's arrows
+// are normative flow, not server-enforced), ISSUE_STATE_UNSPECIFIED is an
+// in-band invalid_argument, a target equal to the current state is an idempotent
+// no-op returning current truth, ISSUE_STATE_ARCHIVED is just a target state
+// (DL-091's archive-is-a-transition ruling survives on this surface).
+message SetIssueStateRequest {
+  string issue_id = 1;                  // the Compass-local id (Issue.id)
+  compass.v1.IssueState state = 2;      // target; UNSPECIFIED -> in-band invalid_argument
+}
+// The post-transition truth, correlated in BoardCallResult. Unchanged on a no-op.
+message SetIssueStateResponse {
+  compass.v1.Issue issue = 1;
+}
+
+// The result of one board call, correlated by `call_id`. A successful call sets
+// `set_issue_state`; an in-band failure (a tool error — not_found,
+// invalid_argument) sets `error`, which is NOT a transport teardown. Same shape
+// as CommsCallError / ForgeCallError.
+message BoardCallResult {
+  string call_id = 1;
+  oneof result {
+    SetIssueStateResponse set_issue_state = 2;
+    BoardCallError error = 3;
+  }
+}
+
+// An in-band board-call failure: a tool error the agent renders to the model,
+// never a transport teardown. `code` is a short stable token ("not_found",
+// "invalid_argument"); `message` is human-readable detail.
+message BoardCallError {
+  string code = 1;
+  string message = 2;
+}
 
 // Publish stream element: one trace/session AgentFrame, in emission order. No
 // seq field — the Runner assigns the upstream PublishEvents RunnerSeq. The
