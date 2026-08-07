@@ -1959,6 +1959,38 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(seen[0].customSystemPrompt).toBeUndefined();
 	});
 
+	test("COMPASS_ROLE with a path-traversal label → rejected, no customSystemPrompt", async () => {
+		// A role is a flat directory name; a label carrying a separator or `..`
+		// must never traverse outside prompts/. The decoy sits at current/SYSTEM.md
+		// — exactly where role="../" resolves (join(current, "prompts", "../",
+		// "SYSTEM.md") = current/SYSTEM.md) — so WITHOUT the guard the traversal
+		// would find it and inject it as block-0 (customSystemPrompt defined). The
+		// guard rejects the label first, so main falls back to today's behavior.
+		// This placement is what makes the test non-vacuous: drop the guard and it
+		// fails. Defense in depth: role is store-set out-of-band today, but the
+		// guard holds the moment a client-facing setter lands.
+		const mount = scratch();
+		writeMount(mount, "SYSTEM.md", "# Escaped\n");
+		const session = fakeSession();
+		const seen: SeenConfig[] = [];
+		await main(
+			{ HOME: scratch(), COMPASS_ROLE: "../" },
+			{
+				configMount: mount,
+				createSession: (options) => {
+					seen.push({ customSystemPrompt: options.customSystemPrompt });
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		expect(seen).toHaveLength(1);
+		expect(seen[0].customSystemPrompt).toBeUndefined();
+	});
+
 	test("COMPASS_ROLE unset → no customSystemPrompt (exactly today's behavior)", async () => {
 		const mount = scratch();
 		writeMount(mount, "prompts/manager/SYSTEM.md", "# Manager\n");

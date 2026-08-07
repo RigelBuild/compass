@@ -371,6 +371,14 @@ export async function readMountedRolePrompt(
 	currentDir: string,
 	role: string,
 ): Promise<string | undefined> {
+	// Guard the label as a path segment: a role is a flat directory name
+	// (`manager`, `supervisor`), never a path. Reject a separator or `..` so the
+	// label can never traverse outside the `prompts/` subtree. Defense in depth —
+	// today `role` is set out-of-band in the store (no RPC populates it, so the
+	// value is trusted), but the guard costs nothing and closes the traversal the
+	// moment a client-facing setter lands. A rejected label reads as "no prompt"
+	// (undefined), so it falls back to the default block-0 like any absent file.
+	if (/[/\\]|\.\./.test(role)) return undefined;
 	const path = join(currentDir, "prompts", role, "SYSTEM.md");
 	try {
 		if (!(await stat(path)).isFile()) return undefined;
