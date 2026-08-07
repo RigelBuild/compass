@@ -165,16 +165,16 @@ func (s *Store) CreateChannel(ctx context.Context, actor AccountID, c NewChannel
 	// agent member's delivery cursor MUST be seeded in this same tx — an
 	// un-seeded delivery target is the fail-DANGEROUS D2 hazard
 	// (compass-notification-delivery/design.md:293-311). Symmetric with
-	// SetChannelPolicy's newly-mandatory seed. seedDeliveryCursor is
-	// self-guarding (agent-only) and idempotent, so seeding every member is safe
-	// (a human member is a no-op). A non-mandatory channel seeds nothing here —
-	// its members seed at subscribe time (addOrUpdateMember), the pre-substrate
-	// behavior.
+	// SetChannelPolicy's newly-mandatory seed. One set-based statement seeds
+	// every agent member of the channel; it is self-guarding (agent-only) and
+	// idempotent, so a human member is a no-op. The member INSERTs above have
+	// already landed in this tx's snapshot, so the statement's channel_members
+	// read sees exactly this channel's member set. A non-mandatory channel seeds
+	// nothing here — its members seed at subscribe time (addOrUpdateMember), the
+	// pre-substrate behavior.
 	if c.Policy.MandatorySubscription {
-		for _, m := range members {
-			if err := seedDeliveryCursor(ctx, tx, m, ChannelID(id)); err != nil {
-				return Channel{}, err
-			}
+		if err := seedChannelDeliveryCursors(ctx, tx, ChannelID(id)); err != nil {
+			return Channel{}, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -692,32 +692,13 @@ func (s *Store) SetChannelPolicy(ctx context.Context, actor AccountID, channelID
 	}
 
 	// Newly-mandatory: every member becomes a delivery target, so seed each
-	// agent member's cursor in this same txn. seedDeliveryCursor is self-guarding
-	// (agent-only) and idempotent, so seeding every member is safe.
+	// agent member's cursor in this same txn — an un-seeded delivery target is
+	// the fail-DANGEROUS D2 hazard. One set-based statement seeds every agent
+	// member of the channel; it is self-guarding (agent-only) and idempotent, so
+	// seeding across the whole member set is safe (a human member is a no-op).
 	if p.MandatorySubscription && !wasMandatory {
-		rows, err := tx.Query(ctx,
-			"SELECT account_id FROM channel_members WHERE channel_id = $1", string(channelID))
-		if err != nil {
-			return Channel{}, fmt.Errorf("store: list channel members for seed: %w", err)
-		}
-		var members []AccountID
-		for rows.Next() {
-			var m string
-			if err := rows.Scan(&m); err != nil {
-				rows.Close()
-				return Channel{}, fmt.Errorf("store: scan member for seed: %w", err)
-			}
-			members = append(members, AccountID(m))
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return Channel{}, fmt.Errorf("store: iterate members for seed: %w", err)
-		}
-		rows.Close()
-		for _, m := range members {
-			if err := seedDeliveryCursor(ctx, tx, m, channelID); err != nil {
-				return Channel{}, err
-			}
+		if err := seedChannelDeliveryCursors(ctx, tx, channelID); err != nil {
+			return Channel{}, err
 		}
 	}
 
