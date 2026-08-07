@@ -109,7 +109,7 @@ amendment:
 | 9 | `ForgeChecksSummary`/`ForgeCheck` (#995 :421-431) | **REMOVED** | Replaced by `compass.v1.ChecksSummary`/`Check` (#1018 :222-232), field-for-field identical. |
 | 10 | The seven op requests (#995 :433-473): `CreateIssueRequest`, `CommentOnIssueRequest`, `GetIssueRequest`, `ListIssuesRequest`, `CreatePullRequestRequest`, `CommentOnPullRequestRequest`, `GetPullRequestRequest` | **SURVIVE** | Confirmed per-request this run: every field in all seven is a scalar (`string`/`uint64`/`uint32`/`bool`/`repeated string`) — no forge domain type appears in any request shape (#995 :433-473). Read-op requests (`GetIssueRequest`, `ListIssuesRequest`, `GetPullRequestRequest`) survive (OQ-A ruled option 3 — answered from the projection/store, §Resolved decisions). One width note: #995 keeps `uint64` issue/pull numbers in these requests (:444-446, :470-472) while the canonical result types carry `uint32 number` (#1018 :178); narrow the surviving request fields to `uint32` to match the canonical width — free now, buf-breaking after the surface ships. |
 | 11 | `ListIssuesResponse` (#995 :454-456) | **RECONCILED** | `repeated Issue issues = 1` retypes to `repeated compass.v1.Issue`; the read op is answered from the projection/store (OQ-A ruled option 3). |
-| 12 | `SubscribeForgeRequest`/`Response`, `UnsubscribeForgeRequest`/`Response`, `ForgeArtifactKind` (#995 :1027-1043) | **SURVIVE** | All scalar/enum fields (`repo`, `kind`, `number`, `subscription_id`); no domain type. |
+| 12 | `SubscribeForgeRequest`/`Response`, `UnsubscribeForgeRequest`/`Response`, `ForgeArtifactKind` (#995 :1027-1043) | **SURVIVE** | All scalar/enum fields (`repo`, `kind`, `number`, `subscription_id`); no domain type. (`ForgeArtifactKind` relocates to the new `forge.proto` leaf per DL-161 — see row 13; the subscribe/unsubscribe requests stay in `agent_gateway.proto`.) |
 | 13 | `ForgeNotification`/`ForgeNotificationKind` (#995 :1191-1212) | **RECONCILED + RELOCATED (DL-161)** | The message and kind enum survive but move to the new leaf `forge.proto` (with `ForgeArtifactKind` + `CommentRef`) to break the notification-placement cycle. Three arms reconcile: `ForgeChecksSummary checks = 9` → `compass.v1.ChecksSummary`; `IssueComment comment = 8` → the ruled `CommentRef` (§Resolved decisions OQ-B); and `string provider = 2` (#995 :1193) is retyped to `compass.v1.ForgeRef forge = 2` — the shipped decision (forge.proto `ForgeRef forge = 2`), so the notification path carries the one `compass.v1` forge-identity vocabulary rather than a second bare-string one. |
 | 14 | `runner.proto`: `RelayForgeCall` + `RelayForgeCallRequest`/`Response` (#995 :485-493) | **SURVIVES** | Pure wrapper: `ForgeCallRequest call` / `ForgeCallResult result` by reference; reconciliation is inherited from items 2-3. |
 | 15 | `SessionsResponse.forge_notification = 7` (#995 :1633) | **SURVIVES** | Carries `ForgeNotification`, reconciled internally (item 13). |
@@ -123,7 +123,8 @@ is deleted** — six messages removed, four carrier arms retyped to `compass.v1`
 **Multi-forge request addressing (a reconciliation consequence).** The
 surviving op requests and `SubscribeForgeRequest` address artifacts by
 `(repo, number)` with no provider/host (#995 :433-473, :1027-1043), while the
-canonical result types now carry `ForgeRef` (#1018 :146-160, DL-091:
+canonical result types — and now the notification path (row 13) — carry
+`ForgeRef` (#1018 :146-160, DL-091:
 repo-only coordinates collide under multiple connected forges). #995 even
 names subscriptions "(provider, repo, kind, number)" (:944-945) though its
 wire request carries no provider. Ruled (Matt, 2026-07-31, §Resolved
@@ -224,22 +225,25 @@ amended proto work, confirmed against the live tree this run.
   #995's cite: the gen-fence grep script sits at `proto/moon.yml:151` (task
   `gen-fence` opens at :121), not :141 as #995 recorded — confirmed by reading
   the live file this run.
-- **The gen-fence extension fences the carrier family only.** Extend the grep
-  with the unanchored `ForgeCall|RelayForgeCall|ForgeNotification|
-  ForgeArtifactKind` family exactly as #995 T1 specifies (design.md:1636-1639)
-  — but the canonical `Issue`/`PullRequest`/`ChecksSummary`/`Check`/
-  `AgentAttribution` symbols are PUBLIC `compass.proto` types that must
-  generate into the public trees and MUST NOT be added to the fence. Those
-  four patterns are safe not because of word-bounding (word-bounding guards
-  substring collisions like `SessionFrame` vs `AgentSessionFrame`,
-  `proto/moon.yml:138-150`) but because none of them prefixes a public symbol
-  — `ForgeRef`/`ForgeProvider` share only the `Forge` stem, no full-pattern
-  match. The surviving internal-only requests are NOT matched by any pattern
-  (`CreateIssueRequest`, `CommentOnIssueRequest`, the `Get*`/`List*` requests,
-  `ListIssuesResponse`, `SubscribeForge*`/`UnsubscribeForge*`, and
-  `CommentRef`); this gap existed in #995 too — extend the fence with these
-  word-boundable names (none collides with a public symbol) or accept the gap
-  explicitly.
+- **The gen-fence extension fences the carrier family plus the internal-only
+  requests.** Extend the grep with the unanchored `ForgeCall|RelayForgeCall|
+  ForgeNotification|ForgeArtifactKind` family exactly as #995 T1 specifies
+  (design.md:1636-1639) — but the canonical `Issue`/`PullRequest`/
+  `ChecksSummary`/`Check`/`AgentAttribution` symbols are PUBLIC `compass.proto`
+  types that must generate into the public trees and MUST NOT be added to the
+  fence. Those four patterns are safe not because of word-bounding
+  (word-bounding guards substring collisions like `SessionFrame` vs
+  `AgentSessionFrame`, `proto/moon.yml:138-150`) but because none of them
+  prefixes a public symbol — `ForgeRef`/`ForgeProvider` share only the `Forge`
+  stem, no full-pattern match. The surviving internal-only requests are NOT
+  matched by any of those four family patterns (`CreateIssueRequest`,
+  `CommentOnIssueRequest`, the `Get*`/`List*` requests, `ListIssuesResponse`,
+  `SubscribeForge*`/`UnsubscribeForge*`, and `CommentRef`); this gap existed in
+  #995 too. Decided (A1): the fence IS extended with these word-boundable names
+  (none collides with a public symbol), not left as an accepted gap —
+  `CommentRef` in particular MUST be fenced, because DL-161 relocates it into
+  the internal-only `forge.proto` leaf, so it is a now-internal symbol that
+  would otherwise leak onto the public gen surface.
 - **Cross-file import — already satisfiable, handled per-lane.** Retyping the
   result arms makes `agent_gateway.proto` import `compass/v1/compass.proto`.
   This is not a new dependency: `agent_gateway.proto` already transitively
