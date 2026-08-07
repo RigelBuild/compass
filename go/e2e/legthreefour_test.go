@@ -4,8 +4,8 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
-	"strings"
 	"testing"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
@@ -52,9 +52,14 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	const peerHandle = "leg34-peer"
 	const peerDisplayName = "Leg Three-Four Peer"
 	// The spawn tool's arguments, serialized JSON (the OpenAI tool-call
-	// contract). Field names are the spawnParameters wire schema
-	// (lifecycle.ts:79-93): handle, display_name, initial_prompt.
-	const spawnArgsJSON = `{"handle":"leg34-peer","display_name":"Leg Three-Four Peer","initial_prompt":"idle, await instructions"}`
+	// contract). Built from the consts above so the minted handle/display name
+	// cannot drift from what the leg-3 assertions resolve. Field names are the
+	// spawnParameters wire schema (lifecycle.ts:79-93): handle, display_name,
+	// initial_prompt.
+	spawnArgsJSON := fmt.Sprintf(
+		`{"handle":%q,"display_name":%q,"initial_prompt":%q}`,
+		peerHandle, peerDisplayName, "idle, await instructions",
+	)
 	// The assistant text the closing turn settles on, asserted present in the
 	// spawner's transcript (the same transcript-contains-canned-reply proof as
 	// leg-2).
@@ -168,9 +173,10 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 
 	// ── Leg 4: post an @mention → mentioned member steers, subscriber delivers ─
 
-	// Open TWO subscriptions before the post so each sees the live fan: one to
-	// observe the deliver-side event, and the store-side steer/deliver split is
-	// read back below. sinceSeq 0 snapshots then tails.
+	// Open one subscription before the post so it sees the live fan of the
+	// deliver-side MessagePosted event. sinceSeq 0 snapshots then tails. (The
+	// recipient-side steer/deliver split is the deferred TODO(SEA-1788) below,
+	// not observed here.)
 	sub, err := f.SubscribeComms(ctx, 0)
 	if err != nil {
 		t.Fatalf("SubscribeComms: %v", err)
@@ -199,8 +205,8 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AwaitDelivery: %v", err)
 	}
-	if got := firstBlockText(delivered); !strings.Contains(got, "@leg34-peer") {
-		t.Fatalf("delivered message text = %q, want the @mention body", got)
+	if got := firstBlockText(delivered); got != mentionText {
+		t.Fatalf("delivered message text = %q, want the exact @mention body %q", got, mentionText)
 	}
 
 	// TODO(SEA-1788): assert the steer-vs-deliver SPLIT on the recipient side —
