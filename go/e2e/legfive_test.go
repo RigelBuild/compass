@@ -140,10 +140,12 @@ func TestLegFivePersistAndResume(t *testing.T) {
 		joined.WriteString(e.EntryJSON)
 	}
 	body := joined.String()
-	// Both replies present under the original id proves the resumed session
-	// continued the SAME transcript lineage: reply1 is only in the durable body
-	// the persist boundary left behind, so if resume had loaded a FRESH session
-	// instead of the reconstructed body, reply1 would be ABSENT and this reddens.
+	// reply1 is durable across the persist boundary regardless of resume:
+	// RemoveWorkspace does not prune the transcript, so the pre-teardown row
+	// survives. Its presence here after resume confirms lifetime-2's start
+	// carried the reconstructed prior body forward rather than superseding it
+	// with a fresh-header checkpoint that prunes it. The primary rebase-onto-
+	// the-logical-id proof is the reply2 assertion below.
 	if !strings.Contains(body, reply1) {
 		t.Fatalf("transcript under the original session id is missing the pre-teardown reply %q; the resumed session did not carry the persisted lineage", reply1)
 	}
@@ -156,11 +158,12 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	}
 
 	// The mint-new-id contract: Resume returns a NEW live session id, never the
-	// one passed in. A non-empty id proves Resume returned a live lifetime; its
-	// inequality with originalSessionID pins that resume minted a fresh live id
-	// rather than reusing the logical id — the contract that separates the
-	// control-plane live id from the durable transcript key
-	// (runnerhub/resume_start.go:30-31,43).
+	// one passed in. The inequality with originalSessionID (below) pins that
+	// resume minted a fresh live id rather than reusing the logical id — the
+	// contract that separates the control-plane live id from the durable
+	// transcript key (runnerhub/resume_start.go). The non-empty check is an
+	// explicit contract statement for the reader; AwaitSessionSettled on
+	// resumedSessionID above would already fail an empty id before this point.
 	if resumedSessionID == "" {
 		t.Fatal("Resume returned an empty session id; the resumed lifetime did not come online")
 	}
