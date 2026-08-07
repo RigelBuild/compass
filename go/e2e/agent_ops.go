@@ -60,6 +60,27 @@ func (f *Fixture) StartSession(ctx context.Context, containerName, initialPrompt
 	return resp.Msg.GetSessionId(), nil
 }
 
+// Resume brings the agent in a freshly provisioned container online over
+// CompassService resuming a persisted logical session: resumeSessionID is the
+// session id to resume (the id a prior StartSession returned), reconstructed
+// server-side into the new container. Returns the server-MINTED live session id
+// for the resumed lifetime (a NEW id — the durable transcript stays keyed under
+// resumeSessionID). Returns an error rather than panicking so the caller decides
+// fatality; the per-call deadline is threaded from ctx.
+func (f *Fixture) Resume(ctx context.Context, containerName, resumeSessionID, initialPrompt string) (sessionID string, err error) {
+	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+	defer cancel()
+	resp, err := f.Compass().StartAgentSession(rctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
+		ContainerName:   containerName,
+		InitialPrompt:   initialPrompt,
+		ResumeSessionId: resumeSessionID,
+	}))
+	if err != nil {
+		return "", fmt.Errorf("StartAgentSession(resume) RPC: %w", err)
+	}
+	return resp.Msg.GetSessionId(), nil
+}
+
 // AwaitSessionSettled subscribes to the session frame stream and returns once the
 // session has settled — the first frame reporting AGENT_SESSION_STATE_READY. It
 // is FULLY EVENT-GATED: it reads frames off the stream until READY or the
