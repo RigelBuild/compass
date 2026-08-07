@@ -398,8 +398,8 @@ These are list and form surfaces with no bespoke styling: they reuse the shared
 contracts directly.
 
 **Composition.** Backlog and Done are list surfaces built from `.cx-card` (or
-`.cx-tree-row` where a dense row reads better), `.cx-badge` (`data-status` and
-priority variants), and `.cx-pip` — the same card/row/badge vocabulary the board
+`.cx-tree-row` where a dense row reads better), `.cx-badge` (`data-status`) and a
+`.cx-pip` priority indicator — the same card/row/badge vocabulary the board
 uses, without the swimlane grid. Settings uses the form contracts: `.cx-input`,
 `.cx-select`, and `.cx-btn`. The status-mapping editor renders as a two-column
 `.cx-tree-row` table (source status ↔ mapped lane).
