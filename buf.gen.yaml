@@ -12,21 +12,24 @@ version: v2
 clean: true
 # The internal-only surfaces (compass/v1/agent.proto — the agent-stdio envelopes;
 # compass/v1/runner.proto — the Server<->Runner RunnerService; compass/v1/
-# agent_gateway.proto — the agent->Runner AgentGateway call transport) are fenced
-# OFF the public client surfaces here: buf v2 scopes path filters at the input
+# agent_gateway.proto — the agent->Runner AgentGateway call transport; compass/v1/
+# forge.proto — the forge notification + shared carrier leaf) are fenced OFF the
+# public client surfaces here: buf v2 scopes path filters at the input
 # level, so excluding them from this template keeps protoc-gen-es (→ compass-client)
 # and protoc-gen-go/connect-go (→ go/gen) from ever emitting them. Their gen lives
 # in separate per-consumer templates (buf.gen.agent-ts.yaml for agent.proto +
-# agent_gateway.proto → the compass-agent TS client; buf.gen.internal-go.yaml for
-# agent.proto + runner.proto + agent_gateway.proto → go/internal/gen). Keep this
-# list in sync with those templates' `paths:` — a proto that leaks here breaks the
-# SEA-1267 fence (the gen-fence check in proto/moon.yml catches a forgotten entry).
+# agent_gateway.proto + forge.proto → the compass-agent TS client;
+# buf.gen.internal-go.yaml for agent.proto + runner.proto + agent_gateway.proto +
+# forge.proto → go/internal/gen). Keep this list in sync with those templates'
+# `paths:` — a proto that leaks here breaks the SEA-1267 fence (the gen-fence check
+# in proto/moon.yml catches a forgotten entry).
 inputs:
   - directory: proto
     exclude_paths:
       - proto/compass/v1/agent.proto
       - proto/compass/v1/runner.proto
       - proto/compass/v1/agent_gateway.proto
+      - proto/compass/v1/forge.proto
 plugins:
   # TypeScript (connect-es v2: protoc-gen-es emits the service defs createClient
   # consumes — no separate connect plugin needed).

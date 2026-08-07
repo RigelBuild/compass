@@ -74,6 +74,8 @@ const (
 	AgentGatewayPostConversationFrameProcedure = "/compass.v1.AgentGateway/PostConversationFrame"
 	// AgentGatewayControlProcedure is the fully-qualified name of the AgentGateway's Control RPC.
 	AgentGatewayControlProcedure = "/compass.v1.AgentGateway/Control"
+	// AgentGatewayForgeProcedure is the fully-qualified name of the AgentGateway's Forge RPC.
+	AgentGatewayForgeProcedure = "/compass.v1.AgentGateway/Forge"
 )
 
 // AgentGatewayClient is a client for the compass.v1.AgentGateway service.
@@ -101,6 +103,18 @@ type AgentGatewayClient interface {
 	// the Runner pushes one AgentControl per message. Replaces the never-built
 	// stdin decoder.
 	Control(context.Context, *connect.Request[v1.ControlSubscribeRequest]) (*connect.ServerStreamForClient[v1.AgentControl], error)
+	// Forge (unary, agent -> Runner): create/comment/read a forge issue or PR, or
+	// subscribe/unsubscribe an artifact. A sibling call family to Comms and
+	// Lifecycle (DL-049 shape) — the ForgeCallRequest / ForgeCallResult envelopes
+	// are reused verbatim as the RelayForgeCallRequest.call /
+	// RelayForgeCallResponse.result payloads on the Runner->Server leg
+	// (runner.proto RelayForgeCall). One shared envelope across both hops. The
+	// Runner asserts NO account; the Server resolves session_id -> account and
+	// stamps the owner header itself (DL-050), holding the sole forge write
+	// credential (DL-052). Read ops are answered from the projection/store, not a
+	// live forge proxy (DL-069 amendment §Resolved decisions OQ-A). INTERNAL
+	// surface (never public gen).
+	Forge(context.Context, *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error)
 }
 
 // NewAgentGatewayClient constructs a client for the compass.v1.AgentGateway service. By default, it
@@ -144,6 +158,12 @@ func NewAgentGatewayClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(agentGatewayMethods.ByName("Control")),
 			connect.WithClientOptions(opts...),
 		),
+		forge: connect.NewClient[v1.ForgeCallRequest, v1.ForgeCallResult](
+			httpClient,
+			baseURL+AgentGatewayForgeProcedure,
+			connect.WithSchema(agentGatewayMethods.ByName("Forge")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -154,6 +174,7 @@ type agentGatewayClient struct {
 	publish               *connect.Client[v1.PublishFrameRequest, v1.PublishFrameResponse]
 	postConversationFrame *connect.Client[v1.PostConversationFrameRequest, v1.PostConversationFrameResponse]
 	control               *connect.Client[v1.ControlSubscribeRequest, v1.AgentControl]
+	forge                 *connect.Client[v1.ForgeCallRequest, v1.ForgeCallResult]
 }
 
 // Comms calls compass.v1.AgentGateway.Comms.
@@ -181,6 +202,11 @@ func (c *agentGatewayClient) Control(ctx context.Context, req *connect.Request[v
 	return c.control.CallServerStream(ctx, req)
 }
 
+// Forge calls compass.v1.AgentGateway.Forge.
+func (c *agentGatewayClient) Forge(ctx context.Context, req *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error) {
+	return c.forge.CallUnary(ctx, req)
+}
+
 // AgentGatewayHandler is an implementation of the compass.v1.AgentGateway service.
 type AgentGatewayHandler interface {
 	Comms(context.Context, *connect.Request[v1.CommsCallRequest]) (*connect.Response[v1.CommsCallResult], error)
@@ -206,6 +232,18 @@ type AgentGatewayHandler interface {
 	// the Runner pushes one AgentControl per message. Replaces the never-built
 	// stdin decoder.
 	Control(context.Context, *connect.Request[v1.ControlSubscribeRequest], *connect.ServerStream[v1.AgentControl]) error
+	// Forge (unary, agent -> Runner): create/comment/read a forge issue or PR, or
+	// subscribe/unsubscribe an artifact. A sibling call family to Comms and
+	// Lifecycle (DL-049 shape) — the ForgeCallRequest / ForgeCallResult envelopes
+	// are reused verbatim as the RelayForgeCallRequest.call /
+	// RelayForgeCallResponse.result payloads on the Runner->Server leg
+	// (runner.proto RelayForgeCall). One shared envelope across both hops. The
+	// Runner asserts NO account; the Server resolves session_id -> account and
+	// stamps the owner header itself (DL-050), holding the sole forge write
+	// credential (DL-052). Read ops are answered from the projection/store, not a
+	// live forge proxy (DL-069 amendment §Resolved decisions OQ-A). INTERNAL
+	// surface (never public gen).
+	Forge(context.Context, *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error)
 }
 
 // NewAgentGatewayHandler builds an HTTP handler from the service implementation. It returns the
@@ -245,6 +283,12 @@ func NewAgentGatewayHandler(svc AgentGatewayHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(agentGatewayMethods.ByName("Control")),
 		connect.WithHandlerOptions(opts...),
 	)
+	agentGatewayForgeHandler := connect.NewUnaryHandler(
+		AgentGatewayForgeProcedure,
+		svc.Forge,
+		connect.WithSchema(agentGatewayMethods.ByName("Forge")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/compass.v1.AgentGateway/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case AgentGatewayCommsProcedure:
@@ -257,6 +301,8 @@ func NewAgentGatewayHandler(svc AgentGatewayHandler, opts ...connect.HandlerOpti
 			agentGatewayPostConversationFrameHandler.ServeHTTP(w, r)
 		case AgentGatewayControlProcedure:
 			agentGatewayControlHandler.ServeHTTP(w, r)
+		case AgentGatewayForgeProcedure:
+			agentGatewayForgeHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -284,4 +330,8 @@ func (UnimplementedAgentGatewayHandler) PostConversationFrame(context.Context, *
 
 func (UnimplementedAgentGatewayHandler) Control(context.Context, *connect.Request[v1.ControlSubscribeRequest], *connect.ServerStream[v1.AgentControl]) error {
 	return connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Control is not implemented"))
+}
+
+func (UnimplementedAgentGatewayHandler) Forge(context.Context, *connect.Request[v1.ForgeCallRequest]) (*connect.Response[v1.ForgeCallResult], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.AgentGateway.Forge is not implemented"))
 }

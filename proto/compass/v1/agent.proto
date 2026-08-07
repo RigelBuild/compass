@@ -23,6 +23,11 @@ package compass.v1;
 
 import "compass/v1/comms.proto";
 import "compass/v1/compass.proto";
+// ForgeNotification (the forge_notification AgentControl variant) lives in the
+// forge.proto leaf, not agent_gateway.proto: agent_gateway.proto imports THIS
+// file, so referencing a type it defined would be a circular import (Matt-ruled,
+// 2026-08-05). forge.proto imports only compass.proto, so this edge is acyclic.
+import "compass/v1/forge.proto";
 
 // The agent's stdout envelope: one discriminated frame per newline-delimited
 // protojson line. The agent emits two payload classes, routed to two surfaces
@@ -165,6 +170,11 @@ message AgentControl {
     ConfigControl config = 5;
     TranscriptReplay replay = 6;
     ReplayComplete replay_complete = 7;
+    // forge_notification (tag 9; tag 8 is the control_seq envelope field): a forge
+    // change on a subscribed artifact, pushed to the agent (DL-053/DL-054). Its
+    // type lives in the forge.proto leaf to avoid the agent_gateway.proto import
+    // cycle (see the import comment).
+    ForgeNotification forge_notification = 9;
   }
 }
 

@@ -31,6 +31,7 @@ package compass.v1;
 import "compass/v1/agent_gateway.proto";
 import "compass/v1/agent.proto";
 import "compass/v1/compass.proto";
+import "compass/v1/forge.proto";
 
 // The internal control seam between the Server and one Runner. Five RPCs, all
 // initiated by the Runner (it dials out; the Server has no inbound route to the
@@ -106,6 +107,21 @@ service RunnerService {
   // Runner still initiates; the Server gains no inbound route); merging the
   // spawn/despawn record ratifies it.
   rpc RelayLifecycleCall(RelayLifecycleCallRequest) returns (RelayLifecycleCallResponse);
+
+  // RelayForgeCall (unary, Runner->Server): relay one agent-initiated forge call
+  // (create/comment/read an issue or PR, subscribe/unsubscribe an artifact) under
+  // the agent account the session resolves to. Same pure-forwarder shape as
+  // RelayCommsCall: the Runner sends the session_id it structurally owns (the
+  // per-container AgentGateway socket the call arrived on, 1:1 with the session)
+  // and the ForgeCallRequest, and asserts NO account. The Server resolves
+  // session_id -> agent account from its own Provision-originated hub binding,
+  // stamps the owner header (DL-050) and makes the forge call with its own
+  // credential (DL-052), fail-closed: an unknown/stopped session is CodeNotFound,
+  // never a stale account or the bootstrap admin. Read ops are answered from the
+  // projection/store, not a live forge proxy (DL-069 amendment OQ-A). Additive to
+  // the frozen dial-out shape (the Runner still initiates; the Server gains no
+  // inbound route); merging the ownership-layer record ratifies it.
+  rpc RelayForgeCall(RelayForgeCallRequest) returns (RelayForgeCallResponse);
 
   // CommitConversationFrame (unary, Runner->Server): durably commit one
   // agent-authored conversation frame and return the commit outcome. This is
@@ -209,6 +225,12 @@ message SessionsResponse {
     ReloadAgentSessionRequest reload = 4;
     GetAgentStatusRequest status = 5;
     ProvisionAgentWorkspaceRequest provision = 6;
+    // forge_notification (tag 7): the Server pushes one forge change on a
+    // subscribed artifact (DL-053/DL-054); the Runner relays it down the
+    // addressed session's per-container socket as AgentControl.forge_notification.
+    // Payload-carrying (ForgeNotification, forge.proto), like deliver_control; no
+    // SessionsRequest result variant — it is a notification, not a command.
+    ForgeNotification forge_notification = 7;
     // secrets_version (tag 8; tag 7 reserved for forge_notification): the Server
     // signals the Runner that the session's secret set changed; the Runner
     // re-fetches via FetchSecrets. Signal-only — never carries values, no result
@@ -459,6 +481,28 @@ message RelayLifecycleCallRequest {
 // stream error, so a single failed call never tears down the transport.
 message RelayLifecycleCallResponse {
   LifecycleCallResult result = 1;
+}
+
+// RelayForgeCall request: the Runner forwards one agent-initiated forge call to
+// the Server. `session_id` is the session the Runner structurally owns for this
+// call (which per-container AgentGateway socket it arrived on — 1:1 with the
+// session, agent_gateway.proto). `call` is the agent's request verbatim. The
+// Runner asserts NO account here; the Server resolves session_id -> account from
+// its own binding and stamps the owner header itself, fail-closed CodeNotFound
+// for an unknown/stopped/dropped session — never a stale account, never the
+// bootstrap admin.
+message RelayForgeCallRequest {
+  string session_id = 1;
+  ForgeCallRequest call = 2;   // defined in agent_gateway.proto
+}
+
+// RelayForgeCall response: the result of the executed forge call, correlated by
+// the same call_id the agent minted. A successful call carries its domain/ack
+// result; an in-band tool failure (not_found, rate limit, bad input) carries the
+// ForgeCallError variant — NOT a Connect stream error, so a single failed call
+// never tears down the transport.
+message RelayForgeCallResponse {
+  ForgeCallResult result = 1;  // defined in agent_gateway.proto
 }
 
 // CommitConversationFrame request: one durable conversation frame the Runner

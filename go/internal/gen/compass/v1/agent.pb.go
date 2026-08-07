@@ -407,6 +407,7 @@ type AgentControl struct {
 	//	*AgentControl_Config
 	//	*AgentControl_Replay
 	//	*AgentControl_ReplayComplete
+	//	*AgentControl_ForgeNotification
 	Control       isAgentControl_Control `protobuf_oneof:"control"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -519,6 +520,15 @@ func (x *AgentControl) GetReplayComplete() *ReplayComplete {
 	return nil
 }
 
+func (x *AgentControl) GetForgeNotification() *ForgeNotification {
+	if x != nil {
+		if x, ok := x.Control.(*AgentControl_ForgeNotification); ok {
+			return x.ForgeNotification
+		}
+	}
+	return nil
+}
+
 type isAgentControl_Control interface {
 	isAgentControl_Control()
 }
@@ -551,6 +561,14 @@ type AgentControl_ReplayComplete struct {
 	ReplayComplete *ReplayComplete `protobuf:"bytes,7,opt,name=replay_complete,json=replayComplete,proto3,oneof"`
 }
 
+type AgentControl_ForgeNotification struct {
+	// forge_notification (tag 9; tag 8 is the control_seq envelope field): a forge
+	// change on a subscribed artifact, pushed to the agent (DL-053/DL-054). Its
+	// type lives in the forge.proto leaf to avoid the agent_gateway.proto import
+	// cycle (see the import comment).
+	ForgeNotification *ForgeNotification `protobuf:"bytes,9,opt,name=forge_notification,json=forgeNotification,proto3,oneof"`
+}
+
 func (*AgentControl_Prompt) isAgentControl_Control() {}
 
 func (*AgentControl_Steer) isAgentControl_Control() {}
@@ -564,6 +582,8 @@ func (*AgentControl_Config) isAgentControl_Control() {}
 func (*AgentControl_Replay) isAgentControl_Control() {}
 
 func (*AgentControl_ReplayComplete) isAgentControl_Control() {}
+
+func (*AgentControl_ForgeNotification) isAgentControl_Control() {}
 
 // Representable payloads (existing compass.v1 scalars only).
 type PromptControl struct {
@@ -1049,7 +1069,7 @@ var File_compass_v1_agent_proto protoreflect.FileDescriptor
 const file_compass_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"\x16compass/v1/agent.proto\x12\n" +
-	"compass.v1\x1a\x16compass/v1/comms.proto\x1a\x18compass/v1/compass.proto\"\xdf\x02\n" +
+	"compass.v1\x1a\x16compass/v1/comms.proto\x1a\x18compass/v1/compass.proto\x1a\x16compass/v1/forge.proto\"\xdf\x02\n" +
 	"\n" +
 	"AgentFrame\x124\n" +
 	"\asession\x18\x03 \x01(\v2\x18.compass.v1.SessionFrameH\x00R\asession\x12O\n" +
@@ -1069,7 +1089,7 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\fSessionFrame\x123\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\x129\n" +
 	"\vtyped_event\x18\x03 \x01(\v2\x18.compass.v1.SessionEventR\n" +
-	"typedEventJ\x04\b\x01\x10\x02R\x05event\"\xcc\x03\n" +
+	"typedEventJ\x04\b\x01\x10\x02R\x05event\"\x9c\x04\n" +
 	"\fAgentControl\x12\x1f\n" +
 	"\vcontrol_seq\x18\b \x01(\x04R\n" +
 	"controlSeq\x123\n" +
@@ -1080,7 +1100,8 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"ask_answer\x18\x04 \x01(\v2\x1c.compass.v1.AskAnswerControlH\x00R\taskAnswer\x123\n" +
 	"\x06config\x18\x05 \x01(\v2\x19.compass.v1.ConfigControlH\x00R\x06config\x126\n" +
 	"\x06replay\x18\x06 \x01(\v2\x1c.compass.v1.TranscriptReplayH\x00R\x06replay\x12E\n" +
-	"\x0freplay_complete\x18\a \x01(\v2\x1a.compass.v1.ReplayCompleteH\x00R\x0ereplayCompleteB\t\n" +
+	"\x0freplay_complete\x18\a \x01(\v2\x1a.compass.v1.ReplayCompleteH\x00R\x0ereplayComplete\x12N\n" +
+	"\x12forge_notification\x18\t \x01(\v2\x1d.compass.v1.ForgeNotificationH\x00R\x11forgeNotificationB\t\n" +
 	"\acontrol\"%\n" +
 	"\rPromptControl\x12\x14\n" +
 	"\x05input\x18\x01 \x01(\tR\x05input\"b\n" +
@@ -1135,8 +1156,9 @@ var file_compass_v1_agent_proto_goTypes = []any{
 	(*ControlAck)(nil),           // 13: compass.v1.ControlAck
 	(v1.AgentSessionState)(0),    // 14: compass.v1.AgentSessionState
 	(*v1.SessionEvent)(nil),      // 15: compass.v1.SessionEvent
-	(*v1.AskQuestionAnswer)(nil), // 16: compass.v1.AskQuestionAnswer
-	(*v1.Message)(nil),           // 17: compass.v1.Message
+	(*ForgeNotification)(nil),    // 16: compass.v1.ForgeNotification
+	(*v1.AskQuestionAnswer)(nil), // 17: compass.v1.AskQuestionAnswer
+	(*v1.Message)(nil),           // 18: compass.v1.Message
 }
 var file_compass_v1_agent_proto_depIdxs = []int32{
 	2,  // 0: compass.v1.AgentFrame.session:type_name -> compass.v1.SessionFrame
@@ -1153,14 +1175,15 @@ var file_compass_v1_agent_proto_depIdxs = []int32{
 	9,  // 11: compass.v1.AgentControl.config:type_name -> compass.v1.ConfigControl
 	8,  // 12: compass.v1.AgentControl.replay:type_name -> compass.v1.TranscriptReplay
 	6,  // 13: compass.v1.AgentControl.replay_complete:type_name -> compass.v1.ReplayComplete
-	16, // 14: compass.v1.AskAnswerControl.answers:type_name -> compass.v1.AskQuestionAnswer
-	17, // 15: compass.v1.SteerControl.message:type_name -> compass.v1.Message
-	17, // 16: compass.v1.DeliverControl.message:type_name -> compass.v1.Message
-	17, // [17:17] is the sub-list for method output_type
-	17, // [17:17] is the sub-list for method input_type
-	17, // [17:17] is the sub-list for extension type_name
-	17, // [17:17] is the sub-list for extension extendee
-	0,  // [0:17] is the sub-list for field type_name
+	16, // 14: compass.v1.AgentControl.forge_notification:type_name -> compass.v1.ForgeNotification
+	17, // 15: compass.v1.AskAnswerControl.answers:type_name -> compass.v1.AskQuestionAnswer
+	18, // 16: compass.v1.SteerControl.message:type_name -> compass.v1.Message
+	18, // 17: compass.v1.DeliverControl.message:type_name -> compass.v1.Message
+	18, // [18:18] is the sub-list for method output_type
+	18, // [18:18] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_agent_proto_init() }
@@ -1168,6 +1191,7 @@ func file_compass_v1_agent_proto_init() {
 	if File_compass_v1_agent_proto != nil {
 		return
 	}
+	file_compass_v1_forge_proto_init()
 	file_compass_v1_agent_proto_msgTypes[0].OneofWrappers = []any{
 		(*AgentFrame_Session)(nil),
 		(*AgentFrame_ReplayCompleteAck)(nil),
@@ -1183,6 +1207,7 @@ func file_compass_v1_agent_proto_init() {
 		(*AgentControl_Config)(nil),
 		(*AgentControl_Replay)(nil),
 		(*AgentControl_ReplayComplete)(nil),
+		(*AgentControl_ForgeNotification)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
