@@ -126,7 +126,6 @@ func run() error {
 	quitter := quitController{
 		stackDown: runStackDown(stackBin),
 		params:    params,
-		bin:       stackBin,
 		quit:      app.Quit,
 		timeout:   stackDownTimeout,
 	}

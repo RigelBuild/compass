@@ -36,15 +36,13 @@ const stackDownTimeout = 60 * time.Second
 
 // quitController is the explicit "Quit and stop stack" orchestration over its
 // injected effects. It holds the teardown seam (stackDown), the argv inputs
-// (params, resolved once in run()), the compass-stack binary path (bin, so the
-// argv can name a real exec — informational for the seam), the app-quit
-// indirection (quit, wired to app.Quit), the teardown deadline (timeout), and a
-// logger. A test supplies a recording stackDown stub and a counting quit, so the
-// quit sequence is verified with no real exec and no display.
+// (params, resolved once in run()), the app-quit indirection (quit, wired to
+// app.Quit), the teardown deadline (timeout), and a logger. A test supplies a
+// recording stackDown stub and a counting quit, so the quit sequence is
+// verified with no real exec and no display.
 type quitController struct {
 	stackDown func(ctx context.Context, args []string) error
 	params    embeddedParams
-	bin       string
 	quit      func()
 	timeout   time.Duration
 	logger    *slog.Logger

@@ -204,6 +204,10 @@ func runStackDown(bin string) func(ctx context.Context, args []string) error {
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
+			if ctx.Err() == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
+				return fmt.Errorf("compass-stack down exceeded the %s teardown window "+
+					"(attach, SIGTERM the child tree, wait the server drain): %w", stackDownTimeout, err)
+			}
 			if msg := strings.TrimSpace(stderr.String()); msg != "" {
 				return fmt.Errorf("compass-stack down failed: %w: %s", err, msg)
 			}

@@ -51,7 +51,6 @@ func TestStopStackAndQuitHappyPath(t *testing.T) {
 			return nil
 		},
 		params:  baseParams,
-		bin:     "/usr/bin/compass-stack",
 		quit:    func() { quitCount++ },
 		timeout: stackDownTimeout,
 	}
@@ -76,7 +75,6 @@ func TestStopStackAndQuitQuitsAnywayOnDownFailure(t *testing.T) {
 			return errors.New("down boom")
 		},
 		params:  baseParams,
-		bin:     "/usr/bin/compass-stack",
 		quit:    func() { quitCount++ },
 		timeout: stackDownTimeout,
 	}
