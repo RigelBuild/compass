@@ -5,7 +5,14 @@
 	//   - forks/<name> — vendored upstream fork subtrees (SEA-1512). The glob is
 	//     `forks/*/**`, not `forks/**`: the first-party forks/README.md stays
 	//     linted; only the fork trees under it are exempt.
+	//   - config/prompts/** + config/agents/** — agent-context PAYLOADS (SEA-1732),
+	//     not docsite prose: these files are loaded verbatim into a model's context
+	//     (the config-delivery bundle, packages/compass-agent/src/config-reader.ts),
+	//     and their shape is fixed by the frozen manager-prompt design record
+	//     (the `<compass-manager>` wrapper, atx role headings matching OMP's own
+	//     block-0). Prose rules (MD033/MD041/MD025/MD003) fight that purpose, so the
+	//     payload subtrees are exempt — same "not our prose to lint" basis as forks.
 	"globs": ["**/*.md"],
 	"gitignore": true,
-	"ignores": ["forks/*/**"]
+	"ignores": ["forks/*/**", "config/prompts/**", "config/agents/**"]
 }
