@@ -17,6 +17,9 @@ finished issue open has not finished.**
 - When the ask is actually satisfied — verified, not merely CI-green — close it
   yourself in the same turn as the last merge. If it is moot, cancel it with a
   note.
+- On handing a lane off, rewrite the owner to the receiving agent. Ownership
+  transfers explicitly or not at all — an unswept issue from a torn-down agent
+  becomes the supervisor's problem.
 
 Merged ≠ done: a merged PR is evidence toward done, not done. An issue with three
 deliverables is not closed at PR #1 — file the remainder or keep it open.

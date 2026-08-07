@@ -1,5 +1,5 @@
 ---
-description: "Never block your turn waiting on a peer, a subagent, or a message — a foreground wait makes you deaf to steers and everything else. End the turn and resume when the result lands."
+description: "Never block your turn in a foreground wait — it makes you deaf to steers; end the turn and resume when the result lands."
 alwaysApply: true
 ---
 
