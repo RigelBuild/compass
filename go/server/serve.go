@@ -295,9 +295,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	hubLog := slog.Default()
 	hub := newRunnerHub(st, brd, tail, commsSvc, hubLog)
 	svc := newService(cfg.Version, bus, st, hub, brd, issueBrd, tail)
-	// Break the hub<->lifecycle (SEA-1618 T5) and comms<->hub ask-answer wake
-	// (SEA-1577) construction cycles; see wireHubServiceCycles in sinks.go.
-	wireHubServiceCycles(hub, commsSvc, st)
+	// Break the hub<->lifecycle (SEA-1618 T5), hub<->board (agent primary
+	// lifecycle T3-a, RelayBoardCall), and comms<->hub ask-answer wake (SEA-1577)
+	// construction cycles; see wireHubServiceCycles in sinks.go.
+	wireHubServiceCycles(hub, commsSvc, st, issueBrd)
 	// The SecretsService is an account-facing sibling of CompassService/CommsService:
 	// it mounts on every account door (socket, dev, network) behind the same bearer +
 	// admin-gate chain, which classifies its three procedures authenticatedOpen — the

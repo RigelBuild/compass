@@ -272,6 +272,13 @@ type Hub struct {
 	// serve path never race. Nil-safe: a hub with none wired fails
 	// RelayLifecycleCall closed CodeUnavailable — the lifecycle leg is not mounted.
 	lifecycleCaller LifecycleCaller
+	// boardCaller is the board-write execution seam RelayBoardCall delegates a
+	// resolved SetIssueState call to (agent primary lifecycle T3-a). Nil until
+	// SetBoardCaller wires it (after both hub and boardService exist, breaking
+	// their construction cycle), and read under mu so the setter and the serve
+	// path never race. Nil-safe: a hub with none wired fails RelayBoardCall
+	// closed CodeUnavailable — the board write leg is not mounted.
+	boardCaller BoardCaller
 
 	mu sync.Mutex
 	// runner is the single attached Runner (single-Runner MVP, OQ6
@@ -426,6 +433,18 @@ func (h *Hub) SetLifecycleCaller(c LifecycleCaller) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.lifecycleCaller = c
+}
+
+// SetBoardCaller wires the board-write execution seam after construction, so no
+// NewHub caller signature changes and the hub<->boardService construction cycle
+// (the service needs the store + issue projection; the hub needs the service to
+// serve RelayBoardCall) is broken exactly as SetLifecycleCaller breaks the
+// lifecycle cycle. A hub with none wired fails RelayBoardCall closed
+// CodeUnavailable. Wired under mu; read under mu.
+func (h *Hub) SetBoardCaller(c BoardCaller) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.boardCaller = c
 }
 
 // Deliver is the sole entry point a relayed Runner event takes into the Server.

@@ -54,7 +54,7 @@ var errLifecycleUnavailable = errors.New("runnerhub: no lifecycle caller wired t
 // self-despawn) is returned IN-BAND as the LifecycleCallError variant of the
 // result — the agent renders it and the transport survives — exactly the
 // RelayCommsCall split: only a resolution miss / no-caller is a Connect error.
-func (h *Hub) RelayLifecycleCall(
+func (h *Hub) RelayLifecycleCall( //nolint:dupl // deliberate structural mirror of RelayBoardCall (relay_board.go): the sibling relay legs each spell out the same fail-closed guard order (nil-caller CodeUnavailable, unbound-session CodeNotFound, in-band tool error) so the security-critical resolution edge reads identically per leg — collapsing them into one generic helper is the "second convention" these legs are required not to invent.
 	ctx context.Context,
 	req *compassv1internal.RelayLifecycleCallRequest,
 ) (*compassv1internal.RelayLifecycleCallResponse, error) {

@@ -93,6 +93,34 @@ func (p *IssueProjection) PublishIssueUpdate(ctx context.Context, issue *compass
 	return nil
 }
 
+// RecordAndPublish is the STATE-ONLY record+publish the write-path transition
+// executor (server/board.go, agent primary lifecycle T3-a) drives after it has
+// already committed the new canonical state to Postgres AND read the full row
+// back. It is the step-(5) tail of PublishIssueUpdate WITHOUT the store
+// upsert/read-back: the executor owns the durable commit (a forge-only upsert
+// would demand forge fields and could not carry the state column), so this only
+// maps the committed row to the wire Issue and records+fans it — never a store
+// write. committed is the executor's read-back of committed truth.
+//
+// Lock discipline mirrors PublishIssueUpdate exactly: the map -> proto mapping
+// runs OUTSIDE p.mu (no DB round-trip is held under the projection mutex; here
+// there is no DB work at all), and only the map-record + the non-blocking
+// bus.Publish run under the lock, so record and fan-out are atomic to any
+// Snapshot reader and deadlock-free. Per-coordinate serialization is the
+// executor's job (its per-issue transition lock), not this projection's.
+func (p *IssueProjection) RecordAndPublish(committed store.Issue) {
+	// Map committed store.Issue -> wire Issue OUTSIDE the lock.
+	wire := issueToProto(committed)
+
+	// Record + fan out atomically under the write lock.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.issues[wire.GetId()] = wire
+	p.bus.Publish(&compassv1.SubscribeEventsResponse{
+		Payload: &compassv1.SubscribeEventsResponse_Issue{Issue: wire},
+	})
+}
+
 // Snapshot returns every issue on the board (all states incl. ARCHIVED — the
 // board's Done view shows archived; v1 carries upserts only, no removal), sorted
 // by id for determinism. Each entry is a fresh clone the caller owns. This is
@@ -125,6 +153,16 @@ func (p *IssueProjection) Rehydrate(ctx context.Context) error {
 		p.issues[proto.GetId()] = proto
 	}
 	return nil
+}
+
+// IssueToProto maps a store-native issue to the canonical wire Issue. It is the
+// exported form of issueToProto for the write-path transition executor
+// (server/board.go), which reads a committed row back through the store and must
+// return it on the SetIssueState response wire — the store<->wire mapping stays
+// owned by this package (the ONLY place the two types meet), so the executor
+// borrows it rather than re-implementing the edge.
+func IssueToProto(si store.Issue) *compassv1.Issue {
+	return issueToProto(si)
 }
 
 // issueToProto maps the store-native issue to the canonical wire Issue. store

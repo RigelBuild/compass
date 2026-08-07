@@ -330,6 +330,55 @@ func newHubWithLifecycle() (*Hub, *fakeLifecycleCaller) {
 	return hub, fake
 }
 
+// boardCall records one BoardCaller invocation: the account the hub attributed
+// it to plus the request forwarded. A test asserts the hub delegated under the
+// RESOLVED caller account (never the Runner's, never admin).
+type boardCall struct {
+	account       store.AccountID
+	setIssueState *compassv1internal.SetIssueStateRequest
+}
+
+// fakeBoardCaller is a hand-written BoardCaller mirroring fakeLifecycleCaller:
+// it records every call (account + request) so a test asserts the hub attributed
+// to the bound account and forwarded the exact request, and returns a
+// configurable canned response or error so a test drives both the success and
+// the in-band tool-error path without a real service. Concurrency-safe for
+// parity with the real caller, though the hub calls it inline.
+type fakeBoardCaller struct {
+	mu    sync.Mutex
+	calls []boardCall
+
+	resp *compassv1internal.SetIssueStateResponse
+	err  error
+}
+
+func (f *fakeBoardCaller) SetIssueStateAsAccount(_ context.Context, caller store.AccountID, req *compassv1internal.SetIssueStateRequest) (*compassv1internal.SetIssueStateResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, boardCall{account: caller, setIssueState: req})
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.resp, nil
+}
+
+func (f *fakeBoardCaller) snapshot() []boardCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]boardCall(nil), f.calls...)
+}
+
+// newHubWithBoard builds a hub whose BoardCaller is the returned fake (wired
+// post-construction via SetBoardCaller, the real wiring path), so a
+// RelayBoardCall test drives the resolve->attribute->delegate path and asserts
+// on the caller account the fake was called with. Like newHubOnly otherwise.
+func newHubWithBoard() (*Hub, *fakeBoardCaller) {
+	fake := &fakeBoardCaller{}
+	hub := newHubOnly()
+	hub.SetBoardCaller(fake)
+	return hub, fake
+}
+
 // resolverEntry is one token the fakeResolver knows: the subject it resolves to
 // and whether it has been revoked.
 type resolverEntry struct {
