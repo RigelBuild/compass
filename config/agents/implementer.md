@@ -31,6 +31,6 @@ from that default — do not restate it.
 
 # Pushing your work
 - Compass uses jj with stacked bookmarks, not git branches. If your slice includes
-  a push, follow the `jj-stacking` skill: stack your change on the branch point the
+  a push, follow the `jj` skill: stack your change on the branch point the
   brief named and push only that bookmark — never the shared trunk, never a merge.
   If the brief names no push target, report back rather than guess.
