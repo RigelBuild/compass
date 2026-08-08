@@ -116,9 +116,12 @@ jj-vine submit <issue>-<slug>                 # push (through the CI gate) + ope
 - **Start every change with `jj new 'main@origin'`.** It bases you on the latest
   fetched `main` and it sidesteps the auto-amend hazard. Verify with
   `jj --no-pager diff --stat` before you submit — it must list only your files.
-- **Every push runs the local gate first.** An `hk` pre-push hook runs `moon ci`
-  (the affected subset) before a push completes — the same task graph CI runs on
-  the PR. A red gate blocks the push; get it green first.
+- **Every push runs the local gate first, through `jj-hp`.** `jj-vine submit` is
+  your push path, and Compass routes its push through **`jj-hp`** (which runs the
+  hooks before pushing) — so every submit runs the `hk` gate (`moon ci` over the
+  affected subset) before the push completes, the same task graph CI runs on the
+  PR. Never bypass it with a bare `jj git push`, which skips the gate. A red gate
+  blocks the push; get it green first.
 - **`@` accumulates all your edits into one commit** — right for a single-purpose
   PR. To split a change into multiple commits, seal each step with
   `jj commit -m "…"` (describes `@`, starts a fresh `@` on top) rather than
@@ -133,14 +136,16 @@ jj-vine submit <issue>-<slug>                 # push (through the CI gate) + ope
   `user/` prefix. In multi-agent work, keep the name descriptive of the lane so
   peers can tell stacks apart.
 
-`[TODO SEA-1882]` The push-authorization guard that enforces the
-never-push-`main` and owner-allowlist invariant is a bundled OMP extension that
-intercepts your push/merge commands in-container and hard-blocks a violation —
-load-bearing, because Compass cannot rely on a user's own repo branch protection
-(recommended as a server-side backstop, never guaranteed). Until that extension
-ships, the invariant is **behavioral**: you enforce it; nothing blocks you. Do
-not invent or run a guarded-push wrapper that is not provisioned in your clone.
-`jj-vine submit` remains the push path, and the `hk` hook remains the CI gate.
+`[TODO SEA-1882]` Distinct from the `jj-hp` CI gate above, the
+push-*authorization* guard that enforces the never-push-`main` and
+owner-allowlist invariant is a bundled OMP extension that intercepts your
+push/merge commands in-container and hard-blocks a violation — load-bearing,
+because Compass cannot rely on a user's own repo branch protection (recommended
+as a server-side backstop, never guaranteed). Until that extension ships, the
+invariant is **behavioral**: you enforce it; nothing blocks you. Do not invent
+or run a push-*authorization* guard wrapper that is not provisioned in your
+clone.
+`jj-vine submit` (gated through `jj-hp`) remains the push path.
 
 `[TODO SEA-1734]` Reading PR and review state (checks, threads, merge status) uses
 the Compass forge tools, which land pre-Dogfood as an operator-provisioned
@@ -215,6 +220,7 @@ jj workspace forget ws-router && rm -rf ../ws-router   # teardown: forget, then 
 | Seal `@` and start a new commit on top | `jj commit -m "…"` |
 | Name the branch | `jj bookmark create <name> -r @` |
 | Advance a bookmark to a new commit | `jj bookmark move <name> --to @` |
+| Local gate (runs inside `jj-vine submit`, not run directly) | `jj-hp push` *(automatic)* |
 | Open/update the PR (+ stack diagram) | `jj-vine submit <name>` |
 | Submit the whole stack | `jj-vine submit --tracked` |
 | Preview a submit (no side effects) | `jj-vine submit <name> --dry-run` |
