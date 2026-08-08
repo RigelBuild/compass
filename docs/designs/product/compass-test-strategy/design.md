@@ -105,7 +105,7 @@ server-tier `lifecycle_e2e_pgtest_test.go` does the same
 (`mountRunnerServerE2E`, `lifecycle_e2e_pgtest_test.go:520-531`). So the
 runner leg is proven end to end — but **no suite on `main` dials
 `runner.Dial` through the production TLS door**. That is the one uncomposed
-seam (S3).
+seam (S2).
 
 **Container lifecycle (`//go:build podman`)** — `internal/runtime`'s
 lifecycle/config/secrets suites plus the whole `go/e2e/` dogfood harness
@@ -117,7 +117,7 @@ this record's (D4).
 (`packages/compass-client/moon.yml:15-16`) against mocks; `apps/ui/src/*`
 carries frame-level transport tests (`daemon-transport.test.ts`). Nothing
 drives the generated TS client against a live Go server — the contract seam
-between the two generated stubs is untested over a real wire (S5, a
+between the two generated stubs is untested over a real wire (S3, a
 follow-up).
 
 ### The shape: a differential-oracle pyramid, Postgres as the one live dependency
@@ -131,36 +131,11 @@ composes the served seams; full browser e2e is rejected (D5).
 | --- | --- | --- | --- | --- |
 | Unit / contract | `go test -race` (untagged + `unix`), `bun test` | in-memory doubles / fakes | none | moon `test` (`go/moon.yml:138`) — shipped |
 | Live-backend integration | `//go:build pgtest` | the same contract, differentially, against the store | Postgres | **inline step in the existing CI job** (`ci.yml:295-316`) — shipped |
-| Whole-flow | `//go:build pgtest` | one scripted flow composing the served seams, event-gated | Postgres | same inline step — **S3 unexecuted** |
+| Whole-flow | `//go:build pgtest` | one scripted flow composing the served seams, event-gated | Postgres | same inline step — **S2 unexecuted** |
 | Container lifecycle / full-stack scenario | `//go:build podman` (incl. `go/e2e/`) | production Launch path + dogfood legs | rootless podman | skip-if-absent; owned by the dogfood-e2e record (D4) |
-| Client transport contract | `bun test` vs a live Go server binary | generated `compass.v1` TS client ↔ real server | server binary + Postgres | **S5 unexecuted — follow-up, fold toward dogfood-e2e** |
+| Client transport contract | `bun test` vs a live Go server binary | generated `compass.v1` TS client ↔ real server | server binary + Postgres | **S3 unexecuted — follow-up, fold toward dogfood-e2e** |
 
-### A1 — Postgres provisioning in CI: the shipped service container (amends orion D4)
-
-**Decision, not open question — this is ground truth.** The orion record
-ruled a per-step **embedded `postgresql_18` postmaster** on a Unix socket
-(nix-vendored binary, `initdb` a throwaway datadir, socket-only DSN in URL
-form), because orion's Woodpecker step image had no container CLI and no
-service-step concept. Compass CI is GitHub Actions, which has exactly that
-concept, and the shipped shape uses it: a `services:` **Postgres service
-container**, digest-pinned —
-`postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777`
-(`ci.yml:119`) — with `POSTGRES_DB: compass`, a health-gated start
-(`pg_isready`, `ci.yml:124-127`), and a TCP DSN exported to the step
-(`ci.yml:301`). The pin is by digest deliberately (`16-alpine` is a mutable
-tag) and must stay equal to `pgtest.go`'s `pgImage` (`pgtest.go:42-50`) so CI
-and a local container run exercise byte-identical Postgres. The entire
-embedded-postmaster apparatus the orion record designed — the socket-only
-`sun_path` budget, the URL-form-DSN-or-schema-isolation-breaks analysis, the
-`initdb -U postgres` provisioning flags, `max_connections` measurement — is
-**not ported**: it solved a Woodpecker constraint compass does not have. What
-survives of it is the two invariants the analysis protected, both already
-held by the shipped shape: the DSN is URL-form (so the harness's query-string
-`search_path` threading works unchanged), and version parity is pinned
-(digest-equal image on both sides, at major **16**, not the orion record's
-18 — the parity mechanism matters, the major is whatever both sides pin).
-
-### A2 — One CI job, pgtest inline: no separate lane (amends orion D2/DL-049)
+### A1 — One CI job, pgtest inline: no separate lane (amends orion D2/DL-049)
 
 **Matt's ruling, verbatim: "trimmed but no extra CI job, it goes in the same
 existing job."** The orion record's D2 mandated a separate `compass-go:test-pg`
@@ -190,6 +165,31 @@ that coupling, `ci.yml:335-340`). S1 adds the in-harness half: a
 one seam every suite passes through (`RequireDSN`), set by the CI step env.
 The workflow guard stays — two independent teeth, one contract.
 
+### A2 — Postgres provisioning in CI: the shipped service container (amends orion D4)
+
+**Decision, not open question — this is ground truth.** The orion record
+ruled a per-step **embedded `postgresql_18` postmaster** on a Unix socket
+(nix-vendored binary, `initdb` a throwaway datadir, socket-only DSN in URL
+form), because orion's Woodpecker step image had no container CLI and no
+service-step concept. Compass CI is GitHub Actions, which has exactly that
+concept, and the shipped shape uses it: a `services:` **Postgres service
+container**, digest-pinned —
+`postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777`
+(`ci.yml:119`) — with `POSTGRES_DB: compass`, a health-gated start
+(`pg_isready`, `ci.yml:124-127`), and a TCP DSN exported to the step
+(`ci.yml:301`). The pin is by digest deliberately (`16-alpine` is a mutable
+tag) and must stay equal to `pgtest.go`'s `pgImage` (`pgtest.go:42-50`) so CI
+and a local container run exercise byte-identical Postgres. The entire
+embedded-postmaster apparatus the orion record designed — the socket-only
+`sun_path` budget, the URL-form-DSN-or-schema-isolation-breaks analysis, the
+`initdb -U postgres` provisioning flags, `max_connections` measurement — is
+**not ported**: it solved a Woodpecker constraint compass does not have. What
+survives of it is the two invariants the analysis protected, both already
+held by the shipped shape: the DSN is URL-form (so the harness's query-string
+`search_path` threading works unchanged), and version parity is pinned
+(digest-equal image on both sides, at major **16**, not the orion record's
+18 — the parity mechanism matters, the major is whatever both sides pin).
+
 ### A3 — The whole-flow level: compose the already-built seams; no browser e2e
 
 Everything a from-scratch smoke would build has shipped: the network accept +
@@ -200,13 +200,13 @@ wire (`lifecycle_e2e_pgtest_test.go`). The one seam no suite composes is
 `runner.Dial` → the **production** `RunnerService` door built by
 `buildNetworkServer` (Runner-kind bearer gate, `network_door.go:285-296`):
 both existing runner-dialing suites mount `RunnerService` on their own
-`httptest` h2c servers and dial cleartext. S3 closes exactly that seam and
+`httptest` h2c servers and dial cleartext. S2 closes exactly that seam and
 nothing else — it does not re-assert the served comms round-trip or the plain
 TLS accept.
 
 Browser (Playwright/WebDriver) e2e stays rejected: the UI transport adapter
 is contract-tested at the frame level (`apps/ui/src/daemon-transport.test.ts`),
-the client factory is generated code (proven by S5 once it lands), and a
+the client factory is generated code (proven by S3 once it lands), and a
 browser adds the largest flake+infra surface for coverage the layered seams
 already compose. Full-stack *scenario* coverage — real containers, real agent
 turns, UI-inclusive tiers — is the dogfood-e2e record's charter, not a gap
@@ -218,13 +218,13 @@ The orion F5 lane — a `bun test` suite spawning the real `compass-server`
 binary and driving the generated TS client against it over a loopback
 endpoint — remains a real gap (mock-fetch on the TS side, in-process servers
 on the Go side; the two generated stubs never meet a real wire in any gate).
-It is kept in this record's Plan as S5 **as a scoping note, not a build
+It is kept in this record's Plan as S3 **as a scoping note, not a build
 task here**: conceptually it belongs with the compass-dogfood-e2e harness
 (`docs/designs/platform/compass-dogfood-e2e/design.md`), which already owns
 full-stack bring-up, authenticated Connect clients against a served door, and
 a parked UI-inclusive tier (its H7/OQ3). Standing up a second
 spawn-a-real-server fixture under `packages/compass-client` would duplicate
-that bring-up. S5 therefore files the lane as a new feature against the
+that bring-up. S3 therefore files the lane as a new feature against the
 dogfood-e2e scope (a follow-up issue), rather than landing a parallel
 fixture from this record. This record does not edit the dogfood-e2e record.
 
