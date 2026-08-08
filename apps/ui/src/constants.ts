@@ -72,7 +72,7 @@ export interface ActivityBarItem {
  *  issue tabs (Files / VCS / PR). The agent conversation tabs are no longer
  *  hardcoded here — they are derived per pin from the store's pin set
  *  (`rightTabGroups()`), so the fleet group is a configurable pin layer, not a
- *  fixed Supervisor · Warden pair (Record A §T2). */
+ *  fixed Supervisor pin (Record A §T2). */
 export type StaticRightTab = "status" | IssueTab;
 
 /** The static tabs in activity-bar order, keyed on the static-tab union in a
@@ -98,7 +98,7 @@ export const RIGHT_SIDEBAR_ISSUE_ITEMS: readonly ActivityBarItem[] =
  *  §T2; SEA-1645 P1). The tab id is the `agent:`-prefixed account id (the open
  *  arm of `RightSidebarTab`); the icon is the agent handle's initial (matching
  *  the UI's glyph-icon convention — a per-agent glyph, no hardcoded Supervisor
- *  ◆ / Warden 🛡), and the title is the LIVE agent handle. The item is left
+ *  ◆), and the title is the LIVE agent handle. The item is left
  *  unmarked (`unreachable` absent) so its `agentId` badges a real `StateDot`.
  *  An unresolvable pin is built by `unreachableFleetItem` instead — so a
  *  marked item can carry an `agentId` that resolves no agent. */

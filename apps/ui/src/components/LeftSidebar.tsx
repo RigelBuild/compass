@@ -48,7 +48,7 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 				<span class="name">{a().account.handle}</span>
 				<Show when={a().role !== "worker"}>
 					<span class="role-pip" data-role={a().role} title={a().role}>
-						{a().role === "supervisor" ? "◆" : "🛡"}
+						◆
 					</span>
 				</Show>
 				<Show when={props.badge !== undefined}>

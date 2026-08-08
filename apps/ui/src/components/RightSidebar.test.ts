@@ -146,7 +146,7 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 	// The two visible fixture agents to pin — both resolve in STUB_AGENTS, so the
 	// derivation must surface a fleet item for each, in pin order.
 	const SUP = "acc-supervisor";
-	const WARDEN = "acc-warden";
+	const LIVINGSTONE = "acc-livingstone";
 
 	// Fleet must sit ABOVE issue (D2). A swapped order renders the bar upside-down.
 	test("orders the groups fleet-first, issue-second", () => {
@@ -164,7 +164,7 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 				const ids = groups.flatMap((g) => g.items.map((item) => item.id));
 				expect(ids).toEqual([
 					`agent:${SUP}`,
-					`agent:${WARDEN}`,
+					`agent:${LIVINGSTONE}`,
 					"status",
 					"files",
 					"vcs",
@@ -173,7 +173,7 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 				// No duplicate, independent of order.
 				expect(new Set(ids).size).toBe(ids.length);
 			},
-			[SUP, WARDEN],
+			[SUP, LIVINGSTONE],
 		);
 	});
 
@@ -220,7 +220,7 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 				);
 				expect(withAgent.map((item) => item.id)).toEqual([
 					`agent:${SUP}`,
-					`agent:${WARDEN}`,
+					`agent:${LIVINGSTONE}`,
 				]);
 				for (const item of withAgent) {
 					expect(STUB_AGENTS.some((a) => a.account.id === item.agentId)).toBe(
@@ -234,7 +234,7 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 				expect(status).toBeDefined();
 				expect(status?.agentId).toBeUndefined();
 			},
-			[SUP, WARDEN],
+			[SUP, LIVINGSTONE],
 		);
 	});
 });

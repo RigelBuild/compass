@@ -1,7 +1,7 @@
 /* Compass ADE — dev UI styling. Dark, dense, board-first. An Orca-inspired
  * shell: a left folder tree of agents, a central Bridge (swimlane board) or
  * agent (ACP + terminals) view, and a right sidebar carrying the fleet
- * conversations (Supervisor · Warden · Status) above the issue files/VCS/PR
+ * conversations (Supervisor · Status) above the issue files/VCS/PR
  * tabs, plus a bottom usage bar. All read one store. */
 
 :root {
@@ -527,9 +527,6 @@ button {
 }
 .role-pip[data-role="supervisor"] {
 	color: var(--accent);
-}
-.role-pip[data-role="warden"] {
-	color: var(--purple);
 }
 
 /* ── Main area ──────────────────────────────────────────────────────────── */

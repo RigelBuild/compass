@@ -6,8 +6,8 @@ import type { AgentState } from "./stub-data";
 // agent-state.ts is the pure D9 projection: it maps the daemon's coarse,
 // authoritative `AgentSessionState` (compass.v1, #443) plus optional stream
 // refinements onto the fine-grained UI dot. These tests pin the projection
-// row-by-row so a future edit to the switch, a leaked refinement, or a reorder
-// of the `wardenPaused` override can't silently render the wrong dot.
+// row-by-row so a future edit to the switch or a leaked refinement can't
+// silently render the wrong dot.
 
 // The complete UI dot union (stub-data AgentState) as a membership table.
 // Enumerated on purpose: the return-type guard below asserts every branch lands
@@ -131,51 +131,6 @@ describe("turnDoneUnopened refinement (READY → done)", () => {
 	});
 });
 
-describe("wardenPaused override (precedence)", () => {
-	// The strongest contract: a Warden pause is a Compass overlay that wins over
-	// the enum regardless of what the session was doing. `wardenPaused` is the
-	// first check in the function; moving it below the switch (so a WORKING/READY
-	// session returned early) would redden every row here.
-	for (const state of ALL_SESSION_STATES) {
-		test(`paused wins for ${AgentSessionState[state]}`, () => {
-			expect(agentDotState(state, { wardenPaused: true })).toBe("paused");
-		});
-	}
-
-	// Precedence over the other refinements: pause beats an open ask and an
-	// unopened-done turn. If the override were reordered after the refinement
-	// branches, these would resolve to waiting/done instead.
-	test("paused beats awaitingInput", () => {
-		expect(
-			agentDotState(AgentSessionState.WORKING, {
-				wardenPaused: true,
-				awaitingInput: true,
-			}),
-		).toBe("paused");
-	});
-
-	test("paused beats turnDoneUnopened", () => {
-		expect(
-			agentDotState(AgentSessionState.READY, {
-				wardenPaused: true,
-				turnDoneUnopened: true,
-			}),
-		).toBe("paused");
-	});
-
-	// A falsy wardenPaused must NOT trigger the override — the enum mapping still
-	// governs. Guards against `if (refinement.wardenPaused !== undefined)` or a
-	// truthiness slip that treats an explicit `false` as a pause.
-	test("wardenPaused:false does not override the enum mapping", () => {
-		expect(
-			agentDotState(AgentSessionState.WORKING, { wardenPaused: false }),
-		).toBe("working");
-		expect(
-			agentDotState(AgentSessionState.READY, { wardenPaused: false }),
-		).toBe("idle");
-	});
-});
-
 describe("return type is always a valid AgentState", () => {
 	// Totality guard: across every enum value and a spread of refinement combos,
 	// the result is one of the seven union members. Catches a future branch that
@@ -185,8 +140,6 @@ describe("return type is always a valid AgentState", () => {
 		{},
 		{ awaitingInput: true },
 		{ turnDoneUnopened: true },
-		{ wardenPaused: true },
-		{ awaitingInput: true, turnDoneUnopened: true, wardenPaused: true },
 	];
 
 	for (const state of ALL_SESSION_STATES) {

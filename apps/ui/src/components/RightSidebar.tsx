@@ -540,7 +540,7 @@ const StatusPane: Component = () => {
 
 /** The right sidebar (design D5, dock-in-sidebar D2/D3/D5): an icon-per-tab
  *  activity bar mirroring Orca, grouped fleet-over-issue with a divider.
- *  Fleet tabs (Supervisor · Warden) render the agent's home-DM conversation
+ *  Fleet tabs (Supervisor) render the agent's home-DM conversation
  *  inline (read-only asks) above an open-workspace control;
  *  issue tabs render the repo/branch dropdown + detail head above the pane
  *  for the active tab — Files (with a search box), VCS (changed files + commit
