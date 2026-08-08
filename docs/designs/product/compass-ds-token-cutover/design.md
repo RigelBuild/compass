@@ -118,8 +118,9 @@ wholesale**; base.css becomes the sole global layer, which is what flips the
 canvas to Night Owl and the body face to Space Mono in one stroke. The
 scrollbar-hover raw hex `#45505f` (`app.css:101`) dies with the block —
 base.css already answers it with `--cx-text-faint` ("legacy used a raw grey;
-here the faint readable-meta text token", `base.css:49-53`) — OQ-4 asks
-whether that answer stands or a dedicated token is coined.
+here the faint readable-meta text token", `base.css:49-53`) — this is a
+stated assumption (see *Stated assumptions & known follow-ups*), revisited
+only if the T2 screenshots read wrong.
 
 ### (d) The `--st-*` → `--cx-st-*` state recolor (visible, not a rename)
 
@@ -229,7 +230,7 @@ reviews. The harness is a precondition task, not an afterthought.
   durations/easings outside `tokens.css` (`compass-ux-foundation/design.md:295-297`).
 - **`tokens.css` is read-only for this lane.** Both blocks (brand-mirrored
   `--rigel-*` and the compass-ux-owned `--cx-*` tier). Any new token this
-  migration needs (OQ-2, OQ-4) is coined BY compass-ux via coordination, never
+  migration needs (OQ-2) is coined BY compass-ux via coordination, never
   added here unilaterally.
 - **Purple is never aliased into `--cx-*`** (`tokens.css:110` "Accent (blue;
   purple is NEVER aliased into --cx-*)"; `tokens.css:45-46` "purple is
@@ -249,11 +250,11 @@ reviews. The harness is a precondition task, not an afterthought.
   interim is `--cx-text-bright` (`tokens.css:100`); OQ-2's is `--cx-accent`
   (T4); OQ-3's is `--cx-accent-muted` (T3). Matt's ruling then only re-points
   an already-valid ref — no task blocks on his latency.
-- **Merge atomically (see OQ-5 topology):** T2-T5 change the palette in
+- **Merge atomically (see OQ-4 topology):** T2-T5 change the palette in
   deliberately-clashing intermediate states (Night-Owl canvas over legacy
   panels between T2 and T3). Those intermediates are fine as commits inside a
   train that merges as one unit; they must NEVER land on `main` independently.
-  Whether the train is one PR or a stack merged together is OQ-5 (batched for
+  Whether the train is one PR or a stack merged together is OQ-4 (batched for
   Matt).
 - Base revision: main `94754d0a` + PR #220 merged. The driver runs
   format/lint/tests and the PR train; tasks here only edit and report.
@@ -279,7 +280,8 @@ PNGs (`e2e/__screens__/<surface>.png`) the driver attaches for Matt.
 Delete `app.css:60-103` (reset, `html/body/#root`, `body`, `button`,
 scrollbar set). Verify no other `app.css` rule re-declares `body`/scrollbar
 globals. Canvas goes Night Owl; body face goes Space Mono; scrollbar hover
-goes `--cx-text-faint` (interim answer to OQ-4).
+goes `--cx-text-faint` (the stated-assumption answer — see *Stated
+assumptions & known follow-ups*).
 Interfaces: consumes T1 (baseline captured before this lands); produces the
 edited `app.css` + a T1 screenshot pass. The T2 pass validates the
 canvas/scrollbar/typeface **globals only** — between T2 and T3 the panels and
@@ -294,7 +296,8 @@ Apply the mapping table in Approach (a) to every `var(--…)` legacy ref in
 `--radius*`, `--font-mono`, plus the five undefined-var fixes
 (`--danger`/`--bg-inset`/`--surface-2`/`--text-muted`/`--fg-muted`).
 `--accent-dim` refs (9) take the #220 interim (`--cx-accent-muted`) with an
-`/* OQ-3 pending */` comment. The 4 `--purple` refs (post-warden-delete) flip
+`/* OQ-3 pending */` comment. The 4 remaining `--purple` consumers (5 var()
+refs — `.mention-chip.reserved` carries two, post-warden-delete) flip
 to the **defined** interim `--cx-text-bright` (`tokens.css:100`) with an
 `/* OQ-1 pending */` comment — a defined token, so T5's tier-deletion never
 leaves them undefined; Matt's OQ-1 ruling only re-points them. Move the layout
