@@ -142,6 +142,7 @@ type stubStreamingRuntime struct {
 	stopErr     error                            // when set, engine Stop fails — models a Teardown partial failure
 	stopErrByID map[runtime.ContainerID]error    // per-container Stop error; overrides stopErr for the keyed id
 	stopGate    chan struct{}                    // when non-nil, Stop blocks on it (after recording) — test-controlled teardown parking
+	stopEntered chan runtime.ContainerID         // when non-nil, Stop sends id after recording, before parking — a real "reached Stop" event for a test to gate on
 	callsByID   map[runtime.ContainerID][]string // per-container lifecycle calls (stop/remove), for fan-out isolation assertions
 	created     []runtime.ContainerSpec
 }
@@ -182,11 +183,16 @@ func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.Con
 func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.ContainerID, _ time.Duration) error {
 	f.record("stop")
 	f.recordForID(id, "stop")
-	// Park mid-Stop when the test holds the gate, so a teardown can be observed
-	// in progress (stop recorded, remove not yet reached) before it is released.
 	f.mu.Lock()
 	gate := f.stopGate
+	entered := f.stopEntered
 	f.mu.Unlock()
+	// Signal that this teardown has entered Stop (a real event the test gates on),
+	// then park until the test releases the gate — so a teardown can be observed
+	// in progress (stop recorded, remove not yet reached) before it is released.
+	if entered != nil {
+		entered <- id
+	}
 	if gate != nil {
 		<-gate
 	}

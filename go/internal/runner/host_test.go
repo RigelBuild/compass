@@ -713,14 +713,19 @@ func TestCloseJoinsConcurrentTeardowns(t *testing.T) {
 	provisionAndStart(t, host, "a")
 	provisionAndStart(t, host, "b")
 
-	// Park every teardown mid-Stop until the test releases the gate. Released on
+	// Park every teardown mid-Stop until the test releases the gate, and have each
+	// signal stopEntered when it reaches Stop (a real event the test gates on, not
+	// a poll). stopEntered is buffered for both containers so a teardown can signal
+	// and then park without waiting for the test to read. The gate is released on
 	// every exit path (including a failing assertion) so the suite can't hang.
 	gate := make(chan struct{})
+	entered := make(chan runtime.ContainerID, 2)
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(gate) }) }
 	t.Cleanup(release)
 	engine.mu.Lock()
 	engine.stopGate = gate
+	engine.stopEntered = entered
 	engine.mu.Unlock()
 
 	done := make(chan struct{})
@@ -729,16 +734,15 @@ func TestCloseJoinsConcurrentTeardowns(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait until both teardowns have entered Stop (recorded, now parked on the
-	// gate), event-gated with a bounded failsafe — no sleeps.
-	deadline := time.After(30 * time.Second)
-	for engine.countCall("stop") < 2 {
+	// Wait until both teardowns have entered Stop (each sends on stopEntered, now
+	// parked on the gate) — a real event with a bounded failsafe, no poll, no sleeps.
+	for range 2 {
 		select {
-		case <-deadline:
+		case <-entered:
+		case <-time.After(30 * time.Second):
 			t.Fatal("teardowns did not both reach Stop within 30s")
 		case <-done:
 			t.Fatal("Close returned before its teardowns reached Stop")
-		default:
 		}
 	}
 
