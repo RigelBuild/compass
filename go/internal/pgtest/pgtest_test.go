@@ -19,6 +19,7 @@ func TestDecideDSNSource(t *testing.T) {
 		dsn          string
 		useContainer string
 		cli          string
+		requireLive  string
 		want         dsnSource
 	}{
 		{
@@ -42,12 +43,35 @@ func TestDecideDSNSource(t *testing.T) {
 			useContainer: "1",
 			want:         sourceContainer,
 		},
+		{
+			name:        "require-live no dsn no runtime fails",
+			cli:         "",
+			requireLive: "1",
+			want:        sourceFailRequireLive,
+		},
+		{
+			name:        "require-live no dsn runtime present still misconfigured fail",
+			cli:         "podman",
+			requireLive: "1",
+			want:        sourceFailMisconfigured,
+		},
+		{
+			name: "no require-live no dsn no runtime still skips",
+			cli:  "",
+			want: sourceSkipNoRuntime,
+		},
+		{
+			name:        "dsn set uses shared schema regardless of require-live",
+			dsn:         "postgres://localhost/db",
+			requireLive: "1",
+			want:        sourceSharedSchema,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := decideDSNSource(tt.dsn, tt.useContainer, tt.cli); got != tt.want {
-				t.Errorf("decideDSNSource(%q, %q, %q) = %d, want %d",
-					tt.dsn, tt.useContainer, tt.cli, got, tt.want)
+			if got := decideDSNSource(tt.dsn, tt.useContainer, tt.cli, tt.requireLive); got != tt.want {
+				t.Errorf("decideDSNSource(%q, %q, %q, %q) = %d, want %d",
+					tt.dsn, tt.useContainer, tt.cli, tt.requireLive, got, tt.want)
 			}
 		})
 	}

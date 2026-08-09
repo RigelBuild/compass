@@ -59,6 +59,14 @@ const DSNEnvVar = "COMPASS_TEST_DATABASE_DSN"
 // changes what the suite measures, so it is opt-in rather than a fallback.
 const UseContainerEnvVar = "COMPASS_TEST_USE_CONTAINER"
 
+// RequireLiveEnvVar, when set to a non-empty value, turns the no-runtime SKIP
+// path into a hard failure: with no COMPASS_TEST_DATABASE_DSN and no container
+// runtime, RequireDSN would normally skip so the suite stays green in a
+// container-less sandbox, but where a live database is mandatory (CI sets this)
+// a skip would silently pass the suite without exercising anything. Setting
+// COMPASS_REQUIRE_LIVE=1 makes that case fail loudly instead.
+const RequireLiveEnvVar = "COMPASS_REQUIRE_LIVE"
+
 // dsnSource is which of the four database-acquisition paths RequireDSN takes.
 type dsnSource int
 
@@ -67,15 +75,19 @@ const (
 	sourceSkipNoRuntime                      // no DSN, no container runtime
 	sourceFailMisconfigured                  // no DSN, runtime present, no opt-in
 	sourceContainer                          // no DSN, runtime present, opt-in
+	sourceFailRequireLive                    // no DSN, no runtime, COMPASS_REQUIRE_LIVE set
 )
 
 // decideDSNSource is the pure policy behind RequireDSN, split out so the dispatch
 // is unit-testable without a real Postgres or *testing.T.
-func decideDSNSource(dsn, useContainer, cli string) dsnSource {
+func decideDSNSource(dsn, useContainer, cli, requireLive string) dsnSource {
 	if dsn != "" {
 		return sourceSharedSchema
 	}
 	if cli == "" {
+		if requireLive != "" {
+			return sourceFailRequireLive
+		}
 		return sourceSkipNoRuntime
 	}
 	if useContainer == "" {
@@ -98,7 +110,7 @@ func RequireDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv(DSNEnvVar)
 	cli := containerCLI()
-	switch decideDSNSource(dsn, os.Getenv(UseContainerEnvVar), cli) {
+	switch decideDSNSource(dsn, os.Getenv(UseContainerEnvVar), cli, os.Getenv(RequireLiveEnvVar)) {
 	case sourceSharedSchema:
 		return isolatedSchemaDSN(t, dsn)
 	case sourceSkipNoRuntime:
@@ -109,6 +121,10 @@ func RequireDSN(t *testing.T) string {
 			"or set COMPASS_TEST_USE_CONTAINER=1 to opt into a throwaway per-test container (~500x slower)", cli)
 	case sourceContainer:
 		return startContainer(t, cli)
+	case sourceFailRequireLive:
+		t.Fatalf("%s=%s requires a live Postgres but COMPASS_TEST_DATABASE_DSN is unset and no "+
+			"container runtime (podman/docker) is present: set COMPASS_TEST_DATABASE_DSN to a "+
+			"running Postgres", RequireLiveEnvVar, os.Getenv(RequireLiveEnvVar))
 	}
 	return ""
 }

@@ -300,6 +300,11 @@ jobs:
           # managing a container.
           COMPASS_TEST_DATABASE_DSN: postgres://postgres:compass-test@127.0.0.1:5432/compass?sslmode=disable
           CGO_ENABLED: '1'
+          # The harness SKIPS when it can reach no database — correct for a
+          # container-less sandbox, but in CI the service Postgres above is
+          # mandatory, so a skip here would silently pass nothing. Setting this
+          # turns the no-DSN/no-runtime SKIP into a hard failure.
+          COMPASS_REQUIRE_LIVE: '1'
         # -v so the assertion below can read per-test outcomes. The redirect —
         # rather than a pipe to tee — is deliberate: a pipeline's exit status is
         # its LAST command's, so `go test ... | tee` returns tee's 0 and a real
