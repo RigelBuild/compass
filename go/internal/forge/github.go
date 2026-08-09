@@ -1,0 +1,392 @@
+package forge
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// ErrBudgetExhausted is returned (wrapped) when the rate budget is at or under
+// the reserve, or a 403/429 signals a rate-limit skip; the caller skips the
+// cycle and retries next tick. The client never sleeps in-process — backoff is
+// the driver's ticker.
+var ErrBudgetExhausted = errors.New("forge: rate budget exhausted")
+
+// TokenSource yields the current forge token and lets the client drop a cached
+// value when it observes an auth failure, so the next batch re-resolves. Token
+// is called per fetch batch (not per request); the client calls Invalidate on a
+// 401 / bad-creds-403.
+type TokenSource interface {
+	Token(ctx context.Context) (string, error)
+	Invalidate()
+}
+
+// GitHubConfig configures a GitHub read client.
+type GitHubConfig struct {
+	Host   string       // "github.com" or a GHES host; API base derives from it
+	Token  TokenSource  // required
+	Client *http.Client // nil -> a default client with a sane timeout
+}
+
+// ListPage is one conditional page fetch result. On NotModified, Issues is nil
+// and ETag/HasNext are zero — the caller's stored cursor row remains the truth.
+type ListPage struct {
+	Issues      []Issue
+	ETag        string // the response ETag to store on sink success
+	HasNext     bool   // an RFC-5988 Link rel="next" was present
+	NotModified bool   // 304: content unchanged vs the etag argument
+}
+
+// GitHub is a hand-rolled net/http read client for a GitHub (or GHES) forge
+// (OQ-6: no go-github dependency, stdlib only — the high-level library lacks
+// the conditional-request + budget hook this driver's core mechanism needs).
+// It is STATELESS about cursors: the page-level primitive takes the caller's
+// ETag and reports NotModified; no in-memory ETag/response/Link cache exists.
+// The caller (the DL-053 poll driver) owns cursor state durably.
+//
+// Conditional requests are load-bearing for the budget math: a 304 Not Modified
+// is NOT charged against the primary (core) rate limit when the request carried
+// a valid Authorization header. Reverified against current GitHub REST docs on
+// 2026-08-09:
+// https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#use-conditional-requests
+// ("Making a conditional request does not count against your primary rate limit
+// if a 304 response is returned and the request was made while correctly
+// authorized with an Authorization header.").
+type GitHub struct {
+	host   string
+	token  TokenSource
+	client *http.Client
+
+	// resetAt is the rate-budget gate: when non-zero and now() is before it,
+	// the next call fails fast with ErrBudgetExhausted rather than burning the
+	// tail of the window. It is derived from the last response's
+	// x-ratelimit-reset (or a 403/429 Retry-After / reset signal). A zero value
+	// means the gate is OPEN. Absent/malformed headers leave it open (treat
+	// unknown budget as available — never wedge the gate). Once now() passes
+	// resetAt the gate re-opens, so a wedged window self-clears after the reset.
+	// The driver polls single-goroutine per the frozen design, so no mutex.
+	resetAt time.Time
+
+	// now is the clock seam (defaults to time.Now in NewGitHub); tests override
+	// it to drive the reset-time gate deterministically without real sleeps.
+	now func() time.Time
+}
+
+// reserve is the rate-budget floor: when x-ratelimit-remaining is at or under
+// this, the next call fails fast with ErrBudgetExhausted rather than spending
+// the tail of the window.
+const reserve = 10
+
+// perPage is the fixed page size for list requests (stable across polls so more
+// ticks return 304 — GitHub best-practices "make requests that can be cached").
+const perPage = 100
+
+// defaultSkip is the reset-window fallback: when a 403/429 rate-limit signal
+// carries no usable reset time (no Retry-After, no x-ratelimit-reset), the gate
+// arms for this bounded duration so it still self-clears rather than wedging.
+const defaultSkip = time.Minute
+
+// NewGitHub returns a GitHub read client. A nil cfg.Client gets a default client
+// with a sane timeout; cfg.Token is required (the caller wires it — DL-052).
+func NewGitHub(cfg GitHubConfig) *GitHub {
+	client := cfg.Client
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	return &GitHub{host: cfg.Host, token: cfg.Token, client: client, now: time.Now}
+}
+
+// ghIssue is the wire shape of one GitHub /issues list row. Only the fields the
+// forge.Issue domain needs are decoded; the pullRequest key discriminates a PR
+// row (GitHub's issues endpoint returns PRs as issues — they are dropped).
+type ghIssue struct {
+	Number    uint64 `json:"number"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	State     string `json:"state"`
+	HTMLURL   string `json:"html_url"`
+	UpdatedAt string `json:"updated_at"`
+	User      struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	PullRequest *json.RawMessage `json:"pull_request"`
+}
+
+// ghError is the wire shape of a GitHub error body (the message field feeds
+// StatusError.Message).
+type ghError struct {
+	Message string `json:"message"`
+}
+
+// ListIssuesPage fetches one page (1-based) of a repo's issues conditionally.
+// etag == "" is an unconditional fetch (no If-None-Match); a non-empty etag
+// sends If-None-Match, and a 304 maps to ListPage{NotModified: true} with nil
+// Issues and zero ETag/HasNext (no body parse). The client holds NO cursor
+// state — the caller owns it.
+func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter, page int, etag string) (ListPage, error) {
+	// Gate check: an armed gate blocks until the injected clock passes resetAt,
+	// then re-opens so the next call issues a real request (whose response
+	// re-records the budget). A zero resetAt means the gate is open.
+	if !g.resetAt.IsZero() {
+		if g.now().Before(g.resetAt) {
+			return ListPage{}, fmt.Errorf("forge: github list %q page %d: %w", repo, page, ErrBudgetExhausted)
+		}
+		g.resetAt = time.Time{}
+	}
+
+	token, err := g.token.Token(ctx)
+	if err != nil {
+		return ListPage{}, fmt.Errorf("forge: github resolve token: %w", err)
+	}
+
+	u := g.apiBase() + "/repos/" + repo + "/issues?" + g.queryParams(f, page).Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return ListPage{}, fmt.Errorf("forge: github build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return ListPage{}, fmt.Errorf("forge: github list %q page %d: %w", repo, page, err)
+	}
+	defer func() { _ = resp.Body.Close() }() // read-only GET; body drained/closed, no actionable close error
+
+	// Record the budget gate from THIS response for the NEXT call.
+	g.recordBudget(resp)
+
+	switch {
+	case resp.StatusCode == http.StatusNotModified:
+		return ListPage{NotModified: true}, nil
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		// fallthrough to body parse below
+	default:
+		return ListPage{}, g.mapErrorResponse(resp)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ListPage{}, fmt.Errorf("forge: github read body: %w", err)
+	}
+
+	var rows []ghIssue
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return ListPage{}, fmt.Errorf("forge: github decode issues: %w", err)
+	}
+
+	issues := make([]Issue, 0, len(rows))
+	for _, r := range rows {
+		if r.PullRequest != nil {
+			continue // GitHub returns PRs as issues; drop them (issue-shaped only)
+		}
+		issues = append(issues, r.toIssue())
+	}
+
+	return ListPage{
+		Issues:  issues,
+		ETag:    resp.Header.Get("ETag"),
+		HasNext: hasNextLink(resp.Header.Get("Link")),
+	}, nil
+}
+
+// ListIssues is the unconditional full walk (concatenated pages), built on
+// ListIssuesPage. It follows the RFC-5988 Link rel="next" chain. Satisfies
+// ingest.forgeReader structurally and is the read half of forge.Provider.
+func (g *GitHub) ListIssues(ctx context.Context, repo string, f IssueFilter) ([]Issue, error) {
+	var all []Issue
+	for page := 1; ; page++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		p, err := g.ListIssuesPage(ctx, repo, f, page, "")
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, p.Issues...)
+		if !p.HasNext {
+			return all, nil
+		}
+	}
+}
+
+// apiBase derives the REST API base URL from the configured host. github.com
+// maps to api.github.com; a GHES host maps to https://<host>/api/v3.
+func (g *GitHub) apiBase() string {
+	if g.host == "" || g.host == "github.com" {
+		return "https://api.github.com"
+	}
+	return "https://" + g.host + "/api/v3"
+}
+
+// toIssue maps a decoded wire row to the raw forge.Issue. Body is returned RAW
+// (the owner-header strip belongs to ingestion, never the provider). UpdatedAt
+// is parsed from the row's updated_at (RFC-3339); an unparseable value leaves
+// the zero time.
+func (r ghIssue) toIssue() Issue {
+	labels := make([]string, 0, len(r.Labels))
+	for _, l := range r.Labels {
+		labels = append(labels, l.Name)
+	}
+	var updated time.Time
+	if r.UpdatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, r.UpdatedAt); err == nil {
+			updated = t
+		}
+	}
+	return Issue{
+		Number:       r.Number,
+		Title:        r.Title,
+		Body:         r.Body,
+		State:        r.State,
+		URL:          r.HTMLURL,
+		ForgeAccount: r.User.Login,
+		Labels:       labels,
+		UpdatedAt:    updated,
+	}
+}
+
+// queryParams maps the IssueFilter to GitHub list-issues query params. An empty
+// State maps to state=all (this provider's documented default); labels join
+// comma-separated. per_page and page are always set.
+func (g *GitHub) queryParams(f IssueFilter, page int) url.Values {
+	q := url.Values{}
+	state := f.State
+	if state == "" {
+		state = "all"
+	}
+	q.Set("state", state)
+	if len(f.Labels) > 0 {
+		q.Set("labels", strings.Join(f.Labels, ","))
+	}
+	q.Set("per_page", strconv.Itoa(perPage))
+	q.Set("page", strconv.Itoa(page))
+	return q
+}
+
+// recordBudget updates the fail-fast gate from a response's x-ratelimit-*
+// headers. remaining <= reserve arms the gate until x-ratelimit-reset (unix
+// seconds); absent/malformed headers leave it open (treat unknown budget as
+// available — never wedge the gate). A missing/unparseable reset with a
+// low remaining falls back to a bounded skip so the gate still self-clears.
+func (g *GitHub) recordBudget(resp *http.Response) {
+	raw := resp.Header.Get("X-Ratelimit-Remaining")
+	if raw == "" {
+		g.resetAt = time.Time{}
+		return
+	}
+	remaining, err := strconv.Atoi(raw)
+	if err != nil {
+		g.resetAt = time.Time{}
+		return
+	}
+	if remaining > reserve {
+		g.resetAt = time.Time{}
+		return
+	}
+	g.armGate(resetFromHeader(resp.Header.Get("X-Ratelimit-Reset")))
+}
+
+// armGate sets the reset-time gate. A zero at (no usable reset time) falls back
+// to a bounded skip from now() so the gate self-clears rather than wedging.
+func (g *GitHub) armGate(at time.Time) {
+	if at.IsZero() {
+		at = g.now().Add(defaultSkip)
+	}
+	g.resetAt = at
+}
+
+// resetFromHeader parses an x-ratelimit-reset value (unix seconds) into an
+// absolute reset instant; an absent/malformed value yields the zero time.
+func resetFromHeader(raw string) time.Time {
+	if raw == "" {
+		return time.Time{}
+	}
+	secs, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return time.Time{}
+	}
+	return time.Unix(secs, 0)
+}
+
+// mapErrorResponse classifies a non-2xx/non-304 response. A 403/429 carrying
+// retry-after OR a zeroed x-ratelimit-remaining is a rate-limit skip
+// (ErrBudgetExhausted, arms the gate, no token re-resolve). A 401, or a 403
+// without rate-limit headers (bad-credentials/permission), is a *StatusError
+// AND invalidates the TokenSource so the next batch re-resolves. Any other
+// non-2xx is a *StatusError only.
+func (g *GitHub) mapErrorResponse(resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body) // best-effort: message is diagnostic; a read error just yields an empty message
+	var ge ghError
+	_ = json.Unmarshal(body, &ge) // best-effort decode of the diagnostic message; malformed body -> empty message
+
+	status := resp.StatusCode
+	if status == http.StatusForbidden || status == http.StatusTooManyRequests {
+		if isRateLimited(resp) {
+			g.armGate(g.rateLimitReset(resp))
+			return fmt.Errorf("forge: github http %d: %w", status, ErrBudgetExhausted)
+		}
+	}
+
+	if status == http.StatusUnauthorized || status == http.StatusForbidden {
+		// 401, or a 403 that is NOT a rate-limit signal -> bad credentials /
+		// permission: drop the cached token so the next batch re-resolves.
+		g.token.Invalidate()
+	}
+
+	return &StatusError{Status: status, Message: ge.Message}
+}
+
+// isRateLimited reports whether a 403/429 is a rate-limit signal: a retry-after
+// header, or a zeroed x-ratelimit-remaining. The presence of these two is the
+// ONLY discriminator (a dead token is never mistaken for a rate-limit skip).
+func isRateLimited(resp *http.Response) bool {
+	if resp.Header.Get("Retry-After") != "" {
+		return true
+	}
+	if raw := resp.Header.Get("X-Ratelimit-Remaining"); raw != "" {
+		if remaining, err := strconv.Atoi(raw); err == nil && remaining == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// rateLimitReset derives a reset instant from a 403/429 rate-limit response: a
+// Retry-After seconds value maps to now()+seconds; otherwise an
+// x-ratelimit-reset (unix seconds) is used. A zero time (neither present/usable)
+// lets armGate fall back to the bounded default skip.
+func (g *GitHub) rateLimitReset(resp *http.Response) time.Time {
+	if ra := resp.Header.Get("Retry-After"); ra != "" {
+		if secs, err := strconv.Atoi(ra); err == nil {
+			return g.now().Add(time.Duration(secs) * time.Second)
+		}
+	}
+	return resetFromHeader(resp.Header.Get("X-Ratelimit-Reset"))
+}
+
+// hasNextLink reports whether an RFC-5988 Link header carries a rel="next".
+func hasNextLink(link string) bool {
+	if link == "" {
+		return false
+	}
+	for part := range strings.SplitSeq(link, ",") {
+		if strings.Contains(part, `rel="next"`) {
+			return true
+		}
+	}
+	return false
+}
