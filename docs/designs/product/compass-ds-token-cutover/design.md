@@ -168,7 +168,7 @@ it clean. Since the guard is billed as what makes the deleted tier
 unrevivable, it also bans the legacy vocabulary by name (a
 `declaration-value-disallowed-list` regex over `--bg`, `--text`, `--st-`,
 `--accent`, `--purple`, `--radius`, `--font-mono`, minus the named layout
-  knobs) — cheap, and it converts the undefined-`--purple` failure mode
+knobs) — cheap, and it converts the undefined-`--purple` failure mode
 (below) from an invisible `inherit` into a CI red. The 14 unimported
 `design/components/*.css` files (`state-dot.css`, `button.css`, …) are in the
 guard's glob; they are expected-clean per D7 authorship (`--cx-*` already), so
@@ -370,9 +370,14 @@ Interfaces: consumes T1-T6; produces the reviewed screenshot set + changelog.
 Four **LOAD-BEARING** forks, all ruled by Matt on 2026-08-08. Recorded here as
 the frozen contract — execution reads the decided target, not a fork. (The
 former scrollbar-hover question is a stated assumption, not a fork — see
-*Stated assumptions & known follow-ups*.) Decision 2 additionally needs
-compass-ux (DS-tier owner) sign-off that the issue axis may serve the PR badge;
-the ruling coins no token, so no `tokens.css` change is required either way.
+*Stated assumptions & known follow-ups*.) Decision 2's issue-axis reuse for the
+PR badge has DS-tier sign-off from compass-ux (the record owner); it coins no
+token, so no `tokens.css` change is required either way.
+
+All `app.css` line refs below are in the record's declared **post-#220**
+coordinate space (Base revision, above). Executors resolve consumers by
+**selector** (`.tool-name`, `.mention-chip.reserved`, the `var(--accent-dim)`
+sites, …) against the actual post-#220 tree, never by the literal line numbers.
 
 1. **The 4 remaining `--purple` consumers** — split by role.
    `.mention-chip.reserved` (`app.css:3367-3368`, color + 16% wash) recolors to
@@ -394,8 +399,8 @@ the ruling coins no token, so no `tokens.css` change is required either way.
    CI/review family, or an interim `--cx-accent`, were rejected — an
    unnecessary token / a conflation with the interaction color. (The sibling
    `--st-blocked` / `--st-review` already map cleanly to `--cx-issue-blocked` /
-   `--cx-issue-in_review`.) Lands in T4; compass-ux confirms the issue-axis
-   reuse.
+   `--cx-issue-in_review`.) Lands in T4; DS-tier sign-off granted by compass-ux
+   (the issue axis may serve the PR badge).
 
 3. **`--accent-dim` fidelity (fill token + paired foreground)** — split by
    role. #220 mapped `--accent-dim` (solid `#1f6feb`, `app.css:27`) →
