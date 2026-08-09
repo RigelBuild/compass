@@ -359,6 +359,79 @@ jobs:
           echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
           exit "$rc"
 
+      - name: Seed the compass-agent image into local containers-storage
+        # The dogfood e2e fixture resolves its agent image as the bare ref
+        # `compass-agent:latest` (go/e2e/fixture.go's agentImage const), and its
+        # EnsureImage present-checks the LOCAL containers-storage
+        # (internal/stack/adapters/image.go) — it does not pull at test time. So
+        # seeding that exact tag into local storage here is what satisfies the
+        # ensure: the run below finds it present and no registry round-trip
+        # happens mid-test. The bare `compass-agent:latest` ref is also what
+        # podmanUsable() runs as its probe, so the same seed makes that probe
+        # true rather than skipping the suite.
+        #
+        # The image is public (SEA-1690; Matt-ruled public), so this pulls with
+        # no login, no credential, and no `packages: read` — `permissions:
+        # contents: read` above stays untouched.
+        run: |
+          podman pull ghcr.io/rigelbuild/compass-agent:latest
+          podman tag ghcr.io/rigelbuild/compass-agent:latest compass-agent:latest
+
+      - name: Dogfood e2e (deterministic full-stack tier)
+        working-directory: go
+        # The deterministic tier: a REAL full stack — compass-server + runner +
+        # agent-container + a PRIVATE postgres the suite stands up itself (not the
+        # job's `services: postgres`) — brought up via stack.Up, driven against a
+        # canned in-process model. No live model egress and no secrets (Decision
+        # D2), so it is reproducible and safe on every PR. It is build-tagged
+        # `podman`, so the moon `go test ./...` battery never compiles it — this
+        # step is the ONLY thing that runs it.
+        #
+        # Same capture-replay-exit shape as the Real-Postgres step above and for
+        # the same reason: redirect (not a `| tee` pipeline, whose exit status is
+        # tee's 0 and would swallow a FAIL), replay the log, then exit on go
+        # test's own status. `|| rc=$?` because the step runs under `bash -e`,
+        # which would otherwise abort before the log is printed. -race matches the
+        # pgtest step; the 20m timeout is finite headroom for a run that builds 3
+        # binaries, stands up a real stack, and runs a container turn.
+        run: |
+          rc=0
+          go test -tags podman -race -v -timeout 20m ./e2e/... >/tmp/e2e.log 2>&1 || rc=$?
+          cat /tmp/e2e.log
+          exit "$rc"
+
+      - name: Assert the dogfood e2e ran rather than skipped
+        working-directory: go
+        # The e2e legs t.Skip (never fail) when podmanUsable() is false — correct
+        # for a container-less sandbox, but a silent no-op here. A required check
+        # that let that skip pass would be VACUOUSLY green, so this guard makes an
+        # unavailable-podman run loud.
+        #
+        # Both halves are derived from source rather than hardcoded, matching the
+        # pgtest guard's discipline: a guard that drifts out of step with what it
+        # guards passes silently.
+        #   - the skip text is read from go/e2e/harness_test.go, so rewording the
+        #     skip cannot leave this grep matching nothing and reporting success;
+        #   - the ok line is required for the e2e package specifically, so "the
+        #     deterministic tier actually ran and passed" is what green means.
+        run: |
+          skip=$(sed -n 's/.*t\.Skip("\(rootless podman[^";]*\)[^"]*").*/\1/p' \
+            e2e/harness_test.go)
+          if [ -z "$skip" ]; then
+            echo "::error::could not read the skip message out of go/e2e/harness_test.go — this guard has drifted from the harness and is no longer checking anything"
+            exit 1
+          fi
+          if grep -qF "$skip" /tmp/e2e.log; then
+            echo "::error::dogfood e2e skipped — podman could not run compass-agent:latest, so nothing was asserted"
+            grep -nF "$skip" /tmp/e2e.log | head
+            exit 1
+          fi
+          if ! grep -qE "^ok[[:space:]]+github\.com/sealedsecurity/compass/go/e2e[[:space:]]" /tmp/e2e.log; then
+            echo "::error::the dogfood e2e package did not report ok — it failed, skipped, or never ran"
+            exit 1
+          fi
+          echo "dogfood e2e: the deterministic full-stack tier ran and reported ok"
+
       - name: Retrospect
         # Collapse the single job's flat task fan-out into per-task sections in
         # the Actions log, so a failure is one expand instead of a scroll. Reads
