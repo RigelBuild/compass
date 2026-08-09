@@ -41,13 +41,13 @@ before/after screenshots; that is the acceptance gate for the visible restyle.
 - **Coordination with the parallel warden task.** A sibling task (same wave)
   deletes the warden producer, including `.role-pip[data-role="warden"]`
   (`app.css:531-533`, `color: var(--purple)`), removing one of the five
-  `--purple` consumers. This record's purple fork (OQ-1) covers the remaining
-  four.
+  `--purple` consumers. This record's purple recolor (decision 1) covers the
+  remaining four.
 
 ### (a) Delete the legacy `:root` tier
 
 `app.css:7-58` is deleted. Every name in it is either flipped to a `--cx-*`
-target (below), resolved by an Open Question, or is a **layout knob, not a
+target (below) or is a **layout knob, not a
 design token** — `--topbar-h: 44px`, `--usage-h: 26px`, `--right-w: 400px`
 (`app.css:52-57`) have no DS counterpart and are not colors/type/space; they
 survive in a new, clearly-commented `/* app layout knobs (not DS tokens) */`
@@ -71,14 +71,14 @@ The mechanical mapping (targets verified present in `tokens.css:80-213`):
 | `--text-dim` | 51 | `--cx-text-dim` | |
 | `--text-faint` | 68 | `--cx-text-faint` | |
 | `--accent` | 47 | `--cx-accent` | |
-| `--accent-dim` | 9 | **OQ-3** | wash vs solid fidelity fork |
+| `--accent-dim` | 9 | **`--cx-border-focus` / `--cx-accent`** | fidelity split (decision 3): borders → `--cx-border-focus`, solid fills → `--cx-accent` w/ fg `--cx-bg` |
 | `--add` | 20 | `--cx-ok` | recolor `#3fb950` → `--rigel-success #22da6e` |
 | `--del` | 19 | `--cx-error` | recolor `#f85149` → `--rigel-red #ef5350` |
 | `--warn` | 18 | `--cx-warn` | recolor `#d29922` → `--rigel-amber #ecc48d` |
-| `--purple` | 6 | **OQ-1** | banned from `--cx-*` (one-accent rule) |
+| `--purple` | 6 | **`--cx-accent` / `--cx-text-bright`** | one-accent rule bans purple from `--cx-*`; decision 1: reserved-mention → blue accent, tool-names → text-bright |
 | `--st-working/idle/waiting/paused/error/done/stopped/disconnected` | 10 | `--cx-st-*` | see (d) — visible recolor |
-| `--st-blocked` / `--st-review` | 2 | `--cx-issue-blocked` / `--cx-issue-in_review` | sole consumers are BOARD_LANES (`constants.ts:18-22`) — clean issue-axis mapping; see OQ-2 |
-| `--st-merged` | 3 | **OQ-2** | PR-merged semantic, no DS counterpart |
+| `--st-blocked` / `--st-review` | 2 | `--cx-issue-blocked` / `--cx-issue-in_review` | sole consumers are BOARD_LANES (`constants.ts:18-22`) — clean issue-axis mapping; `--st-merged` too (decision 2) |
+| `--st-merged` | 3 | **`--cx-issue-done`** | PR-merged ≈ done on task axis (decision 2); no new token |
 | `--radius` `8px` / `--radius-sm` `5px` | 39 | `--cx-radius-md` `6px` / `--cx-radius-sm` `3px` (`tokens.css:200-202`) | stated assumption: the px delta is part of the deliberate restyle, reviewed in screenshots — not an OQ. `md` not `lg` (`10px`, `tokens.css:202`): the restyle tightens per the dense-UI direction |
 | `--font-mono` (ui-monospace stack) | 35 | `--cx-font-ui` (`--rigel-mono` = Space Mono, `tokens.css:61,189`) | type-face flip, visible. Note: erases the code-vs-body face distinction — 35 `--font-mono` refs collapse onto the same `--cx-font-ui` the body now uses; no `--cx-font-code` exists (`--cx-ed-*` editor block reserved-unbuilt). Intended by the mono-UI design; called out so the screenshot review reads it as intent |
 | `--topbar-h` / `--usage-h` / `--right-w` | 3 | kept as layout knobs | renamed block, guard-allowlisted |
@@ -102,7 +102,7 @@ tokens for exactly these five lanes (`tokens.css:139-143`: `--cx-issue-queued/
 blocked/in_progress/in_review/done`), so BOARD_LANES flips to `--cx-issue-*`
 one-for-one — including `queued` off the misused `--st-paused` and `done` off
 `--st-merged`. This is the clean half of the `--st-merged` story; the PR-badge
-half is OQ-2.
+half maps to `--cx-issue-done` too (decision 2).
 
 ### (c) Un-shadow base.css
 
@@ -168,7 +168,7 @@ it clean. Since the guard is billed as what makes the deleted tier
 unrevivable, it also bans the legacy vocabulary by name (a
 `declaration-value-disallowed-list` regex over `--bg`, `--text`, `--st-`,
 `--accent`, `--purple`, `--radius`, `--font-mono`, minus the named layout
-knobs) — cheap, and it converts the OQ-1 undefined-`--purple` failure mode
+knobs) — cheap, and it converts the undefined-`--purple` failure mode
 (below) from an invisible `inherit` into a CI red. The 14 unimported
 `design/components/*.css` files (`state-dot.css`, `button.css`, …) are in the
 guard's glob; they are expected-clean per D7 authorship (`--cx-*` already), so
@@ -229,33 +229,30 @@ reviews. The harness is a precondition task, not an afterthought.
   (+ the named layout knobs). No raw hex, no `--rigel-*`, no literal
   durations/easings outside `tokens.css` (`compass-ux-foundation/design.md:295-297`).
 - **`tokens.css` is read-only for this lane.** Both blocks (brand-mirrored
-  `--rigel-*` and the compass-ux-owned `--cx-*` tier). Any new token this
-  migration needs (OQ-2) is coined BY compass-ux via coordination, never
+  `--rigel-*` and the compass-ux-owned `--cx-*` tier). This cutover coins no new
+  token (decision 2 maps `--st-merged` onto the existing `--cx-issue-done`); any
+  token a future need requires is coined BY compass-ux via coordination, never
   added here unilaterally.
 - **Purple is never aliased into `--cx-*`** (`tokens.css:110` "Accent (blue;
   purple is NEVER aliased into --cx-*)"; `tokens.css:45-46` "purple is
   reserved for the brand mark only"; one-accent rule,
-  `compass-ux-foundation/design.md:221-226`). OQ-1 cannot be resolved by
-  minting `--cx-purple`.
+  `compass-ux-foundation/design.md:221-226`). The `--purple` consumers are
+  therefore recolored (decision 1), never re-aliased via a minted `--cx-purple`.
 - **Cascade order is load-bearing:** `tokens.css` → `base.css` → `app.css`
   (#220's `App.tsx` import order); nothing may reorder it.
 - **`paused` stays:** the `AgentState` union member, its `--cx-st-paused`
   token, and `.state-dot[data-state="paused"]` handling all survive; only its
   color changes.
-- **OQ-blocked work:** tasks touching an OQ surface land the mechanical
-  remainder and leave the OQ surface on a `/* OQ-n pending */`-commented
-  interim that maps to a **defined** token named in this record — never a
-  legacy-named var (a legacy name would go undefined when T5 deletes the tier,
-  reproducing the undefined-var bug class this record argues against). OQ-1's
-  interim is `--cx-text-bright` (`tokens.css:100`); OQ-2's is `--cx-accent`
-  (T4); OQ-3's is `--cx-accent-muted` (T3). Matt's ruling then only re-points
-  an already-valid ref — no task blocks on his latency.
-- **Merge atomically (see OQ-4 topology):** T2-T5 change the palette in
+- **Every ref lands a defined `--cx-*` target.** No consumer is left on a
+  legacy-named var (which would go undefined when T5 deletes the tier,
+  reproducing the undefined-var bug class this record argues against). All four
+  forks are ruled (see *Resolved decisions*), so each task flips straight to its
+  decided target — no interim two-step, no pending comments.
+- **Merge atomically (decision 4):** T2-T5 change the palette in
   deliberately-clashing intermediate states (Night-Owl canvas over legacy
   panels between T2 and T3). Those intermediates are fine as commits inside a
   train that merges as one unit; they must NEVER land on `main` independently.
-  Whether the train is one PR or a stack merged together is OQ-4 (batched for
-  Matt).
+  The train is a jj-vine stack (T1 / T2 / T3-T5 / T6 / T7) merged as one unit.
 - Base revision: main `94754d0a` + PR #220 merged. The driver runs
   format/lint/tests and the PR train; tasks here only edit and report.
 
@@ -291,20 +288,23 @@ expected, not a coherence defect to review.
 ### T3 — Mechanical consumer flip (surfaces, lines, text, accents, type, radius)
 
 Apply the mapping table in Approach (a) to every `var(--…)` legacy ref in
-`app.css` except the `--st-*`/state block (T4) and the OQ-gated refs:
+`app.css` except the `--st-*`/state block (T4) and the role-split
+`--accent-dim`/`--purple` refs (handled below per decisions 1 & 3):
 `--bg*`, `--border*`, `--text*`, `--accent`, `--add`/`--del`/`--warn`,
 `--radius*`, `--font-mono`, plus the five undefined-var fixes
 (`--danger`/`--bg-inset`/`--surface-2`/`--text-muted`/`--fg-muted`).
-`--accent-dim` refs (9) take the #220 interim (`--cx-accent-muted`) with an
-`/* OQ-3 pending */` comment. The 4 remaining `--purple` consumers (5 var()
-refs — `.mention-chip.reserved` carries two, post-warden-delete) flip
-to the **defined** interim `--cx-text-bright` (`tokens.css:100`) with an
-`/* OQ-1 pending */` comment — a defined token, so T5's tier-deletion never
-leaves them undefined; Matt's OQ-1 ruling only re-points them. Move the layout
-knobs into the new commented block.
+`--accent-dim`'s 9 refs split per decision 3: the border/outline refs
+(`:327,1013,1322,1373,2220`) → solid `--cx-border-focus` (`tokens.css:108`), the
+four solid-fill refs (`:1372,1449,3003,3535`) → `--cx-accent` with their paired
+hard-coded white foreground flipped to `var(--cx-bg)` (dark-on-accent). The 4
+remaining `--purple` consumers (5 var() refs — `.mention-chip.reserved` carries
+two, post-warden-delete) flip per decision 1: `.mention-chip.reserved` →
+`--cx-accent` (blue), the three tool-name uses (`.tool-name` `:1212`, `:1952`,
+`:2195`) → `--cx-text-bright` (`tokens.css:100`). Move the layout knobs into the
+new commented block.
 Interfaces: consumes the frozen mapping table + T2; produces the flipped
-`app.css` (every legacy `var()` ref either flipped or on a defined-token
-`/* OQ-n pending */` interim — zero undefined vars) + a T1 screenshot pass.
+`app.css` (every legacy `var()` ref flipped to its decided `--cx-*` target —
+zero undefined vars) + a T1 screenshot pass.
 
 ### T4 — State recolor: `.state-dot` + BOARD_LANES
 
@@ -312,8 +312,8 @@ Flip `app.css:483-514` and `:3626` from `--st-*` to `--cx-st-*` (eight
 states, `paused` included); flip `constants.ts:17-23` BOARD_LANES to
 `--cx-issue-*` five-for-five. `--st-merged`'s two remaining refs
 (`app.css:1606` `.pr-state[data-state="merged"]`, `:2062` `.done-row-merge`)
-take an `/* OQ-2 pending */` interim of `--cx-accent` (blue, the
-least-wrong non-purple stand-in) until Matt/compass-ux rule. Update the
+map to `--cx-issue-done` (cyan) per decision 2 — merged ≈ done on the task
+axis, no new token. Update the
 `StateDot.tsx:5-9` doc comment's color vocabulary to the Night Owl hues.
 Interfaces: consumes T3; produces the flipped state rules + BOARD_LANES + a
 T1 screenshot pass including the state-dot crop.
@@ -323,10 +323,10 @@ T1 screenshot pass including the state-dot crop.
 Delete `app.css:7-58` (everything not already moved/deleted by T2-T4),
 including unused `--pink`. Sweep the remaining ~39 raw hex literals in
 `app.css` (e.g. `color: #fff` at `:1605`, ask-error fallbacks `#f87171`) to
-`--cx-*` equivalents. Grep-verify: zero `--bg`/`--text`/`--st-`/`--accent`/
-`--purple`(post-OQ-1)/raw-hex outside the allowlist.
+`app.css`. Grep-verify: zero `--bg`/`--text`/`--st-`/`--accent`/
+`--purple`/raw-hex outside the allowlist.
 Interfaces: consumes T2-T4; produces an `app.css` whose only `:root` is the
-layout-knob block; blocked-on-OQ surfaces carry their named interims.
+layout-knob block; every surface on its decided `--cx-*` target.
 
 ### T6 — Wire the D7 stylelint guard (error severity)
 
@@ -351,8 +351,8 @@ conventions), the toolchain dep, and the `moon.yml` CI wiring.
 ### T7 — Final screenshot pass + record close-out
 
 Full T1 suite re-run; assemble the before/after pairs for Matt's review;
-changelog entry; update this record's Open Questions with the rulings once
-they land (driver relays).
+changelog entry. (The record's four forks are ruled pre-freeze — see *Resolved
+decisions* — so execution reads decided targets, not open questions.)
 Interfaces: consumes T1-T6; produces the reviewed screenshot set + changelog.
 
 ## Tasks
@@ -365,87 +365,66 @@ Interfaces: consumes T1-T6; produces the reviewed screenshot set + changelog.
 - [ ] T6 D7 stylelint guard wired at error
 - [ ] T7 Final screenshot pass, changelog, record close-out
 
-## Open Questions
+## Resolved decisions
 
-Four **LOAD-BEARING** forks batched for Matt (the driver relays; this lane does
-not decide them). OQ-2 additionally needs compass-ux (DS-tier owner)
-coordination for any coined token. (The former scrollbar-hover OQ is demoted to
-a stated assumption — see *Stated assumptions & known follow-ups* — as it fails
-the load-bearing bar: nothing blocks on it, no task carries an interim, and the
-recommendation is the already-shipped base.css choice.)
+Four **LOAD-BEARING** forks, all ruled by Matt on 2026-08-08. Recorded here as
+the frozen contract — execution reads the decided target, not a fork. (The
+former scrollbar-hover question is a stated assumption, not a fork — see
+*Stated assumptions & known follow-ups*.) Decision 2's issue-axis reuse for the
+PR badge has DS-tier sign-off from compass-ux (the DS-tier owner); it coins no
+token, so no `tokens.css` change is required either way.
 
-1. **The 4 remaining `--purple` consumers** (LOAD-BEARING; T3 lands the
-   `--cx-text-bright` defined interim, this ruling re-points it).
-   `.tool-name` (`app.css:1212`), the tool-name-adjacent uses at `:1952` and
-   `:2195`, and `.mention-chip.reserved` (`:3367-3368`, color + 16% wash).
-   (The 5th, the warden role-pip `:532`, is deleted by the parallel warden
-   task.) D2's one-accent rule bans purple from `--cx-*`
+All `app.css` line refs below are in the record's declared **post-#220**
+coordinate space (Base revision, above). Executors resolve consumers by
+**selector** (`.tool-name`, `.mention-chip.reserved`, the `var(--accent-dim)`
+sites, …) against the actual post-#220 tree, never by the literal line numbers.
+
+1. **The 4 remaining `--purple` consumers** — split by role.
+   `.mention-chip.reserved` (`app.css:3367-3368`, color + 16% wash) recolors to
+   `--cx-accent` (blue): a reserved mention is interaction-flavored, and blue is
+   the interaction color. The three tool-name uses (`.tool-name` `:1212`,
+   `:1952`, `:2195`) recolor to `--cx-text-bright` (`tokens.css:100`): emphasis,
+   not accent. (The 5th consumer, the warden role-pip `:532`, is deleted by the
+   parallel warden task.) D2's one-accent rule bans purple from `--cx-*`
    (`tokens.css:110`, `:45-46`; `compass-ux-foundation/design.md:221-226`), so
-   no mechanical flip exists. Options: **(a)** recolor to `--cx-accent` blue;
-   **(b)** a neutral token (`--cx-text-bright` or `--cx-text-dim`) —
-   de-emphasize rather than re-accent; **(c)** a narrow carve-out admitting
-   purple for tool-name/reserved-mention semantics (widens the mark-only
-   exception D7 guards, `design.md:616-620`); **(d)** keep legacy `--purple`
-   as a deliberate documented exception (keeps a second tier alive — against
-   this record's whole premise). Recommendation: **(a)** for
-   `.mention-chip.reserved` (mentions are interaction-flavored, blue is the
-   interaction color) and **(b)** `--cx-text-bright` for the three tool-name
-   uses (emphasis, not accent). (c) and (d) undercut the one-accent rule and
-   the cutover respectively.
+   no mechanical flip existed; a carve-out admitting purple, or keeping legacy
+   `--purple` as a documented exception, were both rejected — they undercut the
+   one-accent rule and the cutover respectively. Lands in T3.
 
-2. **The unmapped `--st-merged` PR-badge token** (LOAD-BEARING; blocks part of
-   T4; needs compass-ux). Of the three legacy state tokens with no `--cx-st-*`
-   counterpart (`tokens.css:129-136` covers only the eight AgentStates),
-   `--st-blocked #f85149` and `--st-review #a371f7` are resolved mechanically:
-   their ONLY consumers are BOARD_LANES (`constants.ts:19,21`) and the DS has
-   the issue axis — `--cx-issue-blocked` (red) / `--cx-issue-in_review` (amber)
-   (`tokens.css:140,142`) — a clean map (visible purple→amber recolor for
-   in-review). The real residue is `--st-merged #8957e5` (purple!), consumed
-   OUTSIDE the lane/dot vocabulary as a PR-merged badge:
-   `.pr-state[data-state="merged"]` bg (`app.css:1606`) and `.done-row-merge`
-   color (`:2062`). Options: **(a)** map merged → `--cx-issue-done`
-   (cyan; merged ≈ done on the task axis); **(b)** coin a `--cx-pr-merged`
-   in the CI/review token family (`tokens.css:145-151`) — value TBD by
-   compass-ux, noting GitHub's merged-purple collides with the one-accent
-   rule; **(c)** map merged → `--cx-accent` (blue interim, as T4 stages).
-   Recommendation: **(a)** — no new token, no purple, semantically honest;
-   confirm with compass-ux that the issue axis may serve the PR badge or
-   whether (b) is worth the coin.
+2. **The unmapped `--st-merged` PR-badge token** → `--cx-issue-done` (cyan).
+   Its two PR-badge consumers — `.pr-state[data-state="merged"]` bg
+   (`app.css:1606`) and `.done-row-merge` color (`:2062`) — map to
+   `--cx-issue-done` (`tokens.css:143`): merged ≈ done on the task axis. No new
+   token, no purple, semantically honest. Coining a `--cx-pr-merged` in the
+   CI/review family, or an interim `--cx-accent`, were rejected — an
+   unnecessary token / a conflation with the interaction color. (The sibling
+   `--st-blocked` / `--st-review` already map cleanly to `--cx-issue-blocked` /
+   `--cx-issue-in_review`.) Lands in T4; DS-tier sign-off granted by compass-ux
+   (the issue axis may serve the PR badge).
 
-3. **`--accent-dim` fidelity — the token AND its paired foreground**
-   (LOAD-BEARING; token choice, 9 refs at
-   `app.css:327,1013,1322,1372-1373,1449,2220,3003,3535`). PR #220 mapped
-   `--accent-dim` (solid `#1f6feb`, `app.css:27`) → `--cx-accent-muted`, a
-   24%-alpha wash (`tokens.css:117`) — a fidelity drop for the refs used as
-   SOLID fills (button bgs `:1449,3535`, chosen-option bg `:1372`, badge bg
-   `:3003`), not just borders. **Crucially, every solid-fill consumer pairs
-   `--accent-dim` with a hard-coded white foreground** (`.ask-option.chosen`
-   `color:#fff` `:1374`; the `:1449` send button; the `:3003` badge `:3004`;
-   the `:3535` button `:3538`). Legacy `#1f6feb` is a dark blue — white on it
-   passes contrast; but `--cx-accent` = `--rigel-blue #82aaff` (`tokens.css:111`)
-   is a light pastel — white on it is ~1.9:1, illegible. So the fork must decide
-   the PAIR (fill token + foreground token), not just the fill. Options:
-   **(a)** all 9 → `--cx-accent-muted` (#220's precedent; solid fills go
-   translucent); **(b)** borders → `--cx-border-focus` (solid `--rigel-blue`,
-   `tokens.css:108`), solid fills → `--cx-accent` **with the foreground flipped
-   to `var(--cx-bg)`** (dark-on-accent, the standard on-accent treatment);
-   **(c)** all 9 → `--cx-accent` (same foreground problem); **(d)** compass-ux
-   coins a dark `--cx-accent-strong` for fills, keeping white foregrounds legal.
-   Recommendation: **(b)** — `--accent-dim` served two roles the DS separates;
-   map each to its DS token and fix the on-accent foreground with it.
+3. **`--accent-dim` fidelity (fill token + paired foreground)** — split by
+   role. #220 mapped `--accent-dim` (solid `#1f6feb`, `app.css:27`) →
+   `--cx-accent-muted`, a 24%-alpha wash — a fidelity drop for its solid-fill
+   consumers, each of which pairs the fill with a hard-coded white foreground
+   (`.ask-option.chosen` bg `:1372` / fg `:1374`; send button `:1449`; badge
+   `:3003` / fg `:3004`; button `:3535` / fg `:3538`). White is legal on legacy
+   dark `#1f6feb` but ~1.9:1 (illegible) on `--cx-accent` = `--rigel-blue`
+   `#82aaff` (`tokens.css:111`). Ruling: the border/outline refs
+   (`app.css:327,1013,1322,1373,2220`) → solid `--cx-border-focus`
+   (`tokens.css:108`); the four solid-fill refs (`:1372,1449,3003,3535`) →
+   `--cx-accent` **with the paired foreground flipped to `var(--cx-bg)`**
+   (dark-on-accent, the standard on-accent treatment). `--accent-dim` served
+   two roles the DS separates; each maps to its DS token. An all-`--cx-accent-muted`
+   map (translucent fills) and a compass-ux-coined dark `--cx-accent-strong`
+   were rejected — the first drops fidelity, the second coins an avoidable
+   token. Lands in T3.
 
-4. **PR-train topology** (LOAD-BEARING; shape of the whole execution). Matt
-   ruled out COEXISTENCE (two live tiers), not STAGING. The train can be **one
-   PR** carrying T1-T7, or a **jj-vine stack** (e.g. T1 / T2 / T3-T5 / T6 / T7)
-   merged as a unit. They differ materially: one PR = a ~540-ref diff + a new
-   harness + a new toolchain dep in a single review (screenshots carry the color
-   review, but the harness and stylelint config get buried under mechanical
-   churn); a stack = per-step screenshot pairs and independently-reviewable
-   harness/lint steps. A stack whose steps merge INDEPENDENTLY is rejected — it
-   would put a mixed-palette state on `main` (see the merge-atomicity
-   constraint). Options: **(a)** one PR; **(b)** stacked train, merged
-   atomically as a unit; **(c)** stack with independent merges (rejected).
-   Recommendation: **(b)** — per-step screenshot review, reviewable harness/lint
-   PRs, and no mixed-palette state ever on `main`; it is exactly the shape
-   `skill://jj`'s stacked-PR workflow is built for, and fully inside Matt's
-   full-cutover ruling.
+4. **PR-train topology** — a jj-vine stack merged as one unit. T1-T7 ship as a
+   stack (e.g. T1 / T2 / T3-T5 / T6 / T7), reviewed per-step (each flip carries
+   its own before/after screenshot pair; the harness and stylelint config are
+   independently reviewable), then merged atomically. A single ~540-ref PR was
+   rejected (harness + toolchain dep buried under mechanical churn); a stack
+   whose steps merge **independently** was rejected (it would put a
+   mixed-palette state on `main`, against the merge-atomicity constraint). This
+   is the shape `skill://jj`'s stacked-PR workflow is built for, fully inside
+   the full-cutover ruling.
