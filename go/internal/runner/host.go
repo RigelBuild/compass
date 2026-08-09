@@ -223,7 +223,10 @@ func (h *agentHost) Session(containerName string) (string, bool) {
 // teardown is joined before Close returns — a leaked goroutine plus an un-reaped
 // container is the exact failure this closes. A per-container teardown error is
 // logged, never fatal: a best-effort drain is correct here (the stack lingers
-// safe on a failed teardown), matching drainChildren's join-all-errors posture.
+// safe on a failed teardown), matching drainChildren's attempt-every-child
+// best-effort posture — though the error handling differs: drainChildren joins
+// its children's errors and returns the aggregate, whereas Close, returning void
+// on the process-shutdown path, logs each per-container error and discards it.
 //
 // Remove closes each container's socket itself (its deferred closeSocket), so
 // Close delegates entirely to Remove and never double-closes: after Close

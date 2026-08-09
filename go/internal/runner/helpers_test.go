@@ -135,12 +135,15 @@ func (f *pipeRuntime) closeStdout() { _ = f.stdoutW.Close() }
 // spec it is handed is recorded, so a test can assert what identity and
 // configuration the host actually started an agent with.
 type stubStreamingRuntime struct {
-	mu        sync.Mutex
-	calls     []string
-	execSpecs []runtime.StreamingExecSpec
-	cli       *runtime.PodmanCLI
-	stopErr   error // when set, engine Stop fails — models a Teardown partial failure
-	created   []runtime.ContainerSpec
+	mu          sync.Mutex
+	calls       []string
+	execSpecs   []runtime.StreamingExecSpec
+	cli         *runtime.PodmanCLI
+	stopErr     error                            // when set, engine Stop fails — models a Teardown partial failure
+	stopErrByID map[runtime.ContainerID]error    // per-container Stop error; overrides stopErr for the keyed id
+	stopGate    chan struct{}                    // when non-nil, Stop blocks on it (after recording) — test-controlled teardown parking
+	callsByID   map[runtime.ContainerID][]string // per-container lifecycle calls (stop/remove), for fan-out isolation assertions
+	created     []runtime.ContainerSpec
 }
 
 func newStubStreamingRuntime(t *testing.T) *stubStreamingRuntime {
@@ -176,12 +179,28 @@ func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.Con
 	f.mu.Unlock()
 	return f.cli.ExecStreaming(ctx, id, spec)
 }
-func (f *stubStreamingRuntime) Stop(context.Context, runtime.ContainerID, time.Duration) error {
+func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.ContainerID, _ time.Duration) error {
 	f.record("stop")
-	return f.stopErr
+	f.recordForID(id, "stop")
+	// Park mid-Stop when the test holds the gate, so a teardown can be observed
+	// in progress (stop recorded, remove not yet reached) before it is released.
+	f.mu.Lock()
+	gate := f.stopGate
+	f.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	f.mu.Lock()
+	err := f.stopErr
+	if e, ok := f.stopErrByID[id]; ok {
+		err = e
+	}
+	f.mu.Unlock()
+	return err
 }
-func (f *stubStreamingRuntime) Remove(context.Context, runtime.ContainerID) error {
+func (f *stubStreamingRuntime) Remove(_ context.Context, id runtime.ContainerID) error {
 	f.record("remove")
+	f.recordForID(id, "remove")
 	return nil
 }
 func (f *stubStreamingRuntime) Exists(context.Context, string) (bool, error) { return false, nil }
@@ -193,6 +212,33 @@ func (f *stubStreamingRuntime) record(call string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, call)
+}
+
+// recordForID records a lifecycle call against a specific container id, so a
+// fan-out isolation assertion can prove one container reached remove while
+// another aborted at stop.
+func (f *stubStreamingRuntime) recordForID(id runtime.ContainerID, call string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.callsByID == nil {
+		f.callsByID = map[runtime.ContainerID][]string{}
+	}
+	f.callsByID[id] = append(f.callsByID[id], call)
+}
+
+// countCallForID reports how many times the named lifecycle call was recorded
+// for a specific container id, taken under the lock — mirrors countCall for the
+// per-container fan-out assertions.
+func (f *stubStreamingRuntime) countCallForID(id runtime.ContainerID, call string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.callsByID[id] {
+		if c == call {
+			n++
+		}
+	}
+	return n
 }
 
 // streamingSpecs returns a copy of the exec specs the host has started agents
