@@ -129,22 +129,29 @@ inline call has today.
 A Send failure no longer returns from RunSessions directly (the failing Send is
 off-loop) — it must unwind the Receive loop, but it must NOT be misread as a
 clean shutdown. RunSessions today classifies its Receive error as clean via
-`errors.Is(ctx.Err(), context.Canceled)` (`dispatch.go:194-197`). A bare
-`cancel()` after a failed Send would make that arm true → RunSessions returns
-nil → Run returns nil (`run.go:118-121` wraps only a non-nil error), so a
-**broken stream would read as a clean cancel** — a silent regression, since the
-serial loop returns the Send error directly today (`dispatch.go:203-205`). The
-cancel is therefore a `context.WithCancelCause`: RunSessions derives
-`ctx, cancelCause := context.WithCancelCause(ctx)` (replacing the plain
-`context.WithCancel` at `dispatch.go:167-168`), the send path cancels with a
-sentinel-wrapped cause, and the Receive-error classification checks
-`context.Cause(ctx)` — a `context.Canceled` cause is the clean external
-shutdown (returns nil); a send-failure cause is returned as the loop error.
-Cancelling ctx still closes the response side (`dispatch.go:185-188` — the
-watcher goroutine calls `stream.CloseResponse()` on ctx.Done) and pops the
-blocked Receive, so the loop unwinds on a broken stream — now with the error
-preserved, not swallowed. (T3 pins this: a forced Send failure must surface as a
-non-nil RunSessions error, not nil.)
+`if errors.Is(err, io.EOF) || errors.Is(ctx.Err(), context.Canceled) { return nil }`
+(`dispatch.go:192-195`) — note the `io.EOF` arm is FIRST and unconditional. A
+bare `cancel()` after a failed Send would make the `context.Canceled` arm true →
+RunSessions returns nil → Run returns nil (`run.go:118-121` wraps only a non-nil
+error), so a **broken stream would read as a clean cancel** — a silent
+regression, since the serial loop returns the Send error directly today
+(`dispatch.go:203-205`). The cancel is therefore a `context.WithCancelCause`:
+RunSessions derives `ctx, cancelCause := context.WithCancelCause(ctx)` (replacing
+the plain `context.WithCancel` at `dispatch.go:167-168`), the send path cancels
+with a sentinel-wrapped cause, and the Receive-error classification checks
+`context.Cause(ctx)` FIRST — a send-failure cause is returned as the loop error
+**regardless of whether the Receive error itself is `io.EOF`**; only a
+`context.Canceled` cause (the clean external shutdown), or a genuine external EOF
+with no send-failure cause, returns nil. This precedence is load-bearing: a Send
+failure very commonly surfaces the subsequent blocked Receive as `io.EOF` (the
+watcher's `stream.CloseResponse()` on ctx.Done, `dispatch.go:185-188`, pops the
+blocked Receive as an EOF), so an implementer who swaps only the
+`context.Canceled` sub-check for a `context.Cause` check but leaves the
+unconditional `io.EOF` nil-arm ahead of it would re-open the exact regression
+this section closes. So the loop unwinds on a broken stream — now with the error
+preserved, not swallowed. (T3 pins this: a forced Send failure whose broken
+stream drives the next Receive to `io.EOF` must still surface as a non-nil
+RunSessions error, proving the cause check overrides the `io.EOF` arm.)
 
 Shutdown join: extend the existing deferred join to
 `defer func() { cancelCause(nil); d.wg.Wait(); <-d.configWorkerDone }()` —
@@ -156,9 +163,19 @@ The join TERMINATES but is not instantaneous: an in-flight Provision mid-`podman
 pull` dies on ctx-cancel kill promptly, but a goroutine inside a non-ctx-bounded
 section (`AgentStream.Stop`'s `drainGrace`, a teardown grace) can hold
 `wg.Wait()` for up to that section's bound, so worst-case join latency
-approaches the per-command kill/drain bounds — not zero. Because concurrency
-lets more ops be mid-flight at cancel time than the serial loop ever did,
-cancellation now leaves more partial container state (a killed teardown, a
+approaches the per-command kill/drain bounds — not zero. That bound also sums
+across a cross-lock hop: with T4's per-container locks, a dispatch-driven
+Stop/Remove/Reload command goroutine can block on a container lock held by the
+config worker's `RefreshConfig` leg (its
+`MountLabel`+`Materialize`+`reloadLocked` critical section), and the deferred
+join reaps command goroutines (`d.wg.Wait()`) BEFORE the config worker
+(`<-d.configWorkerDone`), so `wg.Wait()` can complete only after the not-yet-
+joined worker releases that lock. It still terminates because every
+`RefreshConfig` lock-holding section is ctx-/drainGrace-bounded — an invariant
+T9 must preserve when it reshapes the host (were any such section ever made
+non-time-bounded, the join would hang behind a worker it joins last). Because
+concurrency lets more ops be mid-flight at cancel time than the serial loop ever
+did, cancellation now leaves more partial container state (a killed teardown, a
 launched-but-unrecorded container), leaning harder on the existing crash-reclaim
 paths (`gateway.reclaimStaleSocket`, idempotent re-Provision) that already cover
 a serial loop cancelled mid-command. Signal-only arms (SecretsVersion,
@@ -308,7 +325,7 @@ Design of the lock:
   responsiveness is the point of this record).
 - **Reload must split to avoid a self-deadlock via `RefreshConfig`.** The
   config worker's per-container fan-out calls `h.Reload` directly inside its
-  loop (`host.go:629` — `if err := h.Reload(ctx, t.sessionID); err != nil`).
+  loop (`host.go:627` — `if err := h.Reload(ctx, t.sessionID); err != nil`).
   If BOTH the `RefreshConfig` leg AND `Reload` acquire the same non-reentrant
   `sync.Mutex` for that container, the worker holding container C's lock then
   entering `Reload(C)` blocks on its own lock forever — and since the lock is
@@ -428,11 +445,13 @@ host has no container lock:
    (Red: with a single non-reentrant lock taken by both the fan-out leg and
    `Reload`, the worker wedges and the later Stop wedges behind it — the test
    times out). This pins the `reloadLocked` split (T4).
-6. **A broken Send surfaces as a non-nil loop error**: force `send` to fail
-   for one command; assert `RunSessions` returns a non-nil error (not nil via
-   a mis-classified clean-cancel), while a normal external ctx-cancel still
-   returns nil. This pins the `WithCancelCause` classification (Approach (a),
-   T3).
+6. **A broken Send surfaces as a non-nil loop error**: force `send` to fail for
+   one command AND drive the subsequent Receive to return `io.EOF` (the broken
+   stream's natural surface); assert `RunSessions` returns a non-nil error (not
+   nil via the `io.EOF` arm or a mis-classified clean-cancel), proving the
+   `context.Cause` check takes precedence over the unconditional `io.EOF`
+   nil-arm, while a normal external ctx-cancel still returns nil. This pins the
+   `WithCancelCause` classification and its precedence (Approach (a), T3).
 
 Interfaces: test-only; drives `(*ServerLink).RunSessions(ctx context.Context,
 host SessionHost, log *slog.Logger) error` (`dispatch.go:164`) over the
@@ -476,12 +495,38 @@ Interfaces:
   the local ctx becomes `ctx, cancelCause := context.WithCancelCause(ctx)`
   (replacing the plain `context.WithCancel` at `dispatch.go:167-168`); a failed
   off-loop `send` calls `cancelCause(<send-failure error>)`; the Receive-error
-  classification (`dispatch.go:194-197`) checks `context.Cause(ctx)` — a
-  `context.Canceled` cause returns nil (clean shutdown), a send-failure cause
-  is returned as the loop error; the deferred join becomes
-  `cancelCause(nil); d.wg.Wait(); <-d.configWorkerDone`. Greens test 6.
+  classification (`dispatch.go:192-195`) checks `context.Cause(ctx)` FIRST — a
+  send-failure cause is returned as the loop error REGARDLESS of whether the
+  Receive error is `io.EOF`; only a `context.Canceled` cause (or a genuine
+  external EOF with no send-failure cause) returns nil, so the existing
+  unconditional `io.EOF` nil-arm must move behind the cause check; the deferred
+  join becomes `cancelCause(nil); d.wg.Wait(); <-d.configWorkerDone`. Greens
+  test 6.
 - No `SessionHost` change; no proto change.
 - Signal-only arms stay inline on the receive loop (Approach (a)).
+
+### T-cap — Provision-arm concurrency semaphore
+
+Land the Provision-arm concurrency cap (OQ-4, ruled (i) by Matt): restore an
+intentional throttle on agent-triggered Provisions in place of the accidental
+concurrency-1 the serial loop provided, without touching the latency isolation
+this record buys. Lands between T3 and T4 (it needs T3's per-command goroutines
+to exist; T4's per-container locks are independent).
+
+Interfaces:
+
+- A package-level cap const (a single tunable, e.g. `provisionConcurrency = 8`
+  — range 8–16) and a `dispatcher` counting semaphore field
+  `provisionSem chan struct{}` sized to the cap, initialized in `newDispatcher`.
+- Acquire in the spawned command goroutine ONLY on the Provision arm, before the
+  heavy podman work (the `host.Provision` call), and release on that arm's exit
+  (`d.provisionSem <- struct{}{}` / `<-d.provisionSem`). Stop, Status, Reload,
+  and Remove never touch the semaphore, so a Provision backlog never queues a
+  Stop — the latency isolation from Approach (a) and T4 is preserved.
+- Test: fan out more concurrent distinct-id Provisions than the cap against a
+  fake host whose Provision parks; assert at most `cap` Provisions run at once
+  (the overflow queues on the semaphore) while a concurrent Stop still returns
+  immediately (event-gated, no sleeps).
 
 ### T4 — Per-container transition lock in agentHost
 
@@ -506,7 +551,7 @@ Interfaces:
   `Stop(ctx, sessionID)` (`host.go:363`) and `Reload` (the public wrapper) —
   resolve session→container under `h.mu`, release, take container lock,
   re-check session; `Remove(ctx, containerName)` (`host.go:394`); and the
-  per-container leg of `RefreshConfig` (`host.go:629`), which takes the lock
+  per-container leg of `RefreshConfig` (`host.go:627`), which takes the lock
   itself and calls `reloadLocked` (NOT `Reload`, to avoid the self-deadlock).
 - `Status` deliberately does NOT acquire container locks.
 - Rewrite the TOCTOU comment (`host.go:244-252`) and the dispatch idempotency
@@ -609,7 +654,7 @@ current one returns. This record removes that throttle before any explicit cap
 exists — spawn caps were explicitly deferred to **SEA-1574** (Problem section;
 the relay deadline is named there as the *sole* MVP guard). So N distinct-id
 Provisions become N concurrent podman launches, each up to
-`defaultCommandTimeout` (120s, `podman.go:317-320`) of CPU/disk/network — a
+`defaultCommandTimeout` (120s, `podman.go:329`) of CPU/disk/network — a
 Runner-host resource-exhaustion surface that did not exist under the serial
 loop. The exposure is real because Provision is agent-triggerable in a loop
 (spawn/despawn record) and the frozen trust model has the Runner trust the
