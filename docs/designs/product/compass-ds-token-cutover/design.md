@@ -371,7 +371,7 @@ Four **LOAD-BEARING** forks, all ruled by Matt on 2026-08-08. Recorded here as
 the frozen contract — execution reads the decided target, not a fork. (The
 former scrollbar-hover question is a stated assumption, not a fork — see
 *Stated assumptions & known follow-ups*.) Decision 2's issue-axis reuse for the
-PR badge has DS-tier sign-off from compass-ux (the record owner); it coins no
+PR badge has DS-tier sign-off from compass-ux (the DS-tier owner); it coins no
 token, so no `tokens.css` change is required either way.
 
 All `app.css` line refs below are in the record's declared **post-#220**
