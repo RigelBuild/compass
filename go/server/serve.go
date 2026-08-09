@@ -23,6 +23,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -36,6 +38,8 @@ import (
 	"github.com/sealedsecurity/compass/go/internal/auth"
 	"github.com/sealedsecurity/compass/go/internal/board"
 	"github.com/sealedsecurity/compass/go/internal/comms"
+	"github.com/sealedsecurity/compass/go/internal/forge"
+	"github.com/sealedsecurity/compass/go/internal/ingest"
 	"github.com/sealedsecurity/compass/go/internal/runnerhub"
 	"github.com/sealedsecurity/compass/go/internal/secrets"
 	"github.com/sealedsecurity/compass/go/internal/store"
@@ -86,6 +90,73 @@ type ServeConfig struct {
 	// CORSAllowedOrigin, when set, is the single browser origin the network door
 	// exposes gRPC-Web CORS for. Empty = closed (no CORS on the network door).
 	CORSAllowedOrigin string
+	// Forge is the board-ingestion poll driver config (SEA-1810). All-optional
+	// exactly like S3: forge polling disabled (empty SeedRepos, Poll false)
+	// leaves the driver off — today's behavior, zero new requirements on
+	// existing deployments. See ForgeConfig and forgePollingEnabled.
+	Forge ForgeConfig
+}
+
+// ForgeConfig configures the board-ingestion poll driver (SEA-1810, DL-053).
+// All-optional: polling is disabled (empty SeedRepos and Poll false) unless the
+// operator opts in, leaving the driver off (today's behavior). The 0016 tables
+// exist but sit empty — a migration is not a behavior change.
+type ForgeConfig struct {
+	// Host is the forge host the driver binds (default "github.com"); the API
+	// base URL derives from it. Seed rows and the live target set are keyed
+	// under this host, so changing it between boots abandons (does not migrate)
+	// the prior host's rows.
+	Host string
+	// SeedRepos are "owner/name" repos boot-reconciled into
+	// forge_repo_subscriptions (bootstrap-only insert, ON CONFLICT DO NOTHING;
+	// lowercased for GITHUB) — a declarative SEED, not the live target set. The
+	// live target set is always the table (WHERE enabled, read per pass).
+	SeedRepos []string
+	// Poll runs the driver even with an empty seed (targets already in the
+	// table). Polling is enabled iff Poll || len(SeedRepos) > 0.
+	Poll bool
+	// SecretName is the declared server_only secret NAME holding the forge token
+	// (default "GITHUB_FORGE_TOKEN"; the VALUE never crosses config or a flag).
+	SecretName string
+	// PollInterval is the poll cadence (default time.Minute).
+	PollInterval time.Duration
+}
+
+// Forge config defaults, applied by resolveForge when a field is zero.
+const (
+	defaultForgeHost         = "github.com"
+	defaultForgeSecretName   = "GITHUB_FORGE_TOKEN" //nolint:gosec // G101: this is the default declared-secret NAME (an env-var identifier), not a credential value — the value is resolved from the secrets provider, never hardcoded
+	defaultForgePollInterval = time.Minute
+	// forgeTokenTTL is the TTL the driver's TokenSource caches a resolved token
+	// for: a resolve reads the whole declared-secret registry, writes a manifest
+	// temp file, and drives a full secretspec provider Load (resolver.go:135-165),
+	// so re-resolving every poll pass would tax the store and provider. The
+	// cache drops its value on TTL expiry or on Invalidate() (the client calls
+	// it on a 401/bad-creds-403), so a rotated token still takes effect within
+	// the TTL or immediately on the next auth failure.
+	forgeTokenTTL = 5 * time.Minute
+)
+
+// forgePollingEnabled reports whether the forge poll driver runs: iff --forge-poll
+// is set OR the seed list is non-empty (design §T4). Only then are the driver,
+// the startup secret resolve, and the seed reconcile built.
+func (c ForgeConfig) forgePollingEnabled() bool {
+	return c.Poll || len(c.SeedRepos) > 0
+}
+
+// resolved returns the config with its zero fields defaulted (Host, SecretName,
+// PollInterval). SeedRepos and Poll are taken verbatim.
+func (c ForgeConfig) resolved() ForgeConfig {
+	if c.Host == "" {
+		c.Host = defaultForgeHost
+	}
+	if c.SecretName == "" {
+		c.SecretName = defaultForgeSecretName
+	}
+	if c.PollInterval <= 0 {
+		c.PollInterval = defaultForgePollInterval
+	}
+	return c
 }
 
 // The bootstrap-admin identity the local-socket door attributes callers to until
@@ -318,6 +389,26 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return err
 	}
 
+	// The board-ingestion poll driver (SEA-1810, DL-053). Built only when forge
+	// polling is enabled (Poll || a non-empty seed); disabled leaves forgeDriver
+	// nil (today's behavior) but still emits one Warn if the table already holds
+	// enabled rows for the bound (provider, host). Its startup secret resolve and
+	// seed reconcile fail fast HERE — after the UDS listener binds, so the same
+	// udsListener.Close()+listeners.close() cleanup path the Rehydrate failure
+	// uses (above) applies — and the seed rows are visible in the table BEFORE
+	// the driver's first pass (the driver enumerates WHERE enabled per pass).
+	var forgeDriver *ingest.Driver
+	if cfg.Forge.forgePollingEnabled() {
+		forgeDriver, err = buildForgeDriver(ctx, cfg, st, issueBrd, resolver, hubLog)
+		if err != nil {
+			udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
+			listeners.close()
+			return err
+		}
+	} else {
+		warnDisabledForgePolling(ctx, st, store.ForgeProviderGitHub, cfg.Forge.resolved().Host, hubLog)
+	}
+
 	// Run every door under one scoped group. errgroup.WithContext gives the
 	// listener/drain coordination scoped lifecycle, first-error-wins, and sibling
 	// cancellation in one audited primitive: gctx is cancelled when the parent ctx
@@ -337,6 +428,13 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		g.Go(func() error {
 			return classifyServe(doors.net.ServeTLS(netListener, "", ""), "compass.v1 network door")
 		})
+	}
+	// The forge poll driver (SEA-1810), one more member of the same scoped group
+	// so it inherits exactly the doors' lifecycle: cancelled on SIGINT/SIGTERM
+	// via gctx, first-error-wins, drained with everything else. nil when forge
+	// polling is disabled. Run returns nil on ctx-cancel (clean shutdown).
+	if forgeDriver != nil {
+		g.Go(func() error { return forgeDriver.Run(gctx) })
 	}
 	// The comms-bus consumers (SEA-1569): the T3 delivery fan-out consumer and
 	// the T8 presence projection, both tailing the comms bus with their bus-tail
@@ -567,6 +665,250 @@ func classifyServe(err error, ctx string) error {
 		return nil
 	}
 	return fmt.Errorf("%s terminated with an error: %w", ctx, err)
+}
+
+// buildForgeDriver wires the SEA-1810 board-ingestion poll driver into boot. The
+// caller builds it ONLY when forge polling is enabled (the disabled path — one
+// Warn if enabled rows exist — is handled in Serve), so this always returns a
+// live driver or a startup error. In order it: (1) resolves the forge secret
+// ONCE at startup so a misconfiguration fails fast (two distinct error texts —
+// undeclared name vs a resolve that errors), (2) reconciles the seed repos into
+// forge_repo_subscriptions (bootstrap-only insert, ON CONFLICT DO NOTHING,
+// lowercased for GITHUB) so the seed rows are visible BEFORE the first pass,
+// then (3) assembles the GitHub client (over a TTL-caching TokenSource), the
+// Ingester (sharing issueBrd), the poll-store adapter, and the driver. The
+// returned driver's Run is added to the serve errgroup by the caller.
+func buildForgeDriver(
+	ctx context.Context,
+	cfg ServeConfig,
+	st *store.Store,
+	issueBrd *board.IssueProjection,
+	resolver secrets.Resolver,
+	log *slog.Logger,
+) (*ingest.Driver, error) {
+	fc := cfg.Forge.resolved()
+	// The board driver ships a GitHub client only this slice (Global
+	// Constraints); the bound provider is GITHUB.
+	const provider = store.ForgeProviderGitHub
+
+	// (1) Startup secret resolve: fail fast with distinct texts so a permanent
+	// misconfig (undeclared name) is not confused with a transient outage (a
+	// resolve that errors). The TokenSource re-resolves later on TTL/Invalidate.
+	if err := validateForgeSecret(ctx, resolver, fc.SecretName); err != nil {
+		return nil, err
+	}
+
+	// (2) Seed reconcile BEFORE the first pass: each seed repo lowercased (for
+	// GITHUB) and inserted enabled under ON CONFLICT DO NOTHING — additive, never
+	// destructive, never re-enabling. Bad repo format fails startup.
+	if err := reconcileForgeSeed(ctx, st, provider, fc.Host, cfg.Forge.SeedRepos); err != nil {
+		return nil, err
+	}
+
+	// (3) Assemble the pipeline: a TTL-caching TokenSource over the resolver, the
+	// GitHub client, the Ingester (sharing the existing issue projection), the
+	// poll-store adapter binding (provider, host), and the driver.
+	tok := newForgeTokenSource(resolver, fc.SecretName)
+	client := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: tok})
+	ing := ingest.NewIngester(client, issueBrd, &compassv1.ForgeRef{
+		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
+		Host:     fc.Host,
+	})
+	adapter := &forgePollStore{st: st, provider: provider, host: fc.Host}
+	return ingest.NewDriver(client, ing, adapter, ingest.DriverConfig{
+		Interval: fc.PollInterval,
+		Log:      log,
+	}), nil
+}
+
+// validateForgeSecret resolves the declared secret set once and asserts the
+// configured name is present. A resolve that ERRORS is transient
+// ("forge secret resolve failed at startup: %w"); a name ABSENT from the
+// resolved set is a permanent misconfiguration ("forge secret %q not declared").
+// The two are distinguishable so a crash-loop is diagnosable.
+func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, name string) error {
+	resolved, err := resolver.Resolve(ctx, "forge poll")
+	if err != nil {
+		return fmt.Errorf("forge secret resolve failed at startup: %w", err)
+	}
+	for _, s := range resolved {
+		if s.Name == name {
+			return nil
+		}
+	}
+	return fmt.Errorf("forge secret %q not declared", name)
+}
+
+// reconcileForgeSeed inserts each seed repo as an enabled target, bootstrap-only
+// (ON CONFLICT DO NOTHING via EnsureForgeRepoSubscription): the flag creates
+// rows that do not yet exist and leaves an existing row entirely untouched (a
+// dropped-from-flag repo is neither deleted nor disabled; a soft-disabled row
+// stays disabled). Each repo is validated owner/name and lowercased for GITHUB
+// before insert, so a Owner/Name and owner/name seed mint ONE PK row.
+func reconcileForgeSeed(ctx context.Context, st *store.Store, provider store.ForgeProvider, host string, seed []string) error {
+	for _, raw := range seed {
+		repo, err := normalizeGitHubRepo(raw)
+		if err != nil {
+			return err
+		}
+		if err := st.EnsureForgeRepoSubscription(ctx, store.ForgeRepoSubscription{
+			Provider: provider,
+			Host:     host,
+			Repo:     repo,
+			Enabled:  true,
+		}); err != nil {
+			return fmt.Errorf("seeding forge repo subscription %q: %w", repo, err)
+		}
+	}
+	return nil
+}
+
+// warnDisabledForgePolling emits exactly one slog.Warn when polling is disabled
+// but the table already holds enabled rows for the bound (provider, host) — a
+// deployment that landed a manual row (or a prior --forge-repos) without the
+// flag. Never fail-fast: it keeps today's no-driver behavior. No Warn when no
+// enabled rows exist. The count covers ONLY the bound coordinate.
+func warnDisabledForgePolling(ctx context.Context, st *store.Store, provider store.ForgeProvider, host string, log *slog.Logger) {
+	enabled, err := st.ListEnabledForgeRepoSubscriptions(ctx, provider, host)
+	if err != nil {
+		log.Error("forge poll: list enabled targets at boot", "err", err)
+		return
+	}
+	if len(enabled) == 0 {
+		return
+	}
+	log.Warn("forge polling disabled but enabled targets exist; set --forge-poll",
+		"targets", len(enabled), "forge_host", host)
+}
+
+// normalizeGitHubRepo validates an "owner/name" repo string and lowercases it
+// (GitHub owner/name is case-insensitive-but-case-preserving, so Owner/Name and
+// owner/name must not mint two PK rows — two poll targets). A string that is not
+// exactly one non-empty owner and one non-empty name is a startup error.
+func normalizeGitHubRepo(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	owner, name, ok := strings.Cut(trimmed, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return "", fmt.Errorf("invalid forge repo %q: want \"owner/name\"", raw)
+	}
+	return strings.ToLower(trimmed), nil
+}
+
+// forgePollStore adapts *store.Store to ingest.PollStore, binding the driver's
+// forge coordinate half (provider, host) so the ingest-side seam stays
+// repo-keyed and this package holds the store dependency the ingest package's
+// no-store rule keeps out (Global Constraints). It delegates every method to the
+// T2 store methods with the bound coordinate.
+type forgePollStore struct {
+	st       *store.Store
+	provider store.ForgeProvider
+	host     string
+}
+
+// ListEnabledRepos maps the enabled subscription rows for the bound coordinate
+// to their repo strings — the driver's per-pass target enumeration.
+func (a *forgePollStore) ListEnabledRepos(ctx context.Context) ([]string, error) {
+	subs, err := a.st.ListEnabledForgeRepoSubscriptions(ctx, a.provider, a.host)
+	if err != nil {
+		return nil, err
+	}
+	repos := make([]string, len(subs))
+	for i, s := range subs {
+		repos[i] = s.Repo
+	}
+	return repos, nil
+}
+
+// ListCursor maps the stored page rows for repo to the driver's page-cursor view.
+func (a *forgePollStore) ListCursor(ctx context.Context, repo string) ([]ingest.ListPageCursor, error) {
+	rows, err := a.st.ForgeListCursor(ctx, a.provider, a.host, repo)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ingest.ListPageCursor, len(rows))
+	for i, r := range rows {
+		out[i] = ingest.ListPageCursor{Page: int(r.Page), ETag: r.ETag, HasNext: r.HasNext}
+	}
+	return out, nil
+}
+
+// UpsertListCursorPage maps the driver's page-cursor view back to a store row
+// for the bound coordinate and repo.
+func (a *forgePollStore) UpsertListCursorPage(ctx context.Context, repo string, cur ingest.ListPageCursor) error {
+	return a.st.UpsertForgeListCursorPage(ctx, store.ForgeListPageCursor{
+		Provider: a.provider,
+		Host:     a.host,
+		Repo:     repo,
+		Page:     int32(cur.Page), //nolint:gosec // G115: page is a 1-based walk index the driver increments from 1; a repo never has 2^31 pages, so it is always within the int32 domain
+		ETag:     cur.ETag,
+		HasNext:  cur.HasNext,
+	})
+}
+
+// PruneListCursorPages deletes page rows past maxPage for the bound coordinate
+// and repo (a repo whose walk shrank).
+func (a *forgePollStore) PruneListCursorPages(ctx context.Context, repo string, maxPage int) error {
+	return a.st.PruneForgeListCursorPages(ctx, a.provider, a.host, repo, int32(maxPage)) //nolint:gosec // G115: maxPage is the driver's last-walked page index (from 1); a repo never has 2^31 pages, so it is always within the int32 domain
+}
+
+// forgeTokenSource is the driver's forge.TokenSource: a TTL cache over the one
+// SpecResolver, selecting the configured secret name from the resolved set. A
+// resolve is not cheap (reads the whole registry, writes a manifest, drives a
+// provider Load — resolver.go:135-165), so the value is cached for forgeTokenTTL
+// and re-resolved only on TTL expiry or Invalidate() (the client calls the
+// latter on a 401/bad-creds-403). This is the design's stated reason for a
+// TTL-cache with an invalidation seam rather than a captured token or bare func.
+type forgeTokenSource struct {
+	resolver secrets.Resolver
+	name     string
+	ttl      time.Duration
+	now      func() time.Time
+
+	mu      sync.Mutex
+	token   string
+	expires time.Time
+	valid   bool
+}
+
+// newForgeTokenSource returns a TokenSource resolving name through resolver,
+// caching each resolved value for forgeTokenTTL.
+func newForgeTokenSource(resolver secrets.Resolver, name string) *forgeTokenSource {
+	return &forgeTokenSource{resolver: resolver, name: name, ttl: forgeTokenTTL, now: time.Now}
+}
+
+// Token returns the cached token while it is valid and unexpired, else
+// re-resolves the declared set and selects the configured name. A missing name
+// at Token time (declaration deleted post-boot) is an error the driver surfaces
+// per-pass as an auth failure + retry next tick (idempotent).
+func (t *forgeTokenSource) Token(ctx context.Context) (string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.valid && t.now().Before(t.expires) {
+		return t.token, nil
+	}
+	resolved, err := t.resolver.Resolve(ctx, "forge poll")
+	if err != nil {
+		return "", fmt.Errorf("forge token resolve: %w", err)
+	}
+	for _, s := range resolved {
+		if s.Name == t.name {
+			t.token = s.Value
+			t.expires = t.now().Add(t.ttl)
+			t.valid = true
+			return t.token, nil
+		}
+	}
+	t.valid = false
+	return "", fmt.Errorf("forge secret %q not declared", t.name)
+}
+
+// Invalidate drops the cached value so the next Token re-resolves — the client
+// calls it when it observes an auth failure, so a rotated token takes effect
+// immediately rather than after the TTL.
+func (t *forgeTokenSource) Invalidate() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.valid = false
 }
 
 func closeListener(l net.Listener) {
