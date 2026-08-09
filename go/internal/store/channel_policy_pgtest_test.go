@@ -197,21 +197,66 @@ func TestSetChannelPolicySeedsCursorsForNewlyMandatory(t *testing.T) {
 	}
 }
 
+// TestSetChannelPolicyMandatoryDoesNotSeedHumanMember pins the set-based seed's
+// agent-only guard (the JOIN agent_accounts): flipping mandatory on a channel
+// with both a human and an agent member seeds ONLY the agent — the human member
+// gets no cursor row. This fails if the JOIN were dropped or loosened to seed
+// every member.
+func TestSetChannelPolicyMandatoryDoesNotSeedHumanMember(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "a1")
+	human := mustUser(t, s, "human")
+	// A non-mandatory channel with one agent and one human member, neither
+	// subscribed — so neither has a delivery cursor row yet.
+	ch := mustPolicyChannel(t, s, owner.ID, "coord", ChannelPolicy{}, agent.ID, human.ID)
+	unsubscribeMember(t, s, ch.ID, agent.ID)
+	unsubscribeMember(t, s, ch.ID, human.ID)
+
+	// Precondition: no cursor rows exist for either member on this channel.
+	for _, a := range []AccountID{agent.ID, human.ID} {
+		if _, _, ok := readCursor(t, s, a, ch.ID); ok {
+			t.Fatalf("precondition: member %s already has a cursor on %s", a, ch.ID)
+		}
+	}
+
+	if _, err := s.SetChannelPolicy(ctx, owner.ID, ch.ID, ChannelPolicy{
+		MandatorySubscription: true,
+	}); err != nil {
+		t.Fatalf("SetChannelPolicy: %v", err)
+	}
+
+	// The agent member is seeded (a delivery target); the human member is NOT —
+	// the agent-only JOIN admits no human_account row.
+	if _, _, ok := readCursor(t, s, agent.ID, ch.ID); !ok {
+		t.Fatalf("agent %s has no cursor after mandatory flip — an un-seeded delivery target", agent.ID)
+	}
+	if _, _, ok := readCursor(t, s, human.ID, ch.ID); ok {
+		t.Fatalf("human %s got a cursor after mandatory flip — the agent-only JOIN was bypassed", human.ID)
+	}
+}
+
 // TestCreateChannelBornMandatorySeedsCursors pins the create-with-policy path's
 // D2-hazard closure: a channel created with Policy.MandatorySubscription=true
 // makes every member a delivery target (D1 disjunct), so CreateChannel MUST seed
 // each agent member's cursor in the create txn — else the channel is born with
-// un-seeded delivery targets. Symmetric with the SetChannelPolicy flip.
+// un-seeded delivery targets — and a human member gets none (the seed is
+// agent-only). Symmetric with the SetChannelPolicy flip and its human test.
 func TestCreateChannelBornMandatorySeedsCursors(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	owner := mustUser(t, s, "owner")
 	a1 := mustAgent(t, s, owner.ID, "a1")
 	a2 := mustAgent(t, s, owner.ID, "a2")
+	// A human member proves the born-mandatory seed is agent-only on the create
+	// path too (symmetric with the SetChannelPolicy human test): the JOIN
+	// agent_accounts admits no human row.
+	human := mustUser(t, s, "human")
 
 	ch := mustPolicyChannel(t, s, owner.ID, "coord", ChannelPolicy{
 		MandatorySubscription: true,
-	}, a1.ID, a2.ID)
+	}, a1.ID, a2.ID, human.ID)
 
 	// Every agent member has a seeded cursor from birth (at head 0, an empty
 	// channel) and is caught-up (owed nothing) — no un-seeded delivery target,
@@ -232,6 +277,12 @@ func TestCreateChannelBornMandatorySeedsCursors(t *testing.T) {
 		if len(owed[ch.ID]) != 0 {
 			t.Fatalf("agent %s owed %d messages after born-mandatory seed, want 0", a, len(owed[ch.ID]))
 		}
+	}
+
+	// The human member is NOT a delivery target — the agent-only JOIN admits no
+	// human row, so it has no cursor (symmetric with the SetChannelPolicy path).
+	if _, _, ok := readCursor(t, s, human.ID, ch.ID); ok {
+		t.Fatalf("human %s got a cursor after born-mandatory create — the agent-only JOIN was bypassed", human.ID)
 	}
 }
 

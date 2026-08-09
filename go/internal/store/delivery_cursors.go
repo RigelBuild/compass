@@ -35,6 +35,36 @@ func seedDeliveryCursor(ctx context.Context, tx pgx.Tx, agent AccountID, channel
 	return nil
 }
 
+// seedChannelDeliveryCursorsSQL seeds EVERY agent member of the channel to the
+// current channel head in one statement — MAX(seq) over the channel's messages,
+// 0 if empty, a same-channel constant across all seeded rows — with NO history
+// replay (design record D2). The JOIN agent_accounts is the agent-only guard
+// (the set form of the per-row WHERE EXISTS in seedDeliveryCursorSQL): a human
+// member has no agent_accounts row and so is a silent no-op rather than an FK
+// violation. ON CONFLICT DO NOTHING keeps a re-subscribe / re-run idempotent —
+// it never resets an existing cursor. $1 is the channel id.
+const seedChannelDeliveryCursorsSQL = `
+	INSERT INTO agent_delivery_cursors (agent_account_id, channel_id, acked_seq)
+	SELECT cm.account_id, $1,
+	       COALESCE((SELECT MAX(m.seq) FROM messages m JOIN topics t ON t.id = m.topic_id WHERE t.channel_id = $1), 0)
+	FROM channel_members cm
+	JOIN agent_accounts aa ON aa.account_id = cm.account_id
+	WHERE cm.channel_id = $1
+	ON CONFLICT (agent_account_id, channel_id) DO NOTHING`
+
+// seedChannelDeliveryCursors is the set-based counterpart to seedDeliveryCursor:
+// it seeds all agent members of the channel in a single statement (collapsing the
+// per-member seed loop), riding the caller's existing transaction so a missed
+// seed is a loud failure in that same commit. Self-guarding (agent-only, see
+// seedChannelDeliveryCursorsSQL) and idempotent, so it is safe to call for a
+// channel whose member set includes humans.
+func seedChannelDeliveryCursors(ctx context.Context, tx pgx.Tx, channel ChannelID) error {
+	if _, err := tx.Exec(ctx, seedChannelDeliveryCursorsSQL, string(channel)); err != nil {
+		return fmt.Errorf("store: seed channel delivery cursors: %w", err)
+	}
+	return nil
+}
+
 // SeedDeliveryCursor seeds acked_seq to the current channel head (MAX(seq) over
 // the channel's messages, 0 if empty) — NO history replay. It MUST be called in
 // the SAME txn as the channel_members row insert (the seed rides that commit, so
