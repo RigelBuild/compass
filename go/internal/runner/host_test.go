@@ -22,7 +22,9 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -593,6 +595,184 @@ func TestFailedTeardownLeavesContainerResolvableForRetry(t *testing.T) {
 	// The successful retry actually drove the engine teardown (stop then remove),
 	// proving the retry re-ran Teardown rather than short-circuiting.
 	assertRecorded(t, engine.calls, "remove")
+}
+
+// Close stops AND removes every container the runner is hosting, not just its
+// sockets. The defect this guards: the old Close closed only the per-container
+// socket listeners, so after a shutdown-driven Close the podman containers kept
+// running unsupervised (conmon double-forks them out of the runner's process
+// group, so the stack's group-signal cannot reach them either). Close must drain
+// them through the same teardown path Remove uses. Two containers are provisioned
+// and started; Close must drive an engine stop+remove for BOTH and leave no
+// socket served.
+func TestCloseStopsEveryProvisionedContainer(t *testing.T) {
+	host, engine, _ := newConfigRefreshFixture(t)
+	ctx := context.Background()
+
+	nameA := provisionAndStart(t, host, "a")
+	nameB := provisionAndStart(t, host, "b")
+
+	host.Close(ctx)
+
+	// Both containers were stopped and removed — not merely un-socketed.
+	assertRecorded(t, engine.calls, "stop")
+	assertRecorded(t, engine.calls, "remove")
+	if got := engine.countCall("stop"); got != 2 {
+		t.Fatalf("engine stop calls = %d, want 2 (both provisioned containers stopped): %v", got, engine.calls)
+	}
+	if got := engine.countCall("remove"); got != 2 {
+		t.Fatalf("engine remove calls = %d, want 2 (both provisioned containers removed): %v", got, engine.calls)
+	}
+	if socketServed(t, host, nameA) || socketServed(t, host, nameB) {
+		t.Fatal("agent socket still served after Close; every socket must be closed")
+	}
+}
+
+// Close keys off the provisioned-container set (the sockets index), not the live
+// session set: a container provisioned but never Started still has a running
+// podman container behind it, so Close must stop+remove it too. A bug that
+// enumerated only started sessions would leak a provisioned-but-idle container.
+func TestCloseTearsDownProvisionedButNotStartedContainer(t *testing.T) {
+	host, engine, _ := newConfigRefreshFixture(t)
+	ctx := context.Background()
+
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"})
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	// No Start: the container is provisioned and running, but binds no session.
+
+	host.Close(ctx)
+
+	if got := engine.countCall("stop"); got != 1 {
+		t.Fatalf("engine stop calls = %d, want 1 (the provisioned-but-unstarted container): %v", got, engine.calls)
+	}
+	if got := engine.countCall("remove"); got != 1 {
+		t.Fatalf("engine remove calls = %d, want 1 (the provisioned-but-unstarted container): %v", got, engine.calls)
+	}
+	if socketServed(t, host, name) {
+		t.Fatal("agent socket still served after Close; a provisioned container's socket must be closed")
+	}
+}
+
+// Close is best-effort with per-container isolation: one container's Stop failing
+// must not abort a sibling's teardown. The failing container aborts at stop (its
+// AgentRuntime.Teardown returns at the stop stage, before remove and deregister),
+// while the healthy sibling still runs stop→remove→deregister to completion — and
+// every socket is closed regardless. This proves the concurrent fan-out isolates
+// a failure to its own container rather than letting it short-circuit the drain.
+func TestCloseIsBestEffortOnStopError(t *testing.T) {
+	host, engine, _ := newConfigRefreshFixture(t)
+	ctx := context.Background()
+
+	nameA := provisionAndStart(t, host, "a")
+	nameB := provisionAndStart(t, host, "b")
+	// The engine keys container ids by name (Create returns ContainerID(spec.Name)),
+	// so fail exactly container A's Stop and leave B healthy.
+	idA := runtime.ContainerID(nameA)
+	idB := runtime.ContainerID(nameB)
+	engine.stopErrByID = map[runtime.ContainerID]error{idA: errors.New("engine stop failed")}
+
+	host.Close(ctx)
+
+	// The failing container aborted at stop: it recorded a stop but never a remove.
+	if got := engine.countCallForID(idA, "stop"); got != 1 {
+		t.Fatalf("failing container stop calls = %d, want 1 (attempted): %v", got, engine.callsByID[idA])
+	}
+	if got := engine.countCallForID(idA, "remove"); got != 0 {
+		t.Fatalf("failing container remove calls = %d, want 0 (Teardown aborts at stop): %v", got, engine.callsByID[idA])
+	}
+	// The healthy sibling fully tore down: stop, then remove, then deregister.
+	if got := engine.countCallForID(idB, "stop"); got != 1 {
+		t.Fatalf("healthy container stop calls = %d, want 1: %v", got, engine.callsByID[idB])
+	}
+	if got := engine.countCallForID(idB, "remove"); got != 1 {
+		t.Fatalf("healthy container remove calls = %d, want 1 (a failing sibling must not abort it): %v", got, engine.callsByID[idB])
+	}
+	if _, ok := host.registry.Resolve(nameB); ok {
+		t.Fatal("healthy container handle still resolvable after Close; a full teardown must deregister it")
+	}
+	// Both sockets are closed regardless of the teardown failure.
+	if socketServed(t, host, nameA) || socketServed(t, host, nameB) {
+		t.Fatal("agent socket still served after a best-effort Close; every socket must be closed on every path")
+	}
+}
+
+// Close joins its concurrent teardowns before returning — no goroutine outlives
+// it. A test-controlled gate parks both teardowns mid-Stop: while it is held,
+// Close must NOT have returned and no container may have reached remove (the
+// teardowns are stalled at stop). Releasing the gate lets every teardown finish;
+// only then may Close return, with all stops and removes recorded. Deleting
+// wg.Wait() from Close breaks this deterministically — Close would return while
+// the teardowns are still parked, tripping the "not returned yet"/"no removes"
+// assertion. Run under -race, this also guards the concurrent map/slice access.
+func TestCloseJoinsConcurrentTeardowns(t *testing.T) {
+	host, engine, _ := newConfigRefreshFixture(t)
+	ctx := context.Background()
+
+	provisionAndStart(t, host, "a")
+	provisionAndStart(t, host, "b")
+
+	// Park every teardown mid-Stop until the test releases the gate, and have each
+	// signal stopEntered when it reaches Stop (a real event the test gates on, not
+	// a poll). stopEntered is buffered for both containers so a teardown can signal
+	// and then park without waiting for the test to read. The gate is released on
+	// every exit path (including a failing assertion) so the suite can't hang.
+	gate := make(chan struct{})
+	entered := make(chan runtime.ContainerID, 2)
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gate) }) }
+	t.Cleanup(release)
+	engine.mu.Lock()
+	engine.stopGate = gate
+	engine.stopEntered = entered
+	engine.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		host.Close(ctx)
+		close(done)
+	}()
+
+	// Wait until both teardowns have entered Stop (each sends on stopEntered, now
+	// parked on the gate) — a real event with a bounded failsafe, no poll, no sleeps.
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(30 * time.Second):
+			t.Fatal("teardowns did not both reach Stop within 30s")
+		case <-done:
+			t.Fatal("Close returned before its teardowns reached Stop")
+		}
+	}
+
+	// While the gate is held: Close has not returned and no remove has happened.
+	// Without wg.Wait(), Close would have returned here → this fails.
+	select {
+	case <-done:
+		t.Fatal("Close returned while teardowns were still parked mid-Stop; it must join before returning")
+	default:
+	}
+	if got := engine.countCall("remove"); got != 0 {
+		t.Fatalf("engine remove calls = %d while teardowns parked at stop, want 0: %v", got, engine.calls)
+	}
+
+	// Release the gate; every teardown now runs to completion and Close returns.
+	release()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("Close did not return within 30s after the gate released; teardowns must join, not hang")
+	}
+
+	// Every teardown finished before Close returned: both stops and both removes
+	// are recorded, with no goroutine still running behind Close.
+	if got := engine.countCall("stop"); got != 2 {
+		t.Fatalf("engine stop calls = %d after Close returned, want 2 (all teardowns joined): %v", got, engine.calls)
+	}
+	if got := engine.countCall("remove"); got != 2 {
+		t.Fatalf("engine remove calls = %d after Close returned, want 2 (all teardowns joined): %v", got, engine.calls)
+	}
 }
 
 // OQ6 row 5: Status is answered from the Runner's own live session set — a
