@@ -17,7 +17,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -145,6 +144,37 @@ func stackUpArgs(p embeddedParams) []string {
 	return args
 }
 
+// captureStderr wires cmd.Stderr to a temp *os.File and returns a reader for the
+// bytes captured so far plus a cleanup that closes and removes the file.
+// Capturing to an *os.File — not a bytes.Buffer — is load-bearing for the
+// fire-and-return stack commands: `compass-stack up` exits 0 once the stack is
+// Ready while its postgres/server/runner children keep running. os/exec backs a
+// non-*os.File stderr writer with an OS pipe whose copy goroutine Cmd.Wait
+// blocks on until EOF, and those lingering children inherit the pipe's
+// write-end, so EOF never arrives and Wait hangs forever. An *os.File is dup'd
+// straight into the child (no pipe, no goroutine), so Wait returns the instant
+// compass-stack itself exits; and the children write to a plain file that never
+// EPIPEs, so capturing this way never signals the very stack the app must keep
+// alive.
+func captureStderr(cmd *exec.Cmd) (read func() string, cleanup func(), err error) {
+	f, err := os.CreateTemp("", "compass-stack-stderr-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("creating stderr capture file: %w", err)
+	}
+	cmd.Stderr = f
+	read = func() string {
+		// Best-effort: an unreadable capture degrades to the generic
+		// "compass-stack ... failed" error, and never blocks surfacing.
+		b, _ := os.ReadFile(f.Name())
+		return strings.TrimSpace(string(b))
+	}
+	cleanup = func() {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+	}
+	return read, cleanup, nil
+}
+
 // runStackUp is the real stackUp seam: it execs the compass-stack binary at bin
 // with the given argv and waits for it to exit 0 (up is fire-and-return, so
 // Run returning nil means the stack reached Ready and its children keep
@@ -155,14 +185,17 @@ func runStackUp(bin string) func(ctx context.Context, args []string) error {
 		//nolint:gosec // G204: bin is operator/PATH-resolved (resolveStackBin) and
 		// the argv is pipeline-assembled (stackUpArgs), not user input.
 		cmd := exec.CommandContext(ctx, bin, args...)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
+		stderr, cleanup, capErr := captureStderr(cmd)
+		if capErr != nil {
+			return capErr
+		}
+		defer cleanup()
 		if err := cmd.Run(); err != nil {
 			if ctx.Err() == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
 				return fmt.Errorf("compass-stack up exceeded the %s bring-up window "+
 					"(a cold agent-image pull from GHCR can take longer on first run): %w", bringUpTimeout, err)
 			}
-			if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			if msg := stderr(); msg != "" {
 				return fmt.Errorf("compass-stack up failed: %w: %s", err, msg)
 			}
 			return fmt.Errorf("compass-stack up failed: %w", err)
@@ -201,14 +234,17 @@ func runStackDown(bin string) func(ctx context.Context, args []string) error {
 		//nolint:gosec // G204: bin is operator/PATH-resolved (resolveStackBin) and
 		// the argv is pipeline-assembled (stackDownArgs), not user input.
 		cmd := exec.CommandContext(ctx, bin, args...)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
+		stderr, cleanup, capErr := captureStderr(cmd)
+		if capErr != nil {
+			return capErr
+		}
+		defer cleanup()
 		if err := cmd.Run(); err != nil {
 			if ctx.Err() == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
 				return fmt.Errorf("compass-stack down exceeded the %s teardown window "+
 					"(attach, SIGTERM the child tree, wait the server drain): %w", stackDownTimeout, err)
 			}
-			if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			if msg := stderr(); msg != "" {
 				return fmt.Errorf("compass-stack down failed: %w: %s", err, msg)
 			}
 			return fmt.Errorf("compass-stack down failed: %w", err)
