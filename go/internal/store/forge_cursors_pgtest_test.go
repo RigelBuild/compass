@@ -20,9 +20,8 @@ import (
 
 // TestMigration0016TablesExist proves the migration applied (newTestStore runs
 // it) and every forge table is present by inserting the minimal legal row into
-// each. The sequential migration harness proves both the empty-db and
-// from-0015-db paths — newTestStore opens a freshly-migrated database, applying
-// 0001..0016 in order.
+// each. newTestStore applies 0001..0016 in order on a fresh database, so 0016
+// is exercised landing on top of the full 0001..0015 schema.
 func TestMigration0016TablesExist(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
@@ -31,8 +30,11 @@ func TestMigration0016TablesExist(t *testing.T) {
 	mustExec(t, s, `INSERT INTO forge_repo_subscriptions (forge_provider, forge_host, repo) VALUES (1, 'github.com', 'a/b')`)
 	// forge_list_cursors
 	mustExec(t, s, `INSERT INTO forge_list_cursors (forge_provider, forge_host, repo, page) VALUES (1, 'github.com', 'a/b', 1)`)
-	// forge_artifact_cursors
+	// forge_artifact_cursors — both legal kind values (1=issue, 2=pull_request)
+	// accept, proving the CHECK IN (1,2) upper bound, symmetric to the
+	// provider-domain 1..4 accept test.
 	mustExec(t, s, `INSERT INTO forge_artifact_cursors (forge_provider, forge_host, repo, kind, number) VALUES (1, 'github.com', 'a/b', 1, 7)`)
+	mustExec(t, s, `INSERT INTO forge_artifact_cursors (forge_provider, forge_host, repo, kind, number) VALUES (1, 'github.com', 'a/b', 2, 8)`)
 	// agent_forge_subscriptions needs a real agent_account_id (FK); seed one.
 	owner := mustUser(t, s, "forge-owner")
 	agent := mustAgent(t, s, owner.ID, "forge-agent")
@@ -264,7 +266,13 @@ func TestForgeRepoSubscriptionCRUD(t *testing.T) {
 	}
 
 	// ListEnabled returns only enabled rows for the asked (provider, host),
-	// ascending repo, nil for none. Seed a second enabled repo + a foreign host.
+	// ascending repo, nil for none. Seed two enabled github.com repos INSERTED
+	// out of lexical order (a/c before a/a) plus a foreign host, so the returned
+	// slice being ascending proves the ORDER BY repo ASC clause (a dropped or
+	// DESC order goes RED here, not silently green on a single row).
+	if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/c", Enabled: true}); err != nil {
+		t.Fatalf("ensure a/c: %v", err)
+	}
 	if err := s.EnsureForgeRepoSubscription(ctx, ForgeRepoSubscription{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/a", Enabled: true}); err != nil {
 		t.Fatalf("ensure a/a: %v", err)
 	}
@@ -275,9 +283,16 @@ func TestForgeRepoSubscriptionCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list enabled: %v", err)
 	}
-	// a/b is disabled; only a/a is enabled on github.com.
-	if len(list) != 1 || list[0].Repo != "a/a" || !list[0].Enabled {
-		t.Fatalf("list enabled = %+v, want [a/a enabled]", list)
+	// a/b is disabled; a/a and a/c are enabled on github.com, returned ascending.
+	gotRepos := make([]string, len(list))
+	for i, r := range list {
+		gotRepos[i] = r.Repo
+		if !r.Enabled {
+			t.Fatalf("list enabled contains a disabled row: %+v", r)
+		}
+	}
+	if len(list) != 2 || gotRepos[0] != "a/a" || gotRepos[1] != "a/c" {
+		t.Fatalf("list enabled = %v, want [a/a a/c] ascending", gotRepos)
 	}
 
 	// nil for none: a provider/host with no enabled rows.
