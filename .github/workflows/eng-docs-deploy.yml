@@ -104,4 +104,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: bun apps/eng-docs/scripts/deploy.ts
+        working-directory: apps/eng-docs
+        run: bun scripts/deploy.ts
