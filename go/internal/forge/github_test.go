@@ -247,6 +247,37 @@ func TestBudgetGateRetryAfterSelfClears(t *testing.T) {
 	}
 }
 
+// item 3 (cont.): the budget floor is `remaining <= reserve` (reserve=10). A 200
+// whose X-RateLimit-Remaining EQUALS the reserve arms the gate — this pins the
+// boundary so a regression flipping the comparison to `<` (arming only strictly
+// below reserve) goes red.
+func TestBudgetGateRemainingEqualsReserve(t *testing.T) {
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	resetUnix := strconv.FormatInt(base.Add(30*time.Second).Unix(), 10)
+
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: "[]", headers: map[string]string{
+			"X-RateLimit-Remaining": "10", // == reserve -> arms the gate
+			"X-RateLimit-Reset":     resetUnix,
+		}},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	g.now = func() time.Time { return base }
+
+	// Call 1 sees remaining == reserve -> arms the gate.
+	if _, err := g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 1, ""); err != nil {
+		t.Fatalf("call 1: %v", err)
+	}
+	// Call 2, still before the reset, must fail fast WITHOUT issuing a request.
+	_, err := g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 2, "")
+	if !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("call 2 err = %v, want ErrBudgetExhausted (reserve boundary)", err)
+	}
+	if rt.calls != 1 {
+		t.Fatalf("gate did not arm at remaining==reserve: calls = %d, want 1", rt.calls)
+	}
+}
+
 // --- item 4: HasNext, per_page/page on the wire, ListIssues two-page walk ----
 
 func TestPaginationAndWalk(t *testing.T) {
@@ -378,6 +409,12 @@ func TestErrorMappingAndInvalidate(t *testing.T) {
 			body:        `{"message":"Bad credentials"}`,
 			wantInvalid: 1,
 		},
+		{
+			name:        "401 bad-creds",
+			status:      401,
+			body:        `{"message":"Bad credentials"}`,
+			wantInvalid: 1,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -395,7 +432,7 @@ func TestErrorMappingAndInvalidate(t *testing.T) {
 			if se.Status != tc.status {
 				t.Errorf("Status = %d, want %d", se.Status, tc.status)
 			}
-			wantMsg := map[int]string{404: "Not Found", 500: "boom", 403: "Bad credentials"}[tc.status]
+			wantMsg := map[int]string{401: "Bad credentials", 404: "Not Found", 500: "boom", 403: "Bad credentials"}[tc.status]
 			if se.Message != wantMsg {
 				t.Errorf("Message = %q, want %q", se.Message, wantMsg)
 			}

@@ -149,6 +149,9 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 		return ListPage{}, fmt.Errorf("forge: github resolve token: %w", err)
 	}
 
+	// repo is a trusted internal coordinate ("owner/name" from the subscription
+	// store, validated at ingest), never attacker-controlled, so it is
+	// interpolated into the path directly; queryParams escapes the filter args.
 	u := g.apiBase() + "/repos/" + repo + "/issues?" + g.queryParams(f, page).Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
@@ -166,15 +169,23 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 	}
 	defer func() { _ = resp.Body.Close() }() // read-only GET; body drained/closed, no actionable close error
 
-	// Record the budget gate from THIS response for the NEXT call.
-	g.recordBudget(resp)
-
 	switch {
 	case resp.StatusCode == http.StatusNotModified:
+		// A 304's x-ratelimit-* headers reflect a healthy authorized bucket
+		// (the conditional request was not charged against the primary limit);
+		// record it for the NEXT call, then short-circuit before any body parse.
+		g.recordBudget(resp)
 		return ListPage{NotModified: true}, nil
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		// A 2xx's headers reflect a healthy bucket; record for the next call.
+		g.recordBudget(resp)
 		// fallthrough to body parse below
 	default:
+		// Error responses: mapErrorResponse owns the budget decision (it arms
+		// the gate on a true rate-limit signal). A bad-creds 403 in the
+		// unauthenticated bucket carries a low nonzero remaining; recording it
+		// here would arm the gate against the token we are about to invalidate,
+		// suppressing the fresh-token retry the next batch is meant to make.
 		return ListPage{}, g.mapErrorResponse(resp)
 	}
 
@@ -190,8 +201,12 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 
 	issues := make([]Issue, 0, len(rows))
 	for _, r := range rows {
-		if r.PullRequest != nil {
-			continue // GitHub returns PRs as issues; drop them (issue-shaped only)
+		// GitHub returns PRs as issues; drop them (issue-shaped only). GitHub
+		// OMITS the pull_request key for a plain issue, but a *json.RawMessage
+		// unmarshals an explicit "pull_request": null to a non-nil
+		// RawMessage("null") — guard that so a null never drops a real issue.
+		if raw := r.PullRequest; raw != nil && len(*raw) > 0 && string(*raw) != "null" {
+			continue
 		}
 		issues = append(issues, r.toIssue())
 	}
@@ -366,13 +381,17 @@ func isRateLimited(resp *http.Response) bool {
 }
 
 // rateLimitReset derives a reset instant from a 403/429 rate-limit response: a
-// Retry-After seconds value maps to now()+seconds; otherwise an
-// x-ratelimit-reset (unix seconds) is used. A zero time (neither present/usable)
-// lets armGate fall back to the bounded default skip.
+// Retry-After value maps to now()+seconds (RFC-7231 delta-seconds) or the
+// parsed HTTP-date; otherwise an x-ratelimit-reset (unix seconds) is used. A
+// zero time (neither present/usable) lets armGate fall back to the bounded
+// default skip.
 func (g *GitHub) rateLimitReset(resp *http.Response) time.Time {
 	if ra := resp.Header.Get("Retry-After"); ra != "" {
 		if secs, err := strconv.Atoi(ra); err == nil {
 			return g.now().Add(time.Duration(secs) * time.Second)
+		}
+		if at, err := http.ParseTime(ra); err == nil {
+			return at
 		}
 	}
 	return resetFromHeader(resp.Header.Get("X-Ratelimit-Reset"))
