@@ -1,7 +1,7 @@
 /*
  * Compass engineering docs — public Starlight theme override.
  *
- * Maps Starlight's CSS-variable tokens onto the Sealed Security
+ * Maps Starlight's CSS-variable tokens onto the Rigel
  * brand palette pulled from
  * sealed/apps/sealedsecurity.com/src/investors/sealed-docs.css so the
  * docs site reads as part of the same brand family as the landing
@@ -15,7 +15,7 @@
 @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap");
 
 :root {
-	/* ── Sealed Security brand tokens. Mirrors sealed-docs.css ── */
+	/* ── Rigel brand tokens. Mirrors sealed-docs.css ── */
 	--sealed-black: #0f0f0f;
 	--sealed-white: #f7f5ef;
 	--sealed-paper: #ede9df;
