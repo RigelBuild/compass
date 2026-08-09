@@ -5,6 +5,7 @@ package stack
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -33,9 +34,12 @@ func (r *recorder) snapshot() []string {
 }
 
 // stubProcess is a started child that records its stop signals in start-order so
-// drain order is assertable.
+// drain order is assertable. pid is a fake, unique-per-child process id the
+// pgid-capture path persists; a test stubs readStartTime so no real /proc lookup
+// happens.
 type stubProcess struct {
 	name string
+	pid  int
 	rec  *recorder
 }
 
@@ -48,6 +52,8 @@ func (p *stubProcess) Wait(ctx context.Context) error {
 	p.rec.add("wait " + p.name)
 	return nil
 }
+
+func (p *stubProcess) Pid() int { return p.pid }
 
 // stubSupervisor records each Start, can inject a per-component start error, can
 // gate a component's Start on a channel (for the concurrency race), and flips
@@ -76,7 +82,23 @@ func (s *stubSupervisor) Start(ctx context.Context, spec ProcessSpec) (Process, 
 	if spec.Component == ComponentServer && s.serverStarted != nil {
 		s.serverStarted.Store(true)
 	}
-	return &stubProcess{name: spec.Component.String(), rec: s.rec}, nil
+	return &stubProcess{name: spec.Component.String(), pid: fakePid(spec.Component), rec: s.rec}, nil
+}
+
+// fakePid maps a component to a stable, distinct fake pid the pgid-capture path
+// persists. The values are arbitrary but unique so a test can assert reverse
+// drain order and identity by pgid.
+func fakePid(c Component) int {
+	switch c {
+	case ComponentPostgres:
+		return 1001
+	case ComponentServer:
+		return 1002
+	case ComponentRunner:
+		return 1003
+	default:
+		return 1000
+	}
 }
 
 // stubProber answers GetServerInfo. forceLive makes it answer unconditionally
@@ -200,6 +222,71 @@ func (i *stubImage) EnsureImage(ctx context.Context, image string) error {
 	return i.err
 }
 
+// fakeGroupSignaller is the cross-process teardown seam under test: it records
+// each signal in order and models per-group liveness as a controllable state
+// machine, so DownDetached's ordering / escalation / zombie-window / identity
+// logic is exercised with no real processes. alive maps pgid→liveness; identity
+// maps pgid→the start-time token a live group answers to (a mismatch models a
+// recycled pid). A pgid absent from alive is treated as gone (ESRCH).
+type fakeGroupSignaller struct {
+	rec      *recorder
+	mu       sync.Mutex
+	alive    map[int]bool
+	identity map[int]uint64
+	// onKill / onTerm, when set for a pgid, run after a SIGKILL / SIGTERM to that
+	// group — a test uses them to flip a group dead at the right escalation step
+	// (or to leave a killed group a zombie: still "alive" for the group-ESRCH
+	// channel, which DownDetached treats as success for the runner).
+	onKill map[int]func()
+	onTerm map[int]func()
+}
+
+func newFakeGroupSignaller(rec *recorder) *fakeGroupSignaller {
+	return &fakeGroupSignaller{
+		rec:      rec,
+		alive:    map[int]bool{},
+		identity: map[int]uint64{},
+		onKill:   map[int]func(){},
+		onTerm:   map[int]func(){},
+	}
+}
+
+func (f *fakeGroupSignaller) Signal(pgid int, sig ProcessSignal) error {
+	f.mu.Lock()
+	name := "term"
+	if sig == SignalKill {
+		name = "kill"
+	}
+	f.rec.add("group-" + name + " " + strconv.Itoa(pgid))
+	var cb func()
+	switch sig {
+	case SignalKill:
+		cb = f.onKill[pgid]
+	case SignalTerm:
+		cb = f.onTerm[pgid]
+	}
+	f.mu.Unlock()
+	// Run the hook OUTSIDE the lock: a hook typically calls set(), which locks
+	// f.mu, so holding it here would deadlock.
+	if cb != nil {
+		cb()
+	}
+	return nil
+}
+
+func (f *fakeGroupSignaller) Alive(pgid int, startTime uint64) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.alive[pgid] && f.identity[pgid] == startTime
+}
+
+func (f *fakeGroupSignaller) set(pgid int, startTime uint64, alive bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.alive[pgid] = alive
+	f.identity[pgid] = startTime
+}
+
 // harness bundles the recorder, the shared serverStarted flag, and the stub
 // seams so a test can tweak individual fields before calling Up.
 type harness struct {
@@ -211,6 +298,7 @@ type harness struct {
 	image         *stubImage
 	prober        *stubProber
 	dbProber      *stubDBProber
+	groupSig      *fakeGroupSignaller
 	deps          Deps
 }
 
@@ -232,9 +320,17 @@ func newHarness(t *testing.T) (Config, *harness) {
 	image := &stubImage{rec: rec}
 	prober := &stubProber{rec: rec, version: testVersion, serverStarted: started}
 	dbProber := &stubDBProber{rec: rec}
+	groupSig := newFakeGroupSignaller(rec)
+
+	// Stub the start-time reader so the pgid-capture path never touches /proc:
+	// map each fake pid to a deterministic token (pid*10) and restore the real
+	// reader when the test ends.
+	prev := readStartTime
+	readStartTime = func(pid int) (uint64, error) { return uint64(pid) * 10, nil }
+	t.Cleanup(func() { readStartTime = prev })
 	h := &harness{
 		rec: rec, serverStarted: started,
-		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber,
+		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber, groupSig: groupSig,
 	}
 	h.deps = Deps{
 		Supervisor:      sup,
@@ -243,6 +339,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 		Images:          image,
 		Prober:          prober,
 		DBProber:        dbProber,
+		GroupSignaller:  groupSig,
 		ExpectedVersion: testVersion,
 	}
 	cfg := Config{

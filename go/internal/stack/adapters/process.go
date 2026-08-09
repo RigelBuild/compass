@@ -111,6 +111,13 @@ func (p *process) Signal(sig stack.ProcessSignal) error {
 	}
 }
 
+// Pid reports the child's PID, which doubles as its process-group ID (set via
+// Setpgid at Start). The supervisor persists it as the pgid a cross-process
+// down signals; the negative form is the group target.
+func (p *process) Pid() int {
+	return p.cmd.Process.Pid
+}
+
 // Wait blocks until the child exits or ctx is done. On a normal exit: if a
 // graceful stop was requested first (Signal(SignalTerm) succeeded), any exit —
 // a clean one, a SIGTERM-signaled death, OR a nonzero exit code — is the drain
