@@ -975,6 +975,13 @@ The fix is to stop conflating them:
 
 ```sql
 -- 0004_forge (same migration as the server_only column above).
+-- NOTE (forward pointer): this table ships RENAMED `agent_forge_subscriptions`.
+-- The forge-poll driver record renames DL-053's `forge_subscriptions` to
+-- disambiguate this per-ARTIFACT, agent-owned subscription from the board's
+-- per-REPO poll target `forge_repo_subscriptions`; the shape here is unchanged,
+-- only the name moved. Authority: DECISIONS.md DL-163; rationale:
+-- compass-forge-poll-driver/design.md (OQ-C). A reader grepping
+-- `forge_subscriptions` from this frozen record finds the mapping here.
 CREATE TABLE forge_subscriptions (
     id               TEXT PRIMARY KEY,
     agent_account_id TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
