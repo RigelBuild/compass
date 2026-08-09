@@ -978,8 +978,10 @@ The fix is to stop conflating them:
 -- NOTE (forward pointer): this table ships RENAMED `agent_forge_subscriptions`.
 -- The forge-poll driver record renames DL-053's `forge_subscriptions` to
 -- disambiguate this per-ARTIFACT, agent-owned subscription from the board's
--- per-REPO poll target `forge_repo_subscriptions`; the shape here is unchanged,
--- only the name moved. Authority: DECISIONS.md DL-163; rationale:
+-- per-REPO poll target `forge_repo_subscriptions`. The rename is name-only;
+-- the shipped table is additionally coordinate-aligned (SMALLINT
+-- `forge_provider` + a `forge_host` column, recomposed keys) per DL-163, so
+-- see that DDL for the exact shape. Authority: DECISIONS.md DL-163; rationale:
 -- compass-forge-poll-driver/design.md (OQ-C). A reader grepping
 -- `forge_subscriptions` from this frozen record finds the mapping here.
 CREATE TABLE forge_subscriptions (
