@@ -30,6 +30,13 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # moon's affected-graph diffing (compass-eng-docs:build depends on the
+          # gather inputs) resolves its base against `main`; a shallow single-ref
+          # PR checkout has no such ref, so the build's `git ... main` aborts
+          # (exit 128). Full history populates refs/remotes/origin/*, matching
+          # ci.yml's checkout (ci.yml:130-135).
+          fetch-depth: 0
 
       - name: Read the toolchain pins
         id: pins
