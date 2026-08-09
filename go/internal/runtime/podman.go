@@ -22,8 +22,9 @@
 // This file is the container-runtime seam: a ContainerRuntime interface plus
 // PodmanCLI, its rootless-podman-CLI implementation. Rootless is a hard
 // requirement (compass.md §5.3, §7.1): no daemon, no root, no rootful fallback.
-// Containers run with --userns=keep-id so files the agent writes in a
-// bind-mount map back to the invoking user on the host.
+// Containers run with --userns=keep-id:uid=<agent-uid>,gid=<agent-gid> so the
+// invoking host user is mapped to the baked agent uid; files the agent writes
+// in a bind-mount still map back to the invoking user on the host.
 //
 // Kill-on-abandon: the Rust original relied on tokio's kill_on_drop to reap a
 // subprocess whose future was dropped. Go has no Drop, so cancellation is
@@ -79,21 +80,28 @@ type ContainerSpec struct {
 	// agent itself runs as a non-root user with an empty capability set (see
 	// egress.go).
 	CapAdd []string
-	// Mounts is the read-only host bind mounts (e.g. a host cache mounted
-	// read-only).
+	// Mounts is the host bind mounts. Not all read-only: the config/cache
+	// mounts are read-only, but the per-container agent gateway socket is
+	// mounted read-write (the agent must connect() to it).
 	Mounts []Mount
 	// Env is the environment variables set on the container.
 	Env map[string]string
 	// Command is the long-lived entrypoint. The container stays up (the Runner
 	// execs into it); a sleep loop when empty.
 	Command []string
+	// UID is the container uid the invoking host user is mapped to via
+	// --userns=keep-id:uid=,gid= — the baked agent uid the image bakes /nix and
+	// $HOME as (the T1/T2 baked-agent-uid invariant; see
+	// docs/designs/platform/compass-runner-arbitrary-uid/design.md).
+	UID uint32
 }
 
 // ExecSpec is how to run a command inside a container.
 type ExecSpec struct {
 	Command []string
-	// User is the --user value. Nil runs as the image's default user (root);
-	// agent work always sets a uid so it runs unprivileged.
+	// User is the --user value. Nil runs as the image's default user (for the
+	// compass-agent image that is uid 1000, not root); agent work always sets a
+	// uid explicitly so it runs unprivileged.
 	User *string
 	// Workdir is the --workdir inside the container.
 	Workdir *string
@@ -144,8 +152,9 @@ func (o ExecOutput) Success() bool { return o.ExitCode == 0 }
 // ignored.
 type StreamingExecSpec struct {
 	Command []string
-	// User is the --user value. Nil runs as the image's default user (root);
-	// agent work always sets a uid so it runs unprivileged.
+	// User is the --user value. Nil runs as the image's default user (for the
+	// compass-agent image that is uid 1000, not root); agent work always sets a
+	// uid so it runs unprivileged.
 	User *string
 	// Workdir is the --workdir inside the container.
 	Workdir *string
@@ -324,6 +333,7 @@ const defaultCommandTimeout = 120 * time.Second
 const (
 	argExec        = "exec"
 	argInteractive = "--interactive"
+	argFormat      = "--format"
 )
 
 // PodmanCLI is a ContainerRuntime over the podman CLI.
@@ -353,6 +363,17 @@ func (p *PodmanCLI) WithTimeout(timeout time.Duration) *PodmanCLI {
 
 // Create assembles and runs `podman create`, returning the new container id.
 func (p *PodmanCLI) Create(ctx context.Context, spec ContainerSpec) (ContainerID, error) {
+	stdout, err := p.run(ctx, "podman create", createArgs(spec))
+	if err != nil {
+		return "", err
+	}
+	return ContainerID(strings.TrimSpace(string(stdout))), nil
+}
+
+// createArgs assembles the argv for `podman create`. Split out so the argv
+// assembly is unit-testable without spawning podman, mirroring
+// execStreamingArgs.
+func createArgs(spec ContainerSpec) []string {
 	// Preallocate: 4 fixed tokens (create, --name+value, --userns) + 2 per
 	// cap/mount/env pair + image + command tokens, so the appends below don't
 	// reallocate.
@@ -360,9 +381,12 @@ func (p *PodmanCLI) Create(ctx context.Context, spec ContainerSpec) (ContainerID
 	args = append(args,
 		"create",
 		"--name", spec.Name,
-		// Rootless uid mapping: files the agent writes in a bind-mount map back
-		// to the invoking user, not to a high subuid (compass.md §5.3).
-		"--userns=keep-id",
+		// Rootless uid remap: maps the invoking host user to the baked agent
+		// uid, so files the agent writes in a bind-mount still map back to the
+		// invoking user on the host (compass.md §5.3;
+		// docs/designs/platform/compass-runner-arbitrary-uid/design.md). gid
+		// collapses to uid: the image bakes gid==uid==1000.
+		fmt.Sprintf("--userns=keep-id:uid=%d,gid=%d", spec.UID, spec.UID),
 	)
 	for _, cap := range spec.CapAdd {
 		args = append(args, "--cap-add", cap)
@@ -375,12 +399,63 @@ func (p *PodmanCLI) Create(ctx context.Context, spec ContainerSpec) (ContainerID
 	}
 	args = append(args, spec.Image)
 	args = append(args, spec.Command...)
+	return args
+}
 
-	stdout, err := p.run(ctx, "podman create", args)
+// minUsernsRemapMajor / minUsernsRemapMinor are the podman version floor for
+// the --userns=keep-id:uid=,gid= remap Create relies on: keep-id:uid= is a
+// podman 4.3+ option
+// (docs/designs/platform/compass-runner-arbitrary-uid/design.md §(b)). There is
+// no --uidmap fallback below it — the floor is hard.
+const (
+	minUsernsRemapMajor = 4
+	minUsernsRemapMinor = 3
+)
+
+// VerifyUsernsRemapSupport checks the engine is new enough for the userns remap
+// Create depends on: podman ≥ 4.3, where --userns=keep-id:uid=,gid= is
+// available. It probes `podman version --format {{.Client.Version}}` (for local
+// rootless podman the client version is the engine version; remote client/server
+// skew is out of scope) and errors below the floor, naming both the required
+// floor and the found version so an operator on too-old a podman learns the
+// cause at startup rather than deep inside the first container create.
+func (p *PodmanCLI) VerifyUsernsRemapSupport(ctx context.Context) error {
+	stdout, err := p.run(ctx, "podman version", []string{"version", argFormat, "{{.Client.Version}}"})
 	if err != nil {
-		return "", err
+		return err
 	}
-	return ContainerID(strings.TrimSpace(string(stdout))), nil
+	raw := strings.TrimSpace(string(stdout))
+	major, minor, err := parsePodmanVersion(raw)
+	if err != nil {
+		return err
+	}
+	if major < minUsernsRemapMajor || (major == minUsernsRemapMajor && minor < minUsernsRemapMinor) {
+		return fmt.Errorf(
+			"podman %d.%d or newer is required (the container userns remap "+
+				"--userns=keep-id:uid=,gid= is a %d.%d+ option), but this host has podman %s",
+			minUsernsRemapMajor, minUsernsRemapMinor, minUsernsRemapMajor, minUsernsRemapMinor, raw)
+	}
+	return nil
+}
+
+// parsePodmanVersion parses the leading major.minor of a podman version string
+// (e.g. "5.8.4" or "4.3.1-dev") into its numeric components. Split out so the
+// floor comparison is unit-testable without spawning podman. An input without a
+// parseable major.minor is an error.
+func parsePodmanVersion(s string) (major, minor int, err error) {
+	fields := strings.SplitN(strings.TrimSpace(s), ".", 3)
+	if len(fields) < 2 {
+		return 0, 0, fmt.Errorf("unparseable podman version %q: want major.minor[.patch]", s)
+	}
+	major, err = strconv.Atoi(fields[0])
+	if err != nil {
+		return 0, 0, fmt.Errorf("unparseable podman major version in %q: %w", s, err)
+	}
+	minor, err = strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf("unparseable podman minor version in %q: %w", s, err)
+	}
+	return major, minor, nil
 }
 
 // Start starts a created container.
@@ -652,7 +727,7 @@ func execStreamingArgs(id ContainerID, spec StreamingExecSpec) []string {
 // mount label. Split out so the argv assembly is unit-testable without spawning
 // podman, mirroring execStreamingArgs.
 func inspectMountLabelArgs(id ContainerID) []string {
-	return []string{"inspect", "--format", "{{.MountLabel}}", id.String()}
+	return []string{"inspect", argFormat, "{{.MountLabel}}", id.String()}
 }
 
 // mountArg assembles a `-v host:container[:ro],Z` argument. SELinux relabelling

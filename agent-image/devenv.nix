@@ -68,13 +68,15 @@ in
 
       # Identity, matched to the Go runtime rather than devenv's default. The
       # runtime runs the agent as uid 1000 with $HOME=/home/agent
-      # (cmd/compass-runner/main.go:48 `-home-dir`, :118 `UID: defaultAgentUID`;
-      # internal/runner/spec.go:29-31 `SpecDefaults.CheckoutDir/HomeDir/UID`), and
-      # launches containers with plain `--userns=keep-id`
-      # (internal/runtime/podman.go:357), which maps the host Runner uid through
-      # unchanged rather than remapping it — hence the `verifyRunnerUID` guard
-      # that fails fast when the Runner is not itself uid 1000
-      # (cmd/compass-runner/main.go:146-169). devenv defaults to user `user` with
+      # (cmd/compass-runner/main.go `-home-dir`, `UID: defaultAgentUID`;
+      # internal/runner/spec.go `SpecDefaults.CheckoutDir/HomeDir/UID`), and
+      # launches containers with
+      # `--userns=keep-id:uid=<agent-uid>,gid=<agent-gid>`
+      # (internal/runtime/podman.go createArgs), which remaps the invoking host
+      # uid to the baked agent uid rather than passing it through — so an
+      # arbitrary host uid still yields an agent that owns /nix. A startup
+      # podman-version preflight (VerifyUsernsRemapSupport, ≥ 4.3) guards that
+      # the engine supports the remap. devenv defaults to user `user` with
       # $HOME=/env; the uid agrees either way — that is what /nix ownership keys
       # on — but the passwd row and $HOME must match what the Runner execs with,
       # or nix/direnv/devenv hit "$HOME is not owned by you" and silently fall
