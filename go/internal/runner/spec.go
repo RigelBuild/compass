@@ -94,6 +94,7 @@ func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequ
 		Egress:  d.Egress,
 		Mounts:  d.Mounts,
 		Persona: req.GetPersona(),
+		Role:    req.GetRole(),
 	}, nil
 }
 

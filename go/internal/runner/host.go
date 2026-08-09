@@ -657,6 +657,7 @@ func (h *agentHost) agentEnv(handle *runtime.AgentHandle) AgentEnv {
 		Workdir: handle.CheckoutDir(),
 		Model:   h.model,
 		Persona: handle.Persona(),
+		Role:    handle.Role(),
 	}
 }
 

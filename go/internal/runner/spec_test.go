@@ -115,6 +115,26 @@ func TestBuildSpecMapsPersona(t *testing.T) {
 	}
 }
 
+// BuildSpec maps the request's server-authoritative role onto the AgentSpec so
+// it rides through to the agent's block-0 customSystemPrompt. A bug that dropped
+// it would boot every agent with no role and the default block-0 prompt.
+func TestBuildSpecMapsRole(t *testing.T) {
+	builder, err := NewConfigSpecBuilder(goodDefaults())
+	if err != nil {
+		t.Fatalf("NewConfigSpecBuilder: %v", err)
+	}
+	spec, err := builder.BuildSpec(&compassv1.ProvisionAgentWorkspaceRequest{
+		AgentAccountId: strings.Repeat("a", 32),
+		Role:           "manager",
+	})
+	if err != nil {
+		t.Fatalf("BuildSpec = %v", err)
+	}
+	if spec.Role != "manager" {
+		t.Fatalf("spec.Role = %q, want %q (req.Role must reach the AgentSpec)", spec.Role, "manager")
+	}
+}
+
 // The container name is prefix+agent_account_id. A bug in the name derivation
 // would collide containers or misroute the per-agent workspace.
 func TestBuildSpecDerivesName(t *testing.T) {

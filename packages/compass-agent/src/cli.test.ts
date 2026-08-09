@@ -32,6 +32,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent";
 import { serializeTitleSlot } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
+import { buildSystemPrompt } from "@oh-my-pi/pi-coding-agent/system-prompt";
 import {
 	AGENT_SOCKET_PATH,
 	authSeedPath,
@@ -42,6 +43,7 @@ import {
 	parseEnvFile,
 	resolveModelSelector,
 	resolvePersona,
+	resolveRole,
 } from "./cli";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
@@ -153,6 +155,29 @@ describe("resolvePersona", () => {
 		expect(resolvePersona({ COMPASS_PERSONA: "  You are Ada.  " })).toBe(
 			"You are Ada.",
 		);
+	});
+});
+
+// COMPASS_ROLE is the server-authoritative block-0 role selector (SEA-1732 T10).
+// The entrypoint resolves the LABEL here (trimmed; blank → unset), then reads its
+// `prompts/<role>/SYSTEM.md` from the mount and injects it as customSystemPrompt.
+// Same unset/trim semantics as the model selector and persona.
+describe("resolveRole", () => {
+	test("returns the COMPASS_ROLE value when set", () => {
+		expect(resolveRole({ COMPASS_ROLE: "manager" })).toBe("manager");
+	});
+
+	test("returns undefined when COMPASS_ROLE is unset (default block-0 applies)", () => {
+		expect(resolveRole({})).toBeUndefined();
+	});
+
+	test("treats an empty or whitespace-only value as unset", () => {
+		expect(resolveRole({ COMPASS_ROLE: "" })).toBeUndefined();
+		expect(resolveRole({ COMPASS_ROLE: "   " })).toBeUndefined();
+	});
+
+	test("trims surrounding whitespace so a padded env value still resolves", () => {
+		expect(resolveRole({ COMPASS_ROLE: "  supervisor  " })).toBe("supervisor");
 	});
 });
 
@@ -1608,6 +1633,11 @@ interface SeenConfig {
 	customTools?: unknown[];
 	enableMCP?: boolean;
 	autoApprove?: boolean;
+	customSystemPrompt?: string;
+	systemPrompt?:
+		| string
+		| string[]
+		| ((defaultPrompt: string[]) => string | string[]);
 }
 
 // The `name` of each captured skill, narrowing with `in`/`typeof` (no fabricated
@@ -1857,6 +1887,271 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// (SEA-1741) — so customTools is exactly the six comms/lifecycle natives.
 		expect(toolNames(seen[0].customTools)).toContain("comms_post_message");
 		expect(seen[0].customTools).toHaveLength(6);
+	});
+
+	// ── SEA-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──
+	//
+	// The role selector delivers a per-role block-0 as `customSystemPrompt` (which
+	// REPLACES OMP's default block-0), while persona STILL appends AFTER (record
+	// §OQ-8). These pin the four compose states at the createSession seam; the
+	// MP-1 render property (skills/rules/footer survival + read-tool gate) is the
+	// SDK-render test that follows.
+	test("COMPASS_ROLE with a shipped prompt → its text reaches customSystemPrompt", async () => {
+		const mount = scratch();
+		writeMount(
+			mount,
+			"prompts/manager/SYSTEM.md",
+			"# Manager\nYou coordinate the fleet.\n",
+		);
+		const session = fakeSession();
+		const seen: SeenConfig[] = [];
+		await main(
+			{ HOME: scratch(), COMPASS_ROLE: "manager" },
+			{
+				configMount: mount,
+				createSession: (options) => {
+					seen.push({
+						customSystemPrompt: options.customSystemPrompt,
+						systemPrompt: options.systemPrompt,
+					});
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		expect(seen).toHaveLength(1);
+		// The role prompt's TEXT (block-0 replacement) reached customSystemPrompt.
+		// Non-vacuity: dropping the `customSystemPrompt: rolePrompt` spread leaves
+		// this undefined → red.
+		expect(seen[0].customSystemPrompt).toBe(
+			"# Manager\nYou coordinate the fleet.\n",
+		);
+		// No persona set → no append customizer; behavior is role-replace only.
+		expect(seen[0].systemPrompt).toBeUndefined();
+	});
+
+	test("COMPASS_ROLE set but NO prompt file → falls back to today's behavior (no customSystemPrompt)", async () => {
+		// A role the operator set but the config bundle never shipped a
+		// prompts/<role>/SYSTEM.md for. The reader returns undefined, so main must
+		// OMIT customSystemPrompt entirely — never inject an empty replace, which
+		// would still route through the block-0-replacing custom template.
+		const mount = scratch();
+		const session = fakeSession();
+		const seen: SeenConfig[] = [];
+		await main(
+			{ HOME: scratch(), COMPASS_ROLE: "ghost" },
+			{
+				configMount: mount,
+				createSession: (options) => {
+					seen.push({ customSystemPrompt: options.customSystemPrompt });
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		expect(seen).toHaveLength(1);
+		expect(seen[0].customSystemPrompt).toBeUndefined();
+	});
+
+	test("COMPASS_ROLE with a path-traversal label → rejected, no customSystemPrompt", async () => {
+		// A role is a flat directory name; a label carrying a separator or `..`
+		// must never traverse outside prompts/. The decoy sits at current/SYSTEM.md
+		// — exactly where role="../" resolves (join(current, "prompts", "../",
+		// "SYSTEM.md") = current/SYSTEM.md) — so WITHOUT the guard the traversal
+		// would find it and inject it as block-0 (customSystemPrompt defined). The
+		// guard rejects the label first, so main falls back to today's behavior.
+		// This placement is what makes the test non-vacuous: drop the guard and it
+		// fails. Defense in depth: role is store-set out-of-band today, but the
+		// guard holds the moment a client-facing setter lands.
+		const mount = scratch();
+		writeMount(mount, "SYSTEM.md", "# Escaped\n");
+		const session = fakeSession();
+		const seen: SeenConfig[] = [];
+		await main(
+			{ HOME: scratch(), COMPASS_ROLE: "../" },
+			{
+				configMount: mount,
+				createSession: (options) => {
+					seen.push({ customSystemPrompt: options.customSystemPrompt });
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		expect(seen).toHaveLength(1);
+		expect(seen[0].customSystemPrompt).toBeUndefined();
+	});
+
+	test("COMPASS_ROLE unset → no customSystemPrompt (exactly today's behavior)", async () => {
+		const mount = scratch();
+		writeMount(mount, "prompts/manager/SYSTEM.md", "# Manager\n");
+		const session = fakeSession();
+		const seen: SeenConfig[] = [];
+		await main(
+			{ HOME: scratch() },
+			{
+				configMount: mount,
+				createSession: (options) => {
+					seen.push({ customSystemPrompt: options.customSystemPrompt });
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		expect(seen).toHaveLength(1);
+		// Non-vacuity: reading the role prompt unconditionally (not gated on a set
+		// role) would surface the shipped manager prompt here → red.
+		expect(seen[0].customSystemPrompt).toBeUndefined();
+	});
+
+	test("role + persona compose: role reaches customSystemPrompt AND persona appends after", async () => {
+		// The OQ-8 composition: customSystemPrompt (role, REPLACE block-0) and the
+		// systemPrompt append customizer (persona) are ORTHOGONAL keys, so both
+		// apply. The customizer runs over whatever default array the SDK built —
+		// which, with a role, already carries the role block-0 — so persona lands
+		// LAST, after the role block. Drive the customizer with a fake default that
+		// stands in for [role block-0, …skills/rules, project footer].
+		const mount = scratch();
+		writeMount(mount, "prompts/manager/SYSTEM.md", "# Manager block-0\n");
+		const session = fakeSession();
+		const seen: SeenConfig[] = [];
+		await main(
+			{
+				HOME: scratch(),
+				COMPASS_ROLE: "manager",
+				COMPASS_PERSONA: "You are Ada.",
+			},
+			{
+				configMount: mount,
+				createSession: (options) => {
+					seen.push({
+						customSystemPrompt: options.customSystemPrompt,
+						systemPrompt: options.systemPrompt,
+					});
+					return Promise.resolve({
+						session: session as unknown as AgentSession,
+					});
+				},
+				createTransport: () =>
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			},
+		);
+		expect(seen).toHaveLength(1);
+		expect(seen[0].customSystemPrompt).toBe("# Manager block-0\n");
+		const customizer = seen[0].systemPrompt;
+		if (typeof customizer !== "function") {
+			throw new Error("systemPrompt was not the append customizer function");
+		}
+		// Persona appends AFTER the role block (and everything else the SDK built).
+		expect(
+			customizer(["# Manager block-0", "skills+rules", "project footer"]),
+		).toEqual([
+			"# Manager block-0",
+			"skills+rules",
+			"project footer",
+			"You are Ada.",
+		]);
+	});
+
+	// ── MP-1 PROPERTY (frozen record §MP-1) ───────────────────────────────────
+	//
+	// Passing a role prompt as `customSystemPrompt` REPLACES OMP's block-0 — but
+	// the SDK's custom-system-prompt template STILL auto-injects skills + rules,
+	// and the project footer stays a separate block. Two pins the record names:
+	//   (1) skills injection is GATED on the `read` tool being in the tool set
+	//       (system-prompt.ts:819-820) — so the tool set MUST retain `read`;
+	//   (2) the rendered prompt RETAINS skills + rules + the project footer even
+	//       though block-0 is the role text, not the default.
+	// This is a real SDK render (buildSystemPrompt), not a seam spy: it exercises
+	// the actual template the SDK routes customSystemPrompt through.
+	test("MP-1: a role prompt as customSystemPrompt REPLACES block-0 while skills, rules, and the project footer survive (read-tool gate held)", async () => {
+		const roleBlock0 = "ROLE-BLOCK-0-SENTINEL: you are the manager.";
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: scratch(),
+			// The role prompt injected as the block-0 replacement.
+			resolvedCustomPrompt: roleBlock0,
+			// The read tool is the skills-injection gate (system-prompt.ts:819).
+			toolNames: ["read"],
+			skills: [
+				{
+					name: "mp1-skill",
+					path: "/mnt/skills/mp1-skill/SKILL.md",
+					content: "# skill",
+					level: "user",
+					_source: {
+						provider: "compass-config",
+						path: "/mnt/skills/mp1-skill/SKILL.md",
+						level: "user",
+					},
+				},
+			] as never,
+			rules: [
+				{
+					name: "mp1-rule",
+					description: "MP1-RULE-SENTINEL constraint",
+					path: "/mnt/rules/mp1-rule.md",
+				},
+			],
+		});
+		const rendered = systemPrompt.join("\n\n");
+		// (1) block-0 is REPLACED: the role text is present…
+		expect(rendered).toContain(roleBlock0);
+		// …and the default block-0's opening sentinel is GONE.
+		expect(rendered).not.toContain(
+			"You are a helpful assistant the team trusts with load-bearing changes",
+		);
+		// (2) skills survived (the custom template's <skills> list) — this is the
+		// read-tool gate holding: drop `read` from toolNames and this vanishes.
+		expect(rendered).toContain("mp1-skill");
+		expect(rendered).toContain("<skills>");
+		// (2) rules survived (the custom template's <rules> list).
+		expect(rendered).toContain("MP1-RULE-SENTINEL");
+		expect(rendered).toContain("<rules>");
+		// (2) the project footer survived as its own block (environment + cwd).
+		expect(rendered).toContain("PROJECT");
+		expect(rendered).toContain("current working directory");
+		// The read tool stayed in the set (the gate's precondition).
+		expect(systemPrompt.join("\n")).toContain("read");
+	});
+
+	test("MP-1 gate: WITHOUT the read tool the custom template drops the skills list (proves the gate is live)", async () => {
+		// The non-vacuity companion to the property above: skills injection is
+		// GATED on `read` (system-prompt.ts:819-820). With no read tool the same
+		// role-as-customSystemPrompt render must NOT carry the skills list — so the
+		// Compass tool set retaining `read` is load-bearing, not incidental.
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: scratch(),
+			resolvedCustomPrompt: "ROLE-BLOCK-0-SENTINEL",
+			toolNames: [],
+			skills: [
+				{
+					name: "mp1-skill",
+					path: "/mnt/skills/mp1-skill/SKILL.md",
+					content: "# skill",
+					level: "user",
+					_source: {
+						provider: "compass-config",
+						path: "/mnt/skills/mp1-skill/SKILL.md",
+						level: "user",
+					},
+				},
+			] as never,
+		});
+		const rendered = systemPrompt.join("\n\n");
+		expect(rendered).not.toContain("mp1-skill");
+		expect(rendered).not.toContain("<skills>");
 	});
 
 	// The MCP manager teardown — what main() alone owns (the SDK never

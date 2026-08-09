@@ -528,6 +528,18 @@ message ProvisionAgentWorkspaceRequest {
   // it into the container
   // (compass-runner consumer). Empty = no persona baked (default).
   string persona = 6;
+  // The agent's operator-set role, selecting the container's block-0 system
+  // prompt at provision so it survives compaction (a system-prompt config block
+  // is not part of the message history a snapcompact archives). SERVER-
+  // AUTHORITATIVE: the Server is expected to populate this by reading
+  // AgentAccount.role from the store on the provision path and to overwrite any
+  // client-supplied value, so a caller cannot inject a role prompt — an
+  // invariant enforced by the server provision path (not by this wire-settable
+  // field). Where persona (field 6) is an APPEND overlay, role REPLACES block-0:
+  // the label selects config/prompts/<role>/SYSTEM.md, materialized by the
+  // Runner into the container's customSystemPrompt (compass-runner consumer).
+  // Empty = no role (default OMP block-0).
+  string role = 7;
 }
 
 message ProvisionAgentWorkspaceResponse {

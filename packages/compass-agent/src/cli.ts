@@ -8,8 +8,11 @@
 //     per container (`internal/runner/host.go:33`), chosen "so the agent needs no
 //     per-session configuration" (`host.go:28-29`);
 //   - the model selector from `COMPASS_MODEL`;
-//   - the persona identity overlay from `COMPASS_PERSONA`, appended to the
-//     agent's default system prompt;
+//   - the block-0 role selector from `COMPASS_ROLE`, naming a
+//     `prompts/<role>/SYSTEM.md` in the mount that REPLACES the agent's default
+//     block-0 (delivered as `customSystemPrompt`);
+//   - the persona identity overlay from `COMPASS_PERSONA`, appended AFTER the
+//     agent's default system prompt (or after the role block-0 when both set);
 //   - the provider credential from the 0600 `$HOME/.compass/auth-seed.json` the
 //     Runner's materializer writes (design §T5);
 //   - the materialized tool/MCP secrets from the 0600 `$HOME/.compass/env` the
@@ -53,8 +56,10 @@ import { CompassAgent } from "./agent";
 import { CommsBroker, createCommsTools } from "./comms";
 import {
 	AGENT_CONFIG_MOUNT_PATH,
+	currentConfigDir,
 	loadMountedConfig,
 	type MountedMcp,
+	readMountedRolePrompt,
 } from "./config-reader";
 import type { FrameSink } from "./frame";
 import { createLifecycleTools, LifecycleBroker } from "./lifecycle";
@@ -152,6 +157,26 @@ export function resolvePersona(
 	env: Record<string, string | undefined>,
 ): string | undefined {
 	const raw = env.COMPASS_PERSONA?.trim();
+	return raw ? raw : undefined;
+}
+
+/**
+ * The block-0 role for this container, from `COMPASS_ROLE`.
+ *
+ * A REPLACEMENT selector, not an overlay: the label names a
+ * `prompts/<role>/SYSTEM.md` in the mount, whose text `main` injects as
+ * `customSystemPrompt` — replacing OMP's default block-0 (persona still appends
+ * AFTER, record §OQ-8). This function only resolves the LABEL; the file lookup +
+ * fallback (absent file → today's behavior) live in `main`.
+ *
+ * Unset (or blank) is a legitimate configuration: the Runner empty-omits the env
+ * var (`go/internal/runner/agent_exec.go` `execSpec`), so an absent role leaves
+ * the agent on its default block-0. Same unset/trim semantics as `resolvePersona`.
+ */
+export function resolveRole(
+	env: Record<string, string | undefined>,
+): string | undefined {
+	const raw = env.COMPASS_ROLE?.trim();
 	return raw ? raw : undefined;
 }
 
@@ -489,6 +514,13 @@ export async function main(
 	// already normalized a blank value to undefined.
 	const persona = resolvePersona(env);
 
+	// The block-0 role selector; undefined when unset or whitespace-only. When
+	// set, `main` reads its `prompts/<role>/SYSTEM.md` from the mount (below) and
+	// injects it as `customSystemPrompt` — REPLACING OMP's default block-0. The
+	// resolve here only yields the LABEL; the file lookup + fallback live below,
+	// after the mount is loaded.
+	const role = resolveRole(env);
+
 	// The workdir the session is keyed to. `||`, not `??`: an empty or
 	// whitespace-only COMPASS_WORKDIR is unset, not a valid cwd. The Runner sets
 	// it unconditionally (relay.go `execSpec`), so a caller that builds an
@@ -590,6 +622,21 @@ export async function main(
 	if (mounted.version) {
 		console.error(`[compass-agent] config version: ${mounted.version}`);
 	}
+
+	// The role's block-0 prompt (SEA-1732 T10): when a role is set, read its
+	// `prompts/<role>/SYSTEM.md` from the same mount and inject it below as
+	// `customSystemPrompt` — REPLACING OMP's default block-0. The read is
+	// tolerant (absent/empty file → undefined), so a set-but-unshipped role
+	// FALLS BACK to today's behavior (no customSystemPrompt) rather than
+	// injecting an empty replace. The mount is read through `current/`, the
+	// symlink the Runner flips, so a ConfigVersion flip stays live. Persona still
+	// appends AFTER this block (record §OQ-8) — see the createSession call.
+	const rolePrompt = role
+		? await readMountedRolePrompt(
+				currentConfigDir(deps.configMount ?? AGENT_CONFIG_MOUNT_PATH),
+				role,
+			)
+		: undefined;
 
 	// Fleet OMP config passthrough (SEA-1678, design compass-agent-config-passthrough
 	// §CP-1/CP-2/CP-4), applied AFTER loadMountedConfig and BEFORE
@@ -709,8 +756,23 @@ export async function main(
 		rules,
 		...(contextFiles ? { contextFiles } : {}),
 		...(fleetSettings ? { settingsManager: fleetSettings } : {}),
-		// Persona is an identity OVERLAY, not a replacement: append it after the
-		// default prompt so block-0 base instructions + project footer survive.
+		// Role (SEA-1732 T10) + persona compose INDEPENDENTLY, and BOTH apply:
+		//   - `customSystemPrompt` (role): the role's block-0 text, routed through
+		//     the SDK's custom-system-prompt template (sdk.ts:2727) — REPLACES
+		//     OMP's default block-0 while the template STILL injects skills + rules
+		//     and the project footer stays a separate block (record §MP-1). Passed
+		//     ONLY when a role prompt was found; absent → key omitted → today's
+		//     default block-0 (no empty replace).
+		//   - `systemPrompt` (persona): the identity OVERLAY, APPENDED after the
+		//     built default array (record §OQ-8: persona appends AFTER the role
+		//     block). The callback transforms whatever `defaultPrompt` the SDK
+		//     built — with a role, that array already carries the role block-0 +
+		//     skills/rules/footer, so persona lands LAST, after the role block.
+		//     Passed ONLY when a persona is set.
+		// The two are orthogonal keys, so all four states compose: neither, role
+		// only (replace block-0), persona only (append, today's behavior), both
+		// (role replaces block-0, persona appends after).
+		...(rolePrompt ? { customSystemPrompt: rolePrompt } : {}),
 		...(persona
 			? {
 					systemPrompt: (defaultPrompt: string[]) => [

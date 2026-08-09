@@ -109,6 +109,37 @@ func TestExecSpecExportsPersonaOnlyWhenConfigured(t *testing.T) {
 	}
 }
 
+// COMPASS_ROLE is exported only when a role is configured. An empty Role must
+// leave the key ABSENT, not mapped to "": the agent treats an absent var as "no
+// role" and stays on its default block-0 prompt, so exporting a blank value
+// would force it to special-case an empty string. A non-empty Role is exported
+// verbatim — this is the assertion that proves the block-0 selector is wired
+// from the AgentEnv seam at all.
+func TestExecSpecExportsRoleOnlyWhenConfigured(t *testing.T) {
+	tests := []struct {
+		name    string
+		role    string
+		want    string
+		present bool
+	}{
+		{name: "empty role omits the key entirely", role: "", present: false},
+		{name: "configured role is exported verbatim", role: "manager", want: "manager", present: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := AgentEnv{UID: 1000, HomeDir: "/home/coder", Workdir: "/srv/checkout", Role: tc.role}.execSpec()
+
+			got, ok := spec.Env["COMPASS_ROLE"]
+			if ok != tc.present {
+				t.Fatalf("COMPASS_ROLE present = %v (value %q), want present = %v", ok, got, tc.present)
+			}
+			if ok && got != tc.want {
+				t.Fatalf("COMPASS_ROLE = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // SECURITY-LOAD-BEARING. The container is created with --cap-add NET_ADMIN
 // (runtime/agent.go:212) so its root entrypoint can arm the nft egress
 // firewall. Podman strips a container's ambient capabilities from an exec ONLY
