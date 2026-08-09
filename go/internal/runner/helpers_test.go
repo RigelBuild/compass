@@ -212,6 +212,21 @@ func (f *stubStreamingRuntime) callsSnapshot() []string {
 	return append([]string(nil), f.calls...)
 }
 
+// countCall reports how many times the named lifecycle call was recorded, taken
+// under the lock — so a Close-drain assertion can count per-container stops and
+// removes.
+func (f *stubStreamingRuntime) countCall(call string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, c := range f.calls {
+		if c == call {
+			n++
+		}
+	}
+	return n
+}
+
 // createdSpecs returns a copy of the ContainerSpecs the host has created
 // containers with so far, taken under the lock.
 func (f *stubStreamingRuntime) createdSpecs() []runtime.ContainerSpec {

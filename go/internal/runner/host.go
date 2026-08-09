@@ -11,7 +11,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"maps"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -200,24 +199,54 @@ func (h *agentHost) Session(containerName string) (string, bool) {
 	return "", false
 }
 
-// Close tears down every live agent socket, draining in-flight calls under each
-// listener's bounded deadline. It is the container-teardown symmetric point in
-// the single-Runner MVP: there is no per-container Deprovision RPC (a session
-// Stop/Reload reuses the container and its socket), so every container lives
-// until the Runner process ends, and Close runs once on that shutdown. A crash
-// instead leaves the socket files on disk, which the next Provision reclaims
-// (gateway.reclaimStaleSocket).
+// Close drains every container this Runner is hosting on process shutdown: it
+// stops and removes each one through the same teardown path Remove uses (session
+// retire + AgentRuntime.Teardown + socket close), so no agent container outlives
+// the Runner. It is the container-teardown symmetric point in the single-Runner
+// MVP: there is no per-container Deprovision RPC (a session Stop/Reload reuses
+// the container and its socket), so every container lives until the Runner
+// process ends, and Close runs once on that shutdown.
+//
+// The listener-only teardown this replaces closed just the agent sockets, which
+// left the podman containers running unsupervised: conmon double-forks them out
+// of the Runner's process group, so the stack's group-signal on shutdown never
+// reached them either. Close now enumerates the provisioned-container set (the
+// h.sockets keys — Provision serves a socket keyed by container name before
+// `podman run` and teardown removes the key, so the keys are exactly the
+// containers provisioned and not yet removed, a superset of the started
+// sessions) and tears each down.
+//
+// The teardowns run concurrently, so total shutdown is ~one stop grace regardless
+// of container count, not N × the grace. Close runs under
+// context.WithoutCancel(ctx) (run.go) precisely so the stop gets its full grace
+// even though the parent ctx is already cancelled by the shutdown signal. Every
+// teardown is joined before Close returns — a leaked goroutine plus an un-reaped
+// container is the exact failure this closes. A per-container teardown error is
+// logged, never fatal: a best-effort drain is correct here (the stack lingers
+// safe on a failed teardown), matching drainChildren's join-all-errors posture.
+//
+// Remove closes each container's socket itself (its deferred closeSocket), so
+// Close delegates entirely to Remove and never double-closes: after Close
+// returns there is no running container and no socket left, each closed once. A
+// crash instead leaves the socket files on disk, which the next Provision
+// reclaims (gateway.reclaimStaleSocket).
 func (h *agentHost) Close(ctx context.Context) {
 	h.mu.Lock()
-	listeners := make(map[string]*gateway.SocketListener, len(h.sockets))
-	maps.Copy(listeners, h.sockets)
-	h.sockets = map[string]*gateway.SocketListener{}
-	h.mu.Unlock()
-	for name, l := range listeners {
-		if err := l.Close(ctx); err != nil {
-			h.log.Warn("closing agent socket", slog.String("container", name), slog.Any("error", err))
-		}
+	names := make([]string, 0, len(h.sockets))
+	for name := range h.sockets {
+		names = append(names, name)
 	}
+	h.mu.Unlock()
+
+	var wg sync.WaitGroup
+	for _, name := range names {
+		wg.Go(func() {
+			if err := h.Remove(ctx, name); err != nil {
+				h.log.Warn("tearing down agent container", slog.String("container", name), slog.Any("error", err))
+			}
+		})
+	}
+	wg.Wait()
 }
 
 // Start resolves the launched container by name and starts the agent relay in
