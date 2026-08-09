@@ -25,8 +25,9 @@ package main
 // thing that ever STOPS a process here is `compass-stack down` (which signals
 // only the exact process groups it reads from the stack's OWN state-dir
 // stack.pgids record) — never a pkill/killall/pattern-kill/name-scan. The
-// post-down liveness assertion (assertGroupESRCH) probes ONLY pgids read from
-// that same record, with kill(-pgid, 0), and asserts ESRCH — it signals nothing.
+// post-down liveness assertion (waitGroupsGone) probes ONLY pgids read from
+// that same record, with kill(-pgid, 0), and asserts each group is gone — ESRCH
+// or a recycled-pid start-time mismatch — signalling nothing.
 // A t.Cleanup runs an idempotent `compass-stack down` so a t.Fatal mid-test still
 // drains the children (the subprocess mirror of the in-process downGuard).
 //
@@ -47,6 +48,8 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -99,10 +102,12 @@ const teardownConfirmBudget = 30 * time.Second
 //  2. `compass-stack up --linger …` as a subprocess → exit 0 (up fire-and-returns
 //     after Ready; the children linger in their own process groups).
 //  3. Assert the stack is live (server socket answers) AND the pgid record exists.
-//  4. Read the recorded pgids from the stack's own record (for the ESRCH check).
+//  4. Read the recorded pgids + start-time tokens from the stack's own record
+//     (for the identity-checked liveness assertion).
 //  5. `compass-stack down …` as a SECOND, independent subprocess → exit 0.
 //  6. Assert cross-process teardown happened: every recorded process group is
-//     ESRCH (the authoritative proof, gated first), then the server and postgres
+//     gone — identity-checked ESRCH (the authoritative proof, gated first), then
+//     the server and postgres
 //     sockets are dark and the pgid record is removed.
 //  7. A second `compass-stack down` after full teardown → exit 0 (idempotent
 //     "no stack" branch), proving a retried down is safe.
@@ -136,9 +141,10 @@ func TestCrossProcessTeardown(t *testing.T) {
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), downBudget)
 		defer cancel()
-		// Best-effort teardown guard; output is only of interest if it fails, and
-		// a failing guard must not itself fail an already-finished test.
-		_, _ = runStack(cctx, t, stackBin, env, "down",
+		// Best-effort teardown guard. It runs runStack directly (not mustRunStack)
+		// so a harness/infra hiccup or a non-zero down here is only LOGGED, never
+		// fatal: a failing guard must not fail an already-finished, passing test.
+		out, runErr, infraErr := runStack(cctx, t, stackBin, env, "down",
 			"--state-dir", cfg.StateDir,
 			"--socket", cfg.SocketPath,
 			"--listen", cfg.ListenAddr,
@@ -146,6 +152,12 @@ func TestCrossProcessTeardown(t *testing.T) {
 			"--image", cfg.AgentImage,
 			"--runtime-dir", cfg.RuntimeDir,
 		)
+		switch {
+		case infraErr != nil:
+			t.Logf("cleanup guard: compass-stack down harness error (ignored): %v", infraErr)
+		case runErr != nil:
+			t.Logf("cleanup guard: compass-stack down exited non-zero (ignored): %v\n%s", runErr, out)
+		}
 	})
 
 	// 2. `compass-stack up --linger` as a subprocess. up returns (exit 0) only
@@ -153,7 +165,7 @@ func TestCrossProcessTeardown(t *testing.T) {
 	// IS the readiness gate, no sleep.
 	upCtx, upCancel := context.WithTimeout(ctx, upBudget)
 	defer upCancel()
-	out, err := runStack(upCtx, t, stackBin, env, "up",
+	out, err := mustRunStack(upCtx, t, stackBin, env, "up",
 		"--state-dir", cfg.StateDir,
 		"--socket", cfg.SocketPath,
 		"--listen", cfg.ListenAddr,
@@ -175,10 +187,12 @@ func TestCrossProcessTeardown(t *testing.T) {
 	}
 
 	// 4. Read the recorded process groups from the stack's OWN record — the only
-	// pgids this test is ever permitted to probe (rule://process-safety). Reading
-	// before the down lets step 6 assert each group is ESRCH afterward.
-	pgids := readRecordedPgids(t, recordPath)
-	if len(pgids) == 0 {
+	// pgids this test is ever permitted to probe (rule://process-safety), plus
+	// each group's recorded start-time identity token. Reading before the down
+	// lets step 6 assert each group is gone afterward — identity-checked, so a
+	// recycled pid can never masquerade as a still-alive child.
+	groups := readRecordedGroups(t, recordPath)
+	if len(groups) == 0 {
 		t.Fatal("stack.pgids recorded no process groups; a Ready stack spawned all three children")
 	}
 
@@ -187,7 +201,7 @@ func TestCrossProcessTeardown(t *testing.T) {
 	// from the persisted record (the stack.DownDetached path).
 	downCtx, downCancel := context.WithTimeout(ctx, downBudget)
 	defer downCancel()
-	out, err = runStack(downCtx, t, stackBin, env, "down",
+	out, err = mustRunStack(downCtx, t, stackBin, env, "down",
 		"--state-dir", cfg.StateDir,
 		"--socket", cfg.SocketPath,
 		"--listen", cfg.ListenAddr,
@@ -201,18 +215,20 @@ func TestCrossProcessTeardown(t *testing.T) {
 
 	// 6. Cross-process teardown actually happened. The AUTHORITATIVE proof is
 	// process-group death, so gate on it FIRST: poll every recorded process group
-	// until it is ESRCH (bounded, event-gated). This is load-bearing, not
+	// until it is gone — ESRCH, or a leader start-time mismatch (a recycled pid),
+	// the same identity gate production teardown uses (bounded, event-gated). This
+	// is load-bearing, not
 	// belt-and-suspenders — DownDetached confirms postgres via its DBProber
 	// socket-quiescence channel, which fires the moment postgres enters SIGTERM
 	// "smart shutdown" and refuses NEW connections, i.e. while the postmaster
 	// process is still alive draining compass-server's pooled connections and
 	// still accept()ing on its unix socket. So down returns exit 0 (record
 	// removed) before the postmaster has actually exited; a raw socket dial in
-	// that window still connects. Waiting for group ESRCH is what makes the
-	// socket gone-assertions below deterministic. Only pgids from the stack's OWN
-	// record are ever probed (rule://process-safety); kill(-pgid, 0) signals
-	// nothing.
-	waitGroupsESRCH(t, pgids, teardownConfirmBudget)
+	// that window still connects. Waiting for every recorded group to be gone
+	// (identity-checked) is what makes the socket gone-assertions below
+	// deterministic. Only pgids from the stack's OWN record are ever probed
+	// (rule://process-safety); kill(-pgid, 0) signals nothing.
+	waitGroupsGone(t, groups, teardownConfirmBudget)
 
 	// With every recorded group gone, the sockets are deterministically dark and
 	// the full-success teardown has removed its record.
@@ -226,7 +242,7 @@ func TestCrossProcessTeardown(t *testing.T) {
 	// server → the "no stack" branch → exit 0. Proves an idempotent down.
 	down2Ctx, down2Cancel := context.WithTimeout(ctx, downBudget)
 	defer down2Cancel()
-	out, err = runStack(down2Ctx, t, stackBin, env, "down",
+	out, err = mustRunStack(down2Ctx, t, stackBin, env, "down",
 		"--state-dir", cfg.StateDir,
 		"--socket", cfg.SocketPath,
 		"--listen", cfg.ListenAddr,
@@ -279,9 +295,13 @@ func stackEnv(binDir string) []string {
 }
 
 // runStack runs the compass-stack binary with the given args and environment,
-// bounded by ctx, and returns its combined stdout+stderr. The error is the
-// process's exit status (nil == exit 0); callers assert on it, and the combined
-// output is returned regardless so a failing caller can print it.
+// bounded by ctx. It returns the subprocess's combined stdout+stderr, the
+// process exit error (runErr; nil == exit 0), and a separate infraErr that is
+// non-nil only when the HARNESS itself failed — it could not create or read
+// back the temp output file. Keeping the harness failure distinct from the
+// subprocess exit status is what lets the best-effort cleanup guard log-and-
+// ignore a transient tmp-I/O hiccup instead of failing an already-finished
+// test; the happy-path steps call mustRunStack, which makes infraErr fatal.
 //
 // Output goes to a temp FILE, never a pipe (CombinedOutput / a buffer-backed
 // cmd.Stdout). That is load-bearing for the `up --linger` path: up spawns the
@@ -291,14 +311,14 @@ func stackEnv(binDir string) []string {
 // returning even though up itself exited. A file fd is passed straight to the
 // child; cmd.Wait returns on the process's own exit, and the inherited fd is
 // harmless.
-func runStack(ctx context.Context, t *testing.T, stackBin string, env []string, args ...string) (string, error) {
+func runStack(ctx context.Context, t *testing.T, stackBin string, env []string, args ...string) (out string, runErr, infraErr error) {
 	t.Helper()
 	// A plain os.CreateTemp (not t.TempDir) so this is safe to call from a
 	// t.Cleanup, where registering a new t.TempDir cleanup would be too late; the
 	// file is removed explicitly below.
 	logFile, err := os.CreateTemp("", "compass-stack-out.*.log")
 	if err != nil {
-		t.Fatalf("create subprocess output file: %v", err)
+		return "", nil, fmt.Errorf("create subprocess output file: %w", err)
 	}
 	logPath := logFile.Name()
 	defer func() {
@@ -312,13 +332,26 @@ func runStack(ctx context.Context, t *testing.T, stackBin string, env []string, 
 	cmd.Env = env
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	runErr := cmd.Run()
+	runErr = cmd.Run()
 
-	out, readErr := os.ReadFile(logPath)
+	data, readErr := os.ReadFile(logPath)
 	if readErr != nil {
-		t.Fatalf("read back subprocess output %q: %v", logPath, readErr)
+		return "", runErr, fmt.Errorf("read back subprocess output %q: %w", logPath, readErr)
 	}
-	return string(out), runErr
+	return string(data), runErr, nil
+}
+
+// mustRunStack is runStack for the happy-path steps (up / down / retried down):
+// a harness (infra) failure is fatal, and only the subprocess exit error is
+// returned for the caller to assert on. The cleanup guard calls runStack
+// directly so its infra errors are logged, not fatal.
+func mustRunStack(ctx context.Context, t *testing.T, stackBin string, env []string, args ...string) (string, error) {
+	t.Helper()
+	out, runErr, infraErr := runStack(ctx, t, stackBin, env, args...)
+	if infraErr != nil {
+		t.Fatalf("compass-stack %v: harness error: %v", args, infraErr)
+	}
+	return out, runErr
 }
 
 // waitServerAnswering polls the server socket until GetServerInfo answers,
@@ -343,66 +376,127 @@ func waitServerAnswering(t *testing.T, deps stack.Deps, socketPath string) {
 	}
 }
 
-// waitGroupsESRCH polls every recorded process group until it is ESRCH (gone) or
-// the budget elapses — the authoritative "the children are actually dead" proof
-// after a cross-process down. It signals nothing: kill(-pgid, 0) is the existence
-// probe (signal 0), and it only ever runs on pgids the test read from the
-// stack's OWN stack.pgids record, never a scan (rule://process-safety). A pgid
-// still alive at budget expiry fails the test — the teardown did not stop it.
-func waitGroupsESRCH(t *testing.T, pgids []int, budget time.Duration) {
+// recordedGroup is one child's teardown identity as persisted in stack.pgids:
+// its process-group id and the group leader's start-time token. The start time
+// is what closes the pid-recycling window — the same (Pgid, StartTime) identity
+// the production teardown checks (internal/stack/pgidfile.go pgidEntry,
+// adapters/groupsignal.go Alive).
+type recordedGroup struct {
+	pgid      int
+	startTime uint64
+}
+
+// waitGroupsGone polls every recorded process group until it is gone or the
+// budget elapses — the authoritative "the children are actually dead" proof
+// after a cross-process down. "Gone" is identity-checked, mirroring production's
+// teardown gate (adapters/groupsignal.go Alive): a group is gone when it is
+// ESRCH, OR it still exists but its leader's start time no longer equals the
+// recorded token (the kernel recycled the pid to an unrelated leader). Without
+// the identity check the probe is a false-FAILURE risk on the shared box — a
+// dead child's pgid reused by another process would read as "still alive" and
+// fail the test at budget even though teardown worked.
+//
+// It signals nothing: kill(-pgid, 0) is the existence probe (signal 0), run
+// only on pgids read from the stack's OWN stack.pgids record, never a scan
+// (rule://process-safety). A group genuinely still alive at budget expiry fails
+// the test — the teardown did not stop it.
+func waitGroupsGone(t *testing.T, groups []recordedGroup, budget time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(budget)
 	ticker := time.NewTicker(answerPollInterval)
 	defer ticker.Stop()
-	for _, pgid := range pgids {
-		if pgid <= 1 {
-			t.Fatalf("refusing to probe degenerate pgid %d", pgid)
+	for _, grp := range groups {
+		if grp.pgid <= 1 {
+			t.Fatalf("refusing to probe degenerate pgid %d", grp.pgid)
 		}
 		for {
-			gone, err := groupGone(pgid)
+			alive, err := groupAlive(grp.pgid, grp.startTime)
 			if err != nil {
-				t.Fatalf("probing group %d after down: got %v, want ESRCH (gone) or a live group", pgid, err)
+				t.Fatalf("probing group %d after down: got %v, want gone or a live group", grp.pgid, err)
 			}
-			if gone {
+			if !alive {
 				break
 			}
 			if !time.Now().Before(deadline) {
-				t.Fatalf("process group %d still alive %s after down; the cross-process teardown did not stop it", pgid, budget)
+				t.Fatalf("process group %d still alive %s after down; the cross-process teardown did not stop it", grp.pgid, budget)
 			}
 			<-ticker.C
 		}
 	}
 }
 
-// groupGone reports whether the process group named by pgid is ESRCH (fully
-// gone). kill(-pgid, 0) with nil or EPERM means the group still exists (EPERM =
-// exists but not signalable by us); ESRCH means gone; any other errno is
-// unexpected and surfaced. Probe only — signal 0 delivers nothing.
-func groupGone(pgid int) (bool, error) {
+// groupAlive reports whether the process group named by pgid still exists AND
+// its leader's start time equals the recorded token — the same existence-then-
+// identity gate production teardown uses (adapters/groupsignal.go Alive). A
+// group that is ESRCH, or whose leader start time no longer matches (a recycled
+// pid), or whose /proc entry cannot be read is reported not-alive: for a
+// post-down liveness probe the safe verdict is "gone", never a false "alive"
+// off a pid the kernel reused. It signals nothing — kill(-pgid, 0) is signal 0.
+// An unexpected kill errno (not ESRCH/EPERM) is surfaced as an error.
+func groupAlive(pgid int, startTime uint64) (bool, error) {
 	err := syscall.Kill(-pgid, 0)
 	switch {
-	case err == nil:
-		return false, nil
-	case err == syscall.ESRCH:
-		return true, nil
-	case err == syscall.EPERM:
-		return false, nil
-	default:
-		return false, err
+	case errors.Is(err, syscall.ESRCH):
+		return false, nil // gone
+	case err != nil && !errors.Is(err, syscall.EPERM):
+		return false, err // unexpected errno
 	}
+	// Exists (nil or EPERM). Confirm identity via the leader's start time; a read
+	// failure means the leader vanished or /proc is unreadable — treat as gone.
+	got, rerr := readLeaderStartTime(pgid)
+	if rerr != nil {
+		// Deliberate: a /proc read failure on an existing pgid means the leader
+		// vanished between the two syscalls (or /proc is unreadable) — the safe
+		// post-down verdict is "gone", never a false "alive". Mirrors production
+		// adapters/groupsignal.go Alive, which also treats a read failure as
+		// not-alive.
+		return false, nil //nolint:nilerr // read failure => leader gone => not-alive (see comment)
+	}
+	return got == startTime, nil
 }
 
-// readRecordedPgids parses the stack.pgids record and returns the recorded
-// process-group ids in start order. The record is
+// readLeaderStartTime reads field 22 (starttime) of /proc/<pgid>/stat — the
+// group leader, since pid == pgid for a Setpgid child. It is a third read-only
+// copy of the leaf parser the production teardown uses; the canonical
+// explanation of the parenthesized-comm gotcha lives at stack.parseStatStartTime
+// (duplicated again in adapters.parseGroupLeaderStat for the same reason).
+func readLeaderStartTime(pgid int) (uint64, error) {
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pgid) + "/stat")
+	if err != nil {
+		return 0, err
+	}
+	return parseLeaderStartTime(string(data))
+}
+
+// parseLeaderStartTime extracts field 22 (starttime) from a /proc/<pid>/stat
+// line. comm (field 2) is parenthesized and may itself contain spaces and
+// parens, so count fields from the LAST ')'; field[0] after it is state
+// (field 3), so starttime (field 22) is index 22-3. See stack.parseStatStartTime.
+func parseLeaderStartTime(line string) (uint64, error) {
+	rparen := strings.LastIndexByte(line, ')')
+	if rparen < 0 {
+		return 0, errors.New("no comm terminator ')' in /proc stat line")
+	}
+	rest := strings.Fields(line[rparen+1:])
+	const startTimeIndexAfterComm = 22 - 3
+	if len(rest) <= startTimeIndexAfterComm {
+		return 0, errors.New("too few fields after comm in /proc stat line")
+	}
+	return strconv.ParseUint(rest[startTimeIndexAfterComm], 10, 64)
+}
+
+// readRecordedGroups parses the stack.pgids record and returns the recorded
+// process groups in start order, each with its pgid and start-time identity
+// token. The record is
 //
 //	<version> <writerPid>
 //	<component> <pgid> <starttime>
 //	...
 //
-// (internal/stack/pgidfile.go writePgidFile). The const is package-internal to
-// stack, so the test parses the pgid field directly rather than calling the
-// unexported reader — a read-only parse of a stack-owned file, never a write.
-func readRecordedPgids(t *testing.T, recordPath string) []int {
+// (internal/stack/pgidfile.go writePgidFile). The const/type are package-
+// internal to stack, so the test parses the fields directly rather than calling
+// the unexported reader — a read-only parse of a stack-owned file, never a write.
+func readRecordedGroups(t *testing.T, recordPath string) []recordedGroup {
 	t.Helper()
 	f, err := os.Open(recordPath)
 	if err != nil {
@@ -413,7 +507,7 @@ func readRecordedPgids(t *testing.T, recordPath string) []int {
 		_ = f.Close()
 	}()
 
-	var pgids []int
+	var groups []recordedGroup
 	sc := bufio.NewScanner(f)
 	line := 0
 	for sc.Scan() {
@@ -430,10 +524,14 @@ func readRecordedPgids(t *testing.T, recordPath string) []int {
 		if err != nil {
 			t.Fatalf("stack.pgids entry line %d has unparseable pgid %q: %v", line, fields[1], err)
 		}
-		pgids = append(pgids, pgid)
+		startTime, err := strconv.ParseUint(fields[2], 10, 64)
+		if err != nil {
+			t.Fatalf("stack.pgids entry line %d has unparseable start time %q: %v", line, fields[2], err)
+		}
+		groups = append(groups, recordedGroup{pgid: pgid, startTime: startTime})
 	}
 	if err := sc.Err(); err != nil {
 		t.Fatalf("scan stack.pgids record %q: %v", recordPath, err)
 	}
-	return pgids
+	return groups
 }
