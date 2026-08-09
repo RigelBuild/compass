@@ -47,20 +47,6 @@ type pgidRecord struct {
 	Entries   []pgidEntry
 }
 
-// matches reports whether the record holds an entry whose recorded pgid and
-// start-time identity token both equal the arguments. It is the read-side
-// identity predicate: a recorded pgid whose leader start time no longer matches
-// is a different (recycled) process and must never be signaled as if it were the
-// original child.
-func (r pgidRecord) matches(pgid int, startTime uint64) bool {
-	for _, e := range r.Entries {
-		if e.Pgid == pgid && e.StartTime == startTime {
-			return true
-		}
-	}
-	return false
-}
-
 // writePgidFile publishes rec to <stateDir>/stack.pgids atomically (temp +
 // rename in the same dir), mode 0600, plain text with a trailing newline. The
 // rename is the torn-write guard: a reader either sees the whole previous file
@@ -166,6 +152,15 @@ func parsePgidLine(line string) (pgidEntry, error) {
 	if err != nil {
 		return pgidEntry{}, fmt.Errorf("unparseable pgid %q in entry line %q: %w", f[1], line, err)
 	}
+	// A real process-group leader pid is always > 1; pid 1 is init and is never a
+	// compass child. Refuse a degenerate pgid at parse time so a corrupt or
+	// tampered record is rejected wholesale rather than reaching the signal sink,
+	// where kill(-1, ...) is the "every process the caller may signal" wildcard
+	// and kill(0, ...) targets the down process's own group — exactly the
+	// pattern-kill blast radius the design forbids.
+	if pgid <= 1 {
+		return pgidEntry{}, fmt.Errorf("invalid pgid %d in entry line %q: a process-group leader pid is always > 1", pgid, line)
+	}
 	startTime, err := strconv.ParseUint(f[2], 10, 64)
 	if err != nil {
 		return pgidEntry{}, fmt.Errorf("unparseable start time %q in entry line %q: %w", f[2], line, err)
@@ -201,10 +196,12 @@ func removePgidFile(stateDir string) error {
 }
 
 // readStartTime is the package-internal seam that reads a process's start time
-// (the identity token). It is a var, not a func, so tests can stub it and the
-// package is not hard-Linux in principle — the real implementation reads
-// /proc/<pid>/stat, which only exists on Linux, but the seam keeps that a
-// swappable detail rather than a compile-time dependency.
+// (the identity token). It is a var, not a func, so tests can stub it without a
+// live process. The wired implementation reads /proc/<pid>/stat, which exists
+// only on Linux — and the embedded stack is Linux/podman-only at runtime anyway
+// (the runner loop, compass-native-app design.md:247,346-348), so the seam is a
+// test seam, not a cross-OS portability claim: on a non-Linux unix this reader
+// fails and up refuses, which is the correct outcome on an unsupported host.
 var readStartTime = readStartTimeProc
 
 // readStartTimeProc reads field 22 (starttime, in clock ticks since boot) of

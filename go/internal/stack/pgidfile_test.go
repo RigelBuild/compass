@@ -81,9 +81,9 @@ func TestPgidFileTrailingNewline(t *testing.T) {
 func TestPgidFilePartialSequenceRewrite(t *testing.T) {
 	dir := t.TempDir()
 	entries := []pgidEntry{
-		{Component: ComponentPostgres, Pgid: 1, StartTime: 11},
-		{Component: ComponentServer, Pgid: 2, StartTime: 22},
-		{Component: ComponentRunner, Pgid: 3, StartTime: 33},
+		{Component: ComponentPostgres, Pgid: 101, StartTime: 11},
+		{Component: ComponentServer, Pgid: 102, StartTime: 22},
+		{Component: ComponentRunner, Pgid: 103, StartTime: 33},
 	}
 	for n := 1; n <= len(entries); n++ {
 		rec := pgidRecord{WriterPid: 1, Version: pgidFileVersion, Entries: entries[:n]}
@@ -144,6 +144,9 @@ func TestReadPgidFileMalformed(t *testing.T) {
 		"entry too few fields": "1 7\npostgres 200\n",
 		"unknown component":    "1 7\nnot-a-component 200 999\n",
 		"bad pgid":             "1 7\npostgres xx 999\n",
+		"pgid one (init)":      "1 7\npostgres 1 999\n",
+		"pgid zero":            "1 7\npostgres 0 999\n",
+		"pgid negative":        "1 7\npostgres -5 999\n",
 		"bad starttime":        "1 7\npostgres 200 zz\n",
 	}
 	for name, content := range cases {
@@ -174,23 +177,6 @@ func TestRemovePgidFileIdempotent(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, pgidFileName)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("file still present after remove: %v", err)
-	}
-}
-
-// TestPgidRecordMatches is the identity predicate: a matching pgid+token is
-// found; a right pgid with the wrong token (a recycled pid) is NOT.
-func TestPgidRecordMatches(t *testing.T) {
-	rec := pgidRecord{Entries: []pgidEntry{
-		{Component: ComponentServer, Pgid: 42, StartTime: 100},
-	}}
-	if !rec.matches(42, 100) {
-		t.Fatal("matches(42,100) = false, want true (exact pgid+token)")
-	}
-	if rec.matches(42, 999) {
-		t.Fatal("matches(42,999) = true, want false (recycled pid: right pgid, wrong start-time token)")
-	}
-	if rec.matches(99, 100) {
-		t.Fatal("matches(99,100) = true, want false (unknown pgid)")
 	}
 }
 

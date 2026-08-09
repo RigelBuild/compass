@@ -319,6 +319,10 @@ func TestDownDrainsReverseAndReleasesLock(t *testing.T) {
 		t.Fatalf("Down() = %v", err)
 	}
 
+	// A fully successful drain removes the teardown record, so no stale
+	// stack.pgids is left for a later cross-process down to act on.
+	assertPgidFileGone(t, cfg.StateDir)
+
 	// Children stopped in reverse start order: runner → server → postgres.
 	wantStops := []string{
 		"signal compass-runner", "wait compass-runner",

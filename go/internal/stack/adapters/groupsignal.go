@@ -35,6 +35,13 @@ func NewGroupSignaller() *GroupSignaller {
 // per kill(2)'s group-signal convention). Only SignalTerm and SignalKill are
 // valid dispositions; any other is an error rather than a silent no-op.
 func (g *GroupSignaller) Signal(pgid int, sig stack.ProcessSignal) error {
+	// Defense in depth: the parser already rejects pgid <= 1, but this is the one
+	// sink that reaches syscall.Kill(-pgid, ...), where -1 is the "every process
+	// the caller may signal" wildcard and 0 is the caller's own group. Never let
+	// a degenerate value reach it, whatever the caller passed.
+	if pgid <= 1 {
+		return fmt.Errorf("refusing to signal degenerate pgid %d", pgid)
+	}
 	var sysSig syscall.Signal
 	switch sig {
 	case stack.SignalTerm:
@@ -62,6 +69,13 @@ func (g *GroupSignaller) Signal(pgid int, sig stack.ProcessSignal) error {
 // the two syscalls, or /proc is unavailable) is treated as not-alive — the safe
 // verdict is never to signal.
 func (g *GroupSignaller) Alive(pgid int, startTime uint64) bool {
+	// A degenerate pgid is never a live compass child: kill(-1, 0) probes the
+	// whole session and kill(0, 0) the caller's own group, both of which would
+	// falsely report "alive". Treat pgid <= 1 as not-alive so it can never be
+	// selected as a signal target.
+	if pgid <= 1 {
+		return false
+	}
 	// Existence: signal 0 to the group. ESRCH means gone; EPERM means it exists
 	// but is not ours (still "exists"); nil means exists.
 	if err := syscall.Kill(-pgid, 0); err != nil && !errors.Is(err, syscall.EPERM) {
@@ -86,22 +100,33 @@ func readGroupLeaderStartTime(pgid int) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("read /proc/%d/stat: %w", pgid, err)
 	}
-	line := string(data)
+	startTime, err := parseGroupLeaderStat(string(data))
+	if err != nil {
+		return 0, fmt.Errorf("/proc/%d/stat: %w", pgid, err)
+	}
+	return startTime, nil
+}
+
+// parseGroupLeaderStat extracts field 22 (starttime) from a /proc/<pid>/stat
+// line. Split out from readGroupLeaderStartTime so the parenthesized-comm parse
+// is unit-tested against synthesized lines without a live process — the same
+// split (and the same gotcha) as stack.parseStatStartTime.
+func parseGroupLeaderStat(line string) (uint64, error) {
 	// comm (field 2) is parenthesized and may contain spaces AND parens, so
 	// count fields from the LAST ')'; field[0] after it is state (field 3), so
 	// starttime (field 22) is index 22-3.
 	rparen := strings.LastIndexByte(line, ')')
 	if rparen < 0 {
-		return 0, fmt.Errorf("/proc/%d/stat: no comm terminator ')'", pgid)
+		return 0, errors.New("no comm terminator ')'")
 	}
 	rest := strings.Fields(line[rparen+1:])
 	const startTimeIndexAfterComm = 22 - 3
 	if len(rest) <= startTimeIndexAfterComm {
-		return 0, fmt.Errorf("/proc/%d/stat: only %d fields after comm, need field 22", pgid, len(rest))
+		return 0, fmt.Errorf("only %d fields after comm, need field 22", len(rest))
 	}
 	startTime, err := strconv.ParseUint(rest[startTimeIndexAfterComm], 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("/proc/%d/stat: unparseable starttime %q: %w", pgid, rest[startTimeIndexAfterComm], err)
+		return 0, fmt.Errorf("unparseable starttime %q: %w", rest[startTimeIndexAfterComm], err)
 	}
 	return startTime, nil
 }

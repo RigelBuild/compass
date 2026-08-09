@@ -15,8 +15,13 @@ import (
 // Per-component drain budgets: after SIGTERM, how long DownDetached waits for a
 // component's confirmation channel to go quiet before escalating to a group
 // SIGKILL. Reverse start order (runner → server → postgres); the server's
-// graceful drain is the long pole. They sum to 55s, inside the app's 60s
-// stackDownTimeout (lifecycle.go:35) with margin (Open Question 2). They are
+// graceful drain is the long pole. On the SIGTERM-succeeds path they sum to 55s;
+// on the escalation path the two socket-confirmed components each add a
+// postKillGrace, so the true worst case is 15 + (30+5) + (10+5) = 65s. That can
+// exceed the app's 60s stackDownTimeout (lifecycle.go:35) — and is bounded by
+// its ctx cancellation, not by this arithmetic: on ctx.Done waitDead returns the
+// current dead() verdict, so an overrun becomes a partial-failure survivor
+// rewrite + loud report (Open Question 2), never an unbounded wait. They are
 // package vars, not consts, so tests can shrink them; the budget is enforced via
 // deps.now(), so a test drives expiry with a controlled clock rather than real
 // waiting.
@@ -319,11 +324,12 @@ func clearLockFile(stateDir string) error {
 	return l.release()
 }
 
-// logSignalMiss records a non-fatal signal-delivery error to stderr. Delivery is
-// never the teardown verdict — the per-component confirm channel is — so a miss
-// (most often ESRCH: the group vanished in the irreducible verify→signal gap) is
-// logged for the operator, not returned. Kept as one helper so both the SIGTERM
-// and SIGKILL sites read identically.
+// logSignalMiss records a non-fatal signal-delivery error at debug level.
+// Delivery is never the teardown verdict — the per-component confirm channel is
+// — so a miss (most often ESRCH: the group vanished in the irreducible
+// verify→signal gap) is an expected, benign event, logged at debug for a
+// deep-dive trace rather than surfaced to the operator or returned. Kept as one
+// helper so both the SIGTERM and SIGKILL sites read identically.
 func logSignalMiss(sig string, e pgidEntry, err error) {
 	slog.Debug("group signal not delivered (group likely already gone)",
 		"signal", sig, "component", e.Component.String(), "pgid", e.Pgid, "error", err)

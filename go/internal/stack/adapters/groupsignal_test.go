@@ -74,6 +74,27 @@ func TestGroupSignallerUnknownSignal(t *testing.T) {
 	}
 }
 
+// TestParseGroupLeaderStatParsesParenthesizedComm guards the adapter's own copy
+// of the /proc/<pid>/stat field-22 parse against the parenthesized-comm gotcha:
+// a comm with embedded spaces AND parens must not throw off the field count. It
+// mirrors stack.TestReadStartTimeProcParsesParenthesizedComm so the two parsers
+// (deliberately duplicated, groupsignal.go:93-97) cannot drift on the
+// load-bearing identity token — a "simplify to strings.Fields(line)" regression
+// here would be caught rather than only by the real-/proc integration test whose
+// comm has no embedded spaces.
+func TestParseGroupLeaderStatParsesParenthesizedComm(t *testing.T) {
+	// comm is "(weird )(name)" — embedded spaces and parens; starttime (field 22)
+	// is 987654.
+	line := "1234 (weird )(name) S 1 1234 1234 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 ...\n"
+	got, err := parseGroupLeaderStat(line)
+	if err != nil {
+		t.Fatalf("parseGroupLeaderStat = %v", err)
+	}
+	if got != 987654 {
+		t.Fatalf("starttime = %d, want 987654", got)
+	}
+}
+
 // deadPGID returns a pgid that names no live process group: it scans upward from
 // a high number until kill(-pgid, 0) reports ESRCH.
 func deadPGID(t *testing.T) int {
