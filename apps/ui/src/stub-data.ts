@@ -55,7 +55,7 @@ export type AgentState =
 	| "disconnected";
 
 /** The kind of agent — the moat agents plus leveraged worker agents. */
-export type AgentRole = "supervisor" | "warden" | "worker";
+export type AgentRole = "supervisor" | "worker";
 
 /** Priority of an issue, drives the card accent. */
 export type Priority = "urgent" | "high" | "medium" | "low";
@@ -478,22 +478,6 @@ export const STUB_AGENTS: Agent[] = [
 		role: "supervisor",
 		model: "claude-opus-4",
 		cwd: "~/agents/workspaces/supervisor/sealed",
-		terminals: [],
-	},
-	{
-		account: {
-			id: "acc-warden",
-			handle: "warden",
-			displayName: "warden",
-			kind: "agent",
-			ownerUserId: "acc-matt",
-			homeChannelId: "dm-warden",
-		},
-		lifecycle: "working",
-		activity: "auditing push-guard denials",
-		role: "warden",
-		model: "seal-wasm-runtime",
-		cwd: "(sandboxed)",
 		terminals: [],
 	},
 	{
@@ -1258,7 +1242,7 @@ export const STUB_ASSIGNED_ISSUES: Issue[] = [
 		forge: LINEAR_FORGE,
 		repo: "SEA",
 		number: 1201,
-		title: "Warden audit-log retention policy — design",
+		title: "Audit-log retention policy — design",
 		body: "",
 		forgeState: "open",
 		url: "https://linear.app/sealed/issue/SEA-1201",

@@ -427,14 +427,6 @@ export const STUB_TOPICS: Topic[] = [
 		createdByAccountId: "acc-supervisor",
 		archived: false,
 	},
-	{
-		id: "top-dm-warden",
-		channelId: "dm-warden",
-		name: "general",
-		createdAtUnixMs: min(69),
-		createdByAccountId: "acc-warden",
-		archived: false,
-	},
 ];
 
 export const STUB_MESSAGES: Message[] = [
@@ -623,7 +615,7 @@ export const STUB_MESSAGES: Message[] = [
 		blocks: [
 			{
 				kind: "text",
-				text: "Fleet snapshot: cook + livingstone in review, cousteau waiting on a merge gate, warden holding the sandbox lane. No collisions on the compass-ui zone right now.",
+				text: "Fleet snapshot: cook + livingstone in review, cousteau waiting on a merge gate. No collisions on the compass-ui zone right now.",
 			},
 		],
 	},
@@ -686,41 +678,6 @@ export const STUB_MESSAGES: Message[] = [
 					],
 					answered: false,
 				},
-			},
-		],
-	},
-
-	// ── DM: matt <-> warden ──
-	{
-		id: "msg-dm-war1",
-		topicId: "top-dm-warden",
-		authorAccountId: "acc-warden",
-		atUnixMs: min(70),
-		blocks: [
-			{
-				kind: "text",
-				text: "Sandbox policy check: every worker is confined to its own clone under ~/agents/workspaces. No writes to main, allowlisted owners only.",
-			},
-		],
-	},
-	{
-		id: "msg-dm-war2",
-		topicId: "top-dm-warden",
-		authorAccountId: MATT,
-		atUnixMs: min(73),
-		blocks: [
-			{ kind: "text", text: "Flag anything that reaches outside its lane." },
-		],
-	},
-	{
-		id: "msg-dm-war3",
-		topicId: "top-dm-warden",
-		authorAccountId: "acc-warden",
-		atUnixMs: min(75),
-		blocks: [
-			{
-				kind: "text",
-				text: "Will do — no boundary crossings observed this cycle.",
 			},
 		],
 	},

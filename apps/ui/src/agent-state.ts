@@ -26,10 +26,6 @@ export interface AgentStreamRefinement {
 	/** The agent completed a turn and no human has opened its view yet. Refines
 	 *  `READY` → `done` (emerald check, deliberately not idle grey). */
 	turnDoneUnopened?: boolean;
-	/** A Warden security-pause is in force (compass-0.4 `pause_agent`) — a
-	 *  Compass overlay, not an ACP/`AgentSessionState` value. Wins over the enum
-	 *  mapping while set. */
-	wardenPaused?: boolean;
 }
 
 /**
@@ -47,15 +43,11 @@ export interface AgentStreamRefinement {
  * | UNSPECIFIED       | idle (defensive; a well-behaved daemon never   |
  * |                   | sends it as a live state)                     |
  *
- * `wardenPaused` overrides to `paused` regardless of the enum, since a pause is
- * a Compass overlay applied on top of whatever the session was doing.
  */
 export function agentDotState(
 	sessionState: AgentSessionState,
 	refinement: AgentStreamRefinement = {},
 ): AgentState {
-	if (refinement.wardenPaused) return "paused";
-
 	switch (sessionState) {
 		case AgentSessionState.STARTING:
 		case AgentSessionState.WORKING:

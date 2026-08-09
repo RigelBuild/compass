@@ -240,7 +240,7 @@ describe("openAgent", () => {
 
 	// Switching to a *different* agent resets the per-agent view state: repo pick
 	// and issue selection fall back to the new agent's defaults. An agent that
-	// owns nothing (warden) clears the issue selection and exposes no clone.
+	// owns nothing (supervisor) clears the issue selection and exposes no clone.
 	test("switching agents resets selection and clears surfaces for an agent that owns none", () => {
 		withStore((s) => {
 			// Build up per-agent state on cook so the switch has something to reset.
@@ -248,11 +248,11 @@ describe("openAgent", () => {
 			s.setActiveBranch("cook-965-client-transport");
 			expect(s.activeRepo()?.currentBranch).toBe("cook-965-client-transport");
 
-			// agent-warden is assigned zero issues.
-			s.openAgent("acc-warden");
+			// acc-supervisor is assigned zero issues.
+			s.openAgent("acc-supervisor");
 
 			expect(s.view()).toBe("agent");
-			expect(s.selectedAgentId()).toBe("acc-warden");
+			expect(s.selectedAgentId()).toBe("acc-supervisor");
 			// No owned issues → no selection and no repo clone.
 			expect(s.selectedIssueId()).toBeNull();
 			expect(s.agentRepos()).toEqual([]);
@@ -515,8 +515,8 @@ describe("right sidebar tab (dock-in-sidebar T1; Record A §T2)", () => {
 	// old issue-only type, or one stuck on its boot value, would fail one leg.
 	test("setActiveRightTab round-trips a fleet pin and an issue value", () => {
 		withStore((s) => {
-			s.setActiveRightTab("agent:acc-warden");
-			expect(s.activeRightTab()).toBe("agent:acc-warden");
+			s.setActiveRightTab("agent:acc-cook");
+			expect(s.activeRightTab()).toBe("agent:acc-cook");
 
 			s.setActiveRightTab("vcs");
 			expect(s.activeRightTab()).toBe("vcs");
@@ -528,7 +528,7 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 	// STUB_AGENTS fixture ids used across these tests. Both resolve to visible
 	// agents (so they surface in rightTabGroups()); "acc-ghost" resolves to none.
 	const SUP = "acc-supervisor";
-	const WARDEN = "acc-warden";
+	const LIVINGSTONE = "acc-livingstone";
 	const COOK = "acc-cook";
 	const GHOST = "acc-ghost";
 	const key = (workspace: string) => `compass.pinnedAgents.${workspace}`;
@@ -579,13 +579,13 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 	test("pins append in order; a re-pin is a no-op", () => {
 		clearStorage();
 		withPinStore("ws-a", (s) => {
-			s.pinAgent(WARDEN);
+			s.pinAgent(LIVINGSTONE);
 			s.pinAgent(SUP);
 			s.pinAgent(COOK);
-			expect(s.pinnedAgentIds()).toEqual([WARDEN, SUP, COOK]);
+			expect(s.pinnedAgentIds()).toEqual([LIVINGSTONE, SUP, COOK]);
 			// Re-pinning an existing id neither duplicates nor reorders.
-			s.pinAgent(WARDEN);
-			expect(s.pinnedAgentIds()).toEqual([WARDEN, SUP, COOK]);
+			s.pinAgent(LIVINGSTONE);
+			expect(s.pinnedAgentIds()).toEqual([LIVINGSTONE, SUP, COOK]);
 		});
 		clearStorage();
 	});
@@ -626,12 +626,12 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 	test("two workspace keys do not cross-hydrate", () => {
 		clearStorage();
 		globalThis.localStorage.setItem(key("ws-1"), JSON.stringify([SUP]));
-		globalThis.localStorage.setItem(key("ws-2"), JSON.stringify([WARDEN]));
+		globalThis.localStorage.setItem(key("ws-2"), JSON.stringify([LIVINGSTONE]));
 		withPinStore("ws-1", (s) => {
 			expect(s.pinnedAgentIds()).toEqual([SUP]);
 		});
 		withPinStore("ws-2", (s) => {
-			expect(s.pinnedAgentIds()).toEqual([WARDEN]);
+			expect(s.pinnedAgentIds()).toEqual([LIVINGSTONE]);
 		});
 		clearStorage();
 	});
@@ -683,10 +683,10 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		clearStorage();
 		globalThis.localStorage.setItem(
 			key("ws-boot2"),
-			JSON.stringify([GHOST, WARDEN]),
+			JSON.stringify([GHOST, LIVINGSTONE]),
 		);
 		withPinStore("ws-boot2", (s) => {
-			expect(s.activeRightTab()).toBe("agent:acc-warden");
+			expect(s.activeRightTab()).toBe("agent:acc-livingstone");
 		});
 		clearStorage();
 	});

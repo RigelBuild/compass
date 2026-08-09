@@ -190,7 +190,7 @@ describe("AgentView (T3)", () => {
 // a rendered placeholder — so every one would FAIL against the disabled variant.
 //
 // Fixture ground truth (verified from stub-data.ts STUB_AGENTS, quoted here):
-//   - acc-supervisor / acc-warden: `terminals: []` — ZERO fixture terminals, so
+//   - acc-supervisor: `terminals: []` — ZERO fixture terminals, so
 //     `nextFreeTerminalPane` returns undefined from the first "+" click. The old
 //     code disabled "+" immediately for them → the cleanest always-open proof.
 //   - acc-cook: terminals `t-c1` + `t-c2` (2) — exhausted after two opens.
@@ -203,9 +203,8 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		return agent.terminals.length;
 	};
 
-	test("fixture ground truth: supervisor/warden have zero terminals, cook has two", () => {
+	test("fixture ground truth: supervisor has zero terminals, cook has two", () => {
 		expect(agentTerminalCount("acc-supervisor")).toBe(0);
-		expect(agentTerminalCount("acc-warden")).toBe(0);
 		expect(agentTerminalCount("acc-cook")).toBe(2);
 	});
 
@@ -294,10 +293,10 @@ describe("AgentView always-open '+'/split (regression)", () => {
 	// disabled the split buttons the moment `nextFreeTerminalPane` was undefined.
 	test("split stays open after fixtures: clicking a split button grows the tree with a placeholder pane", () => {
 		const { store, container } = mountAgentView();
-		store.openAgent("acc-warden");
+		store.openAgent("acc-supervisor");
 
-		// Open the warden's first (minted) terminal tab so its pane shows split
-		// buttons — warden has zero fixtures, so this pane is itself a placeholder.
+		// Open the supervisor's first (minted) terminal tab so its pane shows split
+		// buttons — supervisor has zero fixtures, so this pane is itself a placeholder.
 		const newTab = container.querySelector<HTMLButtonElement>(".av-tab-new");
 		if (!newTab) throw new Error("'+' new-tab button not rendered");
 		fireEvent.click(newTab);
