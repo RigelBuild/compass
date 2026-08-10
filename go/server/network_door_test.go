@@ -648,7 +648,7 @@ func TestNetworkDoorStreamingBearerAuth(t *testing.T) {
 // partition. A flipped code mapping or a mint that does not register in the store
 // reddens the matching sub-case.
 func TestIssueTokenHandlerInputContract(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	st, admin, _ := newNetworkStore(t)
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
@@ -674,7 +674,7 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 	})
 
 	t.Run("existing account mints a resolvable token", func(t *testing.T) {
-		rpcCtx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
 		defer cancel()
 		resp, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: string(admin)}))
 		if err != nil {

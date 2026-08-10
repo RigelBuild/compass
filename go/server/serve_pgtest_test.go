@@ -36,7 +36,7 @@ func TestServeBindsSocketServesClientAndCleansUpOnCancel(t *testing.T) {
 		errCh <- Serve(ctx, ServeConfig{
 			SocketPath:  socketPath,
 			Version:     "serve-test",
-			DatabaseDSN: pgtest.RequireDSN(t),
+			DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
 		})
 	}()
 
@@ -101,7 +101,7 @@ func TestServeShutdownIsClean(t *testing.T) {
 		errCh <- Serve(ctx, ServeConfig{
 			SocketPath:  socketPath,
 			Version:     "serve-test",
-			DatabaseDSN: pgtest.RequireDSN(t),
+			DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
 		})
 	}()
 
@@ -160,7 +160,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 		errCh <- Serve(serveCtx, ServeConfig{
 			SocketPath:  socketPath,
 			Version:     "serve-test",
-			DatabaseDSN: pgtest.RequireDSN(t),
+			DatabaseDSN: pgtest.RequireDSN(t), //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
 		})
 	}()
 	waitListening(t, socketPath)
@@ -187,7 +187,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 	// the same lock that registers the live subscriber, so the seeded
 	// ChannelChanged is delivered exactly once and its receipt proves the
 	// subscriber is registered and now blocked on the live tail.
-	subCtx, subCancel := context.WithCancel(context.Background())
+	subCtx, subCancel := context.WithCancel(t.Context())
 	defer subCancel()
 	stream, err := commsClient.SubscribeComms(subCtx, connect.NewRequest(&compassv1.SubscribeCommsRequest{SinceSeq: 0}))
 	if err != nil {
@@ -242,7 +242,7 @@ func TestServeShutdownWithLiveCommsSubscriberReturnsClean(t *testing.T) {
 		}
 		gate <- nil
 		// Block on the live tail until the server closes the comms bus.
-		for stream.Receive() { //nolint:revive // draining until the server-side close ends the stream
+		for stream.Receive() {
 		}
 	}()
 
