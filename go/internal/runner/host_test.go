@@ -44,7 +44,15 @@ type fakeSpecBuilder struct {
 
 func (b *fakeSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {
 	b.last = req
-	return b.spec, b.err
+	if b.err != nil {
+		return runtime.AgentSpec{}, b.err
+	}
+	// Echo the request's account onto the returned spec, as the real BuildSpec
+	// does (spec.go:98) — so the account threads Provision→spec→handle→session
+	// and the Status stamp (host.go:384/533/537) is exercised end-to-end.
+	spec := b.spec
+	spec.AgentAccountID = req.GetAgentAccountId()
+	return spec, nil
 }
 
 // newHostFixture builds an agentHost over the stub-streaming runtime (real,
@@ -803,6 +811,13 @@ func TestStatusIsAnsweredFromLiveSet(t *testing.T) {
 	if one[0].GetState() != compassv1.AgentSessionState_AGENT_SESSION_STATE_READY {
 		t.Fatalf("live session state = %v, want READY", one[0].GetState())
 	}
+	// The account provisioned for this container is stamped onto its status —
+	// the DL-167 attribution the reject-on-live scan matches on. This is the sole
+	// PRODUCTION source of that field (dropping the stamp at host.go:533 would
+	// silently disable reject-on-live).
+	if got := one[0].GetAgentAccountId(); got != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("Status(one) account = %q, want the provisioned account", got)
+	}
 
 	// An empty id returns every live session.
 	all, err := host.Status(ctx, "")
@@ -811,6 +826,9 @@ func TestStatusIsAnsweredFromLiveSet(t *testing.T) {
 	}
 	if len(all) != 1 {
 		t.Fatalf("Status(all) returned %d sessions, want 1 (the live set)", len(all))
+	}
+	if got := all[0].GetAgentAccountId(); got != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("Status(all) account = %q, want the provisioned account (the all-arm at host.go:537 must stamp it too)", got)
 	}
 
 	// After Stop the session leaves the live set: a targeted Status is NotFound,
