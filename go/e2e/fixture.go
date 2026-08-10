@@ -262,7 +262,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		t.Fatalf("build authed clients: %v", err)
 	}
 
-	return &Fixture{
+	f := &Fixture{
 		compass:    compass,
 		comms:      comms,
 		stack:      st,
@@ -272,6 +272,21 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		runtimeDir: runtimeDir,
 		stub:       stub,
 	}
+
+	// stack.Up returns as soon as the compass-runner CHILD is spawned, but the
+	// runner enrolls with the server ASYNCHRONOUSLY over the TLS door AFTER Up
+	// returns. A leg that Provisions immediately would otherwise race that
+	// enrollment and fail `unavailable: no runner enrolled to serve session`.
+	// Gate the fixture's post-Up readiness on the runner being enrolled — the
+	// enrollment counterpart to the stack's own waitReady/waitPostgres — so every
+	// leg starts against an enrolled runner. Event-gated on a real cross-process
+	// signal (an enrollment-gated probe), never a sleep. On the WithSite re-attach
+	// path the runner is already enrolled, so the first probe passes immediately.
+	if err := f.waitRunnerEnrolled(ctx); err != nil {
+		t.Fatalf("wait for runner enrollment: %v", err)
+	}
+
+	return f
 }
 
 // cannedAgentDir is the in-container path the canned models.yml is delivered
