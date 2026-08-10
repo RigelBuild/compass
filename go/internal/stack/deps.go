@@ -29,6 +29,12 @@ type Deps struct {
 	// DBProber probes Postgres reachability between starting postgres and
 	// compass-server, so the store opens on the first try (devenv.nix:224-242).
 	DBProber DBProber
+	// GroupSignaller signals and liveness-checks a persisted child process
+	// group by pgid for the cross-process teardown (DownDetached). It is the
+	// only seam that touches groups this process did not spawn (and thus holds
+	// no Process handle for); the real adapter targets the negative pgid, the
+	// same primitive the in-process escalation uses.
+	GroupSignaller GroupSignaller
 	// Now is the clock the cert-expiry math reads. Nil defaults to time.Now.
 	Now func() time.Time
 
@@ -81,26 +87,50 @@ func (c Component) String() string {
 
 // Process is a handle to a started child. Signal requests a graceful stop; Wait
 // blocks until the child exits (or ctx is done) and returns its exit error, if
-// any.
+// any. Pid reports the child's PID, which doubles as its process-group ID (the
+// adapter sets Setpgid at Start), so the supervisor can persist the pgid for a
+// cross-process teardown that no longer holds this in-memory handle.
 type Process interface {
 	Signal(sig ProcessSignal) error
 	Wait(ctx context.Context) error
+	Pid() int
 }
 
-// ProcessSignal is the stop disposition Signal requests. The core only ever asks
-// for a graceful termination; escalation to a hard kill is the supervisor
-// adapter's concern.
+// ProcessSignal is the stop disposition a signal targets. The in-process
+// Process.Signal seam only ever asks for a graceful termination (SignalTerm);
+// the GroupSignaller seam (cross-process teardown) also carries SignalKill for
+// the bounded escalation after the per-child drain budget.
 type ProcessSignal int
 
 const (
 	// SignalTerm requests a graceful termination (SIGTERM semantics).
 	SignalTerm ProcessSignal = iota
+	// SignalKill requests an unconditional hard kill (SIGKILL semantics). It is
+	// the terminal step of DownDetached's bounded escalation, never a first
+	// resort, and is not a valid disposition for the in-process Process.Signal.
+	SignalKill
 )
 
 // ProcessSupervisor starts child processes. Start returns a live handle or an
 // error if the child could not be launched.
 type ProcessSupervisor interface {
 	Start(ctx context.Context, spec ProcessSpec) (Process, error)
+}
+
+// GroupSignaller signals and identity-checks a persisted child process group by
+// its process-group id. It is the cross-process teardown primitive: DownDetached
+// reads pgids from the state-dir record and drives them here, since the tearing
+// process holds no Process handle for a stack a prior up spawned.
+//
+// Signal delivers sig to the whole group (the real adapter targets the negative
+// pgid, matching the in-process escalation's syscall.Kill(-pid, ...)). Alive
+// reports whether a group with this pgid exists AND its leader's current start
+// time matches startTime — the identity gate that turns "a group with this pgid
+// exists" (which a recycled pid passes falsely) into "the ORIGINAL group is
+// still alive". A gone group (ESRCH) or a start-time mismatch reports not-alive.
+type GroupSignaller interface {
+	Signal(pgid int, sig ProcessSignal) error
+	Alive(pgid int, startTime uint64) bool
 }
 
 // CertEnsurer ensures the TLS anchor (one PEM that is both the server's

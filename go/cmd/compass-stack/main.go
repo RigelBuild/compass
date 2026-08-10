@@ -227,6 +227,7 @@ func buildDeps(cfg stack.Config) stack.Deps {
 		Images:          adapters.NewImageEnsurer(),
 		Prober:          adapters.NewHealthProber(),
 		DBProber:        adapters.NewDBProber(),
+		GroupSignaller:  adapters.NewGroupSignaller(),
 		Now:             time.Now,
 		ExpectedVersion: version,
 	}
@@ -264,10 +265,11 @@ func runUp(ctx context.Context, args []string) error {
 	return nil
 }
 
-// runDown attaches to the live stack (stack.Up attaches if a server is already
-// answering) and stops its children, releasing the lock. There is no separate
-// public "attach then Down" constructor — Down is a method on the *Stack that Up
-// returns — so down goes through Up's attach path, then calls Down.
+// runDown tears the stack down across the process boundary via
+// stack.DownDetached: it reads the pgid record a prior up persisted and signals
+// those process groups, so a fresh down process stops a stack it never spawned.
+// This replaces the old attach-path Up+Down, which was a silent no-op across
+// processes (the attached Stack owned no child handles to signal).
 func runDown(ctx context.Context, args []string) error {
 	fs, f := newFlagSet("down", false)
 	if err := fs.Parse(args); err != nil {
@@ -279,18 +281,14 @@ func runDown(ctx context.Context, args []string) error {
 	}
 	deps := buildDeps(cfg)
 
-	st, err := stack.Up(ctx, cfg, deps)
-	if err != nil {
-		if errors.Is(err, stack.ErrVersionMismatch) {
-			// A mismatched live stack still needs stopping; but Up won't hand us
-			// a handle to it, so we cannot Down it through this build. Surface the
-			// mismatch legibly rather than silently no-op.
-			return errors.New("the live stack was built by a different version of compass-stack; " +
-				"stop it with that build's `compass-stack down`")
+	if err := stack.DownDetached(ctx, cfg, deps); err != nil {
+		if errors.Is(err, stack.ErrStackStarting) {
+			return errors.New("a stack is starting; retry `compass-stack down` once it is up")
 		}
-		return fmt.Errorf("attaching to the stack to bring it down: %w", err)
-	}
-	if err := st.Down(ctx); err != nil {
+		if errors.Is(err, stack.ErrNoTeardownRecord) {
+			return errors.New("the live stack has no teardown record for this build; " +
+				"stop it with the build that started it")
+		}
 		return fmt.Errorf("bringing down the stack: %w", err)
 	}
 	_, _ = fmt.Fprintln(os.Stdout, "stack down") // best-effort CLI output; a write failure to the terminal is not actionable

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -44,6 +45,11 @@ type Stack struct {
 	server Process
 	runner Process
 	pg     Process
+	// pgids accumulates each spawned child's teardown identity (pgid +
+	// start-time token) in start order, so spawnChain can rewrite the state-dir
+	// pgid record after each spawn and a fully successful Down knows the file it
+	// wrote is complete. Empty on an attached stack (it spawned nothing).
+	pgids []pgidEntry
 	// attached is true when Up short-circuited to an already-live server; such a
 	// stack spawned nothing and Down must not signal children it does not own.
 	attached bool
@@ -142,8 +148,21 @@ func attachContended(ctx context.Context, cfg Config, deps Deps) (*Stack, error)
 // An attached stack owns no children, so Down only releases (a no-op lock, since
 // attach released it). Draining is best-effort across children: a stop error on
 // one does not skip the rest, and all errors are joined.
+//
+// On a fully successful drain (no child stop errored) the state-dir pgid record
+// is removed too: this process just tore down every child it recorded, so the
+// cross-process teardown record has nothing left to describe. A partial or
+// failed drain leaves the file in place so a later fresh down can still finish
+// the job. An attached stack recorded no children, so removal is a no-op.
 func (s *Stack) Down(ctx context.Context) error {
 	err := s.drainChildren(ctx)
+	if err == nil {
+		// Fully successful drain: this process tore down every child it
+		// recorded, so the cross-process teardown record has nothing left to
+		// describe. A partial/failed drain leaves the file for a fresh down to
+		// finish, and errors.Join with a nil err would just be rerr anyway.
+		err = removePgidFile(s.cfg.StateDir)
+	}
 	if rerr := s.lock.release(); rerr != nil {
 		err = errors.Join(err, fmt.Errorf("release lock: %w", rerr))
 	}
@@ -179,6 +198,9 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return fmt.Errorf("start postgres: %w", err)
 	}
 	s.pg = pg
+	if err := s.recordChild(ComponentPostgres, pg); err != nil {
+		return err
+	}
 
 	// 1b. Wait until postgres is accepting — Supervisor.Start returned at
 	// process launch, not at readiness; compass-server's store.Open pings once
@@ -199,6 +221,9 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return fmt.Errorf("start compass-server: %w", err)
 	}
 	s.server = server
+	if err := s.recordChild(ComponentServer, server); err != nil {
+		return err
+	}
 
 	// 4. Poll GetServerInfo readiness — the socket binds before migrations, so
 	// only an answering probe means ready.
@@ -224,6 +249,28 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return fmt.Errorf("start compass-runner: %w", err)
 	}
 	s.runner = runner
+	if err := s.recordChild(ComponentRunner, runner); err != nil {
+		return err
+	}
+	return nil
+}
+
+// recordChild appends a spawned child's teardown identity (pgid == pid, plus the
+// leader start-time token read at spawn) and rewrites the state-dir pgid record
+// so it reflects every child started so far. Rewriting after each spawn keeps
+// the crash window one child wide: the atomically-renamed file on disk is always
+// a complete earlier prefix of the start sequence, so a fresh down never reads a
+// torn record and drains exactly the prefix that was started.
+func (s *Stack) recordChild(c Component, p Process) error {
+	startTime, err := readStartTime(p.Pid())
+	if err != nil {
+		return fmt.Errorf("read start time for %s (pid %d): %w", c, p.Pid(), err)
+	}
+	s.pgids = append(s.pgids, pgidEntry{Component: c, Pgid: p.Pid(), StartTime: startTime})
+	rec := pgidRecord{WriterPid: os.Getpid(), Version: pgidFileVersion, Entries: s.pgids}
+	if err := writePgidFile(s.cfg.StateDir, rec); err != nil {
+		return fmt.Errorf("persist pgid record after starting %s: %w", c, err)
+	}
 	return nil
 }
 
