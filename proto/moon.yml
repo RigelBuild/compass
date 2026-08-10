@@ -162,7 +162,7 @@ tasks:
     inputs:
       - '/packages/compass-client/src/gen/**/*'
       - '/go/gen/**/*'
-  # buf breaking gate removed pre-dogfood (SEA-1922); RE-ADD AT GA / first pinned client.
+  # buf breaking gate removed pre-dogfood (SEA-1922); RE-ADD AT GA / first pinned client (tracked: SEA-1951).
   ci:
     deps: ['lint', 'drift', 'gen-fence']
     options:

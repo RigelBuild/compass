@@ -34,4 +34,4 @@ lint:
       - proto/compass/v1/agent_gateway.proto
     RPC_RESPONSE_STANDARD_NAME:
       - proto/compass/v1/agent_gateway.proto
-# buf breaking gate removed pre-dogfood (SEA-1922); RE-ADD AT GA / first pinned client.
+# buf breaking gate removed pre-dogfood (SEA-1922); RE-ADD AT GA / first pinned client (tracked: SEA-1951).

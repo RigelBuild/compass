@@ -3687,7 +3687,7 @@ func (*DeleteAgentConfigResponse) Descriptor() ([]byte, []int) {
 // header names an agent, that is the displayed author: NO forge-login
 // cross-check, NO verified bit, NO population gating. It never reaches an authz,
 // routing, or ownership decision (DL-050). Owner is a property of the agent
-// account (AgentAccount.owner_user_id, comms.proto:131-133), resolved
+// account (AgentAccount.owner_user_id in comms.proto), resolved
 // server-side, never restated per artifact — so no owner_handle. Field numbers
 // 2,3 are simply reclaimable pre-dogfood (DL-186): no wire build ever shipped
 // the frozen #1018 owner_handle/verified shape, and nothing on disk is
