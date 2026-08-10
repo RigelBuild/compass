@@ -201,6 +201,19 @@ describe("NewWorkstreamDialog", () => {
 		});
 	});
 
+	test("focuses its own container on mount (Escape reachable from open)", () => {
+		const { container } = render(() => (
+			<NewWorkstreamDialog
+				agents={AGENTS}
+				onSubmit={() => {}}
+				onCancel={() => {}}
+			/>
+		));
+		expect(document.activeElement).toBe(
+			container.querySelector("[role='dialog']"),
+		);
+	});
+
 	test("Cancel fires onCancel and NOT onSubmit", () => {
 		let submitted = false;
 		let cancelled = false;

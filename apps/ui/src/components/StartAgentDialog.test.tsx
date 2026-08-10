@@ -108,4 +108,13 @@ describe("StartAgentDialog", () => {
 		expect(cancelled).toBe(true);
 		expect(submitted).toBe(false);
 	});
+
+	test("focuses its own container on mount (Escape reachable from open)", () => {
+		const { container } = render(() => (
+			<StartAgentDialog spec={SPEC} onSubmit={() => {}} onCancel={() => {}} />
+		));
+		expect(document.activeElement).toBe(
+			container.querySelector("[role='dialog']"),
+		);
+	});
 });
