@@ -20,7 +20,7 @@ import (
 )
 
 // The fleet CONFIG-BUNDLE store (SEA-1624 T1). One fleet-wide singleton bundle
-// row (agent_config_bundle, 0008_agent_config) holds the gzip-tarball of the
+// row (agent_config_bundle, 0001_init.sql) holds the gzip-tarball of the
 // skills/, extensions/, and mcp/ material every agent materializes into its
 // scoped config dir (T3/T4). Unlike the secrets NAMES registry (secrets.go, a
 // set of named rows), config is CURRENT-ONLY: PutAgentConfig replaces the one

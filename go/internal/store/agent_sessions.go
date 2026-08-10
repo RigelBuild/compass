@@ -9,12 +9,12 @@ import (
 // session_id -> agent_account_id -> home_channel_id mapping that
 // SubscribeAgentSession resolves to authorize a subscriber. It is rooted
 // non-spoofably — session_id is a server-minted response value recorded only
-// after the Runner call succeeds (0004_agent_placement.sql). The rows survive a
-// Server restart, so the authz boundary does not depend on the in-memory
-// RunnerHub enrollment.
+// after the Runner call succeeds (0001_init.sql, agent_sessions/agent_placements).
+// The rows survive a Server restart, so the authz boundary does not depend on
+// the in-memory RunnerHub enrollment.
 //
-// The chain used to hop through a container_name row (0003_agent_ownership.sql).
-// That hop was removed in 0004 on a SCHEMA fact, not a naming one: in
+// The chain used to hop through a container_name row (a since-squashed migration).
+// That hop was removed on a SCHEMA fact, not a naming one: in the old
 // agent_containers, container_name was the PRIMARY KEY and agent_account_id a
 // NOT NULL FK to the account, so the hop was a provable 1:1 pass-through — it
 // could resolve exactly one account for a name, and never fewer. Removing it
