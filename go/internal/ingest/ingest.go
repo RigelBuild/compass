@@ -55,6 +55,16 @@ func (in *Ingester) Ingest(ctx context.Context, repo string) error {
 	if err != nil {
 		return fmt.Errorf("ingest: list issues for %q: %w", repo, err)
 	}
+	return in.IngestIssues(ctx, repo, raws)
+}
+
+// IngestIssues translates + sinks a caller-fetched batch of raw issues for
+// repo: the loop body of Ingest, exposed so the DL-053 driver (which fetches
+// page-wise to gate cursor advance on sink success) reuses the one pipeline.
+// It stops and returns the first sink error (wrapped, so callers can errors.Is
+// the cause); partial progress is fine — a re-poll is idempotent on the
+// coordinate.
+func (in *Ingester) IngestIssues(ctx context.Context, repo string, raws []forge.Issue) error {
 	for _, raw := range raws {
 		issue := in.translateOne(raw, repo)
 		if err := in.sink.PublishIssueUpdate(ctx, issue); err != nil {
