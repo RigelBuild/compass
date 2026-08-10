@@ -370,6 +370,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// lifecycle T3-a, RelayBoardCall), and comms<->hub ask-answer wake (SEA-1577)
 	// construction cycles; see wireHubServiceCycles in sinks.go.
 	wireHubServiceCycles(hub, commsSvc, st, issueBrd)
+	// Seed the root Manager "supervisor" on first launch (SEA-1820). The seed
+	// needs a Runner whose command stream can serve Provision/Start, which is not
+	// up at boot — the embedded stack starts the Runner only after the server is
+	// serving, and its command stream attaches only after it enrolls — so it
+	// hangs off the hub's runner-ready hook, fired once a Runner's Sessions
+	// stream attaches. Idempotent (find-or-create-then-start, empty-tree-gated
+	// create), so a reconnect re-fire is safe. adminID is the bootstrap admin the
+	// supervisor is owned by.
+	seedLog := slog.Default()
+	hub.SetRunnerReadyHook(func() { seedRootSupervisor(ctx, st, svc, admin.ID, seedLog) })
 	// The SecretsService is an account-facing sibling of CompassService/CommsService:
 	// it mounts on every account door (socket, dev, network) behind the same bearer +
 	// admin-gate chain, which classifies its three procedures authenticatedOpen — the

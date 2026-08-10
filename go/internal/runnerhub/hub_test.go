@@ -12,6 +12,7 @@ package runnerhub
 import (
 	"context"
 	"testing"
+	"time"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
@@ -177,4 +178,36 @@ func TestEnrollDuplicateReattaches(t *testing.T) {
 	if _, _, err := hub.routerFor("any"); err != nil {
 		t.Fatalf("routerFor after enroll = %v, want a live router", err)
 	}
+}
+
+// TestRunnerReadyHookFiresOnEachStreamAttach pins the SEA-1820 seam: a hook wired
+// via SetRunnerReadyHook is invoked once per fireRunnerReady (the Sessions
+// handler calls it each time a Runner's command stream attaches), on its own
+// goroutine so a blocking seed cannot wedge the handler's receive loop. The
+// first-launch supervisor seed hangs off this — Provision/Start need a Runner
+// whose command stream can serve them, and that stream attaches only AFTER
+// enroll returns, so firing on enroll would race the attach. Re-firing on a
+// reconnect is by design; the seed itself is idempotent.
+//
+// Mutation: not firing (dropping the go hook() call in fireRunnerReady) hangs
+// both receives and the test fails on the deadline.
+func TestRunnerReadyHookFiresOnEachStreamAttach(t *testing.T) {
+	hub := newHubOnly()
+
+	fired := make(chan struct{}, 2)
+	hub.SetRunnerReadyHook(func() { fired <- struct{}{} })
+
+	hub.fireRunnerReady() // first stream attach
+	hub.fireRunnerReady() // reconnect re-attach
+
+	for i := range 2 {
+		select {
+		case <-fired:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("runner-ready hook fired %d times, want 2 (once per stream attach)", i)
+		}
+	}
+
+	// A hub with no hook wired must fire without panicking (nil-safe).
+	newHubOnly().fireRunnerReady()
 }

@@ -279,6 +279,18 @@ type Hub struct {
 	// path never race. Nil-safe: a hub with none wired fails RelayBoardCall
 	// closed CodeUnavailable — the board write leg is not mounted.
 	boardCaller BoardCaller
+	// runnerReadyHook, when set, is invoked once each time a Runner's Sessions
+	// command stream attaches (fired from the Sessions handler after
+	// router.attach binds the live send, on its own goroutine). It is the seam
+	// the first-launch supervisor seed hangs off: Provision/Start need not just
+	// an enrolled Runner but one whose command stream can actually serve a
+	// command, and that stream attaches AFTER Enroll returns — firing on enroll
+	// would race the attach and fail the seed's first Provision CodeUnavailable.
+	// The hook itself is idempotent (it gates on an empty agent tree), so
+	// re-firing on a later reconnect is a safe no-op. Nil until
+	// SetRunnerReadyHook wires it; read under mu. Nil-safe: a hub with none wired
+	// does nothing extra when a stream attaches.
+	runnerReadyHook func()
 
 	mu sync.Mutex
 	// runner is the single attached Runner (single-Runner MVP, OQ6
@@ -390,6 +402,20 @@ func (h *Hub) SetPresenceSink(presence PresenceSink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.presence = presence
+}
+
+// SetRunnerReadyHook wires a callback fired once each time a Runner's Sessions
+// command stream attaches — the seam the first-launch supervisor seed hangs off,
+// since Provision/Start need a Runner whose command stream can serve a command,
+// and that stream attaches only after Enroll returns (firing on enroll would
+// race the attach). Called once at server assembly; nil-safe (a hub with none
+// wired does nothing extra when a stream attaches). The hook must be idempotent:
+// it fires on every attach (each reconnect), so it gates its own effect (the
+// seed no-ops on a non-empty tree).
+func (h *Hub) SetRunnerReadyHook(hook func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.runnerReadyHook = hook
 }
 
 // SetDeliveryStore wires the durable delivery-cursor store the ack arm advances,
@@ -527,6 +553,23 @@ func (h *Hub) FrameDiagnostics() FrameDiagnostics {
 		SeenGap:       h.seenGap,
 		UnknownFrames: h.unknownFrames,
 		DroppedAcks:   h.droppedAcks,
+	}
+}
+
+// fireRunnerReady invokes the runner-ready hook, if wired, on its OWN goroutine.
+// Called by the Sessions handler right after the command stream attaches — the
+// point a Runner can actually serve a Provision/Start. The goroutine is
+// load-bearing, not just decoupling: the seed drives Provision→Start back
+// through this hub's router down the very stream whose handler is calling this,
+// so running it inline would block that handler's receive loop before it could
+// serve the command, deadlocking the seed on its own transport. Reads the hook
+// under h.mu (paired with SetRunnerReadyHook); fires after releasing the lock.
+func (h *Hub) fireRunnerReady() {
+	h.mu.Lock()
+	hook := h.runnerReadyHook
+	h.mu.Unlock()
+	if hook != nil {
+		go hook()
 	}
 }
 

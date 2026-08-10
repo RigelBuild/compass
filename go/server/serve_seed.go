@@ -1,0 +1,130 @@
+//go:build unix
+
+package server
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"time"
+
+	"connectrpc.com/connect"
+
+	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/store"
+)
+
+// The root Manager seeded on first launch. A fixed handle so the empty-tree gate
+// and CreateAgent's unique-handle constraint together make the seed idempotent;
+// role "manager" selects config/prompts/manager/SYSTEM.md as the container's
+// block-0 prompt (SEA-1732), which is what makes the seeded agent a real Manager
+// rather than a default agent.
+const (
+	rootSupervisorHandle      = "supervisor"
+	rootSupervisorDisplayName = "Supervisor"
+	rootSupervisorRole        = "manager"
+)
+
+// seedClientRequestID is the fixed idempotency key the seed's SpawnAgent runs
+// under. Fixed (not per-call) so a re-enroll that re-fires the seed for an
+// already-seeded-and-live supervisor joins the completed spawn or is rejected
+// on-live, never provisioning a second container for it.
+const seedClientRequestID = "compass-root-supervisor-seed"
+
+// seedTimeout bounds the whole seed (CreateAgent + Provision + Start) so a wedged
+// Runner cannot hang the enroll-hook goroutine forever.
+const seedTimeout = 2 * time.Minute
+
+// seedRootSupervisor brings up the root Manager "supervisor" on first launch: on
+// an empty agent tree it creates one root agent under the bootstrap admin, then
+// provisions and starts it. It is the runner-ready-hook body (wired via
+// Hub.SetRunnerReadyHook) because Provision/Start need a Runner whose command
+// stream can serve them, which is not up when the server boots — the embedded
+// stack starts the Runner only after the server is already serving, and the
+// Runner's command stream attaches only after it enrolls. It runs on the hook's
+// own goroutine.
+//
+// It is find-or-create-then-start, so re-firing on a later Runner reconnect
+// correctly re-drives a supervisor that exists but is not live (e.g. a prior
+// boot created the row but its Start failed, or the Runner restarted). The start
+// is SpawnAgent under a fixed client_request_id, so an already-live supervisor is
+// rejected on-live (or joins the completed spawn) rather than getting a second
+// container. The create half stays gated on an EMPTY tree: if the operator has
+// built any other root, the seed adopts nothing and creates nothing.
+//
+// A failure is logged, not fatal: the server stays up and the next Runner
+// reconnect re-fires the seed.
+func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, adminID store.AccountID, log *slog.Logger) {
+	ctx, cancel := context.WithTimeout(ctx, seedTimeout)
+	defer cancel()
+
+	// Find-or-create the supervisor. AgentByHandle resolves a prior boot's row;
+	// ErrNotFound means it does not exist yet, so fall through to the empty-tree
+	// create gate.
+	supervisor, err := st.AgentByHandle(ctx, rootSupervisorHandle)
+	switch {
+	case err == nil:
+		// Exists already (prior boot). Skip create; re-drive the start below.
+	case errors.Is(err, store.ErrNotFound):
+		created, ok, cerr := createRootSupervisor(ctx, st, adminID, log)
+		if cerr != nil || !ok {
+			return // createRootSupervisor logged the reason (or the tree was non-empty).
+		}
+		supervisor = created
+	default:
+		log.Error("root-supervisor seed: looking up supervisor failed; skipping seed", "err", err)
+		return
+	}
+
+	// Provision + Start under the fixed idempotency key. reject-on-live + the
+	// spawn memo make this a no-op for an already-live supervisor, so a re-enroll
+	// re-fire never launches a second container.
+	if _, err := svc.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
+		AgentAccountId:  string(supervisor.ID),
+		ClientRequestId: seedClientRequestID,
+	})); err != nil {
+		if connect.CodeOf(err) == connect.CodeAlreadyExists {
+			// Already live (reject-on-live) — the supervisor is up; nothing to do.
+			return
+		}
+		log.Error("root-supervisor seed: starting supervisor failed; will retry on next enroll",
+			"agent_account_id", supervisor.ID, "err", err)
+		return
+	}
+
+	log.Info("root-supervisor seed: root Manager live", "agent_account_id", supervisor.ID, "handle", rootSupervisorHandle)
+}
+
+// createRootSupervisor creates the root supervisor agent, but only on an EMPTY
+// tree (no root under the admin). It returns (agent, true, nil) when it created
+// one, and (zero, false, nil) when it created nothing — either the tree already
+// held a root (operator-built), or a concurrent seed won the unique-handle race
+// (that winner drives the start). The caller starts the supervisor only on a
+// true. Any real error is returned with created=false.
+func createRootSupervisor(ctx context.Context, st *store.Store, adminID store.AccountID, log *slog.Logger) (store.Account, bool, error) {
+	roots, err := st.CountRootAgents(ctx, adminID)
+	if err != nil {
+		log.Error("root-supervisor seed: counting root agents failed; skipping seed", "err", err)
+		return store.Account{}, false, err
+	}
+	if roots > 0 {
+		// The tree is not empty (operator built a root), so seed nothing.
+		return store.Account{}, false, nil
+	}
+	agent, err := st.CreateAgent(ctx, adminID, store.NewAgent{
+		Handle:      rootSupervisorHandle,
+		DisplayName: rootSupervisorDisplayName,
+		Role:        rootSupervisorRole,
+		// ParentAgentID empty => root.
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			// Raced another ready-hook fire to the handle; the winner drives the
+			// start. Nothing to create.
+			return store.Account{}, false, nil
+		}
+		log.Error("root-supervisor seed: creating supervisor agent failed", "err", err)
+		return store.Account{}, false, err
+	}
+	return agent, true, nil
+}

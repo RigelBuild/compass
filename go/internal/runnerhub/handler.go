@@ -107,6 +107,14 @@ func (h *Handler) Sessions(ctx context.Context, stream *connect.BidiStream[compa
 	router.attach(stream.Send)
 	defer router.detach(errStreamClosed)
 
+	// The Runner's command stream is now live — a Provision/Start can be served.
+	// Fire the runner-ready hook (first-launch supervisor seed) here, not on
+	// enroll: enroll only registers the Runner, the send stream attaches only
+	// now, so a hook fired on enroll would race this attach and fail its first
+	// command CodeUnavailable. Runs on its own goroutine (fireRunnerReady), since
+	// the seed drives commands back down this very stream.
+	h.hub.fireRunnerReady()
+
 	for {
 		result, err := stream.Receive()
 		if err != nil {
