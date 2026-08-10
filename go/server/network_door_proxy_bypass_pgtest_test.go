@@ -2,16 +2,16 @@
 
 package server
 
-// Auth-door COMPOSITION tests (SEA-1946): proof that the authenticated TLS
+// Auth-door COMPOSITION tests (SEA-1946): proof that the authenticated
 // network door derives caller identity ONLY from the Authorization: Bearer
 // credential resolved against the store, and NEVER from any proxy-injected
 // header. The Compass Bridge will be fronted by `tailscale serve` (a reverse
 // proxy), so an attacker who can shape request headers must gain nothing from
 // them: no identity, no elevation, no revocation. These tests drive the REAL
-// served interceptor chain (BearerInterceptor outer, AdminGate inner) over a
-// real connect client via the shared harness in network_door_test.go
-// (networkDoorHandler / newNetworkStore), so they exercise the same production
-// seam a proxied client would hit.
+// served interceptor chain (BearerInterceptor outer, AdminGate inner) through
+// the shared h2c connect harness in network_door_test.go (networkDoorHandler /
+// newNetworkStore), so they exercise the same production seam a proxied client
+// would hit.
 //
 // The forged headers below (X-Forwarded-User, X-Forwarded-For, X-Remote-User,
 // Forwarded) are the identity-suggestive headers a reverse proxy conventionally
@@ -29,6 +29,7 @@ package server
 // newNetworkStore (which calls pgtest.RequireDSN → t.Skip when no runtime).
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"testing"
@@ -184,7 +185,10 @@ func TestNetworkDoorProxyHeadersDoNotElevate(t *testing.T) {
 // a non-admin), the admin+forged request would be denied while the admin-only
 // request succeeds — the two would diverge and this reddens. Teeth: the admin-only
 // baseline succeeds, so the admin+forged case reaching the handler identically
-// proves the headers are inert, not merely harmless-when-absent.
+// proves the headers are inert, not merely harmless-when-absent. NON-GOAL: the
+// mint-TARGET is pinned by AccountId being an explicit request argument (not
+// header-derived), so a forged X-Forwarded-User cannot redirect which account
+// the token is minted for — a documented non-goal here, not a coverage gap.
 func TestNetworkDoorProxyHeadersAreInertForAdmin(t *testing.T) {
 	st, admin, _ := newNetworkStore(t)
 	adminTok, err := auth.IssueAccountToken(t.Context(), st, admin)
@@ -221,5 +225,122 @@ func TestNetworkDoorProxyHeadersAreInertForAdmin(t *testing.T) {
 	}
 	if err := issue(true); err != nil {
 		t.Fatalf("admin token + forged contradictory headers on IssueToken: %v — the headers must be inert (neither grant nor revoke)", err)
+	}
+}
+
+// TestNetworkDoorProxyHeadersGrantNoIdentityStreaming is the SERVER-STREAM half
+// of TestNetworkDoorProxyHeadersGrantNoIdentity: a proxy-shaped SubscribeEvents
+// stream carrying the identity-suggestive headers but NO Authorization bearer is
+// rejected exactly as a plain no-bearer stream is — same connect.Code AND same
+// Message. SubscribeEvents is authenticatedOpen and its stream leg runs through
+// BearerStreamInterceptor, a SEPARATE interceptor path from the unary door, so
+// this pins the negative on the streaming seam too: forwarded headers grant no
+// identity on the stream.
+//
+// REDDENING MUTATION: if the stream interceptor (BearerStreamInterceptor /
+// resolveBearer on the stream leg) ever fell back to a forwarded header when
+// Authorization is absent — reading X-Forwarded-User as the caller handle — the
+// forged stream would authenticate (or fail differently) while the plain stream
+// stays Unauthenticated, so the two would diverge in Code or Message and this
+// reddens. The shared resolveBearer makes this transitive with the unary case,
+// but the stream leg gets its own assertion because its interceptor wrapper is
+// distinct. Teeth: the ONLY difference between the two streams is the forged
+// headers, so any divergence is attributable solely to the door consulting them.
+func TestNetworkDoorProxyHeadersGrantNoIdentityStreaming(t *testing.T) {
+	st, admin, _ := newNetworkStore(t)
+
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	svc := newService("proxy-noidentity-stream", bus, st, nil, nil, nil, nil)
+	client := networkDoorHandler(t, svc, st, admin)
+
+	// open drives the authenticatedOpen SubscribeEvents server-stream with no
+	// Authorization header, optionally adding the forged proxy headers, and
+	// returns the client-visible connect.Error. A rejected stream surfaces its
+	// terminal error on the first Receive (the interceptor returns before the
+	// handler runs), matching the pattern in TestNetworkDoorStreamingBearerAuth.
+	open := func(withForged bool) *connect.Error {
+		req := connect.NewRequest(&compassv1.SubscribeEventsRequest{SinceSeq: 0})
+		if withForged {
+			applyHeaders(req.Header(), forgedProxyHeaders("admin"))
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), testTimeout)
+		defer cancel()
+		stream, err := client.SubscribeEvents(ctx, req)
+		if err != nil {
+			var ce *connect.Error
+			if !errors.As(err, &ce) {
+				t.Fatalf("expected a connect.Error rejection on open, got %v", err)
+			}
+			return ce
+		}
+		defer func() { _ = stream.Close() }()
+		if recvStreamOrTimeout(t, stream) {
+			t.Fatalf("a rejected stream delivered an event: %+v", stream.Msg())
+		}
+		var ce *connect.Error
+		if !errors.As(stream.Err(), &ce) {
+			t.Fatalf("expected a connect.Error rejection, got %v", stream.Err())
+		}
+		return ce
+	}
+
+	plain := open(false)
+	forged := open(true)
+
+	if plain.Code() != connect.CodeUnauthenticated {
+		t.Fatalf("plain no-bearer stream code = %v, want CodeUnauthenticated", plain.Code())
+	}
+	if forged.Code() != plain.Code() {
+		t.Fatalf("forged-header stream diverged in code: forged=%v plain=%v — the stream door consulted a forwarded header", forged.Code(), plain.Code())
+	}
+	if forged.Message() != plain.Message() {
+		t.Fatalf("forged-header stream diverged in message — the stream door consulted a forwarded header:\n  plain:  %q\n  forged: %q", plain.Message(), forged.Message())
+	}
+}
+
+// TestNetworkDoorSmuggledSecondAuthorizationDoesNotElevate: a request bearing a
+// valid NON-ADMIN bearer as its first Authorization header, then a SECOND
+// smuggled admin credential appended as another Authorization header (the shape
+// a proxy appending a header produces), sent to the adminOnly IssueToken RPC,
+// MUST NOT succeed — the door never elevates on the smuggled admin value. The
+// assertion is robust to whichever Authorization net/http surfaces (first, last,
+// or comma-joined): the security invariant is only that a second admin header
+// never elevates, so the RPC returns a non-nil error coded PermissionDenied
+// (the admin value lost / gate rejects the non-admin) OR Unauthenticated (a
+// joined value resolves to no token) — never nil/OK.
+//
+// REDDENING MUTATION: a proxy appending a second Authorization is proxy-shaped
+// traffic; if the door ever preferred a LATER (or admin-looking) Authorization
+// value over the first, the adminOnly IssueToken would clear the gate and
+// succeed — this test reddens. Teeth: the first header is a genuinely valid
+// non-admin bearer, so a success could only come from the door honoring the
+// smuggled admin header.
+func TestNetworkDoorSmuggledSecondAuthorizationDoesNotElevate(t *testing.T) {
+	st, admin, member := newNetworkStore(t)
+	memberTok, err := auth.IssueAccountToken(t.Context(), st, member)
+	if err != nil {
+		t.Fatalf("IssueAccountToken(member): %v", err)
+	}
+	adminTok, err := auth.IssueAccountToken(t.Context(), st, admin)
+	if err != nil {
+		t.Fatalf("IssueAccountToken(admin): %v", err)
+	}
+
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	svc := newService("proxy-smuggle", bus, st, nil, nil, nil, nil)
+	client := networkDoorHandler(t, svc, st, admin)
+
+	req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: string(admin)})
+	req.Header().Set("Authorization", "Bearer "+memberTok)
+	req.Header().Add("Authorization", "Bearer "+adminTok)
+
+	_, err = client.IssueToken(t.Context(), req)
+	if err == nil {
+		t.Fatal("smuggled second admin Authorization elevated the caller: IssueToken succeeded — the door honored the appended admin header")
+	}
+	if code := connect.CodeOf(err); code != connect.CodePermissionDenied && code != connect.CodeUnauthenticated {
+		t.Fatalf("smuggled second Authorization on IssueToken = %v, want CodePermissionDenied or CodeUnauthenticated", code)
 	}
 }
