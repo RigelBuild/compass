@@ -28,6 +28,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Issue is the raw forge issue (server-internal; never a wire type). The later
@@ -50,6 +51,10 @@ type Issue struct {
 	ForgeAccount string
 	// Labels are the forge label names on the issue.
 	Labels []string
+	// UpdatedAt is the forge's last-updated timestamp for the issue, parsed from
+	// the LIST row's updated_at. PR-C's DL-129 recency guard reads it off this
+	// same fetch (one-fetch-path guarantee); the board sink ignores it.
+	UpdatedAt time.Time
 }
 
 // Comment is a raw forge comment on an issue or pull request.
