@@ -4,7 +4,14 @@
 // title + priority) and hands it to onSubmit — no initial prompt, no lifecycle
 // effect, no store. Dialog open/closed is the parent's concern.
 
-import { type Component, createMemo, createSignal, For, Show } from "solid-js";
+import {
+	type Component,
+	createMemo,
+	createSignal,
+	For,
+	onMount,
+	Show,
+} from "solid-js";
 import type { WorkstreamSpec } from "../spawn";
 import type { Agent, Priority } from "../stub-data";
 
@@ -30,6 +37,11 @@ export const NewWorkstreamDialog: Component<{
 		isNewAgent() ? handle().trim().length > 0 : agentValue().length > 0;
 	const canSubmit = createMemo(() => agentReady() && title().trim().length > 0);
 
+	// The dialog owns its initial focus so its own Escape handler is reachable
+	// before the user tabs into a field (role=dialog/aria-modal expectation).
+	let dialogRef: HTMLDivElement | undefined;
+	onMount(() => dialogRef?.focus());
+
 	const submit = () => {
 		if (!canSubmit()) return;
 		const agent: WorkstreamSpec["agent"] = isNewAgent()
@@ -40,10 +52,12 @@ export const NewWorkstreamDialog: Component<{
 
 	return (
 		<div
+			ref={dialogRef}
 			class="dialog new-workstream-dialog"
 			role="dialog"
 			aria-modal="true"
 			aria-label="New workstream"
+			tabindex={-1}
 			onKeyDown={(e) => {
 				if (e.key === "Escape") props.onCancel();
 			}}

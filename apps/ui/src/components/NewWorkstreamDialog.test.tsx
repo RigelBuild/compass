@@ -134,6 +134,40 @@ describe("NewWorkstreamDialog", () => {
 		expect("initialPrompt" in (captured as object)).toBe(false);
 	});
 
+	test("trims title + handle and rejects a whitespace-only title", () => {
+		let captured: WorkstreamSpec | undefined;
+		const { container } = render(() => (
+			<NewWorkstreamDialog
+				agents={AGENTS}
+				onSubmit={(s) => {
+					captured = s;
+				}}
+				onCancel={() => {}}
+			/>
+		));
+		const select = agentSelect(container);
+		if (!select) throw new Error("no agent select");
+		fireEvent.input(select, { target: { value: "__new__" } });
+		const handle = handleInput(container);
+		const title = titleInput(container);
+		if (!handle || !title) throw new Error("fields missing");
+		// A whitespace-only title does not enable submit (agent is ready).
+		fireEvent.input(handle, { target: { value: "  newbie  " } });
+		fireEvent.input(title, { target: { value: "   " } });
+		expect(submitBtn(container)?.disabled).toBe(true);
+		// A real title enables it, and both values are trimmed in the spec.
+		fireEvent.input(title, { target: { value: "  Fix the flake  " } });
+		expect(submitBtn(container)?.disabled).toBe(false);
+		const submit = submitBtn(container);
+		if (!submit) throw new Error("no submit");
+		fireEvent.click(submit);
+		expect(captured).toEqual({
+			agent: { kind: "new", handle: "newbie" },
+			title: "Fix the flake",
+			priority: "medium",
+		});
+	});
+
 	test("a new-agent submit carries { kind: 'new', handle }", () => {
 		let captured: WorkstreamSpec | undefined;
 		const { container } = render(() => (
