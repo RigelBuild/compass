@@ -106,12 +106,16 @@ type service struct {
 	// without a signal, there being no live session to notify.
 	signaler configSignaler
 	// spawnMu guards spawns, the SpawnAgent composite-span memo (spawn.go). A
-	// client_request_id-keyed spawn is registered before its Provision→Start runs
-	// and settled after, so a retry (concurrent or sequential) joins the original
-	// rather than re-provisioning — the end-to-end idempotency the three lower
-	// dedup primitives do not compose for a completed retry.
+	// spawn keyed by (agent_account_id, client_request_id) is registered before
+	// its Provision→Start runs and settled after, so a retry (concurrent or
+	// sequential) joins the original rather than re-provisioning — the end-to-end
+	// idempotency the three lower dedup primitives do not compose for a completed
+	// retry. A settled success is evicted after spawnMemoTTL, bounding the map.
 	spawnMu sync.Mutex
-	spawns  map[string]*spawnCall
+	spawns  map[spawnKey]*spawnCall
+	// scheduleAfter schedules the delayed memo eviction; nil uses time.AfterFunc.
+	// A test overrides it to drive eviction deterministically without wall time.
+	scheduleAfter func(time.Duration, func()) *time.Timer
 }
 
 func newService(version string, bus *events.Bus[busPayload], st *store.Store, hub *runnerhub.Hub, brd *board.Projection, issueBrd *board.IssueProjection, tail *sessionTail) *service {

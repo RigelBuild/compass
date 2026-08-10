@@ -33,6 +33,7 @@ package server
 import (
 	"context"
 	"errors"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -44,12 +45,31 @@ import (
 // container (DL-170). CodeAlreadyExists, returned before any Provision.
 var errAgentAlreadyLive = errors.New("agent already has a live session")
 
+// spawnMemoTTL bounds how long a settled SUCCESS spawn entry is retained for
+// idempotent replay before eviction. It covers the real retry window — a UI
+// double-click or a blip retry, seconds to minutes — not a server restart: the
+// server is single-instance and re-derives live truth from the Runner on
+// restart, so a memo need not survive one. Without this bound the map would
+// grow one permanent entry per successful spawn for the process lifetime.
+const spawnMemoTTL = 10 * time.Minute
+
+// spawnKey identifies a composite spawn in the memo. It binds the
+// client_request_id to the agent account — matching provisionDedupID's account
+// binding (runnerhub/commands.go): the same client_request_id reused for a
+// DIFFERENT account derives a distinct entry, never a join that would hand back
+// the first account's session and provision nothing for the second.
+type spawnKey struct {
+	account string
+	crid    string
+}
+
 // spawnCall is one in-flight-or-completed composite spawn, keyed by
-// client_request_id. done closes when the composite settles; resp/err then hold
-// its outcome for every retry that joined. A SUCCESSFUL entry is retained so a
-// later sequential retry returns the same session (the end-to-end idempotency
-// contract); a FAILED entry is removed on settle so a retry re-attempts rather
-// than replaying the failure (DL-169: retry a failed start is a re-attempt the
+// (agent_account_id, client_request_id). done closes when the composite
+// settles; resp/err then hold its outcome for every retry that joined. A
+// SUCCESSFUL entry is retained for spawnMemoTTL so a later sequential retry
+// returns the same session (the end-to-end idempotency contract) then evicted;
+// a FAILED entry is removed on settle so a retry re-attempts rather than
+// replaying the failure (DL-169: retry a failed start is a re-attempt the
 // server's dedup decides join-vs-reattempt on).
 type spawnCall struct {
 	done chan struct{}
@@ -73,30 +93,26 @@ func (s *service) SpawnAgent(
 	}
 
 	crid := req.Msg.GetClientRequestId()
-	// The dedup-join lookup. A non-empty client_request_id memoizes the spawn:
-	// the first caller runs it, every retry joins the same entry. An empty id is
-	// not memoized (each call is a distinct spawn) but still runs reject-on-live.
+	// The dedup-join lookup. A non-empty client_request_id memoizes the spawn,
+	// keyed by (account, id): the first caller runs it, every retry for the SAME
+	// account joins the same entry. An empty id is not memoized (each call is a
+	// distinct spawn) but still runs reject-on-live. Keying on the account too
+	// (not the id alone) matches provisionDedupID: a client_request_id reused
+	// across accounts is a distinct spawn, never a cross-account join.
 	if crid != "" {
-		if call, joined := s.joinOrBeginSpawn(crid); joined {
+		key := spawnKey{account: req.Msg.GetAgentAccountId(), crid: crid}
+		call, joined := s.joinOrBeginSpawn(key)
+		if joined {
 			// Joined an in-flight or completed spawn: wait for it to settle and
 			// return its result — never a second Provision, never reject-on-live.
-			select {
-			case <-call.done:
-				if call.err != nil {
-					return nil, call.err
-				}
-				return connect.NewResponse(call.resp), nil
-			case <-ctx.Done():
-				return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
-			}
-		} else {
-			resp, err := s.runSpawn(ctx, req.Msg)
-			s.settleSpawn(crid, call, resp, err)
-			if err != nil {
-				return nil, err
-			}
-			return connect.NewResponse(resp), nil
+			return awaitSpawn(ctx, call)
 		}
+		resp, err := s.runSpawn(ctx, req.Msg)
+		s.settleSpawn(key, call, resp, err)
+		if err != nil {
+			return nil, err
+		}
+		return connect.NewResponse(resp), nil
 	}
 
 	resp, err := s.runSpawn(ctx, req.Msg)
@@ -104,6 +120,23 @@ func (s *service) SpawnAgent(
 		return nil, err
 	}
 	return connect.NewResponse(resp), nil
+}
+
+// awaitSpawn blocks until the joined composite spawn settles, returning its
+// memoized result — or CodeCanceled if the joining caller's context is done
+// first (the original beginner keeps running and still settles the entry). The
+// read of call.resp/err is safe without the lock: it happens-after the
+// close(call.done) settleSpawn issues, per the Go memory model.
+func awaitSpawn(ctx context.Context, call *spawnCall) (*connect.Response[compassv1.SpawnAgentResponse], error) {
+	select {
+	case <-call.done:
+		if call.err != nil {
+			return nil, call.err
+		}
+		return connect.NewResponse(call.resp), nil
+	case <-ctx.Done():
+		return nil, connect.NewError(connect.CodeCanceled, ctx.Err())
+	}
 }
 
 // runSpawn is the cache-miss body: reject-on-live, then Provision, then Start,
@@ -165,34 +198,56 @@ func (s *service) rejectIfAgentLive(ctx context.Context, agentAccountID string) 
 }
 
 // joinOrBeginSpawn is the memo lookup: it returns (existing, true) when a spawn
-// for crid is already in flight or completed-successfully, or (fresh, false)
+// for key is already in flight or completed-successfully, or (fresh, false)
 // after registering a new entry the caller must settle. Under s.spawnMu so two
 // concurrent retries never both begin.
-func (s *service) joinOrBeginSpawn(crid string) (*spawnCall, bool) {
+func (s *service) joinOrBeginSpawn(key spawnKey) (*spawnCall, bool) {
 	s.spawnMu.Lock()
 	defer s.spawnMu.Unlock()
 	if s.spawns == nil {
-		s.spawns = make(map[string]*spawnCall)
+		s.spawns = make(map[spawnKey]*spawnCall)
 	}
-	if existing, ok := s.spawns[crid]; ok {
+	if existing, ok := s.spawns[key]; ok {
 		return existing, true
 	}
 	call := &spawnCall{done: make(chan struct{})}
-	s.spawns[crid] = call
+	s.spawns[key] = call
 	return call, false
 }
 
 // settleSpawn records a fresh spawn's outcome and wakes every joined retry. A
-// success is retained under crid so a later sequential retry returns the same
-// session (end-to-end idempotency); a failure is removed so a retry re-attempts
-// (DL-169) rather than replaying the failure.
-func (s *service) settleSpawn(crid string, call *spawnCall, resp *compassv1.SpawnAgentResponse, err error) {
+// FAILED entry is removed immediately so a retry re-attempts (DL-169) rather
+// than replaying the failure; a SUCCESS is retained for spawnMemoTTL so a later
+// sequential retry returns the same session (end-to-end idempotency) then
+// evicted, bounding the memo to the in-flight + recent-retry window.
+func (s *service) settleSpawn(key spawnKey, call *spawnCall, resp *compassv1.SpawnAgentResponse, err error) {
 	s.spawnMu.Lock()
 	call.resp = resp
 	call.err = err
 	if err != nil {
-		delete(s.spawns, crid)
+		delete(s.spawns, key)
 	}
 	s.spawnMu.Unlock()
 	close(call.done)
+	if err != nil {
+		return
+	}
+	// Retain the success for the idempotency-replay window, then evict so the
+	// memo does not grow one entry per successful spawn for the process lifetime.
+	sched := s.scheduleAfter
+	if sched == nil {
+		sched = time.AfterFunc
+	}
+	sched(spawnMemoTTL, func() { s.evictSpawn(key, call) })
+}
+
+// evictSpawn drops a settled success entry once its idempotency-replay window
+// has elapsed, removing only the exact call it settled (identity guard) so a
+// distinct later spawn that re-registered the same key is never clobbered.
+func (s *service) evictSpawn(key spawnKey, call *spawnCall) {
+	s.spawnMu.Lock()
+	defer s.spawnMu.Unlock()
+	if s.spawns[key] == call {
+		delete(s.spawns, key)
+	}
 }

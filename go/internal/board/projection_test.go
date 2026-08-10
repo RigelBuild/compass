@@ -391,3 +391,37 @@ func TestConcurrentSameSessionRecordPublishAgree(t *testing.T) {
 			snap[0].GetState(), lastBus)
 	}
 }
+
+// TestSnapshotEchoesAgentAccount pins the DL-167 account echo through the board:
+// a recorded status carries its agent_account_id into the snapshot (both the
+// by-id and all-sessions arms), and a status with no account round-trips an
+// empty account — the stated residual gap (an unbound session carries none),
+// not a wrong or dropped value.
+//
+// Mutation: dropping entry.account from statusOf (projection.go:156) or from the
+// PublishSessionStatus record (projection.go:98) reddens the account assertion —
+// the snapshot would carry an empty account for a bound session.
+func TestSnapshotEchoesAgentAccount(t *testing.T) {
+	p, _ := newBoard(t)
+
+	const account = "0123456789abcdef0123456789abcdef"
+	p.PublishSessionStatus(&compassv1.AgentSessionStatus{SessionId: "s-bound", State: working, AgentAccountId: account})
+	p.PublishSessionStatus(&compassv1.AgentSessionStatus{SessionId: "s-unbound", State: working})
+
+	byID := p.Snapshot("s-bound")
+	if len(byID) != 1 || byID[0].GetAgentAccountId() != account {
+		t.Fatalf("Snapshot(s-bound) account = %v, want %q echoed through the board", byID, account)
+	}
+
+	unbound := p.Snapshot("s-unbound")
+	if len(unbound) != 1 || unbound[0].GetAgentAccountId() != "" {
+		t.Fatalf("Snapshot(s-unbound) account = %v, want empty (the unbound residual gap)", unbound)
+	}
+
+	// The all-sessions arm carries the account too.
+	for _, s := range p.Snapshot("") {
+		if s.GetSessionId() == "s-bound" && s.GetAgentAccountId() != account {
+			t.Fatalf("Snapshot(\"\") account for s-bound = %q, want %q (the all-arm must echo it)", s.GetAgentAccountId(), account)
+		}
+	}
+}

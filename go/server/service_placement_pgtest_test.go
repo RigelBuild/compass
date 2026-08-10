@@ -66,6 +66,9 @@ type placementFixture struct {
 	store  *store.Store
 	hub    *runnerhub.Hub
 	client compassv1connect.CompassServiceClient
+	// svc is the concrete service behind the wire client, exposed so a
+	// white-box test can drive the spawn memo's eviction seam and inspect it.
+	svc    *service
 	runner *recordingRunner
 	// agentID is a real agent account (with its home channel) that every
 	// placement and session in these tests belongs to.
@@ -119,6 +122,7 @@ func newPlacementFixtureWith(t *testing.T, withholdStop bool) placementFixture {
 		dsn:     dsn,
 		store:   st,
 		hub:     hub,
+		svc:     svc,
 		client:  newH2CClient(t, newH2CTestServer(t, svc)),
 		runner:  attachFakeRunner(t, st, hub, withholdStop),
 		agentID: agent.ID,
