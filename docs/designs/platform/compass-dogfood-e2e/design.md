@@ -62,14 +62,17 @@ its own.
   merged compass-stack integration test: `//go:build podman` +
   `podmanUsable()`-guarded skip — "a missing binary or broken rootless setup
   means skip, not fail"
-  (`go/cmd/compass-stack/integration_podman_test.go:1,77-81`). Today the runner
-  additionally refuses any uid but 1000 (`verifyRunnerUID(os.Getuid())`,
-  `go/cmd/compass-runner/main.go:93`; `const defaultAgentUID uint32 = 1000`,
-  `:163`), which `podmanUsable()` does not probe. The capstone gate runs its CI
-  runner AT uid 1000, so this does not block the Dogfood full-stack tier;
-  lifting it to an arbitrary uid — to run on ordinary CI runners — is a
-  GA-milestone follow-up (SEA-1691, milestone GA), not a capstone prerequisite
-  (D2). The interim uid handling for embedded Dogfood is preflight-and-refuse
+  (`go/cmd/compass-stack/integration_podman_test.go:1,77-81`). The runner runs
+  the agent as a baked in-container uid 1000 but no longer requires the HOST
+  uid to be 1000: containers launch with
+  `--userns=keep-id:uid=<agent-uid>,gid=<agent-gid>`
+  (`go/internal/runtime/podman.go:389`, `spec.UID` = `defaultAgentUID` = 1000,
+  `go/cmd/compass-runner/main.go:140,167`), which remaps any host uid onto the
+  baked uid, and the engine's support for that remap is floor-checked by
+  `VerifyUsernsRemapSupport` (`podman.go:422`, called from `main.go:97`). The
+  once-blocking uid-1000-host requirement (`verifyRunnerUID`) has since been
+  lifted (SEA-1691), so the full-stack tier runs on ordinary arbitrary-uid CI
+  runners. The interim uid handling for embedded Dogfood is preflight-and-refuse
   (compass-native T4, SEA-1685).
 - **AF_UNIX sun_path budget.** `stack.Config.Validate` rejects a `RuntimeDir`
   whose per-container agent-socket tail would overflow the platform sun_path
@@ -105,12 +108,12 @@ its own.
 - **Deterministic tier gates PRs; live/UI tiers are on-demand.** Per D1: the
   backend-only + deterministic-model configuration is the per-PR CI gate and
   regression base; live-model and UI-inclusive runs are on-demand/nightly
-  (nondeterministic, keys + cost). The Dogfood capstone gate's one feasibility
-  prerequisite is agent-image distribution (SEA-1690, GHCR publish); until it
-  lands, the interim cadence keeps every PR gated by the in-process pgtest e2e
-  suite while the full-stack tier runs on the merge queue + nightly. Promoting
-  that gate to ordinary (arbitrary-uid) CI runners is a further GA-milestone
-  step (SEA-1691); both are the subject of Decision D2.
+  (nondeterministic, keys + cost). The two once-blocking feasibility
+  prerequisites have since landed — agent-image distribution (SEA-1690, GHCR
+  publish) and the host-uid lift (SEA-1691, the userns keep-id remap) — so the
+  full-stack deterministic tier now runs as the required per-PR check directly
+  on ordinary arbitrary-uid CI runners, with no interim merge-queue/nightly
+  staging. This is the subject of Decision D2.
 - **Commits** authored as Matt with the seal co-author trailer
   (rule://commit-conventions); the spawning agent ships the PR.
 
@@ -732,44 +735,60 @@ UI-tier scenario passes against the harness fixture.
 Wire the deterministic backend-only tier into the repo's ACTUAL CI — GitHub
 Actions (`.github/workflows/ci.yml`; the repo has no Woodpecker config, so any
 Woodpecker migration is out of scope for this record). Per Decision D2 the
-Dogfood end state is a required per-PR check running the full-stack
-deterministic tier — on a uid-1000 runner, its one prerequisite being SEA-1690,
-which publishes `compass-agent` to GHCR so `EnsureImage`'s unconditional pull
-resolves in CI (needed regardless, part of getting this e2e test into CI).
-Until it lands, this task wires the interim cadence: the full-stack
-deterministic suite runs on the merge queue and nightly, and the existing
-in-process pgtest e2e step remains the per-PR gate
-(`.github/workflows/ci.yml:296-316`) — never a skip-configured required check,
-which would pass vacuously green. Promoting the check further to ORDINARY
-(arbitrary-uid) runners is a GA-milestone follow-up (SEA-1691), which lifts the
-uid-1000 requirement (`verifyRunnerUID`,
-`go/cmd/compass-runner/main.go:93,178-187` — which `podmanUsable()` does not
-probe, `integration_podman_test.go:74-81`, so on a podman-capable runner at
-uid ≠ 1000 the suite would otherwise go RED, not skip); it is not a Dogfood
-prerequisite.
+Dogfood end state — which this task now implements — is a required per-PR check
+running the full-stack deterministic tier on an ORDINARY arbitrary-uid
+ubuntu-latest runner. Two once-blocking prerequisites have landed: SEA-1690
+published `compass-agent` to GHCR, and the uid-1000 requirement was lifted by
+the userns keep-id remap (`go/internal/runtime/podman.go`'s
+`--userns=keep-id:uid=%d,gid=%d`, `:389`, floor-checked by
+`VerifyUsernsRemapSupport`, `:415-438` / `go/cmd/compass-runner/main.go:97` —
+`verifyRunnerUID` no longer exists), so the runner no longer has to be uid 1000
+and no interim merge-queue/nightly staging is needed. The check runs on every
+PR directly, never a skip-configured required check (which would pass vacuously
+green).
+
+The image the gate tests comes from one of two sources, decided per-PR by
+whether the PR changes the image's inputs (`.github/workflows/ci.yml`'s
+`compass-agent-image` moon `--affected` detection): an image-input-changing PR
+builds+loads the image from THIS tree into local containers-storage (`nix run
+path:../forks/devenv#devenv -- container copy agent` from `agent-image/`, the
+ref the fixture resolves), so the gate proves the image the PR produces; any
+other PR (and every push to main, where main's own publish already rebuilt it)
+pulls the published `ghcr.io/rigelbuild/compass-agent:latest`. `:latest` is kept
+mutable deliberately (Matt-ruled always-fresh), not digest-pinned. Either way
+the fixture's `EnsureImage` present-checks local containers-storage and does not
+pull at test time, so the seed step above is what satisfies it.
+
+The e2e harness additionally needs a postgres toolchain on PATH: its private
+postgres (`go/compass-postgres/main.go`) shells out to `initdb`/`postgres`/
+`createdb` via `exec.LookPath`. In CI those binaries come from the devenv
+`packages` list (`devenv.nix`), which gate-tools carries onto PATH; in the dev
+shell they come from `services.postgres`. Without them on PATH the full-stack
+bring-up cannot stand up its database and the suite fails rather than runs.
 
 Interfaces:
 
 - Consumes: `go test -tags podman ./go/e2e/...` (mirroring the pgtest step
-  shape, `.github/workflows/ci.yml:296-316`); H3's documented `COMPASS_MODEL`
-  selector; the GHCR image ref (SEA-1690); the uid lift (SEA-1691); live-mode
+  shape, `.github/workflows/ci.yml`'s Real-Postgres suites); H3's documented
+  `COMPASS_MODEL` selector; the published `compass-agent:latest` image (SEA-1690)
+  OR — on an image-input-changing PR — the image built+loaded from the tree via
+  `container copy agent`; the postgres toolchain (`initdb`/`postgres`/`createdb`)
+  carried onto PATH from the devenv `packages` list (`devenv.nix`); live-mode
   secrets (LiteLLM key) injected only in the nightly workflow, never per-PR.
-- Produces: interim (pre-SEA-1690) — a merge-queue/nightly full-stack job with
-  the per-PR gate remaining the in-process pgtest e2e suite; Dogfood end state
-  (post SEA-1690) — a required per-PR check running the deterministic full-stack
-  tier on a uid-1000 runner; GA end state (post SEA-1691) — the same check
-  promoted to ordinary arbitrary-uid runners. Either way: an on-demand/nightly
-  live-mode job, and documented runner prereqs (Linux, rootless podman,
-  subuid/subgid).
+- Produces: a required per-PR full-stack e2e check on an ordinary arbitrary-uid
+  ubuntu-latest runner, seeding the agent image per-PR (built-from-tree when the
+  PR changes image inputs, else pulled `:latest`); plus an on-demand/nightly
+  live-mode job. Documented runner prereqs: Linux, rootless podman,
+  subuid/subgid, and the postgres binaries on PATH (via devenv `packages` in CI,
+  `services.postgres` in the dev shell).
 
 Test cycle: red — no CI job compiles the podman-tagged suite (build tags keep
-it out of `go test ./...`); a naive required check on a GitHub-hosted runner
-(uid ≠ 1000, pre-SEA-1691) reds on `verifyRunnerUID`, and a skip-configured
-one passes vacuously. Green — the interim cadence runs the full-stack tier on
-the merge queue + nightly and reports honestly while the pgtest e2e suite
-gates per-PR; once SEA-1690 lands the full-stack tier promotes to the required
-per-PR check (uid-1000 runner), and SEA-1691 later widens it to ordinary
-runners; the nightly live run reports without gating throughout.
+it out of `go test ./...`), so the deterministic tier never runs and the gate is
+vacuously green; a skip-configured required check would pass vacuously the same
+way. Green — the full-stack tier runs as the required per-PR check on
+ubuntu-latest, seeding the agent image per-PR, with the assert-ran guard making
+a podman-unavailable skip loud rather than silently green; the nightly live run
+reports without gating.
 
 ## Tasks
 
@@ -780,7 +799,7 @@ runners; the nightly live run reports without gating throughout.
 - [ ] H5 [harness] leg-5 scenario: remove → re-provision → resume across a real container boundary (red-green)
 - [ ] H6 [harness] teardown + idempotence: exact-name preflight/cleanup; double-run gate (red-green via second-run provision)
 - [ ] H7 [ui] UI-inclusive tier scenario — gated on OQ3 + compass-ui/compass-native coordination (fast-follow unless ruled otherwise)
-- [ ] H8 [ci] GitHub Actions wiring (D2): interim merge-queue/nightly full-stack + pgtest e2e per-PR gate; promotes to a required per-PR full-stack check (uid-1000 runner) once SEA-1690 (GHCR image) lands; widens to ordinary arbitrary-uid runners once SEA-1691 (uid lift, GA) lands; live tier on-demand/nightly
+- [ ] H8 [ci] GitHub Actions wiring (D2): a required per-PR full-stack e2e check (`go test -tags podman ./e2e/...`) on ordinary arbitrary-uid ubuntu-latest — SEA-1690 (GHCR image) + SEA-1691 (host-uid lift) both landed, so no interim staging; seeds the agent image per-PR (built-from-tree when the PR changes image inputs, else pull `:latest`); postgres toolchain on PATH via devenv `packages`; live tier on-demand/nightly
 
 ## Decisions
 
@@ -797,16 +816,15 @@ runners; the nightly live run reports without gating throughout.
    deterministic tier is the per-PR gate; the feasibility constraints in its way
    are FIXED, not worked around. Agent-image distribution rides SEA-1690
    (publish `compass-agent` to GHCR), which is needed regardless and becomes
-   part of getting this e2e test into CI — it is the one prerequisite for the
-   Dogfood per-PR gate, which runs its CI runner at uid 1000. The runner's
-   uid-1000 requirement is a known limitation that "can't be required long
-   term"; lifting it to arbitrary uids (SEA-1691, milestone GA) promotes the
-   gate to ordinary CI runners, a GA-timeframe step — NOT a Dogfood-capstone
-   prerequisite (the interim uid handling for embedded Dogfood is the
-   preflight-and-refuse of compass-native T4, SEA-1685). Until SEA-1690 lands,
-   the interim cadence runs the full-stack tier on the merge queue + nightly
-   while the existing in-process pgtest e2e suite remains the per-PR gate; once
-   it lands, the full-stack tier promotes to the required per-PR check.
+   part of getting this e2e test into CI. The runner's original
+   uid-1000-on-the-HOST requirement was a known limitation that "can't be
+   required long term"; lifting it to arbitrary host uids (SEA-1691, the userns
+   keep-id remap) lets the gate run on ordinary CI runners. Both once-blocking
+   prerequisites have since landed, so the full-stack deterministic tier now
+   runs as the required per-PR check directly on ordinary arbitrary-uid runners
+   — no interim merge-queue/nightly staging. (The interim uid handling for
+   embedded Dogfood remains the preflight-and-refuse of compass-native T4,
+   SEA-1685.)
    Supersedes the drafted OQ5 arms: neither a bespoke uid-1000 runner ([A]) nor
    a permanent nightly-only fallback ([B]) — fix the constraints, gate per-PR.
    Folded through Global Constraints, Approach A1, and task H8.

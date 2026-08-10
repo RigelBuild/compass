@@ -313,6 +313,133 @@ jobs:
           echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
           exit "$rc"
 
+      - name: Detect whether this PR changes the compass-agent image
+        id: image_affected
+        # PRs only. Whether the e2e gate must test a LOCALLY-BUILT image or the
+        # published `:latest` turns on one question — does this PR change the
+        # image's inputs? — and the answer already lives in one place: the
+        # `compass-agent-image` moon project's `inputs` globs (agent-image/moon.yml).
+        # Asking moon `--affected` reuses that declaration as the single source of
+        # truth for the image closure, so this detection cannot drift from what
+        # actually rebuilds the image — the same anti-silent-staleness doctrine the
+        # matrix rationale in this file's header rejects a hand-kept project list
+        # for. moon resolves the base from GITHUB_BASE_REF exactly as the "CI
+        # (affected)" step above does. A non-empty result = affected; empty (or the
+        # non-PR path, where this step never runs) = fall to the pull branch below.
+        if: github.event_name == 'pull_request'
+        run: |
+          affected=$(moon query projects --affected --id compass-agent-image)
+          if [ -n "$affected" ]; then
+            echo "image_affected=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "image_affected=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Seed the compass-agent image into local containers-storage
+        # The dogfood e2e fixture resolves its agent image as the bare ref
+        # `compass-agent:latest` (go/e2e/fixture.go's agentImage const), and its
+        # EnsureImage present-checks the LOCAL containers-storage
+        # (internal/stack/adapters/image.go) — it does not pull at test time. So
+        # seeding that exact tag into local storage here is what satisfies the
+        # ensure: the run below finds it present and no registry round-trip
+        # happens mid-test. The bare `compass-agent:latest` ref is also what
+        # podmanUsable() runs as its probe, so the same seed makes that probe
+        # true rather than skipping the suite.
+        #
+        # Where that tag COMES FROM branches on the detection above:
+        #
+        #   image-affected PR → build+load from THIS tree. On a PR that changes
+        #   the image's inputs the gate must prove the image THIS PR produces, not
+        #   the last-published `:latest`. `nix run path:../forks/devenv#devenv --
+        #   container copy agent`, run from agent-image/, builds the image and
+        #   copies it into local containers-storage (agent-image/devenv.nix's
+        #   `registry = "containers-storage:"`) — the exact ref the fixture
+        #   resolves — with no registry round-trip and no `:pr-<N>` tag. It reuses
+        #   the warm nix store `moon ci :ci` already realized for the
+        #   compass-agent-image:build task on this same PR, so the copy's realize
+        #   is near-free.
+        #
+        #   otherwise → pull the published image. On a PR that leaves the image
+        #   untouched (and on every push to main, where the detection step does
+        #   not run and image_affected is unset), test the last-published
+        #   `:latest`. The image is public (SEA-1690; Matt-ruled public), so this
+        #   pulls with no login, no credential, and no `packages: read` —
+        #   `permissions: contents: read` above stays untouched. The mutable
+        #   `:latest` tag is intentional (Matt-ruled always-fresh) — do NOT
+        #   "fix" it to a digest pin; the gate is meant to test whatever main
+        #   last published.
+        run: |
+          if [ "${{ steps.image_affected.outputs.image_affected }}" = "true" ]; then
+            ( cd agent-image && nix run path:../forks/devenv#devenv -- container copy agent )
+          else
+            podman pull ghcr.io/rigelbuild/compass-agent:latest
+            podman tag ghcr.io/rigelbuild/compass-agent:latest compass-agent:latest
+          fi
+
+      - name: Dogfood e2e (deterministic full-stack tier)
+        working-directory: go
+        env:
+          # -race needs cgo, matching the pgtest sibling above (go/moon.yml's race
+          # lane and the Real-Postgres step both build with CGO_ENABLED=1). Without
+          # it `go test -race` refuses to build.
+          CGO_ENABLED: '1'
+        # The deterministic tier: a REAL full stack — compass-server + runner +
+        # agent-container + a PRIVATE postgres the suite stands up itself (not the
+        # job's `services: postgres`) — brought up via stack.Up, driven against a
+        # canned in-process model. No live model egress and no secrets (Decision
+        # D2), so it is reproducible and safe on every PR. It is build-tagged
+        # `podman`, so the moon `go test ./...` battery never compiles it — this
+        # step is the ONLY thing that runs it.
+        #
+        # Same capture-replay-exit shape as the Real-Postgres step above and for
+        # the same reason: redirect (not a `| tee` pipeline, whose exit status is
+        # tee's 0 and would swallow a FAIL), replay the log, then exit on go
+        # test's own status. `|| rc=$?` because the step runs under `bash -e`,
+        # which would otherwise abort before the log is printed. -race matches the
+        # pgtest step; the 20m timeout is finite headroom for a run that builds 3
+        # binaries, stands up a real stack, and runs a container turn.
+        run: |
+          rc=0
+          go test -tags podman -race -v -timeout 20m ./e2e/... >/tmp/e2e.log 2>&1 || rc=$?
+          cat /tmp/e2e.log
+          exit "$rc"
+
+      - name: Assert the dogfood e2e ran rather than skipped
+        working-directory: go
+        # The e2e legs t.Skip (never fail) when podmanUsable() is false — correct
+        # for a container-less sandbox, but a silent no-op here. A required check
+        # that let that skip pass would be VACUOUSLY green, so this guard makes an
+        # unavailable-podman run loud.
+        #
+        # Both halves are derived from source rather than hardcoded, matching the
+        # pgtest guard's discipline: a guard that drifts out of step with what it
+        # guards passes silently.
+        #   - the skip text is read from go/e2e/harness_test.go, so rewording the
+        #     skip cannot leave this grep matching nothing and reporting success;
+        #   - the ok line is required for the e2e package specifically, so "the
+        #     deterministic tier actually ran and passed" is what green means.
+        #     This matters because go/e2e/cannedmodel_test.go is deliberately
+        #     UNTAGGED and runs under a bare `go test`, so an `ok`-line grep alone
+        #     could pass on that file while the real podman legs silently skipped
+        #     — the skip-string check above is what closes that gap.
+        run: |
+          skip=$(sed -n 's/.*t\.Skip("\(rootless podman[^";]*\)[^"]*").*/\1/p' \
+            e2e/harness_test.go)
+          if [ -z "$skip" ]; then
+            echo "::error::could not read the skip message out of go/e2e/harness_test.go — this guard has drifted from the harness and is no longer checking anything"
+            exit 1
+          fi
+          if grep -qF "$skip" /tmp/e2e.log; then
+            echo "::error::dogfood e2e skipped — podman could not run compass-agent:latest, so nothing was asserted"
+            grep -nF "$skip" /tmp/e2e.log | head
+            exit 1
+          fi
+          if ! grep -qE "^ok[[:space:]]+github\.com/sealedsecurity/compass/go/e2e[[:space:]]" /tmp/e2e.log; then
+            echo "::error::the dogfood e2e package did not report ok — it failed, skipped, or never ran"
+            exit 1
+          fi
+          echo "dogfood e2e: the deterministic full-stack tier ran and reported ok"
+
       - name: Retrospect
         # Collapse the single job's flat task fan-out into per-task sections in
         # the Actions log, so a failure is one expand instead of a scroll. Reads

@@ -95,6 +95,22 @@ in
     # resolves and is cross-platform — harmless on macOS, where the app links
     # the system WebKit framework and pkg-config goes unused.
     pkg-config
+
+    # postgresql: the dogfood e2e harness's private postgres
+    # (go/cmd/compass-postgres/main.go) shells out to `initdb`/`postgres`/`createdb`
+    # via exec.LookPath, so those binaries must be on PATH wherever the e2e suite
+    # runs. In the dev shell they arrive free from `services.postgres` (a devenv
+    # service), but CI's gate-tools (tools/toolchain/gate-tools.nix, fed by
+    # `parity.ts --print-nix-attrs` off THIS list) builds its PATH env ONLY from
+    # `packages` — service-provided binaries never reach a CI runner. So the
+    # harness prereq has to live here for the CI e2e gate to find `initdb`.
+    #
+    # Bare `postgresql`, not a version-suffixed attr, for strict parity:
+    # `services.postgres.package` defaults to bare `pkgs.postgresql`
+    # (forks/devenv/src/modules/services/postgres.nix), which at this devenv.lock
+    # pin resolves to postgresql-18.4 — the SAME derivation the service uses, so
+    # CI and the dev shell exercise one postgres, not two.
+    postgresql
   ])
   # The language toolchains: bun/node/moon vendored from
   # tools/toolchain/versions/*.nix and go from the go-overlay input. Appended
