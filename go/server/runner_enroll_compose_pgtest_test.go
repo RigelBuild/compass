@@ -68,7 +68,9 @@ func newTLSRunnerHTTPClient(t *testing.T, pool *x509.CertPool) *http.Client {
 
 // TestRunnerEnrollsThroughNetworkDoorWithMintedToken composes the enrollment seam
 // end-to-end: a real minted Runner token enrolls through the production
-// RunnerService door over TLS, and a bogus token is rejected Unauthenticated.
+// RunnerService door over TLS; an unminted token is rejected Unauthenticated at
+// the hash-lookup miss; and a valid ACCOUNT token is rejected at the Kind gate
+// (the OQ7 cross-door rule) — the leg that defends the cross-door contract.
 func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -136,10 +138,12 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 		t.Fatal("first Enroll reattached = true, want false (fresh registration)")
 	}
 
-	// Negative leg: a bogus token is rejected Unauthenticated. This proves the
-	// door's Runner-subject Kind gate has teeth — the positive leg is not a
-	// vacuous pass that would accept any credential. runner.Dial wraps the
-	// enroll error, so unwrap to the connect code.
+	// Negative leg 1 (not-found): an unminted string is rejected Unauthenticated.
+	// This exercises the hash-lookup miss branch (store.ErrNotFound ->
+	// ErrTokenNotFound -> errUnauthenticated), not the Kind gate — a token that
+	// never resolves fails before subj.Kind is ever compared. It proves the
+	// positive leg is not a vacuous accept-anything. runner.Dial wraps the enroll
+	// error, so unwrap to the connect code.
 	bctx, bcancel := context.WithTimeout(ctx, testTimeout)
 	defer bcancel()
 	_, err = runner.Dial(bctx, runner.RunnerConfig{
@@ -149,9 +153,34 @@ func TestRunnerEnrollsThroughNetworkDoorWithMintedToken(t *testing.T) {
 		HTTPClient: httpClient,
 	})
 	if err == nil {
-		t.Fatal("runner.Dial with a bogus token = nil error, want Unauthenticated (the Kind gate must reject it)")
+		t.Fatal("runner.Dial with an unminted token = nil error, want Unauthenticated (not-found branch)")
 	}
 	if code := connect.CodeOf(err); code != connect.CodeUnauthenticated {
-		t.Fatalf("bogus-token Dial code = %v, want CodeUnauthenticated", code)
+		t.Fatalf("unminted-token Dial code = %v, want CodeUnauthenticated", code)
+	}
+
+	// Negative leg 2 (the real Kind gate, OQ7 cross-door): present a VALID
+	// account token — the bootstrap admin token buildNetworkServer minted and
+	// wrote under stateDir — to the RUNNER door. It resolves to a real subject,
+	// so it clears the hash-lookup branch and reaches `subj.Kind != want`
+	// (SubjectAccount presented where SubjectRunner is required), which rejects
+	// it Unauthenticated. This is the leg that goes red if the Kind gate is
+	// removed or inverted — the not-found leg above would stay green through
+	// such a regression, so this is what actually defends the cross-door rule
+	// through buildNetworkServer's real resolver + TLS.
+	adminToken := readAdminToken(t, stateDir)
+	kctx, kcancel := context.WithTimeout(ctx, testTimeout)
+	defer kcancel()
+	_, err = runner.Dial(kctx, runner.RunnerConfig{
+		RunnerID:   runnerID,
+		ServerAddr: serverAddr,
+		Token:      adminToken,
+		HTTPClient: httpClient,
+	})
+	if err == nil {
+		t.Fatal("runner.Dial with a valid ACCOUNT token on the Runner door = nil error, want Unauthenticated (the Kind gate must reject a wrong-subject token)")
+	}
+	if code := connect.CodeOf(err); code != connect.CodeUnauthenticated {
+		t.Fatalf("account-token-on-runner-door Dial code = %v, want CodeUnauthenticated (Kind gate)", code)
 	}
 }
