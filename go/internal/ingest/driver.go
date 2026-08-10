@@ -151,6 +151,7 @@ func (d *Driver) pollRepo(ctx context.Context, repo string) {
 	advanced := false // any 200 page whose issues sank this walk
 	probing := false  // this fetch is the M1 boundary probe (force etag="")
 	probed := false   // the probe already ran this walk (never probe twice)
+	probeAnchor := 0  // the stored tail page a probe extended (0 = no probe fired)
 	page := 1
 	for {
 		cur := etags[page]
@@ -227,6 +228,7 @@ func (d *Driver) pollRepo(ctx context.Context, repo string) {
 				d.all304[repo] = 0
 				probed = true
 				probing = true
+				probeAnchor = page // the stored tail; promote it if the probe re-anchors
 				page++
 				continue
 			}
@@ -240,13 +242,42 @@ func (d *Driver) pollRepo(ctx context.Context, repo string) {
 		break
 	}
 
+	if err := d.reanchorTail(ctx, repo, etags[probeAnchor], advanced); err != nil {
+		d.log.Error("forge poll: re-anchor cursor", "repo", repo, "page", probeAnchor, "err", err)
+		return
+	}
+
 	if err := d.cursors.PruneListCursorPages(ctx, repo, page); err != nil {
 		d.log.Error("forge poll: prune cursors", "repo", repo, "max_page", page, "err", err)
 		return
 	}
 
+	// not_modified = !advanced follows the design's OPERATIONAL definition of an
+	// all-304 walk ("no page advanced", design.md:550): a plain 200 with zero
+	// issues sinks nothing, so it reads not_modified=true and counts toward the
+	// all-304 probe streak. That is intentional — a zero-issue page-1 implies no
+	// tail, so the streak cannot miss real content — not a bug to "fix" to a
+	// literal saw-a-200 bool.
 	d.log.Info("forge poll: repo polled",
 		"repo", repo, "issues", issues, "pages", pages,
 		"not_modified", !advanced, "dur", time.Since(start),
 		"ratelimit_remaining", lastRemaining)
+}
+
+// reanchorTail durably re-anchors an M1 boundary probe (design.md:555-556). A
+// probe that found content beyond the stored boundary (advanced) extended the
+// tail, but the anchor page it grew from was served a 304 this walk, so its
+// stored HasNext is still false. Promoting the anchor to HasNext=true
+// (preserving its ETag) makes the next conditional walk thread the 304 chain
+// THROUGH the grown tail rather than stopping at the anchor — which would prune
+// the freshly-sunk pages and force a re-probe + full-tail re-sink every
+// probeEvery walks. A no-op unless a probe re-anchored: anchor is the zero
+// cursor (empty ETag) when no probe fired, and advanced is false when the probe
+// found nothing.
+func (d *Driver) reanchorTail(ctx context.Context, repo string, anchor ListPageCursor, advanced bool) error {
+	if !advanced || anchor.ETag == "" {
+		return nil
+	}
+	anchor.HasNext = true
+	return d.cursors.UpsertListCursorPage(ctx, repo, anchor)
 }

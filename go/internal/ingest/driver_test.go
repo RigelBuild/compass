@@ -122,6 +122,14 @@ func (s *fakePollStore) UpsertListCursorPage(_ context.Context, repo string, cur
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.upserts = append(s.upserts, upsertCall{repo, cur})
+	rows := s.cursors[repo]
+	for i, r := range rows {
+		if r.Page == cur.Page {
+			rows[i] = cur // persist: overwrite the existing page row
+			return nil
+		}
+	}
+	s.cursors[repo] = append(rows, cur) // persist: insert a new page row
 	return nil
 }
 
@@ -129,7 +137,27 @@ func (s *fakePollStore) PruneListCursorPages(_ context.Context, repo string, max
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prunes = append(s.prunes, pruneCall{repo, maxPage})
+	rows := s.cursors[repo]
+	kept := make([]ListPageCursor, 0, len(rows))
+	for _, r := range rows {
+		if r.Page <= maxPage { // persist: drop rows past the walked tail
+			kept = append(kept, r)
+		}
+	}
+	s.cursors[repo] = kept
 	return nil
+}
+
+// cursor returns the persisted cursor row for a page (zero value if absent).
+func (s *fakePollStore) cursor(repo string, page int) ListPageCursor {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, r := range s.cursors[repo] {
+		if r.Page == page {
+			return r
+		}
+	}
+	return ListPageCursor{}
 }
 func (s *fakePollStore) setRepos(repos ...string) {
 	s.mu.Lock()
@@ -724,9 +752,11 @@ func newProbeDriver(t *testing.T, lister *fakeLister, store *fakePollStore, sink
 	return NewDriver(lister, ing, store, DriverConfig{Interval: time.Hour, Log: log, ProbeEveryAll304: probeEvery})
 }
 
-// A content probe on the Nth all-304 walk re-anchors the tail: page lastPage+1
-// is fetched unconditionally, its issues sink and a cursor upserts, and the
-// streak resets so the next walk does not immediately re-probe.
+// A content probe on the Nth all-304 walk DURABLY re-anchors the tail: page
+// lastPage+1 is fetched unconditionally, its issues sink, its cursor upserts,
+// AND the stored anchor page is promoted to HasNext=true so the next
+// conditional walk threads the 304 chain THROUGH the grown tail instead of
+// pruning it and re-probing forever (design.md:555-556).
 func TestBoundaryProbeContentReanchors(t *testing.T) {
 	lister := newFakeLister()
 	store := newFakePollStore("owner/a")
@@ -745,7 +775,8 @@ func TestBoundaryProbeContentReanchors(t *testing.T) {
 		t.Fatalf("probe fired on the 1st all-304 walk: page-2 fetches = %d, want 0", got)
 	}
 
-	// Walk 2: all-304, streak hits 2 -> ONE unconditional probe of page 2.
+	// Walk 2: all-304, streak hits 2 -> ONE unconditional probe of page 2 that
+	// re-anchors the tail.
 	d.pollRepo(context.Background(), "owner/a")
 	p2 := probePageFetches(lister.callsFor("owner/a"))
 	if len(p2) != 1 {
@@ -754,15 +785,31 @@ func TestBoundaryProbeContentReanchors(t *testing.T) {
 	if p2[0].etag != "" {
 		t.Fatalf("probe etag = %q, want empty (unconditional GET)", p2[0].etag)
 	}
-	ups := probePageUpserts(store.upsertsFor("owner/a"))
-	if len(ups) != 1 || ups[0].cur.ETag != "n2" {
+	if ups := probePageUpserts(store.upsertsFor("owner/a")); len(ups) != 1 || ups[0].cur.ETag != "n2" {
 		t.Fatalf("content probe upserts for page 2 = %+v, want one carrying n2 (re-anchor)", ups)
 	}
+	// THE durable re-anchor: the anchor page (served 304 this walk) is promoted
+	// to HasNext=true so its stored ETag still threads the chain to page 2.
+	if a := store.cursor("owner/a", 1); !a.HasNext || a.ETag != "e1" {
+		t.Fatalf("anchor page-1 cursor = %+v, want {e1, HasNext:true} (durable re-anchor)", a)
+	}
 
-	// Walk 3: the content probe reset the streak -> NO immediate re-probe.
+	// The tail has already been sunk; steady state is a 304 on the grown page.
+	lister.set("owner/a", 2, pageResult{page: forge.ListPage{NotModified: true}})
+
+	// Walk 3: the promoted anchor threads the 304 chain THROUGH page 2 — page 2
+	// is re-fetched CONDITIONALLY (its stored etag), never re-probed
+	// unconditionally, and its cursor survives the post-walk prune.
 	d.pollRepo(context.Background(), "owner/a")
-	if got := len(probePageFetches(lister.callsFor("owner/a"))); got != 1 {
-		t.Fatalf("streak not reset: page-2 fetches = %d after walk 3, want still 1", got)
+	p2 = probePageFetches(lister.callsFor("owner/a"))
+	if len(p2) != 2 {
+		t.Fatalf("page-2 fetches after walk 3 = %d, want 2 (probe + durable conditional walk)", len(p2))
+	}
+	if p2[1].etag != "n2" {
+		t.Fatalf("walk-3 page-2 fetch etag = %q, want %q (conditional durable thread, not a re-probe)", p2[1].etag, "n2")
+	}
+	if got := store.cursor("owner/a", 2); got.Page != 2 {
+		t.Fatalf("page-2 cursor pruned after walk 3 (got %+v); the re-anchor must keep it durable", got)
 	}
 }
 
