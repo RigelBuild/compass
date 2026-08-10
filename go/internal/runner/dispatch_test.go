@@ -64,6 +64,31 @@ type fakeSessionHost struct {
 	// pass in flight to exercise coalescing, deterministically — no sleeps.
 	refreshConfigEntered chan struct{}
 	refreshConfigRelease chan struct{}
+
+	// provisionEntered/provisionRelease and stopEntered park a command in the
+	// host so a concurrency test can hold one lifecycle op in flight while it
+	// drives another, deterministically (no sleeps) — the same entered/release
+	// gate shape as refreshConfig above. When non-nil, Provision sends on
+	// provisionEntered at its start (buffered by the test so a parked op never
+	// blocks the send) and then blocks until provisionRelease is closed;
+	// stopEntered, when non-nil, signals that Stop was reached. These back the
+	// concurrent-dispatch tests (docs/designs/platform/compass-runner-concurrent-dispatch/design.md).
+	provisionEntered chan struct{}
+	provisionRelease chan struct{}
+	stopEntered      chan struct{}
+	// provisionLive/provisionPeak track concurrent Provision arms (under mu), so
+	// the T-cap seam test can assert the semaphore bounds concurrency: provisionLive
+	// is the current in-flight count, provisionPeak the max ever observed.
+	provisionLive int
+	provisionPeak int
+	// provisionExiting/provisionExitGate deterministically pin the shutdown-join
+	// test: when provisionExitGate is non-nil, a Provision that unwinds on
+	// ctx.Done first signals provisionExiting, then blocks on provisionExitGate
+	// before returning — so the join test can prove runSessions has NOT returned
+	// while a command goroutine is still in flight (mirroring the entered+gate
+	// shape of TestCloseJoinsConcurrentTeardowns in host_test.go).
+	provisionExiting  chan struct{}
+	provisionExitGate chan struct{}
 }
 
 func (f *fakeSessionHost) Start(_ context.Context, _ *compassv1.StartAgentSessionRequest, _ string) (string, error) {
@@ -73,19 +98,49 @@ func (f *fakeSessionHost) Start(_ context.Context, _ *compassv1.StartAgentSessio
 	return f.sessionID, f.startErr
 }
 
-func (f *fakeSessionHost) Provision(_ context.Context, _ *compassv1.ProvisionAgentWorkspaceRequest) (string, error) {
+func (f *fakeSessionHost) Provision(ctx context.Context, _ *compassv1.ProvisionAgentWorkspaceRequest) (string, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.provisionCalls++
-	return f.containerName, f.provisionErr
+	f.provisionLive++
+	if f.provisionLive > f.provisionPeak {
+		f.provisionPeak = f.provisionLive
+	}
+	entered, release, name, err := f.provisionEntered, f.provisionRelease, f.containerName, f.provisionErr
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.provisionLive--
+		f.mu.Unlock()
+	}()
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		case <-ctx.Done():
+			f.onProvisionCtxDone()
+			return "", ctx.Err()
+		}
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			f.onProvisionCtxDone()
+			return "", ctx.Err()
+		}
+	}
+	return name, err
 }
 
 func (f *fakeSessionHost) Stop(_ context.Context, sessionID string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.stopCalls++
 	f.lastStopID = sessionID
-	return f.stopErr
+	entered, err := f.stopEntered, f.stopErr
+	f.mu.Unlock()
+	if entered != nil {
+		entered <- struct{}{}
+	}
+	return err
 }
 
 func (f *fakeSessionHost) Remove(_ context.Context, containerName string) error {
@@ -142,6 +197,23 @@ func (f *fakeSessionHost) RefreshConfig(ctx context.Context) error {
 	return err
 }
 
+// onProvisionCtxDone runs the shutdown-join test's exit-gate protocol: signal
+// that this Provision is exiting on ctx.Done, then block on the exit gate before
+// returning, so the test can observe the goroutine is still in flight and assert
+// runSessions has not yet returned. A no-op when the gate is unset.
+func (f *fakeSessionHost) onProvisionCtxDone() {
+	f.mu.Lock()
+	exiting, gate := f.provisionExiting, f.provisionExitGate
+	f.mu.Unlock()
+	if gate == nil {
+		return
+	}
+	if exiting != nil {
+		exiting <- struct{}{}
+	}
+	<-gate
+}
+
 // configRefreshCount reads the RefreshConfig call count under the lock, so a test
 // can gate on the worker's async pass without racing the counter.
 func (f *fakeSessionHost) configRefreshCount() int {
@@ -156,6 +228,29 @@ func startCommand(id string) *compassv1internal.SessionsResponse {
 		RequestId: id,
 		Command:   &compassv1internal.SessionsResponse_Start{Start: &compassv1.StartAgentSessionRequest{ContainerName: "c1"}},
 	}
+}
+
+// provisionCommand builds a Provision command carrying a request id.
+func provisionCommand(id string) *compassv1internal.SessionsResponse {
+	return &compassv1internal.SessionsResponse{
+		RequestId: id,
+		Command:   &compassv1internal.SessionsResponse_Provision{Provision: &compassv1.ProvisionAgentWorkspaceRequest{}},
+	}
+}
+
+// stopCommand builds a Stop command carrying a request id.
+func stopCommand(id string) *compassv1internal.SessionsResponse {
+	return &compassv1internal.SessionsResponse{
+		RequestId: id,
+		Command:   &compassv1internal.SessionsResponse_Stop{Stop: &compassv1.StopAgentSessionRequest{}},
+	}
+}
+
+// peakProvisions reports the max concurrent Provision arms ever observed.
+func (f *fakeSessionHost) peakProvisions() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.provisionPeak
 }
 
 // OQ6 (Runner-side twin): the dispatcher's handle with a repeated request id

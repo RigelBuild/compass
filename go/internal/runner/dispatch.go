@@ -14,6 +14,7 @@ package runner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -77,15 +78,17 @@ type dispatcher struct {
 	log  *slog.Logger
 
 	mu sync.Mutex
-	// handled records the result for each request id already processed, so a
-	// retry returns the recorded result rather than re-executing. Single-Runner
-	// MVP: the set is small and lives for the stream's life — it is not evicted,
-	// and single-delivery-per-id (so this dedup is not itself raced by two
-	// concurrent pushes of one id) relies on the upstream Server router joining
-	// retries on the one Sessions stream. A future high-volume / multi-stream
-	// Runner needs bounded eviction + in-flight-sentinel dedup here; deferred to
-	// T9 (go-toolchain-default.md:979).
-	handled map[string]*compassv1internal.SessionsRequest
+	// handled records an in-flight-or-completed entry per request id, so a retry
+	// of an id whose execution is still running JOINS that execution rather than
+	// starting a second — and a retry of a completed id returns the recorded
+	// result. Concurrent per-command dispatch (Approach (a)) opens the
+	// check-then-record window to concurrent same-id pushes, so the entry carries
+	// a done channel the joiner waits on; this mirrors the Server router's
+	// pendingCall (runnerhub/router.go). Single-Runner MVP: the set is small and
+	// lives for the stream's life — it is not evicted. Bounded eviction (plus the
+	// per-container transition lock this change already lands) is the remaining
+	// T9 work (SEA-1328); see docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
+	handled map[string]*inflightResult
 
 	// configSignal coalesces ConfigVersion signals into a single pending
 	// re-materialize+Reload pass. It is buffered with capacity 1 and written by a
@@ -101,6 +104,42 @@ type dispatcher struct {
 	// RunSessions can join it on shutdown (no leaked goroutine) and a test can
 	// assert a clean exit on ctx cancel.
 	configWorkerDone chan struct{}
+
+	// wg tracks the per-command dispatch goroutines RunSessions spawns (Approach
+	// (a)), so the deferred shutdown join waits for every in-flight command to
+	// unwind on ctx-cancel before returning — the leak-free guarantee.
+	wg sync.WaitGroup
+	// sendMu serializes the local stream.Send: connect-go's client BidiStream
+	// Send is not safe for concurrent callers, and per-command goroutines now
+	// call it concurrently. Taken only around the Send, never while holding mu —
+	// mirroring the Server router's sendMu (runnerhub/router.go).
+	sendMu sync.Mutex
+	// send pushes one correlated result down the Sessions request half under
+	// sendMu. RunSessions sets it over the live stream; a per-command goroutine
+	// calls it rather than touching the stream directly.
+	send func(*compassv1internal.SessionsRequest) error
+	// provisionSem is a counting semaphore bounding concurrent Provision arms to
+	// provisionConcurrency (T-cap, OQ-4=(i)): it restores an intentional throttle
+	// on agent-triggered Provisions in place of the accidental concurrency-1 the
+	// serial loop provided, WITHOUT queueing any other command (only the Provision
+	// arm acquires it, so a Provision backlog never delays a Stop/Status).
+	provisionSem chan struct{}
+}
+
+// provisionConcurrency caps how many Provision arms run at once (T-cap,
+// OQ-4=(i)): the single tunable restoring an intentional throttle on
+// agent-triggered Provisions in place of the accidental concurrency-1 the serial
+// dispatch loop provided. Sized for the single-Runner dogfood target; see
+// docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
+const provisionConcurrency = 8
+
+// inflightResult is one request id's dispatch entry: done closes when the
+// execution completes and result is set, so a concurrent same-id push waits on
+// done and observes the one identical outcome (Approach (b), mirroring the
+// Server router's pendingCall in runnerhub/router.go).
+type inflightResult struct {
+	done   chan struct{}
+	result *compassv1internal.SessionsRequest
 }
 
 func newDispatcher(host SessionHost, log *slog.Logger) *dispatcher {
@@ -110,9 +149,10 @@ func newDispatcher(host SessionHost, log *slog.Logger) *dispatcher {
 	return &dispatcher{
 		host:             host,
 		log:              log,
-		handled:          map[string]*compassv1internal.SessionsRequest{},
+		handled:          map[string]*inflightResult{},
 		configSignal:     make(chan struct{}, 1),
 		configWorkerDone: make(chan struct{}),
+		provisionSem:     make(chan struct{}, provisionConcurrency),
 	}
 }
 
@@ -162,20 +202,52 @@ func (d *dispatcher) runConfigWorker(ctx context.Context) {
 // flush the headers; the Server's router ignores a result frame with no matching
 // in-flight request id, so the bootstrap is a harmless no-op there.
 func (l *ServerLink) RunSessions(ctx context.Context, host SessionHost, log *slog.Logger) error {
+	return runSessions(ctx, l.client.Sessions(ctx), host, log)
+}
+
+// sessionStream is the Sessions client bidi stream surface the dispatch loop
+// drives: the real *connect.BidiStreamForClient satisfies it directly (no
+// adapter). It is the seam RunSessions wraps around the live stream so the loop
+// — the concurrent-dispatch logic in runSessions — is exercised over the real
+// wire in production AND drivable with a scripted stream in a loop-level unit
+// test.
+type sessionStream interface {
+	Send(result *compassv1internal.SessionsRequest) error
+	Receive() (*compassv1internal.SessionsResponse, error)
+	CloseResponse() error
+}
+
+// runSessions runs the dispatch loop over stream until it ends or ctx is
+// cancelled. Each command the Server pushes is executed (or deduped) in its own
+// goroutine and its result sent back correlated by request id (Approach (a)):
+// this keeps a slow Provision from head-of-line-blocking every other command on
+// the stream. The wire ordering across commands is NOT preserved — the Server
+// router correlates by request id, so out-of-order completions are legal.
+func runSessions(ctx context.Context, stream sessionStream, host SessionHost, log *slog.Logger) error {
 	d := newDispatcher(host, log)
-	// Derive a cancelable ctx so the watcher goroutine below always exits when
-	// RunSessions returns — on ctx cancel, EOF, or error alike — never leaking.
-	ctx, cancel := context.WithCancel(ctx)
+	// Derive a cancelable ctx (with cause) so the watcher goroutine below always
+	// exits when the loop returns — on ctx cancel, EOF, or error alike — never
+	// leaking. The cause distinguishes a clean shutdown from a send-failure
+	// unwind (see the Receive-error classification below).
+	ctx, cancelCause := context.WithCancelCause(ctx)
 	// The config worker runs the coalesced re-materialize+Reload passes off the
-	// sequential receive loop. On return, cancel it and join its goroutine so it
-	// never outlives RunSessions (deferred as one step so cancel precedes the
-	// join regardless of return path).
+	// receive loop. On return, cancel first (nil cause = clean shutdown), then
+	// join every in-flight command goroutine, then the config worker — so no
+	// spawned goroutine outlives runSessions (leak-free), and cancel precedes the
+	// join regardless of return path.
 	go d.runConfigWorker(ctx)
 	defer func() {
-		cancel()
+		cancelCause(nil)
+		d.wg.Wait()
 		<-d.configWorkerDone
 	}()
-	stream := l.client.Sessions(ctx)
+	// send serializes the local Send under sendMu, so concurrent per-command
+	// goroutines never race connect's non-concurrent-safe stream Send.
+	d.send = func(result *compassv1internal.SessionsRequest) error {
+		d.sendMu.Lock()
+		defer d.sendMu.Unlock()
+		return stream.Send(result)
+	}
 	if err := stream.Send(&compassv1internal.SessionsRequest{}); err != nil {
 		return err
 	}
@@ -189,20 +261,50 @@ func (l *ServerLink) RunSessions(ctx context.Context, host SessionHost, log *slo
 	for {
 		cmd, err := stream.Receive()
 		if err != nil {
+			// Classify the loop's exit. The send-failure cause is checked FIRST
+			// and overrides the io.EOF arm: a broken Send commonly surfaces the
+			// next Receive as io.EOF (the watcher's CloseResponse on ctx.Done pops
+			// the blocked Receive as EOF), so returning nil on io.EOF ahead of the
+			// cause check would silently swallow the send failure the serial loop
+			// used to return directly. Only a clean context.Canceled cause, or a
+			// genuine external EOF with no send-failure cause, returns nil.
+			if cause := context.Cause(ctx); cause != nil && !errors.Is(cause, context.Canceled) {
+				return cause
+			}
 			if errors.Is(err, io.EOF) || errors.Is(ctx.Err(), context.Canceled) {
 				return nil
 			}
 			return err
 		}
-		result := d.handle(ctx, cmd)
-		// A signal-only command (SecretsVersion) has no result variant on the
-		// request half — handle returns nil, and nothing is sent back.
-		if result == nil {
+		// ConfigVersion is a signal-only arm that carries no request id and no
+		// result and is genuinely non-blocking: its arm only marks a pass pending
+		// on the coalescing config worker (signalConfig) and returns, so it runs
+		// inline on the receive loop without ever blocking it. SecretsVersion is
+		// also signal-only but is NOT cheap — its arm re-fetches (a network
+		// FetchSecrets) and re-materializes (a container exec) synchronously, so
+		// running it inline would head-of-line-block every other command behind a
+		// slow rotation, the exact block this dispatch exists to remove. It goes
+		// through the per-command goroutine like a correlated command; handle
+		// routes it to execute(ctx, "") and returns nil, so no result frame is
+		// sent, and it is joined by the shutdown wg.Wait like every other spawn.
+		// The initial before-start materialize is unaffected: it lives in
+		// host.Start (FetchSecretsByContainer + Install, strictly before
+		// StartAgent), and RefreshSecrets no-ops with errSessionUnknown until the
+		// session Start records is live, so a rotation can never precede it.
+		if _, ok := cmd.GetCommand().(*compassv1internal.SessionsResponse_ConfigVersion); ok {
+			d.execute(ctx, "", cmd)
 			continue
 		}
-		if err := stream.Send(result); err != nil {
-			return err
-		}
+		d.wg.Go(func() {
+			result := d.handle(ctx, cmd)
+			if result == nil {
+				return
+			}
+			if err := d.send(result); err != nil {
+				d.log.ErrorContext(ctx, "sending session result failed", slog.Any("error", err))
+				cancelCause(fmt.Errorf("session result send failed: %w", err))
+			}
+		})
 	}
 }
 
@@ -213,28 +315,42 @@ func (d *dispatcher) handle(ctx context.Context, cmd *compassv1internal.Sessions
 	// and has no result variant — it must never enter the request-id dedup map, or
 	// the empty-id key would collapse every signal to one and a later rotation or
 	// config update would never re-materialize. Execute it directly and return no
-	// result frame.
+	// result frame. SecretsVersion reaches here as its live path (the receive loop
+	// spawns it through this goroutine so its network+exec never blocks the loop);
+	// ConfigVersion is filtered inline before the spawn, so it reaches this branch
+	// only via a direct caller (tests) — the case stays for that and for the
+	// empty-id guard above.
 	switch cmd.GetCommand().(type) {
 	case *compassv1internal.SessionsResponse_SecretsVersion, *compassv1internal.SessionsResponse_ConfigVersion:
 		return d.execute(ctx, "", cmd)
 	}
 	id := cmd.GetRequestId()
 
-	// Idempotent retry: a request id already handled returns the recorded
-	// result, never a second execution (OQ6).
+	// Idempotent retry under concurrent dispatch (Approach (b)): create an entry
+	// the FIRST time an id is seen, and record its result when the execution
+	// lands. A concurrent same-id push that finds the entry JOINS it — waiting on
+	// done and returning the one recorded result — rather than executing a second
+	// time (execute-once). A joiner that lands while the Runner is shutting down
+	// returns nil on ctx.Done and sends nothing: the Server's own retry then
+	// observes the Runner detach, so the unsent frame is covered server-side, not
+	// lost.
 	d.mu.Lock()
-	if prev, ok := d.handled[id]; ok {
+	if entry, ok := d.handled[id]; ok {
 		d.mu.Unlock()
-		return prev
+		select {
+		case <-entry.done:
+			return entry.result
+		case <-ctx.Done():
+			return nil
+		}
 	}
+	entry := &inflightResult{done: make(chan struct{})}
+	d.handled[id] = entry
 	d.mu.Unlock()
 
-	result := d.execute(ctx, id, cmd)
-
-	d.mu.Lock()
-	d.handled[id] = result
-	d.mu.Unlock()
-	return result
+	entry.result = d.execute(ctx, id, cmd)
+	close(entry.done)
+	return entry.result
 }
 
 // execute runs the command against the host and maps the outcome to a result
@@ -251,6 +367,16 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 			Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: sessionID}},
 		}
 	case *compassv1internal.SessionsResponse_Provision:
+		// Bound concurrent Provisions to provisionConcurrency (T-cap): acquire a
+		// slot before the heavy podman work and release on the arm's exit. Only
+		// this arm touches the semaphore, so a Provision backlog never queues a
+		// Stop/Status. ctx.Done releases a caller blocked for a slot on shutdown.
+		select {
+		case d.provisionSem <- struct{}{}:
+		case <-ctx.Done():
+			return errorResult(id, ctx.Err())
+		}
+		defer func() { <-d.provisionSem }()
 		containerName, err := d.host.Provision(ctx, c.Provision)
 		if err != nil {
 			return errorResult(id, err)
