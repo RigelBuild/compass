@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/sealedsecurity/compass/go/server"
 )
@@ -76,6 +77,7 @@ func run() error {
 	s3UseTLSFlag := flag.Bool("s3-use-tls", false,
 		"Use https to the S3 endpoint. Defaults to $COMPASS_S3_USE_TLS "+
 			"(\"1\"/\"true\"/\"yes\"/\"on\" = on).")
+	forgeFlags := registerForgeFlags()
 	showVersion := flag.Bool("version", false, "Print the version and exit.")
 	flag.Parse()
 
@@ -124,10 +126,6 @@ func run() error {
 		return errors.New("a Postgres DSN is required: pass --database or set $COMPASS_DATABASE_DSN")
 	}
 
-	// S3 archive tier: each flag falls back to its $COMPASS_S3_* env, mirroring
-	// the DATABASE_DSN precedence. All-optional: an absent endpoint/bucket leaves
-	// the archive tier unconfigured and the server boots socket-only (the store's
-	// nil object-store guard fails a flush loudly only if one is ever attempted).
 	s3Config := server.S3Config{
 		Endpoint:  firstNonEmpty(*s3EndpointFlag, os.Getenv("COMPASS_S3_ENDPOINT")),
 		Bucket:    firstNonEmpty(*s3BucketFlag, os.Getenv("COMPASS_S3_BUCKET")),
@@ -135,6 +133,12 @@ func run() error {
 		SecretKey: firstNonEmpty(*s3SecretKeyFlag, os.Getenv("COMPASS_S3_SECRET_KEY")),
 		Region:    firstNonEmpty(*s3RegionFlag, os.Getenv("COMPASS_S3_REGION")),
 		UseTLS:    *s3UseTLSFlag || envTrue(os.Getenv("COMPASS_S3_USE_TLS")),
+	}
+
+	// Forge poll driver (SEA-1810): flag-then-env, all-optional (see forgeFlags.resolve).
+	forgeConfig, err := forgeFlags.resolve()
+	if err != nil {
+		return err
 	}
 
 	slog.Info("compass-server starting",
@@ -149,17 +153,10 @@ func run() error {
 	defer stop()
 
 	// Log once when a termination signal actually arrives, so an operator watching
-	// stderr can tell a graceful drain from a hard death. A dedicated registration
-	// rather than ctx.Done(), so it fires only on a real signal — not when Serve
-	// returns on its own and the deferred stop() then cancels ctx.
-	drainSig := make(chan os.Signal, 1)
-	signal.Notify(drainSig, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(drainSig)
-	go func() {
-		if _, ok := <-drainSig; ok {
-			slog.Info("shutdown signal received; draining")
-		}
-	}()
+	// stderr can tell a graceful drain from a hard death (a dedicated registration
+	// so it fires only on a real signal, not when Serve returns on its own).
+	stopDrainLog := logOnDrainSignal()
+	defer stopDrainLog()
 
 	return server.Serve(ctx, server.ServeConfig{
 		SocketPath:  socketPath,
@@ -169,7 +166,24 @@ func run() error {
 		TLS:         tlsConfig,
 		DatabaseDSN: databaseDSN,
 		S3:          s3Config,
+		Forge:       forgeConfig,
 	})
+}
+
+// logOnDrainSignal registers a one-shot handler that logs the first SIGINT/SIGTERM
+// so an operator can tell a graceful drain from a hard death. It returns a stop
+// func the caller defers (unregisters the handler). A dedicated registration
+// rather than ctx.Done() so it fires only on a real signal — not when Serve
+// returns on its own and the caller's stop() then cancels ctx.
+func logOnDrainSignal() func() {
+	drainSig := make(chan os.Signal, 1)
+	signal.Notify(drainSig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		if _, ok := <-drainSig; ok {
+			slog.Info("shutdown signal received; draining")
+		}
+	}()
+	return func() { signal.Stop(drainSig) }
 }
 
 // resolveNetworkDoor validates the three network-door flags as an all-or-none
@@ -209,6 +223,112 @@ func resolveNetworkDoor(listen, tlsCert, tlsKey string) (string, *server.TLSConf
 				"(missing %s); pass all three to enable it or none for the "+
 				"socket-only default", strings.Join(missing, ", "))
 	}
+}
+
+// forgeFlags holds the five SEA-1810 forge CLI flag pointers, registered as a
+// group so run() stays short (they mirror the S3 flag set's precedence).
+type forgeFlags struct {
+	repos    *string
+	poll     *bool
+	interval *string
+	secret   *string
+	host     *string
+}
+
+// registerForgeFlags declares the five forge flags on the default FlagSet and
+// returns their pointers. Split out of run() so the flag registration does not
+// inflate it past the length budget.
+func registerForgeFlags() forgeFlags {
+	return forgeFlags{
+		repos: flag.String("forge-repos", "",
+			"Comma-separated owner/name repos to SEED into forge_repo_subscriptions "+
+				"(SEA-1810 board poll). Defaults to $COMPASS_FORGE_REPOS. A declarative "+
+				"seed reconciled at boot (bootstrap-only insert), NOT the live target "+
+				"set — the table is authoritative after the first insert. A non-empty "+
+				"seed enables the poll driver."),
+		poll: flag.Bool("forge-poll", false,
+			"Run the forge poll driver even with an empty --forge-repos seed (targets "+
+				"already in the table). Defaults to $COMPASS_FORGE_POLL "+
+				"(\"1\"/\"true\"/\"yes\"/\"on\" = on). Off by default; forge polling is "+
+				"enabled iff this is set OR the seed is non-empty."),
+		interval: flag.String("forge-poll-interval", "",
+			"Forge poll cadence (a Go duration, e.g. 1m). Defaults to "+
+				"$COMPASS_FORGE_POLL_INTERVAL, then 1m."),
+		secret: flag.String("forge-secret", "",
+			"Declared server_only secret NAME holding the forge token (the VALUE never "+
+				"crosses a flag). Defaults to $COMPASS_FORGE_SECRET, then GITHUB_FORGE_TOKEN."),
+		host: flag.String("forge-host", "",
+			"Forge host the poll driver binds (github.com or a GHES host; the API base "+
+				"derives from it). Defaults to $COMPASS_FORGE_HOST, then github.com."),
+	}
+}
+
+// resolve applies the flag-then-env precedence to each forge flag and delegates
+// to resolveForge (the pure input->output core, unit-tested directly).
+func (f forgeFlags) resolve() (server.ForgeConfig, error) {
+	return resolveForge(
+		firstNonEmpty(*f.repos, os.Getenv("COMPASS_FORGE_REPOS")),
+		*f.poll || envTrue(os.Getenv("COMPASS_FORGE_POLL")),
+		firstNonEmpty(*f.interval, os.Getenv("COMPASS_FORGE_POLL_INTERVAL")),
+		firstNonEmpty(*f.secret, os.Getenv("COMPASS_FORGE_SECRET")),
+		firstNonEmpty(*f.host, os.Getenv("COMPASS_FORGE_HOST")),
+	)
+}
+
+// resolveForge turns the five forge flags (already flag-then-env resolved) into
+// the ServeConfig.Forge surface, mirroring resolveNetworkDoor's shape: pure
+// input->output, no I/O. The repos string is a comma-separated owner/name list;
+// each entry is validated (garbage is a startup error) and lowercased for GITHUB
+// so Owner/Name and owner/name collapse to one target. An interval that is set
+// but unparseable or non-positive is a startup error; empty leaves it zero for
+// server-side defaulting. Empty host/secret likewise default server-side.
+func resolveForge(repos string, poll bool, interval, secret, host string) (server.ForgeConfig, error) {
+	seed, err := parseForgeRepos(repos)
+	if err != nil {
+		return server.ForgeConfig{}, err
+	}
+	var pollInterval time.Duration
+	if interval != "" {
+		d, perr := time.ParseDuration(interval)
+		if perr != nil {
+			return server.ForgeConfig{}, fmt.Errorf("invalid --forge-poll-interval %q: %w", interval, perr)
+		}
+		if d <= 0 {
+			return server.ForgeConfig{}, fmt.Errorf("invalid --forge-poll-interval %q: must be positive", interval)
+		}
+		pollInterval = d
+	}
+	return server.ForgeConfig{
+		Host:         host,
+		SeedRepos:    seed,
+		Poll:         poll,
+		SecretName:   secret,
+		PollInterval: pollInterval,
+	}, nil
+}
+
+// parseForgeRepos splits a comma-separated owner/name list, validating and
+// lowercasing each entry (GITHUB owner/name is case-insensitive-but-preserving,
+// so Owner/Name and owner/name must collapse to one PK row). Blank entries are
+// skipped; a malformed entry is a startup error. An empty input yields a nil
+// slice (no seed).
+func parseForgeRepos(repos string) ([]string, error) {
+	if strings.TrimSpace(repos) == "" {
+		return nil, nil
+	}
+	var out []string
+	for raw := range strings.SplitSeq(repos, ",") {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		owner, name, ok := strings.Cut(trimmed, "/")
+		if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+			return nil, fmt.Errorf("invalid --forge-repos entry %q: want \"owner/name\"", raw)
+		}
+		out = append(out, strings.ToLower(trimmed))
+	}
+	return out, nil
 }
 
 // firstNonEmpty returns a if it is non-empty, else b — the flag-then-env
