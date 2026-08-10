@@ -324,12 +324,17 @@ jobs:
         # actually rebuilds the image — the same anti-silent-staleness doctrine the
         # matrix rationale in this file's header rejects a hand-kept project list
         # for. moon resolves the base from GITHUB_BASE_REF exactly as the "CI
-        # (affected)" step above does. A non-empty result = affected; empty (or the
-        # non-PR path, where this step never runs) = fall to the pull branch below.
+        # (affected)" step above does. `moon query projects` prints a JSON
+        # envelope on stdout UNCONDITIONALLY — an unaffected project yields
+        # `{"projects": [], "options": {…}}`, not empty output — so the signal is
+        # the `.projects` ARRAY, not stdout-emptiness. `jq -e` on its length is
+        # the discriminator: populated = affected (build from tree), empty = not
+        # (fall to the pull branch below); the non-PR path never runs this step,
+        # so image_affected is unset and the seed step's `!= true` also pulls.
         if: github.event_name == 'pull_request'
         run: |
-          affected=$(moon query projects --affected --id compass-agent-image)
-          if [ -n "$affected" ]; then
+          if moon query projects --affected --id compass-agent-image \
+            | jq -e '.projects | length > 0' >/dev/null; then
             echo "image_affected=true" >>"$GITHUB_OUTPUT"
           else
             echo "image_affected=false" >>"$GITHUB_OUTPUT"
@@ -354,10 +359,11 @@ jobs:
         #   container copy agent`, run from agent-image/, builds the image and
         #   copies it into local containers-storage (agent-image/devenv.nix's
         #   `registry = "containers-storage:"`) — the exact ref the fixture
-        #   resolves — with no registry round-trip and no `:pr-<N>` tag. It reuses
-        #   the warm nix store `moon ci :ci` already realized for the
-        #   compass-agent-image:build task on this same PR, so the copy's realize
-        #   is near-free.
+        #   resolves — with no registry round-trip and no `:pr-<N>` tag. Because
+        #   this branch now fires ONLY when the image is affected (see the fixed
+        #   detection above), `moon ci :ci` on this same PR already built
+        #   compass-agent-image, so the copy reuses that warm nix store and its
+        #   realize is near-free.
         #
         #   otherwise → pull the published image. On a PR that leaves the image
         #   untouched (and on every push to main, where the detection step does

@@ -760,7 +760,7 @@ the fixture's `EnsureImage` present-checks local containers-storage and does not
 pull at test time, so the seed step above is what satisfies it.
 
 The e2e harness additionally needs a postgres toolchain on PATH: its private
-postgres (`go/compass-postgres/main.go`) shells out to `initdb`/`postgres`/
+postgres (`go/cmd/compass-postgres/main.go`) shells out to `initdb`/`postgres`/
 `createdb` via `exec.LookPath`. In CI those binaries come from the devenv
 `packages` list (`devenv.nix`), which gate-tools carries onto PATH; in the dev
 shell they come from `services.postgres`. Without them on PATH the full-stack
