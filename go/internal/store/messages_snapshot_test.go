@@ -12,7 +12,7 @@ import (
 // point-in-time boundary, but Message does not expose Seq (scanMessages,
 // messages.go:462, never selects it). We recover the boundary from the append
 // order instead: messages.seq is BIGSERIAL starting at 1 (migrations/
-// 0001_init.sql:114), and in a FRESH newTestStore store with a single channel
+// 0001_init.sql:202), and in a FRESH newTestStore store with a single channel
 // and single-threaded sequential AppendMessage calls, the Nth appended message
 // is assigned seq=N. So after appending K messages in order, SnapshotSeq=K is
 // exactly the seq of the Kth message. The tests therefore assert on the stable,

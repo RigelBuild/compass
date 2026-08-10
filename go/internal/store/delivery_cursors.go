@@ -82,7 +82,7 @@ func (s *Store) SeedDeliveryCursor(ctx context.Context, tx pgx.Tx, agent Account
 // cursor). It marks the seq acked (retained in above_seqs), then advances the
 // contiguous cursor across every seq that is EITHER acked (in above_seqs) OR
 // self-authored in this channel (author_account_id = agent — never dispatched).
-// Because messages.seq is a table-global BIGSERIAL (0001_init.sql:114), a
+// Because messages.seq is a table-global BIGSERIAL (0001_init.sql:202), a
 // channel's owed seqs are sparse: a seq belonging to another channel sits
 // between two owed seqs and currently stops the advance, so above_seqs can
 // accumulate acked seqs on a busy multi-channel deployment. Tightening this
