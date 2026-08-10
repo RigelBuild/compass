@@ -140,12 +140,14 @@ export function applyStopped(b: SessionBinding): SessionBinding {
 /** The reconcile reducer for attributed live statuses. It does NOT widen
  *  `SpawnPhase` — the live state lands on the agent's lifecycle and
  *  `agentDotState` renders it (Board state model precedence). Only meaningful
- *  once `running`, so the phase is left at `running`. */
+ *  once `running` (the store invokes it only then), so the live state is
+ *  discarded and the phase is left untouched — never derived from `_state`,
+ *  and never forced onto a binding that has since left `running`. */
 export function applySessionStatus(
 	b: SessionBinding,
 	_state: AgentSessionState,
 ): SessionBinding {
-	return { ...b, phase: "running" };
+	return { ...b };
 }
 
 /** The pre-reconcile dot, total over every phase. The board reads it until an

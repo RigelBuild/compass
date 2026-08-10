@@ -135,10 +135,22 @@ describe("applyStopped", () => {
 });
 
 describe("applySessionStatus", () => {
-	test("leaves SpawnPhase at running", () => {
+	test("leaves SpawnPhase at running, ignoring the live state", () => {
 		const b = applySessionStatus(
 			bindingAt("running"),
 			AgentSessionState.WORKING,
+		);
+		expect(b.phase).toBe("running");
+	});
+
+	// A non-running live state pins the invariant WORKING alone cannot: a
+	// wrong impl that derived phase from the live state (STOPPED → "stopped")
+	// passes the WORKING case by coincidence but fails here. The reducer must
+	// discard `_state` and never widen SpawnPhase (DL-167 / Board-state model).
+	test("discards a non-running live state, holding phase at running", () => {
+		const b = applySessionStatus(
+			bindingAt("running"),
+			AgentSessionState.STOPPED,
 		);
 		expect(b.phase).toBe("running");
 	});
