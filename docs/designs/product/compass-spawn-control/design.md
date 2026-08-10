@@ -316,8 +316,7 @@ the compass `Issue.id` (`stub-data.ts:203-205`).)*
   not live: it opens a **StartAgentDialog** whose only field is the optional
   initial prompt, and submits the store's `startAgent`. It is absent when
   the agent already holds a live session, because `SpawnAgent` would reject
-  (`CodeAlreadyExists`) — the card is simply added to the running agent's
-  board instead.
+  (`CodeAlreadyExists`).
 - **Stop** stays where it is: the LogPanel "■ stop" button
   (`LogPanel.tsx:73-98`), already wired to the real `store.stopAgent()`
   (`:85`) and already disabled for fixture sessions (`:79`), gains a
