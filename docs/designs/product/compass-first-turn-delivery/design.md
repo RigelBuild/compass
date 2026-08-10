@@ -503,11 +503,12 @@ Interfaces:
   (`:168`) returns `"idle"` unconditionally (live `AgentSessionState` takes
   over from the first attributed status, per the existing DL-167 reconcile).
 - `apps/ui/src/components/StartAgentDialog.tsx` + `.test.tsx` — its only input
-  (the prompt textarea) is gone. Its disposition is OQ-1 (a genuine fork:
-  DL-185 explicitly KEEPS this dialog), Matt-ruled at this design-PR gate:
-  either deleted (the board start affordance invokes the spawn action directly
-  with `SpawnSpec`) or reduced to a bare confirm dialog. T5 implements whichever
-  Matt rules.
+  (the prompt textarea) is gone, so the dialog is **deleted** (Matt's
+  design-PR-gate ruling on OQ-1): the board start affordance invokes the spawn
+  action directly with `SpawnSpec` (`{agentAccountId, workstreamId}`; spawn is
+  already guarded by the DL-164/168 live-session predicate and idempotent under
+  its request id). This amends DL-185's "Kept: `StartAgentDialog`" clause — the
+  one status-flip, ordered after #267/SEA-1932 merges (see below).
 - `apps/ui/src/spawn.test.ts:24,38,60,65-67,177,183` — drop prompt fixtures;
   the two `bindingDotState` running-arm cases collapse to one (`running` →
   `"idle"`).
@@ -576,15 +577,18 @@ path" is a DECISION, but the path's Runner middle leg (and the T-R0 DM
 auto-provision) is unbuilt today — PR-A (T-R0/T-R1/T-R2/T-R3) builds it. Do NOT
 land DL-186 as "verified end-to-end": the Runner leg is PR-A, not yet exercised.
 
-**Status flips: one, conditional on OQ-1.** No existing DL row rules on
+**Status flips: one (Matt-ruled).** No existing DL row rules on
 `initial_prompt`, start-idle semantics, or first-turn carriage (verified:
 `DECISIONS.md` has no occurrence of "initial" or "prompt" in any Decision cell
 bearing on the prompt field; DL-166/DL-164 rule the composite-spawn and
-start-affordance shapes without it). **But DL-185 (SEA-1932, Active) explicitly
+start-affordance shapes without it). **DL-185 (SEA-1932, Active) explicitly
 KEEPS `StartAgentDialog`** as the human's only start affordance — so T5's
-disposition of that dialog (OQ-1) amends DL-185's "Kept" clause IF Matt rules
-delete. That amendment is NOT applied here: it is Matt's call at this
-design-PR gate (OQ-1). If Matt keeps a bare confirm dialog, no DL row flips.
+**deletion** of that dialog (OQ-1, Matt-ruled delete at this design-PR gate)
+amends DL-185's "Kept" clause. That amendment is NOT applied in this record: T5
+lands it in PR-B, ordered after #267/SEA-1932 merges so the "Kept" clause exists
+to be amended. The driver records the flip on DL-185 in the design-ledger-gate
+PR at that point, not here.
+
 The superseded content lives in frozen RECORDS, not
 ledger rows. All six records carrying now-superseded `initial_prompt` content
 are superseded-in-part by DL-186 (the citable overturn) — three already noted
@@ -627,29 +631,29 @@ PR-B (atomic removal + harness re-model — greens leg-2, lands after PR-A):
 - [ ] T2 — server: drop `InitialPrompt` at `lifecycle.go:325` and `spawn.go:135` + pgtest fixtures (implement)
 - [ ] T3 — runner: compile against regenerated types; gateway fixture cleanup (no production change beyond PR-A's deliver-lane, which T-R1/T-R2 already landed) (implement)
 - [ ] T4 — agent SDK: spawn tool loses `initial_prompt?`; tests updated (drop the JSON key as hygiene; NO unknown-key reject assert — see arktype note) (implement)
-- [ ] T5 — UI: promptless `SpawnSpec`/binding, `running`→`idle` dot, dispose of `StartAgentDialog` per OQ-1 (delete, or reduce to a bare confirm dialog — Matt's design-gate ruling) (implement)
+- [ ] T5 — UI: promptless `SpawnSpec`/binding, `running`→`idle` dot, delete `StartAgentDialog` + test (OQ-1 Matt-ruled delete; board start affordance calls the spawn action directly; amends DL-185's "Kept" clause after #267/SEA-1932 merges) (implement)
 - [ ] T6 — e2e harness re-model: promptless Start/Resume, home-channel `PostMessage` first turn, split into `OpenSessionTail`(before post) + `AwaitTurnSettled`(WORKING→READY), leg-2/leg-3-4 scenario updates (implement-hard; unblocks SEA-1792 H8 / PR #256)
 - [ ] T7 — ledger rows DL-186/DL-187/DL-188/DL-189 + `Status:` header; references case-1 follow-up SEA-1820 (no new issue filed) (driver)
 
 ## Open Questions
 
-The four design-fork OQs (case-1 scope, deliver-lane carrier, barrier-lift
-mechanism, system-sender freeze) are Matt-ruled and folded above
-(DL-186..189 + SEA-1820). Two items remain for Matt at this design-PR gate:
+All five design-fork OQs are resolved. The four load-bearing ones (case-1
+scope, deliver-lane carrier, barrier-lift mechanism, system-sender freeze) are
+Matt-ruled and folded above (DL-186..189 + SEA-1820). OQ-1 (`StartAgentDialog`
+disposition) is Matt-ruled at this design-PR gate:
 
-1. **[FORK — intersects an Active decision] `StartAgentDialog` disposition.**
+1. **`StartAgentDialog` disposition — RULED: delete (Matt, design-PR gate).**
    Removing `initial_prompt` empties this dialog (its only input was the prompt
-   textarea). But **DL-185 (SEA-1932, Active, Matt 2026-08-07) explicitly KEEPS
-   `StartAgentDialog`** as the human's sole start affordance after the
-   add-a-workstream surface was dropped — so this is NOT a driver call.
-   **Recommendation: delete it** and start directly from the board affordance
-   with `{agentAccountId, workstreamId}` (spawn is already guarded by the
-   DL-164/168 live-session predicate and idempotent under its request id) — an
-   empty dialog is pure friction. **Alternative: keep a bare confirm dialog**
-   ("Start this agent?"). Whichever Matt rules, T5 implements it; a delete
-   amends DL-185's "Kept" clause (the one conditional status-flip noted above).
-2. **[Minor, driver-resolved] Settle-primitive naming → `AwaitTurnSettled`.**
+   textarea). DL-185 (SEA-1932, Active) explicitly KEEPS it, so this was a fork,
+   not a driver call. Matt ruled **delete**: the board start affordance invokes
+   the spawn action directly with `{agentAccountId, workstreamId}` (spawn is
+   already guarded by the DL-164/168 live-session predicate and idempotent under
+   its request id). T5 lands the deletion in PR-B, ordered after #267/SEA-1932
+   merges; it amends DL-185's "Kept" clause (the one status-flip above).
+   (Ground check at ruling time: `StartAgentDialog.tsx` + `.test.tsx` still
+   present on `main@origin`; no open PR removes them — the deletion is this
+   design's, landed by T5.)
+2. **Settle-primitive naming → `AwaitTurnSettled` (driver-resolved).**
    The new name (WORKING→READY, one settled turn) is the accurate one T6 uses;
    the old `AwaitSessionSettled` named a session-ready wait the re-model no
-   longer performs. Pure rename; flip is free if the dogfood-e2e lane prefers
-   the old name with the new contract.
+   longer performs. Pure rename, settled in-record.
