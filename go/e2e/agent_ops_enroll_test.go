@@ -3,9 +3,11 @@
 package e2e
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 )
@@ -48,6 +50,13 @@ func TestClassifyEnrollProbe(t *testing.T) {
 			wantRetry: false,
 			wantErr:   true,
 		},
+		{
+			name:      "deadline exceeded is surfaced not retried",
+			err:       context.DeadlineExceeded,
+			wantReady: false,
+			wantRetry: false,
+			wantErr:   true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -72,5 +81,31 @@ func TestClassifyEnrollProbe(t *testing.T) {
 				t.Errorf("cerr = %v, want nil", cerr)
 			}
 		})
+	}
+}
+
+// TestWaitRunnerEnrolledBudgetTimeout drives the budget-timeout branch of
+// waitRunnerEnrolled through the injectable clock seam: the fake clock jumps
+// past the deadline on the loop-top check, so the poll returns the clean
+// budget-exhausted error without ever firing a live probe (a bare Fixture with
+// only now set — Compass() is never reached).
+func TestWaitRunnerEnrolledBudgetTimeout(t *testing.T) {
+	base := time.Now()
+	calls := 0
+	f := &Fixture{
+		now: func() time.Time {
+			calls++
+			if calls == 1 {
+				return base // deadline = base + enrollPollBudget
+			}
+			return base.Add(enrollPollBudget + time.Second) // past the deadline
+		},
+	}
+	err := f.waitRunnerEnrolled(context.Background())
+	if err == nil {
+		t.Fatal("waitRunnerEnrolled() = nil, want budget-timeout error")
+	}
+	if !strings.Contains(err.Error(), "did not enroll within") {
+		t.Errorf("err = %q, want budget-timeout message", err.Error())
 	}
 }

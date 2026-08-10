@@ -160,13 +160,13 @@ func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
 	ticker := time.NewTicker(enrollPollInterval)
 	defer ticker.Stop()
 	for {
+		if !f.now().Before(deadline) {
+			return fmt.Errorf("runner did not enroll within %s", enrollPollBudget)
+		}
 		if ready, err := f.runnerEnrolledProbe(ctx, deadline); err != nil {
 			return err
 		} else if ready {
 			return nil
-		}
-		if !f.now().Before(deadline) {
-			return fmt.Errorf("runner did not enroll within %s", enrollPollBudget)
 		}
 		select {
 		case <-ctx.Done():
@@ -190,7 +190,7 @@ const enrollProbeSessionID = "e2e-enroll-probe-nonexistent-session"
 func (f *Fixture) runnerEnrolledProbe(ctx context.Context, deadline time.Time) (ready bool, err error) {
 	perProbe := rpcTimeout
 	if !deadline.IsZero() {
-		if remaining := time.Until(deadline); remaining < perProbe {
+		if remaining := deadline.Sub(f.now()); remaining < perProbe {
 			perProbe = remaining
 		}
 	}
