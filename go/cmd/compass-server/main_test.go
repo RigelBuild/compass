@@ -194,3 +194,110 @@ func extractMissingClause(t *testing.T, msg string) string {
 	}
 	return clause
 }
+
+// TestBuildServeConfigFlagRoundTrip pins the CLI flag→ServeConfig mapping: the
+// three T1 network-door flags (--state-dir/--admin-handle/--cors-allowed-origin)
+// carry into their ServeConfig fields, and omitting them leaves the shipped
+// defaults. A round-trip is necessary-not-sufficient for --admin-handle (an inert
+// knob round-trips too — the server-level TestServeMints* tests are the teeth for
+// "takes effect"), but it is exactly what pins the flag NAME→field wiring: a
+// --state-dir mistakenly feeding AdminHandle reddens here. --database is supplied
+// throughout because buildServeConfig requires a DSN (flag or $COMPASS_DATABASE_DSN).
+func TestBuildServeConfigFlagRoundTrip(t *testing.T) {
+	t.Setenv("COMPASS_DATABASE_DSN", "") // isolate from an ambient env DSN
+
+	t.Run("new flags round-trip into their fields", func(t *testing.T) {
+		cfg, showVersion, err := buildServeConfig([]string{
+			"--database", "postgres://x/db",
+			"--socket", "/tmp/x.sock",
+			"--state-dir", "/var/lib/compass",
+			"--admin-handle", "matt",
+			"--cors-allowed-origin", "https://ui.example.ts.net",
+		})
+		if err != nil {
+			t.Fatalf("buildServeConfig = %v, want nil", err)
+		}
+		if showVersion {
+			t.Fatal("showVersion = true, want false (no --version)")
+		}
+		if cfg.StateDir != "/var/lib/compass" {
+			t.Errorf("StateDir = %q, want %q (--state-dir)", cfg.StateDir, "/var/lib/compass")
+		}
+		if cfg.AdminHandle != "matt" {
+			t.Errorf("AdminHandle = %q, want %q (--admin-handle)", cfg.AdminHandle, "matt")
+		}
+		if cfg.CORSAllowedOrigin != "https://ui.example.ts.net" {
+			t.Errorf("CORSAllowedOrigin = %q, want %q (--cors-allowed-origin)", cfg.CORSAllowedOrigin, "https://ui.example.ts.net")
+		}
+	})
+
+	t.Run("omitted new flags leave the shipped defaults", func(t *testing.T) {
+		cfg, _, err := buildServeConfig([]string{"--database", "postgres://x/db", "--socket", "/tmp/x.sock"})
+		if err != nil {
+			t.Fatalf("buildServeConfig = %v, want nil", err)
+		}
+		if cfg.StateDir != "" || cfg.AdminHandle != "" || cfg.CORSAllowedOrigin != "" {
+			t.Errorf("unset flags = {StateDir:%q AdminHandle:%q CORSAllowedOrigin:%q}, want all empty (the socket-only shipped defaults)",
+				cfg.StateDir, cfg.AdminHandle, cfg.CORSAllowedOrigin)
+		}
+	})
+
+	t.Run("shipped listen+tls group still maps", func(t *testing.T) {
+		cfg, _, err := buildServeConfig([]string{
+			"--database", "postgres://x/db", "--socket", "/tmp/x.sock",
+			"--listen", "0.0.0.0:8443", "--tls-cert", "/c.pem", "--tls-key", "/k.pem",
+		})
+		if err != nil {
+			t.Fatalf("buildServeConfig = %v, want nil", err)
+		}
+		if cfg.Listen != "0.0.0.0:8443" {
+			t.Errorf("Listen = %q, want %q", cfg.Listen, "0.0.0.0:8443")
+		}
+		if cfg.TLS == nil || cfg.TLS.CertPath != "/c.pem" || cfg.TLS.KeyPath != "/k.pem" {
+			t.Errorf("TLS = %+v, want cert=/c.pem key=/k.pem", cfg.TLS)
+		}
+	})
+}
+
+// TestBuildServeConfigVersion: --version returns showVersion=true and no config,
+// so run() prints the version and exits without touching the store.
+func TestBuildServeConfigVersion(t *testing.T) {
+	_, showVersion, err := buildServeConfig([]string{"--version"})
+	if err != nil {
+		t.Fatalf("buildServeConfig(--version) = %v, want nil", err)
+	}
+	if !showVersion {
+		t.Fatal("showVersion = false, want true for --version")
+	}
+}
+
+// TestBuildServeConfigMissingDSN: with neither --database nor $COMPASS_DATABASE_DSN,
+// buildServeConfig fails rather than returning a store-less config Serve would
+// reject deep in startup.
+func TestBuildServeConfigMissingDSN(t *testing.T) {
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+	_, _, err := buildServeConfig([]string{"--socket", "/tmp/x.sock"})
+	if err == nil {
+		t.Fatal("buildServeConfig with no DSN = nil, want a 'DSN is required' error")
+	}
+	if !strings.Contains(err.Error(), "DSN is required") {
+		t.Fatalf("error = %q, want a 'DSN is required' message", err.Error())
+	}
+}
+
+// TestBuildServeConfigPartialNetworkDoorErrors: a partial --listen/--tls group is
+// rejected at parse time (the resolveNetworkDoor guard), so the invalid combo
+// never reaches Serve. Complements resolveNetworkDoor's own unit test by proving
+// buildServeConfig surfaces that error rather than swallowing it.
+func TestBuildServeConfigPartialNetworkDoorErrors(t *testing.T) {
+	_, _, err := buildServeConfig([]string{
+		"--database", "postgres://x/db", "--socket", "/tmp/x.sock",
+		"--listen", "0.0.0.0:8443", // missing --tls-cert/--tls-key
+	})
+	if err == nil {
+		t.Fatal("buildServeConfig with --listen and no TLS = nil, want the partial-flag error")
+	}
+	if !strings.Contains(err.Error(), "--tls-cert") {
+		t.Fatalf("error = %q, want it to name the missing TLS flags", err.Error())
+	}
+}

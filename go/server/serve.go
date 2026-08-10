@@ -81,8 +81,12 @@ type ServeConfig struct {
 	// (e.g. "0.0.0.0:8443"). Empty on the socket-only shipped path. When set, TLS
 	// is required — a bearer token over cleartext is credential disclosure.
 	Listen string
-	// AdminHandle is the bootstrap-admin account handle minted on network-door
-	// startup (default "admin"). Its token is written 0600 under the state dir.
+	// AdminHandle is the handle of the bootstrap-admin account created (or found)
+	// at startup — the identity the local-socket door attributes callers to and
+	// the network door's AdminGate compares against. Empty defaults to "admin".
+	// Bootstrap is find-or-create by handle, so a handle that already names a
+	// non-admin account fails startup rather than elevating it. When the network
+	// door is enabled, this account's token is written 0600 under the state dir.
 	AdminHandle string
 	// StateDir is the directory the bootstrap-admin token file is written under
 	// (0600). Defaults to the socket's parent directory when empty.
@@ -166,6 +170,17 @@ const (
 	bootstrapAdminHandle      = "admin"
 	bootstrapAdminDisplayName = "Administrator"
 )
+
+// resolvedAdminHandle is the bootstrap-admin handle after defaulting: cfg.AdminHandle
+// when the operator set --admin-handle, else bootstrapAdminHandle ("admin"). Both
+// the Serve bootstrap and the network door read the handle through this one seam so
+// the minted account and the door's logging never drift.
+func (cfg ServeConfig) resolvedAdminHandle() string {
+	if cfg.AdminHandle != "" {
+		return cfg.AdminHandle
+	}
+	return bootstrapAdminHandle
+}
 
 // secretsStateDir returns the Server-owned directory the secret resolver writes
 // its generated SecretSpec manifests under: a "secrets" subdirectory of the same
@@ -300,7 +315,14 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// 0600 socket is the local credential). Idempotent: created on first boot,
 	// fetched on every later one. Created unconditionally — even socket-only —
 	// so the AdminGate always has a real admin id to compare against.
-	admin, err := st.BootstrapAdmin(ctx, store.NewUser{Handle: bootstrapAdminHandle, DisplayName: bootstrapAdminDisplayName})
+	//
+	// The handle is operator-settable via --admin-handle (cfg.AdminHandle),
+	// defaulting to bootstrapAdminHandle when unset — the same default the
+	// network door logs against, so the minted account and the log never drift.
+	// Find-or-create by handle: a non-default handle that already names a
+	// non-admin account fails startup (BootstrapAdmin returns ErrConflict rather
+	// than elevating it), never silently reusing a member account as admin.
+	admin, err := st.BootstrapAdmin(ctx, store.NewUser{Handle: cfg.resolvedAdminHandle(), DisplayName: bootstrapAdminDisplayName})
 	if err != nil {
 		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
 		listeners.close()

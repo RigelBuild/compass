@@ -40,111 +40,30 @@ func main() {
 }
 
 func run() error {
-	socketFlag := flag.String("socket", "",
-		"Unix socket to serve compass.v1 on. Defaults to "+
-			"$XDG_RUNTIME_DIR/compass/server.sock, falling back to "+
-			"$HOME/.compass/server.sock.")
-	devHTTPFlag := flag.String("dev-http", "",
-		"Dev only: also serve gRPC-Web on this loopback TCP address (e.g. "+
-			"127.0.0.1:50051) for a browser dev server. Off by default; the "+
-			"shipped path is socket-only. A non-loopback address is rejected.")
-	listenFlag := flag.String("listen", "",
-		"Serve the authenticated gRPC network door on this TCP address (e.g. "+
-			"0.0.0.0:8443). Off by default; the shipped local path is socket-only. "+
-			"Requires --tls-cert and --tls-key together — a bearer token over "+
-			"cleartext is credential disclosure.")
-	tlsCertFlag := flag.String("tls-cert", "",
-		"PEM certificate file terminating TLS on the --listen network door. "+
-			"Required with --listen.")
-	tlsKeyFlag := flag.String("tls-key", "",
-		"PEM private-key file terminating TLS on the --listen network door. "+
-			"Required with --listen.")
-	databaseFlag := flag.String("database", "",
-		"Postgres DSN for the store of record (e.g. postgres://user:pass@host/compass). "+
-			"Defaults to $COMPASS_DATABASE_DSN.")
-	s3EndpointFlag := flag.String("s3-endpoint", "",
-		"S3-compatible object-store endpoint host[:port] (no scheme) for the "+
-			"transcript archive tier (Garage/R2/MinIO/AWS). Defaults to "+
-			"$COMPASS_S3_ENDPOINT. Absent = no archive tier (dev server still boots).")
-	s3BucketFlag := flag.String("s3-bucket", "",
-		"Bucket archive segments are written under. Defaults to $COMPASS_S3_BUCKET.")
-	s3AccessKeyFlag := flag.String("s3-access-key", "",
-		"S3 access key. Defaults to $COMPASS_S3_ACCESS_KEY.")
-	s3SecretKeyFlag := flag.String("s3-secret-key", "",
-		"S3 secret key. Defaults to $COMPASS_S3_SECRET_KEY.")
-	s3RegionFlag := flag.String("s3-region", "",
-		"S3 region (e.g. us-east-1, or \"garage\" for Garage). Defaults to $COMPASS_S3_REGION.")
-	s3UseTLSFlag := flag.Bool("s3-use-tls", false,
-		"Use https to the S3 endpoint. Defaults to $COMPASS_S3_USE_TLS "+
-			"(\"1\"/\"true\"/\"yes\"/\"on\" = on).")
-	forgeFlags := registerForgeFlags()
-	showVersion := flag.Bool("version", false, "Print the version and exit.")
-	flag.Parse()
-
-	if *showVersion {
-		fmt.Printf("compass-server %s\n", version) //nolint:forbidigo // --version writes to stdout: that is a command's own CLI output, not logging, so the no-fmt-print rule does not apply
+	cfg, showVersion, err := buildServeConfig(os.Args[1:])
+	if errors.Is(err, flag.ErrHelp) {
+		// -h/--help: the FlagSet already printed usage; a clean exit, not an error.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if showVersion {
+		// Genuine CLI output — the --version result printed to stdout, not a
+		// diagnostic — so an explicit writer, never slog and never a bare
+		// fmt.Print (go-no-fmt-print-logging). stdout write errors on --version
+		// are not actionable (the process is exiting cleanly regardless), so the
+		// return is deliberately discarded.
+		_, _ = fmt.Fprintf(os.Stdout, "compass-server %s\n", version)
 		return nil
 	}
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
-	socketPath := *socketFlag
-	if socketPath == "" {
-		resolved, err := server.DefaultSocketPath()
-		if err != nil {
-			return fmt.Errorf("resolving default socket path: %w", err)
-		}
-		socketPath = resolved
-	}
-
-	var devHTTP *netip.AddrPort
-	if *devHTTPFlag != "" {
-		addr, err := netip.ParseAddrPort(*devHTTPFlag)
-		if err != nil {
-			return fmt.Errorf("parsing --dev-http address %q: %w", *devHTTPFlag, err)
-		}
-		// A dev endpoint must stay on the loopback interface — it has no auth and
-		// exists only for the local browser dev server; binding it on a routable
-		// address would expose the server to the network. server.Serve re-asserts
-		// this invariant, but fail fast here rather than deep in the serve loop.
-		if !addr.Addr().IsLoopback() {
-			return fmt.Errorf("--dev-http must bind a loopback address (127.0.0.1 or ::1), got %s", addr)
-		}
-		devHTTP = &addr
-	}
-
-	listen, tlsConfig, err := resolveNetworkDoor(*listenFlag, *tlsCertFlag, *tlsKeyFlag)
-	if err != nil {
-		return err
-	}
-
-	databaseDSN := *databaseFlag
-	if databaseDSN == "" {
-		databaseDSN = os.Getenv("COMPASS_DATABASE_DSN")
-	}
-	if databaseDSN == "" {
-		return errors.New("a Postgres DSN is required: pass --database or set $COMPASS_DATABASE_DSN")
-	}
-
-	s3Config := server.S3Config{
-		Endpoint:  firstNonEmpty(*s3EndpointFlag, os.Getenv("COMPASS_S3_ENDPOINT")),
-		Bucket:    firstNonEmpty(*s3BucketFlag, os.Getenv("COMPASS_S3_BUCKET")),
-		AccessKey: firstNonEmpty(*s3AccessKeyFlag, os.Getenv("COMPASS_S3_ACCESS_KEY")),
-		SecretKey: firstNonEmpty(*s3SecretKeyFlag, os.Getenv("COMPASS_S3_SECRET_KEY")),
-		Region:    firstNonEmpty(*s3RegionFlag, os.Getenv("COMPASS_S3_REGION")),
-		UseTLS:    *s3UseTLSFlag || envTrue(os.Getenv("COMPASS_S3_USE_TLS")),
-	}
-
-	// Forge poll driver (SEA-1810): flag-then-env, all-optional (see forgeFlags.resolve).
-	forgeConfig, err := forgeFlags.resolve()
-	if err != nil {
-		return err
-	}
-
 	slog.Info("compass-server starting",
 		"version", version,
 		"api", apiVersion,
-		"socket", socketPath,
+		"socket", cfg.SocketPath,
 	)
 
 	// SIGINT (Ctrl-C) or SIGTERM (service stop) cancels the context, which drains
@@ -158,16 +77,144 @@ func run() error {
 	stopDrainLog := logOnDrainSignal()
 	defer stopDrainLog()
 
-	return server.Serve(ctx, server.ServeConfig{
-		SocketPath:  socketPath,
-		Version:     version,
-		DevHTTP:     devHTTP,
-		Listen:      listen,
-		TLS:         tlsConfig,
-		DatabaseDSN: databaseDSN,
-		S3:          s3Config,
-		Forge:       forgeConfig,
-	})
+	return server.Serve(ctx, cfg)
+}
+
+// buildServeConfig parses args into the ServeConfig the serve loop consumes,
+// returning showVersion=true when --version was requested (the caller prints the
+// version and exits). Split out of run() so the whole flag→config mapping is
+// unit-testable without binding a socket or serving — a bad flag combination is
+// an error here, not deep in Serve. It uses a private FlagSet (ContinueOnError)
+// rather than the global flag.CommandLine, so a parse error returns up (never
+// os.Exit) and tests never race on global flag state; a -h/--help request comes
+// back as flag.ErrHelp with usage already printed.
+func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
+	fs := flag.NewFlagSet("compass-server", flag.ContinueOnError)
+	socketFlag := fs.String("socket", "",
+		"Unix socket to serve compass.v1 on. Defaults to "+
+			"$XDG_RUNTIME_DIR/compass/server.sock, falling back to "+
+			"$HOME/.compass/server.sock.")
+	devHTTPFlag := fs.String("dev-http", "",
+		"Dev only: also serve gRPC-Web on this loopback TCP address (e.g. "+
+			"127.0.0.1:50051) for a browser dev server. Off by default; the "+
+			"shipped path is socket-only. A non-loopback address is rejected.")
+	listenFlag := fs.String("listen", "",
+		"Serve the authenticated gRPC network door on this TCP address (e.g. "+
+			"0.0.0.0:8443). Off by default; the shipped local path is socket-only. "+
+			"Requires --tls-cert and --tls-key together — a bearer token over "+
+			"cleartext is credential disclosure.")
+	tlsCertFlag := fs.String("tls-cert", "",
+		"PEM certificate file terminating TLS on the --listen network door. "+
+			"Required with --listen.")
+	tlsKeyFlag := fs.String("tls-key", "",
+		"PEM private-key file terminating TLS on the --listen network door. "+
+			"Required with --listen.")
+	databaseFlag := fs.String("database", "",
+		"Postgres DSN for the store of record (e.g. postgres://user:pass@host/compass). "+
+			"Defaults to $COMPASS_DATABASE_DSN.")
+	s3EndpointFlag := fs.String("s3-endpoint", "",
+		"S3-compatible object-store endpoint host[:port] (no scheme) for the "+
+			"transcript archive tier (Garage/R2/MinIO/AWS). Defaults to "+
+			"$COMPASS_S3_ENDPOINT. Absent = no archive tier (dev server still boots).")
+	s3BucketFlag := fs.String("s3-bucket", "",
+		"Bucket archive segments are written under. Defaults to $COMPASS_S3_BUCKET.")
+	s3AccessKeyFlag := fs.String("s3-access-key", "",
+		"S3 access key. Defaults to $COMPASS_S3_ACCESS_KEY.")
+	s3SecretKeyFlag := fs.String("s3-secret-key", "",
+		"S3 secret key. Defaults to $COMPASS_S3_SECRET_KEY.")
+	s3RegionFlag := fs.String("s3-region", "",
+		"S3 region (e.g. us-east-1, or \"garage\" for Garage). Defaults to $COMPASS_S3_REGION.")
+	s3UseTLSFlag := fs.Bool("s3-use-tls", false,
+		"Use https to the S3 endpoint. Defaults to $COMPASS_S3_USE_TLS "+
+			"(\"1\"/\"true\"/\"yes\"/\"on\" = on).")
+	stateDirFlag := fs.String("state-dir", "",
+		"Directory the bootstrap-admin token file is written under (0600). "+
+			"Defaults to the socket's parent directory.")
+	adminHandleFlag := fs.String("admin-handle", "",
+		"Handle of the bootstrap-admin account created (or found) at startup. "+
+			"Defaults to \"admin\". A handle that already names a non-admin "+
+			"account fails startup rather than elevating it.")
+	corsAllowedOriginFlag := fs.String("cors-allowed-origin", "",
+		"Single browser origin the network door exposes gRPC-Web CORS for "+
+			"(e.g. https://host.example.ts.net). Empty = no CORS on the network door.")
+	forge := registerForgeFlags(fs)
+	showVersion := fs.Bool("version", false, "Print the version and exit.")
+	if err := fs.Parse(args); err != nil {
+		return server.ServeConfig{}, false, err
+	}
+	if *showVersion {
+		return server.ServeConfig{}, true, nil
+	}
+
+	socketPath := *socketFlag
+	if socketPath == "" {
+		resolved, err := server.DefaultSocketPath()
+		if err != nil {
+			return server.ServeConfig{}, false, fmt.Errorf("resolving default socket path: %w", err)
+		}
+		socketPath = resolved
+	}
+
+	var devHTTP *netip.AddrPort
+	if *devHTTPFlag != "" {
+		addr, err := netip.ParseAddrPort(*devHTTPFlag)
+		if err != nil {
+			return server.ServeConfig{}, false, fmt.Errorf("parsing --dev-http address %q: %w", *devHTTPFlag, err)
+		}
+		// A dev endpoint must stay on the loopback interface — it has no auth and
+		// exists only for the local browser dev server; binding it on a routable
+		// address would expose the server to the network. server.Serve re-asserts
+		// this invariant, but fail fast here rather than deep in the serve loop.
+		if !addr.Addr().IsLoopback() {
+			return server.ServeConfig{}, false, fmt.Errorf("--dev-http must bind a loopback address (127.0.0.1 or ::1), got %s", addr)
+		}
+		devHTTP = &addr
+	}
+
+	listen, tlsConfig, err := resolveNetworkDoor(*listenFlag, *tlsCertFlag, *tlsKeyFlag)
+	if err != nil {
+		return server.ServeConfig{}, false, err
+	}
+
+	databaseDSN := *databaseFlag
+	if databaseDSN == "" {
+		databaseDSN = os.Getenv("COMPASS_DATABASE_DSN")
+	}
+	if databaseDSN == "" {
+		return server.ServeConfig{}, false, errors.New("a Postgres DSN is required: pass --database or set $COMPASS_DATABASE_DSN")
+	}
+
+	// S3 archive tier: each flag falls back to its $COMPASS_S3_* env, mirroring
+	// the DATABASE_DSN precedence. All-optional: an absent endpoint/bucket leaves
+	// the archive tier unconfigured and the server boots socket-only.
+	s3Config := server.S3Config{
+		Endpoint:  firstNonEmpty(*s3EndpointFlag, os.Getenv("COMPASS_S3_ENDPOINT")),
+		Bucket:    firstNonEmpty(*s3BucketFlag, os.Getenv("COMPASS_S3_BUCKET")),
+		AccessKey: firstNonEmpty(*s3AccessKeyFlag, os.Getenv("COMPASS_S3_ACCESS_KEY")),
+		SecretKey: firstNonEmpty(*s3SecretKeyFlag, os.Getenv("COMPASS_S3_SECRET_KEY")),
+		Region:    firstNonEmpty(*s3RegionFlag, os.Getenv("COMPASS_S3_REGION")),
+		UseTLS:    *s3UseTLSFlag || envTrue(os.Getenv("COMPASS_S3_USE_TLS")),
+	}
+
+	// Forge poll driver (SEA-1810): flag-then-env, all-optional (see forge.resolve).
+	forgeConfig, err := forge.resolve()
+	if err != nil {
+		return server.ServeConfig{}, false, err
+	}
+
+	return server.ServeConfig{
+		SocketPath:        socketPath,
+		Version:           version,
+		DevHTTP:           devHTTP,
+		Listen:            listen,
+		TLS:               tlsConfig,
+		DatabaseDSN:       databaseDSN,
+		S3:                s3Config,
+		Forge:             forgeConfig,
+		StateDir:          *stateDirFlag,
+		AdminHandle:       *adminHandleFlag,
+		CORSAllowedOrigin: *corsAllowedOriginFlag,
+	}, false, nil
 }
 
 // logOnDrainSignal registers a one-shot handler that logs the first SIGINT/SIGTERM
@@ -235,29 +282,29 @@ type forgeFlags struct {
 	host     *string
 }
 
-// registerForgeFlags declares the five forge flags on the default FlagSet and
-// returns their pointers. Split out of run() so the flag registration does not
-// inflate it past the length budget.
-func registerForgeFlags() forgeFlags {
+// registerForgeFlags declares the five forge flags on the given FlagSet and
+// returns their pointers, so buildServeConfig registers them alongside the rest
+// on its private FlagSet rather than the global flag.CommandLine.
+func registerForgeFlags(fs *flag.FlagSet) forgeFlags {
 	return forgeFlags{
-		repos: flag.String("forge-repos", "",
+		repos: fs.String("forge-repos", "",
 			"Comma-separated owner/name repos to SEED into forge_repo_subscriptions "+
 				"(SEA-1810 board poll). Defaults to $COMPASS_FORGE_REPOS. A declarative "+
 				"seed reconciled at boot (bootstrap-only insert), NOT the live target "+
 				"set — the table is authoritative after the first insert. A non-empty "+
 				"seed enables the poll driver."),
-		poll: flag.Bool("forge-poll", false,
+		poll: fs.Bool("forge-poll", false,
 			"Run the forge poll driver even with an empty --forge-repos seed (targets "+
 				"already in the table). Defaults to $COMPASS_FORGE_POLL "+
 				"(\"1\"/\"true\"/\"yes\"/\"on\" = on). Off by default; forge polling is "+
 				"enabled iff this is set OR the seed is non-empty."),
-		interval: flag.String("forge-poll-interval", "",
+		interval: fs.String("forge-poll-interval", "",
 			"Forge poll cadence (a Go duration, e.g. 1m). Defaults to "+
 				"$COMPASS_FORGE_POLL_INTERVAL, then 1m."),
-		secret: flag.String("forge-secret", "",
+		secret: fs.String("forge-secret", "",
 			"Declared server_only secret NAME holding the forge token (the VALUE never "+
 				"crosses a flag). Defaults to $COMPASS_FORGE_SECRET, then GITHUB_FORGE_TOKEN."),
-		host: flag.String("forge-host", "",
+		host: fs.String("forge-host", "",
 			"Forge host the poll driver binds (github.com or a GHES host; the API base "+
 				"derives from it). Defaults to $COMPASS_FORGE_HOST, then github.com."),
 	}
