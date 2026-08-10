@@ -8,6 +8,8 @@ package main
 // the whole truth table.
 
 import (
+	"errors"
+	"flag"
 	"strings"
 	"testing"
 
@@ -257,6 +259,34 @@ func TestBuildServeConfigFlagRoundTrip(t *testing.T) {
 			t.Errorf("TLS = %+v, want cert=/c.pem key=/k.pem", cfg.TLS)
 		}
 	})
+
+	t.Run("shipped s3 + dev-http fields still map after the FlagSet move", func(t *testing.T) {
+		// The flag.String->fs.String move is exactly where a copy-paste transposition
+		// (e.g. --s3-bucket read into S3.Endpoint) would compile, vet, and ship green.
+		// Pin the full field-assembly block, not just the three T1 fields.
+		cfg, _, err := buildServeConfig([]string{
+			"--database", "postgres://x/db", "--socket", "/tmp/x.sock",
+			"--dev-http", "127.0.0.1:50051",
+			"--s3-endpoint", "s3.example:9000",
+			"--s3-bucket", "transcripts",
+			"--s3-region", "us-east-1",
+		})
+		if err != nil {
+			t.Fatalf("buildServeConfig = %v, want nil", err)
+		}
+		if cfg.DevHTTP == nil || cfg.DevHTTP.String() != "127.0.0.1:50051" {
+			t.Errorf("DevHTTP = %v, want 127.0.0.1:50051 (--dev-http)", cfg.DevHTTP)
+		}
+		if cfg.S3.Endpoint != "s3.example:9000" {
+			t.Errorf("S3.Endpoint = %q, want %q (--s3-endpoint)", cfg.S3.Endpoint, "s3.example:9000")
+		}
+		if cfg.S3.Bucket != "transcripts" {
+			t.Errorf("S3.Bucket = %q, want %q (--s3-bucket)", cfg.S3.Bucket, "transcripts")
+		}
+		if cfg.S3.Region != "us-east-1" {
+			t.Errorf("S3.Region = %q, want %q (--s3-region)", cfg.S3.Region, "us-east-1")
+		}
+	})
 }
 
 // TestBuildServeConfigVersion: --version returns showVersion=true and no config,
@@ -299,5 +329,47 @@ func TestBuildServeConfigPartialNetworkDoorErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--tls-cert") {
 		t.Fatalf("error = %q, want it to name the missing TLS flags", err.Error())
+	}
+}
+
+// TestBuildServeConfigRejectsWildcardCORS: the network door's CORS contract is
+// exactly one explicit origin, so a wildcard (the ubiquitous "*", or any '*'
+// pattern rs/cors honors) is rejected up front rather than silently opening the
+// internet-facing door to every origin. Table-driven over the wildcard shapes.
+func TestBuildServeConfigRejectsWildcardCORS(t *testing.T) {
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+	for _, origin := range []string{"*", "https://*.example.com", "*.ts.net"} {
+		t.Run(origin, func(t *testing.T) {
+			_, _, err := buildServeConfig([]string{
+				"--database", "postgres://x/db", "--socket", "/tmp/x.sock",
+				"--cors-allowed-origin", origin,
+			})
+			if err == nil {
+				t.Fatalf("buildServeConfig(--cors-allowed-origin %q) = nil, want a wildcard rejection", origin)
+			}
+			if !strings.Contains(err.Error(), "wildcard") {
+				t.Fatalf("error = %q, want it to name the wildcard rejection", err.Error())
+			}
+		})
+	}
+}
+
+// TestBuildServeConfigBadFlagIsUsageError: an unknown flag is a CLI usage
+// mistake, not a server crash — buildServeConfig tags the parse error errUsage
+// so main() exits 2 without re-logging it through slog (the FlagSet already
+// printed usage). flag.ErrHelp stays distinguishable (multi-%w), so run()'s
+// clean-exit help path is unaffected.
+func TestBuildServeConfigBadFlagIsUsageError(t *testing.T) {
+	// The ContinueOnError FlagSet writes usage to stderr; the test only inspects
+	// the returned error, so the stderr noise is harmless.
+	_, _, err := buildServeConfig([]string{"--no-such-flag"})
+	if err == nil {
+		t.Fatal("buildServeConfig(--no-such-flag) = nil, want a usage error")
+	}
+	if !errors.Is(err, errUsage) {
+		t.Fatalf("error %v is not errUsage; main() would re-log a usage mistake as a server crash", err)
+	}
+	if errors.Is(err, flag.ErrHelp) {
+		t.Fatalf("a bad flag must not read as ErrHelp (that is a clean help exit): %v", err)
 	}
 }

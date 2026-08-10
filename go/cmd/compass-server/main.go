@@ -32,11 +32,25 @@ var version = "0.1.0"
 // RPC).
 const apiVersion = "compass.v1"
 
+// errUsage marks a CLI usage error (a bad flag) that buildServeConfig's FlagSet
+// has ALREADY reported to stderr (usage + the parse error). run() returns it so
+// main() can exit non-zero without re-logging it through slog — a typo'd flag is
+// a usage mistake, not a server crash, and double-reporting it as a structured
+// error line reads like the latter.
+var errUsage = errors.New("cli usage error")
+
 func main() {
-	if err := run(); err != nil {
-		slog.Error("compass-server exited with an error", "error", err)
-		os.Exit(1)
+	err := run()
+	if err == nil {
+		return
 	}
+	if errors.Is(err, errUsage) {
+		// The FlagSet already printed usage + the parse error to stderr; exit with
+		// the conventional usage code without re-reporting it as a server error.
+		os.Exit(2)
+	}
+	slog.Error("compass-server exited with an error", "error", err)
+	os.Exit(1)
 }
 
 func run() error {
@@ -90,63 +104,20 @@ func run() error {
 // back as flag.ErrHelp with usage already printed.
 func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 	fs := flag.NewFlagSet("compass-server", flag.ContinueOnError)
-	socketFlag := fs.String("socket", "",
-		"Unix socket to serve compass.v1 on. Defaults to "+
-			"$XDG_RUNTIME_DIR/compass/server.sock, falling back to "+
-			"$HOME/.compass/server.sock.")
-	devHTTPFlag := fs.String("dev-http", "",
-		"Dev only: also serve gRPC-Web on this loopback TCP address (e.g. "+
-			"127.0.0.1:50051) for a browser dev server. Off by default; the "+
-			"shipped path is socket-only. A non-loopback address is rejected.")
-	listenFlag := fs.String("listen", "",
-		"Serve the authenticated gRPC network door on this TCP address (e.g. "+
-			"0.0.0.0:8443). Off by default; the shipped local path is socket-only. "+
-			"Requires --tls-cert and --tls-key together — a bearer token over "+
-			"cleartext is credential disclosure.")
-	tlsCertFlag := fs.String("tls-cert", "",
-		"PEM certificate file terminating TLS on the --listen network door. "+
-			"Required with --listen.")
-	tlsKeyFlag := fs.String("tls-key", "",
-		"PEM private-key file terminating TLS on the --listen network door. "+
-			"Required with --listen.")
-	databaseFlag := fs.String("database", "",
-		"Postgres DSN for the store of record (e.g. postgres://user:pass@host/compass). "+
-			"Defaults to $COMPASS_DATABASE_DSN.")
-	s3EndpointFlag := fs.String("s3-endpoint", "",
-		"S3-compatible object-store endpoint host[:port] (no scheme) for the "+
-			"transcript archive tier (Garage/R2/MinIO/AWS). Defaults to "+
-			"$COMPASS_S3_ENDPOINT. Absent = no archive tier (dev server still boots).")
-	s3BucketFlag := fs.String("s3-bucket", "",
-		"Bucket archive segments are written under. Defaults to $COMPASS_S3_BUCKET.")
-	s3AccessKeyFlag := fs.String("s3-access-key", "",
-		"S3 access key. Defaults to $COMPASS_S3_ACCESS_KEY.")
-	s3SecretKeyFlag := fs.String("s3-secret-key", "",
-		"S3 secret key. Defaults to $COMPASS_S3_SECRET_KEY.")
-	s3RegionFlag := fs.String("s3-region", "",
-		"S3 region (e.g. us-east-1, or \"garage\" for Garage). Defaults to $COMPASS_S3_REGION.")
-	s3UseTLSFlag := fs.Bool("s3-use-tls", false,
-		"Use https to the S3 endpoint. Defaults to $COMPASS_S3_USE_TLS "+
-			"(\"1\"/\"true\"/\"yes\"/\"on\" = on).")
-	stateDirFlag := fs.String("state-dir", "",
-		"Directory the bootstrap-admin token file is written under (0600). "+
-			"Defaults to the socket's parent directory.")
-	adminHandleFlag := fs.String("admin-handle", "",
-		"Handle of the bootstrap-admin account created (or found) at startup. "+
-			"Defaults to \"admin\". A handle that already names a non-admin "+
-			"account fails startup rather than elevating it.")
-	corsAllowedOriginFlag := fs.String("cors-allowed-origin", "",
-		"Single browser origin the network door exposes gRPC-Web CORS for "+
-			"(e.g. https://host.example.ts.net). Empty = no CORS on the network door.")
+	f := registerServeFlags(fs)
 	forge := registerForgeFlags(fs)
 	showVersion := fs.Bool("version", false, "Print the version and exit.")
 	if err := fs.Parse(args); err != nil {
-		return server.ServeConfig{}, false, err
+		// Wrap with errUsage AND the original: the FlagSet already printed usage +
+		// the message, so main() exits 2 without re-logging. Multi-%w keeps
+		// flag.ErrHelp visible to run()'s help check (a clean exit, not an error).
+		return server.ServeConfig{}, false, fmt.Errorf("%w: %w", errUsage, err)
 	}
 	if *showVersion {
 		return server.ServeConfig{}, true, nil
 	}
 
-	socketPath := *socketFlag
+	socketPath := *f.socket
 	if socketPath == "" {
 		resolved, err := server.DefaultSocketPath()
 		if err != nil {
@@ -156,10 +127,10 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 	}
 
 	var devHTTP *netip.AddrPort
-	if *devHTTPFlag != "" {
-		addr, err := netip.ParseAddrPort(*devHTTPFlag)
+	if *f.devHTTP != "" {
+		addr, err := netip.ParseAddrPort(*f.devHTTP)
 		if err != nil {
-			return server.ServeConfig{}, false, fmt.Errorf("parsing --dev-http address %q: %w", *devHTTPFlag, err)
+			return server.ServeConfig{}, false, fmt.Errorf("parsing --dev-http address %q: %w", *f.devHTTP, err)
 		}
 		// A dev endpoint must stay on the loopback interface — it has no auth and
 		// exists only for the local browser dev server; binding it on a routable
@@ -171,15 +142,22 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		devHTTP = &addr
 	}
 
-	listen, tlsConfig, err := resolveNetworkDoor(*listenFlag, *tlsCertFlag, *tlsKeyFlag)
+	listen, tlsConfig, err := resolveNetworkDoor(*f.listen, *f.tlsCert, *f.tlsKey)
 	if err != nil {
 		return server.ServeConfig{}, false, err
 	}
 
-	databaseDSN := *databaseFlag
-	if databaseDSN == "" {
-		databaseDSN = os.Getenv("COMPASS_DATABASE_DSN")
+	// The network door's CORS contract is exactly one explicit origin, never a
+	// wildcard — it is internet-facing, so an any-origin door is exactly the state
+	// the design forbids. rs/cors treats a literal "*" (or a '*' pattern) as
+	// all-origins, so a copy-pasted "*" would silently open the door with no error.
+	// Reject any '*' up front rather than deep in the CORS layer.
+	if strings.Contains(*f.corsAllowedOrigin, "*") {
+		return server.ServeConfig{}, false, fmt.Errorf(
+			"--cors-allowed-origin must be a single explicit origin, not a wildcard: %q", *f.corsAllowedOrigin)
 	}
+
+	databaseDSN := firstNonEmpty(*f.database, os.Getenv("COMPASS_DATABASE_DSN"))
 	if databaseDSN == "" {
 		return server.ServeConfig{}, false, errors.New("a Postgres DSN is required: pass --database or set $COMPASS_DATABASE_DSN")
 	}
@@ -188,12 +166,12 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 	// the DATABASE_DSN precedence. All-optional: an absent endpoint/bucket leaves
 	// the archive tier unconfigured and the server boots socket-only.
 	s3Config := server.S3Config{
-		Endpoint:  firstNonEmpty(*s3EndpointFlag, os.Getenv("COMPASS_S3_ENDPOINT")),
-		Bucket:    firstNonEmpty(*s3BucketFlag, os.Getenv("COMPASS_S3_BUCKET")),
-		AccessKey: firstNonEmpty(*s3AccessKeyFlag, os.Getenv("COMPASS_S3_ACCESS_KEY")),
-		SecretKey: firstNonEmpty(*s3SecretKeyFlag, os.Getenv("COMPASS_S3_SECRET_KEY")),
-		Region:    firstNonEmpty(*s3RegionFlag, os.Getenv("COMPASS_S3_REGION")),
-		UseTLS:    *s3UseTLSFlag || envTrue(os.Getenv("COMPASS_S3_USE_TLS")),
+		Endpoint:  firstNonEmpty(*f.s3Endpoint, os.Getenv("COMPASS_S3_ENDPOINT")),
+		Bucket:    firstNonEmpty(*f.s3Bucket, os.Getenv("COMPASS_S3_BUCKET")),
+		AccessKey: firstNonEmpty(*f.s3AccessKey, os.Getenv("COMPASS_S3_ACCESS_KEY")),
+		SecretKey: firstNonEmpty(*f.s3SecretKey, os.Getenv("COMPASS_S3_SECRET_KEY")),
+		Region:    firstNonEmpty(*f.s3Region, os.Getenv("COMPASS_S3_REGION")),
+		UseTLS:    *f.s3UseTLS || envTrue(os.Getenv("COMPASS_S3_USE_TLS")),
 	}
 
 	// Forge poll driver (SEA-1810): flag-then-env, all-optional (see forge.resolve).
@@ -211,9 +189,9 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		DatabaseDSN:       databaseDSN,
 		S3:                s3Config,
 		Forge:             forgeConfig,
-		StateDir:          *stateDirFlag,
-		AdminHandle:       *adminHandleFlag,
-		CORSAllowedOrigin: *corsAllowedOriginFlag,
+		StateDir:          *f.stateDir,
+		AdminHandle:       *f.adminHandle,
+		CORSAllowedOrigin: *f.corsAllowedOrigin,
 	}, false, nil
 }
 
@@ -231,6 +209,82 @@ func logOnDrainSignal() func() {
 		}
 	}()
 	return func() { signal.Stop(drainSig) }
+}
+
+// serveFlags holds the pointers for the core (non-forge) compass-server CLI
+// flags. Registered as a group by registerServeFlags so buildServeConfig stays
+// short and the flag→field assembly reads as one block (mirrors forgeFlags).
+type serveFlags struct {
+	socket            *string
+	devHTTP           *string
+	listen            *string
+	tlsCert           *string
+	tlsKey            *string
+	database          *string
+	s3Endpoint        *string
+	s3Bucket          *string
+	s3AccessKey       *string
+	s3SecretKey       *string
+	s3Region          *string
+	s3UseTLS          *bool
+	stateDir          *string
+	adminHandle       *string
+	corsAllowedOrigin *string
+}
+
+// registerServeFlags declares the core compass-server flags on the given FlagSet
+// and returns their pointers. Split out of buildServeConfig so the declaration
+// boilerplate does not inflate it past the length budget.
+func registerServeFlags(fs *flag.FlagSet) serveFlags {
+	return serveFlags{
+		socket: fs.String("socket", "",
+			"Unix socket to serve compass.v1 on. Defaults to "+
+				"$XDG_RUNTIME_DIR/compass/server.sock, falling back to "+
+				"$HOME/.compass/server.sock."),
+		devHTTP: fs.String("dev-http", "",
+			"Dev only: also serve gRPC-Web on this loopback TCP address (e.g. "+
+				"127.0.0.1:50051) for a browser dev server. Off by default; the "+
+				"shipped path is socket-only. A non-loopback address is rejected."),
+		listen: fs.String("listen", "",
+			"Serve the authenticated gRPC network door on this TCP address (e.g. "+
+				"0.0.0.0:8443). Off by default; the shipped local path is socket-only. "+
+				"Requires --tls-cert and --tls-key together — a bearer token over "+
+				"cleartext is credential disclosure."),
+		tlsCert: fs.String("tls-cert", "",
+			"PEM certificate file terminating TLS on the --listen network door. "+
+				"Required with --listen."),
+		tlsKey: fs.String("tls-key", "",
+			"PEM private-key file terminating TLS on the --listen network door. "+
+				"Required with --listen."),
+		database: fs.String("database", "",
+			"Postgres DSN for the store of record (e.g. postgres://user:pass@host/compass). "+
+				"Defaults to $COMPASS_DATABASE_DSN."),
+		s3Endpoint: fs.String("s3-endpoint", "",
+			"S3-compatible object-store endpoint host[:port] (no scheme) for the "+
+				"transcript archive tier (Garage/R2/MinIO/AWS). Defaults to "+
+				"$COMPASS_S3_ENDPOINT. Absent = no archive tier (dev server still boots)."),
+		s3Bucket: fs.String("s3-bucket", "",
+			"Bucket archive segments are written under. Defaults to $COMPASS_S3_BUCKET."),
+		s3AccessKey: fs.String("s3-access-key", "",
+			"S3 access key. Defaults to $COMPASS_S3_ACCESS_KEY."),
+		s3SecretKey: fs.String("s3-secret-key", "",
+			"S3 secret key. Defaults to $COMPASS_S3_SECRET_KEY."),
+		s3Region: fs.String("s3-region", "",
+			"S3 region (e.g. us-east-1, or \"garage\" for Garage). Defaults to $COMPASS_S3_REGION."),
+		s3UseTLS: fs.Bool("s3-use-tls", false,
+			"Use https to the S3 endpoint. Defaults to $COMPASS_S3_USE_TLS "+
+				"(\"1\"/\"true\"/\"yes\"/\"on\" = on)."),
+		stateDir: fs.String("state-dir", "",
+			"Directory the bootstrap-admin token file is written under (0600). "+
+				"Defaults to the socket's parent directory."),
+		adminHandle: fs.String("admin-handle", "",
+			"Handle of the bootstrap-admin account created (or found) at startup. "+
+				"Defaults to \"admin\". A handle that already names a non-admin "+
+				"account fails startup rather than elevating it."),
+		corsAllowedOrigin: fs.String("cors-allowed-origin", "",
+			"Single browser origin the network door exposes gRPC-Web CORS for "+
+				"(e.g. https://host.example.ts.net). Empty = no CORS on the network door."),
+	}
 }
 
 // resolveNetworkDoor validates the three network-door flags as an all-or-none
