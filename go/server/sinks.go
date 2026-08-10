@@ -169,17 +169,18 @@ func startCommsBusConsumers(gctx context.Context, g *errgroup.Group, commsBus *e
 // the failure mode this whole classification split exists to expose, so leaving
 // the numbers unreadable would have undone it.
 //
-// A clean run logs at Info and reads as four zeros. Any contract defect flips it
-// to Error and says the relay is misconfigured, because on the current base a
-// non-zero defect count means every agent turn was lost (runnerhub/hub.go,
-// ContractDefects). This is the minimum that makes the counters observable — the
-// server has no metrics surface to register a gauge on, and inventing one is not
-// this change's job. A future metrics or diagnostics RPC reads the same
-// FrameDiagnostics snapshot.
+// It logs at Info: the three surviving loss signals (unknown_frames,
+// seen_sequence_gap, dropped_acks) are all recoverable — an unknown frame
+// reached no sink, a sequence gap the Client bus resync recovers, a dropped ack
+// costs only a redundant redeliver on the recipient's next reconnect sweep. This
+// is the minimum that makes the counters observable — the server has no metrics
+// surface to register a gauge on, and inventing one is not this change's job. A
+// future metrics or diagnostics RPC reads the same FrameDiagnostics snapshot.
 func logFrameDiagnostics(ctx context.Context, log *slog.Logger, hub *runnerhub.Hub) {
 	d := hub.FrameDiagnostics()
 	log.InfoContext(ctx, "relayed agent frame accounting",
 		slog.Uint64("unknown_frames", d.UnknownFrames),
 		slog.Bool("seen_sequence_gap", d.SeenGap),
+		slog.Uint64("dropped_acks", d.DroppedAcks),
 	)
 }
