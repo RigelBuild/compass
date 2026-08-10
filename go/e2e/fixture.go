@@ -49,6 +49,11 @@ type Fixture struct {
 	// WithCannedModel, else nil. Its lifecycle rides a t.Cleanup registered at
 	// startup, so a consumer never closes it directly.
 	stub *cannedModelServer
+	// now is the injectable wall-clock for the enrollment-readiness poll;
+	// defaults to time.Now. A test overrides it to drive the budget-timeout
+	// branch of waitRunnerEnrolled — the enrollment counterpart to the stack's
+	// s.deps.now() seam.
+	now func() time.Time
 }
 
 // fixtureConfig holds the optional knobs a caller flips through fixtureOption
@@ -271,6 +276,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		serverURL:  serverURL,
 		runtimeDir: runtimeDir,
 		stub:       stub,
+		now:        time.Now,
 	}
 
 	// stack.Up returns as soon as the compass-runner CHILD is spawned, but the

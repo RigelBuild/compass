@@ -156,16 +156,16 @@ func (f *Fixture) RemoveWorkspace(ctx context.Context, containerName, clientRequ
 // probe stops reporting no-runner. The poll respects ctx cancellation; a budget
 // timeout is a legible error.
 func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
-	deadline := time.Now().Add(enrollPollBudget)
+	deadline := f.now().Add(enrollPollBudget)
 	ticker := time.NewTicker(enrollPollInterval)
 	defer ticker.Stop()
 	for {
-		if ready, err := f.runnerEnrolledProbe(ctx); err != nil {
+		if ready, err := f.runnerEnrolledProbe(ctx, deadline); err != nil {
 			return err
 		} else if ready {
 			return nil
 		}
-		if !time.Now().Before(deadline) {
+		if !f.now().Before(deadline) {
 			return fmt.Errorf("runner did not enroll within %s", enrollPollBudget)
 		}
 		select {
@@ -187,17 +187,43 @@ const enrollProbeSessionID = "e2e-enroll-probe-nonexistent-session"
 // CodeUnavailable `no runner enrolled` condition), and a non-nil error for any
 // other failure — which waitRunnerEnrolled surfaces immediately rather than
 // polling through.
-func (f *Fixture) runnerEnrolledProbe(ctx context.Context) (ready bool, err error) {
-	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
+func (f *Fixture) runnerEnrolledProbe(ctx context.Context, deadline time.Time) (ready bool, err error) {
+	perProbe := rpcTimeout
+	if !deadline.IsZero() {
+		if remaining := time.Until(deadline); remaining < perProbe {
+			perProbe = remaining
+		}
+	}
+	if perProbe <= 0 {
+		perProbe = time.Millisecond
+	}
+	rctx, cancel := context.WithTimeout(ctx, perProbe)
 	defer cancel()
 	_, err = f.Compass().StopAgentSession(rctx, connect.NewRequest(&compassv1.StopAgentSessionRequest{
 		SessionId: enrollProbeSessionID,
 	}))
-	if err == nil {
-		return true, nil
-	}
-	if connect.CodeOf(err) == connect.CodeUnavailable && strings.Contains(err.Error(), "no runner enrolled") {
+	ready, retry, cerr := classifyEnrollProbe(err)
+	if retry {
 		return false, nil
 	}
-	return false, fmt.Errorf("runner enrollment probe (StopAgentSession): %w", err)
+	return ready, cerr
+}
+
+// classifyEnrollProbe classifies a StopAgentSession probe result into the
+// enrollment-readiness signal, as a pure function so its branches are unit
+// testable without a live client. A nil error means the Runner is enrolled. The
+// substring "no runner enrolled" is a load-bearing cross-package coupling to the
+// production error raised by routerFor at go/internal/runnerhub/hub.go; only that specific
+// CodeUnavailable condition is treated as not-yet-ready (retry). A CodeUnavailable
+// that does NOT carry that message — a transient transport flap — is intentionally
+// surfaced as fatal rather than retried, which is acceptable for a deterministic
+// e2e readiness gate. Any other error is a real failure surfaced immediately.
+func classifyEnrollProbe(err error) (ready bool, retry bool, cerr error) {
+	if err == nil {
+		return true, false, nil
+	}
+	if connect.CodeOf(err) == connect.CodeUnavailable && strings.Contains(err.Error(), "no runner enrolled") {
+		return false, true, nil
+	}
+	return false, false, fmt.Errorf("runner enrollment probe (StopAgentSession): %w", err)
 }
