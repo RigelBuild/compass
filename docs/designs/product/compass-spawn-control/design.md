@@ -10,6 +10,15 @@ Matt-ruled amendments, re-grounded against the current compass tree
 (`main@origin`, 2026-08-07). Orion's DL-053..060 are re-expressed here as
 DL-164..DL-171.
 
+> **Amendment (DL-185, Matt 2026-08-07):** the manual add-a-workstream /
+> create-agent surface is dropped from the Compass UI — `NewWorkstreamDialog`,
+> `store.addWorkstream`, the `WorkstreamSpec` type, and the "＋ New workstream"
+> toolbar button. Cards come from the tracker and the Manager builds the tree
+> (issues are forge-ingested per DL-069/DL-161; the Manager builds the rest per
+> DL-095/DL-134; positive replacement SEA-1820). The sections below are
+> reconciled to the surviving start/stop surface — `StartAgentDialog`, the
+> spawn/stop phase machine, and stop control stay.
+
 ## Problem / Intent
 
 The Bridge board can observe and stop, but not start: the server's
@@ -21,8 +30,8 @@ awaits `client.stopAgentSession({ sessionId })` on the live `CompassClient`,
 refusing fixture-sourced sessions and offline stores with a surfaced reason,
 triggered by the LogPanel "■ stop" button (`components/LogPanel.tsx:73-98`).
 But there is **no start/provision trigger anywhere in `apps/ui/src`**: nothing
-in the UI calls `ProvisionAgentWorkspace` or `StartAgentSession`, and no board
-surface adds a card and names its agent. This record designs the human-facing
+in the UI calls `ProvisionAgentWorkspace` or `StartAgentSession`. This record
+designs the human-facing
 control that starts a workstream agent (provision + start, with an optional
 initial prompt) from the board, and hardens the existing stop into the same
 control model.
@@ -44,9 +53,7 @@ SHALL binding one container per agent account** (DL-170, Matt ruled
 rather than by an incidental Runner naming property; §DL-170 carries the full
 argument. The spec doc is reconciled in T0 (where the wire change actually
 lands), per the "spec updated as the last step of implementation" convention —
-not this design-only PR, which has no code. The add-agent path needs no spec
-change: it reuses the existing `CommsService.CreateAgent`
-(`proto/compass/v1/comms.proto:41-42`), and the reject-on-live rule **agrees
+not this design-only PR, which has no code. The reject-on-live rule **agrees
 with** the container-scoped SHALL at `compass.md:368-370`.
 
 *(Port note: the orion record carried a fourth reconciliation — relaxing
@@ -105,11 +112,6 @@ Baseline RPCs from `proto/compass/v1/compass.proto`, verified this run:
   the server to the UI; `AgentSessionStatus` (`compass.proto:324-327`) pushed
   on every transition. **Already consumed by the store's live board read**
   (`store.ts:926-932`, `runEventStream`).
-- Agent-account creation: `rpc CreateAgent(...)` on **CommsService**
-  (`comms.proto:41-42` — owner = the authenticated caller). Already exists —
-  no proto change; impl at `go/internal/comms/comms.go:120`, store
-  `go/internal/store/accounts.go:131` (handle required, `:132-134`; mints the
-  agent + home channel in one tx). The add-agent flow consumes it.
 
 **Change 1 (DL-166) — new `rpc SpawnAgent` on CompassService** (after
 `StartAgentSession`). Two new messages; the request carries the agent
@@ -198,12 +200,12 @@ RPC (`go/server/service.go:51-53`, checked per-handler — e.g. `:131-132`,
 failure, not only per-session errors — the shipped `stopAgent` already routes
 exactly this refusal (`store.ts:1808-1815`).
 
-### Control flow: add-a-workstream (no RPC) vs start-an-agent (`SpawnAgent`)
+### Control flow: start an agent (`SpawnAgent`)
 
-Two distinct client operations (DL-164). Adding a workstream to an agent is a
-**board** operation and makes **no** lifecycle RPC at all — it creates the
-card and names its agent, nothing more. Starting an agent is the lifecycle
-operation, one RPC — the server orchestrates Provision → Start (DL-166):
+Starting an agent is the lifecycle operation, one RPC — the server
+orchestrates Provision → Start (DL-166). Cards come from the tracker (issues
+are forge-ingested, not minted in the UI — DL-185); the human's only
+lifecycle affordance is start/stop on an existing card:
 
 1. Start = mint one `client_request_id` (UUID); call
    `SpawnAgent(agent_account_id, initial_prompt, client_request_id)` →
@@ -254,9 +256,7 @@ operation, one RPC — the server orchestrates Provision → Start (DL-166):
    an internal error, not `AlreadyExists`. The existing `errAlreadyRunning`
    guard (`runner/host.go:224-238`) cannot carry the rule either: it sits
    inside `StartAgentSession`, and a composite Provision→Start against a
-   live agent never reaches it. Starting a second workstream on a live agent
-   is therefore not a start at all: the card is added to the board and the
-   running agent picks it up.
+   live agent never reaches it.
 2. Stop = `StopAgentSession(session_id)` — **already shipped**
    (`store.ts:1816-1849`): stops the observed session, refuses fixture
    sessions and offline stores with a surfaced reason routed to the error
@@ -289,8 +289,8 @@ Two pieces of state with an explicit precedence rule:
 `AgentSessionStatus` **attributed to that agent** arrives (Change 2); from
 then on the live state wins and the binding phase holds at `running`. A
 precedence *switch*, not an overwrite — `SpawnPhase` does not grow the
-live-session variants. A card with no binding (added but never started)
-shows no pill. Because the live event stream is already wired in compass
+live-session variants. A card with no binding (never started) shows no pill.
+Because the live event stream is already wired in compass
 (`store.ts:926-932`), the switch is **attribution-gated, not lane-gated**
 (an amendment to orion's "T6-gated" phrasing): it happens the moment the
 first attributed status for that agent lands, which requires T0's Change 2
@@ -312,22 +312,11 @@ the compass `Issue.id` (`stub-data.ts:203-205`).)*
 
 ### Surfaces
 
-- **"＋ New workstream" button** in the Bridge toolbar (`components/
-  Bridge.tsx`, beside the board-mode segment) opening a
-  **NewWorkstreamDialog** with: agent picker over existing accounts **plus a
-  "＋ new agent" path** (DL-164: the flow must be able to create agents) —
-  the new-agent path calls `CommsService.CreateAgent` (`comms.proto:41-42`)
-  and uses the returned account id as the card's assignee (`Issue.assignee`,
-  `stub-data.ts:231`) — plus board fields (title, priority). Submit = the
-  store's `addWorkstream`. **This surface starts nothing**: no `SpawnAgent`,
-  no prompt field, and it works whether the agent is stopped, already live,
-  or brand new.
 - **Start** is its own affordance on the card (T4) for a card whose agent is
   not live: it opens a **StartAgentDialog** whose only field is the optional
   initial prompt, and submits the store's `startAgent`. It is absent when
   the agent already holds a live session, because `SpawnAgent` would reject
-  (`CodeAlreadyExists`) — the card is simply added to the running agent's
-  board instead.
+  (`CodeAlreadyExists`).
 - **Stop** stays where it is: the LogPanel "■ stop" button
   (`LogPanel.tsx:73-98`), already wired to the real `store.stopAgent()`
   (`:85`) and already disabled for fixture sessions (`:79`), gains a
@@ -379,9 +368,6 @@ equally.
 - **Accept self-spawned-only reconcile scope**: no wire change, but a
   session started by another client or surviving a refresh can't reconcile.
   Rejected (Matt ruled the wire attribution, DL-167).
-- **Add-then-start as one fused action**: rejected (DL-164) — fusing them
-  makes a second workstream on a live agent impossible to express, since the
-  start half would be rejected by the server.
 - **Server-side reject-on-live check over `SessionForAccount`**: compass now
   has the reverse map orion lacked (`relay_comms.go:157-171`), but it fails
   open after a Runner re-enroll (`hub.go:707-711`); the Runner scan is
@@ -402,7 +388,7 @@ Every task below inherits these; task briefs do not restate them.
   is `go/server/service.go`, `projection.go` is
   `go/internal/board/projection.go`. A bare `compass.md` is the spec,
   `docs/specs/product/compass.md`. Names with no candidate (`spawn.ts`,
-  `spawn.test.ts`, `NewWorkstreamDialog.tsx`, `StartAgentDialog.tsx`) are
+  `spawn.test.ts`, `StartAgentDialog.tsx`) are
   files this record proposes. All line-cited coordinates were verified
   against `main@origin` in the porting run (2026-08-07); citations are
   additionally anchored on symbol names, stable across drift.
@@ -490,25 +476,9 @@ export interface SpawnSpec {
   readonly agentAccountId: string;
   /** Empty = start idle. */
   readonly initialPrompt: string;
-  /** The existing card to start the agent on. Starting is always against a
-   *  card that already exists (per DL-164: adding one is a separate board
-   *  action). */
+  /** The existing card to start the agent on — cards come from the tracker,
+   *  not minted in the UI (DL-185). */
   readonly workstreamId: string;
-}
-
-/** The board-only add-a-workstream input — no prompt, no lifecycle fields. */
-export interface WorkstreamSpec {
-  /** The agent to assign the card to. The "＋ new agent" path cannot carry
-   *  an account id — the id is CreateAgent's OUTPUT, and CreateAgent
-   *  requires a non-empty handle (accounts.go:132-134, ErrInvalidArgument
-   *  on empty) — so the arm carries the handle instead and the store calls
-   *  CommsService.CreateAgent first (per DL-164), then assigns the returned
-   *  id. */
-  readonly agent:
-    | { readonly kind: "existing"; readonly agentAccountId: string }
-    | { readonly kind: "new"; readonly handle: string; readonly displayName?: string };
-  readonly title: string;
-  readonly priority: Priority;
 }
 ```
 
@@ -547,7 +517,6 @@ Interfaces:
 export interface SessionBinding { /* as above */ }
 export type SpawnPhase = /* as above */;
 export interface SpawnSpec { /* as above */ }
-export interface WorkstreamSpec { /* as above */ }
 export function beginSpawn(spec: SpawnSpec, requestId: string): SessionBinding;
 export function applySpawned(b: SessionBinding, sessionId: string): SessionBinding;
 // Domain: running | stop-failed → stopping (a stop retry re-enters stopping
@@ -569,26 +538,17 @@ captured `initialPrompt` is empty and `working` otherwise;
 `applySessionStatus` leaves `SpawnPhase` at `running`. Watch fail (module
 absent), then implement.
 
-### T2 — Store actions: `addWorkstream`, `startAgent`, stop-binding integration, `retrySpawn`
+### T2 — Store actions: `startAgent`, stop-binding integration, `retrySpawn`
 
 Extend `AppStore` and `createAppStore` (`store.ts:667`) with the control
 actions, **live-wired** against `options.compass` / `options.comms` per
 DL-165 — awaiting the real RPCs when clients are present, refusing with a
 surfaced reason when absent (the shipped `stopAgent` shape).
 
-Adding a workstream and starting an agent are **two** actions, not one
-(DL-164): the first is a pure board mutation, the second is the lifecycle
-call. Either can happen without the other.
+Starting an agent is the lifecycle operation, against an existing
+(forge-ingested) card — adding cards from the UI is dropped (DL-185). A start
+or a stop happens independently on a card:
 
-- `addWorkstream(spec)` — the **board** operation. On
-  `spec.agent.kind === "new"` (DL-164), first await
-  `CommsService.CreateAgent({ handle, displayName })` on `options.comms` →
-  account id (offline: refuse with a surfaced reason); on `"existing"` use
-  `spec.agent.agentAccountId` directly. Then create a board `Issue` card
-  (title, priority, `assignee` = the agent id, no branch/PR fields) and
-  return its id. **No `client_request_id`, no `SpawnAgent`, no
-  `SessionBinding`** — the card exists with no lifecycle state, and the
-  agent it names may be stopped, live on another card, or never started.
 - `startAgent(spec)` — the **lifecycle** operation, against an existing
   card. Mint a `client_request_id`; create the `SessionBinding` keyed by
   `spec.workstreamId` (phase `spawning`); await
@@ -631,11 +591,6 @@ Interfaces:
 
 ```ts
 // store.ts — AppStore additions
-/** Add a workstream card and assign it to an agent (per DL-164: adding a
- *  workstream is a board operation, starting an agent is a separate one).
- *  No lifecycle effect, no SpawnAgent, no SessionBinding. A new-agent spec
- *  first awaits CommsService.CreateAgent. Returns the new card's id. */
-addWorkstream: (spec: WorkstreamSpec) => Promise<string>;
 /** Start the agent on an existing card via the composite SpawnAgent RPC
  *  (per DL-166). Rejects when that agent already holds a live session
  *  (CodeAlreadyExists, per DL-164) — the rejection surfaces on spawnAlert
@@ -659,9 +614,7 @@ selectedAgentStartedBinding: () => SessionBinding | undefined;
 Test cycle: a new `store-spawn.test.ts`, driving the actions through a fake
 `CompassClient` / `CommsClient` (method-stubbed objects injected through the
 existing `AppStoreOptions` — the pattern `store.live.test.ts` already uses) —
-`addWorkstream` creates a card and mints **no** binding and calls no compass
-method; a new-agent spec awaits `createAgent` first and assigns the returned
-id; `startAgent` calls `spawnAgent` once with the spec's fields and drives
+`startAgent` calls `spawnAgent` once with the spec's fields and drives
 the binding to `running`; `startAgent` against an agent that already holds a
 started binding is rejected locally — no dial, no second binding, `spawnAlert`
 kind `rejected`; a `CodeAlreadyExists` from the fake maps to the same alert;
@@ -673,19 +626,10 @@ fake stop takes stopping→stop-failed, and a second `stopAgent` re-enters
 refusals surface reasons and mint no binding; `retrySpawn` re-sends the same
 `clientRequestId`. Red first against the missing actions.
 
-### T3 — New-workstream + start-agent dialogs + Bridge toolbar entry
+### T3 — Start-agent dialog
 
-Two dialogs, because adding a workstream and starting an agent are two
-operations (DL-164): neither dialog can perform the other's effect.
-
-**`components/NewWorkstreamDialog.tsx`** — opened by a "＋ New workstream"
-button in the Bridge toolbar. Fields: agent — a select over existing
-accounts **plus a "＋ new agent" option** that reveals a handle field
-(producing `agent: { kind: "new", handle }`) — title, priority. **No
-initial-prompt field and no lifecycle effect.** Validation: agent (existing
-selection or a new-agent handle) + title required. Submit calls
-`store.addWorkstream(spec)` and closes; Escape/Cancel closes without
-mutation.
+One dialog — the start operation. Cards come from the tracker (DL-185), so
+there is no add-a-card dialog and no Bridge toolbar entry.
 
 **`components/StartAgentDialog.tsx`** — opened by the card's "▶ start"
 affordance (T4), which fixes the agent and the workstream, so the only field
@@ -702,12 +646,6 @@ not store state.
 Interfaces:
 
 ```ts
-// components/NewWorkstreamDialog.tsx (new)
-export const NewWorkstreamDialog: Component<{
-  agents: Agent[];
-  onSubmit: (spec: WorkstreamSpec) => void;
-  onCancel: () => void;
-}>;
 // components/StartAgentDialog.tsx (new)
 export const StartAgentDialog: Component<{
   spec: Omit<SpawnSpec, "initialPrompt">;
@@ -716,15 +654,8 @@ export const StartAgentDialog: Component<{
 }>;
 ```
 
-Test cycle: new `NewWorkstreamDialog.test.tsx` — renders every field and
-**no** prompt field; the "＋ new agent" option reveals the handle field and a
-new-agent submit carries it; submit disabled until required fields set;
-submit produces a `WorkstreamSpec` through `onSubmit`; cancel fires
-`onCancel` without `onSubmit`; submitting mints no binding. New
-`StartAgentDialog.test.tsx` — an empty prompt submits (start idle) and the
-spec carries the fixed agent + workstream. Plus a `Bridge.test.tsx` assertion
-that the toolbar button opens the new-workstream dialog and a submitted card
-appears on the board with no binding.
+Test cycle: new `StartAgentDialog.test.tsx` — an empty prompt submits (start
+idle) and the spec carries the fixed agent + workstream.
 
 ### T4 — Start affordance + stop confirm + status surfaces (LogPanel, board card)
 
@@ -918,18 +849,16 @@ the compass service-owner. Independent of the UI tasks, so no freeze block.
   classification (DL-171); the one-container-per-agent-account SHALL in
   `compass.md` (DL-170); server tests incl. the pre-Provision
   zero-Provision-commands assertion. **Blocked on** nothing.
-- [ ] T1 — `spawn.ts`: `SessionBinding` / `SpawnPhase` / `SpawnSpec` /
-  `WorkstreamSpec` types + pure reducers + `bindingDotState`;
-  `spawn.test.ts` red→green. **Blocked on** nothing.
-- [ ] T2 — store actions `addWorkstream` (+ create-agent path) /
-  `startAgent` (reject-on-live, live-wired) / `stopAgent` binding
-  integration / `retrySpawn` + `sessionBinding` /
+- [ ] T1 — `spawn.ts`: `SessionBinding` / `SpawnPhase` / `SpawnSpec` types +
+  pure reducers + `bindingDotState`; `spawn.test.ts` red→green. **Blocked
+  on** nothing.
+- [ ] T2 — store actions `startAgent` (reject-on-live, live-wired) /
+  `stopAgent` binding integration / `retrySpawn` + `sessionBinding` /
   `selectedAgentStartedBinding` accessors + `spawnAlert`;
   `store-spawn.test.ts` red→green with fake clients. **Blocked on** T1, and
   on T0 for the generated `spawnAgent` method (DL-165: no fixture lane).
-- [ ] T3 — `NewWorkstreamDialog.tsx` (+ "＋ new agent" path) +
-  `StartAgentDialog.tsx` + Bridge toolbar entry; both dialog suites + the
-  Bridge assertion red→green. **Blocked on** T2.
+- [ ] T3 — `StartAgentDialog.tsx`; the dialog suite red→green. **Blocked on**
+  T2.
 - [ ] T4 — card "▶ start" affordance (no-binding **or** `stopped`, DL-168);
   LogPanel two-step confirm (guard = enablement, agent-scoped, `stop-failed`
   covered per DL-169); card restructure to `<div role="button">` + pill +
@@ -947,18 +876,21 @@ port-amendment row (DL-165). The orion rulings' full arguments live in the
 source record; the compass-grounded substance is folded into the sections
 above. Mapping:
 
-### DL-164 (orion OQ-B / DL-053) — two paths; multiple workstreams per agent; existing-or-new agent
+### DL-164 (orion OQ-B / DL-053) — start-an-agent; multiple cards per agent; reject-on-live
 
-Adding a workstream is a **board** operation (`addWorkstream`, no lifecycle
-RPC); starting an agent is the **lifecycle** operation (`startAgent` →
+Starting an agent is the **lifecycle** operation (`startAgent` →
 `SpawnAgent`), and `SpawnAgent` rejects when the agent already holds a live
-session. Agents need multiple workstreams, so the `SessionBinding` map is
-keyed by `workstreamId`; the flow can create agents via the existing
-`CommsService.CreateAgent`. One container per agent account, one live
+session. An agent owns multiple cards, so the `SessionBinding` map is keyed
+by `workstreamId` (= `Issue.id`); one container per agent account, one live
 session in it; the agent clones and works its several repos inside that one
 container. Bindings for one agent never share a session: at most one of an
-agent's cards carries a `sessionId`, every other card is board-only with no
-binding.
+agent's cards carries a `sessionId`, every other card has no binding.
+
+**Add-half superseded by DL-185 (Matt, 2026-08-07):** the manual
+add-a-workstream board mutation (`addWorkstream`) and UI-side agent creation
+(`CommsService.CreateAgent`) are dropped — cards come from the tracker
+(issues forge-ingested, DL-069/DL-161) and the Manager builds the tree
+(DL-095/DL-134; positive replacement SEA-1820), not a UI mutation.
 
 ### DL-165 (port amendment, this record) — live-wired posture
 

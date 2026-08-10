@@ -14,7 +14,7 @@
 // attributed live `AgentSessionState` arrives (Board state model precedence).
 
 import type { AgentSessionState } from "@compass/client";
-import type { AgentState, Priority } from "./stub-data";
+import type { AgentState } from "./stub-data";
 
 /** One started workstream's wire-lifecycle bookkeeping. Store-internal —
  *  never a fixture shape (stub-data.ts Issue/Agent stay frozen). Keyed by
@@ -55,21 +55,6 @@ export interface SpawnSpec {
 	readonly initialPrompt: string;
 	/** The existing card to start the agent on (per DL-164). */
 	readonly workstreamId: string;
-}
-
-/** The board-only add-a-workstream input — no prompt, no lifecycle fields. */
-export interface WorkstreamSpec {
-	/** The agent to assign the card to. The "＋ new agent" path carries a handle
-	 *  (CreateAgent's input) instead of an account id (its output), per DL-164. */
-	readonly agent:
-		| { readonly kind: "existing"; readonly agentAccountId: string }
-		| {
-				readonly kind: "new";
-				readonly handle: string;
-				readonly displayName?: string;
-		  };
-	readonly title: string;
-	readonly priority: Priority;
 }
 
 /** Mint a fresh binding in `spawning`, capturing the spec's prompt so the dot
