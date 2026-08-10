@@ -42,18 +42,28 @@ type pageLister interface {
 type DriverConfig struct {
 	Interval time.Duration // > 0; the caller defaults it
 	Log      *slog.Logger  // nil -> slog.Default()
+	// ProbeEveryAll304 sets how often a repo whose walk served only 304s
+	// triggers a lastPage+1 boundary probe (M1).
+	ProbeEveryAll304 int // every Nth consecutive all-304 walk triggers a lastPage+1 boundary probe (M1); <=0 -> default 60
 }
+
+// defaultAll304ProbeEvery is the default M1 boundary-probe cadence: every 60th
+// consecutive all-304 walk of a repo triggers one lastPage+1 probe (~hourly at
+// the 1m poll interval).
+const defaultAll304ProbeEvery = 60
 
 // Driver runs the DL-053 conditional-poll loop: each pass enumerates the enabled
 // targets, walks each repo's pages against its stored fetch cursors, sinks each
 // 200 page through the Ingester, and advances the durable cursor ONLY after the
 // page's issues have sunk (the Idempotency invariant).
 type Driver struct {
-	client  pageLister
-	ing     *Ingester
-	cursors PollStore
-	log     *slog.Logger
-	every   time.Duration
+	client     pageLister
+	ing        *Ingester
+	cursors    PollStore
+	log        *slog.Logger
+	every      time.Duration
+	probeEvery int            // M1 boundary-probe cadence (see defaultAll304ProbeEvery)
+	all304     map[string]int // per-repo consecutive all-304 walk counter
 }
 
 // NewDriver returns a Driver polling client's pages, sinking through ing, and
@@ -63,12 +73,22 @@ func NewDriver(client pageLister, ing *Ingester, cursors PollStore, cfg DriverCo
 	if log == nil {
 		log = slog.Default()
 	}
+	interval := cfg.Interval
+	if interval <= 0 {
+		interval = time.Minute
+	}
+	probeEvery := cfg.ProbeEveryAll304
+	if probeEvery <= 0 {
+		probeEvery = defaultAll304ProbeEvery
+	}
 	return &Driver{
-		client:  client,
-		ing:     ing,
-		cursors: cursors,
-		log:     log,
-		every:   cfg.Interval,
+		client:     client,
+		ing:        ing,
+		cursors:    cursors,
+		log:        log,
+		every:      interval,
+		probeEvery: probeEvery,
+		all304:     map[string]int{},
 	}
 }
 
@@ -95,6 +115,9 @@ func (d *Driver) Run(ctx context.Context) error {
 // isolated: the pass continues to the next repo. ctx cancellation ends the pass
 // promptly (the per-repo walk is deadline-gated through the fetch).
 func (d *Driver) pass(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
 	repos, err := d.cursors.ListEnabledRepos(ctx)
 	if err != nil {
 		d.log.Error("forge poll: list enabled repos", "err", err)
@@ -124,14 +147,29 @@ func (d *Driver) pollRepo(ctx context.Context, repo string) {
 		etags[c.Page] = c
 	}
 
-	var issues, pages int
+	var issues, pages, lastRemaining int
+	advanced := false // any 200 page whose issues sank this walk
+	probing := false  // this fetch is the M1 boundary probe (force etag="")
+	probed := false   // the probe already ran this walk (never probe twice)
 	page := 1
 	for {
 		cur := etags[page]
-		res, err := d.client.ListIssuesPage(ctx, repo, forge.IssueFilter{}, page, cur.ETag)
+		etag := cur.ETag
+		if probing {
+			// M1 probe of lastPage+1: an unconditional GET (a never-stored page
+			// already has an empty etag, but force it so a stray stored row
+			// cannot make the probe conditional).
+			etag = ""
+			probing = false
+		}
+		res, err := d.client.ListIssuesPage(ctx, repo, forge.IssueFilter{}, page, etag)
 		if err != nil {
 			if errors.Is(err, forge.ErrBudgetExhausted) {
 				d.log.Warn("forge poll: budget exhausted", "repo", repo, "page", page)
+				return
+			}
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				// Shutdown mid-walk: return cleanly, no spurious Error (LOW-1).
 				return
 			}
 			d.log.Error("forge poll: list page", "repo", repo, "page", page, "err", err)
@@ -139,6 +177,7 @@ func (d *Driver) pollRepo(ctx context.Context, repo string) {
 		}
 
 		pages++
+		lastRemaining = res.RateLimitRemaining
 
 		var hasNext bool
 		if res.NotModified {
@@ -146,28 +185,59 @@ func (d *Driver) pollRepo(ctx context.Context, repo string) {
 			// the STORED HasNext, not the response.
 			hasNext = cur.HasNext
 		} else {
-			if err := d.ing.IngestIssues(ctx, repo, res.Issues); err != nil {
-				// Mid-page sink failure: do NOT advance this page's cursor and
-				// abort the repo's pass. Next tick re-fetches with the OLD etag.
-				d.log.Error("forge poll: ingest page", "repo", repo, "page", page, "err", err)
-				return
-			}
-			issues += len(res.Issues)
-			if err := d.cursors.UpsertListCursorPage(ctx, repo, ListPageCursor{
-				Page:    page,
-				ETag:    res.ETag,
-				HasNext: res.HasNext,
-			}); err != nil {
-				d.log.Error("forge poll: upsert cursor", "repo", repo, "page", page, "err", err)
-				return
+			// Zero-issue upsert-skip (design.md:557-560): a 200 with no issues
+			// sinks nothing, writes NO cursor row, and does not count as an
+			// advance — it still drives the walk on res.HasNext. This keeps an
+			// empty probe page from persisting a tail row that would 304 forever
+			// and sit outside PruneListCursorPages' post-walk drop.
+			if len(res.Issues) > 0 {
+				if err := d.ing.IngestIssues(ctx, repo, res.Issues); err != nil {
+					// Mid-page sink failure: do NOT advance this page's cursor and
+					// abort the repo's pass. Next tick re-fetches with the OLD etag.
+					d.log.Error("forge poll: ingest page", "repo", repo, "page", page, "err", err)
+					return
+				}
+				issues += len(res.Issues)
+				if err := d.cursors.UpsertListCursorPage(ctx, repo, ListPageCursor{
+					Page:    page,
+					ETag:    res.ETag,
+					HasNext: res.HasNext,
+				}); err != nil {
+					d.log.Error("forge poll: upsert cursor", "repo", repo, "page", page, "err", err)
+					return
+				}
+				advanced = true
 			}
 			hasNext = res.HasNext
 		}
 
-		if !hasNext {
+		if hasNext {
+			page++
+			continue
+		}
+
+		// The walk reached its tail at `page` (== lastPage). Decide the M1
+		// boundary probe (design.md:545-561).
+		if !probed && !advanced {
+			// A true all-304 walk: bump the per-repo streak and, every Nth such
+			// consecutive walk, probe lastPage+1 once to catch content that
+			// entered sorted beyond the stored boundary.
+			d.all304[repo]++
+			if d.all304[repo] >= d.probeEvery {
+				d.all304[repo] = 0
+				probed = true
+				probing = true
+				page++
+				continue
+			}
 			break
 		}
-		page++
+		if advanced {
+			// Any content advance (including a probe that re-anchored the tail)
+			// resets the streak.
+			d.all304[repo] = 0
+		}
+		break
 	}
 
 	if err := d.cursors.PruneListCursorPages(ctx, repo, page); err != nil {
@@ -176,5 +246,7 @@ func (d *Driver) pollRepo(ctx context.Context, repo string) {
 	}
 
 	d.log.Info("forge poll: repo polled",
-		"repo", repo, "issues", issues, "pages", pages, "dur", time.Since(start))
+		"repo", repo, "issues", issues, "pages", pages,
+		"not_modified", !advanced, "dur", time.Since(start),
+		"ratelimit_remaining", lastRemaining)
 }
