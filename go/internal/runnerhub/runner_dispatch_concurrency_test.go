@@ -24,6 +24,7 @@ package runnerhub
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -42,9 +43,16 @@ type fakeSessionHost struct {
 	provisionCalls int
 	provisionLive  int // currently in Provision (between entered-signal and release)
 	stopCalls      int
+	refreshCalls   int
 
 	provisionEntered chan struct{} // one value per Provision as it parks (buffered by the test)
 	provisionRelease chan struct{} // Provision returns once this is closed
+
+	refreshEntered chan struct{} // one value per RefreshSecrets as it parks (buffered by the test)
+	refreshRelease chan struct{} // RefreshSecrets returns once this is closed
+
+	statusEntered chan struct{} // one value per Status as it parks (buffered by the test)
+	statusRelease chan struct{} // Status returns once this is closed
 }
 
 func (f *fakeSessionHost) Start(context.Context, *compassv1.StartAgentSessionRequest, string) (string, error) {
@@ -86,11 +94,56 @@ func (f *fakeSessionHost) Stop(context.Context, string) error {
 	return nil
 }
 
-func (f *fakeSessionHost) Remove(context.Context, string) error         { return nil }
-func (f *fakeSessionHost) Reload(context.Context, string) error         { return nil }
-func (f *fakeSessionHost) RefreshSecrets(context.Context, string) error { return nil }
-func (f *fakeSessionHost) RefreshConfig(context.Context) error          { return nil }
-func (f *fakeSessionHost) Status(context.Context, string) ([]*compassv1.AgentSessionStatus, error) {
+func (f *fakeSessionHost) Remove(context.Context, string) error { return nil }
+func (f *fakeSessionHost) Reload(context.Context, string) error { return nil }
+
+// RefreshSecrets is the rotation (SecretsVersion-signal) path. Like Provision it
+// can park on a channel so a test can hold a slow rotation in flight and observe
+// whether it head-of-line-blocks the dispatch loop. With nil gates it returns
+// immediately (the common case for tests that do not exercise rotation).
+func (f *fakeSessionHost) RefreshSecrets(ctx context.Context, _ string) error {
+	f.mu.Lock()
+	f.refreshCalls++
+	entered, release := f.refreshEntered, f.refreshRelease
+	f.mu.Unlock()
+
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+func (f *fakeSessionHost) RefreshConfig(context.Context) error { return nil }
+func (f *fakeSessionHost) Status(ctx context.Context, _ string) ([]*compassv1.AgentSessionStatus, error) {
+	f.mu.Lock()
+	entered, release := f.statusEntered, f.statusRelease
+	f.mu.Unlock()
+
+	if entered != nil {
+		select {
+		case entered <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	if release != nil {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return nil, nil
 }
 
@@ -102,11 +155,11 @@ func (f *fakeSessionHost) leaveProvision() {
 
 // runnerLoopFixture stands up the hub + mounted h2c wire, dials a real Runner in,
 // and drives runner.RunSessions over the live Sessions stream against host. It
-// returns the hub (to push commands via its exported relay methods), a context
-// bound to the loop, its cancel, and a channel carrying RunSessions' return. The
-// caller gates on host park channels; waitRouterAttached ensures the router is
-// bound before the first command is pushed.
-func runnerLoopFixture(t *testing.T, host runner.SessionHost) (hub *Hub, ctx context.Context, cancel context.CancelFunc, loopDone <-chan error) {
+// returns the hub (to push commands via its exported relay methods), the loop's
+// cancel, and a channel carrying RunSessions' return. The caller gates on host
+// park channels; waitRouterAttached ensures the router is bound before the first
+// command is pushed.
+func runnerLoopFixture(t *testing.T, host runner.SessionHost) (hub *Hub, cancel context.CancelFunc, loopDone <-chan error) {
 	t.Helper()
 	hub = newHubOnly()
 	resolver := &fakeResolver{tokens: map[string]resolverEntry{
@@ -114,7 +167,7 @@ func runnerLoopFixture(t *testing.T, host runner.SessionHost) (hub *Hub, ctx con
 	}}
 	url := newMountedH2CServer(t, hub, resolver.resolve)
 
-	ctx, cancel = context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	link, err := runner.Dial(ctx, runner.RunnerConfig{
 		RunnerID:   "runner-1",
 		ServerAddr: url,
@@ -129,7 +182,7 @@ func runnerLoopFixture(t *testing.T, host runner.SessionHost) (hub *Hub, ctx con
 	done := make(chan error, 1)
 	go func() { done <- link.RunSessions(ctx, host, discardLogger()) }()
 	waitRouterAttached(t, hub)
-	return hub, ctx, cancel, done
+	return hub, cancel, done
 }
 
 // A slow Provision does not head-of-line-block a concurrent Stop: while a
@@ -148,7 +201,7 @@ func TestSlowProvisionDoesNotBlockConcurrentStop(t *testing.T) {
 		provisionEntered: make(chan struct{}, 1),
 		provisionRelease: make(chan struct{}),
 	}
-	hub, _, cancel, loopDone := runnerLoopFixture(t, host)
+	hub, cancel, loopDone := runnerLoopFixture(t, host)
 	t.Cleanup(func() { cancel(); <-loopDone })
 
 	// Dispatch a Provision; it parks in the host.
@@ -184,5 +237,121 @@ func TestSlowProvisionDoesNotBlockConcurrentStop(t *testing.T) {
 	case <-provisionDone:
 	case <-timeAfter():
 		t.Fatal("Provision did not complete after release")
+	}
+}
+
+// A slow SecretsVersion rotation does not head-of-line-block a concurrent Stop.
+// SecretsVersion is signal-only (no request id, no result frame), but its
+// handler re-fetches and re-materializes synchronously — a real network+exec
+// cost — so it must run through the per-command goroutine, not inline on the
+// receive loop, or a wedged rotation for one session stalls every other command.
+//
+// RED (SecretsVersion executed inline on the receive loop): the loop calls
+// RefreshSecrets inline and parks in it, so the Stop frame is never Received and
+// hub.Stop blocks until the testTimeout ceiling. GREEN: the rotation runs in its
+// own goroutine, the loop reads on, and the Stop completes while it is parked.
+func TestSlowSecretsRefreshDoesNotBlockConcurrentStop(t *testing.T) {
+	host := &fakeSessionHost{
+		refreshEntered: make(chan struct{}, 1),
+		refreshRelease: make(chan struct{}),
+	}
+	hub, cancel, loopDone := runnerLoopFixture(t, host)
+	t.Cleanup(func() { cancel(); <-loopDone })
+
+	// A live session must be bound for SignalSecretsVersion to push a frame at it.
+	bindSession(hub, "sess-a")
+
+	// Signal a rotation; the Runner dispatches it to RefreshSecrets, which parks.
+	if err := hub.SignalSecretsVersion(); err != nil {
+		t.Fatalf("SignalSecretsVersion = %v, want nil", err)
+	}
+	select {
+	case <-host.refreshEntered:
+	case <-timeAfter():
+		t.Fatal("SecretsVersion rotation never reached the host over the wire")
+	}
+
+	// With the rotation parked, a concurrent Stop must still complete.
+	stopDone := make(chan error, 1)
+	go func() {
+		_, err := hub.Stop(context.Background(), "", &compassv1.StopAgentSessionRequest{SessionId: "sess-a"})
+		stopDone <- err
+	}()
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop while a SecretsVersion rotation was parked = %v, want success", err)
+		}
+	case <-timeAfter():
+		t.Fatal("Stop did not complete while a SecretsVersion rotation was parked; the dispatch loop is head-of-line blocked behind the slow rotation (SecretsVersion still runs inline on the receive loop)")
+	}
+
+	// Release the rotation so the loop can drain cleanly on cancel.
+	close(host.refreshRelease)
+}
+
+// Concurrent per-command result Sends over the REAL client Sessions stream do
+// not race. connect's client BidiStream.Send is NOT safe for concurrent use, and
+// per-command goroutine dispatch has many commands completing and calling d.send
+// (the loop's serialized Send closure) at once. runSessions guards every Send
+// with sendMu; this test forces N result frames to hit d.send simultaneously and
+// runs under -race, so a regression that dropped the runner-side sendMu reddens
+// here (WARNING: DATA RACE on connect's stream write path), mirroring the
+// server-side TestConcurrentDispatchOverRealStreamNoDataRace.
+//
+// The barrier is load-bearing. An instant host arm lets the receive loop pace
+// Receive->spawn->execute->send so the sends effectively serialize and the race
+// never fires. So every Status arm PARKS on entry: the test waits until all N
+// are parked (all N goroutines poised past Receive+spawn, each holding a result
+// to send), then releases them at once — now the N d.send calls actually overlap.
+//
+// This lives in package runnerhub because it needs the real mounted h2c wire and
+// a live client stream driving the production runSessions; the runner package's
+// own seam tests drive a fake stream whose Send is mutex-guarded, so a dropped
+// runner sendMu stays green there. The merge gate therefore MUST run
+// ./internal/runnerhub/... under -race for this invariant to be covered.
+func TestConcurrentResultSendsOverRealStreamNoDataRace(t *testing.T) {
+	const n = 64
+	host := &fakeSessionHost{
+		statusEntered: make(chan struct{}, n),
+		statusRelease: make(chan struct{}),
+	}
+	hub, cancel, loopDone := runnerLoopFixture(t, host)
+	t.Cleanup(func() { cancel(); <-loopDone })
+
+	// Fan out N concurrent Status commands with DISTINCT request ids (distinct ids
+	// avoid the in-flight dedup join — a same-id retry would wait on the first,
+	// not Send a second frame). Each parks in the host.
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("req-%d", i)
+			_, errs[i] = hub.Status(context.Background(), id, &compassv1.GetAgentStatusRequest{SessionId: "sess-x"})
+		}(i)
+	}
+
+	// Wait until all N are parked inside the host — every goroutine is now poised
+	// with a result to send. Releasing them together makes the N d.send calls
+	// overlap, which is what exercises sendMu.
+	for range n {
+		select {
+		case <-host.statusEntered:
+		case <-timeAfter():
+			t.Fatal("not all Status commands reached the host; dispatch is not concurrent")
+		}
+	}
+	close(host.statusRelease)
+	wg.Wait()
+
+	// Every dispatch completed with a correlated result: a concurrent-Send frame
+	// interleave corrupts the wire bytes, so a caller either fails to decode or
+	// never completes (ctx timeout) — both reddening here in addition to -race.
+	for i := range n {
+		if errs[i] != nil {
+			t.Errorf("Status %d = %v, want a correlated result", i, errs[i])
+		}
 	}
 }

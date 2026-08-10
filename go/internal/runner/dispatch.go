@@ -276,11 +276,22 @@ func runSessions(ctx context.Context, stream sessionStream, host SessionHost, lo
 			}
 			return err
 		}
-		// Signal-only arms (SecretsVersion, ConfigVersion) carry no request id and
-		// no result — run them inline on the receive loop (they are cheap and
-		// non-blocking; keeping them off the goroutine path minimizes the diff).
-		switch cmd.GetCommand().(type) {
-		case *compassv1internal.SessionsResponse_SecretsVersion, *compassv1internal.SessionsResponse_ConfigVersion:
+		// ConfigVersion is a signal-only arm that carries no request id and no
+		// result and is genuinely non-blocking: its arm only marks a pass pending
+		// on the coalescing config worker (signalConfig) and returns, so it runs
+		// inline on the receive loop without ever blocking it. SecretsVersion is
+		// also signal-only but is NOT cheap — its arm re-fetches (a network
+		// FetchSecrets) and re-materializes (a container exec) synchronously, so
+		// running it inline would head-of-line-block every other command behind a
+		// slow rotation, the exact block this dispatch exists to remove. It goes
+		// through the per-command goroutine like a correlated command; handle
+		// routes it to execute(ctx, "") and returns nil, so no result frame is
+		// sent, and it is joined by the shutdown wg.Wait like every other spawn.
+		// The initial before-start materialize is unaffected: it lives in
+		// host.Start (FetchSecretsByContainer + Install, strictly before
+		// StartAgent), and RefreshSecrets no-ops with errSessionUnknown until the
+		// session Start records is live, so a rotation can never precede it.
+		if _, ok := cmd.GetCommand().(*compassv1internal.SessionsResponse_ConfigVersion); ok {
 			d.execute(ctx, "", cmd)
 			continue
 		}
@@ -304,7 +315,11 @@ func (d *dispatcher) handle(ctx context.Context, cmd *compassv1internal.Sessions
 	// and has no result variant — it must never enter the request-id dedup map, or
 	// the empty-id key would collapse every signal to one and a later rotation or
 	// config update would never re-materialize. Execute it directly and return no
-	// result frame.
+	// result frame. SecretsVersion reaches here as its live path (the receive loop
+	// spawns it through this goroutine so its network+exec never blocks the loop);
+	// ConfigVersion is filtered inline before the spawn, so it reaches this branch
+	// only via a direct caller (tests) — the case stays for that and for the
+	// empty-id guard above.
 	switch cmd.GetCommand().(type) {
 	case *compassv1internal.SessionsResponse_SecretsVersion, *compassv1internal.SessionsResponse_ConfigVersion:
 		return d.execute(ctx, "", cmd)
