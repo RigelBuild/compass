@@ -7,7 +7,7 @@ Status: Draft
 Compass carries an `initial_prompt` field through its whole start contract
 (proto → server → runner → agent SDK → UI → e2e harness), but the Runner never
 sends it into the container — `(*agentHost).Start` reads only the container
-name (`go/internal/runner/host.go:264-265`: `func (h *agentHost) Start(ctx
+name (`go/internal/runner/host.go:284-285`: `func (h *agentHost) Start(ctx
 context.Context, req *compassv1.StartAgentSessionRequest, resumeBody string)`
 … `name := req.GetContainerName()`; no `GetInitialPrompt` call exists in the
 file), so every prompt riding the field is silently dropped and the agent
@@ -50,14 +50,14 @@ plus a **fresh-start barrier-lift** (gap c) — see PR-A (T-R3, the OQ-A ruling
 folded below). The three gaps:
 
 - **Gap (a) — runner dispatch has no `DeliverControl` arm.**
-  `go/internal/runner/dispatch.go:243` switches on
+  `go/internal/runner/dispatch.go:359` switches on
   Start/Provision/Stop/Remove/Reload/Status/SecretsVersion/ConfigVersion only;
   a server-pushed `SessionsResponse_DeliverControl` falls to the default and
   returns `errorResult(id, errors.New("unrecognized session command variant"))`
-  (`dispatch.go:320-323`). The server DOES send this variant —
+  (`dispatch.go:446-449`). The server DOES send this variant —
   `go/internal/runnerhub/dispatch_control.go:44-53` wraps the op in
   `SessionsResponse_DeliverControl` and `router.send1`s it — and the wire
-  variant exists (`go/internal/gen/compass/v1/runner.pb.go:599,634`). The send
+  variant exists (`go/internal/gen/compass/v1/runner.pb.go:618,655`). The send
   path is live; the receive arm is missing. **T-R1 builds it.**
 - **Gap (b) — gateway control lane rejects deliver/steer.**
   `go/internal/runner/gateway/control.go:192-203` `representable()` returns
@@ -83,7 +83,7 @@ folded below). The three gaps:
 The pieces that DO exist, and that PR-A/PR-B compose with:
 
 1. **Fan-out** — the delivery consumer wraps a posted message in the deliver
-   op: `go/internal/delivery/consumer.go:277-281` —
+   op: `go/internal/delivery/consumer.go:288-291` —
    `func deliverOp(msg *compassv1.Message) *compassv1internal.AgentControl`
    builds `AgentControl_Deliver{Deliver: &DeliverControl{Message: msg}}`.
 2. **Dispatch** — `consumer.go:42-43`: `ControlDispatcher` is
@@ -165,7 +165,7 @@ cluttering the operator's view) is a KNOWN later problem Matt has deferred
 | Generated code | `go/gen/compass/v1/compass.pb.go:2767,2885`, `go/internal/gen/compass/v1/agent_gateway.pb.go:595`, `packages/compass-agent/src/gen/compass/v1/{compass_pb.ts:1143,1206, agent_gateway_pb.ts:299}`, `packages/compass-client/src/gen/compass/v1/compass_pb.ts:1143,1206` | Regenerate via the repo's buf lanes (`buf.gen.yaml`, `buf.gen.internal-go.yaml`, `buf.gen.agent-ts.yaml`) — never hand-edit |
 | Server: agent-spawn leg | `go/server/lifecycle.go:325` — `InitialPrompt: req.GetInitialPrompt(),` inside `hub.Start(ctx, "", &compassv1.StartAgentSessionRequest{...})` | Drop the field from the literal |
 | Server: composite SpawnAgent | `go/server/spawn.go:135` — `InitialPrompt: msg.GetInitialPrompt(),` in `runSpawn` | Drop the field from the literal |
-| Runner | `go/internal/runner/host.go:227-228` — `Start` reads only `req.GetContainerName()`, never the field (the standing bug) | Removing the field makes the drop correct-by-construction (no `host.go` change). NOT "already enrolled for delivery": the Runner deliver-lane is UNBUILT (dispatch has no `SessionsResponse_DeliverControl` arm, `dispatch.go:243/320-323`; `representable()` rejects Deliver/Steer, `gateway/control.go:192-203`) — built additively in PR-A (T-R1/T-R2), NOT in this removal PR |
+| Runner | `go/internal/runner/host.go:284-285` — `Start` reads only `req.GetContainerName()`, never the field (the standing bug) | Removing the field makes the drop correct-by-construction (no `host.go` change). NOT "already enrolled for delivery": the Runner deliver-lane is UNBUILT (dispatch has no `SessionsResponse_DeliverControl` arm, `dispatch.go:359/446-449`; `representable()` rejects Deliver/Steer, `gateway/control.go:192-203`) — built additively in PR-A (T-R1/T-R2), NOT in this removal PR |
 | Agent SDK spawn tool | `packages/compass-agent/src/lifecycle.ts:90-92` — `"initial_prompt?": type("string").describe("Initial prompt to seed the new peer's first turn")`; `:159` `initialPrompt: params.initial_prompt ?? ""`; tool description "optionally a display name and an initial prompt…" (`:146-148`) | Remove the schema key, the request field, and the description clause; describe the replacement ("post the peer's brief to your DM channel with it after spawn") |
 | UI spawn state | `apps/ui/src/spawn.ts:38` `SessionBinding.initialPrompt`, `:55` `SpawnSpec.initialPrompt`, `:82` capture in `beginSpawn`, `:168` `return b.initialPrompt ? "working" : "idle"` | Remove both fields; `bindingDotState` `running` arm returns `"idle"` unconditionally (every spawn is a start-idle spawn) |
 | UI start dialog | `apps/ui/src/components/StartAgentDialog.tsx:10-24` — the dialog's only input is the prompt textarea (`spec: Omit<SpawnSpec, "initialPrompt">`, submit re-attaches `initialPrompt`) | Delete `StartAgentDialog` (+ its test); the board's start affordance calls the spawn action directly with `{agentAccountId, workstreamId}`. The user prompts the agent by posting in its home channel — the exact model this record ratifies |
@@ -245,8 +245,8 @@ dogfood-e2e record documents that seam as a primitive
 
   Guard note: the "boot-idle READY" premise was an over-claim. On the STREAM the
   agent emits STARTING at boot (`packages/compass-agent/src/agent.ts:147-149`)
-  and READY only at `agent_end` (`packages/compass-agent/src/mapping.ts:145-146`);
-  the READY at `go/internal/runner/host.go:346,480` is the Runner's Status-answer
+  and READY only at `agent_end` (`packages/compass-agent/src/mapping.ts:115-116`);
+  the READY at `go/internal/runner/host.go:405,785` is the Runner's Status-answer
   state, NOT a stream frame. So the guard is stated as "ignore everything until
   the first WORKING, then return on the next READY" — not a claim about a
   boot-READY frame appearing on the stream. This also closes the dogfood-e2e
@@ -367,13 +367,13 @@ Additive only (no proto removal), independently landable, greens nothing yet.
 #### T-R1 — Runner dispatch: `DeliverControl` arm (lane: implement-hard, Go runner)
 
 Add a `case *compassv1internal.SessionsResponse_DeliverControl:` arm to the
-`dispatcher.execute` switch (`go/internal/runner/dispatch.go:243`), mirroring
+`dispatcher.execute` switch (`go/internal/runner/dispatch.go:359`), mirroring
 the existing arms' shape. It unwraps `c.DeliverControl.GetOp()` (the
 `AgentControl`) and `c.DeliverControl.GetSessionId()` and routes the op to that
 session's control producer, so a server-pushed deliver is no longer met by the
-`:320-323` default's `"unrecognized session command variant"`. The send side is
+`:446-449` default's `"unrecognized session command variant"`. The send side is
 already live (`go/internal/runnerhub/dispatch_control.go:44-53`;
-`go/internal/gen/compass/v1/runner.pb.go:599,634`).
+`go/internal/gen/compass/v1/runner.pb.go:618,655`).
 
 #### T-R2 — gateway control: admit payload-carrying Deliver/Steer (lane: implement, Go runner)
 
@@ -458,7 +458,7 @@ Interfaces:
 ### T3 — Runner: idle-start assert + gateway test (lane: implement, Go runner)
 
 The `initial_prompt` removal itself is behavior-preserving in the runner
-(`host.go:227-228` never read the field). The runner's PRODUCTION change for
+(`host.go:284-285` never read the field). The runner's PRODUCTION change for
 first-turn delivery is NOT in this task — it is the additive deliver-lane build
 in PR-A (T-R1 `dispatch.go` `SessionsResponse_DeliverControl` arm, T-R2
 `representable()` fix, T-R3 barrier-lift). This T3 slice is only the
@@ -466,7 +466,7 @@ compile-against-regenerated-types proof plus gateway fixture cleanup.
 
 Interfaces:
 
-- `go/internal/runner/host.go:227` — signature unchanged: `Start(ctx
+- `go/internal/runner/host.go:284` — signature unchanged: `Start(ctx
   context.Context, req *compassv1.StartAgentSessionRequest, resumeBody
   string) (string, error)`; compiles against the regenerated type.
 - `go/internal/runner/gateway/lifecycle_test.go:65` — drop `InitialPrompt:
@@ -617,7 +617,7 @@ harness re-model (T1–T7), lands SECOND, greens leg-2.
 PR-A (Runner deliver-lane + DM auto-provision — additive, independently landable):
 
 - [ ] T-R0 — spawn-edge manager↔peer DM auto-provision: get-or-create a per-pair `ChannelKindDM` channel (`store/types.go:74-75`) for the `{manager, peer}` pair via `CreateChannel` + `expandOwnerMembership` (`store/channels.go:72-140`), modeled on the `CoordinationHook` reconcile (`store/coordination.go:10-23`, fired in the CreateAgent tx) but pairwise + idempotent, so the manager can post the brief point-to-point (implement-hard, Go store + comms)
-- [ ] T-R1 — runner dispatch: add a `SessionsResponse_DeliverControl` arm in `dispatch.go` (`:243` switch) routing the wrapped op to the container's control producer, so a server-pushed deliver is no longer met by the `:323` "unrecognized session command variant" default (implement-hard, Go runner)
+- [ ] T-R1 — runner dispatch: add a `SessionsResponse_DeliverControl` arm in `dispatch.go` (`:359` switch) routing the wrapped op to the container's control producer, so a server-pushed deliver is no longer met by the `:449` "unrecognized session command variant" default (implement-hard, Go runner)
 - [ ] T-R2 — gateway control: fix `representable()` (`gateway/control.go:192-203`) to admit payload-carrying `Deliver`/`Steer` (they carry a comms `Message`), so the send is no longer dropped as an empty shell (implement, Go runner)
 - [ ] T-R3 — fresh-start barrier-lift: on a fresh (non-resume) start the Runner sends `AgentControl{replay_complete}` as the first control op after Bind (OQ-A ruling), so the first deliver is not refused-and-stranded by the agent barrier (`control-source.ts:278,373-390`) (implement-hard, Go runner + TS agent)
 
