@@ -880,6 +880,13 @@ func newForgeTokenSource(resolver secrets.Resolver, name string) *forgeTokenSour
 // re-resolves the declared set and selects the configured name. A missing name
 // at Token time (declaration deleted post-boot) is an error the driver surfaces
 // per-pass as an auth failure + retry next tick (idempotent).
+//
+// Single-caller by the driver's contract: the poll driver calls Token
+// sequentially per fetch batch on one goroutine, and Invalidate runs on that
+// same goroutine (never re-entrantly from inside Token), so holding t.mu across
+// the resolve I/O never contends. Were a second concurrent caller ever added,
+// the lock would simply serialize resolves (singleflight-like) — benign, but the
+// single-caller assumption is the reason the resolve is inside the lock.
 func (t *forgeTokenSource) Token(ctx context.Context) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -518,10 +518,14 @@ func TestForgeDisabledPollingWarnsOnEnabledRows(t *testing.T) {
 // --- test 7 (store-backed leg): fail-fast texts as Serve would surface them --
 
 // TestForgeStartupSecretFailFastTexts pins that the two startup failure texts
-// buildForgeDriver returns are the exact record strings and distinguishable,
-// exercised through buildForgeDriver (the function Serve calls on the
-// listener-cleanup path). The resolver is a fake; the store is real because
-// buildForgeDriver reconciles the seed after a successful resolve.
+// buildForgeDriver returns are the exact record strings and distinguishable.
+// This exercises buildForgeDriver's error RETURN directly. Serve routes that
+// return through its listener-cleanup branch (udsListener.Close +
+// listeners.close), mirroring the sibling Rehydrate/buildDoors early returns;
+// that Serve-level routing is not separately covered here because the package
+// has no Serve harness (the sibling cleanup branches are equally uncovered).
+// The resolver is a fake; the store is real because buildForgeDriver reconciles
+// the seed after a successful resolve.
 func TestForgeStartupSecretFailFastTexts(t *testing.T) {
 	st := forgeTestStore(t)
 	ctx := context.Background() // test root
