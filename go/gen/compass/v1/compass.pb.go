@@ -2524,13 +2524,17 @@ type ProvisionAgentWorkspaceRequest struct {
 	// from CommsService). Names whose credentials + home channel the container
 	// is provisioned for.
 	AgentAccountId string `protobuf:"bytes,1,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
+	// Repo carriage removed (SEA-1527, Matt 2026-07-29): spawn/provision no longer
+	// clone a repo for the agent. The container is provisioned with a git
+	// credential + workspace and the agent self-clones whatever it needs after
+	// launch.
 	// Idempotency key (OQ6). When set, a timeout-retry with the same id returns
 	// the same container_name rather than provisioning a second container: the
 	// Server threads it as the RunnerHub request id so the retry joins the
 	// in-flight/completed call instead of re-dispatching. Empty = no dedup (each
 	// call provisions). compass.md §"A retried provision creates no duplicate
 	// container".
-	ClientRequestId string `protobuf:"bytes,5,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
+	ClientRequestId string `protobuf:"bytes,2,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
 	// The agent's persona, baked into the container's system prompt at provision
 	// so it survives compaction (a system-prompt config block is not part of the
 	// message history a snapcompact archives). SERVER-AUTHORITATIVE: the Server
@@ -2540,7 +2544,7 @@ type ProvisionAgentWorkspaceRequest struct {
 	// provision path (not by this wire-settable field). The Runner materializes
 	// it into the container
 	// (compass-runner consumer). Empty = no persona baked (default).
-	Persona string `protobuf:"bytes,6,opt,name=persona,proto3" json:"persona,omitempty"`
+	Persona string `protobuf:"bytes,3,opt,name=persona,proto3" json:"persona,omitempty"`
 	// The agent's operator-set role, selecting the container's block-0 system
 	// prompt at provision so it survives compaction (a system-prompt config block
 	// is not part of the message history a snapcompact archives). SERVER-
@@ -2548,11 +2552,11 @@ type ProvisionAgentWorkspaceRequest struct {
 	// AgentAccount.role from the store on the provision path and to overwrite any
 	// client-supplied value, so a caller cannot inject a role prompt — an
 	// invariant enforced by the server provision path (not by this wire-settable
-	// field). Where persona (field 6) is an APPEND overlay, role REPLACES block-0:
+	// field). Where persona (field 3) is an APPEND overlay, role REPLACES block-0:
 	// the label selects config/prompts/<role>/SYSTEM.md, materialized by the
 	// Runner into the container's customSystemPrompt (compass-runner consumer).
 	// Empty = no role (default OMP block-0).
-	Role          string `protobuf:"bytes,7,opt,name=role,proto3" json:"role,omitempty"`
+	Role          string `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3684,9 +3688,10 @@ func (*DeleteAgentConfigResponse) Descriptor() ([]byte, []int) {
 // cross-check, NO verified bit, NO population gating. It never reaches an authz,
 // routing, or ownership decision (DL-050). Owner is a property of the agent
 // account (AgentAccount.owner_user_id, comms.proto:131-133), resolved
-// server-side, never restated per artifact — so no owner_handle. Fields 2-3 and
-// the names owner_handle/verified are reserved forever (DL-094): the frozen
-// #1018 shape burned those numbers even though no wire build shipped them.
+// server-side, never restated per artifact — so no owner_handle. Field numbers
+// 2,3 are simply reclaimable pre-dogfood (DL-186): no wire build ever shipped
+// the frozen #1018 owner_handle/verified shape, and nothing on disk is
+// proto-encoded, so the numbers carry no compatibility obligation.
 type AgentAttribution struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	AgentHandle   string                 `protobuf:"bytes,1,opt,name=agent_handle,json=agentHandle,proto3" json:"agent_handle,omitempty"` // the authoring agent's handle, from the header
@@ -4724,14 +4729,12 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12.\n" +
 	"\x05event\x18\x02 \x01(\v2\x18.compass.v1.SessionEventR\x05event\x123\n" +
-	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\"\xd3\x01\n" +
+	"\x05state\x18\x03 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\"\xa4\x01\n" +
 	"\x1eProvisionAgentWorkspaceRequest\x12(\n" +
 	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12*\n" +
-	"\x11client_request_id\x18\x05 \x01(\tR\x0fclientRequestId\x12\x18\n" +
-	"\apersona\x18\x06 \x01(\tR\apersona\x12\x12\n" +
-	"\x04role\x18\a \x01(\tR\x04roleJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05R\n" +
-	"remote_urlR\n" +
-	"local_pathR\x03ref\"H\n" +
+	"\x11client_request_id\x18\x02 \x01(\tR\x0fclientRequestId\x12\x18\n" +
+	"\apersona\x18\x03 \x01(\tR\apersona\x12\x12\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\"H\n" +
 	"\x1fProvisionAgentWorkspaceResponse\x12%\n" +
 	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\"p\n" +
 	"\x1bRemoveAgentWorkspaceRequest\x12%\n" +
@@ -4793,9 +4796,9 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\n" +
 	"has_models\x18\t \x01(\bR\thasModels\"\x1a\n" +
 	"\x18DeleteAgentConfigRequest\"\x1b\n" +
-	"\x19DeleteAgentConfigResponse\"Y\n" +
+	"\x19DeleteAgentConfigResponse\"5\n" +
 	"\x10AgentAttribution\x12!\n" +
-	"\fagent_handle\x18\x01 \x01(\tR\vagentHandleJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04R\fowner_handleR\bverified\"U\n" +
+	"\fagent_handle\x18\x01 \x01(\tR\vagentHandle\"U\n" +
 	"\bForgeRef\x125\n" +
 	"\bprovider\x18\x01 \x01(\x0e2\x19.compass.v1.ForgeProviderR\bprovider\x12\x12\n" +
 	"\x04host\x18\x02 \x01(\tR\x04host\"\xb2\x04\n" +
