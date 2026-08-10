@@ -144,6 +144,8 @@ type stubStreamingRuntime struct {
 	stopGate    chan struct{}                    // when non-nil, Stop blocks on it (after recording) — test-controlled teardown parking
 	stopEntered chan runtime.ContainerID         // when non-nil, Stop sends id after recording, before parking — a real "reached Stop" event for a test to gate on
 	callsByID   map[runtime.ContainerID][]string // per-container lifecycle calls (stop/remove), for fan-out isolation assertions
+	execGate    chan struct{}                    // when non-nil, ExecStreaming blocks on it (after recording, ctx-escapable) — parks a Start/Reload relaunch so a concurrent-dispatch test can hold one lifecycle op in flight (docs/designs/platform/compass-runner-concurrent-dispatch/design.md)
+	execEntered chan runtime.ContainerID         // when non-nil, ExecStreaming sends id after recording, before parking — the real "reached the agent launch" event a test gates on
 	created     []runtime.ContainerSpec
 }
 
@@ -177,7 +179,24 @@ func (f *stubStreamingRuntime) ExecStreaming(ctx context.Context, id runtime.Con
 	f.mu.Lock()
 	f.calls = append(f.calls, "exec_streaming")
 	f.execSpecs = append(f.execSpecs, spec)
+	gate := f.execGate
+	entered := f.execEntered
 	f.mu.Unlock()
+	// Signal that a relaunch reached the agent launch (a real event the test
+	// gates on), then park until released or ctx is cancelled — so a
+	// concurrent-dispatch test can hold one Start/Reload in flight while it drives
+	// another. The ctx escape keeps a parked launch from outliving a cancelled
+	// RunSessions.
+	if entered != nil {
+		entered <- id
+	}
+	if gate != nil {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	return f.cli.ExecStreaming(ctx, id, spec)
 }
 func (f *stubStreamingRuntime) Stop(_ context.Context, id runtime.ContainerID, _ time.Duration) error {

@@ -76,6 +76,20 @@ type agentHost struct {
 	// (SEA-1659 per-container roots), and it must survive a Reload (which reuses
 	// the session but keeps the container).
 	configVersions map[string]string
+	// containerLocks serializes the state-transitioning lifecycle ops per
+	// container name (Provision/Start/Stop/Remove/Reload), so concurrent dispatch
+	// (per-command goroutines) cannot interleave two transitions on one container
+	// — closing the Start TOCTOU documented below and linearizing Stop/Reload/
+	// Remove on a container. Guarded by h.mu for get-or-create ONLY; entries are
+	// NEVER deleted (not even by Remove), which is load-bearing: a deleted entry
+	// could race a concurrent op that already resolved the same *sync.Mutex, so
+	// retaining it is what makes the resolve-then-lock protocol safe. Growth is
+	// bounded by distinct container names ever provisioned — the same retention
+	// class as handled/configVersions, and T9's bounded-eviction (SEA-1328)
+	// covers them together. Status deliberately does NOT lock (it answers from
+	// the session set under h.mu), so it never queues behind a slow Provision.
+	// See docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
+	containerLocks map[string]*sync.Mutex
 }
 
 // liveSession is one running agent session: its container and the relay stream
@@ -125,6 +139,7 @@ func NewSessionHost(link *ServerLink, rt *runtime.AgentRuntime, registry *runtim
 		nextID:         newID,
 		materializer:   runtime.NewSecretMaterializer(engine, log),
 		configVersions: map[string]string{},
+		containerLocks: map[string]*sync.Mutex{},
 	}
 }
 
@@ -144,6 +159,11 @@ func (h *agentHost) Provision(ctx context.Context, req *compassv1.ProvisionAgent
 	if err != nil {
 		return "", err
 	}
+	// Serialize all transitions on this container: a concurrent Remove/Start of
+	// the same name cannot interleave with this provision. Resolved from the spec
+	// name (the stable lifecycle key).
+	unlock := h.lockContainer(spec.Name)
+	defer unlock()
 	listener, err := h.serveSocket(ctx, spec.Name)
 	if err != nil {
 		return "", err
@@ -258,6 +278,18 @@ func (h *agentHost) Close(ctx context.Context) {
 // retries before this is reached).
 func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionRequest, resumeBody string) (string, error) {
 	name := req.GetContainerName()
+	// Serialize transitions on this container across the whole Start: the
+	// existing-session check releases h.mu before the slow StartAgent below and
+	// re-acquires it to record, so two concurrent Starts for one container could
+	// both pass the check in that window (a TOCTOU minting a duplicate session).
+	// The per-container transition lock closes it: the second Start blocks here
+	// until the first records its session, then sees it and returns
+	// errAlreadyRunning. Concurrent dispatch (per-command goroutines) made this
+	// reachable; T9's in-process reattach (SEA-1328) consumes the same lock — do
+	// not reintroduce it. See docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
+	unlock := h.lockContainer(name)
+	defer unlock()
+
 	handle, ok := h.registry.Resolve(name)
 	if !ok {
 		return "", errSessionUnknown
@@ -272,16 +304,6 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	}
 	sessionID := h.nextID()
 	h.mu.Unlock()
-
-	// The existing-session check releases h.mu before the slow StartAgent below
-	// and re-acquires it to record. Two concurrent Starts for one container
-	// could both pass the check in that window (TOCTOU). Unreachable in the
-	// single-Runner MVP: the Sessions dispatch loop is strictly sequential
-	// (dispatch.go — Receive→execute→Send, no per-command goroutine) and Run is
-	// single-shot (run.go — one host, one RunSessions, no in-process reconnect),
-	// so only one lifecycle op is ever in flight against this host. A per-session
-	// transition lock is deferred to T9, where in-process reattach against a
-	// persistent host first makes concurrent callers reachable (go-toolchain-default.md:979).
 
 	// Materialize the agent's secrets into the container BEFORE exec'ing the
 	// agent, so its first provider/gh/env read never races an empty seed
@@ -393,8 +415,21 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 // Stop tears a session down. An unknown/already-stopped session succeeds
 // (idempotent, matching the frozen StopAgentSession semantics).
 func (h *agentHost) Stop(_ context.Context, sessionID string) error {
+	// Resolve session→container under h.mu first, release, then take the
+	// container lock and re-check — the resolve-then-lock protocol (the lock key
+	// is the container, but the caller names a session). A session that vanished
+	// in the gap re-checks to not-found below and returns nil (idempotent).
 	h.mu.Lock()
 	s, ok := h.sessions[sessionID]
+	h.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	unlock := h.lockContainer(s.containerName)
+	defer unlock()
+
+	h.mu.Lock()
+	s, ok = h.sessions[sessionID]
 	if ok {
 		delete(h.sessions, sessionID)
 		// The socket outlives the session (a Stop/Start reuses the container and
@@ -424,6 +459,10 @@ func (h *agentHost) Stop(_ context.Context, sessionID string) error {
 // gone but whose socket still lingers (a crash-reclaimed or post-Stop container)
 // still has its socket closed, so a Remove always leaves no socket behind.
 func (h *agentHost) Remove(ctx context.Context, containerName string) error {
+	// Serialize all transitions on this container across the whole teardown, so a
+	// concurrent Provision/Start/Stop/Reload of the same name cannot interleave.
+	unlock := h.lockContainer(containerName)
+	defer unlock()
 	// Retire the live session bound to this container under h.mu — the mirror of
 	// Stop's retirement — so a concurrent lifecycle op cannot observe a
 	// half-torn state. The socket is closed unconditionally below, so it is not
@@ -477,41 +516,25 @@ func (h *agentHost) Remove(ctx context.Context, containerName string) error {
 }
 
 // Reload restarts a session's agent in place, reusing the session id so the
-// board entry is continuous.
+// board entry is continuous. This is the public, dispatch-facing entry: it takes
+// the session's container transition lock and delegates to reloadLocked. It must
+// NOT be called from a caller that already holds the container lock — the
+// config worker's RefreshConfig leg calls reloadLocked directly for exactly that
+// reason (the lock is non-reentrant; calling Reload while holding it would
+// self-deadlock). See docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
 func (h *agentHost) Reload(ctx context.Context, sessionID string) error {
+	// Resolve session→container under h.mu, release, take the container lock,
+	// then delegate — the resolve-then-lock protocol, mirroring Stop. A session
+	// that vanished before the lock is rejected in reloadLocked's re-check.
 	h.mu.Lock()
 	s, ok := h.sessions[sessionID]
 	h.mu.Unlock()
-	// Reload reads the session under h.mu, releases, then runs the slow Stop +
-	// StartAgent unlocked before re-locking to swap the stream. A concurrent Stop
-	// could delete the session mid-interval, leaving Reload to relaunch through a
-	// pointer the caller was told had stopped. Same MVP invariant as Start makes
-	// this unreachable (sequential dispatch + single-shot Run); the per-session
-	// transition lock that serializes Stop vs Reload is T9 (go-toolchain-default.md:979).
 	if !ok {
 		return errSessionUnknown
 	}
-	// Re-resolve the handle BEFORE stopping, so the relaunch carries the same
-	// identity and configuration the original Start did and a session whose
-	// container has since been dropped from the registry is rejected while its
-	// agent is still running: the error path is a true no-op, never a stopped
-	// agent left behind a session the live set still reports READY.
-	handle, ok := h.registry.Resolve(s.containerName)
-	if !ok {
-		return errSessionUnknown
-	}
-	if err := s.stream.Stop(); err != nil {
-		return err
-	}
-	stream, err := h.link.StartAgent(ctx, sessionID, s.containerID, h.engine, h.agentEnv(handle), h.log)
-	if err != nil {
-		return err
-	}
-	h.mu.Lock()
-	s.stream = stream
-	s.state = compassv1.AgentSessionState_AGENT_SESSION_STATE_READY
-	h.mu.Unlock()
-	return nil
+	unlock := h.lockContainer(s.containerName)
+	defer unlock()
+	return h.reloadLocked(ctx, sessionID)
 }
 
 // Status returns one session's status, or every live session's when id is empty
@@ -637,45 +660,124 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 	h.mu.Unlock()
 
 	for _, t := range targets {
-		mcsLabel, err := h.engine.MountLabel(ctx, t.containerID)
-		if err != nil {
-			h.log.ErrorContext(ctx, "reading container mount label on ConfigVersion signal failed; skipping container this pass",
-				slog.String("container", t.containerName), slog.Any("error", err))
+		// Take THIS container's transition lock for the whole leg — MountLabel +
+		// Materialize + relaunch run as one critical section, so a concurrent
+		// dispatch-driven Stop/Remove/Reload of the same container cannot
+		// interleave with the config update. The leg calls reloadLocked (NOT the
+		// public Reload, which would re-take this same non-reentrant lock and
+		// self-deadlock the worker forever, wedging every later transition on the
+		// container behind it). See docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
+		if err := h.refreshOneContainer(ctx, t.sessionID, t.containerName, t.containerID, t.lastVersion); err != nil {
 			continue
 		}
-		mount, err := h.configMaterializerFor(t.containerName).Materialize(ctx, mcsLabel)
-		if err != nil {
-			h.log.ErrorContext(ctx, "re-materializing agent config on ConfigVersion signal failed; will retry on next signal",
-				slog.String("container", t.containerName), slog.Any("error", err))
-			continue
-		}
-		if mount.Version == t.lastVersion {
-			// Version unchanged: the re-materialize was idempotent and the agent
-			// already reads this config. Do not Reload — it would interrupt the
-			// agent mid-turn for no config change. The tracked version already
-			// matches, so there is nothing to record.
-			continue
-		}
-		if err := h.Reload(ctx, t.sessionID); err != nil {
-			// Reload failed: do NOT advance the tracked version, so the next
-			// ConfigVersion signal still sees a version change and retries the
-			// Reload. Materialize already flipped `current` to this version on
-			// disk (idempotently), so the retry re-materializes for free and
-			// only re-runs the Reload.
-			h.log.ErrorContext(ctx, "reloading agent after config update failed; will retry on next signal",
-				slog.String("container", t.containerName), slog.String("session_id", t.sessionID), slog.Any("error", err))
-			continue
-		}
-		// Reload succeeded: record the version now so a same-version signal does
-		// not Reload the agent again. Materialize re-flips `current` on every
-		// pass, so tracking the version only after a successful Reload — not the
-		// on-disk state — is what gates the mid-turn interrupt.
-		h.mu.Lock()
-		h.configVersions[t.containerName] = mount.Version
-		h.mu.Unlock()
 	}
 	// Always nil today: every per-container fault is swallowed above. The error
 	// return is reserved for a future fleet-level fault (see the interface doc).
+	return nil
+}
+
+// refreshOneContainer runs one container's config-update leg under its transition
+// lock: read the live MCS label, re-materialize, and reloadLocked the agent iff
+// the bundle version moved. A per-container fault (MountLabel, Materialize,
+// Reload) is logged and returned so the caller skips this container this pass
+// without aborting the fleet; the tracked version advances only after a
+// successful reload. Split out of RefreshConfig so the container lock scopes to
+// exactly one leg via defer.
+func (h *agentHost) refreshOneContainer(ctx context.Context, sessionID, containerName string, containerID runtime.ContainerID, lastVersion string) error {
+	unlock := h.lockContainer(containerName)
+	defer unlock()
+
+	mcsLabel, err := h.engine.MountLabel(ctx, containerID)
+	if err != nil {
+		h.log.ErrorContext(ctx, "reading container mount label on ConfigVersion signal failed; skipping container this pass",
+			slog.String("container", containerName), slog.Any("error", err))
+		return err
+	}
+	mount, err := h.configMaterializerFor(containerName).Materialize(ctx, mcsLabel)
+	if err != nil {
+		h.log.ErrorContext(ctx, "re-materializing agent config on ConfigVersion signal failed; will retry on next signal",
+			slog.String("container", containerName), slog.Any("error", err))
+		return err
+	}
+	if mount.Version == lastVersion {
+		// Version unchanged: the re-materialize was idempotent and the agent
+		// already reads this config. Do not Reload — it would interrupt the
+		// agent mid-turn for no config change. The tracked version already
+		// matches, so there is nothing to record.
+		return nil
+	}
+	if err := h.reloadLocked(ctx, sessionID); err != nil {
+		// Reload failed: do NOT advance the tracked version, so the next
+		// ConfigVersion signal still sees a version change and retries the
+		// Reload. Materialize already flipped `current` to this version on
+		// disk (idempotently), so the retry re-materializes for free and
+		// only re-runs the Reload.
+		h.log.ErrorContext(ctx, "reloading agent after config update failed; will retry on next signal",
+			slog.String("container", containerName), slog.String("session_id", sessionID), slog.Any("error", err))
+		return err
+	}
+	// Reload succeeded: record the version now so a same-version signal does
+	// not Reload the agent again. Materialize re-flips `current` on every
+	// pass, so tracking the version only after a successful Reload — not the
+	// on-disk state — is what gates the mid-turn interrupt.
+	h.mu.Lock()
+	h.configVersions[containerName] = mount.Version
+	h.mu.Unlock()
+	return nil
+}
+
+// lockContainer acquires the per-container transition lock for name, creating it
+// on first use, and returns the unlock. The get-or-create touches h.mu only
+// briefly (never a container lock while holding h.mu, and never h.mu while
+// holding a container lock — no lock is ever held across a slow call or a
+// stream.Send). The entry is never removed, so a caller that resolves the mutex
+// and a concurrent caller always contend on the same instance.
+func (h *agentHost) lockContainer(name string) (unlock func()) {
+	h.mu.Lock()
+	lock, ok := h.containerLocks[name]
+	if !ok {
+		lock = &sync.Mutex{}
+		h.containerLocks[name] = lock
+	}
+	h.mu.Unlock()
+	lock.Lock()
+	return lock.Unlock
+}
+
+// reloadLocked performs the in-place agent relaunch assuming the caller holds
+// the session's container transition lock. It re-resolves the session and its
+// handle (a session dropped since the lock was taken is rejected as a true
+// no-op), runs the slow Stop + StartAgent, then swaps the stream under h.mu.
+// Callers: Reload (the public wrapper, which locks) and RefreshConfig's
+// per-container fan-out leg (which takes the container lock ITSELF so its
+// MountLabel + Materialize + relaunch run as one critical section).
+func (h *agentHost) reloadLocked(ctx context.Context, sessionID string) error {
+	h.mu.Lock()
+	s, ok := h.sessions[sessionID]
+	h.mu.Unlock()
+	if !ok {
+		return errSessionUnknown
+	}
+	// Re-resolve the handle BEFORE stopping, so the relaunch carries the same
+	// identity and configuration the original Start did and a session whose
+	// container has since been dropped from the registry is rejected while its
+	// agent is still running: the error path is a true no-op, never a stopped
+	// agent left behind a session the live set still reports READY.
+	handle, ok := h.registry.Resolve(s.containerName)
+	if !ok {
+		return errSessionUnknown
+	}
+	if err := s.stream.Stop(); err != nil {
+		return err
+	}
+	stream, err := h.link.StartAgent(ctx, sessionID, s.containerID, h.engine, h.agentEnv(handle), h.log)
+	if err != nil {
+		return err
+	}
+	h.mu.Lock()
+	s.stream = stream
+	s.state = compassv1.AgentSessionState_AGENT_SESSION_STATE_READY
+	h.mu.Unlock()
 	return nil
 }
 
