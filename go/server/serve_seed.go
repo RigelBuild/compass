@@ -44,13 +44,22 @@ const seedTimeout = 2 * time.Minute
 // Runner's command stream attaches only after it enrolls. It runs on the hook's
 // own goroutine.
 //
-// It is find-or-create-then-start, so re-firing on a later Runner reconnect
-// correctly re-drives a supervisor that exists but is not live (e.g. a prior
-// boot created the row but its Start failed, or the Runner restarted). The start
-// is SpawnAgent under a fixed client_request_id, so an already-live supervisor is
-// rejected on-live (or joins the completed spawn) rather than getting a second
-// container. The create half stays gated on an EMPTY tree: if the operator has
-// built any other root, the seed adopts nothing and creates nothing.
+// It is find-or-create-then-start: on a later Runner reconnect it re-fires and
+// re-drives a supervisor whose row exists but was never started (a prior boot
+// created the row but its Start failed), because that supervisor has no success
+// memo to join, so SpawnAgent runs reject-on-live then Provision/Start for real.
+// The create half stays gated on an EMPTY tree: if the operator has built any
+// other root, the seed adopts nothing and creates nothing.
+//
+// Re-drive is bounded by the spawn memo, and does NOT cover a Runner-only
+// restart within the memo's success-retention window (spawnMemoTTL). The start
+// is SpawnAgent under a fixed client_request_id (seedClientRequestID); once a
+// boot's Start succeeds, that success is memoized, so a re-fire inside the window
+// joins the completed spawn and returns its cached session id WITHOUT consulting
+// the Runner — even if the session actually died with a restarted Runner. Real
+// liveness-checked re-drive (consult the Runner's authoritative live set, spawn
+// under a fresh key when the cached session is gone) is tracked as a follow-up;
+// SEA-1820 covers first-launch seed and the never-started re-drive above.
 //
 // A failure is logged, not fatal: the server stays up and the next Runner
 // reconnect re-fires the seed.
@@ -92,7 +101,11 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, admi
 		return
 	}
 
-	log.Info("root-supervisor seed: root Manager live", "agent_account_id", supervisor.ID, "handle", rootSupervisorHandle)
+	// SpawnAgent returned without error: either it drove Provision/Start, or it
+	// joined this boot's completed seed spawn. It does NOT re-confirm liveness
+	// against the Runner on a memo join (see the memo caveat above), so this
+	// reports the seed drove to completion, not an independently verified session.
+	log.Info("root-supervisor seed: root Manager seed completed", "agent_account_id", supervisor.ID, "handle", rootSupervisorHandle)
 }
 
 // createRootSupervisor creates the root supervisor agent, but only on an EMPTY

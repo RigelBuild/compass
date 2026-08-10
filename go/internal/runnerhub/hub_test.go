@@ -211,3 +211,38 @@ func TestRunnerReadyHookFiresOnEachStreamAttach(t *testing.T) {
 	// A hub with no hook wired must fire without panicking (nil-safe).
 	newHubOnly().fireRunnerReady()
 }
+
+// TestRunnerReadyHookPanicDoesNotCrash pins the non-fatal contract: a hook that
+// panics is recovered inside fireRunnerReady's goroutine and logged, so a seed
+// panic degrades to a logged failure instead of an unrecovered goroutine panic
+// that would take down the whole serving process (every live session in the
+// single-Runner fleet). A later fire still runs, proving the recover is scoped to
+// the one fire and does not wedge the hub.
+//
+// Mutation: dropping the deferred recover() in fireRunnerReady turns the panic
+// into an unrecovered goroutine crash — go test reports a panic and fails.
+func TestRunnerReadyHookPanicDoesNotCrash(t *testing.T) {
+	hub := newHubOnly()
+
+	panicked := make(chan struct{}, 1)
+	recovered := make(chan struct{}, 1)
+	hub.SetRunnerReadyHook(func() {
+		panicked <- struct{}{}
+		panic("seed blew up")
+	})
+	hub.fireRunnerReady()
+	select {
+	case <-panicked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("panicking hook never ran")
+	}
+	// Give the recover path a moment; the process is still alive if we reach here.
+	// Now prove the hub still fires a subsequent (non-panicking) hook.
+	hub.SetRunnerReadyHook(func() { recovered <- struct{}{} })
+	hub.fireRunnerReady()
+	select {
+	case <-recovered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hub did not fire a later hook after an earlier hook panicked")
+	}
+}

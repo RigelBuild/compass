@@ -23,6 +23,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -46,6 +47,11 @@ type seedHarness struct {
 	dsn      string
 	adminID  store.AccountID
 	seedDone chan struct{}
+	// seedOnce guards the seedDone close: fireRunnerReady fires on EVERY Sessions
+	// attach, and close() on an already-closed channel panics, so the harness
+	// tolerates a second hook fire (the re-fire idempotency the feature is built
+	// around) as a safe no-op rather than crashing the test.
+	seedOnce sync.Once
 }
 
 // newSeedHarness wires the seam but does NOT attach a Runner — the caller does
@@ -80,7 +86,7 @@ func newSeedHarness(t *testing.T) *seedHarness {
 	h := &seedHarness{store: st, hub: hub, dsn: dsn, adminID: admin.ID, seedDone: make(chan struct{})}
 	hub.SetRunnerReadyHook(func() {
 		seedRootSupervisor(context.Background(), st, svc, admin.ID, slog.New(slog.DiscardHandler))
-		close(h.seedDone)
+		h.seedOnce.Do(func() { close(h.seedDone) })
 	})
 	return h
 }

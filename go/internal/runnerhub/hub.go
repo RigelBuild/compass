@@ -564,13 +564,28 @@ func (h *Hub) FrameDiagnostics() FrameDiagnostics {
 // so running it inline would block that handler's receive loop before it could
 // serve the command, deadlocking the seed on its own transport. Reads the hook
 // under h.mu (paired with SetRunnerReadyHook); fires after releasing the lock.
+//
+// The goroutine body recovers a panic and logs it: the hook's contract is
+// "a failure is logged, not fatal" (the seed stays non-fatal to a serving
+// process), and a bare panic in a goroutine would take down the whole daemon —
+// every live session in the single-Runner fleet — rather than degrade to a
+// logged failure. Every future ready-hook inherits this guarantee.
 func (h *Hub) fireRunnerReady() {
 	h.mu.Lock()
 	hook := h.runnerReadyHook
 	h.mu.Unlock()
-	if hook != nil {
-		go hook()
+	if hook == nil {
+		return
 	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				h.log.Error("runner-ready hook panicked; recovered (server stays up)",
+					slog.Any("panic", r))
+			}
+		}()
+		hook()
+	}()
 }
 
 // deliverSession routes a session frame to the observation-pane tail and, when
