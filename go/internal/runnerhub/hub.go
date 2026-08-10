@@ -540,10 +540,19 @@ func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFram
 	if state == compassv1.AgentSessionState_AGENT_SESSION_STATE_UNSPECIFIED {
 		return
 	}
-	h.lifecycle.PublishSessionStatus(&compassv1.AgentSessionStatus{
-		SessionId: sessionID,
-		State:     state,
-	})
+	// Resolve the session's agent account from the hub's own live binding and
+	// stamp it onto the published status — the DL-167 attribution join, the same
+	// binding the presence arm below reads. A status published while the binding
+	// is live (including the terminal STOPPED/ERRORED status, as long as Stop's
+	// unbindSession has not yet dropped it) carries its account; one published
+	// after a Runner reconnect cleared the maps carries none (the stated residual
+	// gap). accountForSession takes h.mu; deliverSession holds no lock here.
+	account, hasAccount := h.accountForSession(sessionID)
+	status := &compassv1.AgentSessionStatus{SessionId: sessionID, State: state}
+	if hasAccount {
+		status.AgentAccountId = string(account)
+	}
+	h.lifecycle.PublishSessionStatus(status)
 	// Same arm, right after the lifecycle publish: notify the delivery consumer
 	// of the author's settle edge so it can fire any agent-authored messages held
 	// for this session (SEA-1569 T3 §2, design.md:155-160). Read the sink under
@@ -558,19 +567,18 @@ func (h *Hub) deliverSession(sessionID string, sf *compassv1internal.SessionFram
 	}
 	// Same arm: notify the presence projection of the lifecycle transition so it
 	// recomputes + republishes-on-change the session's agent presence (SEA-1569
-	// T8, design.md:472-479). Resolve the account in-package and pass it (the sink
-	// is per-account; accountForSession stays private). Read the sink under mu,
-	// nil-safe, exactly as the settle sink above; the sink enqueues into the
-	// component's own loop and returns promptly (no store work on Deliver). A
-	// session with no bound account (a transition before Start's promote) has no
-	// presence to publish, so it is simply skipped.
+	// T8, design.md:472-479). Reuse the account resolved above (same binding, one
+	// lookup) and pass it (the sink is per-account; accountForSession stays
+	// private). Read the sink under mu, nil-safe, exactly as the settle sink
+	// above; the sink enqueues into the component's own loop and returns promptly
+	// (no store work on Deliver). A session with no bound account (a transition
+	// before Start's promote) has no presence to publish, so it is simply
+	// skipped.
 	h.mu.Lock()
 	presence := h.presence
 	h.mu.Unlock()
-	if presence != nil {
-		if account, ok := h.accountForSession(sessionID); ok {
-			presence.OnSessionLifecycle(account, sessionID, state)
-		}
+	if presence != nil && hasAccount {
+		presence.OnSessionLifecycle(account, sessionID, state)
 	}
 }
 

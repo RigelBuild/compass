@@ -60,6 +60,9 @@ const (
 	// CompassServiceStartAgentSessionProcedure is the fully-qualified name of the CompassService's
 	// StartAgentSession RPC.
 	CompassServiceStartAgentSessionProcedure = "/compass.v1.CompassService/StartAgentSession"
+	// CompassServiceSpawnAgentProcedure is the fully-qualified name of the CompassService's SpawnAgent
+	// RPC.
+	CompassServiceSpawnAgentProcedure = "/compass.v1.CompassService/SpawnAgent"
 	// CompassServiceStopAgentSessionProcedure is the fully-qualified name of the CompassService's
 	// StopAgentSession RPC.
 	CompassServiceStopAgentSessionProcedure = "/compass.v1.CompassService/StopAgentSession"
@@ -140,6 +143,19 @@ type CompassServiceClient interface {
 	// Runner streaming-exec bridge and stream its relayed activity onto
 	// SubscribeEvents. Returns the server-side session id (compass.md §7.1).
 	StartAgentSession(context.Context, *connect.Request[v1.StartAgentSessionRequest]) (*connect.Response[v1.StartAgentSessionResponse], error)
+	// Spawn an agent: the composite lifecycle operation that provisions a
+	// per-agent container and brings its session online in ONE call, so a UI
+	// starts an agent without orchestrating ProvisionAgentWorkspace and
+	// StartAgentSession itself. The server runs those two internal steps under
+	// the single client_request_id this request carries, owning end-to-end
+	// idempotency across both: a retry with the same client_request_id returns
+	// the same session_id and provisions no second container. Before issuing any
+	// Provision, the server rejects with ALREADY_EXISTS when that agent account
+	// already holds a live session (one container per agent account, DL-170) —
+	// a pre-Provision short-circuit ordered AFTER the idempotency dedup-join, so
+	// a retry of an in-flight/completed spawn rejoins the original rather than
+	// bouncing. Routes Client -> Server -> RunnerHub -> Runner.
+	SpawnAgent(context.Context, *connect.Request[v1.SpawnAgentRequest]) (*connect.Response[v1.SpawnAgentResponse], error)
 	// Stop a live agent session: deliberately kill the in-container agent and
 	// release the session. Idempotent — stopping an unknown/already-stopped
 	// session succeeds.
@@ -251,6 +267,12 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("StartAgentSession")),
 			connect.WithClientOptions(opts...),
 		),
+		spawnAgent: connect.NewClient[v1.SpawnAgentRequest, v1.SpawnAgentResponse](
+			httpClient,
+			baseURL+CompassServiceSpawnAgentProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("SpawnAgent")),
+			connect.WithClientOptions(opts...),
+		),
 		stopAgentSession: connect.NewClient[v1.StopAgentSessionRequest, v1.StopAgentSessionResponse](
 			httpClient,
 			baseURL+CompassServiceStopAgentSessionProcedure,
@@ -316,6 +338,7 @@ type compassServiceClient struct {
 	listBoardIssues         *connect.Client[v1.ListBoardIssuesRequest, v1.ListBoardIssuesResponse]
 	provisionAgentWorkspace *connect.Client[v1.ProvisionAgentWorkspaceRequest, v1.ProvisionAgentWorkspaceResponse]
 	startAgentSession       *connect.Client[v1.StartAgentSessionRequest, v1.StartAgentSessionResponse]
+	spawnAgent              *connect.Client[v1.SpawnAgentRequest, v1.SpawnAgentResponse]
 	stopAgentSession        *connect.Client[v1.StopAgentSessionRequest, v1.StopAgentSessionResponse]
 	removeAgentWorkspace    *connect.Client[v1.RemoveAgentWorkspaceRequest, v1.RemoveAgentWorkspaceResponse]
 	reloadAgentSession      *connect.Client[v1.ReloadAgentSessionRequest, v1.ReloadAgentSessionResponse]
@@ -355,6 +378,11 @@ func (c *compassServiceClient) ProvisionAgentWorkspace(ctx context.Context, req 
 // StartAgentSession calls compass.v1.CompassService.StartAgentSession.
 func (c *compassServiceClient) StartAgentSession(ctx context.Context, req *connect.Request[v1.StartAgentSessionRequest]) (*connect.Response[v1.StartAgentSessionResponse], error) {
 	return c.startAgentSession.CallUnary(ctx, req)
+}
+
+// SpawnAgent calls compass.v1.CompassService.SpawnAgent.
+func (c *compassServiceClient) SpawnAgent(ctx context.Context, req *connect.Request[v1.SpawnAgentRequest]) (*connect.Response[v1.SpawnAgentResponse], error) {
+	return c.spawnAgent.CallUnary(ctx, req)
 }
 
 // StopAgentSession calls compass.v1.CompassService.StopAgentSession.
@@ -444,6 +472,19 @@ type CompassServiceHandler interface {
 	// Runner streaming-exec bridge and stream its relayed activity onto
 	// SubscribeEvents. Returns the server-side session id (compass.md §7.1).
 	StartAgentSession(context.Context, *connect.Request[v1.StartAgentSessionRequest]) (*connect.Response[v1.StartAgentSessionResponse], error)
+	// Spawn an agent: the composite lifecycle operation that provisions a
+	// per-agent container and brings its session online in ONE call, so a UI
+	// starts an agent without orchestrating ProvisionAgentWorkspace and
+	// StartAgentSession itself. The server runs those two internal steps under
+	// the single client_request_id this request carries, owning end-to-end
+	// idempotency across both: a retry with the same client_request_id returns
+	// the same session_id and provisions no second container. Before issuing any
+	// Provision, the server rejects with ALREADY_EXISTS when that agent account
+	// already holds a live session (one container per agent account, DL-170) —
+	// a pre-Provision short-circuit ordered AFTER the idempotency dedup-join, so
+	// a retry of an in-flight/completed spawn rejoins the original rather than
+	// bouncing. Routes Client -> Server -> RunnerHub -> Runner.
+	SpawnAgent(context.Context, *connect.Request[v1.SpawnAgentRequest]) (*connect.Response[v1.SpawnAgentResponse], error)
 	// Stop a live agent session: deliberately kill the in-container agent and
 	// release the session. Idempotent — stopping an unknown/already-stopped
 	// session succeeds.
@@ -551,6 +592,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("StartAgentSession")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServiceSpawnAgentHandler := connect.NewUnaryHandler(
+		CompassServiceSpawnAgentProcedure,
+		svc.SpawnAgent,
+		connect.WithSchema(compassServiceMethods.ByName("SpawnAgent")),
+		connect.WithHandlerOptions(opts...),
+	)
 	compassServiceStopAgentSessionHandler := connect.NewUnaryHandler(
 		CompassServiceStopAgentSessionProcedure,
 		svc.StopAgentSession,
@@ -619,6 +666,8 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceProvisionAgentWorkspaceHandler.ServeHTTP(w, r)
 		case CompassServiceStartAgentSessionProcedure:
 			compassServiceStartAgentSessionHandler.ServeHTTP(w, r)
+		case CompassServiceSpawnAgentProcedure:
+			compassServiceSpawnAgentHandler.ServeHTTP(w, r)
 		case CompassServiceStopAgentSessionProcedure:
 			compassServiceStopAgentSessionHandler.ServeHTTP(w, r)
 		case CompassServiceRemoveAgentWorkspaceProcedure:
@@ -668,6 +717,10 @@ func (UnimplementedCompassServiceHandler) ProvisionAgentWorkspace(context.Contex
 
 func (UnimplementedCompassServiceHandler) StartAgentSession(context.Context, *connect.Request[v1.StartAgentSessionRequest]) (*connect.Response[v1.StartAgentSessionResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.StartAgentSession is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) SpawnAgent(context.Context, *connect.Request[v1.SpawnAgentRequest]) (*connect.Response[v1.SpawnAgentResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.SpawnAgent is not implemented"))
 }
 
 func (UnimplementedCompassServiceHandler) StopAgentSession(context.Context, *connect.Request[v1.StopAgentSessionRequest]) (*connect.Response[v1.StopAgentSessionResponse], error) {

@@ -86,6 +86,11 @@ type liveSession struct {
 	containerID   runtime.ContainerID
 	stream        *AgentStream
 	state         compassv1.AgentSessionState
+	// agentAccountID is the owned agent account this session belongs to, copied
+	// from the resolved handle at Start so Status can attribute the session's
+	// AgentSessionStatus to its account (DL-167) — the field the Server's
+	// reject-on-live scan matches against.
+	agentAccountID string
 }
 
 // AgentHostConfig is the SessionHost's own configuration, distinct from the
@@ -371,11 +376,12 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 
 	h.mu.Lock()
 	h.sessions[sessionID] = &liveSession{
-		sessionID:     sessionID,
-		containerName: name,
-		containerID:   handle.ID(),
-		stream:        stream,
-		state:         compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
+		sessionID:      sessionID,
+		containerName:  name,
+		containerID:    handle.ID(),
+		stream:         stream,
+		state:          compassv1.AgentSessionState_AGENT_SESSION_STATE_READY,
+		agentAccountID: handle.AgentAccountID(),
 	}
 	// Create the session's control state here, under the same lock that records
 	// the session — the mirror of Stop's retirement. The Runner owning both ends
@@ -524,11 +530,11 @@ func (h *agentHost) Status(_ context.Context, sessionID string) ([]*compassv1.Ag
 		if !ok {
 			return nil, errSessionUnknown
 		}
-		return []*compassv1.AgentSessionStatus{{SessionId: s.sessionID, State: s.state}}, nil
+		return []*compassv1.AgentSessionStatus{{SessionId: s.sessionID, State: s.state, AgentAccountId: s.agentAccountID}}, nil
 	}
 	out := make([]*compassv1.AgentSessionStatus, 0, len(h.sessions))
 	for _, s := range h.sessions {
-		out = append(out, &compassv1.AgentSessionStatus{SessionId: s.sessionID, State: s.state})
+		out = append(out, &compassv1.AgentSessionStatus{SessionId: s.sessionID, State: s.state, AgentAccountId: s.agentAccountID})
 	}
 	return out, nil
 }

@@ -652,6 +652,11 @@ type recordingRunner struct {
 	// logical session) gets distinct live ids. Empty falls back to answer()'s
 	// fixed fakeSessionID. Read/popped under mu.
 	startIDs []string
+	// statuses, when set, is what the loop answers a GetAgentStatus command with
+	// (the all-sessions scan the SpawnAgent reject-on-live check reads). Empty
+	// answers an empty set — no live session, so reject-on-live never fires.
+	// Read under mu.
+	statuses []*compassv1.AgentSessionStatus
 }
 
 // serve runs the dispatch loop. Like the seam test's loop it opens with one
@@ -708,6 +713,16 @@ func (r *recordingRunner) serve(
 				}
 				continue
 			}
+		}
+		if cmd.GetStatus() != nil {
+			if err := stream.Send(&compassv1internal.SessionsRequest{
+				RequestId: cmd.GetRequestId(),
+				Result:    &compassv1internal.SessionsRequest_Status{Status: &compassv1.GetAgentStatusResponse{Statuses: r.statusSet()}},
+			}); err != nil {
+				done <- err
+				return
+			}
+			continue
 		}
 		if err := stream.Send(answer(cmd)); err != nil {
 			done <- err
@@ -797,6 +812,38 @@ func (r *recordingRunner) setStartIDs(ids ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.startIDs = append([]string(nil), ids...)
+}
+
+// statusSet returns the live-session status set the loop answers a GetAgentStatus
+// with — the all-sessions scan the SpawnAgent reject-on-live check reads. Read
+// under mu for a clean handoff from setStatuses.
+func (r *recordingRunner) statusSet() []*compassv1.AgentSessionStatus {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.statuses
+}
+
+// setStatuses installs the live-session set the loop answers GetAgentStatus with.
+// Set before the Spawn whose reject-on-live it should drive.
+func (r *recordingRunner) setStatuses(statuses ...*compassv1.AgentSessionStatus) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.statuses = append([]*compassv1.AgentSessionStatus(nil), statuses...)
+}
+
+// provisionCount counts the Provision commands the Server pushed — the teeth of
+// the idempotency and reject-on-live assertions (exactly one on an idempotent
+// retry, zero on a reject-on-live short-circuit).
+func (r *recordingRunner) provisionCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, c := range r.seen {
+		if c.GetProvision() != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // sawRemove reports whether the Server pushed a Remove for containerName — the

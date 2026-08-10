@@ -49,6 +49,11 @@ type AgentSpec struct {
 	// agent, delivered as the container's customSystemPrompt at boot. Empty
 	// means no role (default OMP block-0).
 	Role string
+	// AgentAccountID is the owned agent account this workstream belongs to (the
+	// AgentAccount id from the provision request). Carried onto the spec so the
+	// Runner can attribute a session's AgentSessionStatus to its account (DL-167)
+	// without parsing it back out of the derived container name.
+	AgentAccountID string
 }
 
 // AgentHandle is a live agent container: the resolved id plus the spec it was
@@ -83,6 +88,10 @@ func (h *AgentHandle) Persona() string { return h.spec.Persona }
 // Role returns the server-authoritative operator-set block-0 selector for this
 // agent, or empty for none.
 func (h *AgentHandle) Role() string { return h.spec.Role }
+
+// AgentAccountID returns the owned agent account this workstream belongs to,
+// the attribution key the Runner stamps onto each session's status (DL-167).
+func (h *AgentHandle) AgentAccountID() string { return h.spec.AgentAccountID }
 
 // StageError wraps a container runtime error with the lifecycle stage it
 // failed at, so a failure is diagnosable without a container inspect.

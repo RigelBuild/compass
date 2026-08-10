@@ -52,9 +52,13 @@ func classifyProcedure(procedure string) (privilege, bool) {
 	// like it (the agent-facing despawn reaches the same teardown over the Runner
 	// relay with its own owner-scoped check, never this door). PutAgentConfig and
 	// DeleteAgentConfig are the operator-scoped fleet config writes (record §520-522).
+	// SpawnAgent is the composite Provision+Start start-an-agent RPC — strictly
+	// more powerful than any sibling since it provisions AND starts, so it is
+	// admin-gated like them (DL-171).
 	case compassv1connect.CompassServiceProvisionAgentWorkspaceProcedure,
 		compassv1connect.CompassServiceRemoveAgentWorkspaceProcedure,
 		compassv1connect.CompassServiceStartAgentSessionProcedure,
+		compassv1connect.CompassServiceSpawnAgentProcedure,
 		compassv1connect.CompassServiceStopAgentSessionProcedure,
 		compassv1connect.CompassServiceReloadAgentSessionProcedure,
 		compassv1connect.CompassServiceGetAgentStatusProcedure,
