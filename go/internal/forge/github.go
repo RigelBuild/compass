@@ -42,6 +42,10 @@ type ListPage struct {
 	ETag        string // the response ETag to store on sink success
 	HasNext     bool   // an RFC-5988 Link rel="next" was present
 	NotModified bool   // 304: content unchanged vs the etag argument
+	// RateLimitRemaining is the x-ratelimit-remaining header from this response
+	// (the poll driver logs it as an observability signal). -1 when the header
+	// is absent or unparseable (an unauthenticated or GHES-variant response).
+	RateLimitRemaining int
 }
 
 // GitHub is a hand-rolled net/http read client for a GitHub (or GHES) forge
@@ -175,7 +179,7 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 		// (the conditional request was not charged against the primary limit);
 		// record it for the NEXT call, then short-circuit before any body parse.
 		g.recordBudget(resp)
-		return ListPage{NotModified: true}, nil
+		return ListPage{NotModified: true, RateLimitRemaining: remainingHeader(resp)}, nil
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		// A 2xx's headers reflect a healthy bucket; record for the next call.
 		g.recordBudget(resp)
@@ -212,9 +216,10 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 	}
 
 	return ListPage{
-		Issues:  issues,
-		ETag:    resp.Header.Get("ETag"),
-		HasNext: hasNextLink(resp.Header.Get("Link")),
+		Issues:             issues,
+		ETag:               resp.Header.Get("ETag"),
+		HasNext:            hasNextLink(resp.Header.Get("Link")),
+		RateLimitRemaining: remainingHeader(resp),
 	}, nil
 }
 
@@ -313,6 +318,22 @@ func (g *GitHub) recordBudget(resp *http.Response) {
 		return
 	}
 	g.armGate(resetFromHeader(resp.Header.Get("X-Ratelimit-Reset")))
+}
+
+// remainingHeader parses the x-ratelimit-remaining header into the observability
+// value carried on ListPage. It returns -1 when the header is absent or
+// unparseable (an unauthenticated response, or a GHES variant that omits it), so
+// a "no signal" reading is distinguishable from a genuine zero.
+func remainingHeader(resp *http.Response) int {
+	raw := resp.Header.Get("X-Ratelimit-Remaining")
+	if raw == "" {
+		return -1
+	}
+	remaining, err := strconv.Atoi(raw)
+	if err != nil {
+		return -1
+	}
+	return remaining
 }
 
 // armGate sets the reset-time gate. A zero at (no usable reset time) falls back
