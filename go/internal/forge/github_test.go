@@ -358,6 +358,32 @@ func TestListPageCarriesRateLimitRemaining(t *testing.T) {
 			t.Errorf("RateLimitRemaining = %d, want -1 (absent sentinel)", p.RateLimitRemaining)
 		}
 	})
+	t.Run("unparseable header -> -1 sentinel", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 200, body: "[]", headers: map[string]string{"X-RateLimit-Remaining": "nan"}},
+		}}
+		g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+		p, err := g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 1, "")
+		if err != nil {
+			t.Fatalf("ListIssuesPage: %v", err)
+		}
+		if p.RateLimitRemaining != -1 {
+			t.Errorf("RateLimitRemaining = %d, want -1 (unparseable sentinel)", p.RateLimitRemaining)
+		}
+	})
+	t.Run("genuine zero is 0, not the sentinel", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 200, body: "[]", headers: map[string]string{"X-RateLimit-Remaining": "0"}},
+		}}
+		g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+		p, err := g.ListIssuesPage(context.Background(), "org/repo", IssueFilter{}, 1, "")
+		if err != nil {
+			t.Fatalf("ListIssuesPage: %v", err)
+		}
+		if p.RateLimitRemaining != 0 {
+			t.Errorf("RateLimitRemaining = %d, want 0 (genuine zero, distinct from -1 sentinel)", p.RateLimitRemaining)
+		}
+	})
 }
 
 // --- item 4: HasNext, per_page/page on the wire, ListIssues two-page walk ----
