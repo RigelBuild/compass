@@ -43,8 +43,19 @@ type Projection struct {
 	// filters terminal states out, since GetAgentStatus unfiltered contracts to
 	// return every *live* session (compass.proto:49,283). Retain-all is bounded by
 	// the single-Runner agent count for the MVP; lifecycle GC (eviction on the
-	// reattach/expiry state machine, compass.proto:149-153) is deferred.
-	sessions map[string]compassv1.AgentSessionState
+	// reattach/expiry state machine, compass.proto:149-153) is deferred. The
+	// value carries the DL-167 agent_account_id alongside the state, so a
+	// snapshot reattaches each session to its agent for any status the hub
+	// published with a resolvable binding.
+	sessions map[string]sessionEntry
+}
+
+// sessionEntry is the board's per-session record: the latest state and the
+// agent account it was attributed to (empty when the hub could not resolve the
+// binding — the stated DL-167 residual gap).
+type sessionEntry struct {
+	state   compassv1.AgentSessionState
+	account string
 }
 
 // NewProjection constructs an empty board over the SubscribeEvents bus it fans
@@ -52,7 +63,7 @@ type Projection struct {
 func NewProjection(bus *events.Bus[busPayload]) *Projection {
 	return &Projection{
 		bus:      bus,
-		sessions: make(map[string]compassv1.AgentSessionState),
+		sessions: make(map[string]sessionEntry),
 	}
 }
 
@@ -84,7 +95,7 @@ func (p *Projection) PublishSessionStatus(status *compassv1.AgentSessionStatus) 
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.sessions[status.GetSessionId()] = status.GetState()
+	p.sessions[status.GetSessionId()] = sessionEntry{state: status.GetState(), account: status.GetAgentAccountId()}
 
 	p.bus.Publish(&compassv1.SubscribeEventsResponse{
 		Payload: &compassv1.SubscribeEventsResponse_AgentSessionStatus{
@@ -107,19 +118,19 @@ func (p *Projection) Snapshot(sessionID string) []*compassv1.AgentSessionStatus 
 	defer p.mu.RUnlock()
 
 	if sessionID != "" {
-		state, ok := p.sessions[sessionID]
+		entry, ok := p.sessions[sessionID]
 		if !ok {
 			return nil
 		}
-		return []*compassv1.AgentSessionStatus{statusOf(sessionID, state)}
+		return []*compassv1.AgentSessionStatus{statusOf(sessionID, entry)}
 	}
 
 	out := make([]*compassv1.AgentSessionStatus, 0, len(p.sessions))
-	for id, state := range p.sessions {
-		if isTerminal(state) {
+	for id, entry := range p.sessions {
+		if isTerminal(entry.state) {
 			continue
 		}
-		out = append(out, statusOf(id, state))
+		out = append(out, statusOf(id, entry))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		return out[i].GetSessionId() < out[j].GetSessionId()
@@ -139,7 +150,8 @@ func isTerminal(state compassv1.AgentSessionState) bool {
 		state == compassv1.AgentSessionState_AGENT_SESSION_STATE_ERRORED
 }
 
-// statusOf builds one board entry.
-func statusOf(sessionID string, state compassv1.AgentSessionState) *compassv1.AgentSessionStatus {
-	return &compassv1.AgentSessionStatus{SessionId: sessionID, State: state}
+// statusOf builds one board entry from a retained session record, carrying the
+// DL-167 agent_account_id alongside the state.
+func statusOf(sessionID string, entry sessionEntry) *compassv1.AgentSessionStatus {
+	return &compassv1.AgentSessionStatus{SessionId: sessionID, State: entry.state, AgentAccountId: entry.account}
 }

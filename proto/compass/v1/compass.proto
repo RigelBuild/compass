@@ -58,6 +58,20 @@ service CompassService {
   // SubscribeEvents. Returns the server-side session id (compass.md §7.1).
   rpc StartAgentSession(StartAgentSessionRequest) returns (StartAgentSessionResponse);
 
+  // Spawn an agent: the composite lifecycle operation that provisions a
+  // per-agent container and brings its session online in ONE call, so a UI
+  // starts an agent without orchestrating ProvisionAgentWorkspace and
+  // StartAgentSession itself. The server runs those two internal steps under
+  // the single client_request_id this request carries, owning end-to-end
+  // idempotency across both: a retry with the same client_request_id returns
+  // the same session_id and provisions no second container. Before issuing any
+  // Provision, the server rejects with ALREADY_EXISTS when that agent account
+  // already holds a live session (one container per agent account, DL-170) —
+  // a pre-Provision short-circuit ordered AFTER the idempotency dedup-join, so
+  // a retry of an in-flight/completed spawn rejoins the original rather than
+  // bouncing. Routes Client -> Server -> RunnerHub -> Runner.
+  rpc SpawnAgent(SpawnAgentRequest) returns (SpawnAgentResponse);
+
   // Stop a live agent session: deliberately kill the in-container agent and
   // release the session. Idempotent — stopping an unknown/already-stopped
   // session succeeds.
@@ -325,6 +339,14 @@ message AgentSessionStatus {
   // The server-side session id this status is for.
   string session_id = 1;
   AgentSessionState state = 2;
+  // The agent account this session belongs to — the attribution join key
+  // (DL-167). It reattaches a status to its agent across clients and refreshes
+  // for as long as the server can resolve the session->account binding, and it
+  // is the field the SpawnAgent reject-on-live scan matches a request's agent
+  // against. A backward-compatible append (buf: non-breaking). Empty when the
+  // binding is no longer resolvable — a status emitted after a Runner reconnect
+  // cleared the live-session maps carries none (the stated residual gap).
+  string agent_account_id = 3;
 }
 
 // Agent-session lifecycle states. `ERRORED` is an unexpected agent exit (OOM,
@@ -582,6 +604,35 @@ message StartAgentSessionResponse {
   // The server-side session id; the cursor for Stop/Reload/GetAgentStatus and
   // the attribution id on every agent payload.
   string session_id = 1;
+}
+
+// SpawnAgent: the composite start — Provision then Start under one
+// client_request_id, the single call a UI makes to bring an agent online.
+message SpawnAgentRequest {
+  // The owned agent account to bring online (the AgentAccount id from
+  // CommsService). The container is provisioned for, and the session bound to,
+  // this account.
+  string agent_account_id = 1;
+  // Optional initial prompt sent once the session is ready. Empty = start idle,
+  // awaiting a later prompt (same contract as StartAgentSessionRequest).
+  string initial_prompt = 2;
+  // End-to-end idempotency key. A retry with the same id returns the same
+  // session_id and provisions no second container: the server threads it across
+  // both the internal Provision and Start so the whole composite dedups, and
+  // consults it BEFORE the reject-on-live check so a retry of an in-flight or
+  // completed spawn rejoins the original rather than being bounced as a second
+  // start. Empty = no dedup (each call is a distinct spawn).
+  string client_request_id = 3;
+}
+
+message SpawnAgentResponse {
+  // The server-side session id the internal Start minted — the cursor for
+  // Stop/Reload/GetAgentStatus, the same value StartAgentSession returns.
+  string session_id = 1;
+  // The intermediate container handle the internal Provision created, surfaced
+  // for lifecycle/debug parity with the two-call path; a UI consuming only the
+  // session id may ignore it.
+  string container_name = 2;
 }
 
 message StopAgentSessionRequest {

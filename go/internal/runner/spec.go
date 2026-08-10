@@ -91,10 +91,11 @@ func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequ
 			HomeDir:     d.HomeDir,
 			UID:         d.UID,
 		},
-		Egress:  d.Egress,
-		Mounts:  d.Mounts,
-		Persona: req.GetPersona(),
-		Role:    req.GetRole(),
+		Egress:         d.Egress,
+		Mounts:         d.Mounts,
+		Persona:        req.GetPersona(),
+		Role:           req.GetRole(),
+		AgentAccountID: accountID,
 	}, nil
 }
 

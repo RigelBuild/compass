@@ -373,6 +373,17 @@ server stops the current agent and session, then starts a new one under the
 **same** session id (so the id stays a stable handle) and the agent reloads from
 its workspace state.
 
+### Requirement: One container per agent account
+
+The server SHALL bind at most one live container to a given agent account. A
+`SpawnAgent` for an agent account that already holds a live session SHALL be
+rejected with `ALREADY_EXISTS` before any container is provisioned (the
+existing session is unaffected). This binds the reject-on-live rule to the
+*agent account*, not merely to the container name: the existing
+one-session-per-container requirement above coincides with it today only
+because the container name is derived from the account, an incidental property
+a future Runner naming containers differently would break.
+
 ### Requirement: A deliberate stop is distinct from an unexpected exit or a lost Runner
 
 The server SHALL distinguish three session-ending conditions. A deliberate
