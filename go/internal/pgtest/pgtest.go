@@ -67,7 +67,7 @@ const UseContainerEnvVar = "COMPASS_TEST_USE_CONTAINER"
 // COMPASS_REQUIRE_LIVE=1 makes that case fail loudly instead.
 const RequireLiveEnvVar = "COMPASS_REQUIRE_LIVE"
 
-// dsnSource is which of the four database-acquisition paths RequireDSN takes.
+// dsnSource is which of the five database-acquisition paths RequireDSN takes.
 type dsnSource int
 
 const (
@@ -105,7 +105,9 @@ func decideDSNSource(dsn, useContainer, cli, requireLive string) dsnSource {
 // container-less sandbox. When a runtime IS present but no DSN is set, it FAILS
 // LOUDLY unless COMPASS_TEST_USE_CONTAINER is set: the ~500x-slower throwaway
 // container path is opt-in, never a silent fallback that changes what the suite
-// measures.
+// measures. When COMPASS_REQUIRE_LIVE is set and neither a DSN nor a container
+// runtime is available, the skip becomes a hard failure instead (see
+// RequireLiveEnvVar) — for contexts like CI where a live database is mandatory.
 func RequireDSN(t *testing.T) string {
 	t.Helper()
 	dsn := os.Getenv(DSNEnvVar)

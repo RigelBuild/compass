@@ -66,6 +66,13 @@ func TestDecideDSNSource(t *testing.T) {
 			requireLive: "1",
 			want:        sourceSharedSchema,
 		},
+		{
+			name:         "require-live never suppresses the opt-in container path",
+			cli:          "podman",
+			useContainer: "1",
+			requireLive:  "1",
+			want:         sourceContainer,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
