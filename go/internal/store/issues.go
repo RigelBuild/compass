@@ -24,7 +24,7 @@ const (
 )
 
 // ForgeProvider mirrors compass.v1 ForgeProvider (UNSPECIFIED=0, GITHUB=1,
-// GITLAB=2, FORGEJO=3). Part of the forge coordinate.
+// GITLAB=2, FORGEJO=3, LINEAR=4). Part of the forge coordinate.
 type ForgeProvider int32
 
 const (
@@ -32,6 +32,7 @@ const (
 	ForgeProviderGitHub      ForgeProvider = 1
 	ForgeProviderGitLab      ForgeProvider = 2
 	ForgeProviderForgejo     ForgeProvider = 3
+	ForgeProviderLinear      ForgeProvider = 4
 )
 
 // Issue is the store-native canonical board issue: forge-derived fields plus
