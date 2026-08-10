@@ -2,6 +2,10 @@
 .moon/cache
 .moon/docker
 
+# golangci-lint per-workspace cache (compass-go:lint sets GOLANGCI_LINT_CACHE
+# to $projectRoot/.golangci-cache to avoid shared-cache contention).
+/go/.golangci-cache/
+
 # Rust
 /target
 **/target
