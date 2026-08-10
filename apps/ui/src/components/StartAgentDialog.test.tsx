@@ -4,13 +4,13 @@ import type { SpawnSpec } from "../spawn";
 import { StartAgentDialog } from "./StartAgentDialog";
 
 // The start-agent dialog's START contract (design compass-spawn-control T3,
-// DL-164). The caller has already fixed the agent + workstream via props.spec,
+// DL-164). The caller has already fixed the agent + card via props.spec,
 // so the only field is the initial prompt (a textarea). An empty prompt is
 // valid ("start idle"). Pure callback component — no store.
 
 const SPEC: Omit<SpawnSpec, "initialPrompt"> = {
 	agentAccountId: "acc-cook",
-	workstreamId: "iss-42",
+	issueId: "iss-42",
 };
 
 const promptArea = (c: HTMLElement) =>
@@ -38,7 +38,7 @@ describe("StartAgentDialog", () => {
 		fireEvent.click(submit);
 		expect(captured).toEqual({
 			agentAccountId: "acc-cook",
-			workstreamId: "iss-42",
+			issueId: "iss-42",
 			initialPrompt: "",
 		});
 	});
@@ -62,7 +62,7 @@ describe("StartAgentDialog", () => {
 		fireEvent.click(submit);
 		expect(captured).toEqual({
 			agentAccountId: "acc-cook",
-			workstreamId: "iss-42",
+			issueId: "iss-42",
 			initialPrompt: "pick up SEA-1729",
 		});
 	});

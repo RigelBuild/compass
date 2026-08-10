@@ -1,5 +1,5 @@
 // Start-agent dialog — the start operation (design compass-spawn-control T3,
-// DL-164). The caller has already fixed the agent + workstream via props.spec,
+// DL-164). The caller has already fixed the agent + card via props.spec,
 // so the only field is the initial prompt (a textarea; empty = start idle, and
 // so a valid submit). Pure callback component — no store. Dialog open/closed is
 // the parent's concern.
