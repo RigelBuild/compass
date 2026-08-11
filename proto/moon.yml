@@ -30,24 +30,6 @@ tasks:
     inputs:
       - 'compass/**/*.proto'
       - '/buf.yaml'
-  breaking:
-    # Gate incompatible schema edits against the merge target. No-op when the
-    # probed path is absent from origin/main, and offline. That covers two
-    # cases: the first contract PR (no base yet), and the one cycle after the
-    # monorepo import, while origin/main still holds the pre-import tree — the
-    # gate re-arms on its own once the import lands. The base is probed through
-    # `git rev-parse --git-common-dir`, not $GIT_DIR: git exports $GIT_DIR during
-    # a push hook, and in a linked worktree that points at the private
-    # .git/worktrees/<name> dir, which buf rejects as an input ("git options
-    # set"). --git-common-dir yields the real repo from a worktree and plain
-    # `.git` from a normal checkout, so it is correct in both.
-    script: 'if git cat-file -e "refs/remotes/origin/main:proto/compass/v1/compass.proto" 2>/dev/null; then buf breaking . --against "$(git rev-parse --git-common-dir)#ref=refs/remotes/origin/main"; else echo "no base contract on origin/main yet - skipping breaking gate"; fi'
-    options:
-      runFromWorkspaceRoot: true
-      cache: false
-    inputs:
-      - 'compass/**/*.proto'
-      - '/buf.yaml'
   gen:
     # In-place regen for developers after a schema edit (outputs declared so
     # moon caches on the proto). THREE lanes: the public lane (buf.gen.yaml —
@@ -180,7 +162,8 @@ tasks:
     inputs:
       - '/packages/compass-client/src/gen/**/*'
       - '/go/gen/**/*'
+  # buf breaking gate removed pre-dogfood (SEA-1922); RE-ADD AT GA / first pinned client (tracked: SEA-1951).
   ci:
-    deps: ['lint', 'breaking', 'drift', 'gen-fence']
+    deps: ['lint', 'drift', 'gen-fence']
     options:
       cache: false

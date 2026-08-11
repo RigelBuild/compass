@@ -315,15 +315,12 @@ func (x *TranscriptEntry) GetEntrySeq() uint64 {
 //     session_id it owns) → SubscribeEvents for the board.
 //     AGENT_SESSION_STATE_UNSPECIFIED means "no transition — trace only".
 //
-// Field 1 (`bytes event`) is retired: the trace is typed now, never a dual
-// opaque+typed wire. Removing it is buf-breaking on this INTERNAL-only message,
-// permitted under the ephemeral-Server rationale (the Server on `main` has no
-// live client; agent + Runner ship together) — the same precedent as
-// compass-0.6's own field removal.
+// The former field 1 (`bytes event`) is gone: the trace is typed now, never a
+// dual opaque+typed wire.
 type SessionFrame struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	State         v1.AgentSessionState   `protobuf:"varint,2,opt,name=state,proto3,enum=compass.v1.AgentSessionState" json:"state,omitempty"`
-	TypedEvent    *v1.SessionEvent       `protobuf:"bytes,3,opt,name=typed_event,json=typedEvent,proto3" json:"typed_event,omitempty"`
+	State         v1.AgentSessionState   `protobuf:"varint,1,opt,name=state,proto3,enum=compass.v1.AgentSessionState" json:"state,omitempty"`
+	TypedEvent    *v1.SessionEvent       `protobuf:"bytes,2,opt,name=typed_event,json=typedEvent,proto3" json:"typed_event,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1085,11 +1082,11 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\n" +
 	"checkpoint\x18\x02 \x01(\bR\n" +
 	"checkpoint\x12\x1b\n" +
-	"\tentry_seq\x18\x03 \x01(\x04R\bentrySeq\"\x8b\x01\n" +
+	"\tentry_seq\x18\x03 \x01(\x04R\bentrySeq\"~\n" +
 	"\fSessionFrame\x123\n" +
-	"\x05state\x18\x02 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\x129\n" +
-	"\vtyped_event\x18\x03 \x01(\v2\x18.compass.v1.SessionEventR\n" +
-	"typedEventJ\x04\b\x01\x10\x02R\x05event\"\x9c\x04\n" +
+	"\x05state\x18\x01 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\x129\n" +
+	"\vtyped_event\x18\x02 \x01(\v2\x18.compass.v1.SessionEventR\n" +
+	"typedEvent\"\x9c\x04\n" +
 	"\fAgentControl\x12\x1f\n" +
 	"\vcontrol_seq\x18\b \x01(\x04R\n" +
 	"controlSeq\x123\n" +

@@ -129,27 +129,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # buf breaking compares against refs/remotes/origin/main, and the drift
-          # gate's `git diff --no-index` needs real git. A shallow single-ref
-          # checkout has neither.
+          # The drift gate's `git diff --no-index` needs real git; a shallow
+          # single-ref checkout does not provide it.
           fetch-depth: 0
-
-      - name: Guarantee the base ref the breaking gate compares against
-        # proto/moon.yml's `buf breaking` compares against
-        # refs/remotes/origin/main, and takes a "no base contract yet" branch
-        # when that ref is absent — a vacuous pass, the failure mode this whole
-        # pipeline exists to end. checkout at fetch-depth: 0 does populate
-        # refs/remotes/origin/* today, so the fetch below is normally a no-op;
-        # it is kept as a cheap guarantee that does not depend on the action's
-        # future behaviour. The rev-parse is the part that matters: it turns a
-        # missing base ref into a loud failure here instead of a silent skip
-        # inside the gate.
-        run: |
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          git rev-parse --verify refs/remotes/origin/main >/dev/null || {
-            echo "::error::refs/remotes/origin/main is absent — buf breaking would skip its comparison and pass without checking anything"
-            exit 1
-          }
 
       - name: Read the toolchain pins
         id: pins

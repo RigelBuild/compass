@@ -163,19 +163,15 @@ message AgentAccount {
   // The owning user's account id. Server-set to the creating caller; not a
   // client-chosen field.
   string owner_user_id = 1;
-  // Field 2 (`harness`) retired pre-launch: under the single-first-party-agent
-  // model there is no runtime to select, so no interop label to carry.
-  reserved 2;
-  reserved "harness";
   // The agent's home channel, minted at CreateAgent. The agent is always
   // subscribed to it (implicit, not a togglable row); turn-end delivery and the
   // observation-pane ACL scope to it. Server-set.
-  string home_channel_id = 3;
+  string home_channel_id = 2;
   // The agent's parent in the agent tree; empty = root. Set at creation (to the
   // spawning agent's account id, or a user-supplied parent on CreateAgent) and
   // editable via ReparentAgent. Mirrors ChannelGroup.parent_group_id. The
   // server validates same-owner and no-cycle on every write.
-  string parent_agent_id = 4;
+  string parent_agent_id = 3;
 }
 
 // ── Channel groups + channels (D9) ─────────────────────────────────────────
@@ -289,10 +285,6 @@ message AgentWorkspace {
   string id = 1;
   // The agent account whose ACP session this surface renders.
   string agent_account_id = 2;
-  // Field 3 (`participant_user_ids`) removed (fork f): observation-pane access
-  // is a projection of home-channel membership, not a second cross-service ACL.
-  reserved 3;
-  reserved "participant_user_ids";
 }
 
 // ── Topics (Zulip threading model) ─────────────────────────────────────────
@@ -330,13 +322,11 @@ message Message {
   // parent_message_id are both REMOVED, not reserved (F9: pre-dogfood, zero
   // stored payloads); field 2 is reused as topic_id, same `string` wire type.
   string topic_id = 2;
-  reserved 3;
-  reserved "workspace_id";
   // The posting account (a user or an agent).
-  string author_account_id = 4;
-  int64 at_unix_ms = 5;
+  string author_account_id = 3;
+  int64 at_unix_ms = 4;
   // Ordered content; mirrors ACP session/update blocks (D5).
-  repeated MessageBlock blocks = 6;
+  repeated MessageBlock blocks = 5;
 }
 
 // One content block in a message: the durable conversation the comms layer
@@ -349,10 +339,8 @@ message MessageBlock {
     // Settled user-facing / assistant text (markdown).
     string text = 1;
     // A structured question awaiting an answer.
-    Ask ask = 6;
+    Ask ask = 2;
   }
-  reserved 2, 3, 4, 5;
-  reserved "thought", "tool_call", "plan", "diff";
 }
 
 // A structured question set the agent asks: one atomic form of one or more
@@ -371,7 +359,7 @@ message Ask {
   // the Ask by AskQuestion.question_id.
   string ask_id = 1;
   // The questions, in the order the agent asked them. At least one.
-  repeated AskQuestion questions = 6;
+  repeated AskQuestion questions = 2;
   // True once this ask has been answered. It flips exactly once, on the first
   // RespondToAsk, and a second one is rejected — so a client that cannot see
   // this field renders an answered ask as answerable and fires an RPC the
@@ -382,11 +370,7 @@ message Ask {
   // Server-owned: set only by the server, on RespondToAsk. A value supplied on
   // an inbound Ask (via PostMessage) is IGNORED — an ask being posted has by
   // definition not been answered.
-  bool answered = 7;
-  // Superseded single-question shape (compass-0.5 D5); see
-  // docs/designs/product/compass-ask-typed-derivation.md.
-  reserved 2 to 5;
-  reserved "question", "options", "allow_multiple", "chosen_option_ids";
+  bool answered = 3;
 }
 
 // One question within an Ask, carrying its own options and answer state.
@@ -577,15 +561,10 @@ message CreateUserResponse {
 message CreateAgentRequest {
   string handle = 1;
   string display_name = 2;
-  // Field 3 (`harness`) retired pre-launch: under the single-first-party-agent
-  // model there is no runtime to select at create time, so no interop label to
-  // carry.
-  reserved 3;
-  reserved "harness";
   // Optional parent in the agent tree; empty = root. The server validates it
   // (must resolve to an existing agent under the caller's resolved owner) before
   // set-at-creation.
-  string parent_agent_id = 4;
+  string parent_agent_id = 3;
 }
 
 message CreateAgentResponse {
@@ -765,19 +744,17 @@ message ListMessagesRequest {
   oneof container {
     string channel_id = 1;
   }
-  reserved 2;
-  reserved "workspace_id";
   // Page size; the server clamps to a maximum.
-  uint32 limit = 3;
+  uint32 limit = 2;
   // Page before this message id (exclusive); empty = the newest page.
-  string before_message_id = 4;
+  string before_message_id = 3;
   // Point-in-time snapshot cursor (see SubscribeCommsResponse.snapshot_seq).
   // 0 = latest.
-  uint64 snapshot_seq = 5;
+  uint64 snapshot_seq = 4;
   // Optional topic filter within the channel — a bare field, NOT a selector in
   // a oneof: empty pages the whole channel newest-first; set narrows to one
   // topic's messages.
-  string topic_id = 6;
+  string topic_id = 5;
 }
 
 message ListMessagesResponse {
@@ -793,23 +770,21 @@ message PostMessageRequest {
   oneof container {
     string channel_id = 1;
   }
-  reserved 2;
-  reserved "workspace_id";
-  repeated MessageBlock blocks = 3;
+  repeated MessageBlock blocks = 2;
   // The topic to post into, within the channel above (orthogonal to container;
   // the two oneofs coexist legally). topic_name = get-or-create by name;
   // topic_id = post to an exact existing topic. Unset posts to the channel's
-  // home topic. parent_message_id (field 5) is REMOVED (F9: threading is now
+  // home topic. parent_message_id is REMOVED (F9: threading is now
   // topic-level, not per-message).
   oneof topic {
-    string topic_id = 6;
-    string topic_name = 7;
+    string topic_id = 3;
+    string topic_name = 4;
   }
   // Client-supplied idempotency key: a caller-unique id for this post. The
   // server deduplicates retries of the same key (at-least-once transport over a
   // store of record, D12), returning the already-stored message rather than
   // posting a duplicate. Optional; empty disables dedup for this call.
-  string client_request_id = 4;
+  string client_request_id = 5;
 }
 
 message PostMessageResponse {
@@ -846,10 +821,7 @@ message RespondToAskRequest {
   // Exactly one answer per AskQuestion in the Ask, keyed by question_id. The
   // server rejects a request that omits a question, repeats one, or names an
   // unknown one — answering is atomic, all questions in one round-trip.
-  repeated AskQuestionAnswer answers = 3;
-  // Superseded flat single-question answer shape.
-  reserved 2;
-  reserved "chosen_option_ids";
+  repeated AskQuestionAnswer answers = 2;
 }
 
 // The answer to one AskQuestion.
@@ -871,13 +843,11 @@ message SearchMessagesRequest {
   oneof scope {
     string channel_id = 2;
   }
-  reserved 3;
-  reserved "workspace_id";
   // Page size; the server clamps to a maximum.
-  uint32 limit = 4;
+  uint32 limit = 3;
   // Point-in-time snapshot cursor (see SubscribeCommsResponse.snapshot_seq).
   // 0 = latest.
-  uint64 snapshot_seq = 5;
+  uint64 snapshot_seq = 4;
 }
 
 message SearchMessagesResponse {

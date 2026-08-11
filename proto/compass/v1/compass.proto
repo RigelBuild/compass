@@ -529,17 +529,14 @@ message ProvisionAgentWorkspaceRequest {
   // Repo carriage removed (SEA-1527, Matt 2026-07-29): spawn/provision no longer
   // clone a repo for the agent. The container is provisioned with a git
   // credential + workspace and the agent self-clones whatever it needs after
-  // launch. Tags 2,3,4 (the former repo oneof + ref) are reserved so a live
-  // consumer never re-binds them.
-  reserved 2, 3, 4;
-  reserved "remote_url", "local_path", "ref";
+  // launch.
   // Idempotency key (OQ6). When set, a timeout-retry with the same id returns
   // the same container_name rather than provisioning a second container: the
   // Server threads it as the RunnerHub request id so the retry joins the
   // in-flight/completed call instead of re-dispatching. Empty = no dedup (each
   // call provisions). compass.md §"A retried provision creates no duplicate
   // container".
-  string client_request_id = 5;
+  string client_request_id = 2;
   // The agent's persona, baked into the container's system prompt at provision
   // so it survives compaction (a system-prompt config block is not part of the
   // message history a snapcompact archives). SERVER-AUTHORITATIVE: the Server
@@ -549,7 +546,7 @@ message ProvisionAgentWorkspaceRequest {
   // provision path (not by this wire-settable field). The Runner materializes
   // it into the container
   // (compass-runner consumer). Empty = no persona baked (default).
-  string persona = 6;
+  string persona = 3;
   // The agent's operator-set role, selecting the container's block-0 system
   // prompt at provision so it survives compaction (a system-prompt config block
   // is not part of the message history a snapcompact archives). SERVER-
@@ -557,11 +554,11 @@ message ProvisionAgentWorkspaceRequest {
   // AgentAccount.role from the store on the provision path and to overwrite any
   // client-supplied value, so a caller cannot inject a role prompt — an
   // invariant enforced by the server provision path (not by this wire-settable
-  // field). Where persona (field 6) is an APPEND overlay, role REPLACES block-0:
+  // field). Where persona (field 3) is an APPEND overlay, role REPLACES block-0:
   // the label selects config/prompts/<role>/SYSTEM.md, materialized by the
   // Runner into the container's customSystemPrompt (compass-runner consumer).
   // Empty = no role (default OMP block-0).
-  string role = 7;
+  string role = 4;
 }
 
 message ProvisionAgentWorkspaceResponse {
@@ -746,14 +743,13 @@ enum IssueState {
 // header names an agent, that is the displayed author: NO forge-login
 // cross-check, NO verified bit, NO population gating. It never reaches an authz,
 // routing, or ownership decision (DL-050). Owner is a property of the agent
-// account (AgentAccount.owner_user_id, comms.proto:131-133), resolved
-// server-side, never restated per artifact — so no owner_handle. Fields 2-3 and
-// the names owner_handle/verified are reserved forever (DL-094): the frozen
-// #1018 shape burned those numbers even though no wire build shipped them.
+// account (AgentAccount.owner_user_id in comms.proto), resolved
+// server-side, never restated per artifact — so no owner_handle. Field numbers
+// 2,3 are simply reclaimable pre-dogfood (DL-186): no wire build ever shipped
+// the frozen #1018 owner_handle/verified shape, and nothing on disk is
+// proto-encoded, so the numbers carry no compatibility obligation.
 message AgentAttribution {
   string agent_handle = 1;  // the authoring agent's handle, from the header
-  reserved 2, 3;
-  reserved "owner_handle", "verified";
 }
 
 // Which forge (and which host, for self-hosted instances) an artifact lives on.

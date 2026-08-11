@@ -517,12 +517,12 @@ type AgentAccount struct {
 	// The agent's home channel, minted at CreateAgent. The agent is always
 	// subscribed to it (implicit, not a togglable row); turn-end delivery and the
 	// observation-pane ACL scope to it. Server-set.
-	HomeChannelId string `protobuf:"bytes,3,opt,name=home_channel_id,json=homeChannelId,proto3" json:"home_channel_id,omitempty"`
+	HomeChannelId string `protobuf:"bytes,2,opt,name=home_channel_id,json=homeChannelId,proto3" json:"home_channel_id,omitempty"`
 	// The agent's parent in the agent tree; empty = root. Set at creation (to the
 	// spawning agent's account id, or a user-supplied parent on CreateAgent) and
 	// editable via ReparentAgent. Mirrors ChannelGroup.parent_group_id. The
 	// server validates same-owner and no-cycle on every write.
-	ParentAgentId string `protobuf:"bytes,4,opt,name=parent_agent_id,json=parentAgentId,proto3" json:"parent_agent_id,omitempty"`
+	ParentAgentId string `protobuf:"bytes,3,opt,name=parent_agent_id,json=parentAgentId,proto3" json:"parent_agent_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1047,10 +1047,10 @@ type Message struct {
 	// stored payloads); field 2 is reused as topic_id, same `string` wire type.
 	TopicId string `protobuf:"bytes,2,opt,name=topic_id,json=topicId,proto3" json:"topic_id,omitempty"`
 	// The posting account (a user or an agent).
-	AuthorAccountId string `protobuf:"bytes,4,opt,name=author_account_id,json=authorAccountId,proto3" json:"author_account_id,omitempty"`
-	AtUnixMs        int64  `protobuf:"varint,5,opt,name=at_unix_ms,json=atUnixMs,proto3" json:"at_unix_ms,omitempty"`
+	AuthorAccountId string `protobuf:"bytes,3,opt,name=author_account_id,json=authorAccountId,proto3" json:"author_account_id,omitempty"`
+	AtUnixMs        int64  `protobuf:"varint,4,opt,name=at_unix_ms,json=atUnixMs,proto3" json:"at_unix_ms,omitempty"`
 	// Ordered content; mirrors ACP session/update blocks (D5).
-	Blocks        []*MessageBlock `protobuf:"bytes,6,rep,name=blocks,proto3" json:"blocks,omitempty"`
+	Blocks        []*MessageBlock `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1202,7 +1202,7 @@ type MessageBlock_Text struct {
 
 type MessageBlock_Ask struct {
 	// A structured question awaiting an answer.
-	Ask *Ask `protobuf:"bytes,6,opt,name=ask,proto3,oneof"`
+	Ask *Ask `protobuf:"bytes,2,opt,name=ask,proto3,oneof"`
 }
 
 func (*MessageBlock_Text) isMessageBlock_Block() {}
@@ -1226,7 +1226,7 @@ type Ask struct {
 	// the Ask by AskQuestion.question_id.
 	AskId string `protobuf:"bytes,1,opt,name=ask_id,json=askId,proto3" json:"ask_id,omitempty"`
 	// The questions, in the order the agent asked them. At least one.
-	Questions []*AskQuestion `protobuf:"bytes,6,rep,name=questions,proto3" json:"questions,omitempty"`
+	Questions []*AskQuestion `protobuf:"bytes,2,rep,name=questions,proto3" json:"questions,omitempty"`
 	// True once this ask has been answered. It flips exactly once, on the first
 	// RespondToAsk, and a second one is rejected — so a client that cannot see
 	// this field renders an answered ask as answerable and fires an RPC the
@@ -1237,7 +1237,7 @@ type Ask struct {
 	// Server-owned: set only by the server, on RespondToAsk. A value supplied on
 	// an inbound Ask (via PostMessage) is IGNORED — an ask being posted has by
 	// definition not been answered.
-	Answered      bool `protobuf:"varint,7,opt,name=answered,proto3" json:"answered,omitempty"`
+	Answered      bool `protobuf:"varint,3,opt,name=answered,proto3" json:"answered,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2298,7 +2298,7 @@ type CreateAgentRequest struct {
 	// Optional parent in the agent tree; empty = root. The server validates it
 	// (must resolve to an existing agent under the caller's resolved owner) before
 	// set-at-creation.
-	ParentAgentId string `protobuf:"bytes,4,opt,name=parent_agent_id,json=parentAgentId,proto3" json:"parent_agent_id,omitempty"`
+	ParentAgentId string `protobuf:"bytes,3,opt,name=parent_agent_id,json=parentAgentId,proto3" json:"parent_agent_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3714,16 +3714,16 @@ type ListMessagesRequest struct {
 	//	*ListMessagesRequest_ChannelId
 	Container isListMessagesRequest_Container `protobuf_oneof:"container"`
 	// Page size; the server clamps to a maximum.
-	Limit uint32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
+	Limit uint32 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
 	// Page before this message id (exclusive); empty = the newest page.
-	BeforeMessageId string `protobuf:"bytes,4,opt,name=before_message_id,json=beforeMessageId,proto3" json:"before_message_id,omitempty"`
+	BeforeMessageId string `protobuf:"bytes,3,opt,name=before_message_id,json=beforeMessageId,proto3" json:"before_message_id,omitempty"`
 	// Point-in-time snapshot cursor (see SubscribeCommsResponse.snapshot_seq).
 	// 0 = latest.
-	SnapshotSeq uint64 `protobuf:"varint,5,opt,name=snapshot_seq,json=snapshotSeq,proto3" json:"snapshot_seq,omitempty"`
+	SnapshotSeq uint64 `protobuf:"varint,4,opt,name=snapshot_seq,json=snapshotSeq,proto3" json:"snapshot_seq,omitempty"`
 	// Optional topic filter within the channel — a bare field, NOT a selector in
 	// a oneof: empty pages the whole channel newest-first; set narrows to one
 	// topic's messages.
-	TopicId       string `protobuf:"bytes,6,opt,name=topic_id,json=topicId,proto3" json:"topic_id,omitempty"`
+	TopicId       string `protobuf:"bytes,5,opt,name=topic_id,json=topicId,proto3" json:"topic_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3868,11 +3868,11 @@ type PostMessageRequest struct {
 	//
 	//	*PostMessageRequest_ChannelId
 	Container isPostMessageRequest_Container `protobuf_oneof:"container"`
-	Blocks    []*MessageBlock                `protobuf:"bytes,3,rep,name=blocks,proto3" json:"blocks,omitempty"`
+	Blocks    []*MessageBlock                `protobuf:"bytes,2,rep,name=blocks,proto3" json:"blocks,omitempty"`
 	// The topic to post into, within the channel above (orthogonal to container;
 	// the two oneofs coexist legally). topic_name = get-or-create by name;
 	// topic_id = post to an exact existing topic. Unset posts to the channel's
-	// home topic. parent_message_id (field 5) is REMOVED (F9: threading is now
+	// home topic. parent_message_id is REMOVED (F9: threading is now
 	// topic-level, not per-message).
 	//
 	// Types that are valid to be assigned to Topic:
@@ -3884,7 +3884,7 @@ type PostMessageRequest struct {
 	// server deduplicates retries of the same key (at-least-once transport over a
 	// store of record, D12), returning the already-stored message rather than
 	// posting a duplicate. Optional; empty disables dedup for this call.
-	ClientRequestId string `protobuf:"bytes,4,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
+	ClientRequestId string `protobuf:"bytes,5,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -3989,11 +3989,11 @@ type isPostMessageRequest_Topic interface {
 }
 
 type PostMessageRequest_TopicId struct {
-	TopicId string `protobuf:"bytes,6,opt,name=topic_id,json=topicId,proto3,oneof"`
+	TopicId string `protobuf:"bytes,3,opt,name=topic_id,json=topicId,proto3,oneof"`
 }
 
 type PostMessageRequest_TopicName struct {
-	TopicName string `protobuf:"bytes,7,opt,name=topic_name,json=topicName,proto3,oneof"`
+	TopicName string `protobuf:"bytes,4,opt,name=topic_name,json=topicName,proto3,oneof"`
 }
 
 func (*PostMessageRequest_TopicId) isPostMessageRequest_Topic() {}
@@ -4256,7 +4256,7 @@ type RespondToAskRequest struct {
 	// Exactly one answer per AskQuestion in the Ask, keyed by question_id. The
 	// server rejects a request that omits a question, repeats one, or names an
 	// unknown one — answering is atomic, all questions in one round-trip.
-	Answers       []*AskQuestionAnswer `protobuf:"bytes,3,rep,name=answers,proto3" json:"answers,omitempty"`
+	Answers       []*AskQuestionAnswer `protobuf:"bytes,2,rep,name=answers,proto3" json:"answers,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4416,10 +4416,10 @@ type SearchMessagesRequest struct {
 	//	*SearchMessagesRequest_ChannelId
 	Scope isSearchMessagesRequest_Scope `protobuf_oneof:"scope"`
 	// Page size; the server clamps to a maximum.
-	Limit uint32 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	Limit uint32 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
 	// Point-in-time snapshot cursor (see SubscribeCommsResponse.snapshot_seq).
 	// 0 = latest.
-	SnapshotSeq   uint64 `protobuf:"varint,5,opt,name=snapshot_seq,json=snapshotSeq,proto3" json:"snapshot_seq,omitempty"`
+	SnapshotSeq   uint64 `protobuf:"varint,4,opt,name=snapshot_seq,json=snapshotSeq,proto3" json:"snapshot_seq,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4617,11 +4617,11 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x05agent\x18\v \x01(\v2\x18.compass.v1.AgentAccountH\x00R\x05agentB\x06\n" +
 	"\x04kind\"7\n" +
 	"\vUserAccount\x12(\n" +
-	"\x04role\x18\x01 \x01(\x0e2\x14.compass.v1.UserRoleR\x04role\"\x91\x01\n" +
+	"\x04role\x18\x01 \x01(\x0e2\x14.compass.v1.UserRoleR\x04role\"\x82\x01\n" +
 	"\fAgentAccount\x12\"\n" +
 	"\rowner_user_id\x18\x01 \x01(\tR\vownerUserId\x12&\n" +
-	"\x0fhome_channel_id\x18\x03 \x01(\tR\rhomeChannelId\x12&\n" +
-	"\x0fparent_agent_id\x18\x04 \x01(\tR\rparentAgentIdJ\x04\b\x02\x10\x03R\aharness\"\xc2\x01\n" +
+	"\x0fhome_channel_id\x18\x02 \x01(\tR\rhomeChannelId\x12&\n" +
+	"\x0fparent_agent_id\x18\x03 \x01(\tR\rparentAgentId\"\xc2\x01\n" +
 	"\fChannelGroup\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12&\n" +
@@ -4648,10 +4648,10 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\x12\x1a\n" +
 	"\bposition\x18\x02 \x01(\x05R\bposition\x12)\n" +
 	"\x11pinned_at_unix_ms\x18\x03 \x01(\x03R\x0epinnedAtUnixMs\x12/\n" +
-	"\x14pinned_by_account_id\x18\x04 \x01(\tR\x11pinnedByAccountId\"f\n" +
+	"\x14pinned_by_account_id\x18\x04 \x01(\tR\x11pinnedByAccountId\"J\n" +
 	"\x0eAgentWorkspace\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12(\n" +
-	"\x10agent_account_id\x18\x02 \x01(\tR\x0eagentAccountIdJ\x04\b\x03\x10\x04R\x14participant_user_ids\"\xc6\x01\n" +
+	"\x10agent_account_id\x18\x02 \x01(\tR\x0eagentAccountId\"\xc6\x01\n" +
 	"\x05Topic\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1d\n" +
 	"\n" +
@@ -4659,22 +4659,22 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x04name\x18\x03 \x01(\tR\x04name\x12+\n" +
 	"\x12created_at_unix_ms\x18\x04 \x01(\x03R\x0fcreatedAtUnixMs\x121\n" +
 	"\x15created_by_account_id\x18\x05 \x01(\tR\x12createdByAccountId\x12\x1a\n" +
-	"\barchived\x18\x06 \x01(\bR\barchived\"\xc4\x01\n" +
+	"\barchived\x18\x06 \x01(\bR\barchived\"\xb0\x01\n" +
 	"\aMessage\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\btopic_id\x18\x02 \x01(\tR\atopicId\x12*\n" +
-	"\x11author_account_id\x18\x04 \x01(\tR\x0fauthorAccountId\x12\x1c\n" +
+	"\x11author_account_id\x18\x03 \x01(\tR\x0fauthorAccountId\x12\x1c\n" +
 	"\n" +
-	"at_unix_ms\x18\x05 \x01(\x03R\batUnixMs\x120\n" +
-	"\x06blocks\x18\x06 \x03(\v2\x18.compass.v1.MessageBlockR\x06blocksJ\x04\b\x03\x10\x04R\fworkspace_id\"\x8a\x01\n" +
+	"at_unix_ms\x18\x04 \x01(\x03R\batUnixMs\x120\n" +
+	"\x06blocks\x18\x05 \x03(\v2\x18.compass.v1.MessageBlockR\x06blocks\"R\n" +
 	"\fMessageBlock\x12\x14\n" +
 	"\x04text\x18\x01 \x01(\tH\x00R\x04text\x12#\n" +
-	"\x03ask\x18\x06 \x01(\v2\x0f.compass.v1.AskH\x00R\x03askB\a\n" +
-	"\x05blockJ\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\athoughtR\ttool_callR\x04planR\x04diff\"\xab\x01\n" +
+	"\x03ask\x18\x02 \x01(\v2\x0f.compass.v1.AskH\x00R\x03askB\a\n" +
+	"\x05block\"o\n" +
 	"\x03Ask\x12\x15\n" +
 	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x125\n" +
-	"\tquestions\x18\x06 \x03(\v2\x17.compass.v1.AskQuestionR\tquestions\x12\x1a\n" +
-	"\banswered\x18\a \x01(\bR\bansweredJ\x04\b\x02\x10\x06R\bquestionR\aoptionsR\x0eallow_multipleR\x11chosen_option_ids\"\xdb\x02\n" +
+	"\tquestions\x18\x02 \x03(\v2\x17.compass.v1.AskQuestionR\tquestions\x12\x1a\n" +
+	"\banswered\x18\x03 \x01(\bR\banswered\"\xdb\x02\n" +
 	"\vAskQuestion\x12\x1f\n" +
 	"\vquestion_id\x18\x01 \x01(\tR\n" +
 	"questionId\x12\x1a\n" +
@@ -4734,11 +4734,11 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x06handle\x18\x01 \x01(\tR\x06handle\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\"C\n" +
 	"\x12CreateUserResponse\x12-\n" +
-	"\aaccount\x18\x01 \x01(\v2\x13.compass.v1.AccountR\aaccount\"\x86\x01\n" +
+	"\aaccount\x18\x01 \x01(\v2\x13.compass.v1.AccountR\aaccount\"w\n" +
 	"\x12CreateAgentRequest\x12\x16\n" +
 	"\x06handle\x18\x01 \x01(\tR\x06handle\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12&\n" +
-	"\x0fparent_agent_id\x18\x04 \x01(\tR\rparentAgentIdJ\x04\b\x03\x10\x04R\aharness\"D\n" +
+	"\x0fparent_agent_id\x18\x03 \x01(\tR\rparentAgentId\"D\n" +
 	"\x13CreateAgentResponse\x12-\n" +
 	"\aaccount\x18\x01 \x01(\v2\x13.compass.v1.AccountR\aaccount\"8\n" +
 	"\x13ListAccountsRequest\x12!\n" +
@@ -4820,27 +4820,27 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x19OpenAgentWorkspaceRequest\x12(\n" +
 	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\"V\n" +
 	"\x1aOpenAgentWorkspaceResponse\x128\n" +
-	"\tworkspace\x18\x01 \x01(\v2\x1a.compass.v1.AgentWorkspaceR\tworkspace\"\xd7\x01\n" +
+	"\tworkspace\x18\x01 \x01(\v2\x1a.compass.v1.AgentWorkspaceR\tworkspace\"\xc3\x01\n" +
 	"\x13ListMessagesRequest\x12\x1f\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\tH\x00R\tchannelId\x12\x14\n" +
-	"\x05limit\x18\x03 \x01(\rR\x05limit\x12*\n" +
-	"\x11before_message_id\x18\x04 \x01(\tR\x0fbeforeMessageId\x12!\n" +
-	"\fsnapshot_seq\x18\x05 \x01(\x04R\vsnapshotSeq\x12\x19\n" +
-	"\btopic_id\x18\x06 \x01(\tR\atopicIdB\v\n" +
-	"\tcontainerJ\x04\b\x02\x10\x03R\fworkspace_id\"G\n" +
+	"\x05limit\x18\x02 \x01(\rR\x05limit\x12*\n" +
+	"\x11before_message_id\x18\x03 \x01(\tR\x0fbeforeMessageId\x12!\n" +
+	"\fsnapshot_seq\x18\x04 \x01(\x04R\vsnapshotSeq\x12\x19\n" +
+	"\btopic_id\x18\x05 \x01(\tR\atopicIdB\v\n" +
+	"\tcontainer\"G\n" +
 	"\x14ListMessagesResponse\x12/\n" +
-	"\bmessages\x18\x01 \x03(\v2\x13.compass.v1.MessageR\bmessages\"\xfb\x01\n" +
+	"\bmessages\x18\x01 \x03(\v2\x13.compass.v1.MessageR\bmessages\"\xe7\x01\n" +
 	"\x12PostMessageRequest\x12\x1f\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\tH\x00R\tchannelId\x120\n" +
-	"\x06blocks\x18\x03 \x03(\v2\x18.compass.v1.MessageBlockR\x06blocks\x12\x1b\n" +
-	"\btopic_id\x18\x06 \x01(\tH\x01R\atopicId\x12\x1f\n" +
+	"\x06blocks\x18\x02 \x03(\v2\x18.compass.v1.MessageBlockR\x06blocks\x12\x1b\n" +
+	"\btopic_id\x18\x03 \x01(\tH\x01R\atopicId\x12\x1f\n" +
 	"\n" +
-	"topic_name\x18\a \x01(\tH\x01R\ttopicName\x12*\n" +
-	"\x11client_request_id\x18\x04 \x01(\tR\x0fclientRequestIdB\v\n" +
+	"topic_name\x18\x04 \x01(\tH\x01R\ttopicName\x12*\n" +
+	"\x11client_request_id\x18\x05 \x01(\tR\x0fclientRequestIdB\v\n" +
 	"\tcontainerB\a\n" +
-	"\x05topicJ\x04\b\x02\x10\x03R\fworkspace_id\"D\n" +
+	"\x05topic\"D\n" +
 	"\x13PostMessageResponse\x12-\n" +
 	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\"]\n" +
 	"\x11ListTopicsRequest\x12\x1d\n" +
@@ -4856,24 +4856,24 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x05_nameB\v\n" +
 	"\t_archived\">\n" +
 	"\x13UpdateTopicResponse\x12'\n" +
-	"\x05topic\x18\x01 \x01(\v2\x11.compass.v1.TopicR\x05topic\"~\n" +
+	"\x05topic\x18\x01 \x01(\v2\x11.compass.v1.TopicR\x05topic\"e\n" +
 	"\x13RespondToAskRequest\x12\x15\n" +
 	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x127\n" +
-	"\aanswers\x18\x03 \x03(\v2\x1d.compass.v1.AskQuestionAnswerR\aanswersJ\x04\b\x02\x10\x03R\x11chosen_option_ids\"\x81\x01\n" +
+	"\aanswers\x18\x02 \x03(\v2\x1d.compass.v1.AskQuestionAnswerR\aanswers\"\x81\x01\n" +
 	"\x11AskQuestionAnswer\x12\x1f\n" +
 	"\vquestion_id\x18\x01 \x01(\tR\n" +
 	"questionId\x12*\n" +
 	"\x11chosen_option_ids\x18\x02 \x03(\tR\x0fchosenOptionIds\x12\x1f\n" +
 	"\vcustom_text\x18\x03 \x01(\tR\n" +
 	"customText\"\x16\n" +
-	"\x14RespondToAskResponse\"\xa4\x01\n" +
+	"\x14RespondToAskResponse\"\x90\x01\n" +
 	"\x15SearchMessagesRequest\x12\x14\n" +
 	"\x05query\x18\x01 \x01(\tR\x05query\x12\x1f\n" +
 	"\n" +
 	"channel_id\x18\x02 \x01(\tH\x00R\tchannelId\x12\x14\n" +
-	"\x05limit\x18\x04 \x01(\rR\x05limit\x12!\n" +
-	"\fsnapshot_seq\x18\x05 \x01(\x04R\vsnapshotSeqB\a\n" +
-	"\x05scopeJ\x04\b\x03\x10\x04R\fworkspace_id\"I\n" +
+	"\x05limit\x18\x03 \x01(\rR\x05limit\x12!\n" +
+	"\fsnapshot_seq\x18\x04 \x01(\x04R\vsnapshotSeqB\a\n" +
+	"\x05scope\"I\n" +
 	"\x16SearchMessagesResponse\x12/\n" +
 	"\bmessages\x18\x01 \x03(\v2\x13.compass.v1.MessageR\bmessages\"[\n" +
 	"\x15SubscribeCommsRequest\x12\x1b\n" +

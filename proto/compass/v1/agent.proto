@@ -125,16 +125,11 @@ message TranscriptEntry {
 //     session_id it owns) → SubscribeEvents for the board.
 //     AGENT_SESSION_STATE_UNSPECIFIED means "no transition — trace only".
 //
-// Field 1 (`bytes event`) is retired: the trace is typed now, never a dual
-// opaque+typed wire. Removing it is buf-breaking on this INTERNAL-only message,
-// permitted under the ephemeral-Server rationale (the Server on `main` has no
-// live client; agent + Runner ship together) — the same precedent as
-// compass-0.6's own field removal.
+// The former field 1 (`bytes event`) is gone: the trace is typed now, never a
+// dual opaque+typed wire.
 message SessionFrame {
-  reserved 1;
-  reserved "event";
-  AgentSessionState state = 2;
-  SessionEvent typed_event = 3;
+  AgentSessionState state = 1;
+  SessionEvent typed_event = 2;
 }
 
 // The agent's inbound control envelope — the other half of this §T5 contract,
