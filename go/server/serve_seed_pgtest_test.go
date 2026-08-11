@@ -178,3 +178,62 @@ func TestServeSeedsNothingOnNonEmptyTree(t *testing.T) {
 		t.Fatalf("session ownership rows for %q = %d, want 0 (the seed must not spawn on a non-empty tree)", fakeSessionID, n)
 	}
 }
+
+// TestServeReDrivesNeverStartedSupervisor pins the ticket-scoped find-then-start
+// path (serve_seed.go `case err == nil`): a "supervisor" root ROW that exists
+// but was never started (a prior boot created the row but its Start failed)
+// is re-driven live when a later Runner's command stream attaches. The row is
+// pre-created BEFORE the Runner attaches, so AgentByHandle resolves it (the find
+// half), the empty-tree create gate is never reached, and the seed drives
+// Provision->Start against the EXISTING agent. Deterministic via awaitSeed.
+//
+// It also proves the find half does not RE-create: the supervisor read back after
+// the seed is the same id + display name the test pre-created, and the ownership
+// row is owned by it.
+//
+// Mutation: a regression that skipped the start on the find path (`case err ==
+// nil: return`) leaves the pre-created row but no session — the ownership-row
+// assertion reddens. A regression that mishandled the find path by re-creating
+// would change the display name (or ErrConflict-fail the seed).
+func TestServeReDrivesNeverStartedSupervisor(t *testing.T) {
+	ctx := context.Background()
+	h := newSeedHarness(t)
+
+	// A prior boot created the supervisor root row under the bootstrap admin but
+	// never started it. Distinct display name so the read-back proves this exact
+	// row was re-driven, not re-created.
+	const priorBootDisplayName = "Prior-Boot Supervisor"
+	precreated, err := h.store.CreateAgent(ctx, h.adminID, store.NewAgent{
+		Handle:      rootSupervisorHandle,
+		DisplayName: priorBootDisplayName,
+		Role:        rootSupervisorRole,
+		// ParentAgentID empty => root.
+	})
+	if err != nil {
+		t.Fatalf("pre-create never-started supervisor: %v", err)
+	}
+
+	attachFakeRunner(t, h.store, h.hub, false) // enroll + Sessions attach -> ready hook -> seed finds the existing row
+	h.awaitSeed(t)
+
+	// The find half re-drove the EXISTING row: same id + display name, never
+	// re-created, and still the admin's single root.
+	supervisor, err := h.store.AgentByHandle(ctx, rootSupervisorHandle)
+	if err != nil {
+		t.Fatalf("AgentByHandle(supervisor) after re-drive = %v, want the pre-created root", err)
+	}
+	if supervisor.ID != precreated.ID {
+		t.Fatalf("supervisor id after re-drive = %q, want the pre-created %q (find must not re-create)", supervisor.ID, precreated.ID)
+	}
+	if supervisor.DisplayName != priorBootDisplayName {
+		t.Fatalf("supervisor display name = %q, want %q (find must not re-create)", supervisor.DisplayName, priorBootDisplayName)
+	}
+	if n, err := h.store.CountRootAgents(ctx, h.adminID); err != nil || n != 1 {
+		t.Fatalf("CountRootAgents after re-drive = (%d, %v), want (1, nil) — the same root, none added", n, err)
+	}
+	// The seed drove Provision->Start on the found row: the durable ownership row
+	// for fakeSessionID is owned by the pre-created supervisor.
+	if owner := sessionOwner(t, ctx, h.dsn, fakeSessionID); owner != string(precreated.ID) {
+		t.Fatalf("re-driven session %q owned by %q, want the pre-created supervisor %q", fakeSessionID, owner, precreated.ID)
+	}
+}

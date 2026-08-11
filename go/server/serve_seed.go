@@ -73,7 +73,19 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, admi
 	supervisor, err := st.AgentByHandle(ctx, rootSupervisorHandle)
 	switch {
 	case err == nil:
-		// Exists already (prior boot). Skip create; re-drive the start below.
+		// Exists already (prior boot). The find half resolves by a globally
+		// unique handle, so assert the found agent is actually THIS admin's root
+		// before re-driving it — mirroring the create half's owner+root invariant
+		// (createRootSupervisor is empty-tree-gated and admin-scoped). Without
+		// this, a non-admin-owned or non-root agent that happened to hold the
+		// reserved handle would be auto-provisioned and started. Defensive under
+		// the single-admin MVP, but it keeps the create half's "adopts nothing it
+		// did not seed" contract honest on the find half too.
+		if supervisor.Agent == nil || supervisor.Agent.OwnerUserID != adminID || supervisor.Agent.ParentAgentID != "" {
+			log.Error("root-supervisor seed: agent holding the supervisor handle is not the admin's root; skipping seed",
+				"agent_account_id", supervisor.ID)
+			return
+		}
 	case errors.Is(err, store.ErrNotFound):
 		created, ok, cerr := createRootSupervisor(ctx, st, adminID, log)
 		if cerr != nil || !ok {

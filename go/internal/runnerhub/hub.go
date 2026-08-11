@@ -570,6 +570,14 @@ func (h *Hub) FrameDiagnostics() FrameDiagnostics {
 // process), and a bare panic in a goroutine would take down the whole daemon —
 // every live session in the single-Runner fleet — rather than degrade to a
 // logged failure. Every future ready-hook inherits this guarantee.
+//
+// The goroutine is fire-and-forget: not tracked by a WaitGroup or shutdown
+// drain. That is safe because the hook captures the server's Serve ctx (the seed
+// derives its own timeout from it), so shutdown cancellation reaches the hook's
+// in-flight work rather than orphaning it. A ready-hook whose work must instead
+// complete-or-abort cleanly at teardown would need these goroutines tracked in
+// the server's wait group; the current hooks are logged-not-fatal, so they are
+// left to race teardown by design.
 func (h *Hub) fireRunnerReady() {
 	h.mu.Lock()
 	hook := h.runnerReadyHook
