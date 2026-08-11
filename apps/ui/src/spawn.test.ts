@@ -22,7 +22,7 @@ import type { AgentState } from "./stub-data";
 const spec: SpawnSpec = {
 	agentAccountId: "agent-1",
 	initialPrompt: "do the thing",
-	workstreamId: "issue-1",
+	issueId: "issue-1",
 };
 
 // A binding forced into an arbitrary phase, for exercising rejection arms and
@@ -32,7 +32,7 @@ function bindingAt(
 	overrides: Partial<SessionBinding> = {},
 ): SessionBinding {
 	return {
-		workstreamId: "issue-1",
+		issueId: "issue-1",
 		agentAccountId: "agent-1",
 		clientRequestId: "req-1",
 		initialPrompt: "do the thing",
@@ -55,7 +55,7 @@ describe("beginSpawn", () => {
 		const b = beginSpawn(spec, "req-1");
 		expect(b.phase).toBe("spawning");
 		expect(b.agentAccountId).toBe("agent-1");
-		expect(b.workstreamId).toBe("issue-1");
+		expect(b.issueId).toBe("issue-1");
 		expect(b.clientRequestId).toBe("req-1");
 		expect(b.initialPrompt).toBe("do the thing");
 		expect(b.sessionId).toBeUndefined();

@@ -1,9 +1,9 @@
 // The spawn/stop phase machine — the store-internal core of the spawn axis
 // (design compass-spawn-control T1).
 //
-// A `SessionBinding` holds one started workstream's wire-lifecycle bookkeeping
+// A `SessionBinding` holds one started card's wire-lifecycle bookkeeping
 // (the SpawnAgent request id, the resolved session id, and the phase). It is
-// store-internal, keyed by workstreamId (= Issue.id) per DL-164 — never a
+// store-internal, keyed by issueId (= Issue.id) per DL-164 — never a
 // fixture shape (stub-data.ts Issue/Agent stay frozen). The composite
 // SpawnAgent RPC (DL-166) means the client sees spawn as one call, so the phase
 // machine has no provisioning-vs-starting split.
@@ -16,13 +16,13 @@
 import type { AgentSessionState } from "@compass/client";
 import type { AgentState } from "./stub-data";
 
-/** One started workstream's wire-lifecycle bookkeeping. Store-internal —
+/** One started card's wire-lifecycle bookkeeping. Store-internal —
  *  never a fixture shape (stub-data.ts Issue/Agent stay frozen). Keyed by
- *  workstreamId (= Issue.id) in the store map (per DL-164). A binding exists
+ *  issueId (= Issue.id) in the store map (per DL-164). A binding exists
  *  only for a card the agent was actually started on. */
 export interface SessionBinding {
 	/** The card this start targets — the store map key (Issue.id). */
-	readonly workstreamId: string;
+	readonly issueId: string;
 	/** The agent account the start is for — the SpawnAgent input, and the join
 	 *  key to a pushed AgentSessionStatus.agent_account_id (per DL-167). */
 	readonly agentAccountId: string;
@@ -54,14 +54,14 @@ export interface SpawnSpec {
 	/** Empty = start idle. */
 	readonly initialPrompt: string;
 	/** The existing card to start the agent on (per DL-164). */
-	readonly workstreamId: string;
+	readonly issueId: string;
 }
 
 /** Mint a fresh binding in `spawning`, capturing the spec's prompt so the dot
  *  stays pure over the binding. */
 export function beginSpawn(spec: SpawnSpec, requestId: string): SessionBinding {
 	return {
-		workstreamId: spec.workstreamId,
+		issueId: spec.issueId,
 		agentAccountId: spec.agentAccountId,
 		clientRequestId: requestId,
 		initialPrompt: spec.initialPrompt,
