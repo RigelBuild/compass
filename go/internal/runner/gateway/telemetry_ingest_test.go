@@ -354,7 +354,7 @@ func (f *fakeCommitter) count() int {
 func TestPublishOrdersThreeTraceFrames(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, events, nil)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 	client := newAgentGatewayServer(t, g)
 
 	texts := []string{"alpha", "bravo", "charlie"}
@@ -392,7 +392,7 @@ func TestPublishOrdersThreeTraceFrames(t *testing.T) {
 // verbatim-payload assertions go RED.
 func TestPostConversationFrameForwardsTranscriptEntry(t *testing.T) {
 	committer := &fakeCommitter{}
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 
 	resp, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 		Frame:          transcriptEntryFrame(`{"role":"assistant"}`, true, 7),
@@ -439,7 +439,7 @@ func TestPostConversationFrameForwardsTranscriptEntry(t *testing.T) {
 // unary wrongly returns success against a failing commit.
 func TestPostConversationFrameDeliveredOrErred(t *testing.T) {
 	committer := &fakeCommitter{err: connect.NewError(connect.CodeUnavailable, errors.New("server unreachable"))}
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 
 	resp, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 		Frame:          durableFrame("boom"),
@@ -480,7 +480,7 @@ func TestPostConversationFrameAtLeastOnceRetryability(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			committer := &fakeCommitter{err: connect.NewError(tc.code, errors.New("commit failed"))}
-			g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
+			g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 			_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 				Frame:          durableFrame("f"),
 				IdempotencyKey: "retry-key",
@@ -500,7 +500,7 @@ func TestPostConversationFrameAtLeastOnceRetryability(t *testing.T) {
 	// fast-path did not short-circuit), and once it succeeds the key IS marked so
 	// a further retry short-circuits without a second commit.
 	committer := &fakeCommitter{err: connect.NewError(connect.CodeUnavailable, errors.New("transient"))}
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 	post := func() error {
 		_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 			Frame:          durableFrame("f"),
@@ -552,7 +552,7 @@ func TestPostConversationFrameAtLeastOnceRetryability(t *testing.T) {
 func TestConcurrencyNoFalseGap(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", staticSessions{sessionID: "sess-1", ok: true}, nil, nil, events, nil)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: staticSessions{sessionID: "sess-1", ok: true}, Events: events})
 	client := newAgentGatewayServer(t, g)
 
 	const total = 20
@@ -624,7 +624,7 @@ func (s *seqSink) seqs() []uint64 {
 func TestSequenceSurvivesPublisherReplacement(t *testing.T) {
 	sink := &seqSink{}
 	events := newRunnerServiceServer(t, sink)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, events, nil)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 
 	// Drive the publisher directly: since the swap, only Publish rides it, so the
 	// counter-ownership guarantee is exercised through the publisher API itself
@@ -665,7 +665,7 @@ func TestSequenceSurvivesPublisherReplacement(t *testing.T) {
 func TestFailedForwardDoesNotBurnASequenceNumber(t *testing.T) {
 	sink := &seqSink{}
 	live := newRunnerServiceServer(t, sink)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, live, nil)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: live})
 
 	forward := func(txt string) error {
 		return g.acquirePublisher("sess-1").forward(traceFrame(txt))
@@ -725,7 +725,7 @@ func TestFailedForwardDoesNotBurnASequenceNumber(t *testing.T) {
 func TestReleaseDoesNotRestartTheSequence(t *testing.T) {
 	sink := &seqSink{}
 	events := newRunnerServiceServer(t, sink)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, events, nil)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 
 	// This test opens MORE than one upstream stream (the release closes the
 	// first, a later forward opens a fresh one), which the shared capture
@@ -792,7 +792,7 @@ func TestReleaseDoesNotRestartTheSequence(t *testing.T) {
 // commits again -> a second commit call is recorded.
 func TestPostConversationFrameDedupOnKey(t *testing.T) {
 	committer := &fakeCommitter{}
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 
 	post := func(key string) {
 		t.Helper()
@@ -822,7 +822,7 @@ func TestPostConversationFrameDedupOnKey(t *testing.T) {
 // short-circuits -> only one commit call is recorded.
 func TestPostConversationFrameEmptyKeyNeverDedups(t *testing.T) {
 	committer := &fakeCommitter{}
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 
 	for range 2 {
 		if _, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
@@ -856,7 +856,7 @@ func TestPostConversationFrameRejectsNonConversationFrame(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			committer := &fakeCommitter{}
-			g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
+			g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 
 			_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 				Frame:          tc.frame,
@@ -887,7 +887,7 @@ func TestPostConversationFrameRejectsNonConversationFrame(t *testing.T) {
 func TestPostConversationFrameAdvisorySetLossReforwards(t *testing.T) {
 	committer := &fakeCommitter{}
 
-	g1 := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
+	g1 := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 	if _, err := g1.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 		Frame:          durableFrame("dur"),
 		IdempotencyKey: "same-key",
@@ -896,7 +896,7 @@ func TestPostConversationFrameAdvisorySetLossReforwards(t *testing.T) {
 	}
 
 	// Advisory-set loss: a fresh Gateway with an empty committedKeys map.
-	g2 := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
+	g2 := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 	resp, err := g2.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
 		Frame:          durableFrame("dur"),
 		IdempotencyKey: "same-key",
@@ -930,7 +930,7 @@ func TestPostConversationFrameAdvisorySetLossReforwards(t *testing.T) {
 func TestPublishRoutesAcksToControlRouterNotUpstream(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, events, nil)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 	router := &fakeControlRouter{}
 	g.SetControlRouter(router) // set before serving: not concurrency-safe with a live stream.
 	client := newAgentGatewayServer(t, g)
@@ -988,7 +988,7 @@ func TestNoSessionFailsClosedBothHandlers(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
 	committer := &fakeCommitter{}
-	g := NewGateway(context.Background(), "cont-1", &fakeSessions{ok: false}, nil, nil, events, committer)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: &fakeSessions{ok: false}, Events: events, Committer: committer})
 	client := newAgentGatewayServer(t, g)
 
 	_, err := g.PostConversationFrame(context.Background(), connect.NewRequest(&compassv1internal.PostConversationFrameRequest{
@@ -1027,7 +1027,7 @@ func TestNoSessionFailsClosedBothHandlers(t *testing.T) {
 func TestPublishCleanEndClosesUpstreamAndAwaitsAck(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, events, nil)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 	client := newAgentGatewayServer(t, g)
 
 	stream := client.Publish(context.Background())
@@ -1061,7 +1061,7 @@ func TestPublishCleanEndClosesUpstreamAndAwaitsAck(t *testing.T) {
 func TestPublishOverLimitFailsStream(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, events, nil)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
 	client := newAgentGatewayServer(t, g)
 
 	huge := strings.Repeat("A", maxAgentMessageBytes+1024)
@@ -1090,7 +1090,7 @@ func TestPublisherResetsOnSessionChange(t *testing.T) {
 	capture := newCapturePublish()
 	events := newRunnerServiceServer(t, capture)
 	sessions := &toggleSessions{sessionID: "sess-1"}
-	g := NewGateway(context.Background(), "cont-1", sessions, nil, nil, events, nil)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: sessions, Events: events})
 	t.Cleanup(func() { _ = g.releasePublisher() })
 
 	// acquirePublisher resolves the session the same way the Publish handler
@@ -1132,7 +1132,7 @@ func TestPublisherResetsOnSessionChange(t *testing.T) {
 // re-committing, so no second commit call is recorded).
 func TestCommittedKeysBounded(t *testing.T) {
 	committer := &fakeCommitter{}
-	g := NewGateway(context.Background(), "cont-1", boundSessions(), nil, nil, nil, committer)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Committer: committer})
 
 	const overflow = 100
 	total := committedKeysMax + overflow

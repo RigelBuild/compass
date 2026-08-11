@@ -1025,7 +1025,7 @@ func TestControlAckOnlyRouterRefusesSubscription(t *testing.T) {
 	// routes acks and carries no drain. The nil stream is load-bearing — the
 	// refusal must fire before anything is written, so a handler that touched the
 	// stream first would panic here rather than pass.
-	g := NewGateway(context.Background(), "cnt-A", boundSessions(), nil, nil, nil, nil)
+	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: boundSessions()})
 
 	err := g.Control(context.Background(),
 		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}), nil)

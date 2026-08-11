@@ -825,7 +825,7 @@ func (h *agentHost) serveSocket(ctx context.Context, containerName string) (*gat
 	}
 	h.mu.Unlock()
 	path := filepath.Join(h.runtimeDir, agentSocketDir, containerName, agentSocketFile)
-	listener, err := gateway.Serve(ctx, path, containerName, h, h.link.client, h.link.client, h.link.client, h.link.client)
+	listener, err := gateway.Serve(ctx, path, containerName, gateway.Deps{Sessions: h, Relay: h.link.client, Lifecycle: h.link.client, Events: h.link.client, Committer: h.link.client})
 	if err != nil {
 		return nil, fmt.Errorf("serving agent socket for container %q: %w", containerName, err)
 	}

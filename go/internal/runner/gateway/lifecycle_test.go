@@ -77,7 +77,7 @@ func spawnCall() *compassv1internal.LifecycleCallRequest {
 func TestLifecycleNoSessionFailsClosedPermissionDenied(t *testing.T) {
 	sessions := &fakeSessions{ok: false}
 	relay := &fakeLifecycleRelay{}
-	g := NewGateway(context.Background(), "cnt-A", sessions, nil, relay, nil, nil)
+	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
 	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
 	if err == nil {
@@ -103,7 +103,7 @@ func TestLifecycleNoSessionFailsClosedPermissionDenied(t *testing.T) {
 func TestLifecycleEmptySessionIDFailsClosedPermissionDenied(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "", ok: true}
 	relay := &fakeLifecycleRelay{}
-	g := NewGateway(context.Background(), "cnt-A", sessions, nil, relay, nil, nil)
+	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
 	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
 	if err == nil {
@@ -136,7 +136,7 @@ func TestLifecycleHappyPathForwardsUnderBoundSessionAndReturnsResult(t *testing.
 		}},
 	}
 	relay := &fakeLifecycleRelay{resp: &compassv1internal.RelayLifecycleCallResponse{Result: wantResult}}
-	g := NewGateway(context.Background(), "cnt-A", sessions, nil, relay, nil, nil)
+	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
 	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
 	if err != nil {
@@ -171,7 +171,7 @@ func TestLifecycleResolvesConstructionContainerName(t *testing.T) {
 			relay := &fakeLifecycleRelay{resp: &compassv1internal.RelayLifecycleCallResponse{
 				Result: &compassv1internal.LifecycleCallResult{CallId: testCallID},
 			}}
-			g := NewGateway(context.Background(), name, sessions, nil, relay, nil, nil)
+			g := NewGateway(context.Background(), name, Deps{Sessions: sessions, Lifecycle: relay})
 
 			if _, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall())); err != nil {
 				t.Fatalf("Lifecycle = %v, want success", err)
@@ -188,7 +188,7 @@ func TestLifecycleResolvesConstructionContainerName(t *testing.T) {
 func TestLifecycleTransportFailurePropagatesConnectError(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "sess-7", ok: true}
 	relay := &fakeLifecycleRelay{err: connect.NewError(connect.CodeUnavailable, errors.New("server unreachable"))}
-	g := NewGateway(context.Background(), "cnt-A", sessions, nil, relay, nil, nil)
+	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
 	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
 	if err == nil {
@@ -208,7 +208,7 @@ func TestLifecycleTransportFailurePropagatesConnectError(t *testing.T) {
 func TestLifecycleNilResultIsInternalError(t *testing.T) {
 	sessions := &fakeSessions{sessionID: "sess-7", ok: true}
 	relay := &fakeLifecycleRelay{resp: &compassv1internal.RelayLifecycleCallResponse{}}
-	g := NewGateway(context.Background(), "cnt-A", sessions, nil, relay, nil, nil)
+	g := NewGateway(context.Background(), "cnt-A", Deps{Sessions: sessions, Lifecycle: relay})
 
 	resp, err := g.Lifecycle(context.Background(), connect.NewRequest(spawnCall()))
 	if err == nil {

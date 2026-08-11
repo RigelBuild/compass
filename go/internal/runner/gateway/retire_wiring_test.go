@@ -59,7 +59,7 @@ func (l *SocketListener) producer(t *testing.T) *controlProducer {
 func TestRetireSessionReachesTheServedProducer(t *testing.T) {
 	path := socketPath(t)
 	l, err := Serve(context.Background(), path, "cont-1",
-		staticSessions{sessionID: testSession, ok: true}, nil, nil, nil, nil)
+		Deps{Sessions: staticSessions{sessionID: testSession, ok: true}})
 	if err != nil {
 		t.Fatalf("Serve = %v, want a live listener", err)
 	}
