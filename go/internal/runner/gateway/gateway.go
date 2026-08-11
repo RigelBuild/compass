@@ -231,9 +231,10 @@ type Deps struct {
 // containerName is bound here (the socket is that container's identity), and
 // deps carries the interchangeable interface dependencies: deps.Sessions
 // resolves the container to its live session, deps.Relay forwards a comms
-// call to the Server, deps.Events forwards trace/session telemetry up
-// PublishEvents, and deps.Committer forwards a durable conversation frame to
-// the Server for commit.
+// call to the Server, deps.Lifecycle forwards a spawn/despawn call to the
+// Server, deps.Events forwards trace/session telemetry up PublishEvents, and
+// deps.Committer forwards a durable conversation frame to the Server for
+// commit.
 // The control router defaults to a no-op; SetControlRouter injects the real one
 // once the control lane is wired.
 //
