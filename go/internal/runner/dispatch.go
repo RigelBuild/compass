@@ -64,6 +64,12 @@ type SessionHost interface {
 	// logged and swallowed inside; the returned error is reserved for a
 	// fleet-level fault the caller logs and recovers from on the next signal.
 	RefreshConfig(ctx context.Context) error
+	// Deliver writes a server-relayed control op to the session's container
+	// socket — the receive arm of the Server's send-only DeliverControl dispatch
+	// (a turn-driving message deliver). An unknown session returns
+	// errSessionUnknown; success means the op was durably queued for the agent,
+	// confirmed later by the agent's delivery_ack (not by this return).
+	Deliver(ctx context.Context, sessionID string, op *compassv1internal.AgentControl) error
 }
 
 // Sentinel errors the host returns, mapped to RunnerErrorCode on the wire.
@@ -442,6 +448,22 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 		d.log.InfoContext(ctx, "received ConfigVersion signal",
 			slog.String("version", c.ConfigVersion.GetVersion()))
 		d.signalConfig()
+		return nil
+	case *compassv1internal.SessionsResponse_DeliverControl:
+		// Send-only: relay a server-pushed control op (a turn-driving message
+		// deliver) to the session's container socket. On SUCCESS return nil — NO
+		// result frame. This is the contract the Server's send-only dispatch
+		// requires: success is confirmed later by the agent's delivery_ack (which
+		// advances the durable delivery cursor), NOT by a synchronous result. A
+		// typed success result here is read by the Server's router.complete as a
+		// refusal ("deliver returned an unexpected non-error result; cursor left
+		// unadvanced") and the message sticks. A FAILURE returns errorResult: a
+		// refusal the Server observes asynchronously and leaves the cursor
+		// unadvanced for the D2 reconnect sweep to redeliver (errSessionUnknown
+		// maps to NOT_FOUND via errorResult).
+		if err := d.host.Deliver(ctx, c.DeliverControl.GetSessionId(), c.DeliverControl.GetOp()); err != nil {
+			return errorResult(id, err)
+		}
 		return nil
 	default:
 		// An unset/unrecognized command variant — a contract skew. Return an
