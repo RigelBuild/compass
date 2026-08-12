@@ -49,6 +49,11 @@ type Fixture struct {
 	// WithCannedModel, else nil. Its lifecycle rides a t.Cleanup registered at
 	// startup, so a consumer never closes it directly.
 	stub *cannedModelServer
+	// now is the injectable wall-clock for the enrollment-readiness poll;
+	// defaults to time.Now. A test overrides it to drive the budget-timeout
+	// branch of waitRunnerEnrolled — the enrollment counterpart to the stack's
+	// s.deps.now() seam.
+	now func() time.Time
 }
 
 // fixtureConfig holds the optional knobs a caller flips through fixtureOption
@@ -262,7 +267,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		t.Fatalf("build authed clients: %v", err)
 	}
 
-	return &Fixture{
+	f := &Fixture{
 		compass:    compass,
 		comms:      comms,
 		stack:      st,
@@ -271,7 +276,23 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		serverURL:  serverURL,
 		runtimeDir: runtimeDir,
 		stub:       stub,
+		now:        time.Now,
 	}
+
+	// stack.Up returns as soon as the compass-runner CHILD is spawned, but the
+	// runner enrolls with the server ASYNCHRONOUSLY over the TLS door AFTER Up
+	// returns. A leg that Provisions immediately would otherwise race that
+	// enrollment and fail `unavailable: no runner enrolled to serve session`.
+	// Gate the fixture's post-Up readiness on the runner being enrolled — the
+	// enrollment counterpart to the stack's own waitReady/waitPostgres — so every
+	// leg starts against an enrolled runner. Event-gated on a real cross-process
+	// signal (an enrollment-gated probe), never a sleep. On the WithSite re-attach
+	// path the runner is already enrolled, so the first probe passes immediately.
+	if err := f.waitRunnerEnrolled(ctx); err != nil {
+		t.Fatalf("wait for runner enrollment: %v", err)
+	}
+
+	return f
 }
 
 // cannedAgentDir is the in-container path the canned models.yml is delivered
