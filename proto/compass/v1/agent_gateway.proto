@@ -167,7 +167,8 @@ message LifecycleCallRequest {
 message SpawnPeerRequest {
   string handle = 1;               // the new agent's account handle (unique)
   string display_name = 2;
-  string initial_prompt = 3;       // threaded to StartAgentSessionRequest.initial_prompt
+  reserved 3;
+  reserved "initial_prompt";
   string client_request_id = 4;    // whole-chain idempotency key (handler-level join + Provision dedup)
 }
 message SpawnPeerResponse {

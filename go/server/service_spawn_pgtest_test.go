@@ -39,7 +39,6 @@ func TestSpawnAgentRunsProvisionThenStart(t *testing.T) {
 
 	resp, err := f.client.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
 		AgentAccountId:  string(f.agentID),
-		InitialPrompt:   "go",
 		ClientRequestId: "spawn-happy",
 	}))
 	if err != nil {

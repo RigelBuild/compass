@@ -148,7 +148,6 @@ func e2eSpawnHappyPath(t *testing.T, w *e2eWire) (peerID store.AccountID, peerCo
 		Call: &compassv1internal.LifecycleCallRequest_Spawn{Spawn: &compassv1internal.SpawnPeerRequest{
 			Handle:          "peer-1",
 			DisplayName:     "Peer One",
-			InitialPrompt:   "go",
 			ClientRequestId: "spawn-req-1",
 		}},
 	}))
@@ -371,7 +370,6 @@ func TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp(t *testing.T) {
 	peerBResp, err := w.lc.SpawnAsAccount(ctx, agentB.ID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-b",
 		DisplayName:     "Peer B",
-		InitialPrompt:   "go",
 		ClientRequestId: "spawn-b-1",
 	})
 	if err != nil {
