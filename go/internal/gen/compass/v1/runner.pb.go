@@ -67,6 +67,15 @@ const (
 	// retention-full refusal in-band so the Server can leave the delivery cursor
 	// unadvanced and redeliver.
 	RunnerErrorCode_RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED RunnerErrorCode = 4
+	// A command failed on an operator-fault condition in the Runner's
+	// deployment (a socket path over the AF_UNIX limit, socket-dir
+	// permissions/ownership, an occupied socket path) -> Connect
+	// FailedPrecondition. Distinguished from INTERNAL so an admin sees a
+	// fix-the-deployment signal rather than a Compass bug. Direction:
+	// outbound Runner->Server->admin, distinct from the inbound
+	// Server->Runner CodeFailedPrecondition the Runner treats as a benign
+	// no-secrets / no-config-surface signal (host.go, config_materialize.go).
+	RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION RunnerErrorCode = 5
 )
 
 // Enum value maps for RunnerErrorCode.
@@ -77,13 +86,15 @@ var (
 		2: "RUNNER_ERROR_CODE_NOT_FOUND",
 		3: "RUNNER_ERROR_CODE_INTERNAL",
 		4: "RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED",
+		5: "RUNNER_ERROR_CODE_FAILED_PRECONDITION",
 	}
 	RunnerErrorCode_value = map[string]int32{
-		"RUNNER_ERROR_CODE_UNSPECIFIED":        0,
-		"RUNNER_ERROR_CODE_ALREADY_RUNNING":    1,
-		"RUNNER_ERROR_CODE_NOT_FOUND":          2,
-		"RUNNER_ERROR_CODE_INTERNAL":           3,
-		"RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED": 4,
+		"RUNNER_ERROR_CODE_UNSPECIFIED":         0,
+		"RUNNER_ERROR_CODE_ALREADY_RUNNING":     1,
+		"RUNNER_ERROR_CODE_NOT_FOUND":           2,
+		"RUNNER_ERROR_CODE_INTERNAL":            3,
+		"RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED":  4,
+		"RUNNER_ERROR_CODE_FAILED_PRECONDITION": 5,
 	}
 )
 
@@ -2120,13 +2131,14 @@ const file_compass_v1_runner_proto_rawDesc = "" +
 	"\tcommitted\x18\x01 \x01(\bR\tcommitted\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x02 \x01(\tR\tmessageId\x12\x10\n" +
-	"\x03seq\x18\x03 \x01(\x04R\x03seq*\xc6\x01\n" +
+	"\x03seq\x18\x03 \x01(\x04R\x03seq*\xf1\x01\n" +
 	"\x0fRunnerErrorCode\x12!\n" +
 	"\x1dRUNNER_ERROR_CODE_UNSPECIFIED\x10\x00\x12%\n" +
 	"!RUNNER_ERROR_CODE_ALREADY_RUNNING\x10\x01\x12\x1f\n" +
 	"\x1bRUNNER_ERROR_CODE_NOT_FOUND\x10\x02\x12\x1e\n" +
 	"\x1aRUNNER_ERROR_CODE_INTERNAL\x10\x03\x12(\n" +
-	"$RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED\x10\x042\x8b\a\n" +
+	"$RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED\x10\x04\x12)\n" +
+	"%RUNNER_ERROR_CODE_FAILED_PRECONDITION\x10\x052\x8b\a\n" +
 	"\rRunnerService\x12?\n" +
 	"\x06Enroll\x12\x19.compass.v1.EnrollRequest\x1a\x1a.compass.v1.EnrollResponse\x12I\n" +
 	"\bSessions\x12\x1b.compass.v1.SessionsRequest\x1a\x1c.compass.v1.SessionsResponse(\x010\x01\x12V\n" +

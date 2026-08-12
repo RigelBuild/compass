@@ -420,6 +420,15 @@ enum RunnerErrorCode {
   // retention-full refusal in-band so the Server can leave the delivery cursor
   // unadvanced and redeliver.
   RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED = 4;
+  // A command failed on an operator-fault condition in the Runner's
+  // deployment (a socket path over the AF_UNIX limit, socket-dir
+  // permissions/ownership, an occupied socket path) -> Connect
+  // FailedPrecondition. Distinguished from INTERNAL so an admin sees a
+  // fix-the-deployment signal rather than a Compass bug. Direction:
+  // outbound Runner->Server->admin, distinct from the inbound
+  // Server->Runner CodeFailedPrecondition the Runner treats as a benign
+  // no-secrets / no-config-surface signal (host.go, config_materialize.go).
+  RUNNER_ERROR_CODE_FAILED_PRECONDITION = 5;
 }
 
 // One Runner-sequenced agent event, relayed Runner->Server on PublishEvents.
