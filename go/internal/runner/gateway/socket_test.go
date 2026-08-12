@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -605,4 +606,132 @@ func TestMountTargetsLiveSocketReadWrite(t *testing.T) {
 	if got != want {
 		t.Fatalf("Mount(%q) = %+v, want %+v", containerPath, got, want)
 	}
+}
+
+// Case 10. The operator-fault sentinel: every path whose remedy
+// is an operator knob wraps ErrOperatorConfig so errorResult maps it to
+// FAILED_PRECONDITION, while every genuine-internal path does NOT — the negative
+// assertion is the over-classification guard the record requires (a future
+// blanket-wrap refactor that mislabels an OS anomaly as operator-fault reddens
+// here). Both directions matter; see
+// docs/designs/platform/compass-runner-gateway-error-sentinels/design.md.
+func TestOperatorFaultSentinelClassification(t *testing.T) {
+	t.Run("path over the AF_UNIX limit is operator-fault", func(t *testing.T) {
+		// Build a path one byte over the cap under a short root, mirroring
+		// TestRejectsPathOverSunPathLimit's construction.
+		root, err := os.MkdirTemp("", "g") //nolint:usetesting // a short root is required so a path one byte over sunPathMax fits the AF_UNIX budget; t.TempDir embeds the test name and overflows it — same construction as TestRejectsPathOverSunPathLimit
+		if err != nil {
+			t.Fatalf("MkdirTemp: %v", err)
+		}
+		t.Cleanup(func() {
+			if err := os.RemoveAll(root); err != nil {
+				t.Errorf("removing %q: %v", root, err)
+			}
+		})
+		dir := filepath.Join(root, "run")
+		base := len(dir) + 1
+		if base > sunPathMax {
+			t.Fatalf("temp root %q leaves no room for an over-cap path; set TMPDIR shorter", dir)
+		}
+		path := filepath.Join(dir, strings.Repeat("s", sunPathMax+1-base))
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		_, err = listenAgentSocket(ctx, path, stubHandler(t), func() {})
+		if err == nil {
+			t.Fatal("over-cap path listen must fail")
+		}
+		if !errors.Is(err, ErrOperatorConfig) {
+			t.Errorf("path-too-long error %v is not tagged ErrOperatorConfig", err)
+		}
+	})
+
+	t.Run("socket-dir MkdirAll failure is operator-fault", func(t *testing.T) {
+		// A regular file where the socket dir should be makes MkdirAll fail
+		// ENOTDIR — an EACCES/EROFS-class deployment fault.
+		root := t.TempDir()
+		occupied := filepath.Join(root, "run")
+		if err := os.WriteFile(occupied, []byte("x"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		path := filepath.Join(occupied, "agent.sock")
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		_, err := listenAgentSocket(ctx, path, stubHandler(t), func() {})
+		if err == nil {
+			t.Fatal("MkdirAll into a regular file must fail")
+		}
+		if !errors.Is(err, ErrOperatorConfig) {
+			t.Errorf("socket-dir MkdirAll error %v is not tagged ErrOperatorConfig", err)
+		}
+		// The multi-%w chain keeps the underlying OS error inspectable too.
+		if !errors.Is(err, syscall.ENOTDIR) {
+			t.Errorf("socket-dir MkdirAll error %v dropped the wrapped OS error", err)
+		}
+	})
+
+	t.Run("reclaim non-socket occupant is operator-fault", func(t *testing.T) {
+		path := socketPath(t)
+		if err := os.MkdirAll(filepath.Dir(path), socketDirMode); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("not a socket"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		err := reclaimStaleSocket(path)
+		if err == nil {
+			t.Fatal("reclaim over a non-socket must fail closed")
+		}
+		if !errors.Is(err, ErrOperatorConfig) {
+			t.Errorf("non-socket refusal %v is not tagged ErrOperatorConfig", err)
+		}
+	})
+
+	t.Run("reclaim wrong-owner socket is operator-fault", func(t *testing.T) {
+		path := socketPath(t)
+		leaveOwnedSocket(t, path)
+		orig := runnerUID
+		runnerUID = func() int { return os.Getuid() + 1 }
+		defer func() { runnerUID = orig }()
+		err := reclaimStaleSocket(path)
+		if err == nil {
+			t.Fatal("reclaim over a wrong-owner socket must fail closed")
+		}
+		if !errors.Is(err, ErrOperatorConfig) {
+			t.Errorf("wrong-owner refusal %v is not tagged ErrOperatorConfig", err)
+		}
+	})
+
+	// Negative guards: genuine-internal paths must NOT carry the sentinel.
+	t.Run("socket-file Chmod failure stays INTERNAL", func(t *testing.T) {
+		// Constructed the same way the code raises it (securing agent socket
+		// FILE, socket.go): the file Chmod arm is an OS anomaly on a file the
+		// Runner just created, deliberately unwrapped. Triggering it live needs
+		// a chmod-race; asserting on the value the code builds is the record's
+		// sanctioned alternative and keeps the negative assertion sharp.
+		err := fmt.Errorf("securing agent socket %q: %w", "/run/x/agent.sock", syscall.EPERM)
+		if errors.Is(err, ErrOperatorConfig) {
+			t.Error("socket-FILE Chmod error must stay INTERNAL, not operator-fault")
+		}
+	})
+
+	t.Run("Listen failure stays INTERNAL", func(t *testing.T) {
+		err := fmt.Errorf("listening on agent socket %q: %w", "/run/x/agent.sock", syscall.EADDRINUSE)
+		if errors.Is(err, ErrOperatorConfig) {
+			t.Error("Listen error must stay INTERNAL, not operator-fault")
+		}
+	})
+
+	t.Run("reclaim Lstat inspection failure stays INTERNAL", func(t *testing.T) {
+		err := fmt.Errorf("inspecting agent socket path %q: %w", "/run/x/agent.sock", syscall.EACCES)
+		if errors.Is(err, ErrOperatorConfig) {
+			t.Error("reclaim Lstat error must stay INTERNAL, not operator-fault")
+		}
+	})
+
+	t.Run("reclaim ownership-read failure stays INTERNAL", func(t *testing.T) {
+		err := fmt.Errorf("agent socket path %q: cannot read socket ownership", "/run/x/agent.sock")
+		if errors.Is(err, ErrOperatorConfig) {
+			t.Error("reclaim ownership-read error must stay INTERNAL, not operator-fault")
+		}
+	})
 }

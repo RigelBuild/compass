@@ -71,6 +71,12 @@ const shutdownGrace = 5 * time.Second
 // would have worked is the safe direction.
 const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
 
+// ErrOperatorConfig marks a failure whose remedy is an operator knob
+// (runtime-dir length, socket-dir permissions/ownership) rather than a
+// Compass bug. errorResult (runner/dispatch.go) maps it to
+// RUNNER_ERROR_CODE_FAILED_PRECONDITION instead of INTERNAL.
+var ErrOperatorConfig = errors.New("operator-fault runner configuration")
+
 // runnerUID reports the uid a reclaimable stale socket must be owned by. It is a
 // package var over os.Getuid so a hermetic test can drive the wrong-owner
 // fail-closed branch (which cannot be forged on disk without root).
@@ -138,17 +144,17 @@ func listenAgentSocket(ctx context.Context, path string, h http.Handler, cancel 
 	// deployment is self-diagnosing at Provision and leaves nothing behind. The
 	// message names both knobs: the path alone does not say which one to shrink.
 	if len(path) > sunPathMax {
-		return nil, fmt.Errorf("agent socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten the Runner's --runtime-dir or the agent account id", path, len(path), sunPathMax)
+		return nil, fmt.Errorf("agent socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten the Runner's --runtime-dir or the agent account id: %w", path, len(path), sunPathMax, ErrOperatorConfig)
 	}
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, socketDirMode); err != nil {
-		return nil, fmt.Errorf("creating agent socket dir %q: %w", dir, err)
+		return nil, fmt.Errorf("creating agent socket dir %q: %w: %w", dir, err, ErrOperatorConfig)
 	}
 	// A pre-existing dir may carry a looser mode (umask, or a prior op); force
 	// it owner-only so the 0600 socket inside is genuinely unreachable.
 	if err := os.Chmod(dir, socketDirMode); err != nil {
-		return nil, fmt.Errorf("securing agent socket dir %q: %w", dir, err)
+		return nil, fmt.Errorf("securing agent socket dir %q: %w: %w", dir, err, ErrOperatorConfig)
 	}
 
 	if err := reclaimStaleSocket(path); err != nil {
@@ -195,14 +201,14 @@ func reclaimStaleSocket(path string) error {
 	// Lstat, not Stat: a symlink must be rejected as itself, never followed —
 	// following it could target reclaim at an unrelated inode.
 	if info.Mode().Type() != os.ModeSocket {
-		return fmt.Errorf("agent socket path %q is occupied by a non-socket (%s); refusing to remove", path, info.Mode().Type())
+		return fmt.Errorf("agent socket path %q is occupied by a non-socket (%s); refusing to remove: %w", path, info.Mode().Type(), ErrOperatorConfig)
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return fmt.Errorf("agent socket path %q: cannot read socket ownership", path)
 	}
 	if int(st.Uid) != runnerUID() {
-		return fmt.Errorf("agent socket path %q is a socket owned by uid %d, not the Runner uid %d; refusing to remove", path, st.Uid, runnerUID())
+		return fmt.Errorf("agent socket path %q is a socket owned by uid %d, not the Runner uid %d; refusing to remove: %w", path, st.Uid, runnerUID(), ErrOperatorConfig)
 	}
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("removing stale agent socket %q: %w", path, err)

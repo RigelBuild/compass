@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/runner/gateway"
 )
 
 // fakeSessionHost is a hand-written SessionHost that counts calls and returns
@@ -704,3 +706,118 @@ type wrapError struct{ inner error }
 
 func (w *wrapError) Error() string { return "wrapped: " + w.inner.Error() }
 func (w *wrapError) Unwrap() error { return w.inner }
+
+// A Provision failure carrying gateway.ErrOperatorConfig maps to
+// RUNNER_ERROR_CODE_FAILED_PRECONDITION (not the default INTERNAL) and the
+// original diagnostic text is preserved on the wire message. Red before the
+// ErrOperatorConfig arm existed: the classifier fell an operator-fault provision
+// to INTERNAL — the exact over-classification this change fixes. See
+// docs/designs/platform/compass-runner-gateway-error-sentinels/design.md.
+func TestExecuteProvisionOperatorFaultMapsToFailedPrecondition(t *testing.T) {
+	diag := fmt.Errorf("serving agent socket for container %q: %w", "cont-op", gateway.ErrOperatorConfig)
+	host := &fakeSessionHost{provisionErr: diag}
+	d := newDispatcher(host, discardLoggerRunner())
+	res := d.execute(context.Background(), "r", provisionCommand("r"))
+	re := res.GetError()
+	if re == nil {
+		t.Fatal("operator-fault provision did not produce an error result")
+	}
+	if re.GetCode() != compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION {
+		t.Fatalf("operator-fault code = %v, want FAILED_PRECONDITION", re.GetCode())
+	}
+	// The diagnostic the admin reads must survive intact (dispatch.go sets
+	// Message: err.Error()); the sentinel phrase is appended, not replacing it.
+	if !strings.Contains(re.GetMessage(), "serving agent socket for container") {
+		t.Fatalf("operator-fault message %q dropped the original diagnostic", re.GetMessage())
+	}
+}
+
+// levelHandler is a mutex-guarded slog.Handler that records one (level, message)
+// per Handle call, so a test can pin exactly how many records an error result
+// emits and at which level. Concurrency-safe because errorResult logs from
+// per-command goroutines under -race.
+type levelHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *levelHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *levelHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	h.records = append(h.records, r.Clone())
+	h.mu.Unlock()
+	return nil
+}
+func (h *levelHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *levelHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *levelHandler) snapshot() []slog.Record {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]slog.Record(nil), h.records...)
+}
+
+// errorResult logs exactly one record per error result, at a level chosen by
+// class: Error for INTERNAL, Warn for a classified code, and Debug for a
+// context cancellation — so the shutdown/ctx.Err() arm never emits an ERROR for
+// a routine cancel. Pinning the noise posture makes it a contract, not an
+// accident. See docs/designs/platform/compass-runner-gateway-error-sentinels/design.md.
+func TestErrorResultLogsLevelByClass(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want slog.Level
+	}{
+		{"internal", errors.New("engine exploded"), slog.LevelError},
+		{"already running (classified)", errAlreadyRunning, slog.LevelWarn},
+		{"operator fault (classified)", fmt.Errorf("dir: %w", gateway.ErrOperatorConfig), slog.LevelWarn},
+		{"context canceled (shutdown noise)", context.Canceled, slog.LevelDebug},
+		{"deadline exceeded (shutdown noise)", context.DeadlineExceeded, slog.LevelDebug},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &levelHandler{}
+			d := newDispatcher(&fakeSessionHost{}, slog.New(h))
+			d.errorResult(context.Background(), "r", tc.err)
+			recs := h.snapshot()
+			if len(recs) != 1 {
+				t.Fatalf("errorResult emitted %d records, want exactly 1", len(recs))
+			}
+			if recs[0].Level != tc.want {
+				t.Fatalf("record level = %v, want %v", recs[0].Level, tc.want)
+			}
+		})
+	}
+}
+
+// The shutdown arm — a Provision cancelled while queued for a concurrency slot
+// returns errorResult(ctx.Err()) (dispatch.go) — logs at Debug, not Error: a
+// provision queued at shutdown must not spam an ERROR "session command failed"
+// for a routine cancel. This drives the arm through execute (not errorResult
+// directly) so the ctx.Done wiring itself is exercised.
+func TestExecuteProvisionCancelledIsDebugNoise(t *testing.T) {
+	// Fill the provision semaphore so the next Provision blocks on ctx.Done.
+	host := &fakeSessionHost{}
+	h := &levelHandler{}
+	d := newDispatcher(host, slog.New(h))
+	for range provisionConcurrency {
+		d.provisionSem <- struct{}{}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res := d.execute(ctx, "r", provisionCommand("r"))
+	re := res.GetError()
+	if re == nil {
+		t.Fatal("cancelled provision did not produce an error result")
+	}
+	if host.provisionCalls != 0 {
+		t.Fatalf("provision ran %d times, want 0 (cancelled before acquiring a slot)", host.provisionCalls)
+	}
+	recs := h.snapshot()
+	if len(recs) != 1 {
+		t.Fatalf("cancelled provision emitted %d records, want exactly 1", len(recs))
+	}
+	if recs[0].Level != slog.LevelDebug {
+		t.Fatalf("cancelled-provision record level = %v, want Debug (shutdown noise)", recs[0].Level)
+	}
+}
