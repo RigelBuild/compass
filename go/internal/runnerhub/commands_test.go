@@ -30,6 +30,7 @@ func TestRunnerErrorToConnectCodeMapping(t *testing.T) {
 	}{
 		{"already running", compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING, connect.CodeAlreadyExists},
 		{"not found", compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND, connect.CodeNotFound},
+		{"failed precondition", compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION, connect.CodeFailedPrecondition},
 		{"internal", compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL, connect.CodeInternal},
 		{"unspecified falls to internal", compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_UNSPECIFIED, connect.CodeInternal},
 	}
