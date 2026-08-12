@@ -17,13 +17,13 @@ sentinels and defaults everything else to INTERNAL:
 
 > ```go
 > func errorResult(id string, err error) *compassv1internal.SessionsRequest {
-> 	code := compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL
-> 	switch {
-> 	case errors.Is(err, errAlreadyRunning):
-> 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING
-> 	case errors.Is(err, errSessionUnknown):
-> 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND
-> 	}
+>   code := compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL
+>   switch {
+>   case errors.Is(err, errAlreadyRunning):
+>     code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING
+>   case errors.Is(err, errSessionUnknown):
+>     code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND
+>   }
 > ```
 
 and the Server's `runnerErrorToConnect`
@@ -33,11 +33,11 @@ and the Server's `runnerErrorToConnect`
 > ```go
 > switch e.GetCode() {
 > case compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING:
-> 	code = connect.CodeAlreadyExists
+>   code = connect.CodeAlreadyExists
 > case compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND:
-> 	code = connect.CodeNotFound
+>   code = connect.CodeNotFound
 > default:
-> 	code = connect.CodeInternal
+>   code = connect.CodeInternal
 > }
 > ```
 
@@ -46,7 +46,7 @@ The canonical operator-fault path is the socket-path-too-long check, a bare
 
 > ```go
 > if len(path) > sunPathMax {
-> 	return nil, fmt.Errorf("agent socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten the Runner's --runtime-dir or the agent account id", path, len(path), sunPathMax)
+>   return nil, fmt.Errorf("agent socket path %q is %d bytes, over the %d-byte AF_UNIX limit: shorten the Runner's --runtime-dir or the agent account id", path, len(path), sunPathMax)
 > }
 > ```
 
@@ -190,7 +190,7 @@ returns `serveSocket`'s error directly (`host.go:172-175`), landing at
 
 ```go
 case errors.Is(err, gateway.ErrOperatorConfig):
-	code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION
+  code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION
 ```
 
 **Which socket.go paths qualify.** Classification rule: a failure is
@@ -267,11 +267,11 @@ before returning —
 
 ```go
 func (d *dispatcher) errorResult(ctx context.Context, id string, err error) *compassv1internal.SessionsRequest {
-	// classify code as today, then log at a level chosen by class:
-	//   context.Canceled / context.DeadlineExceeded -> skip (or Debug)
-	//   INTERNAL                                     -> Error
-	//   classified operator/client-fault codes       -> Warn
-	// build and return the result frame
+  // classify code as today, then log at a level chosen by class:
+  //   context.Canceled / context.DeadlineExceeded -> skip (or Debug)
+  //   INTERNAL                                     -> Error
+  //   classified operator/client-fault codes       -> Warn
+  // build and return the result frame
 }
 ```
 
