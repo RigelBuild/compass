@@ -479,3 +479,50 @@ func TestAgentByHandleUserHandleIsNotFound(t *testing.T) {
 	_, err := s.AgentByHandle(t.Context(), user.Handle)
 	sentinelIs(t, err, ErrNotFound, "agent handle lookup for a user handle")
 }
+
+// TestCountRootAgents pins the empty-tree gate the first-launch supervisor seed
+// keys on: zero when the owner has no root agent, one after a root is created,
+// still one when a non-root child is added (only parent-less agents count), and
+// owner-scoped (another owner's root does not count).
+//
+// Mutation: dropping the `parent_agent_id IS NULL` filter reddens the
+// child-does-not-count assertion; dropping the owner scope reddens the
+// cross-owner assertion.
+func TestCountRootAgents(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+
+	if n, err := s.CountRootAgents(ctx, owner.ID); err != nil || n != 0 {
+		t.Fatalf("CountRootAgents(empty) = (%d, %v), want (0, nil)", n, err)
+	}
+
+	root, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "root", DisplayName: "Root"})
+	if err != nil {
+		t.Fatalf("CreateAgent(root): %v", err)
+	}
+	if n, err := s.CountRootAgents(ctx, owner.ID); err != nil || n != 1 {
+		t.Fatalf("CountRootAgents(one root) = (%d, %v), want (1, nil)", n, err)
+	}
+
+	// A non-root child must NOT be counted — only parent-less agents are roots.
+	if _, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: "child", DisplayName: "Child", ParentAgentID: root.ID}); err != nil {
+		t.Fatalf("CreateAgent(child): %v", err)
+	}
+	if n, err := s.CountRootAgents(ctx, owner.ID); err != nil || n != 1 {
+		t.Fatalf("CountRootAgents(root + child) = (%d, %v), want (1, nil) — a child must not count", n, err)
+	}
+
+	// The count is owner-scoped: another owner's root does not leak in.
+	other := mustUser(t, s, "other")
+	if _, err := s.CreateAgent(ctx, other.ID, NewAgent{Handle: "other-root", DisplayName: "Other Root"}); err != nil {
+		t.Fatalf("CreateAgent(other root): %v", err)
+	}
+	if n, err := s.CountRootAgents(ctx, owner.ID); err != nil || n != 1 {
+		t.Fatalf("CountRootAgents(owner, after other-owner root) = (%d, %v), want (1, nil) — must be owner-scoped", n, err)
+	}
+
+	// Empty owner id is a caller error.
+	_, err = s.CountRootAgents(ctx, "")
+	sentinelIs(t, err, ErrInvalidArgument, "CountRootAgents with empty owner id")
+}

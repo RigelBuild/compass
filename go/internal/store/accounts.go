@@ -218,6 +218,24 @@ func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAge
 	}, nil
 }
 
+// CountRootAgents returns how many root agents (parent_agent_id IS NULL) the
+// owner holds. It backs the first-launch seed's idempotency gate: zero means an
+// empty tree to seed, non-zero means a root already exists and the seed is a
+// no-op. Scoped to ownerUserID so it counts only this owner's tree.
+func (s *Store) CountRootAgents(ctx context.Context, ownerUserID AccountID) (int, error) {
+	if ownerUserID == "" {
+		return 0, fmt.Errorf("%w: owner user id is required", ErrInvalidArgument)
+	}
+	var n int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM agent_accounts WHERE owner_user_id = $1 AND parent_agent_id IS NULL`,
+		string(ownerUserID),
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: count root agents: %w", err)
+	}
+	return n, nil
+}
+
 // GetAccount returns one account by id, or ErrNotFound if it does not exist.
 // GetAccount is an id-addressed fetch used internally by other store methods
 // and the auth layer; caller-facing visibility scoping is applied by
