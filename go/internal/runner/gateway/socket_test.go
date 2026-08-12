@@ -702,12 +702,19 @@ func TestOperatorFaultSentinelClassification(t *testing.T) {
 	})
 
 	// Negative guards: genuine-internal paths must NOT carry the sentinel.
+	// These assert on a value built the same way the code raises it, not on an
+	// error returned by the live path (each needs an OS anomaly — a chmod-race,
+	// a bind collision, an Lstat-EACCES — that is not portably forceable in a
+	// unit test). So they pin the MESSAGE SHAPE: the unwrapped fmt.Errorf the
+	// code uses at these sites does not accidentally satisfy errors.Is for the
+	// sentinel. They do NOT catch a future refactor that blanket-wraps the live
+	// path — that changes the code, not this literal. The real regression
+	// protection for the wrap/unwrap boundary is the live positive guards above
+	// plus the live multi-%w assertion; these keep the intended unwrapped shapes
+	// documented and executable.
 	t.Run("socket-file Chmod failure stays INTERNAL", func(t *testing.T) {
-		// Constructed the same way the code raises it (securing agent socket
-		// FILE, socket.go): the file Chmod arm is an OS anomaly on a file the
-		// Runner just created, deliberately unwrapped. Triggering it live needs
-		// a chmod-race; asserting on the value the code builds is the record's
-		// sanctioned alternative and keeps the negative assertion sharp.
+		// Built the same way the code raises it at the socket-FILE Chmod arm
+		// (securing agent socket, socket.go), which is deliberately unwrapped.
 		err := fmt.Errorf("securing agent socket %q: %w", "/run/x/agent.sock", syscall.EPERM)
 		if errors.Is(err, ErrOperatorConfig) {
 			t.Error("socket-FILE Chmod error must stay INTERNAL, not operator-fault")
