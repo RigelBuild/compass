@@ -47,6 +47,7 @@ type lifecycleFixture struct {
 // over its real store + hub, and resolves the fixture agent's owner for the
 // ownership assertions.
 func newLifecycleFixture(t *testing.T) lifecycleFixture {
+	t.Helper()
 	pf := newPlacementFixture(t)
 	pf.runner.forget() // discard the attach probe; assertions see only driven commands
 	ctx := context.Background()

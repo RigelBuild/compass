@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -136,12 +137,7 @@ func TestSpawnAgentRejectsWhenAgentAlreadyLive(t *testing.T) {
 
 // sawStartFor reports whether the Server pushed a Start for containerName.
 func sawStartFor(f placementFixture, containerName string) bool {
-	for _, c := range f.runner.commands() {
-		if c == "start "+containerName {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(f.runner.commands(), "start "+containerName)
 }
 
 // TestSpawnAgentFailedRetryReattempts is the DL-169 re-attempt tooth: when the

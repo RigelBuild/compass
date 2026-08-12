@@ -54,6 +54,7 @@ type resumeFixture struct {
 }
 
 func newResumeFixture(t *testing.T) resumeFixture {
+	t.Helper()
 	ctx := context.Background() // test root
 	dsn := pgtest.RequireDSN(t)
 	st, err := store.Open(ctx, dsn)
@@ -139,7 +140,7 @@ func TestStartAgentSessionResumeUnknownOrForeignIsNotFoundBeforeRunner(t *testin
 	ctx := context.Background() // test root
 
 	t.Run("foreign session", func(t *testing.T) {
-		f := newResumeFixture(t)
+		f := newResumeFixture(t) //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
 		// A session owned by a FOREIGN agent (owned by the outsider user), whose
 		// home channel the admin caller is not a member of. The admin passes the
 		// network door's admin gate, but the handler's RequireAgentSessionSubscriber
@@ -171,7 +172,7 @@ func TestStartAgentSessionResumeUnknownOrForeignIsNotFoundBeforeRunner(t *testin
 	})
 
 	t.Run("unknown session", func(t *testing.T) {
-		f := newResumeFixture(t)
+		f := newResumeFixture(t) //nolint:contextcheck // RequireDSN is a shared test helper; ctx-threading is tracked separately
 		f.runner.forget()
 
 		_, err := f.startResume(ctx, f.adminToken, "sess-does-not-exist")

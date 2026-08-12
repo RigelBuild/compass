@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -240,12 +241,5 @@ func TestDeleteAgentConfigClearsAndSignalsEmpty(t *testing.T) {
 
 // join renders a name slice for a stable equality assertion.
 func join(names []string) string {
-	out := ""
-	for i, n := range names {
-		if i > 0 {
-			out += ","
-		}
-		out += n
-	}
-	return out
+	return strings.Join(names, ",")
 }

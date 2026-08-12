@@ -54,7 +54,7 @@ import (
 // directly rather than threading values through the harness.
 const (
 	fakeRunnerID    = "runner-1"
-	fakeRunnerToken = "cnVubmVyLXRva2Vu" //nolint:gosec // a test bearer, hashed into this test's own schema
+	fakeRunnerToken = "cnVubmVyLXRva2Vu"
 	fakeContainer   = "compass-agent-c1"
 	fakeSessionID   = "sess-relayed"
 )
@@ -80,6 +80,7 @@ type placementFixture struct {
 // router is attached — so a dispatched command reaches the fake rather than
 // racing the stream open.
 func newPlacementFixture(t *testing.T) placementFixture {
+	t.Helper()
 	return newPlacementFixtureWith(t, false)
 }
 
@@ -87,6 +88,7 @@ func newPlacementFixture(t *testing.T) placementFixture {
 // answers Stop (withholdStop=false) or accepts but never answers it
 // (withholdStop=true) — the wedged-Runner shape the rollback-bound test drives.
 func newPlacementFixtureWith(t *testing.T, withholdStop bool) placementFixture {
+	t.Helper()
 	ctx := context.Background() // the test root context
 	dsn := pgtest.RequireDSN(t)
 	st, err := store.Open(ctx, dsn)
@@ -901,8 +903,7 @@ func (r *recordingRunner) provisionPersona(t *testing.T) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, c := range r.seen {
-		switch v := c.GetCommand().(type) {
-		case *compassv1internal.SessionsResponse_Provision:
+		if v, ok := c.GetCommand().(*compassv1internal.SessionsResponse_Provision); ok {
 			return v.Provision.GetPersona()
 		}
 	}
@@ -918,8 +919,7 @@ func (r *recordingRunner) provisionRole(t *testing.T) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, c := range r.seen {
-		switch v := c.GetCommand().(type) {
-		case *compassv1internal.SessionsResponse_Provision:
+		if v, ok := c.GetCommand().(*compassv1internal.SessionsResponse_Provision); ok {
 			return v.Provision.GetRole()
 		}
 	}

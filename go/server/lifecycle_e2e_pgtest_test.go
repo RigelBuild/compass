@@ -38,7 +38,6 @@ package server
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -101,7 +100,6 @@ const peerPostText = "peer speaking over its own AgentGateway socket"
 // pins ONE property with its own mutation comment.
 func TestSpawnDespawnOverTheWire(t *testing.T) {
 	w := newE2EWire(t)
-	ctx := w.ctx
 
 	// The peer the whole test spawns, despawns, and asserts fail-closed on.
 	// Captured across subtests because the state is sequential.
@@ -112,201 +110,240 @@ func TestSpawnDespawnOverTheWire(t *testing.T) {
 	)
 
 	t.Run("spawn happy-path inherits the caller's owner (F2)", func(t *testing.T) {
-		resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
-			CallId: "spawn-call-1",
-			Call: &compassv1internal.LifecycleCallRequest_Spawn{Spawn: &compassv1internal.SpawnPeerRequest{
-				Handle:          "peer-1",
-				DisplayName:     "Peer One",
-				InitialPrompt:   "go",
-				ClientRequestId: "spawn-req-1",
-			}},
-		}))
-		if err != nil {
-			t.Fatalf("Lifecycle(spawn) over the socket = %v, want the round-trip result", err)
-		}
-		// A spawn is a SUCCESS variant (never the in-band _Error): an _Error here
-		// means the happy-path spawn tripped a tool-level guard it should not.
-		if e := resp.Msg.GetError(); e != nil {
-			t.Fatalf("spawn returned in-band error {code=%q msg=%q}, want a spawn result", e.GetCode(), e.GetMessage())
-		}
-		spawn := resp.Msg.GetSpawn()
-		if spawn == nil {
-			t.Fatal("spawn result carried no SpawnPeerResponse")
-		}
-		// call_id rides back verbatim: the hub stamps the inbound call_id onto the
-		// result (RelayLifecycleCall). Dropping that stamp reddens this.
-		if got := resp.Msg.GetCallId(); got != "spawn-call-1" {
-			t.Fatalf("result call id = %q, want the verbatim %q", got, "spawn-call-1")
-		}
-
-		peerID = store.AccountID(spawn.GetAgentAccountId())
-		peerContainer = spawn.GetContainerName()
-		if peerID == "" || peerID == w.supervisor.ID {
-			t.Fatalf("spawned peer id = %q, want a fresh id distinct from the supervisor %q", peerID, w.supervisor.ID)
-		}
-
-		// F2 ownership — the load-bearing security frame. The peer is owned by the
-		// SUPERVISOR'S OWNER (a non-admin user), never the supervisor agent, never
-		// the bootstrap admin. Mutation: creating the peer under the caller agent
-		// id, or a hard-coded admin id, instead of the store-resolved caller owner
-		// reddens this — the admin-literal arm is real because the fixture owns the
-		// supervisor under a non-admin user distinct from admin.
-		owner, err := w.store.AgentOwner(ctx, peerID)
-		if err != nil {
-			t.Fatalf("AgentOwner(peer) = %v", err)
-		}
-		if owner != w.supervisorOwner {
-			t.Fatalf("peer owner = %q, want the supervisor's owner %q (never the caller agent, never admin-literal)", owner, w.supervisorOwner)
-		}
-		if owner == w.supervisor.ID {
-			t.Fatalf("peer is owned by the CALLER AGENT %q — the F2 ownership frame is broken", w.supervisor.ID)
-		}
-		if owner == w.adminID {
-			t.Fatalf("peer is owned by the bootstrap ADMIN %q — the caller->owner resolution collapsed to the admin literal instead of the session-bound caller's owner", w.adminID)
-		}
-
-		// The chain completed: provisioned + placed. Mutation: skipping
-		// RecordAgentPlacement in provisionAndStart leaves the peer unplaced, so
-		// PlacementForAgent misses.
-		if _, container, err := w.store.PlacementForAgent(ctx, peerID); err != nil || container != peerContainer {
-			t.Fatalf("PlacementForAgent(peer) = (%q, %v), want (%q, nil)", container, err, peerContainer)
-		}
-		// A real session was started and recorded under the PEER account.
-		// Mutation: recording the session under the wrong account (or not at all)
-		// reddens the session-owner read.
-		if got := sessionOwner(t, ctx, w.dsn, spawn.GetSessionId()); got != string(peerID) {
-			t.Fatalf("session owner = %q, want the spawned peer %q", got, peerID)
-		}
-
-		acc, err := w.store.GetAccount(ctx, peerID)
-		if err != nil {
-			t.Fatalf("GetAccount(peer) = %v", err)
-		}
-		peerHome = acc.Agent.HomeChannelID
+		peerID, peerContainer, peerHome = e2eSpawnHappyPath(t, w)
 	})
 
 	t.Run("peer's own comms call resolves to the peer account", func(t *testing.T) {
 		if peerID == "" {
 			t.Fatal("spawn subtest did not run; peer is unset")
 		}
-		// Dial the PEER's per-container socket and post as the in-container peer
-		// agent would. The Server resolves the peer's session->account binding and
-		// attributes the post to the PEER — never the supervisor, never admin.
-		// Mutation: if spawn promoted the session binding onto the wrong account
-		// (or the supervisor's), this author check reddens — the proof that spawn
-		// wired a genuinely independent bound session.
-		client := w.dialPeer(t, peerContainer)
-		resp, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
-			CallId: "peer-post-1",
-			Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerHome)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: peerPostText}}}}},
-		}))
-		if err != nil {
-			t.Fatalf("Comms(post) over the peer socket = %v, want the round-trip result", err)
-		}
-		posted := resp.Msg.GetPost().GetMessage()
-		if posted == nil {
-			t.Fatal("peer comms post result carried no message")
-		}
-		if got := posted.GetAuthorAccountId(); got != string(peerID) {
-			t.Fatalf("peer post author = %q, want the bound PEER account %q (not the supervisor, not admin)", got, peerID)
-		}
-
-		// Committed to the REAL store under the peer account.
-		msgs, err := w.store.ListMessages(ctx, store.ListMessagesQuery{Actor: peerID, ChannelID: peerHome, Page: store.Page{Limit: 10}})
-		if err != nil {
-			t.Fatalf("ListMessages(peer home) = %v", err)
-		}
-		if len(msgs) != 1 || textOfE2E(msgs[0]) != peerPostText {
-			t.Fatalf("peer home has %d messages (want 1 with the posted body); got %+v", len(msgs), msgs)
-		}
-		if msgs[0].AuthorAccountID != peerID {
-			t.Fatalf("stored peer message author = %q, want the peer account %q", msgs[0].AuthorAccountID, peerID)
-		}
+		e2ePeerPostsUnderOwnAccount(t, w, peerID, peerContainer, peerHome)
 	})
 
 	t.Run("despawn removes the container and deletes the placement", func(t *testing.T) {
 		if peerID == "" {
 			t.Fatal("spawn subtest did not run; peer is unset")
 		}
-		resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
-			CallId: "despawn-call-1",
-			Call: &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{
-				AgentAccountId: string(peerID),
-			}},
-		}))
-		if err != nil {
-			t.Fatalf("Lifecycle(despawn) over the socket = %v, want the round-trip result", err)
-		}
-		// Same-owner despawn is a SUCCESS variant. Mutation: an authz regression
-		// that treated the supervisor's own owner's peer as foreign would flip this
-		// to the in-band _Error not_found.
-		if e := resp.Msg.GetError(); e != nil {
-			t.Fatalf("despawn returned in-band error {code=%q msg=%q}, want a despawn result", e.GetCode(), e.GetMessage())
-		}
-		if resp.Msg.GetDespawn() == nil {
-			t.Fatal("despawn result carried no DespawnPeerResponse")
-		}
-		if got := resp.Msg.GetCallId(); got != "despawn-call-1" {
-			t.Fatalf("result call id = %q, want the verbatim %q", got, "despawn-call-1")
-		}
-
-		// The container was torn down on the wire: the stub engine's Remove was
-		// driven for the peer container (engine id == container name here).
-		// Mutation: dropping the hub.Remove in DespawnAsAccount leaves the
-		// container live and this reddens.
-		if !w.engine.wasRemoved(peerContainer) {
-			t.Fatalf("stub engine never saw Remove for the peer container %q; removed=%v", peerContainer, w.engine.removedIDs())
-		}
-		// The durable placement was released. Mutation: dropping
-		// DeleteAgentPlacement leaves the row and this read succeeds instead of
-		// missing.
-		if _, _, err := w.store.PlacementForAgent(ctx, peerID); !errors.Is(err, store.ErrNotFound) {
-			t.Fatalf("PlacementForAgent(peer) after despawn = %v, want ErrNotFound (placement released)", err)
-		}
+		e2eDespawnPeer(t, w, peerID, peerContainer)
 	})
 
 	t.Run("peer fails closed after despawn", func(t *testing.T) {
 		if peerID == "" {
 			t.Fatal("spawn subtest did not run; peer is unset")
 		}
-		// The peer can no longer act. Despawn's hub.Remove tore the container's
-		// AgentGateway socket down (agentHost.Remove -> closeSocket removes the
-		// listener AND the socket file), AND hub.Stop unbound the session->account
-		// mapping first. So a fresh dial of the peer's (now-removed) socket fails
-		// closed at the TRANSPORT layer — the socket file is gone — which is the
-		// strongest fail-closed: the peer cannot even reach its door.
-		//
-		// LAYER NOTE (per the record's ask to document which layer returns what):
-		// the observable here is a Connect TRANSPORT error (dial of a removed unix
-		// socket), NOT the CodeNotFound RelayCommsCall would return. That
-		// CodeNotFound is what surfaces when a session is merely UNBOUND while its
-		// socket still serves (a Stop without a Remove); despawn does a full
-		// Remove, so the socket layer errors first. Either way the peer is fail-
-		// closed. A fresh client is dialed (not the scenario-2 client) because that
-		// client's cached conn was force-closed when the listener closed.
-		//
-		// Mutation: a despawn that stopped short of removing the container (or left
-		// the session bound) would let this post SUCCEED — the exact regression
-		// this pins.
-		client := w.dialPeer(t, peerContainer)
-		_, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
-			CallId: "peer-post-after-despawn",
-			Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerHome)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "should never commit"}}}}},
-		}))
-		if err == nil {
-			t.Fatal("peer comms post after despawn SUCCEEDED, want a fail-closed error (container + socket torn down)")
-		}
-
-		// And nothing committed: the peer's home channel still holds only the one
-		// pre-despawn message.
-		msgs, err := w.store.ListMessages(ctx, store.ListMessagesQuery{Actor: peerID, ChannelID: peerHome, Page: store.Page{Limit: 10}})
-		if err != nil {
-			t.Fatalf("ListMessages(peer home) after despawn = %v", err)
-		}
-		if len(msgs) != 1 {
-			t.Fatalf("peer home has %d messages after a fail-closed post, want 1 (nothing new committed)", len(msgs))
-		}
+		e2ePeerFailsClosedAfterDespawn(t, w, peerID, peerContainer, peerHome)
 	})
+}
+
+// e2eSpawnHappyPath drives the spawn happy-path over the wire and returns the
+// spawned peer's account id, container name, and home channel — the state the
+// later phases act on. It pins the F2 ownership frame (peer owned by the
+// supervisor's OWNER, never the caller agent, never admin) and that the spawn
+// chain provisioned + placed + started a session under the peer account.
+func e2eSpawnHappyPath(t *testing.T, w *e2eWire) (peerID store.AccountID, peerContainer string, peerHome store.ChannelID) {
+	t.Helper()
+	ctx := w.ctx
+	resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
+		CallId: "spawn-call-1",
+		Call: &compassv1internal.LifecycleCallRequest_Spawn{Spawn: &compassv1internal.SpawnPeerRequest{
+			Handle:          "peer-1",
+			DisplayName:     "Peer One",
+			InitialPrompt:   "go",
+			ClientRequestId: "spawn-req-1",
+		}},
+	}))
+	if err != nil {
+		t.Fatalf("Lifecycle(spawn) over the socket = %v, want the round-trip result", err)
+	}
+	// A spawn is a SUCCESS variant (never the in-band _Error): an _Error here
+	// means the happy-path spawn tripped a tool-level guard it should not.
+	if e := resp.Msg.GetError(); e != nil {
+		t.Fatalf("spawn returned in-band error {code=%q msg=%q}, want a spawn result", e.GetCode(), e.GetMessage())
+	}
+	spawn := resp.Msg.GetSpawn()
+	if spawn == nil {
+		t.Fatal("spawn result carried no SpawnPeerResponse")
+	}
+	// call_id rides back verbatim: the hub stamps the inbound call_id onto the
+	// result (RelayLifecycleCall). Dropping that stamp reddens this.
+	if got := resp.Msg.GetCallId(); got != "spawn-call-1" {
+		t.Fatalf("result call id = %q, want the verbatim %q", got, "spawn-call-1")
+	}
+
+	peerID = store.AccountID(spawn.GetAgentAccountId())
+	peerContainer = spawn.GetContainerName()
+	if peerID == "" || peerID == w.supervisor.ID {
+		t.Fatalf("spawned peer id = %q, want a fresh id distinct from the supervisor %q", peerID, w.supervisor.ID)
+	}
+
+	// F2 ownership — the load-bearing security frame. The peer is owned by the
+	// SUPERVISOR'S OWNER (a non-admin user), never the supervisor agent, never
+	// the bootstrap admin. Mutation: creating the peer under the caller agent
+	// id, or a hard-coded admin id, instead of the store-resolved caller owner
+	// reddens this — the admin-literal arm is real because the fixture owns the
+	// supervisor under a non-admin user distinct from admin.
+	owner, err := w.store.AgentOwner(ctx, peerID)
+	if err != nil {
+		t.Fatalf("AgentOwner(peer) = %v", err)
+	}
+	if owner != w.supervisorOwner {
+		t.Fatalf("peer owner = %q, want the supervisor's owner %q (never the caller agent, never admin-literal)", owner, w.supervisorOwner)
+	}
+	if owner == w.supervisor.ID {
+		t.Fatalf("peer is owned by the CALLER AGENT %q — the F2 ownership frame is broken", w.supervisor.ID)
+	}
+	if owner == w.adminID {
+		t.Fatalf("peer is owned by the bootstrap ADMIN %q — the caller->owner resolution collapsed to the admin literal instead of the session-bound caller's owner", w.adminID)
+	}
+
+	// The chain completed: provisioned + placed. Mutation: skipping
+	// RecordAgentPlacement in provisionAndStart leaves the peer unplaced, so
+	// PlacementForAgent misses.
+	if _, container, err := w.store.PlacementForAgent(ctx, peerID); err != nil || container != peerContainer {
+		t.Fatalf("PlacementForAgent(peer) = (%q, %v), want (%q, nil)", container, err, peerContainer)
+	}
+	// A real session was started and recorded under the PEER account.
+	// Mutation: recording the session under the wrong account (or not at all)
+	// reddens the session-owner read.
+	if got := sessionOwner(t, ctx, w.dsn, spawn.GetSessionId()); got != string(peerID) {
+		t.Fatalf("session owner = %q, want the spawned peer %q", got, peerID)
+	}
+
+	acc, err := w.store.GetAccount(ctx, peerID)
+	if err != nil {
+		t.Fatalf("GetAccount(peer) = %v", err)
+	}
+	peerHome = acc.Agent.HomeChannelID
+	return peerID, peerContainer, peerHome
+}
+
+// e2ePeerPostsUnderOwnAccount dials the peer's own per-container socket and
+// posts as the in-container peer would, asserting the post is attributed to the
+// PEER account (never the supervisor, never admin) and committed to the real
+// store — the proof spawn wired a genuinely independent bound session.
+func e2ePeerPostsUnderOwnAccount(t *testing.T, w *e2eWire, peerID store.AccountID, peerContainer string, peerHome store.ChannelID) {
+	t.Helper()
+	ctx := w.ctx
+	// Dial the PEER's per-container socket and post as the in-container peer
+	// agent would. The Server resolves the peer's session->account binding and
+	// attributes the post to the PEER — never the supervisor, never admin.
+	// Mutation: if spawn promoted the session binding onto the wrong account
+	// (or the supervisor's), this author check reddens — the proof that spawn
+	// wired a genuinely independent bound session.
+	client := w.dialPeer(t, peerContainer)
+	resp, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+		CallId: "peer-post-1",
+		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerHome)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: peerPostText}}}}},
+	}))
+	if err != nil {
+		t.Fatalf("Comms(post) over the peer socket = %v, want the round-trip result", err)
+	}
+	posted := resp.Msg.GetPost().GetMessage()
+	if posted == nil {
+		t.Fatal("peer comms post result carried no message")
+	}
+	if got := posted.GetAuthorAccountId(); got != string(peerID) {
+		t.Fatalf("peer post author = %q, want the bound PEER account %q (not the supervisor, not admin)", got, peerID)
+	}
+
+	// Committed to the REAL store under the peer account.
+	msgs, err := w.store.ListMessages(ctx, store.ListMessagesQuery{Actor: peerID, ChannelID: peerHome, Page: store.Page{Limit: 10}})
+	if err != nil {
+		t.Fatalf("ListMessages(peer home) = %v", err)
+	}
+	if len(msgs) != 1 || textOfE2E(msgs[0]) != peerPostText {
+		t.Fatalf("peer home has %d messages (want 1 with the posted body); got %+v", len(msgs), msgs)
+	}
+	if msgs[0].AuthorAccountID != peerID {
+		t.Fatalf("stored peer message author = %q, want the peer account %q", msgs[0].AuthorAccountID, peerID)
+	}
+}
+
+// e2eDespawnPeer drives the despawn happy-path over the wire and asserts the
+// container was removed on the stub engine and the durable placement released.
+func e2eDespawnPeer(t *testing.T, w *e2eWire, peerID store.AccountID, peerContainer string) {
+	t.Helper()
+	ctx := w.ctx
+	resp, err := w.supervisorClient.Lifecycle(ctx, connect.NewRequest(&compassv1internal.LifecycleCallRequest{
+		CallId: "despawn-call-1",
+		Call: &compassv1internal.LifecycleCallRequest_Despawn{Despawn: &compassv1internal.DespawnPeerRequest{
+			AgentAccountId: string(peerID),
+		}},
+	}))
+	if err != nil {
+		t.Fatalf("Lifecycle(despawn) over the socket = %v, want the round-trip result", err)
+	}
+	// Same-owner despawn is a SUCCESS variant. Mutation: an authz regression
+	// that treated the supervisor's own owner's peer as foreign would flip this
+	// to the in-band _Error not_found.
+	if e := resp.Msg.GetError(); e != nil {
+		t.Fatalf("despawn returned in-band error {code=%q msg=%q}, want a despawn result", e.GetCode(), e.GetMessage())
+	}
+	if resp.Msg.GetDespawn() == nil {
+		t.Fatal("despawn result carried no DespawnPeerResponse")
+	}
+	if got := resp.Msg.GetCallId(); got != "despawn-call-1" {
+		t.Fatalf("result call id = %q, want the verbatim %q", got, "despawn-call-1")
+	}
+
+	// The container was torn down on the wire: the stub engine's Remove was
+	// driven for the peer container (engine id == container name here).
+	// Mutation: dropping the hub.Remove in DespawnAsAccount leaves the
+	// container live and this reddens.
+	if !w.engine.wasRemoved(peerContainer) {
+		t.Fatalf("stub engine never saw Remove for the peer container %q; removed=%v", peerContainer, w.engine.removedIDs())
+	}
+	// The durable placement was released. Mutation: dropping
+	// DeleteAgentPlacement leaves the row and this read succeeds instead of
+	// missing.
+	if _, _, err := w.store.PlacementForAgent(ctx, peerID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("PlacementForAgent(peer) after despawn = %v, want ErrNotFound (placement released)", err)
+	}
+}
+
+// e2ePeerFailsClosedAfterDespawn asserts the despawned peer can no longer act:
+// a fresh dial of its removed socket fails closed at the transport layer and
+// nothing new commits to its home channel.
+func e2ePeerFailsClosedAfterDespawn(t *testing.T, w *e2eWire, peerID store.AccountID, peerContainer string, peerHome store.ChannelID) {
+	t.Helper()
+	ctx := w.ctx
+	// The peer can no longer act. Despawn's hub.Remove tore the container's
+	// AgentGateway socket down (agentHost.Remove -> closeSocket removes the
+	// listener AND the socket file), AND hub.Stop unbound the session->account
+	// mapping first. So a fresh dial of the peer's (now-removed) socket fails
+	// closed at the TRANSPORT layer — the socket file is gone — which is the
+	// strongest fail-closed: the peer cannot even reach its door.
+	//
+	// LAYER NOTE (per the record's ask to document which layer returns what):
+	// the observable here is a Connect TRANSPORT error (dial of a removed unix
+	// socket), NOT the CodeNotFound RelayCommsCall would return. That
+	// CodeNotFound is what surfaces when a session is merely UNBOUND while its
+	// socket still serves (a Stop without a Remove); despawn does a full
+	// Remove, so the socket layer errors first. Either way the peer is fail-
+	// closed. A fresh client is dialed (not the scenario-2 client) because that
+	// client's cached conn was force-closed when the listener closed.
+	//
+	// Mutation: a despawn that stopped short of removing the container (or left
+	// the session bound) would let this post SUCCEED — the exact regression
+	// this pins.
+	client := w.dialPeer(t, peerContainer)
+	_, err := client.Comms(ctx, connect.NewRequest(&compassv1internal.CommsCallRequest{
+		CallId: "peer-post-after-despawn",
+		Call:   &compassv1internal.CommsCallRequest_Post{Post: &compassv1.PostMessageRequest{Container: &compassv1.PostMessageRequest_ChannelId{ChannelId: string(peerHome)}, Topic: &compassv1.PostMessageRequest_TopicName{TopicName: "general"}, Blocks: []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: "should never commit"}}}}},
+	}))
+	if err == nil {
+		t.Fatal("peer comms post after despawn SUCCEEDED, want a fail-closed error (container + socket torn down)")
+	}
+
+	// And nothing committed: the peer's home channel still holds only the one
+	// pre-despawn message.
+	msgs, err := w.store.ListMessages(ctx, store.ListMessagesQuery{Actor: peerID, ChannelID: peerHome, Page: store.Page{Limit: 10}})
+	if err != nil {
+		t.Fatalf("ListMessages(peer home) after despawn = %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("peer home has %d messages after a fail-closed post, want 1 (nothing new committed)", len(msgs))
+	}
 }
 
 // TestForeignOwnerDespawnOverTheWireIsIndistinguishableNoOp pins the load-
@@ -557,7 +594,7 @@ func newE2EWire(t *testing.T) *e2eWire {
 	// still before the runtime-dir removal registered at the very top. The fresh
 	// bounded ctx is the sanctioned test-root exemption: the test ctx is cancelled
 	// by the time this runs (mirrors the reference's assertCleanShutdown close).
-	if closer, ok := host.(interface{ Close(context.Context) }); ok {
+	if closer, ok := host.(interface{ Close(ctx context.Context) }); ok {
 		t.Cleanup(func() {
 			closeCtx, cancelClose := context.WithTimeout(context.Background(), e2eTimeout)
 			defer cancelClose()
@@ -890,7 +927,7 @@ func mountRunnerServerE2E(t *testing.T, hub *runnerhub.Hub, resolve runnerhub.To
 
 // discardLogE2E is a throwaway logger for the Runner + hub diagnostics this test
 // does not assert on.
-func discardLogE2E() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+func discardLogE2E() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 // textOfE2E returns the first text block of a stored message.
 func textOfE2E(m store.Message) string {

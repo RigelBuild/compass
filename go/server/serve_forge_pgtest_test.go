@@ -76,14 +76,8 @@ type pagerCall struct {
 	etag string
 }
 
-func newFakePager(st *store.Store, host string) *fakePager {
-	return &fakePager{st: st, host: host, results: map[pageCoord]scriptedPage{}}
-}
-
-func (p *fakePager) set(repo string, page int, res scriptedPage) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.results[pageCoord{repo, page}] = res
+func newFakePager(st *store.Store) *fakePager {
+	return &fakePager{st: st, host: forgeTestHost, results: map[pageCoord]scriptedPage{}}
 }
 
 func (p *fakePager) ListIssuesPage(ctx context.Context, repo string, _ forge.IssueFilter, page int, etag string) (forge.ListPage, error) {
@@ -115,6 +109,12 @@ func (p *fakePager) ListIssuesPage(ctx context.Context, repo string, _ forge.Iss
 		return forge.ListPage{}, nil
 	}
 	return res.page, res.err
+}
+
+func (p *fakePager) set(res scriptedPage) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.results[pageCoord{"owner/repo", 1}] = res
 }
 
 func (p *fakePager) allCalls() []pagerCall {
@@ -198,12 +198,12 @@ func forgeTestStore(t *testing.T) *store.Store {
 // record, so the sink + cursor advance have committed before we cancel) — then
 // cancels and waits for Run to return. Event-gated, never a sleep. A long
 // interval means only the immediate pass fires.
-func runOnePass(t *testing.T, st *store.Store, brd *board.IssueProjection, p *fakePager, host string) {
+func runOnePass(t *testing.T, st *store.Store, brd *board.IssueProjection, p *fakePager) {
 	t.Helper()
-	adapter := &forgePollStore{st: st, provider: store.ForgeProviderGitHub, host: host}
+	adapter := &forgePollStore{st: st, provider: store.ForgeProviderGitHub, host: forgeTestHost}
 	ing := ingest.NewIngester(noopForgeReader{}, brd, &compassv1.ForgeRef{
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
-		Host:     host,
+		Host:     forgeTestHost,
 	})
 	passDone := &signalHandler{msg: "forge poll: repo polled", fired: make(chan struct{}, 1)}
 	driver := ingest.NewDriver(p, ing, adapter, ingest.DriverConfig{
@@ -234,10 +234,10 @@ func runOnePass(t *testing.T, st *store.Store, brd *board.IssueProjection, p *fa
 
 // oneIssuePage returns a scripted 200 page carrying a single issue for number,
 // with the given ETag and no next page.
-func oneIssuePage(number uint64, etag string) forge.ListPage {
+func oneIssuePage(etag string) forge.ListPage {
 	return forge.ListPage{
 		Issues: []forge.Issue{{
-			Number:       number,
+			Number:       1,
 			Title:        "a bug",
 			Body:         "it broke",
 			State:        "open",
@@ -264,10 +264,10 @@ func TestForgeEndToEndBootWiringSinksAndStoresCursor(t *testing.T) {
 	t.Cleanup(bus.Close)
 	brd := board.NewIssueProjection(bus, st)
 
-	pager := newFakePager(st, forgeTestHost)
-	pager.set("owner/repo", 1, scriptedPage{page: oneIssuePage(1, `"etag-p1"`)})
+	pager := newFakePager(st)
+	pager.set(scriptedPage{page: oneIssuePage(`"etag-p1"`)})
 
-	runOnePass(t, st, brd, pager, forgeTestHost)
+	runOnePass(t, st, brd, pager)
 
 	// DIRECT ordering proof: the seeded row was visible in the store AT the
 	// pager's first call (the reconcile ran before the first pass).
@@ -315,9 +315,9 @@ func TestForgeRestartResyncIssuesConditionalFetch(t *testing.T) {
 	bus1 := events.NewBus[busPayload]()
 	t.Cleanup(bus1.Close)
 	brd1 := board.NewIssueProjection(bus1, st)
-	pager1 := newFakePager(st, forgeTestHost)
-	pager1.set("owner/repo", 1, scriptedPage{page: oneIssuePage(1, `"etag-p1"`)})
-	runOnePass(t, st, brd1, pager1, forgeTestHost)
+	pager1 := newFakePager(st)
+	pager1.set(scriptedPage{page: oneIssuePage(`"etag-p1"`)})
+	runOnePass(t, st, brd1, pager1)
 
 	// "Restart": a fresh pipeline over the SAME schema. The pager scripts a 304
 	// for the stored ETag and would FAIL if asked for an unconditional fetch
@@ -328,10 +328,10 @@ func TestForgeRestartResyncIssuesConditionalFetch(t *testing.T) {
 	if err := brd2.Rehydrate(ctx); err != nil {
 		t.Fatalf("rehydrate on restart: %v", err)
 	}
-	pager2 := newFakePager(st, forgeTestHost)
-	pager2.set("owner/repo", 1, scriptedPage{page: forge.ListPage{NotModified: true}})
+	pager2 := newFakePager(st)
+	pager2.set(scriptedPage{page: forge.ListPage{NotModified: true}})
 
-	runOnePass(t, st, brd2, pager2, forgeTestHost)
+	runOnePass(t, st, brd2, pager2)
 
 	// The restart pass issued a CONDITIONAL fetch carrying the stored ETag.
 	calls := pager2.allCalls()
@@ -370,9 +370,9 @@ func TestForgeReingestDoesNotClobberHumanSetState(t *testing.T) {
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	brd := board.NewIssueProjection(bus, st)
-	pager := newFakePager(st, forgeTestHost)
-	pager.set("owner/repo", 1, scriptedPage{page: oneIssuePage(1, `"etag-open"`)})
-	runOnePass(t, st, brd, pager, forgeTestHost)
+	pager := newFakePager(st)
+	pager.set(scriptedPage{page: oneIssuePage(`"etag-open"`)})
+	runOnePass(t, st, brd, pager)
 
 	issues, err := st.ListIssues(ctx)
 	if err != nil {
@@ -396,11 +396,11 @@ func TestForgeReingestDoesNotClobberHumanSetState(t *testing.T) {
 	bus2 := events.NewBus[busPayload]()
 	t.Cleanup(bus2.Close)
 	brd2 := board.NewIssueProjection(bus2, st)
-	pager2 := newFakePager(st, forgeTestHost)
-	closedPage := oneIssuePage(1, `"etag-closed"`)
+	pager2 := newFakePager(st)
+	closedPage := oneIssuePage(`"etag-closed"`)
 	closedPage.Issues[0].State = "closed"
-	pager2.set("owner/repo", 1, scriptedPage{page: closedPage})
-	runOnePass(t, st, brd2, pager2, forgeTestHost)
+	pager2.set(scriptedPage{page: closedPage})
+	runOnePass(t, st, brd2, pager2)
 
 	// (4) ForgeState updated to the new forge truth, State UNCHANGED from the
 	// human-set value. A regression adding state = EXCLUDED.state to
@@ -429,7 +429,7 @@ func TestForgeSeedReconcileIsAdditiveAndNeverReEnables(t *testing.T) {
 	if err := reconcileForgeSeed(ctx, st, store.ForgeProviderGitHub, host, []string{"a/b", "c/d"}); err != nil {
 		t.Fatalf("initial reconcile: %v", err)
 	}
-	if got := enabledRepos(t, st, host); !equalSet(got, []string{"a/b", "c/d"}) {
+	if got := enabledRepos(t, st); !equalSet(got, []string{"a/b", "c/d"}) {
 		t.Fatalf("after initial reconcile enabled = %v, want [a/b c/d]", got)
 	}
 
@@ -447,7 +447,7 @@ func TestForgeSeedReconcileIsAdditiveAndNeverReEnables(t *testing.T) {
 	if err := reconcileForgeSeed(ctx, st, store.ForgeProviderGitHub, host, []string{"a/b"}); err != nil {
 		t.Fatalf("re-reconcile with shrunk seed: %v", err)
 	}
-	if got := enabledRepos(t, st, host); !equalSet(got, []string{"a/b", "c/d", "e/f"}) {
+	if got := enabledRepos(t, st); !equalSet(got, []string{"a/b", "c/d", "e/f"}) {
 		t.Fatalf("after shrunk reconcile enabled = %v, want [a/b c/d e/f] (no auto-delete/disable)", got)
 	}
 
@@ -460,7 +460,7 @@ func TestForgeSeedReconcileIsAdditiveAndNeverReEnables(t *testing.T) {
 	if err := reconcileForgeSeed(ctx, st, store.ForgeProviderGitHub, host, []string{"a/b", "c/d"}); err != nil {
 		t.Fatalf("re-reconcile with c/d back in seed: %v", err)
 	}
-	if got := enabledRepos(t, st, host); !equalSet(got, []string{"a/b", "e/f"}) {
+	if got := enabledRepos(t, st); !equalSet(got, []string{"a/b", "e/f"}) {
 		t.Fatalf("after re-reconcile enabled = %v, want [a/b e/f] (c/d stays disabled)", got)
 	}
 
@@ -471,7 +471,7 @@ func TestForgeSeedReconcileIsAdditiveAndNeverReEnables(t *testing.T) {
 	if err := reconcileForgeSeed(ctx, st, store.ForgeProviderGitHub, host, []string{"a/b"}); err != nil {
 		t.Fatalf("final reconcile: %v", err)
 	}
-	if got := enabledRepos(t, st, host); !equalSet(got, []string{"a/b"}) {
+	if got := enabledRepos(t, st); !equalSet(got, []string{"a/b"}) {
 		t.Fatalf("final enabled = %v, want [a/b] (e/f stays disabled)", got)
 	}
 }
@@ -554,9 +554,9 @@ func TestForgeStartupSecretFailFastTexts(t *testing.T) {
 
 // --- helpers ---------------------------------------------------------------
 
-func enabledRepos(t *testing.T, st *store.Store, host string) []string {
+func enabledRepos(t *testing.T, st *store.Store) []string {
 	t.Helper()
-	subs, err := st.ListEnabledForgeRepoSubscriptions(context.Background(), store.ForgeProviderGitHub, host)
+	subs, err := st.ListEnabledForgeRepoSubscriptions(context.Background(), store.ForgeProviderGitHub, forgeTestHost)
 	if err != nil {
 		t.Fatalf("ListEnabledForgeRepoSubscriptions: %v", err)
 	}
