@@ -30,9 +30,6 @@ import (
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
-// defaultAdminHandle is the bootstrap-admin handle when --admin-handle is unset.
-const defaultAdminHandle = "admin"
-
 // adminTokenFile is the basename of the 0600 file the bootstrap-admin token is
 // written to under the state dir. The operator reads the freshly minted bearer
 // token from here; it is never logged.
@@ -245,10 +242,7 @@ func buildNetworkServer(
 	netTLS *tls.Config,
 	resolver secrets.Resolver,
 ) (*http.Server, error) {
-	handle := cfg.AdminHandle
-	if handle == "" {
-		handle = defaultAdminHandle
-	}
+	handle := cfg.resolvedAdminHandle()
 	stateDir := cfg.StateDir
 	if stateDir == "" {
 		// Default to the socket's parent dir; a bare-filename socket has no
