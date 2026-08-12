@@ -63,7 +63,7 @@ func TestLegTwoPrimitives(t *testing.T) {
 }
 
 // TestLegTwoRealTurn is the full leg-2 scenario: CreateAgent -> Provision ->
-// StartSession -> AwaitSessionSettled -> assert the session's
+// StartSession -> PostMessage(home) drives the turn -> AwaitSessionSettled -> assert the session's
 // transcript is non-empty. On H2 it was PRESENT-BUT-SKIPPED: the leg-2 turn
 // cannot complete without a deterministic model backend, so on the bare stack
 // AwaitSessionSettled would hang and the transcript stay empty. H3 (SEA-1787)
@@ -110,15 +110,27 @@ func TestLegTwoRealTurn(t *testing.T) {
 		t.Fatalf("StartSession: %v", err)
 	}
 
-	if err := f.AwaitSessionSettled(ctx, sessionID); err != nil {
-		t.Fatalf("AwaitSessionSettled: %v", err)
-	}
-
 	st, err := store.Open(ctx, f.DSN())
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	defer st.Close()
+
+	// Post to the agent's home channel: the server sweeps the undelivered
+	// message in on session start and it fires the agent's first turn, so this
+	// post is what drives the turn AwaitSessionSettled waits on. Must precede the
+	// settle wait.
+	acc, err := st.AgentByHandle(ctx, "leg2-realturn")
+	if err != nil {
+		t.Fatalf("AgentByHandle: %v", err)
+	}
+	if _, err := f.PostMessage(ctx, string(acc.Agent.HomeChannelID), "general", "say hello and stop"); err != nil {
+		t.Fatalf("PostMessage(home): %v", err)
+	}
+
+	if err := f.AwaitSessionSettled(ctx, sessionID); err != nil {
+		t.Fatalf("AwaitSessionSettled: %v", err)
+	}
 
 	transcript, err := st.SessionTranscript(ctx, sessionID)
 	if err != nil {

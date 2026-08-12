@@ -77,6 +77,25 @@ func TestLegFivePersistAndResume(t *testing.T) {
 		t.Fatalf("StartSession (container1): %v", err)
 	}
 
+	st, err := store.Open(ctx, f.DSN())
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+
+	// Resolve the agent's home channel once; both the pre-teardown and resumed
+	// turns are driven by posts to it. The server sweeps each undelivered
+	// message in on session start and it fires that lifetime's turn, so each post
+	// must precede its settle wait.
+	acc, err := st.AgentByHandle(ctx, "leg5-persistresume")
+	if err != nil {
+		t.Fatalf("AgentByHandle: %v", err)
+	}
+	homeChannelID := string(acc.Agent.HomeChannelID)
+	if _, err := f.PostMessage(ctx, homeChannelID, "general", "say the pre-teardown reply and stop"); err != nil {
+		t.Fatalf("PostMessage(home, pre-teardown): %v", err)
+	}
+
 	// Event-gated settle on the first session — the canned turn0 (reply1) runs.
 	if err := f.AwaitSessionSettled(ctx, originalSessionID); err != nil {
 		t.Fatalf("AwaitSessionSettled (original): %v", err)
@@ -110,6 +129,11 @@ func TestLegFivePersistAndResume(t *testing.T) {
 		t.Fatalf("Resume (container2): %v", err)
 	}
 
+	// Post 2 drives the resumed turn: same home channel, resolved once above.
+	if _, err := f.PostMessage(ctx, homeChannelID, "general", "say the resumed reply and stop"); err != nil {
+		t.Fatalf("PostMessage(home, resumed): %v", err)
+	}
+
 	// Event-gated settle on the RESUMED session: the frame stream keys on the
 	// minted live id, so wait on resumedSessionID — the canned turn1 (reply2)
 	// runs. If the resumed turn never settled, this errors (the design.md:687
@@ -117,12 +141,6 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	if err := f.AwaitSessionSettled(ctx, resumedSessionID); err != nil {
 		t.Fatalf("AwaitSessionSettled (resumed): %v", err)
 	}
-
-	st, err := store.Open(ctx, f.DSN())
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-	defer st.Close()
 
 	// The carried transcript lives under the ORIGINAL logical session id, NOT the
 	// minted resumedSessionID: the persisted entry_seq is monotonic per session

@@ -46,9 +46,9 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	ctx := context.Background() // test root, threaded into NewFixture + every primitive
 
 	// The peer the scripted spawn mints: a unique handle the leg-3 assertions
-	// resolve the fresh account and its container by. The peer provisions and
-	// idles (no live-model egress: the peer has no canned backend of its own,
-	// like the leg-2 primitives path).
+	// resolve the fresh account and its container by. The peer stays idle by
+	// default (no live-model egress: the peer has no canned backend of its own;
+	// it simply provisions and idles, like the leg-2 primitives path).
 	const peerHandle = "leg34-peer"
 	const peerDisplayName = "Leg Three-Four Peer"
 	// The spawn tool's arguments, serialized JSON (the OpenAI tool-call
@@ -115,17 +115,29 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 		t.Fatalf("StartSession (spawner): %v", err)
 	}
 
-	// Event-gated settle on the spawner's session: the scripted spawn tool-call
-	// executes and the closing text turn settles — no sleeps.
-	if err := f.AwaitSessionSettled(ctx, sessionID); err != nil {
-		t.Fatalf("AwaitSessionSettled (spawner): %v", err)
-	}
-
 	st, err := store.Open(ctx, f.DSN())
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	defer st.Close()
+
+	// Post to the SPAWNER's home channel: the server sweeps the undelivered
+	// message in on session start and it fires the spawner's first turn (the one
+	// that issues the spawn tool-call), so this post is what drives the turn
+	// AwaitSessionSettled waits on. Must precede the settle wait.
+	spawner, err := st.AgentByHandle(ctx, "leg34-spawner")
+	if err != nil {
+		t.Fatalf("AgentByHandle(spawner): %v", err)
+	}
+	if _, err := f.PostMessage(ctx, string(spawner.Agent.HomeChannelID), "general", "spawn a peer and stand by"); err != nil {
+		t.Fatalf("PostMessage(home): %v", err)
+	}
+
+	// Event-gated settle on the spawner's session: the scripted spawn tool-call
+	// executes and the closing text turn settles — no sleeps.
+	if err := f.AwaitSessionSettled(ctx, sessionID); err != nil {
+		t.Fatalf("AwaitSessionSettled (spawner): %v", err)
+	}
 
 	// ── Leg 3: fresh peer account (F2 ownership) + a second real container ──
 
