@@ -30,8 +30,8 @@
 # DOCUMENTED CONSUMER-SEAM SMOKE (not executed here — it needs a rootless-podman
 # host, which GitHub-hosted runners are not). On such a host, after a publish:
 #
-#     podman pull ghcr.io/sealedsecurity/compass-agent:git-<sha12>
-#     compass-runner --image ghcr.io/sealedsecurity/compass-agent:git-<sha12>
+#     podman pull ghcr.io/rigelbuild/compass-agent:git-<sha12>
+#     compass-runner --image ghcr.io/rigelbuild/compass-agent:git-<sha12>
 #     # then drive one provision
 #
 # This exercises the exact seam compass-stack consumes (`--image` /
@@ -152,7 +152,7 @@ jobs:
         run: |
           set -euo pipefail
           sha12="$(git rev-parse --short=12 HEAD)"
-          ref="docker://ghcr.io/sealedsecurity/compass-agent"
+          ref="docker://ghcr.io/rigelbuild/compass-agent"
           inspect_json="$RUNNER_TEMP/git-inspect.json"
 
           # Resolvable from GHCR at the immutable tag.

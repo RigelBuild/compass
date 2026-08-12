@@ -17,7 +17,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-IMAGE=ghcr.io/sealedsecurity/compass-agent
+IMAGE=ghcr.io/rigelbuild/compass-agent
 
 # skopeo login (in CI) and the copies below run as SEPARATE `nix run`
 # processes, so they must resolve the SAME credentials file. The default
