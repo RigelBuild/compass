@@ -141,7 +141,7 @@ rationale see the design record
 `docs/designs/platform/compass-agent-image-publish.md`; the durable operational
 shape is here.
 
-**Ref and tags.** The image is `ghcr.io/sealedsecurity/compass-agent`. Every
+**Ref and tags.** The image is `ghcr.io/rigelbuild/compass-agent`. Every
 closure-affecting main build publishes two tags:
 
 - `:git-<sha12>` — the 12-hex short commit sha, **immutable**. This is the pin
@@ -183,8 +183,8 @@ HEAD on demand.
 **Smoke.** On a runner host, pull the immutable tag and drive the consumer seam:
 
 ```sh
-podman pull ghcr.io/sealedsecurity/compass-agent:git-<sha12>
-compass-runner --image ghcr.io/sealedsecurity/compass-agent:git-<sha12>
+podman pull ghcr.io/rigelbuild/compass-agent:git-<sha12>
+compass-runner --image ghcr.io/rigelbuild/compass-agent:git-<sha12>
 # then drive one provision
 ```
 
