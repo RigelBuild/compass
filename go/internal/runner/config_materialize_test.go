@@ -23,6 +23,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/sealedsecurity/compass/go/internal/runner/gateway"
 )
 
 // fakeConfigFetcher returns a canned bundle (or error), recording the requested
@@ -366,6 +368,36 @@ func TestConfigMaterializeFetchErrorPropagates(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("nothing should be written on fetch error, got %d entries", len(entries))
+	}
+}
+
+// ensureRoot wraps its MkdirAll failure with gateway.ErrOperatorConfig so the
+// dispatcher maps a config-root that cannot be created to FailedPrecondition
+// rather than a bare INTERNAL — an unwritable mount point is an operator
+// deployment fault, not a Runner bug. Driven live: root nested under a regular
+// file, so MkdirAll fails ENOTDIR regardless of uid. Asserts the sentinel and,
+// through the multi-%w chain, the underlying OS error. RED if the ": %w"
+// carrying the sentinel is dropped. The adjacent Chmod arm uses the identical
+// wrap idiom but is not portably triggerable (chmod on an owned, just-created
+// dir does not fail), so it is left unexercised rather than asserted against a
+// hand-built literal that would prove only errors.Is plumbing.
+func TestConfigMaterializeEnsureRootIsOperatorFault(t *testing.T) {
+	root := t.TempDir()
+	occupied := filepath.Join(root, "file")
+	if err := os.WriteFile(occupied, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	m := NewConfigMaterializer(filepath.Join(occupied, "config"), nil, nil)
+	err := m.ensureRoot()
+	if err == nil {
+		t.Fatal("MkdirAll under a regular file must fail")
+	}
+	if !errors.Is(err, gateway.ErrOperatorConfig) {
+		t.Errorf("ensureRoot error %v is not tagged gateway.ErrOperatorConfig", err)
+	}
+	// The multi-%w chain keeps the underlying OS error inspectable too.
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("ensureRoot error %v dropped the wrapped OS error", err)
 	}
 }
 

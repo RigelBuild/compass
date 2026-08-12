@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
+	"github.com/sealedsecurity/compass/go/internal/runner/gateway"
 	yaml "go.yaml.in/yaml/v3"
 )
 
@@ -204,10 +205,10 @@ func (m *ConfigMaterializer) Materialize(ctx context.Context, mcsLabel string) (
 // of ambient umask — the parent-level counterpart to pinConfigModes on the tree.
 func (m *ConfigMaterializer) ensureRoot() error {
 	if err := os.MkdirAll(m.root, 0o755); err != nil { //nolint:gosec // G301: the config root is mounted read-only into the container; it must be 0755 for the confined agent to traverse it
-		return fmt.Errorf("ensuring config root %q: %w", m.root, err)
+		return fmt.Errorf("ensuring config root %q: %w: %w", m.root, err, gateway.ErrOperatorConfig)
 	}
 	if err := os.Chmod(m.root, 0o755); err != nil { //nolint:gosec // G302: pin 0755 independent of the Runner umask; see the mode rationale above
-		return fmt.Errorf("pinning config root %q mode: %w", m.root, err)
+		return fmt.Errorf("pinning config root %q mode: %w: %w", m.root, err, gateway.ErrOperatorConfig)
 	}
 	return nil
 }

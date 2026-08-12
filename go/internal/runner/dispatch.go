@@ -21,6 +21,7 @@ import (
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/runner/gateway"
 )
 
 // SessionHost is the container-lifecycle surface the dispatcher drives — the
@@ -73,6 +74,10 @@ type SessionHost interface {
 }
 
 // Sentinel errors the host returns, mapped to RunnerErrorCode on the wire.
+// These are package-private to runner; the operator-fault sentinel
+// gateway.ErrOperatorConfig is exported from package gateway (it is raised
+// there) and errorResult maps it to RUNNER_ERROR_CODE_FAILED_PRECONDITION —
+// see docs/designs/platform/compass-runner-gateway-error-sentinels/design.md.
 var (
 	errAlreadyRunning = errors.New("session already running on container")
 	errSessionUnknown = errors.New("session unknown to runner")
@@ -366,7 +371,7 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 	case *compassv1internal.SessionsResponse_Start:
 		sessionID, err := d.host.Start(ctx, c.Start, cmd.GetResumeBody().GetSessionBody())
 		if err != nil {
-			return errorResult(id, err)
+			return d.errorResult(ctx, id, err)
 		}
 		return &compassv1internal.SessionsRequest{
 			RequestId: id,
@@ -380,12 +385,12 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 		select {
 		case d.provisionSem <- struct{}{}:
 		case <-ctx.Done():
-			return errorResult(id, ctx.Err())
+			return d.errorResult(ctx, id, ctx.Err())
 		}
 		defer func() { <-d.provisionSem }()
 		containerName, err := d.host.Provision(ctx, c.Provision)
 		if err != nil {
-			return errorResult(id, err)
+			return d.errorResult(ctx, id, err)
 		}
 		return &compassv1internal.SessionsRequest{
 			RequestId: id,
@@ -393,7 +398,7 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 		}
 	case *compassv1internal.SessionsResponse_Stop:
 		if err := d.host.Stop(ctx, c.Stop.GetSessionId()); err != nil {
-			return errorResult(id, err)
+			return d.errorResult(ctx, id, err)
 		}
 		return &compassv1internal.SessionsRequest{
 			RequestId: id,
@@ -401,7 +406,7 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 		}
 	case *compassv1internal.SessionsResponse_Remove:
 		if err := d.host.Remove(ctx, c.Remove.GetContainerName()); err != nil {
-			return errorResult(id, err)
+			return d.errorResult(ctx, id, err)
 		}
 		return &compassv1internal.SessionsRequest{
 			RequestId: id,
@@ -410,7 +415,7 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 	case *compassv1internal.SessionsResponse_Reload:
 		sessionID := c.Reload.GetSessionId()
 		if err := d.host.Reload(ctx, sessionID); err != nil {
-			return errorResult(id, err)
+			return d.errorResult(ctx, id, err)
 		}
 		return &compassv1internal.SessionsRequest{
 			RequestId: id,
@@ -419,7 +424,7 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 	case *compassv1internal.SessionsResponse_Status:
 		statuses, err := d.host.Status(ctx, c.Status.GetSessionId())
 		if err != nil {
-			return errorResult(id, err)
+			return d.errorResult(ctx, id, err)
 		}
 		return &compassv1internal.SessionsRequest{
 			RequestId: id,
@@ -468,20 +473,39 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 	default:
 		// An unset/unrecognized command variant — a contract skew. Return an
 		// internal error so the Server surfaces it rather than hanging the call.
-		return errorResult(id, errors.New("unrecognized session command variant"))
+		return d.errorResult(ctx, id, errors.New("unrecognized session command variant"))
 	}
 }
 
 // errorResult maps a host error to a RunnerError result with the wire code the
-// Server translates to a Connect status.
-func errorResult(id string, err error) *compassv1internal.SessionsRequest {
+// Server translates to a Connect status, and logs the failure once at a level
+// chosen by class (see
+// docs/designs/platform/compass-runner-gateway-error-sentinels/design.md): a
+// context cancellation (a routine shutdown/deadline outcome) is dropped to
+// Debug, an INTERNAL fault logs at Error, and a classified operator/client
+// fault logs at Warn. The diagnostic thus survives locally independent of relay
+// fidelity without over-logging the two noise classes.
+func (d *dispatcher) errorResult(ctx context.Context, id string, err error) *compassv1internal.SessionsRequest {
 	code := compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL
 	switch {
 	case errors.Is(err, errAlreadyRunning):
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_ALREADY_RUNNING
 	case errors.Is(err, errSessionUnknown):
 		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND
+	case errors.Is(err, gateway.ErrOperatorConfig):
+		code = compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION
 	}
+
+	level := slog.LevelError
+	switch {
+	case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+		level = slog.LevelDebug
+	case code != compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_INTERNAL:
+		level = slog.LevelWarn
+	}
+	d.log.Log(ctx, level, "session command failed",
+		slog.String("request_id", id), slog.Any("error", err), slog.String("code", code.String()))
+
 	return &compassv1internal.SessionsRequest{
 		RequestId: id,
 		Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
