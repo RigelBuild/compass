@@ -98,9 +98,8 @@ RESOURCE_EXHAUSTED=4. Add tag 5 for the operator-fault class, mirroring the
 RESOURCE_EXHAUSTED precedent (value + doc comment naming its Connect mapping
 and why it is distinguished).
 
-**Recommended value**: `RUNNER_ERROR_CODE_FAILED_PRECONDITION = 5` → Connect
-`FailedPrecondition`. Reasoning (the fork is recorded in Open Questions for
-Matt's final ruling):
+**Ruled value** (Matt, 2026-08-05): `RUNNER_ERROR_CODE_FAILED_PRECONDITION = 5`
+→ Connect `FailedPrecondition`. Recorded rationale:
 
 - The client's *arguments* are fine. A provision that trips the socket-path
   guard carries a well-formed `ProvisionAgentWorkspaceRequest`; the overlong
@@ -124,9 +123,9 @@ Matt's final ruling):
   misconfiguration (`go/internal/comms/agent_caller.go:71-79`). The no-secrets
   / no-config-surface servers answer `CodeFailedPrecondition` for absent
   deployment state (`go/internal/runnerhub/handler.go:52-56`, and the fail-
-  closed arms at `:253-254`, `:288-292`, `:324-326`), and the RunnerHub maps
-  `store.ErrFailedPrecondition` → `CodeFailedPrecondition`
-  (`go/internal/runnerhub/context.go:52-53`). Choosing InvalidArgument would
+  closed arms at `:253-254`, `:288-292`, `:324-326`), and the comms
+  request-error mapper maps `store.ErrFailedPrecondition` →
+  `CodeFailedPrecondition` (`go/internal/comms/context.go:52`). Choosing InvalidArgument would
   put the Runner's operator-fault class at odds with the repo's own
   comms-relay classification.
 - Naming the enum after the Connect code (not e.g. `OPERATOR_FAULT`) follows
@@ -238,7 +237,7 @@ Operator-fault (wrap `ErrOperatorConfig`):
   `fmt.Errorf("materializing agent config: %w", err)`
   (`go/internal/runner/host.go:184-190`), which lands at `errorResult(id, err)`
   through the same Provision path. The sentinel is importable there — package
-  `runner` already imports `gateway` (`go/internal/runner/host.go:822` calls
+  `runner` already imports `gateway` (`go/internal/runner/host.go:828` calls
   `gateway.Serve`). Indistinguishable in kind from the socket-dir
   MkdirAll/Chmod, so it wraps `ErrOperatorConfig` on the same footing.
   (The staging/unpack MkdirAlls at `config_materialize.go:401` and `:407`
@@ -411,7 +410,7 @@ RunnerError codes over the relay at
 - Interfaces: consumes both lanes' changes; produces no API.
 - Acceptance: `connect.CodeOf(err) == connect.CodeFailedPrecondition` and the
   message contains the socket diagnostic (which now also carries the appended
-  operator-fault sentinel phrase, per F4). If the e2e harness observes the
+  operator-fault sentinel phrase, per Approach (3)). If the e2e harness observes the
   Runner-side log, it may also assert the shutdown/`ctx.Err()` noise posture
   end-to-end (per OQ-2's ruling).
 
@@ -463,7 +462,7 @@ which is ledgered.
   the no-secrets / no-config-surface handlers answer `CodeFailedPrecondition`
   for absent deployment state (`go/internal/runnerhub/handler.go:52-56`,
   `:253-254`, `:288-292`, `:324-326`); and `store.ErrFailedPrecondition` maps
-  to `CodeFailedPrecondition` (`go/internal/runnerhub/context.go:52-53`).
+  to `CodeFailedPrecondition` (`go/internal/comms/context.go:52`).
   Choosing InvalidArgument would put the Runner's operator-fault class at odds
   with the repo's own comms-relay classification. Dismissed third options:
   reusing `RESOURCE_EXHAUSTED = 4` is semantically wrong AND collides with the
@@ -497,15 +496,13 @@ which is ledgered.
   operator/client-fault codes, **skip/Debug** for context-cancellation.
   Concurrency is clean: all eight call sites are inside `dispatch.go`'s
   `execute`, the dispatcher already logs from these per-command goroutines, and
-  slog handlers are concurrency-safe. Framing to rule on: log-all vs
-  log-new-code-only (fallback if Matt prefers minimal scope: log only the new
-  operator-fault value), and the level nuance above.
+  slog handlers are concurrency-safe. The ruling adopts log-all
+  level-by-class as specified above.
 - **OQ-3 — `reclaimStaleSocket` refusals in scope? RULED (Matt, 2026-08-05): INCLUDE both.** The brief names
   MkdirAll/Chmod/Listen as the sibling paths; this record additionally
   classifies the two fail-closed reclaim refusals (`socket.go:197-198`,
   `:204-205`) as operator-fault, since both are deliberate refusals over
-  on-disk state only an operator can clear. If Matt prefers the narrower
-  reading, T3 drops those two wraps; the mechanism is unchanged.
+  on-disk state only an operator can clear.
 - **OQ-4 — `ensureRoot` in the wrapped set? RULED (Matt, 2026-08-05): INCLUDE.**
   Beyond socket.go there is a same-class
   operator-fault sibling: `ensureRoot`'s MkdirAll + Chmod of
@@ -517,11 +514,9 @@ which is ledgered.
   `%w`-chains to `errorResult` via the Provision arm
   (`go/internal/runner/host.go:184-190` — `fmt.Errorf("materializing agent
   config: %w", err)`). The sentinel is importable there (package `runner`
-  already imports `gateway`, `go/internal/runner/host.go:822`).
-  **Recommendation: INCLUDE** ensureRoot's two paths on the same footing as the
+  already imports `gateway`, `go/internal/runner/host.go:828`).
+  **Ruled: INCLUDE** ensureRoot's two paths on the same footing as the
   socket-dir MkdirAll/Chmod — leaving it out violates the record's own
   classification rule, since ensureRoot is indistinguishable in kind. The
   staging/unpack MkdirAlls (`config_materialize.go:401,407`) stay INTERNAL
-  (bundle-content-driven, murkier). Matt may narrow to socket.go-only with an
-  explicit exclusion rationale + a filed follow-up; the record is written
-  against INCLUDE.
+  (bundle-content-driven, murkier).
