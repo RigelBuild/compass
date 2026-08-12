@@ -156,3 +156,66 @@ func TestBindSessionOnUnwiredListenerIsANoOp(t *testing.T) {
 		t.Fatalf("Comms after binding on an unwired listener = %v, want %v (the socket must still be serving)", code, connect.CodeUnimplemented)
 	}
 }
+
+// TestSendControlReachesTheServedProducer is the deliver-arm twin of the retire
+// assertion: an op handed to SocketListener.SendControl goes IN at the
+// listener's producer and comes OUT of the Gateway's drain over the real
+// socket, so the seam agentHost.Deliver reaches the agent through is wired to
+// the SAME producer the Gateway serves. A listener holding a different producer
+// would deliver nothing here.
+func TestSendControlReachesTheServedProducer(t *testing.T) {
+	path := socketPath(t)
+	l, err := Serve(context.Background(), path, "cont-1",
+		Deps{Sessions: staticSessions{sessionID: testSession, ok: true}})
+	if err != nil {
+		t.Fatalf("Serve = %v, want a live listener", err)
+	}
+	t.Cleanup(func() { _ = l.Close(context.Background()) })
+
+	l.BindSession(testSession)
+
+	// Retain the op before anyone subscribes (the retention contract), so the
+	// drainer's redelivery is the event that unblocks the client — no sleep.
+	if err := l.SendControl(testSession, promptOp("relayed")); err != nil {
+		t.Fatalf("SendControl through the listener = %v, want nil", err)
+	}
+
+	stream, err := agentClient(t, path).Control(t.Context(),
+		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+	if err != nil {
+		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	if !stream.Receive() {
+		t.Fatalf("no op reached the agent over the socket (stream err %v): SendControl did not delegate to the served producer", stream.Err())
+	}
+	if input := stream.Msg().GetPrompt().GetInput(); input != "relayed" {
+		t.Fatalf("op off the socket = %q, want %q", input, "relayed")
+	}
+}
+
+// TestSendControlOnUnwiredListenerErrors pins the nil-producer guard: unlike
+// Bind/Retire (benign no-ops), a SendControl on a listener whose producer was
+// never wired cannot deliver, so it MUST return an error rather than silently
+// drop the op — a swallowed op is a message stuck forever with no signal. The
+// socket is exercised afterwards to prove the error branch left the live
+// listener undisturbed.
+func TestSendControlOnUnwiredListenerErrors(t *testing.T) {
+	path := socketPath(t)
+	l, err := listenAgentSocket(context.Background(), path, stubHandler(t), func() {})
+	if err != nil {
+		t.Fatalf("listenAgentSocket = %v, want a live listener", err)
+	}
+	t.Cleanup(func() { _ = l.Close(context.Background()) })
+
+	if err := l.SendControl(testSession, promptOp("relayed")); err == nil {
+		t.Fatal("SendControl on an unwired listener = nil, want an error (a listener with no producer cannot deliver)")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	if code := connect.CodeOf(callComms(ctx, agentClient(t, path))); code != connect.CodeUnimplemented {
+		t.Fatalf("Comms after a failed SendControl = %v, want %v (the socket must still be serving)", code, connect.CodeUnimplemented)
+	}
+}

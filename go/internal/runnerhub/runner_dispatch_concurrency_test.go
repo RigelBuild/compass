@@ -29,6 +29,7 @@ import (
 	"testing"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/runner"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
@@ -96,6 +97,9 @@ func (f *fakeSessionHost) Stop(context.Context, string) error {
 
 func (f *fakeSessionHost) Remove(context.Context, string) error { return nil }
 func (f *fakeSessionHost) Reload(context.Context, string) error { return nil }
+func (f *fakeSessionHost) Deliver(context.Context, string, *compassv1internal.AgentControl) error {
+	return nil
+}
 
 // RefreshSecrets is the rotation (SecretsVersion-signal) path. Like Provision it
 // can park on a channel so a test can hold a slow rotation in flight and observe

@@ -56,6 +56,11 @@ type fakeSessionHost struct {
 	lastRefreshID string
 	refreshErr    error
 
+	deliverCalls  int
+	lastDeliverID string
+	lastDeliverOp *compassv1internal.AgentControl
+	deliverErr    error
+
 	refreshConfigCalls int
 	refreshConfigErr   error
 	// refreshConfigEntered, when non-nil, receives one value at the START of
@@ -195,6 +200,15 @@ func (f *fakeSessionHost) RefreshConfig(ctx context.Context) error {
 		}
 	}
 	return err
+}
+
+func (f *fakeSessionHost) Deliver(_ context.Context, sessionID string, op *compassv1internal.AgentControl) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deliverCalls++
+	f.lastDeliverID = sessionID
+	f.lastDeliverOp = op
+	return f.deliverErr
 }
 
 // onProvisionCtxDone runs the shutdown-join test's exit-gate protocol: signal
@@ -692,6 +706,72 @@ func TestConfigWorkerExitsOnContextCancel(t *testing.T) {
 	case <-d.configWorkerDone:
 	case <-timeAfter():
 		t.Fatal("config worker did not exit on ctx cancel; goroutine leaked")
+	}
+}
+
+// deliverControlCommand builds a send-only DeliverControl command wrapping a
+// message-deliver control op for sessionID, carrying a request id.
+func deliverControlCommand(id, sessionID, msgID string) *compassv1internal.SessionsResponse {
+	return &compassv1internal.SessionsResponse{
+		RequestId: id,
+		Command: &compassv1internal.SessionsResponse_DeliverControl{
+			DeliverControl: &compassv1internal.DispatchControl{
+				SessionId: sessionID,
+				Op: &compassv1internal.AgentControl{
+					Control: &compassv1internal.AgentControl_Deliver{
+						Deliver: &compassv1internal.DeliverControl{Message: &compassv1.Message{Id: msgID}},
+					},
+				},
+			},
+		},
+	}
+}
+
+// A DeliverControl command routes to host.Deliver with the wrapped session id
+// and op, and on success produces NO result frame — the send-only invariant.
+// Success is confirmed later by the agent's delivery_ack (which advances the
+// Server's durable delivery cursor), so a typed success result here would be
+// read as a refusal and leave the cursor unadvanced. RED check: WITHOUT the
+// DeliverControl arm this command hits execute()'s default and returns the
+// "unrecognized session command variant" INTERNAL error, never reaching
+// host.Deliver.
+func TestExecuteDeliverControlRoutesToHostNoResult(t *testing.T) {
+	host := &fakeSessionHost{}
+	d := newDispatcher(host, discardLoggerRunner())
+	res := d.execute(context.Background(), "req-deliver", deliverControlCommand("req-deliver", "sess-1", "m-1"))
+	if res != nil {
+		t.Fatalf("DeliverControl produced a result frame %+v, want nil (send-only)", res)
+	}
+	if host.deliverCalls != 1 {
+		t.Fatalf("Deliver called %d times, want 1", host.deliverCalls)
+	}
+	if host.lastDeliverID != "sess-1" {
+		t.Fatalf("Deliver got session %q, want sess-1", host.lastDeliverID)
+	}
+	if got := host.lastDeliverOp.GetDeliver().GetMessage().GetId(); got != "m-1" {
+		t.Fatalf("Deliver got message id %q, want m-1 (op relayed intact)", got)
+	}
+}
+
+// A host Deliver failure returns an errorResult carrying the mapped wire code:
+// errSessionUnknown → NOT_FOUND. The Server reads this async refusal on the
+// send-only id and leaves the delivery cursor unadvanced for the D2 sweep.
+func TestExecuteDeliverControlFailureIsErrorResult(t *testing.T) {
+	host := &fakeSessionHost{deliverErr: errSessionUnknown}
+	d := newDispatcher(host, discardLoggerRunner())
+	res := d.execute(context.Background(), "req-deliver", deliverControlCommand("req-deliver", "sess-gone", "m-1"))
+	re := res.GetError()
+	if re == nil {
+		t.Fatal("Deliver failure did not produce an error result")
+	}
+	if re.GetCode() != compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND {
+		t.Fatalf("Deliver failure code = %v, want NOT_FOUND", re.GetCode())
+	}
+	if re.GetMessage() == "" {
+		t.Fatal("Deliver failure carried an empty message")
+	}
+	if res.GetRequestId() != "req-deliver" {
+		t.Fatalf("error result request id = %q, want req-deliver (correlation)", res.GetRequestId())
 	}
 }
 

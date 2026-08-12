@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/runtime"
 )
 
@@ -272,6 +273,19 @@ func (l *SocketListener) RetireSession(sessionID string) {
 		return
 	}
 	l.control.Retire(sessionID)
+}
+
+// SendControl writes a server-relayed control op to the bound session's control
+// producer, the seam the dispatcher's Deliver arm reaches an agent through. A
+// listener whose producer was never wired cannot deliver, so it returns an
+// error rather than silently dropping the op (unlike Bind/Retire, whose absent
+// producer is a benign no-op). Delegation and retention semantics are the
+// producer's: Send queues durably until the agent acks.
+func (l *SocketListener) SendControl(sessionID string, op *compassv1internal.AgentControl) error {
+	if l.control == nil {
+		return errors.New("gateway: socket listener has no control producer wired")
+	}
+	return l.control.Send(sessionID, op)
 }
 
 // Mount describes the socket bind-mount handed to the runtime: the host socket

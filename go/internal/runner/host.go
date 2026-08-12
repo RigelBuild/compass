@@ -19,6 +19,7 @@ import (
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/runner/gateway"
 	"github.com/sealedsecurity/compass/go/internal/runtime"
 )
@@ -560,6 +561,35 @@ func (h *agentHost) Status(_ context.Context, sessionID string) ([]*compassv1.Ag
 		out = append(out, &compassv1.AgentSessionStatus{SessionId: s.sessionID, State: s.state, AgentAccountId: s.agentAccountID})
 	}
 	return out, nil
+}
+
+// Deliver writes a server-relayed control op to sessionID's container socket —
+// the receive arm of the Server's send-only DeliverControl dispatch. It
+// resolves session→container→socket under h.mu, releases, then delegates to the
+// listener's SendControl (whose control producer has its own locking).
+//
+// It deliberately does NOT take the container transition lock: a control-send is
+// not a container transition (Start/Reload/Stop/Remove), so serializing delivers
+// behind those would add latency for no safety gain — the producer is already
+// concurrency-safe. Resolving under h.mu and returning errSessionUnknown when
+// the session is already gone is the guard against a deliver racing a Stop: Stop
+// removes the session from h.sessions (and retires its control state) under
+// h.mu before the socket goes away, so a deliver that observes the session still
+// present resolved a live socket, and one that races past removal returns
+// errSessionUnknown rather than delivering into a retired session.
+func (h *agentHost) Deliver(_ context.Context, sessionID string, op *compassv1internal.AgentControl) error {
+	h.mu.Lock()
+	s, ok := h.sessions[sessionID]
+	if !ok {
+		h.mu.Unlock()
+		return errSessionUnknown
+	}
+	listener, served := h.sockets[s.containerName]
+	h.mu.Unlock()
+	if !served {
+		return errSessionUnknown
+	}
+	return listener.SendControl(sessionID, op)
 }
 
 // RefreshSecrets re-fetches the resolved secret set bound to sessionID and

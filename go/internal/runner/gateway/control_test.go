@@ -10,6 +10,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 )
 
@@ -221,16 +222,17 @@ func TestControlPreservesSendOrder(t *testing.T) {
 	}
 }
 
-// TestControlRejectsEmptyVariants pins the must-not-send rule. The four
-// undefined-payload variants (SteerControl, DeliverControl, TranscriptReplay, ConfigControl) are
-// empty shells on the wire; sending one is a must-not, enforced at the seam
-// with CodeInvalidArgument rather than left for the agent to count as unmapped.
+// TestControlRejectsEmptyVariants pins the must-not-send rule. The three
+// still-undefined-payload variants (SteerControl, TranscriptReplay,
+// ConfigControl) are empty shells on the wire; sending one is a must-not,
+// enforced at the seam with CodeInvalidArgument rather than left for the agent
+// to count as unmapped. DeliverControl is NO LONGER among them — it carries a
+// defined compass.v1.Message, so it is representable and sent (asserted in
+// TestControlSendsDeliver).
 func TestControlRejectsEmptyVariants(t *testing.T) {
 	empties := map[string]*compassv1internal.AgentControl{
 		"steer": {Control: &compassv1internal.AgentControl_Steer{
 			Steer: &compassv1internal.SteerControl{}}},
-		"deliver": {Control: &compassv1internal.AgentControl_Deliver{
-			Deliver: &compassv1internal.DeliverControl{}}},
 		"replay": {Control: &compassv1internal.AgentControl_Replay{
 			Replay: &compassv1internal.TranscriptReplay{}}},
 		"config": {Control: &compassv1internal.AgentControl_Config{
@@ -277,6 +279,34 @@ func TestControlRejectsEmptyVariants(t *testing.T) {
 			_ = stream.recv(t)
 		}
 	})
+}
+
+// TestControlSendsDeliver pins the un-parking: a DeliverControl op carries a
+// defined compass.v1.Message, so it is representable and Send stamps, retains
+// and drains it to the subscription — it must NOT be rejected as an empty
+// variant. Success is the seam accepting it and the op reaching the stream
+// intact; a bug that left Deliver parked would return errEmptyControlVariant.
+func TestControlSendsDeliver(t *testing.T) {
+	p := newTestProducer()
+	stream := newControlStream()
+	stop := p.subscribe(t, stream)
+	defer stop()
+
+	op := &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_Deliver{
+			Deliver: &compassv1internal.DeliverControl{Message: &compassv1.Message{Id: "m-1"}},
+		},
+	}
+	if err := p.Send(testSession, op); err != nil {
+		t.Fatalf("Send(deliver) = %v, want nil (representable)", err)
+	}
+	got := stream.recv(t)
+	if id := got.GetDeliver().GetMessage().GetId(); id != "m-1" {
+		t.Fatalf("delivered message id = %q, want m-1 (op reached the stream intact)", id)
+	}
+	if got.GetControlSeq() == 0 {
+		t.Fatal("delivered op carried no control_seq; Send must stamp it")
+	}
 }
 
 // TestControlTakeoverTransfersUnackedOps pins subscription takeover. A second
