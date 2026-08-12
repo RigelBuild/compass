@@ -425,9 +425,9 @@ enum RunnerErrorCode {
   // permissions/ownership, an occupied socket path) -> Connect
   // FailedPrecondition. Distinguished from INTERNAL so an admin sees a
   // fix-the-deployment signal rather than a Compass bug. Direction:
-  // outbound Runner->Server->admin, distinct from the inbound
-  // Server->Runner CodeFailedPrecondition the Runner treats as a benign
-  // no-secrets / no-config-surface signal (host.go, config_materialize.go).
+  // outbound Runner->Server->admin, distinct from the inbound Server->Runner
+  // CodeFailedPrecondition the Runner treats as a benign no-secrets /
+  // no-config-surface signal (in go/internal/runner: host.go, config_materialize.go).
   RUNNER_ERROR_CODE_FAILED_PRECONDITION = 5;
 }
 
