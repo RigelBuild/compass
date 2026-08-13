@@ -467,7 +467,7 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 		// unadvanced for the D2 reconnect sweep to redeliver (errSessionUnknown
 		// maps to NOT_FOUND via errorResult).
 		if err := d.host.Deliver(ctx, c.DeliverControl.GetSessionId(), c.DeliverControl.GetOp()); err != nil {
-			return errorResult(id, err)
+			return d.errorResult(ctx, id, err)
 		}
 		return nil
 	default:
