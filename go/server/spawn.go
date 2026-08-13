@@ -165,7 +165,6 @@ func (s *service) runSpawn(ctx context.Context, msg *compassv1.SpawnAgentRequest
 
 	startResp, err := s.StartAgentSession(ctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
 		ContainerName: container,
-		InitialPrompt: msg.GetInitialPrompt(),
 	}))
 	if err != nil {
 		return nil, err

@@ -2766,9 +2766,6 @@ type StartAgentSessionRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The launched container's stable name (the server's agent handle).
 	ContainerName string `protobuf:"bytes,1,opt,name=container_name,json=containerName,proto3" json:"container_name,omitempty"`
-	// Optional initial prompt to send once the session is ready. Empty = start
-	// idle, awaiting a later prompt.
-	InitialPrompt string `protobuf:"bytes,2,opt,name=initial_prompt,json=initialPrompt,proto3" json:"initial_prompt,omitempty"`
 	// When set, the session in this container resumes the identified persisted
 	// logical session: the Server (subscriber-authz gated) reconstructs the
 	// stored transcript into a session-JSONL body the Runner materializes into
@@ -2812,13 +2809,6 @@ func (*StartAgentSessionRequest) Descriptor() ([]byte, []int) {
 func (x *StartAgentSessionRequest) GetContainerName() string {
 	if x != nil {
 		return x.ContainerName
-	}
-	return ""
-}
-
-func (x *StartAgentSessionRequest) GetInitialPrompt() string {
-	if x != nil {
-		return x.InitialPrompt
 	}
 	return ""
 }
@@ -2884,9 +2874,6 @@ type SpawnAgentRequest struct {
 	// CommsService). The container is provisioned for, and the session bound to,
 	// this account.
 	AgentAccountId string `protobuf:"bytes,1,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
-	// Optional initial prompt sent once the session is ready. Empty = start idle,
-	// awaiting a later prompt (same contract as StartAgentSessionRequest).
-	InitialPrompt string `protobuf:"bytes,2,opt,name=initial_prompt,json=initialPrompt,proto3" json:"initial_prompt,omitempty"`
 	// End-to-end idempotency key. A retry with the same id returns the same
 	// session_id and provisions no second container: the server threads it across
 	// both the internal Provision and Start so the whole composite dedups, and
@@ -2931,13 +2918,6 @@ func (*SpawnAgentRequest) Descriptor() ([]byte, []int) {
 func (x *SpawnAgentRequest) GetAgentAccountId() string {
 	if x != nil {
 		return x.AgentAccountId
-	}
-	return ""
-}
-
-func (x *SpawnAgentRequest) GetInitialPrompt() string {
-	if x != nil {
-		return x.InitialPrompt
 	}
 	return ""
 }
@@ -4740,18 +4720,16 @@ const file_compass_v1_compass_proto_rawDesc = "" +
 	"\x1bRemoveAgentWorkspaceRequest\x12%\n" +
 	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\x12*\n" +
 	"\x11client_request_id\x18\x02 \x01(\tR\x0fclientRequestId\"\x1e\n" +
-	"\x1cRemoveAgentWorkspaceResponse\"\x94\x01\n" +
+	"\x1cRemoveAgentWorkspaceResponse\"\x83\x01\n" +
 	"\x18StartAgentSessionRequest\x12%\n" +
-	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\x12%\n" +
-	"\x0einitial_prompt\x18\x02 \x01(\tR\rinitialPrompt\x12*\n" +
-	"\x11resume_session_id\x18\x03 \x01(\tR\x0fresumeSessionId\":\n" +
+	"\x0econtainer_name\x18\x01 \x01(\tR\rcontainerName\x12*\n" +
+	"\x11resume_session_id\x18\x03 \x01(\tR\x0fresumeSessionIdJ\x04\b\x02\x10\x03R\x0einitial_prompt\":\n" +
 	"\x19StartAgentSessionResponse\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x01 \x01(\tR\tsessionId\"\x90\x01\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\"\x7f\n" +
 	"\x11SpawnAgentRequest\x12(\n" +
-	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12%\n" +
-	"\x0einitial_prompt\x18\x02 \x01(\tR\rinitialPrompt\x12*\n" +
-	"\x11client_request_id\x18\x03 \x01(\tR\x0fclientRequestId\"Z\n" +
+	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12*\n" +
+	"\x11client_request_id\x18\x03 \x01(\tR\x0fclientRequestIdJ\x04\b\x02\x10\x03R\x0einitial_prompt\"Z\n" +
 	"\x12SpawnAgentResponse\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12%\n" +

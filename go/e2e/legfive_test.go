@@ -72,7 +72,7 @@ func TestLegFivePersistAndResume(t *testing.T) {
 		_ = f.RemoveWorkspace(ctx, container1, "leg5-teardown-1")
 	})
 
-	originalSessionID, err := f.StartSession(ctx, container1, "say the pre-teardown reply and stop")
+	originalSessionID, err := f.StartSession(ctx, container1)
 	if err != nil {
 		t.Fatalf("StartSession (container1): %v", err)
 	}
@@ -105,7 +105,7 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	// Resume the ORIGINAL logical session into the fresh container. Resume MINTS
 	// a NEW live session id for this lifetime (the durable transcript stays keyed
 	// under originalSessionID); resumedSessionID is that minted id.
-	resumedSessionID, err := f.Resume(ctx, container2, originalSessionID, "say the resumed reply and stop")
+	resumedSessionID, err := f.Resume(ctx, container2, originalSessionID)
 	if err != nil {
 		t.Fatalf("Resume (container2): %v", err)
 	}

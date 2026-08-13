@@ -48,13 +48,12 @@ func (f *Fixture) Provision(ctx context.Context, accountID, clientRequestID stri
 }
 
 // StartSession brings the agent in a provisioned container online over
-// CompassService with an initial prompt and returns the server-side session id.
-func (f *Fixture) StartSession(ctx context.Context, containerName, initialPrompt string) (sessionID string, err error) {
+// CompassService and returns the server-side session id.
+func (f *Fixture) StartSession(ctx context.Context, containerName string) (sessionID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	resp, err := f.Compass().StartAgentSession(rctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
 		ContainerName: containerName,
-		InitialPrompt: initialPrompt,
 	}))
 	if err != nil {
 		return "", fmt.Errorf("StartAgentSession RPC: %w", err)
@@ -69,12 +68,11 @@ func (f *Fixture) StartSession(ctx context.Context, containerName, initialPrompt
 // for the resumed lifetime (a NEW id — the durable transcript stays keyed under
 // resumeSessionID). Returns an error rather than panicking so the caller decides
 // fatality; the per-call deadline is threaded from ctx.
-func (f *Fixture) Resume(ctx context.Context, containerName, resumeSessionID, initialPrompt string) (sessionID string, err error) {
+func (f *Fixture) Resume(ctx context.Context, containerName, resumeSessionID string) (sessionID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
 	resp, err := f.Compass().StartAgentSession(rctx, connect.NewRequest(&compassv1.StartAgentSessionRequest{
 		ContainerName:   containerName,
-		InitialPrompt:   initialPrompt,
 		ResumeSessionId: resumeSessionID,
 	}))
 	if err != nil {

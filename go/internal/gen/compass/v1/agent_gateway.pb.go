@@ -592,7 +592,6 @@ type SpawnPeerRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	Handle          string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"` // the new agent's account handle (unique)
 	DisplayName     string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	InitialPrompt   string                 `protobuf:"bytes,3,opt,name=initial_prompt,json=initialPrompt,proto3" json:"initial_prompt,omitempty"`         // threaded to StartAgentSessionRequest.initial_prompt
 	ClientRequestId string                 `protobuf:"bytes,4,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"` // whole-chain idempotency key (handler-level join + Provision dedup)
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
@@ -638,13 +637,6 @@ func (x *SpawnPeerRequest) GetHandle() string {
 func (x *SpawnPeerRequest) GetDisplayName() string {
 	if x != nil {
 		return x.DisplayName
-	}
-	return ""
-}
-
-func (x *SpawnPeerRequest) GetInitialPrompt() string {
-	if x != nil {
-		return x.InitialPrompt
 	}
 	return ""
 }
@@ -2697,12 +2689,11 @@ const file_compass_v1_agent_gateway_proto_rawDesc = "" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x124\n" +
 	"\x05spawn\x18\x02 \x01(\v2\x1c.compass.v1.SpawnPeerRequestH\x00R\x05spawn\x12:\n" +
 	"\adespawn\x18\x03 \x01(\v2\x1e.compass.v1.DespawnPeerRequestH\x00R\adespawnB\x06\n" +
-	"\x04call\"\xa0\x01\n" +
+	"\x04call\"\x8f\x01\n" +
 	"\x10SpawnPeerRequest\x12\x16\n" +
 	"\x06handle\x18\x01 \x01(\tR\x06handle\x12!\n" +
-	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12%\n" +
-	"\x0einitial_prompt\x18\x03 \x01(\tR\rinitialPrompt\x12*\n" +
-	"\x11client_request_id\x18\x04 \x01(\tR\x0fclientRequestId\"\x83\x01\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12*\n" +
+	"\x11client_request_id\x18\x04 \x01(\tR\x0fclientRequestIdJ\x04\b\x03\x10\x04R\x0einitial_prompt\"\x83\x01\n" +
 	"\x11SpawnPeerResponse\x12(\n" +
 	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12%\n" +
 	"\x0econtainer_name\x18\x02 \x01(\tR\rcontainerName\x12\x1d\n" +

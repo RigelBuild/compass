@@ -46,19 +46,18 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	ctx := context.Background() // test root, threaded into NewFixture + every primitive
 
 	// The peer the scripted spawn mints: a unique handle the leg-3 assertions
-	// resolve the fresh account and its container by. The initial prompt keeps
-	// the peer idle (no live-model egress: the peer has no canned backend of its
-	// own; it simply provisions and idles, like the leg-2 primitives path).
+	// resolve the fresh account and its container by. The peer provisions and
+	// idles (no live-model egress: the peer has no canned backend of its own,
+	// like the leg-2 primitives path).
 	const peerHandle = "leg34-peer"
 	const peerDisplayName = "Leg Three-Four Peer"
 	// The spawn tool's arguments, serialized JSON (the OpenAI tool-call
 	// contract). Built from the consts above so the minted handle/display name
 	// cannot drift from what the leg-3 assertions resolve. Field names are the
-	// spawnParameters wire schema (lifecycle.ts:79-93): handle, display_name,
-	// initial_prompt.
+	// spawnParameters wire schema (lifecycle.ts): handle, display_name.
 	spawnArgsJSON := fmt.Sprintf(
-		`{"handle":%q,"display_name":%q,"initial_prompt":%q}`,
-		peerHandle, peerDisplayName, "idle, await instructions",
+		`{"handle":%q,"display_name":%q}`,
+		peerHandle, peerDisplayName,
 	)
 	// The assistant text the closing turn settles on, asserted present in the
 	// spawner's transcript (the same transcript-contains-canned-reply proof as
@@ -111,7 +110,7 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 		_ = f.RemoveWorkspace(ctx, runner.AgentContainerNamePrefix+string(peer.ID), "leg34-peer-teardown")
 	})
 
-	sessionID, err := f.StartSession(ctx, spawnerContainer, "spawn a peer and stand by")
+	sessionID, err := f.StartSession(ctx, spawnerContainer)
 	if err != nil {
 		t.Fatalf("StartSession (spawner): %v", err)
 	}

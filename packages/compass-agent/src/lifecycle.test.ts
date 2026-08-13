@@ -176,7 +176,6 @@ describe("agents_spawn_peer", () => {
 		await exec(t, "tc-42", {
 			handle: "worker-a",
 			display_name: "Worker A",
-			initial_prompt: "do the thing",
 		});
 
 		expect(transport.requests).toHaveLength(1);
@@ -187,7 +186,6 @@ describe("agents_spawn_peer", () => {
 		const spawn = req.call.value;
 		expect(spawn.handle).toBe("worker-a");
 		expect(spawn.displayName).toBe("Worker A");
-		expect(spawn.initialPrompt).toBe("do the thing");
 		expect(spawn.clientRequestId.length).toBeGreaterThan(0);
 		expect(spawn.clientRequestId).toEndWith(":tc-42");
 		expect(spawn.clientRequestId).toBe(broker.idempotencyKey("tc-42"));
@@ -204,7 +202,6 @@ describe("agents_spawn_peer", () => {
 		const req = transport.requests[0];
 		if (req.call.case !== "spawn") throw new Error("expected spawn case");
 		expect(req.call.value.displayName).toBe("");
-		expect(req.call.value.initialPrompt).toBe("");
 	});
 
 	test("renders the spawned peer's server values as a text block", async () => {

@@ -77,7 +77,6 @@ func TestSpawnInheritsCallerOwner(t *testing.T) {
 	resp, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-1",
 		DisplayName:     "Peer One",
-		InitialPrompt:   "go",
 		ClientRequestId: "spawn-1",
 	})
 	if err != nil {
@@ -128,7 +127,6 @@ func TestSpawnSetsParentToCaller(t *testing.T) {
 	resp, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-parent",
 		DisplayName:     "Peer Parent",
-		InitialPrompt:   "go",
 		ClientRequestId: "spawn-parent",
 	})
 	if err != nil {

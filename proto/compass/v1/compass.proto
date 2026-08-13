@@ -586,9 +586,8 @@ message RemoveAgentWorkspaceResponse {}
 message StartAgentSessionRequest {
   // The launched container's stable name (the server's agent handle).
   string container_name = 1;
-  // Optional initial prompt to send once the session is ready. Empty = start
-  // idle, awaiting a later prompt.
-  string initial_prompt = 2;
+  reserved 2;
+  reserved "initial_prompt";
   // When set, the session in this container resumes the identified persisted
   // logical session: the Server (subscriber-authz gated) reconstructs the
   // stored transcript into a session-JSONL body the Runner materializes into
@@ -610,9 +609,8 @@ message SpawnAgentRequest {
   // CommsService). The container is provisioned for, and the session bound to,
   // this account.
   string agent_account_id = 1;
-  // Optional initial prompt sent once the session is ready. Empty = start idle,
-  // awaiting a later prompt (same contract as StartAgentSessionRequest).
-  string initial_prompt = 2;
+  reserved 2;
+  reserved "initial_prompt";
   // End-to-end idempotency key. A retry with the same id returns the same
   // session_id and provisions no second container: the server threads it across
   // both the internal Provision and Start so the whole composite dedups, and

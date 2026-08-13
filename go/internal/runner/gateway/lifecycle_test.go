@@ -61,8 +61,7 @@ func spawnCall() *compassv1internal.LifecycleCallRequest {
 	return &compassv1internal.LifecycleCallRequest{
 		CallId: testCallID,
 		Call: &compassv1internal.LifecycleCallRequest_Spawn{Spawn: &compassv1internal.SpawnPeerRequest{
-			Handle:        "peer-1",
-			InitialPrompt: "go",
+			Handle: "peer-1",
 		}},
 	}
 }

@@ -322,7 +322,6 @@ func (l *lifecycleService) provisionAndStart(
 
 	startResp, err := l.hub.Start(ctx, "", &compassv1.StartAgentSessionRequest{
 		ContainerName: container,
-		InitialPrompt: req.GetInitialPrompt(),
 	})
 	if err != nil {
 		l.rollbackSpawn(ctx, container, "")

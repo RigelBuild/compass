@@ -53,7 +53,7 @@ func TestLegTwoPrimitives(t *testing.T) {
 		_ = f.RemoveWorkspace(ctx, containerName, "leg2-primitives-teardown")
 	})
 
-	sessionID, err := f.StartSession(ctx, containerName, "hello from leg-2 primitives")
+	sessionID, err := f.StartSession(ctx, containerName)
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestLegTwoPrimitives(t *testing.T) {
 }
 
 // TestLegTwoRealTurn is the full leg-2 scenario: CreateAgent -> Provision ->
-// StartSession(initial_prompt) -> AwaitSessionSettled -> assert the session's
+// StartSession -> AwaitSessionSettled -> assert the session's
 // transcript is non-empty. On H2 it was PRESENT-BUT-SKIPPED: the leg-2 turn
 // cannot complete without a deterministic model backend, so on the bare stack
 // AwaitSessionSettled would hang and the transcript stay empty. H3 (SEA-1787)
@@ -105,7 +105,7 @@ func TestLegTwoRealTurn(t *testing.T) {
 		_ = f.RemoveWorkspace(ctx, containerName, "leg2-realturn-teardown")
 	})
 
-	sessionID, err := f.StartSession(ctx, containerName, "say hello and stop")
+	sessionID, err := f.StartSession(ctx, containerName)
 	if err != nil {
 		t.Fatalf("StartSession: %v", err)
 	}

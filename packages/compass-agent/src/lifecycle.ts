@@ -87,9 +87,6 @@ export const spawnParameters = type({
 	"display_name?": type("string").describe(
 		"Human-readable display name for the new peer",
 	),
-	"initial_prompt?": type("string").describe(
-		"Initial prompt to seed the new peer's first turn",
-	),
 });
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
@@ -145,7 +142,7 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 		approval: "write",
 		description:
 			"Spawn a new peer agent owned by your owner. Provide a unique handle; " +
-			"optionally a display name and an initial prompt to seed its first turn.",
+			"optionally a display name.",
 		parameters: spawnParameters,
 		execute: async (toolCallId, params) => {
 			const result = await broker.call(
@@ -156,7 +153,6 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 						value: create(SpawnPeerRequestSchema, {
 							handle: params.handle,
 							displayName: params.display_name ?? "",
-							initialPrompt: params.initial_prompt ?? "",
 							// Idempotency key, so a replayed spawn (an agent-turn/model
 							// retry of the same tool call) dedupes at the lifecycle handler
 							// rather than double-spawning. Broker-scoped, never the bare
