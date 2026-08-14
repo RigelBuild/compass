@@ -5,17 +5,18 @@ the gates a change has to pass, and the pull-request conventions.
 
 ## Development setup
 
-Compass uses [proto](https://moonrepo.dev/proto) for language toolchains and
-[devenv](https://devenv.sh) for everything else. The recommended path uses
-[direnv](https://direnv.net):
+Compass uses [devenv](https://devenv.sh) (nix underneath) for the entire
+toolchain — every language runtime (go, bun, node, moon) plus everything else.
+The recommended path uses [direnv](https://direnv.net):
 
 ```bash
 direnv allow      # loads the devenv shell (toolchain on PATH)
 bun install       # install the workspace JS deps
 ```
 
-Without nix, install proto and let it bootstrap the pinned toolchains (go,
-bun, node, moon) from the repository toolchain config, then `bun install`.
+Without nix, install the pinned toolchain versions (go, bun, node, moon) by
+hand from the pin files under `tools/toolchain/versions/*.nix`, then
+`bun install`.
 
 ## The gate
 

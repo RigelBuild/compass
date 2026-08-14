@@ -6,9 +6,11 @@ skim this too — the conventions are not agent-specific. See
 
 ## Toolchain and the gate
 
-The toolchain is [proto](https://moonrepo.dev/proto) (language toolchains,
-pinned in `.prototools`) plus [devenv](https://devenv.sh)
-(everything else). Enter the dev shell with `direnv allow`, then `bun install`.
+The toolchain is [devenv](https://devenv.sh) (nix underneath): it owns every
+language toolchain (bun, node, moon, go — pinned in
+`tools/toolchain/versions/*.nix`) plus everything else (the contract tooling,
+the Go analysis tools, the linters). Enter the dev shell with `direnv allow`,
+then `bun install`.
 
 `moon run :ci` is the entire gate — build, lint, test, and contract drift across
 the workspace. **Run it and get it green before declaring a change ready.** Use

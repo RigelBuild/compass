@@ -2,9 +2,10 @@
 #
 # moon workspace. One project per package, plus the workspace root. Tasks are
 # *system* tasks — they exec the toolchain that the devenv shell puts on PATH
-# (bun/node/go/moon via proto, buf/biome/the Go battery via nixpkgs) rather than
-# moon managing its own toolchain. That keeps .prototools the single version
-# source and moon's graph/caching layer toolchain-agnostic.
+# (bun/node/go/moon plus buf/biome/the Go battery, all owned by devenv/nix)
+# rather than moon managing its own toolchain. That keeps the nix pin files
+# under tools/toolchain/versions/*.nix the single version source and moon's
+# graph/caching layer toolchain-agnostic.
 
 projects:
   # Workspace root project: owns the single bun dependency install (one root

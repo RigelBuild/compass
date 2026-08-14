@@ -9,9 +9,8 @@
 #
 # Tagged `oss` for the import boundary (may only depend on other oss/ projects),
 # NOT `bun` — it is a Go module. go/gofmt/golangci-lint/govulncheck/go-licenses/
-# nilaway all come from the devenv/CI PATH (proto installs the .prototools Go pin
-# in the dev shell; ci/ci-toolchain.nix vendors Go + the lint + supply-chain
-# binaries into the image).
+# nilaway all come from the devenv/nix dev shell (and CI's nix toolchain step)
+# on PATH.
 layer: 'library'
 language: 'go'
 tags: ['oss']

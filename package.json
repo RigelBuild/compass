@@ -2,7 +2,7 @@
 	"name": "@compass/workspace",
 	"private": true,
 	"type": "module",
-	"description": "Compass workspace root. Coordinates the bun workspace (one root bun.lock + hoisted node_modules) and pins shared dependency versions via the catalog. proto (.prototools) owns the bun/node toolchains; this catalog owns the shared package versions. The overrides are reviewed floors/pins, not floats: @tanstack/virtual-core 3.17.5 is the chat-mode scroll floor the message-surface renderer requires. The codegen plugins are not here — buf and every plugin it invokes come from the pinned nixpkgs (devenv.nix), so the version stamped into each generated header is a store path rather than a lockfile resolution.",
+	"description": "Compass workspace root. Coordinates the bun workspace (one root bun.lock + hoisted node_modules) and pins shared dependency versions via the catalog. devenv/nix owns the bun/node toolchains (pinned in tools/toolchain/versions/*.nix); this catalog owns the shared package versions. The overrides are reviewed floors/pins, not floats: @tanstack/virtual-core 3.17.5 is the chat-mode scroll floor the message-surface renderer requires. The codegen plugins are not here — buf and every plugin it invokes come from the pinned nixpkgs (devenv.nix), so the version stamped into each generated header is a store path rather than a lockfile resolution.",
 	"workspaces": {
 		"packages": [
 			"packages/*",
