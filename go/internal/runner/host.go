@@ -412,10 +412,35 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	// agent that subscribes or acks against a session the lifecycle never bound
 	// (or already retired) is turned away, instead of minting state nothing
 	// would ever reclaim.
-	if listener, served := h.sockets[name]; served {
+	listener, served := h.sockets[name]
+	if served {
 		listener.BindSession(sessionID)
 	}
 	h.mu.Unlock()
+
+	// On a fresh (non-resume) start, lift the agent's replay barrier so the
+	// first idle-deliver that starts the agent's turn is dispatched rather than
+	// refused: the barrier defaults closed and only the arrival of
+	// replay_complete lifts it. A resume start never sends it — the restart
+	// replay path drives the barrier there. Sent after the h.mu release,
+	// mirroring Deliver's resolve-under-lock / send-outside discipline; the
+	// per-container transition lock held across Start guarantees no Stop/Retire
+	// races between the bind above and this send. See
+	// docs/designs/product/compass-system-sender-first-turn/design.md.
+	if served && req.GetResumeSessionId() == "" {
+		op := &compassv1internal.AgentControl{
+			Control: &compassv1internal.AgentControl_ReplayComplete{
+				ReplayComplete: &compassv1internal.ReplayComplete{},
+			},
+		}
+		if err := listener.SendControl(sessionID, op); err != nil {
+			// A served listener always has a wired producer (gateway.Serve wires
+			// it), so this is an unreachable wiring fault in production, not a
+			// reason to fail an already-recorded Start (recorded => success). Log
+			// and continue, matching Start's other degraded-posture logging.
+			h.log.Error("sending fresh-start replay_complete", slog.String("container", name), slog.String("session_id", sessionID), slog.Any("error", err))
+		}
+	}
 	return sessionID, nil
 }
 
