@@ -239,7 +239,7 @@ Grounded in the current file, the complete delta set:
   input's nodes.
 - `devenv.nix`: `inputs` added to the function head (`devenv.nix:1-6` today
   destructures only `pkgs, lib, config`); let-bindings `goPin` (import
-  `versions/go.nix`), `goToolchain` (go-overlay selector, pending OQ2),
+  `versions/go.nix`), `goToolchain` (go-overlay flake selector, OQ2 → A),
   `toolchainTools` (import `tools/toolchain/toolchain-tools.nix`); and the
   packages list re-shaped to a concatenation that keeps the parsed literal
   language-free:
@@ -300,7 +300,7 @@ protobuf/`proto/` schema hits are unrelated and excluded):
 | `tools/toolchain/gate-tools.nix` | — | gains `langs` output |
 | `.moon/workspace.yml:4-7` | "bun/node/go/moon via proto … keeps .prototools the single version source" | reword |
 | `go/go.mod:10-12` | floor-policy comment | re-point at `versions/go.nix` |
-| `go/moon.yml:11-14` | "proto installs the .prototools Go pin" | reword |
+| `go/moon.yml:11-14` | proto clause + stale `ci/ci-toolchain.nix` (orion artifact; no `ci/` dir in compass) | reword whole provenance sentence |
 | `package.json:5` | "proto (.prototools) owns the bun/node toolchains" | reword |
 | `AGENTS.md:9-11` | "The toolchain is proto … plus devenv" | reword |
 | `CONTRIBUTING.md:8-18` | proto install path incl. the no-nix route | reword (no-nix route: install the pinned versions by hand from `versions/*.nix`) |
@@ -362,8 +362,8 @@ detection retain value independent of CI's install path.
    (`tools/toolchain/package.json:6`) and dependency-free ("it must be able
    to run before `bun install` has", `tools/toolchain/package.json:5`).
 7. **One required check.** ci.yml stays one job (`ci.yml:4` "ONE JOB, NOT A
-   MATRIX"); no new jobs. Steps may be replaced or split (OQ3 option A adds
-   one).
+   MATRIX"); no new jobs. Steps may be replaced or split (OQ3 → A adds one
+   step).
 
 ## Plan
 
@@ -414,15 +414,18 @@ bun ahead on PATH fails store-path; a dotted token inside the
 **T5 — ci.yml cutover.** Delete the pins step (`:136-178`), setup-bun/node/go
 (`:180-193`), npm moon (`:195-207`); replace the nix tools step (`:229-245`)
 with the two-phase bootstrap (langs → PATH → `--print-nix-attrs` → env →
-PATH; step shape per OQ3).
+PATH; two separate `run:` steps per OQ3 → A).
 Verify: full CI green on the PR; the parity step's report shows every tool
 verified; no `setup-` action remains in the workflow.
 
 **T6 — docs/comment sweep.** Every remaining fork-5 row: workspace.yml,
 go/go.mod, go/moon.yml, package.json, AGENTS.md, CONTRIBUTING.md, README.md,
-build-and-ci.md, apps/*/moon.yml, forks/oh-my-pi/moon.yml. Verify:
-the fork-5 grep set returns zero live-manager hits outside frozen design
-records; `moon run root:markdownlint` green.
+build-and-ci.md, apps/*/moon.yml, forks/oh-my-pi/moon.yml. The `go/moon.yml`
+reword covers the whole toolchain-provenance sentence (`:11-14`) — drop both
+the proto clause and the stale `ci/ci-toolchain.nix` image clause, which names
+a file/substrate that does not exist in compass. Verify: the fork-5 grep set
+returns zero live-manager hits outside frozen design records; `moon run
+root:markdownlint` green.
 
 ## Tasks
 
@@ -434,8 +437,8 @@ records; `moon run root:markdownlint` green.
   1.3.13, node 24.18.0, moon 2.4.2 (orion `versions/*.nix` as the shape
   reference).
 - [ ] **T2: devenv cutover** *(one landing unit with T4)*
-  Interfaces: consumes T1; edits `devenv.yaml` (go-overlay input, pending
-  OQ2), `devenv.nix` (fork-4 removes + adds; `inputs` in the arg set;
+  Interfaces: consumes T1; edits `devenv.yaml` (go-overlay input, OQ2 → A),
+  `devenv.nix` (fork-4 removes + adds; `inputs` in the arg set;
   packages re-shaped to `(with pkgs; [ … ]) ++ [ …languages ]`), `.envrc`,
   `devenv.lock`. Produces a dev shell whose bun/node/moon/go are nix store
   paths at the pinned versions.
@@ -451,7 +454,8 @@ records; `moon run root:markdownlint` green.
   `])`; `parseProtoTools`, `verifySelfReport`, `extractVersion`, and
   `PROTO_PROBES` deleted; `gate-tools.nix` head becomes `{ attrs ? [ ] }:`
   (today `{ attrs }:` with no default, `gate-tools.nix:25`) with a `langs`
-  output that never consumes `attrs` (go source per OQ2); store-path
+  output that never consumes `attrs` (go via the OQ2 → A overlay route,
+  `pkgs.go-bin.versions.${goPin.version}`); store-path
   verdicts for the language half against `langs`.
 - [ ] **T5: ci.yml cutover**
   Interfaces: consumes T1+T4 (`langs` output, `--print-nix-attrs` unchanged);
@@ -476,48 +480,50 @@ records; `moon run root:markdownlint` green.
    correct without automation. Recommendation: accept manual bumps now;
    revisit if/when compass adopts a renovate config, reusing orion's regex
    managers re-targeted at `tools/toolchain/versions/*.nix`.
-2. **LOAD-BEARING — go derivation single-sourcing (Matt to rule at the
-   design PR).** The dev shell's go and the parity gate's `langs` go MUST be
-   the same derivation: `verifyStorePath` compares the resolved binary
-   against the expected store path (`parity-core.ts:23-25`: "`realpath` of
-   the binary on PATH must be inside the store path that the
+2. **RESOLVED (Matt, design PR #300) — go derivation single-sourcing: A,
+   both sides consume go-overlay.** The dev shell's go and the parity gate's
+   `langs` go MUST be the same derivation: `verifyStorePath` compares the
+   resolved binary against the expected store path (`parity-core.ts:23-25`:
+   "`realpath` of the binary on PATH must be inside the store path that the
    devenv.lock-pinned nixpkgs resolves that attribute to"), so two different
    go derivations make the go verdict fail structurally. A `langs`-side
    vendored-go fallback is therefore NOT contract-invisible or local to T4
    (as an earlier draft claimed): triggering it forces devenv.yaml/devenv.nix
-   (T2) to also drop the go-overlay input and vendor go — a cross-fork
-   change. Options:
-   - **A — both sides consume go-overlay.** devenv.nix via the flake input
-     (fork 2); gate-tools.nix via `fetchTarball` of go-overlay at the
-     devenv.lock-pinned rev + the `versions/go.nix` selector (go-overlay has
-     a root `default.nix` — verified against `purpleclay/go-overlay@main`).
-     Keeps fork 2's decision and orion's shape. Risk: the two consumption
-     routes must demonstrably resolve the same store path, so the combined
-     T2+T4 verify includes the go store-path verdict passing in a fresh
-     shell.
-   - **B — both sides consume a vendored go** from `versions/go.nix` +
-     per-platform hashes, the bun/node/moon shape; the go-overlay input is
-     dropped and fork 2 is reversed. Trivially one derivation, but
-     re-implements the per-release hash maintenance go-overlay exists to
-     carry, and diverges from orion.
-   Recommendation: **A**, with B as the pre-agreed fallback — applied to
-   BOTH consumers in the same change, never to `langs` alone. The invariant
-   either way: dev-shell go and `langs` go are the same derivation, or
-   store-path parity is a false gate.
-3. **LOAD-BEARING — two-phase CI bootstrap step semantics (Matt to rule at
-   the design PR).** `$GITHUB_PATH` affects only *subsequent* steps, never
-   the remainder of the step that writes it — today's nix step depends on
-   exactly this (`ci.yml:245` appends; the separate parity step at
+   (T2) to also drop the go-overlay input and vendor go — a cross-fork change.
+   **Decision — A: both routes read go-overlay** at the devenv.lock-pinned
+   rev, keeping fork 2 and orion's shape. The two routes use *different,
+   asymmetric* selectors against the same upstream — the asymmetry is
+   load-bearing (verified against `purpleclay/go-overlay@main`):
+   - devenv.nix (flake route) selects the flake-only package attribute
+     `inputs.go-overlay.packages.${system}."go_1_26_6"` (fork 2's shape;
+     flake.nix builds these via `versionToPackageName`/`versionedPackages`
+     over `pkgs.go-bin.versions`, dots→underscores).
+   - gate-tools.nix (overlay route, applied to the devenv.lock nixpkgs)
+     selects `pkgs.go-bin.versions.${goPin.version}` (raw version-string key,
+     e.g. `"1.26.6"`). go-overlay's root `default.nix` is an *overlay* that
+     sets only `go-bin`; it does NOT set a top-level `go_1_26_6`, so mirroring
+     the flake selector into the overlay route is a nix eval failure on a
+     nonexistent attribute.
+   Both resolve the same `mkGoToolchain` derivation only when built against the
+   same nixpkgs — secured by `devenv.yaml`'s `inputs.nixpkgs.follows: nixpkgs`
+   plus reading go-overlay at the devenv.lock-pinned rev on both sides; the
+   combined T2+T4 verify includes the go store-path verdict passing in a fresh
+   shell. **Fallback (pre-agreed): B** — both sides vendor go from
+   `versions/go.nix` + per-platform hashes, dropping the go-overlay input and
+   reversing fork 2, applied to BOTH consumers in the same change, never to
+   `langs` alone. The invariant either way: dev-shell go and `langs` go are the
+   same derivation, or store-path parity is a false gate.
+3. **RESOLVED (Matt, design PR #300) — two-phase CI bootstrap step shape: A,
+   two separate `run:` steps.** `$GITHUB_PATH` affects only *subsequent*
+   steps, never the remainder of the step that writes it — today's nix step
+   depends on exactly this (`ci.yml:245` appends; the separate parity step at
    `:247-251` consumes) — so fork 1's phase 2 cannot see phase 1's
-   `$GITHUB_PATH` append if both share one `run:`. Options:
-   - **A — two separate `run:` steps.** Phase 1 builds `langs` and appends
-     `$GITHUB_PATH`; phase 2 is a later step and inherits it. Matches the
-     workflow's existing PATH idiom, gives per-phase timing and log
-     attribution; costs one extra step (allowed — Global Constraint 7 bars
-     new *jobs*, not steps).
-   - **B — one step, in-shell export.** Phase 1 ends with
-     `export PATH="$langs/bin:$PATH"` so phase 2 sees it in the same shell,
-     plus the `$GITHUB_PATH` append for later steps. One step fewer, but
-     PATH is constructed through two mechanisms in one script and a phase-2
-     failure is harder to attribute in the step log.
-   Recommendation: **A**.
+   `$GITHUB_PATH` append if both share one `run:`. **Decision — A: two
+   separate `run:` steps.** Phase 1 builds `langs` and appends `$GITHUB_PATH`;
+   phase 2 is a later step and inherits it. Matches the workflow's existing
+   PATH idiom, gives per-phase timing and log attribution; costs one extra
+   step (allowed — Global Constraint 7 bars new *jobs*, not steps). Rejected
+   **B** (one step, in-shell `export PATH="$langs/bin:$PATH"` plus the
+   `$GITHUB_PATH` append for later steps): one step fewer, but PATH built
+   through two mechanisms in one script and a phase-2 failure is harder to
+   attribute in the step log.
