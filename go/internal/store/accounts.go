@@ -14,6 +14,9 @@ func (s *Store) CreateUser(ctx context.Context, u NewUser) (Account, error) {
 	if u.Handle == "" {
 		return Account{}, fmt.Errorf("%w: user handle is required", ErrInvalidArgument)
 	}
+	if err := validateHandle(u.Handle); err != nil {
+		return Account{}, err
+	}
 
 	id := newID()
 	tx, err := s.pool.Begin(ctx)
@@ -62,6 +65,9 @@ func (s *Store) CreateUser(ctx context.Context, u NewUser) (Account, error) {
 func (s *Store) BootstrapAdmin(ctx context.Context, u NewUser) (Account, error) {
 	if u.Handle == "" {
 		return Account{}, fmt.Errorf("%w: admin handle is required", ErrInvalidArgument)
+	}
+	if err := validateHandle(u.Handle); err != nil {
+		return Account{}, err
 	}
 
 	id := newID()
@@ -131,6 +137,9 @@ func (s *Store) adminByHandle(ctx context.Context, handle string) (Account, erro
 func (s *Store) CreateAgent(ctx context.Context, ownerUserID AccountID, a NewAgent) (Account, error) {
 	if a.Handle == "" {
 		return Account{}, fmt.Errorf("%w: agent handle is required", ErrInvalidArgument)
+	}
+	if err := validateHandle(a.Handle); err != nil {
+		return Account{}, err
 	}
 	if ownerUserID == "" {
 		return Account{}, fmt.Errorf("%w: owner user id is required", ErrInvalidArgument)

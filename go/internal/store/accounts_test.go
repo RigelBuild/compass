@@ -526,3 +526,77 @@ func TestCountRootAgents(t *testing.T) {
 	_, err = s.CountRootAgents(ctx, "")
 	sentinelIs(t, err, ErrInvalidArgument, "CountRootAgents with empty owner id")
 }
+
+// invalidHandles is the reserved/malformed set the T1 guard must reject at every
+// creation path: the system handle `compass`, its uppercase and leading-`@`
+// spoofs, the three reserved broadcast mentions, a leading-space grammar
+// violator, and a zero-width-space confusable that renders as `Compass`.
+var invalidHandles = []string{
+	"compass",
+	"Compass",
+	"@compass",
+	"agents",
+	"everyone",
+	"users",
+	" foo",
+	"Compass\u200b",
+}
+
+// TestCreateUserReservedHandleInvalid pins the T1 guard on CreateUser: every
+// reserved/malformed handle is ErrInvalidArgument and writes no row (the handle
+// resolves to nothing afterward).
+func TestCreateUserReservedHandleInvalid(t *testing.T) {
+	ctx := context.Background()
+	for _, h := range invalidHandles {
+		t.Run(h, func(t *testing.T) {
+			s := newTestStore(t)
+			_, err := s.CreateUser(ctx, NewUser{Handle: h, DisplayName: "x"})
+			sentinelIs(t, err, ErrInvalidArgument, "CreateUser reserved/malformed handle "+h)
+			assertNoAccountRow(t, s, h)
+		})
+	}
+}
+
+// TestBootstrapAdminReservedHandleInvalid pins the T1 guard on BootstrapAdmin.
+func TestBootstrapAdminReservedHandleInvalid(t *testing.T) {
+	ctx := context.Background()
+	for _, h := range invalidHandles {
+		t.Run(h, func(t *testing.T) {
+			s := newTestStore(t)
+			_, err := s.BootstrapAdmin(ctx, NewUser{Handle: h, DisplayName: "x"})
+			sentinelIs(t, err, ErrInvalidArgument, "BootstrapAdmin reserved/malformed handle "+h)
+			assertNoAccountRow(t, s, h)
+		})
+	}
+}
+
+// TestCreateAgentReservedHandleInvalid pins the T1 guard on CreateAgent. A valid
+// owner exists first so the rejection is the handle guard, not the owner check.
+func TestCreateAgentReservedHandleInvalid(t *testing.T) {
+	ctx := context.Background()
+	for _, h := range invalidHandles {
+		t.Run(h, func(t *testing.T) {
+			s := newTestStore(t)
+			owner := mustUser(t, s, "owner")
+			_, err := s.CreateAgent(ctx, owner.ID, NewAgent{Handle: h, DisplayName: "x"})
+			sentinelIs(t, err, ErrInvalidArgument, "CreateAgent reserved/malformed handle "+h)
+			assertNoAccountRow(t, s, h)
+		})
+	}
+}
+
+// assertNoAccountRow fails if any account row exists for handle — the "writes no
+// row" half of the T1 contract, read directly through the pool since a rejected
+// handle has no id-addressed or handle-addressed public read that resolves it.
+func assertNoAccountRow(t *testing.T, s *Store, handle string) {
+	t.Helper()
+	var n int
+	if err := s.pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM accounts WHERE handle = $1", handle,
+	).Scan(&n); err != nil {
+		t.Fatalf("count accounts for handle %q: %v", handle, err)
+	}
+	if n != 0 {
+		t.Fatalf("account row(s) exist for rejected handle %q: got %d, want 0", handle, n)
+	}
+}
