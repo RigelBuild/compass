@@ -23,7 +23,7 @@ no route to the gRPC-Web door — `apps/ui/vite.config.ts:4-6` says so itself:
 proxy arrive with the local-transport work." Second, macOS has no path at
 all: `services.postgres` (devenv.nix:211), `processes` (devenv.nix:218), and
 `tasks` (devenv.nix:346) are all `lib.optionalAttrs pkgs.stdenv.isLinux`, and
-the native desktop shell has no darwin entrypoint (grounded in §A3). Third,
+the native desktop shell has no darwin entrypoint (grounded in §A2c). Third,
 the pre-push gate (`hk.pkl:31-33`, `check = "moon ci"`) runs in jj-vine's
 temp worktree `/tmp/jj-hooks-worktree-*`, which has the tree but no direnv
 activation, so `moon ci` resolves biome/moon/proto from the ambient system
@@ -68,9 +68,11 @@ if (!baseUrl) {
 Crucially, the dev door already carries a permissive wildcard CORS policy
 built expressly for a browser dev server: `devCORS()` sets `AllowedOrigins:
 ["*"]` with the Connect/gRPC-Web headers allowed and the grpc-status
-trailers exposed (go/server/serve.go:639-646), and the door is documented as
-existing "for a browser dev server" (serve.go:65-67; served with that policy
-at serve.go:519-521). An earlier draft of this record motivated a vite proxy
+trailers exposed (`go/server/serve.go:667-676`, `AllowedOrigins` at `:673`),
+and the door is documented as existing "for a browser dev server"
+(serve.go:65-67; the dev server is wrapped with that policy at
+serve.go:585-586, `devCORS().Handler(devMux)`).
+An earlier draft of this record motivated a vite proxy
 with "the browser stays same-origin (no CORS surface on the dev door)" —
 that premise is false: the CORS surface exists today, by design, for this
 exact consumer.
@@ -171,7 +173,8 @@ the guard together.
 
 ### A2 — macOS full setup
 
-Per DECIDED #6: postgres/server/UI run native on macOS; the podman-backed
+Per Matt's 2026-08-14 macOS ruling (native services + runner-loop-in-VM):
+postgres/server/UI run native on macOS; the podman-backed
 runner loop runs against a Linux VM. Three sub-lanes.
 
 **A2a — native services.** `services.postgres`, `compass-server`,
@@ -197,8 +200,9 @@ runner also asserts host facts a mac cannot satisfy: devenv.nix:202-204
 ("Prereqs: a Linux dev box with rootless podman and the uid-1000
 subuid/subgid ranges configured"), and `go/cmd/compass-runner/main.go:89-97`
 verifies podman ≥ 4.3 userns-remap support at startup. So the whole runner
-process runs INSIDE the VM — exactly DECIDED #6's "reuse the existing
-Linux-native loop unchanged; the VM is the new moving part" — and composes
+process runs INSIDE the VM — per Matt's 2026-08-14 macOS ruling ("reuse the
+existing Linux-native loop unchanged; the VM is the new moving part") — and
+composes
 with the runner's own posture: "Runners are remote by design, so this dials
 the authenticated TLS door" (devenv.nix:302-304). Shape:
 
@@ -281,11 +285,14 @@ lifecycle.go:1, preflight_adapters.go:1) — and are semantically Linux-bound:
 `compass-stack`; both are meaningless on a mac where podman lives in a VM
 (A2b). So the darwin build realistically ships **client-mode-only
 initially; embedded mode on darwin is deferred** until the VM runner-loop
-lane (A2b) can carry it. Flag for Matt: this grazes DL-109's mode-selection
-default ("Defaults to $COMPASS_APP_MODE, then app.toml, then embedded",
-main.go:57-59 — an embedded default would be broken-by-default on darwin);
-if that counts as a product-visible mode change he should rule on it,
-otherwise it stands as this documented initial-posture note.
+lane (A2b) can carry it. This is an initial-posture note, not a product
+decision: DL-109's mode default ("Defaults to $COMPASS_APP_MODE, then
+app.toml, then embedded", main.go:57-59) governs the shipped binary's
+behavior with no explicit mode; darwin having no embedded mode yet is a
+platform-capability gap, reversible once the VM lane lands, not a change to
+the product default (Matt ruled 2026-08-14: not product-visible). T6's
+interface commits the build contract: mode resolution on darwin must not fall
+through to the embedded default.
 
 The darwin lane is build-tag surgery plus a new entrypoint (T6):
 
@@ -403,7 +410,8 @@ Direct-dial per §A1 (decided): a one-line env wire —
 `VITE_COMPASS_BASE_URL = "http://127.0.0.1:${toString
 config.processes.compass-server.ports.devhttp.value}"` injected on the
 `compass-ui` process (lands with T3's process definition). The dev door's
-wildcard CORS (go/server/serve.go:639-646) already admits the vite origin;
+  wildcard CORS (`go/server/serve.go:667-676`, `AllowedOrigins:["*"]` at
+  `:673`; served at `serve.go:585-586`) already admits the vite origin;
 no vite.config.ts proxy — the only vite.config.ts edit is updating the
 stale header comment (vite.config.ts:4-6: the transport route now exists).
 (The §A1 proxy shape stays documented as the prod-parity alternative; T1
@@ -420,6 +428,11 @@ carries no proxy work.)
   readiness check uses, devenv.nix:288-294), and a browser session loads
   the board and holds a live `SubscribeEvents` stream (the browser dials
   the door directly; no middlebox in the path).
+
+  T1 is independently verifiable before T3's `devenv up` process exists: its
+  deliverable is the validated env value proven via the standalone `moon run
+  compass-ui:dev` task (`apps/ui/moon.yml:11-12`, exists today); T3 is that
+  value's placement into the `devenv up` process definition.
 
 ### T2 — UI streaming e2e smoke against the dev door  (owner: compass-repo)
 
@@ -579,6 +592,25 @@ zireael/jj-hp lane. No behavioral change in this repo.
 - [ ] T6 — darwin Wails entrypoint (`darwin && shell` opt-in) + welded-trio
       retag + shared `shell.go` + `compass-go:app` moon task (compass-app)
 - [ ] T7 — hk.pkl hazard/workaround/zireael-pointer comment (compass-repo)
+
+## Alternatives considered
+
+The two losing arms are treated inline where the decision is made; collected
+here for the canonical audit surface.
+
+- **Vite dev-proxy instead of direct-dial** (losing arm of the browser→dev-door
+  route, §A1 `:78-136`). Weighed for prod-parity (the browser stays
+  same-origin, mirroring a reverse-proxied production deploy) against a
+  middlebox in the streaming path (a vite proxy buffering/!flushing a long-
+  lived `SubscribeEvents` stream is a real failure class). Rejected for local
+  dev: the dev door already serves permissive wildcard CORS built for exactly
+  this consumer (`serve.go:667-676`), so direct-dial has no CORS cost, and
+  removing the middlebox removes the streaming-buffering risk. The proxy shape
+  stays documented in §A1 as the prod-parity reference.
+- **colima instead of podman machine** for the macOS runner VM (losing arm of
+  OQ1). Rejected: the runner execs `podman` directly, and podman machine is
+  the first-party path with matching containers-storage semantics; colima adds
+  a docker-compat layer this loop does not need. Full treatment in OQ1.
 
 ## Open Questions
 
