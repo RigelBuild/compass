@@ -34,7 +34,7 @@ func TestProvisionRelaySurfacesOperatorFaultAsFailedPrecondition(t *testing.T) {
 	// the socket diagnostic followed by the appended gateway.ErrOperatorConfig
 	// sentinel text. The Runner is simulated here, so the wire carries only the
 	// string — the gateway package is deliberately not imported.
-	const diag = "serving agent socket for container \"cont-op\": agent socket path \"/very/long/path\" is over the AF_UNIX limit: operator-fault runner configuration"
+	const diag = "serving agent socket for container \"cont-op\": agent socket path \"/run/compass/containers/cont-op/agent.sock\" is 120 bytes, over the 108-byte AF_UNIX limit: shorten the Runner's --runtime-dir or the agent account id: operator-fault runner configuration"
 
 	router.attach(func(cmd *compassv1internal.SessionsResponse) error {
 		go router.complete(&compassv1internal.SessionsRequest{
