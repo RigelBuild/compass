@@ -3,44 +3,32 @@
 // half of the gate is unit-testable (parity-core.test.ts) and the executable
 // shell (parity.ts) stays thin.
 //
-// THE ASYMMETRY THIS FILE EXISTS TO HANDLE. The dev toolchain is pinned in two
-// places with two different shapes:
+// THE METHOD THIS FILE IMPLEMENTS. Every dev toolchain — the language runtimes
+// (bun/node/moon/go) and everything else (buf, protoc, the Go battery, the
+// linters) — resolves to a nix derivation, so one uniform verdict covers them
+// all:
 //
-//   .prototools  — bun/node/moon/go, each a literal version string. The pin IS
-//                  the text, so the check is: does the binary CI actually put on
-//                  PATH report that exact version?
-//   devenv.nix   — buf, protoc, the Go battery, the linters: bare nixpkgs
-//                  attribute names with NO version literal anywhere in the repo.
-//                  Their versions are whatever the nixpkgs revision pinned in
-//                  devenv.lock resolves to. Two of them (go-licenses, nilaway)
-//                  do not implement a version flag at all, so "run it and parse
-//                  the version" cannot be the check for that half.
+//   store-path — `realpath` of the binary on PATH must be inside the store path
+//                that the devenv.lock-pinned nix derivation resolves to. This
+//                identifies the exact derivation, not a coincidence of version
+//                numbers, and it is the only method that works for the tools
+//                (go-licenses, nilaway) that implement no version flag at all.
+//                An ambient runtime shadowing the pinned one resolves outside
+//                the expected store path and fails.
 //
-// So the two halves get two different, and in each case exact, verdicts:
+// The two halves differ only in where the expected store path comes from: the
+// nixpkgs attrs are parsed out of devenv.nix's `packages = (with pkgs; [ … ])`
+// literal and resolved through gate-tools.nix's `identity`; the language
+// toolchains are the closed set gate-tools.nix's `langs` output builds. Both
+// are checked by the identical containment test below.
 //
-//   self-report — the .prototools half. Runtime's own reported version must
-//                 equal the literal in .prototools.
-//   store-path  — the devenv.nix half. `realpath` of the binary on PATH must be
-//                 inside the store path that the devenv.lock-pinned nixpkgs
-//                 resolves that attribute to. This is STRICTLY STRONGER than a
-//                 version-string match (it identifies the exact derivation, not
-//                 a coincidence of version numbers), it is uniform across the
-//                 whole half, and it is the only method that works for the two
-//                 tools that cannot report a version.
-//
-// A tool that fits neither method is NOT skipped — `verdict()` returns
-// `unverifiable`, which the caller treats as a failure. Silently omitting a tool
-// it could not check is the precise failure mode this gate exists to prevent: a
-// green that proves nothing.
-
-/** A version pin read from `.prototools`: a tool name and its literal version. */
-export interface ProtoPin {
-	readonly tool: string;
-	readonly version: string;
-}
+// A tool that cannot be checked is NOT skipped — the verdict is `unverifiable`,
+// which the caller treats as a failure. Silently omitting a tool it could not
+// check is the precise failure mode this gate exists to prevent: a green that
+// proves nothing.
 
 /** How a tool's identity was established. */
-export type CheckMethod = "self-report" | "store-path";
+export type CheckMethod = "store-path";
 
 /** One tool's parity result. */
 export type Verdict =
@@ -64,32 +52,14 @@ export type Verdict =
 	  };
 
 /**
- * Parse `.prototools` into its version pins.
+ * Extract the nixpkgs attribute names from devenv.nix's
+ * `packages = (with pkgs; [ … ]) ++ [ … ]` list.
  *
- * The format is a TOML subset: `name = "version"` lines, `#` comments, blanks.
- * Parsing it directly (rather than pulling a TOML dependency) keeps the gate
- * dependency-free — it must run before `bun install` has necessarily happened.
- * Only bare top-level keys are pins; a `[section]` header ends the top-level
- * table, and anything inside one is configuration, not a toolchain pin.
- */
-export function parseProtoTools(source: string): ProtoPin[] {
-	const pins: ProtoPin[] = [];
-	for (const raw of source.split("\n")) {
-		const line = raw.trim();
-		if (line === "" || line.startsWith("#")) continue;
-		// A table header ends the top-level pin table; nothing after it is a pin.
-		if (line.startsWith("[")) break;
-		const match = /^([A-Za-z0-9_-]+)\s*=\s*"([^"]+)"/.exec(line);
-		if (match?.[1] !== undefined && match[2] !== undefined) {
-			pins.push({ tool: match[1], version: match[2] });
-		}
-	}
-	return pins;
-}
-
-/**
- * Extract the nixpkgs attribute names from devenv.nix's `packages = with pkgs; [
- * … ];` list.
+ * Only the parenthesised `with pkgs; [ … ]` half is parsed — the bare nixpkgs
+ * attributes. The appended `++ [ … ]` list holds the language toolchains as
+ * dotted references (`toolchainTools.bun`, `goToolchain`), which are NOT bare
+ * attribute names; they are covered by the store-path `langs` verdict instead
+ * and must never reach this parser (a dotted token THROWS, see below).
  *
  * Reading the list rather than hand-copying it is what makes the gate cover the
  * dev shell as it actually is: adding a tool to devenv.nix extends the gate with
@@ -117,10 +87,10 @@ export function parseProtoTools(source: string): ProtoPin[] {
  * which is the failure this function exists to prevent.
  */
 export function parseDevenvPackages(source: string): string[] {
-	const open = source.indexOf("packages = with pkgs; [");
+	const open = source.indexOf("packages = (with pkgs; [");
 	if (open === -1) return [];
 	const start = source.indexOf("[", open) + 1;
-	const end = source.indexOf("];", start);
+	const end = source.indexOf("])", start);
 	if (end === -1) return [];
 	const body = source
 		.slice(start, end)
@@ -148,57 +118,15 @@ export function parseDevenvPackages(source: string): string[] {
 }
 
 /**
- * Pull a version out of a tool's `--version` output.
- *
- * Every runtime in the .prototools half decorates its version differently
- * (`1.3.13`, `v24.18.0`, `moon 2.4.2`, `go version go1.26.5 linux/amd64`), so
- * match the first dotted numeric run and drop a `v`/`go` prefix rather than
- * carrying a per-tool parser. Returns null when the output contains no version,
- * which the caller must surface as `unverifiable` — never as a pass.
- */
-export function extractVersion(output: string): string | null {
-	const match = /(?:^|[^0-9A-Za-z.])(?:v|go)?(\d+\.\d+(?:\.\d+)?)/.exec(output);
-	return match?.[1] ?? null;
-}
-
-/**
- * Verify a `.prototools`-pinned runtime: what it reports must equal the literal.
- *
- * `expected` comes from the file, `probeOutput` from running the binary that is
- * actually on PATH — so this catches a `setup-*` action resolving something
- * other than the pin, a stale tool cache, and a shim shadowed by a host install,
- * none of which reading the file alone would ever notice.
- */
-export function verifySelfReport(
-	tool: string,
-	expected: string,
-	probeOutput: string | null,
-): Verdict {
-	if (probeOutput === null) {
-		return { kind: "unverifiable", tool, reason: "not on PATH" };
-	}
-	const actual = extractVersion(probeOutput);
-	if (actual === null) {
-		return {
-			kind: "unverifiable",
-			tool,
-			reason: `no version in output: ${probeOutput.trim().split("\n")[0] ?? ""}`,
-		};
-	}
-	return actual === expected
-		? { kind: "match", tool, method: "self-report", actual }
-		: { kind: "mismatch", tool, method: "self-report", expected, actual };
-}
-
-/**
- * Verify a nixpkgs-provided tool: the resolved binary must live inside the store
- * path the devenv.lock-pinned nixpkgs builds that attribute to.
+ * Verify a nix-provided tool: the resolved binary must live inside the store
+ * path the devenv.lock-pinned derivation builds it to.
  *
  * `expectedStorePath` is that derivation's outPath; `resolvedBinary` is
  * `realpath` of what PATH resolves. Containment (not equality) because the
- * binary is `<outPath>/bin/<name>`. This is the whole devenv.nix half's method,
- * including the two tools that implement no version flag — their derivation
- * identity is checkable even though their self-report is not.
+ * binary is `<outPath>/bin/<name>`. This is the gate's whole method — it works
+ * uniformly for the language toolchains, the codegen tools, and the two tools
+ * (go-licenses, nilaway) that implement no version flag, since it checks
+ * derivation identity rather than a self-reported version string.
  */
 export function verifyStorePath(
 	tool: string,

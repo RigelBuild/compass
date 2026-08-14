@@ -1,8 +1,19 @@
 # devenv inputs. Rolling nixpkgs is devenv's recommended channel for dev
-# shells (newer than a release channel, curated for devenv). It is the only
-# input this shell needs: the toolchain is nixpkgs derivations plus the
-# proto-managed runtimes (.prototools), with no container image, no Rust
-# toolchain, and no secrets provider to source.
+# shells (newer than a release channel, curated for devenv). The toolchain is
+# nixpkgs derivations (buf, the codegen plugins, the Go gate battery, the
+# linters) plus the language runtimes — bun/node/moon vendored as nix
+# derivations from tools/toolchain/versions/*.nix and go from the go-overlay
+# input below. There is no container image, no Rust toolchain, and no secrets
+# provider to source.
 inputs:
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/rolling
+  # go-overlay builds the exact go pin (tools/toolchain/versions/go.nix) for the
+  # dev shell. The single Go-toolchain source, selected by version in devenv.nix
+  # and — via the same input at this pinned rev — by the parity gate
+  # (tools/toolchain/gate-tools.nix), so both resolve the identical derivation.
+  go-overlay:
+    url: github:purpleclay/go-overlay
+    inputs:
+      nixpkgs:
+        follows: nixpkgs

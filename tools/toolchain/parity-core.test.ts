@@ -8,12 +8,9 @@
 
 import { describe, expect, test } from "bun:test";
 import {
-	extractVersion,
 	parseDevenvPackages,
-	parseProtoTools,
 	renderReport,
 	type Verdict,
-	verifySelfReport,
 	verifyStorePath,
 } from "./parity-core.ts";
 
@@ -52,51 +49,23 @@ describe("the Postgres image pin", () => {
 	});
 });
 
-describe("parseProtoTools", () => {
-	test("reads every pin from the real .prototools shape", () => {
-		const pins = parseProtoTools(
-			[
-				"# Language/runtime toolchains, pinned per the proto/devenv split.",
-				"#",
-				'bun = "1.3.13"',
-				'node = "24.18.0"',
-				"# moon is pinned HERE rather than taken from nixpkgs.",
-				'moon = "2.4.2"',
-				"",
-				'go = "1.26.5"',
-			].join("\n"),
-		);
-		expect(pins).toEqual([
-			{ tool: "bun", version: "1.3.13" },
-			{ tool: "node", version: "24.18.0" },
-			{ tool: "moon", version: "2.4.2" },
-			{ tool: "go", version: "1.26.5" },
-		]);
-	});
-
-	test("stops at a table header, so section settings are never read as pins", () => {
-		const pins = parseProtoTools(
-			['bun = "1.3.13"', "", "[settings]", 'auto-install = "true"'].join("\n"),
-		);
-		expect(pins).toEqual([{ tool: "bun", version: "1.3.13" }]);
-	});
-
-	test("yields nothing for a file with no pins, so the caller can refuse a vacuous pass", () => {
-		expect(parseProtoTools("# only a comment\n\n")).toEqual([]);
-	});
-});
-
 describe("parseDevenvPackages", () => {
+	// The concatenated shape: the parsed nixpkgs half is a
+	// `(with pkgs; [ … ])` literal, and the language toolchains are appended
+	// OUTSIDE it as an `++ [ … ]` list of dotted references.
 	const devenv = [
 		"{",
-		"  packages = with pkgs; [",
-		"    # Language/runtime manager. Pins bun/node/moon/go via .prototools.",
-		"    proto",
-		"",
+		"  packages = (with pkgs; [",
 		"    # buf drives the pipeline; protobuf supplies protoc.",
 		"    buf",
 		"    protobuf # protoc",
 		"    protoc-gen-go",
+		"  ])",
+		"  ++ [",
+		"    toolchainTools.bun",
+		"    toolchainTools.node",
+		"    toolchainTools.moon",
+		"    goToolchain",
 		"  ];",
 		"",
 		"  enterShell = ''",
@@ -105,9 +74,8 @@ describe("parseDevenvPackages", () => {
 		"}",
 	].join("\n");
 
-	test("reads the attribute list", () => {
+	test("reads the nixpkgs attribute list", () => {
 		expect(parseDevenvPackages(devenv)).toEqual([
-			"proto",
 			"buf",
 			"protobuf",
 			"protoc-gen-go",
@@ -119,11 +87,24 @@ describe("parseDevenvPackages", () => {
 		// constantly; treating a mention as an entry would make the gate demand
 		// tools the shell does not provide.
 		expect(parseDevenvPackages(devenv)).not.toContain("protoc");
-		expect(parseDevenvPackages(devenv)).not.toContain("bun");
 	});
 
-	test("stops at the closing bracket, so nothing after the list leaks in", () => {
+	test("stops at the `])` closing the nixpkgs half, so nothing after leaks in", () => {
 		expect(parseDevenvPackages(devenv)).not.toContain("enterShell");
+	});
+
+	// The appended `++ [ … ]` language list is covered by the store-path `langs`
+	// verdict alone; it must NEVER reach this parser. Its dotted references would
+	// each throw (see the throw cases below), so a shape that let them leak in
+	// would fail loudly rather than silently — but the contract is that the
+	// parser stops at the `])` before them.
+	test("never parses the appended language toolchain list", () => {
+		const attrs = parseDevenvPackages(devenv);
+		expect(attrs).not.toContain("toolchainTools");
+		expect(attrs).not.toContain("goToolchain");
+		// And it certainly did not throw on the dotted `toolchainTools.bun`
+		// tokens, because they sit outside the `(with pkgs; [ … ])` half.
+		expect(attrs).toEqual(["buf", "protobuf", "protoc-gen-go"]);
 	});
 
 	test("yields nothing when the block is absent, so the caller can refuse a vacuous pass", () => {
@@ -140,19 +121,24 @@ describe("parseDevenvPackages", () => {
 	// individually rather than folded into one representative case.
 	test.each([
 		["a dotted attribute path", "nodePackages.prettier"],
+		// A dotted language reference INSIDE the parsed literal is exactly the
+		// mistake this shape guards against: the toolchains must be appended outside
+		// the `(with pkgs; [ … ])` half, never within it.
+		["a dotted language reference", "toolchainTools.bun"],
 		["a parenthesised call", "(python3.withPackages (ps: [ps.requests]))"],
 		// Nix interpolation syntax in a plain string is the fixture — deliberately
 		// NOT a JS template literal, which is what makes it unparseable to the gate.
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: see above
 		["an interpolation", "${myTool}"],
 		["a quoted string", '"weird"'],
-	])("throws on %s rather than silently dropping it", (_label, entry) => {
+	])("throws on %s inside the literal rather than silently dropping it", (_label, entry) => {
 		const source = [
 			"{",
-			"  packages = with pkgs; [",
+			"  packages = (with pkgs; [",
 			"    buf",
 			`    ${entry}`,
-			"  ];",
+			"  ])",
+			"  ++ [ goToolchain ];",
 			"}",
 		].join("\n");
 		expect(() => parseDevenvPackages(source)).toThrow(
@@ -165,62 +151,14 @@ describe("parseDevenvPackages", () => {
 		// keep parsing, or the gate refuses everything and covers nothing.
 		const source = [
 			"{",
-			"  packages = with pkgs; [",
+			"  packages = (with pkgs; [",
 			"    buf",
 			"    protobuf",
-			"  ];",
+			"  ])",
+			"  ++ [ goToolchain ];",
 			"}",
 		].join("\n");
 		expect(parseDevenvPackages(source)).toEqual(["buf", "protobuf"]);
-	});
-});
-
-describe("extractVersion", () => {
-	test.each([
-		["1.3.13", "1.3.13"],
-		["v24.18.0", "24.18.0"],
-		["moon 2.4.2", "2.4.2"],
-		["go version go1.26.5 linux/amd64", "1.26.5"],
-		["markdownlint-cli2 v0.22.1 (markdownlint v0.40.0)", "0.22.1"],
-	])("parses %p", (output, expected) => {
-		expect(extractVersion(output)).toBe(expected);
-	});
-
-	test("returns null when there is no version to find", () => {
-		expect(
-			extractVersion("flag provided but not defined: -version"),
-		).toBeNull();
-	});
-});
-
-describe("verifySelfReport", () => {
-	test("matches when the runtime reports the pinned version", () => {
-		expect(verifySelfReport("bun", "1.3.13", "1.3.13\n")).toEqual({
-			kind: "match",
-			tool: "bun",
-			method: "self-report",
-			actual: "1.3.13",
-		});
-	});
-
-	test("fails on a skew — the gate's whole reason to exist", () => {
-		expect(verifySelfReport("bun", "1.3.13", "1.3.14\n")).toEqual({
-			kind: "mismatch",
-			tool: "bun",
-			method: "self-report",
-			expected: "1.3.13",
-			actual: "1.3.14",
-		});
-	});
-
-	test("an absent tool is unverifiable, not a pass", () => {
-		expect(verifySelfReport("moon", "2.4.2", null).kind).toBe("unverifiable");
-	});
-
-	test("unparseable output is unverifiable, not a pass", () => {
-		expect(verifySelfReport("go", "1.26.5", "command failed").kind).toBe(
-			"unverifiable",
-		);
 	});
 });
 
@@ -275,7 +213,7 @@ describe("renderReport", () => {
 	const ok: Verdict = {
 		kind: "match",
 		tool: "bun",
-		method: "self-report",
+		method: "store-path",
 		actual: "1.3.13",
 	};
 
@@ -289,7 +227,7 @@ describe("renderReport", () => {
 			{
 				kind: "mismatch",
 				tool: "moon",
-				method: "self-report",
+				method: "store-path",
 				expected: "2.4.2",
 				actual: "2.4.5",
 			},
@@ -318,7 +256,6 @@ describe("renderReport", () => {
 			},
 		]).table;
 		expect(table).toContain("bun");
-		expect(table).toContain("self-report");
 		expect(table).toContain("nilaway");
 		expect(table).toContain("store-path");
 	});
