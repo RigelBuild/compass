@@ -2,9 +2,9 @@
 #
 # This is a *runtime* toolchain for a coding agent, not a build image: it needs
 # Nix and a shell, not the project's compile-time dependency closure. What it
-# does share with the rest of the repo is the `.prototools` bun version, which is
-# read here and asserted against nixpkgs' bun rather than re-pinned — see `bun`
-# below.
+# does share with the rest of the repo is the pinned bun version: this image
+# consumes the exact vendored bun derivation the dev shell and CI gate build
+# (tools/toolchain/toolchain-tools.nix) rather than re-pinning — see `bun` below.
 #
 # What the agent needs in-image, and why each is here rather than assumed:
 #
@@ -34,26 +34,15 @@
 #     at the first `nix` substitution with an opaque TLS error.
 {
   pkgs,
-  lib,
   compassAgent,
 }:
 let
-  # The repo's pinned bun version. This image takes bun from nixpkgs rather than
-  # vendoring the upstream release tarball, which would mean carrying per-arch
-  # hashes for an image whose only bun caller is the `compass-agent` entrypoint,
-  # ordinary TypeScript with no version floor. But "close enough" is not a pin:
-  # reading the pin and asserting on it turns a silent drift into a build failure
-  # naming both versions, so a nixpkgs roll that moves bun off the repo's version
-  # cannot ship unnoticed.
-  protoTools = builtins.fromTOML (builtins.readFile ../.prototools);
-
-  bun =
-    assert lib.assertMsg (pkgs.bun.version == protoTools.bun) ''
-      agent image bun (nixpkgs ${pkgs.bun.version}) has drifted from the
-      .prototools pin (${protoTools.bun}). Either pin nixpkgs' bun to the
-      .prototools version, or vendor that release directly.
-    '';
-    pkgs.bun;
+  # The repo's pinned bun. This image consumes the exact vendored bun derivation
+  # built from tools/toolchain/versions/bun.nix — the same one the dev shell and
+  # the CI toolchain gate import from tools/toolchain/toolchain-tools.nix — so
+  # the image cannot drift from the repo's pin: it IS the pin, byte for byte,
+  # not a nixpkgs bun that merely happens to match.
+  bun = (import ../tools/toolchain/toolchain-tools.nix { inherit pkgs; }).bun;
 
   # Single-user Nix: in-container Nix is set up for the agent uid, with `/nix`
   # owned by the agent user. Each setting below is load-bearing:

@@ -62,9 +62,10 @@ on:
       - bun.lock
       # A fix to this lane itself must republish.
       - .github/workflows/publish-agent-image.yml
-      # NOTE: .prototools is deliberately EXCLUDED — a bun-pin move there can
-      # only fail the toolchain.nix assert, never silently change the output, so
-      # it needs no publish trigger.
+      # The bun pin the image's toolchain.nix consumes: the vendored bun
+      # derivation is built from versions/bun.nix, so a pin move there changes
+      # the published artifact and must trigger a republish.
+      - tools/toolchain/versions/bun.nix
   workflow_dispatch:
 
 # Least privilege: read the tree, write the GHCR package, nothing else.
