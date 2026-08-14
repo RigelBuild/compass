@@ -10,4 +10,4 @@ moon = "2.4.2"
 # dev shell installs it via `proto install` (enterShell). Floor policy: the `go`
 # directive in go/go.mod tracks this pin minus at most one minor, so an upstream
 # security patch never blocks on a mod edit.
-go = "1.26.5"
+go = "1.26.6"
