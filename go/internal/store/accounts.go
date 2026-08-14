@@ -319,6 +319,34 @@ func (s *Store) CountRootAgents(ctx context.Context, ownerUserID AccountID) (int
 	return n, nil
 }
 
+// EnsureChannelMember idempotently adds account to channelID as an UNSUBSCRIBED
+// member (subscribed=FALSE), mirroring the coordination-hook insert
+// (coordination.go:273-282) but as a single-statement pool write, not in a tx:
+// there is no delivery cursor to seed alongside it. It backs the first-launch
+// Setup post (T4), which must make @compass a member of the supervisor's home
+// channel BEFORE posting — PostMessage D9-gates the post on membership
+// (messages.go, requireChannelMember). It is deliberately NOT UpdateChannelMembers:
+// that path D9-gates on the ACTOR already being a member (a chicken-and-egg for
+// this seed insert, which runs server-internal with no naturally-authorized
+// actor) and fires membership events + owner-transitive add logic the seed does
+// not want. NO delivery cursor is seeded: @compass is a system account with no
+// agent_accounts row, and cursors are agent-only (delivery_cursors.go); it posts,
+// never receives. ON CONFLICT DO NOTHING makes a re-fire a no-op. An unknown
+// channel or account is ErrInvalidArgument (the FK violation), never a store fault.
+func (s *Store) EnsureChannelMember(ctx context.Context, channelID ChannelID, accountID AccountID) error {
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, FALSE) `+
+			`ON CONFLICT (channel_id, account_id) DO NOTHING`,
+		string(channelID), string(accountID),
+	); err != nil {
+		if pgErrIs(err, pgForeignKeyViolation) {
+			return fmt.Errorf("%w: unknown channel %q or account %q", ErrInvalidArgument, channelID, accountID)
+		}
+		return fmt.Errorf("store: ensure channel member: %w", err)
+	}
+	return nil
+}
+
 // GetAccount returns one account by id, or ErrNotFound if it does not exist.
 // GetAccount is an id-addressed fetch used internally by other store methods
 // and the auth layer; caller-facing visibility scoping is applied by

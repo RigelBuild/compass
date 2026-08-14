@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	_ "embed"
 	"errors"
 	"log/slog"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/comms"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
@@ -34,6 +36,26 @@ const seedClientRequestID = "compass-root-supervisor-seed"
 // seedTimeout bounds the whole seed (CreateAgent + Provision + Start) so a wedged
 // Runner cannot hang the enroll-hook goroutine forever.
 const seedTimeout = 2 * time.Minute
+
+// setupThreadClientRequestIDPrefix + "-" + supervisorAccountID is the effective
+// idempotency key the Setup post runs under. SUPERVISOR-SCOPED, not a single
+// global fixed key (OQ-7): the idempotency index is (author, client_request_id)
+// global per author, and the author is @compass forever — so a global key would
+// silently suppress the Setup post for a RECREATED root supervisor (operator
+// deletes it, the empty-tree gate re-seeds a NEW one), leaving the recreated
+// Manager with no first turn. A supervisor-scoped key is immune and costs nothing.
+const setupThreadClientRequestIDPrefix = "compass-root-supervisor-setup"
+
+// setupTopicName is the topic the Setup thread is posted into, get-or-created by
+// name in the supervisor's home channel.
+const setupTopicName = "Setup"
+
+// setupThreadBody is the platform's first-turn Setup message, posted as @compass
+// into the root supervisor's home channel to give the Manager its first turn.
+// OQ-5: the copy is a placeholder pending Matt's product sign-off at the PR.
+//
+//go:embed setup_thread.md
+var setupThreadBody string
 
 // seedRootSupervisor brings up the root Manager "supervisor" on first launch: on
 // an empty agent tree it creates one root agent under the bootstrap admin, then
@@ -63,7 +85,7 @@ const seedTimeout = 2 * time.Minute
 //
 // A failure is logged, not fatal: the server stays up and the next Runner
 // reconnect re-fires the seed.
-func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, adminID store.AccountID, log *slog.Logger) {
+func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *comms.Comms, adminID, compassID store.AccountID, log *slog.Logger) {
 	ctx, cancel := context.WithTimeout(ctx, seedTimeout)
 	defer cancel()
 
@@ -105,7 +127,11 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, admi
 		ClientRequestId: seedClientRequestID,
 	})); err != nil {
 		if connect.CodeOf(err) == connect.CodeAlreadyExists {
-			// Already live (reject-on-live) — the supervisor is up; nothing to do.
+			// Already live (reject-on-live) — the supervisor is up. Still post the
+			// Setup thread: on a re-fire for a supervisor that came up on a prior
+			// boot, this arm is the ONLY path that reaches the post, and the
+			// supervisor-scoped idempotency key makes a repeat post a no-op.
+			postSetupThread(ctx, cm, st, compassID, supervisor, log)
 			return
 		}
 		log.Error("root-supervisor seed: starting supervisor failed; will retry on next enroll",
@@ -118,6 +144,40 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, admi
 	// against the Runner on a memo join (see the memo caveat above), so this
 	// reports the seed drove to completion, not an independently verified session.
 	log.Info("root-supervisor seed: root Manager seed completed", "agent_account_id", supervisor.ID, "handle", rootSupervisorHandle)
+
+	// Give the Manager its first turn: post the Setup thread as @compass into its
+	// home channel. A post failure is logged, not fatal (matching the seed's own
+	// posture); the next ready-hook re-fire retries it.
+	postSetupThread(ctx, cm, st, compassID, supervisor, log)
+}
+
+// postSetupThread posts the platform's Setup thread as @compass into the
+// supervisor's home channel, giving the seeded root Manager its first turn. It
+// first makes @compass an (unsubscribed) member of that channel — PostMessage
+// D9-gates the post on membership, so a post before membership collapses to
+// CodeNotFound — then posts under a supervisor-scoped idempotency key, so a
+// re-fire (or the reject-on-live arm) is deduped to the one Setup message.
+//
+// Both steps are non-fatal: an error is logged and the seed continues. The next
+// ready-hook re-fire retries. compassID is the reserved system sender; it never
+// receives (no delivery cursor is seeded), it only authors this post.
+func postSetupThread(ctx context.Context, cm *comms.Comms, st *store.Store, compassID store.AccountID, supervisor store.Account, log *slog.Logger) {
+	homeChannelID := supervisor.Agent.HomeChannelID
+	if err := st.EnsureChannelMember(ctx, homeChannelID, compassID); err != nil {
+		log.Error("root-supervisor seed: making @compass a member of the supervisor home channel failed; skipping Setup post",
+			"agent_account_id", supervisor.ID, "channel_id", homeChannelID, "err", err)
+		return
+	}
+	if _, err := cm.PostAsAccount(ctx, compassID, &compassv1.PostMessageRequest{
+		Container:       &compassv1.PostMessageRequest_ChannelId{ChannelId: string(homeChannelID)},
+		Topic:           &compassv1.PostMessageRequest_TopicName{TopicName: setupTopicName},
+		Blocks:          []*compassv1.MessageBlock{{Block: &compassv1.MessageBlock_Text{Text: setupThreadBody}}},
+		ClientRequestId: setupThreadClientRequestIDPrefix + "-" + string(supervisor.ID),
+	}); err != nil {
+		log.Error("root-supervisor seed: posting the Setup thread failed; will retry on next enroll",
+			"agent_account_id", supervisor.ID, "channel_id", homeChannelID, "err", err)
+		return
+	}
 }
 
 // createRootSupervisor creates the root supervisor agent, but only on an EMPTY
