@@ -438,7 +438,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			// it), so this is an unreachable wiring fault in production, not a
 			// reason to fail an already-recorded Start (recorded => success). Log
 			// and continue, matching Start's other degraded-posture logging.
-			h.log.Error("sending fresh-start replay_complete", "container", name, "session", sessionID, "err", err)
+			h.log.Error("sending fresh-start replay_complete", slog.String("container", name), slog.String("session_id", sessionID), slog.Any("error", err))
 		}
 	}
 	return sessionID, nil

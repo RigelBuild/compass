@@ -348,7 +348,9 @@ func TestFreshStartSendsReplayCompleteFirst(t *testing.T) {
 		t.Fatalf("Deliver sentinel = %v", err)
 	}
 
-	stream, err := dialAgent(t, listenerPath(t, h, name)).Control(t.Context(),
+	subCtx, cancel := context.WithTimeout(ctx, testTimeout)
+	defer cancel()
+	stream, err := dialAgent(t, listenerPath(t, h, name)).Control(subCtx,
 		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
 	if err != nil {
 		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
@@ -401,7 +403,9 @@ func TestResumeStartSendsNoReplayComplete(t *testing.T) {
 		t.Fatalf("Deliver sentinel = %v", err)
 	}
 
-	stream, err := dialAgent(t, listenerPath(t, h, name)).Control(t.Context(),
+	subCtx, cancel := context.WithTimeout(ctx, testTimeout)
+	defer cancel()
+	stream, err := dialAgent(t, listenerPath(t, h, name)).Control(subCtx,
 		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
 	if err != nil {
 		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
