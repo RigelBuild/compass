@@ -314,3 +314,107 @@ func TestE2EInFlightCallForceClosedAtTeardown(t *testing.T) {
 		t.Fatalf("host teardown must remove the agent socket: Lstat = %v", err)
 	}
 }
+
+// TestFreshStartSendsReplayCompleteFirst — a fresh (non-resume) Start lifts the
+// agent's replay barrier by sending replay_complete as the FIRST control op, so
+// the first idle-deliver that starts the agent's turn is dispatched rather than
+// refused. Event-gated with no clock: the producer retains ops until acked, so a
+// sentinel prompt enqueued via Deliver AFTER Start sits behind the Start-sent
+// replay_complete; a subscriber attaching later reads them in order. Contract:
+// the first op is replay_complete and ordinary ops follow it. Mutation that
+// reddens it: dropping the fresh-start SendControl in host.Start (the first op
+// would then be the sentinel, GetReplayComplete() == nil).
+func TestFreshStartSendsReplayCompleteFirst(t *testing.T) {
+	fake := &recordingRelay{}
+	h := newTransportFixture(t, fake)
+	ctx := context.Background()
+
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name}, "")
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { _ = h.Stop(context.Background(), sessionID) })
+
+	sentinel := &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_Prompt{
+			Prompt: &compassv1internal.PromptControl{Input: "after-barrier"},
+		},
+	}
+	if err := h.Deliver(ctx, sessionID, sentinel); err != nil {
+		t.Fatalf("Deliver sentinel = %v", err)
+	}
+
+	stream, err := dialAgent(t, listenerPath(t, h, name)).Control(t.Context(),
+		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+	if err != nil {
+		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	if !stream.Receive() {
+		t.Fatalf("no first op reached the agent (stream err %v): fresh Start did not send replay_complete", stream.Err())
+	}
+	if stream.Msg().GetReplayComplete() == nil {
+		t.Fatalf("first op = %v, want replay_complete first on a fresh start", stream.Msg())
+	}
+	if !stream.Receive() {
+		t.Fatalf("no second op reached the agent (stream err %v): sentinel did not follow replay_complete", stream.Err())
+	}
+	if input := stream.Msg().GetPrompt().GetInput(); input != "after-barrier" {
+		t.Fatalf("second op input = %q, want the sentinel %q (ordinary ops follow the barrier lift)", input, "after-barrier")
+	}
+}
+
+// TestResumeStartSendsNoReplayComplete — a resume Start (non-empty
+// resume_session_id) NEVER sends replay_complete: the restart replay path drives
+// the barrier there, so the lifecycle must not double-lift it. Same clockless
+// event-gate as the fresh case: a sentinel prompt enqueued after Start is the
+// only retained op, so the first op the subscriber reads is the sentinel.
+// Contract: the first op is the ordinary sentinel, not replay_complete. Mutation
+// that reddens it: sending replay_complete on resume (dropping the
+// resume-session-id guard in host.Start) would put replay_complete first.
+func TestResumeStartSendsNoReplayComplete(t *testing.T) {
+	fake := &recordingRelay{}
+	h := newTransportFixture(t, fake)
+	ctx := context.Background()
+
+	name, err := h.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"})
+	if err != nil {
+		t.Fatalf("Provision = %v", err)
+	}
+	sessionID, err := h.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: name, ResumeSessionId: "resume-1"}, "some transcript body")
+	if err != nil {
+		t.Fatalf("Start = %v", err)
+	}
+	t.Cleanup(func() { _ = h.Stop(context.Background(), sessionID) })
+
+	sentinel := &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_Prompt{
+			Prompt: &compassv1internal.PromptControl{Input: "after-barrier"},
+		},
+	}
+	if err := h.Deliver(ctx, sessionID, sentinel); err != nil {
+		t.Fatalf("Deliver sentinel = %v", err)
+	}
+
+	stream, err := dialAgent(t, listenerPath(t, h, name)).Control(t.Context(),
+		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
+	if err != nil {
+		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	if !stream.Receive() {
+		t.Fatalf("no op reached the agent (stream err %v): sentinel was not delivered", stream.Err())
+	}
+	if stream.Msg().GetReplayComplete() != nil {
+		t.Fatal("resume Start sent replay_complete; want none (the restart replay path drives the barrier)")
+	}
+	if input := stream.Msg().GetPrompt().GetInput(); input != "after-barrier" {
+		t.Fatalf("first op input = %q, want the sentinel %q first on a resume start", input, "after-barrier")
+	}
+}
