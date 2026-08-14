@@ -551,8 +551,10 @@ contract: bound-method calls + `"compass_rpc:"+requestId` runtime events
   auto-connect probe (that reconciles the earlier draft's contradiction): the
   single auto-connect probe is the UI's boot-time `shellConnect("")`
   (Approach step 2, T5.5), so a slow/unreachable remote never wedges launch.
-  Mode is exposed to the UI via a bound `Mode()` getter (beside `AccountID`,
-  `bridge_service.go:84-86`) so boot picks env-provider vs native-client path.
+  The launch mode is handed to the UI as a shell-injected startup global
+  (`window.__COMPASS_MODE__`, set at window creation — OQ-8) that the UI reads
+  synchronously at entry to pick env-provider vs native-client path, so boot
+  needs no IPC round-trip to learn its mode.
 - **Interfaces:**
   - consumes T5.1/T5.2/T5.3, `appconfig.Load` (`appconfig.go:158`),
     `launchByMode` (`embedded.go:97-105`).
@@ -564,11 +566,12 @@ contract: bound-method calls + `"compass_rpc:"+requestId` runtime events
     and a `runClient(cfg, deps) (*bridgeService, err error)` that wires the TLS
     target + tokenstore + prober and leaves `accountID` empty (client identity
     is UI-resolved, OQ-7). `run()` switches on `cfg.Mode` and only the embedded
-    arm touches `resolveStackBin`/the quit controller. Plus:
-
-    ```go
-    func (s *bridgeService) Mode(_ context.Context) string // "embedded" | "client"
-    ```
+    arm touches `resolveStackBin`/the quit controller. Plus: inject
+    `window.__COMPASS_MODE__` (`"embedded" | "client"`) into the webview at
+    window creation (the `application.WebviewWindowOptions` in `run()`,
+    `main.go:142-147`), the boot-dispatch signal the UI reads with no IPC
+    (OQ-8). No bound `Mode()` IPC getter: the injected global is the single
+    source of truth for the mode.
 
 - **Test cycle:** replace `embedded_test.go`'s `launchByMode` rows with the two
   split paths: `runClient` no longer errors, invokes no pipeline/stack-bin
@@ -613,20 +616,20 @@ contract: bound-method calls + `"compass_rpc:"+requestId` runtime events
   tests incl. token-not-retained.
 - [ ] **T5.6** Client-mode launch wiring: TLS target instead of UDS,
   `resolveStackBin`/quit-controller moved embedded-only, boot-driven
-  auto-connect (no pre-window probe), `Mode()` binding; split
-  `runEmbedded`/`runClient` dispatch tests.
+  auto-connect (no pre-window probe), `window.__COMPASS_MODE__` injected at
+  window creation (no `Mode()` IPC getter); split `runEmbedded`/`runClient`
+  dispatch tests.
 - [ ] **T5.7** e2e gate script vs `compass-server --listen` (token accepted /
   wrong token / version mismatch / restart-survives-keychain /
   no-secret-in-config-or-cmdline); manual QA + headless CI variant.
 
 ## Open Questions
 
-OQ-1/OQ-5/OQ-7 resolved by Matt's ruling before freeze (the genuine forks — a
-new third-party dep, a cross-lane zone edit, an A-vs-B with a viable
-alternative); OQ-2/OQ-3/OQ-4/OQ-6 by the adopted recommendation, each confirmed
-sound by the design red-team. OQ-8 (entry-point mode dispatch) is PARKED for
-Matt with a recommendation — surfaced by the design review, a genuine UI-zone
-A-vs-B. Kept here as the decision record.
+OQ-1/OQ-5/OQ-7/OQ-8 resolved by Matt's ruling before freeze (the genuine forks
+— a new third-party dep, a cross-lane zone edit, and two A-vs-B boot/identity
+choices with viable alternatives; OQ-8 was surfaced by the design review);
+OQ-2/OQ-3/OQ-4/OQ-6 by the adopted recommendation, each confirmed sound by the
+design red-team. Kept here as the decision record.
 
 - **OQ-1 — Keychain API under Wails v3. RESOLVED (Matt): `zalando/go-keyring`.**
   Wails v3 (beta, `github.com/wailsapp/wails/v3 v3.0.0-beta.0`, `go/go.mod:29`)
@@ -704,23 +707,27 @@ A-vs-B. Kept here as the decision record.
   the cost of that mode-branch, staleness window, and concurrency hazard.
   *(affects T5.3 accountID handling, T5.4 binding surface, T5.5 boot path)*
 - **OQ-8 — Entry-point mode dispatch: how boot picks env-provider vs
-  native-client BEFORE it can call `Mode()`.** T5.6 exposes a bound `Mode()`
-  getter, but reading it is itself an IPC call only available inside the Wails
-  shell, and `index.tsx:32` today unconditionally boots
-  `envConnectionProvider` (`provider.ts:36-44`). So the entry point needs a
-  shell-presence detection that runs with NO IPC — to decide whether to call
-  `Mode()` at all — before either boot path starts. **Recommendation: detect
-  the injected Wails runtime** (`@wailsio/runtime` present / its global on
-  `window`) synchronously at entry: present → call `Mode()`, then dispatch to
-  `bootNativeClient` (client) or the embedded native provider; absent → the
-  unchanged `bootConnection(envConnectionProvider)` browser-dev path. This
-  mirrors the existing mode-seam discipline (`provider.ts:1-14`: the mode
-  difference is confined to which provider boot installs) and the existing
-  runtime-presence sniff (`store.ts:706` keys off `import.meta.env?.DEV`).
-  Parked for Matt because the detection primitive lands in the UI entry point
-  (compass-ui's zone) and is a genuine A-vs-B (runtime sniff vs a Vite build
-  flag vs a shell-injected global). *(affects the T5.6 `Mode()` wiring and the
-  T5.4/T5.5 UI boot entry)*
+  native-client BEFORE it can call a Go getter. RESOLVED (Matt): a
+  shell-injected startup global.** `index.tsx:32` today unconditionally boots
+  `envConnectionProvider` (`provider.ts:36-44`), and any Go-side getter is an
+  IPC call only available inside the Wails shell — so the entry point needs a
+  mode signal it can read synchronously, with NO IPC, before either boot path
+  starts. **The shell injects the mode as a startup global**
+  (`window.__COMPASS_MODE__ = "embedded" | "client"`) at window creation (the
+  `application.WebviewWindowOptions` in `run()`, `main.go:142-147`); the UI
+  reads it synchronously at entry: `"client"` → `bootNativeClient`; `"embedded"`
+  → the embedded native provider; absent (browser dev build, no shell) → the
+  unchanged `bootConnection(envConnectionProvider)` path. The mode difference
+  stays confined to which provider boot installs (`provider.ts:1-14`). The
+  rejected alternatives were a synchronous `@wailsio/runtime`-presence sniff
+  (implicit — infers mode from runtime presence rather than an explicit signal)
+  and a Vite build flag (splits the bundle by target and adds a build-config
+  surface the shell must set correctly); the injected global is the most
+  explicit shell→UI contract and needs no runtime inference. **Consequence for
+  T5.6:** this REPLACES the previously-planned bound `Mode()` IPC getter, whose
+  only purpose was boot dispatch — the record carries the injected global, not
+  the getter, so there is one source of truth for the mode. *(affects the T5.6
+  launch wiring and the T5.4/T5.5 UI boot entry)*
 
 ## Ledger-impact
 
