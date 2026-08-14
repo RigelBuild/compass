@@ -218,7 +218,7 @@ Client-mode flow:
    (`index.tsx:32-47` `bootConnection` → `main` → `bootCaller`), with ONLY the
    native provider substituted for `envConnectionProvider`. The caller id is
    resolved UNIFORMLY by the existing `bootCaller(root, () =>
-   resolveCaller(clients.compass))` path (`index.tsx:66`) — the same WhoAmI
+   resolveCaller(clients.compass))` path (`index.tsx:64`) — the same WhoAmI
    round-trip both modes already run, now tunneled over the IPC fetch with the
    shell-injected bearer. This keeps the mode difference confined to the boot
    provider choice (§A1's one sanctioned divergence, no second mode-conditional
@@ -286,7 +286,11 @@ residual (never a silent fallthrough).
 
 Dependency order: T5.1 → T5.2 → T5.3 → (T5.4 ∥ T5.5) → T5.6 → T5.7. T5.1/T5.2/
 T5.3 are Go-shell slices; T5.4/T5.5 are UI slices; T5.6 wires launch; T5.7 is
-the gate.
+the gate. The `T5.4 ∥ T5.5` parallelism is against a STUBBED seam: T5.5 is
+developed against a stubbed `shellConnect`/`nativeConnectionProvider` and
+integrates T5.4's real outputs at its gate (T5.5 *consumes* them — see its
+Interfaces block), so the two UI slices are concurrently developable but
+T5.5's gate depends on T5.4's outputs landing.
 
 ### T5.1 — Remote TLS bridge target
 
@@ -423,8 +427,9 @@ Extends `bridgeService` (`go/cmd/compass-app/bridge_service.go`).
 
 **Cross-lane: needs compass-ui coordination (decided, OQ-5).**
 `apps/ui/src/daemon-transport.ts`, `apps/ui/src/components/MarkdownText.tsx`,
-and `apps/ui/package.json` are the compass-ui lane's zone; this task edits all
-three, so it MUST be coordinated with (and ack'd by) the compass-ui lane before
+`apps/ui/src/components/MarkdownText.test.tsx`, and `apps/ui/package.json` are
+the compass-ui lane's zone; this task edits all four, so it MUST be coordinated
+with (and ack'd by) the compass-ui lane before
 it starts. Parent §A2 anticipates the `ShellIpc` swap
 (`compass-native-app/design.md:127-130` — "swaps only the two framework calls
 (`invoke`, `Channel`, today Tauri-shaped in the UI) for the Wails runtime
@@ -460,9 +465,13 @@ contract: bound-method calls + `"compass_rpc:"+requestId` runtime events
   today, pre-existing from T4). Swap it for the Wails runtime's
   browser-open call (`@wailsio/runtime` `Browser.OpenURL`), keeping the
   browser-dev-build path (a plain anchor / `window.open`) intact behind the
-  same seam. Remove BOTH `@tauri-apps/*` entries from `package.json`. The T5.7
-  gate's "board renders" is extended to assert a rendered-markdown external
-  link actually opens, so a silently-broken opener cannot pass.
+  same seam. In `package.json`: remove BOTH `@tauri-apps/*` entries AND ADD
+  `@wailsio/runtime` (pinned) to `dependencies` — the runtime this task's
+  binding (`Call.ByName`/`Events.On`/`Browser.OpenURL`) imports, not currently
+  a UI dep. (Flagged as a new JS dep at review, mirroring the go-keyring
+  Ledger-impact call-out.) The T5.7 gate's "board renders" is extended to
+  assert a rendered-markdown external link actually opens, so a
+  silently-broken opener cannot pass.
 - **Interfaces:**
   - consumes `ShellIpc`/`createDaemonFetch` (`daemon-transport.ts:32,66`),
     `ConnectionProvider`/`ResolvedConnection` (`provider.ts:22-30`), the Wails
@@ -481,7 +490,15 @@ contract: bound-method calls + `"compass_rpc:"+requestId` runtime events
   fake-the-seam style as `FakeShellIpc`, `daemon-transport.test.ts:42`):
   frame ordering, unsubscribe-on-terminal, cancel forwarding; provider test
   asserting `resolve()` yields `token === undefined` and a defined
-  `fetchImpl`.
+  `fetchImpl`. **Plus:** rewrite `MarkdownText.test.tsx`'s link-safety suite,
+  which today couples to the removed dep (`import * as realOpener from
+  "@tauri-apps/plugin-opener"` at line 3; `mock.module("@tauri-apps/plugin-opener",
+  …)` at lines 429/434/472/499) — remock the new Wails `Browser.OpenURL` seam
+  instead, PRESERVING every `javascript:`/`file:`/`data:` scheme-neutralization
+  assertion (a dangerous href must never reach the opener) and the
+  safe-`https:`-still-opens assertion. Removing the Tauri opener without this
+  rewrite breaks the suite's module mocks; the suite must not be deleted or
+  skipped to green CI (that would drop live-href injection coverage).
 
 ### T5.5 — Connect screen as a boot gate (UI)
 
@@ -500,7 +517,7 @@ contract: bound-method calls + `"compass_rpc:"+requestId` runtime events
   existing boot chain (`index.tsx:32-47`): resolve via
   `nativeConnectionProvider`, and resolve the caller id UNIFORMLY through the
   existing `bootCaller(root, () => resolveCaller(clients.compass))` path
-  (`index.tsx:66`) — no mode-conditional, no `shellAccountID` seeding (OQ-7).
+  (`index.tsx:64`) — no mode-conditional, no `shellAccountID` seeding (OQ-7).
   The token input's value is cleared after the call; nothing stores it
   UI-side.
 - **Interfaces:**
@@ -604,18 +621,24 @@ contract: bound-method calls + `"compass_rpc:"+requestId` runtime events
 
 ## Open Questions
 
-All resolved before freeze: OQ-1/OQ-5/OQ-7 by Matt's ruling (the genuine
-forks — a new third-party dep, a cross-lane zone edit, an A-vs-B with a viable
+OQ-1/OQ-5/OQ-7 resolved by Matt's ruling before freeze (the genuine forks — a
+new third-party dep, a cross-lane zone edit, an A-vs-B with a viable
 alternative); OQ-2/OQ-3/OQ-4/OQ-6 by the adopted recommendation, each confirmed
-sound by the design red-team. Kept here as the decision record.
+sound by the design red-team. OQ-8 (entry-point mode dispatch) is PARKED for
+Matt with a recommendation — surfaced by the design review, a genuine UI-zone
+A-vs-B. Kept here as the decision record.
 
 - **OQ-1 — Keychain API under Wails v3. RESOLVED (Matt): `zalando/go-keyring`.**
   Wails v3 (beta, `github.com/wailsapp/wails/v3 v3.0.0-beta.0`, `go/go.mod:29`)
   ships no keychain service. The existing `secretspec-go` dep (`go.mod:21`,
   v0.15.0) does NOT fit: its Go SDK is resolve-only (`New()` →
-  `WithProvider/WithProfile` → `Load()/Report()`, `secretspec.go:158-183,245`),
-  with no `Set`/`Write` primitive — writing a value into a provider is a CLI
-  action, not an SDK one — and it is a SERVER-side manifest-driven
+  `WithProvider/WithProfile` → `Load()/Report()`), with no `Set`/`Write`
+  primitive — writing a value into a provider is a CLI action, not an SDK one.
+  This is grounded in-repo by the seal-side wrapper of that same SDK:
+  `go/internal/secrets/resolver.go:80-81` documents `WithCLI` as pinning "the
+  secretspec CLI binary used for the write path", and `resolver.go`'s resolve
+  path uses only `b.WithProvider`/`b.WithProfile`/`b.Load()` (`resolver.go:162-164`),
+  never a `Set`. And it is a SERVER-side manifest-driven
   resolve-a-declared-set surface (DL-026, `internal/secrets`), the wrong layer
   for a client-side single-token write. So T5 takes a direct keyring dep:
   `zalando/go-keyring` (pure-Go, no CGO), which wraps the same OS backends
@@ -669,7 +692,7 @@ sound by the design red-team. Kept here as the decision record.
   seeding. RESOLVED (Matt): uniform `resolveCaller` over the IPC fetch.** After
   a successful `Connect`, run the existing
   `bootCaller(root, () => resolveCaller(clients.compass))` path
-  (`index.tsx:66`) in BOTH modes, tunneled over the IPC fetch with the
+  (`index.tsx:64`) in BOTH modes, tunneled over the IPC fetch with the
   shell-injected bearer. Costs one extra WhoAmI round-trip at boot; in return
   there is no second mode-conditional above the transport seam (§A1's one
   sanctioned divergence is the provider choice; the parent forbids another
@@ -680,6 +703,24 @@ sound by the design red-team. Kept here as the decision record.
   (seed `bootCaller` from a Go-side `shellAccountID()`) saved the round-trip at
   the cost of that mode-branch, staleness window, and concurrency hazard.
   *(affects T5.3 accountID handling, T5.4 binding surface, T5.5 boot path)*
+- **OQ-8 — Entry-point mode dispatch: how boot picks env-provider vs
+  native-client BEFORE it can call `Mode()`.** T5.6 exposes a bound `Mode()`
+  getter, but reading it is itself an IPC call only available inside the Wails
+  shell, and `index.tsx:32` today unconditionally boots
+  `envConnectionProvider` (`provider.ts:36-44`). So the entry point needs a
+  shell-presence detection that runs with NO IPC — to decide whether to call
+  `Mode()` at all — before either boot path starts. **Recommendation: detect
+  the injected Wails runtime** (`@wailsio/runtime` present / its global on
+  `window`) synchronously at entry: present → call `Mode()`, then dispatch to
+  `bootNativeClient` (client) or the embedded native provider; absent → the
+  unchanged `bootConnection(envConnectionProvider)` browser-dev path. This
+  mirrors the existing mode-seam discipline (`provider.ts:1-14`: the mode
+  difference is confined to which provider boot installs) and the existing
+  runtime-presence sniff (`store.ts:706` keys off `import.meta.env?.DEV`).
+  Parked for Matt because the detection primitive lands in the UI entry point
+  (compass-ui's zone) and is a genuine A-vs-B (runtime sniff vs a Vite build
+  flag vs a shell-injected global). *(affects the T5.6 `Mode()` wiring and the
+  T5.4/T5.5 UI boot entry)*
 
 ## Ledger-impact
 
