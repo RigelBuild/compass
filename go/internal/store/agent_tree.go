@@ -14,10 +14,12 @@ import (
 const agentTreeProjection = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
+		       sy.account_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
-		JOIN agent_accounts ag ON ag.account_id = a.id`
+		JOIN agent_accounts ag ON ag.account_id = a.id
+		LEFT JOIN system_accounts sy ON sy.account_id = a.id`
 
 // queryAgents runs an agent-tree query built from agentTreeProjection and scans
 // every row through scanAccount, so all three reads share one row-handling path.

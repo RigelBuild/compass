@@ -102,19 +102,33 @@ type Subject struct {
 	ID string
 }
 
-// Account is a communication-layer account: a human user or an owned agent
-// (comms.proto:107-118). Exactly one of User / Agent is non-nil, mirroring the
-// wire `kind` oneof; the accessor helpers below make the discriminant explicit
-// at call sites.
+// Account is a communication-layer account: a human user, an owned agent, or the
+// reserved system sender (comms.proto:107-118). Exactly one of User / Agent /
+// System is non-nil, mirroring the wire `kind` oneof; the accessor helpers below
+// make the discriminant explicit at call sites.
 type Account struct {
 	ID          AccountID
 	Handle      string
 	DisplayName string
-	// User is set for a human account, nil for an agent.
+	// User is set for a human account, nil otherwise.
 	User *UserAccount
-	// Agent is set for an agent account, nil for a human.
+	// Agent is set for an agent account, nil otherwise.
 	Agent *AgentAccount
+	// System is set for the reserved system account (@compass), nil otherwise.
+	System *SystemAccount
 }
+
+// SystemAccountHandle is the reserved handle of the platform system sender,
+// seeded by EnsureSystemAccount and rejected for user/agent creation (T1).
+const SystemAccountHandle = "compass"
+
+// systemAccountDisplayName is the display name minted for the reserved system
+// account by EnsureSystemAccount.
+const systemAccountDisplayName = "Compass"
+
+// SystemAccount is the reserved system sender's payload: empty, because the row's
+// existence in system_accounts is the entire discriminator.
+type SystemAccount struct{}
 
 // IsAgent reports whether this account is an owned agent subtype.
 func (a Account) IsAgent() bool { return a.Agent != nil }

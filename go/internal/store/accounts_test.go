@@ -648,3 +648,121 @@ func assertNoAccountRow(t *testing.T, s *Store, handle string) {
 		t.Fatalf("account row(s) exist for rejected handle %q: got %d, want 0", handle, n)
 	}
 }
+
+// TestEnsureSystemAccountSeedsSystemSubtype asserts the first call mints the
+// reserved @compass row as the system subtype: System set, User and Agent nil,
+// with the reserved handle and display name.
+func TestEnsureSystemAccountSeedsSystemSubtype(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	acc, err := s.EnsureSystemAccount(ctx)
+	if err != nil {
+		t.Fatalf("EnsureSystemAccount: %v", err)
+	}
+	if acc.System == nil {
+		t.Fatalf("system account has nil System subtype: %+v", acc)
+	}
+	if acc.User != nil || acc.Agent != nil {
+		t.Fatalf("system account carries a user/agent subtype: %+v", acc)
+	}
+	if acc.Handle != SystemAccountHandle {
+		t.Fatalf("system account handle = %q, want %q", acc.Handle, SystemAccountHandle)
+	}
+	if acc.DisplayName != "Compass" {
+		t.Fatalf("system account display name = %q, want %q", acc.DisplayName, "Compass")
+	}
+}
+
+// TestEnsureSystemAccountIsIdempotent asserts a second call returns the SAME
+// account id rather than minting a duplicate — the unique-violation-means-fetch
+// restart path.
+func TestEnsureSystemAccountIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	first, err := s.EnsureSystemAccount(ctx)
+	if err != nil {
+		t.Fatalf("first EnsureSystemAccount: %v", err)
+	}
+	second, err := s.EnsureSystemAccount(ctx)
+	if err != nil {
+		t.Fatalf("second EnsureSystemAccount: %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("EnsureSystemAccount not idempotent: first id %q, second id %q", first.ID, second.ID)
+	}
+	if second.System == nil {
+		t.Fatalf("second call returned non-system account: %+v", second)
+	}
+}
+
+// TestEnsureSystemAccountRoundTripsThroughGetAccount asserts the seeded row
+// reads back through scanAccount/GetAccount as the system subtype — the
+// six-feeder join wiring must resolve the system column on an id-addressed read.
+func TestEnsureSystemAccountRoundTripsThroughGetAccount(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	seeded, err := s.EnsureSystemAccount(ctx)
+	if err != nil {
+		t.Fatalf("EnsureSystemAccount: %v", err)
+	}
+	got, err := s.GetAccount(ctx, seeded.ID)
+	if err != nil {
+		t.Fatalf("GetAccount(%s): %v", seeded.ID, err)
+	}
+	if got.System == nil {
+		t.Fatalf("round-tripped account is not the system subtype: %+v", got)
+	}
+	if got.User != nil || got.Agent != nil {
+		t.Fatalf("round-tripped system account carries a user/agent subtype: %+v", got)
+	}
+}
+
+// TestEnsureSystemAccountWrongShapeSquatterConflicts asserts a pre-existing
+// @compass row of the WRONG shape (a user, then separately an agent) fails with
+// ErrConflict rather than being silently adopted as the system sender. The
+// squatters are inserted directly through the pool because CreateUser/
+// CreateAgent reject the reserved handle (T1), so a squatter can only originate
+// from a pre-guard database — exactly what this simulates.
+func TestEnsureSystemAccountWrongShapeSquatterConflicts(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("user squatter", func(t *testing.T) {
+		s := newTestStore(t)
+		id := newID()
+		if _, err := s.pool.Exec(ctx,
+			"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
+			id, SystemAccountHandle, "Squatter",
+		); err != nil {
+			t.Fatalf("insert squatter account: %v", err)
+		}
+		if _, err := s.pool.Exec(ctx,
+			"INSERT INTO user_accounts (account_id, role) VALUES ($1, $2)", id, int32(UserRoleMember),
+		); err != nil {
+			t.Fatalf("insert squatter user_account: %v", err)
+		}
+		_, err := s.EnsureSystemAccount(ctx)
+		sentinelIs(t, err, ErrConflict, "user squatter on the reserved handle")
+	})
+
+	t.Run("agent squatter", func(t *testing.T) {
+		s := newTestStore(t)
+		owner := mustUser(t, s, "owner")
+		id := newID()
+		if _, err := s.pool.Exec(ctx,
+			"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
+			id, SystemAccountHandle, "Squatter",
+		); err != nil {
+			t.Fatalf("insert squatter account: %v", err)
+		}
+		if _, err := s.pool.Exec(ctx,
+			"INSERT INTO agent_accounts (account_id, owner_user_id) VALUES ($1, $2)", id, string(owner.ID),
+		); err != nil {
+			t.Fatalf("insert squatter agent_account: %v", err)
+		}
+		_, err := s.EnsureSystemAccount(ctx)
+		sentinelIs(t, err, ErrConflict, "agent squatter on the reserved handle")
+	})
+}

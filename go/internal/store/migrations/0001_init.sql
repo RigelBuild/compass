@@ -80,6 +80,17 @@ CREATE INDEX agent_accounts_owner_idx ON agent_accounts (owner_user_id);
 -- The "children of this parent" read direction for the agent tree.
 CREATE INDEX agent_accounts_parent_idx ON agent_accounts (parent_agent_id);
 
+-- System accounts: the reserved platform sender (@compass), a distinct
+-- first-class subtype alongside user_accounts and agent_accounts. No payload
+-- columns — the row's existence is the discriminator (there is exactly one,
+-- seeded at startup by store.EnsureSystemAccount, not by this migration). PK is
+-- also the FK to accounts, so a system row is exactly one account and cannot
+-- coexist with a user or agent row of the same id. ON DELETE RESTRICT so the
+-- reserved account cannot be orphaned out from under its subtype row.
+CREATE TABLE system_accounts (
+    account_id TEXT PRIMARY KEY REFERENCES accounts (id) ON DELETE RESTRICT
+);
+
 -- ── Channel groups ──────────────────────────────────────────────────────────
 -- Namespace nodes. parent_group_id nests them (NULL = a top-level root);
 -- owner_user_id is the user whose space this is (empty string for a
