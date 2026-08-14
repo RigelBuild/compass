@@ -116,10 +116,12 @@ func TestLegTwoRealTurn(t *testing.T) {
 	}
 	defer st.Close()
 
-	// Post to the agent's home channel: the server sweeps the undelivered
-	// message in on session start and it fires the agent's first turn, so this
-	// post is what drives the turn AwaitSessionSettled waits on. Must precede the
-	// settle wait.
+	// Post to the agent's home channel: this post lands on the already-live
+	// session and is delivered via the live fan-out (the delivery consumer
+	// tailing the comms bus), which fires the agent's first turn — the turn
+	// AwaitSessionSettled waits on. The session-start sweep only redelivers
+	// messages left undelivered from a prior lifetime (relevant only to leg-5's
+	// post1), not this one. Must precede the settle wait.
 	acc, err := st.AgentByHandle(ctx, "leg2-realturn")
 	if err != nil {
 		t.Fatalf("AgentByHandle: %v", err)

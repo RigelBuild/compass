@@ -84,21 +84,37 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	defer st.Close()
 
 	// Resolve the agent's home channel once; both the pre-teardown and resumed
-	// turns are driven by posts to it. The server sweeps each undelivered
-	// message in on session start and it fires that lifetime's turn, so each post
-	// must precede its settle wait.
+	// turns are driven by posts to it. Each post lands on the already-live
+	// session and is delivered via the LIVE delivery path — the delivery
+	// consumer tailing the comms bus dispatches it to the live session, which
+	// fires the turn AwaitSessionSettled waits on. The session-start sweep only
+	// redelivers messages left UNDELIVERED from a prior lifetime, which is
+	// exactly why post1 below must be acked (cursor advanced) before the resume:
+	// otherwise container2's start-sweep would redeliver it and consume the
+	// resumed lifetime's canned turn. So each post must precede its settle wait.
 	acc, err := st.AgentByHandle(ctx, "leg5-persistresume")
 	if err != nil {
 		t.Fatalf("AgentByHandle: %v", err)
 	}
 	homeChannelID := string(acc.Agent.HomeChannelID)
-	if _, err := f.PostMessage(ctx, homeChannelID, "general", "say the pre-teardown reply and stop"); err != nil {
+	post1ID, err := f.PostMessage(ctx, homeChannelID, "general", "say the pre-teardown reply and stop")
+	if err != nil {
 		t.Fatalf("PostMessage(home, pre-teardown): %v", err)
 	}
 
 	// Event-gated settle on the first session — the canned turn0 (reply1) runs.
 	if err := f.AwaitSessionSettled(ctx, originalSessionID); err != nil {
 		t.Fatalf("AwaitSessionSettled (original): %v", err)
+	}
+
+	// Gate on the delivery cursor advancing past post1 BEFORE the container1
+	// teardown, so the resume start-sweep in container2 does not observe post1
+	// still owed and redeliver it. The cursor advances on the agent's
+	// delivery_ack, NOT on the settle above (AwaitSessionSettled returns on the
+	// first READY frame; it does not gate on the ack), so this is the event that
+	// actually proves post1 is consumed. See waitDeliveryCursorPast for the WHY.
+	if err := f.waitDeliveryCursorPast(ctx, st, acc.ID, acc.Agent.HomeChannelID, store.MessageID(post1ID)); err != nil {
+		t.Fatalf("waitDeliveryCursorPast (post1): %v", err)
 	}
 
 	// The persist boundary: tear container1 down mid-test (the leg-5 teardown

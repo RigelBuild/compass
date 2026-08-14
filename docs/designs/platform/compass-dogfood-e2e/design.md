@@ -69,7 +69,7 @@ its own.
   (`go/internal/runtime/podman.go:389`, `spec.UID` = `defaultAgentUID` = 1000,
   `go/cmd/compass-runner/main.go:140,167`), which remaps any host uid onto the
   baked uid, and the engine's support for that remap is floor-checked by
-  `VerifyUsernsRemapSupport` (`podman.go:422`, called from `main.go:97`). The
+  `VerifyUsernsRemapSupport` (`podman.go:415-438`, called from `main.go:97`). The
   once-blocking uid-1000-host requirement (`verifyRunnerUID`) has since been
   lifted (SEA-1691), so the full-stack tier runs on ordinary arbitrary-uid CI
   runners. The interim uid handling for embedded Dogfood is preflight-and-refuse

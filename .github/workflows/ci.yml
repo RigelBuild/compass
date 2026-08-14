@@ -327,14 +327,22 @@ jobs:
         # (affected)" step above does. `moon query projects` prints a JSON
         # envelope on stdout UNCONDITIONALLY — an unaffected project yields
         # `{"projects": [], "options": {…}}`, not empty output — so the signal is
-        # the `.projects` ARRAY, not stdout-emptiness. `jq -e` on its length is
         # the discriminator: populated = affected (build from tree), empty = not
         # (fall to the pull branch below); the non-PR path never runs this step,
         # so image_affected is unset and the seed step's `!= true` also pulls.
+        # moon's own exit is checked SEPARATELY from jq: under pipefail a
+        # `moon query` that ITSELF exits non-zero (moon error, renamed id,
+        # transient) would sink the pipe, fall to the else, and set
+        # image_affected=false — silently pulling published :latest and testing
+        # the WRONG image with no signal. A broken moon means the detection
+        # cannot be trusted, so fail the step loudly rather than guess.
         if: github.event_name == 'pull_request'
         run: |
-          if moon query projects --affected --id compass-agent-image \
-            | jq -e '.projects | length > 0' >/dev/null; then
+          if ! moon_out=$(moon query projects --affected --id compass-agent-image); then
+            echo "::error::moon query for compass-agent-image affected-detection failed; cannot trust the image-affected signal, so failing rather than testing a possibly-stale published image"
+            exit 1
+          fi
+          if printf '%s' "$moon_out" | jq -e '.projects | length > 0' >/dev/null; then
             echo "image_affected=true" >>"$GITHUB_OUTPUT"
           else
             echo "image_affected=false" >>"$GITHUB_OUTPUT"

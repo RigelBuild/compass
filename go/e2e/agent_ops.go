@@ -11,6 +11,7 @@ import (
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
 // CreateAgent creates a first-party agent account over CommsService and returns
@@ -173,6 +174,71 @@ func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
 		}
 	}
 }
+
+// waitDeliveryCursorPast blocks until post1 is no longer OWED to the agent on
+// its home channel — the moment the agent's delivery cursor has advanced past
+// it — or the budget elapses. leg-5's resume is only correct if this ordering
+// holds BEFORE the resumed lifetime's server-side start-sweep runs: the cursor
+// advances on the agent's delivery_ack (runnerhub deliverAck), NOT on the
+// WORKING→READY settle AwaitSessionSettled observes, so a settle can return
+// with post1 still owed. The resume start-sweep reads UndeliveredMessages for
+// the agent and redelivers anything still owed into the fresh container2; were
+// post1 still owed at that point the sweep would redeliver it, consume the
+// resumed lifetime's canned turn, and desync the 2-turn script (a
+// hang-to-timeout flake OR a mis-attributed green). Gating on the cursor — the
+// real cross-process ack signal — instead of trusting the settle-implies-acked
+// ordering closes that race.
+//
+// It is an event-gated bounded poll on UndeliveredMessages, mirroring
+// waitRunnerEnrolled: a ticker-driven bound off f.now() with a deadline check
+// that returns a legible timeout error, and a select on ctx.Done() vs the
+// ticker so it respects cancellation — no sleeps, no retry-as-sync. It returns
+// nil the instant post1ID is absent from the home-channel slice of the map
+// UndeliveredMessages returns; a store error, ctx cancellation, or a budget
+// timeout is a legible error.
+func (f *Fixture) waitDeliveryCursorPast(ctx context.Context, st *store.Store, agent store.AccountID, home store.ChannelID, post1ID store.MessageID) error {
+	deadline := f.now().Add(cursorPollBudget)
+	ticker := time.NewTicker(cursorPollInterval)
+	defer ticker.Stop()
+	for {
+		if !f.now().Before(deadline) {
+			return fmt.Errorf("delivery cursor did not advance past message %s within %s", post1ID, cursorPollBudget)
+		}
+		owed, err := st.UndeliveredMessages(ctx, agent)
+		if err != nil {
+			return err
+		}
+		stillOwed := false
+		for _, m := range owed[home] {
+			if m.ID == post1ID {
+				stillOwed = true
+				break
+			}
+		}
+		if !stillOwed {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// cursorPollInterval and cursorPollBudget bound waitDeliveryCursorPast: the
+// wait between leg-5's pre-teardown settle and the container1 teardown for the
+// agent's delivery cursor to advance past post1. The cursor advances on the
+// agent's delivery_ack (runnerhub deliverAck), which trails the WORKING→READY
+// settle by a bus round-trip, not by an agent turn — so like enrollment this is
+// a fast one-time transition and the budget can be far smaller than
+// settleTimeout while still failing a genuinely stuck ack legibly rather than
+// hanging to the go-test timeout; the interval matches enrollPollInterval's
+// magnitude. A deterministic deadline, never a retry loop.
+const (
+	cursorPollInterval = 100 * time.Millisecond
+	cursorPollBudget   = 15 * time.Second
+)
 
 // enrollProbeSessionID is the synthetic, never-started session id the enrollment
 // probe Stops. It is namespaced so it can never collide with a real
