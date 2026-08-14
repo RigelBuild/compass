@@ -210,6 +210,8 @@ func runnerErrorToConnect(e *compassv1internal.RunnerError) error {
 		code = connect.CodeAlreadyExists
 	case compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_NOT_FOUND:
 		code = connect.CodeNotFound
+	case compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_FAILED_PRECONDITION:
+		code = connect.CodeFailedPrecondition
 	default:
 		code = connect.CodeInternal
 	}
