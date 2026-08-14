@@ -45,7 +45,7 @@ env".
 | --- | --- | --- |
 | Purpose | CRITICAL wave infra; the fleet's live Compass | agent-PR testing (Record B's lanes run here/against it) |
 | Code | `origin/main` only, auto-deployed on every merge | PR builds, deployed by Record B's mechanics |
-| Checkout | `~/compass-envs/main` (tracks `origin/main`) | `~/compass-envs/preview` (PR ref per Record B) |
+| Checkout | `~mattw/compass-envs/main` (tracks `origin/main`) | `~compass-preview/compass-envs/preview` (PR ref per Record B) |
 | Unix user | `mattw` | `compass-preview` (dedicated; see Creds) |
 | Postgres | its own devenv-managed instance (per-checkout state) | its own; never shares a database with `main` |
 | Server doors | Unix socket + dev-http `50051` + TLS network door `50061` on the tailnet address | same shape, ports `50151`/`50161`, loopback+tailnet |
@@ -198,8 +198,9 @@ Servers with two databases, their registries are independent by construction.
 agent PR is PR code running with resolver privileges — if it shared `mattw`'s
 keyring it could read every production value regardless of profile. So
 `preview` runs as a dedicated Unix user `compass-preview` with its OWN keyring
-holding a scoped credential set: a spend-capped LiteLLM key, a
-reduced-permission bot PAT, a Linear key for a test team (or none). This is the
+holding a scoped credential set: a DISTINCT LiteLLM key (never `main`'s — see
+OQ-3), a reduced-permission bot PAT, a Linear key for a test team (or none).
+This is the
 one place the two envs deliberately diverge, and it is what makes "preview is
 isolated from main" true against a malicious-or-buggy PR, not just against
 accidents. (The one-user alternative is rejected in Alternatives considered.)
@@ -314,8 +315,8 @@ running the wave until the last step:
 1. **Provision** (T1): add `nixosConfigurations.mattfw` to the personal flake —
    rootless podman with subuid/subgid for both `mattw` and `compass-preview`
    (the runner no longer gates on host uid — see Global Constraints; `preview`
-   under a non-1000 uid DEPENDS on the compass-runner-arbitrary-uid record
-   being merged and shipped), headless keyring provisioning via the decided
+   under a non-1000 uid needs T1's subuid/subgid provisioning below), headless
+   keyring provisioning via the decided
    blank-password auto-unlock, tailscale, the `compass-preview` user, and
    the shared dev
    modules.
@@ -405,7 +406,7 @@ running the wave until the last step:
   remaining startup engine check is the podman userns-remap preflight
   (`go/cmd/compass-runner/main.go:89-99`), and uid 1000 survives only as the
   in-container agent uid (`main.go:165-167`). `preview` under the non-1000
-  `compass-preview` uid depends on that record being merged and shipped.
+  `compass-preview` uid then needs only T1's subuid/subgid ranges below.
 - **`main` runs only `origin/main` builds — never PR code.** Fast-forward-only
   deploys; any deviation is an incident, not a config choice.
 - **Secrets never travel as flags or logs:** tokens are env/file only
@@ -443,8 +444,8 @@ subuid/subgid ranges for BOTH users (`mattw` and `compass-preview` — the
 runner no longer gates on uid 1000; the only startup engine check is the
 podman userns-remap preflight, `go/cmd/compass-runner/main.go:89-99`, and uid
 1000 survives only as the in-container agent uid, `main.go:165-167`; `preview`
-under a non-1000 uid therefore DEPENDS on the compass-runner-arbitrary-uid
-record being merged and shipped), the decided headless keyring provisioning
+under a non-1000 uid therefore needs the subuid/subgid ranges this task
+provisions), the decided headless keyring provisioning
 (blank-password default collection for both env users, so gnome-keyring
 auto-unlocks at user-unit start with no login),
 `users.users.mattw.homeMode = "0700"` pinned explicitly (the 0600
@@ -683,17 +684,22 @@ external-dependency items:
   the natural Woodpecker shape: zero new tailnet credential in CI, but
   publish couples to that agent's uptime; (b) a hosted/ephemeral agent
   joining via an ephemeral tailscale OAuth key — standard, but a tailnet
-  credential lives in CI. **Recommendation: (a)**; orion is Matt's personal
-  CI and the tailnet-resident agent is the smaller trust surface. Document
+  credential lives in CI. **Recommendation: (a)** — run the self-hosted agent
+  as a systemd user unit on `mattfw` (the box already hosting the envs), the
+  smaller trust surface; orion is Matt's personal CI. Document
   (b) as the fallback in T5. Either placement works without changing the
   design.
-- **OQ-3 (non-load-bearing deferral) — `preview` LLM spend scoping.** The
-  scoped `preview` credential set wants a spend-capped LiteLLM key. If
-  per-key budgets are not available on Matt's proxy, the fallback is sharing
-  `main`'s key and accepting `preview` spend risk. **Recommendation:** mint
-  a per-env key with a budget cap; treat the shared-key fallback as
-  explicitly temporary, noted in T6's checklist. An external dependency on
-  the proxy's feature set; the design holds either way.
+- **OQ-3 (non-load-bearing deferral) — whether `preview`'s DISTINCT LiteLLM
+  key is spend-CAPPED.** Distinctness is not open: `preview`'s credential set
+  MUST hold its own LiteLLM key, never `main`'s — `preview`'s Server is PR code
+  with resolver privileges (inject-all reads the whole keyring), so `main`'s
+  key in `preview`'s keyring is credential EXPOSURE of `main`'s production LLM
+  access to PR code, not merely shared spend. What stays deferred is only the
+  CAP: if per-key budgets are available on Matt's proxy, mint the distinct
+  `preview` key with a budget cap; if not, a distinct un-capped `preview` key
+  (or, as the safe floor, `preview` with no LLM access) — never `main`'s key.
+  An external dependency on the proxy's feature set; the isolation guarantee
+  holds either way because the key is distinct regardless of cap.
 - **OQ-4 (non-load-bearing deferral) — deploy-failure alerting beyond the
   one-line ping.** The minimal form — ONE line pushed to the wave's home
   channel on deploy failure — is IN SCOPE in T3 (`systemctl --user --failed`
