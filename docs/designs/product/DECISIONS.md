@@ -270,7 +270,7 @@ check enforces the mechanical half. Full rationale:
 
 > Ledger note: the four rows below (DL-187..190) were drafted as DL-186..189 in
 > `compass-first-turn-delivery/design.md`; renumbered on landing — DL-186 was
-> consumed by the proto-strip decision (DL-186 under *Threading & rendering*).
+> consumed by the proto-strip decision (DL-186 under *UI shell*).
 > The merged first-turn-delivery record's frozen prose still names DL-186..189;
 > resolve the stale numbers through this note (the freeze rule adds, never
 > rewrites frozen prose).
