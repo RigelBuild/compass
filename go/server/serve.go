@@ -340,7 +340,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// fails startup rather than being adopted. The system account id backs the
 	// first-turn seed a later task wires; for now the helper logs it so the
 	// seeded row is observable at boot.
-	admin, _, err := seedBootstrapAccounts(ctx, st, cfg)
+	admin, systemAccount, err := seedBootstrapAccounts(ctx, st, cfg)
 	if err != nil {
 		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
 		listeners.close()
@@ -419,7 +419,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// create), so a reconnect re-fire is safe. adminID is the bootstrap admin the
 	// supervisor is owned by.
 	seedLog := slog.Default()
-	hub.SetRunnerReadyHook(func() { seedRootSupervisor(ctx, st, svc, admin.ID, seedLog) })
+	hub.SetRunnerReadyHook(func() { seedRootSupervisor(ctx, st, svc, commsSvc, admin.ID, systemAccount.ID, seedLog) })
 	// The SecretsService is an account-facing sibling of CompassService/CommsService:
 	// it mounts on every account door (socket, dev, network) behind the same bearer +
 	// admin-gate chain, which classifies its three procedures authenticatedOpen — the
