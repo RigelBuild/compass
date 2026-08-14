@@ -2,15 +2,14 @@
   pkgs,
   lib,
   config,
+  inputs,
   ...
 }:
-# Compass dev shell — the single source of the dev + CI toolchain. The split:
-#
-#   proto  — owns the language/runtime toolchains (bun, node, moon, go),
-#            pinned in .prototools. Activated on shell entry below.
-#   devenv — provides proto itself plus everything non-language: the contract
-#            codegen tools, the Go analysis battery, and the linters the moon
-#            gate runs.
+# Compass dev shell — the single source of the dev + CI toolchain. nix/devenv
+# owns everything: the language/runtime toolchains (bun/node/moon vendored as
+# nix derivations from tools/toolchain/versions/*.nix, go from the go-overlay
+# input) plus everything non-language — the contract codegen tools, the Go
+# analysis battery, and the linters the moon gate runs.
 #
 # Everything here is a system task's dependency: moon execs what this shell puts
 # on PATH rather than managing a toolchain of its own.
@@ -20,12 +19,24 @@ let
   # binding — a lone edit to either copy would silently point mint at a different
   # database, surfacing only as a runner enroll failure.
   dogfoodDSN = "host=${config.env.PGHOST} port=${toString config.env.PGPORT} dbname=compass sslmode=disable";
+
+  # The go pin (tools/toolchain/versions/go.nix), version-selected from the
+  # go-overlay input. go-overlay's flake exposes each version as a package attr
+  # named `go_<major>_<minor>_<patch>` (dots→underscores; nix attr names hold no
+  # unquoted dots), built over the devenv.lock-pinned nixpkgs via the
+  # devenv.yaml `inputs.nixpkgs.follows: nixpkgs`. The parity gate selects the
+  # same version through go-overlay's overlay route, so both resolve one
+  # derivation.
+  goPin = import ./tools/toolchain/versions/go.nix;
+  goToolchain = inputs.go-overlay.packages.${pkgs.stdenv.system}."go_${lib.replaceStrings [ "." ] [ "_" ] goPin.version}";
+
+  # bun/node/moon vendored as nix derivations from tools/toolchain/versions/*.nix.
+  # The dev shell and the parity gate (tools/toolchain/gate-tools.nix) import this
+  # one module, so the two sides cannot drift.
+  toolchainTools = import ./tools/toolchain/toolchain-tools.nix { inherit pkgs; };
 in
 {
-  packages = with pkgs; [
-    # Language/runtime manager. Pins bun/node/moon/go via .prototools.
-    proto
-
+  packages = (with pkgs; [
     # compass.v1 contract codegen. buf drives the pipeline; protobuf supplies
     # protoc; protoc-gen-go (messages) + protoc-gen-connect-go (Connect
     # handlers/clients) are the Go lane's plugins, and protoc-gen-es is the TS
@@ -54,8 +65,8 @@ in
     # Go gate battery (go/moon.yml): golangci-lint (lint gate incl. the
     # gochecksumtype/exhaustive exhaustiveness check), govulncheck (vuln scan),
     # go-licenses (license fence), nilaway (advisory nil-flow analysis). Go
-    # itself is a .prototools-pinned runtime installed by `proto install` on
-    # shell entry, like bun/node/moon.
+    # itself is the go-overlay toolchain appended below, alongside the vendored
+    # bun/node/moon derivations.
     golangci-lint
     govulncheck
     go-licenses
@@ -84,29 +95,21 @@ in
     # resolves and is cross-platform — harmless on macOS, where the app links
     # the system WebKit framework and pkg-config goes unused.
     pkg-config
+  ])
+  # The language toolchains: bun/node/moon vendored from
+  # tools/toolchain/versions/*.nix and go from the go-overlay input. Appended
+  # OUTSIDE the `with pkgs; [ … ]` literal above because each is a dotted
+  # reference, not a bare nixpkgs attribute — and the toolchain-parity gate
+  # parses that literal and THROWS on any non-bare token. The gate covers these
+  # through its store-path `langs` verdict instead; it never parses this list.
+  ++ [
+    toolchainTools.bun
+    toolchainTools.node
+    toolchainTools.moon
+    goToolchain
   ];
 
-  env = {
-    # Without this the Go gates lie in the dev shell: govulncheck and
-    # golangci-lint fail outright (`can't determine type sizes for compiler
-    # "an"` / `package missing import path`) and nilaway reports a silent zero
-    # findings on most runs — a false clean indistinguishable from a real one.
-    # The cause is proto's shim: seeing CLAUDECODE, it prints a "Detected an AI
-    # agent environment" banner as NDJSON on STDOUT, and Go tooling shells out
-    # to `go list` and parses that stdout, so the banner lands in the package
-    # list. `text` drops the banner line, leaving a shimmed tool's stdout
-    # carrying only the tool's own output. It does NOT move proto's progress to
-    # stderr — that still goes to stdout — so a run that triggers a shim
-    # auto-install would still prepend installer lines; in practice the
-    # toolchain is already installed (enterShell's `proto install`, above)
-    # before the gates run, so that path is not normally reached.
-    # This is a dev-shell-only env. CI (.github/workflows/ci.yml) installs the
-    # language runtimes via the setup-bun/node/go actions and moon via npm, and
-    # never runs enterShell — so proto's shims are never activated on the runner
-    # (`go` comes straight from setup-go), the shimmed `go list` that emits the
-    # banner never happens, and CI never had the bug.
-    PROTO_REPORTER = "text";
-  }
+  env = { }
   # The Compass native app (Wails v3, go/cmd/compass-app) links the Linux
   # GTK3/WebKitGTK stack through cgo. pkg-config (in `packages` above) finds each
   # library's `.pc` file along PKG_CONFIG_PATH, built here over the transitive
@@ -153,12 +156,6 @@ in
   };
 
   enterShell = ''
-    # Activate the proto-managed toolchains (bun/node/moon/go from .prototools).
-    export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
-    export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
-    # Use the pinned nix proto (the shims dir is ahead on PATH, so a bare
-    # `proto` would resolve a host install instead of this one).
-    ${pkgs.proto}/bin/proto install
     # Bootstrap the workspace on shell entry so a fresh clone is ready right
     # after `direnv allow` — no separate install step. --frozen-lockfile is a
     # fast no-op once node_modules is current.
@@ -234,14 +231,6 @@ in
     # store hiccup recovers.
     compass-server = {
       exec = ''
-        # Go is proto-managed (.prototools); make its shim
-        # resolvable even when this process is launched outside the enterShell
-        # PATH mutation. This fixes PATH only — installing the pinned toolchain
-        # is `proto install`'s job, which `direnv allow` runs via enterShell.
-        # Absent that, the proto shim auto-installs the pinned Go on the first
-        # `go build`.
-        export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
-        export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
         # Build once into the state dir, then exec the binary so no shell/`go
         # run` parent lingers between devenv-tasks and compass-server — the
         # binary lands directly in the process group devenv-tasks signals on
@@ -298,7 +287,7 @@ in
     # compass-runner: enrolls with the server over the TLS network door, then
     # idles awaiting Provision/Start commands. Built into the state dir and
     # exec'd the same way as compass-server (see that process's comment for the
-    # PATH/build/exec rationale and the devenv-tasks signal path). Runners are
+    # build/exec rationale and the devenv-tasks signal path). Runners are
     # remote by design, so this dials the authenticated TLS door
     # (https://127.0.0.1:<network-port>) with the gen-cert cert as the single
     # trust anchor (--ca) — never the loopback socket. The enrollment token is
@@ -320,8 +309,6 @@ in
     # would otherwise leave a permanently dead runner.
     compass-runner = {
       exec = ''
-        export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
-        export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
         : "''${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be set; the compass-runner per-container sockets live under it}"
         bin="${config.devenv.state}/compass/compass-runner"
         go build -o "$bin" ./cmd/compass-runner
@@ -354,8 +341,6 @@ in
     # opens over them.
     "dogfood:gen-cert" = {
       exec = ''
-        export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
-        export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
         bin="${config.devenv.state}/compass/compass-gen-cert"
         go build -o "$bin" ./cmd/compass-gen-cert
         exec "$bin" \
@@ -374,8 +359,6 @@ in
     # without rotating when the file exists.
     "dogfood:mint-runner-token" = {
       exec = ''
-        export PROTO_HOME="''${PROTO_HOME:-$HOME/.proto}"
-        export PATH="$PROTO_HOME/shims:$PROTO_HOME/bin:$PATH"
         bin="${config.devenv.state}/compass/compass-mint-runner-token"
         go build -o "$bin" ./cmd/compass-mint-runner-token
         exec "$bin" \
