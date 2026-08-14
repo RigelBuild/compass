@@ -22,8 +22,9 @@ in
   bun = pkgs.stdenv.mkDerivation {
     pname = "bun";
     version = bunPin.version;
-    # bun's `-baseline` (no-AVX2) x64 build runs on pre-Haswell hosts where the
-    # AVX2-only standard x64 build SIGILLs. ARM has no AVX2, so the aarch64 leg
+    # bun's `-baseline` (no-AVX2) x64 build is the universally-safe choice: it
+    # runs on any x86_64 host regardless of AVX2 support, so it makes no
+    # assumption about a developer's CPU. ARM has no AVX2, so the aarch64 leg
     # uses the plain build.
     src = pkgs.fetchurl bunPin.srcs.${pkgs.stdenv.hostPlatform.system};
     # autoPatchelf is linux-ELF mechanics; darwin ships a self-contained Mach-O.
