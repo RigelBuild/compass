@@ -102,6 +102,19 @@ let
       cp -R node_modules $out/node_modules
       cp -R packages/compass-agent/node_modules \
             $out/packages/compass-agent/node_modules
+      # Drop every `node_modules/.bin` directory before hashing. Its entries are
+      # per-CLI symlinks bun points at each package's own `bin/`, not generated
+      # wrapper scripts — so `rm -rf` on a `.bin` dir removes only the links,
+      # never their targets, and no dependency file is collaterally deleted. The
+      # bundle below resolves imports through the `.bun` package trees, never
+      # through `.bin`, so the runtime does not need them. They are ALSO the sole
+      # source of this FOD's cross-environment non-determinism: bun's
+      # nested-`.bin` symlink set is not
+      # stable across build hosts (e.g. a `browserslist` shim inside
+      # `update-browserslist-db/node_modules/.bin` is emitted on some hosts and
+      # not others), which desynchronizes an otherwise byte-identical tree.
+      # Removing them makes the recursive output hash reproducible.
+      find $out -type d -name .bin -prune -exec rm -rf {} +
       runHook postInstall
     '';
 
@@ -109,16 +122,16 @@ let
     # the network, and pinning the output hash is what keeps the rest of the
     # build pure. What the hash covers is the INSTALLED TREE, not just the
     # lockfile's version set: `bun install` writes a `.bun` cache layout and
-    # platform-specific optional dependencies, so the tree is platform-scoped
-    # and `dontFixup` leaves it un-normalized. `--ignore-scripts` keeps
-    # postinstall from injecting host-varying content on top of that. Expect the
-    # hash to move when `bun.lock` or a workspace manifest does, and to need a
-    # per-platform value — refresh it by setting `lib.fakeSha256` and taking the
-    # value nix reports.
+    # platform-specific optional dependencies. `--ignore-scripts` keeps
+    # postinstall from injecting host-varying content, and the installPhase
+    # strips the non-deterministic `.bin` shims above, so the tree is
+    # reproducible across build hosts. Expect the hash to move when `bun.lock` or
+    # a workspace manifest does — refresh it by setting `lib.fakeSha256` and
+    # taking the value nix reports.
     dontFixup = true;
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-HjRWz8xklL6GwJTf0zmB7iOBnCueYtvbjNDicPhnPCc=";
+    outputHash = "sha256-0npkHSmqG6pHPw6C2Km70VUpUIRDyPNEm9gZuWz2EDc=";
   };
 
   # The package's own source. A BARE path here (`${../packages/…}`) would copy
