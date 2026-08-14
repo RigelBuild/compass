@@ -98,7 +98,8 @@ mechanism (delegated by Matt to this record):
   noting it lost the env. Claiming is a deliberate human/agent act, never
   automatic.
 - **Release.** `unlabeled` or PR `closed` releases the env — the preview
-  service redeploys to an idle/neutral state (or stops until reclaimed).
+  service stops (`compass-preview.service` down until a claim (re)starts it);
+  the cheapest release, and a claim already redeploys from scratch.
 - **Deploy action.** Check the PR ref out into Record A's
   `~/compass-envs/preview` checkout
   (`compass-dogfood-operations/design.md:48`) and restart
@@ -136,10 +137,10 @@ fixture primitives; coverage state grounded):
 
 | Scenario | State today | What the expansion adds |
 | --- | --- | --- |
-| Multi-agent communication | Legs 3+4 merged: agent-driven spawn + `@mention` steer/deliver split (harness record H4, `design.md:634-665`) | Multi-peer fan-out: 3+ agents, channel policy (OWNER_ONLY, `comms.proto:237-238`), unmentioned-subscriber deliver at scale |
+| Multi-agent communication | Legs 3+4 merged: agent-driven spawn + `@mention` steer/deliver split (harness record H4, `design.md:634-665`) | Multi-peer fan-out: 3+ agents, channel policy (OWNER_ONLY, `comms.proto:233-235,247-250`), unmentioned-subscriber deliver at scale |
 | PR submitting | Wire contract exists on paper only — `AgentGateway.Forge` carries the envelopes (`proto/compass/v1/agent_gateway.proto:79-90`) and the relay procedure is generated (`RunnerServiceRelayForgeCallProcedure`, `runner.connect.go:74-77`) — but FOUR execution layers are missing: no agent-side forge tool (`packages/compass-agent/src/` has only the `comms.ts`/`lifecycle.ts` brokers); no Runner `Forge` handler; no Server relay leg (`go/internal/runnerhub/` has `relay_comms.go`/`relay_lifecycle.go`/`relay_board.go`, no `relay_forge.go`; the Handler embeds `UnimplementedRunnerServiceHandler`, `handler.go:44-45`, so `RelayForgeCall` returns `CodeUnimplemented` today, `runner.connect.go:610`); no server-side forge write executor (`go/server/board.go:73-74,108-109` — "no real forge-tracker write seam exists yet") | Deferred — split out of B3: the scenario belongs to the forge execution stack's own lane (DL-052) as ITS acceptance test (see B3) |
 | Provision/enroll | Leg 1 + leg 6 merged: bring-up through enrollment, teardown idempotence across a stack restart (`legsix_test.go:14-31`) | Re-enroll after runner restart with live sessions; provision under a revoked/expired runner token (fail-closed assert) |
-| Home-channel first-turn | Being re-modeled by #256: "legs 2 / 3-4 / 5 now drive the first turn by posting to the agent's home channel (the post-`initial_prompt` contract), delivered via the live fan-out" (pr://256 body). On this checkout `initial_prompt` still exists (`compass.proto:592-594`); the home channel is minted at CreateAgent ("The agent's home channel, minted at CreateAgent. The agent is always subscribed to it", `comms.proto:170-173`) | First-class scenario: post-to-home-channel → delivery → first turn settles → reply lands back in the home channel; the delivery-cursor event-gate #256 introduces (its leg-5 hardening) becomes a shared primitive |
+| Home-channel first-turn | Re-modeled by PR #256: "legs 2 / 3-4 / 5 now drive the first turn by posting to the agent's home channel (the post-`initial_prompt` contract), delivered via the live fan-out" (pr://256 body). `initial_prompt` is already removed on this checkout — `reserved` at `compass.proto:590` and `:613` (see `compass-initial-prompt-removal.md`) — so the home-channel-first-turn delivery contract is the CURRENT state, not a pending re-model; the home channel is minted at CreateAgent ("The agent's home channel, minted at CreateAgent. The agent is always subscribed to it", `comms.proto:166-169`) | First-class scenario: post-to-home-channel → delivery → first turn settles → reply lands back in the home channel; the delivery-cursor event-gate #256 introduces (its leg-5 hardening) becomes a shared primitive |
 | Replay | Replay-then-Live subscribe waits exist (`SubscribeComms`, harness record A2); `replay_complete` is the agent control-lane barrier ("on receipt the Runner releases the live ops held behind the restart replay barrier", `proto/compass/v1/agent.proto:64-67`), fresh-start emission lands with #303 | A restart-replay scenario: kill/restart the runner mid-conversation, assert the replay barrier holds live ops until `replay_complete_ack`, no duplicate or lost delivery across the barrier |
 
 **How agents self-run them.** Two surfaces, both existing-mechanism:
@@ -276,8 +277,10 @@ Interfaces:
   `bunx vite build` → `dist` (`apps/ui/moon.yml:19-23`); Record A's `preview`
   network-door address (`…:50161`); `IssueTokenRequest{account_id} →
   IssueTokenResponse{token}` (`proto/compass/v1/compass.proto:663-675`) for
-  the reviewer-token mint ON the preview env (re-mintable on every deploy —
-  the env is disposable, so the token is too).
+  the reviewer-token mint ON the preview env, minted against a preview admin
+  account (so the admin chrome is previewable — the bearer's authority ends at
+  the disposable env); the mint is re-runnable on every deploy — the env is
+  disposable, so the token is too.
 - Produces: `moon run compass-ui:build` parameterized by
   `VITE_COMPASS_BASE_URL`/`VITE_COMPASS_TOKEN` yielding a `dist/` that boots
   against preview's network door.
@@ -302,9 +305,14 @@ The label-triggered deploy workflow plus the serving front. On `pull_request`
 - **UI:** build the PR's UI (B1) against preview's door and serve it on
   `mattfw` via `tailscale serve` (tailnet-internal HTTPS; never `funnel`) at
   the one stable preview URL.
-- **Label lifecycle:** on `labeled`, strip the `preview` label from any other
-  PR holding it and post the displacement sticky comment; on
-  `unlabeled`/`closed`, release the env (redeploy idle or stop the unit).
+- **Label lifecycle (same-repo claims only).** On `labeled` of a SAME-REPO
+  PR, strip the `preview` label from any other PR holding it and post the
+  displacement sticky comment; on `unlabeled`/`closed`, release the env (stop
+  `compass-preview.service`; the next claim (re)starts it). A FORK PR's claim
+  is rejected up front — on `labeled` of a fork PR, immediately remove the
+  `preview` label and post a "preview is same-repo only" comment WITHOUT
+  displacing the current holder or deploying, so a fork label never evicts a
+  live incumbent.
 
 A separate least-privilege workflow (the `publish-agent-image.yml`
 precedent), never a required check — a preview flake must not red the merge
@@ -319,6 +327,13 @@ a preview origin) is dropped with that arm. The PREVIEW server sets its OWN
 
 Interfaces:
 
+- **Serialization (REQUIRED):** the workflow carries its own
+  `concurrency: { group: compass-preview-deploy, cancel-in-progress: false }`
+  (the `publish-agent-image.yml:14-15` precedent) so claim → label-strip →
+  checkout → restart against the ONE shared `~/compass-envs/preview` tree runs
+  strictly one-at-a-time; a single claim's label-strip + deploy is one
+  serialized unit. Without it, two near-simultaneous `preview` events race the
+  shared checkout and can strip each other's label (split-brain).
 - Consumes: B1's parameterized build; Record A's `preview` env contract
   (the `~/compass-envs/preview` checkout, `compass-preview.service`, doors
   `50151`/`50161`, the `compass-preview` user + slice); tailnet reachability
@@ -347,7 +362,7 @@ Two new scenario files in `go/e2e`, composing existing primitives
 (`fixture.go:87-98` `WithCannedScript`):
 
 1. Multi-peer fan-out: 3 agents in one channel, OWNER_ONLY policy assert
-   (`comms.proto:237-238`), mention-steer vs subscriber-deliver at N>2.
+   (`comms.proto:233-235,247-250`), mention-steer vs subscriber-deliver at N>2.
 2. Provision/enroll hardening: runner restart with live sessions re-enrolls
    and resumes delivery; provision with an invalid runner token fails closed.
 
@@ -392,7 +407,7 @@ Two scenarios landing AFTER #256/#303 merge (Global Constraints sequencing):
 
 1. Home-channel first-turn as a first-class scenario (not a leg detail):
    CreateAgent → Provision → Start idle → PostMessage to
-   `AgentAccount.home_channel_id` (`comms.proto:170-173`) → delivery fan-out →
+   `AgentAccount.home_channel_id` (`comms.proto:166-169`) → delivery fan-out →
    `AwaitSessionSettled` → the reply lands back in the home channel. Reuses
    #256's delivery-cursor event-gate as a shared primitive (promote it out of
    the leg-5 test into `agent_ops.go`).
@@ -585,7 +600,11 @@ against, so no task blocks on an answer.
    (a) all repos, compass as the worked example — recommended: the failure
    mode (Matt pulling branches to see UI changes) is not compass-specific,
    and rules are global by construction (`~/.agents/AGENTS.md:3` "Global,
-   always-on rules"); (b) compass-only, generalize later. **Recommend (a).**
+   always-on rules"). The rule's REQUIREMENT stays generic — a user-visible
+   change ships running-artifact evidence appropriate to the repo — while the
+   compass-specific mechanics (the preview link, the e2e scenario suite) live
+   in the skill as the worked example, so the global rule is satisfiable on a
+   non-compass PR; (b) compass-only, generalize later. **Recommend (a).**
 3. **OQ6 — Capture-stack delivery: where do playwright/chromium +
    `tools/capture` live?** (non-load-bearing). B6's phase-2 evidence needs a
    capture stack that does not exist in the tree (no
