@@ -420,12 +420,20 @@ func (s *service) IssueToken(
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("account_id is required"))
 	}
-	if _, err := s.store.GetAccount(ctx, id); err != nil {
+	acc, err := s.store.GetAccount(ctx, id)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound,
 				fmt.Errorf("no account with id %s", id))
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	// The system account (@compass) is structurally not authenticatable: it is a
+	// server-internal sender, never a token subject. Refuse here rather than
+	// relying on the admin gate alone — defense in depth on the token-minting door.
+	if acc.System != nil {
+		return nil, connect.NewError(connect.CodePermissionDenied,
+			fmt.Errorf("account %s is the system account and cannot be issued a token", id))
 	}
 	token, err := auth.IssueAccountToken(ctx, s.store, id)
 	if err != nil {

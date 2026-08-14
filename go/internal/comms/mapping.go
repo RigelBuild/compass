@@ -32,6 +32,8 @@ func accountToWire(a store.Account) *compassv1.Account {
 			HomeChannelId: string(a.Agent.HomeChannelID),
 			ParentAgentId: string(a.Agent.ParentAgentID),
 		}}
+	case a.System != nil:
+		out.Kind = &compassv1.Account_System{System: &compassv1.SystemAccount{}}
 	}
 	return out
 }
