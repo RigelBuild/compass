@@ -234,7 +234,7 @@ in
     # store hiccup recovers.
     compass-server = {
       exec = ''
-        # Go is proto-managed (.prototools, go = 1.26.5); make its shim
+        # Go is proto-managed (.prototools); make its shim
         # resolvable even when this process is launched outside the enterShell
         # PATH mutation. This fixes PATH only — installing the pinned toolchain
         # is `proto install`'s job, which `direnv allow` runs via enterShell.

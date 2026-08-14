@@ -7,7 +7,7 @@
 // prefix must be the destination or every import breaks on export
 // (oss/README.md; the oss/seal -> github.com/sealedsecurity/seal precedent).
 //
-// The `go` directive tracks the .prototools pin (1.26.5) minus at most one
+// The `go` directive tracks the .prototools pin minus at most one
 // minor, so an upstream Go security patch never blocks on a mod edit (Global
 // Constraint 1, floor policy).
 module github.com/sealedsecurity/compass/go
