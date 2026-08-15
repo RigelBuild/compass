@@ -140,8 +140,14 @@ message Account {
   oneof kind {
     UserAccount user = 10;
     AgentAccount agent = 11;
+    SystemAccount system = 12;
   }
 }
+
+// The reserved platform system sender (@compass). A distinct first-class account
+// type alongside user and agent, with no payload — its existence as this kind is
+// the entire signal. It is never a deliver recipient and is not authenticatable.
+message SystemAccount {}
 
 // A human account with a standard permission role.
 message UserAccount {

@@ -28,7 +28,9 @@ import (
 	"time"
 
 	"github.com/sealedsecurity/compass/go/events"
+	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/board"
+	"github.com/sealedsecurity/compass/go/internal/comms"
 	"github.com/sealedsecurity/compass/go/internal/pgtest"
 	"github.com/sealedsecurity/compass/go/internal/runnerhub"
 	"github.com/sealedsecurity/compass/go/internal/store"
@@ -42,11 +44,15 @@ import (
 // pgtest.RequireDSN call mints a fresh schema) so raw store reads land in the
 // same schema store.Open migrated into.
 type seedHarness struct {
-	store    *store.Store
-	hub      *runnerhub.Hub
-	dsn      string
-	adminID  store.AccountID
-	seedDone chan struct{}
+	store     *store.Store
+	hub       *runnerhub.Hub
+	svc       *service
+	commsSvc  *comms.Comms
+	commsBus  *events.Bus[*compassv1.SubscribeCommsResponse]
+	dsn       string
+	adminID   store.AccountID
+	compassID store.AccountID
+	seedDone  chan struct{}
 	// seedOnce guards the seedDone close: fireRunnerReady fires on EVERY Sessions
 	// attach, and close() on an already-closed channel panics, so the harness
 	// tolerates a second hook fire (the re-fire idempotency the feature is built
@@ -75,17 +81,36 @@ func newSeedHarness(t *testing.T) *seedHarness {
 		store.Subject{Kind: store.SubjectRunner, ID: fakeRunnerID}); err != nil {
 		t.Fatalf("PutTokenHash(runner): %v", err)
 	}
+	// The reserved @compass system sender authors the Setup post; seed it as the
+	// production boot does (seedBootstrapAccounts).
+	system, err := st.EnsureSystemAccount(ctx)
+	if err != nil {
+		t.Fatalf("EnsureSystemAccount: %v", err)
+	}
 
 	bus := events.NewBus[busPayload]()
 	t.Cleanup(bus.Close)
 	brd := board.NewProjection(bus)
 	tail := newSessionTail()
-	hub := newRunnerHub(st, brd, tail, nil, slog.New(slog.DiscardHandler))
+	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
+	t.Cleanup(commsBus.Close)
+	commsSvc := comms.NewComms(st, commsBus, admin.ID)
+	hub := newRunnerHub(st, brd, tail, commsSvc, slog.New(slog.DiscardHandler))
 	svc := newService("test", bus, st, hub, brd, nil, tail)
 
-	h := &seedHarness{store: st, hub: hub, dsn: dsn, adminID: admin.ID, seedDone: make(chan struct{})}
+	h := &seedHarness{
+		store:     st,
+		hub:       hub,
+		svc:       svc,
+		commsSvc:  commsSvc,
+		commsBus:  commsBus,
+		dsn:       dsn,
+		adminID:   admin.ID,
+		compassID: system.ID,
+		seedDone:  make(chan struct{}),
+	}
 	hub.SetRunnerReadyHook(func() {
-		seedRootSupervisor(context.Background(), st, svc, admin.ID, slog.New(slog.DiscardHandler))
+		seedRootSupervisor(context.Background(), st, svc, commsSvc, admin.ID, system.ID, slog.New(slog.DiscardHandler))
 		h.seedOnce.Do(func() { close(h.seedDone) })
 	})
 	return h
@@ -235,5 +260,167 @@ func TestServeReDrivesNeverStartedSupervisor(t *testing.T) {
 	// for fakeSessionID is owned by the pre-created supervisor.
 	if owner := sessionOwner(t, ctx, h.dsn, fakeSessionID); owner != string(precreated.ID) {
 		t.Fatalf("re-driven session %q owned by %q, want the pre-created supervisor %q", fakeSessionID, owner, precreated.ID)
+	}
+}
+
+// setupMessageCount counts the Setup-thread messages @compass has posted into
+// channelID: rows in topic "Setup" authored by compassID. Read directly off the
+// store of record (the topic namespace + author are what the assertions turn
+// on), in this test's isolated schema.
+func setupMessageCount(t *testing.T, ctx context.Context, dsn string, channelID store.ChannelID, compassID store.AccountID) int {
+	t.Helper()
+	conn := connectPG(t, ctx, dsn)
+	var n int
+	if err := conn.QueryRow(ctx,
+		`SELECT count(*) FROM messages m JOIN topics t ON t.id = m.topic_id
+		  WHERE t.channel_id = $1 AND t.name = $2 AND m.author_account_id = $3`,
+		string(channelID), setupTopicName, string(compassID),
+	).Scan(&n); err != nil {
+		t.Fatalf("count Setup messages: %v", err)
+	}
+	return n
+}
+
+// TestSeedPostsSetupThreadAsCompass pins the T4 acceptance path: the first-launch
+// seed posts exactly ONE Setup message into the supervisor's home channel,
+// authored by the reserved @compass system account, in topic "Setup". @compass
+// is made a channel member first (PostMessage D9-gates on membership), so the
+// post lands rather than collapsing to CodeNotFound.
+//
+// Mutation: dropping the EnsureChannelMember call reddens (the post collapses to
+// CodeNotFound, so no Setup message exists). Dropping the postSetupThread call
+// leaves zero Setup messages.
+func TestSeedPostsSetupThreadAsCompass(t *testing.T) {
+	ctx := context.Background()
+	h := newSeedHarness(t)
+
+	attachFakeRunner(t, h.store, h.hub, false)
+	h.awaitSeed(t)
+
+	supervisor, err := h.store.AgentByHandle(ctx, rootSupervisorHandle)
+	if err != nil {
+		t.Fatalf("AgentByHandle(supervisor) after seed = %v, want the seeded root", err)
+	}
+	home := supervisor.Agent.HomeChannelID
+
+	// @compass is a member of the home channel (the pre-post membership insert).
+	if member, err := h.store.IsChannelMember(ctx, h.compassID, home); err != nil || !member {
+		t.Fatalf("IsChannelMember(@compass, home) = (%v, %v), want (true, nil) — the post's D9 gate", member, err)
+	}
+	// Exactly one Setup message, authored by @compass, in topic "Setup".
+	if n := setupMessageCount(t, ctx, h.dsn, home, h.compassID); n != 1 {
+		t.Fatalf("Setup messages by @compass in the home channel = %d, want exactly 1", n)
+	}
+}
+
+// TestSeedSetupThreadIdempotentOnReFire pins the OQ-7 supervisor-scoped
+// idempotency: a re-fire of the seed on the already-live arm posts NOTHING new —
+// the (author, client_request_id) unique index dedups the supervisor-scoped key
+// through AppendMessage's ON CONFLICT DO NOTHING, so the home channel still holds
+// exactly one Setup message.
+//
+// Mutation: a global fixed key would still dedup here (same supervisor), so this
+// pins the re-fire no-op, not the scope; the scope's payoff (a recreated
+// supervisor) is covered by the record's OQ-7 rationale.
+func TestSeedSetupThreadIdempotentOnReFire(t *testing.T) {
+	ctx := context.Background()
+	h := newSeedHarness(t)
+
+	attachFakeRunner(t, h.store, h.hub, false)
+	h.awaitSeed(t)
+
+	supervisor, err := h.store.AgentByHandle(ctx, rootSupervisorHandle)
+	if err != nil {
+		t.Fatalf("AgentByHandle(supervisor) after seed = %v, want the seeded root", err)
+	}
+	home := supervisor.Agent.HomeChannelID
+	if n := setupMessageCount(t, ctx, h.dsn, home, h.compassID); n != 1 {
+		t.Fatalf("Setup messages after first seed = %d, want 1", n)
+	}
+
+	// Re-fire the seed directly (the supervisor is now live, so SpawnAgent joins
+	// the completed spawn or rejects on-live — both arms reach postSetupThread).
+	seedRootSupervisor(ctx, h.store, h.svc, h.commsSvc, h.adminID, h.compassID, slog.New(slog.DiscardHandler))
+
+	if n := setupMessageCount(t, ctx, h.dsn, home, h.compassID); n != 1 {
+		t.Fatalf("Setup messages after a seed re-fire = %d, want still 1 (the scoped key dedups)", n)
+	}
+}
+
+// TestSeedSetupThreadPublishesOneMessagePosted pins the fan-out: the genuine
+// first insert publishes exactly ONE MessagePosted on the comms bus. Event-gated
+// (design.md:599-600): subscribe BEFORE the seed, then assert the received event
+// off the live tail — no poll, no sleep. The seed's PostAsAccount publishes
+// synchronously before the seed goroutine returns (awaitSeed), so the event is
+// buffered on Live by the time this reads it.
+//
+// Mutation: dropping publishMessagePosted's inserted-gate, or re-firing a
+// duplicate publish, would surface a second MessagePosted the drain would catch.
+func TestSeedSetupThreadPublishesOneMessagePosted(t *testing.T) {
+	ctx := context.Background()
+	h := newSeedHarness(t)
+
+	// Subscribe before the seed fires so the post's MessagePosted lands on Live.
+	sub, err := h.commsBus.Subscribe(0, 0)
+	if err != nil {
+		t.Fatalf("commsBus.Subscribe: %v", err)
+	}
+	defer sub.Cancel()
+
+	attachFakeRunner(t, h.store, h.hub, false)
+	h.awaitSeed(t)
+
+	supervisor, err := h.store.AgentByHandle(ctx, rootSupervisorHandle)
+	if err != nil {
+		t.Fatalf("AgentByHandle(supervisor) after seed = %v, want the seeded root", err)
+	}
+
+	// Exactly one MessagePosted for the Setup post. The first event off Live must
+	// be a MessagePosted authored by @compass; then no further MessagePosted
+	// arrives (a short drain window bounds the "exactly one").
+	first := awaitCommsEvent(t, sub.Live)
+	mp := first.GetMessagePosted()
+	if mp == nil {
+		t.Fatalf("first comms event payload = %T, want a MessagePosted", first.GetPayload())
+	}
+	if got := mp.GetMessage().GetAuthorAccountId(); got != string(h.compassID) {
+		t.Fatalf("MessagePosted author = %q, want @compass %q", got, h.compassID)
+	}
+	assertNoMoreMessagePosted(t, sub.Live)
+
+	_ = supervisor
+}
+
+// awaitCommsEvent reads one event off the comms live tail, failing on a deadline.
+func awaitCommsEvent(t *testing.T, live <-chan events.Stamped[*compassv1.SubscribeCommsResponse]) *compassv1.SubscribeCommsResponse {
+	t.Helper()
+	select {
+	case ev, ok := <-live:
+		if !ok {
+			t.Fatal("comms live tail closed before any event")
+		}
+		return ev.Payload
+	case <-time.After(30 * time.Second):
+		t.Fatal("no comms event on the live tail")
+		return nil
+	}
+}
+
+// assertNoMoreMessagePosted drains a short window and fails on a second
+// MessagePosted — bounding the Setup post to exactly one fan-out.
+func assertNoMoreMessagePosted(t *testing.T, live <-chan events.Stamped[*compassv1.SubscribeCommsResponse]) {
+	t.Helper()
+	for {
+		select {
+		case ev, ok := <-live:
+			if !ok {
+				return
+			}
+			if ev.Payload.GetMessagePosted() != nil {
+				t.Fatalf("a second MessagePosted arrived, want exactly one for the Setup post")
+			}
+		case <-time.After(500 * time.Millisecond):
+			return
+		}
 	}
 }

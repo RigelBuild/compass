@@ -692,6 +692,22 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 			t.Fatalf("minted token resolves to %s, want the target account %s", subj.ID, admin)
 		}
 	})
+
+	t.Run("system account is PermissionDenied and mints no token", func(t *testing.T) {
+		rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
+		defer cancel()
+		sys, err := st.EnsureSystemAccount(ctx)
+		if err != nil {
+			t.Fatalf("EnsureSystemAccount: %v", err)
+		}
+		resp, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: string(sys.ID)}))
+		if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
+			t.Fatalf("IssueToken for the system account = %v, want CodePermissionDenied — @compass is not authenticatable", code)
+		}
+		if resp != nil {
+			t.Fatalf("IssueToken for the system account returned a response %+v — no token may be minted for @compass", resp.Msg)
+		}
+	})
 }
 
 // TestServeWithListenWritesAdminToken0600: on a --listen start, Serve mints the

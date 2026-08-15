@@ -112,10 +112,12 @@ func (s *Store) adminByHandle(ctx context.Context, handle string) (Account, erro
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
+		       sy.account_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
+		LEFT JOIN system_accounts sy ON sy.account_id = a.id
 		WHERE a.handle = $1`
 	acc, err := scanAccount(s.pool.QueryRow(ctx, q, handle))
 	if err != nil {
@@ -123,6 +125,78 @@ func (s *Store) adminByHandle(ctx context.Context, handle string) (Account, erro
 	}
 	if acc.User == nil || acc.User.Role != UserRoleAdmin {
 		return Account{}, fmt.Errorf("%w: handle %q exists but is not an admin", ErrConflict, handle)
+	}
+	return acc, nil
+}
+
+// EnsureSystemAccount ensures the reserved system sender (@compass) exists and
+// returns it, idempotently — the seed for the platform's first-turn delivery.
+// Mirrors BootstrapAdmin's unique-violation-means-fetch shape: on first boot it
+// mints one accounts row (handle SystemAccountHandle, display name "Compass")
+// with a system_accounts subtype row — NOT a user or agent row; on every later
+// boot the insert hits the unique handle and the existing row is fetched and
+// returned. Its own insert is deliberately NOT routed through validateHandle:
+// this is the one path that mints the reserved handle. A pre-existing @compass
+// row of the wrong shape (a user or agent row from a pre-guard database) is
+// ErrConflict and fails startup — never silent adoption, mirroring
+// adminByHandle's posture.
+func (s *Store) EnsureSystemAccount(ctx context.Context) (Account, error) {
+	id := newID()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return Account{}, fmt.Errorf("store: begin ensure system account: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after a successful commit; safe on every non-commit path.
+
+	if _, err := tx.Exec(ctx,
+		"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
+		id, SystemAccountHandle, systemAccountDisplayName,
+	); err != nil {
+		if pgErrIs(err, pgUniqueViolation) {
+			// Already seeded (restart): fetch and return the existing system account.
+			return s.systemByHandle(ctx, SystemAccountHandle)
+		}
+		return Account{}, fmt.Errorf("store: insert account: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		"INSERT INTO system_accounts (account_id) VALUES ($1)", id,
+	); err != nil {
+		return Account{}, fmt.Errorf("store: insert system_account: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Account{}, fmt.Errorf("store: commit ensure system account: %w", err)
+	}
+
+	return Account{
+		ID:          AccountID(id),
+		Handle:      SystemAccountHandle,
+		DisplayName: systemAccountDisplayName,
+		System:      &SystemAccount{},
+	}, nil
+}
+
+// systemByHandle fetches an existing account by handle and asserts it is the
+// system subtype, backing EnsureSystemAccount's idempotent restart path. A
+// handle that exists as a non-system account (a user or agent row from a
+// pre-guard database) is a misconfiguration: ErrConflict, never a silent
+// adoption of a foreign row as the privileged system sender.
+func (s *Store) systemByHandle(ctx context.Context, handle string) (Account, error) {
+	const q = `
+		SELECT a.id, a.handle, a.display_name,
+		       u.role,
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
+		       sy.account_id
+		FROM accounts a
+		LEFT JOIN user_accounts u ON u.account_id = a.id
+		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
+		LEFT JOIN system_accounts sy ON sy.account_id = a.id
+		WHERE a.handle = $1`
+	acc, err := scanAccount(s.pool.QueryRow(ctx, q, handle))
+	if err != nil {
+		return Account{}, fmt.Errorf("store: resolve system account by handle: %w", err)
+	}
+	if acc.System == nil {
+		return Account{}, fmt.Errorf("%w: handle %q exists but is not the system account", ErrConflict, handle)
 	}
 	return acc, nil
 }
@@ -245,6 +319,34 @@ func (s *Store) CountRootAgents(ctx context.Context, ownerUserID AccountID) (int
 	return n, nil
 }
 
+// EnsureChannelMember idempotently adds account to channelID as an UNSUBSCRIBED
+// member (subscribed=FALSE), mirroring the coordination-hook insert
+// (coordination.go:273-282) but as a single-statement pool write, not in a tx:
+// there is no delivery cursor to seed alongside it. It backs the first-launch
+// Setup post (T4), which must make @compass a member of the supervisor's home
+// channel BEFORE posting — PostMessage D9-gates the post on membership
+// (messages.go, requireChannelMember). It is deliberately NOT UpdateChannelMembers:
+// that path D9-gates on the ACTOR already being a member (a chicken-and-egg for
+// this seed insert, which runs server-internal with no naturally-authorized
+// actor) and fires membership events + owner-transitive add logic the seed does
+// not want. NO delivery cursor is seeded: @compass is a system account with no
+// agent_accounts row, and cursors are agent-only (delivery_cursors.go); it posts,
+// never receives. ON CONFLICT DO NOTHING makes a re-fire a no-op. An unknown
+// channel or account is ErrInvalidArgument (the FK violation), never a store fault.
+func (s *Store) EnsureChannelMember(ctx context.Context, channelID ChannelID, accountID AccountID) error {
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO channel_members (channel_id, account_id, subscribed) VALUES ($1, $2, FALSE) `+
+			`ON CONFLICT (channel_id, account_id) DO NOTHING`,
+		string(channelID), string(accountID),
+	); err != nil {
+		if pgErrIs(err, pgForeignKeyViolation) {
+			return fmt.Errorf("%w: unknown channel %q or account %q", ErrInvalidArgument, channelID, accountID)
+		}
+		return fmt.Errorf("store: ensure channel member: %w", err)
+	}
+	return nil
+}
+
 // GetAccount returns one account by id, or ErrNotFound if it does not exist.
 // GetAccount is an id-addressed fetch used internally by other store methods
 // and the auth layer; caller-facing visibility scoping is applied by
@@ -253,10 +355,12 @@ func (s *Store) GetAccount(ctx context.Context, id AccountID) (Account, error) {
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
+		       sy.account_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
+		LEFT JOIN system_accounts sy ON sy.account_id = a.id
 		WHERE a.id = $1`
 	acc, err := scanAccount(s.pool.QueryRow(ctx, q, string(id)))
 	if err != nil {
@@ -426,10 +530,12 @@ func (s *Store) ReparentAgent(ctx context.Context, caller, agentAccountID, newPa
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
+		       sy.account_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
+		LEFT JOIN system_accounts sy ON sy.account_id = a.id
 		WHERE a.id = $1`
 	acc, err := scanAccount(tx.QueryRow(ctx, q, string(agentAccountID)))
 	if err != nil {
@@ -512,10 +618,12 @@ func (s *Store) AgentByHandle(ctx context.Context, handle string) (Account, erro
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
+		       sy.account_id
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
+		LEFT JOIN system_accounts sy ON sy.account_id = a.id
 		WHERE a.handle = $1`
 	acc, err := scanAccount(s.pool.QueryRow(ctx, q, handle))
 	if err != nil {
@@ -552,6 +660,7 @@ const accountVisibleFromWhere = `
 		FROM accounts a
 		LEFT JOIN user_accounts u ON u.account_id = a.id
 		LEFT JOIN agent_accounts ag ON ag.account_id = a.id
+		LEFT JOIN system_accounts sy ON sy.account_id = a.id
 		WHERE (
 		        a.id = $1
 		     OR u.account_id IS NOT NULL
@@ -570,7 +679,8 @@ func (s *Store) ListAccounts(ctx context.Context, visibleTo AccountID) ([]Accoun
 	const q = `
 		SELECT a.id, a.handle, a.display_name,
 		       u.role,
-		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id` +
+		       ag.owner_user_id, ag.home_channel_id, ag.persona, ag.role, ag.parent_agent_id,
+		       sy.account_id` +
 		accountVisibleFromWhere + `
 		ORDER BY a.handle`
 	rows, err := s.pool.Query(ctx, q, string(visibleTo))
@@ -610,22 +720,26 @@ func (s *Store) AccountVisibleTo(ctx context.Context, actor AccountID, target Ac
 }
 
 // scanAccount reads one joined account row (accounts LEFT JOIN user_accounts
-// LEFT JOIN agent_accounts) into an Account, setting exactly the User or Agent
-// subtype by which side of the join populated. Shared by GetAccount and
-// ListAccounts so the oneof reconstruction lives in one place.
+// LEFT JOIN agent_accounts LEFT JOIN system_accounts) into an Account, setting
+// exactly the User, Agent, or System subtype by which side of the join
+// populated. Shared by GetAccount and ListAccounts so the oneof reconstruction
+// lives in one place. The system_accounts column is scanned LAST, so every
+// projection that feeds scanAccount must select it in that position or the
+// fixed-arity Scan mismatches.
 func scanAccount(row pgx.Row) (Account, error) {
 	var (
-		acc           Account
-		id, handle    string
-		displayName   string
-		role          *int32
-		ownerUserID   *string
-		homeChannelID *string
-		persona       *string
-		agRole        *string
-		parentAgentID *string
+		acc             Account
+		id, handle      string
+		displayName     string
+		role            *int32
+		ownerUserID     *string
+		homeChannelID   *string
+		persona         *string
+		agRole          *string
+		parentAgentID   *string
+		systemAccountID *string
 	)
-	if err := row.Scan(&id, &handle, &displayName, &role, &ownerUserID, &homeChannelID, &persona, &agRole, &parentAgentID); err != nil {
+	if err := row.Scan(&id, &handle, &displayName, &role, &ownerUserID, &homeChannelID, &persona, &agRole, &parentAgentID, &systemAccountID); err != nil {
 		return Account{}, err
 	}
 	acc.ID = AccountID(id)
@@ -649,6 +763,8 @@ func scanAccount(row pgx.Row) (Account, error) {
 			agent.ParentAgentID = AccountID(*parentAgentID)
 		}
 		acc.Agent = agent
+	case systemAccountID != nil:
+		acc.System = &SystemAccount{}
 	}
 	return acc, nil
 }

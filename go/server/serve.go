@@ -219,6 +219,29 @@ func openStore(ctx context.Context, cfg ServeConfig) (*store.Store, error) {
 	return st, nil
 }
 
+// seedBootstrapAccounts brings up the two platform accounts a boot needs before
+// serving: the bootstrap admin — the account the local-socket door attributes
+// every RPC to until the network door sets a real caller (the 0600 socket is the
+// local credential) — and the reserved system sender @compass, the first-turn
+// delivery sender. Both are find-or-create by handle: minted on first boot,
+// fetched on every later one, so the call is idempotent. The admin handle is
+// operator-settable via --admin-handle (defaulting to bootstrapAdminHandle); a
+// non-default handle already naming a non-admin account fails rather than
+// elevating it, and a pre-existing @compass row of the wrong shape fails rather
+// than being silently adopted — neither reserved account is ever quietly reused.
+func seedBootstrapAccounts(ctx context.Context, st *store.Store, cfg ServeConfig) (admin, system store.Account, err error) {
+	admin, err = st.BootstrapAdmin(ctx, store.NewUser{Handle: cfg.resolvedAdminHandle(), DisplayName: bootstrapAdminDisplayName})
+	if err != nil {
+		return store.Account{}, store.Account{}, fmt.Errorf("bootstrapping admin account: %w", err)
+	}
+	system, err = st.EnsureSystemAccount(ctx)
+	if err != nil {
+		return store.Account{}, store.Account{}, fmt.Errorf("seeding system account: %w", err)
+	}
+	slog.Default().Info("system account seeded", "account_id", system.ID, "handle", system.Handle)
+	return admin, system, nil
+}
+
 // Serve binds the compass.v1 service to cfg.SocketPath and drives it until ctx
 // is cancelled.
 //
@@ -310,23 +333,18 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 	defer st.Close()
 
-	// The bootstrap admin is the account the local-socket door attributes every
-	// RPC to until the network-door interceptor sets a real caller identity (the
-	// 0600 socket is the local credential). Idempotent: created on first boot,
-	// fetched on every later one. Created unconditionally — even socket-only —
-	// so the AdminGate always has a real admin id to compare against.
-	//
-	// The handle is operator-settable via --admin-handle (cfg.AdminHandle),
-	// defaulting to bootstrapAdminHandle when unset — the same default the
-	// network door logs against, so the minted account and the log never drift.
-	// Find-or-create by handle: a non-default handle that already names a
-	// non-admin account fails startup (BootstrapAdmin returns ErrConflict rather
-	// than elevating it), never silently reusing a member account as admin.
-	admin, err := st.BootstrapAdmin(ctx, store.NewUser{Handle: cfg.resolvedAdminHandle(), DisplayName: bootstrapAdminDisplayName})
+	// Seed the two platform accounts before serving: the bootstrap admin and the
+	// reserved system sender @compass. Created unconditionally — even socket-only
+	// — so the AdminGate always has a real admin id to compare against. Both are
+	// idempotent find-or-create; a wrong-shape row under either reserved handle
+	// fails startup rather than being adopted. The system account id backs the
+	// first-turn seed a later task wires; for now the helper logs it so the
+	// seeded row is observable at boot.
+	admin, systemAccount, err := seedBootstrapAccounts(ctx, st, cfg)
 	if err != nil {
 		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
 		listeners.close()
-		return fmt.Errorf("bootstrapping admin account: %w", err)
+		return err
 	}
 
 	// The store of record backs the network door's bearer credentials: IssueToken
@@ -401,7 +419,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// create), so a reconnect re-fire is safe. adminID is the bootstrap admin the
 	// supervisor is owned by.
 	seedLog := slog.Default()
-	hub.SetRunnerReadyHook(func() { seedRootSupervisor(ctx, st, svc, admin.ID, seedLog) })
+	hub.SetRunnerReadyHook(func() { seedRootSupervisor(ctx, st, svc, commsSvc, admin.ID, systemAccount.ID, seedLog) })
 	// The SecretsService is an account-facing sibling of CompassService/CommsService:
 	// it mounts on every account door (socket, dev, network) behind the same bearer +
 	// admin-gate chain, which classifies its three procedures authenticatedOpen — the
