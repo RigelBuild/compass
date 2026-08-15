@@ -41,6 +41,11 @@ type Fixture struct {
 	dsn       string
 	caPath    string
 	serverURL string
+	// adminToken is the bootstrap-admin bearer read from disk at Up (the same
+	// credential the authed clients carry). Retained so a client-mode leg can
+	// build its own bridge target bearer against the real door; exposed via
+	// AdminToken(). Never logged.
+	adminToken string
 	// runtimeDir is this fixture's unique runner runtime-dir (shortRoot/rt),
 	// forwarded to the runner as --runtime-dir. Exposed so a process-table
 	// assertion can scope its match to this fixture's own runner.
@@ -128,6 +133,25 @@ func (f *Fixture) Stack() *stack.Stack { return f.stack }
 
 // DSN is the private-postgres keyword/value DSN for store-side assertions.
 func (f *Fixture) DSN() string { return f.dsn }
+
+// ServerURL is the https loopback TLS-door base URL the stack listens on — the
+// server_url a native client-mode connection dials. Exposed for a client-mode
+// leg that builds its own bridge target against the real door.
+func (f *Fixture) ServerURL() string { return f.serverURL }
+
+// CAPath is the filesystem path to the stack's self-signed TLS anchor
+// (StateDir/tls.crt) — the ca_cert a native client-mode connection pins.
+func (f *Fixture) CAPath() string { return f.caPath }
+
+// AdminToken is the bootstrap-admin bearer the stack minted at Up. Exposed for a
+// client-mode leg that arms its own bridge target; it is the same credential the
+// authed clients carry. Never log it.
+func (f *Fixture) AdminToken() string { return f.adminToken }
+
+// RuntimeDir is this fixture's unique runner runtime-dir (shortRoot/rt). Exposed
+// so a process-hygiene assertion can scope its /proc scan to this fixture's own
+// child processes rather than matching unrelated host processes.
+func (f *Fixture) RuntimeDir() string { return f.runtimeDir }
 
 // NewFixture stands up the real embedded stack over stack.Up with the real
 // adapter set and returns a Fixture with authenticated Connect clients. It
@@ -274,6 +298,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		dsn:        dsn,
 		caPath:     caPath,
 		serverURL:  serverURL,
+		adminToken: adminToken,
 		runtimeDir: runtimeDir,
 		stub:       stub,
 		now:        time.Now,
