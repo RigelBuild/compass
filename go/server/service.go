@@ -442,6 +442,33 @@ func (s *service) IssueToken(
 	return connect.NewResponse(&compassv1.IssueTokenResponse{Token: token}), nil
 }
 
+// RevokeToken withdraws a bearer token by its presented plaintext (network door,
+// admin-gated by classifyProcedure). The CLI sends the plaintext over the
+// authenticated door and this handler hashes it (auth.RevokeToken → hashToken):
+// the server is the only party that hashes, and the store keys tokens by hash,
+// never plaintext. Revocation is per-hash (this one token), not per-account.
+// An empty token is a client error (InvalidArgument). A token that was never
+// issued is NotFound; an already-revoked token is a no-op success (the store
+// returns nil), so a repeat revoke is not an error.
+func (s *service) RevokeToken(
+	ctx context.Context,
+	req *connect.Request[compassv1.RevokeTokenRequest],
+) (*connect.Response[compassv1.RevokeTokenResponse], error) {
+	token := req.Msg.GetToken()
+	if token == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument,
+			errors.New("token is required"))
+	}
+	if err := auth.RevokeToken(ctx, s.store, token); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeNotFound,
+				errors.New("no such token"))
+		}
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	return connect.NewResponse(&compassv1.RevokeTokenResponse{}), nil
+}
+
 // SubscribeEvents snapshots the event ring then tails live updates until the
 // client disconnects, the server shuts down, or the subscriber lags past the
 // ring — the lag case emits a final ResyncRequired so the client re-snapshots.

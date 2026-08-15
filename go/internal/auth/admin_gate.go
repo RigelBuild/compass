@@ -63,6 +63,7 @@ func classifyProcedure(procedure string) (privilege, bool) {
 		compassv1connect.CompassServiceReloadAgentSessionProcedure,
 		compassv1connect.CompassServiceGetAgentStatusProcedure,
 		compassv1connect.CompassServiceIssueTokenProcedure,
+		compassv1connect.CompassServiceRevokeTokenProcedure,
 		compassv1connect.CompassServicePutAgentConfigProcedure,
 		compassv1connect.CompassServiceDeleteAgentConfigProcedure:
 		return adminOnly{}, true

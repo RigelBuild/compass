@@ -119,6 +119,15 @@ service CompassService {
   // out-of-band at first start).
   rpc IssueToken(IssueTokenRequest) returns (IssueTokenResponse);
 
+  // Admin-gated: only an admin may revoke a token; a non-admin caller gets
+  // permission_denied. Revocation is BY TOKEN VALUE (per-hash), not by
+  // account: the caller presents the token plaintext and the server hashes it,
+  // marking that one token's stored hash revoked. Idempotent — revoking an
+  // already-revoked token succeeds; revoking a token that was never issued is
+  // not_found. The plaintext is carried on the wire only to be hashed
+  // server-side; it is never logged (debug_redact).
+  rpc RevokeToken(RevokeTokenRequest) returns (RevokeTokenResponse);
+
   // Declare the fleet agent-config bundle: the gzip tarball of skills/,
   // extensions/, and mcp/ material every agent materializes into its scoped
   // config dir. Whole-bundle replace (current-only): the new bundle supersedes
@@ -669,6 +678,17 @@ message IssueTokenResponse {
   // subsequent requests; the server retains only its hash.
   string token = 1;
 }
+
+// RevokeToken: the admin-only path to withdraw a bearer token by its value.
+message RevokeTokenRequest {
+  // The bearer token plaintext to revoke. Carried on the wire only so the
+  // server can hash it (the store keys tokens by SHA-256 hash, never by
+  // plaintext); never logged. The caller's identity is the authenticated
+  // connection, never a field here.
+  string token = 1 [debug_redact = true];
+}
+
+message RevokeTokenResponse {}
 
 // PutAgentConfig: declare the fleet config bundle. The caller's identity is the
 // authenticated connection, never a field here.

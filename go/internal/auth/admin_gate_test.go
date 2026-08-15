@@ -122,6 +122,7 @@ func TestAdminGateGatesFrozenAdminOnlyRPCs(t *testing.T) {
 		{"ReloadAgentSession", compassv1connect.CompassServiceReloadAgentSessionProcedure},
 		{"GetAgentStatus", compassv1connect.CompassServiceGetAgentStatusProcedure},
 		{"IssueToken", compassv1connect.CompassServiceIssueTokenProcedure},
+		{"RevokeToken", compassv1connect.CompassServiceRevokeTokenProcedure},
 		{"RemoveAgentWorkspace", compassv1connect.CompassServiceRemoveAgentWorkspaceProcedure},
 	}
 
