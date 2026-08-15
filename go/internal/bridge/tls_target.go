@@ -54,6 +54,14 @@ func NewTLSTarget(serverURL string, caPEM []byte) (*Target, error) {
 	}, nil
 }
 
+// Client exposes the target's underlying *http.Client and base URL so a probe
+// can build a connect-go client over the same TLS-anchored http.Client the
+// bridge target uses (T5.3). The probe client thus shares the target's
+// bearer-injecting transport: the only way a probe request carries a candidate
+// token is via SetBearer (a request-level Authorization header is stripped,
+// DL-107). client/baseURL are defined on the shared Target struct in pump.go.
+func (t *Target) Client() (*http.Client, string) { return t.client, t.baseURL }
+
 // SetBearer arms (or disarms) the target's Authorization injection. When token
 // is non-empty every forwarded request carries exactly "Authorization: Bearer
 // <token>", overwriting any caller-supplied authorization header (the DL-107

@@ -21,10 +21,18 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
+	"errors"
+	"net"
 	"sync"
 
+	"connectrpc.com/connect"
+
+	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/sealedsecurity/compass/go/internal/bridge"
+	"github.com/sealedsecurity/compass/go/internal/tokenstore"
 )
 
 // eventEmitter is the seam the bridge service emits response frames through. Its
@@ -43,6 +51,14 @@ type eventEmitter interface {
 type bridgeService struct {
 	pump   *bridge.Pump
 	events eventEmitter
+
+	// target is the TLS-anchored remote bridge target (native-client mode). The
+	// Connect probe arms it via SetBearer and forwards through its
+	// bearer-injecting transport. Nil in embedded mode, which never calls Connect.
+	target *bridge.Target
+	// tokens persists the remote bearer keyed by server URL (T5.2). Nil in
+	// embedded mode.
+	tokens tokenstore.Store
 
 	// accountID is the caller account id resolved by the embedded launch
 	// pipeline via WhoAmI (DL-111), exposed to the JS/UI through the bound
@@ -65,11 +81,14 @@ type inflightCall struct {
 }
 
 // newBridgeService builds a bridge service that forwards against pump and emits
-// response frames through events.
-func newBridgeService(pump *bridge.Pump, events eventEmitter) *bridgeService {
+// response frames through events. target and tokens back the Connect probe in
+// native-client mode; both are nil in embedded mode, which never calls Connect.
+func newBridgeService(pump *bridge.Pump, events eventEmitter, target *bridge.Target, tokens tokenstore.Store) *bridgeService {
 	return &bridgeService{
 		pump:     pump,
 		events:   events,
+		target:   target,
+		tokens:   tokens,
 		inflight: make(map[string]*inflightCall),
 	}
 }
@@ -160,6 +179,83 @@ func (s *bridgeService) CompassRPCCancel(_ context.Context, req cancelRequest) {
 	}
 }
 
+// Connect runs the native-client connect probe against the remote daemon over
+// the target's TLS-anchored, bearer-injecting transport, and persists+arms the
+// token on success. A non-empty req.Token is the candidate; an empty token means
+// "use the stored one" (boot auto-connect). On any failure the target is
+// disarmed before returning so a failed probe never leaves a bad bearer armed
+// (T5 starts unarmed and only a successful Connect arms it). The token never
+// appears in Message or any log/error.
+func (s *bridgeService) Connect(ctx context.Context, req connectRequest) connectResult {
+	client, serverURL := s.target.Client()
+
+	candidate := req.Token
+	if candidate == "" {
+		stored, err := s.tokens.Read(serverURL)
+		if err != nil {
+			if errors.Is(err, tokenstore.ErrNotFound) {
+				return connectResult{Kind: connectKindBadToken, Message: "No stored token; enter one to connect"}
+			}
+			return connectResult{Kind: connectKindOther, Message: "Could not read the stored token"}
+		}
+		candidate = stored
+	}
+
+	// Arm the target so the probe carries the candidate: the RoundTripper strips
+	// any request-level Authorization (DL-107), so SetBearer is the only path.
+	s.target.SetBearer(candidate)
+
+	cc := compassv1connect.NewCompassServiceClient(client, serverURL)
+
+	infoResp, err := cc.GetServerInfo(ctx, connect.NewRequest(&compassv1.GetServerInfoRequest{}))
+	if err != nil {
+		s.target.SetBearer("")
+		kind, message := classifyConnectErr(err)
+		return connectResult{Kind: kind, Message: message}
+	}
+	serverVersion := infoResp.Msg.GetVersion()
+	serverAPIVersion := infoResp.Msg.GetApiVersion()
+
+	if serverAPIVersion != clientAPIVersion {
+		s.target.SetBearer("")
+		return connectResult{
+			Kind:          connectKindVersionMismatch,
+			Message:       "The app speaks " + clientAPIVersion + "; the server speaks " + serverAPIVersion,
+			ServerVersion: serverVersion,
+			APIVersion:    serverAPIVersion,
+		}
+	}
+
+	whoResp, err := cc.WhoAmI(ctx, connect.NewRequest(&compassv1.WhoAmIRequest{}))
+	if err != nil {
+		s.target.SetBearer("")
+		kind, message := classifyConnectErr(err)
+		return connectResult{Kind: kind, Message: message}
+	}
+	accountID := whoResp.Msg.GetAccountId()
+	if accountID == "" {
+		// Mirror embedded.go's resolveCaller: an empty id is never a valid
+		// identity, even on an otherwise-successful WhoAmI.
+		s.target.SetBearer("")
+		return connectResult{Kind: connectKindOther, Message: "The server returned an empty account id"}
+	}
+
+	if err := s.tokens.Write(serverURL, candidate); err != nil {
+		s.target.SetBearer("")
+		return connectResult{Kind: connectKindOther, Message: "Connected, but could not save the token"}
+	}
+
+	// Success: leave the target armed with the candidate. AccountID rides in the
+	// result only — writing s.accountID here would race its lock-free set-once
+	// read (see the accountID field doc).
+	return connectResult{
+		OK:            true,
+		AccountID:     accountID,
+		ServerVersion: serverVersion,
+		APIVersion:    serverAPIVersion,
+	}
+}
+
 // register derives the forwarding context for a call and records the call's
 // teardown handle under requestID, cancelling any prior call already under that
 // id first (so a stale forwarder can never keep emitting onto the same event).
@@ -246,4 +342,65 @@ func frameToResponse(f bridge.Frame) responseFrame {
 	// exhaustive. Returning an error frame keeps go-no-panic-in-lib clean rather
 	// than panicking on a hypothetical new variant.
 	return responseFrame{Kind: frameKindError, Message: "compass bridge: unknown response frame"}
+}
+
+// clientAPIVersion is the compass API version the app speaks. The server's own
+// apiVersion constant is unexported (go/server/service.go), so the app pins its
+// OWN literal and a drift-guard test cross-checks it against a live
+// GetServerInfo. Keep in sync with go/server/service.go apiVersion.
+const clientAPIVersion = "compass.v1"
+
+// connectKind* is the sealed failure-kind vocabulary a Connect probe returns
+// (empty Kind = success). It is the contract the connect screen renders one
+// visual state per (T5.5/T5.6).
+const (
+	connectKindBadURL          = "bad-url"
+	connectKindBadCert         = "bad-cert"
+	connectKindBadToken        = "bad-token"
+	connectKindVersionMismatch = "version-mismatch"
+	connectKindOther           = "other"
+)
+
+// connectRequest is the compass Connect argument: a pasted bearer token, or the
+// empty string meaning "use the stored one" (a boot-internal auto-connect call,
+// never a user submit).
+type connectRequest struct {
+	Token string `json:"token"`
+}
+
+// connectResult is the Connect outcome the webview renders. Kind is the sealed
+// failure vocabulary; Message is safe prose that NEVER contains the token.
+// AccountID rides in the result only — it is deliberately NOT written to the
+// service's set-once accountID field, which is read without a lock and would
+// race a webview-goroutine Connect (bridge_service.go accountID doc).
+type connectResult struct {
+	OK            bool   `json:"ok"`
+	Kind          string `json:"kind"`    // "" | "bad-url" | "bad-cert" | "bad-token" | "version-mismatch" | "other"
+	Message       string `json:"message"` // safe prose, NEVER the token
+	AccountID     string `json:"accountId"`
+	ServerVersion string `json:"serverVersion"`
+	APIVersion    string `json:"apiVersion"`
+}
+
+// classifyConnectErr maps a probe error to a sealed connect kind + safe message.
+// connect wraps transport failures, so a TLS/dial cause surfaces as a
+// *connect.Error (CodeUnavailable) wrapping the net/tls error; errors.As reaches
+// the underlying cause THROUGH the connect wrapper.
+func classifyConnectErr(err error) (kind, message string) {
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return connectKindBadCert, "The server's certificate is not trusted"
+	}
+
+	var dnsErr *net.DNSError
+	var opErr *net.OpError
+	if errors.As(err, &dnsErr) || errors.As(err, &opErr) || errors.Is(err, context.DeadlineExceeded) {
+		return connectKindBadURL, "Could not reach the server at this URL"
+	}
+
+	if connect.CodeOf(err) == connect.CodeUnauthenticated {
+		return connectKindBadToken, "The server rejected this token"
+	}
+
+	return connectKindOther, "Could not connect to the server"
 }

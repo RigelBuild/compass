@@ -227,3 +227,21 @@ func TestTLSTargetUnarmedStripsCallerAuthorization(t *testing.T) {
 		t.Error("caller-supplied Authorization reached server while unarmed, want stripped")
 	}
 }
+
+// Client returns the same non-nil *http.Client the target forwards through and
+// the base URL the constructor was given, so a T5.3 probe can build a connect-go
+// client on the target's bearer-injecting transport.
+func TestTLSTargetClientAccessor(t *testing.T) {
+	srv, certPEM := tlsStubServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	target := tlsTarget(t, srv, certPEM)
+	client, baseURL := target.Client()
+	if client == nil {
+		t.Fatal("Client() returned a nil *http.Client")
+	}
+	if baseURL != srv.URL {
+		t.Errorf("Client() baseURL = %q, want %q", baseURL, srv.URL)
+	}
+}
