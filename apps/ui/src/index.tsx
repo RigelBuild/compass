@@ -4,6 +4,7 @@ import { createRoot } from "solid-js";
 import { render } from "solid-js/web";
 import App from "./App";
 import { bootCaller, bootConnection, renderBootError } from "./boot";
+import { bootNativeClient } from "./boot-native";
 import { StoreContext } from "./context";
 import { createLiveClients, resolveCaller } from "./live/client";
 import {
@@ -11,6 +12,7 @@ import {
 	type ResolvedConnection,
 } from "./live/provider";
 import { AppRoutes } from "./routes";
+import { shellMode } from "./shell-globals";
 import { createAppStore } from "./store";
 
 const root = document.getElementById("root");
@@ -18,18 +20,34 @@ if (!root) {
 	throw new Error("missing #root element");
 }
 
-// Boot resolves the connection through a ConnectionProvider (the default env
-// provider in the browser dev build; a shell-provided provider in the native
-// app). resolve() is async, so the whole boot sequence runs inside a single
-// async chain: bootConnection catches a resolve throw at the boundary and paints
-// the resolver's own message into #root — a missing VITE_COMPASS_BASE_URL still
-// throws by design (live/connection.ts) and still lands on the same failure
-// screen — and main() carries on only when a connection resolved. Undefined
-// means there is nothing valid to dial, so we stop rather than boot against a
-// wrong default, and the error screen is the whole UI. A post-connection boot
-// failure (createRoot/createAppStore/render throwing) routes to the same painter
-// so a swallowed `void` promise never leaves a blank #root.
-void bootConnection(root, () => envConnectionProvider().resolve())
+// Entry dispatch on the shell-injected launch mode (OQ-8), read synchronously
+// with NO IPC — the entry point must pick a boot path before any Go getter is
+// reachable. The mode difference stays confined to which connection PROVIDER
+// boot installs (§A1's one sanctioned divergence): `main()` below is uniform.
+//
+//   "client"  → bootNativeClient gates on the shell's armed connection (probe +
+//               connect screen), then boots through the SAME main() chain.
+//   "embedded" → the native embedded provider. T5.6 wires that provider; until
+//               then embedded shares the env path (a co-hosted server is dialed
+//               by env just like the browser dev build), so it falls through.
+//   absent    → the UNCHANGED browser-dev path: envConnectionProvider.
+//
+// Boot resolves the connection through a ConnectionProvider. resolve() is async,
+// so the whole sequence runs inside a single async chain: bootConnection catches
+// a resolve throw at the boundary and paints the resolver's own message into
+// #root — a missing VITE_COMPASS_BASE_URL still throws by design
+// (live/connection.ts) and still lands on the same failure screen — and main()
+// carries on only when a connection resolved. Undefined means there is nothing
+// valid to dial (or, in client mode, the user cannot proceed), so we stop rather
+// than boot against a wrong default, and the gate/error screen is the whole UI.
+// A post-connection boot failure (createRoot/createAppStore/render throwing)
+// routes to the same painter so a swallowed `void` promise never leaves a blank
+// #root.
+const bootConnectionForMode =
+	shellMode() === "client"
+		? () => bootNativeClient(root)
+		: () => bootConnection(root, () => envConnectionProvider().resolve());
+void bootConnectionForMode()
 	.then((connection) => {
 		if (connection) {
 			return main(root, connection);
