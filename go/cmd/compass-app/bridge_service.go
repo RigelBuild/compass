@@ -60,6 +60,14 @@ type bridgeService struct {
 	// embedded mode.
 	tokens tokenstore.Store
 
+	// connectMu serializes the whole Connect probe transaction (arm → probe →
+	// classify → disarm/persist). The target's bearer is a single shared slot,
+	// so without this two overlapping Connect calls — a boot auto-connect racing
+	// a user submit, or a double submit — could interleave: one probe carrying
+	// the other's token, or a failing call disarming a target the other just
+	// armed. Held for the whole method so each Connect is single-flight.
+	connectMu sync.Mutex
+
 	// accountID is the caller account id resolved by the embedded launch
 	// pipeline via WhoAmI (DL-111), exposed to the JS/UI through the bound
 	// AccountID method so it can build the native ConnectionProvider. It is set
@@ -187,6 +195,19 @@ func (s *bridgeService) CompassRPCCancel(_ context.Context, req cancelRequest) {
 // (T5 starts unarmed and only a successful Connect arms it). The token never
 // appears in Message or any log/error.
 func (s *bridgeService) Connect(ctx context.Context, req connectRequest) connectResult {
+	// Connect is reflect-bound on the service in every mode, but only
+	// native-client mode wires a target + tokenstore; embedded mode passes nil
+	// for both. A webview IPC call to Connect there must fail closed, not
+	// nil-deref (rule://go-no-panic-in-lib — this service never panics).
+	if s.target == nil || s.tokens == nil {
+		return connectResult{Kind: connectKindOther, Message: "Connect is not available in this mode"}
+	}
+
+	// Serialize the arm → probe → disarm/persist transaction against the single
+	// shared target bearer so overlapping Connect calls cannot interleave.
+	s.connectMu.Lock()
+	defer s.connectMu.Unlock()
+
 	client, serverURL := s.target.Client()
 
 	candidate := req.Token
@@ -369,17 +390,22 @@ type connectRequest struct {
 }
 
 // connectResult is the Connect outcome the webview renders. Kind is the sealed
-// failure vocabulary; Message is safe prose that NEVER contains the token.
+// failure vocabulary. Message NEVER contains the token, but it is NOT fully
+// app-controlled: the version-mismatch Message, and the ServerVersion /
+// APIVersion fields, echo strings the remote server reported — untrusted input
+// (a spoofed daemon can return any bytes). The renderer (T5.5/T5.6) MUST treat
+// Message, ServerVersion and APIVersion as plain text — escaped, never injected
+// as HTML — so a hostile server cannot script the webview.
 // AccountID rides in the result only — it is deliberately NOT written to the
 // service's set-once accountID field, which is read without a lock and would
 // race a webview-goroutine Connect (bridge_service.go accountID doc).
 type connectResult struct {
 	OK            bool   `json:"ok"`
 	Kind          string `json:"kind"`    // "" | "bad-url" | "bad-cert" | "bad-token" | "version-mismatch" | "other"
-	Message       string `json:"message"` // safe prose, NEVER the token
+	Message       string `json:"message"` // safe from the token; MAY echo untrusted server text — render escaped
 	AccountID     string `json:"accountId"`
-	ServerVersion string `json:"serverVersion"`
-	APIVersion    string `json:"apiVersion"`
+	ServerVersion string `json:"serverVersion"` // untrusted server-reported string
+	APIVersion    string `json:"apiVersion"`    // untrusted server-reported string
 }
 
 // classifyConnectErr maps a probe error to a sealed connect kind + safe message.
@@ -398,6 +424,12 @@ func classifyConnectErr(err error) (kind, message string) {
 		return connectKindBadURL, "Could not reach the server at this URL"
 	}
 
+	// The sealed mapping is frozen by the design record (T5.3): only
+	// CodeUnauthenticated is bad-token, deadline is folded into bad-url above,
+	// and every other code — CodePermissionDenied (403 on a revoked token),
+	// CodeUnavailable with no net/tls cause, etc. — is the explicit `other`
+	// residual, never a silent fallthrough. Widening it is a contract change
+	// (a new design record), not an inline tweak.
 	if connect.CodeOf(err) == connect.CodeUnauthenticated {
 		return connectKindBadToken, "The server rejected this token"
 	}
