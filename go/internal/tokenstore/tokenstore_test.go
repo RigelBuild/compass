@@ -126,8 +126,11 @@ func TestTokenNeverInErrorStrings(t *testing.T) {
 	if err := s.Write(testURL, testToken); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	// Corrupt the file so Read fails during unmarshal, then check the error.
-	if err := os.WriteFile(filepath.Join(s.dir, tokenFileName), []byte("not json"), 0o600); err != nil {
+	// Corrupt the file into invalid JSON that STILL CONTAINS the token, so a
+	// regression that wrapped the raw file bytes into the error would surface
+	// the token and redden this test (defends DL-109, not a tautology).
+	corrupt := `{"serverUrl":"` + testURL + `","token":"` + testToken + `" GARBAGE`
+	if err := os.WriteFile(filepath.Join(s.dir, tokenFileName), []byte(corrupt), 0o600); err != nil {
 		t.Fatalf("corrupt file: %v", err)
 	}
 	_, err := s.Read(testURL)
