@@ -1146,6 +1146,9 @@ button {
 .msg.agent .msg-role {
 	color: var(--add);
 }
+.msg.system .msg-role {
+	color: var(--pink);
+}
 
 .msg-at {
 	color: var(--text-faint);

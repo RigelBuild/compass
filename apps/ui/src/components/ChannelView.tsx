@@ -174,15 +174,16 @@ const Block: Component<{
 	</Show>
 );
 
-/** One message: author handle + time, then its blocks. `agent`/`user` styling
- *  distinguishes the poster kind. */
+/** One message: author handle + time, then its blocks. The author's `kind`
+ *  (`user`/`agent`/`system`) is the row's style class, so a system post (the
+ *  reserved `@compass` sender) reads distinctly from a human or an agent. */
 export const MessageRow: Component<{
 	msg: Message;
 	byId: Map<string, Account>;
 	byHandle: Map<string, Account>;
 }> = (props) => {
 	const author = () => props.byId.get(props.msg.authorAccountId);
-	const roleClass = () => (author()?.kind === "agent" ? "agent" : "user");
+	const roleClass = () => author()?.kind ?? "user";
 	return (
 		<div class="msg" classList={{ [roleClass()]: true }}>
 			<div class="msg-head">

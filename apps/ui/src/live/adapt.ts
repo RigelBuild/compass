@@ -106,13 +106,15 @@ function adaptPinnedEntry(w: WirePinnedEntry): PinnedEntry {
 	return { messageId: w.messageId, position: w.position };
 }
 
-/** Map a wire Account to the domain Account, flattening the `kind` oneof and
- *  lifting the agent arm's `homeChannelId`/`ownerUserId`/`parentAgentId` onto
- *  the flat domain shape (the domain models an agent's home DM + owner inline,
- *  not in a nested message). An unset `kind` oneof (`case: undefined`) is a
- *  malformed wire account; it maps to a `user` with no agent fields rather than
- *  throwing, so a single bad row never blanks the whole roster — the missing
- *  agent fields make it inert (no home DM, no ownership) rather than wrong. */
+/** Map a wire Account to the domain Account, flattening the `kind` oneof. The
+ *  agent arm lifts `homeChannelId`/`ownerUserId`/`parentAgentId` onto the flat
+ *  domain shape (the domain models an agent's home DM + owner inline, not in a
+ *  nested message); the system arm (the reserved `@compass` platform sender)
+ *  carries only the base identity. An unset `kind` oneof (`case: undefined`) is
+ *  a malformed wire account; it maps to a `user` with no agent fields rather
+ *  than throwing, so a single bad row never blanks the whole roster — the
+ *  missing agent fields make it inert (no home DM, no ownership) rather than
+ *  wrong. */
 export function adaptAccount(w: WireAccount): Account {
 	const base = {
 		id: w.id,
@@ -133,6 +135,9 @@ export function adaptAccount(w: WireAccount): Account {
 			// holds and agentTree derives it as top-level.
 			parentAgentId: w.kind.value.parentAgentId || undefined,
 		};
+	}
+	if (w.kind.case === "system") {
+		return { ...base, kind: "system" };
 	}
 	return { ...base, kind: "user" };
 }

@@ -196,6 +196,7 @@ export type {
 	MessageBlock,
 	PinnedEntry,
 	SubscribeCommsResponse,
+	SystemAccount,
 	Topic,
 	TopicUpserted,
 	UserAccount,
@@ -216,6 +217,7 @@ export {
 	MessageBlockSchema,
 	MessageSchema,
 	PinnedEntrySchema,
+	SystemAccountSchema,
 	TopicSchema,
 	UserAccountSchema,
 } from "./gen/compass/v1/comms_pb";

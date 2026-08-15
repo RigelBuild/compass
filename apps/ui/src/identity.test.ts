@@ -214,13 +214,15 @@ describe("honest lifecycle vs session optionality", () => {
 
 // ── 4. STUB_ACCOUNTS is derived (design.md:365-367, :396) ─────────────────────
 describe("STUB_ACCOUNTS derivation", () => {
-	// STUB_ACCOUNTS is NOT hand-listed — it is `[MATT_ACCOUNT, ...STUB_AGENTS.map
-	// (a => a.account)]`. So it holds exactly one caller (user) plus one account
-	// per agent, in order, and each agent slot is the SAME object the roster owns
-	// (referential identity proves derivation, not a parallel copy that can drift).
-	test("is exactly the caller plus each agent's own account object, in order", () => {
+	// STUB_ACCOUNTS is NOT hand-listed for the roster — it is `[MATT_ACCOUNT,
+	// ...STUB_AGENTS.map(a => a.account), COMPASS_ACCOUNT]`. So it holds exactly
+	// one caller (user), one account per agent in order (each the SAME object the
+	// roster owns — referential identity proves derivation, not a parallel copy
+	// that can drift), plus the one reserved `@compass` system sender appended
+	// last (a comms account, not a roster agent — it never enters the agent tree).
+	test("is the caller plus each agent's own account object, then the system sender", () => {
 		const agentAccounts = STUB_AGENTS.map((agent) => agent.account);
-		expect(STUB_ACCOUNTS.length).toBe(agentAccounts.length + 1);
+		expect(STUB_ACCOUNTS.length).toBe(agentAccounts.length + 2);
 
 		const caller = STUB_ACCOUNTS[0];
 		expect(caller.id).toBe(CALLER_ID);
@@ -230,10 +232,17 @@ describe("STUB_ACCOUNTS derivation", () => {
 			expect(STUB_ACCOUNTS[i + 1]).toBe(account); // derived, not duplicated
 		});
 
+		// The system sender is last: exactly one, kind "system", handle "compass".
+		const system = STUB_ACCOUNTS[STUB_ACCOUNTS.length - 1];
+		expect(system.kind).toBe("system");
+		expect(system.handle).toBe("compass");
+
 		const ids = STUB_ACCOUNTS.map((account) => account.id);
 		expect(new Set(ids).size).toBe(ids.length); // no dup accounts
 		const users = STUB_ACCOUNTS.filter((account) => account.kind === "user");
 		expect(users.map((u) => u.id)).toEqual([CALLER_ID]); // exactly one caller
+		const systems = STUB_ACCOUNTS.filter((a) => a.kind === "system");
+		expect(systems).toHaveLength(1); // exactly one system sender
 	});
 });
 
