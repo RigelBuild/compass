@@ -70,7 +70,7 @@ func newSecretSetCmd() *cobra.Command {
 		"How the secret is delivered to agents: env or file (required).")
 	cmd.Flags().StringVar(&kind, "kind", kindGeneric,
 		"Secret kind: generic, provider, or gh.")
-	cmd.Flags().StringVar(&provider, kindProvider, "",
+	cmd.Flags().StringVar(&provider, "provider", "",
 		"LLM provider id (required when --kind provider).")
 	cmd.Flags().StringVar(&host, "host", "",
 		"gh host (required when --kind gh).")
@@ -178,7 +178,7 @@ func runSecretSet(ctx context.Context, client compassv1connect.SecretsServiceCli
 	if err != nil {
 		return fmt.Errorf("reading secret value from stdin: %w", err)
 	}
-	value := strings.TrimRight(string(raw), "\n")
+	value := strings.TrimSuffix(string(raw), "\n")
 	if value == "" {
 		return errEmptySecretValue
 	}
