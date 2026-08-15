@@ -370,3 +370,29 @@ describe("ChannelView is a composerless topic index (T5 model boundary)", () => 
 		expect(container.querySelector(".conv-composer")).toBeNull();
 	});
 });
+
+// The @compass system-sender mention resolves as KNOWN through the REAL store,
+// end to end (SEA-1820 T5). The unit test in MarkdownText.test.tsx builds a
+// local byHandle with a hardcoded compass entry, and identity.test.ts pins that
+// STUB_ACCOUNTS carries the system sender — this closes the loop between them:
+// it renders TopicView over the actual offline store (whose byHandle is built
+// from store.accounts(), TopicView.tsx:22-23) and asserts a fixture message body
+// containing `@compass` (msg-c1 in top-compass-t3a) chips with NEITHER `reserved`
+// (purple, mark-only per DL-155) NOR `unknown`. Mutation-check: dropping the
+// system sender from the store's account surface — while leaving STUB_ACCOUNTS
+// intact — reddens here, where the two unit tests alone would not.
+describe("@compass system sender resolves as a known mention end-to-end (T5)", () => {
+	test("a fixture @compass mention chips as known through the real store", () => {
+		const { store, container } = mountTopicView();
+		store.openTopic("top-compass-t3a");
+
+		const chip = [
+			...container.querySelectorAll<HTMLElement>(".mention-chip"),
+		].find((c) => c.textContent === "@compass");
+		// Precondition: the mention actually rendered (proves the class assertions
+		// below are meaningful, not an empty-render false pass).
+		expect(chip).toBeDefined();
+		expect(chip?.classList.contains("reserved")).toBe(false);
+		expect(chip?.classList.contains("unknown")).toBe(false);
+	});
+});

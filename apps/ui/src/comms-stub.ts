@@ -261,7 +261,13 @@ const MATT_ACCOUNT: Account = {
  *  account so its posts render with the system-author style and an `@compass`
  *  mention resolves as a known account (not an unknown handle). The server keeps
  *  it visible only to the co-members of channels it posts into; the fixture
- *  models that by carrying it in the account set the message surfaces resolve. */
+ *  models that by carrying it in the account set the message surfaces resolve.
+ *
+ *  DEFERRED (no autocomplete surface exists today — the composer is a plain
+ *  input): when a composer @-mention autocomplete is built, it must filter
+ *  `kind: "system"` accounts out of its suggestion source (`store.accounts()`)
+ *  so `@compass` resolves once typed but is never OFFERED as a completion,
+ *  mirroring the server's directory/roster exclusion. */
 const COMPASS_ACCOUNT: Account = {
 	id: "acc-sys-compass",
 	handle: "compass",
