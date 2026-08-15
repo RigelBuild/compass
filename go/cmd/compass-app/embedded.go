@@ -34,7 +34,9 @@ import (
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/sealedsecurity/compass/go/internal/appconfig"
+	"github.com/sealedsecurity/compass/go/internal/bridge"
 	"github.com/sealedsecurity/compass/go/internal/preflight"
+	"github.com/sealedsecurity/compass/go/internal/tokenstore"
 )
 
 // defaultAgentImage is the canonical agent image ref the embedded stack runs
@@ -52,11 +54,6 @@ const (
 	flagImage    = "--image"
 	flagSocket   = "--socket"
 )
-
-// errClientNotImplemented is the native-client (T5) mode's placeholder outcome.
-// Client mode is a later slice; embedded mode is this one. It is a sentinel so
-// the mode branch is assertable in tests without matching on a message string.
-var errClientNotImplemented = errors.New("native-client mode is not yet implemented (T5)")
 
 // embeddedPipeline is the embedded-mode launch pipeline over its injected
 // external effects. Each field is one genuine effect the real launch supplies
@@ -90,19 +87,63 @@ type embeddedParams struct {
 	image string
 }
 
-// launchByMode dispatches the resolved app mode: embedded mode runs the
-// pipeline (returning the caller account id), client mode returns the T5
-// not-implemented sentinel WITHOUT touching any pipeline effect. Any other mode
-// value is a programming error (appconfig only ever yields the two).
-func launchByMode(ctx context.Context, mode appconfig.Mode, pipeline embeddedPipeline, params embeddedParams) (string, error) {
-	switch mode {
-	case appconfig.ModeEmbedded:
-		return pipeline.run(ctx, params)
-	case appconfig.ModeClient:
-		return "", errClientNotImplemented
-	default:
-		return "", fmt.Errorf("unknown app mode %v", mode)
+// runEmbedded runs the embedded-mode launch and builds the embedded-only quit
+// controller. It runs the pipeline (preflight → stack up → WhoAmI) and, on
+// success, returns the resolved caller account id together with a *quitController
+// wired to the injected stackDown seam (its quit func is wired to app.Quit by
+// run() once the app exists). resolveStackBin and this controller are embedded
+// concerns only: a client-only install has no compass-stack binary and no stack
+// to stop, so neither may gate a client launch (design §T5.6).
+func runEmbedded(
+	ctx context.Context,
+	pipeline embeddedPipeline,
+	params embeddedParams,
+	stackDown func(ctx context.Context, args []string) error,
+) (string, *quitController, error) {
+	accountID, err := pipeline.run(ctx, params)
+	if err != nil {
+		return "", nil, err
 	}
+	quitter := &quitController{
+		stackDown: stackDown,
+		params:    params,
+		timeout:   stackDownTimeout,
+	}
+	return accountID, quitter, nil
+}
+
+// runClient wires the native-client launch: it builds the ONE TLS-anchored
+// bridge target (design §T5.6) and hands that SAME *bridge.Target to BOTH the
+// pump and the bridge service, so an armed bearer (Connect → target.SetBearer)
+// reaches every forwarded RPC (CompassRPC → pump → target.client.Do). The
+// tokenstore persists the remote bearer keyed by server URL. accountID is left
+// empty (client identity is UI-resolved, OQ-7). There is NO pre-window probe —
+// the single auto-connect is the UI's boot-time shellConnect("") (T5.5) — so a
+// slow/unreachable remote never wedges launch.
+//
+// A CA read/parse failure (bad ca_cert path or contents) or a NewTLSTarget
+// failure returns a legible error that aborts launch; per rule://go-no-panic-in-lib
+// this path never panics.
+func runClient(cfg appconfig.Config, stateDir string) (*bridgeService, error) {
+	var caPEM []byte
+	if cfg.CACert != "" {
+		pem, err := os.ReadFile(cfg.CACert)
+		if err != nil {
+			return nil, fmt.Errorf("reading client CA cert %q: %w", cfg.CACert, err)
+		}
+		caPEM = pem
+	}
+
+	target, err := bridge.NewTLSTarget(cfg.ServerURL, caPEM)
+	if err != nil {
+		return nil, fmt.Errorf("building client TLS target for %q: %w", cfg.ServerURL, err)
+	}
+
+	// The ONE-target invariant: the pump and the service MUST share this single
+	// *bridge.Target instance, or a bearer armed on the service's target never
+	// reaches the pump's forwarded requests.
+	svc := newBridgeService(bridge.NewPump(target), nil, target, tokenstore.New(stateDir))
+	return svc, nil
 }
 
 // run executes the embedded launch in order: preflight → stack up → WhoAmI. A

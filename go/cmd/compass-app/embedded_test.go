@@ -13,9 +13,14 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -27,6 +32,7 @@ import (
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/sealedsecurity/compass/go/internal/appconfig"
+	"github.com/sealedsecurity/compass/go/internal/bridge"
 	"github.com/sealedsecurity/compass/go/internal/preflight"
 )
 
@@ -71,41 +77,38 @@ func stubPipeline(rec *recorder, preflightErr, stackUpErr, whoAmIErr error, acco
 	}
 }
 
-// TestLaunchByModeClientNotImplemented: client mode returns the T5 sentinel and
-// touches NO pipeline effect (no preflight, no stack-up, no WhoAmI) — the client
-// path is not stubbed-in here, it is explicitly out of scope. Mutation that
-// reddens it: routing client mode into run() would flip a recorder flag.
-func TestLaunchByModeClientNotImplemented(t *testing.T) {
-	rec := &recorder{}
-	pipeline := stubPipeline(rec, nil, nil, nil, "acc-x")
-
-	id, err := launchByMode(context.Background(), appconfig.ModeClient, pipeline, baseParams)
-	if !errors.Is(err, errClientNotImplemented) {
-		t.Fatalf("client mode err = %v, want errClientNotImplemented", err)
-	}
-	if id != "" {
-		t.Errorf("client mode account id = %q, want empty", id)
-	}
-	if rec.preflightCalled || rec.stackUpCalled || rec.whoAmICalled {
-		t.Errorf("client mode ran a pipeline effect: %+v", rec)
-	}
+// runEmbeddedStub runs runEmbedded with a recording stackDown seam so the quit
+// controller wiring is observable without a real exec.
+func runEmbeddedStub(
+	t *testing.T, pipeline embeddedPipeline,
+) (string, *quitController, error) {
+	t.Helper()
+	stackDown := func(_ context.Context, _ []string) error { return nil }
+	return runEmbedded(context.Background(), pipeline, baseParams, stackDown)
 }
 
-// TestLaunchByModeEmbeddedHappyPath: embedded mode runs preflight → stack up →
-// WhoAmI in order, passes the SAME socket to the dial that the argv carries, and
-// returns the resolved account id. Asserting the argv (up, --socket, --state-dir,
-// --image) is the stack-invocation contract; asserting whoAmISocket == socket is
-// the single-socket invariant (the value passed to --socket IS the value dialed).
-func TestLaunchByModeEmbeddedHappyPath(t *testing.T) {
+// TestRunEmbeddedHappyPath: embedded mode runs preflight → stack up → WhoAmI in
+// order, passes the SAME socket to the dial that the argv carries, returns the
+// resolved account id, and builds a quit controller wired to the params. Asserting
+// the argv (up, --socket, --state-dir, --image) is the stack-invocation contract;
+// asserting whoAmISocket == socket is the single-socket invariant (the value
+// passed to --socket IS the value dialed).
+func TestRunEmbeddedHappyPath(t *testing.T) {
 	rec := &recorder{}
 	pipeline := stubPipeline(rec, nil, nil, nil, "acc-42")
 
-	id, err := launchByMode(context.Background(), appconfig.ModeEmbedded, pipeline, baseParams)
+	id, quitter, err := runEmbeddedStub(t, pipeline)
 	if err != nil {
 		t.Fatalf("embedded happy path err = %v, want nil", err)
 	}
 	if id != "acc-42" {
 		t.Errorf("account id = %q, want acc-42", id)
+	}
+	if quitter == nil {
+		t.Fatal("embedded mode returned a nil quit controller, want one wired to the stack teardown")
+	}
+	if quitter.params != baseParams {
+		t.Errorf("quit controller params = %+v, want %+v", quitter.params, baseParams)
 	}
 	if !rec.preflightCalled || !rec.stackUpCalled || !rec.whoAmICalled {
 		t.Fatalf("not every stage ran: %+v", rec)
@@ -120,21 +123,24 @@ func TestLaunchByModeEmbeddedHappyPath(t *testing.T) {
 	}
 }
 
-// TestLaunchByModePreflightShortCircuits: a preflight failure returns the
-// aggregated legible error VERBATIM and never proceeds to stack-up or WhoAmI.
-// Mutation that reddens it: running the checks after a failure, or reformatting
-// Results.Err's copy.
-func TestLaunchByModePreflightShortCircuits(t *testing.T) {
+// TestRunEmbeddedPreflightShortCircuits: a preflight failure returns the
+// aggregated legible error VERBATIM, never proceeds to stack-up or WhoAmI, and
+// builds no quit controller. Mutation that reddens it: running the checks after a
+// failure, or reformatting Results.Err's copy.
+func TestRunEmbeddedPreflightShortCircuits(t *testing.T) {
 	rec := &recorder{}
 	preflightErr := errors.New("embedded-mode preflight failed:\n  - windows is not linux")
 	pipeline := stubPipeline(rec, preflightErr, nil, nil, "acc-x")
 
-	id, err := launchByMode(context.Background(), appconfig.ModeEmbedded, pipeline, baseParams)
+	id, quitter, err := runEmbeddedStub(t, pipeline)
 	if !errors.Is(err, preflightErr) {
 		t.Fatalf("preflight-fail err = %v, want the preflight error verbatim", err)
 	}
 	if id != "" {
 		t.Errorf("account id = %q, want empty on preflight failure", id)
+	}
+	if quitter != nil {
+		t.Error("preflight failure returned a quit controller, want nil")
 	}
 	if !rec.preflightCalled {
 		t.Error("preflight did not run")
@@ -144,45 +150,254 @@ func TestLaunchByModePreflightShortCircuits(t *testing.T) {
 	}
 }
 
-// TestLaunchByModeStackUpFails: a non-zero compass-stack up exit is surfaced and
+// TestRunEmbeddedStackUpFails: a non-zero compass-stack up exit is surfaced and
 // the pipeline stops before WhoAmI. The stackUp seam already folds stderr into
 // its error (see TestRunStackUpNonZeroExitSurfacesStderr); here the contract is
-// that run() propagates it and does not dial.
-func TestLaunchByModeStackUpFails(t *testing.T) {
+// that runEmbedded propagates it and does not dial.
+func TestRunEmbeddedStackUpFails(t *testing.T) {
 	rec := &recorder{}
 	stackErr := errors.New("compass-stack up failed: exit status 1: postgres refused")
 	pipeline := stubPipeline(rec, nil, stackErr, nil, "acc-x")
 
-	id, err := launchByMode(context.Background(), appconfig.ModeEmbedded, pipeline, baseParams)
+	id, quitter, err := runEmbeddedStub(t, pipeline)
 	if !errors.Is(err, stackErr) {
 		t.Fatalf("stack-up-fail err = %v, want the stack-up error", err)
 	}
 	if id != "" {
 		t.Errorf("account id = %q, want empty on stack-up failure", id)
 	}
+	if quitter != nil {
+		t.Error("stack-up failure returned a quit controller, want nil")
+	}
 	if rec.whoAmICalled {
 		t.Error("pipeline dialed WhoAmI after a failed stack-up")
 	}
 }
 
-// TestLaunchByModeWhoAmIFails: a WhoAmI error is surfaced (wrapped with the
-// socket for context) and no account id is returned. Mutation that reddens it:
+// TestRunEmbeddedWhoAmIFails: a WhoAmI error is surfaced (wrapped with the socket
+// for context) and no account id is returned. Mutation that reddens it:
 // swallowing the WhoAmI error and returning an empty id as success.
-func TestLaunchByModeWhoAmIFails(t *testing.T) {
+func TestRunEmbeddedWhoAmIFails(t *testing.T) {
 	rec := &recorder{}
 	whoErr := errors.New("connect: connection refused")
 	pipeline := stubPipeline(rec, nil, nil, whoErr, "")
 
-	id, err := launchByMode(context.Background(), appconfig.ModeEmbedded, pipeline, baseParams)
+	id, quitter, err := runEmbeddedStub(t, pipeline)
 	if !errors.Is(err, whoErr) {
 		t.Fatalf("whoami-fail err = %v, want the WhoAmI error wrapped", err)
 	}
 	if id != "" {
 		t.Errorf("account id = %q, want empty on WhoAmI failure", id)
 	}
+	if quitter != nil {
+		t.Error("WhoAmI failure returned a quit controller, want nil")
+	}
 	if !strings.Contains(err.Error(), baseParams.socket) {
 		t.Errorf("WhoAmI error %q does not name the socket for context", err.Error())
 	}
+}
+
+// clientConfig is a representative valid native-client config. ServerURL is an
+// absolute https URL (validated upstream by appconfig); runClient never dials it.
+var clientConfig = appconfig.Config{
+	Mode:      appconfig.ModeClient,
+	ServerURL: "https://remote.example:8443",
+}
+
+// TestRunClientBuildsServiceWithoutPipelineEffect: a valid client config yields a
+// bridge service with a non-nil TLS target + tokenstore and an empty accountID,
+// and touches NO embedded pipeline/stack-bin effect. runClient takes no pipeline,
+// so the assertion is structural: the service it returns is wired for Connect
+// (target + tokens non-nil), which the embedded arm never sets. No network dial.
+func TestRunClientBuildsServiceWithoutPipelineEffect(t *testing.T) {
+	svc, err := runClient(clientConfig, t.TempDir())
+	if err != nil {
+		t.Fatalf("runClient err = %v, want nil for a valid client config", err)
+	}
+	if svc.target == nil {
+		t.Error("client service target is nil, want a TLS target wired for Connect")
+	}
+	if svc.tokens == nil {
+		t.Error("client service tokenstore is nil, want one wired for Connect")
+	}
+	if svc.accountID != "" {
+		t.Errorf("client service accountID = %q, want empty (identity is UI-resolved, OQ-7)", svc.accountID)
+	}
+}
+
+// TestRunClientBadCACertNamesThePath: an unreadable ca_cert path aborts launch
+// with a legible error that NAMES the path (not a panic, not a bare os error).
+func TestRunClientBadCACertNamesThePath(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.pem")
+	cfg := clientConfig
+	cfg.CACert = missing
+
+	svc, err := runClient(cfg, t.TempDir())
+	if err == nil {
+		t.Fatal("runClient with a missing ca_cert returned nil error, want a legible read error")
+	}
+	if svc != nil {
+		t.Error("runClient returned a non-nil service alongside an error")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("CA read error %q does not name the ca_cert path %q", err.Error(), missing)
+	}
+}
+
+// TestRunClientBadCAPEMNamesTheCause: a ca_cert file that is not a usable PEM
+// aborts launch with a legible error surfacing the TLS-target cause (NewTLSTarget
+// rejects a PEM yielding no certificate).
+func TestRunClientBadCAPEMNamesTheCause(t *testing.T) {
+	badPEM := filepath.Join(t.TempDir(), "bad.pem")
+	if err := os.WriteFile(badPEM, []byte("not a pem"), 0o600); err != nil {
+		t.Fatalf("writing bad PEM fixture: %v", err)
+	}
+	cfg := clientConfig
+	cfg.CACert = badPEM
+
+	svc, err := runClient(cfg, t.TempDir())
+	if err == nil {
+		t.Fatal("runClient with an unusable CA PEM returned nil error, want a legible target error")
+	}
+	if svc != nil {
+		t.Error("runClient returned a non-nil service alongside an error")
+	}
+	if !strings.Contains(err.Error(), "certificate") {
+		t.Errorf("CA PEM error %q does not surface the no-usable-certificate cause", err.Error())
+	}
+}
+
+// TestRunClientSharesOneTargetAcrossPumpAndService is the load-bearing wiring
+// invariant (design §T5.6): the client pump and the bridge service MUST share ONE
+// *bridge.Target, or a bearer armed on the service's target (Connect →
+// SetBearer) never reaches the pump's forwarded requests (CompassRPC → pump →
+// target.client.Do).
+//
+// The assertion is behavioral, not a private-field pointer peek: arm a bearer on
+// the service's target, then run a real gRPC-Web forward through the service's
+// pump against an in-process TLS server that records the Authorization header it
+// receives. If the pump forwarded through the SAME target, the armed bearer
+// arrives; if runClient had built two targets, the pump's target would be unarmed
+// and no bearer would arrive. Non-vacuous: mutating runClient to pass a second
+// bridge.NewTLSTarget(...) to NewPump reddens this (the recorded header is empty).
+func TestRunClientSharesOneTargetAcrossPumpAndService(t *testing.T) {
+	const bearer = "arm-me-9f3c"
+
+	gotAuth := make(chan string, 1)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case gotAuth <- r.Header.Get("Authorization"):
+		default:
+		}
+		// Minimal well-formed response so the pump emits head→end, not an error
+		// frame; the body is irrelevant to the header assertion.
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	caPEM := pemEncodeCert(t, srv.Certificate())
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, caPEM, 0o600); err != nil {
+		t.Fatalf("writing CA fixture: %v", err)
+	}
+	cfg := appconfig.Config{Mode: appconfig.ModeClient, ServerURL: srv.URL, CACert: caFile}
+
+	svc, err := runClient(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("runClient err = %v, want nil", err)
+	}
+
+	// Arm the bearer on the SERVICE's target (the point Connect arms it).
+	svc.target.SetBearer(bearer)
+
+	// Forward one call through the SERVICE's pump; block until the terminal
+	// frame so the request has completed (no time.Sleep — the pump's Do is
+	// synchronous and signals completion by emitting a terminal frame).
+	done := make(chan struct{})
+	svc.pump.Do(context.Background(), bridge.Call{Path: "/probe"}, func(f bridge.Frame) {
+		switch f.(type) {
+		case bridge.EndFrame, bridge.ErrorFrame:
+			close(done)
+		default:
+		}
+	})
+	<-done
+
+	select {
+	case auth := <-gotAuth:
+		if auth != "Bearer "+bearer {
+			t.Errorf("pump forwarded Authorization = %q, want %q — the pump's target is NOT the service's armed target",
+				auth, "Bearer "+bearer)
+		}
+	default:
+		t.Fatal("server received no request through the pump")
+	}
+}
+
+// pemEncodeCert PEM-encodes a certificate for use as a CA anchor fixture.
+func pemEncodeCert(t *testing.T, cert *x509.Certificate) []byte {
+	t.Helper()
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+}
+
+// TestShellStartupJS covers the OQ-8 startup-global injection: the mode token per
+// mode, __COMPASS_SERVER_URL__ present ONLY in client mode, and JSON-escaping of
+// a hostile server URL so it cannot break out of the script.
+func TestShellStartupJS(t *testing.T) {
+	t.Run("embedded injects mode only", func(t *testing.T) {
+		js, err := shellStartupJS(appconfig.ModeEmbedded.String(), "")
+		if err != nil {
+			t.Fatalf("shellStartupJS err = %v, want nil", err)
+		}
+		if !strings.Contains(js, `window.__COMPASS_MODE__="embedded";`) {
+			t.Errorf("embedded JS = %q, want the embedded mode global", js)
+		}
+		if strings.Contains(js, "__COMPASS_SERVER_URL__") {
+			t.Errorf("embedded JS = %q, want NO server-url global", js)
+		}
+	})
+
+	t.Run("client injects mode and server url", func(t *testing.T) {
+		js, err := shellStartupJS(appconfig.ModeClient.String(), "https://remote.example:8443")
+		if err != nil {
+			t.Fatalf("shellStartupJS err = %v, want nil", err)
+		}
+		if !strings.Contains(js, `window.__COMPASS_MODE__="client";`) {
+			t.Errorf("client JS = %q, want the client mode global", js)
+		}
+		if !strings.Contains(js, `window.__COMPASS_SERVER_URL__="https://remote.example:8443";`) {
+			t.Errorf("client JS = %q, want the server-url global", js)
+		}
+	})
+
+	t.Run("hostile server url is JSON-escaped, not a breakout", func(t *testing.T) {
+		hostile := `https://x/"+alert(1)+"</script><script>`
+		js, err := shellStartupJS(appconfig.ModeClient.String(), hostile)
+		if err != nil {
+			t.Fatalf("shellStartupJS err = %v, want nil", err)
+		}
+
+		// The raw hostile string must NOT appear verbatim — the double-quote and
+		// the </script> would break out of the script if concatenated unescaped.
+		if strings.Contains(js, hostile) {
+			t.Fatalf("JS contains the raw hostile URL verbatim (breakout): %q", js)
+		}
+		// The value must be a valid JS/JSON string literal: parse back the
+		// assigned literal and confirm it round-trips to the original URL.
+		assign := "window.__COMPASS_SERVER_URL__="
+		i := strings.Index(js, assign)
+		if i < 0 {
+			t.Fatalf("JS missing the server-url assignment: %q", js)
+		}
+		literal := strings.TrimSuffix(js[i+len(assign):], ";")
+		var decoded string
+		if err := json.Unmarshal([]byte(literal), &decoded); err != nil {
+			t.Fatalf("server-url literal %q is not a valid JSON string: %v", literal, err)
+		}
+		if decoded != hostile {
+			t.Errorf("decoded server url = %q, want the original %q", decoded, hostile)
+		}
+	})
 }
 
 // TestStackUpArgsOmitsDatabase: the pure argv builder omits --database
