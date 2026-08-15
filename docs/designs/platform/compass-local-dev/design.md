@@ -69,10 +69,10 @@ if (!baseUrl) {
 Crucially, the dev door already carries a permissive wildcard CORS policy
 built expressly for a browser dev server: `devCORS()` sets `AllowedOrigins:
 ["*"]` with the Connect/gRPC-Web headers allowed and the grpc-status
-trailers exposed (`go/server/serve.go:667-676`, `AllowedOrigins` at `:673`),
+trailers exposed (`go/server/serve.go:689-696`, `AllowedOrigins` at `:691`),
 and the door is documented as existing "for a browser dev server"
 (serve.go:65-67; the dev server is wrapped with that policy at
-serve.go:585-586, `devCORS().Handler(devMux)`).
+serve.go:604, `devCORS().Handler(devMux)`).
 An earlier draft of this record motivated a vite proxy
 with "the browser stays same-origin (no CORS surface on the dev door)" —
 that premise is false: the CORS surface exists today, by design, for this
@@ -411,8 +411,8 @@ Direct-dial per §A1 (decided): a one-line env wire —
 `VITE_COMPASS_BASE_URL = "http://127.0.0.1:${toString
 config.processes.compass-server.ports.devhttp.value}"` injected on the
 `compass-ui` process (lands with T3's process definition). The dev door's
-  wildcard CORS (`go/server/serve.go:667-676`, `AllowedOrigins:["*"]` at
-  `:673`; served at `serve.go:585-586`) already admits the vite origin;
+  wildcard CORS (`go/server/serve.go:689-696`, `AllowedOrigins:["*"]` at
+  `:691`; served at `serve.go:604`) already admits the vite origin;
 no vite.config.ts proxy — the only vite.config.ts edit is updating the
 stale header comment (vite.config.ts:4-6: the transport route now exists).
 (The §A1 proxy shape stays documented as the prod-parity alternative; T1
@@ -605,7 +605,7 @@ here for the canonical audit surface.
   middlebox in the streaming path (a vite proxy buffering/!flushing a long-
   lived `SubscribeEvents` stream is a real failure class). Rejected for local
   dev: the dev door already serves permissive wildcard CORS built for exactly
-  this consumer (`serve.go:667-676`), so direct-dial has no CORS cost, and
+  this consumer (`serve.go:689-696`), so direct-dial has no CORS cost, and
   removing the middlebox removes the streaming-buffering risk. The proxy shape
   stays documented in §A1 as the prod-parity reference.
 - **colima instead of podman machine** for the macOS runner VM (losing arm of
@@ -616,9 +616,10 @@ here for the canonical audit surface.
 ## Open Questions
 
 This section holds ONLY non-load-bearing deferrals — no live load-bearing
-question remains; the ruled forks (browser→dev-door route: direct-dial;
-darwin `--listen` rebind) are folded into the body as decisions
-(Matt, 2026-08-14).
+question remains; the ruled forks (browser→dev-door route: direct-dial, the
+former OQ2; darwin `--listen` rebind) are folded into the body as decisions
+(Matt, 2026-08-14). The numbering keeps the original OQ ids for traceability,
+so OQ2 is intentionally absent — it was promoted to a decision, not dropped.
 
 - **OQ1 (non-load-bearing) — macOS VM engine: podman machine vs colima.**
   Recommendation: `podman machine` — the runner execs `podman` directly
