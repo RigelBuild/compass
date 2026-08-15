@@ -36,7 +36,12 @@ tasks:
     # projects run a bare `bun test`.
     command: 'bun test --conditions browser'
     deps: ['install']
-    inputs: ['src/**/*', 'tsconfig.json', 'package.json', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+    # `bun test` includes the previewable-build gate (src/preview-build.test.ts),
+    # which runs a real `vite build` — so its result depends on index.html and
+    # vite.config.ts too, matching the `build`/`typecheck` inputs. Without these a
+    # vite.config-only change would leave `test` unaffected and serve the gate a
+    # cached-green, precisely on the config change the gate exists to catch.
+    inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
   ci:
     deps: ['typecheck', 'build', 'test']
     options:
