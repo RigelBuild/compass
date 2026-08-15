@@ -169,8 +169,8 @@ format/lint/test.
   in the private infrastructure design repo". No internal hostnames,
   addresses, ports, service/unit names, or private repo names appear in this
   record or in anything it produces (workflow YAML, skill text, PR comments).
-- **Sequencing floor.** Harness tasks that extend the CI gate land AFTER #256
-  (the `[ci]` gate wiring) and #303 (`replay_complete` fresh-start emission)
+- **Sequencing floor.** Tasks that extend the CI gate land AFTER #256
+  (the CI gate wiring) and #303 (`replay_complete` fresh-start emission)
   merge; the replay scenario (B4) additionally consumes #303's emission as
   its subject.
 - Commits authored as seal with Matt's co-author trailer
@@ -181,13 +181,12 @@ format/lint/test.
 
 ## Plan
 
-Owner lanes: `[compass-ui]` = apps/ui; `[harness]` = go/e2e; `[platform]` =
-CI wiring + agent equipment. (Task ids keep the source record's numbering for
-traceability; A1 and B2 — the preview deploy workflow and its env topology —
-live in the private infrastructure design repo's preview record, not here, so
-the Approach opens at A2 and the Plan has no B2.)
+Task ids keep the source record's numbering for traceability; A1 and B2 — the
+preview deploy workflow and its env topology — live in the private
+infrastructure design repo's preview record, not here, so the Approach opens at
+A2 and the Plan has no B2.
 
-### B1 [compass-ui] — previewable UI build: env injection for a configurable target
+### B1 — previewable UI build: env injection for a configurable target
 
 A general compass-ui capability: make the UI bundle buildable against ANY
 configured door URL + bearer via build-time env — the isolated PR-preview
@@ -222,7 +221,7 @@ reaches WhoAmI against a TLS door (verified against the dev stack's own
 network door, which devenv already binds: `devenv.nix:255-257`
 `--listen … --tls-cert … --tls-key`).
 
-### B3 [harness] — scenario expansion: multi-peer fan-out, provision/enroll hardening
+### B3 — scenario expansion: multi-peer fan-out, provision/enroll hardening
 
 Two new scenario files in `go/e2e`, composing existing primitives
 (`agent_ops.go:16-129`) + the canned script mechanism
@@ -269,7 +268,7 @@ restart-re-enroll today; both are unexercised compositions. Green — both
 pass twice back-to-back (the leg-6 idempotence gate, `legsix_test.go:14-31`)
 under `-race`.
 
-### B4 [harness] — scenarios: home-channel first-turn + restart-replay
+### B4 — scenarios: home-channel first-turn + restart-replay
 
 Two scenarios landing AFTER #256/#303 merge (Global Constraints sequencing):
 
@@ -300,7 +299,7 @@ Test cycle: red — no scenario drives a restart across a live conversation;
 the replay barrier is proven only at the seam level. Green — both pass under
 `-race`, double-run clean.
 
-### B5 [platform] — PR result surfacing: step summary, artifacts, sticky comment
+### B5 — PR result surfacing: step summary, artifacts, sticky comment
 
 Make the e2e verdict readable without pulling code: (1) the e2e CI step (from
 PR #256) writes a per-scenario table to `$GITHUB_STEP_SUMMARY` (scenario name,
@@ -335,7 +334,7 @@ Test cycle: red — today a failure is a raw check log; green — a seeded
 failing scenario produces the summary table, the artifact bundle, and one
 updated (not duplicated) comment across two pushes.
 
-### B6 [platform] — the capture stack: headless-browser tooling for visual evidence
+### B6 — the capture stack: headless-browser tooling for visual evidence
 
 The prerequisite that activates the skill's phase 2 (A3). No headless-browser
 or capture tooling exists anywhere in the compass tree (verified this
@@ -367,7 +366,7 @@ today; green — `tools/capture` against the dev stack's UI yields a PNG that
 shows the rendered app, and the attach flow produces a stable raw URL that
 renders in a PR body.
 
-### B7 [platform] — the bundled PR-validation skill
+### B7 — the bundled PR-validation skill
 
 Author the validation skill decided in A3 and bundle it with the Compass
 agents by default: the skill ships as part of the standard agent equipment
@@ -394,7 +393,7 @@ land evidence-less today; green — a freshly provisioned Compass agent lists
 the skill, and a probe PR authored under it carries the phase-1 evidence
 section (click-path + named e2e scenarios or suite result).
 
-### B8 [platform] — path-filtered live-model e2e leg in GitHub Actions
+### B8 — path-filtered live-model e2e leg in GitHub Actions
 
 The A4 ruling's second tier. A separate workflow (one-job doctrine: a
 least-privilege sibling, never a required check) triggered on `pull_request`
@@ -434,13 +433,13 @@ does not trigger it; the canned gate result is identical in both cases.
 
 ## Tasks
 
-- [ ] B1 [compass-ui] configurable UI build: `VITE_COMPASS_BASE_URL`/`VITE_COMPASS_TOKEN` → a `dist` that boots against a configured TLS door (red-green vs the devenv TLS door); consumed by the isolated PR-preview environment (private infra design repo)
-- [ ] B3 [harness] scenarios: multi-peer fan-out + provision/enroll hardening (double-run + `-race` green); PR-submitting scenario split out as a stub handed to the forge-stack lane (DL-052) with its four-layer gap named
-- [ ] B4 [harness] scenarios: home-channel first-turn (delivery-cursor gate promoted to a primitive) + restart-replay barrier — lands after #256/#303 merge
-- [ ] B5 [platform] result surfacing: `tools/e2e-summary` (go test -json → step-summary table), failure artifacts, sticky PR comment via a minimal-permission `workflow_run` workflow (PR number via artifact, treated as untrusted)
-- [ ] B6 [platform] capture stack: playwright + chromium + `tools/capture` (PNG/webm from a running build) + the `pr-assets` attach convention
-- [ ] B7 [platform] the bundled PR-validation skill: authored in-repo, provisioned to every Compass agent by default (phase 1 now; phase 2 activates with B6)
-- [ ] B8 [platform] path-filtered live-model e2e leg: separate GitHub Actions workflow, `paths:`-gated, LLM key from an Actions secret, never required; canned tier unchanged as the every-PR gate
+- [ ] B1 configurable UI build: `VITE_COMPASS_BASE_URL`/`VITE_COMPASS_TOKEN` → a `dist` that boots against a configured TLS door (red-green vs the devenv TLS door); consumed by the isolated PR-preview environment (private infra design repo)
+- [ ] B3 scenarios: multi-peer fan-out + provision/enroll hardening (double-run + `-race` green); PR-submitting scenario split out as a stub handed to the forge-stack lane (DL-052) with its four-layer gap named
+- [ ] B4 scenarios: home-channel first-turn (delivery-cursor gate promoted to a primitive) + restart-replay barrier — lands after #256/#303 merge
+- [ ] B5 result surfacing: `tools/e2e-summary` (go test -json → step-summary table), failure artifacts, sticky PR comment via a minimal-permission `workflow_run` workflow (PR number via artifact, treated as untrusted)
+- [ ] B6 capture stack: playwright + chromium + `tools/capture` (PNG/webm from a running build) + the `pr-assets` attach convention
+- [ ] B7 the bundled PR-validation skill: authored in-repo, provisioned to every Compass agent by default (phase 1 now; phase 2 activates with B6)
+- [ ] B8 path-filtered live-model e2e leg: separate GitHub Actions workflow, `paths:`-gated, LLM key from an Actions secret, never required; canned tier unchanged as the every-PR gate
 
 ## Resolved decisions
 
