@@ -185,6 +185,12 @@ in
   #                         and dial the TLS door, never the loopback socket).
   #                         On network-door startup it mints the bootstrap
   #                         admin-token 0600 under the state dir.
+  #   compass-ui          — the browser UI dev server (vite); serves the SolidJS
+  #                         board on http://127.0.0.1:5173 and dials the
+  #                         server's loopback gRPC-Web dev door directly via
+  #                         VITE_COMPASS_BASE_URL. Runs after the server is ready
+  #                         so the first browser load never races the migrating
+  #                         store.
   #   dogfood:mint-runner-token — registers the `dogfood` runner and writes its
   #                         enrollment token; runs after the server is ready
   #                         (the readiness probe gates on the migrated store).
@@ -282,6 +288,31 @@ in
           -d '{}' >/dev/null
       '';
       restart.on = "on_failure";
+    };
+
+    # compass-ui: the browser UI dev server (vite). Serves the SolidJS board on
+    # http://127.0.0.1:5173 and dials compass-server's loopback gRPC-Web dev
+    # door directly — no vite proxy: the browser reads the door URL from
+    # VITE_COMPASS_BASE_URL at boot (apps/ui/src/live/connection.ts) and the dev
+    # door serves wildcard CORS for exactly this consumer (go/server/serve.go
+    # devCORS, AllowedOrigins ["*"]). `exec bunx vite` matches the moon dev task
+    # (apps/ui/moon.yml) — one convention, two entry points. `after`s the
+    # server's readiness probe (a real GetServerInfo answer over the dev door,
+    # not merely a bound socket) so the first browser load never races the
+    # migrating store.
+    compass-ui = {
+      exec = ''
+        exec bunx vite
+      '';
+      cwd = "${config.devenv.root}/apps/ui";
+      env = {
+        # Direct-dial (decided): the browser dials the dev door directly, so the
+        # base URL is the server's loopback dev-http port (devenv stays the
+        # single owner of that port number).
+        VITE_COMPASS_BASE_URL =
+          "http://127.0.0.1:${toString config.processes.compass-server.ports.devhttp.value}";
+      };
+      after = [ "devenv:processes:compass-server" ];
     };
 
     # compass-runner: enrolls with the server over the TLS network door, then
