@@ -63,7 +63,7 @@ fixture primitives; coverage state grounded):
 | Scenario | State today | What the expansion adds |
 | --- | --- | --- |
 | Multi-agent communication | Legs 3+4 merged: agent-driven spawn + `@mention` steer/deliver split (harness record H4, `design.md:634-665`) | Multi-peer fan-out: 3+ agents, channel policy (OWNER_ONLY, `proto/compass/v1/comms.proto:239-241,252-257`), unmentioned-subscriber deliver at scale |
-| PR submitting | Wire contract exists on paper only — `AgentGateway.Forge` carries the envelopes (`proto/compass/v1/agent_gateway.proto:79-90`) and the relay procedure is generated (`RunnerServiceRelayForgeCallProcedure`, `runner.connect.go:74-77`) — but FOUR execution layers are missing: no agent-side forge tool (`packages/compass-agent/src/` has only the `comms.ts`/`lifecycle.ts` brokers); no Runner `Forge` handler; no Server relay leg (`go/internal/runnerhub/` has `relay_comms.go`/`relay_lifecycle.go`/`relay_board.go`, no `relay_forge.go`; the Handler embeds `UnimplementedRunnerServiceHandler`, `handler.go:44-45`, so `RelayForgeCall` returns `CodeUnimplemented` today, `runner.connect.go:610`); no server-side forge write executor (`go/server/board.go:73-74,108-109`) | Split out as a stub handed to the forge execution stack's lane (DL-052) as THAT lane's acceptance test — see B3 |
+| PR submitting | Wire contract exists on paper only — `AgentGateway.Forge` carries the envelopes (`proto/compass/v1/agent_gateway.proto:79-90`) and the relay procedure is generated (`RunnerServiceRelayForgeCallProcedure`, `go/internal/gen/compass/v1/compassv1internalconnect/runner.connect.go:74-77`) — but FOUR execution layers are missing: no agent-side forge tool (`packages/compass-agent/src/` has only the `comms.ts`/`lifecycle.ts` brokers); no Runner `Forge` handler; no Server relay leg (`go/internal/runnerhub/` has `relay_comms.go`/`relay_lifecycle.go`/`relay_board.go`, no `relay_forge.go`; the Handler embeds `UnimplementedRunnerServiceHandler`, `handler.go:44-45`, so `RelayForgeCall` returns `CodeUnimplemented` today, `go/internal/gen/compass/v1/compassv1internalconnect/runner.connect.go:609-611`); no server-side forge write executor (`go/server/board.go:73-74,108-109`) | Split out as a stub handed to the forge execution stack's lane (DL-052) as THAT lane's acceptance test — see B3 |
 | Provision/enroll | Leg 1 + leg 6 merged: bring-up through enrollment, teardown idempotence across a stack restart (`go/e2e/legsix_test.go:14-31`) | Re-enroll after runner restart with live sessions; provision under a revoked/expired runner token (fail-closed assert) |
 | Home-channel first-turn | Re-modeled by PR #256: "legs 2 / 3-4 / 5 now drive the first turn by posting to the agent's home channel (the post-`initial_prompt` contract), delivered via the live fan-out" (pr://256 body). `initial_prompt` is already removed on this checkout — `reserved` at `compass.proto:590` and `:613` (see `compass-initial-prompt-removal.md`) — so the home-channel-first-turn delivery contract is the CURRENT state, not a pending re-model; the home channel is minted at CreateAgent (`proto/compass/v1/comms.proto:174-175`) | First-class scenario: post-to-home-channel → delivery → first turn settles → reply lands back in the home channel; #256's delivery-cursor event-gate promoted to a shared primitive |
 | Replay | Replay-then-Live subscribe waits exist (`SubscribeComms`, harness record A2); `replay_complete` is the agent control-lane barrier ("on receipt the Runner releases the live ops held behind the restart replay barrier", `proto/compass/v1/agent.proto:64-67`), fresh-start emission lands with #303 | A restart-replay scenario: kill/restart the runner mid-conversation, assert the replay barrier holds live ops until `replay_complete_ack`, no duplicate or lost delivery across the barrier |
@@ -183,8 +183,9 @@ format/lint/test.
 
 Owner lanes: `[compass-ui]` = apps/ui; `[harness]` = go/e2e; `[platform]` =
 CI wiring + agent equipment. (Task ids keep the source record's numbering for
-traceability; B2 — the preview deploy workflow — lives in the private
-infrastructure design repo's preview record, not here.)
+traceability; A1 and B2 — the preview deploy workflow and its env topology —
+live in the private infrastructure design repo's preview record, not here, so
+the Approach opens at A2 and the Plan has no B2.)
 
 ### B1 [compass-ui] — previewable UI build: env injection for a configurable target
 
@@ -242,7 +243,7 @@ missing layer. The gap is actually FOUR layers of the forge execution stack:
 `go/internal/runnerhub/` has `relay_comms.go`/`relay_lifecycle.go`/
 `relay_board.go` but no `relay_forge.go`, and the Handler embeds
 `UnimplementedRunnerServiceHandler` (`handler.go:44-45`), so a
-`RelayForgeCall` today returns `CodeUnimplemented` (`runner.connect.go:610`)
+`RelayForgeCall` today returns `CodeUnimplemented` (`go/internal/gen/compass/v1/compassv1internalconnect/runner.connect.go:609-611`)
 — the FIRST failure on any forge path, well before any tool dispatch; and
 (4) the server-side forge WRITE executor + credential path the relay would
 delegate to (`go/server/board.go:73-74,108-109` — "no real forge-tracker
