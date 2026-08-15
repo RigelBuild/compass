@@ -21,7 +21,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -79,31 +81,13 @@ func run() error {
 		return err
 	}
 
-	// The embedded launch pipeline (mode-select → preflight → stack up → WhoAmI)
-	// runs BEFORE the window opens, under a bounded bring-up context. The
-	// resolved account id is handed to the bridge service for the JS/UI.
-	stateDir := resolveStateDir(*stateDirFlag)
-	image := resolveImage(*imageFlag)
-	stackBin, err := resolveStackBin(*stackBinFlag)
+	// run() is the process root (called directly by main), so context.Background()
+	// here is the sanctioned process-root context, not a mid-tree re-root.
+	svc, quitter, err := launch(cfg, socket, resolveStateDir(*stateDirFlag),
+		resolveImage(*imageFlag), stackBinFlag)
 	if err != nil {
 		return err
 	}
-	pipeline := embeddedPipeline{
-		preflight: realPreflight(image, embeddedDatabaseDSN(stateDir)),
-		stackUp:   runStackUp(stackBin),
-		whoAmI:    whoAmIOverUDS,
-	}
-	params := embeddedParams{socket: socket, stateDir: stateDir, image: image}
-
-	bringUpCtx, cancel := context.WithTimeout(context.Background(), bringUpTimeout)
-	accountID, err := launchByMode(bringUpCtx, cfg.Mode, pipeline, params)
-	cancel()
-	if err != nil {
-		return err
-	}
-
-	svc := newBridgeService(bridge.NewPump(bridge.NewUnixTarget(socket)), nil, nil, nil)
-	svc.accountID = accountID
 
 	app := application.New(application.Options{
 		Name:        "compass-app",
@@ -119,35 +103,109 @@ func run() error {
 	// wire it now that the app (and its EventManager) exists.
 	svc.events = app.Event
 
-	// Explicit "Quit and stop stack" (DL-108, T4.2). Plain quit (window close,
-	// OS quit) LINGERS by default — the stack children stay running and the app
-	// does nothing to them (relaunch re-attaches), so there is deliberately NO
-	// OnShutdown teardown here. Only this menu item tears the stack down.
-	quitter := quitController{
-		stackDown: runStackDown(stackBin),
-		params:    params,
-		quit:      app.Quit,
-		timeout:   stackDownTimeout,
+	// Explicit "Quit and stop stack" (DL-108, T4.2) is embedded-only: client
+	// mode has no stack to stop, so launch() returns a nil quitter there and no
+	// menu is installed. Plain quit (window close, OS quit) LINGERS by default —
+	// the stack children stay running and the app does nothing to them (relaunch
+	// re-attaches), so there is deliberately NO OnShutdown teardown here.
+	if quitter != nil {
+		quitter.quit = app.Quit
+		menu := application.NewMenu()
+		fileMenu := menu.AddSubmenu("File")
+		fileMenu.Add("Quit and stop stack").OnClick(func(_ *application.Context) {
+			// A UI-event callback has no inherited context.Context, so this is
+			// the legitimate main-entrypoint root; stopStackAndQuit derives its
+			// bounded teardown deadline from it.
+			quitter.stopStackAndQuit(context.Background())
+		})
+		app.Menu.Set(menu)
 	}
-	menu := application.NewMenu()
-	fileMenu := menu.AddSubmenu("File")
-	fileMenu.Add("Quit and stop stack").OnClick(func(_ *application.Context) {
-		// A UI-event callback has no inherited context.Context, so this is the
-		// legitimate main-entrypoint root; stopStackAndQuit derives its bounded
-		// teardown deadline from it.
-		quitter.stopStackAndQuit(context.Background())
-	})
-	app.Menu.Set(menu)
 
+	startupJS, err := shellStartupJS(cfg.Mode.String(), cfg.ServerURL)
+	if err != nil {
+		return err
+	}
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Title:  "Compass",
 		Width:  1280,
 		Height: 800,
 		URL:    "/",
+		// OQ-8: the shell injects the launch mode (both modes) and, in client
+		// mode, the server URL as synchronous startup globals the UI reads at
+		// entry with no IPC to pick its boot path. JS runs before the app bundle.
+		JS: startupJS,
 	})
 
-	slog.Info("compass-app starting", "socket", socket, "assets", assetsDir)
+	slog.Info("compass-app starting", "mode", cfg.Mode, "socket", socket, "assets", assetsDir)
 	return app.Run()
+}
+
+// launch dispatches the resolved mode into the embedded or client launch arm and
+// returns the wired bridge service plus (embedded only) the quit controller.
+// Only the embedded arm resolves the compass-stack binary and builds the quit
+// controller; a client-only install has neither a compass-stack binary nor a
+// stack to stop, so those effects must not gate a client launch (design §T5.6).
+func launch(
+	cfg appconfig.Config, socket, stateDir, image string, stackBinFlag *string,
+) (*bridgeService, *quitController, error) {
+	switch cfg.Mode {
+	case appconfig.ModeEmbedded:
+		stackBin, err := resolveStackBin(*stackBinFlag)
+		if err != nil {
+			return nil, nil, err
+		}
+		pipeline := embeddedPipeline{
+			preflight: realPreflight(image, embeddedDatabaseDSN(stateDir)),
+			stackUp:   runStackUp(stackBin),
+			whoAmI:    whoAmIOverUDS,
+		}
+		params := embeddedParams{socket: socket, stateDir: stateDir, image: image}
+
+		// The embedded bring-up (preflight → stack up → WhoAmI) runs BEFORE the
+		// window opens, under a bounded bring-up context rooted at the process
+		// root (run() is called directly by main).
+		bringUpCtx, cancel := context.WithTimeout(context.Background(), bringUpTimeout)
+		accountID, quitter, err := runEmbedded(bringUpCtx, pipeline, params, runStackDown(stackBin))
+		cancel()
+		if err != nil {
+			return nil, nil, err
+		}
+
+		svc := newBridgeService(bridge.NewPump(bridge.NewUnixTarget(socket)), nil, nil, nil)
+		svc.accountID = accountID
+		return svc, quitter, nil
+	case appconfig.ModeClient:
+		// Client mode opens the window immediately: no pre-window probe (the
+		// single auto-connect is the UI's boot-time shellConnect(""), T5.5).
+		svc, err := runClient(cfg, stateDir)
+		if err != nil {
+			return nil, nil, err
+		}
+		return svc, nil, nil
+	default:
+		return nil, nil, fmt.Errorf("unknown app mode %v", cfg.Mode)
+	}
+}
+
+// shellStartupJS builds the OQ-8 startup script the webview loads before the app
+// bundle. It assigns window.__COMPASS_MODE__ in both modes and, in client mode,
+// window.__COMPASS_SERVER_URL__. Each value is JSON-encoded (encoding/json) so a
+// hostile server URL containing quotes/backslashes/</script> cannot break out of
+// the script or inject — the encoded form is always a valid JS string literal.
+func shellStartupJS(mode, serverURL string) (string, error) {
+	modeJSON, err := json.Marshal(mode)
+	if err != nil {
+		return "", fmt.Errorf("encoding startup mode global: %w", err)
+	}
+	js := "window.__COMPASS_MODE__=" + string(modeJSON) + ";"
+	if mode == appconfig.ModeClient.String() {
+		urlJSON, err := json.Marshal(serverURL)
+		if err != nil {
+			return "", fmt.Errorf("encoding startup server-url global: %w", err)
+		}
+		js += "window.__COMPASS_SERVER_URL__=" + string(urlJSON) + ";"
+	}
+	return js, nil
 }
 
 // resolveSocket picks the daemon socket to dial: the --socket flag, else
