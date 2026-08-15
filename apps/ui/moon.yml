@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 # The Compass web UI (SolidJS + Vite). System tasks: bun/vite/biome from the
-# devenv/proto toolchain on PATH. It consumes the checked-in generated client
+# devenv toolchain on PATH. It consumes the checked-in generated client
 # (@compass/client -> compass.v1); compass-proto:drift gates its freshness.
 layer: 'application'
 language: 'typescript'

@@ -59,15 +59,16 @@ docs/architecture/       architecture notes
 ```
 
 The build and toolchain config (`package.json`, `.moon/`, `buf.*`,
-`devenv.nix`, `.prototools`, `biome.json`) lives at the repository root.
+`devenv.nix`, `tools/toolchain/versions/*.nix`, `biome.json`) lives at the
+repository root.
 
 ## Toolchain
 
-A strict split, two layers. **[proto](https://moonrepo.dev/proto)** pins the
-Go/bun/node/moon toolchains (`.prototools`). **[devenv](https://devenv.sh)**
-provides the rest (protobuf/contract tooling, the Go analysis tools, the
-linters). The dev shell is the supported path; the no-nix route is below.
-Detail in
+One owner, [devenv](https://devenv.sh) (nix underneath). It provides every
+language toolchain — Go, bun, node, moon, pinned in
+`tools/toolchain/versions/*.nix` — plus the rest (protobuf/contract tooling,
+the Go analysis tools, the linters). The dev shell is the supported path; the
+no-nix route is below. Detail in
 [`docs/architecture/build-and-ci.md`](./docs/architecture/build-and-ci.md).
 
 ## Quickstart
@@ -80,11 +81,11 @@ bun install       # install the workspace JS deps
 moon run :ci      # the full local gate: build, lint, test, contract drift
 ```
 
-The devenv shell is the supported path. Without nix you can still build: install
-proto (it bootstraps Go, bun, node, and moon from `.prototools`), and supply the
-rest the dev shell otherwise provides — `buf`, `protoc`, `protoc-gen-go`,
-`protoc-gen-connect-go`, `protoc-gen-es` — then `bun install` and
-`moon run :ci`.
+The devenv shell is the supported path. Without nix you can still build:
+install the pinned Go, bun, node, and moon versions by hand from the pin files
+under `tools/toolchain/versions/*.nix`, and supply the rest the dev shell
+otherwise provides — `buf`, `protoc`, `protoc-gen-go`, `protoc-gen-connect-go`,
+`protoc-gen-es` — then `bun install` and `moon run :ci`.
 
 `protoc-gen-es` is on that list rather than arriving with `bun install`: the
 codegen tasks resolve it from PATH, not from `node_modules`, so its version is

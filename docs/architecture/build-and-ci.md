@@ -4,8 +4,7 @@ How a change goes from an editor to a verified build. Each layer is configured
 in a real format and composes cleanly:
 
 ```text
-proto       Go/bun/node/moon version pins
-devenv      the dev shell
+devenv      the dev shell — owns every toolchain (Go/bun/node/moon + the rest)
 moon        the task graph: what to build/test, caching, affected detection
 ```
 
@@ -14,26 +13,20 @@ the scheduler differs — GitHub Actions remotely, moon on one box locally. What
 keeps that true rather than aspirational is the version-parity gate below,
 which fails the build when the two toolchains diverge.
 
-## Toolchains: proto
+## Toolchains: devenv/nix
 
-[proto](https://moonrepo.dev/proto) pins the Go, bun, node, and moon toolchains
-in `.prototools`; it bootstraps standalone, so contributors get those without
-nix. Tool versions live in that one file.
-
-## Dev environment: devenv
-
-[devenv](https://devenv.sh) (nix underneath) provides everything that is not a
-language runtime: the protobuf/contract tooling (buf, protoc, the Go codegen
-plugins), the Go analysis tools (golangci-lint, govulncheck, go-licenses,
-nilaway), and the linters. The split is strict — proto owns the runtimes,
-devenv owns the rest — so PATH order never silently decides which copy of a
-tool wins.
+[devenv](https://devenv.sh) (nix underneath) owns the entire toolchain — one
+owner, one activation path. The language runtimes (Go, bun, node, moon) are
+pinned in `tools/toolchain/versions/*.nix`; everything else — the
+protobuf/contract tooling (buf, protoc, the Go codegen plugins), the Go
+analysis tools (golangci-lint, govulncheck, go-licenses, nilaway), and the
+linters — comes from the pinned nixpkgs revision. A single owner means PATH
+order never silently decides which copy of a tool wins.
 
 - **Local:** `direnv allow` puts the toolchain on PATH. devenv injects tools,
   not a whole shell — you keep your own prompt and dotfiles.
-- **CI:** the runtimes come from the native `setup-*` actions reading
-  `.prototools`; the devenv-provided tools are resolved from the same pinned
-  nixpkgs revision. See CI below.
+- **CI:** the identical derivations the dev shell builds are resolved from the
+  same pinned sources and put on PATH — no `setup-*` actions. See CI below.
 
 ## Task graph: moon
 
@@ -47,7 +40,8 @@ CI-environment form, which reads the base from the provider), while a local
 
 moon runs `go` and `bun` as **system tasks** — it execs the toolchain on PATH
 rather than managing its own. moon's graph/caching layer stays
-toolchain-agnostic; `.prototools` remains the version source.
+toolchain-agnostic; the nix pin files under `tools/toolchain/versions/*.nix`
+remain the version source.
 
 ## The contract gate
 
@@ -95,15 +89,13 @@ and a nightly schedule. One job, `CI`, with two parts:
 
 ### Where CI's toolchain comes from
 
-The split mirrors the local one, with one seam that only exists remotely.
-
-The language runtimes come from the native `setup-*` actions, which read their
-versions **out of `.prototools`** at run time rather than repeating them in
-YAML. The nixpkgs-provided tools — buf, protoc, the Go analysis battery, biome,
-markdownlint — have no `setup-*` equivalent that could reproduce a nixpkgs pin,
-so CI resolves the identical derivations the dev shell does, from the nixpkgs
-revision `devenv.lock` pins (`tools/toolchain/gate-tools.nix`), and puts them on
-PATH. Nix is the mechanism for that one step; it is not the toolchain strategy.
+CI's toolchain is the local one — no remote-only seam. Nix builds the identical
+derivations the dev shell builds, from the same pinned sources: the language
+runtimes (bun, node, moon, go) from `tools/toolchain/versions/*.nix`, and the
+nixpkgs-provided tools — buf, protoc, the Go analysis battery, biome,
+markdownlint — from the nixpkgs revision `devenv.lock` pins
+(`tools/toolchain/gate-tools.nix`). Their `bin/` dirs go on PATH; there are no
+`setup-*` actions. One owner, one activation path, remotely and locally.
 
 ### The parity gate
 
@@ -111,17 +103,12 @@ Reading a version from a file does not prove the runner got it. A step before
 the gate (`tools/toolchain/parity.ts`, also scheduled by `:ci` as
 `toolchain-parity:parity`) asserts that the toolchain actually on PATH is the
 one the dev shell defines, and **fails the build** — never warns — when it is
-not. The two halves of the toolchain are checked two ways, because they are
-pinned two ways:
-
-- **`.prototools` runtimes** (bun, node, moon, go) carry a literal version, so
-  the check is that the binary reports exactly it.
-- **`devenv.nix` packages** carry no version literal anywhere in the repo —
-  their version is whatever the pinned nixpkgs resolves — and two of them
-  (`go-licenses`, `nilaway`) implement no version flag at all. So the check is
-  that `realpath` of each command lands inside the derivation that nixpkgs
-  revision builds. That is stricter than comparing version strings: it catches
-  an ambient binary of the same version shadowing the pinned one.
+not. Every tool is pinned the same way now — as a nix derivation — so the gate
+checks every one the same way: it resolves `realpath` of each command on PATH
+and asserts it lands inside the derivation the pinned sources build. That is a
+store-path identity check, stronger than comparing version strings: it catches
+an ambient binary of the same version shadowing the pinned one, and it works
+for the tools (`go-licenses`, `nilaway`) that implement no version flag at all.
 
 A tool the gate cannot check is reported `UNVERIFIABLE` and fails the build.
 Skipping what it cannot verify would make its green mean nothing.
@@ -219,15 +206,14 @@ The build is heavy — the image closure is the dominant CI cost, the reason
 the gate's timeout is 90m — but it is not paid on every PR. `moon ci` runs a
 PR's *affected* projects only, and the task's `inputs` scope it to the image
 closure: the `agent-image/` tree, the two vendored forks, `packages/compass-agent/`,
-the root `package.json` and `bun.lock`, and `.prototools`. A PR that touches
-none of those never builds the image; every push to main runs it
-unconditionally in the full sweep. Its `inputs` mirror the publish workflow's
+the root `package.json` and `bun.lock`, and `tools/toolchain/versions/bun.nix`.
+A PR that touches none of those never builds the image; every push to main runs
+it unconditionally in the full sweep. Its `inputs` mirror the publish workflow's
 `on.push.paths` — the reviewed source of truth for what changes the published
-artifact — plus `.prototools` (which publish excludes because a pin move there
-cannot change the output, but which reddens the toolchain assert, exactly what
-this gate exists to catch at PR time). As a project in the one-job gate it is a
-required check: a build break blocks merge, the same posture as the vendored
-forks' nix builds.
+artifact — including the bun pin file, since the image now builds bun from that
+pinned derivation, so a pin move there changes the output. As a project in the
+one-job gate it is a required check: a build break blocks merge, the same
+posture as the vendored forks' nix builds.
 
 ## Caching
 
