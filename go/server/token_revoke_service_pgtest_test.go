@@ -88,4 +88,11 @@ func TestRevokeTokenRoundTrip(t *testing.T) {
 			t.Fatalf("revoking an unknown token = %v, want CodeNotFound", code)
 		}
 	})
+
+	t.Run("revoking an empty token is InvalidArgument", func(t *testing.T) {
+		err := revoke(adminTok, "")
+		if code := connect.CodeOf(err); code != connect.CodeInvalidArgument {
+			t.Fatalf("revoking an empty token = %v, want CodeInvalidArgument", code)
+		}
+	})
 }
