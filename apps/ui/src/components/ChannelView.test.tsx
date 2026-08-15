@@ -376,19 +376,43 @@ describe("ChannelView is a composerless topic index (T5 model boundary)", () => 
 // local byHandle with a hardcoded compass entry, and identity.test.ts pins that
 // STUB_ACCOUNTS carries the system sender — this closes the loop between them:
 // it renders TopicView over the actual offline store (whose byHandle is built
-// from store.accounts(), TopicView.tsx:22-23) and asserts a fixture message body
-// containing `@compass` (msg-c1 in top-compass-t3a) chips with NEITHER `reserved`
-// (purple, mark-only per DL-155) NOR `unknown`. Mutation-check: dropping the
-// system sender from the store's account surface — while leaving STUB_ACCOUNTS
-// intact — reddens here, where the two unit tests alone would not.
+// from store.accounts(), TopicView.tsx:22-23) and asserts the system sender's
+// mention chips with NEITHER `reserved` (purple, mark-only per DL-155) NOR
+// `unknown`. Mutation-check: dropping the system sender from the store's account
+// surface — while leaving STUB_ACCOUNTS intact — reddens here, where the two
+// unit tests alone would not.
+//
+// Derived from the fixture (like STANDALONE_ASK above) so a reshuffle can't
+// stale it: the sole system-kind account's handle, and the topic of the first
+// message body that mentions it.
+const SYSTEM_MENTION = (() => {
+	const system = STUB_ACCOUNTS.find((a) => a.kind === "system");
+	if (!system) {
+		throw new Error(
+			"fixture has no kind:'system' account — the @compass end-to-end test needs one",
+		);
+	}
+	const token = `@${system.handle}`; // "@compass"
+	for (const m of STUB_MESSAGES) {
+		for (const b of m.blocks) {
+			if (b.kind === "text" && b.text.includes(token)) {
+				return { topicId: m.topicId, token };
+			}
+		}
+	}
+	throw new Error(
+		`fixture has no message mentioning ${token} — the @compass end-to-end test needs one`,
+	);
+})();
+
 describe("@compass system sender resolves as a known mention end-to-end (T5)", () => {
 	test("a fixture @compass mention chips as known through the real store", () => {
 		const { store, container } = mountTopicView();
-		store.openTopic("top-compass-t3a");
+		store.openTopic(SYSTEM_MENTION.topicId);
 
 		const chip = [
 			...container.querySelectorAll<HTMLElement>(".mention-chip"),
-		].find((c) => c.textContent === "@compass");
+		].find((c) => c.textContent === SYSTEM_MENTION.token);
 		// Precondition: the mention actually rendered (proves the class assertions
 		// below are meaningful, not an empty-render false pass).
 		expect(chip).toBeDefined();
