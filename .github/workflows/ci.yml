@@ -133,84 +133,11 @@ jobs:
           # single-ref checkout does not provide it.
           fetch-depth: 0
 
-      - name: Read the toolchain pins
-        id: pins
-        # .prototools is the single source for the language/runtime versions.
-        # Reading it here rather than hardcoding into the `setup-*` inputs below
-        # is what keeps that true — a pin bump is one file, and the parity gate
-        # further down proves the runner actually got what was asked for.
-        #
-        # `/^\[/q` stops at the first table header, so only top-level pins are
-        # read and a future [settings] section is never mistaken for one. This
-        # mirrors parseProtoTools in tools/toolchain/parity-core.ts, which is
-        # what checks the result — a divergence between the two shows up as a
-        # parity failure, not as a silent wrong version.
-        #
-        # Every value is shape-checked before it is written. A pin is always a
-        # version string; anything else means the file is malformed or crafted,
-        # and refusing is the same posture the parity gate takes — fail rather
-        # than proceed over something unvouched. This also closes GITHUB_OUTPUT
-        # injection, since a rejected value never reaches the file.
-        run: |
-          pins=$(sed -n '/^\[/q; s/^\([A-Za-z0-9_-]\{1,\}\)[[:space:]]*=[[:space:]]*"\([^"]\{1,\}\)".*/\1=\2/p' \
-            .prototools)
-          while IFS='=' read -r name value; do
-            [ -n "$name" ] || continue
-            case $value in
-              *[!0-9A-Za-z.+-]*|'')
-                echo "::error::.prototools pin '$name' has value '$value', which is not a version string"
-                exit 1
-                ;;
-            esac
-          done <<EOF
-          $pins
-          EOF
-          # Refuse over nothing: a malformed .prototools parses to zero pins, and
-          # every `setup-*` below would then silently take its own default
-          # version — a green run on an unpinned toolchain. Each pin the jobs
-          # consume must be present.
-          for required in bun node go moon; do
-            printf '%s\n' "$pins" | grep -q "^$required=" || {
-              echo "::error::.prototools yielded no '$required' pin — the file is malformed or its shape changed"
-              exit 1
-            }
-          done
-          printf '%s\n' "$pins" | tee -a "$GITHUB_OUTPUT"
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2 (v2.2.0)
-        with:
-          bun-version: ${{ steps.pins.outputs.bun }}
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ steps.pins.outputs.node }}
-
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6 (6.5.0)
-        with:
-          go-version: ${{ steps.pins.outputs.go }}
-          # go/moon.yml owns caching decisions per task; a second cache keyed on
-          # a go.sum this action found by guessing only adds a way to be wrong.
-          cache: false
-
-      - name: Install moon
-        # moon has no first-party setup action that pins from .prototools, and
-        # its npm package is version-for-version the release. The parity gate
-        # confirms the binary that lands reports the pinned version.
-        #
-        # The pin arrives via env rather than a `${{ }}` interpolation into the
-        # script: `${{ }}` is textual substitution performed BEFORE the shell
-        # parses the line, so a .prototools value carrying shell metacharacters
-        # would execute. A shell variable is data. .prototools is PR-editable, so
-        # this is reachable from a fork.
-        env:
-          MOON_VERSION: ${{ steps.pins.outputs.moon }}
-        run: npm install --global "@moonrepo/cli@$MOON_VERSION"
-
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
           # The forks' functional CI is `nix build` of their own flakes, and the
-          # nixpkgs half of the toolchain is fetched below. Flakes are needed for
-          # the former; nix-command for both.
+          # whole toolchain — language runtimes AND the nixpkgs tools — is built
+          # from nix below. Flakes are needed for the former; nix-command for both.
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
@@ -226,18 +153,44 @@ jobs:
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
+      - name: Put the language toolchains on PATH
+        # Phase one of the two-phase bootstrap. The language runtimes
+        # (bun/node/moon/go) come from nix, not `setup-*` actions: gate-tools.nix's
+        # `langs` output resolves the identical derivations the dev shell does —
+        # bun/node/moon from tools/toolchain/toolchain-tools.nix, go from the
+        # go-overlay applied to the devenv.lock-pinned nixpkgs — so CI runs the
+        # pinned versions byte-for-byte and the parity gate has a concrete store
+        # path to check each against. `langs` is a closed set, so it needs no
+        # `--arg attrs` (the head defaults it).
+        #
+        # This must precede phase two: `--print-nix-attrs` runs under `bun`, so
+        # bun has to be on PATH before that parse can run.
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          # Fail closed locally rather than leaning on the absence of a
+          # root-level flake.nix: with no installables `nix build` would build a
+          # default package if one existed, so an empty `langs` must error here.
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
       - name: Put the dev shell's nixpkgs tools on PATH
-        # buf, protoc, the Go analysis battery, biome and markdownlint have no
-        # `setup-*` action that could reproduce a nixpkgs pin. Rather than pick a
-        # close-enough release from some other channel and hope, CI resolves the
-        # SAME derivations the dev shell does, from the nixpkgs revision
-        # devenv.lock pins. Nix is a mechanism for this step; it is not the
-        # toolchain strategy — the language runtimes above come from the native
-        # actions, per the standing decision.
+        # Phase two. buf, protoc, the Go analysis battery, biome and markdownlint
+        # have no `setup-*` action that could reproduce a nixpkgs pin. Rather than
+        # pick a close-enough release from some other channel and hope, CI
+        # resolves the SAME derivations the dev shell does, from the nixpkgs
+        # revision devenv.lock pins.
         #
         # The attribute list comes from the parity script's own parse of
-        # devenv.nix, so what CI installs and what the gate expects cannot
-        # disagree, and neither is enumerated here.
+        # devenv.nix (run under the bun that phase one just put on PATH), so what
+        # CI installs and what the gate expects cannot disagree, and neither is
+        # enumerated here.
         run: |
           attrs=$(bun tools/toolchain/parity.ts --print-nix-attrs)
           out=$(nix build --no-link --print-out-paths \

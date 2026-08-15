@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
 # The toolchain parity gate (tools/toolchain). Asserts that the toolchain the
-# runner has on PATH is the toolchain the dev shell defines — the .prototools
-# literals for bun/node/moon/go, and the devenv.lock-pinned nixpkgs derivation
-# for everything else.
+# runner has on PATH is the toolchain the dev shell defines — the
+# devenv.lock-pinned nix derivations: the bun/node/moon/go language toolchains
+# and the nixpkgs tools alongside them.
 #
 # It is a moon project, not a bare workflow step, for two reasons. Its pure half
 # is real logic that must itself be gated (`test`, `typecheck` below) — an
