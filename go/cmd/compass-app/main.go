@@ -102,7 +102,7 @@ func run() error {
 		return err
 	}
 
-	svc := newBridgeService(bridge.NewPump(bridge.NewUnixTarget(socket)), nil)
+	svc := newBridgeService(bridge.NewPump(bridge.NewUnixTarget(socket)), nil, nil, nil)
 	svc.accountID = accountID
 
 	app := application.New(application.Options{

@@ -83,7 +83,7 @@ func stubServer(t *testing.T, handler http.HandlerFunc) (socketPath string) {
 // emitter the test drains.
 func newService(socket string) (*bridgeService, *fakeEmitter) {
 	emitter := newFakeEmitter()
-	svc := newBridgeService(bridge.NewPump(bridge.NewUnixTarget(socket)), emitter)
+	svc := newBridgeService(bridge.NewPump(bridge.NewUnixTarget(socket)), emitter, nil, nil)
 	return svc, emitter
 }
 
