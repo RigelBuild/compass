@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	keyring "github.com/zalando/go-keyring"
 )
@@ -41,71 +42,97 @@ type Store interface {
 	Delete(serverURL string) error
 }
 
-// New returns a keyring-first store that transparently falls back to an atomic
-// 0600 file under stateDir when the OS keyring is unavailable. stateDir is the
-// already-resolved state directory (XDG resolution lives in main.go, T5.6); it
-// is used only when the keyring backend errors out.
+// New returns a keyring-first store that binds to the OS keyring, or to an
+// atomic 0600 file under stateDir when the keyring backend is unavailable. The
+// backend is chosen once, on first use, and held for the store's lifetime, so
+// Read/Write/Delete never split across backends: a rotate/logout can never
+// leave a live credential in one backend while the caller believes it removed
+// from the other. stateDir is the already-resolved state directory (XDG
+// resolution lives in main.go, T5.6); it is used only when the keyring backend
+// is unavailable.
 func New(stateDir string) Store {
 	return &keyringStore{fallback: &fileStore{dir: stateDir}}
 }
 
-// keyringStore prefers the OS keyring and falls back to fallback when the
-// keyring backend is unavailable (e.g. no D-Bus Secret Service on Linux).
+// backend identifies the persistence backend a keyringStore has bound to.
+type backend int
+
+const (
+	backendUnbound backend = iota // not yet chosen (the zero value; never observed)
+	backendKeyring                // OS keyring
+	backendFile                   // 0600 file fallback
+)
+
+// probeUser is a reserved keyring key used only to detect whether the keyring
+// backend can service requests. It is never written; a real key is always a
+// validated https server URL, so this sentinel can never collide with one. A
+// Get returns ErrNotFound on a working backend and a dial/platform error on an
+// absent one.
+const probeUser = "compass-app::keyring-probe"
+
+// keyringStore prefers the OS keyring and binds to the file fallback only when
+// the keyring backend is unavailable (e.g. no D-Bus Secret Service on Linux).
+// The choice is made once and cached, so an operational keyring failure after a
+// successful bind propagates as an error rather than silently diverting one
+// operation to the file — which would split-brain the credential across
+// backends (SEA-2009).
 type keyringStore struct {
 	fallback *fileStore
-}
 
-// unavailable reports whether err indicates the keyring backend is absent, as
-// opposed to a genuine operational failure. go-keyring surfaces a missing
-// backend as ErrUnsupportedPlatform or a D-Bus/Secret-Service dial error; only
-// keyring.ErrNotFound is a real "no such entry" answer, which is NOT a fallback
-// trigger.
-func unavailable(err error) bool {
-	if err == nil || errors.Is(err, keyring.ErrNotFound) {
-		return false
-	}
-	// Any non-ErrNotFound error from the keyring means the backend could not
-	// service the request (unsupported platform, no Secret Service bus, etc.);
-	// fall back to the file so a keyring-less host still works (DL-109).
-	return true
+	once  sync.Once
+	bound backend
 }
 
 func (s *keyringStore) Read(serverURL string) (string, error) {
+	if s.resolve() == backendFile {
+		return s.fallback.Read(serverURL)
+	}
 	token, err := keyring.Get(keyringService, serverURL)
 	switch {
 	case err == nil:
 		return token, nil
 	case errors.Is(err, keyring.ErrNotFound):
 		return "", ErrNotFound
-	case unavailable(err):
-		return s.fallback.Read(serverURL)
 	default:
 		return "", fmt.Errorf("tokenstore: reading keyring: %w", err)
 	}
 }
 
 func (s *keyringStore) Write(serverURL, token string) error {
-	err := keyring.Set(keyringService, serverURL, token)
-	switch {
-	case err == nil:
-		return nil
-	case unavailable(err):
+	if s.resolve() == backendFile {
 		return s.fallback.Write(serverURL, token)
-	default:
+	}
+	if err := keyring.Set(keyringService, serverURL, token); err != nil {
 		return fmt.Errorf("tokenstore: writing keyring: %w", err)
 	}
+	return nil
 }
 
 func (s *keyringStore) Delete(serverURL string) error {
-	err := keyring.Delete(keyringService, serverURL)
-	switch {
-	case err == nil, errors.Is(err, keyring.ErrNotFound):
-		return nil
-	case unavailable(err):
+	if s.resolve() == backendFile {
 		return s.fallback.Delete(serverURL)
-	default:
+	}
+	if err := keyring.Delete(keyringService, serverURL); err != nil && !errors.Is(err, keyring.ErrNotFound) {
 		return fmt.Errorf("tokenstore: deleting keyring: %w", err)
 	}
+	return nil
+}
+
+// resolve binds the persistence backend once, on first use. It probes the
+// keyring with a read of the reserved probeUser key: ErrNotFound (or any
+// success) means the keyring is present and working; any other error means the
+// backend is unavailable and the file fallback is bound for the store's
+// lifetime.
+func (s *keyringStore) resolve() backend {
+	s.once.Do(func() {
+		_, err := keyring.Get(keyringService, probeUser)
+		if err == nil || errors.Is(err, keyring.ErrNotFound) {
+			s.bound = backendKeyring
+		} else {
+			s.bound = backendFile
+		}
+	})
+	return s.bound
 }
 
 // tokenPair is the on-disk fallback record. The URL is stored alongside the

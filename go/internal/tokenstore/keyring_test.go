@@ -105,3 +105,39 @@ func TestKeyringStoreErrNotFoundNeverFallsBack(t *testing.T) {
 		t.Fatalf("Read err = %v, want ErrNotFound (ErrNotFound must not trigger fallback)", err)
 	}
 }
+
+// Once the store has bound to the keyring, a later transient keyring failure
+// (locked keychain, cancelled prompt, D-Bus hiccup) must PROPAGATE as an error
+// — never silently divert that one operation to the file fallback, which would
+// split-brain the credential across backends (SEA-2009). Sharpest for Delete: a
+// silent fallback there returns nil while the credential stays live in the
+// keyring. This test is red against per-call fallback, green against bind-once.
+func TestKeyringStoreBoundKeyringPropagatesTransientError(t *testing.T) {
+	keyring.MockInit() // working backend
+	dir := t.TempDir()
+	s := New(dir)
+
+	// First op binds the store to the keyring for its lifetime.
+	if err := s.Write(testURL, testToken); err != nil {
+		t.Fatalf("initial Write: %v", err)
+	}
+
+	// The keyring now fails transiently for every op. The store stays bound to
+	// the keyring (the bind is not re-evaluated), so operations must surface the
+	// failure rather than fall back to the file.
+	transient := errors.New("keyring locked")
+	keyring.MockInitWithError(transient)
+
+	if _, err := s.Read(testURL); err == nil {
+		t.Error("Read: want error on transient keyring failure, got nil (must not fall back)")
+	}
+	if err := s.Write(testURL, "rotated"); err == nil {
+		t.Error("Write: want error on transient keyring failure, got nil (must not fall back)")
+	}
+	if err := s.Delete(testURL); err == nil {
+		t.Error("Delete: want error on transient keyring failure, got nil — a silent nil hides a live credential (SEA-2009)")
+	}
+	if fallbackFileExists(t, dir) {
+		t.Error("fallback file written after keyring bind; credential split-brained across backends")
+	}
+}
