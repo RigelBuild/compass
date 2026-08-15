@@ -12,7 +12,17 @@
 	//     (the `<compass-manager>` wrapper, atx role headings matching OMP's own
 	//     block-0). Prose rules (MD033/MD041/MD025/MD003) fight that purpose, so the
 	//     payload subtrees are exempt — same "not our prose to lint" basis as forks.
+	//   - go/server/setup_thread.md — the root Manager's setup-thread prompt,
+	//     //go:embed-ed as setupThreadBody (go/server/serve_seed.go) and seeded
+	//     verbatim into a model's context. Same agent-context-payload basis as
+	//     config/prompts + config/agents: its conversational first line is by
+	//     design, so MD041 (first-line-heading) does not apply.
 	"globs": ["**/*.md"],
 	"gitignore": true,
-	"ignores": ["forks/*/**", "config/prompts/**", "config/agents/**"]
+	"ignores": [
+		"forks/*/**",
+		"config/prompts/**",
+		"config/agents/**",
+		"go/server/setup_thread.md"
+	]
 }
