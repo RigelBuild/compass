@@ -126,6 +126,12 @@ func TestClientModeHeadlessChain(t *testing.T) {
 	if err := store.Write(f.ServerURL(), f.AdminToken()); err != nil {
 		t.Fatalf("tokenstore Write: %v", err)
 	}
+	// The real admin bearer just landed in the store; on a keyring-equipped box
+	// (which podmanUsable() implies) that is the host OS keyring, not a temp dir,
+	// so delete it on teardown rather than leaking one dead credential entry per
+	// run — the file fallback already auto-reaps under t.TempDir(). A Delete
+	// error during cleanup is not actionable.
+	t.Cleanup(func() { _ = store.Delete(f.ServerURL()) })
 
 	relaunched := tokenstore.New(storeDir) // a fresh store == the client relaunching against the same state dir
 	got, err := relaunched.Read(f.ServerURL())
@@ -164,8 +170,13 @@ func TestClientModeHeadlessChain(t *testing.T) {
 	assertTokenNotInCmdlines(t, f.RuntimeDir(), f.AdminToken())
 
 	// A client-mode app.toml carries mode/server_url/ca_cert but NEVER the token
-	// (the token lives in the tokenstore, DL-109). Write one as the client setup
-	// would and assert it contains no token substring.
+	// (the token lives in the tokenstore, DL-109). NOTE: this is a
+	// design-conformance placeholder, not regression coverage — compass-app has
+	// no app.toml WRITER yet (embedded.go/main.go only Load it), so this
+	// constructs the TOML the client setup would write and asserts the shape.
+	// The real hygiene coverage is the /proc scan + tokenstore legs above; when a
+	// production client-mode config writer lands, point this at it instead of a
+	// test-authored literal so it catches a real leak.
 	appToml := "mode = \"client\"\n" +
 		"server_url = " + strconv.Quote(f.ServerURL()) + "\n" +
 		"ca_cert = " + strconv.Quote(f.CAPath()) + "\n"
