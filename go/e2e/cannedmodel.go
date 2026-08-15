@@ -28,9 +28,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -131,6 +133,28 @@ type cannedModelServer struct {
 	servedMu sync.Mutex
 	served   int
 }
+
+// setupTurnMarker is a stable substring of the server's root-supervisor Setup
+// thread (go/server/setup_thread.md, embedded as setupThreadBody). The e2e stack
+// boots on an empty agent tree, so the server's first-launch seed always creates
+// a root supervisor and posts that Setup thread into its home channel — driving
+// a REAL first turn on the supervisor that dials THIS shared canned backend,
+// concurrently with the test's own agent turn. That supervisor turn is not part
+// of any leg's script, and it races the test agent on the positional counter, so
+// left unrouted it would consume a scripted slot (or, for an ordered script,
+// the WRONG slot). The handler classifies a request as the supervisor's Setup
+// turn by this marker and serves it setupReply off a SEPARATE counter, leaving
+// each leg's ordered script drawn only by the test agent.
+//
+// It is a substring, not the whole body, so incidental copy edits below the
+// first line don't silently un-route the Setup turn; TestCannedSetupMarker
+// guards against drift by asserting it stays a substring of setup_thread.md.
+const setupTurnMarker = "you are the root Manager for this Compass workspace"
+
+// setupReply is the clean text turn the canned backend settles the supervisor's
+// Setup turn on. Its content is irrelevant to every leg's assertions (which read
+// the TEST agent's transcript), so it only needs to settle the turn cleanly.
+const setupReply = "canned setup turn settled OK"
 
 // startCannedModelServer binds a listener on bindAddr (host:port; port 0 lets
 // the kernel assign a free one) and serves the canned streaming SSE script on
@@ -282,6 +306,25 @@ func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http
 		return
 	}
 
+	// Read the request body so the Setup turn can be routed off the script. The
+	// body is small (one chat-completions request) and fully buffered before any
+	// response byte is written.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("canned model backend read body: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// The root-supervisor Setup turn (see setupTurnMarker) is an out-of-script
+	// turn-driver the e2e stack's first-launch seed always fires, racing the
+	// test agent on the shared backend. Serve it a fixed clean reply WITHOUT
+	// advancing the script counter, so each leg's ordered script is drawn only by
+	// the test agent's turns — race-free regardless of which turn dials first.
+	if strings.Contains(string(body), setupTurnMarker) {
+		c.writeTextTurn(w, flusher, setupReply)
+		return
+	}
+
 	// Claim the next script index under the counter mutex so a pathological
 	// concurrent hit stays race-free. An index past the end is a test bug: fail
 	// loudly with a 500 naming exhaustion BEFORE writing the 200 stream header,
@@ -296,20 +339,14 @@ func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http
 	}
 	turn := c.script[idx]
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-
 	const id = "canned-completion"
-	var events []chatChunk
 	if turn.isToolCall {
 		// A single tool-call turn: one delta.tool_calls entry with a unique
 		// deterministic call id, then a terminal finish_reason "tool_calls" (maps
 		// to stopReason toolUse the agent loop gates tool execution on).
 		finish := finishToolCall
 		callID := fmt.Sprintf("call_%d", idx)
-		events = []chatChunk{
+		c.writeTurn(w, flusher, []chatChunk{
 			{ID: id, Object: chunkObject, Choices: []chatChoice{{
 				Index: 0,
 				Delta: chatDelta{Role: "assistant", ToolCalls: []chatToolCall{{
@@ -327,32 +364,50 @@ func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http
 				Delta:        chatDelta{},
 				FinishReason: &finish,
 			}}},
-		}
-	} else {
-		// A pure-text turn: the content chunk then a clean finish_reason "stop".
-		stop := finishStop
-		events = []chatChunk{
-			{ID: id, Object: chunkObject, Choices: []chatChoice{{
-				Index: 0,
-				Delta: chatDelta{Role: "assistant", Content: turn.text},
-			}}},
-			{ID: id, Object: chunkObject, Choices: []chatChoice{{
-				Index:        0,
-				Delta:        chatDelta{},
-				FinishReason: &stop,
-			}}},
-		}
+		})
+		return
 	}
+	c.writeTextTurn(w, flusher, turn.text)
+}
+
+// writeTextTurn serves a pure-text turn: a content chunk carrying reply then a
+// clean finish_reason "stop", the same shape a scripted CannedText turn emits.
+// It is the shared path for both a scripted text turn and the out-of-script
+// Setup turn (setupTurnMarker), so both settle identically on the wire.
+func (c *cannedModelServer) writeTextTurn(w http.ResponseWriter, flusher http.Flusher, reply string) {
+	const id = "canned-completion"
+	stop := finishStop
+	c.writeTurn(w, flusher, []chatChunk{
+		{ID: id, Object: chunkObject, Choices: []chatChoice{{
+			Index: 0,
+			Delta: chatDelta{Role: "assistant", Content: reply},
+		}}},
+		{ID: id, Object: chunkObject, Choices: []chatChoice{{
+			Index:        0,
+			Delta:        chatDelta{},
+			FinishReason: &stop,
+		}}},
+	})
+}
+
+// writeTurn writes the 200 SSE header, streams each event as a `data:` frame
+// flushed immediately (so the client's first-event watchdog sees bytes without
+// waiting on the handler to return), then the terminal `data: [DONE]` sentinel.
+// A marshal failure of a fixed in-memory struct is surfaced as a 500 rather than
+// swallowed; a mid-stream write error means the client hung up, so nothing
+// actionable remains.
+func (c *cannedModelServer) writeTurn(w http.ResponseWriter, flusher http.Flusher, events []chatChunk) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
 	for _, ev := range events {
 		payload, err := json.Marshal(ev)
 		if err != nil {
-			// Marshaling a fixed in-memory struct cannot realistically fail;
-			// surface it rather than swallow it, then stop the stream.
 			http.Error(w, fmt.Sprintf("canned model backend marshal: %v", err), http.StatusInternalServerError)
 			return
 		}
 		if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
-			// The client hung up mid-stream; nothing actionable remains.
 			return
 		}
 		flusher.Flush()

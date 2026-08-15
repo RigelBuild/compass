@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -443,5 +444,23 @@ func TestCannedModelServerRejectsEmptyScript(t *testing.T) {
 			_ = srv.Close() // unexpected success; release the listener
 		}
 		t.Fatal("startCannedModelServer with an empty script returned nil error, want a construction error")
+	}
+}
+
+// TestCannedSetupMarker guards the drift-critical coupling behind the canned
+// backend's Setup-turn routing: setupTurnMarker MUST stay a substring of the
+// server's root-supervisor Setup thread (go/server/setup_thread.md), because the
+// handler classifies a request as the out-of-script supervisor Setup turn by
+// exactly that substring. If the server edits the Setup copy so the marker no
+// longer matches, the supervisor's turn would silently fall through to the
+// scripted path again and re-introduce the race this routing fixes — this test
+// reddens the moment that coupling breaks, in the hermitic (no-podman) lane.
+func TestCannedSetupMarker(t *testing.T) {
+	body, err := os.ReadFile("../server/setup_thread.md")
+	if err != nil {
+		t.Fatalf("read setup_thread.md: %v", err)
+	}
+	if !strings.Contains(string(body), setupTurnMarker) {
+		t.Fatalf("setupTurnMarker %q is no longer a substring of go/server/setup_thread.md; the canned backend can no longer route the supervisor Setup turn off the script (update the marker to a stable phrase of the current Setup copy)", setupTurnMarker)
 	}
 }

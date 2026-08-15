@@ -34,7 +34,7 @@
 import type { Stats } from "node:fs";
 import { lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
-import type { Model } from "@oh-my-pi/pi-ai";
+import type { ApiKey, Model } from "@oh-my-pi/pi-ai";
 import {
 	type AgentSession,
 	type CreateAgentSessionOptions,
@@ -192,7 +192,8 @@ interface Seed {
 }
 
 /**
- * A `getApiKey` resolver backed by the on-disk seed.
+ * A `getApiKey` resolver backed by the on-disk seed, layered over the SDK's own
+ * per-call resolver.
  *
  * Re-reads the seed on EVERY call, which is the load-bearing behavior: the SDK
  * invokes `getApiKey` per LLM call precisely so an expiring or rotated
@@ -200,21 +201,34 @@ interface Seed {
  * (design §T6) rewrites this file in place. A value cached at construction would
  * silently pin the container to a stale key until it was torn down.
  *
- * Every failure path returns `undefined` rather than throwing: a missing,
- * unreadable, malformed, or provider-less seed must leave the agent running and
- * able to report, letting the SDK surface a clean auth error on the call that
- * needed the key. A container that crashes at boot because its credential has
- * not been materialized yet is strictly worse — provisioning writes the seed
- * after the container is up.
+ * A seeded provider's key always wins — that is the T6 rotation contract. When
+ * the seed has no key for the provider, resolution FALLS THROUGH to `fallback`,
+ * the SDK resolver `createAgentSession` installed (`modelRegistry.resolver`,
+ * `sdk.ts:3030`). That resolver is what returns the keyless `"N/A"` sentinel
+ * (`kNoAuth`) for a `auth: none` models.yml provider (`model-registry.ts:2305`,
+ * `openai-shared.ts` `NO_AUTH_SENTINEL`), so a keyless local/gateway provider
+ * dials instead of failing `MissingApiKeyError`. Replacing the SDK resolver
+ * outright (seed-only) silently dropped that path — a delivered idle turn ran
+ * the full agent loop but never dialed the model. `fallback` is optional so the
+ * pure seed lookup stays testable in isolation; `main` always passes it.
+ *
+ * Every seed failure path returns via the fallback (or `undefined` when none):
+ * a missing, unreadable, malformed, or provider-less seed must leave the agent
+ * running and able to report, letting the SDK surface a clean auth error on the
+ * call that needed the key. A container that crashes at boot because its
+ * credential has not been materialized yet is strictly worse — provisioning
+ * writes the seed after the container is up.
  */
 export function createSeedApiKeyResolver(
 	home: string,
-): (model: Model) => Promise<string | undefined> {
+	fallback?: (model: Model) => Promise<ApiKey | undefined> | ApiKey | undefined,
+): (model: Model) => Promise<ApiKey | undefined> {
 	const path = authSeedPath(home);
-	return async (model: Model): Promise<string | undefined> => {
+	return async (model: Model): Promise<ApiKey | undefined> => {
 		const seed = await readSeed(path);
 		const key = seed?.entries?.[model.provider]?.key;
-		return typeof key === "string" ? key : undefined;
+		if (typeof key === "string") return key;
+		return fallback?.(model);
 	};
 }
 
@@ -789,7 +803,15 @@ export async function main(
 	// example (`sdk.d.ts:368`) advertises the option, but the type does not carry
 	// it, so passing it there is a compile error. Assigning the field is the
 	// type-safe path to the same per-call resolution semantics.
-	session.agent.getApiKey = createSeedApiKeyResolver(home);
+	//
+	// LAYER the seed OVER the SDK resolver rather than replacing it: capture the
+	// resolver `createAgentSession` installed (`modelRegistry.resolver`) and pass
+	// it as the fall-through. A seeded provider's key still wins (T6 rotation),
+	// but a provider absent from the seed — notably an `auth: none` keyless
+	// provider — resolves through the SDK path, which yields the keyless `"N/A"`
+	// sentinel so the turn dials instead of failing `MissingApiKeyError`.
+	const sdkGetApiKey = session.agent.getApiKey?.bind(session.agent);
+	session.agent.getApiKey = createSeedApiKeyResolver(home, sdkGetApiKey);
 
 	// Construction cycle (SEA-1310 §8): createSocketControlSource needs the
 	// ImmediateControl handle at construction, but the handle must forward into

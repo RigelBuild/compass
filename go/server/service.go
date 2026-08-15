@@ -206,31 +206,33 @@ func (s *service) StartAgentSession(
 	// The resume branch: a non-empty resume_session_id relays through the resume
 	// handoff (authz-gate the caller, bind the lifetime, reconstruct the body,
 	// attach it to the INTERNAL start envelope), all BEFORE any Runner call for
-	// the authz + bind. A fresh start (empty id) takes the verbatim relay,
-	// attaching nothing and binding nothing (its first-lifetime base defaults to
-	// 0 per migration 0009). Either way resp is the started session the ownership
-	// chain below records.
-	var resp *compassv1.StartAgentSessionResponse
+	// the authz + bind. A resume REUSES the logical session id as the live id, so
+	// its ownership row (session_id -> agent_account_id) already exists from the
+	// first lifetime and its caller was already authorized against that row by
+	// startResumeSession (RequireAgentSessionSubscriber) — so the resume branch
+	// does NOT re-record ownership (that INSERT would conflict on the existing
+	// row). A fresh start (empty id) mints a new id, so it takes the verbatim
+	// relay, attaches nothing, binds nothing (first-lifetime base defaults to 0
+	// per migration 0009), and records the ownership chain below.
 	if resumeID := req.Msg.GetResumeSessionId(); resumeID != "" {
-		var err error
-		resp, err = s.startResumeSession(ctx, resumeID, req.Msg)
+		resp, err := s.startResumeSession(ctx, resumeID, req.Msg)
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		var err error
-		resp, err = s.hub.Start(ctx, "", req.Msg)
-		if err != nil {
-			return nil, err
-		}
+		return connect.NewResponse(resp), nil
+	}
+
+	resp, err := s.hub.Start(ctx, "", req.Msg)
+	if err != nil {
+		return nil, err
 	}
 	// Complete the durable ownership chain now that the Runner has started the
-	// session: session_id (the server-minted response) -> agent_account_id, the
-	// chain SubscribeAgentSession resolves to authorize a subscriber. The
+	// fresh session: session_id (the server-minted response) -> agent_account_id,
+	// the chain SubscribeAgentSession resolves to authorize a subscriber. The
 	// request carries only container_name, so the owning account comes from the
-	// placement recorded at Provision — a durable read, not an in-memory
-	// binding, so the ownership record is written correctly even across a Server
-	// restart or a Runner re-enroll since the container was provisioned.
+	// placement recorded at Provision — a durable read, not an in-memory binding,
+	// so the ownership record is written correctly even across a Server restart or
+	// a Runner re-enroll since the container was provisioned.
 	//
 	// Either store step can fail AFTER the Runner has irreversibly started an
 	// agent, and unlike Provision this does NOT self-heal: Provision's write is

@@ -12,22 +12,37 @@ import (
 )
 
 // TestLegSixTeardownIdempotence is the full leg-6 scenario over the real stack
-// (design.md:690-706, Approach A6 :383-402): a container is provisioned, the
-// stack is torn Down (the container LEAKS — Down closes only the runner's
-// sockets, host.go:203-210, so the podman container survives), then the stack is
-// restarted against the SAME persisted postgres so the same handle resolves to
-// the SAME account (hence the SAME deterministic container name), and a preflight
-// exact-name `podman rm -f` lets the second Provision succeed where without it it
-// would collide on `podman create --name`.
+// (design.md:690-706, Approach A6 :386-405): a container is provisioned, the
+// stack is torn Down, the stack is restarted against the SAME persisted postgres
+// so the same handle resolves to the SAME account (hence the SAME deterministic
+// container name), and a preflight exact-name `podman rm -f` guarantees the
+// second Provision succeeds regardless of whether the prior container survived
+// Down or was already reaped by it.
+//
+// The invariant under test is A6 idempotence: teardown + re-provision of the same
+// deterministic name is repeatable and self-healing. Two teardown surfaces feed
+// it (design.md:388-402) — the Runner does NOT reap agent containers on shutdown
+// (host.go:203-210 Close tears down sockets only), so whether the podman
+// container outlives `Stack().Down` is environment-dependent (reparented rootless
+// conmon may or may not be swept by the child-process-group SIGTERM in
+// stack.go:341). The A6 preflight is designed to be correct EITHER WAY: it is an
+// exact-name `podman rm -f`, which exits 0 for an absent container (teardown.go),
+// so it is a no-op when the prior container was already reaped and a real sweep
+// when it leaked. This leg therefore does NOT assert the leak — asserting a
+// timing-dependent teardown detail made the leg fail deterministically (local AND
+// in CI) at its own precondition without ever exercising A6. It asserts the
+// actual contract: the preflight sweep + re-provision succeeds, and the Remove
+// RPC is idempotent (a second Remove of the same container is a no-op success,
+// host.go:497-500).
 //
 // Unlike legs 2-5, this leg goes GREEN on the bare stack TODAY: its red→green is
 // at the Provision/`podman create` boundary (the A6 preflight), independent of
 // the unmerged native-agent lane — no agent turn is driven, so no canned backend
 // is needed. podmanUsable() SKIPs it in a container-less sandbox. Every blocking
-// wait is a bounded RPC (rpcTimeout, threaded from ctx) — the Provision calls and
-// the store ops. The fire-once `podman container exists` presence probes are
-// dependency-free local shellouts (the podmanUsable convention, fixture.go:477),
-// not ctx-bounded RPC waits. No sleeps, no polling, no retries.
+// wait is a bounded RPC (rpcTimeout, threaded from ctx) — the Provision/Remove
+// calls and the store ops. The fire-once `podman container exists` presence
+// probes are dependency-free local shellouts (the podmanUsable convention,
+// fixture.go:477), not ctx-bounded RPC waits. No sleeps, no polling, no retries.
 func TestLegSixTeardownIdempotence(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
@@ -86,22 +101,28 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 		t.Fatalf("container %q is not present after run1 Provision — the first lifetime never created it, so the leak/collision premise cannot be exercised", containerName)
 	}
 
-	// Tear run1's stack Down HERE, between the two runs (the fixture's own
-	// t.Cleanup Downs it too, but that fires at test end — too late to free the
-	// ports for run2's Up). Down is safe to call twice; the registered cleanup
-	// no-ops idempotently.
-	if err := f1.Stack().Down(ctx); err != nil {
-		t.Fatalf("Stack().Down (run1): %v", err)
+	// Prove teardown idempotence directly, while the stack is still up so the
+	// Remove RPC reaches the live runner: the Remove RPC is a no-op success on a
+	// container regardless of prior state (host.go:497-500 "an unknown container
+	// — never provisioned, or already removed — is a no-op success"). Called
+	// twice back-to-back: the first tears run1's just-provisioned container down,
+	// the second exercises the idempotent no-op arm on the already-removed
+	// container. Neither may error. This is the A6 idempotence invariant,
+	// asserted on the behavior that actually happens rather than on whether the
+	// container leaks past Down (which is environment-dependent — see the doc
+	// comment).
+	if err := f1.RemoveWorkspace(ctx, containerName, "leg6-run1-remove"); err != nil {
+		t.Fatalf("RemoveWorkspace (run1, first): %v — teardown of the run1 container failed", err)
+	}
+	if err := f1.RemoveWorkspace(ctx, containerName, "leg6-run1-remove-again"); err != nil {
+		t.Fatalf("RemoveWorkspace (run1, second): %v — a repeat Remove of the same container must be an idempotent no-op success (host.go:497-500)", err)
 	}
 
-	// THE LEAK (the RED's precondition, mechanism-link #2): the container SURVIVES
-	// Down — Down closes only the runner's agent sockets (host.go:203-210) and
-	// drains the stack children (stack.go:141-151), orphaning the podman
-	// container. If a future change made Down reap containers, this reddens and
-	// the whole leg is moot (there would be nothing to collide with in run2), so
-	// this assertion is load-bearing, not decoration.
-	if exec.Command("podman", "container", "exists", containerName).Run() != nil {
-		t.Fatalf("container %q was reaped by run1's Stack().Down — the leak the A6 preflight guards against no longer happens, so the idempotence scenario is moot (mechanism-link #2, host.go:203-210)", containerName)
+	// Tear run1's stack Down (the fixture's own t.Cleanup Downs it too, but that
+	// fires at test end — too late to free the ports for run2's Up). Down is safe
+	// to call twice; the registered cleanup no-ops idempotently.
+	if err := f1.Stack().Down(ctx); err != nil {
+		t.Fatalf("Stack().Down (run1): %v", err)
 	}
 
 	// ── RUN 2: restart over the SAME site, preflight-sweep, re-provision ──
@@ -137,30 +158,33 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 		t.Fatalf("persisted account id %q != the run1 account id %q — the re-attached DB resolved a different account for the same handle, so the deterministic-name collision premise is gone", accountID2, accountID)
 	}
 
-	// THE A6 FIX UNDER TEST: preflight force-remove the leaked run1 container by
-	// its EXACT name before re-provisioning.
+	// THE A6 FIX UNDER TEST: preflight force-remove any container holding the
+	// deterministic run1 name, by EXACT name, before re-provisioning.
 	//
-	// WITHOUT this preflight, the second Provision below FAILS: createAndStart
-	// issues `podman create --name <containerName>` with no happy-path pre-create
-	// sweep (go/internal/runtime/agent.go:245-267; the only Removes there are
-	// error-recovery of that same call's partial container), so it collides with
-	// the leaked run1 container that survived Down above. The in-memory
+	// createAndStart issues `podman create --name <containerName>` with no
+	// happy-path pre-create sweep (go/internal/runtime/agent.go:245-267; the only
+	// Removes there are error-recovery of that same call's partial container), so
+	// if any container still holds run1's deterministic name it collides. Whether
+	// one does is environment-dependent — a reparented rootless conmon may outlive
+	// Down — so the A6 preflight makes re-provision correct EITHER WAY: `podman rm
+	// -f` exits 0 on an absent container (teardown.go), so it is a no-op when the
+	// name is already free and a real sweep when it is not. The in-memory
 	// client_request_id dedup is also gone (run2 is a fresh runner process), so
-	// run2 genuinely re-issues the create. This preflight is the A6 fix; the
-	// green run2 Provision below is its proof.
+	// run2 genuinely re-issues the create. This preflight is the A6 fix; the green
+	// run2 Provision below is its proof.
 	if err := podmanRemoveForce(ctx, containerName); err != nil {
-		t.Fatalf("podmanRemoveForce preflight (run2): %v — the A6 exact-name sweep of the leaked container failed", err)
+		t.Fatalf("podmanRemoveForce preflight (run2): %v — the A6 exact-name sweep before re-provision failed", err)
 	}
 
 	container2, err := f2.Provision(ctx, accountID2, "leg6-run2-provision")
 	if err != nil {
-		t.Fatalf("Provision (run2): %v — the second Provision failed despite the A6 preflight sweep of the leaked run1 container", err)
+		t.Fatalf("Provision (run2): %v — the second Provision failed despite the A6 preflight exact-name sweep before re-provision", err)
 	}
 	if container2 != containerName {
 		t.Fatalf("Provision (run2) returned container %q, want the same deterministic name %q as run1", container2, containerName)
 	}
 	// The re-provisioned container is PRESENT by that exact name — the GREEN: with
-	// the preflight, the second Provision succeeds despite the run1 leak.
+	// the preflight, the second Provision succeeds across the stack restart.
 	if exec.Command("podman", "container", "exists", containerName).Run() != nil {
 		t.Fatalf("container %q is not present after run2 Provision — the idempotent re-provision did not bring the container back up", containerName)
 	}

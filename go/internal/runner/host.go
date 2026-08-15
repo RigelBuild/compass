@@ -308,7 +308,17 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			return "", errAlreadyRunning
 		}
 	}
-	sessionID := h.nextID()
+	// A resume REUSES the logical session id (resume_session_id) as the live id,
+	// so the resumed lifetime's transcript frames commit under the SAME session
+	// key the prior lifetime used — the durable transcript is one lineage, and
+	// BindLifetime's entry_seq rebase (agent_transcripts.go) continues the stored
+	// sequence under that key exactly as designed. A fresh start has no prior id,
+	// so it mints a new one. The Server skips RecordAgentSession on resume because
+	// the row already exists under this id (service.go).
+	sessionID := req.GetResumeSessionId()
+	if sessionID == "" {
+		sessionID = h.nextID()
+	}
 	h.mu.Unlock()
 
 	// Materialize the agent's secrets into the container BEFORE exec'ing the
@@ -418,16 +428,24 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	}
 	h.mu.Unlock()
 
-	// On a fresh (non-resume) start, lift the agent's replay barrier so the
-	// first idle-deliver that starts the agent's turn is dispatched rather than
-	// refused: the barrier defaults closed and only the arrival of
-	// replay_complete lifts it. A resume start never sends it — the restart
-	// replay path drives the barrier there. Sent after the h.mu release,
+	// Lift the agent's replay barrier so the first idle-deliver that starts the
+	// agent's turn is dispatched rather than refused: the barrier defaults closed
+	// and only the arrival of replay_complete lifts it. Sent on EVERY served
+	// start, fresh AND file-based resume. A file-based resume (SEA-1570) loads
+	// its transcript synchronously from COMPASS_RESUME_SESSION_FILE
+	// (cli.ts setSessionFile) BEFORE the agent subscribes to the control stream
+	// and runs, so replay_complete arriving on that stream is always processed
+	// after the transcript is loaded — it is the correct "replay done, live ops
+	// may flow" signal for resume too, not just fresh start. (The control-plane
+	// restart-replay path — gateway HoldForReplay + replay frames released on
+	// ReplayCompleteAck — has no production caller; the file-based resume is the
+	// only resume that runs, and it needs this lift or every channel-driven turn
+	// on a resumed agent is refused forever.) Sent after the h.mu release,
 	// mirroring Deliver's resolve-under-lock / send-outside discipline; the
 	// per-container transition lock held across Start guarantees no Stop/Retire
 	// races between the bind above and this send. See
 	// docs/designs/product/compass-system-sender-first-turn/design.md.
-	if served && req.GetResumeSessionId() == "" {
+	if served {
 		op := &compassv1internal.AgentControl{
 			Control: &compassv1internal.AgentControl_ReplayComplete{
 				ReplayComplete: &compassv1internal.ReplayComplete{},
@@ -438,7 +456,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 			// it), so this is an unreachable wiring fault in production, not a
 			// reason to fail an already-recorded Start (recorded => success). Log
 			// and continue, matching Start's other degraded-posture logging.
-			h.log.Error("sending fresh-start replay_complete", slog.String("container", name), slog.String("session_id", sessionID), slog.Any("error", err))
+			h.log.Error("sending replay_complete", slog.String("container", name), slog.String("session_id", sessionID), slog.Any("error", err))
 		}
 	}
 	return sessionID, nil

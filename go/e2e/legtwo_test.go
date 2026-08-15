@@ -4,7 +4,6 @@ package e2e
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/sealedsecurity/compass/go/internal/store"
@@ -63,18 +62,20 @@ func TestLegTwoPrimitives(t *testing.T) {
 }
 
 // TestLegTwoRealTurn is the full leg-2 scenario: CreateAgent -> Provision ->
-// StartSession -> PostMessage(home) drives the turn -> AwaitSessionSettled -> assert the session's
-// transcript is non-empty. On H2 it was PRESENT-BUT-SKIPPED: the leg-2 turn
-// cannot complete without a deterministic model backend, so on the bare stack
-// AwaitSessionSettled would hang and the transcript stay empty. H3 (SEA-1787)
-// lands that backend — the canned stub the fixture stands up via WithCannedModel
-// — so this same scenario now runs GREEN with zero live-model egress.
+// StartSession -> OpenSessionTail(sessionID) -> PostMessage(home) drives the
+// turn -> AwaitTurnSettled -> assert the session's transcript is non-empty. On
+// H2 it was PRESENT-BUT-SKIPPED: the leg-2 turn cannot complete without a
+// deterministic model backend, so on the bare stack the settle would hang and
+// the transcript stay empty. H3 (SEA-1787) lands that backend — the canned stub
+// the fixture stands up via WithCannedModel — so this same scenario now runs
+// GREEN with zero live-model egress.
 //
-// The turn is driven entirely by the canned stub (a fixed scripted reply), and
-// the settle is event-gated on AwaitSessionSettled (the READY frame) — no
-// sleeps, no polling, no retries. AwaitSessionSettled has no hermetic unit shape
-// (it needs a live settling session), so its proof rides this scenario —
-// deliberately NOT faking a frame stream.
+// The turn is driven entirely by the canned stub (a fixed scripted reply). The
+// tail is opened BEFORE the post so a fast canned turn cannot fan its edges into
+// the post→subscribe gap, and the settle is event-gated on AwaitTurnSettled (the
+// WORKING→READY edge) — no sleeps, no polling, no retries. The split settle
+// primitives have no hermetic unit shape (they need a live settling session), so
+// their proof rides this scenario — deliberately NOT faking a frame stream.
 func TestLegTwoRealTurn(t *testing.T) {
 	if !podmanUsable() {
 		t.Skip("rootless podman cannot run compass-agent:latest here; skipping the real-stack e2e")
@@ -116,12 +117,24 @@ func TestLegTwoRealTurn(t *testing.T) {
 	}
 	defer st.Close()
 
+	// Open the session tail BEFORE the post drives the turn: OpenSessionTail
+	// subscribes to the frame stream so it is already tailing when the turn
+	// fans. SubscribeAgentSession is live-fan (no replay ring), so were the tail
+	// opened AFTER the post a fast canned turn could fan its WORKING/READY edges
+	// into the post→subscribe gap and AwaitTurnSettled would hang. Must precede
+	// the post.
+	tail, err := f.OpenSessionTail(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("OpenSessionTail: %v", err)
+	}
+	defer tail.Close()
+
 	// Post to the agent's home channel: this post lands on the already-live
 	// session and is delivered via the live fan-out (the delivery consumer
 	// tailing the comms bus), which fires the agent's first turn — the turn
-	// AwaitSessionSettled waits on. The session-start sweep only redelivers
+	// AwaitTurnSettled waits on. The session-start sweep only redelivers
 	// messages left undelivered from a prior lifetime (relevant only to leg-5's
-	// post1), not this one. Must precede the settle wait.
+	// post1), not this one.
 	acc, err := st.AgentByHandle(ctx, "leg2-realturn")
 	if err != nil {
 		t.Fatalf("AgentByHandle: %v", err)
@@ -130,28 +143,23 @@ func TestLegTwoRealTurn(t *testing.T) {
 		t.Fatalf("PostMessage(home): %v", err)
 	}
 
-	if err := f.AwaitSessionSettled(ctx, sessionID); err != nil {
-		t.Fatalf("AwaitSessionSettled: %v", err)
+	// Event-gated settle on the already-open tail: skip until WORKING, then
+	// return on the next READY (WORKING→READY = one settled turn) — no sleeps.
+	if err := f.AwaitTurnSettled(ctx, tail); err != nil {
+		t.Fatalf("AwaitTurnSettled: %v", err)
 	}
 
-	transcript, err := st.SessionTranscript(ctx, sessionID)
-	if err != nil {
-		t.Fatalf("SessionTranscript: %v", err)
-	}
-	if len(transcript) == 0 {
-		t.Fatal("SessionTranscript returned an empty transcript; the completed turn was not persisted")
-	}
-	// The turn is deterministic: the canned stub settles on exactly cannedReply,
-	// so that text MUST appear verbatim in the persisted transcript. A bare
-	// non-empty check would pass on a misconfigured backend that logged only an
-	// error entry or echoed back the prompt; asserting the canned reply's
-	// presence is what proves the canned model actually drove the settled turn
-	// (the record's "final settled entry is present", design.md §H2).
-	var joined strings.Builder
-	for _, e := range transcript {
-		joined.WriteString(e.EntryJSON)
-	}
-	if !strings.Contains(joined.String(), cannedReply) {
-		t.Fatalf("transcript does not contain the canned reply %q; the settled turn was not driven by the canned model", cannedReply)
+	// The transcript persists on the CommitConversationFrame unary, INDEPENDENT
+	// of the PublishEvents session-state channel AwaitTurnSettled gates on, so it
+	// commits one runner→server round-trip AFTER the WORKING→READY settle. Gate
+	// the read on that convergence rather than reading immediately (which races
+	// the commit and flakes on store: not found). The turn is deterministic — the
+	// canned stub settles on exactly cannedReply — so the persisted transcript
+	// MUST contain that text verbatim; awaitTranscriptPersisted returns only once
+	// it does. Asserting the canned reply's presence (not a bare non-empty check)
+	// is what proves the canned model actually drove the settled turn (the
+	// record's "final settled entry is present", design.md §H2).
+	if _, err := f.awaitTranscriptPersisted(ctx, st, sessionID, cannedReply); err != nil {
+		t.Fatalf("awaitTranscriptPersisted: %v", err)
 	}
 }

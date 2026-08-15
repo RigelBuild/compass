@@ -371,15 +371,22 @@ func TestFreshStartSendsReplayCompleteFirst(t *testing.T) {
 	}
 }
 
-// TestResumeStartSendsNoReplayComplete — a resume Start (non-empty
-// resume_session_id) NEVER sends replay_complete: the restart replay path drives
-// the barrier there, so the lifecycle must not double-lift it. Same clockless
-// event-gate as the fresh case: a sentinel prompt enqueued after Start is the
-// only retained op, so the first op the subscriber reads is the sentinel.
-// Contract: the first op is the ordinary sentinel, not replay_complete. Mutation
-// that reddens it: sending replay_complete on resume (dropping the
-// resume-session-id guard in host.Start) would put replay_complete first.
-func TestResumeStartSendsNoReplayComplete(t *testing.T) {
+// TestResumeStartSendsReplayCompleteFirst — a resume Start (non-empty
+// resume_session_id) lifts the agent's replay barrier by sending replay_complete
+// as the FIRST control op, exactly like a fresh start. A file-based resume
+// (SEA-1570) loads its transcript synchronously (COMPASS_RESUME_SESSION_FILE)
+// before the agent subscribes to the control stream, so replay_complete arriving
+// on that stream is the correct "replay done, live ops may flow" signal; without
+// it every channel-driven turn on a resumed agent is refused by the closed
+// barrier forever. The control-plane restart-replay path (gateway HoldForReplay
+// released on ReplayCompleteAck) has no production caller, so the file-based
+// resume is the only resume that runs and it needs this lift. Same clockless
+// event-gate as the fresh case: a sentinel prompt enqueued via Deliver AFTER
+// Start sits behind the Start-sent replay_complete. Contract: the first op is
+// replay_complete and the sentinel follows. Mutation that reddens it: restoring
+// the resume-session-id guard in host.Start (the first op would then be the
+// sentinel, GetReplayComplete() == nil).
+func TestResumeStartSendsReplayCompleteFirst(t *testing.T) {
 	fake := &recordingRelay{}
 	h := newTransportFixture(t, fake)
 	ctx := context.Background()
@@ -413,12 +420,15 @@ func TestResumeStartSendsNoReplayComplete(t *testing.T) {
 	defer func() { _ = stream.Close() }()
 
 	if !stream.Receive() {
-		t.Fatalf("no op reached the agent (stream err %v): sentinel was not delivered", stream.Err())
+		t.Fatalf("no first op reached the agent (stream err %v): resume Start did not send replay_complete", stream.Err())
 	}
-	if stream.Msg().GetReplayComplete() != nil {
-		t.Fatal("resume Start sent replay_complete; want none (the restart replay path drives the barrier)")
+	if stream.Msg().GetReplayComplete() == nil {
+		t.Fatalf("first op = %v, want replay_complete first on a resume start", stream.Msg())
+	}
+	if !stream.Receive() {
+		t.Fatalf("no second op reached the agent (stream err %v): sentinel did not follow replay_complete", stream.Err())
 	}
 	if input := stream.Msg().GetPrompt().GetInput(); input != "after-barrier" {
-		t.Fatalf("first op input = %q, want the sentinel %q first on a resume start", input, "after-barrier")
+		t.Fatalf("second op input = %q, want the sentinel %q (ordinary ops follow the barrier lift)", input, "after-barrier")
 	}
 }
