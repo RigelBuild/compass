@@ -131,20 +131,23 @@ describe("parseDevenvPackages", () => {
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: see above
 		["an interpolation", "${myTool}"],
 		["a quoted string", '"weird"'],
-	])("throws on %s inside the literal rather than silently dropping it", (_label, entry) => {
-		const source = [
-			"{",
-			"  packages = (with pkgs; [",
-			"    buf",
-			`    ${entry}`,
-			"  ])",
-			"  ++ [ goToolchain ];",
-			"}",
-		].join("\n");
-		expect(() => parseDevenvPackages(source)).toThrow(
-			/not a bare nixpkgs attribute name/,
-		);
-	});
+	])(
+		"throws on %s inside the literal rather than silently dropping it",
+		(_label, entry) => {
+			const source = [
+				"{",
+				"  packages = (with pkgs; [",
+				"    buf",
+				`    ${entry}`,
+				"  ])",
+				"  ++ [ goToolchain ];",
+				"}",
+			].join("\n");
+			expect(() => parseDevenvPackages(source)).toThrow(
+				/not a bare nixpkgs attribute name/,
+			);
+		},
+	);
 
 	test("still yields the bare entries it can resolve", () => {
 		// Guards the refusal against over-reach: a block of ordinary entries must
