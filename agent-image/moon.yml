@@ -48,12 +48,11 @@ tasks:
     # The image's build closure. MIRRORS publish-agent-image.yml's
     # on.push.paths — the reviewed source of truth for what changes the
     # published artifact — so affected-detection schedules this build on exactly
-    # the PRs a republish fires on. Plus .prototools: the build's toolchain.nix
-    # bun-drift assert reads it, so a pin move there can red this build (publish
-    # excludes .prototools because it cannot change the output — but reddening on
-    # the assert at PR time is precisely this gate's purpose). A leading `/` is
-    # workspace-root-relative; the bare glob is this project's own tree (image
-    # definition, toolchain, entrypoint FOD).
+    # the PRs a republish fires on. Plus the bun pin: the build's toolchain.nix
+    # consumes the vendored bun derivation built from versions/bun.nix, so a pin
+    # move there rebuilds the image and must red this gate at PR time. A leading
+    # `/` is workspace-root-relative; the bare glob is this project's own tree
+    # (image definition, toolchain, entrypoint FOD).
     #
     # A benign warn is expected here: moon's task hasher logs "Attempted to hash
     # input forks/devenv/tests/keycloak-certs/realms but only files can be
@@ -70,7 +69,7 @@ tasks:
       - '/forks/nix2container/**'
       - '/package.json'
       - '/bun.lock'
-      - '/.prototools'
+      - '/tools/toolchain/versions/bun.nix'
 
   ci:
     deps: ['build']

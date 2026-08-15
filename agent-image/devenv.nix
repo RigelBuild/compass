@@ -33,7 +33,7 @@ let
   # entrypoint.nix carries the full rationale.
   compassAgent = import ./entrypoint.nix { inherit pkgs lib; };
 
-  toolchain = import ./toolchain.nix { inherit pkgs lib compassAgent; };
+  toolchain = import ./toolchain.nix { inherit pkgs compassAgent; };
 
 in
 {
