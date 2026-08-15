@@ -18,6 +18,7 @@ import (
 func tlsStubServer(t *testing.T, handler http.HandlerFunc) (srv *httptest.Server, certPEM []byte) {
 	t.Helper()
 	srv = httptest.NewUnstartedServer(handler)
+	srv.EnableHTTP2 = true
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 
@@ -38,7 +39,9 @@ func tlsTarget(t *testing.T, srv *httptest.Server, caPEM []byte) *Target {
 
 // (a) dial succeeds when the server's cert PEM is pinned as caPEM.
 func TestTLSTargetDialTrustedCA(t *testing.T) {
+	var protoMajor int
 	srv, certPEM := tlsStubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		protoMajor = r.ProtoMajor
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
@@ -60,6 +63,9 @@ func TestTLSTargetDialTrustedCA(t *testing.T) {
 	}
 	if head.Status != http.StatusOK {
 		t.Errorf("head status = %d, want %d", head.Status, http.StatusOK)
+	}
+	if protoMajor != 2 {
+		t.Errorf("negotiated HTTP/%d, want HTTP/2 (encrypted h2 over TLS)", protoMajor)
 	}
 }
 
@@ -95,6 +101,29 @@ func TestTLSTargetDialUntrustedCA(t *testing.T) {
 	}
 	if ef.Message == "" {
 		t.Error("ErrorFrame message empty")
+	}
+}
+
+// NewTLSTarget fails closed when a non-empty caPEM yields no usable certificate:
+// a garbage trust anchor is a config error, never a silent fall-through to the
+// system roots.
+func TestTLSTargetRejectsUnusableCA(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		caPEM []byte
+	}{
+		{"not pem", []byte("this is not a PEM block")},
+		{"wrong block type", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte("nope")})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, err := NewTLSTarget("https://example.invalid", tc.caPEM)
+			if err == nil {
+				t.Fatalf("NewTLSTarget with %s caPEM = nil error, want failure", tc.name)
+			}
+			if target != nil {
+				t.Errorf("target = %v, want nil on error", target)
+			}
+		})
 	}
 }
 

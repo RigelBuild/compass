@@ -23,9 +23,12 @@ import (
 // certificate is a configuration error and is returned as such.
 //
 // The TLS transport requires TLS 1.3 to mirror the server's network door
-// (network_door.go:115). HTTP/2 is negotiated via ALPN by the standard
-// http.Transport for a real TLS dial — no h2c/SetUnencryptedHTTP2 (that path is
-// cleartext, for the UDS target only).
+// (network_door.go:115) and enables HTTP/1.1 and HTTP/2 explicitly via
+// http.Protocols, so ALPN negotiates encrypted h2 over the real TLS dial. The
+// explicit opt-in is required: a custom TLSClientConfig otherwise makes
+// net/http conservatively disable HTTP/2 (transport.go), silently downgrading
+// to HTTP/1.1. This is the encrypted counterpart to NewUnixTarget's h2c
+// (SetUnencryptedHTTP2) opt-in — never the cleartext path here.
 //
 // The returned Target carries a bearer-injecting RoundTripper (see SetBearer):
 // it starts unarmed, so until SetBearer is called it forwards requests as-is.
@@ -39,7 +42,10 @@ func NewTLSTarget(serverURL string, caPEM []byte) (*Target, error) {
 		cfg.RootCAs = pool
 	}
 
-	base := &http.Transport{TLSClientConfig: cfg}
+	p := new(http.Protocols)
+	p.SetHTTP1(true)
+	p.SetHTTP2(true)
+	base := &http.Transport{TLSClientConfig: cfg, Protocols: p}
 	rt := &bearerRoundTripper{base: base}
 
 	return &Target{
@@ -82,9 +88,11 @@ type bearerRoundTripper struct {
 
 func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	token := b.token.Load()
-	// Fast path: unarmed with no caller-supplied Authorization to strip — forward
-	// as-is, no allocation.
-	if token == nil && req.Header.Get("Authorization") == "" {
+	// Fast path: unarmed with no caller-supplied Authorization header at all —
+	// forward as-is, no allocation. Keyed on true absence (Values == nil), not
+	// Get == "", so a present-but-empty "Authorization:" header still falls
+	// through to the unconditional strip below (DL-107, even by bug).
+	if token == nil && req.Header.Values("Authorization") == nil {
 		return b.base.RoundTrip(req)
 	}
 
