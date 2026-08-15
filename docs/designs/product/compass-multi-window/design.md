@@ -72,10 +72,10 @@ Why this is correct, grounded in the wiring as-built:
   keeps its one sanctioned mode divergence — which `ConnectionProvider` boot
   installs (`apps/ui/src/live/provider.ts:1-14`) — and multi-window adds no
   second one. In embedded mode `apps/ui` needs **zero changes** for this record.
-  The client-mode connect gate composes cleanly too: with the one-window startup
-  default there is exactly one auto-connect probe at boot, and a later window
-  inherits the already-armed shell connection (A3), so no `apps/ui` change is
-  required for the connect flow either.
+  The client-mode connect gate composes cleanly too: it is per-window and
+  unchanged, and the concurrent boot probes from a restored multi-window set are
+  serialized and idempotent (A3), so no `apps/ui` change is required for the
+  connect flow either.
 
 ### A2 — Window topology: one Bridge window at startup, a Window menu (both modes), a persisted set
 
@@ -137,23 +137,42 @@ place `WebviewWindowOptions` is built, so the same `JS` startup injection
 divergence is therefore structurally impossible and no new mode surface is
 added.
 
-**The client-mode connect gate composes too — the one-window default resolves
-it.** The T5.5 connect gate is per-window and stateful, and the frozen T5 record
-mandates exactly ONE auto-connect probe per launch
-(`compass-native-client-mode/design.md:180-186`, :550-553). With the startup
-default of exactly ONE window (A2), there is exactly one auto-connect probe at
-boot — the frozen single-probe contract is honored with no amendment. A SECOND
-window, opened later via the Window menu or restored from the persisted set, does
-NOT re-probe: by the time any second window can exist the shell is already
-connected and its target armed (`SetBearer` persisted, `bridge_service.go:227`),
-so the new window inherits the armed connection and boots straight to Bridge. The
-connect gate thus runs only in the first/boot window; a menu-opened client-mode
-window skips it because it is already connected. A later window cannot open
-before the first connects — the menu that opens it only exists after boot — so
-there is no window that races the initial probe. The earlier framing of this as a
-load-bearing open question (two startup windows → two concurrent
-`shellConnect("")` probes racing `tokenstore.Write`/`SetBearer`) is dissolved by
-the one-window default: the collision it described cannot arise.
+**The client-mode connect gate composes too — it is per-window, and so is the
+frozen T5 contract.** The T5.5 connect gate is per-window and stateful, and the
+frozen T5 record mandates ONE auto-connect probe chain *per window boot*: boot
+calls `Connect` with an empty token and the shell runs no separate pre-window
+probe, so a single window boot never double-probes
+(`compass-native-client-mode/design.md:180-186`, :550-553). Multi-window keeps
+that per-window guarantee intact — every window, however opened, runs the one
+unchanged UI-driven probe path, and nothing adds a second probe *within* a boot.
+Across windows the probe simply runs once per window boot, which is safe by
+construction:
+
+- **The first/only window at boot** runs its probe, arms the shell target
+  (`SetBearer`, `bridge_service.go:227`), and — with a valid stored token — boots
+  straight to Bridge.
+- **A menu-opened window** is created after the shell is already connected, so its
+  boot probe finds the target already armed and the stored token present, and
+  completes fast into Bridge with no connect screen.
+- **A restored set on a client-mode relaunch** is the one case where more than one
+  window boots concurrently: `run()` reopens the persisted set (A2/M1) by creating
+  each window at startup, and each independently runs its boot probe. Those probes
+  serialize on the bridge's `connectMu` (`bridge_service.go:208-209`), and the
+  empty-token connect is idempotent (it writes no new token; the first probe to
+  win the lock arms the target via `SetBearer`, the rest observe it already
+  armed). So N windows means N per-window boot probes that converge safely — the
+  first arms, the rest fast-path — not a data race and not a breach of the
+  per-window single-probe contract.
+
+The connect gate therefore needs no cross-window coordination: no shared client
+state, no first-window sentinel, no shell→UI "already-armed" signal — none of
+which the architecture has (each webview is an isolated JS runtime, A1) or the
+frozen injection contract carries. The earlier framing of a two-window startup as
+a load-bearing collision (two concurrent `shellConnect("")` probes *corrupting*
+`tokenstore.Write`/`SetBearer`) is dissolved: the empty-token writes are
+serialized and idempotent, so concurrent boot probes are safe rather than racy.
+The one-window startup default (A2) further means the concurrent-probe case
+arises only on an explicit multi-window relaunch, never on a fresh install.
 
 ### A4 — Frame routing: target the originating window, fall back to broadcast
 
@@ -175,7 +194,7 @@ via the window's `DispatchWailsEvent` (`webview_window.go:1372`, per-window
 delivery), falling back to the existing app-wide `Emit` when no window is in
 context (windowless transports, tests). This is byte routing, not RPC logic —
 thin-shell safe — and stays behind the existing `eventEmitter` seam
-(`bridge_service.go:42-45`) so the fake-emitter tests keep working.
+(`bridge_service.go:42-44`) so the fake-emitter tests keep working.
 
 **Destroyed-window frames are intentionally dropped.** `DispatchWailsEvent`
 silently no-ops once a window `isDestroyed()` (`webview_window.go:1373-1375`),
@@ -325,7 +344,7 @@ and `apps/ui` is untouched by this record (A1, A3).
   (`messageprocessor_call.go:134`), store it on the `inflightCall`
   (`bridge_service.go:87-89`), and emit that call's frames through the window's
   `DispatchWailsEvent` (`webview_window.go:1372`) instead of the app-wide `Emit`
-  — behind the existing `eventEmitter` seam (`bridge_service.go:42-45`), widened
+  — behind the existing `eventEmitter` seam (`bridge_service.go:42-44`), widened
   to a per-call frame sink so a nil/absent window falls back to the current
   app-wide `svc.events.Emit` (`main.go:104`, emit site `bridge_service.go:317`).
   `CompassRPCCancel` is unchanged (id-keyed, `bridge_service.go:180-188`).
@@ -428,10 +447,12 @@ Matt's rulings and folded into the record:
   the old `localStorage` last-writer-wins clobber does not arise (A1). The
   server-side prefs move is a named dependency (its own record/task), not this
   record's work.
-- Two-window startup × the frozen T5 connect gate → **resolved by the one-window
-  default** (A3): one auto-connect probe at boot honors the frozen single-probe
-  contract, and a later window inherits the armed shell connection with no second
-  probe — no frozen-contract amendment needed.
+- Two-window startup × the frozen T5 connect gate → **resolved: the frozen
+  contract is per-window, and concurrent boot probes are safe** (A3). Every window
+  runs the one unchanged per-window probe; the empty-token connect serializes on
+  `connectMu` and is idempotent, so a restored multi-window set's N boot probes
+  converge safely — no second probe *within* a boot, no frozen-contract
+  amendment, no `apps/ui` change.
 
 **Non-load-bearing (explicit deferrals):**
 
