@@ -2,8 +2,10 @@ import { defineConfig } from "vite";
 import solid from "vite-plugin-solid";
 
 // Vite + the SolidJS plugin (JSX -> reactive DOM transform). The UI consumes
-// the generated @compass/client; the daemon transport + dev proxy arrive with
-// the local-transport work.
+// the generated @compass/client and dials the Compass server's loopback
+// gRPC-Web dev door directly: it reads the door URL from VITE_COMPASS_BASE_URL
+// at boot (live/connection.ts), and the door serves wildcard CORS for the
+// browser, so no dev proxy is needed here.
 export default defineConfig({
 	plugins: [solid()],
 	// Pin the dev-server port so the URL is copy-paste stable across restarts;
