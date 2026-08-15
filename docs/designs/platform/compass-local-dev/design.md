@@ -37,10 +37,11 @@ a one-time fix benefiting every repo, owned and routed in the zireael lane.
 This record therefore only documents the hazard and the interim workaround;
 it designs no compass-side gate change.
 
-Local dev is the developer's own box — neither the `main` nor the `preview`
-environment; those are defined by Record A
-(`docs/designs/platform/compass-dogfood-operations/design.md`) and are not
-redesigned here. PR-preview mechanics are Record B
+Local dev is the developer's own box — not a deployed `main` or `preview`
+environment. Those deployed environments are internal infrastructure, defined
+in the private infrastructure design repo, and are not redesigned here. The
+repo-facing PR-validation surface (the expanded e2e harness and its
+results-on-PR) is Record B
 (`docs/designs/platform/compass-pr-validation/design.md`).
 
 ## Approach
@@ -393,8 +394,8 @@ OQ4, not a task.
   `lib.optionalAttrs pkgs.stdenv.isLinux`.
 - **Frozen decisions composed, not reopened:** DL-106/DL-109/DL-110/DL-111/
   DL-112/DL-183 (native app), DL-025/026/027/078 (container/secrets/config).
-  Record A owns the `main`/`preview` env model; this record is the
-  developer-box lane only.
+  The deployed `main`/`preview` env model is owned by the private
+  infrastructure design repo; this record is the developer-box lane only.
 - **No CI scope:** compass CI does not compile the native app; the new
   `compass-go:app` task is `runInCI: false`.
 
