@@ -294,8 +294,9 @@ in
     # http://127.0.0.1:5173 and dials compass-server's loopback gRPC-Web dev
     # door directly — no vite proxy: the browser reads the door URL from
     # VITE_COMPASS_BASE_URL at boot (apps/ui/src/live/connection.ts) and the dev
-    # door serves wildcard CORS for exactly this consumer (go/server/serve.go
-    # devCORS, AllowedOrigins ["*"]). `exec bunx vite` matches the moon dev task
+    # door serves wildcard CORS (any origin — it is a loopback dev-only door),
+    # which covers this browser consumer (go/server/serve.go devCORS,
+    # AllowedOrigins ["*"]). `exec bunx vite` matches the moon dev task
     # (apps/ui/moon.yml) — one convention, two entry points. `after`s the
     # server's readiness probe (a real GetServerInfo answer over the dev door,
     # not merely a bound socket) so the first browser load never races the
