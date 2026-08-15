@@ -320,7 +320,7 @@ export interface Account {
 	/** Unique handle, e.g. "cook". */
 	handle: string;
 	displayName: string;
-	kind: "user" | "agent";
+	kind: "user" | "agent" | "system";
 	/** Agent kind: the owning user's account id. */
 	ownerUserId?: string;
 	/** Agent kind: the agent's home DM (RT-2). */

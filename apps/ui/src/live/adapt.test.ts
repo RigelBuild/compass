@@ -18,6 +18,7 @@ import {
 	MessageBlockSchema,
 	MessageSchema,
 	PullRequestSchema,
+	SystemAccountSchema,
 	TopicSchema,
 	UserAccountSchema,
 } from "@compass/client";
@@ -78,6 +79,14 @@ function wireAgent(
 		},
 	});
 }
+function wireSystem(id: string, handle: string, displayName: string) {
+	return create(AccountSchema, {
+		id,
+		handle,
+		displayName,
+		kind: { case: "system", value: create(SystemAccountSchema, {}) },
+	});
+}
 
 describe("adaptAccount", () => {
 	test("user account maps to a flat domain user with no agent fields", () => {
@@ -92,6 +101,21 @@ describe("adaptAccount", () => {
 		// carries no ownership or home DM.
 		expect(r).not.toHaveProperty("ownerUserId");
 		expect(r).not.toHaveProperty("homeChannelId");
+	});
+
+	test("system account maps to a flat domain system sender with no agent fields", () => {
+		const r = adaptAccount(wireSystem("acc-sys-compass", "compass", "Compass"));
+		expect(r).toEqual({
+			id: "acc-sys-compass",
+			handle: "compass",
+			displayName: "Compass",
+			kind: "system",
+		});
+		// The reserved platform sender carries no ownership or home DM — the
+		// agent-only fields are absent, not present-and-undefined.
+		expect(r).not.toHaveProperty("ownerUserId");
+		expect(r).not.toHaveProperty("homeChannelId");
+		expect(r).not.toHaveProperty("parentAgentId");
 	});
 
 	test("agent account lifts ownerUserId and homeChannelId from the agent arm", () => {

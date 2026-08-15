@@ -25,8 +25,9 @@ const realHighlightToHtml = realHighlighter.highlightToHtml;
 // promise resolves; only its timing is async).
 
 // A byHandle map keyed lowercase, exactly as ChannelView builds it
-// (ChannelView.tsx:364-365). "cook" is a known account; "everyone" is reserved
-// (comms-stub.ts:175); "ghost" is unknown (absent from the map).
+// (ChannelView.tsx:364-365). "cook" is a known account; "compass" is the known
+// system sender (SEA-1820 — resolves like any known account, NOT reserved);
+// "everyone" is reserved (comms-stub.ts:175); "ghost" is unknown (absent).
 function byHandle(): Map<string, Account> {
 	const cook: Account = {
 		id: "acc-cook",
@@ -34,7 +35,16 @@ function byHandle(): Map<string, Account> {
 		displayName: "Cook",
 		kind: "agent",
 	};
-	return new Map([["cook", cook]]);
+	const compass: Account = {
+		id: "acc-sys-compass",
+		handle: "compass",
+		displayName: "Compass",
+		kind: "system",
+	};
+	return new Map([
+		["cook", cook],
+		["compass", compass],
+	]);
 }
 
 // A streaming fence is highlighted only once its text has been quiet for
@@ -113,6 +123,20 @@ describe("MarkdownText — mention composition", () => {
 		expect(chip?.textContent).toBe("@ghost");
 		expect(chip?.classList.contains("unknown")).toBe(true);
 		expect(chip?.classList.contains("reserved")).toBe(false);
+	});
+
+	test("the @compass system sender chips as known — not reserved, not unknown", () => {
+		// SEA-1820: @compass resolves like any known account (accent chip), NOT a
+		// reserved broadcast target. The `reserved` modifier is purple (mark-only
+		// per DL-155), so a system-sender mention must never carry it; and being a
+		// resolved account it is not `unknown` either.
+		const { container } = render(() => (
+			<MarkdownText text={"ping @compass for setup"} byHandle={byHandle()} />
+		));
+		const chip = container.querySelector(".mention-chip");
+		expect(chip?.textContent).toBe("@compass");
+		expect(chip?.classList.contains("reserved")).toBe(false);
+		expect(chip?.classList.contains("unknown")).toBe(false);
 	});
 
 	test("a mention inside emphasis renders BOTH bold and the chip", () => {

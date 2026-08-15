@@ -255,12 +255,28 @@ const MATT_ACCOUNT: Account = {
 	kind: "user",
 };
 
+/** The reserved platform system sender `@compass` (SEA-1820). A third account
+ *  kind alongside the caller and agents — never a roster/directory entry (it is
+ *  not a STUB_AGENTS row, so it never enters the agent tree), but it IS a comms
+ *  account so its posts render with the system-author style and an `@compass`
+ *  mention resolves as a known account (not an unknown handle). The server keeps
+ *  it visible only to the co-members of channels it posts into; the fixture
+ *  models that by carrying it in the account set the message surfaces resolve. */
+const COMPASS_ACCOUNT: Account = {
+	id: "acc-sys-compass",
+	handle: "compass",
+	displayName: "Compass",
+	kind: "system",
+};
+
 // The accounts are DERIVED from the roster (stub-data STUB_AGENTS) plus the
 // caller: one account per agent, in roster order, the SAME object the roster
-// owns (referential identity, not a parallel copy that can drift).
+// owns (referential identity, not a parallel copy that can drift). The system
+// sender is appended — a comms account, but not a roster agent.
 export const STUB_ACCOUNTS: Account[] = [
 	MATT_ACCOUNT,
 	...STUB_AGENTS.map((a) => a.account),
+	COMPASS_ACCOUNT,
 ];
 
 export const STUB_CHANNEL_GROUPS: ChannelGroup[] = [
