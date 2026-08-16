@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -186,12 +187,21 @@ type sseTurn struct {
 	rawFrames []string
 }
 
-// readCannedTurn POSTs one /chat/completions request the way the SDK transport
-// does (Accept: text/event-stream) and decodes the SSE frames into an sseTurn.
-// It bounds the wait with the caller's ctx (rule://no-retries: no sleeps/polls).
+// readCannedTurn POSTs the default (non-marker) request body. See
+// readCannedTurnBody for the body-bearing variant used to drive the off-script
+// Setup-turn routing.
 func readCannedTurn(ctx context.Context, t *testing.T, url string) sseTurn {
 	t.Helper()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(`{"model":"x","messages":[]}`))
+	return readCannedTurnBody(ctx, t, url, `{"model":"x","messages":[]}`)
+}
+
+// readCannedTurnBody POSTs one /chat/completions request with the given body the
+// way the SDK transport does (Accept: text/event-stream) and decodes the SSE
+// frames into an sseTurn. It bounds the wait with the caller's ctx
+// (rule://no-retries: no sleeps/polls).
+func readCannedTurnBody(ctx context.Context, t *testing.T, url, body string) sseTurn {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
@@ -443,5 +453,75 @@ func TestCannedModelServerRejectsEmptyScript(t *testing.T) {
 			_ = srv.Close() // unexpected success; release the listener
 		}
 		t.Fatal("startCannedModelServer with an empty script returned nil error, want a construction error")
+	}
+}
+
+// TestCannedSetupMarker guards the drift-critical coupling behind the canned
+// backend's Setup-turn routing: setupTurnMarker MUST stay a substring of the
+// server's root-supervisor Setup thread (go/server/setup_thread.md), because the
+// handler classifies a request as the out-of-script supervisor Setup turn by
+// exactly that substring. If the server edits the Setup copy so the marker no
+// longer matches, the supervisor's turn would silently fall through to the
+// scripted path again and re-introduce the race this routing fixes — this test
+// reddens the moment that coupling breaks, in the hermitic (no-podman) lane.
+func TestCannedSetupMarker(t *testing.T) {
+	body, err := os.ReadFile("../server/setup_thread.md")
+	if err != nil {
+		t.Fatalf("read setup_thread.md: %v", err)
+	}
+	if !strings.Contains(string(body), setupTurnMarker) {
+		t.Fatalf("setupTurnMarker %q is no longer a substring of go/server/setup_thread.md; the canned backend can no longer route the supervisor Setup turn off the script (update the marker to a stable phrase of the current Setup copy)", setupTurnMarker)
+	}
+}
+
+// TestCannedSetupMarkerRoutesOffScript pins the load-bearing behavior behind the
+// Setup-turn routing (TestCannedSetupMarker only guards the marker/copy string
+// coupling, not the handler). A request whose body contains setupTurnMarker MUST
+// draw the fixed setupReply WITHOUT advancing the script counter, so the ordered
+// script is drawn only by the test agent's turns — race-free no matter which turn
+// dials first. It drives the handler directly: a marker POST returns setupReply
+// and does not consume the one scripted turn, which the following normal POST
+// then draws at index 0. A regression that advanced the counter on the setup
+// turn (re-introducing the exact race this fixes) or stopped matching the marker
+// reddens here, in the hermetic (no-podman) lane.
+func TestCannedSetupMarkerRoutesOffScript(t *testing.T) {
+	const scripted = "the one scripted turn"
+	host, err := hostRoutableAddr()
+	if err != nil {
+		t.Fatalf("hostRoutableAddr: %v", err)
+	}
+	srv, err := startCannedModelServer(host+":0", []CannedTurn{CannedText(scripted)})
+	if err != nil {
+		t.Fatalf("startCannedModelServer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("canned model server Close: %v", err)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	url := srv.BaseURL(host) + "/chat/completions"
+
+	// A marker-bearing body is the supervisor Setup turn: it must settle on the
+	// fixed setupReply, off the script.
+	markerBody := `{"model":"x","messages":[{"role":"user","content":"` + setupTurnMarker + `"}]}`
+	setup := readCannedTurnBody(ctx, t, url, markerBody)
+	if setup.content != setupReply {
+		t.Fatalf("marker POST content = %q, want the off-script setupReply %q", setup.content, setupReply)
+	}
+	if setup.finish != "stop" {
+		t.Fatalf("marker POST finish_reason = %q, want stop", setup.finish)
+	}
+
+	// The counter must NOT have advanced: the single scripted turn is still at
+	// index 0, so a normal POST draws it (not a 500 exhaustion).
+	first := readCannedTurn(ctx, t, url)
+	if first.content != scripted {
+		t.Fatalf("post-marker normal POST content = %q, want the scripted turn %q (the setup turn advanced the counter — the race this routing fixes is back)", first.content, scripted)
+	}
+	if first.finish != "stop" {
+		t.Fatalf("post-marker normal POST finish_reason = %q, want stop", first.finish)
 	}
 }

@@ -95,6 +95,22 @@ in
     # resolves and is cross-platform — harmless on macOS, where the app links
     # the system WebKit framework and pkg-config goes unused.
     pkg-config
+
+    # postgresql: the dogfood e2e harness's private postgres
+    # (go/cmd/compass-postgres/main.go) shells out to `initdb`/`postgres`/`createdb`
+    # via exec.LookPath, so those binaries must be on PATH wherever the e2e suite
+    # runs. In the dev shell they arrive free from `services.postgres` (a devenv
+    # service), but CI's gate-tools (tools/toolchain/gate-tools.nix, fed by
+    # `parity.ts --print-nix-attrs` off THIS list) builds its PATH env ONLY from
+    # `packages` — service-provided binaries never reach a CI runner. So the
+    # harness prereq has to live here for the CI e2e gate to find `initdb`.
+    #
+    # Bare `postgresql`, not a version-suffixed attr, for strict parity:
+    # `services.postgres.package` defaults to bare `pkgs.postgresql`
+    # (forks/devenv/src/modules/services/postgres.nix), which at this devenv.lock
+    # pin resolves to postgresql-18.4 — the SAME derivation the service uses, so
+    # CI and the dev shell exercise one postgres, not two.
+    postgresql
   ])
   # The language toolchains: bun/node/moon vendored from
   # tools/toolchain/versions/*.nix and go from the go-overlay input. Appended
@@ -415,7 +431,17 @@ in
     # starts fine without the image; it only resolves it at Provision time.
     "dogfood:agent-image" = {
       exec = ''
-        exec nix run path:../forks/devenv#devenv -- container copy agent
+        set -euo pipefail
+        # Drop any stale localhost/ tag BEFORE the copy. `container copy` writes
+        # the fresh image to docker.io/library/compass-agent:latest, but podman
+        # resolves the BARE ref `compass-agent:latest` (what the runner and the
+        # e2e fixture use) against localhost/ FIRST — so a leftover
+        # localhost/compass-agent:latest from an older build would SHADOW this
+        # fresh copy and the runner would silently launch stale agent code.
+        # Removing it first makes the bare ref resolve to the image we just built.
+        # `podman rmi` exits non-zero when the tag is absent, so tolerate that.
+        podman rmi -f localhost/compass-agent:latest 2>/dev/null || true
+        nix run path:../forks/devenv#devenv -- container copy agent
       '';
       cwd = "${config.devenv.root}/agent-image";
     };
@@ -437,6 +463,15 @@ in
           podman rm -f $ids
         fi
         rm -rf "$XDG_RUNTIME_DIR/compass-runner/containers/"
+        # Drop the stale localhost/ tag of the agent image. `container copy`
+        # writes the fresh image to docker.io/library/compass-agent:latest, but
+        # podman resolves the BARE ref `compass-agent:latest` (what the runner and
+        # the e2e fixture use) against localhost/ FIRST — so a leftover
+        # localhost/compass-agent:latest from an older build SHADOWS every fresh
+        # copy, and the runner silently launches stale agent code. `podman rmi`
+        # exits non-zero when the tag is absent, so tolerate that: the goal is a
+        # clean slate, not a guaranteed prior existence.
+        podman rmi -f localhost/compass-agent:latest 2>/dev/null || true
       '';
     };
   };

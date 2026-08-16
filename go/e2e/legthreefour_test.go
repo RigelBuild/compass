@@ -36,7 +36,7 @@ const spawnToolName = "agents_spawn_peer"
 // image) is unmerged, so the scripted spawn tool-call resolves to "unknown
 // tool" and the peer never comes up (design.md:655-659). That is the intended
 // RED state; podmanUsable() SKIPs it in a container-less sandbox. Every wait it
-// makes is ctx-bounded (AwaitSessionSettled / AwaitDelivery) — no sleeps, no
+// makes is ctx-bounded (AwaitTurnSettled / AwaitDelivery) — no sleeps, no
 // polling, no retries.
 func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	if !podmanUsable() {
@@ -46,9 +46,9 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 	ctx := context.Background() // test root, threaded into NewFixture + every primitive
 
 	// The peer the scripted spawn mints: a unique handle the leg-3 assertions
-	// resolve the fresh account and its container by. The peer provisions and
-	// idles (no live-model egress: the peer has no canned backend of its own,
-	// like the leg-2 primitives path).
+	// resolve the fresh account and its container by. The peer stays idle by
+	// default (no live-model egress: the peer has no canned backend of its own;
+	// it simply provisions and idles, like the leg-2 primitives path).
 	const peerHandle = "leg34-peer"
 	const peerDisplayName = "Leg Three-Four Peer"
 	// The spawn tool's arguments, serialized JSON (the OpenAI tool-call
@@ -115,17 +115,45 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 		t.Fatalf("StartSession (spawner): %v", err)
 	}
 
-	// Event-gated settle on the spawner's session: the scripted spawn tool-call
-	// executes and the closing text turn settles — no sleeps.
-	if err := f.AwaitSessionSettled(ctx, sessionID); err != nil {
-		t.Fatalf("AwaitSessionSettled (spawner): %v", err)
-	}
-
 	st, err := store.Open(ctx, f.DSN())
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	defer st.Close()
+
+	// Open the spawner session tail BEFORE the post drives the turn: the frame
+	// stream is live-fan with no replay ring, so opening it first (mirroring the
+	// deliver-side "Open one subscription before the post" below) guarantees it
+	// is already tailing when the turn fans, rather than losing a fast canned
+	// turn's WORKING/READY edges into the post→subscribe gap.
+	tail, err := f.OpenSessionTail(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("OpenSessionTail (spawner): %v", err)
+	}
+	defer tail.Close()
+
+	// Post to the SPAWNER's home channel: this post lands on the already-live
+	// session and is delivered via the live fan-out (the delivery consumer
+	// tailing the comms bus), which fires the spawner's first turn (the one that
+	// issues the spawn tool-call) — the turn AwaitTurnSettled waits on. The
+	// session-start sweep only redelivers messages left undelivered from a prior
+	// lifetime (relevant only to leg-5's post1), not this one. Must precede the
+	// settle wait.
+	spawner, err := st.AgentByHandle(ctx, "leg34-spawner")
+	if err != nil {
+		t.Fatalf("AgentByHandle(spawner): %v", err)
+	}
+	if _, err := f.PostMessage(ctx, string(spawner.Agent.HomeChannelID), "general", "spawn a peer and stand by"); err != nil {
+		t.Fatalf("PostMessage(home): %v", err)
+	}
+
+	// Event-gated settle on the spawner's already-open tail: skip until WORKING,
+	// then return on the next READY (WORKING→READY = one settled turn) — the
+	// scripted spawn tool-call executes and the closing text turn settles — no
+	// sleeps.
+	if err := f.AwaitTurnSettled(ctx, tail); err != nil {
+		t.Fatalf("AwaitTurnSettled (spawner): %v", err)
+	}
 
 	// ── Leg 3: fresh peer account (F2 ownership) + a second real container ──
 

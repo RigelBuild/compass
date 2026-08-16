@@ -9,7 +9,7 @@ import "time"
 // hanging the test. Deterministic per-call deadline, never a retry loop.
 const rpcTimeout = 30 * time.Second
 
-// settleTimeout bounds AwaitSessionSettled: a real agent turn can run well past
+// settleTimeout bounds AwaitTurnSettled: a real agent turn can run well past
 // a single RPC's rpcTimeout (model round-trips, tool calls), so this is
 // deliberately generous — but finite, so a session that never reaches READY
 // fails visibly here instead of blocking to the go-test timeout. A deterministic

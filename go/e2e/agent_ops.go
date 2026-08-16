@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
 // CreateAgent creates a first-party agent account over CommsService and returns
@@ -64,10 +66,11 @@ func (f *Fixture) StartSession(ctx context.Context, containerName string) (sessi
 // Resume brings the agent in a freshly provisioned container online over
 // CompassService resuming a persisted logical session: resumeSessionID is the
 // session id to resume (the id a prior StartSession returned), reconstructed
-// server-side into the new container. Returns the server-MINTED live session id
-// for the resumed lifetime (a NEW id — the durable transcript stays keyed under
-// resumeSessionID). Returns an error rather than panicking so the caller decides
-// fatality; the per-call deadline is threaded from ctx.
+// server-side into the new container. The resumed lifetime REUSES that logical
+// id as its live id, so the returned session id equals resumeSessionID and the
+// durable transcript stays one lineage under that single key. Returns an error
+// rather than panicking so the caller decides fatality; the per-call deadline is
+// threaded from ctx.
 func (f *Fixture) Resume(ctx context.Context, containerName, resumeSessionID string) (sessionID string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
@@ -81,34 +84,85 @@ func (f *Fixture) Resume(ctx context.Context, containerName, resumeSessionID str
 	return resp.Msg.GetSessionId(), nil
 }
 
-// AwaitSessionSettled subscribes to the session frame stream and returns once the
-// session has settled — the first frame reporting AGENT_SESSION_STATE_READY. It
-// is FULLY EVENT-GATED: it reads frames off the stream until READY or the
-// deadline elapses — no sleeps, no polling, no retry loops. It derives its own
-// deadline from ctx (settleTimeout) so a wedged stream fails visibly rather than
-// blocking to the go-test timeout — the guarantee holds for every caller, not
-// just one that remembers to pass a bounded ctx.
-func (f *Fixture) AwaitSessionSettled(ctx context.Context, sessionID string) error {
-	ctx, cancel := context.WithTimeout(ctx, settleTimeout)
-	defer cancel()
-
+// OpenSessionTail opens the session frame stream (SubscribeAgentSession) and
+// returns it for the caller to consume and Close. It is the OPEN half of the
+// settle-wait, split out from the READ half (AwaitTurnSettled) so the tail can
+// be opened BEFORE the PostMessage that drives the turn: SubscribeAgentSession
+// is live-fan with no replay ring, so a turn that starts AND settles in the
+// post→subscribe window would fan its WORKING/READY edges to zero subscribers
+// and the wait would hang. Opening here first guarantees the stream is already
+// subscribed when the turn fans (mirroring the deliver-side precedent at
+// legthreefour_test.go:190-198, "Open one subscription before the post").
+//
+// It derives NO deadline: the stream's lifetime spans the whole post+settle, so
+// the ctx the caller passes governs (the caller Closes the returned stream and
+// keeps ctx alive across the post). The RECEIVE loop is bounded separately in
+// AwaitTurnSettled via its own derived settleTimeout, mirroring how
+// SubscribeComms opens under the caller's ctx and AwaitDelivery bounds the read.
+func (f *Fixture) OpenSessionTail(ctx context.Context, sessionID string) (*connect.ServerStreamForClient[compassv1.AgentSessionFrame], error) {
 	stream, err := f.Compass().SubscribeAgentSession(ctx, connect.NewRequest(&compassv1.SubscribeAgentSessionRequest{
 		SessionId: sessionID,
 	}))
 	if err != nil {
-		return fmt.Errorf("SubscribeAgentSession RPC: %w", err)
+		return nil, fmt.Errorf("SubscribeAgentSession RPC: %w", err)
 	}
-	defer stream.Close()
+	return stream, nil
+}
 
-	for stream.Receive() {
-		if stream.Msg().GetState() == compassv1.AgentSessionState_AGENT_SESSION_STATE_READY {
-			return nil
+// AwaitTurnSettled reads an ALREADY-OPEN session frame stream (from
+// OpenSessionTail) and returns once one turn has settled. It is FULLY
+// EVENT-GATED: it reads frames off the stream and returns on the WORKING→READY
+// edge — no sleeps, no polling, no retry loops. It SKIPS every frame until the
+// first frame reporting AGENT_SESSION_STATE_WORKING, then returns nil on the
+// next frame reporting AGENT_SESSION_STATE_READY: WORKING→READY is exactly one
+// settled turn. The skip-until-WORKING guard is load-bearing — the agent emits
+// STARTING at boot and READY only at agent_end (mapping.ts:115-116), so gating
+// on a bare READY without first seeing WORKING would settle on a stray edge
+// rather than the driven turn.
+//
+// The stream was opened under the caller's ctx in OpenSessionTail (whose
+// lifetime spans the post), so AwaitTurnSettled cannot re-wrap the stream's own
+// ctx to bound the blocking stream.Receive(). Instead it derives its own
+// settleTimeout deadline HERE (as the old AwaitSessionSettled did) and bounds
+// the receive by pumping stream.Receive() in a goroutine and racing it against
+// the derived deadline — the exact shape AwaitDelivery uses to bound a
+// caller-ctx stream. So a wedged stream fails visibly here rather than blocking
+// to the go-test timeout.
+func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerStreamForClient[compassv1.AgentSessionFrame]) error {
+	ctx, cancel := context.WithTimeout(ctx, settleTimeout)
+	defer cancel()
+
+	// Buffered so the pump goroutine never blocks writing its terminal result
+	// after this method has already returned on the ctx deadline — it sends once
+	// and exits, no leak past the caller's Close.
+	out := make(chan error, 1)
+	go func() {
+		workingSeen := false
+		for stream.Receive() {
+			st := stream.Msg().GetState()
+			switch st {
+			case compassv1.AgentSessionState_AGENT_SESSION_STATE_WORKING:
+				workingSeen = true
+			case compassv1.AgentSessionState_AGENT_SESSION_STATE_READY:
+				if workingSeen {
+					out <- nil
+					return
+				}
+			}
 		}
+		if err := stream.Err(); err != nil {
+			out <- fmt.Errorf("SubscribeAgentSession stream: %w", err)
+			return
+		}
+		out <- fmt.Errorf("frame stream ended before reaching a WORKING→READY settle")
+	}()
+
+	select {
+	case err := <-out:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("awaiting WORKING→READY settle: %w", ctx.Err())
 	}
-	if err := stream.Err(); err != nil {
-		return fmt.Errorf("SubscribeAgentSession stream: %w", err)
-	}
-	return fmt.Errorf("session %s frame stream ended before reaching READY", sessionID)
 }
 
 // RemoveWorkspace tears down a provisioned agent workspace container over
@@ -173,6 +227,133 @@ func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
 		}
 	}
 }
+
+// waitDeliveryCursorPast blocks until post1 is no longer OWED to the agent on
+// its home channel — the moment the agent's delivery cursor has advanced past
+// it — or the budget elapses. leg-5's resume is only correct if this ordering
+// holds BEFORE the resumed lifetime's server-side start-sweep runs: the cursor
+// advances on the agent's delivery_ack (runnerhub deliverAck), NOT on the
+// WORKING→READY settle AwaitTurnSettled observes, so a settle can return
+// with post1 still owed. The resume start-sweep reads UndeliveredMessages for
+// the agent and redelivers anything still owed into the fresh container2; were
+// post1 still owed at that point the sweep would redeliver it, consume the
+// resumed lifetime's canned turn, and desync the 2-turn script (a
+// hang-to-timeout flake OR a mis-attributed green). Gating on the cursor — the
+// real cross-process ack signal — instead of trusting the settle-implies-acked
+// ordering closes that race.
+//
+// It is an event-gated bounded poll on UndeliveredMessages, mirroring
+// waitRunnerEnrolled: a ticker-driven bound off f.now() with a deadline check
+// that returns a legible timeout error, and a select on ctx.Done() vs the
+// ticker so it respects cancellation — no sleeps, no retry-as-sync. It returns
+// nil the instant post1ID is absent from the home-channel slice of the map
+// UndeliveredMessages returns; a store error, ctx cancellation, or a budget
+// timeout is a legible error.
+func (f *Fixture) waitDeliveryCursorPast(ctx context.Context, st *store.Store, agent store.AccountID, home store.ChannelID, post1ID store.MessageID) error {
+	deadline := f.now().Add(cursorPollBudget)
+	ticker := time.NewTicker(cursorPollInterval)
+	defer ticker.Stop()
+	for {
+		if !f.now().Before(deadline) {
+			return fmt.Errorf("delivery cursor did not advance past message %s within %s", post1ID, cursorPollBudget)
+		}
+		owed, err := st.UndeliveredMessages(ctx, agent)
+		if err != nil {
+			return err
+		}
+		stillOwed := false
+		for _, m := range owed[home] {
+			if m.ID == post1ID {
+				stillOwed = true
+				break
+			}
+		}
+		if !stillOwed {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// cursorPollInterval and cursorPollBudget bound waitDeliveryCursorPast: the
+// wait between leg-5's pre-teardown settle and the container1 teardown for the
+// agent's delivery cursor to advance past post1. The cursor advances on the
+// agent's delivery_ack (runnerhub deliverAck), which trails the WORKING→READY
+// settle by a bus round-trip, not by an agent turn — so like enrollment this is
+// a fast one-time transition and the budget can be far smaller than
+// settleTimeout while still failing a genuinely stuck ack legibly rather than
+// hanging to the go-test timeout; the interval matches enrollPollInterval's
+// magnitude. A deterministic deadline, never a retry loop.
+const (
+	cursorPollInterval = 100 * time.Millisecond
+	cursorPollBudget   = 15 * time.Second
+)
+
+// awaitTranscriptPersisted blocks until the session's durable transcript is
+// present in the store AND contains wantReply, or the budget elapses. It closes
+// the same class of race waitDeliveryCursorPast does: the WORKING→READY settle
+// AwaitTurnSettled observes rides the PublishEvents session-state channel, while
+// the turn's transcript persists on the INDEPENDENT CommitConversationFrame
+// unary (runnerhub/relay_comms.go) — the agent's tee sends its transcript
+// frame, the server commits it to agent_session_transcript_entries, and only
+// then is SessionTranscript non-empty. That commit trails READY by one runner→
+// server round-trip, so a SessionTranscript read fired the instant settle
+// returns can legitimately find nothing yet (store: not found) or a transcript
+// missing the just-settled reply. A leg that reads immediately is racing the
+// commit.
+//
+// Like waitDeliveryCursorPast this is an event-gated bounded poll, NOT a
+// retry-as-sync: it gates on a fast one-time cross-process convergence (the
+// commit round-trip), a ticker-driven deadline off f.now() with a select on
+// ctx.Done() vs the ticker, returning the instant the transcript holds the
+// reply. It returns the persisted entries on success; a store error other than
+// ErrNotFound, ctx cancellation, or a budget timeout is a legible error. A bare
+// ErrNotFound (or a present-but-incomplete transcript) is the not-yet-committed
+// state it waits through, never a failure until the budget elapses.
+func (f *Fixture) awaitTranscriptPersisted(ctx context.Context, st *store.Store, sessionID, wantReply string) ([]store.TranscriptEntryRow, error) {
+	deadline := f.now().Add(transcriptPollBudget)
+	ticker := time.NewTicker(transcriptPollInterval)
+	defer ticker.Stop()
+	for {
+		transcript, err := st.SessionTranscript(ctx, sessionID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			var joined strings.Builder
+			for _, e := range transcript {
+				joined.WriteString(e.EntryJSON)
+			}
+			if strings.Contains(joined.String(), wantReply) {
+				return transcript, nil
+			}
+		}
+		if !f.now().Before(deadline) {
+			return nil, fmt.Errorf("transcript for session %s did not persist reply %q within %s", sessionID, wantReply, transcriptPollBudget)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// transcriptPollInterval and transcriptPollBudget bound awaitTranscriptPersisted.
+// The transcript commit trails the WORKING→READY settle by one runner→server
+// CommitConversationFrame round-trip — a fast one-time transition like the
+// delivery-cursor ack, so the budget can be far smaller than settleTimeout while
+// still failing a genuinely stuck commit legibly rather than hanging to the
+// go-test timeout; the interval matches cursorPollInterval's magnitude. A
+// deterministic deadline, never a retry loop.
+const (
+	transcriptPollInterval = 100 * time.Millisecond
+	transcriptPollBudget   = 15 * time.Second
+)
 
 // enrollProbeSessionID is the synthetic, never-started session id the enrollment
 // probe Stops. It is namespaced so it can never collide with a real

@@ -324,6 +324,41 @@ describe("createSeedApiKeyResolver", () => {
 		const getApiKey = createSeedApiKeyResolver(home);
 		expect(await getApiKey(model("anthropic"))).toBeUndefined();
 	});
+
+	// The fall-through is what fixes keyless providers: a provider absent from
+	// the seed resolves through the SDK resolver `createAgentSession` installed,
+	// which returns the `"N/A"` sentinel for an `auth: none` provider so the turn
+	// dials instead of failing MissingApiKeyError. These pin the layering.
+	test("falls through to the fallback for a provider absent from the seed", async () => {
+		const home = scratch();
+		writeSeed(home, { entries: { anthropic: { type: "api-key", key: "k" } } });
+
+		const getApiKey = createSeedApiKeyResolver(home, (m) =>
+			m.provider === "cannedci" ? "N/A" : undefined,
+		);
+		expect(await getApiKey(model("cannedci"))).toBe("N/A");
+	});
+
+	test("a seeded key wins over the fallback — T6 rotation precedence holds", async () => {
+		const home = scratch();
+		writeSeed(home, {
+			entries: { anthropic: { type: "api-key", key: "sk-seed" } },
+		});
+
+		const getApiKey = createSeedApiKeyResolver(home, () => "N/A");
+		expect(await getApiKey(model("anthropic"))).toBe("sk-seed");
+	});
+
+	test("falls through to the fallback when the seed file is absent", async () => {
+		const getApiKey = createSeedApiKeyResolver(scratch(), () => "N/A");
+		expect(await getApiKey(model("cannedci"))).toBe("N/A");
+	});
+
+	test("propagates a resolver-function fallback unchanged (ApiKey union)", async () => {
+		const resolver = () => "minted";
+		const getApiKey = createSeedApiKeyResolver(scratch(), () => resolver);
+		expect(await getApiKey(model("cannedci"))).toBe(resolver);
+	});
 });
 
 function writeSeed(home: string, seed: unknown): void {

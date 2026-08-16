@@ -202,9 +202,10 @@ func TestStartAgentSessionResumeAttachesReconstructedBody(t *testing.T) {
 	if err := f.store.RecordAgentSession(ctx, logical, f.agentID); err != nil {
 		t.Fatalf("RecordAgentSession: %v", err)
 	}
-	// The resume mints a fresh live session id (the Runner's answer) whose
-	// ownership row the handler records via AgentForContainer -> so the container
-	// must be placed.
+	// A resume reuses the logical id as the live id (real host.Start; the fake
+	// Runner here just echoes an id). The handler skips RecordAgentSession on
+	// resume — the ownership row already exists — but a placement is still needed
+	// so any post-Start read that resolves the container's account succeeds.
 	if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, fakeContainer); err != nil {
 		t.Fatalf("RecordAgentPlacement: %v", err)
 	}
@@ -282,9 +283,12 @@ func TestStartAgentSessionResumeKeyedOnStableLogicalIdAcrossResumes(t *testing.T
 	}
 	want := "{\"header\":true}\n{\"d\":2}"
 
-	// The container must be placed so each resume's ownership recording resolves,
-	// and each of the two resumes mints a DISTINCT live session id (the fresh
-	// lifetime), while the stored transcript stays keyed on the stable logical id.
+	// A placement is recorded for completeness, though the resume branch no longer
+	// reads it (ownership is recorded only on a fresh start; a resume reuses the
+	// logical id whose row already exists). In production a resume reuses the
+	// logical id as its live id; the fake Runner here echoes setStartIDs values,
+	// which the handler ignores on resume — what matters is that both resumes
+	// reconstruct from and bind the SAME stable logical transcript.
 	if err := f.store.RecordAgentPlacement(ctx, f.agentID, fakeRunnerID, fakeContainer); err != nil {
 		t.Fatalf("RecordAgentPlacement: %v", err)
 	}
