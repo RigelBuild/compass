@@ -1061,6 +1061,41 @@ describe("runCommsStream — presence seed + tail", () => {
 		});
 	});
 
+	test("an UNSPECIFIED presence tail delta routes through presenceLifecycle → lifecycle undefined (seed↔tail one vocabulary)", async () => {
+		const controller = new AbortController();
+		const { client } = createFakeClient(controller, {
+			accounts: [wireUserAccount(CALLER)],
+			channels: [wireChannel("chan-1")],
+			messagesByChannel: { "chan-1": [] },
+			roster: [wireRosterEntry("acc-x", AgentPresence.WORKING, "cooking")],
+			subscribeScripts: [
+				async function* () {
+					yield boundary(100n, 1n);
+					yield presenceChanged(2n, "acc-x", AgentPresence.UNSPECIFIED);
+					controller.abort();
+				},
+			],
+		});
+		const states: CommsState[] = [];
+		await runCommsStream({
+			client,
+			callerId: CALLER,
+			mapMessage,
+			onState: (s) => states.push(s),
+			signal: controller.signal,
+		});
+
+		// The tail arm builds its AgentPresenceInfo through presenceLifecycle, the
+		// same path the roster seed uses — so an UNSPECIFIED delta yields the
+		// defensive `lifecycle: undefined`, never a bare enum leaking past the
+		// vocabulary. A regression that bypassed presenceLifecycle would red here
+		// while T1's isolated adapt tests stayed green.
+		expect(states.at(-1)?.presence.get("acc-x")).toEqual({
+			lifecycle: undefined,
+			activity: undefined,
+		});
+	});
+
 	test("a GetRoster rejection aborts the whole snapshot — onError fires, presence is never a silent empty map", async () => {
 		const controller = new AbortController();
 		const boom = new Error("getRoster boom");
