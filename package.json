@@ -17,6 +17,7 @@
 			"astro": "^6.3.7",
 			"github-slugger": "^2.0.0",
 			"sharp": "^0.34.4",
+			"stylelint": "^17.14.1",
 			"typescript": "^6.0.3"
 		}
 	},
