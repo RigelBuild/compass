@@ -1,6 +1,6 @@
 # Design: Compass Bridge re-clothe (SEA-2111)
 
-Status: Draft
+Status: Active
 Owner lane: compass-ux (design) → compass-ui (execution)
 Refs: SEA-2111 (live board doesn't match the rigel.build reference); sequenced
 after the SEA-2034 DS-token cutover (merged, main `18e988b5`). Two adjacent
