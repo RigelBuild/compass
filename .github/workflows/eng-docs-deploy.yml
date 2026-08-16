@@ -1,0 +1,115 @@
+# Continuous deployment for the Compass engineering docsite (apps/eng-docs).
+#
+# A push to main deploys production; a pull_request deploys a per-PR Cloudflare
+# Pages preview and upserts the preview-URL comment (apps/eng-docs/scripts/
+# deploy.ts, SEA-1765). This is a STANDALONE CD workflow — it is deliberately
+# NOT part of `moon ci :ci` (the CI gate in ci.yml), so a deploy failure never
+# gates a merge and a green CI never waits on Cloudflare.
+name: eng-docs-deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: eng-docs-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Fork guard: a push always runs; a PR only runs when it comes from a branch
+    # in THIS repo. Fork PRs get no secrets (CLOUDFLARE_*/GH_TOKEN), so a deploy
+    # would fail anyway — and running one with an attacker's code near secret
+    # plumbing is the risk this closes. Same-repo PRs are trusted.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # moon's affected-graph diffing (compass-eng-docs:build depends on the
+          # gather inputs) resolves its base against `main`; a shallow single-ref
+          # PR checkout has no such ref, so the build's `git ... main` aborts
+          # (exit 128). Full history populates refs/remotes/origin/*, matching
+          # ci.yml's checkout (ci.yml:130-135).
+          fetch-depth: 0
+
+      - name: Read the toolchain pins
+        id: pins
+        # .prototools is the single source for the language/runtime versions.
+        # Reading it here rather than hardcoding into the `setup-*` inputs below
+        # is what keeps that true — a pin bump is one file. Mirrors ci.yml's
+        # "Read the toolchain pins" step (ci.yml:154-196).
+        #
+        # `/^\[/q` stops at the first table header, so only top-level pins are
+        # read and a future [settings] section is never mistaken for one.
+        #
+        # Every value is shape-checked before it is written. A pin is always a
+        # version string; anything else means the file is malformed or crafted,
+        # and refusing is the same posture the parity gate takes. This also
+        # closes GITHUB_OUTPUT injection, since a rejected value never reaches
+        # the file.
+        run: |
+          pins=$(sed -n '/^\[/q; s/^\([A-Za-z0-9_-]\{1,\}\)[[:space:]]*=[[:space:]]*"\([^"]\{1,\}\)".*/\1=\2/p' \
+            .prototools)
+          while IFS='=' read -r name value; do
+            [ -n "$name" ] || continue
+            case $value in
+              *[!0-9A-Za-z.+-]*|'')
+                echo "::error::.prototools pin '$name' has value '$value', which is not a version string"
+                exit 1
+                ;;
+            esac
+          done <<EOF
+          $pins
+          EOF
+          # Refuse over nothing: a malformed .prototools parses to zero pins, and
+          # every `setup-*` below would then silently take its own default
+          # version. Each pin the job consumes must be present.
+          for required in bun node moon; do
+            printf '%s\n' "$pins" | grep -q "^$required=" || {
+              echo "::error::.prototools yielded no '$required' pin — the file is malformed or its shape changed"
+              exit 1
+            }
+          done
+          printf '%s\n' "$pins" | tee -a "$GITHUB_OUTPUT"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2 (v2.2.0)
+        with:
+          bun-version: ${{ steps.pins.outputs.bun }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.pins.outputs.node }}
+
+      - name: Install moon
+        # moon has no first-party setup action that pins from .prototools, and
+        # its npm package is version-for-version the release. The pin arrives via
+        # env rather than a `${{ }}` interpolation into the script: `${{ }}` is
+        # textual substitution performed BEFORE the shell parses the line, so a
+        # .prototools value carrying shell metacharacters would execute. A shell
+        # variable is data. .prototools is PR-editable, so this is reachable from
+        # a fork. Mirrors ci.yml:213-225.
+        env:
+          MOON_VERSION: ${{ steps.pins.outputs.moon }}
+        run: npm install --global "@moonrepo/cli@$MOON_VERSION"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build the docsite
+        run: moon run compass-eng-docs:build
+
+      - name: Deploy to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        working-directory: apps/eng-docs
+        run: bun scripts/deploy.ts
