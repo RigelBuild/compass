@@ -49,6 +49,7 @@ import { probeServer } from "./live/client";
 import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
 import { runEventStream } from "./live/events";
 import { runCommsStream } from "./live/stream";
+import { joinAgents } from "./roster";
 import type { AgentSession } from "./session-events";
 import { STUB_SESSION_EVENTS } from "./session-events-stub";
 import {
@@ -368,6 +369,11 @@ export interface AppStore {
 	/** All accounts visible to the caller — the author/handle resolution source
 	 *  for the channel surface (distinct from `agents`, the board's fleet). */
 	accounts: Accessor<readonly Account[]>;
+	/** The board's live fleet — the roster view-models `joinAgents` composes
+	 *  from `accounts` (identity) + the comms presence map (lifecycle/activity).
+	 *  Offline (no `options.comms`) this is the STUB_AGENTS fixture; live it is
+	 *  the joined roster. The accessor the board components cut over to in T4. */
+	agents: Accessor<readonly Agent[]>;
 	/** All channel groups visible to the caller (the rail's group headers). */
 	channelGroups: Accessor<readonly ChannelGroup[]>;
 	/** All channels + DMs visible to the caller — the reactive rail source, so a
@@ -666,7 +672,6 @@ function savePinnedAgents(
  */
 export function createAppStore(options: AppStoreOptions): AppStore {
 	const callerId = options.callerId ?? CALLER_ID;
-	const agents = STUB_AGENTS;
 	// The issue list is reactive so promote/archive (below) are visible on
 	// every surface at once. Seeded from the fixture; the real @compass/client
 	// stream replaces the seed later (the accessor stays the seam).
@@ -787,34 +792,15 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const pinnedAgentIds = createMemo<readonly string[]>(() =>
 		pinnedAgents().map((p) => p.id),
 	);
-	// The single agent-resolution seam (SEA-1645 P5): resolve an account id to its
-	// visible agent. A REACTIVE read — a closure over the `agents` source, so every
-	// consumer (`rightTabGroups`, transitively `activeFleetItem`) re-runs when the
-	// agent set changes. `agents` is a static const today, so this cannot flip
-	// live→unreachable yet; the live-agents migration owes converting `agents` to a
-	// signal/store read flowing through this one seam (not a non-reactive snapshot).
+	// The single agent-resolution seam (SEA-1645 P5): resolve an account id to
+	// its visible agent. A REACTIVE read — a closure over the `agents` memo, so
+	// every consumer (`rightTabGroups`, transitively `activeFleetItem`) re-runs
+	// when the agent set changes. The live-agents migration this seam owed is
+	// discharged: `agents` is now the reactive join memo below (offline fixture,
+	// live `joinAgents(accounts(), presence())`), not a static const, so a
+	// presence/account tick flips resolution live→reachable through this one seam.
 	const agentById = (accountId: string): Agent | undefined =>
-		agents.find((a) => a.account.id === accountId);
-	// Boot default (Record A §T5): the first hydrated pin that resolves to a
-	// visible agent, else the static `status` pane. Boot has no mid-view state to
-	// preserve, so it lands on a live pane rather than an unreachable one (SEA-1645
-	// P4, OQ-1 ruled kept). An unresolvable leading pin is skipped here but still
-	// shows its (marked) bar item. The D6 no-auto-switch rule is unchanged.
-	const firstResolvablePin = pinnedAgentIds().find(
-		(id) => agentById(id) !== undefined,
-	);
-	const [activeRightTab, setActiveRightTabRaw] = createSignal<RightSidebarTab>(
-		firstResolvablePin ? `agent:${firstResolvablePin}` : "status",
-	);
-	// The single public set seam (SEA-1645 P3): a plain pass-through. The old
-	// resolvability guard (coerce an unresolvable `agent:` tab to `status`) is
-	// retired — selecting or keeping an unresolvable agent tab is now valid and
-	// renders the unreachable pane, so an `agent:` tab no longer requires a visible
-	// agent. The unpin-active→status fallback (a user gesture) still routes through
-	// here. No fluctuation-watcher: a visibility change never coerces the tab.
-	const setActiveRightTab = (tab: RightSidebarTab) => {
-		setActiveRightTabRaw(tab);
-	};
+		agents().find((a) => a.account.id === accountId);
 	// The active repo id (T6). The current branch is derived from the selected
 	// issue (see agentRepos), so there's no separate branch-pick signal to
 	// drift from the panes.
@@ -843,6 +829,37 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const channels = createMemo(() => comms().channels);
 	const messages = createMemo(() => comms().messages);
 	const topics = createMemo(() => comms().topics);
+	// The board's fleet (§T3). An intermediate presence memo beside the
+	// per-collection memos: it re-notifies only when the presence map's identity
+	// actually changes — each posted message replaces the whole CommsState via
+	// `adoptComms`, and this memo's `===` equality plus the reducer's structural
+	// sharing absorb that, so a chat message does not re-join the roster. Then
+	// the join itself, gated on the live/offline switch: offline it is the
+	// fixture; live it re-joins only when accounts or presence change.
+	const presence = createMemo(() => comms().presence);
+	const agents = createMemo<readonly Agent[]>(() =>
+		options.comms ? joinAgents(accounts(), presence()) : STUB_AGENTS,
+	);
+	// Boot default (Record A §T5): the first hydrated pin that resolves to a
+	// visible agent, else the static `status` pane. Boot has no mid-view state to
+	// preserve, so it lands on a live pane rather than an unreachable one (SEA-1645
+	// P4, OQ-1 ruled kept). An unresolvable leading pin is skipped here but still
+	// shows its (marked) bar item. The D6 no-auto-switch rule is unchanged.
+	const firstResolvablePin = pinnedAgentIds().find(
+		(id) => agentById(id) !== undefined,
+	);
+	const [activeRightTab, setActiveRightTabRaw] = createSignal<RightSidebarTab>(
+		firstResolvablePin ? `agent:${firstResolvablePin}` : "status",
+	);
+	// The single public set seam (SEA-1645 P3): a plain pass-through. The old
+	// resolvability guard (coerce an unresolvable `agent:` tab to `status`) is
+	// retired — selecting or keeping an unresolvable agent tab is now valid and
+	// renders the unreachable pane, so an `agent:` tab no longer requires a visible
+	// agent. The unpin-active→status fallback (a user gesture) still routes through
+	// here. No fluctuation-watcher: a visibility change never coerces the tab.
+	const setActiveRightTab = (tab: RightSidebarTab) => {
+		setActiveRightTabRaw(tab);
+	};
 	// Open on the first subscribed channel so the shell boots into a live
 	// conversation, not the empty state — no hardcoded id, and null before the
 	// first snapshot arrives (the components render their empty state).
@@ -985,13 +1002,13 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	let mintedTerminalCount = 0;
 
 	const selectedAgent = createMemo(() =>
-		agents.find((a) => a.account.id === selectedAgentId()),
+		agents().find((a) => a.account.id === selectedAgentId()),
 	);
 	// The pure seam that composes the durable `account` with the optional
 	// ephemeral `lifecycle` by shared account id (`joinAgents` in the real era) —
 	// lifecycle is already carried on the view-model, so this is a lookup.
 	const agentView = (id: string): Agent | undefined =>
-		agents.find((a) => a.account.id === id);
+		agents().find((a) => a.account.id === id);
 	const selectedIssue = createMemo(() =>
 		issues().find((w) => w.id === selectedIssueId()),
 	);
@@ -1989,6 +2006,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		caller,
 		daemon,
 		accounts,
+		agents,
 		channelGroups,
 		channels,
 		messages,

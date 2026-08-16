@@ -350,12 +350,12 @@ export interface Agent {
 	 *  process state. Absent/empty = none (the presence render shows the state
 	 *  dot + handle alone, as today). */
 	activity?: string;
-	/** UI-only roster config. */
-	role: AgentRole;
-	/** UI-only (the model the OMP SDK is set with). */
-	model: string;
-	/** UI-only. */
-	cwd: string;
+	/** UI-only roster config. Optional: a live agent has no fixture role. */
+	role?: AgentRole;
+	/** UI-only (the model the OMP SDK is set with). Optional for a live agent. */
+	model?: string;
+	/** UI-only. Optional for a live agent. */
+	cwd?: string;
 	/** Fixture-only. */
 	terminals: Terminal[];
 }

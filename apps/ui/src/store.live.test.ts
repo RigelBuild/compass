@@ -1,4 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import {
+	AccountSchema,
+	AgentAccountSchema,
+	AgentPresence,
+	create,
+	RosterEntrySchema,
+} from "@compass/client";
 import { createRoot } from "solid-js";
 import {
 	wireChannel as buildWireChannel,
@@ -1049,5 +1056,87 @@ describe("daemon banner (live GetServerInfo)", () => {
 		} finally {
 			dispose();
 		}
+	});
+});
+
+// An agent account on the wire — the durable identity `joinAgents` filters to
+// and composes. Distinct from `wireAccount` (a user), because the join drops
+// non-agent kinds.
+const wireAgentAccount = (id: string) =>
+	create(AccountSchema, {
+		id,
+		handle: id,
+		displayName: id,
+		kind: {
+			case: "agent",
+			value: create(AgentAccountSchema, { ownerUserId: CALLER }),
+		},
+	});
+
+const rosterEntry = (agentAccountId: string, presence: AgentPresence) =>
+	create(RosterEntrySchema, { agentAccountId, presence });
+
+describe("store agents() live join (§T3)", () => {
+	// The live seam: `agents()` joins the durable accounts (identity, from the
+	// snapshot) with the presence map (lifecycle/activity, from GetRoster) via
+	// joinAgents. A present roster entry projects its lifecycle; an agent account
+	// with NO roster entry is a map miss → "stopped" (R2/DL-194), never the
+	// components' false-live idle. Non-agent accounts (the caller) are filtered.
+	test("joins live accounts + presence into agents(), miss→stopped", async () => {
+		const fake = createFakeComms({
+			accounts: [
+				wireAccount(CALLER),
+				wireAgentAccount("acc-cook"),
+				wireAgentAccount("acc-idle"),
+			],
+			channels: [wireChannel(CHANNEL)],
+			roster: [rosterEntry("acc-cook", AgentPresence.WORKING)],
+		});
+
+		await withLiveStore(fake, async (store) => {
+			// Only the two agent accounts, in account order; the caller is filtered.
+			expect(store.agents().map((a) => a.account.id)).toEqual([
+				"acc-cook",
+				"acc-idle",
+			]);
+			// acc-cook has a WORKING roster entry; acc-idle has none → the miss maps
+			// to "stopped", NOT undefined/idle.
+			expect(store.agentById("acc-cook")?.lifecycle).toBe("working");
+			expect(store.agentById("acc-idle")?.lifecycle).toBe("stopped");
+		});
+	});
+
+	// The SEA-1645 reactivity the store.ts:790-795 comment owed: `agentById`
+	// resolves through the reactive `agents()` memo, so a presence tick flips its
+	// answer. A tail AgentPresenceChanged upserts acc-idle's lifecycle and the
+	// seam re-resolves stopped→working with no accessor swap.
+	test("agentById reacts to a presence change", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER), wireAgentAccount("acc-idle")],
+			channels: [wireChannel(CHANNEL)],
+			roster: [],
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			// No roster seed → the miss rule: the agent renders "stopped".
+			expect(store.agentById("acc-idle")?.lifecycle).toBe("stopped");
+
+			await fake.emit(
+				{
+					case: "agentPresenceChanged",
+					value: {
+						agentAccountId: "acc-idle",
+						presence: AgentPresence.WORKING,
+						activity: "now working",
+					},
+				},
+				1n,
+			);
+			await settled();
+
+			// The one seam re-resolved through the reactive agents() memo.
+			expect(store.agentById("acc-idle")?.lifecycle).toBe("working");
+			expect(store.agentById("acc-idle")?.activity).toBe("now working");
+		});
 	});
 });
