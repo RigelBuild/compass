@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { render, waitFor } from "@solidjs/testing-library";
-import * as realOpener from "@tauri-apps/plugin-opener";
+import * as realRuntime from "@wailsio/runtime";
 import { createSignal, ErrorBoundary } from "solid-js";
 import type { Account } from "../comms-stub";
 import * as realHighlighter from "../markdown/highlighter";
@@ -16,8 +16,8 @@ const realHighlightToHtml = realHighlighter.highlightToHtml;
 // the markdown tree's TEXT nodes (markdown-first), renders code verbatim through
 // a `code` override (so mentions never chip inside code), highlights fenced code
 // via a lazy Shiki singleton with a plain-text fallback, stays stable while a
-// string grows mid-stream, and routes link activation through the Tauri opener
-// instead of navigating the app.
+// string grows mid-stream, and routes link activation through the Wails
+// `Browser.OpenURL` seam instead of navigating the app.
 //
 // happy-dom has no layout, but every assertion here is on rendered DOM
 // STRUCTURE / text / classes / attributes / events — none needs pixels. The
@@ -446,19 +446,34 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 });
 
 describe("MarkdownText — link safety", () => {
+	// The `openExternal` seam routes to the Wails `Browser.OpenURL` only inside
+	// the native shell (detected via `window._wails.environment`, injected by the
+	// Wails runtime); in a plain browser it falls back to `window.open`. happy-dom
+	// is not a shell, so each test that observes the opener installs a fake shell
+	// marker to drive the native path, then tears it down.
+	const asShell = () => {
+		(window as unknown as { _wails?: unknown })._wails = { environment: {} };
+	};
+
 	// mock.module leaks past this describe and across FILES (bun runs one
-	// process), so the opener stub must be torn down — the same hazard this
-	// file's header documents and the highlighting describe already guards.
+	// process), so the opener stub AND the fake shell marker must be torn down —
+	// the same hazard this file's header documents and the highlighting describe
+	// already guards.
 	afterEach(() => {
-		mock.module("@tauri-apps/plugin-opener", () => realOpener);
+		mock.module("@wailsio/runtime", () => realRuntime);
+		(window as unknown as { _wails?: unknown })._wails = undefined;
 	});
 
-	test("activating a message link routes through the Tauri opener and does NOT navigate the app", () => {
+	test("activating a message link routes through the Wails opener and does NOT navigate the app", () => {
+		asShell();
 		const opened: string[] = [];
-		mock.module("@tauri-apps/plugin-opener", () => ({
-			openUrl: (url: string) => {
-				opened.push(url);
-				return Promise.resolve();
+		mock.module("@wailsio/runtime", () => ({
+			...realRuntime,
+			Browser: {
+				OpenURL: (url: string) => {
+					opened.push(url);
+					return Promise.resolve();
+				},
 			},
 		}));
 
@@ -472,7 +487,7 @@ describe("MarkdownText — link safety", () => {
 		expect(a).not.toBeNull();
 
 		// Activate: the click is intercepted (default prevented → no app nav) and
-		// routed to openUrl.
+		// routed to Browser.OpenURL.
 		const evt = new MouseEvent("click", { bubbles: true, cancelable: true });
 		a.dispatchEvent(evt);
 		expect(evt.defaultPrevented).toBe(true);
@@ -482,21 +497,25 @@ describe("MarkdownText — link safety", () => {
 	// T-MD-1: dangerous-scheme links are neutralized. solid-markdown does NOT
 	// strip schemes (its transformLinkUri default is null), so an agent-authored
 	// `javascript:` / `file:` / `data:` href would otherwise reach the DOM as a
-	// live attribute AND `openUrl`. The `a` override must render it inert
+	// live attribute AND the opener. The `a` override must render it inert
 	// (`href="#"`) and never hand the raw href to the opener on activation.
 	// Pre-fix (`href={p.href ?? "#"}`, `const href = p.href`) the live href
-	// reaches the DOM and openUrl → red.
+	// reaches the DOM and the opener → red.
 	for (const scheme of [
 		"javascript:alert(1)",
 		"file:///etc/passwd",
 		"data:text/html,<script>alert(1)</script>",
 	]) {
 		test(`a ${scheme.split(":")[0]}: link renders inert and never reaches the opener`, () => {
+			asShell();
 			const opened: string[] = [];
-			mock.module("@tauri-apps/plugin-opener", () => ({
-				openUrl: (url: string) => {
-					opened.push(url);
-					return Promise.resolve();
+			mock.module("@wailsio/runtime", () => ({
+				...realRuntime,
+				Browser: {
+					OpenURL: (url: string) => {
+						opened.push(url);
+						return Promise.resolve();
+					},
 				},
 			}));
 
@@ -519,11 +538,15 @@ describe("MarkdownText — link safety", () => {
 	// live href AND still routes to the opener. This pins that the sanitizer
 	// gates on scheme, not by neutering all links.
 	test("a safe https link keeps its href and still calls the opener", () => {
+		asShell();
 		const opened: string[] = [];
-		mock.module("@tauri-apps/plugin-opener", () => ({
-			openUrl: (url: string) => {
-				opened.push(url);
-				return Promise.resolve();
+		mock.module("@wailsio/runtime", () => ({
+			...realRuntime,
+			Browser: {
+				OpenURL: (url: string) => {
+					opened.push(url);
+					return Promise.resolve();
+				},
 			},
 		}));
 

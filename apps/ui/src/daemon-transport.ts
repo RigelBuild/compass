@@ -8,11 +8,11 @@
 // `Response` whose body is a `ReadableStream` — so
 // `createGrpcWebTransport({ fetch })` streams `SubscribeEvents` incrementally,
 // with all gRPC-Web framing handled by the generated client.
-//
-// The two framework-specific calls (Tauri's `invoke` and `Channel`) sit behind
-// a local `ShellIpc` seam so the frame contract and all stream/cancel/abort
-// logic are framework-agnostic: the browser dev path keeps the default network
-// `fetch`, and any shell can supply its own `ShellIpc` binding.
+// The two framework-specific calls (the Wails runtime's `Call.ByName` bound
+// method + the `Events.On` response-frame subscription) sit behind a local
+// `ShellIpc` seam so the frame contract and all stream/cancel/abort logic are
+// framework-agnostic: the browser dev path keeps the default network `fetch`,
+// and any shell can supply its own `ShellIpc` binding.
 
 // Mirrors the Rust `ResponseFrame` (bridge.rs): a tagged head/body/end/error
 // stream. Body chunks are base64 so they ride the JSON channel as strings.
@@ -26,7 +26,7 @@ export type ResponseFrame =
  * The shell↔UI frame seam (design §A2). A `ShellIpc` proxies a single gRPC-Web
  * call to the daemon: `rpc` issues the `compass_rpc` request and delivers each
  * ordered `ResponseFrame` to `onFrame`; `cancel` issues `compass_rpc_cancel`
- * for the same `requestId`. Framework calls (`invoke`, `Channel`) live only in
+ * for the same `requestId`. Framework calls (`Call.ByName`, `Events.On`) live
  * a binding of this interface, never above it.
  */
 export interface ShellIpc {
@@ -182,26 +182,112 @@ export function createDaemonFetch(ipc: ShellIpc): DaemonFetch {
 	};
 }
 
-// The Tauri binding of the seam — the only place that touches
-// `@tauri-apps/api/core`. `rpc` opens the response `Channel`, wires each frame
-// to `onFrame`, and issues `compass_rpc`; `cancel` issues `compass_rpc_cancel`.
-import { Channel, invoke } from "@tauri-apps/api/core";
+// The Wails v3 binding of the seam — the only place that touches
+// `@wailsio/runtime`. `rpc` subscribes to the per-request runtime event
+// `"compass_rpc:"+requestId` BEFORE invoking the bound `CompassRPC` method (by
+// name), delivering each `ResponseFrame` to `onFrame`, and unsubscribes on the
+// terminal frame (`end`/`error`); `cancel` invokes the bound `CompassRPCCancel`
+// method. The Go shell emits one runtime event per ordered frame carrying the
+// JS `ResponseFrame` shape (go/cmd/compass-app/bridge_service.go:9-12,199-201).
+import { Call, Events } from "@wailsio/runtime";
+import type { ConnectionProvider, ResolvedConnection } from "./live/provider";
 
-const tauriShellIpc: ShellIpc = {
-	async rpc(args, onFrame) {
-		const channel = new Channel<ResponseFrame>();
-		channel.onmessage = onFrame;
-		await invoke("compass_rpc", { ...args, channel });
-	},
-	cancel(requestId) {
-		// Best-effort: swallow a cancel that races the proxy finishing.
-		invoke("compass_rpc_cancel", { requestId }).catch(() => {});
-	},
+// The fully-qualified names of the bound Go methods, as the Wails binding
+// generator computes them for a `main`-package service: `main.<Struct>.<Method>`
+// (v3 collectMethod: reflect reports the main package's path as "main", then
+// `path + "." + structName + "." + methodName`). The service is `bridgeService`
+// in `go/cmd/compass-app` (package main), so its bound methods are namespaced
+// under `main.bridgeService`.
+const RPC_METHOD = "main.bridgeService.CompassRPC";
+const RPC_CANCEL_METHOD = "main.bridgeService.CompassRPCCancel";
+const CONNECT_METHOD = "main.bridgeService.Connect";
+
+/** Build the Wails binding of the shell IPC seam. `rpc` wires the response-frame
+ *  subscription up before firing the call so no frame can race ahead of the
+ *  listener, and tears the subscription down on the terminal frame; `cancel`
+ *  best-effort invokes the cancel method and swallows a race with the proxy
+ *  finishing. */
+export function wailsShellIpc(): ShellIpc {
+	return {
+		rpc(args, onFrame) {
+			const eventName = `compass_rpc:${args.requestId}`;
+			// Subscribe BEFORE invoking so the first (head) frame can never be
+			// emitted before the listener is installed. `Events.On` returns its
+			// own unsubscribe function; the terminal frame calls it so a finished
+			// stream leaves no dangling listener.
+			let off: (() => void) | undefined;
+			const unsubscribe = () => {
+				off?.();
+				off = undefined;
+			};
+			off = Events.On(eventName, (event: Events.WailsEvent) => {
+				const frame = event.data as ResponseFrame;
+				onFrame(frame);
+				if (frame.kind === "end" || frame.kind === "error") unsubscribe();
+			});
+			// The Go `CompassRPC` returns nothing (it launches the streaming proxy
+			// and returns immediately); the frames arrive as events. Surface an
+			// invoke rejection to the caller so `createDaemonFetch` can fail the
+			// head/stream, and drop the subscription so it does not leak.
+			return Call.ByName(RPC_METHOD, args).then(
+				() => {},
+				(err: unknown) => {
+					unsubscribe();
+					throw err instanceof Error ? err : new Error(String(err));
+				},
+			);
+		},
+		cancel(requestId) {
+			// Best-effort: swallow a cancel that races the proxy finishing (an
+			// unknown/already-finished id is a no-op on the Go side).
+			Call.ByName(RPC_CANCEL_METHOD, { requestId }).catch(() => {});
+		},
+	};
+}
+
+/** The sealed result of a shell `Connect` probe. `kind` is `""` on success and
+ *  one of the failure kinds otherwise (mirrors the Go `connectResult`,
+ *  design.md T5.3). The bearer never crosses this seam — it is stored shell-side
+ *  only (DL-109). */
+export type ConnectResult = {
+	ok: boolean;
+	kind:
+		| ""
+		| "bad-url"
+		| "bad-cert"
+		| "bad-token"
+		| "version-mismatch"
+		| "other";
+	message: string;
+	accountId: string;
+	serverVersion: string;
+	apiVersion: string;
 };
 
-/**
- * A `fetch` that proxies gRPC-Web calls to the daemon over the Tauri bridge.
- * Used only when running inside the shell; the plain browser dev path keeps the
- * default network `fetch`.
- */
-export const daemonFetch: DaemonFetch = createDaemonFetch(tauriShellIpc);
+/** Invoke the Go shell's `Connect` bound method by name, passing the pasted
+ *  token (or `""` for the boot-internal "use the stored one" probe, T5.5), and
+ *  return its classified result. The method lives in the (unmerged) T5.3 stack;
+ *  it is called purely by string name through the Wails runtime, never imported,
+ *  so this compiles and is testable against a fake runtime without the Go method
+ *  existing on main. */
+export function shellConnect(token: string): Promise<ConnectResult> {
+	return Call.ByName(CONNECT_METHOD, { token }) as Promise<ConnectResult>;
+}
+
+/** The native (desktop-shell) connection provider. `resolve()` hands back the
+ *  shell base URL plus a `fetchImpl` that tunnels gRPC-Web over the Wails IPC —
+ *  and NEVER a bearer: `token` is always `undefined` because in client mode the
+ *  bearer lives only shell-side, presented by the shell as it proxies each call
+ *  (DL-109). This is the one place a shell dependency (`wailsShellIpc`) meets the
+ *  provider seam, kept out of `provider.ts` so that module stays Wails-free. */
+export function nativeConnectionProvider(baseUrl: string): ConnectionProvider {
+	return {
+		async resolve(): Promise<ResolvedConnection> {
+			// The transport only ever invokes the call signature of `fetch`; the
+			// daemon fetch deliberately omits `fetch.preconnect` (a no-op over the
+			// IPC tunnel), so widen it to the `typeof fetch` the seam declares.
+			const fetchImpl = createDaemonFetch(wailsShellIpc()) as typeof fetch;
+			return { baseUrl, token: undefined, fetchImpl };
+		},
+	};
+}

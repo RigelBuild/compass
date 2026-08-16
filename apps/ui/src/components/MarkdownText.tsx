@@ -1,4 +1,4 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { Browser } from "@wailsio/runtime";
 import type {
 	Element as HastElement,
 	Parent as HastParent,
@@ -197,7 +197,9 @@ function rehypeInertRawAndBreaks() {
 // tree's TEXT nodes (markdown-first, so emphasis spanning a mention survives and
 // a mention inside code stays verbatim). Code is highlighted via the lazy Shiki
 // singleton with an immediate plain fallback; links open externally through the
-// Tauri opener instead of navigating the app; images render as their alt text
+// `openExternal` seam (the Wails runtime's `Browser.OpenURL` inside the shell, a
+// plain `window.open` in the browser dev build) instead of navigating the app;
+// images render as their alt text
 // and are never fetched. A growing string renders a valid partial every step:
 // CommonMark closes an unterminated fence implicitly at end of input, so a
 // half-streamed fence already parses as a growing code block, and `reconcile`
@@ -208,6 +210,36 @@ function rehypeInertRawAndBreaks() {
  *  text keeps the sentence around it readable. */
 function imgPlaceholder(alt: string | undefined): string {
 	return alt ? `[image: ${alt}]` : "[image]";
+}
+
+/** Open a link OUTSIDE the app — never as an in-page navigation. The single seam
+ *  the `a` override routes activation through, with the framework dependency
+ *  (`@wailsio/runtime`) confined here (design §A2 / DL-109 zone discipline).
+ *
+ *  Inside the Wails shell (`window._wails.environment` is injected by the native
+ *  runtime, prod and dev alike) the OS default browser opens via
+ *  `Browser.OpenURL`; in the plain-browser dev build — where no Wails runtime is
+ *  reachable and calling it would throw — a `window.open` with the same
+ *  bypass-proofing (`noreferrer,noopener`) opens a new tab. The caller has
+ *  already scheme-sanitized the href (`safeHref`), so this only ever receives a
+ *  vetted absolute URL. */
+function isNativeShell(): boolean {
+	// The native Wails runtime injects `window._wails.environment` into the page
+	// (prod and dev alike, internal/runtime/runtime_{prod,dev}.go); a plain
+	// browser build has no such object. Narrow with `in`/`typeof` so the property
+	// read is actually checked rather than asserted onto `window`.
+	if (typeof window === "undefined") return false;
+	if (!("_wails" in window)) return false;
+	const wails = window._wails;
+	return typeof wails === "object" && wails !== null && "environment" in wails;
+}
+
+function openExternal(href: string): void {
+	if (isNativeShell()) {
+		void Browser.OpenURL(href).catch(() => {});
+		return;
+	}
+	window.open(href, "_blank", "noreferrer,noopener");
 }
 
 /** The concatenated raw text of a hast element's descendants — the verbatim
@@ -376,16 +408,16 @@ export const MarkdownText: Component<{
 		// this `pre` override is a pass-through — rendering its `<code>` child
 		// directly avoids a `<pre>` nested inside a `<pre>`.
 		pre: (p: { children?: unknown }) => <>{p.children as never}</>,
-		// Links open externally via the Tauri opener; label rendered from raw text
-		// (so a mention in a label never chips, and inline markup is flattened —
-		// accepted). Until the Tauri shell registers the opener capability, openUrl
-		// rejects → the link is inert (intercepted, no nav).
+		// Links open externally via the `openExternal` seam (Wails `Browser.OpenURL`
+		// in the shell, `window.open` in the dev build); label rendered from raw
+		// text (so a mention in a label never chips, and inline markup is flattened
+		// — accepted).
 		a: (p: { node?: HastElement; href?: string }) => {
 			const label = () => rawText(p.node);
 			// Scheme-sanitize on BOTH the DOM attribute and the opener call: a
 			// `javascript:`/`data:`/`file:` href must never be a live attribute
 			// (middle-click / keyboard-activate / context-menu can bypass onClick
-			// in a webview) nor reach `openUrl` (a `file://` would open a local
+			// in a webview) nor reach `openExternal` (a `file://` would open a local
 			// file in the OS default app). Unsafe → inert `#` + no-op click.
 			const safe = () => safeHref(p.href);
 			return (
@@ -401,7 +433,7 @@ export const MarkdownText: Component<{
 					onClick={(e) => {
 						e.preventDefault();
 						const href = safe();
-						if (href) void openUrl(href).catch(() => {});
+						if (href) openExternal(href);
 					}}
 				>
 					{label()}
