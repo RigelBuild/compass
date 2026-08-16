@@ -65,12 +65,19 @@ on:
     # 07:17 UTC, off the top-of-hour cron congestion GitHub throttles.
     - cron: '17 7 * * *'
 
-# One in-flight run per ref per event. A superseded push's run is answering a
-# question nobody is asking any more. Event is in the key so a nightly schedule
-# run and a coincident post-merge push don't cancel each other — they answer
-# different questions about the same ref.
+# One in-flight run per ref per event action. A superseded push's run is
+# answering a question nobody is asking any more. Both the event and its action
+# are in the key so runs answering different questions about the same ref don't
+# cancel each other: a nightly schedule and a coincident post-merge push
+# (different events), and a PR's `opened`/`edited`/`synchronize` sub-actions
+# (same event, different questions). That last case is load-bearing: jj-vine
+# opens a PR, then ~1s later edits the body to add the stack diagram, and that
+# `edited` run must not cancel the still-running real `opened` run — otherwise
+# the required check ends cancelled+skipped (the edited run self-skips via the
+# job `if` below) and reads as a false green. Superseded pushes are all
+# `synchronize`, so they still collapse to one in-flight run per ref as intended.
 concurrency:
-  group: ci-${{ github.ref }}-${{ github.event_name }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}-${{ github.event.action }}
   cancel-in-progress: true
 
 permissions:
