@@ -15,6 +15,24 @@
 // Bypass knobs:
 //   HK=0 git push           // skip all hooks (emergency)
 //   git push --no-verify    // hk respects this too
+//
+// Temp-worktree tool drift (jj-vine push).
+//   jj-vine runs this hook in a throwaway worktree (/tmp/jj-hooks-worktree-*)
+//   that has the checked-out tree but no direnv activation, so `moon ci`
+//   resolves biome/moon from the ambient system PATH instead of the devenv
+//   pins. A system biome that is not the biome.json pin (2.5.4) reformats
+//   files the pinned biome leaves clean, producing a false-red gate. NEVER
+//   run biome `--write` from this worktree: an off-version biome's output
+//   breaks main CI, which runs the pinned 2.5.4.
+//
+//   Interim workaround (until the durable fix ships): verify in the devenv
+//   shell of your source checkout (`moon ci` there uses the pinned tools),
+//   then push with hooks skipped (the Bypass knobs above; via jj-vine, its
+//   --no-hooks path) and confirm GitHub CI green — CI installs the pinned
+//   toolchains itself and never has the drift.
+//
+//   The durable fix — propagate the repo's devenv env into the hook worktree,
+//   one fix fleet-wide — is tracked in the zireael/jj-hp lane, not here.
 amends "package://github.com/jdx/hk/releases/download/v1.45.0/hk@1.45.0#/Config.pkl"
 
 // Pin the default-branch reference. Without this, hk's auto-detect reads
