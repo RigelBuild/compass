@@ -442,16 +442,67 @@ existed to verify — there is no middlebox to prove unbuffered. What remains
 is the direct-dial arm's streaming smoke: a check that a server-streaming
 RPC against the direct dev-door delivers frames incrementally
 (a `SubscribeEvents` subscription observing an event created after
-subscribe). Lives with the existing UI test conventions (bun test,
-apps/ui/moon.yml:37) or as a documented manual step in the record if a
-headless-vite harness is disproportionate — the task decides, defaulting
-to the automated check (automation depth: OQ5).
+subscribe).
 
 - **Interfaces:** consumes T1's env wire + the running `devenv up` stack;
   produces a repeatable check named in the PR (command + expected output).
 - **Test cycle:** the check itself, red (compass-server stopped or the
   event never created) → green (running stack, frames arrive
   incrementally).
+
+**Resolved (SEA-2001) — OQ5 decided: a documented manual smoke, not a bun
+test.** The hermetic-automated arm cannot faithfully cover this task's
+subject. A `SubscribeEvents` check against the *browser's own* direct-dial
+transport (`createCompassWebTransport` → gRPC-Web over real `fetch`,
+`apps/ui/src/live/client.ts:43-46`) needs a real HTTP gRPC-Web server fake;
+`apps/ui`'s only in-fence fake is `createRouterTransport` — the vendor's
+*no-HTTP* in-memory path (`packages/compass-client/src/index.ts:83-88`),
+which `apps/ui/src/live/events.test.ts` already uses to cover the *driver's*
+incremental apply, and which never exercises the HTTP transport this task is
+about. A real-HTTP fake would need `@connectrpc/connect-node`, which the
+`biome.json` `noRestrictedImports` fence blocks in `apps/ui` (`biome.json:17`,
+"reach the daemon only through @compass/client"), and hand-framing gRPC-Web
+over `createCompassClientOverFetch` would mostly exercise the vendor decoder,
+not compass code. The full-stack automated e2e harness is Record B's lane,
+not this record's (OQ5). So per OQ5's stated rule the check is a documented
+manual smoke.
+
+**The check** — run inside the devenv shell with `devenv up` (or at least
+`compass-server`) running; the dev-http door is devenv-owned on
+`127.0.0.1:50051`:
+
+```bash
+# GREEN: the door streams incrementally and holds the tail open.
+timeout 5 buf curl --http2-prior-knowledge --protocol grpcweb --schema proto \
+  -d '{"sinceSeq":"0"}' \
+  http://127.0.0.1:50051/compass.v1.CompassService/SubscribeEvents
+```
+
+Expected GREEN: the snapshot boundary frame (an `instanceEpoch`, no `seq`),
+then the positioned `serverStatus: SERVER_STATE_READY` frame (`seq: "1"`),
+after which the stream stays open and idle until `timeout` ends it — the
+frames arrive as separate reads, not one buffered batch at close, which is
+the unbuffered incremental delivery direct-dial exists to prove.
+`--protocol grpcweb` is the browser's own transport (the app builds a
+gRPC-Web transport, `client.ts:44`); `h2c` because the dev door serves
+cleartext HTTP/2 (`go/server/serve.go:604,699-703`).
+
+Expected RED: with the door down (`compass-server` stopped, or the wrong
+port) the same command returns immediately with `code: unavailable` /
+`connection refused` — no frames, no held-open tail.
+
+**Event-created-after-subscribe (the fuller form).** The dev door exposes no
+client-triggerable board mutation (board transitions route
+Server→RunnerHub→Runner and are agent-driven), so the strongest form needs a
+runner: with the stream above still open, `SpawnAgent` (or the seeded
+root-supervisor coming online) fans an `AgentSessionStatus` frame onto the
+already-open subscription — a positioned frame arriving *after* subscribe,
+seen as a new read on the same held-open stream. The browser end-to-end
+confirmation is the same property through the real app: `moon run
+compass-ui:dev` (or the T3 `devenv up` `compass-ui` process), load
+`http://127.0.0.1:5173`, and the board renders from the snapshot burst then
+live-updates as the stream tails — the browser dialing the dev door directly,
+no middlebox in the path.
 
 ### T3 — `compass-ui` process in `devenv up`  (owner: compass-repo)
 
@@ -642,12 +693,15 @@ so OQ2 is intentionally absent — it was promoted to a decision, not dropped.
   devenv env the assertion is dead weight, and landing it now creates a
   compass-side change the harness fix immediately obsoletes. Revisit only if
   the zireael fix slips a month+.
-- **OQ5 (non-load-bearing) — T2 automation depth.** Recommendation: automate
-  the streaming smoke as a bun test only if it stays hermetic against a
-  scripted server
-  fake; if it needs the full `devenv up` stack, keep it a documented manual
-  check in the PR (the e2e harness expansion is Record B's lane, not this
-  record's).
+- **OQ5 (non-load-bearing) — T2 automation depth. RESOLVED (SEA-2001):
+  documented manual smoke, not a bun test** — the hermetic arm cannot cover
+  the browser's real gRPC-Web-over-HTTP transport in-fence
+  (`@connectrpc/connect-node` is fenced in `apps/ui`; the only in-fence fake,
+  `createRouterTransport`, is no-HTTP and already covers the driver in
+  `events.test.ts`), and full-stack e2e is Record B's lane. The check plus its
+  verified green/red output live in T2 above. (Original recommendation, now
+  the decision: automate as a bun test only if hermetic against a scripted
+  fake; else a documented manual check.)
 
 Ledger-impact: none — this record composes frozen decisions (DL-106/109/110/
 111/112/183, DL-025/026/027/078) and makes only operational/local-dev
