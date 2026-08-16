@@ -222,8 +222,11 @@ export interface PreviewLinkPayload {
 }
 
 /**
- * The `preview_url` + `preview_pr` outputs below ARE the emitted payload
- * (marker `PREVIEW_MARKER`); the interface names the shape SEA-2014 consumes.
+ * The cross-workflow interface SEA-2014 consumes is the GitHub Deployment
+ * record (its `environment_url`, set on the success status); GITHUB_OUTPUT does
+ * not cross workflows. The `preview_url` + `preview_pr` outputs below (marker
+ * `PREVIEW_MARKER`) are a same-run/`::notice::` breadcrumb for local
+ * visibility, not the cross-workflow payload.
  */
 
 /** The GitHub deployment_status states this tool drives. */
@@ -316,15 +319,29 @@ export async function runOnce(deps: Deps): Promise<number> {
 					"claimed the preview label — rejecting (no displace, no deploy).",
 			);
 			// Best-effort on a fork: the `on: pull_request` token is read-only for
-			// a fork head, so these may 403. The security invariant does NOT depend
-			// on them — the deploy simply never runs for a fork.
-			await gh.removeLabel(ctx.prNumber, PREVIEW_LABEL);
-			await gh.postComment(ctx.prNumber, forkRejectionComment());
+			// a fork head, so these WILL 403. The security invariant does NOT depend
+			// on them — the deploy simply never runs for a fork — so tolerate a
+			// failing label API here (realGitHubApi swallows via .nothrow(); this
+			// guard also holds for an injected API that throws) and still exit 0.
+			try {
+				await gh.removeLabel(ctx.prNumber, PREVIEW_LABEL);
+				await gh.postComment(ctx.prNumber, forkRejectionComment());
+			} catch (e) {
+				err(
+					`compass-preview-deploy: fork-reject label/comment failed (ignored): ${
+						e instanceof Error ? e.message : String(e)
+					}`,
+				);
+			}
 			return 0;
 		}
 
 		case "claim": {
 			// Displace every other holder FIRST, so exactly one PR owns the env.
+			// We strip the loser's label + comment but do NOT explicitly mark its
+			// Deployment inactive: GitHub's auto_inactive default flips prior
+			// deployments on this environment inactive when the winner's success
+			// status posts below (via deployAndRecord).
 			for (const loser of decision.displaced) {
 				log(`compass-preview-deploy: displacing PR #${loser}.`);
 				await gh.removeLabel(loser, PREVIEW_LABEL);
@@ -379,8 +396,10 @@ async function deployAndRecord(
 			headSha: ctx.headSha,
 		});
 		await gh.setDeploymentStatus(deploymentId, "success", environmentUrl);
-		// Emit the stable preview-link payload (PreviewLinkPayload shape) that the
-		// SEA-2014 result-surfacing lane consumes.
+		// The CROSS-workflow interface SEA-2014 consumes is the GitHub Deployment
+		// record (its environment_url, set on success above); these emitted outputs
+		// are a same-run/`::notice::` breadcrumb for local visibility, not the
+		// cross-workflow payload (GITHUB_OUTPUT does not cross workflows).
 		emitOutput("preview_url", environmentUrl);
 		emitOutput("preview_pr", String(ctx.prNumber));
 		log(`compass-preview-deploy: preview up at ${environmentUrl}`);
@@ -414,6 +433,11 @@ export function parseLabels(raw: string | undefined): string[] {
 		.split(",")
 		.map((s) => s.trim())
 		.filter((s) => s.length > 0);
+}
+
+/** The `payload` field for a preview Deployment: JSON so findActiveDeployment can recover the PR. Pure. */
+export function deploymentPayload(pr: number): string {
+	return JSON.stringify({ pr });
 }
 
 /**
@@ -452,14 +476,31 @@ function realGitHubApi(repo: string): GitHubApi {
 				.quiet();
 		},
 		createDeployment: async (pr, ref) => {
-			// required_contexts:[] so the deployment is not left pending on checks;
+			// required_contexts is sent as a raw-JSON empty array `[]` (NOT `[""]`)
+			// so the deployment is not left pending on a context literally named "";
 			// the PR number rides in payload so findActiveDeployment can recover it.
 			// Build the JSON in JS and interpolate the variable: a bun-shell string
 			// literal `{"pr":123}` gets its quotes STRIPPED (yielding invalid JSON
-			// `{pr:123}`), so the payload must be a single interpolated value.
-			const payload = JSON.stringify({ pr });
-			const out =
-				await $`gh api --method POST repos/${repo}/deployments -f ref=${ref} -f environment=${PREVIEW_ENVIRONMENT} -F auto_merge=false -f required_contexts[]= -f payload=${payload} --jq .id`.text();
+			// `{pr:123}`), so the payload must be a single interpolated value. The
+			// raw-JSON `required_contexts:=[]` likewise rides as an array element to
+			// dodge quote-stripping (mirrors setDeploymentStatus's args array below).
+			const payload = deploymentPayload(pr);
+			const args = [
+				"--method",
+				"POST",
+				`repos/${repo}/deployments`,
+				"-f",
+				`ref=${ref}`,
+				"-f",
+				`environment=${PREVIEW_ENVIRONMENT}`,
+				"-F",
+				"auto_merge=false",
+				"-F",
+				"required_contexts:=[]",
+				"-f",
+				`payload=${payload}`,
+			];
+			const out = await $`gh api ${args} --jq .id`.text();
 			const id = Number.parseInt(out.trim(), 10);
 			if (!Number.isFinite(id)) {
 				throw new Error(`could not parse deployment id from: ${out}`);

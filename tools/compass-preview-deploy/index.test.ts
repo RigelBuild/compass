@@ -23,6 +23,7 @@ import {
 	type DeploymentState,
 	type Deps,
 	decide,
+	deploymentPayload,
 	deploymentPr,
 	type EventContext,
 	type GitHubApi,
@@ -192,6 +193,7 @@ describe("parseLabels", () => {
 function fakes(over?: {
 	deployThrows?: boolean;
 	releaseThrows?: boolean;
+	labelApiThrows?: boolean;
 	active?: ActiveDeployment | null;
 }) {
 	const calls: string[] = [];
@@ -201,9 +203,11 @@ function fakes(over?: {
 	const gh: GitHubApi = {
 		removeLabel: async (pr, label) => {
 			calls.push(`removeLabel(${pr},${label})`);
+			if (over?.labelApiThrows) throw new Error("403 read-only fork token");
 		},
 		postComment: async (pr) => {
 			calls.push(`postComment(${pr})`);
+			if (over?.labelApiThrows) throw new Error("403 read-only fork token");
 		},
 		createDeployment: async (pr, ref) => {
 			calls.push(`createDeployment(${pr},${ref})`);
@@ -300,6 +304,19 @@ describe("runOnce — fork rejection", () => {
 		expect(f.calls.some((c) => c.startsWith("createDeployment"))).toBe(false);
 		expect(f.calls).not.toContain("removeLabel(9,preview)");
 	});
+
+	test("a fork claim tolerates a throwing label API (best-effort) and still returns 0", async () => {
+		// On a real fork the `on: pull_request` token is read-only, so removeLabel
+		// + postComment 403. realGitHubApi swallows via .nothrow(); this pins that
+		// runOnce's fork-reject path also tolerates an injected API that throws.
+		const f = fakes({ labelApiThrows: true });
+		const code = await runOnce(
+			f.deps(ctx({ headRepo: FORK, prNumber: 10, currentHolders: [10] })),
+		);
+		expect(code).toBe(0);
+		expect(f.calls).not.toContain("deploy");
+		expect(f.calls.some((c) => c.startsWith("createDeployment"))).toBe(false);
+	});
 });
 
 describe("runOnce — release", () => {
@@ -382,5 +399,19 @@ describe("deploymentPr", () => {
 		expect(deploymentPr(null)).toBeUndefined();
 		expect(deploymentPr(undefined)).toBeUndefined();
 		expect(deploymentPr(42)).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// deploymentPayload — the WRITE side of the payload seam (pinned with the read
+// side, since this is the seam that regressed under bun's quote-stripping).
+// ---------------------------------------------------------------------------
+
+describe("deploymentPayload", () => {
+	test("emits valid JSON carrying the pr", () => {
+		expect(JSON.parse(deploymentPayload(42))).toEqual({ pr: 42 });
+	});
+	test("round-trips through deploymentPr (write + read pinned together)", () => {
+		expect(deploymentPr(deploymentPayload(42))).toBe(42);
 	});
 });

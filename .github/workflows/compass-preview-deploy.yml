@@ -53,6 +53,9 @@ on:
 # Claim → label-strip → checkout → restart against the ONE shared preview tree
 # runs strictly one-at-a-time. cancel-in-progress:false so a superseded deploy
 # finishes cleanly rather than tearing the shared checkout mid-flight.
+# NOTE: a queued `release` event superseded by a newer preview event is NOT
+# guaranteed to run — release is not exactly-once. The next claim reconciles the
+# env by stateless re-derivation, so a dropped release self-heals.
 concurrency:
   group: compass-preview-deploy
   cancel-in-progress: false
