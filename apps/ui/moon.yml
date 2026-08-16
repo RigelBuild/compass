@@ -48,7 +48,15 @@ tasks:
     # vite.config-only change would leave `test` unaffected and serve the gate a
     # cached-green, precisely on the config change the gate exists to catch.
     inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+  stylelint:
+    # D7 guard (SEA-2034 T6): bans raw hex, --rigel-* refs, literal
+    # durations/easings, and the retired legacy var vocabulary outside
+    # design/tokens.css. Error severity is stylelint's default — any violation
+    # exits non-zero and fails this task (and, via ci deps, the CI gate).
+    command: 'bunx stylelint "src/**/*.css"'
+    deps: ['install']
+    inputs: ['src/**/*.css', '.stylelintrc.cjs', 'package.json', '/bun.lock']
   ci:
-    deps: ['typecheck', 'build', 'test']
+    deps: ['typecheck', 'build', 'test', 'stylelint']
     options:
       cache: false

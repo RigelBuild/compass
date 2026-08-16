@@ -273,6 +273,7 @@
 	width: 10px;
 	display: inline-flex;
 	justify-content: center;
+	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s grandfathered by the SEA-2034 cutover lane, which never scoped the motion axis */
 	transition: transform 0.12s;
 }
 
@@ -633,10 +634,12 @@
 	border-radius: var(--cx-radius-sm);
 	padding: 8px 10px;
 	color: var(--cx-text);
+	/* stylelint-disable declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/0.05s grandfathered by the SEA-2034 cutover lane, which never scoped the motion axis */
 	transition:
 		border-color 0.12s,
 		background 0.12s,
 		transform 0.05s;
+	/* stylelint-enable declaration-property-value-disallowed-list */
 }
 
 .card:hover {
@@ -994,6 +997,7 @@
 
 .ws-caret {
 	display: inline-block;
+	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/ease grandfathered by the SEA-2034 cutover lane, which never scoped the motion axis */
 	transition: transform 0.12s ease;
 }
 
@@ -1744,6 +1748,7 @@
 .backlog-chevron {
 	color: var(--cx-text-faint);
 	font-size: 10px;
+	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/ease grandfathered by the SEA-2034 cutover lane, which never scoped the motion axis */
 	transition: transform 0.12s ease;
 }
 
@@ -2981,6 +2986,7 @@
 
 .browse-caret {
 	display: inline-block;
+	/* stylelint-disable-next-line declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/ease grandfathered by the SEA-2034 cutover lane, which never scoped the motion axis */
 	transition: transform 0.12s ease;
 	margin-right: 4px;
 	color: var(--cx-text-faint);

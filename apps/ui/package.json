@@ -36,6 +36,7 @@
 		"@types/bun": "catalog:",
 		"@types/hast": "3.0.5",
 		"happy-dom": "20.11.1",
+		"stylelint": "catalog:",
 		"typescript": "catalog:",
 		"vite": "^8.2.0",
 		"vite-plugin-solid": "^2.11.14"
