@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
 	AccountSchema,
 	AgentAccountSchema,
+	AgentPresence,
 	ChannelGroupSchema,
 	ChannelKind,
 	ChannelSchema,
 	create,
+	RosterEntrySchema,
 	UserAccountSchema,
 } from "@compass/client";
 import type { Account, Channel, ChannelGroup, Message } from "../comms-stub";
@@ -70,6 +72,7 @@ function baseState(): CommsState {
 		channels: [chan("chan-a")],
 		topics: [],
 		messages: [msg("m-mid", 100)],
+		presence: new Map(),
 	};
 }
 
@@ -111,6 +114,7 @@ describe("reduceSnapshot", () => {
 				}),
 			],
 			topics: [],
+			roster: [],
 			// Deliberately out of (atUnixMs,id) order so the sort is observable.
 			messages: [msg("m2", 200), msg("m1", 100), msg("m3", 100)],
 		};
@@ -126,6 +130,42 @@ describe("reduceSnapshot", () => {
 		// non-togglably subscribed — proves callerId + accounts were threaded in.
 		expect(state.channels[0]?.membership).toBe("subscribed");
 		expect(state.channels[0]?.alwaysSubscribed).toBe(true);
+	});
+
+	test("seeds presence from the roster array via adaptRosterEntry", () => {
+		const snap: CommsSnapshot = {
+			accounts: [],
+			channelGroups: [],
+			channels: [],
+			topics: [],
+			roster: [
+				create(RosterEntrySchema, {
+					agentAccountId: "acc-cook",
+					presence: AgentPresence.WORKING,
+					activity: "cooking",
+				}),
+				create(RosterEntrySchema, {
+					agentAccountId: "acc-idle",
+					presence: AgentPresence.IDLE,
+					activity: "",
+				}),
+			],
+			messages: [],
+		};
+
+		const state = reduceSnapshot(CALLER, snap);
+
+		// A WORKING entry → lifecycle "working" with its activity note.
+		expect(state.presence.get("acc-cook")).toEqual({
+			lifecycle: "working",
+			activity: "cooking",
+		});
+		// An IDLE entry → lifecycle "idle"; empty activity normalizes to undefined.
+		expect(state.presence.get("acc-idle")).toEqual({
+			lifecycle: "idle",
+			activity: undefined,
+		});
+		expect(state.presence.size).toBe(2);
 	});
 });
 
@@ -267,5 +307,32 @@ describe("applyEvent — immutability", () => {
 		// …and the input's array is untouched (same reference, same length).
 		expect(base.messages).toBe(priorMessages);
 		expect(base.messages).toHaveLength(priorLen);
+	});
+});
+
+describe("applyEvent — presence upsert", () => {
+	test("presenceChanged upserts one key into a NEW presence Map, leaving other collections identity-equal", () => {
+		const base = baseState();
+		const priorPresence = base.presence;
+		const next = applyEvent(base, {
+			kind: "presenceChanged",
+			accountId: "acc-cook",
+			info: { lifecycle: "working", activity: "cooking" },
+		});
+
+		// The upsert landed in a FRESH Map — the old one is never mutated.
+		expect(next.presence).not.toBe(base.presence);
+		expect(base.presence).toBe(priorPresence);
+		expect(base.presence.size).toBe(0);
+		expect(next.presence.get("acc-cook")).toEqual({
+			lifecycle: "working",
+			activity: "cooking",
+		});
+		// Structural sharing: every untouched collection keeps its identity.
+		expect(next.accounts).toBe(base.accounts);
+		expect(next.channels).toBe(base.channels);
+		expect(next.channelGroups).toBe(base.channelGroups);
+		expect(next.messages).toBe(base.messages);
+		expect(next).not.toBe(base);
 	});
 });

@@ -37,12 +37,15 @@
 // (createAppStore injection, deferred behind franklin's landed store.ts).
 
 import type { CommsClient, SubscribeCommsResponse } from "@compass/client";
+import { RosterScope } from "@compass/client";
 import {
+	type AgentPresenceInfo,
 	adaptAccount,
 	adaptChannel,
 	adaptChannelGroup,
 	adaptTopic,
 	agentHomeChannelIds,
+	presenceLifecycle,
 } from "./adapt";
 import {
 	applyEvent,
@@ -91,11 +94,21 @@ export async function fetchSnapshot(
 	signal?: AbortSignal,
 ): Promise<CommsSnapshot> {
 	const opts = { signal };
-	const [accountsResp, groupsResp, channelsResp] = await Promise.all([
-		client.listAccounts({ snapshotSeq }, opts),
-		client.listChannelGroups({ snapshotSeq }, opts),
-		client.listChannels({ snapshotSeq }, opts),
-	]);
+	// GetRoster joins the SAME failure domain as the other snapshot reads — NOT
+	// best-effort. It carries no agent_account_id: the server defaults the
+	// vantage to the caller and resolves a user caller to its own owned set (R6).
+	// GetRosterRequest carries only scope + agent_account_id (no snapshotSeq), so
+	// the presence seed is unversioned and converges via the seq'd tail replay.
+	// A rejection propagates (throws) exactly like the sibling reads, is caught
+	// in runCommsStream, and retries the whole snapshot with backoff — never a
+	// swallow that would leave presence permanently empty.
+	const [accountsResp, groupsResp, channelsResp, rosterResp] =
+		await Promise.all([
+			client.listAccounts({ snapshotSeq }, opts),
+			client.listChannelGroups({ snapshotSeq }, opts),
+			client.listChannels({ snapshotSeq }, opts),
+			client.getRoster({ scope: RosterScope.OWNER }, opts),
+		]);
 
 	// Topics + messages page per channel. Topics list per channel (ListTopics is
 	// channel-scoped); messages page the whole channel (ListMessages topic filter
@@ -125,6 +138,7 @@ export async function fetchSnapshot(
 		channels: channelsResp.channels,
 		topics,
 		messages,
+		roster: rosterResp.entries,
 	};
 }
 
@@ -221,6 +235,21 @@ function decodeEvent(
 				kind: "topicUpserted",
 				topic: adaptTopic(payload.value.topic),
 			};
+		case "agentPresenceChanged": {
+			// A presence delta: the agent's new lifecycle + activity note. Built
+			// through the same presenceLifecycle path adaptRosterEntry uses so the
+			// stream and the roster seed read one vocabulary (empty activity →
+			// undefined). The reducer upserts it into a fresh presence Map.
+			const info: AgentPresenceInfo = {
+				lifecycle: presenceLifecycle(payload.value.presence),
+				activity: payload.value.activity || undefined,
+			};
+			return {
+				kind: "presenceChanged",
+				accountId: payload.value.agentAccountId,
+				info,
+			};
+		}
 		default:
 			// Boundary-only, agentWorkspaceChanged (observation pane, not comms
 			// state), resyncRequired (control), or an unset payload.

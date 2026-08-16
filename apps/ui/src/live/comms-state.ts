@@ -17,6 +17,7 @@ import type {
 	Account as WireAccount,
 	Channel as WireChannel,
 	ChannelGroup as WireChannelGroup,
+	RosterEntry as WireRosterEntry,
 	Topic as WireTopic,
 } from "@compass/client";
 import type {
@@ -27,9 +28,11 @@ import type {
 	Topic,
 } from "../comms-stub";
 import {
+	type AgentPresenceInfo,
 	adaptAccount,
 	adaptChannel,
 	adaptChannelGroup,
+	adaptRosterEntry,
 	adaptTopic,
 	agentHomeChannelIds,
 } from "./adapt";
@@ -57,6 +60,7 @@ export interface CommsState {
 	readonly channels: readonly Channel[];
 	readonly topics: readonly Topic[];
 	readonly messages: readonly Message[];
+	readonly presence: ReadonlyMap<string, AgentPresenceInfo>;
 }
 
 /** The empty state — the reducer's identity, before any snapshot or event. */
@@ -66,6 +70,7 @@ export const EMPTY_COMMS_STATE: CommsState = {
 	channels: [],
 	topics: [],
 	messages: [],
+	presence: new Map(),
 };
 
 /** A raw snapshot from the read RPCs (ListAccounts/ListChannelGroups/
@@ -82,6 +87,7 @@ export interface CommsSnapshot {
 	readonly channels: readonly WireChannel[];
 	readonly topics: readonly WireTopic[];
 	readonly messages: readonly Message[];
+	readonly roster: readonly WireRosterEntry[];
 }
 
 /** Reduce a raw snapshot into a fresh CommsState. Accounts map first because
@@ -100,7 +106,8 @@ export function reduceSnapshot(
 	const channelGroups = snap.channelGroups.map(adaptChannelGroup);
 	const topics = snap.topics.map(adaptTopic);
 	const messages = [...snap.messages].sort(byPostOrder);
-	return { accounts, channelGroups, channels, topics, messages };
+	const presence = new Map(snap.roster.map(adaptRosterEntry));
+	return { accounts, channelGroups, channels, topics, messages, presence };
 }
 
 /** Chronological by post time, then id — the stable tiebreak the pure comms
@@ -188,7 +195,12 @@ export type CommsEvent =
 	| { readonly kind: "channelGroupChanged"; readonly group: ChannelGroup }
 	| { readonly kind: "accountChanged"; readonly account: Account }
 	| { readonly kind: "topicUpserted"; readonly topic: Topic }
-	| { readonly kind: "channelRemoved"; readonly channelId: string };
+	| { readonly kind: "channelRemoved"; readonly channelId: string }
+	| {
+			readonly kind: "presenceChanged";
+			readonly accountId: string;
+			readonly info: AgentPresenceInfo;
+	  };
 
 /** Apply one decoded event to the state, returning the next state. Pure: upserts
  *  the entity by id (dedup — a redelivered post or an update never duplicates a
@@ -234,5 +246,14 @@ export function applyEvent(state: CommsState, event: CommsEvent): CommsState {
 				...state,
 				channels: removeById(state.channels, event.channelId),
 			};
+		// A presence delta: upsert one agent's ephemeral presence into a FRESH
+		// Map (clone-then-set), never mutating the existing map — the
+		// "every transition returns a fresh object" contract, with the untouched
+		// collections keeping identity (structural sharing).
+		case "presenceChanged": {
+			const presence = new Map(state.presence);
+			presence.set(event.accountId, event.info);
+			return { ...state, presence };
+		}
 	}
 }

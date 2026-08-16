@@ -717,4 +717,5 @@ export const STUB_COMMS_STATE = {
 	channels: STUB_CHANNELS,
 	topics: STUB_TOPICS,
 	messages: STUB_MESSAGES,
+	presence: new Map(),
 };
