@@ -334,7 +334,9 @@ export interface AppStore {
 	/** Resolve an account id to its visible agent, or undefined — the single
 	 *  agent-resolution seam (SEA-1645 P5). A REACTIVE read: consumers that call
 	 *  it (`rightTabGroups`, and transitively `activeFleetItem`) re-run when the
-	 *  agent set changes. Backed today by the static `agents` seed. */
+	 *  agent set changes. Resolves through the reactive `agents` memo (offline
+	 *  `STUB_AGENTS`, live `joinAgents(accounts(), presence())`), so a
+	 *  presence/account tick flips its answer. */
 	agentById: (accountId: string) => Agent | undefined;
 	/** The activity bar as ordered groups (unreachable-pin amendment SEA-1645):
 	 *  the fleet group is EVERY pin (one item per pin, in pin order) plus the
