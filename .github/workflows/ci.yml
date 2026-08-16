@@ -318,19 +318,31 @@ jobs:
         # PRs only. Whether the e2e gate must test a LOCALLY-BUILT image or the
         # published `:latest` turns on one question — does this PR change the
         # image's inputs? — and the answer already lives in one place: the
-        # `compass-agent-image` moon project's `inputs` globs (agent-image/moon.yml).
-        # Asking moon `--affected` reuses that declaration as the single source of
-        # truth for the image closure, so this detection cannot drift from what
-        # actually rebuilds the image — the same anti-silent-staleness doctrine the
-        # matrix rationale in this file's header rejects a hand-kept project list
-        # for. moon resolves the base from GITHUB_BASE_REF exactly as the "CI
-        # (affected)" step above does. `moon query projects` prints a JSON
-        # envelope on stdout UNCONDITIONALLY — an unaffected project yields
-        # `{"projects": [], "options": {…}}`, not empty output — so the signal is
-        # the discriminator: populated = affected (build from tree), empty = not
-        # (fall to the pull branch below); the non-PR path never runs this step,
-        # so image_affected is unset and the seed step's `!= true` also pulls.
-        # moon's own exit is checked SEPARATELY from jq: under pipefail a
+        # `compass-agent-image` build task's `inputs` globs (agent-image/moon.yml),
+        # which mirror publish-agent-image.yml's on.push.paths (the reviewed
+        # source of truth for what changes the published artifact).
+        #
+        # The discriminator is `moon query tasks --affected --project
+        # compass-agent-image`: it intersects the PR's changed files with that
+        # build task's `inputs`, so the detection cannot drift from what actually
+        # rebuilds the image — the same anti-silent-staleness doctrine the matrix
+        # rationale in this file's header rejects a hand-kept project list for.
+        # It must be `tasks --affected`, NOT `projects --affected`: the latter
+        # walks the PROJECT graph (a project is affected only when its own sources
+        # or a project it `dependsOn` changed) and never consults a project's
+        # cross-tree task `inputs`. The image project's sources are `agent-image/`
+        # alone with no `dependsOn`, so a change confined to
+        # `packages/compass-agent/**` — in the image's `build.inputs` but the
+        # compass-agent PROJECT's tree — is invisible to `projects --affected`,
+        # and the gate would silently pull and test a stale published image.
+        # moon resolves the base from GITHUB_BASE_REF exactly as the "CI
+        # (affected)" step above does. `moon query tasks` prints a JSON envelope
+        # on stdout UNCONDITIONALLY — an unaffected project yields
+        # `{"tasks": {}, "options": {…}}`, not empty output — so the signal is the
+        # discriminator: populated `.tasks` = affected (build from tree), empty =
+        # not (fall to the pull branch below); the non-PR path never runs this
+        # step, so image_affected is unset and the seed step's `!= true` also
+        # pulls. moon's own exit is checked SEPARATELY from jq: under pipefail a
         # `moon query` that ITSELF exits non-zero (moon error, renamed id,
         # transient) would sink the pipe, fall to the else, and set
         # image_affected=false — silently pulling published :latest and testing
@@ -338,11 +350,11 @@ jobs:
         # cannot be trusted, so fail the step loudly rather than guess.
         if: github.event_name == 'pull_request'
         run: |
-          if ! moon_out=$(moon query projects --affected --id compass-agent-image); then
+          if ! moon_out=$(moon query tasks --affected --project compass-agent-image); then
             echo "::error::moon query for compass-agent-image affected-detection failed; cannot trust the image-affected signal, so failing rather than testing a possibly-stale published image"
             exit 1
           fi
-          if printf '%s' "$moon_out" | jq -e '.projects | length > 0' >/dev/null; then
+          if printf '%s' "$moon_out" | jq -e '.tasks | length > 0' >/dev/null; then
             echo "image_affected=true" >>"$GITHUB_OUTPUT"
           else
             echo "image_affected=false" >>"$GITHUB_OUTPUT"
