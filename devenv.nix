@@ -209,16 +209,17 @@ in
   # with an opaque TLS error — rerun `compass-gen-cert --force` (or delete
   # tls.crt/tls.key from the state dir) to rotate.
   #
-  # Linux-only: the Postgres service, the backend build stack, and the whole
-  # podman-backed runner loop target the Linux dev box.
-  services.postgres = lib.optionalAttrs pkgs.stdenv.isLinux {
+  # Postgres, compass-server, and compass-ui run cross-platform (macOS-native
+  # dogfood); only the podman-backed runner loop (compass-runner) targets the
+  # Linux dev box.
+  services.postgres = {
     enable = true;
     # The single dogfood database compass-server opens. Owned by $USER over the
     # local Unix socket (peer auth) — no password on the loopback dev path.
     initialDatabases = [ { name = "compass"; } ];
   };
 
-  processes = lib.optionalAttrs pkgs.stdenv.isLinux {
+  processes = {
     # compass-server: serves compass.v1 on a Unix domain socket (the shipped
     # local door) plus a loopback gRPC-Web port for the browser UI dev server.
     # It builds the binary once, then `exec`s it. process-compose does not run
@@ -315,7 +316,8 @@ in
       };
       after = [ "devenv:processes:compass-server" ];
     };
-
+  }
+  // lib.optionalAttrs pkgs.stdenv.isLinux {
     # compass-runner: enrolls with the server over the TLS network door, then
     # idles awaiting Provision/Start commands. Built into the state dir and
     # exec'd the same way as compass-server (see that process's comment for the
@@ -360,9 +362,10 @@ in
     };
   };
 
-  # Dogfood loop tasks. All Linux-only (the whole podman-backed loop targets the
-  # Linux dev box), so they sit under the same guard as the processes above.
-  tasks = lib.optionalAttrs pkgs.stdenv.isLinux {
+  # Dogfood loop tasks. gen-cert and mint-runner-token run cross-platform (they
+  # back the macOS-native server/UI dogfood); agent-image and clean stay
+  # Linux-only, as the whole podman-backed loop targets the Linux dev box.
+  tasks = {
     # gen-cert: mint the self-signed TLS trust anchor the network door serves and
     # the runner trusts. Built into the state dir and run the same way the server
     # binary is (PATH/build preamble mirrors compass-server). SAN defaults
@@ -403,7 +406,10 @@ in
       };
       after = [ "devenv:processes:compass-server" ];
     };
-
+  }
+  // lib.optionalAttrs pkgs.stdenv.isLinux {
+    # agent-image and clean are Linux-only: the podman-backed image build/teardown
+    # targets the Linux dev box.
     # agent-image: build AND load the agent base image into
     # containers-storage:compass-agent:latest (the ref the runner resolves with
     # no pull). `container copy` builds then copies; the invocation is pinned to
