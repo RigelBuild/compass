@@ -540,3 +540,246 @@ func TestAccountIDBoundGetter(t *testing.T) {
 		t.Errorf("AccountID = %q, want acc-resolved", got)
 	}
 }
+
+// fakeWindow is a windowDispatcher test double: it records each per-window
+// delivery (event name + decoded frame) onto a buffered channel, the per-window
+// analogue of fakeEmitter. It stands in for a real *application.WebviewWindow so
+// the routed frame path is verified without the GTK webview stack (which does
+// not compile under the unix test tag). The service consults call.window through
+// the windowDispatcher seam, so a test injects one by setting inflightCall.window
+// directly — windowFromContext returns nil in the non-gtk3 test build.
+type fakeWindow struct {
+	ch chan emitted
+}
+
+func newFakeWindow() *fakeWindow {
+	return &fakeWindow{ch: make(chan emitted, 64)}
+}
+
+func (w *fakeWindow) dispatch(name string, resp responseFrame) {
+	w.ch <- emitted{name: name, frame: resp}
+}
+
+// recvWindow receives one delivery on a fake window's channel or fails on
+// timeout (event-gated, no sleeps), mirroring recv for the emitter path.
+func recvWindow(t *testing.T, w *fakeWindow) emitted {
+	t.Helper()
+	select {
+	case ev := <-w.ch:
+		return ev
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for a per-window delivery")
+		return emitted{}
+	}
+}
+
+// assertNoEmit fails if the app-wide emitter received any frame within a short
+// window — proving a windowed call did NOT fall back to the broadcast path. It
+// is the negative half of per-window routing: frames go to the window's channel
+// ONLY. A short deadline bounds the check; the frames it guards against are
+// emitted synchronously on the same pump goroutine that already delivered to the
+// window, so by the time the window's terminal frame is observed, any stray Emit
+// would already be buffered.
+func assertNoEmit(t *testing.T, e *fakeEmitter) {
+	t.Helper()
+	select {
+	case ev := <-e.ch:
+		t.Fatalf("app-wide Emit received %q frame for a windowed call; want per-window only", ev.frame.Kind)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// runWindowed drives one call synchronously with its window handle injected on
+// the inflightCall, returning after every frame has been routed and the entry
+// cleared (the deterministic single-shot pattern of TestCompassRPCUnaryRoundTrip).
+// The window is set on the registered call directly because windowFromContext
+// returns nil in the non-gtk3 test build; the seam field is exactly what the
+// routed sink (emitFrame) consults.
+func runWindowed(svc *bridgeService, win windowDispatcher, req rpcRequest) {
+	callCtx, call := svc.register(context.Background(), req.RequestID)
+	call.window = win
+	svc.run(callCtx, call, req)
+}
+
+// TestCompassRPCRoutesToOriginatingWindow proves M3's core behavior: a call with
+// a captured window routes ALL its frames to THAT window's dispatcher (per-window
+// delivery), and NOT to the app-wide emitter — so with more than one window open
+// a frame never broadcasts to a non-owning window.
+func TestCompassRPCRoutesToOriginatingWindow(t *testing.T) {
+	respBody := []byte("windowed-response")
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/grpc-web+proto")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(respBody)
+	})
+
+	svc, emitter := newService(socket)
+	win := newFakeWindow()
+	const requestID = "req-windowed"
+	runWindowed(svc, win, rpcRequest{RequestID: requestID, Path: "/compass.v1.Service/Method"})
+
+	// head -> body -> end, all on the WINDOW's channel under the per-id event.
+	head := recvWindow(t, win)
+	if head.name != "compass_rpc:"+requestID {
+		t.Errorf("window delivery name = %q, want per-requestId key", head.name)
+	}
+	if head.frame.Kind != frameKindHead {
+		t.Fatalf("frame[0].kind = %q, want head", head.frame.Kind)
+	}
+	if body := recvWindow(t, win); body.frame.Kind != frameKindBody {
+		t.Fatalf("frame[1].kind = %q, want body", body.frame.Kind)
+	}
+	if end := recvWindow(t, win); end.frame.Kind != frameKindEnd {
+		t.Fatalf("frame[2].kind = %q, want end", end.frame.Kind)
+	}
+
+	// The app-wide emitter saw nothing: a windowed call never broadcasts.
+	assertNoEmit(t, emitter)
+	assertNotInflight(t, svc, requestID)
+}
+
+// TestCompassRPCConcurrentTwoWindowIsolation is the §M3 two-window arm on the
+// concurrent-distinct-ids shape: ONE bridgeService (the production shape — a
+// single service is created once in launch()) drives two calls CONCURRENTLY,
+// each carrying a DIFFERENT originating window, sharing the one mutex-guarded
+// inflight map. Each call's frames must land ONLY on its own window's channel,
+// never the other's and never the app-wide emitter. This is the arm that would
+// actually catch a routing regression: a service-scoped (rather than per-call)
+// window handle, or a closure that captured the wrong call, would cross-deliver
+// here — where two independent services could not. Event-gated, no sleeps.
+func TestCompassRPCConcurrentTwoWindowIsolation(t *testing.T) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/grpc-web+proto")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
+	socket := stubServer(t, handler)
+
+	svc, emitter := newService(socket)
+	winA := newFakeWindow()
+	winB := newFakeWindow()
+	const idA = "req-winA"
+	const idB = "req-winB"
+
+	// Drive both calls on the ONE service concurrently, mirroring CompassRPC's
+	// own register-then-go-run, with each call's originating window injected on
+	// the registered inflightCall (windowFromContext returns nil in this
+	// non-gtk3 test build, so the seam field is set directly). The two run
+	// goroutines share svc.inflight — the concurrency the arm exists to stress.
+	// Each run signals done on return (after its deferred finish clears the
+	// inflight entry), so the not-inflight assertion is gated on completion
+	// rather than racing the goroutine — event-gated, no sleeps.
+	launch := func(win windowDispatcher, req rpcRequest) chan struct{} {
+		callCtx, call := svc.register(context.Background(), req.RequestID)
+		call.window = win
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			svc.run(callCtx, call, req)
+		}()
+		return done
+	}
+	doneA := launch(winA, rpcRequest{RequestID: idA, Path: "/a"})
+	doneB := launch(winB, rpcRequest{RequestID: idB, Path: "/b"})
+
+	// Each window receives its own stream through the terminal frame; every
+	// frame must carry that window's own per-id event name (no cross-delivery).
+	drainWindow(t, winA, idA)
+	drainWindow(t, winB, idB)
+
+	// Both runs returned (deferred finish cleared each entry); assert teardown.
+	waitDone(t, doneA)
+	waitDone(t, doneB)
+
+	// Neither concurrent call fell back to the app-wide broadcast.
+	assertNoEmit(t, emitter)
+	assertNotInflight(t, svc, idA)
+	assertNotInflight(t, svc, idB)
+}
+
+// drainWindow reads frames off a window's channel through the terminal end frame,
+// asserting every one carries the expected per-id event name (no cross-delivery).
+func drainWindow(t *testing.T, w *fakeWindow, requestID string) {
+	t.Helper()
+	want := "compass_rpc:" + requestID
+	for {
+		ev := recvWindow(t, w)
+		if ev.name != want {
+			t.Errorf("cross-window delivery: got %q, want %q", ev.name, want)
+		}
+		if ev.frame.Kind == frameKindEnd || ev.frame.Kind == frameKindError {
+			return
+		}
+	}
+}
+
+// waitDone blocks until a run goroutine signals completion, or fails on timeout
+// (event-gated, no sleeps) — the completion gate for a concurrently-driven call.
+func waitDone(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for a run goroutine to finish")
+	}
+}
+
+// TestCompassRPCNoWindowFallsBackToEmit pins the preserved fallback: a call with
+// no captured window emits through the app-wide eventEmitter seam (the fakeEmitter
+// path), exactly as before M3. This is the invariant the existing no-window tests
+// (which drive CompassRPC with a plain context) depend on.
+func TestCompassRPCNoWindowFallsBackToEmit(t *testing.T) {
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/grpc-web+proto")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	svc, emitter := newService(socket)
+	const requestID = "req-nowindow"
+	// No window injected (call.window stays nil), matching windowFromContext's
+	// nil result for a windowless caller.
+	callCtx, call := svc.register(context.Background(), requestID)
+	if call.window != nil {
+		t.Fatalf("no-window register captured a window %v, want nil", call.window)
+	}
+	svc.run(callCtx, call, rpcRequest{RequestID: requestID, Path: "/x"})
+
+	if head := recv(t, emitter); head.name != "compass_rpc:"+requestID || head.frame.Kind != frameKindHead {
+		t.Fatalf("head = (%q,%q), want (compass_rpc:%s, head)", head.name, head.frame.Kind, requestID)
+	}
+	assertNotInflight(t, svc, requestID)
+}
+
+// TestCompassRPCDestroyedWindowDropsFrames pins A4: a frame for a call whose
+// window has closed is DROPPED, not fallback-broadcast. The real
+// *application.WebviewWindow.DispatchWailsEvent no-ops once isDestroyed()
+// (webview_window.go:1373); through the windowDispatcher seam a "destroyed"
+// window is one whose dispatch is a no-op. The call must still complete and tear
+// down cleanly, with NO frame delivered anywhere (not the window, not the
+// app-wide emitter) and no panic.
+func TestCompassRPCDestroyedWindowDropsFrames(t *testing.T) {
+	socket := stubServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/grpc-web+proto")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("dropped"))
+	})
+	svc, emitter := newService(socket)
+	const requestID = "req-destroyed"
+	// A destroyed window: dispatch is a no-op, modeling DispatchWailsEvent's
+	// isDestroyed() guard. Routing still targets it (not the fallback), so the
+	// frames are dropped rather than broadcast app-wide.
+	runWindowed(svc, destroyedWindow{}, rpcRequest{RequestID: requestID, Path: "/gone"})
+
+	// Nothing reached the app-wide emitter: the drop is NOT a fallback broadcast.
+	assertNoEmit(t, emitter)
+	// The call finished and cleaned up despite every frame being dropped.
+	assertNotInflight(t, svc, requestID)
+}
+
+// destroyedWindow is a windowDispatcher whose dispatch is a no-op, modeling a
+// window whose DispatchWailsEvent has begun no-opping because the window
+// isDestroyed() (webview_window.go:1373). Frames routed to it are silently
+// dropped — the A4 destroyed-window behavior.
+type destroyedWindow struct{}
+
+func (destroyedWindow) dispatch(string, responseFrame) {}

@@ -43,6 +43,30 @@ type eventEmitter interface {
 	Emit(name string, data ...any) bool
 }
 
+// windowDispatcher is the per-window analogue of the eventEmitter seam: it
+// delivers one response frame to a SINGLE originating webview window, rather
+// than app-wide. The real Wails *application.WebviewWindow satisfies it via
+// DispatchWailsEvent (webview_window.go:1372); a test substitutes a fake that
+// records deliveries with no webview.
+//
+// The seam is why this file stays //go:build unix and imports no
+// github.com/wailsapp/wails/v3/pkg/application: that package only compiles under
+// -tags gtk3 on this toolchain (the default GTK4/WebKit6.0 path has no
+// pkg-config here; main_nogtk3.go documents it repo-wide), so a direct import
+// would break the untagged module build and the unix-tagged tests. The concrete
+// window handle is captured from the bound-method ctx by windowFromContext, a
+// build-tagged helper (bridge_service_window_gtk3.go reads application.WindowKey
+// and returns the window; the nogtk3 stub returns nil), mirroring the
+// main.go / main_nogtk3.go split. §A4/§M3 mandate exactly this: per-window
+// routing behind the existing eventEmitter seam.
+type windowDispatcher interface {
+	// dispatch delivers one frame to this window's webview under the given event
+	// name. It no-ops for a destroyed window (the real DispatchWailsEvent guards
+	// isDestroyed(), webview_window.go:1373), so a frame for a closed window's
+	// call is dropped rather than broadcast (A4).
+	dispatch(name string, resp responseFrame)
+}
+
 // bridgeService binds the compass_rpc / compass_rpc_cancel IPC methods and
 // forwards each call through the pump. In-flight calls are tracked by requestId
 // so compass_rpc_cancel can tear one down; the map is mutex-guarded because the
@@ -86,6 +110,17 @@ type bridgeService struct {
 // never has its live entry mis-deleted by a prior call's deferred finish.
 type inflightCall struct {
 	cancel context.CancelFunc
+
+	// window is the originating webview window for this call, captured from the
+	// bound-method ctx by windowFromContext at register time — it is gone from
+	// ctx by the time the pump goroutine emits, so it is captured up front and
+	// stored here (record §M3:354). This call's response frames route to this
+	// window only, via the windowDispatcher seam; nil means no originating window
+	// was in context (a windowless transport, a non-gtk3 build, or a direct test
+	// call), and the frames fall back to the app-wide eventEmitter. The interface
+	// value is comparable, so it is also the index M3b's close-time
+	// cancel-all-for-window keys on.
+	window windowDispatcher
 }
 
 // newBridgeService builds a bridge service that forwards against pump and emits
@@ -287,9 +322,20 @@ func (s *bridgeService) Connect(ctx context.Context, req connectRequest) connect
 // bound-method invocation's lifetime — the stream must outlive CompassRPC's
 // return and is torn down only by a terminal frame or an explicit
 // compass_rpc_cancel, never by Wails reclaiming the call context.
+//
+// The originating window is captured HERE, off the still-live bound-method ctx,
+// by windowFromContext (a build-tagged helper: the gtk3 build reads
+// application.WindowKey, set by Wails at messageprocessor_call.go:136, and
+// returns the window; the nogtk3 build returns nil). WithoutCancel would preserve
+// the value on callCtx too, but the frames emit on the pump goroutine after
+// CompassRPC has returned, so the handle is read synchronously up front and
+// stored (record §M3:354). A nil result (no window in ctx — a windowless
+// transport, a non-gtk3 build, or a direct test call) routes frames to the
+// app-wide fallback.
 func (s *bridgeService) register(ctx context.Context, requestID string) (context.Context, *inflightCall) {
+	win := windowFromContext(ctx)
 	callCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	call := &inflightCall{cancel: cancel}
+	call := &inflightCall{cancel: cancel, window: win}
 	s.mu.Lock()
 	if prev, ok := s.inflight[requestID]; ok {
 		prev.cancel()
@@ -314,8 +360,31 @@ func (s *bridgeService) run(callCtx context.Context, call *inflightCall, req rpc
 		Body:    req.Body,
 	}
 	s.pump.Do(callCtx, rpc, func(f bridge.Frame) {
-		s.events.Emit(eventName, frameToResponse(f))
+		s.emitFrame(call, eventName, frameToResponse(f))
 	})
+}
+
+// emitFrame is the per-call response-frame sink: it routes one frame to the
+// call's originating window when one was captured, else to the app-wide emitter.
+//
+// A captured window gets the frame via the windowDispatcher seam — the real one
+// is *application.WebviewWindow.DispatchWailsEvent (per-window delivery,
+// webview_window.go:1372), so the app-wide broadcast (transport_event_ipc.go) is
+// bypassed and a frame never reaches a non-owning window. That method internally
+// no-ops once the window isDestroyed() (webview_window.go:1373), so a frame for a
+// call whose window has since closed is silently dropped rather than broadcast —
+// M3 routes and inherits that drop; it adds no destroyed check of its own (A4).
+//
+// A nil window (no window in the caller's ctx — a windowless transport, a
+// non-gtk3 build, or a direct test call) falls back to the app-wide eventEmitter
+// seam (main.go:104), preserving both non-window callers and the fake-emitter
+// test path (§M3).
+func (s *bridgeService) emitFrame(call *inflightCall, name string, resp responseFrame) {
+	if call.window != nil {
+		call.window.dispatch(name, resp)
+		return
+	}
+	s.events.Emit(name, resp)
 }
 
 // finish drops the in-flight entry for a completed call, then cancels its own
