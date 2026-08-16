@@ -118,16 +118,22 @@ func run() error {
 		}
 	})
 
-	// Explicit "Quit and stop stack" (DL-108, T4.2) is embedded-only: client
-	// mode has no stack to stop, so launch() returns a nil quitter there and no
-	// menu is installed. Plain quit (window close, OS quit) LINGERS by default —
-	// the stack children stay running and the app does nothing to them (relaunch
-	// re-attaches), so there is deliberately no OnShutdown *stack* teardown here.
-	// (The window-set persist hook above is unrelated: it touches only the
-	// state-dir window list, never the stack.)
+	startupJS, err := shellStartupJS(cfg.Mode.String(), cfg.ServerURL)
+	if err != nil {
+		return err
+	}
+
+	// The menu is installed in both modes. The "Window"/"New Window" item opens
+	// an additional Bridge window and is always available. The embedded-only
+	// "File"/"Quit and stop stack" item (DL-108, T4.2) is gated on quitter: client
+	// mode has no stack to stop. Plain quit (window close, OS quit) LINGERS by
+	// default — the stack children stay running and the app does nothing to them
+	// (relaunch re-attaches), so there is deliberately no OnShutdown *stack*
+	// teardown here. (The window-set persist hook above is unrelated: it touches
+	// only the state-dir window list, never the stack.)
+	menu := application.NewMenu()
 	if quitter != nil {
 		quitter.quit = app.Quit
-		menu := application.NewMenu()
 		fileMenu := menu.AddSubmenu("File")
 		fileMenu.Add("Quit and stop stack").OnClick(func(_ *application.Context) {
 			// A UI-event callback has no inherited context.Context, so this is
@@ -135,13 +141,14 @@ func run() error {
 			// bounded teardown deadline from it.
 			quitter.stopStackAndQuit(context.Background())
 		})
-		app.Menu.Set(menu)
 	}
+	windowMenu := menu.AddSubmenu("Window")
+	windowMenu.Add("New Window").OnClick(func(_ *application.Context) {
+		name := nextWindowName(app)
+		newAppWindow(app, name, "Compass", startupJS)
+	})
+	app.Menu.Set(menu)
 
-	startupJS, err := shellStartupJS(cfg.Mode.String(), cfg.ServerURL)
-	if err != nil {
-		return err
-	}
 	// Restore the persisted window set (Compass multi-window M1). First-ever run
 	// (empty/absent/corrupt set) opens exactly one default "bridge" window. Every
 	// window is a Bridge window (URL "/") carrying the SAME startupJS injection
@@ -175,9 +182,39 @@ func windowOptions(name, title, startupJS string) application.WebviewWindowOptio
 	}
 }
 
-// newAppWindow creates a Compass Bridge window on app from windowOptions.
-func newAppWindow(app *application.App, name, title, startupJS string) *application.WebviewWindow {
+// newAppWindow creates a Compass Bridge window on app from windowOptions. The
+// returned *WebviewWindow is the frozen-record M1 seam (design §M1 interface)
+// that M3b consumes to attach the per-window WindowClosing close-cancel handler;
+// it is unused in the M1→M2 stack positions, so the suppression is removed when
+// M3b wires the handle.
+func newAppWindow(app *application.App, name, title, startupJS string) *application.WebviewWindow { //nolint:unparam // return is the M3b per-window close-handler seam (frozen record §M1); consumed there
 	return app.Window.NewWithOptions(windowOptions(name, title, startupJS))
+}
+
+// nextWindowName returns the first window name that has no live window on app.
+// The default window is defaultWindowName ("bridge"); additional windows are
+// suffixed bridge-2, bridge-3, … The live-window check goes through the app, so
+// the pure name selection is factored into firstFreeName for unit testing.
+func nextWindowName(app *application.App) string {
+	return firstFreeName(defaultWindowName, func(n string) bool {
+		_, ok := app.Window.GetByName(n)
+		return ok
+	})
+}
+
+// firstFreeName returns base if exists(base) is false, else the first
+// base-2, base-3, … for which exists reports false. exists reports whether a
+// name is already taken.
+func firstFreeName(base string, exists func(string) bool) string {
+	if !exists(base) {
+		return base
+	}
+	for n := 2; ; n++ {
+		name := fmt.Sprintf("%s-%d", base, n)
+		if !exists(name) {
+			return name
+		}
+	}
 }
 
 // launch dispatches the resolved mode into the embedded or client launch arm and
