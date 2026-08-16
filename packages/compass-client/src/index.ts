@@ -220,6 +220,7 @@ export {
 	MessageSchema,
 	PinnedEntrySchema,
 	RosterEntrySchema,
+	RosterScope,
 	SystemAccountSchema,
 	TopicSchema,
 	UserAccountSchema,

@@ -2,15 +2,18 @@ import { describe, expect, test } from "bun:test";
 import {
 	AccountSchema,
 	AgentAccountSchema,
+	AgentPresence,
 	ChannelGroupSchema,
 	ChannelKind,
 	ChannelSchema,
 	type CommsClient,
 	create,
+	RosterEntrySchema,
 	UserAccountSchema,
 	type Account as WireAccount,
 	type Channel as WireChannel,
 	type ChannelGroup as WireChannelGroup,
+	type RosterEntry as WireRosterEntry,
 } from "@compass/client";
 import type { CommsState, MapMessage } from "./comms-state";
 import { fetchSnapshot, runCommsStream } from "./stream";
@@ -93,6 +96,14 @@ type FakePayload =
 			// Optional to mirror proto3 message presence — a body-less
 			// accountChanged (value.account undefined) is skipped by the driver.
 			readonly value: { readonly account?: WireAccount };
+	  }
+	| {
+			readonly case: "agentPresenceChanged";
+			readonly value: {
+				readonly agentAccountId: string;
+				readonly presence: AgentPresence;
+				readonly activity: string;
+			};
 	  }
 	| { readonly case: "resyncRequired"; readonly value: Record<string, never> }
 	| { readonly case: undefined; readonly value?: undefined };
@@ -179,6 +190,7 @@ interface RecordedCalls {
 	readonly listAccountsSeqs: bigint[];
 	readonly listChannelsSeqs: bigint[];
 	readonly listChannelGroupsSeqs: bigint[];
+	readonly getRosterScopes: number[];
 	readonly listMessages: {
 		channelId: string;
 		beforeMessageId: string;
@@ -203,6 +215,11 @@ interface FakeConfig {
 	readonly messagePageClamp?: number;
 	/** One generator factory per subscribeComms call, in order. */
 	readonly subscribeScripts?: Array<() => AsyncGenerator<FakeResponse>>;
+	/** Roster entries GetRoster returns for the snapshot presence seed. */
+	readonly roster?: WireRosterEntry[];
+	/** When set, GetRoster rejects with this error instead of returning — the
+	 *  read-failure path (the snapshot must abort, not seed an empty map). */
+	readonly getRosterError?: Error;
 }
 
 const MESSAGE_PAGE = 200;
@@ -219,6 +236,7 @@ function createFakeClient(
 		listAccountsSeqs: [],
 		listChannelsSeqs: [],
 		listChannelGroupsSeqs: [],
+		getRosterScopes: [],
 		listMessages: [],
 		subscribeSinceSeqs: [],
 		subscribeEpochs: [],
@@ -245,6 +263,11 @@ function createFakeClient(
 		listChannels: async ({ snapshotSeq }: { snapshotSeq: bigint }) => {
 			calls.listChannelsSeqs.push(snapshotSeq);
 			return { channels: config.channels ?? [] };
+		},
+		getRoster: async ({ scope }: { scope: number }) => {
+			calls.getRosterScopes.push(scope);
+			if (config.getRosterError) throw config.getRosterError;
+			return { entries: config.roster ?? [] };
 		},
 		listTopics: async (req: { channelId: string }) => ({
 			topics: config.topicsByChannel?.[req.channelId] ?? [],
@@ -323,6 +346,31 @@ function wireChannel(id: string): WireChannel {
 }
 function wireGroup(id: string): WireChannelGroup {
 	return create(ChannelGroupSchema, { id, name: id });
+}
+function wireRosterEntry(
+	agentAccountId: string,
+	presence: AgentPresence,
+	activity = "",
+): WireRosterEntry {
+	return create(RosterEntrySchema, { agentAccountId, presence, activity });
+}
+// A tail agentPresenceChanged: an upsert of one agent's presence + activity.
+function presenceChanged(
+	seq: bigint,
+	agentAccountId: string,
+	presence: AgentPresence,
+	activity = "",
+): FakeResponse {
+	return {
+		seq,
+		atUnixMs: 0n,
+		instanceEpoch: 1n,
+		snapshotSeq: 0n,
+		payload: {
+			case: "agentPresenceChanged",
+			value: { agentAccountId, presence, activity },
+		},
+	};
 }
 
 describe("runCommsStream — snapshot then tail", () => {
@@ -971,5 +1019,82 @@ describe("fetchSnapshot — paging + opaque token", () => {
 			"m3",
 			"m4",
 		]);
+	});
+});
+
+describe("runCommsStream — presence seed + tail", () => {
+	test("the snapshot seeds presence from GetRoster(OWNER), and a tail agentPresenceChanged upserts one key", async () => {
+		const controller = new AbortController();
+		const { client, calls } = createFakeClient(controller, {
+			accounts: [wireUserAccount(CALLER)],
+			channels: [wireChannel("chan-1")],
+			messagesByChannel: { "chan-1": [] },
+			roster: [wireRosterEntry("acc-cook", AgentPresence.WORKING, "cooking")],
+			subscribeScripts: [
+				async function* () {
+					yield boundary(100n, 1n);
+					yield presenceChanged(2n, "acc-cook", AgentPresence.IDLE);
+					controller.abort();
+				},
+			],
+		});
+		const states: CommsState[] = [];
+		await runCommsStream({
+			client,
+			callerId: CALLER,
+			mapMessage,
+			onState: (s) => states.push(s),
+			signal: controller.signal,
+		});
+
+		// GetRoster was called once with the OWNER scope.
+		expect(calls.getRosterScopes).toEqual([2]);
+		// The snapshot seeded presence from the roster read.
+		expect(states[0]?.presence.get("acc-cook")).toEqual({
+			lifecycle: "working",
+			activity: "cooking",
+		});
+		// The tail delta upserted the same key to its new lifecycle.
+		expect(states.at(-1)?.presence.get("acc-cook")).toEqual({
+			lifecycle: "idle",
+			activity: undefined,
+		});
+	});
+
+	test("a GetRoster rejection aborts the whole snapshot — onError fires, presence is never a silent empty map", async () => {
+		const controller = new AbortController();
+		const boom = new Error("getRoster boom");
+		const { client } = createFakeClient(controller, {
+			accounts: [wireUserAccount(CALLER)],
+			channels: [wireChannel("chan-1")],
+			messagesByChannel: { "chan-1": [] },
+			getRosterError: boom,
+			subscribeScripts: [
+				async function* () {
+					yield boundary(100n, 1n);
+					controller.abort();
+				},
+				// biome-ignore lint/correctness/useYield: the retried subscribe aborts to end the loop.
+				async function* () {
+					controller.abort();
+				},
+			],
+		});
+		const states: CommsState[] = [];
+		const errors: unknown[] = [];
+		await runCommsStream({
+			client,
+			callerId: CALLER,
+			mapMessage,
+			onState: (s) => states.push(s),
+			onError: (e) => errors.push(e),
+			signal: controller.signal,
+		});
+
+		// The roster read is in the snapshot failure domain: its rejection threw,
+		// surfaced to onError, and no state (empty presence or otherwise) was
+		// pushed from the failed snapshot round.
+		expect(errors).toContain(boom);
+		expect(states).toHaveLength(0);
 	});
 });

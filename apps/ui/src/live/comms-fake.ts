@@ -107,6 +107,10 @@ export interface FakeCommsSnapshot {
 	readonly accounts?: readonly unknown[];
 	readonly channelGroups?: readonly unknown[];
 	readonly channels?: readonly unknown[];
+	/** What GetRoster serves for the presence seed — wire RosterEntry rows
+	 *  (reduceSnapshot adapts them). Empty by default: a fake with no roster
+	 *  seeds an empty presence map, which is the pre-live-roster behavior. */
+	readonly roster?: readonly unknown[];
 	/** Per channel id — what ListTopics serves for that channel. */
 	readonly topicsByChannel?: Readonly<Record<string, readonly unknown[]>>;
 	/** Per channel id, newest-first — what ListMessages pages over. */
@@ -183,6 +187,7 @@ export function createFakeComms(snapshot: FakeCommsSnapshot = {}): FakeComms {
 		listAccounts: async () => ({ accounts: snapshot.accounts ?? [] }),
 		listChannelGroups: async () => ({ groups: snapshot.channelGroups ?? [] }),
 		listChannels: async () => ({ channels: snapshot.channels ?? [] }),
+		getRoster: async () => ({ entries: snapshot.roster ?? [] }),
 		listTopics: async (req: { channelId: string }) => ({
 			topics: snapshot.topicsByChannel?.[req.channelId] ?? [],
 		}),
