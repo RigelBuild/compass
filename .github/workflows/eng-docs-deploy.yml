@@ -38,65 +38,45 @@ jobs:
           # ci.yml's checkout (ci.yml:130-135).
           fetch-depth: 0
 
-      - name: Read the toolchain pins
-        id: pins
-        # .prototools is the single source for the language/runtime versions.
-        # Reading it here rather than hardcoding into the `setup-*` inputs below
-        # is what keeps that true — a pin bump is one file. Mirrors ci.yml's
-        # "Read the toolchain pins" step (ci.yml:154-196).
-        #
-        # `/^\[/q` stops at the first table header, so only top-level pins are
-        # read and a future [settings] section is never mistaken for one.
-        #
-        # Every value is shape-checked before it is written. A pin is always a
-        # version string; anything else means the file is malformed or crafted,
-        # and refusing is the same posture the parity gate takes. This also
-        # closes GITHUB_OUTPUT injection, since a rejected value never reaches
-        # the file.
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # The docsite build runs under moon, whose toolchain (bun/node/moon)
+          # comes from nix, not `setup-*` actions — the same posture ci.yml
+          # takes. Flakes + nix-command are needed to evaluate and build the
+          # gate-tools derivations below.
+          #
+          # The substituters are declared here rather than via
+          # `accept-flake-config = true`, which would make nix trust the
+          # `nixConfig` of any flake it evaluates (forks/devenv/flake.nix carries
+          # such a block) — a PR could then add its own substituter and trusted
+          # key and CI would run binaries signed by it. Naming the two caches the
+          # repo legitimately uses keeps that trust in a reviewed file. Mirrors
+          # ci.yml's install-nix-action step.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        # The language runtimes (bun/node/moon/go) come from nix, not `setup-*`
+        # actions: gate-tools.nix's `langs` output resolves the identical
+        # derivations the dev shell does, so this job runs the pinned versions
+        # byte-for-byte. `langs` is a closed set, so it needs no `--arg attrs`.
+        # Mirrors ci.yml's "Put the language toolchains on PATH" step.
         run: |
-          pins=$(sed -n '/^\[/q; s/^\([A-Za-z0-9_-]\{1,\}\)[[:space:]]*=[[:space:]]*"\([^"]\{1,\}\)".*/\1=\2/p' \
-            .prototools)
-          while IFS='=' read -r name value; do
-            [ -n "$name" ] || continue
-            case $value in
-              *[!0-9A-Za-z.+-]*|'')
-                echo "::error::.prototools pin '$name' has value '$value', which is not a version string"
-                exit 1
-                ;;
-            esac
-          done <<EOF
-          $pins
-          EOF
-          # Refuse over nothing: a malformed .prototools parses to zero pins, and
-          # every `setup-*` below would then silently take its own default
-          # version. Each pin the job consumes must be present.
-          for required in bun node moon; do
-            printf '%s\n' "$pins" | grep -q "^$required=" || {
-              echo "::error::.prototools yielded no '$required' pin — the file is malformed or its shape changed"
-              exit 1
-            }
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          # Fail closed locally rather than leaning on the absence of a
+          # root-level flake.nix: with no installables `nix build` would build a
+          # default package if one existed, so an empty `langs` must error here.
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
           done
-          printf '%s\n' "$pins" | tee -a "$GITHUB_OUTPUT"
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2 (v2.2.0)
-        with:
-          bun-version: ${{ steps.pins.outputs.bun }}
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ steps.pins.outputs.node }}
-
-      - name: Install moon
-        # moon has no first-party setup action that pins from .prototools, and
-        # its npm package is version-for-version the release. The pin arrives via
-        # env rather than a `${{ }}` interpolation into the script: `${{ }}` is
-        # textual substitution performed BEFORE the shell parses the line, so a
-        # .prototools value carrying shell metacharacters would execute. A shell
-        # variable is data. .prototools is PR-editable, so this is reachable from
-        # a fork. Mirrors ci.yml:213-225.
-        env:
-          MOON_VERSION: ${{ steps.pins.outputs.moon }}
-        run: npm install --global "@moonrepo/cli@$MOON_VERSION"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
