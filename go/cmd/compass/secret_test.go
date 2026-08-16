@@ -290,6 +290,7 @@ func TestParseKindRoutingRejections(t *testing.T) {
 		{name: "generic with host", kind: kindGeneric, host: "h", want: "--host"},
 		{name: "provider with host", kind: kindProvider, provider: "foo", host: "h", want: "--host"},
 		{name: "gh with provider", kind: kindGH, host: "h", provider: "foo", want: "--provider"},
+		{name: "generic with both", kind: kindGeneric, provider: "foo", host: "h", want: "--provider"},
 	}
 	for _, tt := range reject {
 		t.Run(tt.name, func(t *testing.T) {
@@ -363,6 +364,22 @@ func TestRunSecretSetBound(t *testing.T) {
 		}
 		if len(fake.gotSet.GetValue()) != maxSecretBytes {
 			t.Errorf("value length = %d, want %d", len(fake.gotSet.GetValue()), maxSecretBytes)
+		}
+	})
+
+	t.Run("content at the cap with a trailing newline", func(t *testing.T) {
+		fake := &fakeSecrets{}
+		client := startFakeSecretsServer(t, fake)
+		var out strings.Builder
+		in := strings.NewReader(strings.Repeat("a", maxSecretBytes) + "\n")
+		if err := runSecretSet(context.Background(), client, secretSetArgs{name: "X", delivery: "env", kind: "generic"}, in, &out); err != nil {
+			t.Fatalf("runSecretSet at cap with trailing newline: %v", err)
+		}
+		if fake.gotSet == nil {
+			t.Fatal("SetSecret was not called for cap-sized content with a trailing newline")
+		}
+		if len(fake.gotSet.GetValue()) != maxSecretBytes {
+			t.Errorf("value length = %d, want %d (newline trimmed, content at cap accepted)", len(fake.gotSet.GetValue()), maxSecretBytes)
 		}
 	})
 }

@@ -196,14 +196,14 @@ func runSecretSet(ctx context.Context, client compassv1connect.SecretsServiceCli
 	if err != nil {
 		return err
 	}
-	raw, err := io.ReadAll(io.LimitReader(in, maxSecretBytes+1))
+	raw, err := io.ReadAll(io.LimitReader(in, maxSecretBytes+2))
 	if err != nil {
 		return fmt.Errorf("reading secret value from stdin: %w", err)
 	}
-	if len(raw) > maxSecretBytes {
+	value := strings.TrimSuffix(string(raw), "\n")
+	if len(value) > maxSecretBytes {
 		return fmt.Errorf("secret value exceeds the %d-byte limit: pipe a smaller value on stdin", maxSecretBytes)
 	}
-	value := strings.TrimSuffix(string(raw), "\n")
 	if value == "" {
 		return errEmptySecretValue
 	}
