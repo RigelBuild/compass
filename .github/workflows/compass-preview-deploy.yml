@@ -1,0 +1,153 @@
+# Deploys a Compass PR's FULL stack to the isolated `preview` env on mattfw,
+# selected by a single-holder `preview` GitHub label, served tailnet-gated,
+# with a GitHub Deployment as the PR-visible state surface (SEA-2027; orion
+# docs/designs/platform/compass-pr-preview/design.md P1).
+#
+# WHY A SEPARATE WORKFLOW, NOT A STEP IN THE CI GATE — the publish-agent-image.yml
+# precedent, and the design record's ONE-JOB-doctrine carve-out (§Global
+# Constraints "One-job CI doctrine"):
+#
+#   - Least privilege. The label lifecycle needs `pull-requests: write` and the
+#     Deployment record needs `deployments: write`; the CI gate job runs
+#     `contents: read` only. These permissions are declared HERE and never reach
+#     the gate job — a per-workflow token, scoped to this lane alone.
+#   - THE FORK GUARD — the load-bearing security invariant. This triggers on
+#     `on: pull_request` (NOT `pull_request_target`), so a fork PR's job gets a
+#     read-only GITHUB_TOKEN and NO secrets are EVER exposed to fork-controlled
+#     code — the exact guarantee publish-agent-image.yml relies on ("no token or
+#     secret is ever exposed to a fork PR"). On top of that, every step that
+#     could deploy or reach the tailnet is gated on
+#     `head.repo.full_name == github.repository`, and the fork-guard job below
+#     runs FIRST for a fork claim: strip the label + post a same-repo-only
+#     comment, WITHOUT displacing the incumbent or deploying. A fork reaching the
+#     deploy path is the worst-case failure; two layers (event type + same-repo
+#     conditional) prevent it.
+#   - Its own concurrency. Claim → label-strip → checkout → restart against the
+#     ONE shared ~/compass-envs/preview tree must SERIALIZE
+#     (`cancel-in-progress: false`) — two near-simultaneous `preview` events
+#     would otherwise race the shared checkout and strip each other's label
+#     (split-brain). A superseded deploy must FINISH cleanly, not be half-torn.
+#   - Off the hot path, not a required check. A preview flake must never red the
+#     required merge gate — this workflow is not in the branch-protection set.
+#
+# THE THIN BODY. All real logic — the label-lifecycle state machine, the deploy
+# sequence, and the Deployments API calls — lives in the bun/TS tool
+# (tools/compass-preview-deploy), per the repo's no-bash-gate posture. This YAML
+# only orchestrates events → tool invocation, plus the tailnet reach.
+#
+# THE DEPLOY-REACH MECHANISM. Compass CI runs on GitHub-hosted ubuntu-latest (no
+# self-hosted runners), so the runner must reach mattfw's tailnet to deploy. It
+# joins the tailnet EPHEMERALLY as a tagged, ACL-scoped node
+# (tailscale/github-action with an OAuth client secret), then the tool ssh's the
+# deploy to mattfw's `compass-preview` user. The OAuth secret is gated behind the
+# same-repo fork guard (the `deploy` job's `if:` below), so it never reaches a
+# fork PR. See the summary's flagged orion-side dependency: the fleet ACL needs a
+# tag for this ephemeral runner + an ssh grant to reach mattfw's preview user.
+
+name: Compass preview deploy
+
+on:
+  pull_request:
+    types: [labeled, synchronize, unlabeled, closed]
+
+# Claim → label-strip → checkout → restart against the ONE shared preview tree
+# runs strictly one-at-a-time. cancel-in-progress:false so a superseded deploy
+# finishes cleanly rather than tearing the shared checkout mid-flight.
+concurrency:
+  group: compass-preview-deploy
+  cancel-in-progress: false
+
+# Least privilege, confined to THIS workflow: the label lifecycle + sticky
+# comment (pull-requests), the Deployment record (deployments), and reading the
+# tree (contents). Nothing else; these never reach the CI gate job.
+permissions:
+  pull-requests: write
+  deployments: write
+  contents: read
+
+jobs:
+  # A fork PR that adds the `preview` label is rejected up front — strip the
+  # label + post a same-repo-only comment, WITHOUT displacing the current holder
+  # or deploying. No tailnet, no secret; the read-only fork token suffices for
+  # the best-effort label strip (and if it 403s, the deploy simply never runs).
+  reject-fork:
+    name: Reject fork claim
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'preview' &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3"
+      - name: Reject the fork preview claim
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGED_LABEL: ${{ github.event.label.name }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: bun run tools/compass-preview-deploy/index.ts
+
+  # SAME-REPO ONLY. Every deploy/label-mutating path (claim/displace/redeploy/
+  # release) runs here, gated on head.repo == github.repository, so the OAuth
+  # secret + tailnet reach are never exposed to fork-controlled code. A
+  # synchronize on an unlabeled PR reaches the tool and no-ops there.
+  deploy:
+    name: Deploy preview
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3"
+
+      # Join the tailnet EPHEMERALLY as a tagged, ACL-scoped node so the tool can
+      # ssh the deploy to mattfw. OAuth client secret (fork-guarded by this job's
+      # same-repo `if:` above) → an ephemeral node that Tailscale reaps on job
+      # end. tag:compass-preview-ci is the ACL tag the fleet grant scopes to
+      # mattfw:22 (the flagged orion-side dependency).
+      - name: Join the tailnet (ephemeral)
+        uses: tailscale/github-action@780049a30b6ff5c378a9e7b389d15ece7a204888 # v4.1.3
+        with:
+          oauth-client-id: ${{ secrets.TS_PREVIEW_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_PREVIEW_OAUTH_SECRET }}
+          tags: tag:compass-preview-ci
+
+      - name: Configure the deploy ssh key
+        env:
+          PREVIEW_DEPLOY_SSH_KEY: ${{ secrets.PREVIEW_DEPLOY_SSH_KEY }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$PREVIEW_DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Deploy / redeploy / release the preview env
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CHANGED_LABEL: ${{ github.event.label.name }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          # The preview env contract (Record A): the checkout, the TLS network
+          # door (:50161), the preview user, and the one stable tailnet URL.
+          PREVIEW_SSH_HOST: mattfw
+          PREVIEW_SSH_USER: compass-preview
+          PREVIEW_CHECKOUT: /home/compass-preview/compass-envs/preview
+          PREVIEW_DOOR_URL: https://mattfw:50161
+          PREVIEW_URL: ${{ vars.COMPASS_PREVIEW_URL }}
+          PREVIEW_ADMIN_ACCOUNT: ${{ vars.COMPASS_PREVIEW_ADMIN_ACCOUNT }}
+        run: bun run tools/compass-preview-deploy/index.ts

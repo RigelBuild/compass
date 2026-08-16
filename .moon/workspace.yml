@@ -51,6 +51,13 @@ projects:
   # file's --rigel-purple is the one narrow allowlist. WARN until the adoption
   # step-5 flip, then ERROR.
   cx-token-gate: 'tools/cx-token-gate'
+  # The PR-preview deploy tool: the single-holder `preview`-label lifecycle
+  # (claim/displace/release + fork-claim rejection), the full-stack deploy to
+  # the isolated preview env on mattfw served tailnet-gated, and the GitHub
+  # Deployment record surfacing live state on the PR (SEA-2027). Driven by the
+  # separate least-privilege .github/workflows/compass-preview-deploy.yml, not
+  # the required CI gate; its `ci` aggregate is typecheck + unit test only.
+  compass-preview-deploy: 'tools/compass-preview-deploy'
   # The one-shot engineering-docs sanitization migration (SEA-1766, T4). Encodes
   # the four-class rewrite policy; no standing run task, deleted after T5.
   docs-migrate: 'tools/docs-migrate'

@@ -1,0 +1,14 @@
+{
+	"name": "@compass/compass-preview-deploy",
+	"private": true,
+	"type": "module",
+	"description": "PR-preview deploy tool (SEA-2027): the single-holder `preview`-label lifecycle (claim/displace/release + fork-claim rejection), the full-stack deploy to the isolated preview env on mattfw served tailnet-gated, and the GitHub Deployment record that surfaces live state on the PR.",
+	"module": "index.ts",
+	"bin": {
+		"compass-preview-deploy": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

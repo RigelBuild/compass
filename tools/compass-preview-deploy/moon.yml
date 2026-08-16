@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# compass-preview-deploy (SEA-2027) — the Compass PR-preview deploy tool: the
+# single-holder `preview`-label lifecycle (claim/displace/release + fork-claim
+# rejection), the full-stack deploy to the isolated `preview` env on mattfw
+# served tailnet-gated, and the GitHub Deployment record surfacing live state
+# on the PR. A bun/TypeScript CLI; a hoisted root-workspace member (`bun` tag):
+# install is inherited via .moon/tasks/tag-bun.yml (the shared root install)
+# and lint/format are whole-repo tasks on the root project (/moon.yml), so this
+# leaf has no own bun.lock and never runs its own install.
+#
+# NO `check` task, unlike the gate tools (cx-token-gate, design-ledger-gate):
+# those observe the live tree on every CI run. This tool is a DEPLOY driver
+# invoked by .github/workflows/compass-preview-deploy.yml on `preview`-label PR
+# events — a SEPARATE least-privilege workflow, never the required CI gate (a
+# preview flake must not red the merge gate). So the `ci` aggregate below is
+# typecheck + test only: the pure state machine is unit-gated on every PR; the
+# side-effecting deploy runs only from its own workflow, never in `moon run :ci`.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  test:
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false
