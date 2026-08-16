@@ -23,6 +23,7 @@ import {
 	type DeploymentState,
 	type Deps,
 	decide,
+	deploymentPr,
 	type EventContext,
 	type GitHubApi,
 	isEventAction,
@@ -350,5 +351,36 @@ describe("runOnce — no-op", () => {
 		);
 		expect(code).toBe(0);
 		expect(f.calls).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// deploymentPr — the payload PR recovery, robust to string OR object payload.
+// ---------------------------------------------------------------------------
+
+describe("deploymentPr", () => {
+	test("a JSON STRING payload recovers the pr (the regression case)", () => {
+		// The Deployments API returns payload as a string; the read side MUST
+		// parse it, else activePreviewPr is always null and release never fires.
+		expect(deploymentPr('{"pr":42}')).toBe(42);
+	});
+	test("an already-parsed object payload recovers the pr", () => {
+		expect(deploymentPr({ pr: 42 })).toBe(42);
+	});
+	test("a malformed JSON string is undefined (never throws)", () => {
+		expect(deploymentPr("{pr:42}")).toBeUndefined();
+		expect(deploymentPr("not json")).toBeUndefined();
+	});
+	test("a missing pr is undefined", () => {
+		expect(deploymentPr("{}")).toBeUndefined();
+		expect(deploymentPr({})).toBeUndefined();
+	});
+	test("a non-numeric pr is undefined", () => {
+		expect(deploymentPr('{"pr":"42"}')).toBeUndefined();
+	});
+	test("a non-object payload is undefined", () => {
+		expect(deploymentPr(null)).toBeUndefined();
+		expect(deploymentPr(undefined)).toBeUndefined();
+		expect(deploymentPr(42)).toBeUndefined();
 	});
 });

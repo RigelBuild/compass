@@ -416,6 +416,27 @@ export function parseLabels(raw: string | undefined): string[] {
 		.filter((s) => s.length > 0);
 }
 
+/**
+ * Recover the PR a preview Deployment tracks from its `payload`, robust to
+ * BOTH shapes GitHub can return: the Deployments API returns `payload` as a
+ * JSON STRING (what `gh api -f payload=…` sends), but a caller may hold it
+ * already parsed. Returns the numeric `pr`, or undefined for a non-object,
+ * malformed JSON, or a missing/non-numeric `pr` — never throws.
+ */
+export function deploymentPr(payload: unknown): number | undefined {
+	let obj: unknown = payload;
+	if (typeof payload === "string") {
+		try {
+			obj = JSON.parse(payload);
+		} catch {
+			return undefined;
+		}
+	}
+	if (typeof obj !== "object" || obj === null) return undefined;
+	const pr = (obj as { pr?: unknown }).pr;
+	return typeof pr === "number" ? pr : undefined;
+}
+
 /** The gh-CLI-backed GitHubApi. Every call names the repo explicitly. */
 function realGitHubApi(repo: string): GitHubApi {
 	return {
@@ -433,8 +454,12 @@ function realGitHubApi(repo: string): GitHubApi {
 		createDeployment: async (pr, ref) => {
 			// required_contexts:[] so the deployment is not left pending on checks;
 			// the PR number rides in payload so findActiveDeployment can recover it.
+			// Build the JSON in JS and interpolate the variable: a bun-shell string
+			// literal `{"pr":123}` gets its quotes STRIPPED (yielding invalid JSON
+			// `{pr:123}`), so the payload must be a single interpolated value.
+			const payload = JSON.stringify({ pr });
 			const out =
-				await $`gh api --method POST repos/${repo}/deployments -f ref=${ref} -f environment=${PREVIEW_ENVIRONMENT} -F auto_merge=false -f required_contexts[]= -f payload={"pr":${pr}} --jq .id`.text();
+				await $`gh api --method POST repos/${repo}/deployments -f ref=${ref} -f environment=${PREVIEW_ENVIRONMENT} -F auto_merge=false -f required_contexts[]= -f payload=${payload} --jq .id`.text();
 			const id = Number.parseInt(out.trim(), 10);
 			if (!Number.isFinite(id)) {
 				throw new Error(`could not parse deployment id from: ${out}`);
@@ -459,21 +484,15 @@ function realGitHubApi(repo: string): GitHubApi {
 			// success or in_progress is the live one. Its payload carries the PR.
 			const raw =
 				await $`gh api repos/${repo}/deployments?environment=${PREVIEW_ENVIRONMENT}&per_page=30`.json();
-			const deployments = raw as Array<{
-				id: number;
-				payload?: { pr?: number } | string;
-			}>;
+			const deployments = raw as Array<{ id: number; payload?: unknown }>;
 			for (const d of deployments) {
 				const statuses =
 					await $`gh api repos/${repo}/deployments/${d.id}/statuses?per_page=1`.json();
 				const latest = (statuses as Array<{ state: string }>)[0];
 				if (!latest) continue;
 				if (latest.state === "success" || latest.state === "in_progress") {
-					const pr =
-						typeof d.payload === "object" && d.payload
-							? d.payload.pr
-							: undefined;
-					if (typeof pr === "number") return { id: d.id, pr };
+					const pr = deploymentPr(d.payload);
+					if (pr !== undefined) return { id: d.id, pr };
 				}
 			}
 			return null;
