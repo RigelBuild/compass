@@ -83,7 +83,8 @@ func run() error {
 
 	// run() is the process root (called directly by main), so context.Background()
 	// here is the sanctioned process-root context, not a mid-tree re-root.
-	svc, quitter, err := launch(cfg, socket, resolveStateDir(*stateDirFlag),
+	stateDir := resolveStateDir(*stateDirFlag)
+	svc, quitter, err := launch(cfg, socket, stateDir,
 		resolveImage(*imageFlag), stackBinFlag)
 	if err != nil {
 		return err
@@ -103,11 +104,27 @@ func run() error {
 	// wire it now that the app (and its EventManager) exists.
 	svc.events = app.Event
 
+	// Persist the live window set on shutdown so a relaunch reopens the same set
+	// (Compass multi-window M1). Best-effort: a failed persist must not block
+	// shutdown, so the error is logged, never propagated.
+	app.OnShutdown(func() {
+		wins := app.Window.GetAll()
+		names := make([]string, 0, len(wins))
+		for _, w := range wins {
+			names = append(names, w.Name())
+		}
+		if err := saveWindowSet(stateDir, names); err != nil {
+			slog.Error("compass-app persisting window set", "error", err)
+		}
+	})
+
 	// Explicit "Quit and stop stack" (DL-108, T4.2) is embedded-only: client
 	// mode has no stack to stop, so launch() returns a nil quitter there and no
 	// menu is installed. Plain quit (window close, OS quit) LINGERS by default —
 	// the stack children stay running and the app does nothing to them (relaunch
-	// re-attaches), so there is deliberately NO OnShutdown teardown here.
+	// re-attaches), so there is deliberately no OnShutdown *stack* teardown here.
+	// (The window-set persist hook above is unrelated: it touches only the
+	// state-dir window list, never the stack.)
 	if quitter != nil {
 		quitter.quit = app.Quit
 		menu := application.NewMenu()
@@ -125,8 +142,29 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Title:  "Compass",
+	// Restore the persisted window set (Compass multi-window M1). First-ever run
+	// (empty/absent/corrupt set) opens exactly one default "bridge" window. Every
+	// window is a Bridge window (URL "/") carrying the SAME startupJS injection
+	// (record §A1/§A3), so the factory forwards the identical script to each.
+	names := windowNamesOrDefault(loadWindowSet(stateDir))
+	for _, name := range names {
+		newAppWindow(app, name, "Compass", startupJS)
+	}
+
+	slog.Info("compass-app starting", "mode", cfg.Mode, "socket", socket, "assets", assetsDir)
+	return app.Run()
+}
+
+// windowOptions builds the Wails options for a Compass window. Every window is a
+// Bridge window (URL "/", record §A1) at the fixed 1280x800 size, carrying the
+// caller-resolved startupJS unchanged so the mode/serverURL injection is
+// identical across windows (§A3). Name keys the persisted set and later per-frame
+// routing (M3), so it is always set. Kept a pure forwarder so it is unit-testable
+// without a display.
+func windowOptions(name, title, startupJS string) application.WebviewWindowOptions {
+	return application.WebviewWindowOptions{
+		Name:   name,
+		Title:  title,
 		Width:  1280,
 		Height: 800,
 		URL:    "/",
@@ -134,10 +172,12 @@ func run() error {
 		// mode, the server URL as synchronous startup globals the UI reads at
 		// entry with no IPC to pick its boot path. JS runs before the app bundle.
 		JS: startupJS,
-	})
+	}
+}
 
-	slog.Info("compass-app starting", "mode", cfg.Mode, "socket", socket, "assets", assetsDir)
-	return app.Run()
+// newAppWindow creates a Compass Bridge window on app from windowOptions.
+func newAppWindow(app *application.App, name, title, startupJS string) *application.WebviewWindow {
+	return app.Window.NewWithOptions(windowOptions(name, title, startupJS))
 }
 
 // launch dispatches the resolved mode into the embedded or client launch arm and
