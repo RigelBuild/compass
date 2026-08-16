@@ -13,12 +13,7 @@ import {
 } from "../comms";
 import type { Channel } from "../comms-stub";
 import { useStore } from "../context";
-import {
-	type Agent,
-	type AgentTreeNode,
-	agentTree,
-	STUB_AGENTS,
-} from "../stub-data";
+import { type Agent, type AgentTreeNode, agentTree } from "../stub-data";
 import { StateDot } from "./StateDot";
 
 /** An agent leaf row in the tree — the per-agent select button, plus a hover
@@ -46,7 +41,7 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 			>
 				<StateDot state={a().lifecycle ?? "idle"} />
 				<span class="name">{a().account.handle}</span>
-				<Show when={a().role !== "worker"}>
+				<Show when={a().role !== undefined && a().role !== "worker"}>
 					<span class="role-pip" data-role={a().role} title={a().role}>
 						◆
 					</span>
@@ -397,9 +392,21 @@ const AgentsSection: Component = () => {
 			</button>
 			<Show when={!collapsed()}>
 				<div class="tree ws-section-body">
-					<For each={agentTree(STUB_AGENTS)}>
-						{(node) => <Node node={node} />}
-					</For>
+					<Show
+						when={
+							store.firstSnapshotArrived() &&
+							agentTree(store.agents()).length === 0
+						}
+						fallback={
+							<For each={agentTree(store.agents())}>
+								{(node) => <Node node={node} />}
+							</For>
+						}
+					>
+						<div class="tree-empty">
+							No agents in the fleet yet — spawn one from the command palette.
+						</div>
+					</Show>
 				</div>
 			</Show>
 		</div>

@@ -374,6 +374,11 @@ export interface AppStore {
 	 *  Offline (no `options.comms`) this is the STUB_AGENTS fixture; live it is
 	 *  the joined roster. The accessor the board components cut over to in T4. */
 	agents: Accessor<readonly Agent[]>;
+	/** Whether the first comms snapshot has been adopted. Offline this stays
+	 *  false; live it flips true once `adoptComms` lands the initial state — the
+	 *  gate that distinguishes a genuinely empty roster from a not-yet-loaded one
+	 *  (T5 tree-empty seam). */
+	firstSnapshotArrived: Accessor<boolean>;
 	/** All channel groups visible to the caller (the rail's group headers). */
 	channelGroups: Accessor<readonly ChannelGroup[]>;
 	/** All channels + DMs visible to the caller — the reactive rail source, so a
@@ -2007,6 +2012,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		daemon,
 		accounts,
 		agents,
+		firstSnapshotArrived,
 		channelGroups,
 		channels,
 		messages,

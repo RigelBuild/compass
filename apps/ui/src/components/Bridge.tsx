@@ -17,7 +17,7 @@ import {
 } from "../board-render";
 import { BOARD_LANES } from "../constants";
 import { useStore } from "../context";
-import { type IssueState, STUB_AGENTS } from "../stub-data";
+import type { IssueState } from "../stub-data";
 import { IssueCard } from "./IssueCard";
 import { StateDot } from "./StateDot";
 
@@ -107,7 +107,7 @@ export const Bridge: Component = () => {
 	const scope = (): ReadonlySet<string> | undefined => undefined;
 	const multiForge = () => isMultiForge(store.issues());
 	const prGroups = () => {
-		const groups = prRowGroups(STUB_AGENTS, store.issues());
+		const groups = prRowGroups(store.agents(), store.issues());
 		const active = scope();
 		if (!active) return groups;
 		return groups.filter(
@@ -115,10 +115,10 @@ export const Bridge: Component = () => {
 		);
 	};
 
-	// The board reads the store's reactive issue list (design "one source
-	// of truth") through the pure board.ts partition, so a promote/archive shows
-	// here immediately. STUB_AGENTS stays direct — agents aren't mutated here.
-	const boardAgents = () => boardAgentsOf(STUB_AGENTS, store.issues());
+	// The board reads the store's reactive fleet and issue list (design "one
+	// source of truth") through the pure board.ts partition, so a promote/archive
+	// or a roster change shows here immediately.
+	const boardAgents = () => boardAgentsOf(store.agents(), store.issues());
 	const cellItems = (agentId: string | null, state: IssueState) =>
 		cellItemsOf(store.issues(), agentId, state);
 	const laneTotal = (state: IssueState) => laneTotalOf(store.issues(), state);
