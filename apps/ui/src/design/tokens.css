@@ -150,6 +150,12 @@
 	--cx-review-changes: var(--cx-error);
 	--cx-review-pending: var(--cx-text-faint);
 
+	/* --- Message author (voice) — the system/@compass author color. User and
+	   agent authors reuse existing semantic tokens (--cx-accent / --cx-ok); only
+	   the system voice needs its own. Magenta, the closest non-purple decorative
+	   primitive to the retired legacy --pink; purple stays mark-only (SEA-2008). */
+	--cx-author-system: var(--rigel-magenta);
+
 	/* --- Editor theme (--cx-ed-*) — embedded editor/Shiki share the chrome palette (D8) --- */
 	--cx-ed-bg: var(--cx-bg); /* editor surface = chrome background (night sky) */
 	--cx-ed-text: var(--cx-text); /* primary editor text (fog) */

@@ -4,51 +4,9 @@
  * conversations (Supervisor · Status) above the issue files/VCS/PR
  * tabs, plus a bottom usage bar. All read one store. */
 
+/* app layout knobs (not DS tokens) — dimensions with no design-token
+   counterpart; kept here and allowlisted by name in the D7 stylelint guard. */
 :root {
-	/* Surfaces — layered dark greys, back to front. */
-	--bg: #0a0d12;
-	--bg-raised: #10141b;
-	--bg-panel: #131820;
-	--bg-card: #1a2029;
-	--bg-hover: #202836;
-	--bg-active: #263041;
-
-	/* Lines. */
-	--border: #232a36;
-	--border-strong: #333c4b;
-
-	/* Text. */
-	--text: #e6edf3;
-	--text-dim: #8b949e;
-	--text-faint: #616b78;
-
-	/* Accents + semantic. */
-	--accent: #58a6ff;
-	--accent-dim: #1f6feb;
-	--add: #3fb950;
-	--del: #f85149;
-	--warn: #d29922;
-	--purple: #a371f7;
-	--pink: #db61a2;
-
-	/* State colors, shared by dots + lane heads + badges. */
-	--st-working: #3fb950;
-	--st-idle: #616b78;
-	--st-waiting: #d29922;
-	--st-paused: #58a6ff;
-	--st-error: #f85149;
-	--st-done: #2ea043;
-	--st-stopped: #414b58;
-	--st-disconnected: #d29922;
-	--st-blocked: #f85149;
-	--st-review: #a371f7;
-	--st-merged: #8957e5;
-
-	--radius: 8px;
-	--radius-sm: 5px;
-	--font-mono:
-		ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", "Menlo",
-		"Consolas", monospace;
 	--topbar-h: 44px;
 	--usage-h: 26px;
 	/* Right sidebar width (dock-in-sidebar D4). The single knob the deferred
@@ -1103,7 +1061,7 @@
 	color: var(--cx-ok);
 }
 .msg.system .msg-role {
-	color: var(--pink);
+	color: var(--cx-author-system);
 }
 
 .msg-at {
@@ -1418,7 +1376,7 @@
 	font-family: var(--cx-font-ui);
 	font-size: 11.5px;
 	line-height: 1.55;
-	color: #c9d3df;
+	color: var(--cx-text);
 	white-space: pre-wrap;
 }
 
