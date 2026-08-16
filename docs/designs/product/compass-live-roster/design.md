@@ -265,7 +265,7 @@ Add the wire→domain presence pieces in `apps/ui/src/live/adapt.ts`.
 - Interfaces:
   - `export function presenceLifecycle(p: AgentPresence): AgentState | undefined`
     — total over the generated `AgentPresence` enum (`@compass/client`):
-    `AGENT_PRESENCE_WORKING → "working"`, `IDLE → "idle"`,
+    `WORKING → "working"`, `IDLE → "idle"`,
     `WAITING → "waiting"`, `OFFLINE → "stopped"`,
     `UNSPECIFIED → undefined`; default arm throws on an unmodeled numeric
     (the `agent-state.ts:75-78` exhaustiveness convention).
@@ -332,7 +332,20 @@ Convert the dead const to the documented reactive seam.
     `board.ts`, same pure-over-injected-inputs shape, `board.ts:6`): filters
     `kind === "agent"`, preserves account order (the `agentTree` stable-order
     contract, `stub-data.ts:372-377`), and composes
-    `{ account, lifecycle: info?.lifecycle, activity: info?.activity, terminals: [] }`.
+    `{ account, lifecycle: info ? info.lifecycle : "stopped", activity: info?.activity, terminals: [] }`.
+    A presence-map MISS maps to `"stopped"`, mirroring the server's
+    absent→OFFLINE→stopped default at the client seam (R2 / DL-194): an account
+    present in `accounts` but absent from the presence seed — a snapshot-
+    boundary race, or a post-snapshot `accountChanged` arrival never re-seeded
+    (`GetRoster` runs only at `tailSeq === 0n`, `stream.ts:293`, and
+    `AgentPresenceChanged` fires only on a real transition, `presence.go:36-38`,
+    so the miss is durable, not a boot flicker) — is an at-rest/unstarted
+    agent, so it MUST render the "stopped" dot, never the false-live grey idle
+    dot the components' `lifecycle ?? "idle"` fallback (`LeftSidebar.tsx:47`,
+    `AgentView.tsx:217`) would otherwise show; the first real
+    `AgentPresenceChanged` upserts the map and flips the dot. A present-but-
+    `UNSPECIFIED` entry keeps `lifecycle: undefined` → the defensive idle arm
+    (unreachable on the GetRoster path).
   - `Agent` (`stub-data.ts:344-361`): `role`, `model`, `cwd` become optional
     (`role?: AgentRole; model?: string; cwd?: string`). `terminals:
     Terminal[]` stays required (live = `[]`).
@@ -355,10 +368,13 @@ Convert the dead const to the documented reactive seam.
   - `AppStore` interface gains
     `agents: Accessor<readonly Agent[]>;` (beside `accounts`,
     `store.ts:368-370`), the accessor the components cut over to in T4.
-- Tests: store tests — offline store returns the fixture through `agents()`;
-  a store with a fake comms state joins live accounts + presence; `agentById`
-  reacts to an agent-set change (the SEA-1645 reactivity the comment at
-  `store.ts:790-795` owes).
+- Tests: `roster.ts` unit tests — `joinAgents` over accounts + a presence map:
+  a present entry projects its lifecycle/activity; a map MISS projects
+  `lifecycle: "stopped"` (NOT idle) so an unseeded / just-arrived account
+  renders the stopped dot; account order is preserved. Store tests — offline
+  store returns the fixture through `agents()`; a store with a fake comms state
+  joins live accounts + presence; `agentById` reacts to an agent-set change
+  (the SEA-1645 reactivity the comment at `store.ts:790-795` owes).
 
 ### T4 — component cutover (retire STUB_AGENTS as render source)
 
@@ -437,7 +453,9 @@ persist) are all composed with, not superseded:
 - **DL-194** — The presence→dot projection is the total 4-state mapping
   `WORKING→working, IDLE→idle, WAITING→waiting, OFFLINE→stopped`, plus a
   defensive `UNSPECIFIED→undefined` (unreachable on the GetRoster path, which
-  defaults every absent/unstarted agent to `OFFLINE`, `roster.go:79-82`). The
+  defaults every absent/unstarted agent to `OFFLINE`, `roster.go:79-82`; the
+  client `joinAgents` mirrors this, mapping a presence-map miss to `stopped` so
+  the absent→stopped invariant holds end-to-end). The
   4-state enum cannot distinguish a deliberately-stopped agent from a
   never-started one; splitting them is owed to the deferred `AgentSessionStatus`
   lane, which is also the only source for the remaining four `AgentState`
@@ -475,7 +493,11 @@ the frozen contract.
   after a runner restart) renders the "stopped/terminated" dot rather than
   today's grey idle dot — a known, named day-one cost. Splitting "terminated"
   from "never started" is owed to the deferred `AgentSessionStatus` lane; the
-  4-state enum alone cannot.
+  4-state enum alone cannot. The client `joinAgents` preserves this invariant
+  at its own seam: an account absent from the presence map (a snapshot race or
+  a post-snapshot `accountChanged` arrival) also maps to `"stopped"`, not the
+  components' `?? "idle"` fallback, so "not live → stopped" holds end-to-end
+  (see T3).
 - **R3 (UI-only fields) — optional and render-gated.** `role`/`model`/`cwd`
   become optional; live agents get `terminals: []`; the role pip is NOT derived
   from tree position ("has children" is not "supervisor" and a guessed pip is
