@@ -195,6 +195,7 @@ export type {
 	Message,
 	MessageBlock,
 	PinnedEntry,
+	RosterEntry,
 	SubscribeCommsResponse,
 	SystemAccount,
 	Topic,
@@ -204,6 +205,7 @@ export type {
 export {
 	AccountSchema,
 	AgentAccountSchema,
+	AgentPresence,
 	AskOptionSchema,
 	AskQuestionSchema,
 	AskSchema,
@@ -217,6 +219,7 @@ export {
 	MessageBlockSchema,
 	MessageSchema,
 	PinnedEntrySchema,
+	RosterEntrySchema,
 	SystemAccountSchema,
 	TopicSchema,
 	UserAccountSchema,
