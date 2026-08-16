@@ -550,7 +550,14 @@ jobs:
           extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
           extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
           NIXCONF
+          # Pin the installer by content hash, not just version+TLS: the gates
+          # job gets its nix from a SHA-pinned action, so this bare curl must not
+          # be the one unverified fetch feeding a --privileged job that then holds
+          # passwordless sudo and builds+loads the agent image. Fail closed if the
+          # published bytes ever differ from the reviewed pin.
           curl -fsSL https://releases.nixos.org/nix/nix-2.35.1/install -o /tmp/install-nix
+          echo "34e0ef63ec1f3e552e15069660afd9a0a23f69009e340c33067595252888286c  /tmp/install-nix" \
+            | sha256sum -c -
           sh /tmp/install-nix --no-daemon --no-channel-add --nix-extra-conf-file "$conf"
           mkdir -p /home/podman/.config/nix
           cp "$conf" /home/podman/.config/nix/nix.conf
