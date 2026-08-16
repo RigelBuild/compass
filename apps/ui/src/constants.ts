@@ -15,11 +15,19 @@ export interface Lane {
 }
 
 export const BOARD_LANES: Lane[] = [
-	{ state: "queued", label: "Queued", color: "var(--st-paused)" },
-	{ state: "blocked", label: "Blocked", color: "var(--st-blocked)" },
-	{ state: "in_progress", label: "In progress", color: "var(--st-working)" },
-	{ state: "in_review", label: "In review", color: "var(--st-review)" },
-	{ state: "done", label: "Done", color: "var(--st-merged)" },
+	{ state: "queued", label: "Queued", color: "var(--cx-issue-queued)" },
+	{ state: "blocked", label: "Blocked", color: "var(--cx-issue-blocked)" },
+	{
+		state: "in_progress",
+		label: "In progress",
+		color: "var(--cx-issue-in_progress)",
+	},
+	{
+		state: "in_review",
+		label: "In review",
+		color: "var(--cx-issue-in_review)",
+	},
+	{ state: "done", label: "Done", color: "var(--cx-issue-done)" },
 ];
 
 /** The pre-active tier, in Backlog-view display order (Todo first, then

@@ -440,32 +440,33 @@
 	height: 7px;
 	border-radius: 50%;
 	flex: none;
-	background: var(--st-idle);
+	background: var(--cx-st-idle);
 }
 .state-dot[data-state="working"] {
-	background: var(--st-working);
-	box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--st-working) 20%, transparent);
+	background: var(--cx-st-working);
+	box-shadow: 0 0 0 2.5px
+		color-mix(in srgb, var(--cx-st-working) 20%, transparent);
 }
 .state-dot[data-state="waiting"] {
-	background: var(--st-waiting);
+	background: var(--cx-st-waiting);
 }
 .state-dot[data-state="paused"] {
-	background: var(--st-paused);
+	background: var(--cx-st-paused);
 }
 .state-dot[data-state="error"] {
-	background: var(--st-error);
+	background: var(--cx-st-error);
 }
 .state-dot[data-state="done"] {
-	background: var(--st-done);
-	box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--st-done) 22%, transparent);
+	background: var(--cx-st-done);
+	box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--cx-st-done) 22%, transparent);
 }
 .state-dot[data-state="stopped"] {
 	background: transparent;
-	box-shadow: inset 0 0 0 1.5px var(--st-stopped);
+	box-shadow: inset 0 0 0 1.5px var(--cx-st-stopped);
 }
 .state-dot[data-state="disconnected"] {
 	background: transparent;
-	box-shadow: inset 0 0 0 1.5px var(--st-disconnected);
+	box-shadow: inset 0 0 0 1.5px var(--cx-st-disconnected);
 }
 
 .tree-agent .name {
@@ -1557,8 +1558,8 @@
 	background: var(--cx-bg-panel);
 }
 .pr-state[data-state="merged"] {
-	color: #fff;
-	background: var(--st-merged);
+	color: var(--cx-bg);
+	background: var(--cx-issue-done);
 }
 .pr-state[data-state="closed"] {
 	color: var(--cx-error);
@@ -2014,7 +2015,7 @@
 }
 
 .done-row-merge {
-	color: var(--st-merged);
+	color: var(--cx-issue-done);
 }
 
 .done-archived-mark {
@@ -2178,7 +2179,7 @@
 }
 
 .settings-btn-save:not(:disabled):hover {
-	background: var(--cx-accent);
+	background: var(--cx-accent-hover);
 }
 
 .settings-btn-reset {
@@ -3578,7 +3579,7 @@
 }
 
 .obs-run.live .obs-run-dot {
-	background: var(--st-working);
+	background: var(--cx-st-working);
 }
 
 .obs-stop {

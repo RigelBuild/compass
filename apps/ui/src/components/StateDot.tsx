@@ -4,8 +4,9 @@ import type { AgentState } from "../stub-data";
 
 /** The agent-state dot (design D9): one glyph carrying the agent's process
  *  state through color (app.css `.state-dot[data-state=…]`). The visual
- *  vocabulary mirrors Orca's `AgentStateDot` — grey idle, yellow-ringed working,
- *  amber waiting, emerald done, amber paused, hollow-ring stopped, red error —
+ *  vocabulary follows the Night Owl DS palette (`--cx-st-*`) — grey idle,
+ *  green-ringed working, amber waiting, cyan done, grey paused, hollow-ring
+ *  stopped, red error —
  *  with `done` kept visually distinct from idle so a finished-but-unopened agent
  *  reads as done, and `stopped` (terminated) distinct from a live idle session.
  *
