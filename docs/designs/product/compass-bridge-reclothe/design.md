@@ -119,7 +119,7 @@ written against them.
 
 ## Approach
 
-One PR train of five right-sized slices over `Bridge.tsx`, `IssueCard.tsx`, and
+One PR train of six right-sized slices over `Bridge.tsx`, `IssueCard.tsx`, and
 the `.bridge*`/`.swim*`/`.card*`/`.pr-*` blocks of `app.css`, in the order:
 harness extension → grid shell → cards → badges → advancing hook → PRs board.
 Each slice deletes the legacy selectors it replaces in the same diff
@@ -219,7 +219,7 @@ the current `StateDot` (untouched here — its glyph adoption is SEA-2118).
 
 ## Plan
 
-Slices are dependency-ordered; T2–T5 are each independently reviewable and
+Slices are dependency-ordered; T2–T6 are each independently reviewable and
 re-run the visual harness. Class renames land with the slice that owns the
 element (`.swim-*` → the `surfaces.md:211-216` `.bridge-lane` /
 `.bridge-col-head` / `.bridge-cell` vocabulary), updating `Bridge.test.tsx`
@@ -243,7 +243,7 @@ The board frame, hairline borders, panel-tier gutters, tinted column heads,
 display heading, seg metrics (squared off), empty-cell fix, cell metrics.
 Renames `.swim-*` selectors/classes to `.bridge-lane`/`.bridge-col-head`/
 `.bridge-cell`/`.bridge-corner` in `Bridge.tsx` + `app.css`. **The
-`.pr-group-head` head reuses `.swim-gutter` (`Bridge.tsx:296`, styled
+`.pr-group-head` head reuses `.swim-gutter` (`Bridge.tsx:291`, styled
 `app.css:797-805`) — its class reference updates in THIS slice's rename, so the
 grouped PRs list stays coherent until T6 replaces it (F10).** Column tint:
 `Bridge.tsx` sets `style={{ "--lane-tint": lane.color }}` on each head (lane
@@ -326,7 +326,8 @@ plus a sweeping `::after` chase-light gradient
 (`color-mix(in srgb, var(--cx-accent) 32%, transparent)` — the reference's
 32% mix, `astro:598-603`), animated at `var(--cx-pulse-period)`
 `var(--cx-ease-out)` infinite (existing tokens only — no coined literal).
-**Fidelity/guard notes (F12):** `--cx-pulse-period` is 1.6s (`tokens.css:39`)
+**Fidelity/guard notes (F12):** `--cx-pulse-period` (`tokens.css:224`) resolves
+to 1.6s via `--rigel-pulse-period` (`tokens.css:39`)
 where the reference hard-codes a 1.8s sweep (`astro:606`) — we accept the
 token value rather than coin the literal. The period token is **zeroed** under
 reduced motion (`tokens.css:241-248`), which would leave a `0s`-infinite
@@ -383,7 +384,7 @@ export function prBoardGroups(
 ```
 
 **Unassigned lane gutter (F8):** `prBoardGroups` keeps `prRowGroups`'s trailing
-`agent: null` group (`board.ts:136-138`), so the swimlane grid gets an
+`agent: null` group (`board.ts:149-150`), so the swimlane grid gets an
 Unassigned lane — but a null agent has no `StateDot`/handle/count/`→` open
 affordance (the gutter anatomy at `Bridge.tsx:225-242`). T6 designs that
 gutter explicitly: no StateDot, a faint "Unassigned" label, no open affordance
@@ -410,7 +411,10 @@ Interfaces: consumes `PrRow = { issue: Issue; pr: PullRequest }`
 board markup + deletions + unit tests for `prLifecycle`/`prBoardRows`
 (precedence: merged > ready > in_review > in_progress; thread-gating per D1a).
 Test cycle: new vitest units red→green; `Bridge.test.tsx` PR-tab assertions
-updated; harness `bridge-prs.png`.
+updated; harness `bridge-prs.png` — and the stub board set (F2) carries at
+least one merged PR whose parent issue is in `store.issues()`, so the Merged
+column is non-empty in that shot and the D1 board-ification is visually
+verified rather than vacuously green (G11).
 
 ### Out of scope
 
