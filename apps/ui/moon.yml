@@ -34,7 +34,13 @@ tasks:
     # than zero. Green-on-543 and green-on-0 become the same result. Nothing here
     # needs the flag: this project has test files, and its two sibling bun
     # projects run a bare `bun test`.
-    command: 'bun test --conditions browser'
+    # Scoped to `src/` so bun's test runner globs only the unit suites there
+    # (all 33 live under src/) and never the Playwright e2e harness at
+    # e2e/visual-smoke.spec.ts — bun matches `*.spec.ts` by default, and loading
+    # a @playwright/test spec under `bun test` throws "test.describe() … not
+    # expected here". The e2e harness runs via the `test:visual` script
+    # (playwright test), never here.
+    command: 'bun test --conditions browser src/'
     deps: ['install']
     # `bun test` includes the previewable-build gate (src/preview-build.test.ts),
     # which runs a real `vite build` — so its result depends on index.html and

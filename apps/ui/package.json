@@ -4,6 +4,9 @@
 	"license": "AGPL-3.0-only",
 	"private": true,
 	"type": "module",
+	"scripts": {
+		"test:visual": "playwright test"
+	},
 	"dependencies": {
 		"@braintree/sanitize-url": "7.1.2",
 		"@bufbuild/protobuf": "^2.12.1",
@@ -25,6 +28,7 @@
 		"@babel/core": "8.0.1",
 		"@babel/preset-typescript": "8.0.1",
 		"@babel/plugin-syntax-jsx": "8.0.1",
+		"@playwright/test": "1.62.1",
 		"@happy-dom/global-registrator": "20.11.1",
 		"babel-preset-solid": "1.9.12",
 		"@solidjs/testing-library": "0.8.10",
