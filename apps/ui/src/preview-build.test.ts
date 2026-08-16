@@ -43,10 +43,12 @@ const UI_DIR = resolve(import.meta.dir, "..");
 const PREVIEW_BASE_URL = "https://sea2011-preview-door.invalid:8443";
 const PREVIEW_TOKEN = "sea2011-preview-bearer-SENTINEL";
 
-// The tracked dev default (.env.development:23). Vite ignores .env.development in
-// build mode, so a production `vite build` must NOT carry it — asserting its
-// absence proves the build reflects the CONFIGURED env, not a checked-in dev
-// value that would silently override a misconfigured preview.
+// The tracked dev default (.env.development, VITE_COMPASS_BASE_URL). Vite ignores
+// .env.development in build mode, so a production `vite build` must NOT carry it.
+// This is a cheap tripwire, not the load-bearing assertion: absent a new
+// hardcoded loopback fallback (in connection.ts or a vite.config `define`) its
+// absence follows from the mode-loading rule the two positive assertions already
+// exercise. It stays as a regression guard against exactly that wrong-default bake.
 const DEV_DEFAULT_BASE_URL = "127.0.0.1:50051";
 
 // Concatenate every emitted JS chunk once so each assertion greps the whole
