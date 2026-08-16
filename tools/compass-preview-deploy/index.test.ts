@@ -19,6 +19,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	type ActiveDeployment,
+	createDeploymentArgs,
 	type Deployer,
 	type DeploymentState,
 	type Deps,
@@ -413,5 +414,34 @@ describe("deploymentPayload", () => {
 	});
 	test("round-trips through deploymentPr (write + read pinned together)", () => {
 		expect(deploymentPr(deploymentPayload(42))).toBe(42);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// createDeploymentArgs — the gh-api WRITE encoding. This seam regressed twice
+// on the required_contexts empty-array form (`-f key[]=` → [""], `-F key:=[]` →
+// a bogus field), because the fakes bypass realGitHubApi's arg construction.
+// Pin the exact encoding here.
+// ---------------------------------------------------------------------------
+
+describe("createDeploymentArgs", () => {
+	test("encodes required_contexts as an empty array via `-f key[]` (no `=`)", () => {
+		const args = createDeploymentArgs("o/r", "abc123", 42);
+		// gh sends {"required_contexts":[]} ONLY for `-f required_contexts[]` with
+		// no value; the two wrong forms carry an `=` or use `:=` raw-JSON syntax.
+		const i = args.indexOf("required_contexts[]");
+		expect(i).toBeGreaterThan(0);
+		expect(args[i - 1]).toBe("-f");
+		expect(args).not.toContain("required_contexts[]=");
+		expect(args).not.toContain("required_contexts:=[]");
+	});
+	test("carries the pr payload as a single interpolated JSON string", () => {
+		const args = createDeploymentArgs("o/r", "abc123", 42);
+		expect(args).toContain(`payload=${deploymentPayload(42)}`);
+	});
+	test("targets the repo's deployments endpoint with the given ref", () => {
+		const args = createDeploymentArgs("o/r", "abc123", 42);
+		expect(args).toContain("repos/o/r/deployments");
+		expect(args).toContain("ref=abc123");
 	});
 });

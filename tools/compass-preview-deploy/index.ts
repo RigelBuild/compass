@@ -441,6 +441,43 @@ export function deploymentPayload(pr: number): string {
 }
 
 /**
+ * The `gh api` argv (after `gh api`) that creates a preview Deployment. Pure so
+ * the write-side encoding is regression-pinned in a unit test — this seam has
+ * bitten twice on the `required_contexts` empty-array encoding.
+ *
+ * `required_contexts` MUST be an empty JSON array `[]` so the deployment does
+ * not sit pending on checks. gh's ONLY encoding for that is `-f key[]` with NO
+ * `=` and no value (verified against gh 2.96.0): it sends `{"required_contexts":[]}`.
+ * The two wrong forms both broke the claim path: `-f key[]=` sends `[""]` (a
+ * context named ""), and `-F key:=[]` (httpie raw-JSON syntax gh does NOT
+ * support) sends a bogus field `"required_contexts:":"[]"` with the real field
+ * absent — which makes the API default to all-contexts and 409 while CI runs.
+ * `payload` rides as a single interpolated JSON string (a bun-shell `$` string
+ * literal would get its quotes stripped).
+ */
+export function createDeploymentArgs(
+	repo: string,
+	ref: string,
+	pr: number,
+): string[] {
+	return [
+		"--method",
+		"POST",
+		`repos/${repo}/deployments`,
+		"-f",
+		`ref=${ref}`,
+		"-f",
+		`environment=${PREVIEW_ENVIRONMENT}`,
+		"-F",
+		"auto_merge=false",
+		"-f",
+		"required_contexts[]",
+		"-f",
+		`payload=${deploymentPayload(pr)}`,
+	];
+}
+
+/**
  * Recover the PR a preview Deployment tracks from its `payload`, robust to
  * BOTH shapes GitHub can return: the Deployments API returns `payload` as a
  * JSON STRING (what `gh api -f payload=…` sends), but a caller may hold it
@@ -476,31 +513,10 @@ function realGitHubApi(repo: string): GitHubApi {
 				.quiet();
 		},
 		createDeployment: async (pr, ref) => {
-			// required_contexts is sent as a raw-JSON empty array `[]` (NOT `[""]`)
-			// so the deployment is not left pending on a context literally named "";
-			// the PR number rides in payload so findActiveDeployment can recover it.
-			// Build the JSON in JS and interpolate the variable: a bun-shell string
-			// literal `{"pr":123}` gets its quotes STRIPPED (yielding invalid JSON
-			// `{pr:123}`), so the payload must be a single interpolated value. The
-			// raw-JSON `required_contexts:=[]` likewise rides as an array element to
-			// dodge quote-stripping (mirrors setDeploymentStatus's args array below).
-			const payload = deploymentPayload(pr);
-			const args = [
-				"--method",
-				"POST",
-				`repos/${repo}/deployments`,
-				"-f",
-				`ref=${ref}`,
-				"-f",
-				`environment=${PREVIEW_ENVIRONMENT}`,
-				"-F",
-				"auto_merge=false",
-				"-F",
-				"required_contexts:=[]",
-				"-f",
-				`payload=${payload}`,
-			];
-			const out = await $`gh api ${args} --jq .id`.text();
+			// The gh-api arg encoding (incl. the required_contexts empty-array form)
+			// lives in the pure createDeploymentArgs so it is regression-pinned.
+			const out =
+				await $`gh api ${createDeploymentArgs(repo, ref, pr)} --jq .id`.text();
 			const id = Number.parseInt(out.trim(), 10);
 			if (!Number.isFinite(id)) {
 				throw new Error(`could not parse deployment id from: ${out}`);
