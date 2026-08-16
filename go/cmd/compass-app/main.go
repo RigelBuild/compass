@@ -32,6 +32,7 @@ import (
 	"github.com/sealedsecurity/compass/go/internal/appconfig"
 	"github.com/sealedsecurity/compass/go/internal/bridge"
 	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 func main() {
@@ -145,7 +146,7 @@ func run() error {
 	windowMenu := menu.AddSubmenu("Window")
 	windowMenu.Add("New Window").OnClick(func(_ *application.Context) {
 		name := nextWindowName(app)
-		newAppWindow(app, name, "Compass", startupJS)
+		newAppWindow(app, svc, name, "Compass", startupJS)
 	})
 	app.Menu.Set(menu)
 
@@ -155,7 +156,7 @@ func run() error {
 	// (record §A1/§A3), so the factory forwards the identical script to each.
 	names := windowNamesOrDefault(loadWindowSet(stateDir))
 	for _, name := range names {
-		newAppWindow(app, name, "Compass", startupJS)
+		newAppWindow(app, svc, name, "Compass", startupJS)
 	}
 
 	slog.Info("compass-app starting", "mode", cfg.Mode, "socket", socket, "assets", assetsDir)
@@ -182,13 +183,20 @@ func windowOptions(name, title, startupJS string) application.WebviewWindowOptio
 	}
 }
 
-// newAppWindow creates a Compass Bridge window on app from windowOptions. The
-// returned *WebviewWindow is the frozen-record M1 seam (design §M1 interface)
-// that M3b consumes to attach the per-window WindowClosing close-cancel handler;
-// it is unused in the M1→M2 stack positions, so the suppression is removed when
-// M3b wires the handle.
-func newAppWindow(app *application.App, name, title, startupJS string) *application.WebviewWindow { //nolint:unparam // return is the M3b per-window close-handler seam (frozen record §M1); consumed there
-	return app.Window.NewWithOptions(windowOptions(name, title, startupJS))
+// newAppWindow creates a Compass Bridge window on app from windowOptions and
+// attaches the per-window WindowClosing close-cancel handler (design §M3b):
+// when the window closes, every in-flight bridge call registered to it is
+// canceled and dropped, driving the same teardown as compass_rpc_cancel so no
+// call's pump goroutine or server-side subscription leaks for the app's
+// lifetime. Attaching here (not per call site) means every window — New Window
+// menu and restore loop alike — gets the leak gate; it cannot be forgotten at a
+// call site. The unsubscribe func the registration returns is ignored: the
+// window and its handler die together.
+func newAppWindow(app *application.App, svc *bridgeService, name, title, startupJS string) {
+	win := app.Window.NewWithOptions(windowOptions(name, title, startupJS))
+	win.OnWindowEvent(events.Common.WindowClosing, func(_ *application.WindowEvent) {
+		svc.cancelWindow(wailsWindowDispatcher{win: win})
+	})
 }
 
 // nextWindowName returns the first window name that has no live window on app.

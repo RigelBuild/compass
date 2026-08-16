@@ -312,6 +312,33 @@ func (s *bridgeService) Connect(ctx context.Context, req connectRequest) connect
 	}
 }
 
+// cancelWindow cancels every in-flight call registered to a closing window and
+// drops their entries, driving the same id-keyed teardown as compass_rpc_cancel
+// (a canceled pump stops silently — no further frames — so the server-side
+// subscription terminates). It is the close-time leak gate (record §M3b): a
+// window closing without this leaves its calls' pump goroutines and server
+// subscriptions live for the app's lifetime. Matching is by the comparable
+// windowDispatcher the call captured at register time (bridge_service.go window
+// field); a nil win matches nothing (fallback/windowless calls are never swept
+// by a close). Cancels run outside the lock, matching CompassRPCCancel.
+func (s *bridgeService) cancelWindow(win windowDispatcher) {
+	if win == nil {
+		return
+	}
+	s.mu.Lock()
+	var doomed []*inflightCall
+	for id, call := range s.inflight {
+		if call.window == win {
+			doomed = append(doomed, call)
+			delete(s.inflight, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, call := range doomed {
+		call.cancel()
+	}
+}
+
 // register derives the forwarding context for a call and records the call's
 // teardown handle under requestID, cancelling any prior call already under that
 // id first (so a stale forwarder can never keep emitting onto the same event).

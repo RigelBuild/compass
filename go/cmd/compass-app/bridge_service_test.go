@@ -358,6 +358,19 @@ func assertNotInflight(t *testing.T, svc *bridgeService, requestID string) {
 	}
 }
 
+// assertInflight fails if requestID does NOT have an in-flight entry — the
+// positive counterpart to assertNotInflight, used to prove a call survives a
+// close-cancel that targeted a different window.
+func assertInflight(t *testing.T, svc *bridgeService, requestID string) {
+	t.Helper()
+	svc.mu.Lock()
+	_, ok := svc.inflight[requestID]
+	svc.mu.Unlock()
+	if !ok {
+		t.Errorf("requestId %q not in-flight, want live entry", requestID)
+	}
+}
+
 // TestResponseFrameWireContract locks the JSON wire shape of every ResponseFrame
 // kind against the JS contract (apps/ui/src/daemon-transport.ts:19-23). The
 // load-bearing assertion is that head headers marshal as [name,value] TUPLE
@@ -783,3 +796,86 @@ func TestCompassRPCDestroyedWindowDropsFrames(t *testing.T) {
 type destroyedWindow struct{}
 
 func (destroyedWindow) dispatch(string, responseFrame) {}
+
+// TestCancelWindowSweepsOnlyClosingWindow proves §M3b close-time cancel: ONE
+// service holds four long-lived calls — TWO on winA (A1, A2), one on winB, and
+// one with no window (the fallback/windowless path) — all kept in-flight by a
+// stub handler that blocks until the test releases it. cancelWindow(winA) drops
+// BOTH of winA's calls and nothing else: their entries are gone and their run
+// goroutines return (each canceled pump stops → finish), while winB's call and
+// the windowless call stay live and in-flight. Two calls on winA is the point —
+// it pins the collect-and-cancel-ALL loop against a first-match-only regression
+// (a stray break/return would leak A2 and this test would redden).
+// cancelWindow(nil) then sweeps nothing. Finally the server is released so the
+// survivors drain and the test exits clean. Event-gated on channels/waitDone,
+// no sleeps.
+func TestCancelWindowSweepsOnlyClosingWindow(t *testing.T) {
+	release := make(chan struct{})
+	handler := func(w http.ResponseWriter, _ *http.Request) {
+		<-release // block so each call's pump stays in-flight until released
+		w.Header().Set("Content-Type", "application/grpc-web+proto")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
+	socket := stubServer(t, handler)
+
+	svc, _ := newService(socket)
+	winA := newFakeWindow()
+	winB := newFakeWindow()
+	const idA1 = "req-winA-1"
+	const idA2 = "req-winA-2"
+	const idB = "req-winB"
+	const idC = "req-nowin"
+
+	// Launch the calls on the ONE service, each on its own run goroutine
+	// (CompassRPC's own register-then-go-run shape). The window is injected on
+	// the registered inflightCall directly because windowFromContext returns nil
+	// in this non-gtk3 test build. Each run signals done on return so teardown is
+	// event-gated, not raced.
+	launch := func(win windowDispatcher, req rpcRequest) chan struct{} {
+		callCtx, call := svc.register(context.Background(), req.RequestID)
+		call.window = win
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			svc.run(callCtx, call, req)
+		}()
+		return done
+	}
+	doneA1 := launch(winA, rpcRequest{RequestID: idA1, Path: "/a1"})
+	doneA2 := launch(winA, rpcRequest{RequestID: idA2, Path: "/a2"})
+	doneB := launch(winB, rpcRequest{RequestID: idB, Path: "/b"})
+	doneC := launch(nil, rpcRequest{RequestID: idC, Path: "/c"})
+
+	// All four are registered and blocked in their pump (the handler is stuck on
+	// release), so all four entries are live before any cancel.
+	assertInflight(t, svc, idA1)
+	assertInflight(t, svc, idA2)
+	assertInflight(t, svc, idB)
+	assertInflight(t, svc, idC)
+
+	// Close winA: BOTH of winA's calls are swept, not just the first. Each entry
+	// is dropped and its canceled pump stops → run returns → done closes.
+	svc.cancelWindow(winA)
+	waitDone(t, doneA1)
+	waitDone(t, doneA2)
+	assertNotInflight(t, svc, idA1)
+	assertNotInflight(t, svc, idA2)
+
+	// B (other window) and C (no window) are untouched by winA's close.
+	assertInflight(t, svc, idB)
+	assertInflight(t, svc, idC)
+
+	// A nil window matches nothing: the windowless/fallback call is never swept
+	// by a close, and the surviving windowed call stays live.
+	svc.cancelWindow(nil)
+	assertInflight(t, svc, idB)
+	assertInflight(t, svc, idC)
+
+	// Release the server so B and C complete and tear down; the test exits clean.
+	close(release)
+	waitDone(t, doneB)
+	waitDone(t, doneC)
+	assertNotInflight(t, svc, idB)
+	assertNotInflight(t, svc, idC)
+}
