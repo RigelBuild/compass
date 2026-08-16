@@ -275,3 +275,94 @@ func TestRunSecretDelete(t *testing.T) {
 		t.Errorf("delete output %q does not confirm the name", out.String())
 	}
 }
+
+// TestParseKindRoutingRejections asserts parseKind rejects routing flags that do
+// not belong to the chosen kind, and still accepts each kind's valid routing.
+func TestParseKindRoutingRejections(t *testing.T) {
+	reject := []struct {
+		name     string
+		kind     string
+		provider string
+		host     string
+		want     string
+	}{
+		{name: "generic with provider", kind: kindGeneric, provider: "foo", want: "--provider"},
+		{name: "generic with host", kind: kindGeneric, host: "h", want: "--host"},
+		{name: "provider with host", kind: kindProvider, provider: "foo", host: "h", want: "--host"},
+		{name: "gh with provider", kind: kindGH, host: "h", provider: "foo", want: "--provider"},
+	}
+	for _, tt := range reject {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseKind(tt.kind, tt.provider, tt.host)
+			if err == nil {
+				t.Fatalf("parseKind(%q, %q, %q) = nil error, want rejection", tt.kind, tt.provider, tt.host)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("error %q does not mention %q", err.Error(), tt.want)
+			}
+			if got != compassv1.SecretKind_SECRET_KIND_UNSPECIFIED {
+				t.Errorf("kind = %v, want UNSPECIFIED on error", got)
+			}
+		})
+	}
+
+	accept := []struct {
+		name     string
+		kind     string
+		provider string
+		host     string
+		want     compassv1.SecretKind
+	}{
+		{name: "generic no routing", kind: kindGeneric, want: compassv1.SecretKind_SECRET_KIND_GENERIC},
+		{name: "provider with provider", kind: kindProvider, provider: "anthropic", want: compassv1.SecretKind_SECRET_KIND_PROVIDER},
+		{name: "gh with host", kind: kindGH, host: "github.com", want: compassv1.SecretKind_SECRET_KIND_GH},
+	}
+	for _, tt := range accept {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseKind(tt.kind, tt.provider, tt.host)
+			if err != nil {
+				t.Fatalf("parseKind(%q, %q, %q) = %v, want accept", tt.kind, tt.provider, tt.host, err)
+			}
+			if got != tt.want {
+				t.Errorf("kind = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestRunSecretSetBound asserts a stdin value over maxSecretBytes is rejected
+// before any RPC, while a value exactly at the cap is accepted.
+func TestRunSecretSetBound(t *testing.T) {
+	t.Run("over the cap", func(t *testing.T) {
+		fake := &fakeSecrets{}
+		client := startFakeSecretsServer(t, fake)
+		var out strings.Builder
+		in := strings.NewReader(strings.Repeat("a", maxSecretBytes+1))
+		err := runSecretSet(context.Background(), client, secretSetArgs{name: "X", delivery: "env", kind: "generic"}, in, &out)
+		if err == nil {
+			t.Fatal("runSecretSet with oversized stdin = nil error, want rejection")
+		}
+		if !strings.Contains(err.Error(), "limit") {
+			t.Errorf("error %q does not mention the limit", err.Error())
+		}
+		if fake.gotSet != nil {
+			t.Error("SetSecret was called despite oversized value")
+		}
+	})
+
+	t.Run("exactly at the cap", func(t *testing.T) {
+		fake := &fakeSecrets{}
+		client := startFakeSecretsServer(t, fake)
+		var out strings.Builder
+		in := strings.NewReader(strings.Repeat("a", maxSecretBytes))
+		if err := runSecretSet(context.Background(), client, secretSetArgs{name: "X", delivery: "env", kind: "generic"}, in, &out); err != nil {
+			t.Fatalf("runSecretSet at cap: %v", err)
+		}
+		if fake.gotSet == nil {
+			t.Fatal("SetSecret was not called for a value at the cap")
+		}
+		if len(fake.gotSet.GetValue()) != maxSecretBytes {
+			t.Errorf("value length = %d, want %d", len(fake.gotSet.GetValue()), maxSecretBytes)
+		}
+	})
+}
