@@ -91,8 +91,8 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: CI
+  gates:
+    name: Gates (moon + pgtest)
     runs-on: ubuntu-latest
     # Skip only the no-op case of the `edited` trigger above: a PR title/body
     # edit that did NOT move the base. `changes.base` is present on the payload
@@ -313,6 +313,276 @@ jobs:
           echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
           exit "$rc"
 
+      - name: Retrospect
+        # Collapse the single job's flat task fan-out into per-task sections in
+        # the Actions log, so a failure is one expand instead of a scroll. Reads
+        # .moon/cache/{ci,run}Report.json — no token, no added permissions, so
+        # `permissions: contents: read` above is untouched. `success() ||
+        # failure()` so it still renders when the gate failed.
+        #
+        # This is third-party JS that runs on every event, fork PRs included, so
+        # the SHA pin below IS its trust anchor — the same posture the pgtest
+        # image digest and the nix substituter keys take for their own boundaries.
+        # At the pinned commit the action takes no token, makes no network call,
+        # and only reads and prints local cache files, so a fork PR cannot turn it
+        # into an exfiltration or write path. Bump the pin deliberately (it rides
+        # the same dependabot config as the other pinned actions), never drift it.
+        if: success() || failure()
+        uses: appthrust/moon-ci-retrospect@631a1e667f96e8ca893eab69f03e425f7fbfdc2b # v2.1.0
+
+  dogfood-e2e:
+    name: Dogfood e2e (deterministic full-stack tier)
+    runs-on: ubuntu-latest
+    # A DEDICATED job in a PRIVILEGED container, split off from `gates`, for one
+    # reason: the image-affected seed path. On a PR that changes the image
+    # closure the gate builds the agent image from THIS tree and copies it into
+    # local containers-storage (`nix run …#devenv -- container copy agent`,
+    # skopeo `nix:` → `containers-storage:`). That copy needs the equivalent of
+    # `podman unshare` — a nested user namespace — which the bare `ubuntu-latest`
+    # runner denies (`Error during unshare(...): Operation not permitted`;
+    # skopeo#2377, actions/runner-images#10443). `podman run` works there (the
+    # pulled-image legs execute), but the copy-to-storage does not. A privileged
+    # container is the reliable way to grant the userns caps that copy needs
+    # (the redhat-actions / travier pattern), so the from-tree seed runs here
+    # rather than in `gates`.
+    #
+    # It is its OWN job, not `gates` wrapped in a container, so `gates` stays on
+    # the bare runner: wrapping the whole job would flip its Postgres service
+    # from 127.0.0.1 to the `postgres` service hostname (containerized jobs reach
+    # services by label) and break the Real-Postgres step's DSN. This tier needs
+    # no Postgres service anyway — it stands up its OWN private postgres
+    # (go/cmd/compass-postgres) inside the stack. The cost is a second nix +
+    # toolchain bootstrap; the `CI` rollup below keeps the single required check.
+    container:
+      # A glibc≥2.27 image carrying podman + newuidmap: the runner mounts its
+      # node20 (dynamically linked) into the container to run the JS actions
+      # below, so a musl or ancient-glibc image breaks checkout at
+      # `/__e/node20/bin/node`. quay.io/podman/stable is Fedora-based (recent
+      # glibc) and ships the rootless podman + shadow-utils stack (subuid/subgid
+      # preconfigured for its `podman` user) this job needs. --privileged is what
+      # lets rootless podman-in-a-container work at all here: the podman user's
+      # nested user namespaces (for `podman unshare`, image pulls, and the e2e's
+      # own agent-container spawns) need the userns + mount caps the default
+      # container sandbox withholds.
+      image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
+      options: --privileged
+    # Mirror the `gates` guard: skip only the no-op `edited` (title/body) case.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.action != 'edited' ||
+      github.event.changes.base != null
+    timeout-minutes: 60
+    env:
+      # Same short temp root as `gates`: the e2e suite binds AF_UNIX sockets
+      # under t.TempDir() and the 108-byte sun_path cap needs the budget.
+      TMPDIR: /tmp
+      # The rootless runtime dir for the podman user. Without it, containers
+      # (skopeo's containers-storage write in the seed, and the e2e's own agent
+      # spawns) default their runroot to the system `/run/containers`, which the
+      # non-root podman user cannot create (`mkdir /run/containers: permission
+      # denied`). Pointing XDG_RUNTIME_DIR at a podman-owned dir (created in prep)
+      # puts the rootless runroot there instead. `-E` on the step shell forwards
+      # it across the user switch.
+      XDG_RUNTIME_DIR: /run/user/1000
+    # Every `run:` step executes as the image's built-in rootless `podman` user
+    # (uid 1000), NOT root. The container itself must stay root (no `--user`): the
+    # root-only prep step below needs to create /nix and grant sudo, which a
+    # non-root container user cannot do. But the WORK must not run as root,
+    # because the self-hosted postgres this tier stands up
+    # (go/cmd/compass-postgres) runs initdb/postgres, and PostgreSQL refuses to
+    # run as root by design (`initdb: cannot be run as root`). Running every step
+    # as one consistent non-root uid — the purpose-built rootless `podman` user,
+    # which already has subuid/subgid configured — makes postgres, rootless
+    # podman storage, the nix build, and the image seed all agree, matching how
+    # the suite runs locally (a normal non-root user).
+    #
+    # `defaults.run.shell` runs each step through the `/usr/local/bin/podman-step`
+    # wrapper the prep step writes. The wrapper is spawned by the runner as the
+    # container user (root), does the one thing that MUST be root, then drops to
+    # the podman user for the step body:
+    #   - GitHub's `$GITHUB_PATH` / `$GITHUB_OUTPUT` are runner-created files owned
+    #     by root (mode 644). The steps below append to them (toolchain bin dirs,
+    #     the image_affected flag), which the non-root podman user cannot do — so
+    #     the wrapper first `chmod`s the per-step file-command dir writable while
+    #     it is still root, then execs the body as podman. Doing this in the
+    #     wrapper (not a step) is what lets every step keep using the standard
+    #     `>>"$GITHUB_PATH"` idiom unchanged.
+    #   - `sudo -u podman -E` preserves the runner env across the user switch
+    #     (the `$GITHUB_*` vars, `$GITHUB_BASE_REF` for moon's detection); `-E` is
+    #     permitted by the `SETENV:` tag on the podman sudoers line prep writes.
+    #   - explicit `env "PATH=…"` overrides the one var `-E` cannot carry (sudo
+    #     resets PATH via secure_path): the runner-built PATH FIRST (its nix +
+    #     toolchain bin dirs win), then the standard system dirs appended
+    #     (`:/usr/local/bin:/usr/bin:/bin`), which the runner's PATH omits inside
+    #     this container so `mktemp`/`curl`/`sh`/`git` resolve. bash is absolute
+    #     (/usr/bin/bash) because `env "PATH=…"` resolves the interpreter against
+    #     that PATH. HOME is pinned to the podman user's home (over the runner's
+    #     /github/home) so nix and the go/bun/moon caches resolve there.
+    # `uses:` steps (checkout) ignore this shell and still run as root — their
+    # output is world-readable, which is all the podman steps need from them.
+    defaults:
+      run:
+        shell: podman-step {0}
+    steps:
+      - name: Provision the container as root (prep for the podman user)
+        # The ONLY step that runs as root — it overrides the job's default
+        # podman-user shell (see `defaults.run` above) with a plain root bash to
+        # set up everything the non-root work needs, none of which the podman user
+        # could do itself:
+        #   - gcc + jq + xz + procps-ng: this minimal Fedora image lacks them,
+        #     and the bare ubuntu runner had them ambiently. gcc for `go test
+        #     -race` (cgo); jq for the toolchain bootstrap parse + the Detect
+        #     step's moon JSON; xz for the nix installer tarball; procps-ng for
+        #     `ps`, which the e2e harness reads the live compass-runner's argv
+        #     from (harness_test.go assertRunnerHasConfiguredFlags reads the
+        #     process table to prove the configured flags reached the runner).
+        #   - /nix owned by the podman user: the nix single-user install below
+        #     runs AS podman and needs to own the store (the installer does
+        #     `mkdir /nix` as root normally; here we pre-create it owned by
+        #     podman so a non-root install can populate it).
+        #   - /run/user/1000 owned by the podman user: the rootless runtime dir
+        #     $XDG_RUNTIME_DIR (job env) points at, so containers-storage puts its
+        #     runroot there instead of the root-only /run/containers.
+        #   - /home/podman/.config/containers/containers.conf with
+        #     netns = "bridge": the e2e stands up agent containers via rootless
+        #     podman NESTED inside this privileged container (podman-in-podman).
+        #     Each agent container's root entrypoint arms an nftables egress
+        #     firewall (runtime/egress.go); but the default rootless netns
+        #     (pasta/slirp4netns) does not give a doubly-nested netns a
+        #     manageable nftables — `nft add table` fails EPERM even with
+        #     CAP_NET_ADMIN present in the exec's effective set. A bridge netns
+        #     (netavark) is owned by the nested user namespace, so nft works.
+        #     Single-level rootless — the production model a normal dev box and
+        #     the real runner use — takes the default netns and is unaffected;
+        #     this reshapes only the CI nesting, not the product or its egress
+        #     security property (default-deny + allowlist is armed identically).
+        #   - passwordless sudo for podman WITH the SETENV tag: every work step
+        #     runs via `sudo -u podman -E` (see `defaults.run` above), and `-E`
+        #     (preserve the runner's environment across the user switch) is only
+        #     permitted when the sudoers rule carries `SETENV:`. The nix installer
+        #     also shells `sudo` in single-user mode. The image grants the podman
+        #     user no sudo by default.
+        #   - git safe.directory system-wide: GitHub checks the repo out as the
+        #     host runner uid, but the podman user reads it — without this, git
+        #     (and moon's affected-detection, which shells git) fails with
+        #     `detected dubious ownership`. `--system` so the podman user sees it;
+        #     `*` covers the vendored forks under the tree (each a git-aware moon
+        #     project).
+        #   - /usr/bin/podman-step: the wrapper `defaults.run.shell` runs every
+        #     other step through (see the job's `defaults.run` comment). GitHub
+        #     resolves a custom shell's command via $PATH, so it is named bare
+        #     (`podman-step {0}`) — an absolute-path custom shell trips the
+        #     runner's .NET path parser ("Second path fragment must not be a
+        #     drive or UNC name"). It lands in /usr/bin (always on the runner's
+        #     PATH) and is written here, while root, because it must exist before
+        #     the first podman step and only root can install it and chmod the
+        #     runner's file-command files.
+        shell: bash -e {0}
+        run: |
+          dnf install -y --setopt=install_weak_deps=False gcc jq xz procps-ng
+          install -d -m 0755 -o podman -g podman /nix
+          install -d -m 0700 -o podman -g podman /run/user/1000
+          install -d -m 0755 -o podman -g podman \
+            /home/podman/.config /home/podman/.config/containers
+          cat >/home/podman/.config/containers/containers.conf <<'CONF'
+          [containers]
+          netns = "bridge"
+          CONF
+          chown podman:podman /home/podman/.config/containers/containers.conf
+          echo "podman ALL=(ALL) NOPASSWD: SETENV: ALL" >/etc/sudoers.d/podman
+          git config --system --add safe.directory '*'
+          cat >/usr/bin/podman-step <<'WRAP'
+          #!/usr/bin/env bash
+          # Run one GitHub step as the rootless podman user. The runner spawns
+          # this as root; make the per-step file-command files (owned root, 644)
+          # writable so the podman body can append to $GITHUB_PATH/$GITHUB_OUTPUT,
+          # then drop to podman preserving env, fixing PATH, and pinning HOME.
+          set -e
+          [ -n "$RUNNER_TEMP" ] && chmod -R a+rw "$RUNNER_TEMP/_runner_file_commands" 2>/dev/null || true
+          exec sudo -u podman -E env "PATH=$PATH:/usr/local/bin:/usr/bin:/bin" HOME=/home/podman /usr/bin/bash -e "$1"
+          WRAP
+          chmod 0755 /usr/bin/podman-step
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Hand the checkout to the podman user (as root)
+        # actions/checkout runs as the container user (root), so the worktree
+        # lands root-owned. The podman user that runs every step below must WRITE
+        # into it — moon drops its cache at .moon/cache, and the seed's nix build
+        # from agent-image/ writes there too — so a read-only (safe.directory)
+        # grant is not enough; without ownership moon fails with
+        # `Failed to create .moon/cache: Permission denied`. chown the whole
+        # checkout to podman. Overrides the default podman shell (only root can
+        # chown), so it is one of the two root steps in this job.
+        shell: bash -e {0}
+        run: chown -R podman:podman "$GITHUB_WORKSPACE"
+
+      - name: Install Nix (single-user, as the podman user)
+        # This REPLACES cachix/install-nix-action, which cannot serve this job:
+        # the action installs as the container user (root), and with no systemd in
+        # the container it does a SINGLE-USER install whose store database is
+        # root-owned — so the non-root podman user that runs every other step
+        # could not `nix build` (the image seed needs a build). Installing nix AS
+        # the podman user (this step runs under the job's default podman shell)
+        # puts the store db under the same uid that later builds and seeds.
+        #
+        # `build-users-group =` (empty) selects the single-user build model (no
+        # nixbld group in this image). `--no-channel-add` matches the action; the
+        # installer is pinned to the same nix version the action installs (2.35.1).
+        # The profile bin dir goes on $GITHUB_PATH so the toolchain steps below
+        # find `nix`. The nix.conf details are documented at the `run:` below.
+        run: |
+          # The nix config the podman user reads on every `nix` call. Written to
+          # BOTH the installer's --nix-extra-conf-file (so the install itself honors
+          # build-users-group =) AND the podman user's own ~/.config/nix/nix.conf
+          # (so `nix eval`/`nix build` in the steps below see nix-command + flakes;
+          # the system /etc/nix/nix.conf the installer writes is not consulted for a
+          # single-user install run as a normal user). Mirrors the `gates`
+          # install-nix-action config exactly — the SAME two cache substituters +
+          # trusted keys the vendored forks use, never `accept-flake-config` (which
+          # would trust a PR-supplied substituter + key).
+          conf=$(mktemp)
+          cat >"$conf" <<'NIXCONF'
+          build-users-group =
+          experimental-features = nix-command flakes
+          extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+          extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+          NIXCONF
+          curl -fsSL https://releases.nixos.org/nix/nix-2.35.1/install -o /tmp/install-nix
+          sh /tmp/install-nix --no-daemon --no-channel-add --nix-extra-conf-file "$conf"
+          mkdir -p /home/podman/.config/nix
+          cp "$conf" /home/podman/.config/nix/nix.conf
+          echo "/home/podman/.nix-profile/bin" >>"$GITHUB_PATH"
+
+      - name: Put the language toolchains on PATH
+        # The dogfood seed's `moon query tasks --affected` and the e2e `go test`
+        # need the same nix-pinned toolchain the gates job builds. Phase one:
+        # bun/node/moon/go from gate-tools.nix's `langs` (see the gates job for
+        # the two-phase rationale). Duplicated here because this is a separate
+        # job with its own runner filesystem.
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Put the dev shell's nixpkgs tools on PATH
+        # Phase two: the nixpkgs tools (buf, the Go battery, …) from the parity
+        # script's own parse of devenv.nix, run under the bun phase one added.
+        run: |
+          attrs=$(bun tools/toolchain/parity.ts --print-nix-attrs)
+          out=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
+          echo "$out/bin" >>"$GITHUB_PATH"
+
       - name: Detect whether this PR changes the compass-agent image
         id: image_affected
         # PRs only. Whether the e2e gate must test a LOCALLY-BUILT image or the
@@ -335,16 +605,15 @@ jobs:
         # `packages/compass-agent/**` — in the image's `build.inputs` but the
         # compass-agent PROJECT's tree — is invisible to `projects --affected`,
         # and the gate would silently pull and test a stale published image.
-        # moon resolves the base from GITHUB_BASE_REF exactly as the "CI
-        # (affected)" step above does. `moon query tasks` prints a JSON envelope
-        # on stdout UNCONDITIONALLY — an unaffected project yields
-        # `{"tasks": {}, "options": {…}}`, not empty output — so the signal is the
-        # discriminator: populated `.tasks` = affected (build from tree), empty =
-        # not (fall to the pull branch below); the non-PR path never runs this
-        # step, so image_affected is unset and the seed step's `!= true` also
-        # pulls. moon's own exit is checked SEPARATELY from jq: under pipefail a
-        # `moon query` that ITSELF exits non-zero (moon error, renamed id,
-        # transient) would sink the pipe, fall to the else, and set
+        # moon resolves the base from GITHUB_BASE_REF. `moon query tasks` prints
+        # a JSON envelope on stdout UNCONDITIONALLY — an unaffected project
+        # yields `{"tasks": {}, "options": {…}}`, not empty output — so the
+        # signal is the discriminator: populated `.tasks` = affected (build from
+        # tree), empty = not (fall to the pull branch below); the non-PR path
+        # never runs this step, so image_affected is unset and the seed step's
+        # `!= true` also pulls. moon's own exit is checked SEPARATELY from jq:
+        # under pipefail a `moon query` that ITSELF exits non-zero (moon error,
+        # renamed id, transient) would sink the pipe, fall to the else, and set
         # image_affected=false — silently pulling published :latest and testing
         # the WRONG image with no signal. A broken moon means the detection
         # cannot be trusted, so fail the step loudly rather than guess.
@@ -376,27 +645,40 @@ jobs:
         #   image-affected PR → build+load from THIS tree. On a PR that changes
         #   the image's inputs the gate must prove the image THIS PR produces, not
         #   the last-published `:latest`. `nix run path:../forks/devenv#devenv --
-        #   container copy agent`, run from agent-image/, builds the image and
-        #   copies it into local containers-storage (agent-image/devenv.nix's
-        #   `registry = "containers-storage:"`) — the exact ref the fixture
-        #   resolves — with no registry round-trip and no `:pr-<N>` tag. Because
-        #   this branch now fires ONLY when the image is affected (see the fixed
-        #   detection above), `moon ci :ci` on this same PR already built
-        #   compass-agent-image, so the copy reuses that warm nix store and its
-        #   realize is near-free.
+        #   container copy agent -r docker-archive:…`, run from agent-image/,
+        #   builds the image and writes it to a docker-archive TAR, which `podman
+        #   load` then imports into the podman user's rootless containers-storage
+        #   as the exact `compass-agent:latest` ref the fixture resolves — with no
+        #   registry round-trip and no `:pr-<N>` tag. The docker-archive write is
+        #   a plain file (no user namespace); `podman load` sets up its rootless
+        #   namespace via newuidmap, avoiding the bare host unshare the GitHub
+        #   runner denies a non-root uid (see the run body).
         #
         #   otherwise → pull the published image. On a PR that leaves the image
         #   untouched (and on every push to main, where the detection step does
         #   not run and image_affected is unset), test the last-published
         #   `:latest`. The image is public (SEA-1690; Matt-ruled public), so this
-        #   pulls with no login, no credential, and no `packages: read` —
-        #   `permissions: contents: read` above stays untouched. The mutable
-        #   `:latest` tag is intentional (Matt-ruled always-fresh) — do NOT
-        #   "fix" it to a digest pin; the gate is meant to test whatever main
+        #   pulls with no login, no credential, and no `packages: read`. The
+        #   mutable `:latest` tag is intentional (Matt-ruled always-fresh) — do
+        #   NOT "fix" it to a digest pin; the gate is meant to test whatever main
         #   last published.
         run: |
           if [ "${{ steps.image_affected.outputs.image_affected }}" = "true" ]; then
-            ( cd agent-image && nix run path:../forks/devenv#devenv -- container copy agent )
+            # Build the image from THIS tree and load it into the podman user's
+            # rootless containers-storage WITHOUT a bare host unshare — which the
+            # GitHub runner denies a non-root uid even in a privileged container
+            # (skopeo#2377, actions/runner-images#10443). nix2container's skopeo
+            # copies the `nix:` image to a `docker-archive:` TAR, a plain file
+            # write with no user namespace and no containers-storage. `podman
+            # load` then imports that tar; it sets up its rootless namespace
+            # through newuidmap against the podman user's subuid/subgid (the same
+            # path a plain `podman pull` uses, which the host allows), so it never
+            # hits the denied bare unshare. The image lands in the podman user's
+            # own rootless storage as `compass-agent:latest`, the exact ref the
+            # e2e run (also podman) resolves.
+            ( cd agent-image && nix run path:../forks/devenv#devenv -- container copy agent -r "docker-archive:/tmp/compass-agent-seed.tar:" )
+            podman load -i /tmp/compass-agent-seed.tar
+            rm -f /tmp/compass-agent-seed.tar
           else
             podman pull ghcr.io/rigelbuild/compass-agent:latest
             podman tag ghcr.io/rigelbuild/compass-agent:latest compass-agent:latest
@@ -405,25 +687,22 @@ jobs:
       - name: Dogfood e2e (deterministic full-stack tier)
         working-directory: go
         env:
-          # -race needs cgo, matching the pgtest sibling above (go/moon.yml's race
-          # lane and the Real-Postgres step both build with CGO_ENABLED=1). Without
-          # it `go test -race` refuses to build.
+          # -race needs cgo, matching go/moon.yml's race lane. Without it `go
+          # test -race` refuses to build.
           CGO_ENABLED: '1'
         # The deterministic tier: a REAL full stack — compass-server + runner +
-        # agent-container + a PRIVATE postgres the suite stands up itself (not the
-        # job's `services: postgres`) — brought up via stack.Up, driven against a
-        # canned in-process model. No live model egress and no secrets (Decision
-        # D2), so it is reproducible and safe on every PR. It is build-tagged
-        # `podman`, so the moon `go test ./...` battery never compiles it — this
-        # step is the ONLY thing that runs it.
+        # agent-container + a PRIVATE postgres the suite stands up itself — brought
+        # up via stack.Up, driven against a canned in-process model. No live model
+        # egress and no secrets (Decision D2), so it is reproducible and safe on
+        # every PR. It is build-tagged `podman`, so the moon `go test ./...`
+        # battery never compiles it — this step is the ONLY thing that runs it.
         #
-        # Same capture-replay-exit shape as the Real-Postgres step above and for
-        # the same reason: redirect (not a `| tee` pipeline, whose exit status is
-        # tee's 0 and would swallow a FAIL), replay the log, then exit on go
-        # test's own status. `|| rc=$?` because the step runs under `bash -e`,
-        # which would otherwise abort before the log is printed. -race matches the
-        # pgtest step; the 20m timeout is finite headroom for a run that builds 3
-        # binaries, stands up a real stack, and runs a container turn.
+        # Same capture-replay-exit shape as the gates job's suites: redirect (not
+        # a `| tee` pipeline, whose exit status is tee's 0 and would swallow a
+        # FAIL), replay the log, then exit on go test's own status. `|| rc=$?`
+        # because the step runs under `bash -e`. The 20m timeout is finite
+        # headroom for a run that builds 3 binaries, stands up a real stack, and
+        # runs a container turn.
         run: |
           rc=0
           go test -tags podman -race -v -timeout 20m ./e2e/... >/tmp/e2e.log 2>&1 || rc=$?
@@ -466,20 +745,47 @@ jobs:
           fi
           echo "dogfood e2e: the deterministic full-stack tier ran and reported ok"
 
-      - name: Retrospect
-        # Collapse the single job's flat task fan-out into per-task sections in
-        # the Actions log, so a failure is one expand instead of a scroll. Reads
-        # .moon/cache/{ci,run}Report.json — no token, no added permissions, so
-        # `permissions: contents: read` above is untouched. `success() ||
-        # failure()` so it still renders when the gate failed.
-        #
-        # This is third-party JS that runs on every event, fork PRs included, so
-        # the SHA pin below IS its trust anchor — the same posture the pgtest
-        # image digest and the nix substituter keys take for their own boundaries.
-        # At the pinned commit the action takes no token, makes no network call,
-        # and only reads and prints local cache files, so a fork PR cannot turn it
-        # into an exfiltration or write path. Bump the pin deliberately (it rides
-        # the same dependabot config as the other pinned actions), never drift it.
-        if: success() || failure()
-        uses: appthrust/moon-ci-retrospect@631a1e667f96e8ca893eab69f03e425f7fbfdc2b # v2.1.0
+  CI:
+    name: CI
+    # The single required check: a rollup that succeeds only if every work job
+    # above did. Requiring THIS one status (not each work job) means the set of
+    # jobs can be split or renamed without touching branch protection — a new
+    # tier just joins `needs` below.
+    #
+    # The `if` has two parts AND-ed together, and both are load-bearing:
+    #   - `always()` so the rollup runs even when a needed job FAILED. Without it
+    #     the default `success()` gate would SKIP this job when a work job failed,
+    #     and branch protection treats a skipped required check as passing — so a
+    #     red work job would be mergeable. `always()` forces the rollup to run and
+    #     inspect each result, turning any non-success into a red required check.
+    #   - the SAME no-op-`edited` guard the work jobs carry, so on a PR title/body
+    #     edit that did not move the base — where both work jobs skip — this rollup
+    #     skips too, rather than running and failing on `skipped != success`. A
+    #     bare `always()` would red the required check on a legitimate no-op edit.
+    # `always()` must be parenthesized: `&&` binds tighter than `||`, so without
+    # the parens the trailing `|| changes.base != null` would detach from the AND.
+    needs: [gates, dogfood-e2e]
+    if: >-
+      always() && (
+      github.event_name != 'pull_request' ||
+      github.event.action != 'edited' ||
+      github.event.changes.base != null )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every work job to have succeeded
+        # `needs.<job>.result` is one of success | failure | cancelled | skipped.
+        # Only `success` passes. This step runs only when the rollup's own `if`
+        # let it (see above): the no-op-`edited` case skips the whole rollup, so a
+        # work-job `skipped` reaching here means a real dependency skip, not the
+        # benign no-op — still correctly a non-success. Any failure or
+        # cancellation reds the one required check.
+        run: |
+          gates='${{ needs.gates.result }}'
+          dogfood='${{ needs.dogfood-e2e.result }}'
+          echo "gates=$gates dogfood-e2e=$dogfood"
+          if [ "$gates" != "success" ] || [ "$dogfood" != "success" ]; then
+            echo "::error::a required work job did not succeed (gates=$gates, dogfood-e2e=$dogfood)"
+            exit 1
+          fi
+          echo "all work jobs succeeded"
 
