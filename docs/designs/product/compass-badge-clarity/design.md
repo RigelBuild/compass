@@ -15,8 +15,9 @@ meaning is carried by **color alone** — a user cannot tell what a badge means,
 it belongs to (CI vs review), or its status without prior knowledge. Worse, the token tier
 maps CI-pass and review-approved to the **same green** and CI-fail and review-changes to
 the **same red**, so color *cannot* disambiguate even for a trained eye. This record
-enumerates several buildable directions — each with a precise render spec — for Matt to pick
-from via a side-by-side render. It recommends, but does not select.
+enumerated several buildable directions — each with a precise render spec — and ran a
+side-by-side render (T1); **Matt selected Option B** from it (see `## Decision`). The
+implementation below is scoped to that choice.
 
 ## Global Constraints
 
@@ -29,8 +30,11 @@ from via a side-by-side render. It recommends, but does not select.
   (`IssueCard`), PR rows (`Bridge`), and Done rows (`DoneView`); any option must state how
   it reads at that size.
 - **Two axes on one card.** A PR shows BOTH a CI badge AND a review badge, adjacent.
-  Because of the color collisions below, the CI-vs-review distinction must ride a second
-  channel (glyph family / shape / label / position) — never color.
+  Because of the color collisions below, under this record's commitment to keep the
+  semantic `--cx-*` routing intact (T2) the CI-vs-review distinction must ride a second,
+  non-color channel (glyph family / shape / label / position); Option E is the carried
+  alternative that spends color instead (so "never color" is this record's chosen
+  posture, not a physical law — see the collisions section and Option E).
 - **Aesthetic:** match the state-dot pixel-art 1-bit vocabulary — whole-cell 9×9 grids,
   `shape-rendering="crispEdges"`, one CSS px per cell (`components.md:93-95`, quoted
   below). Matt has stated he likes this form and wants the badges to lead with it.
@@ -253,8 +257,8 @@ site's recolor as Compass's cheapest de-collision baseline.
 
 All options keep `ciBadge`/`reviewBadge` untouched and change only markup + CSS at the
 three consumer sites. All options add `aria-label` (e.g. `aria-label="CI: failing"`,
-`aria-label="Review: changes requested"`) and a matching `title` tooltip — that fix ships
-regardless of which visual direction wins.
+`aria-label="Review: changes requested"`) and a matching `title` tooltip — that a11y fix
+ships regardless of the visual form.
 
 ### Option A — Pixel-art 1-bit glyph badges (LEAD)
 
@@ -292,17 +296,21 @@ a check on a PR chip (CI pass) and a check on an agent row (done) share a silhou
 card-vs-row context carries it, and one board-wide "success" mark is a feature, but the
 uniqueness guarantee does not extend across component families.
 
-**Cost:** medium. One new `BadgeGlyph` Solid component emitting inline SVG (mirroring how
-`compass-ui` emits the state-dot SVG), 6 glyph grids added to `components.md`, a small CSS
-file, 3 consumer flips. No token changes.
+**Cost:** medium. One new `BadgeGlyph` Solid component emitting inline SVG (built from the
+render spec below — see the note on the emission precedent), 6 glyph grids added to
+`components.md`, a small CSS file, 3 consumer flips. No token changes.
 
 **Render spec (exact):**
 
 - Markup per badge: `<svg class="cx-ci-glyph" data-status="…" viewBox="0 0 9 9"
   width="9" height="9" shape-rendering="crispEdges" role="img" aria-label="CI: …">` with
-  one `<rect x y width="1" height="1" fill="currentColor">` per lit cell (identical to
-  the state-dot emission contract, `components.md:93-95`). Review twin:
-  `.cx-review-glyph[data-verdict]`.
+  one `<rect x y width="1" height="1" fill="currentColor">` per lit cell. This is the same
+  inline-`crispEdges`-SVG *markup contract* the design system documents for the state-dot
+  glyph (`components.md:93-95`) and the loader spinner (`loader.css:24-28`,
+  `motion.md:81-86`) — note that both are documented specs, not shipped emitters
+  (`StateDot.tsx` renders a color-only `<span class="state-dot" role="img">`; the state-dot
+  glyph SVG is the SEA-2118 lane), so `BadgeGlyph` is built from the grids below as spec,
+  not copied from a rendered artifact. Review twin: `.cx-review-glyph[data-verdict]`.
 - Box: 9×9 CSS px, `display: inline-block`, no background, no border.
 - Color: `color: var(--cx-ci-pass|--cx-ci-pending|--cx-ci-fail)` /
   `var(--cx-review-approved|--cx-review-pending|--cx-review-changes)` per variant.
@@ -420,10 +428,21 @@ per-surface layout checks (Bridge rows already carry `pr-row-state` text at
 **Render spec (exact):**
 
 - Markup: `<span class="cx-axis-badge" data-axis="ci|review" data-status="…">` containing
-  `<span class="cx-axis-code">CI</span>` (or `RV`) + the Option A 9×9 SVG.
+  `<span class="cx-axis-code">CI</span>` (or `RV`) + the Option A 9×9 glyph SVG. The
+  wrapper's `data-status` is the single source of truth for the whole badge — CI values
+  `success|pending|failure`, review values `approved|changes|commented`; the inner glyph
+  drops its own `data-verdict`/`data-status` and selects its shape off the wrapper via a
+  descendant selector (`.cx-axis-badge[data-axis="review"][data-status="approved"] .glyph`,
+  etc.), so there is no second attribute to keep in sync.
 - Code text: `font-family: var(--cx-font-ui)`, `font-size: var(--cx-text-xs)`,
-  `line-height: 1`, `letter-spacing: 0.5px`, `color: currentColor`; container sets the
-  status token as in A. Gap code↔glyph: `var(--cx-space-1)`.
+  `line-height: 1`, `letter-spacing: 0.5px`, `color: currentColor`. Gap code↔glyph:
+  `var(--cx-space-1)`.
+- Color routing — the wrapper sets `color` (both the code text and, via `currentColor`,
+  the glyph `fill`) through the six explicit selectors:
+  `[data-axis="ci"][data-status="success"]{color:var(--cx-ci-pass)}`,
+  `…="pending"{--cx-ci-pending}`, `…="failure"{--cx-ci-fail}`;
+  `[data-axis="review"][data-status="approved"]{--cx-review-approved}`,
+  `…="changes"{--cx-review-changes}`, `…="commented"{--cx-review-pending}` (Q3 mute).
 - Compact rule: `.cx-axis-badge[data-compact] .cx-axis-code { display: none; }` —
   IssueCard passes `data-compact`; Bridge and Done rows show the code.
 - Total footprint (full): ~26×10px per badge; (compact): 9×9px.
@@ -646,8 +665,10 @@ size and 4× zoom. Screenshot for Matt.
 
 ### T2 — Implement Option B (glyph + micro-label)
 
-- New `BadgeGlyph` Solid component emitting the inline 9×9 `crispEdges` SVG (same emission
-  contract as the state dot), wrapped by the `.cx-axis-badge` structure: a
+- New `BadgeGlyph` Solid component emitting the inline 9×9 `crispEdges` SVG built from the
+  Option A render spec (the same inline-`crispEdges`-SVG *markup contract* the DS documents
+  for the state-dot glyph and the loader — both specs, not shipped emitters; see Option A),
+  wrapped by the `.cx-axis-badge` structure: a
   `.cx-axis-code` span (`CI` / `RV`) + the glyph, container carrying the status token.
   New CSS in `apps/ui/src/design/components/` (the `.cx-axis-badge` / `.cx-axis-code` /
   glyph rules from Option B's render spec), glyph grids appended to `components.md` §Badge.
