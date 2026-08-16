@@ -1139,4 +1139,34 @@ describe("store agents() live join (§T3)", () => {
 			expect(store.agentById("acc-idle")?.activity).toBe("now working");
 		});
 	});
+
+	// L3 (SEA-2100): a chat-message tail must NOT recompute the agents() join.
+	// The memo depends only on accounts()/presence(); a MessagePosted touches
+	// messages() with structural sharing, so accounts/presence keep identity and
+	// agents() returns the SAME array reference. Reference equality is the point:
+	// a message never re-joins the roster.
+	test("a message does not re-join the roster (agents() keeps identity)", async () => {
+		const fake = createFakeComms({
+			accounts: [wireAccount(CALLER), wireAgentAccount("acc-cook")],
+			channels: [wireChannel(CHANNEL)],
+			roster: [rosterEntry("acc-cook", AgentPresence.WORKING)],
+		});
+
+		await withLiveStore(fake, async (store, settled) => {
+			const before = store.agents();
+			expect(before.map((a) => a.account.id)).toEqual(["acc-cook"]);
+
+			await fake.emit(
+				{
+					case: "messagePosted",
+					value: { message: wireTextMessage("m-tail", 500, "a tail") },
+				},
+				1n,
+			);
+			await settled();
+
+			// The memo did NOT recompute — same array reference.
+			expect(store.agents()).toBe(before);
+		});
+	});
 });

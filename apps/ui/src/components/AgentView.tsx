@@ -216,8 +216,12 @@ export const AgentView: Component = () => {
 					<div class="av-header">
 						<StateDot state={agent().lifecycle ?? "idle"} />
 						<span class="av-name">{agent().account.handle}</span>
-						<span class="av-model">{agent().model}</span>
-						<span class="av-cwd">{agent().cwd}</span>
+						<Show when={agent().model}>
+							<span class="av-model">{agent().model}</span>
+						</Show>
+						<Show when={agent().cwd}>
+							<span class="av-cwd">{agent().cwd}</span>
+						</Show>
 						<span class="av-spacer" />
 						<button
 							type="button"

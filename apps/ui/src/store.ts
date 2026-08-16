@@ -334,7 +334,9 @@ export interface AppStore {
 	/** Resolve an account id to its visible agent, or undefined — the single
 	 *  agent-resolution seam (SEA-1645 P5). A REACTIVE read: consumers that call
 	 *  it (`rightTabGroups`, and transitively `activeFleetItem`) re-run when the
-	 *  agent set changes. Backed today by the static `agents` seed. */
+	 *  agent set changes. Resolves through the reactive `agents` memo (offline
+	 *  `STUB_AGENTS`, live `joinAgents(accounts(), presence())`), so a
+	 *  presence/account tick flips its answer. */
 	agentById: (accountId: string) => Agent | undefined;
 	/** The activity bar as ordered groups (unreachable-pin amendment SEA-1645):
 	 *  the fleet group is EVERY pin (one item per pin, in pin order) plus the
@@ -374,6 +376,11 @@ export interface AppStore {
 	 *  Offline (no `options.comms`) this is the STUB_AGENTS fixture; live it is
 	 *  the joined roster. The accessor the board components cut over to in T4. */
 	agents: Accessor<readonly Agent[]>;
+	/** Whether the first comms snapshot has been adopted. Offline this stays
+	 *  false; live it flips true once `adoptComms` lands the initial state — the
+	 *  gate that distinguishes a genuinely empty roster from a not-yet-loaded one
+	 *  (T5 tree-empty seam). */
+	firstSnapshotArrived: Accessor<boolean>;
 	/** All channel groups visible to the caller (the rail's group headers). */
 	channelGroups: Accessor<readonly ChannelGroup[]>;
 	/** All channels + DMs visible to the caller — the reactive rail source, so a
@@ -2007,6 +2014,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		daemon,
 		accounts,
 		agents,
+		firstSnapshotArrived,
 		channelGroups,
 		channels,
 		messages,
