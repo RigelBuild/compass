@@ -22,18 +22,18 @@ import (
 // The invariant under test is A6 idempotence: teardown + re-provision of the same
 // deterministic name is repeatable and self-healing. Two teardown surfaces feed
 // it (design.md:388-402) — the Runner does NOT reap agent containers on shutdown
-// (host.go:203-210 Close tears down sockets only), so whether the podman
-// container outlives `Stack().Down` is environment-dependent (reparented rootless
-// conmon may or may not be swept by the child-process-group SIGTERM in
-// stack.go:341). The A6 preflight is designed to be correct EITHER WAY: it is an
-// exact-name `podman rm -f`, which exits 0 for an absent container (teardown.go),
-// so it is a no-op when the prior container was already reaped and a real sweep
-// when it leaked. This leg therefore does NOT assert the leak — asserting a
+// (host.go Close tears down sockets only), so whether the podman container
+// outlives `Stack().Down` is environment-dependent (reparented rootless conmon
+// may or may not be swept by the child-process-group SIGTERM in stack.go:341).
+// The A6 preflight is designed to be correct EITHER WAY: it is an exact-name
+// `podman rm -f`, which exits 0 for an absent container (teardown.go), so it is a
+// no-op when the prior container was already reaped and a real sweep when it
+// leaked. This leg therefore does NOT assert the leak — asserting a
 // timing-dependent teardown detail made the leg fail deterministically (local AND
 // in CI) at its own precondition without ever exercising A6. It asserts the
-// actual contract: the preflight sweep + re-provision succeeds, and the Remove
-// RPC is idempotent (a second Remove of the same container is a no-op success,
-// host.go:497-500).
+// actual contract: the Remove RPC is idempotent (a second Remove of the same
+// container is a no-op success, host.go Remove), and re-provision of the same
+// deterministic name succeeds across a stack restart.
 //
 // Unlike legs 2-5, this leg goes GREEN on the bare stack TODAY: its red→green is
 // at the Provision/`podman create` boundary (the A6 preflight), independent of
@@ -103,7 +103,7 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 
 	// Prove teardown idempotence directly, while the stack is still up so the
 	// Remove RPC reaches the live runner: the Remove RPC is a no-op success on a
-	// container regardless of prior state (host.go:497-500 "an unknown container
+	// container regardless of prior state (host.go Remove: "an unknown container
 	// — never provisioned, or already removed — is a no-op success"). Called
 	// twice back-to-back: the first tears run1's just-provisioned container down,
 	// the second exercises the idempotent no-op arm on the already-removed
@@ -115,7 +115,7 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 		t.Fatalf("RemoveWorkspace (run1, first): %v — teardown of the run1 container failed", err)
 	}
 	if err := f1.RemoveWorkspace(ctx, containerName, "leg6-run1-remove-again"); err != nil {
-		t.Fatalf("RemoveWorkspace (run1, second): %v — a repeat Remove of the same container must be an idempotent no-op success (host.go:497-500)", err)
+		t.Fatalf("RemoveWorkspace (run1, second): %v — a repeat Remove of the same container must be an idempotent no-op success (host.go Remove)", err)
 	}
 
 	// Tear run1's stack Down (the fixture's own t.Cleanup Downs it too, but that
@@ -158,20 +158,26 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 		t.Fatalf("persisted account id %q != the run1 account id %q — the re-attached DB resolved a different account for the same handle, so the deterministic-name collision premise is gone", accountID2, accountID)
 	}
 
-	// THE A6 FIX UNDER TEST: preflight force-remove any container holding the
-	// deterministic run1 name, by EXACT name, before re-provisioning.
+	// Defensive preflight: force-remove any container holding the deterministic
+	// run1 name, by EXACT name, before re-provisioning.
 	//
-	// createAndStart issues `podman create --name <containerName>` with no
-	// happy-path pre-create sweep (go/internal/runtime/agent.go:245-267; the only
-	// Removes there are error-recovery of that same call's partial container), so
-	// if any container still holds run1's deterministic name it collides. Whether
-	// one does is environment-dependent — a reparented rootless conmon may outlive
-	// Down — so the A6 preflight makes re-provision correct EITHER WAY: `podman rm
-	// -f` exits 0 on an absent container (teardown.go), so it is a no-op when the
-	// name is already free and a real sweep when it is not. The in-memory
-	// client_request_id dedup is also gone (run2 is a fresh runner process), so
-	// run2 genuinely re-issues the create. This preflight is the A6 fix; the green
-	// run2 Provision below is its proof.
+	// The A6 idempotence proof this leg delivers is the double-RemoveWorkspace
+	// above (a repeat Remove is a no-op success). This preflight is
+	// belt-and-suspenders, NOT the load-bearing proof: the explicit
+	// RemoveWorkspace calls already freed the deterministic name, so on the
+	// common path this `podman rm -f` sweeps nothing and run2's Provision would
+	// succeed even if it were a no-op. It earns its place only for the residual
+	// environment-dependent case the RPC teardown cannot reach — a reparented
+	// rootless conmon that outlived `Stack().Down` and still holds the name in
+	// podman's runtime set (host.go Close tears down sockets only; it does not
+	// reap agent containers). createAndStart issues `podman create --name
+	// <containerName>` with no happy-path pre-create sweep (go/internal/runtime/
+	// agent.go:245-267; the only Removes there are error-recovery of that same
+	// call's partial container), so such a leaked container would collide on the
+	// re-create — and `podman rm -f` exits 0 on an absent container (teardown.go),
+	// making the preflight a no-op when the name is free and a real sweep when it
+	// is not. The in-memory client_request_id dedup is also gone (run2 is a fresh
+	// runner process), so run2 genuinely re-issues the create.
 	if err := podmanRemoveForce(ctx, containerName); err != nil {
 		t.Fatalf("podmanRemoveForce preflight (run2): %v — the A6 exact-name sweep before re-provision failed", err)
 	}

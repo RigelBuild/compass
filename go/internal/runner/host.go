@@ -318,6 +318,18 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	sessionID := req.GetResumeSessionId()
 	if sessionID == "" {
 		sessionID = h.nextID()
+	} else if _, live := h.sessions[sessionID]; live {
+		// Reusing the logical id as the map key means a resume that races a
+		// still-live prior lifetime of the SAME session would clobber that
+		// lifetime's liveSession entry — orphaning its stream and goroutine
+		// (never Stop'd). The name loop above cannot catch this: it keys on
+		// container name, and a resume targets a fresh container under the same
+		// id. The single-orchestrator precondition (the Server tears lifetime-1
+		// down before resuming) keeps this unreachable in the intended flow, but
+		// guard it anyway so a precondition violation fails loud rather than
+		// leaking the prior stream under a clobbered key.
+		h.mu.Unlock()
+		return "", errAlreadyRunning
 	}
 	h.mu.Unlock()
 
