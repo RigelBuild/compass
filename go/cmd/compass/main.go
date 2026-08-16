@@ -46,6 +46,7 @@ func newRootCmd() *cobra.Command {
 	addConnFlags(root.PersistentFlags())
 
 	root.AddCommand(newAgentConfigCmd())
+	root.AddCommand(newSecretCmd())
 	return root
 }
 

@@ -180,20 +180,38 @@ func trimToken(raw []byte) string {
 	return strings.TrimSpace(string(raw))
 }
 
-// newClient constructs the CompassService client for the resolved connection: a
+// httpClientFor builds the connect.HTTPClient for the resolved connection: a
 // custom-root http.Client when --ca is set (the self-signed dogfood door), else
-// http.DefaultClient (system roots), with the bearer interceptor stamping the
-// admin token on every call (mirrors internal/runner Dial).
-func newClient(cfg connConfig) (compassv1connect.CompassServiceClient, error) {
-	var httpClient connect.HTTPClient = http.DefaultClient
+// http.DefaultClient (system roots). Both service dialers share it so the TLS
+// trust behaviour is defined once (mirrors internal/runner Dial).
+func httpClientFor(cfg connConfig) (connect.HTTPClient, error) {
 	if cfg.caPath != "" {
-		c, err := runner.NewCATrustClient(cfg.caPath)
-		if err != nil {
-			return nil, err
-		}
-		httpClient = c
+		return runner.NewCATrustClient(cfg.caPath)
+	}
+	return http.DefaultClient, nil
+}
+
+// newClient constructs the CompassService client for the resolved connection,
+// with the bearer interceptor stamping the admin token on every call.
+func newClient(cfg connConfig) (compassv1connect.CompassServiceClient, error) {
+	httpClient, err := httpClientFor(cfg)
+	if err != nil {
+		return nil, err
 	}
 	return compassv1connect.NewCompassServiceClient(
+		httpClient, cfg.serverAddr,
+		connect.WithInterceptors(&bearerToken{token: cfg.token}),
+	), nil
+}
+
+// newSecretsClient constructs the SecretsService client for the resolved
+// connection, reusing the same httpClient + bearer interceptor as newClient.
+func newSecretsClient(cfg connConfig) (compassv1connect.SecretsServiceClient, error) {
+	httpClient, err := httpClientFor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return compassv1connect.NewSecretsServiceClient(
 		httpClient, cfg.serverAddr,
 		connect.WithInterceptors(&bearerToken{token: cfg.token}),
 	), nil
@@ -207,4 +225,14 @@ func dialClient(cmd *cobra.Command) (compassv1connect.CompassServiceClient, erro
 		return nil, err
 	}
 	return newClient(cfg)
+}
+
+// dialSecretsClient resolves the connection config and builds the SecretsService
+// client in one step — the shared prelude every secret subcommand runs.
+func dialSecretsClient(cmd *cobra.Command) (compassv1connect.SecretsServiceClient, error) {
+	cfg, err := resolveConn(cmd)
+	if err != nil {
+		return nil, err
+	}
+	return newSecretsClient(cfg)
 }
