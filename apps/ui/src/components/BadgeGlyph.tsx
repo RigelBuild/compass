@@ -23,9 +23,17 @@ type BadgeGlyphProps =
 	| { axis: "ci"; status: CiStatus; compact?: boolean }
 	| { axis: "review"; status: ReviewStatus; compact?: boolean };
 
+/** Every valid axis+status key — the lookup tables below are keyed by this
+ *  exhaustive union, so a status added to a prop type without a matching glyph
+ *  (or aria-label) is a compile error, not a silent runtime blank. */
+type GlyphKey = `ci-${CiStatus}` | `review-${ReviewStatus}`;
+
 /** [x, y] of each lit cell (9×9, one CSS px per cell), transcribed from the
  *  frozen ASCII grids in `design/components.md` §Badge (`#` = lit). */
-const GLYPH_CELLS: Record<string, ReadonlyArray<readonly [number, number]>> = {
+const GLYPH_CELLS: Record<
+	GlyphKey,
+	ReadonlyArray<readonly [number, number]>
+> = {
 	"ci-success": [
 		[8, 3],
 		[7, 4],
@@ -134,7 +142,7 @@ const GLYPH_CELLS: Record<string, ReadonlyArray<readonly [number, number]>> = {
 
 const AXIS_CODE = { ci: "CI", review: "RV" } as const;
 
-const ARIA_LABEL: Record<string, string> = {
+const ARIA_LABEL: Record<GlyphKey, string> = {
 	"ci-success": "CI: passing",
 	"ci-pending": "CI: pending",
 	"ci-failure": "CI: failing",
@@ -144,7 +152,8 @@ const ARIA_LABEL: Record<string, string> = {
 };
 
 export const BadgeGlyph: Component<BadgeGlyphProps> = (props) => {
-	const key = () => `${props.axis}-${props.status}`;
+	const key = (): GlyphKey =>
+		props.axis === "ci" ? `ci-${props.status}` : `review-${props.status}`;
 	return (
 		<span
 			class="cx-axis-badge"
