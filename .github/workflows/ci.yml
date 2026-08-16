@@ -74,8 +74,15 @@ on:
 # opens a PR, then ~1s later edits the body to add the stack diagram, and that
 # `edited` run must not cancel the still-running real `opened` run — otherwise
 # the required check ends cancelled+skipped (the edited run self-skips via the
-# job `if` below) and reads as a false green. Superseded pushes are all
-# `synchronize`, so they still collapse to one in-flight run per ref as intended.
+# job `if` below) and reads as a false green.
+#
+# `push` and `schedule` payloads have no `action` field, so
+# `${{ github.event.action }}` renders to a constant empty string for them —
+# their grouping is unchanged by this key addition (every main push still
+# collapses to `ci-<ref>-push-` and still cancels the prior one; a schedule run
+# still coexists with a coincident push via the distinct event name). A PR
+# branch's superseded pushes fire `pull_request.synchronize`, so they too share
+# one group and collapse to one in-flight run per ref, as intended.
 concurrency:
   group: ci-${{ github.ref }}-${{ github.event_name }}-${{ github.event.action }}
   cancel-in-progress: true
