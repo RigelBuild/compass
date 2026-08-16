@@ -122,7 +122,9 @@ func run() error {
 	// mode has no stack to stop, so launch() returns a nil quitter there and no
 	// menu is installed. Plain quit (window close, OS quit) LINGERS by default —
 	// the stack children stay running and the app does nothing to them (relaunch
-	// re-attaches), so there is deliberately NO OnShutdown teardown here.
+	// re-attaches), so there is deliberately no OnShutdown *stack* teardown here.
+	// (The window-set persist hook above is unrelated: it touches only the
+	// state-dir window list, never the stack.)
 	if quitter != nil {
 		quitter.quit = app.Quit
 		menu := application.NewMenu()
@@ -144,10 +146,7 @@ func run() error {
 	// (empty/absent/corrupt set) opens exactly one default "bridge" window. Every
 	// window is a Bridge window (URL "/") carrying the SAME startupJS injection
 	// (record §A1/§A3), so the factory forwards the identical script to each.
-	names := loadWindowSet(stateDir)
-	if len(names) == 0 {
-		names = []string{defaultWindowName}
-	}
+	names := windowNamesOrDefault(loadWindowSet(stateDir))
 	for _, name := range names {
 		newAppWindow(app, name, "Compass", startupJS)
 	}

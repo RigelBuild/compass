@@ -3,9 +3,11 @@
 package main
 
 // Compass multi-window M1 window-set store gate. The real invariants are the
-// round-trip (persisted N names reload in order → N windows on relaunch) and
-// degrade-to-empty (absent OR corrupt file → nil set → run() opens exactly one
-// default window). No test launches a real webview.
+// round-trip (persisted N names reload as N windows on relaunch, canonically
+// sorted — the contract is a SET, not an order, §A2), degrade-to-empty (absent
+// OR corrupt file → nil set → run() opens exactly one default window), and the
+// empty→default substitution that decides the window count. No test launches a
+// real webview.
 
 import (
 	"os"
@@ -16,13 +18,15 @@ import (
 
 func TestWindowSetRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	want := []string{"bridge", "bridge-2"}
-	if err := saveWindowSet(dir, want); err != nil {
+	// Feed unsorted input: the store persists a SET canonically sorted, so the
+	// reload is deterministic regardless of the caller's (map-derived) order.
+	if err := saveWindowSet(dir, []string{"bridge-2", "bridge"}); err != nil {
 		t.Fatalf("saveWindowSet: %v", err)
 	}
 	got := loadWindowSet(dir)
+	want := []string{"bridge", "bridge-2"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("loadWindowSet = %v, want %v", got, want)
+		t.Fatalf("loadWindowSet = %v, want %v (canonically sorted)", got, want)
 	}
 }
 
@@ -68,5 +72,24 @@ func TestWindowOptions(t *testing.T) {
 	}
 	if opts.JS != "globalThis.x=1" {
 		t.Errorf("JS = %q, want the injected startup script unchanged", opts.JS)
+	}
+}
+
+func TestWindowNamesOrDefault(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"nil set opens one default window", nil, []string{defaultWindowName}},
+		{"empty set opens one default window", []string{}, []string{defaultWindowName}},
+		{"populated set passes through", []string{"bridge", "bridge-2"}, []string{"bridge", "bridge-2"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := windowNamesOrDefault(tt.in); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("windowNamesOrDefault(%v) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
 	}
 }
