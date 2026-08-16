@@ -3,6 +3,7 @@ import type { Ask as WireAsk } from "@compass/client";
 import {
 	AccountSchema,
 	AgentAccountSchema,
+	AgentPresence,
 	AskOptionSchema,
 	AskQuestionSchema,
 	AskSchema,
@@ -18,6 +19,7 @@ import {
 	MessageBlockSchema,
 	MessageSchema,
 	PullRequestSchema,
+	RosterEntrySchema,
 	SystemAccountSchema,
 	TopicSchema,
 	UserAccountSchema,
@@ -32,9 +34,11 @@ import {
 	adaptIssue,
 	adaptMessage,
 	adaptPullRequest,
+	adaptRosterEntry,
 	adaptTopic,
 	agentHomeChannelIds,
 	deriveMembership,
+	presenceLifecycle,
 } from "./adapt";
 
 // adapt.ts is the wire→domain adapter: it flattens protobuf-es oneofs/enums into
@@ -935,5 +939,60 @@ describe("adaptIssue", () => {
 		expect(r.agent).toBeUndefined();
 		expect(r.tracker).toBeUndefined();
 		expect(r.prs).toEqual([]);
+	});
+});
+
+describe("presenceLifecycle", () => {
+	test("maps each modeled AgentPresence to its AgentState dot", () => {
+		expect(presenceLifecycle(AgentPresence.WORKING)).toBe("working");
+		expect(presenceLifecycle(AgentPresence.IDLE)).toBe("idle");
+		expect(presenceLifecycle(AgentPresence.WAITING)).toBe("waiting");
+		// R2/DL-194: OFFLINE covers both "stopped" and "never started"; the
+		// 4-state enum cannot split them, so it renders the "stopped" dot.
+		expect(presenceLifecycle(AgentPresence.OFFLINE)).toBe("stopped");
+	});
+
+	test("UNSPECIFIED maps to undefined (the defensive fall-back arm)", () => {
+		expect(presenceLifecycle(AgentPresence.UNSPECIFIED)).toBeUndefined();
+	});
+
+	test("throws on an unmodeled numeric (proto3-open, version-skew guard)", () => {
+		expect(() => presenceLifecycle(99 as AgentPresence)).toThrow(
+			"Unhandled AgentPresence: 99",
+		);
+	});
+});
+
+describe("adaptRosterEntry", () => {
+	test("returns [id, info] with lifecycle from presence and activity preserved", () => {
+		const [id, info] = adaptRosterEntry(
+			create(RosterEntrySchema, {
+				agentAccountId: "acc-cook",
+				handle: "cook",
+				displayName: "Cook",
+				parentAgentId: "acc-supervisor",
+				presence: AgentPresence.WORKING,
+				activity: "wiring the roster join",
+			}),
+		);
+		expect(id).toBe("acc-cook");
+		expect(info.lifecycle).toBe("working");
+		expect(info.activity).toBe("wiring the roster join");
+		// Identity fields are dropped — accounts own identity (R1).
+		expect(info).not.toHaveProperty("handle");
+		expect(info).not.toHaveProperty("displayName");
+		expect(info).not.toHaveProperty("parentAgentId");
+	});
+
+	test("empty-string activity normalizes to undefined", () => {
+		const [, info] = adaptRosterEntry(
+			create(RosterEntrySchema, {
+				agentAccountId: "acc-drake",
+				presence: AgentPresence.OFFLINE,
+				activity: "",
+			}),
+		);
+		expect(info.lifecycle).toBe("stopped");
+		expect(info.activity).toBeUndefined();
 	});
 });

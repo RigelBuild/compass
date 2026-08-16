@@ -17,6 +17,7 @@
 //    an unhandled value is a compile error, never a silent default.
 
 import {
+	AgentPresence,
 	ChannelGroupVisibility,
 	ChannelKind,
 	ChannelPostPolicy,
@@ -38,6 +39,7 @@ import {
 	type PullRequest as WirePullRequest,
 	type Review as WireReview,
 	type ReviewThread as WireReviewThread,
+	type RosterEntry as WireRosterEntry,
 	type Topic as WireTopic,
 	type TrackerRef as WireTrackerRef,
 } from "@compass/client";
@@ -57,6 +59,7 @@ import type {
 } from "../comms-stub";
 import type {
 	Account,
+	AgentState,
 	AgentAttribution as DomainAgentAttribution,
 	ChangedStats as DomainChangedStats,
 	Check as DomainCheck,
@@ -487,4 +490,67 @@ export function adaptIssue(w: WireIssue): DomainIssue {
 		prs: w.prs.map(adaptPullRequest),
 		tracker: w.tracker ? adaptTrackerRef(w.tracker) : undefined,
 	};
+}
+
+/** The wire `AgentPresence` enum → the domain's `AgentState` dot state. Total
+ *  over the 4-state MVP enum (DL-194): `WORKING → "working"`, `IDLE → "idle"`,
+ *  `WAITING → "waiting"`, `OFFLINE → "stopped"`. `OFFLINE → "stopped"` is a
+ *  ruled decision (R2): the server defaults every agent absent from its
+ *  in-memory presence source to `OFFLINE`, so `OFFLINE` covers both
+ *  "deliberately stopped" and "never started" — the enum cannot split them
+ *  client-side, and the "stopped" hollow-ring dot is the honest render.
+ *  `UNSPECIFIED → undefined` is a defensive arm only: unreachable on the
+ *  `GetRoster` path (which never emits UNSPECIFIED), it lets a caller fall back
+ *  to its own default rather than paint a wrong dot. The default arm throws on
+ *  an unmodeled numeric (the `agent-state.ts:71-78` exhaustiveness convention):
+ *  the enum is proto3-open, so a version-skewed server could send a variant the
+ *  `never` check can't catch at compile time — throw rather than return a raw
+ *  enum that would break a downstream `Record<AgentState>` lookup. */
+export function presenceLifecycle(p: AgentPresence): AgentState | undefined {
+	switch (p) {
+		case AgentPresence.WORKING:
+			return "working";
+		case AgentPresence.IDLE:
+			return "idle";
+		case AgentPresence.WAITING:
+			return "waiting";
+		case AgentPresence.OFFLINE:
+			return "stopped";
+		case AgentPresence.UNSPECIFIED:
+			return undefined;
+		default: {
+			const _exhaustive: never = p;
+			throw new Error(`Unhandled AgentPresence: ${_exhaustive}`);
+		}
+	}
+}
+
+/** The domain presence value — the ephemeral join the store layers onto an
+ *  agent's durable account identity (DL-193). Both fields optional: `lifecycle`
+ *  is absent when presence is `UNSPECIFIED` (the caller falls back to its own
+ *  default dot), and `activity` is absent when the wire carries no note. NEVER a
+ *  wire shape — the adapt seam maps `AgentPresence`/`RosterEntry` into this. */
+export interface AgentPresenceInfo {
+	readonly lifecycle?: AgentState;
+	readonly activity?: string;
+}
+
+/** Map one wire `RosterEntry` to its presence-map entry: `[agentAccountId,
+ *  info]`. The join carries ONLY the ephemeral presence — `lifecycle` (via
+ *  `presenceLifecycle`) and the human-readable `activity` note (empty-string
+ *  normalized to undefined, matching the `Agent.activity` contract
+ *  `stub-data.ts:350-351`). The identity fields the wire also carries (`handle`,
+ *  `displayName`, `parentAgentId`) are deliberately DROPPED: accounts own
+ *  identity (Approach fork 1 / R1), and a second identity source here could
+ *  drift from the live `accountChanged` stream. */
+export function adaptRosterEntry(
+	w: WireRosterEntry,
+): [string, AgentPresenceInfo] {
+	return [
+		w.agentAccountId,
+		{
+			lifecycle: presenceLifecycle(w.presence),
+			activity: w.activity || undefined,
+		},
+	];
 }
