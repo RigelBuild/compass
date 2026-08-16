@@ -21,11 +21,14 @@ import (
 //
 // The invariant under test is A6 idempotence: teardown + re-provision of the same
 // deterministic name is repeatable and self-healing. Two teardown surfaces feed
-// it (design.md:388-402) — the Runner does NOT reap agent containers on shutdown
-// (host.go Close tears down sockets only), so whether the podman container
-// outlives `Stack().Down` is environment-dependent (reparented rootless conmon
-// may or may not be swept by the child-process-group SIGTERM in stack.go:341).
-// The A6 preflight is designed to be correct EITHER WAY: it is an exact-name
+// it (design.md:388-402) — agentHost.Close DOES reap every served container
+// (Remove -> runtime.Teardown), but Close only runs on the runner's graceful
+// ctx-cancel shutdown, so a hard stack teardown that kills the runner before
+// Close runs can leave a reparented rootless conmon still holding the name
+// (whether the child-process-group SIGTERM in stack.go:341 sweeps it is
+// environment-dependent). So whether the podman container outlives `Stack().Down`
+// is not guaranteed either way, and the A6 preflight is designed to be correct
+// whether or not it leaked: it is an exact-name
 // `podman rm -f`, which exits 0 for an absent container (teardown.go), so it is a
 // no-op when the prior container was already reaped and a real sweep when it
 // leaked. This leg therefore does NOT assert the leak — asserting a
@@ -167,10 +170,12 @@ func TestLegSixTeardownIdempotence(t *testing.T) {
 	// RemoveWorkspace calls already freed the deterministic name, so on the
 	// common path this `podman rm -f` sweeps nothing and run2's Provision would
 	// succeed even if it were a no-op. It earns its place only for the residual
-	// environment-dependent case the RPC teardown cannot reach — a reparented
-	// rootless conmon that outlived `Stack().Down` and still holds the name in
-	// podman's runtime set (host.go Close tears down sockets only; it does not
-	// reap agent containers). createAndStart issues `podman create --name
+	// case the RPC teardown cannot reach — a reparented rootless conmon that
+	// outlived `Stack().Down` and still holds the name in podman's runtime set.
+	// (agentHost.Close reaps every served container via Remove -> runtime.Teardown,
+	// but Close only runs on the runner's graceful ctx-cancel shutdown, so a hard
+	// stack teardown that kills the runner before Close runs can leak the nested
+	// container.) createAndStart issues `podman create --name
 	// <containerName>` with no happy-path pre-create sweep (go/internal/runtime/
 	// agent.go:245-267; the only Removes there are error-recovery of that same
 	// call's partial container), so such a leaked container would collide on the
