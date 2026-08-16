@@ -1865,3 +1865,14 @@ describe("openChannel (T5)", () => {
 		});
 	});
 });
+
+describe("agents() seam (§T3)", () => {
+	// An OFFLINE store (no `options.comms`) serves the fixture through the
+	// `agents()` accessor — the join is gated on the live switch, so offline is
+	// the unchanged STUB_AGENTS source the board reads today.
+	test("an offline store returns the fixture through agents()", () => {
+		withStore((s) => {
+			expect(s.agents()).toBe(STUB_AGENTS);
+		});
+	});
+});
