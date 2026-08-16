@@ -47,6 +47,7 @@ func newRootCmd() *cobra.Command {
 
 	root.AddCommand(newAgentConfigCmd())
 	root.AddCommand(newSecretCmd())
+	root.AddCommand(newTokenCmd())
 	return root
 }
 

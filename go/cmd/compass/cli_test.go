@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -258,6 +259,7 @@ type fakeCompass struct {
 	putVersion  string
 	info        *compassv1.GetAgentConfigInfoResponse
 	deleteCalls int
+	gotToken    string
 	gotAuth     string
 }
 
@@ -280,6 +282,12 @@ func (f *fakeCompass) DeleteAgentConfig(_ context.Context, req *connect.Request[
 	f.deleteCalls++
 	f.gotAuth = req.Header().Get("Authorization")
 	return connect.NewResponse(&compassv1.DeleteAgentConfigResponse{}), nil
+}
+
+func (f *fakeCompass) RevokeToken(_ context.Context, req *connect.Request[compassv1.RevokeTokenRequest]) (*connect.Response[compassv1.RevokeTokenResponse], error) {
+	f.gotToken = req.Msg.GetToken()
+	f.gotAuth = req.Header().Get("Authorization")
+	return connect.NewResponse(&compassv1.RevokeTokenResponse{}), nil
 }
 
 // startFakeServer stands up the fake CompassService over a plain-HTTP httptest
@@ -421,4 +429,41 @@ func TestRunDelete(t *testing.T) {
 	if !strings.Contains(out.String(), "cleared") {
 		t.Errorf("delete output %q does not confirm", out.String())
 	}
+}
+
+// TestRunRevoke asserts revoke reads the token from stdin (never argv), stamps
+// the bearer token, and rejects empty stdin before any RPC.
+func TestRunRevoke(t *testing.T) {
+	t.Run("reads token from stdin and stamps bearer", func(t *testing.T) {
+		fake := &fakeCompass{}
+		client := startFakeServer(t, fake)
+		in := strings.NewReader("  tok-to-revoke\n")
+		var out strings.Builder
+		if err := runRevoke(context.Background(), client, in, &out); err != nil {
+			t.Fatalf("runRevoke: %v", err)
+		}
+		if fake.gotToken != "tok-to-revoke" {
+			t.Errorf("RevokeToken received token %q, want %q (trimmed, from stdin)", fake.gotToken, "tok-to-revoke")
+		}
+		if fake.gotAuth != "Bearer test-token" {
+			t.Errorf("Authorization = %q, want Bearer test-token", fake.gotAuth)
+		}
+		if !strings.Contains(out.String(), "revoked") {
+			t.Errorf("revoke output %q does not confirm", out.String())
+		}
+	})
+
+	t.Run("empty stdin is rejected before any RPC", func(t *testing.T) {
+		fake := &fakeCompass{}
+		client := startFakeServer(t, fake)
+		in := strings.NewReader("   \n")
+		var out strings.Builder
+		err := runRevoke(context.Background(), client, in, &out)
+		if !errors.Is(err, errEmptyRevokeToken) {
+			t.Fatalf("runRevoke with empty stdin = %v, want errEmptyRevokeToken", err)
+		}
+		if fake.gotToken != "" {
+			t.Errorf("RevokeToken was called with %q; an empty stdin must be rejected before any RPC", fake.gotToken)
+		}
+	})
 }

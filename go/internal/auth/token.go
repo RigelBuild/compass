@@ -114,3 +114,16 @@ func ResolveToken(ctx context.Context, st *store.Store, presented string, want s
 	}
 	return subj, nil
 }
+
+// RevokeToken withdraws a bearer token by its presented plaintext, marking the
+// stored hash revoked so ResolveToken thereafter fails it as ErrTokenRevoked.
+// Hashing lives here (hashToken), the one place issuance and resolution agree on
+// how a token becomes a store key, so a revoke can never key a token differently
+// than it was issued or resolved. Revocation is per-hash (this one token), not
+// per-account. Idempotent: revoking an already-revoked token is a no-op success
+// (store.RevokeToken returns nil). Revoking a token that was never issued returns
+// store.ErrNotFound, passed through unwrapped so the server can map it to a
+// distinct not-found response.
+func RevokeToken(ctx context.Context, st *store.Store, presented string) error {
+	return st.RevokeToken(ctx, hashToken(presented))
+}

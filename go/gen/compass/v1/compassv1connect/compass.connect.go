@@ -81,6 +81,9 @@ const (
 	// CompassServiceIssueTokenProcedure is the fully-qualified name of the CompassService's IssueToken
 	// RPC.
 	CompassServiceIssueTokenProcedure = "/compass.v1.CompassService/IssueToken"
+	// CompassServiceRevokeTokenProcedure is the fully-qualified name of the CompassService's
+	// RevokeToken RPC.
+	CompassServiceRevokeTokenProcedure = "/compass.v1.CompassService/RevokeToken"
 	// CompassServicePutAgentConfigProcedure is the fully-qualified name of the CompassService's
 	// PutAgentConfig RPC.
 	CompassServicePutAgentConfigProcedure = "/compass.v1.CompassService/PutAgentConfig"
@@ -197,6 +200,14 @@ type CompassServiceClient interface {
 	// non-bootstrap account's token (the bootstrap admin token is issued
 	// out-of-band at first start).
 	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
+	// Admin-gated: only an admin may revoke a token; a non-admin caller gets
+	// permission_denied. Revocation is BY TOKEN VALUE (per-hash), not by
+	// account: the caller presents the token plaintext and the server hashes it,
+	// marking that one token's stored hash revoked. Idempotent — revoking an
+	// already-revoked token succeeds; revoking a token that was never issued is
+	// not_found. The plaintext is carried on the wire only to be hashed
+	// server-side; it is never logged (debug_redact).
+	RevokeToken(context.Context, *connect.Request[v1.RevokeTokenRequest]) (*connect.Response[v1.RevokeTokenResponse], error)
 	// Declare the fleet agent-config bundle: the gzip tarball of skills/,
 	// extensions/, and mcp/ material every agent materializes into its scoped
 	// config dir. Whole-bundle replace (current-only): the new bundle supersedes
@@ -309,6 +320,12 @@ func NewCompassServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(compassServiceMethods.ByName("IssueToken")),
 			connect.WithClientOptions(opts...),
 		),
+		revokeToken: connect.NewClient[v1.RevokeTokenRequest, v1.RevokeTokenResponse](
+			httpClient,
+			baseURL+CompassServiceRevokeTokenProcedure,
+			connect.WithSchema(compassServiceMethods.ByName("RevokeToken")),
+			connect.WithClientOptions(opts...),
+		),
 		putAgentConfig: connect.NewClient[v1.PutAgentConfigRequest, v1.PutAgentConfigResponse](
 			httpClient,
 			baseURL+CompassServicePutAgentConfigProcedure,
@@ -345,6 +362,7 @@ type compassServiceClient struct {
 	getAgentStatus          *connect.Client[v1.GetAgentStatusRequest, v1.GetAgentStatusResponse]
 	subscribeAgentSession   *connect.Client[v1.SubscribeAgentSessionRequest, v1.AgentSessionFrame]
 	issueToken              *connect.Client[v1.IssueTokenRequest, v1.IssueTokenResponse]
+	revokeToken             *connect.Client[v1.RevokeTokenRequest, v1.RevokeTokenResponse]
 	putAgentConfig          *connect.Client[v1.PutAgentConfigRequest, v1.PutAgentConfigResponse]
 	getAgentConfigInfo      *connect.Client[v1.GetAgentConfigInfoRequest, v1.GetAgentConfigInfoResponse]
 	deleteAgentConfig       *connect.Client[v1.DeleteAgentConfigRequest, v1.DeleteAgentConfigResponse]
@@ -413,6 +431,11 @@ func (c *compassServiceClient) SubscribeAgentSession(ctx context.Context, req *c
 // IssueToken calls compass.v1.CompassService.IssueToken.
 func (c *compassServiceClient) IssueToken(ctx context.Context, req *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error) {
 	return c.issueToken.CallUnary(ctx, req)
+}
+
+// RevokeToken calls compass.v1.CompassService.RevokeToken.
+func (c *compassServiceClient) RevokeToken(ctx context.Context, req *connect.Request[v1.RevokeTokenRequest]) (*connect.Response[v1.RevokeTokenResponse], error) {
+	return c.revokeToken.CallUnary(ctx, req)
 }
 
 // PutAgentConfig calls compass.v1.CompassService.PutAgentConfig.
@@ -526,6 +549,14 @@ type CompassServiceHandler interface {
 	// non-bootstrap account's token (the bootstrap admin token is issued
 	// out-of-band at first start).
 	IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error)
+	// Admin-gated: only an admin may revoke a token; a non-admin caller gets
+	// permission_denied. Revocation is BY TOKEN VALUE (per-hash), not by
+	// account: the caller presents the token plaintext and the server hashes it,
+	// marking that one token's stored hash revoked. Idempotent — revoking an
+	// already-revoked token succeeds; revoking a token that was never issued is
+	// not_found. The plaintext is carried on the wire only to be hashed
+	// server-side; it is never logged (debug_redact).
+	RevokeToken(context.Context, *connect.Request[v1.RevokeTokenRequest]) (*connect.Response[v1.RevokeTokenResponse], error)
 	// Declare the fleet agent-config bundle: the gzip tarball of skills/,
 	// extensions/, and mcp/ material every agent materializes into its scoped
 	// config dir. Whole-bundle replace (current-only): the new bundle supersedes
@@ -634,6 +665,12 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 		connect.WithSchema(compassServiceMethods.ByName("IssueToken")),
 		connect.WithHandlerOptions(opts...),
 	)
+	compassServiceRevokeTokenHandler := connect.NewUnaryHandler(
+		CompassServiceRevokeTokenProcedure,
+		svc.RevokeToken,
+		connect.WithSchema(compassServiceMethods.ByName("RevokeToken")),
+		connect.WithHandlerOptions(opts...),
+	)
 	compassServicePutAgentConfigHandler := connect.NewUnaryHandler(
 		CompassServicePutAgentConfigProcedure,
 		svc.PutAgentConfig,
@@ -680,6 +717,8 @@ func NewCompassServiceHandler(svc CompassServiceHandler, opts ...connect.Handler
 			compassServiceSubscribeAgentSessionHandler.ServeHTTP(w, r)
 		case CompassServiceIssueTokenProcedure:
 			compassServiceIssueTokenHandler.ServeHTTP(w, r)
+		case CompassServiceRevokeTokenProcedure:
+			compassServiceRevokeTokenHandler.ServeHTTP(w, r)
 		case CompassServicePutAgentConfigProcedure:
 			compassServicePutAgentConfigHandler.ServeHTTP(w, r)
 		case CompassServiceGetAgentConfigInfoProcedure:
@@ -745,6 +784,10 @@ func (UnimplementedCompassServiceHandler) SubscribeAgentSession(context.Context,
 
 func (UnimplementedCompassServiceHandler) IssueToken(context.Context, *connect.Request[v1.IssueTokenRequest]) (*connect.Response[v1.IssueTokenResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.IssueToken is not implemented"))
+}
+
+func (UnimplementedCompassServiceHandler) RevokeToken(context.Context, *connect.Request[v1.RevokeTokenRequest]) (*connect.Response[v1.RevokeTokenResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("compass.v1.CompassService.RevokeToken is not implemented"))
 }
 
 func (UnimplementedCompassServiceHandler) PutAgentConfig(context.Context, *connect.Request[v1.PutAgentConfigRequest]) (*connect.Response[v1.PutAgentConfigResponse], error) {
