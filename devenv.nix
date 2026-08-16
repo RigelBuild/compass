@@ -123,7 +123,16 @@ in
     toolchainTools.node
     toolchainTools.moon
     goToolchain
-  ];
+  ]
+  # xvfb-run: a virtual framebuffer wrapper for the multi-window gtk3 e2e
+  # (go/cmd/compass-app, design record compass-multi-window §M4) — the real
+  # GTK3/WebKit shell needs a display to open windows, and dev boxes + CI
+  # runners are headless. Linux-only (X11) and appended OUTSIDE the parsed
+  # `packages` literal: the toolchain-parity gate resolves every bare attr in
+  # that literal on macOS too, where xvfb-run does not exist. The package is
+  # self-contained (its wrapper prepends its own Xvfb to PATH). CI's dedicated
+  # e2e step gets it via tools/toolchain/gtk-e2e-env.nix, not this shell.
+  ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.xvfb-run ];
 
   env = { }
   # The Compass native app (Wails v3, go/cmd/compass-app) links the Linux
@@ -141,29 +150,18 @@ in
   # Linux-only, and set in `env` rather than `packages`: on macOS the app links
   # the system WebKit framework, so the closure is Linux's alone; and keeping it
   # out of the parsed `packages` list means the heavy WebKitGTK closure is never
-  # realized by the toolchain-parity gate on a CI runner — it is a dev-box build
-  # input, and compass CI does not compile the native app.
+  # realized by the toolchain-parity gate on a CI runner. The per-PR moon gate
+  # still never compiles the native app; the one CI lane that does — the
+  # multi-window gtk3 e2e (compass-multi-window §M4) — is a dedicated,
+  # affected-guarded ci.yml step that realizes this same closure out of band via
+  # tools/toolchain/gtk-e2e-env.nix, so the moon battery stays GTK-free.
   // lib.optionalAttrs pkgs.stdenv.isLinux {
     PKG_CONFIG_PATH =
       let
-        pcClosure = lib.closePropagation (
-          with pkgs;
-          [
-            dbus
-            openssl
-            glib
-            gtk3
-            webkitgtk_4_1
-            libsoup_3
-            cairo
-            pango
-            gdk-pixbuf
-            atk
-            harfbuzz
-            librsvg
-            gobject-introspection
-          ]
-        );
+        # The frozen SEA-1172 GTK3/WebKitGTK set, imported from the shared
+        # module so the dev shell and the gtk3 e2e CI helper
+        # (tools/toolchain/gtk-e2e-env.nix) resolve one closure and cannot drift.
+        pcClosure = lib.closePropagation (import ./tools/toolchain/gtk-closure.nix pkgs);
       in
       lib.concatStringsSep ":" [
         (lib.makeSearchPathOutput "dev" "lib/pkgconfig" pcClosure)

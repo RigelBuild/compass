@@ -313,6 +313,120 @@ jobs:
           echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
           exit "$rc"
 
+      - name: Multi-window gtk3 e2e gate
+        # The ONE CI lane that compiles + runs the native app (Wails v3,
+        # go/cmd/compass-app) — the multi-window smoke gate (design record
+        # compass-multi-window §M4). It is a DEDICATED step, not a moon-battery
+        # task, for the same reason the pgtest suite above is: it is build-tagged
+        # (unix,gtk3) so `moon`'s untagged `go test ./...` never compiles it, and
+        # it needs an environment the bare moon gate has no business realizing —
+        # a virtual framebuffer (the real GTK3/WebKit shell opens windows) and
+        # the heavy WebKitGTK cgo-link closure. The per-PR moon battery stays
+        # GTK-free; this step realizes the closure out of band via
+        # tools/toolchain/gtk-e2e-env.nix (pinned to the SAME devenv.lock nixpkgs
+        # the dev shell links against), so a dev box and CI run byte-for-byte the
+        # same libraries.
+        #
+        # AFFECTED-GUARDED to match the one-job affected posture: on a PR it runs
+        # only when go/cmd/compass-app/ actually changed (the native app is the
+        # only tree whose behavior it gates), so a Go/UI/docs PR never pays the
+        # WebKitGTK realization. push-to-main and the nightly schedule always run
+        # it (the full-sweep backstop), matching the moon affected/full split.
+        if: success()
+        working-directory: go
+        env:
+          CGO_ENABLED: '1'
+        run: |
+          # Decide whether this event must run the gate.
+          run_it=1
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            base="origin/${GITHUB_BASE_REF}"
+            # fetch-depth:0 (job checkout) gives the base ref for the diff. Fail
+            # LOUD if it does not resolve rather than swallowing the error as
+            # "not affected": an unresolvable base (e.g. a stacked PR's base
+            # churning under a pull_request.edited re-point) must red the gate,
+            # never skip it green. No `|| true` on the diff for the same reason —
+            # under `bash -e` a genuine diff failure aborts the step.
+            if ! git -C .. rev-parse --verify --quiet "$base" >/dev/null; then
+              echo "::error::gtk3 e2e affected gate: base ref $base does not resolve — cannot compute the affected set"
+              exit 1
+            fi
+            changed=$(git -C .. diff --name-only "$base"...HEAD -- go/cmd/compass-app/)
+            if [ -z "$changed" ]; then
+              run_it=0
+            fi
+          fi
+          if [ "$run_it" = 0 ]; then
+            echo "gtk3 e2e: PR does not touch go/cmd/compass-app/ — skipping (affected gate)"
+            exit 0
+          fi
+
+          # Realize the out-of-band gtk3 env, ALL parts via `nix build` (not
+          # `nix eval`): xvfb-run (+ its Xvfb) + pkg-config on PATH, the
+          # WebKitGTK pkg-config closure, and the nixpkgs C toolchain. `nix
+          # build` is what actually builds each into this runner's store; a `nix
+          # eval --raw` of a search-path string strips nix's store context, so
+          # the `.pc` paths it prints would name derivations nix never built and
+          # the cgo link fails "No package 'glib-2.0' found". All pinned to
+          # devenv.lock's nixpkgs via the helper.
+          helper=../tools/toolchain/gtk-e2e-env.nix
+          binenv=$(nix build --no-link --print-out-paths -f "$helper" bin)
+          pcenv=$(nix build --no-link --print-out-paths -f "$helper" pkgConfig)
+          # cc.out, not the bare `cc`: the cc-wrapper is multi-output (out, man,
+          # info) and `nix build --print-out-paths` of the derivation prints
+          # ALL of them, so a bare `cc` captures two lines and CC resolves to
+          # the `-man` dir. The `.out` selector pins the one output with bin/cc.
+          ccenv=$(nix build --no-link --print-out-paths -f "$helper" cc.out)
+          PKG_CONFIG_PATH="$pcenv/lib/pkgconfig:$pcenv/share/pkgconfig"
+          export PKG_CONFIG_PATH
+          export PATH="$binenv/bin:$PATH"
+          # Link the cgo objects with the nixpkgs toolchain, NOT the runner's
+          # /usr/bin/gcc: WebKitGTK from this nixpkgs is built against glibc
+          # 2.42, so the system gcc's older libc fails to link
+          # libwebkit2gtk-4.1.so ("undefined reference to
+          # `__inet_pton_chk@GLIBC_2.42'"). The cc-wrapper carries the matching
+          # glibc and rpaths + interp-stamps the store libs, so the test binary
+          # is self-contained on a non-NixOS runner. This is the toolchain a dev
+          # box links with implicitly, so CI now matches it byte-for-byte.
+          export CC="$ccenv/bin/cc"
+          export CXX="$ccenv/bin/c++"
+
+          # xvfb-run -a auto-picks a free display. The Xvfb SERVER log goes to a
+          # real file (-e), NOT /dev/stdout: with the step's own `>… 2>&1`
+          # redirect already pointing fd 1 at the go-test log, `-e /dev/stdout`
+          # makes xvfb-run reopen that fd for the server log and the fd juggling
+          # swallows the child's stdout — the go-test output never reaches the
+          # file, so the PASS-line guard below fires on an empty log even though
+          # the e2e passed. A dedicated server-log file avoids the collision and
+          # is replayed only on failure, where a bring-up error is what matters.
+          # Capture-then-replay + explicit exit so a FAIL is never masked (same
+          # discipline as the pgtest step above).
+          #
+          # No -race here (the pgtest step uses it): this is a cgo+GTK smoke lane
+          # where -race is slow and noisy, and the driver-goroutine / InvokeSync
+          # handoffs it would cover are already exercised under -race by the
+          # untagged unit suite. The omission is deliberate.
+          rc=0
+          xvfb-run -a -e /tmp/xvfb-server.log \
+            go test -tags 'unix gtk3' -run 'E2E' -count=1 -v -timeout 10m \
+            ./cmd/compass-app/ >/tmp/gtk3-e2e.log 2>&1 || rc=$?
+          cat /tmp/gtk3-e2e.log
+          # Guard against a silent no-op: the gate must have PASSED the e2e, not
+          # merely started it. Assert the PASS line, not `=== RUN`: `go test -v`
+          # prints `=== RUN <name>` BEFORE the body runs, so a `t.Skip` (no
+          # display came up, or any future skip condition) still emits RUN — a
+          # RUN-grep would read a skipped, assertion-free run as green. The PASS
+          # grep fails on skip, on no-run, and on a build-tag regression that
+          # drops the test; a genuine FAIL is still caught by `exit "$rc"`. This
+          # is the polarity the pgtest step uses (it fails on the SKIP message).
+          if ! grep -q -- '--- PASS: TestMultiWindowCloseCancelsOnlyClosingWindowE2E' /tmp/gtk3-e2e.log; then
+            echo "::error::gtk3 e2e gate did not PASS TestMultiWindowCloseCancelsOnlyClosingWindowE2E — it skipped (no display came up), the build tag broke, or the test did not run"
+            echo "--- Xvfb server log (bring-up diagnostics) ---"
+            cat /tmp/xvfb-server.log 2>/dev/null || echo "(no Xvfb server log)"
+            exit 1
+          fi
+          exit "$rc"
+
       - name: Retrospect
         # Collapse the single job's flat task fan-out into per-task sections in
         # the Actions log, so a failure is one expand instead of a scroll. Reads
