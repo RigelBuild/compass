@@ -485,7 +485,7 @@ frames arrive as separate reads, not one buffered batch at close, which is
 the unbuffered incremental delivery direct-dial exists to prove.
 `--protocol grpcweb` is the browser's own transport (the app builds a
 gRPC-Web transport, `client.ts:44`); `h2c` because the dev door serves
-cleartext HTTP/2 (`go/server/serve.go:604,699-703`).
+cleartext HTTP/2 (`go/server/serve.go:604,704-707`).
 
 Expected RED: with the door down (`compass-server` stopped, or the wrong
 port) the same command returns immediately with `code: unavailable` /
@@ -633,7 +633,7 @@ zireael/jj-hp lane. No behavioral change in this repo.
 - [ ] T1 — wire `VITE_COMPASS_BASE_URL` to the dev-http door (direct-dial,
       decided) (compass-repo)
 - [ ] T2 — streaming e2e smoke against the direct dev-door (compass-repo;
-      automation depth per OQ5)
+      documented manual smoke per OQ5, resolved)
 - [ ] T3 — `compass-ui` process in `devenv up`, after compass-server ready
       (compass-repo; rebase on SEA-1983)
 - [ ] T4 — relax Linux guards: postgres/server/UI/gen-cert/mint
@@ -699,9 +699,9 @@ so OQ2 is intentionally absent — it was promoted to a decision, not dropped.
   (`@connectrpc/connect-node` is fenced in `apps/ui`; the only in-fence fake,
   `createRouterTransport`, is no-HTTP and already covers the driver in
   `events.test.ts`), and full-stack e2e is Record B's lane. The check plus its
-  verified green/red output live in T2 above. (Original recommendation, now
-  the decision: automate as a bun test only if hermetic against a scripted
-  fake; else a documented manual check.)
+  verified green/red output live in T2 above. (The original recommendation was
+  conditional — automate only if hermetic against a scripted fake; the hermetic
+  arm proved infeasible in-fence, so the decision is the manual smoke.)
 
 Ledger-impact: none — this record composes frozen decisions (DL-106/109/110/
 111/112/183, DL-025/026/027/078) and makes only operational/local-dev
