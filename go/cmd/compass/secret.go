@@ -29,6 +29,12 @@ const (
 	kindGH       = "gh"
 )
 
+// maxSecretBytes caps the stdin read in `secret set`. A secret value (an API
+// key, a certificate, a token) is kilobytes at most; the cap only stops a stray
+// `compass secret set NAME < largefile` from allocating an entire file into
+// memory.
+const maxSecretBytes = 1 << 20 // 1 MiB
+
 // newSecretCmd builds the secret noun: the fleet secrets operator surface
 // (set/list/delete). It carries no logic of its own; each verb is a child that
 // dials the Server and drives one SecretsService RPC. A secret value is read
@@ -143,17 +149,33 @@ func parseDelivery(s string) (compassv1.SecretDelivery, error) {
 func parseKind(kind, provider, host string) (compassv1.SecretKind, error) {
 	switch kind {
 	case kindGeneric:
+		if provider != "" {
+			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
+				errors.New("--provider is only valid with --kind provider")
+		}
+		if host != "" {
+			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
+				errors.New("--host is only valid with --kind gh")
+		}
 		return compassv1.SecretKind_SECRET_KIND_GENERIC, nil
 	case kindProvider:
 		if provider == "" {
 			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
 				errors.New("--kind provider requires --provider <id>")
 		}
+		if host != "" {
+			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
+				errors.New("--host is only valid with --kind gh")
+		}
 		return compassv1.SecretKind_SECRET_KIND_PROVIDER, nil
 	case kindGH:
 		if host == "" {
 			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
 				errors.New("--kind gh requires --host <h>")
+		}
+		if provider != "" {
+			return compassv1.SecretKind_SECRET_KIND_UNSPECIFIED,
+				errors.New("--provider is only valid with --kind provider")
 		}
 		return compassv1.SecretKind_SECRET_KIND_GH, nil
 	default:
@@ -174,11 +196,14 @@ func runSecretSet(ctx context.Context, client compassv1connect.SecretsServiceCli
 	if err != nil {
 		return err
 	}
-	raw, err := io.ReadAll(in)
+	raw, err := io.ReadAll(io.LimitReader(in, maxSecretBytes+2))
 	if err != nil {
 		return fmt.Errorf("reading secret value from stdin: %w", err)
 	}
 	value := strings.TrimSuffix(string(raw), "\n")
+	if len(value) > maxSecretBytes {
+		return fmt.Errorf("secret value exceeds the %d-byte limit: pipe a smaller value on stdin", maxSecretBytes)
+	}
 	if value == "" {
 		return errEmptySecretValue
 	}
