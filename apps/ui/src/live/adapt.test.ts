@@ -995,4 +995,17 @@ describe("adaptRosterEntry", () => {
 		expect(info.lifecycle).toBe("stopped");
 		expect(info.activity).toBeUndefined();
 	});
+
+	test("a present-but-UNSPECIFIED entry yields lifecycle undefined (defensive arm)", () => {
+		// UNSPECIFIED is unreachable on the GetRoster path (R2), but the
+		// composed adaptRosterEntry must still project it to the defensive
+		// undefined arm rather than a wrong dot.
+		const [, info] = adaptRosterEntry(
+			create(RosterEntrySchema, {
+				agentAccountId: "acc-ghost",
+				presence: AgentPresence.UNSPECIFIED,
+			}),
+		);
+		expect(info.lifecycle).toBeUndefined();
+	});
 });
