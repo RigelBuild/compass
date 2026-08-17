@@ -84,6 +84,120 @@ plus the accent left rule, never a raised background.
   `--cx-text-xs`, `--cx-space-1/-2/-4/-5`, `--cx-radius-sm`,
   `--cx-motion-fast`, `--cx-ease-out`, `--cx-focus-ring`.
 
+### Axis badge — `.cx-axis-badge` (SEA-2117 / SEA-2121, shipped variant)
+
+- **Classes:** `.cx-axis-badge` · `data-axis` (`ci | review`) · `data-status`
+  · `data-compact`; contains `.cx-axis-code` (the `CI` / `RV` mono label) and a
+  9×9 `.glyph` SVG.
+- **What it is:** the frozen Option B — a fixed 2-char axis code in the mono UI
+  face followed by a 9×9 1-bit pixel-art status glyph. The wrapper's
+  `data-axis`+`data-status` is the single source of truth: it sets `color`,
+  which paints both the code text and (via `currentColor`) the glyph fill. The
+  inner glyph SVG carries NO own `data-status`/`data-verdict` — it selects its
+  shape off the wrapper via CSS descendant selectors.
+- **Statuses:** CI `success | pending | failure`; review `approved | changes |
+  commented`.
+- **Color routing:** `[data-axis="ci"][data-status="success"]` →
+  `--cx-ci-pass`, `pending` → `--cx-ci-pending`, `failure` → `--cx-ci-fail`;
+  `[data-axis="review"][data-status="approved"]` → `--cx-review-approved`,
+  `changes` → `--cx-review-changes`, `commented` → `--cx-review-pending`.
+- **Compact:** `.cx-axis-badge[data-compact] .cx-axis-code { display: none; }`
+  — the glyph-only fallback for cramped surfaces (IssueCard); Bridge / Done
+  rows show the code.
+- **Geometry:** each glyph is a 9×9 1-bit grid, `shape-rendering="crispEdges"`,
+  one `<rect width="1" height="1" fill="currentColor">` per lit cell.
+- **Tokens:** `--cx-ci-pass/-pending/-fail`,
+  `--cx-review-approved/-changes/-pending`, `--cx-font-ui`, `--cx-text-xs`,
+  `--cx-space-1`.
+
+#### The six axis-badge glyphs (canonical 9×9 grids)
+
+`#` = lit cell, `.` = off; one CSS px per cell.
+
+`ci-success` — check tick (reuses the state-dot `done` grid):
+
+```text
+.........
+.........
+.........
+........#
+.......#.
+#.....#..
+.#...#...
+..#.#....
+...#.....
+```
+
+`ci-pending` — ellipsis (three 2×2 dots, "running…"):
+
+```text
+.........
+.........
+.........
+.........
+##.##.##.
+##.##.##.
+.........
+.........
+.........
+```
+
+`ci-failure` — full X cross:
+
+```text
+#.......#
+.#.....#.
+..#...#..
+...#.#...
+....#....
+...#.#...
+..#...#..
+.#.....#.
+#.......#
+```
+
+`review-approved` — a thick/bold check (the "extra-affirmed" tick):
+
+```text
+.........
+.........
+........#
+.......##
+##....##.
+.##..##..
+..####...
+...##....
+.........
+```
+
+`review-changes` — delta (hollow triangle, the change mark):
+
+```text
+.........
+....#....
+....#....
+...#.#...
+...#.#...
+..#...#..
+..#...#..
+.#######.
+.........
+```
+
+`review-commented` — speech bubble with tail:
+
+```text
+.........
+.#######.
+.#.....#.
+.#.....#.
+.#######.
+...#.....
+..#......
+.........
+.........
+```
+
 ## State dot
 
 - **Class:** `.cx-state-dot` · `data-state`, `data-alive="1"` (working only).
