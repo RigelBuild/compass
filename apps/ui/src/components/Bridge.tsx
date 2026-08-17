@@ -18,6 +18,7 @@ import {
 import { BOARD_LANES } from "../constants";
 import { useStore } from "../context";
 import type { IssueState } from "../stub-data";
+import { BadgeGlyph } from "./BadgeGlyph";
 import { IssueCard } from "./IssueCard";
 import { StateDot } from "./StateDot";
 
@@ -57,11 +58,11 @@ const PrRowItem: Component<{
 				{pr().repo}#{pr().number}
 			</span>
 			<span class="pr-row-title">{pr().title}</span>
-			<Show when={pr().checks}>
-				<span class="ci-badge" data-status={ciBadge(pr())} />
+			<Show when={ciBadge(pr())}>
+				{(status) => <BadgeGlyph axis="ci" status={status()} />}
 			</Show>
 			<Show when={reviewBadge(pr())}>
-				{(verdict) => <span class="review-badge" data-verdict={verdict()} />}
+				{(verdict) => <BadgeGlyph axis="review" status={verdict()} />}
 			</Show>
 			<span class="pr-row-threads">
 				{resolved()}/{pr().threads.length}

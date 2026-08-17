@@ -9,6 +9,7 @@ import {
 } from "../board-render";
 import { useStore } from "../context";
 import type { Issue } from "../stub-data";
+import { BadgeGlyph } from "./BadgeGlyph";
 
 /** A single Done/Archived row. Mirrors the IssueCard shape but laid out as a
  *  wide list row: issue id, title, priority accent, PR summary, and the
@@ -33,13 +34,11 @@ const DoneRow: Component<{ issue: Issue }> = (props) => {
 					<Show when={pr()}>
 						{(p) => (
 							<span class="card-pr" data-pr-state={prBadge(p())}>
-								<Show when={p().checks}>
-									<span class="ci-badge" data-status={ciBadge(p())} />
+								<Show when={ciBadge(p())}>
+									{(status) => <BadgeGlyph axis="ci" status={status()} />}
 								</Show>
 								<Show when={reviewBadge(p())}>
-									{(verdict) => (
-										<span class="review-badge" data-verdict={verdict()} />
-									)}
+									{(verdict) => <BadgeGlyph axis="review" status={verdict()} />}
 								</Show>
 								#{p().number} {prBadge(p())}
 							</span>

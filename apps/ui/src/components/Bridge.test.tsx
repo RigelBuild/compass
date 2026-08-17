@@ -142,10 +142,12 @@ describe("Bridge card badges (Record B §3)", () => {
 		// The card pip strip is gone from the board (the RightSidebar CheckRuns
 		// pane, which keeps its pips, is not mounted here).
 		expect(container.querySelectorAll(".check-pips")).toHaveLength(0);
-		expect(container.querySelectorAll(".ci-badge").length).toBeGreaterThan(0);
-		expect(container.querySelectorAll(".review-badge").length).toBeGreaterThan(
-			0,
-		);
+		expect(
+			container.querySelectorAll('.cx-axis-badge[data-axis="ci"]').length,
+		).toBeGreaterThan(0);
+		expect(
+			container.querySelectorAll('.cx-axis-badge[data-axis="review"]').length,
+		).toBeGreaterThan(0);
 	});
 
 	test("a card PR chip is a link that selects the issue and flips to the PRs tab", () => {
