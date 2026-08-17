@@ -198,6 +198,13 @@ plus the accent left rule, never a raised background.
 .........
 ```
 
+#### Back-port to `rigel.build` (follow-up, Q5)
+
+The public `rigel.build` DS docs still show the earlier flat-dot badge form.
+Porting this axis-badge variant (the code + 9×9 glyph grids above) to that
+surface is tracked as a follow-up, out of scope for the Compass adoption
+(SEA-2117 Q5). Until then, the grids here are canonical.
+
 ## State dot
 
 - **Class:** `.cx-state-dot` · `data-state`, `data-alive="1"` (working only).
