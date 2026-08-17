@@ -8,6 +8,7 @@ import {
 } from "../board-render";
 import { useStore } from "../context";
 import type { Issue } from "../stub-data";
+import { BadgeGlyph } from "./BadgeGlyph";
 
 /** A single issue card — used in the Bridge swimlane cells. Single-click selects
  *  the issue (syncing the roster) without leaving the board; double-click jumps
@@ -75,12 +76,12 @@ export const IssueCard: Component<{
 								props.onOpenPr();
 							}}
 						>
-							<Show when={p().checks}>
-								<span class="ci-badge" data-status={ciBadge(p())} />
+							<Show when={ciBadge(p())}>
+								{(status) => <BadgeGlyph axis="ci" status={status()} compact />}
 							</Show>
 							<Show when={reviewBadge(p())}>
 								{(verdict) => (
-									<span class="review-badge" data-verdict={verdict()} />
+									<BadgeGlyph axis="review" status={verdict()} compact />
 								)}
 							</Show>
 							#{p().number}

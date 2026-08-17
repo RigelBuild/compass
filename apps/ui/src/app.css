@@ -740,37 +740,6 @@
 	background: var(--cx-warn);
 }
 
-/* CI + review roll-up badges — the board-distance collapse of the per-check pip
- * strip (DL-097). The RightSidebar CheckRuns pane keeps .check-pip above; these
- * are the card / Done / PR-row summary dots on the shared --add/--del/--warn. */
-.ci-badge,
-.review-badge {
-	width: 8px;
-	height: 8px;
-	border-radius: 2px;
-	background: var(--cx-text-faint);
-}
-.ci-badge[data-status="success"] {
-	background: var(--cx-ok);
-}
-.ci-badge[data-status="failure"] {
-	background: var(--cx-error);
-}
-.ci-badge[data-status="pending"] {
-	background: var(--cx-warn);
-}
-.review-badge {
-	border-radius: 50%;
-}
-.review-badge[data-verdict="approved"] {
-	background: var(--cx-ok);
-}
-.review-badge[data-verdict="changes"] {
-	background: var(--cx-error);
-}
-.review-badge[data-verdict="commented"] {
-	background: var(--cx-warn);
-}
 .card-pr.link {
 	cursor: pointer;
 }
