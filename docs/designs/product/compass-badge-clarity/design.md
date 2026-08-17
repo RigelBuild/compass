@@ -1,6 +1,6 @@
 # Compass badge clarity (SEA-2117)
 
-Status: Draft
+Status: Active
 Owner lane: compass-ux (design) → compass-ui (execution)
 Refs: SEA-2117 (CI/review badges convey meaning by color alone, and the token tier maps
 CI-pass ≡ review-approved and CI-fail ≡ review-changes to the same hues). Sibling to the
