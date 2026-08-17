@@ -21,6 +21,8 @@ export default defineConfig({
 		baseURL: "http://localhost:5173",
 		headless: true,
 		screenshot: "off",
+		reducedMotion: "reduce",
+		deviceScaleFactor: 1,
 		launchOptions: {
 			// Env-overridable so this config carries no box-specific path in the
 			// shared tree. Default is the nix-wrapped Chromium on Matt's dev box
@@ -38,7 +40,7 @@ export default defineConfig({
 		},
 	],
 	webServer: {
-		command: "bunx vite --port 5173 --strictPort",
+		command: "bunx vite --port 5173 --strictPort --mode fixture",
 		url: "http://localhost:5173",
 		reuseExistingServer: true,
 		timeout: 120_000,
