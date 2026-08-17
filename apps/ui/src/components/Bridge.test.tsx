@@ -150,6 +150,21 @@ describe("Bridge card badges (Record B §3)", () => {
 		).toBeGreaterThan(0);
 	});
 
+	test("card badges are compact (glyph-only); PR-row badges show the code", () => {
+		const { container } = mountBridge();
+		// T3 contract: IssueCard passes `compact` (cramped card gutter → the CI/RV
+		// code is hidden, glyph only), Bridge PR rows do not (code shown). Defend
+		// the distinction, not just badge presence — a dropped/inverted `compact`
+		// on a consumer would otherwise ship green.
+		const cardBadge = container.querySelector(".card .cx-axis-badge");
+		if (!cardBadge) throw new Error("no card axis badge");
+		expect(cardBadge.hasAttribute("data-compact")).toBe(true);
+		clickTab(container, "PRs");
+		const rowBadge = container.querySelector(".pr-row .cx-axis-badge");
+		if (!rowBadge) throw new Error("no PR-row axis badge");
+		expect(rowBadge.hasAttribute("data-compact")).toBe(false);
+	});
+
 	test("a card PR chip is a link that selects the issue and flips to the PRs tab", () => {
 		const { store, container } = mountBridge();
 		const chip = container.querySelector<HTMLElement>('.card-pr[role="link"]');
