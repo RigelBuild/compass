@@ -45,12 +45,14 @@ export default defineConfig({
 		// Always launch our own `--mode fixture` server; never adopt a server
 		// already on :5173. The command is mode-specific, but Playwright's reuse
 		// probe only checks the URL for any 200 — it can't tell a fixture server
-		// from a plain `vite dev`. Reusing a non-fixture server would boot the
-		// live path (no VITE_COMPASS_BASE_URL → boot-error screen) and every PNG
-		// would capture the error surface; the same-box byte-identity self-test
-		// can't catch it (both runs reuse the same wrong server → identical wrong
-		// shots). With --strictPort a port clash now fails loud instead. CI has
-		// no pre-existing server, so this is behavior-identical there.
+		// from a plain `vite dev`. Reusing a foreign server (a dev server wired to
+		// a live daemon, or any non-fixture build) makes the per-surface selectors
+		// resolve against wrong-but-plausible content, so the shots look valid
+		// while depicting non-fixture data — and the same-box byte-identity
+		// self-test can't catch it (both runs reuse the same wrong server →
+		// identical wrong shots). With --strictPort a port clash now fails the
+		// launch loudly instead. CI has no pre-existing server, so this is
+		// behavior-identical there.
 		reuseExistingServer: false,
 		timeout: 120_000,
 	},
