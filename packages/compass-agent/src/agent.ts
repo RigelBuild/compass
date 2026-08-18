@@ -698,11 +698,12 @@ export class CompassAgent {
 				if (answer !== undefined) {
 					for (const id of answer.chosenOptionIds) {
 						// Strict decimal-literal parse: `Number()` alone would coerce
-						// "", whitespace, "0x1", "1e0", and "01" to real indices and
-						// silently mis-map them (worst: "" → 0 selects the first
-						// option as a fabricated answer). Anything that is not a clean
-						// non-negative integer literal must fall through to the
-						// skip-and-surface branch below.
+						// "", whitespace, "0x1", and "1e0" to real indices and silently
+						// mis-map them (worst: "" → 0 selects the first option as a
+						// fabricated answer). Anything that is not a clean non-negative
+						// integer literal must fall through to the skip-and-surface
+						// branch below. (A zero-padded "01" is a legitimate index 1 —
+						// it passes `/^\d+$/` and is intentionally still accepted.)
 						const index = /^\d+$/.test(id) ? Number(id) : Number.NaN;
 						const option =
 							Number.isInteger(index) &&
