@@ -53,6 +53,8 @@ type FakeProvider struct {
 	GetPRResult PullRequest
 	// ChecksResult is returned by Checks when no error is scripted.
 	ChecksResult Checks
+	// BodyLimitResult is returned by BodyLimit; 0 (the default) means unlimited.
+	BodyLimitResult int
 
 	mu     sync.Mutex
 	name   string
@@ -94,6 +96,10 @@ func (f *FakeProvider) Calls() []Call {
 
 // Name reports the configured provider name.
 func (f *FakeProvider) Name() string { return f.name }
+
+// BodyLimit reports the configured body-size limit in bytes (0 = unlimited). It
+// is not recorded in the call log — it is a pure accessor, not a network call.
+func (f *FakeProvider) BodyLimit() int { return f.BodyLimitResult }
 
 // CreateIssue records the call and returns the scripted result or error.
 func (f *FakeProvider) CreateIssue(_ context.Context, repo string, in CreateIssue) (Issue, error) {

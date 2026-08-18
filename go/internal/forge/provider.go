@@ -209,6 +209,10 @@ type Provider interface {
 	// Checks returns the rolled-up CI/status state for a PR head. Separated from
 	// GetPullRequest because the subscription poller needs it alone (#995 Decision 5).
 	Checks(ctx context.Context, repo string, number uint64) (Checks, error)
+	// BodyLimit is the maximum body size (in BYTES) the Service enforces before
+	// a write. Zero means unlimited (the fake's default). See GitHub.BodyLimit
+	// for the byte-vs-character-cap rationale (A9).
+	BodyLimit() int
 }
 
 // ErrUnsupported is returned by a provider for an operation it cannot serve
