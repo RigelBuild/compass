@@ -139,11 +139,11 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 	test("bridge — column-head strip", async ({ page }) => {
 		await page.goto("/#/");
 		await page.locator(".bridge").waitFor({ state: "visible" });
-		const heads = page.locator(".swim-colhead");
+		const heads = page.locator(".bridge-col-head");
 		await heads.first().waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
 		// Cropped clip of the column-head strip (tint review): union the bounding
-		// boxes of the individual `.swim-colhead` cells into one row rect.
+		// boxes of the individual `.bridge-col-head` cells into one row rect.
 		const boxes = await heads.evaluateAll((els) =>
 			els
 				.map((el) => el.getBoundingClientRect())

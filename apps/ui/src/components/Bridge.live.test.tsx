@@ -96,7 +96,7 @@ describe("Bridge — live roster (T4/T5)", () => {
 		expect(store.agents().map((a) => a.account.id)).toContain("acc-cook");
 
 		// It partitions into a Bridge swimlane gutter row carrying its handle.
-		const gutter = container.querySelector<HTMLButtonElement>(".swim-gutter");
+		const gutter = container.querySelector<HTMLButtonElement>(".bridge-lane");
 		expect(gutter).not.toBeNull();
 		expect(gutter?.querySelector(".g-name")?.textContent).toBe("acc-cook");
 	});
