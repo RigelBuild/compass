@@ -1,218 +1,157 @@
 /*
  * Compass engineering docs — public Starlight theme override.
  *
- * Maps Starlight's CSS-variable tokens onto the Rigel
- * brand palette pulled from
- * sealed/apps/sealedsecurity.com/src/investors/sealed-docs.css so the
- * docs site reads as part of the same brand family as the landing
- * page without being a pixel-clone (the landing site is editorial
- * document-shaped; the docs site is multi-page reference-shaped).
+ * Maps Starlight's CSS-variable tokens onto the Rigel brand system (the Night
+ * Owl palette + Space/Departure Mono type) so the docs site reads as part of
+ * the same brand family as the Compass product surface without being a
+ * pixel-clone (the product is app-shaped; the docs site is multi-page
+ * reference-shaped).
+ *
+ * Dark-only: the Rigel aesthetic is Night Owl, and light mode is treated as a
+ * mere polarity inversion rather than a distinct design. The Starlight token
+ * mapping is asserted under every data-theme so an OS-light visitor still gets
+ * Night Owl; the now-inert theme toggle is hidden below.
+ *
+ * The one-accent rule: purple appears only inside the brand mark. This surface
+ * has no mark, so purple appears NOWHERE — links, accents, and active states
+ * all use the blue flow color (--rigel-blue).
  *
  * Token reference:
  *   https://starlight.astro.build/guides/css-and-tailwind/#theming
  */
 
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap");
-
+/* ── Rigel Night Owl palette (the subset of the brand surface tokens this
+      docsite consumes). The state/syntax tiers (cyan/green/amber/red/faint) are
+      omitted — this reference surface has no state or syntax UI (code token
+      colors come from the night-owl Shiki theme, not these vars). ─────────── */
 :root {
-	/* ── Rigel brand tokens. Mirrors sealed-docs.css ── */
-	--sealed-black: #0f0f0f;
-	--sealed-white: #f7f5ef;
-	--sealed-paper: #ede9df;
-	--sealed-gray-100: #e8e6e0;
-	--sealed-gray-200: #ccc9c0;
-	--sealed-gray-400: #8a8780;
-	--sealed-gray-600: #4a4845;
+	--rigel-night: #011627;
+	--rigel-night-2: #0b2942;
+	--rigel-panel: #0e2a45;
+	--rigel-selection: #1d3b53;
+	--rigel-fog: #d6deeb;
+	--rigel-bright: #c5e4fd;
+	--rigel-haze: #89a4bb;
+	--rigel-mute: #5f7e97;
+	--rigel-blue: #82aaff;
 
-	--sealed-yellow-bg: #fef08a;
-	--sealed-yellow-border: #a0760a;
-	--sealed-pink-bg: #ffd6e0;
-	--sealed-pink-border: #b04070;
-	--sealed-blue-bg: #dbeafe;
-	--sealed-blue-border: #3b6cc4;
-	--sealed-green-bg: #dcfce7;
-	--sealed-green-border: #2d9e58;
-	--sealed-red-bg: #fee2e2;
-	--sealed-red-border: #dc2626;
-
-	--sealed-term-bg: #1a1400;
-	--sealed-term-amber: #ffb300;
-	--sealed-term-dim: #a07800;
-
-	--sealed-mono:
-		"IBM Plex Mono", ui-monospace, SFMono-Regular, "SF Mono", Consolas,
-		"Liberation Mono", monospace;
-	--sealed-sans:
-		"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Helvetica, Arial,
-		sans-serif;
+	--rigel-mono:
+		"Space Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Consolas,
+		monospace;
+	--rigel-display: "Departure Mono", "Space Mono", monospace;
 }
 
-/* ── Light theme ────────────────────────────────────────────── */
+/* ── Starlight token mapping — Night Owl under every data-theme so the brand
+      holds regardless of the OS light/dark preference. ─────────────────────── */
+:root,
+:root[data-theme="dark"],
 :root[data-theme="light"] {
-	--sl-color-bg: var(--sealed-white);
-	--sl-color-bg-nav: var(--sealed-paper);
-	--sl-color-bg-sidebar: var(--sealed-paper);
-	--sl-color-bg-inline-code: var(--sealed-paper);
-	--sl-color-bg-accent: var(--sealed-gray-100);
+	color-scheme: dark;
 
-	--sl-color-text: var(--sealed-black);
-	--sl-color-text-accent: var(--sealed-gray-600);
-	--sl-color-text-invert: var(--sealed-white);
+	--sl-color-bg: var(--rigel-night);
+	--sl-color-bg-nav: var(--rigel-night-2);
+	--sl-color-bg-sidebar: var(--rigel-night-2);
+	--sl-color-bg-inline-code: var(--rigel-panel);
+	--sl-color-bg-accent: var(--rigel-night-2);
 
-	--sl-color-hairline: var(--sealed-gray-200);
-	--sl-color-hairline-light: var(--sealed-gray-100);
-	--sl-color-hairline-shade: var(--sealed-gray-400);
+	--sl-color-text: var(--rigel-fog);
+	--sl-color-text-accent: var(--rigel-blue);
+	--sl-color-text-invert: var(--rigel-night);
 
-	--sl-color-accent: var(--sealed-blue-border);
-	--sl-color-accent-low: var(--sealed-blue-bg);
-	--sl-color-accent-high: var(--sealed-black);
+	--sl-color-hairline: var(--rigel-panel);
+	--sl-color-hairline-light: var(--rigel-night-2);
+	--sl-color-hairline-shade: var(--rigel-selection);
 
-	--sl-color-white: var(--sealed-black);
-	--sl-color-gray-1: var(--sealed-gray-600);
-	--sl-color-gray-2: var(--sealed-gray-400);
-	--sl-color-gray-3: var(--sealed-gray-200);
-	--sl-color-gray-4: var(--sealed-gray-100);
-	--sl-color-gray-5: var(--sealed-paper);
-	--sl-color-gray-6: var(--sealed-white);
-	--sl-color-black: var(--sealed-paper);
+	/* Links + active nav + focus ride the blue flow color (never purple). */
+	--sl-color-accent: var(--rigel-blue);
+	--sl-color-accent-low: var(--rigel-night-2);
+	--sl-color-accent-high: var(--rigel-bright);
+
+	/* Grays: 1 = brightest text → 6 = darkest surface, all Night Owl. */
+	--sl-color-white: var(--rigel-bright);
+	--sl-color-gray-1: var(--rigel-fog);
+	--sl-color-gray-2: var(--rigel-haze);
+	--sl-color-gray-3: var(--rigel-mute);
+	--sl-color-gray-4: var(--rigel-selection);
+	--sl-color-gray-5: var(--rigel-panel);
+	--sl-color-gray-6: var(--rigel-night-2);
+	--sl-color-black: var(--rigel-night);
 }
 
-/* ── Dark theme ─────────────────────────────────────────────── */
-:root[data-theme="dark"] {
-	--sl-color-bg: var(--sealed-black);
-	--sl-color-bg-nav: #1a1a18;
-	--sl-color-bg-sidebar: #1a1a18;
-	--sl-color-bg-inline-code: #1a1a18;
-	--sl-color-bg-accent: #2a2a26;
-
-	--sl-color-text: var(--sealed-white);
-	--sl-color-text-accent: var(--sealed-gray-200);
-
-	--sl-color-hairline: #2a2a26;
-	--sl-color-hairline-light: #1a1a18;
-	--sl-color-hairline-shade: var(--sealed-gray-600);
-
-	--sl-color-accent: var(--sealed-term-amber);
-	--sl-color-accent-low: #2a2200;
-	--sl-color-accent-high: var(--sealed-white);
+/* The dark-only palette makes the theme switcher a no-op; hide it rather than
+   ship a control that does nothing. */
+starlight-theme-select {
+	display: none;
 }
 
 /* ── Typography ─────────────────────────────────────────────── */
 :root {
-	--sl-font: var(--sealed-sans);
-	--sl-font-mono: var(--sealed-mono);
+	--sl-font: var(--rigel-mono);
+	--sl-font-mono: var(--rigel-mono);
 
-	/* Slightly tighter than Starlight default — IBM Plex reads
-	   better with a touch less line-height than the default UI
-	   font stack assumes. */
+	/* Space Mono is wide; a touch less line-height than the default stack. */
 	--sl-line-height: 1.65;
 	--sl-line-height-headings: 1.2;
 }
 
-/* Body copy in Plex Mono — matches the landing site's editorial
-   "everything is monospace" feel without imposing it on every
-   single Starlight element (sidebar nav stays sans for
-   legibility at small sizes). */
+/* The site title is the one brand-display moment on this surface: the wordmark,
+   in Departure Mono at 22px (an even multiple of the 11px bitmap grid, so it
+   stays crisp). Everything else is Space Mono — docs page titles are long and
+   off-grid, so per the type rule they stay in the crisp-at-any-size body face
+   rather than the bitmap display face. */
+.site-title {
+	font-family: var(--rigel-display);
+	font-size: 22px;
+	line-height: 1;
+	letter-spacing: 2px;
+	color: var(--rigel-fog);
+	/* Never synthesize weight/slant on the bitmap face — it skews the grid. */
+	font-synthesis: none;
+}
+
+/* Body copy in Space Mono — the retro-futurist workhorse the whole brand runs
+   on, matching the Compass product surface. */
 .sl-markdown-content {
-	font-family: var(--sealed-mono);
-	font-size: 14px;
+	font-family: var(--rigel-mono);
+	font-size: 15px;
 }
 
-/* Headings keep the sans face for the visual rhythm Starlight
-   already establishes. */
+/* Headings in Space Mono (crisp at any size), bright for emphasis. */
 .sl-markdown-content :is(h1, h2, h3, h4, h5, h6) {
-	font-family: var(--sealed-sans);
-	font-weight: 600;
-	letter-spacing: -0.01em;
+	font-family: var(--rigel-mono);
+	font-weight: 700;
+	color: var(--rigel-bright);
+	letter-spacing: 0;
 }
 
-/* ── Code blocks — terminal-feel dark background, matches the
-      sealed-docs.css `code` style. The Shiki theme is pinned to
-      `tokyo-night` for both light and dark site modes (see
-      astro.config.mjs `expressiveCode.themes`) so token colors
-      are always designed for the dark bg they're actually painted
-      on. The high-specificity selector (theme-attr + chained
-      classes) sits FIRST so the inline-code rule lower in the file
-      doesn't trip biome's noDescendingSpecificity warning. */
-:root[data-theme="light"] .expressive-code .frame:not(.is-terminal) pre code {
-	color: var(--sealed-term-amber);
+/* ── Code frames — Shiki is pinned to the `night-owl` theme (see
+      astro.config.mjs `expressiveCode.themes`), whose background is Night Owl
+      navy, so code blocks sit flush on the surface. Hard edges, hairline
+      border, no radius — the 1-bit dot-matrix shape discipline. ──────────── */
+.expressive-code .frame pre,
+.expressive-code .frame.has-title:not(.is-terminal) .header {
+	border-radius: 0;
 }
 
-:root[data-theme="light"]
-	.expressive-code
-	.frame.has-title:not(.is-terminal)
-	.header,
-:root[data-theme="light"] .expressive-code .frame:not(.is-terminal) pre {
-	background: var(--sealed-term-bg);
-	color: var(--sealed-term-amber);
+.expressive-code .frame:not(.is-terminal) pre {
+	border: 1px solid var(--rigel-panel);
 }
 
-/* ── Color-bar accent above the top nav — the signature brand
-      marker from the landing site. Six pixels, rainbow-rule
-      gradient. Sits below the sticky header so scrolling doesn't
-      cover it. ─────────────────────────────────────────────── */
-body::before {
-	content: "";
-	display: block;
-	height: 6px;
-	background: linear-gradient(
-		to right,
-		#e63946 0%,
-		#e63946 7.14%,
-		#f4a261 7.14%,
-		#f4a261 14.28%,
-		#e9c46a 14.28%,
-		#e9c46a 21.42%,
-		#2a9d8f 21.42%,
-		#2a9d8f 28.56%,
-		#457b9d 28.56%,
-		#457b9d 35.7%,
-		#6d4c9e 35.7%,
-		#6d4c9e 42.84%,
-		#1a1a2e 42.84%,
-		#1a1a2e 50%,
-		#d0cdc6 50%,
-		#d0cdc6 57.14%,
-		#b5b0a8 57.14%,
-		#b5b0a8 64.28%,
-		#8a8780 64.28%,
-		#8a8780 71.42%,
-		#5a5755 71.42%,
-		#5a5755 78.56%,
-		#3a3835 78.56%,
-		#3a3835 85.7%,
-		#1a6b3c 85.7%,
-		#1a6b3c 92.84%,
-		#f7c59f 92.84%,
-		#f7c59f 100%
-	);
-	position: sticky;
-	top: 0;
-	z-index: 100;
-}
-
-/* ── Inline code — matches landing-site `code` styling.
-   biome-ignore lint/style/noDescendingSpecificity: this rule
-   targets inline `code` (not inside a `pre`), while the
-   higher-specificity expressive-code rule above targets block
-   `code` (inside `pre`). The :not(pre) negation means they
-   never match the same element, so the descending-specificity
-   warning is a false positive here — source order doesn't
-   affect cascade resolution because there's no element a
-   browser would have to decide between them for. */
+/* ── Inline code — flat panel fill, hairline border, no radius, bright text. */
 .sl-markdown-content :not(pre) > code {
 	background: var(--sl-color-bg-inline-code);
-	border: 1px solid var(--sl-color-hairline-light);
+	border: 1px solid var(--rigel-selection);
+	color: var(--rigel-bright);
 	padding: 1px 5px;
 	font-size: 0.9em;
 	border-radius: 0;
 }
 
-/* ── Blockquotes — small accent border + paper-tone fill,
-      cousin of the landing site's `.highlight` block. ─── */
+/* ── Blockquotes — hairline blue (flow color) left border + raised panel fill,
+      flat, no radius. ─────────────────────────────────────────────────────── */
 .sl-markdown-content blockquote {
-	border-left: 3px solid var(--sl-color-accent);
-	background: var(--sl-color-bg-accent);
+	border-left: 3px solid var(--rigel-blue);
+	background: var(--rigel-night-2);
 	padding: 12px 16px;
 	margin: 16px 0;
 	font-style: normal;
