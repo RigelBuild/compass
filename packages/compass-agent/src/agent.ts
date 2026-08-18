@@ -30,7 +30,13 @@
 // changes only the sink/source impls, not this class.
 
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
+import type {
+	AgentSession,
+	ExtensionAskDialogQuestion,
+	ExtensionAskDialogResult,
+	ExtensionAskDialogResultItem,
+	ExtensionUIDialogOptions,
+} from "@oh-my-pi/pi-coding-agent";
 import {
 	AgentSessionState,
 	create,
@@ -107,6 +113,24 @@ export class CompassAgent {
 	// fresh control_seq (independent of the control-source's seq dedup) is dropped
 	// here so a message is injected at most once (frozen record :811-812).
 	readonly #processedMessageIds = new Set<string>();
+	// Single-slot pending ask (RIG-1509). The SDK `AskTool` is
+	// `concurrency: "exclusive"` and its `execute()` awaits the `askDialog`
+	// promise, so at most ONE ask is in flight per session at any time —
+	// therefore this is a single slot, NOT a keyed registry. `askDialog` fills it
+	// when the ask tool calls out; the `askAnswer` control arm resolves + clears
+	// it. `questions` are retained so the inbound answer (index-string option ids)
+	// can be reconstructed back to option LABELS. `resolve` settles the in-flight
+	// promise; `abort` unsubscribes the dialog's AbortSignal listener when the
+	// slot is cleared (answered or superseded).
+	#pendingAsk:
+		| {
+				readonly questions: readonly ExtensionAskDialogQuestion[];
+				readonly resolve: (
+					result: ExtensionAskDialogResult | undefined,
+				) => void;
+				readonly abort: () => void;
+		  }
+		| undefined;
 
 	constructor(opts: CompassAgentOptions) {
 		this.#session = opts.session;
@@ -377,6 +401,64 @@ export class CompassAgent {
 		});
 	}
 
+	// RIG-1509 — the SDK ask seam. The Compass `ExtensionUIContext.askDialog`
+	// installed in `cli.ts` delegates here: the ask tool calls out with its
+	// questions, this stores the single pending slot and returns a promise the
+	// tool's `execute()` awaits. The promise settles when the inbound `askAnswer`
+	// control arrives (`#applyControl`) — resolved with a reconstructed
+	// `ExtensionAskDialogResult` — or with `undefined` (a cancel) when the tool's
+	// AbortSignal fires.
+	//
+	// Single-slot invariant: `AskTool` is exclusive-concurrency (design §"the key
+	// architectural fact"), so a second ask cannot legitimately open while one is
+	// pending. Defensively, if it does, we fail SAFE for the caller that is
+	// actually blocked — the OLDER pending ask — by resolving it `undefined` (a
+	// cancel it can act on) and surfacing a counted unmapped op, rather than
+	// leaving it hung forever; the newer ask then takes the slot.
+	askDialog(
+		questions: ExtensionAskDialogQuestion[],
+		dialogOptions?: ExtensionUIDialogOptions,
+	): Promise<ExtensionAskDialogResult | undefined> {
+		const signal = dialogOptions?.signal;
+		// An already-aborted call never opens an ask: resolve undefined at once.
+		if (signal?.aborted) return Promise.resolve(undefined);
+
+		if (this.#pendingAsk !== undefined) {
+			// Should be unreachable under exclusive concurrency; if it happens,
+			// release the older blocked caller with a cancel rather than hang it.
+			const previous = this.#pendingAsk;
+			this.#pendingAsk = undefined;
+			previous.abort();
+			previous.resolve(undefined);
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "control:ask_answer",
+				reason:
+					"a second ask opened while one was pending — older ask cancelled (exclusive-concurrency invariant violated)",
+			});
+		}
+
+		const { promise, resolve } = Promise.withResolvers<
+			ExtensionAskDialogResult | undefined
+		>();
+		// Honor the tool's AbortSignal: on abort, clear the slot and resolve the
+		// in-flight promise `undefined` (the SDK ask contract reads `undefined` as
+		// a cancel). The listener is `once` and removed by `abort()` when the slot
+		// is cleared for any reason, so no stray listener survives.
+		const onAbort = () => {
+			if (this.#pendingAsk?.resolve !== resolve) return;
+			this.#pendingAsk = undefined;
+			resolve(undefined);
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		this.#pendingAsk = {
+			questions,
+			resolve,
+			abort: () => signal?.removeEventListener("abort", onAbort),
+		};
+		return promise;
+	}
+
 	// Track a session turn edge (SEA-1310 §8). A turn-start edge marks the session
 	// active; `agent_end` settles it and flushes the coalesced deliver queue as
 	// one turn-end prompt. See the `#turnActive` field comment for why the flush
@@ -516,17 +598,27 @@ export class CompassAgent {
 					});
 					return;
 				}
-				// STAGED: wiring the answer into the SDK needs the SEA-1310 ask
-				// correlation key (askId → the in-flight ask). Until then, surface a
-				// counted "staged" unmapped op — the variant is faithfully enumerated
-				// + applied (never a missing arm), but the answer is not yet
-				// delivered.
-				this.#onUnmapped({
-					kind: "unmapped",
-					eventType: "control:ask_answer",
-					reason:
-						"ask_answer delivery staged — awaiting SEA-1310 ask correlation key",
-				});
+				// Deliver the answer to the in-flight `askDialog` promise (RIG-1509).
+				// Single-slot invariant: `AskTool` is exclusive-concurrency, so THIS
+				// answer resolves THE one pending ask — `askId` is informational
+				// (surfaced only on the no-pending unmapped op), never a correlation
+				// key. No pending ask → nothing to answer: surface a counted unmapped
+				// op, never throw or drop.
+				if (this.#pendingAsk === undefined) {
+					this.#onUnmapped({
+						kind: "unmapped",
+						eventType: "control:ask_answer",
+						reason: `no in-flight ask to answer (askId=${control.askId})`,
+					});
+					return;
+				}
+				{
+					const pending = this.#pendingAsk;
+					this.#pendingAsk = undefined;
+					pending.abort();
+					const result = this.#reconstructAskResult(pending.questions, control);
+					pending.resolve(result);
+				}
 				return;
 		}
 	}
@@ -580,6 +672,62 @@ export class CompassAgent {
 			merged.push(native);
 		}
 		return merged ?? tools;
+	}
+
+	// Reconstruct the SDK `ExtensionAskDialogResult` from the inbound answer
+	// (RIG-1509). The wire `AskQuestionAnswer.chosenOptionIds` are option ids —
+	// zero-based indices as decimal strings (`"0"`, `"1"`, …) minted in question
+	// order (design §Mapping) — but the SDK result carries option LABELS in
+	// `selectedOptions`. So each id is resolved back to its label by indexing the
+	// original question's `options`. We emit one result item PER original question
+	// in order (mirrors the native forward-skip): a question with no matching
+	// answer entry yields an empty item (`selectedOptions: []`, no customInput).
+	// A non-numeric or out-of-range option id is skipped and surfaced as a counted
+	// unmapped op — never thrown, never dropped silently.
+	#reconstructAskResult(
+		questions: readonly ExtensionAskDialogQuestion[],
+		control: Extract<AgentControl, { kind: "askAnswer" }>,
+	): ExtensionAskDialogResult {
+		const answerByQuestionId = new Map(
+			control.answers.map((answer) => [answer.questionId, answer]),
+		);
+		const results: ExtensionAskDialogResultItem[] = questions.map(
+			(question) => {
+				const answer = answerByQuestionId.get(question.id);
+				const selectedOptions: string[] = [];
+				if (answer !== undefined) {
+					for (const id of answer.chosenOptionIds) {
+						const index = Number(id);
+						const option =
+							Number.isInteger(index) &&
+							index >= 0 &&
+							index < question.options.length
+								? question.options[index]
+								: undefined;
+						if (option === undefined) {
+							this.#onUnmapped({
+								kind: "unmapped",
+								eventType: "control:ask_answer",
+								reason: `ask_answer option id "${id}" is not a valid index into question "${question.id}" — skipped`,
+							});
+							continue;
+						}
+						selectedOptions.push(option.label);
+					}
+				}
+				const item: ExtensionAskDialogResultItem = {
+					id: question.id,
+					question: question.question,
+					options: question.options.map((option) => option.label),
+					multi: question.multi ?? false,
+					selectedOptions,
+				};
+				const customInput = answer?.customText || undefined;
+				if (customInput !== undefined) item.customInput = customInput;
+				return item;
+			},
+		);
+		return { kind: "submit", results };
 	}
 }
 

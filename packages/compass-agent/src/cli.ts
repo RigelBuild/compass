@@ -40,10 +40,15 @@ import {
 	type CreateAgentSessionOptions,
 	createAgentSession,
 	discoverContextFiles,
+	type ExtensionAskDialogQuestion,
+	type ExtensionAskDialogResult,
+	type ExtensionUIContext,
+	type ExtensionUIDialogOptions,
 	type IndexedSessionStorage,
 	SessionManager,
 	Settings,
 	type ToolDefinition,
+	theme,
 } from "@oh-my-pi/pi-coding-agent";
 import { loadCapability } from "@oh-my-pi/pi-coding-agent/capability";
 import {
@@ -454,10 +459,19 @@ export async function buildFleetSettings(
  * is the part that carries a real defect, so it is the part worth reaching.
  */
 export interface MainDeps {
-	/** Session constructor. Defaults to the SDK's `createAgentSession`. */
-	createSession?: (
-		options: CreateAgentSessionOptions,
-	) => Promise<{ session: AgentSession }>;
+	/**
+	 * Session constructor. Defaults to the SDK's `createAgentSession`.
+	 *
+	 * `setToolUIContext` is OPTIONAL on the seam so a test fake may return just
+	 * `{ session }`: the real `createAgentSession` always provides it (it is a
+	 * required member of `CreateAgentSessionResult`), and `main` installs the
+	 * Compass UI context only when the factory hands it back — a fake that omits
+	 * it simply runs without the ask seam, which is exactly what those tests want.
+	 */
+	createSession?: (options: CreateAgentSessionOptions) => Promise<{
+		session: AgentSession;
+		setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
+	}>;
 	/** Runner-socket carrier. Defaults to `createUnixSocketTransport`. */
 	createTransport?: (socketPath: string) => RunnerTransport;
 	/**
@@ -491,6 +505,54 @@ export interface MainDeps {
 	 * way to reach the customTools wiring and the teardown-disconnect barrier.
 	 */
 	connectMcp?: (cwd: string, mcp: MountedMcp) => Promise<ConnectedMcp>;
+}
+
+// Build the Compass `ExtensionUIContext` the SDK installs for tool UI (RIG-1509).
+// The container is headless — there is no human at a TUI — so ONLY `askDialog`
+// is load-bearing: it delegates to the CompassAgent's single-slot pending ask,
+// which the inbound `askAnswer` control resolves. Every other member is a
+// minimal, honest no-op/default: an interactive dialog (`select`/`confirm`/
+// `input`/`editor`/`custom`) has no one to answer, so it resolves to
+// cancel/false/undefined; `notify` goes to stderr (the container's log lane);
+// setters and widget/theme controls do nothing (no TUI to mutate). `theme`
+// returns the SDK's global default so a member that reads it never faults.
+function headlessUIContext(
+	askDialog: (
+		questions: ExtensionAskDialogQuestion[],
+		dialogOptions?: ExtensionUIDialogOptions,
+	) => Promise<ExtensionAskDialogResult | undefined>,
+): ExtensionUIContext {
+	return {
+		askDialog,
+		select: () => Promise.resolve(undefined),
+		confirm: () => Promise.resolve(false),
+		input: () => Promise.resolve(undefined),
+		editor: () => Promise.resolve(undefined),
+		custom: () => Promise.resolve(undefined as never),
+		notify: (message, type) =>
+			console.error(`[compass-agent] notify (${type ?? "info"}): ${message}`),
+		onTerminalInput: () => () => {},
+		setStatus: () => {},
+		setWorkingMessage: () => {},
+		setWidget: () => {},
+		setFooter: () => {},
+		setHeader: () => {},
+		setTitle: () => {},
+		pasteToEditor: () => {},
+		setEditorText: () => {},
+		getEditorText: () => "",
+		addAutocompleteProvider: () => {},
+		setEditorComponent: () => {},
+		get theme() {
+			return theme;
+		},
+		getAllThemes: () => Promise.resolve([]),
+		getTheme: () => Promise.resolve(undefined),
+		setTheme: () =>
+			Promise.resolve({ success: false, error: "headless container" }),
+		getToolsExpanded: () => false,
+		setToolsExpanded: () => {},
+	};
 }
 
 /**
@@ -713,9 +775,18 @@ export async function main(
 	).items;
 	const rules = [...mounted.rules, ...discoveredRules];
 
-	const { session } = await (deps.createSession ?? createAgentSession)({
+	const { session, setToolUIContext } = await (
+		deps.createSession ?? createAgentSession
+	)({
 		cwd,
 		modelPattern: resolveModelSelector(env),
+		// The container is a headless in-container agent, but it DOES need the
+		// interactive `ask` tool: the SDK gates `AskTool.createIf` on `hasUI`, so
+		// without this the model is never offered the ask capability and silently
+		// guesses at design forks. The ask flows over the SDK's own
+		// `ExtensionUIContext.askDialog` seam (installed below), not a Compass
+		// AgentFrame variant (RIG-1509, Matt's 2026-08-18 ruling).
+		hasUI: true,
 		// The tee-backed manager, so every session write teems upstream and the
 		// resumed history (if any) is already loaded.
 		sessionManager: manager,
@@ -846,8 +917,23 @@ export async function main(
 	// broke it a skipped `close()` would leak the session, which is the exact
 	// defect `close()` was added to fix.
 	try {
-		agent = new CompassAgent({ session, sink, control });
-		await agent.run();
+		const runningAgent = new CompassAgent({ session, sink, control });
+		agent = runningAgent;
+		// Install the Compass UI context so the SDK ask tool's `askDialog` calls
+		// route to the CompassAgent's single-slot pending ask (RIG-1509). Same
+		// construction-cycle shape as `control` above, but the context closes over
+		// the just-constructed `runningAgent` directly (no mutable-holder guard
+		// needed — it is assigned before install). The container is headless, so
+		// ONLY `askDialog` is load-bearing — every other member is an honest
+		// no-op/default (see `headlessUIContext`). Guarded because the deps seam
+		// makes `setToolUIContext` optional (a test fake may omit it).
+		setToolUIContext?.(
+			headlessUIContext((questions, dialogOptions) =>
+				runningAgent.askDialog(questions, dialogOptions),
+			),
+			true,
+		);
+		await runningAgent.run();
 	} finally {
 		// The load-bearing drain→close chain is UNTOUCHED — storage.drain →
 		// sink.drain → transport.close, in that exact order (see above). The MCP

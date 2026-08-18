@@ -19,6 +19,8 @@ import type {
 	AgentSession,
 	AgentSessionEvent,
 	AgentSessionEventListener,
+	ExtensionAskDialogQuestion,
+	ExtensionAskDialogResult,
 } from "@oh-my-pi/pi-coding-agent";
 import { CompassAgent, formatDeliversForPrompt } from "./agent";
 import {
@@ -338,12 +340,55 @@ describe("CompassAgent — barrier lifts on ReplayComplete", () => {
 	});
 });
 
-describe("CompassAgent — ask_answer is staged, never delivered to the SDK (SEA-1310)", () => {
-	// The frozen 6th AgentControl variant. Both arms surface a counted unmapped
-	// op and drive NO SDK action: pre-barrier it is refused like prompt/steer;
-	// post-barrier it is STAGED (wiring the answer needs the SEA-1310 correlation
-	// key). The two reasons distinguish the arms so a regression that collapses
-	// them — or that starts delivering the answer to the SDK — reddens here.
+// Build an agent over a fixed control script WITHOUT running it yet, exposing
+// the agent so a test can register a pending ask (`agent.askDialog(...)`) before
+// `run()` consumes the controls. Mirrors `runWith`'s recording session/sink, but
+// the deferred `run()` is what lets the ask round-trip be observed: register the
+// pending ask, run the script that feeds the answer, then await the promise.
+function askAgent(controls: AgentControl[]) {
+	const session = recordingSession();
+	const frames: OutboundFrame[] = [];
+	const unmapped: UnmappedEvent[] = [];
+	const control: ControlSource = {
+		async *[Symbol.asyncIterator]() {
+			for (const c of controls) yield c;
+		},
+	};
+	const agent = new CompassAgent({
+		session: session as unknown as AgentSession,
+		sink: {
+			emit: (f) => {
+				frames.push(f);
+			},
+			emitDurable: (f) => {
+				frames.push(f);
+				return Promise.resolve();
+			},
+		},
+		control,
+		onUnmapped: (u) => unmapped.push(u),
+	});
+	return { agent, session, frames, unmapped, run: () => agent.run() };
+}
+
+// A minimal ExtensionAskDialogQuestion fixture. Options carry only labels (the
+// load-bearing field for reconstruction); ids are the zero-based index as a
+// decimal string, minted by position — mirrored by the answers below.
+function askQuestion(
+	id: string,
+	question: string,
+	labels: string[],
+	multi = false,
+): ExtensionAskDialogQuestion {
+	return { id, question, options: labels.map((label) => ({ label })), multi };
+}
+
+describe("CompassAgent — ask_answer delivers to the in-flight SDK askDialog (RIG-1509)", () => {
+	// The frozen 6th AgentControl variant. Pre-barrier it is refused like
+	// prompt/steer (surfaced, never delivered). Post-barrier it resolves THE one
+	// in-flight ask (single-slot: AskTool is exclusive-concurrency), reconstructing
+	// option LABELS from the index-string option ids and carrying customText. With
+	// no pending ask, it is a counted unmapped op — never thrown, never dropped.
 	test("ask_answer before ReplayComplete is refused by the barrier and surfaced, never delivered", async () => {
 		const { agent, unmapped } = await runWith([
 			{
@@ -352,7 +397,7 @@ describe("CompassAgent — ask_answer is staged, never delivered to the SDK (SEA
 				answers: [
 					create(AskQuestionAnswerSchema, {
 						questionId: "q-1",
-						chosenOptionIds: ["opt-1"],
+						chosenOptionIds: ["0"],
 					}),
 				],
 			},
@@ -369,8 +414,8 @@ describe("CompassAgent — ask_answer is staged, never delivered to the SDK (SEA
 		);
 	});
 
-	test("ask_answer after ReplayComplete is staged (awaiting SEA-1310) and surfaced, still not delivered", async () => {
-		const { agent, unmapped } = await runWith([
+	test("ask_answer after ReplayComplete resolves the pending askDialog with reconstructed labels", async () => {
+		const { agent, session, unmapped, run } = askAgent([
 			{ kind: "replayComplete" },
 			{
 				kind: "askAnswer",
@@ -378,22 +423,117 @@ describe("CompassAgent — ask_answer is staged, never delivered to the SDK (SEA
 				answers: [
 					create(AskQuestionAnswerSchema, {
 						questionId: "q-1",
-						chosenOptionIds: ["opt-1", "opt-2"],
+						chosenOptionIds: ["1"],
+						customText: "",
 					}),
 				],
 			},
 		]);
-		// The barrier lifted, yet the answer is NOT wired into the SDK — it is
-		// staged, so still no prompt/steer/append for this frame.
+		// Register the in-flight ask BEFORE running the script that answers it.
+		const answered = agent.askDialog([
+			askQuestion("q-1", "Pick one", ["Alpha", "Beta", "Gamma"]),
+		]);
+		await run();
+		const result = await answered;
+		expect(result).toEqual({
+			kind: "submit",
+			results: [
+				{
+					id: "q-1",
+					question: "Pick one",
+					options: ["Alpha", "Beta", "Gamma"],
+					multi: false,
+					// Index "1" → the second option's label.
+					selectedOptions: ["Beta"],
+				},
+			],
+		} satisfies ExtensionAskDialogResult);
+		// The answer is NOT a prompt/steer/append, and the happy path is clean.
+		expect(session.agent.prompts).toEqual([]);
+		expect(session.agent.steers).toEqual([]);
+		expect(session.agent.appended).toEqual([]);
+		expect(unmapped).toEqual([]);
+	});
+
+	test("option ids reconstruct to labels across a multi-question ask, carrying customText", async () => {
+		const { agent, unmapped, run } = askAgent([
+			{ kind: "replayComplete" },
+			{
+				kind: "askAnswer",
+				askId: "a-2",
+				answers: [
+					// Single-select question: one index.
+					create(AskQuestionAnswerSchema, {
+						questionId: "scope",
+						chosenOptionIds: ["0"],
+						customText: "",
+					}),
+					// Multi-select question: two indices + free-text "Other".
+					create(AskQuestionAnswerSchema, {
+						questionId: "targets",
+						chosenOptionIds: ["0", "2"],
+						customText: "and the docs",
+					}),
+				],
+			},
+		]);
+		const answered = agent.askDialog([
+			askQuestion("scope", "Which scope?", ["Package", "Repo"]),
+			askQuestion(
+				"targets",
+				"Which targets?",
+				["cli", "agent", "control"],
+				true,
+			),
+		]);
+		await run();
+		const result = await answered;
+		expect(result).toEqual({
+			kind: "submit",
+			results: [
+				{
+					id: "scope",
+					question: "Which scope?",
+					options: ["Package", "Repo"],
+					multi: false,
+					selectedOptions: ["Package"],
+				},
+				{
+					id: "targets",
+					question: "Which targets?",
+					options: ["cli", "agent", "control"],
+					multi: true,
+					// Indices "0","2" → first and third labels; customText carried.
+					selectedOptions: ["cli", "control"],
+					customInput: "and the docs",
+				},
+			],
+		} satisfies ExtensionAskDialogResult);
+		expect(unmapped).toEqual([]);
+	});
+
+	test("ask_answer with no in-flight ask is a counted unmapped op, never thrown", async () => {
+		const { agent, unmapped } = await runWith([
+			{ kind: "replayComplete" },
+			{
+				kind: "askAnswer",
+				askId: "a-3",
+				answers: [
+					create(AskQuestionAnswerSchema, {
+						questionId: "q-1",
+						chosenOptionIds: ["0"],
+					}),
+				],
+			},
+		]);
+		// No pending ask was registered, so nothing to resolve — surfaced, not
+		// dropped, and no SDK action.
 		expect(agent.prompts).toEqual([]);
 		expect(agent.steers).toEqual([]);
 		expect(agent.appended).toEqual([]);
 		expect(unmapped).toHaveLength(1);
-		const staged = unmapped[0];
-		expect(staged.eventType).toBe("control:ask_answer");
-		expect(staged.reason).toBe(
-			"ask_answer delivery staged — awaiting SEA-1310 ask correlation key",
-		);
+		expect(unmapped[0].eventType).toBe("control:ask_answer");
+		expect(unmapped[0].reason).toBe("no in-flight ask to answer (askId=a-3)");
 	});
 });
 

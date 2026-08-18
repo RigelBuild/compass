@@ -34,16 +34,16 @@ export type AgentControl =
 	| { readonly kind: "steer"; readonly message: AgentMessage }
 	// A structured answer to an in-flight `ask` (frozen 6th variant, design
 	// compass-0.6:1405). Carries the ratified wire shape (`AskAnswerControl`,
-	// agent_pb.ts): `askId` correlates the answer to the right ask across turns,
-	// and a repeated `AskQuestionAnswer` keys one answer per question (with
-	// `customText` for a free-text "Other") — the flat single-question
+	// agent_pb.ts): a repeated `AskQuestionAnswer` keys one answer per question
+	// (with `customText` for a free-text "Other") — the flat single-question
 	// `chosenOptionIds` the wire deliberately superseded cannot represent a
-	// multi-question ask, so it is not used here. STAGED like the outbound `ask`
-	// derivation (see mapping.ts #deriveAsk): the variant is enumerated + applied
-	// so the union is faithful to the frozen oneof and #applyControl has an arm,
-	// but wiring the answer into the SDK needs the SEA-1310 ask correlation key —
-	// until then #applyControl surfaces it as a counted "staged" unmapped op,
-	// never silently dropped.
+	// multi-question ask, so it is not used here. `#applyControl` delivers the
+	// answer to the in-flight SDK `askDialog` promise (RIG-1509): the SDK
+	// `AskTool` is exclusive-concurrency, so at most ONE ask is in flight per
+	// session and the answer resolves THE pending ask — `askId` is informational
+	// (logged), never a correlation key against a keyed registry. An answer that
+	// arrives with no pending ask is surfaced as a counted unmapped op, never
+	// silently dropped.
 	| {
 			readonly kind: "askAnswer";
 			readonly askId: string;
