@@ -114,4 +114,64 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 			scale: "css",
 		});
 	});
+
+	test("bridge — PRs board", async ({ page }) => {
+		await page.goto("/#/");
+		await page.locator(".bridge").waitFor({ state: "visible" });
+		// The PRs seg button (Bridge.tsx:154-158) — label "PRs · N", matched on
+		// its stable prefix so the live count doesn't perturb the selector.
+		await page.getByRole("button", { name: /^PRs/ }).click();
+		// Wait on a populated PR row (Bridge.tsx:276 `.pr-tab` > `.pr-group` >
+		// `.pr-row`), not the `.pr-tab` container — the container renders even with
+		// no PRs (the "No open PRs." fallback, Bridge.tsx:279), so gating on a row
+		// guarantees the populated board is captured. Mirrors the backlog test's
+		// wait-on-a-row pattern.
+		await page.locator(".pr-tab .pr-row").first().waitFor({ state: "visible" });
+		await page.evaluate(() => document.fonts.ready);
+		await page.screenshot({
+			path: `${SCREENS}/bridge-prs.png`,
+			fullPage: true,
+			animations: "disabled",
+			scale: "css",
+		});
+	});
+
+	test("bridge — column-head strip", async ({ page }) => {
+		await page.goto("/#/");
+		await page.locator(".bridge").waitFor({ state: "visible" });
+		const heads = page.locator(".swim-colhead");
+		await heads.first().waitFor({ state: "visible" });
+		await page.evaluate(() => document.fonts.ready);
+		// Cropped clip of the column-head strip (tint review): union the bounding
+		// boxes of the individual `.swim-colhead` cells into one row rect.
+		const boxes = await heads.evaluateAll((els) =>
+			els
+				.map((el) => el.getBoundingClientRect())
+				.map((r) => ({ x: r.x, y: r.y, right: r.right, bottom: r.bottom })),
+		);
+		const x = Math.min(...boxes.map((b) => b.x));
+		const y = Math.min(...boxes.map((b) => b.y));
+		const width = Math.max(...boxes.map((b) => b.right)) - x;
+		const height = Math.max(...boxes.map((b) => b.bottom)) - y;
+		await page.screenshot({
+			path: `${SCREENS}/bridge-colheads.png`,
+			clip: { x, y, width, height },
+			animations: "disabled",
+			scale: "css",
+		});
+	});
+
+	test("bridge — single card close-up", async ({ page }) => {
+		await page.goto("/#/");
+		await page.locator(".bridge").waitFor({ state: "visible" });
+		const card = page.locator(".card").first();
+		await card.waitFor({ state: "visible" });
+		await page.evaluate(() => document.fonts.ready);
+		// Cropped close-up clip of a single issue card (IssueCard.tsx:47 `.card`).
+		await card.screenshot({
+			path: `${SCREENS}/bridge-card.png`,
+			animations: "disabled",
+			scale: "css",
+		});
+	});
 });
