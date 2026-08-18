@@ -535,6 +535,165 @@ describe("CompassAgent — ask_answer delivers to the in-flight SDK askDialog (R
 		expect(unmapped[0].eventType).toBe("control:ask_answer");
 		expect(unmapped[0].reason).toBe("no in-flight ask to answer (askId=a-3)");
 	});
+
+	test("an aborted signal clears the pending ask and resolves undefined; a later answer finds nothing", async () => {
+		const { agent, unmapped, run } = askAgent([
+			{ kind: "replayComplete" },
+			{
+				kind: "askAnswer",
+				askId: "a-late",
+				answers: [
+					create(AskQuestionAnswerSchema, {
+						questionId: "q-1",
+						chosenOptionIds: ["0"],
+					}),
+				],
+			},
+		]);
+		const controller = new AbortController();
+		const answered = agent.askDialog(
+			[askQuestion("q-1", "Pick one", ["Alpha", "Beta"])],
+			{ signal: controller.signal },
+		);
+		// The tool's AbortSignal fires (turn cancelled): the dialog resolves with
+		// a cancel (undefined), and the slot is cleared.
+		controller.abort();
+		expect(await answered).toBeUndefined();
+		await run();
+		// Non-vacuity: if abort did NOT clear the slot, this answer would resolve
+		// the stale ask instead of being surfaced as a no-in-flight-ask op.
+		expect(unmapped).toHaveLength(1);
+		expect(unmapped[0].eventType).toBe("control:ask_answer");
+		expect(unmapped[0].reason).toBe(
+			"no in-flight ask to answer (askId=a-late)",
+		);
+	});
+
+	test("a second ask while one is pending cancels the older, surfaces it, and the answer resolves the newer", async () => {
+		const { agent, unmapped, run } = askAgent([
+			{ kind: "replayComplete" },
+			{
+				kind: "askAnswer",
+				askId: "a-2",
+				answers: [
+					create(AskQuestionAnswerSchema, {
+						questionId: "q-2",
+						chosenOptionIds: ["0"],
+					}),
+				],
+			},
+		]);
+		// Two asks back-to-back: the exclusive-concurrency invariant should make
+		// this unreachable, but if it happens the older caller is released with a
+		// cancel rather than left hung, and the newer ask takes the slot.
+		const first = agent.askDialog([askQuestion("q-1", "First", ["A", "B"])]);
+		const second = agent.askDialog([askQuestion("q-2", "Second", ["X", "Y"])]);
+		expect(await first).toBeUndefined();
+		await run();
+		expect(await second).toEqual({
+			kind: "submit",
+			results: [
+				{
+					id: "q-2",
+					question: "Second",
+					options: ["X", "Y"],
+					multi: false,
+					selectedOptions: ["X"],
+				},
+			],
+		} satisfies ExtensionAskDialogResult);
+		const supersede = unmapped.find(
+			(u) =>
+				u.eventType === "control:ask_answer" &&
+				u.reason.includes("a second ask opened while one was pending"),
+		);
+		expect(supersede).toBeDefined();
+		expect(unmapped).toHaveLength(1);
+	});
+
+	test("an out-of-range option id is skipped and surfaced, never mis-mapped", async () => {
+		const { agent, unmapped, run } = askAgent([
+			{ kind: "replayComplete" },
+			{
+				kind: "askAnswer",
+				askId: "a-3",
+				answers: [
+					create(AskQuestionAnswerSchema, {
+						questionId: "q-1",
+						// "9" is out of range for a 2-option question; "0" is valid.
+						chosenOptionIds: ["0", "9"],
+					}),
+				],
+			},
+		]);
+		const answered = agent.askDialog([
+			askQuestion("q-1", "Pick", ["Alpha", "Beta"]),
+		]);
+		await run();
+		expect(await answered).toEqual({
+			kind: "submit",
+			results: [
+				{
+					id: "q-1",
+					question: "Pick",
+					options: ["Alpha", "Beta"],
+					multi: false,
+					// Only the valid "0" → "Alpha"; "9" dropped, not mis-mapped.
+					selectedOptions: ["Alpha"],
+				},
+			],
+		} satisfies ExtensionAskDialogResult);
+		const skipped = unmapped.find(
+			(u) =>
+				u.eventType === "control:ask_answer" &&
+				u.reason.includes('option id "9" is not a valid index'),
+		);
+		expect(skipped).toBeDefined();
+		expect(unmapped).toHaveLength(1);
+	});
+
+	test("an empty-string option id is skipped, not coerced to the first option", async () => {
+		// `Number("")` is 0, so a bare `Number(id)` parse would silently select
+		// the FIRST option as a fabricated answer. The strict `/^\d+$/` parse
+		// routes "" into the skip-and-surface branch. RED against `Number(id)`.
+		const { agent, unmapped, run } = askAgent([
+			{ kind: "replayComplete" },
+			{
+				kind: "askAnswer",
+				askId: "a-4",
+				answers: [
+					create(AskQuestionAnswerSchema, {
+						questionId: "q-1",
+						chosenOptionIds: [""],
+					}),
+				],
+			},
+		]);
+		const answered = agent.askDialog([
+			askQuestion("q-1", "Pick", ["Alpha", "Beta"]),
+		]);
+		await run();
+		expect(await answered).toEqual({
+			kind: "submit",
+			results: [
+				{
+					id: "q-1",
+					question: "Pick",
+					options: ["Alpha", "Beta"],
+					multi: false,
+					// No fabricated selection: the empty id is dropped.
+					selectedOptions: [],
+				},
+			],
+		} satisfies ExtensionAskDialogResult);
+		const skipped = unmapped.find(
+			(u) =>
+				u.eventType === "control:ask_answer" &&
+				u.reason.includes('option id "" is not a valid index'),
+		);
+		expect(skipped).toBeDefined();
+		expect(unmapped).toHaveLength(1);
+	});
 });
 
 describe("CompassAgent — config applies to the SDK independent of the barrier", () => {

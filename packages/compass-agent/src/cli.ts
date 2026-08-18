@@ -775,6 +775,16 @@ export async function main(
 	).items;
 	const rules = [...mounted.rules, ...discoveredRules];
 
+	// `hasUI: true` (below) unlocks the SDK ask seam, but it ALSO flips the
+	// interactive bash-PTY path on: `canUseInteractiveBashPty` returns true once
+	// `hasUI && ctx.ui` are set (bash-pty-selection.ts:13), so a `bash pty:true`
+	// call would route into `runInteractiveBashPty` → our headless `custom`
+	// no-op → `undefined`, and the SDK dereferences `result.cancelled` and throws
+	// a raw TypeError (bash.ts:1464). The container has no terminal, so force the
+	// PTY path off: `PI_NO_PTY=1` short-circuits the selector (line 12) regardless
+	// of `hasUI`, restoring the graceful "ran without a terminal" degrade.
+	process.env.PI_NO_PTY = "1";
+
 	const { session, setToolUIContext } = await (
 		deps.createSession ?? createAgentSession
 	)({
