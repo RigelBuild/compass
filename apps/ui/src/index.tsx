@@ -1,17 +1,12 @@
-import { HashRouter } from "@solidjs/router";
-import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import { createRoot } from "solid-js";
-import { render } from "solid-js/web";
-import App from "./App";
 import { bootCaller, bootConnection, renderBootError } from "./boot";
 import { bootNativeClient } from "./boot-native";
-import { StoreContext } from "./context";
 import { createLiveClients, resolveCaller } from "./live/client";
 import {
 	envConnectionProvider,
 	type ResolvedConnection,
 } from "./live/provider";
-import { AppRoutes } from "./routes";
+import { mountShell, newAppQueryClient } from "./mount";
 import { shellMode } from "./shell-globals";
 import { createAppStore } from "./store";
 
@@ -31,6 +26,10 @@ if (!root) {
 //               then embedded shares the env path (a co-hosted server is dialed
 //               by env just like the browser dev build), so it falls through.
 //   absent    → the UNCHANGED browser-dev path: envConnectionProvider.
+//   fixture   → the offline fixture boot (§A1), a third BROWSER-ONLY arm checked
+//               first: Vite statically replaces `import.meta.env.MODE`, so in a
+//               non-fixture build the branch dead-code-eliminates and the
+//               dynamically-imported boot-fixture chunk is never emitted.
 //
 // Boot resolves the connection through a ConnectionProvider. resolve() is async,
 // so the whole sequence runs inside a single async chain: bootConnection catches
@@ -43,26 +42,43 @@ if (!root) {
 // A post-connection boot failure (createRoot/createAppStore/render throwing)
 // routes to the same painter so a swallowed `void` promise never leaves a blank
 // #root.
-const bootConnectionForMode =
-	shellMode() === "client"
-		? () => bootNativeClient(root)
-		: () => bootConnection(root, () => envConnectionProvider().resolve());
-void bootConnectionForMode()
-	.then((connection) => {
-		if (connection) {
-			return main(root, connection);
-		}
-	})
-	.catch((error) => {
-		renderBootError(
-			root,
-			"Compass UI cannot start",
-			error instanceof Error ? error.message : String(error),
-			"An unexpected error interrupted boot after the connection was " +
-				"established. Reload; if it persists, check the console for the " +
-				"full stack.",
-		);
-	});
+// The `import.meta.env.MODE === "fixture"` comparison MUST stay INLINE: Vite
+// folds it to `if ("production" === "fixture")` in a non-fixture build, which
+// dead-code-eliminates this branch and prevents the boot-fixture chunk from
+// being emitted at all. Hoisting MODE to a variable defeats the fold (§A1).
+if (import.meta.env.MODE === "fixture") {
+	void import("./boot-fixture")
+		.then((m) => m.bootFixture(root))
+		.catch((error) => {
+			renderBootError(
+				root,
+				"Compass UI cannot start",
+				error instanceof Error ? error.message : String(error),
+				"This is the offline fixture build.",
+			);
+		});
+} else {
+	const bootConnectionForMode =
+		shellMode() === "client"
+			? () => bootNativeClient(root)
+			: () => bootConnection(root, () => envConnectionProvider().resolve());
+	void bootConnectionForMode()
+		.then((connection) => {
+			if (connection) {
+				return main(root, connection);
+			}
+		})
+		.catch((error) => {
+			renderBootError(
+				root,
+				"Compass UI cannot start",
+				error instanceof Error ? error.message : String(error),
+				"An unexpected error interrupted boot after the connection was " +
+					"established. Reload; if it persists, check the console for the " +
+					"full stack.",
+			);
+		});
+}
 
 // The post-connect boot sequence, async because learning the caller requires a
 // round-trip: build the clients, ask the server who we are (WhoAmI via
@@ -94,9 +110,7 @@ async function main(
 	// (§A3). Components read the SAME instance through the provider — two access
 	// paths, one cache, so invalidations and setQueryData from either side are
 	// one source of truth.
-	const queryClient = new QueryClient({
-		defaultOptions: { queries: { retry: 1, staleTime: 30_000 } },
-	});
+	const queryClient = newAppQueryClient();
 
 	// The store is an app-lifetime singleton; createRoot gives its memos a stable
 	// owner (intentionally never disposed) so Solid doesn't warn about
@@ -130,16 +144,5 @@ async function main(
 		}),
 	);
 
-	render(
-		() => (
-			<StoreContext.Provider value={store}>
-				<QueryClientProvider client={queryClient}>
-					<HashRouter root={App}>
-						<AppRoutes />
-					</HashRouter>
-				</QueryClientProvider>
-			</StoreContext.Provider>
-		),
-		root,
-	);
+	mountShell(root, store, queryClient);
 }
