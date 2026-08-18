@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -907,4 +908,101 @@ func TestGitHubBodyLimit(t *testing.T) {
 	if got := g.BodyLimit(); got != 65536 {
 		t.Errorf("BodyLimit() = %d, want 65536", got)
 	}
+}
+
+// A 2xx write whose body is not JSON surfaces a decode failure, after the
+// request was issued (calls == 1). Covers doJSON's json.Unmarshal error branch.
+func TestGitHubDoJSONDecodeError(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: "not json"}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	_, err := g.CreateIssue(context.Background(), "org/repo", CreateIssue{Title: "x"})
+	if err == nil {
+		t.Fatal("CreateIssue: want decode error, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode response") {
+		t.Errorf("err = %v, want a decode-response failure", err)
+	}
+	if rt.calls != 1 {
+		t.Errorf("calls = %d, want 1 (request must have been issued)", rt.calls)
+	}
+}
+
+// A token-source error short-circuits a write before any HTTP request, mirroring
+// the read-path token-error test. Covers doJSON's token-resolution error branch.
+func TestGitHubDoJSONTokenError(t *testing.T) {
+	rt := &scriptedRoundTripper{}
+	tokErr := errors.New("resolve failed")
+	g := newTestGitHub(rt, &fakeTokenSource{err: tokErr})
+
+	_, err := g.CreateIssue(context.Background(), "org/repo", CreateIssue{Title: "x"})
+	if !errors.Is(err, tokErr) {
+		t.Fatalf("err = %v, want token error", err)
+	}
+	if !strings.Contains(err.Error(), "resolve token") {
+		t.Errorf("err = %v, want a resolve-token wrap", err)
+	}
+	if rt.calls != 0 {
+		t.Errorf("issued a request despite token error: calls = %d", rt.calls)
+	}
+}
+
+// concurrentRoundTripper is a race-safe transport for the concurrency test: it
+// serves a fixed benign response and guards its call counter with a mutex, so
+// the only unsynchronized shared state under test is the client's resetAt gate.
+type concurrentRoundTripper struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (rt *concurrentRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	rt.calls++
+	rt.mu.Unlock()
+	var body string
+	if req.Method == http.MethodGet {
+		body = "[]" // ListIssuesPage decodes a JSON array
+	} else {
+		body = `{"number":1,"id":1,"user":{"login":"a"}}` // write decodes an object
+	}
+	h := http.Header{}
+	// A healthy budget keeps the gate open on most calls; the occasional
+	// low-remaining response arms it, exercising the concurrent arm/clear.
+	h.Set("X-Ratelimit-Remaining", "5000")
+	h.Set("X-Ratelimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+	return &http.Response{StatusCode: http.StatusOK, Header: h, Body: io.NopCloser(strings.NewReader(body))}, nil
+}
+
+// TestGitHubGateConcurrentAccess drives concurrent reads and writes through ONE
+// client so the resetAt gate is read-modify-written from many goroutines at
+// once. It trips go test -race without the mu guard (the HIGH finding) and
+// passes cleanly with it. context.Background() is the test root (F-ttsr).
+func TestGitHubGateConcurrentAccess(t *testing.T) {
+	rt := &concurrentRoundTripper{}
+	// Host "" resolves to api.github.com (apiBase), same as "github.com".
+	g := NewGitHub(GitHubConfig{Host: "", Token: &fakeTokenSource{token: "t"}, Client: &http.Client{Transport: rt}})
+
+	const workers = 8
+	const iters = 50
+	var wg sync.WaitGroup
+	ctx := context.Background()
+
+	for range workers {
+		wg.Go(func() {
+			for range iters {
+				// Errors are not the subject under test — the race detector is;
+				// discard them so a benign gate/decode result never fails here.
+				_, _ = g.ListIssuesPage(ctx, "org/repo", IssueFilter{}, 1, "")
+			}
+		})
+	}
+	for range workers {
+		wg.Go(func() {
+			for range iters {
+				_, _ = g.CreateIssue(ctx, "org/repo", CreateIssue{Title: "x"})
+				_, _ = g.CommentOnIssue(ctx, "org/repo", 7, "x")
+			}
+		})
+	}
+	wg.Wait()
 }

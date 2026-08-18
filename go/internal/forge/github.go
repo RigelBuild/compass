@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -69,6 +70,12 @@ type GitHub struct {
 	token  TokenSource
 	client *http.Client
 
+	// mu guards resetAt: the author client is shared between the single poll
+	// driver and the write-RPC goroutines (OQ-6), so the gate is a concurrent
+	// read-modify-write. It is held only around the fast gate check/arm, never
+	// across the HTTP round-trip.
+	mu sync.Mutex
+
 	// resetAt is the rate-budget gate: when non-zero and now() is before it,
 	// the next call fails fast with ErrBudgetExhausted rather than burning the
 	// tail of the window. It is derived from the last response's
@@ -76,7 +83,8 @@ type GitHub struct {
 	// means the gate is OPEN. Absent/malformed headers leave it open (treat
 	// unknown budget as available — never wedge the gate). Once now() passes
 	// resetAt the gate re-opens, so a wedged window self-clears after the reset.
-	// The driver polls single-goroutine per the frozen design, so no mutex.
+	// Guarded by mu because the author client is shared between the poll driver
+	// and write-RPC goroutines (OQ-6).
 	resetAt time.Time
 
 	// now is the clock seam (defaults to time.Now in NewGitHub); tests override
@@ -142,11 +150,8 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 	// Gate check: an armed gate blocks until the injected clock passes resetAt,
 	// then re-opens so the next call issues a real request (whose response
 	// re-records the budget). A zero resetAt means the gate is open.
-	if !g.resetAt.IsZero() {
-		if g.now().Before(g.resetAt) {
-			return ListPage{}, fmt.Errorf("forge: github list %q page %d: %w", repo, page, ErrBudgetExhausted)
-		}
-		g.resetAt = time.Time{}
+	if g.gateBlocked() {
+		return ListPage{}, fmt.Errorf("forge: github list %q page %d: %w", repo, page, ErrBudgetExhausted)
 	}
 
 	token, err := g.token.Token(ctx)
@@ -364,6 +369,23 @@ func (g *GitHub) CommentOnPullRequest(ctx context.Context, repo string, number u
 // as bytes — StampOwner reserves bytes via len — with no conversion anywhere).
 func (g *GitHub) BodyLimit() int { return 65536 }
 
+// gateBlocked reports whether the fail-fast budget gate is currently armed,
+// clearing a gate whose reset instant has passed (re-opening it) as a side
+// effect. Guarded by mu — the gate is shared between the poll driver and the
+// write-RPC goroutines (OQ-6).
+func (g *GitHub) gateBlocked() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.resetAt.IsZero() {
+		return false
+	}
+	if g.now().Before(g.resetAt) {
+		return true
+	}
+	g.resetAt = time.Time{}
+	return false
+}
+
 // doJSON carries the write-path plumbing once for all four write methods: the
 // resetAt fail-fast gate (a write burst respects the same reserve as the poll
 // driver, so it cannot starve it), token auth, budget recording, and error
@@ -373,26 +395,23 @@ func (g *GitHub) BodyLimit() int { return 65536 }
 func (g *GitHub) doJSON(ctx context.Context, url string, in, out any) error {
 	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
 	// request until the injected clock passes resetAt, then re-opens.
-	if !g.resetAt.IsZero() {
-		if g.now().Before(g.resetAt) {
-			return fmt.Errorf("forge: github POST %s: %w", url, ErrBudgetExhausted)
-		}
-		g.resetAt = time.Time{}
+	if g.gateBlocked() {
+		return fmt.Errorf("POST %s: %w", url, ErrBudgetExhausted)
 	}
 
 	token, err := g.token.Token(ctx)
 	if err != nil {
-		return fmt.Errorf("forge: github resolve token: %w", err)
+		return fmt.Errorf("resolve token: %w", err)
 	}
 
 	payload, err := json.Marshal(in)
 	if err != nil {
-		return fmt.Errorf("forge: github marshal request body: %w", err)
+		return fmt.Errorf("marshal request body: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("forge: github build request: %w", err)
+		return fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -400,7 +419,7 @@ func (g *GitHub) doJSON(ctx context.Context, url string, in, out any) error {
 
 	resp, err := g.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("forge: github do request: %w", err)
+		return fmt.Errorf("do request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }() // response body drained/closed; no actionable close error on a read
 
@@ -415,10 +434,10 @@ func (g *GitHub) doJSON(ctx context.Context, url string, in, out any) error {
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("forge: github read body: %w", err)
+		return fmt.Errorf("read body: %w", err)
 	}
 	if err := json.Unmarshal(respBody, out); err != nil {
-		return fmt.Errorf("forge: github decode response: %w", err)
+		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
 }
@@ -483,6 +502,8 @@ func (g *GitHub) queryParams(f IssueFilter, page int) url.Values {
 // available — never wedge the gate). A missing/unparseable reset with a
 // low remaining falls back to a bounded skip so the gate still self-clears.
 func (g *GitHub) recordBudget(resp *http.Response) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	raw := resp.Header.Get("X-Ratelimit-Remaining")
 	if raw == "" {
 		g.resetAt = time.Time{}
@@ -518,6 +539,7 @@ func remainingHeader(resp *http.Response) int {
 
 // armGate sets the reset-time gate. A zero at (no usable reset time) falls back
 // to a bounded skip from now() so the gate self-clears rather than wedging.
+// Caller MUST hold g.mu.
 func (g *GitHub) armGate(at time.Time) {
 	if at.IsZero() {
 		at = g.now().Add(defaultSkip)
@@ -552,7 +574,9 @@ func (g *GitHub) mapErrorResponse(resp *http.Response) error {
 	status := resp.StatusCode
 	if status == http.StatusForbidden || status == http.StatusTooManyRequests {
 		if isRateLimited(resp) {
+			g.mu.Lock()
 			g.armGate(g.rateLimitReset(resp))
+			g.mu.Unlock()
 			return fmt.Errorf("forge: github http %d: %w", status, ErrBudgetExhausted)
 		}
 	}
