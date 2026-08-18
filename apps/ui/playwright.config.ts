@@ -21,6 +21,8 @@ export default defineConfig({
 		baseURL: "http://localhost:5173",
 		headless: true,
 		screenshot: "off",
+		reducedMotion: "reduce",
+		deviceScaleFactor: 1,
 		launchOptions: {
 			// Env-overridable so this config carries no box-specific path in the
 			// shared tree. Default is the nix-wrapped Chromium on Matt's dev box
@@ -38,9 +40,20 @@ export default defineConfig({
 		},
 	],
 	webServer: {
-		command: "bunx vite --port 5173 --strictPort",
+		command: "bunx vite --port 5173 --strictPort --mode fixture",
 		url: "http://localhost:5173",
-		reuseExistingServer: true,
+		// Always launch our own `--mode fixture` server; never adopt a server
+		// already on :5173. The command is mode-specific, but Playwright's reuse
+		// probe only checks the URL for any 200 — it can't tell a fixture server
+		// from a plain `vite dev`. Reusing a foreign server (a dev server wired to
+		// a live daemon, or any non-fixture build) makes the per-surface selectors
+		// resolve against wrong-but-plausible content, so the shots look valid
+		// while depicting non-fixture data — and the same-box byte-identity
+		// self-test can't catch it (both runs reuse the same wrong server →
+		// identical wrong shots). With --strictPort a port clash now fails the
+		// launch loudly instead. CI has no pre-existing server, so this is
+		// behavior-identical there.
+		reuseExistingServer: false,
 		timeout: 120_000,
 	},
 });
