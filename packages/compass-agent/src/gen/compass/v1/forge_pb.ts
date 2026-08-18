@@ -42,7 +42,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/forge.proto.
  */
 export const file_compass_v1_forge: GenFile = /*@__PURE__*/
-  fileDesc("ChZjb21wYXNzL3YxL2ZvcmdlLnByb3RvEgpjb21wYXNzLnYxIn8KCkNvbW1lbnRSZWYSCwoDdXJsGAEgASgJEhIKCmNvbW1lbnRfaWQYAiABKAQSDAoEYm9keRgDIAEoCRIVCg1mb3JnZV9hY2NvdW50GAQgASgJEisKBWFnZW50GAUgASgLMhwuY29tcGFzcy52MS5BZ2VudEF0dHJpYnV0aW9uIr8CChFGb3JnZU5vdGlmaWNhdGlvbhIXCg9zdWJzY3JpcHRpb25faWQYASABKAkSIwoFZm9yZ2UYAiABKAsyFC5jb21wYXNzLnYxLkZvcmdlUmVmEgwKBHJlcG8YAyABKAkSKwoEa2luZBgEIAEoDjIdLmNvbXBhc3MudjEuRm9yZ2VBcnRpZmFjdEtpbmQSDgoGbnVtYmVyGAUgASgEEgsKA3VybBgGIAEoCRIxCgZjaGFuZ2UYByABKA4yIS5jb21wYXNzLnYxLkZvcmdlTm90aWZpY2F0aW9uS2luZBInCgdjb21tZW50GAggASgLMhYuY29tcGFzcy52MS5Db21tZW50UmVmEikKBmNoZWNrcxgJIAEoCzIZLmNvbXBhc3MudjEuQ2hlY2tzU3VtbWFyeRINCgVzdGF0ZRgKIAEoCSp9ChFGb3JnZUFydGlmYWN0S2luZBIjCh9GT1JHRV9BUlRJRkFDVF9LSU5EX1VOU1BFQ0lGSUVEEAASHQoZRk9SR0VfQVJUSUZBQ1RfS0lORF9JU1NVRRABEiQKIEZPUkdFX0FSVElGQUNUX0tJTkRfUFVMTF9SRVFVRVNUEAIq0AEKFUZvcmdlTm90aWZpY2F0aW9uS2luZBInCiNGT1JHRV9OT1RJRklDQVRJT05fS0lORF9VTlNQRUNJRklFRBAAEiMKH0ZPUkdFX05PVElGSUNBVElPTl9LSU5EX0NPTU1FTlQQARIhCh1GT1JHRV9OT1RJRklDQVRJT05fS0lORF9TVEFURRACEiIKHkZPUkdFX05PVElGSUNBVElPTl9LSU5EX1VQREFURRADEiIKHkZPUkdFX05PVElGSUNBVElPTl9LSU5EX0NIRUNLUxAEYgZwcm90bzM", [file_compass_v1_compass]);
+  fileDesc("ChZjb21wYXNzL3YxL2ZvcmdlLnByb3RvEgpjb21wYXNzLnYxIn8KCkNvbW1lbnRSZWYSCwoDdXJsGAEgASgJEhIKCmNvbW1lbnRfaWQYAiABKAQSDAoEYm9keRgDIAEoCRIVCg1mb3JnZV9hY2NvdW50GAQgASgJEisKBWFnZW50GAUgASgLMhwuY29tcGFzcy52MS5BZ2VudEF0dHJpYnV0aW9uIjwKCVJldmlld1JlZhILCgN1cmwYASABKAkSEQoJcmV2aWV3X2lkGAIgASgEEg8KB3ZlcmRpY3QYAyABKAkivwIKEUZvcmdlTm90aWZpY2F0aW9uEhcKD3N1YnNjcmlwdGlvbl9pZBgBIAEoCRIjCgVmb3JnZRgCIAEoCzIULmNvbXBhc3MudjEuRm9yZ2VSZWYSDAoEcmVwbxgDIAEoCRIrCgRraW5kGAQgASgOMh0uY29tcGFzcy52MS5Gb3JnZUFydGlmYWN0S2luZBIOCgZudW1iZXIYBSABKAQSCwoDdXJsGAYgASgJEjEKBmNoYW5nZRgHIAEoDjIhLmNvbXBhc3MudjEuRm9yZ2VOb3RpZmljYXRpb25LaW5kEicKB2NvbW1lbnQYCCABKAsyFi5jb21wYXNzLnYxLkNvbW1lbnRSZWYSKQoGY2hlY2tzGAkgASgLMhkuY29tcGFzcy52MS5DaGVja3NTdW1tYXJ5Eg0KBXN0YXRlGAogASgJKn0KEUZvcmdlQXJ0aWZhY3RLaW5kEiMKH0ZPUkdFX0FSVElGQUNUX0tJTkRfVU5TUEVDSUZJRUQQABIdChlGT1JHRV9BUlRJRkFDVF9LSU5EX0lTU1VFEAESJAogRk9SR0VfQVJUSUZBQ1RfS0lORF9QVUxMX1JFUVVFU1QQAirQAQoVRm9yZ2VOb3RpZmljYXRpb25LaW5kEicKI0ZPUkdFX05PVElGSUNBVElPTl9LSU5EX1VOU1BFQ0lGSUVEEAASIwofRk9SR0VfTk9USUZJQ0FUSU9OX0tJTkRfQ09NTUVOVBABEiEKHUZPUkdFX05PVElGSUNBVElPTl9LSU5EX1NUQVRFEAISIgoeRk9SR0VfTk9USUZJQ0FUSU9OX0tJTkRfVVBEQVRFEAMSIgoeRk9SR0VfTk9USUZJQ0FUSU9OX0tJTkRfQ0hFQ0tTEARiBnByb3RvMw", [file_compass_v1_compass]);
 
 /**
  * A reference to a forge comment, carried on a comment write result and on a
@@ -102,6 +102,38 @@ export type CommentRef = Message<"compass.v1.CommentRef"> & {
  */
 export const CommentRefSchema: GenMessage<CommentRef> = /*@__PURE__*/
   messageDesc(file_compass_v1_forge, 0);
+
+/**
+ * A reference to a submitted PR review — the write ack for submit_review.
+ * Mirrors CommentRef: url + id only on an ack (DL-069: no forge shape on wire).
+ *
+ * @generated from message compass.v1.ReviewRef
+ */
+export type ReviewRef = Message<"compass.v1.ReviewRef"> & {
+  /**
+   * @generated from field: string url = 1;
+   */
+  url: string;
+
+  /**
+   * @generated from field: uint64 review_id = 2;
+   */
+  reviewId: bigint;
+
+  /**
+   * echo of the applied verdict
+   *
+   * @generated from field: string verdict = 3;
+   */
+  verdict: string;
+};
+
+/**
+ * Describes the message compass.v1.ReviewRef.
+ * Use `create(ReviewRefSchema)` to create a new message.
+ */
+export const ReviewRefSchema: GenMessage<ReviewRef> = /*@__PURE__*/
+  messageDesc(file_compass_v1_forge, 1);
 
 /**
  * A forge change on a subscribed artifact, pushed to the agent (DL-053
@@ -178,7 +210,7 @@ export type ForgeNotification = Message<"compass.v1.ForgeNotification"> & {
  * Use `create(ForgeNotificationSchema)` to create a new message.
  */
 export const ForgeNotificationSchema: GenMessage<ForgeNotification> = /*@__PURE__*/
-  messageDesc(file_compass_v1_forge, 1);
+  messageDesc(file_compass_v1_forge, 2);
 
 /**
  * Which forge artifact a subscription and a notification address. Zero is the

@@ -223,7 +223,22 @@ message ForgeCallRequest {
     GetPullRequestRequest get_pull_request = 8;
     SubscribeForgeRequest subscribe = 9;      // DL-053
     UnsubscribeForgeRequest unsubscribe = 10; // DL-053
+    SubmitReviewRequest submit_review = 11;
   }
+  // Which forge the call addresses. UNSET selects the default (configured
+  // GitHub) forge — additive, existing callers unchanged. An unknown/unconfigured
+  // coordinate is an in-band not_found ForgeCallError; an EMPTY host means the
+  // selected provider's default host (A3) — never a panic, never a silent
+  // provider fall-through.
+  compass.v1.ForgeRef forge = 12;
+  // Whole-chain idempotency key for the CREATE arms (create_issue /
+  // create_pull_request) — the SpawnPeerRequest.client_request_id precedent
+  // (agent_gateway.proto:172 "whole-chain idempotency key (handler-level
+  // join + Provision dedup)"). A retried create with the same key returns the
+  // ORIGINAL artifact, never a duplicate. Distinct from call_id, which is
+  // correlation-only. Ignored on non-create arms. Field 13 is collision-free:
+  // call_id=1, oneof arms 2-11, forge=12.
+  string client_request_id = 13;
 }
 
 // The result of one forge call, correlated by `call_id`. Per DL-069 no raw forge
@@ -243,6 +258,7 @@ message ForgeCallResult {
     SubscribeForgeResponse subscribed = 7;
     UnsubscribeForgeResponse unsubscribed = 8;
     ForgeCallError error = 9;
+    ReviewRef review = 10;         // submit_review (write ack: url + review_id)
   }
 }
 
@@ -257,7 +273,7 @@ message ForgeCallError {
 
 // The seven forge operation requests. Every field is a scalar — no forge domain
 // type appears in any request shape, so the request wire is identical under
-// either forge read model. `repo` is "<owner>/<name>" on GitHub and the project
+// either forge read model. `repo` is "<owner>/<name>" on GitHub and the team
 // key on Linear, REQUIRED on every call — an empty `repo` is an invalid_argument
 // ForgeCallError, never a default (an agent is bound to no single repo, so there
 // is nothing to infer). Request addressing is single-forge for a GitHub-first v1
@@ -303,6 +319,19 @@ message CommentOnPullRequestRequest {
 message GetPullRequestRequest {
   string repo = 1;
   uint64 pull_number = 2;
+}
+message SubmitReviewRequest {
+  string repo = 1;               // REQUIRED; empty is invalid_argument
+  uint64 pull_number = 2;
+  string verdict = 3;            // "approve" | "request_changes" | "comment"
+  string body = 4;               // WITHOUT the owner header; the Server stamps it
+  repeated ReviewCommentInput comments = 5;  // inline comments; may be empty
+}
+message ReviewCommentInput {
+  string path = 1;               // REQUIRED
+  uint32 line = 2;               // new-file line number (GitHub `line`)
+  string side = 3;               // "LEFT" | "RIGHT"; "" = RIGHT
+  string body = 4;               // NOT stamped (rides inside the stamped review)
 }
 
 // Subscribe/unsubscribe a forge artifact for change notifications (DL-053). The
