@@ -121,8 +121,12 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		// The PRs seg button (Bridge.tsx:154-158) — label "PRs · N", matched on
 		// its stable prefix so the live count doesn't perturb the selector.
 		await page.getByRole("button", { name: /^PRs/ }).click();
-		// Wait for the PRs surface to render (Bridge.tsx:276 `.pr-tab`).
-		await page.locator(".pr-tab").waitFor({ state: "visible" });
+		// Wait on a populated PR row (Bridge.tsx:276 `.pr-tab` > `.pr-group` >
+		// `.pr-row`), not the `.pr-tab` container — the container renders even with
+		// no PRs (the "No open PRs." fallback, Bridge.tsx:279), so gating on a row
+		// guarantees the populated board is captured. Mirrors the backlog test's
+		// wait-on-a-row pattern.
+		await page.locator(".pr-tab .pr-row").first().waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
 		await page.screenshot({
 			path: `${SCREENS}/bridge-prs.png`,
