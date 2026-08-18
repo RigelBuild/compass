@@ -299,7 +299,7 @@ inline body would otherwise be a display-attribution forgery vector.
 ### 4. Provider addressing: same oneof, envelope `ForgeRef`, typed degradation
 
 With a second provider the bare `repo` string stops being self-describing
-("owner/name" vs Linear team key). The proto reserved exactly this follow-up
+("owner/name" vs Linear team key). The standing proto comment names exactly this follow-up
 (`agent_gateway.proto:263-264`: "an optional ForgeRef is a named additive
 follow-up"). The decided design (OQ-4, resolved 2026-08-17):
 
@@ -548,6 +548,13 @@ message ReviewRef {
 ```
 
 `ForgeCallResult` (:235-247) gains `ReviewRef review = 10;`.
+
+The write `verdict` vocabulary (`approve`/`request_changes`/`comment`) is
+GitHub's reviews-POST `event` token set — deliberately distinct from the
+canonical read-side `compass.v1.Review.verdict` past-tense set
+(`approved`/`changes_requested`/`commented`, GitHub's read `state`);
+`ReviewRef.verdict` echoes the applied write token, so no cross-mapping is
+expected on the ack.
 
 Interfaces:
 
@@ -969,6 +976,10 @@ decisions; the only live questions below are two non-load-bearing deferrals.
   client_request_id)` index on `forge_authored_artifacts`, written in the
   same ordered step as the DL-055 row. Why: a retried create must return the
   original artifact, and the spawn precedent already froze the shape.
+  The key is minted once per logical create (the spawn-precedent contract):
+  reusing one `client_request_id` across differently-typed creates returns the
+  originally-recorded artifact by design, and the stored `kind` is returned so
+  a mismatched retry is observable to the caller.
 
 ## Open Questions
 
@@ -1012,7 +1023,7 @@ design PR (this record does not edit the ledger).
 | --- | --- | --- | --- |
 | DL-200 | The forge write path is served by a single-method `ForgeCaller` seam (`ExecuteForgeCallAsAccount(ctx, caller, sessionID, call)`) behind `Hub.RelayForgeCall` with the RelayBoardCall guard order (nil-caller CodeUnavailable before resolution; unbound session CodeNotFound; tool errors in-band); the hub keeps only the resolution edge, the oneof dispatch + stamping + provider selection live in the server-side `forgeService` — the first production `forge.StampOwner` caller (DL-050) | Active (Matt, 2026-08-17) | [forge write path §1](compass-forge-write-path/design.md#1-the-forgecaller-seam--relayforgecall-server-leg-the-dl-050-chokepoint) |
 | DL-201 | The review surface is a `submit_review` arm on the existing `ForgeCallRequest` oneof (verdict + summary body + optional inline path/line/side comments, one POST, never a PENDING review) acked by a `ReviewRef` reference in forge.proto mirroring `CommentRef`; the canonical read-side `compass.v1.Review` is untouched (DL-069/DL-092 hold: no forge-shaped wire type, write acks are references). The arm executes under a DISTINCT reviewer GitHub identity — a second `server_only` declared secret (F1) — so APPROVE/REQUEST_CHANGES/COMMENT are all usable on Compass-authored PRs (GitHub 422s an author's self-review verdicts); the motivating consumer is the `skill://review` loop posting its per-PR review to the PR as that reviewer. Amends DL-052 (the reviewer credential joins the author credential as a second `server_only` secret; the Server-holds-write-creds core stands) | Active (Matt, 2026-08-17) | [forge write path §3](compass-forge-write-path/design.md#3-github-provider-writes--the-review-surface) |
-| DL-202 | Multi-provider addressing is an optional `ForgeRef forge` field on the `ForgeCallRequest` envelope (unset = the configured default GitHub forge — the additive follow-up agent_gateway.proto reserved); there is no capability-negotiation RPC: an op the addressed provider cannot serve returns the in-band `ForgeCallError{code:"unimplemented"}` built on `forge.ErrUnsupported`, and the agent tool prompt documents the static per-provider capability matrix | Active (Matt, 2026-08-17) | [forge write path §4](compass-forge-write-path/design.md#4-provider-addressing-same-oneof-envelope-forgeref-typed-degradation) |
+| DL-202 | Multi-provider addressing is an optional `ForgeRef forge` field on the `ForgeCallRequest` envelope (unset = the configured default GitHub forge — the additive follow-up the standing agent_gateway.proto comment names); there is no capability-negotiation RPC: an op the addressed provider cannot serve returns the in-band `ForgeCallError{code:"unimplemented"}` built on `forge.ErrUnsupported`, and the agent tool prompt documents the static per-provider capability matrix | Active (Matt, 2026-08-17) | [forge write path §4](compass-forge-write-path/design.md#4-provider-addressing-same-oneof-envelope-forgeref-typed-degradation) |
 | DL-203 | The Linear provider (`go/internal/forge/linear.go`, stdlib GraphQL, team key as `repo`) serves the issues half read+write — the read half served live via the OQ-A untracked-artifact fallback (no Linear ingestion exists) — and returns `ErrUnsupported` for the whole PR/review family — the canonical PullRequest surface is never fabricated on a Linear coordinate; its write credential is its own `server_only` declared secret (DL-052). Amends DL-051 (Linear moves from a deferred issues-only follow-on to in-scope issues read+write; the swappable-`Provider` framing and the PR/review-family-unsupported core stand) | Active (Matt, 2026-08-17) | [forge write path §5](compass-forge-write-path/design.md#5-linear-provider-read--write-issues-half) |
 | DL-204 | Linear attribution is dual-channel with deliberate granularity: every write passes through `StampOwner` unchanged (the one chokepoint; the header carries the fine-grained PER-AGENT owner truth) AND sets Linear's native `createAsUser` to the ONE general shared Compass app identity (coarse native display, never per-agent; the token is OAuth actor=app, degrading to stamp-only via a named boot-time capability probe on a non-actor token); both values are Server-chosen so DL-050 unforgeability holds on both channels | Active (Matt, 2026-08-17) | [forge write path §5](compass-forge-write-path/design.md#5-linear-provider-read--write-issues-half) |
 | DL-205 | The DL-055 ownership index materializes as `forge_authored_artifacts` (PK = forge coordinate; agent/owner/session columns; ON DELETE RESTRICT FKs), written by `forgeService` strictly after forge write success — no row for a rejected write, no orphan row on a stamp failure | Active (Matt, 2026-08-17) | [forge write path §6](compass-forge-write-path/design.md#6-the-dl-055-ownership-index-first-writer) |
