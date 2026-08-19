@@ -627,6 +627,48 @@
 	padding: 9px 10px;
 }
 
+/* The one card mid-advance (G10; D2): a border in the blue flow color plus a
+   chase-light bar sweeping through it — work crossing a column boundary, never
+   a state pulse. Board-scoped like the F3 layout so it can never paint a
+   non-board .cx-card. Ships DORMANT: no live data sets data-advancing yet (the
+   Issue model carries no transition timestamp), so this waits on a future store
+   accessor. Consumes existing motion tokens only — no coined duration/easing. */
+.bridge-cell > .cx-card[data-advancing="1"] {
+	border-color: var(--cx-accent);
+	overflow: hidden;
+}
+.bridge-cell > .cx-card[data-advancing="1"]::after {
+	content: "";
+	position: absolute;
+	inset: 0 auto 0 -45%;
+	width: 45%;
+	background: linear-gradient(
+		90deg,
+		transparent,
+		color-mix(in srgb, var(--cx-accent) 32%, transparent),
+		transparent
+	);
+	animation: card-advance var(--cx-pulse-period) var(--cx-ease-out) infinite;
+}
+@keyframes card-advance {
+	to {
+		transform: translateX(320%);
+	}
+}
+/* Load-bearing (F12): --cx-pulse-period is zeroed under reduced motion, which
+   would leave a zero-duration infinite animation spinning in place — so hiding
+   ::after is not redundant with the zeroed token. Both triggers, mirroring the
+   house convention (base.css / loader.css) and surfaces.md:111: the OS media
+   query AND the manual data-reduce="on" toggle. Do not strip either. */
+@media (prefers-reduced-motion: reduce) {
+	.bridge-cell > .cx-card[data-advancing="1"]::after {
+		display: none;
+	}
+}
+:root[data-reduce="on"] .bridge-cell > .cx-card[data-advancing="1"]::after {
+	display: none;
+}
+
 /* ── Issue card ─────────────────────────────────────────────────────────── */
 
 .card-top {
