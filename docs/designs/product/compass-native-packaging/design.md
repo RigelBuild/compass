@@ -12,7 +12,7 @@ version-stamp path. macOS packaging, signed installers, and auto-update are
 deferred per the epic's scope boundary (`compass-native-app/design.md:242-248`:
 "Deferred to follow-up issues: … signed installers with auto-update"). The agent
 image is NOT embedded — `compass-stack` `podman pull`s it from GHCR at first run
-(DL-112, DECISIONS.md:230), and the GHCR publish lane already exists
+(DL-112), and the GHCR publish lane already exists
 (`agent-image/moon.yml:5-8` names `agent-image/publish.sh` as "the publish lane"
 whose derivation the moon build proves).
 
@@ -246,10 +246,19 @@ that reading AMENDS the interface to affected-per-PR + unconditional
 main/nightly. Matt ratified this amendment on 2026-08-19 (via `ask`); the
 chosen approach is unchanged.
 
+**Second deviation — lane shape.** The parent T6 also names "moon-registered
+build/test/ci lanes for the shell project"; this record realizes them as a
+`build`+`ci` pair on the NEW `compass-app-bundle` project (not the shell
+project), with no standalone `test` lane by design — the bundle carries no Go
+tests of its own (the shell's live in `compass-go:ci` via T6.1/T6.2), and its
+test intent is the T6.3 sanity gate folded into `build`.
+
 The build task carries its own sanity gate (T6.3): after staging, it asserts
-every binary exists, `--version` on each prints the stamped value, and
-`bin/dist/index.html` is present — so a green lane means a *complete* bundle,
-not merely an exit-0 script.
+every binary exists, the five compass binaries each print the stamped value from
+`--version` (the bundled `postgres`/`initdb`/`createdb` tools carry PostgreSQL's
+own 18.x version, so they are checked present + executable, not stamp-matched),
+and `bin/dist/index.html` is present — so a green lane means a *complete*
+bundle, not merely an exit-0 script.
 
 ### A5 — Scope boundary
 
@@ -440,8 +449,9 @@ the epic batch context; every task below inherits them:
     `compass-stack`/`compass-server`/`compass-runner`/`compass-postgres`; stage
     the A2 layout (dist from `apps/ui/dist`, `compass.desktop`, LICENSE, and
     the `postgres`/`initdb`/`createdb` store symlinks into `bin/`); run
-    the sanity assertions (every binary present; each `--version` prints `$v`;
-    `bin/dist/index.html` exists); tar to
+    the sanity assertions (all five compass binaries present, each printing `$v`
+    from `--version`; the `postgres`/`initdb`/`createdb` tools present and
+    executable; `bin/dist/index.html` exists); tar to
     `compass-app-$v-linux-amd64.tar.gz`.
   - `moon.yml` — `build` task (deps: `['compass-ui:build']`, `outputs` the
     tarball dir, `inputs` = `/go/**` (excluding `**/*_test.go`, so
