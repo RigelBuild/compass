@@ -4,6 +4,7 @@ import { type Component, Show } from "solid-js";
 import "./design/tokens.css";
 import "./design/base.css";
 import "./design/components/badge-glyph.css";
+import "./design/components/card.css";
 import "./app.css";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { RightSidebar } from "./components/RightSidebar";

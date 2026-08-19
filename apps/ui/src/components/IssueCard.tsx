@@ -44,9 +44,10 @@ export const IssueCard: Component<{
 	return (
 		<button
 			type="button"
-			class="card"
-			data-priority={props.issue.priority}
-			classList={{ selected: props.issue.id === store.selectedIssueId() }}
+			class="cx-card"
+			data-selected={
+				props.issue.id === store.selectedIssueId() ? "" : undefined
+			}
 			onClick={() => store.selectIssue(props.issue.id)}
 			onDblClick={openAssignedAgent}
 		>

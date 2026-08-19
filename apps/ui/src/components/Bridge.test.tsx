@@ -156,7 +156,7 @@ describe("Bridge card badges (Record B §3)", () => {
 		// code is hidden, glyph only), Bridge PR rows do not (code shown). Defend
 		// the distinction, not just badge presence — a dropped/inverted `compact`
 		// on a consumer would otherwise ship green.
-		const cardBadge = container.querySelector(".card .cx-axis-badge");
+		const cardBadge = container.querySelector(".cx-card .cx-axis-badge");
 		if (!cardBadge) throw new Error("no card axis badge");
 		expect(cardBadge.hasAttribute("data-compact")).toBe(true);
 		clickTab(container, "PRs");
