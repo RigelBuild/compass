@@ -74,18 +74,34 @@ test.describe("advancing hook — normal motion", () => {
 });
 
 test.describe("advancing hook — reduced motion (F12 guard)", () => {
-	test("the manual data-reduce=on mirror hides the chase-light", async ({
-		page,
-	}) => {
-		await markFirstCardAdvancing(page);
-		const display = await page.evaluate((sel) => {
-			document.documentElement.setAttribute("data-reduce", "on");
-			const el = document.querySelector(sel);
-			return el ? getComputedStyle(el, "::after").display : null;
-		}, SEL);
-		// Load-bearing: the period is zeroed here, so ::after MUST be hidden or a
-		// 0s-infinite animation spins in place. Do not strip this guard.
-		expect(display).toBe("none");
+	test.describe("manual data-reduce=on mirror (no OS preference)", () => {
+		// Isolate from the OS-media guard: the global reducedMotion:"reduce"
+		// (playwright.config.ts) otherwise keeps @media(prefers-reduced-motion)
+		// active, so stripping the manual :root[data-reduce="on"] mirror would
+		// leave ::after hidden by the media path and this test would not redden.
+		// Under no-preference ONLY the manual toggle can hide ::after.
+		test.use({ reducedMotion: "no-preference" });
+		test("the manual data-reduce=on mirror hides the chase-light", async ({
+			page,
+		}) => {
+			await markFirstCardAdvancing(page);
+			// Pre-assert: with no OS preference and no manual toggle the chase-light
+			// is live, so ::after is painted (display !== none). Proves the toggle
+			// below is what flips display, not the media guard.
+			const before = await page.evaluate((sel) => {
+				const el = document.querySelector(sel);
+				return el ? getComputedStyle(el, "::after").display : null;
+			}, SEL);
+			expect(before).not.toBe("none");
+			const display = await page.evaluate((sel) => {
+				document.documentElement.setAttribute("data-reduce", "on");
+				const el = document.querySelector(sel);
+				return el ? getComputedStyle(el, "::after").display : null;
+			}, SEL);
+			// Load-bearing: the period is zeroed here, so ::after MUST be hidden or a
+			// 0s-infinite animation spins in place. Do not strip this guard.
+			expect(display).toBe("none");
+		});
 	});
 
 	test.describe("under prefers-reduced-motion emulation", () => {

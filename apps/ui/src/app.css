@@ -634,6 +634,10 @@
    Issue model carries no transition timestamp), so this waits on a future store
    accessor. Consumes existing motion tokens only — no coined duration/easing. */
 .bridge-cell > .cx-card[data-advancing="1"] {
+	/* When a card is both selected and advancing this rule (2 classes + 1 attr)
+	   intentionally outranks .cx-card[data-selected] (1 class + 1 attr) on the
+	   border, so the advance color wins. Both resolve to --cx-accent today, so
+	   there is no visible conflict — this is a deliberate override, not a clash. */
 	border-color: var(--cx-accent);
 	overflow: hidden;
 }
