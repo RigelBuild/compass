@@ -828,6 +828,12 @@ reports without gating.
    Supersedes the drafted OQ5 arms: neither a bespoke uid-1000 runner ([A]) nor
    a permanent nightly-only fallback ([B]) — fix the constraints, gate per-PR.
    Folded through Global Constraints, Approach A1, and task H8.
+   Later-record pointer (added by citation, 2026-08-18; the freeze rule adds,
+   never rewrites): D2's no-secrets, deterministic per-PR cadence governs THIS
+   dogfood tier and is unchanged. A separate secret-bearing forge live-oracle
+   step joins the per-PR gate as its own decision (DL-210,
+   [forge integration testing](../../product/compass-forge-integration-testing/design.md));
+   it does not modify this tier.
 3. **D3 — Harness shape (Decision, Matt, 2026-08-05): option C.** A
    `//go:build podman` Go test suite over the merged compass-stack bring-up
    (`stack.Up`/`stack.Stack`, `go/internal/stack`), not
