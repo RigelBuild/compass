@@ -49,6 +49,11 @@ import (
 // just above are for the reader, not values anything computes against.) The
 // namePrefix and accountIDHexLen the caller passes model the same container name
 // the Runner actually builds, so the budget assertion tracks the real path.
+//
+// A caller may open MULTIPLE sockets under the returned root (the e2e wire
+// does); all share the RuntimeDir/containers/<name> layout and every name is the
+// same length (namePrefix + accountIDHexLen hex chars), so this single
+// longest-path budget covers them all.
 func ShortRuntimeDir(t *testing.T, namePrefix string, accountIDHexLen int) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", "cr") //nolint:usetesting // t.TempDir embeds the test name, which is what put this path over the sun_path cap — the bug this helper exists to prevent
