@@ -39,11 +39,27 @@ tasks:
       - '/bun.lock'
     outputs: ['dist']
 
-  # Type-check the site (astro + tsconfig strict). Depends on gather so the
-  # content collection it type-checks is present.
+  # Type-check the site (astro + tsconfig strict). Depends on `build` (not just
+  # `gather`) so the two astro processes never run concurrently against the
+  # shared content data-store: build and check both run astro non-dev, so both
+  # resolve the store to the single shared cacheDir (node_modules/.astro/
+  # data-store.json). MutableDataStore.#writeFileAtomic renames a fixed-name
+  # `.tmp` onto that file guarded only in-process, so a concurrent `astro build`
+  # + `astro check` race the rename(.tmp -> .json) and the loser ENOENTs — it
+  # fires in a cold CI/jj-hooks worktree (both cold-start together) while a warm
+  # local .astro hides it. Serialization is the fix: check reuses build's warm
+  # store (write skipped, no rename). Two deliberate trade-offs: (1) check now
+  # folds build's wider input set (public/**, scripts/**) into its hash, so a
+  # public- or script-only change re-runs the type-check that used to stay
+  # cached; and (2) check no longer parallelizes with build, so the check gate's
+  # wall-clock now includes build's duration. Per-task cache isolation (which
+  # would keep them parallel) is not cleanly feasible: cacheDir is single-shared
+  # in astro.config.mjs and tsconfig.json hard-codes include:['.astro/types.d.ts']
+  # at a fixed path, so isolating check to its own store would break the
+  # type-check include.
   check:
     command: 'bunx astro check'
-    deps: ['gather']
+    deps: ['build']
     inputs:
       - 'src/**/*'
       - 'astro.config.mjs'
