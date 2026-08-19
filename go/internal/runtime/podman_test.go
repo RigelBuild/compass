@@ -165,6 +165,20 @@ func TestInspectMountLabelArgsPinsFormat(t *testing.T) {
 	}
 }
 
+// removeArgs pins the exact `podman rm` argv. --volumes must ride alongside
+// --force so a container whose image declares a VOLUME does not orphan its
+// anonymous volumes on removal — leaked volumes exhaust podman's num_locks and
+// wedge the host. A dropped --volumes silently reintroduces that leak on the
+// production removal path, which has no other guard.
+func TestRemoveArgsCarriesVolumes(t *testing.T) {
+	args := removeArgs(ContainerID("ctr123"))
+
+	want := []string{"rm", "--force", "--volumes", "ctr123"}
+	if !slices.Equal(args, want) {
+		t.Fatalf("removeArgs = %q, want %q", args, want)
+	}
+}
+
 // execStreamingArgs carries -e vars but never --env-file: env-delivery secrets
 // are not passed on the exec at all (podman resolves --env-file host-side, where
 // the container-internal file does not exist; the agent sources the file itself).

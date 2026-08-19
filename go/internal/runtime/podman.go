@@ -563,8 +563,18 @@ func (p *PodmanCLI) Stop(ctx context.Context, id ContainerID, timeout time.Durat
 
 // Remove removes a container (force-kills if still running).
 func (p *PodmanCLI) Remove(ctx context.Context, id ContainerID) error {
-	_, err := p.run(ctx, "podman rm", []string{"rm", "--force", id.String()})
+	_, err := p.run(ctx, "podman rm", removeArgs(id))
 	return err
+}
+
+// removeArgs assembles the `podman rm` argv. --volumes removes any anonymous
+// volumes created with the container along with it: a base image that declares
+// a VOLUME directive would otherwise orphan them, and leaked anonymous volumes
+// exhaust podman's num_locks and wedge the host. Harmless when the container
+// has none. Sister argv in internal/pgtest (removeContainerArgs); the two are
+// deliberately independent (no prod->test-harness dependency) — keep in sync.
+func removeArgs(id ContainerID) []string {
+	return []string{"rm", "--force", "--volumes", id.String()}
 }
 
 // Pull fetches image from its registry. A one-shot fire-and-check like

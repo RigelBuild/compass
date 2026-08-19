@@ -251,8 +251,9 @@ func startContainer(t *testing.T, cli string) string {
 // volume — hence no new container — can be allocated, which surfaces downstream
 // as a pgtest "hang" (the socket never binds, so the test waits out its
 // deadline). --rm alone does not cover this: it does not remove anonymous
-// volumes on an explicit force-remove. Shared with the harness's own regression
 // test so the flag that keeps the pool bounded cannot be dropped unnoticed.
+// Sister argv in internal/runtime (removeArgs); the two are deliberately
+// independent (no test-harness->prod dependency) — keep in sync.
 func removeContainerArgs(name string) []string {
 	return []string{"rm", "--force", "--volumes", name}
 }
