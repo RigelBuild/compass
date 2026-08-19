@@ -604,8 +604,12 @@ type forgeOp struct {
 // forge's, so 403 and 404 are indistinguishable); *StatusError{422} →
 // invalid_argument carrying the forge's validation message; ErrUnsupported →
 // unimplemented naming provider+op; ErrBudgetExhausted / *StatusError{429} →
-// resource_exhausted (+ retry_after_ms, 0 when the forge gave no hint);
-// everything else → internal.
+// resource_exhausted; everything else → internal. NOTE: ForgeCallError.RetryAfterMs
+// is currently always 0 — neither forge.ErrBudgetExhausted (a bare sentinel) nor
+// forge.StatusError (only {Status, Message}) surfaces the forge's Retry-After /
+// reset hint, so there is nothing to populate it from yet (cross-slice follow-up:
+// the provider error surface must carry the reset value before retry_after_ms can
+// be honored).
 func mapForgeError(err error, op forgeOp) *compassv1internal.ForgeCallError {
 	switch {
 	case errors.Is(err, forge.ErrBodyTooLarge):

@@ -20,6 +20,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -153,6 +154,15 @@ func createIssueCall(body, clientReqID string) *compassv1internal.ForgeCallReque
 		ClientRequestId: clientReqID,
 		Call: &compassv1internal.ForgeCallRequest_CreateIssue{CreateIssue: &compassv1internal.CreateIssueRequest{
 			Repo: testRepo, Title: "t", Body: body,
+		}},
+	}
+}
+
+func createPRCall(body, clientReqID string) *compassv1internal.ForgeCallRequest {
+	return &compassv1internal.ForgeCallRequest{
+		ClientRequestId: clientReqID,
+		Call: &compassv1internal.ForgeCallRequest_CreatePullRequest{CreatePullRequest: &compassv1internal.CreatePullRequestRequest{
+			Repo: testRepo, Title: "t", Body: body, HeadRef: "feature", BaseRef: "main",
 		}},
 	}
 }
@@ -521,6 +531,211 @@ func TestForgeF1DispatchReviewerVsAuthorClient(t *testing.T) {
 	}
 	if len(reviewer.Calls()) != 1 {
 		t.Fatalf("create_issue leaked onto reviewer: reviewer total=%d, want 1 (unchanged)", len(reviewer.Calls()))
+	}
+}
+
+// --- tests: create_pull_request arm (M2) ------------------------------------
+
+// TestForgeCreatePullRequestStampsAndRecordsPRKind pins the PR-create twin of
+// createIssue: the body reaching the AUTHOR client is stamped exactly once, the
+// result is a PullRequest arm, and the DL-055 row lands with Kind=pull_request
+// and the returned coordinate's number — the copy-paste class of bug (wrong
+// role, missing stamp, wrong kind constant) a happy-path assertion catches.
+func TestForgeCreatePullRequestStampsAndRecordsPRKind(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	reviewer := forge.NewFakeProvider("gh-reviewer")
+	svc, st := newForgeServiceForTest(t, author, reviewer)
+	author.CreatePRResult = forge.PullRequest{Number: 55, URL: "u"}
+
+	res := svc.ExecuteForgeCallAsAccountMust(t, createPRCall("body", ""))
+	if res.GetError() != nil {
+		t.Fatalf("create_pull_request errored: %v", res.GetError())
+	}
+	if res.GetPullRequest() == nil {
+		t.Fatalf("create_pull_request returned no PR arm: %v", res)
+	}
+	if len(author.Calls()) != 1 || len(reviewer.Calls()) != 0 {
+		t.Fatalf("PR-create dispatch: author=%d reviewer=%d, want author=1 reviewer=0", len(author.Calls()), len(reviewer.Calls()))
+	}
+	body := author.Calls()[0].Payload.(forge.CreatePR).Body
+	if n := strings.Count(body, ownerHeaderSentinel); n != 1 {
+		t.Fatalf("PR body carries %d owner headers, want exactly 1:\n%s", n, body)
+	}
+	if len(st.recorded) != 1 {
+		t.Fatalf("recorded rows = %d, want 1", len(st.recorded))
+	}
+	if st.recorded[0].Kind != store.ForgeArtifactKindPullRequest {
+		t.Fatalf("recorded kind = %v, want pull_request", st.recorded[0].Kind)
+	}
+	if st.recorded[0].Number != 55 {
+		t.Fatalf("recorded number = %d, want 55", st.recorded[0].Number)
+	}
+}
+
+// TestForgeCreateRetryMismatchedArmReturnsStoredKind pins the F3 mismatched-arm
+// property: a create_issue recorded under a client_request_id, then a
+// create_pull_request RETRIED with the SAME key, returns the ORIGINAL Issue
+// coordinate (the STORED kind), never a PR arm, with ZERO additional provider
+// calls — the memo keys on (agent, request id), not on the arm.
+func TestForgeCreateRetryMismatchedArmReturnsStoredKind(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	reviewer := forge.NewFakeProvider("gh-reviewer")
+	svc, st := newForgeServiceForTest(t, author, reviewer)
+	author.CreateIssueResult = forge.Issue{Number: 42, URL: "u"}
+
+	first := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", "req-x"))
+	if first.GetError() != nil || first.GetIssue().GetNumber() != 42 {
+		t.Fatalf("first create_issue = %v, want issue 42", first)
+	}
+
+	second := svc.ExecuteForgeCallAsAccountMust(t, createPRCall("different", "req-x"))
+	if second.GetError() != nil {
+		t.Fatalf("mismatched-arm retry errored: %v", second.GetError())
+	}
+	if second.GetPullRequest() != nil {
+		t.Fatalf("mismatched-arm retry returned a PR arm, want the stored ISSUE arm")
+	}
+	if second.GetIssue().GetNumber() != 42 {
+		t.Fatalf("mismatched-arm retry issue number = %d, want 42 (stored coordinate)", second.GetIssue().GetNumber())
+	}
+	if len(author.Calls()) != 1 {
+		t.Fatalf("provider calls total = %d, want 1 (PR retry deduped, zero provider calls)", len(author.Calls()))
+	}
+	if len(st.recorded) != 1 {
+		t.Fatalf("recorded rows = %d, want 1 (no second row)", len(st.recorded))
+	}
+}
+
+// TestForgeNonAgentCallerIsInvalidArgumentZeroProviderCalls pins the security
+// guard: a caller AccountID that resolves to a NON-agent account (Agent==nil, a
+// plain user) cannot author a stamped forge artifact — the write fails in-band
+// with invalid_argument BEFORE any stamp or provider touch. Inverting or
+// dropping the guard would otherwise ship green while a user/service account
+// drove an attributed write.
+func TestForgeNonAgentCallerIsInvalidArgumentZeroProviderCalls(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	reviewer := forge.NewFakeProvider("gh-reviewer")
+	svc, st := newForgeServiceForTest(t, author, reviewer)
+
+	const nonAgentID = store.AccountID("acct-user")
+	st.accounts[nonAgentID] = store.Account{ID: nonAgentID, Handle: "auser", User: &store.UserAccount{}}
+
+	res, err := svc.ExecuteForgeCallAsAccount(context.Background(), nonAgentID, testSessionID, createIssueCall("b", ""))
+	if err != nil {
+		t.Fatalf("non-agent caller returned a Connect error, want in-band: %v", err)
+	}
+	fe := res.GetError()
+	if fe == nil || fe.GetCode() != "invalid_argument" {
+		t.Fatalf("non-agent caller error = %v, want invalid_argument", res.GetError())
+	}
+	if !strings.Contains(fe.GetMessage(), "not an agent account") {
+		t.Fatalf("non-agent message = %q, want it to name the non-agent caller", fe.GetMessage())
+	}
+	if len(author.Calls())+len(reviewer.Calls()) != 0 {
+		t.Fatalf("non-agent caller touched a provider = %d, want 0", len(author.Calls())+len(reviewer.Calls()))
+	}
+	if len(st.recorded) != 0 {
+		t.Fatalf("non-agent caller recorded %d rows, want 0", len(st.recorded))
+	}
+}
+
+// TestForgeCommentArmsStampBodies pins that both comment arms stamp the body on
+// the AUTHOR client and return the matching ack arm (IssueComment vs PrComment)
+// — the arms are hand-copied twins, so a missing stamp or crossed result variant
+// is exactly the copy-paste bug an explicit assertion catches.
+func TestForgeCommentArmsStampBodies(t *testing.T) {
+	t.Run("issue", func(t *testing.T) {
+		author := forge.NewFakeProvider("gh-author")
+		reviewer := forge.NewFakeProvider("gh-reviewer")
+		svc, _ := newForgeServiceForTest(t, author, reviewer)
+		call := &compassv1internal.ForgeCallRequest{
+			Call: &compassv1internal.ForgeCallRequest_CommentOnIssue{CommentOnIssue: &compassv1internal.CommentOnIssueRequest{
+				Repo: testRepo, IssueNumber: 3, Body: "hi",
+			}},
+		}
+		res := svc.ExecuteForgeCallAsAccountMust(t, call)
+		if res.GetIssueComment() == nil {
+			t.Fatalf("comment_on_issue returned no IssueComment arm: %v", res.GetError())
+		}
+		if len(author.Calls()) != 1 {
+			t.Fatalf("comment_on_issue author calls = %d, want 1", len(author.Calls()))
+		}
+		if n := strings.Count(author.Calls()[0].Body, ownerHeaderSentinel); n != 1 {
+			t.Fatalf("comment body carries %d owner headers, want exactly 1", n)
+		}
+	})
+	t.Run("pull_request", func(t *testing.T) {
+		author := forge.NewFakeProvider("gh-author")
+		reviewer := forge.NewFakeProvider("gh-reviewer")
+		svc, _ := newForgeServiceForTest(t, author, reviewer)
+		call := &compassv1internal.ForgeCallRequest{
+			Call: &compassv1internal.ForgeCallRequest_CommentOnPullRequest{CommentOnPullRequest: &compassv1internal.CommentOnPullRequestRequest{
+				Repo: testRepo, PullNumber: 4, Body: "hi",
+			}},
+		}
+		res := svc.ExecuteForgeCallAsAccountMust(t, call)
+		if res.GetPrComment() == nil {
+			t.Fatalf("comment_on_pull_request returned no PrComment arm: %v", res.GetError())
+		}
+		if len(author.Calls()) != 1 {
+			t.Fatalf("comment_on_pull_request author calls = %d, want 1", len(author.Calls()))
+		}
+		if n := strings.Count(author.Calls()[0].Body, ownerHeaderSentinel); n != 1 {
+			t.Fatalf("PR-comment body carries %d owner headers, want exactly 1", n)
+		}
+	})
+}
+
+// TestForgeBudgetExhaustedAnd429MapToResourceExhausted pins the rate-limit arm
+// of the single error-mapping function: both the ErrBudgetExhausted sentinel and
+// a *StatusError{429} flatten to an in-band resource_exhausted.
+func TestForgeBudgetExhaustedAnd429MapToResourceExhausted(t *testing.T) {
+	run := func(scripted error) *compassv1internal.ForgeCallError {
+		author := forge.NewFakeProvider("gh-author")
+		reviewer := forge.NewFakeProvider("gh-reviewer")
+		svc, _ := newForgeServiceForTest(t, author, reviewer)
+		author.SetError("CreateIssue", scripted)
+		return svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", "")).GetError()
+	}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"budget_sentinel", forge.ErrBudgetExhausted},
+		{"status_429", &forge.StatusError{Status: 429, Message: "rate limited"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fe := run(tc.err)
+			if fe == nil || fe.GetCode() != "resource_exhausted" {
+				t.Fatalf("%s error = %v, want resource_exhausted", tc.name, fe)
+			}
+		})
+	}
+}
+
+// TestForgeRecordFailureAfterProviderSuccessIsInternal pins the record-after-
+// success fault path: the forge create SUCCEEDED (one provider call) but the
+// DL-055 row+memo write failed, so the call returns an in-band internal error
+// and NO row lands — documenting the inherent F3 consequence that a retry then
+// re-attempts (the artifact already exists forge-side, so a duplicate is
+// possible; the memo, not the row, is what a successful retry would dedup).
+func TestForgeRecordFailureAfterProviderSuccessIsInternal(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	reviewer := forge.NewFakeProvider("gh-reviewer")
+	svc, st := newForgeServiceForTest(t, author, reviewer)
+	author.CreateIssueResult = forge.Issue{Number: 7}
+	st.recErr = errors.New("record: db unavailable")
+
+	res := svc.ExecuteForgeCallAsAccountMust(t, createIssueCall("b", "req-1"))
+	fe := res.GetError()
+	if fe == nil || fe.GetCode() != "internal" {
+		t.Fatalf("record-after-success error = %v, want internal", fe)
+	}
+	if len(author.Calls()) != 1 {
+		t.Fatalf("provider calls = %d, want 1 (the create ran before record failed)", len(author.Calls()))
+	}
+	if len(st.recorded) != 0 {
+		t.Fatalf("recorded rows = %d, want 0 (record failed)", len(st.recorded))
 	}
 }
 
