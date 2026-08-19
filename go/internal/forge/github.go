@@ -372,17 +372,19 @@ type reviewEvent struct {
 }
 
 // The write-side verdict vocabulary (design §T3): GitHub's reviews-POST event
-// token set, distinct from the past-tense read-side Review.verdict.
+// token set, distinct from the past-tense read-side Review.verdict. Package-
+// private — the spec surfaces only the type triple and interface method; a
+// caller passes the raw token, and T4's Service owns any exported vocabulary.
 const (
-	VerdictApprove        = "approve"
-	VerdictRequestChanges = "request_changes"
-	VerdictComment        = "comment"
+	verdictApprove        = "approve"
+	verdictRequestChanges = "request_changes"
+	verdictComment        = "comment"
 )
 
 var reviewEvents = map[string]reviewEvent{
-	VerdictApprove:        {token: "APPROVE", requiresBody: false},
-	VerdictRequestChanges: {token: "REQUEST_CHANGES", requiresBody: true},
-	VerdictComment:        {token: "COMMENT", requiresBody: true},
+	verdictApprove:        {token: "APPROVE", requiresBody: false},
+	verdictRequestChanges: {token: "REQUEST_CHANGES", requiresBody: true},
+	verdictComment:        {token: "COMMENT", requiresBody: true},
 }
 
 // ghReviewComment is the wire shape of one inline comment inside a reviews POST.
@@ -419,6 +421,7 @@ func (g *GitHub) SubmitReview(ctx context.Context, repo string, number uint64, i
 		Body     string            `json:"body"`
 		Comments []ghReviewComment `json:"comments,omitempty"`
 	}{Event: ev.token, Body: in.Body}
+	body.Comments = make([]ghReviewComment, 0, len(in.Comments))
 	for _, c := range in.Comments {
 		body.Comments = append(body.Comments, ghReviewComment(c))
 	}
