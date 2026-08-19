@@ -1,4 +1,4 @@
--- 0002_messages_author_idx: a btree index on messages.author_account_id, added
+-- 0003_messages_author_idx: a btree index on messages.author_account_id, added
 -- to serve the author-only equality probe in AgentHasOpenAsk (presence_reads.go):
 --   SELECT EXISTS(SELECT 1 FROM messages WHERE author_account_id = $1 AND blocks @? …)
 -- The presence projection calls AgentHasOpenAsk on EVERY presence edge, so this
