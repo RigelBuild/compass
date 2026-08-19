@@ -725,6 +725,29 @@
 	font-family: var(--cx-font-ui);
 }
 
+.card-threads {
+	font-family: var(--cx-font-ui);
+	font-size: 10px;
+	color: var(--cx-text-faint);
+}
+
+.card-issue-link {
+	margin-left: auto;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--cx-accent);
+	cursor: pointer;
+}
+
+.bridge-lane.unassigned {
+	color: var(--cx-text-faint);
+}
+/* The PRs-board Unassigned gutter is a static <div>, not the agent <button> —
+   neutralize the inherited .bridge-lane:hover highlight so it reads inert. */
+.bridge-lane.unassigned:hover {
+	background: var(--cx-bg-panel);
+}
+
 .check-pips {
 	display: inline-flex;
 	gap: 3px;
@@ -751,89 +774,6 @@
 }
 .card-pr.link:hover {
 	color: var(--cx-text);
-}
-
-/* ── Bridge PRs tab ────────────────────────────────────────────────────── */
-
-.pr-tab {
-	display: flex;
-	flex-direction: column;
-	gap: 12px;
-	padding: 12px;
-	overflow: auto;
-}
-
-.pr-group {
-	display: flex;
-	flex-direction: column;
-	gap: 4px;
-}
-
-.pr-group-head {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	font-size: 12px;
-	font-weight: 600;
-	color: var(--cx-text-dim);
-	padding: 4px 6px;
-}
-.pr-group-head.unassigned {
-	color: var(--cx-text-faint);
-}
-
-.pr-row {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	width: 100%;
-	text-align: left;
-	background: var(--cx-bg-panel);
-	border: 1px solid var(--cx-border);
-	border-radius: 6px;
-	padding: 6px 10px;
-	color: var(--cx-text);
-	cursor: pointer;
-}
-.pr-row:hover {
-	background: var(--cx-bg-hover);
-}
-.pr-row.selected {
-	border-color: var(--cx-accent);
-}
-
-.pr-row-state {
-	font-size: 10px;
-	text-transform: uppercase;
-	color: var(--cx-text-faint);
-}
-.pr-row-coord {
-	font-family: var(--cx-font-ui);
-	font-size: 11px;
-	color: var(--cx-text-dim);
-}
-.pr-row-title {
-	flex: 1;
-	font-size: 12px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.pr-row-threads {
-	font-family: var(--cx-font-ui);
-	font-size: 10px;
-	color: var(--cx-text-faint);
-}
-.pr-row-issue {
-	font-size: 11px;
-	font-weight: 600;
-	color: var(--cx-accent);
-	cursor: pointer;
-}
-.pr-empty {
-	padding: 24px;
-	color: var(--cx-text-faint);
-	font-size: 12px;
 }
 
 .add {

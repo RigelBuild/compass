@@ -151,10 +151,44 @@ export function prRowGroups(
 	return groups;
 }
 
-/** The PRs-tab count badge — the number of rows the tab shows, so it equals the
- *  visible row count. Unscoped: `prRows(all).length`. With C's `subtreeAgentIds`
- *  scope, counts only rows whose `issue.assignee` is in scope (unassigned rows
- *  are excluded when scoped, matching the filtered tab). */
+/** Every board-PR row across issues in ANY lifecycle state: like `prRows`
+ *  (board.ts:132-134) but the predicate is forgeState !== "closed", so MERGED
+ *  PRs are included (the Merged column, D1b — the store hands the UI whatever
+ *  merged rows survive its 1-day window; this function does not implement
+ *  retention). Issue order then `prs` order preserved. */
+export function prBoardRows(all: readonly Issue[]): PrRow[] {
+	return all.flatMap((issue) =>
+		issue.prs
+			.filter((p) => p.forgeState !== "closed")
+			.map((pr) => ({ issue, pr })),
+	);
+}
+
+/** The PRs-board groups: `prBoardRows` grouped by `issue.assignee`, group
+ *  sequence = `treeOrder(agents)` filtered to agents with >=1 row, then one
+ *  `agent: null` ("Unassigned") group LAST iff it has rows. Grouping/order
+ *  contract identical to `prRowGroups` (board.ts:139-152), only the row source
+ *  differs (board rows vs open-only). */
+export function prBoardGroups(
+	agents: readonly Agent[],
+	all: readonly Issue[],
+): { agent: Agent | null; rows: PrRow[] }[] {
+	const rows = prBoardRows(all);
+	const groups: { agent: Agent | null; rows: PrRow[] }[] = [];
+	for (const agent of treeOrder(agents)) {
+		const owned = rows.filter((r) => r.issue.assignee === agent.account.id);
+		if (owned.length > 0) groups.push({ agent, rows: owned });
+	}
+	const unassigned = rows.filter((r) => r.issue.assignee === null);
+	if (unassigned.length > 0) groups.push({ agent: null, rows: unassigned });
+	return groups;
+}
+
+/** The PRs-tab count badge — the number of NON-Merged (open) visible rows; the
+ *  Merged column is not counted (consistent with the reference). Unscoped:
+ *  `prRows(all).length`. With C's `subtreeAgentIds` scope, counts only rows
+ *  whose `issue.assignee` is in scope (unassigned rows are excluded when scoped,
+ *  matching the filtered tab). */
 export function prCount(
 	all: readonly Issue[],
 	scope?: ReadonlySet<string>,

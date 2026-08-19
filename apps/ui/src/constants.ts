@@ -30,6 +30,27 @@ export const BOARD_LANES: Lane[] = [
 	{ state: "done", label: "Done", color: "var(--cx-issue-done)" },
 ];
 
+/** PR-lifecycle columns for the Bridge PRs view (design D1; T6). A separate axis
+ *  from the issue-lifecycle BOARD_LANES: a PR moves across these as it heads to
+ *  merge. Colors reuse the issue-lifecycle namespace + the accent for "ready". */
+export type PrLifecycle = "in_progress" | "in_review" | "ready" | "merged";
+
+export const PR_LANES: { state: PrLifecycle; label: string; color: string }[] =
+	[
+		{
+			state: "in_progress",
+			label: "In progress",
+			color: "var(--cx-issue-in_progress)",
+		},
+		{
+			state: "in_review",
+			label: "In review",
+			color: "var(--cx-issue-in_review)",
+		},
+		{ state: "ready", label: "Ready to merge", color: "var(--cx-accent)" },
+		{ state: "merged", label: "Merged", color: "var(--cx-issue-done)" },
+	];
+
 /** The pre-active tier, in Backlog-view display order (Todo first, then
  *  Backlog). Todo is the global pool of promoted-but-unassigned tasks; Backlog
  *  is the un-promoted tier (design D1). Neither renders on the board grid. */

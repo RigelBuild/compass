@@ -8,6 +8,7 @@
 // author, so a reassigned issue names its current holder on the card and its
 // original author in the PR pane. That divergence is intended, not drift.
 
+import type { PrLifecycle } from "./constants";
 import type {
 	AgentAttribution,
 	Check,
@@ -118,6 +119,23 @@ export function reviewBadge(
  *  per-check list). No `checks` → `undefined` (no badge). */
 export function ciBadge(pr: PullRequest): ChecksSummary["state"] | undefined {
 	return pr.checks?.state;
+}
+
+/** The PR-lifecycle column a PR sits in on the PRs board (design D1 / T6).
+ *  Precedence: merged > ready > in_review > in_progress. Defined over the
+ *  reviewBadge/ciBadge roll-ups so it inherits their latest-per-author rule.
+ *  D1a: an approved + CI-green PR with an UNRESOLVED thread is NOT ready — it
+ *  stays "in review". Total over board rows (forgeState !== "closed"); the
+ *  defensive default keeps it total if the type widens. */
+export function prLifecycle(pr: PullRequest): PrLifecycle {
+	if (pr.forgeState === "merged") return "merged";
+	const approvedGreen =
+		reviewBadge(pr) === "approved" && ciBadge(pr) === "success";
+	const allThreadsResolved = pr.threads.every((t) => t.resolved);
+	if (approvedGreen && allThreadsResolved) return "ready";
+	const hasOpenThreads = pr.threads.some((t) => !t.resolved);
+	if (reviewBadge(pr) !== undefined || hasOpenThreads) return "in_review";
+	return "in_progress"; // incl. draft-open + the defensive default
 }
 
 /** The open PRs of an issue — `forgeState === "open"` (drafts included), `prs`

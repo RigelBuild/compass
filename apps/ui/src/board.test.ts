@@ -8,6 +8,8 @@ import {
 	isActiveState,
 	isBacklogState,
 	laneTotal,
+	prBoardGroups,
+	prBoardRows,
 	prCount,
 	prRowGroups,
 	prRows,
@@ -655,5 +657,114 @@ describe("prCount", () => {
 		// The same orphan row is dropped from the grouped render (no matching agent).
 		const groups = prRowGroups([agent("a")], all);
 		expect(groups.flatMap((g) => g.rows)).toHaveLength(0);
+	});
+});
+
+// prBoardRows / prBoardGroups build the PRs-BOARD partition: one row per PR that
+// is not closed (MERGED included, for the Merged column), grouped by assignee in
+// treeOrder with a trailing Unassigned group. Contract mirrors prRows/prRowGroups
+// except the row predicate is forgeState !== "closed" (not open-only).
+describe("prBoardRows", () => {
+	test("includes merged, excludes closed, preserves issue-then-prs order", () => {
+		const open = prOf({ number: 1, forgeState: "open" });
+		const merged = prOf({ number: 2, forgeState: "merged" });
+		const closed = prOf({ number: 3, forgeState: "closed" });
+		const rows = prBoardRows([
+			ws({ id: "i1", state: "in_review", prs: [open, merged, closed] }),
+		]);
+		expect(rows.map((r) => r.pr.number)).toEqual([1, 2]);
+		expect(rows.every((r) => r.issue.id === "i1")).toBe(true);
+	});
+
+	test("issue order then prs order preserved across issues", () => {
+		const rows = prBoardRows([
+			ws({ id: "i1", state: "in_progress", prs: [prOf({ number: 1 })] }),
+			ws({
+				id: "i2",
+				state: "in_review",
+				prs: [prOf({ number: 2 }), prOf({ number: 3, forgeState: "merged" })],
+			}),
+		]);
+		expect(rows.map((r) => `${r.issue.id}:${r.pr.number}`)).toEqual([
+			"i1:1",
+			"i2:2",
+			"i2:3",
+		]);
+	});
+});
+
+describe("prBoardGroups", () => {
+	test("groups follow treeOrder (parent before child), each with its rows", () => {
+		const agents = [agent("root"), agent("child", "root")];
+		const all = [
+			ws({
+				id: "c1",
+				state: "in_review",
+				assignee: "child",
+				prs: [prOf({ number: 2 })],
+			}),
+			ws({
+				id: "r1",
+				state: "in_progress",
+				assignee: "root",
+				prs: [prOf({ number: 1 })],
+			}),
+		];
+		const groups = prBoardGroups(agents, all);
+		expect(groups.map((g) => g.agent?.account.id)).toEqual(["root", "child"]);
+		expect(groups[0]?.rows.map((r) => r.pr.number)).toEqual([1]);
+		expect(groups[1]?.rows.map((r) => r.pr.number)).toEqual([2]);
+	});
+
+	test("a merged PR contributes a board group row (open-only would drop it)", () => {
+		const agents = [agent("a")];
+		const all = [
+			ws({
+				id: "m1",
+				state: "done",
+				assignee: "a",
+				prs: [prOf({ number: 1, forgeState: "merged" })],
+			}),
+		];
+		const groups = prBoardGroups(agents, all);
+		expect(groups.map((g) => g.agent?.account.id)).toEqual(["a"]);
+		expect(groups[0]?.rows.map((r) => r.pr.number)).toEqual([1]);
+	});
+
+	test("the Unassigned group is last iff it has rows", () => {
+		const agents = [agent("a")];
+		const all = [
+			ws({
+				id: "u1",
+				state: "in_review",
+				assignee: null,
+				prs: [prOf({ number: 2 })],
+			}),
+			ws({
+				id: "a1",
+				state: "in_progress",
+				assignee: "a",
+				prs: [prOf({ number: 1 })],
+			}),
+		];
+		const groups = prBoardGroups(agents, all);
+		expect(groups.map((g) => g.agent?.account.id ?? "UNASSIGNED")).toEqual([
+			"a",
+			"UNASSIGNED",
+		]);
+	});
+
+	test("no Unassigned group when every row has an assignee", () => {
+		const agents = [agent("a")];
+		const all = [
+			ws({
+				id: "a1",
+				state: "in_progress",
+				assignee: "a",
+				prs: [prOf({ number: 1 })],
+			}),
+		];
+		const groups = prBoardGroups(agents, all);
+		expect(groups.every((g) => g.agent !== null)).toBe(true);
 	});
 });

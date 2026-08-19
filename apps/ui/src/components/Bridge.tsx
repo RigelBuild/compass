@@ -5,17 +5,17 @@ import {
 	cellItems as cellItemsOf,
 	laneTotal as laneTotalOf,
 	type PrRow,
+	prBoardGroups,
 	prCount,
-	prRowGroups,
 } from "../board";
 import {
 	ciBadge,
 	isMultiForge,
 	issueKey,
-	prBadge,
+	prLifecycle,
 	reviewBadge,
 } from "../board-render";
-import { BOARD_LANES } from "../constants";
+import { BOARD_LANES, PR_LANES } from "../constants";
 import { useStore } from "../context";
 import type { IssueState } from "../stub-data";
 import { BadgeGlyph } from "./BadgeGlyph";
@@ -30,62 +30,79 @@ type BoardMode = "swimlane" | "status";
  *  `BoardMode` (which is how ISSUES group). Bridge-local, like `BoardMode`. */
 type BoardTab = "issues" | "prs";
 
-/** One PRs-tab row: the PR's state badge, forge coordinate, title, CI + review
- *  badges, resolved/total thread tally, and the owning issue's key as the
- *  cross-link chip back to the Issues tab. The row body selects the issue
- *  (without leaving the tab); the issueKey chip selects AND flips to Issues. */
-const PrRowItem: Component<{
+/** One PRs-board card — mirrors the IssueCard anatomy (IssueCard.tsx:49-115)
+ *  with the PR's own facts. The card body selects the owning issue (staying on
+ *  the PRs tab); a `.card-issue-link` chip in the card top selects AND flips to
+ *  the Issues tab. Badges are `compact` (glyph-only): the board card is the same
+ *  cramped gutter as the issue card, and the frozen reference render shows
+ *  glyph-only PR badges — deliberate, not an accident. */
+const PrCard: Component<{
 	row: PrRow;
 	multiForge: boolean;
 	selected: boolean;
 	onSelect: () => void;
 	onOpenIssue: () => void;
 }> = (props) => {
+	const store = useStore();
 	const pr = () => props.row.pr;
 	const resolved = () => pr().threads.filter((t) => t.resolved).length;
+	const coord = () =>
+		`${props.multiForge ? `${pr().forge.host}/` : ""}${pr().repo}#${pr().number}`;
+	// Mirror IssueCard.tsx:44-48: the assignee is a trusted Compass account id, so
+	// agentView resolves it; a miss surfaces the raw id rather than a fake handle.
+	const assignee = () => {
+		const id = props.row.issue.assignee;
+		if (!id) return undefined;
+		return store.agentView(id)?.account.handle ?? id;
+	};
 	return (
 		<button
 			type="button"
-			class="pr-row"
-			classList={{ selected: props.selected }}
+			class="cx-card"
+			data-selected={props.selected ? "" : undefined}
 			onClick={props.onSelect}
 		>
-			<span class="pr-row-state" data-pr-state={prBadge(pr())}>
-				{prBadge(pr())}
+			<span class="card-top">
+				<span class="card-issue">{coord()}</span>
+				<span class="card-pr">
+					<Show when={ciBadge(pr())}>
+						{(status) => <BadgeGlyph axis="ci" status={status()} compact />}
+					</Show>
+					<Show when={reviewBadge(pr())}>
+						{(verdict) => (
+							<BadgeGlyph axis="review" status={verdict()} compact />
+						)}
+					</Show>
+				</span>
+				{/* biome-ignore lint/a11y/useSemanticElements: an <a> needs an href; this is an
+				   in-app selection chip, and it already lives inside the card <button>, so a
+				   nested link/button is disallowed — role="link" + keyboard is the compromise. */}
+				<span
+					class="card-issue-link"
+					role="link"
+					tabIndex={0}
+					onClick={(e) => {
+						e.stopPropagation();
+						props.onOpenIssue();
+					}}
+					onKeyDown={(e) => {
+						if (e.key !== "Enter" && e.key !== " ") return;
+						e.preventDefault();
+						e.stopPropagation();
+						props.onOpenIssue();
+					}}
+				>
+					{issueKey(props.row.issue, props.multiForge)}
+				</span>
 			</span>
-			<span class="pr-row-coord">
-				{props.multiForge ? `${pr().forge.host}/` : ""}
-				{pr().repo}#{pr().number}
-			</span>
-			<span class="pr-row-title">{pr().title}</span>
-			<Show when={ciBadge(pr())}>
-				{(status) => <BadgeGlyph axis="ci" status={status()} />}
-			</Show>
-			<Show when={reviewBadge(pr())}>
-				{(verdict) => <BadgeGlyph axis="review" status={verdict()} />}
-			</Show>
-			<span class="pr-row-threads">
-				{resolved()}/{pr().threads.length}
-			</span>
-			{/* biome-ignore lint/a11y/useSemanticElements: an <a> needs an href; this is an
-			   in-app selection chip, and it already lives inside the row <button>, so a
-			   nested link/button is disallowed — role="link" + keyboard is the compromise. */}
-			<span
-				class="pr-row-issue"
-				role="link"
-				tabIndex={0}
-				onClick={(e) => {
-					e.stopPropagation();
-					props.onOpenIssue();
-				}}
-				onKeyDown={(e) => {
-					if (e.key !== "Enter" && e.key !== " ") return;
-					e.preventDefault();
-					e.stopPropagation();
-					props.onOpenIssue();
-				}}
-			>
-				{issueKey(props.row.issue, props.multiForge)}
+			<span class="card-title">{pr().title}</span>
+			<span class="card-foot">
+				<span class="card-author">
+					{assignee() ? `@${assignee()}` : "unassigned"}
+				</span>
+				<span class="card-threads">
+					{resolved()}/{pr().threads.length} threads
+				</span>
 			</span>
 		</button>
 	);
@@ -108,7 +125,7 @@ export const Bridge: Component = () => {
 	const scope = (): ReadonlySet<string> | undefined => undefined;
 	const multiForge = () => isMultiForge(store.issues());
 	const prGroups = () => {
-		const groups = prRowGroups(store.agents(), store.issues());
+		const groups = prBoardGroups(store.agents(), store.issues());
 		const active = scope();
 		if (!active) return groups;
 		return groups.filter(
@@ -272,23 +289,38 @@ export const Bridge: Component = () => {
 			</Show>
 
 			<Show when={tab() === "prs"}>
-				<div class="pr-tab">
-					<For
-						each={prGroups()}
-						fallback={<div class="pr-empty">No open PRs.</div>}
-					>
+				<div
+					class="bridge-grid"
+					style={{
+						"grid-template-columns": `180px repeat(${PR_LANES.length}, minmax(210px, 1fr))`,
+					}}
+				>
+					<div class="bridge-corner">Agent</div>
+					<For each={PR_LANES}>
+						{(lane) => (
+							<div
+								class="bridge-col-head"
+								style={{ "--lane-tint": lane.color }}
+							>
+								{lane.label}
+							</div>
+						)}
+					</For>
+					<For each={prGroups()}>
 						{(group) => (
-							<div class="pr-group">
+							<>
 								<Show
 									when={group.agent}
 									fallback={
-										<div class="pr-group-head unassigned">Unassigned</div>
+										<div class="bridge-lane unassigned">
+											<span class="g-name">Unassigned</span>
+										</div>
 									}
 								>
 									{(agent) => (
 										<button
 											type="button"
-											class="pr-group-head bridge-lane"
+											class="bridge-lane"
 											onClick={() => store.openAgent(agent().account.id)}
 										>
 											<StateDot state={agent().lifecycle ?? "idle"} />
@@ -299,21 +331,37 @@ export const Bridge: Component = () => {
 										</button>
 									)}
 								</Show>
-								<For each={group.rows}>
-									{(row) => (
-										<PrRowItem
-											row={row}
-											multiForge={multiForge()}
-											selected={row.issue.id === store.selectedIssueId()}
-											onSelect={() => store.selectIssue(row.issue.id)}
-											onOpenIssue={() => {
-												store.selectIssue(row.issue.id);
-												setTab("issues");
-											}}
-										/>
-									)}
+								<For each={PR_LANES}>
+									{(lane) => {
+										const cards = group.rows.filter(
+											(r) => prLifecycle(r.pr) === lane.state,
+										);
+										return (
+											<div
+												class="bridge-cell"
+												classList={{ dim: cards.length === 0 }}
+											>
+												<For each={cards}>
+													{(row) => (
+														<PrCard
+															row={row}
+															multiForge={multiForge()}
+															selected={
+																row.issue.id === store.selectedIssueId()
+															}
+															onSelect={() => store.selectIssue(row.issue.id)}
+															onOpenIssue={() => {
+																store.selectIssue(row.issue.id);
+																setTab("issues");
+															}}
+														/>
+													)}
+												</For>
+											</div>
+										);
+									}}
 								</For>
-							</div>
+							</>
 						)}
 					</For>
 				</div>
