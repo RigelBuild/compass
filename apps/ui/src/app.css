@@ -475,8 +475,8 @@
 }
 
 .bridge-toolbar .heading {
-	font-size: 13px;
-	font-weight: 600;
+	font-family: var(--cx-font-display);
+	font-size: var(--cx-display-sm);
 }
 
 .bridge-toolbar .sub {
@@ -489,7 +489,6 @@
 	margin-left: auto;
 	background: var(--cx-bg-panel);
 	border: 1px solid var(--cx-border);
-	border-radius: var(--cx-radius-sm);
 	overflow: hidden;
 }
 
@@ -506,16 +505,17 @@
 	color: var(--cx-text);
 }
 
-/* The swimlane grid: a sticky column header row, then one row per agent. */
-.swimlane {
+/* The bridge grid: a sticky column header row, then one row per agent. */
+.bridge-grid {
 	flex: 1;
 	overflow: auto;
 	display: grid;
 	/* First column = agent gutter; the rest are status columns, set inline. */
 	align-content: start;
+	border: 1px solid var(--cx-border);
 }
 
-.swim-corner {
+.bridge-corner {
 	position: sticky;
 	top: 0;
 	left: 0;
@@ -533,55 +533,50 @@
 	align-items: center;
 }
 
-.swim-colhead {
+.bridge-col-head {
 	position: sticky;
 	top: 0;
 	z-index: 2;
-	background: var(--cx-bg-raised);
+	background: color-mix(in srgb, var(--lane-tint) 8%, var(--cx-bg-raised));
 	border-bottom: 1px solid var(--cx-border);
 	border-right: 1px solid var(--cx-border);
-	padding: 8px 12px;
+	padding: 12px 14px;
 	display: flex;
 	align-items: center;
-	gap: 7px;
-	font-size: 10px;
+	font-family: var(--cx-font-ui);
+	font-size: 11px;
 	font-weight: 600;
 	text-transform: uppercase;
-	letter-spacing: 0.05em;
+	letter-spacing: 1px;
 	color: var(--cx-text-dim);
 }
 
-.swim-colhead .lane-dot {
-	width: 6px;
-	height: 6px;
-	border-radius: 50%;
-}
-.swim-colhead .lane-count {
+.bridge-col-head .lane-count {
 	margin-left: auto;
 	color: var(--cx-text-faint);
 	font-variant-numeric: tabular-nums;
 }
 
 /* An agent's row gutter — sticky to the left as the board scrolls. */
-.swim-gutter {
+.bridge-lane {
 	position: sticky;
 	left: 0;
 	z-index: 1;
-	background: var(--cx-bg-raised);
+	background: var(--cx-bg-panel);
 	border-bottom: 1px solid var(--cx-border);
 	border-right: 1px solid var(--cx-border);
-	padding: 10px 12px;
+	padding: 14px 12px;
 	display: flex;
 	align-items: center;
-	gap: 8px;
+	gap: 9px;
 	min-width: 0;
 }
 
-.swim-gutter:hover {
+.bridge-lane:hover {
 	background: var(--cx-bg-hover);
 }
 
-.swim-gutter .g-name {
+.bridge-lane .g-name {
 	font-size: 12px;
 	font-weight: 600;
 	overflow: hidden;
@@ -589,35 +584,36 @@
 	white-space: nowrap;
 }
 
-.swim-gutter .g-meta {
+.bridge-lane .g-meta {
 	font-size: 10px;
 	color: var(--cx-text-faint);
 }
 
-.swim-gutter .g-open {
+.bridge-lane .g-open {
 	margin-left: auto;
 	color: var(--cx-text-faint);
 	font-size: 11px;
 	opacity: 0;
 }
 
-.swim-gutter:hover .g-open {
+.bridge-lane:hover .g-open {
 	opacity: 1;
 }
 
 /* A cell at (agent, status) — may hold 0..n cards. */
-.swim-cell {
+.bridge-cell {
 	border-bottom: 1px solid var(--cx-border);
 	border-right: 1px solid var(--cx-border);
-	padding: 7px;
+	padding: 10px;
 	display: flex;
 	flex-direction: column;
-	gap: 7px;
+	gap: 8px;
 	min-width: 210px;
+	min-height: 56px;
 	background: var(--cx-bg);
 }
 
-.swim-cell.dim {
+.bridge-cell.dim {
 	background: color-mix(in srgb, var(--cx-bg) 60%, transparent);
 }
 

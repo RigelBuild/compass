@@ -179,17 +179,19 @@ export const Bridge: Component = () => {
 
 			<Show when={tab() === "issues"}>
 				<div
-					class="swimlane"
+					class="bridge-grid"
 					style={{ "grid-template-columns": gridColumns() }}
 				>
 					{/* Header row */}
 					<Show when={mode() === "swimlane"}>
-						<div class="swim-corner">Agent</div>
+						<div class="bridge-corner">Agent</div>
 					</Show>
 					<For each={BOARD_LANES}>
 						{(lane) => (
-							<div class="swim-colhead">
-								<span class="lane-dot" style={{ background: lane.color }} />
+							<div
+								class="bridge-col-head"
+								style={{ "--lane-tint": lane.color }}
+							>
 								{lane.label}
 								<span class="lane-count">{laneTotal(lane.state)}</span>
 							</div>
@@ -202,11 +204,8 @@ export const Bridge: Component = () => {
 						fallback={
 							<For each={BOARD_LANES}>
 								{(lane) => (
-									<div class="swim-cell">
-										<For
-											each={cellItems(null, lane.state)}
-											fallback={<span class="term-empty">—</span>}
-										>
+									<div class="bridge-cell">
+										<For each={cellItems(null, lane.state)}>
 											{(ws) => (
 												<IssueCard
 													issue={ws}
@@ -227,7 +226,7 @@ export const Bridge: Component = () => {
 								<>
 									<button
 										type="button"
-										class="swim-gutter"
+										class="bridge-lane"
 										onClick={() => store.openAgent(agent.account.id)}
 									>
 										<StateDot state={agent.lifecycle ?? "idle"} />
@@ -247,7 +246,7 @@ export const Bridge: Component = () => {
 											const items = cellItems(agent.account.id, lane.state);
 											return (
 												<div
-													class="swim-cell"
+													class="bridge-cell"
 													classList={{ dim: items.length === 0 }}
 												>
 													<For each={items}>
@@ -289,7 +288,7 @@ export const Bridge: Component = () => {
 									{(agent) => (
 										<button
 											type="button"
-											class="pr-group-head swim-gutter"
+											class="pr-group-head bridge-lane"
 											onClick={() => store.openAgent(agent().account.id)}
 										>
 											<StateDot state={agent().lifecycle ?? "idle"} />
