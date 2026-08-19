@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
-import { prCount, prRows } from "../board";
+import { prBoardRows, prCount } from "../board";
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_ISSUES } from "../stub-data";
@@ -48,13 +48,15 @@ const clickTab = (container: HTMLElement, label: "Issues" | "PRs"): void => {
 };
 
 describe("Bridge Issues/PRs tabs (DL-097)", () => {
-	test("defaults to the Issues tab: grouping seg shown, no PR rows", () => {
+	test("defaults to the Issues tab: grouping seg shown, no PR cards", () => {
 		const { container } = mountBridge();
 		expect(groupingSeg(container)).not.toBeNull();
-		expect(container.querySelectorAll(".pr-row")).toHaveLength(0);
+		// `.card-issue-link` is unique to PR cards, so its absence proves the PRs
+		// board is not mounted (the Issues board's `.cx-card`s have no such chip).
+		expect(container.querySelectorAll(".card-issue-link")).toHaveLength(0);
 	});
 
-	test("the PRs tab label carries the open-PR count (prCount)", () => {
+	test("the PRs tab label carries the open-PR count (prCount, open-only)", () => {
 		const { container } = mountBridge();
 		const prTab = tabButtons(container).find((b) =>
 			(b.textContent ?? "").startsWith("PRs"),
@@ -64,44 +66,51 @@ describe("Bridge Issues/PRs tabs (DL-097)", () => {
 		);
 	});
 
-	test("flipping to PRs renders one row per open PR and hides the grouping seg", () => {
+	test("flipping to PRs renders one card per board PR and hides the grouping seg", () => {
 		const { container } = mountBridge();
 		clickTab(container, "PRs");
-		expect(container.querySelectorAll(".pr-row")).toHaveLength(
-			prRows(STUB_ISSUES).length,
+		// The cross-link chip is 1:1 with a PR card, so its count is the PR-card
+		// count — and prBoardRows includes merged rows (the Merged column).
+		expect(container.querySelectorAll(".card-issue-link")).toHaveLength(
+			prBoardRows(STUB_ISSUES).length,
 		);
 		expect(groupingSeg(container)).toBeNull();
 	});
 
-	test("a PR row's issueKey chip selects the issue and flips back to Issues", () => {
+	test("a PR card's issueKey chip selects the issue and flips back to Issues", () => {
 		const { store, container } = mountBridge();
 		clickTab(container, "PRs");
-		const firstRowIssueId = prRows(STUB_ISSUES)[0]?.issue.id;
-		const chip = container.querySelector<HTMLElement>(".pr-row-issue");
+		const firstRowIssueId = prBoardRows(STUB_ISSUES)[0]?.issue.id;
+		const chip = container.querySelector<HTMLElement>(".card-issue-link");
 		if (!chip) throw new Error("no issueKey chip");
 		fireEvent.click(chip);
 		expect(store.selectedIssueId()).toBe(firstRowIssueId);
 		expect(groupingSeg(container)).not.toBeNull();
 	});
 
-	test("a PR row body click selects its issue without leaving the PRs tab", () => {
+	test("a PR card body click selects its issue without leaving the PRs tab", () => {
 		const { store, container } = mountBridge();
 		clickTab(container, "PRs");
-		const firstRowIssueId = prRows(STUB_ISSUES)[0]?.issue.id;
-		const row = container.querySelector<HTMLElement>(".pr-row");
-		if (!row) throw new Error("no PR row");
-		fireEvent.click(row);
+		const firstRowIssueId = prBoardRows(STUB_ISSUES)[0]?.issue.id;
+		// The card body is the `.cx-card` that owns the first cross-link chip.
+		const card = container
+			.querySelector<HTMLElement>(".card-issue-link")
+			?.closest<HTMLElement>(".cx-card");
+		if (!card) throw new Error("no PR card");
+		fireEvent.click(card);
 		expect(store.selectedIssueId()).toBe(firstRowIssueId);
-		// Still on the PRs tab: rows remain, grouping seg absent.
-		expect(container.querySelectorAll(".pr-row").length).toBeGreaterThan(0);
+		// Still on the PRs tab: cards remain, grouping seg absent.
+		expect(
+			container.querySelectorAll(".card-issue-link").length,
+		).toBeGreaterThan(0);
 		expect(groupingSeg(container)).toBeNull();
 	});
 
 	test("the issueKey chip activates on Enter (keyboard a11y, DL-097)", () => {
 		const { store, container } = mountBridge();
 		clickTab(container, "PRs");
-		const firstRowIssueId = prRows(STUB_ISSUES)[0]?.issue.id;
-		const chip = container.querySelector<HTMLElement>(".pr-row-issue");
+		const firstRowIssueId = prBoardRows(STUB_ISSUES)[0]?.issue.id;
+		const chip = container.querySelector<HTMLElement>(".card-issue-link");
 		if (!chip) throw new Error("no issueKey chip");
 		// Enter activates the chip: same effect as a click (select + flip to Issues).
 		fireEvent.keyDown(chip, { key: "Enter" });
@@ -112,8 +121,8 @@ describe("Bridge Issues/PRs tabs (DL-097)", () => {
 	test("the issueKey chip activates on Space and consumes the default page scroll", () => {
 		const { store, container } = mountBridge();
 		clickTab(container, "PRs");
-		const firstRowIssueId = prRows(STUB_ISSUES)[0]?.issue.id;
-		const chip = container.querySelector<HTMLElement>(".pr-row-issue");
+		const firstRowIssueId = prBoardRows(STUB_ISSUES)[0]?.issue.id;
+		const chip = container.querySelector<HTMLElement>(".card-issue-link");
 		if (!chip) throw new Error("no issueKey chip");
 		// Space activates AND is consumed: preventDefault makes dispatchEvent return
 		// false, so the space key never scrolls the page.
@@ -126,13 +135,15 @@ describe("Bridge Issues/PRs tabs (DL-097)", () => {
 	test("the issueKey chip ignores non-activation keys (stays on the PRs tab)", () => {
 		const { container } = mountBridge();
 		clickTab(container, "PRs");
-		const chip = container.querySelector<HTMLElement>(".pr-row-issue");
+		const chip = container.querySelector<HTMLElement>(".card-issue-link");
 		if (!chip) throw new Error("no issueKey chip");
 		// The guard early-returns on any key but Enter/Space: no activation, so no
-		// flip — still on the PRs tab (grouping seg absent, rows present).
+		// flip — still on the PRs tab (grouping seg absent, cards present).
 		fireEvent.keyDown(chip, { key: "a" });
 		expect(groupingSeg(container)).toBeNull();
-		expect(container.querySelectorAll(".pr-row").length).toBeGreaterThan(0);
+		expect(
+			container.querySelectorAll(".card-issue-link").length,
+		).toBeGreaterThan(0);
 	});
 });
 
@@ -150,19 +161,25 @@ describe("Bridge card badges (Record B §3)", () => {
 		).toBeGreaterThan(0);
 	});
 
-	test("card badges are compact (glyph-only); PR-row badges show the code", () => {
+	test("card badges are compact (glyph-only) on both boards", () => {
 		const { container } = mountBridge();
 		// T3 contract: IssueCard passes `compact` (cramped card gutter → the CI/RV
-		// code is hidden, glyph only), Bridge PR rows do not (code shown). Defend
-		// the distinction, not just badge presence — a dropped/inverted `compact`
-		// on a consumer would otherwise ship green.
+		// code is hidden, glyph only). The PRs board reuses the same card anatomy,
+		// so its PR cards are compact too — defend the attribute on BOTH, a
+		// dropped/inverted `compact` on either consumer would otherwise ship green.
 		const cardBadge = container.querySelector(".cx-card .cx-axis-badge");
 		if (!cardBadge) throw new Error("no card axis badge");
 		expect(cardBadge.hasAttribute("data-compact")).toBe(true);
 		clickTab(container, "PRs");
-		const rowBadge = container.querySelector(".pr-row .cx-axis-badge");
-		if (!rowBadge) throw new Error("no PR-row axis badge");
-		expect(rowBadge.hasAttribute("data-compact")).toBe(false);
+		// A PR card = the `.cx-card` owning a `.card-issue-link` chip; its badge is
+		// compact too.
+		const prCard = container
+			.querySelector<HTMLElement>(".card-issue-link")
+			?.closest<HTMLElement>(".cx-card");
+		if (!prCard) throw new Error("no PR card");
+		const prBadge = prCard.querySelector(".cx-axis-badge");
+		if (!prBadge) throw new Error("no PR-card axis badge");
+		expect(prBadge.hasAttribute("data-compact")).toBe(true);
 	});
 
 	test("the selected card carries data-selected; others do not (presence toggle)", () => {
@@ -195,7 +212,9 @@ describe("Bridge card badges (Record B §3)", () => {
 		expect(store.selectedIssueId()).not.toBeNull();
 		// Flipped to the PRs tab: grouping seg hidden, PR rows shown.
 		expect(groupingSeg(container)).toBeNull();
-		expect(container.querySelectorAll(".pr-row").length).toBeGreaterThan(0);
+		expect(
+			container.querySelectorAll(".card-issue-link").length,
+		).toBeGreaterThan(0);
 	});
 
 	test("a card PR chip activates on Enter (keyboard a11y, DL-097)", () => {
@@ -206,7 +225,9 @@ describe("Bridge card badges (Record B §3)", () => {
 		fireEvent.keyDown(chip, { key: "Enter" });
 		expect(store.selectedIssueId()).not.toBeNull();
 		expect(groupingSeg(container)).toBeNull();
-		expect(container.querySelectorAll(".pr-row").length).toBeGreaterThan(0);
+		expect(
+			container.querySelectorAll(".card-issue-link").length,
+		).toBeGreaterThan(0);
 	});
 
 	test("a card PR chip activates on Space and consumes the default page scroll", () => {
@@ -219,7 +240,9 @@ describe("Bridge card badges (Record B §3)", () => {
 		expect(notDefaulted).toBe(false);
 		expect(store.selectedIssueId()).not.toBeNull();
 		expect(groupingSeg(container)).toBeNull();
-		expect(container.querySelectorAll(".pr-row").length).toBeGreaterThan(0);
+		expect(
+			container.querySelectorAll(".card-issue-link").length,
+		).toBeGreaterThan(0);
 	});
 
 	test("a card PR chip ignores non-activation keys", () => {
@@ -232,6 +255,6 @@ describe("Bridge card badges (Record B §3)", () => {
 		fireEvent.keyDown(chip, { key: "a" });
 		expect(store.selectedIssueId()).toBe(before);
 		expect(groupingSeg(container)).not.toBeNull();
-		expect(container.querySelectorAll(".pr-row")).toHaveLength(0);
+		expect(container.querySelectorAll(".card-issue-link")).toHaveLength(0);
 	});
 });

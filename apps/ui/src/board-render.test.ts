@@ -8,6 +8,7 @@ import {
 	openPrs,
 	prBadge,
 	primaryPr,
+	prLifecycle,
 	reviewBadge,
 } from "./board-render";
 import type {
@@ -17,6 +18,7 @@ import type {
 	Issue,
 	PullRequest,
 	Review,
+	ReviewThread,
 } from "./stub-data";
 
 const GITHUB: ForgeRef = { provider: "github", host: "github.com" };
@@ -333,5 +335,103 @@ describe("openPrs", () => {
 
 	test("an empty prs list → []", () => {
 		expect(openPrs(issue({ prs: [] }))).toEqual([]);
+	});
+});
+
+// prLifecycle places a PR in a PRs-board column (design D1 / T6). Precedence:
+// merged > ready > in_review > in_progress, defined over the reviewBadge/ciBadge
+// roll-ups. D1a: an approved + CI-green PR with an UNRESOLVED thread is NOT
+// ready — it stays "in review". Total over board rows (forgeState !== "closed").
+describe("prLifecycle", () => {
+	const review = (author: string, verdict: Review["verdict"]): Review => ({
+		author,
+		isBot: false,
+		verdict,
+		body: "",
+	});
+	const thread = (resolved: boolean): ReviewThread => ({
+		path: "",
+		resolved,
+		comments: [],
+	});
+	const green = { headSha: "a", state: "success" as const, checks: [] };
+
+	test("merged wins even over approved + green + all-resolved", () => {
+		expect(
+			prLifecycle(
+				pr({
+					forgeState: "merged",
+					reviews: [review("a", "approved")],
+					checks: green,
+					threads: [thread(true)],
+				}),
+			),
+		).toBe("merged");
+	});
+
+	test("ready: approved + CI success + all threads resolved", () => {
+		expect(
+			prLifecycle(
+				pr({
+					reviews: [review("a", "approved")],
+					checks: green,
+					threads: [thread(true)],
+				}),
+			),
+		).toBe("ready");
+	});
+
+	test("ready: approved + CI success + zero threads (vacuously resolved)", () => {
+		expect(
+			prLifecycle(
+				pr({ reviews: [review("a", "approved")], checks: green, threads: [] }),
+			),
+		).toBe("ready");
+	});
+
+	test("D1a gate: approved + green but an UNRESOLVED thread → in_review, not ready", () => {
+		expect(
+			prLifecycle(
+				pr({
+					reviews: [review("a", "approved")],
+					checks: green,
+					threads: [thread(true), thread(false)],
+				}),
+			),
+		).toBe("in_review");
+	});
+
+	test("in_review via a verdict alone (commented, no threads)", () => {
+		expect(
+			prLifecycle(pr({ reviews: [review("a", "commented")], threads: [] })),
+		).toBe("in_review");
+	});
+
+	test("in_review via a changes verdict (not approved-green)", () => {
+		expect(
+			prLifecycle(
+				pr({
+					reviews: [review("a", "changes_requested")],
+					checks: green,
+					threads: [],
+				}),
+			),
+		).toBe("in_review");
+	});
+
+	test("in_review via open threads with no verdict", () => {
+		expect(prLifecycle(pr({ reviews: [], threads: [thread(false)] }))).toBe(
+			"in_review",
+		);
+	});
+
+	test("in_progress: draft-open with no reviews or threads", () => {
+		expect(prLifecycle(pr({ draft: true, reviews: [], threads: [] }))).toBe(
+			"in_progress",
+		);
+	});
+
+	test("in_progress: a bare open PR (no reviews, no threads, no checks)", () => {
+		expect(prLifecycle(pr({ reviews: [], threads: [] }))).toBe("in_progress");
 	});
 });
