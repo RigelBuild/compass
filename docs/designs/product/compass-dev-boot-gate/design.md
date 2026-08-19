@@ -136,7 +136,7 @@ A headless-boot smoke (RIG-1536's Shape B) as a Playwright spec, wired as a
   (`moon.yml:61-62`).
 - **CI browser provisioning**: CI has no Chromium today — `grep` of
   `.github/workflows/ci.yml`, `devenv.nix`, and `tools/toolchain/` finds no
-  playwright/chromium/puppeteer reference, and `playwright.config.ts:31-33`
+  playwright/chromium/puppeteer reference, and `playwright.config.ts`
   falls back to a dev-box path (`/etc/profiles/per-user/mattw/bin/chromium`)
   overridable via `PLAYWRIGHT_CHROMIUM_PATH`. Chromium enters CI the same way
   every other tool does: added to `devenv.nix`'s `packages` list, which
@@ -229,11 +229,11 @@ lever.
   (`package.json:31`) — no version bump in this work, no `puppeteer-core`, no
   second browser-automation convention.
 - **Browser**: Chromium via `launchOptions.executablePath`
-  (`playwright.config.ts:31-33`), env-overridable through
+  (`playwright.config.ts`), env-overridable through
   `PLAYWRIGHT_CHROMIUM_PATH`; CI supplies a nix-resolved Chromium through the
   `devenv.nix` `packages` → `gate-tools.nix` pipeline (never a `setup-*`
   action, never Playwright's own unpatched-for-NixOS download —
-  `playwright.config.ts:8-14`).
+  `playwright.config.ts`).
 - **`dev-smoke` carries explicit `inputs` AND `cache: false`**, both
   mandatory and composing (see T2): `inputs` drive PR-path
   affected-detection (a no-`inputs` project task defaults to
@@ -343,17 +343,17 @@ in-scope store path directly,
 `echo "PLAYWRIGHT_CHROMIUM_PATH=$out/bin/chromium" >> "$GITHUB_ENV"` (there
 `$(command -v chromium)` would resolve nothing — `$out/bin` is not yet on the
 running step's PATH — silently falling back to the dev-box path in
-`playwright.config.ts:31-33`).
+`playwright.config.ts`).
 
 - `Interfaces:` consumes `devenv.nix` `packages` list and
   `.github/workflows/ci.yml` phase-two step; produces `PLAYWRIGHT_CHROMIUM_PATH`
-  in the CI job env, consumed by `playwright.config.ts:31-33`.
+  in the CI job env, consumed by `playwright.config.ts`.
 - Test cycle: CI run on the implementation PR shows `compass-ui:dev-smoke`
   executed and green; `bun tools/toolchain/parity.ts` stays green locally.
 - Risk to name up front: the Chromium SANDBOX on the runner. GitHub's
   ubuntu-24.04 images restrict unprivileged user namespaces via AppArmor, and
   a nix-wrapped Chromium (no setuid sandbox helper) launched via a bare
-  `executablePath` (`playwright.config.ts:26-34` — `launchOptions` carries no
+  `executablePath` (`playwright.config.ts` — `launchOptions` carries no
   `args`) can fail to launch there. A launch failure reds the gate loudly —
   not a false green — but it would present as "gate is flaky/broken in CI" on
   the first T3 run. Resolve launch args (`--no-sandbox` via
