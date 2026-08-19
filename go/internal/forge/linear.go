@@ -262,10 +262,14 @@ func (l *Linear) ListIssues(ctx context.Context, repo string, f IssueFilter) ([]
 		for _, n := range out.Issues.Nodes {
 			all = append(all, n.toIssue())
 		}
-		if !out.Issues.PageInfo.HasNextPage {
+		next := out.Issues.PageInfo.EndCursor
+		// Terminate on end-of-pages OR a malformed page (hasNextPage with an
+		// empty cursor): advancing on an empty cursor would drop the `after`
+		// variable and refetch page 1 forever.
+		if !out.Issues.PageInfo.HasNextPage || next == "" {
 			break
 		}
-		after = out.Issues.PageInfo.EndCursor
+		after = next
 	}
 	return all, nil
 }
@@ -533,11 +537,14 @@ func (l *Linear) resolveIssueID(ctx context.Context, repo string, number uint64)
 }
 
 // actorAttribution reports whether writes may set createAsUser, running the
-// one-time capability probe on first call and caching the result. The probe
+// capability probe on first call and caching an AUTHORITATIVE result. The probe
 // queries `viewer { app }`: an actor=app OAuth token authenticates AS the app,
-// so viewer.app is true; a plain user/API-key token reports false. A probe that
-// errors is treated as not-capable (degrade, never block the write). On the
-// not-capable transition it emits the named degrade log line EXACTLY once.
+// so viewer.app is true; a plain user/API-key token reports false. The probe is
+// meant to reflect the token's NATURE, not a transient runtime state — so a
+// probe that ERRORS (network blip, HTTP 5xx, or an already-armed rate gate)
+// degrades THIS write to stamp-only WITHOUT caching, letting a later write
+// re-probe once the transient condition clears; only a clean answer
+// (probeErr == nil) is cached. On the first degrade it emits the named log line.
 func (l *Linear) actorAttribution(ctx context.Context) bool {
 	l.mu.Lock()
 	if l.probeDone {
@@ -556,24 +563,26 @@ func (l *Linear) actorAttribution(ctx context.Context) bool {
 		} `json:"viewer"`
 	}
 	probeErr := l.doGraphQL(ctx, query, nil, &out)
-	capable := probeErr == nil && out.Viewer.App
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.probeDone {
-		// A concurrent caller finished the probe first; honor its result.
+		// A concurrent caller finished an authoritative probe first; honor it.
 		return l.actorCapable
 	}
-	l.probeDone = true
-	l.actorCapable = capable
-	if !capable {
-		if probeErr != nil {
-			l.log.Warn("linear: actor attribution unavailable; degrading to stamp-only", "probe_error", probeErr)
-		} else {
-			l.log.Warn("linear: actor attribution unavailable; degrading to stamp-only")
-		}
+	if probeErr != nil {
+		// Transient failure — degrade this write but do NOT cache, so a later
+		// write re-probes. Log the degrade line once per transient occurrence.
+		l.log.Warn("linear: actor attribution unavailable; degrading to stamp-only", "probe_error", probeErr)
+		return false
 	}
-	return capable
+	// Authoritative answer: cache it. A definitive not-capable also degrades.
+	l.probeDone = true
+	l.actorCapable = out.Viewer.App
+	if !l.actorCapable {
+		l.log.Warn("linear: actor attribution unavailable; degrading to stamp-only")
+	}
+	return l.actorCapable
 }
 
 // applyAttribution sets createAsUser/displayIconUrl on a mutation input when the

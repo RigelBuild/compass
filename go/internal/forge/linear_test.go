@@ -73,10 +73,9 @@ func probeResp(app bool) scriptedResponse {
 	return scriptedResponse{status: 200, body: `{"data":{"viewer":{"app":` + strconv.FormatBool(app) + `}}}`}
 }
 
-// teamResp is a scripted team-key->id lookup response.
-func teamResp(id string) scriptedResponse {
-	return scriptedResponse{status: 200, body: `{"data":{"teams":{"nodes":[{"id":"` + id + `"}]}}}`}
-}
+// teamResp is a scripted team-key->id lookup response (the id is fixed; tests
+// assert behavior, not the specific UUID).
+var teamResp = scriptedResponse{status: 200, body: `{"data":{"teams":{"nodes":[{"id":"team-uuid-1"}]}}}`}
 
 const degradeMsg = "linear: actor attribution unavailable; degrading to stamp-only"
 
@@ -97,7 +96,7 @@ func decodeGraphQLReq(t *testing.T, body string) (string, map[string]any) {
 
 func TestLinearCreateIssueRequestGolden(t *testing.T) {
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{
-		teamResp("team-uuid-1"),
+		teamResp,
 		probeResp(true), // actor probe: capable
 		{status: 200, body: `{"data":{"issueCreate":{"issue":{
 			"number":42,"title":"a bug","description":"stamped body",
@@ -184,8 +183,8 @@ func TestLinearCommentOnIssueRequestGolden(t *testing.T) {
 
 func TestLinearTeamIDResolvedOnceThenCached(t *testing.T) {
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{
-		teamResp("team-uuid-1"), // team lookup (once)
-		probeResp(true),         // probe (once)
+		teamResp,        // team lookup (once)
+		probeResp(true), // probe (once)
 		{status: 200, body: `{"data":{"issueCreate":{"issue":{"number":1,"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}}}}`},
 		// Second CreateIssue: probe cached, team cached -> ONLY the create request.
 		{status: 200, body: `{"data":{"issueCreate":{"issue":{"number":2,"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}}}}`},
@@ -427,7 +426,7 @@ func TestLinearGraphQLErrorsOn200(t *testing.T) {
 func TestLinearActorProbeDegradesToStampOnly(t *testing.T) {
 	cap := &capturingHandler{}
 	rt := &scriptedRoundTripper{responses: []scriptedResponse{
-		teamResp("team-uuid-1"),
+		teamResp,
 		probeResp(false), // probe: NOT an actor=app token
 		{status: 200, body: `{"data":{"issueCreate":{"issue":{"number":1,"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}}}}`},
 		// Second create: probe cached -> team+create only, still no createAsUser.
@@ -522,5 +521,144 @@ func TestLinearName(t *testing.T) {
 	l := newTestLinear(&scriptedRoundTripper{}, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
 	if got := l.Name(); got != "linear" {
 		t.Errorf("Name() = %q, want linear", got)
+	}
+}
+
+// linearIssueNodeResp is a minimal valid issues-query response (GetIssue reads
+// the first node); enough fields to decode through toIssue without error.
+func linearIssueNodeResp(number int) string {
+	return `{"data":{"issues":{"nodes":[{"number":` + strconv.Itoa(number) +
+		`,"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}]}}}`
+}
+
+// --- budget recording on the SUCCESS path (proactive gate) -------------------
+
+// A 200 whose X-Ratelimit-Requests-Remaining EQUALS the reserve arms the gate,
+// so the next call fails fast without a wire request. Pins the `remaining >
+// reserve` boundary, the recordBudget call site, and the epoch-ms reset parse.
+func TestLinearBudgetGateRemainingAtReserveArms(t *testing.T) {
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	resetMS := strconv.FormatInt(base.Add(time.Minute).UnixMilli(), 10)
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: linearIssueNodeResp(7), headers: map[string]string{
+			"X-Ratelimit-Requests-Remaining": strconv.Itoa(reserve), // == reserve -> arms
+			"X-Ratelimit-Requests-Reset":     resetMS,
+		}},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	l.now = func() time.Time { return base }
+
+	if _, err := l.GetIssue(context.Background(), "SEA", 7); err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if _, err := l.GetIssue(context.Background(), "SEA", 8); !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("gated call err = %v, want ErrBudgetExhausted", err)
+	}
+	if rt.calls != 1 {
+		t.Errorf("gate issued a request: calls = %d, want 1", rt.calls)
+	}
+}
+
+// A 200 with remaining ABOVE the reserve leaves the gate open: the next call
+// issues a real request. Guards against a `>`→`>=` regression at the boundary.
+func TestLinearBudgetGateRemainingAboveReserveStaysOpen(t *testing.T) {
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	resetMS := strconv.FormatInt(base.Add(time.Minute).UnixMilli(), 10)
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: linearIssueNodeResp(7), headers: map[string]string{
+			"X-Ratelimit-Requests-Remaining": strconv.Itoa(reserve + 1), // > reserve -> open
+			"X-Ratelimit-Requests-Reset":     resetMS,
+		}},
+		{status: 200, body: linearIssueNodeResp(8)},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	l.now = func() time.Time { return base }
+
+	if _, err := l.GetIssue(context.Background(), "SEA", 7); err != nil {
+		t.Fatalf("GetIssue 1: %v", err)
+	}
+	if _, err := l.GetIssue(context.Background(), "SEA", 8); err != nil {
+		t.Fatalf("GetIssue 2 (gate should be open): %v", err)
+	}
+	if rt.calls != 2 {
+		t.Errorf("calls = %d, want 2 (gate stayed open)", rt.calls)
+	}
+}
+
+// --- rateLimitReset: both non-delta-seconds branches -------------------------
+
+// A 429 with Retry-After as an HTTP-date arms the gate at exactly that instant.
+func TestLinearRateLimitResetHTTPDate(t *testing.T) {
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	at := base.Add(45 * time.Second)
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 429, body: `{"errors":[{"message":"rate limited"}]}`, headers: map[string]string{
+			"Retry-After": at.Format(http.TimeFormat),
+		}},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	l.now = func() time.Time { return base }
+
+	if _, err := l.GetIssue(context.Background(), "SEA", 7); !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("err = %v, want ErrBudgetExhausted", err)
+	}
+	if !l.resetAt.Equal(at) {
+		t.Errorf("resetAt = %v, want %v (Retry-After HTTP-date)", l.resetAt, at)
+	}
+}
+
+// A 429 with no Retry-After falls back to X-Ratelimit-Requests-Reset (epoch ms).
+func TestLinearRateLimitResetHeaderFallback(t *testing.T) {
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	at := base.Add(90 * time.Second)
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 429, body: `{"errors":[{"message":"rate limited"}]}`, headers: map[string]string{
+			"X-Ratelimit-Requests-Reset": strconv.FormatInt(at.UnixMilli(), 10),
+		}},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
+	l.now = func() time.Time { return base }
+
+	if _, err := l.GetIssue(context.Background(), "SEA", 7); !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("err = %v, want ErrBudgetExhausted", err)
+	}
+	if !l.resetAt.Equal(time.UnixMilli(at.UnixMilli())) {
+		t.Errorf("resetAt = %v, want %v (epoch-ms fallback)", l.resetAt, at)
+	}
+}
+
+// --- actor probe: a TRANSIENT error is not cached; a later write re-probes ---
+
+func TestLinearActorProbeTransientErrorReprobed(t *testing.T) {
+	cap := &capturingHandler{}
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		teamResp,
+		// Write 1's probe hits a transient 500 -> degrade this write, do NOT cache.
+		{status: 500, body: `{"errors":[{"message":"internal"}]}`},
+		{status: 200, body: `{"data":{"issueCreate":{"issue":{"number":1,"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}}}}`},
+		// Write 2 re-probes (transient cleared) -> capable -> createAsUser set.
+		probeResp(true),
+		{status: 200, body: `{"data":{"issueCreate":{"issue":{"number":2,"state":{"type":"unstarted"},"labels":{"nodes":[]},"creator":null}}}}`},
+	}}
+	l := newTestLinear(rt, &fakeTokenSource{token: "t"}, slog.New(cap))
+
+	if _, err := l.CreateIssue(context.Background(), "SEA", CreateIssue{Title: "x"}); err != nil {
+		t.Fatalf("CreateIssue 1: %v", err)
+	}
+	_, vars1 := decodeGraphQLReq(t, readReqBody(t, rt.requests[2]))
+	if _, ok := vars1["input"].(map[string]any)["createAsUser"]; ok {
+		t.Errorf("transient-probe-fail write must NOT set createAsUser")
+	}
+	if !cap.has(degradeMsg) {
+		t.Errorf("transient probe failure must emit the degrade line")
+	}
+
+	if _, err := l.CreateIssue(context.Background(), "SEA", CreateIssue{Title: "y"}); err != nil {
+		t.Fatalf("CreateIssue 2: %v", err)
+	}
+	_, vars2 := decodeGraphQLReq(t, readReqBody(t, rt.requests[4]))
+	if vars2["input"].(map[string]any)["createAsUser"] != attributionUser {
+		t.Errorf("re-probe capable write must set createAsUser=%q (proves no permanent cache); got %#v",
+			attributionUser, vars2["input"])
 	}
 }
