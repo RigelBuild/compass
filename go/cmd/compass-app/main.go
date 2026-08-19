@@ -49,6 +49,11 @@ func main() {
 const bringUpTimeout = 60 * time.Second
 
 func run() error {
+	if versionRequested(os.Args[1:]) {
+		_, err := fmt.Fprintln(os.Stdout, version)
+		return err
+	}
+
 	socketFlag := flag.String("socket", "",
 		"Unix socket the Compass daemon serves compass.v1 on. Defaults to "+
 			"$COMPASS_SOCKET, then $XDG_RUNTIME_DIR/compass/server.sock. In "+
@@ -159,7 +164,7 @@ func run() error {
 		newAppWindow(app, svc, name, "Compass", startupJS)
 	}
 
-	slog.Info("compass-app starting", "mode", cfg.Mode, "socket", socket, "assets", assetsDir)
+	slog.Info("compass-app starting", "mode", cfg.Mode, "socket", socket, "assets", assetsDir, "version", version)
 	return app.Run()
 }
 
