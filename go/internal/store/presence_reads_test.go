@@ -12,6 +12,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -151,19 +152,21 @@ func TestSharesVisibleChannel(t *testing.T) {
 // author-only equality probe (author_account_id = $1), which fires on every
 // presence edge. The index is created by a migration; this asserts it survives
 // into a freshly-migrated database, defending against a future migration
-// collapse silently dropping it (RIG-1649).
+// collapse silently dropping it (RIG-1649). It asserts the indexed column too
+// (via indexdef), so a future rename that moves the index off author_account_id
+// also fails rather than passing on the name alone.
 func TestMessagesAuthorIndexExists(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 
-	var exists bool
+	var indexdef string
 	if err := s.pool.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM pg_indexes
-		   WHERE tablename = 'messages' AND indexname = 'messages_author_idx')`,
-	).Scan(&exists); err != nil {
-		t.Fatalf("query pg_indexes: %v", err)
+		`SELECT indexdef FROM pg_indexes
+		   WHERE tablename = 'messages' AND indexname = 'messages_author_idx'`,
+	).Scan(&indexdef); err != nil {
+		t.Fatalf("index messages_author_idx missing; AgentHasOpenAsk's author-only equality probe would seq-scan messages on every presence edge: %v", err)
 	}
-	if !exists {
-		t.Fatalf("index messages_author_idx missing; AgentHasOpenAsk's author-only equality probe would seq-scan messages on every presence edge")
+	if !strings.Contains(indexdef, "(author_account_id)") {
+		t.Fatalf("messages_author_idx is not on author_account_id (indexdef = %q); AgentHasOpenAsk's author-only probe would not be served", indexdef)
 	}
 }
