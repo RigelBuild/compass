@@ -1,6 +1,7 @@
 package forge
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -68,6 +70,12 @@ type GitHub struct {
 	token  TokenSource
 	client *http.Client
 
+	// mu guards resetAt: the author client is shared between the single poll
+	// driver and the write-RPC goroutines (OQ-6), so the gate is a concurrent
+	// read-modify-write. It is held only around the fast gate check/arm, never
+	// across the HTTP round-trip.
+	mu sync.Mutex
+
 	// resetAt is the rate-budget gate: when non-zero and now() is before it,
 	// the next call fails fast with ErrBudgetExhausted rather than burning the
 	// tail of the window. It is derived from the last response's
@@ -75,7 +83,8 @@ type GitHub struct {
 	// means the gate is OPEN. Absent/malformed headers leave it open (treat
 	// unknown budget as available — never wedge the gate). Once now() passes
 	// resetAt the gate re-opens, so a wedged window self-clears after the reset.
-	// The driver polls single-goroutine per the frozen design, so no mutex.
+	// Guarded by mu because the author client is shared between the poll driver
+	// and write-RPC goroutines (OQ-6).
 	resetAt time.Time
 
 	// now is the clock seam (defaults to time.Now in NewGitHub); tests override
@@ -141,11 +150,8 @@ func (g *GitHub) ListIssuesPage(ctx context.Context, repo string, f IssueFilter,
 	// Gate check: an armed gate blocks until the injected clock passes resetAt,
 	// then re-opens so the next call issues a real request (whose response
 	// re-records the budget). A zero resetAt means the gate is open.
-	if !g.resetAt.IsZero() {
-		if g.now().Before(g.resetAt) {
-			return ListPage{}, fmt.Errorf("forge: github list %q page %d: %w", repo, page, ErrBudgetExhausted)
-		}
-		g.resetAt = time.Time{}
+	if g.gateBlocked() {
+		return ListPage{}, fmt.Errorf("forge: github list %q page %d: %w", repo, page, ErrBudgetExhausted)
 	}
 
 	token, err := g.token.Token(ctx)
@@ -243,6 +249,199 @@ func (g *GitHub) ListIssues(ctx context.Context, repo string, f IssueFilter) ([]
 	}
 }
 
+// ghComment is the wire shape of a GitHub issue/PR comment (the create response
+// and the read shape share this envelope). Only the fields forge.Comment needs
+// are decoded.
+type ghComment struct {
+	ID      uint64 `json:"id"`
+	HTMLURL string `json:"html_url"`
+	Body    string `json:"body"`
+	User    struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+// toComment maps a decoded wire comment to the raw forge.Comment (body RAW).
+func (r ghComment) toComment() Comment {
+	return Comment{ID: r.ID, URL: r.HTMLURL, Body: r.Body, ForgeAccount: r.User.Login}
+}
+
+// ghPull is the wire shape of a GitHub pull request (the create response). Only
+// the fields forge.PullRequest needs at create time are decoded; the read-side
+// roll-ups (Changed/Checks/Reviews/Threads) belong to RIG-1728's GetPullRequest.
+type ghPull struct {
+	Number  uint64 `json:"number"`
+	Title   string `json:"title"`
+	Body    string `json:"body"`
+	State   string `json:"state"`
+	HTMLURL string `json:"html_url"`
+	Draft   bool   `json:"draft"`
+	Head    struct {
+		Ref string `json:"ref"`
+	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+// toPullRequest maps a decoded wire PR to the raw forge.PullRequest. Only the
+// create-time fields are populated (body RAW); read roll-ups stay zero.
+func (r ghPull) toPullRequest() PullRequest {
+	return PullRequest{
+		Number:       r.Number,
+		Title:        r.Title,
+		Body:         r.Body,
+		State:        r.State,
+		URL:          r.HTMLURL,
+		HeadRef:      r.Head.Ref,
+		BaseRef:      r.Base.Ref,
+		ForgeAccount: r.User.Login,
+		Draft:        r.Draft,
+	}
+}
+
+// CreateIssue creates an issue on repo. in.Body is PRE-stamped by the Service
+// (DL-050); the Provider sends it verbatim. Returns the created forge.Issue.
+func (g *GitHub) CreateIssue(ctx context.Context, repo string, in CreateIssue) (Issue, error) {
+	body := struct {
+		Title  string   `json:"title"`
+		Body   string   `json:"body"`
+		Labels []string `json:"labels,omitempty"`
+	}{Title: in.Title, Body: in.Body, Labels: in.Labels}
+	var out ghIssue
+	if err := g.doJSON(ctx, g.apiBase()+"/repos/"+repo+"/issues", body, &out); err != nil {
+		return Issue{}, fmt.Errorf("forge: github create issue %q: %w", repo, err)
+	}
+	return out.toIssue(), nil
+}
+
+// CommentOnIssue posts a comment on issue number in repo. body is PRE-stamped.
+func (g *GitHub) CommentOnIssue(ctx context.Context, repo string, number uint64, body string) (Comment, error) {
+	in := struct {
+		Body string `json:"body"`
+	}{Body: body}
+	url := g.apiBase() + "/repos/" + repo + "/issues/" + strconv.FormatUint(number, 10) + "/comments"
+	var out ghComment
+	if err := g.doJSON(ctx, url, in, &out); err != nil {
+		return Comment{}, fmt.Errorf("forge: github comment on issue %q#%d: %w", repo, number, err)
+	}
+	return out.toComment(), nil
+}
+
+// CreatePullRequest opens a pull request on repo. in.Body is PRE-stamped.
+func (g *GitHub) CreatePullRequest(ctx context.Context, repo string, in CreatePR) (PullRequest, error) {
+	body := struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+		Head  string `json:"head"`
+		Base  string `json:"base"`
+		Draft bool   `json:"draft"`
+	}{Title: in.Title, Body: in.Body, Head: in.HeadRef, Base: in.BaseRef, Draft: in.Draft}
+	var out ghPull
+	if err := g.doJSON(ctx, g.apiBase()+"/repos/"+repo+"/pulls", body, &out); err != nil {
+		return PullRequest{}, fmt.Errorf("forge: github create pull request %q: %w", repo, err)
+	}
+	return out.toPullRequest(), nil
+}
+
+// CommentOnPullRequest posts a conversation comment on PR number in repo. GitHub
+// models PR conversation comments as issue comments, so this targets the issues
+// comments endpoint. body is PRE-stamped.
+func (g *GitHub) CommentOnPullRequest(ctx context.Context, repo string, number uint64, body string) (Comment, error) {
+	in := struct {
+		Body string `json:"body"`
+	}{Body: body}
+	url := g.apiBase() + "/repos/" + repo + "/issues/" + strconv.FormatUint(number, 10) + "/comments"
+	var out ghComment
+	if err := g.doJSON(ctx, url, in, &out); err != nil {
+		return Comment{}, fmt.Errorf("forge: github comment on pull request %q#%d: %w", repo, number, err)
+	}
+	return out.toComment(), nil
+}
+
+// BodyLimit is the max issue/comment/PR body size the Service enforces before a
+// write, in BYTES. GitHub caps these bodies at 65536 CHARACTERS; because a
+// UTF-8 string's character count never exceeds its byte count, enforcing 65536
+// BYTES is strictly conservative under the character cap (A9: the unit is pinned
+// as bytes — StampOwner reserves bytes via len — with no conversion anywhere).
+func (g *GitHub) BodyLimit() int { return 65536 }
+
+// gateBlocked reports whether the fail-fast budget gate is currently armed,
+// clearing a gate whose reset instant has passed (re-opening it) as a side
+// effect. Guarded by mu — the gate is shared between the poll driver and the
+// write-RPC goroutines (OQ-6).
+func (g *GitHub) gateBlocked() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.resetAt.IsZero() {
+		return false
+	}
+	if g.now().Before(g.resetAt) {
+		return true
+	}
+	g.resetAt = time.Time{}
+	return false
+}
+
+// doJSON carries the write-path plumbing once for all four write methods: the
+// resetAt fail-fast gate (a write burst respects the same reserve as the poll
+// driver, so it cannot starve it), token auth, budget recording, and error
+// mapping. It marshals in to a JSON request body and decodes a 2xx response
+// into out. The read path (ListIssuesPage) is intentionally NOT refactored onto
+// this in this slice (no RIG-1728 rework).
+func (g *GitHub) doJSON(ctx context.Context, url string, in, out any) error {
+	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
+	// request until the injected clock passes resetAt, then re-opens.
+	if g.gateBlocked() {
+		return fmt.Errorf("POST %s: %w", url, ErrBudgetExhausted)
+	}
+
+	token, err := g.token.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve token: %w", err)
+	}
+
+	payload, err := json.Marshal(in)
+	if err != nil {
+		return fmt.Errorf("marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("do request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }() // response body drained/closed; no actionable close error on a read
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Error responses: mapErrorResponse owns the budget decision (it arms
+		// the gate on a true rate-limit signal). A bad-creds 403 carries a low
+		// nonzero remaining; recording it here would arm the gate against the
+		// token we are about to invalidate (same reasoning as the read path).
+		return g.mapErrorResponse(resp)
+	}
+	g.recordBudget(resp)
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read body: %w", err)
+	}
+	if err := json.Unmarshal(respBody, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
 // apiBase derives the REST API base URL from the configured host. github.com
 // maps to api.github.com; a GHES host maps to https://<host>/api/v3.
 func (g *GitHub) apiBase() string {
@@ -303,6 +502,8 @@ func (g *GitHub) queryParams(f IssueFilter, page int) url.Values {
 // available — never wedge the gate). A missing/unparseable reset with a
 // low remaining falls back to a bounded skip so the gate still self-clears.
 func (g *GitHub) recordBudget(resp *http.Response) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	raw := resp.Header.Get("X-Ratelimit-Remaining")
 	if raw == "" {
 		g.resetAt = time.Time{}
@@ -338,6 +539,7 @@ func remainingHeader(resp *http.Response) int {
 
 // armGate sets the reset-time gate. A zero at (no usable reset time) falls back
 // to a bounded skip from now() so the gate self-clears rather than wedging.
+// Caller MUST hold g.mu.
 func (g *GitHub) armGate(at time.Time) {
 	if at.IsZero() {
 		at = g.now().Add(defaultSkip)
@@ -372,7 +574,9 @@ func (g *GitHub) mapErrorResponse(resp *http.Response) error {
 	status := resp.StatusCode
 	if status == http.StatusForbidden || status == http.StatusTooManyRequests {
 		if isRateLimited(resp) {
+			g.mu.Lock()
 			g.armGate(g.rateLimitReset(resp))
+			g.mu.Unlock()
 			return fmt.Errorf("forge: github http %d: %w", status, ErrBudgetExhausted)
 		}
 	}

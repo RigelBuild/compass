@@ -57,6 +57,17 @@ func TestFakeZeroCallsWhenUnused(t *testing.T) {
 	}
 }
 
+func TestFakeBodyLimit(t *testing.T) {
+	f := NewFakeProvider("test-forge")
+	if got := f.BodyLimit(); got != 0 {
+		t.Errorf("default BodyLimit() = %d, want 0 (unlimited)", got)
+	}
+	f.BodyLimitResult = 65536
+	if got := f.BodyLimit(); got != 65536 {
+		t.Errorf("configured BodyLimit() = %d, want 65536", got)
+	}
+}
+
 func TestFakeScriptedResult(t *testing.T) {
 	ctx := context.Background()
 	f := NewFakeProvider("test-forge")

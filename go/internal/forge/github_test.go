@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -674,4 +675,334 @@ func (c cancelAfterFirst) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := c.inner.RoundTrip(req)
 	c.cancel()
 	return resp, err
+}
+
+// --- write path: CreateIssue / CommentOnIssue / CreatePullRequest /
+// CommentOnPullRequest, all through doJSON --------------------------------
+
+// readReqBody drains and returns a recorded request's body as a string.
+func readReqBody(t *testing.T, req *http.Request) string {
+	t.Helper()
+	if req.Body == nil {
+		return ""
+	}
+	b, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read request body: %v", err)
+	}
+	return string(b)
+}
+
+func TestCreateIssueRequestAndDecode(t *testing.T) {
+	const respBody = `{
+		"number": 42,
+		"title": "a bug",
+		"body": "stamped body",
+		"state": "open",
+		"html_url": "https://github.com/org/repo/issues/42",
+		"user": {"login": "octocat"},
+		"labels": [{"name": "bug"}, {"name": "p1"}]
+	}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: respBody}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "sekret"})
+
+	got, err := g.CreateIssue(context.Background(), "org/repo",
+		CreateIssue{Title: "a bug", Body: "stamped body", Labels: []string{"bug", "p1"}})
+	if err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+
+	req := rt.requests[0]
+	if req.Method != http.MethodPost {
+		t.Errorf("method = %s, want POST", req.Method)
+	}
+	if req.URL.String() != "https://api.github.com/repos/org/repo/issues" {
+		t.Errorf("URL = %s", req.URL.String())
+	}
+	if h := req.Header.Get("Authorization"); h != "Bearer sekret" {
+		t.Errorf("Authorization = %q, want %q", h, "Bearer sekret")
+	}
+	if h := req.Header.Get("Content-Type"); h != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", h)
+	}
+	wantBody := `{"title":"a bug","body":"stamped body","labels":["bug","p1"]}`
+	if b := readReqBody(t, req); b != wantBody {
+		t.Errorf("request body = %q, want %q", b, wantBody)
+	}
+
+	if got.Number != 42 || got.Title != "a bug" || got.Body != "stamped body" ||
+		got.State != "open" || got.URL != "https://github.com/org/repo/issues/42" ||
+		got.ForgeAccount != "octocat" || len(got.Labels) != 2 {
+		t.Errorf("decoded Issue = %+v", got)
+	}
+}
+
+func TestCommentOnIssueRequestAndDecode(t *testing.T) {
+	const respBody = `{
+		"id": 555,
+		"html_url": "https://github.com/org/repo/issues/7#issuecomment-555",
+		"body": "a reply",
+		"user": {"login": "octocat"}
+	}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: respBody}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.CommentOnIssue(context.Background(), "org/repo", 7, "a reply")
+	if err != nil {
+		t.Fatalf("CommentOnIssue: %v", err)
+	}
+
+	req := rt.requests[0]
+	if req.Method != http.MethodPost {
+		t.Errorf("method = %s, want POST", req.Method)
+	}
+	if req.URL.String() != "https://api.github.com/repos/org/repo/issues/7/comments" {
+		t.Errorf("URL = %s", req.URL.String())
+	}
+	if b := readReqBody(t, req); b != `{"body":"a reply"}` {
+		t.Errorf("request body = %q", b)
+	}
+	if got.ID != 555 || got.Body != "a reply" || got.ForgeAccount != "octocat" ||
+		got.URL != "https://github.com/org/repo/issues/7#issuecomment-555" {
+		t.Errorf("decoded Comment = %+v", got)
+	}
+}
+
+func TestCreatePullRequestRequestAndDecode(t *testing.T) {
+	const respBody = `{
+		"number": 13,
+		"title": "a change",
+		"body": "stamped body",
+		"state": "open",
+		"html_url": "https://github.com/org/repo/pull/13",
+		"draft": true,
+		"head": {"ref": "feature"},
+		"base": {"ref": "main"},
+		"user": {"login": "octocat"}
+	}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: respBody}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.CreatePullRequest(context.Background(), "org/repo",
+		CreatePR{Title: "a change", Body: "stamped body", HeadRef: "feature", BaseRef: "main", Draft: true})
+	if err != nil {
+		t.Fatalf("CreatePullRequest: %v", err)
+	}
+
+	req := rt.requests[0]
+	if req.URL.String() != "https://api.github.com/repos/org/repo/pulls" {
+		t.Errorf("URL = %s", req.URL.String())
+	}
+	wantBody := `{"title":"a change","body":"stamped body","head":"feature","base":"main","draft":true}`
+	if b := readReqBody(t, req); b != wantBody {
+		t.Errorf("request body = %q, want %q", b, wantBody)
+	}
+	if got.Number != 13 || got.Title != "a change" || got.State != "open" ||
+		got.URL != "https://github.com/org/repo/pull/13" || !got.Draft ||
+		got.HeadRef != "feature" || got.BaseRef != "main" || got.ForgeAccount != "octocat" {
+		t.Errorf("decoded PullRequest = %+v", got)
+	}
+}
+
+func TestCommentOnPullRequestTargetsIssueComments(t *testing.T) {
+	const respBody = `{"id": 99, "html_url": "https://x/y", "body": "pr note", "user": {"login": "octocat"}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: respBody}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.CommentOnPullRequest(context.Background(), "org/repo", 13, "pr note")
+	if err != nil {
+		t.Fatalf("CommentOnPullRequest: %v", err)
+	}
+	// PR conversation comments are issue comments on GitHub.
+	if req := rt.requests[0]; req.URL.String() != "https://api.github.com/repos/org/repo/issues/13/comments" {
+		t.Errorf("URL = %s, want issues/13/comments", req.URL.String())
+	}
+	if got.ID != 99 || got.Body != "pr note" {
+		t.Errorf("decoded Comment = %+v", got)
+	}
+}
+
+// The write path routes 403-rate / 403-bad-creds / 404 through mapErrorResponse
+// to the right sentinel, exactly like the read path.
+func TestWriteErrorMapping(t *testing.T) {
+	t.Run("403 rate-limit -> ErrBudgetExhausted, no Invalidate", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 403, body: `{"message":"rate limited"}`, headers: map[string]string{"Retry-After": "60"}},
+		}}
+		ts := &fakeTokenSource{token: "t"}
+		g := newTestGitHub(rt, ts)
+		_, err := g.CreateIssue(context.Background(), "org/repo", CreateIssue{Title: "x"})
+		if !errors.Is(err, ErrBudgetExhausted) {
+			t.Fatalf("err = %v, want ErrBudgetExhausted", err)
+		}
+		if ts.invalidated != 0 {
+			t.Errorf("rate-limit must not Invalidate; got %d", ts.invalidated)
+		}
+	})
+	t.Run("403 bad-creds -> StatusError + Invalidate", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 403, body: `{"message":"Bad credentials"}`},
+		}}
+		ts := &fakeTokenSource{token: "t"}
+		g := newTestGitHub(rt, ts)
+		_, err := g.CommentOnIssue(context.Background(), "org/repo", 7, "x")
+		var se *StatusError
+		if !errors.As(err, &se) || se.Status != 403 {
+			t.Fatalf("err = %v, want *StatusError 403", err)
+		}
+		if ts.invalidated != 1 {
+			t.Errorf("bad-creds must Invalidate; got %d", ts.invalidated)
+		}
+	})
+	t.Run("404 -> StatusError, no Invalidate", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 404, body: `{"message":"Not Found"}`},
+		}}
+		ts := &fakeTokenSource{token: "t"}
+		g := newTestGitHub(rt, ts)
+		_, err := g.CreatePullRequest(context.Background(), "org/repo", CreatePR{Title: "x"})
+		var se *StatusError
+		if !errors.As(err, &se) || se.Status != 404 {
+			t.Fatalf("err = %v, want *StatusError 404", err)
+		}
+		if se.Message != "Not Found" {
+			t.Errorf("Message = %q, want Not Found", se.Message)
+		}
+		if ts.invalidated != 0 {
+			t.Errorf("404 must not Invalidate; got %d", ts.invalidated)
+		}
+	})
+}
+
+// A write while the budget gate is armed short-circuits without an HTTP request.
+func TestWriteBudgetGateFailFast(t *testing.T) {
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	clock := base
+	resetUnix := strconv.FormatInt(base.Add(30*time.Second).Unix(), 10)
+
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		// Call 1 arms the gate (remaining=0).
+		{status: 201, body: `{"number":1,"user":{"login":"a"}}`, headers: map[string]string{
+			"X-RateLimit-Remaining": "0",
+			"X-RateLimit-Reset":     resetUnix,
+		}},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	g.now = func() time.Time { return clock }
+
+	if _, err := g.CreateIssue(context.Background(), "org/repo", CreateIssue{Title: "x"}); err != nil {
+		t.Fatalf("call 1: %v", err)
+	}
+	// Call 2, still before the reset, must fail fast WITHOUT issuing a request.
+	_, err := g.CommentOnIssue(context.Background(), "org/repo", 7, "x")
+	if !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("call 2 err = %v, want ErrBudgetExhausted", err)
+	}
+	if rt.calls != 1 {
+		t.Fatalf("gate issued a request: calls = %d, want 1", rt.calls)
+	}
+}
+
+func TestGitHubBodyLimit(t *testing.T) {
+	g := newTestGitHub(&scriptedRoundTripper{}, &fakeTokenSource{token: "t"})
+	if got := g.BodyLimit(); got != 65536 {
+		t.Errorf("BodyLimit() = %d, want 65536", got)
+	}
+}
+
+// A 2xx write whose body is not JSON surfaces a decode failure, after the
+// request was issued (calls == 1). Covers doJSON's json.Unmarshal error branch.
+func TestGitHubDoJSONDecodeError(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: "not json"}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	_, err := g.CreateIssue(context.Background(), "org/repo", CreateIssue{Title: "x"})
+	if err == nil {
+		t.Fatal("CreateIssue: want decode error, got nil")
+	}
+	if !strings.Contains(err.Error(), "decode response") {
+		t.Errorf("err = %v, want a decode-response failure", err)
+	}
+	if rt.calls != 1 {
+		t.Errorf("calls = %d, want 1 (request must have been issued)", rt.calls)
+	}
+}
+
+// A token-source error short-circuits a write before any HTTP request, mirroring
+// the read-path token-error test. Covers doJSON's token-resolution error branch.
+func TestGitHubDoJSONTokenError(t *testing.T) {
+	rt := &scriptedRoundTripper{}
+	tokErr := errors.New("resolve failed")
+	g := newTestGitHub(rt, &fakeTokenSource{err: tokErr})
+
+	_, err := g.CreateIssue(context.Background(), "org/repo", CreateIssue{Title: "x"})
+	if !errors.Is(err, tokErr) {
+		t.Fatalf("err = %v, want token error", err)
+	}
+	if !strings.Contains(err.Error(), "resolve token") {
+		t.Errorf("err = %v, want a resolve-token wrap", err)
+	}
+	if rt.calls != 0 {
+		t.Errorf("issued a request despite token error: calls = %d", rt.calls)
+	}
+}
+
+// concurrentRoundTripper is a race-safe transport for the concurrency test: it
+// serves a fixed benign response and guards its call counter with a mutex, so
+// the only unsynchronized shared state under test is the client's resetAt gate.
+type concurrentRoundTripper struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (rt *concurrentRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.mu.Lock()
+	rt.calls++
+	rt.mu.Unlock()
+	var body string
+	if req.Method == http.MethodGet {
+		body = "[]" // ListIssuesPage decodes a JSON array
+	} else {
+		body = `{"number":1,"id":1,"user":{"login":"a"}}` // write decodes an object
+	}
+	h := http.Header{}
+	// A healthy budget keeps the gate open on most calls; the occasional
+	// low-remaining response arms it, exercising the concurrent arm/clear.
+	h.Set("X-Ratelimit-Remaining", "5000")
+	h.Set("X-Ratelimit-Reset", strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10))
+	return &http.Response{StatusCode: http.StatusOK, Header: h, Body: io.NopCloser(strings.NewReader(body))}, nil
+}
+
+// TestGitHubGateConcurrentAccess drives concurrent reads and writes through ONE
+// client so the resetAt gate is read-modify-written from many goroutines at
+// once. It trips go test -race without the mu guard (the HIGH finding) and
+// passes cleanly with it. context.Background() is the test root (F-ttsr).
+func TestGitHubGateConcurrentAccess(t *testing.T) {
+	rt := &concurrentRoundTripper{}
+	// Host "" resolves to api.github.com (apiBase), same as "github.com".
+	g := NewGitHub(GitHubConfig{Host: "", Token: &fakeTokenSource{token: "t"}, Client: &http.Client{Transport: rt}})
+
+	const workers = 8
+	const iters = 50
+	var wg sync.WaitGroup
+	ctx := context.Background()
+
+	for range workers {
+		wg.Go(func() {
+			for range iters {
+				// Errors are not the subject under test — the race detector is;
+				// discard them so a benign gate/decode result never fails here.
+				_, _ = g.ListIssuesPage(ctx, "org/repo", IssueFilter{}, 1, "")
+			}
+		})
+	}
+	for range workers {
+		wg.Go(func() {
+			for range iters {
+				_, _ = g.CreateIssue(ctx, "org/repo", CreateIssue{Title: "x"})
+				_, _ = g.CommentOnIssue(ctx, "org/repo", 7, "x")
+			}
+		})
+	}
+	wg.Wait()
 }
