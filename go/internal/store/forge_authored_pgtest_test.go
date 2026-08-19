@@ -95,6 +95,38 @@ func TestRecordAuthoredArtifactIdempotentUpsert(t *testing.T) {
 	if got[0].SessionID != "sess-2" || got[0].CreatedAtUnixMS != 2000 {
 		t.Fatalf("row not updated in place: %+v", got[0])
 	}
+
+	// Authorship is WRITE-ONCE: re-landing the SAME coordinate under a DIFFERENT
+	// agent must NOT rewrite who authored it (the DO UPDATE SET omits
+	// agent_account_id/owner_user_id). This can't happen on the real path (a
+	// forge never reuses a coordinate), but the store must not silently transfer
+	// ownership if it ever did.
+	other, otherOwner := seedAgent(t, s, "t2-other")
+	steal := base
+	steal.AgentAccountID = other
+	steal.OwnerUserID = otherOwner
+	steal.SessionID = "sess-3"
+	if err := s.RecordAuthoredArtifact(ctx, steal); err != nil {
+		t.Fatalf("re-record under different agent: %v", err)
+	}
+	// The original author still owns the row; the thief's by-agent scan is empty.
+	orig, err := s.ListAuthoredArtifactsByAgent(ctx, agent)
+	if err != nil {
+		t.Fatalf("list original: %v", err)
+	}
+	if len(orig) != 1 || orig[0].AgentAccountID != agent || orig[0].OwnerUserID != owner {
+		t.Fatalf("authorship not write-once: original agent %q lost the row: %+v", agent, orig)
+	}
+	if orig[0].SessionID != "sess-3" || orig[0].CreatedAtUnixMS != 2000 {
+		t.Fatalf("non-authorship fields should still update in place: %+v", orig[0])
+	}
+	stolen, err := s.ListAuthoredArtifactsByAgent(ctx, other)
+	if err != nil {
+		t.Fatalf("list thief: %v", err)
+	}
+	if len(stolen) != 0 {
+		t.Fatalf("different agent must not own the row: %+v", stolen)
+	}
 }
 
 // ── Test 3: FK RESTRICT — unknown agent / owner is rejected ───────────────────
@@ -166,6 +198,55 @@ func TestListAuthoredArtifactsByAgentOrdering(t *testing.T) {
 	}
 	if empty != nil {
 		t.Fatalf("no-rows = %v, want nil", empty)
+	}
+}
+
+// ── Test 4b: ordering tie-break on the coordinate when created_at is equal ─────
+
+func TestListAuthoredArtifactsByAgentOrderingTieBreak(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	agent, owner := seedAgent(t, s, "t4b")
+
+	// All rows share created_at, so the secondary coordinate keys (provider,
+	// host, repo, kind, number) decide the order — a regression that dropped the
+	// coordinate tie-break from the ORDER BY would make this non-deterministic.
+	// Insert scrambled; expect back sorted by (repo, kind, number) at equal time.
+	const t0 = 777
+	rows := []AuthoredArtifact{
+		{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/b", Kind: ForgeArtifactKindPullRequest, Number: 2, AgentAccountID: agent, OwnerUserID: owner, CreatedAtUnixMS: t0},
+		{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/b", Kind: ForgeArtifactKindIssue, Number: 5, AgentAccountID: agent, OwnerUserID: owner, CreatedAtUnixMS: t0},
+		{Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/a", Kind: ForgeArtifactKindIssue, Number: 1, AgentAccountID: agent, OwnerUserID: owner, CreatedAtUnixMS: t0},
+	}
+	for _, r := range rows {
+		if err := s.RecordAuthoredArtifact(ctx, r); err != nil {
+			t.Fatalf("record %s#%d: %v", r.Repo, r.Number, err)
+		}
+	}
+
+	got, err := s.ListAuthoredArtifactsByAgent(ctx, agent)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("row count = %d, want 3", len(got))
+	}
+	// Expected coordinate order at equal created_at: repo a/a before a/b, then
+	// within a/b kind issue(1) before pull_request(2).
+	type coord struct {
+		repo   string
+		kind   ForgeArtifactKind
+		number uint64
+	}
+	want := []coord{
+		{"a/a", ForgeArtifactKindIssue, 1},
+		{"a/b", ForgeArtifactKindIssue, 5},
+		{"a/b", ForgeArtifactKindPullRequest, 2},
+	}
+	for i, w := range want {
+		if got[i].Repo != w.repo || got[i].Kind != w.kind || got[i].Number != w.number {
+			t.Fatalf("row %d = {%s %d #%d}, want {%s %d #%d}", i, got[i].Repo, got[i].Kind, got[i].Number, w.repo, w.kind, w.number)
+		}
 	}
 }
 

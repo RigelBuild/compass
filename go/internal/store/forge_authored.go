@@ -68,11 +68,18 @@ func (a AuthoredArtifact) valid() error {
 
 // RecordAuthoredArtifact idempotently upserts the ownership row at a's forge
 // coordinate, writing the row AND the F3 memo in one statement. A retry of the
-// same authored create (same coordinate) re-lands on the PK and updates the
-// row in place. ClientRequestID "" is stored as SQL NULL so null-key rows never
-// collide under the partial unique memo index. A duplicate (agent,
-// client_request_id) non-null key is ErrConflict; an unknown agent/owner is
-// ErrInvalidArgument (the FK RESTRICT). Zero/empty fields -> ErrInvalidArgument.
+// same authored create (same coordinate) re-lands on the PK. Authorship is
+// WRITE-ONCE: the DO UPDATE SET deliberately omits agent_account_id and
+// owner_user_id, so a re-land never rewrites who authored the artifact (matching
+// the issues.go UpsertIssueForgeFields "never clobber owned fields on conflict"
+// precedent). A real forge never reuses a coordinate, so the only re-land is a
+// same-agent crash-replay where author/owner are invariant anyway — omitting
+// them changes nothing on the real path while closing the silent
+// ownership-transfer seam. ClientRequestID "" is stored as SQL NULL so null-key
+// rows never collide under the partial unique memo index. A duplicate (agent,
+// client_request_id) non-null key is ErrConflict; an unknown agent/owner (or a
+// mismatched pair) is ErrInvalidArgument (the composite FK RESTRICT). Zero/empty
+// fields -> ErrInvalidArgument.
 func (s *Store) RecordAuthoredArtifact(ctx context.Context, a AuthoredArtifact) error {
 	if err := a.valid(); err != nil {
 		return err
@@ -83,9 +90,7 @@ func (s *Store) RecordAuthoredArtifact(ctx context.Context, a AuthoredArtifact) 
 		      agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 ON CONFLICT (forge_provider, forge_host, repo, kind, number) DO UPDATE
-		    SET agent_account_id  = EXCLUDED.agent_account_id,
-		        owner_user_id      = EXCLUDED.owner_user_id,
-		        session_id         = EXCLUDED.session_id,
+		    SET session_id         = EXCLUDED.session_id,
 		        client_request_id  = EXCLUDED.client_request_id,
 		        created_at_unix_ms = EXCLUDED.created_at_unix_ms`,
 		int32(a.Provider), a.Host, a.Repo, int32(a.Kind), int64(a.Number), //nolint:gosec // G115: number is a canonical forge artifact number (a positive issue/PR number) written to a BIGINT, always well within the int64 domain — never near the uint64 ceiling.
