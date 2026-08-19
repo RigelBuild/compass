@@ -65,7 +65,7 @@ describe("the fixture boot path is absent from a production build (hard wall)", 
 			})
 			.quiet();
 		bundle = await bundleText(outDir);
-	});
+	}, 60_000);
 
 	afterAll(async () => {
 		await rm(outDir, { recursive: true, force: true });

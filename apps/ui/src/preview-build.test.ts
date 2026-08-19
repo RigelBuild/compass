@@ -85,7 +85,7 @@ describe("previewable build bakes the configured door + bearer into dist/", () =
 			})
 			.quiet();
 		bundle = await bundleText(outDir);
-	});
+	}, 60_000);
 
 	afterAll(async () => {
 		await rm(outDir, { recursive: true, force: true });
