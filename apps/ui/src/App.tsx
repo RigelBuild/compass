@@ -20,7 +20,7 @@ import { useStore } from "./context";
 //
 // This is the dev walking-skeleton made fully explorable: every surface reads
 // the in-memory stub (stub-data.ts) through one store (store.ts), so it renders
-// and is clickable in `vite dev` with no daemon and no Tauri IPC. When the
+// and is clickable in `vite dev` with no daemon and no Wails IPC. When the
 // daemon grows the real board / agent / ACP / audit streams, the store's
 // accessors swap the fixture for the generated @compass/client and the
 // components stay as-is.

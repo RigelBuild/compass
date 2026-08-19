@@ -2,7 +2,7 @@ import type { HighlighterCore } from "shiki/core";
 
 // Shiki code highlighting with a fine-grained bundle.
 //
-// The Compass UI ships inside the Tauri shell, so Shiki's pre-composed bundles
+// The Compass UI ships inside the Wails shell, so Shiki's pre-composed bundles
 // (full: 1.2 MB gzip; web: 695 KB) are disqualifying. Instead: `shiki/core`
 // (~12 KB) + the JavaScript regex engine (no WASM asset to ship or load in the
 // webview) + ONLY the grammars/themes this UI actually shows, imported as

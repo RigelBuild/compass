@@ -8,7 +8,7 @@
 // Transport is chosen at client construction (compass-tauri-shell.md:110-124):
 // the browser MVP dials the T3b authenticated network door over gRPC-Web with a
 // bearer token (the T3-door account token → `authorization: Bearer`). The
-// hosted/handshake modes (GetServerInfo, a Tauri custom-fetch to a UDS) are
+// hosted/handshake modes (GetServerInfo, a Wails custom-fetch to a UDS) are
 // sibling transports layered at this same seam later — this module is the one
 // place the baseUrl+token are resolved, so adding a mode never leaks a
 // local-assumption above the transport boundary.

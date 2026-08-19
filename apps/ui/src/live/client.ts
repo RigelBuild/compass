@@ -1,7 +1,7 @@
 // Live client construction: a resolved Connection → the typed compass.v1 clients
 // the store dials. The one place transport is chosen (compass-tauri-shell.md:
 // 110-124) — the browser MVP builds gRPC-Web clients over the T3b network door
-// through the shipped @compass/client factories; a hosted/Tauri transport is a
+// through the shipped @compass/client factories; a hosted/Wails transport is a
 // sibling built here later without touching a caller above this seam.
 //
 // Two clients from one connection: the CommsClient (the channel surface — the
