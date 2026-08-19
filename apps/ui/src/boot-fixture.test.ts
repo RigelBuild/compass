@@ -28,8 +28,8 @@ describe("bootFixture (offline fixture boot)", () => {
 			await flush();
 
 			// The board renders IssueCards from the clientless store's STUB_ISSUES
-			// seed. A `.card` element proves the shell mounted with fixture content.
-			expect(root.querySelector(".card")).not.toBeNull();
+			// seed. A `.cx-card` element proves the shell mounted with fixture content.
+			expect(root.querySelector(".cx-card")).not.toBeNull();
 
 			// And a known fixture issue's title is in the rendered text — the board
 			// is populated from the fixtures, not merely a mounted-but-empty shell.

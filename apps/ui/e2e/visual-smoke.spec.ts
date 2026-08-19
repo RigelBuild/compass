@@ -164,10 +164,10 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 	test("bridge — single card close-up", async ({ page }) => {
 		await page.goto("/#/");
 		await page.locator(".bridge").waitFor({ state: "visible" });
-		const card = page.locator(".card").first();
+		const card = page.locator(".cx-card").first();
 		await card.waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
-		// Cropped close-up clip of a single issue card (IssueCard.tsx:47 `.card`).
+		// Cropped close-up clip of a single issue card (IssueCard.tsx:47 `.cx-card`).
 		await card.screenshot({
 			path: `${SCREENS}/bridge-card.png`,
 			animations: "disabled",

@@ -617,53 +617,17 @@
 	background: color-mix(in srgb, var(--cx-bg) 60%, transparent);
 }
 
-/* ── Issue card ─────────────────────────────────────────────────────────── */
-
-.card {
+/* Board cells pack the DS card denser than its block/12px default (F3),
+   scoped to the board so it never leaks to other .cx-card surfaces. */
+.bridge-cell > .cx-card {
 	display: flex;
 	flex-direction: column;
 	gap: 6px;
 	text-align: left;
-	background: var(--cx-bg-panel);
-	border: 1px solid var(--cx-border);
-	border-left-width: 3px;
-	border-radius: var(--cx-radius-sm);
-	padding: 8px 10px;
-	color: var(--cx-text);
-	/* stylelint-disable declaration-property-value-disallowed-list -- TODO(motion migration, D9/foundation-T8): raw 0.12s/0.05s grandfathered by the SEA-2034 cutover lane, which never scoped the motion axis */
-	transition:
-		border-color 0.12s,
-		background 0.12s,
-		transform 0.05s;
-	/* stylelint-enable declaration-property-value-disallowed-list */
+	padding: 9px 10px;
 }
 
-.card:hover {
-	background: var(--cx-bg-hover);
-	border-color: var(--cx-border-strong);
-}
-
-.card:active {
-	transform: translateY(1px);
-}
-
-.card.selected {
-	border-color: var(--cx-accent);
-	box-shadow: 0 0 0 1px var(--cx-accent);
-}
-
-.card[data-priority="urgent"] {
-	border-left-color: var(--cx-error);
-}
-.card[data-priority="high"] {
-	border-left-color: var(--cx-warn);
-}
-.card[data-priority="medium"] {
-	border-left-color: var(--cx-accent);
-}
-.card[data-priority="low"] {
-	border-left-color: var(--cx-border-strong);
-}
+/* ── Issue card ─────────────────────────────────────────────────────────── */
 
 .card-top {
 	display: flex;
@@ -672,9 +636,9 @@
 }
 
 .card-issue {
-	color: var(--cx-accent);
+	color: var(--cx-text-faint);
 	font-size: 11px;
-	font-weight: 600;
+	letter-spacing: 0.5px;
 	font-family: var(--cx-font-ui);
 }
 
