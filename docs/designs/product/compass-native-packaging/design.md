@@ -457,7 +457,8 @@ the epic batch context; every task below inherits them:
     tarball dir, `inputs` = `/go/**` (excluding `**/*_test.go`, so
     server/gen/events are covered, not just cmd/internal), `/go/go.{mod,sum}`,
     `/tools/toolchain/gtk-closure.nix` + `/tools/toolchain/gtk-e2e-env.nix`
-    (both realized directly by build.sh, §435-444), `/tools/toolchain/versions/go.nix`,
+    (the closure build.sh realizes — gtk-e2e-env.nix directly, gtk-closure.nix
+    transitively via its import, §435-444), `/tools/toolchain/versions/go.nix`,
     `/devenv.lock`, `/LICENSE` (copied into the artifact), project-local files
     — no `/apps/ui/src/**` belt: moon
     schedules dependents of affected projects, so a `compass-ui:build` input
