@@ -22,7 +22,7 @@ import (
 )
 
 func main() {
-	slog.Error("compass-app was built without the desktop shell; rebuild with -tags gtk3 " +
-		"(the shell requires the GTK3 + WebKit2GTK 4.1 stack)")
+	slog.Error("compass-app was built without the desktop shell; rebuild with -tags gtk3 "+
+		"(the shell requires the GTK3 + WebKit2GTK 4.1 stack)", "version", version)
 	os.Exit(1)
 }
