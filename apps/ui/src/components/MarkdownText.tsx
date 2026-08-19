@@ -12,6 +12,7 @@ import {
 	createResource,
 	createSignal,
 	For,
+	on,
 	onCleanup,
 	Show,
 } from "solid-js";
@@ -332,12 +333,20 @@ function CodeBlock(props: {
 	const [settled, setSettled] = createSignal<readonly [string, string] | null>(
 		null,
 	);
-	createEffect(() => {
-		if (props.inline) return;
-		const next = [code(), lang()] as const;
-		const t = setTimeout(() => setSettled(next), HIGHLIGHT_DEBOUNCE_MS);
-		onCleanup(() => clearTimeout(t));
-	});
+	// Static-dep effect: track code/lang (and inline defensively — see below) via
+	// `on`, keeping the debounce apply UNTRACKED so the setTimeout/onCleanup cycle
+	// only re-runs when a tracked source changes. `inline` is a structural prop
+	// (the code override sets it once per node instance and never mutates it), but
+	// it is included in the deps rather than asserted invariant so the guard can
+	// never read a stale value if that ever changes.
+	createEffect(
+		on([code, lang, () => props.inline], ([nextCode, nextLang, inline]) => {
+			if (inline) return;
+			const next = [nextCode, nextLang] as const;
+			const t = setTimeout(() => setSettled(next), HIGHLIGHT_DEBOUNCE_MS);
+			onCleanup(() => clearTimeout(t));
+		}),
+	);
 	const [html] = createResource(
 		() => (props.inline ? null : settled()),
 		async (src) => {

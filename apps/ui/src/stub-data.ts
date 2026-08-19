@@ -1,11 +1,11 @@
 // Dev-only stub data for the Compass ADE UI.
 //
 // Compass is an Agentic Development Environment: a persistent daemon (compassd)
-// with a Tauri shell rendering this web UI, meeting at the compass.v1 gRPC
+// with a Wails shell rendering this web UI, meeting at the compass.v1 gRPC
 // contract (docs/specs/product/compass.md). The real board / agent / ACP /
 // audit event payloads are not built yet — the daemon today reports liveness and
 // a daemon-status stream — so this module hand-fakes a representative fleet so
-// the full interface is explorable in `vite dev` with no daemon and no Tauri IPC.
+// the full interface is explorable in `vite dev` with no daemon and no Wails IPC.
 //
 // Everything here is a plain in-memory fixture. When the daemon grows the board,
 // agent-runtime (ACP over compass.v1, design record compass-0.4), and audit
