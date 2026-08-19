@@ -49,8 +49,7 @@ func main() {
 const bringUpTimeout = 60 * time.Second
 
 func run() error {
-	if versionRequested(os.Args[1:]) {
-		_, err := fmt.Fprintln(os.Stdout, version)
+	if handled, err := printVersionIfRequested(os.Args[1:], os.Stdout); handled {
 		return err
 	}
 
