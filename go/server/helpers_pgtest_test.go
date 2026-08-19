@@ -15,36 +15,53 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 
 	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
 )
 
+// socketReadyTimeout bounds the wait for Serve to bind its Unix socket. It is
+// deliberately separate from — and larger than — testTimeout (the RPC/stream
+// safety net, helpers_test.go): under full-suite -race load the Serve goroutine
+// can be slow to get scheduled and bind, and a readiness wait sharing the 15s
+// RPC budget false-fails with "socket never became connectable" on healthy code
+// that is merely under load. This budget fails only a genuinely wedged bind.
+const socketReadyTimeout = 60 * time.Second
+
 // waitListening blocks until the Unix socket at path is connectable, or fails
-// the test at the deadline. net.Listen makes a stream socket connectable the
-// instant it returns (the kernel accepts into the backlog before the server
+// the test at socketReadyTimeout. net.Listen makes a stream socket connectable
+// the instant it returns (the kernel accepts into the backlog before the server
 // calls Accept), so this gates precisely on "Serve has bound" — a monotonic,
 // deterministic readiness signal, not a flaky retry: it advances the moment the
-// socket is bound and fails loud if it never binds. runtime.Gosched yields to
-// the Serve goroutine between probes; no wall-clock sleep is used for timing.
+// socket is bound and fails loud if it never binds.
+//
+// The poll is ticker-gated, not a busy-spin: each miss blocks on <-tick.C,
+// yielding the CPU to the Serve goroutine this wait depends on. A tight
+// runtime.Gosched loop here instead starves that goroutine under full-suite
+// -race load — N parallel readiness loops hot-spinning across the runner's cores
+// keep the bind goroutine off-CPU, so readiness overshoots its budget on healthy
+// code (the load-dependent flake this replaces). <-tick.C is a bounded poll, not
+// a wall-clock sleep: it never encodes a timing assumption about when the socket
+// binds, only how often to re-probe.
 func waitListening(t *testing.T, path string) {
 	t.Helper()
-	deadline := timeAfter()
+	deadline := time.After(socketReadyTimeout)
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
 	for {
-		select {
-		case <-deadline:
-			t.Fatalf("socket %s never became connectable", path)
-		default:
-		}
 		conn, err := net.Dial("unix", path)
 		if err == nil {
 			conn.Close()
 			return
 		}
-		runtime.Gosched()
+		select {
+		case <-deadline:
+			t.Fatalf("socket %s never became connectable within %s", path, socketReadyTimeout)
+		case <-tick.C:
+		}
 	}
 }
 
