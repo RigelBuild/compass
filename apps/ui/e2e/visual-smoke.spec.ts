@@ -33,9 +33,22 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 	test("right sidebar — PR pane", async ({ page }) => {
 		await page.goto("/#/");
 		await page.locator(".bridge").waitFor({ state: "visible" });
+		// Drive the real interaction path so the PR pane actually renders: the
+		// pane is shown only when an issue is selected AND the PR tab is active.
+		// Select the cook issue (SEA-1022 / PR #453) — its review set carries a
+		// `commented` verdict, so the shot covers all three .rv[data-v] colors,
+		// including the review-pending (faint-grey) one.
+		const card = page.locator(".cx-card", { hasText: "SEA-1022" }).first();
+		await card.waitFor({ state: "visible" });
+		await card.click();
+		await page.getByRole("button", { name: "Pull request" }).click();
 		const sidebar = page.locator("aside.right");
 		await sidebar.waitFor({ state: "visible" });
-		// Cropped clip of the right sidebar region so the PR pane reads clearly.
+		// Gate on the review chips so the capture is taken after the pane renders.
+		await page
+			.locator(".review-chip .rv")
+			.first()
+			.waitFor({ state: "visible" });
 		await page.evaluate(() => document.fonts.ready);
 		await sidebar.screenshot({
 			path: `${SCREENS}/right-sidebar.png`,
