@@ -204,20 +204,32 @@ func (g *Gateway) acquirePublisher(sessionID string) *sessionPublisher {
 	return pub
 }
 
-// releasePublisher closes the publisher's upstream stream and clears it so a
-// later Publish reconnect opens a fresh one. Called by the Publish handler (the
-// stream owner) at stream end. Returns the upstream close/ack error.
+// releasePublisher clears the publisher under pubMu, then closes its upstream
+// stream OUTSIDE the lock. Called by the Publish handler (the stream owner) at
+// stream end. Returns the upstream close/ack error.
 //
-// pubMu is held ACROSS the close, not just around the field clear, so a
-// concurrent acquirePublisher (e.g. the session-change reset racing a reconnect)
-// blocks until the close completes and then builds exactly one fresh publisher,
-// never a second live publisher on the same session interleaving writes on two
-// upstream streams.
+// The close is deliberately outside pubMu. pub.close() blocks on
+// CloseAndReceive awaiting the Server's terminal ack on the socket-lifetime
+// stream, with no per-close timeout; holding pubMu across it would let one
+// unresponsive-but-connected Server stall every later Publish forward on the
+// same mutex — a session-wide telemetry outage from one clean stream-end.
+// Clearing g.pub under the lock first is enough. releasePublisher is only
+// reached after the handler's Receive loop has drained (publish.go:75/82/88),
+// so no forward() from that handler is in flight, and forward()'s per-publisher
+// pub.mu serializes any Send against this close on the same stream — the drained
+// publisher never Sends concurrently with its own close. A concurrent
+// acquirePublisher that observes g.pub==nil just opens a fresh one, and the
+// capture under the lock still gives single ownership, so pub is closed exactly
+// once. The only residue is a cross-stream reorder of already-sent frames that
+// the hub's loss-tolerant gap detector accepts by design: recordSeq flags only a
+// forward jump, so a delayed low seq neither flags a gap nor rewinds lastSeq.
+// This mirrors acquirePublisher, which already closes its stale publisher
+// outside the lock.
 func (g *Gateway) releasePublisher() error {
 	g.pubMu.Lock()
-	defer g.pubMu.Unlock()
 	pub := g.pub
 	g.pub = nil
+	g.pubMu.Unlock()
 	if pub == nil {
 		return nil
 	}
