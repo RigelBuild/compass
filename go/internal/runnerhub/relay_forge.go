@@ -50,6 +50,11 @@ type ForgeCaller interface {
 // leg is not mounted, never a silent success.
 var errForgeUnavailable = errors.New("runnerhub: no forge caller wired to serve RelayForgeCall")
 
+// errForgeNoResult is the cause when a wired ForgeCaller returns a nil result on
+// the nil-error arm — a malformed reply, surfaced in-band as CodeInternal rather
+// than nil-dereferenced on the resolution edge.
+var errForgeNoResult = errors.New("runnerhub: forge caller returned no result")
+
 // SetForgeCaller wires the forge execution seam after construction, so no NewHub
 // caller signature changes and the hub<->forgeService construction cycle (the
 // service needs the store + provider registry; the hub needs the service to
@@ -105,6 +110,22 @@ func (h *Hub) RelayForgeCall(
 			Result: &compassv1internal.ForgeCallResult{
 				CallId: callID,
 				Result: &compassv1internal.ForgeCallResult_Error{Error: forgeCallError(err)},
+			},
+		}, nil
+	}
+	if result == nil {
+		// Defensive: a ForgeCaller must return a non-nil result on the nil-error
+		// arm (the sibling legs get this for free from their internal executor,
+		// which always builds a fresh result; the forge leg calls the external
+		// ForgeCaller directly). A (nil, nil) return is a malformed reply, not a
+		// tool failure — surface it in-band as CodeInternal rather than nil-deref
+		// on this security-critical resolution edge.
+		return &compassv1internal.RelayForgeCallResponse{
+			Result: &compassv1internal.ForgeCallResult{
+				CallId: callID,
+				Result: &compassv1internal.ForgeCallResult_Error{
+					Error: forgeCallError(connect.NewError(connect.CodeInternal, errForgeNoResult)),
+				},
 			},
 		}, nil
 	}

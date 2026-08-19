@@ -236,3 +236,30 @@ func TestRelayForgeCallEchoesCallIDOnSuccess(t *testing.T) {
 		t.Fatal("response result is not the caller's result")
 	}
 }
+
+// 6. A ForgeCaller that returns (nil, nil) — a nil result on the nil-error arm —
+// must NOT nil-deref on the resolution edge: the malformed reply is surfaced
+// in-band as CodeInternal with the call_id echoed, not a panic. The sibling
+// legs get this immunity for free from their internal executor; the forge leg
+// calls the external ForgeCaller directly, so the guard is explicit.
+func TestRelayForgeCallNilResultIsInternalErrorInBand(t *testing.T) {
+	hub, fake := newHubWithForge()
+	fake.result = nil // (nil result, nil error) — a malformed caller reply
+	fake.err = nil
+	bindLiveSession(hub)
+
+	resp, err := hub.RelayForgeCall(context.Background(), relayCreateIssue("sess-1", "fc-6", &compassv1internal.CreateIssueRequest{Repo: "o/r", Title: "t"}))
+	if err != nil {
+		t.Fatalf("RelayForgeCall with a nil-result caller returned a Go error %v, want nil (in-band render)", err)
+	}
+	toolErr := resp.GetResult().GetError()
+	if toolErr == nil {
+		t.Fatal("response has no in-band ForgeCallError, want the malformed nil result rendered in-band")
+	}
+	if toolErr.GetCode() != "internal" {
+		t.Fatalf("in-band error code = %q, want internal", toolErr.GetCode())
+	}
+	if got := resp.GetResult().GetCallId(); got != "fc-6" {
+		t.Fatalf("in-band error call_id = %q, want fc-6", got)
+	}
+}
