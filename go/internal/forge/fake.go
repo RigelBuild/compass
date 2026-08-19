@@ -53,6 +53,8 @@ type FakeProvider struct {
 	GetPRResult PullRequest
 	// ChecksResult is returned by Checks when no error is scripted.
 	ChecksResult Checks
+	// SubmitReviewResult is returned by SubmitReview when no error is scripted.
+	SubmitReviewResult SubmittedReview
 	// BodyLimitResult is returned by BodyLimit; 0 (the default) means unlimited.
 	BodyLimitResult int
 
@@ -147,6 +149,14 @@ func (f *FakeProvider) CommentOnPullRequest(_ context.Context, repo string, numb
 		return Comment{}, err
 	}
 	return f.CommentResult, nil
+}
+
+// SubmitReview records the call and returns the scripted result or error.
+func (f *FakeProvider) SubmitReview(_ context.Context, repo string, number uint64, in SubmitReview) (SubmittedReview, error) {
+	if err := f.record(Call{Method: "SubmitReview", Repo: repo, Number: number, Payload: in}); err != nil {
+		return SubmittedReview{}, err
+	}
+	return f.SubmitReviewResult, nil
 }
 
 // GetPullRequest records the call and returns the scripted result or error.

@@ -362,6 +362,78 @@ func (g *GitHub) CommentOnPullRequest(ctx context.Context, repo string, number u
 	return out.toComment(), nil
 }
 
+// reviewEvent maps a write-side verdict to its GitHub reviews-POST event token
+// and whether GitHub requires a non-empty body for it. An unknown verdict is
+// absent from reviewEvents and rejected before any wire call (design §T3);
+// APPROVE may be bodyless (A2), COMMENT and REQUEST_CHANGES may not.
+type reviewEvent struct {
+	token        string
+	requiresBody bool
+}
+
+// The write-side verdict vocabulary (design §T3): GitHub's reviews-POST event
+// token set, distinct from the past-tense read-side Review.verdict. Package-
+// private — the spec surfaces only the type triple and interface method; a
+// caller passes the raw token, and T4's Service owns any exported vocabulary.
+const (
+	verdictApprove        = "approve"
+	verdictRequestChanges = "request_changes"
+	verdictComment        = "comment"
+)
+
+var reviewEvents = map[string]reviewEvent{
+	verdictApprove:        {token: "APPROVE", requiresBody: false},
+	verdictRequestChanges: {token: "REQUEST_CHANGES", requiresBody: true},
+	verdictComment:        {token: "COMMENT", requiresBody: true},
+}
+
+// ghReviewComment is the wire shape of one inline comment inside a reviews POST.
+type ghReviewComment struct {
+	Path string `json:"path"`
+	Line uint32 `json:"line"`
+	Side string `json:"side,omitempty"`
+	Body string `json:"body"`
+}
+
+// ghReview is the wire shape of the reviews-POST 201 response. Only the fields
+// forge.SubmittedReview needs are decoded.
+type ghReview struct {
+	ID      uint64 `json:"id"`
+	HTMLURL string `json:"html_url"`
+}
+
+// SubmitReview submits a pull-request review on PR number in repo. in.Body is
+// PRE-stamped by the Service; in.Comments ride unstamped inside the review. The
+// verdict is validated (and, for COMMENT/REQUEST_CHANGES, a non-empty body
+// required — GitHub rejects a bodyless one; APPROVE may be bodyless per A2)
+// BEFORE any wire call. Maps to POST /repos/{repo}/pulls/{number}/reviews.
+func (g *GitHub) SubmitReview(ctx context.Context, repo string, number uint64, in SubmitReview) (SubmittedReview, error) {
+	ev, ok := reviewEvents[in.Verdict]
+	if !ok {
+		return SubmittedReview{}, fmt.Errorf("forge: github submit review %q#%d: unknown verdict %q", repo, number, in.Verdict)
+	}
+	if in.Body == "" && ev.requiresBody {
+		return SubmittedReview{}, fmt.Errorf("forge: github submit review %q#%d: verdict %q requires a body", repo, number, in.Verdict)
+	}
+
+	body := struct {
+		Event    string            `json:"event"`
+		Body     string            `json:"body"`
+		Comments []ghReviewComment `json:"comments,omitempty"`
+	}{Event: ev.token, Body: in.Body}
+	body.Comments = make([]ghReviewComment, 0, len(in.Comments))
+	for _, c := range in.Comments {
+		body.Comments = append(body.Comments, ghReviewComment(c))
+	}
+
+	url := g.apiBase() + "/repos/" + repo + "/pulls/" + strconv.FormatUint(number, 10) + "/reviews"
+	var out ghReview
+	if err := g.doJSON(ctx, url, body, &out); err != nil {
+		return SubmittedReview{}, fmt.Errorf("forge: github submit review %q#%d: %w", repo, number, err)
+	}
+	return SubmittedReview{ID: out.ID, URL: out.HTMLURL, Verdict: in.Verdict}, nil
+}
+
 // BodyLimit is the max issue/comment/PR body size the Service enforces before a
 // write, in BYTES. GitHub caps these bodies at 65536 CHARACTERS; because a
 // UTF-8 string's character count never exceeds its byte count, enforcing 65536

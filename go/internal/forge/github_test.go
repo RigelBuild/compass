@@ -1006,3 +1006,196 @@ func TestGitHubGateConcurrentAccess(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// --- write path: SubmitReview through doJSON ---------------------------------
+
+// The request golden: verdict->event mapping, body, and the inline comments
+// array shape (path/line/side/body).
+func TestSubmitReviewRequestAndDecode(t *testing.T) {
+	const respBody = `{"id": 8801, "html_url": "https://github.com/org/repo/pull/13#pullrequestreview-8801"}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: respBody}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "sekret"})
+
+	got, err := g.SubmitReview(context.Background(), "org/repo", 13, SubmitReview{
+		Verdict: "request_changes",
+		Body:    "please fix",
+		Comments: []ReviewCommentInput{
+			{Path: "a.go", Line: 12, Side: "RIGHT", Body: "here"},
+			{Path: "b.go", Line: 3, Body: "and here"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+
+	req := rt.requests[0]
+	if req.Method != http.MethodPost {
+		t.Errorf("method = %s, want POST", req.Method)
+	}
+	if req.URL.String() != "https://api.github.com/repos/org/repo/pulls/13/reviews" {
+		t.Errorf("URL = %s", req.URL.String())
+	}
+	if h := req.Header.Get("Authorization"); h != "Bearer sekret" {
+		t.Errorf("Authorization = %q", h)
+	}
+	wantBody := `{"event":"REQUEST_CHANGES","body":"please fix","comments":[{"path":"a.go","line":12,"side":"RIGHT","body":"here"},{"path":"b.go","line":3,"body":"and here"}]}`
+	if b := readReqBody(t, req); b != wantBody {
+		t.Errorf("request body = %q, want %q", b, wantBody)
+	}
+	if got.ID != 8801 || got.Verdict != "request_changes" ||
+		got.URL != "https://github.com/org/repo/pull/13#pullrequestreview-8801" {
+		t.Errorf("decoded SubmittedReview = %+v", got)
+	}
+}
+
+// verdict->event mapping for all three tokens.
+func TestSubmitReviewEventMapping(t *testing.T) {
+	cases := map[string]string{
+		"approve":         "APPROVE",
+		"request_changes": "REQUEST_CHANGES",
+		"comment":         "COMMENT",
+	}
+	for verdict, event := range cases {
+		t.Run(verdict, func(t *testing.T) {
+			rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: `{"id":1,"html_url":"u"}`}}}
+			g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+			if _, err := g.SubmitReview(context.Background(), "org/repo", 1, SubmitReview{Verdict: verdict, Body: "b"}); err != nil {
+				t.Fatalf("SubmitReview: %v", err)
+			}
+			wantBody := `{"event":"` + event + `","body":"b"}`
+			if b := readReqBody(t, rt.requests[0]); b != wantBody {
+				t.Errorf("request body = %q, want %q", b, wantBody)
+			}
+		})
+	}
+}
+
+// Empty comments omits the array entirely (not "comments":null).
+func TestSubmitReviewEmptyCommentsOmitsArray(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: `{"id":1,"html_url":"u"}`}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	if _, err := g.SubmitReview(context.Background(), "org/repo", 1, SubmitReview{Verdict: "comment", Body: "b"}); err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+	wantBody := `{"event":"COMMENT","body":"b"}`
+	if b := readReqBody(t, rt.requests[0]); b != wantBody {
+		t.Errorf("request body = %q, want %q", b, wantBody)
+	}
+}
+
+// An unknown verdict errors before any HTTP call.
+func TestSubmitReviewUnknownVerdictNoWire(t *testing.T) {
+	rt := &scriptedRoundTripper{}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	_, err := g.SubmitReview(context.Background(), "org/repo", 1, SubmitReview{Verdict: "lgtm", Body: "b"})
+	if err == nil || !strings.Contains(err.Error(), "unknown verdict") {
+		t.Fatalf("err = %v, want unknown-verdict error", err)
+	}
+	if rt.calls != 0 {
+		t.Errorf("issued a request: calls = %d, want 0", rt.calls)
+	}
+}
+
+// COMMENT and REQUEST_CHANGES with an empty body are rejected client-side with
+// zero HTTP calls (GitHub requires a body for both).
+func TestSubmitReviewEmptyBodyRejected(t *testing.T) {
+	for _, verdict := range []string{"comment", "request_changes"} {
+		t.Run(verdict, func(t *testing.T) {
+			rt := &scriptedRoundTripper{}
+			g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+			_, err := g.SubmitReview(context.Background(), "org/repo", 1, SubmitReview{Verdict: verdict})
+			if err == nil || !strings.Contains(err.Error(), "requires a body") {
+				t.Fatalf("err = %v, want requires-a-body error", err)
+			}
+			if rt.calls != 0 {
+				t.Errorf("issued a request: calls = %d, want 0", rt.calls)
+			}
+		})
+	}
+}
+
+// APPROVE may be bodyless (A2): an empty-body approve succeeds.
+func TestSubmitReviewApproveBodyless(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 201, body: `{"id":7,"html_url":"u"}`}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	got, err := g.SubmitReview(context.Background(), "org/repo", 1, SubmitReview{Verdict: "approve"})
+	if err != nil {
+		t.Fatalf("SubmitReview: %v", err)
+	}
+	if b := readReqBody(t, rt.requests[0]); b != `{"event":"APPROVE","body":""}` {
+		t.Errorf("request body = %q", b)
+	}
+	if got.ID != 7 || got.Verdict != "approve" {
+		t.Errorf("decoded SubmittedReview = %+v", got)
+	}
+}
+
+// An off-diff inline comment drives a mocked 422 -> *StatusError{422}.
+func TestSubmitReviewOffDiff422(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 422, body: `{"message":"line must be part of the diff"}`},
+	}}
+	ts := &fakeTokenSource{token: "t"}
+	g := newTestGitHub(rt, ts)
+	_, err := g.SubmitReview(context.Background(), "org/repo", 1, SubmitReview{
+		Verdict:  "comment",
+		Body:     "b",
+		Comments: []ReviewCommentInput{{Path: "a.go", Line: 9999, Body: "off diff"}},
+	})
+	var se *StatusError
+	if !errors.As(err, &se) || se.Status != 422 {
+		t.Fatalf("err = %v, want *StatusError 422", err)
+	}
+	if ts.invalidated != 0 {
+		t.Errorf("422 must not Invalidate; got %d", ts.invalidated)
+	}
+}
+
+// 403-rate / 403-bad-creds / 404 route through mapErrorResponse, like the other
+// write methods.
+func TestSubmitReviewErrorMapping(t *testing.T) {
+	t.Run("403 rate-limit -> ErrBudgetExhausted, no Invalidate", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 403, body: `{"message":"rate limited"}`, headers: map[string]string{"Retry-After": "60"}},
+		}}
+		ts := &fakeTokenSource{token: "t"}
+		g := newTestGitHub(rt, ts)
+		_, err := g.SubmitReview(context.Background(), "org/repo", 1, SubmitReview{Verdict: "approve"})
+		if !errors.Is(err, ErrBudgetExhausted) {
+			t.Fatalf("err = %v, want ErrBudgetExhausted", err)
+		}
+		if ts.invalidated != 0 {
+			t.Errorf("rate-limit must not Invalidate; got %d", ts.invalidated)
+		}
+	})
+	t.Run("403 bad-creds -> StatusError + Invalidate", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 403, body: `{"message":"Bad credentials"}`},
+		}}
+		ts := &fakeTokenSource{token: "t"}
+		g := newTestGitHub(rt, ts)
+		_, err := g.SubmitReview(context.Background(), "org/repo", 1, SubmitReview{Verdict: "approve"})
+		var se *StatusError
+		if !errors.As(err, &se) || se.Status != 403 {
+			t.Fatalf("err = %v, want *StatusError 403", err)
+		}
+		if ts.invalidated != 1 {
+			t.Errorf("bad-creds must Invalidate; got %d", ts.invalidated)
+		}
+	})
+	t.Run("404 -> StatusError, no Invalidate", func(t *testing.T) {
+		rt := &scriptedRoundTripper{responses: []scriptedResponse{
+			{status: 404, body: `{"message":"Not Found"}`},
+		}}
+		ts := &fakeTokenSource{token: "t"}
+		g := newTestGitHub(rt, ts)
+		_, err := g.SubmitReview(context.Background(), "org/repo", 1, SubmitReview{Verdict: "approve"})
+		var se *StatusError
+		if !errors.As(err, &se) || se.Status != 404 {
+			t.Fatalf("err = %v, want *StatusError 404", err)
+		}
+		if ts.invalidated != 0 {
+			t.Errorf("404 must not Invalidate; got %d", ts.invalidated)
+		}
+	})
+}
