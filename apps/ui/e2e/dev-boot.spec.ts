@@ -15,9 +15,13 @@ import { expect, test } from "@playwright/test";
 //      mount check: renderBootError paints the caught-error screen INTO #root,
 //      so a bare "#root is non-empty" test false-greens on a caught boot
 //      failure, whereas `.bridge` visibility only ever means the app mounted.
-//  (b) zero pageerror events over the whole load — catches a mount that renders
-//      and then throws asynchronously (a deferred chunk explodes after mount),
-//      which clause (a) alone would miss.
+//  (b) zero pageerror events over the load — catches a mount that renders and
+//      then throws during boot (a synchronously-evaluated chunk explodes after
+//      the root paints), which clause (a) alone would miss. This covers errors
+//      thrown up to the point boot completes, NOT an arbitrarily-deferred
+//      post-mount async throw (e.g. lazily-loaded CJS rot in a chunk pulled in
+//      later) — that residual is named and accepted in the design record
+//      (compass-dev-boot-gate, resolved decision 1), outside a static-boot gate.
 // `#root` non-empty is asserted too, but only as a cheap redundant secondary
 // guard given (a) — never a co-equal clause.
 //
@@ -65,5 +69,9 @@ test("dev boot — app mounts with no page errors", async ({ page }) => {
 
 	const rootHtml = await page.locator("#root").innerHTML();
 	expect(rootHtml).not.toBe("");
+	// Belt-and-suspenders: re-assert no errors after the post-poll `#root` read.
+	// The throw guard above already fires on anything captured before the poll
+	// resolved; this catches the narrow case of a pageerror landing DURING the
+	// innerHTML await on the line above.
 	expect(pageErrors).toEqual([]);
 });

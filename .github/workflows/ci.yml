@@ -210,14 +210,18 @@ jobs:
           out=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
           echo "$out/bin" >>"$GITHUB_PATH"
-          # Playwright needs the Chromium executable PATH, not the command on
-          # PATH — the dev-boot gate (apps/ui:dev-smoke) resolves it via
-          # PLAYWRIGHT_CHROMIUM_PATH (playwright.config.ts:31-33). Use the
-          # in-scope store path directly: a $GITHUB_PATH append only affects
-          # SUBSEQUENT steps, so `$out/bin` is not yet on this step's PATH and
-          # `$(command -v chromium)` would resolve nothing, silently falling
-          # back to the dev-box path in the config.
-          echo "PLAYWRIGHT_CHROMIUM_PATH=$out/bin/chromium" >>"$GITHUB_ENV"
+          # The dev-boot gate (apps/ui:dev-smoke) drives a headless Chromium
+          # through Playwright, which resolves it from PLAYWRIGHT_CHROMIUM_PATH
+          # (apps/ui/playwright.config.ts:31-33). chromium is Linux-only in
+          # nixpkgs, so it is NOT in the parity `attrs` above (see devenv.nix) —
+          # it is realized out-of-band here from its own pinned helper, the same
+          # pattern the gtk3 e2e step uses for its browser stack. Read its
+          # bin/chromium out-path straight into the env: a $GITHUB_PATH append
+          # only affects SUBSEQUENT steps, so resolving `chromium` off PATH here
+          # would find nothing and silently fall back to the dev-box path.
+          chromium=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/chromium-e2e-env.nix chromium)
+          echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
 
       - name: Toolchain parity
         # Runs BEFORE the gate, though `:ci` schedules it again (it takes under a
