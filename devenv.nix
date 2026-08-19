@@ -143,7 +143,17 @@ in
   # step provisions it via tools/toolchain/chromium-e2e-env.nix, not this shell.
   ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.chromium ];
 
-  env = { }
+  env = {
+    # moon execs the vendored nix toolchain on PATH (the .moon/workspace.yml
+    # system-task design) instead of resolving go/gofmt through the proto shims
+    # under ~/.proto — which are present but back an absent `proto` binary, so
+    # every `compass-go:*` moon task (and the jj-hp pre-push `moon ci` gate)
+    # dies with a proto-shim exec error without this. Forcing globals makes moon
+    # honor the documented system-task contract rather than manage its own
+    # toolchain. Platform-independent, so it lives in the base set, not the
+    # Linux-only merge below.
+    MOON_TOOLCHAIN_FORCE_GLOBALS = "true";
+  }
   # The Compass native app (Wails v3, go/cmd/compass-app) links the Linux
   # GTK3/WebKitGTK stack through cgo. pkg-config (in `packages` above) finds each
   # library's `.pc` file along PKG_CONFIG_PATH, built here over the transitive
