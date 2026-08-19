@@ -451,6 +451,14 @@ boots in `vite dev`.
 
 All three ruled by Matt at the design-PR gate.
 
+> **Ledger note (2026-08-19):** decision 2's `solid-markdown` clause below
+> (codemod-only fork, no in-repo AST renderer, keep `SolidMarkdown`) is
+> **superseded by DL-218** ([markdown react10](../compass-ui-markdown-react10/design.md)):
+> the owned fork now adopts upstream #44's react-markdown-10 rewrite +
+> `hast-util-to-jsx-runtime` renderer re-ported to Solid 2, published as
+> `@rigelbuild/solid-markdown@3.0.0`. Decision 2's `@tanstack/solid-virtual`
+> clause and the fork-externalization stance are unaffected.
+
 1. **Build the migration branch NOW against `2.0.0-rc.0` with branch-only
    peer overrides; the RIG-2186 greenfield starts directly on Solid v2**
    (Matt, 2026-08-18). Background: the blocker deps gate the *merge*
