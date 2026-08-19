@@ -80,6 +80,74 @@ func TestForgeConfigEnableAndDefaults(t *testing.T) {
 	})
 }
 
+// TestForgeReviewerSecretDefaultingAndWritesEnabled pins the T8 write-path
+// enablement contract (Matt's 2026-08-19 ruling): the reviewer secret name
+// defaults to defaultForgeReviewerSecretName, an explicit one survives, and the
+// write path is enabled iff BOTH the author and reviewer secrets are declared —
+// independent of the poll driver's forgePollingEnabled gate.
+func TestForgeReviewerSecretDefaultingAndWritesEnabled(t *testing.T) {
+	t.Run("reviewer secret defaulted to the F1 default name", func(t *testing.T) {
+		if got := (ForgeConfig{}).resolved().ReviewerSecretName; got != defaultForgeReviewerSecretName {
+			t.Fatalf("ReviewerSecretName = %q, want %q", got, defaultForgeReviewerSecretName)
+		}
+	})
+	t.Run("explicit reviewer secret survives defaulting", func(t *testing.T) {
+		if got := (ForgeConfig{ReviewerSecretName: "REV_TOK"}).resolved().ReviewerSecretName; got != "REV_TOK" {
+			t.Fatalf("ReviewerSecretName = %q, want the explicit REV_TOK", got)
+		}
+	})
+	t.Run("both defaulted secrets declared -> writes enabled", func(t *testing.T) {
+		declared := []secrets.ResolvedSecret{
+			{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName},
+		}
+		if !(ForgeConfig{}).forgeWritesEnabled(declared) {
+			t.Fatal("both secrets declared should enable the write path")
+		}
+	})
+	t.Run("only the author secret declared -> writes disabled", func(t *testing.T) {
+		declared := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}}
+		if (ForgeConfig{}).forgeWritesEnabled(declared) {
+			t.Fatal("author-only should NOT enable the write path (both required)")
+		}
+	})
+	t.Run("only the reviewer secret declared -> writes disabled", func(t *testing.T) {
+		declared := []secrets.ResolvedSecret{{Name: defaultForgeReviewerSecretName}}
+		if (ForgeConfig{}).forgeWritesEnabled(declared) {
+			t.Fatal("reviewer-only should NOT enable the write path (both required)")
+		}
+	})
+	t.Run("neither declared -> writes disabled", func(t *testing.T) {
+		if (ForgeConfig{}).forgeWritesEnabled(nil) {
+			t.Fatal("no declared secrets should leave the write path disabled")
+		}
+	})
+	t.Run("enablement honours explicit secret names, not just defaults", func(t *testing.T) {
+		cfg := ForgeConfig{SecretName: "AUTHOR_TOK", ReviewerSecretName: "REVIEWER_TOK"}
+		both := []secrets.ResolvedSecret{{Name: "AUTHOR_TOK"}, {Name: "REVIEWER_TOK"}}
+		if !cfg.forgeWritesEnabled(both) {
+			t.Fatal("explicit names both declared should enable the write path")
+		}
+		// The DEFAULT names being present must NOT enable a config that named
+		// custom secrets — the predicate keys on the resolved config's names.
+		defaults := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName}}
+		if cfg.forgeWritesEnabled(defaults) {
+			t.Fatal("default names must not satisfy a config that declared custom secret names")
+		}
+	})
+	t.Run("write enablement is independent of the poll gate", func(t *testing.T) {
+		// forgePollingEnabled is false (no seed, no Poll) yet writes are enabled
+		// on both secrets — the two gates are orthogonal (Matt's ruling).
+		cfg := ForgeConfig{}
+		if cfg.forgePollingEnabled() {
+			t.Fatal("fixture precondition: polling should be disabled")
+		}
+		declared := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName}}
+		if !cfg.forgeWritesEnabled(declared) {
+			t.Fatal("writes must enable on both secrets even with polling disabled")
+		}
+	})
+}
+
 func TestForgeTokenSourceCachesUntilTTL(t *testing.T) {
 	res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "GITHUB_FORGE_TOKEN", Value: "tok-1"}}}
 	ts := newForgeTokenSource(res, "GITHUB_FORGE_TOKEN")

@@ -160,7 +160,7 @@ type forgeService struct {
 // assembly with hub.SetForgeCaller after all three exist (T8), breaking the
 // hub<->forgeService construction cycle exactly as newBoardService does
 // (sinks.go).
-func newForgeService(st *store.Store, issueBrd *board.IssueProjection, providers *forgeProviderRegistry) *forgeService { //nolint:unused // wired at serve assembly by T8 via hub.SetForgeCaller (mirrors newBoardService, which sinks.go already calls); this slice defines the chokepoint, T8 mounts it.
+func newForgeService(st *store.Store, issueBrd *board.IssueProjection, providers *forgeProviderRegistry) *forgeService {
 	return &forgeService{store: st, issueBrd: issueBrd, providers: providers, now: time.Now}
 }
 

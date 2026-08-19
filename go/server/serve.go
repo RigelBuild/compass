@@ -122,15 +122,32 @@ type ForgeConfig struct {
 	// SecretName is the declared server_only secret NAME holding the forge token
 	// (default "GITHUB_FORGE_TOKEN"; the VALUE never crosses config or a flag).
 	SecretName string
+	// ReviewerSecretName is the declared server_only secret NAME holding the
+	// REVIEWER forge token (default "GITHUB_FORGE_REVIEWER_TOKEN"; the VALUE
+	// never crosses config or a flag). A distinct GitHub identity from the
+	// author token so an agent approving a PR it authored is a different account
+	// (F1). The agent forge-WRITE path is enabled iff BOTH this and SecretName
+	// resolve to a declared secret (Matt's 2026-08-19 ruling); it is independent
+	// of the poll driver's forgePollingEnabled gate.
+	ReviewerSecretName string
 	// PollInterval is the poll cadence (default time.Minute).
 	PollInterval time.Duration
 }
 
 // Forge config defaults, applied by resolveForge when a field is zero.
 const (
-	defaultForgeHost         = "github.com"
-	defaultForgeSecretName   = "GITHUB_FORGE_TOKEN" //nolint:gosec // G101: this is the default declared-secret NAME (an env-var identifier), not a credential value — the value is resolved from the secrets provider, never hardcoded
-	defaultForgePollInterval = time.Minute
+	defaultForgeHost       = "github.com"
+	defaultForgeSecretName = "GITHUB_FORGE_TOKEN" //nolint:gosec // G101: this is the default declared-secret NAME (an env-var identifier), not a credential value — the value is resolved from the secrets provider, never hardcoded
+	// defaultForgeReviewerSecretName is the default declared-secret NAME holding
+	// the REVIEWER forge token (F1) — a distinct identity from the author token.
+	// A secret NAME, not a value (see defaultForgeSecretName's gosec note).
+	defaultForgeReviewerSecretName = "GITHUB_FORGE_REVIEWER_TOKEN" //nolint:gosec // G101: the default declared-secret NAME (an env-var identifier), not a credential value — resolved from the secrets provider, never hardcoded
+	// defaultForgeLinearSecretName is the declared-secret NAME holding the Linear
+	// write token (DL-051/DL-052). A Linear write coordinate is registered ONLY
+	// when this secret is declared; otherwise the write path is GitHub-only. A
+	// secret NAME, not a value.
+	defaultForgeLinearSecretName = "LINEAR_FORGE_TOKEN" //nolint:gosec // G101: the default declared-secret NAME (an env-var identifier), not a credential value — resolved from the secrets provider, never hardcoded
+	defaultForgePollInterval     = time.Minute
 	// forgeTokenTTL is the TTL the driver's TokenSource caches a resolved token
 	// for: a resolve reads the whole declared-secret registry, writes a manifest
 	// temp file, and drives a full secretspec provider Load (resolver.go:135-165),
@@ -149,7 +166,7 @@ func (c ForgeConfig) forgePollingEnabled() bool {
 }
 
 // resolved returns the config with its zero fields defaulted (Host, SecretName,
-// PollInterval). SeedRepos and Poll are taken verbatim.
+// ReviewerSecretName, PollInterval). SeedRepos and Poll are taken verbatim.
 func (c ForgeConfig) resolved() ForgeConfig {
 	if c.Host == "" {
 		c.Host = defaultForgeHost
@@ -157,10 +174,35 @@ func (c ForgeConfig) resolved() ForgeConfig {
 	if c.SecretName == "" {
 		c.SecretName = defaultForgeSecretName
 	}
+	if c.ReviewerSecretName == "" {
+		c.ReviewerSecretName = defaultForgeReviewerSecretName
+	}
 	if c.PollInterval <= 0 {
 		c.PollInterval = defaultForgePollInterval
 	}
 	return c
+}
+
+// forgeWritesEnabled reports whether the agent forge-WRITE path is enabled: iff
+// BOTH the author secret (SecretName) and the reviewer secret
+// (ReviewerSecretName) resolve to a name present in declared (Matt's 2026-08-19
+// ruling — independent of forgePollingEnabled, both secrets required). It is a
+// pure predicate over the resolved declared-secret set so the "enabled = both
+// declared" rule is unit-testable without a running Serve; buildForgeWriteService
+// re-validates each name through validateForgeSecret to fail fast with the two
+// distinct texts. Called on the resolved() config so the defaulted names apply.
+func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool {
+	fc := c.resolved()
+	var haveAuthor, haveReviewer bool
+	for _, s := range declared {
+		switch s.Name {
+		case fc.SecretName:
+			haveAuthor = true
+		case fc.ReviewerSecretName:
+			haveReviewer = true
+		}
+	}
+	return haveAuthor && haveReviewer
 }
 
 // The bootstrap-admin identity the local-socket door attributes callers to until
@@ -439,24 +481,19 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return err
 	}
 
-	// The board-ingestion poll driver (SEA-1810, DL-053). Built only when forge
-	// polling is enabled (Poll || a non-empty seed); disabled leaves forgeDriver
-	// nil (today's behavior) but still emits one Warn if the table already holds
-	// enabled rows for the bound (provider, host). Its startup secret resolve and
-	// seed reconcile fail fast HERE — after the UDS listener binds, so the same
-	// udsListener.Close()+listeners.close() cleanup path the Rehydrate failure
-	// uses (above) applies — and the seed rows are visible in the table BEFORE
-	// the driver's first pass (the driver enumerates WHERE enabled per pass).
-	var forgeDriver *ingest.Driver
-	if cfg.Forge.forgePollingEnabled() {
-		forgeDriver, err = buildForgeDriver(ctx, cfg, st, issueBrd, resolver, hubLog)
-		if err != nil {
-			udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
-			listeners.close()
-			return err
-		}
-	} else {
-		warnDisabledForgePolling(ctx, st, store.ForgeProviderGitHub, cfg.Forge.resolved().Host, hubLog)
+	// The board-ingestion poll driver (SEA-1810, DL-053) and the agent forge-WRITE
+	// path (T8) are the two forge startup phases; see wireForgePollDriver and
+	// wireForgeWriteCaller. Both fail fast HERE, on the same udsListener.Close()+
+	// listeners.close() cleanup path the Rehydrate fault above uses.
+	forgeDriver, err := wireForgePollDriver(ctx, cfg, st, issueBrd, resolver, hubLog, udsListener, listeners)
+	if err != nil {
+		return err
+	}
+
+	// The forge-WRITE caller is independent of the poll driver (Matt's 2026-08-19
+	// ruling): enabled iff BOTH write secrets are declared.
+	if err := wireForgeWriteCaller(ctx, cfg, st, issueBrd, resolver, hub, hubLog, udsListener, listeners); err != nil {
+		return err
 	}
 
 	// Run every door under one scoped group. errgroup.WithContext gives the
@@ -771,6 +808,38 @@ func buildForgeDriver(
 	}), nil
 }
 
+// wireForgePollDriver builds the board-ingestion poll driver (SEA-1810, DL-053)
+// when forge polling is enabled (Poll || a non-empty seed), else returns a nil
+// driver after emitting one Warn if the table already holds enabled rows for the
+// bound (provider, host). Its startup secret resolve and seed reconcile fail
+// fast, unwinding the caller-bound listeners (udsListener + listeners) before
+// returning — the same teardown path the write caller and Rehydrate faults use.
+// The seed rows are visible in the table BEFORE the driver's first pass (the
+// driver enumerates WHERE enabled per pass); the returned driver's Run is added
+// to the serve errgroup by the caller.
+func wireForgePollDriver(
+	ctx context.Context,
+	cfg ServeConfig,
+	st *store.Store,
+	issueBrd *board.IssueProjection,
+	resolver secrets.Resolver,
+	log *slog.Logger,
+	udsListener net.Listener,
+	listeners boundListeners,
+) (*ingest.Driver, error) {
+	if !cfg.Forge.forgePollingEnabled() {
+		warnDisabledForgePolling(ctx, st, store.ForgeProviderGitHub, cfg.Forge.resolved().Host, log)
+		return nil, nil //nolint:nilnil // polling disabled is a valid non-error state: a nil driver is the signal (the caller guards `if forgeDriver != nil`), not an ambiguous nil-nil — a sentinel error would force the caller to distinguish it from a real fault.
+	}
+	driver, err := buildForgeDriver(ctx, cfg, st, issueBrd, resolver, log)
+	if err != nil {
+		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
+		listeners.close()
+		return nil, err
+	}
+	return driver, nil
+}
+
 // validateForgeSecret resolves the declared secret set once and asserts the
 // configured name is present. A resolve that ERRORS is transient
 // ("forge secret resolve failed at startup: %w"); a name ABSENT from the
@@ -787,6 +856,138 @@ func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, name st
 		}
 	}
 	return fmt.Errorf("forge secret %q not declared", name)
+}
+
+// wireForgeWriteCaller resolves the declared secrets, and — when the forge-WRITE
+// path is enabled (both write secrets declared) — builds the write chokepoint
+// and mounts it on the hub via SetForgeCaller. A resolve FAULT (not an absent
+// name) fails startup regardless of whether writes are on; when writes are off,
+// the caller is left unwired and Hub.RelayForgeCall fail-closes to an in-band
+// CodeUnavailable (relay_forge.go), the clean degrade. On any startup fault it
+// unwinds the caller-bound listeners (udsListener + listeners) before returning,
+// the same teardown path the poll driver and Rehydrate faults use.
+func wireForgeWriteCaller(
+	ctx context.Context,
+	cfg ServeConfig,
+	st *store.Store,
+	issueBrd *board.IssueProjection,
+	resolver secrets.Resolver,
+	hub *runnerhub.Hub,
+	log *slog.Logger,
+	udsListener net.Listener,
+	listeners boundListeners,
+) error {
+	declaredSecrets, err := resolver.Resolve(ctx, "forge write")
+	if err != nil {
+		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
+		listeners.close()
+		return fmt.Errorf("forge secret resolve failed at startup: %w", err)
+	}
+	if !cfg.Forge.forgeWritesEnabled(declaredSecrets) {
+		return nil
+	}
+	forgeSvc, err := buildForgeWriteService(ctx, cfg, st, issueBrd, resolver, log)
+	if err != nil {
+		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
+		listeners.close()
+		return err
+	}
+	hub.SetForgeCaller(forgeSvc)
+	return nil
+}
+
+// buildForgeWriteService assembles the agent forge-WRITE chokepoint (the
+// runnerhub.ForgeCaller) per Matt's 2026-08-19 ruling: independent of the poll
+// driver, enabled iff BOTH forge write secrets are declared. In order it: (1)
+// validates BOTH the author and reviewer secrets ONCE at startup so a
+// misconfiguration fails fast with the two distinct texts (undeclared name vs a
+// resolve that errors, via validateForgeSecret — exactly buildForgeDriver's
+// fail-fast), (2) builds the provider registry, registering the GitHub
+// coordinate (author+reviewer, F1) and — when its secret is declared — a Linear
+// coordinate, and (3) returns the forgeService the caller mounts with
+// hub.SetForgeCaller. The caller gates the whole call on forgeWritesEnabled, so
+// this only runs when both write secrets are present; the validateForgeSecret
+// calls are the fail-fast on a resolve fault.
+//
+// The registry always holds the GitHub coordinate (its host defaults to
+// github.com, so registerGitHubForgeCoordinate registers it whenever writes are
+// enabled) plus a Linear coordinate when LINEAR_FORGE_TOKEN is declared, so the
+// returned service is always non-nil on success.
+func buildForgeWriteService(
+	ctx context.Context,
+	cfg ServeConfig,
+	st *store.Store,
+	issueBrd *board.IssueProjection,
+	resolver secrets.Resolver,
+	log *slog.Logger,
+) (*forgeService, error) {
+	fc := cfg.Forge.resolved()
+
+	// (1) Startup secret resolve for BOTH roles: fail fast with the distinct
+	// texts so a permanent misconfig (an undeclared name) is not confused with a
+	// transient outage (a resolve that errors). The TokenSources re-resolve later
+	// on TTL/Invalidate.
+	if err := validateForgeSecret(ctx, resolver, fc.SecretName); err != nil {
+		return nil, err
+	}
+	if err := validateForgeSecret(ctx, resolver, fc.ReviewerSecretName); err != nil {
+		return nil, err
+	}
+
+	// (2) The provider registry: the GitHub coordinate (author+reviewer, F1)
+	// plus a Linear coordinate when its secret is declared.
+	registry := newForgeProviderRegistry()
+	registerGitHubForgeCoordinate(registry, fc, resolver)
+
+	// Linear write coordinate — registered ONLY when LINEAR_FORGE_TOKEN is
+	// declared (else GitHub-only). Linear is issues-only (DL-051): its PR/review
+	// ops return ErrUnsupported, which the chokepoint flattens to in-band
+	// unimplemented. One client serves both roles — Linear has no author/reviewer
+	// split (no review concept), so the same client is the author and the reviewer
+	// entry. Its coordinate host is left empty so a Linear-provider ForgeRef with
+	// no host resolves it via the registry's per-provider default; the GraphQL
+	// endpoint default lives inside NewLinear. isDefault=false: the GitHub
+	// coordinate is the default a nil/unset ForgeRef resolves to, so Linear is the
+	// additive coordinate a LINEAR-addressed ForgeRef selects explicitly.
+	if linearDeclared, err := forgeSecretDeclared(ctx, resolver, defaultForgeLinearSecretName); err != nil {
+		return nil, err
+	} else if linearDeclared {
+		linear := forge.NewLinear(forge.LinearConfig{Token: newForgeTokenSource(resolver, defaultForgeLinearSecretName), Log: log})
+		registry.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR}, linear, linear, false)
+	}
+
+	return newForgeService(st, issueBrd, registry), nil
+}
+
+// registerGitHubForgeCoordinate registers the production GitHub write coordinate
+// — the AUTHOR client (over fc.SecretName) and the REVIEWER client (over
+// fc.ReviewerSecretName, F1), each on its own TTL-caching TokenSource — as the
+// default coordinate a nil/unset ForgeRef resolves to. The two roles are
+// distinct GitHub identities so an agent approving a PR it authored dispatches
+// submit_review on a different account than it authored with, dissolving the
+// author-approving-own-PR rejection at the credential layer.
+func registerGitHubForgeCoordinate(reg *forgeProviderRegistry, fc ForgeConfig, resolver secrets.Resolver) {
+	author := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: newForgeTokenSource(resolver, fc.SecretName)})
+	reviewer := forge.NewGitHub(forge.GitHubConfig{Host: fc.Host, Token: newForgeTokenSource(resolver, fc.ReviewerSecretName)})
+	reg.register(forgeCoordinate{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, host: fc.Host}, author, reviewer, true)
+}
+
+// forgeSecretDeclared reports whether name is present in the resolved
+// declared-secret set — the additive Linear gate (register a Linear coordinate
+// iff its secret is declared). A resolve fault fails fast the same way
+// validateForgeSecret's does; unlike validateForgeSecret an absent name is NOT an
+// error (Linear is the optional additive coordinate, not the required path).
+func forgeSecretDeclared(ctx context.Context, resolver secrets.Resolver, name string) (bool, error) {
+	resolved, err := resolver.Resolve(ctx, "forge write")
+	if err != nil {
+		return false, fmt.Errorf("forge secret resolve failed at startup: %w", err)
+	}
+	for _, s := range resolved {
+		if s.Name == name {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // reconcileForgeSeed inserts each seed repo as an enabled target, bootstrap-only
