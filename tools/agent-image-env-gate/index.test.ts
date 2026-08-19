@@ -53,7 +53,7 @@ describe("evaluateImage", () => {
 			},
 			{ builderHome: "/home/mattw" },
 		);
-		expect(problems.some((p) => p.includes("Os"))).toBe(true);
+		expect(problems).toContain(`image Os is darwin, expected ${EXPECTED_OS}`);
 	});
 
 	test("Architecture drift is a problem", () => {
@@ -65,7 +65,9 @@ describe("evaluateImage", () => {
 			},
 			{ builderHome: "/home/mattw" },
 		);
-		expect(problems.some((p) => p.includes("Architecture"))).toBe(true);
+		expect(problems).toContain(
+			`image Architecture is arm64, expected ${EXPECTED_ARCH}`,
+		);
 	});
 
 	test("a DEVENV_ leak in Env is a problem", () => {
