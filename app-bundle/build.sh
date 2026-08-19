@@ -103,7 +103,13 @@ for b in compass-app compass-stack compass-server compass-runner compass-postgre
   # "compass-server <v>", the others the bare value — A0 §77-84), so a
   # substring check is the faithful "prints the stamped value" test, not an
   # exact-string match that a correct bundle would fail.
-  got="$("$bin" --version)"
+  # Capture stdout+stderr and guard the exit explicitly: a binary that crashes
+  # on --version would otherwise abort at this assignment under `set -e` before
+  # the diagnostic below runs, losing the operator's clue to which binary broke.
+  if ! got="$("$bin" --version 2>&1)"; then
+    err "sanity: bin/$b --version exited non-zero: $got"
+    exit 1
+  fi
   if [[ "$got" != *"$v"* ]]; then
     err "sanity: bin/$b --version = '$got', expected to contain '$v'"
     exit 1

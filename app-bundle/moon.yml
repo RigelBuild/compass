@@ -40,14 +40,21 @@ tasks:
     # covered through the compass-ui:build deps edge (no /apps/ui/src/** belt —
     # moon schedules dependents of affected projects). A leading `/` is
     # workspace-root-relative; the bare globs are this project's own tree.
+    # gtk-closure.nix + gtk-e2e-env.nix + devenv.lock are the nix closure
+    # build.sh realizes directly (the cc/pkg-config env every ELF is rpathed
+    # against); LICENSE is copied into the artifact — all first-class inputs so
+    # a change to any of them reschedules the bundle under per-PR affected
+    # detection.
     inputs:
       - '/go/**'
       - '!/go/**/*_test.go'
       - '/go/go.mod'
       - '/go/go.sum'
       - '/tools/toolchain/gtk-closure.nix'
+      - '/tools/toolchain/gtk-e2e-env.nix'
       - '/tools/toolchain/versions/go.nix'
       - '/devenv.lock'
+      - '/LICENSE'
       - 'build.sh'
       - 'bundle-env.nix'
       - 'compass.desktop'
