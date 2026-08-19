@@ -16,6 +16,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -76,6 +77,74 @@ func TestForgeConfigEnableAndDefaults(t *testing.T) {
 		got := in.resolved()
 		if got.Host != "ghe.example.com" || got.SecretName != "TOK" || got.PollInterval != 3*time.Minute {
 			t.Fatalf("explicit fields clobbered by defaulting: %+v", got)
+		}
+	})
+}
+
+// TestForgeReviewerSecretDefaultingAndWritesEnabled pins the T8 write-path
+// enablement contract (Matt's 2026-08-19 ruling): the reviewer secret name
+// defaults to defaultForgeReviewerSecretName, an explicit one survives, and the
+// write path is enabled iff BOTH the author and reviewer secrets are declared —
+// independent of the poll driver's forgePollingEnabled gate.
+func TestForgeReviewerSecretDefaultingAndWritesEnabled(t *testing.T) {
+	t.Run("reviewer secret defaulted to the F1 default name", func(t *testing.T) {
+		if got := (ForgeConfig{}).resolved().ReviewerSecretName; got != defaultForgeReviewerSecretName {
+			t.Fatalf("ReviewerSecretName = %q, want %q", got, defaultForgeReviewerSecretName)
+		}
+	})
+	t.Run("explicit reviewer secret survives defaulting", func(t *testing.T) {
+		if got := (ForgeConfig{ReviewerSecretName: "REV_TOK"}).resolved().ReviewerSecretName; got != "REV_TOK" {
+			t.Fatalf("ReviewerSecretName = %q, want the explicit REV_TOK", got)
+		}
+	})
+	t.Run("both defaulted secrets declared -> writes enabled", func(t *testing.T) {
+		declared := []secrets.ResolvedSecret{
+			{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName},
+		}
+		if !(ForgeConfig{}).forgeWritesEnabled(declared) {
+			t.Fatal("both secrets declared should enable the write path")
+		}
+	})
+	t.Run("only the author secret declared -> writes disabled", func(t *testing.T) {
+		declared := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}}
+		if (ForgeConfig{}).forgeWritesEnabled(declared) {
+			t.Fatal("author-only should NOT enable the write path (both required)")
+		}
+	})
+	t.Run("only the reviewer secret declared -> writes disabled", func(t *testing.T) {
+		declared := []secrets.ResolvedSecret{{Name: defaultForgeReviewerSecretName}}
+		if (ForgeConfig{}).forgeWritesEnabled(declared) {
+			t.Fatal("reviewer-only should NOT enable the write path (both required)")
+		}
+	})
+	t.Run("neither declared -> writes disabled", func(t *testing.T) {
+		if (ForgeConfig{}).forgeWritesEnabled(nil) {
+			t.Fatal("no declared secrets should leave the write path disabled")
+		}
+	})
+	t.Run("enablement honours explicit secret names, not just defaults", func(t *testing.T) {
+		cfg := ForgeConfig{SecretName: "AUTHOR_TOK", ReviewerSecretName: "REVIEWER_TOK"}
+		both := []secrets.ResolvedSecret{{Name: "AUTHOR_TOK"}, {Name: "REVIEWER_TOK"}}
+		if !cfg.forgeWritesEnabled(both) {
+			t.Fatal("explicit names both declared should enable the write path")
+		}
+		// The DEFAULT names being present must NOT enable a config that named
+		// custom secrets — the predicate keys on the resolved config's names.
+		defaults := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName}}
+		if cfg.forgeWritesEnabled(defaults) {
+			t.Fatal("default names must not satisfy a config that declared custom secret names")
+		}
+	})
+	t.Run("write enablement is independent of the poll gate", func(t *testing.T) {
+		// forgePollingEnabled is false (no seed, no Poll) yet writes are enabled
+		// on both secrets — the two gates are orthogonal (Matt's ruling).
+		cfg := ForgeConfig{}
+		if cfg.forgePollingEnabled() {
+			t.Fatal("fixture precondition: polling should be disabled")
+		}
+		declared := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName}}
+		if !cfg.forgeWritesEnabled(declared) {
+			t.Fatal("writes must enable on both secrets even with polling disabled")
 		}
 	})
 }
@@ -165,7 +234,7 @@ func TestValidateForgeSecretDistinctErrors(t *testing.T) {
 
 	t.Run("name absent -> not declared", func(t *testing.T) {
 		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "OTHER", Value: "x"}}}
-		err := validateForgeSecret(ctx, res, "GITHUB_FORGE_TOKEN")
+		err := validateForgeSecret(ctx, res, "forge write", "GITHUB_FORGE_TOKEN")
 		if err == nil {
 			t.Fatal("validateForgeSecret with the name absent = nil, want an error")
 		}
@@ -177,7 +246,7 @@ func TestValidateForgeSecretDistinctErrors(t *testing.T) {
 	t.Run("resolve errors -> resolve failed at startup", func(t *testing.T) {
 		sentinel := errors.New("provider unreachable")
 		res := &fakeResolver{err: sentinel}
-		err := validateForgeSecret(ctx, res, "GITHUB_FORGE_TOKEN")
+		err := validateForgeSecret(ctx, res, "forge write", "GITHUB_FORGE_TOKEN")
 		if err == nil {
 			t.Fatal("validateForgeSecret with a resolve error = nil, want an error")
 		}
@@ -191,8 +260,8 @@ func TestValidateForgeSecretDistinctErrors(t *testing.T) {
 
 	t.Run("the two texts are distinguishable", func(t *testing.T) {
 		absent := validateForgeSecret(ctx,
-			&fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "OTHER"}}}, "GITHUB_FORGE_TOKEN")
-		failed := validateForgeSecret(ctx, &fakeResolver{err: errors.New("boom")}, "GITHUB_FORGE_TOKEN")
+			&fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "OTHER"}}}, "forge write", "GITHUB_FORGE_TOKEN")
+		failed := validateForgeSecret(ctx, &fakeResolver{err: errors.New("boom")}, "forge write", "GITHUB_FORGE_TOKEN")
 		if absent.Error() == failed.Error() {
 			t.Fatal("the not-declared and resolve-failed texts must differ so a crash-loop is diagnosable")
 		}
@@ -200,8 +269,84 @@ func TestValidateForgeSecretDistinctErrors(t *testing.T) {
 
 	t.Run("name present -> nil", func(t *testing.T) {
 		res := &fakeResolver{resolved: []secrets.ResolvedSecret{{Name: "GITHUB_FORGE_TOKEN", Value: "x"}}}
-		if err := validateForgeSecret(ctx, res, "GITHUB_FORGE_TOKEN"); err != nil {
+		if err := validateForgeSecret(ctx, res, "forge write", "GITHUB_FORGE_TOKEN"); err != nil {
 			t.Fatalf("validateForgeSecret with the name present = %v, want nil", err)
+		}
+	})
+}
+
+// capWarnHandler is a DB-free slog.Handler that counts Warn records and keeps
+// the last one's attributes, for the partial-misconfig warn assertions. Kept
+// local to this unix (no-pgtest) file — the warn path under test is a pure
+// function of config + declared secrets, no store needed.
+type capWarnHandler struct {
+	warns    int
+	lastAttr map[string]string
+}
+
+func (h *capWarnHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *capWarnHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Level == slog.LevelWarn {
+		h.warns++
+		h.lastAttr = map[string]string{}
+		r.Attrs(func(a slog.Attr) bool {
+			h.lastAttr[a.Key] = a.Value.String()
+			return true
+		})
+	}
+	return nil
+}
+func (h *capWarnHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *capWarnHandler) WithGroup(string) slog.Handler      { return h }
+
+// TestWarnPartialForgeWriteSecrets pins the observability contract for a partial
+// write-secret misconfiguration: exactly one of the two required secrets
+// declared emits ONE Warn naming the declared and the missing secret, while the
+// intentional both-absent OFF state and the both-present ENABLED state stay
+// silent. Guards against a silent hard-outage on an operator typo in one of the
+// two env-var names.
+func TestWarnPartialForgeWriteSecrets(t *testing.T) {
+	t.Run("author-only declared -> one Warn naming declared+missing", func(t *testing.T) {
+		h := &capWarnHandler{}
+		declared := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}}
+		warnPartialForgeWriteSecrets(ForgeConfig{}, declared, slog.New(h))
+		if h.warns != 1 {
+			t.Fatalf("Warn count = %d, want exactly 1 on a partial (author-only) misconfig", h.warns)
+		}
+		if h.lastAttr["declared"] != defaultForgeSecretName {
+			t.Fatalf("declared attr = %q, want %q", h.lastAttr["declared"], defaultForgeSecretName)
+		}
+		if h.lastAttr["missing"] != defaultForgeReviewerSecretName {
+			t.Fatalf("missing attr = %q, want %q", h.lastAttr["missing"], defaultForgeReviewerSecretName)
+		}
+	})
+	t.Run("reviewer-only declared -> one Warn naming declared+missing", func(t *testing.T) {
+		h := &capWarnHandler{}
+		declared := []secrets.ResolvedSecret{{Name: defaultForgeReviewerSecretName}}
+		warnPartialForgeWriteSecrets(ForgeConfig{}, declared, slog.New(h))
+		if h.warns != 1 {
+			t.Fatalf("Warn count = %d, want exactly 1 on a partial (reviewer-only) misconfig", h.warns)
+		}
+		if h.lastAttr["declared"] != defaultForgeReviewerSecretName {
+			t.Fatalf("declared attr = %q, want %q", h.lastAttr["declared"], defaultForgeReviewerSecretName)
+		}
+		if h.lastAttr["missing"] != defaultForgeSecretName {
+			t.Fatalf("missing attr = %q, want %q", h.lastAttr["missing"], defaultForgeSecretName)
+		}
+	})
+	t.Run("neither declared -> silent (intentional off)", func(t *testing.T) {
+		h := &capWarnHandler{}
+		warnPartialForgeWriteSecrets(ForgeConfig{}, nil, slog.New(h))
+		if h.warns != 0 {
+			t.Fatalf("Warn count = %d, want 0 for the intentional both-absent off state", h.warns)
+		}
+	})
+	t.Run("both declared -> silent (enabled path warns nothing)", func(t *testing.T) {
+		h := &capWarnHandler{}
+		declared := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName}}
+		warnPartialForgeWriteSecrets(ForgeConfig{}, declared, slog.New(h))
+		if h.warns != 0 {
+			t.Fatalf("Warn count = %d, want 0 when both secrets are declared", h.warns)
 		}
 	})
 }

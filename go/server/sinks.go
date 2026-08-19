@@ -79,6 +79,15 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 // satisfies the runnerhub-defined CommsCaller.
 var _ comms.AskAnswerWaker = (*runnerhub.Hub)(nil)
 
+// Compass forge write path T8: *forgeService (forge.go, the DL-050 write
+// chokepoint) satisfies the T5-defined runnerhub.ForgeCaller seam the hub relays
+// RelayForgeCall into. The assertion lives here in the server package — which
+// imports both forgeService (unexported, same package) and runnerhub — the same
+// direction the sibling AskAnswerWaker assertion above is proven; T4 could not
+// place it because the runnerhub interface was not importable in its isolated
+// slice.
+var _ runnerhub.ForgeCaller = (*forgeService)(nil)
+
 // wireHubServiceCycles breaks the post-construction cycles between the hub and
 // the account-facing services that are built before it (the hub relays through
 // them, so they cannot take the hub at construction): the hub<->lifecycle cycle
