@@ -691,13 +691,13 @@
 	background: var(--cx-text-faint);
 }
 .check-pip[data-status="success"] {
-	background: var(--cx-ok);
+	background: var(--cx-ci-pass);
 }
 .check-pip[data-status="failure"] {
-	background: var(--cx-error);
+	background: var(--cx-ci-fail);
 }
 .check-pip[data-status="pending"] {
-	background: var(--cx-warn);
+	background: var(--cx-ci-pending);
 }
 
 .card-pr.link {
@@ -1494,13 +1494,13 @@
 	font-family: var(--cx-font-ui);
 }
 .c-verdict[data-status="success"] {
-	color: var(--cx-ok);
+	color: var(--cx-ci-pass);
 }
 .c-verdict[data-status="failure"] {
-	color: var(--cx-error);
+	color: var(--cx-ci-fail);
 }
 .c-verdict[data-status="pending"] {
-	color: var(--cx-warn);
+	color: var(--cx-ci-pending);
 }
 
 .pr-reviews {
