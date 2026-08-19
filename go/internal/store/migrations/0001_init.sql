@@ -8,13 +8,16 @@
 -- authored-artifact ownership.
 --
 -- History note: this replaces the original sequential 0001..0016 migration
--- chain. Pre-dogfood — zero users, zero deployed databases — so migration
--- history was dead weight and Matt ruled (2026-08-07) to collapse it into this
--- single init. It is a schema RESET, correct ONLY because no deployed DB exists
--- to migrate; the resulting schema is byte-identical (pg_dump) to applying the
--- 16 files in order. The `schema_migrations` bookkeeping table is deliberately
--- NOT here: the Go runner creates it (store.go ensureMigrationsTable) so it can
--- record v1 itself.
+-- chain PLUS the two migrations added after it (the forge authored-artifact
+-- ownership table and the messages author-index), all folded back into this
+-- single init. Pre-dogfood — zero users, zero deployed databases — so migration
+-- history was dead weight and Matt ruled (2026-08-07) to collapse it; the same
+-- reasoning folds each later migration in as it accretes. It is a schema RESET,
+-- correct ONLY because no deployed DB exists to migrate; the resulting schema
+-- is byte-identical (pg_dump) to applying the collapsed 0001..0016 chain and
+-- those later files in order. The `schema_migrations` bookkeeping table is
+-- deliberately NOT here: the Go runner creates it (store.go ensureMigrationsTable)
+-- so it can record v1 itself.
 --
 -- Convention: text ids are server-assigned (the store generates a UUID per
 -- row); FKs are ON DELETE RESTRICT so a referenced account/channel/agent cannot
