@@ -192,8 +192,18 @@ func (c ForgeConfig) resolved() ForgeConfig {
 // re-validates each name through validateForgeSecret to fail fast with the two
 // distinct texts. Called on the resolved() config so the defaulted names apply.
 func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool {
+	haveAuthor, haveReviewer := c.forgeWriteSecretsDeclared(declared)
+	return haveAuthor && haveReviewer
+}
+
+// forgeWriteSecretsDeclared reports which of the two required write secrets —
+// the author (SecretName) and the reviewer (ReviewerSecretName) — are present
+// in the resolved declared set. Both true is the writes-enabled state
+// (forgeWritesEnabled); exactly one true is a partial misconfiguration
+// warnPartialForgeWriteSecrets surfaces. Resolves the config internally so the
+// defaulted names apply — the caller need not pre-resolve.
+func (c ForgeConfig) forgeWriteSecretsDeclared(declared []secrets.ResolvedSecret) (haveAuthor, haveReviewer bool) {
 	fc := c.resolved()
-	var haveAuthor, haveReviewer bool
 	for _, s := range declared {
 		switch s.Name {
 		case fc.SecretName:
@@ -202,7 +212,7 @@ func (c ForgeConfig) forgeWritesEnabled(declared []secrets.ResolvedSecret) bool 
 			haveReviewer = true
 		}
 	}
-	return haveAuthor && haveReviewer
+	return haveAuthor, haveReviewer
 }
 
 // The bootstrap-admin identity the local-socket door attributes callers to until
@@ -781,7 +791,7 @@ func buildForgeDriver(
 	// (1) Startup secret resolve: fail fast with distinct texts so a permanent
 	// misconfig (undeclared name) is not confused with a transient outage (a
 	// resolve that errors). The TokenSource re-resolves later on TTL/Invalidate.
-	if err := validateForgeSecret(ctx, resolver, fc.SecretName); err != nil {
+	if err := validateForgeSecret(ctx, resolver, "forge poll", fc.SecretName); err != nil {
 		return nil, err
 	}
 
@@ -845,8 +855,8 @@ func wireForgePollDriver(
 // ("forge secret resolve failed at startup: %w"); a name ABSENT from the
 // resolved set is a permanent misconfiguration ("forge secret %q not declared").
 // The two are distinguishable so a crash-loop is diagnosable.
-func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, name string) error {
-	resolved, err := resolver.Resolve(ctx, "forge poll")
+func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, reason, name string) error {
+	resolved, err := resolver.Resolve(ctx, reason)
 	if err != nil {
 		return fmt.Errorf("forge secret resolve failed at startup: %w", err)
 	}
@@ -863,7 +873,9 @@ func validateForgeSecret(ctx context.Context, resolver secrets.Resolver, name st
 // and mounts it on the hub via SetForgeCaller. A resolve FAULT (not an absent
 // name) fails startup regardless of whether writes are on; when writes are off,
 // the caller is left unwired and Hub.RelayForgeCall fail-closes to an in-band
-// CodeUnavailable (relay_forge.go), the clean degrade. On any startup fault it
+// CodeUnavailable (relay_forge.go), the clean degrade — but a PARTIAL misconfig
+// (only one of the two write secrets declared) logs a Warn first, since that is
+// a likely operator typo rather than an intentional off. On any startup fault it
 // unwinds the caller-bound listeners (udsListener + listeners) before returning,
 // the same teardown path the poll driver and Rehydrate faults use.
 func wireForgeWriteCaller(
@@ -884,6 +896,7 @@ func wireForgeWriteCaller(
 		return fmt.Errorf("forge secret resolve failed at startup: %w", err)
 	}
 	if !cfg.Forge.forgeWritesEnabled(declaredSecrets) {
+		warnPartialForgeWriteSecrets(cfg.Forge, declaredSecrets, log)
 		return nil
 	}
 	forgeSvc, err := buildForgeWriteService(ctx, cfg, st, issueBrd, resolver, log)
@@ -927,10 +940,10 @@ func buildForgeWriteService(
 	// texts so a permanent misconfig (an undeclared name) is not confused with a
 	// transient outage (a resolve that errors). The TokenSources re-resolve later
 	// on TTL/Invalidate.
-	if err := validateForgeSecret(ctx, resolver, fc.SecretName); err != nil {
+	if err := validateForgeSecret(ctx, resolver, "forge write", fc.SecretName); err != nil {
 		return nil, err
 	}
-	if err := validateForgeSecret(ctx, resolver, fc.ReviewerSecretName); err != nil {
+	if err := validateForgeSecret(ctx, resolver, "forge write", fc.ReviewerSecretName); err != nil {
 		return nil, err
 	}
 
@@ -1030,6 +1043,27 @@ func warnDisabledForgePolling(ctx context.Context, st *store.Store, provider sto
 	}
 	log.Warn("forge polling disabled but enabled targets exist; set --forge-poll",
 		"targets", len(enabled), "forge_host", host)
+}
+
+// warnPartialForgeWriteSecrets emits exactly one slog.Warn when the forge-WRITE
+// path is disabled because only ONE of the two required write secrets is
+// declared — a likely operator typo in one of the two env-var NAMES, which
+// otherwise silently fails every agent forge write closed (CodeUnavailable)
+// with nothing in the startup log to explain it. The intentional both-absent
+// OFF state stays silent. Mirrors warnDisabledForgePolling: diagnostic only,
+// never fail-fast, and logs secret NAMES (env-var identifiers) never values.
+func warnPartialForgeWriteSecrets(fc ForgeConfig, declared []secrets.ResolvedSecret, log *slog.Logger) {
+	haveAuthor, haveReviewer := fc.forgeWriteSecretsDeclared(declared)
+	if haveAuthor == haveReviewer {
+		return // both present (enabled path, not here) or both absent (intentional off)
+	}
+	rc := fc.resolved()
+	declaredName, missingName := rc.SecretName, rc.ReviewerSecretName
+	if haveReviewer {
+		declaredName, missingName = rc.ReviewerSecretName, rc.SecretName
+	}
+	log.Warn("forge write path disabled: only one of the two required forge write secrets is declared; both are required",
+		"declared", declaredName, "missing", missingName)
 }
 
 // normalizeGitHubRepo validates an "owner/name" repo string and lowercases it
