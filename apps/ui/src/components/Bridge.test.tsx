@@ -165,6 +165,28 @@ describe("Bridge card badges (Record B §3)", () => {
 		expect(rowBadge.hasAttribute("data-compact")).toBe(false);
 	});
 
+	test("the selected card carries data-selected; others do not (presence toggle)", () => {
+		// T3 encodes selection solely as `.cx-card[data-selected]` (IssueCard.tsx:
+		// `sel ? "" : undefined`), which owns the accent left rule now that the
+		// priority stripe is gone. Defend the toggle against inversion / a dropped
+		// attribute: exactly one card is selected (the store seeds STUB_ISSUES[0]),
+		// and selecting a different issue moves the attribute to exactly one card.
+		const { store, container } = mountBridge();
+		const selectedCards = () =>
+			container.querySelectorAll(".cx-card[data-selected]");
+		const allCards = container.querySelectorAll(".cx-card");
+		expect(allCards.length).toBeGreaterThan(1);
+		expect(selectedCards()).toHaveLength(1);
+
+		// Move the selection to a different fixture issue that the board renders.
+		const otherId = STUB_ISSUES.find(
+			(w) => w.id !== store.selectedIssueId(),
+		)?.id;
+		if (!otherId) throw new Error("need a second fixture issue");
+		store.selectIssue(otherId);
+		expect(selectedCards()).toHaveLength(1);
+	});
+
 	test("a card PR chip is a link that selects the issue and flips to the PRs tab", () => {
 		const { store, container } = mountBridge();
 		const chip = container.querySelector<HTMLElement>('.card-pr[role="link"]');
