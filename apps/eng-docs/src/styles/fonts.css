@@ -1,0 +1,28 @@
+/* Rigel brand faces for the public engineering docsite, self-hosted from
+   public/fonts/. Departure Mono is the bitmap display face (crisp only at 11px
+   multiples); Space Mono is the body/UI workhorse (--rigel-mono); IBM Plex Mono
+   is the stack fallback. */
+@font-face {
+	font-family: "Departure Mono";
+	src: url("/fonts/DepartureMono-Regular.otf") format("opentype");
+	font-weight: 400;
+	font-display: swap;
+}
+@font-face {
+	font-family: "Space Mono";
+	src: url("/fonts/SpaceMono-Regular.ttf") format("truetype");
+	font-weight: 400;
+	font-display: swap;
+}
+@font-face {
+	font-family: "Space Mono";
+	src: url("/fonts/SpaceMono-Bold.ttf") format("truetype");
+	font-weight: 700;
+	font-display: swap;
+}
+@font-face {
+	font-family: "IBM Plex Mono";
+	src: url("/fonts/IBMPlexMono-Regular.ttf") format("truetype");
+	font-weight: 400;
+	font-display: swap;
+}
