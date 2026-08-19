@@ -226,6 +226,7 @@ func runStackUp(bin string) func(ctx context.Context, args []string) error {
 		//nolint:gosec // G204: bin is operator/PATH-resolved (resolveStackBin) and
 		// the argv is pipeline-assembled (stackUpArgs), not user input.
 		cmd := exec.CommandContext(ctx, bin, args...)
+		cmd.Env = prependExecDirToPath(os.Environ(), filepath.Dir(bin))
 		stderr, cleanup, capErr := captureStderr(cmd)
 		if capErr != nil {
 			return capErr
@@ -275,6 +276,7 @@ func runStackDown(bin string) func(ctx context.Context, args []string) error {
 		//nolint:gosec // G204: bin is operator/PATH-resolved (resolveStackBin) and
 		// the argv is pipeline-assembled (stackDownArgs), not user input.
 		cmd := exec.CommandContext(ctx, bin, args...)
+		cmd.Env = prependExecDirToPath(os.Environ(), filepath.Dir(bin))
 		stderr, cleanup, capErr := captureStderr(cmd)
 		if capErr != nil {
 			return capErr
@@ -334,10 +336,13 @@ func resolveMode(flagValue string) string {
 }
 
 // resolveStackBin picks the compass-stack binary to supervise the stack with:
-// the --compass-stack flag, else $COMPASS_STACK_BIN, else compass-stack on
-// $PATH, else a compass-stack sibling of the running executable (where a
-// packaged build stages it, mirroring resolveAssetsDir's beside-the-executable
-// pattern). A legible error names every place it looked when none resolves.
+// the --compass-stack flag, else $COMPASS_STACK_BIN, else a compass-stack
+// sibling of the running executable (where a packaged build stages it, mirroring
+// resolveAssetsDir's beside-the-executable pattern), else compass-stack on
+// $PATH. The sibling is preferred over $PATH so a packaged build's staged
+// sidecar wins over any ambient compass-stack, while a dev-box build (no
+// sibling) still falls through to $PATH. A legible error names every place it
+// looked when none resolves.
 func resolveStackBin(flagValue string) (string, error) {
 	if flagValue != "" {
 		return flagValue, nil
@@ -345,17 +350,48 @@ func resolveStackBin(flagValue string) (string, error) {
 	if env := os.Getenv("COMPASS_STACK_BIN"); env != "" {
 		return env, nil
 	}
-	if p, err := exec.LookPath("compass-stack"); err == nil {
-		return p, nil
-	}
 	if exe, err := os.Executable(); err == nil {
 		sibling := filepath.Join(filepath.Dir(exe), "compass-stack")
 		if info, statErr := os.Stat(sibling); statErr == nil && !info.IsDir() {
 			return sibling, nil
 		}
 	}
+	if p, err := exec.LookPath("compass-stack"); err == nil {
+		return p, nil
+	}
 	return "", errors.New("compass-stack binary not found: pass --compass-stack, set $COMPASS_STACK_BIN, " +
 		"put compass-stack on $PATH, or stage it beside the compass-app executable")
+}
+
+// prependExecDirToPath returns env with execDir prepended to its PATH entry so a
+// bundle's sidecar binaries (compass-postgres/compass-server/compass-runner) win
+// exec.LookPath inside the supervised stack, while an ambient dev-box PATH keeps
+// working unchanged (prepend, never replace). env is the process environment
+// (os.Environ() shape: "KEY=VALUE"); a missing PATH entry is created.
+//
+// execDir must be an absolute path — a relative or empty execDir is a no-op, so
+// a bare-name compass-stack (filepath.Dir "." from a $PATH/flag bin) never
+// prepends the current directory onto the child's PATH.
+func prependExecDirToPath(env []string, execDir string) []string {
+	if !filepath.IsAbs(execDir) {
+		return env
+	}
+	out := make([]string, len(env), len(env)+1)
+	copy(out, env)
+	for i, e := range out {
+		if value, ok := strings.CutPrefix(e, "PATH="); ok {
+			// A present-but-empty PATH takes execDir alone: appending the
+			// separator would leave a trailing empty element, which exec
+			// loaders read as the current directory.
+			if value == "" {
+				out[i] = "PATH=" + execDir
+			} else {
+				out[i] = "PATH=" + execDir + string(os.PathListSeparator) + value
+			}
+			return out
+		}
+	}
+	return append(out, "PATH="+execDir)
 }
 
 // resolveStateDir picks the app state directory: the --state-dir flag, else
