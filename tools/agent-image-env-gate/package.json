@@ -1,0 +1,14 @@
+{
+	"name": "@compass/agent-image-env-gate",
+	"private": true,
+	"type": "module",
+	"description": "CI gate (RIG-1444): build the compass-agent image and fail on wrong-image signals — a leaked DEVENV_ env key, a build-host home path baked into the env, or a platform-contract mismatch — the class of defect a successful `container build` does not catch.",
+	"module": "index.ts",
+	"bin": {
+		"agent-image-env-gate": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}
