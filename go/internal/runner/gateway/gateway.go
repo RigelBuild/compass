@@ -108,6 +108,17 @@ type LifecycleRelay interface {
 	RelayLifecycleCall(ctx context.Context, req *connect.Request[compassv1internal.RelayLifecycleCallRequest]) (*connect.Response[compassv1internal.RelayLifecycleCallResponse], error)
 }
 
+// ForgeRelay forwards one agent-initiated forge call (create/comment/get/list an
+// issue or PR, submit a review) to the Server under the resolved session.
+// Sibling of LifecycleRelay: the same pure-forwarder shape over the generated
+// RunnerServiceClient's RelayForgeCall, narrowed to the one method the gateway
+// needs. The real client satisfies it; a test supplies a fake. The Runner sends
+// the session_id it structurally owns and the agent's call verbatim, and asserts
+// no account.
+type ForgeRelay interface {
+	RelayForgeCall(ctx context.Context, req *connect.Request[compassv1internal.RelayForgeCallRequest]) (*connect.Response[compassv1internal.RelayForgeCallResponse], error)
+}
+
 // ConversationCommitter is the narrow slice of the generated RunnerServiceClient
 // the durable conversation path needs — just CommitConversationFrame. The real
 // client satisfies it; a test supplies a fake. Mirrors CommsRelay's narrowing of
@@ -137,6 +148,11 @@ type Gateway struct {
 	// forward. Same pure-forwarder posture: no account, session id the Runner
 	// structurally owns.
 	lifecycle LifecycleRelay
+	// forge forwards ONE agent-initiated forge call (create/comment/get/list an
+	// issue or PR, submit a review) to the Server (RelayForgeCall), the sibling
+	// of lifecycle's spawn/despawn forward. Same pure-forwarder posture: no
+	// account, session id the Runner structurally owns.
+	forge ForgeRelay
 	// committer forwards ONE durable conversation frame to the Server for commit
 	// (CommitConversationFrame, the delivered-or-erred unary) and returns the
 	// commit outcome. Durable conversation frames leave the loss-tolerant Publish
@@ -221,6 +237,8 @@ type Deps struct {
 	Relay CommsRelay
 	// Lifecycle forwards an agent-initiated spawn/despawn call to the Server (RelayLifecycleCall).
 	Lifecycle LifecycleRelay
+	// Forge forwards an agent-initiated forge call to the Server (RelayForgeCall).
+	Forge ForgeRelay
 	// Events forwards trace/session telemetry up the loss-tolerant PublishEvents stream.
 	Events EventRelay
 	// Committer forwards a durable conversation frame to the Server for commit (CommitConversationFrame).
@@ -249,6 +267,7 @@ func NewGateway(baseCtx context.Context, containerName string, deps Deps) *Gatew
 		sessions:      deps.Sessions,
 		relay:         deps.Relay,
 		lifecycle:     deps.Lifecycle,
+		forge:         deps.Forge,
 		events:        deps.Events,
 		committer:     deps.Committer,
 		control:       noopControlRouter{},

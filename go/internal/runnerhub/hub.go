@@ -279,6 +279,13 @@ type Hub struct {
 	// path never race. Nil-safe: a hub with none wired fails RelayBoardCall
 	// closed CodeUnavailable — the board write leg is not mounted.
 	boardCaller BoardCaller
+	// forgeCaller is the forge-write execution seam RelayForgeCall delegates a
+	// resolved forge call to (Compass forge write path T4). Nil until
+	// SetForgeCaller wires it (after both hub and forgeService exist, breaking
+	// their construction cycle), and read under mu so the setter and the serve
+	// path never race. Nil-safe: a hub with none wired fails RelayForgeCall
+	// closed CodeUnavailable — the forge write leg is not mounted.
+	forgeCaller ForgeCaller
 	// runnerReadyHook, when set, is invoked once each time a Runner's Sessions
 	// command stream attaches (fired from the Sessions handler after
 	// router.attach binds the live send, on its own goroutine). It is the seam
