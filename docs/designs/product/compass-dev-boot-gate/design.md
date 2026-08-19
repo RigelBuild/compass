@@ -88,10 +88,11 @@ A headless-boot smoke (RIG-1536's Shape B) as a Playwright spec, wired as a
   empty check is therefore redundant given the `.bridge` wait, and is kept (if
   at all) only as a cheap secondary guard, never a co-equal clause.
 - **The server**: the existing fixture-boot dev server, exactly as the visual
-  harness runs it — `playwright.config.ts:43`:
+  harness runs it — `playwright.config.ts`, on an OS-assigned ephemeral port
+  (RIG-2283) so it never collides with a dev server already on the box:
 
   ```ts
-  command: "bunx vite --port 5173 --strictPort --mode fixture",
+  command: `bunx vite --port ${devPort} --strictPort --mode fixture`,
   ```
 
   Fixture mode is still a dev SERVE (the `development` condition applies — the
@@ -169,8 +170,9 @@ dev server" check becomes a task.
   broken index.html — not just the one failure mode we've seen. Cost: needs a
   browser in CI (~seconds of boot + load per run, plus a one-time Chromium
   provisioning task) and carries browser-harness flake risk, mitigated by the
-  existing harness's determinism choices (`playwright.config.ts:42-57`:
-  `strictPort`, `reuseExistingServer: false`, generous webServer timeout).
+  existing harness's determinism choices (`playwright.config.ts`:
+  ephemeral port, `strictPort`, `reuseExistingServer: false`, generous
+  webServer timeout).
 - **Shape A — module-graph crawl.** RIG-1536 validated it: ~1.8s, no browser,
   crawl the served graph from `/src/index.tsx`, fail on any raw-served `/@fs`
   dependency default-importing into a CJS-only package with no
@@ -240,14 +242,18 @@ lever.
   the subject is the served module graph resolved out of `node_modules` at
   run time, not a moon-hashable input — a cached green would survive exactly
   the dependency-bump rot (`vite.config.ts:40-43`) the gate exists to red on.
-- **Boot environment**: the fixture-mode dev server
-  (`bunx vite --port 5173 --strictPort --mode fixture`,
-  `playwright.config.ts:43`) — offline by construction, no
+- **Boot environment**: the fixture-mode dev server on an OS-assigned
+  ephemeral port (`bunx vite --port <ephemeral> --strictPort --mode fixture`,
+  `playwright.config.ts`) — offline by construction, no
   `VITE_COMPASS_BASE_URL`, no daemon, no caller-id env var (the UI has none:
   `.env.development:46-48` — caller identity comes from the WhoAmI RPC, and in
-  fixture mode from the stub store). RIG-1536's `VITE_COMPASS_CALLER_ID` note
-  predates fixture boot and is obsolete — the var does not exist in the tree
-  (grep of `apps/ui` finds zero occurrences).
+  fixture mode from the stub store). The port is picked at config-load and
+  pinned in `process.env` so the runner, workers, and webServer launch agree;
+  a fixed port (vite's 5173 default) collides with any dev server already on
+  the box — Matt's review vite, or a second agent running this harness — which
+  `--strictPort` turns into a hard launch failure (RIG-2283). RIG-1536's
+  `VITE_COMPASS_CALLER_ID` note predates fixture boot and is obsolete — the
+  var does not exist in the tree (grep of `apps/ui` finds zero occurrences).
 - **Task hygiene**: the new spec must never be picked up by `bun test` —
   `moon.yml:37-42` documents why `test` is scoped to `src/` (a
   `@playwright/test` spec under `bun test` throws); the new spec therefore
@@ -260,8 +266,9 @@ lever.
 ### T1 — the `dev-boot` Playwright spec
 
 Add `apps/ui/e2e/dev-boot.spec.ts`: one test that navigates to `/#/` on the
-config's `baseURL` (`playwright.config.ts:21`, `http://localhost:5173`; the
-shared `webServer` block boots the fixture-mode dev server), collects every
+config's `baseURL` (`playwright.config.ts`, `http://localhost:${devPort}` on
+the ephemeral port; the shared `webServer` block boots the fixture-mode dev
+server), collects every
 `pageerror` from before navigation to the end of the test (the
 `page.on("pageerror", …)` listener attaches before `page.goto`), waits for the
 app's mount (the `.bridge` root surface, the same selector the visual harness
