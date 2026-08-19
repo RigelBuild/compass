@@ -62,6 +62,7 @@ tasks:
     # (a change to, or a repoint of, any path under the globs below still runs
     # the build), and the hasher's cache key — the only thing the unhashable
     # node would feed — is unused because this task is cache:false.
+    # NOTE: tools/agent-image-env-gate/moon.yml's check task MIRRORS these inputs — a change here must be mirrored there.
     inputs:
       - '**/*'
       - '/packages/compass-agent/**'

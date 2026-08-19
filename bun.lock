@@ -90,6 +90,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/agent-image-env-gate": {
+      "name": "@compass/agent-image-env-gate",
+      "bin": {
+        "agent-image-env-gate": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/cx-token-gate": {
       "name": "@compass/cx-token-gate",
       "bin": {
@@ -271,6 +281,8 @@
     "@colors/colors": ["@colors/colors@1.6.0", "", {}, "sha512-Ir+AOibqzrIsL6ajt3Rz3LskB7OiMVHqltZmspbW/TJuTVuyOMirVqAkjfY6JISiLHgyNqicAC8AyHHGzNd/dA=="],
 
     "@compass/agent": ["@compass/agent@workspace:packages/compass-agent"],
+
+    "@compass/agent-image-env-gate": ["@compass/agent-image-env-gate@workspace:tools/agent-image-env-gate"],
 
     "@compass/client": ["@compass/client@workspace:packages/compass-client"],
 
