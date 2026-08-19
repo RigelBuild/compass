@@ -368,15 +368,26 @@ func resolveStackBin(flagValue string) (string, error) {
 // exec.LookPath inside the supervised stack, while an ambient dev-box PATH keeps
 // working unchanged (prepend, never replace). env is the process environment
 // (os.Environ() shape: "KEY=VALUE"); a missing PATH entry is created.
+//
+// execDir must be an absolute path — a relative or empty execDir is a no-op, so
+// a bare-name compass-stack (filepath.Dir "." from a $PATH/flag bin) never
+// prepends the current directory onto the child's PATH.
 func prependExecDirToPath(env []string, execDir string) []string {
-	if execDir == "" {
+	if !filepath.IsAbs(execDir) {
 		return env
 	}
 	out := make([]string, len(env), len(env)+1)
 	copy(out, env)
 	for i, e := range out {
 		if value, ok := strings.CutPrefix(e, "PATH="); ok {
-			out[i] = "PATH=" + execDir + string(os.PathListSeparator) + value
+			// A present-but-empty PATH takes execDir alone: appending the
+			// separator would leave a trailing empty element, which exec
+			// loaders read as the current directory.
+			if value == "" {
+				out[i] = "PATH=" + execDir
+			} else {
+				out[i] = "PATH=" + execDir + string(os.PathListSeparator) + value
+			}
 			return out
 		}
 	}

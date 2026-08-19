@@ -42,6 +42,24 @@ func TestPrependExecDirToPath(t *testing.T) {
 		}
 	})
 
+	t.Run("relative execDir is a no-op (no cwd on PATH)", func(t *testing.T) {
+		in := []string{"PATH=/usr/bin", "HOME=/h"}
+		got := prependExecDirToPath(in, ".")
+		want := []string{"PATH=/usr/bin", "HOME=/h"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("present-but-empty PATH takes execDir alone", func(t *testing.T) {
+		in := []string{"PATH=", "HOME=/h"}
+		got := prependExecDirToPath(in, "/opt/x")
+		want := []string{"PATH=/opt/x", "HOME=/h"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("got %v, want %v (a trailing separator would put cwd on PATH)", got, want)
+		}
+	})
+
 	t.Run("does not mutate the input slice", func(t *testing.T) {
 		in := []string{"PATH=/usr/bin" + sep + "/bin", "HOME=/h"}
 		_ = prependExecDirToPath(in, "/opt/x")
