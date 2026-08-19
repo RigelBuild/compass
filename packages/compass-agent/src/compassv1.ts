@@ -116,6 +116,7 @@ export {
 	type Ask,
 	type AskOption,
 	AskOptionSchema,
+	type AskQuestion,
 	// The answer to one AskQuestion (question_id + chosen option ids + free
 	// text). AskAnswerControl carries a repeated AskQuestionAnswer so a
 	// multi-question ask survives the control wire keyed per question — the

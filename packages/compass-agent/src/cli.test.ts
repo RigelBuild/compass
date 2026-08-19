@@ -1839,7 +1839,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 			...createCommsTools(new CommsBroker(fakeTransport)),
 			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
 		];
-		expect(natives).toHaveLength(6);
+		expect(natives).toHaveLength(7);
 		for (const tool of natives) {
 			expect({ name: tool.name, arity: tool.execute.length }).toEqual({
 				name: tool.name,
@@ -1889,7 +1889,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// natives are ALWAYS merged in (SEA-1741) — so customTools carries exactly
 		// those, and never a discovered MCP tool.
 		expect(toolNames(seen[0].customTools)).toContain("agents_spawn_peer");
-		expect(seen[0].customTools).toHaveLength(6);
+		expect(seen[0].customTools).toHaveLength(7);
 		expect(seen[0].enableMCP).toBe(false);
 	});
 
@@ -1919,9 +1919,9 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(skillNames(seen[0].skills)).toEqual(["only"]);
 		expect(seen[0].additionalExtensionPaths).toEqual([]);
 		// No MCP tools from a skills-only mount, but the natives always merge in
-		// (SEA-1741) — so customTools is exactly the six comms/lifecycle natives.
+		// (SEA-1741) — so customTools is exactly the seven comms/lifecycle natives.
 		expect(toolNames(seen[0].customTools)).toContain("comms_post_message");
-		expect(seen[0].customTools).toHaveLength(6);
+		expect(seen[0].customTools).toHaveLength(7);
 	});
 
 	// ── SEA-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──

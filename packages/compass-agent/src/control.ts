@@ -38,12 +38,13 @@ export type AgentControl =
 	// and a repeated `AskQuestionAnswer` keys one answer per question (with
 	// `customText` for a free-text "Other") — the flat single-question
 	// `chosenOptionIds` the wire deliberately superseded cannot represent a
-	// multi-question ask, so it is not used here. STAGED like the outbound `ask`
-	// derivation (see mapping.ts #deriveAsk): the variant is enumerated + applied
-	// so the union is faithful to the frozen oneof and #applyControl has an arm,
-	// but wiring the answer into the SDK needs the SEA-1310 ask correlation key —
-	// until then #applyControl surfaces it as a counted "staged" unmapped op,
-	// never silently dropped.
+	// multi-question ask, so it is not used here. The apply arm is LIVE
+	// (RIG-1509): post-barrier, #applyControl correlates `askId` against the
+	// `PendingAsks` registry the raise tool recorded, renders the answers against
+	// the recorded questions, and delivers them to the model on the turn-end
+	// coalescing path. A pre-barrier answer is thrown (unacked → the Runner
+	// redelivers it post-barrier); an answer whose `askId` has no registry entry
+	// is surfaced as a counted unmapped op, never fabricated.
 	| {
 			readonly kind: "askAnswer";
 			readonly askId: string;
