@@ -116,6 +116,10 @@ func NewGitHub(cfg GitHubConfig) *GitHub {
 	return &GitHub{host: cfg.Host, token: cfg.Token, client: client, now: time.Now}
 }
 
+// Compile-time proof that GitHub satisfies the Provider interface (the read
+// half — GetIssue/GetPullRequest/Checks — completes the surface).
+var _ Provider = (*GitHub)(nil)
+
 // ghIssue is the wire shape of one GitHub /issues list row. Only the fields the
 // forge.Issue domain needs are decoded; the pullRequest key discriminates a PR
 // row (GitHub's issues endpoint returns PRs as issues — they are dropped).
@@ -381,6 +385,22 @@ const (
 	verdictComment        = "comment"
 )
 
+// Check roll-up states folded from GitHub's check-runs (modern) and
+// combined-status (legacy) endpoints into the forge Check.State domain
+// (queued|in_progress|success|failure|neutral|cancelled — see provider.go).
+const (
+	checkStateQueued     = "queued"
+	checkStateInProgress = "in_progress"
+	checkStateSuccess    = "success"
+	checkStateFailure    = "failure"
+	checkStatePending    = "pending"
+	checkStateNeutral    = "neutral"
+	checkStateCancelled  = "cancelled"
+)
+
+// prStateMerged is the pull-request state when the forge reports it merged.
+const prStateMerged = "merged"
+
 var reviewEvents = map[string]reviewEvent{
 	verdictApprove:        {token: "APPROVE", requiresBody: false},
 	verdictRequestChanges: {token: "REQUEST_CHANGES", requiresBody: true},
@@ -434,12 +454,375 @@ func (g *GitHub) SubmitReview(ctx context.Context, repo string, number uint64, i
 	return SubmittedReview{ID: out.ID, URL: out.HTMLURL, Verdict: in.Verdict}, nil
 }
 
+// Name identifies this provider (mirrors Linear.Name; the registry keys the
+// GitHub backend on this token).
+func (g *GitHub) Name() string { return "github" }
+
+// GetIssue fetches one issue by number. repo is a trusted internal coordinate
+// (see ListIssuesPage), interpolated into the path directly. Body is returned
+// RAW (the owner-header strip belongs to ingestion, never the provider).
+func (g *GitHub) GetIssue(ctx context.Context, repo string, number uint64) (Issue, error) {
+	url := g.apiBase() + "/repos/" + repo + "/issues/" + strconv.FormatUint(number, 10)
+	var row ghIssue
+	if _, err := g.getJSON(ctx, url, &row); err != nil {
+		return Issue{}, fmt.Errorf("forge: github get issue %q#%d: %w", repo, number, err)
+	}
+	return row.toIssue(), nil
+}
+
+// ghPullDetail is the wire shape of the GitHub pull-detail endpoint, extending
+// ghPull with the diff-size roll-up, the merged discriminator, and the head SHA
+// (the checks roll-up runs against it). GitHub's pulls endpoint returns state
+// open|closed plus a separate merged bool; toPullRequest folds them into the
+// forge domain's open|closed|merged.
+type ghPullDetail struct {
+	Number       uint64 `json:"number"`
+	Title        string `json:"title"`
+	Body         string `json:"body"`
+	State        string `json:"state"`
+	HTMLURL      string `json:"html_url"`
+	Draft        bool   `json:"draft"`
+	Additions    uint32 `json:"additions"`
+	Deletions    uint32 `json:"deletions"`
+	ChangedFiles uint32 `json:"changed_files"`
+	Merged       bool   `json:"merged"`
+	Head         struct {
+		Ref string `json:"ref"`
+		SHA string `json:"sha"`
+	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
+}
+
+// toPullRequest maps a decoded wire pull detail to the raw forge.PullRequest
+// (body RAW). State folds the merged bool: merged==true -> "merged", else the
+// raw open|closed (so State stays in the domain's {open,closed,merged}). The
+// read roll-ups Checks/Reviews/Threads are populated by GetPullRequest, not here.
+func (r ghPullDetail) toPullRequest() PullRequest {
+	state := r.State
+	if r.Merged {
+		state = prStateMerged
+	}
+	return PullRequest{
+		Number:       r.Number,
+		Title:        r.Title,
+		Body:         r.Body,
+		State:        state,
+		URL:          r.HTMLURL,
+		HeadRef:      r.Head.Ref,
+		BaseRef:      r.Base.Ref,
+		ForgeAccount: r.User.Login,
+		Draft:        r.Draft,
+		Changed: ChangedStats{
+			Files:     r.ChangedFiles,
+			Additions: r.Additions,
+			Deletions: r.Deletions,
+		},
+	}
+}
+
+// ghReviewRow is the wire shape of one entry in the pull reviews list. Only the
+// fields forge.Review needs are decoded; the user type discriminates a bot.
+type ghReviewRow struct {
+	Body  string `json:"body"`
+	State string `json:"state"`
+	User  struct {
+		Login string `json:"login"`
+		Type  string `json:"type"`
+	} `json:"user"`
+}
+
+// GetPullRequest fetches a pull request with its read roll-ups. It is a
+// composite of three GETs — the pull detail, the reviews list, and the checks
+// roll-up (folded off the head SHA the detail already carries, so the PR is not
+// re-fetched). Bodies are RAW.
+func (g *GitHub) GetPullRequest(ctx context.Context, repo string, number uint64) (PullRequest, error) {
+	base := g.apiBase() + "/repos/" + repo + "/pulls/" + strconv.FormatUint(number, 10)
+
+	var detail ghPullDetail
+	if _, err := g.getJSON(ctx, base, &detail); err != nil {
+		return PullRequest{}, fmt.Errorf("forge: github get pull request %q#%d: %w", repo, number, err)
+	}
+	pr := detail.toPullRequest()
+
+	reviews, err := getAllPages(ctx, g, base+"/reviews",
+		func(e []ghReviewRow) []ghReviewRow { return e })
+	if err != nil {
+		return PullRequest{}, fmt.Errorf("forge: github get pull request %q#%d: %w", repo, number, err)
+	}
+	pr.Reviews = make([]Review, 0, len(reviews))
+	for _, rv := range reviews {
+		pr.Reviews = append(pr.Reviews, Review{
+			Author:  rv.User.Login,
+			IsBot:   rv.User.Type == "Bot",
+			Verdict: strings.ToLower(rv.State),
+			Body:    rv.Body,
+		})
+	}
+
+	checks, err := g.checksForSHA(ctx, repo, detail.Head.SHA)
+	if err != nil {
+		return PullRequest{}, fmt.Errorf("forge: github get pull request %q#%d: %w", repo, number, err)
+	}
+	pr.Checks = checks
+
+	// TODO(RIG-1728): review-thread resolution is GitHub GraphQL-only; the REST read path leaves Threads empty. The write path does not consume Threads; the board/ingestion PR-pane enrichment is RIG-1728's full read/projection scope.
+	pr.Threads = nil
+
+	return pr, nil
+}
+
+// ghCheckRun is one entry in the check-runs endpoint (the modern Checks API);
+// only the fields forge.Check needs are decoded.
+type ghCheckRun struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	HTMLURL    string `json:"html_url"`
+}
+
+// ghCheckRuns is the paginated envelope of the commit check-runs endpoint.
+type ghCheckRuns struct {
+	CheckRuns []ghCheckRun `json:"check_runs"`
+}
+
+// ghStatus is one entry in the legacy combined-status endpoint.
+type ghStatus struct {
+	Context   string `json:"context"`
+	State     string `json:"state"`
+	TargetURL string `json:"target_url"`
+}
+
+// ghCombinedStatus is the paginated envelope of the legacy combined-status
+// endpoint. GitHub surfaces some CI (and required merge gates) only here, so
+// the roll-up folds both sources.
+type ghCombinedStatus struct {
+	Statuses []ghStatus `json:"statuses"`
+}
+
+// Checks returns the rolled-up CI/status state for a PR head. It first resolves
+// the head SHA (a minimal pull-detail fetch), then delegates to checksForSHA.
+func (g *GitHub) Checks(ctx context.Context, repo string, number uint64) (Checks, error) {
+	url := g.apiBase() + "/repos/" + repo + "/pulls/" + strconv.FormatUint(number, 10)
+	var detail ghPullDetail
+	if _, err := g.getJSON(ctx, url, &detail); err != nil {
+		return Checks{}, fmt.Errorf("forge: github checks %q#%d: %w", repo, number, err)
+	}
+	checks, err := g.checksForSHA(ctx, repo, detail.Head.SHA)
+	if err != nil {
+		return Checks{}, fmt.Errorf("forge: github checks %q#%d: %w", repo, number, err)
+	}
+	return checks, nil
+}
+
 // BodyLimit is the max issue/comment/PR body size the Service enforces before a
 // write, in BYTES. GitHub caps these bodies at 65536 CHARACTERS; because a
 // UTF-8 string's character count never exceeds its byte count, enforcing 65536
 // BYTES is strictly conservative under the character cap (A9: the unit is pinned
 // as bytes — StampOwner reserves bytes via len — with no conversion anywhere).
 func (g *GitHub) BodyLimit() int { return 65536 }
+
+// getJSON carries the read-path plumbing once for all one-shot GET reads
+// (GetIssue/GetPullRequest/Checks and their sub-fetches): the resetAt fail-fast
+// gate, token auth, budget recording, and error mapping. It is the read-side
+// analogue of doJSON (which is POST) and mirrors the inline plumbing in
+// ListIssuesPage — but these are UNCONDITIONAL one-shot reads, so it carries no
+// If-None-Match / 304 handling (that belongs to the poll-cursor page fetch). It
+// decodes a 2xx body into out and reports whether the response carried an
+// RFC-5988 Link rel="next" (getAllPages follows it; single-resource callers
+// ignore it).
+func (g *GitHub) getJSON(ctx context.Context, url string, out any) (bool, error) {
+	// Gate check mirrors ListIssuesPage: an armed gate short-circuits without a
+	// request until the injected clock passes resetAt, then re-opens.
+	if g.gateBlocked() {
+		return false, fmt.Errorf("GET %s: %w", url, ErrBudgetExhausted)
+	}
+
+	token, err := g.token.Token(ctx)
+	if err != nil {
+		return false, fmt.Errorf("resolve token: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("do request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }() // read-only GET; body drained/closed, no actionable close error
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Error responses: mapErrorResponse owns the budget decision (it arms
+		// the gate on a true rate-limit signal). A bad-creds 403 carries a low
+		// nonzero remaining; recording it here would arm the gate against the
+		// token we are about to invalidate (same reasoning as ListIssuesPage's
+		// default arm — do NOT record budget on error).
+		return false, g.mapErrorResponse(resp)
+	}
+	g.recordBudget(resp)
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, fmt.Errorf("read body: %w", err)
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return false, fmt.Errorf("decode response: %w", err)
+	}
+	return hasNextLink(resp.Header.Get("Link")), nil
+}
+
+// getAllPages walks the RFC-5988 Link rel="next" chain from baseURL, decoding
+// each page into a fresh envelope E and concatenating the rows it yields, until
+// no rel="next" remains. It sets per_page/page on every request (mirroring
+// ListIssues' full walk) so a >perPage result set is never silently truncated
+// to page 1 — a truncated checks fold would let a failing check on a later page
+// roll up green. baseURL may already carry a query string (or none).
+func getAllPages[E, T any](ctx context.Context, g *GitHub, baseURL string, rows func(E) []T) ([]T, error) {
+	sep := "?"
+	if strings.Contains(baseURL, "?") {
+		sep = "&"
+	}
+	var all []T
+	for page := 1; ; page++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		u := baseURL + sep + "per_page=" + strconv.Itoa(perPage) + "&page=" + strconv.Itoa(page)
+		var env E
+		hasNext, err := g.getJSON(ctx, u, &env)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, rows(env)...)
+		if !hasNext {
+			return all, nil
+		}
+	}
+}
+
+// checksForSHA folds the check-runs endpoint (modern) and the combined-status
+// endpoint (legacy) into one forge.Checks for the given head SHA. Both sources
+// are walked to completion via getAllPages (a >perPage result set on either is
+// concatenated, never truncated to page 1). The roll-up State is "failure" if
+// ANY check is a terminal-bad outcome (failure or cancelled), else "pending" if
+// ANY is non-terminal or unknown, else "success" (only when every check is a
+// terminal pass; an empty set rolls up to success). Required is false everywhere:
+// TODO(RIG-1728): required-check status derives from branch protection (a separate API); the write path does not consume Required.
+func (g *GitHub) checksForSHA(ctx context.Context, repo, sha string) (Checks, error) {
+	commitBase := g.apiBase() + "/repos/" + repo + "/commits/" + sha
+
+	runs, err := getAllPages(ctx, g, commitBase+"/check-runs",
+		func(e ghCheckRuns) []ghCheckRun { return e.CheckRuns })
+	if err != nil {
+		return Checks{}, fmt.Errorf("forge: github checks for %q@%s: %w", repo, sha, err)
+	}
+	statuses, err := getAllPages(ctx, g, commitBase+"/status",
+		func(e ghCombinedStatus) []ghStatus { return e.Statuses })
+	if err != nil {
+		return Checks{}, fmt.Errorf("forge: github checks for %q@%s: %w", repo, sha, err)
+	}
+
+	out := make([]Check, 0, len(runs)+len(statuses))
+	for _, r := range runs {
+		out = append(out, Check{
+			Name:     r.Name,
+			State:    mapCheckRunState(r.Status, r.Conclusion),
+			URL:      r.HTMLURL,
+			Required: false,
+		})
+	}
+	for _, s := range statuses {
+		out = append(out, Check{
+			Name:     s.Context,
+			State:    mapCommitStatusState(s.State),
+			URL:      s.TargetURL,
+			Required: false,
+		})
+	}
+
+	return Checks{HeadSHA: sha, State: rollupChecksState(out), Checks: out}, nil
+}
+
+// mapCheckRunState maps a check-run's (status, conclusion) to the forge Check
+// state, always inside the domain enum (queued|in_progress|success|failure|
+// neutral|cancelled — provider.go). An incomplete run maps its status: queued
+// and in_progress pass through; every other non-terminal status GitHub may add
+// (waiting, requested, pending) normalizes to queued so an unrecognized
+// in-flight state never escapes the enum and never rolls up as a pass. A
+// completed run maps its conclusion, defaulting unknown conclusions to neutral.
+func mapCheckRunState(status, conclusion string) string {
+	if status != "completed" {
+		switch status {
+		case checkStateQueued, checkStateInProgress:
+			return status
+		default:
+			return checkStateQueued
+		}
+	}
+	switch conclusion {
+	case checkStateSuccess:
+		return checkStateSuccess
+	case checkStateFailure, "timed_out", "action_required", "startup_failure":
+		return checkStateFailure
+	case checkStateCancelled:
+		return checkStateCancelled
+	case checkStateNeutral, "skipped":
+		return checkStateNeutral
+	default:
+		return checkStateNeutral
+	}
+}
+
+// mapCommitStatusState maps a legacy combined-status state to the forge Check
+// state. The legacy vocabulary is success|failure|pending|error; error folds to
+// failure (a terminal bad outcome).
+func mapCommitStatusState(state string) string {
+	switch state {
+	case checkStateSuccess:
+		return checkStateSuccess
+	case checkStatePending:
+		return checkStatePending
+	default: // failure, error, or any unknown terminal-bad state
+		return checkStateFailure
+	}
+}
+
+// rollupChecksState reduces a check set to the domain roll-up
+// (pending|success|failure), biased fail-safe: an unrecognized state never
+// silently rolls up green against a merge gate. Any terminal-bad check (failure
+// or cancelled) dominates -> "failure"; else any in-flight or unrecognized
+// check -> "pending"; else "success". A terminal pass is success or neutral
+// (GitHub treats a neutral conclusion as non-blocking for branch protection);
+// an empty set rolls up to success. A cancelled check counts as non-passing
+// (mirrors mapCommitStatusState folding legacy "error" to failure): an aborted
+// or superseded required run must not read green.
+func rollupChecksState(checks []Check) string {
+	pending := false
+	for _, c := range checks {
+		switch c.State {
+		case checkStateFailure, checkStateCancelled:
+			return checkStateFailure
+		case checkStateSuccess, checkStateNeutral:
+			// a terminal pass (neutral is non-blocking); contributes nothing
+		default:
+			// queued|in_progress|pending|anything unrecognized: not yet a pass
+			pending = true
+		}
+	}
+	if pending {
+		return checkStatePending
+	}
+	return checkStateSuccess
+}
 
 // gateBlocked reports whether the fail-fast budget gate is currently armed,
 // clearing a gate whose reset instant has passed (re-opening it) as a side

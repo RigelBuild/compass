@@ -1199,3 +1199,546 @@ func TestSubmitReviewErrorMapping(t *testing.T) {
 		}
 	})
 }
+
+// --- read path: GetIssue -----------------------------------------------------
+
+// GetIssue happy path: field-by-field decode, Body RAW (owner header NOT
+// stripped), and the GET endpoint/method on the wire.
+func TestGetIssueHappy(t *testing.T) {
+	const respBody = `{
+		"number": 7,
+		"title": "a bug",
+		"body": "raw <!--owner--> body",
+		"state": "open",
+		"html_url": "https://github.com/org/repo/issues/7",
+		"updated_at": "2026-08-01T12:30:00Z",
+		"user": {"login": "octocat"},
+		"labels": [{"name": "bug"}, {"name": "p1"}]
+	}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{{status: 200, body: respBody}}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "sekret"})
+
+	got, err := g.GetIssue(context.Background(), "org/repo", 7)
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+
+	req := rt.requests[0]
+	if req.Method != http.MethodGet {
+		t.Errorf("method = %s, want GET", req.Method)
+	}
+	if req.URL.String() != "https://api.github.com/repos/org/repo/issues/7" {
+		t.Errorf("URL = %s", req.URL.String())
+	}
+	if h := req.Header.Get("Authorization"); h != "Bearer sekret" {
+		t.Errorf("Authorization = %q, want %q", h, "Bearer sekret")
+	}
+	if got.Number != 7 || got.Title != "a bug" || got.State != "open" {
+		t.Errorf("scalar fields wrong: %+v", got)
+	}
+	if got.Body != "raw <!--owner--> body" {
+		t.Errorf("body not raw/untouched: %q", got.Body)
+	}
+	if got.URL != "https://github.com/org/repo/issues/7" {
+		t.Errorf("URL = %q", got.URL)
+	}
+	if got.ForgeAccount != "octocat" {
+		t.Errorf("ForgeAccount = %q", got.ForgeAccount)
+	}
+	if strings.Join(got.Labels, ",") != "bug,p1" {
+		t.Errorf("Labels = %v", got.Labels)
+	}
+}
+
+// GetIssue on a 404 maps to *StatusError{404}.
+func TestGetIssueNotFound(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 404, body: `{"message":"Not Found"}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	_, err := g.GetIssue(context.Background(), "org/repo", 7)
+	var se *StatusError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v, want *StatusError", err)
+	}
+	if se.Status != 404 {
+		t.Errorf("Status = %d, want 404", se.Status)
+	}
+}
+
+// GetIssue while the budget gate is armed short-circuits with ErrBudgetExhausted
+// and issues ZERO further round-trips.
+func TestGetIssueBudgetGateFailFast(t *testing.T) {
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	clock := base
+	resetUnix := strconv.FormatInt(base.Add(30*time.Second).Unix(), 10)
+
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		// Call 1 arms the gate (remaining=0).
+		{status: 200, body: `{"number":1,"user":{"login":"a"}}`, headers: map[string]string{
+			"X-RateLimit-Remaining": "0",
+			"X-RateLimit-Reset":     resetUnix,
+		}},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+	g.now = func() time.Time { return clock }
+
+	if _, err := g.GetIssue(context.Background(), "org/repo", 1); err != nil {
+		t.Fatalf("call 1: %v", err)
+	}
+	_, err := g.GetIssue(context.Background(), "org/repo", 2)
+	if !errors.Is(err, ErrBudgetExhausted) {
+		t.Fatalf("call 2 err = %v, want ErrBudgetExhausted", err)
+	}
+	if rt.calls != 1 {
+		t.Fatalf("gate issued a request: calls = %d, want 1", rt.calls)
+	}
+}
+
+// --- read path: GetPullRequest -----------------------------------------------
+
+// GetPullRequest happy path: the 3-leg composite (detail + reviews + checks),
+// merged->"merged" state fold, Changed stats, Reviews (bot/human, verdict
+// lowercased), embedded Checks populated, Threads nil, and the endpoint chain.
+func TestGetPullRequestHappy(t *testing.T) {
+	const detailBody = `{
+		"number": 42,
+		"title": "a feature",
+		"body": "raw <!--owner--> pr body",
+		"state": "closed",
+		"html_url": "https://github.com/org/repo/pull/42",
+		"draft": false,
+		"additions": 120,
+		"deletions": 30,
+		"changed_files": 4,
+		"merged": true,
+		"head": {"ref": "feature", "sha": "abc123"},
+		"base": {"ref": "main"},
+		"user": {"login": "octocat"}
+	}`
+	const reviewsBody = `[
+		{"body": "lgtm", "state": "APPROVED", "user": {"login": "botly", "type": "Bot"}},
+		{"body": "needs work", "state": "CHANGES_REQUESTED", "user": {"login": "carol", "type": "User"}}
+	]`
+	const checkRunsBody = `{"check_runs": [
+		{"name": "build", "status": "completed", "conclusion": "success", "html_url": "https://ci/build"}
+	]}`
+	const statusBody = `{"statuses": [
+		{"context": "legacy-ci", "state": "success", "target_url": "https://ci/legacy"}
+	]}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 200, body: reviewsBody},
+		{status: 200, body: checkRunsBody},
+		{status: 200, body: statusBody},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.GetPullRequest(context.Background(), "org/repo", 42)
+	if err != nil {
+		t.Fatalf("GetPullRequest: %v", err)
+	}
+
+	// Endpoint chain + count.
+	wantURLs := []string{
+		"https://api.github.com/repos/org/repo/pulls/42",
+		"https://api.github.com/repos/org/repo/pulls/42/reviews?per_page=100&page=1",
+		"https://api.github.com/repos/org/repo/commits/abc123/check-runs?per_page=100&page=1",
+		"https://api.github.com/repos/org/repo/commits/abc123/status?per_page=100&page=1",
+	}
+	if rt.calls != len(wantURLs) {
+		t.Fatalf("calls = %d, want %d", rt.calls, len(wantURLs))
+	}
+	for i, want := range wantURLs {
+		if got := rt.requests[i].URL.String(); got != want {
+			t.Errorf("request %d URL = %s, want %s", i, got, want)
+		}
+		if m := rt.requests[i].Method; m != http.MethodGet {
+			t.Errorf("request %d method = %s, want GET", i, m)
+		}
+	}
+
+	// State fold: merged=true -> "merged" (not the raw "closed").
+	if got.State != "merged" {
+		t.Errorf("State = %q, want merged", got.State)
+	}
+	if got.Body != "raw <!--owner--> pr body" {
+		t.Errorf("body not raw/untouched: %q", got.Body)
+	}
+	if got.HeadRef != "feature" || got.BaseRef != "main" || got.ForgeAccount != "octocat" {
+		t.Errorf("refs/account wrong: %+v", got)
+	}
+	if got.Changed != (ChangedStats{Files: 4, Additions: 120, Deletions: 30}) {
+		t.Errorf("Changed = %+v", got.Changed)
+	}
+
+	// Reviews: bot/human + verdict lowercased.
+	if len(got.Reviews) != 2 {
+		t.Fatalf("Reviews len = %d, want 2", len(got.Reviews))
+	}
+	if got.Reviews[0] != (Review{Author: "botly", IsBot: true, Verdict: "approved", Body: "lgtm"}) {
+		t.Errorf("Reviews[0] = %+v", got.Reviews[0])
+	}
+	if got.Reviews[1] != (Review{Author: "carol", IsBot: false, Verdict: "changes_requested", Body: "needs work"}) {
+		t.Errorf("Reviews[1] = %+v", got.Reviews[1])
+	}
+
+	// Embedded checks populated (both sources), rolled up to success.
+	if got.Checks.HeadSHA != "abc123" {
+		t.Errorf("Checks.HeadSHA = %q, want abc123", got.Checks.HeadSHA)
+	}
+	if got.Checks.State != "success" {
+		t.Errorf("Checks.State = %q, want success", got.Checks.State)
+	}
+	if len(got.Checks.Checks) != 2 {
+		t.Errorf("Checks.Checks len = %d, want 2", len(got.Checks.Checks))
+	}
+
+	// Threads left empty on the REST read path.
+	if got.Threads != nil {
+		t.Errorf("Threads = %v, want nil", got.Threads)
+	}
+}
+
+// GetPullRequest maps merged=false + state=open to "open" (the state fold only
+// fires on merged=true).
+func TestGetPullRequestOpenState(t *testing.T) {
+	const detailBody = `{
+		"number": 5,
+		"state": "open",
+		"merged": false,
+		"head": {"ref": "f", "sha": "sha5"},
+		"base": {"ref": "main"},
+		"user": {"login": "a"}
+	}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 200, body: `[]`},
+		{status: 200, body: `{"check_runs": []}`},
+		{status: 200, body: `{"statuses": []}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.GetPullRequest(context.Background(), "org/repo", 5)
+	if err != nil {
+		t.Fatalf("GetPullRequest: %v", err)
+	}
+	if got.State != "open" {
+		t.Errorf("State = %q, want open", got.State)
+	}
+	// Empty check set rolls up to success.
+	if got.Checks.State != "success" {
+		t.Errorf("Checks.State = %q, want success", got.Checks.State)
+	}
+}
+
+// An error on any leg of the composite propagates (here the reviews leg 500s).
+func TestGetPullRequestLegError(t *testing.T) {
+	const detailBody = `{"number":1,"state":"open","head":{"ref":"f","sha":"s"},"base":{"ref":"main"},"user":{"login":"a"}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 500, body: `{"message":"boom"}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	_, err := g.GetPullRequest(context.Background(), "org/repo", 1)
+	var se *StatusError
+	if !errors.As(err, &se) || se.Status != 500 {
+		t.Fatalf("err = %v, want *StatusError 500", err)
+	}
+	// Only the detail + reviews legs ran; the checks legs never fired.
+	if rt.calls != 2 {
+		t.Errorf("calls = %d, want 2 (detail + failing reviews leg)", rt.calls)
+	}
+}
+
+// --- read path: Checks -------------------------------------------------------
+
+// Checks happy path: resolves the head SHA from pull detail, folds check-runs +
+// combined-status, and rolls up a mixed set (one failure) to "failure".
+func TestChecksMixedFailure(t *testing.T) {
+	const detailBody = `{"number":9,"head":{"sha":"deadbeef"},"base":{"ref":"main"},"user":{"login":"a"}}`
+	const checkRunsBody = `{"check_runs": [
+		{"name": "build", "status": "completed", "conclusion": "success", "html_url": "https://ci/build"},
+		{"name": "lint", "status": "completed", "conclusion": "failure", "html_url": "https://ci/lint"}
+	]}`
+	const statusBody = `{"statuses": [
+		{"context": "coverage", "state": "success", "target_url": "https://ci/cov"}
+	]}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 200, body: checkRunsBody},
+		{status: 200, body: statusBody},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.Checks(context.Background(), "org/repo", 9)
+	if err != nil {
+		t.Fatalf("Checks: %v", err)
+	}
+
+	wantURLs := []string{
+		"https://api.github.com/repos/org/repo/pulls/9",
+		"https://api.github.com/repos/org/repo/commits/deadbeef/check-runs?per_page=100&page=1",
+		"https://api.github.com/repos/org/repo/commits/deadbeef/status?per_page=100&page=1",
+	}
+	if rt.calls != len(wantURLs) {
+		t.Fatalf("calls = %d, want %d", rt.calls, len(wantURLs))
+	}
+	for i, want := range wantURLs {
+		if got := rt.requests[i].URL.String(); got != want {
+			t.Errorf("request %d URL = %s, want %s", i, got, want)
+		}
+	}
+
+	if got.HeadSHA != "deadbeef" {
+		t.Errorf("HeadSHA = %q, want deadbeef", got.HeadSHA)
+	}
+	// Any failure dominates the roll-up.
+	if got.State != "failure" {
+		t.Errorf("State = %q, want failure", got.State)
+	}
+	// Both sources contribute (2 check-runs + 1 status).
+	if len(got.Checks) != 3 {
+		t.Fatalf("Checks len = %d, want 3", len(got.Checks))
+	}
+	// Folded entries in order: check-runs first, then statuses. Required false.
+	want := []Check{
+		{Name: "build", State: "success", URL: "https://ci/build", Required: false},
+		{Name: "lint", State: "failure", URL: "https://ci/lint", Required: false},
+		{Name: "coverage", State: "success", URL: "https://ci/cov", Required: false},
+	}
+	for i, w := range want {
+		if got.Checks[i] != w {
+			t.Errorf("Checks[%d] = %+v, want %+v", i, got.Checks[i], w)
+		}
+	}
+}
+
+// Checks rolls a set with no failures but a non-terminal run up to "pending".
+func TestChecksPending(t *testing.T) {
+	const detailBody = `{"number":9,"head":{"sha":"s"},"base":{"ref":"main"},"user":{"login":"a"}}`
+	const checkRunsBody = `{"check_runs": [
+		{"name": "build", "status": "completed", "conclusion": "success", "html_url": ""},
+		{"name": "deploy", "status": "in_progress", "conclusion": "", "html_url": ""}
+	]}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 200, body: checkRunsBody},
+		{status: 200, body: `{"statuses": []}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.Checks(context.Background(), "org/repo", 9)
+	if err != nil {
+		t.Fatalf("Checks: %v", err)
+	}
+	if got.State != "pending" {
+		t.Errorf("State = %q, want pending", got.State)
+	}
+	// The in_progress run reports its status verbatim.
+	if got.Checks[1].State != "in_progress" {
+		t.Errorf("Checks[1].State = %q, want in_progress", got.Checks[1].State)
+	}
+}
+
+// Checks rolls an all-success set (both sources) up to "success".
+func TestChecksAllSuccess(t *testing.T) {
+	const detailBody = `{"number":9,"head":{"sha":"s"},"base":{"ref":"main"},"user":{"login":"a"}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 200, body: `{"check_runs": [{"name":"build","status":"completed","conclusion":"success","html_url":""}]}`},
+		{status: 200, body: `{"statuses": [{"context":"cov","state":"success","target_url":""}]}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.Checks(context.Background(), "org/repo", 9)
+	if err != nil {
+		t.Fatalf("Checks: %v", err)
+	}
+	if got.State != "success" {
+		t.Errorf("State = %q, want success", got.State)
+	}
+}
+
+// An error on a checks leg propagates (here the check-runs leg 500s).
+func TestChecksLegError(t *testing.T) {
+	const detailBody = `{"number":9,"head":{"sha":"s"},"base":{"ref":"main"},"user":{"login":"a"}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 500, body: `{"message":"boom"}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	_, err := g.Checks(context.Background(), "org/repo", 9)
+	var se *StatusError
+	if !errors.As(err, &se) || se.Status != 500 {
+		t.Fatalf("err = %v, want *StatusError 500", err)
+	}
+	if rt.calls != 2 {
+		t.Errorf("calls = %d, want 2 (detail + failing check-runs leg)", rt.calls)
+	}
+}
+
+// Checks walks the check-runs Link rel="next" chain to completion: a failure on
+// page 2 must not be dropped by fetching only page 1 (a truncated fold would
+// roll up green against a merge gate). Asserts both pages are fetched in order
+// and the roll-up sees the page-2 failure.
+func TestChecksFollowsPagination(t *testing.T) {
+	const detailBody = `{"number":9,"head":{"sha":"pg"},"base":{"ref":"main"},"user":{"login":"a"}}`
+	const page1 = `{"check_runs": [{"name":"build","status":"completed","conclusion":"success","html_url":""}]}`
+	const page2 = `{"check_runs": [{"name":"lint","status":"completed","conclusion":"failure","html_url":""}]}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 200, body: page1, headers: map[string]string{
+			"Link": `<https://api.github.com/repos/org/repo/commits/pg/check-runs?per_page=100&page=2>; rel="next"`,
+		}},
+		{status: 200, body: page2},
+		{status: 200, body: `{"statuses": []}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.Checks(context.Background(), "org/repo", 9)
+	if err != nil {
+		t.Fatalf("Checks: %v", err)
+	}
+	// detail + 2 check-run pages + 1 status page.
+	if rt.calls != 4 {
+		t.Fatalf("calls = %d, want 4 (detail + 2 check-run pages + status)", rt.calls)
+	}
+	wantURLs := []string{
+		"https://api.github.com/repos/org/repo/pulls/9",
+		"https://api.github.com/repos/org/repo/commits/pg/check-runs?per_page=100&page=1",
+		"https://api.github.com/repos/org/repo/commits/pg/check-runs?per_page=100&page=2",
+		"https://api.github.com/repos/org/repo/commits/pg/status?per_page=100&page=1",
+	}
+	for i, want := range wantURLs {
+		if got := rt.requests[i].URL.String(); got != want {
+			t.Errorf("request %d URL = %s, want %s", i, got, want)
+		}
+	}
+	if len(got.Checks) != 2 {
+		t.Fatalf("Checks len = %d, want 2 (both pages folded)", len(got.Checks))
+	}
+	// The page-2 failure dominates: a truncated page-1-only fold would be success.
+	if got.State != "failure" {
+		t.Errorf("State = %q, want failure (page-2 failure must not be dropped)", got.State)
+	}
+}
+
+// A check-run in a non-terminal status GitHub may add beyond queued/in_progress
+// (here "waiting", a deployment-protection gate) must not roll up green: it
+// normalizes into the domain enum and the roll-up reads "pending".
+func TestChecksUnknownNonTerminalStatusPending(t *testing.T) {
+	const detailBody = `{"number":9,"head":{"sha":"s"},"base":{"ref":"main"},"user":{"login":"a"}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 200, body: `{"check_runs": [{"name":"gate","status":"waiting","conclusion":"","html_url":""}]}`},
+		{status: 200, body: `{"statuses": []}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.Checks(context.Background(), "org/repo", 9)
+	if err != nil {
+		t.Fatalf("Checks: %v", err)
+	}
+	// "waiting" normalizes to the "queued" domain token (never leaks verbatim).
+	if got.Checks[0].State != "queued" {
+		t.Errorf("Check.State = %q, want queued (unknown non-terminal normalized)", got.Checks[0].State)
+	}
+	if got.State != "pending" {
+		t.Errorf("State = %q, want pending (a still-running gate must not read green)", got.State)
+	}
+}
+
+// A cancelled check-run is not a pass: an aborted/superseded run must roll up
+// "failure", never contribute to a green merge gate.
+func TestChecksCancelledIsFailure(t *testing.T) {
+	const detailBody = `{"number":9,"head":{"sha":"s"},"base":{"ref":"main"},"user":{"login":"a"}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 200, body: `{"check_runs": [
+			{"name":"build","status":"completed","conclusion":"success","html_url":""},
+			{"name":"deploy","status":"completed","conclusion":"cancelled","html_url":""}
+		]}`},
+		{status: 200, body: `{"statuses": []}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.Checks(context.Background(), "org/repo", 9)
+	if err != nil {
+		t.Fatalf("Checks: %v", err)
+	}
+	if got.Checks[1].State != "cancelled" {
+		t.Errorf("Check.State = %q, want cancelled", got.Checks[1].State)
+	}
+	if got.State != "failure" {
+		t.Errorf("State = %q, want failure (cancelled is non-passing)", got.State)
+	}
+}
+
+// A completed run with a neutral (or skipped) conclusion is non-blocking on
+// GitHub, so an all-neutral set rolls up "success" — neutral is a terminal pass,
+// not pending.
+func TestChecksNeutralRollsUpSuccess(t *testing.T) {
+	const detailBody = `{"number":9,"head":{"sha":"s"},"base":{"ref":"main"},"user":{"login":"a"}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 200, body: `{"check_runs": [{"name":"advisory","status":"completed","conclusion":"neutral","html_url":""}]}`},
+		{status: 200, body: `{"statuses": []}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.Checks(context.Background(), "org/repo", 9)
+	if err != nil {
+		t.Fatalf("Checks: %v", err)
+	}
+	if got.Checks[0].State != "neutral" {
+		t.Errorf("Check.State = %q, want neutral", got.Checks[0].State)
+	}
+	if got.State != "success" {
+		t.Errorf("State = %q, want success (neutral is non-blocking)", got.State)
+	}
+}
+
+// The legacy combined-status "error" (and unknown) states fold to failure (the
+// mapCommitStatusState default arm) and dominate the roll-up.
+func TestChecksLegacyErrorStatusIsFailure(t *testing.T) {
+	const detailBody = `{"number":9,"head":{"sha":"s"},"base":{"ref":"main"},"user":{"login":"a"}}`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: detailBody},
+		{status: 200, body: `{"check_runs": []}`},
+		{status: 200, body: `{"statuses": [{"context":"legacy","state":"error","target_url":""}]}`},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	got, err := g.Checks(context.Background(), "org/repo", 9)
+	if err != nil {
+		t.Fatalf("Checks: %v", err)
+	}
+	if got.Checks[0].State != "failure" {
+		t.Errorf("Check.State = %q, want failure (legacy error folds to failure)", got.Checks[0].State)
+	}
+	if got.State != "failure" {
+		t.Errorf("State = %q, want failure", got.State)
+	}
+}
+
+// A malformed 200 body surfaces a decode error that is NOT a *StatusError,
+// keeping a body-shape fault distinguishable from a transport/status fault.
+func TestGetIssueDecodeError(t *testing.T) {
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: `{"number":`}, // truncated JSON
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	_, err := g.GetIssue(context.Background(), "org/repo", 7)
+	if err == nil {
+		t.Fatal("GetIssue: want decode error, got nil")
+	}
+	var se *StatusError
+	if errors.As(err, &se) {
+		t.Errorf("err = %v, want a non-*StatusError decode fault", err)
+	}
+}
