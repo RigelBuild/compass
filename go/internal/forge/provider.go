@@ -183,6 +183,29 @@ type CreatePR struct {
 	Draft bool
 }
 
+// SubmitReview is the input to Provider.SubmitReview. Body is PRE-stamp
+// (the Service stamps it); Comments ride unstamped inside the stamped review.
+type SubmitReview struct {
+	Verdict  string // "approve" | "request_changes" | "comment"
+	Body     string
+	Comments []ReviewCommentInput
+}
+
+// ReviewCommentInput is one inline review comment carried inside a SubmitReview.
+type ReviewCommentInput struct {
+	Path string
+	Line uint32
+	Side string // "LEFT" | "RIGHT"; "" = RIGHT
+	Body string
+}
+
+// SubmittedReview is the write ack a provider returns.
+type SubmittedReview struct {
+	ID      uint64
+	URL     string
+	Verdict string
+}
+
 // IssueFilter narrows Provider.ListIssues.
 type IssueFilter struct {
 	// State selects by forge state ("open" | "closed" | "all"); empty means the
@@ -197,7 +220,7 @@ type IssueFilter struct {
 // argument (the provider closes over its own). Body handling is the PROVIDER'S
 // contract: a Create/Comment method receives a body already stamped by the
 // Service, and a read method returns the body RAW — the Service strips/parses.
-type Provider interface {
+type Provider interface { //nolint:interfacebloat // one method per forge operation the Server drives; the surface is the forge contract, not incidental sprawl
 	Name() string
 	CreateIssue(ctx context.Context, repo string, in CreateIssue) (Issue, error)
 	CommentOnIssue(ctx context.Context, repo string, number uint64, body string) (Comment, error)
@@ -205,6 +228,10 @@ type Provider interface {
 	ListIssues(ctx context.Context, repo string, f IssueFilter) ([]Issue, error)
 	CreatePullRequest(ctx context.Context, repo string, in CreatePR) (PullRequest, error)
 	CommentOnPullRequest(ctx context.Context, repo string, number uint64, body string) (Comment, error)
+	// SubmitReview submits a pull-request review (verdict + optional body +
+	// optional inline comments). in.Body is PRE-stamped by the Service. An
+	// unknown verdict is rejected before any wire call.
+	SubmitReview(ctx context.Context, repo string, number uint64, in SubmitReview) (SubmittedReview, error)
 	GetPullRequest(ctx context.Context, repo string, number uint64) (PullRequest, error)
 	// Checks returns the rolled-up CI/status state for a PR head. Separated from
 	// GetPullRequest because the subscription poller needs it alone (#995 Decision 5).
