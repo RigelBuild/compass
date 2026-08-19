@@ -4,16 +4,20 @@
 -- channels + membership + policy, topics and topic-scoped messages, the pinned
 -- board, agent workspaces, delivery cursors, session ownership + placement, the
 -- two-tier transcript store, the secrets names registry, the fleet config
--- bundle, board issues, and the forge-poll fetch machinery.
+-- bundle, board issues, the forge-poll fetch machinery, and forge
+-- authored-artifact ownership.
 --
 -- History note: this replaces the original sequential 0001..0016 migration
--- chain. Pre-dogfood — zero users, zero deployed databases — so migration
--- history was dead weight and Matt ruled (2026-08-07) to collapse it into this
--- single init. It is a schema RESET, correct ONLY because no deployed DB exists
--- to migrate; the resulting schema is byte-identical (pg_dump) to applying the
--- 16 files in order. The `schema_migrations` bookkeeping table is deliberately
--- NOT here: the Go runner creates it (store.go ensureMigrationsTable) so it can
--- record v1 itself.
+-- chain PLUS the two migrations added after it (the forge authored-artifact
+-- ownership table and the messages author-index), all folded back into this
+-- single init. Pre-dogfood — zero users, zero deployed databases — so migration
+-- history was dead weight and Matt ruled (2026-08-07) to collapse it; the same
+-- reasoning folds each later migration in as it accretes. It is a schema RESET,
+-- correct ONLY because no deployed DB exists to migrate; the resulting schema
+-- is byte-identical (pg_dump) to applying the collapsed 0001..0016 chain and
+-- those later files in order. The `schema_migrations` bookkeeping table is
+-- deliberately NOT here: the Go runner creates it (store.go ensureMigrationsTable)
+-- so it can record v1 itself.
 --
 -- Convention: text ids are server-assigned (the store generates a UUID per
 -- row); FKs are ON DELETE RESTRICT so a referenced account/channel/agent cannot
@@ -73,7 +77,16 @@ CREATE TABLE agent_accounts (
     home_channel_id TEXT,
     persona         TEXT NOT NULL DEFAULT '',
     parent_agent_id TEXT REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
-    role            TEXT NOT NULL DEFAULT ''
+    role            TEXT NOT NULL DEFAULT '',
+    -- Composite-FK target for forge_authored_artifacts: (account_id,
+    -- owner_user_id) must be UNIQUE so a composite FK can reference the exact
+    -- pair (account_id alone is the PK, but a composite FK requires a UNIQUE on
+    -- the exact referenced column list). Guarantees the store cannot record a
+    -- forge artifact under an (agent, user) pair that is not a real
+    -- (agent, that-agent's-owner) pair. This UNIQUE subsumes the plain
+    -- agent_account_id FK, and the transitive owner_user_id -> user_accounts FK
+    -- already rides on agent_accounts.
+    UNIQUE (account_id, owner_user_id)
 );
 
 CREATE INDEX agent_accounts_owner_idx ON agent_accounts (owner_user_id);
@@ -233,6 +246,16 @@ CREATE INDEX messages_search_idx ON messages USING GIN (search_tsv);
 CREATE UNIQUE INDEX messages_idem_idx
     ON messages (author_account_id, client_request_id)
     WHERE client_request_id <> '';
+
+-- AgentHasOpenAsk (presence_reads.go) probes messages by author-only equality
+-- (WHERE author_account_id = $1 AND blocks @? ...) on EVERY presence edge, so
+-- this equality lookup is hot. The other messages indexes do not serve it:
+-- messages_topic_seq_idx leads on topic_id, messages_search_idx is a GIN on
+-- search_tsv, and the partial-unique idempotency index excludes the rows an ask
+-- probe cares about. Absent this index the probe seq-scans messages. Plain
+-- (non-partial, non-CONCURRENT) btree: migrations run inside a transaction
+-- (store.go applyMigration), so CREATE INDEX CONCURRENTLY is invalid here.
+CREATE INDEX messages_author_idx ON messages (author_account_id);
 
 -- ── Channel pins (the pinned board) ─────────────────────────────────────────
 -- A channel's pinned board is a small, ordered set of POINTERS to existing
@@ -594,3 +617,50 @@ CREATE TABLE forge_list_cursors (
     advanced_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (forge_provider, forge_host, repo, page)
 );
+
+-- One row per forge artifact Compass AUTHORED on behalf of an agent (DL-055):
+-- the coordinate the write path minted, who authored it, and the F3 idempotency
+-- memo. The write chokepoint (T4) writes the row AND the memo in a single
+-- statement on a create success; a provider error writes NOTHING.
+--
+-- forge_provider is a SMALLINT enum; the CHECK IN (1, 2, 3, 4) exists to reject
+-- UNSPECIFIED(0), not to gate rollout. FK ON DELETE RESTRICT (below) so a
+-- referenced account cannot be orphaned out from under an ownership row.
+--
+-- PK is the forge coordinate (provider, host, repo, kind, number) — the same
+-- coordinate shape forge_artifact_cursors keys on. A retry of the same authored
+-- create idempotently re-lands on this key (ON CONFLICT upsert). kind CHECK
+-- IN (1, 2): 1=issue, 2=pull_request, matching agent_forge_subscriptions.kind.
+--
+-- client_request_id is NULLABLE: NULL when the caller supplied no idempotency
+-- key. The UNIQUE PARTIAL index on (agent_account_id, client_request_id) WHERE
+-- client_request_id IS NOT NULL is the F3 memo — it dedups a per-agent retry
+-- carrying the same key, while NULL-key rows never collide.
+CREATE TABLE forge_authored_artifacts (
+    forge_provider     SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
+    forge_host         TEXT     NOT NULL,
+    repo               TEXT     NOT NULL,
+    kind               SMALLINT NOT NULL CHECK (kind IN (1, 2)),
+    number             BIGINT   NOT NULL,  -- canonical uint64
+    agent_account_id   TEXT     NOT NULL,
+    owner_user_id      TEXT     NOT NULL,
+    session_id         TEXT     NOT NULL DEFAULT '',
+    client_request_id  TEXT,  -- NULL = caller supplied no idempotency key (F3)
+    created_at_unix_ms BIGINT   NOT NULL,
+    PRIMARY KEY (forge_provider, forge_host, repo, kind, number),
+    -- Composite FK: the pair must be a real (agent, that-agent's-owner). ON
+    -- DELETE RESTRICT so a referenced agent/owner cannot be orphaned out from
+    -- under an ownership row.
+    FOREIGN KEY (agent_account_id, owner_user_id)
+        REFERENCES agent_accounts (account_id, owner_user_id) ON DELETE RESTRICT
+);
+
+-- The F3 memo: a per-agent idempotency key is unique across the agent's
+-- authored artifacts. Partial so NULL-key rows (no key supplied) never collide.
+CREATE UNIQUE INDEX forge_authored_artifacts_request_memo_idx
+    ON forge_authored_artifacts (agent_account_id, client_request_id)
+    WHERE client_request_id IS NOT NULL;
+
+-- By-agent scan (ListAuthoredArtifactsByAgent): every artifact one agent authored.
+CREATE INDEX forge_authored_artifacts_agent_idx
+    ON forge_authored_artifacts (agent_account_id);
