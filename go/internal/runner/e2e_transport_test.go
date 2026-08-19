@@ -18,8 +18,6 @@ package runner
 import (
 	"context"
 	"errors"
-	"net"
-	"net/http"
 	"os"
 	"strconv"
 	"sync"
@@ -31,6 +29,7 @@ import (
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/sealedsecurity/compass/go/internal/runnertest"
 	"github.com/sealedsecurity/compass/go/internal/runtime"
 )
 
@@ -140,27 +139,6 @@ func listenerPath(t *testing.T, h *agentHost, container string) string {
 	return l.Path()
 }
 
-// dialAgent builds a real generated AgentGatewayClient that dials the unix
-// socket at path over prior-knowledge h2c — the same cleartext-HTTP/2 door the
-// listener serves — so the Gateway is exercised over the wire it ships on. The
-// base URL is a placeholder; DialContext routes every dial to the socket.
-// (Mirrors agentClient in gateway/socket_test.go, reproduced here because that
-// helper lives in package gateway.)
-func dialAgent(t *testing.T, path string) compassv1internalconnect.AgentGatewayClient {
-	t.Helper()
-	p := new(http.Protocols)
-	p.SetUnencryptedHTTP2(true)
-	tr := &http.Transport{
-		Protocols: p,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", path)
-		},
-	}
-	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1internalconnect.NewAgentGatewayClient(&http.Client{Transport: tr}, "http://unix")
-}
-
 // TestE2ERoundTripUnderBoundSession — the GREEN happy path. Contract: a call
 // arriving on the container's socket while a session is bound reaches the Server
 // carrying (a) the exact session id Start minted and (b) the agent's CallId
@@ -186,7 +164,7 @@ func TestE2ERoundTripUnderBoundSession(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = h.Stop(context.Background(), sessionID) })
 
-	client := dialAgent(t, listenerPath(t, h, name))
+	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
 	callCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
 	resp, err := client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{
@@ -237,7 +215,7 @@ func TestE2EFailClosedBeforeStart(t *testing.T) {
 	}
 	// Deliberately no Start: the socket is served, but no session is bound.
 
-	client := dialAgent(t, listenerPath(t, h, name))
+	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
 	callCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
 	_, err = client.Comms(callCtx, connect.NewRequest(&compassv1internal.CommsCallRequest{CallId: "tc-2"}))
@@ -280,7 +258,7 @@ func TestE2EInFlightCallForceClosedAtTeardown(t *testing.T) {
 	t.Cleanup(func() { _ = h.Stop(context.Background(), sessionID) })
 
 	socketPath := listenerPath(t, h, name)
-	client := dialAgent(t, socketPath)
+	client := runnertest.DialAgentSocket(t, socketPath)
 
 	callErr := make(chan error, 1)
 	go func() {
@@ -350,7 +328,7 @@ func TestFreshStartSendsReplayCompleteFirst(t *testing.T) {
 
 	subCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	stream, err := dialAgent(t, listenerPath(t, h, name)).Control(subCtx,
+	stream, err := runnertest.DialAgentSocket(t, listenerPath(t, h, name)).Control(subCtx,
 		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
 	if err != nil {
 		t.Fatalf("Control over the socket = %v, want a bound subscription", err)
@@ -412,7 +390,7 @@ func TestResumeStartSendsReplayCompleteFirst(t *testing.T) {
 
 	subCtx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
-	stream, err := dialAgent(t, listenerPath(t, h, name)).Control(subCtx,
+	stream, err := runnertest.DialAgentSocket(t, listenerPath(t, h, name)).Control(subCtx,
 		connect.NewRequest(&compassv1internal.ControlSubscribeRequest{}))
 	if err != nil {
 		t.Fatalf("Control over the socket = %v, want a bound subscription", err)

@@ -39,6 +39,7 @@ import (
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
 	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/sealedsecurity/compass/go/internal/runnertest"
 
 	"connectrpc.com/connect"
 )
@@ -98,7 +99,7 @@ func TestStopRetiresTheSessionsControlState(t *testing.T) {
 	// ends rather than leaking into the rest of the package's run.
 	subCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	client := dialAgent(t, listenerPath(t, h, name))
+	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
 	first := subscribeControl(subCtx, client, "first")
 	second := subscribeControl(subCtx, client, "second")
 

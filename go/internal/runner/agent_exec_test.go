@@ -20,6 +20,7 @@ import (
 
 	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
 	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	"github.com/sealedsecurity/compass/go/internal/runnertest"
 	"github.com/sealedsecurity/compass/go/internal/runtime"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -355,7 +356,7 @@ func TestStopReapsBeforeJoiningTheDrains(t *testing.T) {
 		t.Fatalf("Start = %v", err)
 	}
 
-	client := dialAgent(t, listenerPath(t, h, name))
+	client := runnertest.DialAgentSocket(t, listenerPath(t, h, name))
 	go func() {
 		_, _ = client.Comms(context.Background(), connect.NewRequest(&compassv1internal.CommsCallRequest{CallId: "tc-stop"}))
 	}()
