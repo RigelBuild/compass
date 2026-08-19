@@ -1168,3 +1168,98 @@ func TestCommittedKeysBounded(t *testing.T) {
 		t.Fatalf("re-commit key = %q, want %q", calls[0].idempotencyKey, key(0))
 	}
 }
+
+// --- Case 14 (RIG-1545 Fork 1) -----------------------------------------------
+
+// blockingClosePublish is a RunnerService whose PublishEvents handler drains the
+// client stream, then BLOCKS before returning its response — so the client's
+// CloseAndReceive hangs awaiting the terminal ack, modelling an
+// unresponsive-but-connected Server at a clean stream-end. `closing` fires once
+// the handler has entered the stall (the close is in flight); `release` unblocks
+// it (closed in cleanup) so the hung close goroutine and the httptest server
+// tear down.
+type blockingClosePublish struct {
+	compassv1internalconnect.UnimplementedRunnerServiceHandler
+	closing chan struct{}
+	release chan struct{}
+}
+
+func newBlockingClosePublish() *blockingClosePublish {
+	return &blockingClosePublish{
+		closing: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (b *blockingClosePublish) PublishEvents(_ context.Context, stream *connect.ClientStream[compassv1internal.PublishEventsRequest]) (*connect.Response[compassv1internal.PublishEventsResponse], error) {
+	for stream.Receive() {
+		// Drain: the frame body is irrelevant here. The loop ends when the client
+		// half-closes its send side (CloseAndReceive), at which point the client
+		// is blocked awaiting this handler's response.
+	}
+	// The close is in flight: signal it, then stall — a connected-but-unresponsive
+	// Server that never sends the terminal PublishEventsResponse.
+	select {
+	case b.closing <- struct{}{}:
+	default:
+	}
+	<-b.release
+	return connect.NewResponse(&compassv1internal.PublishEventsResponse{}), nil
+}
+
+// releasePublisher must close the outgoing publisher's upstream stream OUTSIDE
+// pubMu: pub.close()'s CloseAndReceive blocks awaiting the Server's terminal ack
+// on the socket-lifetime stream with no per-close timeout, so holding pubMu
+// across it would let one unresponsive-but-connected Server stall every later
+// Publish forward on the same mutex — a session-wide telemetry outage from one
+// clean stream-end. THE contract: a concurrent acquirePublisher must not block
+// on pubMu while a close is in flight. Event-gated on the Server entering its
+// stall and on acquire returning — no sleeps (rule://no-retries).
+//
+// RED (pre-fix): hold pubMu across the close (`g.pubMu.Lock(); defer
+// g.pubMu.Unlock()` with `pub.close()` inside the critical section) -> the
+// concurrent acquirePublisher blocks on pubMu for the whole stalled close ->
+// `done` never fires and the assertion times out.
+func TestReleasePublisherClosesOutsideLock(t *testing.T) {
+	relay := newBlockingClosePublish()
+	events := newRunnerServiceServer(t, relay)
+	g := NewGateway(context.Background(), "cont-1", Deps{Sessions: boundSessions(), Events: events})
+
+	// Establish the publisher (opens the upstream stream) with one forward, so
+	// releasePublisher closes a genuinely live stream.
+	if err := g.acquirePublisher("sess-1").forward(traceFrame("f")); err != nil {
+		t.Fatalf("initial forward = %v, want success", err)
+	}
+
+	// releasePublisher clears g.pub under pubMu, then blocks in pub.close()'s
+	// CloseAndReceive against the unresponsive Server.
+	released := make(chan error, 1)
+	go func() { released <- g.releasePublisher() }()
+
+	// Gate on the close genuinely reaching the Server before racing the acquire,
+	// so the assertion measures the lock, not a scheduling coincidence.
+	select {
+	case <-relay.closing:
+	case <-time.After(testTimeout):
+		t.Fatal("timed out waiting for releasePublisher's close to reach the Server")
+	}
+	// Unblock the stalled close in cleanup (LIFO: runs before srv.Close) so the
+	// close goroutine returns and the server tears down.
+	t.Cleanup(func() {
+		close(relay.release)
+		<-released
+	})
+
+	// THE assertion: a concurrent acquire returns promptly while the close is in
+	// flight. done fires only when acquirePublisher returns.
+	done := make(chan *sessionPublisher, 1)
+	go func() { done <- g.acquirePublisher("sess-1") }()
+	select {
+	case pub := <-done:
+		if pub == nil {
+			t.Fatal("acquirePublisher returned nil during an in-flight close")
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("acquirePublisher blocked while releasePublisher held pubMu across CloseAndReceive")
+	}
+}
