@@ -779,7 +779,7 @@ enum ForgeProvider {
   FORGE_PROVIDER_GITLAB = 2;
   FORGE_PROVIDER_FORGEJO = 3;
   FORGE_PROVIDER_LINEAR = 4;  // DL-051's issues-only forge source: a
-                              // Linear-origin Issue whose repo is the project key
+                              // Linear-origin Issue whose repo is the team key
 }
 message ForgeRef {
   ForgeProvider provider = 1;

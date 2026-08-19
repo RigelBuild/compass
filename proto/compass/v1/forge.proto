@@ -53,6 +53,14 @@ message CommentRef {
   compass.v1.AgentAttribution agent = 5; // set only when the commenter is a Compass agent; unset for a human
 }
 
+// A reference to a submitted PR review — the write ack for submit_review.
+// Mirrors CommentRef: url + id only on an ack (DL-069: no forge shape on wire).
+message ReviewRef {
+  string url = 1;
+  uint64 review_id = 2;
+  string verdict = 3;                    // echo of the applied verdict
+}
+
 // Which forge artifact a subscription and a notification address. Zero is the
 // _UNSPECIFIED sentinel: this file is NOT in buf.yaml's ENUM_ZERO_VALUE_SUFFIX
 // exemption (that covers comms.proto only), so the sentinel is required. An

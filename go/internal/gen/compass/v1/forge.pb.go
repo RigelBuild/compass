@@ -248,6 +248,68 @@ func (x *CommentRef) GetAgent() *v1.AgentAttribution {
 	return nil
 }
 
+// A reference to a submitted PR review — the write ack for submit_review.
+// Mirrors CommentRef: url + id only on an ack (DL-069: no forge shape on wire).
+type ReviewRef struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	ReviewId      uint64                 `protobuf:"varint,2,opt,name=review_id,json=reviewId,proto3" json:"review_id,omitempty"`
+	Verdict       string                 `protobuf:"bytes,3,opt,name=verdict,proto3" json:"verdict,omitempty"` // echo of the applied verdict
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReviewRef) Reset() {
+	*x = ReviewRef{}
+	mi := &file_compass_v1_forge_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReviewRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReviewRef) ProtoMessage() {}
+
+func (x *ReviewRef) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_forge_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReviewRef.ProtoReflect.Descriptor instead.
+func (*ReviewRef) Descriptor() ([]byte, []int) {
+	return file_compass_v1_forge_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ReviewRef) GetUrl() string {
+	if x != nil {
+		return x.Url
+	}
+	return ""
+}
+
+func (x *ReviewRef) GetReviewId() uint64 {
+	if x != nil {
+		return x.ReviewId
+	}
+	return 0
+}
+
+func (x *ReviewRef) GetVerdict() string {
+	if x != nil {
+		return x.Verdict
+	}
+	return ""
+}
+
 // A forge change on a subscribed artifact, pushed to the agent (DL-053
 // subscriptions, DL-054 notifications v1). Carried identically on both hops: the
 // Server->Runner relay (runner.proto SessionsResponse.forge_notification) and the
@@ -275,7 +337,7 @@ type ForgeNotification struct {
 
 func (x *ForgeNotification) Reset() {
 	*x = ForgeNotification{}
-	mi := &file_compass_v1_forge_proto_msgTypes[1]
+	mi := &file_compass_v1_forge_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -287,7 +349,7 @@ func (x *ForgeNotification) String() string {
 func (*ForgeNotification) ProtoMessage() {}
 
 func (x *ForgeNotification) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_forge_proto_msgTypes[1]
+	mi := &file_compass_v1_forge_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -300,7 +362,7 @@ func (x *ForgeNotification) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForgeNotification.ProtoReflect.Descriptor instead.
 func (*ForgeNotification) Descriptor() ([]byte, []int) {
-	return file_compass_v1_forge_proto_rawDescGZIP(), []int{1}
+	return file_compass_v1_forge_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ForgeNotification) GetSubscriptionId() string {
@@ -386,7 +448,11 @@ const file_compass_v1_forge_proto_rawDesc = "" +
 	"comment_id\x18\x02 \x01(\x04R\tcommentId\x12\x12\n" +
 	"\x04body\x18\x03 \x01(\tR\x04body\x12#\n" +
 	"\rforge_account\x18\x04 \x01(\tR\fforgeAccount\x122\n" +
-	"\x05agent\x18\x05 \x01(\v2\x1c.compass.v1.AgentAttributionR\x05agent\"\x8f\x03\n" +
+	"\x05agent\x18\x05 \x01(\v2\x1c.compass.v1.AgentAttributionR\x05agent\"T\n" +
+	"\tReviewRef\x12\x10\n" +
+	"\x03url\x18\x01 \x01(\tR\x03url\x12\x1b\n" +
+	"\treview_id\x18\x02 \x01(\x04R\breviewId\x12\x18\n" +
+	"\averdict\x18\x03 \x01(\tR\averdict\"\x8f\x03\n" +
 	"\x11ForgeNotification\x12'\n" +
 	"\x0fsubscription_id\x18\x01 \x01(\tR\x0esubscriptionId\x12*\n" +
 	"\x05forge\x18\x02 \x01(\v2\x14.compass.v1.ForgeRefR\x05forge\x12\x12\n" +
@@ -423,23 +489,24 @@ func file_compass_v1_forge_proto_rawDescGZIP() []byte {
 }
 
 var file_compass_v1_forge_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_compass_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_compass_v1_forge_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_compass_v1_forge_proto_goTypes = []any{
 	(ForgeArtifactKind)(0),      // 0: compass.v1.ForgeArtifactKind
 	(ForgeNotificationKind)(0),  // 1: compass.v1.ForgeNotificationKind
 	(*CommentRef)(nil),          // 2: compass.v1.CommentRef
-	(*ForgeNotification)(nil),   // 3: compass.v1.ForgeNotification
-	(*v1.AgentAttribution)(nil), // 4: compass.v1.AgentAttribution
-	(*v1.ForgeRef)(nil),         // 5: compass.v1.ForgeRef
-	(*v1.ChecksSummary)(nil),    // 6: compass.v1.ChecksSummary
+	(*ReviewRef)(nil),           // 3: compass.v1.ReviewRef
+	(*ForgeNotification)(nil),   // 4: compass.v1.ForgeNotification
+	(*v1.AgentAttribution)(nil), // 5: compass.v1.AgentAttribution
+	(*v1.ForgeRef)(nil),         // 6: compass.v1.ForgeRef
+	(*v1.ChecksSummary)(nil),    // 7: compass.v1.ChecksSummary
 }
 var file_compass_v1_forge_proto_depIdxs = []int32{
-	4, // 0: compass.v1.CommentRef.agent:type_name -> compass.v1.AgentAttribution
-	5, // 1: compass.v1.ForgeNotification.forge:type_name -> compass.v1.ForgeRef
+	5, // 0: compass.v1.CommentRef.agent:type_name -> compass.v1.AgentAttribution
+	6, // 1: compass.v1.ForgeNotification.forge:type_name -> compass.v1.ForgeRef
 	0, // 2: compass.v1.ForgeNotification.kind:type_name -> compass.v1.ForgeArtifactKind
 	1, // 3: compass.v1.ForgeNotification.change:type_name -> compass.v1.ForgeNotificationKind
 	2, // 4: compass.v1.ForgeNotification.comment:type_name -> compass.v1.CommentRef
-	6, // 5: compass.v1.ForgeNotification.checks:type_name -> compass.v1.ChecksSummary
+	7, // 5: compass.v1.ForgeNotification.checks:type_name -> compass.v1.ChecksSummary
 	6, // [6:6] is the sub-list for method output_type
 	6, // [6:6] is the sub-list for method input_type
 	6, // [6:6] is the sub-list for extension type_name
@@ -458,7 +525,7 @@ func file_compass_v1_forge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compass_v1_forge_proto_rawDesc), len(file_compass_v1_forge_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
