@@ -1,0 +1,16 @@
+-- 0002_messages_author_idx: a btree index on messages.author_account_id, added
+-- to serve the author-only equality probe in AgentHasOpenAsk (presence_reads.go):
+--   SELECT EXISTS(SELECT 1 FROM messages WHERE author_account_id = $1 AND blocks @? …)
+-- The presence projection calls AgentHasOpenAsk on EVERY presence edge, so this
+-- equality lookup is hot. 0001_init's message indexes do not serve it:
+-- messages_channel_seq_idx (channel_id, seq DESC) leads on channel_id, the GIN
+-- messages_search_idx is on search_tsv, and the partial unique messages_idem_idx
+-- (author_account_id, client_request_id) WHERE client_request_id <> '' excludes
+-- the non-idempotent rows an ask probe cares about. Absent this index the probe
+-- seq-scans messages; with it, Postgres narrows to the author's (few) rows and
+-- evaluates the jsonpath predicate only on those.
+--
+-- Plain (non-partial, non-CONCURRENT) btree: naming mirrors messages_channel_seq_idx
+-- (messages_<col>_idx). Migrations run inside a transaction (store.go
+-- applyMigration), so CREATE INDEX CONCURRENTLY is invalid here.
+CREATE INDEX messages_author_idx ON messages (author_account_id);
