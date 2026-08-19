@@ -300,6 +300,51 @@ func TestDeleteAgentConfigClearsAndSignalsEmpty(t *testing.T) {
 	}
 }
 
+// TestAgentConfigWriteRPCsDenyNonAdminToken pins the network-door admin gate for
+// the two config-write RPCs: a valid NON-admin (member) bearer is denied
+// CodePermissionDenied on both PutAgentConfig and DeleteAgentConfig. The gate
+// short-circuits BEFORE the handler runs (so the bundle is never validated on
+// this path), which is why it uses the full network-door chain via
+// networkDoorHandler rather than the handler-contract newConfigFixture (that
+// fixture installs only the bearer interceptor, not the AdminGate). Mirrors the
+// SecretsService per-RPC agent-token denial tests. This reddens if the gate ever
+// stops classifying either RPC adminOnly.
+func TestAgentConfigWriteRPCsDenyNonAdminToken(t *testing.T) {
+	ctx := context.Background()
+	st, admin, member := newNetworkStore(t)
+	memberTok, err := auth.IssueAccountToken(ctx, st, member)
+	if err != nil {
+		t.Fatalf("IssueAccountToken(member): %v", err)
+	}
+
+	bus := events.NewBus[busPayload]()
+	t.Cleanup(bus.Close)
+	svc := newService("rig1658-denial-test", bus, st, nil, nil, nil, nil)
+	client := networkDoorHandler(t, svc, st, admin)
+
+	t.Run("PutAgentConfig as non-admin is PermissionDenied", func(t *testing.T) {
+		req := connect.NewRequest(&compassv1.PutAgentConfigRequest{
+			Bundle: mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"}),
+		})
+		req.Header().Set("Authorization", "Bearer "+memberTok)
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		if _, err := client.PutAgentConfig(ctx, req); connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatalf("non-admin token on PutAgentConfig = %v, want CodePermissionDenied", connect.CodeOf(err))
+		}
+	})
+
+	t.Run("DeleteAgentConfig as non-admin is PermissionDenied", func(t *testing.T) {
+		req := connect.NewRequest(&compassv1.DeleteAgentConfigRequest{})
+		req.Header().Set("Authorization", "Bearer "+memberTok)
+		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+		defer cancel()
+		if _, err := client.DeleteAgentConfig(ctx, req); connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatalf("non-admin token on DeleteAgentConfig = %v, want CodePermissionDenied", connect.CodeOf(err))
+		}
+	})
+}
+
 // join renders a name slice for a stable equality assertion.
 func join(names []string) string {
 	return strings.Join(names, ",")
