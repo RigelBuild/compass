@@ -210,6 +210,14 @@ jobs:
           out=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
           echo "$out/bin" >>"$GITHUB_PATH"
+          # Playwright needs the Chromium executable PATH, not the command on
+          # PATH — the dev-boot gate (apps/ui:dev-smoke) resolves it via
+          # PLAYWRIGHT_CHROMIUM_PATH (playwright.config.ts:31-33). Use the
+          # in-scope store path directly: a $GITHUB_PATH append only affects
+          # SUBSEQUENT steps, so `$out/bin` is not yet on this step's PATH and
+          # `$(command -v chromium)` would resolve nothing, silently falling
+          # back to the dev-box path in the config.
+          echo "PLAYWRIGHT_CHROMIUM_PATH=$out/bin/chromium" >>"$GITHUB_ENV"
 
       - name: Toolchain parity
         # Runs BEFORE the gate, though `:ci` schedules it again (it takes under a

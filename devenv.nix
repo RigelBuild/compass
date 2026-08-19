@@ -111,6 +111,14 @@ in
     # pin resolves to postgresql-18.4 — the SAME derivation the service uses, so
     # CI and the dev shell exercise one postgres, not two.
     postgresql
+
+    # chromium: the browser the dev-boot smoke gate drives (apps/ui:dev-smoke).
+    # Playwright points at it via launchOptions.executablePath, resolved in CI
+    # from PLAYWRIGHT_CHROMIUM_PATH over this nix store path
+    # (playwright.config.ts:31-33). Kept in the parsed `packages` list so the
+    # toolchain-parity gate resolves it onto the CI PATH like every other tool,
+    # with no hand-listing in gate-tools.nix or the workflow.
+    chromium
   ])
   # The language toolchains: bun/node/moon vendored from
   # tools/toolchain/versions/*.nix and go from the go-overlay input. Appended
