@@ -307,8 +307,10 @@ func TestDeleteAgentConfigClearsAndSignalsEmpty(t *testing.T) {
 // this path), which is why it uses the full network-door chain via
 // networkDoorHandler rather than the handler-contract newConfigFixture (that
 // fixture installs only the bearer interceptor, not the AdminGate). Mirrors the
-// SecretsService per-RPC agent-token denial tests. This reddens if the gate ever
-// stops classifying either RPC adminOnly.
+// per-RPC denial PATTERN of the SecretsService agent-token tests — but asserts
+// the error code only, since the gate denies before the handler here, whereas
+// those deny inside the handler and so also assert no side effect. This reddens
+// if the gate ever stops classifying either RPC adminOnly.
 func TestAgentConfigWriteRPCsDenyNonAdminToken(t *testing.T) {
 	ctx := context.Background()
 	st, admin, member := newNetworkStore(t)
