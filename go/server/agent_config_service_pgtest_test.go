@@ -169,6 +169,39 @@ func TestPutAgentConfigIdempotentRePutDoesNotResignal(t *testing.T) {
 	}
 }
 
+// TestPutAgentConfigChangedContentResignals: a Put whose content DIFFERS from the
+// stored bundle yields a new version and MUST re-prod the fleet — this pins the
+// guard's signalling true-branch over a real (non-empty) prior version, the exact
+// path a dedupe regression would silently break (leaving the fleet on stale config
+// while the idempotent-case test stays green).
+func TestPutAgentConfigChangedContentResignals(t *testing.T) {
+	f := newConfigFixture(t)
+
+	respA, err := f.client.PutAgentConfig(context.Background(),
+		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"})}))
+	if err != nil {
+		t.Fatalf("PutAgentConfig (A): %v", err)
+	}
+	v1 := respA.Msg.GetVersion()
+
+	respB, err := f.client.PutAgentConfig(context.Background(),
+		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review v2"})}))
+	if err != nil {
+		t.Fatalf("PutAgentConfig (B): %v", err)
+	}
+	v2 := respB.Msg.GetVersion()
+
+	if v2 == v1 {
+		t.Fatalf("changed content yielded the same version %q — expected a new one", v2)
+	}
+	if len(f.signaler.versions) != 2 {
+		t.Fatalf("signaler saw %d emits after a changed-content Put, want 2", len(f.signaler.versions))
+	}
+	if f.signaler.versions[1] != v2 {
+		t.Fatalf("second signal version %q != changed-content version %q", f.signaler.versions[1], v2)
+	}
+}
+
 // TestPutAgentConfigInvalidBundleIsInvalidArgument: a bundle that fails the store
 // door (not a gzip tarball) is CodeInvalidArgument, and no signal fires.
 func TestPutAgentConfigInvalidBundleIsInvalidArgument(t *testing.T) {
