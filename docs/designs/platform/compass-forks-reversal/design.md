@@ -38,7 +38,7 @@ machinery that existed only to carry them.
   the frozen record with their own RIG keys. The driver owns all VCS and issue
   filing.
 - **planning-evidence:** every claim about compass code in this record carries
-  file+line verified in this checkout (`main` @ `7d77f50d`), with a quoted
+  file+line verified in this checkout (`main` @ `13a43cec`), with a quoted
   snippet where the claim is load-bearing.
 - **No ledger delta.** Compass's design-ledger gate is product-scoped only:
   `tools/design-ledger-gate/index.ts:45` — `export const PRODUCT_DIR =
@@ -81,12 +81,17 @@ updates the lock (`devenv update` / `nix flake lock --update-input`). Between
 the two, compass keeps building against the previous pinned rev.
 
 **One rev, not two.** The module set is pinned in `agent-image/devenv.lock`, but
-the fork's CLI is also invoked raw (`nix run path:../forks/<fork>#…`) in five
-places that bypass the lock (see L1/L2 Interfaces). Today a single `path:` tree
+the fork's CLI is also invoked raw (`nix run path:../forks/<fork>#…`) in the
+raw-CLI call sites (six files, incl. `tools/agent-image-env-gate/index.ts`) that
+bypass the lock (see L1/L2 Interfaces). Today a single `path:` tree
 makes CLI-rev == module-rev by construction (`devenv.nix:442-445` names exactly
-this as the reason for the pin shape). The reversal MUST preserve that identity:
-the recommended shape is a tiny compass-side flake re-exporting the locked
-inputs so every consumer resolves one lockfile rev (OQ2). Scattering a
+this as the reason for the pin shape). The flake-input side follows orion's
+frozen default — `github:RigelBuild/<fork>` pinned via `devenv.lock`
+(`docs/designs/platform/oss-forks/oss-fork-github-native-reversal.md:142-155`) —
+but the six raw-CLI sites bypass that lock, so the reversal MUST separately
+preserve the CLI-rev == module-rev identity: the recommended shape is a tiny
+compass-side flake re-exporting the locked inputs so every consumer resolves one
+lockfile rev (OQ2). Scattering a
 `github:RigelBuild/<fork>/<rev>` literal across the CLI call sites reintroduces a
 silent divergence channel — a bump that edits the lock but not a literal builds
 the image with the module set at one rev driven by a CLI at another, with no
@@ -121,7 +126,12 @@ is compass's review point — not a mechanical path swap.
   `agent-image/moon.yml:44` (`command: 'nix run path:../forks/devenv#devenv --
   container build agent'`), `agent-image/publish.sh:50-51`, `devenv.nix:461`
   (`nix run path:../forks/devenv#devenv -- container copy agent`),
-  `.github/workflows/ci.yml:812`.
+  `.github/workflows/ci.yml:812`, and
+  `tools/agent-image-env-gate/index.ts:100` — the fail-closed image-env gate
+  (`tools/agent-image-env-gate/`, a registered moon project at
+  `.moon/workspace.yml:60`) builds the image through the same CLI, and its
+  `moon.yml` check task carries `/forks/devenv/**` as an affected-detection
+  input glob (`agent-image-env-gate/moon.yml:58`).
 
 **The sealed patch is compass-specific and load-bearing.** All of it sits in
 `forks/devenv/src/modules/containers.nix`:
@@ -161,9 +171,10 @@ rationale.
   container module builds through it); locked rev-less at
   `agent-image/devenv.lock:216,220`.
 - The fork's patched skopeo is invoked by path:
-  `.github/workflows/publish-agent-image.yml:139,160` and
-  `agent-image/publish.sh:32` — `nix run
-  path:../forks/nix2container#skopeo-nix2container`.
+  `.github/workflows/publish-agent-image.yml:139,160`, `agent-image/publish.sh:32`,
+  and `tools/agent-image-env-gate/index.ts:118` — `nix run
+  path:../forks/nix2container#skopeo-nix2container`. The env-gate also globs
+  `/forks/nix2container/**` (`agent-image-env-gate/moon.yml:59`).
 
 **The sealed patch is shared.** `forks/nix2container/default.nix:396-399` drops
 relocated copyToRoot paths from the initialized nix DB:
@@ -178,22 +189,28 @@ in makeNixDatabase closureGraphForAllLayers;
 versus upstream's `ignore = [configFile]++allLayers;` — without it the in-image
 nix DB claims store paths the image does not carry, breaking image self-rebuild
 with a failed lstat (comment block at `default.nix:386-395`). This is the SAME
-fix orion's T1 (RIG-2215, In Review as of this record) lands onto
-`RigelBuild/nix2container` — whose `master` is today still plain upstream on
-this point (verified 2026-08-19 against `RigelBuild/nix2container@76be9608`
-`default.nix`: `ignore = [configFile]++allLayers;`, no `copyToRootList` in the
-DB ignore set).
+fix orion's T1 (RIG-2215) landed onto `RigelBuild/nix2container`. That fork
+repo's `main` now carries it: rev
+`8f4a6fd7b10abaeeddff6c4d8bb4908c5123c90c` (verified 2026-08-19,
+`git ls-remote https://github.com/RigelBuild/nix2container` — public, no auth)
+is upstream `master` plus the one relocated-copyToRoot-paths patch, byte-identical
+to the fix compass carries at `forks/nix2container/default.nix:386-395`. So
+consuming that rev restores the fix by construction — compass never re-patches
+it.
 
-**Landing sequence.** Orion T1 is **PR #1483** (RIG-2215), which lands the shared
-nix-DB-drop fix on `RigelBuild/nix2container`. Compass repoints to
-`github:RigelBuild/nix2container` only after #1483 **merges** (not opens) — no
-compass-side fork-repo PR needed. #1483 is itself blocked on **RIG-2332**
-(the sole arm64 image-builder is down, so its CI cannot dispatch), so the fork
-content is not on `RigelBuild/nix2container` `master` yet. Because this lane's
-prerequisite is external and open-ended, the reversal runs **L2 / L3 / L4
-first** and sequences L1 last (see Plan); forge pings compass when #1483 merges
-so L1 locks a real rev. The compass lane is blocked on #1483, not on any
-compass work.
+**Landing sequence — cleared.** Orion T1 was **PR #1483** (RIG-2215),
+**merged 2026-08-19** (orion mergeCommit `f561bd97`, verified via
+`gh api repos/RigelBuild/orion/pulls/1483`); orion deleted its vendored
+`oss/forks/nix2container` subtree and now consumes the fork via a rev-pinned
+`github:` input. The external RIG-2332 block (the sole arm64 image-builder was
+down) is therefore **resolved** — the fork content is live on
+`RigelBuild/nix2container` `main`. Compass consumes the same canonical repo
+(Matt's one-fork-per-upstream ruling) at rev `8f4a6fd7`, does **not** stand up a
+duplicate, and if it ever needs a patch it combines onto
+`RigelBuild/nix2container` `main` rather than re-forking. L1 was sequenced last
+while this prerequisite was open; it is now unblocked and free to run once the
+record freezes. (forge signalled the merge over the cross-lane channel; both the
+merge and the rev were re-verified at source before this fold.)
 
 ### oh-my-pi
 
@@ -224,7 +241,7 @@ build; L3 must repoint the generator, not just delete the tree.
 There is no *build* consumer to repoint, so the tree deletion is clean and
 removes 5892 of the 7424 vendored files in one move. The one real consumer —
 the generator — should read the npm-installed schema the agent actually runs
-(`node_modules/@oh-my-pi/pi-coding-agent/src/config/settings-schema.ts`, pinned
+(`packages/compass-agent/node_modules/@oh-my-pi/pi-coding-agent/src/config/settings-schema.ts`, pinned
 at `packages/compass-agent/package.json:19`), so the denylist tracks the version
 in production rather than a vendored snapshot. The sealed deltas catalogued in
 `forks/README.md:156-197` live in the monorepo fork and are
@@ -243,9 +260,11 @@ main is never red between the two. The vendored posture's converse property
 needs both sides lands fork-first with defaults that keep the old consumer
 behavior, then the compass bump adopts it.
 
-Compass runs **no Renovate** (verified: no `renovate.json`/`.renovaterc*`
-config anywhere in this checkout), so routine bumps are manual `devenv update`
-PRs until someone wires automation; this record does not require it.
+Compass runs **no first-party Renovate** (verified: the only `renovate.json` in
+the tree is upstream's inside `forks/devenv/.github/`, which no compass workflow
+runs and which L2 deletes with the subtree; no `.renovaterc*` anywhere), so
+routine bumps are manual `devenv update` PRs until someone wires automation;
+this record does not require it.
 
 ## Alternatives considered
 
@@ -268,12 +287,13 @@ tree that nothing consumes but everything still gates); the teardown lane
 removes only the machinery shared across forks, and runs after the last tree is
 gone.
 
-Dependency order: L0a → L2; L0b → L1 (L0b/L1 also behind orion PR #1483 /
-RIG-2215, itself blocked on RIG-2332); L3 independent (behind OQ1's answer);
-L1+L2+L3 → L4. **Execution order** given L1's open-ended external block:
-run L2 / L3 / L4-of-the-non-nix2container-machinery first, and sequence L1 last
-when forge signals #1483 merged — so nix2container is off compass's critical
-path.
+Dependency order: L0a → L2; L0b → L1 (L0b confirms orion PR #1483 / RIG-2215,
+which **merged 2026-08-19** — the earlier RIG-2332 arm64-builder block is
+resolved); L3 independent (behind OQ1's answer); L1+L2+L3 → L4. **Execution
+order:** L1's external prerequisite is now met, so L1 can run at any point after
+L0b's trivial confirmation. L2 / L3 / L4-of-the-non-nix2container-machinery
+still run ahead of L1 by the original plan, but L1 is no longer gated on an
+open-ended external block — it locks the real rev `8f4a6fd7` immediately.
 
 ### L0 — Cross-repo prerequisites (fork-repo side; no compass PR)
 
@@ -312,10 +332,10 @@ nix2container shared fix has landed.
     forge owns the scaffolding convention.
   - Gate: the fork repo's own CI green **and** the byte-identity nix-eval check.
 - **L0b — confirm orion T1 (RIG-2215) merged on `RigelBuild/nix2container`.**
-  Verification: `RigelBuild/nix2container` `master` `default.nix` includes
-  `copyToRootList` in the nix-DB `ignore` set (today it does not — `ignore =
-  [configFile]++allLayers;` at `76be9608`). No compass-side work; coordinate
-  with forge.
+  **Done (2026-08-19):** `RigelBuild/nix2container` `main` is at rev
+  `8f4a6fd7b10abaeeddff6c4d8bb4908c5123c90c`, upstream `master` plus the one
+  relocated-copyToRoot-paths patch (the shared nix-DB-drop fix); orion PR #1483
+  merged (mergeCommit `f561bd97`). This is the rev L1 pins. No compass-side work.
 
 Interfaces:
 
@@ -325,7 +345,7 @@ Interfaces:
   `RigelBuild/nix2container` `master` rev carrying the shared fix. These two
   revs are the pins L1/L2 lock.
 
-### L1 — nix2container: repoint + delete (behind L0b)
+### L1 — nix2container: repoint + delete (behind L0b; prerequisite met)
 
 One compass PR: repoint every nix2container consumer to
 `github:RigelBuild/nix2container` pinned at the post-T1 rev, delete
@@ -333,22 +353,28 @@ One compass PR: repoint every nix2container consumer to
 
 Interfaces:
 
-- Consumes: the L0b rev of `RigelBuild/nix2container`.
+- Consumes: `RigelBuild/nix2container` at the L0b rev
+  `8f4a6fd7b10abaeeddff6c4d8bb4908c5123c90c` (fork `main`, carries the shared fix).
 - Repoints (pin format `github:RigelBuild/nix2container`, rev locked in
   `agent-image/devenv.lock`):
   - `agent-image/devenv.yaml:20` — `url: path:../forks/nix2container` →
     `url: github:RigelBuild/nix2container` (keep the `nixpkgs` follows).
   - `agent-image/devenv.lock:215-222` — regenerate; the input's `locked` block
     gains a `rev`.
-  - `.github/workflows/publish-agent-image.yml:139,160` and
-    `agent-image/publish.sh:32` — `nix run
+  - `.github/workflows/publish-agent-image.yml:139,160`,
+    `agent-image/publish.sh:32`, and `tools/agent-image-env-gate/index.ts:118` — `nix run
     path:../forks/nix2container#skopeo-nix2container` → `nix run
     github:RigelBuild/nix2container/<rev>#skopeo-nix2container` (rev-pinned
     literal; these are raw CLI refs with no lockfile, so the rev rides in the
     URL and bumps are explicit edits).
 - Deletes: `forks/nix2container/` (incl. `.upstream-sync`, `moon.yml`);
-  `.moon/workspace.yml:72` (`nix2container-fork: 'forks/nix2container'`);
-  `agent-image/moon.yml:69` input glob `/forks/nix2container/**`;
+  `.moon/workspace.yml:79` (`nix2container-fork: 'forks/nix2container'`);
+  `agent-image/moon.yml:70` input glob `/forks/nix2container/**`;
+  `tools/agent-image-env-gate/moon.yml:59` input glob `/forks/nix2container/**`
+  (the env-gate's inputs MIRROR agent-image's per `agent-image/moon.yml:65`; a
+  dead glob left behind makes the fail-closed gate silently stop running on
+  image PRs — the "silently inert registration" failure `.moon/workspace.yml:72-77`
+  warns of);
   `.github/workflows/publish-agent-image.yml:57` path-filter trigger
   `forks/nix2container/**`.
 - Prose/comment sweep: `agent-image/devenv.yaml:12-19` ("Tracks
@@ -376,16 +402,23 @@ Interfaces:
   - CLI invocations `nix run path:../forks/devenv#devenv` → `nix run
     github:RigelBuild/devenv/<rev>#devenv` (rev-pinned literal, same rationale
     as L1): `agent-image/moon.yml:44`, `agent-image/publish.sh:50-51`,
-    `devenv.nix:461`, `.github/workflows/ci.yml:812`.
+    `devenv.nix:461`, `.github/workflows/ci.yml:812`,
+    `tools/agent-image-env-gate/index.ts:100`.
 - Deletes: `forks/devenv/` (incl. `.upstream-sync`, `moon.yml`);
-  `.moon/workspace.yml:71` (`devenv-fork: 'forks/devenv'`);
-  `agent-image/moon.yml:68` input glob `/forks/devenv/**` and the
-  symlink-hash-warn comment `moon.yml:57-61`;
+  `.moon/workspace.yml:78` (`devenv-fork: 'forks/devenv'`);
+  `agent-image/moon.yml:69` input glob `/forks/devenv/**` and the
+  symlink-hash-warn comment `moon.yml:57-64`;
+  `tools/agent-image-env-gate/moon.yml:58` input glob `/forks/devenv/**` (the
+  mirrored env-gate glob — same silently-inert risk as L1);
   `.github/workflows/publish-agent-image.yml:55` trigger `forks/devenv/**`;
   `.gitignore:64` `!forks/**/.DS_Store` (exists only for
   `forks/devenv/logos/`, `.gitignore:43-44`).
 - Comment sweep (fork-path references in prose): `agent-image/devenv.nix:7`,
-  `agent-image/toolchain.nix:96`, `devenv.nix:110,443`,
+  `agent-image/toolchain.nix:96`, `agent-image/moon.yml:5,38` (the
+  `nix run path:../forks/devenv#devenv` example and the `path:../forks/*`
+  cwd-rationale comment, adjacent to the repointed CLI), `devenv.nix:110,443`,
+  `tools/agent-image-env-gate/env-check.ts:8`, `index.ts:15`, and
+  `moon.yml:10,41` (all cite `forks/devenv/...` or `path:../forks/*`),
   `apps/ui/.env.development:30-32` (cites
   `forks/devenv/src/modules/processes.nix`, `devenv-core/src/ports.rs`,
   `devenv/src/main.rs` for port-allocation behavior — will actively misdirect a
@@ -411,20 +444,36 @@ Interfaces:
 
 - Consumes: OQ1's answer.
 - Repoints (the one real consumer): `go/internal/store/gen_credential_keys.go:42`
-  `schemaRelPath` → the npm-installed schema
-  (`node_modules/@oh-my-pi/pi-coding-agent/src/config/settings-schema.ts`, pinned
-  at `packages/compass-agent/package.json:19`); regenerate
-  `go/internal/store/credential_keys_gen.go` (`go generate ./internal/store/...`)
-  so its source header (`credential_keys_gen.go:3`) names the new path; update
-  the provenance comments at `gen_credential_keys.go:9` and
+  `schemaRelPath` → the npm-installed schema. The generator resolves the path
+  from `runtime.Caller` relative to `go/internal/store/`
+  (`gen_credential_keys.go:39-42,52-56`), and the SDK is **not** top-level
+  hoisted (`agent-image/entrypoint.nix:208-218`), so the concrete target is
+  `../../../packages/compass-agent/node_modules/@oh-my-pi/pi-coding-agent/src/config/settings-schema.ts`
+  (pinned at `packages/compass-agent/package.json:19`); confirm `go generate
+  ./internal/store/...` resolves it from the store's cwd before freezing the lane.
+- The generated header is emitted from a HARDCODED literal, not from
+  `schemaRelPath`: `gen_credential_keys.go:74`
+  (`fmt.Fprintln(&b, "// Source: forks/oh-my-pi/.../config/settings-schema.ts …")`)
+  is what produces `credential_keys_gen.go:3`. Edit `:74` (and the `:9` comment)
+  or regeneration re-emits the deleted `forks/oh-my-pi/...` path; `:3` updates
+  only as a CONSEQUENCE of editing `:74` then regenerating — regeneration alone
+  is necessary but not sufficient. Also update the provenance at
   `agent_config.go:656-659` and the regeneration instruction in
-  `agent_config_test.go:505-518`. Verify the regenerated denylist is
-  byte-identical (the npm copy at the pinned version must match the vendored
-  `v17.1.8` schema — if it differs, that is a real denylist drift to surface,
-  not paper over).
+  `agent_config_test.go:505-518`.
+- **Expect a denylist diff, not byte-identity.** The vendored tree is `v17.1.8`
+  (`forks/oh-my-pi/packages/coding-agent/package.json:4`) but the npm pin
+  `^16.4.8` resolves to `16.5.2` in this checkout
+  (`packages/compass-agent/node_modules/@oh-my-pi/pi-coding-agent/package.json`)
+  — a full major behind. Across that gap the two schemas almost certainly
+  differ, so `TestCredentialKeysMatchSchema` (`agent_config_test.go:507`) will
+  likely red on the repoint and its `want` set (`agent_config_test.go:508-516`)
+  must be re-reviewed and updated in the SAME PR. This is the correct outcome —
+  the repoint re-bases the denylist onto the version production actually runs,
+  which the Approach argues for; a diff is the expected case, not drift to
+  paper over.
 - Deletes: `forks/oh-my-pi/` (incl. `moon.yml`; this tree has no
   `.upstream-sync` — only devenv and nix2container carry one);
-  `.moon/workspace.yml:73-76` (the `oh-my-pi-fork` entry and its comment).
+  `.moon/workspace.yml:80-83` (the `oh-my-pi-fork` entry and its comment).
 - Prose sweep: `forks/README.md` §oh-my-pi (deleted with the README in L4);
   `go/e2e/cannedmodel.go:14` ("Grounded against the SDK parser firsthand
   (forks/oh-my-pi)"); `go/internal/runner/config_delivery_e2e_test.go:78-80`
@@ -448,7 +497,12 @@ Interfaces:
 
 - Consumes: an empty `forks/` (all three trees gone).
 - Deletes/edits:
-  - `.markdownlint-cli2.jsonc:23` — remove `"forks/*/**"` from `ignores`.
+  - `.moon/workspace.yml:64-77` — delete the shared fork-projects comment block
+    (`Vendored upstream fork subtrees …` through the `VENDORING A NEW FORK`
+    note); it explains only the three `-fork` entries and dangles once L1/L2/L3
+    have removed all of them.
+  - `.markdownlint-cli2.jsonc:5-6,23` — remove `"forks/*/**"` from `ignores`
+    (:23) and its exclusion-rationale comment (:5-6).
   - `biome.json:5` — remove `!forks/*` from `files.includes`.
   - `.gitignore:41-63` — remove the vendored-fork re-include comment block
     (the `!forks/**/.DS_Store` line itself goes in L2 if not already gone).
@@ -482,14 +536,16 @@ Interfaces:
 
 - [ ] L0a — land compass's `containers.nix` patch set in `RigelBuild/devenv`
       (fork-repo PR; provenance carried; fork CI green).
-- [ ] L0b — confirm orion T1 (RIG-2215) merged the shared nix-DB fix on
-      `RigelBuild/nix2container`.
+- [x] L0b — orion T1 (RIG-2215) **merged 2026-08-19**; `RigelBuild/nix2container`
+      `main` at `8f4a6fd7` carries the shared nix-DB fix (the rev L1 pins).
 - [ ] L1 — repoint nix2container consumers to pinned
       `github:RigelBuild/nix2container`; delete `forks/nix2container/` + its
-      moon entry, input glob, workflow trigger.
+      moon entry, input glob (incl. the mirrored env-gate glob), workflow
+      trigger, and the env-gate CLI ref.
 - [ ] L2 — repoint devenv consumers to pinned `github:RigelBuild/devenv`;
-      delete `forks/devenv/` + its moon entry, input glob, workflow trigger,
-      `.DS_Store` negation; agent-image smoke green.
+      delete `forks/devenv/` + its moon entry, input glob (incl. the mirrored
+      env-gate glob), workflow trigger, `.DS_Store` negation, and the env-gate
+      CLI ref; agent-image smoke green.
 - [ ] L3 — resolve OQ1, then (drop path) repoint the credential-keys generator
       (`gen_credential_keys.go:42`) to the npm schema, regenerate, and delete
       `forks/oh-my-pi/` + its moon entry — or pin `github:RigelBuild/oh-my-pi`
@@ -514,21 +570,38 @@ Interfaces:
    imminent and named.
 2. **Rev-pinned CLI literals vs one lockfile for the raw `nix run` invocations**
    (`agent-image/publish.sh:32,50-51`, `agent-image/moon.yml:44`,
-   `devenv.nix:461`, `ci.yml:812`, `publish-agent-image.yml:139,160`) —
-   **LOAD-BEARING.** Today a single `path:` tree makes the CLI rev and the
-   locked module-set rev identical by construction (`devenv.nix:442-445` names
-   this as the reason for the pin shape); the frozen dogfood-loop record makes
-   the same argument
-   (`docs/designs/platform/compass-dogfood-loop/design.md:225-229`). Scattering
-   a `github:…/<rev>` literal across five files that bypass `devenv.lock`
+   `devenv.nix:461`, `ci.yml:812`, `publish-agent-image.yml:139,160`,
+   `tools/agent-image-env-gate/index.ts:100,118`) —
+   **LOAD-BEARING, but narrower than first framed.** The *flake-input* half is
+   settled: orion has frozen the nix-flake-input class as
+   `github:RigelBuild/<fork>` pinned **via lockfile**
+   (`docs/designs/platform/oss-forks/oss-fork-github-native-reversal.md:142-155`
+   — verified at source; the deliberate default plus the RIG-1860 whole-repo
+   narHash fix), so compass's one flake-input consumer, `agent-image/devenv.lock`,
+   converges on that with no reason to diverge. What orion's precedent does **not**
+   cover is the wrinkle: orion's frozen class table (`:142-147`) has four import
+   classes — flake-input, standalone-executable-as-a-file, GHCR-image, and
+   no-consumer — but **none is a raw-CLI bypass**, whereas compass invokes the
+   fork CLI raw at the six sites above, which bypass `devenv.lock` entirely.
+   Today a single `path:` tree makes the CLI rev and the locked
+   module-set rev identical by construction (`devenv.nix:442-445` names this as
+   the reason for the pin shape; the frozen dogfood-loop record makes the same
+   argument, `docs/designs/platform/compass-dogfood-loop/design.md:225-229`).
+   Scattering a `github:…/<rev>` literal across those six lockfile-bypass sites
    reintroduces a silent divergence: a bump editing the lock but not a literal
    (or vice versa) builds the image with the module set at one rev and the CLI at
-   another, with no gate to catch it. **Recommendation: a tiny compass-side
-   flake re-exporting the locked inputs**, so every consumer resolves one
-   lockfile rev and the by-construction identity is restored. If rev-in-URL
-   literals are kept instead, L1/L2 MUST add a CI assert that each literal's rev
-   equals the corresponding `devenv.lock` rev, named in the lane gates. This is
-   the record's one genuine fork — Matt's call.
+   another, with no gate to catch it. **Recommendation: a tiny compass-side flake
+   re-exporting the locked inputs**, so the raw CLIs resolve the same lockfile rev
+   as the module set and the by-construction identity is restored — this option
+   has no orion analog. The coherent alternative is orion's literal style — keep
+   the `github:…/<rev>` literals but have L1/L2 add a CI assert that each
+   literal's rev equals the corresponding `devenv.lock` rev, named in the lane
+   gates; this mirrors orion's terraform-provider class (`:145,166-178`), a pinned
+   **non-flake** consumption (tagged GitHub Release + committed sha256 manifest,
+   verified at build time) — the orion shape for "pin and verify a path not
+   resolved through a lockfile." This is the record's one genuine fork — Matt's
+   call; note at review that orion has no raw-CLI-bypass class, so its flake-input
+   precedent settles compass's `devenv.lock` consumer but not the raw-CLI shape.
 3. **Secret-scanning re-widening fallout** — non-load-bearing. Deleting
    `.github/secret_scanning.yml:25` re-enables scanning + push protection
    repo-wide. Expected clean once the trees are gone; if historical alerts
