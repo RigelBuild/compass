@@ -44,6 +44,13 @@ type configSignaler interface {
 // that fails the door's validation (not a gzip tarball, path escapes, size/count
 // caps, invalid mcp JSON) is CodeInvalidArgument; the bundle bytes are never
 // logged.
+//
+// The signal fires only when the written version differs from the one already
+// stored. The store is content-hash-versioned, so a re-Put of byte-identical
+// content yields the same version and replaces the row in place — the fleet
+// already holds it, so re-signalling would be a redundant re-fetch prod.
+// Concurrent Put is last-writer-wins with no compare-and-set (design record),
+// so the read-before-write version compare is a best-effort dedupe, not a lock.
 func (s *service) PutAgentConfig(
 	ctx context.Context,
 	req *connect.Request[compassv1.PutAgentConfigRequest],
@@ -52,6 +59,13 @@ func (s *service) PutAgentConfig(
 	if err != nil {
 		return nil, err
 	}
+	currentVersion, _, err := s.store.CurrentAgentConfig(ctx)
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		currentVersion = "" // unconfigured fleet: first-ever Put always signals
+	}
 	version, err := s.store.PutAgentConfig(ctx, caller, req.Msg.GetBundle())
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidArgument) {
@@ -59,7 +73,9 @@ func (s *service) PutAgentConfig(
 		}
 		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	s.signalConfigVersion(ctx, version)
+	if version != currentVersion {
+		s.signalConfigVersion(ctx, version)
+	}
 	return connect.NewResponse(&compassv1.PutAgentConfigResponse{Version: version}), nil
 }
 

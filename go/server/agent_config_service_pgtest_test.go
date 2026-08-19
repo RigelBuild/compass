@@ -141,6 +141,34 @@ func TestPutAgentConfigReturnsVersionAndSignals(t *testing.T) {
 	}
 }
 
+// TestPutAgentConfigIdempotentRePutDoesNotResignal: a re-Put of byte-identical
+// content is idempotent at the content-hash store — it yields the same version and
+// replaces the row in place, so the handler must NOT re-prod the fleet with a
+// second ConfigVersion signal for a version it already holds.
+func TestPutAgentConfigIdempotentRePutDoesNotResignal(t *testing.T) {
+	f := newConfigFixture(t)
+	bundle := mkConfigBundle(t, map[string]string{"skills/review/SKILL.md": "# review"})
+
+	resp, err := f.client.PutAgentConfig(context.Background(),
+		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: bundle}))
+	if err != nil {
+		t.Fatalf("PutAgentConfig (first): %v", err)
+	}
+	v := resp.Msg.GetVersion()
+
+	resp2, err := f.client.PutAgentConfig(context.Background(),
+		authReq(f, &compassv1.PutAgentConfigRequest{Bundle: bundle}))
+	if err != nil {
+		t.Fatalf("PutAgentConfig (re-Put): %v", err)
+	}
+	if resp2.Msg.GetVersion() != v {
+		t.Fatalf("re-Put version %q != first version %q", resp2.Msg.GetVersion(), v)
+	}
+	if len(f.signaler.versions) != 1 {
+		t.Fatalf("signaler saw %d emits after an identical re-Put, want 1", len(f.signaler.versions))
+	}
+}
+
 // TestPutAgentConfigInvalidBundleIsInvalidArgument: a bundle that fails the store
 // door (not a gzip tarball) is CodeInvalidArgument, and no signal fires.
 func TestPutAgentConfigInvalidBundleIsInvalidArgument(t *testing.T) {
