@@ -90,6 +90,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/compass-preview-deploy": {
+      "name": "@compass/compass-preview-deploy",
+      "bin": {
+        "compass-preview-deploy": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/cx-token-gate": {
       "name": "@compass/cx-token-gate",
       "bin": {
@@ -273,6 +283,8 @@
     "@compass/agent": ["@compass/agent@workspace:packages/compass-agent"],
 
     "@compass/client": ["@compass/client@workspace:packages/compass-client"],
+
+    "@compass/compass-preview-deploy": ["@compass/compass-preview-deploy@workspace:tools/compass-preview-deploy"],
 
     "@compass/cx-token-gate": ["@compass/cx-token-gate@workspace:tools/cx-token-gate"],
 
