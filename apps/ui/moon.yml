@@ -56,7 +56,28 @@ tasks:
     command: 'bunx stylelint "src/**/*.css"'
     deps: ['install']
     inputs: ['src/**/*.css', '.stylelintrc.cjs', 'package.json', '/bun.lock']
+  dev-smoke:
+    # The dev-boot smoke gate: boots the real fixture-mode dev server and reads
+    # the SERVED module graph (see e2e/dev-boot.spec.ts) — the one thing no
+    # build/unit task does, since they exercise the production build path where
+    # this defect class cannot appear. The two settings below are both
+    # mandatory and do different jobs:
+    #  - explicit `inputs` drive PR-path affected-detection. A project task with
+    #    no `inputs` key defaults to project-relative `**/*`, which EXCLUDES the
+    #    workspace-root `/bun.lock` — so a lockfile-only dependency-bump PR (the
+    #    shape most likely to rot vite.config.ts's optimizeDeps pins, and with it
+    #    dev boot) would be missed. This is `build`'s list plus this spec and the
+    #    Playwright config, the two files whose edits must re-schedule the gate.
+    #  - `cache: false` forces a real run whenever the task is scheduled: the
+    #    subject is the served module graph resolved out of node_modules at run
+    #    time, not a moon-hashable input, so a cached green would survive exactly
+    #    the rot this gate exists to red on. Precedent: `ci` itself (below).
+    command: 'bunx playwright test e2e/dev-boot.spec.ts'
+    deps: ['install']
+    inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', 'e2e/dev-boot.spec.ts', 'playwright.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+    options:
+      cache: false
   ci:
-    deps: ['typecheck', 'build', 'test', 'stylelint']
+    deps: ['typecheck', 'build', 'test', 'stylelint', 'dev-smoke']
     options:
       cache: false

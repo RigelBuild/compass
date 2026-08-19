@@ -132,7 +132,16 @@ in
   # that literal on macOS too, where xvfb-run does not exist. The package is
   # self-contained (its wrapper prepends its own Xvfb to PATH). CI's dedicated
   # e2e step gets it via tools/toolchain/gtk-e2e-env.nix, not this shell.
-  ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.xvfb-run ];
+  ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.xvfb-run ]
+  # chromium: the browser the dev-boot smoke gate drives (apps/ui:dev-smoke,
+  # design record compass-dev-boot-gate). Playwright points at it via
+  # launchOptions.executablePath, resolved from PLAYWRIGHT_CHROMIUM_PATH
+  # (apps/ui/playwright.config.ts:31-33). Linux-only (nixpkgs chromium has no
+  # darwin build) and appended OUTSIDE the parsed `packages` literal for the
+  # same reason as xvfb-run: the toolchain-parity gate resolves every bare attr
+  # in that literal on macOS too, where chromium does not exist. CI's dev-smoke
+  # step provisions it via tools/toolchain/chromium-e2e-env.nix, not this shell.
+  ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.chromium ];
 
   env = { }
   # The Compass native app (Wails v3, go/cmd/compass-app) links the Linux

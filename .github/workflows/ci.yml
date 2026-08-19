@@ -210,6 +210,18 @@ jobs:
           out=$(nix build --no-link --print-out-paths \
             -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
           echo "$out/bin" >>"$GITHUB_PATH"
+          # The dev-boot gate (apps/ui:dev-smoke) drives a headless Chromium
+          # through Playwright, which resolves it from PLAYWRIGHT_CHROMIUM_PATH
+          # (apps/ui/playwright.config.ts:31-33). chromium is Linux-only in
+          # nixpkgs, so it is NOT in the parity `attrs` above (see devenv.nix) —
+          # it is realized out-of-band here from its own pinned helper, the same
+          # pattern the gtk3 e2e step uses for its browser stack. Read its
+          # bin/chromium out-path straight into the env: a $GITHUB_PATH append
+          # only affects SUBSEQUENT steps, so resolving `chromium` off PATH here
+          # would find nothing and silently fall back to the dev-box path.
+          chromium=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/chromium-e2e-env.nix chromium)
+          echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
 
       - name: Toolchain parity
         # Runs BEFORE the gate, though `:ci` schedules it again (it takes under a
