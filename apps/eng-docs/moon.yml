@@ -52,10 +52,15 @@ tasks:
   # folds build's wider input set (public/**, scripts/**) into its hash, so a
   # public- or script-only change re-runs the type-check that used to stay
   # cached; and (2) check no longer parallelizes with build, so the check gate's
-  # wall-clock now includes build's duration. Per-task cache isolation (which
-  # would keep them parallel) is not cleanly feasible: cacheDir is single-shared
-  # in astro.config.mjs and tsconfig.json hard-codes include:['.astro/types.d.ts']
-  # at a fixed path, so isolating check to its own store would break the
+  # wall-clock now includes build's duration. Two alternatives were rejected: a
+  # moon `mutex` on build+check would serialize them as siblings (keeping check's
+  # narrow input set), but it only serializes within a single pipeline run and
+  # does not protect two independently-spawned cold moon processes any better
+  # than a dep edge — which additionally hands check a warm store. Per-task cache
+  # isolation (separate stores, keeping them parallel) is not cleanly feasible:
+  # the store resolves to astro's single shared default (astro.config.mjs sets no
+  # per-task cacheDir) and tsconfig.json include hard-codes the fixed
+  # `.astro/types.d.ts` path, so isolating check to its own store would break the
   # type-check include.
   check:
     command: 'bunx astro check'
