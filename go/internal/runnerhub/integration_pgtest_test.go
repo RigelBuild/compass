@@ -65,12 +65,12 @@ const relayText = "e2e reply over the AgentGateway socket"
 func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 	dsn := pgtest.RequireDSN(t) // SKIPs when no podman/DSN — never fails hard.
 	// First cleanup registered, so LIFO removes the tree LAST — after
-	// runSessionsLoop's drain has confirmed the loop left dispatch (see there).
+	// runnerloop.RunSessionsLoop's drain has confirmed the loop left dispatch (see there).
 	runtimeDir := runnertest.ShortRuntimeDir(t, agentNamePrefix, accountIDHexLen)
 	ctx, cancel := context.WithCancel(context.Background())
 	// Registered adjacent to WithCancel so the ~60 lines of fixture setup below
 	// (openStoreFixture, runner.Dial, NewConfigSpecBuilder) cannot t.Fatalf out
-	// with the context never cancelled. runSessionsLoop registers cancel again,
+	// with the context never cancelled. runnerloop.RunSessionsLoop registers cancel again,
 	// later, so LIFO still runs its copy FIRST and the drain ordering the loop
 	// documents is unchanged; context.CancelFunc is idempotent, so the second
 	// call here is a no-op.
@@ -78,13 +78,13 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 
 	st, agent, commsSvc, commsSub := openStoreFixture(t, ctx, dsn)
 	homeChannel := agent.Agent.HomeChannelID
-	// shortRuntimeDir budgeted the path against a MODEL of the account id
+	// runnertest.ShortRuntimeDir budgeted the path against a MODEL of the account id
 	// (accountIDHexLen "f"s), because it runs before an account exists. Tie the
 	// model to the real minted value now that it does: widen store ids and this
 	// reddens here, rather than silently invalidating that budget and letting
 	// the real socket path overrun.
 	if got := len(agent.ID); got != accountIDHexLen {
-		t.Fatalf("minted account id is %d chars, but shortRuntimeDir budgeted for %d; update accountIDHexLen", got, accountIDHexLen)
+		t.Fatalf("minted account id is %d chars, but ShortRuntimeDir budgeted for %d; update accountIDHexLen", got, accountIDHexLen)
 	}
 
 	// comms is the hub's CommsCaller — the real agent-comms execution leg over
@@ -220,7 +220,7 @@ func TestIntegrationSocketPostCommitsToStoreAndFansOnBus(t *testing.T) {
 // Receive.
 //
 // This is the CLEAN path, asserted as its own property. The cleanup registered
-// by runSessionsLoop covers the failing paths, where a t.Fatalf skips this.
+// by runnerloop.RunSessionsLoop covers the failing paths, where a t.Fatalf skips this.
 func assertCleanShutdown(t *testing.T, ctx context.Context, cancel context.CancelFunc, host runner.SessionHost, sessionID string, loopDone <-chan error) {
 	t.Helper()
 	if err := host.Stop(ctx, sessionID); err != nil {
@@ -458,7 +458,7 @@ func textOf(m store.Message) string {
 func discardLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 // agentNamePrefix is the container-name prefix this test wires into its
-// SpecDefaults, hoisted so shortRuntimeDir models the same name the Runner
+// SpecDefaults, hoisted so runnertest.ShortRuntimeDir models the same name the Runner
 // actually builds (BuildSpec in spec.go joins it with the account id). Editing
 // the prefix in one place would otherwise silently shrink the modelled path and
 // turn the budget assertion into a false negative.

@@ -24,12 +24,12 @@ package server
 // constructor (out of scope — T7 adds no production interfaces). So this test
 // lives in package server and ASSEMBLES the full wire inline, combining the
 // server-package hub wiring (newRunnerHub + SetLifecycleCaller) with the
-// real-runner-over-stub-engine socket shape lifted from
-// runnerhub/integration_pgtest_test.go. Those helpers live in package
-// runnerhub_test, so the ones this needs are PORTED below (copied + adapted,
-// keeping the load-bearing WHY-comments — shortRuntimeDir's sun_path budget,
-// runSessionsLoop's LIFO drain ordering); nothing is exported from runnerhub to
-// make this compile.
+// real-runner-over-stub-engine socket shape. The socket scaffolding it needs —
+// the sun_path-bounded runtime dir, the h2c client, the cleartext-H2 dialer —
+// is the same shape runnerhub/integration_pgtest_test.go needs, so it lives in
+// the shared internal/runnertest package (ShortRuntimeDir carries the sun_path
+// budget; runnerloop.RunSessionsLoop carries the LIFO drain ordering) and both
+// tests import it rather than each carrying a copy.
 //
 // Each assertion carries a mutation comment: the plausible regression in the
 // (already merged, green) spine that would redden it — the "red-first" the
@@ -72,7 +72,7 @@ import (
 const e2eTimeout = 30 * time.Second
 
 // e2eNamePrefix is the container-name prefix this test wires into its
-// SpecDefaults, hoisted so shortRuntimeDir models the same name the Runner
+// SpecDefaults, hoisted so runnertest.ShortRuntimeDir models the same name the Runner
 // actually builds (BuildSpec in spec.go joins it with the account id). Editing
 // the prefix in one place would otherwise silently shrink the modelled path and
 // turn the budget assertion into a false negative.
@@ -484,7 +484,7 @@ type e2eWire struct {
 // a socket-serving stub engine, then provisions and starts a supervisor session
 // and returns a client dialed to its per-container socket. Cleanups are ordered
 // so the runtime-dir removal runs LAST (after the loop has left dispatch and the
-// host has drained its sockets) — see runSessionsLoop and the host-Close cleanup
+// host has drained its sockets) — see runnerloop.RunSessionsLoop and the host-Close cleanup
 // below.
 func newE2EWire(t *testing.T) *e2eWire {
 	t.Helper()
@@ -494,7 +494,7 @@ func newE2EWire(t *testing.T) *e2eWire {
 	runtimeDir := runnertest.ShortRuntimeDir(t, e2eNamePrefix, e2eAccountIDHexLen)
 	ctx, cancel := context.WithCancel(context.Background()) // the test root context
 	// Registered adjacent to WithCancel so the fixture setup below cannot t.Fatalf
-	// out with the context never cancelled. runSessionsLoop registers cancel again
+	// out with the context never cancelled. runnerloop.RunSessionsLoop registers cancel again
 	// later; CancelFunc is idempotent, so the ordering the loop documents is
 	// unchanged.
 	t.Cleanup(cancel)
@@ -523,13 +523,13 @@ func newE2EWire(t *testing.T) *e2eWire {
 	if err != nil {
 		t.Fatalf("CreateAgent(supervisor): %v", err)
 	}
-	// shortRuntimeDirE2E budgeted the socket path against a MODEL of the account
+	// runnertest.ShortRuntimeDir budgeted the socket path against a MODEL of the account
 	// id (e2eAccountIDHexLen "f"s), before an account existed. Tie the model to
 	// the real minted width now: widen store ids and this reddens here, rather
 	// than silently invalidating the budget and letting the real socket path
 	// overrun.
 	if got := len(supervisor.ID); got != e2eAccountIDHexLen {
-		t.Fatalf("minted account id is %d chars, but shortRuntimeDirE2E budgeted for %d; update e2eAccountIDHexLen", got, e2eAccountIDHexLen)
+		t.Fatalf("minted account id is %d chars, but ShortRuntimeDir budgeted for %d; update e2eAccountIDHexLen", got, e2eAccountIDHexLen)
 	}
 
 	// The hub, wired exactly as the server package builds it (sinks.go
@@ -586,7 +586,7 @@ func newE2EWire(t *testing.T) *e2eWire {
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	host := runner.NewSessionHost(link, rt, registry, engine, specs, runner.AgentHostConfig{RuntimeDir: runtimeDir}, discardLogE2E(), nil)
 	// host.Close drains every per-container socket. Registered BEFORE
-	// runSessionsLoop so under LIFO it runs AFTER the loop's cancel+drain — the
+	// runnerloop.RunSessionsLoop so under LIFO it runs AFTER the loop's cancel+drain — the
 	// production order (run.go: cancel, RunSessions returns, THEN host.Close), and
 	// still before the runtime-dir removal registered at the very top. The fresh
 	// bounded ctx is the sanctioned test-root exemption: the test ctx is cancelled
@@ -634,13 +634,14 @@ func (w *e2eWire) dialPeer(t *testing.T, containerName string) compassv1internal
 	return runnertest.DialAgentSocket(t, agentSocketPathE2E(w.runtimeDir, containerName))
 }
 
-// --- ported helpers (from runnerhub/integration_pgtest_test.go) --------------
+// --- server-package-specific wire helpers -----------------------------------
 //
-// These are lifted from the runnerhub whole-wire reference and adapted to
-// package server; the load-bearing WHY-comments are kept. They carry an `E2E`
-// suffix so they never collide with the runnerhub originals or any existing
-// server-package test helper, and so a future reader sees at a glance they are
-// this file's ported copies rather than shared scaffolding.
+// The generic socket scaffolding (runtime dir, h2c client, dialer, sessions
+// loop) lives in the shared internal/runnertest package. What remains here is
+// the wire this test builds on top of it and cannot share: the single-token
+// resolver, the stub runtime, and the server-package assembly helpers. They
+// carry an `E2E` suffix so they never collide with an existing server-package
+// test helper. The load-bearing WHY-comments are kept.
 
 // e2eResolver accepts exactly one Runner token — the minimal TokenResolver the
 // mounted RunnerService door authenticates the stub Runner with.
@@ -789,7 +790,7 @@ func provisionWhenSeamLiveE2E(t *testing.T, ctx context.Context, hub *runnerhub.
 // mountRunnerServerE2E mounts the real RunnerService door on an httptest server
 // that speaks cleartext HTTP/2 (h2c + HTTP/1) and returns its base URL. The
 // server is torn down via t.Cleanup — registered here (early) so under LIFO it
-// closes AFTER the Sessions loop has been cancelled (see runSessionsLoopE2E).
+// closes AFTER the Sessions loop has been cancelled (see runnerloop.RunSessionsLoop).
 func mountRunnerServerE2E(t *testing.T, hub *runnerhub.Hub, resolve runnerhub.TokenResolver) string {
 	t.Helper()
 	path, handler := runnerhub.NewMountedHandler(hub, resolve, nil, nil)
