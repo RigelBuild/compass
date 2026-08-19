@@ -19,6 +19,11 @@ import { BadgeGlyph } from "./BadgeGlyph";
 export const IssueCard: Component<{
 	issue: Issue;
 	onOpenPr?: () => void;
+	/** Dormant hook (T5, D2): when a future store accessor marks this card as
+	 *  advancing a column, it renders `data-advancing="1"` and the board paints
+	 *  the chase-light. No live data sets it yet (the Issue model carries no
+	 *  transition timestamp), so it is unwired — every caller omits it today. */
+	advancing?: boolean;
 }> = (props) => {
 	const store = useStore();
 	const openAssignedAgent = () => {
@@ -48,6 +53,7 @@ export const IssueCard: Component<{
 			data-selected={
 				props.issue.id === store.selectedIssueId() ? "" : undefined
 			}
+			data-advancing={props.advancing ? "1" : undefined}
 			onClick={() => store.selectIssue(props.issue.id)}
 			onDblClick={openAssignedAgent}
 		>
