@@ -38,9 +38,16 @@
 // answering is the human side of the conversation and arrives over the control
 // lane. The prohibition is structural rather than a convention to uphold — the
 // request oneof cannot express RespondToAsk — so widening that oneof is what
-// re-checks it. Raising stays permitted: post can carry `ask` blocks.
+// re-checks it. Raising stays permitted: post can carry `ask` blocks, and the
+// dedicated `comms_post_ask` tool raises one. An ask is an ASYNC channel
+// message, never a session dialog — there is no promptable session (the session
+// log is operator observe+stop only). `comms_post_ask` posts and returns with a
+// server-minted ask id; the operator's answer arrives later as an
+// AskAnswerControl over the control lane, delivered to the model on a subsequent
+// turn. See packages/compass-agent/AGENTS.md for the package contract.
 //
-// Four tools ship: post, list, roster, and set_status; search is deferred (OQ-3).
+// Five tools ship: post, post_ask, list, roster, and set_status; search is
+// deferred (OQ-3).
 
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 // `arktype` is pinned exact in package.json to whatever the SDK resolves
@@ -51,6 +58,10 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { type } from "arktype";
 import {
 	AgentPresence,
+	AskOptionSchema,
+	type AskQuestion,
+	AskQuestionSchema,
+	AskSchema,
 	type CommsCallRequest,
 	CommsCallRequestSchema,
 	type CommsCallResult,
@@ -142,6 +153,101 @@ export const postParameters = type({
 			"Target channel; omit entirely for your home channel (an empty string is rejected)",
 		),
 });
+
+/**
+ * The `comms_post_ask` parameters, 1:1 with the SDK ask tool's `QuestionItem` /
+ * `OptionItem` (pi-coding-agent ask.ts:57-69). Exported so a test can validate
+ * the wire contract the agent loop enforces.
+ */
+export const postAskParameters = type({
+	// At least one question — `Ask.questions` is repeated with a "at least one"
+	// contract (comms.proto:361-368). The per-question `id` must be non-empty AND
+	// unique across the Ask (the key an AskQuestionAnswer addresses,
+	// comms.proto:383-389); enforced by the `.narrow` below and stated in its
+	// description, since a `.narrow` predicate has no JSON Schema form and the
+	// model sees only the description.
+	questions: type({
+		id: type("string").describe(
+			"Stable id for this question, unique and non-empty within the ask; the answer echoes it back",
+		),
+		question: type("string").describe("The question text"),
+		"header?": type("string").describe(
+			"Optional short display chip shown above/beside the question",
+		),
+		options: type({
+			label: type("string").describe("The option's label"),
+			"description?": type("string").describe(
+				"Optional explanatory text shown under the label",
+			),
+			"preview?": type("string").describe("Optional rich preview content"),
+		})
+			.array()
+			.describe(
+				"Selectable options; may be empty for a free-text-only question",
+			),
+		"multi?": type("boolean").describe(
+			"Whether more than one option may be chosen",
+		),
+		"recommended?": type("number.integer").describe(
+			"Zero-based index into options of the recommended default",
+		),
+	})
+		.array()
+		.atLeastLength(1)
+		.narrow((qs, ctx) => {
+			const ids = qs.map((q) => q.id);
+			if (ids.some((id) => id.trim().length === 0))
+				return ctx.mustBe("questions with non-empty ids");
+			if (new Set(ids).size !== ids.length)
+				return ctx.mustBe("questions with unique ids");
+			return true;
+		})
+		.describe(
+			"The questions to ask, at least one; each question id must be non-empty and unique within the ask",
+		),
+	// A named conversation within the channel; same non-blank/≤120 idiom as
+	// `postParameters.topic`, but optional here with a `"general"` default (the
+	// store rejects an unset topic — store/messages.go:36-37 — and gets-or-creates
+	// the named topic on append).
+	"topic?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.narrow((s, ctx) => s.length <= 120 || ctx.mustBe("at most 120 characters"))
+		.describe(
+			'Named conversation within the channel; an unknown name creates the topic (default "general")',
+		),
+	"channel_id?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"Target channel; omit entirely for your home channel (an empty string is rejected)",
+		),
+});
+
+/**
+ * A live-session, in-memory registry of the asks this agent has raised, keyed
+ * by the server-minted `ask_id`. The raise tool records the questions it built
+ * so the answer lane can render an inbound `AskAnswerControl` against them; the
+ * registry is session-scoped and not durable (design "The answer lane", the
+ * owed-to-handle delivery is a filed runner/hub dependency).
+ */
+export interface PendingAsks {
+	record(askId: string, questions: AskQuestion[]): void;
+	take(askId: string): AskQuestion[] | undefined;
+}
+
+/** A `Map`-backed in-memory `PendingAsks`. */
+export function createPendingAsks(): PendingAsks {
+	const asks = new Map<string, AskQuestion[]>();
+	return {
+		record(askId, questions) {
+			asks.set(askId, questions);
+		},
+		take(askId) {
+			const questions = asks.get(askId);
+			asks.delete(askId);
+			return questions;
+		},
+	};
+}
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const listParameters = type({
@@ -253,13 +359,16 @@ function presenceLabel(presence: AgentPresence): string {
 }
 
 /**
- * The native comms tool set. Four tools; never an ask-answering one.
+ * The native comms tool set. Five tools; never an ask-answering one.
  *
  * Wired into the container entrypoint by `cli.ts main()` (SEA-1741): the tools
  * are merged into the session's `customTools` and so register as `#withNatives`
  * natives. This package's tests also exercise the end-to-end contract directly.
  */
-export function createCommsTools(broker: CommsBroker): AgentTool[] {
+export function createCommsTools(
+	broker: CommsBroker,
+	pendingAsks?: PendingAsks,
+): AgentTool[] {
 	const postMessage: AgentTool<typeof postParameters> = {
 		name: "comms_post_message",
 		label: "Post channel message",
@@ -315,6 +424,94 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 					{
 						type: "text",
 						text: `Posted message ${attr(posted.id)} to topic ${attr(posted.topicId)}.`,
+					},
+				],
+			};
+		},
+	};
+
+	const postAsk: AgentTool<typeof postAskParameters> = {
+		name: "comms_post_ask",
+		label: "Post channel ask",
+		approval: "write",
+		description:
+			"Raise a structured question (an 'ask') on a Compass channel. The ask " +
+			"is posted as an async channel message: it returns immediately with a " +
+			"server-minted ask id, and the operator's answer arrives on a LATER " +
+			"turn — you do NOT wait for it here. A topic names the conversation " +
+			'within the channel (default "general"); omit channel_id to post to ' +
+			"your home channel.",
+		parameters: postAskParameters,
+		execute: async (toolCallId, params) => {
+			const topic = params.topic ?? "general";
+			// Build the AskQuestion[] mirroring the SDK ask shape 1:1. AskOption.id
+			// is CLIENT-MINTED as the option's zero-based index rendered as a
+			// decimal string — native OptionItem carries no id, but AskOption.id is
+			// the referent chosen_option_ids echoes back, so the option's position
+			// in options[] is the stable key. The server-owned fields (ask_id,
+			// answered, and every answer field) are left unset — an inbound Ask has
+			// by definition not been answered, and the server ignores them anyway.
+			const questions = params.questions.map((q) =>
+				create(AskQuestionSchema, {
+					questionId: q.id,
+					question: q.question,
+					header: q.header,
+					options: q.options.map((o, i) =>
+						create(AskOptionSchema, {
+							id: String(i),
+							label: o.label,
+							description: o.description,
+							preview: o.preview,
+						}),
+					),
+					allowMultiple: q.multi,
+					recommended: q.recommended,
+				}),
+			);
+			const askBlock = create(MessageBlockSchema, {
+				block: {
+					case: "ask",
+					value: create(AskSchema, { questions }),
+				},
+			});
+			const result = await broker.call(
+				create(CommsCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "post",
+						value: create(PostMessageRequestSchema, {
+							container: params.channel_id
+								? { case: "channelId", value: params.channel_id }
+								: { case: undefined },
+							blocks: [askBlock],
+							topic: { case: "topicName", value: topic },
+							clientRequestId: broker.idempotencyKey(toolCallId),
+						}),
+					},
+				}),
+			);
+			if (result.result.case !== "post")
+				throw commsFailure(result, "comms_post_ask", "post");
+			const posted = result.result.value.message;
+			if (!posted)
+				throw new Error(
+					"comms_post_ask: protocol violation — post result carried no message",
+				);
+			const askValue = posted.blocks[0]?.block;
+			if (askValue?.case !== "ask")
+				throw new Error(
+					"comms_post_ask: protocol violation — post result carried no ask block",
+				);
+			const askId = askValue.value.askId;
+			// Record the questions the model asked, keyed by the server-minted ask
+			// id, so the answer lane can render an inbound AskAnswerControl against
+			// them (session-scoped, in-memory).
+			pendingAsks?.record(askId, questions);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Posted ask ${attr(askId)} to topic ${attr(posted.topicId)}. The operator's answer will arrive in a later turn — do not wait for it; continue.`,
 					},
 				],
 			};
@@ -653,5 +850,5 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		},
 	};
 
-	return [postMessage, listMessages, roster, setStatus];
+	return [postMessage, postAsk, listMessages, roster, setStatus];
 }

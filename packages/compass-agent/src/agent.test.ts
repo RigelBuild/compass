@@ -20,9 +20,16 @@ import type {
 	AgentSessionEvent,
 	AgentSessionEventListener,
 } from "@oh-my-pi/pi-coding-agent";
-import { CompassAgent, formatDeliversForPrompt } from "./agent";
+import {
+	CompassAgent,
+	formatAskAnswerForPrompt,
+	formatDeliversForPrompt,
+} from "./agent";
+import { createPendingAsks, type PendingAsks } from "./comms";
 import {
 	AgentSessionState,
+	AskOptionSchema,
+	type AskQuestion,
 	AskQuestionAnswerSchema,
 	AskQuestionSchema,
 	AskSchema,
@@ -202,7 +209,11 @@ function names(tools: AgentTool[] | undefined): string[] {
 // so `run()` resolves once it ends. The recording session is the only external
 // dependency; the cast to AgentSession is honest because CompassAgent touches
 // only the members implemented above.
-async function runWith(controls: AgentControl[], natives: AgentTool[] = []) {
+async function runWith(
+	controls: AgentControl[],
+	natives: AgentTool[] = [],
+	pendingAsks?: PendingAsks,
+) {
 	const session = recordingSession(natives);
 	const frames: OutboundFrame[] = [];
 	const unmapped: UnmappedEvent[] = [];
@@ -224,6 +235,7 @@ async function runWith(controls: AgentControl[], natives: AgentTool[] = []) {
 		},
 		control,
 		onUnmapped: (u) => unmapped.push(u),
+		pendingAsks,
 	}).run();
 	return { session, agent: session.agent, frames, unmapped };
 }
@@ -338,62 +350,297 @@ describe("CompassAgent — barrier lifts on ReplayComplete", () => {
 	});
 });
 
-describe("CompassAgent — ask_answer is staged, never delivered to the SDK (SEA-1310)", () => {
-	// The frozen 6th AgentControl variant. Both arms surface a counted unmapped
-	// op and drive NO SDK action: pre-barrier it is refused like prompt/steer;
-	// post-barrier it is STAGED (wiring the answer needs the SEA-1310 correlation
-	// key). The two reasons distinguish the arms so a regression that collapses
-	// them — or that starts delivering the answer to the SDK — reddens here.
-	test("ask_answer before ReplayComplete is refused by the barrier and surfaced, never delivered", async () => {
-		const { agent, unmapped } = await runWith([
-			{
-				kind: "askAnswer",
-				askId: "a-1",
-				answers: [
-					create(AskQuestionAnswerSchema, {
-						questionId: "q-1",
-						chosenOptionIds: ["opt-1"],
-					}),
-				],
+// An AskQuestion fixture: id + text + zero or more options whose ids are the
+// zero-based-index strings Lane 1 mints ("0","1",…). Only the axes the answer
+// formatter reads are load-bearing.
+function askQuestion(
+	id: string,
+	text: string,
+	options: { id: string; label: string }[] = [],
+): AskQuestion {
+	return create(AskQuestionSchema, {
+		questionId: id,
+		question: text,
+		options: options.map((o) =>
+			create(AskOptionSchema, { id: o.id, label: o.label }),
+		),
+	});
+}
+
+// A PendingAsks pre-seeded with one recorded ask, mirroring what the raise tool
+// (`comms_post_ask`) records so the answer lane can render an inbound answer
+// against the questions the model asked.
+function seededAsks(askId: string, questions: AskQuestion[]): PendingAsks {
+	const asks = createPendingAsks();
+	asks.record(askId, questions);
+	return asks;
+}
+
+// A CompassAgent over a PUSHABLE control source: `feed` enqueues a control op
+// and lets the run loop drain it, `drive` pushes session turn edges through the
+// recorded listener, `close` ends the loop. Unlike runWith (a fixed script that
+// runs to completion) this interleaves control ops with turn edges — the
+// coalescing path the askAnswer arm shares with deliver needs both.
+function startControlAgent(
+	natives: AgentTool[] = [],
+	pendingAsks?: PendingAsks,
+) {
+	const session = recordingSession(natives);
+	const frames: OutboundFrame[] = [];
+	const unmapped: UnmappedEvent[] = [];
+	const queue: AgentControl[] = [];
+	let notify: (() => void) | undefined;
+	let closed = false;
+	const control: ControlSource = {
+		async *[Symbol.asyncIterator]() {
+			while (true) {
+				while (queue.length > 0) {
+					const next = queue.shift();
+					if (next !== undefined) yield next;
+				}
+				if (closed) return;
+				await new Promise<void>((resolve) => {
+					notify = resolve;
+				});
+			}
+		},
+	};
+	const agent = new CompassAgent({
+		session: session as unknown as AgentSession,
+		sink: {
+			emit: (f) => {
+				frames.push(f);
 			},
-		]);
-		// No SDK action for this frame, on any drive path.
+			emitDurable: (f) => {
+				frames.push(f);
+				return Promise.resolve();
+			},
+		},
+		control,
+		onUnmapped: (u) => unmapped.push(u),
+		pendingAsks,
+	});
+	const done = agent.run();
+	// Enqueue a control op and drain the microtask turns the `for await` needs to
+	// pull + apply it (the apply is synchronous for askAnswer).
+	const feed = async (c: AgentControl): Promise<void> => {
+		queue.push(c);
+		notify?.();
+		notify = undefined;
+		await tick();
+		await tick();
+	};
+	const drive = (event: AgentSessionEvent): void => {
+		session.listener?.(event);
+	};
+	const close = async (): Promise<void> => {
+		closed = true;
+		notify?.();
+		await done;
+	};
+	return { agent, session, frames, unmapped, feed, drive, close };
+}
+
+describe("CompassAgent — ask_answer delivery (RIG-1509)", () => {
+	// The frozen 6th AgentControl variant, now LIVE. Pre-barrier it THROWS (not a
+	// counted-return refusal): apply-then-ack means a returning arm is acked and
+	// the Runner retires the op — a permanent drop; throwing exits the loop
+	// unacked so the Runner redelivers it post-barrier. Post-barrier a registered
+	// answer is formatted against the recorded questions and delivered on the
+	// turn-end coalescing path deliver uses; an unknown ask id is surfaced (never
+	// fabricated), and a redelivered already-taken answer is not double-injected.
+
+	test("ask_answer before ReplayComplete THROWS (unacked → Runner redelivers), never delivered", async () => {
+		// A pre-barrier askAnswer must NOT return-with-unmapped (that would ack it
+		// and permanently drop it). It throws, so run() terminates ERRORED and the
+		// control loop crashes unacked — exactly how the Runner is signalled to
+		// redeliver. Asserted via runWithSource, which captures run()'s rejection.
+		const source: ControlSource = {
+			async *[Symbol.asyncIterator]() {
+				yield {
+					kind: "askAnswer",
+					askId: "a-1",
+					answers: [
+						create(AskQuestionAnswerSchema, {
+							questionId: "q-1",
+							chosenOptionIds: ["0"],
+						}),
+					],
+				};
+			},
+		};
+		const { agent, frames, error } = await runWithSource(source);
+		// The arm threw: run() rejected (the unacked crash the Runner redelivers on).
+		expect(error).toBeInstanceOf(Error);
+		expect((error as Error).message).toContain("before ReplayComplete");
+		// No SDK action for the frame, on any drive path.
 		expect(agent.prompts).toEqual([]);
 		expect(agent.steers).toEqual([]);
 		expect(agent.appended).toEqual([]);
-		expect(unmapped).toHaveLength(1);
-		const refused = unmapped[0];
-		expect(refused.eventType).toBe("control:ask_answer");
-		expect(refused.reason).toBe(
-			"live ask_answer arrived before ReplayComplete — refused by replay barrier",
+		// Terminal state is ERRORED, distinct from a clean STOPPED.
+		const states = frames.flatMap((f) =>
+			f.kind === "session" ? [f.value.state] : [],
 		);
+		expect(states.at(-1)).toBe(AgentSessionState.ERRORED);
 	});
 
-	test("ask_answer after ReplayComplete is staged (awaiting SEA-1310) and surfaced, still not delivered", async () => {
-		const { agent, unmapped } = await runWith([
-			{ kind: "replayComplete" },
-			{
-				kind: "askAnswer",
-				askId: "a-1",
-				answers: [
-					create(AskQuestionAnswerSchema, {
-						questionId: "q-1",
-						chosenOptionIds: ["opt-1", "opt-2"],
-					}),
-				],
-			},
+	test("an idle post-barrier registered ask_answer is formatted and delivered as one prompt", async () => {
+		const pending = seededAsks("a-1", [
+			askQuestion("q-1", "Ship it?", [
+				{ id: "0", label: "Yes, ship" },
+				{ id: "1", label: "Hold" },
+			]),
 		]);
-		// The barrier lifted, yet the answer is NOT wired into the SDK — it is
-		// staged, so still no prompt/steer/append for this frame.
+		const { agent, unmapped } = await runWith(
+			[
+				{ kind: "replayComplete" },
+				{
+					kind: "askAnswer",
+					askId: "a-1",
+					answers: [
+						create(AskQuestionAnswerSchema, {
+							questionId: "q-1",
+							chosenOptionIds: ["0"],
+							customText: "with a canary first",
+						}),
+					],
+				},
+			],
+			[],
+			pending,
+		);
+		// Idle (no active turn) → the answer flushes at once as ONE prompt.
+		expect(agent.prompts).toHaveLength(1);
+		const prompt = agent.prompts[0];
+		// Question text, the chosen option LABEL (not its id), and the free text.
+		expect(prompt).toContain("Ship it?");
+		expect(prompt).toContain("Yes, ship");
+		expect(prompt).toContain("with a canary first");
+		// The unchosen option's label is not asserted-in — only what was chosen.
+		expect(prompt).not.toContain("Hold");
+		// Delivered, not surfaced-as-unmapped.
+		expect(unmapped).toEqual([]);
+	});
+
+	test("a mid-turn post-barrier ask_answer coalesces into the turn-end flush", async () => {
+		const pending = seededAsks("a-1", [askQuestion("q-1", "Ship it?")]);
+		const h = startControlAgent([], pending);
+		await h.feed({ kind: "replayComplete" });
+		// A turn is live: the answer must queue, not flush immediately.
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		await h.feed({
+			kind: "askAnswer",
+			askId: "a-1",
+			answers: [
+				create(AskQuestionAnswerSchema, {
+					questionId: "q-1",
+					customText: "go",
+				}),
+			],
+		});
+		// No prompt while the turn is active — the answer is coalesced.
+		expect(h.session.agent.prompts).toEqual([]);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// The turn-end edge flushes it as exactly one prompt.
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("Ship it?");
+		expect(h.session.agent.prompts[0]).toContain("go");
+		expect(h.unmapped).toEqual([]);
+		await h.close();
+	});
+
+	test("a deliver AND an ask_answer on the same turn-end edge drain into ONE prompt", async () => {
+		// The whole reason #askAnswerQueue is a sibling of #deliverQueue: two
+		// back-to-back agent.prompt() calls on one agent_end edge collide with
+		// AgentBusyError (pi-agent-core agent.ts:1072), so when BOTH queues are
+		// non-empty the deliver digest and the ask-answer strings MUST coalesce
+		// into a single prompt. A regression that split the flush into two
+		// prompt() calls would leave every single-queue test green while silently
+		// dropping one side under interleaving — this pins the collision invariant.
+		const pending = seededAsks("a-1", [askQuestion("q-1", "Ship it?")]);
+		const h = startControlAgent([], pending);
+		await h.feed({ kind: "replayComplete" });
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		// Both queues populated during the live turn: a channel message (deliver)
+		// and a registered answer (askAnswer). Neither flushes mid-turn.
+		h.agent.deliver(deliverMsg("m1", "channel msg"));
+		await h.feed({
+			kind: "askAnswer",
+			askId: "a-1",
+			answers: [
+				create(AskQuestionAnswerSchema, {
+					questionId: "q-1",
+					customText: "go",
+				}),
+			],
+		});
+		expect(h.session.agent.prompts).toEqual([]);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// EXACTLY one prompt carrying BOTH the delivered message and the answer —
+		// non-vacuity: split into two prompt() calls → the second rejects
+		// AgentBusyError and this reddens (a side goes missing or length !== 1).
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("channel msg");
+		expect(h.session.agent.prompts[0]).toContain("Ship it?");
+		expect(h.session.agent.prompts[0]).toContain("go");
+		expect(h.unmapped).toEqual([]);
+		await h.close();
+	});
+
+	test("a post-barrier ask_answer with an UNKNOWN ask id is surfaced, never fabricated", async () => {
+		// Empty registry: the ask id was never recorded (e.g. a restart wiped it).
+		const { agent, unmapped } = await runWith(
+			[
+				{ kind: "replayComplete" },
+				{
+					kind: "askAnswer",
+					askId: "ghost",
+					answers: [
+						create(AskQuestionAnswerSchema, {
+							questionId: "q-1",
+							chosenOptionIds: ["0"],
+						}),
+					],
+				},
+			],
+			[],
+			createPendingAsks(),
+		);
+		// No fabricated prompt/steer/append — the answer cannot be rendered.
 		expect(agent.prompts).toEqual([]);
 		expect(agent.steers).toEqual([]);
 		expect(agent.appended).toEqual([]);
+		// Surfaced as one counted unmapped op naming the missing correlation.
 		expect(unmapped).toHaveLength(1);
-		const staged = unmapped[0];
-		expect(staged.eventType).toBe("control:ask_answer");
-		expect(staged.reason).toBe(
-			"ask_answer delivery staged — awaiting SEA-1310 ask correlation key",
+		expect(unmapped[0].eventType).toBe("control:ask_answer");
+		expect(unmapped[0].reason).toContain("unknown ask ghost");
+	});
+
+	test("a redelivered already-taken ask_answer is not double-injected (take deletes on read)", async () => {
+		const pending = seededAsks("a-1", [askQuestion("q-1", "Ship it?")]);
+		const answer = {
+			kind: "askAnswer" as const,
+			askId: "a-1",
+			answers: [
+				create(AskQuestionAnswerSchema, {
+					questionId: "q-1",
+					customText: "go",
+				}),
+			],
+		};
+		// The SAME answer twice (a redelivery): the first is delivered, the second
+		// finds an empty registry entry (take() deleted it) → unknown-ask-id arm.
+		const { agent, unmapped } = await runWith(
+			[{ kind: "replayComplete" }, answer, answer],
+			[],
+			pending,
 		);
+		// Exactly one prompt — the second redelivery does NOT inject a second time.
+		expect(agent.prompts).toHaveLength(1);
+		// The redelivery is surfaced as an unknown-ask-id op, not silently dropped.
+		expect(unmapped).toHaveLength(1);
+		expect(unmapped[0].eventType).toBe("control:ask_answer");
+		expect(unmapped[0].reason).toContain("unknown ask a-1");
 	});
 });
 
@@ -600,7 +847,10 @@ function deliverMsg(id: string, text: string, topicId = ""): Message {
 // source, so `run()` registers the turn-tracking listener but never terminates
 // on its own. Returns the agent, the captured frames/unmapped, a `drive` to
 // push session turn edges, and a `close` that ends the run loop cleanly.
-function startDeliverAgent(natives: AgentTool[] = []) {
+function startDeliverAgent(
+	natives: AgentTool[] = [],
+	pendingAsks?: PendingAsks,
+) {
 	const session = recordingSession(natives);
 	const frames: OutboundFrame[] = [];
 	const unmapped: UnmappedEvent[] = [];
@@ -636,6 +886,7 @@ function startDeliverAgent(natives: AgentTool[] = []) {
 		},
 		control,
 		onUnmapped: (u) => unmapped.push(u),
+		pendingAsks,
 	});
 	const done = agent.run();
 	const drive = (event: AgentSessionEvent): void => {
@@ -1161,5 +1412,94 @@ describe("formatDeliversForPrompt — coalescing format (SEA-1310 §8)", () => {
 
 		expect(out.match(/^Topic /gm)).toHaveLength(1);
 		expect(out.indexOf("one")).toBeLessThan(out.indexOf("two"));
+	});
+});
+
+describe("formatAskAnswerForPrompt — answer render (RIG-1509)", () => {
+	test("renders the question text, chosen option LABELS, and custom text", () => {
+		const questions = [
+			askQuestion("q-1", "Deploy target?", [
+				{ id: "0", label: "staging" },
+				{ id: "1", label: "prod" },
+			]),
+		];
+		const answers = [
+			create(AskQuestionAnswerSchema, {
+				questionId: "q-1",
+				chosenOptionIds: ["1"],
+				customText: "after the freeze",
+			}),
+		];
+		const out = formatAskAnswerForPrompt(questions, answers);
+		expect(out).toContain("Deploy target?");
+		// The LABEL of the chosen id, not the id itself.
+		expect(out).toContain("prod");
+		expect(out).toContain("after the freeze");
+		// The unchosen option's label is not rendered.
+		expect(out).not.toContain("staging");
+	});
+
+	test("one section per answered question, in answer order", () => {
+		const questions = [
+			askQuestion("q-1", "First?"),
+			askQuestion("q-2", "Second?"),
+		];
+		const answers = [
+			create(AskQuestionAnswerSchema, { questionId: "q-1", customText: "a" }),
+			create(AskQuestionAnswerSchema, { questionId: "q-2", customText: "b" }),
+		];
+		const out = formatAskAnswerForPrompt(questions, answers);
+		expect(out.indexOf("First?")).toBeLessThan(out.indexOf("Second?"));
+	});
+
+	test("renders an unresolvable option id defensively, never dropped or mislabelled", () => {
+		const questions = [
+			askQuestion("q-1", "Pick?", [{ id: "0", label: "only" }]),
+		];
+		const answers = [
+			create(AskQuestionAnswerSchema, {
+				questionId: "q-1",
+				// An id with no recorded option — surfaced by id, marked unknown.
+				chosenOptionIds: ["9"],
+			}),
+		];
+		const out = formatAskAnswerForPrompt(questions, answers);
+		expect(out).toContain("option 9");
+		expect(out).toContain("unknown");
+	});
+
+	test("guards an embedded newline in an option label (flat), keeping the section on one line", () => {
+		const questions = [
+			askQuestion("q-1", "Pick?", [{ id: "0", label: "line one\nline two" }]),
+		];
+		const answers = [
+			create(AskQuestionAnswerSchema, {
+				questionId: "q-1",
+				chosenOptionIds: ["0"],
+			}),
+		];
+		const out = formatAskAnswerForPrompt(questions, answers);
+		// The label's newline is collapsed — it cannot forge a new section line.
+		expect(out).toContain("line one line two");
+		expect(out).not.toContain("line one\nline two");
+	});
+
+	test("renders an answer whose question is not in the recorded set defensively, never fabricated", () => {
+		// The questionId does not correlate to any recorded question — the heading
+		// falls back to the defensive `Answer to unknown question <id>:` branch
+		// rather than dropping the answer or inventing a question label.
+		const questions = [askQuestion("q-1", "Recorded?")];
+		const answers = [
+			create(AskQuestionAnswerSchema, {
+				questionId: "q-ghost",
+				customText: "still surfaced",
+			}),
+		];
+		const out = formatAskAnswerForPrompt(questions, answers);
+		expect(out).toContain("unknown question");
+		expect(out).toContain("q-ghost");
+		expect(out).toContain("still surfaced");
+		// No recorded question's text is fabricated onto the ghost answer.
+		expect(out).not.toContain("Recorded?");
 	});
 });

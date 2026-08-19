@@ -31,8 +31,11 @@
 
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent";
+import { createPendingAsks, type PendingAsks } from "./comms";
 import {
 	AgentSessionState,
+	type AskQuestion,
+	type AskQuestionAnswer,
 	create,
 	type DeliveryAck,
 	DeliveryAckSchema,
@@ -43,6 +46,7 @@ import {
 import type { AgentControl, ControlSource } from "./control";
 import type { FrameSink } from "./frame";
 import { EventMapper, type UnmappedEvent } from "./mapping";
+import { flat } from "./render-guard";
 
 export interface CompassAgentOptions {
 	// The session to drive. Constructed by the caller (container entrypoint) via
@@ -59,6 +63,13 @@ export interface CompassAgentOptions {
 	// Sink for frames the mapper could not map — logged + counted, never
 	// dropped. Defaults to a no-op counter-less logger via console.
 	readonly onUnmapped?: (u: UnmappedEvent) => void;
+	// The correlation registry the raise tool (`comms_post_ask`) records minted
+	// ask ids into, so the askAnswer apply arm can render an inbound answer
+	// against the questions the model asked. Optional: when omitted the agent
+	// mints a fresh empty registry (see the constructor), so the arm always has a
+	// well-defined registry and an answer whose ask id it never recorded lands on
+	// the unknown-ask-id safety net rather than crashing.
+	readonly pendingAsks?: PendingAsks;
 }
 
 export class CompassAgent {
@@ -107,6 +118,24 @@ export class CompassAgent {
 	// fresh control_seq (independent of the control-source's seq dedup) is dropped
 	// here so a message is injected at most once (frozen record :811-812).
 	readonly #processedMessageIds = new Set<string>();
+	// RIG-1509 answer lane — the askAnswer sibling of `#deliverQueue`. A
+	// post-barrier `askAnswer` is formatted into a plain prompt string and rides
+	// the SAME turn-end coalescing edge (`agent_end`) delivers use, but it is a
+	// STRING, not a `Message`: it carries no `Message.id`, so it earns no
+	// DeliveryAck — an `askAnswer` op is acked by the control loop returning
+	// (apply-then-ack), not by a delivery ack. It cannot live in the
+	// Message-typed `#deliverQueue`, hence a sibling queue; both drain into ONE
+	// prompt at the same flush (`#flushDelivers`) because two back-to-back
+	// `agent.prompt` calls on one edge would collide — the first sets the inner
+	// agent streaming synchronously (pi-agent-core agent.ts:1072) and the second
+	// would reject AgentBusyError.
+	#askAnswerQueue: string[] = [];
+	// RIG-1509 correlation registry (co-ratified with RIG-1310): the ask ids the
+	// raise tool minted, so the askAnswer arm renders an inbound answer against
+	// the questions the model asked. Well-defined default (a fresh empty
+	// registry) when the caller omits one, so the arm always has a registry and
+	// an unrecorded ask id lands on the surfaced-not-fabricated safety net.
+	readonly #pendingAsks: PendingAsks;
 
 	constructor(opts: CompassAgentOptions) {
 		this.#session = opts.session;
@@ -117,6 +146,10 @@ export class CompassAgent {
 		this.#sink = opts.sink;
 		this.#control = opts.control;
 		this.#mapper = new EventMapper();
+		// Well-defined default: a fresh empty registry when the caller passed none,
+		// so the askAnswer arm always has a `take()` to consult. cli.ts passes the
+		// SAME instance the raise tool records into, joining the two lanes.
+		this.#pendingAsks = opts.pendingAsks ?? createPendingAsks();
 		this.#onUnmapped =
 			opts.onUnmapped ??
 			((u) =>
@@ -395,14 +428,21 @@ export class CompassAgent {
 		}
 	}
 
-	// Flush the coalesced deliver queue: drain it, format the batch into ONE
-	// prompt, issue that single prompt, and emit one delivery ack per message —
-	// but ONLY once injection is known-accepted. The ack means "injected into the
-	// agent", NOT "the resulting turn finished" (frozen :800): it is emitted at
-	// injection time (the microtask right after the synchronous `prompt` call, by
-	// which point injection has happened), never gated behind the prompt's
-	// completion — so a crash mid-turn does not lose the receipt for a message
-	// that WAS injected.
+	// Flush the coalesced turn-end queues — the DELIVER queue (channel messages)
+	// and the RIG-1509 ASK-ANSWER queue (formatted answer strings) — as ONE
+	// prompt, then emit one delivery ack per DELIVERED message once injection is
+	// known-accepted. Ask-answer strings carry no `Message.id` and earn no ack:
+	// an `askAnswer` op is acked by the control loop returning (apply-then-ack),
+	// not by a DeliveryAck. Both queues drain into a single `agent.prompt` on the
+	// same edge because two back-to-back prompts on one edge collide (the first
+	// sets the inner agent streaming synchronously, pi-agent-core agent.ts:1072,
+	// and the second rejects AgentBusyError).
+	//
+	// The ack means "injected into the agent", NOT "the resulting turn finished"
+	// (frozen :800): it is emitted at injection time (the microtask right after
+	// the synchronous `prompt` call, by which point injection has happened),
+	// never gated behind the prompt's completion — so a crash mid-turn does not
+	// lose the receipt for a message that WAS injected.
 	//
 	// Rejection-safety belt (SEA-1310 §8): `Agent.prompt` injects SYNCHRONOUSLY up
 	// to its first await (pi-agent-core agent.ts:1072) and can only signal refusal
@@ -414,16 +454,27 @@ export class CompassAgent {
 	// next microtask, gated on the prompt not having synchronously-rejected: a
 	// settled-rejected promise schedules its `.catch` microtask BEFORE this
 	// `queueMicrotask`, so the guard flag is observed deterministically — no
-	// timer, no race. On rejection we fail closed: no ack, and the ids are
-	// un-deduped so the Server (which never saw an ack, so its delivery cursor
+	// timer, no race. On rejection we fail closed: no ack, and the delivered ids
+	// are un-deduped so the Server (which never saw an ack, so its delivery cursor
 	// never advanced — agent_pb.ts:483) redelivers and re-injects them. The batch
 	// is NOT locally re-enqueued: the Server is the single redelivery authority,
-	// so re-enqueueing on top of its resend would double-inject.
+	// so re-enqueueing on top of its resend would double-inject. A rejected
+	// ask-answer flush is surfaced (never a silent drop); its op is already acked
+	// (apply-then-ack), so there is no ack to withhold and no local redelivery —
+	// the within-session correlation entry was already `take()`n.
 	#flushDelivers(): void {
-		if (this.#deliverQueue.length === 0) return;
 		const batch = this.#deliverQueue;
+		const answers = this.#askAnswerQueue;
+		if (batch.length === 0 && answers.length === 0) return;
 		this.#deliverQueue = [];
-		const input = formatDeliversForPrompt(batch);
+		this.#askAnswerQueue = [];
+		// One prompt per edge: the coalesced deliver digest first (when any), then
+		// each formatted answer section, joined by the same blank-line separator
+		// `formatDeliversForPrompt` uses between its sections.
+		const parts: string[] = [];
+		if (batch.length > 0) parts.push(formatDeliversForPrompt(batch));
+		for (const answer of answers) parts.push(answer);
+		const input = parts.join("\n\n");
 		// Optimistically mark a turn active — an idle flush starts one; the
 		// rejection path below clears it, since a refused prompt starts no turn.
 		this.#turnActive = true;
@@ -438,11 +489,20 @@ export class CompassAgent {
 			rejected = true;
 			this.#turnActive = false;
 			for (const msg of batch) this.#processedMessageIds.delete(msg.id);
-			this.#onUnmapped({
-				kind: "unmapped",
-				eventType: "deliver:prompt",
-				reason: `deliver flush prompt rejected — batch not injected, un-acked for redelivery: ${String(err)}`,
-			});
+			if (batch.length > 0) {
+				this.#onUnmapped({
+					kind: "unmapped",
+					eventType: "deliver:prompt",
+					reason: `deliver flush prompt rejected — batch not injected, un-acked for redelivery: ${String(err)}`,
+				});
+			}
+			if (answers.length > 0) {
+				this.#onUnmapped({
+					kind: "unmapped",
+					eventType: "control:ask_answer",
+					reason: `ask_answer flush prompt rejected — answer not injected: ${String(err)}`,
+				});
+			}
 		});
 		queueMicrotask(() => {
 			if (rejected) return;
@@ -503,31 +563,51 @@ export class CompassAgent {
 				}
 				this.#session.agent.steer(control.message);
 				return;
-			case "askAnswer":
-				// Live input (a structured answer to an in-flight ask): the Runner
-				// holds these behind the replay barrier like prompt/steer; a frame
-				// slipping through early is surfaced, not dropped.
+			case "askAnswer": {
+				// Live input (a structured answer to an in-flight ask). Unlike
+				// prompt/steer, a pre-barrier askAnswer must NOT be a counted-return
+				// refusal: apply-then-ack means an arm that RETURNS is acked, and the
+				// Runner then retires the op from retention (control-source.ts:16-18,
+				// control.go:318) — a PERMANENT drop. Throwing instead exits the
+				// control loop unacked, so the Runner redelivers the op to the next
+				// session once the barrier has lifted (control-source.ts:568-570:
+				// "an apply that failed must not be acked — the Runner redelivers").
+				// `HoldForReplay` is not a fallback here — it has no production caller
+				// (control.go:429-431). So a pre-barrier answer is thrown, converting
+				// the drop into an at-least-once redelivery.
 				if (!this.#replayComplete) {
+					throw new Error(
+						"live ask_answer arrived before ReplayComplete — thrown unacked so the Runner redelivers it post-barrier",
+					);
+				}
+				// Correlate on the server-minted ask id (co-ratified with RIG-1310):
+				// `take()` deletes-on-read, which gives free dedup — a redelivered
+				// answer whose id was already consumed returns undefined and lands on
+				// the unknown-ask-id arm below rather than double-injecting.
+				const questions = this.#pendingAsks.take(control.askId);
+				if (questions === undefined) {
+					// Unknown ask id (no registry entry — e.g. a container restart wiped
+					// the in-memory registry): surface a counted unmapped op naming the
+					// missing correlation, NEVER a fabricated prompt. This is the
+					// permanent within-session safety net; cross-restart survival is the
+					// filed runner/hub owed-to-handle dependency (design T7).
 					this.#onUnmapped({
 						kind: "unmapped",
 						eventType: "control:ask_answer",
-						reason:
-							"live ask_answer arrived before ReplayComplete — refused by replay barrier",
+						reason: `ask_answer for unknown ask ${control.askId} — no pending registry entry; not delivered`,
 					});
 					return;
 				}
-				// STAGED: wiring the answer into the SDK needs the SEA-1310 ask
-				// correlation key (askId → the in-flight ask). Until then, surface a
-				// counted "staged" unmapped op — the variant is faithfully enumerated
-				// + applied (never a missing arm), but the answer is not yet
-				// delivered.
-				this.#onUnmapped({
-					kind: "unmapped",
-					eventType: "control:ask_answer",
-					reason:
-						"ask_answer delivery staged — awaiting SEA-1310 ask correlation key",
-				});
+				// Render the answers against the recorded questions and enqueue on the
+				// SAME turn-end coalescing path deliver uses: an idle answer starts a
+				// turn at once; a mid-turn answer coalesces into the `agent_end` flush.
+				this.#askAnswerQueue.push(
+					formatAskAnswerForPrompt(questions, control.answers),
+				);
+				if (!this.#turnActive && !this.#session.isStreaming)
+					this.#flushDelivers();
 				return;
+			}
 		}
 	}
 
@@ -613,4 +693,44 @@ export function formatDeliversForPrompt(batch: readonly Message[]): string {
 		groups,
 		([topicId, texts]) => `Topic ${topicId}:\n${texts.join("\n\n")}`,
 	).join("\n\n");
+}
+
+// Render an inbound `AskAnswerControl` against the questions the model asked
+// (RIG-1509 answer lane). Pure + exported so it is unit-testable, mirroring
+// `formatDeliversForPrompt`. ONE section per answered question: the question
+// text, the chosen option LABELS (each `chosen_option_id` resolved against the
+// recorded `question.options[].id` — the ids Lane 1 minted as "0","1",… in
+// options order), and the free-text `custom_text` when present.
+//
+// Every interpolated value passes through `flat` (the same marker-line render
+// guard the comms renderer uses), so an operator-controlled option label or
+// free-text answer cannot break the section structure with an embedded newline.
+// An answer whose question is not in the recorded set, or a chosen id that
+// resolves to no recorded option, is rendered DEFENSIVELY by its id rather than
+// dropped — the answer is surfaced faithfully even when the correlation is
+// partial, never fabricated into a wrong label.
+export function formatAskAnswerForPrompt(
+	questions: readonly AskQuestion[],
+	answers: readonly AskQuestionAnswer[],
+): string {
+	const byId = new Map(questions.map((q) => [q.questionId, q]));
+	const sections = answers.map((answer) => {
+		const question = byId.get(answer.questionId);
+		const heading =
+			question === undefined
+				? `Answer to unknown question ${flat(answer.questionId)}:`
+				: `Question: ${flat(question.question)}`;
+		const lines = [heading];
+		const options = question?.options ?? [];
+		const labelById = new Map(options.map((o) => [o.id, o.label]));
+		const chosen = answer.chosenOptionIds.map((id) => {
+			const label = labelById.get(id);
+			return label === undefined ? `option ${flat(id)} (unknown)` : flat(label);
+		});
+		if (chosen.length > 0) lines.push(`Chose: ${chosen.join(", ")}`);
+		if (answer.customText !== "")
+			lines.push(`Custom answer: ${flat(answer.customText)}`);
+		return lines.join("\n");
+	});
+	return `Answer received for ask:\n${sections.join("\n\n")}`;
 }

@@ -53,7 +53,7 @@ import {
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp";
 import { YAML } from "bun";
 import { CompassAgent } from "./agent";
-import { CommsBroker, createCommsTools } from "./comms";
+import { CommsBroker, createCommsTools, createPendingAsks } from "./comms";
 import {
 	AGENT_CONFIG_MOUNT_PATH,
 	currentConfigDir,
@@ -589,8 +589,13 @@ export async function main(
 	// onUpdate (e.g. wiring cancellation), it CANNOT go through this seam — the
 	// SDK must gain a real native-registration path, or the tool must be a true
 	// `ToolDefinition`. Do not consume args 3-5 here.
+	// One PendingAsks registry, shared across the raise + answer lanes (RIG-1509):
+	// comms_post_ask records the asks it raises here; the answer lane (T4) reads
+	// them back on an inbound AskAnswerControl by passing this SAME instance into
+	// CompassAgent below.
+	const pendingAsks = createPendingAsks();
 	const nativeTools = [
-		...createCommsTools(commsBroker),
+		...createCommsTools(commsBroker, pendingAsks),
 		...createLifecycleTools(lifecycleBroker),
 	] as ToolDefinition[];
 
@@ -846,7 +851,7 @@ export async function main(
 	// broke it a skipped `close()` would leak the session, which is the exact
 	// defect `close()` was added to fix.
 	try {
-		agent = new CompassAgent({ session, sink, control });
+		agent = new CompassAgent({ session, sink, control, pendingAsks });
 		await agent.run();
 	} finally {
 		// The load-bearing drain→close chain is UNTOUCHED — storage.drain →
