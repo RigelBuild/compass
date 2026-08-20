@@ -24,12 +24,12 @@ package server
 // constructor (out of scope — T7 adds no production interfaces). So this test
 // lives in package server and ASSEMBLES the full wire inline, combining the
 // server-package hub wiring (newRunnerHub + SetLifecycleCaller) with the
-// real-runner-over-stub-engine socket shape lifted from
-// runnerhub/integration_pgtest_test.go. Those helpers live in package
-// runnerhub_test, so the ones this needs are PORTED below (copied + adapted,
-// keeping the load-bearing WHY-comments — shortRuntimeDir's sun_path budget,
-// runSessionsLoop's LIFO drain ordering); nothing is exported from runnerhub to
-// make this compile.
+// real-runner-over-stub-engine socket shape. The socket scaffolding it needs —
+// the sun_path-bounded runtime dir, the h2c client, the cleartext-H2 dialer —
+// is the same shape runnerhub/integration_pgtest_test.go needs, so it lives in
+// the shared internal/runnertest package (ShortRuntimeDir carries the sun_path
+// budget; runnerloop.RunSessionsLoop carries the LIFO drain ordering) and both
+// tests import it rather than each carrying a copy.
 //
 // Each assertion carries a mutation comment: the plausible regression in the
 // (already merged, green) spine that would redden it — the "red-first" the
@@ -39,15 +39,12 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	stdruntime "runtime"
-	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -62,6 +59,8 @@ import (
 	"github.com/sealedsecurity/compass/go/internal/pgtest"
 	"github.com/sealedsecurity/compass/go/internal/runner"
 	"github.com/sealedsecurity/compass/go/internal/runnerhub"
+	"github.com/sealedsecurity/compass/go/internal/runnertest"
+	"github.com/sealedsecurity/compass/go/internal/runnertest/runnerloop"
 	"github.com/sealedsecurity/compass/go/internal/runtime"
 	"github.com/sealedsecurity/compass/go/internal/store"
 )
@@ -73,7 +72,7 @@ import (
 const e2eTimeout = 30 * time.Second
 
 // e2eNamePrefix is the container-name prefix this test wires into its
-// SpecDefaults, hoisted so shortRuntimeDir models the same name the Runner
+// SpecDefaults, hoisted so runnertest.ShortRuntimeDir models the same name the Runner
 // actually builds (BuildSpec in spec.go joins it with the account id). Editing
 // the prefix in one place would otherwise silently shrink the modelled path and
 // turn the budget assertion into a false negative.
@@ -485,17 +484,17 @@ type e2eWire struct {
 // a socket-serving stub engine, then provisions and starts a supervisor session
 // and returns a client dialed to its per-container socket. Cleanups are ordered
 // so the runtime-dir removal runs LAST (after the loop has left dispatch and the
-// host has drained its sockets) — see runSessionsLoop and the host-Close cleanup
+// host has drained its sockets) — see runnerloop.RunSessionsLoop and the host-Close cleanup
 // below.
 func newE2EWire(t *testing.T) *e2eWire {
 	t.Helper()
 	dsn := pgtest.RequireDSN(t) // hard-fails on infra-missing (SEA-1523), never skips silently.
 	// First cleanup registered, so LIFO removes the tree LAST — after the loop's
 	// drain and the host's socket close have both run (see below).
-	runtimeDir := shortRuntimeDirE2E(t)
+	runtimeDir := runnertest.ShortRuntimeDir(t, e2eNamePrefix, e2eAccountIDHexLen)
 	ctx, cancel := context.WithCancel(context.Background()) // the test root context
 	// Registered adjacent to WithCancel so the fixture setup below cannot t.Fatalf
-	// out with the context never cancelled. runSessionsLoop registers cancel again
+	// out with the context never cancelled. runnerloop.RunSessionsLoop registers cancel again
 	// later; CancelFunc is idempotent, so the ordering the loop documents is
 	// unchanged.
 	t.Cleanup(cancel)
@@ -524,13 +523,13 @@ func newE2EWire(t *testing.T) *e2eWire {
 	if err != nil {
 		t.Fatalf("CreateAgent(supervisor): %v", err)
 	}
-	// shortRuntimeDirE2E budgeted the socket path against a MODEL of the account
+	// runnertest.ShortRuntimeDir budgeted the socket path against a MODEL of the account
 	// id (e2eAccountIDHexLen "f"s), before an account existed. Tie the model to
 	// the real minted width now: widen store ids and this reddens here, rather
 	// than silently invalidating the budget and letting the real socket path
 	// overrun.
 	if got := len(supervisor.ID); got != e2eAccountIDHexLen {
-		t.Fatalf("minted account id is %d chars, but shortRuntimeDirE2E budgeted for %d; update e2eAccountIDHexLen", got, e2eAccountIDHexLen)
+		t.Fatalf("minted account id is %d chars, but ShortRuntimeDir budgeted for %d; update e2eAccountIDHexLen", got, e2eAccountIDHexLen)
 	}
 
 	// The hub, wired exactly as the server package builds it (sinks.go
@@ -563,7 +562,7 @@ func newE2EWire(t *testing.T) *e2eWire {
 		ServerAddr: url,
 		Token:      "runner-tok",
 		Engine:     engine,
-		HTTPClient: h2cClientE2E(t),
+		HTTPClient: runnertest.H2CClient(t),
 	})
 	if err != nil {
 		t.Fatalf("runner.Dial: %v", err)
@@ -587,7 +586,7 @@ func newE2EWire(t *testing.T) *e2eWire {
 	rt := runtime.NewAgentRuntimeWithRegistry(engine, registry)
 	host := runner.NewSessionHost(link, rt, registry, engine, specs, runner.AgentHostConfig{RuntimeDir: runtimeDir}, discardLogE2E(), nil)
 	// host.Close drains every per-container socket. Registered BEFORE
-	// runSessionsLoop so under LIFO it runs AFTER the loop's cancel+drain — the
+	// runnerloop.RunSessionsLoop so under LIFO it runs AFTER the loop's cancel+drain — the
 	// production order (run.go: cancel, RunSessions returns, THEN host.Close), and
 	// still before the runtime-dir removal registered at the very top. The fresh
 	// bounded ctx is the sanctioned test-root exemption: the test ctx is cancelled
@@ -599,7 +598,7 @@ func newE2EWire(t *testing.T) *e2eWire {
 			closer.Close(closeCtx)
 		})
 	}
-	runSessionsLoopE2E(t, ctx, cancel, link, host)
+	runnerloop.RunSessionsLoop(t, ctx, cancel, link, host, e2eTimeout)
 
 	// Provision + start the supervisor: this proves the seam live (the retrying
 	// Provision is also the attach gate) and binds the supervisor's session to its
@@ -632,16 +631,17 @@ func newE2EWire(t *testing.T) *e2eWire {
 // a cached conn to a torn-down socket.
 func (w *e2eWire) dialPeer(t *testing.T, containerName string) compassv1internalconnect.AgentGatewayClient {
 	t.Helper()
-	return dialAgentSocketE2E(t, agentSocketPathE2E(w.runtimeDir, containerName))
+	return runnertest.DialAgentSocket(t, agentSocketPathE2E(w.runtimeDir, containerName))
 }
 
-// --- ported helpers (from runnerhub/integration_pgtest_test.go) --------------
+// --- server-package-specific wire helpers -----------------------------------
 //
-// These are lifted from the runnerhub whole-wire reference and adapted to
-// package server; the load-bearing WHY-comments are kept. They carry an `E2E`
-// suffix so they never collide with the runnerhub originals or any existing
-// server-package test helper, and so a future reader sees at a glance they are
-// this file's ported copies rather than shared scaffolding.
+// The generic socket scaffolding (runtime dir, h2c client, dialer, sessions
+// loop) lives in the shared internal/runnertest package. What remains here is
+// the wire this test builds on top of it and cannot share: the single-token
+// resolver, the stub runtime, and the server-package assembly helpers. They
+// carry an `E2E` suffix so they never collide with an existing server-package
+// test helper. The load-bearing WHY-comments are kept.
 
 // e2eResolver accepts exactly one Runner token — the minimal TokenResolver the
 // mounted RunnerService door authenticates the stub Runner with.
@@ -750,26 +750,6 @@ func agentSocketPathE2E(runtimeDir, containerName string) string {
 	return filepath.Join(runtimeDir, "containers", containerName, "agent.sock")
 }
 
-// dialAgentSocketE2E builds a real generated AgentGatewayClient that dials the
-// unix socket at path over prior-knowledge h2c — the same cleartext-HTTP/2 door
-// the per-container listener serves — so the Gateway is exercised over the wire
-// it ships on. The base URL is a placeholder; DialContext routes every dial to
-// the socket.
-func dialAgentSocketE2E(t *testing.T, path string) compassv1internalconnect.AgentGatewayClient {
-	t.Helper()
-	p := new(http.Protocols)
-	p.SetUnencryptedHTTP2(true)
-	tr := &http.Transport{
-		Protocols: p,
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", path)
-		},
-	}
-	t.Cleanup(tr.CloseIdleConnections)
-	return compassv1internalconnect.NewAgentGatewayClient(&http.Client{Transport: tr}, "http://unix")
-}
-
 // provisionWhenSeamLiveE2E provisions the workspace through the public hub path →
 // the Runner launches the (stub) container and returns its name.
 //
@@ -807,110 +787,10 @@ func provisionWhenSeamLiveE2E(t *testing.T, ctx context.Context, hub *runnerhub.
 	}
 }
 
-// runSessionsLoopE2E starts the Runner's dispatch loop and registers the teardown
-// that must bracket it. The ordering is load-bearing in both directions, which is
-// why it lives beside the goroutine rather than beside context.WithCancel.
-//
-// It must run BEFORE httptest's srv.Close (registered inside mountRunnerServerE2E,
-// therefore earlier, therefore later under LIFO): Close waits on its handlers,
-// and the live Sessions handler returns only once ctx is cancelled, so cancelling
-// after Close deadlocks the entire cleanup stack.
-//
-// It must run AFTER the runtime dir removal registered at the top of newE2EWire,
-// so LIFO reclaims that tree only once the loop has left dispatch. Cancel alone
-// would not do it: cancel signals and returns, so the WAIT is what makes the
-// ordering mean anything.
-//
-// If the drain times out the later cleanups still run — a cleanup cannot cancel
-// the ones registered before it — so the timeout arm reports the collision rather
-// than averting it. That is the right trade at that point: the test has already
-// failed.
-func runSessionsLoopE2E(t *testing.T, ctx context.Context, cancel context.CancelFunc, link *runner.ServerLink, host runner.SessionHost) {
-	t.Helper()
-	loopDone := make(chan error, 1)
-	go func() {
-		loopDone <- link.RunSessions(ctx, host, discardLogE2E())
-		close(loopDone)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-loopDone:
-			// A cancelled ctx is the expected end; a stream error that killed the
-			// loop must surface here rather than be discarded.
-			if err != nil && !errors.Is(err, context.Canceled) {
-				t.Errorf("RunSessions ended with %v", err)
-			}
-		case <-time.After(e2eTimeout):
-			t.Errorf("RunSessions still running %s after cancel; the runtime dir removal runs anyway and will race an in-flight command", e2eTimeout)
-		}
-	})
-}
-
-// shortRuntimeDirE2E is a Runner RuntimeDir bounded to fit the AF_UNIX sun_path
-// limit, replacing t.TempDir() for this file's socket-opening tests. The Runner
-// appends a fixed tail to its RuntimeDir
-// (/containers/compass-agent-<32hex>/agent.sock, host.go) at the store-minted
-// 32-hex id. t.TempDir() derives its path from the TEST NAME, and this package's
-// test names exceed that budget once a real socket is opened, so a fixed short
-// root removes the TEST-NAME dependency. It does not make the budget
-// unconditional: the root still comes from TMPDIR, and a deep one re-inflates it,
-// so the resulting path is asserted rather than assumed.
-//
-// This site FAILS rather than skips on an over-budget root: a skip would silently
-// drop the only end-to-end coverage of the socket path. The cap is DERIVED the
-// way the production guard derives it (sun_path is not one size across the
-// platforms //go:build unix admits — 108 on linux, 104 on darwin/BSD, 1023 on
-// aix — and this file is //go:build unix) rather than written as a literal,
-// because that constant is unexported. The T7 wire opens MULTIPLE sockets under
-// this one root, but all share the RuntimeDir/containers/<name> layout and every
-// name is the same length (prefix + 32-hex), so the single longest-path budget
-// covers them all.
-func shortRuntimeDirE2E(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "cr") //nolint:usetesting // t.TempDir embeds the test name, which is what put this path over the sun_path cap — the bug this helper exists to prevent
-	if err != nil {
-		t.Fatalf("MkdirTemp for runner runtime dir: %v", err)
-	}
-	// sun_path holds the path plus a NUL, so the usable cap is one less than the
-	// platform's array.
-	const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
-	longest := filepath.Join(dir, "containers", e2eNamePrefix+strings.Repeat("f", e2eAccountIDHexLen), "agent.sock")
-	if len(longest) > sunPathMax {
-		if rmErr := os.RemoveAll(dir); rmErr != nil {
-			t.Errorf("removing over-budget runner runtime dir %q: %v", dir, rmErr)
-		}
-		t.Fatalf("runner runtime dir %q yields a %d-byte agent socket path, over the %d-byte sun_path cap (TMPDIR too deep)", dir, len(longest), sunPathMax)
-	}
-	t.Cleanup(func() {
-		if err := os.RemoveAll(dir); err != nil {
-			t.Errorf("removing runner runtime dir %q: %v", dir, err)
-		}
-	})
-	return dir
-}
-
-// h2cClientE2E is the Runner's HTTP client speaking prior-knowledge cleartext
-// HTTP/2 to the mounted RunnerService door.
-func h2cClientE2E(t *testing.T) *http.Client {
-	t.Helper()
-	p := new(http.Protocols)
-	p.SetUnencryptedHTTP2(true)
-	tr := &http.Transport{
-		Protocols: p,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, network, addr)
-		},
-	}
-	t.Cleanup(tr.CloseIdleConnections)
-	return &http.Client{Transport: tr}
-}
-
 // mountRunnerServerE2E mounts the real RunnerService door on an httptest server
 // that speaks cleartext HTTP/2 (h2c + HTTP/1) and returns its base URL. The
 // server is torn down via t.Cleanup — registered here (early) so under LIFO it
-// closes AFTER the Sessions loop has been cancelled (see runSessionsLoopE2E).
+// closes AFTER the Sessions loop has been cancelled (see runnerloop.RunSessionsLoop).
 func mountRunnerServerE2E(t *testing.T, hub *runnerhub.Hub, resolve runnerhub.TokenResolver) string {
 	t.Helper()
 	path, handler := runnerhub.NewMountedHandler(hub, resolve, nil, nil)
