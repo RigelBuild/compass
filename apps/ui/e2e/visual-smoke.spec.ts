@@ -36,8 +36,10 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		// Drive the real interaction path so the PR pane actually renders: the
 		// pane is shown only when an issue is selected AND the PR tab is active.
 		// Select the cook issue (SEA-1022 / PR #453) — its review set carries a
-		// `commented` verdict, so the shot covers all three .rv[data-v] colors,
-		// including the review-pending (faint-grey) one.
+		// `commented` verdict, so the shot captures the recolored review-pending
+		// (faint-grey) chip alongside the approved chips. That review-pending
+		// value is the only one with a visual delta in this PR: approved/changes
+		// map to alias tokens (--cx-ok/--cx-error) that are unchanged.
 		const card = page.locator(".cx-card", { hasText: "SEA-1022" }).first();
 		await card.waitFor({ state: "visible" });
 		await card.click();
