@@ -1,0 +1,14 @@
+{
+	"name": "@compass/forge-linear-token",
+	"private": true,
+	"type": "module",
+	"description": "CI helper (RIG-2423): mint a per-run Linear OAuth app-actor token from the custodied client_credentials pair and hand it to the forge live-oracle as LINEAR_FORGE. Linear's client_credentials tokens expire in ~30 days with no refresh, so the token is derived fresh each run rather than stored.",
+	"module": "index.ts",
+	"bin": {
+		"forge-linear-token": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

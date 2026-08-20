@@ -90,6 +90,13 @@ projects:
   # failing fast with a named diagnosis instead of Renovate's opaque
   # platform-unknown-error. Registered so its own typecheck + unit test gate.
   renovate-preflight: 'tools/renovate-preflight'
+  # The forge live-oracle Linear token mint (RIG-2423): mints a per-run Linear
+  # OAuth app-actor token from the custodied client_credentials pair for the
+  # live-contract oracle's Linear legs (client_credentials tokens expire ~30d
+  # with no refresh, so the token is derived per run, never stored). Registered
+  # so its typecheck + unit test run in the moon-driven CI sweep — unregistered,
+  # moon never discovers it and the mint's pure core ships untested.
+  forge-linear-token: 'tools/forge-linear-token'
   # Vendored upstream fork subtrees (forks/<name>, SEA-1512). Each carries its
   # own nix-driven build as functional CI — so a fork-only change is gated by
   # the fork's own suite — while its tree stays exempt from the style gates

@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# forge-linear-token (RIG-2423) — mint the forge live-oracle's Linear credential
+# per CI run. The oracle's Linear legs authenticate as a Linear OAuth app via the
+# client_credentials grant; those tokens expire in ~30 days with no refresh, so
+# storing a minted token would red the gate monthly. Instead the two static
+# halves (client id + secret) are custodied as Actions secrets and this helper
+# mints a fresh app-actor token per run, exporting it to the job as LINEAR_FORGE.
+#
+# A bun/TypeScript CLI; a hoisted root-workspace member (`bun` tag): install is
+# inherited via .moon/tasks/tag-bun.yml (the shared root install) and lint/format
+# are whole-repo tasks on the root project (/moon.yml), so this leaf has no own
+# bun.lock and never runs its own install.
+#
+# Compass CI is a single moon-driven `CI` job (.github/workflows/ci.yml runs
+# `moon run :ci`), so the `ci` aggregate below is swept automatically. There is
+# no `check` task: the mint is an operational step keyed on live credentials the
+# gate has no business realizing, exactly like the live-oracle suite it feeds; it
+# is exercised directly in the ci.yml mint step, and its pure core is unit-tested
+# here.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  test:
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false
