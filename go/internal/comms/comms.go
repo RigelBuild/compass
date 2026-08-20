@@ -115,18 +115,26 @@ func (c *Comms) CreateUser(
 	return connect.NewResponse(&compassv1.CreateUserResponse{Account: accountToWire(acc)}), nil
 }
 
-// CreateAgent creates an agent account owned by the authenticated caller; the
-// store mints the agent's home channel (RT-2) in the same transaction.
+// CreateAgent creates an agent account owned by the caller's resolved owner (an
+// agent caller's child belongs to the caller's owner, a user caller's to itself
+// — see the resolution below); the store mints the agent's home channel (RT-2)
+// in the same transaction.
 func (c *Comms) CreateAgent(
 	ctx context.Context,
 	req *connect.Request[compassv1.CreateAgentRequest],
 ) (*connect.Response[compassv1.CreateAgentResponse], error) {
-	owner := c.actorFromContext(ctx)
-	// CreateAgent is a user-caller API: `owner` is the caller's own id, used
-	// directly both as the new agent's owner and as the parent same-owner
-	// comparison key below. This matches the store only for user callers — the
-	// store's ReparentAgent resolves an agent caller to its owner via COALESCE,
-	// but no such resolution is applied here.
+	caller := c.actorFromContext(ctx)
+	owner, err := c.store.ResolveOwner(ctx, caller)
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	// CreateAgent now resolves the caller's owner via store.ResolveOwner
+	// (mirroring ReparentAgent's clause-0 resolution): an agent caller resolves
+	// to its owner_user_id, a user caller to itself. The resolved user-owner is
+	// both the parent same-owner comparison key below AND the owner the new agent
+	// is created under — so an agent spawning a child under a same-owner parent is
+	// authorized correctly, and the store's owner_user_id FK (which requires a
+	// user) is satisfied.
 	// A supplied parent is validated before the account is minted (§Server
 	// validation, applied on creation too): it must exist (clause 3 → NotFound)
 	// and belong to the creating caller's owner (clauses 0/1 → PermissionDenied,
