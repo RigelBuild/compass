@@ -403,7 +403,9 @@ func (s *Store) AgentOwner(ctx context.Context, agentAccountID AccountID) (Accou
 // a user owns itself. An unknown id likewise resolves to itself; that is
 // deliberate and matches ReparentAgent's form, which leans on the subsequent
 // same-owner and owner-FK checks to reject a bogus caller rather than probing
-// existence here.
+// existence here. ReparentAgent keeps its own inline copy of this resolution
+// because it must run inside its serialized transaction (on tx, not s.pool) — do
+// not route it through ResolveOwner, which would drop that guarantee.
 func (s *Store) ResolveOwner(ctx context.Context, caller AccountID) (AccountID, error) {
 	if caller == "" {
 		return "", fmt.Errorf("%w: caller is required", ErrInvalidArgument)
