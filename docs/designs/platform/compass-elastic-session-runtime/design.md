@@ -166,13 +166,18 @@ The hardening work reuses that discipline:
   remains the engine seam (create/start/exec/stop against a `ContainerID`,
   `go/internal/runtime/podman.go:286-324`), including `ExecStreaming`
   (`go/internal/runtime/podman.go:299-307`) for the long-lived agent process.
-  Resize-in-place (C3) adds one verb — `Resize(ctx, id, Resources)` (a
-  `podman update`-class cgroup limit change) — so resize reaches the engine
-  *through* the seam, never by shelling past it (Global Constraint 2). "Frozen"
-  means no existing verb's signature changes; additive reservation is the same
-  discipline the reserved streaming variant already uses. (Rootless `podman
-  update` needs cgroups v2 + systemd delegation; where the box lacks it, C3's
-  resize backend falls back to burst — the capability hedge already in C3.)
+  Resize-in-place adds one verb — `Resize(ctx, id, ResourceLimits)` (a
+  `podman update`-class cgroup limit change), naming a concrete cgroup-limit
+  type distinct from the `ComputeSpec.Resources ResourceClass` policy enum
+  below — so resize reaches the engine *through* the seam, never by shelling
+  past it (Global Constraint 2). The verb is **frozen into the interface at
+  S1** (additively reserved, the same discipline as the reserved streaming
+  variant), so I1's microVM backend and every fake carry it from the start;
+  C3 fills in only the resize *behavior* behind the already-frozen seam — no
+  interface change lands after S1. "Frozen" means no existing verb's
+  signature changes. (Rootless `podman update` needs cgroups v2 + systemd
+  delegation; where the box lacks it, C3's resize backend falls back to burst
+  — the capability hedge already in C3.)
 - **`VirtualFS` — a thin source-of-tree seam.** It abstracts *where the
   working tree comes from*: plain checkout | git sparse-checkout | volume
   snapshot | a mounted customer VFS. It is deliberately minimal — not a
@@ -286,9 +291,11 @@ non-coding." Software engineering fails both:
   go-to-def, diagnostics, formatters, and git all need the materialized tree +
   toolchain + real CPU/RAM *continuously* — the "just editing" tier is
   already a full dev environment, with nothing light to peel off.
-- Heavy ops are not a different *kind* of environment, just a bigger one, and
-  they are reached constantly across a session — not rare, not cleanly
-  isolatable from the loop that produces them.
+- Heavy ops are not a different *kind* of environment, just a bigger one.
+  Though a small fraction of operations by count, they interleave with the
+  inner loop that produces them (compile → edit → compile), so they cannot be
+  peeled into a standing tier the session rarely touches. Condition (2) fails
+  on *isolatability in time*, not on aggregate frequency.
 
 So for a coding agent the split's premise is simply false. The two apparent
 rescues collapse into simpler mechanisms this record already contains:
@@ -509,6 +516,13 @@ configurations end to end, with `ContainerRuntime`'s existing verbs frozen:
   fully buffered stdout/stderr, an accepted limit for whole-suite output
   until the streaming variant lands. `SpecBuilder`
   (`go/internal/runner/host.go:46-48`) derives the `WorkspaceSource`.
+  `ContainerRuntime` also gains the additively-reserved
+  `Resize(ctx, id ContainerID, limits ResourceLimits) error` — frozen here,
+  unimplemented until C3 — so I1's microVM backend and every fake carry the
+  full surface from the start and C3 lands no interface change.
+  `ResourceLimits{CPUShares int, MemoryBytes int64}` is the concrete
+  cgroup-limit struct, distinct from the `ComputeSpec.Resources ResourceClass`
+  policy enum.
 - **Depends:** nothing (first code task; M0 parallel).
 - **Test cycle:** contract tests a fake and the real backend both pass, per
   seam; provision→materialize→session→release round-trip in an integration
@@ -800,9 +814,11 @@ order):
 ## Open Questions
 
 Each tagged **load-bearing** (an executor hits real ambiguity — blocks merge;
-the driver asks Matt) or **non-load-bearing** (deferred with rationale). Each
-carries a recommendation; the record is drafted against the recommendation as
-a stated assumption. Nothing pinned in the Approach is re-opened here.
+the driver asks Matt), **non-load-bearing** (deferred with rationale), or
+**resolved** (decided and promoted to a plan task, carrying its Decision in
+place of a recommendation). Each pending question carries a recommendation;
+the record is drafted against the recommendation as a stated assumption.
+Nothing pinned in the Approach is re-opened here.
 
 1. **[non-load-bearing] Elastic-compute backend default — resize-in-place or
    burst?** Both land in C3; which one policy prefers when either would serve
