@@ -28,6 +28,7 @@ package forge
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -56,7 +57,7 @@ const (
 	envAuthor   = "LIVEGITHUB_AUTHOR_TOKEN"   // test-only author bot PAT
 	envReviewer = "LIVEGITHUB_REVIEWER_TOKEN" // test-only reviewer bot PAT
 	envLinear   = "LINEAR_FORGE"              // test-only Linear token (dedicated test team)
-	envTeam     = "LINEAR_FORGE_TEAM"         // test team key; defaults to "SEA"
+	envTeam     = "LINEAR_FORGE_TEAM"         // test team key; no default (dead "SEA" dropped)
 )
 
 // requireLive reads the GitHub credential trio and t.Skips (never fails) when
@@ -76,17 +77,17 @@ func requireLive(t *testing.T) (repo string, author, reviewer *fakeTokenSource) 
 	return repo, &fakeTokenSource{token: at}, &fakeTokenSource{token: rt}
 }
 
-// requireLinear reads the Linear credential and t.Skips independently of the
-// GitHub trio, returning an env-backed token source and the test team key.
+// requireLinear reads the Linear credential AND the test team key, t.Skipping
+// independently of the GitHub trio when EITHER is unset (no-team-no-run,
+// co-equal with the credential gate — the migrated workspace has no default
+// team, so a TEAM-unset run would fail opaquely at resolveTeamID). Returns an
+// env-backed token source and the test team key.
 func requireLinear(t *testing.T) (token *fakeTokenSource, team string) {
 	t.Helper()
 	tok := os.Getenv(envLinear)
-	if tok == "" {
-		t.Skip(liveLinearSkipMessage)
-	}
 	team = os.Getenv(envTeam)
-	if team == "" {
-		team = "SEA"
+	if tok == "" || team == "" {
+		t.Skip(liveLinearSkipMessage)
 	}
 	return &fakeTokenSource{token: tok}, team
 }
@@ -217,10 +218,12 @@ func TestLiveGitHubCreateIssue(t *testing.T) {
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "create_issue")
-	got, err := createIssueWithBackoff(ctx, gh, repo, CreateIssue{
-		Title:  "compass-live-issue-" + newRunID(),
-		Body:   f.Request.Input.body(),
-		Labels: f.Request.Input.labels(),
+	got, err := createWithBackoff(ctx, func() (Issue, error) {
+		return gh.CreateIssue(ctx, repo, CreateIssue{
+			Title:  "compass-live-issue-" + newRunID(),
+			Body:   f.Request.Input.body(),
+			Labels: f.Request.Input.labels(),
+		})
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
@@ -230,24 +233,32 @@ func TestLiveGitHubCreateIssue(t *testing.T) {
 }
 
 // TestLiveGitHubCommentOnIssue comments on a freshly-created issue and asserts
-// the decoded comment matches the fixture under the allowlist.
+// the decoded comment's shape DIRECTLY (non-zero ID, non-empty URL, and the
+// sent Body echoed back): all four Comment fields are volatile, so a fixture
+// compare would strip both sides to {} and pin nothing.
 func TestLiveGitHubCommentOnIssue(t *testing.T) {
 	repo, author, _ := requireLive(t)
 	ctx := context.Background()
 	gh := liveGitHub(author)
 
-	issue, err := createIssueWithBackoff(ctx, gh, repo, CreateIssue{Title: "compass-live-comment-" + newRunID()})
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return gh.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-comment-" + newRunID()})
+	})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
 	t.Cleanup(func() { closeGitHubIssue(t, author, repo, issue.Number) })
 
-	f := liveFixture(t, providerGitHub, "comment_on_issue")
-	got, err := gh.CommentOnIssue(ctx, repo, issue.Number, "compass-live comment "+newRunID())
+	body := "compass-live comment " + newRunID()
+	got, err := createWithBackoff(ctx, func() (Comment, error) {
+		return gh.CommentOnIssue(ctx, repo, issue.Number, body)
+	})
 	if err != nil {
 		t.Fatalf("CommentOnIssue: %v", err)
 	}
-	assertMatchesFixture(t, got, f.Response.Want)
+	if got.ID == 0 || got.URL == "" || got.Body != body {
+		t.Errorf("CommentOnIssue decoded = %+v, want non-zero ID, non-empty URL, Body=%q", got, body)
+	}
 }
 
 // TestLiveGitHubGetIssue creates then reads an issue back, asserting the decoded
@@ -258,10 +269,12 @@ func TestLiveGitHubGetIssue(t *testing.T) {
 	gh := liveGitHub(author)
 
 	f := liveFixture(t, providerGitHub, "get_issue")
-	issue, err := createIssueWithBackoff(ctx, gh, repo, CreateIssue{
-		Title:  "compass-live-get-" + newRunID(),
-		Body:   f.Response.wantBody(),
-		Labels: []string{"bug", "p1"},
+	issue, err := createWithBackoff(ctx, func() (Issue, error) {
+		return gh.CreateIssue(ctx, repo, CreateIssue{
+			Title:  "compass-live-get-" + newRunID(),
+			Body:   "compass-live get body " + newRunID(),
+			Labels: []string{"bug", "p1"},
+		})
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
@@ -283,9 +296,11 @@ func TestLiveGitHubListIssues(t *testing.T) {
 	ctx := context.Background()
 	gh := liveGitHub(author)
 
-	setup, err := createIssueWithBackoff(ctx, gh, repo, CreateIssue{
-		Title:  "compass-live-list-" + newRunID(),
-		Labels: []string{"bug"},
+	setup, err := createWithBackoff(ctx, func() (Issue, error) {
+		return gh.CreateIssue(ctx, repo, CreateIssue{
+			Title:  "compass-live-list-" + newRunID(),
+			Labels: []string{"bug"},
+		})
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
@@ -297,10 +312,17 @@ func TestLiveGitHubListIssues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
-	if len(got) == 0 {
-		t.Fatalf("ListIssues returned no rows; expected at least the setup issue")
+	var row *Issue
+	for i := range got {
+		if got[i].Number == setup.Number {
+			row = &got[i]
+			break
+		}
 	}
-	assertMatchesFixture(t, got[0], f.Response.firstWant(t))
+	if row == nil {
+		t.Fatalf("ListIssues did not return the setup issue #%d among %d rows", setup.Number, len(got))
+	}
+	assertMatchesFixture(t, *row, f.Response.firstWant(t))
 }
 
 // TestLiveGitHubCreatePullRequest opens a PR on a prepared head branch and
@@ -312,12 +334,16 @@ func TestLiveGitHubCreatePullRequest(t *testing.T) {
 	gh := liveGitHub(author)
 
 	head := "compass-live-" + newRunID()
+	seedHeadBranch(t, ctx, author, repo, head)
 	f := liveFixture(t, providerGitHub, "create_pull_request")
-	got, err := gh.CreatePullRequest(ctx, repo, CreatePR{
-		Title:   "compass-live-pr-" + newRunID(),
-		Body:    f.Request.Input.body(),
-		HeadRef: head,
-		BaseRef: "main",
+	got, err := createWithBackoff(ctx, func() (PullRequest, error) {
+		return gh.CreatePullRequest(ctx, repo, CreatePR{
+			Title:   "compass-live-pr-" + newRunID(),
+			Body:    f.Request.Input.body(),
+			HeadRef: head,
+			BaseRef: "main",
+			Draft:   true,
+		})
 	})
 	if err != nil {
 		t.Fatalf("CreatePullRequest: %v", err)
@@ -336,22 +362,28 @@ func TestLiveGitHubCommentOnPullRequest(t *testing.T) {
 	gh := liveGitHub(author)
 
 	head := "compass-live-" + newRunID()
-	pr, err := gh.CreatePullRequest(ctx, repo, CreatePR{
-		Title:   "compass-live-prcomment-" + newRunID(),
-		HeadRef: head,
-		BaseRef: "main",
+	seedHeadBranch(t, ctx, author, repo, head)
+	pr, err := createWithBackoff(ctx, func() (PullRequest, error) {
+		return gh.CreatePullRequest(ctx, repo, CreatePR{
+			Title:   "compass-live-prcomment-" + newRunID(),
+			HeadRef: head,
+			BaseRef: "main",
+		})
 	})
 	if err != nil {
 		t.Fatalf("CreatePullRequest (setup): %v", err)
 	}
 	t.Cleanup(func() { teardownGitHubPR(t, author, repo, pr.Number, head) })
 
-	got, err := gh.CommentOnPullRequest(ctx, repo, pr.Number, "compass-live pr comment "+newRunID())
+	body := "compass-live pr comment " + newRunID()
+	got, err := createWithBackoff(ctx, func() (Comment, error) {
+		return gh.CommentOnPullRequest(ctx, repo, pr.Number, body)
+	})
 	if err != nil {
 		t.Fatalf("CommentOnPullRequest: %v", err)
 	}
-	if got.ID == 0 || got.URL == "" {
-		t.Errorf("CommentOnPullRequest decoded = %+v, want non-zero ID and URL", got)
+	if got.ID == 0 || got.URL == "" || got.Body != body {
+		t.Errorf("CommentOnPullRequest decoded = %+v, want non-zero ID, non-empty URL, Body=%q", got, body)
 	}
 }
 
@@ -365,10 +397,13 @@ func TestLiveGitHubSubmitReview(t *testing.T) {
 	reviewerGH := liveGitHub(reviewer)
 
 	head := "compass-live-" + newRunID()
-	pr, err := authorGH.CreatePullRequest(ctx, repo, CreatePR{
-		Title:   "compass-live-review-" + newRunID(),
-		HeadRef: head,
-		BaseRef: "main",
+	seedHeadBranch(t, ctx, author, repo, head)
+	pr, err := createWithBackoff(ctx, func() (PullRequest, error) {
+		return authorGH.CreatePullRequest(ctx, repo, CreatePR{
+			Title:   "compass-live-review-" + newRunID(),
+			HeadRef: head,
+			BaseRef: "main",
+		})
 	})
 	if err != nil {
 		t.Fatalf("CreatePullRequest (setup): %v", err)
@@ -382,8 +417,8 @@ func TestLiveGitHubSubmitReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitReview request_changes: %v", err)
 	}
-	if rc.Verdict != "changes_requested" {
-		t.Errorf("request_changes verdict = %q, want changes_requested", rc.Verdict)
+	if rc.Verdict != "request_changes" {
+		t.Errorf("request_changes verdict = %q, want request_changes (write-side echo)", rc.Verdict)
 	}
 
 	cm, err := reviewerGH.SubmitReview(ctx, repo, pr.Number, SubmitReview{
@@ -393,8 +428,8 @@ func TestLiveGitHubSubmitReview(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitReview comment: %v", err)
 	}
-	if cm.Verdict != "commented" {
-		t.Errorf("comment verdict = %q, want commented", cm.Verdict)
+	if cm.Verdict != "comment" {
+		t.Errorf("comment verdict = %q, want comment (write-side echo)", cm.Verdict)
 	}
 }
 
@@ -409,11 +444,14 @@ func TestLiveGitHubF1AuthorApprovalRejected(t *testing.T) {
 	reviewerGH := liveGitHub(reviewer)
 
 	head := "compass-live-" + newRunID()
-	pr, err := authorGH.CreatePullRequest(ctx, repo, CreatePR{
-		Title:   "compass-live-f1-" + newRunID(),
-		Body:    "raw <!--owner--> body",
-		HeadRef: head,
-		BaseRef: "main",
+	seedHeadBranch(t, ctx, author, repo, head)
+	pr, err := createWithBackoff(ctx, func() (PullRequest, error) {
+		return authorGH.CreatePullRequest(ctx, repo, CreatePR{
+			Title:   "compass-live-f1-" + newRunID(),
+			Body:    "raw <!--owner--> body",
+			HeadRef: head,
+			BaseRef: "main",
+		})
 	})
 	if err != nil {
 		t.Fatalf("author CreatePullRequest: %v", err)
@@ -433,8 +471,8 @@ func TestLiveGitHubF1AuthorApprovalRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reviewer approve: %v", err)
 	}
-	if got.Verdict != "approved" {
-		t.Errorf("reviewer verdict = %q, want approved", got.Verdict)
+	if got.Verdict != "approve" {
+		t.Errorf("reviewer verdict = %q, want approve (write-side echo)", got.Verdict)
 	}
 }
 
@@ -478,12 +516,16 @@ func TestLiveLinearCreateIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
-	t.Cleanup(func() { archiveLinearIssue(t, ts, got.Number) })
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, got.Number) })
 	assertMatchesFixture(t, got, f.Response.Want)
 }
 
 // TestLiveLinearCommentOnIssue comments on a freshly-created Linear issue and
-// asserts the decoded comment matches the fixture under the allowlist.
+// asserts the decoded comment's shape DIRECTLY (non-empty URL and the sent Body
+// echoed back): all four Comment fields are volatile, so a fixture compare
+// would strip both sides to {} and pin nothing. Linear comment IDs are UUIDs
+// that cannot fit forge.Comment.ID (uint64), so ID stays 0 and identity travels
+// via URL (see linear.go linearComment.toComment).
 func TestLiveLinearCommentOnIssue(t *testing.T) {
 	ts, team := requireLinear(t)
 	ctx := context.Background()
@@ -493,14 +535,16 @@ func TestLiveLinearCommentOnIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
-	t.Cleanup(func() { archiveLinearIssue(t, ts, issue.Number) })
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
 
-	f := liveFixture(t, providerLinear, "comment_on_issue")
-	got, err := ln.CommentOnIssue(ctx, team, issue.Number, "compass-live comment "+newRunID())
+	body := "compass-live comment " + newRunID()
+	got, err := ln.CommentOnIssue(ctx, team, issue.Number, body)
 	if err != nil {
 		t.Fatalf("CommentOnIssue: %v", err)
 	}
-	assertMatchesFixture(t, got, f.Response.Want)
+	if got.URL == "" || got.Body != body {
+		t.Errorf("CommentOnIssue decoded = %+v, want non-empty URL and Body=%q", got, body)
+	}
 }
 
 // TestLiveLinearGetIssue creates then reads a Linear issue back, asserting the
@@ -518,7 +562,7 @@ func TestLiveLinearGetIssue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
-	t.Cleanup(func() { archiveLinearIssue(t, ts, issue.Number) })
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, issue.Number) })
 
 	got, err := ln.GetIssue(ctx, team, issue.Number)
 	if err != nil {
@@ -541,17 +585,24 @@ func TestLiveLinearListIssues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
 	}
-	t.Cleanup(func() { archiveLinearIssue(t, ts, setup.Number) })
+	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, setup.Number) })
 
 	f := liveFixture(t, providerLinear, "list_issues")
 	got, err := ln.ListIssues(ctx, team, IssueFilter{State: "open", Labels: []string{"bug"}})
 	if err != nil {
 		t.Fatalf("ListIssues: %v", err)
 	}
-	if len(got) == 0 {
-		t.Fatalf("ListIssues returned no rows; expected at least the setup issue")
+	var row *Issue
+	for i := range got {
+		if got[i].Number == setup.Number {
+			row = &got[i]
+			break
+		}
 	}
-	assertMatchesFixture(t, got[0], f.Response.firstWant(t))
+	if row == nil {
+		t.Fatalf("ListIssues did not return the setup issue #%d among %d rows", setup.Number, len(got))
+	}
+	assertMatchesFixture(t, *row, f.Response.firstWant(t))
 }
 
 // TestLiveLinearPRUnsupported locks the Linear contract: the PR/review family is
@@ -584,18 +635,6 @@ func (in *fixtureInput) labels() []string {
 	return in.Labels
 }
 
-// wantBody extracts the "Body" field from a fixture's decoded-value expectation
-// (used to seed a live create so the non-volatile body round-trips).
-func (r fixtureResponse) wantBody() string {
-	var w struct {
-		Body string `json:"Body"`
-	}
-	if err := json.Unmarshal(r.Want, &w); err != nil {
-		return ""
-	}
-	return w.Body
-}
-
 // firstWant returns the first element of a list-op fixture's `want` array as a
 // single decoded-value expectation.
 func (r fixtureResponse) firstWant(t *testing.T) json.RawMessage {
@@ -612,21 +651,23 @@ func (r fixtureResponse) firstWant(t *testing.T) json.RawMessage {
 
 // --- rate-limit backoff ------------------------------------------------------
 
-// createIssueWithBackoff wraps a content-creating call with a single bounded
-// backoff on GitHub's SECONDARY rate limit (403 abuse-detection on rapid
-// content creation). This is real live-API timing behavior on the network path
-// — it never executes on the skip path, and it is a bounded one-shot backoff,
-// not a retry loop masking a bug.
-func createIssueWithBackoff(ctx context.Context, gh *GitHub, repo string, in CreateIssue) (Issue, error) {
-	got, err := gh.CreateIssue(ctx, repo, in)
+// createWithBackoff wraps ANY GitHub content-creating call with a single
+// bounded backoff on GitHub's SECONDARY rate limit (403 abuse-detection on
+// rapid content creation — issue/PR/comment creates and the H3 branch-seed
+// commit all trip it). This is real live-API timing behavior on the network
+// path: it never executes on the skip path, and it is a bounded one-shot
+// ctx-aware backoff, NOT a retry loop masking a bug (rule://no-retries).
+func createWithBackoff[T any](ctx context.Context, create func() (T, error)) (T, error) {
+	got, err := create()
 	if isSecondaryRateLimit(err) {
-		// Back off once, then retry — GitHub's secondary limit clears quickly.
+		// Back off once, then re-issue — GitHub's secondary limit clears quickly.
 		select {
 		case <-ctx.Done():
-			return Issue{}, ctx.Err()
+			var zero T
+			return zero, ctx.Err()
 		case <-time.After(30 * time.Second):
 		}
-		return gh.CreateIssue(ctx, repo, in)
+		return create()
 	}
 	return got, err
 }
@@ -692,21 +733,93 @@ func githubREST(ctx context.Context, ts TokenSource, method, path string, body i
 	return nil
 }
 
-// archiveLinearIssue archives a Linear issue via the GraphQL API for teardown.
-func archiveLinearIssue(t *testing.T, ts TokenSource, number uint64) {
+// seedHeadBranch prepares a head branch for a PR create: GitHub 422s a
+// CreatePullRequest ("No commits between main and <head>") unless the head ref
+// exists AND diverges from main by at least one commit. It (1) GETs main's SHA,
+// (2) creates refs/heads/<head> at that SHA, then (3) PUTs a unique file on
+// <head> to make it diverge. Authored by the same identity that opens the PR.
+// The create-content PUT is wrapped in the shared secondary-rate-limit backoff.
+func seedHeadBranch(t *testing.T, ctx context.Context, ts *fakeTokenSource, repo, head string) {
 	t.Helper()
-	// Linear archives by issue node id, not team-scoped number, and resolving
-	// the node id is a second query; the dedicated test team plus unique
-	// run-ids keep leaked issues harmless, so teardown archives best-effort by
-	// the number-scoped mutation the test client would drive. A failure is
-	// logged, never fatal.
+
+	var mainRef struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := githubRESTJSON(ctx, ts, http.MethodGet,
+		fmt.Sprintf("/repos/%s/git/ref/heads/main", repo), nil, &mainRef); err != nil {
+		t.Fatalf("seed head branch: get main ref: %v", err)
+	}
+
+	createRef := fmt.Sprintf(`{"ref":"refs/heads/%s","sha":%q}`, head, mainRef.Object.SHA)
+	if err := githubREST(ctx, ts, http.MethodPost,
+		fmt.Sprintf("/repos/%s/git/refs", repo), strings.NewReader(createRef)); err != nil {
+		t.Fatalf("seed head branch: create ref %q: %v", head, err)
+	}
+
+	path := "compass-live/" + newRunID() + ".txt"
+	content := base64.StdEncoding.EncodeToString([]byte("compass-live seed " + head + "\n"))
+	putBody := fmt.Sprintf(`{"message":"compass-live seed commit","content":%q,"branch":%q}`, content, head)
+	if _, err := createWithBackoff(ctx, func() (struct{}, error) {
+		return struct{}{}, githubREST(ctx, ts, http.MethodPut,
+			fmt.Sprintf("/repos/%s/contents/%s", repo, path), strings.NewReader(putBody))
+	}); err != nil {
+		t.Fatalf("seed head branch: create diverging commit on %q: %v", head, err)
+	}
+}
+
+// githubRESTJSON issues one authenticated REST call and decodes a 2xx JSON body
+// into out (the read-side companion to githubREST, used by the H3 seed).
+func githubRESTJSON(ctx context.Context, ts TokenSource, method, path string, body io.Reader, out any) error {
+	token, err := ts.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve token: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, "https://api.github.com"+path, body)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("do request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }() // response drain; close error not actionable
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read body: %w", err)
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("%s %s: http %d: %s", method, path, resp.StatusCode, bytes.TrimSpace(payload))
+	}
+	if err := json.Unmarshal(payload, out); err != nil {
+		return fmt.Errorf("decode %s %s: %w", method, path, err)
+	}
+	return nil
+}
+
+// archiveLinearIssue archives a Linear issue via the GraphQL API for teardown.
+// Linear's issueArchive takes the issue NODE UUID, not the team-scoped number,
+// so this resolves the UUID first (reusing the client's own resolveIssueID) and
+// archives by UUID — archiving by number is a permanent no-op that leaks every
+// issue. A failure is logged, never fatal; the dedicated test team plus unique
+// run-ids keep any leaked issue harmless.
+func archiveLinearIssue(t *testing.T, ln *Linear, ts TokenSource, team string, number uint64) {
+	t.Helper()
 	ctx := context.Background()
+	id, err := ln.resolveIssueID(ctx, team, number)
+	if err != nil {
+		t.Logf("teardown: resolve linear issue %s-%d node id: %v", team, number, err)
+		return
+	}
 	token, err := ts.Token(ctx)
 	if err != nil {
 		t.Logf("teardown: resolve linear token: %v", err)
 		return
 	}
-	query := fmt.Sprintf(`{"query":"mutation { issueArchive(id: %q) { success } }"}`, strconv.FormatUint(number, 10))
+	query := fmt.Sprintf(`{"query":"mutation { issueArchive(id: %q) { success } }"}`, id)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.linear.app/graphql", strings.NewReader(query))
 	if err != nil {
 		t.Logf("teardown: build linear archive request: %v", err)
@@ -716,7 +829,7 @@ func archiveLinearIssue(t *testing.T, ts TokenSource, number uint64) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Logf("teardown: archive linear issue %d: %v", number, err)
+		t.Logf("teardown: archive linear issue %s-%d: %v", team, number, err)
 		return
 	}
 	_ = resp.Body.Close() // teardown drain; close error not actionable
