@@ -194,18 +194,16 @@ describe("LeftSidebar (T5)", () => {
 		// The Agent workspaces section exists (RED now — no section chrome yet).
 		expect(findToggle(container, "Agent workspaces")).toBeDefined();
 
-		const cook = STUB_AGENTS.find((a) => a.account.id === "acc-compass-ui");
-		expect(cook).toBeDefined();
-		if (!cook) throw new Error("fixture missing acc-compass-ui");
+		const ui = STUB_AGENTS.find((a) => a.account.id === "acc-compass-ui");
+		expect(ui).toBeDefined();
+		if (!ui) throw new Error("fixture missing acc-compass-ui");
 
-		const cookLeaf = [
+		const uiLeaf = [
 			...container.querySelectorAll<HTMLButtonElement>(".tree-agent"),
-		].find(
-			(l) => l.querySelector(".name")?.textContent === cook.account.handle,
-		);
-		expect(cookLeaf).toBeDefined();
-		if (!cookLeaf) throw new Error("compass-ui agent leaf not rendered");
-		fireEvent.click(cookLeaf);
+		].find((l) => l.querySelector(".name")?.textContent === ui.account.handle);
+		expect(uiLeaf).toBeDefined();
+		if (!uiLeaf) throw new Error("compass-ui agent leaf not rendered");
+		fireEvent.click(uiLeaf);
 
 		expect(store.view()).toBe("agent");
 		expect(store.selectedAgentId()).toBe("acc-compass-ui");
@@ -331,12 +329,12 @@ describe("LeftSidebar (T5)", () => {
 		);
 
 		// compass-server-acp has no activity → no `.agent-activity` on its row.
-		const cousteau = STUB_AGENTS.find(
+		const serverAcp = STUB_AGENTS.find(
 			(a) => a.account.id === "acc-compass-server-acp",
 		);
-		expect(cousteau?.activity).toBeUndefined();
-		const cousteauRow = leafByHandle("compass-server-acp");
-		expect(cousteauRow).toBeDefined();
-		expect(cousteauRow?.querySelector(".agent-activity")).toBeNull();
+		expect(serverAcp?.activity).toBeUndefined();
+		const serverAcpRow = leafByHandle("compass-server-acp");
+		expect(serverAcpRow).toBeDefined();
+		expect(serverAcpRow?.querySelector(".agent-activity")).toBeNull();
 	});
 });

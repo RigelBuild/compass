@@ -259,9 +259,9 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		store.openTab(termPaneC2);
 		expect(container.querySelectorAll(".av-tab").length).toBe(3);
 		// No unplaced fixture terminal remains — the fallback path is now live.
-		const cook = store.selectedAgent();
-		if (!cook) throw new Error("compass-ui not selected");
-		expect(nextFreeTerminalPane(cook, store.agentTabs())).toBe(undefined);
+		const selected = store.selectedAgent();
+		if (!selected) throw new Error("compass-ui not selected");
+		expect(nextFreeTerminalPane(selected, store.agentTabs())).toBe(undefined);
 
 		const newBtn = (): HTMLButtonElement => {
 			const btn = container.querySelector<HTMLButtonElement>(".av-tab-new");
