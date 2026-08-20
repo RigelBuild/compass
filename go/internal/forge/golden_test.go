@@ -208,11 +208,18 @@ func replayFixture(t *testing.T, provider string, f fixture) {
 
 	got := invoke(t, provider, rt, ts, f.Request)
 
-	// (a) Request half: the request the client emitted at index len(Prelude).
-	idx := len(f.Response.Prelude)
-	if idx >= len(rt.requests) {
-		t.Fatalf("op %q emitted %d requests, want at least %d", f.Request.Op, len(rt.requests), idx+1)
+	// (a) Request half: assert the client emitted EXACTLY the scripted number
+	// of requests — prelude probes + the asserted request + composite extras.
+	// A dropped or added leg (e.g. a regressed composite read that skips a
+	// follow-on fetch) then fails loudly on its own, not only when the decoded
+	// value happens to depend on the missing leg's data.
+	wantN := len(f.Response.Prelude) + 1 + len(f.Response.Extra)
+	if got := len(rt.requests); got != wantN {
+		t.Fatalf("op %q emitted %d requests, want exactly %d", f.Request.Op, got, wantN)
 	}
+	// The asserted request is the one at index len(Prelude); the exact-count
+	// check above guarantees this index is in range.
+	idx := len(f.Response.Prelude)
 	assertRequest(t, rt.requests[idx], f.Request)
 
 	// (b) Value half: the decoded domain value matches the captured expectation.
@@ -280,6 +287,13 @@ func invoke(t *testing.T, provider string, rt *scriptedRoundTripper, ts *fakeTok
 // assertRequest checks the emitted request against the fixture's expectation:
 // method, path, query, and any named non-auth headers; the body is compared as
 // semantic JSON when the fixture pins one. Authorization is never asserted.
+//
+// The query and header checks are subset assertions — each pinned key must
+// match, but an unpinned key the client also emits is not flagged — and only
+// the asserted request at index len(Prelude) is checked. A composite op's
+// prelude/extra legs are locked by count (replayFixture) and by the decoded
+// value, not by per-leg method/path assertions; T2's live capture re-grounds
+// the fixture values against the real APIs.
 func assertRequest(t *testing.T, got *http.Request, want fixtureRequest) {
 	t.Helper()
 	if got.Method != want.Method {
@@ -360,6 +374,7 @@ func TestFixtureRoundTrip(t *testing.T) {
 			Number: 7,
 			Method: http.MethodGet,
 			Path:   "/repos/org/repo/issues/7",
+			Body:   json.RawMessage(`{"title":"round trip"}`),
 		},
 		Response: fixtureResponse{
 			Status: 200,
@@ -373,8 +388,17 @@ func TestFixtureRoundTrip(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("loaded %d fixtures, want 1", len(got))
 	}
-	if got[0].Name != want.Name || got[0].Request.Op != want.Request.Op ||
-		got[0].Request.Number != want.Request.Number || got[0].Response.Status != want.Response.Status {
-		t.Errorf("round-tripped fixture = %+v, want %+v", got[0], want)
+	g := got[0]
+	if g.Name != want.Name || g.Request.Op != want.Request.Op ||
+		g.Request.Repo != want.Request.Repo || g.Request.Number != want.Request.Number ||
+		g.Request.Method != want.Request.Method || g.Request.Path != want.Request.Path ||
+		g.Response.Status != want.Response.Status {
+		t.Errorf("round-tripped scalar fields = %+v, want %+v", g, want)
 	}
+	// The json.RawMessage fields are the seam T2's -update path writes through;
+	// assert they survive write->load structurally (indentation may change, the
+	// content must not).
+	assertJSONEqual(t, "roundtrip request body", g.Request.Body, want.Request.Body)
+	assertJSONEqual(t, "roundtrip response body", g.Response.Body, want.Response.Body)
+	assertJSONEqual(t, "roundtrip want", g.Response.Want, want.Response.Want)
 }
