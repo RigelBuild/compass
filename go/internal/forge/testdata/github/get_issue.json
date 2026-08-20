@@ -1,0 +1,33 @@
+{
+	"name": "get_issue",
+	"request": {
+		"op": "get_issue",
+		"repo": "org/repo",
+		"number": 7,
+		"method": "GET",
+		"path": "/repos/org/repo/issues/7"
+	},
+	"response": {
+		"status": 200,
+		"body": {
+			"number": 7,
+			"title": "a bug",
+			"body": "raw <!--owner--> body",
+			"state": "open",
+			"html_url": "https://github.com/org/repo/issues/7",
+			"updated_at": "2026-08-01T12:30:00Z",
+			"user": { "login": "octocat" },
+			"labels": [{ "name": "bug" }, { "name": "p1" }]
+		},
+		"want": {
+			"Number": 7,
+			"Title": "a bug",
+			"Body": "raw <!--owner--> body",
+			"State": "open",
+			"URL": "https://github.com/org/repo/issues/7",
+			"ForgeAccount": "octocat",
+			"Labels": ["bug", "p1"],
+			"UpdatedAt": "2026-08-01T12:30:00Z"
+		}
+	}
+}

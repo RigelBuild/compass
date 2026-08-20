@@ -1,0 +1,52 @@
+{
+	"name": "create_pull_request",
+	"request": {
+		"op": "create_pull_request",
+		"repo": "org/repo",
+		"input": {
+			"title": "a change",
+			"body": "stamped body",
+			"headRef": "feature",
+			"baseRef": "main",
+			"draft": true
+		},
+		"method": "POST",
+		"path": "/repos/org/repo/pulls",
+		"body": {
+			"title": "a change",
+			"body": "stamped body",
+			"head": "feature",
+			"base": "main",
+			"draft": true
+		}
+	},
+	"response": {
+		"status": 201,
+		"body": {
+			"number": 13,
+			"title": "a change",
+			"body": "stamped body",
+			"state": "open",
+			"html_url": "https://github.com/org/repo/pull/13",
+			"draft": true,
+			"head": { "ref": "feature" },
+			"base": { "ref": "main" },
+			"user": { "login": "octocat" }
+		},
+		"want": {
+			"Number": 13,
+			"Title": "a change",
+			"Body": "stamped body",
+			"State": "open",
+			"URL": "https://github.com/org/repo/pull/13",
+			"HeadRef": "feature",
+			"BaseRef": "main",
+			"ForgeAccount": "octocat",
+			"Draft": true,
+			"Changed": { "Files": 0, "Additions": 0, "Deletions": 0 },
+			"Checks": { "HeadSHA": "", "State": "", "Checks": null },
+			"Reviews": null,
+			"Threads": null
+		}
+	}
+}

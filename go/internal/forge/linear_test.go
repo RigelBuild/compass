@@ -519,7 +519,7 @@ func TestLinearBodyLimit(t *testing.T) {
 
 func TestLinearName(t *testing.T) {
 	l := newTestLinear(&scriptedRoundTripper{}, &fakeTokenSource{token: "t"}, slog.New(&capturingHandler{}))
-	if got := l.Name(); got != "linear" {
+	if got := l.Name(); got != providerLinear {
 		t.Errorf("Name() = %q, want linear", got)
 	}
 }

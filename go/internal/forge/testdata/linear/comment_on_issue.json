@@ -1,0 +1,57 @@
+{
+	"name": "comment_on_issue",
+	"request": {
+		"op": "comment_on_issue",
+		"repo": "SEA",
+		"number": 7,
+		"input": {
+			"body": "a reply"
+		},
+		"method": "POST",
+		"path": "/graphql",
+		"body": {
+			"query": "mutation CompassCommentCreate($input: CommentCreateInput!) {\n  commentCreate(input: $input) {\n    comment { id url body user { displayName } }\n  }\n}",
+			"variables": {
+				"input": {
+					"issueId": "issue-uuid-9",
+					"body": "a reply",
+					"createAsUser": "Compass",
+					"displayIconUrl": "https://compass.sealedsecurity.com/assets/compass-app.png"
+				}
+			}
+		}
+	},
+	"response": {
+		"prelude": [
+			{
+				"status": 200,
+				"body": {
+					"data": { "issues": { "nodes": [{ "id": "issue-uuid-9" }] } }
+				}
+			},
+			{
+				"status": 200,
+				"body": { "data": { "viewer": { "app": true } } }
+			}
+		],
+		"status": 200,
+		"body": {
+			"data": {
+				"commentCreate": {
+					"comment": {
+						"id": "comment-uuid",
+						"url": "https://linear.app/x/issue/SEA-7#comment-1",
+						"body": "a reply",
+						"user": null
+					}
+				}
+			}
+		},
+		"want": {
+			"ID": 0,
+			"URL": "https://linear.app/x/issue/SEA-7#comment-1",
+			"Body": "a reply",
+			"ForgeAccount": ""
+		}
+	}
+}

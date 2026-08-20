@@ -52,6 +52,12 @@ tasks:
       - '**/*.go'
       - 'go.mod'
       - 'go.sum'
+      # Fixture files (JSON under **/testdata/**) are NOT matched by '**/*.go',
+      # so a fixture-only diff (a golden -update regeneration commit) would
+      # schedule nothing on the affected-PR path. Adding the glob here keeps the
+      # Go battery running when only fixtures change — an inputs-glob edit in the
+      # project's own moon file, not a banned CI-workflow project enumeration.
+      - '**/testdata/**'
       # go.work / go.work.sum are not present today, but a workspace file
       # rewrites which modules the go commands see, so it must invalidate this
       # lane the moment one lands — otherwise a go.work-only change would read as
