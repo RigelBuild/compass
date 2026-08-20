@@ -181,18 +181,18 @@ describe("openAgent", () => {
 	// agent's clone.
 	test("opens the agent view and syncs selection to the primary issue + repo", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 
 			expect(s.view()).toBe("agent");
-			expect(s.selectedAgentId()).toBe("acc-cook");
+			expect(s.selectedAgentId()).toBe("acc-compass-ui");
 			// The memo resolves the actual agent object, not just an id echo.
-			expect(s.selectedAgent()?.account.id).toBe("acc-cook");
-			expect(s.selectedAgent()?.account.handle).toBe("cook");
-			// cook owns ws-1022 (listed first = primary) then ws-965; the primary
+			expect(s.selectedAgent()?.account.id).toBe("acc-compass-ui");
+			expect(s.selectedAgent()?.account.handle).toBe("compass-ui");
+			// compass-ui owns ws-1022 (listed first = primary) then ws-965; the primary
 			// drives the selection.
 			expect(s.selectedIssueId()).toBe("ws-1022");
 			// The repo pick jumps to the agent's clone id.
-			expect(s.activeRepoId()).toBe("acc-cook-repo");
+			expect(s.activeRepoId()).toBe("acc-compass-ui-repo");
 		});
 	});
 
@@ -203,15 +203,17 @@ describe("openAgent", () => {
 	// reset drops it.
 	test("resets tabs to the chat tab and points workspaceChannel at the agent's home DM", () => {
 		withStore((s) => {
-			const home = STUB_AGENTS.find((a) => a.account.id === "acc-livingstone");
+			const home = STUB_AGENTS.find(
+				(a) => a.account.id === "acc-compass-server",
+			);
 			expect(home?.account.homeChannelId).toBeDefined();
 
 			// Prior workspace with an extra tab open — the switch must clear it.
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
 
-			s.openAgent("acc-livingstone");
+			s.openAgent("acc-compass-server");
 
 			// Tabs reset to the lone chat tab, focused on it.
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID]);
@@ -226,12 +228,12 @@ describe("openAgent", () => {
 	// selectedAgentId, or no guard at all, would wipe the terminal tab on re-open.
 	test("re-opening the same agent preserves an opened terminal tab (init-guard)", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
 
 			// Re-open the same agent (clicking its tree row again).
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 
 			// The init-guard returned before the reset — the terminal tab survives.
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
@@ -243,10 +245,10 @@ describe("openAgent", () => {
 	// owns nothing (supervisor) clears the issue selection and exposes no clone.
 	test("switching agents resets selection and clears surfaces for an agent that owns none", () => {
 		withStore((s) => {
-			// Build up per-agent state on cook so the switch has something to reset.
-			s.openAgent("acc-cook");
-			s.setActiveBranch("cook-965-client-transport");
-			expect(s.activeRepo()?.currentBranch).toBe("cook-965-client-transport");
+			// Build up per-agent state on compass-ui so the switch has something to reset.
+			s.openAgent("acc-compass-ui");
+			s.setActiveBranch("compass-ui-965-transport");
+			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-965-transport");
 
 			// acc-supervisor is assigned zero issues.
 			s.openAgent("acc-supervisor");
@@ -265,18 +267,18 @@ describe("openAgent", () => {
 	// `agentId === agentViewAgentId()` guard returns before any reset.
 	test("re-opening the already-selected agent preserves the user's branch context", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
-			s.setActiveBranch("cook-965-client-transport");
+			s.openAgent("acc-compass-ui");
+			s.setActiveBranch("compass-ui-965-transport");
 			s.showBridge();
 			expect(s.view()).toBe("bridge");
 
 			// Re-open the same agent.
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 
 			// The view is re-asserted, but the branch context is untouched.
 			expect(s.view()).toBe("agent");
-			expect(s.selectedAgentId()).toBe("acc-cook");
-			expect(s.activeRepo()?.currentBranch).toBe("cook-965-client-transport");
+			expect(s.selectedAgentId()).toBe("acc-compass-ui");
+			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-965-transport");
 		});
 	});
 
@@ -286,13 +288,13 @@ describe("openAgent", () => {
 	// move can't suppress it and leak the previous agent's selection (PR #467).
 	test("opening a different agent after a roster move still resets the selection", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 
-			// Board move to livingstone's issue: selects the agent, no init.
+			// Board move to compass-server's issue: selects the agent, no init.
 			s.selectIssue("ws-1023");
-			expect(s.selectedAgentId()).toBe("acc-livingstone");
+			expect(s.selectedAgentId()).toBe("acc-compass-server");
 
-			s.openAgent("acc-livingstone");
+			s.openAgent("acc-compass-server");
 
 			// The reset keys on agentViewAgentId — the move didn't suppress it.
 			expect(s.selectedIssueId()).toBe("ws-1023");
@@ -306,14 +308,14 @@ describe("openAgent", () => {
 	test("openAgent keeps a non-primary issue picked just before opening (card jump)", () => {
 		withStore((s) => {
 			// Card double-click: select the card's ws first, then open its agent.
-			s.selectIssue("ws-965"); // cook's non-primary issue
-			expect(s.selectedAgentId()).toBe("acc-cook");
+			s.selectIssue("ws-965"); // compass-ui's non-primary issue
+			expect(s.selectedAgentId()).toBe("acc-compass-ui");
 
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 
 			// The non-primary pick survives — not snapped to ws-1022.
 			expect(s.selectedIssueId()).toBe("ws-965");
-			expect(s.activeRepo()?.currentBranch).toBe("cook-965-client-transport");
+			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-965-transport");
 		});
 	});
 
@@ -323,16 +325,16 @@ describe("openAgent", () => {
 	// OWNED issue — the other agent's ws must not leak (greptile's finding).
 	test("re-opening the agent-view agent after a cross-agent roster move re-anchors the issue", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook"); // agentViewAgentId = cook
+			s.openAgent("acc-compass-ui"); // agentViewAgentId = compass-ui
 			expect(s.selectedIssueId()).toBe("ws-1022");
 
-			s.selectIssue("ws-1023"); // livingstone's ws; view still cook
-			expect(s.selectedAgentId()).toBe("acc-livingstone");
+			s.selectIssue("ws-1023"); // compass-server's ws; view still compass-ui
+			expect(s.selectedAgentId()).toBe("acc-compass-server");
 
-			s.openAgent("acc-cook"); // early-return path (cook is still agentViewAgentId)
+			s.openAgent("acc-compass-ui"); // early-return path (compass-ui is still agentViewAgentId)
 
-			// Re-anchored to a cook-owned ws — livingstone's ws-1023 did NOT leak.
-			expect(s.selectedAgentId()).toBe("acc-cook");
+			// Re-anchored to a compass-ui-owned ws — compass-server's ws-1023 did NOT leak.
+			expect(s.selectedAgentId()).toBe("acc-compass-ui");
 			expect(s.selectedIssueId()).toBe("ws-1022");
 		});
 	});
@@ -347,22 +349,22 @@ describe("openAgent", () => {
 	// standalone selection (PR #783 / SEA-1195).
 	test("re-opening the agent-view agent shows its home DM while leaving the standalone selection intact", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook"); // agentViewAgentId = cook
-			const home = STUB_AGENTS.find((a) => a.account.id === "acc-cook")?.account
-				.homeChannelId;
+			s.openAgent("acc-compass-ui"); // agentViewAgentId = compass-ui
+			const home = STUB_AGENTS.find((a) => a.account.id === "acc-compass-ui")
+				?.account.homeChannelId;
 			expect(home).toBeDefined();
 
-			// Move the standalone channel surface to a channel distinct from cook's
+			// Move the standalone channel surface to a channel distinct from compass-ui's
 			// home DM.
 			s.openChannel("ch-svc-compass");
 			expect(s.view()).toBe("channel");
 			expect(s.selectedChannelId()).toBe("ch-svc-compass");
 
-			// Re-open the same agent → early-return path (cook is still
+			// Re-open the same agent → early-return path (compass-ui is still
 			// agentViewAgentId).
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 
-			// The workspace pane derives cook's home DM, and the view is restored.
+			// The workspace pane derives compass-ui's home DM, and the view is restored.
 			expect(s.view()).toBe("agent");
 			expect(s.workspaceChannel()?.id).toBe(home);
 			// The decouple's whole point: openAgent left `selectedChannelId`
@@ -379,17 +381,17 @@ describe("openAgent", () => {
 	// separate state.
 	test("a standalone channel selection does not move the workspace channel", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
-			const home = STUB_AGENTS.find((a) => a.account.id === "acc-cook")?.account
-				.homeChannelId;
+			s.openAgent("acc-compass-ui");
+			const home = STUB_AGENTS.find((a) => a.account.id === "acc-compass-ui")
+				?.account.homeChannelId;
 			expect(home).toBeDefined();
 
-			// Move the standalone surface to a channel distinct from cook's home DM.
+			// Move the standalone surface to a channel distinct from compass-ui's home DM.
 			s.openChannel("ch-svc-compass");
 
 			// The standalone surface moved…
 			expect(s.selectedChannel()?.id).toBe("ch-svc-compass");
-			// …but the workspace pane still derives cook's home DM.
+			// …but the workspace pane still derives compass-ui's home DM.
 			expect(s.workspaceChannel()?.id).toBe(home);
 		});
 	});
@@ -401,19 +403,19 @@ describe("agentRepos memo (T6)", () => {
 	// branch is the repo's default currentBranch.
 	test("derives the selected agent's clone with branches in fixture order", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			const repos = s.agentRepos();
 			expect(repos).toHaveLength(1);
 			const repo = repos[0];
-			expect(repo?.id).toBe("acc-cook-repo");
+			expect(repo?.id).toBe("acc-compass-ui-repo");
 			expect(repo?.name).toBe("sealedsecurity/sealed");
-			// cook owns ws-1022 then ws-965 → their branches, primary first.
+			// compass-ui owns ws-1022 then ws-965 → their branches, primary first.
 			expect(repo?.branches).toEqual([
-				"cook-1022-tauri-shell",
-				"cook-965-client-transport",
+				"compass-ui-1022-bridge-ui",
+				"compass-ui-965-transport",
 			]);
 			// Selection is the primary issue (ws-1022) → currentBranch is its branch, the first.
-			expect(repo?.currentBranch).toBe("cook-1022-tauri-shell");
+			expect(repo?.currentBranch).toBe("compass-ui-1022-bridge-ui");
 		});
 	});
 
@@ -437,11 +439,11 @@ describe("selectIssue", () => {
 			s.selectIssue("ws-1023");
 
 			expect(s.selectedIssueId()).toBe("ws-1023");
-			// ws-1023 is assigned to livingstone; the roster follows.
-			expect(s.selectedAgentId()).toBe("acc-livingstone");
+			// ws-1023 is assigned to compass-server; the roster follows.
+			expect(s.selectedAgentId()).toBe("acc-compass-server");
 			// The memo resolves the actual issue object.
 			expect(s.selectedIssue()?.id).toBe("ws-1023");
-			expect(s.selectedIssue()?.assignee).toBe("acc-livingstone");
+			expect(s.selectedIssue()?.assignee).toBe("acc-compass-server");
 			// Crucially, the view does not change.
 			expect(s.view()).toBe("bridge");
 		});
@@ -453,7 +455,7 @@ describe("selectIssue", () => {
 		withStore((s) => {
 			// Seed a real agent selection to prove it gets cleared.
 			s.selectIssue("ws-1023");
-			expect(s.selectedAgentId()).toBe("acc-livingstone");
+			expect(s.selectedAgentId()).toBe("acc-compass-server");
 
 			// ws-1146 is in the backlog with assignee null.
 			s.selectIssue("ws-1146");
@@ -515,8 +517,8 @@ describe("right sidebar tab (dock-in-sidebar T1; Record A §T2)", () => {
 	// old issue-only type, or one stuck on its boot value, would fail one leg.
 	test("setActiveRightTab round-trips a fleet pin and an issue value", () => {
 		withStore((s) => {
-			s.setActiveRightTab("agent:acc-cook");
-			expect(s.activeRightTab()).toBe("agent:acc-cook");
+			s.setActiveRightTab("agent:acc-compass-ui");
+			expect(s.activeRightTab()).toBe("agent:acc-compass-ui");
 
 			s.setActiveRightTab("vcs");
 			expect(s.activeRightTab()).toBe("vcs");
@@ -528,8 +530,8 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 	// STUB_AGENTS fixture ids used across these tests. Both resolve to visible
 	// agents (so they surface in rightTabGroups()); "acc-ghost" resolves to none.
 	const SUP = "acc-supervisor";
-	const LIVINGSTONE = "acc-livingstone";
-	const COOK = "acc-cook";
+	const COMPASS_SERVER = "acc-compass-server";
+	const COMPASS_UI = "acc-compass-ui";
 	const GHOST = "acc-ghost";
 	const key = (workspace: string) => `compass.pinnedAgents.${workspace}`;
 
@@ -579,13 +581,13 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 	test("pins append in order; a re-pin is a no-op", () => {
 		clearStorage();
 		withPinStore("ws-a", (s) => {
-			s.pinAgent(LIVINGSTONE);
+			s.pinAgent(COMPASS_SERVER);
 			s.pinAgent(SUP);
-			s.pinAgent(COOK);
-			expect(s.pinnedAgentIds()).toEqual([LIVINGSTONE, SUP, COOK]);
+			s.pinAgent(COMPASS_UI);
+			expect(s.pinnedAgentIds()).toEqual([COMPASS_SERVER, SUP, COMPASS_UI]);
 			// Re-pinning an existing id neither duplicates nor reorders.
-			s.pinAgent(LIVINGSTONE);
-			expect(s.pinnedAgentIds()).toEqual([LIVINGSTONE, SUP, COOK]);
+			s.pinAgent(COMPASS_SERVER);
+			expect(s.pinnedAgentIds()).toEqual([COMPASS_SERVER, SUP, COMPASS_UI]);
 		});
 		clearStorage();
 	});
@@ -596,10 +598,10 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		clearStorage();
 		globalThis.localStorage.setItem(
 			key("ws-seed"),
-			JSON.stringify([SUP, COOK]),
+			JSON.stringify([SUP, COMPASS_UI]),
 		);
 		withPinStore("ws-seed", (s) => {
-			expect(s.pinnedAgentIds()).toEqual([SUP, COOK]);
+			expect(s.pinnedAgentIds()).toEqual([SUP, COMPASS_UI]);
 		});
 		clearStorage();
 	});
@@ -626,12 +628,15 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 	test("two workspace keys do not cross-hydrate", () => {
 		clearStorage();
 		globalThis.localStorage.setItem(key("ws-1"), JSON.stringify([SUP]));
-		globalThis.localStorage.setItem(key("ws-2"), JSON.stringify([LIVINGSTONE]));
+		globalThis.localStorage.setItem(
+			key("ws-2"),
+			JSON.stringify([COMPASS_SERVER]),
+		);
 		withPinStore("ws-1", (s) => {
 			expect(s.pinnedAgentIds()).toEqual([SUP]);
 		});
 		withPinStore("ws-2", (s) => {
-			expect(s.pinnedAgentIds()).toEqual([LIVINGSTONE]);
+			expect(s.pinnedAgentIds()).toEqual([COMPASS_SERVER]);
 		});
 		clearStorage();
 	});
@@ -669,7 +674,7 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		clearStorage();
 		globalThis.localStorage.setItem(
 			key("ws-boot"),
-			JSON.stringify([SUP, COOK]),
+			JSON.stringify([SUP, COMPASS_UI]),
 		);
 		withPinStore("ws-boot", (s) => {
 			expect(s.activeRightTab()).toBe("agent:acc-supervisor");
@@ -683,10 +688,10 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		clearStorage();
 		globalThis.localStorage.setItem(
 			key("ws-boot2"),
-			JSON.stringify([GHOST, LIVINGSTONE]),
+			JSON.stringify([GHOST, COMPASS_SERVER]),
 		);
 		withPinStore("ws-boot2", (s) => {
-			expect(s.activeRightTab()).toBe("agent:acc-livingstone");
+			expect(s.activeRightTab()).toBe("agent:acc-compass-server");
 		});
 		clearStorage();
 	});
@@ -796,23 +801,23 @@ describe("agent collapse", () => {
 	// stay collapsed" assertion.
 	test("collapses agent subtrees independently via the underlying Set", () => {
 		withStore((s) => {
-			expect(s.isAgentCollapsed("acc-cook")).toBe(false);
-			expect(s.isAgentCollapsed("acc-livingstone")).toBe(false);
+			expect(s.isAgentCollapsed("acc-compass-ui")).toBe(false);
+			expect(s.isAgentCollapsed("acc-compass-server")).toBe(false);
 
-			s.toggleAgent("acc-cook");
-			expect(s.isAgentCollapsed("acc-cook")).toBe(true);
-			// Collapsing cook leaves livingstone expanded.
-			expect(s.isAgentCollapsed("acc-livingstone")).toBe(false);
+			s.toggleAgent("acc-compass-ui");
+			expect(s.isAgentCollapsed("acc-compass-ui")).toBe(true);
+			// Collapsing compass-ui leaves compass-server expanded.
+			expect(s.isAgentCollapsed("acc-compass-server")).toBe(false);
 
-			s.toggleAgent("acc-livingstone");
+			s.toggleAgent("acc-compass-server");
 			// Both now collapsed simultaneously — the Set holds both.
-			expect(s.isAgentCollapsed("acc-cook")).toBe(true);
-			expect(s.isAgentCollapsed("acc-livingstone")).toBe(true);
+			expect(s.isAgentCollapsed("acc-compass-ui")).toBe(true);
+			expect(s.isAgentCollapsed("acc-compass-server")).toBe(true);
 
-			s.toggleAgent("acc-cook");
-			// Re-toggling cook expands only cook; livingstone remains collapsed.
-			expect(s.isAgentCollapsed("acc-cook")).toBe(false);
-			expect(s.isAgentCollapsed("acc-livingstone")).toBe(true);
+			s.toggleAgent("acc-compass-ui");
+			// Re-toggling compass-ui expands only compass-ui; compass-server remains collapsed.
+			expect(s.isAgentCollapsed("acc-compass-ui")).toBe(false);
+			expect(s.isAgentCollapsed("acc-compass-server")).toBe(true);
 		});
 	});
 });
@@ -824,17 +829,17 @@ describe("repo + branch selection (T6)", () => {
 	// There is no independent per-repo branch pick to drift from the panes.
 	test("setActiveBranch selects the issue that owns the branch, moving the panes with the dropdown", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
-			expect(s.activeRepo()?.currentBranch).toBe("cook-1022-tauri-shell");
+			s.openAgent("acc-compass-ui");
+			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-1022-bridge-ui");
 
-			s.setActiveBranch("cook-965-client-transport");
+			s.setActiveBranch("compass-ui-965-transport");
 
 			// The dropdown label follows the newly-selected issue's branch.
-			expect(s.activeRepo()?.currentBranch).toBe("cook-965-client-transport");
+			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-965-transport");
 			// And the selection itself moved — this is the whole point: the pick
 			// re-targets the selected issue, not a private branch override.
 			expect(s.selectedIssueId()).toBe("ws-965");
-			expect(s.selectedIssue()?.branch).toBe("cook-965-client-transport");
+			expect(s.selectedIssue()?.branch).toBe("compass-ui-965-transport");
 		});
 	});
 
@@ -846,16 +851,16 @@ describe("repo + branch selection (T6)", () => {
 	// private branchOverrides map and left selectedIssueId at the primary —
 	// so here it would still be "ws-1022", and the selectedIssueId() /
 	// selectedIssue().branch assertions below would fail (the dropdown shows
-	// cook-965 while the panes still show ws-1022).
+	// compass-ui-965 while the panes still show ws-1022).
 	test("the dropdown and the detail panes resolve to one issue (no drift)", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook"); // primary = ws-1022
-			s.setActiveBranch("cook-965-client-transport");
+			s.openAgent("acc-compass-ui"); // primary = ws-1022
+			s.setActiveBranch("compass-ui-965-transport");
 
 			const dropdownBranch = s.activeRepo()?.currentBranch;
 			const paneBranch = s.selectedIssue()?.branch;
-			expect(dropdownBranch).toBe("cook-965-client-transport");
-			expect(paneBranch).toBe("cook-965-client-transport");
+			expect(dropdownBranch).toBe("compass-ui-965-transport");
+			expect(paneBranch).toBe("compass-ui-965-transport");
 			// The one-source-of-truth invariant: label === pane source.
 			expect(dropdownBranch).toBe(paneBranch);
 			expect(s.selectedIssueId()).toBe("ws-965");
@@ -867,77 +872,77 @@ describe("repo + branch selection (T6)", () => {
 	// stale/foreign branch can't move the panes.
 	test("setActiveBranch is a no-op for a branch no issue of the agent owns", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
-			s.setActiveBranch("cook-965-client-transport");
+			s.openAgent("acc-compass-ui");
+			s.setActiveBranch("compass-ui-965-transport");
 
 			s.setActiveBranch("not-a-branch");
 
 			// Unchanged: the guard found no owning issue, so both the label
-			// and the selection stay on ws-965 / cook-965.
-			expect(s.activeRepo()?.currentBranch).toBe("cook-965-client-transport");
+			// and the selection stay on ws-965 / compass-ui-965.
+			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-965-transport");
 			expect(s.selectedIssueId()).toBe("ws-965");
 		});
 	});
 
 	// A branch owned by a DIFFERENT agent's issue is also rejected: the
-	// guard requires `w.assignee === selectedAgentId()`, so picking livingstone's
-	// branch while cook is selected can't hijack the selection.
+	// guard requires `w.assignee === selectedAgentId()`, so picking compass-server's
+	// branch while compass-ui is selected can't hijack the selection.
 	// TEETH: drop the `assignee === id` half of the guard and this would select
-	// ws-1023 (livingstone's), moving cook's panes onto another agent's work —
+	// ws-1023 (compass-server's), moving compass-ui's panes onto another agent's work —
 	// selectedIssueId() would become "ws-1023" and this assertion fails.
 	test("setActiveBranch is a no-op for a branch owned by a different agent", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook"); // selects ws-1022
-			s.setActiveBranch("livingstone-1023-acp-session");
+			s.openAgent("acc-compass-ui"); // selects ws-1022
+			s.setActiveBranch("compass-server-1023-acp-session");
 
-			// livingstone's branch belongs to agent-livingstone, not cook → ignored.
+			// compass-server's branch belongs to agent-compass-server, not compass-ui → ignored.
 			expect(s.selectedIssueId()).toBe("ws-1022");
-			expect(s.activeRepo()?.currentBranch).toBe("cook-1022-tauri-shell");
+			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-1022-bridge-ui");
 		});
 	});
 
 	// setActiveRepo only accepts an id that is actually among the agent's clones.
 	test("setActiveRepo is a no-op for an id not among the agent's clones", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
-			expect(s.activeRepoId()).toBe("acc-cook-repo");
+			s.openAgent("acc-compass-ui");
+			expect(s.activeRepoId()).toBe("acc-compass-ui-repo");
 
 			s.setActiveRepo("bogus-repo");
 
 			// The pick is untouched, so activeRepo still resolves to the real clone.
-			expect(s.activeRepoId()).toBe("acc-cook-repo");
-			expect(s.activeRepo()?.id).toBe("acc-cook-repo");
+			expect(s.activeRepoId()).toBe("acc-compass-ui-repo");
+			expect(s.activeRepo()?.id).toBe("acc-compass-ui-repo");
 		});
 	});
 
 	// Opening an agent resets the selection to that agent's primary (first-owned)
 	// issue — the branch follows the selected issue, and there is no
-	// remembered per-agent branch to restore. So navigating to cook-965, away to
-	// livingstone, and back to cook lands on cook's primary (ws-1022), NOT the
-	// previously-navigated cook-965.
+	// remembered per-agent branch to restore. So navigating to compass-ui-965, away to
+	// compass-server, and back to compass-ui lands on compass-ui's primary (ws-1022), NOT the
+	// previously-navigated compass-ui-965.
 	test("openAgent resets the selection to the agent's primary issue", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
-			// Primary issue first: ws-1022 / cook-1022-tauri-shell.
+			s.openAgent("acc-compass-ui");
+			// Primary issue first: ws-1022 / compass-ui-1022-bridge-ui.
 			expect(s.selectedIssueId()).toBe("ws-1022");
-			expect(s.activeRepo()?.currentBranch).toBe("cook-1022-tauri-shell");
+			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-1022-bridge-ui");
 
-			// Navigate to cook's other issue via the dropdown.
-			s.setActiveBranch("cook-965-client-transport");
+			// Navigate to compass-ui's other issue via the dropdown.
+			s.setActiveBranch("compass-ui-965-transport");
 			expect(s.selectedIssueId()).toBe("ws-965");
 
-			// Switch to livingstone: its only issue (ws-1023) is selected.
-			s.openAgent("acc-livingstone");
+			// Switch to compass-server: its only issue (ws-1023) is selected.
+			s.openAgent("acc-compass-server");
 			expect(s.selectedIssueId()).toBe("ws-1023");
 			expect(s.activeRepo()?.currentBranch).toBe(
-				"livingstone-1023-acp-session",
+				"compass-server-1023-acp-session",
 			);
 
-			// Back to cook: openAgent re-selects the primary issue — NOT the
-			// previously-navigated cook-965.
-			s.openAgent("acc-cook");
+			// Back to compass-ui: openAgent re-selects the primary issue — NOT the
+			// previously-navigated compass-ui-965.
+			s.openAgent("acc-compass-ui");
 			expect(s.selectedIssueId()).toBe("ws-1022");
-			expect(s.activeRepo()?.currentBranch).toBe("cook-1022-tauri-shell");
+			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-1022-bridge-ui");
 		});
 	});
 });
@@ -956,9 +961,9 @@ describe("store isolation", () => {
 				queryClient: testQueryClient(),
 			});
 			try {
-				a.openAgent("acc-cook");
+				a.openAgent("acc-compass-ui");
 				a.toggleLeft();
-				a.toggleAgent("acc-cook");
+				a.toggleAgent("acc-compass-ui");
 
 				// Store A moved into an agent view.
 				expect(a.view()).toBe("agent");
@@ -969,7 +974,7 @@ describe("store isolation", () => {
 				expect(b.selectedAgentId()).toBeNull();
 				expect(b.leftOpen()).toBe(true);
 				expect(b.agentRepos()).toEqual([]);
-				expect(b.isAgentCollapsed("acc-cook")).toBe(false);
+				expect(b.isAgentCollapsed("acc-compass-ui")).toBe(false);
 			} finally {
 				dispose();
 			}
@@ -983,7 +988,7 @@ describe("agent tab group (T7)", () => {
 	// pane is the chat pane — `kind` moved from the tab to the pane.
 	test("agentTabs leads with the permanent chat tab holding the chat pane", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			const tabs = s.agentTabs();
 			expect(tabs).toHaveLength(1);
 			expect(tabs[0]?.id).toBe(CHAT_TAB_ID);
@@ -999,7 +1004,7 @@ describe("agent tab group (T7)", () => {
 	// full-screen (a single leaf) — a fresh tab is never pre-split.
 	test("openTab appends a full-screen tab, focuses it, and shows its pane as a single leaf", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			const pane: Pane = {
 				id: "term-1",
 				kind: "terminal",
@@ -1021,7 +1026,7 @@ describe("agent tab group (T7)", () => {
 	// Re-opening an id already present must NOT duplicate — it only refocuses.
 	test("re-opening an existing tab id refocuses without duplicating", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
 			expect(s.activeAgentTabId()).toBe("term-2");
@@ -1041,7 +1046,7 @@ describe("agent tab group (T7)", () => {
 	// setActiveAgentTab only focuses a tab that exists.
 	test("setActiveAgentTab is a no-op for an absent tab id", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			expect(s.activeAgentTabId()).toBe("term-1");
 
@@ -1059,7 +1064,7 @@ describe("splitActivePane (T7)", () => {
 	// the new pane to the right (split right).
 	test("splits the active tab's focused pane and focuses the new pane (row = split right)", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			const pane: Pane = { id: "term-1", kind: "terminal", title: "dev" };
 
 			s.splitActivePane(pane, "row");
@@ -1083,7 +1088,7 @@ describe("splitActivePane (T7)", () => {
 	// onto the split node, not silently coerced to row.
 	test("column direction stacks the new pane below (split down)", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 
 			s.splitActivePane(
 				{ id: "term-1", kind: "terminal", title: "dev" },
@@ -1110,7 +1115,7 @@ describe("splitActivePane (T7)", () => {
 	// leak the new pane into the other tabs here.
 	test("only mutates the active tab, leaving other tabs untouched", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
 			// Make term-1 the active tab, then split it.
@@ -1139,7 +1144,7 @@ describe("splitActivePane (T7)", () => {
 	// order, drives where a split lands.
 	test("setFocusedPane redirects where the next split anchors; an absent id is a no-op", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			// Split once: panes [chat, term-1], term-1 focused.
 			s.splitActivePane(
 				{ id: "term-1", kind: "terminal", title: "dev" },
@@ -1174,7 +1179,7 @@ describe("closing tabs + panes (T7)", () => {
 	// chat tab.
 	test("closeTab drops the tab and falls focus back to the chat", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
 			expect(s.activeAgentTabId()).toBe("term-2");
@@ -1190,7 +1195,7 @@ describe("closing tabs + panes (T7)", () => {
 	// active tab moves focus. A "always reset to chat" bug would fail here.
 	test("closing a non-active tab leaves the active tab focused", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
 			s.setActiveAgentTab("term-2");
@@ -1205,7 +1210,7 @@ describe("closing tabs + panes (T7)", () => {
 	// The chat tab is permanent — closing it does nothing to the tabs or focus.
 	test("closeTab on the chat tab is a no-op", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			expect(s.activeAgentTabId()).toBe("term-1");
 
@@ -1220,7 +1225,7 @@ describe("closing tabs + panes (T7)", () => {
 	// sibling; the tab itself stays open (it still has a pane).
 	test("closePane collapses the split around the surviving sibling", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			s.splitActivePane(
 				{ id: "term-2", kind: "terminal", title: "tests" },
@@ -1243,7 +1248,7 @@ describe("closing tabs + panes (T7)", () => {
 	// focus back to the chat.
 	test("closing the last pane of a non-chat tab closes the tab", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			expect(s.activeAgentTabId()).toBe("term-1");
 
@@ -1258,7 +1263,7 @@ describe("closing tabs + panes (T7)", () => {
 	// focus can never dangle on a pane that's gone.
 	test("closing the focused pane falls focus back to a surviving pane", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
 			s.splitActivePane(
 				{ id: "term-2", kind: "terminal", title: "tests" },
@@ -1279,7 +1284,7 @@ describe("closing tabs + panes (T7)", () => {
 	// the permanent chat tab).
 	test("closePane on the sole chat pane is a no-op (chat pane permanent)", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 
 			s.closePane(CHAT_TAB_ID);
 
@@ -1298,7 +1303,7 @@ describe("closing tabs + panes (T7)", () => {
 	// down to just the terminal, evicting the permanent chat pane.
 	test("closePane on the chat pane in a split chat tab is a no-op", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			// Split the chat tab: chat pane + term-1 beside it.
 			s.splitActivePane(
 				{ id: "term-1", kind: "terminal", title: "dev" },
@@ -1320,7 +1325,7 @@ describe("closing tabs + panes (T7)", () => {
 	// freeze the whole tab.
 	test("closePane on the non-chat pane of a split chat tab prunes it", () => {
 		withStore((s) => {
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 			s.splitActivePane(
 				{ id: "term-1", kind: "terminal", title: "dev" },
 				"row",
@@ -1472,7 +1477,7 @@ describe("log panel (D2)", () => {
 			s.toggleLog();
 			expect(s.logOpen()).toBe(false);
 
-			s.openAgent("acc-cook");
+			s.openAgent("acc-compass-ui");
 
 			expect(s.logOpen()).toBe(true);
 		});
@@ -1824,29 +1829,29 @@ describe("openChannel (T5)", () => {
 	// A 1:1 agent home DM is the agent's workspace surface, not a dead-end DM
 	// view (record §603-604): openChannel delegates to openAgent, so the id
 	// resolves to the agent view with that agent selected. The DM id is derived
-	// from cook's homeChannelId so a fixture reshuffle can't stale it.
+	// from compass-ui's homeChannelId so a fixture reshuffle can't stale it.
 	test("routes a 1:1 agent DM to the agent workspace via openAgent", () => {
 		withStore((s) => {
-			const cook = STUB_AGENTS.find((a) => a.account.id === "acc-cook");
-			const dmId = cook?.account.homeChannelId ?? "dm-cook";
+			const agent = STUB_AGENTS.find((a) => a.account.id === "acc-compass-ui");
+			const dmId = agent?.account.homeChannelId ?? "dm-compass-ui";
 
 			s.openChannel(dmId);
 
 			expect(s.view()).toBe("agent");
-			expect(s.selectedAgentId()).toBe("acc-cook");
+			expect(s.selectedAgentId()).toBe("acc-compass-ui");
 		});
 	});
 
 	// A group DM has more than one other party — it is not a single-agent
 	// workspace, so it routes to the channel view like any channel (not to an
-	// agent). `dm-cook-ross` is a `group_dm` of matt + cook + ross
+	// agent). `dm-ui-server` is a `group_dm` of matt + compass-ui + compass-server
 	// (comms-stub.ts:262-268).
 	test("routes a group DM to the channel view, not an agent workspace", () => {
 		withStore((s) => {
-			s.openChannel("dm-cook-ross");
+			s.openChannel("dm-ui-server");
 
 			expect(s.view()).toBe("channel");
-			expect(s.selectedChannelId()).toBe("dm-cook-ross");
+			expect(s.selectedChannelId()).toBe("dm-ui-server");
 		});
 	});
 

@@ -21,32 +21,32 @@ import { AgentView, nextFreeTerminalPane } from "./AgentView";
 // implementer makes it green next.
 //
 // Fixture ground truth (grepped from comms-stub.ts / stub-data.ts, quoted here):
-//   - agent `acc-cook`, home DM `dm-cook`. `openAgent("acc-cook")` centers
-//     `selectedChannel` on dm-cook, so the chat pane's ChannelView renders it.
-//   - dm-cook message `msg-dm-f1` (text) and `msg-dm-f2` (an ask).
-//   - cook terminals `t-c1` ("vite dev") and `t-c2` ("compass-ui:ci").
+//   - agent `acc-compass-ui`, home DM `dm-compass-ui`. `openAgent("acc-compass-ui")` centers
+//     `selectedChannel` on dm-compass-ui, so the chat pane's ChannelView renders it.
+//   - dm-compass-ui message `msg-dm-f1` (text) and `msg-dm-f2` (an ask).
+//   - compass-ui terminals `t-ui1` ("vite dev") and `t-ui2` ("compass-ui:ci").
 
 // The fixture agent whose home DM carries a visible message + an interactive ask.
-const AGENT_ID = "acc-cook";
+const AGENT_ID = "acc-compass-ui";
 
-// dm-cook's home topic (`top-dm-cook`) name — the topic row the chat pane's
+// dm-compass-ui's home topic (`top-dm-compass-ui`) name — the topic row the chat pane's
 // topic index must show. A DM is topics too (Matt's ruling): one home topic.
 const HOME_DM_TOPIC = "general";
 
-// cook's two terminals, as the terminal panes `openTab`/`splitActivePane` place.
-// `t-c1`'s scrollback carries this line — proof the right terminal rendered.
+// compass-ui's two terminals, as the terminal panes `openTab`/`splitActivePane` place.
+// `t-ui1`'s scrollback carries this line — proof the right terminal rendered.
 const TERM_C1_LINE = "VITE v8.1.0  ready in 247 ms";
 const termPaneC1: Pane = {
-	id: "t-c1",
+	id: "t-ui1",
 	kind: "terminal",
 	title: "vite dev",
-	terminalId: "t-c1",
+	terminalId: "t-ui1",
 };
 const termPaneC2: Pane = {
-	id: "t-c2",
+	id: "t-ui2",
 	kind: "terminal",
 	title: "compass-ui:ci",
-	terminalId: "t-c2",
+	terminalId: "t-ui2",
 };
 
 // Mount AgentView over a real store through the app's StoreContext (index.tsx
@@ -156,7 +156,7 @@ describe("AgentView (T3)", () => {
 		expect(container.querySelectorAll(".av-tab").length).toBe(2);
 
 		// Only the active tab's tree renders, so a visible `.term-body` proves the
-		// terminal tab is active — and it carries the real t-c1 scrollback.
+		// terminal tab is active — and it carries the real t-ui1 scrollback.
 		const termBody = container.querySelector(".av-tree .term-body");
 		expect(termBody).not.toBeNull();
 		expect(termBody?.textContent).toContain(TERM_C1_LINE);
@@ -193,7 +193,7 @@ describe("AgentView (T3)", () => {
 //   - acc-supervisor: `terminals: []` — ZERO fixture terminals, so
 //     `nextFreeTerminalPane` returns undefined from the first "+" click. The old
 //     code disabled "+" immediately for them → the cleanest always-open proof.
-//   - acc-cook: terminals `t-c1` + `t-c2` (2) — exhausted after two opens.
+//   - acc-compass-ui: terminals `t-ui1` + `t-ui2` (2) — exhausted after two opens.
 describe("AgentView always-open '+'/split (regression)", () => {
 	// Assert the fixture facts this suite leans on straight from the source, so a
 	// fixture reshuffle reddens here rather than silently weakening the tests.
@@ -203,9 +203,9 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		return agent.terminals.length;
 	};
 
-	test("fixture ground truth: supervisor has zero terminals, cook has two", () => {
+	test("fixture ground truth: supervisor has zero terminals, compass-ui has two", () => {
 		expect(agentTerminalCount("acc-supervisor")).toBe(0);
-		expect(agentTerminalCount("acc-cook")).toBe(2);
+		expect(agentTerminalCount("acc-compass-ui")).toBe(2);
 	});
 
 	// PRIMARY REGRESSION. A zero-fixture-terminal agent (supervisor): the "+"
@@ -244,15 +244,15 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		expect(container.querySelector(".av-tree .term-body")).toBeNull();
 	});
 
-	// Fixture EXHAUSTION. cook has two fixture terminals. Open both as tabs, then
+	// EXHAUSTION. compass-ui has two fixture terminals. Open both as tabs, then
 	// assert `nextFreeTerminalPane` is spent (undefined) yet "+" stays enabled and
 	// a further click opens ANOTHER tab — a minted placeholder. Assert the tab
 	// count keeps growing and each new tab id is unique (no collision with the
 	// fixtures or with each other, no dedupe-swallow). The old code disabled "+"
 	// at this exact point.
-	test("fixture exhaustion (cook): '+' stays enabled and mints unique placeholder tabs", () => {
+	test("fixture exhaustion (compass-ui): '+' stays enabled and mints unique placeholder tabs", () => {
 		const { store, container } = mountAgentView();
-		store.openAgent("acc-cook");
+		store.openAgent("acc-compass-ui");
 
 		// Exhaust both fixture terminals through the real store action.
 		store.openTab(termPaneC1);
@@ -260,7 +260,7 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		expect(container.querySelectorAll(".av-tab").length).toBe(3);
 		// No unplaced fixture terminal remains — the fallback path is now live.
 		const cook = store.selectedAgent();
-		if (!cook) throw new Error("cook not selected");
+		if (!cook) throw new Error("compass-ui not selected");
 		expect(nextFreeTerminalPane(cook, store.agentTabs())).toBe(undefined);
 
 		const newBtn = (): HTMLButtonElement => {
@@ -281,7 +281,7 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		// distinct from the fixture tabs — no collision, no dedupe-swallow.
 		const ids = store.agentTabs().map((t) => t.id);
 		expect(new Set(ids).size).toBe(ids.length);
-		const minted = ids.filter((id) => id.startsWith("term-acc-cook-"));
+		const minted = ids.filter((id) => id.startsWith("term-acc-compass-ui-"));
 		expect(minted.length).toBe(2);
 		expect(new Set(minted).size).toBe(2);
 	});

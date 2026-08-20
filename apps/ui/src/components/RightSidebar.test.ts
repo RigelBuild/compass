@@ -146,7 +146,7 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 	// The two visible fixture agents to pin — both resolve in STUB_AGENTS, so the
 	// derivation must surface a fleet item for each, in pin order.
 	const SUP = "acc-supervisor";
-	const LIVINGSTONE = "acc-livingstone";
+	const LIVINGSTONE = "acc-compass-server";
 
 	// Fleet must sit ABOVE issue (D2). A swapped order renders the bar upside-down.
 	test("orders the groups fleet-first, issue-second", () => {

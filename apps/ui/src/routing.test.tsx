@@ -69,11 +69,11 @@ describe("routing (record A1/A4)", () => {
 	// A deep-link onto /agent/:agentId runs the full workspace anchoring lifted
 	// from openAgent — the deep-link and the click share one home.
 	test("an agent deep-link anchors the workspace", async () => {
-		const { store, container } = mountApp("/agent/acc-cook");
+		const { store, container } = mountApp("/agent/acc-compass-ui");
 		await flush();
 
 		expect(store.view()).toBe("agent");
-		expect(store.selectedAgentId()).toBe("acc-cook");
+		expect(store.selectedAgentId()).toBe("acc-compass-ui");
 		expect(container.querySelector(".agent-view")).not.toBeNull();
 	});
 

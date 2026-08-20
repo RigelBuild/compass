@@ -12,9 +12,9 @@ import type { AgentSession } from "./session-events";
 // agents reachable via an agent DM in comms-stub need a session; others resolve
 // to an empty trace.
 export const STUB_SESSION_EVENTS: Record<string, AgentSession> = {
-	"acc-livingstone": {
-		sessionId: "sess-livingstone-1",
-		agentAccountId: "acc-livingstone",
+	"acc-compass-server": {
+		sessionId: "sess-compass-server-1",
+		agentAccountId: "acc-compass-server",
 		running: true,
 		fixture: true,
 		events: [
@@ -138,9 +138,9 @@ export const STUB_SESSION_EVENTS: Record<string, AgentSession> = {
 			},
 		],
 	},
-	"acc-drake": {
-		sessionId: "sess-drake-1",
-		agentAccountId: "acc-drake",
+	"acc-compass-native": {
+		sessionId: "sess-compass-native-1",
+		agentAccountId: "acc-compass-native",
 		running: false,
 		fixture: true,
 		events: [
@@ -148,13 +148,13 @@ export const STUB_SESSION_EVENTS: Record<string, AgentSession> = {
 				id: "se-d1",
 				atUnixMs: 1_753_000_000_000,
 				kind: "notice",
-				text: "Idle — channel-model amendment folded into #767; awaiting franklin's grid.",
+				text: "Idle — window/daemon spawn folded into #864; awaiting the codesign cert.",
 			},
 		],
 	},
-	"acc-cook": {
-		sessionId: "sess-cook-1",
-		agentAccountId: "acc-cook",
+	"acc-compass-ui": {
+		sessionId: "sess-compass-ui-1",
+		agentAccountId: "acc-compass-ui",
 		running: true,
 		fixture: true,
 		events: [
@@ -163,7 +163,7 @@ export const STUB_SESSION_EVENTS: Record<string, AgentSession> = {
 				atUnixMs: 1_753_000_000_000,
 				kind: "tool_call",
 				toolCallId: "tc-k1",
-				title: "gt submit --no-interactive  (T3b network-door serve wiring)",
+				title: "moon run compass-ui:ci  (board strip render)",
 				status: "in_progress",
 			},
 			{
@@ -172,7 +172,7 @@ export const STUB_SESSION_EVENTS: Record<string, AgentSession> = {
 				kind: "tool_call_update",
 				toolCallId: "tc-k1",
 				status: "completed",
-				output: "pushed cook-sea-1195-network-door → CI 5126 firing",
+				output: "pushed compass-ui-1022-bridge-ui → CI 5126 firing",
 			},
 		],
 	},

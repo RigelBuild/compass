@@ -22,10 +22,10 @@ import { LeftSidebar } from "./LeftSidebar";
 //   - Standalone rail channels (kind "channel", membership !== "none"):
 //     ch-announcements, ch-coordination, ch-svc-compass ("svc.compass", unread
 //     5), ch-svc-ci-build. ch-random is membership "none" → the browse list.
-//   - Group DM dm-cook-ross ("cook, ross", kind group_dm) — lists in Channels.
+//   - Group DM dm-ui-server ("compass-ui, compass-server", kind group_dm) — lists in Channels.
 //   - 1:1 agent home DMs (kind "dm", one per board agent, name = handle) — must
-//     NOT list under Channels (§589); the agent workspace is their surface. cook
-//     ("acc-cook") is a `.tree-agent` leaf in the Agent workspaces tree instead.
+//     NOT list under Channels (§589); the agent workspace is their surface. compass-ui
+//     ("acc-compass-ui") is a `.tree-agent` leaf in the Agent workspaces tree instead.
 
 // The Channels rail lists standalone channels + group DMs but NOT 1:1 agent DMs
 // (kind "dm"). Derived from the fixture so a reshuffle can't stale the count.
@@ -127,7 +127,7 @@ describe("LeftSidebar (T5)", () => {
 	});
 
 	// Contract (§611): the Channels section lists the standalone set — a plain
-	// channel (svc.compass) with its unread badge, and the group DM (cook, ross).
+	// channel (svc.compass) with its unread badge, and the group DM (compass-ui, compass-server).
 	test("lists standalone channels and the group DM with an unread badge", () => {
 		const { container } = mountSidebar();
 
@@ -139,12 +139,12 @@ describe("LeftSidebar (T5)", () => {
 		expect(compass?.querySelector(".ch-unread")?.textContent).toBe("5");
 
 		// The group DM lists as a rail row.
-		expect(railNames(container)).toContain("cook, ross");
+		expect(railNames(container)).toContain("compass-ui, compass-server");
 	});
 
 	// Contract (§589, §611): 1:1 agent home DMs do NOT list under Channels — the
 	// rail row count is exactly the standalone set (channels + group DMs), and no
-	// rail row's label is a bare agent handle. The same handle ("cook") DOES
+	// row's label is a bare agent handle. The same handle ("compass-ui") DOES
 	// appear as an agent leaf in the tree, proving the exclusion is about the DM
 	// row, not the agent.
 	test("excludes 1:1 agent DMs from the Channels section", () => {
@@ -157,13 +157,13 @@ describe("LeftSidebar (T5)", () => {
 		// Exactly the standalone set — not standalone + the ~10 agent home DMs.
 		expect(railRows(container).length).toBe(RAIL_ROWS);
 
-		// No rail row is the bare "cook" DM…
-		expect(railNames(container)).not.toContain("cook");
-		// …but "cook" IS an agent leaf in the Agent workspaces tree.
+		// No rail row is the bare "compass-ui" DM…
+		expect(railNames(container)).not.toContain("compass-ui");
+		// …but "compass-ui" IS an agent leaf in the Agent workspaces tree.
 		const treeNames = [...container.querySelectorAll(".tree-agent .name")].map(
 			(n) => n.textContent,
 		);
-		expect(treeNames).toContain("cook");
+		expect(treeNames).toContain("compass-ui");
 	});
 
 	// Contract (§586-587, §602): clicking a channel row routes to the channel
@@ -194,9 +194,9 @@ describe("LeftSidebar (T5)", () => {
 		// The Agent workspaces section exists (RED now — no section chrome yet).
 		expect(findToggle(container, "Agent workspaces")).toBeDefined();
 
-		const cook = STUB_AGENTS.find((a) => a.account.id === "acc-cook");
+		const cook = STUB_AGENTS.find((a) => a.account.id === "acc-compass-ui");
 		expect(cook).toBeDefined();
-		if (!cook) throw new Error("fixture missing acc-cook");
+		if (!cook) throw new Error("fixture missing acc-compass-ui");
 
 		const cookLeaf = [
 			...container.querySelectorAll<HTMLButtonElement>(".tree-agent"),
@@ -204,11 +204,11 @@ describe("LeftSidebar (T5)", () => {
 			(l) => l.querySelector(".name")?.textContent === cook.account.handle,
 		);
 		expect(cookLeaf).toBeDefined();
-		if (!cookLeaf) throw new Error("cook agent leaf not rendered");
+		if (!cookLeaf) throw new Error("compass-ui agent leaf not rendered");
 		fireEvent.click(cookLeaf);
 
 		expect(store.view()).toBe("agent");
-		expect(store.selectedAgentId()).toBe("acc-cook");
+		expect(store.selectedAgentId()).toBe("acc-compass-ui");
 	});
 
 	// Matt's ruling: join/subscribe are NOT wired to the wire yet — there is no
@@ -311,7 +311,7 @@ describe("LeftSidebar (T5)", () => {
 	// activity note (Agent.activity, AgentPresenceChanged.activity) beside the
 	// process-state dot. Present → a `.agent-activity` with the fixture text;
 	// absent → nothing extra. Mutation-check: dropping the render reddens the
-	// present leg. Fixture: supervisor has an activity; cousteau has none.
+	// present leg. Fixture: supervisor has an activity; compass-server-acp has none.
 	test("renders an agent's activity note when present", () => {
 		const { container } = mountSidebar();
 
@@ -330,10 +330,12 @@ describe("LeftSidebar (T5)", () => {
 			supervisor?.activity,
 		);
 
-		// cousteau has no activity → no `.agent-activity` on its row.
-		const cousteau = STUB_AGENTS.find((a) => a.account.id === "acc-cousteau");
+		// compass-server-acp has no activity → no `.agent-activity` on its row.
+		const cousteau = STUB_AGENTS.find(
+			(a) => a.account.id === "acc-compass-server-acp",
+		);
 		expect(cousteau?.activity).toBeUndefined();
-		const cousteauRow = leafByHandle("cousteau");
+		const cousteauRow = leafByHandle("compass-server-acp");
 		expect(cousteauRow).toBeDefined();
 		expect(cousteauRow?.querySelector(".agent-activity")).toBeNull();
 	});

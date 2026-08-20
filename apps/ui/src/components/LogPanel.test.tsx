@@ -24,19 +24,19 @@ import { LogPanel } from "./LogPanel";
 // pass the resolved agent as the prop — both are driven below.
 //
 // Fixture ground truth (session-events-stub.ts STUB_SESSION_EVENTS):
-//   - acc-livingstone: running:true — a thinking beat, ~10 one-word
+//   - acc-compass-server: running:true — a thinking beat, ~10 one-word
 //     assistant_text deltas sharing messageId "m-l1" (fold → ONE text item), a
 //     tool_call + tool_call_update (tc-l1, diff+output+status "completed"), a
 //     3-entry plan.
-//   - acc-drake:  running:false — a single notice.
-//   - acc-ross:   ABSENT → agentSession() undefined → empty state.
+//   - acc-compass-native:  running:false — a single notice.
+//   - acc-compass-comms:   ABSENT → agentSession() undefined → empty state.
 
 // Derived from the fixture (never hardcoded, so a fixture reshuffle can't stale
 // the test): the coalesced assistant text and the tool title the typed trace
-// must show for acc-livingstone. Computed via the real fold so the test asserts
+// must show for acc-compass-server. Computed via the real fold so the test asserts
 // exactly what the panel renders.
 const LIVINGSTONE_ITEMS = foldSession(
-	STUB_SESSION_EVENTS["acc-livingstone"].events,
+	STUB_SESSION_EVENTS["acc-compass-server"].events,
 );
 const LIVINGSTONE_COALESCED_TEXT = (() => {
 	const item = LIVINGSTONE_ITEMS.find((i) => i.kind === "text");
@@ -96,7 +96,7 @@ describe("LogPanel (T-U2)", () => {
 	// have run — the ~10 one-word streaming deltas coalesce into ONE `.block-text`
 	// (not 10 rows), the tool title shows, and the plan block renders.
 	test("renders the agent's typed trace", () => {
-		const { container } = mountLogPanel("acc-livingstone");
+		const { container } = mountLogPanel("acc-compass-server");
 
 		const trace = container.querySelector(".obs-trace");
 		expect(trace).not.toBeNull();
@@ -128,7 +128,7 @@ describe("LogPanel (T-U2)", () => {
 	// and there is no `.obs-trace` body. (The fallback text is the TracePane's to
 	// pick; assert the empty-state contract via `.obs-empty` presence + no body.)
 	test("empty state for an agent without a session", () => {
-		const { container } = mountLogPanel("acc-ross");
+		const { container } = mountLogPanel("acc-compass-comms");
 
 		expect(container.querySelector(".obs-empty")).not.toBeNull();
 		expect(container.querySelector(".obs-trace")).toBeNull();
@@ -138,7 +138,7 @@ describe("LogPanel (T-U2)", () => {
 	// body is gone from the DOM — while the running dot stays visible (liveness at
 	// a glance). Expanding restores the body. Driven via the toggle by aria-label.
 	test("minimize hides the trace body but keeps the running dot; expand restores it", () => {
-		const { container } = mountLogPanel("acc-livingstone");
+		const { container } = mountLogPanel("acc-compass-server");
 
 		// Expanded: body present, running dot present.
 		expect(container.querySelector(".obs-body")).not.toBeNull();
@@ -172,18 +172,18 @@ describe("LogPanel (T-U2)", () => {
 	// fixture session now disables Stop unconditionally (below) — so this keeps
 	// defending running-vs-idle rather than accidentally re-asserting the guard.
 	test("Stop is disabled when idle, enabled when running", () => {
-		const { store, container } = mountLogPanel("acc-drake", {
-			"acc-drake": served("acc-drake", false),
-			"acc-livingstone": served("acc-livingstone", true),
+		const { store, container } = mountLogPanel("acc-compass-native", {
+			"acc-compass-native": served("acc-compass-native", false),
+			"acc-compass-server": served("acc-compass-server", true),
 		});
 
-		// acc-drake: running:false → Stop disabled.
+		// acc-compass-native: running:false → Stop disabled.
 		const idleStop = container.querySelector<HTMLButtonElement>(".obs-stop");
 		expect(idleStop).not.toBeNull();
 		expect(idleStop?.disabled).toBe(true);
 
 		// Re-open a running agent: the reactive prop + session update, Stop enables.
-		store.openAgent("acc-livingstone");
+		store.openAgent("acc-compass-server");
 
 		const liveStop = container.querySelector<HTMLButtonElement>(".obs-stop");
 		expect(liveStop).not.toBeNull();
@@ -195,9 +195,9 @@ describe("LogPanel (T-U2)", () => {
 	// anything for one (store.stopAgent refuses), so the control must LOOK dead
 	// rather than silently no-op — even though the fixture pins `running: true`.
 	test("Stop is disabled for a fixture session even while it reads running", () => {
-		const { container } = mountLogPanel("acc-livingstone");
+		const { container } = mountLogPanel("acc-compass-server");
 
-		expect(STUB_SESSION_EVENTS["acc-livingstone"].running).toBe(true);
+		expect(STUB_SESSION_EVENTS["acc-compass-server"].running).toBe(true);
 		const stop = container.querySelector<HTMLButtonElement>(".obs-stop");
 		expect(stop).not.toBeNull();
 		expect(stop?.disabled).toBe(true);
@@ -211,8 +211,8 @@ describe("LogPanel (T-U2)", () => {
 	test("a refused stop renders its message beside the control", async () => {
 		const compass = createFakeCompass();
 		const { container } = mountLogPanel(
-			"acc-livingstone",
-			{ "acc-livingstone": served("acc-livingstone", true) },
+			"acc-compass-server",
+			{ "acc-compass-server": served("acc-compass-server", true) },
 			compass.client,
 		);
 
@@ -244,7 +244,7 @@ describe("LogPanel (T-U2)", () => {
 	// disabled — so the panel must still say why when a stop is attempted, not
 	// leave the reason in the console.
 	test("a fixture-session refusal renders its message", async () => {
-		const { store, container } = mountLogPanel("acc-livingstone");
+		const { store, container } = mountLogPanel("acc-compass-server");
 
 		await store.stopAgent();
 
@@ -258,7 +258,7 @@ describe("LogPanel (T-U2)", () => {
 	// observation-only — the panel carries NO input box. A composer creeping into
 	// the observation panel would redden this.
 	test("the panel contains no input box (observation-only)", () => {
-		const { container } = mountLogPanel("acc-livingstone");
+		const { container } = mountLogPanel("acc-compass-server");
 
 		expect(container.querySelector("input, textarea")).toBeNull();
 	});

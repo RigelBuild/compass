@@ -29,13 +29,13 @@ import { TopicView } from "./TopicView";
 //   - The ONLY ask sitting in a standalone (kind "channel") channel is
 //     msg-c4 `ask-s4-integration` in `ch-svc-compass` ("svc.compass",
 //     kind "channel", membership "subscribed" → a standalone member channel).
-//     Its message author is `acc-livingstone` (handle "livingstone"). The
+//     Its message author is `acc-compass-server` (handle "compass-server"). The
 //     hint-absence leg asserts NO `@<author-handle>` text renders (the gate that
-//     once routed answers to @<author>'s workspace is gone); @livingstone is that
-//     author. NOTE: the brief said `@cook`, but `ask-cook-layout` (cook's ask)
-//     lives in `dm-cook` (kind "dm") → openChannel routes THAT to the agent
-//     workspace (store.ts:602-616), so it never renders in a standalone channel.
-//     We derive the true author from the store's accounts.
+//     once routed answers to @<author>'s workspace is gone); @compass-server is
+//     that author. NOTE: the brief said `@compass-ui`, but `ask-ui-layout`
+//     (compass-ui's ask) lives in `dm-compass-ui` (kind "dm") → openChannel
+//     routes THAT to the agent workspace (store.ts:602-616), so it never renders
+//     in a standalone channel. We derive the true author from the store's accounts.
 //   - `ch-svc-compass` also carries a threaded text exchange (msg-c1 root +
 //     msg-c2/msg-c3 replies) plus the ask, so both mounts render real threads —
 //     the "threads render identically" leg has content to compare.
@@ -87,7 +87,7 @@ const AUTHOR_HANDLE = (() => {
 			`fixture ask author ${STANDALONE_ASK.authorAccountId} has no account — cannot resolve the hint handle`,
 		);
 	}
-	return account.handle; // "livingstone" for ask-s4-integration
+	return account.handle; // "compass-server" for ask-s4-integration
 })();
 
 // Mount TopicView over a real store through the app's StoreContext (index.tsx

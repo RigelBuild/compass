@@ -159,13 +159,13 @@ describe("topicsOf", () => {
 		expect(grouped.length).toBe(3); // no duplication
 	});
 
-	// Fixture ground truth: ch-svc-compass carries two topics (top-compass-t3a,
+	// Fixture ground truth: ch-svc-compass carries two topics (top-compass-acp,
 	// top-compass-integration). Derived from the stub so a reshuffle can't stale
 	// the assertion.
 	test("fixture: ch-svc-compass groups its two topics", () => {
 		const groups = topicsOf(STUB_TOPICS, STUB_MESSAGES, "ch-svc-compass");
 		expect(new Set(groups.map((g) => g.topic.id))).toEqual(
-			new Set(["top-compass-t3a", "top-compass-integration"]),
+			new Set(["top-compass-acp", "top-compass-integration"]),
 		);
 	});
 
@@ -208,22 +208,25 @@ describe("topicSummary", () => {
 		});
 	});
 
-	// The fixture topic (top-compass-t3a): three messages, cook(10)/livingstone(24)/
-	// cook(27). messageCount counts messages; participantIds are the DISTINCT
-	// authors in first-post order (cook posted first, then livingstone);
+	// The fixture topic (top-compass-acp): three messages, compass-ui(10)/compass-server(24)/
+	// compass-ui(27). messageCount counts messages; participantIds are the DISTINCT
+	// authors in first-post order (compass-ui posted first, then compass-server);
 	// lastActivityAtUnixMs is the max post time. Derived from topicsOf over the
 	// stub so a fixture reshuffle can't stale it.
 	test("fixture topic: count, distinct participants in first-post order, max time", () => {
 		const group = topicsOf(STUB_TOPICS, STUB_MESSAGES, "ch-svc-compass").find(
-			(g) => g.topic.id === "top-compass-t3a",
+			(g) => g.topic.id === "top-compass-acp",
 		);
-		if (!group) throw new Error("fixture topic top-compass-t3a not found");
+		if (!group) throw new Error("fixture topic top-compass-acp not found");
 		const last = group.messages[group.messages.length - 1];
 
 		const summary = topicSummary(group);
 
 		expect(summary.messageCount).toBe(3);
-		expect(summary.participantIds).toEqual(["acc-cook", "acc-livingstone"]);
+		expect(summary.participantIds).toEqual([
+			"acc-compass-ui",
+			"acc-compass-server",
+		]);
 		expect(summary.lastActivityAtUnixMs).toBe(last.atUnixMs);
 	});
 

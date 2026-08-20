@@ -81,23 +81,27 @@ async function mountLive(fake: FakeComms): Promise<{
 describe("Bridge — live roster (T4/T5)", () => {
 	// Bridge defaults to the Issues tab + swimlane mode, so the gutter renders
 	// immediately. A live agent whose account id matches an active STUB_ISSUES
-	// assignee (acc-cook) partitions into a Bridge swimlane; its gutter row
+	// assignee (acc-compass-ui) partitions into a Bridge swimlane; its gutter row
 	// carries the joined account's handle. This can only be green if the board
-	// reads the live `store.agents()` — STUB_AGENTS has no acc-cook live join.
+	// reads the live `store.agents()` — STUB_AGENTS has no acc-compass-ui live join.
 	test("a Bridge swimlane renders a gutter row for a live agent", async () => {
 		const fake = createFakeComms({
-			accounts: [wireUserAccount(CALLER), wireAgentAccount("acc-cook")],
-			roster: [wireRosterEntry("acc-cook", AgentPresence.WORKING, "cooking")],
+			accounts: [wireUserAccount(CALLER), wireAgentAccount("acc-compass-ui")],
+			roster: [
+				wireRosterEntry("acc-compass-ui", AgentPresence.WORKING, "cooking"),
+			],
 		});
 
 		const { store, container } = await mountLive(fake);
 
-		// The live join produced the acc-cook agent (not STUB_AGENTS).
-		expect(store.agents().map((a) => a.account.id)).toContain("acc-cook");
+		// The live join produced the acc-compass-ui agent (not STUB_AGENTS).
+		expect(store.agents().map((a) => a.account.id)).toContain("acc-compass-ui");
 
 		// It partitions into a Bridge swimlane gutter row carrying its handle.
 		const gutter = container.querySelector<HTMLButtonElement>(".bridge-lane");
 		expect(gutter).not.toBeNull();
-		expect(gutter?.querySelector(".g-name")?.textContent).toBe("acc-cook");
+		expect(gutter?.querySelector(".g-name")?.textContent).toBe(
+			"acc-compass-ui",
+		);
 	});
 });

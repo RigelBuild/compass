@@ -10,11 +10,11 @@ import { test } from "@playwright/test";
 // and pins determinism (animations disabled, css-scaled raster, fonts settled)
 // so the artifact is byte-stable across same-box runs.
 //
-// A real stub agent id (acc-cook) drives the /#/agent/:agentId route; it is
-// defined in src/stub-data.ts (STUB_AGENTS).
+// A real stub agent id (acc-compass-ui) drives the /#/agent/:agentId route; it
+// is defined in src/stub-data.ts (STUB_AGENTS).
 
 const SCREENS = "e2e/__screens__";
-const AGENT_ID = "acc-cook";
+const AGENT_ID = "acc-compass-ui";
 
 test.describe("visual smoke — legacy-palette baseline", () => {
 	test("bridge board", async ({ page }) => {
@@ -35,7 +35,7 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		await page.locator(".bridge").waitFor({ state: "visible" });
 		// Drive the real interaction path so the PR pane actually renders: the
 		// pane is shown only when an issue is selected AND the PR tab is active.
-		// Select the cook issue (SEA-1022 / PR #453) — its review set carries a
+		// Select the compass-ui issue (SEA-1022 / PR #453) — its review set carries a
 		// `commented` verdict, so the shot captures the recolored review-pending
 		// (faint-grey) chip alongside the approved chips. That review-pending
 		// value is the only one with a visual delta in this PR: approved/changes

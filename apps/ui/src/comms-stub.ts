@@ -349,7 +349,12 @@ export const STUB_CHANNELS: Channel[] = [
 		name: "svc.compass",
 		groupId: "grp-matt",
 		kind: "channel",
-		memberAccountIds: [MATT, "acc-livingstone", "acc-cook", "acc-ross"],
+		memberAccountIds: [
+			MATT,
+			"acc-compass-server",
+			"acc-compass-ui",
+			"acc-compass-comms",
+		],
 		topic: "The compass service lane — seam reviews, contract rulings.",
 		membership: "subscribed",
 		unread: 5,
@@ -378,10 +383,10 @@ export const STUB_CHANNELS: Channel[] = [
 		postPolicy: "open",
 	},
 	{
-		id: "dm-cook-ross",
-		name: "cook, ross",
+		id: "dm-ui-server",
+		name: "compass-ui, compass-server",
 		kind: "group_dm",
-		memberAccountIds: [MATT, "acc-cook", "acc-ross"],
+		memberAccountIds: [MATT, "acc-compass-ui", "acc-compass-server"],
 		membership: "subscribed",
 		postPolicy: "open",
 	},
@@ -410,11 +415,11 @@ export const STUB_TOPICS: Topic[] = [
 		archived: false,
 	},
 	{
-		id: "top-compass-t3a",
+		id: "top-compass-acp",
 		channelId: "ch-svc-compass",
-		name: "T3a review",
+		name: "ACP seam review",
 		createdAtUnixMs: min(9),
-		createdByAccountId: "acc-cook",
+		createdByAccountId: "acc-compass-ui",
 		archived: false,
 	},
 	{
@@ -422,23 +427,23 @@ export const STUB_TOPICS: Topic[] = [
 		channelId: "ch-svc-compass",
 		name: "integration CI",
 		createdAtUnixMs: min(30),
-		createdByAccountId: "acc-livingstone",
+		createdByAccountId: "acc-compass-server",
 		archived: false,
 	},
 	{
-		id: "top-dm-livingstone",
-		channelId: "dm-livingstone",
+		id: "top-dm-compass-server",
+		channelId: "dm-compass-server",
 		name: "general",
 		createdAtUnixMs: min(14),
 		createdByAccountId: MATT,
 		archived: false,
 	},
 	{
-		id: "top-dm-cook",
-		channelId: "dm-cook",
+		id: "top-dm-compass-ui",
+		channelId: "dm-compass-ui",
 		name: "general",
 		createdAtUnixMs: min(49),
-		createdByAccountId: "acc-cook",
+		createdByAccountId: "acc-compass-ui",
 		archived: false,
 	},
 	{
@@ -478,40 +483,40 @@ export const STUB_MESSAGES: Message[] = [
 		],
 	},
 
-	// ── #svc.compass / T3a review (a multi-message topic exchange) ──
+	// ── #svc.compass / ACP seam review (a multi-message topic exchange) ──
 	{
 		id: "msg-c1",
-		topicId: "top-compass-t3a",
-		authorAccountId: "acc-cook",
+		topicId: "top-compass-acp",
+		authorAccountId: "acc-compass-ui",
 		atUnixMs: min(10),
 		blocks: [
 			{
 				kind: "text",
-				text: "@compass T3a #727 fix-head is up for your seam pass at 527ec845a — sumtype fix + streaming door coverage + the classification omission guard.",
+				text: "@compass the ACP session pane fix-head is up for your seam pass at 527ec845a — reconnect cursor + streaming-frame coverage + the empty-trace guard.",
 			},
 		],
 	},
 	{
 		id: "msg-c2",
-		topicId: "top-compass-t3a",
-		authorAccountId: "acc-livingstone",
+		topicId: "top-compass-acp",
+		authorAccountId: "acc-compass-server",
 		atUnixMs: min(24),
 		blocks: [
 			{
 				kind: "text",
-				text: "Seam pass DONE, gate GREEN at 527ec845a. Verified with teeth: scope-clean, admin-gate interceptor unit test, CI-exhaustiveness proven to bite both ways. Nothing owed back.",
+				text: "Seam pass DONE, gate GREEN at 527ec845a. Verified with teeth: scope-clean, session-reload unit test, CI-exhaustiveness proven to bite both ways. Nothing owed back.",
 			},
 		],
 	},
 	{
 		id: "msg-c3",
-		topicId: "top-compass-t3a",
-		authorAccountId: "acc-cook",
+		topicId: "top-compass-acp",
+		authorAccountId: "acc-compass-ui",
 		atUnixMs: min(27),
 		blocks: [
 			{
 				kind: "text",
-				text: "Thanks — that's the last review surface on T3a. Holding the lane at Matt's merge gate.",
+				text: "Thanks — that's the last review surface on the pane. Holding the lane at Matt's merge gate.",
 			},
 		],
 	},
@@ -520,7 +525,7 @@ export const STUB_MESSAGES: Message[] = [
 	{
 		id: "msg-c4",
 		topicId: "top-compass-integration",
-		authorAccountId: "acc-livingstone",
+		authorAccountId: "acc-compass-server",
 		atUnixMs: min(33),
 		blocks: [
 			{
@@ -531,7 +536,7 @@ export const STUB_MESSAGES: Message[] = [
 						{
 							questionId: "q1",
 							question:
-								"Q2 (live-NATS integration CI) — new sub-issue, or fold into SEA-1243?",
+								"Q2 (live-daemon integration CI) — new sub-issue, or fold into SEA-1023?",
 							allowMultiple: false,
 							chosenOptionIds: [],
 							options: [
@@ -539,12 +544,12 @@ export const STUB_MESSAGES: Message[] = [
 									id: "opt-new",
 									label: "New sub-issue",
 									description:
-										"Test-infra is orthogonal to the port lane; tracks the ci-build dep cleaner.",
+										"Test-infra is orthogonal to the ACP lane; tracks the ci-build dep cleaner.",
 								},
 								{
 									id: "opt-fold",
-									label: "Fold into SEA-1243",
-									description: "Keep it under the one comms/runner port lane.",
+									label: "Fold into SEA-1023",
+									description: "Keep it under the one ACP session lane.",
 								},
 							],
 						},
@@ -555,22 +560,22 @@ export const STUB_MESSAGES: Message[] = [
 		],
 	},
 
-	// ── DM: matt <-> livingstone ──
+	// ── DM: matt <-> compass-server ──
 	{
 		id: "msg-dm1",
-		topicId: "top-dm-livingstone",
-		authorAccountId: "acc-livingstone",
+		topicId: "top-dm-compass-server",
+		authorAccountId: "acc-compass-server",
 		atUnixMs: min(15),
 		blocks: [
 			{
 				kind: "text",
-				text: "The channel-model amendment for #767 is nearly firm — I'll ping franklin when the membership contract carrier settles.",
+				text: "The session-reload contract for #1023 is nearly firm — I'll ping compass-comms when the membership carrier settles.",
 			},
 		],
 	},
 	{
 		id: "msg-dm2",
-		topicId: "top-dm-livingstone",
+		topicId: "top-dm-compass-server",
 		authorAccountId: MATT,
 		atUnixMs: min(18),
 		blocks: [
@@ -578,11 +583,11 @@ export const STUB_MESSAGES: Message[] = [
 		],
 	},
 
-	// ── DM: matt <-> cook ──
+	// ── DM: matt <-> compass-ui ──
 	{
 		id: "msg-dm-f1",
-		topicId: "top-dm-cook",
-		authorAccountId: "acc-cook",
+		topicId: "top-dm-compass-ui",
+		authorAccountId: "acc-compass-ui",
 		atUnixMs: min(50),
 		blocks: [
 			{
@@ -593,14 +598,14 @@ export const STUB_MESSAGES: Message[] = [
 	},
 	{
 		id: "msg-dm-f2",
-		topicId: "top-dm-cook",
-		authorAccountId: "acc-cook",
+		topicId: "top-dm-compass-ui",
+		authorAccountId: "acc-compass-ui",
 		atUnixMs: min(52),
 		blocks: [
 			{
 				kind: "ask",
 				ask: {
-					askId: "ask-cook-layout",
+					askId: "ask-ui-layout",
 					questions: [
 						{
 							questionId: "q1",
@@ -637,7 +642,7 @@ export const STUB_MESSAGES: Message[] = [
 		blocks: [
 			{
 				kind: "text",
-				text: "Fleet snapshot: cook + livingstone in review, cousteau waiting on a merge gate. No collisions on the compass-ui zone right now.",
+				text: "Fleet snapshot: compass-ui + compass-server in review, compass-native waiting on a merge gate. No collisions on the compass-ui zone right now.",
 			},
 		],
 	},
@@ -679,7 +684,7 @@ export const STUB_MESSAGES: Message[] = [
 						{
 							questionId: "q1",
 							question:
-								"cousteau's gate just cleared — put him on the flaky-CI lane next, or pull him onto the compass-ui review backlog?",
+								"compass-native's gate just cleared — put it on the flaky-CI lane next, or pull it onto the compass-ui review backlog?",
 							allowMultiple: false,
 							chosenOptionIds: [],
 							options: [
