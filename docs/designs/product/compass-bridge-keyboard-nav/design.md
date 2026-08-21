@@ -192,9 +192,17 @@ model violates this three ways, all reconciled here:
    (foundation D5, `compass-ux-foundation/design.md:450-451`) and the board
    has nothing to expand — so the board group maps it to the cross-link.
    On a card with no cross-link chip (no PR on the issues tab, no linked issue
-   on the PRs tab), `Space` is a no-op. Because nothing visually announces the
-   `Space` binding, the cursor card carries `aria-keyshortcuts` naming it, so a
-   screen-reader focus-mode user is told the cross-link is reachable.
+   on the PRs tab), `Space` does nothing visible — but it is still **claimed**
+   by the board group: the handler reports handled and the dispatcher calls
+   `preventDefault` (T1), so a chipless `Space` neither selects the card nor
+   scrolls the panel (every stop is a native `<button>`, `IssueCard.tsx:50`,
+   whose native `Space` would otherwise fire `onClick`/scroll). Decline
+   (return `false`, fall through to the next tier) is reserved strictly for a
+   chord the group does not own — the `Enter → comms.send` deferral, T1/RD-2 —
+   never for a claimed chord whose action is a no-op. Because nothing visually
+   announces the `Space` binding, the cursor card carries `aria-keyshortcuts`
+   naming it, so a screen-reader focus-mode user is told the cross-link is
+   reachable.
 
 **Focus vs selection.** The cursor is focus, not selection — moving the cursor
 does NOT call `selectIssue` (Enter does). `data-selected` (the accent rule,
@@ -222,8 +230,10 @@ contract is what "a11y verified" (the RIG-2130 acceptance) tests in T4.
 per `prGroups()` row, `PR_LANES` columns, `dim` empty cells
 (`Bridge.tsx:291-368`) — with two PR-specific rules the stop model must state
 (they sit in T3's contract). First, a PR row is an `(issue, pr)` pair and an
-issue with two open PRs yields two rows sharing `issue.id`
-(`board.ts:155-169`), so a PR card's **stop id is composite**
+issue with two non-closed PRs (open + merged, per DL-196's board-ified PRs
+tab) yields two rows sharing `issue.id` (`prBoardRows`, `board.ts:159-165`,
+whose `flatMap` keeps every `forgeState !== "closed"` PR), so a PR card's
+**stop id is composite**
 (`${issue.id}::${pr.repo}#${pr.number}`), never the bare issue id — otherwise
 the cursor is ambiguous between the two rows. (The same duplicate-id latent bug
 already exists in selection rendering — `selected={row.issue.id ===
@@ -240,8 +250,10 @@ cursor to the tab's selected/first stop.
 
 ### The empty-board message
 
-When the active tab has zero stops — issues tab: `activeIssues(store.issues())`
-empty (`board.ts:39-41`); PRs tab: `prGroups()` yields no rows — the grid is
+When the active tab renders **zero stops** — the gate is the built stop list
+being empty (`boardStops(...).length === 0`, T3), not `activeIssues` emptiness
+directly, so both board modes agree (issues tab: `activeIssues(store.issues())`
+empty, `board.ts:39-41`; PRs tab: `prGroups()` yields no rows) — the grid is
 replaced by a single centered `.bridge-empty` message on the panel surface
 (`--cx-bg-panel`), per `surfaces.md:241-245`: "A board with no issues at all
 renders a single centered empty-state message on the panel surface. The
@@ -258,6 +270,16 @@ command palette."):
 The empty board registers no roving stops; Tab passes through the toolbar's
 existing stops. Empty-state text is faint (`--cx-fg-dim` vocabulary, same as
 `.tree-empty`), never a placeholder card.
+
+Gating on the rendered stop count (not `activeIssues` emptiness) also keeps
+the message exact in one swimlane edge: `boardAgents` (`board.ts:53-59`)
+admits an agent only if it holds an active issue assigned to it, so active
+issues with a `null` assignee render in status mode but nowhere in swimlane
+mode — a board whose only active issues are all unassigned yields zero
+swimlane stops while `activeIssues` is non-empty. That unassigned-in-swimlane
+drop is pre-existing Bridge behavior, out of this lane's scope; gating on the
+stop count means the empty-board message tracks what is actually reachable in
+either mode rather than inheriting the quirk.
 
 ## Alternatives considered
 
@@ -347,22 +369,35 @@ normalizes the event to a chord string (`Mod` per `resolveChord`,
    dispatcher disambiguates by **focused group**. This refines, not contradicts,
    the KeymapEntry doc's own framing that the Lists block is "resolved against
    the active roving group at dispatch" (`keymap.ts:45-48`).
-2. **Scoped tier** — else, a `when`-scoped entry whose zone is active wins (e.g.
-   `comms.send` when the comms composer, not a roving group, holds focus).
+2. **Scoped tier** — else, a `when`-scoped entry whose zone is active wins over
+   a window-global one (the frozen D5 ranking, `keymap.ts:48-51`). Its live
+   consumers are zone-scoped commands on a non-input focus target; the one
+   scoped family in today's keymap, `comms.*` (`when:"main"`), does not route
+   here — the comms composer handles its own keys locally (see the guard note
+   below).
 3. **Global tier** — else, a window-global unscoped entry fires anywhere
    (`view.bridge`/`palette.open`/the zone chords).
 
-A matched entry whose command is unregistered, or whose command handler returns
-`false` (declines), **falls through** to the next tier — so the board's `Enter`
-keeps working before the comms lane ever registers `comms.send`, and starts
-deferring correctly once it does. **`preventDefault`/`stopPropagation` on any
-handled group-relative chord**: every stop is a native `<button>`
-(`IssueCard.tsx:50`, `Bridge.tsx:59,244`), so an unsuppressed `Enter` fires
-native click AND the command (double-select) and `Space` fires the cross-link
-command AND native click — the dispatcher suppresses native activation on
-handled chords. Editable-target guard: keys without modifiers (arrows, Enter,
-Space, Home/End) never fire while `event.target` is an
-input/textarea/contenteditable. Register `view.bridge` → `store.showBridge()` as
+A matched entry whose command is unregistered, or whose handler returns
+`false` (declines), **falls through** to the next tier — so a chord the active
+board group does not claim (e.g. `Mod+B` while the board is focused) reaches the
+global `view.bridge`, and a claimed chord whose command is not yet registered
+does not swallow it. Decline/`false` means "this tier does not own the chord's
+action", never a claimed no-op (a claimed no-op reports handled — §cursor model,
+Space). **`preventDefault`/`stopPropagation` on any handled group-relative
+chord**: every stop is a native `<button>` (`IssueCard.tsx:50`,
+`Bridge.tsx:59,244`), so an unsuppressed `Enter` fires native click AND the
+command (double-select) and `Space` fires the cross-link command AND native
+click — the dispatcher suppresses native activation on handled chords.
+Editable-target guard: keys without modifiers (arrows, Enter, Space, Home/End)
+never fire while `event.target` is an input/textarea/contenteditable — so the
+one `when`-scoped family in today's keymap, `comms.*` (`when:"main"`,
+`keymap.ts:98-100`), is not dispatched through tier-2 at all: the comms composer
+is a text `<input>` (`ChannelView.tsx:316`) that handles `Enter`/`Shift+Enter`
+in its own `onKeyDown` (`ChannelView.tsx:322-327`), so comms send/newline stay
+composer-local, and board `Enter` (tier-1, board focused) vs comms `Enter`
+(composer-local, board unfocused) are focus-exclusive, never contending. Register
+`view.bridge` → `store.showBridge()` as
 the first command; install at the App root (`App.tsx:35-42`, where the store's
 router seam already binds).
 New files `apps/ui/src/keyboard/registry.ts`, `keyboard/dispatch.ts`.
@@ -404,7 +439,8 @@ traversal over board data — no DOM, no Solid. Stop list = gutter heads
 (swimlane mode, column −1) + cards in (row, col, indexInCell) order, both tabs.
 **Stop ids:** an issues-tab card's id is `issue.id`; a **PRs-tab card's id is
 composite** (`${issue.id}::${pr.repo}#${pr.number}`) because an issue with two
-open PRs yields two rows sharing `issue.id` (`board.ts:155-169`) and a bare id
+non-closed PRs yields two rows sharing `issue.id` (`prBoardRows`,
+`board.ts:159-165`) and a bare id
 would be an ambiguous cursor. The trailing **Unassigned group** (`agent: null`,
 `board.ts:172-175`; a non-interactive `<div>`, `Bridge.tsx:314-317`) contributes
 **no gutter stop** — the gutter track skips that row and `ArrowLeft` in it clamps
@@ -525,12 +561,17 @@ deferrals.
   **Decision:** the dispatcher (T1) resolves a chord in three tiers — (1) an
   **active roving group** claims its group-relative chords first (the board's
   `Enter`/`Shift+Enter`/`Space` fire board commands while the board is the
-  focused group), (2) else a `when`-scoped entry whose zone is active
-  (`comms.send` fires while the comms composer holds focus), (3) else a
-  window-global entry — with **fall-through**: a matched command that is
-  unregistered or declines (returns `false`) falls to the next tier, so the
-  board's `Enter` works today and auto-defers to `comms.send` once the comms
-  lane registers it. This reads the frozen D5 "scoped wins while its zone is
+  focused group), (2) else a `when`-scoped entry whose zone is active wins over
+  a window-global one, (3) else a window-global entry — with **fall-through**: a
+  matched command that is unregistered or declines (returns `false`) falls to
+  the next tier, so a chord the board group does not claim reaches the global
+  binding. The board↔comms `Enter` collision the whole-zone rule could not
+  resolve is resolved by **focus-exclusivity**: board `Enter` is tier-1 while
+  the board is the focused group, and comms `Enter` is handled composer-locally
+  (the comms composer is a text `<input>` with its own `onKeyDown`,
+  `ChannelView.tsx:316,322-327`) and never dispatched through tier-2 anyway (the
+  editable-target guard, T1). The two are focus-exclusive, so they never
+  contend. This reads the frozen D5 "scoped wins while its zone is
   active" ranking as *focused-surface* precedence, not literal whole-zone
   precedence, and touches no frozen contract. (Matt ratified the three-tier
   model.) The rejected alternatives — a literal whole-zone rule forcing the
