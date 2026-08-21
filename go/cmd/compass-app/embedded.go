@@ -44,7 +44,7 @@ import (
 // (docs/designs/platform/compass-agent-image-publish.md §Ref); the native app
 // does not bundle the image (DL-112) — compass-stack podman-pulls it from GHCR
 // at first run.
-const defaultAgentImage = "ghcr.io/sealedsecurity/compass-agent:latest"
+const defaultAgentImage = "ghcr.io/rigelbuild/compass-agent:latest"
 
 // The compass-stack CLI flag names the embedded pipeline drives. Shared by
 // stackUpArgs and stackDownArgs so the two argv builders cannot drift on a flag

@@ -44,7 +44,7 @@ const embeddedTestTimeout = 5 * time.Second
 var baseParams = embeddedParams{
 	socket:   "/run/compass/server.sock",
 	stateDir: "/state/compass",
-	image:    "ghcr.io/sealedsecurity/compass-agent:latest",
+	image:    "ghcr.io/rigelbuild/compass-agent:latest",
 }
 
 // stubPipeline builds an embeddedPipeline whose three seams are deterministic
@@ -602,7 +602,7 @@ func classifyDeps() preflight.Deps {
 }
 
 var classifyParams = preflight.Params{
-	AgentImage:  "ghcr.io/sealedsecurity/compass-agent:latest",
+	AgentImage:  "ghcr.io/rigelbuild/compass-agent:latest",
 	DatabaseDSN: "host=/state/compass/postgres/sock port=5432 dbname=compass sslmode=disable",
 }
 
@@ -854,6 +854,15 @@ func TestResolveImage(t *testing.T) {
 		t.Setenv("COMPASS_AGENT_IMAGE", "")
 		if got := resolveImage(""); got != defaultAgentImage {
 			t.Errorf("got %q, want defaultAgentImage %q", got, defaultAgentImage)
+		}
+	})
+	// Pin the default to the canonical live GHCR owner. This guards the value
+	// itself (not just that resolveImage returns it): the old
+	// ghcr.io/sealedsecurity/compass-agent owner 403s post org-rename, so a
+	// shipped app that fell back to it could not pull its agent image (RIG-1967).
+	t.Run("default is the canonical rigelbuild ref", func(t *testing.T) {
+		if defaultAgentImage != "ghcr.io/rigelbuild/compass-agent:latest" {
+			t.Errorf("defaultAgentImage = %q, want the canonical rigelbuild ref", defaultAgentImage)
 		}
 	})
 }
