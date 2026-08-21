@@ -125,6 +125,13 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	// per agent instance, so no two processes ever collide.
 	const nonce = randomUUID();
 	let seq = 0;
+	// One-shot terminal latch for drain(). The old Set<Promise> drain was
+	// idempotent (snapshot-and-await + idempotent spine.drain); the Effect drain
+	// disposes the runtime and closes fiberScope, so a second call would run
+	// FiberSet.awaitEmpty / dispose on an already-disposed runtime and throw.
+	// Guard so a repeat drain is a no-op, preserving the old idempotent contract
+	// (mirrors publish-spine's `ended` flag).
+	let drained = false;
 
 	// Unwrap the original error from an Effect failure Cause so the give-up seam
 	// hands the caller the real ConnectError, not an Effect FiberFailure wrapper
@@ -240,18 +247,26 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 		},
 
 		async drain(): Promise<void> {
-			// Await every forked durable commit first (FiberSet.awaitEmpty), so no
-			// transcript frame is abandoned uncommitted — the Effect equivalent of the
-			// old snapshot-and-await over the in-flight promise set.
-			await runtime.runPromise(FiberSet.awaitEmpty(inflight));
-			// Then flush + close the Publish spine: any queued priority frame (the
-			// terminal STOPPED) goes ahead of the trace backlog.
-			await spine.drain();
-			// Terminal for the sink (post-drain enqueues are no-ops by contract):
-			// close the FiberSet's scope and dispose the transitional runtime so no
-			// runtime leaks across the T2–T4 transitional state (design record T2/T5).
-			await runtime.runPromise(Scope.close(fiberScope, Exit.void));
-			await runtime.dispose();
+			// Idempotent: a second drain is a no-op (the first disposed the runtime).
+			if (drained) return;
+			drained = true;
+			try {
+				// Await every forked durable commit first (FiberSet.awaitEmpty), so no
+				// transcript frame is abandoned uncommitted — the Effect equivalent of
+				// the old snapshot-and-await over the in-flight promise set.
+				await runtime.runPromise(FiberSet.awaitEmpty(inflight));
+				// Then flush + close the Publish spine: any queued priority frame (the
+				// terminal STOPPED) goes ahead of the trace backlog.
+				await spine.drain();
+			} finally {
+				// Terminal for the sink (post-drain enqueues are no-ops by contract):
+				// close the FiberSet's scope and dispose the transitional runtime so no
+				// runtime leaks across the T2–T4 transitional state (design record
+				// T2/T5). In a `finally` so a future rejecting awaitEmpty/spine.drain
+				// cannot strand the runtime undisposed.
+				await runtime.runPromise(Scope.close(fiberScope, Exit.void));
+				await runtime.dispose();
+			}
 		},
 	};
 }
