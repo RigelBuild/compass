@@ -32,6 +32,12 @@ projects:
   # image build is in the gate — affected-detection runs it only on PRs that
   # touch the image closure (see agent-image/moon.yml).
   compass-agent-image: 'agent-image'
+  # The Compass native-app release bundle: a heavy nix build (realises the
+  # WebKitGTK cc/pkg-config closure) that stages the versioned tarball. Same
+  # affected-detection posture as compass-agent-image — registered here so the
+  # bundle build rides the gate per-PR when a packaging input changes, and the
+  # unconditional main + nightly full sweep (see app-bundle/moon.yml).
+  compass-app-bundle: 'app-bundle'
   # The toolchain version-parity gate: asserts CI's PATH holds the dev shell's
   # toolchain, and carries the unit tests for its own comparison logic.
   toolchain-parity: 'tools/toolchain'

@@ -1,0 +1,67 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# compass-app-bundle (app-bundle/): builds the versioned Compass native-app
+# release tarball (compass-app-<version>-linux-amd64.tar.gz) — the A1/A2 bundle
+# of the gtk3 shell, its four pure-Go sidecars, the pinned postgres tooling, and
+# the UI dist. build.sh owns the realize/build/stage/sanity/tar pipeline.
+#
+# A heavy-nix-build-as-moon-project, mirroring agent-image/: the build realizes
+# the WebKitGTK cc/pkg-config closure, so it is registered in .moon/workspace.yml
+# (T6.4) to ride the two-speed CI — affected-scheduled per-PR when a packaging
+# input changes, unconditional on main + nightly.
+layer: 'application'
+language: 'nix'
+
+workspace:
+  inheritedTasks:
+    # Not a bun package, so the tag-bun `install` must never run here; `lint`
+    # and `format` are whole-repo tasks on the root project, never inherited.
+    # Mirrors the sibling nix project agent-image/moon.yml:27-31.
+    exclude: ['install', 'lint', 'format']
+
+tasks:
+  build:
+    # build.sh realizes the pinned nix outputs, links the five binaries, stages
+    # the A2 layout, runs the sanity gate, and tars the bundle. Runs from
+    # app-bundle/ (moon's default project cwd).
+    #
+    # cache:false — nix owns its store-path caching and the git-sha stamp makes
+    # every commit a distinct artifact; moon must not false-green a build it did
+    # not re-run (the same posture agent-image/moon.yml:42-43 takes).
+    command: 'bash build.sh'
+    deps: ['compass-ui:build']
+    options:
+      cache: false
+      runInCI: true
+    outputs:
+      - 'compass-app-*-linux-amd64.tar.gz'
+    # The packaging closure. `/go/**` covers every bundled binary's source
+    # (cmd + internal + server/gen/events), excluding tests; the UI dist is
+    # covered through the compass-ui:build deps edge (no /apps/ui/src/** belt —
+    # moon schedules dependents of affected projects). A leading `/` is
+    # workspace-root-relative; the bare globs are this project's own tree.
+    # gtk-e2e-env.nix is realized directly by build.sh (the cc/pkg-config env
+    # every ELF is rpathed against); gtk-closure.nix + devenv.lock are pulled in
+    # transitively (imported/read by the nix files) and listed explicitly
+    # because moon's file-based affected-detection does not follow nix imports;
+    # LICENSE is copied into the artifact — all first-class inputs so a change
+    # to any of them reschedules the bundle under per-PR affected detection.
+    inputs:
+      - '/go/**'
+      - '!/go/**/*_test.go'
+      - '/go/go.mod'
+      - '/go/go.sum'
+      - '/tools/toolchain/gtk-closure.nix'
+      - '/tools/toolchain/gtk-e2e-env.nix'
+      - '/tools/toolchain/versions/go.nix'
+      - '/devenv.lock'
+      - '/LICENSE'
+      - 'build.sh'
+      - 'bundle-env.nix'
+      - 'compass.desktop'
+
+  ci:
+    deps: ['build']
+    options:
+      cache: false
+      runInCI: true

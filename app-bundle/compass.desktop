@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Compass
+Comment=Compass native desktop app
+Exec=compass-app
+Icon=compass
+Terminal=false
+Categories=Development;

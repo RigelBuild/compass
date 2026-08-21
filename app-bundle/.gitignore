@@ -1,0 +1,8 @@
+# The nix build GC-root symlink build.sh keeps under app-bundle/ so the closure
+# (rpaths + postgres-tool bin/ symlinks) survives nix-collect-garbage.
+/result
+/result-*
+
+# The versioned tarball artifact and the staged bundle dir build.sh produces.
+/*.tar.gz
+/compass-app-*-linux-amd64/
