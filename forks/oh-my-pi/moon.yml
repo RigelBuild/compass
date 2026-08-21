@@ -17,11 +17,11 @@
 # bun workspace, which globs only packages/* and apps/*), so its install never
 # touches the root node_modules.
 #
-# BUN PIN DIVERGENCE: the repo pins bun 1.3.13 (tools/toolchain/versions/bun.nix);
+# BUN PIN DIVERGENCE: the repo pins bun 1.4.0 (tools/toolchain/versions/bun.nix);
 # the fork declares "packageManager": "bun@1.3.14" and upstream CI installs
 # bun-v1.3.14. The gate
-# passes on 1.3.13 because the fork's bun.lock is lockfileVersion 1, which
-# 1.3.13 reads — but the pins are not the same and nothing enforces the fork's.
+# passes on 1.4.0 because the fork's bun.lock is lockfileVersion 1, which
+# 1.4.0 still reads — but the pins are not the same and nothing enforces the fork's.
 # A future import must re-check whether the root pin has to move with the fork.
 #
 # COVERAGE, STATED PLAINLY: this gate covers the TypeScript surface only.
