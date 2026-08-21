@@ -10,10 +10,12 @@
 // TRUE behavior and says so in its header — the record is a spec, and a spec that
 // misreads the library is a bug the executor surfaces, not silently honors.
 //
-// Timing cases use `TestClock` virtual time (never wall-clock sleeps): a retry
-// ladder is asserted by advancing the clock to each boundary and observing the
-// attempt count, so load can never perturb the assertion and there is no flake to
-// paper over with a re-run.
+// The retry-ladder case uses `TestClock` virtual time (never a wall-clock
+// sleep): the ladder is asserted by advancing the clock to each boundary and
+// observing the attempt count, so load can never perturb the assertion and there
+// is no flake to paper over with a re-run. The timeout case uses a short real
+// deadline over a never-resolving promise — its outcome (a timeout) is the only
+// possible one regardless of load, so it is deterministic without virtual time.
 
 import { expect, test } from "bun:test";
 import {
@@ -37,7 +39,7 @@ import {
 // one runtime per transport, promise seams cross it via runPromise, and the
 // synchronous emit() path crosses it via runSync. Pin that a bare runtime runs an
 // Effect both ways and disposes cleanly. Mutation check: a runtime that never ran
-// the Effect would leave `ran` false.
+// the Effect would not yield 42 (the +1 map never fired) or "sync".
 test("ManagedRuntime runs Effects across both the promise and the sync seam", async () => {
 	const runtime = ManagedRuntime.make(Layer.empty);
 	const viaPromise = await runtime.runPromise(
