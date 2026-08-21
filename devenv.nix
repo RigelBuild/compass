@@ -141,7 +141,27 @@ in
   # same reason as xvfb-run: the toolchain-parity gate resolves every bare attr
   # in that literal on macOS too, where chromium does not exist. CI's dev-smoke
   # step provisions it via tools/toolchain/chromium-e2e-env.nix, not this shell.
-  ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.chromium ];
+  ++ lib.optionals pkgs.stdenv.isLinux [ pkgs.chromium ]
+  # skopeo-nix2container: the RigelBuild/nix2container fork's patched skopeo,
+  # which understands the `nix:` transport (reads a nix2container image spec
+  # directly). The agent-image publish lane (agent-image/publish.sh, the
+  # publish-agent-image workflow, tools/agent-image-env-gate) drives it to
+  # inspect and copy the built image; installing it HERE, on the dev shell the
+  # publish job enters, puts a plain `skopeo` on PATH so those sites invoke it by
+  # name rather than a raw, lockfile-bypassing `nix run` (OQ2 Decision 2). It is
+  # deliberately NOT in agent-image/devenv.nix `packages`: that devenv is the one
+  # the container module bakes into the image via the entrypoint's
+  # `source ${shell.envScript}`, so a package there lands skopeo's ~168 MB
+  # closure in every published agent image — a publish-only tool the running
+  # agent never invokes. This shell is not a container, so nothing bakes it.
+  # Resolved from the `nix2container` input pinned in devenv.lock (one source of
+  # truth for the rev). Linux-only and appended OUTSIDE the parsed `with pkgs`
+  # literal (same reason as xvfb-run/chromium: it is a dotted input reference,
+  # not a bare nixpkgs attr, and the toolchain-parity gate throws on any non-bare
+  # token in that literal).
+  ++ lib.optionals pkgs.stdenv.isLinux [
+    inputs.nix2container.packages.${pkgs.stdenv.system}.skopeo-nix2container
+  ];
 
   env = {
     # moon execs the vendored nix toolchain on PATH (the .moon/workspace.yml

@@ -29,13 +29,15 @@ IMAGE=ghcr.io/rigelbuild/compass-agent
 export REGISTRY_AUTH_FILE
 
 # The fork's patched skopeo understands the `nix:` transport (reads a
-# nix2container image spec directly); stock skopeo does not. It is installed
-# into this devenv (devenv.nix `packages`) from the lockfile-pinned
-# nix2container input — the single source of truth for its rev, no raw
-# nix2container flake ref here — and reached by name through the same devenv the
-# build below runs, so CI (which has only nix) resolves it without a separate
-# devenv install.
-SKOPEO=(nix run path:../forks/devenv#devenv -- shell -- skopeo)
+# nix2container image spec directly); stock skopeo does not. The publish
+# workflow puts it on PATH (resolved from the shared pinned helper
+# tools/toolchain/skopeo-nix2container-env.nix, from the lockfile-pinned
+# nix2container + nixpkgs revs — one source of truth, no raw flake ref), so it
+# is a plain command here. It is NOT in agent-image/devenv.nix: a package there
+# would bake skopeo's closure into the published image via the container
+# entrypoint. Locally, `direnv`/`devenv shell` puts it on PATH from the root
+# devenv.nix `packages` the same way.
+SKOPEO=(skopeo)
 
 log() { printf '>> %s\n' "$*" >&2; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }

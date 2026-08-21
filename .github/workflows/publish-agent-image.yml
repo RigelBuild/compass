@@ -116,6 +116,39 @@ jobs:
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
+      - name: Put the fork's patched skopeo on PATH
+        # The publish lane invokes a plain `skopeo` (the RigelBuild/nix2container
+        # fork's patched build, understanding the `nix:` transport). Resolve it
+        # from the shared pinned helper, tools/toolchain/skopeo-nix2container-env.nix
+        # — which builds the exact derivation the root dev shell installs, from
+        # the nix2container + nixpkgs revisions ../devenv.lock pins (one source of
+        # truth for both revs, no raw nix2container flake ref) — and prepend its
+        # bin/ to PATH, so the login / publish / verify steps below invoke skopeo
+        # by name. This is the same out-of-band `nix build` pattern ci.yml uses
+        # for chromium-e2e-env.nix, and it avoids entering the root dev shell
+        # (whose enterShell banner would pollute a captured store path). skopeo is
+        # deliberately NOT in agent-image/devenv.nix: a package there would bake
+        # its ~168 MB closure into every published image via the container
+        # entrypoint's sourced shell env.
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # `--print-out-paths` prints every output (skopeo ships a `-man` output
+          # too); take the one carrying bin/skopeo, not a fixed line.
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
+          done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
+
       - name: Pin the registry auth file
         # LOAD-BEARING. `skopeo login` and the publish script's `skopeo copy`
         # run as SEPARATE `nix run` processes and must resolve the SAME creds
@@ -131,13 +164,13 @@ jobs:
           # shell — behavior-identical here (GitHub usernames carry no shell
           # metacharacters), but keeps context values off the run: command line.
           ACTOR: ${{ github.actor }}
-        # The fork's patched skopeo understands the `nix:` transport used by the
-        # publish. It is installed into the agent-image devenv (devenv.nix
-        # `packages`, from the lockfile-pinned nix2container input); reach it by
-        # name through the same devenv the build runs, so one skopeo backs the
-        # whole lane and no raw nix2container flake ref lives here.
+        # The root compass dev shell's patched skopeo (bootstrapped onto PATH
+        # above) understands the `nix:` transport the publish uses. It is a plain
+        # command here — one skopeo backs the whole lane, resolved from the
+        # lockfile-pinned nix2container input, and no raw nix2container flake ref
+        # lives in this workflow.
         run: |
-          nix run path:../forks/devenv#devenv -- shell -- skopeo \
+          skopeo \
             login ghcr.io -u "$ACTOR" --password-stdin \
             --authfile "$REGISTRY_AUTH_FILE" <<< "$GITHUB_TOKEN"
 
@@ -157,9 +190,9 @@ jobs:
           ref="docker://ghcr.io/rigelbuild/compass-agent"
           inspect_json="$RUNNER_TEMP/git-inspect.json"
 
-          # Resolvable from GHCR at the immutable tag. skopeo is the fork's
-          # patched build, reached by name through the agent-image devenv.
-          skopeo() { nix run path:../forks/devenv#devenv -- shell -- skopeo "$@"; }
+          # Resolvable from GHCR at the immutable tag. skopeo is the root dev
+          # shell's patched skopeo on PATH (bootstrapped above), understanding
+          # the `nix:` transport.
           skopeo inspect --authfile "$REGISTRY_AUTH_FILE" "$ref:git-$sha12" > "$inspect_json"
 
           # Cheapest platform-contract-regression tripwire.

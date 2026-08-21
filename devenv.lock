@@ -118,6 +118,26 @@
         "type": "github"
       }
     },
+    "nix2container": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1783089182,
+        "narHash": "sha256-zO32ctEp4mox3CJtuqBConUYADw/hGjsS/rEqqWon/k=",
+        "owner": "RigelBuild",
+        "repo": "nix2container",
+        "rev": "8f4a6fd7b10abaeeddff6c4d8bb4908c5123c90c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "RigelBuild",
+        "repo": "nix2container",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "inputs": {
         "nixpkgs-src": "nixpkgs-src"
@@ -158,6 +178,7 @@
       "inputs": {
         "devenv": "devenv",
         "go-overlay": "go-overlay",
+        "nix2container": "nix2container",
         "nixpkgs": "nixpkgs"
       }
     },
