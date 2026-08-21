@@ -122,17 +122,21 @@ type Consumer struct {
 	// (WORKING->READY) or reaches a terminal frame. The value is the ordered set
 	// of message ids held for that author, in post order, so a settle fires them
 	// ascending. A no-frame author death (no settle edge ever enqueues) leaves
-	// its entry here until the next reap: it is reaped in-process on a subsequent
+	// its entry here until it is reaped: the reap happens in-process on the next
 	// Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped), which
-	// drops the entry for every session id whose hub binding was just cleared. So
-	// a no-frame death's entry lives only until a subsequent enroll clears its
-	// session, not until process restart. "Subsequent" (not strictly "the next"):
-	// a Deliver that resolved the author LIVE an instant before enroll cleared the
-	// maps can hold(sess) just after that enroll's reap, re-adding a dead session's
-	// entry that a later enroll reaps — still enroll-bounded, one cycle wider in
-	// that race. Delivery correctness (no-loss) is unaffected either way: the
-	// recipient still receives the message via the reconnect cursor sweep — now
-	// no-loss AND enroll-bounded.
+	// drops the entry for every session id whose hub binding enroll just cleared.
+	// So the common no-frame death is reaped at that next enroll rather than
+	// persisting until process restart. The reap is best-effort, NOT a hard
+	// bound: the reaped set is exactly the session ids bound at enroll time, and a
+	// no-frame-dead session is never re-promoted (its id, once cleared, never
+	// re-enters the hub's session map), so a narrow race can still strand one
+	// entry until process restart — a Deliver that resolved the author LIVE an
+	// instant before enroll cleared the maps can hold(sess) just AFTER that
+	// enroll's reap, re-adding the dead session's entry; because that id never
+	// re-enrolls, no later enroll reaps it. Delivery correctness (no-loss) is
+	// unaffected either way — only the reap (a leak bound, not the delivery
+	// guarantee) is best-effort: the recipient still receives the message via the
+	// reconnect cursor sweep, independent of this registry.
 	held map[string][]string
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel

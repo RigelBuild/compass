@@ -84,15 +84,18 @@ func firesHeldDelivers(state compassv1.AgentSessionState) bool {
 // edge fires the messages held for that author session, in post order, from each
 // message's CURRENT (settled) stored blocks (design.md:158-168), then clears the
 // registry entry — a no-frame author death never enqueues an edge, so its held
-// entry is left in place until the next reap. It is reaped in-process on a
-// subsequent Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped),
-// which drops the entry for every cleared session id — so a no-frame death's
-// entry lives only until a subsequent enroll clears its session, not until
-// process restart (a Deliver that resolved the author LIVE just before enroll
-// cleared the maps can re-hold the dead session past this enroll's reap; a later
-// enroll reaps it — still enroll-bounded). No-loss is unaffected — the reconnect
-// sweep still delivers the message (design.md:168-176): now no-loss AND
-// enroll-bounded.
+// entry is left in place until it is reaped. The reap happens in-process on the
+// next Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped),
+// which drops the entry for every session id enroll just cleared — so the common
+// no-frame death is reaped at that next enroll rather than persisting until
+// process restart. The reap is best-effort, not a hard bound: a no-frame-dead
+// session is never re-promoted, so a narrow race (a Deliver that resolved the
+// author LIVE an instant before enroll cleared the maps re-holds the dead
+// session just AFTER that enroll's reap) can still strand one entry until process
+// restart, since that id never re-enrolls to be reaped again. No-loss is
+// unaffected regardless — the reconnect sweep still delivers the message
+// (design.md:168-176); only the leak bound, not the delivery guarantee, is
+// best-effort.
 func (c *Consumer) drainSettles(ctx context.Context) {
 	for {
 		c.mu.Lock()
