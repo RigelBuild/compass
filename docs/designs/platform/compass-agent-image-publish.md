@@ -1,7 +1,7 @@
 # Publish the compass-agent image to GHCR
 
 > **Design record.** This designs the GHCR publish lane for the `compass-agent`
-> runtime image; it targets the **`sealedsecurity/compass`** repo — every
+> runtime image; it targets the **`RigelBuild/compass`** repo — every
 > `agent-image/*`, `.github/workflows/*`, `forks/*`, `go/cmd/*`, `ci.yml`,
 > `devenv.nix`, `packages/compass-agent/*`, and `docs/architecture/*` citation
 > below is a path in that repo at HEAD `b3fc25311`, not this one (line numbers
@@ -30,7 +30,7 @@ compass-native's (SEA-1683/T2).
 Settled peer-to-peer with compass-native (the consumer) — recorded as a
 decision, not an assumption:
 
-- **Ref:** `ghcr.io/sealedsecurity/compass-agent` — locked.
+- **Ref:** `ghcr.io/rigelbuild/compass-agent` — locked.
 - **Tags, both published per main build:**
   - `:git-<short-sha>` (12-hex, `git rev-parse --short=12 HEAD`) — **immutable**.
     This is the pin compass-stack bakes into the native app binary and hands the
@@ -112,8 +112,8 @@ container copy` exposes only `--registry` and `--copy-args`
    `default.nix:78-81`):
 
    ```text
-   skopeo --insecure-policy copy nix:$SPEC docker://ghcr.io/sealedsecurity/compass-agent:git-<sha>
-   skopeo --insecure-policy copy nix:$SPEC docker://ghcr.io/sealedsecurity/compass-agent:latest
+   skopeo --insecure-policy copy nix:$SPEC docker://ghcr.io/rigelbuild/compass-agent:git-<sha>
+   skopeo --insecure-policy copy nix:$SPEC docker://ghcr.io/rigelbuild/compass-agent:latest
    ```
 
    The second copy re-uploads nothing: skopeo skips blobs the registry already
@@ -121,7 +121,7 @@ container copy` exposes only `--registry` and `--copy-args`
 
 **Alternatives weighed:**
 
-- *(a) `devenv container copy agent --registry docker://ghcr.io/sealedsecurity/`
+- *(a) `devenv container copy agent --registry docker://ghcr.io/rigelbuild/`
   then retag* — reuses the highest-level CLI, but can only produce `:latest`
   (tag fixed at `cfg.version`), forcing a registry→registry retag copy for the
   immutable tag and pushing the moving tag *first* — the wrong order (the pin
@@ -299,7 +299,7 @@ visibility ever changes.
 ## Global Constraints
 
 - Conventional Commits; this design PR is `docs(platform): …` with the
-  `Co-authored-by: Matt Wilkinson <matt@sealedsecurity.com>` trailer.
+  `Co-authored-by: Matt Wilkinson <matt@rigel.build>` trailer.
 - No AI-product names; no planning metadata in source. SEA-#### appears only
   as tracking refs in this record.
 - Comments and docs explain non-obvious WHY (compass `AGENTS.md`).
@@ -356,7 +356,7 @@ locally (with a PAT-backed `skopeo login`) and from CI identically.
      idempotent re-run, skip the copy (no-op success). Differ → fail with a
      "tag exists — immutable" error.
 - Copy: `skopeo --insecure-policy copy nix:$SPEC
-  docker://ghcr.io/sealedsecurity/compass-agent:<tag>` (`--insecure-policy`
+  docker://ghcr.io/rigelbuild/compass-agent:<tag>` (`--insecure-policy`
   matches the module's own copy invocation, `containers.nix:307`).
 - **Post-copy assert.** After each copy, re-inspect the pushed tag's config
   digest and assert it equals the local spec's — upgrading the guarantee from
@@ -382,8 +382,8 @@ Interfaces:
 - Consumes: cwd `agent-image/`; `forks/devenv` + `forks/nix2container` flakes;
   git HEAD for the sha tag; an existing `skopeo login ghcr.io` session.
 - Produces: pushed
-  `docker://ghcr.io/sealedsecurity/compass-agent:git-<sha12>` and
-  `docker://ghcr.io/sealedsecurity/compass-agent:latest`; exits non-zero on
+  `docker://ghcr.io/rigelbuild/compass-agent:git-<sha12>` and
+  `docker://ghcr.io/rigelbuild/compass-agent:latest`; exits non-zero on
   immutability violation or copy failure.
 - CLI: `./publish.sh [tag …]` (no args = the default two-tag set; the GA
   release tag later becomes `./publish.sh git-<sha> v<semver> latest`).
@@ -439,9 +439,9 @@ Two layers, one automated + one documented smoke:
   contract — an unauthenticated `skopeo inspect` is the truest check, notable
   as a T3 follow-up) nor a real pull-and-run.
 - Documented smoke (in the workflow header comment and the T4 doc fold): on a
-  runner host, `podman pull ghcr.io/sealedsecurity/compass-agent:git-<sha12>`
+  runner host, `podman pull ghcr.io/rigelbuild/compass-agent:git-<sha12>`
   then start `compass-runner --image
-  ghcr.io/sealedsecurity/compass-agent:git-<sha12>` and drive one provision —
+  ghcr.io/rigelbuild/compass-agent:git-<sha12>` and drive one provision —
   exercising the exact consumer seam
   (`go/cmd/compass-runner/main.go:44-45,111-114`). This is the acceptance
   check compass-native T2 repeats from the pull side.

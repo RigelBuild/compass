@@ -729,12 +729,12 @@ export const STUB_AGENTS: Agent[] = [
 ];
 
 // ── Canonical-shape fixture helpers ──────────────────────────────────────────
-// Every board item is forge-backed (DL-071 §Global constraints). The agents'
-// work lives in the sealed monorepo on GitHub; the attribution owner is the
-// human "matt". These builders keep the seeded rows compact and honest.
+// Every board item is forge-backed (DL-071 §Global constraints). The seeded
+// work is attributed to the human owner "matt". These builders keep the seeded
+// rows compact and honest.
 
 const GITHUB: ForgeRef = { provider: "github", host: "github.com" };
-const SEALED_REPO = "sealedsecurity/sealed";
+const DEMO_REPO = "RigelBuild/compass";
 
 /** Agent attribution parsed from the owner header (DL-050) — a claim, hedged
  *  in the UI unless `verified`. */
@@ -784,12 +784,12 @@ export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-1022",
 		forge: GITHUB,
-		repo: SEALED_REPO,
+		repo: DEMO_REPO,
 		number: 1022,
 		title: "Explorable Bridge dev UI on stub data",
 		body: "",
 		forgeState: "open",
-		url: "https://github.com/sealedsecurity/sealed/issues/1022",
+		url: "https://github.com/RigelBuild/compass/issues/1022",
 		agent: attrib("compass-ui"),
 		forgeAccount: "compass-bot",
 		labels: [],
@@ -801,11 +801,11 @@ export const STUB_ISSUES: Issue[] = [
 		prs: [
 			{
 				forge: GITHUB,
-				repo: SEALED_REPO,
+				repo: DEMO_REPO,
 				number: 453,
 				title: "feat(compass): explorable Bridge dev UI on stub data",
 				forgeState: "open",
-				url: "https://github.com/sealedsecurity/sealed/pull/453",
+				url: "https://github.com/RigelBuild/compass/pull/453",
 				headRef: "compass-ui-1022-bridge-ui",
 				baseRef: "main",
 				agent: attrib("compass-ui"),
@@ -855,12 +855,12 @@ export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-965",
 		forge: GITHUB,
-		repo: SEALED_REPO,
+		repo: DEMO_REPO,
 		number: 965,
 		title: "compass-client — gRPC-Web transport polish + reconnect",
 		body: "",
 		forgeState: "open",
-		url: "https://github.com/sealedsecurity/sealed/issues/965",
+		url: "https://github.com/RigelBuild/compass/issues/965",
 		agent: attrib("compass-ui"),
 		forgeAccount: "compass-bot",
 		labels: [],
@@ -894,12 +894,12 @@ export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-1023",
 		forge: GITHUB,
-		repo: SEALED_REPO,
+		repo: DEMO_REPO,
 		number: 1023,
 		title: "Agent process management + ACP session over compass.v1",
 		body: "",
 		forgeState: "open",
-		url: "https://github.com/sealedsecurity/sealed/issues/1023",
+		url: "https://github.com/RigelBuild/compass/issues/1023",
 		agent: attrib("compass-server"),
 		forgeAccount: "compass-bot",
 		labels: [],
@@ -911,11 +911,11 @@ export const STUB_ISSUES: Issue[] = [
 		prs: [
 			{
 				forge: GITHUB,
-				repo: SEALED_REPO,
+				repo: DEMO_REPO,
 				number: 443,
 				title: "feat(compass): agent process management + ACP over compass.v1",
 				forgeState: "open",
-				url: "https://github.com/sealedsecurity/sealed/pull/443",
+				url: "https://github.com/RigelBuild/compass/pull/443",
 				headRef: "compass-server-1023-acp-session",
 				baseRef: "main",
 				agent: attrib("compass-server"),
@@ -958,12 +958,12 @@ export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-864",
 		forge: GITHUB,
-		repo: SEALED_REPO,
+		repo: DEMO_REPO,
 		number: 864,
 		title: "Tauri desktop shell — window + daemon spawn/attach",
 		body: "",
 		forgeState: "open",
-		url: "https://github.com/sealedsecurity/sealed/issues/864",
+		url: "https://github.com/RigelBuild/compass/issues/864",
 		agent: attrib("compass-native"),
 		forgeAccount: "compass-bot",
 		labels: [],
@@ -975,11 +975,11 @@ export const STUB_ISSUES: Issue[] = [
 		prs: [
 			{
 				forge: GITHUB,
-				repo: SEALED_REPO,
+				repo: DEMO_REPO,
 				number: 444,
 				title: "feat(compass): Tauri window + daemon spawn/attach",
 				forgeState: "open",
-				url: "https://github.com/sealedsecurity/sealed/pull/444",
+				url: "https://github.com/RigelBuild/compass/pull/444",
 				headRef: "compass-native-864-tauri-shell",
 				baseRef: "main",
 				agent: attrib("compass-native"),
@@ -1001,12 +1001,12 @@ export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-1085",
 		forge: GITHUB,
-		repo: SEALED_REPO,
+		repo: DEMO_REPO,
 		number: 1085,
 		title: "Topic threading — per-boot epoch forces resync for stale cursors",
 		body: "",
 		forgeState: "open",
-		url: "https://github.com/sealedsecurity/sealed/issues/1085",
+		url: "https://github.com/RigelBuild/compass/issues/1085",
 		agent: attrib("compass-comms"),
 		forgeAccount: "compass-bot",
 		labels: [],
@@ -1018,11 +1018,11 @@ export const STUB_ISSUES: Issue[] = [
 		prs: [
 			{
 				forge: GITHUB,
-				repo: SEALED_REPO,
+				repo: DEMO_REPO,
 				number: 332,
 				title: "feat(compass): per-boot instance epoch for comms cursors",
 				forgeState: "open",
-				url: "https://github.com/sealedsecurity/sealed/pull/332",
+				url: "https://github.com/RigelBuild/compass/pull/332",
 				headRef: "compass-comms-1085-topic-epoch",
 				baseRef: "main",
 				agent: attrib("compass-comms"),
@@ -1051,12 +1051,12 @@ export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-847",
 		forge: GITHUB,
-		repo: SEALED_REPO,
+		repo: DEMO_REPO,
 		number: 847,
 		title: "renovate-preflight — fail the cron fast with a token diagnosis",
 		body: "",
 		forgeState: "open",
-		url: "https://github.com/sealedsecurity/sealed/issues/847",
+		url: "https://github.com/RigelBuild/compass/issues/847",
 		agent: attrib("ci"),
 		forgeAccount: "compass-bot",
 		labels: [],
@@ -1068,11 +1068,11 @@ export const STUB_ISSUES: Issue[] = [
 		prs: [
 			{
 				forge: GITHUB,
-				repo: SEALED_REPO,
+				repo: DEMO_REPO,
 				number: 400,
 				title: "feat(ci): renovate-preflight token diagnosis",
 				forgeState: "open",
-				url: "https://github.com/sealedsecurity/sealed/pull/400",
+				url: "https://github.com/RigelBuild/compass/pull/400",
 				headRef: "ci-847-renovate-preflight",
 				baseRef: "main",
 				agent: attrib("ci"),
@@ -1101,12 +1101,12 @@ export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-888",
 		forge: GITHUB,
-		repo: SEALED_REPO,
+		repo: DEMO_REPO,
 		number: 888,
 		title: "Elastic runner pool + cache warmer",
 		body: "",
 		forgeState: "open",
-		url: "https://github.com/sealedsecurity/sealed/issues/888",
+		url: "https://github.com/RigelBuild/compass/issues/888",
 		agent: attrib("fleet-runner"),
 		forgeAccount: "compass-bot",
 		labels: [],
@@ -1118,11 +1118,11 @@ export const STUB_ISSUES: Issue[] = [
 		prs: [
 			{
 				forge: GITHUB,
-				repo: SEALED_REPO,
+				repo: DEMO_REPO,
 				number: 180,
 				title: "feat(fleet): elastic runner pool + cache warmer",
 				forgeState: "open",
-				url: "https://github.com/sealedsecurity/sealed/pull/180",
+				url: "https://github.com/RigelBuild/compass/pull/180",
 				headRef: "fleet-runner-888-runner-pool",
 				baseRef: "main",
 				agent: attrib("fleet-runner"),
@@ -1147,12 +1147,12 @@ export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-1128",
 		forge: GITHUB,
-		repo: SEALED_REPO,
+		repo: DEMO_REPO,
 		number: 1128,
 		title: "NixOS host convergence + deploy-fleet gate",
 		body: "",
 		forgeState: "open",
-		url: "https://github.com/sealedsecurity/sealed/issues/1128",
+		url: "https://github.com/RigelBuild/compass/issues/1128",
 		agent: attrib("fleet"),
 		forgeAccount: "compass-bot",
 		labels: [],
@@ -1172,12 +1172,12 @@ export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-1145",
 		forge: GITHUB,
-		repo: SEALED_REPO,
+		repo: DEMO_REPO,
 		number: 1145,
 		title: "rigel.build hero — Manager-tree motion",
 		body: "",
 		forgeState: "closed",
-		url: "https://github.com/sealedsecurity/sealed/issues/1145",
+		url: "https://github.com/RigelBuild/compass/issues/1145",
 		agent: attrib("web"),
 		forgeAccount: "compass-bot",
 		labels: [],
@@ -1189,11 +1189,11 @@ export const STUB_ISSUES: Issue[] = [
 		prs: [
 			{
 				forge: GITHUB,
-				repo: SEALED_REPO,
+				repo: DEMO_REPO,
 				number: 436,
 				title: "feat(web): rigel.build hero — Manager-tree motion",
 				forgeState: "merged",
-				url: "https://github.com/sealedsecurity/sealed/pull/436",
+				url: "https://github.com/RigelBuild/compass/pull/436",
 				headRef: "web-1145-hero-motion",
 				baseRef: "main",
 				agent: attrib("web"),
@@ -1215,12 +1215,12 @@ export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-1130",
 		forge: GITHUB,
-		repo: SEALED_REPO,
+		repo: DEMO_REPO,
 		number: 1130,
 		title: "Card layout + state-dot field",
 		body: "",
 		forgeState: "closed",
-		url: "https://github.com/sealedsecurity/sealed/issues/1130",
+		url: "https://github.com/RigelBuild/compass/issues/1130",
 		agent: attrib("compass-ui-bridge"),
 		forgeAccount: "compass-bot",
 		labels: [],
@@ -1232,11 +1232,11 @@ export const STUB_ISSUES: Issue[] = [
 		prs: [
 			{
 				forge: GITHUB,
-				repo: SEALED_REPO,
+				repo: DEMO_REPO,
 				number: 228,
 				title: "feat(compass): card layout + state-dot field",
 				forgeState: "merged",
-				url: "https://github.com/sealedsecurity/sealed/pull/228",
+				url: "https://github.com/RigelBuild/compass/pull/228",
 				headRef: "compass-ui-bridge-1130-card-layout",
 				baseRef: "main",
 				agent: attrib("compass-ui-bridge"),
@@ -1258,12 +1258,12 @@ export const STUB_ISSUES: Issue[] = [
 	{
 		id: "ws-1146",
 		forge: GITHUB,
-		repo: SEALED_REPO,
+		repo: DEMO_REPO,
 		number: 1146,
 		title: "Command palette — fuzzy action routing",
 		body: "",
 		forgeState: "open",
-		url: "https://github.com/sealedsecurity/sealed/issues/1146",
+		url: "https://github.com/RigelBuild/compass/issues/1146",
 		forgeAccount: "matt",
 		labels: [],
 		state: "backlog",

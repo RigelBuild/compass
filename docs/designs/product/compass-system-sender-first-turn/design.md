@@ -19,7 +19,7 @@ parent already froze.
 
 ## Global Constraints
 
-1. **Go module**: `github.com/sealedsecurity/compass/go`. Server-side work
+1. **Go module**: `github.com/RigelBuild/compass/go`. Server-side work
    lands under `go/server` and `go/internal/store`; no new top-level packages.
 2. **The mechanism is frozen, not re-litigated.** Matt ruled (parent record
    OQ-C, its DL-187 row text at

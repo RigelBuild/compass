@@ -99,10 +99,10 @@ describe("buildFrontmatter", () => {
 		expect(
 			buildFrontmatter(
 				"Observability",
-				"https://github.com/sealedsecurity/compass/edit/main/ci/README.md",
+				"https://github.com/RigelBuild/compass/edit/main/ci/README.md",
 			),
 		).toBe(
-			'---\ntitle: "Observability"\neditUrl: "https://github.com/sealedsecurity/compass/edit/main/ci/README.md"\n---\n',
+			'---\ntitle: "Observability"\neditUrl: "https://github.com/RigelBuild/compass/edit/main/ci/README.md"\n---\n',
 		);
 	});
 
@@ -110,10 +110,10 @@ describe("buildFrontmatter", () => {
 		expect(
 			buildFrontmatter(
 				'The "read layer"',
-				"https://github.com/sealedsecurity/compass/edit/main/docs/a.md",
+				"https://github.com/RigelBuild/compass/edit/main/docs/a.md",
 			),
 		).toBe(
-			'---\ntitle: "The \\"read layer\\""\neditUrl: "https://github.com/sealedsecurity/compass/edit/main/docs/a.md"\n---\n',
+			'---\ntitle: "The \\"read layer\\""\neditUrl: "https://github.com/RigelBuild/compass/edit/main/docs/a.md"\n---\n',
 		);
 	});
 });
@@ -352,7 +352,7 @@ describe("isExcluded", () => {
 describe("editUrlFor", () => {
 	test("builds the GitHub edit URL for a repo-relative source path", () => {
 		expect(editUrlFor("docs/designs/repo/compass-eng-docs/design.md")).toBe(
-			"https://github.com/sealedsecurity/compass/edit/main/docs/designs/repo/compass-eng-docs/design.md",
+			"https://github.com/RigelBuild/compass/edit/main/docs/designs/repo/compass-eng-docs/design.md",
 		);
 	});
 });
@@ -416,7 +416,7 @@ describe("rewriteLinks", () => {
 				gathered,
 			),
 		).toBe(
-			"run [deploy](https://github.com/sealedsecurity/compass/blob/main/apps/eng-docs/scripts/deploy.ts)",
+			"run [deploy](https://github.com/RigelBuild/compass/blob/main/apps/eng-docs/scripts/deploy.ts)",
 		);
 	});
 
@@ -424,7 +424,7 @@ describe("rewriteLinks", () => {
 		expect(
 			rewriteLinks("[u](../shared/util.ts)", "ci/scripts/build.md", gathered),
 		).toBe(
-			"[u](https://github.com/sealedsecurity/compass/blob/main/ci/shared/util.ts)",
+			"[u](https://github.com/RigelBuild/compass/blob/main/ci/shared/util.ts)",
 		);
 	});
 
@@ -452,7 +452,7 @@ describe("rewriteLinks", () => {
 				gathered,
 			),
 		).toBe(
-			"see [infra](https://github.com/sealedsecurity/compass/blob/main/docs/specs/platform/infrastructure.md)",
+			"see [infra](https://github.com/RigelBuild/compass/blob/main/docs/specs/platform/infrastructure.md)",
 		);
 	});
 
@@ -464,7 +464,7 @@ describe("rewriteLinks", () => {
 				gathered,
 			),
 		).toBe(
-			"see [infra](https://github.com/sealedsecurity/compass/blob/main/docs/specs/platform/infrastructure.md#deploy)",
+			"see [infra](https://github.com/RigelBuild/compass/blob/main/docs/specs/platform/infrastructure.md#deploy)",
 		);
 		expect(
 			rewriteLinks(
@@ -473,7 +473,7 @@ describe("rewriteLinks", () => {
 				gathered,
 			),
 		).toBe(
-			"see [infra](https://github.com/sealedsecurity/compass/blob/main/docs/specs/platform/infrastructure.md?v=1)",
+			"see [infra](https://github.com/RigelBuild/compass/blob/main/docs/specs/platform/infrastructure.md?v=1)",
 		);
 	});
 
@@ -481,10 +481,10 @@ describe("rewriteLinks", () => {
 		const from = "docs/README.md";
 		// Same base path: the trailing slash — not the extension — picks tree.
 		expect(rewriteLinks("[d](../tools/docs-publish/)", from, gathered)).toBe(
-			"[d](https://github.com/sealedsecurity/compass/tree/main/tools/docs-publish)",
+			"[d](https://github.com/RigelBuild/compass/tree/main/tools/docs-publish)",
 		);
 		expect(rewriteLinks("[f](../tools/docs-publish)", from, gathered)).toBe(
-			"[f](https://github.com/sealedsecurity/compass/blob/main/tools/docs-publish)",
+			"[f](https://github.com/RigelBuild/compass/blob/main/tools/docs-publish)",
 		);
 	});
 
@@ -497,7 +497,7 @@ describe("rewriteLinks", () => {
 			"see [infra](/specs/platform/infrastructure)",
 		);
 		expect(rewriteLinks(link, from, new Set())).toBe(
-			"see [infra](https://github.com/sealedsecurity/compass/blob/main/docs/specs/platform/infrastructure.md)",
+			"see [infra](https://github.com/RigelBuild/compass/blob/main/docs/specs/platform/infrastructure.md)",
 		);
 	});
 });
@@ -515,14 +515,14 @@ describe("transform", () => {
 		expect(
 			transform(src, "docs/specs/platform/observability.md", gathered),
 		).toBe(
-			'---\ntitle: "Observability"\neditUrl: "https://github.com/sealedsecurity/compass/edit/main/docs/specs/platform/observability.md"\n---\nThe platform...\n',
+			'---\ntitle: "Observability"\neditUrl: "https://github.com/RigelBuild/compass/edit/main/docs/specs/platform/observability.md"\n---\nThe platform...\n',
 		);
 	});
 
 	test("uses the basename fallback and injects no-op strip when no H1", () => {
 		const src = "prose with no heading\n";
 		expect(transform(src, "docs/specs/tools/README.md", gathered)).toBe(
-			'---\ntitle: "README"\neditUrl: "https://github.com/sealedsecurity/compass/edit/main/docs/specs/tools/README.md"\n---\nprose with no heading\n',
+			'---\ntitle: "README"\neditUrl: "https://github.com/RigelBuild/compass/edit/main/docs/specs/tools/README.md"\n---\nprose with no heading\n',
 		);
 	});
 
@@ -531,21 +531,21 @@ describe("transform", () => {
 		expect(
 			transform(src, "docs/designs/platform/docs-consumption.md", gathered),
 		).toBe(
-			'---\ntitle: "Docs consumption: Notion as the read layer"\neditUrl: "https://github.com/sealedsecurity/compass/edit/main/docs/designs/platform/docs-consumption.md"\n---\nWhy...\n',
+			'---\ntitle: "Docs consumption: Notion as the read layer"\neditUrl: "https://github.com/RigelBuild/compass/edit/main/docs/designs/platform/docs-consumption.md"\n---\nWhy...\n',
 		);
 	});
 
 	test("a doc opening with a fenced `#` keeps the fence and strips the real H1", () => {
 		const src = "```sh\n# example\n```\n\n# Setup\n\nSteps...\n";
 		expect(transform(src, "docs/specs/tools/setup.md", gathered)).toBe(
-			'---\ntitle: "Setup"\neditUrl: "https://github.com/sealedsecurity/compass/edit/main/docs/specs/tools/setup.md"\n---\n```sh\n# example\n```\n\nSteps...\n',
+			'---\ntitle: "Setup"\neditUrl: "https://github.com/RigelBuild/compass/edit/main/docs/specs/tools/setup.md"\n---\n```sh\n# example\n```\n\nSteps...\n',
 		);
 	});
 
 	test("a doc opening with a tilde-fenced `#` keeps the fence and strips the real H1", () => {
 		const src = "~~~sh\n# example\n~~~\n\n# Setup\n\nSteps...\n";
 		expect(transform(src, "docs/specs/tools/setup.md", gathered)).toBe(
-			'---\ntitle: "Setup"\neditUrl: "https://github.com/sealedsecurity/compass/edit/main/docs/specs/tools/setup.md"\n---\n~~~sh\n# example\n~~~\n\nSteps...\n',
+			'---\ntitle: "Setup"\neditUrl: "https://github.com/RigelBuild/compass/edit/main/docs/specs/tools/setup.md"\n---\n~~~sh\n# example\n~~~\n\nSteps...\n',
 		);
 	});
 
@@ -553,7 +553,7 @@ describe("transform", () => {
 		const src =
 			"# Docsite\n\nSee [tech](../../specs/platform/technology-stack.md) and [deploy](./deploy.ts).\n";
 		expect(transform(src, "docs/designs/platform/docsite.md", gathered)).toBe(
-			'---\ntitle: "Docsite"\neditUrl: "https://github.com/sealedsecurity/compass/edit/main/docs/designs/platform/docsite.md"\n---\nSee [tech](/specs/platform/technology-stack) and [deploy](https://github.com/sealedsecurity/compass/blob/main/docs/designs/platform/deploy.ts).\n',
+			'---\ntitle: "Docsite"\neditUrl: "https://github.com/RigelBuild/compass/edit/main/docs/designs/platform/docsite.md"\n---\nSee [tech](/specs/platform/technology-stack) and [deploy](https://github.com/RigelBuild/compass/blob/main/docs/designs/platform/deploy.ts).\n',
 		);
 	});
 });

@@ -6,7 +6,7 @@
 > seam (deterministic vs live) — plus the FIRST scenario set authored on it:
 > the five-leg dogfood capstone (bring-up → real agent turn → agent-driven
 > spawn → cross-agent messaging → persist+resume) that is the acceptance gate
-> for the Dogfood milestone. The design targets the **`sealedsecurity/compass`**
+> for the Dogfood milestone. The design targets the **`RigelBuild/compass`**
 > repo; every `go/*`, `proto/*`, `packages/*`, `apps/*`, and `devenv.nix:*`
 > citation below is a path in that repo at origin/main HEAD `abdb412c`, not
 > this one. It lives in the sealed design corpus because that is where the

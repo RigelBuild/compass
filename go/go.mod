@@ -2,10 +2,10 @@
 // One module for the whole backend: the compass-server binary (served on
 // server.sock), the comms packages, and the generated compass.v1 stubs (gen/).
 //
-// Module path is the PUBLIC Copybara-destination path — oss/ is stripped when
-// oss/compass/ mirrors out to github.com/RigelBuild/compass, so the import
-// prefix must be the destination or every import breaks on export
-// (oss/README.md; the oss/seal -> github.com/sealedsecurity/seal precedent).
+// Module path is the repo's public GitHub path: github.com/RigelBuild/compass
+// with the module rooted at go/. Imports resolve directly against the public
+// repo (go-get meta for RigelBuild/compass), so the prefix must match it
+// exactly or every import breaks.
 //
 // The `go` directive tracks the tools/toolchain/versions/go.nix pin minus at
 // most one minor, so an upstream Go security patch never blocks on a mod edit

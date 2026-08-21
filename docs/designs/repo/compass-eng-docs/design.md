@@ -1,7 +1,7 @@
 # Compass engineering docs site
 
 Design record for making Compass build-in-the-open: relocate the Compass design
-records + product specs into this PUBLIC repo (`sealedsecurity/compass`) and
+records + product specs into this PUBLIC repo (`RigelBuild/compass`) and
 stand up a public Astro Starlight **engineering docs** site with production
 deploy on push:main and a per-PR Cloudflare Pages preview, driven by GitHub
 Actions. Matt's intent, verbatim: "build in the open — people can look through
@@ -16,14 +16,14 @@ naming and `docs.compass.rigel.build` domain. This site takes
 `eng.compass.rigel.build`.
 
 This record is itself the first artifact under the new convention: it is
-authored in `sealedsecurity/compass` at
+authored in `RigelBuild/compass` at
 `docs/designs/repo/compass-eng-docs/design.md`, not in sealed.
 
 ## Problem / Intent
 
-The Compass design corpus (39 records + the living spec) lives in the PRIVATE
-`sealedsecurity/sealed` monorepo, invisible to the public the product is being
-built in the open for; the public `sealedsecurity/compass` repo has no docsite
+The Compass design corpus (39 records + the living spec) lives in a PRIVATE
+internal monorepo, invisible to the public the product is being
+built in the open for; the public `RigelBuild/compass` repo has no docsite
 and no `docs/designs/` tree (only `docs/architecture/build-and-ci.md`, verified
 this session). Move the Compass records + specs here and publish them on a
 public Starlight engineering docs site with sealed's per-PR-preview UX,
@@ -34,7 +34,7 @@ re-based from Woodpecker onto GitHub Actions and with no Cloudflare Access gate.
 - **Public repo, public site — no access gate.** sealed's docsite is
   "gated to the team via Cloudflare Access"
   (`sealed/apps/docs/astro.config.mjs:9-10`: "to
-  sealed-docs.sealedsecurity.com via Cloudflare Pages, gated to the team via
+  sealed-docs.rigel.build via Cloudflare Pages, gated to the team via
   Cloudflare Access"). The compass mirror deliberately drops the Access gate:
   the site is public. Nothing in the docsite build, deploy, or content may
   assume an authenticated reader.
@@ -112,7 +112,7 @@ sealed's shape, extracted at source this session:
   `[...ignores, "oss/seal/**", "**/outputs/**"]`).
 - **Per-page editUrl** — `editUrlFor` builds
   `https://github.com/${REPO_SLUG}/edit/main/${sourcePath}`
-  (`gather.ts:203-205`), with `REPO_SLUG = "sealedsecurity/sealed"`
+  (`gather.ts:203-205`), with `REPO_SLUG = "RigelBuild/compass"`
   (`gather.ts:25`).
 - **Starlight config** — `pagefind: true`, generated `sidebar`, `editLink`,
   `lastUpdated`, expressiveCode tokyo-night
@@ -132,7 +132,7 @@ The compass adaptation:
   `docs/architecture/` classifies under Designs? No — it keeps its own
   `Architecture` section (a `docs/` domain like the others); the DOMAINS list
   becomes `["designs", "specs", "architecture"]`.
-- **`REPO_SLUG = "sealedsecurity/compass"`**; editUrl points here.
+- **`REPO_SLUG = "RigelBuild/compass"`**; editUrl points here.
 - **Exclusions**: compass's `.markdownlint-cli2.jsonc` `ignores` is
   `["forks/*/**"]` (`compass/.markdownlint-cli2.jsonc:10`); the gather adds
   its own tree + `**/outputs/**` as sealed's does, and drops the
@@ -253,7 +253,7 @@ Repeatable rules applied by the migration task and binding on future records:
    dropped) when the referent is a private sealed artifact.
 2. **Private tracker links (SEA-####, linear.app).** *Keep the ID, strip the
    link.* ~50 distinct SEA IDs are load-bearing provenance (records cite each
-   other through them); a dead `linear.app/sealedsecurity/...` URL is worse
+   other through them); a dead `linear.app/rigelbuild/...` URL is worse
    than no URL. Rewrite BOTH link forms to plain `SEA-1234`: the inline
    `[SEA-1234](https://linear.app/…)` AND the reference-definition
    `[SEA-1234]: https://linear.app/…` (`^\[.+\]:\s*https://linear\.app/`) —
@@ -327,7 +327,7 @@ Interfaces:
 
 - Consumes: `sealed/apps/docs/scripts/gather.ts` (491 lines) + `gather.test.ts` as the port source.
 - Produces: `apps/eng-docs/scripts/gather.ts` with:
-  - `const REPO_SLUG = "sealedsecurity/compass"` (editUrl base, mirrors `sealed gather.ts:25,203-205`).
+  - `const REPO_SLUG = "RigelBuild/compass"` (editUrl base, mirrors `sealed gather.ts:25,203-205`).
   - `const DOMAINS = ["designs", "specs", "architecture"] as const` (replaces sealed's `["designs","specs","research","team"]`, `gather.ts:31`).
   - `SECTIONS` in sidebar order: Designs, Specs, Architecture, Packages, Contributing (drops sealed's Research/Team/Infra, `gather.ts:43-51`).
   - `packagePath` drops the `oss` arm (`sealed gather.ts:78`, keep the `apps` two-segment case).
@@ -418,7 +418,7 @@ Interfaces:
   precedent: the docsite got "its OWN Pages:Edit-scoped token once SEA-1119
   provisions the project", `sealed/ci/pipeline.ts:334-336`); repo secrets
   `CLOUDFLARE_API_TOKEN` (Pages:Edit-scoped, least-privilege per
-  `pipeline.ts:321-324`) + `CLOUDFLARE_ACCOUNT_ID` on `sealedsecurity/compass`;
+  `pipeline.ts:321-324`) + `CLOUDFLARE_ACCOUNT_ID` on `RigelBuild/compass`;
   production branch set to `main`. NOTE: creating the Pages project + seeding
   the two repo secrets is an operator step (not agent-executable).
 - Test cycle: T3's scratch-PR preview + main production deploy succeed end to end.

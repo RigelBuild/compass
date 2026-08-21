@@ -26,7 +26,7 @@ the shell scaffold (T3); everything else holds independent of that choice.
 
 ### A0 — The current stack, as-built (what the two modes must bridge)
 
-Source facts the design composes with (`sealedsecurity/compass` @ main 2624bcb5):
+Source facts the design composes with (`RigelBuild/compass` @ main 2624bcb5):
 
 - **The server serves three doors.** Default is a Unix domain socket
   (`go/cmd/compass-server/main.go:42-45`: "Unix socket to serve compass.v1 on.

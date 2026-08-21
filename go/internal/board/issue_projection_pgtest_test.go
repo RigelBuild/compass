@@ -92,7 +92,7 @@ func canonicalIssue(number uint32) *compassv1.Issue {
 			Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
 			Host:     "github.com",
 		},
-		Repo:         "sealedsecurity/compass",
+		Repo:         "RigelBuild/compass",
 		Number:       number,
 		Title:        "a bug",
 		Body:         "it broke",
@@ -126,8 +126,8 @@ func TestPublishFansIssue16(t *testing.T) {
 	}
 
 	got := recvIssue(t, sub.Live)
-	if got.GetRepo() != "sealedsecurity/compass" || got.GetNumber() != 1 {
-		t.Errorf("fanned issue = %s#%d, want sealedsecurity/compass#1", got.GetRepo(), got.GetNumber())
+	if got.GetRepo() != "RigelBuild/compass" || got.GetNumber() != 1 {
+		t.Errorf("fanned issue = %s#%d, want RigelBuild/compass#1", got.GetRepo(), got.GetNumber())
 	}
 	if got.GetForge().GetProvider() != compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB {
 		t.Errorf("fanned provider = %v, want GITHUB", got.GetForge().GetProvider())

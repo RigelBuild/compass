@@ -51,7 +51,7 @@ no convergence refactor ever needed.
 
 ## Global Constraints
 
-- **Toolchain:** module `github.com/sealedsecurity/compass/go`, go 1.25.0
+- **Toolchain:** module `github.com/RigelBuild/compass/go`, go 1.25.0
   (`go/go.mod`).
 - **DL-053 (FROZEN, Matt 2026-07-27, `DECISIONS.md:76`) — the target model,
   not an option:** "Forge subscriptions are Server-side Postgres rows with a

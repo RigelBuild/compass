@@ -18,16 +18,10 @@ and the container-runtime record
 [`compass-agent-container-runtime.md`](../compass-agent-container-runtime.md)
 (threat model, egress posture).
 
-**Grounding.** This record lives in `sealedsecurity/sealed`; most of the code it
-describes does not. Citations resolve by prefix, and the prefix is the
-repository:
-
-- `docs/…` — this repo, `sealedsecurity/sealed`.
-- `oss/forks/oh-my-pi/…` — also `sealed` (the vendored OMP fork).
-- A bare sibling design record (`compass-0.6/design.md`,
-  `compass-agent-container-runtime.md`) — this directory,
-  `sealed/docs/designs/product/`.
-- everything else (`packages/…`, `go/…`, `proto/…`) — `sealedsecurity/compass`.
+**Grounding.** This record and the code it describes now live together in this
+repository, so citations resolve against this tree directly: `docs/…` for
+records (this directory is `docs/designs/product/`), `forks/oh-my-pi/…` for
+the vendored OMP fork, and `packages/…`, `go/…`, `proto/…` for the code.
 
 Compass citations were verified at the errata pass of 2026-07-28 against the
 `compass-comms-sea-1355-agent-comms-tools` branch, **not** `compass` `main`: the
@@ -110,11 +104,11 @@ this record rides its `RunnerCallTransport` seam and does not re-decide it.
   (`go/internal/store/accounts.go:156-158`).
 - **Tools are OMP `AgentTool`s.** `interface AgentTool<TParameters extends
   TSchema = TSchema, …> extends Tool<TParameters>`
-  (`oss/forks/oh-my-pi/packages/agent/src/types.ts:638-639`), where the base
+  (`forks/oh-my-pi/packages/agent/src/types.ts:638-639`), where the base
   `Tool` is `{ name; description; parameters }`
-  (`oss/forks/oh-my-pi/packages/ai/src/types.ts:855-858`), authored with `z`
+  (`forks/oh-my-pi/packages/ai/src/types.ts:855-858`), authored with `z`
   from `@oh-my-pi/pi-ai` per the README example
-  (`oss/forks/oh-my-pi/packages/agent/README.md:284-308`). Tools reach the SDK
+  (`forks/oh-my-pi/packages/agent/README.md:284-308`). Tools reach the SDK
   either externally via `ConfigControl.tools` → `setTools()`
   (`packages/compass-agent/src/agent.ts:147-148`) or at construction — the SDK
   session is "Constructed by the caller (container entrypoint) via
@@ -549,7 +543,7 @@ In `packages/compass-agent/src/`:
 
   `execute` sets `call_id` = `toolCallId`, maps a `CommsCallError` result to a
   thrown `Error` (OMP contract: "Throw an error when a tool fails",
-  `oss/forks/oh-my-pi/packages/agent/README.md:312`), and renders a success as
+  `forks/oh-my-pi/packages/agent/README.md:312`), and renders a success as
   text content.
 
   **Errata (as shipped) — `client_request_id` is broker-scoped, not the bare
@@ -563,7 +557,7 @@ In `packages/compass-agent/src/`:
   client_request_id)` (unique index `messages_idem_idx`) and an account
   outlives any single session, while some provider tool-call ids fall back to a
   turn-position-derived value rather than randomness
-  (`oss/forks/oh-my-pi/packages/ai/src/providers/openai-completions.ts:2020`).
+  (`forks/oh-my-pi/packages/ai/src/providers/openai-completions.ts:2020`).
   A bare tool-call id therefore collides across two sessions of the *same
   account* — session B's post no-ops as a duplicate of session A's, and
   `ON CONFLICT DO NOTHING` returns the older message, so the tool reports
@@ -592,11 +586,11 @@ In `packages/compass-agent/src/`:
   *Why not one `content` block per message, which needs no delimiter at all?*
   Because the boundary would be out-of-band only on some providers.
   `AgentToolResult.content` is an array
-  (`oss/forks/oh-my-pi/packages/agent/src/types.ts:571`) and the Anthropic path
+  (`forks/oh-my-pi/packages/agent/src/types.ts:571`) and the Anthropic path
   preserves each block discretely on the wire (`convertContentBlocks`,
-  `oss/forks/oh-my-pi/packages/ai/src/providers/anthropic.ts:948-972`) — but
+  `forks/oh-my-pi/packages/ai/src/providers/anthropic.ts:948-972`) — but
   the OpenAI path flattens it, `.map(c => c.text).join("\n")`
-  (`oss/forks/oh-my-pi/packages/ai/src/providers/openai-completions.ts:2076-2079`).
+  (`forks/oh-my-pi/packages/ai/src/providers/openai-completions.ts:2076-2079`).
   The join separator is a newline: precisely the delimiter the original forgery
   used. A block array is therefore unforgeable on one provider and
   newline-delimited on another, with nothing at this layer able to tell which,

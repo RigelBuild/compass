@@ -232,7 +232,7 @@ describe("SessionTrace (T-U2)", () => {
 
 	// notice item whose event carries a `link` → a link-out anchor with that href.
 	test("notice item with a link renders a link-out anchor to that href", () => {
-		const href = "https://github.com/sealedsecurity/sealed/pull/814";
+		const href = "https://github.com/RigelBuild/compass/pull/814";
 		const container = mountTrace([
 			{
 				kind: "notice",
@@ -285,7 +285,7 @@ describe("SessionTrace (T-U2)", () => {
 	// exact original href (safe-url returns the source string, not sanitize-url's
 	// normalized form). Pins that the gate is scheme-based, not link-neutering.
 	test("notice item with a safe https link keeps its exact href", () => {
-		const link = "https://github.com/sealedsecurity/sealed/pull/814";
+		const link = "https://github.com/RigelBuild/compass/pull/814";
 		const container = mountTrace([
 			{
 				kind: "notice",

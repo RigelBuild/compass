@@ -27,7 +27,7 @@ func TestIssueToProtoMapsForgeAndMachinery(t *testing.T) {
 		ID:            "iss-1",
 		ForgeProvider: store.ForgeProviderGitHub,
 		ForgeHost:     "github.com",
-		Repo:          "sealedsecurity/compass",
+		Repo:          "RigelBuild/compass",
 		Number:        42,
 		Title:         "a bug",
 		Body:          "it broke",
@@ -57,8 +57,8 @@ func TestIssueToProtoMapsForgeAndMachinery(t *testing.T) {
 	if got.GetForge().GetHost() != "github.com" {
 		t.Errorf("host = %q, want github.com", got.GetForge().GetHost())
 	}
-	if got.GetRepo() != "sealedsecurity/compass" || got.GetNumber() != 42 {
-		t.Errorf("coordinate = %q#%d, want sealedsecurity/compass#42", got.GetRepo(), got.GetNumber())
+	if got.GetRepo() != "RigelBuild/compass" || got.GetNumber() != 42 {
+		t.Errorf("coordinate = %q#%d, want RigelBuild/compass#42", got.GetRepo(), got.GetNumber())
 	}
 	if got.GetTitle() != "a bug" || got.GetBody() != "it broke" ||
 		got.GetForgeState() != "open" || got.GetUrl() != si.URL ||
@@ -91,7 +91,7 @@ func TestIssueToProtoEmptyLabelsAndHumanAuthor(t *testing.T) {
 		ID:            "iss-2",
 		ForgeProvider: store.ForgeProviderGitHub,
 		ForgeHost:     "github.com",
-		Repo:          "sealedsecurity/compass",
+		Repo:          "RigelBuild/compass",
 		Number:        7,
 	})
 	if got.GetLabels() != nil {
@@ -113,7 +113,7 @@ func TestProtoToForgeFieldsDropsMachinery(t *testing.T) {
 			Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
 			Host:     "github.com",
 		},
-		Repo:         "sealedsecurity/compass",
+		Repo:         "RigelBuild/compass",
 		Number:       99,
 		Title:        "title",
 		Body:         "body",
@@ -135,7 +135,7 @@ func TestProtoToForgeFieldsDropsMachinery(t *testing.T) {
 	want := store.IssueForgeFields{
 		ForgeProvider: store.ForgeProviderGitHub,
 		ForgeHost:     "github.com",
-		Repo:          "sealedsecurity/compass",
+		Repo:          "RigelBuild/compass",
 		Number:        99,
 		Title:         "title",
 		Body:          "body",
@@ -205,7 +205,7 @@ func TestRecordAndPublishFansAndRecordsCommittedState(t *testing.T) {
 		ID:            "iss-1",
 		ForgeProvider: store.ForgeProviderGitHub,
 		ForgeHost:     "github.com",
-		Repo:          "sealedsecurity/compass",
+		Repo:          "RigelBuild/compass",
 		Number:        42,
 		State:         store.IssueStateInProgress,
 	}

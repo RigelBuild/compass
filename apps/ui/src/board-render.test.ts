@@ -29,7 +29,7 @@ const GITHUB: ForgeRef = { provider: "github", host: "github.com" };
 function pr(over: Partial<PullRequest>): PullRequest {
 	return {
 		forge: GITHUB,
-		repo: "sealedsecurity/compass",
+		repo: "RigelBuild/compass",
 		number: 0,
 		title: "",
 		forgeState: "open",
@@ -50,7 +50,7 @@ function issue(over: Partial<Issue>): Issue {
 	return {
 		id: "cmp-0",
 		forge: GITHUB,
-		repo: "sealedsecurity/compass",
+		repo: "RigelBuild/compass",
 		number: 41,
 		title: "",
 		body: "",
@@ -155,13 +155,13 @@ describe("issueKey + isMultiForge", () => {
 	});
 
 	test("coordinate repo#number when no tracker and single-forge", () => {
-		const it = issue({ repo: "sealedsecurity/compass", number: 41 });
-		expect(issueKey(it, false)).toBe("sealedsecurity/compass#41");
+		const it = issue({ repo: "RigelBuild/compass", number: 41 });
+		expect(issueKey(it, false)).toBe("RigelBuild/compass#41");
 	});
 
 	test("host-qualified when multiForge", () => {
-		const it = issue({ repo: "sealedsecurity/compass", number: 41 });
-		expect(issueKey(it, true)).toBe("github.com/sealedsecurity/compass#41");
+		const it = issue({ repo: "RigelBuild/compass", number: 41 });
+		expect(issueKey(it, true)).toBe("github.com/RigelBuild/compass#41");
 	});
 
 	test("isMultiForge is false for a one-ForgeRef list", () => {

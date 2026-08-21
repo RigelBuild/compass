@@ -37,7 +37,7 @@ func boardCanonicalIssue(number uint32) *compassv1.Issue {
 			Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
 			Host:     "github.com",
 		},
-		Repo:         "sealedsecurity/compass",
+		Repo:         "RigelBuild/compass",
 		Number:       number,
 		Title:        "a bug",
 		Body:         "it broke",

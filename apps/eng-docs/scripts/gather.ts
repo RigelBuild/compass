@@ -22,7 +22,7 @@ import { Glob } from "bun";
 import { slug as githubSlug } from "github-slugger";
 
 /** The GitHub repo the docsite renders — for edit links + code-file link rewrites. */
-const REPO_SLUG = "sealedsecurity/compass";
+const REPO_SLUG = "RigelBuild/compass";
 
 /**
  * The `docs/` subtrees that map to a nav section by their directory name. Each

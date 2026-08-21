@@ -3,7 +3,7 @@
 > **Design record.** The full `devenv up` dogfood loop for Compass: build + load
 > the `compass-agent` image, bring up postgres + a TLS-door `compass-server`,
 > mint a runner token, enroll `compass-runner`, and drive one real agent session
-> end to end. The design targets the **`sealedsecurity/compass`** repo (its
+> end to end. The design targets the **`RigelBuild/compass`** repo (its
 > `devenv.nix`, `agent-image/`, and `go/cmd/*` binaries); every `devenv.nix:*`,
 > `agent-image/*`, and `go/cmd/*` citation below is a path in that repo at HEAD
 > `21241f720`, not this one. It lives in the sealed design corpus because that is
