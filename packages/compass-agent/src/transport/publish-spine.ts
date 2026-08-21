@@ -223,10 +223,9 @@ export function createPublishSpine(
 				continue;
 			}
 			priority.unshift(...batch.slice(0, priorityCount));
-			const delay =
-				PRIORITY_BATCH_RETRY_MS[
-					Math.min(priorityRetries, PRIORITY_BATCH_RETRY_MS.length - 1)
-				];
+			// The `>= length` guard above is the sole bound, so priorityRetries is
+			// in [0, length-1] here — index directly, no clamp needed.
+			const delay = PRIORITY_BATCH_RETRY_MS[priorityRetries];
 			priorityRetries++;
 			yield* Effect.sleep(Duration.millis(delay));
 		}
