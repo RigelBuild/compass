@@ -90,10 +90,10 @@ jobs:
     # The image closure is the heavy nix build that sizes this timeout, the same
     # cost that motivates ci.yml's 90m.
     timeout-minutes: 90
-    # publish.sh cd's into its own dir, and the skopeo login below uses a
-    # `path:../forks/...` flake ref that only resolves from agent-image/. Run
-    # every step from agent-image/ so both the login and the publish resolve the
-    # forks the same way.
+    # `run: ./publish.sh` resolves relative to this default, and publish.sh's own
+    # `path:../forks/devenv` container build resolves only from agent-image/. The
+    # skopeo login/verify steps do NOT depend on this cwd — they invoke skopeo by
+    # name off PATH (bootstrapped below as an absolute store path).
     defaults:
       run:
         working-directory: agent-image

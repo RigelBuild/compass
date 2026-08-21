@@ -23,13 +23,16 @@
 # a local `direnv`/`devenv shell` puts it on PATH; this file is how CI resolves
 # the identical derivation without entering that (banner-emitting) shell.
 #
-# Pins BOTH the nix2container fork rev AND nixpkgs to the SAME devenv.lock
+# Pins BOTH the nix2container fork rev AND nixpkgs to the SAME root devenv.lock
 # revisions the root dev shell resolves (devenv.yaml's `nix2container` input
 # follows the shell's nixpkgs), so CI builds byte-for-byte the skopeo a local
-# dev box does — the single source of truth for both revs is devenv.lock (OQ2
-# Decision 2: no raw nix2container flake-ref literal). Realized with `nix build`
-# (never `nix eval`, which strips the store context that would build the
-# derivation).
+# dev box does — the single source of truth for the skopeo tool's two revs is
+# the root devenv.lock (OQ2 Decision 2: no raw nix2container flake-ref literal).
+# agent-image/devenv.lock pins nix2container separately and by design — a
+# different consumer (the image BUILD's phantom-store-path patch, not this
+# publish-time skopeo) — so the two locks are not kept in lockstep. Realized
+# with `nix build` (never `nix eval`, which strips the store context that would
+# build the derivation).
 #
 # One output the consumers read `bin/skopeo` off:
 #

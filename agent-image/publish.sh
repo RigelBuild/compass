@@ -3,12 +3,14 @@
 # under each requested tag, enforcing :git-<sha> immutability.
 #
 # Why bash: this is nix-orchestration glue. It builds the compass-agent image
-# through the RigelBuild/devenv fork's `devenv container build` and drives the
-# RigelBuild/nix2container fork's patched skopeo (installed into this devenv, so
-# `skopeo` is on PATH). agent-image/ is a standalone nix devenv with zero
-# bun/TS infrastructure, and the publish must run byte-identically locally and
-# in CI — a bash script with no runtime deps beyond the flakes it already
-# invokes is the one form that does that. Per AGENTS.md, a script that genuinely
+# through the vendored forks/devenv `devenv container build` (that half is not
+# reversed yet) and drives the RigelBuild/nix2container fork's patched skopeo,
+# which it invokes by name off PATH (see the SKOPEO= note below — skopeo is
+# deliberately NOT in agent-image/devenv.nix; it comes from the root dev shell
+# locally or the publish workflow's pinned-helper bootstrap in CI).
+# agent-image/ is a standalone nix devenv with zero bun/TS infrastructure, and
+# the publish must run byte-identically locally and in CI, which this thin bash
+# glue over `nix`/`skopeo` does directly. Per AGENTS.md, a script that genuinely
 # must be bash carries its rationale inline; this is it.
 
 set -euo pipefail
