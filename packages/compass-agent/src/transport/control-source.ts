@@ -55,6 +55,7 @@
 // never-dropped priority lane.
 
 import { create } from "@bufbuild/protobuf";
+import { Effect, Either, Fiber, Logger, ManagedRuntime } from "effect";
 import type { Message } from "./../compassv1";
 import type { AgentControl, ControlSource } from "./../control";
 import { ControlSubscribeRequestSchema } from "./../gen/compass/v1/agent_gateway_pb";
@@ -267,6 +268,15 @@ export function createSocketControlSource(
 	// consumer abandons the iterable (its `return()`), so an abandoned source does
 	// not keep consuming the transport and dispatching into the buffer (M2).
 	const abort = new AbortController();
+	// The source's transitional module-local ManagedRuntime (design record
+	// docs/designs/platform/compass-agent-effect-adoption/design.md §T4). Effect
+	// is confined module-private here: it backs the forked, interruptible reconnect
+	// pump fiber, and is disposed in the iterator's return() — the AsyncIterable
+	// has no drain(), so return() is its only teardown seam. The default logger is
+	// removed so a swallowed pump defect does not double-report to the console,
+	// mirroring the sibling transport modules' runtimes (frame-sink.ts,
+	// publish-spine.ts). T5 consolidates runtime ownership into the transport.
+	const runtime = ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
 	// Seqs decoded to a representable op and queued but not yet applied. Dedups a
 	// redelivery of an op the source already holds (reconnect/takeover) against
 	// re-queueing it; cleared as each is applied on pull.
@@ -412,13 +422,18 @@ export function createSocketControlSource(
 		}
 	}
 
-	// Consume the Control stream on the event loop, reconnecting on a drop. A
-	// clean, Runner-initiated stream end closes the buffer (→ STOPPED); a
-	// non-clean end (thrown) re-opens the subscription on the bounded backoff,
-	// from which the Runner redelivers unacked ops. Runs detached; its terminal
-	// state reaches the consumer through the buffer, never as an unhandled
-	// rejection.
-	async function pump(): Promise<void> {
+	// Consume the Control stream, reconnecting on a drop. A clean, Runner-initiated
+	// stream end closes the buffer (→ STOPPED); a non-clean end (thrown) re-opens
+	// the subscription on the bounded backoff, from which the Runner redelivers
+	// unacked ops. Runs as a forked interruptible fiber on the module-local
+	// runtime (design record §T4); its terminal state reaches the consumer through
+	// the buffer, never as an unhandled rejection. The iterator's return()
+	// interrupts it and aborts the source-lifetime signal (cancelling the in-flight
+	// Control RPC). The ladder is an explicit attempt-indexed loop, NOT
+	// Schedule.fromDelays: the min-uptime flap reset (design record §T4) zeroes the
+	// attempt index mid-ladder, and a Schedule consumed by Effect.retry advances
+	// internally with no external reset handle.
+	const pumpEffect = Effect.gen(function* () {
 		let attempt = 0;
 		// Consecutive reconnects without the session making progress. Progress is
 		// the AckCursor's applied count advancing OR an apply in flight
@@ -453,84 +468,107 @@ export function createSocketControlSource(
 			// sample so it does not read as a meaningful fallback stamp.
 			let openedAt = 0;
 			let established = false;
-			try {
-				const stream = transport.control(
-					create(ControlSubscribeRequestSchema, {}),
-					{
-						signal: abort.signal,
-						onHeader: () => {
-							established = true;
-							openedAt = now();
-						},
+			// Consume one connection on the event loop, exactly as before — the
+			// for-await drives the Connect server-stream. Effect.tryPromise carries
+			// its settlement into the fiber (clean end → Right; drop → Left with the
+			// raw error) without changing the wire behaviour; the raw error is kept
+			// in the failure channel (catch: identity) so buffer.fail() surfaces the
+			// real ConnectError, not an Effect wrapper.
+			const result = yield* Effect.either(
+				Effect.tryPromise({
+					try: async () => {
+						const stream = transport.control(
+							create(ControlSubscribeRequestSchema, {}),
+							{
+								signal: abort.signal,
+								onHeader: () => {
+									established = true;
+									openedAt = now();
+								},
+							},
+						);
+						for await (const wire of stream) {
+							dispatch(wire);
+						}
 					},
-				);
-				for await (const wire of stream) {
-					dispatch(wire);
-				}
+					catch: (err) => err,
+				}),
+			);
+			if (Either.isRight(result)) {
 				buffer.close();
 				return;
-			} catch (err) {
-				// The consumer's return() aborted the stream — not a transport drop.
-				// End quietly (buffer already closed by return()); never reconnect or
-				// fail() an intentional cancellation.
-				if (abort.signal.aborted) return;
-				// No-progress bound, checked BEFORE the uptime reset below — this is
-				// the termination the reset cannot clear. A socket that is accepted,
-				// stays up past the floor, and then fails (wedged Runner, server-side
-				// deadline, door idle timeout) resets the ladder on every drop, so the
-				// ladder can never bound it; what bounds it is that it never makes
-				// progress. Progress is any single application since the last drop OR
-				// an op in flight at drop time (`applyInFlight`) — a long apply
-				// mid-turn cannot advance the ack cursor until the consumer returns for
-				// the next op, so without the in-flight arm a healthy session flapping
-				// during one long turn would be killed mid-apply (SEA-1540). Either arm
-				// zeroes the counter, so a healthy session is untouched however widely
-				// its blips are spaced — the distinction a reconnect-RATE window could
-				// not draw, since a healthy sparse-blip session and a socket wedging at
-				// an idle timeout reconnect at the same rate.
-				const applied = acks.appliedCount;
-				const madeProgress = applied > appliedAtLastDrop || applyInFlight;
-				noProgress = madeProgress ? 0 : noProgress + 1;
-				appliedAtLastDrop = applied;
-				if (noProgress >= CONTROL_RECONNECT_NO_PROGRESS_MAX) {
-					buffer.fail(err);
-					return;
-				}
-				// Reset-on-open flap-detector: a connection that stayed open past the
-				// min-uptime floor was healthy, so its drop resets the backoff climb —
-				// the next reconnect starts fast. A rapid flap (each connection
-				// shorter than the floor) never resets, so it still climbs the budget
-				// to a definitive fail. This replaces resetting on op-receipt, which
-				// left a quiet-but-healthy session (a reconnect redelivering zero ops)
-				// unable to reset and let four silent flaps spuriously ERROR it.
-				//
-				// `established` does NOT reinstate op-receipt gating: a stream that
-				// opened and sat quiet still resets, because the header stamped
-				// `openedAt` and the floor is measured from there. It excludes only a
-				// stream that never opened at all — one whose lazy dial hung and
-				// threw, where the elapsed time is dial latency, not uptime.
-				if (established && now() - openedAt >= CONTROL_RECONNECT_MIN_UPTIME_MS)
-					attempt = 0;
-				if (attempt >= CONTROL_RECONNECT_BACKOFF_MS.length) {
-					buffer.fail(err);
-					return;
-				}
-				const delay = CONTROL_RECONNECT_BACKOFF_MS[attempt++];
-				await sleepOrAbort(delay, abort.signal);
 			}
+			const err = result.left;
+			// The consumer's return() aborted the stream — not a transport drop.
+			// End quietly (buffer already closed by return()); never reconnect or
+			// fail() an intentional cancellation.
+			if (abort.signal.aborted) return;
+			// No-progress bound, checked BEFORE the uptime reset below — this is
+			// the termination the reset cannot clear. A socket that is accepted,
+			// stays up past the floor, and then fails (wedged Runner, server-side
+			// deadline, door idle timeout) resets the ladder on every drop, so the
+			// ladder can never bound it; what bounds it is that it never makes
+			// progress. Progress is any single application since the last drop OR
+			// an op in flight at drop time (`applyInFlight`) — a long apply
+			// mid-turn cannot advance the ack cursor until the consumer returns for
+			// the next op, so without the in-flight arm a healthy session flapping
+			// during one long turn would be killed mid-apply (SEA-1540). Either arm
+			// zeroes the counter, so a healthy session is untouched however widely
+			// its blips are spaced — the distinction a reconnect-RATE window could
+			// not draw, since a healthy sparse-blip session and a socket wedging at
+			// an idle timeout reconnect at the same rate.
+			const applied = acks.appliedCount;
+			const madeProgress = applied > appliedAtLastDrop || applyInFlight;
+			noProgress = madeProgress ? 0 : noProgress + 1;
+			appliedAtLastDrop = applied;
+			if (noProgress >= CONTROL_RECONNECT_NO_PROGRESS_MAX) {
+				buffer.fail(err);
+				return;
+			}
+			// Reset-on-open flap-detector: a connection that stayed open past the
+			// min-uptime floor was healthy, so its drop resets the backoff climb —
+			// the next reconnect starts fast. A rapid flap (each connection
+			// shorter than the floor) never resets, so it still climbs the budget
+			// to a definitive fail. This replaces resetting on op-receipt, which
+			// left a quiet-but-healthy session (a reconnect redelivering zero ops)
+			// unable to reset and let four silent flaps spuriously ERROR it.
+			//
+			// `established` does NOT reinstate op-receipt gating: a stream that
+			// opened and sat quiet still resets, because the header stamped
+			// `openedAt` and the floor is measured from there. It excludes only a
+			// stream that never opened at all — one whose lazy dial hung and
+			// threw, where the elapsed time is dial latency, not uptime. Uptime is
+			// sampled on the INJECTED `now()`, never Effect Clock (design record
+			// §T4: the flap-detector tests inject and advance `now`).
+			if (established && now() - openedAt >= CONTROL_RECONNECT_MIN_UPTIME_MS)
+				attempt = 0;
+			if (attempt >= CONTROL_RECONNECT_BACKOFF_MS.length) {
+				buffer.fail(err);
+				return;
+			}
+			const delay = CONTROL_RECONNECT_BACKOFF_MS[attempt++];
+			// The backoff wait is Effect.sleep(delay) raced against a single
+			// listener on the source-lifetime abort signal, always detached on both
+			// settle paths — kept here as `sleepOrAbort` wrapped in Effect.promise,
+			// which registers exactly ONE live abort listener for the duration of
+			// the wait and ZERO after (design record §T4; pinned by
+			// control-source.test.ts F5). A bare Effect.sleep under fiber
+			// interruption registers nothing on the signal and would redden F5.
+			yield* Effect.promise(() => sleepOrAbort(delay, abort.signal));
 		}
-	}
+	});
 
-	// The pump starts on first iteration and runs once for the source's life. The
+	// The pump starts on first iteration and runs once for the source's life,
+	// forked as an interruptible fiber on the module-local runtime. The
 	// ControlSource is single-consumer by contract (CompassAgent's one control
-	// loop, agent.ts) — guard against a second `for await` spawning a duplicate
-	// pump on the shared buffer/spine.
-	let pumping = false;
+	// loop, agent.ts) — the `pumpFiber` handle both guards against a second
+	// `for await` spawning a duplicate pump on the shared buffer/spine and gives
+	// return() a fiber to interrupt.
+	let pumpFiber: Fiber.RuntimeFiber<void> | undefined;
 	return {
 		[Symbol.asyncIterator](): AsyncIterator<AgentControl> {
-			if (!pumping) {
-				pumping = true;
-				void pump();
+			if (pumpFiber === undefined) {
+				pumpFiber = runtime.runFork(pumpEffect);
 			}
 			// The op yielded on the previous pull, awaiting the apply-then-ack the
 			// consumer's return for the next op proves.
@@ -558,11 +596,20 @@ export function createSocketControlSource(
 					return { value: r.value.op, done: false };
 				},
 				// The consumer abandoned the `for await` (agent.ts's control loop
-				// erroring / breaking): cancel the background pump and the underlying
-				// Control server-stream so an abandoned source stops consuming the
-				// transport, and close the buffer so an in-flight pull settles. Idempotent
-				// (abort/close both no-op once fired). Returns done so the iterator
-				// protocol completes cleanly (M2).
+				// erroring / breaking): tear the source down. `abort.abort()` is the
+				// cancellation ROOT — it cancels the in-flight Control RPC via the
+				// `{ signal }` threaded into transport.control() AND wakes the backoff
+				// wait (sleepOrAbort resolves, detaching its one live abort listener),
+				// so the parked pump fiber unblocks and its top-of-loop guard returns.
+				// It must fire FIRST: the backoff wait is an uninterruptible
+				// Effect.promise, so Fiber.interrupt alone cannot end a fiber parked in
+				// it — only the abort unparks it (design record §T4). buffer.close()
+				// settles an in-flight pull. Then the now-unblocked fiber is interrupted
+				// (a belt-and-suspenders join point) and the module-local ManagedRuntime
+				// is disposed — the AsyncIterable has no drain(), so return() is the
+				// runtime's only teardown seam, and disposing it here is what keeps no
+				// live runtime across the T2–T4 transitional state (design record §T4).
+				// Idempotent: abort/close/interrupt/dispose all no-op once fired.
 				// A pending `lastYielded` is deliberately left UNACKED here. That is
 				// correct for the only path that reaches return() today: agent.ts's
 				// control loop exits solely by `#applyControl` THROWING, and an apply
@@ -574,6 +621,11 @@ export function createSocketControlSource(
 				async return(): Promise<IteratorResult<AgentControl>> {
 					abort.abort();
 					buffer.close();
+					if (pumpFiber !== undefined) {
+						await runtime.runPromise(Fiber.interrupt(pumpFiber));
+						pumpFiber = undefined;
+					}
+					await runtime.dispose();
 					return { value: undefined, done: true };
 				},
 			};

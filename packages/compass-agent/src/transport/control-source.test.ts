@@ -1629,3 +1629,91 @@ test("F6: return() is terminal and idempotent — before any pull, twice over, a
 		done: true,
 	});
 });
+
+test("F7: return() while the pump is parked in the deepest backoff wait tears the fiber down and disposes the module runtime — its awaited teardown never wedges on the uninterruptible wait (T4 no-live-runtime)", async () => {
+	// Contract (design record §T4, the mandated T4 addition): the pump is a forked
+	// fiber on a module-local ManagedRuntime, and the iterator's return() is the
+	// AsyncIterable's only teardown seam (there is no drain()). return() must leave
+	// NO live fiber and NO live runtime: it interrupts the pump fiber and disposes
+	// the runtime, and — critically — that teardown must SETTLE rather than wedge.
+	//
+	// The failure mode this pins is specific to the Effect migration. The backoff
+	// wait is an `Effect.promise(() => sleepOrAbort(delay, abort.signal))`, and
+	// `Effect.promise` is UNINTERRUPTIBLE for the duration of its promise — so a
+	// fiber parked in the deepest (2s) backoff cannot be ended by `Fiber.interrupt`
+	// alone. What unparks it is `abort.abort()`, which resolves `sleepOrAbort`
+	// early (clearing its timer, detaching its one live listener). return() must
+	// therefore abort BEFORE it awaits the interrupt + dispose, or its own awaited
+	// teardown blocks on the 2s timer running to term. Because return() awaits that
+	// teardown, a source that skipped the abort (or ordered it after the awaited
+	// interrupt) would make return() itself hang ~2s — the observable here.
+	//
+	// Non-vacuity (mutation-verified): drop `abort.abort()` from the iterator's
+	// return() (leaving the `await runtime.runPromise(Fiber.interrupt(pumpFiber))`
+	// / `await runtime.dispose()`) → the interrupt cannot end the fiber parked in
+	// the uninterruptible Effect.promise until the 2s timer expires, so return()'s
+	// awaited teardown blocks past the 2s floor and the bounded guard below reds
+	// with its named message rather than a bare suite timeout.
+	const rec = emptyRecorder();
+	const socketPath = await serve(rec, {
+		control: () => dropsImmediately(),
+	});
+	const obs = observingTransport(createUnixSocketTransport(socketPath));
+	const { immediate } = recordingImmediate();
+	const source = createSocketControlSource(obs.transport, immediate, {
+		onUnmapped: () => {},
+		// never advances → uptime 0 << the floor → the climb never resets, so the
+		// pump reaches and parks in its DEEPEST (2000ms) backoff wait.
+		now: () => 0,
+	});
+	const it = source[Symbol.asyncIterator]();
+	const pending = it.next();
+	await obs.streamRejected(DROPS_TO_DEEPEST_BACKOFF);
+	await flush();
+	// Precondition: parked in the deepest backoff, holding exactly one live listener
+	// on the source-lifetime signal — the wait the teardown must unpark, not
+	// outlast. (Same construct F5 pins; asserted here as this test's setup, not its
+	// contract.)
+	expect(obs.controlCalls()).toBe(DROPS_TO_DEEPEST_BACKOFF);
+	expect(obs.liveAbortListeners()).toBe(1);
+
+	// return()'s awaited interrupt + dispose must settle well inside the deepest
+	// backoff delay (2000ms). Real bounded timer (ts-no-test-timers exception,
+	// same rationale as F3/F6): it converts a WEDGED teardown — a return() blocked
+	// on the uninterruptible wait — into a named assertion failure, and is cleared
+	// the moment return() settles, so a passing run waits zero extra time. 1000ms
+	// is comfortably below the 2000ms the abort-skip mutant would block for and far
+	// above the ~16ms a correct teardown takes.
+	const returned =
+		it.return?.() ?? Promise.resolve({ value: undefined, done: true });
+	const guard = new Promise<never>((_, reject) => {
+		const t = setTimeout(
+			() =>
+				reject(
+					new Error(
+						"return() did not settle within 1s — its awaited teardown wedged on the uninterruptible backoff wait (abort.abort() did not unpark the pump fiber before the interrupt/dispose await)",
+					),
+				),
+			1000,
+		);
+		void returned.then(
+			() => clearTimeout(t),
+			() => clearTimeout(t),
+		);
+	});
+	expect(await Promise.race([returned, guard])).toEqual({
+		value: undefined,
+		done: true,
+	});
+	await flush();
+	// The fiber is down: its backoff wait woke and detached, so nothing remains on
+	// the source-lifetime signal. A live fiber (a teardown that did not end it)
+	// would still hold its wait's listener here.
+	expect(obs.liveAbortListeners()).toBe(0);
+	// And the disposed runtime spawns no further work: no reconnect open follows
+	// the teardown.
+	expect(obs.controlCalls()).toBe(DROPS_TO_DEEPEST_BACKOFF);
+	// The abandoned first pull is deliberately NOT awaited (F6 owns the buffer-close
+	// contract); swallow so it can never surface as an unhandled rejection.
+	void pending.catch(() => undefined);
+});

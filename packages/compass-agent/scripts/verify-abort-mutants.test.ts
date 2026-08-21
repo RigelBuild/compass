@@ -185,9 +185,18 @@ describe("isFailing", () => {
 });
 
 describe("the MUTANTS table's recorded expectations", () => {
-	test("exactly one branch is marked UNTESTABLE — the catch-side guard", () => {
+	test("the two UNTESTABLE branches are the abort guards masked by return()'s interrupt", () => {
+		// Before the T4 Effect migration only the catch-side guard was masked (by
+		// the top-of-loop guard). Once return() interrupts the pump fiber in
+		// addition to aborting, the top-of-loop guard is masked too — the interrupt
+		// prevents the re-open whether or not the guard is present, and no public
+		// seam fires the abort without also interrupting. See each entry's
+		// expectedSurvivor for the measured reasoning.
 		const marked = MUTANTS.filter((m) => m.expectedSurvivor !== undefined);
-		expect(marked.map((m) => m.name)).toEqual(["catch-side abort guard"]);
+		expect(marked.map((m) => m.name)).toEqual([
+			"top-of-loop abort guard",
+			"catch-side abort guard",
+		]);
 	});
 
 	test("every UNTESTABLE mark carries its reasoning, not a bare flag", () => {

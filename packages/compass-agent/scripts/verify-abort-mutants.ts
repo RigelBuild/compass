@@ -112,11 +112,27 @@ export const MUTANTS: readonly Mutant[] = [
 		replace: "\t\t\t// Uptime is measured from STREAM ESTABLISHMENT",
 		expect:
 			"a return()'d source must not re-open the subscription on the next loop turn",
+		expectedSurvivor:
+			"Became UNTESTABLE at the public surface with the T4 Effect migration " +
+			"(design record §T4). The pump is now a forked fiber, and the iterator's " +
+			"return() interrupts it (Fiber.interrupt) in addition to abort.abort(). " +
+			"The only public path that fires the abort signal is return(), which " +
+			"ALWAYS also interrupts the fiber — so once the abort wakes the backoff " +
+			"wait, the fiber is interrupted at its next yield boundary and never " +
+			"reaches transport.control() again, whether or not this guard is present. " +
+			"The interrupt absorbs the difference this guard used to make, exactly as " +
+			"the catch-side guard below is absorbed by THIS one. Measured: with the " +
+			"guard removed, F4's `controlCalls() === DROPS_TO_DEEPEST_BACKOFF` (no 5th " +
+			"open) stays green because the interrupted fiber cannot re-open. There is " +
+			"no seam to abort-without-interrupt, so no black-box test can kill it. " +
+			"The guard is kept as correct defense-in-depth (deleting it would be a " +
+			"control-flow change with no behavioural payoff); this entry records that " +
+			"the migration, not a lost test, is why it now survives.",
 	},
 	{
 		name: "catch-side abort guard",
-		find: "\t\t\t\tif (abort.signal.aborted) return;\n\t\t\t\t// No-progress bound",
-		replace: "\t\t\t\t// No-progress bound",
+		find: "\t\t\tif (abort.signal.aborted) return;\n\t\t\t// No-progress bound",
+		replace: "\t\t\t// No-progress bound",
 		expect:
 			"an abort landing mid-stream must end quietly, never reconnect or fail() the buffer",
 		expectedSurvivor:
@@ -138,9 +154,8 @@ export const MUTANTS: readonly Mutant[] = [
 	},
 	{
 		name: "abortable backoff sleep",
-		find: "\t\t\t\tawait sleepOrAbort(delay, abort.signal);",
-		replace:
-			"\t\t\t\tawait new Promise<void>((resolve) => setTimeout(resolve, delay));",
+		find: "\t\t\tyield* Effect.promise(() => sleepOrAbort(delay, abort.signal));",
+		replace: "\t\t\tyield* Effect.sleep(delay);",
 		expect:
 			"an abort during the backoff must wake immediately, not sit out the full delay",
 	},
