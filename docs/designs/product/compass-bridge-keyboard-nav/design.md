@@ -393,8 +393,11 @@ Editable-target guard: keys without modifiers (arrows, Enter, Space, Home/End)
 never fire while `event.target` is an input/textarea/contenteditable — so the
 one `when`-scoped family in today's keymap, `comms.*` (`when:"main"`,
 `keymap.ts:98-100`), is not dispatched through tier-2 at all: the comms composer
-is a text `<input>` (`ChannelView.tsx:316`) that handles `Enter`/`Shift+Enter`
-in its own `onKeyDown` (`ChannelView.tsx:322-327`), so comms send/newline stay
+is a text `<input>` (`ChannelView.tsx:316`) that handles plain `Enter` locally
+(`preventDefault` + send on non-shift `Enter`, `ChannelView.tsx:321-327`);
+`Shift+Enter` is not intercepted (a single-line `<input>`, so `comms.newline` has
+no local effect), and every `comms.*` `when:"main"` entry is blocked from tier-2
+by the editable-target guard regardless. So comms send/newline stay
 composer-local, and board `Enter` (tier-1, board focused) vs comms `Enter`
 (composer-local, board unfocused) are focus-exclusive, never contending. Register
 `view.bridge` → `store.showBridge()` as
@@ -499,21 +502,28 @@ T1 — the Lists-block convention, `keymap.ts:45-48,78-82`).
 Test cycle: `Bridge.test.tsx` component tests — one tab stop on the mounted
 board, arrow traversal across a fixture with a multi-card cell + an empty cell,
 Enter selects, Shift+Enter opens agent (while a stub `comms.send` is registered,
-proving tier-1 wins), Space fires the chip action (and is a no-op on a
-chip-less card), gutter Enter opens agent, the positional `aria-label` is
+proving tier-1 wins), Space fires the chip action and on a chip-less card is
+still claimed — handler reports handled, dispatcher `preventDefault`s (no
+select, no scroll), never a fall-through — gutter Enter opens agent, the
+positional `aria-label` is
 present on the cursor stop, tab-switch resets cursor, pointer paths unregressed.
 
 ### T5 — Empty-board centered message
 
-`Show`-gate each tab's `.bridge-grid` on its stop source (issues:
-`activeIssues(store.issues()).length`; PRs: `prGroups()` rows) with a
+`Show`-gate each tab's `.bridge-grid` on **T3's built stop list being empty**
+(`boardStops(input).length === 0`), not `activeIssues`/`prGroups` directly — so
+both board modes agree and the message tracks what is actually reachable (the
+all-unassigned-in-swimlane caveat, §the empty-board message). `activeIssues`
+(`board.ts:39-41`) / `prGroups` remain the underlying source that *feeds*
+`boardStops`, never the gate. Render a
 `.bridge-empty` centered fallback on the panel surface; toolbar + segmented
 counts render unchanged. Copy per §Approach. CSS: a `.bridge-empty` block in
 the board's stylesheet — flex-centered, faint text, panel background tokens
 only. Extend the stub/fixture path so an empty board is constructible in tests
 and the visual harness captures `bridge-empty.png`.
-Interfaces: consumes `activeIssues` (`board.ts:39-41`), `prGroups`
-(`Bridge.tsx:127-134`); produces the `.bridge-empty` markup + CSS + copy, a
+Interfaces: consumes T3's `boardStops` (the built stop list, over `activeIssues`
+`board.ts:39-41` / `prGroups` `Bridge.tsx:127-134` as its feed); produces the
+`.bridge-empty` markup + CSS + copy, a
 `Bridge.test.tsx` empty-board assertion (message shown, zero roving stops,
 toolbar intact), and the harness shot.
 
@@ -568,8 +578,9 @@ deferrals.
   binding. The board↔comms `Enter` collision the whole-zone rule could not
   resolve is resolved by **focus-exclusivity**: board `Enter` is tier-1 while
   the board is the focused group, and comms `Enter` is handled composer-locally
-  (the comms composer is a text `<input>` with its own `onKeyDown`,
-  `ChannelView.tsx:316,322-327`) and never dispatched through tier-2 anyway (the
+  (the comms composer is a text `<input>` whose `onKeyDown` `preventDefault`s and
+  sends on non-shift `Enter`, `ChannelView.tsx:316,321-327`) and never
+  dispatched through tier-2 anyway (the
   editable-target guard, T1). The two are focus-exclusive, so they never
   contend. This reads the frozen D5 "scoped wins while its zone is
   active" ranking as *focused-surface* precedence, not literal whole-zone
