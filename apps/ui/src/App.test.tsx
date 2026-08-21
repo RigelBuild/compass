@@ -29,7 +29,7 @@ import { flush, mountApp } from "./test-router";
 //     which only fires for 1:1 agent DMs. Derived below via the same ask finder
 //     ChannelView.test.tsx uses, so both suites pin to the same channel + real
 //     threaded content renders (proving the surface really mounted, not empty).
-//   - Agent `acc-cook` (handle "cook", home DM dm-cook) — the agent openAgent
+//   - Agent `acc-compass-ui` (handle "compass-ui", home DM dm-compass-ui) — the agent openAgent
 //     selects; its name (derived from STUB_AGENTS, not copied) is the label the
 //     selected-agent view-tab must carry.
 // Query anchors (grepped): Bridge root `.bridge` (Bridge.tsx:46); LeftSidebar
@@ -65,7 +65,7 @@ const STANDALONE_CHANNEL_ID = standaloneChannelId(); // "ch-svc-compass"
 // The agent openAgent selects (brief-specified id) with its name resolved from
 // the fixture, so the view-tab label assertion tracks the real fixture name
 // rather than a copied literal.
-const AGENT_ID = "acc-cook";
+const AGENT_ID = "acc-compass-ui";
 const AGENT_NAME = (() => {
 	const agent = STUB_AGENTS.find((a) => a.account.id === AGENT_ID);
 	if (!agent) {
@@ -73,7 +73,7 @@ const AGENT_NAME = (() => {
 			`fixture has no agent ${AGENT_ID} — T7 agent-tab test needs one`,
 		);
 	}
-	return agent.account.displayName ?? agent.account.handle; // "cook"
+	return agent.account.displayName ?? agent.account.handle; // "compass-ui"
 })();
 
 // Mount the real App shell over a fixture-backed store on the shared

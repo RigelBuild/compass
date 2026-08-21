@@ -141,7 +141,7 @@ describe("store live read path", () => {
 	// legs.
 	test("reduces a snapshot and a streamed MessagePosted into the accessors", async () => {
 		const fake = createFakeComms({
-			accounts: [wireAccount(CALLER), wireAccount("acc-cook")],
+			accounts: [wireAccount(CALLER), wireAccount("acc-compass-ui")],
 			channels: [wireChannel(CHANNEL)],
 			messagesByChannel: {
 				[CHANNEL]: [wireTextMessage("m-snap", 100, "from the snapshot")],
@@ -150,7 +150,10 @@ describe("store live read path", () => {
 
 		await withLiveStore(fake, async (store, settled) => {
 			// (a) the snapshot populated every accessor.
-			expect(store.accounts().map((a) => a.id)).toEqual([CALLER, "acc-cook"]);
+			expect(store.accounts().map((a) => a.id)).toEqual([
+				CALLER,
+				"acc-compass-ui",
+			]);
 			expect(store.channels().map((c) => c.id)).toEqual([CHANNEL]);
 			expect(store.messages().map((m) => m.id)).toEqual(["m-snap"]);
 			// …and the selection settled on the (subscribed) snapshot channel with
@@ -1086,22 +1089,22 @@ describe("store agents() live join (§T3)", () => {
 		const fake = createFakeComms({
 			accounts: [
 				wireAccount(CALLER),
-				wireAgentAccount("acc-cook"),
+				wireAgentAccount("acc-compass-ui"),
 				wireAgentAccount("acc-idle"),
 			],
 			channels: [wireChannel(CHANNEL)],
-			roster: [rosterEntry("acc-cook", AgentPresence.WORKING)],
+			roster: [rosterEntry("acc-compass-ui", AgentPresence.WORKING)],
 		});
 
 		await withLiveStore(fake, async (store) => {
 			// Only the two agent accounts, in account order; the caller is filtered.
 			expect(store.agents().map((a) => a.account.id)).toEqual([
-				"acc-cook",
+				"acc-compass-ui",
 				"acc-idle",
 			]);
-			// acc-cook has a WORKING roster entry; acc-idle has none → the miss maps
+			// acc-compass-ui has a WORKING roster entry; acc-idle has none → the miss maps
 			// to "stopped", NOT undefined/idle.
-			expect(store.agentById("acc-cook")?.lifecycle).toBe("working");
+			expect(store.agentById("acc-compass-ui")?.lifecycle).toBe("working");
 			expect(store.agentById("acc-idle")?.lifecycle).toBe("stopped");
 		});
 	});
@@ -1147,14 +1150,14 @@ describe("store agents() live join (§T3)", () => {
 	// a message never re-joins the roster.
 	test("a message does not re-join the roster (agents() keeps identity)", async () => {
 		const fake = createFakeComms({
-			accounts: [wireAccount(CALLER), wireAgentAccount("acc-cook")],
+			accounts: [wireAccount(CALLER), wireAgentAccount("acc-compass-ui")],
 			channels: [wireChannel(CHANNEL)],
-			roster: [rosterEntry("acc-cook", AgentPresence.WORKING)],
+			roster: [rosterEntry("acc-compass-ui", AgentPresence.WORKING)],
 		});
 
 		await withLiveStore(fake, async (store, settled) => {
 			const before = store.agents();
-			expect(before.map((a) => a.account.id)).toEqual(["acc-cook"]);
+			expect(before.map((a) => a.account.id)).toEqual(["acc-compass-ui"]);
 
 			await fake.emit(
 				{

@@ -12,7 +12,7 @@ import { testQueryClient } from "../test-support";
 import { RightSidebar } from "./RightSidebar";
 
 // Render acceptance spec for the compass-0.7 fleet pane (design compass-0.7,
-// FleetPane in RightSidebar.tsx). A fleet tab (Supervisor · Cook) used to
+// FleetPane in RightSidebar.tsx). A fleet tab (Supervisor · Compass-UI) used to
 // render CONTROL-ONLY — just a button into the agent's workspace. It now renders
 // the agent's home-DM conversation INLINE above a compact "Open workspace"
 // control, and — per Matt's kill-the-gate ruling (2026-07-20) — any ask in that
@@ -58,7 +58,7 @@ function mountRightSidebar(): { store: AppStore; container: HTMLElement } {
 // out of `rightTabGroups()` (SEA-1645 P2), which emits only PINNED agents, so a
 // test must pin the agent before activating its tab. Both ids resolve in the
 // fixture, so once pinned the pane renders their home-DM inline.
-const FLEET_TABS = ["acc-supervisor", "acc-cook"] as const;
+const FLEET_TABS = ["acc-supervisor", "acc-compass-ui"] as const;
 
 // The agent account's home-DM channel id — resolved through the SAME account set
 // the store exposes (STUB_ACCOUNTS carries agent accounts with homeChannelId),
@@ -191,8 +191,8 @@ describe("RightSidebar fleet pane (compass-0.7)", () => {
 	// stops resolving a live agent.
 	test("a resolved fleet tab renders the live pane, not the unreachable block", () => {
 		const { store, container } = mountRightSidebar();
-		store.pinAgent("acc-cook");
-		store.setActiveRightTab("agent:acc-cook");
+		store.pinAgent("acc-compass-ui");
+		store.setActiveRightTab("agent:acc-compass-ui");
 
 		expect(container.querySelector(".fleet-pane")).not.toBeNull();
 		expect(container.querySelector(".fleet-unreachable")).toBeNull();
