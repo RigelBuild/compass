@@ -40,14 +40,19 @@ const (
 // Route resolves the ResourceClass an op runs at from the classifier's verdict
 // and an optional agent hint. It fails closed — an unknown or unrecognized op
 // escalates to ClassBurst — and applies the hint upgrade-only: the hint may
-// raise the class above the policy floor but a hint below the floor is refused,
-// so the returned class is never cheaper than policy chose.
+// raise the class above the policy floor, but a hint below the floor or outside
+// the recognized class set is refused. So the returned class is always one of
+// the recognized classes and is never cheaper than policy chose.
 func Route(op OpClass, hint ResourceClass) ResourceClass {
 	base := baseClass(op)
-	// Upgrade-only: a hint above the floor raises the class; a hint at or below
-	// the floor leaves it untouched. max encodes both — a downgrade hint can
-	// never win because base is never below it in that case.
-	if hint > base {
+	// Upgrade-only, within the recognized range: a hint above the floor raises
+	// the class, but only when it names a real class (<= ClassBurst, the
+	// heaviest). An out-of-range or garbage hint is refused exactly as a
+	// below-floor hint is — it collapses to the policy floor rather than
+	// propagating an unrecognized class. So Route's verdict is always one of the
+	// recognized classes, and a malformed hint can neither lower isolation nor
+	// escape the class set.
+	if hint > base && hint <= ClassBurst {
 		return hint
 	}
 	return base

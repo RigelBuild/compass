@@ -33,12 +33,16 @@ func TestRouteFailClosedAndUpgradeOnly(t *testing.T) {
 		{"hint raises inner to burst", OpInnerLoop, ClassBurst, ClassBurst},
 		{"hint raises resized to burst", OpResize, ClassBurst, ClassBurst},
 
-		// Downgrade refused: a hint below the floor is ignored; the class never
-		// drops beneath what policy chose.
+		// Refused: a hint below the floor is ignored, and a hint outside the
+		// recognized class set (> ClassBurst) is likewise refused to the floor —
+		// so the class never drops beneath what policy chose and Route never
+		// emits an unrecognized class.
 		{"downgrade hint on resize refused", OpResize, ClassInner, ClassResized},
 		{"downgrade hint on burst refused", OpBurst, ClassInner, ClassBurst},
 		{"downgrade hint on burst to resized refused", OpBurst, ClassResized, ClassBurst},
 		{"downgrade hint on unknown refused", OpUnknown, ClassInner, ClassBurst},
+		{"out-of-range hint refused to inner floor", OpInnerLoop, ResourceClass(99), ClassInner},
+		{"out-of-range hint refused to resize floor", OpResize, ResourceClass(99), ClassResized},
 	}
 
 	for _, tc := range cases {

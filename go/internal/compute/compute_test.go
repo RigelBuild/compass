@@ -224,6 +224,25 @@ func TestInPlaceExecAppliesTimeoutAsContextDeadline(t *testing.T) {
 			t.Fatal("engine ctx has a deadline for a zero Timeout; want the inherited deadline-less ctx")
 		}
 	})
+	t.Run("caller deadline shorter than timeout wins", func(t *testing.T) {
+		eng := &recordingEngine{}
+		cr := NewInPlace(eng, runtime.ContainerID("sess-container"), runtime.EgressPolicy{})
+
+		// A caller ctx already bounded tighter than spec.Timeout: the effective
+		// deadline must stay the caller's, never be pushed out to now+Timeout.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := cr.Exec(ctx, ComputeSpec{Command: []string{"go", "test"}, Timeout: 30 * time.Second}); err != nil {
+			t.Fatalf("Exec returned error: %v", err)
+		}
+		deadline, ok := eng.gotCtx.Deadline()
+		if !ok {
+			t.Fatal("engine ctx has no deadline; caller deadline was dropped")
+		}
+		if remaining := time.Until(deadline); remaining <= 0 || remaining > 5*time.Second {
+			t.Fatalf("deadline %s out; want (0, 5s] from the tighter caller ctx, not the 30s spec.Timeout", remaining)
+		}
+	})
 }
 
 // Guard the seam type identities: ComputeRuntime must be satisfied by both the
