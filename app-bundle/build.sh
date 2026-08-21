@@ -169,9 +169,16 @@ if [[ ! -f "$STAGE/bin/dist/index.html" ]]; then
 fi
 log "  bin/dist/index.html present"
 
-# --- 7. Tar the bundle dir.
+# --- 7. Tar the bundle dir. Clear ALL prior release tarballs first, not just
+# this version's: build.sh stamps the name with the git sha, so a dev box that
+# builds across commits (or a reused moon cache dir) accumulates stale
+# compass-app-*.tar.gz beside the fresh one. The smoke gate globs the one
+# tarball in this dir and fails on more than one (it must smoke exactly this
+# build), so "one tarball after a build" is an invariant this step owns. CI's
+# workspace is clean so this is a no-op there; it is the dev-box path that needs
+# it.
 log "Creating tarball: $TARBALL"
-rm -f "$SCRIPT_DIR/$TARBALL"
+rm -f "$SCRIPT_DIR"/compass-app-*-linux-amd64.tar.gz
 tar -czf "$SCRIPT_DIR/$TARBALL" -C "$SCRIPT_DIR" "$BUNDLE"
 
 log "Done: $TARBALL"

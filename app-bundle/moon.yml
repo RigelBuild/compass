@@ -60,8 +60,46 @@ tasks:
       - 'bundle-env.nix'
       - 'compass.desktop'
 
-  ci:
+  smoke:
+    # The automated packaged-artifact bring-up gate (T6.5): unpack THIS build's
+    # tarball and drive the packaged postgres + server binaries to
+    # GetServerInfo-ready — stack.spawnChain steps 1-4, the T4 embedded smoke
+    # minus the two podman legs (agent image + compass-runner enroll). Those
+    # legs need rootless podman + GHCR, which on CI live only in the privileged
+    # dogfood-e2e job, not the bare gates runner this bundle task rides; wiring
+    # the bundle there would be a ci.yml edit the frozen packaging design forbids
+    # (A4). So this gate covers the podman-free bring-up automatically and
+    # app-bundle/SMOKE.md carries the runner/board residue as a manual runbook.
+    #
+    # Why it catches what compass-go:test + dogfood-e2e cannot: both bring the
+    # stack up from devenv-PATH binaries, where postgres share/ + lib/ sit beside
+    # bin/ in one nix store — so a bundle that staged only bin/ still passes
+    # there. This drives the PACKAGED tree (share + lib as separate store
+    # symlinks) from the tarball, so a staging regression (the defect T6.5 found)
+    # reds here and only here.
+    #
+    # The `bundlesmoke`-tagged test lives in the go module (go/bundlesmoke); run
+    # it with `go -C` so it resolves go.mod, handing it this project's dir via
+    # COMPASS_BUNDLE_DIR so resolveTarball globs the one artifact `build` just
+    # produced. `-count 1` (space, not `-count=1`: moon splits an arg on `=`, so
+    # the `=1` form parses as a bare `-count` plus a stray `=1`) so a cached PASS
+    # never stands in for a fresh bring-up; -timeout exceeds the test's own
+    # smokeBudget so a wedge surfaces as the test's legible phase error, not an
+    # opaque binary kill.
+    command: 'go -C ../go test -tags "unix bundlesmoke" -count 1 -timeout 5m ./bundlesmoke/'
     deps: ['build']
+    env:
+      # $projectRoot is app-bundle/'s ABSOLUTE path. It must be absolute, not
+      # '.': `go test` runs the test binary with its cwd set to the package dir
+      # (go/bundlesmoke), so a relative dot would glob there, not here.
+      COMPASS_BUNDLE_DIR: '$projectRoot'
+    options:
+      cache: false
+      runInCI: true
+      runFromWorkspaceRoot: false
+
+  ci:
+    deps: ['smoke'] # smoke deps [build], so build is transitive
     options:
       cache: false
       runInCI: true
