@@ -1,0 +1,134 @@
+/**
+ * Keymap dispatcher (RIG-2130 T1). Installs ONE window `keydown` listener that
+ * normalizes each event to a chord string, then resolves it through the ratified
+ * three-tier model (RD-2): active roving group → zone-scoped entry → window
+ * global. A matched entry whose command is unregistered, or whose group handler
+ * declines (`false`), falls through to the next tier — so a chord the active
+ * group does not claim (e.g. `Mod+B` while the board is focused) still reaches
+ * the global `view.bridge`. The caller registers commands and supplies the
+ * active-group accessor; this module registers nothing.
+ */
+
+import type { CommandId, CommandRegistry } from "./commands";
+import { DEFAULT_KEYMAP, type Platform, resolveChord } from "./keymap";
+import type { RovingGroupHandle } from "./roving";
+import type { FocusZone } from "./zones";
+
+/**
+ * Normalize a `KeyboardEvent` to a concrete-modifier chord string comparable
+ * with `resolveChord(entry.chord, platform)`. Modifier order is fixed —
+ * `Mod+Shift+Alt+Key` — with `Mod` rendered as the platform's concrete modifier
+ * (`Cmd` on macOS via `metaKey`, `Ctrl` elsewhere via `ctrlKey`). Space's raw
+ * `event.key` (`" "`) becomes `Space`; a single-character key is upper-cased so
+ * `b` matches the keymap's `B` (and `,`/`\` pass through unchanged).
+ */
+export function eventToChord(event: KeyboardEvent, platform: Platform): string {
+	const parts: string[] = [];
+	if (platform === "mac" ? event.metaKey : event.ctrlKey) {
+		parts.push(platform === "mac" ? "Cmd" : "Ctrl");
+	}
+	if (event.shiftKey) parts.push("Shift");
+	if (event.altKey) parts.push("Alt");
+	let key = event.key;
+	if (key === " ") key = "Space";
+	else if (key.length === 1) key = key.toUpperCase();
+	parts.push(key);
+	return parts.join("+");
+}
+
+/**
+ * A group-relative command id — the Lists block (`list.*`) whose action the
+ * active roving group owns, plus the board's own chords (`board.*`, wired in
+ * Wave 2). These are the ids the dispatcher routes to `handleCommand`; every
+ * other id (`view.*`, `zone.*`, `comms.*`, …) is resolved against the registry.
+ */
+function isGroupRelative(id: CommandId): boolean {
+	return id.startsWith("list.") || id.startsWith("board.");
+}
+
+/** Whether an event target owns its own text keys (comms composer, etc.). */
+function isEditableTarget(target: EventTarget | null): boolean {
+	return (
+		target instanceof HTMLInputElement ||
+		target instanceof HTMLTextAreaElement ||
+		(target instanceof HTMLElement && target.isContentEditable)
+	);
+}
+
+/**
+ * Install the global keymap. Adds one `keydown` listener and returns the
+ * uninstaller (removes exactly that listener). `active` yields the focused
+ * roving group (or `null`); `activeZone` yields the focused zone for the scoped
+ * tier and defaults to `() => null` (no live zone controller in this wave, so
+ * tier 2 is dormant until one exists — kept correct and testable via the stub).
+ */
+export function installKeymap(
+	registry: CommandRegistry,
+	active: () => RovingGroupHandle | null,
+	activeZone: () => FocusZone | null = () => null,
+): () => void {
+	const platform: Platform = /mac/i.test(
+		navigator.platform || navigator.userAgent,
+	)
+		? "mac"
+		: "other";
+
+	const handler = (event: KeyboardEvent): void => {
+		const chord = eventToChord(event, platform);
+		const matching = DEFAULT_KEYMAP.filter(
+			(entry) => resolveChord(entry.chord, platform) === chord,
+		);
+		if (matching.length === 0) return;
+
+		// Editable-target guard: a modifier-less chord (arrows, Enter, Space,
+		// Home/End, and bare Shift combos) never fires while focus is in a text
+		// field — the composer keeps its local keys. Mod/Ctrl/Alt chords are
+		// global and are NOT guarded.
+		const hasCommandModifier = event.metaKey || event.ctrlKey || event.altKey;
+		if (!hasCommandModifier && isEditableTarget(event.target)) return;
+
+		// Tier 1 — active group. Route a group-relative chord to the group; a
+		// `true` return handles it (and suppresses native activation), a `false`
+		// (declines) falls through to the next tier.
+		const group = active();
+		if (group) {
+			const groupEntry = matching.find((entry) =>
+				isGroupRelative(entry.commandId),
+			);
+			if (groupEntry && group.handleCommand(groupEntry.commandId)) {
+				event.preventDefault();
+				event.stopPropagation();
+				return;
+			}
+		}
+
+		// Tier 2 — scoped. A `when`-scoped entry whose zone is active wins over a
+		// window-global one. An unregistered scoped command falls through.
+		const zone = activeZone();
+		if (zone) {
+			const scopedEntry = matching.find((entry) => entry.when === zone);
+			if (scopedEntry) {
+				const command = registry.get(scopedEntry.commandId);
+				if (command) {
+					command.run();
+					event.preventDefault();
+					return;
+				}
+			}
+		}
+
+		// Tier 3 — global. A window-global unscoped entry fires anywhere. An
+		// unregistered global command does not swallow the event.
+		const globalEntry = matching.find((entry) => entry.when === undefined);
+		if (globalEntry) {
+			const command = registry.get(globalEntry.commandId);
+			if (command) {
+				command.run();
+				event.preventDefault();
+			}
+		}
+	};
+
+	window.addEventListener("keydown", handler);
+	return () => window.removeEventListener("keydown", handler);
+}

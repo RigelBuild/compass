@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
 import { prBoardRows, prCount } from "../board";
 import { StoreContext } from "../context";
+import type { CommandId } from "../keyboard/commands";
+import { createCommandRegistry } from "../keyboard/registry";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_ISSUES } from "../stub-data";
 import { testQueryClient } from "../test-support";
@@ -256,5 +258,285 @@ describe("Bridge card badges (Record B §3)", () => {
 		expect(store.selectedIssueId()).toBe(before);
 		expect(groupingSeg(container)).not.toBeNull();
 		expect(container.querySelectorAll(".card-issue-link")).toHaveLength(0);
+	});
+});
+
+// T4 — the whole board is ONE roving-tabindex group with a 2-D cursor (RIG-2130,
+// DL-220/221; design §471-509). The board mounts its own keymap + roving group,
+// so these drive real window `keydown`s (the same seam the dispatcher listens
+// on) and assert against the live DOM + store. The fixture has no swimlane
+// multi-card cell, so the multi-card traversal is exercised in status mode (the
+// in_review column stacks SEA-1022/1085/847) and the empty-cell skip in swimlane
+// mode (compass-ui's queued/blocked cells are empty between its cards).
+const boardGrouping = (container: HTMLElement): HTMLElement | null =>
+	container.querySelector('[aria-label="Board grouping"]');
+const clickGrouping = (
+	container: HTMLElement,
+	label: "Swimlanes" | "Status",
+) => {
+	const btn = [
+		...container.querySelectorAll<HTMLButtonElement>(
+			'[aria-label="Board grouping"] button',
+		),
+	].find((b) => b.textContent === label);
+	if (!btn) throw new Error(`grouping ${label} not found`);
+	fireEvent.click(btn);
+};
+// The cursor is the sole `tabindex="0"` stop; its positional aria-label names it.
+const cursorLabel = (container: HTMLElement): string | null =>
+	container
+		.querySelector<HTMLElement>('[tabindex="0"]')
+		?.getAttribute("aria-label") ?? null;
+// A real window keydown — the dispatcher's one listener resolves it.
+const press = (init: KeyboardEventInit): KeyboardEvent => {
+	const event = new KeyboardEvent("keydown", {
+		bubbles: true,
+		cancelable: true,
+		...init,
+	});
+	window.dispatchEvent(event);
+	return event;
+};
+
+describe("Bridge board roving group (T4, DL-220/221)", () => {
+	test("the mounted board is one roving group: exactly one tabindex=0 stop", () => {
+		const { container } = mountBridge();
+		const tabbable = container.querySelectorAll('[tabindex="0"]');
+		expect(tabbable).toHaveLength(1);
+		// The single stop is a board card/gutter, not a nested chip.
+		expect(tabbable[0].classList.contains("cx-card")).toBe(true);
+		// Every other card + gutter is demoted to -1 (no stray native Tab stop).
+		const stops = container.querySelectorAll(".cx-card, .bridge-lane");
+		expect(stops.length).toBeGreaterThan(1);
+		for (const s of stops) {
+			if (s === tabbable[0]) continue;
+			expect((s as HTMLElement).tabIndex).toBe(-1);
+		}
+	});
+
+	test("the cursor seeds to the selected card (store seeds STUB_ISSUES[0])", () => {
+		const { store, container } = mountBridge();
+		expect(store.selectedIssueId()).toBe(STUB_ISSUES[0].id); // ws-1022
+		expect(cursorLabel(container)).toBe("Issue SEA-1022");
+	});
+
+	test("Up/Down traverse a multi-card column (status mode in_review stack)", () => {
+		const { container } = mountBridge();
+		clickGrouping(container, "Status");
+		// The in_review column stacks three cards; the cursor rests on SEA-1022.
+		expect(cursorLabel(container)).toBe("Issue SEA-1022");
+		press({ key: "ArrowDown" });
+		expect(cursorLabel(container)).toBe("Issue SEA-1085");
+		press({ key: "ArrowDown" });
+		expect(cursorLabel(container)).toBe("Issue SEA-847");
+		// No wrap: Down at the column end clamps.
+		press({ key: "ArrowDown" });
+		expect(cursorLabel(container)).toBe("Issue SEA-847");
+		press({ key: "ArrowUp" });
+		expect(cursorLabel(container)).toBe("Issue SEA-1085");
+	});
+
+	test("Left skips empty cells and lands on the row gutter (swimlane)", () => {
+		const { container } = mountBridge();
+		// compass-ui's row: SEA-1022 (in_review) and SEA-965 (in_progress) are the
+		// only cards; queued/blocked cells are empty, and the gutter is column -1.
+		expect(cursorLabel(container)).toBe("Issue SEA-1022");
+		press({ key: "ArrowLeft" });
+		expect(cursorLabel(container)).toBe("Issue SEA-965"); // in_progress
+		press({ key: "ArrowLeft" });
+		// The empty queued/blocked cells are skipped — straight to the gutter head.
+		expect(cursorLabel(container)).toBe("compass-ui lane");
+		// No wrap: Left at the gutter clamps.
+		press({ key: "ArrowLeft" });
+		expect(cursorLabel(container)).toBe("compass-ui lane");
+	});
+
+	test("Enter selects the cursor card and suppresses native activation", () => {
+		const { store, container } = mountBridge();
+		clickGrouping(container, "Status");
+		press({ key: "ArrowDown" }); // cursor → SEA-1085 (ws-1085)
+		const event = press({ key: "Enter" });
+		expect(store.selectedIssueId()).toBe("ws-1085");
+		expect(event.defaultPrevented).toBe(true);
+	});
+
+	test("Shift+Enter opens the assigned agent — tier-1 board claim beats when:main comms", () => {
+		// The load-bearing precedence test. A competing `comms.newline`/`comms.send`
+		// is registered in the SAME registry the board installs against, in the
+		// SAME `main` zone; `Shift+Enter → comms.newline {when:"main"}` is a frozen
+		// keymap entry. The board's `board.openAssignedAgent` is group-relative, so
+		// the dispatcher's tier 1 claims it AHEAD of the scoped comms entry.
+		let commsNewlineRan = 0;
+		let commsSendRan = 0;
+		const registry = createCommandRegistry();
+		registry.register({
+			id: "comms.newline" as CommandId,
+			title: "Insert newline",
+			keywords: [],
+			scope: "main",
+			run: () => commsNewlineRan++,
+		});
+		registry.register({
+			id: "comms.send" as CommandId,
+			title: "Send",
+			keywords: [],
+			scope: "main",
+			run: () => commsSendRan++,
+		});
+		let store!: AppStore;
+		render(() => {
+			store = createAppStore({ queryClient: testQueryClient() });
+			return (
+				<StoreContext.Provider value={store}>
+					<Bridge registry={registry} />
+				</StoreContext.Provider>
+			);
+		});
+		// Cursor on SEA-1022 (assignee acc-compass-ui). Shift+Enter opens the agent.
+		const event = press({ key: "Enter", shiftKey: true });
+		expect(store.view()).toBe("agent");
+		expect(store.selectedAgentId()).toBe("acc-compass-ui");
+		expect(event.defaultPrevented).toBe(true);
+		// The comms entry NEVER fired — the board won at tier 1.
+		expect(commsNewlineRan).toBe(0);
+		expect(commsSendRan).toBe(0);
+	});
+
+	test("Space fires the cursor card's cross-link (Issues → PRs)", () => {
+		const { store, container } = mountBridge();
+		// Cursor SEA-1022 has a PR chip; Space is its cross-link (select + flip).
+		const event = press({ key: " " });
+		expect(event.defaultPrevented).toBe(true);
+		expect(store.selectedIssueId()).toBe("ws-1022");
+		expect(boardGrouping(container)).toBeNull(); // flipped to the PRs tab
+	});
+
+	test("Space on a chip-less card is still claimed (no select, no scroll, no fall-through)", () => {
+		const { store, container } = mountBridge();
+		// Move to SEA-965 (compass-ui, in_progress) — an issue with no PR, so no
+		// cross-link. Space must STILL be claimed: the handler reports handled, the
+		// dispatcher preventDefaults, and nothing selects / scrolls / falls through.
+		press({ key: "ArrowLeft" });
+		expect(cursorLabel(container)).toBe("Issue SEA-965");
+		const selectedBefore = store.selectedIssueId();
+		const event = press({ key: " " });
+		expect(event.defaultPrevented).toBe(true); // claimed → native scroll suppressed
+		expect(store.selectedIssueId()).toBe(selectedBefore); // no select
+		expect(boardGrouping(container)).not.toBeNull(); // no flip — still Issues
+	});
+
+	test("Enter on a gutter opens the agent", () => {
+		const { store, container } = mountBridge();
+		// Land on compass-ui's gutter head (Left past the empty cells).
+		press({ key: "ArrowLeft" });
+		press({ key: "ArrowLeft" });
+		expect(cursorLabel(container)).toBe("compass-ui lane");
+		press({ key: "Enter" });
+		expect(store.view()).toBe("agent");
+		expect(store.selectedAgentId()).toBe("acc-compass-ui");
+	});
+
+	test("the cursor stop carries a positional aria-label and names its Space shortcut", () => {
+		const { container } = mountBridge();
+		const cursor = container.querySelector<HTMLElement>('[tabindex="0"]');
+		if (!cursor) throw new Error("no cursor stop");
+		expect(cursor.getAttribute("aria-label")).toBe("Issue SEA-1022");
+		expect(cursor.getAttribute("aria-description")).toContain("column");
+		// The cursor card names the Space cross-link (design §491).
+		expect(cursor.getAttribute("aria-keyshortcuts")).toBe("Space");
+	});
+
+	test("the container is a kanban board without an ARIA grid role (DL-220)", () => {
+		const { container } = mountBridge();
+		const grid = container.querySelector<HTMLElement>(".bridge-grid");
+		if (!grid) throw new Error("no grid");
+		expect(grid.getAttribute("aria-roledescription")).toBe("kanban board");
+		expect(grid.getAttribute("aria-label")).toBe("Board grid");
+		// A group with a kanban roledescription — never the forbidden role="grid".
+		expect(grid.getAttribute("role")).toBe("group");
+	});
+
+	test("switching tabs rebuilds the cursor onto a valid stop", () => {
+		const { container } = mountBridge();
+		expect(cursorLabel(container)).toBe("Issue SEA-1022");
+		clickTab(container, "PRs");
+		// The Issues stop id no longer exists; the cursor rebuilds onto a PR stop.
+		const label = cursorLabel(container);
+		expect(label).not.toBeNull();
+		expect(label?.startsWith("PR ")).toBe(true);
+		// Still exactly one tab stop after the rebuild.
+		expect(container.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+	});
+
+	test("pointer click-select is unregressed by the roving wiring", () => {
+		const { store, container } = mountBridge();
+		const otherId = STUB_ISSUES.find(
+			(w) => w.id !== store.selectedIssueId() && w.state !== "backlog",
+		)?.id;
+		if (!otherId) throw new Error("need a second board issue");
+		// A plain click still selects, exactly as before the roving group.
+		const cards = [...container.querySelectorAll<HTMLElement>(".cx-card")];
+		const target = cards.find((c) =>
+			c.getAttribute("aria-label")?.includes("SEA-965"),
+		);
+		if (!target) throw new Error("no SEA-965 card");
+		fireEvent.click(target);
+		expect(store.selectedIssueId()).toBe("ws-965");
+	});
+});
+
+// T5 — the empty-board centered message (RIG-2130, design §251-282, §523-540).
+// When the built stop list is empty, each tab swaps its grid for a single
+// centered `.bridge-empty` line; the toolbar + segmented controls (counts → 0)
+// render unchanged, and the board registers ZERO roving stops.
+function mountEmptyBridge(): { store: AppStore; container: HTMLElement } {
+	let store!: AppStore;
+	const { container } = render(() => {
+		store = createAppStore({
+			queryClient: testQueryClient(),
+			initialIssues: [],
+		});
+		return (
+			<StoreContext.Provider value={store}>
+				<Bridge />
+			</StoreContext.Provider>
+		);
+	});
+	return { store, container };
+}
+
+describe("Bridge empty board (T5, RIG-2130)", () => {
+	test("Issues tab shows the empty message, no grid, no roving stops", () => {
+		const { container } = mountEmptyBridge();
+		const empty = container.querySelector(".bridge-empty");
+		expect(empty?.textContent).toBe(
+			"No issues on the board yet — promote work from the Backlog to see it here.",
+		);
+		expect(container.querySelector(".bridge-grid")).toBeNull();
+		// No roving stops: no cursor tabindex, no cards, no gutters.
+		expect(container.querySelectorAll('[tabindex="0"]')).toHaveLength(0);
+		expect(container.querySelector(".cx-card")).toBeNull();
+		expect(container.querySelector(".bridge-lane")).toBeNull();
+	});
+
+	test("toolbar + tab labels with (zero) counts stay intact", () => {
+		const { container } = mountEmptyBridge();
+		expect(container.querySelector(".bridge-toolbar")).not.toBeNull();
+		expect(groupingSeg(container)).not.toBeNull();
+		const tabs = tabButtons(container);
+		expect(tabs).toHaveLength(2);
+		expect((tabs[0].textContent ?? "").startsWith("Issues")).toBe(true);
+		expect(tabs[1].textContent).toContain("PRs · 0");
+	});
+
+	test("flipping to the PRs tab shows the PRs empty copy", () => {
+		const { container } = mountEmptyBridge();
+		clickTab(container, "PRs");
+		const empty = container.querySelector(".bridge-empty");
+		expect(empty?.textContent).toBe(
+			"No open PRs yet — cards appear here when an agent opens one.",
+		);
+		expect(container.querySelector(".bridge-grid")).toBeNull();
+		expect(container.querySelectorAll('[tabindex="0"]')).toHaveLength(0);
 	});
 });
