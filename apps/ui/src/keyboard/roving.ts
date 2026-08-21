@@ -19,12 +19,16 @@ export type Stop = { id: string; el: HTMLElement };
 /**
  * The active-group handle the dispatcher holds. `handleCommand` routes a
  * group-relative command id into the group's movement semantics and returns
- * whether the group owned the action; `focus` pulls DOM focus onto the cursor
- * stop (Tab-entry / zone-focus landing).
+ * whether the group owned the action; `isFocused` reports whether DOM focus
+ * currently lives on a stop of this group (the dispatcher gates its tier-1
+ * claim on this, so the board only owns Enter/Space/Arrows/… while the board
+ * is the focused surface — the focus-exclusivity contract, design §401-405);
+ * `focus` pulls DOM focus onto the cursor stop (Tab-entry / zone-focus landing).
  */
 export interface RovingGroupHandle {
 	readonly group: RovingGroup;
 	handleCommand(id: CommandId): boolean;
+	isFocused(): boolean;
 	focus(): void;
 }
 
@@ -96,6 +100,9 @@ export function createRovingGroup(opts: RovingGroupOptions): RovingGroupHandle {
 		group: opts.group,
 		handleCommand(id: CommandId): boolean {
 			return opts.onCommand(id);
+		},
+		isFocused(): boolean {
+			return opts.stops().some((s) => s.el === document.activeElement);
 		},
 		focus(): void {
 			const active = resolveCursorStop(opts.stops(), opts.cursor());

@@ -307,26 +307,36 @@ export const Bridge: Component<{
 		return map;
 	});
 
-	// The cursor: a card/gutter stop id. Seeded to the selected card if it is a
-	// stop, else the first stop. Rebuilt when the stop set changes (tab/mode
-	// switch): a surviving cursor id stays put, a vanished one recovers via T3's
-	// `resolveCursor`. `on` with an explicit dep keeps this a static-dep effect
-	// (no read-after-set — the recompute reads `prevStop`, a plain closure var).
+	// Seed the cursor to the selected card if it is a stop, else the first stop —
+	// the tab's "selected/first" landing (design §211, §248). Used at init and on
+	// a tab switch, which rebuilds the whole stop set with fresh ids.
+	const seedCursor = (list: BoardStop[]): string | null => {
+		const selected = store.selectedIssueId();
+		if (selected && list.some((s) => s.id === selected)) return selected;
+		return list[0]?.id ?? null;
+	};
 	const [cursorId, setCursorId] = createSignal<string | null>(
-		(() => {
-			const list = stops();
-			const selected = store.selectedIssueId();
-			if (selected && list.some((s) => s.id === selected)) return selected;
-			return list[0]?.id ?? null;
-		})(),
+		seedCursor(stops()),
 	);
 	let prevStop: BoardStop | null =
 		stops().find((s) => s.id === cursorId()) ?? null;
+	let prevTab = tab();
+	// Rebuild the cursor when the stop set changes. A TAB switch (issues↔prs)
+	// resets to the tab's selected/first stop: the ids change wholesale, so
+	// same-column recovery would land on a semantically arbitrary PR row that
+	// happens to share a numeric column (design §248). In-tab churn — a mode
+	// switch (card ids persist across swimlane/status) or a background data push
+	// — keeps a surviving cursor and recovers a vanished one via T3's
+	// `resolveCursor`. `on` with an explicit dep keeps this a static-dep effect
+	// (the recompute reads `prevStop`/`prevTab`, plain closure vars, not signals).
 	createEffect(
 		on(
 			stops,
 			(list) => {
-				const next = resolveCursor(list, prevStop);
+				const curTab = tab();
+				const next =
+					curTab !== prevTab ? seedCursor(list) : resolveCursor(list, prevStop);
+				prevTab = curTab;
 				setCursorId(next);
 				prevStop = list.find((s) => s.id === next) ?? null;
 			},
@@ -441,9 +451,18 @@ export const Bridge: Component<{
 	// scoped tier (tier 2) can then resolve `when:"main"` entries — which is
 	// exactly what the board's tier-1 claim of `board.openAssignedAgent` must
 	// beat over the frozen `Shift+Enter → comms.newline {when:"main"}` entry.
+	//
+	// Focus-gate the active-group accessor: the board claims a group-relative
+	// chord (Enter/Space/Arrows/Home/End) in tier 1 ONLY while DOM focus is
+	// actually on a board stop. Otherwise the board would hijack those keys for
+	// every non-editable focus target app-wide while it is mounted — trapping the
+	// toolbar/sidebar buttons — which contradicts the frozen focus-exclusivity
+	// contract (design §401-405, §604-613: board Enter is tier-1 "while the board
+	// is the focused group"). `null` outside the group falls through to the
+	// scoped/global tiers.
 	const uninstall = installKeymap(
 		registry,
-		() => rovingGroup,
+		() => (rovingGroup.isFocused() ? rovingGroup : null),
 		() => "main",
 	);
 	onCleanup(uninstall);

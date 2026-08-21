@@ -10,10 +10,13 @@
 //     Matching the build transform keeps test and production semantics identical.
 //
 // Wired via bunfig.toml `preload`.
+
+import { afterEach } from "bun:test";
 import { transformAsync } from "@babel/core";
 import syntaxJsx from "@babel/plugin-syntax-jsx";
 import presetTypeScript from "@babel/preset-typescript";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { cleanup } from "@solidjs/testing-library";
 import solid from "babel-preset-solid";
 import { plugin } from "bun";
 
@@ -134,3 +137,16 @@ if (typeof (divProto as { scrollTo?: unknown }).scrollTo !== "function") {
 		value() {},
 	});
 }
+
+// ── Global per-test DOM cleanup ──────────────────────────────────────────────
+// Dispose every root `render()` mounts after each test, across ALL files. Bun
+// scopes an `afterEach` registered as a module side-effect to the file that
+// first imports the module, so `@solidjs/testing-library`'s own auto-cleanup
+// binds to whichever test file loads it first and leaves every other file
+// WITHOUT per-test disposal. Undisposed roots leak their `onCleanup` work —
+// notably the Bridge's `installKeymap` window `keydown` listener — onto the
+// shared happy-dom `window`, so a stale keymap from one file's mount fires
+// during another file's test (a cross-file order-dependent failure). Registering
+// `cleanup` from the preload runs it in the global scope, so every file disposes
+// its roots after each test regardless of import order.
+afterEach(cleanup);

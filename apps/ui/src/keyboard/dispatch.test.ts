@@ -36,6 +36,9 @@ function stubGroup(handled: (cmd: CommandId) => boolean): {
 				routed.push(cmd);
 				return handled(cmd);
 			},
+			// The dispatcher gates nothing on isFocused (the Bridge install does);
+			// this stub is fed directly as the active group, so it reports focused.
+			isFocused: () => true,
 			focus() {},
 		},
 	};

@@ -297,6 +297,15 @@ const press = (init: KeyboardEventInit): KeyboardEvent => {
 	window.dispatchEvent(event);
 	return event;
 };
+// Enter the board group by focusing the cursor stop (the sole `tabindex="0"`) —
+// the same landing native Tab produces. The dispatcher claims a group-relative
+// chord ONLY while focus is on a board stop (focus-exclusivity, design §401-405),
+// so a keydown test must enter first; a within-group cursor move then keeps focus
+// on the board (the roving effect refocuses), but a grouping/tab switch rebuilds
+// the stop elements and drops focus, so re-enter after one.
+const enterBoard = (container: HTMLElement): void => {
+	container.querySelector<HTMLElement>('[tabindex="0"]')?.focus();
+};
 
 describe("Bridge board roving group (T4, DL-220/221)", () => {
 	test("the mounted board is one roving group: exactly one tabindex=0 stop", () => {
@@ -325,6 +334,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		clickGrouping(container, "Status");
 		// The in_review column stacks three cards; the cursor rests on SEA-1022.
 		expect(cursorLabel(container)).toBe("Issue SEA-1022");
+		enterBoard(container);
 		press({ key: "ArrowDown" });
 		expect(cursorLabel(container)).toBe("Issue SEA-1085");
 		press({ key: "ArrowDown" });
@@ -341,6 +351,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		// compass-ui's row: SEA-1022 (in_review) and SEA-965 (in_progress) are the
 		// only cards; queued/blocked cells are empty, and the gutter is column -1.
 		expect(cursorLabel(container)).toBe("Issue SEA-1022");
+		enterBoard(container);
 		press({ key: "ArrowLeft" });
 		expect(cursorLabel(container)).toBe("Issue SEA-965"); // in_progress
 		press({ key: "ArrowLeft" });
@@ -354,6 +365,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 	test("Enter selects the cursor card and suppresses native activation", () => {
 		const { store, container } = mountBridge();
 		clickGrouping(container, "Status");
+		enterBoard(container);
 		press({ key: "ArrowDown" }); // cursor → SEA-1085 (ws-1085)
 		const event = press({ key: "Enter" });
 		expect(store.selectedIssueId()).toBe("ws-1085");
@@ -384,7 +396,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 			run: () => commsSendRan++,
 		});
 		let store!: AppStore;
-		render(() => {
+		const { container } = render(() => {
 			store = createAppStore({ queryClient: testQueryClient() });
 			return (
 				<StoreContext.Provider value={store}>
@@ -393,6 +405,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 			);
 		});
 		// Cursor on SEA-1022 (assignee acc-compass-ui). Shift+Enter opens the agent.
+		enterBoard(container);
 		const event = press({ key: "Enter", shiftKey: true });
 		expect(store.view()).toBe("agent");
 		expect(store.selectedAgentId()).toBe("acc-compass-ui");
@@ -405,6 +418,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 	test("Space fires the cursor card's cross-link (Issues → PRs)", () => {
 		const { store, container } = mountBridge();
 		// Cursor SEA-1022 has a PR chip; Space is its cross-link (select + flip).
+		enterBoard(container);
 		const event = press({ key: " " });
 		expect(event.defaultPrevented).toBe(true);
 		expect(store.selectedIssueId()).toBe("ws-1022");
@@ -416,6 +430,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		// Move to SEA-965 (compass-ui, in_progress) — an issue with no PR, so no
 		// cross-link. Space must STILL be claimed: the handler reports handled, the
 		// dispatcher preventDefaults, and nothing selects / scrolls / falls through.
+		enterBoard(container);
 		press({ key: "ArrowLeft" });
 		expect(cursorLabel(container)).toBe("Issue SEA-965");
 		const selectedBefore = store.selectedIssueId();
@@ -428,6 +443,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 	test("Enter on a gutter opens the agent", () => {
 		const { store, container } = mountBridge();
 		// Land on compass-ui's gutter head (Left past the empty cells).
+		enterBoard(container);
 		press({ key: "ArrowLeft" });
 		press({ key: "ArrowLeft" });
 		expect(cursorLabel(container)).toBe("compass-ui lane");
@@ -456,15 +472,24 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(grid.getAttribute("role")).toBe("group");
 	});
 
-	test("switching tabs rebuilds the cursor onto a valid stop", () => {
+	test("switching tabs resets the cursor to the new tab's first stop", () => {
+		// design §248: a tab switch rebuilds the stop set and resets the cursor to
+		// the tab's selected/first stop — NOT a same-column recovery onto whatever
+		// PR row happens to share the old numeric column (the ids change wholesale
+		// across tabs, so that landing would be arbitrary). The Issues-tab selection
+		// (an issue id) is not a PRs-tab stop (composite `issueId::repo#n`), so the
+		// reset lands on the first stop. Board stops are <button>s (`.cx-card` cards
+		// + `.bridge-lane` gutters); the Unassigned lane is a non-interactive <div>,
+		// so `button.…` selects only real stops in DOM order.
 		const { container } = mountBridge();
 		expect(cursorLabel(container)).toBe("Issue SEA-1022");
 		clickTab(container, "PRs");
-		// The Issues stop id no longer exists; the cursor rebuilds onto a PR stop.
-		const label = cursorLabel(container);
-		expect(label).not.toBeNull();
-		expect(label?.startsWith("PR ")).toBe(true);
-		// Still exactly one tab stop after the rebuild.
+		const stops = container.querySelectorAll<HTMLElement>(
+			"button.cx-card, button.bridge-lane",
+		);
+		expect(stops.length).toBeGreaterThan(0);
+		// The cursor (sole tabindex=0) is the first stop, and it is the only one.
+		expect(stops[0]?.tabIndex).toBe(0);
 		expect(container.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
 	});
 
@@ -482,6 +507,28 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		if (!target) throw new Error("no SEA-965 card");
 		fireEvent.click(target);
 		expect(store.selectedIssueId()).toBe("ws-965");
+	});
+
+	test("focus-exclusivity: a focused non-board button keeps its native keys", () => {
+		// The regression guard for the focus-exclusivity contract (design §401-405):
+		// the board claims a group-relative chord in tier 1 ONLY while focus is on a
+		// board stop. With focus on a toolbar segmented button (a native, keyboard-
+		// operable control outside the board group), Enter/Space/Arrows must NOT be
+		// claimed — the board neither preventDefaults nor moves its cursor/selection,
+		// so the button keeps its native activation. (This fails if the active-group
+		// accessor is unconditional — the board would trap every non-editable key.)
+		const { store, container } = mountBridge();
+		const cursorBefore = cursorLabel(container);
+		const selectedBefore = store.selectedIssueId();
+		const toolbarButton = tabButtons(container)[0];
+		if (!toolbarButton) throw new Error("no toolbar tab button");
+		toolbarButton.focus();
+		for (const key of ["Enter", " ", "ArrowDown", "ArrowLeft"]) {
+			const event = press({ key });
+			expect(event.defaultPrevented).toBe(false); // board did not claim it
+		}
+		expect(cursorLabel(container)).toBe(cursorBefore); // cursor unmoved
+		expect(store.selectedIssueId()).toBe(selectedBefore); // selection unchanged
 	});
 });
 

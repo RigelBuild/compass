@@ -176,4 +176,32 @@ describe("createRovingGroup", () => {
 			dispose();
 		});
 	});
+
+	test("isFocused reports whether focus is on a group stop", async () => {
+		await createRoot(async (dispose) => {
+			const outside = document.createElement("input");
+			document.body.appendChild(outside);
+			const stops = makeStops("a", "b");
+			const [cursor] = createSignal<string | null>("a");
+			const handle = createRovingGroup({
+				group: GROUP,
+				stops: () => stops,
+				cursor,
+				setCursor: () => {},
+				onCommand: () => true,
+			});
+			await flush();
+
+			// Focus outside the group → not focused; the dispatcher gates its
+			// tier-1 claim on this, so the board yields its keys (focus-exclusivity).
+			outside.focus();
+			expect(handle.isFocused()).toBe(false);
+			// Focus any stop (not just the cursor) → focused.
+			stops[1]?.el.focus();
+			expect(handle.isFocused()).toBe(true);
+
+			outside.remove();
+			dispose();
+		});
+	});
 });

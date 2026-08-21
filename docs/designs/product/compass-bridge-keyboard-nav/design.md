@@ -534,6 +534,29 @@ select, no scroll), never a fall-through — gutter Enter opens agent, the
 positional `aria-label` is
 present on the cursor stop, tab-switch resets cursor, pointer paths unregressed.
 
+**Focus-gate + tab-switch reset — as-built footnote (RIG-2130 impl, PR #472
+review fold):** two conformance fixes to the frozen contract found in review.
+(1) *Focus-exclusivity.* The board supplies its active-group accessor to
+`installKeymap` gated on focus — `() => rovingGroup.isFocused() ? rovingGroup :
+null` (`Bridge.tsx`), where `isFocused()` is `stops().some(s => s.el ===
+document.activeElement)` (`roving.ts`, the same predicate the focus-guard effect
+already computes). Without the gate the board's tier-1 claim was unconditional
+while Bridge was mounted, hijacking `Enter`/`Space`/arrows/`Home`/`End` for every
+non-editable focus target app-wide — a keyboard trap on the toolbar/sidebar
+buttons, contradicting the focus-exclusivity contract above (§401-405, §604-613:
+board `Enter` is tier-1 *while the board is the focused group*). Locked by a
+`Bridge.test.tsx` focus-exclusivity test (focus a toolbar button → the board
+claims nothing, native keys survive). (2) *Tab-switch reset.* A tab switch
+(issues↔prs) reseeds the cursor to the tab's selected/first stop (§248), not a
+same-`(row,col)` recovery onto whatever PR row shares the old numeric column —
+the stop ids change wholesale across tabs, so that landing was arbitrary.
+`resolveCursor`'s same-column recovery is kept for in-tab churn (mode switch,
+background data push). The App-root install of the spine + the `view.bridge`
+(Ctrl/Mod+B) global command (§403-405, checklist T1) are **deferred to a stacked
+follow-up PR**: this PR ships the board-local keyboard model, and the app-wide
+spine mount point — which every sibling surface consumes, not just the board —
+is its own separately-reviewable change (tracked as its own RIG issue).
+
 ### T5 — Empty-board centered message
 
 `Show`-gate each tab's `.bridge-grid` on **T3's built stop list being empty**
