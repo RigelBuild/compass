@@ -16,10 +16,12 @@ Tracking: RIG-1717
 
 ## Problem / Intent
 
-Compass is becoming a **hosted multi-tenant agent platform**. Today's
-architecture already has the right shape: **one rootless-podman container per
-agent, fusing the agent (LLM reasoning + read/write/edit tools + toolchain +
-LSP) and its compute (compile/test/run) in a single environment.**
+Compass is becoming a **hosted multi-tenant agent platform** — a managed
+service built on an open-source core (see *OSS core and managed service*
+below). Today's architecture already has the right shape: **one
+rootless-podman container per agent, fusing the agent (LLM reasoning +
+read/write/edit tools + toolchain + LSP) and its compute (compile/test/run) in
+a single environment.**
 `AgentRuntime.Launch` (`go/internal/runtime/agent.go:177-198`) creates + starts
 the container, arms the default-deny egress firewall (`armEgress`,
 `go/internal/runtime/agent.go:300-309`, running `EgressPolicy.NftScript()`,
@@ -65,6 +67,37 @@ cloud-provider foundation dependency. Sequencing: Beta-phase, explicitly
 **after** the Dogfood substrate
 (`docs/designs/platform/compass-dogfood-loop/design.md`), landing when hosted
 Compass makes infra cost first-order. Nothing in Dogfood blocks on this.
+
+### OSS core and managed service — one architecture, two products
+
+Compass ships as two products over one shared core:
+
+- **OSS core (AGPL, `RigelBuild/compass` — this repo).** The agent runtime and
+  every seam this record touches: `AgentRuntime`, `ContainerRuntime`,
+  `VirtualFS`, `ComputeRuntime`, the volume lifecycle, the microVM boundary.
+  All of this record's `go/internal/*` and `agent-image/*` citations are
+  public-repo paths.
+- **Managed Compass (private monorepo, dual AGPL + commercial license).** The
+  hosted multi-tenant service, which *reuses* the OSS core rather than forking
+  it.
+
+**This record designs a change to the OSS core.** All three axes and all seven
+tasks land in the public repo — that is why the record lives here and every
+code citation resolves against `RigelBuild/compass`. Nothing in the managed
+control plane (tenant orchestration, billing, the hosted control surface, all
+of which live in the private monorepo) is designed here.
+
+**The motivation is primarily the managed service.** Hosted-scale density (pack
+many tenants, suspend the idle ones), durability across eviction, and a
+VM-class inter-tenant isolation boundary are managed-multi-tenant economics —
+they are what make infra cost first-order and drive this work now.
+
+**OSS self-host deployments benefit too.** The performance and durability axes
+— elastic compute, a persistent session volume, fast suspend/resume — improve
+any deployment, single-tenant included; the microVM boundary (I1) hardens the
+host against model-written code whether or not a second tenant exists. Only the
+*multi-tenant* framing (many tenants per box, inter-tenant isolation as a
+product requirement) is managed-specific — the mechanisms are all OSS.
 
 ## Approach
 
