@@ -228,6 +228,133 @@ func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
 	}
 }
 
+// rootSupervisorHandle is the fixed handle the server seeds the first-launch
+// root supervisor under (server/serve_seed.go rootSupervisorHandle). A
+// load-bearing cross-package coupling to that unexported const — the e2e package
+// cannot import server internals, so it mirrors the literal, exactly as
+// classifyEnrollProbe couples to the runnerhub "no runner enrolled" string. If
+// the server ever renames the seed handle, waitSeedSettled stops resolving the
+// supervisor and its budget-timeout fires legibly rather than silently skipping
+// the gate.
+const rootSupervisorHandle = "supervisor"
+
+// waitSeedSettled blocks until the first-launch root-supervisor seed has finished
+// provisioning its container, or the budget elapses. It is the seed counterpart
+// to waitRunnerEnrolled: the seed (server/serve_seed.go) hangs off the Runner
+// Sessions-stream attach — the SAME event waitRunnerEnrolled returns on — and
+// drives its own Provision+Start of the supervisor on the hook goroutine, so a
+// leg that Provisions the instant NewFixture returns races the seed's in-flight
+// Provision (two cold rootless-podman bring-ups contending on the engine storage
+// lock, overrunning the leg's 30s rpcTimeout under CI load — RIG-2403).
+//
+// The observable settle signal is the seed's DURABLE PLACEMENT row: the
+// ProvisionAgentWorkspace handler writes agent_placements (RecordAgentPlacement,
+// server/service.go) immediately after the Runner relay returns the container, so
+// a resolvable placement for the supervisor account means the seed's container
+// work is DONE. It is read cross-process from the store (the fixture has no seed
+// handle) via a short-lived connection. Two states are "still seeding", polled
+// through, never a failure until the budget elapses: the supervisor account not
+// yet created (AgentByHandle ErrNotFound — the seed's create half has not run)
+// and the account present but unplaced (PlacementForAgent ErrNotFound — Provision
+// in flight). Any other store error is a real failure surfaced immediately.
+//
+// It is agent-turn-INDEPENDENT by design: the placement lands at Provision, well
+// before the supervisor's first model turn, so the gate does NOT depend on the
+// board projection (which trails the agent's first lifecycle frame and filters
+// terminal states — a seed that came up model-less would never reach a live board
+// entry, hanging a board-based gate). On the WithSite re-attach path the placement
+// row PERSISTS from the prior boot, so the gate passes on the first probe and
+// correctly does NOT wait on run2's re-fired seed — which is designed to lose its
+// re-drive to the fast teardown (serve_seed.go), so waiting on it would hang.
+//
+// Event-gated bounded poll, mirroring waitRunnerEnrolled: a ticker-driven
+// deadline off f.now() with a select on ctx.Done() vs the ticker, returning the
+// instant the placement resolves. A budget timeout is a legible fail-closed error
+// (rule://no-retries: bounded and loud, never a retry-as-sync).
+func (f *Fixture) waitSeedSettled(ctx context.Context, st *store.Store) error {
+	deadline := f.now().Add(seedSettlePollBudget)
+	ticker := time.NewTicker(seedSettlePollInterval)
+	defer ticker.Stop()
+	for {
+		if !f.now().Before(deadline) {
+			return fmt.Errorf("root-supervisor seed did not provision within %s", seedSettlePollBudget)
+		}
+		if settled, err := f.seedSettledProbe(ctx, st, deadline); err != nil {
+			return err
+		} else if settled {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// seedSettledProbe runs one seed-settle check against the store: it resolves the
+// supervisor account by its fixed handle, then reads its placement. It returns
+// settled=true once the placement resolves (the seed's Provision recorded it),
+// settled=false for the two not-yet states (supervisor account absent, or present
+// but unplaced — both ErrNotFound), and a non-nil error for any other store
+// failure, which waitSeedSettled surfaces immediately rather than polling through.
+// Split out as its own function so its ErrNotFound-vs-real-error branching is
+// unit-testable (classifySeedSettle) without a live stack, mirroring classifyEnrollProbe.
+//
+// Both store reads share a per-probe deadline (rpcTimeout, clamped to the budget
+// remaining), so a wedged read — an exhausted pgxpool, a lock wait, a slow query
+// under the CI-load contention this gate targets — fails at the per-probe bound
+// as a context.DeadlineExceeded (never store.ErrNotFound, so classifySeedSettle
+// surfaces it as a real error) rather than escaping the budget and hanging
+// NewFixture to the go-test global timeout. This mirrors runnerEnrolledProbe,
+// keeping the whole gate bounded and fail-loud within seedSettlePollBudget.
+func (f *Fixture) seedSettledProbe(ctx context.Context, st *store.Store, deadline time.Time) (settled bool, err error) {
+	perProbe := rpcTimeout
+	if !deadline.IsZero() {
+		if remaining := deadline.Sub(f.now()); remaining < perProbe {
+			perProbe = remaining
+		}
+	}
+	if perProbe <= 0 {
+		perProbe = time.Millisecond
+	}
+	rctx, cancel := context.WithTimeout(ctx, perProbe)
+	defer cancel()
+	sup, handleErr := st.AgentByHandle(rctx, rootSupervisorHandle)
+	if handleErr != nil {
+		return classifySeedSettle(handleErr, nil)
+	}
+	_, _, placementErr := st.PlacementForAgent(rctx, sup.ID)
+	return classifySeedSettle(nil, placementErr)
+}
+
+// classifySeedSettle is the pure branching at the heart of the seed-settle probe,
+// split out so its not-yet-vs-real-error logic is unit-testable without a live
+// store (mirroring classifyEnrollProbe). It takes the two store outcomes in
+// order: handleErr from resolving the supervisor by handle, and — only when that
+// succeeded — placementErr from reading its placement. A store.ErrNotFound in
+// EITHER is a "still seeding" not-yet state (the seed's create half has not run,
+// or its Provision is in flight), returning settled=false with no error so the
+// caller polls on. Any OTHER error is a real failure, wrapped and surfaced so the
+// caller aborts rather than polling a broken store to the budget. Both nil means
+// the placement resolved: the seed's Provision is done, settled=true. placementErr
+// is consulted only when handleErr is nil (the probe short-circuits otherwise).
+func classifySeedSettle(handleErr, placementErr error) (settled bool, cerr error) {
+	if handleErr != nil {
+		if errors.Is(handleErr, store.ErrNotFound) {
+			return false, nil // seed's create half has not run yet
+		}
+		return false, fmt.Errorf("resolving root supervisor for seed-settle: %w", handleErr)
+	}
+	if placementErr != nil {
+		if errors.Is(placementErr, store.ErrNotFound) {
+			return false, nil // supervisor created, Provision still in flight
+		}
+		return false, fmt.Errorf("resolving root supervisor placement for seed-settle: %w", placementErr)
+	}
+	return true, nil
+}
+
 // waitDeliveryCursorPast blocks until post1 is no longer OWED to the agent on
 // its home channel — the moment the agent's delivery cursor has advanced past
 // it — or the budget elapses. leg-5's resume is only correct if this ordering
