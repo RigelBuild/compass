@@ -10,4 +10,15 @@ minimumReleaseAge = 432000
 # exact version is exempted from the 5-day cooldown because the floor is a
 # reviewed, record-mandated pin, not an unvetted float; the exact-version
 # exclude keeps the exemption from covering any other virtual-core release.
-minimumReleaseAgeExcludes = ["@tanstack/virtual-core"]
+# @types/bun (and its lockstep transitive bun-types) tracks the bun runtime,
+# which is itself a first-party, nix-pinned (tools/toolchain/versions/bun.nix)
+# toolchain version — not an unvetted registry float. A toolchain bump lands the
+# runtime and its types in lockstep, so the 5-day soak (a supply-chain guard
+# against freshly-published untrusted packages) is the wrong policy for them: it
+# would strand the types packages behind the pin for 5 days on every bun upgrade.
+# Exempting the exact names keeps the global cooldown intact for everything else.
+minimumReleaseAgeExcludes = [
+  "@tanstack/virtual-core",
+  "@types/bun",
+  "bun-types",
+]

@@ -21,7 +21,16 @@ describe("envConnectionProvider (browser dev path — env unchanged)", () => {
 	let priorBaseUrl: string | undefined;
 
 	afterEach(() => {
-		env.VITE_COMPASS_BASE_URL = priorBaseUrl;
+		// Restore by DELETE when the var was originally absent: under Bun ≥1.4
+		// `import.meta.env` coerces an assigned value to a string, so writing an
+		// `undefined` priorBaseUrl back would leave the literal string
+		// "undefined" and leak into sibling suites. Assigning a real prior value
+		// is fine; only the absent case needs the delete.
+		if (priorBaseUrl === undefined) {
+			delete env.VITE_COMPASS_BASE_URL;
+		} else {
+			env.VITE_COMPASS_BASE_URL = priorBaseUrl;
+		}
 	});
 
 	test("resolves the env connection with fetchImpl undefined (platform fetch)", async () => {
@@ -38,7 +47,12 @@ describe("envConnectionProvider (browser dev path — env unchanged)", () => {
 
 	test("preserves the env-required-var throw (missing baseUrl)", async () => {
 		priorBaseUrl = env.VITE_COMPASS_BASE_URL;
-		env.VITE_COMPASS_BASE_URL = undefined;
+		// DELETE (not assign undefined): under Bun ≥1.4 `import.meta.env` coerces
+		// an assigned value to a string, so `= undefined` would leave the literal
+		// "undefined" — a truthy door URL that resolves instead of throwing.
+		// Deleting the key is the faithful "var absent" simulation and matches
+		// 1.3 behavior too.
+		delete env.VITE_COMPASS_BASE_URL;
 
 		// Env parity with today: a missing door URL still throws by design, so
 		// boot's bootConnection catches it at the same boundary as before.
