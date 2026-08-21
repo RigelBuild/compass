@@ -6,7 +6,11 @@
 > place (a later change adds a record, never rewrites the merged one); this
 > amendment records a scope change ruled by Matt during S1 execution and is the
 > authority where it and the frozen record disagree. Every `go/internal/*`
-> citation is a path in the **`RigelBuild/compass`** monorepo.
+> citation is a path in the **`RigelBuild/compass`** monorepo. (The parent
+> record's own `Status:` line still reads `Draft` — it freezes on merge
+> regardless of that text, per the freeze-on-merge convention; a housekeeping
+> flip of that line, being a change to the merged record, is out of scope for
+> this amendment.)
 
 Status: Active — ruled by Matt (2026-08-19)
 Tracking: RIG-2393 (S1), RIG-2395 (P2)
@@ -53,14 +57,19 @@ Three findings drive the descope:
 3. **It bakes in an unsettled decision.** Taken to its end-state, `VirtualFS`
    moves cloning **Runner-side** (the Runner materializes the tree, mounts it
    into the container), replacing the agent's in-container self-clone. That
-   shifts the forge-credential posture: the self-clone uses a scoped
-   machine-user token in the agent's own `$HOME`, while a Runner-side clone
-   needs forge read-credentials host-side — touching the Server-holds-the-sole-
-   forge-credential posture (DL-052). The frozen record does not reconcile this
-   with the existing self-clone code; it assumes a "clone-dir workspace today"
-   that is not a host-side artifact. That reconciliation is a real design
-   decision (who clones, and the credential model), not an S1 implementation
-   detail — and it belongs where the persistent volume makes it concrete.
+   shifts the forge-credential posture: the self-clone reads (and pushes) with a
+   scoped machine-user token in the agent's own `$HOME`, while a Runner-side
+   clone introduces a host-side forge **read** credential. DL-052 governs the
+   forge **write** credential (Server-only, a `server_only` declared secret
+   filtered out of container injection; the agent keeps its own push-scoped
+   token) — it does not today speak to *where the clone (read) credential
+   lives*. So this is a distinct credential-**location** decision, to be made
+   consistent with the DL-052 write-credential posture rather than governed by
+   it. The frozen record does not reconcile this with the existing self-clone
+   code; it assumes a "clone-dir workspace today" that is not a host-side
+   artifact. That reconciliation is a real design decision (who clones, and
+   where the clone credential lives), not an S1 implementation detail — and it
+   belongs where the persistent volume makes it concrete.
 
 **What S1 ships instead (unchanged by this amendment):** the
 `compute.ComputeRuntime` seam + its in-environment passthrough backend + the
@@ -111,11 +120,13 @@ new code task — S1 shrinks, P2 grows.
   owns the **`VirtualFS` source-of-tree seam** (interface + backends) and the
   **provision wiring** that materializes a tree through it onto the volume — the
   seam finally has a real destination and caller here.
-- P2 must resolve, as an explicit load-bearing decision, **who clones and the
-  credential model**: keep the agent self-clone (materializing onto the volume
-  the agent then clones into) vs move cloning Runner-side (host-side clone with
-  a Runner-side forge credential, reconciled with DL-052). This is the
-  reconciliation the frozen record left implicit; it is now P2's to make.
+- P2 must resolve, as an explicit load-bearing decision, **who clones and where
+  the clone (read) credential lives**: keep the agent self-clone (materializing
+  onto the volume the agent then clones into with its in-container token) vs
+  move cloning Runner-side (a host-side clone needing a host-side forge read
+  credential, made consistent with — not governed by — the DL-052
+  write-credential posture). This is the reconciliation the frozen record left
+  implicit; it is now P2's to make.
 - The `WorkspaceSource` variant on `runtime.AgentSpec`/`Workspace` lands with P2
   (it only has meaning once a volume-backed source exists).
 
