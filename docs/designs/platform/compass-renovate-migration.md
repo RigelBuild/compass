@@ -13,7 +13,7 @@ lockstep machinery. Migrate compass onto the same Renovate, adapted to compass's
 layout — with the hard constraint that it runs in **GitHub Actions** (compass has
 no Woodpecker; all its CI is GHA). The repo is pre-prepped: the design-ledger
 gate already exempts `renovate/` branches (`tools/design-ledger-gate/index.ts:87`,
-`EXEMPT_BRANCH_PREFIXES = ["renovate/"]`, comment "prepared for future Renovate").
+`EXEMPT_BRANCH_PREFIXES = ["renovate/"]`, commented "Renovate dependency bumps").
 Note "Dependabot off" has TWO halves: deleting `.github/dependabot.yml` stops
 VERSION updates only; Dependabot security updates/alerts — the hidden
 GitHub-billed feature driving this migration — is a repo Settings toggle the
@@ -35,7 +35,12 @@ with `osvVulnerabilityAlerts: true` replacing the coverage.
   (`matchPackageNames: ["@types/bun", "bun-types"], minimumReleaseAge: null`,
   see packageRules) paired to bunfig's list by a `config.test.ts` guard;
   `@tanstack/virtual-core` needs no rule (an `overrides` pin, outside the
-  catalog manager's reach).
+  catalog manager's reach). The `@types/bun`/`bun-types` half of that exclude
+  list — and the catalog `@types/bun: ^1.4.0` pin — was landed by the bun 1.4
+  migration (RIG-2373, compass #461, merged), on the rationale that the types
+  track the nix-pinned runtime (`tools/toolchain/versions/bun.nix`) and so must
+  not soak behind every toolchain bump. The packageRule and guard 12 therefore
+  mirror the current-`main` bunfig; all line citations here are to that file.
 - **Fork trees disabled** — compass vendors `forks/{devenv,nix2container,oh-my-pi}`
   (root `forks/`, not orion's `oss/forks/`). A packageRule
   `matchFileNames: ["forks/*/**"], enabled: false` (a scoped disable, never
@@ -218,7 +223,7 @@ Dockerfiles in the tree are `forks/oh-my-pi/Dockerfile`,
 config, same reasoning as the nix-manager drop above. (Auto-updating orion's
 harvester `oven/bun` base image is an orion follow-up, filed separately.)
 
-### customManagers: 5 of orion's 7 port, +1 compass-new
+### customManagers: 6 of orion's 7 port, +1 compass-new
 
 | # | Orion manager (`ci/renovate/config.json5`) | Compass disposition |
 | --- | --- | --- |
@@ -292,10 +297,12 @@ Port from orion (`config.json5:290-518`), adapted:
   "^1.4.0"`) that would otherwise soak 5 days behind every bun-runtime bump —
   exactly the stranding `bunfig.toml:13-19` documents exempting ("it would
   strand the types packages behind the pin for 5 days on every bun upgrade";
-  `minimumReleaseAgeExcludes`, `bunfig.toml:20-24`). A `config.test.ts` guard
-  pairs the rule's names to bunfig's exclude list so the two files can't
-  drift. (`@tanstack/virtual-core` needs no rule — an `overrides` pin, out of
-  the catalog manager's reach, as Global Constraints already argue.)
+  `minimumReleaseAgeExcludes`, `bunfig.toml:20-24`; both the exclude-list types
+  entries and the `^1.4.0` catalog pin were landed by RIG-2373/#461, see Global
+  Constraints). A `config.test.ts` guard pairs the rule's names to bunfig's
+  exclude list so the two files can't drift. (`@tanstack/virtual-core` needs no
+  rule — an `overrides` pin, out of the catalog manager's reach, as Global
+  Constraints already argue.)
 - Toolchain un-grouping: `matchFileNames: ["tools/toolchain/versions/*.nix"],
   groupName: null` (orion `:304-313`, path adapted). Because the go manager now
   targets `go.nix` under the same glob, this one rule un-groups all four pins —
@@ -755,9 +762,9 @@ folded into the record as decisions:
   set: Contents, Pull requests, Workflows, Issues — all read/write; Workflows
   is load-bearing for the github-actions manager (see Approach §Secrets/Auth,
   T8). gitAuthor is the App's `[bot]` noreply identity, autodetected from the
-  installation token. This also bounds the F1 self-pin exposure (an ephemeral
-  token instead of a stored PAT) without relaxing the `bunx renovate@<pin>`
-  requirement.
+  installation token. This also bounds the self-pin exposure (Approach §Runner
+  shape) — an ephemeral token instead of a stored PAT — without relaxing the
+  `bunx renovate@<pin>` requirement.
 - **Cadence: daily — top-level AND devenv-nixpkgs** (was OQ5; Matt
   2026-08-21) — `schedule:daily` with the `0 6 * * *` UTC cron, and the
   devenv-nixpkgs solo branch drops orion's weekly-Monday restriction to
