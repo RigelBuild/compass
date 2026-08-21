@@ -202,16 +202,18 @@ in
   # tears down the deterministic-named agent containers so a second session
   # drive does not hit a podman create name collision.
   #
-  # Prereqs: a Linux dev box with rootless podman and the uid-1000 subuid/subgid
-  # ranges configured (the runner guards on uid 1000 and creates per-container
-  # sockets under its runtime dir). Cert expiry: gen-cert is skip-if-present
+  # Prereqs (the podman loop only — compass-runner, agent-image, clean): a Linux
+  # dev box with rootless podman and the uid-1000 subuid/subgid ranges configured
+  # (the runner guards on uid 1000 and creates per-container sockets under its
+  # runtime dir); the postgres/server/UI/cert/token half runs macOS-native and
+  # needs no Linux prereqs. Cert expiry: gen-cert is skip-if-present
   # forever against a finite --validity, so once the cert expires the loop fails
   # with an opaque TLS error — rerun `compass-gen-cert --force` (or delete
   # tls.crt/tls.key from the state dir) to rotate.
   #
   # Postgres, compass-server, and compass-ui run cross-platform (macOS-native
-  # dogfood); only the podman-backed runner loop (compass-runner) targets the
-  # Linux dev box.
+  # dogfood); only the podman-backed loop (compass-runner and the agent-image /
+  # clean tasks) targets the Linux dev box.
   services.postgres = {
     enable = true;
     # The single dogfood database compass-server opens. Owned by $USER over the
