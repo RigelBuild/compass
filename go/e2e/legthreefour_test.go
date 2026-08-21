@@ -8,9 +8,9 @@ import (
 	"os/exec"
 	"testing"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/runner"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/runner"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // spawnToolName is the registered name of the native spawn tool the agent's SDK

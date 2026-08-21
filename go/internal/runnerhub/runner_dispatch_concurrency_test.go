@@ -28,10 +28,10 @@ import (
 	"sync"
 	"testing"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/runner"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/runner"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // fakeSessionHost is a runner.SessionHost whose Provision parks on a channel and

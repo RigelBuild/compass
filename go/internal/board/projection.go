@@ -18,8 +18,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/sealedsecurity/compass/go/events"
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/events"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
 
 // busPayload is the SubscribeEvents bus event type: the whole wire response with

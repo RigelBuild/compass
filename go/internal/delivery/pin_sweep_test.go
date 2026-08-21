@@ -16,7 +16,7 @@ package delivery
 import (
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // Case T7-1: a FRESH session receives the channel's current pins even when the

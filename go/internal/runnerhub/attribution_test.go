@@ -15,7 +15,7 @@ import (
 	"context"
 	"testing"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
 
 // TestDeliverSessionStampsAgentAccountFromBinding pins the DL-167 join: a

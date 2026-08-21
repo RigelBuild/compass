@@ -25,7 +25,7 @@ func forgeFields(number uint32) IssueForgeFields {
 		Title:         "a bug",
 		Body:          "it broke",
 		ForgeState:    "open",
-		URL:           "https://github.com/sealedsecurity/compass/issues/1",
+		URL:           "https://github.com/RigelBuild/compass/issues/1",
 		ForgeAccount:  "octocat",
 		Labels:        []string{"bug"},
 		AgentHandle:   "",

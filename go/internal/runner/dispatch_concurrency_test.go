@@ -26,7 +26,7 @@ import (
 	"context"
 	"testing"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // Same-id concurrent retry executes the host EXACTLY ONCE: a second push of an

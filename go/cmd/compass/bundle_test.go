@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // writeBundleDir materializes a map of relative-path -> content under a fresh

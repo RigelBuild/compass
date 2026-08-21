@@ -11,8 +11,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
 // fakeSecrets is a fake SecretsService handler recording the request each verb

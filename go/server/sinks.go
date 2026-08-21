@@ -20,14 +20,14 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/sealedsecurity/compass/go/events"
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/board"
-	"github.com/sealedsecurity/compass/go/internal/comms"
-	"github.com/sealedsecurity/compass/go/internal/delivery"
-	"github.com/sealedsecurity/compass/go/internal/presence"
-	"github.com/sealedsecurity/compass/go/internal/runnerhub"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/events"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/board"
+	"github.com/RigelBuild/compass/go/internal/comms"
+	"github.com/RigelBuild/compass/go/internal/delivery"
+	"github.com/RigelBuild/compass/go/internal/presence"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // The lifecycle sink is the Bridge board (internal/board): a session lifecycle

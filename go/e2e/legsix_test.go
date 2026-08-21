@@ -7,8 +7,8 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/runner"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/runner"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // TestLegSixTeardownIdempotence is the full leg-6 scenario over the real stack

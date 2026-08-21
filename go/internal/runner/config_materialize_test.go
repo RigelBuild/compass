@@ -24,7 +24,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/runner/gateway"
+	"github.com/RigelBuild/compass/go/internal/runner/gateway"
 )
 
 // fakeConfigFetcher returns a canned bundle (or error), recording the requested

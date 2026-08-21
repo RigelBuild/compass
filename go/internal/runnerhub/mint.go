@@ -21,7 +21,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // tokenBytes is the minted-token entropy: 32 random bytes, matching the account

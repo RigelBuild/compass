@@ -10,8 +10,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/stack"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
 // TestHarnessCore is the podman end-to-end proof of the H1 fixture substrate: a

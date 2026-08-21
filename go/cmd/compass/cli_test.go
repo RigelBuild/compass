@@ -16,8 +16,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
 func TestNoTokenFlag(t *testing.T) {

@@ -5,8 +5,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1connect "github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1connect "github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // privilege is the access class of a CompassService or CommsService RPC on the

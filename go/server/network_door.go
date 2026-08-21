@@ -22,12 +22,12 @@ import (
 	connectcors "connectrpc.com/cors"
 	"github.com/rs/cors"
 
-	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
-	"github.com/sealedsecurity/compass/go/internal/auth"
-	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
-	"github.com/sealedsecurity/compass/go/internal/runnerhub"
-	"github.com/sealedsecurity/compass/go/internal/secrets"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/auth"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
+	"github.com/RigelBuild/compass/go/internal/secrets"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // adminTokenFile is the basename of the 0600 file the bootstrap-admin token is

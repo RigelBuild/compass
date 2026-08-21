@@ -13,7 +13,7 @@ import (
 	"encoding/base64"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // putCall is one captured PutTokenHash.

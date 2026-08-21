@@ -30,7 +30,7 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
-	"github.com/sealedsecurity/compass/go/internal/runner/gateway"
+	"github.com/RigelBuild/compass/go/internal/runner/gateway"
 	yaml "go.yaml.in/yaml/v3"
 )
 

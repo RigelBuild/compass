@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/secrets"
+	"github.com/RigelBuild/compass/go/internal/secrets"
 )
 
 // scriptRunner is a ContainerRuntime whose Exec actually runs the setup script

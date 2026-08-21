@@ -17,7 +17,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // Publish forwards the agent's trace/session frames up PublishEvents,

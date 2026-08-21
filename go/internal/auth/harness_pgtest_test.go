@@ -23,8 +23,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/sealedsecurity/compass/go/internal/pgtest"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/pgtest"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // openTestStore returns a Store connected to a fresh, migrated database and a

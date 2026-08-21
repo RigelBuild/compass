@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/runtime"
+	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // parseMount is the operator surface for --mount: a malformed value must be

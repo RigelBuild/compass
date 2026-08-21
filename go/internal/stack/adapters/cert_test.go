@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/certgen"
+	"github.com/RigelBuild/compass/go/internal/certgen"
 )
 
 // writeAnchor generates an anchor with the given validity and writes it under

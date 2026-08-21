@@ -14,7 +14,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
 
 // TestSetChannelPolicyUpdatesAndEchoes pins the handler happy path: setting

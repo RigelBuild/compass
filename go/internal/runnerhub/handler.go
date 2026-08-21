@@ -17,11 +17,11 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
-	"github.com/sealedsecurity/compass/go/internal/secrets"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/RigelBuild/compass/go/internal/secrets"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // AgentConfigStore is the Server-side fleet config-bundle resolve surface that

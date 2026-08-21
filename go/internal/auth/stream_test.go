@@ -31,7 +31,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // streamConnWithAuth builds a streaming conn carrying value as its Authorization

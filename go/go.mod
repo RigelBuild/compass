@@ -3,14 +3,14 @@
 // server.sock), the comms packages, and the generated compass.v1 stubs (gen/).
 //
 // Module path is the PUBLIC Copybara-destination path — oss/ is stripped when
-// oss/compass/ mirrors out to github.com/sealedsecurity/compass, so the import
+// oss/compass/ mirrors out to github.com/RigelBuild/compass, so the import
 // prefix must be the destination or every import breaks on export
 // (oss/README.md; the oss/seal -> github.com/sealedsecurity/seal precedent).
 //
 // The `go` directive tracks the tools/toolchain/versions/go.nix pin minus at
 // most one minor, so an upstream Go security patch never blocks on a mod edit
 // (Global Constraint 1, floor policy).
-module github.com/sealedsecurity/compass/go
+module github.com/RigelBuild/compass/go
 
 go 1.25.0
 

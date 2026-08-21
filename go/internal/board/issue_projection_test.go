@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/events"
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/events"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // TestIssueToProtoMapsForgeAndMachinery pins that a fully-populated store.Issue
@@ -32,7 +32,7 @@ func TestIssueToProtoMapsForgeAndMachinery(t *testing.T) {
 		Title:         "a bug",
 		Body:          "it broke",
 		ForgeState:    "open",
-		URL:           "https://github.com/sealedsecurity/compass/issues/42",
+		URL:           "https://github.com/RigelBuild/compass/issues/42",
 		ForgeAccount:  "octocat",
 		Labels:        []string{"bug", "p1"},
 		AgentHandle:   "agent-smith",
@@ -118,7 +118,7 @@ func TestProtoToForgeFieldsDropsMachinery(t *testing.T) {
 		Title:        "title",
 		Body:         "body",
 		ForgeState:   "closed",
-		Url:          "https://github.com/sealedsecurity/compass/issues/99",
+		Url:          "https://github.com/RigelBuild/compass/issues/99",
 		ForgeAccount: "human",
 		Labels:       []string{"triage"},
 		Agent:        &compassv1.AgentAttribution{AgentHandle: "agent-x"},
@@ -140,7 +140,7 @@ func TestProtoToForgeFieldsDropsMachinery(t *testing.T) {
 		Title:         "title",
 		Body:          "body",
 		ForgeState:    "closed",
-		URL:           "https://github.com/sealedsecurity/compass/issues/99",
+		URL:           "https://github.com/RigelBuild/compass/issues/99",
 		ForgeAccount:  "human",
 		Labels:        []string{"triage"},
 		AgentHandle:   "agent-x",

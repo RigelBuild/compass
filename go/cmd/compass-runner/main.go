@@ -21,8 +21,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/sealedsecurity/compass/go/internal/runner"
-	"github.com/sealedsecurity/compass/go/internal/runtime"
+	"github.com/RigelBuild/compass/go/internal/runner"
+	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // version is the Runner build version; override at build time with -ldflags

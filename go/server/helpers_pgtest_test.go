@@ -20,7 +20,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
 // socketReadyTimeout bounds the wait for Serve to bind its Unix socket. It is

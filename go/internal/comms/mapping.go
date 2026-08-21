@@ -3,8 +3,8 @@ package comms
 import (
 	"connectrpc.com/connect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // This file maps the compass.v1 wire messages onto the store's domain types at

@@ -13,8 +13,8 @@ import (
 	"context"
 	"fmt"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/forge"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/forge"
 )
 
 // forgeReader is the read surface ingestion needs — a narrow view of

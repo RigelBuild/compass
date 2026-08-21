@@ -35,10 +35,10 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/runnerhub"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // lifecycleService is the LifecycleCaller implementation. It holds the store (of

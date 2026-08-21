@@ -27,8 +27,8 @@ import (
 	"syscall"
 	"time"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/runtime"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // socketFileMode is the mode of the agent socket file: owner read/write only.

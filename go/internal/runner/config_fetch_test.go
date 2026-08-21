@@ -17,8 +17,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
 // fakeConfigFetchServer is a RunnerService handler whose FetchAgentConfig streams

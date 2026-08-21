@@ -10,7 +10,7 @@ import (
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // Runner control producer.

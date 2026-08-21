@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/certgen"
-	"github.com/sealedsecurity/compass/go/internal/stack"
+	"github.com/RigelBuild/compass/go/internal/certgen"
+	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
 // DefaultRotateWindow is the lead time before a cert's NotAfter at which the

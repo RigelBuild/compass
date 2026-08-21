@@ -19,8 +19,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/runnerhub"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // TestResolveDSN pins compass-server's precedence: an explicit --database flag

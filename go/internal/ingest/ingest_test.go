@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/forge"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/forge"
 )
 
 // recordingSink records every Issue it receives and can be scripted to fail on

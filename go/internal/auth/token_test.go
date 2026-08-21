@@ -24,7 +24,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // issue_then_resolve_round_trips_to_the_issued_account: a freshly minted account

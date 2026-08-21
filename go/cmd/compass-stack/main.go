@@ -27,9 +27,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/stack"
-	"github.com/sealedsecurity/compass/go/internal/stack/adapters"
-	"github.com/sealedsecurity/compass/go/server"
+	"github.com/RigelBuild/compass/go/internal/stack"
+	"github.com/RigelBuild/compass/go/internal/stack/adapters"
+	"github.com/RigelBuild/compass/go/server"
 )
 
 // version is the build version; override at build time with -ldflags

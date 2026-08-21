@@ -15,8 +15,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // TestDespawnSelfIsRefusedBeforeAnyStoreCall pins that an agent cannot despawn

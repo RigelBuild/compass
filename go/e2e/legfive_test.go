@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // TestLegFivePersistAndResume is the full leg-5 scenario over the real stack

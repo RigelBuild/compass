@@ -11,9 +11,9 @@ package runner
 
 import (
 	"context"
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/runtime"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/runtime"
 	"strconv"
 	"testing"
 )

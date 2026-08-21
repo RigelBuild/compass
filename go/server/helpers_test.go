@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
 // testTimeout bounds every RPC/stream wait so a broken handler fails fast

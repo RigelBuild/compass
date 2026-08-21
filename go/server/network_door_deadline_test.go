@@ -42,10 +42,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/events"
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
-	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/RigelBuild/compass/go/events"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
 // bodyReadResult is the outcome of the inner handler's full read of the request

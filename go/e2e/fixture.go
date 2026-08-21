@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/stack"
-	"github.com/sealedsecurity/compass/go/internal/stack/adapters"
+	"github.com/RigelBuild/compass/go/internal/stack"
+	"github.com/RigelBuild/compass/go/internal/stack/adapters"
 )
 
 // agentImage is the REAL agent image the dogfood stack runs — present in the

@@ -28,7 +28,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // DeliveryKind is how a resolved secret is delivered into a container — the

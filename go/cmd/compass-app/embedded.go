@@ -31,12 +31,12 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
-	"github.com/sealedsecurity/compass/go/internal/appconfig"
-	"github.com/sealedsecurity/compass/go/internal/bridge"
-	"github.com/sealedsecurity/compass/go/internal/preflight"
-	"github.com/sealedsecurity/compass/go/internal/tokenstore"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/appconfig"
+	"github.com/RigelBuild/compass/go/internal/bridge"
+	"github.com/RigelBuild/compass/go/internal/preflight"
+	"github.com/RigelBuild/compass/go/internal/tokenstore"
 )
 
 // defaultAgentImage is the canonical agent image ref the embedded stack runs

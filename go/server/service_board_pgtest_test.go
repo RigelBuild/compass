@@ -20,12 +20,12 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/sealedsecurity/compass/go/events"
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
-	"github.com/sealedsecurity/compass/go/internal/board"
-	"github.com/sealedsecurity/compass/go/internal/pgtest"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/events"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/board"
+	"github.com/RigelBuild/compass/go/internal/pgtest"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // boardCanonicalIssue is a valid ingested wire Issue for a fresh forge
@@ -42,7 +42,7 @@ func boardCanonicalIssue(number uint32) *compassv1.Issue {
 		Title:        "a bug",
 		Body:         "it broke",
 		ForgeState:   "open",
-		Url:          "https://github.com/sealedsecurity/compass/issues/1",
+		Url:          "https://github.com/RigelBuild/compass/issues/1",
 		ForgeAccount: "octocat",
 		Labels:       []string{"bug"},
 	}

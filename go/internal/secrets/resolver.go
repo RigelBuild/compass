@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/RigelBuild/compass/go/internal/store"
 	secretspec "github.com/cachix/secretspec/secretspec-go"
-	"github.com/sealedsecurity/compass/go/internal/store"
 )
 
 // manifestProject is the single SecretSpec project name Compass resolves under.

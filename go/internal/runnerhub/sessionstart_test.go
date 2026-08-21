@@ -15,7 +15,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // startRecord is one recorded session-start edge.

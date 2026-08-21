@@ -14,7 +14,7 @@ package runnerhub
 import (
 	"context"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // DispatchControl relays a fully-formed control op (for SEA-1569, a message

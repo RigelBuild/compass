@@ -317,7 +317,7 @@ jobs:
           fi
           rc=0
           for pkg in $pkgs; do
-            if ! grep -qE "^ok[[:space:]]+github\.com/sealedsecurity/compass/go/$pkg[[:space:]]" /tmp/pgtest.log; then
+            if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/$pkg[[:space:]]" /tmp/pgtest.log; then
               echo "::error::real-Postgres package '$pkg' did not report ok — it failed, skipped, or never ran"
               rc=1
             fi
@@ -872,7 +872,7 @@ jobs:
             grep -nF "$skip" /tmp/e2e.log | head
             exit 1
           fi
-          if ! grep -qE "^ok[[:space:]]+github\.com/sealedsecurity/compass/go/e2e[[:space:]]" /tmp/e2e.log; then
+          if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/e2e[[:space:]]" /tmp/e2e.log; then
             echo "::error::the dogfood e2e package did not report ok — it failed, skipped, or never ran"
             exit 1
           fi

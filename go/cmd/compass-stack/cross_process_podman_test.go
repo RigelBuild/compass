@@ -59,7 +59,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/stack"
+	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
 // pgidRecordName is the state-dir teardown record a successful up persists and a

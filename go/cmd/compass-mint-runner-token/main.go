@@ -28,8 +28,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/sealedsecurity/compass/go/internal/runnerhub"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // version is the build version; override at build time with -ldflags

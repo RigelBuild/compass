@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/runtime"
-	"github.com/sealedsecurity/compass/go/internal/stack"
+	"github.com/RigelBuild/compass/go/internal/runtime"
+	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
 // imagePullTimeout is the per-command timeout the ImageEnsurer gives podman for

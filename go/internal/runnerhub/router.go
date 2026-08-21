@@ -21,7 +21,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // commandRouter correlates outbound session commands with the results the Runner

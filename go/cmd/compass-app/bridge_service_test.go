@@ -25,7 +25,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/bridge"
+	"github.com/RigelBuild/compass/go/internal/bridge"
 )
 
 const testTimeout = 5 * time.Second

@@ -31,9 +31,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
-	"github.com/sealedsecurity/compass/go/internal/runtime"
+	compassv1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // testTimeout bounds every blocking wait so a wedged handler or goroutine fails

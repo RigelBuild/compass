@@ -10,8 +10,8 @@ package server
 import (
 	"sync"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // tailBuffer is the per-subscriber queue depth. A subscriber that falls this

@@ -11,9 +11,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/comms"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/comms"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // The root Manager seeded on first launch. A fixed handle so the empty-tree gate

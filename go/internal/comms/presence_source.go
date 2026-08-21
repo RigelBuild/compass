@@ -1,8 +1,8 @@
 package comms
 
 import (
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // PresenceSource is the in-memory presence read GetRoster joins the durable tree

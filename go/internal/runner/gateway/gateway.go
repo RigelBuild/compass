@@ -26,8 +26,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/hashicorp/golang-lru/v2/expirable"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
 // errNoSessionForContainer is the fail-closed cause when a comms call arrives on

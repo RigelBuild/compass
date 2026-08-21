@@ -31,14 +31,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/events"
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/board"
-	"github.com/sealedsecurity/compass/go/internal/forge"
-	"github.com/sealedsecurity/compass/go/internal/ingest"
-	"github.com/sealedsecurity/compass/go/internal/pgtest"
-	"github.com/sealedsecurity/compass/go/internal/secrets"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/events"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/board"
+	"github.com/RigelBuild/compass/go/internal/forge"
+	"github.com/RigelBuild/compass/go/internal/ingest"
+	"github.com/RigelBuild/compass/go/internal/pgtest"
+	"github.com/RigelBuild/compass/go/internal/secrets"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // --- fakes -----------------------------------------------------------------

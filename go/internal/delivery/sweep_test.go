@@ -16,7 +16,7 @@ package delivery
 import (
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // Case T6-1: messages posted while NO session was live arrive as delivers on the

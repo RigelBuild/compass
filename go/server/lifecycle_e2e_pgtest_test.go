@@ -50,19 +50,19 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/sealedsecurity/compass/go/events"
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/board"
-	"github.com/sealedsecurity/compass/go/internal/comms"
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
-	"github.com/sealedsecurity/compass/go/internal/pgtest"
-	"github.com/sealedsecurity/compass/go/internal/runner"
-	"github.com/sealedsecurity/compass/go/internal/runnerhub"
-	"github.com/sealedsecurity/compass/go/internal/runnertest"
-	"github.com/sealedsecurity/compass/go/internal/runnertest/runnerloop"
-	"github.com/sealedsecurity/compass/go/internal/runtime"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/events"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/board"
+	"github.com/RigelBuild/compass/go/internal/comms"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/RigelBuild/compass/go/internal/pgtest"
+	"github.com/RigelBuild/compass/go/internal/runner"
+	"github.com/RigelBuild/compass/go/internal/runnerhub"
+	"github.com/RigelBuild/compass/go/internal/runnertest"
+	"github.com/RigelBuild/compass/go/internal/runnertest/runnerloop"
+	"github.com/RigelBuild/compass/go/internal/runtime"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // e2eTimeout bounds every wire wait so a wedged seam fails fast rather than

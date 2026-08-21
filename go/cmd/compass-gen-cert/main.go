@@ -25,7 +25,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/sealedsecurity/compass/go/internal/certgen"
+	"github.com/RigelBuild/compass/go/internal/certgen"
 )
 
 // version is the build version; override at build time with -ldflags

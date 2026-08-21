@@ -23,7 +23,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/runtime"
+	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // agentCommand is the argv the Runner execs to start the first-party agent in a

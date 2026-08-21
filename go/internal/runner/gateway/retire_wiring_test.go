@@ -30,7 +30,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // producer returns the control producer Serve handed the listener. A nil one is
