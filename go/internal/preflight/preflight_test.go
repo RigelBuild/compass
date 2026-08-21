@@ -23,7 +23,7 @@ func okDeps(goos string, uid int) Deps {
 }
 
 var testParams = Params{
-	AgentImage:  "ghcr.io/sealedsecurity/compass-agent:latest",
+	AgentImage:  "ghcr.io/rigelbuild/compass-agent:latest",
 	DatabaseDSN: "postgres://localhost:5432/compass",
 }
 
