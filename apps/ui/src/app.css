@@ -1512,13 +1512,13 @@
 	font-weight: 700;
 }
 .rv[data-v="approved"] {
-	color: var(--cx-ok);
+	color: var(--cx-review-approved);
 }
 .rv[data-v="changes"] {
-	color: var(--cx-error);
+	color: var(--cx-review-changes);
 }
 .rv[data-v="commented"] {
-	color: var(--cx-warn);
+	color: var(--cx-review-pending);
 }
 
 .pr-threads {
