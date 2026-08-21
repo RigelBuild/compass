@@ -122,13 +122,17 @@ type Consumer struct {
 	// (WORKING->READY) or reaches a terminal frame. The value is the ordered set
 	// of message ids held for that author, in post order, so a settle fires them
 	// ascending. A no-frame author death (no settle edge ever enqueues) leaves
-	// its entry here until the next reap: it is reaped in-process on the next
+	// its entry here until the next reap: it is reaped in-process on a subsequent
 	// Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped), which
 	// drops the entry for every session id whose hub binding was just cleared. So
-	// a no-frame death's entry lives only until that next enroll (bounded to the
-	// current Runner connection), not until process restart. Delivery correctness
-	// (no-loss) is unaffected either way: the recipient still receives the message
-	// via the reconnect cursor sweep — now no-loss AND enroll-bounded.
+	// a no-frame death's entry lives only until a subsequent enroll clears its
+	// session, not until process restart. "Subsequent" (not strictly "the next"):
+	// a Deliver that resolved the author LIVE an instant before enroll cleared the
+	// maps can hold(sess) just after that enroll's reap, re-adding a dead session's
+	// entry that a later enroll reaps — still enroll-bounded, one cycle wider in
+	// that race. Delivery correctness (no-loss) is unaffected either way: the
+	// recipient still receives the message via the reconnect cursor sweep — now
+	// no-loss AND enroll-bounded.
 	held map[string][]string
 	// settleQueue buffers author-settle edges the hook enqueues, drained by the
 	// loop under its ctx. A slice (never lost) plus a buffered notify channel

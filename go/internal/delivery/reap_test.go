@@ -53,3 +53,17 @@ func TestOnSessionsReapedEmptyIsNoop(t *testing.T) {
 		t.Fatal("empty reap dropped a held entry, want no-op")
 	}
 }
+
+// OnSessionsReaped of a session id with NO held entry (a session that died with
+// its held queue already drained, or never held anything) is a safe no-op that
+// leaves every unrelated held entry intact — delete of an absent map key.
+func TestOnSessionsReapedAbsentIDIsNoop(t *testing.T) {
+	c, _, _, _ := newTestConsumer(t) //nolint:dogsled // this test needs only the consumer; the fakes are unused — reaping an absent id touches no dispatch/resolve/read path.
+	c.hold("sess-live", "m1")
+
+	c.OnSessionsReaped([]string{"sess-never-held"})
+
+	if !c.isHeld("sess-live", "m1") {
+		t.Fatal("reap of an absent id dropped an unrelated held entry, want it intact")
+	}
+}

@@ -84,11 +84,13 @@ func firesHeldDelivers(state compassv1.AgentSessionState) bool {
 // edge fires the messages held for that author session, in post order, from each
 // message's CURRENT (settled) stored blocks (design.md:158-168), then clears the
 // registry entry — a no-frame author death never enqueues an edge, so its held
-// entry is left in place until the next reap. It is reaped in-process on the
-// next Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped),
+// entry is left in place until the next reap. It is reaped in-process on a
+// subsequent Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped),
 // which drops the entry for every cleared session id — so a no-frame death's
-// entry lives only until that next enroll (bounded to the current Runner
-// connection), not until process restart. No-loss is unaffected — the reconnect
+// entry lives only until a subsequent enroll clears its session, not until
+// process restart (a Deliver that resolved the author LIVE just before enroll
+// cleared the maps can re-hold the dead session past this enroll's reap; a later
+// enroll reaps it — still enroll-bounded). No-loss is unaffected — the reconnect
 // sweep still delivers the message (design.md:168-176): now no-loss AND
 // enroll-bounded.
 func (c *Consumer) drainSettles(ctx context.Context) {
