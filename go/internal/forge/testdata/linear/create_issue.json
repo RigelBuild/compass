@@ -1,0 +1,68 @@
+{
+	"name": "create_issue",
+	"request": {
+		"op": "create_issue",
+		"repo": "SEA",
+		"input": {
+			"title": "a bug",
+			"body": "stamped body"
+		},
+		"method": "POST",
+		"path": "/graphql",
+		"headers": {
+			"Content-Type": "application/json",
+			"Accept": "application/json"
+		},
+		"body": {
+			"query": "mutation CompassIssueCreate($input: IssueCreateInput!) {\n  issueCreate(input: $input) {\n    issue { ...CompassIssueFields }\n  }\n}\nfragment CompassIssueFields on Issue {\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n}",
+			"variables": {
+				"input": {
+					"teamId": "team-uuid-1",
+					"title": "a bug",
+					"description": "stamped body",
+					"createAsUser": "Compass",
+					"displayIconUrl": "https://compass.sealedsecurity.com/assets/compass-app.png"
+				}
+			}
+		}
+	},
+	"response": {
+		"prelude": [
+			{
+				"status": 200,
+				"body": { "data": { "teams": { "nodes": [{ "id": "team-uuid-1" }] } } }
+			},
+			{
+				"status": 200,
+				"body": { "data": { "viewer": { "app": true } } }
+			}
+		],
+		"status": 200,
+		"body": {
+			"data": {
+				"issueCreate": {
+					"issue": {
+						"number": 42,
+						"title": "a bug",
+						"description": "stamped body",
+						"url": "https://linear.app/x/issue/SEA-42",
+						"state": { "name": "Todo", "type": "unstarted" },
+						"labels": { "nodes": [] },
+						"creator": null,
+						"updatedAt": "2026-08-01T12:30:00Z"
+					}
+				}
+			}
+		},
+		"want": {
+			"Number": 42,
+			"Title": "a bug",
+			"Body": "stamped body",
+			"State": "open",
+			"URL": "https://linear.app/x/issue/SEA-42",
+			"ForgeAccount": "",
+			"Labels": [],
+			"UpdatedAt": "2026-08-01T12:30:00Z"
+		}
+	}
+}

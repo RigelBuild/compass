@@ -1,0 +1,45 @@
+{
+	"name": "create_issue",
+	"request": {
+		"op": "create_issue",
+		"repo": "org/repo",
+		"input": {
+			"title": "a bug",
+			"body": "stamped body",
+			"labels": ["bug", "p1"]
+		},
+		"method": "POST",
+		"path": "/repos/org/repo/issues",
+		"headers": {
+			"Content-Type": "application/json",
+			"Accept": "application/vnd.github+json"
+		},
+		"body": {
+			"title": "a bug",
+			"body": "stamped body",
+			"labels": ["bug", "p1"]
+		}
+	},
+	"response": {
+		"status": 201,
+		"body": {
+			"number": 42,
+			"title": "a bug",
+			"body": "stamped body",
+			"state": "open",
+			"html_url": "https://github.com/org/repo/issues/42",
+			"user": { "login": "octocat" },
+			"labels": [{ "name": "bug" }, { "name": "p1" }]
+		},
+		"want": {
+			"Number": 42,
+			"Title": "a bug",
+			"Body": "stamped body",
+			"State": "open",
+			"URL": "https://github.com/org/repo/issues/42",
+			"ForgeAccount": "octocat",
+			"Labels": ["bug", "p1"],
+			"UpdatedAt": "0001-01-01T00:00:00Z"
+		}
+	}
+}

@@ -1,0 +1,55 @@
+{
+	"name": "list_issues",
+	"request": {
+		"op": "list_issues",
+		"repo": "SEA",
+		"filter": {
+			"state": "open"
+		},
+		"method": "POST",
+		"path": "/graphql",
+		"body": {
+			"query": "query CompassIssueList($filter: IssueFilter!, $after: String) {\n  issues(filter: $filter, first: 50, after: $after) {\n    nodes { ...CompassIssueFields }\n    pageInfo { hasNextPage endCursor }\n  }\n}\nfragment CompassIssueFields on Issue {\n  number\n  title\n  description\n  url\n  state { name type }\n  labels { nodes { name } }\n  creator { displayName }\n  updatedAt\n}",
+			"variables": {
+				"filter": {
+					"team": { "key": { "eq": "SEA" } },
+					"state": { "type": { "nin": ["completed", "canceled"] } }
+				}
+			}
+		}
+	},
+	"response": {
+		"status": 200,
+		"body": {
+			"data": {
+				"issues": {
+					"nodes": [
+						{
+							"number": 7,
+							"title": "a bug",
+							"description": "raw body",
+							"url": "https://linear.app/x/issue/SEA-7",
+							"state": { "name": "In Progress", "type": "started" },
+							"labels": { "nodes": [{ "name": "bug" }] },
+							"creator": { "displayName": "alice" },
+							"updatedAt": "2026-08-01T12:30:00Z"
+						}
+					],
+					"pageInfo": { "hasNextPage": false, "endCursor": "" }
+				}
+			}
+		},
+		"want": [
+			{
+				"Number": 7,
+				"Title": "a bug",
+				"Body": "raw body",
+				"State": "open",
+				"URL": "https://linear.app/x/issue/SEA-7",
+				"ForgeAccount": "alice",
+				"Labels": ["bug"],
+				"UpdatedAt": "2026-08-01T12:30:00Z"
+			}
+		]
+	}
+}

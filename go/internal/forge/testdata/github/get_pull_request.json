@@ -1,0 +1,115 @@
+{
+	"name": "get_pull_request",
+	"request": {
+		"op": "get_pull_request",
+		"repo": "org/repo",
+		"number": 42,
+		"method": "GET",
+		"path": "/repos/org/repo/pulls/42"
+	},
+	"response": {
+		"status": 200,
+		"body": {
+			"number": 42,
+			"title": "a feature",
+			"body": "raw <!--owner--> pr body",
+			"state": "closed",
+			"html_url": "https://github.com/org/repo/pull/42",
+			"draft": false,
+			"additions": 120,
+			"deletions": 30,
+			"changed_files": 4,
+			"merged": true,
+			"head": { "ref": "feature", "sha": "abc123" },
+			"base": { "ref": "main" },
+			"user": { "login": "octocat" }
+		},
+		"extra": [
+			{
+				"status": 200,
+				"body": [
+					{
+						"body": "lgtm",
+						"state": "APPROVED",
+						"user": { "login": "botly", "type": "Bot" }
+					},
+					{
+						"body": "needs work",
+						"state": "CHANGES_REQUESTED",
+						"user": { "login": "carol", "type": "User" }
+					}
+				]
+			},
+			{
+				"status": 200,
+				"body": {
+					"check_runs": [
+						{
+							"name": "build",
+							"status": "completed",
+							"conclusion": "success",
+							"html_url": "https://ci/build"
+						}
+					]
+				}
+			},
+			{
+				"status": 200,
+				"body": {
+					"statuses": [
+						{
+							"context": "legacy-ci",
+							"state": "success",
+							"target_url": "https://ci/legacy"
+						}
+					]
+				}
+			}
+		],
+		"want": {
+			"Number": 42,
+			"Title": "a feature",
+			"Body": "raw <!--owner--> pr body",
+			"State": "merged",
+			"URL": "https://github.com/org/repo/pull/42",
+			"HeadRef": "feature",
+			"BaseRef": "main",
+			"ForgeAccount": "octocat",
+			"Draft": false,
+			"Changed": { "Files": 4, "Additions": 120, "Deletions": 30 },
+			"Checks": {
+				"HeadSHA": "abc123",
+				"State": "success",
+				"Checks": [
+					{
+						"Name": "build",
+						"State": "success",
+						"URL": "https://ci/build",
+						"Required": false
+					},
+					{
+						"Name": "legacy-ci",
+						"State": "success",
+						"URL": "https://ci/legacy",
+						"Required": false
+					}
+				]
+			},
+			"Reviews": [
+				{
+					"Author": "botly",
+					"IsBot": true,
+					"Verdict": "approved",
+					"Body": "lgtm"
+				},
+				{
+					"Author": "carol",
+					"IsBot": false,
+					"Verdict": "changes_requested",
+					"Body": "needs work"
+				}
+			],
+			"Threads": null
+		}
+	}
+}
