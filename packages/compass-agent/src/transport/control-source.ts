@@ -561,13 +561,18 @@ export function createSocketControlSource(
 	// The pump starts on first iteration and runs once for the source's life,
 	// forked as an interruptible fiber on the module-local runtime. The
 	// ControlSource is single-consumer by contract (CompassAgent's one control
-	// loop, agent.ts) — the `pumpFiber` handle both guards against a second
-	// `for await` spawning a duplicate pump on the shared buffer/spine and gives
-	// return() a fiber to interrupt.
+	// loop, agent.ts). Two separate handles, deliberately NOT one: `started` is
+	// the fork-once latch — set on first iteration and never reset, so a second
+	// `for await` (or a re-iterate after return()) never spawns a duplicate pump
+	// on the shared buffer/spine, and never re-forks on the now-disposed runtime.
+	// `pumpFiber` is only the interrupt handle return() nulls for idempotency;
+	// nulling it must NOT re-open the fork path, which is why the latch is separate.
+	let started = false;
 	let pumpFiber: Fiber.RuntimeFiber<void> | undefined;
 	return {
 		[Symbol.asyncIterator](): AsyncIterator<AgentControl> {
-			if (pumpFiber === undefined) {
+			if (!started) {
+				started = true;
 				pumpFiber = runtime.runFork(pumpEffect);
 			}
 			// The op yielded on the previous pull, awaiting the apply-then-ack the

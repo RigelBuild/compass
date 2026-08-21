@@ -159,6 +159,21 @@ export const MUTANTS: readonly Mutant[] = [
 		expect:
 			"an abort during the backoff must wake immediately, not sit out the full delay",
 	},
+	// The iterator return()'s teardown ORDER — the single hardest T4 guarantee.
+	// abort.abort() must fire BEFORE the awaited Fiber.interrupt/dispose: the
+	// backoff wait is an uninterruptible Effect.promise, so a fiber parked in it
+	// is only unparked by the abort, never by interrupt alone. Deleting the abort
+	// leaves return()'s awaited teardown wedged on the parked fiber until the 2s
+	// timer expires. F7 pins this with a 1s bounded guard; this entry folds F7's
+	// non-vacuity into the same automated discipline as the pump branches, so a
+	// future refactor reordering the teardown reddens here instead of silently.
+	{
+		name: "return() aborts before awaiting interrupt",
+		find: "\t\t\t\t\tabort.abort();\n\t\t\t\t\tbuffer.close();",
+		replace: "\t\t\t\t\tbuffer.close();",
+		expect:
+			"return()'s awaited teardown must not wedge on the uninterruptible backoff wait — abort unparks the fiber the interrupt then joins",
+	},
 	// The no-progress budget's SIGNAL, not a branch of the pump. It earns a slot
 	// here because it is the pump's only termination for a slow flap: if a
 	// re-ack can inflate the applied count, a Runner redelivering one op forever
