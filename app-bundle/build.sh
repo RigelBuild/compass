@@ -84,7 +84,12 @@ done
 for tool in postgres initdb createdb; do
   ln -s "$PG_ENV/bin/$tool" "$STAGE/bin/$tool"
 done
-mkdir -p "$STAGE/share"
+# $STAGE/share already exists (created with $STAGE/bin above). These are
+# absolute /nix/store symlinks, and the tarball stores them as symlinks (no
+# tar --dereference), so the bundle is a dev-box artifact: usable only where
+# this store path exists — non-relocatable by design, exactly as the bin/
+# tool symlinks already are (§164). A relocatable bundle would be a separate
+# design change (dereference-and-copy, or ship a nix closure).
 ln -s "$PG_ENV/share/postgresql" "$STAGE/share/postgresql"
 ln -s "$PG_ENV/lib" "$STAGE/lib"
 
@@ -144,7 +149,12 @@ for tool in postgres initdb createdb; do
   log "  bin/$tool present + executable"
 done
 pg_probe="$(mktemp -d)"
-if ! initdb_out="$("$STAGE/bin/initdb" -D "$pg_probe/data" --username postgres 2>&1)"; then
+# --auth=trust mirrors the runtime invocation byte-for-byte (compass-postgres
+# initCluster: `initdb -D <dir> --auth=trust`, go/cmd/compass-postgres/main.go),
+# so the probe is the exact initdb the embedded stack runs — no divergence a
+# reader must reason about. The flag is immaterial to the support-file
+# resolution this gate checks; matching it is purely fidelity.
+if ! initdb_out="$("$STAGE/bin/initdb" -D "$pg_probe/data" --auth=trust 2>&1)"; then
   err "sanity: bundled initdb could not initialize a cluster (postgres staging incomplete — check share/postgresql + lib beside bin/):"
   err "$initdb_out"
   rm -rf "$pg_probe"
