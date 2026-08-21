@@ -56,7 +56,6 @@ tasks:
       - '/agent-image/**'
       - '/packages/compass-agent/**'
       - '/forks/devenv/**'
-      - '/forks/nix2container/**'
       - '/package.json'
       - '/bun.lock'
       - '/tools/toolchain/versions/bun.nix'

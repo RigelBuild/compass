@@ -1,4 +1,4 @@
-{ pkgs, lib, ... }:
+{ pkgs, lib, inputs, ... }:
 # The Compass agent base image — the single self-contained OCI artifact every
 # per-agent container starts from.
 #
@@ -37,11 +37,17 @@ let
 
 in
 {
-  # No dev-shell packages: nothing enters a shell here. This devenv exists only to
-  # express the container, so the toolchain lives in the image layer, not in
-  # `packages` — listing it twice would build the same closure for a shell no one
-  # opens.
-  packages = [ ];
+  # The nix2container fork's patched skopeo — it understands the `nix:`
+  # transport (reads a nix2container image spec directly), which the publish
+  # lane and the env-gate drive to inspect and copy the built image. Installing
+  # it here (resolved from the lockfile-pinned `nix2container` input, the single
+  # source of truth for its rev) puts a plain `skopeo` on PATH for anything
+  # entering this devenv's shell, so those sites invoke it by name rather than
+  # through a raw, lockfile-bypassing `nix run`. Nothing else enters a shell
+  # here: the image toolchain lives in the image layer, not in `packages`.
+  packages = [
+    inputs.nix2container.packages.${pkgs.stdenv.system}.skopeo-nix2container
+  ];
 
   # One entry, and only because it has to be here: direnv resolves its rc as
   # `$DIRENV_CONFIG/direnvrc` (default `~/.config/direnv/direnvrc`) and has no

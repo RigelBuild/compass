@@ -213,14 +213,18 @@
         ]
       },
       "locked": {
-        "path": "../forks/nix2container",
-        "type": "path"
+        "lastModified": 1783089182,
+        "narHash": "sha256-zO32ctEp4mox3CJtuqBConUYADw/hGjsS/rEqqWon/k=",
+        "owner": "RigelBuild",
+        "repo": "nix2container",
+        "rev": "8f4a6fd7b10abaeeddff6c4d8bb4908c5123c90c",
+        "type": "github"
       },
       "original": {
-        "path": "../forks/nix2container",
-        "type": "path"
-      },
-      "parent": []
+        "owner": "RigelBuild",
+        "repo": "nix2container",
+        "type": "github"
+      }
     },
     "nixd": {
       "inputs": {

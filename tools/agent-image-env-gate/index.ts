@@ -111,11 +111,14 @@ if (import.meta.main) {
 	}
 
 	// Inspect the built spec through the fork's patched skopeo (understands the
-	// `nix:` transport). The config form (not --raw) exposes Os/Architecture/Env.
+	// `nix:` transport). It is installed into the agent-image devenv (devenv.nix
+	// `packages`, from the lockfile-pinned nix2container input) and reached by
+	// name through the same devenv the build above runs — no raw nix2container
+	// flake ref. The config form (not --raw) exposes Os/Architecture/Env.
 	let inspectOut: string;
 	try {
 		inspectOut =
-			await $`nix run path:../forks/nix2container#skopeo-nix2container -- inspect nix:${spec}`
+			await $`nix run path:../forks/devenv#devenv -- shell -- skopeo inspect nix:${spec}`
 				.cwd(agentImageDir)
 				.text();
 	} catch (cause) {
