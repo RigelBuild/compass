@@ -60,8 +60,8 @@ rested on it would fall over in one sentence.
 But look at what a "cheap" coding brain still needs. It needs the materialized
 source tree, because you cannot grep or edit files you do not have. It needs git.
 For anything beyond trivial edits it wants the language toolchain and a language
-server, which is the direction the frontier is moving, not away from it, and
-which Compass specifically depends on. So the cheap tier is "a box with the whole
+server, which is the direction we expect the frontier to move and which Compass
+specifically depends on. So the cheap tier is "a box with the whole
 repo checked out and the model loop running." The heavy tier is "a box with the
 whole repo checked out and the toolchain running." The delta you actually peel
 off by splitting is the toolchain and some CPU headroom, and to get it you
@@ -74,7 +74,8 @@ carving it onto its own box pays for the machinery of carving it.
 **The heavy work can be isolated, but not profitably into a standing tier.** It
 is tempting to say compiles and tests can't be separated from editing, but that
 overstates it, and this design refutes it directly: the elastic session runtime
-*does* dispatch a compile to a separate, larger environment. So isolation is
+*does* run a compile in a separate, transient environment that shares the
+session's storage. So isolation is
 possible. The question condition 2 really asks is whether a *standing* heavy
 tier earns its cost, and for coding it does not, because the heavy work is woven
 through the inner loop rather than gathered into a phase. The loop is: edit,
