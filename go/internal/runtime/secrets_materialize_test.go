@@ -77,6 +77,9 @@ func (r *scriptRunner) Exists(context.Context, string) (bool, error)           {
 func (r *scriptRunner) MountLabel(context.Context, ContainerID) (string, error) {
 	return "", nil
 }
+func (r *scriptRunner) Resize(context.Context, ContainerID, ResourceLimits) error {
+	return nil
+}
 
 func (r *scriptRunner) specsSnapshot() []ExecSpec {
 	r.mu.Lock()

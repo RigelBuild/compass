@@ -88,6 +88,10 @@ func (f *fakeRuntime) MountLabel(_ context.Context, _ ContainerID) (string, erro
 	return "", nil
 }
 
+func (f *fakeRuntime) Resize(_ context.Context, _ ContainerID, _ ResourceLimits) error {
+	return nil
+}
+
 func (f *fakeRuntime) record(call string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -7,6 +7,7 @@ package runtime
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -176,6 +177,20 @@ func TestRemoveArgsCarriesVolumes(t *testing.T) {
 	want := []string{"rm", "--force", "--volumes", "ctr123"}
 	if !slices.Equal(args, want) {
 		t.Fatalf("removeArgs = %q, want %q", args, want)
+	}
+}
+
+// Resize is frozen into the ContainerRuntime seam at S1 but its behavior is
+// C3's: PodmanCLI.Resize must return ErrResizeNotImplemented, never a silent
+// nil. A no-op success would let a future caller believe a container's cgroup
+// limits were raised when they never moved — the exact false-positive the
+// sentinel exists to prevent. This pins the reserved-not-implemented contract
+// so C3 (which replaces the body with the real `podman update` change)
+// deliberately deletes this test rather than silently regressing past it.
+func TestResizeReservedUntilC3(t *testing.T) {
+	err := NewPodmanCLI().Resize(context.Background(), ContainerID("ctr123"), ResourceLimits{CPUShares: 512, MemoryBytes: 1 << 30})
+	if !errors.Is(err, ErrResizeNotImplemented) {
+		t.Fatalf("Resize err = %v, want ErrResizeNotImplemented", err)
 	}
 }
 

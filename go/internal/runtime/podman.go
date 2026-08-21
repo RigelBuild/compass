@@ -65,6 +65,23 @@ type Mount struct {
 	ReadOnly      bool
 }
 
+// ResourceLimits is a concrete cgroup resource-limit change applied to a live
+// container by Resize — the CPU share weight and the memory ceiling in bytes.
+// It is deliberately distinct from the ComputeSpec.Resources policy enum (the
+// ClassInner/ClassResized/ClassBurst routing class): this struct is the
+// engine-level limit the resize backend hands podman (a `podman update`-class
+// cgroup change), not the policy that decided to resize. A zero field means
+// "leave that limit unchanged", so a caller can raise CPU without touching
+// memory.
+type ResourceLimits struct {
+	// CPUShares is the relative CPU weight (the cgroup v2 cpu.weight-class
+	// value podman's --cpu-shares maps to). Zero leaves the current weight.
+	CPUShares int
+	// MemoryBytes is the memory ceiling in bytes. Zero leaves the current
+	// ceiling.
+	MemoryBytes int64
+}
+
 // ContainerSpec is everything needed to create one agent container. Kept
 // engine-agnostic: the podman-specific argv is assembled in PodmanCLI.Create,
 // not here.
@@ -321,6 +338,17 @@ type ContainerRuntime interface {
 	// freshly materialized version dir into this category so a confined agent
 	// can read it (agentHost.RefreshConfig -> ConfigMaterializer relabel).
 	MountLabel(ctx context.Context, id ContainerID) (string, error)
+
+	// Resize changes a live container's cgroup resource limits in place (a
+	// `podman update`-class operation) — the resize-in-place elastic-compute
+	// path (C3). The verb is frozen into the interface at S1 (additively
+	// reserved, the same discipline as ExecStreaming) so every backend and fake
+	// carries the full surface from the start and no interface change lands
+	// after S1; the resize BEHAVIOR — actually applying and later restoring the
+	// limits around a heavy op — is C3's to fill in behind this signature.
+	// PodmanCLI.Resize therefore returns ErrResizeNotImplemented until C3, and
+	// no caller invokes it yet, so the existing session path is unchanged.
+	Resize(ctx context.Context, id ContainerID, limits ResourceLimits) error
 }
 
 // defaultCommandTimeout is the default per-command wall-clock cap. A hung podman
@@ -575,6 +603,23 @@ func (p *PodmanCLI) Remove(ctx context.Context, id ContainerID) error {
 // deliberately independent (no prod->test-harness dependency) — keep in sync.
 func removeArgs(id ContainerID) []string {
 	return []string{"rm", "--force", "--volumes", id.String()}
+}
+
+// ErrResizeNotImplemented is returned by PodmanCLI.Resize until C3 fills in the
+// resize-in-place behavior behind the S1-frozen seam. The verb exists on the
+// interface now (so every backend and fake carries the full surface and C3
+// lands no interface change); the podman `container update` wiring is C3's, so
+// calling it today is a programming error the sentinel names explicitly rather
+// than a silent no-op that would fake a limit change that never happened.
+var ErrResizeNotImplemented = errors.New("runtime: ContainerRuntime.Resize is reserved at S1 and implemented in C3")
+
+// Resize is the S1-frozen resize-in-place verb, unimplemented until C3. It
+// returns ErrResizeNotImplemented rather than silently succeeding: a no-op that
+// reported success would let a future caller believe a container was resized
+// when its cgroup limits never moved. C3 replaces this body with the real
+// `podman update`-class limit change.
+func (p *PodmanCLI) Resize(_ context.Context, _ ContainerID, _ ResourceLimits) error {
+	return ErrResizeNotImplemented
 }
 
 // Pull fetches image from its registry. A one-shot fire-and-check like

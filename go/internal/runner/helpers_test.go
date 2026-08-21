@@ -115,6 +115,9 @@ func (f *pipeRuntime) Exists(context.Context, string) (bool, error) { return fal
 func (f *pipeRuntime) MountLabel(context.Context, runtime.ContainerID) (string, error) {
 	return "", nil
 }
+func (f *pipeRuntime) Resize(context.Context, runtime.ContainerID, runtime.ResourceLimits) error {
+	return nil
+}
 
 func (f *pipeRuntime) record(call string) {
 	f.mu.Lock()
@@ -231,6 +234,9 @@ func (f *stubStreamingRuntime) Remove(_ context.Context, id runtime.ContainerID)
 func (f *stubStreamingRuntime) Exists(context.Context, string) (bool, error) { return false, nil }
 func (f *stubStreamingRuntime) MountLabel(context.Context, runtime.ContainerID) (string, error) {
 	return "", nil
+}
+func (f *stubStreamingRuntime) Resize(context.Context, runtime.ContainerID, runtime.ResourceLimits) error {
+	return nil
 }
 
 func (f *stubStreamingRuntime) record(call string) {
