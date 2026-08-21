@@ -480,6 +480,30 @@ func TestAgentByHandleUserHandleIsNotFound(t *testing.T) {
 	sentinelIs(t, err, ErrNotFound, "agent handle lookup for a user handle")
 }
 
+// TestResolveOwnerResolvesUserAgentAndUnknown pins the caller-owner resolution
+// CreateAgent leans on: a user resolves to itself (no agent_accounts row, so
+// COALESCE falls through to the id), an agent resolves to its owner_user_id, and
+// an unknown id resolves to itself (the same COALESCE fallback ReparentAgent
+// relies on downstream checks to reject). Empty caller fails closed.
+func TestResolveOwnerResolvesUserAgentAndUnknown(t *testing.T) {
+	ctx := t.Context()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "bot")
+
+	if got, err := s.ResolveOwner(ctx, owner.ID); err != nil || got != owner.ID {
+		t.Fatalf("ResolveOwner(user) = %q, %v; want %q, nil", got, err, owner.ID)
+	}
+	if got, err := s.ResolveOwner(ctx, agent.ID); err != nil || got != owner.ID {
+		t.Fatalf("ResolveOwner(agent) = %q, %v; want owner %q, nil", got, err, owner.ID)
+	}
+	if got, err := s.ResolveOwner(ctx, AccountID("ghost")); err != nil || got != AccountID("ghost") {
+		t.Fatalf("ResolveOwner(unknown) = %q, %v; want self %q, nil", got, err, "ghost")
+	}
+	_, err := s.ResolveOwner(ctx, AccountID(""))
+	sentinelIs(t, err, ErrInvalidArgument, "ResolveOwner with empty caller")
+}
+
 // TestCountRootAgents pins the empty-tree gate the first-launch supervisor seed
 // keys on: zero when the owner has no root agent, one after a root is created,
 // still one when a non-root child is added (only parent-less agents count), and

@@ -153,3 +153,50 @@ func TestCreateAgentWithParentValidatesAndPersists(t *testing.T) {
 	}))
 	connectCodeIs(t, err, connect.CodePermissionDenied, "create with cross-owner parent")
 }
+
+// TestCreateAgentByAgentCallerResolvesOwner is the RIG-1644 red-green teeth:
+// agents spawning agents is core product, so an AGENT caller creating a child
+// under a same-owner parent must be authorized against its resolved USER owner,
+// not its own agent id. Pre-fix CreateAgent used the raw caller id both as the
+// parent same-owner key (→ spurious PermissionDenied) and as the store owner (→
+// owner_user_id FK rejects a non-user), so this call errored. The child must be
+// created and owned by the resolved user owner. The cross-owner case still fails
+// closed, proving the resolution did not open a hole.
+func TestCreateAgentByAgentCallerResolvesOwner(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+	parentAgent := mustAgent(t, st, owner.ID, "parent")
+	callerAgent := mustAgent(t, st, owner.ID, "caller")
+
+	resp, err := svc.CreateAgent(WithActor(ctx, callerAgent.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+		Handle:        "child",
+		DisplayName:   "Child",
+		ParentAgentId: string(parentAgent.ID),
+	}))
+	if err != nil {
+		t.Fatalf("CreateAgent by agent caller: %v", err)
+	}
+	if got := resp.Msg.GetAccount().GetAgent().GetParentAgentId(); got != string(parentAgent.ID) {
+		t.Fatalf("created child parent = %q, want %q", got, parentAgent.ID)
+	}
+	childID := store.AccountID(resp.Msg.GetAccount().GetId())
+	gotOwner, err := st.AgentOwner(ctx, childID)
+	if err != nil {
+		t.Fatalf("AgentOwner(child): %v", err)
+	}
+	if gotOwner != owner.ID {
+		t.Fatalf("child owner = %q, want resolved user owner %q", gotOwner, owner.ID)
+	}
+
+	// An agent caller under a DIFFERENT owner still cannot create under this
+	// parent: resolution maps it to `other`, so the same-owner check denies it.
+	other := mustUser(t, st, "other")
+	intruder := mustAgent(t, st, other.ID, "intruder")
+	_, err = svc.CreateAgent(WithActor(ctx, intruder.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+		Handle:        "hijack",
+		DisplayName:   "Hijack",
+		ParentAgentId: string(parentAgent.ID),
+	}))
+	connectCodeIs(t, err, connect.CodePermissionDenied, "cross-owner agent caller")
+}

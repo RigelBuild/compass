@@ -396,6 +396,30 @@ func (s *Store) AgentOwner(ctx context.Context, agentAccountID AccountID) (Accou
 	return AccountID(ownerUserID), nil
 }
 
+// ResolveOwner resolves a caller to the user account it acts under. It mirrors
+// the caller-owner resolution ReparentAgent applies inline (clause 0): an agent
+// caller resolves to its agent_accounts.owner_user_id, while a user caller has
+// no agent_accounts row and so COALESCE falls through to the caller id itself —
+// a user owns itself. An unknown id likewise resolves to itself; that is
+// deliberate and matches ReparentAgent's form, which leans on the subsequent
+// same-owner and owner-FK checks to reject a bogus caller rather than probing
+// existence here. ReparentAgent keeps its own inline copy of this resolution
+// because it must run inside its serialized transaction (on tx, not s.pool) — do
+// not route it through ResolveOwner, which would drop that guarantee.
+func (s *Store) ResolveOwner(ctx context.Context, caller AccountID) (AccountID, error) {
+	if caller == "" {
+		return "", fmt.Errorf("%w: caller is required", ErrInvalidArgument)
+	}
+	var owner string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COALESCE((SELECT owner_user_id FROM agent_accounts WHERE account_id = $1), $1)`,
+		string(caller),
+	).Scan(&owner); err != nil {
+		return "", fmt.Errorf("store: resolve owner: %w", err)
+	}
+	return AccountID(owner), nil
+}
+
 // ReparentAgent moves an agent to a new parent in the agent tree, or promotes it
 // to a root (empty newParentAgentID), as the serialized validate-and-write the
 // agent-trees record §Server validation requires. The whole check-then-write

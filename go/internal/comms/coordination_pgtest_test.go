@@ -80,6 +80,43 @@ func TestCreateAgentWithParentProvisionsCoordinationChannel(t *testing.T) {
 	}
 }
 
+// TestCreateAgentByAgentCallerProvisionsCoordinationChannel proves owner
+// resolution (RIG-1644) and coordination provisioning compose: an AGENT caller
+// spawning a report under a same-owner manager resolves to its owner, passes the
+// same-owner check, and still fires the store's in-tx coordination hook — the
+// manager's channel is provisioned and its ChannelChanged emitted post-commit,
+// exactly as for a user caller.
+func TestCreateAgentByAgentCallerProvisionsCoordinationChannel(t *testing.T) {
+	h := newStreamHarness(t)
+	h.svc.RegisterCoordinationHook(h.store)
+	ctx := context.Background()
+
+	owner := mustUser(t, h.store, "owner")
+	manager := mustAgent(t, h.store, owner.ID, "manager")
+	caller := mustAgent(t, h.store, owner.ID, "caller")
+
+	// The agent caller (not the owning user) spawns the report under the manager.
+	if _, err := h.svc.CreateAgent(WithActor(ctx, caller.ID), connect.NewRequest(&compassv1.CreateAgentRequest{
+		Handle: "report1", DisplayName: "r1", ParentAgentId: string(manager.ID),
+	})); err != nil {
+		t.Fatalf("CreateAgent by agent caller: %v", err)
+	}
+
+	chs := coordChannelsFor(t, h.store, manager.ID)
+	if len(chs) != 1 {
+		t.Fatalf("provisioned %d coordination channels, want 1", len(chs))
+	}
+	if chs[0].Name != "manager-coordination" {
+		t.Fatalf("coordination channel name = %q, want manager-coordination", chs[0].Name)
+	}
+
+	canary := mkCanary(t, h, "canary1")
+	evts := drainReplayAsActor(t, h, manager.ID, canary)
+	if !hasChannelChangedFor(evts, string(chs[0].ID)) {
+		t.Fatalf("no coordination ChannelChanged emitted for %s", chs[0].ID)
+	}
+}
+
 // TestReparentInEmitsMembershipMove pins the reparent path: moving a report from
 // manager A to manager B adds it to B's channel (reparent-in) and removes it from
 // A's, with the removal carried in A's ChannelChanged.removed_account_ids
