@@ -72,10 +72,21 @@ done
 
 # --- 5. Stage the A2 layout (§156-168).
 # postgres/initdb/createdb: store symlinks from the realized postgresql, so the
-# bundle ships one pinned postgres 18.x (§164).
+# bundle ships one pinned postgres 18.x (§164). PostgreSQL resolves its support
+# files RELATIVE TO THE INVOCATION PATH — the catalog bootstrap
+# (share/postgresql/postgres.bki) as bin/../share/postgresql, and the $libdir
+# extension modules (e.g. dict_snowball.so) as bin/../lib — so symlinking the
+# binaries alone does NOT ship a self-contained postgres: initdb aborts
+# ("postgres.bki does not exist", then a $libdir miss) when run from a bundle
+# that has only bin/. Stage share/postgresql + lib beside bin/ (store symlinks,
+# the same mechanism as the tools) so exe-relative resolution finds a complete
+# pinned tree.
 for tool in postgres initdb createdb; do
   ln -s "$PG_ENV/bin/$tool" "$STAGE/bin/$tool"
 done
+mkdir -p "$STAGE/share"
+ln -s "$PG_ENV/share/postgresql" "$STAGE/share/postgresql"
+ln -s "$PG_ENV/lib" "$STAGE/lib"
 
 # dist: the compass-ui:build output (apps/ui/dist), staged beside the shell.
 UI_DIST="$REPO_ROOT/apps/ui/dist"
@@ -117,8 +128,14 @@ for b in compass-app compass-stack compass-server compass-runner compass-postgre
   log "  bin/$b --version = $got"
 done
 
-# postgres tools: present + executable, NOT stamp-matched (they carry
-# PostgreSQL's own 18.x version).
+# postgres tools: present + executable (NOT stamp-matched — they carry
+# PostgreSQL's own 18.x version), AND the pinned cluster can actually initialize.
+# The present+executable check alone let an incomplete staging ship green: the
+# tool symlinks resolved but their support tree (share/, lib/) did not, so
+# initdb aborted at cluster init inside compass-stack. Run initdb from the
+# STAGED symlink into a throwaway datadir so the bundle's own exe-relative
+# resolution is exercised end to end — this is what makes "green build ⇒
+# COMPLETE bundle" true for postgres, not just "the binaries are present".
 for tool in postgres initdb createdb; do
   if [[ ! -x "$STAGE/bin/$tool" ]]; then
     err "sanity: missing/non-executable postgres tool: bin/$tool"
@@ -126,6 +143,15 @@ for tool in postgres initdb createdb; do
   fi
   log "  bin/$tool present + executable"
 done
+pg_probe="$(mktemp -d)"
+if ! initdb_out="$("$STAGE/bin/initdb" -D "$pg_probe/data" --username postgres 2>&1)"; then
+  err "sanity: bundled initdb could not initialize a cluster (postgres staging incomplete — check share/postgresql + lib beside bin/):"
+  err "$initdb_out"
+  rm -rf "$pg_probe"
+  exit 1
+fi
+rm -rf "$pg_probe"
+log "  bundled initdb initialized a throwaway cluster (postgres tree complete)"
 
 if [[ ! -f "$STAGE/bin/dist/index.html" ]]; then
   err "sanity: bin/dist/index.html missing"
