@@ -20,9 +20,9 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/secrets"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/secrets"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // fakeResolverSecrets is a hand-written secrets.Resolver: Resolve returns a fixed

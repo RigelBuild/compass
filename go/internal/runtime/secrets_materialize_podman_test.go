@@ -24,7 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/secrets"
+	"github.com/RigelBuild/compass/go/internal/secrets"
 )
 
 // TestMaterializeEnvDeliveryReadableInContainer materializes a DeliveryEnv

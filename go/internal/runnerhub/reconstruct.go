@@ -16,7 +16,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // errReaderUnavailable is the fail-closed cause when a hub with no

@@ -9,7 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/forge"
+	"github.com/RigelBuild/compass/go/internal/forge"
 )
 
 // --- fakes -----------------------------------------------------------------

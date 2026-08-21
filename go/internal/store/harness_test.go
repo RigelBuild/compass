@@ -17,7 +17,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/pgtest"
+	"github.com/RigelBuild/compass/go/internal/pgtest"
 )
 
 // newTestStore returns a Store connected to a fresh, migrated database. It skips

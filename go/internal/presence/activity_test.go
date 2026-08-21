@@ -11,8 +11,8 @@ package presence
 import (
 	"testing"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // TestPresenceForProjectsLastPublishedSubset: PresenceFor returns only the

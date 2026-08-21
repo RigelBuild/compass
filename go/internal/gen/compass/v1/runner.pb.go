@@ -33,7 +33,7 @@
 package compassv1internal
 
 import (
-	v1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	v1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"

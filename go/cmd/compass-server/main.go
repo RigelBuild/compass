@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/server"
+	"github.com/RigelBuild/compass/go/server"
 )
 
 // version is the server build + contract version reported by GetServerInfo (the

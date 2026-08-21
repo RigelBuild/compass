@@ -15,7 +15,7 @@ package forge
 import (
 	"math"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
 
 // narrowNumber narrows a forge's uint64 issue/PR number to the canonical

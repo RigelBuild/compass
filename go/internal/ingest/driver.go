@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/forge"
+	"github.com/RigelBuild/compass/go/internal/forge"
 )
 
 // ListPageCursor is the driver's view of one durable page-cursor row.

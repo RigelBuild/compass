@@ -27,7 +27,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // TokenResolver is the shared credential-resolution seam: sha256 the presented

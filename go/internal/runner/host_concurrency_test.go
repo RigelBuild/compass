@@ -29,8 +29,8 @@ import (
 	"sync"
 	"testing"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/runtime"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // startResult is one concurrent Start's outcome, carried back over a channel so

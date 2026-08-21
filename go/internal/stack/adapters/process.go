@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/sealedsecurity/compass/go/internal/stack"
+	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
 // ProcessSupervisor is the real stack.ProcessSupervisor: it launches supervised

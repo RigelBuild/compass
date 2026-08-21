@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/sealedsecurity/compass/go/internal/stack"
+	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
 // GroupSignaller is the real stack.GroupSignaller: it signals and

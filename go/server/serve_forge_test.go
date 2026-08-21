@@ -21,7 +21,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/secrets"
+	"github.com/RigelBuild/compass/go/internal/secrets"
 )
 
 // fakeResolver is a secrets.Resolver whose Resolve returns a scripted set (or a

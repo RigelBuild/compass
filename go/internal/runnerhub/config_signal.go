@@ -11,7 +11,7 @@
 package runnerhub
 
 import (
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // SignalConfigVersion pushes ONE ConfigVersion frame per attached Runner stream,

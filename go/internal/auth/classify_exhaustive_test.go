@@ -14,11 +14,11 @@ package auth
 import (
 	"testing"
 
-	compassv1connect "github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
+	compassv1connect "github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
 
 // procedurePath reconstructs the connect procedure path for a method descriptor.

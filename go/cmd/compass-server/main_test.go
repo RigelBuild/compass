@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/server"
+	"github.com/RigelBuild/compass/go/server"
 )
 
 func TestResolveNetworkDoor(t *testing.T) {

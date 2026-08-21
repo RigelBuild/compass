@@ -22,8 +22,8 @@ import (
 	"strings"
 	"testing"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/runtime"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // configFanoutRuntime is a ContainerRuntime for the RefreshConfig fan-out tests.

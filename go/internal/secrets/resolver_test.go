@@ -17,7 +17,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 func decl(name string, kind store.SecretKind) store.SecretDeclaration {

@@ -25,7 +25,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/sealedsecurity/compass/go/internal/secrets"
+	"github.com/RigelBuild/compass/go/internal/secrets"
 )
 
 // providerCredentialAPIKey is the SDK ApiKeyCredential discriminant

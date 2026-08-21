@@ -12,8 +12,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 )
 
 // newTokenCmd builds the token noun: the fleet bearer-token operator surface. It

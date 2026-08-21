@@ -18,7 +18,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
 )
 
 // ShortRuntimeDir is a Runner RuntimeDir bounded to fit the AF_UNIX sun_path

@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // TestLegTwoPrimitives is the deterministic proof that the leg-2 client-RPC

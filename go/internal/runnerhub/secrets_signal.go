@@ -12,7 +12,7 @@ package runnerhub
 import (
 	"strconv"
 
-	compassv1internal "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 )
 
 // mintSecretsVersion returns the next opaque per-Server monotonic set-change

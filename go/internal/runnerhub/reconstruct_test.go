@@ -29,7 +29,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // fakeTranscriptReader is a hand-written TranscriptReader: it serves canned

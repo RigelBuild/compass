@@ -15,7 +15,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/sealedsecurity/compass/go/internal/runtime"
+	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // sunPathMax is the longest NUL-terminated path an AF_UNIX address can hold on

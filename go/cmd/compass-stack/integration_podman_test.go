@@ -58,7 +58,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/stack"
+	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
 // agentImage is a small, pullable public image standing in for the agent image:

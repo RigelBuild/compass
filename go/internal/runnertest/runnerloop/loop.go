@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/runner"
+	"github.com/RigelBuild/compass/go/internal/runner"
 )
 
 func discardLog() *slog.Logger { return slog.New(slog.DiscardHandler) }

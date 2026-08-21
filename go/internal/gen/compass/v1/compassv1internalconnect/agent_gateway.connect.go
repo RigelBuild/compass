@@ -38,7 +38,7 @@ import (
 	connect "connectrpc.com/connect"
 	context "context"
 	errors "errors"
-	v1 "github.com/sealedsecurity/compass/go/internal/gen/compass/v1"
+	v1 "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
 	http "net/http"
 	strings "strings"
 )

@@ -44,8 +44,8 @@ import (
 	"testing"
 	"time"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/runtime"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/runtime"
 )
 
 // agentImage is the real agent image the E2E boots. Present in containers-storage

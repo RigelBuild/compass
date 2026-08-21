@@ -37,7 +37,7 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 )
 
 // errAgentAlreadyLive is the reject-on-live cause: the target agent account

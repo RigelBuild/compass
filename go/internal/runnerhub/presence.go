@@ -3,8 +3,8 @@
 package runnerhub
 
 import (
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // PresenceSnapshot is the enum-only presence read the roster join consumes for

@@ -31,8 +31,8 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	compassv1 "github.com/sealedsecurity/compass/go/gen/compass/v1"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // askFieldOwnership classifies every field of one ask-related wire message as

@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/stack"
+	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
 // TestGroupSignallerAliveThenSignalTearsDown drives the real syscall adapter

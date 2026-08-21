@@ -43,8 +43,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	compassv1connect "github.com/sealedsecurity/compass/go/gen/compass/v1/compassv1connect"
-	"github.com/sealedsecurity/compass/go/internal/store"
+	compassv1connect "github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // The two caller identities the gate tests compare against. Bare-string

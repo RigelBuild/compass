@@ -16,7 +16,7 @@
 #
 # Emits into go/internal/gen — NOT the public go/gen. Go's `internal/` visibility
 # rule makes the SEA-1267 fence compiler-enforced: nothing outside the
-# github.com/sealedsecurity/compass/go module can import these types
+# github.com/RigelBuild/compass/go module can import these types
 # (go-toolchain-default.md:332-333). Same go module as go/gen (one go.mod), a
 # distinct directory + import path — not a nested module.
 #
@@ -53,19 +53,19 @@ plugins:
     out: go/internal/gen
     opt:
       - paths=source_relative
-      - "Mcompass/v1/agent.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
-      - "Mcompass/v1/runner.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
-      - "Mcompass/v1/agent_gateway.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
-      - "Mcompass/v1/forge.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
-      - "Mcompass/v1/compass.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"
-      - "Mcompass/v1/comms.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"
+      - "Mcompass/v1/agent.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/runner.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/agent_gateway.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/forge.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/compass.proto=github.com/RigelBuild/compass/go/gen/compass/v1;compassv1"
+      - "Mcompass/v1/comms.proto=github.com/RigelBuild/compass/go/gen/compass/v1;compassv1"
   - local: protoc-gen-connect-go
     out: go/internal/gen
     opt:
       - paths=source_relative
-      - "Mcompass/v1/agent.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
-      - "Mcompass/v1/runner.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
-      - "Mcompass/v1/agent_gateway.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
-      - "Mcompass/v1/forge.proto=github.com/sealedsecurity/compass/go/internal/gen/compass/v1;compassv1internal"
-      - "Mcompass/v1/compass.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"
-      - "Mcompass/v1/comms.proto=github.com/sealedsecurity/compass/go/gen/compass/v1;compassv1"
+      - "Mcompass/v1/agent.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/runner.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/agent_gateway.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/forge.proto=github.com/RigelBuild/compass/go/internal/gen/compass/v1;compassv1internal"
+      - "Mcompass/v1/compass.proto=github.com/RigelBuild/compass/go/gen/compass/v1;compassv1"
+      - "Mcompass/v1/comms.proto=github.com/RigelBuild/compass/go/gen/compass/v1;compassv1"

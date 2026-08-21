@@ -28,7 +28,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/bridge"
+	"github.com/RigelBuild/compass/go/internal/bridge"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sealedsecurity/compass/go/internal/stack"
+	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
 // The re-exec-self pattern: the test binary doubles as the child process. When
