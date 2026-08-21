@@ -73,8 +73,9 @@ Compass makes infra cost first-order. Nothing in Dogfood blocks on this.
 Compass ships as two products over one shared core:
 
 - **OSS core (AGPL, `RigelBuild/compass` — this repo).** The agent runtime and
-  every seam this record touches: `AgentRuntime`, `ContainerRuntime`,
-  `VirtualFS`, `ComputeRuntime`, the volume lifecycle, the microVM boundary.
+  every seam this record touches — `AgentRuntime` plus the `ContainerRuntime` /
+  `VirtualFS` / `ComputeRuntime` seams, the volume lifecycle, and the microVM
+  boundary.
   All of this record's `go/internal/*` and `agent-image/*` citations are
   public-repo paths.
 - **Managed Compass (private monorepo, dual AGPL + commercial license).** The
