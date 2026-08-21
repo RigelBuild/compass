@@ -125,6 +125,19 @@ func (h *Hub) unbindSession(sessionID string) {
 
 	// The account now has NO live session: drive its presence OFFLINE. Skipped
 	// when the account was re-pointed to a newer session (wentOffline is false).
+	//
+	// Accepted race (RIG-1651): this edge and promoteSession's OnSessionPromoted
+	// both enqueue onto the presence FIFO after releasing h.mu, so a CONCURRENT
+	// same-account Stop(this)+Start(newer) could order the live promotion before
+	// this DISCONNECTED and strand the account OFFLINE until the next
+	// lifecycle/promotion edge repairs it. Left as-is: an account has at most one
+	// live session (the orchestrator's operating invariant), so concurrent
+	// same-account churn is unreachable, and any transient OFFLINE self-repairs on
+	// the next edge. Do NOT "fix" the fire-after-unlock discipline blind to this —
+	// the re-point guard above already covers every SEQUENTIAL ordering. If
+	// concurrent same-account teardown/promote ever becomes reachable, stamp a
+	// per-account generation under h.mu into each edge and drop a terminal edge
+	// older than the last-applied promotion (RIG-1651 option b).
 	if wentOffline && presence != nil {
 		presence.OnSessionLifecycle(account, sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
 	}
