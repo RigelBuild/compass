@@ -203,7 +203,7 @@ network path, so the egress seal is untouched" (`index.ts:4-5`). A direct
 OTLP-over-network exporter from inside the container is the agent's first
 network egress — a posture decision resolved as (a) (Open Questions Q1). The
 substrate stays socket-based — a local AF_UNIX socket today (`index.ts:4-5`,
-quoted above), which the in-review microVM Runner design (RIG-2394, PR #488)
+quoted above), which the microVM Runner design (RIG-2394, merged in PR #488)
 carries to host-local virtio-vsock, never to an IP transport — so OTLP is
 genuinely the agent's first *network* path and is drawn against the
 destination collector, never the socket/vsock gateway.
@@ -524,8 +524,8 @@ merges.
    (a) and raised a substrate sub-fork (does the agent↔Runner socket converge
    to a network transport?); compass-runner, the substrate owner, resolved it
    this session: it does NOT. Today the gateway is a local AF_UNIX socket
-   (`index.ts:4-5`: a local hop, no network path). The in-review microVM
-   Runner design (RIG-2394, PR #488 — not yet merged) swaps that socket to
+   (`index.ts:4-5`: a local hop, no network path). The microVM Runner design
+   (RIG-2394, merged in PR #488) swaps that socket to
    virtio-vsock: a transport swap, not a protocol change (hybrid vsock, host
    end stays AF_UNIX, same Connect/h2c), and vsock is host-local by
    construction (guest↔its own VMM, non-IP, unreachable from the guest's
@@ -567,7 +567,8 @@ merges.
    agent loop under Effect (a large separate adoption) or a parallel raw
    `@opentelemetry/api` path — either way a different mechanism outside this
    record's containment-cheap transport scope. Agent-loop observability is its
-   own future record.
+   own future record — tracked as RIG-2508 (Refs RIG-2384), to be designed
+   after this record freezes.
 5. **Who owns the env-injection path for `OTEL_EXPORTER_OTLP_ENDPOINT`?**
    RESOLVED — **RIG-2426 owns both halves end-to-end (agent-side gate +
    injection), as one task in this package's lane (O5); no separate Runner
