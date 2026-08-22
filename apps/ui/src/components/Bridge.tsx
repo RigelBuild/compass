@@ -37,9 +37,7 @@ import {
 } from "../board-render";
 import { BOARD_LANES, PR_LANES } from "../constants";
 import { useStore } from "../context";
-import type { CommandId, CommandRegistry } from "../keyboard/commands";
-import { installKeymap } from "../keyboard/dispatch";
-import { createCommandRegistry } from "../keyboard/registry";
+import type { CommandId } from "../keyboard/commands";
 import { createRovingGroup, type Stop } from "../keyboard/roving";
 import type { IssueState } from "../stub-data";
 import { BadgeGlyph } from "./BadgeGlyph";
@@ -159,15 +157,7 @@ const PrCard: Component<{
 /** The Bridge: the full kanban board, swimlane-by-agent by default. Columns are
  *  the issue lifecycle states; each agent is a row; a cell holds that
  *  agent's cards in that state. Clicking an agent gutter opens the agent view. */
-export const Bridge: Component<{
-	/** Board wiring (T4): the command registry the board installs its keymap
-	 *  against. Group-relative `board.*`/`list.*` chords resolve through the
-	 *  active roving group (tier 1) regardless of the registry; the registry
-	 *  backs the palette + the scoped/global tiers. Injectable so a test can seed
-	 *  a competing `comms.*` binding and prove the board's tier-1 claim wins.
-	 *  Defaults to a fresh registry (the standalone board window, design §430). */
-	registry?: CommandRegistry;
-}> = (props) => {
+export const Bridge: Component = () => {
 	const store = useStore();
 	const [mode, setMode] = createSignal<BoardMode>("swimlane");
 	// The active artifact tab — a Bridge-local view axis, peer to `mode`.
@@ -420,12 +410,19 @@ export const Bridge: Component<{
 		return false;
 	};
 
-	// Install the keymap once (component scope) against the injected/own registry
-	// and this board as the sole active group. Register the two board commands so
-	// the palette can surface them; their keyboard path is `onCommand` above (the
-	// dispatcher routes group-relative ids to the group, not `registry.get`), so
-	// `run` mirrors the group behavior for the palette's sake.
-	const registry = props.registry ?? createCommandRegistry();
+	// Consumer of the app keyboard spine (RIG-2456): the board does NOT install
+	// its own keymap — App.tsx installs the one root listener. It registers its
+	// two `board.*` commands into the shared registry (so the palette can surface
+	// them; their keyboard path is `onCommand` above — the dispatcher routes
+	// group-relative ids to the group, not `registry.get` — so `run` mirrors the
+	// group behavior for the palette's sake) and PUBLISHES its roving group to the
+	// spine. The RIG-2130 focus gate now lives in the spine's `activeGroup()`
+	// accessor (keyboard/spine.ts): the board claims a group-relative chord only
+	// while DOM focus is on one of its stops. Both the command registration and
+	// the group publication are retracted on cleanup — the shared registry is
+	// app-lifetime, so a leaked `board.*` command would be tier-3 dispatchable
+	// from any route after the board unmounts (design A5.3 / RD-4).
+	const registry = store.keyboard.registry;
 	const rovingGroup = createRovingGroup({
 		group: { zone: "main", id: "bridge-board" },
 		stops: rovingStops,
@@ -447,25 +444,12 @@ export const Bridge: Component<{
 		scope: "main",
 		run: () => onCommand("board.openCardCrossLink" as CommandId),
 	});
-	// The board IS the main-view focus zone (design §236), so declare it: the
-	// scoped tier (tier 2) can then resolve `when:"main"` entries — which is
-	// exactly what the board's tier-1 claim of `board.openAssignedAgent` must
-	// beat over the frozen `Shift+Enter → comms.newline {when:"main"}` entry.
-	//
-	// Focus-gate the active-group accessor: the board claims a group-relative
-	// chord (Enter/Space/Arrows/Home/End) in tier 1 ONLY while DOM focus is
-	// actually on a board stop. Otherwise the board would hijack those keys for
-	// every non-editable focus target app-wide while it is mounted — trapping the
-	// toolbar/sidebar buttons — which contradicts the frozen focus-exclusivity
-	// contract (design §401-405, §604-613: board Enter is tier-1 "while the board
-	// is the focused group"). `null` outside the group falls through to the
-	// scoped/global tiers.
-	const uninstall = installKeymap(
-		registry,
-		() => (rovingGroup.isFocused() ? rovingGroup : null),
-		() => "main",
-	);
-	onCleanup(uninstall);
+	onCleanup(() => {
+		registry.unregister("board.openAssignedAgent" as CommandId);
+		registry.unregister("board.openCardCrossLink" as CommandId);
+	});
+	store.keyboard.registerGroup(rovingGroup);
+	onCleanup(() => store.keyboard.unregisterGroup(rovingGroup));
 
 	// Apply the positional a11y strings to each stop element, and name the Space
 	// cross-link on the cursor card (design §219-223, §491). Static-dep effect

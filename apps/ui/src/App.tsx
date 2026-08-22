@@ -1,6 +1,6 @@
 import type { RouteSectionProps } from "@solidjs/router";
 import { useLocation, useNavigate } from "@solidjs/router";
-import { type Component, Show } from "solid-js";
+import { type Component, onCleanup, Show } from "solid-js";
 import "./design/tokens.css";
 import "./design/base.css";
 import "./design/components/badge-glyph.css";
@@ -11,6 +11,7 @@ import { RightSidebar } from "./components/RightSidebar";
 import { StateDot } from "./components/StateDot";
 import { UsageBar } from "./components/UsageBar";
 import { useStore } from "./context";
+import { installKeymap } from "./keyboard/dispatch";
 
 // The Compass ADE shell — an Orca-inspired layout over the compass.v1 surface
 // (docs/specs/product/compass.md). A CSS grid: a topbar, a left agent-folder
@@ -40,6 +41,17 @@ const App: Component<RouteSectionProps> = (props) => {
 		navigate: (path) => navigate(path),
 		currentPath: () => location.pathname,
 	});
+	// Install the single production window keymap listener over the store's
+	// keyboard spine (RIG-2456): registry + focus-gated active-group/zone
+	// accessors. `onCleanup` keeps the harness's repeated render/dispose cycles
+	// from stacking listeners (dispatch returns the exact uninstaller).
+	onCleanup(
+		installKeymap(
+			store.keyboard.registry,
+			store.keyboard.activeGroup,
+			store.keyboard.activeZone,
+		),
+	);
 	return (
 		<div class="app">
 			<header class="topbar">

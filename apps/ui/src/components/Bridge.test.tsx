@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { createMemoryHistory, MemoryRouter } from "@solidjs/router";
 import { fireEvent, render } from "@solidjs/testing-library";
+import App from "../App";
 import { prBoardRows, prCount } from "../board";
 import { StoreContext } from "../context";
 import type { CommandId } from "../keyboard/commands";
-import { createCommandRegistry } from "../keyboard/registry";
+import { AppRoutes } from "../routes";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_ISSUES } from "../stub-data";
+import { flush, mountApp } from "../test-router";
 import { testQueryClient } from "../test-support";
 import { Bridge } from "./Bridge";
 
@@ -28,6 +31,27 @@ function mountBridge(): { store: AppStore; container: HTMLElement } {
 		);
 	});
 	return { store, container };
+}
+
+// Mount the full App shell (store + StoreContext + MemoryRouter root={App} +
+// AppRoutes — the production shape mirror of `mountApp`) over a CALLER-PROVIDED
+// store, returning the render's `unmount`. The remount-hygiene test uses one
+// shared store across two mounts to observe the app-lifetime registry across a
+// mount→unmount→remount cycle.
+function mountShell(
+	store: AppStore,
+	initialPath: string,
+): { container: HTMLElement; unmount: () => void } {
+	const history = createMemoryHistory();
+	history.set({ value: initialPath });
+	const { container, unmount } = render(() => (
+		<StoreContext.Provider value={store}>
+			<MemoryRouter history={history} root={App}>
+				<AppRoutes />
+			</MemoryRouter>
+		</StoreContext.Provider>
+	));
+	return { container, unmount };
 }
 
 // The tab buttons live in the toolbar seg labeled "Board view"; the grouping
@@ -285,7 +309,7 @@ const clickGrouping = (
 // The cursor is the sole `tabindex="0"` stop; its positional aria-label names it.
 const cursorLabel = (container: HTMLElement): string | null =>
 	container
-		.querySelector<HTMLElement>('[tabindex="0"]')
+		.querySelector<HTMLElement>('.bridge-grid [tabindex="0"]')
 		?.getAttribute("aria-label") ?? null;
 // A real window keydown — the dispatcher's one listener resolves it.
 const press = (init: KeyboardEventInit): KeyboardEvent => {
@@ -304,10 +328,12 @@ const press = (init: KeyboardEventInit): KeyboardEvent => {
 // on the board (the roving effect refocuses), but a grouping/tab switch rebuilds
 // the stop elements and drops focus, so re-enter after one.
 const enterBoard = (container: HTMLElement): void => {
-	container.querySelector<HTMLElement>('[tabindex="0"]')?.focus();
+	container.querySelector<HTMLElement>('.bridge-grid [tabindex="0"]')?.focus();
 };
 
 describe("Bridge board roving group (T4, DL-220/221)", () => {
+	// Non-keyboard DOM-shape tests keep their direct `<Bridge/>` mount — they
+	// assert the roving tabindex structure, not the installed keymap (RD-3).
 	test("the mounted board is one roving group: exactly one tabindex=0 stop", () => {
 		const { container } = mountBridge();
 		const tabbable = container.querySelectorAll('[tabindex="0"]');
@@ -329,8 +355,13 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(cursorLabel(container)).toBe("Issue SEA-1022");
 	});
 
+	// Keyboard-driving tests re-host onto the full shell (`mountApp`) so the
+	// App-root spine is the installer (RD-3 / A6): they dispatch real window
+	// keydowns and the one root listener resolves them. Cursor moves + selection
+	// are synchronous signal writes; opening an agent navigates (real router), so
+	// those cases await `flush()` before reading the routed view.
 	test("Up/Down traverse a multi-card column (status mode in_review stack)", () => {
-		const { container } = mountBridge();
+		const { container } = mountApp("/");
 		clickGrouping(container, "Status");
 		// The in_review column stacks three cards; the cursor rests on SEA-1022.
 		expect(cursorLabel(container)).toBe("Issue SEA-1022");
@@ -347,7 +378,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 	});
 
 	test("Left skips empty cells and lands on the row gutter (swimlane)", () => {
-		const { container } = mountBridge();
+		const { container } = mountApp("/");
 		// compass-ui's row: SEA-1022 (in_review) and SEA-965 (in_progress) are the
 		// only cards; queued/blocked cells are empty, and the gutter is column -1.
 		expect(cursorLabel(container)).toBe("Issue SEA-1022");
@@ -363,7 +394,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 	});
 
 	test("Enter selects the cursor card and suppresses native activation", () => {
-		const { store, container } = mountBridge();
+		const { store, container } = mountApp("/");
 		clickGrouping(container, "Status");
 		enterBoard(container);
 		press({ key: "ArrowDown" }); // cursor → SEA-1085 (ws-1085)
@@ -372,51 +403,44 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(event.defaultPrevented).toBe(true);
 	});
 
-	test("Shift+Enter opens the assigned agent — tier-1 board claim beats when:main comms", () => {
-		// The load-bearing precedence test. A competing `comms.newline`/`comms.send`
-		// is registered in the SAME registry the board installs against, in the
-		// SAME `main` zone; `Shift+Enter → comms.newline {when:"main"}` is a frozen
-		// keymap entry. The board's `board.openAssignedAgent` is group-relative, so
-		// the dispatcher's tier 1 claims it AHEAD of the scoped comms entry.
+	test("Shift+Enter opens the assigned agent — tier-1 board claim beats when:main comms", async () => {
+		// The load-bearing precedence test, re-hosted onto the App-root spine (RD-3):
+		// a competing `comms.newline`/`comms.send` is seeded into the SAME shared
+		// registry, in the SAME `main` zone; `Shift+Enter → comms.newline
+		// {when:"main"}` is a frozen keymap entry. The board's `board.openAssignedAgent`
+		// is group-relative, so the dispatcher's tier 1 claims it AHEAD of the scoped
+		// comms entry.
+		const { store, container } = mountApp("/");
 		let commsNewlineRan = 0;
 		let commsSendRan = 0;
-		const registry = createCommandRegistry();
-		registry.register({
+		store.keyboard.registry.register({
 			id: "comms.newline" as CommandId,
 			title: "Insert newline",
 			keywords: [],
 			scope: "main",
 			run: () => commsNewlineRan++,
 		});
-		registry.register({
+		store.keyboard.registry.register({
 			id: "comms.send" as CommandId,
 			title: "Send",
 			keywords: [],
 			scope: "main",
 			run: () => commsSendRan++,
 		});
-		let store!: AppStore;
-		const { container } = render(() => {
-			store = createAppStore({ queryClient: testQueryClient() });
-			return (
-				<StoreContext.Provider value={store}>
-					<Bridge registry={registry} />
-				</StoreContext.Provider>
-			);
-		});
 		// Cursor on SEA-1022 (assignee acc-compass-ui). Shift+Enter opens the agent.
 		enterBoard(container);
 		const event = press({ key: "Enter", shiftKey: true });
+		expect(event.defaultPrevented).toBe(true);
+		await flush();
 		expect(store.view()).toBe("agent");
 		expect(store.selectedAgentId()).toBe("acc-compass-ui");
-		expect(event.defaultPrevented).toBe(true);
 		// The comms entry NEVER fired — the board won at tier 1.
 		expect(commsNewlineRan).toBe(0);
 		expect(commsSendRan).toBe(0);
 	});
 
 	test("Space fires the cursor card's cross-link (Issues → PRs)", () => {
-		const { store, container } = mountBridge();
+		const { store, container } = mountApp("/");
 		// Cursor SEA-1022 has a PR chip; Space is its cross-link (select + flip).
 		enterBoard(container);
 		const event = press({ key: " " });
@@ -426,7 +450,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 	});
 
 	test("Space on a chip-less card is still claimed (no select, no scroll, no fall-through)", () => {
-		const { store, container } = mountBridge();
+		const { store, container } = mountApp("/");
 		// Move to SEA-965 (compass-ui, in_progress) — an issue with no PR, so no
 		// cross-link. Space must STILL be claimed: the handler reports handled, the
 		// dispatcher preventDefaults, and nothing selects / scrolls / falls through.
@@ -440,14 +464,15 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(boardGrouping(container)).not.toBeNull(); // no flip — still Issues
 	});
 
-	test("Enter on a gutter opens the agent", () => {
-		const { store, container } = mountBridge();
+	test("Enter on a gutter opens the agent", async () => {
+		const { store, container } = mountApp("/");
 		// Land on compass-ui's gutter head (Left past the empty cells).
 		enterBoard(container);
 		press({ key: "ArrowLeft" });
 		press({ key: "ArrowLeft" });
 		expect(cursorLabel(container)).toBe("compass-ui lane");
 		press({ key: "Enter" });
+		await flush();
 		expect(store.view()).toBe("agent");
 		expect(store.selectedAgentId()).toBe("acc-compass-ui");
 	});
@@ -509,15 +534,16 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(store.selectedIssueId()).toBe("ws-965");
 	});
 
-	test("focus-exclusivity: a focused non-board button keeps its native keys", () => {
-		// The regression guard for the focus-exclusivity contract (design §401-405):
-		// the board claims a group-relative chord in tier 1 ONLY while focus is on a
-		// board stop. With focus on a toolbar segmented button (a native, keyboard-
-		// operable control outside the board group), Enter/Space/Arrows must NOT be
-		// claimed — the board neither preventDefaults nor moves its cursor/selection,
-		// so the button keeps its native activation. (This fails if the active-group
-		// accessor is unconditional — the board would trap every non-editable key.)
-		const { store, container } = mountBridge();
+	test("focus-exclusivity: a focused non-board button keeps its native keys; the tier-3 Shift+Enter escape still fires (RD-4 pin)", async () => {
+		// The regression guard for the focus-exclusivity contract (design §401-405),
+		// re-hosted onto the App-root spine: the board claims a group-relative chord
+		// in tier 1 ONLY while focus is on a board stop. With focus on a toolbar
+		// segmented button (a native control outside the board group), Enter/Space/
+		// Arrows must NOT be claimed — the board neither preventDefaults nor moves
+		// its cursor/selection, so the button keeps its native activation. (This
+		// fails if the spine's active-group accessor were unconditional — the board
+		// would trap every non-editable key.)
+		const { store, container } = mountApp("/");
 		const cursorBefore = cursorLabel(container);
 		const selectedBefore = store.selectedIssueId();
 		const toolbarButton = tabButtons(container)[0];
@@ -529,6 +555,66 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		}
 		expect(cursorLabel(container)).toBe(cursorBefore); // cursor unmoved
 		expect(store.selectedIssueId()).toBe(selectedBefore); // selection unchanged
+
+		// RD-4 PIN (OQ-6, deferred): the tier-1 focus gate does NOT cover tier 3, so
+		// `Shift+Enter → board.openAssignedAgent` (no `when`, keymap.ts:98) is STILL
+		// reachable from a non-board, non-editable target while the board is mounted
+		// (the toolbar button holds focus, so no group is active and no zone is
+		// active — the chord falls through to the window-global tier). This is a
+		// PRE-EXISTING hole this record neither worsens nor closes; the ratified
+		// ruling is DEFER, so we DOCUMENT the current behavior — the assigned-agent
+		// action fires — rather than assert it does not. A follow-up lane that closes
+		// the hole flips this assertion.
+		const escapeEvent = press({ key: "Enter", shiftKey: true });
+		expect(escapeEvent.defaultPrevented).toBe(true); // tier 3 claimed it
+		await flush();
+		expect(store.view()).toBe("agent"); // the deferred escape fired
+	});
+
+	// Lifecycle (A6 bullet 4): a mount→unmount→remount cycle leaves exactly ONE
+	// window listener and NO stale `board.*` commands. Uses ONE shared store across
+	// both shell mounts so the same app-lifetime registry is observed: after
+	// unmount the Bridge's cleanup unregisters both `board.*` ids and App's
+	// cleanup removes the keymap listener; after remount both are present exactly
+	// once. The single-listener property is proven functionally — one `Ctrl+B`
+	// runs the `view.bridge` command exactly once (a stacked listener would run it
+	// twice).
+	test("mount → unmount → remount leaves one listener and no stale board.* commands", async () => {
+		const store = createAppStore({ queryClient: testQueryClient() });
+		const boardCommandIds = (): string[] =>
+			store.keyboard.registry
+				.all()
+				.map((c) => c.id as string)
+				.filter((id) => id.startsWith("board."));
+
+		const first = mountShell(store, "/");
+		expect(boardCommandIds().sort()).toEqual([
+			"board.openAssignedAgent",
+			"board.openCardCrossLink",
+		]);
+		first.unmount();
+		expect(boardCommandIds()).toEqual([]); // retracted on cleanup
+
+		const second = mountShell(store, "/");
+		expect(boardCommandIds().sort()).toEqual([
+			"board.openAssignedAgent",
+			"board.openCardCrossLink",
+		]);
+
+		// Exactly one listener: spy the shared `view.bridge` command and fire one
+		// Ctrl+B. Two stacked App listeners over the one registry would run it twice.
+		let viewBridgeRuns = 0;
+		store.keyboard.registry.register({
+			id: "view.bridge" as CommandId,
+			title: "Go to Bridge",
+			keywords: [],
+			scope: "global",
+			run: () => viewBridgeRuns++,
+		});
+		press({ key: "b", ctrlKey: true });
+		await flush();
+		expect(viewBridgeRuns).toBe(1);
+		second.unmount();
 	});
 });
 

@@ -33,5 +33,8 @@ export function createCommandRegistry(): CommandRegistry {
 		all(): Command[] {
 			return [...commands.values()];
 		},
+		unregister(id: CommandId): void {
+			commands.delete(id);
+		},
 	};
 }

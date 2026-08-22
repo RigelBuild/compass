@@ -23,8 +23,9 @@ describe("bootFixture (offline fixture boot)", () => {
 	test("renders the board seeded from STUB_ISSUES", async () => {
 		const root = document.createElement("div");
 		document.body.appendChild(root);
+		let dispose: (() => void) | undefined;
 		try {
-			bootFixture(root);
+			dispose = bootFixture(root);
 			await flush();
 
 			// The board renders IssueCards from the clientless store's STUB_ISSUES
@@ -39,6 +40,10 @@ describe("bootFixture (offline fixture boot)", () => {
 				expect(root.textContent).toContain(firstTitle);
 			}
 		} finally {
+			// Dispose the reactive root so App's onCleanup runs the keymap
+			// uninstaller — otherwise the App-root window `keydown` listener leaks
+			// onto the shared happy-dom window and fires during a sibling suite.
+			dispose?.();
 			root.remove();
 		}
 	});
