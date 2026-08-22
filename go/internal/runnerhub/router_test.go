@@ -17,6 +17,7 @@ package runnerhub
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -310,5 +311,66 @@ func TestDispatchRequiresRequestId(t *testing.T) {
 	}
 	if send.count() != 0 {
 		t.Fatalf("router pushed %d commands for an empty id, want 0", send.count())
+	}
+}
+
+// deliverRefusals is a bounded LRU, not an unbounded set: send1 registering an id
+// on every dispatch cannot grow it without limit as lifetime successful delivers
+// accumulate (RIG-1610). send1 deliverRefusalsMax+N distinct ids, then assert the
+// set is capped, the earliest id is evicted, and eviction is SAFE — a refusal
+// complete() for a still-resident id is still observed (RefusedDelivers
+// increments), so bounding never breaks refusal observability for the in-flight
+// window.
+// RED (pre-fix): size the LRU unbounded — temporarily replace deliverRefusalsMax
+// in newCommandRouter's expirable.NewLRU(...) with a huge capacity (e.g. 1<<30,
+// models the pre-fix unbounded map: never evicts) — the earliest id stays
+// present, so the Contains("req-0")==false eviction assertion goes RED.
+func TestSend1DeliverRefusalsBounded(t *testing.T) {
+	r := newCommandRouter()
+	r.attach(func(*compassv1internal.SessionsResponse) error { return nil })
+
+	const overflow = 100
+	total := deliverRefusalsMax + overflow
+	id := func(i int) string { return fmt.Sprintf("req-%d", i) }
+	for i := range total {
+		cmd := &compassv1internal.SessionsResponse{
+			RequestId: id(i),
+			Command: &compassv1internal.SessionsResponse_DeliverControl{
+				DeliverControl: &compassv1internal.DispatchControl{SessionId: "sess-1"},
+			},
+		}
+		if err := r.send1(cmd); err != nil {
+			t.Fatalf("send1(%q) = %v, want nil", id(i), err)
+		}
+	}
+
+	// The set is bounded, not grown to total. After adding deliverRefusalsMax+overflow
+	// distinct ids the LRU holds exactly deliverRefusalsMax entries — an exact check
+	// catches an off-by-one in the cap (e.g. keeping Max+1) that a `> Max` bound misses.
+	if got := r.deliverRefusals.Len(); got != deliverRefusalsMax {
+		t.Fatalf("deliverRefusals.Len() = %d, want exactly %d (bounded)", got, deliverRefusalsMax)
+	}
+	// The earliest id (added first, never touched since) is the LRU victim evicted
+	// past deliverRefusalsMax.
+	if r.deliverRefusals.Contains(id(0)) {
+		t.Fatalf("earliest id %q still present; the bounded LRU must have evicted it", id(0))
+	}
+
+	// Eviction is SAFE: a refusal for a still-resident recent id is still observed.
+	resident := id(total - 1)
+	if !r.deliverRefusals.Contains(resident) {
+		t.Fatalf("newest id %q evicted; it must stay resident under the bound", resident)
+	}
+	if got := r.RefusedDelivers(); got != 0 {
+		t.Fatalf("RefusedDelivers before any refusal = %d, want 0", got)
+	}
+	r.complete(&compassv1internal.SessionsRequest{
+		RequestId: resident,
+		Result: &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{
+			Code: compassv1internal.RunnerErrorCode_RUNNER_ERROR_CODE_RESOURCE_EXHAUSTED,
+		}},
+	})
+	if got := r.RefusedDelivers(); got != 1 {
+		t.Fatalf("RefusedDelivers after a refusal for a resident id = %d, want 1 (bounding must not break observability)", got)
 	}
 }

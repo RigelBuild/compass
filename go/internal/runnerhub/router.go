@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
+	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
 // commandRouter correlates outbound session commands with the results the Runner
@@ -37,17 +38,26 @@ type commandRouter struct {
 	// second command (idempotency).
 	inflight map[string]*pendingCall
 
-	// deliverRefusals is the set of request ids for send-only DELIVER dispatches
-	// (send1) still awaiting a possible async refusal. A successful deliver
-	// returns NO synchronous result and rides a later AgentFrame.delivery_ack, so
-	// send1 registers no pendingCall and does not block (SEA-1569 §5). A REFUSAL
-	// does ride the Sessions request stream as a RunnerError result correlated by
-	// request id, which complete() would otherwise drop as "unknown". This set
-	// makes such a refusal OBSERVABLE (logged + counted) instead of silently
-	// dropped; the entry is cleared when its refusal lands or is never read (a
-	// successful deliver acks elsewhere, so the entry lingers harmlessly until
-	// the router is discarded on Runner detach). Guarded by mu.
-	deliverRefusals map[string]struct{}
+	// deliverRefusals is the bounded set of request ids for send-only DELIVER
+	// dispatches (send1) still awaiting a possible async refusal. A successful
+	// deliver returns NO synchronous result and rides a later
+	// AgentFrame.delivery_ack, so send1 registers no pendingCall and does not
+	// block (SEA-1569 §5). A REFUSAL does ride the Sessions request stream as a
+	// RunnerError result correlated by request id, which complete() would
+	// otherwise drop as "unknown". This set makes such a refusal OBSERVABLE
+	// (logged + counted) instead of silently dropped.
+	//
+	// A successful deliver's entry is never removed by complete() (no refusal ever
+	// lands for it), so an unbounded set would grow with total lifetime successful
+	// delivers, not the in-flight working set — the RIG-1610 leak. It is a bounded
+	// size-capped LRU (deliverRefusalsMax): once past the cap the oldest entries
+	// are evicted. Eviction is safe — a refusal arrives within one control
+	// round-trip of its send1, so at lookup time a real refusal's id is freshly
+	// added and present; the only ids that grow old unremoved are successful
+	// delivers, which never have a refusal to look up. The LRU is internally
+	// synchronized, but is still accessed under mu here (onEvict=nil, so no
+	// callback re-entrancy) to keep the same critical sections. Guarded by mu.
+	deliverRefusals *expirable.LRU[string, struct{}]
 	// refusedDelivers counts observed deliver refusals (RESOURCE_EXHAUSTED and
 	// any other RunnerError landing on a send1 id) — the diagnostic that a
 	// refusal was seen and the cursor left unadvanced for the D2 sweep to
@@ -74,10 +84,23 @@ type pendingCall struct {
 	err    error
 }
 
+// deliverRefusalsMax bounds the send1 refusal registry (deliverRefusals). A
+// successful deliver's entry is never removed by complete() — no refusal ever
+// lands for it — so an unbounded set would grow one entry per lifetime
+// successful deliver for a long-lived Runner, a leak proportional to delivery
+// volume (RIG-1610). Sized generously so a normal session's recent send1 ids all
+// stay resident (a refusal within one control round-trip is always still
+// present); an evicted id is a long-past successful deliver that will never be
+// looked up for a refusal, so eviction is safe, never a correctness loss.
+const deliverRefusalsMax = 16384
+
 func newCommandRouter() *commandRouter {
 	return &commandRouter{
-		inflight:        map[string]*pendingCall{},
-		deliverRefusals: map[string]struct{}{},
+		inflight: map[string]*pendingCall{},
+		// ttl=0: no expiry, a pure size-bounded LRU (deliverRefusalsMax). The set
+		// is advisory, so eviction is safe — an evicted id is a long-past
+		// successful deliver that never has a refusal to look up.
+		deliverRefusals: expirable.NewLRU[string, struct{}](deliverRefusalsMax, nil, 0),
 	}
 }
 
@@ -200,7 +223,9 @@ func (r *commandRouter) send1(cmd *compassv1internal.SessionsResponse) error {
 		return fmt.Errorf("no live runner sessions stream for deliver %q", id)
 	}
 	send := r.send
-	r.deliverRefusals[id] = struct{}{}
+	// Add returns whether it evicted an LRU victim; not actionable — an evicted id
+	// is a long-past successful deliver that will never be looked up for a refusal.
+	_ = r.deliverRefusals.Add(id, struct{}{})
 	r.mu.Unlock()
 
 	r.sendMu.Lock()
@@ -212,7 +237,7 @@ func (r *commandRouter) send1(cmd *compassv1internal.SessionsResponse) error {
 		// consumer falls to the sweep. The cursor was never advanced on send, so
 		// there is nothing to roll back.
 		r.mu.Lock()
-		delete(r.deliverRefusals, id)
+		r.deliverRefusals.Remove(id)
 		r.mu.Unlock()
 		return fmt.Errorf("pushing deliver %q to runner: %w", id, err)
 	}
@@ -253,10 +278,10 @@ func (r *commandRouter) complete(result *compassv1internal.SessionsRequest) {
 		close(call.done)
 		return
 	}
-	_, isDeliver := r.deliverRefusals[id]
-	if isDeliver {
-		delete(r.deliverRefusals, id)
-	}
+	// Remove returns whether the id was registered (present); a send-only deliver
+	// awaiting a possible refusal. Removing here clears the entry as its refusal
+	// lands, in the same critical section the map lookup+delete occupied.
+	isDeliver := r.deliverRefusals.Remove(id)
 	r.mu.Unlock()
 	if !isDeliver {
 		return
