@@ -133,6 +133,10 @@ func (c *Consumer) drainStarts(ctx context.Context) {
 			c.log.ErrorContext(ctx, "delivery: sweep pins on session start", "error", err,
 				"account", string(ev.account), "session_id", ev.sessionID)
 		}
+		if err := c.sweepOwedMentions(ctx, ev.account, ev.sessionID); err != nil {
+			c.log.ErrorContext(ctx, "delivery: sweep owed mentions on session start", "error", err,
+				"account", string(ev.account), "session_id", ev.sessionID)
+		}
 	}
 }
 
@@ -189,6 +193,57 @@ func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, session
 		if err := c.dispatch.DispatchControl(ctx, sessionID, po.op); err != nil {
 			c.log.WarnContext(ctx, "delivery: pin sweep dispatch failed, leaving to next sweep",
 				"error", err, "session_id", sessionID, "message_id", string(po.messageID))
+		}
+	}
+	return nil
+}
+
+// sweepOwedMentions dispatches every owed mention for a freshly-live session as
+// a STEER (OQ-4: a woken mention keeps its mention→steer semantics for the
+// mention-gap population), regardless of subscription or cursor. Mirrors
+// sweepPins: reads happen before the gate; the recipient session's dispatch gate
+// is held only across the ordered dispatch. Unlike sweepPins' skip-and-log of an
+// unreadable pin, a permanently-unreadable owed message is CLEAR-and-log — a
+// vanished message is undeliverable by construction, so its owed row is cleared
+// rather than re-logged on every start (an every-start re-log loop otherwise).
+func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID, sessionID string) error {
+	owed, err := c.st.OwedMentions(ctx, agent)
+	if err != nil {
+		return err
+	}
+	type steerOpEntry struct {
+		op        *compassv1internal.AgentControl
+		messageID store.MessageID
+	}
+	var ops []steerOpEntry
+	for channel, msgs := range owed {
+		for _, m := range msgs {
+			wire, _, _, err := c.storeMessageToWire(ctx, string(m.ID))
+			if err != nil {
+				// Permanently unreadable (message vanished): clear the owed row so
+				// it stops re-logging every start, then log once. Do NOT dispatch.
+				if cerr := c.st.ClearOwedMention(ctx, agent, string(m.ID)); cerr != nil {
+					c.log.ErrorContext(ctx, "delivery: clear unreadable owed mention", "error", cerr,
+						"agent", string(agent), "channel", string(channel), "message_id", string(m.ID))
+				}
+				c.log.WarnContext(ctx, "delivery: owed mention unreadable, cleared", "error", err,
+					"agent", string(agent), "channel", string(channel), "message_id", string(m.ID))
+				continue
+			}
+			ops = append(ops, steerOpEntry{op: steerOp(wire), messageID: m.ID})
+		}
+	}
+	if len(ops) > 0 {
+		c.log.InfoContext(ctx, "delivery: sweeping owed mentions on session start",
+			"agent", string(agent), "session_id", sessionID, "count", len(ops))
+	}
+	gate := c.gateFor(sessionID)
+	gate.Lock()
+	defer gate.Unlock()
+	for _, oe := range ops {
+		if err := c.dispatch.DispatchControl(ctx, sessionID, oe.op); err != nil {
+			c.log.WarnContext(ctx, "delivery: owed-mention sweep dispatch failed, leaving to next sweep",
+				"error", err, "session_id", sessionID, "message_id", string(oe.messageID))
 		}
 	}
 	return nil

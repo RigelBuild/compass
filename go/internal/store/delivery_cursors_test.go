@@ -844,3 +844,128 @@ func TestAckDeliveryClearsOwedMentionOnFullAdvance(t *testing.T) {
 		t.Fatalf("full advance did not reach acked seq: acked=%d above=%v ok=%v, want acked=%d above=[]", acked, above, ok, seq1)
 	}
 }
+
+// Case 18 — InSweepSet true for a subscribed member (RIG-1641 T2): an agent
+// subscribed to a non-home channel is in the sweep set (the cursor sweep is its
+// backstop), so no owed row is needed for an offline mention.
+func TestInSweepSetTrueForSubscribed(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := mustNamedChannelWith(t, s, owner.ID, "shared", agent.ID)
+	subscribeAgent(t, s, owner.ID, ch, agent.ID)
+
+	in, err := s.InSweepSet(ctx, agent.ID, ch)
+	if err != nil {
+		t.Fatalf("InSweepSet: %v", err)
+	}
+	if !in {
+		t.Fatal("InSweepSet = false for a subscribed member, want true")
+	}
+}
+
+// Case 19 — InSweepSet true for the home channel (RIG-1641 T2): the home channel
+// is always in the sweep set regardless of the subscribed flag (the D1 home
+// disjunct), so a home-channel mention never needs an owed row.
+func TestInSweepSetTrueForHomeChannel(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := agent.Agent.HomeChannelID
+	// Flip the home row to subscribed=false: the home disjunct must still hold.
+	unsubscribeMember(t, s, ch, agent.ID)
+
+	in, err := s.InSweepSet(ctx, agent.ID, ch)
+	if err != nil {
+		t.Fatalf("InSweepSet: %v", err)
+	}
+	if !in {
+		t.Fatal("InSweepSet = false for the home channel with subscribed=false, want true (home disjunct)")
+	}
+}
+
+// Case 20 — InSweepSet false for an unsubscribed non-home member (RIG-1641 T2):
+// the mention-gap population. Such a member has NO cursor-sweep backstop, so an
+// offline mention to it needs a durable owed_mentions row.
+func TestInSweepSetFalseForUnsubscribedNonHome(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := mustNamedChannelWith(t, s, owner.ID, "shared", agent.ID)
+	unsubscribeMember(t, s, ch, agent.ID)
+
+	in, err := s.InSweepSet(ctx, agent.ID, ch)
+	if err != nil {
+		t.Fatalf("InSweepSet: %v", err)
+	}
+	if in {
+		t.Fatal("InSweepSet = true for an unsubscribed non-home member, want false (the mention gap)")
+	}
+}
+
+// Case 21 — ClearOwedMention (pool-based, RIG-1641 T2): the sweep-path clear
+// removes the owed row outside a txn; a subsequent OwedMentions read returns
+// nothing, and clearing an absent row is a no-op.
+func TestClearOwedMentionPoolBased(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := agent.Agent.HomeChannelID
+
+	msg, _ := postAs(t, s, ch, owner.ID, "@agent paged")
+	if err := s.RecordOwedMention(ctx, agent.ID, ch, msg); err != nil {
+		t.Fatalf("RecordOwedMention: %v", err)
+	}
+
+	if err := s.ClearOwedMention(ctx, agent.ID, msg); err != nil {
+		t.Fatalf("ClearOwedMention: %v", err)
+	}
+	got, err := s.OwedMentions(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("OwedMentions: %v", err)
+	}
+	if owed := got[ch]; len(owed) != 0 {
+		t.Fatalf("owed mention not cleared by ClearOwedMention: %v", owed)
+	}
+	// Clearing again (now absent) is a no-op, not an error.
+	if err := s.ClearOwedMention(ctx, agent.ID, msg); err != nil {
+		t.Fatalf("ClearOwedMention(absent) = %v, want nil (no-op)", err)
+	}
+}
+
+// Case 22 — CountOwedMentions (RIG-1641 T2 observability): the total row count
+// across agents reflects records and clears.
+func TestCountOwedMentions(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := agent.Agent.HomeChannelID
+
+	if n, err := s.CountOwedMentions(ctx); err != nil || n != 0 {
+		t.Fatalf("CountOwedMentions(empty) = %d, %v, want 0, nil", n, err)
+	}
+
+	m1, _ := postAs(t, s, ch, owner.ID, "@agent one")
+	m2, _ := postAs(t, s, ch, owner.ID, "@agent two")
+	if err := s.RecordOwedMention(ctx, agent.ID, ch, m1); err != nil {
+		t.Fatalf("RecordOwedMention(m1): %v", err)
+	}
+	if err := s.RecordOwedMention(ctx, agent.ID, ch, m2); err != nil {
+		t.Fatalf("RecordOwedMention(m2): %v", err)
+	}
+	if n, err := s.CountOwedMentions(ctx); err != nil || n != 2 {
+		t.Fatalf("CountOwedMentions(two) = %d, %v, want 2, nil", n, err)
+	}
+
+	if err := s.ClearOwedMention(ctx, agent.ID, m1); err != nil {
+		t.Fatalf("ClearOwedMention: %v", err)
+	}
+	if n, err := s.CountOwedMentions(ctx); err != nil || n != 1 {
+		t.Fatalf("CountOwedMentions(after clear) = %d, %v, want 1, nil", n, err)
+	}
+}

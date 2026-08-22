@@ -422,19 +422,20 @@ func TestMultiBlockMentionDedupsToOneSteer(t *testing.T) {
 	}
 }
 
-// Case 13 (SEA-1641): a mentioned agent member that is NOT subscribed AND has NO
-// live session gets NOTHING this cycle — no steer (no turn to interrupt) and it is
-// NOT folded into the plain deliver fan-out (it is the mentioned agent, not a
-// subscriber). Only the subscribed live member gets its deliver.
+// Case 13: a mentioned agent member that is NOT subscribed AND has NO live
+// session gets NO IMMEDIATE DISPATCH this cycle — no steer (no turn to interrupt)
+// and it is NOT folded into the plain deliver fan-out (it is the mentioned agent,
+// not a subscriber). Only the subscribed live member gets its deliver.
 //
-// This pins the accept-by-design behavior the SEA-1641 medium tracks: an
-// unsubscribed agent is reachable by a mention ONLY while live, so a mentioned
-// unsubscribed-offline member's redelivery is intentionally deferred to SEA-1641 —
-// there is no subscription for the cursor+sweep to redeliver against, so nothing
-// redelivers. Contrast Case 6, whose mentioned-offline agent WAS subscribed (so the
-// sweep redelivers later); THIS agent is unsubscribed, so nothing does — the
-// intentional gap SEA-1641 tracks.
-func TestUnsubscribedOfflineMentionedMemberGetsNothing(t *testing.T) {
+// This pins the fan-out-time contract: an offline mentioned member never receives
+// a synchronous steer or deliver. Its redelivery is the RIG-1641 owed-mention arm
+// — routeMentions records a durable owed row (out-of-sweep-set members) and wakes
+// it, and the start-edge sweep re-steers the owed mention on resume — covered in
+// offline_mention_test.go, not here. This test wires no waker (the nil-safe wake
+// is a no-op) and asserts only the dispatch layer, so it stays scoped to the
+// no-immediate-dispatch invariant. Contrast Case 6, whose mentioned-offline agent
+// WAS subscribed, so the cursor sweep is its backstop.
+func TestUnsubscribedOfflineMentionedMemberGetsNoImmediateDispatch(t *testing.T) {
 	c, disp, res, reads := newTestConsumer(t)
 	const ch store.ChannelID = "chan-1"
 	const author store.AccountID = "human-1"
@@ -453,7 +454,7 @@ func TestUnsubscribedOfflineMentionedMemberGetsNothing(t *testing.T) {
 
 	got := disp.snapshot()
 	if len(got) != 1 {
-		t.Fatalf("dispatches = %d, want 1 (only B's deliver; the unsubscribed-offline mentioned member gets nothing)", len(got))
+		t.Fatalf("dispatches = %d, want 1 (only B's deliver; the unsubscribed-offline mentioned member gets no immediate dispatch)", len(got))
 	}
 	if a := recordsFor(got, "sess-a"); len(a) != 0 {
 		t.Fatalf("sess-a records = %+v, want none (offline mentioned member must not steer)", a)
