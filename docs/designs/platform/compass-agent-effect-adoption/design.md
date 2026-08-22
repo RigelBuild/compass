@@ -8,8 +8,8 @@
 
 Status: Draft
 Linear: RIG-2384. The adopt/don't-adopt call is **frozen** — ruled by Matt
-(2026-08-20), merged in orion PR #1612
-(`orion/docs/designs/platform/effect-ts-evaluation.md:250-285`). This record
+(2026-08-20), frozen in the internal monorepo's effect-ts evaluation record.
+This record
 designs only the *how*: the migration of the compass agent-runner's transport
 layer onto Effect.
 
@@ -21,9 +21,9 @@ hand-rolls the exact primitives Effect ships — "a bounded priority queue with
 drop-oldest overload (`transport/publish-spine.ts:43`), bounded-backoff retry
 for priority frames (`publish-spine.ts:50-55`), and a durable-unary retry with
 idempotency keys + a drain budget (`transport/frame-sink.ts`) — Queue +
-Schedule + supervision" (`effect-ts-evaluation.md:261-266`). Compass is
-pre-launch ("does not run anywhere yet, not even for dogfood",
-`effect-ts-evaluation.md:270-271`), so the migration carries no production
+Schedule + supervision" (the frozen evaluation record). Compass is
+pre-launch ("does not run anywhere yet, not even for dogfood", per the same
+record), so the migration carries no production
 retrofit risk — but the transport's behavior IS already contractually pinned
 by exhaustive tests (`frame-sink.test.ts`, `control-source.test.ts`,
 `index.test.ts` — 30+ invariant tests, e.g. `frame-sink.test.ts:294`
@@ -104,7 +104,7 @@ supervision, interruptible sleep — maps cleanly and migrates.
 
 A full rewrite risks silently losing one of the ~30 pinned invariants; a
 thin edge-wrapper adopts the dependency without retiring any hand-rolled
-machinery (the ruling's entire point, `effect-ts-evaluation.md:276-279`).
+machinery (the ruling's entire point).
 Incremental-behind-interfaces gets the primitives replaced module by module,
 each PR gated by the untouched black-box tests. Order: dependency + smoke
 (T1) → frame-sink durable lane (T2, the cleanest mapping) → publish-spine
@@ -124,15 +124,15 @@ runtime lifecycle consolidation in `index.ts` (T5).
   dependency without replacing any hand-rolled Queue/Schedule/supervision —
   the opposite of the frozen rationale ("the transport layer's
   Queue/Schedule/supervision needs are met by Effect's primitives from the
-  start, rather than growing a second and third bespoke version",
-  `effect-ts-evaluation.md:276-279`). This is distinct from the ruled hybrid
+  start, rather than growing a second and third bespoke version").
+  This is distinct from the ruled hybrid
   (OQ-7): the hybrid retires every mapping that has a fitting primitive
   (trace `Queue.sliding`, retry, timeout, fiber supervision, interruptible
   sleep) and keeps hand-rolled state *only* where Effect ships no primitive
   (the priority lane); the edge-wrapper retires nothing.
 - **(c) Whole-package blast radius now (CompassAgent, comms, lifecycle,
   cli).** Rejected for the first cut: the ruling names the transport as the
-  concrete target (`effect-ts-evaluation.md:261-266`); the agent loop and cli
+  concrete target; the agent loop and cli
   composition root are OMP-SDK-facing promise/callback surfaces where Effect
   buys least and churns most. The package-wide scope stays available — new
   agent-runner subsystems SHOULD be Effect-first — but retrofitting the
@@ -143,8 +143,9 @@ runtime lifecycle consolidation in `index.ts` (T5).
 
 ## Global Constraints
 
-- **Scope: `packages/compass-agent` only.** Not the Go daemon, not orion
-  `tools/*`, not any other compass package (`effect-ts-evaluation.md:281-285`).
+- **Scope: `packages/compass-agent` only.** Not the Go daemon, not the internal
+  monorepo's tools, not any other compass package
+  (the frozen ruling's scope).
   Within the package, first cut is `src/transport/` (OQ-1).
 - **Every transport invariant survives, no behavior regression.** The pinned
   set: bounded trace queue drop-oldest + counted (`publish-spine.ts:43,196-199`);
@@ -454,7 +455,7 @@ ruling before implementation starts (they change the shape of the work);
 
 - **OQ-1 (load-bearing) — Blast radius within the package.** The frozen
   ruling scopes adoption to the agent-runner package and names the transport
-  as the concrete target (`effect-ts-evaluation.md:261-266,281-285`).
+  as the concrete target.
   **Recommendation: first cut = `src/transport/` only** (this Plan), with
   `control/buffer.ts` + `control/ack-cursor.ts` explicitly excluded (self-
   contained data structures, no primitive replacement to gain), and a

@@ -499,7 +499,7 @@ All three ruled by Matt at the design-PR gate.
    fork development lives in the public RigelBuild repos on GitHub Actions
    CI, and compass consumes each as a pinned artifact (git ref / published
    package) — matching the org-wide fork-externalization ruling (Matt,
-   2026-08-18; orion #1457), which reverses the earlier vendor-into-tree
+   2026-08-18), which reverses the earlier vendor-into-tree
    consolidation.
 3. **Wails-shell risk: low-risk-but-verified stands** (Matt, 2026-08-18; no
    fork — the record's recommendation is the decision). The seam is

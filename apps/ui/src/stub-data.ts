@@ -477,7 +477,7 @@ export const STUB_AGENTS: Agent[] = [
 		activity: "coordinating the wave — routing SEA-1128",
 		role: "supervisor",
 		model: "claude-opus-4",
-		cwd: "~/agents/workspaces/supervisor/orion",
+		cwd: "~/agents/workspaces/supervisor/platform",
 		terminals: [],
 	},
 	{
@@ -662,7 +662,7 @@ export const STUB_AGENTS: Agent[] = [
 		activity: "converging the nixos hosts",
 		role: "worker",
 		model: "claude-opus-4",
-		cwd: "~/agents/workspaces/fleet/orion",
+		cwd: "~/agents/workspaces/fleet/platform",
 		terminals: [],
 	},
 	{
@@ -678,7 +678,7 @@ export const STUB_AGENTS: Agent[] = [
 		lifecycle: "working",
 		role: "worker",
 		model: "claude-sonnet-4",
-		cwd: "~/agents/workspaces/fleet-runner/orion",
+		cwd: "~/agents/workspaces/fleet-runner/platform",
 		terminals: [],
 	},
 	{
@@ -711,7 +711,7 @@ export const STUB_AGENTS: Agent[] = [
 		lifecycle: "working",
 		role: "worker",
 		model: "gpt-5-codex",
-		cwd: "~/agents/workspaces/ci/orion",
+		cwd: "~/agents/workspaces/ci/platform",
 		terminals: [
 			{
 				id: "t-ci1",

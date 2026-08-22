@@ -51,6 +51,12 @@ projects:
   # dangling supersession/Record pointers (SEA-1187). Migrated from the sealed
   # repo with the corpus it governs (SEA-1794).
   design-ledger-gate: 'tools/design-ledger-gate'
+  # The orion-ref-gate boundary gate (RIG-2489): fail-closed scan that the PUBLIC
+  # compass repo carries no reference to the PRIVATE internal monorepo. Mirrors
+  # design-ledger-gate; registered here so its check + typecheck + unit test run
+  # in the moon-driven CI sweep — unregistered, moon never discovers it and the
+  # boundary re-rots uncaught.
+  orion-ref-gate: 'tools/orion-ref-gate'
   # The cx-token consumption gate: scans apps/ui/src CSS for raw hex, --rigel-*
   # primitives, and literal duration/easing values banned outside tokens.css
   # (D2/D9 consumption rule; SEA-1812). Mirrors design-ledger-gate; the mark
@@ -66,13 +72,13 @@ projects:
   # affected-detection.
   agent-image-env-gate: 'tools/agent-image-env-gate'
   # Self-hosted Renovate (RIG-2432): the repo config + bot config + lockstep
-  # postUpgradeTask scripts + the config guard suite. Ported from orion's
-  # ci/renovate (SEA-847). Registered here so config.test.ts runs under the
+  # postUpgradeTask scripts + the config guard suite. Ported from the internal
+  # monorepo's renovate config. Registered here so config.test.ts runs under the
   # `test` task in the moon-driven CI sweep — unregistered, the guard suite is
   # silently inert (moon discovers projects only from this map) and the config
   # drift it fences ships uncaught.
   renovate: 'tools/renovate'
-  # The Renovate preflight probe (ported from orion's tools/renovate-preflight):
+  # The Renovate preflight probe (ported from the internal monorepo's preflight probe):
   # checks the minted App token can see the repo before `bunx renovate` runs,
   # failing fast with a named diagnosis instead of Renovate's opaque
   # platform-unknown-error. Registered so its own typecheck + unit test gate.

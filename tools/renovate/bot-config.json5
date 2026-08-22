@@ -28,7 +28,7 @@
   // NOT pinned here: Renovate autodetects it from the per-run installation
   // token, so an explicit value could only ever be a stale or malformed copy of
   // what the token already carries. Omitting gitAuthor is the correct App-auth
-  // posture (unlike orion, which authenticates as a bot USER via a PAT and so
+  // posture (unlike the internal monorepo, which authenticates as a bot USER via a PAT and so
   // must name that user). One consequence: this drops the App-slug paste-back
   // step from the RIG-2432 provisioning runbook — nothing to fill in post-registration.
   onboarding: false, // config already committed; no onboarding PR

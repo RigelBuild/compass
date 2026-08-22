@@ -5,11 +5,11 @@ import botConfig from "./bot-config.json5";
 import config from "./config.json5";
 
 // Guard suite for compass's self-hosted Renovate config (RIG-2432). Ported from
-// orion's ci/renovate/config.test.ts and adapted to compass's config +
+// the internal monorepo's ci/renovate config.test.ts and adapted to compass's config +
 // ecosystems (bun catalog, devenv-nixpkgs channel, toolchain pins, gomod, GitHub
 // Actions; NO rust/cargo, pulumi, woodpecker, nix-manager, or markdownlint
 // catalog — dropped, compass has none). The .json5 configs load via Bun's native
-// JSON5 import loader, exactly as orion's suite loads them.
+// JSON5 import loader, exactly as the internal monorepo's suite loads them.
 
 type PostUpgradeTasks = {
 	commands?: string[];
@@ -422,7 +422,7 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 	});
 
 	// Branch-mode lockstep task over exactly the three files the script writes
-	// (compass has NO committed inner-rev guard file, unlike orion's fourth entry).
+	// (compass has NO committed inner-rev guard file, unlike the internal monorepo's fourth entry).
 	test("the lockstep postUpgradeTask is branch-mode over the written files", () => {
 		const task = devenvRule?.postUpgradeTasks;
 		expect(task?.executionMode).toBe("branch");

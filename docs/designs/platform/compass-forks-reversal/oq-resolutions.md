@@ -59,7 +59,7 @@ Impact on **L3** (`design.md:437-490`):
 
 **Ruled (Matt, 2026-08-21): install the fork tools as pinned packages; do not
 keep raw `nix run` literals.** The flake-input half of OQ2 was already settled
-(converge on orion's lockfile-pinned `github:RigelBuild/<fork>` default). For
+(converge on the internal monorepo's lockfile-pinned `github:RigelBuild/<fork>` default). For
 the raw-CLI half — the six sites that invoke a fork CLI with `nix run` and so
 bypass `devenv.lock` — the resolution is to **install** the two fork tools
 (devenv's patched CLI carrying compass's container module, and

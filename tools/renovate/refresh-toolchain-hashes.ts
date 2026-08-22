@@ -24,7 +24,7 @@
 // by the self-hosted Renovate runner's environment. Run via `bun` (already on
 // the runner PATH; it runs `bun install --lockfile-only` as an allowed command).
 //
-// This is the bun/TypeScript port of orion's refresh-toolchain-hashes.ts
+// This is the bun/TypeScript port of the internal monorepo's refresh-toolchain-hashes
 // (RIG-2432), scoped to compass's three vendored binary toolchains (bun, node,
 // moon). Every observable behaviour — the per-file self-gate, the per-leg hash
 // fail-loud on a missing marker / hash line, and idempotence — is preserved 1:1.

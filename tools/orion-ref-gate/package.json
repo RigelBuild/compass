@@ -1,0 +1,14 @@
+{
+	"name": "@compass/orion-ref-gate",
+	"private": true,
+	"type": "module",
+	"description": "CI gate (RIG-2489): fail-closed check that the public compass repo carries no reference to the private internal monorepo.",
+	"module": "index.ts",
+	"bin": {
+		"orion-ref-gate": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

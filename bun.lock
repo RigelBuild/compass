@@ -131,6 +131,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/orion-ref-gate": {
+      "name": "@compass/orion-ref-gate",
+      "bin": {
+        "orion-ref-gate": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/renovate": {
       "name": "@compass/renovate",
       "devDependencies": {
@@ -315,6 +325,8 @@
     "@compass/docs-migrate": ["@compass/docs-migrate@workspace:tools/docs-migrate"],
 
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
+
+    "@compass/orion-ref-gate": ["@compass/orion-ref-gate@workspace:tools/orion-ref-gate"],
 
     "@compass/renovate": ["@compass/renovate@workspace:tools/renovate"],
 
