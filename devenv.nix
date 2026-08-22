@@ -161,6 +161,28 @@ in
   # token in that literal).
   ++ lib.optionals pkgs.stdenv.isLinux [
     inputs.nix2container.packages.${pkgs.stdenv.system}.skopeo-nix2container
+  ]
+  # cloud-hypervisor / virtiofsd / passt: the microVM VMM userspace toolset the
+  # elastic-session runtime's KVM-backed backend drives (design record
+  # docs/designs/platform/compass-elastic-session-runtime/microvm-ci-dev-enablement.md,
+  # § E-D1). cloud-hypervisor is the microVM VMM chosen in design D1; virtiofsd
+  # is the virtio-fs daemon that serves the guest's filesystem; passt is the
+  # userspace network backend instantiating the D6 passt/gvproxy-class net path
+  # (E1 picks passt, not gvproxy: C, no in-guest Go runtime, packaged in
+  # nixpkgs, and free of gvproxy's podman-machine coupling). All three are
+  # ordinary user binaries that open(2) /dev/kvm but need no capability or
+  # device node of their own; the host-level /dev/kvm enablement is a separate,
+  # out-of-repo concern. Linux-only and appended OUTSIDE the parsed `with pkgs`
+  # literal for the same reason as xvfb-run/chromium: the toolchain-parity gate
+  # resolves every bare attr in that literal on macOS too, where these
+  # Linux-only packages do not exist. No version pin here — the shell provides
+  # one pinned version from devenv.lock; the runtime preflight (V2a+) will
+  # enforce the floor, and the CI KVM leg will realize these binaries
+  # out-of-band from this same pin.
+  ++ lib.optionals pkgs.stdenv.isLinux [
+    pkgs.cloud-hypervisor
+    pkgs.virtiofsd
+    pkgs.passt
   ];
 
   env = {
