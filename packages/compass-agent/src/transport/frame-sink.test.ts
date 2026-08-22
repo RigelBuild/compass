@@ -20,6 +20,7 @@ import * as http2 from "node:http2";
 import * as os from "node:os";
 import * as path from "node:path";
 import { create } from "@bufbuild/protobuf";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
 import {
 	AgentSessionState,
@@ -430,6 +431,51 @@ test("a durable send gives up after the retry budget, rejecting emitDurable", as
 	} finally {
 		process.off("unhandledRejection", onUnhandled);
 	}
+});
+
+test("emitDurable's give-up rejection carries the ORIGINAL ConnectError, not an Effect wrapper", async () => {
+	// RIG-2448 coverage gap (design record
+	// docs/designs/platform/compass-agent-effect-adoption/design.md, Global
+	// Constraints "Error identity is preserved at the promise boundary"; T2
+	// give-up seam). The durable send uses two-arg
+	// Effect.tryPromise({ try, catch: (e) => e }) so the raw rejection stays in
+	// the failure channel, and causeError unwraps it (Cause.failureOption /
+	// squash) at the reject seam — so emitDurable()'s rejection is the ORIGINAL
+	// ConnectError, never an Effect FiberFailure/UnknownException wrapper. The
+	// existing give-up test above asserts only rejected===true and discards the
+	// value, so a regression to single-arg tryPromise (which wraps in
+	// UnknownException) would stay green there. This pins the identity.
+	//
+	// Non-vacuity (mutation-verified): change the source's two-arg
+	// tryPromise({ try, catch: (err) => err }) in launchDurable to the single-arg
+	// Effect.tryPromise(() => ...) → the rejection becomes an UnknownException
+	// wrapper, so `instanceof ConnectError` and `.code === Code.Unavailable` both
+	// red.
+	const rec = emptyRecorder();
+	const thrown = new ConnectError("runner unavailable", Code.Unavailable);
+	const socketPath = await serve(rec, {
+		onDurable: () => {
+			// Always throw the SAME distinguishable ConnectError so the give-up
+			// path (after the retry budget) rejects with it.
+			throw thrown;
+		},
+	});
+	const sink = createSocketFrameSink(createUnixSocketTransport(socketPath));
+	let caught: unknown;
+	const durable = sink
+		.emitDurable(transcriptFrame(5n))
+		.catch((err: unknown) => {
+			caught = err;
+		});
+	// drain() awaits the in-flight durable; it resolves once the send exhausts
+	// its budget and gives up.
+	await sink.drain?.();
+	await durable;
+	// The caught value IS the original ConnectError, not a wrapper: the wire
+	// round-trip yields a fresh ConnectError instance (not referential identity
+	// with `thrown`), so assert TYPE + CODE — the identity the unwrap preserves.
+	expect(caught).toBeInstanceOf(ConnectError);
+	expect((caught as ConnectError).code).toBe(Code.Unavailable);
 });
 
 test("the trace queue drops the OLDEST frames, keeping the newest cap-worth", async () => {
