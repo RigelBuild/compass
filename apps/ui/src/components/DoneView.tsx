@@ -24,8 +24,10 @@ const DoneRow: Component<{ issue: Issue }> = (props) => {
 		<li class="done-row" data-priority={props.issue.priority}>
 			<button
 				type="button"
-				class="done-row-main"
-				classList={{ selected: props.issue.id === store.selectedIssueId() }}
+				class={[
+					"done-row-main",
+					{ selected: props.issue.id === store.selectedIssueId() },
+				]}
 				onClick={() => store.selectIssue(props.issue.id)}
 			>
 				<span class="done-row-top">

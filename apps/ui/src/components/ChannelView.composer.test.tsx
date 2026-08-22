@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { flush } from "solid-js";
 import { StoreContext } from "../context";
 import {
 	createFakeComms,
@@ -91,9 +92,9 @@ async function mountComposer(fake: FakeComms): Promise<{
 			queryClient: testQueryClient(),
 		});
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<TopicView />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	const settled = async () => {
@@ -117,8 +118,10 @@ describe("topic composer (live PostMessage)", () => {
 		const { input, send, settled } = await mountComposer(fake);
 		try {
 			fireEvent.input(input, { target: { value: "hello from the composer" } });
+			flush();
 			fireEvent.click(send);
 			await settled();
+			flush();
 
 			expect(fake.posts.length).toBe(1);
 			expect(fake.posts[0].channelId).toBe(CHANNEL);
@@ -139,14 +142,18 @@ describe("topic composer (live PostMessage)", () => {
 		const { input, settled } = await mountComposer(fake);
 		try {
 			fireEvent.input(input, { target: { value: "sent with enter" } });
+			flush();
 			fireEvent.keyDown(input, { key: "Enter" });
 			await settled();
+			flush();
 
 			expect(fake.posts.map((p) => p.text)).toEqual(["sent with enter"]);
 
 			fireEvent.input(input, { target: { value: "not sent" } });
+			flush();
 			fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
 			await settled();
+			flush();
 
 			expect(fake.posts.map((p) => p.text)).toEqual(["sent with enter"]);
 			expect(input.value).toBe("not sent");
@@ -164,8 +171,10 @@ describe("topic composer (live PostMessage)", () => {
 		const { container, input, send, settled } = await mountComposer(fake);
 		try {
 			fireEvent.input(input, { target: { value: "echo-me" } });
+			flush();
 			fireEvent.click(send);
 			await settled();
+			flush();
 
 			const stream = () => container.querySelector(".conv-stream")?.textContent;
 			expect(stream()).not.toContain("echo-me");
@@ -182,6 +191,7 @@ describe("topic composer (live PostMessage)", () => {
 				1n,
 			);
 			await settled();
+			flush();
 			expect(stream()).toContain("echo-me");
 
 			// A redelivery of the same stored message must not render a second row.
@@ -190,6 +200,7 @@ describe("topic composer (live PostMessage)", () => {
 				2n,
 			);
 			await settled();
+			flush();
 
 			const occurrences = (stream() ?? "").split("echo-me").length - 1;
 			expect(occurrences).toBe(1);
@@ -207,8 +218,10 @@ describe("topic composer (live PostMessage)", () => {
 			fake.failNextPost(new Error("door is shut"));
 
 			fireEvent.input(input, { target: { value: "precious words" } });
+			flush();
 			fireEvent.click(send);
 			await settled();
+			flush();
 
 			expect(input.value).toBe("precious words");
 			expect(
@@ -228,10 +241,12 @@ describe("topic composer (live PostMessage)", () => {
 			fake.failNextPost(new Error("door is shut"));
 
 			fireEvent.input(input, { target: { value: "first message" } });
+			flush();
 			fireEvent.click(send);
 			// The user keeps typing before the rejection resolves.
 			fireEvent.input(input, { target: { value: "second message" } });
 			await settled();
+			flush();
 
 			expect(input.value).toBe("second message");
 		} finally {
@@ -246,10 +261,12 @@ describe("topic composer (live PostMessage)", () => {
 		const { input, send, settled } = await mountComposer(fake);
 		try {
 			fireEvent.input(input, { target: { value: "   " } });
+			flush();
 			expect(send.disabled).toBe(true);
 
 			fireEvent.keyDown(input, { key: "Enter" });
 			await settled();
+			flush();
 
 			expect(fake.posts).toEqual([]);
 		} finally {
@@ -268,9 +285,11 @@ describe("topic composer (live PostMessage)", () => {
 			const input = composerInput(container);
 			if (!input) throw new Error("composer did not render");
 			fireEvent.input(input, { target: { value: "meant for topic-a" } });
+			flush();
 
 			store.openTopic(TOPIC_B);
 			await settled();
+			flush();
 
 			const switched = composerInput(container);
 			if (!switched) throw new Error("composer did not render after switch");
@@ -278,10 +297,12 @@ describe("topic composer (live PostMessage)", () => {
 
 			// …and what is typed now posts to B, carrying ONLY the new text.
 			fireEvent.input(switched, { target: { value: "meant for topic-b" } });
+			flush();
 			const send = composerSend(container);
 			if (!send) throw new Error("send did not render after switch");
 			fireEvent.click(send);
 			await settled();
+			flush();
 
 			expect(fake.posts.length).toBe(1);
 			expect(fake.posts[0].topic).toEqual({ case: "topicId", value: TOPIC_B });
@@ -302,8 +323,10 @@ describe("topic composer (live PostMessage)", () => {
 			const input = composerInput(container);
 			if (!input) throw new Error("composer did not render");
 			fireEvent.input(input, { target: { value: "secret for topic-a" } });
+			flush();
 			fireEvent.click(composerSend(container) as HTMLButtonElement);
 			await settled();
+			flush();
 
 			// the failure landed in A…
 			expect(input.value).toBe("secret for topic-a");
@@ -313,6 +336,7 @@ describe("topic composer (live PostMessage)", () => {
 
 			store.openTopic(TOPIC_B);
 			await settled();
+			flush();
 
 			// …and stayed there.
 			expect(

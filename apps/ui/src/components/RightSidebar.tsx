@@ -354,8 +354,10 @@ const RepoBranchDropdown: Component = () => {
 										{(r) => (
 											<button
 												type="button"
-												class="rb-item"
-												classList={{ active: r.id === store.activeRepoId() }}
+												class={[
+													"rb-item",
+													{ active: r.id === store.activeRepoId() },
+												]}
 												onClick={() => {
 													store.setActiveRepo(r.id);
 													setRepoOpen(false);
@@ -395,8 +397,10 @@ const RepoBranchDropdown: Component = () => {
 									{(branch) => (
 										<button
 											type="button"
-											class="rb-item"
-											classList={{ active: branch === repo().currentBranch }}
+											class={[
+												"rb-item",
+												{ active: branch === repo().currentBranch },
+											]}
 											onClick={() => {
 												store.setActiveBranch(branch);
 												setBranchOpen(false);
@@ -528,7 +532,7 @@ const StatusPane: Component = () => {
 					<span class="m-label">todo</span>
 				</div>
 				<div class="r-status-metric">
-					<span class="m-val" classList={{ del: metrics().blocked > 0 }}>
+					<span class={["m-val", { del: metrics().blocked > 0 }]}>
 						{metrics().blocked}
 					</span>
 					<span class="m-label">blocked</span>
@@ -586,7 +590,7 @@ export const RightSidebar: Component = () => {
 						<Show when={ws()}>{(w) => <IssueDetailHead issue={w()} />}</Show>
 						<RepoBranchDropdown />
 					</Show>
-					<div class="r-pane" classList={{ fleet: fleetActive() }}>
+					<div class={["r-pane", { fleet: fleetActive() }]}>
 						<Switch>
 							<Match when={activeFleetItem()}>
 								{(item) => (
@@ -659,11 +663,13 @@ export const RightSidebar: Component = () => {
 										return (
 											<button
 												type="button"
-												class="r-tab"
-												classList={{
-													active: store.activeRightTab() === tab.id,
-													unreachable: tab.unreachable === true,
-												}}
+												class={[
+													"r-tab",
+													{
+														active: store.activeRightTab() === tab.id,
+														unreachable: tab.unreachable === true,
+													},
+												]}
 												title={
 													tab.unreachable === true
 														? `${tab.title} (unreachable)`
@@ -674,7 +680,9 @@ export const RightSidebar: Component = () => {
 														? `${tab.title} (unreachable)`
 														: tab.title
 												}
-												aria-pressed={store.activeRightTab() === tab.id}
+												aria-pressed={
+													store.activeRightTab() === tab.id ? "true" : "false"
+												}
 												onClick={() => store.setActiveRightTab(tab.id)}
 											>
 												<span class="r-tab-icon" aria-hidden="true">

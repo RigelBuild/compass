@@ -11,12 +11,12 @@
 // `newAppQueryClient` is the SINGLE source of the app's query defaults so the
 // fixture boot (T2) cannot silently drift from the live client.
 
-import { HashRouter } from "@solidjs/router";
+import { createRouter, hashHistory } from "@solidjs/router";
+import { render } from "@solidjs/web";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
-import { render } from "solid-js/web";
 import App from "./App";
 import { StoreContext } from "./context";
-import { AppRoutes } from "./routes";
+import { appRoutes } from "./routes";
 import type { AppStore } from "./store";
 
 /** The one app-lifetime QueryClient shape — the server-state cache the query
@@ -29,25 +29,26 @@ export function newAppQueryClient(): QueryClient {
 	});
 }
 
-/** Mount the full App shell — the store in a `StoreContext.Provider` wrapping
- *  the `QueryClientProvider` and `HashRouter` render tree — onto `root`. Moved
- *  verbatim from `index.tsx`'s `main()`; the extraction is behavior-preserving.
- *  Returns solid-js/web `render`'s disposer so a test that mounts the real shell
- *  can tear it down (production boot ignores it — the app lives for the process). */
+/** Mount the full App shell — the store in a `StoreContext` provider wrapping
+ *  the `QueryClientProvider` and the router instance, whose render-prop child is
+ *  the `App` root layout receiving the matched route as `props.children`. Router
+ *  2 builds one immutable instance per app; the hash history keeps the shell's
+ *  in-URL routing. Returns solid-js/web `render`'s disposer so a test that mounts
+ *  the real shell can tear it down (production boot ignores it — the app lives
+ *  for the process). */
 export function mountShell(
 	root: HTMLElement,
 	store: AppStore,
 	queryClient: QueryClient,
 ): () => void {
+	const Router = createRouter({ routes: appRoutes, history: hashHistory() });
 	return render(
 		() => (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<QueryClientProvider client={queryClient}>
-					<HashRouter root={App}>
-						<AppRoutes />
-					</HashRouter>
+					<Router>{(props) => <App {...props} />}</Router>
 				</QueryClientProvider>
-			</StoreContext.Provider>
+			</StoreContext>
 		),
 		root,
 	);

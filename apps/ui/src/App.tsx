@@ -82,8 +82,7 @@ const App: Component<RouteSectionProps> = (props) => {
 				<nav class="view-tabs" aria-label="View">
 					<button
 						type="button"
-						class="view-tab"
-						classList={{ active: store.view() === "bridge" }}
+						class={["view-tab", { active: store.view() === "bridge" }]}
 						onClick={() => store.showBridge()}
 						aria-keyshortcuts={bridgeAria}
 						title={bridgeChord ? `Bridge (${bridgeChord})` : undefined}
@@ -97,8 +96,7 @@ const App: Component<RouteSectionProps> = (props) => {
 						{(agent) => (
 							<button
 								type="button"
-								class="view-tab"
-								classList={{ active: store.view() === "agent" }}
+								class={["view-tab", { active: store.view() === "agent" }]}
 								onClick={() => store.openAgent(agent().account.id)}
 							>
 								<StateDot state={agent().lifecycle ?? "idle"} />
@@ -110,7 +108,7 @@ const App: Component<RouteSectionProps> = (props) => {
 
 				<span class="topbar-spacer" />
 
-				<div class="daemon" classList={{ live: store.daemon().live }}>
+				<div class={["daemon", { live: store.daemon().live }]}>
 					<span class="dot" aria-hidden="true" />
 					<span>
 						{store.daemon().live ? "daemon connected" : "stub data — no daemon"}
@@ -123,8 +121,7 @@ const App: Component<RouteSectionProps> = (props) => {
 				<div class="pane-toggles">
 					<button
 						type="button"
-						class="pane-toggle"
-						classList={{ active: store.leftOpen() }}
+						class={["pane-toggle", { active: store.leftOpen() }]}
 						title="Toggle left sidebar"
 						onClick={() => store.toggleLeft()}
 					>
@@ -132,8 +129,7 @@ const App: Component<RouteSectionProps> = (props) => {
 					</button>
 					<button
 						type="button"
-						class="pane-toggle"
-						classList={{ active: store.rightOpen() }}
+						class={["pane-toggle", { active: store.rightOpen() }]}
 						title="Toggle right sidebar"
 						onClick={() => store.toggleRight()}
 					>

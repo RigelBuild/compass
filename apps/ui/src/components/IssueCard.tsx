@@ -27,7 +27,7 @@ export const IssueCard: Component<{
 	/** Board wiring (T4, DL-221): when the card is a stop in the Bridge's
 	 *  roving-tabindex group, its PR chip must not be a second Tab stop — the
 	 *  board owns keyboard nav and the cross-link moves to `board.openCardCrossLink`
-	 *  (Space). True demotes the chip to `tabIndex={-1}`; the pointer + chip
+	 *  (Space). True demotes the chip to `tabindex={-1}`; the pointer + chip
 	 *  keydown handlers stay, so a non-board host (chip omitted) is unaffected. */
 	inRovingGroup?: boolean;
 	/** Board wiring (T4, design §179-182): when the card is a stop in the
@@ -78,10 +78,9 @@ export const IssueCard: Component<{
 						   span with keyboard + stopPropagation is the content-model compromise
 						   (DL-097 §2); inert when onOpenPr is absent. */
 						<span
-							class="card-pr"
-							classList={{ link: props.onOpenPr !== undefined }}
+							class={["card-pr", { link: props.onOpenPr !== undefined }]}
 							role={props.onOpenPr ? "link" : undefined}
-							tabIndex={
+							tabindex={
 								props.onOpenPr ? (props.inRovingGroup ? -1 : 0) : undefined
 							}
 							onClick={(e) => {

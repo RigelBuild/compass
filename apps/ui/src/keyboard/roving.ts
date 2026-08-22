@@ -9,7 +9,7 @@
  * T3/T4), so this primitive only delegates and reports the handled boolean.
  */
 
-import { createEffect, on } from "solid-js";
+import { createEffect } from "solid-js";
 import type { CommandId } from "./commands";
 import type { RovingGroup } from "./zones";
 
@@ -66,8 +66,8 @@ function resolveCursorStop(
  * and disposed with the caller.
  */
 export function createRovingGroup(opts: RovingGroupOptions): RovingGroupHandle {
-	// Sync tabindex + focus to (stops, cursor). Static dep set → explicit `on`
-	// (matches the Solid-v2 migration convention). The effect drives tabindex on
+	// Sync tabindex + focus to (stops, cursor). Explicit compute/effect split
+	// (Solid-v2 two-arg createEffect). The effect drives tabindex on
 	// every run (the one-tab-stop invariant), but pulls DOM focus onto the cursor
 	// ONLY when focus already lives inside the group — a genuine in-group keyboard
 	// move. It must NOT focus on the mount run, nor on a stops-rebuild that
@@ -78,7 +78,8 @@ export function createRovingGroup(opts: RovingGroupOptions): RovingGroupHandle {
 	// a cursor move refocuses so focus never strands on a now-untabbable stop.
 	let lastFocusedId: string | null = null;
 	createEffect(
-		on([opts.stops, opts.cursor], ([stops, cursor]) => {
+		() => [opts.stops(), opts.cursor()] as const,
+		([stops, cursor]) => {
 			const active = resolveCursorStop(stops, cursor);
 			for (const stop of stops) {
 				stop.el.tabIndex = stop === active ? 0 : -1;
@@ -93,7 +94,7 @@ export function createRovingGroup(opts: RovingGroupOptions): RovingGroupHandle {
 				active.el.scrollIntoView({ block: "nearest" });
 			}
 			lastFocusedId = active.id;
-		}),
+		},
 	);
 
 	return {

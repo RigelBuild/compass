@@ -580,10 +580,17 @@ describe("tools/renovate postgres + gomod go disables", () => {
 });
 
 describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
-	// The soak-exemption packageRule for the bun types packages must equal
-	// bunfig.toml's minimumReleaseAgeExcludes MINUS @tanstack/virtual-core (which
-	// is an overrides pin, outside the catalog manager's reach) — i.e. exactly
-	// ["@types/bun","bun-types"]. Read the real bunfig, parse its exclude list.
+	// The catalog-scoped soak-exemption packageRule governs ONLY catalog deps
+	// (matchManagers custom.regex + matchDepTypes workspaces.catalog), so its
+	// matchPackageNames must equal exactly the bunfig `minimumReleaseAgeExcludes`
+	// entries that ARE catalog deps — i.e. the bun-types pair (@types/bun is a
+	// catalog pin; bun-types is its transitive lockstep). Every other bunfig
+	// exclude is a literal npm pin or an `overrides` pin (@tanstack/virtual-core,
+	// the Solid v2 / @tanstack query RC track, the @rigelbuild forks) — all
+	// outside the catalog manager's reach, so a catalog-scoped rule cannot and
+	// must not list them: a future auto-bump of those still soaks the 5 days.
+	// Deriving the catalog set from the real manifest (not a hard-coded list)
+	// keeps this guard current as the migration track lands and later retires.
 	const soakRule = cfg.packageRules.find(
 		(r) =>
 			r.minimumReleaseAge === null &&
@@ -602,16 +609,32 @@ describe("tools/renovate bun-types soak exemption ↔ bunfig excludes", () => {
 		);
 	};
 
+	// The catalog object in the root manifest is the single source of truth for
+	// which names the catalog manager can reach. bun-types never appears in the
+	// catalog itself (only its @types/bun parent does) but is soaked in lockstep,
+	// so it joins the catalog set explicitly.
+	const catalogExcludes = (): string[] => {
+		const parsed = JSON.parse(
+			readFileSync(join(repoRoot, "package.json"), "utf8"),
+		) as { workspaces?: { catalog?: Record<string, string> } };
+		const catalog = new Set(Object.keys(parsed.workspaces?.catalog ?? {}));
+		catalog.add("bun-types");
+		return bunfigExcludes().filter((e) => catalog.has(e));
+	};
+
 	test("the soak-exemption rule exists (custom.regex catalog, minimumReleaseAge null)", () => {
 		expect(soakRule).toBeDefined();
 		expect(soakRule?.minimumReleaseAge).toBeNull();
 		expect(soakRule?.matchManagers).toEqual(["custom.regex"]);
 	});
 
-	test("its package names EQUAL bunfig excludes minus @tanstack/virtual-core", () => {
+	test("its package names EQUAL the catalog-dep subset of bunfig excludes", () => {
 		const excludes = bunfigExcludes();
+		// @tanstack/virtual-core is the canonical non-catalog exclude (an overrides
+		// pin) — it must be present AND must be filtered out as non-catalog.
 		expect(excludes).toContain("@tanstack/virtual-core");
-		const expected = excludes.filter((e) => e !== "@tanstack/virtual-core");
+		const expected = catalogExcludes();
+		expect(expected).not.toContain("@tanstack/virtual-core");
 		expect(expected.slice().sort()).toEqual(["@types/bun", "bun-types"].sort());
 		expect(soakRule?.matchPackageNames?.slice().sort()).toEqual(
 			expected.slice().sort(),

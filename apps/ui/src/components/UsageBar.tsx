@@ -26,8 +26,7 @@ export const UsageBar: Component = () => (
 						<span class="u-plan">{acct.plan}</span>
 						<span class="usage-meter">
 							<span
-								class="fill"
-								classList={{ hot: pct() >= 80 }}
+								class={["fill", { hot: pct() >= 80 }]}
 								style={{ width: `${pct()}%` }}
 							/>
 						</span>

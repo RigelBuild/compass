@@ -1,34 +1,35 @@
+import Markdown, { type Components } from "@rigelbuild/solid-markdown";
 import { Browser } from "@wailsio/runtime";
 import type {
 	Element as HastElement,
 	Parent as HastParent,
 	RootContent as HastRootContent,
-	Text as HastText,
 } from "hast";
 import remarkGfm from "remark-gfm";
 import {
 	type Component,
 	createEffect,
-	createResource,
+	createMemo,
 	createSignal,
-	For,
-	on,
-	onCleanup,
 	Show,
 } from "solid-js";
-import { SolidMarkdown, type SolidMarkdownComponents } from "solid-markdown";
 import type { Account } from "../comms-stub";
+import {
+	getCachedHighlight,
+	setCachedHighlight,
+} from "../markdown/highlight-cache";
 import { highlightToHtml } from "../markdown/highlighter";
-import { mentionRuns } from "../markdown/mention-runs";
+import { rehypeMentionChips } from "../markdown/rehype-mention-chips";
 import { safeHref } from "../safe-url";
 
-/** solid-markdown pipes `remarkRehype` with `allowDangerousHtml: true`
- *  (solid-markdown/dist/index.jsx:307), so any `<…>` in a message becomes a hast
- *  `raw` node — and its child renderer has `Match` arms only for `element` and
- *  `text` (dist/index.jsx:110-125). A `raw` node therefore renders as NOTHING:
- *  `"use Vec<T>"` loses `<T>`, and a `<details>` block loses its whole body.
- *  Since `<` is a raw-HTML opener to CommonMark, ordinary agent prose about
- *  generics or JSX silently loses characters.
+/** `@rigelbuild/solid-markdown` pipes `remarkRehype` with
+ *  `allowDangerousHtml: true` (dist/index.jsx:14), so any `<…>` in a message
+ *  becomes a hast `raw` node — and its renderer, `hast-util-to-jsx-runtime`,
+ *  handles only `element`, `text`, and `mdxJsx*`/`comment` nodes: a `raw` node
+ *  is ignored and therefore renders as NOTHING. `"use Vec<T>"` loses `<T>`, and
+ *  a `<details>` block loses its whole body. Since `<` is a raw-HTML opener to
+ *  CommonMark, ordinary agent prose about generics or JSX silently loses
+ *  characters.
  *
  *  Retyping each `raw` node as `text` renders the source characters verbatim,
  *  escaped by the DOM text path. This restores the content WITHOUT making the
@@ -269,134 +270,161 @@ function rawText(node: HastElement | undefined): string {
 	return out;
 }
 
-/** One prose text run rendered through the shared mention splitter: plain runs
- *  as text, mentions as `mention-chip` spans carrying the `reserved`/`unknown`
- *  modifiers (the `.mention-chip` rules in app.css). This is the `text`
- *  component override, so it fires on every literal prose text node in the
- *  markdown tree — never on code (rendered from raw value) or link labels
- *  (same). */
-function MentionRuns(props: { text: string; byHandle: Map<string, Account> }) {
-	const runs = () => mentionRuns(props.text, props.byHandle);
-	return (
-		<For each={runs()}>
-			{(run) => (
-				<Show when={run.mention} fallback={run.text}>
-					{(m) => (
-						<span
-							class="mention-chip"
-							classList={{
-								reserved: m().reserved,
-								unknown: !m().reserved && !m().known,
-							}}
-						>
-							{run.text}
-						</span>
-					)}
-				</Show>
-			)}
-		</For>
-	);
-}
-
 /** How long a streaming code fence must be quiet before it is highlighted.
  *  Long enough to collapse a burst of growth ticks into one pass, short enough
  *  that a settled block colorizes without a perceptible wait. */
 const HIGHLIGHT_DEBOUNCE_MS = 150;
 
-/** The `code` override — inline and block. Renders the code's raw text verbatim
- *  (so `@handle` inside code never chips), then swaps in Shiki's highlighted
- *  markup when the async highlighter resolves. Plain text shows immediately;
- *  the swap is last-write-wins keyed by the code text identity (a streaming
- *  fence re-renders per growth tick, each kicking a fresh highlight — a stale
- *  resolution for superseded text is dropped by createResource's source keying).
- *  Inline code stays plain (no language, no highlight). */
-function CodeBlock(props: {
-	node?: HastElement;
-	inline?: boolean;
-	class?: string;
-}) {
-	const code = () => rawText(props.node);
-	// The language tag lives in the code element's class as `language-xxx`
-	// (remark-rehype convention); absent for inline or untagged blocks.
-	const lang = () => {
-		const cls = props.class ?? "";
-		const m = /language-([\w-]+)/.exec(cls);
-		return m ? m[1] : "";
-	};
-	// Only block code with a language tag is highlighted, and the source is
-	// DEBOUNCED: a streaming fence changes `code()` on every growth tick, and
-	// highlighting is O(text), so re-tokenizing the whole block each tick makes a
-	// growing block quadratic (measured: 30 ticks of a 465-char block =
-	// 30 highlights over 6,465 chars). Sampling the text once it has been quiet
-	// briefly collapses that to a handful of passes; the plain `<pre>` fallback
-	// stays visible until one resolves, so nothing regresses visually.
+/** Read the language tag off a `code` element's `language-…` class (the
+ *  remark-rehype convention); empty for an untagged block. */
+function langOf(codeClass: string | undefined): string {
+	const m = /language-([\w-]+)/.exec(codeClass ?? "");
+	return m ? m[1] : "";
+}
+
+/** The block code path — owned by the `pre` override (design A4). Renders the
+ *  fenced block's raw text verbatim (so `@handle` inside code never chips), then
+ *  swaps in Shiki's highlighted markup when the async highlighter resolves.
+ *  Plain text shows immediately; a cache hit (R1) paints highlighted markup on
+ *  the first frame with no fallback flash. The swap is last-write-wins keyed by
+ *  the code text: a streaming fence re-renders per growth tick, each kicking a
+ *  fresh highlight, and a stale resolution for superseded text is ignored
+ *  because a newer effect run has already moved `settled` past it. */
+function BlockCode(props: { code: string; codeClass?: string }) {
+	const lang = () => langOf(props.codeClass);
+	// R1 synchronous seed: a rebuilt instance of an already-highlighted block
+	// reads the cache at construction and paints highlighted markup immediately,
+	// so #44's per-tick teardown never flashes the plain fallback for a block we
+	// have already tokenized.
+	const [html, setHtml] = createSignal<string | null>(
+		getCachedHighlight(lang(), props.code) ?? null,
+	);
+	// The debounced highlight source. A streaming fence changes `props.code` on
+	// every growth tick, and highlighting is O(text), so re-tokenizing the whole
+	// block each tick makes a growing block quadratic; sampling the text once it
+	// has been quiet briefly collapses that to a handful of passes. The plain
+	// `<pre>` fallback (or an R1 cache hit) stays visible until one resolves.
 	const [settled, setSettled] = createSignal<readonly [string, string] | null>(
 		null,
 	);
-	// Static-dep effect: track code/lang (and inline defensively — see below) via
-	// `on`, keeping the debounce apply UNTRACKED so the setTimeout/onCleanup cycle
-	// only re-runs when a tracked source changes. `inline` is a structural prop
-	// (the code override sets it once per node instance and never mutates it), but
-	// it is included in the deps rather than asserted invariant so the guard can
-	// never read a stale value if that ever changes.
+	// Static-dep effect: track code/lang in the compute phase, keep the
+	// setTimeout/cleanup cycle in the (untracked) apply phase so it only re-runs
+	// when a tracked source changes. Solid 2's two-arg createEffect returns its
+	// cleanup from the apply phase.
 	createEffect(
-		on([code, lang, () => props.inline], ([nextCode, nextLang, inline]) => {
-			if (inline) return;
-			const next = [nextCode, nextLang] as const;
-			const t = setTimeout(() => setSettled(next), HIGHLIGHT_DEBOUNCE_MS);
-			onCleanup(() => clearTimeout(t));
-		}),
+		() => [props.code, lang()] as const,
+		([nextCode, nextLang]) => {
+			const t = setTimeout(
+				() => setSettled([nextCode, nextLang] as const),
+				HIGHLIGHT_DEBOUNCE_MS,
+			);
+			return () => clearTimeout(t);
+		},
 	);
-	const [html] = createResource(
-		() => (props.inline ? null : settled()),
-		async (src) => {
-			if (!src) return null;
+	// The async highlight, driven off the debounced `settled` source. Replaces
+	// Solid 1's `createResource`: a two-arg effect awaits the highlighter and
+	// writes the resolved markup into the signal (and the R1 cache). A failed
+	// highlight (stale Vite chunk after a redeploy, offline webview) is swallowed
+	// so the block degrades to the plain `<pre>` fallback rather than throwing —
+	// there is no ErrorBoundary on this surface, so an unhandled rejection would
+	// unmount the whole window. A settled source that arrives while an earlier
+	// highlight is still in flight starts a newer run; `disposed` gates the stale
+	// resolution out so last-write-wins holds.
+	createEffect(
+		() => settled(),
+		(src) => {
+			if (!src) return;
 			const [text, language] = src;
-			if (language === "") return null;
-			// A rejected fetcher is RETHROWN by createResource when the accessor is
-			// read during render, and the app mounts no ErrorBoundary — so an
-			// unhandled rejection here unmounts the whole window, not just this
-			// block. A failed highlight (stale Vite chunk after a redeploy, offline
-			// webview) must degrade to the plain `<pre>` fallback below.
-			try {
-				return await highlightToHtml(text, language);
-			} catch {
-				return null;
+			if (language === "") return;
+			const cached = getCachedHighlight(language, text);
+			if (cached !== undefined) {
+				setHtml(cached);
+				return;
 			}
+			let disposed = false;
+			void (async () => {
+				try {
+					const rendered = await highlightToHtml(text, language);
+					if (disposed || rendered === null) return;
+					setCachedHighlight(language, text, rendered);
+					setHtml(rendered);
+				} catch {
+					// degrade to the plain fallback
+				}
+			})();
+			return () => {
+				disposed = true;
+			};
 		},
 	);
 
-	// Inline code is a bare `<code>`; a block owns exactly one `<pre>` — either
-	// the plain fallback's `<pre class="code-block"><code>` or Shiki's own `<pre>`
-	// after the async swap. The `pre` override is a pass-through (no element), so
-	// there is never a `<pre>` nested in a `<pre>`.
+	// A block owns exactly one `<pre>` — either the plain fallback's
+	// `<pre class="code-block"><code>` or Shiki's own `<pre>` after the async
+	// swap. This component IS the `pre` override's body, so there is never a
+	// `<pre>` nested in a `<pre>`.
 	return (
 		<Show
-			when={!props.inline}
-			fallback={<code class={props.class}>{code()}</code>}
+			when={html()}
+			fallback={
+				<pre class="code-block">
+					<code class={props.codeClass}>{props.code}</code>
+				</pre>
+			}
 		>
-			<Show
-				when={html()}
-				fallback={
-					<pre class="code-block">
-						<code class={props.class}>{code()}</code>
-					</pre>
-				}
-			>
-				{(rendered) => (
-					// Shiki emits its own `<pre class="shiki"><code>…tokens…</code></pre>`;
-					// set it as innerHTML on a wrapper. Safe: the HTML is generated from
-					// Shiki's token AST (no user HTML passthrough), rendered into a leaf
-					// with no reactive children. This is the one sink on this surface
-					// where markup goes live, and its safety rests ENTIRELY on Shiki
-					// escaping metacharacters in code content — so if the highlighter
-					// ever gains a transformer or any pass-through path, re-review here
-					// before shipping it.
-					<div class="code-highlight" innerHTML={rendered()} />
-				)}
-			</Show>
+			{(rendered) => (
+				// Shiki emits its own `<pre class="shiki"><code>…tokens…</code></pre>`;
+				// set it as innerHTML on a wrapper. Safe: the HTML is generated from
+				// Shiki's token AST (no user HTML passthrough), rendered into a leaf
+				// with no reactive children. This is the one sink on this surface
+				// where markup goes live, and its safety rests ENTIRELY on Shiki
+				// escaping metacharacters in code content — so if the highlighter
+				// ever gains a transformer or any pass-through path, re-review here
+				// before shipping it.
+				<div class="code-highlight" innerHTML={rendered()} />
+			)}
 		</Show>
 	);
+}
+
+/** Narrow a react-markdown-10 override prop to a plain string. #44 types
+ *  override props with the full JSX attribute union (`href`/`alt` widen to
+ *  `string | SerializableAttributeValue | false | undefined`, `class` to
+ *  `ClassValue | false`), but the values hast actually delivers are strings.
+ *  Everything non-string (the serializable-object / `false` remove-sentinel
+ *  cases, unreachable here) collapses to `undefined`. */
+function stringAttr(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+/** The inline `code` path (design A4). Under react-markdown-10 no `inline` prop
+ *  is passed and block-vs-inline is structural — a block is always
+ *  `<pre><code class="language-…">`, owned by the `pre` override below. This
+ *  override therefore renders inline code ONLY: the raw text verbatim (so
+ *  `@handle` inside code never chips), no language, no highlight. It MUST stay
+ *  computation-free (no effect/resource/timer): the block path's `pre` renders
+ *  from raw text and never mounts this inner `code`'s output, and that
+ *  discard-safety depends on this override doing no reactive work. */
+function InlineCode(props: { node?: HastElement; class?: string }) {
+	return <code class={props.class}>{rawText(props.node)}</code>;
+}
+
+/** The block `pre` path (design A4). react-markdown-10's `pre` override receives
+ *  the block's `<pre>` node; its single child is the `<code class="language-…">`
+ *  element. This finds that child, reads its language class + raw text, and
+ *  hands them to `BlockCode` (the debounced Shiki body + R1 cache). It renders
+ *  from raw text and never renders `p.children`, so the inner `code` override's
+ *  output is never mounted and no `<pre>` nests. */
+function PreBlock(props: { node?: HastElement }) {
+	const codeEl = () =>
+		props.node?.children?.find(
+			(c): c is HastElement => c.type === "element" && c.tagName === "code",
+		);
+	const code = () => rawText(codeEl());
+	const codeClass = () => {
+		const cls = codeEl()?.properties?.className;
+		return Array.isArray(cls) ? cls.join(" ") : (cls as string | undefined);
+	};
+	return <BlockCode code={code()} codeClass={codeClass()} />;
 }
 
 /** The markdown-first renderer. */
@@ -404,31 +432,38 @@ export const MarkdownText: Component<{
 	text: string;
 	byHandle: Map<string, Account>;
 }> = (props) => {
-	const components: SolidMarkdownComponents = {
-		// Prose text → mention chips (the composition seam).
-		text: (p: { node: HastText }) => (
-			<MentionRuns text={p.node.value} byHandle={props.byHandle} />
-		),
-		// Code verbatim + async highlight — mentions never chip here.
-		code: (p: { node?: HastElement; inline?: boolean; class?: string }) => (
-			<CodeBlock node={p.node} inline={p.inline} class={p.class} />
-		),
-		// The `code` override owns the block's single `<pre>` (plain or Shiki), so
-		// this `pre` override is a pass-through — rendering its `<code>` child
-		// directly avoids a `<pre>` nested inside a `<pre>`.
-		pre: (p: { children?: unknown }) => <>{p.children as never}</>,
+	// Chips are injected by a rehype plugin (design A3), not a `text` component
+	// override — react-markdown-10 renders hast text nodes as raw strings, never
+	// routing them through `components`, so the old `text` override would never
+	// fire. Ordered AFTER `rehypeInertRawAndBreaks` so retyped raw-HTML text
+	// chips like any prose. Memoized on `byHandle`: #44's processor is a memo
+	// over its options, so a new map identity re-creates the processor and
+	// re-parses, refreshing chip known/reserved state (coarser than the old
+	// per-chip live resolution — an accepted tradeoff, account-map changes are
+	// rare and a full re-parse is what every streaming tick already costs).
+	const rehypePlugins = createMemo(() => [
+		rehypeInertRawAndBreaks,
+		rehypeMentionChips({ byHandle: props.byHandle }),
+	]);
+	const components: Components = {
+		// Inline code verbatim — mentions never chip here (A4).
+		code: (p) => <InlineCode node={p.node} class={stringAttr(p.class)} />,
+		// The block `<pre>` owns the block code path (plain or Shiki); it renders
+		// from its `code` child's raw text and never mounts `p.children`, so no
+		// `<pre>` nests and the inline `code` override's output is discarded (A4).
+		pre: (p) => <PreBlock node={p.node} />,
 		// Links open externally via the `openExternal` seam (Wails `Browser.OpenURL`
 		// in the shell, `window.open` in the dev build); label rendered from raw
 		// text (so a mention in a label never chips, and inline markup is flattened
 		// — accepted).
-		a: (p: { node?: HastElement; href?: string }) => {
+		a: (p) => {
 			const label = () => rawText(p.node);
 			// Scheme-sanitize on BOTH the DOM attribute and the opener call: a
 			// `javascript:`/`data:`/`file:` href must never be a live attribute
 			// (middle-click / keyboard-activate / context-menu can bypass onClick
 			// in a webview) nor reach `openExternal` (a `file://` would open a local
 			// file in the OS default app). Unsafe → inert `#` + no-op click.
-			const safe = () => safeHref(p.href);
+			const safe = () => safeHref(stringAttr(p.href));
 			return (
 				<a
 					href={safe() ?? "#"}
@@ -454,21 +489,21 @@ export const MarkdownText: Component<{
 		// as dropping it — but the sentence keeps its meaning instead of showing a
 		// hole. (Filtering it out via `disallowedElements` splices the node and its
 		// alt text away entirely.)
-		img: (p: { alt?: string }) => (
-			<span class="md-img-omitted">{imgPlaceholder(p.alt)}</span>
+		img: (p) => (
+			<span class="md-img-omitted">{imgPlaceholder(stringAttr(p.alt))}</span>
 		),
 	};
 
 	return (
 		<div class="msg-text markdown-content">
-			<SolidMarkdown
+			<Markdown
 				renderingStrategy="reconcile"
 				remarkPlugins={[remarkGfm]}
-				rehypePlugins={[rehypeInertRawAndBreaks]}
+				rehypePlugins={rehypePlugins()}
 				components={components}
 			>
 				{props.text}
-			</SolidMarkdown>
+			</Markdown>
 		</div>
 	);
 };

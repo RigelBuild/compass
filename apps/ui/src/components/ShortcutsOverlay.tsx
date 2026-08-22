@@ -14,8 +14,7 @@ import {
 	createMemo,
 	createSignal,
 	For,
-	onCleanup,
-	onMount,
+	onSettled,
 	Show,
 } from "solid-js";
 import { useStore } from "../context";
@@ -42,18 +41,21 @@ export const ShortcutsOverlay: Component = () => {
 	// (every close path — `?` toggle, Escape, backdrop, close-on-navigation).
 	let restoreTo: HTMLElement | null = null;
 
-	onMount(() => {
+	// Setup-and-teardown as one unit (v2 onSettled: runs once after the first
+	// reactive settle, its returned cleanup on dispose — the 1.x onMount+onCleanup
+	// pair). Capture the pre-open focus, grant focus to the search input, and on
+	// close restore focus to the captured element — but only if it is still in the
+	// DOM: a route change during the overlay's lifetime can detach it, and
+	// .focus() on a detached node silently drops focus to <body>.
+	onSettled(() => {
 		restoreTo =
 			document.activeElement instanceof HTMLElement
 				? document.activeElement
 				: null;
 		searchRef?.focus();
-	});
-	// Restore only if the captured element is still in the DOM: a route change
-	// during the overlay's lifetime can detach it, and .focus() on a detached
-	// node silently drops focus to <body>. When disconnected, leave focus alone.
-	onCleanup(() => {
-		if (restoreTo?.isConnected) restoreTo.focus();
+		return () => {
+			if (restoreTo?.isConnected) restoreTo.focus();
+		};
 	});
 
 	// Minimal focus trap: keep Tab/Shift+Tab inside the dialog so focus cannot

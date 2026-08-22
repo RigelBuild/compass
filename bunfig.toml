@@ -4,9 +4,10 @@
 # install dir (not parent dirs), so the guard lives here rather than per-project.
 [install]
 minimumReleaseAge = 432000
-# @tanstack/virtual-core is pinned to 3.17.5 via root `overrides` — the chat-mode
+# @tanstack/virtual-core is pinned to 3.17.8 via root `overrides` — the version
+# @rigelbuild/solid-virtual is built/typed against, at or above the chat-mode
 # scroll floor the compass message-surface renderer requires (the end-anchored
-# anchorTo:'end'+followOnAppend path needs the 3.17.5 anchor-offset clamp). That
+# anchorTo:'end'+followOnAppend path needs the anchor-offset clamp). That
 # exact version is exempted from the 5-day cooldown because the floor is a
 # reviewed, record-mandated pin, not an unvetted float; the exact-version
 # exclude keeps the exemption from covering any other virtual-core release.
@@ -17,8 +18,35 @@ minimumReleaseAge = 432000
 # against freshly-published untrusted packages) is the wrong policy for them: it
 # would strand the types packages behind the pin for 5 days on every bun upgrade.
 # Exempting the exact names keeps the global cooldown intact for everything else.
+#
+# The Solid v2 track (solid-js, @solidjs/web, @solidjs/router, babel-preset-solid)
+# and the owned @rigelbuild forks (@rigelbuild/solid-markdown,
+# @rigelbuild/solid-virtual) are exempted for the apps/ui v2 migration: v2 ships
+# only as pre-releases (rc/next) that are freshly published by nature, and Matt
+# directed the migration onto the RC now rather than waiting for GA — so the
+# soak, meant for unvetted registry floats, is the wrong policy for a
+# deliberately-adopted pre-release track. solid-js/@solidjs/* are the first-party
+# framework; @rigelbuild/solid-markdown and @rigelbuild/solid-virtual are our own
+# forks. The exact names keep the cooldown intact for everything else.
+#
+# @tanstack/solid-query 6.x + its @tanstack/query-core dep join the exemption:
+# solid-query@5 hard-imports Solid-1-only subpaths (solid-js/web, solid-js/store)
+# that Solid 2 removed, so it cannot coexist with the v2 track — the migration
+# folds the solid-query v5->6 bump into the atomic landing, and 6.x ships only as
+# freshly-published pre-releases (rc), the same deliberately-adopted-pre-release
+# case as the Solid track above.
 minimumReleaseAgeExcludes = [
   "@tanstack/virtual-core",
   "@types/bun",
   "bun-types",
+  "solid-js",
+  "@solidjs/web",
+  "@solidjs/router",
+  "@solidjs/signals",
+  "babel-preset-solid",
+  "@dom-expressions/babel-plugin-jsx",
+  "@rigelbuild/solid-markdown",
+  "@rigelbuild/solid-virtual",
+  "@tanstack/solid-query",
+  "@tanstack/query-core",
 ]

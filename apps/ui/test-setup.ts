@@ -138,6 +138,53 @@ if (typeof (divProto as { scrollTo?: unknown }).scrollTo !== "function") {
 	});
 }
 
+// ── happy-dom `textContent` numeric-coercion shim ────────────────────────────
+// happy-dom's `Element.prototype.textContent` setter guards node creation with
+// `if (textContent)`, so a FALSY non-string value — notably numeric `0` — sets
+// NO child text node (happy-dom@20.11.1 nodes/element/Element.js). The DOM spec
+// instead ToString-coerces the value (`0` → `"0"`, a real text node); every
+// browser, and the Wails webview, does this.
+//
+// Solid 2's `insertExpression` relies on the spec behaviour: a reactive text
+// interpolation whose value is `0` at first render (e.g. a live count that
+// starts empty) writes `parent.textContent = 0`, leaving happy-dom's span with
+// NO firstChild; when the value later becomes non-zero Solid takes the
+// `parent.firstChild.data = value` fast-path and throws
+// `TypeError: null is not an object`, which HALTS Solid 2's global scheduler and
+// cascades into every later test. (First tripped by routing.test.tsx's
+// `/backlog` deep-link: BacklogView's async `assignedIssues().length` renders as
+// `0`, then resolves to a non-zero count one tick later.)
+//
+// Wrap the inherited setter so a non-null/undefined value is String-coerced
+// before delegating — matching the spec — while `null`/`undefined` still clear
+// as happy-dom intends. Scoped to the one owning descriptor, so every other
+// textContent write keeps happy-dom's native behaviour.
+const textContentDesc = (() => {
+	let proto: object | null = Object.getPrototypeOf(
+		document.createElement("span"),
+	);
+	while (proto) {
+		const desc = Object.getOwnPropertyDescriptor(proto, "textContent");
+		if (desc?.set) return { proto, desc };
+		proto = Object.getPrototypeOf(proto);
+	}
+	return undefined;
+})();
+if (textContentDesc) {
+	const nativeSet = textContentDesc.desc.set as (
+		this: Node,
+		v: unknown,
+	) => void;
+	Object.defineProperty(textContentDesc.proto, "textContent", {
+		configurable: true,
+		enumerable: textContentDesc.desc.enumerable,
+		get: textContentDesc.desc.get,
+		set(this: Node, value: unknown): void {
+			nativeSet.call(this, value == null ? value : String(value));
+		},
+	});
+}
+
 // ── Global per-test DOM cleanup ──────────────────────────────────────────────
 // Dispose every root `render()` mounts after each test, across ALL files. Bun
 // scopes an `afterEach` registered as a module side-effect to the file that

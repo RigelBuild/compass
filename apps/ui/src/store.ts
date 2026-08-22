@@ -769,15 +769,39 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const currentPath = (): string => routerCurrentPath();
 	// Wire the real router (called once from App, inside the router tree + a
 	// reactive root). The route-sync effect is the SINGLE writer of the routed
-	// dimension under the real router: the location drives applyRoute. Created
-	// here so App's owner disposes it on unmount.
+	// dimension under the real router: applyRoute resolves the current path to
+	// routed state. Created here so App's owner disposes it on unmount.
+	//
+	// The compute phase tracks the path AND the pending-aware resolution inputs
+	// (`firstSnapshotArrived`, `channels`, `topics` — all applyRoute reads to
+	// decide hold-vs-fallback). A deep-link onto an async-loaded surface holds
+	// while its id is not-yet-loaded, then the first snapshot flips
+	// firstSnapshotArrived and lands the channel/topic sets: those reads re-fire
+	// this effect (path unchanged) so applyRoute re-resolves and an id that is
+	// genuinely absent now falls back. Keeping resolution in applyRoute — one
+	// authority, re-run on path OR data change — is the routes-as-truth contract,
+	// and scales to any future routed dimension without a per-dimension fallback
+	// bolted onto the snapshot-adopt path. `channels`/`topics` are memos over
+	// `comms()`, so an unrelated event (a new message) that leaves the sets equal
+	// does not re-fire. Writes stay in the apply phase (v2: no writes under a
+	// tracked compute).
 	const bindRouter = (r: {
 		navigate: (path: string) => void;
 		currentPath: () => string;
 	}): void => {
 		routerNavigate = r.navigate;
 		routerCurrentPath = r.currentPath;
-		createEffect(() => applyRoute(r.currentPath()));
+		createEffect(
+			() => {
+				const path = r.currentPath();
+				// Tracked so a snapshot arrival re-resolves the held route.
+				firstSnapshotArrived();
+				channels();
+				topics();
+				return path;
+			},
+			(path) => applyRoute(path),
+		);
 	};
 
 	// The tracker wiring (T11) + the seam it drives. assignedIssues (D3) is the

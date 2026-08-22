@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup, fireEvent } from "@solidjs/testing-library";
+import { flush as flushSync } from "solid-js";
 import { flush, mountApp } from "../test-router";
 
 // The command palette's rendered contract (RIG-2483). Mounts the full shell so
@@ -217,13 +218,14 @@ describe("Palette (RIG-2483)", () => {
 		fireEvent.input(input(container) as HTMLInputElement, {
 			target: { value: "set" },
 		});
-		// Kobalte's 0ms debounce fires the query on a macrotask, which starts the
-		// async destination resource; the loading row is up until its microtask
-		// resolution lands. Advance past the debounce timer WITHOUT draining
-		// microtasks so the in-flight window is observable.
-		await new Promise((resolve) => {
-			setTimeout(resolve, 0);
-		});
+		// The input change re-runs the navigation split effect, whose apply phase
+		// sets loading=true and kicks off the async provider fetch. Flush the
+		// reactive scheduler SYNCHRONOUSLY (v2 signal writes are flush-deferred) so
+		// the loading row renders — WITHOUT awaiting a microtask, so the async
+		// resolution (a Promise.allSettled chain) has not landed yet and the
+		// in-flight window is observable. (Search 2.x resolves the input change on
+		// the reactive tick, not the 0ms debounce macrotask 0.13.x used.)
+		flushSync();
 		const loadingRow = container.querySelector(".cx-palette-loading");
 		expect(loadingRow).not.toBeNull();
 		expect(

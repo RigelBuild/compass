@@ -12,18 +12,19 @@
 		"@bufbuild/protobuf": "^2.12.1",
 		"@compass/client": "workspace:*",
 		"@connectrpc/connect-query-core": "^2.2.0",
-		"@kobalte/core": "^0.13.13",
+		"@kobalte/core": "2.0.0-alpha.0",
 		"@shikijs/langs": "4.4.1",
 		"@shikijs/themes": "4.4.1",
-		"@solidjs/router": "^1.0.0",
-		"@tanstack/solid-query": "^5.101.4",
-		"@tanstack/solid-virtual": "3.13.36",
+		"@solidjs/router": "^2.0.0-next.17",
+		"@solidjs/web": "^2.0.0-rc.1",
+		"@tanstack/solid-query": "^6.0.0-rc.0",
+		"@rigelbuild/solid-virtual": "3.0.0-rc.0",
 		"@wailsio/runtime": "3.0.0-beta.0",
 		"diff": "^9.0.0",
 		"remark-gfm": "^4.0.1",
 		"shiki": "4.4.1",
-		"solid-js": "^1.9.13",
-		"solid-markdown": "2.1.1"
+		"solid-js": "^2.0.0-rc.1",
+		"@rigelbuild/solid-markdown": "3.0.0-rc.0"
 	},
 	"devDependencies": {
 		"@babel/core": "8.0.1",
@@ -31,8 +32,8 @@
 		"@babel/plugin-syntax-jsx": "8.0.1",
 		"@playwright/test": "1.62.1",
 		"@happy-dom/global-registrator": "20.11.1",
-		"babel-preset-solid": "1.9.12",
-		"@solidjs/testing-library": "0.8.10",
+		"babel-preset-solid": "^2.0.0-rc.1",
+		"@solidjs/testing-library": "1.0.0-beta.2",
 		"@testing-library/jest-dom": "7.0.0",
 		"@types/bun": "catalog:",
 		"@types/hast": "3.0.5",
@@ -40,6 +41,6 @@
 		"stylelint": "catalog:",
 		"typescript": "catalog:",
 		"vite": "^8.2.0",
-		"vite-plugin-solid": "^2.11.14"
+		"vite-plugin-solid": "^3.0.0-next.27"
 	}
 }

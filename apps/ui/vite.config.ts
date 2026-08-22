@@ -11,14 +11,17 @@ export default defineConfig({
 	// Pin the dev-server port so the URL is copy-paste stable across restarts;
 	// strictPort fails loudly rather than silently drifting to 5174 if taken.
 	server: { port: 5173, strictPort: true },
-	// Prebundle two CJS-only leaves of the markdown chain, or the dev server
-	// serves a blank page: both are served raw over `/@fs`, so the browser's ESM
+	// Prebundle the CJS-only leaves of the markdown chain, or the dev server
+	// serves a blank page: each is served raw over `/@fs`, so the browser's ESM
 	// loader finds no `default` binding and the whole module graph dies before
 	// `render()` runs. Naming them here routes them through the prebundler,
 	// which wraps CJS into ESM.
 	//
-	// One symptom, two unrelated causes — worth keeping straight, because only
-	// the first has anything to do with dev builds:
+	// Three leaves, three causes — worth keeping straight. The third
+	// (`style-to-js`, a plain CJS module the fork's `hast-util-to-jsx-runtime`
+	// pulls in) has nothing to do with dev builds: it exports via
+	// `module.exports` with no ESM `default`, so it needs prebundling under
+	// every condition. The other two are dev-tree-only:
 	//
 	//   - `micromark` exposes a `development` export condition (its package.json
 	//     maps it to `./dev/index.js`), and `vite-plugin-solid` prepends that
@@ -43,8 +46,9 @@ export default defineConfig({
 	// just the blank page again.
 	optimizeDeps: {
 		include: [
-			"solid-markdown > remark-parse > mdast-util-from-markdown > micromark > debug",
-			"solid-markdown > remark-parse > unified > extend",
+			"@rigelbuild/solid-markdown > remark-parse > mdast-util-from-markdown > micromark > debug",
+			"@rigelbuild/solid-markdown > remark-parse > unified > extend",
+			"@rigelbuild/solid-markdown > hast-util-to-jsx-runtime > style-to-js",
 		],
 	},
 });

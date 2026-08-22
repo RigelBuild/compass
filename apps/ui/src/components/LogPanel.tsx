@@ -53,8 +53,7 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 	const fixture = () => store.agentSession()?.fixture === true;
 	return (
 		<aside
-			class="log-panel"
-			classList={{ minimized: !store.logOpen() }}
+			class={["log-panel", { minimized: !store.logOpen() }]}
 			aria-label="Agent observation log"
 		>
 			<div class="obs-head">
@@ -63,8 +62,7 @@ export const LogPanel: Component<{ agent: Agent }> = (props) => {
 				</Show>
 				<span class="obs-spacer" />
 				<span
-					class="obs-run"
-					classList={{ live: running() }}
+					class={["obs-run", { live: running() }]}
 					title={running() ? "Agent is running" : "Agent is idle"}
 				>
 					<span class="obs-run-dot" aria-hidden="true" />

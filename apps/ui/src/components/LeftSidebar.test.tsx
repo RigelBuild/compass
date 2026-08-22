@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { flush } from "solid-js";
 import { STUB_CHANNELS, STUB_COMMS_STATE } from "../comms-stub";
 import { StoreContext } from "../context";
 import { type AppStore, createAppStore } from "../store";
@@ -37,7 +38,7 @@ const RAIL_ROWS = STUB_CHANNELS.filter(
 const AGENT_DM_ROWS = STUB_CHANNELS.filter((c) => c.kind === "dm").length;
 
 // Mount LeftSidebar over a real store through the app's StoreContext (index.tsx
-// wires it as `<StoreContext.Provider value={store}>`). The store is built inside
+// wires it as `<StoreContext value={store}>`). The store is built inside
 // render's reactive root so its memos are owned and disposed on the library's
 // per-test cleanup; the reference is captured so tests drive store actions and
 // re-query the live DOM.
@@ -49,9 +50,9 @@ function mountSidebar(): { store: AppStore; container: HTMLElement } {
 			queryClient: testQueryClient(),
 		});
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<LeftSidebar />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	return { store, container };
@@ -98,6 +99,7 @@ describe("LeftSidebar (T5)", () => {
 		expect(chHead).toBeDefined();
 		if (!chHead) throw new Error("Channels section header not rendered");
 		fireEvent.click(chHead);
+		flush();
 
 		expect(store.isSectionCollapsed("channels")).toBe(true);
 		expect(store.isSectionCollapsed("agents")).toBe(false);
@@ -110,6 +112,7 @@ describe("LeftSidebar (T5)", () => {
 		if (!agHead)
 			throw new Error("Agent workspaces section header not rendered");
 		fireEvent.click(agHead);
+		flush();
 
 		expect(store.isSectionCollapsed("agents")).toBe(true);
 		expect(container.querySelectorAll(".tree-agent").length).toBe(0);
@@ -119,6 +122,7 @@ describe("LeftSidebar (T5)", () => {
 		expect(chHead2).toBeDefined();
 		if (!chHead2) throw new Error("Channels section header vanished");
 		fireEvent.click(chHead2);
+		flush();
 
 		expect(store.isSectionCollapsed("channels")).toBe(false);
 		expect(store.isSectionCollapsed("agents")).toBe(true);
@@ -180,6 +184,7 @@ describe("LeftSidebar (T5)", () => {
 		expect(select).not.toBeNull();
 		if (!select) throw new Error("channel-row select button not rendered");
 		fireEvent.click(select);
+		flush();
 
 		expect(store.view()).toBe("channel");
 		expect(store.selectedChannelId()).toBe("ch-svc-compass");
@@ -204,6 +209,7 @@ describe("LeftSidebar (T5)", () => {
 		expect(uiLeaf).toBeDefined();
 		if (!uiLeaf) throw new Error("compass-ui agent leaf not rendered");
 		fireEvent.click(uiLeaf);
+		flush();
 
 		expect(store.view()).toBe("agent");
 		expect(store.selectedAgentId()).toBe("acc-compass-ui");
@@ -229,6 +235,7 @@ describe("LeftSidebar (T5)", () => {
 		expect(browseHead).toBeDefined();
 		if (!browseHead) throw new Error("browse channels header not rendered");
 		fireEvent.click(browseHead);
+		flush();
 
 		const randomRow = [
 			...container.querySelectorAll<HTMLElement>(".ch-row.browse-row"),
@@ -244,6 +251,7 @@ describe("LeftSidebar (T5)", () => {
 
 		// And nothing fakes state behind it.
 		fireEvent.click(join);
+		flush();
 		expect(membershipOf()).toBe("none");
 	});
 

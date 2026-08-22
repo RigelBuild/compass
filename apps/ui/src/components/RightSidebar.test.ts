@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createRoot } from "solid-js";
+import { createRoot, flush } from "solid-js";
 import { type AppStore, createAppStore } from "../store";
 import type { FileNode, Issue, IssueState } from "../stub-data";
 import { STUB_AGENTS } from "../stub-data";
@@ -134,6 +134,7 @@ describe("rightTabGroups() derivation (Record A §T2)", () => {
 				queryClient: testQueryClient(),
 			});
 			for (const id of pins) store.pinAgent(id);
+			flush();
 			try {
 				body(store.rightTabGroups(), store);
 			} finally {

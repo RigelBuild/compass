@@ -69,9 +69,9 @@ async function mountLive(fake: FakeComms): Promise<{
 			queryClient: testQueryClient(),
 		});
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<Bridge />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	for (let i = 0; i < 20; i++) await Promise.resolve();

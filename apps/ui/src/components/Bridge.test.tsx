@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { createMemoryHistory, MemoryRouter } from "@solidjs/router";
+import { createRouter, memoryHistory } from "@solidjs/router";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { createRoot, flush as flushSync } from "solid-js";
 import App from "../App";
 import { prBoardRows, prCount } from "../board";
 import { StoreContext } from "../context";
 import type { CommandId } from "../keyboard/commands";
-import { AppRoutes } from "../routes";
+import { appRoutes } from "../routes";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_ISSUES } from "../stub-data";
 import { flush, mountApp } from "../test-router";
@@ -25,31 +26,31 @@ function mountBridge(): { store: AppStore; container: HTMLElement } {
 	const { container } = render(() => {
 		store = createAppStore({ queryClient: testQueryClient() });
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<Bridge />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	return { store, container };
 }
 
-// Mount the full App shell (store + StoreContext + MemoryRouter root={App} +
-// AppRoutes — the production shape mirror of `mountApp`) over a CALLER-PROVIDED
-// store, returning the render's `unmount`. The remount-hygiene test uses one
-// shared store across two mounts to observe the app-lifetime registry across a
-// mount→unmount→remount cycle.
+// Mount the full App shell (store + StoreContext + a Router 2 instance whose
+// render-prop child is the App root — the production shape mirror of `mountApp`)
+// over a CALLER-PROVIDED store, returning the render's `unmount`. The
+// remount-hygiene test uses one shared store across two mounts to observe the
+// app-lifetime registry across a mount→unmount→remount cycle.
 function mountShell(
 	store: AppStore,
 	initialPath: string,
 ): { container: HTMLElement; unmount: () => void } {
-	const history = createMemoryHistory();
-	history.set({ value: initialPath });
+	const Router = createRouter({
+		routes: appRoutes,
+		history: memoryHistory(initialPath),
+	});
 	const { container, unmount } = render(() => (
-		<StoreContext.Provider value={store}>
-			<MemoryRouter history={history} root={App}>
-				<AppRoutes />
-			</MemoryRouter>
-		</StoreContext.Provider>
+		<StoreContext value={store}>
+			<Router>{(props) => <App {...props} />}</Router>
+		</StoreContext>
 	));
 	return { container, unmount };
 }
@@ -71,6 +72,7 @@ const clickTab = (container: HTMLElement, label: "Issues" | "PRs"): void => {
 	);
 	if (!btn) throw new Error(`tab ${label} not found`);
 	fireEvent.click(btn);
+	flushSync();
 };
 
 describe("Bridge Issues/PRs tabs (DL-097)", () => {
@@ -110,6 +112,7 @@ describe("Bridge Issues/PRs tabs (DL-097)", () => {
 		const chip = container.querySelector<HTMLElement>(".card-issue-link");
 		if (!chip) throw new Error("no issueKey chip");
 		fireEvent.click(chip);
+		flushSync();
 		expect(store.selectedIssueId()).toBe(firstRowIssueId);
 		expect(groupingSeg(container)).not.toBeNull();
 	});
@@ -124,6 +127,7 @@ describe("Bridge Issues/PRs tabs (DL-097)", () => {
 			?.closest<HTMLElement>(".cx-card");
 		if (!card) throw new Error("no PR card");
 		fireEvent.click(card);
+		flushSync();
 		expect(store.selectedIssueId()).toBe(firstRowIssueId);
 		// Still on the PRs tab: cards remain, grouping seg absent.
 		expect(
@@ -140,6 +144,7 @@ describe("Bridge Issues/PRs tabs (DL-097)", () => {
 		if (!chip) throw new Error("no issueKey chip");
 		// Enter activates the chip: same effect as a click (select + flip to Issues).
 		fireEvent.keyDown(chip, { key: "Enter" });
+		flushSync();
 		expect(store.selectedIssueId()).toBe(firstRowIssueId);
 		expect(groupingSeg(container)).not.toBeNull();
 	});
@@ -153,6 +158,7 @@ describe("Bridge Issues/PRs tabs (DL-097)", () => {
 		// Space activates AND is consumed: preventDefault makes dispatchEvent return
 		// false, so the space key never scrolls the page.
 		const notDefaulted = fireEvent.keyDown(chip, { key: " " });
+		flushSync();
 		expect(notDefaulted).toBe(false);
 		expect(store.selectedIssueId()).toBe(firstRowIssueId);
 		expect(groupingSeg(container)).not.toBeNull();
@@ -166,6 +172,7 @@ describe("Bridge Issues/PRs tabs (DL-097)", () => {
 		// The guard early-returns on any key but Enter/Space: no activation, so no
 		// flip — still on the PRs tab (grouping seg absent, cards present).
 		fireEvent.keyDown(chip, { key: "a" });
+		flushSync();
 		expect(groupingSeg(container)).toBeNull();
 		expect(
 			container.querySelectorAll(".card-issue-link").length,
@@ -235,6 +242,7 @@ describe("Bridge card badges (Record B §3)", () => {
 		const chip = container.querySelector<HTMLElement>('.card-pr[role="link"]');
 		if (!chip) throw new Error("no interactive card PR chip");
 		fireEvent.click(chip);
+		flushSync();
 		expect(store.selectedIssueId()).not.toBeNull();
 		// Flipped to the PRs tab: grouping seg hidden, PR rows shown.
 		expect(groupingSeg(container)).toBeNull();
@@ -249,6 +257,7 @@ describe("Bridge card badges (Record B §3)", () => {
 		if (!chip) throw new Error("no interactive card PR chip");
 		// Enter activates: same effect as the click test (select + flip to PRs).
 		fireEvent.keyDown(chip, { key: "Enter" });
+		flushSync();
 		expect(store.selectedIssueId()).not.toBeNull();
 		expect(groupingSeg(container)).toBeNull();
 		expect(
@@ -263,6 +272,7 @@ describe("Bridge card badges (Record B §3)", () => {
 		// Space activates AND is consumed: preventDefault makes dispatchEvent return
 		// false (no page scroll), and the chip selects + flips to the PRs tab.
 		const notDefaulted = fireEvent.keyDown(chip, { key: " " });
+		flushSync();
 		expect(notDefaulted).toBe(false);
 		expect(store.selectedIssueId()).not.toBeNull();
 		expect(groupingSeg(container)).toBeNull();
@@ -279,6 +289,7 @@ describe("Bridge card badges (Record B §3)", () => {
 		// (the store seeds a selection) and no flip to the PRs tab.
 		const before = store.selectedIssueId();
 		fireEvent.keyDown(chip, { key: "a" });
+		flushSync();
 		expect(store.selectedIssueId()).toBe(before);
 		expect(groupingSeg(container)).not.toBeNull();
 		expect(container.querySelectorAll(".card-issue-link")).toHaveLength(0);
@@ -305,6 +316,7 @@ const clickGrouping = (
 	].find((b) => b.textContent === label);
 	if (!btn) throw new Error(`grouping ${label} not found`);
 	fireEvent.click(btn);
+	flushSync();
 };
 // The cursor is the sole `tabindex="0"` stop; its positional aria-label names it.
 const cursorLabel = (container: HTMLElement): string | null =>
@@ -319,6 +331,7 @@ const press = (init: KeyboardEventInit): KeyboardEvent => {
 		...init,
 	});
 	window.dispatchEvent(event);
+	flushSync();
 	return event;
 };
 // Enter the board group by focusing the cursor stop (the sole `tabindex="0"`) —
@@ -531,6 +544,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		);
 		if (!target) throw new Error("no SEA-965 card");
 		fireEvent.click(target);
+		flushSync();
 		expect(store.selectedIssueId()).toBe("ws-965");
 	});
 
@@ -581,7 +595,15 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 	// runs the `view.bridge` command exactly once (a stacked listener would run it
 	// twice).
 	test("mount → unmount → remount leaves one listener and no stale board.*/list.* commands", async () => {
-		const store = createAppStore({ queryClient: testQueryClient() });
+		// The shared store outlives both mounts, so it can't live inside either
+		// render root; build it in its own `createRoot` (v2 createAppStore's useQuery
+		// needs a reactive owner) and dispose after the second unmount — the
+		// store.test.ts withStoreAsync idiom.
+		let disposeStore!: () => void;
+		const store = createRoot((d) => {
+			disposeStore = d;
+			return createAppStore({ queryClient: testQueryClient() });
+		});
 		// Widened to collect the ten `scope:'main'` board commands: the two `board.*`
 		// ids and the eight group-relative `list.*` ids (RIG-2529). All ten must
 		// retract on unmount — a stale `scope:'main'` registration can never outlive
@@ -626,6 +648,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		await flush();
 		expect(viewBridgeRuns).toBe(1);
 		second.unmount();
+		disposeStore();
 	});
 });
 
@@ -641,9 +664,9 @@ function mountEmptyBridge(): { store: AppStore; container: HTMLElement } {
 			initialIssues: [],
 		});
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<Bridge />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	return { store, container };

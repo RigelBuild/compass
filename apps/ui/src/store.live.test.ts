@@ -6,7 +6,7 @@ import {
 	create,
 	RosterEntrySchema,
 } from "@compass/client";
-import { createRoot } from "solid-js";
+import { createRoot, flush } from "solid-js";
 import {
 	wireChannel as buildWireChannel,
 	wireTextMessage as buildWireTextMessage,
@@ -122,6 +122,7 @@ async function withLiveStore(
 	// deterministic — no timers, no wall-clock wait.
 	const settled = async () => {
 		for (let i = 0; i < 20; i++) await Promise.resolve();
+		flush();
 	};
 	try {
 		await settled();
@@ -750,6 +751,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		});
 		try {
 			store.openAgent(runningAgentId());
+			flush();
 			expect(store.agentSession()?.fixture).toBe(true);
 
 			await store.stopAgent();
@@ -778,6 +780,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		});
 		try {
 			store.openAgent(agentId);
+			flush();
 			const session = store.agentSession();
 			expect(session).toBeDefined();
 			expect(session?.fixture).toBeUndefined();
@@ -829,6 +832,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		});
 		try {
 			store.openAgent(agentId);
+			flush();
 			compass.failNextStop(
 				new Error("[unavailable] compass: no runner hub attached"),
 			);
@@ -860,6 +864,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		});
 		try {
 			store.openAgent(agentId);
+			flush();
 			await store.stopAgent();
 			expect(errors.length).toBe(1);
 			expect(String(errors[0])).toMatch(/no compass client/);
@@ -889,6 +894,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		});
 		try {
 			store.openAgent(agentId);
+			flush();
 			expect(store.stopError()).toBeUndefined();
 			compass.failNextStop(
 				new Error("[unavailable] compass: no runner hub attached"),
@@ -919,6 +925,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		});
 		try {
 			fixtureStore.openAgent(agentId);
+			flush();
 			await fixtureStore.stopAgent();
 			expect(fixtureStore.stopError()).toMatch(/fixture data/);
 		} finally {
@@ -935,6 +942,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		});
 		try {
 			offlineStore.openAgent(agentId);
+			flush();
 			await offlineStore.stopAgent();
 			expect(offlineStore.stopError()).toMatch(/no compass client/);
 		} finally {
@@ -959,6 +967,7 @@ describe("store stopAgent (StopAgentSession)", () => {
 		});
 		try {
 			store.openAgent(agentId);
+			flush();
 			compass.failNextStop(new Error("[unavailable] no runner hub"));
 			await store.stopAgent();
 			expect(store.stopError()).toBeDefined();

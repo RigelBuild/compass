@@ -4,7 +4,6 @@ import {
 	createMemo,
 	createSignal,
 	For,
-	on,
 	onCleanup,
 	Show,
 } from "solid-js";
@@ -125,7 +124,7 @@ const PrCard: Component<{
 	onSelect: () => void;
 	onOpenIssue: () => void;
 	/** Board wiring (T4): when the card is a stop in the roving group, its
-	 *  issue-link chip drops to `tabIndex={-1}` (the board owns keyboard nav;
+	 *  issue-link chip drops to `tabindex={-1}` (the board owns keyboard nav;
 	 *  the cross-link moves to `board.openCardCrossLink`, Space). */
 	inRovingGroup?: boolean;
 	/** The board collects each stop's element for the roving group; the
@@ -166,11 +165,15 @@ const PrCard: Component<{
 				</span>
 				{/* biome-ignore lint/a11y/useSemanticElements: an <a> needs an href; this is an
 				   in-app selection chip, and it already lives inside the card <button>, so a
-				   nested link/button is disallowed — role="link" + keyboard is the compromise. */}
+				   nested link/button is disallowed — role="link" + keyboard is the compromise.
+				   biome-ignore lint/a11y/useFocusableInteractive: Solid 2's JSX types only admit
+				   the lowercase `tabindex` prop (camelCase `tabIndex` is a tsc error under
+				   @solidjs/web), which this rule does not recognize as conferring focusability —
+				   but the element IS keyboard-focusable at runtime via the lowercase prop below. */}
 				<span
 					class="card-issue-link"
 					role="link"
-					tabIndex={props.inRovingGroup ? -1 : 0}
+					tabindex={props.inRovingGroup ? -1 : 0}
 					onClick={(e) => {
 						e.stopPropagation();
 						props.onOpenIssue();
@@ -361,42 +364,55 @@ export const Bridge: Component = () => {
 	// happens to share a numeric column (design §248). In-tab churn — a mode
 	// switch (card ids persist across swimlane/status) or a background data push
 	// — keeps a surviving cursor and recovers a vanished one via T3's
-	// `resolveCursor`. `on` with an explicit dep keeps this a static-dep effect
-	// (the recompute reads `prevStop`/`prevTab`, plain closure vars, not signals).
+	// `resolveCursor`. The explicit compute dep (`() => stops()`) keeps this a
+	// static-dep effect (the effect body reads `prevStop`/`prevTab`, plain
+	// closure vars, not signals).
+	// `defer: true` skips the initial run: the cursor is already seeded via
+	// `createSignal(seedCursor(stops()))` above, and running the rebuild on mount
+	// would re-seed and reset `prevTab`/`prevStop` redundantly. It fires only on
+	// subsequent `stops()` changes — the Solid-2 equivalent of Solid 1's
+	// `on(stops, cb, { defer: true })`.
 	createEffect(
-		on(
-			stops,
-			(list) => {
-				const curTab = tab();
-				const next =
-					curTab !== prevTab ? seedCursor(list) : resolveCursor(list, prevStop);
-				prevTab = curTab;
-				setCursorId(next);
-				prevStop = list.find((s) => s.id === next) ?? null;
-			},
-			{ defer: true },
-		),
+		() => stops(),
+		(list: BoardStop[]) => {
+			const curTab = tab();
+			const next =
+				curTab !== prevTab ? seedCursor(list) : resolveCursor(list, prevStop);
+			prevTab = curTab;
+			setCursorId(next);
+			prevStop = list.find((s) => s.id === next) ?? null;
+		},
+		{ defer: true },
 	);
 	// Keep `prevStop` tracking the live cursor so a rebuild recovers from where
 	// the cursor actually is (a move updates the signal, not `prevStop`).
 	createEffect(
-		on(cursorId, (id) => {
+		() => cursorId(),
+		(id: string | null) => {
 			prevStop = stops().find((s) => s.id === id) ?? prevStop;
-		}),
+		},
 	);
 
 	// The board's element refs, keyed by stop id — collected as each card/gutter
 	// button renders. The roving group pairs a live stop id with its element.
+	// `elsVersion` makes the Map observable: refs fire during render (after the
+	// `stops()` memo settles), so `rovingStops` must re-run when the Map fills or
+	// the roving effect would read an empty stop set on mount and never recover
+	// (Solid 2 does not re-run the effect on an untracked Map mutation).
 	const els = new Map<string, HTMLElement>();
+	const [elsVersion, bumpElsVersion] = createSignal(0, { equals: false });
 	const setStopEl = (id: string) => (el: HTMLElement | undefined) => {
 		if (el) els.set(id, el);
 		else els.delete(id);
+		bumpElsVersion(0);
 	};
-	const rovingStops = (): Stop[] =>
-		stops().flatMap((s) => {
+	const rovingStops = (): Stop[] => {
+		elsVersion();
+		return stops().flatMap((s) => {
 			const el = els.get(s.id);
 			return el ? [{ id: s.id, el }] : [];
 		});
+	};
 
 	// The single chord→command→direction table (design §481-483). The dispatcher
 	// routes a group-relative id here; we return true when the board claims it
@@ -512,7 +528,12 @@ export const Bridge: Component = () => {
 	// over (stops, cursor, actions) — the roving group owns tabindex/focus; this
 	// owns only the descriptive attributes, kept off IssueCard's prop surface.
 	createEffect(
-		on([stops, cursorId, actions], ([list, cursor, actionMap]) => {
+		() => [stops(), cursorId(), actions()] as const,
+		([list, cursor, actionMap]: readonly [
+			BoardStop[],
+			string | null,
+			Map<string, StopAction>,
+		]) => {
 			for (const stop of list) {
 				const el = els.get(stop.id);
 				const action = actionMap.get(stop.id);
@@ -527,7 +548,7 @@ export const Bridge: Component = () => {
 					el.removeAttribute("aria-keyshortcuts");
 				}
 			}
-		}),
+		},
 	);
 	return (
 		<div class="bridge">
@@ -539,14 +560,14 @@ export const Bridge: Component = () => {
 				<div class="seg" role="toolbar" aria-label="Board view">
 					<button
 						type="button"
-						classList={{ active: tab() === "issues" }}
+						class={{ active: tab() === "issues" }}
 						onClick={() => setTab("issues")}
 					>
 						Issues
 					</button>
 					<button
 						type="button"
-						classList={{ active: tab() === "prs" }}
+						class={{ active: tab() === "prs" }}
 						onClick={() => setTab("prs")}
 					>
 						PRs · {prCount(store.issues(), scope())}
@@ -556,14 +577,14 @@ export const Bridge: Component = () => {
 					<div class="seg" role="toolbar" aria-label="Board grouping">
 						<button
 							type="button"
-							classList={{ active: mode() === "swimlane" }}
+							class={{ active: mode() === "swimlane" }}
 							onClick={() => setMode("swimlane")}
 						>
 							Swimlanes
 						</button>
 						<button
 							type="button"
-							classList={{ active: mode() === "status" }}
+							class={{ active: mode() === "status" }}
 							onClick={() => setMode("status")}
 						>
 							Status
@@ -660,8 +681,7 @@ export const Bridge: Component = () => {
 												const items = cellItems(agent.account.id, lane.state);
 												return (
 													<div
-														class="bridge-cell"
-														classList={{ dim: items.length === 0 }}
+														class={["bridge-cell", { dim: items.length === 0 }]}
 													>
 														<For each={items}>
 															{(ws) => (
@@ -752,8 +772,7 @@ export const Bridge: Component = () => {
 											);
 											return (
 												<div
-													class="bridge-cell"
-													classList={{ dim: cards.length === 0 }}
+													class={["bridge-cell", { dim: cards.length === 0 }]}
 												>
 													<For each={cards}>
 														{(row) => (
