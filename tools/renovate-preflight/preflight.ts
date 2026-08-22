@@ -1,8 +1,8 @@
 // The Renovate preflight's decision core: a pure function over the result of a
 // single GitHub GraphQL repo probe, with no I/O, so the whole classification is
 // exhaustively unit-testable. The entry point (index.ts) runs the probe via
-// `gh` and feeds the result here; the CI meta job (ci/workflows/meta.ts) runs
-// the entry immediately before `bunx renovate`.
+// `gh` and feeds the result here; the CI job (.github/workflows/renovate.yml)
+// runs the entry immediately before `bunx renovate`.
 //
 // Why this exists: when RENOVATE_TOKEN is expired or lacks access to the repo,
 // Renovate's own initRepo fails with the opaque `platform-unknown-error` (it
@@ -57,7 +57,7 @@ export function classify(probe: ProbeResult): PreflightResult {
 			pass: false,
 			reason: "no-token",
 			message:
-				"RENOVATE_TOKEN is not set. Stage it as a Woodpecker secret (events: cron, manual) so the renovate job can authenticate to GitHub.",
+				"RENOVATE_TOKEN is not set. In .github/workflows/renovate.yml the Renovate step mints it from the GitHub App; check the app-token step ran and that the RENOVATE_APP_PRIVATE_KEY secret + RENOVATE_APP_CLIENT_ID var are staged on the repo so the job can authenticate to GitHub.",
 		};
 	}
 
@@ -78,7 +78,7 @@ export function classify(probe: ProbeResult): PreflightResult {
 			pass: false,
 			reason: "bad-credentials",
 			message:
-				"RENOVATE_TOKEN is invalid or expired (GitHub returned 401 Bad credentials). Rotate the PAT and re-stage the Woodpecker secret.",
+				"RENOVATE_TOKEN is invalid or expired (GitHub returned 401 Bad credentials). The App installation token is minted per run, so a 401 points at the App's credentials: rotate the RENOVATE_APP_PRIVATE_KEY secret and confirm the App is still installed on this repo.",
 		};
 	}
 

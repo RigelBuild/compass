@@ -115,8 +115,13 @@ jobs:
         # Fail fast with a named diagnosis (rotate / grant / stage) instead of
         # Renovate's opaque platform-unknown-error if the token is expired or
         # unscoped. GHA has no CI_REPO, so set REPO from github.repository.
+        # index.ts keys token-presence off RENOVATE_TOKEN (the same var the Run
+        # Renovate step sets) and probes with GH_TOKEN — set BOTH from the minted
+        # App token so the probe actually runs rather than short-circuiting to
+        # no-token.
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RENOVATE_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
         run: bun tools/renovate-preflight/index.ts
 

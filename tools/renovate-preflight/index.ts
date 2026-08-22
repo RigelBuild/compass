@@ -1,5 +1,5 @@
 // The Renovate preflight CI entry point (see preflight.ts for the pure decision
-// core). Run by the `renovate` meta job (ci/workflows/meta.ts) immediately
+// core). Run by the `renovate` job (.github/workflows/renovate.yml) immediately
 // before `bunx renovate`: it probes GitHub with RENOVATE_TOKEN via a single
 // GraphQL repo query, classifies the outcome, prints an actionable one-liner,
 // and exits non-zero on failure so an auth problem stops the run with a clear
@@ -21,7 +21,9 @@ import { classify, type ProbeResult } from "./preflight.ts";
  * Probe the repo with the same credential Renovate uses. Mirrors Renovate's own
  * initRepo GraphQL query (owner/name → repository) so a pass here means a pass
  * there. `timeout` bounds the call so a network hang fails closed rather than
- * blocking CI. gh reads GH_TOKEN, which index sets from RENOVATE_TOKEN.
+ * blocking CI. gh authenticates via GH_TOKEN; the workflow sets both GH_TOKEN
+ * and RENOVATE_TOKEN from the minted App token (this code keys presence off
+ * RENOVATE_TOKEN, the var Renovate itself reads).
  */
 async function probe(
 	owner: string,
@@ -32,7 +34,7 @@ async function probe(
 		"query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner defaultBranchRef{name}}}";
 	// `.nothrow().quiet()` so a non-zero gh exit is captured, not thrown, and
 	// its streams are ours to classify rather than being echoed raw. `timeout`
-	// (coreutils, always present in the Linux orion-ci-publish image this runs in)
+	// (coreutils, always present on the GHA ubuntu-latest runner this runs in)
 	// bounds the call so a network hang fails closed (exit 124 → unknown) rather
 	// than blocking CI. Bun's ShellPromise has no .timeout() in the pinned bun.
 	const res =

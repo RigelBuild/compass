@@ -656,4 +656,22 @@ describe("tools/renovate self-pin workflow (exact Renovate version)", () => {
 			selfPin?.matchStrings?.some((s) => s.includes("bunx renovate@")),
 		).toBe(true);
 	});
+
+	// The preflight step probes with GH_TOKEN but classifies token-PRESENCE off
+	// RENOVATE_TOKEN (tools/renovate-preflight/index.ts) — so the step MUST set
+	// RENOVATE_TOKEN, or index.ts short-circuits to reason="no-token" and exits 1
+	// on every run, failing the job before Renovate starts. Guard the env so that
+	// drop can't silently regress (it shipped green once because nothing covered
+	// the preflight step's env).
+	test("the preflight step sets RENOVATE_TOKEN in its env", () => {
+		// Slice the preflight step: from its `- name: Preflight …` line to the
+		// next step boundary (`- name:`/`- uses:` at step indent) or EOF.
+		const lines = workflow.split("\n");
+		const start = lines.findIndex((l) => /^\s*-\s+name:\s*Preflight/.test(l));
+		expect(start).toBeGreaterThanOrEqual(0);
+		const rest = lines.slice(start + 1);
+		const endRel = rest.findIndex((l) => /^\s*-\s+(name|uses):/.test(l));
+		const stepBody = (endRel === -1 ? rest : rest.slice(0, endRel)).join("\n");
+		expect(/^\s*RENOVATE_TOKEN:\s*\S/m.test(stepBody)).toBe(true);
+	});
 });

@@ -487,7 +487,10 @@
       // byte-compatibility with upstream. A packageRules disable (not ignorePaths,
       // which REPLACES Renovate's safe defaults like node_modules) scoped to the
       // fork trees. This fence must hold against the OSV vuln path too — see the
-      // `osvVulnerabilityAlerts` invariant above.
+      // `osvVulnerabilityAlerts` invariant above. NOTE: this fence is coupled to
+      // the vendored-devenv shim in .github/workflows/renovate.yml — when
+      // forks-reversal (RIG-2336) removes the forks/ trees, drop this packageRule
+      // together with that shim (they are the migration's post-reversal cleanup).
       matchFileNames: ["forks/*/**"],
       enabled: false,
     },
