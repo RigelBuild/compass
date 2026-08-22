@@ -165,6 +165,85 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 	}
 }
 
+// AwaitControlDispatch opens its own session-tail stream for sessionID and
+// blocks until a SessionInjection observation frame whose (opKind, messageID)
+// satisfies match fans onto it, returning the matched op-kind in its string
+// form (SessionInjectionKind.String(), e.g. "SESSION_INJECTION_KIND_STEER").
+// It is the control-plane observation counterpart to AwaitDelivery's deliver
+// side: the split-observation seam lets a scenario assert WHICH control op
+// (steer vs deliver) a session dispatched for a given message, read off the
+// public SessionInjection frames on SubscribeAgentSession.
+//
+// Unlike AwaitTurnSettled (which reads an already-open stream), this opens its
+// own tail from sessionID via OpenSessionTail so a caller passes just a session
+// id; it owns Close on that stream. SessionInjection carries no session id, so
+// the session scoping is done entirely by which session's stream is opened.
+//
+// It is FULLY EVENT-GATED: a goroutine pumps stream.Receive() and the select
+// races each frame against ctx — no sleeps, no polling, no retry loops. The
+// stream was opened under the caller's ctx (whose lifetime OpenSessionTail does
+// not bound), so this derives its own settleTimeout deadline HERE and bounds the
+// blocking receive by pumping in a goroutine and racing the derived deadline —
+// the exact shape AwaitDelivery/AwaitTurnSettled use — so an injection that
+// never arrives fails visibly here rather than blocking to the go-test timeout.
+// settleTimeout (not a tighter bound) is used because an injection can trail a
+// multi-turn scenario.
+//
+// match is invoked for EVERY observed injection frame, not only the matching
+// one, so the caller's match closure is the retention hook: a caller needing
+// window-scoped exclusion (asserting some other op-kind did NOT dispatch for the
+// id within the window) accumulates every (opKind, messageID) it is offered into
+// its own slice and inspects it after the positive match returns. The window
+// closes at that positive match, which is correct for the seam's window-scoped
+// exclusion — a later sweep-redelivered deliver (settle.go builds a deliverOp for
+// every owed message) is out of window and legitimately unobserved. The method
+// keeps no internal retention; the surface stays exactly this one signature.
+func (f *Fixture) AwaitControlDispatch(ctx context.Context, sessionID string, match func(opKind, messageID string) bool) (opKind string, err error) {
+	stream, err := f.OpenSessionTail(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("opening session tail for control dispatch: %w", err)
+	}
+	defer stream.Close()
+
+	ctx, cancel := context.WithTimeout(ctx, settleTimeout)
+	defer cancel()
+
+	type received struct {
+		opKind string
+		err    error
+	}
+	// Buffered so the pump goroutine never blocks writing its terminal result
+	// after this method has already returned on the ctx deadline — it sends
+	// once and exits, no leak past the deferred Close.
+	out := make(chan received, 1)
+	go func() {
+		for stream.Receive() {
+			inj := stream.Msg().GetEvent().GetSessionInjection()
+			if inj == nil {
+				continue
+			}
+			kind := inj.GetOpKind().String()
+			mid := inj.GetMessageId()
+			if match(kind, mid) {
+				out <- received{opKind: kind}
+				return
+			}
+		}
+		if err := stream.Err(); err != nil {
+			out <- received{err: fmt.Errorf("SubscribeAgentSession stream: %w", err)}
+			return
+		}
+		out <- received{err: fmt.Errorf("frame stream ended before a matching SessionInjection arrived")}
+	}()
+
+	select {
+	case r := <-out:
+		return r.opKind, r.err
+	case <-ctx.Done():
+		return "", fmt.Errorf("awaiting matching SessionInjection: %w", ctx.Err())
+	}
+}
+
 // RemoveWorkspace tears down a provisioned agent workspace container over
 // CompassService — the teardown counterpart to Provision. clientRequestID is the
 // idempotency key (same retry-dedup contract as Provision). Returns an error
