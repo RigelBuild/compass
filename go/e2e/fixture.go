@@ -15,6 +15,7 @@ import (
 
 	"github.com/RigelBuild/compass/go/internal/stack"
 	"github.com/RigelBuild/compass/go/internal/stack/adapters"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // agentImage is the REAL agent image the dogfood stack runs — present in the
@@ -315,6 +316,28 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	// path the runner is already enrolled, so the first probe passes immediately.
 	if err := f.waitRunnerEnrolled(ctx); err != nil {
 		t.Fatalf("wait for runner enrollment: %v", err)
+	}
+
+	// The runner is enrolled, but the first-launch root-supervisor seed
+	// (server/serve_seed.go) fires on that SAME Sessions-stream attach and drives
+	// its own Provision+Start of the supervisor on the hook goroutine. A leg that
+	// Provisions the instant this returns would race the seed's in-flight
+	// Provision — two cold rootless-podman bring-ups contending on the engine
+	// storage lock, overrunning the leg's 30s rpcTimeout under CI load (RIG-2403).
+	// Gate on the seed's Provision having recorded its durable placement, so the
+	// seed's container work finishes before any leg Provisions and the two run
+	// serially. Event-gated on the real cross-process placement row, never a sleep;
+	// a short-lived store connection scoped to the gate (the fixture holds none).
+	// On the WithSite re-attach path the placement persists from the prior boot, so
+	// this passes on the first probe and does not wait on the doomed re-fired seed.
+	seedStore, err := store.Open(ctx, dsn)
+	if err != nil {
+		t.Fatalf("open store for seed-settle gate: %v", err)
+	}
+	seedErr := f.waitSeedSettled(ctx, seedStore)
+	seedStore.Close()
+	if seedErr != nil {
+		t.Fatalf("wait for root-supervisor seed to settle: %v", seedErr)
 	}
 
 	return f

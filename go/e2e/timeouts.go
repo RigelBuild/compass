@@ -40,3 +40,26 @@ const (
 	enrollPollInterval = 100 * time.Millisecond
 	enrollPollBudget   = 15 * time.Second
 )
+
+// seedSettlePollInterval and seedSettlePollBudget bound the root-supervisor
+// seed-settle readiness poll NewFixture runs right after waitRunnerEnrolled. The
+// first-launch seed (server/serve_seed.go) fires on the Runner's Sessions-stream
+// attach — the SAME event waitRunnerEnrolled returns on — and drives its OWN
+// Provision+Start of the root supervisor container on the hook goroutine. A leg
+// that Provisions the instant NewFixture returns therefore RACES the seed's
+// in-flight Provision: two cold rootless-podman container bring-ups contend on
+// the engine storage lock, and under CI load the pair overruns the leg's 30s
+// rpcTimeout — the first f.Provision dies with deadline_exceeded (RIG-2403). This
+// gate closes that race by waiting for the seed's Provision to RECORD ITS
+// PLACEMENT (the durable agent_placements row the ProvisionAgentWorkspace handler
+// writes right after the Runner relay returns, server/service.go), so the seed's
+// container work has finished before any leg Provisions and the two run serially.
+// The budget matches the server's own seedTimeout bound (serve_seed.go): the seed
+// is allowed up to that long, so the gate waits up to that long before failing
+// LOUD on a genuinely wedged seed (rule://no-retries: a bounded, fail-closed
+// wait, never a retry-as-sync). The interval matches enrollPollInterval's
+// magnitude.
+const (
+	seedSettlePollInterval = 100 * time.Millisecond
+	seedSettlePollBudget   = 2 * time.Minute
+)
