@@ -76,12 +76,121 @@ func (s *Store) SeedDeliveryCursor(ctx context.Context, tx pgx.Tx, agent Account
 	return seedDeliveryCursor(ctx, tx, agent, channel)
 }
 
+// RecordOwedMention durably records that messageID (posted in channel) is owed
+// to agent — the no-loss backstop for a mentioned member outside the sweep set
+// (RIG-1641 T1). Idempotent: the PK (agent_account_id, message_id) makes a
+// re-record (settle re-fire, at-least-once routing) a no-op upsert.
+//
+// The caller MUST pass the message's OWN channel: channel_id is stored as
+// context (T2 observability) but is not cross-checked against messageID's real
+// channel here, and the read path (OwedMentions) derives the channel from the
+// message's topic JOIN rather than this column, so a mismatched channel would
+// persist a silently-inconsistent row. The settle-edge caller already holds the
+// message's channel, so this is an assertion, not a lookup.
+func (s *Store) RecordOwedMention(ctx context.Context, agent AccountID, channel ChannelID, messageID string) error {
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO owed_mentions (agent_account_id, message_id, channel_id, recorded_at_unix_ms)
+		 VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (agent_account_id, message_id) DO NOTHING`,
+		string(agent), messageID, string(channel), time.Now().UnixMilli(),
+	); err != nil {
+		return fmt.Errorf("store: record owed mention: %w", err)
+	}
+	return nil
+}
+
+// OwedMentions returns every message owed to agent, keyed by channel, ascending
+// seq per channel — shape mirrors UndeliveredMessages (this file). It re-reads
+// the live message rows (JOIN messages) so a swept owed mention carries current
+// blocks; an owed row whose message was deleted simply doesn't join (CASCADE
+// also removes it, so this is belt-and-suspenders). Channels with no owed
+// messages are omitted from the map.
+func (s *Store) OwedMentions(ctx context.Context, agent AccountID) (map[ChannelID][]Message, error) {
+	const q = `
+		SELECT m.id, m.topic_id, t.channel_id, m.author_account_id, m.at_unix_ms, m.blocks
+		FROM owed_mentions om
+		JOIN messages m ON m.id = om.message_id
+		JOIN topics t ON t.id = m.topic_id
+		WHERE om.agent_account_id = $1
+		ORDER BY t.channel_id, m.seq ASC`
+	rows, err := s.pool.Query(ctx, q, string(agent))
+	if err != nil {
+		return nil, fmt.Errorf("store: read owed mentions: %w", err)
+	}
+	defer rows.Close()
+	return scanMessagesByChannel(rows, "owed mention")
+}
+
+// scanMessagesByChannel drains rows of the shared per-channel message projection
+// (m.id, m.topic_id, t.channel_id, m.author_account_id, m.at_unix_ms, m.blocks,
+// ordered by channel then seq) into a channel-keyed map — the scan half shared by
+// UndeliveredMessages (the cursor sweep) and OwedMentions (the mention-gap
+// backstop), which differ only in their query. `what` names the row in error
+// messages ("undelivered message" / "owed mention"). Channels with no rows are
+// absent from the map.
+func scanMessagesByChannel(rows pgx.Rows, what string) (map[ChannelID][]Message, error) {
+	out := make(map[ChannelID][]Message)
+	for rows.Next() {
+		var (
+			id, topicID, channelID, author string
+			atMS                           int64
+			blocksJSON                     []byte
+		)
+		if err := rows.Scan(&id, &topicID, &channelID, &author, &atMS, &blocksJSON); err != nil {
+			return nil, fmt.Errorf("store: scan %s: %w", what, err)
+		}
+		blocks, err := unmarshalBlocks(blocksJSON)
+		if err != nil {
+			return nil, err
+		}
+		out[ChannelID(channelID)] = append(out[ChannelID(channelID)], Message{
+			ID:              MessageID(id),
+			TopicID:         topicID,
+			AuthorAccountID: AccountID(author),
+			At:              time.UnixMilli(atMS).UTC(),
+			Blocks:          blocks,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate %ss: %w", what, err)
+	}
+	return out, nil
+}
+
+// clearOwedMention deletes the owed row for (agent, message_id) inside an
+// EXISTING txn (T1's AckDelivery restructure), independent of channel-cursor
+// state, and reports whether a row was actually deleted. Clearing an absent row
+// is a no-op (cleared=false, err=nil).
+func (s *Store) clearOwedMention(ctx context.Context, tx pgx.Tx, agent AccountID, messageID string) (cleared bool, err error) {
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM owed_mentions WHERE agent_account_id = $1 AND message_id = $2`,
+		string(agent), messageID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: clear owed mention: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // AckDelivery resolves messageID → messages.seq for THIS (agent, channel); a
 // message never dispatched to this agent for this channel is a no-op (the
 // resolution IS the overshoot clamp — a fabricated id cannot advance the
-// cursor). It marks the seq acked (retained in above_seqs), then advances the
-// contiguous cursor across every seq that is EITHER acked (in above_seqs) OR
-// self-authored in this channel (author_account_id = agent — never dispatched).
+// cursor). Once the message is resolved to this channel it ALSO clears any
+// owed_mention row for (agent, message_id) — the RIG-1641 T1 no-loss backstop —
+// inside this same txn. It then marks the seq acked (retained in above_seqs) and
+// advances the contiguous cursor across every seq that is EITHER acked (in
+// above_seqs) OR self-authored in this channel (author_account_id = agent —
+// never dispatched).
+//
+// The owed-clear runs FIRST, before the cursor arm, because the mention-gap
+// population it exists for (unsubscribed, non-home, non-mandatory) has NO
+// agent_delivery_cursors row: the cursor load below would hit noRows and return
+// early, so a clear placed after it is unreachable and one placed before it
+// would roll back with the no-op return. So whenever a row was cleared the txn
+// COMMITS before returning, even when the cursor arm no-ops (no cursor, or a
+// duplicate/reordered ack); the full-advance path's single commit at the end
+// covers both the cursor advance and the clear.
+//
 // Because messages.seq is a table-global BIGSERIAL (0001_init.sql:202), a
 // channel's owed seqs are sparse: a seq belonging to another channel sits
 // between two owed seqs and currently stops the advance, so above_seqs can
@@ -106,14 +215,38 @@ func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel Channe
 		messageID, string(channel),
 	).Scan(&seq); {
 	case noRows(err):
-		return nil // never dispatched to this (agent, channel): a no-op.
+		// Never dispatched to this (agent, channel): a no-op. The owed row (if
+		// any) is keyed (agent, message_id) for a valid ack of THIS channel, and
+		// this ack does not name a message in this channel, so leave it alone.
+		return nil
 	case err != nil:
 		return fmt.Errorf("store: resolve ack message: %w", err)
 	}
 
+	// The message belongs to this channel, so this is a valid ack: clear any
+	// owed_mention for (agent, message_id) FIRST, keyed independently of cursor
+	// state. cleared drives whether a cursor-arm no-op still commits (below).
+	cleared, err := s.clearOwedMention(ctx, tx, agent, messageID)
+	if err != nil {
+		return err
+	}
+
+	// commitIfCleared commits when the owed-clear did work, so the clear is not
+	// lost when the cursor arm no-ops; otherwise the ack changed nothing and the
+	// deferred rollback ends the txn.
+	commitIfCleared := func() error {
+		if !cleared {
+			return nil
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("store: commit ack delivery: %w", err)
+		}
+		return nil
+	}
+
 	// Load the current cursor. An absent row means no cursor was seeded for this
-	// (agent, channel): there is nothing to advance, so the ack is a no-op (the
-	// seed-at-subscribe invariant owns cursor creation, not an ack).
+	// (agent, channel) — the mention-gap population — so there is nothing to
+	// advance; commit the owed-clear if it did work, otherwise no-op.
 	var (
 		ackedSeq  int64
 		aboveSeqs []int64
@@ -125,15 +258,15 @@ func (s *Store) AckDelivery(ctx context.Context, agent AccountID, channel Channe
 		string(agent), string(channel),
 	).Scan(&ackedSeq, &aboveSeqs); {
 	case noRows(err):
-		return nil // no cursor to advance.
+		return commitIfCleared() // no cursor to advance; commit the clear if any.
 	case err != nil:
 		return fmt.Errorf("store: load delivery cursor: %w", err)
 	}
 
-	// A duplicate or reordered ack (at or below the contiguous cursor) is a
-	// no-op: the seq is already vacuously satisfied.
+	// A duplicate or reordered ack (at or below the contiguous cursor) advances
+	// nothing; commit the owed-clear if it did work, otherwise no-op.
 	if seq <= ackedSeq {
-		return nil
+		return commitIfCleared()
 	}
 
 	// Record the acked seq in the above-set (idempotent), then drain the
@@ -254,33 +387,5 @@ func (s *Store) UndeliveredMessages(ctx context.Context, agent AccountID) (map[C
 		return nil, fmt.Errorf("store: sweep undelivered messages: %w", err)
 	}
 	defer rows.Close()
-
-	// Scan channel alongside each message (the message row no longer carries it);
-	// the channel keys the returned map.
-	out := make(map[ChannelID][]Message)
-	for rows.Next() {
-		var (
-			id, topicID, channelID, author string
-			atMS                           int64
-			blocksJSON                     []byte
-		)
-		if err := rows.Scan(&id, &topicID, &channelID, &author, &atMS, &blocksJSON); err != nil {
-			return nil, fmt.Errorf("store: scan undelivered message: %w", err)
-		}
-		blocks, err := unmarshalBlocks(blocksJSON)
-		if err != nil {
-			return nil, err
-		}
-		out[ChannelID(channelID)] = append(out[ChannelID(channelID)], Message{
-			ID:              MessageID(id),
-			TopicID:         topicID,
-			AuthorAccountID: AccountID(author),
-			At:              time.UnixMilli(atMS).UTC(),
-			Blocks:          blocks,
-		})
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate undelivered messages: %w", err)
-	}
-	return out, nil
+	return scanMessagesByChannel(rows, "undelivered message")
 }
