@@ -51,8 +51,6 @@ on:
       - agent-image/**
       # The first-party agent entrypoint bundled into the image.
       - packages/compass-agent/**
-      # The vendored devenv fork the build runs through.
-      - forks/devenv/**
       # The workspace root manifest — the entrypoint FOD reads it to expand the
       # workspace-member set.
       - package.json
@@ -91,7 +89,7 @@ jobs:
     # cost that motivates ci.yml's 90m.
     timeout-minutes: 90
     # `run: ./publish.sh` resolves relative to this default, and publish.sh's own
-    # `path:../forks/devenv` container build resolves only from agent-image/. The
+    # `github:RigelBuild/devenv` container build resolves only from agent-image/. The
     # skopeo login/verify steps do NOT depend on this cwd — they invoke skopeo by
     # name off PATH (bootstrapped below as an absolute store path).
     defaults:
@@ -104,10 +102,10 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # nix-command + flakes for the vendored forks' flakes. The two caches
+          # nix-command + flakes for the RigelBuild forks' flakes. The two caches
           # are declared HERE, not delegated via `accept-flake-config` — that
           # setting makes nix trust the `nixConfig` of ANY flake it evaluates
-          # (forks/devenv/flake.nix carries such a block), so a PR could add its
+          # (the RigelBuild/devenv flake carries such a block), so a PR could add its
           # own substituter AND trusted key and have CI run attacker-signed
           # binaries. Naming the caches in this reviewed file keeps that trust
           # reviewed.

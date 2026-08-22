@@ -2,7 +2,7 @@
 #
 # compass-agent-image (agent-image/): the compass-agent runtime image. A
 # standalone nix devenv, not a bun package — the build is
-# `nix run path:../forks/devenv#devenv -- container build agent`, the same
+# `nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container build agent`, the same
 # fork-pinned derivation the publish lane ships (agent-image/publish.sh) and the
 # local `dogfood:agent-image` load produce. A green build here is proof the
 # exact artifact that publishes still builds.
@@ -35,13 +35,14 @@ tasks:
     # Realise the image exactly as the publish lane and the dogfood load do —
     # the same fork-pinned derivation, so a green build here proves the exact
     # artifact that publishes builds. Runs from agent-image/ (moon's default
-    # project-dir cwd) so the `path:../forks/*` flake refs resolve, matching
-    # publish.sh. The substituters the build fetches from are named in ci.yml's
-    # install-nix-action config, the reviewed trust surface for this gate.
+    # project-dir cwd) so `devenv container build` resolves this image's
+    # devenv.yaml/devenv.lock, matching publish.sh. The substituters the build
+    # fetches from are named in ci.yml's install-nix-action config, the reviewed
+    # trust surface for this gate.
     #
     # cache:false — nix owns its store-path caching; moon must not false-green a
     # build it did not re-run (the same posture the fork builds take).
-    command: 'nix run path:../forks/devenv#devenv -- container build agent'
+    command: 'nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container build agent'
     options:
       cache: false
       runInCI: true
@@ -53,20 +54,10 @@ tasks:
     # move there rebuilds the image and must red this gate at PR time. A leading
     # `/` is workspace-root-relative; the bare glob is this project's own tree
     # (image definition, toolchain, entrypoint FOD).
-    #
-    # A benign warn is expected here: moon's task hasher logs "Attempted to hash
-    # input forks/devenv/tests/keycloak-certs/realms but only files can be
-    # hashed" because the vendored devenv fork ships a directory SYMLINK at that
-    # path (a keycloak test fixture, never in the image closure). It is cosmetic
-    # and cannot skew this gate: affected-scheduling is VCS-touched-file based
-    # (a change to, or a repoint of, any path under the globs below still runs
-    # the build), and the hasher's cache key — the only thing the unhashable
-    # node would feed — is unused because this task is cache:false.
     # NOTE: tools/agent-image-env-gate/moon.yml's check task MIRRORS these inputs — a change here must be mirrored there.
     inputs:
       - '**/*'
       - '/packages/compass-agent/**'
-      - '/forks/devenv/**'
       - '/package.json'
       - '/bun.lock'
       - '/tools/toolchain/versions/bun.nix'

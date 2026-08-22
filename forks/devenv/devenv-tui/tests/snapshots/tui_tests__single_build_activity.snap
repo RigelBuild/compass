@@ -1,7 +1,0 @@
----
-source: devenv-tui/tests/tui_tests.rs
-expression: output
----
-⠋ Building  Building hello-world buildPhase [TIME]
-
- 0 of 1 builds                              ↑↓ nav

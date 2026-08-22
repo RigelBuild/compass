@@ -107,7 +107,7 @@ in
     #
     # Bare `postgresql`, not a version-suffixed attr, for strict parity:
     # `services.postgres.package` defaults to bare `pkgs.postgresql`
-    # (forks/devenv/src/modules/services/postgres.nix), which at this devenv.lock
+    # (the RigelBuild/devenv fork's src/modules/services/postgres.nix), which at this devenv.lock
     # pin resolves to postgresql-18.4 — the SAME derivation the service uses, so
     # CI and the dev shell exercise one postgres, not two.
     postgresql
@@ -468,8 +468,8 @@ in
     # agent-image: build AND load the agent base image into
     # containers-storage:compass-agent:latest (the ref the runner resolves with
     # no pull). `container copy` builds then copies; the invocation is pinned to
-    # the vendored fork's own CLI (`nix run path:../forks/devenv#devenv`, run
-    # from agent-image/ where the fork sits one level up) so it cannot diverge
+    # the shared RigelBuild/devenv fork's own CLI, pinned by rev
+    # (`nix run github:RigelBuild/devenv/<rev>#devenv`) so it cannot diverge
     # from the fork source the agent-image module set is pinned to. Opt-in (per
     # D5): NOT wired `after` into up — the image closure is large and rebuilding
     # it on every `up` would violate the never-heavy-on-up constraint. The runner
@@ -486,7 +486,7 @@ in
         # Removing it first makes the bare ref resolve to the image we just built.
         # `podman rmi` exits non-zero when the tag is absent, so tolerate that.
         podman rmi -f localhost/compass-agent:latest 2>/dev/null || true
-        nix run path:../forks/devenv#devenv -- container copy agent
+        nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container copy agent
       '';
       cwd = "${config.devenv.root}/agent-image";
     };
