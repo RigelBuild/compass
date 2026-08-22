@@ -1,6 +1,6 @@
 # microVM Runner Backend
 
-Status: PROPOSED — RIG-2394 (reframed from a detailing record to a full design pass, 2026-08-21). The six load-bearing forks are resolved (see Decisions D1-D7); this record freezes on merge.
+Status: PROPOSED — RIG-2394 (reframed from a detailing record to a full design pass, 2026-08-21). The nine load-bearing forks are resolved (see Decisions D1-D9); this record freezes on merge.
 
 Parent: [compass-elastic-session-runtime/design.md](./design.md) — this record details under the parent's frozen decisions but replaces its falsified I1 implementation premise.
 
@@ -88,9 +88,9 @@ Alternatives). cloud-hypervisor's virtio-fs
 ([docs/hotplug.md](https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/docs/hotplug.md))
 directly serve both the invariant and the S1-reserved `Resize` seam (D5).
 
-Per session, the backend owns three host processes: the VMM, a dedicated
-`virtiofsd` instance, and (transitively) the guest. All three are supervised
-(see (f)).
+Per session, the backend owns three host processes — the VMM, a dedicated
+`virtiofsd` instance, and the userspace net backend (passt/gvproxy-class, D6)
+— plus the guest they carry. All are supervised (see (f)).
 
 **Guest networking (D6).** A rootless VMM cannot create a host tap, so guest
 networking is a userspace concern the backend must provide. Per D6 the design
@@ -204,8 +204,8 @@ uid/capability gate on every exec.
   no-copy invariant forbids swapping the virtio-fs volume for a quota-bounded
   block device. Per D7 the Runner therefore never *assigns* quota: the
   multi-tenant deployment provisions the session-volume filesystem with
-  per-directory project quota via operator IaC at deploy, and preflight (V5)
-  *verifies is active* (a read-only, rootless-safe check), failing startup if
+  per-directory project quota via operator IaC at deploy, and V6's quota
+  preflight *verifies it is active* (a read-only, rootless-safe check), failing startup if
   absent. Dogfood's single trusted tenant ships no host-enforced quota.
 
 ### (e) Preflight + boot canary + KVM-absent hard-fail
@@ -237,21 +237,23 @@ create":
 
 ### (f) Teardown and mid-session death
 
-The backend supervises its per-session process trio (VMM, virtiofsd, guest —
-the guest via the supervisor channel's liveness). Failure handling:
+The backend supervises its per-session process set (VMM, virtiofsd, net
+backend, guest — the guest via the supervisor channel's liveness). Failure
+handling:
 
 - **VMM death mid-session:** the vsock connections and exec streams break;
   the backend marks the container handle dead, fails in-flight `Exec`s with a
   distinguishable error (the `CommandError`/`TimeoutError` discipline,
-  `podman.go:277-296`), tears down the peer virtiofsd, and releases the vsock
+  `podman.go:277-296`), tears down the peer virtiofsd and net backend, and releases the vsock
   port and volume mount state. `Remove` is idempotent on an already-dead VM.
 - **virtiofsd death mid-session:** the guest's virtio-fs mount goes stale;
   treated as fatal to the session (no remount-and-hope): kill the VMM, same
-  teardown path. The session volume itself is durable on the host and
-  unaffected — resume/replay is the session lifecycle's existing job.
-- **Runner crash:** on startup the backend reaps orphaned VMM/virtiofsd
-  processes by their per-session runtime dir (pidfiles + process-liveness
-  check). This is **new** behavior, not a mirror of the podman path — the
+  teardown path. The session volume itself is durable and unaffected — it lives
+  on the box-independent durable volume (D9), not in the virtiofsd process — so
+  resume/replay is the session lifecycle's existing job.
+- **Runner crash:** on startup the backend reaps orphaned VMM/virtiofsd/
+  net-backend processes by their per-session runtime dir (pidfiles + process-
+  liveness check). This is **new** behavior, not a mirror of the podman path — the
   podman transactional remove-on-start-failure (`agent.go:278-283`) cleans a
   *failed create*, not orphans left by a Runner crash. Healthy VMs found at
   restart are **killed and rebooted on next request, not adopted**: the
@@ -365,6 +367,15 @@ demand via cloud-hypervisor hotplug rather than reserving peak RAM (D5).
   telemetry fan-in are a separate control plane, out of scope here. The agent
   never talks directly to the Server — the local Runner remains the sole,
   frozen attribution boundary.
+- **Box-independent durable volume + suspend-to-durable (D9).** Sessions are
+  not sticky to a box beyond the warm path: an idle session is suspended to its
+  durable volume and woken on any available Runner (the D5 suspend/serialize →
+  resume machinery, triggered by idle-scaledown). This requires the backend to
+  boot a session from a **box-independent** durable volume (network-attached or
+  rehydrated from object storage, not local-disk-only) and to support
+  suspend-to-durable. The scheduling, idle detection, and durable-storage
+  mechanism are the control plane's (RIG-2485); this backend owns only the
+  boot-from-anywhere + suspend contract.
 - **Rootless is hard.** No daemon, no root, no rootful fallback
   (`podman.go:22-24`). The VMM, virtiofsd, and every backend process run as
   the invoking user; host-side file ownership on the session volume matches
@@ -372,7 +383,8 @@ demand via cloud-hypervisor hotplug rather than reserving peak RAM (D5).
   own userns uid/gid translation (Approach (d)). No backend step requires a
   capability the rootless Runner lacks; anything that would (quota assignment)
   is pushed to operator provisioning + preflight verification (D7).
-- **KVM-absent ⇒ hard-fail (D3).** With no container fallback, a box without
+- **KVM-absent ⇒ hard-fail (D3).** When the microVM backend is selected (and
+  unconditionally once the container path is removed, D2), a box without
   microVM support cannot run Compass: `VerifyMicroVMSupport` (V5) fails Runner
   startup with an error naming the missing capability and the fix. This
   supersedes the parent's degrade-to-container default (design.md:600-601),
@@ -424,7 +436,9 @@ sole runtime the selection collapses to microVM with `VerifyMicroVMSupport`
 - **Test cycle:** selection unit tests (transitional: configured backend
   resolves; microVM-only: absent-KVM → startup error naming the missing
   capability, D3); the existing session suite green under the container
-  backend, proving the transitional path is unregressed.
+  backend, proving the transitional path is unregressed; the transitional kill
+  switch (Approach (g)) — a `runtime.backend: podman` flip reverts to the
+  byte-identical container path — asserted by a selection test.
 
 ### V2a — guest image + boot spike (packaging)
 
@@ -573,7 +587,7 @@ restart orphan-reaping; the `backend`-labeled metrics and new microVM metrics
 from (g).
 
 - **Interfaces:** produces the per-session runtime-dir layout
-  (`<runroot>/microvm/<session>/{vmm.pid,virtiofsd.pid,vsock.port}`),
+  (`<runroot>/microvm/<session>/{vmm.pid,virtiofsd.pid,netbackend.pid,vsock.port}`),
   `(*MicroVMRuntime) ReapOrphans(ctx) error` called at startup, and the
   metric set (`compass_microvm_boot_seconds`, `compass_microvm_rss_bytes`,
   `compass_microvm_vsock_rpc_seconds`, `compass_microvm_quota_used_ratio`,
@@ -621,9 +635,9 @@ inter-tenant isolation rather than exercising the happy path.
 
 ## Decisions
 
-The six load-bearing forks below were resolved by the human before freeze; the
-record is written against these decisions. The reasoning that fixed each is
-kept so the executor sees *why*, not just *what*.
+The nine load-bearing forks below (D1-D9) were resolved by the human before
+freeze; the record is written against these decisions. The reasoning that fixed
+each is kept so the executor sees *why*, not just *what*.
 
 1. **D1 — VMM: cloud-hypervisor, and only cloud-hypervisor.** Weighed on four
    axes: (a) virtio-fs — all non-Firecracker candidates qualify; (b) guest
@@ -742,7 +756,7 @@ kept so the executor sees *why*, not just *what*.
    virtio-fs volume for a quota-bounded block device. Decision: the Runner
    never *assigns* quota. The multi-tenant deployment provisions the
    session-volume filesystem with per-directory project quota via operator IaC
-   at deploy; preflight (V5) *verifies* it is active (a read-only,
+   at deploy; V6's quota preflight *verifies* it is active (a read-only,
    rootless-safe check) and fails startup if absent. V6 ships quota
    *verification*, not assignment.
 8. **D8 — deployment topology: the Runner is co-located one-per-box; fleet
@@ -765,9 +779,12 @@ kept so the executor sees *why*, not just *what*.
      bottlenecked" is *satisfied by* co-location, not a reason against it.
    - **It preserves the frozen attribution boundary.** The agent stays
      untrusted with no outbound route except through its local Runner, which
-     owns the session→account binding structurally (`gateway.go`: "the Runner
-     resolves session_id → account … fail-closed") and the ordered `RunnerSeq`
-     the Server's gap-detection depends on (`publisher.go`). The agent does
+     owns the container→session_id binding structurally and forwards session_id
+     resolving no account itself (`gateway.go`: "the Runner resolves NO account
+     and sets NO actor: the Server resolves session_id → account from its own
+     binding and attributes in-process, fail-closed") — plus the ordered
+     `RunnerSeq` the Server's gap-detection depends on (`publisher.go`). The
+     agent does
      **not** talk directly to the Server — that would hand an untrusted process
      a Server-facing credential and break loss-detection, to save a hop
      co-location already makes local. The frozen transport-consolidation
@@ -781,6 +798,41 @@ kept so the executor sees *why*, not just *what*.
    untrusted agent↔Runner hop and is not adopted here). This record is scoped
    to the per-box microVM backend only. The control plane is tracked as
    **RIG-2485** (Backlog), to be designed when the managed service is built.
+9. **D9 — sessions are not sticky to a box beyond the warm path; a woken
+   session reschedules onto any available Runner.** D8 co-locates the Runner
+   with the VMs it manages, which raises a hyperscaler idle-scaledown wrinkle:
+   if a box is deprovisioned when idle, its co-located Runner disappears with
+   it, so a live-but-idle session cannot be pinned to that box. The resolution
+   is that it is **not** pinned. Session stickiness is warm-path only: a
+   *running* session is reachable through its box's local vsock, but an idle
+   session is scaled down by **suspending it to its durable volume**
+   (`session_id` + volume, the state the session lifecycle already treats as
+   durable — the Runner holds no durable session state, only the ephemeral
+   `container→session_id` binding it reconstructs on provision, D8), and a
+   later request **wakes it on any available Runner** via the D5
+   suspend/serialize → resume-on-new-box machinery — the same mechanism D5
+   uses for resize-relocation, triggered by idle-scaledown / box-drain instead
+   of resize-needs-headroom. Co-location makes this *simpler*, not harder:
+   because the agent only ever talks to its **local** Runner (D8), a woken
+   session that lands on a new box simply gets the new local Runner beside it,
+   and the frozen attribution boundary is preserved wherever it lands — no
+   sticky affinity, no reprovision-the-original-box requirement. The one
+   constraint this places on **this** record's backend: the microVM backend
+   must boot a session from a **box-independent durable volume** (network-
+   attached or rehydrated from object storage — not local-disk-only) and
+   support suspend-to-durable, so a woken session can land anywhere. These two
+   obligations carry **no new V-task** here — they are exercised by the
+   parent's P2 volume-lifecycle work and the D5→C3 suspend/resume machinery
+   once it lands; V6's isolation suite verifies the backend boots from the
+   box-independent volume path it is handed. **Out of scope (RIG-2485):** the
+   scheduling that picks a Runner, idle detection + box drain/deprovision,
+   on-demand reprovision on wake, any warm-affinity optimization, and the
+   durable-storage mechanism (network-attached vs object-store) — which **MUST**
+   carry the same per-tenant isolation and at-rest protection the live volume
+   gets from V6's mount-ns sandbox, so suspended session state is never
+   cross-tenant readable. This decision fixes the *direction* (non-sticky,
+   reschedule-on-wake) and the backend contract that enables it; the fleet
+   mechanism is the control plane's.
 
 ### Deferred (non-load-bearing, resolved in implementation)
 
