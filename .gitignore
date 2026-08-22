@@ -44,8 +44,8 @@ result-*
 # them, under forks/devenv/logos/), so that is all the negation re-includes.
 # Keeping it anchored to the file pattern — rather than a `!forks/**` blanket —
 # means real build detritus inside a fork (dist/, *.log, node_modules/, result)
-# stays ignored; forks/nix2container carries no .gitignore of its own, and
-# forks/devenv's covers result/target/node_modules but not dist or *.log.
+# stays ignored; forks/devenv's own .gitignore covers result/target/node_modules
+# but not dist or *.log.
 # Unrelated: proptest-regressions/, poetry.lock, devenv.local.*, and uv.lock are
 # hidden by the forks' OWN nested .gitignore files, which no root negation
 # overrides — they predate the ignore rules in the index and stay tracked

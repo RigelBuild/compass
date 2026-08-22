@@ -2,13 +2,16 @@
 # publish.sh — build the compass-agent image spec once and push it to GHCR
 # under each requested tag, enforcing :git-<sha> immutability.
 #
-# Why bash: this is nix-orchestration glue. It `nix run`s the vendored
-# forks/devenv + forks/nix2container flakes and drives their patched skopeo.
+# Why bash: this is nix-orchestration glue. It builds the compass-agent image
+# through the vendored forks/devenv `devenv container build` (that half is not
+# reversed yet) and drives the RigelBuild/nix2container fork's patched skopeo,
+# which it invokes by name off PATH (see the SKOPEO= note below — skopeo is
+# deliberately NOT in agent-image/devenv.nix; it comes from the root dev shell
+# locally or the publish workflow's pinned-helper bootstrap in CI).
 # agent-image/ is a standalone nix devenv with zero bun/TS infrastructure, and
-# the publish must run byte-identically locally and in CI — a bash script with
-# no runtime deps beyond the flakes it already invokes is the one form that
-# does that. Per AGENTS.md, a script that genuinely must be bash carries this
-# why; this is it.
+# the publish must run byte-identically locally and in CI, which this thin bash
+# glue over `nix`/`skopeo` does directly. Per AGENTS.md, a script that genuinely
+# must be bash carries its rationale inline; this is it.
 
 set -euo pipefail
 
@@ -28,8 +31,15 @@ IMAGE=ghcr.io/rigelbuild/compass-agent
 export REGISTRY_AUTH_FILE
 
 # The fork's patched skopeo understands the `nix:` transport (reads a
-# nix2container image spec directly); stock skopeo does not.
-SKOPEO=(nix run path:../forks/nix2container#skopeo-nix2container --)
+# nix2container image spec directly); stock skopeo does not. The publish
+# workflow puts it on PATH (resolved from the shared pinned helper
+# tools/toolchain/skopeo-nix2container-env.nix, from the lockfile-pinned
+# nix2container + nixpkgs revs — one source of truth, no raw flake ref), so it
+# is a plain command here. It is NOT in agent-image/devenv.nix: a package there
+# would bake skopeo's closure into the published image via the container
+# entrypoint. Locally, `direnv`/`devenv shell` puts it on PATH from the root
+# devenv.nix `packages` the same way.
+SKOPEO=(skopeo)
 
 log() { printf '>> %s\n' "$*" >&2; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }

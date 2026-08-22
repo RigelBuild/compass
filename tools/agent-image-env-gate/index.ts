@@ -16,6 +16,7 @@
 // flake refs resolve. In CI the `compass-agent-image:build` task has already
 // realised this closure, so the build here is a nix cache hit.
 
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { $ } from "bun";
@@ -110,14 +111,50 @@ if (import.meta.main) {
 		);
 	}
 
-	// Inspect the built spec through the fork's patched skopeo (understands the
-	// `nix:` transport). The config form (not --raw) exposes Os/Architecture/Env.
+	// Resolve the fork's patched skopeo (understands the `nix:` transport — it
+	// reads a nix2container image spec directly) from the shared pinned helper,
+	// tools/toolchain/skopeo-nix2container-env.nix. That helper builds the exact
+	// derivation the root dev shell installs, from the nix2container + nixpkgs
+	// revisions devenv.lock pins (one source of truth for both revs, no raw
+	// nix2container flake ref). It is resolved out-of-band here rather than off
+	// PATH because this gate runs in the moon battery, which provisions the
+	// toolchain from nix and never enters the root dev shell — so `bin/skopeo` is
+	// read straight off the built helper's store path, the same pattern ci.yml
+	// uses for chromium-e2e-env.nix. It is deliberately NOT in
+	// agent-image/devenv.nix: a package there would bake skopeo's closure into
+	// the published image via the container entrypoint.
+	let skopeoBin: string;
+	try {
+		const out =
+			await $`nix build --no-link --print-out-paths -f tools/toolchain/skopeo-nix2container-env.nix skopeo`
+				.cwd(repoRoot)
+				.text();
+		// `--print-out-paths` prints every output of the derivation (skopeo ships a
+		// separate `-man` output alongside the default). Pick the one that actually
+		// carries `bin/skopeo` rather than trusting output order.
+		const bin = out
+			.trimEnd()
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((line) => line.startsWith("/nix/store/"))
+			.map((store) => join(store, "bin", "skopeo"))
+			.find((candidate) => existsSync(candidate));
+		if (!bin) {
+			fail(
+				`skopeo helper produced no output carrying bin/skopeo (got: ${JSON.stringify(out)})`,
+			);
+		}
+		skopeoBin = bin;
+	} catch (cause) {
+		fail(`skopeo resolution failed: ${String(cause)}`);
+	}
+
+	// The config form (not --raw) exposes Os/Architecture/Env.
 	let inspectOut: string;
 	try {
-		inspectOut =
-			await $`nix run path:../forks/nix2container#skopeo-nix2container -- inspect nix:${spec}`
-				.cwd(agentImageDir)
-				.text();
+		inspectOut = await $`${skopeoBin} inspect nix:${spec}`
+			.cwd(agentImageDir)
+			.text();
 	} catch (cause) {
 		fail(`skopeo inspect failed: ${String(cause)}`);
 	}

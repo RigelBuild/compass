@@ -56,10 +56,14 @@ tasks:
       - '/agent-image/**'
       - '/packages/compass-agent/**'
       - '/forks/devenv/**'
-      - '/forks/nix2container/**'
       - '/package.json'
       - '/bun.lock'
       - '/tools/toolchain/versions/bun.nix'
+      # This gate resolves the fork's skopeo through the shared pinned helper,
+      # from the nix2container + nixpkgs revs the root devenv.lock pins — so a
+      # rev bump or a helper edit must re-run it.
+      - '/tools/toolchain/skopeo-nix2container-env.nix'
+      - '/devenv.lock'
   ci:
     deps: ['typecheck', 'test', 'check']
     options:

@@ -3,8 +3,9 @@
 # nixpkgs derivations (buf, the codegen plugins, the Go gate battery, the
 # linters) plus the language runtimes — bun/node/moon vendored as nix
 # derivations from tools/toolchain/versions/*.nix and go from the go-overlay
-# input below. There is no container image, no Rust toolchain, and no secrets
-# provider to source.
+# input below. It also carries the RigelBuild/nix2container fork's patched
+# skopeo, so the agent-image publish lane resolves `skopeo` from this shell.
+# There is no container image built here and no secrets provider to source.
 inputs:
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/rolling
@@ -14,6 +15,18 @@ inputs:
   # (tools/toolchain/gate-tools.nix), so both resolve the identical derivation.
   go-overlay:
     url: github:purpleclay/go-overlay
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
+  # The RigelBuild/nix2container fork's patched skopeo (skopeo-nix2container),
+  # installed into this dev shell so the agent-image publish lane invokes a
+  # plain `skopeo` that understands the `nix:` transport (reads a nix2container
+  # image spec directly). Pinned by rev in devenv.lock — one source of truth for
+  # the rev — and the same shared canonical fork the agent image's own devenv
+  # builds through. Its nixpkgs follows this shell's, so the closure has one
+  # nixpkgs.
+  nix2container:
+    url: github:RigelBuild/nix2container
     inputs:
       nixpkgs:
         follows: nixpkgs

@@ -9,15 +9,16 @@ inputs:
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/rolling
   nix2container:
-    # The vendored fork rather than upstream: upstream's buildImage registers
-    # relocated copyToRoot paths (the /etc,/tmp scaffolds whose content moves to
-    # the image root) in the initialized nix DB as valid store paths even though
-    # their /nix/store content is absent from the image. That is load-bearing
-    # HERE specifically — this
-    # image's whole point is a working in-container nix DB the agent rebuilds
-    # against, and a DB claiming paths the image does not carry breaks exactly
-    # that. Tracks forks/nix2container.
-    url: path:../forks/nix2container
+    # The shared canonical Rigel fork of nix2container, pinned by rev in
+    # devenv.lock. It carries one patch over upstream: upstream's buildImage
+    # registers relocated copyToRoot paths (the /etc,/tmp scaffolds whose
+    # content moves to the image root) in the initialized nix DB as valid store
+    # paths even though their /nix/store content is absent from the image. The
+    # fork drops those phantom registrations. That is load-bearing HERE
+    # specifically — this image's whole point is a working in-container nix DB
+    # the agent rebuilds against, and a DB claiming paths the image does not
+    # carry breaks exactly that.
+    url: github:RigelBuild/nix2container
     inputs:
       nixpkgs:
         follows: nixpkgs

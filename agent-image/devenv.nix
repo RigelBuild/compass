@@ -40,7 +40,9 @@ in
   # No dev-shell packages: nothing enters a shell here. This devenv exists only to
   # express the container, so the toolchain lives in the image layer, not in
   # `packages` — listing it twice would build the same closure for a shell no one
-  # opens.
+  # opens. (skopeo, which the publish lane needs, lives in the ROOT compass dev
+  # shell the publish job enters — NOT here: a package here would bake into the
+  # image via the container entrypoint's `source ${shell.envScript}`.)
   packages = [ ];
 
   # One entry, and only because it has to be here: direnv resolves its rc as
