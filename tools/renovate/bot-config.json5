@@ -23,13 +23,14 @@
   platform: "github",
   repositories: ["RigelBuild/compass"],
 
-  // Commit/PR identity — the GitHub App's `[bot]` noreply identity. The concrete
-  // value is `<app-id>+<app-slug>[bot]@users.noreply.github.com`; Renovate
-  // autodetects it from the installation token, but it is pinned explicitly here
-  // once the App is registered (a human action — see the RIG-2432 provisioning
-  // runbook). PLACEHOLDER until then; do not ship the migration without replacing
-  // it with the real App slug.
-  gitAuthor: "renovate[bot] <PLACEHOLDER+renovate[bot]@users.noreply.github.com>",
+  // Commit/PR identity is the GitHub App's own `[bot]` noreply identity
+  // (`<app-id>+<app-slug>[bot]@users.noreply.github.com`). It is deliberately
+  // NOT pinned here: Renovate autodetects it from the per-run installation
+  // token, so an explicit value could only ever be a stale or malformed copy of
+  // what the token already carries. Omitting gitAuthor is the correct App-auth
+  // posture (unlike orion, which authenticates as a bot USER via a PAT and so
+  // must name that user). One consequence: this drops the App-slug paste-back
+  // step from the RIG-2432 provisioning runbook — nothing to fill in post-registration.
   onboarding: false, // config already committed; no onboarding PR
   requireConfig: "required",
 
