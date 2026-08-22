@@ -106,11 +106,15 @@ jobs:
     # only when the base branch was re-pointed, so a real base re-point still
     # runs (the whole reason `edited` is in the trigger set), while a title/body
     # edit is a no-op. push and schedule are not `pull_request` events, so the
-    # first clause lets them through unconditionally.
+    # first clause lets them through unconditionally. `workflow_dispatch` is
+    # excluded: it exists solely to drive the regen-forge-fixtures job, which
+    # carries its own `if:` — a fixture-regen dispatch has no business spinning
+    # up the full 90-minute gate battery, so this job stays off it.
     if: >-
-      github.event_name != 'pull_request' ||
+      github.event_name != 'workflow_dispatch' &&
+      (github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
-      github.event.changes.base != null
+      github.event.changes.base != null)
     # The vendored forks build through nix (devenv's Rust crates via its flake's
     # fenix pin), so this is a long job by construction.
     timeout-minutes: 90
@@ -357,7 +361,16 @@ jobs:
         # output is unset and the oracle's push/schedule arms carry it regardless.
         if: github.event_name == 'pull_request'
         run: |
-          changed=$(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
+          base="origin/${GITHUB_BASE_REF}"
+          # Fail LOUD if the base ref does not resolve rather than swallowing the
+          # error as "not affected" (mirrors the gtk3-affected gate): an
+          # unresolvable base (e.g. a stacked PR's base churning under a
+          # pull_request.edited re-point) must red the gate, never skip it green.
+          if ! git rev-parse --verify --quiet "$base" >/dev/null; then
+            echo "::error::forge affected gate: base ref $base does not resolve — cannot compute the affected set"
+            exit 1
+          fi
+          changed=$(git diff --name-only "$base...HEAD")
           if printf '%s\n' "$changed" \
             | grep -qE '^(go/internal/forge/|\.github/workflows/ci\.yml$)'; then
             echo "forge_affected=true" >>"$GITHUB_OUTPUT"
@@ -374,11 +387,17 @@ jobs:
         # until RIG-2345 lands the LIVEGITHUB_*/LINEAR_FORGE Actions secrets, a
         # push-to-main or nightly run would red the build on a skip that is
         # CORRECT for an unprovisioned testbed. This step resolves whether the
-        # GitHub trio is present (secrets are not readable in a step `if:`, only
-        # in `env:`/`run:`, so — exactly like forge_affected — it computes the
-        # boolean into $GITHUB_OUTPUT for the oracle + guard `if:` to read) and
-        # both gate on it. While unprovisioned the oracle + guard skip cleanly
-        # (dormant-green); the moment the secrets land the gate flips true and
+        # GitHub trio AND the Linear pair are present (secrets are not readable in
+        # a step `if:`, only in `env:`/`run:`, so — exactly like forge_affected —
+        # it computes the boolean into $GITHUB_OUTPUT for the oracle + guard `if:`
+        # to read) and both gate on it. All FIVE are required together because the
+        # two providers are CO-EQUAL and both in scope now (design §525-526), and
+        # the guard below asserts BOTH the GitHub and the Linear leg ran: coupling
+        # the gate to the full set keeps the oracle fully dormant until the whole
+        # testbed is provisioned, so a half-provisioned window (say GitHub secrets
+        # land before the Linear pair) cannot half-run and red on the still-skipped
+        # Linear leg. While unprovisioned the oracle + guard skip cleanly
+        # (dormant-green); the moment all secrets land the gate flips true and
         # enforcement activates with no further edit. The FINAL RIG-2230 step,
         # after provisioning is confirmed, removes this have_creds clause so a
         # later secret-drop can no longer silently disable the required oracle.
@@ -386,9 +405,12 @@ jobs:
           LIVEGITHUB_REPO: ${{ secrets.LIVEGITHUB_REPO }}
           LIVEGITHUB_AUTHOR_TOKEN: ${{ secrets.LIVEGITHUB_AUTHOR_TOKEN }}
           LIVEGITHUB_REVIEWER_TOKEN: ${{ secrets.LIVEGITHUB_REVIEWER_TOKEN }}
+          LINEAR_FORGE: ${{ secrets.LINEAR_FORGE }}
+          LINEAR_FORGE_TEAM: ${{ secrets.LINEAR_FORGE_TEAM }}
         run: |
           if [ -n "$LIVEGITHUB_REPO" ] && [ -n "$LIVEGITHUB_AUTHOR_TOKEN" ] \
-            && [ -n "$LIVEGITHUB_REVIEWER_TOKEN" ]; then
+            && [ -n "$LIVEGITHUB_REVIEWER_TOKEN" ] && [ -n "$LINEAR_FORGE" ] \
+            && [ -n "$LINEAR_FORGE_TEAM" ]; then
             echo "have_creds=true" >>"$GITHUB_OUTPUT"
           else
             echo "have_creds=false" >>"$GITHUB_OUTPUT"
@@ -463,13 +485,18 @@ jobs:
         #
         # The skip text is derived from source, not hardcoded, matching the pgtest
         # guard's discipline (§388-389): a guard that drifts out of step with what
-        # it guards passes silently. The GitHub live legs' skip literal lives in
-        # livegithub_test.go as `const liveSkipMessage`, a single plain string
-        # literal kept greppable for exactly this read; sed extracts it verbatim.
-        # The GitHub skip is the one asserted here because the F1 headline scenario
-        # (the load-bearing review-round-trip) rides the GitHub legs; the Linear
-        # legs carry their own independent `liveLinearSkipMessage`, noted here but
-        # not the required assertion.
+        # it guards passes silently. Each provider's live legs carry their own
+        # stable one-line skip literal — the GitHub legs `const liveSkipMessage`,
+        # the Linear legs `const liveLinearSkipMessage` — kept greppable for
+        # exactly this read; sed extracts each verbatim. BOTH are asserted because
+        # the providers are CO-EQUAL and both required (design §525-526): asserting
+        # only the GitHub leg would leave a permanent vacuous-green hole where the
+        # Linear live-contract leg silently skips (e.g. a LINEAR_FORGE rotation to
+        # empty) yet the required check stays green — a hole that would survive the
+        # final removal of the have_creds staging clause. The have_creds gate
+        # already couples all five secrets, so under normal provisioning both legs
+        # run together; these two assertions are the source-derived backstop that
+        # a partial credential state cannot pass green.
         if: >-
           (
            (github.event_name == 'pull_request' &&
@@ -479,22 +506,28 @@ jobs:
            github.event_name == 'schedule') &&
           steps.forge_creds.outputs.have_creds == 'true'
         run: |
-          skip=$(sed -n 's/.*liveSkipMessage = "\(.*\)"/\1/p' \
-            internal/forge/livegithub_test.go)
-          if [ -z "$skip" ]; then
-            echo "::error::could not read the skip message out of internal/forge/livegithub_test.go — this guard has drifted from the harness and is no longer checking anything"
+          src=internal/forge/livegithub_test.go
+          ghskip=$(sed -n 's/.*liveSkipMessage = "\(.*\)"/\1/p' "$src")
+          lnskip=$(sed -n 's/.*liveLinearSkipMessage = "\(.*\)"/\1/p' "$src")
+          if [ -z "$ghskip" ] || [ -z "$lnskip" ]; then
+            echo "::error::could not read the skip messages out of $src (github='$ghskip' linear='$lnskip') — this guard has drifted from the harness and is no longer checking anything"
             exit 1
           fi
-          if grep -qF "$skip" /tmp/forge-oracle.log; then
-            echo "::error::forge live-contract oracle skipped — the LIVEGITHUB_* credentials were not reached, so nothing was asserted"
-            grep -nF "$skip" /tmp/forge-oracle.log | head
+          if grep -qF "$ghskip" /tmp/forge-oracle.log; then
+            echo "::error::forge live-contract oracle skipped the GitHub legs — the LIVEGITHUB_* credentials were not reached, so nothing was asserted"
+            grep -nF "$ghskip" /tmp/forge-oracle.log | head
+            exit 1
+          fi
+          if grep -qF "$lnskip" /tmp/forge-oracle.log; then
+            echo "::error::forge live-contract oracle skipped the Linear legs — the LINEAR_FORGE credential was not reached, so the co-equal Linear contract was not asserted"
+            grep -nF "$lnskip" /tmp/forge-oracle.log | head
             exit 1
           fi
           if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/internal/forge[[:space:]]" /tmp/forge-oracle.log; then
             echo "::error::the forge live-contract package did not report ok — it failed, skipped, or never ran"
             exit 1
           fi
-          echo "forge oracle: the live-contract suite ran against the testbed and reported ok"
+          echo "forge oracle: the live-contract suite ran both the GitHub and Linear legs against the testbed and reported ok"
 
       - name: Multi-window gtk3 e2e gate
         # The ONE CI lane that compiles + runs the native app (Wails v3,
@@ -663,11 +696,13 @@ jobs:
       # container sandbox withholds.
       image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       options: --privileged
-    # Mirror the `gates` guard: skip only the no-op `edited` (title/body) case.
+    # Mirror the `gates` guard: skip the no-op `edited` (title/body) case, and
+    # stay off `workflow_dispatch` (regen-only — see the gates guard).
     if: >-
-      github.event_name != 'pull_request' ||
+      github.event_name != 'workflow_dispatch' &&
+      (github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
-      github.event.changes.base != null
+      github.event.changes.base != null)
     timeout-minutes: 60
     env:
       # Same short temp root as `gates`: the e2e suite binds AF_UNIX sockets
@@ -1063,12 +1098,16 @@ jobs:
     # jobs can be split or renamed without touching branch protection — a new
     # tier just joins `needs` below.
     #
-    # The `if` has two parts AND-ed together, and both are load-bearing:
+    # The `if` has three parts AND-ed together, and all are load-bearing:
     #   - `always()` so the rollup runs even when a needed job FAILED. Without it
     #     the default `success()` gate would SKIP this job when a work job failed,
     #     and branch protection treats a skipped required check as passing — so a
     #     red work job would be mergeable. `always()` forces the rollup to run and
     #     inspect each result, turning any non-success into a red required check.
+    #   - `github.event_name != 'workflow_dispatch'`: the work jobs stay off a
+    #     fixture-regen dispatch (regen-forge-fixtures runs alone there), so both
+    #     `needs` skip — this rollup must skip too, or `always()` would red the
+    #     required check on `skipped != success` for a run that never gates a merge.
     #   - the SAME no-op-`edited` guard the work jobs carry, so on a PR title/body
     #     edit that did not move the base — where both work jobs skip — this rollup
     #     skips too, rather than running and failing on `skipped != success`. A
@@ -1077,7 +1116,8 @@ jobs:
     # the parens the trailing `|| changes.base != null` would detach from the AND.
     needs: [gates, dogfood-e2e]
     if: >-
-      always() && (
+      always() &&
+      github.event_name != 'workflow_dispatch' && (
       github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
       github.event.changes.base != null )
