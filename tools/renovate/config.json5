@@ -60,9 +60,9 @@
   labels: ["dependencies"],
 
   // Explicit allowlist for the current stack. `github-actions` is present here
-  // (unlike orion, whose meta jobs moved off GHA): compass runs all CI on GitHub
+  // (unlike the internal monorepo, whose meta jobs moved off GHA): compass runs all CI on GitHub
   // Actions and keeps every workflow `uses:` SHA-pinned — see the github-actions
-  // manager rationale below. Dropped vs orion: `cargo`/`rust-toolchain` (no Rust),
+  // manager rationale below. Dropped vs the internal monorepo: `cargo`/`rust-toolchain` (no Rust),
   // `woodpecker` (no Woodpecker), and `nix` — Renovate's nix manager tracks
   // `flake.lock`, and compass has NO root flake (the only flake.lock files are
   // under forks/*, fenced below), while devenv.lock/devenv.yaml are not flake.lock
@@ -217,7 +217,7 @@
       // (`{ version = "1.26.6"; }`, version-only — hashes come from go-overlay) and
       // DERIVES the `go_X_Y_Z` overlay attr name in devenv.nix:30-31 via
       // lib.replaceStrings. So devenv.nix contains no literal `go_X_Y_Z` string to
-      // regex (orion tracked devenv.nix; compass tracks go.nix instead). The
+      // regex (the internal monorepo tracked devenv.nix; compass tracks go.nix instead). The
       // version is dotted in go.nix, so there is NO dots↔underscores gymnastics —
       // capture it straight for the golang-version datasource, and devenv.nix picks
       // it up automatically at eval time. A go bump changes no pin file, so this
@@ -283,7 +283,7 @@
       // Un-group them so each language pin opens its OWN branch and PR. Because
       // compass's go manager now ALSO targets a file under this glob
       // (tools/toolchain/versions/go.nix), this one rule un-groups all four pins —
-      // orion's separate go un-group rule (its go lived in devenv.nix, off-glob) is
+      // the internal monorepo's separate go un-group rule (its go lived in devenv.nix, off-glob) is
       // NOT needed here.
       matchFileNames: ["tools/toolchain/versions/*.nix"],
       groupName: null,
@@ -406,7 +406,7 @@
       matchDepNames: ["cachix/devenv-nixpkgs"],
       groupName: "devenv nixpkgs channel",
       // DAILY, aligned to the same before-4am-ET window the daily cron lands in
-      // (see `timezone` above). This is a deliberate compass divergence from orion,
+      // (see `timezone` above). This is a deliberate compass divergence from the internal monorepo,
       // whose rule schedules weekly (`before 4am on monday`) to bound `rolling`'s
       // near-daily churn — Matt's ruling for compass: nixpkgs tracks daily too.
       schedule: ["before 4am"],

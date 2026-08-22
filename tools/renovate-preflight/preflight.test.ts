@@ -27,16 +27,16 @@ import {
 // --- Ground-truth fixtures: verbatim `gh api graphql` output, captured live. ---
 
 const OK_STDOUT =
-	'{"data":{"repository":{"nameWithOwner":"RigelBuild/orion","defaultBranchRef":{"name":"main"}}}}';
+	'{"data":{"repository":{"nameWithOwner":"RigelBuild/example-repo","defaultBranchRef":{"name":"main"}}}}';
 
 const BAD_CREDS_STDOUT =
 	'{\n  "message": "Bad credentials",\n  "documentation_url": "https://docs.github.com/rest",\n  "status": "401"\n}';
 const BAD_CREDS_STDERR = "gh: Bad credentials (HTTP 401)";
 
 const NO_ACCESS_STDOUT =
-	'{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"Could not resolve to a Repository with the name \'RigelBuild/orion\'."}]}';
+	'{"data":{"repository":null},"errors":[{"type":"NOT_FOUND","path":["repository"],"message":"Could not resolve to a Repository with the name \'RigelBuild/example-repo\'."}]}';
 const NO_ACCESS_STDERR =
-	"gh: Could not resolve to a Repository with the name 'RigelBuild/orion'.";
+	"gh: Could not resolve to a Repository with the name 'RigelBuild/example-repo'.";
 
 const RATE_LIMIT_STDOUT =
 	'{"errors":[{"type":"RATE_LIMIT","code":"graphql_rate_limit","message":"API rate limit already exceeded for user ID 288418925."}]}';
@@ -69,7 +69,7 @@ describe("classify — success (ok)", () => {
 			probe({
 				exitCode: 0,
 				stdout:
-					'{"data":{"repository":{"nameWithOwner":"RigelBuild/orion"}},"note":"bad credentials / HTTP 401 / NOT_FOUND / rate_limit appear in this successful body"}',
+					'{"data":{"repository":{"nameWithOwner":"RigelBuild/example-repo"}},"note":"bad credentials / HTTP 401 / NOT_FOUND / rate_limit appear in this successful body"}',
 			}),
 		);
 		expect(r.pass).toBe(true);

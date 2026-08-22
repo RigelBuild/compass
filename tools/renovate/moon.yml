@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
 # renovate (RIG-2432) — self-hosted Renovate config + lockstep postUpgradeTask
-# scripts for compass, ported from orion's ci/renovate (SEA-847). A bun/TypeScript
+# scripts for compass, ported from the internal monorepo's renovate config. A bun/TypeScript
 # package; a hoisted root-workspace member (`bun` tag): install is inherited via
 # .moon/tasks/tag-bun.yml (the shared root install) and lint/format are whole-repo
 # tasks on the root project (/moon.yml), so this leaf has no own bun.lock and

@@ -224,30 +224,14 @@ semantic tier correctly.
 
 ### The reference — a shape floor, but ahead on color routing
 
-`apps/rigel.build/src/components/BridgeBoard.astro:526-532` (in the sibling `orion`
-checkout at the same path) — the company-site board renders the same bare squares,
-7px, no glyphs, so on **shape** it is a floor this record improves on:
+The internal monorepo's company-site board is prior art here — its Bridge board
+renders the same bare squares, 7px, no glyphs, so on **shape** it is a floor
+this record improves on.
 
-```css
-.ci-badge,
-.review-badge {
-  width: 7px;
-  height: 7px;
-  flex: none;
-  display: inline-block;
-}
-```
-
-But on **color** the reference is already ahead of Compass: it breaks the CI/review
-collision at the consumer (`BridgeBoard.astro:533-550`) by coloring the review axis off a
+But on **color** that board is already ahead of Compass: it breaks the CI/review
+collision at the consumer by coloring the review axis off a
 different palette — approved in cyan, commented in mute — so green-CI-pass and
-cyan-review-approved never share a hue:
-
-```css
-.ci-badge[data-status="success"]        { background: var(--rigel-green); }
-.review-badge[data-verdict="approved"]  { background: var(--rigel-cyan);  }
-.review-badge[data-verdict="commented"] { background: var(--rigel-mute);  }
-```
+cyan-review-approved never share a hue.
 
 So the reference is a floor on *shape* and prior art on *color routing*. This record can
 back-port its chosen glyph form to the site (Q5); Option E is the inverse — adopt the
@@ -527,7 +511,7 @@ the render shows what the heavy end of the spectrum costs.
 
 **What the user sees:** the pips stay exactly as today (no glyphs, no SVG, pip-scale),
 but the review axis is recolored at the consumer so it no longer shares a hue with CI —
-matching the shipped company-site board (`BridgeBoard.astro:533-550`): review-approved
+matching the shipped company-site board: review-approved
 becomes cyan, review-commented becomes mute, review-changes stays red. CI keeps
 green/amber/red. Green-CI-pass and cyan-review-approved are now different colors, so the
 one cross-axis collision this record opens on is gone.
@@ -635,7 +619,7 @@ above). The rationale each proceeded on is kept below for the executor.
   warning. If Matt wants amber kept, the consumer CSS can use `--cx-warn` directly
   (legal — it's a `--cx-*` token) at the cost of tier purity.
   Prior art supports this assumption: the company-site board already ships `commented` as
-  mute (`BridgeBoard.astro:549-550`). Interaction with Q2: `commented` must keep a
+  mute. Interaction with Q2: `commented` must keep a
   distinct **non-color** channel — do not resolve BOTH Q2 (fold commented into a neutral
   dot) and Q3 (route commented to faint mute) to the neutral pole, or a comment-without-
   verdict becomes a near-invisible grey dot. Keep the speech-bubble glyph (Q2) if Q3
@@ -645,8 +629,8 @@ above). The rationale each proceeded on is kept below for the executor.
   size and the open question already tracked at `components.md:111-114`. Whatever answer
   Matt gives there should bind these glyphs too.
 - **Q5 (non-load-bearing): should the chosen option back-port to
-  `rigel.build/BridgeBoard.astro`** (which has the same bare squares,
-  `BridgeBoard.astro:526-532`)? Assumption: yes eventually, out of scope for SEA-2117.
+  the internal monorepo's company-site board** (which has the same bare
+  squares)? Assumption: yes eventually, out of scope for SEA-2117.
 
 ## Plan / Tasks
 

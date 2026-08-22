@@ -21,14 +21,14 @@ machinery that existed only to carry them.
 ## Global Constraints
 
 - **FROZEN (Matt, 2026-08-19): shared `RigelBuild/{devenv,nix2container,oh-my-pi}`
-  repos + combined patch work.** Compass consumes orion's canonical fork repos —
-  one canonical fork per upstream. Sealed patches useful to both orion and
-  compass land in the shared repos, never duplicated. Do not relitigate; tasks
-  execute it.
+  repos + combined patch work.** Compass consumes the shared canonical fork
+  repos — one canonical fork per upstream. Sealed patches useful to both the
+  internal monorepo and compass land in the shared repos, never duplicated. Do
+  not relitigate; tasks execute it.
 - **Shared-repo patch ownership is disjoint (forge coordination, 2026-08-19).**
   On the shared canonical repos each lane owns a disjoint patch set: forge owns
   `RigelBuild/nix2container`'s nix-DB-drop fix and that repo's standup/CI/release
-  scaffolding (orion T1); compass owns `RigelBuild/devenv`'s `containers.nix`
+  scaffolding; compass owns `RigelBuild/devenv`'s `containers.nix`
   patch. Compass only *consumes* nix2container, never patches it; forge's devenv
   reversal (RIG-2216) repoints nothing, so there is zero overlap today. If a
   third shared repo ever needs both lanes' patches, forge lands the base
@@ -85,9 +85,8 @@ the fork's CLI is also invoked raw (`nix run path:../forks/<fork>#…`) in the
 raw-CLI call sites (six files, incl. `tools/agent-image-env-gate/index.ts`) that
 bypass the lock (see L1/L2 Interfaces). Today a single `path:` tree
 makes CLI-rev == module-rev by construction (`devenv.nix:442-445` names exactly
-this as the reason for the pin shape). The flake-input side follows orion's
-frozen default — `github:RigelBuild/<fork>` pinned via `devenv.lock`
-(`docs/designs/platform/oss-forks/oss-fork-github-native-reversal.md:142-155`) —
+this as the reason for the pin shape). The flake-input side follows the internal
+monorepo's frozen default — `github:RigelBuild/<fork>` pinned via `devenv.lock` —
 but the six raw-CLI sites bypass that lock, so the reversal MUST separately
 preserve the CLI-rev == module-rev identity: the recommended shape is a tiny
 compass-side flake re-exporting the locked inputs so every consumer resolves one
@@ -153,12 +152,13 @@ Without this patch the agent image's `$HOME` is root-owned `/env` instead of
 UPSTREAM (verified 2026-08-19 against `RigelBuild/devenv@afed7bf3`
 `src/modules/containers.nix`: `homeDir = "/env";` hardcoded in a module-scope
 `let`, `envContainerName = builtins.getEnv "DEVENV_CONTAINER"` present, no
-per-container identity options). Orion's design gives its devenv fork no sealed
-diff, and orion has no devenv consumer. Per Matt's ruling, compass's
-`containers.nix` patch set therefore **lands INTO `RigelBuild/devenv` first**
-(harmless to orion, required by compass), and only then does compass repoint to
-`github:RigelBuild/devenv`. A naive repoint before the patch lands would build
-the agent image against upstream's module and break it. The fork-repo PR must
+per-container identity options). The shared `RigelBuild/devenv` fork carries no
+sealed diff for this and has no devenv consumer of its own. Per Matt's ruling,
+compass's `containers.nix` patch set therefore **lands INTO `RigelBuild/devenv`
+first** (harmless to other consumers, required by compass), and only then does
+compass repoint to `github:RigelBuild/devenv`. A naive repoint before the patch
+lands would build the agent image against upstream's module and break it. The
+fork-repo PR must
 carry the patch's provenance notes from `forks/README.md` §devenv (the
 byte-identity-by-construction defaults argument) so the shared repo keeps the
 rationale.
@@ -189,7 +189,7 @@ in makeNixDatabase closureGraphForAllLayers;
 versus upstream's `ignore = [configFile]++allLayers;` — without it the in-image
 nix DB claims store paths the image does not carry, breaking image self-rebuild
 with a failed lstat (comment block at `default.nix:386-395`). This is the SAME
-fix orion's T1 (RIG-2215) landed onto `RigelBuild/nix2container`. That fork
+shared nix-DB-drop fix that landed onto `RigelBuild/nix2container`. That fork
 repo's `main` now carries it: rev
 `8f4a6fd7b10abaeeddff6c4d8bb4908c5123c90c` (verified 2026-08-19,
 `git ls-remote https://github.com/RigelBuild/nix2container` — public, no auth)
@@ -198,11 +198,11 @@ to the fix compass carries at `forks/nix2container/default.nix:386-395`. So
 consuming that rev restores the fix by construction — compass never re-patches
 it.
 
-**Landing sequence — cleared.** Orion T1 was **PR #1483** (RIG-2215),
-**merged 2026-08-19** (orion mergeCommit `f561bd97`, verified via
-`gh api repos/RigelBuild/orion/pulls/1483`); orion deleted its vendored
-`oss/forks/nix2container` subtree and now consumes the fork via a rev-pinned
-`github:` input. The external RIG-2332 block (the sole arm64 image-builder was
+**Landing sequence — cleared.** The shared nix-DB-drop fix landed on
+`RigelBuild/nix2container` (rev `8f4a6fd7`, **merged 2026-08-19**); the internal
+monorepo deleted its own vendored `nix2container` subtree and now consumes the
+fork via a rev-pinned `github:` input. The external RIG-2332 block (the sole
+arm64 image-builder was
 down) is therefore **resolved** — the fork content is live on
 `RigelBuild/nix2container` `main`. Compass consumes the same canonical repo
 (Matt's one-fork-per-upstream ruling) at rev `8f4a6fd7`, does **not** stand up a
@@ -273,9 +273,10 @@ this record does not require it.
   repos: one fork per upstream, patch work combined. Two forks of the same
   upstream would duplicate the sealed patches and re-create the divergence this
   reversal exists to end. Frozen; not relitigated here.
-- **Defer until orion's reversal fully lands** — rejected. Only the
-  nix2container lane has a genuine cross-repo dependency (orion T1); serializing
-  the whole reversal behind orion's completion keeps 7424 vendored files (and
+- **Defer until the internal monorepo's reversal fully lands** — rejected. Only
+  the nix2container lane has a genuine cross-repo dependency (the shared
+  nix-DB-drop fix); serializing the whole reversal behind that completion keeps
+  7424 vendored files (and
   their machinery) in compass longer for no correctness gain. Lanes here
   sequence on their actual prerequisites only.
 
@@ -287,7 +288,8 @@ tree that nothing consumes but everything still gates); the teardown lane
 removes only the machinery shared across forks, and runs after the last tree is
 gone.
 
-Dependency order: L0a → L2; L0b → L1 (L0b confirms orion PR #1483 / RIG-2215,
+Dependency order: L0a → L2; L0b → L1 (L0b confirms the shared nix2container fix
+landed on `RigelBuild/nix2container`,
 which **merged 2026-08-19** — the earlier RIG-2332 arm64-builder block is
 resolved); L3 independent (behind OQ1's answer); L1+L2+L3 → L4. **Execution
 order:** L1's external prerequisite is now met, so L1 can run at any point after
@@ -331,16 +333,16 @@ nix2container shared fix has landed.
     greenfield). Compass owns the `containers.nix` patch + the compass repoint;
     forge owns the scaffolding convention.
   - Gate: the fork repo's own CI green **and** the byte-identity nix-eval check.
-- **L0b — confirm orion T1 (RIG-2215) merged on `RigelBuild/nix2container`.**
+- **L0b — confirm the shared nix-DB-drop fix landed on `RigelBuild/nix2container`.**
   **Done (2026-08-19):** `RigelBuild/nix2container` `main` is at rev
   `8f4a6fd7b10abaeeddff6c4d8bb4908c5123c90c`, upstream `master` plus the one
-  relocated-copyToRoot-paths patch (the shared nix-DB-drop fix); orion PR #1483
-  merged (mergeCommit `f561bd97`). This is the rev L1 pins. No compass-side work.
+  relocated-copyToRoot-paths patch (the shared nix-DB-drop fix). This is the rev
+  L1 pins. No compass-side work.
 
 Interfaces:
 
 - Consumes: `forks/devenv/src/modules/containers.nix` (the sealed diff, source
-  of truth for L0a); orion RIG-2215's PR on `RigelBuild/nix2container`.
+  of truth for L0a); the shared nix-DB-drop fix on `RigelBuild/nix2container`.
 - Produces: `RigelBuild/devenv` `main` rev carrying the patch;
   `RigelBuild/nix2container` `master` rev carrying the shared fix. These two
   revs are the pins L1/L2 lock.
@@ -536,7 +538,7 @@ Interfaces:
 
 - [ ] L0a — land compass's `containers.nix` patch set in `RigelBuild/devenv`
       (fork-repo PR; provenance carried; fork CI green).
-- [x] L0b — orion T1 (RIG-2215) **merged 2026-08-19**; `RigelBuild/nix2container`
+- [x] L0b — shared nix-DB-drop fix **landed 2026-08-19**; `RigelBuild/nix2container`
       `main` at `8f4a6fd7` carries the shared nix-DB fix (the rev L1 pins).
 - [ ] L1 — repoint nix2container consumers to pinned
       `github:RigelBuild/nix2container`; delete `forks/nix2container/` + its
@@ -573,16 +575,15 @@ Interfaces:
    `devenv.nix:461`, `ci.yml:812`, `publish-agent-image.yml:139,160`,
    `tools/agent-image-env-gate/index.ts:100,118`) —
    **LOAD-BEARING, but narrower than first framed.** The *flake-input* half is
-   settled: orion has frozen the nix-flake-input class as
-   `github:RigelBuild/<fork>` pinned **via lockfile**
-   (`docs/designs/platform/oss-forks/oss-fork-github-native-reversal.md:142-155`
-   — verified at source; the deliberate default plus the RIG-1860 whole-repo
-   narHash fix), so compass's one flake-input consumer, `agent-image/devenv.lock`,
-   converges on that with no reason to diverge. What orion's precedent does **not**
-   cover is the wrinkle: orion's frozen class table (`:142-147`) has four import
-   classes — flake-input, standalone-executable-as-a-file, GHCR-image, and
-   no-consumer — but **none is a raw-CLI bypass**, whereas compass invokes the
-   fork CLI raw at the six sites above, which bypass `devenv.lock` entirely.
+   settled: the internal monorepo's prior art froze the nix-flake-input class as
+   `github:RigelBuild/<fork>` pinned **via lockfile** (the deliberate default
+   plus a whole-repo narHash fix), so compass's one flake-input consumer,
+   `agent-image/devenv.lock`, converges on that with no reason to diverge. What
+   that precedent does **not** cover is the wrinkle: its frozen class table has
+   four import classes — flake-input, standalone-executable-as-a-file,
+   GHCR-image, and no-consumer — but **none is a raw-CLI bypass**, whereas
+   compass invokes the fork CLI raw at the six sites above, which bypass
+   `devenv.lock` entirely.
    Today a single `path:` tree makes the CLI rev and the locked
    module-set rev identical by construction (`devenv.nix:442-445` names this as
    the reason for the pin shape; the frozen dogfood-loop record makes the same
@@ -593,15 +594,16 @@ Interfaces:
    another, with no gate to catch it. **Recommendation: a tiny compass-side flake
    re-exporting the locked inputs**, so the raw CLIs resolve the same lockfile rev
    as the module set and the by-construction identity is restored — this option
-   has no orion analog. The coherent alternative is orion's literal style — keep
+   has no prior-art analog. The coherent alternative is the literal style — keep
    the `github:…/<rev>` literals but have L1/L2 add a CI assert that each
    literal's rev equals the corresponding `devenv.lock` rev, named in the lane
-   gates; this mirrors orion's terraform-provider class (`:145,166-178`), a pinned
+   gates; this mirrors the internal monorepo's terraform-provider class, a pinned
    **non-flake** consumption (tagged GitHub Release + committed sha256 manifest,
-   verified at build time) — the orion shape for "pin and verify a path not
+   verified at build time) — the prior-art shape for "pin and verify a path not
    resolved through a lockfile." This is the record's one genuine fork — Matt's
-   call; note at review that orion has no raw-CLI-bypass class, so its flake-input
-   precedent settles compass's `devenv.lock` consumer but not the raw-CLI shape.
+   call; note at review that the prior art has no raw-CLI-bypass class, so its
+   flake-input precedent settles compass's `devenv.lock` consumer but not the
+   raw-CLI shape.
 3. **Secret-scanning re-widening fallout** — non-load-bearing. Deleting
    `.github/secret_scanning.yml:25` re-enables scanning + push protection
    repo-wide. Expected clean once the trees are gone; if historical alerts

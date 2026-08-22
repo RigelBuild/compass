@@ -18,8 +18,8 @@
 // the initialized nix DB — non-reproducible bloat and phantom DB entries. Two
 // such vars exist (`DEVENV_PROFILE`, a 266-path dev profile; `DEVENV_TASK_FILE`,
 // the tasks.json), each neutralized consumer-side in agent-image/devenv.nix
-// (mkForce to a non-store placeholder, gated on isBuilding, as orion ships it —
-// docs/designs, SEA-2102). This gate is the regression backstop for that
+// (mkForce to a non-store placeholder, gated on isBuilding, as the internal monorepo ships it).
+// This gate is the regression backstop for that
 // neutralization, plus a build-host-home leak check that catches a builder path
 // baked into ANY key (a non-reproducible-across-hosts defect). Both invariants
 // are set operations on the built image's env, not an eyeball.

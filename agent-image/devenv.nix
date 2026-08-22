@@ -66,7 +66,7 @@ in
   # content layers and the initialized nix DB. `DEVENV_PROFILE` is the 266-path
   # dev profile; `DEVENV_TASK_FILE` is the generated tasks.json. Force both to a
   # non-store placeholder while a container is being built (isBuilding, inert in
-  # a normal dev shell), exactly as orion does (docs/designs, SEA-2102). The
+  # a normal dev shell), exactly as the internal monorepo does. The
   # agent-image-env-gate is the regression backstop for this.
   env = {
     DIRENV_CONFIG = "/etc/direnv";

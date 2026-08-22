@@ -14,7 +14,7 @@
 // token swap, and are done as reviewed manual edits:
 //   - `sealedsecurity/sealed` (the internal monorepo): Matt ruled SCRUB — a
 //     public repo must not reference an internal monorepo at all (not even
-//     repointed to orion). That means removing the link / genericising the
+//     repointed to the internal monorepo). That means removing the link / genericising the
 //     fixture, which is semantic.
 //   - the dead `seal` Rust component (`seal-daemon`, `oss/seal`, `seal-runtime`)
 //     in historical design records: prose-bound, too few for a safe regex.

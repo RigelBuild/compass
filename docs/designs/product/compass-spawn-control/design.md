@@ -5,10 +5,10 @@ Status: Active
 This record freezes on merge; later changes supersede by citation, never
 rewrite.
 
-Ported from the frozen orion record (RigelBuild/orion #884, SEA-1361) with
+Ported from the internal monorepo's prior record with
 Matt-ruled amendments, re-grounded against the current compass tree
-(`main@origin`, 2026-08-07). Orion's DL-053..060 are re-expressed here as
-DL-164..DL-171.
+(`main@origin`, 2026-08-07). The internal monorepo's prior decisions are
+re-expressed here as DL-164..DL-171.
 
 > **Amendment (DL-185, Matt 2026-08-07):** the manual add-a-workstream /
 > create-agent surface is dropped from the Compass UI — `NewWorkstreamDialog`,
@@ -36,16 +36,17 @@ control that starts a workstream agent (provision + start, with an optional
 initial prompt) from the board, and hardens the existing stop into the same
 control model.
 
-*(Port note — superseding the orion premise: the source record described stop
-as a no-op stub, `const stopAgent = () => {};`. That was true of the orion
-snapshot; compass has since shipped the real `stopAgent`, so every stop-side
-task below hardens or extends shipped behavior rather than replacing a stub.)*
+*(Port note — superseding the internal monorepo's premise: the source record
+described stop as a no-op stub, `const stopAgent = () => {};`. That was true of
+the internal monorepo's snapshot; compass has since shipped the real
+`stopAgent`, so every stop-side task below hardens or extends shipped behavior
+rather than replacing a stub.)*
 
 ## Spec impact
 
 Spec-impact: `docs/specs/product/compass.md` — reconciliations land in the
 **T0** proto+server PR. Two are additions to the compass.v1 contract, both
-Matt-authorized on the orion record (DL-166, DL-167): a new `SpawnAgent` RPC
+Matt-authorized on the prior record (DL-166, DL-167): a new `SpawnAgent` RPC
 (+ `SpawnAgentRequest`/`SpawnAgentResponse` messages) on `CompassService`, and
 an `agent_account_id` field on `AgentSessionStatus`. The third is a **new
 SHALL binding one container per agent account** (DL-170, Matt ruled
@@ -56,37 +57,37 @@ lands), per the "spec updated as the last step of implementation" convention —
 not this design-only PR, which has no code. The reject-on-live rule **agrees
 with** the container-scoped SHALL at `compass.md:368-370`.
 
-*(Port note: the orion record carried a fourth reconciliation — relaxing
+*(Port note: the prior record carried a fourth reconciliation — relaxing
 `ProvisionAgentWorkspace`'s repo requirement for self-clone. That already
 shipped in compass under SEA-1527: `ProvisionAgentWorkspaceRequest` no longer
 carries a repo (`compass.proto:506-509` — "Repo carriage removed … the agent
-self-clones"), so it drops from T0's scope entirely, along with the orion
+self-clones"), so it drops from T0's scope entirely, along with the prior
 record's clone-target-validation and agent-credential prerequisites, which
 were consequences of the now-shipped change.)*
 
 ## Approach
 
-### Posture: live-wired from the start (amends orion's walking skeleton — DL-165)
+### Posture: live-wired from the start (amends the walking-skeleton posture — DL-165)
 
-The orion record froze a walking-skeleton posture (its OQ-A) on three facts of
-that tree: `createAppStore` took no arguments, `SubscribeEvents` had zero UI
-consumers, and no live client seam existed. **All three are false in compass
-today**: `createAppStore(options: AppStoreOptions)` already takes an options
-bag carrying `comms` and `compass` clients (`store.ts:551-589`, `:667`), the
-store already runs the live comms stream and the SubscribeEvents-backed board
-read when clients are present (`store.ts:897-912`, `:922-932`), and the
-shipped `stopAgent` already dials `stopAgentSession` on that seam
-(`store.ts:1835-1848`). The rationale for fixture-first is gone, so this port
-amends the posture: **the control lane builds against the live seam
-directly** — store actions await the real RPCs when `options.compass` is
-present and degrade to the documented offline refusal (the shipped `stopAgent`
-precedent: refuse with a surfaced reason, never a silent no-op) when it is
-not. The UI tasks still gate on T0 (the `SpawnAgent` RPC must exist to be
-called), but there is no separate stacked "wiring lane": orion's T6 folds into
-T2/T4. Recorded as DL-165, superseding orion's walking-skeleton ruling whose
-premises no longer hold.
+The internal monorepo's prior record froze a walking-skeleton posture (its
+OQ-A) on three facts of that tree: `createAppStore` took no arguments,
+`SubscribeEvents` had zero UI consumers, and no live client seam existed.
+**All three are false in compass today**: `createAppStore(options:
+AppStoreOptions)` already takes an options bag carrying `comms` and `compass`
+clients (`store.ts:551-589`, `:667`), the store already runs the live comms
+stream and the SubscribeEvents-backed board read when clients are present
+(`store.ts:897-912`, `:922-932`), and the shipped `stopAgent` already dials
+`stopAgentSession` on that seam (`store.ts:1835-1848`). The rationale for
+fixture-first is gone, so this port amends the posture: **the control lane
+builds against the live seam directly** — store actions await the real RPCs
+when `options.compass` is present and degrade to the documented offline
+refusal (the shipped `stopAgent` precedent: refuse with a surfaced reason,
+never a silent no-op) when it is not. The UI tasks still gate on T0 (the
+`SpawnAgent` RPC must exist to be called), but there is no separate stacked
+"wiring lane": the prior record's T6 folds into T2/T4. Recorded as DL-165,
+superseding the walking-skeleton ruling whose premises no longer hold.
 
-### The wire contract (two changes, Matt-authorized on orion; re-grounded here)
+### The wire contract (two changes, Matt-authorized on the prior record; re-grounded here)
 
 Baseline RPCs from `proto/compass/v1/compass.proto`, verified this run:
 
@@ -243,7 +244,7 @@ lifecycle affordance is start/stop on an existing card:
    incidental property DL-170 exists to stop leaning on).
 
    The check **must not** be sourced from Server-side in-memory state.
-   Compass now carries the reverse index orion lacked —
+   Compass now carries the reverse index the internal monorepo lacked —
    `Hub.SessionForAccount` (`relay_comms.go:157-171`, over
    `accountSessions`) — but it is still **live-scoped and cleared on every
    Runner re-enroll** (`hub.go:707-711`, pinned by
@@ -292,7 +293,7 @@ precedence *switch*, not an overwrite — `SpawnPhase` does not grow the
 live-session variants. A card with no binding (never started) shows no pill.
 Because the live event stream is already wired in compass
 (`store.ts:926-932`), the switch is **attribution-gated, not lane-gated**
-(an amendment to orion's "T6-gated" phrasing): it happens the moment the
+(an amendment to the prior record's "T6-gated" phrasing): it happens the moment the
 first attributed status for that agent lands, which requires T0's Change 2
 on the wire — until T0 ships, statuses carry no account and the binding dot
 holds.
@@ -304,7 +305,7 @@ agent-keyed map would bleed one card's pill onto siblings). The binding
 carries its `agentAccountId` for the RPC. Bindings are store-internal
 wire-lifecycle bookkeeping, not a fixture-shape change: the compass board's
 `Issue` (`stub-data.ts:202-240`) and `Agent` shapes stay frozen.
-*(Terminology port note: orion's UI had a `Workstream` type; the compass
+*(Terminology port note: the internal monorepo's UI had a `Workstream` type; the compass
 board renders `Issue` cards (`board.ts:39-56`, `components/IssueCard.tsx`)
 and has no `Workstream` symbol. This record keeps "workstream" for the
 concept — an issue promoted to a unit of work — and `workstreamId` binds to
@@ -354,13 +355,13 @@ equally.
 
 ### Alternatives considered
 
-- **Walking-skeleton-first** (orion OQ-A, Matt-ruled there): build the
+- **Walking-skeleton-first** (the internal monorepo's prior ruling, Matt-ruled there): build the
   control UX as fixture mutations, wire later in a stacked lane. Superseded
   by the shipped compass store: the injection seam and live streams the
   skeleton waited on already exist (`store.ts:551`, `:667`, `:897-932`), and
   `stopAgent` is already live — a fixture-first lane would now *regress* the
   stop side. Recorded as DL-165.
-- **Client-orchestrated Provision → Start** (the orion draft's original
+- **Client-orchestrated Provision → Start** (the prior draft's original
   control flow): the client makes two calls and juggles a split retry-id.
   Rejected (Matt ruled the composite `SpawnAgent`, DL-166): it pushes wire
   dedup semantics into the UI; the composite keeps them server-side where
@@ -369,7 +370,7 @@ equally.
   session started by another client or surviving a refresh can't reconcile.
   Rejected (Matt ruled the wire attribution, DL-167).
 - **Server-side reject-on-live check over `SessionForAccount`**: compass now
-  has the reverse map orion lacked (`relay_comms.go:157-171`), but it fails
+  has the reverse map the internal monorepo lacked (`relay_comms.go:157-171`), but it fails
   open after a Runner re-enroll (`hub.go:707-711`); the Runner scan is
   authoritative. Rejected — the Control-flow section carries the argument.
 - **Browser `confirm()` for stop**: rejected — blocks the event loop,
@@ -403,7 +404,7 @@ Every task below inherits these; task briefs do not restate them.
 - **Live seam, offline honest**: store actions await the real client when
   `options.compass` / `options.comms` is present and refuse with a surfaced
   reason when absent — the shipped `stopAgent` shape (`store.ts:1816-1849`),
-  never a silent no-op. (Amends orion's walking-skeleton constraint;
+  never a silent no-op. (Amends the walking-skeleton constraint;
   DL-165.)
 - **Fixture shapes stay frozen**: no new fields on `Issue` / `Agent` in
   `stub-data.ts`; wire-lifecycle bookkeeping lives in the store's
@@ -420,7 +421,7 @@ Every task below inherits these; task briefs do not restate them.
 
 Tasks below. **T0** is the proto+server change (compass service-owner's
 lane); T1–T4 are the UI build, live-wired per DL-165 and stacked behind T0;
-T5 is the docs/cleanup sweep. (Orion's separate T6 wiring lane is dissolved
+T5 is the docs/cleanup sweep. (The prior record's separate T6 wiring lane is dissolved
 into T2/T4 — see the Posture section.)
 
 ### T1 — Session-binding state + spawn/stop domain types
@@ -760,7 +761,7 @@ the compass service-owner. Independent of the UI tasks, so no freeze block.
   (`compass.proto:59`). Request = `agent_account_id`=1, `initial_prompt`=2,
   `client_request_id`=3; Response = `session_id`=1, `container_name`=2.
   Server orchestrates the existing RunnerHub `Provision` then `Start`
-  (`runnerhub/commands.go:40-88`). *(The orion T0 additionally relaxed the
+  (`runnerhub/commands.go:40-88`). *(The internal monorepo's T0 additionally relaxed the
   repo requirement in `runner/spec.go` and guarded `cloneRepo` — all shipped
   in compass under SEA-1527; `BuildSpec` at `spec.go:76-88` already builds a
   repo-less spec. Dropped from scope.)*
@@ -869,14 +870,13 @@ the compass service-owner. Independent of the UI tasks, so no freeze block.
 
 ## Resolved decisions
 
-The orion record resolved eight load-bearing forks with Matt (its OQ-A/B/D/G,
-2026-07-24; OQ-H/I/J/K, 2026-07-26) and ratified two deferrals. This port
-re-expresses them as compass ledger rows DL-164..DL-171, plus one
-port-amendment row (DL-165). The orion rulings' full arguments live in the
-source record; the compass-grounded substance is folded into the sections
-above. Mapping:
+The internal monorepo's prior record resolved eight load-bearing forks with
+Matt and ratified two deferrals. This port re-expresses them as compass ledger
+rows DL-164..DL-171, plus one port-amendment row (DL-165). The prior rulings'
+full arguments live in the source record; the compass-grounded substance is
+folded into the sections above. Mapping:
 
-### DL-164 (orion OQ-B / DL-053) — start-an-agent; multiple cards per agent; reject-on-live
+### DL-164 (prior decision) — start-an-agent; multiple cards per agent; reject-on-live
 
 Starting an agent is the **lifecycle** operation (`startAgent` →
 `SpawnAgent`), and `SpawnAgent` rejects when the agent already holds a live
@@ -894,13 +894,13 @@ add-a-workstream board mutation (`addWorkstream`) and UI-side agent creation
 
 ### DL-165 (port amendment, this record) — live-wired posture
 
-Supersedes orion's walking-skeleton ruling (its OQ-A / DL-054): its premises
+Supersedes the walking-skeleton ruling (the prior record's): its premises
 (no injection seam, no live streams, stub stop) are all false in compass —
 `AppStoreOptions` + live comms/board streams + real `stopAgent` shipped. The
-control lane builds against the live seam; orion's stacked T6 dissolves into
+control lane builds against the live seam; the prior record's stacked T6 dissolves into
 T2/T4. Offline behavior is the shipped refusal shape, never a silent no-op.
 
-### DL-166 (orion OQ-D / DL-055) — server-side composite `SpawnAgent`
+### DL-166 (prior decision) — server-side composite `SpawnAgent`
 
 One `CompassService.SpawnAgent` RPC runs Provision→Start server-side under a
 single `client_request_id`; the server owns the internal dedup (composing
@@ -910,7 +910,7 @@ Reject-on-live is a pre-Provision short-circuit ordered after the dedup-join
 lookup, sourced from the Runner's authoritative status scan. Rejected
 alternative: client-orchestrated two-call flow.
 
-### DL-167 (orion OQ-G / DL-056) — `agent_account_id` on `AgentSessionStatus`
+### DL-167 (prior decision) — `agent_account_id` on `AgentSessionStatus`
 
 The wire attribution making the reconcile full-fleet within the live hub
 binding's scope; joined Server-side from `sessionAccounts`, carried
@@ -919,7 +919,7 @@ resolves its account before `unbindSession` drops the binding. Also the
 prerequisite of the reject-on-live scan. Rejected alternative:
 self-spawned-only reconcile scope.
 
-### DL-168 (orion OQ-H / DL-057) — a `stopped` card stays restartable
+### DL-168 (prior decision) — a `stopped` card stays restartable
 
 The "▶ start" affordance shows on no-binding **or** a `stopped` binding
 (agent not live), matching the `startAgent` guard exactly — `applyStopped`
@@ -927,14 +927,14 @@ returns a binding rather than clearing it, so a no-binding-only affordance
 would strand every stopped card. Restart mints a fresh binding via
 `beginSpawn`.
 
-### DL-169 (orion OQ-I / DL-058) — Retry is `spawn-failed`-only
+### DL-169 (prior decision) — Retry is `spawn-failed`-only
 
 On `stop-failed` the session is still held, so re-sending `SpawnAgent` is
 semantically wrong (and reject-on-live would bounce it); recovery is
 re-issuing the idempotent stop, so `beginStop` accepts `running` |
 `stop-failed` and the LogPanel enablement covers `stop-failed`.
 
-### DL-170 (orion OQ-J / DL-059) — one-container-per-agent-account SHALL
+### DL-170 (prior decision) — one-container-per-agent-account SHALL
 
 T0 adds a SHALL to `compass.md` binding one container per agent account, so
 the agent-scoped reject-on-live is contract-backed. Today the guarantee is
@@ -943,7 +943,7 @@ incidental — the container name is a pure function of the account
 container-scoped; a future Runner naming containers differently would
 satisfy every existing SHALL while breaking the rule.
 
-### DL-171 (orion OQ-K / DL-060) — `SpawnAgent` ships `adminOnly`
+### DL-171 (prior decision) — `SpawnAgent` ships `adminOnly`
 
 Every generated procedure must be classified (`admin_gate.go:47-127`;
 exhaustiveness enforced by `classify_exhaustive_test.go:49-65`), so T0 must
@@ -955,10 +955,10 @@ the handler, not a bare reclassification.
 
 ### Deferrals (ratified, non-load-bearing)
 
-- **Graceful vs hard stop** (orion OQ-E): the wire has one "deliberately
+- **Graceful vs hard stop** (prior deferral): the wire has one "deliberately
   kill" semantic (`compass.proto:61-63`); "graceful" is the T4 two-step UI
   confirm. `ReloadAgentSession` surfaces later as a distinct restart action.
-- **Injection-seam signature** (orion OQ-F): dissolved by shipped code —
+- **Injection-seam signature** (prior deferral): dissolved by shipped code —
   `AppStoreOptions` exists (`store.ts:551`) and the disposal question is
   settled by the store's owner-scoped cleanup (`store.ts:899-900`,
   `:924-925`). Nothing left to coordinate.
@@ -969,7 +969,7 @@ None load-bearing beyond the recorded decisions. One port-level note for
 Matt's awareness at review (not a blocker; designed against the stated
 assumption):
 
-- **OQ-P1 — posture amendment (DL-165).** This port supersedes orion's
+- **OQ-P1 — posture amendment (DL-165).** This port supersedes the prior
   Matt-ruled walking-skeleton posture because its factual premises no longer
   hold in compass (live seam + real stop shipped). Recommendation: ratify
   DL-165 as stated. If Matt prefers to preserve the fixture-first lane

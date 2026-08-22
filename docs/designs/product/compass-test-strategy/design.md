@@ -2,9 +2,9 @@
 
 Status: Draft
 
-> **Design record** — ported from the frozen orion record (RigelBuild/orion
-> PR #740) into compass, with Matt-ruled amendments grounding it against the
-> shipped compass CI. Ledgered as DL-174..DL-181.
+> **Design record** — ported from the internal monorepo's frozen
+> test-strategy record into compass, with Matt-ruled amendments grounding it
+> against the shipped compass CI. Ledgered as DL-174..DL-181.
 
 ## Problem / Intent
 
@@ -22,13 +22,13 @@ remaining unexecuted deliverables: in-harness require-live teeth, one thin
 client↔server contract lane (a follow-up owned conceptually by the
 dogfood-e2e harness record).
 
-**Provenance and amendments.** This is a port of the frozen orion record
-(RigelBuild/orion PR #740), which designed the strategy against orion's
+**Provenance and amendments.** This is a port of the internal monorepo's
+frozen test-strategy record, which designed the strategy against its
 Woodpecker/moon CI before compass forked. Two of its decisions are amended by
 Matt's ruling to match compass's shipped reality (see D-A1/D-A2 below): the
-orion record mandated a separate `compass-go:test-pg` CI lane — compass runs
+ancestor record mandated a separate `compass-go:test-pg` CI lane — compass runs
 the pgtest suites **inline in the one existing CI job**, with no extra job —
-and the orion record provisioned CI Postgres as a per-step embedded
+and the ancestor record provisioned CI Postgres as a per-step embedded
 `postgresql_18` postmaster on a Unix socket — compass ships a digest-pinned
 `postgres:16-alpine` **service container** with a TCP DSN. This record is a
 **different scope** from the compass-dogfood-e2e harness
@@ -46,8 +46,8 @@ and contract testing — the layered pyramid underneath it.
 `[fmt, vet, lint, nilaway, test, build, vuln, licenses]` (`go/moon.yml:176`).
 Neither the `pgtest` nor the `podman` suites compile into it.
 
-**The live-Postgres surface runs inline in CI — shipped.** Unlike the orion
-ancestor (where no CI lane ran the pgtest suites at all), compass CI already
+**The live-Postgres surface runs inline in CI — shipped.** Unlike the
+internal monorepo's ancestor record (where no CI lane ran the pgtest suites at all), compass CI already
 runs them: `.github/workflows/ci.yml` attaches a Postgres **service
 container** to the one `CI` job (`ci.yml:108-127`) and, after the moon
 battery, a folded-in step runs
@@ -135,17 +135,17 @@ composes the served seams; full browser e2e is rejected (D5).
 | Container lifecycle / full-stack scenario | `//go:build podman` (incl. `go/e2e/`) | production Launch path + dogfood legs | rootless podman | skip-if-absent; owned by the dogfood-e2e record (D4) |
 | Client transport contract | `bun test` vs a live Go server binary | generated `compass.v1` TS client ↔ real server | server binary + Postgres | **S3 unexecuted — follow-up, fold toward dogfood-e2e** |
 
-### A1 — One CI job, pgtest inline: no separate lane (amends orion D2/DL-049)
+### A1 — One CI job, pgtest inline: no separate lane (amends the ancestor record's D2/DL-049)
 
 **Matt's ruling, verbatim: "trimmed but no extra CI job, it goes in the same
-existing job."** The orion record's D2 mandated a separate `compass-go:test-pg`
+existing job."** The ancestor record's D2 mandated a separate `compass-go:test-pg`
 task beside `test`, landing outside the `ci` aggregate's deps until two
 then-red suites closed. Compass took the other fork and it is shipped: the
 pgtest step runs **inline in the one `CI` job**, after the moon battery
 (`ci.yml:295-316`), and the workflow's own header documents why — it *was*
 once a separate job, and was folded in *"so there is one required check, at
 the cost that a service-container flake now reds `CI`"* (`ci.yml:38-44`).
-That tradeoff is accepted and ratified here (DL-175). What the orion D2 was
+That tradeoff is accepted and ratified here (DL-175). What that D2 was
 really protecting survives intact at a different layer: the **hermetic moon
 `test` task stays dependency-free** (a machine with no Postgres still runs
 `moon run compass-go:test` green; the tag keeps the suites out of that gate),
@@ -165,12 +165,12 @@ that coupling, `ci.yml:335-340`). S1 adds the in-harness half: a
 one seam every suite passes through (`RequireDSN`), set by the CI step env.
 The workflow guard stays — two independent teeth, one contract.
 
-### A2 — Postgres provisioning in CI: the shipped service container (amends orion D4)
+### A2 — Postgres provisioning in CI: the shipped service container (amends the ancestor record's D4)
 
-**Decision, not open question — this is ground truth.** The orion record
+**Decision, not open question — this is ground truth.** The ancestor record
 ruled a per-step **embedded `postgresql_18` postmaster** on a Unix socket
 (nix-vendored binary, `initdb` a throwaway datadir, socket-only DSN in URL
-form), because orion's Woodpecker step image had no container CLI and no
+form), because its Woodpecker step image had no container CLI and no
 service-step concept. Compass CI is GitHub Actions, which has exactly that
 concept, and the shipped shape uses it: a `services:` **Postgres service
 container**, digest-pinned —
@@ -180,14 +180,14 @@ container**, digest-pinned —
 (`ci.yml:301`). The pin is by digest deliberately (`16-alpine` is a mutable
 tag) and must stay equal to `pgtest.go`'s `pgImage` (`pgtest.go:42-50`) so CI
 and a local container run exercise byte-identical Postgres. The entire
-embedded-postmaster apparatus the orion record designed — the socket-only
+embedded-postmaster apparatus the ancestor record designed — the socket-only
 `sun_path` budget, the URL-form-DSN-or-schema-isolation-breaks analysis, the
 `initdb -U postgres` provisioning flags, `max_connections` measurement — is
 **not ported**: it solved a Woodpecker constraint compass does not have. What
 survives of it is the two invariants the analysis protected, both already
 held by the shipped shape: the DSN is URL-form (so the harness's query-string
 `search_path` threading works unchanged), and version parity is pinned
-(digest-equal image on both sides, at major **16**, not the orion record's
+(digest-equal image on both sides, at major **16**, not the ancestor record's
 18 — the parity mechanism matters, the major is whatever both sides pin).
 
 ### A3 — The whole-flow level: compose the already-built seams; no browser e2e
@@ -214,7 +214,7 @@ here.
 
 ### A4 — Client-transport contract lane: a follow-up owned with dogfood-e2e
 
-The orion F5 lane — a `bun test` suite spawning the real `compass-server`
+The internal monorepo's ancestor F5 lane — a `bun test` suite spawning the real `compass-server`
 binary and driving the generated TS client against it over a loopback
 endpoint — remains a real gap (mock-fetch on the TS side, in-process servers
 on the Go side; the two generated stubs never meet a real wire in any gate).
@@ -233,7 +233,7 @@ fixture from this record. This record does not edit the dogfood-e2e record.
 `docs/designs/product/compass-test-strategy/design.md` — cross-cutting over
 the verticals and the gate contract, directory-form like its siblings.
 Records freeze on merge; this one supersedes-by-citation and rewrites none.
-It supersedes its own orion ancestor in the two amended decisions (D-A1,
+It supersedes its own ancestor record in the two amended decisions (D-A1,
 D-A2).
 
 ## Global Constraints
@@ -391,22 +391,22 @@ Unexecuted (the deliverables of this record):
 ## Decisions
 
 Ledgered as DL-174..DL-181 in `docs/designs/product/DECISIONS.md`. D-A1 and
-D-A2 are the Matt-ruled amendments overriding the orion ancestor's D2/D4.
+D-A2 are the Matt-ruled amendments overriding the ancestor record's D2/D4.
 
 - **D-A1 (DL-175) — pgtest runs INLINE in the existing CI job; no separate
   lane.** Matt, verbatim: *"trimmed but no extra CI job, it goes in the same
-  existing job."* Overrules the orion record's separate `test-pg` task/lane.
+  existing job."* Overrules the ancestor record's separate `test-pg` task/lane.
   The shipped shape (`ci.yml:38-44,295-316`) is ratified: one required check;
   a service-container flake reds `CI` (accepted); the hermetic moon `test`
   task stays dependency-free via the build tag; the remaining work is teeth
   (S1), not wiring.
 - **D-A2 (DL-176) — CI Postgres is the shipped SERVICE CONTAINER, not an
-  embedded postmaster.** Overrules the orion record's per-step
+  embedded postmaster.** Overrules the ancestor record's per-step
   `postgresql_18`-postmaster-on-a-Unix-socket ruling, which solved a
   Woodpecker-step constraint (no container CLI, no service steps) that
   GitHub Actions does not have. Shipped: `services: postgres` digest-pinned
   `16-alpine`, health-gated, TCP URL-form DSN (`ci.yml:108-127,301`). The
-  two invariants the orion analysis protected survive: URL-form DSN (the
+  two invariants the ancestor analysis protected survive: URL-form DSN (the
   harness's query-string `search_path` threading) and digest-equal
   image parity with `pgtest.go:50`.
 - **D1 (DL-174) — the differential-oracle pyramid.** Every seam carries a
@@ -421,15 +421,15 @@ D-A2 are the Matt-ruled amendments overriding the orion ancestor's D2/D4.
 - **D3 (DL-178) — whole-flow scope: one thin composing test.** `runner.Dial`
   → the production `RunnerService` door (Runner-kind bearer gate) is the one
   uncomposed seam; S2 closes it and nothing else. A full smoke rebuild was
-  rejected as re-describing shipped work (carried from the orion D5 ruling).
+  rejected as re-describing shipped work (carried from the ancestor record's D5 ruling).
 - **D4 (DL-179) — podman/full-stack lanes stay out of this gate.** The
   `podman`-tagged surface (runtime lifecycle, `go/e2e/` dogfood legs) is
   skip-if-absent, developer-run, owned by the dogfood-e2e/infra lane; its CI
-  promotion is not this record's scope (carried from the orion D1).
+  promotion is not this record's scope (carried from the ancestor record's D1).
 - **D5 (DL-180) — no browser e2e.** The whole-flow level is a Go/`pgtest`
   composing test; the UI transport is contract-tested at the frame level and
-  the client factory over the S3 lane once it lands (carried from the orion
-  D3).
+  the client factory over the S3 lane once it lands (carried from the ancestor
+  record's D3).
 - **D6 (DL-181) — the bun contract lane folds toward dogfood-e2e.** The
   TS-client↔Go-server contract lane is a real gap but consumes the dogfood
   harness's bring-up rather than duplicating it; it is filed as a follow-up
@@ -437,7 +437,7 @@ D-A2 are the Matt-ruled amendments overriding the orion ancestor's D2/D4.
 
 ## Resolved decisions
 
-The orion ancestor's open questions do not carry: its OQ1/OQ2 were folded
+The ancestor record's open questions do not carry: its OQ1/OQ2 were folded
 into rulings there, and its OQ3 (podman deferral) is restated here as D4 with
 the dogfood-e2e record as the owner. No open questions remain — the two
 forks this port faced (inline-vs-separate job, service-container-vs-embedded

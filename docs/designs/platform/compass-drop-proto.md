@@ -2,12 +2,12 @@
 
 Status: Draft
 
-Tracker: SEA-1983. Template: orion PR #1266 (SEA-1897, merge `c9185039`) —
+Tracker: SEA-1983. Template: the internal monorepo's proto-drop —
 "refactor(ci): drop proto; pin bun/node/moon via nix, go via go-overlay".
-Compass diverges from that template wherever the CI substrate does: orion runs
-Woodpecker against a nix-built CI step image; compass runs GitHub Actions with
-`setup-*` actions fed by a `.prototools`-parsing pins step. Every decision
-below is grounded in this clone.
+Compass diverges from that template wherever the CI substrate does: the
+internal monorepo runs the internal Woodpecker CI/CD against a nix-built CI
+step image; compass runs GitHub Actions with `setup-*` actions fed by a
+`.prototools`-parsing pins step. Every decision below is grounded in this clone.
 
 ## Problem / Intent
 
@@ -24,7 +24,7 @@ formats, and a parity gate built around the asymmetry. `devenv.nix:9-13`:
 > ```
 
 Drop proto entirely and make devenv/nix the single owner of every toolchain,
-as orion already did — one pin format, one activation path, one parity method,
+as the internal monorepo already did — one pin format, one activation path, one parity method,
 and no `proto` shim quirks (the `PROTO_REPORTER` NDJSON-banner workaround,
 `devenv.nix:90-108`, exists only because proto's shims corrupt `go list`
 output in agent shells).
@@ -33,19 +33,18 @@ output in agent shells).
 
 ### The pin source (fork 5 prerequisite): `tools/toolchain/versions/*.nix`
 
-Four per-language pin files under `tools/toolchain/versions/` — orion's shape
-(`ci/toolchain/versions/{bun,node,moon}.nix`, orion #1266), relocated to
-compass's existing toolchain-gate directory:
+Four per-language pin files under `tools/toolchain/versions/` — the internal
+monorepo's shape, relocated to compass's existing toolchain-gate directory:
 
 - `bun.nix`, `node.nix`, `moon.nix` — `rec { version = "…"; srcs = { "<system>" = { url, hash }; }; }`
-  vendored-release pins, exactly orion's file shape (orion
-  `ci/toolchain/versions/bun.nix`: `version = "1.3.14"; srcs = { "x86_64-linux" = { url = "https://github.com/oven-sh/bun/releases/download/bun-v${version}/…`).
+  vendored-release pins: each pins a `version` plus a `srcs` set of
+  per-system release URL + hash, mirroring the internal monorepo's file shape.
   Compass pins stay at today's versions — this is a pure manager cutover, no
   version bumps: bun `1.3.13`, node `24.18.0`, moon `2.4.2` (`.prototools:6-8`:
   `bun = "1.3.13"` / `node = "24.18.0"` / `moon = "2.4.2"`). Systems covered:
-  `x86_64-linux`, `aarch64-linux`, `aarch64-darwin` (orion's set; compass
+  `x86_64-linux`, `aarch64-linux`, `aarch64-darwin`; compass
   devenv.nix already branches on `pkgs.stdenv.isLinux` for the app closure,
-  `devenv.nix:127`, so darwin is a supported dev platform).
+  `devenv.nix:127`, so darwin is a supported dev platform.
 - `go.nix` — version only (`{ version = "1.26.6"; }`); the derivation comes
   from the go-overlay input (next section), which carries its own per-platform
   hashes. Designed against the post-#298 tree: SEA-1982 bumps the pin to
@@ -54,8 +53,8 @@ compass's existing toolchain-gate directory:
   `purpleclay/go-overlay@main:manifests/go/`).
 
 A sibling `tools/toolchain/toolchain-tools.nix` builds bun/node/moon
-derivations from the pin files (orion's `ci/toolchain/toolchain-tools.nix`
-role): fetch the release artifact for `pkgs.stdenv.system`, unpack, install
+derivations from the pin files (the internal monorepo's equivalent
+tool-builder role): fetch the release artifact for `pkgs.stdenv.system`, unpack, install
 `bin/`. Both the dev shell (`devenv.nix`) and CI (via `gate-tools.nix`, below)
 import this one file, so they cannot drift.
 
@@ -98,11 +97,11 @@ with NO default (`gate-tools.nix:25`), so a bare
 file is restructured to `{ attrs ? [ ] }:` — `langs` never consumes `attrs`
 (the language set is closed), so phase 1 below needs no `--arg attrs`.
 
-**The bootstrap ordering constraint (compass-specific, absent in orion):**
+**The bootstrap ordering constraint (compass-specific, absent in the internal monorepo):**
 today CI needs bun *before* the nix step, because that step runs
 `bun tools/toolchain/parity.ts --print-nix-attrs` to derive the attr list
-(`ci.yml:242`) — and bun currently arrives from setup-bun. Orion never hit
-this: its Woodpecker image pre-bakes everything. The fix is a two-phase nix
+(`ci.yml:242`) — and bun currently arrives from setup-bun. The internal
+monorepo never hit this: its Woodpecker image pre-bakes everything. The fix is a two-phase nix
 bootstrap: phase 1 `nix build`s the fixed `langs` output (no attr parse
 needed — the language set is closed, and `attrs` now has a default) and puts
 its `bin/` on PATH; phase 2 runs the existing `--print-nix-attrs` flow with
@@ -121,13 +120,12 @@ miss; both phases hit the substituters already configured
 
 ### Fork 2 — Go: adopt the purpleclay/go-overlay input
 
-**Decision: go-overlay**, orion's choice (orion `devenv.nix`: `goToolchain =
-inputs.go-overlay.packages.${pkgs.stdenv.system}."go_1_26_5"`; orion
-`devenv.yaml`: "go-overlay builds the exact go pin for the dev shell + the CI
-step image"). Compass adds the input to `devenv.yaml` (which today declares
-nixpkgs as "the only input this shell needs" precisely because "the toolchain
-is nixpkgs derivations plus the proto-managed runtimes", `devenv.yaml:3-4`)
-and version-selects in `devenv.nix` from `versions/go.nix`:
+**Decision: go-overlay**, the internal monorepo's choice (it version-selects
+`go-overlay.packages.${pkgs.stdenv.system}` for the exact go pin in both the
+dev shell and the CI step image). Compass adds the input to `devenv.yaml`
+(which today declares nixpkgs as "the only input this shell needs" precisely
+because "the toolchain is nixpkgs derivations plus the proto-managed runtimes",
+`devenv.yaml:3-4`) and version-selects in `devenv.nix` from `versions/go.nix`:
 `goToolchain = inputs.go-overlay.packages.${pkgs.stdenv.system}."go_${lib.replaceStrings ["."] ["_"] goPin.version}"`.
 
 Why not `actions/setup-go` with a nix-sourced version string: that keeps Go as
@@ -137,7 +135,7 @@ shell can't run a GitHub action; today it gets Go from `proto install`,
 `devenv.nix:161`). Why not nixpkgs' `go`: the pin must be exact and
 promptly bumpable for security releases (the floor-policy comment,
 `.prototools:9-12`), and a rolling nixpkgs controls neither. go-overlay is
-purpose-built for exact Go pins, proven in orion, and its manifest already
+purpose-built for exact Go pins, proven in the internal monorepo, and its manifest already
 carries `1.26.6`.
 
 One constraint is load-bearing and open: the dev shell's go and the parity
@@ -233,7 +231,7 @@ Grounded in the current file, the complete delta set:
 **Add:**
 
 - `devenv.yaml`: the `go-overlay` input (`url: github:purpleclay/go-overlay`,
-  `inputs.nixpkgs.follows: nixpkgs` — orion's exact block) and a comment
+  `inputs.nixpkgs.follows: nixpkgs` — the internal monorepo's exact block) and a comment
   update (`devenv.yaml:3-5` currently: "the toolchain is nixpkgs derivations
   plus the proto-managed runtimes (.prototools)"). `devenv.lock` gains the
   input's nodes.
@@ -300,7 +298,7 @@ protobuf/`proto/` schema hits are unrelated and excluded):
 | `tools/toolchain/gate-tools.nix` | — | gains `langs` output |
 | `.moon/workspace.yml:4-7` | "bun/node/go/moon via proto … keeps .prototools the single version source" | reword |
 | `go/go.mod:10-12` | floor-policy comment | re-point at `versions/go.nix` |
-| `go/moon.yml:11-14` | proto clause + stale `ci/ci-toolchain.nix` (orion artifact; no `ci/` dir in compass) | reword whole provenance sentence |
+| `go/moon.yml:11-14` | proto clause + stale `ci/ci-toolchain.nix` (leftover from the internal monorepo's layout; no `ci/` dir in compass) | reword whole provenance sentence |
 | `package.json:5` | "proto (.prototools) owns the bun/node toolchains" | reword |
 | `AGENTS.md:9-11` | "The toolchain is proto … plus devenv" | reword |
 | `CONTRIBUTING.md:8-18` | proto install path incl. the no-nix route | reword (no-nix route: install the pinned versions by hand from `versions/*.nix`) |
@@ -333,8 +331,8 @@ the runtime cost.
 
 One less file shape, but forfeits exact pinning: moon "nixpkgs … lags"
 (`.prototools:4-5`), and the agent image's bun assert exists because nixpkgs
-bun drifts (`agent-image/toolchain.nix:51-55`). Rejected; orion reached the
-same verdict (its versions/ files are the artifact of that rejection).
+bun drifts (`agent-image/toolchain.nix:51-55`). Rejected; the internal
+monorepo reached the same verdict (its versions/ files are the artifact of that rejection).
 
 ### Retire the parity gate
 
@@ -354,7 +352,7 @@ detection retain value independent of CI's install path.
    `tools/toolchain/versions/go.nix`.
 3. **GitHub Actions substrate, not Woodpecker.** No CI step image exists or
    is introduced; everything lands in `.github/workflows/ci.yml` steps.
-   Orion's `ci/toolchain` layout is a template only.
+   The internal monorepo's toolchain layout is a template only.
 4. **Pure manager cutover — zero version bumps.** bun `1.3.13`, node
    `24.18.0`, moon `2.4.2`, go `1.26.6` before and after.
 5. **Frozen design records are not edited** (see fork 5 table footnote).
@@ -434,8 +432,8 @@ root:markdownlint` green.
   (`rec { version; srcs.<system>.{url,hash}; }`; go.nix version-only) and
   `tools/toolchain/toolchain-tools.nix` (`{ pkgs }: { bun; node; moon; }`,
   each a derivation with `bin/`). Consumes: release URLs/hashes for bun
-  1.3.13, node 24.18.0, moon 2.4.2 (orion `versions/*.nix` as the shape
-  reference).
+  1.3.13, node 24.18.0, moon 2.4.2 (the internal monorepo's `versions/*.nix`
+  as the shape reference).
 - [ ] **T2: devenv cutover** *(one landing unit with T4)*
   Interfaces: consumes T1; edits `devenv.yaml` (go-overlay input, OQ2 → A),
   `devenv.nix` (fork-4 removes + adds; `inputs` in the arg set;
@@ -472,14 +470,14 @@ root:markdownlint` green.
 ## Open Questions
 
 1. **Pin-bump automation (non-load-bearing — deferred).** Compass has no
-   renovate (orion #1266 added four `custom.regex` managers there); dependabot
+   renovate (the internal monorepo added four `custom.regex` managers there); dependabot
    covers only github-actions/bun-lockfile/gomod
    (`.github/dependabot.yml:12,28,40`) and has no nix ecosystem, so
    bun/node/moon/go pin bumps become manual PRs. This is no regression —
    `.prototools` bumps are manual today (SEA-1982 is one) — and the design is
    correct without automation. Recommendation: accept manual bumps now;
-   revisit if/when compass adopts a renovate config, reusing orion's regex
-   managers re-targeted at `tools/toolchain/versions/*.nix`.
+   revisit if/when compass adopts a renovate config, reusing the internal
+   monorepo's regex managers re-targeted at `tools/toolchain/versions/*.nix`.
 2. **RESOLVED (Matt, design PR #300) — go derivation single-sourcing: A,
    both sides consume go-overlay.** The dev shell's go and the parity gate's
    `langs` go MUST be the same derivation: `verifyStorePath` compares the
@@ -491,7 +489,7 @@ root:markdownlint` green.
    (as an earlier draft claimed): triggering it forces devenv.yaml/devenv.nix
    (T2) to also drop the go-overlay input and vendor go — a cross-fork change.
    **Decision — A: both routes read go-overlay** at the devenv.lock-pinned
-   rev, keeping fork 2 and orion's shape. The two routes use *different,
+   rev, keeping fork 2 and the internal monorepo's shape. The two routes use *different,
    asymmetric* selectors against the same upstream — the asymmetry is
    load-bearing (verified against `purpleclay/go-overlay@main`):
    - devenv.nix (flake route) selects the flake-only package attribute
