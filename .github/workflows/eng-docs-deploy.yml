@@ -47,7 +47,7 @@ jobs:
           #
           # The substituters are declared here rather than via
           # `accept-flake-config = true`, which would make nix trust the
-          # `nixConfig` of any flake it evaluates (forks/devenv/flake.nix carries
+          # `nixConfig` of any flake it evaluates (the RigelBuild/devenv flake carries
           # such a block) — a PR could then add its own substituter and trusted
           # key and CI would run binaries signed by it. Naming the two caches the
           # repo legitimately uses keeps that trust in a reviewed file. Mirrors

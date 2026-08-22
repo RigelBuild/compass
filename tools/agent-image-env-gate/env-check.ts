@@ -2,20 +2,27 @@
 // built compass-agent image, decide whether any entry is a signal that the
 // image was built wrong.
 //
-// WHY THIS GATE EXISTS. The vendored devenv fork strips every devenv-internal
-// variable from the image at serialization —
-// `imageEnv = filterAttrs (name: _: !hasPrefix "DEVENV_" name) config.env`
-// (forks/devenv/src/modules/containers.nix). That filter is a sealed-added
-// option the fork's own suite cannot cover (upstream has no such option), and
-// three separate wrong-image defects have shipped through it, each reachable
-// only by hand-inspecting the built image:
-//   1. `DEVENV_ROOT=/home/<builder>/…` — the build host's home baked into the
-//      image, making it non-reproducible across build hosts.
-//   2. `DEVENV_ROOT=/env` — a path the image does not carry, so every container
-//      start emitted mkdir/ln errors.
-//   3. a stale `DEVENV_CONTAINER` corrupting an unrelated image's home.
-// All three surface the same way: a `DEVENV_`-prefixed key survives into the
-// final image `config.Env`. That is the invariant this gate asserts.
+// WHY THIS GATE EXISTS. devenv merges its own internal `DEVENV_*` variables
+// into the container's serialized `config.Env` (top-level.nix sets
+// `env.DEVENV_PROFILE/STATE/RUNTIME/DOTFILE/ROOT`, tasks.nix sets
+// `env.DEVENV_TASK_FILE`). The RigelBuild/devenv fork does NOT blanket-strip
+// them — a reusable container module applies the minimal fix, not a namespace
+// wipe (RIG-2404). It forces the dev-shell-only paths off store/phantom values
+// during a container build (`containers.nix`: `devenv.root`/`dotfile`/`runtime`
+// → the container's own home and `/tmp`), so the live risk is narrower than
+// "any DEVENV_ key present". The one class that actually corrupts the image is
+// a `DEVENV_*` whose VALUE names an absolute `/nix/store` path (anywhere in
+// the value): nix2container makes `config.json` a closure root
+// (`deps = [configFile]`), so every store path
+// NAMED in the env drags its whole closure into the image's content layers and
+// the initialized nix DB — non-reproducible bloat and phantom DB entries. Two
+// such vars exist (`DEVENV_PROFILE`, a 266-path dev profile; `DEVENV_TASK_FILE`,
+// the tasks.json), each neutralized consumer-side in agent-image/devenv.nix
+// (mkForce to a non-store placeholder, gated on isBuilding, as orion ships it —
+// docs/designs, SEA-2102). This gate is the regression backstop for that
+// neutralization, plus a build-host-home leak check that catches a builder path
+// baked into ANY key (a non-reproducible-across-hosts defect). Both invariants
+// are set operations on the built image's env, not an eyeball.
 
 export interface ForbiddenEnv {
 	/** The offending `KEY=value` entry, verbatim. */
@@ -37,10 +44,23 @@ export interface EnvCheckOptions {
 }
 
 const DEVENV_PREFIX = "DEVENV_";
+const NIX_STORE_PREFIX = "/nix/store/";
 
 /**
  * Return every forbidden entry in an image's OCI `config.Env`. Empty result =
  * the image env is clean. Pure: no I/O, deterministic in its inputs.
+ *
+ * Two independent invariants:
+ *   1. No `DEVENV_*` key whose value NAMES an absolute `/nix/store` path —
+ *      anywhere in the value, not only as the whole value, since a value can
+ *      embed a store path mid-string (e.g. a JSON list of task commands). Every
+ *      such path is a closure root nix2container drags whole into the image
+ *      (`config.json` `deps = [configFile]`), the reproducibility/bloat defect
+ *      the consumer neutralizes in agent-image/devenv.nix. A `DEVENV_*` with a
+ *      value that names no store path (a container path like `/home/agent`,
+ *      `/tmp/devenv`, or empty) expands no closure and is not flagged.
+ *   2. No key (DEVENV_ or otherwise) whose value embeds the build host's home —
+ *      a build-host path baked into the image, non-reproducible across hosts.
  */
 export function findForbiddenEnv(
 	env: readonly string[],
@@ -54,14 +74,14 @@ export function findForbiddenEnv(
 		const key = eq === -1 ? entry : entry.slice(0, eq);
 		const value = eq === -1 ? "" : entry.slice(eq + 1);
 
-		if (key.startsWith(DEVENV_PREFIX)) {
+		if (key.startsWith(DEVENV_PREFIX) && value.includes(NIX_STORE_PREFIX)) {
 			forbidden.push({
 				entry,
 				key,
-				reason: `devenv-internal key leaked past the imageEnv filter (containers.nix strips ${DEVENV_PREFIX}* — its survival means the filter regressed)`,
+				reason: `devenv-internal key names an absolute ${NIX_STORE_PREFIX} path — a closure root nix2container drags into the image (neutralize it consumer-side in agent-image/devenv.nix, gated on isBuilding)`,
 			});
-			// A DEVENV_ key is already forbidden; don't also flag it for a builder
-			// path, so each entry reports its root cause once.
+			// Already forbidden by its root cause; don't also flag a builder path,
+			// so each entry reports once.
 			continue;
 		}
 

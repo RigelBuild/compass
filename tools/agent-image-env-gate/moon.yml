@@ -2,14 +2,16 @@
 #
 # agent-image-env-gate (RIG-1444) — assert the built compass-agent image is not
 # a wrong-image build. The `compass-agent-image` project proves the image
-# REALISES; this gate proves it is CORRECT. Three wrong-image defects have
-# shipped through a green `container build`, each caught only by hand-inspecting
-# the image: a build-host home path baked into DEVENV_ROOT, a DEVENV_ROOT=/env
-# the image does not carry, and a stale DEVENV_CONTAINER corrupting an unrelated
-# image. All three leave the same fingerprint — a DEVENV_-prefixed key surviving
-# the fork's `imageEnv` filter (forks/devenv/src/modules/containers.nix) into the
-# image's OCI config.Env. This gate inspects that config and fails on it, plus
-# on a platform-contract (linux/amd64) drift.
+# REALISES; this gate proves it is CORRECT. The defect it backstops: a devenv
+# `DEVENV_*` var whose value is an absolute /nix/store path leaks into the image
+# `config.Env`, where nix2container (config.json a closure root, `deps=[configFile]`)
+# drags its whole closure into the content layers and the nix DB — bloat +
+# phantom DB entries, caught only by hand-inspecting the image. The fork keeps
+# no blanket DEVENV_ strip (a minimal reusable module, RIG-2404); the consumer
+# neutralizes the two store-path leaks (DEVENV_PROFILE, DEVENV_TASK_FILE) in
+# agent-image/devenv.nix, and this gate is the regression backstop. It also
+# fails on a build-host home path baked into ANY key (non-reproducible) and on a
+# platform-contract (linux/amd64) drift.
 #
 # A bun/TypeScript CLI; a hoisted root-workspace member (`bun` tag): install is
 # inherited via .moon/tasks/tag-bun.yml and lint/format are whole-repo tasks on
@@ -37,8 +39,8 @@ tasks:
     # compass-agent-image:build so the realise is ordered first and this task is
     # scheduled by the SAME affected-detection (a closure change reds both); the
     # index.ts `nix run … container build` is then a store cache hit. Run from
-    # the workspace root (index.ts cd's into agent-image/ itself for the
-    # path:../forks/* flake refs to resolve).
+    # the workspace root (index.ts cd's into agent-image/ itself so `devenv
+    # container build` resolves the image's devenv.yaml/devenv.lock).
     command: 'bun run tools/agent-image-env-gate/index.ts'
     deps: ['install', 'compass-agent-image:build']
     options:
@@ -55,7 +57,6 @@ tasks:
       - '**/*'
       - '/agent-image/**'
       - '/packages/compass-agent/**'
-      - '/forks/devenv/**'
       - '/package.json'
       - '/bun.lock'
       - '/tools/toolchain/versions/bun.nix'

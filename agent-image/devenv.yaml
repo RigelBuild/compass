@@ -31,16 +31,19 @@ inputs:
     inputs:
       nixpkgs:
         follows: nixpkgs
-  # devenv itself, pinned to the vendored fork rather than the installed CLI's
-  # bundled modules. Load-bearing for THIS image: the container module's baked
-  # identity (passwd row, $HOME, image USER/HOME) is per-container only on the
-  # fork — upstream hardcodes user `user` + /env, which does not match the uid
-  # 1000 `agent` + /home/agent the Go runtime execs with
-  # (cmd/compass-runner/main.go:48 `-home-dir`, :118 `UID: defaultAgentUID`).
-  # With upstream's module the agent's $HOME is root-owned and nix falls back
-  # with "$HOME is not owned by you".
+  # The shared canonical Rigel fork of devenv, pinned by rev in devenv.lock,
+  # rather than the installed CLI's bundled modules. Load-bearing for THIS
+  # image: the container module's baked identity (passwd row, $HOME, image
+  # USER/HOME) is per-container only on the fork — upstream hardcodes user
+  # `user` + /env, which does not match the uid 1000 `agent` + /home/agent the
+  # Go runtime execs with (cmd/compass-runner/main.go:48 `-home-dir`, :118
+  # `UID: defaultAgentUID`). With upstream's module the agent's $HOME is
+  # root-owned and nix falls back with "$HOME is not owned by you".
   #
-  # Tracks forks/devenv; the fork keeps upstream's values as DEFAULTS, so a
-  # consumer setting none of the new options is byte-identical.
+  # The fork keeps upstream's values as DEFAULTS, so a consumer setting none of
+  # the new options is byte-identical.
   devenv:
-    url: path:../forks/devenv
+    url: github:RigelBuild/devenv
+    inputs:
+      nixpkgs:
+        follows: nixpkgs

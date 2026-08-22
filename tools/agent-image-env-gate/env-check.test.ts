@@ -2,14 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { findForbiddenEnv } from "./env-check.ts";
 
 // A representative clean image env: the container user's HOME and USER (set by
-// containers.nix AFTER the DEVENV_ filter) plus ordinary PATH/locale. None of
-// these is devenv-internal, so a clean image must produce zero findings.
+// containers.nix), ordinary PATH/locale, and the devenv-internal DEVENV_ vars
+// the fork forces to NON-store container paths during a build (home/tmp). None
+// of these names a /nix/store path, so a clean image produces zero findings.
 const CLEAN_ENV = [
 	"PATH=/usr/bin:/bin",
 	"HOME=/home/agent",
 	"USER=agent",
 	"LANG=C.UTF-8",
 	"SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt",
+	// devenv-internal, but forced off store paths during the container build —
+	// harmless container/ephemeral paths, no closure dragged.
+	"DEVENV_ROOT=/home/agent",
+	"DEVENV_STATE=/home/agent/.devenv/state",
+	"DEVENV_RUNTIME=/tmp/devenv",
+	"DEVENV_DOTFILE=/home/agent/.devenv",
+	"DEVENV_TASKS=",
 ];
 
 describe("findForbiddenEnv", () => {
@@ -19,44 +27,73 @@ describe("findForbiddenEnv", () => {
 		);
 	});
 
-	test("defect 1: builder home baked into DEVENV_ROOT is caught", () => {
-		const env = [...CLEAN_ENV, "DEVENV_ROOT=/home/mattw/agents/ws/agent-image"];
-		const found = findForbiddenEnv(env, { builderHome: "/home/mattw" });
+	test("a DEVENV_ var naming a /nix/store path is caught (closure root)", () => {
+		// DEVENV_PROFILE is the 266-path dev profile; naming it in the image env
+		// drags its whole closure into content layers via config.json.
+		const env = [...CLEAN_ENV, "DEVENV_PROFILE=/nix/store/xxx-devenv-profile"];
+		const found = findForbiddenEnv(env);
 		expect(found).toHaveLength(1);
-		expect(found[0]?.key).toBe("DEVENV_ROOT");
-		// Reported once, by its root cause (the leaked prefix), not twice — even
-		// though the value ALSO embeds the builder home.
-		expect(found[0]?.reason).toContain("imageEnv filter");
+		expect(found[0]?.key).toBe("DEVENV_PROFILE");
+		expect(found[0]?.reason).toContain("/nix/store");
 	});
 
-	test("defect 2: DEVENV_ROOT=/env (a path the image lacks) is caught", () => {
-		const found = findForbiddenEnv([...CLEAN_ENV, "DEVENV_ROOT=/env"]);
+	test("DEVENV_TASK_FILE naming a store path is caught (second closure root)", () => {
+		const env = [...CLEAN_ENV, "DEVENV_TASK_FILE=/nix/store/yyy-tasks.json"];
+		const found = findForbiddenEnv(env);
 		expect(found).toHaveLength(1);
-		expect(found[0]?.key).toBe("DEVENV_ROOT");
+		expect(found[0]?.key).toBe("DEVENV_TASK_FILE");
 	});
 
-	test("defect 3: a stale DEVENV_CONTAINER is caught", () => {
-		const found = findForbiddenEnv([...CLEAN_ENV, "DEVENV_CONTAINER=agent"]);
-		expect(found).toHaveLength(1);
-		expect(found[0]?.key).toBe("DEVENV_CONTAINER");
-	});
-
-	test("every DEVENV_-prefixed key is flagged, each once", () => {
+	test("both store-path leaks are flagged, each once", () => {
 		const env = [
 			...CLEAN_ENV,
-			"DEVENV_ROOT=/env",
-			"DEVENV_STATE=/env/.devenv/state",
 			"DEVENV_PROFILE=/nix/store/xxx-devenv-profile",
+			"DEVENV_TASK_FILE=/nix/store/yyy-tasks.json",
 		];
 		const found = findForbiddenEnv(env);
 		expect(found.map((f) => f.key).sort()).toEqual([
 			"DEVENV_PROFILE",
-			"DEVENV_ROOT",
-			"DEVENV_STATE",
+			"DEVENV_TASK_FILE",
 		]);
 	});
 
-	test("a bare builder-home leak in a non-DEVENV_ key is caught", () => {
+	test("a DEVENV_ var embedding a store path mid-string is caught (not just as a prefix)", () => {
+		// DEVENV_TASKS is a JSON list of task commands; each command is a
+		// pkgs.writeScript store path embedded mid-string, not the whole value.
+		// The value starts with `[`, so a prefix-only check would miss it — but
+		// every named store path is still a closure root nix2container drags in.
+		const env = [
+			...CLEAN_ENV.filter((e) => !e.startsWith("DEVENV_TASKS=")),
+			'DEVENV_TASKS=[{"name":"devenv:enterShell","command":"/nix/store/zzz-devenv-enterShell"}]',
+		];
+		const found = findForbiddenEnv(env);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.key).toBe("DEVENV_TASKS");
+		expect(found[0]?.reason).toContain("/nix/store");
+	});
+
+	test("a DEVENV_ var with a non-store container path is NOT flagged", () => {
+		// The container-path DEVENV_ vars expand no closure — they must not trip
+		// the gate, or the fork's minimal-module design (RIG-2404) can never pass.
+		const found = findForbiddenEnv([
+			"DEVENV_ROOT=/home/agent",
+			"DEVENV_RUNTIME=/tmp/devenv",
+			"DEVENV_TASKS=",
+		]);
+		expect(found).toEqual([]);
+	});
+
+	test("builder home baked into DEVENV_ROOT is caught (non-reproducible)", () => {
+		// A store-path check would miss this (it's a /home path), but the builder
+		// home leak is a separate invariant that catches it.
+		const env = [...CLEAN_ENV, "DEVENV_ROOT=/home/mattw/agents/ws/agent-image"];
+		const found = findForbiddenEnv(env, { builderHome: "/home/mattw" });
+		expect(found).toHaveLength(1);
+		expect(found[0]?.key).toBe("DEVENV_ROOT");
+		expect(found[0]?.reason).toContain("build-host home");
+	});
+
+	test("a builder-home leak in a non-DEVENV_ key is caught", () => {
 		const env = [...CLEAN_ENV, "NIX_BUILD_TOP=/home/mattw/tmp/nix-build"];
 		const found = findForbiddenEnv(env, { builderHome: "/home/mattw" });
 		expect(found).toHaveLength(1);
@@ -72,14 +109,27 @@ describe("findForbiddenEnv", () => {
 		).toEqual([]);
 	});
 
-	test("without builderHome, only DEVENV_ keys are enforced", () => {
-		const env = ["NIX_BUILD_TOP=/home/mattw/tmp", "DEVENV_ROOT=/env"];
-		const found = findForbiddenEnv(env);
-		expect(found.map((f) => f.key)).toEqual(["DEVENV_ROOT"]);
+	test("a store-path DEVENV_ leak is reported once, not also as a builder leak", () => {
+		// When a DEVENV_ store path ALSO happens to sit under the builder home,
+		// it reports once by its root cause (the store-path closure root).
+		const env = ["DEVENV_PROFILE=/nix/store/xxx-devenv-profile"];
+		const found = findForbiddenEnv(env, { builderHome: "/nix/store" });
+		expect(found).toHaveLength(1);
+		expect(found[0]?.reason).toContain("/nix/store");
 	});
 
-	test("an entry with no '=' is treated as a bare key", () => {
-		expect(findForbiddenEnv(["DEVENV_BARE"])).toHaveLength(1);
+	test("without builderHome, only store-path DEVENV_ keys are enforced", () => {
+		const env = [
+			"NIX_BUILD_TOP=/home/mattw/tmp",
+			"DEVENV_ROOT=/home/agent",
+			"DEVENV_PROFILE=/nix/store/xxx-devenv-profile",
+		];
+		const found = findForbiddenEnv(env);
+		expect(found.map((f) => f.key)).toEqual(["DEVENV_PROFILE"]);
+	});
+
+	test("a DEVENV_ entry with no '=' is a bare key with an empty value (not a store path)", () => {
+		expect(findForbiddenEnv(["DEVENV_BARE"])).toEqual([]);
 		expect(findForbiddenEnv(["PLAINKEY"])).toEqual([]);
 	});
 

@@ -1,11 +1,11 @@
-{ pkgs, lib, ... }:
+{ pkgs, lib, config, ... }:
 # The Compass agent base image — the single self-contained OCI artifact every
 # per-agent container starts from.
 #
 # WHY THIS IS ITS OWN devenv, and not a `containers.agent` attr on a project dev
 # shell: devenv's container module serializes the ENCLOSING devenv's merged
-# `config.env` into the image config (forks/devenv/src/modules/containers.nix,
-# the `imageEnv` binding read by `mkDerivation`'s `config.Env`). Built from a dev
+# `config.env` into the image config (the RigelBuild/devenv fork's src/modules/containers.nix,
+# the `config.Env` binding read by `mkDerivation`). Built from a dev
 # shell, this image would therefore ship that shell's build environment — its
 # compiler wrappers, its browser and library paths, its whole pkg-config dev
 # closure. None of that belongs in a general-purpose agent runtime, and an env
@@ -54,14 +54,26 @@ in
   # per-exec, as the only component that knows the session; HOME and USER are
   # appended by the container module from the identity options below.
   #
-  # Note this block is NOT what keeps devenv's own DEVENV_PROFILE/STATE/RUNTIME/
-  # DOTFILE/ROOT out of the image — those are merged into `config.env` upstream in
-  # top-level.nix regardless of what is written here, and they name build-host
-  # paths that do not exist in the container. What keeps them out is the
-  # `DEVENV_`-prefix filter the container module applies at serialization
-  # (containers.nix, the `imageEnv` binding), which carries the reasoning.
+  # devenv merges its own `DEVENV_*` vars into `config.env`, which the container
+  # module serializes verbatim into the image `config.Env` (the RigelBuild fork
+  # keeps no blanket `DEVENV_`-prefix strip — a reusable module applies the
+  # minimal fix, not a namespace wipe, RIG-2404). Most are harmless: the fork
+  # forces DEVENV_ROOT/STATE/RUNTIME/DOTFILE to the container's own home and
+  # /tmp during a build (containers.nix, gated on isBuilding), so they name no
+  # store path. The two that DO name an absolute /nix/store path are closure
+  # roots — nix2container makes config.json a closure root (`deps=[configFile]`),
+  # so a store path named in the env drags its whole closure into the image's
+  # content layers and the initialized nix DB. `DEVENV_PROFILE` is the 266-path
+  # dev profile; `DEVENV_TASK_FILE` is the generated tasks.json. Force both to a
+  # non-store placeholder while a container is being built (isBuilding, inert in
+  # a normal dev shell), exactly as orion does (docs/designs, SEA-2102). The
+  # agent-image-env-gate is the regression backstop for this.
   env = {
     DIRENV_CONFIG = "/etc/direnv";
+  }
+  // lib.optionalAttrs config.container.isBuilding {
+    DEVENV_PROFILE = lib.mkForce "/home/agent/.devenv/profile-not-in-image";
+    DEVENV_TASK_FILE = lib.mkForce "/home/agent/.devenv/tasks-not-in-image.json";
   };
 
   containers = lib.optionalAttrs pkgs.stdenv.isLinux {

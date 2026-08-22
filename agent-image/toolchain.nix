@@ -93,7 +93,7 @@ let
   # activation path work. direnv's stdlib has no `use_devenv`; devenv supplies it
   # as a shell fragment printed by `devenv direnvrc`, which an `.envrc` is
   # expected to `eval` itself (devenv's own `devenv init` template does exactly
-  # that — forks/devenv/devenv/init/envrc:3). An `.envrc` that is a bare
+  # that — the RigelBuild/devenv fork's devenv/init/envrc:3). An `.envrc` that is a bare
   # `use devenv` — the shape a repo ends up with once anyone trims the boilerplate
   # — fails with `use_devenv: command not found`, and direnv still runs the
   # command afterwards, so the agent silently degrades to this image's tools

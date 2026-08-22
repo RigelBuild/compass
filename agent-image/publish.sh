@@ -3,11 +3,11 @@
 # under each requested tag, enforcing :git-<sha> immutability.
 #
 # Why bash: this is nix-orchestration glue. It builds the compass-agent image
-# through the vendored forks/devenv `devenv container build` (that half is not
-# reversed yet) and drives the RigelBuild/nix2container fork's patched skopeo,
-# which it invokes by name off PATH (see the SKOPEO= note below — skopeo is
-# deliberately NOT in agent-image/devenv.nix; it comes from the root dev shell
-# locally or the publish workflow's pinned-helper bootstrap in CI).
+# through the shared RigelBuild/devenv fork's `devenv container build` and
+# drives the RigelBuild/nix2container fork's patched skopeo, which it invokes by
+# name off PATH (see the SKOPEO= note below — skopeo is deliberately NOT in
+# agent-image/devenv.nix; it comes from the root dev shell locally or the
+# publish workflow's pinned-helper bootstrap in CI).
 # agent-image/ is a standalone nix devenv with zero bun/TS infrastructure, and
 # the publish must run byte-identically locally and in CI, which this thin bash
 # glue over `nix`/`skopeo` does directly. Per AGENTS.md, a script that genuinely
@@ -15,8 +15,9 @@
 
 set -euo pipefail
 
-# Run cwd-independent: the nix invocations use path:../forks/* relative to
-# agent-image/, so anchor to this script's own directory rather than $PWD.
+# Run cwd-independent: the devenv container build resolves this image's
+# devenv.yaml/devenv.lock relative to agent-image/, so anchor to this script's
+# own directory rather than $PWD.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
@@ -57,8 +58,8 @@ fi
 # Build the image spec exactly as dogfood:agent-image does — same fork-pinned
 # derivation, so the published tag and the local load are copies of ONE build.
 # devenv tracing goes to stderr; the spec store path is the last stdout line.
-log "Building image spec: nix run path:../forks/devenv#devenv -- container build agent"
-BUILD_OUT="$(nix run path:../forks/devenv#devenv -- container build agent)"
+log "Building image spec: nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container build agent"
+BUILD_OUT="$(nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container build agent)"
 SPEC="$(printf '%s\n' "$BUILD_OUT" | tail -n 1)"
 
 # A future fork bump that adds a trailing stdout line must not silently feed

@@ -155,8 +155,8 @@ jobs:
           #
           # The substituters below are declared here rather than delegated via
           # `accept-flake-config = true`. That setting makes nix accept the
-          # `nixConfig` of ANY flake it evaluates, and forks/devenv/flake.nix
-          # carries exactly such a block — so a PR could add its own substituter
+          # `nixConfig` of ANY flake it evaluates, and the RigelBuild/devenv
+          # flake the build fetches carries exactly such a block — so a PR could add its own substituter
           # AND its own trusted public key, and CI would fetch and run binaries
           # signed by the attacker's key, with signature verification satisfied
           # by the key the same PR supplied. Naming the two caches the forks
@@ -777,8 +777,9 @@ jobs:
         #
         #   image-affected PR → build+load from THIS tree. On a PR that changes
         #   the image's inputs the gate must prove the image THIS PR produces, not
-        #   the last-published `:latest`. `nix run path:../forks/devenv#devenv --
-        #   container copy agent -r docker-archive:…`, run from agent-image/,
+        #   the last-published `:latest`. `nix run
+        #   github:RigelBuild/devenv/<rev>#devenv -- container copy agent -r
+        #   docker-archive:…`, run from agent-image/,
         #   builds the image and writes it to a docker-archive TAR, which `podman
         #   load` then imports into the podman user's rootless containers-storage
         #   as the exact `compass-agent:latest` ref the fixture resolves — with no
@@ -809,7 +810,7 @@ jobs:
             # hits the denied bare unshare. The image lands in the podman user's
             # own rootless storage as `compass-agent:latest`, the exact ref the
             # e2e run (also podman) resolves.
-            ( cd agent-image && nix run path:../forks/devenv#devenv -- container copy agent -r "docker-archive:/tmp/compass-agent-seed.tar:" )
+            ( cd agent-image && nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container copy agent -r "docker-archive:/tmp/compass-agent-seed.tar:" )
             podman load -i /tmp/compass-agent-seed.tar
             rm -f /tmp/compass-agent-seed.tar
           else

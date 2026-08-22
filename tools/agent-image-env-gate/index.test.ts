@@ -70,16 +70,38 @@ describe("evaluateImage", () => {
 		);
 	});
 
-	test("a DEVENV_ leak in Env is a problem", () => {
+	test("a DEVENV_ store-path leak in Env is a problem", () => {
 		const problems = evaluateImage(
 			{
 				Os: EXPECTED_OS,
 				Architecture: EXPECTED_ARCH,
-				Env: ["HOME=/home/agent", "DEVENV_ROOT=/env"],
+				Env: [
+					"HOME=/home/agent",
+					"DEVENV_PROFILE=/nix/store/xxx-devenv-profile",
+				],
 			},
 			{ builderHome: "/home/mattw" },
 		);
 		expect(problems.some((p) => p.includes("config.Env carries"))).toBe(true);
+	});
+
+	test("a DEVENV_ var with a non-store container path is NOT a problem", () => {
+		// The fork forces these off store paths during a build; they expand no
+		// closure, so they must not trip the gate.
+		expect(
+			evaluateImage(
+				{
+					Os: EXPECTED_OS,
+					Architecture: EXPECTED_ARCH,
+					Env: [
+						"HOME=/home/agent",
+						"DEVENV_ROOT=/home/agent",
+						"DEVENV_RUNTIME=/tmp/devenv",
+					],
+				},
+				{ builderHome: "/home/mattw" },
+			),
+		).toEqual([]);
 	});
 
 	test("an absent Env is a wrong-image signal", () => {

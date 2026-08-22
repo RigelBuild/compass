@@ -4,16 +4,18 @@
 // wrong-image build.
 //
 // A green `container build` proves the image REALISES; it does not prove the
-// image is CORRECT. Three wrong-image defects have shipped through a successful
-// build, each caught only by hand-inspecting the image (see env-check.ts for
-// the catalogue). This gate closes that hole: it builds the exact same spec the
-// publish lane ships, inspects its OCI config, and fails on the signals those
-// defects leave behind — a leaked `DEVENV_` env key, a build-host home path in
-// the env, or a platform-contract mismatch.
+// image is CORRECT. A wrong build can serialize a devenv-internal `DEVENV_*`
+// var naming a `/nix/store` path into the image env, where nix2container drags
+// its whole closure into the content layers (see env-check.ts for the full
+// mechanism). This gate closes that hole: it builds the exact same spec the
+// publish lane ships, inspects its OCI config, and fails on the signals a wrong
+// build leaves behind — a `DEVENV_` var with a `/nix/store` value, a build-host
+// home path baked into any key, or a platform-contract mismatch.
 //
 // Runs the same fork-pinned derivation as `dogfood:agent-image` and
-// `agent-image/publish.sh`, from the `agent-image/` cwd so the `path:../forks/*`
-// flake refs resolve. In CI the `compass-agent-image:build` task has already
+// `agent-image/publish.sh`, from the `agent-image/` cwd so `devenv container
+// build` resolves this image's devenv.yaml/devenv.lock. In CI the
+// `compass-agent-image:build` task has already
 // realised this closure, so the build here is a nix cache hit.
 
 import { existsSync } from "node:fs";
@@ -98,7 +100,7 @@ if (import.meta.main) {
 	let buildOut: string;
 	try {
 		buildOut =
-			await $`nix run path:../forks/devenv#devenv -- container build agent`
+			await $`nix run github:RigelBuild/devenv/15a81f3e15619187fcbe10c2eac40878e0b4ce28#devenv -- container build agent`
 				.cwd(agentImageDir)
 				.text();
 	} catch (cause) {
