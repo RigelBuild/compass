@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"golang.org/x/sync/singleflight"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -48,6 +49,11 @@ import (
 type lifecycleService struct {
 	store *store.Store
 	hub   *runnerhub.Hub
+	// wakeGroup coalesces concurrent WakeAgent calls for the SAME agent onto one
+	// start (RIG-1641 T3 cost control, §Decisions OQ-2): a burst of messages at
+	// one offline agent produces exactly one resume/Start, not a start-storm. A
+	// zero-value Group is ready, so newLifecycleService needs no init.
+	wakeGroup singleflight.Group
 }
 
 // newLifecycleService constructs the lifecycle caller over the store and hub.
@@ -59,6 +65,46 @@ func newLifecycleService(st *store.Store, hub *runnerhub.Hub) *lifecycleService 
 
 // Compile-time proof lifecycleService satisfies the seam the hub delegates into.
 var _ runnerhub.LifecycleCaller = (*lifecycleService)(nil)
+
+// WakeAgent best-effort resumes an offline agent's most recent session so an
+// owed mention or a subscribed deliver reaches it promptly (RIG-1641 T3,
+// §Decisions OQ-7). It implements delivery.AgentWaker — void and best-effort:
+// every fault is logged with outcome=failed and NEVER surfaced, so mention
+// routing can never fail a post (the frozen "mention routing can never fail a
+// post" contract, design.md:521-523).
+//
+// The chain, all cost-controlled:
+//
+//  1. Not-live pre-check: a live agent has nothing to wake — no-op.
+//  2. Per-agent singleflight: N concurrent wakes for one agent coalesce onto one
+//     start; the coalesced callers log outcome=coalesced.
+//  3. LatestSessionForAccount: a prior session → the SYSTEM-AUTHORIZED internal
+//     resume (a sibling of startResumeSession that SKIPS the caller-subscriber
+//     gate — the wake IS the authorization, §Decisions OQ-2, so there is no
+//     caller and no RequireAgentSessionSubscriber); no prior session → a fresh
+//     hub.Start; no placement → a logged no-op.
+func (l *lifecycleService) WakeAgent(ctx context.Context, agent store.AccountID) {
+	// 1. Not-live pre-check (cost control): a live agent is already awake, so
+	// there is nothing to resume. No-op, no log line — a wake is only an attempt
+	// against an OFFLINE agent.
+	if _, live := l.hub.SessionForAccount(agent); live {
+		return
+	}
+
+	// 2. Per-agent singleflight: the first caller for this agent runs the start;
+	// concurrent callers block on it and share its result (shared==true), so a
+	// burst at one offline agent produces exactly one resume/Start. The outcome
+	// the leader logs already records the attempt; a shared caller logs
+	// outcome=coalesced so the coalescing is visible.
+	outcome, _, shared := l.wakeGroup.Do(string(agent), func() (any, error) {
+		return l.wakeOnce(ctx, agent), nil
+	})
+	if shared {
+		slog.InfoContext(ctx, "agent wake", "outcome", wakeOutcomeCoalesced, "agent_account_id", agent)
+		return
+	}
+	slog.InfoContext(ctx, "agent wake", "outcome", outcome, "agent_account_id", agent)
+}
 
 // spawnChainTimeout bounds the whole spawn (and despawn) relay chain. Like
 // rollbackStopTimeout (service.go) the runnerhub dispatch path has no deadline
@@ -365,4 +411,123 @@ func (l *lifecycleService) rollbackSpawn(ctx context.Context, container, session
 	if err := l.store.DeleteAgentPlacement(tctx, container); err != nil {
 		slog.ErrorContext(ctx, "spawn rollback: releasing placement failed; handle may stay burned", "container_name", container, "error", err)
 	}
+}
+
+// Wake outcomes (§Decisions OQ-7): the structured-log outcome vocabulary a wake
+// attempt terminates in. WakeAgent logs exactly one per attempt; the string
+// values are the literal outcome= log field.
+const (
+	wakeOutcomeResumed      = "resumed"
+	wakeOutcomeFreshStarted = "fresh-started"
+	wakeOutcomeCoalesced    = "coalesced"
+	wakeOutcomeNoPlacement  = "no-placement"
+	wakeOutcomeFailed       = "failed"
+)
+
+// errWakeNoPlacement is the internal sentinel resumeSession returns when the
+// agent has a prior session but no current placement (a despawned agent —
+// despawn deletes the placement, agent_sessions rows are never deleted).
+// wakeOnce maps it to the benign outcome=no-placement, the same disposition
+// freshStart gives a never-provisioned agent (§Decisions OQ-7). It never
+// escapes the wake path.
+var errWakeNoPlacement = errors.New("agent wake: no placement for prior-sessioned agent")
+
+// wakeOnce runs one non-coalesced wake attempt for agent and returns the outcome
+// string the caller logs — one of "resumed", "fresh-started", "no-placement", or
+// "failed". It never returns an error: the singleflight fn's error slot is
+// unused because a wake is void/best-effort, so every fault is captured here as
+// outcome=failed with the cause logged, not propagated.
+func (l *lifecycleService) wakeOnce(ctx context.Context, agent store.AccountID) string {
+	sessionID, ok, err := l.store.LatestSessionForAccount(ctx, agent)
+	if err != nil {
+		slog.ErrorContext(ctx, "agent wake: resolving latest session failed", "agent_account_id", agent, "error", err)
+		return wakeOutcomeFailed
+	}
+	if ok {
+		switch err := l.resumeSession(ctx, agent, sessionID); {
+		case err == nil:
+			return wakeOutcomeResumed
+		case errors.Is(err, errWakeNoPlacement):
+			// A prior session with no current placement is a despawned agent
+			// (despawn deletes the placement; agent_sessions rows are never
+			// deleted). Benign and common, exactly like freshStart's no-placement
+			// arm — a logged no-op, NOT outcome=failed: the owed row waits for the
+			// agent's next natural start. Emitting ERROR here would trip error-rate
+			// alerting on a routine path and drift from the frozen OQ-7 enum.
+			return wakeOutcomeNoPlacement
+		default:
+			slog.ErrorContext(ctx, "agent wake: resume failed", "agent_account_id", agent, "session_id", sessionID, "error", err)
+			return wakeOutcomeFailed
+		}
+	}
+	return l.freshStart(ctx, agent)
+}
+
+// resumeSession runs the SYSTEM-AUTHORIZED internal resume of sessionID: the same
+// ordered chain startResumeSession runs (BindLifetime → ReconstructSessionBody →
+// hub.StartResume, service.go:603-616) MINUS RequireAgentSessionSubscriber — the
+// wake holds an agent_account_id, not a caller, and the wake IS the authorization
+// (§Decisions OQ-2). StartResume relays on the CONTAINER (resume_start.go:34), so
+// the container is resolved from the durable placement while the bind/reconstruct
+// legs key on the stable logical session_id.
+func (l *lifecycleService) resumeSession(ctx context.Context, agent store.AccountID, sessionID string) error {
+	// Resolve the container the resume relays on FIRST (StartResume keys on it),
+	// so a placement miss fails before any bind/reconstruct work.
+	_, container, err := l.store.PlacementForAgent(ctx, agent)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			// Signal a benign no-placement to wakeOnce (mirrors freshStart): a
+			// despawned prior-sessioned agent is a routine no-op, not a fault.
+			return errWakeNoPlacement
+		}
+		return fmt.Errorf("resolving placement: %w", err)
+	}
+	if _, err := l.store.BindLifetime(ctx, sessionID); err != nil {
+		return fmt.Errorf("binding resume lifetime: %w", err)
+	}
+	body, err := l.hub.ReconstructSessionBody(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("reconstructing session body: %w", err)
+	}
+	if _, err := l.hub.StartResume(ctx, "", &compassv1.StartAgentSessionRequest{
+		ContainerName:   container,
+		ResumeSessionId: sessionID,
+	}, body); err != nil {
+		return fmt.Errorf("relaying resume start: %w", err)
+	}
+	return nil
+}
+
+// freshStart is the no-prior-session fallback: an agent that has never had a
+// session recorded has no session_id to reconstruct, so the wake mints a fresh
+// one over the existing start chain (provisionAndStart's tail, lifecycle.go:323).
+// A never-provisioned agent has no placement — a logged no-op (outcome
+// "no-placement"), the owed row / cursor waits for any future natural start. It
+// returns the outcome string the caller logs.
+func (l *lifecycleService) freshStart(ctx context.Context, agent store.AccountID) string {
+	_, container, err := l.store.PlacementForAgent(ctx, agent)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return wakeOutcomeNoPlacement
+		}
+		slog.ErrorContext(ctx, "agent wake: resolving placement failed", "agent_account_id", agent, "error", err)
+		return wakeOutcomeFailed
+	}
+	startResp, err := l.hub.Start(ctx, "", &compassv1.StartAgentSessionRequest{ContainerName: container})
+	if err != nil {
+		slog.ErrorContext(ctx, "agent wake: fresh start failed", "agent_account_id", agent, "container_name", container, "error", err)
+		return wakeOutcomeFailed
+	}
+	if err := l.store.RecordAgentSession(ctx, startResp.GetSessionId(), agent); err != nil {
+		// The session is already live and started, and the pending message
+		// delivers via the live sweep this Start fired — so we deliberately do
+		// NOT roll the container back here (unlike provisionAndStart, which
+		// rolls back a post-Start failure). The only cost of the unrecorded
+		// session is that a FUTURE wake won't find it via LatestSessionForAccount
+		// and will fresh-start again; acceptable for a best-effort void wake on a
+		// rare DB-error path. outcome=failed still flags the record miss.
+		slog.ErrorContext(ctx, "agent wake: recording fresh session failed", "agent_account_id", agent, "session_id", startResp.GetSessionId(), "error", err)
+		return wakeOutcomeFailed
+	}
+	return wakeOutcomeFreshStarted
 }

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // The durable session-ownership chain: the persistent
@@ -41,8 +42,8 @@ func (s *Store) RecordAgentSession(ctx context.Context, sessionID string, agentA
 		return fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
 	}
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO agent_sessions (session_id, agent_account_id) VALUES ($1, $2)`,
-		sessionID, string(agentAccountID),
+		`INSERT INTO agent_sessions (session_id, agent_account_id, recorded_at_unix_ms) VALUES ($1, $2, $3)`,
+		sessionID, string(agentAccountID), time.Now().UnixMilli(),
 	); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			return fmt.Errorf("%w: session %q already recorded", ErrConflict, sessionID)
@@ -53,6 +54,35 @@ func (s *Store) RecordAgentSession(ctx context.Context, sessionID string, agentA
 		return fmt.Errorf("store: record agent session: %w", err)
 	}
 	return nil
+}
+
+// LatestSessionForAccount returns the most-recently-recorded session_id for
+// agent, or ok=false when the agent has never had a session recorded. Used by
+// the wake path to resume an offline agent's latest session (RIG-1641 T3).
+// Distinct from the hub's in-memory SessionForAccount (relay_comms.go), which is
+// LIVE-only: this reads the durable agent_sessions table, so it resolves a
+// session for an agent that is currently offline. Ordered by recorded_at_unix_ms
+// DESC over the agent's rows (a small sort behind agent_sessions_agent_idx),
+// with session_id DESC as a deterministic tiebreaker so two rows sharing a
+// millisecond (or both left at DEFAULT 0) resolve to a stable pick.
+func (s *Store) LatestSessionForAccount(ctx context.Context, agent AccountID) (sessionID string, ok bool, err error) {
+	if agent == "" {
+		return "", false, fmt.Errorf("%w: agent account id is required", ErrInvalidArgument)
+	}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT session_id
+		   FROM agent_sessions
+		  WHERE agent_account_id = $1
+		  ORDER BY recorded_at_unix_ms DESC, session_id DESC
+		  LIMIT 1`,
+		string(agent),
+	).Scan(&sessionID); err != nil {
+		if noRows(err) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("store: latest session for account: %w", err)
+	}
+	return sessionID, true, nil
 }
 
 // RequireAgentSessionSubscriber is the read-path authorization primitive for

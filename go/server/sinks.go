@@ -79,6 +79,13 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 // satisfies the runnerhub-defined CommsCaller.
 var _ comms.AskAnswerWaker = (*runnerhub.Hub)(nil)
 
+// RIG-1641 T3: *lifecycleService satisfies the delivery-defined AgentWaker
+// (delivery defines the narrow interface it needs; the server package implements
+// it over the resume machinery). The assertion lives here in the server package,
+// which imports both — the same direction the AskAnswerWaker assertion above is
+// proven, so delivery never imports server.
+var _ delivery.AgentWaker = (*lifecycleService)(nil)
+
 // Compass forge write path T8: *forgeService (forge.go, the DL-050 write
 // chokepoint) satisfies the T5-defined runnerhub.ForgeCaller seam the hub relays
 // RelayForgeCall into. The assertion lives here in the server package — which
@@ -134,6 +141,13 @@ func (h hubPresenceSource) PresenceFor(accountIDs []store.AccountID) map[store.A
 // bus closes in drainDoors, so shutdown reaches it two ways).
 func startDeliveryConsumer(gctx context.Context, g *errgroup.Group, commsBus *events.Bus[*compassv1.SubscribeCommsResponse], st *store.Store, hub *runnerhub.Hub, log *slog.Logger) {
 	c := delivery.NewConsumer(commsBus, st, hub, hub, log)
+	// The wake seam (RIG-1641 T3): a FRESH lifecycleService, not the instance
+	// wireHubServiceCycles wired as the hub's LifecycleCaller. lifecycleService is
+	// stateless besides its own singleflight group, and only the waker path drives
+	// WakeAgent, so a second instance's group IS the wake's coalescer — sharing
+	// the LifecycleCaller instance would buy nothing and couple two unrelated call
+	// sites. Same (st, hub) inputs, so it runs the identical resume/start chain.
+	c.SetAgentWaker(newLifecycleService(st, hub))
 	hub.SetSettleSink(c)
 	hub.SetSessionStartSink(c)
 	hub.SetSessionReapSink(c)

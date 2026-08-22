@@ -631,3 +631,33 @@ func TestAgentAuthoredNoLiveAuthorDeliversStoredBlocks(t *testing.T) {
 			rec.firstText, "stored grown body")
 	}
 }
+
+// TestConsumerNilAgentWakerConstructsAndRuns pins the nil-safe wake seam
+// (RIG-1641 T3): a Consumer built with no AgentWaker wired — the default, since
+// T3 adds no production caller — constructs and runs its bus-tail loop exactly as
+// before, routing a posted message to a live subscriber. The wake seam is
+// defined and wired at assembly but dormant until T2/T4 add the routing caller;
+// this proves its mere presence changes nothing when unset.
+//
+// Mutation: a non-nil-safe waker field (e.g. an unconditional
+// c.agentWaker.WakeAgent) would nil-panic the loop here, reddening the delivery.
+func TestConsumerNilAgentWakerConstructsAndRuns(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t) // no SetAgentWaker: agentWaker stays nil
+	if c.agentWaker != nil {
+		t.Fatal("precondition: a freshly-built consumer has no AgentWaker wired")
+	}
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const agentA store.AccountID = "agent-a"
+
+	reads.subscribers[ch] = []store.AccountID{agentA, author}
+	res.bind(agentA, "sess-a")
+	startConsumer(t, c)
+
+	c.bus.Publish(postedResponse(wireText("m1", author, "hello")))
+	disp.waitForDispatches(t, 1)
+
+	if got := disp.snapshot(); len(got) != 1 || got[0].sessionID != "sess-a" {
+		t.Fatalf("nil-waker consumer dispatches = %v, want one deliver to sess-a (a nil waker must not disturb routing)", got)
+	}
+}

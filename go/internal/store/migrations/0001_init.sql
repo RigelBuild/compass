@@ -361,9 +361,16 @@ CREATE INDEX secrets_declared_by_idx ON secrets (declared_by);
 -- persisted entry_seq is monotonic per SESSION across lifetimes. DEFAULT 0: a
 -- brand-new session's first lifetime rebases onto 0, first frame lands at 1.
 CREATE TABLE agent_sessions (
-    session_id       TEXT PRIMARY KEY,
-    agent_account_id TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
-    base_entry_seq   BIGINT NOT NULL DEFAULT 0
+    session_id          TEXT PRIMARY KEY,
+    agent_account_id    TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
+    base_entry_seq      BIGINT NOT NULL DEFAULT 0,
+    -- recorded_at_unix_ms is the wall-clock (ms since epoch) the session row was
+    -- written at RecordAgentSession — the recency key the wake path orders by to
+    -- resume an offline agent's MOST RECENT session (LatestSessionForAccount,
+    -- RIG-1641 T3). DEFAULT 0 keeps a NOT NULL add safe on this squashed
+    -- migration: every RecordAgentSession supplies the value, and the default is
+    -- only a floor for any row a future path forgets to stamp (it sorts oldest).
+    recorded_at_unix_ms BIGINT NOT NULL DEFAULT 0
 );
 
 -- Look a session up by the party that owns it; also the "sessions of this agent"
