@@ -344,9 +344,11 @@ func TestSend1DeliverRefusalsBounded(t *testing.T) {
 		}
 	}
 
-	// The set is bounded, not grown to total.
-	if got := r.deliverRefusals.Len(); got > deliverRefusalsMax {
-		t.Fatalf("deliverRefusals.Len() = %d, want <= %d (bounded)", got, deliverRefusalsMax)
+	// The set is bounded, not grown to total. After adding deliverRefusalsMax+overflow
+	// distinct ids the LRU holds exactly deliverRefusalsMax entries — an exact check
+	// catches an off-by-one in the cap (e.g. keeping Max+1) that a `> Max` bound misses.
+	if got := r.deliverRefusals.Len(); got != deliverRefusalsMax {
+		t.Fatalf("deliverRefusals.Len() = %d, want exactly %d (bounded)", got, deliverRefusalsMax)
 	}
 	// The earliest id (added first, never touched since) is the LRU victim evicted
 	// past deliverRefusalsMax.
