@@ -79,6 +79,16 @@ linters:
     nestif:
       min-complexity: 8
 
+    # goconst counts string-literal occurrences PACKAGE-WIDE, but the exclusions
+    # below drop goconst *reporting* on test files (a repeated literal reads
+    # clearer inline in a test). Those two interact badly: a literal repeated in
+    # a test still counts toward the package total and tips a PRODUCTION site
+    # over the threshold, surfacing the finding there. ignore-tests aligns the
+    # counting with the reporting policy — test-file literals neither count nor
+    # report, while genuine production repetition still gates.
+    goconst:
+      ignore-tests: true
+
     # F-sumtype prerequisite: gochecksumtype only checks interfaces carrying the
     # `//sumtype:decl` directive, and by default a `default:` arm satisfies the
     # check. Turn that off so a sum-type switch must enumerate every arm — a
