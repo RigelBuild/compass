@@ -202,10 +202,10 @@ egress-sealed by design — the transport's whole point is "a local hop, no
 network path, so the egress seal is untouched" (`index.ts:4-5`). A direct
 OTLP-over-network exporter from inside the container is the agent's first
 network egress — a posture decision resolved as (a) (Open Questions Q1). The
-substrate stays socket-based (AF_UNIX today, virtio-vsock under the microVM
-end-state, never IP —
-`docs/designs/platform/compass-elastic-session-runtime/microvm-runner.md`), so
-OTLP is genuinely the agent's first *network* path and is drawn against the
+substrate stays socket-based — a local AF_UNIX socket today (`index.ts:4-5`,
+quoted above), which the in-review microVM Runner design (RIG-2394, PR #488)
+carries to host-local virtio-vsock, never to an IP transport — so OTLP is
+genuinely the agent's first *network* path and is drawn against the
 destination collector, never the socket/vsock gateway.
 
 **Recommendation: standard env-gated OTLP, off by default.** At transport
@@ -229,7 +229,7 @@ sdk-trace-base `^2.0.0`).
 
 **Recommendation: merge the OTel layer at the runtime construction point
 inside `createUnixSocketTransport`, leaving its exported signature untouched
-(`index.ts:86`: `export function createUnixSocketTransport(socketPath:
+(`index.ts:94`: `export function createUnixSocketTransport(socketPath:
 string): RunnerTransport`).** RIG-2424 T5 (PR #475, open) consolidates the
 three per-module transitional runtimes into one
 `ManagedRuntime.make(Logger.remove(Logger.defaultLogger))` owned by the
@@ -310,7 +310,7 @@ the parent record modeled for `effect` 3.22.1.
 - **Containment (frozen, parent record):** no `effect`,
   `@effect/opentelemetry`, or `@opentelemetry/*` type in any signature
   exported from `src/transport/` (the package exports `RunnerTransport`
-  (`index.ts:56`) and `createUnixSocketTransport` (`index.ts:86`) plus the
+  (`index.ts:64`) and `createUnixSocketTransport` (`index.ts:94`) plus the
   module factories); `emit()` stays sync/void; `runPromise`/`runFork`/
   `runSync` only at the existing seams. The OTel layer and every span/metric
   is transport-internal, and O1a pins this with an export-surface test.
@@ -522,22 +522,23 @@ merges.
 1. **Egress posture: where does OTLP go from an egress-sealed container?**
    RESOLVED — **(a) env-gated direct OTLP export, off by default.** Matt ruled
    (a) and raised a substrate sub-fork (does the agent↔Runner socket converge
-   to a network transport?); compass-runner resolved it: it does NOT. The
-   microVM design swaps the gateway AF_UNIX socket to virtio-vsock — a
-   transport swap, not a protocol change (hybrid vsock, host end stays
-   AF_UNIX, same Connect/h2c;
-   `docs/designs/platform/compass-elastic-session-runtime/microvm-runner.md`,
-   Approach (b)/(c), D8) — and vsock is host-local by construction (guest↔its
-   own VMM, non-IP, unreachable from the guest's network netns). So OTLP is
-   genuinely the agent's first *network* egress in BOTH the container and the
-   microVM end-state, drawn against the destination collector over the guest's
-   own netns + egress allowlist, never the socket/vsock gateway. A
-   central/remote Runner over a network hop was a D8 candidate and was
-   REJECTED (co-located one-per-box; the fleet control plane is a separate
-   design, RIG-2485), so the substrate never becomes network — no convergence
-   risk, no hedge. Decision 3 / O1b stand as drafted. (Forward note: under the
-   microVM end-state, egress is in-guest default-deny + a resolved allowlist;
-   the OTLP collector endpoint becomes one allowlist entry — future config,
+   to a network transport?); compass-runner, the substrate owner, resolved it
+   this session: it does NOT. Today the gateway is a local AF_UNIX socket
+   (`index.ts:4-5`: a local hop, no network path). The in-review microVM
+   Runner design (RIG-2394, PR #488 — not yet merged) swaps that socket to
+   virtio-vsock: a transport swap, not a protocol change (hybrid vsock, host
+   end stays AF_UNIX, same Connect/h2c), and vsock is host-local by
+   construction (guest↔its own VMM, non-IP, unreachable from the guest's
+   network netns). So OTLP is genuinely the agent's first *network* egress in
+   BOTH the container today and the microVM end-state, drawn against the
+   destination collector over the guest's own netns + egress allowlist, never
+   the socket/vsock gateway. A central/remote Runner over a network hop was a
+   candidate and was REJECTED (co-located one-per-box; the fleet control plane
+   is a separate design, RIG-2485), so the substrate never becomes network — no
+   convergence risk, no hedge. Decision 3 / O1b stand as drafted. (Forward
+   note: under the microVM end-state, egress is in-guest default-deny + a
+   resolved allowlist; the OTLP collector endpoint becomes one allowlist entry
+   — future config,
    not a blocker.)
 2. **Which endpoint?** RESOLVED — **user-provided (self-host) or
    Runner/iac-injected (managed); provisioning is out of this package's
@@ -553,7 +554,7 @@ merges.
    records include this record's own parent, the RIG-2424 adoption record),
    but the `DECISIONS.md` ledger lives under `docs/designs/product/` and the
    design-ledger-gate CI check governs product records ONLY
-   (`tools/design-ledger-gate/index.ts`, `PRODUCT_DIR = "docs/designs/product"`);
+   (`tools/design-ledger-gate/index.ts:45`, `PRODUCT_DIR = "docs/designs/product"`);
    its touch-coupling leg does not fire for a `platform/` record, so #485 is
    not ledger-red. No ledger file is created.
 4. **Scope of the metric surface: transport-only, or also `CompassAgent`-
