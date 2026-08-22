@@ -222,17 +222,15 @@ func TestControlPreservesSendOrder(t *testing.T) {
 	}
 }
 
-// TestControlRejectsEmptyVariants pins the must-not-send rule. The three
-// still-undefined-payload variants (SteerControl, TranscriptReplay,
-// ConfigControl) are empty shells on the wire; sending one is a must-not,
-// enforced at the seam with CodeInvalidArgument rather than left for the agent
-// to count as unmapped. DeliverControl is NO LONGER among them — it carries a
-// defined compass.v1.Message, so it is representable and sent (asserted in
-// TestControlSendsDeliver).
+// TestControlRejectsEmptyVariants pins the must-not-send rule. The two
+// still-undefined-payload variants (TranscriptReplay, ConfigControl) are empty
+// shells on the wire; sending one is a must-not, enforced at the seam with
+// CodeInvalidArgument rather than left for the agent to count as unmapped.
+// SteerControl and DeliverControl are NO LONGER among them — each carries a
+// defined compass.v1.Message, so both are representable and sent (asserted in
+// TestControlSendsSteer and TestControlSendsDeliver).
 func TestControlRejectsEmptyVariants(t *testing.T) {
 	empties := map[string]*compassv1internal.AgentControl{
-		"steer": {Control: &compassv1internal.AgentControl_Steer{
-			Steer: &compassv1internal.SteerControl{}}},
 		"replay": {Control: &compassv1internal.AgentControl_Replay{
 			Replay: &compassv1internal.TranscriptReplay{}}},
 		"config": {Control: &compassv1internal.AgentControl_Config{
@@ -306,6 +304,37 @@ func TestControlSendsDeliver(t *testing.T) {
 	}
 	if got.GetControlSeq() == 0 {
 		t.Fatal("delivered op carried no control_seq; Send must stamp it")
+	}
+}
+
+// TestControlSendsSteer pins the un-parking: a SteerControl op carries a defined
+// compass.v1.Message (SEA-1569/DL-073, the same shape DeliverControl rides), so
+// it is representable and Send stamps, retains and drains it to the
+// subscription — it must NOT be rejected as an empty variant. This is the
+// regression guard for the gap the leg-3/4 real-stack e2e surfaced: steerOp
+// builds a populated steer, but representable() had left AgentControl_Steer in
+// the empty-shell reject set (Deliver was un-parked, Steer was missed), so every
+// @mention steer to a live session was refused with errEmptyControlVariant.
+func TestControlSendsSteer(t *testing.T) {
+	p := newTestProducer()
+	stream := newControlStream()
+	stop := p.subscribe(t, stream)
+	defer stop()
+
+	op := &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_Steer{
+			Steer: &compassv1internal.SteerControl{Message: &compassv1.Message{Id: "m-1"}},
+		},
+	}
+	if err := p.Send(testSession, op); err != nil {
+		t.Fatalf("Send(steer) = %v, want nil (representable)", err)
+	}
+	got := stream.recv(t)
+	if id := got.GetSteer().GetMessage().GetId(); id != "m-1" {
+		t.Fatalf("steered message id = %q, want m-1 (op reached the stream intact)", id)
+	}
+	if got.GetControlSeq() == 0 {
+		t.Fatal("steered op carried no control_seq; Send must stamp it")
 	}
 }
 
