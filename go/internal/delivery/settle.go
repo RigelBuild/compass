@@ -183,7 +183,7 @@ func (c *Consumer) sweepPins(ctx context.Context, agent store.AccountID, session
 					"channel", string(channel), "message_id", string(entry.MessageID))
 				continue
 			}
-			ops = append(ops, pinOp{op: deliverOp(wire), messageID: entry.MessageID})
+			ops = append(ops, pinOp{op: deliverOp(wire, c.authorHandle(ctx, wire)), messageID: entry.MessageID})
 		}
 	}
 	gate := c.gateFor(sessionID)
@@ -230,7 +230,7 @@ func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID,
 					"agent", string(agent), "channel", string(channel), "message_id", string(m.ID))
 				continue
 			}
-			ops = append(ops, steerOpEntry{op: steerOp(wire), messageID: m.ID})
+			ops = append(ops, steerOpEntry{op: steerOp(wire, c.authorHandle(ctx, wire)), messageID: m.ID})
 		}
 	}
 	if len(ops) > 0 {
@@ -317,7 +317,8 @@ func (c *Consumer) sweepSession(ctx context.Context, account store.AccountID, se
 	defer gate.Unlock()
 	for _, msgs := range owed {
 		for i := range msgs {
-			op := deliverOp(comms.MessageToWire(msgs[i]))
+			wire := comms.MessageToWire(msgs[i])
+			op := deliverOp(wire, c.authorHandle(ctx, wire))
 			if err := c.dispatch.DispatchControl(ctx, sessionID, op); err != nil {
 				c.log.WarnContext(ctx, "delivery: sweep dispatch failed, leaving to next sweep",
 					"error", err, "session_id", sessionID, "message_id", string(msgs[i].ID))

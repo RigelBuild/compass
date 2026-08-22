@@ -49,6 +49,8 @@ import {
 	SessionFileDiffSchema,
 	type SessionFrame,
 	SessionFrameSchema,
+	type SessionInjectionKind,
+	SessionInjectionSchema,
 	SessionPlanSchema,
 	SessionThinkingSchema,
 	SessionToolCallSchema,
@@ -242,6 +244,28 @@ export class EventMapper {
 		});
 		const value: SessionFrame = create(SessionFrameSchema, { typedEvent });
 		return { kind: "session", value };
+	}
+
+	// Build one SessionInjection trace frame — the agent-side observation that a
+	// channel message was injected into the live session as a steer or a deliver
+	// (design "steer/deliver split observation seam", T1). Public because the
+	// injection point is `CompassAgent.steer()`/`deliver()`, not the session-event
+	// stream `map()` drains; routing through `#sessionEvent` reuses the same
+	// event_id/at_unix_ms stamping every other trace frame gets, so the injection
+	// observation is ordered on the one monotonic sequence.
+	sessionInjection(
+		opKind: SessionInjectionKind,
+		messageId: string,
+		fromHandle: string,
+	): OutboundFrame {
+		return this.#sessionEvent({
+			case: "sessionInjection",
+			value: create(SessionInjectionSchema, {
+				opKind,
+				messageId,
+				fromHandle,
+			}),
+		});
 	}
 
 	#onMessageUpdate(inner: AssistantMessageEvent): MapOutput[] {

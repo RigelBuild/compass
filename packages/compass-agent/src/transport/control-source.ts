@@ -160,8 +160,13 @@ export const CONTROL_RECONNECT_NO_PROGRESS_MAX = 10;
 // dedups on `msg.id`, injects (steer as a mid-turn interrupt / idle-start turn;
 // deliver coalesced to a turn-end prompt), and acks per message.
 export interface ImmediateControl {
-	steer(msg: Message): void; // compass.v1.Message — .id intact
-	deliver(msg: Message): void; // compass.v1.Message — .id intact
+	// The second arg is the denormalized author `from_handle` off the wire
+	// control (RIG-2486 T1) — the value the CompassAgent emits on the
+	// SessionInjection observation without a per-injection roster lookup. Empty
+	// when the Server could not resolve the author handle (a handle miss is
+	// logged server-side, never a delivery block).
+	steer(msg: Message, fromHandle: string): void; // compass.v1.Message — .id intact
+	deliver(msg: Message, fromHandle: string): void; // compass.v1.Message — .id intact
 }
 
 // Decode the immediate-op payload into the comms `Message` the `immediate`
@@ -397,9 +402,9 @@ export function createSocketControlSource(
 						"empty-shell steer/deliver — payload staged (SEA-1310)",
 					);
 				} else if (wire.control.case === "steer") {
-					immediate.steer(msg);
+					immediate.steer(msg, wire.control.value.fromHandle);
 				} else {
-					immediate.deliver(msg);
+					immediate.deliver(msg, wire.control.value.fromHandle);
 				}
 				// Applied (counted or dispatched) at decode → ack now, ahead of any
 				// queued iterator op (invariant 2 → applied_above).

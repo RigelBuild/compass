@@ -119,21 +119,38 @@ function emptyRecorder(): Recorder {
 }
 
 // No-op immediate handle — C4b never invokes it (empty-shell payloads, OQ-2(A)),
-// but a test can pass a recording one to prove that.
+// but a test can pass a recording one to prove that. Records the second
+// `fromHandle` arg (RIG-2486 T1) alongside each dispatched Message so a test can
+// assert the wire from_handle threaded through.
 function recordingImmediate(): {
-	immediate: { steer(m: unknown): void; deliver(m: unknown): void };
+	immediate: {
+		steer(m: unknown, fromHandle: string): void;
+		deliver(m: unknown, fromHandle: string): void;
+	};
 	steers: unknown[];
 	delivers: unknown[];
+	steerHandles: string[];
+	deliverHandles: string[];
 } {
 	const steers: unknown[] = [];
 	const delivers: unknown[] = [];
+	const steerHandles: string[] = [];
+	const deliverHandles: string[] = [];
 	return {
 		immediate: {
-			steer: (m) => steers.push(m),
-			deliver: (m) => delivers.push(m),
+			steer: (m, fromHandle) => {
+				steers.push(m);
+				steerHandles.push(fromHandle);
+			},
+			deliver: (m, fromHandle) => {
+				delivers.push(m);
+				deliverHandles.push(fromHandle);
+			},
 		},
 		steers,
 		delivers,
+		steerHandles,
+		deliverHandles,
 	};
 }
 
@@ -158,6 +175,7 @@ function populatedSteerOp(
 	seq: bigint,
 	id: string,
 	text: string,
+	fromHandle = "",
 ): WireAgentControl {
 	const message: Message = create(MessageSchema, {
 		id,
@@ -169,14 +187,19 @@ function populatedSteerOp(
 		controlSeq: seq,
 		control: {
 			case: "steer",
-			value: create(SteerControlSchema, { message }),
+			value: create(SteerControlSchema, { message, fromHandle }),
 		},
 	});
 }
 
 // A populated deliver op: a DeliverControl carrying a comms Message with an id
 // and one text block (SEA-1310 §8 — the wire is no longer an empty shell).
-function deliverOp(seq: bigint, id: string, text: string): WireAgentControl {
+function deliverOp(
+	seq: bigint,
+	id: string,
+	text: string,
+	fromHandle = "",
+): WireAgentControl {
 	const message: Message = create(MessageSchema, {
 		id,
 		blocks: [
@@ -187,7 +210,7 @@ function deliverOp(seq: bigint, id: string, text: string): WireAgentControl {
 		controlSeq: seq,
 		control: {
 			case: "deliver",
-			value: create(DeliverControlSchema, { message }),
+			value: create(DeliverControlSchema, { message, fromHandle }),
 		},
 	});
 }
@@ -367,12 +390,12 @@ test("a populated deliver decodes its Message and dispatches it through immediat
 	const socketPath = await serve(rec, {
 		control: async function* () {
 			yield replayCompleteOp(1n);
-			yield deliverOp(2n, "msg-abc", "channel text");
+			yield deliverOp(2n, "msg-abc", "channel text", "matt");
 			yield promptOp(3n, "after");
 		},
 	});
 	const unmapped: UnmappedEvent[] = [];
-	const { immediate, delivers } = recordingImmediate();
+	const { immediate, delivers, deliverHandles } = recordingImmediate();
 	const source = createSocketControlSource(
 		createUnixSocketTransport(socketPath),
 		immediate,
@@ -384,6 +407,9 @@ test("a populated deliver decodes its Message and dispatches it through immediat
 	// The decoded comms Message (id intact) reached immediate.deliver.
 	expect(delivers).toHaveLength(1);
 	expect((delivers[0] as Message).id).toBe("msg-abc");
+	// The wire DeliverControl.from_handle threaded through to immediate.deliver
+	// (RIG-2486 T1). Non-vacuity: drop the fromHandle arg on the dispatch → "".
+	expect(deliverHandles).toEqual(["matt"]);
 	// A populated deliver is NOT counted "payload staged" — it decoded fine.
 	const staged = unmapped.find(
 		(u) => u.eventType === "control:deliver" && u.reason.includes("staged"),
@@ -400,12 +426,12 @@ test("a populated steer decodes its Message and dispatches it through immediate.
 	const socketPath = await serve(rec, {
 		control: async function* () {
 			yield replayCompleteOp(1n);
-			yield populatedSteerOp(2n, "steer-abc", "mention text");
+			yield populatedSteerOp(2n, "steer-abc", "mention text", "matt");
 			yield promptOp(3n, "after");
 		},
 	});
 	const unmapped: UnmappedEvent[] = [];
-	const { immediate, steers } = recordingImmediate();
+	const { immediate, steers, steerHandles } = recordingImmediate();
 	const source = createSocketControlSource(
 		createUnixSocketTransport(socketPath),
 		immediate,
@@ -417,6 +443,9 @@ test("a populated steer decodes its Message and dispatches it through immediate.
 	// The decoded comms Message (id intact) reached immediate.steer.
 	expect(steers).toHaveLength(1);
 	expect((steers[0] as Message).id).toBe("steer-abc");
+	// The wire SteerControl.from_handle threaded through to immediate.steer
+	// (RIG-2486 T1). Non-vacuity: drop the fromHandle arg on the dispatch → "".
+	expect(steerHandles).toEqual(["matt"]);
 	// A populated steer is NOT counted "payload staged" — it decoded fine.
 	const staged = unmapped.find(
 		(u) => u.eventType === "control:steer" && u.reason.includes("staged"),

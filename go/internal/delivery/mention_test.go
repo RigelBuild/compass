@@ -251,6 +251,69 @@ func TestSteerCarriesMessage(t *testing.T) {
 	}
 }
 
+// RIG-2486 T1: the author's handle is denormalized onto BOTH the steer op (to a
+// mentioned member) and the deliver op (to a plain subscriber), resolved once
+// server-side via GetAccount from the message's author_account_id. The agent
+// reads it off the control to emit the SessionInjection observation's
+// from_handle without a per-injection roster lookup. RED before the build sites
+// populated FromHandle: both ops carried an empty from_handle, so the handle
+// assertions failed.
+func TestDeliverAndSteerCarryAuthorFromHandle(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const human store.AccountID = "human-1"
+	const agentA, agentB store.AccountID = "agent-a", "agent-b"
+
+	reads.subscribers[ch] = []store.AccountID{agentA, agentB}
+	reads.members[ch] = []store.AccountID{agentA, agentB}
+	reads.handles["aa"] = agentAccount(agentA, "aa")
+	// The author's account resolves its handle for the denormalized from_handle.
+	reads.accounts[human] = store.Account{ID: human, Handle: "matt"}
+	res.bind(agentA, "sess-a")
+	res.bind(agentB, "sess-b")
+	startConsumer(t, c)
+
+	// @aa steers agent-a; agent-b (subscribed, unmentioned) gets a plain deliver.
+	c.bus.Publish(postedResponse(wireText("m1", human, "hey @aa")))
+	disp.waitForDispatches(t, 2)
+
+	got := disp.snapshot()
+	a := recordsFor(got, "sess-a")
+	if len(a) != 1 || a[0].kind != opSteer || a[0].fromHandle != "matt" {
+		t.Fatalf("sess-a records = %+v, want one steer with from_handle=matt", a)
+	}
+	b := recordsFor(got, "sess-b")
+	if len(b) != 1 || b[0].kind != opDeliver || b[0].fromHandle != "matt" {
+		t.Fatalf("sess-b records = %+v, want one deliver with from_handle=matt", b)
+	}
+}
+
+// RIG-2486 T1: a from_handle resolution MISS (the author account is not found)
+// is logged and yields an empty from_handle — it never blocks the delivery. The
+// deliver still dispatches; only its from_handle is empty.
+func TestFromHandleMissDeliversWithEmptyHandle(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const human store.AccountID = "human-1"
+	const agentA store.AccountID = "agent-a"
+
+	reads.subscribers[ch] = []store.AccountID{agentA}
+	// No reads.accounts entry for the author: GetAccount is ErrNotFound.
+	res.bind(agentA, "sess-a")
+	startConsumer(t, c)
+
+	c.bus.Publish(postedResponse(wireText("m1", human, "hi")))
+	disp.waitForDispatches(t, 1)
+
+	got := disp.snapshot()
+	if len(got) != 1 || got[0].kind != opDeliver || got[0].messageID != "m1" {
+		t.Fatalf("dispatch = %+v, want one deliver of m1", got)
+	}
+	if got[0].fromHandle != "" {
+		t.Fatalf("from_handle = %q on a store miss, want empty", got[0].fromHandle)
+	}
+}
+
 // Case 8 (design.md:853-855): a mention absent from the initial MessagePosted
 // block set but streamed in via a later store-grow still steers at the author's
 // settle edge. The message is HELD while the author streams (no mention yet); the
