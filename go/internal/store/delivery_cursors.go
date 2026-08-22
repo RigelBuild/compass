@@ -80,6 +80,13 @@ func (s *Store) SeedDeliveryCursor(ctx context.Context, tx pgx.Tx, agent Account
 // to agent — the no-loss backstop for a mentioned member outside the sweep set
 // (RIG-1641 T1). Idempotent: the PK (agent_account_id, message_id) makes a
 // re-record (settle re-fire, at-least-once routing) a no-op upsert.
+//
+// The caller MUST pass the message's OWN channel: channel_id is stored as
+// context (T2 observability) but is not cross-checked against messageID's real
+// channel here, and the read path (OwedMentions) derives the channel from the
+// message's topic JOIN rather than this column, so a mismatched channel would
+// persist a silently-inconsistent row. The settle-edge caller already holds the
+// message's channel, so this is an assertion, not a lookup.
 func (s *Store) RecordOwedMention(ctx context.Context, agent AccountID, channel ChannelID, messageID string) error {
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO owed_mentions (agent_account_id, message_id, channel_id, recorded_at_unix_ms)

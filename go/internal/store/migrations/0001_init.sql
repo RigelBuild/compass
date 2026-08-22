@@ -476,6 +476,11 @@ CREATE TABLE agent_delivery_cursors (
 -- departs from the surrounding ON DELETE RESTRICT convention: an owed mention of
 -- a deleted message, account, or channel is moot, so it should vanish with its
 -- referent rather than stand as a lien blocking three tables' delete paths.
+-- The message_id and channel_id CASCADE FKs are intentionally unindexed: no
+-- delete path exists for messages or channels today, so the cascade never fires
+-- and a supporting index would be dead weight. When a message/channel delete
+-- path lands, add owed_mentions(message_id) / owed_mentions(channel_id) to avoid
+-- a seq-scan per parent delete.
 CREATE TABLE owed_mentions (
     agent_account_id    TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE CASCADE,
     message_id          TEXT NOT NULL REFERENCES messages (id) ON DELETE CASCADE,

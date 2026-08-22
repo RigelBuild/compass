@@ -766,3 +766,81 @@ func TestAckDeliveryUnrelatedLeavesOwedMention(t *testing.T) {
 		t.Fatalf("unrelated ack disturbed owed row: OwedMentions[%s] = %v, want single %s", ch, owed, msgA)
 	}
 }
+
+// Case 18 — ack clears an owed mention on the DUP-ACK arm (RIG-1641 T1): the
+// second no-op arm that must still commit the clear (design §T1 lines 476-477).
+// An agent whose cursor sits at or above the owed message's seq — owed while
+// unsubscribed, then subscribed so the cursor seeds at head — acks that message.
+// The seq resolves at/below acked_seq, so the cursor arm no-ops (advances
+// nothing), but the owed-clear must still COMMIT. If the dup-ack arm were
+// mis-edited to `return nil` (its pre-restructure behavior), the owed row would
+// survive and re-deliver on every session start forever — and the suite would
+// stay green without this case.
+func TestAckDeliveryClearsOwedMentionOnDuplicateAck(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+
+	// Post m1 as owner FIRST so it sits at the channel head, then subscribe the
+	// agent — the subscribe seeds the cursor at head (= m1's seq), so an ack of
+	// m1 lands on the dup-ack arm (seq <= acked_seq).
+	ch := mustNamedChannel(t, s, owner.ID, "room").ID
+	m1, seq1 := postAs(t, s, ch, owner.ID, "@agent look here")
+	subscribeAgent(t, s, owner.ID, ch, agent.ID)
+	if acked, _, ok := readCursor(t, s, agent.ID, ch); !ok || acked != seq1 {
+		t.Fatalf("precondition: cursor should be seeded at head %d, got acked=%d ok=%v", seq1, acked, ok)
+	}
+	if err := s.RecordOwedMention(ctx, agent.ID, ch, m1); err != nil {
+		t.Fatalf("RecordOwedMention: %v", err)
+	}
+
+	if err := s.AckDelivery(ctx, agent.ID, ch, m1); err != nil {
+		t.Fatalf("AckDelivery: %v", err)
+	}
+
+	got, err := s.OwedMentions(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("OwedMentions: %v", err)
+	}
+	if owed := got[ch]; len(owed) != 0 {
+		t.Fatalf("owed mention not cleared on dup-ack arm: %v", owed)
+	}
+	// The dup-ack arm must NOT advance the cursor — the clear is the only effect.
+	if acked, _, ok := readCursor(t, s, agent.ID, ch); !ok || acked != seq1 {
+		t.Fatalf("dup-ack arm advanced the cursor: acked=%d ok=%v, want unchanged %d", acked, ok, seq1)
+	}
+}
+
+// Case 19 — ack clears an owed mention on the FULL-ADVANCE path (RIG-1641 T1):
+// when the acked message is above the cursor, the single final commit must carry
+// BOTH the cursor advance AND the owed-clear. Pins that the clear rides the
+// full-advance commit (not just the two no-op arms).
+func TestAckDeliveryClearsOwedMentionOnFullAdvance(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := agent.Agent.HomeChannelID // home cursor seeded at head 0 at agent creation.
+
+	m1, seq1 := postAs(t, s, ch, owner.ID, "@agent above the cursor")
+	if err := s.RecordOwedMention(ctx, agent.ID, ch, m1); err != nil {
+		t.Fatalf("RecordOwedMention: %v", err)
+	}
+
+	if err := s.AckDelivery(ctx, agent.ID, ch, m1); err != nil {
+		t.Fatalf("AckDelivery: %v", err)
+	}
+
+	got, err := s.OwedMentions(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("OwedMentions: %v", err)
+	}
+	if owed := got[ch]; len(owed) != 0 {
+		t.Fatalf("owed mention not cleared on full-advance path: %v", owed)
+	}
+	// The cursor advanced to the acked seq on the same commit that cleared the row.
+	if acked, above, ok := readCursor(t, s, agent.ID, ch); !ok || acked != seq1 || len(above) != 0 {
+		t.Fatalf("full advance did not reach acked seq: acked=%d above=%v ok=%v, want acked=%d above=[]", acked, above, ok, seq1)
+	}
+}
