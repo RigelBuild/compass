@@ -22,12 +22,24 @@
 //     never-drop by the spine contract, so it always enqueuePriority.
 //
 // emit() stays synchronous/void (CompassAgent's shape is unchanged): the durable
-// transcript send (emitDurable) is launched as a tracked in-flight promise,
-// retained behind drain() the teardown path awaits (bounded by the shutdown
-// deadline), so shutdown cannot abandon an uncommitted transcript frame.
+// transcript send (emitDurable) is forked as a tracked fiber into the sink's
+// FiberSet (design record compass-agent-effect-adoption T2), retained behind
+// drain() the teardown path awaits (bounded by the shutdown deadline), so
+// shutdown cannot abandon an uncommitted transcript frame.
 
 import { randomUUID } from "node:crypto";
 import { create } from "@bufbuild/protobuf";
+import {
+	Cause,
+	Effect,
+	Exit,
+	FiberSet,
+	Logger,
+	ManagedRuntime,
+	Option,
+	Schedule,
+	Scope,
+} from "effect";
 import type { FrameSink, OutboundFrame } from "./../frame";
 import {
 	PostConversationFrameRequestSchema,
@@ -50,13 +62,15 @@ export const DURABLE_RETRY_BACKOFF_MS: readonly number[] = [50, 200, 800, 2000];
 
 // Per-attempt deadline on the durable unary (ms). Without it, a Runner that
 // accepts the connection but never responds (a handler hung mid-teardown) would
-// leave `await postConversationFrame` pending forever: the retry loop only
-// advances on a THROWN error, so a hang — not an error — never increments
-// `attempt`, never gives up, and wedges drain()'s in-flight wait past the
-// shutdown deadline. A deadline turns a hang into a retryable DeadlineExceeded
-// the same catch handles, so the give-up path is reachable for hangs too and
-// drain() is bounded by the sink's own retry budget. Sized above the last
-// backoff step so a merely-slow (not hung) Runner still gets its full retry.
+// leave `postConversationFrame` pending forever: Effect.retry only advances on a
+// FAILED attempt, so a hang — not an error — never fails the effect, never gives
+// up, and wedges drain()'s FiberSet.awaitEmpty past the shutdown deadline. The
+// deadline (kept as Connect's own timeoutMs — it cancels the wire call, which a
+// bare Effect.timeout around the promise cannot) turns a hang into a retryable
+// DeadlineExceeded the retry ladder advances on, so the give-up path is reachable
+// for hangs too and drain() is bounded by the sink's own retry budget. Sized
+// above the last backoff step so a merely-slow (not hung) Runner still gets its
+// full retry.
 const DURABLE_CALL_TIMEOUT_MS = 5000;
 
 // Build the wire `AgentFrame` from a domain OutboundFrame — the same oneof stamp
@@ -80,9 +94,25 @@ function isLifecycle(frame: OutboundFrame): boolean {
 
 export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	const spine = transport.publishSpine();
-	// In-flight durable sends, retained so drain() awaits every uncommitted
-	// transcript frame. Each entry removes itself on settle.
-	const inflight = new Set<Promise<void>>();
+	// The sink's own transitional ManagedRuntime (design record
+	// compass-agent-effect-adoption T2). Until T5 consolidates ownership into the
+	// transport, the sink makes its own and disposes it at the end of drain(), so
+	// no undisposed runtime leaks across the T2–T4 transitional state. The runtime
+	// removes the default logger so a handled forked-send failure does not
+	// double-report to the console (the give-up is already surfaced to
+	// emitDurable's caller as a promise reject).
+	const runtime = ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
+	// A sink-lifetime scope backing the FiberSet: it must outlive each fork (a
+	// scoped run would interrupt the set the moment its Effect returned), and
+	// drain() closes it after the set has drained.
+	const fiberScope = runtime.runSync(Scope.make());
+	// In-flight durable sends are forked fibers in this set, retained so drain()
+	// awaits every uncommitted transcript frame via FiberSet.awaitEmpty (replacing
+	// the old snapshot-and-await over a Set<Promise>). A fiber removes itself from
+	// the set on completion.
+	const inflight = runtime.runSync(
+		Scope.extend(FiberSet.make<void>(), fiberScope),
+	);
 	// Per-sink random nonce + monotonic counter feed the idempotency key. The key
 	// must be STABLE across retries of one logical frame (one key minted per
 	// emit, reused by every retry — the Runner dedups a lost-response retry) AND
@@ -95,59 +125,76 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	// per agent instance, so no two processes ever collide.
 	const nonce = randomUUID();
 	let seq = 0;
+	// One-shot terminal latch for drain(). The old Set<Promise> drain was
+	// idempotent (snapshot-and-await + idempotent spine.drain); the Effect drain
+	// disposes the runtime and closes fiberScope, so a second call would run
+	// FiberSet.awaitEmpty / dispose on an already-disposed runtime and throw.
+	// Guard so a repeat drain is a no-op, preserving the old idempotent contract
+	// (mirrors publish-spine's `ended` flag).
+	let drained = false;
 
-	// Send one durable frame on the unary, retrying transient errors on the
-	// bounded backoff schedule. The idempotency key is minted ONCE and reused
-	// across retries so the Runner dedups a lost-response retry. On retry-cap
-	// exhaustion this REJECTS with the last error — the definitive give-up
-	// signal. `emit()` swallows that reject (loss-tolerable session telemetry,
-	// unchanged); `emitDurable()` propagates it so the transcript tee
-	// backend can buffer/retry/fatal (SEA-1570 R4).
-	async function sendDurable(req: OutboundFrame): Promise<void> {
-		const idempotencyKey = `${nonce}-${seq++}`;
-		const request = create(PostConversationFrameRequestSchema, {
-			frame: toAgentFrame(req),
-			idempotencyKey,
-		});
-		for (let attempt = 0; ; attempt++) {
-			try {
-				await transport.postConversationFrame(request, {
-					timeoutMs: DURABLE_CALL_TIMEOUT_MS,
-				});
-				return;
-			} catch (err) {
-				if (attempt >= DURABLE_RETRY_BACKOFF_MS.length) {
-					// Exhausted: definitively erred. Throw so the durable transcript
-					// lane (emitDurable) observes it; the void emit() path catches and
-					// swallows (its frame is delivered-or-erred and the give-up is the
-					// Runner's problem via gap-detection, never a crash).
-					throw err;
-				}
-				const { promise, resolve } = Promise.withResolvers<void>();
-				setTimeout(resolve, DURABLE_RETRY_BACKOFF_MS[attempt]);
-				await promise;
-			}
-		}
+	// Unwrap the original error from an Effect failure Cause so the give-up seam
+	// hands the caller the real ConnectError, not an Effect FiberFailure wrapper
+	// (design record T2). A tryPromise failure carries the raw rejection in the
+	// failure channel (Cause.failureOption); a defect/interrupt squashes.
+	function causeError(cause: Cause.Cause<unknown>): unknown {
+		return Option.getOrElse(Cause.failureOption(cause), () =>
+			Cause.squash(cause),
+		);
 	}
 
-	// Launch a tracked durable send, retained behind drain() so teardown awaits
-	// its commit. `onError` decides the give-up disposition: emit() swallows
-	// (void, loss-tolerable), emitDurable() rejects to its caller (R4). The
-	// returned promise settles when the send does.
+	// Fork one durable send into the FiberSet, retained behind drain() so teardown
+	// awaits its commit. The send is Effect.tryPromise over the unary — KEEPING
+	// the per-attempt Connect timeoutMs, which cancels the wire call (a bare
+	// Effect.timeout around the promise cannot: promise interruption does not abort
+	// the RPC) — piped through Effect.retry on the fixed backoff ladder. The
+	// idempotency key is minted ONCE here, outside the retried effect, so every
+	// retry of one logical frame reuses it and the Runner dedups a lost-response
+	// retry. `onSettle` is the give-up disposition, wired at FORK time (not at
+	// drain/join) so a forked failure is observed by the caller's bridge BEFORE
+	// FiberSet.awaitEmpty resolves: emitDurable() rejects its returned promise
+	// (propagate, R4); a loss-tolerable launch would swallow the terminal error
+	// (emit() carries no durable rider today — frame.ts — but the split is
+	// preserved for T5). On retry-cap exhaustion the send fails and onSettle gets
+	// the unwrapped error; on success onSettle gets undefined.
 	function launchDurable(
 		frame: OutboundFrame,
-		onError: (err: unknown) => void,
-	): Promise<void> {
-		const send = sendDurable(frame);
-		const tracked = send.then(
-			() => {},
-			(err) => onError(err),
-		);
-		const retained = tracked.finally(() => {
-			inflight.delete(retained);
+		onSettle: (err: unknown) => void,
+	): void {
+		const idempotencyKey = `${nonce}-${seq++}`;
+		const request = create(PostConversationFrameRequestSchema, {
+			frame: toAgentFrame(frame),
+			idempotencyKey,
 		});
-		inflight.add(retained);
-		return retained;
+		const send = Effect.tryPromise({
+			try: () =>
+				transport.postConversationFrame(request, {
+					timeoutMs: DURABLE_CALL_TIMEOUT_MS,
+				}),
+			// Preserve the raw rejection (ConnectError) in the failure channel — do
+			// NOT let tryPromise wrap it in an UnknownException, so causeError can
+			// hand the original error back at the reject seam.
+			catch: (err) => err,
+		}).pipe(
+			Effect.retry(
+				Schedule.fromDelays(
+					DURABLE_RETRY_BACKOFF_MS[0],
+					...DURABLE_RETRY_BACKOFF_MS.slice(1),
+				),
+			),
+		);
+		// Bridge the fiber's terminal exit to the caller's disposition. Effect.exit
+		// absorbs the failure so the fiber itself always SUCCEEDS — the set's
+		// failure deferred never trips and no unhandled fiber-failure is logged; the
+		// give-up is delivered only through onSettle. FiberSet.run forks
+		// synchronously, so the fiber (and this bridge) are wired into the set
+		// before launchDurable returns.
+		const bridged = Effect.flatMap(Effect.exit(send), (exit) =>
+			Effect.sync(() =>
+				onSettle(Exit.isFailure(exit) ? causeError(exit.cause) : undefined),
+			),
+		);
+		runtime.runSync(FiberSet.run(inflight, bridged));
 	}
 
 	return {
@@ -183,28 +230,43 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 		},
 
 		emitDurable(frame: OutboundFrame): Promise<void> {
-			// SEA-1570 transcript lane: same durable unary + drain tracking as
-			// emit(), but the definitive-error reject PROPAGATES to the caller so the
-			// tee backend can buffer/retry/fatal (R4). The backend awaits this inside
-			// the per-path storage op, so per-session emit order == send order.
+			// SEA-1570 transcript lane: the durable send is forked into the FiberSet
+			// (same drain tracking as emit's launch), but its definitive give-up
+			// PROPAGATES to the caller so the tee backend can buffer/retry/fatal (R4).
+			// The Deferred→promise reject bridge is wired at FORK time (design record
+			// T2), so a forked failure rejects this promise before drain's
+			// FiberSet.awaitEmpty resolves. The backend awaits this inside the
+			// per-path storage op, so per-session emit order == send order.
 			// `session` frames never reach here (transcript is the only durable
 			// rider on this lane).
 			const { promise, resolve, reject } = Promise.withResolvers<void>();
-			launchDurable(frame, (err) => reject(err)).then(resolve, () => {});
+			launchDurable(frame, (err) =>
+				err === undefined ? resolve() : reject(err),
+			);
 			return promise;
 		},
 
 		async drain(): Promise<void> {
-			// Await every in-flight durable commit first, so no transcript frame is
-			// abandoned uncommitted. New durable sends are not expected during
-			// teardown, but a snapshot-and-await loop covers any launched by a late
-			// emit before the caller stops feeding the sink.
-			while (inflight.size > 0) {
-				await Promise.all([...inflight]);
+			// Idempotent: a second drain is a no-op (the first disposed the runtime).
+			if (drained) return;
+			drained = true;
+			try {
+				// Await every forked durable commit first (FiberSet.awaitEmpty), so no
+				// transcript frame is abandoned uncommitted — the Effect equivalent of
+				// the old snapshot-and-await over the in-flight promise set.
+				await runtime.runPromise(FiberSet.awaitEmpty(inflight));
+				// Then flush + close the Publish spine: any queued priority frame (the
+				// terminal STOPPED) goes ahead of the trace backlog.
+				await spine.drain();
+			} finally {
+				// Terminal for the sink (post-drain enqueues are no-ops by contract):
+				// close the FiberSet's scope and dispose the transitional runtime so no
+				// runtime leaks across the T2–T4 transitional state (design record
+				// T2/T5). In a `finally` so a future rejecting awaitEmpty/spine.drain
+				// cannot strand the runtime undisposed.
+				await runtime.runPromise(Scope.close(fiberScope, Exit.void));
+				await runtime.dispose();
 			}
-			// Then flush + close the Publish spine: any queued priority frame (the
-			// terminal STOPPED) goes ahead of the trace backlog.
-			await spine.drain();
 		},
 	};
 }
