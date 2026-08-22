@@ -57,7 +57,7 @@ const (
 	// displayIconUrl (design.md §5). They are deliberately coarse (not
 	// per-agent); the per-agent owner truth lives in the StampOwner header.
 	attributionUser    = "Compass"
-	attributionIconURL = "https://compass.sealedsecurity.com/assets/compass-app.png"
+	attributionIconURL = "https://compass.rigel.build/assets/compass-app.png"
 
 	// forge state truths mapped from Linear workflow-state types.
 	stateOpen   = "open"

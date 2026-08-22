@@ -791,7 +791,7 @@ describe("adaptPullRequest", () => {
 		const r = adaptPullRequest(
 			create(PullRequestSchema, {
 				forge: { provider: ForgeProvider.GITHUB, host: "github.com" },
-				repo: "sealedsecurity/sealed",
+				repo: "RigelBuild/compass",
 				number: 42,
 				title: "wire the board",
 				forgeState: "open",
@@ -820,7 +820,7 @@ describe("adaptPullRequest", () => {
 			}),
 		);
 		expect(r.forge).toEqual({ provider: "github", host: "github.com" });
-		expect(r.repo).toBe("sealedsecurity/sealed");
+		expect(r.repo).toBe("RigelBuild/compass");
 		expect(r.number).toBe(42);
 		expect(r.title).toBe("wire the board");
 		expect(r.forgeState).toBe("open");

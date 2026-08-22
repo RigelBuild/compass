@@ -53,7 +53,7 @@ do not exist today:
 
 This record designs the three together, riding the frozen notification-delivery
 rail (DL-071/072/073) and the agent tree (DL-095), design only — implementation
-lands later in the `sealedsecurity/compass` repo.
+lands later in the `RigelBuild/compass` repo.
 
 ## Approach
 
@@ -293,7 +293,7 @@ DL-054 amendment).
 Every task below inherits these; task briefs do not restate them.
 
 - **Two-repo split.** This record lives in `sealed` (design corpus);
-  implementation lands in `sealedsecurity/compass`. All file:line citations
+  implementation lands in `RigelBuild/compass`. All file:line citations
   below are into the compass clone.
 - **Additive-only proto changes.** New fields, new enum values, new RPCs, new
   oneof arms only — no renumbering, no wire-type changes, buf-breaking-safe.

@@ -269,7 +269,7 @@ this record does not require it.
 ## Alternatives considered
 
 - **Compass-own fork repos** (`RigelBuild/compass-devenv` etc., or reviving the
-  `sealedsecurity/*` Copybara spokes) — rejected. Matt ruled shared canonical
+  per-upstream Copybara spoke repos) — rejected. Matt ruled shared canonical
   repos: one fork per upstream, patch work combined. Two forks of the same
   upstream would duplicate the sealed patches and re-create the divergence this
   reversal exists to end. Frozen; not relitigated here.

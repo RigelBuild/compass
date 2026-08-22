@@ -1,8 +1,6 @@
 // The agent's lifecycle surface: a thin broker over the Runner transport, plus
 // the two native tools an agent registers on its Agent to spawn / despawn a peer
-// (design sealedsecurity/sealed
-// docs/designs/product/compass-agent-spawn-despawn/design.md, T6 — design
-// records live in sealed, not this repo).
+// (design docs/designs/product/compass-agent-spawn-despawn/design.md, T6).
 //
 // This mirrors comms.ts exactly, one leg over: `AgentGateway.Lifecycle` is a
 // Connect **unary** over the per-container Unix socket (transport/index.ts), so

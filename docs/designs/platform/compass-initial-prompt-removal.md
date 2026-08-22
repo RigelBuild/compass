@@ -5,7 +5,7 @@ Tracking: SEA-1959. Ruled by Matt as a separate cutover shipping ahead of the
 runner deliver-leg build (2026-08-12).
 
 > **Design record.** All file+line citations below are paths in
-> `sealedsecurity/compass` as read in this working copy on 2026-08-11; line
+> `RigelBuild/compass` as read in this working copy on 2026-08-11; line
 > numbers drift as code evolves. Every snippet was read and quoted verbatim
 > from the named file in this pass.
 
@@ -203,7 +203,7 @@ until the field is gone.
 
 ## Global Constraints
 
-- Go module `github.com/sealedsecurity/compass/go`, go 1.25/1.26.
+- Go module `github.com/RigelBuild/compass/go`, go 1.25/1.26.
 - VCS is jj + jj-vine (`skill://jj`): bookmark-per-PR, `jj-vine submit` only,
   review fixes as additive commits. Conventional Commits subject with the
   `Co-authored-by: Matt Wilkinson` trailer (`rule://commit-conventions`).

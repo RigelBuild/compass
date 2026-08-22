@@ -408,7 +408,7 @@ describe("agentRepos memo (T6)", () => {
 			expect(repos).toHaveLength(1);
 			const repo = repos[0];
 			expect(repo?.id).toBe("acc-compass-ui-repo");
-			expect(repo?.name).toBe("sealedsecurity/sealed");
+			expect(repo?.name).toBe("RigelBuild/compass");
 			// compass-ui owns ws-1022 then ws-965 → their branches, primary first.
 			expect(repo?.branches).toEqual([
 				"compass-ui-1022-bridge-ui",

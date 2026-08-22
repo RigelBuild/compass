@@ -224,7 +224,7 @@ GitHub/Linear will not.
 ## Global Constraints
 
 - **Go floor:** `go 1.25.0` (`go/go.mod:15`); the module path is
-  `github.com/sealedsecurity/compass/go` (`go.mod:13`).
+  `github.com/RigelBuild/compass/go` (`go.mod:13`).
 - **No YAML project enumeration in CI.** The workflow may gain the single
   fixed live-oracle step, never a per-project/per-task list (`ci.yml:4-18`).
   Leg 1 requires zero `ci.yml` changes.

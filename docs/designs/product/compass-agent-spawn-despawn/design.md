@@ -16,11 +16,11 @@ agent-side tool pair. Companion records this composes with:
 and [`compass-agent-container-runtime.md`](../compass-agent-container-runtime.md)
 (the provisioning substrate the spawn drives).
 
-**Grounding.** This record lives in `sealedsecurity/sealed`; the code it
-describes lives in `sealedsecurity/compass`. Citations resolve by prefix:
-`docs/…` and sibling design records → `sealed`; `proto/…`, `go/…`,
-`packages/…` → `compass`. All compass citations verified 2026-07-30 against
-the `compass` worktree at `~/agents/workspaces/compass-server/compass`.
+**Grounding.** This record and the code it describes now live together in this
+repository, so citations resolve against this tree directly: `docs/…` and
+sibling design records for records; `proto/…`, `go/…`, `packages/…` for the
+code. All compass citations verified 2026-07-30 against the `compass` worktree
+at `~/agents/workspaces/compass-server/compass`.
 
 **Ownership contract (F2, ruled by Matt 2026-07-29 — designed against, not
 relitigated).** A spawned agent is owned by the **spawning agent's owner**

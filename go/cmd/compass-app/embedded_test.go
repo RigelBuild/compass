@@ -858,7 +858,7 @@ func TestResolveImage(t *testing.T) {
 	})
 	// Pin the default to the canonical live GHCR owner. This guards the value
 	// itself (not just that resolveImage returns it): the old
-	// ghcr.io/sealedsecurity/compass-agent owner 403s post org-rename, so a
+	// ghcr.io/rigelbuild/compass-agent owner 403s post org-rename, so a
 	// shipped app that fell back to it could not pull its agent image (RIG-1967).
 	t.Run("default is the canonical rigelbuild ref", func(t *testing.T) {
 		if defaultAgentImage != "ghcr.io/rigelbuild/compass-agent:latest" {

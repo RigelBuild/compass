@@ -74,7 +74,7 @@ record, not here: Rust→Go is SEA-1243's ruling — "This record designs the
 *how*; the *whether* is settled"
 (`../../platform/go-toolchain-default.md:16-17`). v0.6 builds on it by citation:
 the backend implementation is the Go module `go/**` (module
-`github.com/sealedsecurity/compass/go`,
+`github.com/RigelBuild/compass/go`,
 `go/cmd/compass-server/main.go:19`), gated by the Go CI battery
 (`go/moon.yml:141-147`, `deps: ['fmt', 'vet', 'lint', 'nilaway',
 'test', 'build', 'vuln', 'licenses']`).
@@ -1073,7 +1073,7 @@ Every task below inherits these; task briefs do not restate them.
 
 - **Languages: Go on the backend tiers, TypeScript on the agent + client.**
   The Server and Runner are the Go module `go/**` (module
-  `github.com/sealedsecurity/compass/go`), gated by the full Go battery
+  `github.com/RigelBuild/compass/go`), gated by the full Go battery
   `moon run compass-go:ci` — gofmt, go vet, golangci-lint (exhaustiveness
   on), `-race` tests, build, govulncheck, go-licenses
   (`go/moon.yml:141-147`). The in-container agent is

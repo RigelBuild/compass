@@ -114,7 +114,7 @@ export interface PinnedAgent {
  *  reports more (resolved decision 3). */
 export interface RepoClone {
 	id: string;
-	/** "owner/name", e.g. "sealedsecurity/sealed". */
+	/** "owner/name", e.g. "RigelBuild/compass". */
 	name: string;
 	branches: string[];
 	currentBranch: string;
@@ -1038,7 +1038,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		return [
 			{
 				id: `${id}-repo`,
-				name: "sealedsecurity/sealed",
+				name: "RigelBuild/compass",
 				branches,
 				currentBranch: selected?.branch ?? branches[0],
 			},

@@ -19,16 +19,16 @@ repo, one `main`, one review flow, one CI, atomic with the changes that consume
 it. A subtree may also be plain upstream with no sealed delta at all
 (`oh-my-pi`); the Provenance section below is authoritative per fork.
 
-Where a public fork repo exists (`sealedsecurity/<name>`), it stays alive,
+Where a public fork repo exists (`RigelBuild/<name>`), it stays alive,
 demoted from canonical home to **Copybara spoke**: the GitHub-side staging
 ground upstream PRs are cut from. Nothing in the fleet builds from a spoke
 anymore — every consumer repoints to the vendored subtree at its fork's import.
 Not every fork has one: `oh-my-pi` was imported straight from public upstream
 and has no spoke at all.
 
-Design record (the contract this tree executes) lives in the sealed monorepo
-(`sealedsecurity/sealed`), not here:
-`docs/designs/platform/oss-fork-consolidation.md` in that repo.
+Design record (the contract this tree executes) lives in a private internal
+monorepo, not here: `docs/designs/platform/oss-fork-consolidation.md` in that
+repo.
 
 ## What a fork subtree is
 
@@ -68,8 +68,8 @@ Directory names are lowercase.
 
 | Fork | Upstream | Default branch | Spoke | Release-artifact class |
 | --- | --- | --- | --- | --- |
-| `devenv` | `cachix/devenv` | `main` | `sealedsecurity/devenv` | nix-source (flake) |
-| `nix2container` | `nlewo/nix2container` | `master` | `sealedsecurity/nix2container` | nix-source (flake input) |
+| `devenv` | `cachix/devenv` | `main` | `RigelBuild/devenv` | nix-source (flake) |
+| `nix2container` | `nlewo/nix2container` | `master` | `RigelBuild/nix2container` | nix-source (flake input) |
 | `oh-my-pi` | `can1357/oh-my-pi` | `main` | — (no spoke) | bun/TypeScript + Rust source |
 
 Branch name is data, never hardcoded: `nix2container` defaults to `master`,
@@ -81,7 +81,7 @@ Per-fork customization, consumer, and sync policy.
 
 ### devenv
 
-- **Upstream:** `cachix/devenv` (`main`). **Spoke:** `sealedsecurity/devenv`.
+- **Upstream:** `cachix/devenv` (`main`). **Spoke:** `RigelBuild/devenv`.
 - **Sealed changes:** one patch set, all in `src/modules/containers.nix`, added
   for the Compass agent base image:
   - Per-container `user` / `group` / `homeDir` options. Upstream hardcodes user
@@ -134,7 +134,7 @@ Per-fork customization, consumer, and sync policy.
 ### nix2container
 
 - **Upstream:** `nlewo/nix2container` (`master`). **Spoke:**
-  `sealedsecurity/nix2container`.
+  `RigelBuild/nix2container`.
 - **Sealed changes:** one patch — drops relocated paths from the initialized nix
   DB so a container's in-image nix DB does not claim store paths the image does
   not carry (which breaks the image self-rebuild with a failed lstat).
@@ -147,7 +147,7 @@ Per-fork customization, consumer, and sync policy.
 ### oh-my-pi
 
 - **Upstream:** `can1357/oh-my-pi` (`main`), imported at tag **`v17.1.8`**.
-  **Spoke:** none — this fork has no `sealedsecurity/oh-my-pi` staging repo.
+  **Spoke:** none — this fork has no `RigelBuild/oh-my-pi` staging repo.
 - **Sealed changes: NONE.** This tree is **plain public upstream**, verified
   byte-identical to `can1357/oh-my-pi` at `v17.1.8` (5891 files, compared
   git-natively — blob OIDs *and* file modes — via `git ls-files -s` against

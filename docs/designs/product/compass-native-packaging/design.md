@@ -349,7 +349,7 @@ Inherited from the frozen parent (`compass-native-app/design.md:325-362`) and
 the epic batch context; every task below inherits them:
 
 1. **Go 1.25 floor, one module** — `go/go.mod:15` (`go 1.25.0`); everything
-   builds inside the existing `github.com/sealedsecurity/compass/go` module,
+   builds inside the existing `github.com/RigelBuild/compass/go` module,
    never a second one.
 2. **License AGPL-3.0-only** for the shell/bundle, matching `apps/ui`; the
    bundle carries the LICENSE file.

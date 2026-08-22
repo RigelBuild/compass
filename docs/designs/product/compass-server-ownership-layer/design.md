@@ -11,7 +11,7 @@ Design for making the Compass **Server** the sole path from an agent to the
 three human↔agent surfaces — **Issues, Chat, PRs**. All file+line grounding
 below was verified against the working tree this run; paths are repo-relative
 under `` unless otherwise pathed, so the record survives the
-decided move of the Compass tree to `sealedsecurity/compass`.
+decided move of the Compass tree to `RigelBuild/compass`.
 
 Tracker: SEA-1364.
 

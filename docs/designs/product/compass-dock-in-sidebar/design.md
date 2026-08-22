@@ -600,7 +600,7 @@ living-spec check: `docs/specs/product/compass.md` contains no dock references
 - **Tests-first.** Each task's new behavior lands red → green via the Tester;
   `bun test` in `apps/ui` gates every slice.
 - **Commit convention.** `docs(product): …` for this record;
-  `Co-Authored-By: seal <noreply@sealedsecurity.com>`; markdownlint clean
+  `Co-Authored-By: seal <noreply@rigel.build>`; markdownlint clean
   (blank lines around headings/lists/fences/tables, languages on fences,
   leading+trailing table pipes).
 

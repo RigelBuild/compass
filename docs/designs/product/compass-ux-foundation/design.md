@@ -6,11 +6,10 @@ Supersedes: the pre-freeze draft of this record (sealed PR #1075; its
 DL-114..122 block never shipped)
 
 That pre-freeze draft was authored against a *provisional* brand identity; the
-Rigel brand spec has since FROZEN (`docs/specs/brand/` in
-`sealedsecurity/sealed`), and this rewrite re-derives the record against the
-frozen spec. File references are relative to `apps/ui/src/` in
-`sealedsecurity/compass` unless otherwise pathed; `brand <file>` cites the
-frozen brand spec directory (`sealedsecurity/sealed:docs/specs/brand/`).
+Rigel brand spec has since FROZEN (`docs/specs/brand/`), and this rewrite
+re-derives the record against the frozen spec. File references are relative to
+`apps/ui/src/` in `RigelBuild/compass` unless otherwise pathed; `brand <file>`
+cites the Rigel frozen brand spec.
 
 ## Problem / Intent
 
@@ -470,9 +469,8 @@ compass-native's lane (`compass-native-app/design.md`).
 all day — and they must be genuinely excellent, not merely on-brand. Four carry
 the bar and each has a concrete starting point already built, not a from-scratch
 guess: the **Bridge board** and the **Manager tree** ship as production-quality
-Rigel-site mockups in the brand repo
-(`sealedsecurity/sealed:apps/rigel.build/src/components/BridgeBoard.astro`,
-`AgentTree.astro`, and `ThreadView.astro` below — same repo as the brand spec,
+Rigel-site mockups in the Rigel brand source (`BridgeBoard.astro`,
+`AgentTree.astro`, and `ThreadView.astro` below — same source as the brand spec,
 not co-located in compass), each authored as "the real UI would ship it" citing
 the real compass `Bridge.tsx`/`board.ts`/`LeftSidebar`, so Compass starts from
 those, not a
@@ -884,7 +882,7 @@ keyboard behavior, empty states (pins-empty, tree-empty), mark placement per
 the brand surface table, and the per-surface flip checklist the adoption path's
 step 4 PRs execute. The four **excellence surfaces** get a fuller design pass
 each, starting from their concrete reference (never a blank-page redraw): Bridge
-board from `sealedsecurity/sealed:apps/rigel.build/src/components/BridgeBoard.astro`; Manager tree
+board from the Rigel brand source (`BridgeBoard.astro`); Manager tree
 from `AgentTree.astro`; channels + threads from **Zulip's topic-threading UX**
 (+ `ThreadView.astro`); the session trace from the brand streaming treatment
 (T8). Also specifies the **window-scoped-view contract** (D6.1): each top-level

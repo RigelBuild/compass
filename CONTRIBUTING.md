@@ -99,7 +99,7 @@ against it too if you prefer — colocate a fresh clone with
 ## Security
 
 Please do **not** open a public issue for a security vulnerability. Email
-[security@sealedsecurity.com](mailto:security@sealedsecurity.com) instead.
+[security@rigel.build](mailto:security@rigel.build) instead.
 
 ## License of contributions
 

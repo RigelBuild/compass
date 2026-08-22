@@ -1,4 +1,4 @@
-// CommsBroker + the two native comms tools (design: sealedsecurity/sealed
+// CommsBroker + the two native comms tools (design:
 // docs/designs/product/compass-agent-comms-tools/design.md, T3).
 // Each test defends an observable contract of the agent->Runner comms call: the
 // exact `CommsCallRequest` a tool `execute` puts on the wire (oneof case, text

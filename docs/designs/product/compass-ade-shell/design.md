@@ -488,7 +488,7 @@ export type RightSidebarTab = "files" | "vcs" | "pr";
 
 export interface RepoClone {
   id: string;
-  name: string;            // "sealedsecurity/sealed"
+  name: string;            // "RigelBuild/compass"
   branches: string[];
   currentBranch: string;
 }
@@ -742,7 +742,7 @@ implementing PRs will carry:
 - **planning-evidence:** every claim about Orca carries a file + line + quoted
   snippet (`rule://planning-evidence`); the quotes above were read this session
   from `raw.githubusercontent.com/stablyai/orca/HEAD/...`.
-- Commit `docs(product): <change>` + `Co-Authored-By: seal <noreply@sealedsecurity.com>`;
+- Commit `docs(product): <change>` + `Co-Authored-By: seal <noreply@rigel.build>`;
   markdownlint clean.
 
 ## Risks

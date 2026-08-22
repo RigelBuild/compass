@@ -20,7 +20,7 @@ func forgeFields(number uint32) IssueForgeFields {
 	return IssueForgeFields{
 		ForgeProvider: ForgeProviderGitHub,
 		ForgeHost:     "github.com",
-		Repo:          "sealedsecurity/compass",
+		Repo:          "RigelBuild/compass",
 		Number:        number,
 		Title:         "a bug",
 		Body:          "it broke",
