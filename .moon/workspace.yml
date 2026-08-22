@@ -58,11 +58,12 @@ projects:
   # step-5 flip, then ERROR.
   cx-token-gate: 'tools/cx-token-gate'
   # The agent-image env gate (RIG-1444): builds the compass-agent image and
-  # fails on wrong-image signals a green `container build` misses — a leaked
-  # DEVENV_ env key (the fork's imageEnv filter regressing), a build-host home
-  # path baked into the env, or a platform-contract drift. Complements
-  # compass-agent-image, which proves the image realises; this proves it is
-  # correct. Runs on the same image-closure affected-detection.
+  # fails on wrong-image signals a green `container build` misses — a DEVENV_
+  # env var whose value names a /nix/store path (a closure root nix2container
+  # drags into the image), a build-host home path baked into the env, or a
+  # platform-contract drift. Complements compass-agent-image, which proves the
+  # image realises; this proves it is correct. Runs on the same image-closure
+  # affected-detection.
   agent-image-env-gate: 'tools/agent-image-env-gate'
   # Self-hosted Renovate (RIG-2432): the repo config + bot config + lockstep
   # postUpgradeTask scripts + the config guard suite. Ported from orion's

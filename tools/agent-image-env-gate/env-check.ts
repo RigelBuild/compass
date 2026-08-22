@@ -11,8 +11,9 @@
 // during a container build (`containers.nix`: `devenv.root`/`dotfile`/`runtime`
 // → the container's own home and `/tmp`), so the live risk is narrower than
 // "any DEVENV_ key present". The one class that actually corrupts the image is
-// a `DEVENV_*` whose VALUE is an absolute `/nix/store` path: nix2container makes
-// `config.json` a closure root (`deps = [configFile]`), so every store path
+// a `DEVENV_*` whose VALUE names an absolute `/nix/store` path (anywhere in
+// the value): nix2container makes `config.json` a closure root
+// (`deps = [configFile]`), so every store path
 // NAMED in the env drags its whole closure into the image's content layers and
 // the initialized nix DB — non-reproducible bloat and phantom DB entries. Two
 // such vars exist (`DEVENV_PROFILE`, a 266-path dev profile; `DEVENV_TASK_FILE`,
@@ -50,12 +51,14 @@ const NIX_STORE_PREFIX = "/nix/store/";
  * the image env is clean. Pure: no I/O, deterministic in its inputs.
  *
  * Two independent invariants:
- *   1. No `DEVENV_*` key whose value is an absolute `/nix/store` path — such a
- *      value is a closure root nix2container drags whole into the image
+ *   1. No `DEVENV_*` key whose value NAMES an absolute `/nix/store` path —
+ *      anywhere in the value, not only as the whole value, since a value can
+ *      embed a store path mid-string (e.g. a JSON list of task commands). Every
+ *      such path is a closure root nix2container drags whole into the image
  *      (`config.json` `deps = [configFile]`), the reproducibility/bloat defect
  *      the consumer neutralizes in agent-image/devenv.nix. A `DEVENV_*` with a
- *      non-store value (a container path like `/home/agent`, `/tmp/devenv`, or
- *      empty) expands no closure and is not flagged.
+ *      value that names no store path (a container path like `/home/agent`,
+ *      `/tmp/devenv`, or empty) expands no closure and is not flagged.
  *   2. No key (DEVENV_ or otherwise) whose value embeds the build host's home —
  *      a build-host path baked into the image, non-reproducible across hosts.
  */
@@ -71,7 +74,7 @@ export function findForbiddenEnv(
 		const key = eq === -1 ? entry : entry.slice(0, eq);
 		const value = eq === -1 ? "" : entry.slice(eq + 1);
 
-		if (key.startsWith(DEVENV_PREFIX) && value.startsWith(NIX_STORE_PREFIX)) {
+		if (key.startsWith(DEVENV_PREFIX) && value.includes(NIX_STORE_PREFIX)) {
 			forbidden.push({
 				entry,
 				key,

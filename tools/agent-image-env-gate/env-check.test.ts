@@ -57,6 +57,21 @@ describe("findForbiddenEnv", () => {
 		]);
 	});
 
+	test("a DEVENV_ var embedding a store path mid-string is caught (not just as a prefix)", () => {
+		// DEVENV_TASKS is a JSON list of task commands; each command is a
+		// pkgs.writeScript store path embedded mid-string, not the whole value.
+		// The value starts with `[`, so a prefix-only check would miss it — but
+		// every named store path is still a closure root nix2container drags in.
+		const env = [
+			...CLEAN_ENV.filter((e) => !e.startsWith("DEVENV_TASKS=")),
+			'DEVENV_TASKS=[{"name":"devenv:enterShell","command":"/nix/store/zzz-devenv-enterShell"}]',
+		];
+		const found = findForbiddenEnv(env);
+		expect(found).toHaveLength(1);
+		expect(found[0]?.key).toBe("DEVENV_TASKS");
+		expect(found[0]?.reason).toContain("/nix/store");
+	});
+
 	test("a DEVENV_ var with a non-store container path is NOT flagged", () => {
 		// The container-path DEVENV_ vars expand no closure — they must not trip
 		// the gate, or the fork's minimal-module design (RIG-2404) can never pass.
