@@ -227,7 +227,7 @@ func (c *Consumer) resolveMentioned(ctx context.Context, channel store.ChannelID
 // re-dispatch. A synchronous refusal (no live stream) is not fatal: the cursor
 // was never advanced on send, so the D2 sweep redelivers.
 func (c *Consumer) dispatchTo(ctx context.Context, sessionID string, msg *compassv1.Message) {
-	c.gatedDispatch(ctx, sessionID, deliverOp(msg), msg.GetId())
+	c.gatedDispatch(ctx, sessionID, deliverOp(msg, c.authorHandle(ctx, msg)), msg.GetId())
 }
 
 // dispatchSteerTo relays one steer for msg to a mentioned recipient's session,
@@ -235,7 +235,7 @@ func (c *Consumer) dispatchTo(ctx context.Context, sessionID string, msg *compas
 // same session never interleave. A synchronous refusal falls to the sweep
 // exactly as a deliver does (design.md:546-548).
 func (c *Consumer) dispatchSteerTo(ctx context.Context, sessionID string, msg *compassv1.Message) {
-	c.gatedDispatch(ctx, sessionID, steerOp(msg), msg.GetId())
+	c.gatedDispatch(ctx, sessionID, steerOp(msg, c.authorHandle(ctx, msg)), msg.GetId())
 }
 
 // wake best-effort resumes an offline recipient via the AgentWaker seam (T3), so

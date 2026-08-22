@@ -93,6 +93,19 @@ function isLifecycle(frame: OutboundFrame): boolean {
 	);
 }
 
+// A "session" frame carrying a SessionInjection trace event is NOT loss-tolerable
+// (steer/deliver split-observation seam, F3): a busy trace stream must not
+// drop-oldest it off the bounded trace queue, or a cross-process observer could
+// miss the op-kind a recipient session received. So it rides the never-drop
+// priority lane, exactly like a lifecycle transition or a control ack — even
+// though its board state is UNSPECIFIED (it is a trace event, not a transition).
+function isInjection(frame: OutboundFrame): boolean {
+	return (
+		frame.kind === "session" &&
+		frame.value.typedEvent?.event.case === "sessionInjection"
+	);
+}
+
 export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	const spine = transport.publishSpine();
 	// Borrow the single transport-owned ManagedRuntime through the module-private
@@ -207,7 +220,7 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 				const request = create(PublishFrameRequestSchema, {
 					frame: toAgentFrame(frame),
 				});
-				if (isLifecycle(frame)) {
+				if (isLifecycle(frame) || isInjection(frame)) {
 					spine.enqueuePriority(request);
 				} else {
 					spine.enqueueTrace(request);

@@ -457,6 +457,7 @@ message SessionEvent {
     SessionToolCallUpdate tool_call_update = 6;
     SessionPlan plan = 7;
     SessionNotice notice = 8;
+    SessionInjection session_injection = 9;
   }
 }
 
@@ -511,6 +512,36 @@ message SessionPlan {
 message SessionNotice {
   string text = 1;
   optional string link = 2;
+}
+
+// A control injection into the agent's live session: the moment a channel
+// message was routed into the session as a steer (an @-mention interrupt) or a
+// deliver (turn-end coalesced). Emitted agent-side at injection time, beside the
+// delivery ack, so a subscriber tailing SubscribeAgentSession sees which op-kind
+// each recipient session actually received for a message over the wire — a
+// session tail can render "steered by @X" vs "delivered from @Y", and a
+// cross-process test can assert the steer/deliver split without inferring it
+// from turn timing.
+message SessionInjection {
+  // Which control op injected the message: STEER (mid-turn/idle @-mention
+  // interrupt) or DELIVER (turn-end coalesced channel delivery).
+  SessionInjectionKind op_kind = 1;
+  // The injected message's id — correlates this observation to the message and
+  // to its delivery receipt.
+  string message_id = 2;
+  // The handle the message came from, when known (empty when unavailable).
+  string from_handle = 3;
+}
+
+// The control op-kind a SessionInjection records. Mirrors the internal
+// steer/deliver control discriminant (agent.proto), re-declared here on the
+// public surface because SessionEvent — the public SubscribeAgentSession payload
+// — cannot reference the fenced internal enum without breaching the gen-fence
+// (SEA-1267); see the steer/deliver-seam design record, OQ2.
+enum SessionInjectionKind {
+  SESSION_INJECTION_KIND_UNSPECIFIED = 0;
+  SESSION_INJECTION_KIND_STEER = 1;
+  SESSION_INJECTION_KIND_DELIVER = 2;
 }
 
 // SubscribeAgentSession: the session whose typed observation trace to tail.

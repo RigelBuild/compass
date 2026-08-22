@@ -42,6 +42,7 @@ import {
 	type Message,
 	type SessionFrame,
 	SessionFrameSchema,
+	SessionInjectionKind,
 } from "./compassv1";
 import type { AgentControl, ControlSource } from "./control";
 import type { FrameSink } from "./frame";
@@ -114,6 +115,13 @@ export class CompassAgent {
 	// The coalescing queue: messages delivered mid-turn, drained into one prompt
 	// at the next flush.
 	#deliverQueue: Message[] = [];
+	// RIG-2486 T1 — the denormalized author `from_handle` per queued deliver,
+	// keyed on `Message.id`. A deliver coalesces into `#deliverQueue` and is
+	// injected later at the turn-end flush, so its from_handle (carried on the
+	// wire deliver control, resolved server-side) must be stashed here to travel
+	// with the message to the `#emitInjection` at flush time. Populated at enqueue
+	// beside `#deliverQueue.push`, read + deleted per message at flush.
+	readonly #deliverFromHandles = new Map<string, string>();
 	// Session-lifetime dedup set keyed on `Message.id`. A sweep redelivery under a
 	// fresh control_seq (independent of the control-source's seq dedup) is dropped
 	// here so a message is injected at most once (frozen record :811-812).
@@ -208,12 +216,36 @@ export class CompassAgent {
 		this.#sink.emit({ kind: "session", value });
 	}
 
+	// Emit the SessionInjection observation (steer/deliver split-observation seam,
+	// T1): a first-class trace frame recording that a channel message was injected
+	// into the live session as a steer or a deliver. Emitted BESIDE the delivery
+	// ack at injection time, on the SAME FrameSink path (idle-safe: the emit fires
+	// at control decode on the event loop, not turn-scoped, so an idle leg-4 peer
+	// that drives no turn is still observed). The mapper stamps event_id/at_unix_ms
+	// so this frame is ordered on the one monotonic trace sequence; the sink pins
+	// it off the drop-oldest trace lane onto the never-drop priority lane (F3), so
+	// a busy trace stream cannot silently drop the observation. `from_handle` is the
+	// steering/delivering author's handle, denormalized onto the wire steer/deliver
+	// control server-side (RIG-2486 T1) — the comms Message carries only
+	// author_account_id, so the Server resolves the handle once when wrapping the
+	// AgentControl and the agent reads it straight off the control here. Empty only
+	// when the Server could not resolve the author handle (a logged store miss).
+	#emitInjection(
+		opKind: SessionInjectionKind,
+		messageId: string,
+		fromHandle: string,
+	): void {
+		this.#sink.emit(
+			this.#mapper.sessionInjection(opKind, messageId, fromHandle),
+		);
+	}
+
 	// SEA-1310 §8 — deliver a channel message into the live session (RT-3). The
 	// entry the immediate handle calls when a `DeliverControl.message` decodes.
 	// The replay barrier is enforced UPSTREAM at the control source (a
 	// pre-ReplayComplete immediate op is refused-and-counted before it reaches
 	// this handle, control-source.ts), so this method does not re-check it.
-	deliver(msg: Message): void {
+	deliver(msg: Message, fromHandle = ""): void {
 		// A message with no id cannot be acked or deduped — fail-visible, never a
 		// silent drop (and never injected, since there would be no receipt for it).
 		if (msg.id === "") {
@@ -262,6 +294,7 @@ export class CompassAgent {
 		}
 		this.#processedMessageIds.add(msg.id);
 		this.#deliverQueue.push(msg);
+		this.#deliverFromHandles.set(msg.id, fromHandle);
 		// Idle deliver starts a turn immediately (frozen :799/:810); a mid-turn
 		// deliver waits for the `agent_end` flush. "Idle" consults BOTH the
 		// event-derived `#turnActive` AND the authoritative `#session.isStreaming`
@@ -291,7 +324,7 @@ export class CompassAgent {
 	// "injected", emitted at injection time (frozen :540-546, :283). The replay
 	// barrier is enforced UPSTREAM at the control source (control-source.ts), so
 	// this method does not re-check it — same as `deliver`.
-	steer(msg: Message): void {
+	steer(msg: Message, fromHandle = ""): void {
 		// A message with no id cannot be acked or deduped — fail-visible, never a
 		// silent drop (and never injected, since there would be no receipt for it).
 		// Mirrors deliver's empty-id guard.
@@ -360,6 +393,7 @@ export class CompassAgent {
 					messageId: msg.id,
 				});
 				this.#sink.emit({ kind: "deliveryAck", value });
+				this.#emitInjection(SessionInjectionKind.STEER, msg.id, fromHandle);
 			});
 			return;
 		}
@@ -407,6 +441,7 @@ export class CompassAgent {
 				messageId: msg.id,
 			});
 			this.#sink.emit({ kind: "deliveryAck", value });
+			this.#emitInjection(SessionInjectionKind.STEER, msg.id, fromHandle);
 		});
 	}
 
@@ -488,7 +523,10 @@ export class CompassAgent {
 			if (acked) return;
 			rejected = true;
 			this.#turnActive = false;
-			for (const msg of batch) this.#processedMessageIds.delete(msg.id);
+			for (const msg of batch) {
+				this.#processedMessageIds.delete(msg.id);
+				this.#deliverFromHandles.delete(msg.id);
+			}
 			if (batch.length > 0) {
 				this.#onUnmapped({
 					kind: "unmapped",
@@ -512,6 +550,9 @@ export class CompassAgent {
 					messageId: msg.id,
 				});
 				this.#sink.emit({ kind: "deliveryAck", value });
+				const fromHandle = this.#deliverFromHandles.get(msg.id) ?? "";
+				this.#deliverFromHandles.delete(msg.id);
+				this.#emitInjection(SessionInjectionKind.DELIVER, msg.id, fromHandle);
 			}
 		});
 	}
