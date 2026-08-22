@@ -131,7 +131,7 @@ let
     dontFixup = true;
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    outputHash = "sha256-KCjicPjnY2WRbgxNHdlqAjY1bGTOEx9nGPvzZzjcxOA=";
+    outputHash = "sha256-XSLIHdSuOsw6vRCwyJmI/JqzeqE7h15he9fOGoP3HMc=";
   };
 
   # The package's own source. A BARE path here (`${../packages/…}`) would copy
