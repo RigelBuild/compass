@@ -298,21 +298,35 @@ flowchart TD
    a lost double-Start race is a logged best-effort fault, and the owed row
    is the durable backstop — delivery still happens on whichever start wins.
 
-**Signal shape after the wake (§Decisions OQ-4):** the owed MENTION arrives
-as a STEER — "if it's a mention it was already going to be a steer, so we
-deliver as a steer to keep the semantics the same; in practice they both do
-the same thing to an agent who isn't running a turn" (Matt, 2026-08-21). D5
-mention→steer semantics hold end to end, and steer-only precedence (the
-frozen record's OQ-3, RATIFIED) keeps its ratified meaning: exactly one
-signal per message per agent — the woken agent gets one steer, never
-steer + deliver. The woken steer still acks through the frozen message_id
-ack: for the gap population (which has no cursor row) the ack clears the
-owed row (T1's restructured `AckDelivery`); for a subscribed member the ack
-advances the cursor exactly as a deliver's would (an ack for a below-cursor
-seq stays the existing no-op). The subscribe-wake population (the deliver
-arm) was never mentioned, so its message still arrives as a PLAIN deliver
-via the existing cursor sweep — the steer ruling is scoped to the mention
-path only.
+**Signal shape after the wake (§Decisions OQ-4):** the owed MENTION — the
+gap population's, carried by the owed row — arrives as a STEER: "if it's a
+mention it was already going to be a steer, so we deliver as a steer to keep
+the semantics the same; in practice they both do the same thing to an agent
+who isn't running a turn" (Matt, 2026-08-21). D5 mention→steer is preserved
+for that population by `sweepOwedMentions`, the only start-sweep step that
+dispatches a steer. Steer-only precedence (the frozen record's OQ-3,
+RATIFIED) keeps its ratified meaning throughout: exactly one signal per
+message per agent — never steer + deliver.
+
+The two other woken populations receive a PLAIN deliver, not a steer, and
+this is correct — it is the frozen offline behavior (design.md:546-548: an
+offline subscribed mentioned member "picks the message up as a swept
+`deliver` on next start"), not a regression:
+
+- a **subscribed/home/mandatory MENTIONED** member has no owed row, so on the
+  woken session's start the message arrives via `sweepSession` as a
+  cursor-swept deliver; the wake is pure latency (deliver now vs on next
+  natural start), and the mention's steer already fired live for it in the
+  cycles it was live. The ack advances the cursor exactly as any deliver's
+  would (an ack for a below-cursor seq stays the existing no-op).
+- the **subscribe-wake deliver arm** (OQ-6, an offline subscribed
+  *unmentioned* recipient) likewise arrives as a plain deliver via the cursor
+  sweep.
+
+So the steer ruling is scoped precisely to the mention-gap population — the
+one population the owed row exists for; the woken steer acks through the
+frozen message_id ack, which clears the owed row (T1's restructured
+`AckDelivery`) for that no-cursor population.
 
 **"Natural start", defined (§Decisions OQ-3):** a natural start is the next
 time the agent's session starts for a reason INDEPENDENT of this mechanism —
@@ -683,15 +697,19 @@ residual and for a wake that best-effort fails.
 **OQ-4 — steer vs deliver after wake. RULED: the woken MENTION arrives as a
 STEER.** Matt: "if it's a mention it was already going to be a steer, so we
 deliver as a steer to keep the semantics the same; in practice they both do
-the same thing to an agent who isn't running a turn." D5 mention→steer holds
-end to end; steer-only precedence keeps its ratified meaning (exactly one
-signal per message per agent — a steer, never steer + deliver). The woken
-steer still acks correctly: the frozen message_id ack clears the owed row
-for the no-cursor gap population (T1's restructured `AckDelivery`) and
-advances the cursor as normal for a swept subscribed member. Scope: the
-steer ruling covers the MENTION path only — the subscribe-wake population
-(OQ-6's deliver arm) was never mentioned and still receives a PLAIN deliver
-via the cursor sweep.
+the same thing to an agent who isn't running a turn." The steer is delivered
+by `sweepOwedMentions` and so is scoped to the population that carries an
+owed row — the mention-gap population (unsubscribed, non-home,
+non-mandatory). D5 mention→steer is preserved there; steer-only precedence
+keeps its ratified meaning throughout (exactly one signal per message per
+agent — a steer, never steer + deliver). The woken steer acks through the
+frozen message_id ack, clearing the owed row for that no-cursor population
+(T1's restructured `AckDelivery`). Scope, stated precisely: a
+subscribed/home/mandatory MENTIONED member has no owed row, so when woken it
+receives the message as a cursor-swept PLAIN deliver via `sweepSession` —
+the frozen offline behavior (design.md:546-548), not a regression; and the
+subscribe-wake deliver arm (OQ-6) likewise stays a plain deliver. The steer
+is the gap population's; the deliver is everyone else's.
 
 **OQ-5 — scope of the no-loss invariant. RULED: accept the residual
 pre-settle window for MVP, stated.** Durability begins when `routeMentions`
