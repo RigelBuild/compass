@@ -71,7 +71,7 @@ reopen any of them inside a task.
    motion *runtime*, not the motion *system*: the product UI expresses the
    frozen brand motion system (D9) in **pure CSS/SVG + Solid's fine-grained
    reactivity** — the marketing showcase's GSAP/Three.js/Lenis/Barba stack
-   (`brand motion.md` §"The tech stack") is a *separate track* (brand scopes it
+   (`docs/specs/brand/motion.md` §"The tech stack") is a *separate track* (brand scopes it
    to the marketing site, and `motion.md` marks it "the aspiration, not yet
    built"); this record consumes the same motion vocabulary that stack renders,
    built on the cheap substrate instead. The motion system itself is fully in
@@ -90,7 +90,7 @@ reopen any of them inside a task.
    keyboard-reachable; every interactive element renders a real focus state.
    Brand does not touch this pillar.
 6. **Dark-primary.** The ADE ships dark first (Night Owl); a light pair
-   ("polarity inversion, not a redesign", `brand color.md`) is kept
+   ("polarity inversion, not a redesign", `docs/specs/brand/color.md`) is kept
    architecturally open via semantic-tier indirection but does not ship in
    this record's scope.
 7. **The target IA is frozen** (DL-095/096, DL-113, DL-098/099,
@@ -119,18 +119,18 @@ Night Owl; that derivation is now superseded — the brand spec froze the
 language. Compass looks like a precision instrument for supervising an agent
 fleet at night, expressed in the one Rigel idiom: the chase-light / dot-matrix
 spine — discrete ON/OFF cells, 1-bit bitmap-native, hard edges, a lit segment
-that travels a fixed track (`brand spine.md`). What this record adds is how
+that travels a fixed track (`docs/specs/brand/spine.md`). What this record adds is how
 that identity wears at ADE density. Five principles govern every component:
 
 1. **Surface-color elevation, shadows secondary.** Depth is carried by the
    Night Owl surface ladder (navy `--rigel-night` → raised `--rigel-raised` →
-   panel `--rigel-panel`, `brand color.md` §Surfaces); box-shadows are
+   panel `--rigel-panel`, `docs/specs/brand/color.md` §Surfaces); box-shadows are
    reserved for genuinely floating layers (menus, dialogs, palette, toasts).
 2. **Contrast is meaningful and rationed.** Blue `--rigel-blue` is the
-   interaction color ("functions · links · interaction", `brand color.md`
+   interaction color ("functions · links · interaction", `docs/specs/brand/color.md`
    §Syntax/UI): selection, primary actions, links, the focus ring, the
    focused pane. Purple is NOT an interaction color — it appears in exactly
-   one place per surface, inside the mark (`brand color.md` §"The one-accent
+   one place per surface, inside the mark (`docs/specs/brand/color.md` §"The one-accent
    rule"); phosphor `--rigel-purple-lit` is a lit *state* (loading/active
    pulse), never a static fill. Spectrum colors appear only as status
    semantics — never decoration.
@@ -139,14 +139,14 @@ that identity wears at ADE density. Five principles govern every component:
    intrinsic row heights: the 26px tree/list row is 12px type + 2×7px
    padding, off-grid by design), compact row heights (24-28px) for
    tree/list rows, and a small type ramp (12px UI base; Space Mono is
-   specified legible at 12px, `brand type.md`). Calm comes from hierarchy:
+   specified legible at 12px, `docs/specs/brand/type.md`). Calm comes from hierarchy:
    `--rigel-haze` for secondary content, `--rigel-fog` for primary, blue only
    where attention is owed.
 4. **Monospace is identity, not costume.** The whole UI is mono: Space Mono
    (`--rigel-mono`) is the body/UI workhorse for everything ≤16px and every
    off-grid size; Departure Mono (`--rigel-display`) appears only at large
    brand display moments on even 11px multiples (22/44); the bitmap R mark
-   is SVG geometry, never a font (`brand type.md`; D2's type tokens carry
+   is SVG geometry, never a font (`docs/specs/brand/type.md`; D2's type tokens carry
    the boundaries). Crossing these boundaries is a defect, not a style
    choice.
 5. **Everything answers to the keyboard.** Every interactive element has a
@@ -166,7 +166,7 @@ consumption direction (primitive → semantic → component; never skip upward):
   from `brand tokens.css`, no additions, no renames:
 
   ```css
-  /* Surfaces / text (brand tokens.css; contrast per brand color.md) */
+  /* Surfaces / text (brand tokens.css; contrast per docs/specs/brand/color.md) */
   --rigel-night: #011627;   /* background — the night sky */
   --rigel-night-2: #0b2942;
   --rigel-panel: #0e2a45;   /* panel / border / inset */
@@ -190,11 +190,11 @@ consumption direction (primitive → semantic → component; never skip upward):
   `--rigel-ease-out`, `--rigel-ease-morph`, `--rigel-pulse-color`,
   `--rigel-pulse-period`, `--rigel-stream-char-ms`, `--rigel-cursor-blink` —
   D9) and the two font stacks (`--rigel-mono`, `--rigel-display` — verbatim
-  from `brand type.md` §"The token stacks"). The old draft's
+  from `docs/specs/brand/type.md` §"The token stacks"). The old draft's
   `--rigel-slate/violet/coral/white/night-3/blue-bright/teal` names DO NOT
   EXIST in the frozen set and never appear; there is no violet token at all.
   Compass consumes this tier read-only; brand co-reviews any file that
-  defines it. Six `brand color.md` values are documented in the spec but not
+  defines it. Six `docs/specs/brand/color.md` values are documented in the spec but not
   yet tokenized in `brand tokens.css` (selection `#1d3b53`, faint `#637777`,
   the syntax-tier magenta `#c792ea` / success-green `#22da6e` / coral
   `#f78c6c`, and the loading-track empty `#0a2036`); the editor-theme mapping
@@ -224,7 +224,7 @@ consumption direction (primitive → semantic → component; never skip upward):
     exception to the consumption rule (carved out narrowly in the D7 guard —
     mark component only).
   - Status: `--cx-ok` (success green — Q2's syntax-tier `#22da6e`, distinct
-    from the working green per `brand color.md`: "the two greens are distinct
+    from the working green per `docs/specs/brand/color.md`: "the two greens are distinct
     roles and must not be swapped"), `--cx-warn` → `--rigel-amber`,
     `--cx-error` → `--rigel-red`, `--cx-info` → `--rigel-blue`.
   - Agent state (process axis) — `--cx-st-*`: the EIGHT `AgentState` values
@@ -233,7 +233,7 @@ consumption direction (primitive → semantic → component; never skip upward):
     *process* axis, distinct from an issue's `blocked` (the *task* axis),
     `stub-data.ts:42-46`) — consumed by `.state-dot[data-state=…]`
     (`app.css:490-514`) and typed `AgentState` in `components/StateDot.tsx`.
-    Colors are the brand state-color mapping, verbatim (`brand color.md`
+    Colors are the brand state-color mapping, verbatim (`docs/specs/brand/color.md`
     §"State-color mapping"): working → `--rigel-green` (#addb67 — the
     working-state green, NOT the syntax-tier success green), done →
     `--rigel-cyan`, waiting → `--rigel-amber`, disconnected →
@@ -261,14 +261,14 @@ consumption direction (primitive → semantic → component; never skip upward):
   - Editor-theme: `--cx-ed-*` — the mapping from semantic tier to the
     embedded editor/Shiki theme (background, selection, cursor, syntax ramp),
     so editor panes and UI chrome share one palette. Night Owl "dresses the
-    whole product UI and drives the Compass editor theme" (`brand color.md`);
+    whole product UI and drives the Compass editor theme" (`docs/specs/brand/color.md`);
     Compass owns this mapping (D8).
 - **Scale tokens — `--cx-*` (non-color, Compass-owned).** Space: 4px-grid
   ramp `--cx-space-1..8` (4/8/12/16/20/24/32/40). Type: `--cx-font-ui` →
   `--rigel-mono` (Space Mono, IBM Plex Mono as fallback only — the stack is
   brand's, consumed verbatim), `--cx-font-display` → `--rigel-display`
   (Departure Mono; even 11px multiples ONLY — 22/44 in the ADE; odd
-  multiples smear at fractional DPR, `brand type.md` §"The Departure-Mono
+  multiples smear at fractional DPR, `docs/specs/brand/type.md` §"The Departure-Mono
   11px-grid constraint"); size ramp `--cx-text-xs..xl` (11/12/13/14/16) with
   the 12px UI base — every ramp size is ≤16px, so by the brand type rule the
   entire ramp renders in `--cx-font-ui`; display sizes 22/44 exist outside
@@ -288,7 +288,7 @@ consumption direction (primitive → semantic → component; never skip upward):
   `--cx-tooltip-delay` (400ms, Compass-owned — no brand primitive). D9 owns the
   motion rules. Z-index: `--cx-z-raised|overlay|modal|palette|toast`
   (10/100/200/300/400). Focus: `--cx-focus-ring` — already frozen upstream
-  as `2px solid var(--rigel-blue)` (`brand tokens.css`; `brand color.md`:
+  as `2px solid var(--rigel-blue)` (`brand tokens.css`; `docs/specs/brand/color.md`:
   "the focus ring is blue… not purple"), consumed as-is.
 
 **Consumption rule.** Component CSS consumes semantic + scale tokens only.
@@ -297,12 +297,12 @@ definition block (one file, D7). Raw hex values are banned in component CSS;
 this is lintable (a stylelint declaration-property-value check in CI, part of
 delivery task T2). The same rule governs motion (D9): a literal `200ms` in a
 component is a review failure, exactly like a literal hex
-(`brand motion.md` §"Consumption rule").
+(`docs/specs/brand/motion.md` §"Consumption rule").
 
 **Theming.** The semantic tier is defined under a `[data-theme="night"]`
 scope on the root. A light pair ships later by adding a `[data-theme="day"]`
 scope that re-maps the same semantic names — brand fixes light mode as a
-polarity inversion, not a redesign (`brand color.md`) — with zero component
+polarity inversion, not a redesign (`docs/specs/brand/color.md`) — with zero component
 CSS changes. This is the architectural openness Global Constraint 6 requires.
 
 ### D3 — Component system: a small first-party set with class + `data-*` visual contracts
@@ -341,11 +341,11 @@ review rounds deriving its own dot treatments (ring-arc working, plain-dot
 idle, hourglass debates); that derivation is deleted, not carried — brand
 froze the vocabulary and explicitly ruled the ring out ("the `working` form
 was ruled this session over an earlier ring, which read as a bare 'C' at the
-12px row-dot size", `brand state-icons.md`). `.cx-state-dot` consumes the
+12px row-dot size", `docs/specs/brand/state-icons.md`). `.cx-state-dot` consumes the
 frozen set 1:1 against the `AgentState` enum (`stub-data.ts:47-55`), 9×9
 bitmap grid, static by default, CVD-safe:
 
-| state | glyph (`brand state-icons.md`) | color (`--cx-st-*`, D2) |
+| state | glyph (`docs/specs/brand/state-icons.md`) | color (`--cx-st-*`, D2) |
 | --- | --- | --- |
 | working | double-chevron `»` (fast-forward) — the ONLY animated state | `--rigel-green` |
 | idle | 3×3 block | `--rigel-mute` |
@@ -357,11 +357,11 @@ bitmap grid, static by default, CVD-safe:
 | disconnected | broken square outline | `--rigel-amber` |
 
 Only `working` animates: the working pulse, the brand pulse cadence in the
-working-state green — never the purple phosphor (`brand state-icons.md`
+working-state green — never the purple phosphor (`docs/specs/brand/state-icons.md`
 Requirement; D9). The other seven are distinguished by glyph + color alone,
 so the set holds under `prefers-reduced-motion` by brand contract. Glyphs
 render as inline SVG on the 9×9 grid with `shape-rendering="crispEdges"`
-(`brand spine.md` §Rendering) — 1-bit cells, no anti-aliasing.
+(`docs/specs/brand/spine.md` §Rendering) — 1-bit cells, no anti-aliasing.
 
 **States are mandatory and uniform.** Every interactive component specifies
 rest / hover / active / selected / disabled / **focus**. Focus always renders
@@ -384,7 +384,7 @@ classes; no Kobalte default styles ship.
 - **One focus treatment.** `--cx-focus-ring` on `:focus-visible` everywhere —
   the token is frozen upstream as `2px solid var(--rigel-blue)`
   (`brand tokens.css`), blue because interaction lives on the flow color and
-  purple stays inside the mark (`brand color.md` §"The one-accent rule").
+  purple stays inside the mark (`docs/specs/brand/color.md` §"The one-accent rule").
   Pointer interactions don't paint rings; keyboard always does. The two
   `outline: none` defects (`app.css:2385-2388`, `app.css:3556-3559`) are
   retired by rule: removing an outline without applying the ring token fails
@@ -468,17 +468,18 @@ compass-native's lane (`compass-native-app/design.md`).
 **The excellence bar.** These are the product — the surfaces a user lives in
 all day — and they must be genuinely excellent, not merely on-brand. Four carry
 the bar and each has a concrete starting point already built, not a from-scratch
-guess: the **Bridge board** and the **Manager tree** ship as production-quality
-Rigel-site mockups in the Rigel brand source (`BridgeBoard.astro`,
-`AgentTree.astro`, and `ThreadView.astro` below — same source as the brand spec,
-not co-located in compass), each authored as "the real UI would ship it" citing
-the real compass `Bridge.tsx`/`board.ts`/`LeftSidebar`, so Compass starts from
+guess: the **Bridge board** and the **Manager tree** are pinned to the
+canonical Rigel company-site reference renders of those surfaces (the board,
+the Manager tree, and the thread view — the brand reference render, see
+[`docs/specs/brand/surfaces.md`](../../../specs/brand/surfaces.md) §"The board
+reference render"), each authored as "the real UI would ship it" against the
+real compass `Bridge.tsx`/`board.ts`/`LeftSidebar`, so Compass starts from
 those, not a
 redraw; **channels + threads** take **Zulip's topic-threading UX as the base**
 (the model is already DL-098's) and add Rigel excellence on top; and the
 **agent session trace** must both look excellent and carry the live
 token-streaming treatment prototyped in the brand's UI-micro-excellence system
-(`brand motion.md`, which folds in `ui-micro-excellence.md`: decoupled stream
+(`docs/specs/brand/motion.md`, which folds in `ui-micro-excellence.md`: decoupled stream
 cadence, the phosphor write-head, partial-markdown safety — D9). Everything
 below the excellence surfaces still uses the shared component contracts (D3); it
 is the four above that get bespoke design attention.
@@ -510,7 +511,7 @@ is explicit, not implicit.
   on `--cx-bg-raised`, main on `--cx-bg`; 1px `--cx-border` separators; no
   shadows between docked regions (surface-elevation, D1.1). The topbar
   carries the wordmark treatment per the brand surface table
-  (`brand identity.md` §"Which mark on which surface" — the sole in-app
+  (`docs/specs/brand/identity.md` §"Which mark on which surface" — the sole in-app
   purple, D8), view-tabs (`.cx-tabs`), daemon status pip, pane toggles.
 - **Left sidebar — the agent tree** (DL-095: `parent_agent_id` is the sole
   org mechanism, folders removed, no agent special-cased, re-parenting
@@ -524,7 +525,7 @@ is explicit, not implicit.
   SEA-1622's later unification is a data change, not a visual one. The
   state-dot column is the sanctioned one-pulse-per-region exception (D9): a
   scannable field of working pulses is brand-legal by the pulse budget rule.
-  Starting point: the `AgentTree.astro` mockup (production-quality, Managers as
+  Starting point: the canonical Rigel company-site Manager-tree reference render (production-quality, Managers as
   nodes with a live worker count, a connecting spine with a chase-light pip
   travelling down it = delegation flowing parent→child) — Compass builds from
   it, not a redraw.
@@ -537,7 +538,7 @@ is explicit, not implicit.
   hint) — not a blank void.
 - **Bridge — Issues/PRs board** (DL-067/070/097, DL-129: canonical `Issue`,
   server lifecycle, Issues + PRs tabs, swimlanes by tree-ordered assignee).
-  Starting point: the `BridgeBoard.astro` mockup, authored against the real
+  Starting point: the canonical Rigel company-site board reference render, authored against the real
   `Bridge.tsx`/`IssueCard.tsx`/`board.ts` — Issues tab: sticky-left agent
   gutters (state dot + name, tree order), sticky-top status columns tinted by
   `--cx-issue-*` at low alpha in the lane head only (contrast rationing, D1.2),
@@ -550,7 +551,7 @@ is explicit, not implicit.
   NO composer; topic view is flat messages + composer; ThreadPanel and all
   `.thread-*` are removed). **Base: Zulip's topic-threading UX** (the model is
   DL-098's) — a channel is a list of named topics, each topic a focused flat
-  stream — with Rigel excellence layered on (the `ThreadView.astro` mockup is
+  stream — with Rigel excellence layered on (the company-site thread-view reference render is
   the visual starting point). Topic index: `.cx-tree-row` topic list with
   unread badges + last-activity, "New topic" affordance. Topic view: message
   stream on `--cx-bg`, `.cx-md` content, `.cx-ask` blocks inline (a posted
@@ -568,7 +569,7 @@ is explicit, not implicit.
   typed renderer, tool-status pips (`--cx-ci-*`-style), Shiki-highlighted
   code/diffs via `--cx-ed-*` so embedded content and chrome share the palette,
   collapsible, minimized-rail ↔ full-panel. This is where the brand's live
-  token-streaming treatment runs (D9, `brand motion.md`): decoupled stream
+  token-streaming treatment runs (D9, `docs/specs/brand/motion.md`): decoupled stream
   cadence (bursty network → steady screen at `--cx-stream-char-ms`), the
   phosphor write-head cooling to fog behind it, a blinking block cursor, and
   partial-markdown/code-fence safety so nothing flickers mid-stream. The tab
@@ -628,21 +629,21 @@ is explicit, not implicit.
   old draft's "pending-freeze" variables are gone: purple is frozen
   (`#a66ef5`, mark-only), the type system is frozen (three faces — the old
   "IBM Plex Mono base" language is superseded; Plex survives only as the
-  fallback inside the `--rigel-mono` stack, `brand type.md`).
+  fallback inside the `--rigel-mono` stack, `docs/specs/brand/type.md`).
 - **The mark in the ADE.** The topbar brand slot renders per the brand
-  surface table (`brand identity.md`): the wordmark (sigil-led — the bitmap R
+  surface table (`docs/specs/brand/identity.md`): the wordmark (sigil-led — the bitmap R
   IS the mark; no icon-beside-wordmark lockup, the one-R rule) or, in
   icon-only contexts, `icon-navy`; never below the 16px icon floor / 24px
   wordmark floor — below the floor the mark is omitted, not shrunk. This is
   the ONE purple per surface; `icon-phosphor` (the `#b57eff` variant) appears
   only as the sanctioned loading/active brand moment. The Compass needle mark
-  (`brand compass-mark.md`) is a placeholder, not locked — the ADE uses the
+  (`docs/specs/brand/compass-mark.md`) is a placeholder, not locked — the ADE uses the
   R-family assets until brand locks it.
 - **Editor-theme mapping** (`--cx-ed-*`) is Compass-owned: semantic tier →
   Shiki theme and editor-pane colors, from the same Night Owl set brand fixes
-  as "driving the Compass editor theme" (`brand color.md`), so an embedded
+  as "driving the Compass editor theme" (`docs/specs/brand/color.md`), so an embedded
   editor is indistinguishable in palette from the chrome around it. The
-  syntax ramp consumes the `brand color.md` §Syntax/UI table (blue functions,
+  syntax ramp consumes the `docs/specs/brand/color.md` §Syntax/UI table (blue functions,
   cyan operators, magenta keywords, `#22da6e` diff-add, amber strings, coral
   numbers, red errors, `#addb67` attributes) — the five untokenized values
   route through Q2. compass-ux co-reviews brand's use of the editor theme;
@@ -652,13 +653,13 @@ is explicit, not implicit.
 ### D9 — Motion: consume the frozen brand motion system, pure CSS/SVG
 
 New decision — the pre-freeze draft deferred motion to a follow-up record;
-the brand motion system is now frozen (`brand motion.md`) and this record
+the brand motion system is now frozen (`docs/specs/brand/motion.md`) and this record
 consumes it. The product UI expresses it in **pure CSS/SVG** — no client-side
 animation runtime (no GSAP/Three.js/Lenis/Barba; that stack is the marketing
-showcase's, `brand motion.md` §"The tech stack" scopes the product-UI
+showcase's, `docs/specs/brand/motion.md` §"The tech stack" scopes the product-UI
 framework out, and Global Constraint 3 bans heavy deps). The as-built
 rigel.build site proves the restraint end of the curve works in pure CSS/SVG
-(`brand surfaces.md`).
+(`docs/specs/brand/surfaces.md`).
 
 - **Tokens, consumed through the semantic tier** (D2 aliases the brand motion
   primitives so component CSS never names `--rigel-*` directly):
@@ -673,22 +674,21 @@ rigel.build site proves the restraint end of the curve works in pure CSS/SVG
 - **The working pulse.** The one recurring animation in the ADE: the
   `working` state dot pulses at the brand pulse cadence in the working-state
   green `#addb67` — a state color, never the purple phosphor
-  (`brand state-icons.md`; `brand motion.md` §"The one motion accent"). At
+  (`docs/specs/brand/state-icons.md`; `docs/specs/brand/motion.md` §"The one motion accent"). At
   most one unbounded pulse per viewport region; the scannable state-dot
   column (tree, board gutter) is the sanctioned exception
-  (`brand motion.md` pulse-budget Requirement).
+  (`docs/specs/brand/motion.md` pulse-budget Requirement).
 - **Loaders.** The chase-light primitive (`.cx-loader`, D3): spinner (closed
   square loop) for indeterminate work, bar (open track, blue fill + fog
-  head — the non-purple loading palette, `brand color.md` §"The loading
-  palette") for determinate progress. No indeterminate bars (`brand
-  surfaces.md` §"Per-layer mapping"). The purple spinner is the one
+  head — the non-purple loading palette, `docs/specs/brand/color.md` §"The loading
+  palette") for determinate progress. No indeterminate bars (`docs/specs/brand/surfaces.md` §"Per-layer mapping"). The purple spinner is the one
   sanctioned purple loader — the brand-mark-in-motion moment — used at most
   once per surface and never adjacent to a state-dot field where a
   purple-vs-green ring pair could read as state.
 - **Streaming (the signature interaction).** Agent token-streaming on the trace
   surface (where turns actually stream — DL-039/DL-099) is the one place
   richness is always-on, because it *is* the product. The contract, consumed
-  from the brand micro-excellence system (`brand motion.md`): the network layer
+  from the brand micro-excellence system (`docs/specs/brand/motion.md`): the network layer
   buffers bursty model output and the visual layer drains it at a steady cadence
   (`--cx-stream-char-ms`, ~12ms/char, rate-adaptive so it never falls behind) —
   bursty network, smooth screen; a freshly-revealed character ignites at the
@@ -704,11 +704,11 @@ rigel.build site proves the restraint end of the curve works in pure CSS/SVG
   `--cx-motion-fast`/`--cx-motion-base`: hover/press feedback, panel
   open/close, row settle, toast arrival.
 - **First-load boot-sequence.** The brand names Compass first-load the
-  highest-leverage wow (`brand motion.md` §"The effort/wow curve"): a staged
+  highest-leverage wow (`docs/specs/brand/motion.md` §"The effort/wow curve"): a staged
   terminal-honest reveal — bitmap R pixel-assembly, phosphor pulse, wordmark,
   UI fades in behind. Consumed here as a design surface, CSS/SVG only
   (pixel-assembly is explicitly "cheap: SVG/CSS `steps()`" per
-  `brand motion.md`), skippable, deferred behind idle time, reduced-motion
+  `docs/specs/brand/motion.md`), skippable, deferred behind idle time, reduced-motion
   honored. Specified in T8.
 - **Reduced-motion: substitution, not removal.** Motion becomes an instant
   state change or a ≤80ms opacity crossfade; the information survives, only
@@ -777,7 +777,7 @@ so these are documentation of why, not open forks.
 - **Re-deriving the state-dot vocabulary in this record** (the pre-freeze
   draft's four-round ring-arc/glyph derivation) — superseded wholesale: brand
   froze the eight-glyph set and explicitly ruled out the ring-arc working
-  form ("read as a bare 'C' at 12px", `brand state-icons.md`). Deleted, not
+  form ("read as a bare 'C' at 12px", `docs/specs/brand/state-icons.md`). Deleted, not
   carried; do not resurrect.
 
 ## Adoption path
@@ -827,8 +827,8 @@ CI/review, and the `--cx-ed-*` editor block reserved here as names only — T7
 authors its values), scale tokens (space/type/radius/elevation/z; motion and
 focus consumed from the brand tier, D9/D4), and the reduced-motion zeroing
 block plus its `data-reduce="on"` mirror. Verify WCAG contrast of every text token on each
-surface tier against the `brand color.md` contrast table.
-Interfaces: consumes `brand tokens.css` + `brand color.md` verbatim; produces
+surface tier against the `docs/specs/brand/color.md` contrast table.
+Interfaces: consumes `brand tokens.css` + `docs/specs/brand/color.md` verbatim; produces
 `apps/ui/src/design/tokens.css` defining the complete `--rigel-*`/`--cx-*`
 vocabulary D2 names. Brand co-reviews the primitives block.
 
@@ -846,12 +846,11 @@ lint setup (`apps/ui/package.json` lint script gains stylelint).
 Author the per-component contract specs + CSS for the D3 table: class name,
 `data-*` variants, all six states (rest/hover/active/selected/disabled/
 focus), consumed tokens, and per-component notes (card selection rule, pane
-focus rule). The state dot consumes the frozen `brand state-icons.md`
+focus rule). The state dot consumes the frozen `docs/specs/brand/state-icons.md`
 glyph set as inline 9×9 `crispEdges` SVG — this task transcribes, it does not
 re-derive; verify glyph legibility at the 12px row-dot render size against
 the brand assertion. One CSS file per component under `design/components/`.
-Interfaces: consumes T1 tokens + T2 base + `brand state-icons.md`/`brand
-spine.md`; produces `apps/ui/src/design/components/*.css` + a contract table
+Interfaces: consumes T1 tokens + T2 base + `docs/specs/brand/state-icons.md`/`docs/specs/brand/spine.md`; produces `apps/ui/src/design/components/*.css` + a contract table
 (component · classes · data-attrs · states · tokens) appended to this
 record's directory as `components.md`. compass-ui co-reviews.
 
@@ -882,23 +881,24 @@ keyboard behavior, empty states (pins-empty, tree-empty), mark placement per
 the brand surface table, and the per-surface flip checklist the adoption path's
 step 4 PRs execute. The four **excellence surfaces** get a fuller design pass
 each, starting from their concrete reference (never a blank-page redraw): Bridge
-board from the Rigel brand source (`BridgeBoard.astro`); Manager tree
-from `AgentTree.astro`; channels + threads from **Zulip's topic-threading UX**
-(+ `ThreadView.astro`); the session trace from the brand streaming treatment
+board from the canonical Rigel company-site board reference render; Manager tree
+from the company-site Manager-tree reference render; channels + threads from
+**Zulip's topic-threading UX** (+ the company-site thread-view reference render);
+the session trace from the brand streaming treatment
 (T8). Also specifies the **window-scoped-view contract** (D6.1): each top-level
 surface mounts standalone against its DL-127 route with its own focus
 zones/command scope and no sibling-region dependency, so compass-native can host
 it in its own window.
 Interfaces: consumes T3 contracts + frozen IA records
-(DL-095/096/098/099/067/070/097/039/127/129) + `brand identity.md` + the named
+(DL-095/096/098/099/067/070/097/039/127/129) + `docs/specs/brand/identity.md` + the named
 Rigel-site mockups; produces `surfaces.md` in this record's directory — the
 checklist each flip PR cites.
 
 **T7 — Editor-theme mapping** (D8)
 Derive the `--cx-ed-*` set: Shiki theme JSON and editor pane colors from the
-semantic tier + the `brand color.md` §Syntax/UI ramp; verify against real
+semantic tier + the `docs/specs/brand/color.md` §Syntax/UI ramp; verify against real
 trace and markdown content in the workspace.
-Interfaces: consumes T1 tokens + `brand color.md`; authors the values of the
+Interfaces: consumes T1 tokens + `docs/specs/brand/color.md`; authors the values of the
 `--cx-ed-*` block T1 reserved, plus a generated Shiki theme
 (`design/editor-theme.json`). compass-ux co-reviews brand's downstream use;
 brand co-reviews palette fidelity.
@@ -907,11 +907,11 @@ brand co-reviews palette fidelity.
 Specify the CSS/SVG implementations: the working pulse (keyframes at
 `--cx-pulse-period`, green, one-per-region budget with the state-dot-
 column exception), the chase-light spinner + bar (`.cx-loader`, cell
-keyframes per `brand spine.md`'s seed-reference mechanics, `crispEdges`),
+keyframes per `docs/specs/brand/spine.md`'s seed-reference mechanics, `crispEdges`),
 streamed-text cadence + cursor blink, everyday translate+fade patterns, the
 first-load boot-sequence (staged, skippable, idle-deferred), and the
 reduced-motion substitution for each.
-Interfaces: consumes T1 tokens + `brand motion.md`/`brand spine.md`; produces
+Interfaces: consumes T1 tokens + `docs/specs/brand/motion.md`/`docs/specs/brand/spine.md`; produces
 `design/components/loader.css`, the pulse/stream keyframe blocks in
 `base.css` (consuming the `--cx-*` motion aliases, never `--rigel-*`
 directly, so the D7 guard stays clean), and a `motion.md` spec in this
@@ -957,7 +957,7 @@ decisions above; recorded here for provenance.
    visual position as an agent state dot, and the namespaces stay separate
    (D2). (Magenta and blue weighed and rejected.)
 2. **Q2 — brand tokenizes the six values upstream; raw hex is the interim.**
-   Compass files a one-block PR to brand to add the six `brand color.md`
+   Compass files a one-block PR to brand to add the six `docs/specs/brand/color.md`
    values (selection `#1d3b53`, faint `#637777`, magenta `#c792ea`,
    success-green `#22da6e`, coral `#f78c6c`, loading-empty `#0a2036`) to
    `brand tokens.css` under brand-chosen names, then mirrors them. Until
@@ -986,7 +986,7 @@ Remaining deferrals, carried from the pre-freeze draft (none load-bearing):
    without it. Recommendation: defer; file a follow-up issue when T4 lands.
 2. **[NLB] Light Owl (day theme) shipping scope.** Architecture is held open
    by `[data-theme]` indirection (D2) and brand fixes light mode as a
-   polarity inversion (`brand color.md`), but no day semantic tier is
+   polarity inversion (`docs/specs/brand/color.md`), but no day semantic tier is
    authored in this record's tasks. Recommendation: defer until brand
    publishes light-mode tokens; authoring it then is a one-file addition.
 3. **[NLB] Palette destination-provider ranking (recency + fuzzy weights).**
