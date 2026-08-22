@@ -6,7 +6,7 @@
 // mock would restate the transport; only a live socket server can catch a broken
 // nodeOptions.path, a wrong baseUrl, or a protocol mismatch.
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as http2 from "node:http2";
 import * as os from "node:os";
@@ -217,14 +217,23 @@ test("close() after drain() disposes the single transport-owned runtime, leaving
 	// Borrowed, so drain() must NOT have disposed it — the runtime is still usable.
 	expect(runtime.runSync(Effect.succeed("live"))).toBe("live");
 
-	// close() disposes the runtime (fire-and-forget from its sync signature);
-	// await a second dispose to observe the first's completion (dispose is
-	// idempotent and the second call settles once the runtime is torn down).
+	// close() must be the thing that disposes the runtime — the leak class this
+	// test exists for. Spy on dispose BEFORE close() so the assertion pins
+	// close()'s own call, not a dispose the test issued: awaiting the runtime
+	// here directly (as a "second, idempotent dispose") would tear it down
+	// regardless of whether close() ever called it, so a close() that forgot to
+	// dispose would still pass. With the spy, a close() that only aborts the
+	// session leaves toHaveBeenCalled false and reddens.
+	const disposeSpy = spyOn(runtime, "dispose");
 	transport.close();
-	await runtime.dispose();
+	expect(disposeSpy).toHaveBeenCalledTimes(1);
+	// dispose is fire-and-forget from close()'s sync signature; await the exact
+	// promise close() started (captured by the spy) — no second dispose, no
+	// wall-clock poll — to observe its completion deterministically.
+	await disposeSpy.mock.results[0]?.value;
 
-	// Disposed: the runtime rejects further work, so no fiber it backed survives
-	// the transport. runSync on a disposed ManagedRuntime throws.
+	// Disposed by close(): the runtime rejects further work, so no fiber it backed
+	// survives the transport. runSync on a disposed ManagedRuntime throws.
 	expect(() => runtime.runSync(Effect.succeed("dead"))).toThrow(
 		"ManagedRuntime disposed",
 	);

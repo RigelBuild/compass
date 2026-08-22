@@ -132,8 +132,10 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 			// Fire-and-forget from the sync `void` signature: the composition root
 			// calls close() only AFTER the sink's drain barrier, which has already
 			// quiesced every fiber this runtime backs, so the dispose races nothing
-			// (design record §T5; `index.ts` close() doc above).
-			void runtime.dispose();
+			// (design record §T5; `index.ts` close() doc above). ManagedRuntime.dispose
+			// is not expected to reject; the `.catch` is a guard so a future rejecting
+			// dispose surfaces as nothing rather than an unhandledRejection at teardown.
+			void runtime.dispose().catch(() => {});
 		},
 	};
 	// Publish the owned runtime on the module-private channel so createSocketFrameSink
