@@ -75,6 +75,7 @@ func run() error {
 			mounts = append(mounts, m)
 			return nil
 		})
+	backends := registerBackendFlags()
 	showVersion := flag.Bool("version", false, "Print the version and exit.")
 	flag.Parse()
 
@@ -145,6 +146,11 @@ func run() error {
 		return err
 	}
 
+	engine, err := backends.selectEngine()
+	if err != nil {
+		return err
+	}
+
 	slog.Info("compass-runner starting",
 		"version", version, "runner_id", id, "server", addr)
 
@@ -155,11 +161,49 @@ func run() error {
 		RunnerID:   id,
 		ServerAddr: addr,
 		Token:      token,
-		Engine:     runtime.NewPodmanCLI(),
+		Engine:     engine,
 		RuntimeDir: *runtimeDir,
 		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
 		HTTPClient: httpClient,
 	}, specs, log)
+}
+
+// backendFlags holds the runtime-backend selection flags, registered on the
+// default flag set before flag.Parse and resolved into a runtime after it.
+type backendFlags struct {
+	backend, vmm, virtiofsd, kernel, rootfs *string
+}
+
+// registerBackendFlags declares the backend-selection flags. Call before
+// flag.Parse; resolve with selectEngine after.
+func registerBackendFlags() backendFlags {
+	return backendFlags{
+		backend: flag.String("backend", "",
+			"Container runtime backend: 'podman' (default, transitional) or "+
+				"'microvm'. Defaults to $COMPASS_RUNTIME_BACKEND."),
+		vmm: flag.String("microvm-vmm", "",
+			"Path to the microVM monitor binary (microvm backend). Defaults to $COMPASS_MICROVM_VMM."),
+		virtiofsd: flag.String("microvm-virtiofsd", "",
+			"Path to the virtiofs daemon binary (microvm backend). Defaults to $COMPASS_MICROVM_VIRTIOFSD."),
+		kernel: flag.String("microvm-kernel", "",
+			"Path to the guest kernel image (microvm backend). Defaults to $COMPASS_MICROVM_KERNEL."),
+		rootfs: flag.String("microvm-rootfs", "",
+			"Path to the guest rootfs image (microvm backend). Defaults to $COMPASS_MICROVM_ROOTFS."),
+	}
+}
+
+// selectEngine resolves the configured runtime backend from the parsed flags
+// and their environment fallbacks.
+func (f backendFlags) selectEngine() (runtime.ContainerRuntime, error) {
+	return runtime.SelectBackend(runtime.BackendConfig{
+		Backend: orEnv(*f.backend, "COMPASS_RUNTIME_BACKEND"),
+		MicroVM: runtime.MicroVMConfig{
+			VMMPath:       orEnv(*f.vmm, "COMPASS_MICROVM_VMM"),
+			VirtiofsdPath: orEnv(*f.virtiofsd, "COMPASS_MICROVM_VIRTIOFSD"),
+			KernelImage:   orEnv(*f.kernel, "COMPASS_MICROVM_KERNEL"),
+			RootfsImage:   orEnv(*f.rootfs, "COMPASS_MICROVM_ROOTFS"),
+		},
+	})
 }
 
 // defaultAgentUID is the unprivileged uid the agent user runs as inside the
