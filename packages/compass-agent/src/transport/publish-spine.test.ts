@@ -75,40 +75,68 @@ test("drain() is bounded ~O(1) on a persistently-dead socket, not unbounded", as
 	// count.
 	expect(spine.failedPriorityCount()).toBe(total);
 	expect(spine.droppedTraceCount()).toBe(0);
-	// The budget capped the retries: the first batch costs its initial send plus
-	// PRIORITY_LADDER_RETRIES retries, then the second batch is given up with no
-	// further send (budget already exhausted) — a small constant number of sends,
-	// not one-per-frame and not unbounded.
+	// The budget caps backoff, not send count: the first batch costs its initial
+	// send plus PRIORITY_LADDER_RETRIES retries, then the second batch still
+	// incurs one publish() call whose failure is a definitive give-up with NO
+	// further retry or sleep — so the +2 covers the initial send plus that single
+	// give-up send. Wall-clock cost stays O(1) (no more backoff sleeps after the
+	// budget is spent); send count is O(batches) of immediate rejects, not
+	// one-per-frame and not unbounded.
 	expect(publishCalls).toBeLessThanOrEqual(PRIORITY_LADDER_RETRIES + 2);
 });
 
-test("reset-on-success terminates drain() on a FLAPPING socket", async () => {
-	// Contract: the pump-run-scoped retry budget RESETS on any successful send
-	// (publish-spine.ts:205), so a socket that flaps (fails a few times, then
-	// recovers) does not exhaust the budget — the recovered send delivers the
-	// priority frames and drain() resolves. It stays bounded because drain()
-	// closes enqueues (ended = true), making the priority array finite.
+test("reset-on-success gives each recovered batch a fresh retry budget", async () => {
+	// Contract: the pump-run-scoped retry budget RESETS to zero on any successful
+	// send (publish-spine.ts:205), making it a per-recovery budget, not a
+	// per-drain one — each batch that eventually lands gets the FULL ladder again.
+	// A single flap-then-recover does NOT distinguish this from "no reset": one
+	// batch that recovers within the ladder never re-exhausts the budget, so the
+	// reset is inconsequential there. This case forces a TWO-PHASE flap where the
+	// second batch can only land if the first's success reset the budget:
+	//   - Frame A: fail twice (ladder 0→1→2), deliver on the 3rd send — the reset.
+	//   - Frame B, enqueued only AFTER A lands so it forms its OWN batch
+	//     (enqueuePriority refuses frames once drain() sets `ended`, so B must go
+	//     in before drain): fail three times, deliver on the 4th send. B's third
+	//     retry is reachable ONLY on a fresh ladder — i.e. only if A's success
+	//     reset priorityRetries to 0.
 	//
-	// Non-vacuity: a flapping socket that never recovered would keep failing; only
-	// a real reset-on-success + a finite (drain-closed) priority array lets this
-	// terminate with the frames DELIVERED (failedPriorityCount 0) rather than
-	// given up.
+	// Non-vacuity (mutation-verified): delete the reset (`priorityRetries = 0`,
+	// publish-spine.ts:205). A's two failures then leave the budget at 2, so B's
+	// FIRST failure hits `priorityRetries >= PRIORITY_BATCH_RETRY_MS.length` and B
+	// is given up instead of retried: failedPriorityCount() becomes 1 (not 0) and
+	// publishCalls becomes 5 (not 7). A still lands on call 3, so the mutant reds
+	// on the assertions rather than hanging.
 	let publishCalls = 0;
-	const failsBeforeRecovery = 2; // fail twice (50ms, 200ms) then succeed
+	let markADelivered!: () => void;
+	const aDelivered = new Promise<void>((resolve) => {
+		markADelivered = resolve;
+	});
 	const publish = (): Promise<unknown> => {
 		publishCalls += 1;
-		if (publishCalls <= failsBeforeRecovery) {
-			return Promise.reject(new Error("transient flap"));
+		// Phase A: calls 1-2 fail, call 3 delivers A and resets the budget.
+		if (publishCalls <= 2) return Promise.reject(new Error("flap A"));
+		if (publishCalls === 3) {
+			markADelivered();
+			return Promise.resolve({});
 		}
+		// Phase B: calls 4-6 fail, call 7 delivers B — reachable only if A's
+		// success handed B a fresh 3-retry ladder.
+		if (publishCalls <= 6) return Promise.reject(new Error("flap B"));
 		return Promise.resolve({});
 	};
 	const spine = createPublishSpine(publish);
-	spine.enqueuePriority(priorityFrame());
+	spine.enqueuePriority(priorityFrame()); // A
+	// Wait for A to actually land so B is taken as a SEPARATE batch — a B enqueued
+	// while A is still retrying would be re-unshifted into A's batch and defeat
+	// the two-phase distinction.
+	await aDelivered;
+	spine.enqueuePriority(priorityFrame()); // B, fresh batch on the reset budget
 	await spine.drain();
-	// The frame was DELIVERED once the socket recovered, not given up: no
-	// never-drop loss, no trace loss.
+	// Both frames were delivered on their recovered send — no never-drop loss, no
+	// trace loss.
 	expect(spine.failedPriorityCount()).toBe(0);
 	expect(spine.droppedTraceCount()).toBe(0);
-	// Two failed sends + one successful send.
-	expect(publishCalls).toBe(failsBeforeRecovery + 1);
+	// A: 2 fail + 1 ok = 3; B: 3 fail + 1 ok = 4; total 7. Without the reset B is
+	// given up after 2 sends, making this 5.
+	expect(publishCalls).toBe(7);
 });
