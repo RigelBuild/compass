@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { cleanup } from "@solidjs/testing-library";
+import type { CommandId } from "./keyboard/commands";
 import { flush, mountApp } from "./test-router";
 
 // Real-wiring global-chord tests (RIG-2456 T2/A6). These mount the FULL shell
@@ -71,21 +72,34 @@ describe("App-root keyboard spine (RIG-2456)", () => {
 		const event = press({ key: "b", ctrlKey: true });
 		await flush();
 
-		expect(store.view()).toBe("bridge");
 		expect(event.defaultPrevented).toBe(true);
 	});
 
-	test("after dispose the listener is removed: Ctrl+B is inert", async () => {
+	test("after dispose App's onCleanup removes the listener: view.bridge never runs", async () => {
 		setPlatform("other");
 		const { store } = mountApp("/backlog");
 		expect(store.view()).toBe("backlog");
 
+		// Spy the shared `view.bridge` command on the app-lifetime registry (a
+		// plain Map that outlives the reactive root). Observing the command
+		// directly — not the frozen store view — is what discriminates here: a
+		// leaked listener still resolves the chord and calls run() even though the
+		// disposed store's view() can no longer update, so a store-view assertion
+		// would pass on the very uninstall bug it purports to catch.
+		let viewBridgeRuns = 0;
+		store.keyboard.registry.register({
+			id: "view.bridge" as CommandId,
+			title: "Go to Bridge",
+			keywords: [],
+			scope: "global",
+			run: () => viewBridgeRuns++,
+		});
+
 		// Unmount the shell — App's onCleanup runs the keymap uninstaller.
 		cleanup();
 
-		// The disposed store's view is frozen; a post-dispose chord does nothing.
 		press({ key: "b", ctrlKey: true });
 		await flush();
-		expect(store.view()).toBe("backlog");
+		expect(viewBridgeRuns).toBe(0);
 	});
 });
