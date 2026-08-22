@@ -51,6 +51,7 @@ import {
 } from "./../gen/compass/v1/agent_pb";
 import { AgentSessionState } from "./../gen/compass/v1/compass_pb";
 import type { RunnerTransport } from "./index";
+import { getTransportRuntime } from "./runtime-channel";
 
 // Bounded-backoff retry schedule for the durable unary (ms). A transient unary
 // error (Runner mid-restart, socket blip) is retried on this fixed schedule;
@@ -94,14 +95,17 @@ function isLifecycle(frame: OutboundFrame): boolean {
 
 export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 	const spine = transport.publishSpine();
-	// The sink's own transitional ManagedRuntime (design record
-	// compass-agent-effect-adoption T2). Until T5 consolidates ownership into the
-	// transport, the sink makes its own and disposes it at the end of drain(), so
-	// no undisposed runtime leaks across the T2–T4 transitional state. The runtime
-	// removes the default logger so a handled forked-send failure does not
-	// double-report to the console (the give-up is already surfaced to
-	// emitDurable's caller as a promise reject).
-	const runtime = ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
+	// Borrow the single transport-owned ManagedRuntime through the module-private
+	// channel when present; otherwise (a fake transport in a unit test) make and
+	// OWN a default runtime as before (design record §T5). Effect is confined
+	// module-private behind the sink: the runtime backs the FiberSet of forked
+	// durable sends. The fallback runtime removes the default logger so a handled
+	// forked-send failure does not double-report to the console (the give-up is
+	// already surfaced to emitDurable's caller as a promise reject).
+	const borrowedRuntime = getTransportRuntime(transport);
+	const ownsRuntime = borrowedRuntime === undefined;
+	const runtime =
+		borrowedRuntime ?? ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
 	// A sink-lifetime scope backing the FiberSet: it must outlive each fork (a
 	// scoped run would interrupt the set the moment its Effect returned), and
 	// drain() closes it after the set has drained.
@@ -260,12 +264,15 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 				await spine.drain();
 			} finally {
 				// Terminal for the sink (post-drain enqueues are no-ops by contract):
-				// close the FiberSet's scope and dispose the transitional runtime so no
-				// runtime leaks across the T2–T4 transitional state (design record
-				// T2/T5). In a `finally` so a future rejecting awaitEmpty/spine.drain
-				// cannot strand the runtime undisposed.
+				// close the FiberSet's own scope (always — it belongs to the sink, not
+				// the runtime). Then dispose ONLY a runtime this sink owns (the fallback
+				// path); a borrowed transport-owned runtime is disposed by the
+				// transport's close() after the drain barrier — disposing it here would
+				// break the still-open sibling spine/source that share it (design record
+				// §T5). In a `finally` so a rejecting awaitEmpty/spine.drain cannot
+				// strand a self-owned runtime undisposed.
 				await runtime.runPromise(Scope.close(fiberScope, Exit.void));
-				await runtime.dispose();
+				if (ownsRuntime) await runtime.dispose();
 			}
 		},
 	};

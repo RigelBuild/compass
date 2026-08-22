@@ -16,6 +16,7 @@ import {
 	createGrpcTransport,
 	Http2SessionManager,
 } from "@connectrpc/connect-node";
+import { Logger, ManagedRuntime } from "effect";
 
 import type {
 	CommsCallRequest,
@@ -29,6 +30,7 @@ import type {
 import { AgentGateway } from "../gen/compass/v1/agent_gateway_pb";
 import type { AgentControl } from "../gen/compass/v1/agent_pb";
 import { createPublishSpine, type PublishSpine } from "./publish-spine";
+import { setTransportRuntime } from "./runtime-channel";
 
 /**
  * The agent's handle on the AgentGateway RPCs over the Runner socket. T4
@@ -47,11 +49,17 @@ import { createPublishSpine, type PublishSpine } from "./publish-spine";
  *    erred); the sink awaits + retries it.
  *  - `control` — the agent-opened control server-stream; the ControlSource
  *    consumes it.
- *  - `close()` — release the underlying HTTP/2 session. The composition root
- *    calls it AFTER the sink's drain barrier: the session manager keeps an idle
- *    connection alive for `idleConnectionTimeoutMs` (15 minutes by default), so
- *    a self-terminating agent that only drains would linger holding the socket.
- *    Draining first is what makes closing safe — close abandons open streams.
+ *  - `close()` — release the underlying HTTP/2 session AND dispose the single
+ *    transport-owned `ManagedRuntime` that backs the sink/spine/source lanes
+ *    (design docs/designs/platform/compass-agent-effect-adoption/design.md §T5).
+ *    The composition root calls it AFTER the sink's drain barrier: the session
+ *    manager keeps an idle connection alive for `idleConnectionTimeoutMs` (15
+ *    minutes by default), so a self-terminating agent that only drains would
+ *    linger holding the socket. Draining first is what makes closing safe —
+ *    close abandons open streams. The dispose is likewise safe only after the
+ *    drain barrier: it is fire-and-forget from close()'s sync `void` signature,
+ *    and by the time the root calls close() the drain has already quiesced every
+ *    fiber the runtime backs, so the dispose has nothing live to race.
  */
 export interface RunnerTransport {
 	comms(req: CommsCallRequest): Promise<CommsCallResult>;
@@ -96,19 +104,42 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 		sessionManager,
 	});
 	const client = createClient(AgentGateway, transport);
+	// The single ManagedRuntime this transport owns and every Effect lane behind
+	// it (sink, spine, source) shares, so the production wiring path runs on ONE
+	// scheduler (design record §T5). Same config the three modules made
+	// per-instance before T5: the default logger is removed so a handled/swallowed
+	// lane failure does not double-report to the console. close() disposes it; the
+	// sibling factories BORROW it (never dispose) via the module-private channel.
+	const runtime = ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
 	// The Publish spine is created once on first use and shared by the sink +
-	// source; memoize it so both reach the same single stream.
+	// source; memoize it so both reach the same single stream. It runs on the
+	// transport's runtime (threaded by argument — the spine takes `publish`, not
+	// `transport`, so it cannot read the channel), so its drain() does NOT dispose
+	// the borrowed runtime.
 	let spine: PublishSpine | undefined;
-	return {
+	const runnerTransport: RunnerTransport = {
 		comms: (req) => client.comms(req),
 		lifecycle: (req) => client.lifecycle(req),
 		publishSpine: () => {
-			spine ??= createPublishSpine((stream) => client.publish(stream));
+			spine ??= createPublishSpine((stream) => client.publish(stream), runtime);
 			return spine;
 		},
 		postConversationFrame: (req, options) =>
 			client.postConversationFrame(req, options),
 		control: (req, options) => client.control(req, options),
-		close: () => sessionManager.abort(),
+		close: () => {
+			sessionManager.abort();
+			// Fire-and-forget from the sync `void` signature: the composition root
+			// calls close() only AFTER the sink's drain barrier, which has already
+			// quiesced every fiber this runtime backs, so the dispose races nothing
+			// (design record §T5; `index.ts` close() doc above).
+			void runtime.dispose();
+		},
 	};
+	// Publish the owned runtime on the module-private channel so createSocketFrameSink
+	// and createSocketControlSource BORROW it instead of each making their own
+	// (design record §T5). Absent for a fake transport → those factories fall back
+	// to a self-owned default runtime, disposed at their own teardown seam.
+	setTransportRuntime(runnerTransport, runtime);
+	return runnerTransport;
 }
