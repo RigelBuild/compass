@@ -51,6 +51,11 @@ const liveSkipMessage = "live github oracle: LIVEGITHUB_* credentials unset; ski
 // which gate independently on LINEAR_FORGE (co-equal provider, separate creds).
 const liveLinearSkipMessage = "live linear oracle: LINEAR_FORGE credential unset; skipping the live-contract suite"
 
+// liveUpdateSkipMessage is the STABLE skip string for the regeneration lane:
+// TestLiveUpdateFixtures runs ONLY under -update (it rewrites committed
+// fixtures), so a bare tagged run skips it cleanly with this one-line literal.
+const liveUpdateSkipMessage = "live update capture: -update unset; skipping fixture regeneration"
+
 // Env contract (frozen design T2 interfaces).
 const (
 	envRepo     = "LIVEGITHUB_REPO"           // "owner/name" of the throwaway repo
@@ -108,39 +113,6 @@ func liveLinear(ts TokenSource) *Linear {
 // from a prior run never collides with (or fails) the next run's create.
 func newRunID() string {
 	return strconv.FormatInt(time.Now().UnixNano(), 36)
-}
-
-// volatileFields names the JSON keys (domain types marshal to their Go field
-// names — no json tags) that are NOT asserted against the committed fixture,
-// because the forge assigns them per run/identity or a hygiene-unique artifact
-// name perturbs them. Kept explicit and commented so a reviewer sees exactly
-// what the oracle does NOT pin.
-//
-//   - Forge-assigned per run: Number (issue/PR number), ID (comment/review id),
-//     URL (canonical web url), UpdatedAt (server timestamp), HeadSHA (commit),
-//     HeadRef / BaseRef (branch names).
-//   - Forge-assigned per identity: ForgeAccount / Author (the live bot login
-//     differs from the fixture's captured account).
-//   - Run-supplied uniquely: Title / Body — hygiene requires run-id-suffixed
-//     artifact names, so a live create's title/body never equals the fixture's
-//     captured input; the state fold, label passthrough, verdict mapping, draft
-//     flag and structural shape (everything NOT listed here) ARE asserted.
-//
-// Rate-limit headers are volatile too but never reach a decoded domain value,
-// so there is nothing to strip for them here (they live on the HTTP response,
-// which the oracle does not compare).
-var volatileFields = map[string]struct{}{
-	"Number":       {},
-	"ID":           {},
-	"URL":          {},
-	"UpdatedAt":    {},
-	"HeadSHA":      {},
-	"HeadRef":      {},
-	"BaseRef":      {},
-	"ForgeAccount": {},
-	"Author":       {},
-	"Title":        {},
-	"Body":         {},
 }
 
 // stripVolatile recursively deletes every volatile-allowlisted key from a
@@ -833,4 +805,333 @@ func archiveLinearIssue(t *testing.T, ln *Linear, ts TokenSource, team string, n
 		return
 	}
 	_ = resp.Body.Close() // teardown drain; close error not actionable
+}
+
+// --- -update live capture (RIG-2229 T2) --------------------------------------
+
+// recordingRoundTripper wraps a real http.RoundTripper and records every
+// response (status + raw body) in wire order. Only the RESPONSE is recorded:
+// the request half of each fixture is re-derived (deriveFixtureHalves) by
+// replaying the canonicalized responses through the real client, so a committed
+// request matches what golden replay emits BY CONSTRUCTION instead of carrying
+// live per-run coordinates. Bodies are buffered and re-wrapped so the real
+// client still reads them intact.
+type recordingRoundTripper struct {
+	inner     http.RoundTripper
+	responses []capturedResponse
+	err       error // first capture error; surfaced by the caller
+}
+
+// RoundTrip delegates to the wrapped transport and records the response. A body
+// read/re-wrap failure is latched (not swallowed) and surfaced to the test; the
+// real response still proceeds so the live op is not perturbed.
+func (rt *recordingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := rt.inner.RoundTrip(req)
+	if err != nil {
+		rt.record(capturedResponse{}, err)
+		return resp, err
+	}
+	rec := capturedResponse{status: resp.StatusCode}
+	if resp.Body != nil {
+		buf, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close() // response body fully buffered; re-wrapped below
+		if readErr != nil {
+			rt.record(rec, readErr)
+			return resp, fmt.Errorf("recordingRoundTripper: read response body: %w", readErr)
+		}
+		rec.body = json.RawMessage(buf)
+		resp.Body = io.NopCloser(bytes.NewReader(buf))
+	}
+	rt.record(rec, nil)
+	return resp, nil
+}
+
+// record appends a response and latches the first capture error.
+func (rt *recordingRoundTripper) record(r capturedResponse, err error) {
+	if err != nil && rt.err == nil {
+		rt.err = err
+	}
+	rt.responses = append(rt.responses, r)
+}
+
+// captureSpec is one fixture-regeneration recipe: the committed fixture it
+// rewrites, the number of leading responses that are prelude probes (resolve/
+// actor round-trips before the asserted request), and a run func that drives the
+// live op through a client built on the recording transport. run returns the
+// fixtureRequest coordinates (op + inputs); both request halves and the responses
+// are (re-)derived from the recording by assembleFixture.
+type captureSpec struct {
+	provider string
+	name     string
+	prelude  int
+	run      func(t *testing.T, rt *recordingRoundTripper) fixtureRequest
+}
+
+// TestLiveUpdateFixtures is the -update regeneration lane (RIG-2229 T2). Under
+// -update it re-runs each committed fixture's scenario against the REAL forge
+// through a recording transport, canonicalizes the captured wire responses
+// (reusing the oracle's volatileFields as the source of truth, via domainToWire
+// / canonicalizeWire), derives both fixture halves by replaying the canonicalized
+// responses through the real client (deriveFixtureHalves — so the committed
+// request matches golden replay and decode(Body)==Want, both by construction),
+// and rewrites testdata/<provider>/<name>.json via writeFixture. Absent -update
+// it skips cleanly (it rewrites committed fixtures — never a default run). The
+// credential gates (requireLive/requireLinear) skip each provider's legs
+// independently when its creds are unset.
+//
+// context.Background() below is the test root — the sanctioned F-ttsr exemption
+// (mirrors the sibling live scenarios).
+func TestLiveUpdateFixtures(t *testing.T) {
+	if !*update {
+		t.Skip(liveUpdateSkipMessage)
+	}
+
+	for _, spec := range updateCaptureSpecs() {
+		t.Run(spec.provider+"/"+spec.name, func(t *testing.T) {
+			rt := &recordingRoundTripper{inner: http.DefaultTransport}
+			coords := spec.run(t, rt)
+			if rt.err != nil {
+				t.Fatalf("capture transport error: %v", rt.err)
+			}
+			f := assembleFixture(t, spec.provider, spec.name, spec.prelude, coords, rt.responses)
+			writeFixture(t, filepath.Join("testdata", spec.provider), f)
+		})
+	}
+}
+
+// updateCaptureSpecs is the capture table: one spec per committed fixture across
+// both providers, split by provider so each half documents its own prelude-count
+// grounding (githubUpdateSpecs / linearUpdateSpecs).
+func updateCaptureSpecs() []captureSpec {
+	return append(githubUpdateSpecs(), linearUpdateSpecs()...)
+}
+
+// githubUpdateSpecs is the GitHub half of the capture table (prelude 0 — GitHub
+// writes/reads are single-shot; get_pull_request's reviews+checks legs are EXTRA
+// after the asserted detail GET, not prelude).
+func githubUpdateSpecs() []captureSpec {
+	return []captureSpec{
+		{provider: providerGitHub, name: "create_issue", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				repo, author, _ := requireLive(t)
+				ctx := context.Background()
+				gh := recordingGitHub(author, rt)
+				in := CreateIssue{Title: "compass-live-issue-" + newRunID(), Body: "stamped body", Labels: []string{"bug", "p1"}}
+				got, err := createWithBackoff(ctx, func() (Issue, error) { return gh.CreateIssue(ctx, repo, in) })
+				if err != nil {
+					t.Fatalf("CreateIssue: %v", err)
+				}
+				t.Cleanup(func() { closeGitHubIssue(t, author, repo, got.Number) })
+				return fixtureRequest{Op: "create_issue", Repo: repo,
+					Input: &fixtureInput{Title: in.Title, Body: in.Body, Labels: in.Labels}}
+			}},
+		{provider: providerGitHub, name: "get_issue", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				repo, author, _ := requireLive(t)
+				ctx := context.Background()
+				setup := setupGitHub(author)
+				issue, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, repo, CreateIssue{
+						Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body", Labels: []string{"bug", "p1"}})
+				})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { closeGitHubIssue(t, author, repo, issue.Number) })
+				gh := recordingGitHub(author, rt)
+				if _, err := gh.GetIssue(ctx, repo, issue.Number); err != nil {
+					t.Fatalf("GetIssue: %v", err)
+				}
+				return fixtureRequest{Op: "get_issue", Repo: repo, Number: issue.Number}
+			}},
+		{provider: providerGitHub, name: "list_issues", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				repo, author, _ := requireLive(t)
+				ctx := context.Background()
+				setup := setupGitHub(author)
+				got, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-list-" + newRunID(), Labels: []string{"bug"}})
+				})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { closeGitHubIssue(t, author, repo, got.Number) })
+				filter := IssueFilter{State: "open", Labels: []string{"bug"}}
+				gh := recordingGitHub(author, rt)
+				if _, err := gh.ListIssues(ctx, repo, filter); err != nil {
+					t.Fatalf("ListIssues: %v", err)
+				}
+				return fixtureRequest{Op: "list_issues", Repo: repo,
+					Filter: &fixtureFilter{State: filter.State, Labels: filter.Labels}}
+			}},
+		{provider: providerGitHub, name: "create_pull_request", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				repo, author, _ := requireLive(t)
+				ctx := context.Background()
+				head := "compass-live-" + newRunID()
+				seedHeadBranch(t, ctx, author, repo, head)
+				gh := recordingGitHub(author, rt)
+				in := CreatePR{Title: "compass-live-pr-" + newRunID(), Body: "stamped body", HeadRef: head, BaseRef: "main", Draft: true}
+				got, err := createWithBackoff(ctx, func() (PullRequest, error) { return gh.CreatePullRequest(ctx, repo, in) })
+				if err != nil {
+					t.Fatalf("CreatePullRequest: %v", err)
+				}
+				t.Cleanup(func() { teardownGitHubPR(t, author, repo, got.Number, head) })
+				return fixtureRequest{Op: "create_pull_request", Repo: repo,
+					Input: &fixtureInput{Title: in.Title, Body: in.Body, HeadRef: in.HeadRef, BaseRef: in.BaseRef, Draft: in.Draft}}
+			}},
+		{provider: providerGitHub, name: "get_pull_request", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				repo, author, _ := requireLive(t)
+				ctx := context.Background()
+				head := "compass-live-" + newRunID()
+				seedHeadBranch(t, ctx, author, repo, head)
+				setup := setupGitHub(author)
+				pr, err := createWithBackoff(ctx, func() (PullRequest, error) {
+					return setup.CreatePullRequest(ctx, repo, CreatePR{
+						Title: "compass-live-getpr-" + newRunID(), Body: "raw <!--owner--> pr body", HeadRef: head, BaseRef: "main", Draft: true})
+				})
+				if err != nil {
+					t.Fatalf("CreatePullRequest (setup): %v", err)
+				}
+				t.Cleanup(func() { teardownGitHubPR(t, author, repo, pr.Number, head) })
+				gh := recordingGitHub(author, rt)
+				if _, err := gh.GetPullRequest(ctx, repo, pr.Number); err != nil {
+					t.Fatalf("GetPullRequest: %v", err)
+				}
+				return fixtureRequest{Op: "get_pull_request", Repo: repo, Number: pr.Number}
+			}},
+		{provider: providerGitHub, name: "comment_on_issue", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				repo, author, _ := requireLive(t)
+				ctx := context.Background()
+				setup := setupGitHub(author)
+				issue, err := createWithBackoff(ctx, func() (Issue, error) {
+					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-comment-" + newRunID()})
+				})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { closeGitHubIssue(t, author, repo, issue.Number) })
+				body := "a reply"
+				gh := recordingGitHub(author, rt)
+				if _, err := createWithBackoff(ctx, func() (Comment, error) {
+					return gh.CommentOnIssue(ctx, repo, issue.Number, body)
+				}); err != nil {
+					t.Fatalf("CommentOnIssue: %v", err)
+				}
+				return fixtureRequest{Op: "comment_on_issue", Repo: repo, Number: issue.Number,
+					Input: &fixtureInput{Body: body}}
+			}},
+	}
+}
+
+// linearUpdateSpecs is the Linear half of the capture table. create/comment run
+// resolveTeamID|resolveIssueID + the actor probe BEFORE the mutation (prelude 2);
+// get/list issue reads are single-shot (prelude 0). Each run drives the SAME live
+// op its sibling oracle scenario runs, with the same teardown hygiene.
+func linearUpdateSpecs() []captureSpec {
+	return []captureSpec{
+		{provider: providerLinear, name: "create_issue", prelude: 2,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				ts, team := requireLinear(t)
+				ctx := context.Background()
+				ln := recordingLinear(ts, rt)
+				in := CreateIssue{Title: "compass-live-issue-" + newRunID(), Body: "stamped body"}
+				got, err := ln.CreateIssue(ctx, team, in)
+				if err != nil {
+					t.Fatalf("CreateIssue: %v", err)
+				}
+				t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, got.Number) })
+				return fixtureRequest{Op: "create_issue", Repo: team,
+					Input: &fixtureInput{Title: in.Title, Body: in.Body}}
+			}},
+		{provider: providerLinear, name: "get_issue", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				ts, team := requireLinear(t)
+				ctx := context.Background()
+				setup := setupLinear(ts)
+				issue, err := setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body"})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				ln := recordingLinear(ts, rt)
+				if _, err := ln.GetIssue(ctx, team, issue.Number); err != nil {
+					t.Fatalf("GetIssue: %v", err)
+				}
+				return fixtureRequest{Op: "get_issue", Repo: team, Number: issue.Number}
+			}},
+		{provider: providerLinear, name: "list_issues", prelude: 0,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				ts, team := requireLinear(t)
+				ctx := context.Background()
+				setup := setupLinear(ts)
+				issue, err := setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-list-" + newRunID(), Body: "raw body"})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				filter := IssueFilter{State: "open"}
+				ln := recordingLinear(ts, rt)
+				if _, err := ln.ListIssues(ctx, team, filter); err != nil {
+					t.Fatalf("ListIssues: %v", err)
+				}
+				return fixtureRequest{Op: "list_issues", Repo: team,
+					Filter: &fixtureFilter{State: filter.State}}
+			}},
+		{provider: providerLinear, name: "comment_on_issue", prelude: 2,
+			run: func(t *testing.T, rt *recordingRoundTripper) fixtureRequest {
+				t.Helper()
+				ts, team := requireLinear(t)
+				ctx := context.Background()
+				setup := setupLinear(ts)
+				issue, err := setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
+				if err != nil {
+					t.Fatalf("CreateIssue (setup): %v", err)
+				}
+				t.Cleanup(func() { archiveLinearIssue(t, setup, ts, team, issue.Number) })
+				body := "a reply"
+				ln := recordingLinear(ts, rt)
+				if _, err := ln.CommentOnIssue(ctx, team, issue.Number, body); err != nil {
+					t.Fatalf("CommentOnIssue: %v", err)
+				}
+				return fixtureRequest{Op: "comment_on_issue", Repo: team, Number: issue.Number,
+					Input: &fixtureInput{Body: body}}
+			}},
+	}
+}
+
+// recordingGitHub builds a real GitHub client whose transport is wrapped by rt,
+// so every exchange is captured while the client behaves exactly as in prod.
+func recordingGitHub(ts TokenSource, rt *recordingRoundTripper) *GitHub {
+	return NewGitHub(GitHubConfig{Host: "github.com", Token: ts, Client: &http.Client{Transport: rt}})
+}
+
+// recordingLinear builds a real Linear client whose transport is wrapped by rt.
+func recordingLinear(ts TokenSource, rt *recordingRoundTripper) *Linear {
+	return NewLinear(LinearConfig{Token: ts, Client: &http.Client{Transport: rt}})
+}
+
+// setupGitHub builds a real GitHub client for scenario SETUP (creating the
+// fixture subject before the asserted op). Its exchanges are deliberately NOT
+// recorded — only the asserted op's client feeds assembleFixture — so it takes
+// no recorder (a nil cfg.Client gets NewGitHub's default).
+func setupGitHub(ts TokenSource) *GitHub {
+	return NewGitHub(GitHubConfig{Host: "github.com", Token: ts})
+}
+
+// setupLinear builds a real Linear client for scenario SETUP; like setupGitHub,
+// its exchanges are not recorded.
+func setupLinear(ts TokenSource) *Linear {
+	return NewLinear(LinearConfig{Token: ts})
 }
