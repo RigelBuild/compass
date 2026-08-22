@@ -8,7 +8,7 @@ R mark, see [identity.md](identity.md). The two font stacks are defined in
 
 ## The three faces
 
-- **RIGEL bitmap** — the in-house 8px-cell heavy 6×9 counter-star R. The mark
+- **RIGEL bitmap** — the in-house heavy bitmap counter-star R. The mark
   only: the icon and the wordmark's leading R. Never body copy, never UI labels,
   never headlines. It exists as SVG geometry, not a font file.
 - **Departure Mono** — the wordmark's trailing I-G-E-L and brand display

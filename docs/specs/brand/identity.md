@@ -14,23 +14,23 @@ is the company; the star is Rigel itself, Beta Orionis. One device carries both,
 which is why nothing else in the system ever needs a second logo, badge, or
 emblem.
 
-Geometry and construction:
+Construction and rendering:
 
-- **Tile:** 96×96, corner radius 16 (16.7%), glyph 48×72 at (24,12) — a 12.5%
-  safe area; the R never touches the tile edge.
-- **Cells:** 8px. Heavy 6×9 R (2-cell stem, 2-wide diagonal leg, solid bowl);
-  the star is a full-cell plus + quarter-cell corner ticks.
+- **Tile:** the R sits on a rounded-corner tile with a safe margin, so it never
+  touches the tile edge. It is a bitmap mark on a fixed pixel grid — a heavy
+  stem and diagonal leg, a solid bowl, the star a knocked-out plus with corner
+  ticks.
 - **Rendering:** the bitmap face *is* the mark. `shape-rendering="crispEdges"`,
   always — no anti-aliased redraws, no vector smoothing, no outlining.
-- **Master asset:** the navy icon SVG is the locked master, byte-identical to
-  its explore source (a build check asserts this and fails on drift).
+- **Master asset:** the navy icon SVG is the locked master; every other
+  rendition (mono, maskable, coral, phosphor) derives from it.
 
 ## The wordmark is sigil-led
 
 The leading bitmap R *is* the mark; Departure Mono carries the trailing
-I-G-E-L. Departure is set at cap height 56px against the R's 72px, sharing its
-baseline, so its pixel grid keeps the word coherent with the mark while staying
-live text. There is no tagline; the wordmark alone is the lockup.
+I-G-E-L, sized to sit against the R on a shared baseline so its pixel grid keeps
+the word coherent with the mark while staying live text. There is no tagline;
+the wordmark alone is the lockup.
 
 ## Which mark on which surface
 
@@ -39,7 +39,7 @@ live text. There is no tagline; the wordmark alone is the lockup.
 | favicon 16–64 | navy icon | rounded tile, transparent corners |
 | apple-touch (180) | square icon | full-bleed square; iOS masks its corners |
 | PWA any-purpose 192/512 | navy icon | |
-| PWA maskable 192/512 | maskable icon | 128 grid, glyph at (40,28); survives circle/squircle crops |
+| PWA maskable 192/512 | maskable icon | generous safe zone; survives circle/squircle crops |
 | monochrome / pinned-tab / notification | mono icon | fog R, zero purple, identical geometry; also the CI/automation-bot machine-identity avatar |
 | machine-identity avatar (agent) | coral icon | coral R (`#f78c6c`, from the syntax palette, no state meaning); a scoped one-accent exception for GitHub avatars only |
 | loading / active | phosphor icon | the only permitted `#b57eff` use |
@@ -51,9 +51,8 @@ live text. There is no tagline; the wordmark alone is the lockup.
 
 ## Clear space and minimum size
 
-- **Clear space:** one stem width (2 cells = 1/3 of the R's 6-cell width) on all
-  sides of icon or wordmark. Inside the app tile the 12.5% safe area already
-  provides it.
+- **Clear space:** one stem width on all sides of icon or wordmark. Inside the
+  app tile the safe area already provides it.
 - **Minimum size, icon:** 16px is the floor — judged at true 16px
   nearest-neighbor; below 16px use nothing (no shrunken fallback glyph exists or
   is permitted).

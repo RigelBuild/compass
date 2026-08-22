@@ -1,7 +1,7 @@
 # Decision: adopt Effect on the compass agent-runner
 
-Status: Decided
-Linear: RIG-2501
+Status: Decided (Matt, 2026-08-20)
+Linear: RIG-2501 (decision lineage: RIG-2384)
 
 This is the compass-owned statement of a single decision: **the compass
 agent-runner adopts [Effect](https://effect.website) (the effect-system library

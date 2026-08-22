@@ -75,8 +75,8 @@ Every task below inherits these; none restates them.
   (`app.css:510-512` `.swimlane { flex: 1; overflow: auto; … }`) with sticky
   column heads (`app.css:536-539`) and sticky lane gutters (`app.css:566-569`).
   The reference does not scroll (it caps at `max-width: 1040px`,
-  the reference render, with a mobile `overflow-x: auto` fallback only,
-  `:612-618`). Every lifted visual must keep the sticky/scroll model working.
+  the reference render, with a mobile `overflow-x: auto` fallback only).
+  Every lifted visual must keep the sticky/scroll model working.
 - **Ledger coupling:** this is a product design record; its freeze requires a
   same-PR `docs/designs/product/DECISIONS.md` delta or a `Ledger-impact:` PR
   line. The driver handles this at PR time. Candidate ledger rows are flagged
@@ -152,7 +152,7 @@ The reference is lifted at three levels:
 3. **Type hierarchy** — the reference quiets the issue key
    (`.card-issue { color: var(--rigel-mute); letter-spacing: 0.5px }`,
    the reference render) and brightens the title
-   (`.card-title { color: var(--rigel-fog) }`, `:556-561`); the live card
+   (`.card-title { color: var(--rigel-fog) }`); the live card
    inverts that (key on `--cx-accent` 600-weight, `app.css:678-683`). The
    toolbar heading goes display-face (`--cx-font-display` at
    `--cx-display-sm`, `tokens.css:196,202` — the reference's

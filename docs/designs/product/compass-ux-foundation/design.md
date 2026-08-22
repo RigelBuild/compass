@@ -79,7 +79,7 @@ reopen any of them inside a task.
 4. **Brand seam**: the frozen Rigel brand spec is the upstream source of
    truth and this record's **primitive tier**. A design record cites, never
    imports: Compass consumes the live token names verbatim
-   (`brand tokens.css`) and never invents a parallel palette. Compass owns
+   (the upstream brand token source) and never invents a parallel palette. Compass owns
    the **semantic tier** (`--cx-*`), the component system, the ADE look and
    density, the editor-theme mapping, and the keyboard interaction model.
    Mutual co-review: brand co-reviews the token/primitive layer; compass-ux
@@ -163,10 +163,10 @@ consumption direction (primitive → semantic → component; never skip upward):
 
 - **Primitive tier — `--rigel-*`** (brand-owned, frozen). Compass mirrors the
   live brand token set VERBATIM into its primitives block — names and values
-  from `brand tokens.css`, no additions, no renames:
+  from the upstream brand token source, no additions, no renames:
 
   ```css
-  /* Surfaces / text (brand tokens.css; contrast per docs/specs/brand/color.md) */
+  /* Surfaces / text (upstream brand token source; contrast per docs/specs/brand/color.md) */
   --rigel-night: #011627;   /* background — the night sky */
   --rigel-night-2: #0b2942;
   --rigel-panel: #0e2a45;   /* panel / border / inset */
@@ -195,7 +195,7 @@ consumption direction (primitive → semantic → component; never skip upward):
   EXIST in the frozen set and never appear; there is no violet token at all.
   Compass consumes this tier read-only; brand co-reviews any file that
   defines it. Six `docs/specs/brand/color.md` values are documented in the spec but not
-  yet tokenized in `brand tokens.css` (selection `#1d3b53`, faint `#637777`,
+  yet tokenized in the upstream brand token source (selection `#1d3b53`, faint `#637777`,
   the syntax-tier magenta `#c792ea` / success-green `#22da6e` / coral
   `#f78c6c`, and the loading-track empty `#0a2036`); the editor-theme mapping
   and the loaders need them — see Open Questions Q2 for how they enter the
@@ -212,7 +212,7 @@ consumption direction (primitive → semantic → component; never skip upward):
   - Text: `--cx-text` → `--rigel-fog`, `--cx-text-bright` → `--rigel-bright`,
     `--cx-text-dim` → `--rigel-haze` (the readable secondary — NOT
     `--rigel-mute`, which is 4.29:1 and decorative/large-only per
-    `brand tokens.css` comments), `--cx-text-faint` → `--rigel-mute`
+    the upstream brand token source's comments), `--cx-text-faint` → `--rigel-mute`
     (meta/decorative only), `--cx-text-accent` → `--rigel-blue`.
   - Lines: `--cx-border`, `--cx-border-strong` (panel-derived),
     `--cx-border-focus` → `--rigel-blue`.
@@ -274,10 +274,10 @@ consumption direction (primitive → semantic → component; never skip upward):
   entire ramp renders in `--cx-font-ui`; display sizes 22/44 exist outside
   the ramp as `--cx-display-sm|lg` and are the only sanctioned
   `--cx-font-display` sizes; weights 400/700 (Space Mono ships regular +
-  bold; no synthetic weights — `font-synthesis: none` per `brand tokens.css`
+  bold; no synthetic weights — `font-synthesis: none` per the upstream brand token source
   base). Radius: `--cx-radius-sm|md|lg` (3/6/10). Elevation: `--cx-elev-0..3`
   menu/dialog/palette). Motion: `--cx-motion-fast` (80ms) and `--cx-motion-base`
-  (140ms) are already defined IN `brand tokens.css` as the inherited Compass
+  (140ms) are already defined IN the upstream brand token source as the inherited Compass
   tier; Compass mints the rest of the motion semantic tier as `--cx-*` aliases
   of the brand primitives so component CSS never names a `--rigel-*` motion
   token directly (satisfying the D7 guard): `--cx-motion-slow` →
@@ -288,7 +288,7 @@ consumption direction (primitive → semantic → component; never skip upward):
   `--cx-tooltip-delay` (400ms, Compass-owned — no brand primitive). D9 owns the
   motion rules. Z-index: `--cx-z-raised|overlay|modal|palette|toast`
   (10/100/200/300/400). Focus: `--cx-focus-ring` — already frozen upstream
-  as `2px solid var(--rigel-blue)` (`brand tokens.css`; `docs/specs/brand/color.md`:
+  as `2px solid var(--rigel-blue)` (upstream brand token source; `docs/specs/brand/color.md`:
   "the focus ring is blue… not purple"), consumed as-is.
 
 **Consumption rule.** Component CSS consumes semantic + scale tokens only.
@@ -383,7 +383,7 @@ classes; no Kobalte default styles ship.
 
 - **One focus treatment.** `--cx-focus-ring` on `:focus-visible` everywhere —
   the token is frozen upstream as `2px solid var(--rigel-blue)`
-  (`brand tokens.css`), blue because interaction lives on the flow color and
+  (upstream brand token source), blue because interaction lives on the flow color and
   purple stays inside the mark (`docs/specs/brand/color.md` §"The one-accent rule").
   Pointer interactions don't paint rings; keyboard always does. The two
   `outline: none` defects (`app.css:2385-2388`, `app.css:3556-3559`) are
@@ -591,13 +591,13 @@ is explicit, not implicit.
 
 - `apps/ui/src/design/tokens.css` — the three tiers in one file, three
   clearly-marked blocks: `:root` primitives (`--rigel-*` mirrored verbatim
-  from `brand tokens.css` with a provenance comment pinning the brand spec
+  from the upstream brand token source with a provenance comment pinning the brand spec
   path + date; brand co-reviewed), `[data-theme="night"]` semantic tier
   (`--cx-*`), scale tokens. The ONLY file where `--rigel-*` and raw hexes may
   appear. Includes the `prefers-reduced-motion` zeroing block and the
-  `data-reduce="on"` manual mirror, carried from `brand tokens.css` (D9).
+  `data-reduce="on"` manual mirror, carried from the upstream brand token source (D9).
 - `apps/ui/src/design/base.css` — reset, body type (Space Mono, 12px UI
-  base, `font-synthesis: none` — pixel-face hygiene per `brand tokens.css`),
+  base, `font-synthesis: none` — pixel-face hygiene per the upstream brand token source),
   scrollbar, `:focus-visible` ring application, `.cx-md` typography.
 - `apps/ui/src/design/components/*.css` — one file per component contract
   (`button.css`, `palette.css`, `loader.css`, …), consuming semantic + scale
@@ -715,7 +715,7 @@ rigel.build site proves the restraint end of the curve works in pure CSS/SVG
   the travel is dropped. `tokens.css` zeroes all durations and
   `--rigel-pulse-period` under `prefers-reduced-motion` plus the
   `data-reduce="on"` manual mirror (both carried verbatim from
-  `brand tokens.css`). Motion never sole-carries meaning: every state a
+  the upstream brand token source). Motion never sole-carries meaning: every state a
   motion conveys is also carried by glyph/color/text (the state-dot set is
   static-distinct by construction, D3).
 
@@ -819,7 +819,7 @@ delivery slices sized for their own review cycle; compass-ui executes the
 
 **T1 — Token tiers: author `design/tokens.css`** (D2, D8)
 Author the three-tier token file: `--rigel-*` primitives block (mirrored
-verbatim from `brand tokens.css` with provenance comment; the Q2 untokenized
+verbatim from the upstream brand token source with provenance comment; the Q2 untokenized
 values enter per that question's resolution), `[data-theme="night"]` semantic
 tier (surfaces, text, lines, accent, `--cx-scrim`, status, the eight
 `--cx-st-*` agent states, the five `--cx-issue-*` board-lane colors,
@@ -828,7 +828,7 @@ authors its values), scale tokens (space/type/radius/elevation/z; motion and
 focus consumed from the brand tier, D9/D4), and the reduced-motion zeroing
 block plus its `data-reduce="on"` mirror. Verify WCAG contrast of every text token on each
 surface tier against the `docs/specs/brand/color.md` contrast table.
-Interfaces: consumes `brand tokens.css` + `docs/specs/brand/color.md` verbatim; produces
+Interfaces: consumes the upstream brand token source + `docs/specs/brand/color.md` verbatim; produces
 `apps/ui/src/design/tokens.css` defining the complete `--rigel-*`/`--cx-*`
 vocabulary D2 names. Brand co-reviews the primitives block.
 
@@ -942,7 +942,7 @@ but functional).
 **Stated assumption (not an open question):** the semantic-token prefix is
 `--cx-*` — already the convention the brand token file itself uses for the
 inherited Compass tier (`--cx-motion-*`, `--cx-focus-ring` in
-`brand tokens.css`), so it is now grounded upstream, not merely this record's
+the upstream brand token source), so it is now grounded upstream, not merely this record's
 choice.
 
 ### Resolved decisions (Matt, 2026-08-05)
@@ -960,7 +960,7 @@ decisions above; recorded here for provenance.
    Compass files a one-block PR to brand to add the six `docs/specs/brand/color.md`
    values (selection `#1d3b53`, faint `#637777`, magenta `#c792ea`,
    success-green `#22da6e`, coral `#f78c6c`, loading-empty `#0a2036`) to
-   `brand tokens.css` under brand-chosen names, then mirrors them. Until
+   the upstream brand token source under brand-chosen names, then mirrors them. Until
    brand lands them, Compass carries them as provenance-commented raw hexes in
    its primitives block (the one place raw hex is legal, D2) so T1 is not
    blocked; the later swap to brand's names is mechanical.

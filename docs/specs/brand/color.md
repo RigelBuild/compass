@@ -47,7 +47,7 @@ surfaces.
 | string | `#ecc48d` | strings | 11.22:1 AAA |
 | coral | `#f78c6c` | numbers · params | 7.79:1 AAA |
 | red | `#ef5350` | errors · diff-del | 5.26:1 AA |
-| yellow | `#addb67` | attributes · warnings | 11.44:1 AAA |
+| yellow | `#addb67` | attributes · warnings (same hex as the working-state green, distinct role) | 11.44:1 AAA |
 
 ## Brand
 
