@@ -444,7 +444,9 @@ func owedRowsFor(t *testing.T, ctx context.Context, dsn string, agent store.Acco
 }
 
 // owedMessageIDs flattens the OwedMentions channel-keyed map into the message ids
-// it carries, so a scoped assertion names the exact owed message.
+// it carries, so a scoped assertion names the exact owed message. The returned
+// order is unspecified (Go map iteration), so callers that read a fixed index
+// must guarantee a single element; a multi-message case must compare as a set.
 func owedMessageIDs(owed map[store.ChannelID][]store.Message) []string {
 	var out []string
 	for _, msgs := range owed {
