@@ -647,3 +647,122 @@ func TestReSubscribeDoesNotResetCursor(t *testing.T) {
 		t.Fatalf("sweep = %v, want ascending [%s %s] (backlog replays since original seed)", owed, m1, m2)
 	}
 }
+
+// Case 14 — owed mention record → read (RIG-1641 T1): RecordOwedMention then
+// OwedMentions returns the message under its channel.
+func TestOwedMentionsRecordThenRead(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := agent.Agent.HomeChannelID
+
+	msg, _ := postAs(t, s, ch, owner.ID, "you were mentioned")
+	if err := s.RecordOwedMention(ctx, agent.ID, ch, msg); err != nil {
+		t.Fatalf("RecordOwedMention: %v", err)
+	}
+
+	got, err := s.OwedMentions(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("OwedMentions: %v", err)
+	}
+	owed := got[ch]
+	if len(owed) != 1 || string(owed[0].ID) != msg {
+		t.Fatalf("OwedMentions[%s] = %v, want single %s", ch, owed, msg)
+	}
+}
+
+// Case 15 — idempotent record (RIG-1641 T1): recording the same (agent, msg)
+// twice is a no-op upsert (PK dedup); OwedMentions still returns exactly one.
+func TestOwedMentionsRecordIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := agent.Agent.HomeChannelID
+
+	msg, _ := postAs(t, s, ch, owner.ID, "mentioned once")
+	if err := s.RecordOwedMention(ctx, agent.ID, ch, msg); err != nil {
+		t.Fatalf("RecordOwedMention(first): %v", err)
+	}
+	if err := s.RecordOwedMention(ctx, agent.ID, ch, msg); err != nil {
+		t.Fatalf("RecordOwedMention(second): %v", err)
+	}
+
+	got, err := s.OwedMentions(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("OwedMentions: %v", err)
+	}
+	if owed := got[ch]; len(owed) != 1 || string(owed[0].ID) != msg {
+		t.Fatalf("OwedMentions[%s] = %v, want single %s after double record", ch, owed, msg)
+	}
+}
+
+// Case 16 — ack clears an owed mention WITHOUT a cursor row (the gap population,
+// RIG-1641 T1): the case the AckDelivery restructure exists for. An agent that
+// is a MEMBER of the channel but has NO agent_delivery_cursors row for it (an
+// unsubscribed non-home member) is owed a mention; AckDelivery must clear the
+// owed row even though the cursor arm hits noRows and advances nothing. If the
+// clear is placed wrong (rolled back with the no-cursor early return), this fails.
+func TestAckDeliveryClearsOwedMentionWithoutCursor(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+
+	// A channel the agent is a MEMBER of but NOT subscribed to — so no cursor is
+	// seeded (seeding rides the subscribe txn). EnsureChannelMember adds the
+	// agent as an unsubscribed member without seeding a cursor.
+	ch := mustNamedChannel(t, s, owner.ID, "room").ID
+	if err := s.EnsureChannelMember(ctx, ch, agent.ID); err != nil {
+		t.Fatalf("EnsureChannelMember: %v", err)
+	}
+	if _, _, ok := readCursor(t, s, agent.ID, ch); ok {
+		t.Fatal("precondition: agent unexpectedly has a delivery cursor for the channel")
+	}
+
+	msg, _ := postAs(t, s, ch, owner.ID, "@agent look here")
+	if err := s.RecordOwedMention(ctx, agent.ID, ch, msg); err != nil {
+		t.Fatalf("RecordOwedMention: %v", err)
+	}
+
+	if err := s.AckDelivery(ctx, agent.ID, ch, msg); err != nil {
+		t.Fatalf("AckDelivery: %v", err)
+	}
+
+	got, err := s.OwedMentions(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("OwedMentions: %v", err)
+	}
+	if owed := got[ch]; len(owed) != 0 {
+		t.Fatalf("owed mention not cleared by ack without a cursor row: %v", owed)
+	}
+}
+
+// Case 17 — an unrelated ack leaves an owed mention (RIG-1641 T1): an owed row
+// for msgA is untouched by AckDelivery for a different msgB in the same channel.
+func TestAckDeliveryUnrelatedLeavesOwedMention(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := agent.Agent.HomeChannelID
+
+	msgA, _ := postAs(t, s, ch, owner.ID, "owed A")
+	msgB, _ := postAs(t, s, ch, owner.ID, "unrelated B")
+	if err := s.RecordOwedMention(ctx, agent.ID, ch, msgA); err != nil {
+		t.Fatalf("RecordOwedMention(A): %v", err)
+	}
+
+	if err := s.AckDelivery(ctx, agent.ID, ch, msgB); err != nil {
+		t.Fatalf("AckDelivery(B): %v", err)
+	}
+
+	got, err := s.OwedMentions(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("OwedMentions: %v", err)
+	}
+	if owed := got[ch]; len(owed) != 1 || string(owed[0].ID) != msgA {
+		t.Fatalf("unrelated ack disturbed owed row: OwedMentions[%s] = %v, want single %s", ch, owed, msgA)
+	}
+}
