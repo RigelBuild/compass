@@ -225,7 +225,7 @@ richer zone model.
    dispatchable at **tier 3** from any non-editable target on *any* route
    (`/backlog`, `/settings` — board not mounted), running a stale closure
    over a disposed component's cursor and calling `store.openAgent` — a live,
-   user-reachable misfire (dispatch.ts:120-129, and F1 / OQ-6). Secondary:
+   user-reachable misfire (dispatch.ts:120-129, and OQ-6). Secondary:
    without it every remount trips the dev duplicate-id warning
    (`registry.ts:23-27`), and the registry is the palette's specced source of
    truth (`commands.ts:104-106`). So `unregister` is currently the *only*
@@ -286,14 +286,16 @@ a focused-board `Enter`/`Shift+Enter` fires **twice**. Do not split them.
   tier-1 while focused, board claims nothing while a toolbar button is
   focused — are unchanged; only the mount preamble moves. Non-keyboard
   Bridge tests keep their direct mounts.
-- **Pin the tier-3 escape (F1 / OQ-6)**: extend the focus-exclusivity case to
-  also press `Shift+Enter` with focus on a non-board, non-editable target
-  while the board is mounted. Under the **defer** ruling the test *documents*
-  the current behavior (the assigned-agent action still fires from
-  tier 3 — the hole is pinned, not silently present); under the **close-here**
-  ruling (a tier-3 `isGroupRelative` skip) the same case asserts it does
-  **not** fire. Either way the chord is no longer untested (today
-  `Bridge.test.tsx:517-539` presses only Enter/Space/arrows).
+- **Pin the tier-3 escape (OQ-6 / RD-4)**: extend the focus-exclusivity case
+  to also press `Shift+Enter` with focus on a non-board, non-editable target
+  while the board is mounted. Per the ratified **defer** ruling (RD-4) the
+  test *documents* the current behavior — the assigned-agent action still
+  fires from tier 3, so the hole is pinned, not silently present. (The
+  rejected **close-here** shape — a tier-3 `isGroupRelative` skip — would
+  instead assert the chord does **not** fire; that is the assertion the
+  follow-up lane flips to if it closes the hole.) Either way the chord is no
+  longer untested (today `Bridge.test.tsx:517-539` presses only
+  Enter/Space/arrows).
 - **Spine units** (`spine.test.ts`): register/unregister group round-trip;
   `activeGroup()` picks the focused group among several and `null` when
   none is focused; `activeZone()` mirrors it; `view.bridge` present in a
@@ -383,7 +385,7 @@ Interfaces — consumes: `store.keyboard` (T1), `mountApp` (T2's pattern).
 Produces: Bridge as pure consumer; zero `installKeymap` callers outside
 `App.tsx` (grep-assertable); the re-hosted green board suite including
 focus-exclusivity and tier-1-beats-`comms.newline`; the remount-hygiene test
-(A6 bullet 4). Two executor traps to pre-empt (F5): **(a)** `mountApp` takes
+(A6 bullet 4). Two executor traps to pre-empt — **(a)** `mountApp` takes
 **no store options** (`test-router.tsx:35-56` hard-codes `STUB_COMMS_STATE` +
 `testQueryClient`), so the re-hosted keyboard suite works today on the stub
 store — but if a case needs a store fixture (e.g. the empty-board suite's
