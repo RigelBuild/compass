@@ -31,6 +31,17 @@ import (
 // device: tests gate on the recorder's observed dispatch count, not elapsed time.
 const testTimeout = 10 * time.Second
 
+// busLagFloodCount is how many messages the bus-lag tests publish to force a
+// live-buffer overrun: it must exceed the events bus's per-subscriber live-tail
+// buffer (events.liveBufferCapacity == events.ringCapacity == 1024) so the
+// subscriber's channel latches lagged and closes — the exact condition the
+// resync/sweep path under test triggers on. The events caps are unexported, so
+// this constant restates the coupling explicitly with margin: if those caps ever
+// rise, this must rise past them, or the overrun stops firing and the RIG-2514
+// regression guard silently degrades to a no-op (the tests would still pass
+// while guarding nothing).
+const busLagFloodCount = 1100
+
 func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
 // signalObserved does a NON-BLOCKING send of a per-call token on a test
