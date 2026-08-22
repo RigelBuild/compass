@@ -1,0 +1,45 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# renovate (RIG-2432) — self-hosted Renovate config + lockstep postUpgradeTask
+# scripts for compass, ported from orion's ci/renovate (SEA-847). A bun/TypeScript
+# package; a hoisted root-workspace member (`bun` tag): install is inherited via
+# .moon/tasks/tag-bun.yml (the shared root install) and lint/format are whole-repo
+# tasks on the root project (/moon.yml), so this leaf has no own bun.lock and
+# never runs its own install.
+#
+# Compass CI is a single moon-driven `CI` job (.github/workflows/ci.yml runs
+# `moon run :ci`), so the `ci` aggregate below is swept automatically. The
+# config.test.ts guard suite runs under `test`; it is what fails closed if the
+# repo config and bot config drift (allowedCommands ↔ postUpgradeTasks), if a
+# fence/cap rule goes missing, or if the catalog regex silently truncates.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  test:
+    command: 'bun test'
+    deps: ['install']
+    inputs:
+      - '*.ts'
+      - '*.json5'
+      - 'tsconfig.json'
+      - 'package.json'
+      - '/bun.lock'
+      - '/package.json'
+      - '/bunfig.toml'
+      - '/devenv.lock'
+      - '/.github/workflows/renovate.yml'
+    options:
+      # Never cache: the guard suite reads the live root package.json, bunfig,
+      # devenv.lock, and the workflow file — a cached green from another checkout
+      # is the false-green a fail-closed config gate exists to stop.
+      cache: false
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

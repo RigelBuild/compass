@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# The Renovate preflight (RIG-2432): probes GitHub with RENOVATE_TOKEN before
+# the bot runs and fails fast with an actionable diagnosis instead of
+# Renovate's opaque platform-unknown-error. A moon project so its own typecheck
+# + test gate in CI like every other package; the preflight itself runs as a
+# step in the `renovate` workflow (.github/workflows/renovate.yml), not off the
+# affected graph — this project carries only the code + its unit gate. Compass
+# CI is a single moon-driven `CI` job (.github/workflows/ci.yml runs
+# `moon run :ci`), which sweeps the tasks below automatically — no separate
+# meta.ts wiring (unlike orion's Woodpecker pipeline). install/lint/format
+# inherited via the `bun` tag (.moon/tasks/tag-bun.yml).
+layer: 'tool'
+language: 'typescript'
+tags: ['bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+
+  test:
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['*.ts', 'package.json', 'tsconfig.json', '/bun.lock']
