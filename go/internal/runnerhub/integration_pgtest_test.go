@@ -397,6 +397,9 @@ func (f *integStubRuntime) Exists(context.Context, string) (bool, error)      { 
 func (f *integStubRuntime) MountLabel(context.Context, runtime.ContainerID) (string, error) {
 	return "", nil
 }
+func (f *integStubRuntime) Resize(context.Context, runtime.ContainerID, runtime.ResourceLimits) error {
+	return nil
+}
 
 // --- helpers -----------------------------------------------------------------
 

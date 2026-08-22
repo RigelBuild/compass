@@ -720,6 +720,9 @@ func (f *e2eStubRuntime) Exists(context.Context, string) (bool, error) { return 
 func (f *e2eStubRuntime) MountLabel(context.Context, runtime.ContainerID) (string, error) {
 	return "", nil
 }
+func (f *e2eStubRuntime) Resize(context.Context, runtime.ContainerID, runtime.ResourceLimits) error {
+	return nil
+}
 
 // wasRemoved reports whether Remove was driven for the container (engine id ==
 // container name). Guarded because the dispatch loop calls Remove on its own
