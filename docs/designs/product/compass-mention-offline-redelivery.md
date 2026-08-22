@@ -150,7 +150,8 @@ as a start-sweep sibling that bypasses the cursor gate (`settle.go:139-143`):
 "each PinnedEntry's message is re-read and dispatched […] REGARDLESS of
 cursor position". Unlike the pin step it dispatches each owed mention as a
 STEER (the `dispatchSteerTo` shape, `dispatch.go:141`), preserving D5
-mention→steer semantics end to end (§Decisions OQ-4). The row is cleared when
+mention→steer semantics for the mention-gap population (§Decisions OQ-4).
+The row is cleared when
 the message is acked (`AgentFrame.delivery_ack{message_id}`, the frozen D3
 ack) — via a deliberate restructure of `AckDelivery`
 (`go/internal/store/delivery_cursors.go:93`) that T1 specifies: the existing
