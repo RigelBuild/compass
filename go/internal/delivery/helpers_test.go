@@ -187,6 +187,66 @@ func (r *fakeResolver) bind(account store.AccountID, sessionID string) {
 	r.sessions[account] = sessionID
 }
 
+// fakeWaker is a counting AgentWaker: it records WakeAgent calls per agent so a
+// test can assert wake-all across offline mentioned members. An optional onWake
+// hook lets a test model a wake that resumes the agent (e.g. bind a session) —
+// used by the record-vs-wake race case is instead driven at the resolver, so
+// onWake stays a general seam.
+type fakeWaker struct {
+	mu       sync.Mutex
+	calls    map[store.AccountID]int
+	onWake   func(store.AccountID)
+	recorded chan struct{} // buffered; one token per WakeAgent call
+}
+
+func newFakeWaker() *fakeWaker {
+	return &fakeWaker{calls: map[store.AccountID]int{}, recorded: make(chan struct{}, 1024)}
+}
+
+func (w *fakeWaker) WakeAgent(_ context.Context, agent store.AccountID) {
+	w.mu.Lock()
+	w.calls[agent]++
+	hook := w.onWake
+	w.mu.Unlock()
+	if hook != nil {
+		hook(agent)
+	}
+	w.recorded <- struct{}{}
+}
+
+func (w *fakeWaker) count(agent store.AccountID) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.calls[agent]
+}
+
+func (w *fakeWaker) total() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	n := 0
+	for _, c := range w.calls {
+		n += c
+	}
+	return n
+}
+
+// waitForWakes blocks until at least n WakeAgent calls have been recorded, or
+// fails at the deadline — event-gated on the per-call signal, never a sleep.
+func (w *fakeWaker) waitForWakes(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.After(testTimeout)
+	for {
+		if w.total() >= n {
+			return
+		}
+		select {
+		case <-w.recorded:
+		case <-deadline:
+			t.Fatalf("waited for %d wakes, got %d", n, w.total())
+		}
+	}
+}
+
 // fakeReads is an in-memory DeliveryReads: the subscriber set per channel, the
 // channel agent-member set (for mention→steer routing), the agent-account set, a
 // message-id -> message table, a handle -> account resolution map, and a
@@ -214,6 +274,23 @@ type fakeReads struct {
 	// a message INTO the sweep/subscribe window without deadlocking other reads
 	// on the fake's lock.
 	beforeUndelivered func(store.AccountID)
+	// owedMentions is the OwedMentions read per agent (channel -> messages),
+	// distinct from `owed` (UndeliveredMessages / the cursor sweep). T2's
+	// sweepOwedMentions reads this map. RecordOwedMention appends into it and
+	// ClearOwedMention deletes from it, so a test can assert recorded/cleared
+	// state after routing.
+	owedMentions map[store.AccountID]map[store.ChannelID][]store.Message
+	// sweepSet reports InSweepSet per (agent, channel). Absent -> false (out of
+	// sweep set), so a test seeds only the in-sweep-set memberships it needs.
+	sweepSet map[store.AccountID]map[store.ChannelID]bool
+	// recordErr, when set, makes RecordOwedMention fail — a test drives the
+	// loud-log-never-fail record edge with it.
+	recordErr error
+	// afterRecord, when set, is called (with agent, channel, messageID) right
+	// after a successful RecordOwedMention returns — a TEST-ONLY seam so a test
+	// can flip the recipient live BETWEEN the record and the post-record resolve,
+	// exercising the record-vs-wake race's now-live steer.
+	afterRecord func(store.AccountID, store.ChannelID, string)
 }
 
 func newFakeReads() *fakeReads {
@@ -226,7 +303,98 @@ func newFakeReads() *fakeReads {
 		owed:          map[store.AccountID]map[store.ChannelID][]store.Message{},
 		sweepChannels: map[store.AccountID][]store.ChannelID{},
 		pins:          map[store.ChannelID][]store.PinnedEntry{},
+		owedMentions:  map[store.AccountID]map[store.ChannelID][]store.Message{},
+		sweepSet:      map[store.AccountID]map[store.ChannelID]bool{},
 	}
+}
+
+// OwedMentions returns the seeded owed-mention set for agent (T2 sweep read).
+func (f *fakeReads) OwedMentions(_ context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[store.ChannelID][]store.Message{}
+	for ch, msgs := range f.owedMentions[agent] {
+		out[ch] = append([]store.Message(nil), msgs...)
+	}
+	return out, nil
+}
+
+// RecordOwedMention appends messageID's message into the owed-mention set for
+// agent, keyed by channel — idempotent on message id, mirroring the store's
+// ON CONFLICT DO NOTHING. Returns the injected recordErr when set.
+func (f *fakeReads) RecordOwedMention(_ context.Context, agent store.AccountID, channel store.ChannelID, messageID string) error {
+	f.mu.Lock()
+	if f.recordErr != nil {
+		err := f.recordErr
+		f.mu.Unlock()
+		return err
+	}
+	if f.owedMentions[agent] == nil {
+		f.owedMentions[agent] = map[store.ChannelID][]store.Message{}
+	}
+	dup := false
+	for _, m := range f.owedMentions[agent][channel] {
+		if string(m.ID) == messageID {
+			dup = true
+			break
+		}
+	}
+	if !dup {
+		m, ok := f.messages[messageID]
+		if !ok {
+			m = store.Message{ID: store.MessageID(messageID)}
+		}
+		f.owedMentions[agent][channel] = append(f.owedMentions[agent][channel], m)
+	}
+	hook := f.afterRecord
+	f.mu.Unlock()
+	if hook != nil {
+		hook(agent, channel, messageID) // outside the lock: the hook flips the resolver, not the fake
+	}
+	return nil
+}
+
+// InSweepSet reports the seeded sweep-set membership for (agent, channel);
+// absent is false (out of sweep set).
+func (f *fakeReads) InSweepSet(_ context.Context, agent store.AccountID, channel store.ChannelID) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sweepSet[agent][channel], nil
+}
+
+// ClearOwedMention deletes the owed-mention row for (agent, messageID) across
+// all channels — the pool-based sweep-path clear (T2).
+func (f *fakeReads) ClearOwedMention(_ context.Context, agent store.AccountID, messageID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for ch, msgs := range f.owedMentions[agent] {
+		kept := msgs[:0:0]
+		for _, m := range msgs {
+			if string(m.ID) != messageID {
+				kept = append(kept, m)
+			}
+		}
+		if len(kept) == 0 {
+			delete(f.owedMentions[agent], ch)
+		} else {
+			f.owedMentions[agent][ch] = kept
+		}
+	}
+	return nil
+}
+
+// CountOwedMentions returns the total owed-mention row count across all agents
+// (T2 startup observability).
+func (f *fakeReads) CountOwedMentions(_ context.Context) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, byChan := range f.owedMentions {
+		for _, msgs := range byChan {
+			n += len(msgs)
+		}
+	}
+	return n, nil
 }
 
 // SweepChannels returns the seeded D1 disjunct channel set for agent — the pin
@@ -325,6 +493,52 @@ func (f *fakeReads) seedMessage(m store.Message) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.messages[string(m.ID)] = m
+}
+
+// seedOwedMention registers a durable owed mention (agent, channel, message) the
+// sweepOwedMentions read returns — directly, bypassing RecordOwedMention, so a
+// start-edge test can pre-seed an owed row independent of the routing arm. The
+// message itself must be seeded separately (seedMessage) for the sweep's re-read
+// to resolve it; omit it to model a permanently-unreadable owed row.
+func (f *fakeReads) seedOwedMention(agent store.AccountID, channel store.ChannelID, m store.Message) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.owedMentions[agent] == nil {
+		f.owedMentions[agent] = map[store.ChannelID][]store.Message{}
+	}
+	f.owedMentions[agent][channel] = append(f.owedMentions[agent][channel], m)
+}
+
+// waitForOwed blocks until agent has exactly n owed-mention rows, or fails at the
+// deadline — a polling barrier for the nil-waker case where no dispatch/wake
+// signal is available to gate on (the owed row is the only observable effect).
+func (f *fakeReads) waitForOwed(t *testing.T, agent store.AccountID, n int) {
+	t.Helper()
+	deadline := time.After(testTimeout)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		if f.owedCount(agent) == n {
+			return
+		}
+		select {
+		case <-tick.C:
+		case <-deadline:
+			t.Fatalf("owed rows for %s = %d, want %d", agent, f.owedCount(agent), n)
+		}
+	}
+}
+
+// owedCount reports how many owed-mention rows are recorded for agent — a test
+// accessor over the fake's owed-mention state.
+func (f *fakeReads) owedCount(agent store.AccountID) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, msgs := range f.owedMentions[agent] {
+		n += len(msgs)
+	}
+	return n
 }
 
 // agentAccount builds a resolved agent store.Account for the handle→account map,

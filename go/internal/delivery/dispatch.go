@@ -89,10 +89,12 @@ func (c *Consumer) hold(authorSession, messageID string) {
 // delivers the plain message to every live subscribed agent session, author
 // excluded — but SKIPS any agent that was mentioned: the mentioned agent gets a
 // steer only, never steer + deliver of the same message (steer-only precedence,
-// OQ-3, design.md:537-546). A recipient with no live session is skipped — the D2
-// sweep delivers on its next start (design.md:137,149). Folding mention routing
-// here (not at the raw MessagePosted) parses at the author's settle edge for all
-// three delivery paths at once, so a mention that streams in via a later
+// OQ-3, design.md:537-546). A recipient with no live session is woken via the
+// AgentWaker seam (OQ-6, best-effort resume) and otherwise skipped — the D2
+// cursor sweep is the durable backstop that delivers on its next start
+// (design.md:137,149), so no owed row is recorded on this arm. Folding mention
+// routing here (not at the raw MessagePosted) parses at the author's settle edge
+// for all three delivery paths at once, so a mention that streams in via a later
 // MessageUpdated block is still seen (design.md:519-523).
 func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author store.AccountID, msg *compassv1.Message) {
 	mentioned := c.routeMentions(ctx, channel, author, msg)
@@ -107,7 +109,8 @@ func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author s
 		}
 		sessionID, live := c.resolver.SessionForAccount(agent)
 		if !live {
-			continue // no live session: the reconnect sweep delivers on next start
+			c.wake(ctx, agent) // best-effort resume; the D2 sweep is the durable backstop
+			continue
 		}
 		c.dispatchTo(ctx, sessionID, msg)
 	}
@@ -117,14 +120,18 @@ func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author s
 // every mentioned channel agent member with a LIVE session (D5). It returns the
 // full set of mentioned agent members (live or not) so fanOut can exclude them
 // from the plain deliver — steer-only precedence (OQ-3). A mentioned agent with
-// no live session is skipped: a steer is a mid-turn interrupt and there is no
-// turn to interrupt, and it is NOT added to the deliver fan-out either. A
-// subscribed-or-home member picks the message up on its next start via the D2
-// sweep (design.md:546-548). An UNSUBSCRIBED non-home member has no sweep
-// redelivery (UndeliveredMessages is subscription-gated,
-// store/delivery_cursors.go:212), so a mention reaches it only while it is live:
-// offline + unsubscribed = nothing this cycle, by design (SEA-1641 tracks
-// whether that gap should become recoverable). A mention routing failure is
+// no live session is handled by the offline arm rather than dropped: it is NOT
+// added to the deliver fan-out (steer-only precedence still holds), but the
+// mention is made recoverable. An out-of-sweep-set member (unsubscribed,
+// non-home, non-mandatory) has no cursor-sweep backstop, so a durable
+// owed_mentions row is recorded first (T1; a record failure is logged loud and
+// the mention continues — a mention must never fail a post); after a successful
+// record the session is re-checked and, if now live, the owed mention is steered
+// directly, closing the record-vs-wake race. Then EVERY offline mentioned member
+// is woken via the AgentWaker seam (OQ-3 wake-all, incl. broadcast-expanded
+// members OQ-6), which resumes it to sweep the owed row. Order is record THEN
+// wake — the durable row is written before the wake so a wake that
+// resumes-and-sweeps finds it (durability-first). A mention routing failure is
 // logged and the mention(s) dropped, never returned up: a mention must never
 // fail a post (design.md:522-523).
 func (c *Consumer) routeMentions(ctx context.Context, channel store.ChannelID, author store.AccountID, msg *compassv1.Message) map[store.AccountID]bool {
@@ -135,10 +142,29 @@ func (c *Consumer) routeMentions(ctx context.Context, channel store.ChannelID, a
 	mentioned := c.resolveMentioned(ctx, channel, author, handles)
 	for agent := range mentioned {
 		sessionID, live := c.resolver.SessionForAccount(agent)
-		if !live {
-			continue // no live turn to interrupt; redelivery only if subscribed-or-home (SEA-1641)
+		if live {
+			c.dispatchSteerTo(ctx, sessionID, msg)
+			continue
 		}
-		c.dispatchSteerTo(ctx, sessionID, msg)
+		// Offline mentioned member: record (durable, if outside the sweep set)
+		// then wake (durability-first). The owed row is the no-loss backstop; the
+		// wake is the latency path.
+		inSweep, err := c.st.InSweepSet(ctx, agent, channel)
+		if err != nil {
+			c.log.ErrorContext(ctx, "delivery: in-sweep-set check for offline mention", "error", err,
+				"agent", string(agent), "channel", string(channel), "message_id", msg.GetId())
+		} else if !inSweep {
+			if err := c.st.RecordOwedMention(ctx, agent, channel, msg.GetId()); err != nil {
+				// The no-loss edge: an owed mention that fails to record is lost.
+				c.log.ErrorContext(ctx, "delivery: record owed mention for offline out-of-sweep-set member", "error", err,
+					"agent", string(agent), "channel", string(channel), "message_id", msg.GetId())
+			} else if sessionID, live := c.resolver.SessionForAccount(agent); live {
+				// Now-live between the first resolve and the record: steer directly,
+				// closing the record-vs-wake race.
+				c.dispatchSteerTo(ctx, sessionID, msg)
+			}
+		}
+		c.wake(ctx, agent)
 	}
 	return mentioned
 }
@@ -210,6 +236,17 @@ func (c *Consumer) dispatchTo(ctx context.Context, sessionID string, msg *compas
 // exactly as a deliver does (design.md:546-548).
 func (c *Consumer) dispatchSteerTo(ctx context.Context, sessionID string, msg *compassv1.Message) {
 	c.gatedDispatch(ctx, sessionID, steerOp(msg), msg.GetId())
+}
+
+// wake best-effort resumes an offline recipient via the AgentWaker seam (T3), so
+// an owed mention or subscribed deliver reaches it promptly. Nil-safe: a
+// consumer with no waker wired (the default, and every unit test that does not
+// set one) is a no-op — the durable owed row / cursor sweep is the backstop, so
+// a missing wake never loses a message.
+func (c *Consumer) wake(ctx context.Context, agent store.AccountID) {
+	if c.agentWaker != nil {
+		c.agentWaker.WakeAgent(ctx, agent)
+	}
 }
 
 // gatedDispatch sends one control op to a recipient session under that session's

@@ -172,6 +172,32 @@ func (s *Store) clearOwedMention(ctx context.Context, tx pgx.Tx, agent AccountID
 	return tag.RowsAffected() > 0, nil
 }
 
+// ClearOwedMention deletes the owed row for (agent, messageID) using the pool
+// (no txn) — the sweep-path sibling to clearOwedMention, which requires an
+// existing txn (AckDelivery). sweepOwedMentions clears a permanently-unreadable
+// owed message this way so a vanished message stops re-logging on every start.
+// Clearing an absent row is a no-op.
+func (s *Store) ClearOwedMention(ctx context.Context, agent AccountID, messageID string) error {
+	if _, err := s.pool.Exec(ctx,
+		`DELETE FROM owed_mentions WHERE agent_account_id = $1 AND message_id = $2`,
+		string(agent), messageID,
+	); err != nil {
+		return fmt.Errorf("store: clear owed mention: %w", err)
+	}
+	return nil
+}
+
+// CountOwedMentions returns the total number of owed_mention rows across all
+// agents — the startup visibility count (RIG-1641 T2 observability) so a
+// silently-growing owed table is surfaced.
+func (s *Store) CountOwedMentions(ctx context.Context) (int, error) {
+	var n int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM owed_mentions`).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: count owed mentions: %w", err)
+	}
+	return n, nil
+}
+
 // AckDelivery resolves messageID → messages.seq for THIS (agent, channel); a
 // message never dispatched to this agent for this channel is a no-op (the
 // resolution IS the overshoot clamp — a fabricated id cannot advance the
@@ -388,4 +414,26 @@ func (s *Store) UndeliveredMessages(ctx context.Context, agent AccountID) (map[C
 	}
 	defer rows.Close()
 	return scanMessagesByChannel(rows, "undelivered message")
+}
+
+// InSweepSet reports whether agent is in channel's D2 sweep set — subscribed OR
+// channel is its home OR channel is mandatory_subscription. An agent OUTSIDE the
+// sweep set (unsubscribed, non-home, non-mandatory member) has no cursor-sweep
+// backstop, so an offline mention to it needs a durable owed_mentions row (T1).
+// The disjunct mirrors UndeliveredMessages EXACTLY so the two never drift.
+func (s *Store) InSweepSet(ctx context.Context, agent AccountID, channel ChannelID) (bool, error) {
+	const q = `
+		SELECT EXISTS(
+			SELECT 1
+			FROM channel_members cm
+			JOIN agent_accounts aa ON aa.account_id = cm.account_id
+			JOIN channels ch ON ch.id = cm.channel_id
+			WHERE cm.account_id = $1
+			  AND cm.channel_id = $2
+			  AND (cm.subscribed OR cm.channel_id = aa.home_channel_id OR ch.mandatory_subscription))`
+	var in bool
+	if err := s.pool.QueryRow(ctx, q, string(agent), string(channel)).Scan(&in); err != nil {
+		return false, fmt.Errorf("store: in sweep set: %w", err)
+	}
+	return in, nil
 }

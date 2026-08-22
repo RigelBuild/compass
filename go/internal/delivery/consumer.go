@@ -56,10 +56,11 @@ type SessionResolver interface {
 }
 
 // DeliveryReads is the store surface the consumer reads: subscriber resolution,
-// the author agent/human split, the settled-message re-read, the sweep, and the
-// mention→steer routing set (channel agent members + handle resolution, D5).
-// *store.Store implements it.
-type DeliveryReads interface {
+// the author agent/human split, the settled-message re-read, the sweep, the
+// mention→steer routing set (channel agent members + handle resolution, D5), and
+// the RIG-1641 owed-mention arm (record/read/clear/count + the sweep-set
+// predicate). *store.Store implements it.
+type DeliveryReads interface { //nolint:interfacebloat // one method per store read the consumer drives; the surface is the delivery-read contract, not incidental sprawl
 	SubscribedAgents(ctx context.Context, channel store.ChannelID, author store.AccountID) ([]store.AccountID, error)
 	IsAgentAccount(ctx context.Context, account store.AccountID) (bool, error)
 	MessageByID(ctx context.Context, messageID string) (store.Message, error)
@@ -87,6 +88,24 @@ type DeliveryReads interface {
 	// channel_pins store, T6). The pin sweep dispatches a deliver for each pinned
 	// message regardless of cursor position (design.md T7).
 	PinnedEntries(ctx context.Context, channel store.ChannelID) ([]store.PinnedEntry, error)
+	// OwedMentions returns every message owed to agent (T1), keyed by channel,
+	// ascending seq — the sweepOwedMentions read (RIG-1641 T2).
+	OwedMentions(ctx context.Context, agent store.AccountID) (map[store.ChannelID][]store.Message, error)
+	// RecordOwedMention durably records that messageID (in channel) is owed to
+	// agent — the no-loss backstop when an offline mentioned member is outside
+	// the sweep set (T1). Idempotent on (agent, message_id).
+	RecordOwedMention(ctx context.Context, agent store.AccountID, channel store.ChannelID, messageID string) error
+	// InSweepSet reports whether agent is in channel's D2 sweep set (subscribed
+	// OR home OR mandatory) — an out-of-sweep-set mentioned member has no cursor
+	// backstop, so it needs a durable owed row (T2).
+	InSweepSet(ctx context.Context, agent store.AccountID, channel store.ChannelID) (bool, error)
+	// ClearOwedMention deletes the owed row for (agent, messageID) via the pool
+	// (no txn) — sweepOwedMentions clears a permanently-unreadable owed message
+	// so it stops re-logging on every start (T2).
+	ClearOwedMention(ctx context.Context, agent store.AccountID, messageID string) error
+	// CountOwedMentions returns the total owed_mention row count — the startup
+	// visibility log (T2 observability).
+	CountOwedMentions(ctx context.Context) (int, error)
 }
 
 // settleEvent is one queued author-settle edge handed from the hub's Deliver
@@ -227,6 +246,14 @@ func (c *Consumer) Run(ctx context.Context) error {
 	// to a fresh subscription, and only a closure cancels whichever one is
 	// current at return, not the value captured at defer time.
 	defer func() { sub.Cancel() }()
+
+	// Surface the durable owed-mention backlog once at start — a silently-growing
+	// owed_mentions table (a wake path that never resumes) must be visible.
+	if n, err := c.st.CountOwedMentions(ctx); err != nil {
+		c.log.WarnContext(ctx, "delivery: count owed mentions at start", "error", err)
+	} else {
+		c.log.InfoContext(ctx, "delivery: owed mention backlog at start", "count", n)
+	}
 
 	for _, event := range sub.Replay {
 		select {
