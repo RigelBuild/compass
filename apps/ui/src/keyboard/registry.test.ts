@@ -49,6 +49,39 @@ describe("createCommandRegistry", () => {
 		expect(registry.all()).toEqual([second]);
 	});
 
+	test("unregister removes a command: get → undefined, absent from all()", () => {
+		const registry = createCommandRegistry();
+		const a = makeCommand("view.bridge", "Bridge");
+		registry.register(a);
+		expect(registry.get(id("view.bridge"))).toBe(a);
+
+		registry.unregister(id("view.bridge"));
+		expect(registry.get(id("view.bridge"))).toBeUndefined();
+		expect(registry.all()).toEqual([]);
+	});
+
+	test("unregister preserves the insertion order of the surviving commands", () => {
+		const registry = createCommandRegistry();
+		const a = makeCommand("view.bridge", "Bridge");
+		const b = makeCommand("palette.open", "Palette");
+		const c = makeCommand("view.backlog", "Backlog");
+		registry.register(a);
+		registry.register(b);
+		registry.register(c);
+
+		registry.unregister(id("palette.open"));
+		expect(registry.all()).toEqual([a, c]);
+	});
+
+	test("unregister of an unknown id is a no-op", () => {
+		const registry = createCommandRegistry();
+		const a = makeCommand("view.bridge", "Bridge");
+		registry.register(a);
+
+		registry.unregister(id("nope.missing"));
+		expect(registry.all()).toEqual([a]);
+	});
+
 	describe("dev-mode duplicate warning", () => {
 		// `import.meta.env` is the process-wide Vite env, read directly by
 		// registry.ts's dev gate. Under Bun ≥1.4 an ASSIGNMENT coerces the value

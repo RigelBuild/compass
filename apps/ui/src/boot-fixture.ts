@@ -22,8 +22,10 @@ import { createAppStore } from "./store";
 export const FIXTURE_SENTINEL = "COMPASS-FIXTURE-BOOT-SENTINEL-7f3a";
 
 /** Boot the UI fully offline, seeded from the existing fixtures. Builds the
- *  clientless (offline) store and mounts the same shell the live boot mounts. */
-export function bootFixture(root: HTMLElement): void {
+ *  clientless (offline) store and mounts the same shell the live boot mounts.
+ *  Returns the shell disposer (from `mountShell`) so a test can tear the mount
+ *  down; production's dynamic-import boot ignores it (the app owns the page). */
+export function bootFixture(root: HTMLElement): () => void {
 	// Runtime tripwire (§A1): a build that gained `--mode fixture` while defaulting
 	// NODE_ENV to production trips here. It is insurance — the build-scan gate is
 	// the wall — but references FIXTURE_SENTINEL so the sentinel literal is present.
@@ -55,5 +57,5 @@ export function bootFixture(root: HTMLElement): void {
 		}),
 	);
 
-	mountShell(root, store, queryClient);
+	return mountShell(root, store, queryClient);
 }

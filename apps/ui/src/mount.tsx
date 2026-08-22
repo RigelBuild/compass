@@ -31,13 +31,15 @@ export function newAppQueryClient(): QueryClient {
 
 /** Mount the full App shell — the store in a `StoreContext.Provider` wrapping
  *  the `QueryClientProvider` and `HashRouter` render tree — onto `root`. Moved
- *  verbatim from `index.tsx`'s `main()`; the extraction is behavior-preserving. */
+ *  verbatim from `index.tsx`'s `main()`; the extraction is behavior-preserving.
+ *  Returns solid-js/web `render`'s disposer so a test that mounts the real shell
+ *  can tear it down (production boot ignores it — the app lives for the process). */
 export function mountShell(
 	root: HTMLElement,
 	store: AppStore,
 	queryClient: QueryClient,
-): void {
-	render(
+): () => void {
+	return render(
 		() => (
 			<StoreContext.Provider value={store}>
 				<QueryClientProvider client={queryClient}>

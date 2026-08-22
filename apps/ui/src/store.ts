@@ -44,6 +44,7 @@ import {
 	type RightTabGroup,
 	unreachableFleetItem,
 } from "./constants";
+import { createKeyboardSpine, type KeyboardSpine } from "./keyboard/spine";
 import { adaptMessage } from "./live/adapt";
 import { probeServer } from "./live/client";
 import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
@@ -271,6 +272,11 @@ export interface AppStore {
 		navigate: (path: string) => void;
 		currentPath: () => string;
 	}) => void;
+	/** The app's keyboard spine (RIG-2456): the shared command registry and the
+	 *  set of published roving groups. `App.tsx` installs the single window keymap
+	 *  listener over its accessors; every surface registers commands / publishes
+	 *  its roving group through it (keyboard/spine.ts). */
+	readonly keyboard: KeyboardSpine;
 
 	// ── Selection ──
 	/** The selected agent id, or null. Drives the agent view + roster highlight. */
@@ -1884,6 +1890,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	const showBacklog = () => navigateTo("/backlog");
 	const showDone = () => navigateTo("/done");
 	const showSettings = () => navigateTo("/settings");
+	// The keyboard spine (RIG-2456): created here, after `showBridge` exists, so
+	// `view.bridge` is registered next to its behavior. App.tsx installs the one
+	// window keymap listener over its accessors.
+	const keyboard = createKeyboardSpine({ showBridge });
 
 	const setTrackerConfig = (cfg: TrackerConfig) => {
 		setTrackerConfigSignal(cfg);
@@ -1987,6 +1997,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	return {
 		view,
 		bindRouter,
+		keyboard,
 		showBridge,
 		showBacklog,
 		showDone,
