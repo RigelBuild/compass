@@ -1,0 +1,14 @@
+{
+	"name": "@compass/renovate-preflight",
+	"private": true,
+	"type": "module",
+	"description": "CI preflight for the self-hosted Renovate runner: probes GitHub with RENOVATE_TOKEN before Renovate starts and fails fast with an actionable diagnosis (rotate / grant / stage) instead of Renovate's opaque platform-unknown-error.",
+	"module": "index.ts",
+	"bin": {
+		"renovate-preflight": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

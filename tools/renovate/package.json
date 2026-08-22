@@ -1,0 +1,11 @@
+{
+	"name": "@compass/renovate",
+	"private": true,
+	"type": "module",
+	"description": "Self-hosted Renovate config + lockstep postUpgradeTask scripts for compass (RIG-2432): repo config, bot config, toolchain-hash + devenv-nixpkgs relock scripts, and the config guard suite. Ported from orion's ci/renovate (SEA-847), adapted to compass's tools/* layout, ecosystems, and GitHub Actions runner.",
+	"module": "config.json5",
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

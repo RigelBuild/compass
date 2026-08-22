@@ -1,0 +1,77 @@
+{
+  // Renovate BOT (global/admin) config — the self-hosted half of RIG-2432. The
+  // repo config (tools/renovate/config.json5) holds what end users can see; this
+  // holds the global-only options that only the bot administrator may set. The GHA
+  // workflow (.github/workflows/renovate.yml) runs `bunx renovate` with
+  // RENOVATE_CONFIG_FILE pointed here.
+  //
+  // Global-only options (rejected in a repo config): configFileNames,
+  // allowedCommands, autodiscover*, onboarding*. See
+  // https://docs.renovatebot.com/self-hosted-configuration/.
+  $schema: "https://docs.renovatebot.com/renovate-global-schema.json",
+
+  // Read the repo config from tools/renovate/ (not a root/.github stub). This is
+  // what lets tools/renovate/config.json5 be the repo config; it's checked before
+  // the built-in filename list.
+  configFileNames: ["tools/renovate/config.json5"],
+
+  // The one repo this bot manages. The token (RENOVATE_TOKEN) is a per-run GitHub
+  // App installation token minted by the workflow. This MUST be the repo's current
+  // slug: Renovate detects a renamed repository from the platform and skips it
+  // entirely ("Repository has been renamed - skipping"), doing zero work — no
+  // extract, no rebase of conflicted PRs — until the slug here matches.
+  platform: "github",
+  repositories: ["RigelBuild/compass"],
+
+  // Commit/PR identity — the GitHub App's `[bot]` noreply identity. The concrete
+  // value is `<app-id>+<app-slug>[bot]@users.noreply.github.com`; Renovate
+  // autodetects it from the installation token, but it is pinned explicitly here
+  // once the App is registered (a human action — see the RIG-2432 provisioning
+  // runbook). PLACEHOLDER until then; do not ship the migration without replacing
+  // it with the real App slug.
+  gitAuthor: "renovate[bot] <PLACEHOLDER+renovate[bot]@users.noreply.github.com>",
+  onboarding: false, // config already committed; no onboarding PR
+  requireConfig: "required",
+
+  // Writable HOME for postUpgradeTasks child processes (RIG-2245). The
+  // devenv-nixpkgs lockstep task (refresh-devenv-nixpkgs.ts) shells out to
+  // `devenv update nixpkgs`, and devenv creates its state dir (DEVENV_HOME,
+  // derived as $HOME/.local/share/devenv) on startup; without a writable HOME that
+  // mkdir hits `PermissionDenied` and panics, the relock never runs, and the
+  // channel-bump PR ships an inconsistent devenv.lock. GHA runners have a writable
+  // $HOME natively, but declaring HOME here keeps the writable path versioned and
+  // testable rather than relying on job-shell env + Renovate's default child-env
+  // passthrough, and avoids exposeAllEnv's broad secret exposure. /tmp is the
+  // writable scratch every CI step gets.
+  customEnvVariables: {
+    HOME: "/tmp/renovate-home",
+  },
+
+  // Allow ONLY the postUpgradeTasks commands tools/renovate/config.json5 declares.
+  // postUpgradeTasks.commands are gated by this global allowlist (a repo config
+  // can't self-authorize a command), and the `^…$` anchors pin each entry to
+  // exactly that command — nothing else can run. (Renovate matches allowedCommands
+  // with Node RegExp here: bunx installs renovate but not its optional native re2
+  // addon, so the workflow sets RENOVATE_X_IGNORE_RE2=true to take the RegExp path
+  // quietly.)
+  //
+  // Three entries, all load-bearing:
+  //   1. the toolchain-hash refresh, which re-prefetches the vendored-binary
+  //      sha256 pins a tools/toolchain/versions/*.nix bump invalidates;
+  //   2. the catalog lockfile regeneration. Renovate's custom.regex manager exports
+  //      no `updateArtifacts`, so a root-catalog bump leaves bun.lock stale and the
+  //      fail-closed `bun install --frozen-lockfile` check goes red; the
+  //      catalog-scoped postUpgradeTasks rule runs `bun install --lockfile-only` in
+  //      the branch. Drop this entry and Renovate refuses the command, silently
+  //      restoring the stale-lock failure.
+  //   3. the devenv-nixpkgs lockstep, which re-locks devenv.lock at a new channel
+  //      rev and rewrites the biome catalog pin to the version that rev bakes,
+  //      keeping dev-shell baked==catalog parity.
+  // (1) and (3) are `bun <script>.ts` — the Renovate hooks are TypeScript run via
+  // bun (AGENTS.md "Scripts: TypeScript over bash"); bun is on the runner PATH.
+  allowedCommands: [
+    "^bun tools/renovate/refresh-toolchain-hashes\\.ts$",
+    "^bun install --lockfile-only$",
+    "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$",
+  ],
+}

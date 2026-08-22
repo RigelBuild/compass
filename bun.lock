@@ -127,6 +127,23 @@
         "typescript": "catalog:",
       },
     },
+    "tools/renovate": {
+      "name": "@compass/renovate",
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "tools/renovate-preflight": {
+      "name": "@compass/renovate-preflight",
+      "bin": {
+        "renovate-preflight": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/stamp-gate": {
       "name": "@compass/stamp-gate",
       "devDependencies": {
@@ -293,6 +310,10 @@
     "@compass/docs-migrate": ["@compass/docs-migrate@workspace:tools/docs-migrate"],
 
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
+
+    "@compass/renovate": ["@compass/renovate@workspace:tools/renovate"],
+
+    "@compass/renovate-preflight": ["@compass/renovate-preflight@workspace:tools/renovate-preflight"],
 
     "@compass/stamp-gate": ["@compass/stamp-gate@workspace:tools/stamp-gate"],
 

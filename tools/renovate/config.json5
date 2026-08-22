@@ -1,0 +1,517 @@
+{
+  // Renovate config for compass. Self-hosted: the bot's global config sets
+  // `configFileNames: ["tools/renovate/config.json5"]` so this whole file — not a
+  // root stub — is the repo config.
+  //
+  // Goal (RIG-2432): retire Dependabot and run ONE dependency manager, matching
+  // the fleet. Grouped, scheduled PRs (one grouped PR = one branch) replace
+  // Dependabot's per-bump storm.
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: [
+    "config:recommended",
+    "schedule:daily", // batch per language, once a day (not per-bump)
+    // Pin any un-pinned workflow `uses:` to a commit SHA on sight — see the
+    // github-actions manager rationale below; going beyond Dependabot (which
+    // only maintained EXISTING pins), this pins NEW actions too.
+    "helpers:pinGitHubActionDigests",
+  ],
+  // The GHA cron that runs this bot fires `0 6 * * *` (UTC). Renovate evaluates
+  // `schedule:daily` ("before 4am") in the configured timezone; pin it to
+  // America/New_York so 06:00 UTC = 02:00 EDT / 01:00 EST lands INSIDE the daily
+  // before-4am-ET window with 2-3h of margin in both DST phases. GHA scheduled
+  // runs are best-effort and routinely start 5-30+ min late, so this margin keeps
+  // a delayed start from sliding past 04:00 ET — which would silently open zero
+  // PRs forever (SEA-1220).
+  timezone: "America/New_York",
+  dependencyDashboard: true,
+
+  // Rebase every open branch that falls behind main, not only conflicted ones.
+  // Without this, `rebaseWhen` defaults to `"auto"`, which — because this repo has
+  // no automerge and main's branch protection does not require PRs to be up to
+  // date — resolves to `"conflicted"`: a behind-but-clean branch is never rebased,
+  // so its CI verdict freezes against whatever main looked like when the branch was
+  // last touched, and days-old red CI from a since-fixed main becomes
+  // indistinguishable from a real failure. The renovate job runs on the daily GHA
+  // cron plus workflow_dispatch only, never per-merge — so this rebases the open
+  // set at most once a day, off-peak, not on every push to main.
+  rebaseWhen: "behind-base-branch",
+
+  // Renovate owns security remediation for first-party deps (RIG-2432 moves ALL
+  // dependency automation off Dependabot, including the hidden GitHub-billed
+  // security-update path — disabled explicitly in the migration runbook). OSV
+  // gives Renovate a config-driven vuln source that honors the packageRules fence
+  // below, which the repo-wide Dependabot toggle could not. Direct dependencies
+  // only; queried offline via osv-offline.
+  //
+  // INVARIANT — do NOT add `vulnerabilityAlerts: { enabled: true }`. A vuln fix is
+  // injected as a packageRule carrying `force: { ...vulnerabilityAlerts }`, and
+  // applyPackageRules clears a prior `skipReason` when `force.enabled` is truthy —
+  // which would CANCEL the forks/*/** disable rule and re-open fork bumps. The
+  // default vulnerabilityAlerts object has no `enabled` key, so the fork fence
+  // holds. `config.test.ts` guards both facts.
+  osvVulnerabilityAlerts: true,
+
+  // 5-day supply-chain cooldown — matches the root bunfig.toml `minimumReleaseAge
+  // = 432000`. `strict` suppresses a PR until a non-pending version clears the
+  // window (surfaced on the dashboard).
+  minimumReleaseAge: "5 days",
+  internalChecksFilter: "strict",
+
+  labels: ["dependencies"],
+
+  // Explicit allowlist for the current stack. `github-actions` is present here
+  // (unlike orion, whose meta jobs moved off GHA): compass runs all CI on GitHub
+  // Actions and keeps every workflow `uses:` SHA-pinned — see the github-actions
+  // manager rationale below. Dropped vs orion: `cargo`/`rust-toolchain` (no Rust),
+  // `woodpecker` (no Woodpecker), and `nix` — Renovate's nix manager tracks
+  // `flake.lock`, and compass has NO root flake (the only flake.lock files are
+  // under forks/*, fenced below), while devenv.lock/devenv.yaml are not flake.lock
+  // (the custom git-refs manager covers them) — so a nix manager would be dead
+  // config. No `dockerfile` manager either: the only Dockerfiles in tree are under
+  // forks/*, also fenced, so it too would be dead config.
+  enabledManagers: [
+    "bun",
+    "npm",
+    "gomod",
+    "github-actions",
+    "custom.regex", // catalog + devenv channel + toolchain pins + self-pin — see customManagers below
+  ],
+
+  // ── Root bun catalog ──
+  // Renovate's bun manager does NOT extract `workspaces.catalog` from the root
+  // package.json, so every catalog pin is unmanaged and a bump lands incomplete:
+  // it updates the workspace member that declares a literal range and leaves each
+  // `catalog:` consumer resolving the old version. Upstream has the extractor
+  // (npm/extract/common/catalogs.ts `extractCatalogDeps`) but wires it to pnpm and
+  // yarn only; the shared package-file extractor the bun manager uses never calls
+  // it. So this is an upstream gap, not a misconfiguration — drop this manager if
+  // the bun manager gains native catalog support.
+  //
+  // Scoping: the `^package\.json$` anchor matches the ROOT file only, so the
+  // `forks/*/**` fence below is untouched. `recursive` narrows to the catalog
+  // object FIRST, then extracts its entries. A flat pattern would match every
+  // `"key": "value"` pair in the file — including scalar metadata (`name`, `type`,
+  // `description`) and the single-entry `overrides` block, i.e. non-packages on
+  // npm. Every pin's `replaceString` is unique in the file, so there is no
+  // wrong-site rewrite.
+  //
+  // LIMIT — the scope pattern bounds the catalog with `[^}]*`, so it stops at the
+  // FIRST `}`. Both shapes that would truncate it are absent today, neither is
+  // exotic, and they fail DIFFERENTLY:
+  //   1. a nested object inside the catalog (bun's named `catalogs`, or any
+  //      grouped entry) — the scope ends at the nested object's first `}`, so only
+  //      the pins preceding the nested open survive.
+  //   2. a `}` inside a version value — the scope still matches exactly once, but
+  //      truncates mid-value, so ZERO deps are extracted. This is the worse shape:
+  //      Renovate reports a healthy manager with no updates available,
+  //      indistinguishable from "everything is current".
+  // Truncation is SILENT either way: the surviving pins (or none) look like a
+  // healthy extract, which is the same unmanaged-pin failure this manager exists to
+  // fix. In config.test.ts, `regex extraction recovers every pin the JSON parser
+  // sees` fails the build if either shape appears in the real manifest, and two
+  // companion mutation tests demonstrate that each shape really does truncate — so
+  // the limit cannot regress unnoticed.
+  //
+  // The catalog is the whole tree's single source of version truth: a pin here
+  // propagates to every `catalog:` consumer. Two separate concerns follow.
+  // Grouping: the pins left ungrouped would be one PR each, so the packageRule
+  // below folds them into the "TypeScript dependencies" rollup — one PR, not many.
+  // Lockfile coupling: grouping alone does NOT regenerate bun.lock; that is what
+  // the catalog-scoped `postUpgradeTasks` packageRule below provides.
+  customManagers: [
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^package\\.json$/"],
+      matchStringsStrategy: "recursive",
+      matchStrings: [
+        "\"catalog\"\\s*:\\s*\\{[^}]*\\}",
+        "\"(?<depName>[^\"]+)\"\\s*:\\s*\"(?<currentValue>[^\"]+)\"",
+      ],
+      datasourceTemplate: "npm",
+      depTypeTemplate: "workspaces.catalog",
+      // Without an explicit versioning, Renovate defaults a custom.regex manager to
+      // `semver-coerced`, whose `getNewValue` returns a BARE version: `^0.34.4` →
+      // `0.34.5`. That silently converts range pins to exact pins on their first
+      // bump, freezing the tree's shared versions. `npm` versioning preserves the
+      // range prefix (`^0.34.4` → `^0.34.5`), matching how bun/npm already treat
+      // every other manifest in the tree.
+      versioningTemplate: "npm",
+    },
+    {
+      // ── devenv nixpkgs channel ──
+      // The dev shell bakes biome + markdownlint-cli2 from nixpkgs
+      // (devenv.nix:75-81), whose versions are governed by devenv's nixpkgs channel
+      // (devenv.yaml → github:cachix/devenv-nixpkgs/rolling), locked by git rev in
+      // devenv.lock. The native `nix` manager can't see it — there is no root
+      // flake.nix for it to anchor on, and devenv.lock is devenv's own lock format,
+      // not a flake.lock — so a catalog-only Renovate bump of biome moves the pin
+      // without moving the baked side and the baked==catalog dev-shell parity
+      // drifts. This customManager surfaces the channel rev as a git-refs digest so
+      // Renovate tracks it; the coupled postUpgradeTasks rule below re-locks
+      // devenv.lock and rewrites the biome catalog pin to the version the new rev
+      // bakes, so parity holds in one PR. (Only biome is dual-sourced here —
+      // markdownlint-cli2 has no catalog pin — so the relock rewrites one catalog
+      // pin, not two.)
+      //
+      // Anchor: `"repo": "devenv-nixpkgs"` immediately followed by `"rev"`.
+      // devenv writes alphabetized keys inside `locked` (…owner, repo, rev,
+      // type…), so this pair is unique in the file — the `original` block
+      // repeats `"repo": "devenv-nixpkgs"` but is followed by `"ref"`, never
+      // `"rev"`, so the regex cannot mis-bind. The inner `nixpkgs-src` node
+      // (upstream NixOS/nixpkgs) is deliberately NOT matched: the re-lock
+      // refreshes it from the outer rev. config.test.ts pins the extraction
+      // against the real devenv.lock.
+      customType: "regex",
+      managerFilePatterns: ["/^devenv\\.lock$/"],
+      matchStrings: [
+        "\"repo\": \"devenv-nixpkgs\",\\s*\"rev\": \"(?<currentDigest>[a-f0-9]{40})\"",
+      ],
+      depNameTemplate: "cachix/devenv-nixpkgs",
+      packageNameTemplate: "https://github.com/cachix/devenv-nixpkgs",
+      currentValueTemplate: "rolling",
+      datasourceTemplate: "git-refs",
+    },
+    {
+      // ── bun toolchain pin ──
+      // tools/toolchain/versions/bun.nix pins the vendored bun version; the native
+      // managers can't read a nix attr, so a regex manager surfaces it. bun tags
+      // its GitHub releases `bun-v<version>`, so extractVersion strips that tag
+      // prefix. The coupled top-level postUpgradeTasks script below re-prefetches
+      // the per-platform source hashes that live beside the version in this file.
+      customType: "regex",
+      managerFilePatterns: ["/^tools/toolchain/versions/bun\\.nix$/"],
+      matchStrings: ["version = \"(?<currentValue>[^\"]+)\""],
+      depNameTemplate: "oven-sh/bun",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^bun-v(?<version>.+)$",
+      depTypeTemplate: "toolchain",
+    },
+    {
+      // ── node toolchain pin ──
+      // tools/toolchain/versions/node.nix pins the vendored node version. The
+      // node-version datasource returns clean `x.y.z` releases, so no
+      // extractVersion is needed. Coupled refresh below re-prefetches its hashes.
+      customType: "regex",
+      managerFilePatterns: ["/^tools/toolchain/versions/node\\.nix$/"],
+      matchStrings: ["version = \"(?<currentValue>[^\"]+)\""],
+      depNameTemplate: "node",
+      datasourceTemplate: "node-version",
+      depTypeTemplate: "toolchain",
+    },
+    {
+      // ── moon toolchain pin ──
+      // tools/toolchain/versions/moon.nix pins the vendored moon version. moon tags
+      // its GitHub releases `v<version>`, so extractVersion strips the `v`.
+      // Coupled refresh below re-prefetches its per-platform hashes.
+      customType: "regex",
+      managerFilePatterns: ["/^tools/toolchain/versions/moon\\.nix$/"],
+      matchStrings: ["version = \"(?<currentValue>[^\"]+)\""],
+      depNameTemplate: "moonrepo/moon",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.+)$",
+      depTypeTemplate: "toolchain",
+    },
+    {
+      // ── Go toolchain version (go-overlay) ──
+      // Compass single-sources the go version in tools/toolchain/versions/go.nix
+      // (`{ version = "1.26.6"; }`, version-only — hashes come from go-overlay) and
+      // DERIVES the `go_X_Y_Z` overlay attr name in devenv.nix:30-31 via
+      // lib.replaceStrings. So devenv.nix contains no literal `go_X_Y_Z` string to
+      // regex (orion tracked devenv.nix; compass tracks go.nix instead). The
+      // version is dotted in go.nix, so there is NO dots↔underscores gymnastics —
+      // capture it straight for the golang-version datasource, and devenv.nix picks
+      // it up automatically at eval time. A go bump changes no pin file, so this
+      // manager carries no postUpgradeTasks refresh leg (the overlay ships the
+      // hashes; refresh-toolchain-hashes.ts self-gates past go.nix). Auto-opens
+      // like every other toolchain manager (Matt's ruling: all toolchain bumps
+      // auto-open). The go.mod `go` directive tracks this pin minus at most one
+      // minor by MANUAL policy (go/go.mod:10-12), so the gomod `go`-directive
+      // update is disabled below — a pin bump may occasionally need a manual go.mod
+      // follow-up.
+      customType: "regex",
+      managerFilePatterns: ["/^tools/toolchain/versions/go\\.nix$/"],
+      matchStrings: ["version = \"(?<currentValue>[^\"]+)\""],
+      depNameTemplate: "go",
+      datasourceTemplate: "golang-version",
+      depTypeTemplate: "toolchain",
+    },
+    {
+      // ── Renovate self-pin (RIG-2432) ──
+      // The workflow runs `bunx renovate@<version>` at an EXACT pin, not bare
+      // `bunx renovate` — a bare invocation resolves LATEST from npm on every
+      // scheduled run, executing fresh third-party code with a repo:write token and
+      // bypassing every soak defense this config mandates (minimumReleaseAge and
+      // bunfig's cooldown govern `bun install`, not `bunx`). The pin line is itself
+      // a managed dependency: this manager surfaces it so a bump flows through a
+      // reviewable PR under the normal soak. config.test.ts asserts the workflow
+      // pins an exact version (no bare `bunx renovate`).
+      customType: "regex",
+      managerFilePatterns: ["/^\\.github/workflows/renovate\\.yml$/"],
+      matchStrings: ["bunx renovate@(?<currentValue>\\S+)"],
+      depNameTemplate: "renovate",
+      datasourceTemplate: "npm",
+    },
+  ],
+
+  // ── The github-actions manager: SHA-pin maintenance (RIG-2432) ──
+  // Every `uses:` in this repo's workflows is pinned to an immutable commit SHA,
+  // because a git tag can be repointed by its owner to arbitrary code that then
+  // runs in CI with no review and no diff. SHAs make that impossible — and make
+  // the actions go stale, since nothing follows a moving tag any more.
+  //
+  // Renovate is the other half of that trade (it was Dependabot's before this
+  // migration): the github-actions manager opens a reviewable PR to move each SHA
+  // forward and keeps the trailing `# vX.Y.Z` comment current, so the pins stay
+  // current through the same gate as any other change rather than drifting silently
+  // or being bumped by hand. Combined with `helpers:pinGitHubActionDigests`
+  // (extends, above), any future un-pinned `uses:` is pinned on sight too — beyond
+  // what Dependabot did.
+  packageRules: [
+    // ── Grouping: one rollup PR per language, non-major batched. Majors stay
+    //    individual (default) for careful review. Toolchain bumps below stay
+    //    their own PRs on purpose. ──
+    {
+      matchManagers: ["bun", "npm", "custom.regex"],
+      matchUpdateTypes: ["patch", "minor"],
+      groupName: "TypeScript dependencies",
+    },
+    {
+      // ── Per-language toolchain pin PRs ──
+      // The toolchain-pin managers above (bun/node/moon/go) are all `custom.regex`,
+      // so the "TypeScript dependencies" rollup (matchManagers includes
+      // "custom.regex") would otherwise sweep a pin bump into the TS batch.
+      // Un-group them so each language pin opens its OWN branch and PR. Because
+      // compass's go manager now ALSO targets a file under this glob
+      // (tools/toolchain/versions/go.nix), this one rule un-groups all four pins —
+      // orion's separate go un-group rule (its go lived in devenv.nix, off-glob) is
+      // NOT needed here.
+      matchFileNames: ["tools/toolchain/versions/*.nix"],
+      groupName: null,
+    },
+    {
+      // ── First-party toolchain age-gate exemption ──
+      // The repo-wide `minimumReleaseAge: "5 days"` + `internalChecksFilter:
+      // "strict"` (top of file) is a supply-chain cooldown for the compromised-
+      // registry-release risk. First-party toolchain version bumps
+      // (go/bun/node/moon) come from trusted upstreams (go.dev, GitHub releases of
+      // oven-sh/moonrepo, the node dist index) and ship features we want promptly,
+      // so they should NOT sit out the cooldown. Null the window for the toolchain
+      // depType only — scoped by `depType` (every toolchain manager above stamps
+      // depTypeTemplate: "toolchain") so it targets EXACTLY go/bun/node/moon and
+      // nothing else; npm/gomod registry deps keep the 5-day window.
+      matchDepTypes: ["toolchain"],
+      minimumReleaseAge: null,
+    },
+    {
+      // TypeScript 7.0 (Project Corsa) is the native Go compiler rewrite. It
+      // ships WITHOUT a stable programmatic API — that lands in 7.1 — so every
+      // tool that imports `typescript` as a library breaks on 7.x (e.g.
+      // @astrojs/check, which backs the docs site checks). Cap the major until 7.1
+      // tooling exists; 6.x patch/minor still flows via the rollup above. Remove
+      // this + its config.test.ts guard when TS 7.1 ships a stable API and the
+      // consumers support it. Sets only `allowedVersions` (no `enabled` key) so it
+      // merges with the rollup above on disjoint keys and leaves the fork fence
+      // below (enabled: false) authoritative for a `typescript` dep inside a fenced
+      // tree.
+      matchManagers: ["bun", "npm", "custom.regex"],
+      matchPackageNames: ["typescript"],
+      allowedVersions: "<7",
+    },
+    {
+      // ── biome is channel-owned, not catalog-bumpable ──
+      // biome is BAKED into the dev shell from the devenv nixpkgs channel
+      // (devenv.nix:75-81) AND is a catalog pin (package.json:15). The ONLY path
+      // that moves both sides together is the devenv-nixpkgs channel customManager
+      // above + its lockstep postUpgradeTask, which rewrites the biome catalog pin
+      // to the version a new channel rev bakes. A generic catalog bump (the
+      // "TypeScript dependencies" rollup matches custom.regex/bun/npm) moves the pin
+      // ahead of the baked side and drifts dev-shell parity. Disable the generic
+      // managers for this key so the channel lockstep is its sole updater; the
+      // digest manager (datasource git-refs, no depType) is unaffected. This also
+      // fences the OSV security path for biome: a biome CVE is remediated only when
+      // the channel bakes a fixed version, not by an immediate security PR — an
+      // acceptable tradeoff for a build-time devDependency with no runtime attack
+      // surface. (markdownlint-cli2 is baked from the channel too but has no catalog
+      // pin, so no generic manager reaches it — no rule needed.) Remove only if
+      // biome ever stops being baked from the channel.
+      matchManagers: ["bun", "npm", "custom.regex"],
+      matchPackageNames: ["@biomejs/biome"],
+      enabled: false,
+    },
+    {
+      matchManagers: ["gomod"],
+      matchUpdateTypes: ["patch", "minor"],
+      groupName: "Go dependencies",
+    },
+    {
+      // ── GitHub Actions rollup (RIG-2432) ──
+      // Group all github-actions SHA bumps into one PR ("GitHub Actions"),
+      // mirroring Dependabot's single `actions` group. The `postgres` service image
+      // is EXCLUDED (its own disable rule below) so it never rides this rollup.
+      matchManagers: ["github-actions"],
+      excludeDepNames: ["postgres"],
+      groupName: "GitHub Actions",
+    },
+    {
+      // ── Postgres service image: coupled, manual-only ──
+      // The github-actions manager WOULD bump the postgres CI service-image digest
+      // in .github/workflows/ci.yml (`image: postgres:16-alpine@sha256:…`), but
+      // go/internal/pgtest/pgtest.go:50 hard-codes the SAME digest as a Go const
+      // that Renovate cannot see, and ci.yml declares the parity load-bearing
+      // ("Matches pgtest.go's pinned image"). A one-sided bump silently desyncs the
+      // CI↔local Postgres the suites assert against, so this digest moves ONLY via
+      // a manual two-file PR. Disable it for Renovate.
+      matchDepNames: ["postgres"],
+      enabled: false,
+    },
+    {
+      // ── gomod `go` directive: manual floor policy ──
+      // The `go` directive in go/go.mod tracks the tools/toolchain/versions/go.nix
+      // pin minus at most one minor, so an upstream Go security patch never blocks
+      // on a mod edit (go/go.mod:10-12) — a MANUAL policy by design. Renovate's
+      // gomod manager extracts that directive from the same golang-version
+      // datasource and could bump it ahead of the pin, so disable the gomod
+      // `go`-directive update. A go.nix pin bump PR may occasionally need a manual
+      // go.mod follow-up.
+      matchManagers: ["gomod"],
+      matchDepNames: ["go"],
+      enabled: false,
+    },
+    {
+      // ── bunfig soak exemption for the bun types packages ──
+      // bunfig.toml `minimumReleaseAgeExcludes` exempts `@types/bun` and `bun-types`
+      // from the 5-day cooldown because the types track the nix-pinned bun runtime
+      // (tools/toolchain/versions/bun.nix) and must not strand behind the pin for 5
+      // days on every bun upgrade. Mirror that here so Renovate and `bun install`
+      // agree on what soaks. Scoped to the catalog custom.regex manager (@types/bun
+      // is a catalog pin, package.json:16); config.test.ts pairs these names to
+      // bunfig's exclude list so the two files can't drift. (`@tanstack/virtual-core`
+      // — bunfig's third exclude — needs no rule: it is an `overrides` pin, outside
+      // the catalog manager's reach.)
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["workspaces.catalog"],
+      matchPackageNames: ["@types/bun", "bun-types"],
+      minimumReleaseAge: null,
+    },
+    {
+      // ── devenv nixpkgs channel lockstep ──
+      // Solo branch for the devenv-nixpkgs digest: its own groupName so it NEVER
+      // shares a branch with the "TypeScript dependencies" rollup (which also
+      // matches custom.regex, above). That isolation is what makes the branch-mode
+      // postUpgradeTask below safe — Renovate builds exactly ONE branch-mode task
+      // per branch, so a dep that never shares a branch owns that single slot. The
+      // rollup can't capture this dep regardless: its update type is `digest`, and
+      // the rollup matches only patch/minor.
+      matchManagers: ["custom.regex"],
+      matchDepNames: ["cachix/devenv-nixpkgs"],
+      groupName: "devenv nixpkgs channel",
+      // DAILY, aligned to the same before-4am-ET window the daily cron lands in
+      // (see `timezone` above). This is a deliberate compass divergence from orion,
+      // whose rule schedules weekly (`before 4am on monday`) to bound `rolling`'s
+      // near-daily churn — Matt's ruling for compass: nixpkgs tracks daily too.
+      schedule: ["before 4am"],
+      // The repo-wide `minimumReleaseAge` + `internalChecksFilter: "strict"`
+      // measures age from a release TIMESTAMP. A git-refs digest update to a moving
+      // branch HEAD carries no release-age metadata, so a strict cooldown treats it
+      // as permanently `pending`: on a near-daily `rolling` branch the HEAD is
+      // always younger than any window, so the digest would sit on the dashboard
+      // forever with zero PRs cut (the SEA-1220 silent-no-updates shape). Disable
+      // the cooldown for THIS rule only — the window exists for the compromised-npm-
+      // release risk, which applies weakly to a cachix-curated channel repo.
+      minimumReleaseAge: null,
+      // ── The lockstep task. ──
+      // On this solo branch, re-lock devenv.lock at the new rev, read the baked
+      // biome version the rev ships, and rewrite the catalog pin to match — so
+      // dev-shell baked==catalog parity holds in one PR. `executionMode: "branch"`
+      // runs it once after the digest update is applied; safe here because this dep
+      // never shares a branch (its own groupName above), so it owns the single
+      // branch-mode task slot Renovate builds per branch. Rule-level
+      // postUpgradeTasks REPLACE the top-level one for matching branches; the
+      // evicted top-level toolchain task self-gates on the versions/*.nix pins and
+      // would be a no-op here anyway. fileFilters cover exactly the files the script
+      // writes (compass has no committed inner-rev guard file, so no such entry).
+      //
+      // Self-hosted bot config MUST allow the command:
+      //   allowedCommands: [… , "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$"]
+      // see tools/renovate/bot-config.json5 (config.test.ts pins the two together).
+      postUpgradeTasks: {
+        commands: ["bun tools/renovate/refresh-devenv-nixpkgs.ts"],
+        fileFilters: ["devenv.lock", "package.json", "bun.lock"],
+        executionMode: "branch",
+      },
+    },
+    {
+      // ── Catalog lockfile coupling ──
+      // The regex manager exports no `updateArtifacts`, so NOTHING regenerates
+      // bun.lock for a catalog-only bump. bun.lock mirrors the catalog block, so a
+      // stale lock fails a fail-closed `bun install --frozen-lockfile` check. The
+      // failure is intermittent by shape: a bump that changes resolution goes loudly
+      // red in CI, while a range-widening one drifts silently until some later
+      // install rewrites the lock. `--lockfile-only` re-resolves and writes bun.lock
+      // without touching node_modules.
+      //
+      // `executionMode` MUST be "update", never "branch". Renovate collapses a
+      // branch's config from its alphabetically-FIRST upgrade
+      // (`generateBranchConfig` sorts `config.upgrades` by depName, then spreads
+      // `upgrades[0]` over the branch config), and it builds exactly ONE branch-mode
+      // task from that collapsed config. A branch-mode task here would therefore
+      // compete with the top-level toolchain-hash branch task and one would be
+      // discarded ENTIRELY, not merged: in the shared "TypeScript dependencies"
+      // rollup, a batch whose first-sorting dep is non-catalog never runs the
+      // lockfile command at all, while one whose first-sorting dep is a catalog pin
+      // evicts the toolchain refresh. "update" puts this task on the separate
+      // per-upgrade pass (filtered to `executionMode: "update"`), so the lockfile
+      // command runs on EVERY catalog branch regardless of sort order — that is the
+      // fix. The branch slot itself stays winner-take-all, but harmlessly: each
+      // versions/*.nix toolchain pin groups to its OWN branch and never shares with
+      // catalog, and refresh-toolchain-hashes.ts self-gates on a versions/*.nix pin
+      // changing, so the evicted task would have been a no-op. It runs once per
+      // catalog upgrade, which is harmless: `bun install --lockfile-only` is
+      // idempotent and writes only bun.lock.
+      //
+      // Self-hosted bot config MUST allow the command:
+      //   allowedCommands: [… , "^bun install --lockfile-only$"]
+      // see tools/renovate/bot-config.json5 (config.test.ts pins the two together).
+      matchManagers: ["custom.regex"],
+      matchDepTypes: ["workspaces.catalog"],
+      postUpgradeTasks: {
+        commands: ["bun install --lockfile-only"],
+        fileFilters: ["bun.lock"],
+        executionMode: "update",
+      },
+    },
+    {
+      // Vendored fork subtrees (forks/<name>/) are upstream code, style- and
+      // dependency-exempt. Renovate must not open bump PRs on fork manifests: an
+      // upstream-diverging bump would violate the vendored posture and poison
+      // byte-compatibility with upstream. A packageRules disable (not ignorePaths,
+      // which REPLACES Renovate's safe defaults like node_modules) scoped to the
+      // fork trees. This fence must hold against the OSV vuln path too — see the
+      // `osvVulnerabilityAlerts` invariant above.
+      matchFileNames: ["forks/*/**"],
+      enabled: false,
+    },
+  ],
+
+  // ── Toolchain hash coupling ──
+  // A versions/*.nix toolchain pin bump (bun/node/moon) leaves the vendored-binary
+  // sha256 pins beside each version stale → the dev-shell/CI build fails. This
+  // script re-prefetches and rewrites all three platform legs in each changed pin
+  // file in the same branch so the bump PR lands green. It self-gates (no-op unless
+  // a versions/*.nix pin changed), so it's cheap on every other branch — and it
+  // no-ops on go.nix, whose hashes come from go-overlay, not a per-file pin.
+  // `executionMode: branch` runs it once per branch after the update is applied.
+  //
+  // Self-hosted bot config MUST allow the command:
+  //   allowedCommands: ["^bun tools/renovate/refresh-toolchain-hashes\\.ts$"]
+  // and the runner needs `nix` (nix-command) on PATH.
+  postUpgradeTasks: {
+    commands: ["bun tools/renovate/refresh-toolchain-hashes.ts"],
+    fileFilters: [
+      "tools/toolchain/versions/bun.nix",
+      "tools/toolchain/versions/node.nix",
+      "tools/toolchain/versions/moon.nix",
+    ],
+    executionMode: "branch",
+  },
+}

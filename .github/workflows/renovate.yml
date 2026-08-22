@@ -1,0 +1,138 @@
+# Self-hosted Renovate for compass (RIG-2432) — the GitHub Actions half of the
+# migration off Dependabot. This is a plain GHA job that reuses ci.yml's exact
+# two-phase toolchain bootstrap (install-nix-action + gate-tools.nix), builds the
+# vendored devenv fork onto PATH (compass CI never provisions a PATH `devenv` —
+# its only devenv invocations run the fork CLI by path), mints a per-run GitHub
+# App installation token, runs a preflight probe, then runs a pinned `bunx
+# renovate`. Design: docs/designs/platform/compass-renovate-migration.md.
+#
+# Auth is a GitHub App, not a stored PAT: the workflow mints an installation
+# token that expires ~1h later, so no long-lived credential lives on the CI
+# secret surface. The App's Workflows permission is LOAD-BEARING — the
+# github-actions manager pushes commits under .github/workflows/, which a GitHub
+# App may only do with that permission (see the T8 human-action runbook).
+name: Renovate
+
+on:
+  schedule:
+    # 06:00 UTC = 02:00 EDT / 01:00 EST — inside the before-4am-ET `schedule:daily`
+    # window with 2-3h of margin in both DST phases. GHA cron is best-effort and
+    # routinely starts 5-30+ min late; the margin absorbs that. A tighter cron
+    # (e.g. `0 7`) risks a delayed start slipping past 04:00 ET, which reproduces
+    # the silent-zero-PR symptom Renovate's `timezone`/`schedule` alignment guards.
+    - cron: "0 6 * * *"
+  # Manual runs (the GHA analogue of a Woodpecker `manual` trigger). Also revives
+  # the schedule: GHA auto-disables a scheduled workflow after 60 days without
+  # repo activity — a dispatch (or any commit) re-arms it. The tell that it went
+  # dormant is the dependency dashboard going stale.
+  workflow_dispatch:
+
+# The minted App token carries its own scopes; the job's GITHUB_TOKEN needs
+# nothing, so drop it to none (least privilege).
+permissions: {}
+
+concurrency:
+  # One Renovate run at a time; a scheduled run overlapping a manual one would
+  # race on branch state. Never cancel an in-flight run — a half-run Renovate
+  # can leave branches mid-rebase.
+  group: renovate
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The refresh scripts' self-gates diff each pin file / devenv.lock
+          # against the base branch, so they need real git history, not a
+          # shallow single-ref checkout.
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # Same trust posture as ci.yml:165-168 — name the two caches the forks
+          # legitimately use in this reviewed file rather than delegating via
+          # `accept-flake-config = true`, which would let any evaluated flake
+          # (forks/devenv/flake.nix carries a nixConfig block) inject its own
+          # substituter + trusted key.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        # Phase one of ci.yml's two-phase bootstrap (ci.yml:170-195): the
+        # postUpgradeTasks need bun (all three scripts + `bun install`), node,
+        # moon, and go on PATH. gate-tools.nix's `langs` resolves the same
+        # derivations the dev shell does, so Renovate's relock runs the pinned
+        # toolchain byte-for-byte.
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Put the vendored devenv fork on PATH
+        # The one binary the toolchain bootstrap does NOT provide: compass CI
+        # never puts a `devenv` on PATH — its only devenv invocations run the
+        # vendored fork's CLI by path (ci.yml, agent-image/moon.yml, devenv.nix).
+        # refresh-devenv-nixpkgs.ts shells `devenv update nixpkgs` from PATH, so
+        # build the SAME fork CLI (the flake exports it as packages.<system>.devenv)
+        # and symlink it into a dir prepended to $GITHUB_PATH. A nixpkgs devenv
+        # would be a SECOND, divergent devenv — rejected on fork-posture grounds
+        # (design §Alternatives D). NOTE: when forks-reversal (RIG-2336) removes
+        # forks/devenv, repoint this to the pinned github:RigelBuild/devenv input
+        # and drop the fork-fence packageRule — tracked as the migration's
+        # post-reversal cleanup.
+        run: |
+          out=$(nix build --no-link --print-out-paths path:forks/devenv#devenv)
+          shimdir="$RUNNER_TEMP/devenv-shim/bin"
+          mkdir -p "$shimdir"
+          ln -s "$out/bin/devenv" "$shimdir/devenv"
+          echo "$shimdir" >>"$GITHUB_PATH"
+
+      - name: Assert devenv is on PATH
+        # Fail loud at setup if the shim is missing, rather than exit-127ing
+        # silently on the first channel-bump branch and shipping a half-refreshed
+        # devenv.lock (the SEA-1304/RIG-2245 regression class).
+        run: command -v devenv
+
+      - name: Mint the Renovate App installation token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.RENOVATE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RENOVATE_APP_PRIVATE_KEY }}
+
+      - name: Preflight — probe the token can see the repo
+        # Fail fast with a named diagnosis (rotate / grant / stage) instead of
+        # Renovate's opaque platform-unknown-error if the token is expired or
+        # unscoped. GHA has no CI_REPO, so set REPO from github.repository.
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: bun tools/renovate-preflight/index.ts
+
+      - name: Run Renovate
+        env:
+          # Pinned bot config (repo config path, allowlist, HOME) — see
+          # tools/renovate/bot-config.json5.
+          RENOVATE_CONFIG_FILE: tools/renovate/bot-config.json5
+          # bunx installs renovate but not its optional native re2 addon; take
+          # the RegExp fallback deliberately (allowedCommands matches with Node
+          # RegExp then).
+          RENOVATE_X_IGNORE_RE2: "true"
+          RENOVATE_TOKEN: ${{ steps.app-token.outputs.token }}
+        # Renovate is PINNED: a bare `bunx renovate` resolves latest from npm on
+        # every run — fresh third-party code executing with a repo-write token,
+        # bypassing the soak this repo mandates. The pin line is itself managed:
+        # the self-pin custom.regex manager in config.json5 bumps it through a
+        # reviewable PR under the normal cooldown.
+        run: bunx renovate@44.33.1

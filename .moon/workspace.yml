@@ -64,6 +64,18 @@ projects:
   # compass-agent-image, which proves the image realises; this proves it is
   # correct. Runs on the same image-closure affected-detection.
   agent-image-env-gate: 'tools/agent-image-env-gate'
+  # Self-hosted Renovate (RIG-2432): the repo config + bot config + lockstep
+  # postUpgradeTask scripts + the config guard suite. Ported from orion's
+  # ci/renovate (SEA-847). Registered here so config.test.ts runs under the
+  # `test` task in the moon-driven CI sweep — unregistered, the guard suite is
+  # silently inert (moon discovers projects only from this map) and the config
+  # drift it fences ships uncaught.
+  renovate: 'tools/renovate'
+  # The Renovate preflight probe (ported from orion's tools/renovate-preflight):
+  # checks the minted App token can see the repo before `bunx renovate` runs,
+  # failing fast with a named diagnosis instead of Renovate's opaque
+  # platform-unknown-error. Registered so its own typecheck + unit test gate.
+  renovate-preflight: 'tools/renovate-preflight'
   # The one-shot engineering-docs sanitization migration (SEA-1766, T4). Encodes
   # the four-class rewrite policy; no standing run task, deleted after T5.
   docs-migrate: 'tools/docs-migrate'
