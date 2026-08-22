@@ -16,7 +16,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/sealedsecurity/compass/go/internal/store"
+	"github.com/RigelBuild/compass/go/internal/store"
 )
 
 // fakeSessionReapSink records OnSessionsReaped calls — the hub's session-reap
