@@ -54,6 +54,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"log/slog"
+	"runtime"
 	"testing"
 
 	"github.com/RigelBuild/compass/go/events"
@@ -273,7 +274,12 @@ func TestOfflineMentionRedeliveryEndToEnd(t *testing.T) {
 		// drained — and swept nothing.
 		sentinel := w.seedAgentMember(t, "sentinelsub", true)
 		sentMsg := w.post(t, "sentinel barrier message")
-		waitForStartCount(t, w.runner, 2) // the sentinel's own deliver-arm wake
+		// startCount reaching 2 is the sentinel's own deliver-arm wake ALONE:
+		// the barrier is a plain (non-mention) message and gapmember is
+		// unsubscribed, so neither fanOut's subscribed set nor routeMentions
+		// includes gapmember — it is not re-woken here. That is what makes the
+		// FIFO barrier below a genuine re-start sweep, not an incidental re-wake.
+		waitForStartCount(t, w.runner, 2)
 
 		const sessA2 = "sess-gapmember-2"
 		const sentSess = "sess-sentinel-1"
@@ -388,16 +394,18 @@ func waitForControlDelivers(t *testing.T, r *recordingRunner, sessionID string, 
 	t.Helper()
 	deadline := timeAfter()
 	for {
-		if got := controlDeliversForSession(r, sessionID); len(got) >= n {
+		got := controlDeliversForSession(r, sessionID)
+		if len(got) >= n {
 			return got
 		}
 		select {
 		case <-deadline:
 			t.Fatalf("session %q saw %d control dispatches, want >= %d (commands: %v)",
-				sessionID, len(controlDeliversForSession(r, sessionID)), n, r.commands())
+				sessionID, len(got), n, r.commands())
 			return nil
 		default:
 		}
+		runtime.Gosched()
 	}
 }
 
@@ -416,6 +424,7 @@ func waitForStartCount(t *testing.T, r *recordingRunner, n int) {
 			return
 		default:
 		}
+		runtime.Gosched()
 	}
 }
 
