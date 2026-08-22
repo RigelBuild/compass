@@ -931,7 +931,7 @@ func githubUpdateSpecs() []captureSpec {
 				t.Helper()
 				repo, author, _ := requireLive(t)
 				ctx := context.Background()
-				setup := recordingGitHub(author, &recordingRoundTripper{inner: http.DefaultTransport})
+				setup := setupGitHub(author)
 				issue, err := createWithBackoff(ctx, func() (Issue, error) {
 					return setup.CreateIssue(ctx, repo, CreateIssue{
 						Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body", Labels: []string{"bug", "p1"}})
@@ -951,7 +951,7 @@ func githubUpdateSpecs() []captureSpec {
 				t.Helper()
 				repo, author, _ := requireLive(t)
 				ctx := context.Background()
-				setup := recordingGitHub(author, &recordingRoundTripper{inner: http.DefaultTransport})
+				setup := setupGitHub(author)
 				got, err := createWithBackoff(ctx, func() (Issue, error) {
 					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-list-" + newRunID(), Labels: []string{"bug"}})
 				})
@@ -991,7 +991,7 @@ func githubUpdateSpecs() []captureSpec {
 				ctx := context.Background()
 				head := "compass-live-" + newRunID()
 				seedHeadBranch(t, ctx, author, repo, head)
-				setup := recordingGitHub(author, &recordingRoundTripper{inner: http.DefaultTransport})
+				setup := setupGitHub(author)
 				pr, err := createWithBackoff(ctx, func() (PullRequest, error) {
 					return setup.CreatePullRequest(ctx, repo, CreatePR{
 						Title: "compass-live-getpr-" + newRunID(), Body: "raw <!--owner--> pr body", HeadRef: head, BaseRef: "main", Draft: true})
@@ -1011,7 +1011,7 @@ func githubUpdateSpecs() []captureSpec {
 				t.Helper()
 				repo, author, _ := requireLive(t)
 				ctx := context.Background()
-				setup := recordingGitHub(author, &recordingRoundTripper{inner: http.DefaultTransport})
+				setup := setupGitHub(author)
 				issue, err := createWithBackoff(ctx, func() (Issue, error) {
 					return setup.CreateIssue(ctx, repo, CreateIssue{Title: "compass-live-comment-" + newRunID()})
 				})
@@ -1058,7 +1058,7 @@ func linearUpdateSpecs() []captureSpec {
 				t.Helper()
 				ts, team := requireLinear(t)
 				ctx := context.Background()
-				setup := recordingLinear(ts, &recordingRoundTripper{inner: http.DefaultTransport})
+				setup := setupLinear(ts)
 				issue, err := setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-get-" + newRunID(), Body: "raw <!--owner--> body"})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
@@ -1075,7 +1075,7 @@ func linearUpdateSpecs() []captureSpec {
 				t.Helper()
 				ts, team := requireLinear(t)
 				ctx := context.Background()
-				setup := recordingLinear(ts, &recordingRoundTripper{inner: http.DefaultTransport})
+				setup := setupLinear(ts)
 				issue, err := setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-list-" + newRunID(), Body: "raw body"})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
@@ -1094,7 +1094,7 @@ func linearUpdateSpecs() []captureSpec {
 				t.Helper()
 				ts, team := requireLinear(t)
 				ctx := context.Background()
-				setup := recordingLinear(ts, &recordingRoundTripper{inner: http.DefaultTransport})
+				setup := setupLinear(ts)
 				issue, err := setup.CreateIssue(ctx, team, CreateIssue{Title: "compass-live-comment-" + newRunID()})
 				if err != nil {
 					t.Fatalf("CreateIssue (setup): %v", err)
@@ -1120,4 +1120,18 @@ func recordingGitHub(ts TokenSource, rt *recordingRoundTripper) *GitHub {
 // recordingLinear builds a real Linear client whose transport is wrapped by rt.
 func recordingLinear(ts TokenSource, rt *recordingRoundTripper) *Linear {
 	return NewLinear(LinearConfig{Token: ts, Client: &http.Client{Transport: rt}})
+}
+
+// setupGitHub builds a real GitHub client for scenario SETUP (creating the
+// fixture subject before the asserted op). Its exchanges are deliberately NOT
+// recorded — only the asserted op's client feeds assembleFixture — so it takes
+// no recorder (a nil cfg.Client gets NewGitHub's default).
+func setupGitHub(ts TokenSource) *GitHub {
+	return NewGitHub(GitHubConfig{Host: "github.com", Token: ts})
+}
+
+// setupLinear builds a real Linear client for scenario SETUP; like setupGitHub,
+// its exchanges are not recorded.
+func setupLinear(ts TokenSource) *Linear {
+	return NewLinear(LinearConfig{Token: ts})
 }

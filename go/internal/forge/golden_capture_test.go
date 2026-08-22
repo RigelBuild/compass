@@ -271,7 +271,7 @@ type capturedResponse struct {
 func assembleFixture(t *testing.T, provider, name string, prelude int, coords fixtureRequest, responses []capturedResponse) fixture {
 	t.Helper()
 	if len(responses) <= prelude {
-		t.Fatalf("%s/%s: captured %d responses, need > %d (prelude) + 1 (asserted)",
+		t.Fatalf("%s/%s: captured %d responses, need at least %d (prelude probes) + 1 (asserted)",
 			provider, name, len(responses), prelude)
 	}
 	f := fixture{Name: name, Request: canonicalizeCoordinates(coords)}
@@ -315,11 +315,18 @@ func deriveFixtureHalves(t *testing.T, provider string, f fixture) fixture {
 	got := invoke(t, provider, rt, ts, f.Request)
 	f.Response.Want = mustMarshal(t, got)
 
-	idx := len(f.Response.Prelude)
-	if idx >= len(rt.requests) {
-		t.Fatalf("derive %s/%s: replay emitted %d requests, need > %d (prelude index)",
-			provider, f.Name, len(rt.requests), idx)
+	// Guard that replay consumed EXACTLY every scripted response — the same
+	// exact-count invariant golden replayFixture asserts. A response the client
+	// never reaches (e.g. a later pagination page whose rel=next Link header the
+	// recorder dropped, so HasNext stayed false and the loop stopped early) would
+	// otherwise be written into a truncated fixture silently, surfacing only later
+	// and confusingly as a golden count mismatch. Fail loudly AT CAPTURE instead.
+	wantN := len(f.Response.Prelude) + 1 + len(f.Response.Extra)
+	if got := len(rt.requests); got != wantN {
+		t.Fatalf("derive %s/%s: replay emitted %d requests, want exactly %d — a captured response was not consumed (a dropped rel=next Link header truncating a paginated leg?); the fixture would be truncated",
+			provider, f.Name, got, wantN)
 	}
+	idx := len(f.Response.Prelude)
 	asserted := rt.requests[idx]
 	f.Request.Method = asserted.Method
 	f.Request.Path = asserted.URL.Path
@@ -515,6 +522,110 @@ func TestUpdateCanonicalizeStable(t *testing.T) {
 	}
 	if user, ok := driftTree["user"].(map[string]any); !ok || user["login"] != canonAccount {
 		t.Errorf("nested volatile key not canonicalized: user = %v, want login octocat", driftTree["user"])
+	}
+}
+
+// TestUpdateCanonicalizeComposite is the credential-free guard for the single
+// riskiest capture: get_pull_request, the only fixture with EXTRA legs. It runs
+// a synthetic live capture — a PR detail GET (asserted) followed by the reviews,
+// check_runs, and legacy statuses legs (Extra) — through the REAL assembleFixture
+// -> replayFixture pipeline. This exercises what create_issue cannot: the
+// responses[prelude+1:] Extra assembly, canonNode's []any recursion into an
+// array of objects that themselves carry volatile keys (the two reviews, each an
+// Author<-user.login), and volatile substitution across separate legs
+// (target_url on the statuses leg, sha on the detail leg vs Checks.HeadSHA).
+func TestUpdateCanonicalizeComposite(t *testing.T) {
+	coords := fixtureRequest{Op: "get_pull_request", Repo: "org/repo", Number: 98765}
+	responses := []capturedResponse{
+		// asserted: PR detail with live-ish volatile values.
+		{status: 200, body: json.RawMessage(`{
+			"number": 98765, "title": "a feature", "body": "raw <!--owner--> pr body",
+			"state": "closed", "html_url": "https://github.com/org/repo/pull/98765",
+			"draft": false, "additions": 120, "deletions": 30, "changed_files": 4,
+			"merged": true,
+			"head": { "ref": "feature-live", "sha": "livesha123abc" },
+			"base": { "ref": "main" },
+			"user": { "login": "live-author" }
+		}`)},
+		// extra leg 1: reviews — an array of objects, each with a volatile Author.
+		{status: 200, body: json.RawMessage(`[
+			{ "body": "lgtm", "state": "APPROVED", "user": { "login": "botly-live", "type": "Bot" } },
+			{ "body": "needs work", "state": "CHANGES_REQUESTED", "user": { "login": "carol-live", "type": "User" } }
+		]`)},
+		// extra leg 2: check_runs — html_url volatile.
+		{status: 200, body: json.RawMessage(`{ "check_runs": [
+			{ "name": "build", "status": "completed", "conclusion": "success", "html_url": "https://ci/live-build" }
+		] }`)},
+		// extra leg 3: legacy statuses — target_url volatile.
+		{status: 200, body: json.RawMessage(`{ "statuses": [
+			{ "context": "legacy-ci", "state": "success", "target_url": "https://ci/live-legacy" }
+		] }`)},
+	}
+
+	// assembleFixture derives BOTH halves by replay; replayFixture then re-asserts
+	// the emitted requests (all 4 legs, exact count) and decode(Body)==Want. A
+	// regression in Extra-leg assembly or array-of-volatile-objects recursion
+	// fails here credential-free instead of only at live -update time.
+	f := assembleFixture(t, providerGitHub, "get_pull_request_probe", 0, coords, responses)
+	replayFixture(t, providerGitHub, f)
+
+	// Want is marshal(decode(Body)); domain types carry no json tags, so they
+	// marshal to their Go field names verbatim. Decode into a local tagged struct
+	// (the file's convention, cf. lnVars) so musttag is satisfied.
+	var pr struct {
+		Number  uint64 `json:"Number"`
+		Reviews []struct {
+			Author  string `json:"Author"`
+			IsBot   bool   `json:"IsBot"`
+			Verdict string `json:"Verdict"`
+		} `json:"Reviews"`
+		Checks struct {
+			HeadSHA string `json:"HeadSHA"`
+			Checks  []struct {
+				Name string `json:"Name"`
+				URL  string `json:"URL"`
+			} `json:"Checks"`
+		} `json:"Checks"`
+	}
+	if err := json.Unmarshal(f.Response.Want, &pr); err != nil {
+		t.Fatalf("unmarshal derived get_pull_request Want: %v (%s)", err, f.Response.Want)
+	}
+
+	// (b) both review authors — volatile keys INSIDE an array of objects —
+	// canonicalize; the non-volatile Verdict/IsBot survive distinctly per review.
+	if len(pr.Reviews) != 2 {
+		t.Fatalf("derived Reviews = %d, want 2", len(pr.Reviews))
+	}
+	for i, rv := range pr.Reviews {
+		if rv.Author != canonAccount {
+			t.Errorf("Reviews[%d].Author = %q, want %q (login inside a reviews array must canonicalize)", i, rv.Author, canonAccount)
+		}
+	}
+	if pr.Reviews[0].Verdict != "approved" || !pr.Reviews[0].IsBot {
+		t.Errorf("Reviews[0] non-volatile fields not preserved: verdict=%q isBot=%v, want approved/true", pr.Reviews[0].Verdict, pr.Reviews[0].IsBot)
+	}
+	if pr.Reviews[1].Verdict != "changes_requested" || pr.Reviews[1].IsBot {
+		t.Errorf("Reviews[1] non-volatile fields not preserved: verdict=%q isBot=%v, want changes_requested/false", pr.Reviews[1].Verdict, pr.Reviews[1].IsBot)
+	}
+
+	// (c) the statuses leg's target_url and the checks leg's html_url both
+	// canonicalize to canonURL (URL<-html_url,target_url).
+	if len(pr.Checks.Checks) != 2 {
+		t.Fatalf("derived Checks.Checks = %d, want 2 (check_runs + legacy statuses)", len(pr.Checks.Checks))
+	}
+	for _, c := range pr.Checks.Checks {
+		if c.URL != canonURL {
+			t.Errorf("Check %q URL = %q, want %q (both html_url and target_url are wire-volatile)", c.Name, c.URL, canonURL)
+		}
+	}
+
+	// (d) head.sha canonicalizes consistently across the detail leg and the
+	// rolled-up Checks.HeadSHA (both decode from the same canonicalized sha).
+	if pr.Checks.HeadSHA != canonSHA {
+		t.Errorf("Checks.HeadSHA = %q, want %q (head.sha must canonicalize consistently)", pr.Checks.HeadSHA, canonSHA)
+	}
+	if pr.Number != uint64(canonNumber) {
+		t.Errorf("derived Number = %d, want %d (canonicalized)", pr.Number, uint64(canonNumber))
 	}
 }
 
