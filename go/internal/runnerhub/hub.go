@@ -98,6 +98,28 @@ type SessionStartSink interface {
 	OnSessionStarted(sessionID string, account store.AccountID)
 }
 
+// SessionReapSink is notified at enroll (the Runner-reconnect teardown) of the
+// set of session ids whose hub bindings were just cleared, so a consumer holding
+// soft per-session state keyed by session id can drop it. The delivery consumer
+// (SEA-1569 T3) subscribes to reap its held-deliver registry entries for a
+// no-frame author death: such a death emits no terminal frame, so no settle edge
+// ever fires fireHeld to clear the entry, and it would otherwise persist until
+// process restart. The design specifies exactly this enroll-bounded reap
+// (design.md:172-175). Wired via SetSessionReapSink AFTER both the hub and the
+// consumer exist (breaking the construction cycle, exactly as SetSettleSink
+// does), and is nil-safe: a hub with no reap sink is today's behavior, so every
+// existing hub test is unchanged.
+//
+// Like SessionStartSink the method takes NO ctx and must return promptly: it
+// only drops in-memory registry entries, never blocks the enroll goroutine on
+// store work, and is called AFTER the hub releases h.mu.
+type SessionReapSink interface {
+	// OnSessionsReaped reports that the given session ids had their hub bindings
+	// cleared at a Runner (re-)enroll. sessionIDs may be empty (a first-ever
+	// enroll clears nothing).
+	OnSessionsReaped(sessionIDs []string)
+}
+
 // PresenceSink is notified of the two hub-side edges the SEA-1569 T8 presence
 // projection (design record D4) is fed by: a session lifecycle transition at the
 // deliverSession arm (the SAME arm SettleSink rides, right after the
@@ -236,6 +258,13 @@ type Hub struct {
 	// consumer exist), and read under mu so the setter and promoteSession never
 	// race. Nil-safe: a hub with no session-start sink is today's behavior.
 	sessionStart SessionStartSink
+	// reap is the delivery consumer's session-reap sink (SEA-1569 T3), notified
+	// at enroll with the session ids whose bindings were just cleared, so the
+	// consumer can drop any held-deliver entries a no-frame author death left
+	// behind. Nil until SetSessionReapSink wires it (after both hub and consumer
+	// exist), and read under mu so the setter and enroll never race. Nil-safe: a
+	// hub with no reap sink is today's behavior.
+	reap SessionReapSink
 	// presence is the SEA-1569 T8 presence projection's sink, notified at
 	// deliverSession (lifecycle transition) and promoteSession (reconciliation).
 	// Nil until SetPresenceSink wires it (after both hub and the presence
@@ -397,6 +426,18 @@ func (h *Hub) SetSessionStartSink(sessionStart SessionStartSink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.sessionStart = sessionStart
+}
+
+// SetSessionReapSink wires the delivery consumer as the hub's session-reap-edge
+// sink, AFTER both exist — the post-construction setter that breaks the
+// consumer<->hub construction cycle, exactly as SetSessionStartSink does.
+// Mirrors the SettleSink wiring so no NewHub caller signature changes. Called
+// once at server assembly; safe to leave unset (a hub with no reap sink is
+// today's behavior).
+func (h *Hub) SetSessionReapSink(reap SessionReapSink) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.reap = reap
 }
 
 // SetPresenceSink wires the SEA-1569 T8 presence component as the hub's presence
@@ -785,7 +826,18 @@ func (h *Hub) enroll(id string, subject store.Subject) (reattached bool) {
 	for account, sessionID := range h.accountSessions {
 		offline = append(offline, promotedPair{account: account, sessionID: sessionID})
 	}
+	// Snapshot the session ids whose bindings are about to be cleared, so the
+	// delivery consumer can reap any held-deliver registry entries a no-frame
+	// author death left behind (SEA-1569 T3, design.md:172-175). sessionAccounts
+	// is keyed by session id, and Consumer.held is keyed by that same author
+	// session id, so these are exactly the keys to drop. A first-ever enroll
+	// (empty map) snapshots nothing.
+	reapedSessions := make([]string, 0, len(h.sessionAccounts))
+	for sessionID := range h.sessionAccounts {
+		reapedSessions = append(reapedSessions, sessionID)
+	}
 	presence := h.presence
+	reap := h.reap
 	clear(h.containerAccounts)
 	clear(h.sessionAccounts)
 	clear(h.accountSessions)
@@ -800,6 +852,14 @@ func (h *Hub) enroll(id string, subject store.Subject) (reattached bool) {
 		for _, p := range offline {
 			presence.OnSessionLifecycle(p.account, p.sessionID, compassv1.AgentSessionState_AGENT_SESSION_STATE_DISCONNECTED)
 		}
+	}
+
+	// Fire the reap edge AFTER releasing the lock, the same lock-then-release-
+	// then-fire discipline as the presence edges above: the sink only drops
+	// in-memory registry entries and returns promptly, so it must not run under
+	// h.mu.
+	if reap != nil {
+		reap.OnSessionsReaped(reapedSessions)
 	}
 	return reattached
 }

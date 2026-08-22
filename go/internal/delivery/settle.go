@@ -84,11 +84,18 @@ func firesHeldDelivers(state compassv1.AgentSessionState) bool {
 // edge fires the messages held for that author session, in post order, from each
 // message's CURRENT (settled) stored blocks (design.md:158-168), then clears the
 // registry entry — a no-frame author death never enqueues an edge, so its held
-// entry is left in place. It is NOT reaped in-process (no next-enroll reap is
-// wired: hub.enroll clears only the hub's own session maps, never Consumer.held),
-// so the entry persists until process restart. No-loss is unaffected — the
-// reconnect sweep still delivers the message (design.md:168-176): the design's
-// "no-loss, not no-leak" guarantee.
+// entry is left in place until it is reaped. The reap happens in-process on the
+// next Runner (re-)enroll via the hub's SessionReapSink (OnSessionsReaped),
+// which drops the entry for every session id enroll just cleared — so the common
+// no-frame death is reaped at that next enroll rather than persisting until
+// process restart. The reap is best-effort, not a hard bound: a no-frame-dead
+// session is never re-promoted, so a narrow race (a Deliver that resolved the
+// author LIVE an instant before enroll cleared the maps re-holds the dead
+// session just AFTER that enroll's reap) can still strand one entry until process
+// restart, since that id never re-enrolls to be reaped again. No-loss is
+// unaffected regardless — the reconnect sweep still delivers the message
+// (design.md:168-176); only the leak bound, not the delivery guarantee, is
+// best-effort.
 func (c *Consumer) drainSettles(ctx context.Context) {
 	for {
 		c.mu.Lock()
@@ -207,6 +214,23 @@ func (c *Consumer) fireHeld(ctx context.Context, authorSession string) {
 			continue
 		}
 		c.fanOut(ctx, channel, author, wire)
+	}
+}
+
+// OnSessionsReaped drops the held-deliver registry entries for sessions whose
+// hub bindings were cleared at a Runner (re-)enroll (SessionReapSink). A
+// no-frame author death emits no terminal frame, so no settle edge ever fires
+// fireHeld to clear its entry; this enroll-bounded reap realizes the design's
+// promised cleanup (design.md:172-175) so the registry does not leak an entry
+// per no-frame death until process restart. No-loss is unaffected: any message
+// still owed is redelivered by the recipient's reconnect cursor sweep. Pure
+// in-memory work under c.mu — it does not enqueue onto the consumer loop or
+// touch the store, so it is safe to run directly on the hub's enroll goroutine.
+func (c *Consumer) OnSessionsReaped(sessionIDs []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, sid := range sessionIDs {
+		delete(c.held, sid)
 	}
 }
 
