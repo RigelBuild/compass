@@ -588,6 +588,11 @@ export interface AppStoreOptions {
 	/** The comms state the store starts from before any stream push. Defaults to
 	 *  EMPTY — tests that need populated comms pass the fixture explicitly. */
 	readonly initialComms?: CommsState;
+	/** The board issue list the store starts from before any event-stream push.
+	 *  Defaults to STUB_ISSUES (the fixture); a test or an empty-board harness
+	 *  route passes [] to construct a board with no issues. The live event stream
+	 *  still replaces it (the accessor stays the seam). */
+	readonly initialIssues?: readonly Issue[];
 	/** The live compass client — the agent-lifecycle surface (StopAgentSession).
 	 *  Absent → offline: `stopAgent` reports through `onCommsError` instead of
 	 *  dialing. Separate from `comms`: the two services are separate clients over
@@ -680,18 +685,22 @@ function savePinnedAgents(
 export function createAppStore(options: AppStoreOptions): AppStore {
 	const callerId = options.callerId ?? CALLER_ID;
 	// The issue list is reactive so promote/archive (below) are visible on
-	// every surface at once. Seeded from the fixture; the real @compass/client
-	// stream replaces the seed later (the accessor stays the seam).
-	const [issues, setIssues] = createSignal<Issue[]>(STUB_ISSUES);
+	// every surface at once. Seeded from the fixture (or an explicit override);
+	// the real @compass/client stream replaces the seed later (the accessor
+	// stays the seam).
+	const [issues, setIssues] = createSignal<Issue[]>([
+		...(options.initialIssues ?? STUB_ISSUES),
+	]);
 
 	const [view, setView] = createSignal<View>("bridge");
 	const [selectedAgentId, setSelectedAgentId] = createSignal<string | null>(
 		null,
 	);
 	// Default to the first issue so the seam survives swapping the fixture
-	// for the real @compass/client (no hardcoded stub id).
+	// for the real @compass/client (no hardcoded stub id); an empty board
+	// starts with no selection.
 	const [selectedIssueId, setSelectedIssueId] = createSignal<string | null>(
-		STUB_ISSUES[0]?.id ?? null,
+		(options.initialIssues ?? STUB_ISSUES)[0]?.id ?? null,
 	);
 
 	// ── Router seam (record A3): routes are the source of truth ──────────────

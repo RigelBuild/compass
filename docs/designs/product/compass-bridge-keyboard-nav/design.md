@@ -434,6 +434,20 @@ exposes `{ group, handleCommand(id): boolean, focus(): void }`.
 Test cycle: vitest units — exactly one `tabindex="0"` across stops, cursor
 move refocuses, stale-cursor (stop removed) falls back per the nearest-stop
 rule, Tab entry lands on the cursor stop.
+**Focus-guard — as-built footnote (RIG-2130 impl):** the primitive re-applies
+`tabindex` on every stops/cursor change (the one-tab-stop invariant runs
+unconditionally), but pulls DOM focus + `scrollIntoView` onto the cursor **only
+when focus already lives inside the group** — a genuine in-group keyboard move.
+It must NOT focus on the mount run, nor on a background stops-rebuild that
+recomputes the cursor while the user is elsewhere: either would steal focus and
+scroll the board on load / on a background data push, a WCAG 3.2.1 (focus-on-
+load) violation and a visible board-scroll on first paint. This upholds the
+focus-vs-selection contract above (§207-214): the group is entered by native Tab
+(the cursor stop is the sole `tabindex="0"`) or an explicit `handle.focus()`
+(zone landing), and once focus is in the group a cursor move refocuses so focus
+never strands on a now-untabbable stop. The unit cycle adds a no-focus-steal
+test (focus parked outside the group survives mount and a background cursor
+change) alongside the in-group refocus test.
 
 ### T3 — Board cursor model (pure)
 
@@ -494,11 +508,23 @@ Interfaces: consumes T1 `installKeymap`/registry, T2 `createRovingGroup`, T3
 `boardStops`/`moveCursor`, `store.selectIssue`/`store.openAgent`
 (`store.ts:1233-1235,1268-1271`); produces the wired Bridge, the
 `IssueCard.inRovingGroup` prop, commands `board.openAssignedAgent` +
-`board.openCardCrossLink`, and the keymap rows
-`{ chord: "Shift+Enter", commandId: cmd("board.openAssignedAgent") }`,
-`{ chord: "Space", commandId: cmd("board.openCardCrossLink") }` (both
-group-relative — claimed by the active board group in the dispatcher's tier 1,
+`board.openCardCrossLink`, and the single additive keymap row
+`{ chord: "Shift+Enter", commandId: cmd("board.openAssignedAgent") }`
+(group-relative — claimed by the active board group in the dispatcher's tier 1,
 T1 — the Lists-block convention, `keymap.ts:45-48,78-82`).
+**Space cross-link — as-built footnote (RIG-2130 impl, Matt-approved):** the
+board's `Space` cross-link takes NO keymap row of its own. The dispatcher
+resolves a chord to its FIRST group-relative match in `DEFAULT_KEYMAP` order
+(`dispatch.ts:95-97`), and the frozen Lists block already binds
+`Space → list.expandOrToggle` (`keymap.ts:84`) ahead of any appended board row —
+so a `{ chord: "Space", commandId: cmd("board.openCardCrossLink") }` row would be
+dead code, never selected. The board instead maps the group-relative
+`list.expandOrToggle` it receives on Space to the cross-link (Bridge `onCommand`),
+exactly as it maps the arrow `list.*` ids. `board.openCardCrossLink` remains a
+registered command (palette + the OQ-2 future remap when a real board `Space`
+affordance lands); it simply has no default binding row. Behavior is identical to
+the frozen intent (Space fires the cursor card's cross-link, chip-less card still
+claimed); only the routing is via the existing Lists row, not a new one.
 Test cycle: `Bridge.test.tsx` component tests — one tab stop on the mounted
 board, arrow traversal across a fixture with a multi-card cell + an empty cell,
 Enter selects, Shift+Enter opens agent (while a stub `comms.send` is registered,
@@ -507,6 +533,29 @@ still claimed — handler reports handled, dispatcher `preventDefault`s (no
 select, no scroll), never a fall-through — gutter Enter opens agent, the
 positional `aria-label` is
 present on the cursor stop, tab-switch resets cursor, pointer paths unregressed.
+
+**Focus-gate + tab-switch reset — as-built footnote (RIG-2130 impl, PR #472
+review fold):** two conformance fixes to the frozen contract found in review.
+(1) *Focus-exclusivity.* The board supplies its active-group accessor to
+`installKeymap` gated on focus — `() => rovingGroup.isFocused() ? rovingGroup :
+null` (`Bridge.tsx`), where `isFocused()` is `stops().some(s => s.el ===
+document.activeElement)` (`roving.ts`, the same predicate the focus-guard effect
+already computes). Without the gate the board's tier-1 claim was unconditional
+while Bridge was mounted, hijacking `Enter`/`Space`/arrows/`Home`/`End` for every
+non-editable focus target app-wide — a keyboard trap on the toolbar/sidebar
+buttons, contradicting the focus-exclusivity contract above (§401-405, §604-613:
+board `Enter` is tier-1 *while the board is the focused group*). Locked by a
+`Bridge.test.tsx` focus-exclusivity test (focus a toolbar button → the board
+claims nothing, native keys survive). (2) *Tab-switch reset.* A tab switch
+(issues↔prs) reseeds the cursor to the tab's selected/first stop (§248), not a
+same-`(row,col)` recovery onto whatever PR row shares the old numeric column —
+the stop ids change wholesale across tabs, so that landing was arbitrary.
+`resolveCursor`'s same-column recovery is kept for in-tab churn (mode switch,
+background data push). The App-root install of the spine + the `view.bridge`
+(Ctrl/Mod+B) global command (§403-405, checklist T1) are **deferred to a stacked
+follow-up PR**: this PR ships the board-local keyboard model, and the app-wide
+spine mount point — which every sibling surface consumes, not just the board —
+is its own separately-reviewable change (tracked as its own RIG issue).
 
 ### T5 — Empty-board centered message
 

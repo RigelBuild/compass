@@ -24,6 +24,17 @@ export const IssueCard: Component<{
 	 *  the chase-light. No live data sets it yet (the Issue model carries no
 	 *  transition timestamp), so it is unwired — every caller omits it today. */
 	advancing?: boolean;
+	/** Board wiring (T4, DL-221): when the card is a stop in the Bridge's
+	 *  roving-tabindex group, its PR chip must not be a second Tab stop — the
+	 *  board owns keyboard nav and the cross-link moves to `board.openCardCrossLink`
+	 *  (Space). True demotes the chip to `tabIndex={-1}`; the pointer + chip
+	 *  keydown handlers stay, so a non-board host (chip omitted) is unaffected. */
+	inRovingGroup?: boolean;
+	/** Board wiring (T4, design §179-182): when the card is a stop in the
+	 *  Bridge's roving group, the board collects its `<button>` element (the stop
+	 *  the design mandates carries the managed `tabindex`). A ref-forwarding
+	 *  callback the board passes per stop; omitted by every non-board host. */
+	cardRef?: (el: HTMLButtonElement) => void;
 }> = (props) => {
 	const store = useStore();
 	const openAssignedAgent = () => {
@@ -56,6 +67,7 @@ export const IssueCard: Component<{
 			data-advancing={props.advancing ? "1" : undefined}
 			onClick={() => store.selectIssue(props.issue.id)}
 			onDblClick={openAssignedAgent}
+			ref={(el) => props.cardRef?.(el)}
 		>
 			<span class="card-top">
 				<span class="card-issue">{key()}</span>
@@ -69,7 +81,9 @@ export const IssueCard: Component<{
 							class="card-pr"
 							classList={{ link: props.onOpenPr !== undefined }}
 							role={props.onOpenPr ? "link" : undefined}
-							tabIndex={props.onOpenPr ? 0 : undefined}
+							tabIndex={
+								props.onOpenPr ? (props.inRovingGroup ? -1 : 0) : undefined
+							}
 							onClick={(e) => {
 								if (!props.onOpenPr) return;
 								e.stopPropagation();

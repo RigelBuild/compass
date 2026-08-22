@@ -40,11 +40,18 @@ export function bootFixture(root: HTMLElement): void {
 	// callerId defaults to CALLER_ID, the identity the fixtures are authored
 	// around. createRoot gives the store's memos a stable owner (never disposed),
 	// as index.tsx's main() does.
+	// Fixture-ONLY empty-board affordance (T5): the visual harness sets `?empty`
+	// to capture the empty-board fallback. This module is dead-code-eliminated
+	// from prod by the `import.meta.env.MODE === "fixture"` wall (§A1), so the
+	// param never reaches a shipped build. When present, seed an empty issue
+	// list so the board renders its `.bridge-empty` message.
+	const emptyBoard = new URLSearchParams(location.search).has("empty");
 	const store = createRoot(() =>
 		createAppStore({
 			queryClient,
 			initialComms: STUB_COMMS_STATE,
 			workspaceKey: "fixture",
+			...(emptyBoard ? { initialIssues: [] } : {}),
 		}),
 	);
 

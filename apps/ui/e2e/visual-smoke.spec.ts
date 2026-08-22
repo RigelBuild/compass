@@ -30,6 +30,20 @@ test.describe("visual smoke — legacy-palette baseline", () => {
 		});
 	});
 
+	// T5 — the empty-board fallback. `?empty` is a fixture-ONLY seam (boot-fixture.ts)
+	// that seeds the store with no issues, so the board renders `.bridge-empty`.
+	test("bridge — empty board", async ({ page }) => {
+		await page.goto("/?empty#/");
+		await page.locator(".bridge-empty").waitFor({ state: "visible" });
+		await page.evaluate(() => document.fonts.ready);
+		await page.screenshot({
+			path: `${SCREENS}/bridge-empty.png`,
+			fullPage: true,
+			animations: "disabled",
+			scale: "css",
+		});
+	});
+
 	test("right sidebar — PR pane", async ({ page }) => {
 		await page.goto("/#/");
 		await page.locator(".bridge").waitFor({ state: "visible" });

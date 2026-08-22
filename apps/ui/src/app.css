@@ -515,6 +515,18 @@
 	border: 1px solid var(--cx-border);
 }
 
+/* The empty-board fallback: a single centered, faint line on the panel surface
+ * when the built stop list is empty (no board cards/gutters). Mirrors
+ * `.conv-empty` — `margin:auto` centers it in the `.bridge` flex column. */
+.bridge-empty {
+	margin: auto;
+	max-width: 42ch;
+	padding: var(--cx-space-6);
+	text-align: center;
+	color: var(--cx-text-faint);
+	font-size: 13px;
+}
+
 .bridge-corner {
 	position: sticky;
 	top: 0;
