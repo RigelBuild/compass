@@ -663,6 +663,12 @@ type recordingRunner struct {
 	// answers an empty set — no live session, so reject-on-live never fires.
 	// Read under mu.
 	statuses []*compassv1.AgentSessionStatus
+	// startGate, when non-nil, blocks the serve loop on each Start command until
+	// the gate is closed — the wedged-Start shape the RIG-1641 T3 singleflight
+	// test drives to hold the leader's start in-flight while concurrent wakes
+	// coalesce onto it. The command is RECORDED before the wait, so a start that
+	// should have coalesced is still counted. Read under mu for a clean handoff.
+	startGate chan struct{}
 }
 
 // serve runs the dispatch loop. Like the seam test's loop it opens with one
@@ -690,6 +696,13 @@ func (r *recordingRunner) serve(
 			return
 		}
 		r.record(cmd)
+		if cmd.GetStart() != nil {
+			// Block the leader's Start in-flight until the test releases the gate
+			// — recorded above, so a coalesced-away start is still counted.
+			if gate := r.startGateCh(); gate != nil {
+				<-gate
+			}
+		}
 		if r.withholdStop && cmd.GetStop() != nil {
 			continue // record it, but never answer: the wedged-Runner shape
 		}
@@ -818,6 +831,37 @@ func (r *recordingRunner) setStartIDs(ids ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.startIDs = append([]string(nil), ids...)
+}
+
+// setStartGate installs a gate the serve loop blocks each Start on until the gate
+// is closed. Set before the Starts it should hold. Closing the returned channel
+// releases every blocked Start.
+func (r *recordingRunner) setStartGate(gate chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.startGate = gate
+}
+
+// startGateCh reads the installed Start gate under mu for a clean handoff.
+func (r *recordingRunner) startGateCh() chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.startGate
+}
+
+// startCount counts the Start commands the Server pushed — the teeth of the
+// RIG-1641 T3 singleflight assertion (exactly one underlying start when N
+// concurrent wakes coalesce for one agent).
+func (r *recordingRunner) startCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, c := range r.seen {
+		if c.GetStart() != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // statusSet returns the live-session status set the loop answers a GetAgentStatus

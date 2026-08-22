@@ -178,3 +178,71 @@ func TestRequireAgentSessionSubscriberCollapseIsUniformAcrossRefusalCauses(t *te
 		t.Fatalf("owner on its own agent's session = %v, want nil (uniform refusal must not mean universal refusal)", err)
 	}
 }
+
+// setRecordedAt overwrites a session row's recorded_at_unix_ms directly, so a
+// test controls recency ordering deterministically rather than relying on
+// wall-clock skew between two RecordAgentSession calls.
+func setRecordedAt(t *testing.T, s *Store, sessionID string, ms int64) {
+	t.Helper()
+	if _, err := s.pool.Exec(t.Context(),
+		`UPDATE agent_sessions SET recorded_at_unix_ms = $2 WHERE session_id = $1`,
+		sessionID, ms,
+	); err != nil {
+		t.Fatalf("setRecordedAt(%q, %d): %v", sessionID, ms, err)
+	}
+}
+
+// TestLatestSessionForAccountReturnsMostRecent pins the wake path's recency read:
+// with two sessions recorded for one agent at increasing recorded_at, the read
+// returns the LATER session_id. The recency column is what disambiguates them —
+// without ORDER BY recorded_at_unix_ms DESC the read could return either row, so
+// setting the later timestamp on the second and asserting it comes back is the
+// teeth.
+//
+// Mutation: dropping the ORDER BY (or ordering ASC) reddens this — the earlier
+// session would come back.
+func TestLatestSessionForAccountReturnsMostRecent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+
+	recordSession(t, s, agent, "sess-old")
+	setRecordedAt(t, s, "sess-old", 1000)
+	recordSession(t, s, agent, "sess-new")
+	setRecordedAt(t, s, "sess-new", 2000)
+
+	sessionID, ok, err := s.LatestSessionForAccount(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("LatestSessionForAccount = %v, want nil", err)
+	}
+	if !ok {
+		t.Fatal("LatestSessionForAccount ok = false, want true (the agent has recorded sessions)")
+	}
+	if sessionID != "sess-new" {
+		t.Fatalf("LatestSessionForAccount = %q, want %q (the most-recently-recorded session)", sessionID, "sess-new")
+	}
+}
+
+// TestLatestSessionForAccountNeverRecordedIsNotOk pins the no-prior-session
+// signal the wake path branches on: an agent that has never had a session
+// recorded returns ok=false and no error (not ErrNotFound), so the caller falls
+// to the fresh-start path rather than treating it as a fault.
+//
+// Mutation: surfacing noRows as an error instead of ("", false, nil) reddens the
+// "no error" assertion and would make the wake log outcome=failed for a
+// never-started agent.
+func TestLatestSessionForAccountNeverRecordedIsNotOk(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+
+	sessionID, ok, err := s.LatestSessionForAccount(ctx, agent.ID)
+	if err != nil {
+		t.Fatalf("LatestSessionForAccount(never-recorded) = %v, want nil error", err)
+	}
+	if ok {
+		t.Fatalf("LatestSessionForAccount(never-recorded) ok = true (session %q), want false", sessionID)
+	}
+}

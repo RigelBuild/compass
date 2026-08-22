@@ -114,6 +114,13 @@ type Consumer struct {
 	dispatch ControlDispatcher
 	resolver SessionResolver
 	log      *slog.Logger
+	// agentWaker best-effort resumes an offline recipient's session so an owed
+	// mention or subscribed deliver reaches it promptly (RIG-1641 T3). Set once
+	// at assembly via SetAgentWaker, AFTER both the consumer and the hub exist
+	// (the server package implements it over the resume machinery). Nil-safe: a
+	// consumer with no waker wired does not wake — today's behavior. T3 defines
+	// and wires this seam; no routing path calls it yet (that is T2/T4).
+	agentWaker AgentWaker
 
 	mu sync.Mutex
 	// held is the pending-deliver registry (design.md:157-168), keyed by the
@@ -190,6 +197,16 @@ func NewConsumer(bus *events.Bus[*compassv1.SubscribeCommsResponse], st Delivery
 		notify:   make(chan struct{}, 1),
 		gates:    make(map[string]*sync.Mutex),
 	}
+}
+
+// SetAgentWaker wires the offline-agent wake sink (the server's resume machinery)
+// AFTER both the consumer and the hub exist — the post-construction setter that
+// breaks the delivery<->server construction cycle, mirroring comms.SetAskWaker
+// (comms.go:82-84). Called once at server assembly before serving; no lock
+// because the write happens-before the first dispatch. Nil-safe to leave unset (a
+// consumer with no waker does not wake — today's behavior).
+func (c *Consumer) SetAgentWaker(w AgentWaker) {
+	c.agentWaker = w
 }
 
 // Run tails the comms bus and dispatches until ctx is cancelled (serve shutdown)
