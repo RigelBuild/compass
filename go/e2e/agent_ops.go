@@ -179,6 +179,13 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 // id; it owns Close on that stream. SessionInjection carries no session id, so
 // the session scoping is done entirely by which session's stream is opened.
 //
+// Because that tail is a live fan with no replay ring (see sessiontail.go), the
+// subscribe must be live BEFORE the injection fans: call this — from a goroutine,
+// since it blocks — before the post/action that drives the dispatch. Post first
+// and the frame is lost, and the call fails only at settleTimeout (a hang-then-
+// red, not a fast clear failure). This is the same open-before-post constraint
+// OpenSessionTail documents; AwaitControlDispatch just performs the open itself.
+//
 // It is FULLY EVENT-GATED: a goroutine pumps stream.Receive() and the select
 // races each frame against ctx — no sleeps, no polling, no retry loops. The
 // stream was opened under the caller's ctx (whose lifetime OpenSessionTail does
