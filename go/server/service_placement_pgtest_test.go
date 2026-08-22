@@ -703,6 +703,13 @@ func (r *recordingRunner) serve(
 				<-gate
 			}
 		}
+		if cmd.GetDeliverControl() != nil {
+			// A send-only control deliver (SEA-1569 §5): a real Runner answers a
+			// SUCCESSFUL deliver with NO result (success rides a later
+			// delivery_ack), so record it and send nothing — the RIG-1641 T4 e2e
+			// observes the pushed steer/deliver as this recorded wire command.
+			continue
+		}
 		if r.withholdStop && cmd.GetStop() != nil {
 			continue // record it, but never answer: the wedged-Runner shape
 		}
