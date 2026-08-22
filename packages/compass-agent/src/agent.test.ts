@@ -1435,6 +1435,32 @@ describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () =>
 		]);
 		await h.close();
 	});
+
+	test("two mid-turn delivers with DISTINCT fromHandles thread through per-message-id, not last-write-wins", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		// Two mid-turn delivers, each with its OWN author handle, coalesce into
+		// the one turn-end flush. #deliverFromHandles is keyed per message id, so
+		// each injection carries its own handle — a single scalar (last-write-wins)
+		// would collapse both to "jane".
+		h.agent.deliver(deliverMsg("m1", "hello one"), "matt");
+		h.agent.deliver(deliverMsg("m2", "hello two"), "jane");
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(injections(h.frames)).toEqual([
+			{
+				opKind: SessionInjectionKind.DELIVER,
+				messageId: "m1",
+				fromHandle: "matt",
+			},
+			{
+				opKind: SessionInjectionKind.DELIVER,
+				messageId: "m2",
+				fromHandle: "jane",
+			},
+		]);
+		await h.close();
+	});
 });
 
 describe("formatDeliversForPrompt — coalescing format (SEA-1310 §8)", () => {

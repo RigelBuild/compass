@@ -230,7 +230,7 @@ func (c *Consumer) sweepOwedMentions(ctx context.Context, agent store.AccountID,
 					"agent", string(agent), "channel", string(channel), "message_id", string(m.ID))
 				continue
 			}
-			ops = append(ops, steerOpEntry{op: steerOp(wire), messageID: m.ID})
+			ops = append(ops, steerOpEntry{op: steerOp(wire, c.authorHandle(ctx, wire)), messageID: m.ID})
 		}
 	}
 	if len(ops) > 0 {
