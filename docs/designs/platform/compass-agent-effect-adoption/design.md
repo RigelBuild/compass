@@ -8,7 +8,8 @@
 
 Status: Draft
 Linear: RIG-2384. The adopt/don't-adopt call is **frozen** — ruled by Matt
-(2026-08-20), frozen in the internal monorepo's effect-ts evaluation record.
+(2026-08-20) and recorded in the compass effect-adoption decision record
+([`../compass-effect-adoption-decision.md`](../compass-effect-adoption-decision.md)).
 This record
 designs only the *how*: the migration of the compass agent-runner's transport
 layer onto Effect.
@@ -21,9 +22,9 @@ hand-rolls the exact primitives Effect ships — "a bounded priority queue with
 drop-oldest overload (`transport/publish-spine.ts:43`), bounded-backoff retry
 for priority frames (`publish-spine.ts:50-55`), and a durable-unary retry with
 idempotency keys + a drain budget (`transport/frame-sink.ts`) — Queue +
-Schedule + supervision" (the frozen evaluation record). Compass is
-pre-launch ("does not run anywhere yet, not even for dogfood", per the same
-record), so the migration carries no production
+Schedule + supervision" (the compass effect-adoption decision record). Compass
+is pre-launch ("does not run anywhere yet, not even for dogfood", per the same
+decision), so the migration carries no production
 retrofit risk — but the transport's behavior IS already contractually pinned
 by exhaustive tests (`frame-sink.test.ts`, `control-source.test.ts`,
 `index.test.ts` — 30+ invariant tests, e.g. `frame-sink.test.ts:294`
@@ -143,9 +144,9 @@ runtime lifecycle consolidation in `index.ts` (T5).
 
 ## Global Constraints
 
-- **Scope: `packages/compass-agent` only.** Not the Go daemon, not the internal
-  monorepo's tools, not any other compass package
-  (the frozen ruling's scope).
+- **Scope: `packages/compass-agent` only.** Not the Go daemon, not the tiny
+  first-party TypeScript CLIs, not any other compass package
+  (the compass effect-adoption decision's scope).
   Within the package, first cut is `src/transport/` (OQ-1).
 - **Every transport invariant survives, no behavior regression.** The pinned
   set: bounded trace queue drop-oldest + counted (`publish-spine.ts:43,196-199`);

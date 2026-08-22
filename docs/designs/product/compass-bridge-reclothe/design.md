@@ -2,7 +2,7 @@
 
 Status: Active
 Owner lane: compass-ux (design) → compass-ui (execution)
-Refs: SEA-2111 (live board doesn't match the rigel.build reference); sequenced
+Refs: SEA-2111 (live board doesn't match the company-site reference render);
 after the SEA-2034 DS-token cutover (merged, main `18e988b5`). Two adjacent
 concerns are split into their own lanes/PRs, not folded here: the state-dot
 pixel-art glyph adoption → SEA-2118 (mechanical frozen-spec adoption, global
@@ -11,8 +11,10 @@ pass — see T4). This record is the board-structure re-clothe and ships on the
 current state-dots.
 Governing spec: `apps/ui/src/design/surfaces.md` §"Bridge — the Issues and PRs
 board" (L196–268, frozen T6/SEA-1816)
-Reference render: `apps/rigel.build/src/components/BridgeBoard.astro` (brand
-repo, read-only)
+Reference render: the canonical Rigel company-site board reference render (the
+brand reference for this surface — see
+[`docs/specs/brand/surfaces.md`](../../../specs/brand/surfaces.md) §"The board
+reference render")
 
 ## Problem / Intent
 
@@ -20,7 +22,7 @@ The live Bridge board (`apps/ui/src/components/Bridge.tsx`) renders on the
 merged `--cx-*` tier but still wears its pre-DS clothing: GitHub-board-style
 bordered cells, rounded priority-striped cards, a plain 13px toolbar heading,
 and a PRs tab that is a grouped list rather than the board the frozen spec
-describes. The rigel.build reference render (`BridgeBoard.astro`) is the
+describes. The canonical Rigel company-site board reference render is the
 excellence bar the surfaces spec names as "the starting point … not a redraw"
 (`surfaces.md:202-203`). This record lifts the reference's visual structure
 onto the live component — real data, real interaction, only the clothing
@@ -58,22 +60,23 @@ Every task below inherits these; none restates them.
   freezes. The board keeps today's `StateDot` unchanged; no `.state-dot` rule
   is touched here.
 - **Not a redraw.** `surfaces.md:202-203`: "The starting point is
-  `BridgeBoard.astro` (authored against the real `Bridge.tsx` /
-  `IssueCard.tsx` / `board.ts`), not a redraw." The live component's data
+  the company-site board reference render (authored against the real
+  `Bridge.tsx` / `IssueCard.tsx` / `board.ts`), not a redraw." The live
+  component's data
   wiring (`board.ts` / `board-render.ts` accessors), selection model
   (`store.selectIssue` / `store.openAgent`), click/dblclick/chip a11y
   compromises (`IssueCard.tsx:56-59`, `Bridge.tsx:69-71`), and the
   Swimlanes/Status grouping toggle (`Bridge.tsx:98`, `160-175`) all survive
   unchanged.
 - **No fabricated data.** Where the Astro mock shows a fact the live store
-  cannot source (the `advancing` flag, `BridgeBoard.astro:39,70`), the gap is
+  cannot source (the `advancing` flag, the reference render), the gap is
   handled as a dormant hook — never a stubbed fake field presented as real.
 - **Sticky behavior is load-bearing.** The live board scrolls
   (`app.css:510-512` `.swimlane { flex: 1; overflow: auto; … }`) with sticky
   column heads (`app.css:536-539`) and sticky lane gutters (`app.css:566-569`).
   The reference does not scroll (it caps at `max-width: 1040px`,
-  `BridgeBoard.astro:434-437`, with a mobile `overflow-x: auto` fallback only,
-  `:612-618`). Every lifted visual must keep the sticky/scroll model working.
+  the reference render, with a mobile `overflow-x: auto` fallback only).
+  Every lifted visual must keep the sticky/scroll model working.
 - **Ledger coupling:** this is a product design record; its freeze requires a
   same-PR `docs/designs/product/DECISIONS.md` delta or a `Ledger-impact:` PR
   line. The driver handles this at PR time. Candidate ledger rows are flagged
@@ -129,14 +132,14 @@ The reference is lifted at three levels:
 
 1. **Structure** — the hairline grid. The reference draws its grid as a 1px
    `gap` over a `--rigel-night-2` container background with cells on
-   `--rigel-night` (`BridgeBoard.astro:434-450`), which reads as hairlines.
+   `--rigel-night` (the reference render), which reads as hairlines.
    That exact technique is **not** sticky-safe: the live board scrolls under
    sticky heads, and grid gaps are windows to the scrolled content behind
    them. The re-clothe therefore keeps the live border technique
    (`app.css:609-611`) but tunes it to the hairline look — uniform 1px
    `--cx-border` cell borders, cells on `--cx-bg`, lane gutters on
    `--cx-bg-panel` (the reference's `.bridge-lane { background:
-   var(--rigel-panel) }`, `BridgeBoard.astro:459-465`), and the board frame on
+   var(--rigel-panel) }`, the reference render), and the board frame on
    a single outer `--cx-border` border. Same optics, sticky-safe mechanics.
 2. **Composition** — the frozen `surfaces.md` §Composition contract
    (`surfaces.md:224-234`): cells are `.cx-card` on the panel tier; selection
@@ -148,21 +151,21 @@ The reference is lifted at three levels:
    card/badge component files get wired in as part of their adoption slices.
 3. **Type hierarchy** — the reference quiets the issue key
    (`.card-issue { color: var(--rigel-mute); letter-spacing: 0.5px }`,
-   `BridgeBoard.astro:515-520`) and brightens the title
-   (`.card-title { color: var(--rigel-fog) }`, `:556-561`); the live card
+   the reference render) and brightens the title
+   (`.card-title { color: var(--rigel-fog) }`); the live card
    inverts that (key on `--cx-accent` 600-weight, `app.css:678-683`). The
    toolbar heading goes display-face (`--cx-font-display` at
    `--cx-display-sm`, `tokens.css:196,202` — the reference's
    `font-family: var(--rigel-display); font-size: 22px`,
-   `BridgeBoard.astro:379-384`) from the live 13px/600 (`app.css:477-480`).
+   the reference render) from the live 13px/600 (`app.css:477-480`).
    Column heads go uppercase letterspaced mono per the reference
-   (`BridgeBoard.astro:451-458`) — the live heads are already close
+   (the reference render) — the live heads are already close
    (`app.css:536-552`) and keep their live-data count badge.
 
 Where the DS and the reference disagree on primitive shape (the DS `.cx-card`
 carries `--cx-radius-md` and motion-token transitions,
 `design/components/card.css:11,17-19`; the reference card is square,
-`BridgeBoard.astro:501-508`), **the DS wins on shape** — the reference guides
+the reference render), **the DS wins on shape** — the reference guides
 structure, spacing, and hierarchy; frozen DS components govern primitive shape.
 Where **no DS component governs the element** (the CI/review pips, the seg
 control), the reference's shape wins (OQ-1, generalizing the draft's pip-only
@@ -171,7 +174,7 @@ carve-out).
 The PRs view is the one structural change (D1): `surfaces.md:206-210` freezes
 "both are the same swimlane grid, only the columns differ — … PRs use the
 PR-lifecycle columns (In progress, In review, Ready to merge, Merged)", and the
-reference renders exactly that (`BridgeBoard.astro:120-129,309-359`). The live
+reference renders exactly that (the reference render). The live
 PRs tab is a grouped flat list (`Bridge.tsx:274-320`, `.pr-tab`/`.pr-group`/
 `.pr-row`, `app.css:783-861`). The board-ification is the last slice, driven by
 a new pure derivation over the real `PullRequest` shape — no fabricated column
@@ -189,26 +192,26 @@ field.
 
 ## Gap analysis
 
-Reference (`BridgeBoard.astro`, cited `astro:`) vs live, each row mapped to the
+Reference (the company-site board reference render, its rows cited below) vs live, each row mapped to the
 live file+line it changes and the token it lands on. Live line numbers at main
 `18e988b5`. (The former G9 state-dot row is removed — it is its own lane,
 SEA-2118.)
 
 | # | Reference has | Live has | Live change site | Token(s) |
 | --- | --- | --- | --- | --- |
-| G1 | Hairline 1px grid: container bg `--rigel-night-2`, `gap: 1px`, cells `--rigel-night` (`astro:434-450`) | Per-cell 1px borders bottom/right on `--cx-border` (`app.css:609-611`), corner/head borders (`app.css:524-525,541-542`) | `.swim-cell`, `.swim-corner`, `.swim-colhead`, `.swim-gutter` border/bg rules; add outer board frame | `--cx-border`, `--cx-bg`, `--cx-bg-panel` |
-| G2 | Lane gutter on the panel tier, `padding: 14px 12px; gap: 9px` (`astro:459-465`) | Gutter on `--cx-bg-raised`, `padding: 10px 12px; gap: 8px` (`app.css:566-578`) | `.swim-gutter` (rename `.bridge-lane` per `surfaces.md:211`) | `--cx-bg-panel` |
-| G3 | Col heads: 11px mono, `letter-spacing: 1px`, uppercase, `padding: 12px 14px` (`astro:451-458`) | 10px/600, `letter-spacing: 0.05em`, `padding: 8px 12px`, colored `lane-dot` + count (`app.css:536-563`; dot fed `lane.color` from `constants.ts:17-31`) | `.swim-colhead` (rename `.bridge-col-head`); drop the `lane-dot`, keep the live count | column tint: `color-mix(in srgb, var(--lane-tint) 8%, var(--cx-bg-raised))` where `--lane-tint` = the lane's `--cx-issue-*` (OQ-2 alpha) |
-| G4 | Column-head tint per `surfaces.md:213-215` ("tinted by the issue-state color at low alpha in the lane head only — contrast rationing") — NOT actually present in the reference CSS (`astro:451-458` is untinted `--rigel-haze`) | No tint | `.swim-colhead` background; `Bridge.tsx:190-194` passes `--lane-tint` inline style | `--cx-issue-queued/blocked/in_progress/in_review/done` (`tokens.css:139-143`) |
-| G5 | Flat square card: `bg --rigel-raised`, 1px border, `padding: 9px 10px`, no radius, no left stripe (`astro:501-508`) | `.card`: `--cx-bg-panel`, `--cx-radius-sm`, 3px priority left border (`app.css:626-643,659-670`), selected = accent ring (`app.css:654-657`) | `IssueCard.tsx:46` container class → `.cx-card` + `data-selected`; delete `app.css` `.card` base/selected/priority rules; add the board-scoped internal-layout block (F3) | `.cx-card` contract: `--cx-bg-panel`, `--cx-bg-selected` + accent left rule (`design/components/card.css:5-37`) |
-| G6 | Quiet key / bright title: `.card-issue` on mute + 0.5px tracking (`astro:515-520`), `.card-title` on fog (`astro:556-561`) | Key on `--cx-accent` 11px/600 (`app.css:678-683`); title default text (`app.css:695-698`) | `.card-issue`, `.card-title` rules in `app.css` (propagates to DoneView's shared sub-parts, F6) | `--cx-text-faint` (key), `--cx-text` (title) |
-| G7 | Display-face board heading, 22px (`astro:379-384`) | 13px/600 UI face (`app.css:477-480`) | `.bridge-toolbar .heading` | `--cx-font-display`, `--cx-display-sm` (`tokens.css:196,202`) |
-| G8 | Square seg control, mono labels, bordered (`astro:385-403`) | `.seg` on `--cx-bg-panel` + active `--cx-bg-active`, `--cx-radius-sm` (`app.css:487-507`) | `.seg`, `.seg button` — align metrics + square off (no DS component governs the seg, OQ-1); keep Solid `onClick` mechanism (radios are the marketing no-JS hack, `astro:225-229`, not ported) | `--cx-border`, `--cx-bg-raised` |
-| G9 | 7px square CI/review pips on state colors (`astro:526-550`) | 8px `border-radius: 2px` CI square + circle review dot on `--cx-ok/error/warn` (`app.css:746-773`) | `.ci-badge`/`.review-badge` rules; consumers `IssueCard.tsx:79,83`, `Bridge.tsx:61,64`, `DoneView.tsx:37,41` | `--cx-ci-pass/fail/pending`, `--cx-review-approved/changes/pending` (`tokens.css:146-151`); compact-pip shape per D3 |
-| G10 | One advancing card: blue border + chase-light sweep, 1.8s, reduced-motion `display: none` (`astro:586-610,620-631`) | Nothing | New `.cx-card[data-advancing="1"]` rule + keyframe (consumes existing tokens only); no live data source for the flag | `--cx-accent` (blue flow per `surfaces.md:232-234`), `--cx-pulse-period`, `--cx-ease-out` — D2 |
-| G11 | PRs view is a board: same lanes, PR-lifecycle columns, PR cards with coord-as-key + ci/review + `resolved/total threads` foot (`astro:120-129,309-359`) | Grouped flat list: `.pr-tab` > `.pr-group` > `.pr-row` (`Bridge.tsx:274-320`, `app.css:783-861`) | `Bridge.tsx` PRs branch; new `prLifecycle`/`prBoardRows` in `board-render.ts`/`board.ts`; `PR_LANES` in `constants.ts`; delete `.pr-row*` selectors | `--cx-issue-*` reused for column tint; card tokens as G5 — D1 |
-| G12 | Empty cell renders empty (`astro:490-496` `min-height: 56px`, no placeholder) | Status-mode empty cell renders a `"—"` placeholder (`Bridge.tsx:207` `.term-empty` fallback); swimlane-mode empties are dimmed (`.swim-cell.dim`, `app.css:620-623`, applied `Bridge.tsx:252-255`) | Remove the `Bridge.tsx:207` fallback; `min-height` on `.bridge-cell`; keep `.dim` (a live-data affordance the reference lacks, consistent with the KEPT list — F11) | — |
-| G13 | Cell `padding: 10px; gap: 8px; min-height: 56px` (`astro:490-496`); gutter col 168px, cols `minmax(0,1fr)` (`astro:260`) | Cell `padding: 7px; gap: 7px`, no min-height (`app.css:609-618`); gutter 180px, cols `minmax(210px,1fr)` (`Bridge.tsx:131-134`) | `.bridge-cell` metrics; keep live `minmax(210px,1fr)` (the board scrolls; `minmax(0,1fr)` is the reference's fit-to-1040px constraint, not ours) | `--cx-space-2/3` |
+| G1 | Hairline 1px grid: container bg `--rigel-night-2`, `gap: 1px`, cells `--rigel-night` (the reference render) | Per-cell 1px borders bottom/right on `--cx-border` (`app.css:609-611`), corner/head borders (`app.css:524-525,541-542`) | `.swim-cell`, `.swim-corner`, `.swim-colhead`, `.swim-gutter` border/bg rules; add outer board frame | `--cx-border`, `--cx-bg`, `--cx-bg-panel` |
+| G2 | Lane gutter on the panel tier, `padding: 14px 12px; gap: 9px` (the reference render) | Gutter on `--cx-bg-raised`, `padding: 10px 12px; gap: 8px` (`app.css:566-578`) | `.swim-gutter` (rename `.bridge-lane` per `surfaces.md:211`) | `--cx-bg-panel` |
+| G3 | Col heads: 11px mono, `letter-spacing: 1px`, uppercase, `padding: 12px 14px` (the reference render) | 10px/600, `letter-spacing: 0.05em`, `padding: 8px 12px`, colored `lane-dot` + count (`app.css:536-563`; dot fed `lane.color` from `constants.ts:17-31`) | `.swim-colhead` (rename `.bridge-col-head`); drop the `lane-dot`, keep the live count | column tint: `color-mix(in srgb, var(--lane-tint) 8%, var(--cx-bg-raised))` where `--lane-tint` = the lane's `--cx-issue-*` (OQ-2 alpha) |
+| G4 | Column-head tint per `surfaces.md:213-215` ("tinted by the issue-state color at low alpha in the lane head only — contrast rationing") — NOT actually present in the reference CSS (the reference render is untinted `--rigel-haze`) | No tint | `.swim-colhead` background; `Bridge.tsx:190-194` passes `--lane-tint` inline style | `--cx-issue-queued/blocked/in_progress/in_review/done` (`tokens.css:139-143`) |
+| G5 | Flat square card: `bg --rigel-raised`, 1px border, `padding: 9px 10px`, no radius, no left stripe (the reference render) | `.card`: `--cx-bg-panel`, `--cx-radius-sm`, 3px priority left border (`app.css:626-643,659-670`), selected = accent ring (`app.css:654-657`) | `IssueCard.tsx:46` container class → `.cx-card` + `data-selected`; delete `app.css` `.card` base/selected/priority rules; add the board-scoped internal-layout block (F3) | `.cx-card` contract: `--cx-bg-panel`, `--cx-bg-selected` + accent left rule (`design/components/card.css:5-37`) |
+| G6 | Quiet key / bright title: `.card-issue` on mute + 0.5px tracking (the reference render), `.card-title` on fog (the reference render) | Key on `--cx-accent` 11px/600 (`app.css:678-683`); title default text (`app.css:695-698`) | `.card-issue`, `.card-title` rules in `app.css` (propagates to DoneView's shared sub-parts, F6) | `--cx-text-faint` (key), `--cx-text` (title) |
+| G7 | Display-face board heading, 22px (the reference render) | 13px/600 UI face (`app.css:477-480`) | `.bridge-toolbar .heading` | `--cx-font-display`, `--cx-display-sm` (`tokens.css:196,202`) |
+| G8 | Square seg control, mono labels, bordered (the reference render) | `.seg` on `--cx-bg-panel` + active `--cx-bg-active`, `--cx-radius-sm` (`app.css:487-507`) | `.seg`, `.seg button` — align metrics + square off (no DS component governs the seg, OQ-1); keep Solid `onClick` mechanism (radios are the marketing no-JS hack, the reference render, not ported) | `--cx-border`, `--cx-bg-raised` |
+| G9 | 7px square CI/review pips on state colors (the reference render) | 8px `border-radius: 2px` CI square + circle review dot on `--cx-ok/error/warn` (`app.css:746-773`) | `.ci-badge`/`.review-badge` rules; consumers `IssueCard.tsx:79,83`, `Bridge.tsx:61,64`, `DoneView.tsx:37,41` | `--cx-ci-pass/fail/pending`, `--cx-review-approved/changes/pending` (`tokens.css:146-151`); compact-pip shape per D3 |
+| G10 | One advancing card: blue border + chase-light sweep, 1.8s, reduced-motion `display: none` (the reference render) | Nothing | New `.cx-card[data-advancing="1"]` rule + keyframe (consumes existing tokens only); no live data source for the flag | `--cx-accent` (blue flow per `surfaces.md:232-234`), `--cx-pulse-period`, `--cx-ease-out` — D2 |
+| G11 | PRs view is a board: same lanes, PR-lifecycle columns, PR cards with coord-as-key + ci/review + `resolved/total threads` foot (the reference render) | Grouped flat list: `.pr-tab` > `.pr-group` > `.pr-row` (`Bridge.tsx:274-320`, `app.css:783-861`) | `Bridge.tsx` PRs branch; new `prLifecycle`/`prBoardRows` in `board-render.ts`/`board.ts`; `PR_LANES` in `constants.ts`; delete `.pr-row*` selectors | `--cx-issue-*` reused for column tint; card tokens as G5 — D1 |
+| G12 | Empty cell renders empty (the reference render `min-height: 56px`, no placeholder) | Status-mode empty cell renders a `"—"` placeholder (`Bridge.tsx:207` `.term-empty` fallback); swimlane-mode empties are dimmed (`.swim-cell.dim`, `app.css:620-623`, applied `Bridge.tsx:252-255`) | Remove the `Bridge.tsx:207` fallback; `min-height` on `.bridge-cell`; keep `.dim` (a live-data affordance the reference lacks, consistent with the KEPT list — F11) | — |
+| G13 | Cell `padding: 10px; gap: 8px; min-height: 56px` (the reference render); gutter col 168px, cols `minmax(0,1fr)` (the reference render) | Cell `padding: 7px; gap: 7px`, no min-height (`app.css:609-618`); gutter 180px, cols `minmax(210px,1fr)` (`Bridge.tsx:131-134`) | `.bridge-cell` metrics; keep live `minmax(210px,1fr)` (the board scrolls; `minmax(0,1fr)` is the reference's fit-to-1040px constraint, not ours) | `--cx-space-2/3` |
 
 Live-only features the reference lacks — all KEPT (real data / real
 affordances): the `N agents · M in-flight` toolbar sub (`Bridge.tsx:140-142`),
@@ -274,7 +277,7 @@ already tokenized, `card.css:17-19`).
 `--cx-space-3` (12px) padding (`card.css:5-8`), while the live `.card` is a
 `display: flex; flex-direction: column; gap: 6px; text-align: left` button
 (`app.css:626-630`) and the reference card is `9px 10px` padding
-(`astro:503-508`). So T3 adds a **board-scoped** layout block —
+(the reference render). So T3 adds a **board-scoped** layout block —
 `.bridge-cell > .cx-card { display: flex; flex-direction: column; gap: 6px;
 text-align: left; padding: 9px 10px }` — overriding the DS card's block/12px
 default for the dense board only. This is a spacing/structure override (the
@@ -309,7 +312,7 @@ form. If SEA-2117 is frozen when T4 runs, T4 renders the chosen glyph/pip form
 (a `BadgeGlyph`-style inline SVG mirrors the state-dot emission contract and the
 consumer sites flip from bare `<span>` to the component). If SEA-2117 has NOT
 frozen, T4 ships the interim compact square pip recolored onto the tier (7px,
-no radius — `astro:526-532`) and the glyph form lands as a fast follow — T4
+no radius — the reference render) and the glyph form lands as a fast follow — T4
 does not block on SEA-2117.
 
 Interfaces: consumes `ciBadge(pr): "pending" | "success" | "failure" |
@@ -324,15 +327,15 @@ harness.
 Add the `.cx-card[data-advancing="1"]` rule: `border-color: var(--cx-accent)`
 plus a sweeping `::after` chase-light gradient
 (`color-mix(in srgb, var(--cx-accent) 32%, transparent)` — the reference's
-32% mix, `astro:598-603`), animated at `var(--cx-pulse-period)`
+32% mix, the reference render), animated at `var(--cx-pulse-period)`
 `var(--cx-ease-out)` infinite (existing tokens only — no coined literal).
 **Fidelity/guard notes (F12):** `--cx-pulse-period` (`tokens.css:224`) resolves
 to 1.6s via `--rigel-pulse-period` (`tokens.css:39`)
-where the reference hard-codes a 1.8s sweep (`astro:606`) — we accept the
+where the reference hard-codes a 1.8s sweep (the reference render) — we accept the
 token value rather than coin the literal. The period token is **zeroed** under
 reduced motion (`tokens.css:241-248`), which would leave a `0s`-infinite
 animation running; the explicit `display: none` reduced-motion guard
-(mirroring `astro:620-631`) is therefore **load-bearing, not redundant** — a
+(mirroring the reference render) is therefore **load-bearing, not redundant** — a
 reviewer must not strip it. The attribute has NO live data source (`Issue`
 carries no transition timestamp — `stub-data.ts` has no `updatedAt`/
 `advancing`), so it ships dormant: `IssueCard` renders `data-advancing` only
@@ -347,7 +350,7 @@ Interfaces: produces the CSS rule + keyframe and an optional
 ### T6 — PRs view board-ification (G11; D1, last)
 
 Replace the grouped list with the same swimlane grid over PR-lifecycle
-columns, per `surfaces.md:206-210` and the reference (`astro:309-359`). New
+columns, per `surfaces.md:206-210` and the reference (the reference render). New
 pure derivations (red-green: unit tests first per house rule):
 
 ```ts
@@ -398,7 +401,7 @@ The PR card reuses the T3 card anatomy with the PR's own facts
 and keeps the issue-key `.cx-chip` cross-link flipping to Issues
 (`Bridge.tsx:72-88` semantics). **`prCount` tab badge stays open-only**
 (`board.ts:158-167`) — consistent with the reference, which excludes the
-Merged column from its count (`astro:218-221`). **F7:** `prCount`'s doc
+Merged column from its count (the reference render). **F7:** `prCount`'s doc
 comment (`board.ts:154-155` "equals the visible row count") becomes false once
 the tab shows merged rows the count excludes — the comment updates to "equals
 the non-Merged visible rows" in this diff, and `Bridge.test.tsx:57-64`'s
@@ -480,7 +483,7 @@ wins. Reviewable in the screenshot pass.
 
 **OQ-2 (non-load-bearing) — column-head tint alpha.** `surfaces.md:213-215`
 specs "low alpha" without a number, and the reference CSS carries no tint at
-all (`astro:451-458`). *Assumption:* `color-mix(in srgb, var(--lane-tint) 8%,
+all (the reference render). *Assumption:* `color-mix(in srgb, var(--lane-tint) 8%,
 var(--cx-bg-raised))`. Reviewed in `bridge-colheads.png`; a one-line knob.
 
 **OQ-3 (non-load-bearing) — "Ready to merge" column color.** `--cx-issue-*`
