@@ -572,7 +572,7 @@ func (d *blockCapturingDispatcher) DispatchControl(_ context.Context, sessionID 
 	d.mu.Lock()
 	d.calls = append(d.calls, blockRecord{sessionID: sessionID, messageID: msg.GetId(), firstText: first})
 	d.mu.Unlock()
-	d.recorded <- struct{}{}
+	signalObserved(d.recorded)
 	return nil
 }
 

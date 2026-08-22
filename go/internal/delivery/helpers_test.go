@@ -33,6 +33,27 @@ const testTimeout = 10 * time.Second
 
 func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
+// signalObserved does a NON-BLOCKING send of a per-call token on a test
+// observation channel (the recorded/wake signals below). The token only wakes a
+// waiter (waitForMessage / waitForDispatches / waitForWakes / waitFor) to
+// re-check the fake's recorded set; the recorded FACT already lives in the fake's
+// mutex-guarded calls slice BEFORE this send, so the token is a wakeup hint,
+// never the source of truth. The send must not block: a blocking send turns the
+// observation channel into backpressure on the code under test, so a test that
+// produces more dispatches than the buffer holds (the bus-lag floods publish
+// 1100 past the 1024-token buffer) wedges the consumer's Run goroutine on a full
+// channel the moment a waiter stops draining — a deadlock that passes in
+// isolation but hangs the whole package to the -timeout under cross-test load
+// (RIG-2514). Dropping a token is safe: a drop happens only when the buffer is
+// full (hence non-empty), so a blocked waiter still has a token to drain and loop
+// back to re-check the snapshot; when the buffer is empty the send always lands.
+func signalObserved(ch chan struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
 // opKind distinguishes a deliver op from a steer op in a recorded dispatch, so a
 // mention-routing test can assert the mentioned agent got a STEER and a plain
 // subscriber got a DELIVER.
@@ -115,7 +136,7 @@ func (d *fakeDispatcher) DispatchControl(_ context.Context, sessionID string, op
 	kind, messageID := classifyOp(op)
 	d.calls = append(d.calls, dispatchRecord{sessionID: sessionID, messageID: messageID, kind: kind})
 	d.mu.Unlock()
-	d.recorded <- struct{}{}
+	signalObserved(d.recorded)
 	return nil
 }
 
@@ -211,7 +232,7 @@ func (w *fakeWaker) WakeAgent(_ context.Context, agent store.AccountID) {
 	if hook != nil {
 		hook(agent)
 	}
-	w.recorded <- struct{}{}
+	signalObserved(w.recorded)
 }
 
 func (w *fakeWaker) count(agent store.AccountID) int {
