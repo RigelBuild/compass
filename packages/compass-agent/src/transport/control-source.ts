@@ -70,6 +70,7 @@ import type { UnmappedEvent } from "./../mapping";
 import { AckCursor } from "./control/ack-cursor";
 import { AsyncBuffer, type Queued } from "./control/buffer";
 import type { RunnerTransport } from "./index";
+import { getTransportRuntime } from "./runtime-channel";
 
 // Bounded-backoff reconnect schedule for the Control server-stream (ms). A
 // non-clean stream end (Runner mid-restart, socket blip) re-opens `Control` on
@@ -268,15 +269,20 @@ export function createSocketControlSource(
 	// consumer abandons the iterable (its `return()`), so an abandoned source does
 	// not keep consuming the transport and dispatching into the buffer (M2).
 	const abort = new AbortController();
-	// The source's transitional module-local ManagedRuntime (design record
-	// docs/designs/platform/compass-agent-effect-adoption/design.md §T4). Effect
-	// is confined module-private here: it backs the forked, interruptible reconnect
-	// pump fiber, and is disposed in the iterator's return() — the AsyncIterable
-	// has no drain(), so return() is its only teardown seam. The default logger is
-	// removed so a swallowed pump defect does not double-report to the console,
-	// mirroring the sibling transport modules' runtimes (frame-sink.ts,
-	// publish-spine.ts). T5 consolidates runtime ownership into the transport.
-	const runtime = ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
+	// Borrow the single transport-owned ManagedRuntime through the module-private
+	// channel when present; otherwise (a fake transport in a unit test) make and
+	// OWN a default runtime as before (design record §T5). Effect is confined
+	// module-private here: the runtime backs the forked, interruptible reconnect
+	// pump fiber. An OWNED (fallback) runtime is disposed in the iterator's
+	// return() — the AsyncIterable has no drain(), so return() is its only
+	// teardown seam. A BORROWED runtime is disposed by the transport's close(),
+	// never here. The fallback runtime removes the default logger so a swallowed
+	// pump defect does not double-report to the console, mirroring the sibling
+	// transport lanes (frame-sink.ts, publish-spine.ts).
+	const borrowedRuntime = getTransportRuntime(transport);
+	const ownsRuntime = borrowedRuntime === undefined;
+	const runtime =
+		borrowedRuntime ?? ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
 	// Seqs decoded to a representable op and queued but not yet applied. Dedups a
 	// redelivery of an op the source already holds (reconnect/takeover) against
 	// re-queueing it; cleared as each is applied on pull.
@@ -610,10 +616,13 @@ export function createSocketControlSource(
 				// Effect.promise, so Fiber.interrupt alone cannot end a fiber parked in
 				// it — only the abort unparks it (design record §T4). buffer.close()
 				// settles an in-flight pull. Then the now-unblocked fiber is interrupted
-				// (a belt-and-suspenders join point) and the module-local ManagedRuntime
-				// is disposed — the AsyncIterable has no drain(), so return() is the
-				// runtime's only teardown seam, and disposing it here is what keeps no
-				// live runtime across the T2–T4 transitional state (design record §T4).
+				// (a belt-and-suspenders join point) — always, since the pump is the
+				// source's own — and the ManagedRuntime is disposed ONLY if this source
+				// owns it (the fallback path). A BORROWED transport-owned runtime is
+				// disposed by the transport's close() after the drain barrier; disposing
+				// it here would break the still-open sibling sink/spine that share it
+				// (design record §T5). The AsyncIterable has no drain(), so return() is a
+				// self-owned runtime's only teardown seam.
 				// Idempotent: abort/close/interrupt/dispose all no-op once fired.
 				// A pending `lastYielded` is deliberately left UNACKED here. That is
 				// correct for the only path that reaches return() today: agent.ts's
@@ -630,7 +639,7 @@ export function createSocketControlSource(
 						await runtime.runPromise(Fiber.interrupt(pumpFiber));
 						pumpFiber = undefined;
 					}
-					await runtime.dispose();
+					if (ownsRuntime) await runtime.dispose();
 					return { value: undefined, done: true };
 				},
 			};

@@ -6,26 +6,32 @@
 // mock would restate the transport; only a live socket server can catch a broken
 // nodeOptions.path, a wrong baseUrl, or a protocol mismatch.
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as http2 from "node:http2";
 import * as os from "node:os";
 import * as path from "node:path";
 import { create } from "@bufbuild/protobuf";
 import { connectNodeAdapter } from "@connectrpc/connect-node";
+import { Effect } from "effect";
 
+import { AgentSessionState, SessionFrameSchema } from "../compassv1";
+import type { OutboundFrame } from "../frame";
 import {
 	AgentGateway,
 	CommsCallRequestSchema,
 	type CommsCallResult,
 	CommsCallResultSchema,
+	PublishFrameResponseSchema,
 } from "../gen/compass/v1/agent_gateway_pb";
 import {
 	MessageBlockSchema,
 	PostMessageRequestSchema,
 	PostMessageResponseSchema,
 } from "../gen/compass/v1/comms_pb";
+import { createSocketFrameSink } from "./frame-sink";
 import { createUnixSocketTransport } from "./index";
+import { getTransportRuntime } from "./runtime-channel";
 
 // One server + one socket per test, torn down in afterEach so a failing case
 // never leaks the socket file or a listening server into the next test.
@@ -142,4 +148,93 @@ test("comms() round-trips the in-band error variant", async () => {
 	if (result.result.case !== "error") throw new Error("expected error variant");
 	expect(result.result.value.code).toBe("not_found");
 	expect(result.result.value.message).toBe("no such channel");
+});
+
+// Stand up an h2c server serving AgentGateway.Publish (the client-stream the
+// FrameSink's trace lane rides), draining every frame so the spine's cycled
+// batch resolves cleanly. Same short-socket-path discipline as serveComms.
+async function servePublish(received: string[]): Promise<string> {
+	const socketPath = path.join(
+		os.tmpdir(),
+		`t5-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.sock`,
+	);
+	const adapter = connectNodeAdapter({
+		routes(router) {
+			router.rpc(AgentGateway.method.publish, async (stream) => {
+				for await (const _ of stream) received.push("publish");
+				return create(PublishFrameResponseSchema, {});
+			});
+		},
+	});
+	const server = http2.createServer(adapter);
+	activeServer = server;
+	activeSocketPath = socketPath;
+	await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+	return socketPath;
+}
+
+function traceFrame(): OutboundFrame {
+	return {
+		kind: "session",
+		value: create(SessionFrameSchema, { state: AgentSessionState.UNSPECIFIED }),
+	};
+}
+
+// The leak class close() exists for (index.ts:50-62, design record §T5): the
+// transport owns ONE ManagedRuntime backing the sink/spine/source lanes, and
+// close() — called after the sink's drain barrier — is what disposes it, so no
+// live fiber outlives the transport. This drives a real socket end to end: a
+// sink over the shared transport emits + drains a frame, and then close()
+// disposes the runtime. Both halves of the ownership contract are pinned:
+//   - after sink.drain() the runtime is STILL live — a BORROWING factory must
+//     never dispose the shared runtime (a premature dispose would break the
+//     still-open sibling spine/source), so drain leaves it usable; and
+//   - after transport.close() the runtime is disposed — the transport owns that
+//     disposal, and once disposed it runs no further work, so no fiber keeps the
+//     loop alive.
+// A live server-side receipt of the frame proves the shared runtime actually
+// backed the send (non-vacuity: a runtime disposed too early at drain would have
+// thrown inside the sink rather than flushing).
+test("close() after drain() disposes the single transport-owned runtime, leaving no live fibers", async () => {
+	const received: string[] = [];
+	const socketPath = await servePublish(received);
+
+	const transport = createUnixSocketTransport(socketPath);
+	// The sink borrows the transport-owned runtime through the module-private
+	// channel (production wiring path) — it does not make its own.
+	const sink = createSocketFrameSink(transport);
+	const runtime = getTransportRuntime(transport);
+	if (runtime === undefined) {
+		throw new Error("transport did not publish its runtime on the channel");
+	}
+
+	sink.emit(traceFrame());
+	await sink.drain?.();
+
+	// The frame reached the Runner: the shared runtime backed a real send, so a
+	// borrowed runtime disposed too early at drain would have reddened here.
+	expect(received).toEqual(["publish"]);
+	// Borrowed, so drain() must NOT have disposed it — the runtime is still usable.
+	expect(runtime.runSync(Effect.succeed("live"))).toBe("live");
+
+	// close() must be the thing that disposes the runtime — the leak class this
+	// test exists for. Spy on dispose BEFORE close() so the assertion pins
+	// close()'s own call, not a dispose the test issued: awaiting the runtime
+	// here directly (as a "second, idempotent dispose") would tear it down
+	// regardless of whether close() ever called it, so a close() that forgot to
+	// dispose would still pass. With the spy, a close() that only aborts the
+	// session leaves toHaveBeenCalled false and reddens.
+	const disposeSpy = spyOn(runtime, "dispose");
+	transport.close();
+	expect(disposeSpy).toHaveBeenCalledTimes(1);
+	// dispose is fire-and-forget from close()'s sync signature; await the exact
+	// promise close() started (captured by the spy) — no second dispose, no
+	// wall-clock poll — to observe its completion deterministically.
+	await disposeSpy.mock.results[0]?.value;
+
+	// Disposed by close(): the runtime rejects further work, so no fiber it backed
+	// survives the transport. runSync on a disposed ManagedRuntime throws.
+	expect(() => runtime.runSync(Effect.succeed("dead"))).toThrow(
+		"ManagedRuntime disposed",
+	);
 });

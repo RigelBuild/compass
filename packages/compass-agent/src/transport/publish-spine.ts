@@ -45,6 +45,7 @@ import {
 	Queue,
 } from "effect";
 import type { PublishFrameRequest } from "../gen/compass/v1/agent_gateway_pb";
+import type { TransportRuntime } from "./runtime-channel";
 
 // The bounded trace/session send buffer. Chosen once here: large enough to
 // absorb a normal burst of trace frames against transient backpressure, small
@@ -91,18 +92,29 @@ export interface PublishSpine {
 // transport's `client.publish`, whose promise resolves at stream end). The
 // driver is invoked once per batch, lazily — an idle agent that never emits
 // opens no stream.
+//
+// `borrowedRuntime` is the single transport-owned ManagedRuntime threaded in by
+// createUnixSocketTransport (design record §T5). The spine is a direct child of
+// the transport — it takes `publish`, not `transport`, so it cannot read the
+// module-private channel the sink/source use; the runtime is passed by argument
+// instead (createPublishSpine is neither a package re-export nor a transport
+// index export, so an `effect` type on this internal signature never reaches the
+// public `.d.ts`). When absent (test paths that build a bare spine over a fake
+// publish driver), the spine falls back to its OWN default runtime and disposes
+// it at the end of drain(). A borrowed runtime is NEVER disposed here — the
+// transport's close() owns that.
 export function createPublishSpine(
 	publish: (stream: AsyncIterable<PublishFrameRequest>) => Promise<unknown>,
+	borrowedRuntime?: TransportRuntime,
 ): PublishSpine {
-	// The spine's transitional ManagedRuntime (design record
-	// docs/designs/platform/compass-agent-effect-adoption/design.md, T3/OQ-3).
-	// Effect is confined module-private here: it backs the sliding trace queue,
-	// the wake latch, and the forked pump fiber, and is disposed at the end of
-	// drain(). T5 consolidates runtime ownership into the transport. The default
-	// logger is removed so a handled pump-send failure does not double-report to
-	// the console (the loss disposition is already folded into the drop counters),
-	// mirroring the frame-sink's own runtime.
-	const runtime = ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
+	// Effect is confined module-private behind the spine: it backs the sliding
+	// trace queue, the wake latch, and the forked pump fiber. The default logger
+	// is removed on the fallback runtime so a handled pump-send failure does not
+	// double-report to the console (the loss disposition is already folded into
+	// the drop counters).
+	const ownsRuntime = borrowedRuntime === undefined;
+	const runtime =
+		borrowedRuntime ?? ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
 	// Trace/session lane: a bounded drop-OLDEST sliding queue. The sync emit()
 	// path reads unsafeSize() BEFORE offering (size == cap ⇒ the imminent offer
 	// evicts the oldest) and then runs the effectful offer synchronously — sliding
@@ -278,10 +290,12 @@ export function createPublishSpine(
 					await runtime.runPromise(Fiber.join(pumpFiber));
 				}
 			} finally {
-				// Dispose the transitional runtime at the END of drain, in a `finally`
-				// so a throwing join cannot strand it. T5 consolidates runtime
-				// ownership later.
-				await runtime.dispose();
+				// Dispose ONLY a runtime this spine owns (the fallback path). A borrowed
+				// transport-owned runtime is disposed by the transport's close() after
+				// the drain barrier — disposing it here would break the still-open
+				// sibling sink/source that share it (design record §T5). In a `finally`
+				// so a throwing join cannot strand a self-owned runtime.
+				if (ownsRuntime) await runtime.dispose();
 			}
 		},
 	};
