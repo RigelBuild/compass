@@ -280,21 +280,15 @@ func TestLiveGitHubListIssues(t *testing.T) {
 	t.Cleanup(func() { closeGitHubIssue(t, author, repo, setup.Number) })
 
 	f := liveFixture(t, providerGitHub, "list_issues")
-	got, err := gh.ListIssues(ctx, repo, IssueFilter{State: "open", Labels: []string{"bug"}})
+	filter := IssueFilter{State: "open", Labels: []string{"bug"}}
+	row, n, err := findListedIssueWithBackoff(ctx, gh, repo, filter, setup.Number)
 	if err != nil {
-		t.Fatalf("ListIssues: %v", err)
+		t.Fatalf("findListedIssueWithBackoff: %v", err)
 	}
-	var row *Issue
-	for i := range got {
-		if got[i].Number == setup.Number {
-			row = &got[i]
-			break
-		}
+	if row.Number != setup.Number {
+		t.Fatalf("ListIssues did not return the setup issue #%d among %d rows after backoff", setup.Number, n)
 	}
-	if row == nil {
-		t.Fatalf("ListIssues did not return the setup issue #%d among %d rows", setup.Number, len(got))
-	}
-	assertMatchesFixture(t, *row, f.Response.firstWant(t))
+	assertMatchesFixture(t, row, f.Response.firstWant(t))
 }
 
 // TestLiveGitHubCreatePullRequest opens a PR on a prepared head branch and
@@ -642,6 +636,43 @@ func createWithBackoff[T any](ctx context.Context, create func() (T, error)) (T,
 		return create()
 	}
 	return got, err
+}
+
+// findListedIssueWithBackoff polls ListIssues until the target issue appears,
+// tolerating GitHub's REST list-index read-after-write lag: the label-filtered
+// /repos/{repo}/issues list is eventually consistent, so a just-created issue
+// can be absent from the list for a few seconds even though GetIssue-by-number
+// already returns it. Like createWithBackoff this is real live-API timing
+// behavior on the network path — a bounded, ctx-aware event-gate, NOT a retry
+// loop masking a bug (rule://no-retries): a genuinely-absent issue still fails
+// loud after the bound, and it never executes on the skip path. Returns the
+// matching row, the row count observed on the last attempt (for the caller's
+// diagnostic), and an error only on ctx cancellation or a ListIssues failure.
+func findListedIssueWithBackoff(ctx context.Context, gh *GitHub, repo string, f IssueFilter, want uint64) (Issue, int, error) {
+	var lastLen int
+	// A few attempts spanning the propagation window; total bound (~17s) stays
+	// well under the oracle step budget, on the same scale as createWithBackoff.
+	delays := []time.Duration{0, 2 * time.Second, 5 * time.Second, 10 * time.Second}
+	for _, d := range delays {
+		if d > 0 {
+			select {
+			case <-ctx.Done():
+				return Issue{}, lastLen, ctx.Err()
+			case <-time.After(d):
+			}
+		}
+		got, err := gh.ListIssues(ctx, repo, f)
+		if err != nil {
+			return Issue{}, lastLen, err
+		}
+		lastLen = len(got)
+		for i := range got {
+			if got[i].Number == want {
+				return got[i], lastLen, nil
+			}
+		}
+	}
+	return Issue{}, lastLen, nil // not found within bound; caller fails loud
 }
 
 // isSecondaryRateLimit reports whether err is GitHub's 403 secondary-rate-limit.
