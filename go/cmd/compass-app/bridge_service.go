@@ -76,12 +76,13 @@ type bridgeService struct {
 	pump   *bridge.Pump
 	events eventEmitter
 
-	// target is the TLS-anchored remote bridge target (native-client mode). The
-	// Connect probe arms it via SetBearer and forwards through its
-	// bearer-injecting transport. Nil in embedded mode, which never calls Connect.
+	// target is the TLS-anchored remote bridge target. The Connect probe arms
+	// it via SetBearer and forwards through its bearer-injecting transport. Nil
+	// only in a service constructed without a target (test wiring); production
+	// runClient always wires one.
 	target *bridge.Target
-	// tokens persists the remote bearer keyed by server URL (T5.2). Nil in
-	// embedded mode.
+	// tokens persists the remote bearer keyed by server URL (T5.2). Nil only in
+	// that same test wiring.
 	tokens tokenstore.Store
 
 	// connectMu serializes the whole Connect probe transaction (arm → probe →
@@ -92,12 +93,11 @@ type bridgeService struct {
 	// armed. Held for the whole method so each Connect is single-flight.
 	connectMu sync.Mutex
 
-	// accountID is the caller account id resolved by the embedded launch
-	// pipeline via WhoAmI (DL-111), exposed to the JS/UI through the bound
+	// accountID is the caller account id, exposed to the JS/UI through the bound
 	// AccountID method so it can build the native ConnectionProvider. It is set
-	// once by the launch pipeline immediately after construction and before
-	// app.Run, and only read thereafter, so it needs no lock. Empty in client
-	// mode or when identity was not resolved.
+	// once immediately after construction and before app.Run, and only read
+	// thereafter, so it needs no lock. Empty in client mode, or when identity
+	// was not resolved.
 	accountID string
 
 	mu       sync.Mutex
@@ -124,8 +124,9 @@ type inflightCall struct {
 }
 
 // newBridgeService builds a bridge service that forwards against pump and emits
-// response frames through events. target and tokens back the Connect probe in
-// native-client mode; both are nil in embedded mode, which never calls Connect.
+// response frames through events. target and tokens back the Connect probe;
+// production always wires both, and a service built without them (test wiring)
+// fails Connect closed rather than nil-derefing.
 func newBridgeService(pump *bridge.Pump, events eventEmitter, target *bridge.Target, tokens tokenstore.Store) *bridgeService {
 	return &bridgeService{
 		pump:     pump,
@@ -137,12 +138,10 @@ func newBridgeService(pump *bridge.Pump, events eventEmitter, target *bridge.Tar
 }
 
 // AccountID is the bound IPC getter the webview calls to learn the caller
-// account id the embedded launch resolved via WhoAmI (DL-111). The JS side
-// (compass-ui zone) reads it over Wails IPC to build the native
-// ConnectionProvider; the account id is server-derived, never client-supplied.
-// It returns the empty string when no identity was resolved (client mode, or a
-// shell started against a hand-run daemon), which the JS treats as "not yet
-// identified".
+// account id resolved via WhoAmI (DL-111). The JS side (compass-ui zone) reads
+// it over Wails IPC to build the native ConnectionProvider; the account id is
+// server-derived, never client-supplied. It returns the empty string when no
+// identity was resolved, which the JS treats as "not yet identified".
 func (s *bridgeService) AccountID(_ context.Context) string {
 	return s.accountID
 }
@@ -230,12 +229,12 @@ func (s *bridgeService) CompassRPCCancel(_ context.Context, req cancelRequest) {
 // (T5 starts unarmed and only a successful Connect arms it). The token never
 // appears in Message or any log/error.
 func (s *bridgeService) Connect(ctx context.Context, req connectRequest) connectResult {
-	// Connect is reflect-bound on the service in every mode, but only
-	// native-client mode wires a target + tokenstore; embedded mode passes nil
-	// for both. A webview IPC call to Connect there must fail closed, not
-	// nil-deref (rule://go-no-panic-in-lib — this service never panics).
+	// Connect is reflect-bound on the service, but a service built without a
+	// target + tokenstore (test wiring) has nothing to probe. A webview IPC
+	// call to Connect there must fail closed, not nil-deref
+	// (rule://go-no-panic-in-lib — this service never panics).
 	if s.target == nil || s.tokens == nil {
-		return connectResult{Kind: connectKindOther, Message: "Connect is not available in this mode"}
+		return connectResult{Kind: connectKindOther, Message: "Connect is not available: no remote target is configured"}
 	}
 
 	// Serialize the arm → probe → disarm/persist transaction against the single
@@ -290,8 +289,8 @@ func (s *bridgeService) Connect(ctx context.Context, req connectRequest) connect
 	}
 	accountID := whoResp.Msg.GetAccountId()
 	if accountID == "" {
-		// Mirror embedded.go's resolveCaller: an empty id is never a valid
-		// identity, even on an otherwise-successful WhoAmI.
+		// An empty id is never a valid identity, even on an
+		// otherwise-successful WhoAmI.
 		s.target.SetBearer("")
 		return connectResult{Kind: connectKindOther, Message: "The server returned an empty account id"}
 	}
