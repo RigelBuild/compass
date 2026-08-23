@@ -418,7 +418,7 @@ const AgentsSection: Component = () => {
 
 /** The left sidebar: the Workspace header and Bridge/Backlog/Done/Settings nav
  *  links pinned at the top, then two collapsible sections — Channels above Agent
- *  workspaces (design compass-0.7 §578-590). */
+ *  workspaces (design: architecture-lineage). */
 export const LeftSidebar: Component = () => {
 	const store = useStore();
 	// The Bridge badge mirrors the board's in-flight count: active columns minus

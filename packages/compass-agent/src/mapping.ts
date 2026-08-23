@@ -1,5 +1,5 @@
 // The mapping: the agent's `AgentSessionEvent` stream → compass.v1 `AgentFrame`s.
-// This is the agent's own testable surface (design compass-0.6 §T5): there is no
+// This is the agent's own testable surface (design: architecture-lineage): there is no
 // Runner-side translator, so the agent-side map is where SDK semantics become
 // compass.v1 wire payloads, and it is exhaustively unit-tested against event
 // fixtures.
@@ -11,13 +11,13 @@
 // narrowed (`typeof`/`in`, via the `isRecord` guard and the extractors below),
 // never an inline cast.
 //
-// Session-surface mapping (§T5, spine-inversion + compass-0.8 typed renderer).
+// Session-surface mapping (§T5, spine-inversion + typed session renderer, design: architecture-lineage).
 // The execution trace — assistant-text chunks, thinking chunks, tool calls +
 // their updates (with file diffs), plans, and notices — rides
 // `SessionFrame.typed_event` as a typed `SessionEvent`, which Compass renders in
 // its first-party session pane. This supersedes v0.6's opaque `bytes event`
-// passthrough: the mapper now TYPES the trace (design compass-0.8 §"First-party
-// typed session renderer"), it does not relay opaque bytes. Board lifecycle
+// passthrough: the mapper now TYPES the trace (design: architecture-lineage), it
+// does not relay opaque bytes. Board lifecycle
 // transitions ride the same variant as `SessionFrame.state` (typed_event empty).
 //
 // The streaming conversation write-through (MessagePosted/MessageUpdated → comms)

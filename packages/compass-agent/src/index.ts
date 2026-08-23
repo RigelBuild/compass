@@ -1,4 +1,4 @@
-// @compass/agent — the first-party Compass agent (design compass-0.6 §T5).
+// @compass/agent — the first-party Compass agent (design: architecture-lineage).
 //
 // Built on the OMP SDK (@oh-my-pi/pi-agent-core): it subscribes the SDK event
 // stream, maps it to compass.v1 `AgentFrame`s in-process (its own testable

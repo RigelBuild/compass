@@ -415,7 +415,7 @@ const RepoBranchDropdown: Component = () => {
 	);
 };
 
-/** A fleet tab's pane (design compass-0.7). Renders the agent's home-DM
+/** A fleet tab's pane (design: architecture-lineage). Renders the agent's home-DM
  *  conversation inline (asks answerable in place — first-responder-wins, per
  *  the ask-in-channel record), above a compact header control that opens the
  *  agent's full workspace via store.openAgent. Only rendered for a RESOLVABLE

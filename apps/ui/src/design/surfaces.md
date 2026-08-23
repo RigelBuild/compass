@@ -113,7 +113,7 @@ load-bearing structure to carry forward:
 **Composition.** Tree rows are `.cx-tree-row` at the 26px contract height, using
 `data-depth` (0–5) for indent and `.cx-tree-caret` for the expand affordance.
 Each row carries a `.cx-state-dot` (the eight-glyph process-axis set), the agent
-name, a role pip (`.cx-pip`, for supervisor/warden — a pip, not a special row),
+name, a role pip (`.cx-pip`, for a role such as supervisor — a pip, not a special row),
 and an unread badge (`.cx-badge`). Selection is `--cx-bg-selected` plus the
 accent left rule, never a raised background — the row contract's selected state.
 The channel rail rows are the same `.cx-tree-row`, each channel followed by its

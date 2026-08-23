@@ -3,7 +3,7 @@
 package runtime
 
 // End-to-end per-agent container lifecycle against real rootless podman
-// (compass.md §5.3), driving the production AgentRuntime.Launch path:
+// (design: architecture-lineage), driving the production AgentRuntime.Launch path:
 //
 //  1. the Runner creates + starts a per-agent container,
 //  2. the agent's checkout dir is present inside the container, owned by the

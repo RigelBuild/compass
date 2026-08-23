@@ -1,5 +1,5 @@
 // The compass.v1 communication layer: the Discord/Slack-style channel system
-// that is the spine of Compass (design compass-0.5, D1/D5/D9). Humans and
+// that is the spine of Compass (design: architecture-lineage, D1/D5/D9). Humans and
 // agents are first-class accounts in a management hierarchy. Channels nest in
 // channel groups, so a user's space (e.g. group "matt" → channel
 // "coordination", the path "matt.coordination") carries group-level

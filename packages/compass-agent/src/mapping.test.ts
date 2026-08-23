@@ -1,5 +1,5 @@
 // EventMapper: the SDK `AgentSessionEvent` stream → compass.v1 frame map (§T5's
-// "own testable surface", spine-inversion + compass-0.8 typed session renderer).
+// "own testable surface", spine-inversion + typed session renderer, design: architecture-lineage).
 // Each test defends an observable translation contract — what compass.v1 payload
 // a given SDK event produces — never the mapper's internals. One payload class:
 //   - SESSION (typed trace): assistant-text / thinking chunks, tool calls + their

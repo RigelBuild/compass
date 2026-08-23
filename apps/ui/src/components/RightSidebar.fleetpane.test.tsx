@@ -11,7 +11,7 @@ import { type AppStore, createAppStore } from "../store";
 import { testQueryClient } from "../test-support";
 import { RightSidebar } from "./RightSidebar";
 
-// Render acceptance spec for the compass-0.7 fleet pane (design compass-0.7,
+// Render acceptance spec for the fleet pane (design: architecture-lineage,
 // FleetPane in RightSidebar.tsx). A fleet tab (Supervisor · Compass-UI) used to
 // render CONTROL-ONLY — just a button into the agent's workspace. It now renders
 // the agent's home-DM conversation INLINE above a compact "Open workspace"
@@ -85,7 +85,7 @@ function homeDmMessages(agentId: string) {
 	return STUB_MESSAGES.filter((m) => topicIds.has(m.topicId));
 }
 
-describe("RightSidebar fleet pane (compass-0.7)", () => {
+describe("RightSidebar fleet pane", () => {
 	// pinAgent write-throughs to the default-workspace localStorage key
 	// (compass.pinnedAgents.acc-matt), and happy-dom's localStorage is
 	// process-wide, so clear it around every case — otherwise pins accumulate

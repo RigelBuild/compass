@@ -1163,7 +1163,7 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 // `agent.steer(msg)`. Unlike deliver, a steer is an @-mention interrupt: mid-turn
 // it injects via `session.agent.steer` (drained by the running loop, no turn
 // started); idle it STARTS A TURN with the mention as content via
-// `session.agent.prompt`, mirroring the idle-deliver path (compass-0.6 idle arm).
+// `session.agent.prompt`, mirroring the idle-deliver path (design: architecture-lineage idle arm).
 describe("CompassAgent — channel-borne steer (SEA-1310 §8 steer arm)", () => {
 	test("a mid-turn steer injects via session.agent.steer and does NOT start a turn", async () => {
 		const h = startDeliverAgent();
@@ -1194,7 +1194,7 @@ describe("CompassAgent — channel-borne steer (SEA-1310 §8 steer arm)", () => 
 		// to its live session, but the old continue() path threw and rolled back, so
 		// its SessionInjection.STEER never fired and the split assertion timed out.
 		// The frozen record ties an idle frame to "starts a new turn" (agent.ts
-		// idle-arm comment / compass-0.6 :399-408); prompt() is the idle-deliver
+		// idle-arm comment / design: architecture-lineage); prompt() is the idle-deliver
 		// path's mechanism too (#flushDelivers), so this mirrors it.
 		const h = startDeliverAgent();
 		// Idle: no agent_start, no prior turns — the fresh-peer shape.

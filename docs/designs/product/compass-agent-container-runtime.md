@@ -4,8 +4,8 @@ Status: Active
 
 Design for how a per-agent Compass container gets its **toolchain**, its
 **credentials**, and stays **current** over a long-lived session, on the Go
-stack (`go`). Companion to [`compass.md`](compass.md) §5.3/§5.5 and
-the v0.6 record [`compass-0.6/design.md`](compass-0.6/design.md). All grounding
+stack (`go`). Companion to the [architecture lineage](compass-architecture-lineage/design.md)
+record (the isolation and container-runtime rationale). All grounding
 is against the working tree at `6b192e731` (branch
 `compass-sea-1327-container-runtime-design`); `oss/` is byte-identical to
 `origin/main` at `c1146579a` (verified this run:

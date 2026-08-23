@@ -1,5 +1,5 @@
 // Typed session model + the pure fold that turns an ordered SessionEvent stream
-// into render-ready TraceItems (design compass-0.8, §397-438).
+// into render-ready TraceItems (design: architecture-lineage).
 //
 // A session is an ordered stream of typed SessionEvents (assistant/thinking text
 // deltas, tool calls + updates, plans, notices). `foldSession` reduces that raw

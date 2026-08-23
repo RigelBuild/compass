@@ -1,7 +1,7 @@
 // The frame boundary: the seam between the typed compass.v1 payloads the agent
 // produces/consumes and the bytes on the stdio channel the Runner drives.
 //
-// The frame CONTRACT is frozen (design compass-0.6 §T5, spine-inversion;
+// The frame CONTRACT is frozen (design: architecture-lineage, spine-inversion;
 // extended by SEA-1570 with the transcript-tee lane):
 //   - stdout: `AgentFrame` — oneof frame {
 //         SessionFrame session; TranscriptEntry transcript_entry;

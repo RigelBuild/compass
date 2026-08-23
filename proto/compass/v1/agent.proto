@@ -1,4 +1,4 @@
-// The compass.v1 first-party-agent stdio envelopes (design compass-0.6 §T5).
+// The compass.v1 first-party-agent stdio envelopes (design: architecture-lineage).
 //
 // INTERNAL-ONLY surface. Unlike compass.proto / comms.proto — the public,
 // generated-client door between a UI and the Server — these messages are the
@@ -14,7 +14,7 @@
 // not a change to the public messages. `buf lint`/`buf breaking` still cover it
 // (they glob `compass/**/*.proto`).
 //
-// Ratified additive contract change (design compass-0.6, "Ratified additive
+// Ratified additive contract change (design: architecture-lineage, "Ratified additive
 // contract changes"; freeze gate July 2026).
 
 syntax = "proto3";
@@ -31,7 +31,7 @@ import "compass/v1/forge.proto";
 
 // The agent's stdout envelope: one discriminated frame per newline-delimited
 // protojson line. The agent emits two payload classes, routed to two surfaces
-// with two owners (design compass-0.6 §T5, spine-inversion). The durable
+// with two owners (design: architecture-lineage, spine-inversion). The durable
 // CONVERSATION (an agent `text` reply or an `ask`) is Compass-owned and typed —
 // it commits to comms Message/MessageBlock rows + SubscribeComms. The
 // execution-trace SESSION data (thought chunks, tool calls, todos, edits) is
@@ -58,7 +58,7 @@ message AgentFrame {
     SessionFrame session = 3;
     // Agent -> Runner control-plane acks, riding the loss-tolerable Publish
     // spine beside the conversation/session frames (the established frame-spine
-    // ack convention, design compass-0.6 DeliveryAck; consolidation OQ-4(i) +
+    // ack convention, design: architecture-lineage DeliveryAck; consolidation OQ-4(i) +
     // amended OQ-6). Both are consumed by the Runner's control lane (the
     // telemetry-ingest path routes them off Publish to it), never written
     // through to a comms/session surface.
@@ -113,7 +113,7 @@ message TranscriptEntry {
 }
 
 // The `session` variant's payload: a typed OMP-native session event plus the
-// board's lifecycle state (design compass-0.8 §"First-party typed session
+// board's lifecycle state (design: architecture-lineage §"First-party typed session
 // renderer", retyping the former opaque `bytes event`). A frame carries one or
 // both:
 //   - `typed_event` — one typed SessionEvent (compass.proto): the execution
@@ -135,7 +135,7 @@ message SessionFrame {
 // The agent's inbound control envelope — the other half of this §T5 contract,
 // pushed to the agent over AgentGateway.Control (agent_gateway.proto). One
 // AgentControl per control op. The variant NAMES and TYPES are the ratified
-// v0.6 oneof (design compass-0.6 §"control ops"); the transport-consolidation
+// v0.6 oneof (design: architecture-lineage §"control ops"); the transport-consolidation
 // record (docs/designs/product/compass-agent-transport-consolidation) gives it
 // its first WIRE definition, replacing the never-built stdin decoder.
 //

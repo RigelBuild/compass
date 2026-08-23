@@ -8,7 +8,7 @@
 // the full interface is explorable in `vite dev` with no daemon and no Wails IPC.
 //
 // Everything here is a plain in-memory fixture. When the daemon grows the board,
-// agent-runtime (ACP over compass.v1, design record compass-0.4), and audit
+// agent-runtime (ACP over compass.v1, design: architecture-lineage), and audit
 // streams, this module is deleted and the components read the generated
 // @compass/client instead — the shapes below intentionally mirror that eventual
 // contract. The data is drawn from a real multi-agent wave so it reads true.
@@ -312,7 +312,7 @@ export interface Terminal {
 
 /** Durable comms identity (SubscribeComms · Postgres). The agent-kind arm
  *  gains an additive homeChannelId mirroring ratified 0.6 RT-2
- *  (`../compass-0.6/design.md:1760-1764`); the proto landing of
+ *  (`../compass-architecture-lineage/design.md`); the proto landing of
  *  `home_channel_id` on AgentAccount is the comms-server lane (SEA-1195). */
 export interface Account {
 	/** Account id, e.g. "acc-cook" — the one id space. */

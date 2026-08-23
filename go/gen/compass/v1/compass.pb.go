@@ -1341,7 +1341,7 @@ type SubscribeEventsResponse_ResyncRequired struct {
 
 type SubscribeEventsResponse_AgentSessionStatus struct {
 	// Agent-session payloads, relayed from the Runner's agent event stream
-	// (compass.md §7.2). Each carries the server-side session id so the UI
+	// (design: architecture-lineage). Each carries the server-side session id so the UI
 	// attributes activity to the right agent.
 	AgentSessionStatus *AgentSessionStatus `protobuf:"bytes,12,opt,name=agent_session_status,json=agentSessionStatus,proto3,oneof"`
 }
@@ -1887,7 +1887,7 @@ func (x *AgentPlanEntry) GetStatus() AgentPlanEntryStatus {
 }
 
 // The typed observation-trace event — the render contract for the UI's session
-// pane (compass-0.8 §"First-party typed session renderer"). One SessionEvent is
+// pane (design: architecture-lineage). One SessionEvent is
 // one thing that happened in the agent's execution trace: a chunk of assistant
 // text or thinking, a tool call and its updates, a plan, or a notice. It is the
 // payload the public SubscribeAgentSession stream relays to a subscribed UI,
@@ -2660,7 +2660,7 @@ func (x *AgentSessionFrame) GetState() AgentSessionState {
 
 // ProvisionAgentWorkspace: create the isolated per-agent container for a
 // workstream. Agent ref + repo/workstream spec in, container_name out — the
-// handle StartAgentSession then brings online (compass-0.6 §T4).
+// handle StartAgentSession then brings online (design: architecture-lineage).
 type ProvisionAgentWorkspaceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The owned agent account this workstream belongs to (the AgentAccount id

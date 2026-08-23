@@ -1,7 +1,7 @@
 //go:build unix
 
-// Package runnerhub is the Server side of the Server<->Runner seam (design
-// compass-0.6 §T4). It owns the enrollment registry (which Runner is attached
+// Package runnerhub is the Server side of the Server<->Runner seam (design:
+// architecture-lineage). It owns the enrollment registry (which Runner is attached
 // and under what token subject), the session-command router (a client-facing
 // session RPC → the owning Runner's Sessions stream, request-id correlated),
 // and Deliver — the sole entry point relayed Runner events take into the Server,

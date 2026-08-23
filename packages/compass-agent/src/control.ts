@@ -1,7 +1,7 @@
 // The control boundary: the seam between the bytes on stdin and the typed
 // control ops the agent applies.
 //
-// The control CONTRACT is frozen (design compass-0.6 §T5, ratified additive
+// The control CONTRACT is frozen (design: architecture-lineage, ratified additive
 // message `AgentControl`):
 //   oneof control {
 //     PromptControl prompt; SteerControl steer; DeliverControl deliver;
@@ -32,8 +32,8 @@ import type { AskQuestionAnswer } from "./gen/compass/v1/comms_pb";
 export type AgentControl =
 	| { readonly kind: "prompt"; readonly input: string }
 	| { readonly kind: "steer"; readonly message: AgentMessage }
-	// A structured answer to an in-flight `ask` (frozen 6th variant, design
-	// compass-0.6:1405). Carries the ratified wire shape (`AskAnswerControl`,
+	// A structured answer to an in-flight `ask` (frozen 6th variant, design:
+	// architecture-lineage). Carries the ratified wire shape (`AskAnswerControl`,
 	// agent_pb.ts): `askId` correlates the answer to the right ask across turns,
 	// and a repeated `AskQuestionAnswer` keys one answer per question (with
 	// `customText` for a free-text "Other") — the flat single-question

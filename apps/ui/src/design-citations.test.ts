@@ -1,28 +1,22 @@
-// Source-hygiene gate: no superseded compass-0.6 / channel-first design
-// citations survive in shipped UI source (design record
-// `docs/designs/product/compass-0.7-channel-workspace/design.md`).
+// Source-hygiene gate: no retired-milestone design citations survive in shipped
+// UI source. The early Compass milestone records (v0.3 through v0.8) were
+// retired (RIG-2453); their still-true rationale was consolidated into
+// `docs/designs/product/compass-architecture-lineage/design.md` and every
+// shipped citation re-pointed there.
 //
-// The 0.7 reshape moved the shell from the compass-0.6 "channel-first / channel
-// as the primary surface" prototype (§T7) BACK to a board-primary shell with
-// comms folded into the workspace (record §1-59). Comments, section headers, and
-// fixture prose that still cite the superseded model either (A) document the
-// OPPOSITE of what ships — actively misleading the next maintainer on the core
-// architecture — or (B) tag new code with the stale compass-0.6 vintage, which
-// AGENTS.md forbids ("no superseded-design refs in new code"). A one-off grep in
-// a PR body caught the symbol names but missed the strings, and 17 refs shipped;
-// this test gives the sweep teeth so it can't regress.
+// A vintage provenance tag naming a retired milestone — `design compass-0.6`,
+// `design compass-0.8`, etc. — is now (A) a dead link to a deleted record and
+// (B) a stale stamp AGENTS.md forbids on live code ("no superseded-design refs
+// in new code"). This test gives the sweep teeth so a re-pointed cite can't
+// regress and a new one can't creep in.
 //
-// Two forbidden idioms, each with a precise boundary:
-//   1. `channel-first` / `channel-primary` — the superseded architecture names.
-//      Zero legitimate uses: the shell is board-primary; a channel is a surface
-//      WITHIN it, never "channel-primary".
-//   2. the vintage tag `design compass-0.6` — a stale provenance stamp on new
-//      code. This deliberately does NOT match the one LEGITIMATE compass-0.6
-//      reference: `stub-data.ts`'s RT-2 provenance pointer
-//      `../compass-0.6/design.md:1760-1764` (the 0.7 record itself cites 0.6 for
-//      RT-2, record §118,330 — ratified in 0.6, carried forward, not
-//      re-ratified). The word order is the discriminator: "design compass-0.6"
-//      (vintage tag) vs "compass-0.6/design.md" (a path to the record).
+// The forbidden idiom, with a precise boundary:
+//   the vintage tag `design compass-0.<n>` for any retired milestone n in 3–8.
+//   The word order is the discriminator: "design compass-0.6" (a vintage
+//   provenance stamp) is forbidden; a bare path like "compass-0.6/design.md"
+//   is not matched here — no such path should survive either, but this gate
+//   targets the stamp form that tags live code with a dead vintage. The
+//   architecture-lineage record is the one legitimate design citation.
 
 import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
@@ -30,21 +24,21 @@ import { Glob } from "bun";
 const SRC_DIR = import.meta.dir;
 
 // This gate file itself necessarily contains the forbidden strings (as the
-// regexes and this documentation), so it is excluded from its own scan.
+// regex and this documentation), so it is excluded from its own scan.
 const SELF = "design-citations.test.ts";
 
 type Violation = { file: string; line: number; text: string; idiom: string };
 
 const FORBIDDEN: Array<{ idiom: string; re: RegExp }> = [
-	// The superseded architecture names. Hyphenated, case-insensitive so a
-	// sentence-initial "Channel-first" in fixture prose is caught too.
-	{ idiom: "channel-first / channel-primary", re: /channel-(first|primary)/i },
-	// The vintage design tag: the word "design" (or "design record") immediately
-	// followed by "compass-0.6". `[\s\S]` is not used — the two tokens sit on one
-	// line in every observed case, and keeping it single-line avoids matching the
-	// `compass-0.6/design.md` provenance path (which has the tokens reversed and
-	// slash-joined).
-	{ idiom: "design compass-0.6 (vintage tag)", re: /design\s+compass-0\.6\b/i },
+	// The vintage design tag: the word "design" (optionally "design record")
+	// immediately followed by a retired milestone `compass-0.<n>`, n in 3–8.
+	// Single-line by design: the two tokens sit on one line in every observed
+	// case, and keeping it single-line avoids matching a `compass-0.<n>/…`
+	// provenance path (tokens reversed, slash-joined).
+	{
+		idiom: "design compass-0.<n> (retired-milestone vintage tag)",
+		re: /design(\s+record)?\s+compass-0\.[3-8]\b/i,
+	},
 ];
 
 async function scanForViolations(): Promise<Violation[]> {
@@ -70,8 +64,8 @@ async function scanForViolations(): Promise<Violation[]> {
 	return violations;
 }
 
-describe("design-citation hygiene (no superseded compass-0.6 / channel-first refs)", () => {
-	test("shipped UI source cites only compass-0.7 (or the RT-2 provenance path)", async () => {
+describe("design-citation hygiene (no retired-milestone design refs)", () => {
+	test("shipped UI source cites no retired v0.3–v0.8 milestone record", async () => {
 		const violations = await scanForViolations();
 		const report = violations
 			.map((v) => `  ${v.file}:${v.line} [${v.idiom}] ${v.text}`)
@@ -79,17 +73,17 @@ describe("design-citation hygiene (no superseded compass-0.6 / channel-first ref
 		expect(
 			violations,
 			violations.length > 0
-				? `Superseded design citations found in shipped source — reconcile to board-primary / compass-0.7:\n${report}`
+				? `Retired-milestone design citations found in shipped source — re-point to the architecture-lineage record (docs/designs/product/compass-architecture-lineage/design.md):\n${report}`
 				: "",
 		).toEqual([]);
 	});
 
-	test("the legitimate RT-2 provenance pointer is NOT a false positive", async () => {
-		// stub-data.ts's `../compass-0.6/design.md:1760-1764` is the true RT-2
-		// provenance and MUST survive. This pins that the vintage-tag regex does
-		// not match the path form, so a future tightening can't sweep it away.
-		const provenancePath = "../compass-0.6/design.md:1760-1764";
-		const vintageRe = /design\s+compass-0\.6\b/i;
-		expect(vintageRe.test(provenancePath)).toBe(false);
+	test("the architecture-lineage citation is NOT a false positive", async () => {
+		// A live cite naming the lineage record MUST survive. This pins that the
+		// vintage-tag regex does not match the lineage citation form, so the gate
+		// never sweeps away the one legitimate design reference.
+		const lineageTag = "design: architecture-lineage";
+		const vintageRe = /design(\s+record)?\s+compass-0\.[3-8]\b/i;
+		expect(vintageRe.test(lineageTag)).toBe(false);
 	});
 });

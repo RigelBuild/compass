@@ -36,7 +36,7 @@ const TracePane: Component = () => {
 	);
 };
 
-/** The log panel (design compass-0.7 T4 §547-576): a minimizable observation
+/** The log panel (design: architecture-lineage): a minimizable observation
  *  companion docked at the agent workspace's right edge, OUTSIDE the tab/split
  *  tree. The header carries the agent handle, a running dot, a Stop control and
  *  a minimize toggle; the body is the OMP-native session trace. Minimized, the

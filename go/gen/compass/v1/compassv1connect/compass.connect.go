@@ -119,7 +119,7 @@ type CompassServiceClient interface {
 	// (not admin-gated). account_id is server-derived, never client-supplied.
 	WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error)
 	// The event channel: board, agent, and audit updates as a server stream
-	// (compass.md §7.2). Each response carries a server-assigned monotonic `seq`;
+	// (design: architecture-lineage). Each response carries a server-assigned monotonic `seq`;
 	// reconnect with `since_seq` for a gap-free resubscribe. The sole push path
 	// from the server to the UI.
 	SubscribeEvents(context.Context, *connect.Request[v1.SubscribeEventsRequest]) (*connect.ServerStreamForClient[v1.SubscribeEventsResponse], error)
@@ -140,11 +140,11 @@ type CompassServiceClient interface {
 	// built lifecycle façade (internal/runtime/agent.go). Returns the stable
 	// container_name that StartAgentSession then brings online. Provision and
 	// start are separate RPCs: a container can exist idle before an agent session
-	// runs in it. Routes Client -> Server -> RunnerHub -> Runner (compass-0.6 §T4).
+	// runs in it. Routes Client -> Server -> RunnerHub -> Runner (design: architecture-lineage).
 	ProvisionAgentWorkspace(context.Context, *connect.Request[v1.ProvisionAgentWorkspaceRequest]) (*connect.Response[v1.ProvisionAgentWorkspaceResponse], error)
 	// Bring the first-party agent in a provisioned container online over the
 	// Runner streaming-exec bridge and stream its relayed activity onto
-	// SubscribeEvents. Returns the server-side session id (compass.md §7.1).
+	// SubscribeEvents. Returns the server-side session id (design: architecture-lineage).
 	StartAgentSession(context.Context, *connect.Request[v1.StartAgentSessionRequest]) (*connect.Response[v1.StartAgentSessionResponse], error)
 	// Spawn an agent: the composite lifecycle operation that provisions a
 	// per-agent container and brings its session online in ONE call, so a UI
@@ -174,7 +174,7 @@ type CompassServiceClient interface {
 	// Reload a live agent session in place: tear down the current agent exec and
 	// start a fresh one against the same container, reusing the session id so the
 	// board entry is continuous. The agent reloads from workspace state
-	// (compass.md §4.1).
+	// (design: architecture-lineage).
 	ReloadAgentSession(context.Context, *connect.Request[v1.ReloadAgentSessionRequest]) (*connect.Response[v1.ReloadAgentSessionResponse], error)
 	// Query one session's status, or every live session's when no id is given.
 	GetAgentStatus(context.Context, *connect.Request[v1.GetAgentStatusRequest]) (*connect.Response[v1.GetAgentStatusResponse], error)
@@ -183,11 +183,10 @@ type CompassServiceClient interface {
 	// home-channel membership — the handler resolves the session's owning agent's
 	// home channel and authorizes the caller against THAT channel, so a caller
 	// cannot stream a session in a channel it cannot see. An unknown session_id is
-	// rejected (not-found), never leaked (compass-0.8 §"First-party typed session
-	// renderer").
+	// rejected (not-found), never leaked (design: architecture-lineage).
 	//
 	// The streamed response is AgentSessionFrame, not the `SubscribeAgentSessionResponse`
-	// that RPC_RESPONSE_STANDARD_NAME wants: the name is frozen (compass-0.6) and
+	// that RPC_RESPONSE_STANDARD_NAME wants: the name is frozen (design: architecture-lineage) and
 	// a wrapper would change the frozen wire shape. Ignore
 	// the rule for this one RPC only — every other RPC keeps it armed.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME
@@ -468,7 +467,7 @@ type CompassServiceHandler interface {
 	// (not admin-gated). account_id is server-derived, never client-supplied.
 	WhoAmI(context.Context, *connect.Request[v1.WhoAmIRequest]) (*connect.Response[v1.WhoAmIResponse], error)
 	// The event channel: board, agent, and audit updates as a server stream
-	// (compass.md §7.2). Each response carries a server-assigned monotonic `seq`;
+	// (design: architecture-lineage). Each response carries a server-assigned monotonic `seq`;
 	// reconnect with `since_seq` for a gap-free resubscribe. The sole push path
 	// from the server to the UI.
 	SubscribeEvents(context.Context, *connect.Request[v1.SubscribeEventsRequest], *connect.ServerStream[v1.SubscribeEventsResponse]) error
@@ -489,11 +488,11 @@ type CompassServiceHandler interface {
 	// built lifecycle façade (internal/runtime/agent.go). Returns the stable
 	// container_name that StartAgentSession then brings online. Provision and
 	// start are separate RPCs: a container can exist idle before an agent session
-	// runs in it. Routes Client -> Server -> RunnerHub -> Runner (compass-0.6 §T4).
+	// runs in it. Routes Client -> Server -> RunnerHub -> Runner (design: architecture-lineage).
 	ProvisionAgentWorkspace(context.Context, *connect.Request[v1.ProvisionAgentWorkspaceRequest]) (*connect.Response[v1.ProvisionAgentWorkspaceResponse], error)
 	// Bring the first-party agent in a provisioned container online over the
 	// Runner streaming-exec bridge and stream its relayed activity onto
-	// SubscribeEvents. Returns the server-side session id (compass.md §7.1).
+	// SubscribeEvents. Returns the server-side session id (design: architecture-lineage).
 	StartAgentSession(context.Context, *connect.Request[v1.StartAgentSessionRequest]) (*connect.Response[v1.StartAgentSessionResponse], error)
 	// Spawn an agent: the composite lifecycle operation that provisions a
 	// per-agent container and brings its session online in ONE call, so a UI
@@ -523,7 +522,7 @@ type CompassServiceHandler interface {
 	// Reload a live agent session in place: tear down the current agent exec and
 	// start a fresh one against the same container, reusing the session id so the
 	// board entry is continuous. The agent reloads from workspace state
-	// (compass.md §4.1).
+	// (design: architecture-lineage).
 	ReloadAgentSession(context.Context, *connect.Request[v1.ReloadAgentSessionRequest]) (*connect.Response[v1.ReloadAgentSessionResponse], error)
 	// Query one session's status, or every live session's when no id is given.
 	GetAgentStatus(context.Context, *connect.Request[v1.GetAgentStatusRequest]) (*connect.Response[v1.GetAgentStatusResponse], error)
@@ -532,11 +531,10 @@ type CompassServiceHandler interface {
 	// home-channel membership — the handler resolves the session's owning agent's
 	// home channel and authorizes the caller against THAT channel, so a caller
 	// cannot stream a session in a channel it cannot see. An unknown session_id is
-	// rejected (not-found), never leaked (compass-0.8 §"First-party typed session
-	// renderer").
+	// rejected (not-found), never leaked (design: architecture-lineage).
 	//
 	// The streamed response is AgentSessionFrame, not the `SubscribeAgentSessionResponse`
-	// that RPC_RESPONSE_STANDARD_NAME wants: the name is frozen (compass-0.6) and
+	// that RPC_RESPONSE_STANDARD_NAME wants: the name is frozen (design: architecture-lineage) and
 	// a wrapper would change the frozen wire shape. Ignore
 	// the rule for this one RPC only — every other RPC keeps it armed.
 	// buf:lint:ignore RPC_RESPONSE_STANDARD_NAME

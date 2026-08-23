@@ -1,5 +1,5 @@
-// Default-deny + allowlist egress firewall for an agent container (compass.md
-// §5.3, §6.7). The container's own network namespace is firewalled with
+// Default-deny + allowlist egress firewall for an agent container (design:
+// architecture-lineage). The container's own network namespace is firewalled with
 // nftables, so a compromised agent can't exfiltrate to an arbitrary host — the
 // structural floor beneath the hook-level output gate.
 //

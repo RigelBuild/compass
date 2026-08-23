@@ -144,8 +144,8 @@ tasks:
     #
     # Each of the whole-type symbols is word-bounded (\b…\b) so the fence matches
     # a WHOLE internal identifier, never a substring of a larger public one. This
-    # is load-bearing for the public AgentSessionFrame (compass.proto, frozen
-    # compass-0.6): it contains "SessionFrame" as a substring, so an unanchored
+    # is load-bearing for the public AgentSessionFrame (compass.proto, a frozen
+    # contract): it contains "SessionFrame" as a substring, so an unanchored
     # grep false-fires the moment it generates into a public tree
     # (SEA-1267/OQ-2.4). Word boundaries also future-proof the others (a public
     # "AgentControlFoo" would not trip "AgentControl"). AgentGateway and CommsCall

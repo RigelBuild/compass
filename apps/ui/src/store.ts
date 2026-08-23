@@ -392,7 +392,7 @@ export interface AppStore {
 	 *  (live:false). */
 	daemon: Accessor<DaemonInfo>;
 
-	// ── Comms: the channel surface (design compass-0.7) ──
+	// ── Comms: the channel surface (design: architecture-lineage) ──
 	/** The calling account (the authenticated user; comms.proto caller model). */
 	caller: Accessor<Account>;
 	/** All accounts visible to the caller — the author/handle resolution source
@@ -496,8 +496,8 @@ export interface AppStore {
 	// ── Agent view: tabs (pane groups) + per-tab split trees (T7) ──
 	/** The selected agent's live session: the typed AgentSession (its ordered
 	 *  SessionEvent stream + running flag), or undefined when no agent is selected
-	 *  / it has no session. Compass folds and renders these typed events (design
-	 *  compass-0.8); `running` drives the Stop control's enablement. */
+	 *  / it has no session. Compass folds and renders these typed events (design:
+	 *  architecture-lineage); `running` drives the Stop control's enablement. */
 	agentSession: Accessor<AgentSession | undefined>;
 	/** The open tabs (chat first, never closable; design D6). Each tab is a
 	 *  group of panes with its own split tree. Empty when no agent is selected.
@@ -559,7 +559,7 @@ export interface AppStore {
 
 	// ── Left-sidebar sections (channels / agents) ──
 	/** Whether a sidebar section is collapsed. The two sections collapse
-	 *  independently (design compass-0.7 §410-411). */
+	 *  independently (design: architecture-lineage). */
 	isSectionCollapsed: (section: "channels" | "agents") => boolean;
 	toggleSection: (section: "channels" | "agents") => void;
 
@@ -814,8 +814,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		new Set(),
 	);
 	// Left-sidebar section collapse (channels / agents) — a separate namespaced
-	// key space on the same set mechanism as folder collapse (compass-0.7
-	// §410-411). Keyed `section:${name}` so no tree folder id can collide.
+	// key space on the same set mechanism as folder collapse (design:
+	// architecture-lineage). Keyed `section:${name}` so no tree folder id can collide.
 	const [sectionCollapsed, setSectionCollapsed] = createSignal<
 		ReadonlySet<string>
 	>(new Set());
@@ -853,7 +853,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// drift from the panes.
 	const [activeRepoId, setActiveRepoId] = createSignal<string | null>(null);
 
-	// ── Comms: the channel surface (design compass-0.7) ──
+	// ── Comms: the channel surface (design: architecture-lineage) ──
 	// ONE reduced CommsState drives all four comms accessors. It starts at
 	// `initialComms` (EMPTY by default — the store no longer boots from the
 	// fixture) and is replaced wholesale by each `runCommsStream` push — bar the
@@ -1311,7 +1311,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		setSelectedAgentId(ws?.assignee ?? null);
 	};
 
-	// ── Comms mutations (design compass-0.7) ──
+	// ── Comms mutations (design: architecture-lineage) ──
 	// Join / subscribe are NOT WIRED (Matt's ruling). The wire has no join or
 	// subscribe RPC yet — that slice is unbuilt — and the local-only mutation
 	// these used to perform was a lie against the live stream: `adoptComms`
@@ -2003,7 +2003,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 
 	// Left-sidebar section collapse (channels / agents) — namespaced keys on the
 	// same set mechanism, so the two sections toggle independently and can't
-	// collide with tree folder ids (compass-0.7 §410-411).
+	// collide with tree folder ids (design: architecture-lineage).
 	const isSectionCollapsed = (section: "channels" | "agents") =>
 		sectionCollapsed().has(`section:${section}`);
 	const toggleSection = (section: "channels" | "agents") =>

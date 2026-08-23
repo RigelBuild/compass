@@ -14,7 +14,7 @@ import { STUB_AGENTS, STUB_ISSUES } from "./stub-data";
 import { testQueryClient } from "./test-support";
 
 // T1 — Agent identity: separate co-addressed types + fixture reconciliation
-// (design record `docs/designs/product/compass-0.7-channel-workspace/design.md`,
+// (design record `docs/designs/product/compass-architecture-lineage/design.md`,
 // T1 §282-400). RED-FIRST: this suite is authored against T1's specified surface
 // — the account-kind `Agent`/`Account` in stub-data.ts (design.md:325-362), the
 // cached `account.homeChannelId` (:339,367-369), the derived `STUB_ACCOUNTS`
