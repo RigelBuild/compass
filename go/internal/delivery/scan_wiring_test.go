@@ -58,9 +58,11 @@ func TestOverrunBranchScansMissedMention(t *testing.T) {
 	res.bind(liveAgent, "sess-live")
 	reads.members[ch] = []store.AccountID{agentA}
 	reads.handles["aa"] = agentAccount(agentA, "aa")
-	// A committed-but-unmarked mention whose bus event fell in the dropped
-	// overrun window: only the overrun-branch scan can recover it.
-	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
+	// m1 is seeded AFTER the start scan has run (below, past <-disp.enteredFirst)
+	// so Run's start scan reads an empty unrouted set and cannot recover it —
+	// only the overrun-branch scan can. Without that isolation the start scan
+	// would grab m1 at loop entry and this test would pass with the overrun-branch
+	// scan removed (a false guard).
 
 	resubscribed := make(chan struct{})
 	c.afterResubscribe = func() { close(resubscribed) }
@@ -68,9 +70,12 @@ func TestOverrunBranchScansMissedMention(t *testing.T) {
 	disp.armFirstBlock()
 	startConsumer(t, c)
 
-	// First event consumed off Live, then stalls in the armed dispatch.
+	// First event consumed off Live, then stalls in the armed dispatch. Entry
+	// here is strictly after Run's start scan completed, so seeding m1 now hides
+	// it from that scan; only the overrun-branch scan can recover it.
 	c.bus.Publish(postedResponse(wireText("m0", author, "first")))
 	<-disp.enteredFirst
+	reads.seedUnrouted(textMessage("m1", author, "@aa ping"), ch, 1)
 	// Overrun the live buffer so the channel closes lagged.
 	for range busLagFloodCount {
 		c.bus.Publish(postedResponse(wireText("flood", author, "x")))
