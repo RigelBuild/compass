@@ -38,6 +38,7 @@ import {
 	ManagedRuntime,
 	Metric,
 	Option,
+	Ref,
 	Schedule,
 	Scope,
 } from "effect";
@@ -185,28 +186,58 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 			frame: toAgentFrame(frame),
 			idempotencyKey,
 		});
-		const send = Metric.increment(durableAttempts).pipe(
-			// Count each durable attempt (initial + every retry). The increment is
-			// INSIDE the unit Effect.retry re-runs, so it ticks once per attempt
-			// (Decision 2 counter, frame_sink.durable_attempts).
-			Effect.zipRight(
-				Effect.tryPromise({
-					try: () =>
-						transport.postConversationFrame(request, {
-							timeoutMs: DURABLE_CALL_TIMEOUT_MS,
-						}),
-					// Preserve the raw rejection (ConnectError) in the failure channel — do
-					// NOT let tryPromise wrap it in an UnknownException, so causeError can
-					// hand the original error back at the reject seam.
-					catch: (err) => err,
-				}),
-			),
-			Effect.retry(
-				Schedule.fromDelays(
-					DURABLE_RETRY_BACKOFF_MS[0],
-					...DURABLE_RETRY_BACKOFF_MS.slice(1),
+		// Per-send attempt counter (Decision 1 span attribute source). Minted ONCE
+		// per launchDurable — outside the retried unit and outside the span scope,
+		// exactly like the idempotency key above (one logical frame, not per
+		// attempt) — so its read-and-increment inside the retried unit yields the
+		// 0-based attempt index (0, 1, 2, ...) in lockstep with the durableAttempts
+		// tick that shares the same re-run unit.
+		const send = Ref.make(0).pipe(
+			Effect.flatMap((attemptRef) =>
+				Metric.increment(durableAttempts).pipe(
+					// Count each durable attempt (initial + every retry). The increment is
+					// INSIDE the unit Effect.retry re-runs, so it ticks once per attempt
+					// (Decision 2 counter, frame_sink.durable_attempts).
+					Effect.zipRight(
+						// Read-and-increment the attempt index in the SAME re-run unit as the
+						// metric tick and the tryPromise, so span N carries attempt === N.
+						Ref.getAndUpdate(attemptRef, (n) => n + 1),
+					),
+					Effect.flatMap((attempt) =>
+						Effect.tryPromise({
+							try: () =>
+								transport.postConversationFrame(request, {
+									timeoutMs: DURABLE_CALL_TIMEOUT_MS,
+								}),
+							// Preserve the raw rejection (ConnectError) in the failure channel — do
+							// NOT let tryPromise wrap it in an UnknownException, so causeError can
+							// hand the original error back at the reject seam.
+							catch: (err) => err,
+						}).pipe(
+							// Decision 1 child span: one per attempt. A sibling under the one
+							// durable_send parent via fiber-tree propagation (no manual parent
+							// threading). `attempt` is the 0-based index for this re-run.
+							Effect.withSpan(
+								"compass_agent.transport.frame_sink.durable_attempt",
+								{ attributes: { attempt } },
+							),
+						),
+					),
+					Effect.retry(
+						Schedule.fromDelays(
+							DURABLE_RETRY_BACKOFF_MS[0],
+							...DURABLE_RETRY_BACKOFF_MS.slice(1),
+						),
+					),
 				),
 			),
+			// Decision 1 parent span: the whole durable send (all attempts). Placed
+			// INSIDE the Effect.exit boundary below so on retry-cap exhaustion the
+			// span sees the failure and records ERROR status, while Effect.exit still
+			// absorbs it for the fiber. `frame_kind` is known at launch.
+			Effect.withSpan("compass_agent.transport.frame_sink.durable_send", {
+				attributes: { frame_kind: frame.kind },
+			}),
 		);
 		// Bridge the fiber's terminal exit to the caller's disposition. Effect.exit
 		// absorbs the failure so the fiber itself always SUCCEEDS — the set's
@@ -286,7 +317,15 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 				// Await every forked durable commit first (FiberSet.awaitEmpty), so no
 				// transcript frame is abandoned uncommitted — the Effect equivalent of
 				// the old snapshot-and-await over the in-flight promise set.
-				await runtime.runPromise(FiberSet.awaitEmpty(inflight));
+				await runtime.runPromise(
+					FiberSet.awaitEmpty(inflight).pipe(
+						// Decision 1 span: the sink-side teardown flush (await every forked
+						// durable commit). Wraps ONLY the sink's own awaitEmpty — spine.drain()
+						// below opens the separate publish.drain span from inside the spine, so
+						// no double-wrap. Closes before drain() resolves, hence before dispose.
+						Effect.withSpan("compass_agent.transport.frame_sink.drain"),
+					),
+				);
 				// Then flush + close the Publish spine: any queued priority frame (the
 				// terminal STOPPED) goes ahead of the trace backlog.
 				await spine.drain();
