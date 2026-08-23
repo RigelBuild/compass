@@ -228,8 +228,31 @@ CREATE TABLE messages (
     text_content      TEXT NOT NULL DEFAULT '',
     client_request_id TEXT NOT NULL DEFAULT '',
     search_tsv        TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', text_content)) STORED,
-    topic_id          TEXT NOT NULL REFERENCES topics (id) ON DELETE RESTRICT
+    topic_id          TEXT NOT NULL REFERENCES topics (id) ON DELETE RESTRICT,
+    -- Settle-edge mention pass marker (RIG-2490 T1): the unix-ms time the
+    -- message's settle-edge mention routing pass completed. NULL means that
+    -- pass never completed (a fault between commit and mark), so the message is
+    -- re-scannable by the recovery pass; readers care only about NULL vs
+    -- non-NULL. Unix-ms BIGINT per the schema convention (at_unix_ms above),
+    -- never a SQL TIMESTAMP.
+    mentions_routed_at BIGINT
 );
+
+-- Pre-settle mention-loss recovery scan (RIG-2490 T1). The scan's only query is
+-- `WHERE mentions_routed_at IS NULL ORDER BY seq ASC LIMIT n`; this partial
+-- index serves both the filter and the order, and in steady state holds only
+-- the thin in-flight/unsettled set (nearly every row is marked). None of the
+-- existing messages indexes serve it: messages_topic_seq_idx leads on topic_id,
+-- messages_search_idx is a GIN on search_tsv, and the partial-unique idempotency
+-- index covers other predicates. Plain (non-CONCURRENT) index — migrations run
+-- inside a transaction (store.go applyMigration), so CREATE INDEX CONCURRENTLY
+-- is invalid here. Seed-forward (RD-2): the squashed 0001_init.sql is the only
+-- migration and pre-dogfood databases are recreated on schema change, so every
+-- post-migration row was inserted with the column present — there is no
+-- historical backfill. Were this ever carried into a first real incremental
+-- migration, existing rows would be seeded mentions_routed_at = <migration time>
+-- (so a first scan sees nothing), never backfilled from zero.
+CREATE INDEX messages_mentions_unrouted_idx ON messages (seq) WHERE mentions_routed_at IS NULL;
 
 -- Newest-first paging within a topic; channel-level paging joins to topics and
 -- filters channel_id, keying on the same table-monotonic seq.

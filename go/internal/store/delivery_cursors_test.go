@@ -969,3 +969,94 @@ func TestCountOwedMentions(t *testing.T) {
 		t.Fatalf("CountOwedMentions(after clear) = %d, %v, want 1, nil", n, err)
 	}
 }
+
+// RIG-2490 T1 — the pre-settle mention-loss marker column + scan surface.
+// A fresh insert has a NULL marker and is returned by UnroutedMentionMessages
+// (ascending seq > afterSeq, right channel); after MarkMentionsRouted it is
+// excluded; a re-mark is a contract-level no-op (still excluded); limit bounds
+// one batch and a follow-up read with afterSeq = the last returned seq excludes
+// the already-read prefix (the batch-walk termination contract).
+func TestUnroutedMentionMessagesScan(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner := mustUser(t, s, "owner")
+	agent := mustAgent(t, s, owner.ID, "agent")
+	ch := agent.Agent.HomeChannelID
+
+	m1, seq1 := postAs(t, s, ch, owner.ID, "@agent one")
+	m2, seq2 := postAs(t, s, ch, owner.ID, "@agent two")
+	m3, seq3 := postAs(t, s, ch, owner.ID, "@agent three")
+
+	// Fresh inserts: all three NULL, returned ascending seq, right channel.
+	got, err := s.UnroutedMentionMessages(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("UnroutedMentionMessages(all): %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("UnroutedMentionMessages(all) = %d rows, want 3", len(got))
+	}
+	wantIDs := []string{m1, m2, m3}
+	wantSeqs := []int64{seq1, seq2, seq3}
+	for i, r := range got {
+		if string(r.ID) != wantIDs[i] {
+			t.Fatalf("row[%d].ID = %s, want %s", i, r.ID, wantIDs[i])
+		}
+		if r.Seq != wantSeqs[i] {
+			t.Fatalf("row[%d].Seq = %d, want %d", i, r.Seq, wantSeqs[i])
+		}
+		if r.Channel != ch {
+			t.Fatalf("row[%d].Channel = %s, want %s", i, r.Channel, ch)
+		}
+	}
+	if got[0].Seq >= got[1].Seq || got[1].Seq >= got[2].Seq {
+		t.Fatalf("rows not ascending by seq: %d, %d, %d", got[0].Seq, got[1].Seq, got[2].Seq)
+	}
+
+	// Mark m2 routed: it is excluded; m1 and m3 remain.
+	if err := s.MarkMentionsRouted(ctx, m2); err != nil {
+		t.Fatalf("MarkMentionsRouted(m2): %v", err)
+	}
+	got, err = s.UnroutedMentionMessages(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("UnroutedMentionMessages(after mark): %v", err)
+	}
+	if len(got) != 2 || string(got[0].ID) != m1 || string(got[1].ID) != m3 {
+		t.Fatalf("after mark = %v, want [%s %s]", got, m1, m3)
+	}
+
+	// Re-mark m2: contract-level no-op — still excluded, count unchanged.
+	if err := s.MarkMentionsRouted(ctx, m2); err != nil {
+		t.Fatalf("MarkMentionsRouted(m2 re-mark): %v", err)
+	}
+	got, err = s.UnroutedMentionMessages(ctx, 0, 100)
+	if err != nil {
+		t.Fatalf("UnroutedMentionMessages(after re-mark): %v", err)
+	}
+	if len(got) != 2 || string(got[0].ID) != m1 || string(got[1].ID) != m3 {
+		t.Fatalf("after re-mark = %v, want [%s %s]", got, m1, m3)
+	}
+
+	// Batch-walk termination: limit bounds one batch; a follow-up read with
+	// afterSeq = the last returned seq excludes the already-read prefix.
+	batch1, err := s.UnroutedMentionMessages(ctx, 0, 1)
+	if err != nil {
+		t.Fatalf("UnroutedMentionMessages(batch1): %v", err)
+	}
+	if len(batch1) != 1 || string(batch1[0].ID) != m1 {
+		t.Fatalf("batch1 = %v, want single %s", batch1, m1)
+	}
+	batch2, err := s.UnroutedMentionMessages(ctx, batch1[0].Seq, 1)
+	if err != nil {
+		t.Fatalf("UnroutedMentionMessages(batch2): %v", err)
+	}
+	if len(batch2) != 1 || string(batch2[0].ID) != m3 {
+		t.Fatalf("batch2 = %v, want single %s (m2 marked, excluded)", batch2, m3)
+	}
+	batch3, err := s.UnroutedMentionMessages(ctx, batch2[0].Seq, 1)
+	if err != nil {
+		t.Fatalf("UnroutedMentionMessages(batch3): %v", err)
+	}
+	if len(batch3) != 0 {
+		t.Fatalf("batch3 = %v, want empty (walk terminated)", batch3)
+	}
+}

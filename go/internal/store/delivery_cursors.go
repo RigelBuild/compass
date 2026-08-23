@@ -198,6 +198,85 @@ func (s *Store) CountOwedMentions(ctx context.Context) (int, error) {
 	return n, nil
 }
 
+// MessageWithChannel is a message plus its resolved channel and store-space seq
+// — the projection of the pre-settle mention-loss recovery scan
+// (UnroutedMentionMessages). The channel comes from topics.channel_id (one join
+// from the message) and Seq is messages.seq, the scan-local cursor the caller
+// advances across batches.
+type MessageWithChannel struct {
+	Message
+	Channel ChannelID
+	Seq     int64
+}
+
+// MarkMentionsRouted stamps messageID's settle-edge mention pass complete
+// (mentions_routed_at = now, unix ms). Idempotent: a re-mark overwrites the
+// timestamp; the contract readers rely on is NULL vs non-NULL only (RIG-2490
+// T1). Marking an unknown id is a no-op.
+func (s *Store) MarkMentionsRouted(ctx context.Context, messageID string) error {
+	if _, err := s.pool.Exec(ctx,
+		`UPDATE messages SET mentions_routed_at = $1 WHERE id = $2`,
+		time.Now().UnixMilli(), messageID,
+	); err != nil {
+		return fmt.Errorf("store: mark mentions routed: %w", err)
+	}
+	return nil
+}
+
+// UnroutedMentionMessages returns committed messages whose settle-edge mention
+// pass never completed (mentions_routed_at IS NULL) AND whose seq is > afterSeq,
+// ascending seq, each with its channel resolved through topics.channel_id — the
+// recovery scan read (RIG-2490 T1). limit bounds one batch so a long-idle deploy
+// cannot hold the whole backlog in memory; the caller loops, advancing afterSeq
+// to the last returned seq, until a batch is short. afterSeq is a scan-LOCAL
+// cursor (start each recovery scan at 0), never persisted — a held row skipped by
+// the caller stays NULL and is re-scanned from 0 at the next recovery point, so
+// this is not the killed high-water.
+func (s *Store) UnroutedMentionMessages(ctx context.Context, afterSeq int64, limit int) ([]MessageWithChannel, error) {
+	const q = `
+		SELECT m.id, m.topic_id, m.author_account_id, m.at_unix_ms, m.blocks, t.channel_id, m.seq
+		FROM messages m
+		JOIN topics t ON t.id = m.topic_id
+		WHERE m.mentions_routed_at IS NULL AND m.seq > $1
+		ORDER BY m.seq ASC
+		LIMIT $2`
+	rows, err := s.pool.Query(ctx, q, afterSeq, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: read unrouted mention messages: %w", err)
+	}
+	defer rows.Close()
+	var out []MessageWithChannel
+	for rows.Next() {
+		var (
+			id, topicID, author, channelID string
+			atMS, seq                      int64
+			blocksJSON                     []byte
+		)
+		if err := rows.Scan(&id, &topicID, &author, &atMS, &blocksJSON, &channelID, &seq); err != nil {
+			return nil, fmt.Errorf("store: scan unrouted mention message: %w", err)
+		}
+		blocks, err := unmarshalBlocks(blocksJSON)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, MessageWithChannel{
+			Message: Message{
+				ID:              MessageID(id),
+				TopicID:         topicID,
+				AuthorAccountID: AccountID(author),
+				At:              time.UnixMilli(atMS).UTC(),
+				Blocks:          blocks,
+			},
+			Channel: ChannelID(channelID),
+			Seq:     seq,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate unrouted mention messages: %w", err)
+	}
+	return out, nil
+}
+
 // AckDelivery resolves messageID → messages.seq for THIS (agent, channel); a
 // message never dispatched to this agent for this channel is a no-op (the
 // resolution IS the overshoot clamp — a fabricated id cannot advance the
