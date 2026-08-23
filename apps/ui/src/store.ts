@@ -26,6 +26,7 @@ import {
 	getOwner,
 	onCleanup,
 } from "solid-js";
+import { type PrRow, prRows } from "./board";
 import { agentDmAccountId } from "./comms";
 import type {
 	Account,
@@ -45,6 +46,7 @@ import {
 	unreachableFleetItem,
 } from "./constants";
 import { createKeyboardSpine, type KeyboardSpine } from "./keyboard/spine";
+import type { FocusZone } from "./keyboard/zones";
 import { adaptMessage } from "./live/adapt";
 import { probeServer } from "./live/client";
 import { type CommsState, EMPTY_COMMS_STATE } from "./live/comms-state";
@@ -269,6 +271,19 @@ export interface AppStore {
 	hideShortcuts: () => void;
 	/** Toggle the keyboard-shortcuts overlay — the `?` / `view.shortcuts` action. */
 	toggleShortcuts: () => void;
+	/** Whether the command palette is open (RIG-2483). */
+	paletteOpen: Accessor<boolean>;
+	/** The focus zone captured at palette-open time — read by the palette's
+	 *  action-mode ranking (scoped-above-global, D3/D5). Null when nothing was
+	 *  zone-focused at open, or while the palette is closed. */
+	paletteZone: Accessor<FocusZone | null>;
+	/** Open the command palette — captures the pre-open focus snapshot
+	 *  (`{ zone, element }`) on the false→true transition only (D3). */
+	openPalette: () => void;
+	/** Close the command palette and restore focus to the captured element (if
+	 *  still connected); clears the snapshot. Every close path (Escape, backdrop,
+	 *  Mod+K toggle, running a result) funnels here (D3). */
+	closePalette: () => void;
 	/** Inject the router seam (record A3). Called once from App (inside the
 	 *  router tree): supplies the real navigate + a reactive currentPath and
 	 *  installs the single-writer route-sync effect. The store stays
@@ -553,6 +568,10 @@ export interface AppStore {
 	 *  streamed lifecycle update is visible everywhere at once (design "read
 	 *  through the store accessors"). */
 	issues: Accessor<Issue[]>;
+	/** Every open-PR row across all issues, paired with its owning issue — a
+	 *  `createMemo` over `prRows(issues())` (RIG-2483, D9). The palette's `pr`
+	 *  destination provider reads this; the store has no other PR collection. */
+	prs: Accessor<PrRow[]>;
 
 	// ── Backlog view (D3) ──
 	/** The current user's tracker-assigned issues (their personal queue), read
@@ -1917,11 +1936,48 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		hideShortcuts();
 		navigateTo("/settings");
 	};
-	// The keyboard spine (RIG-2456): created here, after `showBridge` exists, so
-	// `view.bridge` is registered next to its behavior. App.tsx installs the one
-	// window keymap listener over its accessors. `view.shortcuts` (RIG-2482)
-	// rides the same seam via `toggleShortcuts`.
-	const keyboard = createKeyboardSpine({ showBridge, toggleShortcuts });
+	// Command palette (RIG-2483): the open signal plus the D3 pre-open snapshot
+	// `{ zone, element }`. `openPalette` captures the snapshot ONLY on the
+	// false→true transition — the close-toggle leg re-enters `togglePalette` with
+	// focus already in the palette input (a null zone), so re-capturing there
+	// would clobber the real pre-open zone/element. `closePalette` restores focus
+	// to the captured element (if still connected) and clears the snapshot. The
+	// captured element stays store-internal; `paletteZone` exposes only the zone
+	// half (read by the palette's action-mode ranking).
+	const [paletteOpen, setPaletteOpen] = createSignal(false);
+	const [paletteZone, setPaletteZone] = createSignal<FocusZone | null>(null);
+	let paletteElement: HTMLElement | null = null;
+	const openPalette = () => {
+		if (paletteOpen()) return; // already open — never re-capture the snapshot
+		setPaletteZone(keyboard.activeZone());
+		const active = document.activeElement;
+		paletteElement = active instanceof HTMLElement ? active : null;
+		setPaletteOpen(true);
+	};
+	const closePalette = () => {
+		setPaletteOpen(false);
+		const el = paletteElement;
+		paletteElement = null;
+		setPaletteZone(null);
+		if (el?.isConnected) el.focus();
+	};
+	const togglePalette = () => {
+		if (paletteOpen()) closePalette();
+		else openPalette();
+	};
+	// The keyboard spine (RIG-2456): created here, after the `show*`/toggle
+	// closures exist, so `view.bridge` + the RIG-2482/2483 seeds are registered
+	// next to their behavior. App.tsx installs the one window keymap listener over
+	// its accessors. `view.shortcuts` (RIG-2482) rides `toggleShortcuts`;
+	// `palette.open` + the `view.*` seeds (RIG-2483) ride the closures below.
+	const keyboard = createKeyboardSpine({
+		showBridge,
+		toggleShortcuts,
+		showBacklog,
+		showDone,
+		showSettings,
+		togglePalette,
+	});
 
 	const setTrackerConfig = (cfg: TrackerConfig) => {
 		setTrackerConfigSignal(cfg);
@@ -2021,6 +2077,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		const ws = issues().find((w) => w.assignee === id && w.branch === branch);
 		if (ws) setSelectedIssueId(ws.id);
 	};
+	// Every open-PR row across all issues (RIG-2483, D9): the palette's `pr`
+	// destination provider's collection. `prRows` (board.ts) is the same pure
+	// helper the PRs tab reads, so palette PR results can't drift from the pane.
+	const prs = createMemo<PrRow[]>(() => prRows(issues()));
 
 	return {
 		view,
@@ -2033,6 +2093,10 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		shortcutsOpen,
 		hideShortcuts,
 		toggleShortcuts,
+		paletteOpen,
+		paletteZone,
+		openPalette,
+		closePalette,
 		selectedAgentId,
 		selectedIssueId,
 		selectedAgent,
@@ -2101,6 +2165,7 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		isSectionCollapsed,
 		toggleSection,
 		issues,
+		prs,
 		assignedIssues,
 		trackerConfig,
 		setTrackerConfig,

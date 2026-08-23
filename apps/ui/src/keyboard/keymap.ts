@@ -38,6 +38,44 @@ export const resolveChord = (chord: string, platform: Platform): string =>
 	chord.replaceAll(MOD, platform === "mac" ? "Cmd" : "Ctrl");
 
 /**
+ * Resolve a `Mod`-authored chord to WAI-ARIA modifier tokens for `platform`:
+ * `Mod` → `Meta` on macOS, `Control` elsewhere. Unlike `resolveChord` (which
+ * emits the display tokens `Cmd`/`Ctrl`), this emits the fixed tokens
+ * `aria-keyshortcuts` requires; `Cmd` is never emitted. Other chord parts
+ * (`Shift`/`Alt`/`Enter`/`?`/…) are already ARIA-valid and pass through.
+ */
+export const resolveChordAria = (chord: string, platform: Platform): string =>
+	chord.replaceAll(MOD, platform === "mac" ? "Meta" : "Control");
+
+/**
+ * The display chord for a command: the FIRST `DEFAULT_KEYMAP` row bound to `id`,
+ * `resolveChord`-resolved for `platform` (Mod→Cmd/Ctrl). `undefined` when no row
+ * binds the id. This is the single derivation for every shortcut chip (D4) — a
+ * registration never hand-authors a `shortcut` string, so a chip can't drift
+ * from the table or render an unresolved raw `Mod+…`.
+ */
+export function shortcutFor(
+	id: CommandId,
+	platform: Platform,
+): string | undefined {
+	const entry = DEFAULT_KEYMAP.find((e) => e.commandId === id);
+	return entry ? resolveChord(entry.chord, platform) : undefined;
+}
+
+/**
+ * The aria-keyshortcuts value for a command: like shortcutFor but with WAI-ARIA
+ * modifier tokens (Mod→Control on other / Meta on mac, Cmd never emitted), so
+ * assistive tech can parse the chord. Display chips keep shortcutFor (Ctrl/Cmd).
+ */
+export function shortcutForAria(
+	id: CommandId,
+	platform: Platform,
+): string | undefined {
+	const entry = DEFAULT_KEYMAP.find((e) => e.commandId === id);
+	return entry ? resolveChordAria(entry.chord, platform) : undefined;
+}
+
+/**
  * A single default keymap binding.
  *
  * `chord` is authored with the `Mod` token (see `MOD`/`resolveChord`).

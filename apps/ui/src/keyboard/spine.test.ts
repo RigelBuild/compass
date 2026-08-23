@@ -12,6 +12,30 @@ import type { FocusZone } from "./zones";
 
 const id = (s: string): CommandId => s as CommandId;
 
+/** The spine's dependency closures, all no-op by default; a test overrides only
+ *  the leg it asserts. Keeps every `createKeyboardSpine` call at the current
+ *  (RIG-2483) shape without repeating six stubs. */
+function stubDeps(
+	overrides: Partial<{
+		showBridge: () => void;
+		toggleShortcuts: () => void;
+		showBacklog: () => void;
+		showDone: () => void;
+		showSettings: () => void;
+		togglePalette: () => void;
+	}> = {},
+) {
+	return {
+		showBridge: () => {},
+		toggleShortcuts: () => {},
+		showBacklog: () => {},
+		showDone: () => {},
+		showSettings: () => {},
+		togglePalette: () => {},
+		...overrides,
+	};
+}
+
 /** A stub handle with a controllable `isFocused` so a test decides which group
  *  the scan should pick — the real `isFocused` scans `document.activeElement`,
  *  which the spine unit does not exercise (that is the App/Bridge suite). */
@@ -31,10 +55,7 @@ function stubHandle(
 describe("createKeyboardSpine", () => {
 	test("registers view.bridge as a global command that runs showBridge", () => {
 		let ran = 0;
-		const spine = createKeyboardSpine({
-			showBridge: () => ran++,
-			toggleShortcuts: () => {},
-		});
+		const spine = createKeyboardSpine(stubDeps({ showBridge: () => ran++ }));
 
 		const cmd = spine.registry.get(id("view.bridge"));
 		expect(cmd).toBeDefined();
@@ -47,10 +68,7 @@ describe("createKeyboardSpine", () => {
 	});
 
 	test("registerGroup/unregisterGroup round-trip: activeGroup reflects the set", () => {
-		const spine = createKeyboardSpine({
-			showBridge: () => {},
-			toggleShortcuts: () => {},
-		});
+		const spine = createKeyboardSpine(stubDeps());
 		const g = stubHandle("board", "main", () => true);
 
 		expect(spine.activeGroup()).toBeNull(); // empty set
@@ -61,10 +79,7 @@ describe("createKeyboardSpine", () => {
 	});
 
 	test("activeGroup picks the focused group among several, null when none", () => {
-		const spine = createKeyboardSpine({
-			showBridge: () => {},
-			toggleShortcuts: () => {},
-		});
+		const spine = createKeyboardSpine(stubDeps());
 		let treeFocused = false;
 		let boardFocused = false;
 		const tree = stubHandle("tree", "left", () => treeFocused);
@@ -83,10 +98,7 @@ describe("createKeyboardSpine", () => {
 	});
 
 	test("activeZone mirrors the focused group's zone (null when none)", () => {
-		const spine = createKeyboardSpine({
-			showBridge: () => {},
-			toggleShortcuts: () => {},
-		});
+		const spine = createKeyboardSpine(stubDeps());
 		let focused = false;
 		const board = stubHandle("board", "main", () => focused);
 		spine.registerGroup(board);
@@ -98,10 +110,9 @@ describe("createKeyboardSpine", () => {
 
 	test("registers view.shortcuts as a global command that runs toggleShortcuts", () => {
 		let toggled = 0;
-		const spine = createKeyboardSpine({
-			showBridge: () => {},
-			toggleShortcuts: () => toggled++,
-		});
+		const spine = createKeyboardSpine(
+			stubDeps({ toggleShortcuts: () => toggled++ }),
+		);
 
 		const cmd = spine.registry.get(id("view.shortcuts"));
 		expect(cmd).toBeDefined();
@@ -113,5 +124,48 @@ describe("createKeyboardSpine", () => {
 
 		cmd?.run();
 		expect(toggled).toBe(1);
+	});
+
+	test("seeds palette.open + view.settings/backlog/done, all global, none with a shortcut string (D4)", () => {
+		const spine = createKeyboardSpine(stubDeps());
+		const ids = spine.registry.all().map((c) => c.id);
+		// The five app-lifetime seeds (view.bridge covered above) present in one
+		// registry — action mode reads exactly these plus surface-registered ones.
+		for (const seed of [
+			"palette.open",
+			"view.settings",
+			"view.backlog",
+			"view.done",
+		]) {
+			const cmd = spine.registry.get(id(seed));
+			expect(cmd).toBeDefined();
+			expect(cmd?.scope).toBe("global");
+			// Chips derive from the keymap via shortcutFor — no seed hand-authors one.
+			expect(cmd?.shortcut).toBeUndefined();
+			expect(ids).toContain(id(seed));
+		}
+	});
+
+	test("palette.open.run() fires togglePalette; view.settings/backlog/done run their show* legs", () => {
+		let palette = 0;
+		let settings = 0;
+		let backlog = 0;
+		let done = 0;
+		const spine = createKeyboardSpine(
+			stubDeps({
+				togglePalette: () => palette++,
+				showSettings: () => settings++,
+				showBacklog: () => backlog++,
+				showDone: () => done++,
+			}),
+		);
+		spine.registry.get(id("palette.open"))?.run();
+		spine.registry.get(id("view.settings"))?.run();
+		spine.registry.get(id("view.backlog"))?.run();
+		spine.registry.get(id("view.done"))?.run();
+		expect(palette).toBe(1);
+		expect(settings).toBe(1);
+		expect(backlog).toBe(1);
+		expect(done).toBe(1);
 	});
 });

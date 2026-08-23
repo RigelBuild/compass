@@ -9,12 +9,15 @@ import "./design/components/menu.css";
 import "./design/components/shortcuts.css";
 import "./app.css";
 import { LeftSidebar } from "./components/LeftSidebar";
+import { Palette } from "./components/Palette";
 import { RightSidebar } from "./components/RightSidebar";
 import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { StateDot } from "./components/StateDot";
 import { UsageBar } from "./components/UsageBar";
 import { useStore } from "./context";
-import { installKeymap } from "./keyboard/dispatch";
+import type { CommandId } from "./keyboard/commands";
+import { detectPlatform, installKeymap } from "./keyboard/dispatch";
+import { shortcutFor, shortcutForAria } from "./keyboard/keymap";
 
 // The Compass ADE shell — an Orca-inspired layout over the compass.v1 surface
 // (docs/specs/product/compass.md). A CSS grid: a topbar, a left agent-folder
@@ -55,6 +58,14 @@ const App: Component<RouteSectionProps> = (props) => {
 			store.keyboard.activeZone,
 		),
 	);
+	// Point-of-use chip parity (RIG-2483, D10): the topbar Bridge tab announces
+	// its chord via aria-keyshortcuts + title, resolved from the keymap through
+	// shortcutFor (D4) — matching the LeftSidebar view buttons.
+	const bridgeChord = shortcutFor("view.bridge" as CommandId, detectPlatform());
+	const bridgeAria = shortcutForAria(
+		"view.bridge" as CommandId,
+		detectPlatform(),
+	);
 	return (
 		<div class="app">
 			<header class="topbar">
@@ -74,6 +85,8 @@ const App: Component<RouteSectionProps> = (props) => {
 						class="view-tab"
 						classList={{ active: store.view() === "bridge" }}
 						onClick={() => store.showBridge()}
+						aria-keyshortcuts={bridgeAria}
+						title={bridgeChord ? `Bridge (${bridgeChord})` : undefined}
 					>
 						<span class="tab-glyph" aria-hidden="true">
 							▦
@@ -143,6 +156,10 @@ const App: Component<RouteSectionProps> = (props) => {
 
 			<Show when={store.shortcutsOpen()}>
 				<ShortcutsOverlay />
+			</Show>
+
+			<Show when={store.paletteOpen()}>
+				<Palette />
 			</Show>
 		</div>
 	);
