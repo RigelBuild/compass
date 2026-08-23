@@ -65,6 +65,10 @@ export const DEFAULT_KEYMAP: readonly KeymapEntry[] = [
 	{ chord: "Mod+Shift+A", commandId: cmd("view.agentWorkspace") },
 	{ chord: "Mod+,", commandId: cmd("view.settings") },
 	{ chord: "Mod+K", commandId: cmd("palette.open") },
+	// Shortcuts overlay (RIG-2482). Authored as the bare `?` chord; the
+	// dispatcher's eventToChord drops Shift for modifier-less printable
+	// non-ASCII-letter keys, so a US `Shift+/` normalizes to `?`.
+	{ chord: "?", commandId: cmd("view.shortcuts") },
 
 	// Zones (D5:448-449)
 	{ chord: "Mod+1", commandId: cmd("zone.focusLeft") },

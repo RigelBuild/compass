@@ -5,9 +5,12 @@ import "./design/tokens.css";
 import "./design/base.css";
 import "./design/components/badge-glyph.css";
 import "./design/components/card.css";
+import "./design/components/menu.css";
+import "./design/components/shortcuts.css";
 import "./app.css";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { RightSidebar } from "./components/RightSidebar";
+import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { StateDot } from "./components/StateDot";
 import { UsageBar } from "./components/UsageBar";
 import { useStore } from "./context";
@@ -137,6 +140,10 @@ const App: Component<RouteSectionProps> = (props) => {
 			</Show>
 
 			<UsageBar />
+
+			<Show when={store.shortcutsOpen()}>
+				<ShortcutsOverlay />
+			</Show>
 		</div>
 	);
 };

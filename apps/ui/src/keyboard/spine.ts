@@ -57,14 +57,15 @@ export interface KeyboardSpine {
 }
 
 /**
- * Create the keyboard spine. Registers `view.bridge → deps.showBridge()` as its
- * first command before returning (record A4 §182-186: the registration lives
- * with the behavior — the spine is created in `createAppStore` where
- * `showBridge` is in scope), so `Mod+B` resolves through the real wiring with no
- * App-specific setup.
+ * Create the keyboard spine. Registers `view.bridge → deps.showBridge()` and
+ * `view.shortcuts → deps.toggleShortcuts()` (RIG-2482) as its commands before
+ * returning (record A4 §182-186: the registration lives with the behavior — the
+ * spine is created in `createAppStore` where the closures are in scope), so
+ * `Mod+B` and `?` resolve through the real wiring with no App-specific setup.
  */
 export function createKeyboardSpine(deps: {
 	showBridge: () => void;
+	toggleShortcuts: () => void;
 }): KeyboardSpine {
 	const registry = createCommandRegistry();
 	const viewBridge: Command = {
@@ -75,6 +76,14 @@ export function createKeyboardSpine(deps: {
 		run: () => deps.showBridge(),
 	};
 	registry.register(viewBridge);
+	const viewShortcuts: Command = {
+		id: "view.shortcuts" as CommandId,
+		title: "Keyboard shortcuts",
+		keywords: ["help", "shortcuts", "keys", "keymap"],
+		scope: "global",
+		run: () => deps.toggleShortcuts(),
+	};
+	registry.register(viewShortcuts);
 
 	const groups = new Set<RovingGroupHandle>();
 

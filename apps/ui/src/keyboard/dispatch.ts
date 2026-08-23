@@ -21,17 +21,33 @@ import type { FocusZone } from "./zones";
  * (`Cmd` on macOS via `metaKey`, `Ctrl` elsewhere via `ctrlKey`). Space's raw
  * `event.key` (`" "`) becomes `Space`; a single-character key is upper-cased so
  * `b` matches the keymap's `B` (and `,`/`\` pass through unchanged).
+ *
+ * Shift-drop (RIG-2482): when NO command modifier is held and the key is a
+ * single printable non-ASCII-letter character (e.g. `?`, which IS shifted `/`),
+ * the `Shift` part is omitted — the character already encodes the shift, so `?`
+ * is authored as the bare `"?"` chord rather than the layout-fragile `"Shift+?"`.
+ * Space is deliberately NOT dropped: the `" "` → `"Space"` rename runs BEFORE
+ * this predicate, so `Space` is multi-char and fails it — otherwise `Shift+Space`
+ * (today a dead chord) would silently become `Space` and fire
+ * `list.expandOrToggle` (keymap.ts) with the board focused. `/[a-z]/i` is
+ * ASCII-only, so a future non-Latin letter binding would be Shift-dropped
+ * inconsistently with `Shift+B` — flagged here for the next binding author.
  */
 export function eventToChord(event: KeyboardEvent, platform: Platform): string {
 	const parts: string[] = [];
+	const hasCommandModifier = event.metaKey || event.ctrlKey || event.altKey;
 	if (platform === "mac" ? event.metaKey : event.ctrlKey) {
 		parts.push(platform === "mac" ? "Cmd" : "Ctrl");
 	}
-	if (event.shiftKey) parts.push("Shift");
-	if (event.altKey) parts.push("Alt");
+	// Rename Space BEFORE the Shift-drop predicate so it is multi-char and never
+	// Shift-dropped (see the doc comment's Space carve-out).
 	let key = event.key;
 	if (key === " ") key = "Space";
 	else if (key.length === 1) key = key.toUpperCase();
+	const shiftEncodedByKey =
+		!hasCommandModifier && key.length === 1 && !/[a-z]/i.test(key);
+	if (event.shiftKey && !shiftEncodedByKey) parts.push("Shift");
+	if (event.altKey) parts.push("Alt");
 	parts.push(key);
 	return parts.join("+");
 }
@@ -56,6 +72,19 @@ function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 /**
+ * Detect the running platform from `navigator` (RIG-2482). Hoisted from the
+ * former inline predicate in `installKeymap` so `resolveChord` consumers (the
+ * shortcuts overlay) share the ONE platform-detection convention. Exported here
+ * rather than from keymap.ts to keep keymap.ts a pure data/string module with no
+ * `navigator` read (Decision 10).
+ */
+export function detectPlatform(): Platform {
+	return /mac/i.test(navigator.platform || navigator.userAgent)
+		? "mac"
+		: "other";
+}
+
+/**
  * Install the global keymap. Adds one `keydown` listener and returns the
  * uninstaller (removes exactly that listener). `active` yields the focused
  * roving group (or `null`); `activeZone` yields the focused zone for the scoped
@@ -76,11 +105,7 @@ export function installKeymap(
 	active: () => RovingGroupHandle | null,
 	activeZone: () => FocusZone | null = () => null,
 ): () => void {
-	const platform: Platform = /mac/i.test(
-		navigator.platform || navigator.userAgent,
-	)
-		? "mac"
-		: "other";
+	const platform: Platform = detectPlatform();
 
 	const handler = (event: KeyboardEvent): void => {
 		const chord = eventToChord(event, platform);
