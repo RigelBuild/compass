@@ -1374,7 +1374,12 @@ function writeEnvFile(home: string, body: string): void {
 describe("main sources $HOME/.compass/env into process.env", () => {
 	// The test-only keys these tests write into process.env, saved before and
 	// restored after so a leaked key can never flake a later test.
-	const TOUCHED_KEYS = ["SOME_TEST_KEY", "COMPASS_MODEL"] as const;
+	const TOUCHED_KEYS = [
+		"SOME_TEST_KEY",
+		"COMPASS_MODEL",
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"COMPASS_FUTURE_VAR",
+	] as const;
 	let savedEnv: Record<string, string | undefined> = {};
 	beforeEach(() => {
 		savedEnv = {};
@@ -1431,6 +1436,30 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 			),
 		);
 		expect(process.env.COMPASS_MODEL).toBe("from-process");
+	});
+
+	test("the OTEL endpoint key from the env file reaches process.env unfiltered (where the transport's OTel layer reads it), while a COMPASS_-prefixed key is dropped", async () => {
+		const home = process.env.HOME as string;
+		// A non-COMPASS key (the OTEL endpoint) and a COMPASS_-prefixed key in the
+		// same file: the endpoint must land (isReservedEnvKey lets it through), the
+		// COMPASS_ key must be dropped (prefix rule) — pinning that the deployer's
+		// endpoint reaches makeOtelLayer's process.env read while the control-var
+		// namespace stays unclobberable, in one assertion pair.
+		writeEnvFile(
+			home,
+			"OTEL_EXPORTER_OTLP_ENDPOINT=http://collector.example:4318\nCOMPASS_FUTURE_VAR=nope\n",
+		);
+		await main(
+			{ HOME: home },
+			deps(
+				fakeSession(),
+				fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			),
+		);
+		expect(process.env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe(
+			"http://collector.example:4318",
+		);
+		expect(process.env.COMPASS_FUTURE_VAR).toBeUndefined();
 	});
 });
 
