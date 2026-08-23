@@ -55,7 +55,7 @@
 // never-dropped priority lane.
 
 import { create } from "@bufbuild/protobuf";
-import { Effect, Either, Fiber, Logger, ManagedRuntime } from "effect";
+import { Effect, Either, Fiber, Logger, ManagedRuntime, Metric } from "effect";
 import type { Message } from "./../compassv1";
 import type { AgentControl, ControlSource } from "./../control";
 import { ControlSubscribeRequestSchema } from "./../gen/compass/v1/agent_gateway_pb";
@@ -70,6 +70,12 @@ import type { UnmappedEvent } from "./../mapping";
 import { AckCursor } from "./control/ack-cursor";
 import { AsyncBuffer, type Queued } from "./control/buffer";
 import type { RunnerTransport } from "./index";
+import {
+	controlUnmapped,
+	flapResets,
+	noProgressDepth,
+	reconnects,
+} from "./otel-metrics";
 import { getTransportRuntime } from "./runtime-channel";
 
 // Bounded-backoff reconnect schedule for the Control server-stream (ms). A
@@ -306,6 +312,15 @@ export function createSocketControlSource(
 	let applyInFlight = false;
 
 	function count(eventType: string, reason: string): void {
+		// unmapped{event_type} (design.md Decision 2). `count()` is a plain sync
+		// funnel called from `dispatch()` on the event loop, OUTSIDE Effect
+		// context, so the increment runs through the runtime synchronously — the
+		// same `runtime.runSync(Metric.increment(...))` shape publish-spine.ts's
+		// sync enqueue site uses. `event_type` is tagged per-call because the wire
+		// eventType varies.
+		runtime.runSync(
+			Metric.increment(Metric.tagged(controlUnmapped, "event_type", eventType)),
+		);
 		onUnmapped({ kind: "unmapped", eventType, reason });
 	}
 
@@ -486,24 +501,46 @@ export function createSocketControlSource(
 			// in the failure channel (catch: identity) so buffer.fail() surfaces the
 			// real ConnectError, not an Effect wrapper.
 			const result = yield* Effect.either(
-				Effect.tryPromise({
-					try: async () => {
-						const stream = transport.control(
-							create(ControlSubscribeRequestSchema, {}),
-							{
-								signal: abort.signal,
-								onHeader: () => {
-									established = true;
-									openedAt = now();
+				Effect.gen(function* () {
+					// The `established` fact is set inside the `onHeader` JS closure,
+					// which the Connect stream invokes OUTSIDE any Effect context, so
+					// `Effect.annotateCurrentSpan` cannot reach it — it becomes a span
+					// EVENT instead (design.md Decision 1, "`…control.connection`
+					// mechanism"). Capture the live span handle inside the withSpan
+					// scope, and a clock so the event carries a walltime-nanos
+					// timestamp from the SAME source effect stamps span start/end with
+					// (`clock.unsafeCurrentTimeNanos()`; @effect/opentelemetry's tracer
+					// treats the event bigint as walltime nanos). Header receipt always
+					// happens while the tryPromise — and thus the span — is live, so
+					// the handle is valid when `onHeader` fires.
+					const span = yield* Effect.currentSpan;
+					const clock = yield* Effect.clock;
+					return yield* Effect.tryPromise({
+						try: async () => {
+							const stream = transport.control(
+								create(ControlSubscribeRequestSchema, {}),
+								{
+									signal: abort.signal,
+									onHeader: () => {
+										established = true;
+										openedAt = now();
+										span.event("established", clock.unsafeCurrentTimeNanos());
+									},
 								},
-							},
-						);
-						for await (const wire of stream) {
-							dispatch(wire);
-						}
-					},
-					catch: (err) => err,
-				}),
+							);
+							for await (const wire of stream) {
+								dispatch(wire);
+							}
+						},
+						catch: (err) => err,
+					});
+				}).pipe(
+					// `attempt` (the ladder index, known at span open) is a withSpan
+					// attribute (design.md Decision 1). One span per connection attempt.
+					Effect.withSpan("compass_agent.transport.control.connection", {
+						attributes: { attempt },
+					}),
+				),
 			);
 			if (Either.isRight(result)) {
 				buffer.close();
@@ -531,6 +568,10 @@ export function createSocketControlSource(
 			const applied = acks.appliedCount;
 			const madeProgress = applied > appliedAtLastDrop || applyInFlight;
 			noProgress = madeProgress ? 0 : noProgress + 1;
+			// no_progress_depth (design.md Decision 2): the gauge tracks the current
+			// consecutive-no-progress level, including the reset-to-0 that
+			// madeProgress just applied above.
+			yield* Metric.set(noProgressDepth, noProgress);
 			appliedAtLastDrop = applied;
 			if (noProgress >= CONTROL_RECONNECT_NO_PROGRESS_MAX) {
 				buffer.fail(err);
@@ -551,13 +592,18 @@ export function createSocketControlSource(
 			// threw, where the elapsed time is dial latency, not uptime. Uptime is
 			// sampled on the INJECTED `now()`, never Effect Clock (design record
 			// §T4: the flap-detector tests inject and advance `now`).
-			if (established && now() - openedAt >= CONTROL_RECONNECT_MIN_UPTIME_MS)
+			if (established && now() - openedAt >= CONTROL_RECONNECT_MIN_UPTIME_MS) {
 				attempt = 0;
+				// flap_resets (design.md Decision 2): count only when the reset fires.
+				yield* Metric.increment(flapResets);
+			}
 			if (attempt >= CONTROL_RECONNECT_BACKOFF_MS.length) {
 				buffer.fail(err);
 				return;
 			}
 			const delay = CONTROL_RECONNECT_BACKOFF_MS[attempt++];
+			// reconnects (design.md Decision 2): one increment per backoff taken.
+			yield* Metric.increment(reconnects);
 			// The backoff wait is Effect.sleep(delay) raced against a single
 			// listener on the source-lifetime abort signal, always detached on both
 			// settle paths — kept here as `sleepOrAbort` wrapped in Effect.promise,

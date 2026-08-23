@@ -71,3 +71,43 @@ export const durableGiveUps = Metric.counter(
 	"compass_agent.transport.frame_sink.durable_give_ups",
 	{ incremental: true },
 );
+
+// -----------------------------------------------------------------------------
+// control source (O3) — the INBOUND control-stream lane (control-source.ts).
+// Decision 2 of docs/designs/platform/compass-agent-effect-otel/design.md owns
+// these four control.* names; same style as the O2 constants above.
+// -----------------------------------------------------------------------------
+
+// Every reconnect backoff taken on the Control server-stream — the
+// `CONTROL_RECONNECT_BACKOFF_MS[attempt++]` take (monotone).
+export const reconnects = Metric.counter(
+	"compass_agent.transport.control.reconnects",
+	{ incremental: true },
+);
+
+// The consecutive-no-progress level as a LEVEL: set to `noProgress` after each
+// drop's progress check (against CONTROL_RECONNECT_NO_PROGRESS_MAX), reset to 0
+// when a reconnect makes progress — a level, not a count, exactly like the
+// publish spine's priority_retry_depth gauge above.
+export const noProgressDepth = Metric.gauge(
+	"compass_agent.transport.control.no_progress_depth",
+);
+
+// Every min-uptime flap reset of the backoff ladder — the reset-on-open
+// flap-detector zeroing `attempt` after a past-floor connection dropped
+// (monotone).
+export const flapResets = Metric.counter(
+	"compass_agent.transport.control.flap_resets",
+	{ incremental: true },
+);
+
+// Control ops counted-unmapped through the single `count()` funnel, labeled by
+// event type. The `event_type` label is DYNAMIC (the wire eventType varies per
+// call — `control:steer`, `control:replay`, …), so unlike O2's static `reason`
+// tags this is the BASE counter, tagged per-call at the increment site with
+// `Metric.tagged(controlUnmapped, "event_type", eventType)`. Piggybacks the
+// existing funnel; the `onUnmapped` callback contract is unchanged.
+export const controlUnmapped = Metric.counter(
+	"compass_agent.transport.control.unmapped",
+	{ incremental: true },
+);
