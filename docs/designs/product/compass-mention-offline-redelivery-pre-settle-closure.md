@@ -454,11 +454,11 @@ coupling. Lane: compass-comms (driver wires at submit).
       start ⇒ exactly one steer ⇒ ack clears; negative-control leg;
       agent-authored held-then-restart leg; Lagged-overrun leg. Lane:
       compass-comms.
-- [ ] T5 — ledger. This design PR ADDS the closure decision row (DL-239,
+- [ ] T5 — ledger. This design PR ADDS the closure decision row (DL-240,
       recording the marker mechanism + the killed-cursor hazard) and carries a
       `Ledger-impact:` line — the design pass has already appended it. The IMPL
       PR that lands T1–T4 then annotates the DL-226 Status cell
-      (residual-pre-settle-window → closed by DL-239/RIG-2490, amend-not-flip
+      (residual-pre-settle-window → closed by DL-240/RIG-2490, amend-not-flip
       per the ledger's immutable-Decision-cell rule) once the code that
       actually closes the window merges — never before. `tools/design-ledger-gate`
       enforces the touch-coupling on both PRs. Lane: compass-comms.
