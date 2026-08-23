@@ -364,30 +364,30 @@ export class CompassAgent {
 			return;
 		}
 		this.#processedMessageIds.add(msg.id);
-		// Build the AgentMessage the inner `agent.steer` accepts, reusing the
-		// single deliver formatter (single-element batch — no new formatter). The
-		// `steering` flag is what the agent's pre-LLM transform reads to wrap the
-		// message as a mid-turn interrupt (pi-ai types.d.ts:490). Timestamp is a
-		// fixed 0 — never asserted, and a wall-clock read would make tests
-		// non-deterministic.
-		const agentMsg: AgentMessage = {
-			role: "user",
-			content: formatDeliversForPrompt([msg]),
-			steering: true,
-			attribution: "user",
-			timestamp: 0,
-		};
+		// The mention text, formatted once via the single deliver formatter (a
+		// single-element batch — no new formatter). Used as the mid-turn steering
+		// message's content AND as the idle turn-start prompt.
+		const content = formatDeliversForPrompt([msg]);
 		// Idle is computed exactly as deliver does: the event-derived `#turnActive`
 		// AND the authoritative `#session.isStreaming` (closes the control-prompt
 		// spin-up race the event flag alone cannot — see the deliver comment).
 		const idle = !this.#turnActive && !this.#session.isStreaming;
-		// Inject: `agent.steer` only ENQUEUES the steer onto the steering queue; a
-		// running loop drains it at the next injection boundary (interrupt).
-		this.#session.agent.steer(agentMsg);
 		if (!idle) {
-			// Mid-turn: the running loop will drain the enqueued steer. `agent.steer`
-			// is synchronous void and cannot reject, so the ack (means "injected")
-			// rides the next microtask, mirroring deliver's ack-at-injection timing.
+			// Mid-turn: ENQUEUE onto the steering queue so the running loop drains it
+			// at its next injection boundary — an interrupt in place, no new turn.
+			// The `steering` flag is what the agent's pre-LLM transform reads to wrap
+			// the message as a mid-turn interrupt (pi-ai types.d.ts:490); timestamp is
+			// a fixed 0 (never asserted; a wall-clock read would be non-deterministic).
+			// `agent.steer` is synchronous void and cannot reject, so the ack (means
+			// "injected") rides the next microtask, mirroring deliver's timing.
+			const agentMsg: AgentMessage = {
+				role: "user",
+				content,
+				steering: true,
+				attribution: "user",
+				timestamp: 0,
+			};
+			this.#session.agent.steer(agentMsg);
 			queueMicrotask(() => {
 				const value: DeliveryAck = create(DeliveryAckSchema, {
 					messageId: msg.id,
@@ -397,41 +397,46 @@ export class CompassAgent {
 			});
 			return;
 		}
-		// Idle: `agent.steer` alone only enqueues, so nothing drains it — wake a
-		// turn with `agent.continue()` to drain the injected steer. Apply the same
-		// rejection-safety belt as `#flushDelivers`: `continue` injects
+		// Idle: START A NEW TURN with the mention as its content via `prompt()`,
+		// mirroring the idle-DELIVER path (`#flushDelivers`). The frozen record ties
+		// an idle frame to "starts a new turn" (compass-0.6 :399-408). `prompt()`
+		// runs on ANY history — including a fresh, just-spawned peer's EMPTY history
+		// — whereas `continue()` (the earlier mechanism) rejects "No messages to
+		// continue from" on a zero-history session, so an @-mention to an idle,
+		// never-run agent silently dropped its steer and never emitted its
+		// SessionInjection (RIG-2488: the leg-4 e2e caught exactly this over the
+		// wire). The idle path does NOT pre-enqueue onto the steering queue — the
+		// prompt carries the mention as the turn's initial content, so an enqueued
+		// copy would be a double-inject (drained again by a later turn).
+		//
+		// Rejection-safety belt (mirrors `#flushDelivers`): `prompt` injects
 		// synchronously up to its first await and can only signal refusal as a
-		// settled REJECTION. On the idle path the reachable synchronous rejection
-		// is `continue`'s empty-history throw ("No messages to continue from",
-		// pi-agent-core agent.ts:1035) when the inner agent reaches ReplayComplete
-		// with zero replayed messages; an AgentBusyError spin-up race CANNOT fire
-		// here because steer() is fully synchronous from the idle gate (:308) to
-		// this call, so `isStreaming` cannot change between them. (An async-settled
-		// rejection from inside the run loop — e.g. "No model configured" — is also
-		// handled here, exactly as deliver's prompt() equally is.) On rejection the
-		// turn did not start: roll back the steer this method pre-pushed onto the
-		// inner steering queue (so no orphan survives to be drained by a later turn
-		// or double-injected by the Server's redelivery), un-dedup the id (so the
-		// Server redelivers), and surface it, no ack. Otherwise ack on the
-		// microtask. The settled-rejection `.catch` is scheduled before this
-		// `queueMicrotask`, so the `rejected` flag is observed deterministically
-		// under `tick()` — no timer, no race.
+		// settled REJECTION — the AgentBusyError streaming guard or the "No model
+		// configured" throw, both BEFORE any injection. (AgentBusyError cannot fire
+		// here: steer() is synchronous from the idle gate to this call, so
+		// `isStreaming` cannot change between them.) On rejection the turn did not
+		// start: un-dedup the id (so the Server redelivers) and surface it, no ack.
+		// Otherwise ack on the microtask, gated on the prompt not having
+		// synchronously-rejected — the settled-rejection `.catch` is scheduled
+		// before this `queueMicrotask`, so `rejected` is observed deterministically
+		// under `tick()`: no timer, no race.
+		// Optimistically mark a turn active — starting a turn here closes the same
+		// spin-up window `#flushDelivers` does: before `agent_start` propagates,
+		// `isStreaming` may still read false, so a follow-on deliver/steer in that
+		// window would re-gate as idle and start a SECOND turn (→ AgentBusyError).
+		// The rejection path below clears it, since a refused prompt starts no turn.
+		this.#turnActive = true;
 		let rejected = false;
 		let acked = false;
-		this.#session.agent.continue().catch((err) => {
+		this.#session.agent.prompt(content).catch((err) => {
 			if (acked) return;
-			// Roll back the steer pre-pushed at the top of the idle path: the
-			// empty-history throw (pi-agent-core agent.ts:1035) fires BEFORE any
-			// steering dequeue (:1038), so the orphan is still at the queue tail and
-			// this LIFO pop removes exactly it. Placed after the `if (acked)` guard
-			// so a post-injection settled-rejection never pops an injected steer.
-			this.#session.agent.popLastSteer();
 			rejected = true;
+			this.#turnActive = false;
 			this.#processedMessageIds.delete(msg.id);
 			this.#onUnmapped({
 				kind: "unmapped",
-				eventType: "steer:continue",
-				reason: `steer continue rejected — not injected, un-acked for redelivery: ${String(err)}`,
+				eventType: "steer:prompt",
+				reason: `steer prompt rejected — not injected, un-acked for redelivery: ${String(err)}`,
 			});
 		});
 		queueMicrotask(() => {
