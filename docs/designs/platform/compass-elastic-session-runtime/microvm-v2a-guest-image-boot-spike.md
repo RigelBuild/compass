@@ -59,8 +59,9 @@ Why erofs, and why an initramfs is not optional:
   beyond what nixpkgs' initrd tooling provides. Every *post*-`switch_root`
   module need (guestd's `virtio_net`/`virtiofs`/vsock transport, and V3's
   in-guest netfilter arm — `nf_tables` alone is not sufficient: `egress.go`'s
-  ruleset also pulls `nf_conntrack`/`nft_ct` and the interval/pipapo set
-  backends, `go/internal/runtime/egress.go:76-77`) autoloads from the full
+  ruleset also pulls `nf_conntrack`/`nft_ct` (`ct state established,related
+  accept`, `go/internal/runtime/egress.go:121`) and the interval/pipapo set
+  backends (`flags interval`, `egress.go:117-118`)) autoloads from the full
   `/lib/modules/<version>` tree the rootfs ships (T1), so the module surface is
   correct for V3 without re-enumeration.
 - **Reproducible and verifiable.** `mkfs.erofs` supports fixed timestamps and
@@ -208,9 +209,11 @@ D4 Connect/h2c):
   the service additively with no wire break. Message names are the plain
   `HealthRequest`/`HealthResponse` (no collision in `compass.v1`, and matching
   the parent sketch keeps the buf `RPC_REQUEST/RESPONSE_STANDARD_NAME` rules
-  satisfied); the suffix-less `service GuestControl` reuses the existing
-  `AgentGateway` precedent — a documented `ignore_only` `SERVICE_SUFFIX`
-  carve-out in `buf.yaml` (`buf.yaml:16-36`), not a second naming convention.
+  satisfied); the suffix-less `service GuestControl` follows the existing
+  `AgentGateway` precedent — T3 ADDS a new per-file `SERVICE_SUFFIX`
+  `ignore_only` entry for `proto/compass/v1/guest_control.proto` to `buf.yaml`
+  (the carve-out is per-file, `buf.yaml:16-36`, so it is created here, not
+  inherited), not a second naming convention.
   `HealthResponse` carries what the spike must assert: `guestd_version string`,
   `net_provisioned bool`, `workspace_mounted bool`.
 - **Guest side.** guestd serves the generated Connect handler over h2c on an
@@ -232,7 +235,8 @@ D4 Connect/h2c):
 
 ### (f) `BootConfig`: the V2b-consumed contract, finalized
 
-The parent sketched all-string fields (microvm-runner.md:456-460); V2a
+The parent sketched string-typed `VsockCID`/`VsockPort` (and string path
+fields; `CPUs`/`MemoryMB` were already `int`, microvm-runner.md:459-460); V2a
 finalizes with honest types and the two fields the packaging decisions above
 make load-bearing (`Initrd`, `Cmdline`):
 
@@ -260,15 +264,16 @@ type BootConfig struct {
     VsockSocket string // host AF_UNIX path for --vsock socket=… (the hybrid endpoint the host dials)
     FSTag       string // virtio-fs tag ("workspace")
     FSSocket    string // virtiofsd --socket-path the VMM attaches via --fs
+    FSSharedDir string // virtiofsd --shared-dir: the host tree exported as FSTag→/workspace (per-session checkout dir in V2b; a throwaway temp dir in the V2a spike)
     CPUs        int
     MemoryMB    int    // always launched with shared=on ((c))
     Net         NetConfig
 }
 ```
 
-Type deviations from the sketch (`VsockCID`/`VsockPort` numeric, `Initrd` and
-`Cmdline` added, `VsockSocket` split from the CID) are flagged as OQ-E for the
-freeze batch.
+Type deviations from the sketch (`VsockCID`/`VsockPort` numeric; `Initrd`,
+`Cmdline`, and `FSSharedDir` added; `VsockSocket` split from the CID) are
+flagged as OQ-E for the freeze batch.
 
 ### (g) The boot-spike harness
 
@@ -290,8 +295,10 @@ Q-budget (microvm-runner.md:839-842); PSS divides shared pages among mappers.
 Launch also captures the guest serial console (`--serial file=<log>`) into the
 test log — a fail-closed PID-1 exit is otherwise an undebuggable deadline
 timeout, including the corrupt-rootfs negative case. Each child is spawned with
-`SysProcAttr.Pdeathsig = SIGTERM` so a killed test process cannot orphan the
-VMM/virtiofsd/passt; teardown in `t.Cleanup` asserts no orphan processes.
+`SysProcAttr.Pdeathsig = SIGTERM` as a best-effort orphan guard — on Linux
+`PR_SET_PDEATHSIG` fires on the spawning *thread's* death, so the spawn must
+hold `runtime.LockOSThread` for it to be reliable; the real teardown guarantee
+is explicit `Shutdown` + `t.Cleanup` reaping, which asserts no orphan processes.
 `microvmtest` grows two resolutions: a
 `COMPASS_TEST_GUEST_INITRD` env var and a PATH lookup for `passt`, the same
 shape as the existing kernel/rootfs/VMM resolution
@@ -411,16 +418,20 @@ in V2a-concrete form.
   them; the packing step must not lose them.
 - **No Runner wiring.** `MicroVMRuntime` methods stay
   `ErrMicroVMNotImplemented` (`go/internal/runtime/microvm.go:48-55`); V2a's
-  Go code lives in the new `go/internal/runtime/microvm` package +
-  `go/cmd/compass-guestd` and is reached only by the KVM-gated test.
+  Go code lives in the new `go/internal/runtime/microvm` package,
+  `go/internal/guestd` (guestd's logic), and `go/cmd/compass-guestd`, and is
+  reached only by the KVM-gated test.
 
 ## Plan
 
-Tasks are ordered by dependency; each is one reviewer's gate. T2 and T3 are
-independent of each other and can run in parallel lanes; T1's packing depends
-on T2's binary (its nix build replaces the E3 stub with the real guestd, so
-T1's non-guestd parts can start alongside but it completes after T2); T4
-integrates everything.
+Tasks are ordered by dependency; each is one reviewer's gate. T3's proto seed +
+`buf generate` output is a prerequisite of T2: T2's vsock `Health` server
+compiles against the generated `compassv1connect.GuestControlHandler`, so T3's
+proto+codegen half lands first, after which T3's host-side
+`DialGuest`/`GuestClient` runs in parallel with T2. T1's packing depends on
+T2's binary (its nix build replaces the E3 stub with the real guestd, so T1's
+non-guestd parts can start alongside but it completes after T2); T4 integrates
+everything.
 
 ### T1 — image packing: erofs rootfs + module initramfs
 
@@ -429,6 +440,17 @@ Extend `guest-image/default.nix`: fold the E3 contents tree into a
 derivation. Remove the now-dead `workspace.mount` systemd unit ((d) — the
 guest has no systemd; guestd mounts the tag itself). Update the moon `build`
 task to also realize `compass-guest-initrd`.
+
+Wire the new initrd into the CI KVM leg and the dev shell in the same task:
+`.github/workflows/ci.yml`'s "microVM suites" step (ci.yml:385-393 — currently
+`nix build … compass-guest-kernel compass-guest-rootfs`, exporting only
+`COMPASS_TEST_GUEST_KERNEL`/`COMPASS_TEST_GUEST_ROOTFS`) MUST add
+`compass-guest-initrd` to that build and export `COMPASS_TEST_GUEST_INITRD` to
+`$GITHUB_ENV`, plus the matching dev-shell export. T4 extends
+`microvmtest.Require`'s Env with `InitrdImage`, and `resolveEnv` hard-fails on
+any missing guest-image env var once the KVM gate clears
+(`microvmtest.go:133-160`) — so without this wiring the existing KVM leg reddens
+the moment T4 lands.
 
 - **Interfaces:** produces nix attrs `compass-guest-kernel` (unchanged:
   `pkgs.linuxPackages.kernel`, bzImage at `${out}/bzImage`,
@@ -512,7 +534,7 @@ measure, tear down.
 - **Interfaces:** produces `go/internal/runtime/microvm.BootConfig` +
   `NetConfig` exactly per (f); `Launch(ctx context.Context, cfg BootConfig)
   (*VM, error)` — starts virtiofsd (`--socket-path=cfg.FSSocket
-  --shared-dir=<dir> --sandbox=namespace`), passt (`--vhost-user
+  --shared-dir=cfg.FSSharedDir --sandbox=namespace`), passt (`--vhost-user
   --socket cfg.Net.VhostUserSocket --pid <file>`), then cloud-hypervisor
   (`--kernel cfg.Kernel --initramfs cfg.Initrd --disk path=cfg.Rootfs,readonly=on
   --cmdline … --cpus boot=cfg.CPUs --memory size=<MB>M,shared=on
@@ -598,9 +620,12 @@ recommendation.
 - **OQ-E (load-bearing, small) — `BootConfig` deviations from the parent's
   sketch:** `VsockCID`/`VsockPort` as `uint32` (vsock addressing is numeric,
   [vsock(7)](https://man7.org/linux/man-pages/man7/vsock.7.html)), added
-  `Initrd` + `Cmdline` fields (consequence of OQ-A), and `VsockSocket`
-  (hybrid host endpoint) split out. The parent sketched all-string
-  (microvm-runner.md:459-460); this is a detailing refinement, not a
+  `Initrd` + `Cmdline` fields (consequence of OQ-A), added `FSSharedDir` (the
+  per-session host tree virtiofsd exports as `FSTag`→`/workspace` — a temp dir
+  in the spike, the session checkout dir in V2b, microvm-runner.md:470-471),
+  and `VsockSocket` (hybrid host endpoint) split out. The parent sketched
+  string-typed `VsockCID`/`VsockPort` (microvm-runner.md:459-460 —
+  `CPUs`/`MemoryMB` were already `int`); this is a detailing refinement, not a
   contradiction — but V2b consumes it, so it should be ratified.
   **Recommend the (f) struct as written.**
 - **OQ-F (load-bearing, small) — removing E3's `workspace.mount` systemd
