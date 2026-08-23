@@ -982,12 +982,15 @@ func TestUnroutedMentionMessagesScan(t *testing.T) {
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "agent")
 	ch := agent.Agent.HomeChannelID
+	ch2 := mustNamedChannelWith(t, s, owner.ID, "second", agent.ID)
 
 	m1, seq1 := postAs(t, s, ch, owner.ID, "@agent one")
-	m2, seq2 := postAs(t, s, ch, owner.ID, "@agent two")
+	m2, seq2 := postAs(t, s, ch2, owner.ID, "@agent two")
 	m3, seq3 := postAs(t, s, ch, owner.ID, "@agent three")
 
-	// Fresh inserts: all three NULL, returned ascending seq, right channel.
+	// Fresh inserts: all three NULL, returned ascending seq. m2 lives in a
+	// distinct channel, so the topic->channel join must resolve each row to
+	// its OWN channel, not one shared value.
 	got, err := s.UnroutedMentionMessages(ctx, 0, 100)
 	if err != nil {
 		t.Fatalf("UnroutedMentionMessages(all): %v", err)
@@ -997,6 +1000,7 @@ func TestUnroutedMentionMessagesScan(t *testing.T) {
 	}
 	wantIDs := []string{m1, m2, m3}
 	wantSeqs := []int64{seq1, seq2, seq3}
+	wantChans := []ChannelID{ch, ch2, ch}
 	for i, r := range got {
 		if string(r.ID) != wantIDs[i] {
 			t.Fatalf("row[%d].ID = %s, want %s", i, r.ID, wantIDs[i])
@@ -1004,8 +1008,8 @@ func TestUnroutedMentionMessagesScan(t *testing.T) {
 		if r.Seq != wantSeqs[i] {
 			t.Fatalf("row[%d].Seq = %d, want %d", i, r.Seq, wantSeqs[i])
 		}
-		if r.Channel != ch {
-			t.Fatalf("row[%d].Channel = %s, want %s", i, r.Channel, ch)
+		if r.Channel != wantChans[i] {
+			t.Fatalf("row[%d].Channel = %s, want %s", i, r.Channel, wantChans[i])
 		}
 	}
 	if got[0].Seq >= got[1].Seq || got[1].Seq >= got[2].Seq {
