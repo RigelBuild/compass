@@ -309,8 +309,8 @@ jobs:
             grep -nF "$skip" /tmp/pgtest.log | head
             exit 1
           fi
-          pkgs=$(grep -rl 'pgtest\.RequireDSN' --include='*.go' . \
-            | sed 's|^\./||' | xargs -n1 dirname | sort -u)
+          pkgs=$({ grep -rl 'pgtest\.RequireDSN' --include='*.go' . || true; } \
+            | sed 's|^\./||' | xargs -r -n1 dirname | sort -u)
           if [ -z "$pkgs" ]; then
             echo "::error::no package calls pgtest.RequireDSN — the harness moved and this guard is vacuous"
             exit 1
@@ -431,8 +431,8 @@ jobs:
             grep -nF "$skip" /tmp/microvm.log | head
             exit 1
           fi
-          pkgs=$(grep -rl 'microvmtest\.Require' --include='*.go' . \
-            | sed 's|^\./||' | xargs -n1 dirname | sort -u)
+          pkgs=$({ grep -rl 'microvmtest\.Require' --include='*.go' . || true; } \
+            | sed 's|^\./||' | xargs -r -n1 dirname | sort -u)
           if [ -z "$pkgs" ]; then
             echo "::error::no package calls microvmtest.Require — the harness moved and this guard is vacuous"
             exit 1
