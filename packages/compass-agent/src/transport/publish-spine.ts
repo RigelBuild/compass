@@ -225,6 +225,18 @@ export function createPublishSpine(
 			}
 			const result = yield* Effect.either(
 				Effect.tryPromise(() => publish(oneBatch())),
+			).pipe(
+				// Decision 1 span: one per cycled batch send. Attributes are all known
+				// at span open (batch composition + pump-scoped retry level). The span
+				// wraps only the Effect.either(tryPromise) send — a failed batch is a
+				// normal counted event (Either resolves Left), so span status stays ok.
+				Effect.withSpan("compass_agent.transport.publish.batch", {
+					attributes: {
+						batch_size: batch.length,
+						priority_count: priorityCount,
+						retry_index: priorityRetries,
+					},
+				}),
 			);
 			if (Either.isRight(result)) {
 				priorityRetries = 0;
@@ -318,7 +330,14 @@ export function createPublishSpine(
 				// what keeps a queued never-drop priority frame from being abandoned.
 				Queue.unsafeOffer(wake, undefined);
 				if (pumpFiber !== undefined) {
-					await runtime.runPromise(Fiber.join(pumpFiber));
+					// Decision 1 span: the spine-side teardown flush (join the pump so
+					// every queued frame — notably a terminal STOPPED — is sent before
+					// dispose). Closes before drain() resolves, so before dispose() below.
+					await runtime.runPromise(
+						Fiber.join(pumpFiber).pipe(
+							Effect.withSpan("compass_agent.transport.publish.drain"),
+						),
+					);
 				}
 			} finally {
 				// Dispose ONLY a runtime this spine owns (the fallback path). A borrowed
