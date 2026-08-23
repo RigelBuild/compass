@@ -14,6 +14,10 @@
 node_modules
 dist
 *.tsbuildinfo
+# transient tsc declaration emit for the transport export-surface containment
+# test (packages/compass-agent/src/transport/export-surface.test.ts); always
+# cleaned in a finally, ignored so a hard crash never leaves a tracked artifact.
+.dts-surface-*
 
 # devenv / direnv
 .devenv*

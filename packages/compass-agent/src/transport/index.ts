@@ -16,7 +16,7 @@ import {
 	createGrpcTransport,
 	Http2SessionManager,
 } from "@connectrpc/connect-node";
-import { Logger, ManagedRuntime } from "effect";
+import { Layer, Logger, ManagedRuntime } from "effect";
 
 import type {
 	CommsCallRequest,
@@ -29,6 +29,7 @@ import type {
 } from "../gen/compass/v1/agent_gateway_pb";
 import { AgentGateway } from "../gen/compass/v1/agent_gateway_pb";
 import type { AgentControl } from "../gen/compass/v1/agent_pb";
+import { makeOtelLayer } from "./otel-layer";
 import { createPublishSpine, type PublishSpine } from "./publish-spine";
 import { setTransportRuntime } from "./runtime-channel";
 
@@ -106,11 +107,16 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 	const client = createClient(AgentGateway, transport);
 	// The single ManagedRuntime this transport owns and every Effect lane behind
 	// it (sink, spine, source) shares, so the production wiring path runs on ONE
-	// scheduler (design record §T5). Same config the three modules made
-	// per-instance before T5: the default logger is removed so a handled/swallowed
-	// lane failure does not double-report to the console. close() disposes it; the
-	// sibling factories BORROW it (never dispose) via the module-private channel.
-	const runtime = ManagedRuntime.make(Logger.remove(Logger.defaultLogger));
+	// scheduler (design record §T5). The default logger is removed so a
+	// handled/swallowed lane failure does not double-report to the console;
+	// makeOtelLayer() adds the transport's OTel provider when an OTLP endpoint is
+	// configured and Layer.empty otherwise, so instrumentation is inert with no
+	// endpoint (design docs/designs/platform/compass-agent-effect-otel/design.md
+	// Decision 4). close() disposes it; the sibling factories BORROW it (never
+	// dispose) via the module-private channel.
+	const runtime = ManagedRuntime.make(
+		Layer.merge(Logger.remove(Logger.defaultLogger), makeOtelLayer()),
+	);
 	// The Publish spine is created once on first use and shared by the sink +
 	// source; memoize it so both reach the same single stream. It runs on the
 	// transport's runtime (threaded by argument — the spine takes `publish`, not
