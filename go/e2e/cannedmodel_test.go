@@ -525,3 +525,65 @@ func TestCannedSetupMarkerRoutesOffScript(t *testing.T) {
 		t.Fatalf("post-marker normal POST finish_reason = %q, want stop", first.finish)
 	}
 }
+
+// TestCannedCustomMarkerRoutesOffScript pins the caller-supplied marker route
+// (newCannedMarker, threaded in via the WithCannedMarkerReply fixture option and
+// the startCannedModelServer markers variadic): a request whose body contains a
+// registered marker settles on that marker's reply WITHOUT advancing the script
+// counter — the same off-script discipline the built-in Setup marker uses, but
+// caller-supplied. It is checked AFTER the built-in Setup marker and BEFORE the
+// positional claim, so a leg can route a shared-backend turn it does not want
+// drawn off its ordered script (the leg-4 mention-driven steer/deliver turns).
+// This is the hermetic (no-podman) counterpart to the podman leg-4 e2e's use of
+// the option. A regression that advanced the counter on a custom-marker turn, or
+// stopped matching the marker, reddens here.
+func TestCannedCustomMarkerRoutesOffScript(t *testing.T) {
+	const (
+		marker      = "please take a look"
+		markerReply = "canned mention turn settled OK"
+		scripted    = "the one scripted turn"
+	)
+	host, err := hostRoutableAddr()
+	if err != nil {
+		t.Fatalf("hostRoutableAddr: %v", err)
+	}
+	srv, err := startCannedModelServer(
+		host+":0",
+		[]CannedTurn{CannedText(scripted)},
+		newCannedMarker(marker, markerReply),
+	)
+	if err != nil {
+		t.Fatalf("startCannedModelServer: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("canned model server Close: %v", err)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	url := srv.BaseURL(host) + "/chat/completions"
+
+	// A body carrying the registered marker settles on the marker reply, off the
+	// script. Non-vacuity: drop the markers slice and this draws the scripted
+	// turn (or 500s once exhausted) instead of markerReply.
+	markerBody := `{"model":"x","messages":[{"role":"user","content":"` + marker + `"}]}`
+	got := readCannedTurnBody(ctx, t, url, markerBody)
+	if got.content != markerReply {
+		t.Fatalf("marker POST content = %q, want the off-script markerReply %q", got.content, markerReply)
+	}
+	if got.finish != "stop" {
+		t.Fatalf("marker POST finish_reason = %q, want stop", got.finish)
+	}
+
+	// The counter must NOT have advanced: the single scripted turn is still at
+	// index 0, so a normal POST draws it (not a 500 exhaustion).
+	first := readCannedTurn(ctx, t, url)
+	if first.content != scripted {
+		t.Fatalf("post-marker normal POST content = %q, want the scripted turn %q (the custom marker turn advanced the counter)", first.content, scripted)
+	}
+	if first.finish != "stop" {
+		t.Fatalf("post-marker normal POST finish_reason = %q, want stop", first.finish)
+	}
+}

@@ -115,13 +115,45 @@ func CannedToolCall(toolName, argsJSON string) CannedTurn {
 	return CannedTurn{isToolCall: true, toolName: toolName, toolArgs: argsJSON}
 }
 
+// cannedMarker is one off-script body-marker route the canned backend serves:
+// any request whose body contains marker settles on reply as a clean text turn
+// WITHOUT advancing the positional script counter. Build one with
+// newCannedMarker (via the WithCannedMarkerReply fixture option). It generalizes
+// the built-in setupTurnMarker mechanism to a
+// caller-supplied list, so a leg can route a turn it does not want drawn off its
+// ordered script (the mentioned peer's steer-driven turn and the subscriber's
+// deliver-driven turn in leg-4) the same way the root-supervisor Setup turn is
+// already routed.
+type cannedMarker struct {
+	marker string
+	reply  string
+}
+
+// newCannedMarker builds an off-script body-marker route: a request whose body
+// contains marker settles on reply as a clean text turn and does NOT consume a
+// positional script slot. It mirrors the built-in setupTurnMarker routing (which
+// keeps the root-supervisor Setup turn off every leg's script) but is
+// caller-supplied and additive — the Setup marker still routes unconditionally.
+// Use it via WithCannedMarkerReply to keep the ordered script drawn only by its
+// own scripted turns when a shared-backend turn (e.g. a mention-driven steer or
+// deliver) would otherwise race the counter.
+func newCannedMarker(marker, reply string) cannedMarker {
+	return cannedMarker{marker: marker, reply: reply}
+}
+
 // cannedModelServer is a running canned model backend. It owns its listener and
 // http.Server; Close stops both. The zero value is not usable — build one with
 // startCannedModelServer.
 type cannedModelServer struct {
-	srv      *http.Server
-	ln       net.Listener
-	script   []CannedTurn
+	srv    *http.Server
+	ln     net.Listener
+	script []CannedTurn
+	// markers are the caller-supplied off-script body-marker routes (see
+	// cannedMarker / newCannedMarker): a request whose body contains a
+	// marker settles on its reply WITHOUT advancing the positional counter,
+	// generalizing setupTurnMarker. Checked after the built-in Setup marker,
+	// before the positional claim.
+	markers  []cannedMarker
 	port     int
 	closeErr error
 	closeMu  sync.Mutex
@@ -166,8 +198,10 @@ const setupReply = "canned setup turn settled OK"
 // it is the host's routable address (pasta forwards the container to it via the
 // host-gateway); in the hermetic unit test it is loopback. It returns an error
 // rather than panicking (rule://go-no-panic-in-lib) so the caller — a test —
-// decides fatality.
-func startCannedModelServer(bindAddr string, script []CannedTurn) (*cannedModelServer, error) {
+// decides fatality. markers are optional off-script body-marker routes
+// (newCannedMarker): a request whose body carries one settles on its reply
+// without consuming a positional slot, additive to the built-in Setup marker.
+func startCannedModelServer(bindAddr string, script []CannedTurn, markers ...cannedMarker) (*cannedModelServer, error) {
 	if len(script) == 0 {
 		return nil, errors.New("canned model server requires a non-empty script")
 	}
@@ -180,7 +214,7 @@ func startCannedModelServer(bindAddr string, script []CannedTurn) (*cannedModelS
 		_ = ln.Close() // failed construction; release the listener we just opened
 		return nil, fmt.Errorf("canned model server listener has unexpected addr type %T", ln.Addr())
 	}
-	c := &cannedModelServer{ln: ln, script: script, port: tcpAddr.Port}
+	c := &cannedModelServer{ln: ln, script: script, markers: markers, port: tcpAddr.Port}
 	mux := http.NewServeMux()
 	mux.HandleFunc(cannedChatPath, c.handleChatCompletions)
 	// ReadHeaderTimeout bounds a slow-header client (gosec G112); the canned
@@ -323,6 +357,18 @@ func (c *cannedModelServer) handleChatCompletions(w http.ResponseWriter, r *http
 	if strings.Contains(string(body), setupTurnMarker) {
 		c.writeTextTurn(w, flusher, setupReply)
 		return
+	}
+
+	// Caller-supplied off-script markers (newCannedMarker), checked after the
+	// built-in Setup marker and BEFORE the positional claim: a request whose body
+	// carries one settles on its reply without advancing the script counter, so a
+	// shared-backend turn a leg does not want drawn off its ordered script (a
+	// mention-driven steer or deliver) is routed the same way the Setup turn is.
+	for _, m := range c.markers {
+		if strings.Contains(string(body), m.marker) {
+			c.writeTextTurn(w, flusher, m.reply)
+			return
+		}
 	}
 
 	// Claim the next script index under the counter mutex so a pathological

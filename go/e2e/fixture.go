@@ -68,6 +68,12 @@ type Fixture struct {
 type fixtureConfig struct {
 	canned       bool
 	cannedScript []CannedTurn
+	// cannedMarkers are caller-supplied off-script body-marker routes threaded
+	// into the canned backend (WithCannedMarkerReply): a request whose body carries a
+	// marker settles on its reply without consuming a positional script slot,
+	// additive to the built-in Setup marker. Empty is the default (Setup marker
+	// only).
+	cannedMarkers []cannedMarker
 	// site, when non-nil, makes NewFixture reuse a persistent root/stateDir/ports
 	// (WithSite) instead of minting fresh ephemeral ones — the SEA-1790 H6
 	// cross-restart substrate. nil is the default ephemeral fixture.
@@ -105,6 +111,20 @@ func WithCannedScript(script ...CannedTurn) fixtureOption {
 	return func(fc *fixtureConfig) {
 		fc.canned = true
 		fc.cannedScript = script
+	}
+}
+
+// WithCannedMarkerReply adds an off-script body-marker route to the canned
+// backend (newCannedMarker): a model request whose body contains marker
+// settles on reply as a clean text turn WITHOUT advancing the positional script
+// counter. It is additive to the built-in Setup marker and composes with
+// WithCannedScript — a leg routes a shared-backend turn it does not want drawn
+// off its ordered script (the leg-4 mention-driven steer and deliver turns) the
+// same way the root-supervisor Setup turn is already routed. Repeat the option
+// to register several markers.
+func WithCannedMarkerReply(marker, reply string) fixtureOption {
+	return func(fc *fixtureConfig) {
+		fc.cannedMarkers = append(fc.cannedMarkers, newCannedMarker(marker, reply))
 	}
 }
 
@@ -245,7 +265,7 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	// stub means plain mode and every canned field stays as set above.
 	var stub *cannedModelServer
 	if fc.canned {
-		stub = configureCannedModel(t, &cfg, root, fc.cannedScript)
+		stub = configureCannedModel(t, &cfg, root, fc.cannedScript, fc.cannedMarkers)
 	}
 
 	deps := stack.Deps{
@@ -386,14 +406,14 @@ const pastaHostGateway = "169.254.1.2"
 // It returns the running stub; its Close rides a t.Cleanup so teardown never
 // leaks it. cfgRoot is the fixture's short root (the models.yml host dir lives
 // under it, short enough to stay clear of any path budget).
-func configureCannedModel(t *testing.T, cfg *stack.Config, cfgRoot string, script []CannedTurn) *cannedModelServer {
+func configureCannedModel(t *testing.T, cfg *stack.Config, cfgRoot string, script []CannedTurn, markers []cannedMarker) *cannedModelServer {
 	t.Helper()
 
 	hostAddr, err := hostRoutableAddr()
 	if err != nil {
 		t.Fatalf("resolve host routable address for canned model: %v", err)
 	}
-	stub, err := startCannedModelServer(hostAddr+":0", script)
+	stub, err := startCannedModelServer(hostAddr+":0", script, markers...)
 	if err != nil {
 		t.Fatalf("start canned model server: %v", err)
 	}

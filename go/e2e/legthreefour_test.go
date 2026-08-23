@@ -6,6 +6,9 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -19,6 +22,14 @@ import (
 // createLifecycleTools registers it as "agents_spawn_peer"
 // (packages/compass-agent/src/lifecycle.ts:144).
 const spawnToolName = "agents_spawn_peer"
+
+// mentionMarker is a stable substring of the leg-4 @-mention body (mentionText,
+// defined at the leg-4 post below) used to route BOTH mention-driven turns — the
+// mentioned peer's steer-driven turn and the subscribed spawner's deliver-driven
+// turn — off the positional canned script via WithCannedMarkerReply, so the
+// spawner's 2-turn spawn+settle script stays drawn only by its own turns. It
+// must stay a substring of mentionText, asserted at the split assertion.
+const mentionMarker = "please take a look"
 
 // TestLegThreeFourSpawnAndMessaging is the full legs-3/4 scenario over the real
 // stack (design.md:634-665): a canned turn issues Lifecycle(Spawn) so a fresh
@@ -66,11 +77,20 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 
 	// A 2-turn script: turn 0 issues the spawn tool-call (so the agent loop runs
 	// Lifecycle(Spawn)); turn 1 is a clean text settle after the tool result
-	// returns.
-	f := NewFixture(ctx, t, WithCannedScript(
-		CannedToolCall(spawnToolName, spawnArgsJSON),
-		CannedText(settleReply),
-	))
+	// returns. The leg-4 @-mention (mentionText) drives a turn on the mentioned
+	// peer (via steer) AND on the subscribed spawner (via deliver), both dialing
+	// this shared backend; routing them off the positional script with a marker
+	// on the mention body keeps the 2-turn script above drawn ONLY by the
+	// spawner's own spawn+settle turns. mentionMarker is a stable substring of
+	// mentionText (asserted below); off-script marker turns settle cleanly and
+	// carry no assertion, so their reply text only needs to settle.
+	f := NewFixture(ctx, t,
+		WithCannedScript(
+			CannedToolCall(spawnToolName, spawnArgsJSON),
+			CannedText(settleReply),
+		),
+		WithCannedMarkerReply(mentionMarker, "canned mention turn settled OK"),
+	)
 
 	// The spawner agent: created, provisioned, and started exactly as leg-2. Its
 	// turn issues the spawn.
@@ -236,23 +256,163 @@ func TestLegThreeFourSpawnAndMessaging(t *testing.T) {
 		t.Fatalf("delivered message text = %q, want the exact @mention body %q", got, mentionText)
 	}
 
-	// TODO(SEA-1788): assert the steer-vs-deliver SPLIT on the recipient side —
-	// the mentioned peer's live session receives a STEER (opSteer, mid-turn
-	// interrupt) while an unmentioned channel subscriber receives a DELIVER
-	// (turn-end coalesced), per mention_test.go:33,59 and consumer.go:296-308.
-	// This is unconfirmable from the e2e fixture as it stands: the steer/deliver
-	// op-kind is an AgentControl the delivery consumer dispatches over the
-	// Runner's per-session Control stream (agent-facing internal surface), NOT a
-	// comms-bus event a client SubscribeComms observes — the in-process suite
-	// asserts it through a dispatchRecorder fake (mention_test.go), which the
-	// over-the-wire e2e harness has no equivalent of. Confirming it needs a
-	// second real peer subscribed-but-unmentioned AND a harness seam onto the
-	// delivered AgentControl op-kind per recipient (a new Fixture primitive or a
-	// store-side delivery-cursor read distinguishing the two). The observable
-	// bus fan (the post committed + delivered above) is asserted; the
-	// recipient-side split is FLAGGED. Until then leg-4's split assertion is the
-	// missing green — the test is RED here by construction, not by a passing
-	// stub.
+	// ── Leg-4 recipient-side steer/deliver SPLIT (RIG-2488, replaces the former
+	// TODO(SEA-1788)) ──────────────────────────────────────────────────────────
+	//
+	// The mentioned peer's live session must receive a STEER for a mention while
+	// an unmentioned-but-subscribed member receives a plain DELIVER of the same
+	// message (steer-only precedence, design.md:537-546). The second recipient is
+	// the REUSED leg-3 spawner (no third container): it is subscribed onto the
+	// peer's home channel below so it joins the deliver set (SubscribedAgents,
+	// delivery_reads.go — subscribe, not a bare add, because a non-home,
+	// non-mandatory member must carry the subscribed flag to be a deliver target).
+	// The post's author is the fixture human admin, so neither agent is excluded.
+	//
+	// This drives its OWN @-mention post (a second one), because the observation
+	// tails must be opened BEFORE the post that drives the dispatch: the frame
+	// stream is live-fan with no replay ring (AwaitControlDispatch doc,
+	// legthreefour_test.go OpenSessionTail note), so a post-first order would race
+	// the injection frame and only fail at settleTimeout.
+
+	// mentionMarker (routed off the canned script) must be a substring of the
+	// mention body, else the mention-driven turns would draw the positional
+	// script and desync the spawner's spawn+settle turns.
+	if !strings.Contains(mentionText, mentionMarker) {
+		t.Fatalf("mentionMarker %q is not a substring of mentionText %q — the off-script routing would not catch the mention-driven turns", mentionMarker, mentionText)
+	}
+
+	// Subscribe the spawner onto the peer's home channel so it becomes a plain
+	// deliver target there (the second recipient, no new container).
+	if err := f.SubscribeMember(ctx, string(peer.Agent.HomeChannelID), spawnerID); err != nil {
+		t.Fatalf("SubscribeMember(spawner → peer home channel): %v", err)
+	}
+
+	// Resolve the peer's session id BEFORE the post (the spawner's session id is
+	// the sessionID resolved at StartSession above). The peer session was
+	// recorded when the spawn started it; the durable read resolves it whether or
+	// not the peer is mid-turn.
+	peerSessionID, ok, err := st.LatestSessionForAccount(ctx, peer.ID)
+	if err != nil {
+		t.Fatalf("LatestSessionForAccount(peer): %v", err)
+	}
+	if !ok {
+		t.Fatalf("peer %q has no recorded session — the spawn did not start the peer's session", peerHandle)
+	}
+
+	// injectionLog accumulates every (opKind, messageID) a recipient's tail is
+	// offered, under a mutex because match runs on AwaitControlDispatch's pump
+	// goroutine. It is BOTH the positive-match predicate and the window-scoped
+	// exclusion retention hook: the window closes at the positive match (when
+	// AwaitControlDispatch returns), and after the call the accumulated frames are
+	// inspected to assert the excluded op-kind never appeared for the target id
+	// within that window. Exclusion is deliberately window-scoped, NOT absolute: a
+	// steered-but-unacked message can be sweep-redelivered as a plain deliver
+	// LATER (settle.go:241 builds a deliverOp for every owed message), which is
+	// out of window and legitimately unobserved.
+	type injectionLog struct {
+		mu     sync.Mutex
+		frames []struct{ opKind, messageID string }
+	}
+	// recordAndMatch returns a match closure that retains every offered frame and
+	// resolves true once an op-kind CONTAINING wantKind (a stable substring of the
+	// SessionInjectionKind string form, e.g. "STEER"/"DELIVER") is offered for
+	// splitMsgID — the positive match that closes the window.
+	recordAndMatch := func(log *injectionLog, wantKind string, splitMsgID *atomic.Pointer[string]) func(opKind, messageID string) bool {
+		return func(opKind, messageID string) bool {
+			log.mu.Lock()
+			log.frames = append(log.frames, struct{ opKind, messageID string }{opKind, messageID})
+			log.mu.Unlock()
+			want := splitMsgID.Load()
+			return want != nil && messageID == *want && strings.Contains(opKind, wantKind)
+		}
+	}
+
+	// splitMsgID is set AFTER the post returns the message id, but the tails must
+	// be observing BEFORE the post — so the match closures read it via an atomic
+	// pointer that is nil until the post lands. A frame that arrives before the id
+	// is known cannot match (want == nil), which is correct: the driven injection
+	// for this post cannot precede the post.
+	var splitMsgID atomic.Pointer[string]
+	peerLog := &injectionLog{}
+	spawnerLog := &injectionLog{}
+
+	type dispatchResult struct {
+		opKind string
+		err    error
+	}
+	peerResult := make(chan dispatchResult, 1)
+	spawnerResult := make(chan dispatchResult, 1)
+
+	// Open BOTH observations (each opens its own tail internally via
+	// AwaitControlDispatch) from goroutines, launched BEFORE the post. This is
+	// concurrent-with-the-post by necessity, not a launch-and-hope: the tail is a
+	// live fan with no replay ring (AwaitControlDispatch doc, sessiontail.go), and
+	// OpenSessionTail's client call blocks in its first round-trip until the
+	// server flushes a frame. The peer wakes on the mention, but the SPAWNER is
+	// idle here (settled after leg-3) and flushes nothing until the post drives
+	// its DELIVER — so its tail open cannot complete BEFORE the post; the post is
+	// what unblocks it. Opening synchronously on this goroutine before the post
+	// would therefore self-deadlock (the frame that unblocks the open is sequenced
+	// after it). Running the opens concurrently with the post is the correct gate:
+	// each open returns on a server frame, which the server emits only after
+	// registering the subscription, so the driven injection is observed, not raced
+	// away. A genuinely missed frame is a fail-safe settleTimeout red (the excluded
+	// -kind assertion only weakens if frames are missed — there is no false-green).
+	go func() {
+		kind, err := f.AwaitControlDispatch(ctx, peerSessionID, recordAndMatch(peerLog, "STEER", &splitMsgID))
+		peerResult <- dispatchResult{kind, err}
+	}()
+	go func() {
+		kind, err := f.AwaitControlDispatch(ctx, sessionID, recordAndMatch(spawnerLog, "DELIVER", &splitMsgID))
+		spawnerResult <- dispatchResult{kind, err}
+	}()
+
+	// Now post the @-mention into the peer's home channel. The mention steers the
+	// peer and delivers to the subscribed spawner. Its body carries mentionMarker,
+	// so both mention-driven model turns route off the positional canned script.
+	splitMessageID, err := f.PostMessage(ctx, string(peer.Agent.HomeChannelID), "general", mentionText)
+	if err != nil {
+		t.Fatalf("PostMessage(split @mention): %v", err)
+	}
+	if splitMessageID == "" {
+		t.Fatal("PostMessage(split @mention) returned an empty message id")
+	}
+	splitMsgID.Store(&splitMessageID)
+
+	// Join both observations. Each returns on its positive match (or fails at its
+	// derived settleTimeout).
+	peerDispatch := <-peerResult
+	if peerDispatch.err != nil {
+		t.Fatalf("AwaitControlDispatch(peer, want STEER): %v", peerDispatch.err)
+	}
+	spawnerDispatch := <-spawnerResult
+	if spawnerDispatch.err != nil {
+		t.Fatalf("AwaitControlDispatch(spawner, want DELIVER): %v", spawnerDispatch.err)
+	}
+
+	// Positive: peer steered, spawner delivered, same message id.
+	if !strings.Contains(peerDispatch.opKind, "STEER") {
+		t.Fatalf("peer op-kind = %q, want a STEER for the mentioned peer", peerDispatch.opKind)
+	}
+	if !strings.Contains(spawnerDispatch.opKind, "DELIVER") {
+		t.Fatalf("spawner op-kind = %q, want a DELIVER for the unmentioned subscriber", spawnerDispatch.opKind)
+	}
+
+	// Window-scoped exclusion: within each recipient's observation window (up to
+	// its positive match), the peer saw NO deliver and the spawner NO steer for
+	// this message id. NOT an absolute negative — a later sweep-redelivered
+	// deliver of a steered-unacked message (settle.go:241) is out of window.
+	assertExcluded := func(log *injectionLog, excludedKind string, who string) {
+		log.mu.Lock()
+		defer log.mu.Unlock()
+		for _, fr := range log.frames {
+			if fr.messageID == splitMessageID && strings.Contains(fr.opKind, excludedKind) {
+				t.Fatalf("%s observed an excluded %s (op-kind %q) for message %q within the window — steer-only precedence violated", who, excludedKind, fr.opKind, splitMessageID)
+			}
+		}
+	}
+	assertExcluded(peerLog, "DELIVER", "mentioned peer")
+	assertExcluded(spawnerLog, "STEER", "unmentioned spawner")
 }
 
 // firstBlockText returns the first non-empty text block of a wire Message, the

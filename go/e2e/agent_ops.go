@@ -186,6 +186,19 @@ func (f *Fixture) AwaitTurnSettled(ctx context.Context, stream *connect.ServerSt
 // red, not a fast clear failure). This is the same open-before-post constraint
 // OpenSessionTail documents; AwaitControlDispatch just performs the open itself.
 //
+// The "from a goroutine" is load-bearing, not stylistic: OpenSessionTail's client
+// call blocks in its initial round-trip until the server flushes this session's
+// first frame, and an IDLE session (one settled with nothing owed) flushes
+// nothing until the driving post produces its injection. So the open cannot be
+// sequenced synchronously before the post — the frame that unblocks it is the
+// post's own dispatch. Run this concurrently with the post: the post unblocks the
+// open, whose returned first frame the pump then matches. That the open returns
+// on a server frame at all means the subscription was registered server-side
+// before that frame, so the driven injection is not raced away — and the
+// injection's cross-container relay chain is far slower than the local subscribe,
+// so a genuinely lost frame would be a fail-safe settleTimeout red, never a false
+// green.
+//
 // It is FULLY EVENT-GATED: a goroutine pumps stream.Receive() and the select
 // races each frame against ctx — no sleeps, no polling, no retry loops. The
 // stream was opened under the caller's ctx (whose lifetime OpenSessionTail does
