@@ -9,9 +9,9 @@
 // sweep removed the existing references; this gate keeps the boundary from
 // silently re-rotting, the same way design-ledger-gate keeps the ledger honest.
 //
-// SCOPE: orion ONLY. The sibling `sealedsecurity`/`seal` cleanup is one-time
-// (we are not re-adding those tokens), so it needs no standing gate; this gate
-// deliberately does not scan for them.
+// SCOPE: orion ONLY. This gate scans for one token and does not double as a
+// general brand-token gate; other one-time cleanups that are not being re-added
+// need no standing scan here.
 //
 // What counts as a reference: the whole-word token `orion` (any case), which
 // catches the repo name, `RigelBuild/orion`, an `orion <path>` citation, and

@@ -124,13 +124,6 @@
         "typescript": "catalog:",
       },
     },
-    "tools/docs-migrate": {
-      "name": "@compass/docs-migrate",
-      "devDependencies": {
-        "@types/bun": "catalog:",
-        "typescript": "catalog:",
-      },
-    },
     "tools/orion-ref-gate": {
       "name": "@compass/orion-ref-gate",
       "bin": {
@@ -321,8 +314,6 @@
     "@compass/cx-token-gate": ["@compass/cx-token-gate@workspace:tools/cx-token-gate"],
 
     "@compass/design-ledger-gate": ["@compass/design-ledger-gate@workspace:tools/design-ledger-gate"],
-
-    "@compass/docs-migrate": ["@compass/docs-migrate@workspace:tools/docs-migrate"],
 
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
 

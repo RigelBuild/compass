@@ -90,9 +90,6 @@ projects:
   # failing fast with a named diagnosis instead of Renovate's opaque
   # platform-unknown-error. Registered so its own typecheck + unit test gate.
   renovate-preflight: 'tools/renovate-preflight'
-  # The one-shot engineering-docs sanitization migration (SEA-1766, T4). Encodes
-  # the four-class rewrite policy; no standing run task, deleted after T5.
-  docs-migrate: 'tools/docs-migrate'
   # Vendored upstream fork subtrees (forks/<name>, SEA-1512). Each carries its
   # own nix-driven build as functional CI — so a fork-only change is gated by
   # the fork's own suite — while its tree stays exempt from the style gates
