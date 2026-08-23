@@ -36,9 +36,9 @@
 # through two nixpkgs revisions.
 let
   # The root devenv.lock-pinned nixpkgs, resolved exactly as the other plain nix
-  # gates in this repo do (tools/toolchain/gate-tools.nix:37-42,
-  # app-bundle/bundle-env.nix:21-27) — read the lock, fetch that rev, import it.
-  # This is the "root's pkgs" the record's pin divergence turns on.
+  # gates in this repo do (tools/toolchain/gate-tools.nix:37-42) — read the lock,
+  # fetch that rev, import it. This is the "root's pkgs" the record's pin
+  # divergence turns on.
   lock = builtins.fromJSON (builtins.readFile ../devenv.lock);
   node = lock.nodes.nixpkgs.locked;
   nixpkgsSrc = builtins.fetchTarball {

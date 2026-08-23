@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # build.sh — build the versioned Compass native-app release tarball
-# (compass-app-<version>-linux-amd64.tar.gz), the A1/A2 bundle of the gtk3 shell
-# + its four pure-Go sidecars + the pinned postgres tooling + the UI dist.
+# (compass-app-<version>-linux-amd64.tar.gz), the thin CLIENT bundle: the gtk3
+# shell (compass-app) + the UI dist + the desktop file + LICENSE. No sidecar
+# binaries, no postgres tooling — the headless stack ships separately.
 #
 # Why bash: this is nix + go build orchestration glue — it realizes the pinned
-# GTK cc/pkg-config closure and the postgres delta with `nix build`, links the
-# five binaries against them, and stages a directory tree. It carries no runtime
-# deps beyond nix/go/tar, and runs byte-identically in CI and on the dev box.
+# GTK cc/pkg-config closure with `nix build`, links the one gtk3 binary against
+# it, and stages a directory tree. It carries no runtime deps beyond nix/go/tar,
+# and runs byte-identically in CI and on the dev box.
 #
 # Run from app-bundle/ (moon's default project cwd). Paths are anchored to this
 # script's own directory so it is cwd-independent.
@@ -21,22 +22,18 @@ log() { printf '>> %s\n' "$*" >&2; }
 err() { printf 'ERROR: %s\n' "$*" >&2; }
 
 # --- 1. Realize the pinned nix outputs, keeping GC-root symlinks under
-#        app-bundle/ so nix-collect-garbage cannot dangle the tarball's rpaths
-#        or the postgres-tool bin/ symlinks (§435-444). A bare `nix build
-#        --no-link` creates NO GC root. Reuse the already-pinned pkgConfig + cc
-#        outputs directly off gtk-e2e-env.nix (no re-pinned copy); the
-#        postgresql delta comes from bundle-env.nix.
-log "Realizing pinned nix outputs (pkgConfig, cc, postgresql)"
+#        app-bundle/ so nix-collect-garbage cannot dangle the tarball's rpaths.
+#        A bare `nix build --no-link` creates NO GC root. Reuse the
+#        already-pinned pkgConfig + cc outputs directly off gtk-e2e-env.nix (no
+#        re-pinned copy) — the one gtk3 binary is rpathed against them.
+log "Realizing pinned nix outputs (pkgConfig, cc)"
 nix build -f "$REPO_ROOT/tools/toolchain/gtk-e2e-env.nix" pkgConfig \
   -o "$SCRIPT_DIR/result-pkgconfig"
 nix build -f "$REPO_ROOT/tools/toolchain/gtk-e2e-env.nix" cc.out \
   -o "$SCRIPT_DIR/result-cc"
-nix build -f "$SCRIPT_DIR/bundle-env.nix" postgresql \
-  -o "$SCRIPT_DIR/result-postgresql"
 
 PC_ENV="$(readlink -f "$SCRIPT_DIR/result-pkgconfig")"
 CC_ENV="$(readlink -f "$SCRIPT_DIR/result-cc")"
-PG_ENV="$(readlink -f "$SCRIPT_DIR/result-postgresql")"
 
 PKG_CONFIG_PATH="$PC_ENV/lib/pkgconfig:$PC_ENV/share/pkgconfig"
 CC_BIN="$CC_ENV/bin/cc"
@@ -62,36 +59,8 @@ CGO_ENABLED=1 CC="$CC_BIN" PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
   -ldflags "-X main.version=$v" \
   -o "$STAGE/bin/compass-app" ./cmd/compass-app
 
-# The four pure-Go sidecars: CGO off (§448-449).
-for cmd in compass-stack compass-server compass-runner compass-postgres; do
-  log "Building sidecar ($cmd)"
-  CGO_ENABLED=0 go -C "$GO_DIR" build -trimpath \
-    -ldflags "-X main.version=$v" \
-    -o "$STAGE/bin/$cmd" "./cmd/$cmd"
-done
-
-# --- 5. Stage the A2 layout (§156-168).
-# postgres/initdb/createdb: store symlinks from the realized postgresql, so the
-# bundle ships one pinned postgres 18.x (§164). PostgreSQL resolves its support
-# files RELATIVE TO THE INVOCATION PATH — the catalog bootstrap
-# (share/postgresql/postgres.bki) as bin/../share/postgresql, and the $libdir
-# extension modules (e.g. dict_snowball.so) as bin/../lib — so symlinking the
-# binaries alone does NOT ship a self-contained postgres: initdb aborts
-# ("postgres.bki does not exist", then a $libdir miss) when run from a bundle
-# that has only bin/. Stage share/postgresql + lib beside bin/ (store symlinks,
-# the same mechanism as the tools) so exe-relative resolution finds a complete
-# pinned tree.
-for tool in postgres initdb createdb; do
-  ln -s "$PG_ENV/bin/$tool" "$STAGE/bin/$tool"
-done
-# $STAGE/share already exists (created with $STAGE/bin above). These are
-# absolute /nix/store symlinks, and the tarball stores them as symlinks (no
-# tar --dereference), so the bundle is a dev-box artifact: usable only where
-# this store path exists — non-relocatable by design, exactly as the bin/
-# tool symlinks already are (§164). A relocatable bundle would be a separate
-# design change (dereference-and-copy, or ship a nix closure).
-ln -s "$PG_ENV/share/postgresql" "$STAGE/share/postgresql"
-ln -s "$PG_ENV/lib" "$STAGE/lib"
+# --- 5. Stage the A2 layout — the thin client bundle: one gtk3 binary + dist +
+# desktop + LICENSE (§156-168).
 
 # dist: the compass-ui:build output (apps/ui/dist), staged beside the shell.
 UI_DIST="$REPO_ROOT/apps/ui/dist"
@@ -107,7 +76,7 @@ cp "$REPO_ROOT/LICENSE" "$STAGE/LICENSE"
 
 # --- 6. Sanity assertions (§256-261). A green build means a COMPLETE bundle.
 log "Sanity: verifying staged bundle"
-for b in compass-app compass-stack compass-server compass-runner compass-postgres; do
+for b in compass-app; do
   bin="$STAGE/bin/$b"
   if [[ ! -x "$bin" ]]; then
     err "sanity: missing/non-executable binary: bin/$b"
@@ -133,36 +102,6 @@ for b in compass-app compass-stack compass-server compass-runner compass-postgre
   log "  bin/$b --version = $got"
 done
 
-# postgres tools: present + executable (NOT stamp-matched — they carry
-# PostgreSQL's own 18.x version), AND the pinned cluster can actually initialize.
-# The present+executable check alone let an incomplete staging ship green: the
-# tool symlinks resolved but their support tree (share/, lib/) did not, so
-# initdb aborted at cluster init inside compass-stack. Run initdb from the
-# STAGED symlink into a throwaway datadir so the bundle's own exe-relative
-# resolution is exercised end to end — this is what makes "green build ⇒
-# COMPLETE bundle" true for postgres, not just "the binaries are present".
-for tool in postgres initdb createdb; do
-  if [[ ! -x "$STAGE/bin/$tool" ]]; then
-    err "sanity: missing/non-executable postgres tool: bin/$tool"
-    exit 1
-  fi
-  log "  bin/$tool present + executable"
-done
-pg_probe="$(mktemp -d)"
-# --auth=trust mirrors the runtime invocation byte-for-byte (compass-postgres
-# initCluster: `initdb -D <dir> --auth=trust`, go/cmd/compass-postgres/main.go),
-# so the probe is the exact initdb the embedded stack runs — no divergence a
-# reader must reason about. The flag is immaterial to the support-file
-# resolution this gate checks; matching it is purely fidelity.
-if ! initdb_out="$("$STAGE/bin/initdb" -D "$pg_probe/data" --auth=trust 2>&1)"; then
-  err "sanity: bundled initdb could not initialize a cluster (postgres staging incomplete — check share/postgresql + lib beside bin/):"
-  err "$initdb_out"
-  rm -rf "$pg_probe"
-  exit 1
-fi
-rm -rf "$pg_probe"
-log "  bundled initdb initialized a throwaway cluster (postgres tree complete)"
-
 if [[ ! -f "$STAGE/bin/dist/index.html" ]]; then
   err "sanity: bin/dist/index.html missing"
   exit 1
@@ -172,11 +111,10 @@ log "  bin/dist/index.html present"
 # --- 7. Tar the bundle dir. Clear ALL prior release tarballs first, not just
 # this version's: build.sh stamps the name with the git sha, so a dev box that
 # builds across commits (or a reused moon cache dir) accumulates stale
-# compass-app-*.tar.gz beside the fresh one. The smoke gate globs the one
-# tarball in this dir and fails on more than one (it must smoke exactly this
-# build), so "one tarball after a build" is an invariant this step owns. CI's
-# workspace is clean so this is a no-op there; it is the dev-box path that needs
-# it.
+# compass-app-*.tar.gz beside the fresh one. The manual SMOKE.md runbook globs
+# the one tarball in this dir and expects exactly this build's artifact, so
+# "one tarball after a build" is an invariant this step owns. CI's workspace is
+# clean so this is a no-op there; it is the dev-box path that needs it.
 log "Creating tarball: $TARBALL"
 rm -f "$SCRIPT_DIR"/compass-app-*-linux-amd64.tar.gz
 tar -czf "$SCRIPT_DIR/$TARBALL" -C "$SCRIPT_DIR" "$BUNDLE"
