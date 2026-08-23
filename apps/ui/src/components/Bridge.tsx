@@ -52,6 +52,50 @@ type BoardMode = "swimlane" | "status";
  *  `BoardMode` (which is how ISSUES group). Bridge-local, like `BoardMode`. */
 type BoardTab = "issues" | "prs";
 
+// The eight group-relative Lists-block commands (keymap.ts:79-86). Registered
+// `scope:'main'` beside the `board.*` block so the discoverability net (RIG-2482
+// overlay, RIG-2483 palette) earns their rows; the tier-3 scope gate (RIG-2529)
+// keeps them inert unless the main zone holds focus. `run` mirrors `onCommand`,
+// the same behavior tier 1 routes group-relative ids to (D3 rider).
+const LIST_COMMANDS: ReadonlyArray<{
+	id: string;
+	title: string;
+	keywords: string[];
+}> = [
+	{
+		id: "list.movePrev",
+		title: "Move up",
+		keywords: ["up", "previous", "move"],
+	},
+	{
+		id: "list.moveNext",
+		title: "Move down",
+		keywords: ["down", "next", "move"],
+	},
+	{ id: "list.moveLeft", title: "Move left", keywords: ["left", "move"] },
+	{ id: "list.moveRight", title: "Move right", keywords: ["right", "move"] },
+	{
+		id: "list.openOrSelect",
+		title: "Open or select",
+		keywords: ["open", "select", "enter"],
+	},
+	{
+		id: "list.expandOrToggle",
+		title: "Expand or toggle",
+		keywords: ["expand", "toggle", "space"],
+	},
+	{
+		id: "list.moveFirst",
+		title: "Move to first",
+		keywords: ["first", "home", "move"],
+	},
+	{
+		id: "list.moveLast",
+		title: "Move to last",
+		keywords: ["last", "end", "move"],
+	},
+];
+
 /** What the board does when the cursor rests on a given stop, resolved from the
  *  board data as the stop list is built (T4). A card stop carries its
  *  select/cross-link/open-agent targets; a gutter stop only opens its agent.
@@ -444,9 +488,21 @@ export const Bridge: Component = () => {
 		scope: "main",
 		run: () => onCommand("board.openCardCrossLink" as CommandId),
 	});
+	for (const spec of LIST_COMMANDS) {
+		registry.register({
+			id: spec.id as CommandId,
+			title: spec.title,
+			keywords: spec.keywords,
+			scope: "main",
+			run: () => onCommand(spec.id as CommandId),
+		});
+	}
 	onCleanup(() => {
 		registry.unregister("board.openAssignedAgent" as CommandId);
 		registry.unregister("board.openCardCrossLink" as CommandId);
+		for (const spec of LIST_COMMANDS) {
+			registry.unregister(spec.id as CommandId);
+		}
 	});
 	store.keyboard.registerGroup(rovingGroup);
 	onCleanup(() => store.keyboard.unregisterGroup(rovingGroup));
