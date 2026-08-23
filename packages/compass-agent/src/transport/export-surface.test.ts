@@ -48,12 +48,27 @@ const FORBIDDEN =
 	/[/\\]node_modules[/\\](effect|@effect[/\\]opentelemetry|@opentelemetry[/\\])/;
 
 test("the package public type surface carries no effect/@effect/opentelemetry/@opentelemetry type", () => {
-	// Emit INTO the package tree (not the OS tmpdir): node resolution walks up
-	// from the emitted .d.ts to the workspace node_modules, so bare specifiers
-	// like `effect` / `@opentelemetry/*` resolve to their real declaration
-	// files. Emitted to the OS tmpdir they would not resolve, and a re-exported
-	// effect type would show ZERO declaration files — a silent containment hole.
-	const out = mkdtempSync(join(PKG_ROOT, ".dts-surface-"));
+	// Emit INTO the package's own `node_modules/` (not the package root, not the
+	// OS tmpdir). Two constraints pin this location:
+	//   1. Bare-specifier resolution — node/tsc bundler resolution probes
+	//      `<ancestor>/node_modules` at each ancestor directory of the emitted
+	//      `.d.ts`, so from `<pkg>/node_modules/.dts-surface-*/src/…` the ancestor
+	//      `<pkg>` still reaches `<pkg>/node_modules`, where `effect` /
+	//      `@opentelemetry/*` resolve to their real declaration files. Emitted to
+	//      the OS tmpdir they would not resolve, and a re-exported effect type
+	//      would show ZERO declaration files — a silent containment hole. (The
+	//      parent `<pkg>/node_modules` is guaranteed present: it is the same tree
+	//      the resolution walk-up needs, so its absence fails `Bun.resolveSync`
+	//      below first, more loudly than this `mkdtempSync`.)
+	//   2. No VCS-walk race — under the main-only full sweep (`moon run :ci`, max
+	//      concurrency) moon's git-based hasher walks the working tree for other
+	//      tasks while this test creates and `rmSync`s its temp dir. A dir under
+	//      the package ROOT is inside that walk, so git racing the teardown dies
+	//      `exit 128 … No such file`. `node_modules/` is pruned whole from the git
+	//      walk, so the transient emit dir is invisible to the hasher. (Trade-off:
+	//      a crash before the `finally` rmSync leaves git-invisible litter under
+	//      node_modules, cleared by a reinstall; accepted over the CI race.)
+	const out = mkdtempSync(join(PKG_ROOT, "node_modules", ".dts-surface-"));
 	try {
 		// Emit signature-only declarations for the whole package.
 		const tsc = Bun.resolveSync("typescript/bin/tsc", PKG_ROOT);
