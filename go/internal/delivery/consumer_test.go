@@ -350,9 +350,9 @@ func TestBusLagTriggersSweepNotLoss(t *testing.T) {
 	c.bus.Publish(postedResponse(wireText("m0", author, "first")))
 	<-disp.enteredFirst
 
-	// Overrun the consumer's live buffer (capacity 1024) so its channel closes
-	// lagged. Publish comfortably past it.
-	for range 1100 {
+	// Overrun the consumer's live buffer (busLagFloodCount > liveBufferCapacity)
+	// so its channel closes lagged.
+	for range busLagFloodCount {
 		c.bus.Publish(postedResponse(wireText("flood", author, "x")))
 	}
 
@@ -436,8 +436,9 @@ func TestBusLagResubscribesAndKeepsDelivering(t *testing.T) {
 	c.bus.Publish(postedResponse(wireText("m0", author, "first")))
 	<-disp.enteredFirst
 
-	// Overrun the live buffer (capacity 1024) so the channel closes lagged.
-	for range 1100 {
+	// Overrun the live buffer (busLagFloodCount > liveBufferCapacity) so the
+	// channel closes lagged.
+	for range busLagFloodCount {
 		c.bus.Publish(postedResponse(wireText("flood", author, "x")))
 	}
 	// Release the stall: the consumer drains its buffer, reads the lagged-closed
@@ -510,8 +511,9 @@ func TestBusLagResubscribeDeliversWindowMessageLive(t *testing.T) {
 	c.bus.Publish(postedResponse(wireText("m0", author, "first")))
 	<-disp.enteredFirst
 
-	// Overrun the live buffer (capacity 1024) so the channel closes lagged.
-	for range 1100 {
+	// Overrun the live buffer (busLagFloodCount > liveBufferCapacity) so the
+	// channel closes lagged.
+	for range busLagFloodCount {
 		c.bus.Publish(postedResponse(wireText("flood", author, "x")))
 	}
 	// The window publish must happen once the consumer is inside the resync sweep,
@@ -572,7 +574,7 @@ func (d *blockCapturingDispatcher) DispatchControl(_ context.Context, sessionID 
 	d.mu.Lock()
 	d.calls = append(d.calls, blockRecord{sessionID: sessionID, messageID: msg.GetId(), firstText: first})
 	d.mu.Unlock()
-	d.recorded <- struct{}{}
+	signalObserved(d.recorded)
 	return nil
 }
 
