@@ -1,0 +1,49 @@
+// The compass.v1 host->guest control plane for the V2a microVM runtime spike
+// (design docs/designs/platform/compass-elastic-session-runtime/
+// microvm-v2a-guest-image-boot-spike.md, RIG-2588 T3).
+//
+// INTERNAL-ONLY surface. Unlike compass.proto / comms.proto — the public,
+// generated-client door between a UI and the Server — GuestControl is the
+// in-guest control plane the HOST dials: the host is the V2a Launch harness
+// (later V2b's MicroVMRuntime), the guest is compass-guestd. The channel is
+// cloud-hypervisor's hybrid vsock (D1) carrying Connect/h2c (D4): the host
+// opens the AF_UNIX endpoint, writes the `CONNECT <port>` preamble, and speaks
+// Connect over the transparent byte stream to guestd's generated handler.
+//
+// It is generated ONLY into the internal Go lane (guestd's handler + the host's
+// client via buf.gen.internal-go.yaml -> go/internal/gen), never onto the
+// public @compass/client surface or any TS lane — a host<->guest control plane
+// is not a server-door client, so the SEA-1267 gen-fence intent holds. The
+// public buf.gen.yaml excludes this file; buf.gen.agent-ts.yaml (an allowlist)
+// simply never lists it.
+//
+// Additive and buf-breaking-safe: a new file in the owned `compass.v1` package.
+// V2a seeds it with the single spike RPC; V2b grows the service additively
+// (Exec/ExecStream/Signal/Provision) with no wire break.
+//
+// Naming: the service is `GuestControl` (a host-side door onto the guest), not
+// a public `*Service`, following the AgentGateway precedent (also a Runner/
+// host-side door). Its `SERVICE_SUFFIX` is ignore_only-scoped to this file in
+// buf.yaml for exactly that reason. `Health` -> `HealthRequest`/`HealthResponse`
+// already satisfies buf's RPC_REQUEST/RESPONSE_STANDARD_NAME — no carve-out.
+
+syntax = "proto3";
+
+package compass.v1;
+
+// service GuestControl — the in-guest control plane the host dials over hybrid
+// vsock (D1) with Connect/h2c (D4). V2a seeds it with the single spike RPC; V2b
+// grows it additively (Exec/ExecStream/Signal/Provision) with no wire break.
+// Suffix-less service name follows the AgentGateway precedent (a Runner/host-side
+// door, not a public *Service) — carved out per-file in buf.yaml.
+service GuestControl {
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string guestd_version = 1;
+  bool net_provisioned = 2;
+  bool workspace_mounted = 3;
+}

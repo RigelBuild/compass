@@ -25,11 +25,18 @@ lint:
   #     envelope across both hops is the design point; a per-RPC rename forks the
   #     wire. Scoped to this file; every other STANDARD rule still applies here,
   #     and both public protos keep all three rules armed.
+  # guest_control.proto (RIG-2588 T3) carves out one name for the same reason:
+  #   - SERVICE_SUFFIX: the service is `GuestControl` (a host-side door onto the
+  #     guest control plane), not a public `*Service` — the AgentGateway
+  #     precedent. Internal-only, scoped to this one file. `Health` ->
+  #     `HealthRequest`/`HealthResponse` already satisfies the RPC name rules, so
+  #     no RPC_REQUEST/RESPONSE carve-out is needed here.
   ignore_only:
     ENUM_ZERO_VALUE_SUFFIX:
       - proto/compass/v1/comms.proto
     SERVICE_SUFFIX:
       - proto/compass/v1/agent_gateway.proto
+      - proto/compass/v1/guest_control.proto
     RPC_REQUEST_STANDARD_NAME:
       - proto/compass/v1/agent_gateway.proto
     RPC_RESPONSE_STANDARD_NAME:
