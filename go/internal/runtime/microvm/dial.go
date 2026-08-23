@@ -94,10 +94,10 @@ func readPreambleLine(conn net.Conn) (string, error) {
 			if buf[0] == '\n' {
 				return strings.TrimSuffix(b.String(), "\r"), nil
 			}
-			b.WriteByte(buf[0])
-			if b.Len() > maxPreambleLen {
+			if b.Len() == maxPreambleLen {
 				return "", fmt.Errorf("microvm: vsock preamble ack exceeded %d bytes without a newline", maxPreambleLen)
 			}
+			b.WriteByte(buf[0])
 		}
 		if err != nil {
 			return "", err
