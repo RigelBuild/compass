@@ -3,6 +3,28 @@
 Status: Draft
 Linear: RIG-1687
 
+> **Superseded in part by the client-only pivot
+> ([`../compass-native-client-only/design.md`](../compass-native-client-only/design.md),
+> DL-238, Matt 2026-08-23).** The app bundle became the THIN CLIENT —
+> `compass-app` + `dist` + `.desktop` + LICENSE, no sidecar binaries and no
+> postgres tooling — so the embedded-bundle halves of this record retired. By
+> disposition (frozen prose below left intact):
+>
+> - **DL-214** (versioned tarball of a nix-closure-backed bundle dir) — stays
+>   Active for the thin client's Linux gtk3 build (one store-rpathed binary
+>   instead of five).
+> - **DL-215 / §A2** (sidecar `bin/` layout + PATH threading) —
+>   `Superseded by DL-238`; the `dist`-beside-executable half survives inside
+>   DL-238's thin layout, the sidecar/PATH-threading half retired.
+> - **DL-216 / §A4** (moon-registered, affected-gated bundle CI) — stays Active
+>   unchanged; the lane persists, its content shrinks.
+> - **DL-217 / §OQ1** (postgres tooling in the bundle) — `Superseded by DL-238`;
+>   no postgres in a client bundle. The headless machine's postgres-tooling
+>   answer re-opens as the OQ-3 follow-up (RIG-2608).
+>
+> The embedded-bundle release-artifact question this record's follow-up (RIG-2477)
+> asked is re-scoped to the thin client bundle's release distribution.
+
 Details **T6** of the frozen native-app record
 ([compass-native-app §Plan T6](../compass-native-app/design.md#t6--packaging--ci-baseline),
 `compass-native-app/design.md:520-534`): a reproducible Linux build of the app

@@ -4,6 +4,35 @@ Status: Draft
 Supersedes: DL-044 (compass-tauri-shell)
 Linear: SEA-1662
 
+> **Superseded in part by the client-only pivot
+> ([`../compass-native-client-only/design.md`](../compass-native-client-only/design.md),
+> DL-235, Matt 2026-08-23).** The Compass native app retired embedded mode and
+> became a native **client** that connects over the authenticated TLS door to a
+> headless stack — the dual-mode charter this record froze (DL-106, "one binary,
+> two modes") is `Superseded by DL-235`. What that pivot changed here, by
+> disposition (the frozen prose below is left intact as the record of what was
+> ratified):
+>
+> - **DL-106** (one binary, two modes) — fully dead; the app is client-only.
+> - **DL-107** (frame contract + both-modes bridge) — stays Active; the
+>   embedded-pumps-to-UDS clause is now vacuous, the frame-contract half it
+>   protects is untouched.
+> - **DL-108 / §A3** (embedded lifecycle: Go stack supervisor) — stays Active as
+>   the standalone `compass-stack` CLI; only the app's *shell-spawn invocation*
+>   of it retired (DL-236 refines by citation).
+> - **DL-109 / §A4** (mode selection: absent → embedded default; keychain bearer)
+>   — the keychain-first bearer clause stays Active; the embedded-default
+>   mode-selection half is superseded by DL-237 (app.toml is client-only).
+> - **DL-110 / §OQ1** (Wails v3 shell) — stays Active, but its ledger-row clause
+>   "importing `go/internal/stack` … directly" was never accurate (the app execs
+>   the `compass-stack` binary; it never imported the package — verifiable in
+>   HEAD: `grep internal/stack go/cmd/compass-app/` returns nothing, and the
+>   pre-retirement `embedded.go` header said the app supervises "through the
+>   `compass-stack` binary … not by importing `go/internal/stack`") and is doubly
+>   stale post-pivot; read it as "Wails v3, `go/cmd/compass-app`" only.
+> - **DL-111** (WhoAmI), **DL-112** (GHCR agent image) — stay Active; the agent
+>   image is now `podman pull`ed by the headless `compass-stack`, not the app.
+
 ## Problem / Intent
 
 Compass today is a headless Go stack (`compass-server` + `compass-runner`) plus a
