@@ -97,7 +97,7 @@ func (c *Consumer) hold(authorSession, messageID string) {
 // for all three delivery paths at once, so a mention that streams in via a later
 // MessageUpdated block is still seen (design.md:519-523).
 func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author store.AccountID, msg *compassv1.Message) {
-	mentioned := c.routeMentions(ctx, channel, author, msg)
+	mentioned := c.routeMentionsFor(ctx, channel, author, msg)
 	recipients, err := c.st.SubscribedAgents(ctx, channel, author)
 	if err != nil {
 		c.log.ErrorContext(ctx, "delivery: resolve subscribers", "error", err, "channel", string(channel))
@@ -117,13 +117,16 @@ func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author s
 	}
 }
 
-// routeMentions parses `@`-mentions from msg's settled text blocks and steers
-// every mentioned channel agent member with a LIVE session (D5). It returns the
-// full set of mentioned agent members (live or not) so fanOut can exclude them
-// from the plain deliver — steer-only precedence (OQ-3). A mentioned agent with
-// no live session is handled by the offline arm rather than dropped: it is NOT
-// added to the deliver fan-out (steer-only precedence still holds), but the
-// mention is made recoverable. An out-of-sweep-set member (unsubscribed,
+// routeMentionsFor parses `@`-mentions from msg's settled text blocks and steers
+// every mentioned channel agent member with a LIVE session (D5). It is the ONE
+// implementation of the per-message mention policy, shared verbatim by the live
+// settle path (fanOut) and the RIG-2490 recovery scan (scanMissedMentions) — a
+// second mention-routing body is a second correctness surface and is prohibited.
+// It returns the full set of mentioned agent members (live or not) so fanOut can
+// exclude them from the plain deliver — steer-only precedence (OQ-3). A mentioned
+// agent with no live session is handled by the offline arm rather than dropped:
+// it is NOT added to the deliver fan-out (steer-only precedence still holds), but
+// the mention is made recoverable. An out-of-sweep-set member (unsubscribed,
 // non-home, non-mandatory) has no cursor-sweep backstop, so a durable
 // owed_mentions row is recorded first (T1; a record failure is logged loud and
 // the mention continues — a mention must never fail a post); after a successful
@@ -135,7 +138,7 @@ func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author s
 // resumes-and-sweeps finds it (durability-first). A mention routing failure is
 // logged and the mention(s) dropped, never returned up: a mention must never
 // fail a post (design.md:522-523).
-func (c *Consumer) routeMentions(ctx context.Context, channel store.ChannelID, author store.AccountID, msg *compassv1.Message) map[store.AccountID]bool {
+func (c *Consumer) routeMentionsFor(ctx context.Context, channel store.ChannelID, author store.AccountID, msg *compassv1.Message) map[store.AccountID]bool {
 	handles := mentionHandles(msg)
 	if len(handles) == 0 {
 		return nil

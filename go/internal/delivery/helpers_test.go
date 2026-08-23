@@ -326,6 +326,21 @@ type fakeReads struct {
 	// can flip the recipient live BETWEEN the record and the post-record resolve,
 	// exercising the record-vs-wake race's now-live steer.
 	afterRecord func(store.AccountID, store.ChannelID, string)
+	// unrouted is the ordered committed-message set the recovery scan reads
+	// (UnroutedMentionMessages): each row is a message whose settle-edge mention
+	// pass never completed (mentions_routed_at IS NULL), ascending seq. A test
+	// seeds it with seedUnrouted; MarkMentionsRouted removes the marked id, so
+	// the fake mirrors the store's WHERE mentions_routed_at IS NULL predicate.
+	unrouted []store.MessageWithChannel
+	// marked records every id passed to MarkMentionsRouted, so a test asserts a
+	// message's mention pass was marked complete.
+	marked map[string]int
+	// unroutedCalls records the afterSeq argument of every UnroutedMentionMessages
+	// call, so a batch-walk test asserts the scan-local floor advanced.
+	unroutedCalls []int64
+	// unroutedErr, when set, makes UnroutedMentionMessages fail — a test drives
+	// the batch-read-fault-stops-the-scan edge with it.
+	unroutedErr error
 }
 
 func newFakeReads() *fakeReads {
@@ -341,7 +356,49 @@ func newFakeReads() *fakeReads {
 		pins:          map[store.ChannelID][]store.PinnedEntry{},
 		owedMentions:  map[store.AccountID]map[store.ChannelID][]store.Message{},
 		sweepSet:      map[store.AccountID]map[store.ChannelID]bool{},
+		marked:        map[string]int{},
 	}
+}
+
+// MarkMentionsRouted stamps messageID's mention pass complete: records the mark
+// and removes the id from the unrouted set, mirroring the store's UPDATE that
+// makes the WHERE mentions_routed_at IS NULL scan skip it thereafter.
+func (f *fakeReads) MarkMentionsRouted(_ context.Context, messageID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.marked[messageID]++
+	kept := f.unrouted[:0:0]
+	for _, row := range f.unrouted {
+		if string(row.ID) != messageID {
+			kept = append(kept, row)
+		}
+	}
+	f.unrouted = kept
+	return nil
+}
+
+// UnroutedMentionMessages returns the seeded unrouted rows with seq > afterSeq,
+// ascending seq, capped at limit — mirroring the store's batched scan read. It
+// records afterSeq so a batch-walk test asserts the scan-local floor advanced,
+// and returns unroutedErr when set (the batch-read-fault edge).
+func (f *fakeReads) UnroutedMentionMessages(_ context.Context, afterSeq int64, limit int) ([]store.MessageWithChannel, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unroutedCalls = append(f.unroutedCalls, afterSeq)
+	if f.unroutedErr != nil {
+		return nil, f.unroutedErr
+	}
+	var out []store.MessageWithChannel
+	for _, row := range f.unrouted {
+		if row.Seq <= afterSeq {
+			continue
+		}
+		out = append(out, row)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // OwedMentions returns the seeded owed-mention set for agent (T2 sweep read).
@@ -519,13 +576,21 @@ func (f *fakeReads) MessageByID(_ context.Context, messageID string) (store.Mess
 	return m, nil
 }
 
-// MessageChannel resolves a message's channel through its topic. Every delivery
-// test drives the single shared channel ("chan-1", the const ch each declares),
-// so the fake returns it for any message id — mirroring the store's topic->channel
-// join without a database. A message that was never seeded still resolves (the
-// live-post path calls this before any re-read), matching the real store where a
-// committed message always has a topic and therefore a channel.
-func (f *fakeReads) MessageChannel(_ context.Context, _ string) (store.ChannelID, error) {
+// MessageChannel resolves a message's channel through its topic. A message
+// seeded into the unrouted set (seedUnrouted) carries its own channel, so the
+// fake returns THAT — modeling the store's topic->channel join faithfully, incl.
+// the multi-channel case the recovery scan must route each message against. Any
+// other message id resolves to the single shared channel ("chan-1", the const ch
+// most tests declare): the live-post path calls this before any re-read, and the
+// real store always resolves a committed message's channel.
+func (f *fakeReads) MessageChannel(_ context.Context, messageID string) (store.ChannelID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, row := range f.unrouted {
+		if string(row.ID) == messageID {
+			return row.Channel, nil
+		}
+	}
 	return "chan-1", nil
 }
 
@@ -589,6 +654,23 @@ func (f *fakeReads) owedCount(agent store.AccountID) int {
 		n += len(msgs)
 	}
 	return n
+}
+
+// seedUnrouted registers one committed-but-unmarked message the recovery scan
+// reads, with its channel and seq. The message itself is also registered
+// (seedMessage) so the scan's storeMessageToWire re-read resolves it.
+func (f *fakeReads) seedUnrouted(m store.Message, channel store.ChannelID, seq int64) {
+	f.seedMessage(m)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unrouted = append(f.unrouted, store.MessageWithChannel{Message: m, Channel: channel, Seq: seq})
+}
+
+// markCount reports how many times messageID was marked complete.
+func (f *fakeReads) markCount(messageID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.marked[messageID]
 }
 
 // agentAccount builds a resolved agent store.Account for the handle→account map,

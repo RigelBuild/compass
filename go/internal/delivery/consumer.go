@@ -111,6 +111,18 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// id is store.ErrNotFound, which the caller logs and treats as an empty
 	// handle — never a delivery block.
 	GetAccount(ctx context.Context, id store.AccountID) (store.Account, error)
+	// MarkMentionsRouted stamps messageID's settle-edge mention pass complete
+	// (mentions_routed_at = now, unix ms) — the recovery scan's mark after it
+	// replays a message's mention pass, and the live path's mark (T3). Idempotent:
+	// the contract readers rely on is NULL vs non-NULL only (RIG-2490 T1).
+	MarkMentionsRouted(ctx context.Context, messageID string) error
+	// UnroutedMentionMessages returns committed messages whose settle-edge mention
+	// pass never completed (mentions_routed_at IS NULL) AND whose seq is > afterSeq,
+	// ascending seq, each with its channel resolved — the recovery scan read
+	// (RIG-2490 T1). limit bounds one batch; the caller loops, advancing afterSeq
+	// (a scan-LOCAL, never-persisted cursor) to the last returned seq until a batch
+	// is short.
+	UnroutedMentionMessages(ctx context.Context, afterSeq int64, limit int) ([]store.MessageWithChannel, error)
 }
 
 // settleEvent is one queued author-settle edge handed from the hub's Deliver

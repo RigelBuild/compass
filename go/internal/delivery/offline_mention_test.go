@@ -138,6 +138,12 @@ func TestBroadcastMentionWakesAllOwedOnlyOutOfSweepSet(t *testing.T) {
 	if got := w.total(); got != 2 {
 		t.Fatalf("total wakes = %d, want 2 (wake-all across offline mentioned members)", got)
 	}
+	if got := w.count(agentA); got != 1 {
+		t.Fatalf("wakes for agentA = %d, want 1 (each mentioned member woken individually)", got)
+	}
+	if got := w.count(agentB); got != 1 {
+		t.Fatalf("wakes for agentB = %d, want 1 (each mentioned member woken individually)", got)
+	}
 	if n := reads.owedCount(agentA); n != 1 {
 		t.Fatalf("owed rows for agentA = %d, want 1 (out of sweep set)", n)
 	}
