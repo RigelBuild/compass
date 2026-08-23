@@ -32,9 +32,9 @@ func TestParseVsockPort(t *testing.T) {
 			want:    42,
 		},
 		{
-			name:    "max uint32 port",
-			cmdline: "compass.vsock_port=4294967295",
-			want:    4294967295,
+			name:    "max valid port (just below VMADDR_PORT_ANY)",
+			cmdline: "compass.vsock_port=4294967294",
+			want:    4294967294,
 		},
 		{
 			name:    "last occurrence wins",
@@ -64,6 +64,11 @@ func TestParseVsockPort(t *testing.T) {
 		{
 			name:    "zero is not a valid port",
 			cmdline: "compass.vsock_port=0",
+			wantErr: true,
+		},
+		{
+			name:    "VMADDR_PORT_ANY sentinel is reserved",
+			cmdline: "compass.vsock_port=4294967295",
 			wantErr: true,
 		},
 		{

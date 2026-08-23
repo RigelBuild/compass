@@ -216,8 +216,14 @@ func TestBootReadsCmdlineOnlyAfterAPIMount(t *testing.T) {
 
 	// Gate on serve being entered — reaching it proves the cmdline read (and
 	// net+mount) all succeeded, which only happens if the read followed the
-	// api mount. Then cancel to let run return.
-	<-reached
+	// api mount. A read-before-mount regression fail-closes before serve, so
+	// also watch done: surface that as a clean assertion instead of hanging on
+	// reached until the package test timeout.
+	select {
+	case <-reached:
+	case err := <-done:
+		t.Fatalf("boot fail-closed before serve (cmdline read before api mount?); order %v: %v", rec.steps, err)
+	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("run returned %v, want context.Canceled after clean serve", err)
