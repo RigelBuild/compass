@@ -57,15 +57,23 @@ export interface KeyboardSpine {
 }
 
 /**
- * Create the keyboard spine. Registers `view.bridge → deps.showBridge()` and
- * `view.shortcuts → deps.toggleShortcuts()` (RIG-2482) as its commands before
- * returning (record A4 §182-186: the registration lives with the behavior — the
- * spine is created in `createAppStore` where the closures are in scope), so
- * `Mod+B` and `?` resolve through the real wiring with no App-specific setup.
+ * Create the keyboard spine. Registers `view.bridge → deps.showBridge()`,
+ * `view.shortcuts → deps.toggleShortcuts()` (RIG-2482), and the RIG-2483 seed
+ * commands — `palette.open → deps.togglePalette()` plus the view seeds
+ * `view.settings`/`view.backlog`/`view.done` (→ the matching `show*`) — as its
+ * commands before returning (record A4 §182-186 / A3/D6: the registration lives
+ * with the behavior — the spine is created in `createAppStore` where the
+ * closures are in scope), so `Mod+B`, `?`, `Mod+K`, and `Mod+,` resolve through
+ * the real wiring with no App-specific setup. No seed sets a `shortcut` string:
+ * chips derive from the keymap via `shortcutFor` (D4).
  */
 export function createKeyboardSpine(deps: {
 	showBridge: () => void;
 	toggleShortcuts: () => void;
+	showBacklog: () => void;
+	showDone: () => void;
+	showSettings: () => void;
+	togglePalette: () => void;
 }): KeyboardSpine {
 	const registry = createCommandRegistry();
 	const viewBridge: Command = {
@@ -84,6 +92,38 @@ export function createKeyboardSpine(deps: {
 		run: () => deps.toggleShortcuts(),
 	};
 	registry.register(viewShortcuts);
+	const paletteOpen: Command = {
+		id: "palette.open" as CommandId,
+		title: "Open command palette",
+		keywords: ["palette", "command", "search", "k"],
+		scope: "global",
+		run: () => deps.togglePalette(),
+	};
+	registry.register(paletteOpen);
+	const viewSettings: Command = {
+		id: "view.settings" as CommandId,
+		title: "Go to Settings",
+		keywords: ["settings", "preferences", "config", "tracker"],
+		scope: "global",
+		run: () => deps.showSettings(),
+	};
+	registry.register(viewSettings);
+	const viewBacklog: Command = {
+		id: "view.backlog" as CommandId,
+		title: "Go to Backlog",
+		keywords: ["backlog", "todo", "queue"],
+		scope: "global",
+		run: () => deps.showBacklog(),
+	};
+	registry.register(viewBacklog);
+	const viewDone: Command = {
+		id: "view.done" as CommandId,
+		title: "Go to Done",
+		keywords: ["done", "archive", "completed"],
+		scope: "global",
+		run: () => deps.showDone(),
+	};
+	registry.register(viewDone);
 
 	const groups = new Set<RovingGroupHandle>();
 

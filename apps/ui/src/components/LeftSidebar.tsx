@@ -13,6 +13,9 @@ import {
 } from "../comms";
 import type { Channel } from "../comms-stub";
 import { useStore } from "../context";
+import type { CommandId } from "../keyboard/commands";
+import { detectPlatform } from "../keyboard/dispatch";
+import { shortcutFor, shortcutForAria } from "../keyboard/keymap";
 import { type Agent, type AgentTreeNode, agentTree } from "../stub-data";
 import { StateDot } from "./StateDot";
 
@@ -426,6 +429,14 @@ export const LeftSidebar: Component = () => {
 	// Backlog view badge: the pre-active tier (Todo + Backlog) the human triages.
 	const backlogCount = () =>
 		backlogIssues(store.issues()).length + store.assignedIssues().length;
+	// Point-of-use shortcut chips (RIG-2483, D10): the view buttons that fire the
+	// D6-seeded show* paths announce their chord via aria-keyshortcuts + title,
+	// resolved from the keymap through shortcutFor (never hand-authored — D4).
+	// view.backlog/view.done have no keymap row yet, so shortcutFor is undefined
+	// and the attribute is simply omitted.
+	const platform = detectPlatform();
+	const chord = (id: string) => shortcutFor(id as CommandId, platform);
+	const ariaChord = (id: string) => shortcutForAria(id as CommandId, platform);
 	return (
 		<aside class="left" aria-label="Agents">
 			<div class="left-head">
@@ -439,6 +450,10 @@ export const LeftSidebar: Component = () => {
 				class="bridge-link"
 				classList={{ active: store.view() === "bridge" }}
 				onClick={() => store.showBridge()}
+				aria-keyshortcuts={ariaChord("view.bridge")}
+				title={
+					chord("view.bridge") ? `Bridge (${chord("view.bridge")})` : undefined
+				}
 			>
 				<span class="glyph" aria-hidden="true">
 					▦
@@ -451,6 +466,12 @@ export const LeftSidebar: Component = () => {
 				class="bridge-link"
 				classList={{ active: store.view() === "backlog" }}
 				onClick={() => store.showBacklog()}
+				aria-keyshortcuts={ariaChord("view.backlog")}
+				title={
+					chord("view.backlog")
+						? `Backlog (${chord("view.backlog")})`
+						: undefined
+				}
 			>
 				<span class="glyph" aria-hidden="true">
 					▤
@@ -463,6 +484,8 @@ export const LeftSidebar: Component = () => {
 				class="bridge-link"
 				classList={{ active: store.view() === "done" }}
 				onClick={() => store.showDone()}
+				aria-keyshortcuts={ariaChord("view.done")}
+				title={chord("view.done") ? `Done (${chord("view.done")})` : undefined}
 			>
 				<span class="glyph" aria-hidden="true">
 					✓
@@ -474,6 +497,12 @@ export const LeftSidebar: Component = () => {
 				class="bridge-link"
 				classList={{ active: store.view() === "settings" }}
 				onClick={() => store.showSettings()}
+				aria-keyshortcuts={ariaChord("view.settings")}
+				title={
+					chord("view.settings")
+						? `Settings (${chord("view.settings")})`
+						: undefined
+				}
 			>
 				<span class="glyph" aria-hidden="true">
 					⚙

@@ -102,6 +102,20 @@ describe("App-root keyboard spine (RIG-2456)", () => {
 		await flush();
 		expect(viewBridgeRuns).toBe(0);
 	});
+
+	test("Mod+, now lands on Settings (D6 seed lit view.settings' dead chord)", async () => {
+		setPlatform("other");
+		const { store } = mountApp("/");
+		expect(store.view()).toBe("bridge");
+
+		// `Mod+,` (keymap.ts:66) was a dead chord until the RIG-2483 seed registered
+		// `view.settings`; this proves the chord now resolves at tier 3 and runs
+		// showSettings. Registers nothing — real App wiring only.
+		press({ key: ",", ctrlKey: true });
+		await flush();
+
+		expect(store.view()).toBe("settings");
+	});
 });
 
 describe("shortcuts overlay (RIG-2482)", () => {
@@ -190,7 +204,7 @@ describe("shortcuts overlay (RIG-2482)", () => {
 		expect(dialog(container)).not.toBeNull();
 	});
 
-	test("generated content on REAL registrations: Shift+Enter row shows, palette.open does not", async () => {
+	test("generated content on REAL registrations: Shift+Enter and the seeded Mod+K rows show", async () => {
 		setPlatform("other");
 		const { container } = mountApp("/");
 		expect(container.querySelector(".bridge")).not.toBeNull();
@@ -204,25 +218,33 @@ describe("shortcuts overlay (RIG-2482)", () => {
 				(t) => t.includes("Open assigned agent") && t.includes("Shift+Enter"),
 			),
 		).toBe(true);
-		// palette.open (Mod+K) is tabled but unregistered on main → omitted.
-		expect(rows.some((t) => t.includes("Ctrl+K"))).toBe(false);
+		// palette.open (Mod+K) is now a live RIG-2483 seed, so its row renders.
+		expect(
+			rows.some(
+				(t) => t.includes("Open command palette") && t.includes("Ctrl+K"),
+			),
+		).toBe(true);
 	});
 
-	test("drift-immunity: registering palette.open makes the Mod+K row appear on next open", async () => {
+	test("drift-immunity: registering a tabled-but-dead command makes its row appear on next open", async () => {
 		setPlatform("other");
 		const { store, container } = mountApp("/backlog");
 
+		// view.agentWorkspace (Mod+Shift+A, keymap.ts:65) stays tabled-but-
+		// unregistered (OQ-4), so its chord is dead and its row omitted.
 		press({ key: "?", shiftKey: true });
 		await flush();
-		expect(rowText(container).some((t) => t.includes("Ctrl+K"))).toBe(false);
+		expect(rowText(container).some((t) => t.includes("Ctrl+Shift+A"))).toBe(
+			false,
+		);
 		// Close before mutating so the snapshot-at-open memo recomputes.
 		store.hideShortcuts();
 		await flush();
 
 		store.keyboard.registry.register({
-			id: "palette.open" as CommandId,
-			title: "Open command palette",
-			keywords: ["palette", "command"],
+			id: "view.agentWorkspace" as CommandId,
+			title: "Go to agent workspace",
+			keywords: ["agent", "workspace"],
 			scope: "global",
 			run: () => {},
 		});
@@ -231,7 +253,8 @@ describe("shortcuts overlay (RIG-2482)", () => {
 		await flush();
 		expect(
 			rowText(container).some(
-				(t) => t.includes("Open command palette") && t.includes("Ctrl+K"),
+				(t) =>
+					t.includes("Go to agent workspace") && t.includes("Ctrl+Shift+A"),
 			),
 		).toBe(true);
 	});

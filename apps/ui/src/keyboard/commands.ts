@@ -93,6 +93,11 @@ export interface DestinationProvider {
  * a primary action references a registered `CommandId`, and the registry
  * (below) is the single source of truth menus, buttons, and the palette all
  * resolve through.
+ *
+ * Point-of-use chip contract (RIG-2483, A6/D10): a menu item or tooltip
+ * rendering a `PrimaryAction` resolves its command and renders `<ShortcutChip>`
+ * right-aligned — exactly the palette row's treatment. The chord comes from
+ * `shortcutFor(command, platform)` (keymap.ts), never a hand-authored string.
  */
 export interface PrimaryAction {
 	readonly command: CommandId;
