@@ -289,12 +289,13 @@ func buildNetworkServer(
 	runnerResolve := func(ctx context.Context, presented string, want store.SubjectKind) (store.Subject, error) {
 		return auth.ResolveToken(ctx, st, presented, want)
 	}
-	// configStore is nil until the SEA-1568 T1 fleet config-bundle store (SEA-1624)
-	// lands: FetchAgentConfig then fails CodeFailedPrecondition (a no-config-surface
-	// server, tolerated by the Runner), exactly as a nil resolver does for
-	// FetchSecrets. T1 wires the real *store.Store (it satisfies AgentConfigStore
-	// via CurrentAgentConfig) here.
-	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve, resolver, nil)
+	// Wire the store of record as the runner door's fleet config-bundle surface:
+	// *store.Store satisfies AgentConfigStore via CurrentAgentConfig, so a Runner's
+	// FetchAgentConfig streams whatever the admin door's PutAgentConfig last wrote.
+	// A nil here would fail FetchAgentConfig CodeFailedPrecondition ("no config
+	// surface") and every agent would provision with no materialized config — no
+	// model provider, no skills — even with a bundle published to the store.
+	runnerPath, runnerHandler := runnerhub.NewMountedHandler(hub, runnerResolve, resolver, st)
 	netMux.Handle(runnerPath, runnerHandler)
 	var netRoot http.Handler = netMux
 	if cfg.CORSAllowedOrigin != "" {
