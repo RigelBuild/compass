@@ -93,8 +93,8 @@ export {
 	ReplayCompleteSchema,
 	// The `session` variant's payload: a typed OMP-native trace event
 	// (typed_event) plus the board lifecycle state (state). Retyped from the
-	// former opaque `bytes event` under design: architecture-lineage §"First-party typed session
-	// renderer" — the trace is a typed SessionEvent now, never opaque bytes.
+	// former opaque `bytes event` under design: architecture-lineage
+	// — the trace is a typed SessionEvent now, never opaque bytes.
 	type SessionFrame,
 	SessionFrameSchema,
 	type SteerControl,
@@ -174,8 +174,8 @@ export {
 	// The board lifecycle state carried by SessionFrame.state.
 	AgentSessionState,
 	AgentToolCallStatus,
-	// The typed observation-trace event (design: architecture-lineage §"First-party typed session
-	// renderer") carried by SessionFrame.typed_event: a oneof over assistant-text
+	// The typed observation-trace event (design: architecture-lineage)
+	// carried by SessionFrame.typed_event: a oneof over assistant-text
 	// / thinking chunks, a tool call + its updates (with file diffs), a plan, or a
 	// notice. The emitter builds one per trace event it maps; the Session* sub-
 	// message schemas are the oneof payloads it constructs with `create`.

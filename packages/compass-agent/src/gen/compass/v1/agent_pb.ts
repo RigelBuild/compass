@@ -190,8 +190,8 @@ export const TranscriptEntrySchema: GenMessage<TranscriptEntry> = /*@__PURE__*/
 
 /**
  * The `session` variant's payload: a typed OMP-native session event plus the
- * board's lifecycle state (design: architecture-lineage §"First-party typed session
- * renderer", retyping the former opaque `bytes event`). A frame carries one or
+ * board's lifecycle state (design: architecture-lineage, retyping the former
+ * opaque `bytes event`). A frame carries one or
  * both:
  *   - `typed_event` — one typed SessionEvent (compass.proto): the execution
  *     trace (assistant text/thinking chunks, tool calls + updates, plan,
@@ -230,7 +230,7 @@ export const SessionFrameSchema: GenMessage<SessionFrame> = /*@__PURE__*/
  * The agent's inbound control envelope — the other half of this §T5 contract,
  * pushed to the agent over AgentGateway.Control (agent_gateway.proto). One
  * AgentControl per control op. The variant NAMES and TYPES are the ratified
- * v0.6 oneof (design: architecture-lineage §"control ops"); the transport-consolidation
+ * v0.6 oneof (design: architecture-lineage); the transport-consolidation
  * record (docs/designs/product/compass-agent-transport-consolidation) gives it
  * its first WIRE definition, replacing the never-built stdin decoder.
  *
