@@ -164,16 +164,23 @@ export const Palette: Component = () => {
 			const mine = generation;
 			currentGen = mine;
 			setLoading(true);
-			void queryDestinations(providers, input, mine, () => currentGen).then(
-				(result) => {
+			void queryDestinations(providers, input, mine, () => currentGen)
+				.then((result) => {
 					// A stale resolve returns null and must apply nothing — a newer
 					// keystroke already owns the surface. The freshest in-flight query is
 					// the one whose generation is still current; only it clears loading.
 					if (mine !== currentGen) return;
 					if (result !== null) setDestinations(result);
 					setLoading(false);
-				},
-			);
+				})
+				.catch(() => {
+					// queryDestinations wraps providers in Promise.allSettled and never
+					// rejects today; this mirrors createResource's error containment so a
+					// future throwing path can't strand `loading` at true (there is no
+					// ErrorBoundary on this surface — an unhandled rejection would unmount
+					// the window). Same defensive posture as MarkdownText's highlight effect.
+					if (mine === currentGen) setLoading(false);
+				});
 		},
 	);
 

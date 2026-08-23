@@ -11,8 +11,12 @@
  *
  *  Keyed on `lang\ncode` (a `\n` cannot appear in a `language-…` class token, so
  *  it is a safe separator): a language change or a growth tick (new code text)
- *  misses and re-highlights. Unbounded, but a chat scrollback is finite and each
- *  entry is one message's fence. */
+ *  misses and re-highlights. A streaming fence therefore caches every
+ *  intermediate growth snapshot it settles at, not just the final text — so the
+ *  map is FIFO-bounded at `MAX_ENTRIES`: the R1 correctness property only needs
+ *  the currently-visible/recently-rebuilt fences, never the whole session
+ *  history, and a long-lived agent session streams unbounded code otherwise. */
+const MAX_ENTRIES = 512;
 const cache = new Map<string, string>();
 
 /** The cache key for a `(lang, code)` pair. */
@@ -28,12 +32,19 @@ export function getCachedHighlight(
 	return cache.get(key(lang, code));
 }
 
-/** Record a resolved highlight for `(lang, code)`. */
+/** Record a resolved highlight for `(lang, code)`. Evicts the oldest entry
+ *  first when the map is at `MAX_ENTRIES` (Map preserves insertion order, so the
+ *  first key is the oldest) — re-setting an existing key refreshes its value
+ *  without changing its age, which is fine for a bound this coarse. */
 export function setCachedHighlight(
 	lang: string,
 	code: string,
 	html: string,
 ): void {
+	if (cache.size >= MAX_ENTRIES) {
+		const oldest = cache.keys().next().value;
+		if (oldest !== undefined) cache.delete(oldest);
+	}
 	cache.set(key(lang, code), html);
 }
 

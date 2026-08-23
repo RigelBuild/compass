@@ -783,8 +783,11 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 	// and scales to any future routed dimension without a per-dimension fallback
 	// bolted onto the snapshot-adopt path. `channels`/`topics` are memos over
 	// `comms()`, so an unrelated event (a new message) that leaves the sets equal
-	// does not re-fire. Writes stay in the apply phase (v2: no writes under a
-	// tracked compute).
+	// does not re-fire — contingent on the comms reducer preserving `channels`/
+	// `topics` array identity across a message-only push (a future reducer that
+	// rebuilds them every event would re-run applyRoute per message; harmless as
+	// applyRoute is idempotent, but wasteful). Writes stay in the apply phase
+	// (v2: no writes under a tracked compute).
 	const bindRouter = (r: {
 		navigate: (path: string) => void;
 		currentPath: () => string;
