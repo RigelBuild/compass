@@ -2,6 +2,18 @@
 
 Status: Draft
 
+> **App-invocation half superseded by the client-only pivot
+> ([`../compass-native-client-only/design.md`](../compass-native-client-only/design.md),
+> DL-235/DL-236, Matt 2026-08-23).** The native app retired embedded mode, so it
+> no longer spawns, supervises, or tears down a stack — the "embedded native-app
+> stack" framing and the app's "Quit and stop stack" invocation are dead. The
+> mechanism this record decides is NOT superseded: DL-183's cross-process
+> `stack.pgids` teardown lives on whole as the `compass-stack down` quit story
+> for the standalone headless CLI (DL-236 keeps `compass-stack` — with DL-183
+> teardown intact — as the single-user bring-up). Read this record as the
+> teardown design for the headless `compass-stack`, not the app; the frozen prose
+> below is left intact.
+
 Refines **DL-108** (embedded lifecycle: Go stack supervisor, linger-by-default,
 lockfiled attach — [native app §A3](../compass-native-app/design.md#a3--embedded-lifecycle-a-go-stack-supervisor-spawned-by-the-shell)).
 DL-108 stays Active; this record decides ONE thing DL-108 left implicit and the
