@@ -4,9 +4,9 @@ Status: Active
 
 > Internal design record — July 2026. A UI/UX + state-model design for the next
 > iteration of the Compass ADE dev shell, building on the explorable Bridge
-> walking-skeleton (#453, #460). The product vision it serves is the frozen v0.3
-> record ([`../compass.md`](../compass.md)); the strategic posture is
-> [`../compass-0.4/design.md`](../compass-0.4/design.md). This record captures the
+> walking-skeleton (#453, #460). The product vision it serves and the strategic
+> posture behind it are preserved in the
+> [architecture lineage](../compass-architecture-lineage/design.md) record. This record captures the
 > shell's interaction model and the workstream/agent state model — not the daemon
 > or the `compass.v1` wire contract, which stay as those records define them.
 

@@ -1,12 +1,13 @@
 # Compass
 
 Living source-of-truth for how **Compass** currently behaves and is built. The
-point-in-time design rationale — the full ADE vision (Dispatcher, Warden, the
-Bridge, per-agent containers, ACP, the security model) — lives in the design
-records: the v0.3 vision ([`../../designs/product/compass.md`](../../designs/product/compass.md))
-and the v0.4 strategic posture that supersedes its stack choices
-([`../../designs/product/compass-0.4/design.md`](../../designs/product/compass-0.4/design.md));
-this spec describes only what the code exposes today.
+point-in-time design rationale — the ADE vision (the Dispatcher, the Bridge,
+per-agent containers, the three-tier Client→Server→Runner architecture) — lives
+in the design corpus, indexed by the decision ledger
+([`../../designs/product/DECISIONS.md`](../../designs/product/DECISIONS.md)) with
+the surviving milestone rationale in the
+[architecture lineage](../../designs/product/compass-architecture-lineage/design.md)
+record; this spec describes only what the code exposes today.
 
 Interface- and security-critical behavior is stated as `### Requirement:` +
 `#### Scenario:` contracts (RFC 2119 SHALL/MUST, Given/When/Then). Prose frames
@@ -23,9 +24,9 @@ What is built today is the contract seam and the server's transport:
 `compass-server` serves the `compass.v1` service over a Unix domain socket, and
 a generated client is the only sanctioned way to reach it. The agent runtime
 (a first-party in-container agent built on the Oh My Pi SDK, emitting
-`compass.v1` natively, hosted on a per-workstream **Runner**), Warden (on the
-first-party seal runtime), the Cotal coordination substrate, and the Bridge UI
-are designed (see the design records) but not yet fully built; the server
+`compass.v1` natively, hosted on a per-workstream **Runner**), the Cotal
+coordination substrate, and the Bridge UI are designed but not yet fully built;
+the server
 currently reports its liveness, provisions agent workstreams, and pushes a
 server-status event stream, and the web UI is a walking skeleton. The sections
 below describe the serving surface as it stands.
@@ -821,10 +822,10 @@ SHALL NOT be reflected.
 These surfaces are designed (see the design record) but not yet implemented, and
 are out of scope for this spec until they land:
 
-- **Dispatcher, Warden, and board/audit events** — the agent session layer above
-  plugs a Dispatcher MCP endpoint and a Warden gate into named seams, but their
-  logic is a separate issue; the board and audit event payloads are likewise
-  unbuilt. The Bridge UI that consumes the agent event stream is out of scope.
+- **Dispatcher and board/audit events** — the agent session layer above plugs a
+  Dispatcher MCP endpoint into a named seam, but its logic is a separate issue;
+  the board and audit event payloads are likewise unbuilt. The Bridge UI that
+  consumes the agent event stream is out of scope.
 - **Desktop shell (Tauri)** — a thin shell bridging the UI webview to the
   server's Unix socket over its own IPC (a browser cannot dial a Unix socket),
   streaming gRPC-Web responses back as ordered byte frames with no localhost TCP

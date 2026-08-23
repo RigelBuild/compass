@@ -1,5 +1,5 @@
-// Dev-only stub for the typed agent-session observation panel (design
-// compass-0.8, the typed session renderer T-U1). Supplies the typed
+// Dev-only stub for the typed agent-session observation panel (design:
+// architecture-lineage, the typed session renderer T-U1). Supplies the typed
 // SessionEvent vocabulary the real fold + renderer consume. Fixtures are keyed
 // by agent account id and carry deterministic ids + monotonic epoch-ms
 // timestamps (no Date.now) so the panel renders identically every run.

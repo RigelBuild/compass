@@ -108,8 +108,8 @@ const paneIds = (tab: AgentTab | undefined): string[] =>
 	tab ? splitPaneIds(tab.layout) : [];
 
 describe("initial state", () => {
-	// The store boots onto the bridge surface (the default view, compass-0.7
-	// §421) with nothing in the agent view yet: the anchor every transition test
+	// The store boots onto the bridge surface (the default view, design:
+	// architecture-lineage) with nothing in the agent view yet: the anchor every transition test
 	// builds on. A regression that mounted the shell elsewhere or with an agent
 	// already selected breaks here.
 	test("boots onto the bridge surface with the agent view inert", () => {

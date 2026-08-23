@@ -366,7 +366,7 @@ export type SubscribeEventsResponse = Message<"compass.v1.SubscribeEventsRespons
   } | {
     /**
      * Agent-session payloads, relayed from the Runner's agent event stream
-     * (compass.md §7.2). Each carries the server-side session id so the UI
+     * (design: architecture-lineage). Each carries the server-side session id so the UI
      * attributes activity to the right agent.
      *
      * @generated from field: compass.v1.AgentSessionStatus agent_session_status = 12;
@@ -671,7 +671,7 @@ export const AgentPlanEntrySchema: GenMessage<AgentPlanEntry> = /*@__PURE__*/
 
 /**
  * The typed observation-trace event — the render contract for the UI's session
- * pane (compass-0.8 §"First-party typed session renderer"). One SessionEvent is
+ * pane (design: architecture-lineage). One SessionEvent is
  * one thing that happened in the agent's execution trace: a chunk of assistant
  * text or thinking, a tool call and its updates, a plan, or a notice. It is the
  * payload the public SubscribeAgentSession stream relays to a subscribed UI,
@@ -1039,7 +1039,7 @@ export const AgentSessionFrameSchema: GenMessage<AgentSessionFrame> = /*@__PURE_
 /**
  * ProvisionAgentWorkspace: create the isolated per-agent container for a
  * workstream. Agent ref + repo/workstream spec in, container_name out — the
- * handle StartAgentSession then brings online (compass-0.6 §T4).
+ * handle StartAgentSession then brings online (design: architecture-lineage).
  *
  * @generated from message compass.v1.ProvisionAgentWorkspaceRequest
  */
@@ -2588,7 +2588,7 @@ export const CompassService: GenService<{
   },
   /**
    * The event channel: board, agent, and audit updates as a server stream
-   * (compass.md §7.2). Each response carries a server-assigned monotonic `seq`;
+   * (design: architecture-lineage). Each response carries a server-assigned monotonic `seq`;
    * reconnect with `since_seq` for a gap-free resubscribe. The sole push path
    * from the server to the UI.
    *
@@ -2625,7 +2625,7 @@ export const CompassService: GenService<{
    * built lifecycle façade (internal/runtime/agent.go). Returns the stable
    * container_name that StartAgentSession then brings online. Provision and
    * start are separate RPCs: a container can exist idle before an agent session
-   * runs in it. Routes Client -> Server -> RunnerHub -> Runner (compass-0.6 §T4).
+   * runs in it. Routes Client -> Server -> RunnerHub -> Runner (design: architecture-lineage).
    *
    * @generated from rpc compass.v1.CompassService.ProvisionAgentWorkspace
    */
@@ -2637,7 +2637,7 @@ export const CompassService: GenService<{
   /**
    * Bring the first-party agent in a provisioned container online over the
    * Runner streaming-exec bridge and stream its relayed activity onto
-   * SubscribeEvents. Returns the server-side session id (compass.md §7.1).
+   * SubscribeEvents. Returns the server-side session id (design: architecture-lineage).
    *
    * @generated from rpc compass.v1.CompassService.StartAgentSession
    */
@@ -2699,7 +2699,7 @@ export const CompassService: GenService<{
    * Reload a live agent session in place: tear down the current agent exec and
    * start a fresh one against the same container, reusing the session id so the
    * board entry is continuous. The agent reloads from workspace state
-   * (compass.md §4.1).
+   * (design: architecture-lineage).
    *
    * @generated from rpc compass.v1.CompassService.ReloadAgentSession
    */
@@ -2724,11 +2724,10 @@ export const CompassService: GenService<{
    * home-channel membership — the handler resolves the session's owning agent's
    * home channel and authorizes the caller against THAT channel, so a caller
    * cannot stream a session in a channel it cannot see. An unknown session_id is
-   * rejected (not-found), never leaked (compass-0.8 §"First-party typed session
-   * renderer").
+   * rejected (not-found), never leaked (design: architecture-lineage).
    *
    * The streamed response is AgentSessionFrame, not the `SubscribeAgentSessionResponse`
-   * that RPC_RESPONSE_STANDARD_NAME wants: the name is frozen (compass-0.6) and
+   * that RPC_RESPONSE_STANDARD_NAME wants: the name is frozen (design: architecture-lineage) and
    * a wrapper would change the frozen wire shape. Ignore
    * the rule for this one RPC only — every other RPC keeps it armed.
    * buf:lint:ignore RPC_RESPONSE_STANDARD_NAME

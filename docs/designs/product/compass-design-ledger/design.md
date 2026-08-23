@@ -78,8 +78,8 @@ markdownlint-style):
 ```markdown
 | ID | Decision | Status | Record |
 | --- | --- | --- | --- |
-| DL-014 | Session trace is OMP-native opaque bytes; OMP renders it | Superseded by DL-041 (Matt, 2026-07-22) | [v0.6 §Approach](compass-0.6/design.md#approach) |
-| DL-041 | Session events cross a typed gRPC stream; Compass renders first-party | Active (Matt, 2026-07-22) | [v0.8 §Approach](compass-0.8-threading-and-session-renderer/design.md#approach) |
+| DL-014 | Session trace is OMP-native opaque bytes; OMP renders it | Superseded by DL-041 (Matt, 2026-07-22) | [architecture lineage](compass-architecture-lineage/design.md) |
+| DL-041 | Session events cross a typed gRPC stream; Compass renders first-party | Active (Matt, 2026-07-22) | [architecture lineage](compass-architecture-lineage/design.md) |
 ```
 
 - `ID` — `DL-<zero-padded int>`, globally unique, append-only, never reused.
@@ -141,16 +141,19 @@ is legal.
   validates grammar + the `Historical` set, not lifecycle timeliness).
 - `Active` — frozen, and at least one of its decisions is current truth.
 - `Historical` — mechanically assigned: a record is `Historical` **iff** it
-  is in the version-narrative chain (v0.3 `compass.md`, 0.4, 0.5, 0.5-server,
-  0.6, 0.7, 0.8). The gate checks this assignment, not just the grammar, so a
-  non-`Draft` record can't drift to a wrong-but-grammatical value (an
-  out-of-chain record marked `Historical`, or a chain record marked `Active`).
+  is in the version-narrative chain. The gate checks this assignment, not just
+  the grammar, so a non-`Draft` record can't drift to a wrong-but-grammatical
+  value (an out-of-chain record marked `Historical`, or a chain record marked
+  `Active`). The enforced invariant is one-directional (`Historical` ⇒
+  in-chain; a non-`Draft` chain record ⇒ `Historical`), not a full iff;
   `Draft` stays an ungated lifecycle state the T4 same-PR rule catches
-  procedurally, so the enforced invariant is one-directional (`Historical` ⇒
-  in-chain; a non-`Draft` chain record ⇒ `Historical`), not a full iff. A
-  record can be `Historical` while many of its decisions are still
-  `Active` in the ledger — record-level status is the record's lifecycle;
-  per-decision truth lives ONLY in the ledger.
+  procedurally. The chain is **currently empty**: the early v0.3–v0.8
+  milestone records that composed it were retired (RIG-2453), so no record is
+  `Historical` today — the status is reserved for a future version-narrative
+  record, at which point it is added to the gate's `HISTORICAL_CHAIN` and
+  marked `Historical`. A record can be `Historical` while many of its
+  decisions are still `Active` in the ledger — record-level status is the
+  record's lifecycle; per-decision truth lives ONLY in the ledger.
 - `Superseded by <path>` — the record is wholly overturned; `<path>` must
   resolve to an existing record (gate-checked forward pointer).
 

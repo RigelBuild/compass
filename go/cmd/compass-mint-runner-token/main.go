@@ -7,7 +7,7 @@
 //
 // This is the operator provisioning step OQ7 specifies — a dedicated
 // Runner-subject mint path, NOT the account door's IssueToken, and deliberately
-// not an automated RPC (compass-0.6/design.md:1308-1312). The store keeps only
+// not an automated RPC (design: architecture-lineage). The store keeps only
 // the SHA-256 hash; the plaintext is unrecoverable after this command exits, so
 // capture it now: `compass-mint-runner-token --runner-id r1 > runner.token`
 // (then chmod 0600), or `--token-out runner.token` to write+chmod it directly.

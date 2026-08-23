@@ -1,7 +1,7 @@
 // Package runtime is the per-agent isolation substrate: each agent runs in its
 // own rootless-podman container with its own full git clone, a scoped $HOME for
 // that agent's credentials, and a default-deny egress firewall — the container
-// is the unit of isolation (compass.md §5.3). The Runner owns the container
+// is the unit of isolation (design: architecture-lineage). The Runner owns the container
 // lifecycle: create/start the container from the configured agent base image,
 // arm the firewall, exec the agent as a non-root user, and tear it all down.
 // The agent clones its own repos and activates their devenv from inside the
@@ -21,7 +21,7 @@
 //
 // This file is the container-runtime seam: a ContainerRuntime interface plus
 // PodmanCLI, its rootless-podman-CLI implementation. Rootless is a hard
-// requirement (compass.md §5.3, §7.1): no daemon, no root, no rootful fallback.
+// requirement (design: architecture-lineage): no daemon, no root, no rootful fallback.
 // Containers run with --userns=keep-id:uid=<agent-uid>,gid=<agent-gid> so the
 // invoking host user is mapped to the baked agent uid; files the agent writes
 // in a bind-mount still map back to the invoking user on the host.
@@ -411,7 +411,7 @@ func createArgs(spec ContainerSpec) []string {
 		"--name", spec.Name,
 		// Rootless uid remap: maps the invoking host user to the baked agent
 		// uid, so files the agent writes in a bind-mount still map back to the
-		// invoking user on the host (compass.md §5.3;
+		// invoking user on the host (design: architecture-lineage;
 		// docs/designs/platform/compass-runner-arbitrary-uid/design.md). gid
 		// collapses to uid: the image bakes gid==uid==1000.
 		fmt.Sprintf("--userns=keep-id:uid=%d,gid=%d", spec.UID, spec.UID),

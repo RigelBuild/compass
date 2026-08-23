@@ -892,8 +892,8 @@
 	padding: 10px 12px 4px;
 }
 
-/* A collapsible left-sidebar section (Channels / Agent workspaces — design
- * compass-0.7 §580-590). The header reuses the .ws-section-label typography as a
+/* A collapsible left-sidebar section (Channels / Agent workspaces — design:
+ * architecture-lineage). The header reuses the .ws-section-label typography as a
  * clickable toggle with a caret; the body holds the section's rows/tree. */
 .ws-section {
 	display: flex;
@@ -2143,7 +2143,7 @@
 	text-overflow: ellipsis;
 }
 /* A fleet tab's pane: a compact open-workspace header over the inline home-DM
-   conversation (design compass-0.7). */
+   conversation (design: architecture-lineage). */
 .fleet-pane {
 	display: flex;
 	flex-direction: column;

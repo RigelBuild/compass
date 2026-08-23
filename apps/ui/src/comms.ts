@@ -1,4 +1,4 @@
-// The comms partition — the pure core of the comms model (design compass-0.7).
+// The comms partition — the pure core of the comms model (design: architecture-lineage).
 // One source of truth for how the shell organizes channels, DMs,
 // and threaded messages, read by the channel rail and the conversation view so
 // the shape can never drift between surfaces.
@@ -167,8 +167,8 @@ export function agentDmAccountId(
 }
 
 /** The DM channel whose single other party is `agentId` — the agent's own
- *  channel, the chat pane its workspace centers on (design compass-0.7
- *  T3). The inverse of `agentDmAccountId`: given an agent, find the channel to
+ *  channel, the chat pane its workspace centers on (design:
+ *  architecture-lineage). The inverse of `agentDmAccountId`: given an agent, find the channel to
  *  center its workspace on. Returns the first such DM (an agent has one home DM
  *  with the caller in the fixture), or undefined when the caller shares no DM
  *  with it. */

@@ -13,7 +13,7 @@ Status: Active
 > recent topics (F11). Tracker: TBD. Lanes: compass-repo (proto), compass-server
 > (store + comms), compass-agent (tools), compass-ui, compass-runner (gateway).
 > **Supersedes by citation** (never rewrites the merged records):
-> [compass-0.8-threading-and-session-renderer](../compass-0.8-threading-and-session-renderer/design.md),
+> `compass-0.8-threading-and-session-renderer` (retired, RIG-2453),
 > [compass-threading-ui](../compass-threading-ui/design.md),
 > [compass-slack-thread-rendering](../compass-slack-thread-rendering.md),
 > ledger rows **DL-040** and **DL-041**, and **SEA-1364 T3's conversation

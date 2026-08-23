@@ -18,6 +18,7 @@ import {
 	type Changed,
 	type Deps,
 	evaluate,
+	HISTORICAL_CHAIN,
 	type LedgerRow,
 	parseLedger,
 	parseRecordHeader,
@@ -709,7 +710,18 @@ describe("evaluate — record Status: header presence & grammar", () => {
 });
 
 describe("evaluate — Historical-set membership", () => {
-	test("non-chain record marked Historical → 'version-narrative chain'", () => {
+	// The version-narrative chain is EMPTY (RIG-2453 retired the v0.3–v0.8
+	// milestone records that made it up). So today EVERY record marked
+	// `Status: Historical` is out-of-chain → a violation, and the
+	// "legitimately in-chain" branch of the iff has no member to exercise with
+	// a literal path. This drift guard pins the empty set; if a future
+	// version-narrative record re-populates HISTORICAL_CHAIN, restore the
+	// in-chain positive/negative cases (an in-chain record marked `Historical`
+	// passes; marked `Active` must be `Historical`).
+	test("HISTORICAL_CHAIN is empty (no version-narrative record today)", () => {
+		expect(Object.keys(HISTORICAL_CHAIN)).toHaveLength(0);
+	});
+	test("any record marked Historical → 'version-narrative chain' (chain empty)", () => {
 		const vs = evaluate(
 			[],
 			[
@@ -724,37 +736,7 @@ describe("evaluate — Historical-set membership", () => {
 		expect(vs.length).toBe(1);
 		expect(vs[0]?.message).toContain("not in the version-narrative chain");
 	});
-	test("in-chain record marked Active → 'must be `Status: Historical`'", () => {
-		const vs = evaluate(
-			[],
-			[
-				header({
-					path: "docs/designs/product/compass-0.6/design.md",
-					statusLine: "Status: Active",
-				}),
-			],
-			noChange,
-			smallRecord,
-		);
-		expect(vs.length).toBe(1);
-		expect(vs[0]?.message).toContain("must be `Status: Historical`");
-	});
-	test("in-chain record marked Historical → no violation", () => {
-		expect(
-			evaluate(
-				[],
-				[
-					header({
-						path: "docs/designs/product/compass-0.6/design.md",
-						statusLine: "Status: Historical",
-					}),
-				],
-				noChange,
-				smallRecord,
-			),
-		).toEqual([]);
-	});
-	test("non-chain record marked Active → no violation", () => {
+	test("an out-of-chain record marked Active → no violation", () => {
 		expect(
 			evaluate(
 				[],

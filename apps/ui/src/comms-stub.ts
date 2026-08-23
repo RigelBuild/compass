@@ -3,7 +3,7 @@
 // Compass is a Discord/Slack-style multi-agent product: humans and agents
 // talk in channels + DMs, and — once inside an agent workspace — that channel
 // chat is the workspace's primary pane, with the agent's execution trace a
-// secondary observation companion beside it (design compass-0.7). Humans
+// secondary observation companion beside it (design: architecture-lineage). Humans
 // and agents are first-class accounts; channels nest in channel groups
 // (a user's space, e.g. group "matt" -> channel "coordination").
 //
@@ -296,7 +296,7 @@ const AGENT_IDS = STUB_AGENTS.map((a) => a.account.id);
 const EVERYONE = [MATT, ...AGENT_IDS];
 
 // One home DM per board agent — the chat pane its workspace centers on
-// (design compass-0.7). Its id is cached on `account.homeChannelId` (stub-data)
+// (design: architecture-lineage). Its id is cached on `account.homeChannelId` (stub-data)
 // so the chat pane resolves it O(1) with no per-render `agentDmChannel` search.
 const AGENT_HOME_DMS: Channel[] = STUB_AGENTS.map((a) => ({
 	id: a.account.homeChannelId ?? `dm-${a.account.handle}`,

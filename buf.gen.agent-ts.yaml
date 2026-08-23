@@ -1,5 +1,5 @@
 # Internal-only gen lane (TS): the compass.v1 agent-stdio envelopes for the
-# first-party agent (design compass-0.6 §T5). Separate template — buf v2 scopes
+# first-party agent (design: architecture-lineage). Separate template — buf v2 scopes
 # path filters at the INPUT level (template-wide), not per-plugin, so the
 # internal protos cannot be included here and excluded from the public
 # buf.gen.yaml within one template. This lane is its own `buf generate

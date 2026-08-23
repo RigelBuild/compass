@@ -3,7 +3,7 @@
 // WHY a barrel: the agent needs the generated compass.v1 message types to
 // construct the payloads it emits, but where those types live is a build-seam
 // decision owned by the compass service (buf codegen pipeline + drift gate).
-// Frozen §T5 (design compass-0.6): the agent's compass.v1 types are generated
+// Frozen §T5 (design: architecture-lineage): the agent's compass.v1 types are generated
 // into ./gen via a second `out:` on buf.gen.yaml — its own drift-gated tree
 // (option A). Today ./gen holds a byte-identical second buf output of the one
 // owned schema; if that ever fans out differently, only this file's import
@@ -93,8 +93,8 @@ export {
 	ReplayCompleteSchema,
 	// The `session` variant's payload: a typed OMP-native trace event
 	// (typed_event) plus the board lifecycle state (state). Retyped from the
-	// former opaque `bytes event` under compass-0.8 §"First-party typed session
-	// renderer" — the trace is a typed SessionEvent now, never opaque bytes.
+	// former opaque `bytes event` under design: architecture-lineage
+	// — the trace is a typed SessionEvent now, never opaque bytes.
 	type SessionFrame,
 	SessionFrameSchema,
 	type SteerControl,
@@ -145,7 +145,7 @@ export {
 	// as its conversation variants — no bare-block variant. The MessageBlock
 	// oneof carries the surviving durable-conversation variants (text + ask); the
 	// trace variants (thought/tool_call/plan/diff) ride the typed SessionEvent on
-	// the session surface, not comms blocks (design compass-0.6, spine-inversion).
+	// the session surface, not comms blocks (design: architecture-lineage, spine-inversion).
 	type Message,
 	type MessageBlock,
 	MessageBlockSchema,
@@ -174,8 +174,8 @@ export {
 	// The board lifecycle state carried by SessionFrame.state.
 	AgentSessionState,
 	AgentToolCallStatus,
-	// The typed observation-trace event (compass-0.8 §"First-party typed session
-	// renderer") carried by SessionFrame.typed_event: a oneof over assistant-text
+	// The typed observation-trace event (design: architecture-lineage)
+	// carried by SessionFrame.typed_event: a oneof over assistant-text
 	// / thinking chunks, a tool call + its updates (with file diffs), a plan, or a
 	// notice. The emitter builds one per trace event it maps; the Session* sub-
 	// message schemas are the oneof payloads it constructs with `create`.

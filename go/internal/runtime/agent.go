@@ -1,4 +1,4 @@
-// The agent lifecycle façade the Runner drives (compass.md §5.3, §7.1): build
+// The agent lifecycle façade the Runner drives (design: architecture-lineage): build
 // the image, create and start the container, arm the egress firewall as root,
 // install scoped credentials, create the agent's checkout dir as the unprivileged
 // agent user, and tear it all down. Composed from the podman, egress, and

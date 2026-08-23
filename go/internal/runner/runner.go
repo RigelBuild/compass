@@ -1,7 +1,7 @@
 //go:build unix
 
-// Package runner is the Runner-side of the Server<->Runner seam (design
-// compass-0.6 §T4): the second binary. It dials OUT to the Server over gRPC with
+// Package runner is the Runner-side of the Server<->Runner seam (design:
+// architecture-lineage): the second binary. It dials OUT to the Server over gRPC with
 // its per-Runner token, enrolls, opens the Sessions bidi stream to receive
 // session commands, and relays agent events up the PublishEvents client-stream.
 // It wraps the already-built internal/runtime container layer (AgentRuntime /

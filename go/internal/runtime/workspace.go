@@ -1,4 +1,4 @@
-// Clone-per-container and the agent's scoped $HOME (compass.md §5.3).
+// Clone-per-container and the agent's scoped $HOME (design: architecture-lineage).
 //
 // Each agent gets its own full git clone, created inside the container — not a
 // shared checkout and not a host worktree (a worktree's .git link assumes a
@@ -15,7 +15,7 @@ import (
 )
 
 // Credentials are the agent's forge credentials — a dedicated machine user's
-// token, never the human's (compass.md §5.3, §9). Written into the agent's
+// token, never the human's (design: architecture-lineage). Written into the agent's
 // $HOME, scoped to this container.
 type Credentials struct {
 	// Host is the forge host these credentials authenticate to (e.g. github.com

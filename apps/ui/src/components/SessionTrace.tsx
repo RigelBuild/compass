@@ -78,7 +78,7 @@ const NoticeRow: Component<{ item: Extract<TraceItem, { kind: "notice" }> }> = (
 };
 
 /** The typed session trace: walks the folded TraceItem[] and renders one row per
- *  item kind, reusing the existing block CSS (design compass-0.8 §440-478). The
+ *  item kind, reusing the existing block CSS (design: architecture-lineage). The
  *  fold (foldSession) runs upstream; this component is pure presentation. */
 export const SessionTrace: Component<{ items: TraceItem[] }> = (props) => (
 	<For each={props.items}>

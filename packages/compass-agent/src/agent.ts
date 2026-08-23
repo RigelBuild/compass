@@ -8,7 +8,7 @@
 // session. The Runner starts this over ExecStreaming and relays its stdout up
 // PublishEvents.
 //
-// Why the session, not the bare `Agent`: the typed session renderer (compass-0.8)
+// Why the session, not the bare `Agent`: the typed session renderer (design: architecture-lineage)
 // needs the `AgentSessionEvent` superset — `todo_reminder`/`todo_auto_clear`/
 // `notice` and the compaction/retry orchestration events that the session emits
 // but the core `Agent` event stream (`AgentEvent`, 10 cases) does not. Only
@@ -16,7 +16,7 @@
 // session level.
 //
 // Why control drives `session.agent`, not the session: the control contract
-// (prompt/steer/config/replay) is frozen at compass-0.6 §T5 and its wire payload
+// (prompt/steer/config/replay) is frozen at architecture-lineage and its wire payload
 // representation is a parked follow-up (control.ts). Driving the inner `Agent`
 // directly preserves that frozen contract byte-for-byte — the session-level
 // prompt/steer add streaming-queue mediation the Runner already owns (it holds
@@ -315,7 +315,7 @@ export class CompassAgent {
 	// deliver (which coalesces to a turn-end prompt), a steer is an @-mention
 	// interrupt: mid-turn it injects into the running loop (interrupt at the next
 	// tool boundary); idle it starts a fresh turn to drain the injected steer
-	// (frozen record :788-814, precedence :537-562; compass-0.6 amendment
+	// (frozen record :788-814, precedence :537-562; design: architecture-lineage amendment
 	// :399-408 — "a frame arriving while the agent is idle starts a new turn;
 	// only the @-mention steer interrupts a turn in progress"). The `message_id`
 	// dedup shares deliver's `#processedMessageIds` set (a message is steer XOR
@@ -399,7 +399,7 @@ export class CompassAgent {
 		}
 		// Idle: START A NEW TURN with the mention as its content via `prompt()`,
 		// mirroring the idle-DELIVER path (`#flushDelivers`). The frozen record ties
-		// an idle frame to "starts a new turn" (compass-0.6 :399-408). `prompt()`
+		// an idle frame to "starts a new turn" (design: architecture-lineage). `prompt()`
 		// runs on ANY history — including a fresh, just-spawned peer's EMPTY history
 		// — whereas `continue()` (the earlier mechanism) rejects "No messages to
 		// continue from" on a zero-history session, so an @-mention to an idle,

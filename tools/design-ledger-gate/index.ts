@@ -57,16 +57,13 @@ export const LARGE_RECORD_BYTES = 50 * 1024;
  * these (design record §Approach part 2, §T2). Pinned as literal paths — the
  * set is the thing under test, so deriving it from anything else would let a
  * drifted membership pass silently.
+ *
+ * Currently EMPTY: the early v0.3–v0.8 milestone records that made up the
+ * chain were retired (RIG-2453), so no record is `Historical` today. The
+ * status is kept in the grammar (below) and the membership check still runs —
+ * a future version-narrative record is added here and marked `Historical`.
  */
-export const HISTORICAL_CHAIN: Record<string, true> = {
-	[`${PRODUCT_DIR}/compass.md`]: true,
-	[`${PRODUCT_DIR}/compass-0.4/design.md`]: true,
-	[`${PRODUCT_DIR}/compass-0.5/design.md`]: true,
-	[`${PRODUCT_DIR}/compass-0.5-server/design.md`]: true,
-	[`${PRODUCT_DIR}/compass-0.6/design.md`]: true,
-	[`${PRODUCT_DIR}/compass-0.7-channel-workspace/design.md`]: true,
-	[`${PRODUCT_DIR}/compass-0.8-threading-and-session-renderer/design.md`]: true,
-};
+export const HISTORICAL_CHAIN: Record<string, true> = {};
 
 /**
  * A `Ledger-impact:` declaration line in a PR body — the touch-coupling escape
