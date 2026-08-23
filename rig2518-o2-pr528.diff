@@ -1,0 +1,430 @@
+diff --git a/packages/compass-agent/src/transport/frame-sink.ts b/packages/compass-agent/src/transport/frame-sink.ts
+index b79e126f..3d4c8a9c 100644
+--- a/packages/compass-agent/src/transport/frame-sink.ts
++++ b/packages/compass-agent/src/transport/frame-sink.ts
+@@ -36,6 +36,7 @@ import {
+ 	FiberSet,
+ 	Logger,
+ 	ManagedRuntime,
++	Metric,
+ 	Option,
+ 	Schedule,
+ 	Scope,
+@@ -51,6 +52,7 @@ import {
+ } from "./../gen/compass/v1/agent_pb";
+ import { AgentSessionState } from "./../gen/compass/v1/compass_pb";
+ import type { RunnerTransport } from "./index";
++import { durableAttempts, durableGiveUps } from "./otel-metrics";
+ import { getTransportRuntime } from "./runtime-channel";
+ 
+ // Bounded-backoff retry schedule for the durable unary (ms). A transient unary
+@@ -183,16 +185,22 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
+ 			frame: toAgentFrame(frame),
+ 			idempotencyKey,
+ 		});
+-		const send = Effect.tryPromise({
+-			try: () =>
+-				transport.postConversationFrame(request, {
+-					timeoutMs: DURABLE_CALL_TIMEOUT_MS,
++		const send = Metric.increment(durableAttempts).pipe(
++			// Count each durable attempt (initial + every retry). The increment is
++			// INSIDE the unit Effect.retry re-runs, so it ticks once per attempt
++			// (Decision 2 counter, frame_sink.durable_attempts).
++			Effect.zipRight(
++				Effect.tryPromise({
++					try: () =>
++						transport.postConversationFrame(request, {
++							timeoutMs: DURABLE_CALL_TIMEOUT_MS,
++						}),
++					// Preserve the raw rejection (ConnectError) in the failure channel — do
++					// NOT let tryPromise wrap it in an UnknownException, so causeError can
++					// hand the original error back at the reject seam.
++					catch: (err) => err,
+ 				}),
+-			// Preserve the raw rejection (ConnectError) in the failure channel — do
+-			// NOT let tryPromise wrap it in an UnknownException, so causeError can
+-			// hand the original error back at the reject seam.
+-			catch: (err) => err,
+-		}).pipe(
++			),
+ 			Effect.retry(
+ 				Schedule.fromDelays(
+ 					DURABLE_RETRY_BACKOFF_MS[0],
+@@ -207,9 +215,16 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
+ 		// synchronously, so the fiber (and this bridge) are wired into the set
+ 		// before launchDurable returns.
+ 		const bridged = Effect.flatMap(Effect.exit(send), (exit) =>
+-			Effect.sync(() =>
+-				onSettle(Exit.isFailure(exit) ? causeError(exit.cause) : undefined),
+-			),
++			Effect.gen(function* () {
++				if (Exit.isFailure(exit)) {
++					// Definitive give-up: retry budget exhausted (Decision 2 counter,
++					// frame_sink.durable_give_ups). Only the error arm — never success.
++					yield* Metric.increment(durableGiveUps);
++					onSettle(causeError(exit.cause));
++				} else {
++					onSettle(undefined);
++				}
++			}),
+ 		);
+ 		runtime.runSync(FiberSet.run(inflight, bridged));
+ 	}
+diff --git a/packages/compass-agent/src/transport/otel-metrics.test.ts b/packages/compass-agent/src/transport/otel-metrics.test.ts
+new file mode 100644
+index 00000000..16337931
+--- /dev/null
++++ b/packages/compass-agent/src/transport/otel-metrics.test.ts
+@@ -0,0 +1,185 @@
++// O2 metric wiring on the two OUTBOUND transport modules — the publish spine
++// (publish-spine.ts) and the durable frame sink (frame-sink.ts).
++// Decision 2 of docs/designs/platform/compass-agent-effect-otel/design.md.
++//
++// The metrics no-op WITHOUT an OTel provider — but Effect still accumulates them
++// in its process-global in-memory registry, which every ManagedRuntime shares by
++// default (no metric-registry override in the transport's runtime, none here).
++// So a forced overflow / failed batch / priority give-up / durable give-up moves
++// the metric and `Metric.value` reads the delta back SYNCHRONOUSLY, with no live
++// MetricReader, exporter, or network. This is the exact pattern otel-layer.test.ts
++// uses (:64-67). Each case reads a baseline, forces the event, and asserts the
++// delta AND that the frozen hand-rolled counters (droppedTraceCount /
++// failedPriorityCount) are unchanged — the additive-not-replacement invariant.
++//
++// No wall-clock timer, no poll (ts-no-test-timers): failure is driven by the fake
++// driver's rejection and gated on drain()'s returned promise. The frame-sink
++// give-up case incurs the PRODUCTION retry backoff (frame-sink.ts's
++// DURABLE_RETRY_BACKOFF_MS), event-gated by drain(), not a test-injected timer.
++
++import { expect, test } from "bun:test";
++import { create } from "@bufbuild/protobuf";
++import { Effect, Metric } from "effect";
++import { TranscriptEntrySchema } from "../compassv1";
++import type { OutboundFrame } from "../frame";
++import {
++	type PublishFrameRequest,
++	PublishFrameRequestSchema,
++} from "../gen/compass/v1/agent_gateway_pb";
++import { createSocketFrameSink, DURABLE_RETRY_BACKOFF_MS } from "./frame-sink";
++import type { RunnerTransport } from "./index";
++import {
++	durableAttempts,
++	durableGiveUps,
++	priorityFramesLost,
++	traceFramesLostFailedBatch,
++	traceFramesLostOverflow,
++} from "./otel-metrics";
++import {
++	createPublishSpine,
++	type PublishSpine,
++	TRACE_QUEUE_CAP,
++} from "./publish-spine";
++
++// Read a counter's current count / a metric's Out synchronously off the global
++// registry (the default the spine/sink runtimes and Effect.runSync all share).
++function counterCount(metric: Metric.Metric.Counter<number>): number {
++	return Effect.runSync(Metric.value(metric)).count;
++}
++
++function traceFrame(): PublishFrameRequest {
++	return create(PublishFrameRequestSchema, {});
++}
++
++function transcriptFrame(seq: bigint): OutboundFrame {
++	return {
++		kind: "transcriptEntry",
++		value: create(TranscriptEntrySchema, { entrySeq: seq }),
++	};
++}
++
++// A PublishSpine stub the frame-sink borrows: drain resolves, nothing recorded.
++// The durable path never touches the spine, so a no-op spine is the whole seam.
++function noopSpine(): PublishSpine {
++	return {
++		enqueueTrace: () => {},
++		enqueuePriority: () => {},
++		droppedTraceCount: () => 0,
++		failedPriorityCount: () => 0,
++		drain: () => Promise.resolve(),
++	};
++}
++
++// A fake RunnerTransport whose postConversationFrame is scripted per-attempt.
++// getTransportRuntime returns undefined for it (not registered), so the sink owns
++// a fallback runtime. Member shape mirrors spineTransport in frame-sink.test.ts.
++function durableTransport(
++	postConversationFrame: RunnerTransport["postConversationFrame"],
++): RunnerTransport {
++	return {
++		comms: () => Promise.reject(new Error("comms not used by this test")),
++		lifecycle: () =>
++			Promise.reject(new Error("lifecycle not used by this test")),
++		publishSpine: () => noopSpine(),
++		postConversationFrame,
++		control: () => {
++			throw new Error("control not used by this test");
++		},
++		close: () => {},
++	};
++}
++
++test("a trace overflow increments trace_frames_lost{reason=overflow}, additive to droppedTraceCount", () => {
++	// enqueueTrace is fully synchronous (runtime.runSync); the pump only runs on a
++	// later scheduler tick (Effect.yieldNow defers its first batch), so a
++	// synchronous burst of CAP + overflow enqueues fully populates and overflows
++	// the bounded sliding queue before anything drains — exactly `overflow` drops.
++	const overflow = 50;
++	const before = counterCount(traceFramesLostOverflow);
++	// A blocking publish so the pump, once it eventually runs, cannot drain the
++	// queue and shrink the observed drop count.
++	const spine = createPublishSpine(() => new Promise<never>(() => {}));
++	for (let i = 0; i < TRACE_QUEUE_CAP + overflow; i++) {
++		spine.enqueueTrace(traceFrame());
++	}
++	// The metric caught every overflow drop, and the frozen hand-rolled counter
++	// reports the SAME count — metric is additive, not a replacement.
++	expect(counterCount(traceFramesLostOverflow) - before).toBe(overflow);
++	expect(spine.droppedTraceCount()).toBe(overflow);
++	// Mutation check: removing `runtime.runSync(Metric.increment(
++	// traceFramesLostOverflow))` in enqueueTrace makes the delta 0 while
++	// droppedTraceCount stays `overflow` → the first assertion reddens.
++});
++
++test("a failed trace batch increments trace_frames_lost{reason=failed_batch}, additive to droppedTraceCount", async () => {
++	// A publish that always rejects, carrying trace-only frames: the pump's batch
++	// fails, failedBatchFrames += batch.length (priorityCount 0), and — trace being
++	// loss-tolerable — it is NOT retried, so drain() resolves.
++	const frames = 7;
++	const before = counterCount(traceFramesLostFailedBatch);
++	const spine = createPublishSpine(() =>
++		Promise.reject(new Error("batch send failed")),
++	);
++	for (let i = 0; i < frames; i++) spine.enqueueTrace(traceFrame());
++	await spine.drain();
++	expect(counterCount(traceFramesLostFailedBatch) - before).toBe(frames);
++	expect(spine.droppedTraceCount()).toBe(frames);
++});
++
++test("a priority give-up increments priority_frames_lost, additive to failedPriorityCount", async () => {
++	// A single priority frame against a persistently-dead socket: after the bounded
++	// ladder is exhausted the frame is a definitive never-drop loss.
++	const before = counterCount(priorityFramesLost);
++	const spine = createPublishSpine(() =>
++		Promise.reject(new Error("dead socket")),
++	);
++	spine.enqueuePriority(traceFrame());
++	await spine.drain();
++	expect(counterCount(priorityFramesLost) - before).toBe(1);
++	expect(spine.failedPriorityCount()).toBe(1);
++	// No trace loss was recorded on this path.
++	expect(spine.droppedTraceCount()).toBe(0);
++});
++
++test("a durable send counts one attempt per try and one give-up when the retry budget is exhausted", async () => {
++	// onDurable always throws → the send exhausts DURABLE_RETRY_BACKOFF_MS and
++	// gives up. attempts = BACKOFF.length + 1 (initial + one per delay); give-ups
++	// +1. Event-gated on drain() (which awaits the in-flight durable), no timer.
++	const attemptsBefore = counterCount(durableAttempts);
++	const giveUpsBefore = counterCount(durableGiveUps);
++	let calls = 0;
++	const sink = createSocketFrameSink(
++		durableTransport(() => {
++			calls++;
++			return Promise.reject(new Error("always fails"));
++		}),
++	);
++	const durable = sink.emitDurable(transcriptFrame(1n)).catch(() => {});
++	await sink.drain?.();
++	await durable;
++	const expectedAttempts = DURABLE_RETRY_BACKOFF_MS.length + 1;
++	expect(calls).toBe(expectedAttempts);
++	expect(counterCount(durableAttempts) - attemptsBefore).toBe(expectedAttempts);
++	expect(counterCount(durableGiveUps) - giveUpsBefore).toBe(1);
++	// Mutation check: removing `Metric.increment(durableGiveUps)` from the
++	// launchDurable failure arm makes the give-up delta 0 → the last assertion
++	// reddens (attempts and drain still succeed, so the mutant reds not hangs).
++});
++
++test("a successful durable send counts its one attempt and no give-up", async () => {
++	const attemptsBefore = counterCount(durableAttempts);
++	const giveUpsBefore = counterCount(durableGiveUps);
++	let calls = 0;
++	const sink = createSocketFrameSink(
++		durableTransport(() => {
++			calls++;
++			return Promise.resolve(undefined as never);
++		}),
++	);
++	await sink.emitDurable(transcriptFrame(2n));
++	await sink.drain?.();
++	expect(calls).toBe(1);
++	expect(counterCount(durableAttempts) - attemptsBefore).toBe(1);
++	// The success arm never touches the give-up counter.
++	expect(counterCount(durableGiveUps) - giveUpsBefore).toBe(0);
++});
+diff --git a/packages/compass-agent/src/transport/otel-metrics.ts b/packages/compass-agent/src/transport/otel-metrics.ts
+new file mode 100644
+index 00000000..2180718e
+--- /dev/null
++++ b/packages/compass-agent/src/transport/otel-metrics.ts
+@@ -0,0 +1,73 @@
++// Module-private OTel metric constants for the two OUTBOUND transport modules —
++// the publish spine (publish-spine.ts) and the durable frame sink (frame-sink.ts).
++// Decision 2 of docs/designs/platform/compass-agent-effect-otel/design.md
++// (the metric table) owns these seven names; the control.* rows live in O3.
++//
++// `Metric` is from core `effect` (already a dependency — this module adds none).
++// A `Metric.counter`/`Metric.gauge` value is a cheap module-level constant: with
++// no OTel provider installed it no-ops into Effect's in-memory registry, so the
++// black-box transport suites stay green and instrumentation is invisible without
++// a provider. These constants are NOT re-exported from the package entry, so no
++// `effect` type reaches the public `.d.ts` (export-surface.test.ts guards this).
++//
++// The names are the exact Decision-2 strings — do not rename without the record.
++
++import { Metric } from "effect";
++
++// Trace/session frames lost, carrying a `reason` label. The two reasons sum to
++// today's `droppedTraceCount()` (publish-spine.ts): "overflow" is the bounded
++// trace queue evicting the oldest on a full offer; "failed_batch" is the trace
++// frames abandoned when a cycled batch send fails (loss-tolerable). Pre-tagged
++// constants (Metric.tagged) so each increment site names its reason directly.
++const traceFramesLost = Metric.counter(
++	"compass_agent.transport.publish.trace_frames_lost",
++	{ incremental: true },
++);
++export const traceFramesLostOverflow = Metric.tagged(
++	traceFramesLost,
++	"reason",
++	"overflow",
++);
++export const traceFramesLostFailedBatch = Metric.tagged(
++	traceFramesLost,
++	"reason",
++	"failed_batch",
++);
++
++// Priority frames (lifecycle/STOPPED, control acks) lost after a failed batch
++// exhausted the bounded priority retry. A never-drop loss is a contract breach,
++// kept a SEPARATE metric mirroring the source's separate `failedPriorityFrames`.
++export const priorityFramesLost = Metric.counter(
++	"compass_agent.transport.publish.priority_frames_lost",
++	{ incremental: true },
++);
++
++// Every priority-batch retry attempt (monotone).
++export const priorityBatchRetries = Metric.counter(
++	"compass_agent.transport.publish.priority_batch_retries",
++	{ incremental: true },
++);
++
++// The pump-scoped consecutive retry budget as a LEVEL: set to the new retry
++// depth on each retry, reset to 0 on a successful send.
++export const priorityRetryDepth = Metric.gauge(
++	"compass_agent.transport.publish.priority_retry_depth",
++);
++
++// Trace queue depth, sampled at each batch take.
++export const traceQueueDepth = Metric.gauge(
++	"compass_agent.transport.publish.trace_queue_depth",
++);
++
++// Every durable send attempt (initial + each retry) on the frame sink.
++export const durableAttempts = Metric.counter(
++	"compass_agent.transport.frame_sink.durable_attempts",
++	{ incremental: true },
++);
++
++// The durable send definitively failing (retry budget exhausted) — the
++// onSettle error/give-up path.
++export const durableGiveUps = Metric.counter(
++	"compass_agent.transport.frame_sink.durable_give_ups",
++	{ incremental: true },
++);
+diff --git a/packages/compass-agent/src/transport/publish-spine.ts b/packages/compass-agent/src/transport/publish-spine.ts
+index 5eb0770f..5d5ed656 100644
+--- a/packages/compass-agent/src/transport/publish-spine.ts
++++ b/packages/compass-agent/src/transport/publish-spine.ts
+@@ -41,10 +41,19 @@ import {
+ 	Fiber,
+ 	Logger,
+ 	ManagedRuntime,
++	Metric,
+ 	Option,
+ 	Queue,
+ } from "effect";
+ import type { PublishFrameRequest } from "../gen/compass/v1/agent_gateway_pb";
++import {
++	priorityBatchRetries,
++	priorityFramesLost,
++	priorityRetryDepth,
++	traceFramesLostFailedBatch,
++	traceFramesLostOverflow,
++	traceQueueDepth,
++} from "./otel-metrics";
+ import type { TransportRuntime } from "./runtime-channel";
+ 
+ // The bounded trace/session send buffer. Chosen once here: large enough to
+@@ -176,6 +185,8 @@ export function createPublishSpine(
+ 			const traceFrames = yield* Queue.takeUpTo(traceQ, room);
+ 			for (const frame of traceFrames) batch.push(frame);
+ 		}
++		// Sample the trace queue depth at each batch take (Decision 2 gauge).
++		yield* Metric.set(traceQueueDepth, traceSize());
+ 		return { batch, priorityCount };
+ 	});
+ 
+@@ -215,6 +226,8 @@ export function createPublishSpine(
+ 			);
+ 			if (Either.isRight(result)) {
+ 				priorityRetries = 0;
++				// Successful send resets the pump-scoped retry-depth level.
++				yield* Metric.set(priorityRetryDepth, 0);
+ 				continue;
+ 			}
+ 			// A batch send failed (socket dropped, Runner mid-restart). Trace frames
+@@ -222,6 +235,11 @@ export function createPublishSpine(
+ 			// durable conversation path is a separate awaited unary) and the dropped
+ 			// frames are counted with the overflow drops.
+ 			failedBatchFrames += batch.length - priorityCount;
++			// Trace loss on a failed batch (Decision 2 counter, reason=failed_batch).
++			yield* Metric.incrementBy(
++				traceFramesLostFailedBatch,
++				batch.length - priorityCount,
++			);
+ 			if (priorityCount === 0) continue;
+ 			// Priority frames (lifecycle/STOPPED — notably the terminal flush) are
+ 			// NOT loss-tolerable: re-enqueue them at the FRONT and retry the batch on
+@@ -232,6 +250,8 @@ export function createPublishSpine(
+ 			// stops so drain() stays bounded.
+ 			if (priorityRetries >= PRIORITY_BATCH_RETRY_MS.length) {
+ 				failedPriorityFrames += priorityCount;
++				// Never-drop priority loss (Decision 2 counter, kept separate).
++				yield* Metric.incrementBy(priorityFramesLost, priorityCount);
+ 				continue;
+ 			}
+ 			priority.unshift(...batch.slice(0, priorityCount));
+@@ -239,6 +259,10 @@ export function createPublishSpine(
+ 			// in [0, length-1] here — index directly, no clamp needed.
+ 			const delay = PRIORITY_BATCH_RETRY_MS[priorityRetries];
+ 			priorityRetries++;
++			// A priority-batch retry attempt (monotone counter) + the new
++			// pump-scoped retry-depth level (gauge).
++			yield* Metric.increment(priorityBatchRetries);
++			yield* Metric.set(priorityRetryDepth, priorityRetries);
+ 			yield* Effect.sleep(Duration.millis(delay));
+ 		}
+ 	});
+@@ -258,7 +282,12 @@ export function createPublishSpine(
+ 			// queue the effectful offer evicts the OLDEST, which the offer itself
+ 			// does not signal. Sync producer, so the read and the offer share one
+ 			// tick and no take interleaves.
+-			if (traceSize() >= TRACE_QUEUE_CAP) dropped++;
++			if (traceSize() >= TRACE_QUEUE_CAP) {
++				dropped++;
++				// Overflow drop (Decision 2 counter, reason=overflow). Sync enqueue
++				// site, so run it on the runtime like the queue offer below.
++				runtime.runSync(Metric.increment(traceFramesLostOverflow));
++			}
+ 			runtime.runSync(Queue.offer(traceQ, frame));
+ 			Queue.unsafeOffer(wake, undefined);
+ 			kick();

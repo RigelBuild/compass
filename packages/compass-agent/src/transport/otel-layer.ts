@@ -1,5 +1,5 @@
 // The transport's OpenTelemetry layer: the single place the whole `src/transport/`
-// tree gets a Tracer/Meter/Logger provider, composed into the one transport-owned
+// tree gets a Tracer and Meter provider, composed into the one transport-owned
 // `ManagedRuntime` at the construction seam in `index.ts`
 // (design docs/designs/platform/compass-agent-effect-otel/design.md, Decision 4).
 //
@@ -17,15 +17,24 @@
 // existing black-box transport suite stays green unmodified, and a self-hosted
 // deployment that sets no endpoint pays no overhead and opens no network egress.
 //
-// The endpoint-set branch is the exporter seam O1b fills (design O1b, "OQ1 ruled
-// (a)"): the `NodeSdk.layer` composition with a `BatchSpanProcessor(OTLPTraceExporter)`
-// and a `PeriodicExportingMetricReader(OTLPMetricExporter)` over HTTP/protobuf, drawn
-// against the destination collector. Until O1b lands, no exporter exists, so the set
-// branch also yields `Layer.empty` — the gate is live and tested now; only its
-// exporter body is deferred. This keeps O1a posture-neutral: no exporter, no network
-// path, no behavioral change whether the endpoint is set or not.
+// When the endpoint is set, the layer installs an OTLP export pipeline via a
+// single `NodeSdk.layer` call (design O1b, "OQ1 ruled (a)"): a `BatchSpanProcessor`
+// over an `OTLPTraceExporter` and a `PeriodicExportingMetricReader` over an
+// `OTLPMetricExporter`, both exporting OTLP-over-HTTP/protobuf to the configured
+// collector, tagged `service.name = compass-agent`. The exporters read
+// `OTEL_EXPORTER_OTLP_ENDPOINT` themselves — standard OTLP base-endpoint semantics,
+// where each appends its own `/v1/traces` or `/v1/metrics` path — so the endpoint
+// value the gate above reads serves purely as the on/off switch; passing it as an
+// explicit `url` would defeat that per-signal path suffixing. This is the agent's
+// first network egress (design Decision 3): against an egress-sealed substrate it
+// stays off unless a deployer sets the endpoint.
 
-import { Layer } from "effect";
+import { NodeSdk } from "@effect/opentelemetry";
+import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-proto";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
+import { PeriodicExportingMetricReader } from "@opentelemetry/sdk-metrics";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
+import { Duration, Layer } from "effect";
 
 // The transport-internal OTel layer merged into the single `ManagedRuntime` in
 // `createUnixSocketTransport` (design Decision 4). Declared `Layer.Layer<never>`,
@@ -41,10 +50,15 @@ export function makeOtelLayer(): Layer.Layer<never> {
 	if (endpoint === undefined || endpoint === "") {
 		return Layer.empty;
 	}
-	// Endpoint set: the exporter-wiring seam (design O1b). No exporter exists until
-	// O1b lands, so this yields `Layer.empty` today — the env gate is exercised, the
-	// exporter body is O1b's. When O1b lands it returns
-	// `NodeSdk.layer(() => ({ spanProcessor, metricReader, resource, shutdownTimeout }))`
-	// built from `endpoint`.
-	return Layer.empty;
+	// The SDK flush is bounded by `shutdownTimeout` so `runtime.dispose()` in the
+	// transport's `close()` cannot hang teardown on a stuck collector; the drain
+	// barrier has already run before close (design Decision 4).
+	return NodeSdk.layer(() => ({
+		spanProcessor: new BatchSpanProcessor(new OTLPTraceExporter()),
+		metricReader: new PeriodicExportingMetricReader({
+			exporter: new OTLPMetricExporter(),
+		}),
+		resource: { serviceName: "compass-agent" },
+		shutdownTimeout: Duration.seconds(2),
+	}));
 }
