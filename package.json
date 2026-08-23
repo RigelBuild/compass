@@ -16,6 +16,8 @@
 			"@effect/opentelemetry": "0.64.0",
 			"@effect/platform": "^0.97.0",
 			"@opentelemetry/api": "^1.9.1",
+			"@opentelemetry/exporter-metrics-otlp-proto": "^0.220.0",
+			"@opentelemetry/exporter-trace-otlp-proto": "^0.220.0",
 			"@opentelemetry/resources": "^2.0.0",
 			"@opentelemetry/sdk-logs": "^0.220.0",
 			"@opentelemetry/sdk-metrics": "^2.0.0",
