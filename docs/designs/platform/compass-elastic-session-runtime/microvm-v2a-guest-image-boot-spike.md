@@ -125,13 +125,15 @@ microvm-runner.md:733-750); V2a picks **passt**, concretely:
   ([docs/fs.md](https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/docs/fs.md),
   [docs/memory.md](https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/docs/memory.md)),
   so the two devices share one memory config with no extra cost.
-- **Addressing is deterministic and host-controlled.** passt's `-a`/`-g`/`-n`/
+- **Addressing is host-controlled, delivered by DHCP.** passt's `-a`/`-g`/`-n`/
   `-D` flags fix the address, gateway, netmask, and DNS it offers
-  ([passt(1)](https://passt.top/builds/latest/web/passt.1.html)); the harness
-  passes those same values to guestd via the kernel cmdline (OQ-C static path),
-  which is the input `compass-guestd` needs to write `/etc/resolv.conf` before
-  the arm step reads it (`egress.go:112-131`, D6). (passt also ships a built-in
-  DHCP/DHCPv6/NDP server, the OQ-C fallback.)
+  ([passt(1)](https://passt.top/builds/latest/web/passt.1.html)), and passt
+  serves them from its built-in DHCP/DHCPv6/NDP server over the same L2 link;
+  guestd runs an in-process DHCP client (OQ-C, Matt's ruling) that acquires the
+  lease and derives the `/etc/resolv.conf` the arm step reads
+  (`egress.go:112-131`, D6). Host control of the address plan is preserved — it
+  is passt's launch flags, not a guest guess — and DHCP is only the delivery
+  mechanism.
 
 The pinned versions satisfy the wiring: passt `2025_09_19` (vhost-user shipped
 upstream well before), cloud-hypervisor `53.0`, virtiofsd `1.14.0` (all
@@ -164,15 +166,15 @@ executes, in order:
 
 1. **Mount the API filesystems** it needs (`/proc`, `/sys`, `/dev` devtmpfs) —
    the initramfs hands over a bare root.
-2. **Bring up networking (D6):** link-up `lo` and the virtio-net interface,
-   assign the address, install the default route, and **write
-   `/etc/resolv.conf`** — before anything else depends on it
-   (microvm-runner.md:95-103,747-748). The address/gateway/netmask/DNS values
-   come from the kernel cmdline the harness owns (set to match passt's
-   deterministic `-a`/`-g`/`-n`/`-D` launch flags), applied in-process with Go
-   `netlink` alone — no in-guest DHCP client and no DHCP-over-vhost-user
-   exchange on the critical path (OQ-C; the Go-DHCP-library path is the
-   documented fallback if DHCP must be proven in V2a).
+2. **Bring up networking (D6):** link-up `lo` and the virtio-net interface, then
+   run an **in-process DHCP client** (OQ-C, Matt's ruling) against passt's
+   built-in DHCP server to acquire the address/gateway/DNS, install the default
+   route, and **write `/etc/resolv.conf`** — before anything else depends on it
+   (microvm-runner.md:95-103,747-748). The address plan stays host-controlled
+   (passt's `-a`/`-g`/`-n`/`-D` launch flags set what the lease offers); DHCP is
+   the delivery. This proves the DHCP-over-vhost-user path in V2a rather than
+   deferring it, so the net-only boot smoke ((g)/T4) exercises the DHCP exchange
+   as part of the pairing it isolates.
 3. **Mount the virtio-fs workspace:** `mount(2)` the `workspace` tag at
    `/workspace`, type `virtiofs` (the tag/path contract E3 fixed,
    `guest-image/default.nix:90-113`; the stable-path invariant,
@@ -487,22 +489,23 @@ mount, vsock Connect/h2c `Health` server, fail-closed exits. Lives at
 - **Interfaces:** produces the `compass-guestd` binary (static, Linux-only;
   built by T1's nix packaging and by the module for tests). Consumes the T3
   proto's generated `compassv1connect.GuestControlHandler`; kernel cmdline
-  parameters read from `/proc/cmdline` — `compass.vsock_port=<n>`, the net
-  4-tuple (`compass.ip`/`compass.gw`/`compass.netmask`/`compass.dns`, set by the
-  harness to match passt's `-a`/`-g`/`-n`/`-D` flags, OQ-C), and `console=ttyS0`
-  for diagnostics; the virtio-fs tag contract `workspace` → `/workspace`
+  parameters read from `/proc/cmdline` — `compass.vsock_port=<n>` and
+  `console=ttyS0` for diagnostics (the net address plan arrives via DHCP now,
+  OQ-C, not the cmdline); the virtio-fs tag contract `workspace` → `/workspace`
   (`guest-image/default.nix:90-113` note; the mount is
   `mount("workspace", "/workspace", "virtiofs", …)` per
   [CH docs/fs.md](https://github.com/cloud-hypervisor/cloud-hypervisor/blob/main/docs/fs.md)).
-  One new Go dep on the recommended static path — `github.com/vishvananda/netlink`
-  for link/addr/route; the vsock listener uses `golang.org/x/sys/unix`
-  `AF_VSOCK` (already an indirect dep) or the thin `github.com/mdlayher/vsock`
-  convenience. The DHCP fallback (OQ-C) would add `github.com/insomniacslk/dhcp`.
+  Two new Go deps for net bringup (OQ-C, Matt's ruling: DHCP) —
+  `github.com/vishvananda/netlink` for link/addr/route and
+  `github.com/insomniacslk/dhcp` for the DHCP client; the vsock listener uses
+  `golang.org/x/sys/unix` `AF_VSOCK` (already an indirect dep) or the thin
+  `github.com/mdlayher/vsock` convenience.
 - **Test cycle:** unit tests for the pieces that run hermetically: cmdline
-  parsing (net 4-tuple + vsock port), resolv.conf rendering from the parsed DNS
-  value, boot-sequence ordering (Health served only after net+mount success —
-  fake the two provisioners and assert the gate), fail-closed exit on any step
-  error. The in-VM behavior is asserted by T4, not mocked here.
+  parsing (vsock port), resolv.conf rendering from the DHCP-lease DNS value,
+  DHCP-client lease handling against a fake server, boot-sequence ordering
+  (Health served only after net+mount success — fake the two provisioners and
+  assert the gate), fail-closed exit on any step error. The in-VM behavior is
+  asserted by T4, not mocked here.
 
 ### T3 — `GuestControl` proto seed + hybrid-vsock dialer
 
@@ -583,8 +586,20 @@ measure, tear down.
 
 ## Open Questions
 
-Batched for the driver's single `ask`; the body designs against each
-recommendation.
+**Resolved by Matt (2026-08-23).** Five rulings match the recommendation;
+**OQ-C diverges** — Matt chose the in-process Go DHCP client (option 2) over the
+static recommendation, to prove the DHCP-over-vhost-user path in V2a. The body
+above now designs against the rulings:
+
+- **OQ-A → erofs + whole-root tmpfs overlay via a minimal module initramfs.**
+- **OQ-B → passt** (vhost-user-net).
+- **OQ-C → in-process Go DHCP client** (not static-from-cmdline).
+- **OQ-E → ratify the (f) `BootConfig` as written.**
+- **OQ-F → remove E3's `workspace.mount` unit** in T1.
+- **OQ-G → keep passt, isolate with a net-only smoke, pre-authorize the gvproxy
+  vhost-user fallback.**
+
+The original questions and their rationale are retained below for the record.
 
 - **OQ-A (load-bearing) — rootfs format: erofs+overlay vs ext4 vs
   initramfs-root vs virtiofs-root.** Options and tradeoffs in
@@ -599,20 +614,19 @@ recommendation.
   resolv.conf provisioning. gvproxy would add an unpinned dependency for no
   capability gain.
 - **OQ-C (load-bearing) — guestd's net-bringup implementation.** Three options:
-  (1) **static config from the kernel cmdline** — the harness owns both passt's
+  (1) static config from the kernel cmdline — the harness owns both passt's
   deterministic addressing flags (`-a`/`-g`/`-n`/`-D`,
   [passt(1)](https://passt.top/builds/latest/web/passt.1.html)) and the cmdline,
   so guestd applies a fixed address/gateway/DNS with `netlink` alone (ONE new
-  go.mod dep) and no DHCP exchange; (2) in-process Go DHCP client
+  go.mod dep) and no DHCP exchange; (2) **in-process Go DHCP client**
   (`vishvananda/netlink` + `insomniacslk/dhcp`, ~three deps); (3) shell out to a
-  DHCP binary in the image. **Recommend (1) static.** DHCP is not part of any
-  V2b+ contract (the parent requires only that guestd provisions the IP +
-  resolv.conf, microvm-runner.md:95-103,733-750 — never *how*), and static
-  removes both a dep and the DHCP-broadcast-over-vhost-user exchange, keeping it
-  off the same critical path as the untested vhost-user pairing (OQ-G) — the
-  right posture for a minimal-code spike. Option (2) is the documented fallback
-  if Matt wants DHCP proven in V2a; (3) is rejected (an extra in-image daemon
-  for no gain).
+  DHCP binary in the image. **Resolved: option (2), the in-process Go DHCP
+  client** (Matt's ruling) — proves the DHCP-over-vhost-user path in V2a rather
+  than deferring it, at the cost of one extra dep and coupling the DHCP exchange
+  onto the same vhost-user link the net-only smoke ((g)/T4) already isolates.
+  (The static path (1) removed a dep and kept DHCP off the critical path but
+  leaves DHCP unproven; (3) is rejected — an extra in-image daemon for no gain
+  over the Go client.)
 - **OQ-D (non-load-bearing, deferred) — durable/disk-backed overlay upper for
   heavy in-guest `nix build` workloads.** tmpfs upper is correct for the
   spike and inner-loop; revisit in V2b+ when session sizing data exists
