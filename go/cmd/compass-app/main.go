@@ -3,13 +3,14 @@
 // Command compass-app is the Compass native desktop shell: a Wails v3
 // application that opens one window loading the prebuilt SolidJS UI (apps/ui
 // dist) and exposes the compass_rpc / compass_rpc_cancel IPC bridge to it,
-// backed by the bridge pump over the daemon's Unix socket.
+// backed by the bridge pump over the client's TLS connection to a headless
+// Compass stack.
 //
-// This is T3 slice 2 — the shell + IPC bridge only. Stack spawn/supervision,
-// host preflight, and mode selection are T4 (SEA-1685): the window points at a
-// daemon a developer starts by hand (compass-stack up), and the dial target is a
-// single flag/env-supplied socket with a sensible default. There is no stack
-// supervisor here.
+// The app is a native CLIENT only (RIG-2554): it dials a headless Compass stack
+// over the authenticated TLS door (client.go, runClient). Embedded mode — an
+// in-process stack supervisor — was retired; the app no longer spawns, monitors,
+// or tears down a stack. The headless stack is brought up out of band on a
+// dedicated machine, and app.toml's server_url points the app at it.
 //
 // Assets: the dist lives at repo apps/ui/dist, OUTSIDE this Go package's
 // directory subtree, so //go:embed cannot reach it (embed forbids ".." patterns
@@ -20,17 +21,14 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/RigelBuild/compass/go/internal/appconfig"
-	"github.com/RigelBuild/compass/go/internal/bridge"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
@@ -42,55 +40,28 @@ func main() {
 	}
 }
 
-// bringUpTimeout bounds the whole embedded bring-up (preflight + compass-stack
-// up + WhoAmI) as a backstop against a wedged launch. app.Run() itself is not
-// context-bound. Per the T4.1 brief the bring-up window is ~60s; lifecycle
-// polish (a longer window covering a cold agent-image pull) is T4.2.
-const bringUpTimeout = 60 * time.Second
-
 func run() error {
 	if handled, err := printVersionIfRequested(os.Args[1:], os.Stdout); handled {
 		return err
 	}
 
-	socketFlag := flag.String("socket", "",
-		"Unix socket the Compass daemon serves compass.v1 on. Defaults to "+
-			"$COMPASS_SOCKET, then $XDG_RUNTIME_DIR/compass/server.sock. In "+
-			"embedded mode the supervised stack serves it; in client mode it is "+
-			"dialed as-is.")
 	assetsFlag := flag.String("assets", "",
 		"Directory of the prebuilt apps/ui dist to serve. Defaults to "+
 			"$COMPASS_ASSETS_DIR, then a 'dist' directory beside the executable.")
-	modeFlag := flag.String("mode", "",
-		"Operating mode override (embedded|client). Defaults to $COMPASS_APP_MODE, "+
-			"then app.toml, then embedded.")
-	stackBinFlag := flag.String("compass-stack", "",
-		"Path to the compass-stack binary the embedded stack is supervised with. "+
-			"Defaults to $COMPASS_STACK_BIN, then compass-stack on $PATH, then a "+
-			"compass-stack sibling of this executable.")
 	stateDirFlag := flag.String("state-dir", "",
-		"App state directory for the embedded stack. Defaults to "+
+		"App state directory (the client tokenstore lives here). Defaults to "+
 			"$COMPASS_STATE_DIR, then $XDG_STATE_HOME/compass, then $HOME/.compass.")
-	imageFlag := flag.String("image", "",
-		"Agent container image ref for the embedded stack. Defaults to "+
-			"$COMPASS_AGENT_IMAGE, then "+defaultAgentImage+".")
 	flag.Parse()
 
-	socket := resolveSocket(*socketFlag)
 	assetsDir := resolveAssetsDir(*assetsFlag)
 
-	// run() is the process root (called directly by main), so the root context
-	// originates here; the bring-up window is derived from it, not re-rooted.
-	cfg, err := appconfig.Load(os.Getenv("XDG_CONFIG_HOME"), os.Getenv("HOME"), resolveMode(*modeFlag))
+	cfg, err := appconfig.Load(os.Getenv("XDG_CONFIG_HOME"), os.Getenv("HOME"))
 	if err != nil {
 		return err
 	}
 
-	// run() is the process root (called directly by main), so context.Background()
-	// here is the sanctioned process-root context, not a mid-tree re-root.
 	stateDir := resolveStateDir(*stateDirFlag)
-	svc, quitter, err := launch(cfg, socket, stateDir,
-		resolveImage(*imageFlag), stackBinFlag)
+	svc, err := launch(cfg, stateDir)
 	if err != nil {
 		return err
 	}
@@ -128,25 +99,11 @@ func run() error {
 		return err
 	}
 
-	// The menu is installed in both modes. The "Window"/"New Window" item opens
-	// an additional Bridge window and is always available. The embedded-only
-	// "File"/"Quit and stop stack" item (DL-108, T4.2) is gated on quitter: client
-	// mode has no stack to stop. Plain quit (window close, OS quit) LINGERS by
-	// default — the stack children stay running and the app does nothing to them
-	// (relaunch re-attaches), so there is deliberately no OnShutdown *stack*
-	// teardown here. (The window-set persist hook above is unrelated: it touches
-	// only the state-dir window list, never the stack.)
+	// The "Window"/"New Window" item opens an additional Bridge window and is
+	// always available. Plain quit (window close, OS quit) has no stack teardown:
+	// the app is a client and owns no stack. (The window-set persist hook above
+	// touches only the state-dir window list.)
 	menu := application.NewMenu()
-	if quitter != nil {
-		quitter.quit = app.Quit
-		fileMenu := menu.AddSubmenu("File")
-		fileMenu.Add("Quit and stop stack").OnClick(func(_ *application.Context) {
-			// A UI-event callback has no inherited context.Context, so this is
-			// the legitimate main-entrypoint root; stopStackAndQuit derives its
-			// bounded teardown deadline from it.
-			quitter.stopStackAndQuit(context.Background())
-		})
-	}
 	windowMenu := menu.AddSubmenu("Window")
 	windowMenu.Add("New Window").OnClick(func(_ *application.Context) {
 		name := nextWindowName(app)
@@ -163,7 +120,7 @@ func run() error {
 		newAppWindow(app, svc, name, "Compass", startupJS)
 	}
 
-	slog.Info("compass-app starting", "mode", cfg.Mode, "socket", socket, "assets", assetsDir, "version", version)
+	slog.Info("compass-app starting", "mode", cfg.Mode, "assets", assetsDir, "version", version)
 	return app.Run()
 }
 
@@ -229,50 +186,20 @@ func firstFreeName(base string, exists func(string) bool) string {
 	}
 }
 
-// launch dispatches the resolved mode into the embedded or client launch arm and
-// returns the wired bridge service plus (embedded only) the quit controller.
-// Only the embedded arm resolves the compass-stack binary and builds the quit
-// controller; a client-only install has neither a compass-stack binary nor a
-// stack to stop, so those effects must not gate a client launch (design §T5.6).
-func launch(
-	cfg appconfig.Config, socket, stateDir, image string, stackBinFlag *string,
-) (*bridgeService, *quitController, error) {
+// launch wires the native-client bridge service (design §T5.6). Embedded mode —
+// the in-process stack supervisor — was retired in RIG-2554, so launch is a thin
+// wrapper over runClient: there is no stack to spawn, monitor, or tear down, and
+// no quit controller. The Mode was validated to client by appconfig.Load; the
+// default arm rejects any other resolved Mode legibly rather than dialing a
+// half-configured target.
+func launch(cfg appconfig.Config, stateDir string) (*bridgeService, error) {
 	switch cfg.Mode {
-	case appconfig.ModeEmbedded:
-		stackBin, err := resolveStackBin(*stackBinFlag)
-		if err != nil {
-			return nil, nil, err
-		}
-		pipeline := embeddedPipeline{
-			preflight: realPreflight(image, embeddedDatabaseDSN(stateDir)),
-			stackUp:   runStackUp(stackBin),
-			whoAmI:    whoAmIOverUDS,
-		}
-		params := embeddedParams{socket: socket, stateDir: stateDir, image: image}
-
-		// The embedded bring-up (preflight → stack up → WhoAmI) runs BEFORE the
-		// window opens, under a bounded bring-up context rooted at the process
-		// root (run() is called directly by main).
-		bringUpCtx, cancel := context.WithTimeout(context.Background(), bringUpTimeout)
-		accountID, quitter, err := runEmbedded(bringUpCtx, pipeline, params, runStackDown(stackBin))
-		cancel()
-		if err != nil {
-			return nil, nil, err
-		}
-
-		svc := newBridgeService(bridge.NewPump(bridge.NewUnixTarget(socket)), nil, nil, nil)
-		svc.accountID = accountID
-		return svc, quitter, nil
 	case appconfig.ModeClient:
 		// Client mode opens the window immediately: no pre-window probe (the
 		// single auto-connect is the UI's boot-time shellConnect(""), T5.5).
-		svc, err := runClient(cfg, stateDir)
-		if err != nil {
-			return nil, nil, err
-		}
-		return svc, nil, nil
+		return runClient(cfg, stateDir)
 	default:
-		return nil, nil, fmt.Errorf("unknown app mode %v", cfg.Mode)
+		return nil, fmt.Errorf("unknown app mode %v", cfg.Mode)
 	}
 }
 
@@ -295,23 +222,6 @@ func shellStartupJS(mode, serverURL string) (string, error) {
 		js += "window.__COMPASS_SERVER_URL__=" + string(urlJSON) + ";"
 	}
 	return js, nil
-}
-
-// resolveSocket picks the daemon socket to dial: the --socket flag, else
-// $COMPASS_SOCKET, else $XDG_RUNTIME_DIR/compass/server.sock (the server default,
-// go/server/socket.go DefaultSocketPath). A relative XDG_RUNTIME_DIR is treated
-// as unset, matching the server, so the fallback is deterministic.
-func resolveSocket(flagValue string) string {
-	if flagValue != "" {
-		return flagValue
-	}
-	if env := os.Getenv("COMPASS_SOCKET"); env != "" {
-		return env
-	}
-	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); filepath.IsAbs(runtimeDir) {
-		return filepath.Join(runtimeDir, "compass", "server.sock")
-	}
-	return filepath.Join(os.Getenv("HOME"), ".compass", "server.sock")
 }
 
 // resolveAssetsDir picks the dist directory to serve: the --assets flag, else
