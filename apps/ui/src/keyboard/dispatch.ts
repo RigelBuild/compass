@@ -61,6 +61,15 @@ function isEditableTarget(target: EventTarget | null): boolean {
  * roving group (or `null`); `activeZone` yields the focused zone for the scoped
  * tier and defaults to `() => null` (no live zone controller in this wave, so
  * tier 2 is dormant until one exists — kept correct and testable via the stub).
+ *
+ * D5 safety invariant (RIG-2529): the tier-3 scope gate is safe today because
+ * `activeZone` is derived from `active` (spine.ts:95-97) — a non-null zone
+ * implies a roving group holds focus, so tier 1 already saw any group-relative
+ * chord and only a decline reaches the scope-gated tier 3 (harmless: a
+ * group-relative command's `run` mirrors its handler). A future independent
+ * zone controller that can make `activeZone()` non-null while NO roving group
+ * is focused inherits the obligation to re-establish tier-3 safety for
+ * zone-scoped commands, since that decline chain no longer holds.
  */
 export function installKeymap(
 	registry: CommandRegistry,
@@ -117,12 +126,16 @@ export function installKeymap(
 			}
 		}
 
-		// Tier 3 — global. A window-global unscoped entry fires anywhere. An
-		// unregistered global command does not swallow the event.
+		// Tier 3 — global, scope-gated (RIG-2529). A window-global unscoped
+		// entry fires anywhere its COMMAND's scope allows: a `scope:'global'`
+		// command runs from any target; a zone-scoped command runs only while
+		// its zone is active. An unregistered global command does not swallow
+		// the event, and neither does a scoped command whose zone is inactive —
+		// both fall out without preventDefault, so native activation survives.
 		const globalEntry = matching.find((entry) => entry.when === undefined);
 		if (globalEntry) {
 			const command = registry.get(globalEntry.commandId);
-			if (command) {
+			if (command && (command.scope === "global" || command.scope === zone)) {
 				command.run();
 				event.preventDefault();
 			}

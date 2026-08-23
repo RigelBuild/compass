@@ -534,7 +534,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(store.selectedIssueId()).toBe("ws-965");
 	});
 
-	test("focus-exclusivity: a focused non-board button keeps its native keys; the tier-3 Shift+Enter escape still fires (RD-4 pin)", async () => {
+	test("focus-exclusivity: a focused non-board button keeps its native keys; the tier-3 Shift+Enter escape is scope-gated out (RD-4 closed, RIG-2529)", async () => {
 		// The regression guard for the focus-exclusivity contract (design §401-405),
 		// re-hosted onto the App-root spine: the board claims a group-relative chord
 		// in tier 1 ONLY while focus is on a board stop. With focus on a toolbar
@@ -556,19 +556,20 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		expect(cursorLabel(container)).toBe(cursorBefore); // cursor unmoved
 		expect(store.selectedIssueId()).toBe(selectedBefore); // selection unchanged
 
-		// RD-4 PIN (OQ-6, deferred): the tier-1 focus gate does NOT cover tier 3, so
-		// `Shift+Enter → board.openAssignedAgent` (no `when`, keymap.ts:98) is STILL
-		// reachable from a non-board, non-editable target while the board is mounted
-		// (the toolbar button holds focus, so no group is active and no zone is
-		// active — the chord falls through to the window-global tier). This is a
-		// PRE-EXISTING hole this record neither worsens nor closes; the ratified
-		// ruling is DEFER, so we DOCUMENT the current behavior — the assigned-agent
-		// action fires — rather than assert it does not. A follow-up lane that closes
-		// the hole flips this assertion.
+		// RD-4 CLOSED (RIG-2529): tier 3 is now scope-gated. `board.openAssignedAgent`
+		// is `scope:'main'` (Bridge.tsx:437) and the keymap binds it unscoped
+		// (Shift+Enter, keymap.ts:98). With the toolbar button holding focus, no
+		// roving group is active and no zone is active, so `activeZone()` is null —
+		// the scope gate's `command.scope === zone` is `"main" === null` → false, and
+		// the chord falls out of tier 3 UN-consumed. The button keeps its native
+		// activation and the assigned-agent escape does NOT fire. This is the
+		// production-wiring proof (real App, real chord, real store) that the frozen
+		// dispatch contract changed deliberately.
+		const viewBefore = store.view();
 		const escapeEvent = press({ key: "Enter", shiftKey: true });
-		expect(escapeEvent.defaultPrevented).toBe(true); // tier 3 claimed it
+		expect(escapeEvent.defaultPrevented).toBe(false); // native activation survives
 		await flush();
-		expect(store.view()).toBe("agent"); // the deferred escape fired
+		expect(store.view()).toBe(viewBefore); // the assigned-agent escape did NOT fire
 	});
 
 	// Lifecycle (A6 bullet 4): a mount→unmount→remount cycle leaves exactly ONE
@@ -579,27 +580,37 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 	// once. The single-listener property is proven functionally — one `Ctrl+B`
 	// runs the `view.bridge` command exactly once (a stacked listener would run it
 	// twice).
-	test("mount → unmount → remount leaves one listener and no stale board.* commands", async () => {
+	test("mount → unmount → remount leaves one listener and no stale board.*/list.* commands", async () => {
 		const store = createAppStore({ queryClient: testQueryClient() });
+		// Widened to collect the ten `scope:'main'` board commands: the two `board.*`
+		// ids and the eight group-relative `list.*` ids (RIG-2529). All ten must
+		// retract on unmount — a stale `scope:'main'` registration can never outlive
+		// its surface.
 		const boardCommandIds = (): string[] =>
 			store.keyboard.registry
 				.all()
 				.map((c) => c.id as string)
-				.filter((id) => id.startsWith("board."));
-
-		const first = mountShell(store, "/");
-		expect(boardCommandIds().sort()).toEqual([
+				.filter((id) => id.startsWith("board.") || id.startsWith("list."));
+		const ALL_TEN = [
 			"board.openAssignedAgent",
 			"board.openCardCrossLink",
-		]);
+			"list.expandOrToggle",
+			"list.moveFirst",
+			"list.moveLast",
+			"list.moveLeft",
+			"list.moveNext",
+			"list.movePrev",
+			"list.moveRight",
+			"list.openOrSelect",
+		];
+
+		const first = mountShell(store, "/");
+		expect(boardCommandIds().sort()).toEqual(ALL_TEN);
 		first.unmount();
 		expect(boardCommandIds()).toEqual([]); // retracted on cleanup
 
 		const second = mountShell(store, "/");
-		expect(boardCommandIds().sort()).toEqual([
-			"board.openAssignedAgent",
-			"board.openCardCrossLink",
-		]);
+		expect(boardCommandIds().sort()).toEqual(ALL_TEN);
 
 		// Exactly one listener: spy the shared `view.bridge` command and fire one
 		// Ctrl+B. Two stacked App listeners over the one registry would run it twice.

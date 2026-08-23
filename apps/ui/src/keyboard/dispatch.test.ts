@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Command, CommandId } from "./commands";
+import type { Command, CommandId, CommandScope } from "./commands";
 import { eventToChord, installKeymap } from "./dispatch";
 import type { Platform } from "./keymap";
 import { createCommandRegistry } from "./registry";
@@ -14,11 +14,15 @@ import type { RovingGroup } from "./zones";
 const id = (s: string): CommandId => s as CommandId;
 const GROUP: RovingGroup = { zone: "main", id: "board" };
 
-const makeCommand = (rawId: string, run: () => void): Command => ({
+const makeCommand = (
+	rawId: string,
+	run: () => void,
+	scope: CommandScope = "global",
+): Command => ({
 	id: id(rawId),
 	title: rawId,
 	keywords: [],
-	scope: "global",
+	scope,
 	run,
 });
 
@@ -214,6 +218,100 @@ describe("installKeymap", () => {
 
 		expect(routed).toEqual([id("list.openOrSelect")]);
 		expect(listRan).toBe(1); // fell through to global
+	});
+
+	// Tier-3 scope gate (RIG-2529): a matched global entry runs only if its
+	// COMMAND's scope is "global" or equals the active zone. `activeZone`
+	// defaults to () => null, under which only global-scoped commands pass.
+	test("scope gate: a global command fires from tier 3 with no group and no zone", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("view.bridge", () => ran++, "global"));
+		uninstall = installKeymap(registry, () => null);
+
+		const event = keydown({ key: "b", ctrlKey: true });
+
+		expect(ran).toBe(1);
+		expect(event.defaultPrevented).toBe(true);
+	});
+
+	test("scope gate: a scope:'main' command does NOT run at tier 3 when no zone is active", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(
+			makeCommand("board.openAssignedAgent", () => ran++, "main"),
+		);
+		// Default zone stub (() => null): the leak scenario — board mounted but
+		// unfocused, so no group and no zone.
+		uninstall = installKeymap(registry, () => null);
+
+		const event = keydown({ key: "Enter", shiftKey: true });
+
+		expect(ran).toBe(0); // "main" === null → false, command does not run
+		expect(event.defaultPrevented).toBe(false); // native activation survives
+	});
+
+	test("scope gate: a scope:'main' command RUNS at tier 3 when its zone is active", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(
+			makeCommand("board.openAssignedAgent", () => ran++, "main"),
+		);
+		uninstall = installKeymap(
+			registry,
+			() => null,
+			() => "main",
+		);
+
+		const event = keydown({ key: "Enter", shiftKey: true });
+
+		expect(ran).toBe(1); // "main" === "main" → runs
+		expect(event.defaultPrevented).toBe(true);
+	});
+
+	test("scope gate: a declining group falls through to a scope:'main' command when its zone is active", () => {
+		// The one genuinely new reachable path the gate creates: a group-relative
+		// command re-invoked at tier 3 after its group declined, with the zone
+		// derived from that same group live (spine.ts:95-97). Matches production.
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("list.openOrSelect", () => ran++, "main"));
+		const { handle, routed } = stubGroup(() => false); // declines
+		uninstall = installKeymap(
+			registry,
+			() => handle,
+			() => "main",
+		);
+
+		const event = keydown({ key: "Enter" });
+
+		expect(routed).toEqual([id("list.openOrSelect")]);
+		expect(ran).toBe(1); // fell through, zone active → runs
+		expect(event.defaultPrevented).toBe(true);
+	});
+
+	test("scope gate: a scope:'main' command does NOT run at tier 3 when a DIFFERENT zone is active", () => {
+		// Locks the `command.scope === zone` EQUALITY, not merely `zone != null`:
+		// a main-scoped command must stay inert while another zone holds focus
+		// (the cross-zone leak D1 chose this predicate over an isGroupRelative
+		// skip to prevent — e.g. a scope:'right' sidebar command bound unscoped).
+		// Not reachable in production today (single main-zone group ⇒ activeZone()
+		// is only ever "main" or null), but the gate is the general contract.
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(
+			makeCommand("board.openAssignedAgent", () => ran++, "main"),
+		);
+		uninstall = installKeymap(
+			registry,
+			() => null,
+			() => "right",
+		);
+
+		const event = keydown({ key: "Enter", shiftKey: true });
+
+		expect(ran).toBe(0); // "main" !== "right" → does not run
+		expect(event.defaultPrevented).toBe(false); // native activation survives
 	});
 
 	test("fall-through: Mod+B reaches view.bridge while the board group is active", () => {
