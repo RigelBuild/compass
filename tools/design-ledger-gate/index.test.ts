@@ -352,6 +352,21 @@ describe("evaluate — row status-cell grammar", () => {
 		expect(vs[0]?.message).toContain("malformed");
 		expect(vs[0]?.line).toBe(5);
 	});
+	test("Retired-shaped but dateless → 'malformed' (pins ROW_RETIRED_RE strictness)", () => {
+		// A cell that begins `Retired ` but omits the required date must be
+		// rejected — otherwise a future loosening of ROW_RETIRED_RE to a bare
+		// prefix would silently pass. Same strictness the Active/Superseded
+		// forms enforce.
+		const vs = evaluate(
+			[row({ status: "Retired (Matt)" })],
+			[],
+			noChange,
+			smallRecord,
+		);
+		expect(vs.length).toBe(1);
+		expect(vs[0]?.message).toContain("malformed");
+		expect(vs[0]?.line).toBe(5);
+	});
 });
 
 describe("evaluate — supersession integrity", () => {

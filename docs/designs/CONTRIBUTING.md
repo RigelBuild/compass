@@ -54,8 +54,8 @@ editing it in-place.
 
 ## 5. Freeze protects decision content, not links — fix inbound links on deletion
 
-The freeze convention (`AGENTS.md`: a later change adds a new record, never
-rewrites one) protects a record's **decision content**. It does **not** freeze a
+The freeze convention (a later change adds a new record, never rewrites one)
+protects a record's **decision content**. It does **not** freeze a
 record's links to *other* records: a link whose target no longer exists is rot,
 not content. So when a record is deleted or superseded, re-point or de-link its
 inbound references **from surviving records in the same PR** — even from a frozen
@@ -67,3 +67,10 @@ is exactly the "published record cites something that no longer exists" artifact
 rule 1 forbids for tracker IDs. This is a link-integrity edit, not a
 decision-content rewrite, so it is not a freeze violation; leave the record's
 decisions, prose, and security sections (rule 4) untouched.
+
+The same link-integrity requirement covers the ledger's own `Record` cell: the
+gate resolves every row's `Record` link regardless of the row's status, so a
+`Retired` or `Superseded by` row whose record is deleted still gets its `Record`
+cell re-pointed (to the successor, the new home for the rationale, or the
+ledger's own record) in the same PR — a retracted decision's link is held to the
+same standard as a live one's.

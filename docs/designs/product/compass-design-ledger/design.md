@@ -157,7 +157,8 @@ is legal.
 This is a **one-time mechanical amendment** to frozen records — a status
 *label*, not a rewrite of any decision content. The record authorizing it is
 this one; the freeze convention ("a later change adds a new record, never
-rewrites one", `AGENTS.md:59-62`) is preserved for decision content.
+rewrites one", `config/skills/design/SKILL.md`) is preserved for decision
+content.
 
 ### 3. `tools/design-ledger-gate` — the CI gate
 
@@ -178,8 +179,8 @@ It fails CI when:
 - a record's `Status: Superseded by <path>` pointer does not resolve;
 - a record under `docs/designs/product/` is missing a parseable `Status:`
   header, or carries a malformed/unanchored/wrong-`Historical`-set value;
-- a ledger row's `Status` cell matches neither the
-  `Active (<who>, YYYY-MM-DD)` nor the
+- a ledger row's `Status` cell matches none of the
+  `Active (<who>, YYYY-MM-DD)`, `Retired (<who>, YYYY-MM-DD)`, or
   `Superseded by DL-<n> (<who>, YYYY-MM-DD)` grammar;
 - a `DL-<n>` ID is duplicated, self-superseded, or in a supersession cycle
   of any length — a `Superseded` chain that loops back instead of ending at
