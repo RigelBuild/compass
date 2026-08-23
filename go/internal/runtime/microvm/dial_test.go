@@ -151,6 +151,91 @@ func TestDialGuest_Refusal(t *testing.T) {
 	}
 }
 
+// TestDialGuest_NoOverRead pins the no-over-read contract directly: the muxer
+// writes the ack AND trailing application bytes in a single write, the exact
+// case a buffered reader would break. readPreambleLine must consume only through
+// the newline and leave "HELLO" on the wire for the returned conn.
+func TestDialGuest_NoOverRead(t *testing.T) {
+	path := socketPath(t)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("binding muxer: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() }) // listener teardown
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }() // muxer-side teardown after handoff
+		if _, err := bufio.NewReader(conn).ReadString('\n'); err != nil {
+			return
+		}
+		// The ack and the first application bytes arrive in ONE write — the exact
+		// case a buffered reader would swallow past the newline. The dialer must
+		// consume only through "\n" and leave "HELLO" for the returned conn.
+		if _, err := io.WriteString(conn, "OK 1024\nHELLO"); err != nil {
+			return
+		}
+		<-t.Context().Done()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
+	defer cancel()
+	conn, err := DialGuest(ctx, path, guestPort)
+	if err != nil {
+		t.Fatalf("DialGuest: %v", err)
+	}
+	defer conn.Close() // test cleanup
+
+	buf := make([]byte, len("HELLO"))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("reading post-ack app bytes: %v", err)
+	}
+	if string(buf) != "HELLO" {
+		t.Fatalf("post-ack bytes = %q, want %q (dialer over-read the ack line)", buf, "HELLO")
+	}
+}
+
+// TestDialGuest_HandshakeDeadline defends the bounded handshake: a muxer that
+// accepts the connection but never sends an ack must not hang DialGuest — the
+// ctx deadline aborts the ack read. Without the conn deadline this test blocks
+// until testTimeout and fails the suite.
+func TestDialGuest_HandshakeDeadline(t *testing.T) {
+	path := socketPath(t)
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("binding silent muxer: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() }) // listener teardown
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		// Accept and go silent: read the CONNECT preamble but never ack, holding
+		// the connection open so the host blocks in readPreambleLine.
+		_, _ = bufio.NewReader(conn).ReadString('\n') // drain CONNECT, then stall
+		<-t.Context().Done()
+		_ = conn.Close() // teardown when the test ends
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	conn, err := DialGuest(ctx, path, guestPort)
+	if err == nil {
+		_ = conn.Close() // unexpected-success cleanup
+		t.Fatal("DialGuest succeeded against a silent muxer; want a deadline error")
+	}
+	if conn != nil {
+		t.Fatalf("DialGuest returned a non-nil conn on handshake timeout: %v", conn)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("DialGuest took %v against a silent muxer; the handshake was not bounded by ctx", elapsed)
+	}
+}
+
 // healthHandler is a canned GuestControl handler: every Health returns the same
 // response, so the round-trip test asserts the fields survive the wire.
 type healthHandler struct {
@@ -219,7 +304,7 @@ func TestGuestClient_HealthRoundTrip(t *testing.T) {
 		}
 	}()
 
-	client := GuestClient(BootConfig{VsockSocket: path, VsockPort: guestPort})
+	client := GuestClient(path, guestPort)
 
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()

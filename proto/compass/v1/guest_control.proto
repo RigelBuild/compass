@@ -36,6 +36,14 @@ package compass.v1;
 // grows it additively (Exec/ExecStream/Signal/Provision) with no wire break.
 // Suffix-less service name follows the AgentGateway precedent (a Runner/host-side
 // door, not a public *Service) — carved out per-file in buf.yaml.
+//
+// The transport is unauthenticated: no credential travels the vsock hop. For
+// V2a Health this is correct — the host owns both ends of the hybrid vsock and
+// the AF_UNIX socket path is the session's structural identity, so "it answered
+// on the vsock we opened" is sufficient. When V2b adds the higher-value RPCs
+// (Exec/Signal/Provision), that assumption must be revisited explicitly: an Exec
+// surface may warrant the host authenticating guestd's identity beyond reaching
+// it on the expected socket.
 service GuestControl {
   rpc Health(HealthRequest) returns (HealthResponse);
 }
