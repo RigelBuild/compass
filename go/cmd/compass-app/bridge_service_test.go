@@ -540,9 +540,9 @@ func TestCompassRPCConcurrentDistinctIDs(t *testing.T) {
 }
 
 // TestAccountIDBoundGetter: the bound AccountID method returns the account id
-// the embedded launch set on the service (the value the JS/UI reads over IPC to
-// build the native ConnectionProvider), and the empty string when none was
-// resolved. This is the T4.1 hand-off surface for the caller identity.
+// set on the service (the value the JS/UI reads over IPC to build the native
+// ConnectionProvider), and the empty string when none was resolved. This is the
+// T4.1 hand-off surface for the caller identity.
 func TestAccountIDBoundGetter(t *testing.T) {
 	svc, _ := newService("/unused.sock")
 	if got := svc.AccountID(context.Background()); got != "" {

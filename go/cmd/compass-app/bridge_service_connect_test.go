@@ -178,7 +178,7 @@ type connectCase struct {
 	badURL       bool // point the target at an unreachable URL
 	untrusted    bool // do not pin the server's cert
 	preStore     bool // pre-store probeToken for the empty-token path
-	nilService   bool // build the service with nil target+tokens (embedded mode)
+	nilService   bool // build the service with nil target+tokens (test wiring)
 	wantKind     string
 	wantOK       bool
 	wantAccount  string
@@ -215,7 +215,7 @@ func connectClassificationCases() []connectCase {
 		{name: "success path", serverInfo: okServerInfo, whoAmI: recordingWhoAmI("acct-123"), token: probeToken, wantOK: true, wantAccount: "acct-123"},
 		{name: "empty token with stored succeeds", serverInfo: okServerInfo, whoAmI: recordingWhoAmI("acct-stored"), token: "", preStore: true, wantOK: true, wantAccount: "acct-stored"},
 		{name: "empty token nothing stored", serverInfo: okServerInfo, whoAmI: staticWhoAmI(unauthWhoAmI), token: "", wantKind: connectKindBadToken},
-		{name: "embedded mode nil target fails closed", serverInfo: okServerInfo, whoAmI: staticWhoAmI(unauthWhoAmI), token: probeToken, nilService: true, wantKind: connectKindOther},
+		{name: "nil target fails closed", serverInfo: okServerInfo, whoAmI: staticWhoAmI(unauthWhoAmI), token: probeToken, nilService: true, wantKind: connectKindOther},
 	}
 }
 
@@ -237,7 +237,7 @@ func TestConnectClassification(t *testing.T) {
 
 			svc, store := connectService(t, serverURL, caPEM)
 			if tc.nilService {
-				// Embedded mode: the service is bound with no target/tokenstore.
+				// Test wiring: the service is bound with no target/tokenstore.
 				// Connect must fail closed rather than nil-deref.
 				svc = newBridgeService(nil, nil, nil, nil)
 			}

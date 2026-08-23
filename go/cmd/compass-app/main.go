@@ -94,7 +94,7 @@ func run() error {
 		}
 	})
 
-	startupJS, err := shellStartupJS(cfg.Mode.String(), cfg.ServerURL)
+	startupJS, err := shellStartupJS(cfg.ServerURL)
 	if err != nil {
 		return err
 	}
@@ -137,9 +137,9 @@ func windowOptions(name, title, startupJS string) application.WebviewWindowOptio
 		Width:  1280,
 		Height: 800,
 		URL:    "/",
-		// OQ-8: the shell injects the launch mode (both modes) and, in client
-		// mode, the server URL as synchronous startup globals the UI reads at
-		// entry with no IPC to pick its boot path. JS runs before the app bundle.
+		// OQ-8: the shell injects the client mode marker and the server URL as
+		// synchronous startup globals the UI reads at entry with no IPC to pick
+		// its boot path. JS runs before the app bundle.
 		JS: startupJS,
 	}
 }
@@ -204,23 +204,18 @@ func launch(cfg appconfig.Config, stateDir string) (*bridgeService, error) {
 }
 
 // shellStartupJS builds the OQ-8 startup script the webview loads before the app
-// bundle. It assigns window.__COMPASS_MODE__ in both modes and, in client mode,
-// window.__COMPASS_SERVER_URL__. Each value is JSON-encoded (encoding/json) so a
-// hostile server URL containing quotes/backslashes/</script> cannot break out of
-// the script or inject — the encoded form is always a valid JS string literal.
-func shellStartupJS(mode, serverURL string) (string, error) {
-	modeJSON, err := json.Marshal(mode)
+// bundle. It assigns window.__COMPASS_MODE__ ("client" — the app is a native
+// client only, RIG-2554) and window.__COMPASS_SERVER_URL__. The server URL is
+// JSON-encoded (encoding/json) so a hostile URL containing quotes/backslashes/
+// </script> cannot break out of the script or inject — the encoded form is
+// always a valid JS string literal.
+func shellStartupJS(serverURL string) (string, error) {
+	urlJSON, err := json.Marshal(serverURL)
 	if err != nil {
-		return "", fmt.Errorf("encoding startup mode global: %w", err)
+		return "", fmt.Errorf("encoding startup server-url global: %w", err)
 	}
-	js := "window.__COMPASS_MODE__=" + string(modeJSON) + ";"
-	if mode == appconfig.ModeClient.String() {
-		urlJSON, err := json.Marshal(serverURL)
-		if err != nil {
-			return "", fmt.Errorf("encoding startup server-url global: %w", err)
-		}
-		js += "window.__COMPASS_SERVER_URL__=" + string(urlJSON) + ";"
-	}
+	js := `window.__COMPASS_MODE__="client";` +
+		"window.__COMPASS_SERVER_URL__=" + string(urlJSON) + ";"
 	return js, nil
 }
 

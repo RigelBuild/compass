@@ -172,7 +172,7 @@ func pemEncodeCert(t *testing.T, cert *x509.Certificate) []byte {
 // only mode (embedded was retired in RIG-2554).
 func TestShellStartupJS(t *testing.T) {
 	t.Run("client injects mode and server url", func(t *testing.T) {
-		js, err := shellStartupJS(appconfig.ModeClient.String(), "https://remote.example:8443")
+		js, err := shellStartupJS("https://remote.example:8443")
 		if err != nil {
 			t.Fatalf("shellStartupJS err = %v, want nil", err)
 		}
@@ -186,7 +186,7 @@ func TestShellStartupJS(t *testing.T) {
 
 	t.Run("hostile server url is JSON-escaped, not a breakout", func(t *testing.T) {
 		hostile := `https://x/"+alert(1)+"</script><script>`
-		js, err := shellStartupJS(appconfig.ModeClient.String(), hostile)
+		js, err := shellStartupJS(hostile)
 		if err != nil {
 			t.Fatalf("shellStartupJS err = %v, want nil", err)
 		}
