@@ -1,5 +1,12 @@
-import { type Component, createMemo, createSignal, For } from "solid-js";
-import { createStore, reconcile, unwrap } from "solid-js/store";
+import {
+	type Component,
+	createMemo,
+	createSignal,
+	createStore,
+	For,
+	reconcile,
+	snapshot,
+} from "solid-js";
 import { useStore } from "../context";
 import type {
 	TrackerConfig,
@@ -77,7 +84,7 @@ export const SettingsView: Component = () => {
 	const store = useStore();
 
 	const seed = (): TrackerConfig =>
-		structuredClone(unwrap(store.trackerConfig()));
+		structuredClone(snapshot(store.trackerConfig()));
 	const [draft, setDraft] = createStore<TrackerConfig>(seed());
 	// Bump on every draft mutation so the Save-enabled derivation re-runs; the
 	// store's fine-grained reads don't otherwise notify a whole-object compare.
@@ -156,7 +163,10 @@ export const SettingsView: Component = () => {
 							value={draft.handle}
 							placeholder="you@org"
 							onInput={(e) => {
-								setDraft("handle", e.currentTarget.value);
+								const value = e.currentTarget.value;
+								setDraft((s) => {
+									s.handle = value;
+								});
 								touch();
 							}}
 						/>
@@ -167,7 +177,10 @@ export const SettingsView: Component = () => {
 							class="settings-select"
 							value={draft.kind}
 							onInput={(e) => {
-								setDraft("kind", e.currentTarget.value as TrackerKind);
+								const value = e.currentTarget.value as TrackerKind;
+								setDraft((s) => {
+									s.kind = value;
+								});
 								touch();
 							}}
 						>
@@ -200,12 +213,10 @@ export const SettingsView: Component = () => {
 									value={draft.mapping.toTracker[row.state]}
 									placeholder="tracker status"
 									onInput={(e) => {
-										setDraft(
-											"mapping",
-											"toTracker",
-											row.state,
-											e.currentTarget.value,
-										);
+										const value = e.currentTarget.value;
+										setDraft((s) => {
+											s.mapping.toTracker[row.state] = value;
+										});
 										touch();
 									}}
 								/>

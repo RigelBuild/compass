@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { flush } from "solid-js";
 import type { SpawnSpec } from "../spawn";
 import { StartAgentDialog } from "./StartAgentDialog";
 
@@ -57,6 +58,7 @@ describe("StartAgentDialog", () => {
 		const area = promptArea(container);
 		if (!area) throw new Error("no prompt");
 		fireEvent.input(area, { target: { value: "pick up SEA-1729" } });
+		flush();
 		const submit = submitBtn(container);
 		if (!submit) throw new Error("no submit");
 		fireEvent.click(submit);

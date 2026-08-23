@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { flush as flushSync } from "solid-js";
 import { STUB_CHANNELS, STUB_MESSAGES, STUB_TOPICS } from "./comms-stub";
 import { STUB_AGENTS } from "./stub-data";
 import { flush, mountApp } from "./test-router";
@@ -187,10 +188,12 @@ describe("App shell (T7)", () => {
 
 		// Toggling off hides it (a synchronous pane action, not routed).
 		store.toggleLeft();
+		flushSync();
 		expect(leftPresent()).toBe(false);
 
 		// Toggling back on restores it on the channel surface.
 		store.toggleLeft();
+		flushSync();
 		expect(leftPresent()).toBe(true);
 	});
 });

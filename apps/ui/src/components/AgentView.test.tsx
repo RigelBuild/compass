@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { flush } from "solid-js";
 import { STUB_COMMS_STATE } from "../comms-stub";
 import { StoreContext } from "../context";
 import {
@@ -65,9 +66,9 @@ function mountAgentView(): {
 			queryClient: testQueryClient(),
 		});
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<AgentView />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	return { store, container };
@@ -89,6 +90,7 @@ describe("AgentView (T3)", () => {
 	test("chat tab is permanent: one 'Chat' tab, no close button, closeTab is a no-op", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent(AGENT_ID);
+		flush();
 
 		const tabs = container.querySelectorAll(".av-tab");
 		expect(tabs.length).toBe(1);
@@ -97,6 +99,7 @@ describe("AgentView (T3)", () => {
 		expect(tabs[0]?.querySelector(".av-tab-close")).toBeNull();
 
 		store.closeTab(CHAT_TAB_ID);
+		flush();
 
 		// Still exactly one tab — the chat tab can't be closed.
 		expect(container.querySelectorAll(".av-tab").length).toBe(1);
@@ -110,6 +113,7 @@ describe("AgentView (T3)", () => {
 	test("chat pane renders the home-DM topic index in the tab tree", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent(AGENT_ID);
+		flush();
 
 		const tree = container.querySelector(".av-tree");
 		expect(tree).not.toBeNull();
@@ -127,6 +131,7 @@ describe("AgentView (T3)", () => {
 	test("home-DM topic row drills into the topic on click", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent(AGENT_ID);
+		flush();
 
 		const tree = container.querySelector(".av-tree");
 		expect(tree).not.toBeNull();
@@ -138,6 +143,7 @@ describe("AgentView (T3)", () => {
 		if (!row) throw new Error("home-DM topic row not rendered");
 
 		fireEvent.click(row);
+		flush();
 
 		// The click drilled into the topic: the store now selects it and the view
 		// flipped to the topic message surface.
@@ -150,7 +156,9 @@ describe("AgentView (T3)", () => {
 	test("terminal opens as a second, active tab rendering its scrollback", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent(AGENT_ID);
+		flush();
 		store.openTab(termPaneC1);
+		flush();
 
 		// Chat tab + the new terminal tab.
 		expect(container.querySelectorAll(".av-tab").length).toBe(2);
@@ -168,8 +176,11 @@ describe("AgentView (T3)", () => {
 	test("terminal opens as a split: two panes under one row split", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent(AGENT_ID);
+		flush();
 		store.openTab(termPaneC1);
+		flush();
 		store.splitActivePane(termPaneC2, "row");
+		flush();
 
 		const split = container.querySelector(".av-tree .av-split.row");
 		expect(split).not.toBeNull();
@@ -219,6 +230,7 @@ describe("AgentView always-open '+'/split (regression)", () => {
 	test("zero-fixture agent: '+' is enabled and clicking it opens a placeholder tab", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent("acc-supervisor");
+		flush();
 
 		// Only the permanent chat tab to start (no fixture terminals to auto-open).
 		expect(container.querySelectorAll(".av-tab").length).toBe(1);
@@ -230,6 +242,7 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		expect(newBtn.disabled).toBe(false);
 
 		fireEvent.click(newBtn);
+		flush();
 
 		// A second tab appeared — the minted placeholder terminal tab.
 		const tabs = container.querySelectorAll(".av-tab");
@@ -253,10 +266,13 @@ describe("AgentView always-open '+'/split (regression)", () => {
 	test("fixture exhaustion (compass-ui): '+' stays enabled and mints unique placeholder tabs", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent("acc-compass-ui");
+		flush();
 
 		// Exhaust both fixture terminals through the real store action.
 		store.openTab(termPaneC1);
+		flush();
 		store.openTab(termPaneC2);
+		flush();
 		expect(container.querySelectorAll(".av-tab").length).toBe(3);
 		// No unplaced fixture terminal remains — the fallback path is now live.
 		const selected = store.selectedAgent();
@@ -272,9 +288,11 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		expect(newBtn().disabled).toBe(false);
 
 		fireEvent.click(newBtn());
+		flush();
 		expect(container.querySelectorAll(".av-tab").length).toBe(4);
 		expect(newBtn().disabled).toBe(false);
 		fireEvent.click(newBtn());
+		flush();
 		expect(container.querySelectorAll(".av-tab").length).toBe(5);
 
 		// The two minted tabs carry distinct ids (the store's monotonic counter),
@@ -294,12 +312,14 @@ describe("AgentView always-open '+'/split (regression)", () => {
 	test("split stays open after fixtures: clicking a split button grows the tree with a placeholder pane", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent("acc-supervisor");
+		flush();
 
 		// Open the supervisor's first (minted) terminal tab so its pane shows split
 		// buttons — supervisor has zero fixtures, so this pane is itself a placeholder.
 		const newTab = container.querySelector<HTMLButtonElement>(".av-tab-new");
 		if (!newTab) throw new Error("'+' new-tab button not rendered");
 		fireEvent.click(newTab);
+		flush();
 		expect(container.querySelectorAll(".av-tree .av-pane").length).toBe(1);
 
 		const splitRight = container.querySelector<HTMLButtonElement>(
@@ -311,6 +331,7 @@ describe("AgentView always-open '+'/split (regression)", () => {
 		expect(splitRight.disabled).toBe(false);
 
 		fireEvent.click(splitRight);
+		flush();
 
 		// The tab's tree is now a row split with two panes — the split did work.
 		const rowSplit = container.querySelector(".av-tree .av-split.row");
@@ -331,9 +352,11 @@ describe("AgentView always-open '+'/split (regression)", () => {
 	test("minted placeholder renders the 'Terminal starting…' empty state, never an error", () => {
 		const { store, container } = mountAgentView();
 		store.openAgent("acc-supervisor");
+		flush();
 		const newTab = container.querySelector<HTMLButtonElement>(".av-tab-new");
 		if (!newTab) throw new Error("'+' new-tab button not rendered");
 		fireEvent.click(newTab);
+		flush();
 
 		const empty = container.querySelector(".av-tree .av-leaf-empty");
 		expect(empty).not.toBeNull();

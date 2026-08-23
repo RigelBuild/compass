@@ -72,9 +72,9 @@ async function mountAsk(fake: FakeComms): Promise<{
 			queryClient: testQueryClient(),
 		});
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<TopicView />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	const settled = async () => {

@@ -4,7 +4,7 @@
 // so a valid submit). Pure callback component — no store. Dialog open/closed is
 // the parent's concern.
 
-import { type Component, createSignal, onMount } from "solid-js";
+import { type Component, createSignal, onSettled } from "solid-js";
 import type { SpawnSpec } from "../spawn";
 
 export const StartAgentDialog: Component<{
@@ -17,7 +17,7 @@ export const StartAgentDialog: Component<{
 	// The dialog owns its initial focus so its own Escape handler is reachable
 	// before the user tabs into the field (role=dialog/aria-modal expectation).
 	let dialogRef: HTMLDivElement | undefined;
-	onMount(() => dialogRef?.focus());
+	onSettled(() => dialogRef?.focus());
 
 	const submit = () => {
 		props.onSubmit({ ...props.spec, initialPrompt: prompt() });

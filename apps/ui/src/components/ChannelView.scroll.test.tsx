@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { render } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { createSignal, flush } from "solid-js";
 import type { Account, Message } from "../comms-stub";
 import { StoreContext } from "../context";
 import { createAppStore } from "../store";
@@ -164,9 +164,8 @@ function mountStream(initial: Message[]): {
 } {
 	const [messages, setMessages] = createSignal<Message[]>(initial);
 	const [scopeId, setScopeId] = createSignal("top-x");
-	const store = createAppStore({ queryClient: testQueryClient() });
 	const { container } = render(() => (
-		<StoreContext.Provider value={store}>
+		<StoreContext value={createAppStore({ queryClient: testQueryClient() })}>
 			<MessageStream
 				messages={messages()}
 				scopeId={scopeId()}
@@ -174,7 +173,7 @@ function mountStream(initial: Message[]): {
 				byHandle={byHandle}
 				emptyMessage="No messages yet."
 			/>
-		</StoreContext.Provider>
+		</StoreContext>
 	));
 	const scroller = () => container.querySelector(".conv-stream") as HTMLElement;
 	const rows = () => [
@@ -234,6 +233,7 @@ describe("MessageStream scroll contract", () => {
 	test("(2) append while at bottom follows to the new latest", () => {
 		const { setMessages, indices } = mountStream(makeMessages(200));
 		setMessages(makeMessages(201));
+		flush();
 		expect(Math.max(...indices())).toBe(200);
 	});
 
@@ -303,9 +303,8 @@ describe("MessageStream scroll contract", () => {
 			makeMessages(200, 1_000),
 		);
 		const [scopeId, setScopeId] = createSignal("top-a");
-		const store = createAppStore({ queryClient: testQueryClient() });
 		const { container } = render(() => (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={createAppStore({ queryClient: testQueryClient() })}>
 				<MessageStream
 					messages={messages()}
 					scopeId={scopeId()}
@@ -313,7 +312,7 @@ describe("MessageStream scroll contract", () => {
 					byHandle={byHandle}
 					emptyMessage="No messages yet."
 				/>
-			</StoreContext.Provider>
+			</StoreContext>
 		));
 		// Switch scope: new messages + new scopeId (the .conv-stream stays mounted).
 		setMessages(
@@ -351,6 +350,7 @@ describe("MessageStream scroll contract", () => {
 		scrollToTop(scroller());
 		expect(() => {
 			setMessages([]);
+			flush();
 		}).not.toThrow();
 		expect(container.querySelector(".conv-empty")).not.toBeNull();
 		expect(rows().length).toBe(0);
@@ -376,6 +376,7 @@ describe("MessageStream scroll contract", () => {
 		expect(() => {
 			setMessages(shortScope);
 			setScopeId("top-b");
+			flush();
 		}).not.toThrow();
 		const idx = indices();
 		expect(idx.length).toBeGreaterThan(0);

@@ -1,11 +1,4 @@
-import {
-	type Component,
-	createMemo,
-	createSignal,
-	For,
-	Index,
-	Show,
-} from "solid-js";
+import { type Component, createMemo, createSignal, For, Show } from "solid-js";
 import {
 	blockText,
 	canPost,
@@ -90,10 +83,12 @@ const AskBlock: Component<{
 
 	return (
 		<div
-			class="block-ask"
-			classList={{ answered: ask().questions.every((q) => locked(q)) }}
+			class={[
+				"block-ask",
+				{ answered: ask().questions.every((q) => locked(q)) },
+			]}
 		>
-			<Index each={ask().questions}>
+			<For each={ask().questions} keyed={false}>
 				{(q) => (
 					<>
 						<div class="ask-question">{q().question}</div>
@@ -106,8 +101,7 @@ const AskBlock: Component<{
 								{(option) => (
 									<button
 										type="button"
-										class="ask-option"
-										classList={{ chosen: chosen(q(), option.id) }}
+										class={["ask-option", { chosen: chosen(q(), option.id) }]}
 										disabled={locked(q())}
 										onClick={() => {
 											store.answerAsk(
@@ -117,7 +111,7 @@ const AskBlock: Component<{
 												option.id,
 											);
 										}}
-										aria-pressed={chosen(q(), option.id)}
+										aria-pressed={chosen(q(), option.id) ? "true" : "false"}
 									>
 										{option.label}
 										<Show when={option.description}>
@@ -129,7 +123,7 @@ const AskBlock: Component<{
 						</div>
 					</>
 				)}
-			</Index>
+			</For>
 			<Show when={canSubmit()}>
 				<div class="ask-submit-row">
 					<button
@@ -185,14 +179,14 @@ export const MessageRow: Component<{
 	const author = () => props.byId.get(props.msg.authorAccountId);
 	const roleClass = () => author()?.kind ?? "user";
 	return (
-		<div class="msg" classList={{ [roleClass()]: true }}>
+		<div class={["msg", { [roleClass()]: true }]}>
 			<div class="msg-head">
 				<span class="msg-role">
 					{handleOf(props.byId, props.msg.authorAccountId)}
 				</span>
 				<span class="msg-at">{hhmm(props.msg.atUnixMs)}</span>
 			</div>
-			<Index each={props.msg.blocks}>
+			<For each={props.msg.blocks} keyed={false}>
 				{(block) => (
 					<Block
 						messageId={props.msg.id}
@@ -200,7 +194,7 @@ export const MessageRow: Component<{
 						byHandle={props.byHandle}
 					/>
 				)}
-			</Index>
+			</For>
 		</div>
 	);
 };

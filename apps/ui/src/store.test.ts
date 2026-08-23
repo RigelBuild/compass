@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createRoot } from "solid-js";
+import { createRoot, flush } from "solid-js";
 import type { Ask, AskQuestion } from "./comms-stub";
 import { STUB_CHANNELS, STUB_COMMS_STATE, STUB_MESSAGES } from "./comms-stub";
 import {
@@ -169,6 +169,7 @@ describe("view routing", () => {
 			withStore((s) => {
 				r.from(s);
 				r.act(s);
+				flush();
 				expect(s.view()).toBe(r.view);
 			});
 		});
@@ -182,6 +183,7 @@ describe("openAgent", () => {
 	test("opens the agent view and syncs selection to the primary issue + repo", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 
 			expect(s.view()).toBe("agent");
 			expect(s.selectedAgentId()).toBe("acc-compass-ui");
@@ -210,10 +212,13 @@ describe("openAgent", () => {
 
 			// Prior workspace with an extra tab open — the switch must clear it.
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
 
 			s.openAgent("acc-compass-server");
+			flush();
 
 			// Tabs reset to the lone chat tab, focused on it.
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID]);
@@ -229,11 +234,14 @@ describe("openAgent", () => {
 	test("re-opening the same agent preserves an opened terminal tab (init-guard)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
 
 			// Re-open the same agent (clicking its tree row again).
 			s.openAgent("acc-compass-ui");
+			flush();
 
 			// The init-guard returned before the reset — the terminal tab survives.
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
@@ -247,11 +255,14 @@ describe("openAgent", () => {
 		withStore((s) => {
 			// Build up per-agent state on compass-ui so the switch has something to reset.
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.setActiveBranch("compass-ui-965-transport");
+			flush();
 			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-965-transport");
 
 			// acc-supervisor is assigned zero issues.
 			s.openAgent("acc-supervisor");
+			flush();
 
 			expect(s.view()).toBe("agent");
 			expect(s.selectedAgentId()).toBe("acc-supervisor");
@@ -268,12 +279,15 @@ describe("openAgent", () => {
 	test("re-opening the already-selected agent preserves the user's branch context", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.setActiveBranch("compass-ui-965-transport");
 			s.showBridge();
+			flush();
 			expect(s.view()).toBe("bridge");
 
 			// Re-open the same agent.
 			s.openAgent("acc-compass-ui");
+			flush();
 
 			// The view is re-asserted, but the branch context is untouched.
 			expect(s.view()).toBe("agent");
@@ -292,9 +306,11 @@ describe("openAgent", () => {
 
 			// Board move to compass-server's issue: selects the agent, no init.
 			s.selectIssue("ws-1023");
+			flush();
 			expect(s.selectedAgentId()).toBe("acc-compass-server");
 
 			s.openAgent("acc-compass-server");
+			flush();
 
 			// The reset keys on agentViewAgentId — the move didn't suppress it.
 			expect(s.selectedIssueId()).toBe("ws-1023");
@@ -309,9 +325,11 @@ describe("openAgent", () => {
 		withStore((s) => {
 			// Card double-click: select the card's ws first, then open its agent.
 			s.selectIssue("ws-965"); // compass-ui's non-primary issue
+			flush();
 			expect(s.selectedAgentId()).toBe("acc-compass-ui");
 
 			s.openAgent("acc-compass-ui");
+			flush();
 
 			// The non-primary pick survives — not snapped to ws-1022.
 			expect(s.selectedIssueId()).toBe("ws-965");
@@ -326,12 +344,15 @@ describe("openAgent", () => {
 	test("re-opening the agent-view agent after a cross-agent roster move re-anchors the issue", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui"); // agentViewAgentId = compass-ui
+			flush();
 			expect(s.selectedIssueId()).toBe("ws-1022");
 
 			s.selectIssue("ws-1023"); // compass-server's ws; view still compass-ui
+			flush();
 			expect(s.selectedAgentId()).toBe("acc-compass-server");
 
 			s.openAgent("acc-compass-ui"); // early-return path (compass-ui is still agentViewAgentId)
+			flush();
 
 			// Re-anchored to a compass-ui-owned ws — compass-server's ws-1023 did NOT leak.
 			expect(s.selectedAgentId()).toBe("acc-compass-ui");
@@ -357,12 +378,14 @@ describe("openAgent", () => {
 			// Move the standalone channel surface to a channel distinct from compass-ui's
 			// home DM.
 			s.openChannel("ch-svc-compass");
+			flush();
 			expect(s.view()).toBe("channel");
 			expect(s.selectedChannelId()).toBe("ch-svc-compass");
 
 			// Re-open the same agent → early-return path (compass-ui is still
 			// agentViewAgentId).
 			s.openAgent("acc-compass-ui");
+			flush();
 
 			// The workspace pane derives compass-ui's home DM, and the view is restored.
 			expect(s.view()).toBe("agent");
@@ -388,6 +411,7 @@ describe("openAgent", () => {
 
 			// Move the standalone surface to a channel distinct from compass-ui's home DM.
 			s.openChannel("ch-svc-compass");
+			flush();
 
 			// The standalone surface moved…
 			expect(s.selectedChannel()?.id).toBe("ch-svc-compass");
@@ -404,6 +428,7 @@ describe("agentRepos memo (T6)", () => {
 	test("derives the selected agent's clone with branches in fixture order", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			const repos = s.agentRepos();
 			expect(repos).toHaveLength(1);
 			const repo = repos[0];
@@ -434,9 +459,11 @@ describe("selectIssue", () => {
 	test("selects an issue and syncs the roster without leaving the board", () => {
 		withStore((s) => {
 			s.showBridge();
+			flush();
 			expect(s.view()).toBe("bridge");
 
 			s.selectIssue("ws-1023");
+			flush();
 
 			expect(s.selectedIssueId()).toBe("ws-1023");
 			// ws-1023 is assigned to compass-server; the roster follows.
@@ -455,10 +482,12 @@ describe("selectIssue", () => {
 		withStore((s) => {
 			// Seed a real agent selection to prove it gets cleared.
 			s.selectIssue("ws-1023");
+			flush();
 			expect(s.selectedAgentId()).toBe("acc-compass-server");
 
 			// ws-1146 is in the backlog with assignee null.
 			s.selectIssue("ws-1146");
+			flush();
 
 			expect(s.selectedIssueId()).toBe("ws-1146");
 			expect(s.selectedAgentId()).toBeNull();
@@ -495,6 +524,7 @@ describe("pane toggles", () => {
 			withStore((s) => {
 				const before = c.read(s);
 				c.toggle(s);
+				flush();
 				expect(c.read(s)).toBe(!before);
 				// The other pane is untouched.
 				for (const other of c.others) {
@@ -502,6 +532,7 @@ describe("pane toggles", () => {
 				}
 
 				c.toggle(s);
+				flush();
 				expect(c.read(s)).toBe(before);
 				for (const other of c.others) {
 					expect(other(s)).toBe(true);
@@ -518,9 +549,11 @@ describe("right sidebar tab (dock-in-sidebar T1; Record A §T2)", () => {
 	test("setActiveRightTab round-trips a fleet pin and an issue value", () => {
 		withStore((s) => {
 			s.setActiveRightTab("agent:acc-compass-ui");
+			flush();
 			expect(s.activeRightTab()).toBe("agent:acc-compass-ui");
 
 			s.setActiveRightTab("vcs");
+			flush();
 			expect(s.activeRightTab()).toBe("vcs");
 		});
 	});
@@ -567,9 +600,11 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		withPinStore("ws-a", (s) => {
 			expect(s.isPinned(SUP)).toBe(false);
 			s.pinAgent(SUP);
+			flush();
 			expect(s.isPinned(SUP)).toBe(true);
 			expect(s.pinnedAgentIds()).toEqual([SUP]);
 			s.unpinAgent(SUP);
+			flush();
 			expect(s.isPinned(SUP)).toBe(false);
 			expect(s.pinnedAgentIds()).toEqual([]);
 		});
@@ -584,9 +619,11 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 			s.pinAgent(COMPASS_SERVER);
 			s.pinAgent(SUP);
 			s.pinAgent(COMPASS_UI);
+			flush();
 			expect(s.pinnedAgentIds()).toEqual([COMPASS_SERVER, SUP, COMPASS_UI]);
 			// Re-pinning an existing id neither duplicates nor reorders.
 			s.pinAgent(COMPASS_SERVER);
+			flush();
 			expect(s.pinnedAgentIds()).toEqual([COMPASS_SERVER, SUP, COMPASS_UI]);
 		});
 		clearStorage();
@@ -647,8 +684,10 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		withPinStore("ws-a", (s) => {
 			s.pinAgent(SUP);
 			s.setActiveRightTab("agent:acc-supervisor");
+			flush();
 			expect(s.activeRightTab()).toBe("agent:acc-supervisor");
 			s.unpinAgent(SUP);
+			flush();
 			expect(s.activeRightTab()).toBe("status");
 		});
 		clearStorage();
@@ -662,6 +701,7 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		clearStorage();
 		withPinStore("ws-a", (s) => {
 			s.setActiveRightTab("agent:acc-ghost");
+			flush();
 			// No coercion — the tab is kept as set.
 			expect(s.activeRightTab()).toBe("agent:acc-ghost");
 		});
@@ -746,8 +786,10 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		);
 		withPinStore("ws-ghost2", (s) => {
 			s.setActiveRightTab("agent:acc-ghost");
+			flush();
 			expect(s.activeRightTab()).toBe("agent:acc-ghost");
 			s.unpinAgent(GHOST);
+			flush();
 			const fleet = s.rightTabGroups().find((g) => g.group === "fleet");
 			const ids = (fleet?.items ?? []).map((i) => i.id);
 			expect(ids).toEqual(["status"]);
@@ -766,6 +808,7 @@ describe("agent pins (Record A §T2/T3/T5)", () => {
 		if (supHandle === undefined) throw new Error("SUP has no fixture handle");
 		withPinStore("ws-rt", (s) => {
 			s.pinAgent(SUP);
+			flush();
 			expect(s.pinnedAgents()).toEqual([{ id: SUP, handle: supHandle }]);
 		});
 		// A fresh store re-hydrates the same pair from the persisted key.
@@ -805,16 +848,19 @@ describe("agent collapse", () => {
 			expect(s.isAgentCollapsed("acc-compass-server")).toBe(false);
 
 			s.toggleAgent("acc-compass-ui");
+			flush();
 			expect(s.isAgentCollapsed("acc-compass-ui")).toBe(true);
 			// Collapsing compass-ui leaves compass-server expanded.
 			expect(s.isAgentCollapsed("acc-compass-server")).toBe(false);
 
 			s.toggleAgent("acc-compass-server");
+			flush();
 			// Both now collapsed simultaneously — the Set holds both.
 			expect(s.isAgentCollapsed("acc-compass-ui")).toBe(true);
 			expect(s.isAgentCollapsed("acc-compass-server")).toBe(true);
 
 			s.toggleAgent("acc-compass-ui");
+			flush();
 			// Re-toggling compass-ui expands only compass-ui; compass-server remains collapsed.
 			expect(s.isAgentCollapsed("acc-compass-ui")).toBe(false);
 			expect(s.isAgentCollapsed("acc-compass-server")).toBe(true);
@@ -830,9 +876,11 @@ describe("repo + branch selection (T6)", () => {
 	test("setActiveBranch selects the issue that owns the branch, moving the panes with the dropdown", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-1022-bridge-ui");
 
 			s.setActiveBranch("compass-ui-965-transport");
+			flush();
 
 			// The dropdown label follows the newly-selected issue's branch.
 			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-965-transport");
@@ -855,7 +903,9 @@ describe("repo + branch selection (T6)", () => {
 	test("the dropdown and the detail panes resolve to one issue (no drift)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui"); // primary = ws-1022
+			flush();
 			s.setActiveBranch("compass-ui-965-transport");
+			flush();
 
 			const dropdownBranch = s.activeRepo()?.currentBranch;
 			const paneBranch = s.selectedIssue()?.branch;
@@ -873,9 +923,12 @@ describe("repo + branch selection (T6)", () => {
 	test("setActiveBranch is a no-op for a branch no issue of the agent owns", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.setActiveBranch("compass-ui-965-transport");
+			flush();
 
 			s.setActiveBranch("not-a-branch");
+			flush();
 
 			// Unchanged: the guard found no owning issue, so both the label
 			// and the selection stay on ws-965 / compass-ui-965.
@@ -893,7 +946,9 @@ describe("repo + branch selection (T6)", () => {
 	test("setActiveBranch is a no-op for a branch owned by a different agent", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui"); // selects ws-1022
+			flush();
 			s.setActiveBranch("compass-server-1023-acp-session");
+			flush();
 
 			// compass-server's branch belongs to agent-compass-server, not compass-ui → ignored.
 			expect(s.selectedIssueId()).toBe("ws-1022");
@@ -905,9 +960,11 @@ describe("repo + branch selection (T6)", () => {
 	test("setActiveRepo is a no-op for an id not among the agent's clones", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			expect(s.activeRepoId()).toBe("acc-compass-ui-repo");
 
 			s.setActiveRepo("bogus-repo");
+			flush();
 
 			// The pick is untouched, so activeRepo still resolves to the real clone.
 			expect(s.activeRepoId()).toBe("acc-compass-ui-repo");
@@ -923,16 +980,19 @@ describe("repo + branch selection (T6)", () => {
 	test("openAgent resets the selection to the agent's primary issue", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			// Primary issue first: ws-1022 / compass-ui-1022-bridge-ui.
 			expect(s.selectedIssueId()).toBe("ws-1022");
 			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-1022-bridge-ui");
 
 			// Navigate to compass-ui's other issue via the dropdown.
 			s.setActiveBranch("compass-ui-965-transport");
+			flush();
 			expect(s.selectedIssueId()).toBe("ws-965");
 
 			// Switch to compass-server: its only issue (ws-1023) is selected.
 			s.openAgent("acc-compass-server");
+			flush();
 			expect(s.selectedIssueId()).toBe("ws-1023");
 			expect(s.activeRepo()?.currentBranch).toBe(
 				"compass-server-1023-acp-session",
@@ -941,6 +1001,7 @@ describe("repo + branch selection (T6)", () => {
 			// Back to compass-ui: openAgent re-selects the primary issue — NOT the
 			// previously-navigated compass-ui-965.
 			s.openAgent("acc-compass-ui");
+			flush();
 			expect(s.selectedIssueId()).toBe("ws-1022");
 			expect(s.activeRepo()?.currentBranch).toBe("compass-ui-1022-bridge-ui");
 		});
@@ -964,6 +1025,7 @@ describe("store isolation", () => {
 				a.openAgent("acc-compass-ui");
 				a.toggleLeft();
 				a.toggleAgent("acc-compass-ui");
+				flush();
 
 				// Store A moved into an agent view.
 				expect(a.view()).toBe("agent");
@@ -989,6 +1051,7 @@ describe("agent tab group (T7)", () => {
 	test("agentTabs leads with the permanent chat tab holding the chat pane", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			const tabs = s.agentTabs();
 			expect(tabs).toHaveLength(1);
 			expect(tabs[0]?.id).toBe(CHAT_TAB_ID);
@@ -1005,6 +1068,7 @@ describe("agent tab group (T7)", () => {
 	test("openTab appends a full-screen tab, focuses it, and shows its pane as a single leaf", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			const pane: Pane = {
 				id: "term-1",
 				kind: "terminal",
@@ -1013,6 +1077,7 @@ describe("agent tab group (T7)", () => {
 			};
 
 			s.openTab(pane);
+			flush();
 
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
 			expect(s.activeAgentTabId()).toBe("term-1");
@@ -1027,12 +1092,16 @@ describe("agent tab group (T7)", () => {
 	test("re-opening an existing tab id refocuses without duplicating", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
+			flush();
 			expect(s.activeAgentTabId()).toBe("term-2");
 
 			// Re-open term-1 (already present): no new tab, focus moves back to it.
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 
 			expect(s.agentTabs().map((t) => t.id)).toEqual([
 				CHAT_TAB_ID,
@@ -1047,10 +1116,13 @@ describe("agent tab group (T7)", () => {
 	test("setActiveAgentTab is a no-op for an absent tab id", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 			expect(s.activeAgentTabId()).toBe("term-1");
 
 			s.setActiveAgentTab("does-not-exist");
+			flush();
 
 			// Focus unchanged: the guard rejected the unknown id.
 			expect(s.activeAgentTabId()).toBe("term-1");
@@ -1065,9 +1137,11 @@ describe("splitActivePane (T7)", () => {
 	test("splits the active tab's focused pane and focuses the new pane (row = split right)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			const pane: Pane = { id: "term-1", kind: "terminal", title: "dev" };
 
 			s.splitActivePane(pane, "row");
+			flush();
 
 			const tab = s.activeAgentTab();
 			expect(tab?.layout).toEqual({
@@ -1089,11 +1163,13 @@ describe("splitActivePane (T7)", () => {
 	test("column direction stacks the new pane below (split down)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 
 			s.splitActivePane(
 				{ id: "term-1", kind: "terminal", title: "dev" },
 				"column",
 			);
+			flush();
 
 			expect(s.activeAgentTab()?.layout).toEqual({
 				kind: "split",
@@ -1116,15 +1192,20 @@ describe("splitActivePane (T7)", () => {
 	test("only mutates the active tab, leaving other tabs untouched", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
+			flush();
 			// Make term-1 the active tab, then split it.
 			s.setActiveAgentTab("term-1");
+			flush();
 
 			s.splitActivePane(
 				{ id: "term-3", kind: "terminal", title: "logs" },
 				"row",
 			);
+			flush();
 
 			const tabs = s.agentTabs();
 			const term1 = tabs.find((t) => t.id === "term-1");
@@ -1145,17 +1226,21 @@ describe("splitActivePane (T7)", () => {
 	test("setFocusedPane redirects where the next split anchors; an absent id is a no-op", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			// Split once: panes [chat, term-1], term-1 focused.
 			s.splitActivePane(
 				{ id: "term-1", kind: "terminal", title: "dev" },
 				"row",
 			);
+			flush();
 			expect(s.activeAgentTab()?.focusedPaneId).toBe("term-1");
 
 			// Focus back to the chat pane; an absent id changes nothing.
 			s.setFocusedPane(CHAT_TAB_ID);
+			flush();
 			expect(s.activeAgentTab()?.focusedPaneId).toBe(CHAT_TAB_ID);
 			s.setFocusedPane("not-a-pane");
+			flush();
 			expect(s.activeAgentTab()?.focusedPaneId).toBe(CHAT_TAB_ID);
 
 			// The next split anchors on the chat pane, inserting term-2 beside
@@ -1164,6 +1249,7 @@ describe("splitActivePane (T7)", () => {
 				{ id: "term-2", kind: "terminal", title: "tests" },
 				"column",
 			);
+			flush();
 			expect(paneIds(s.activeAgentTab())).toEqual([
 				CHAT_TAB_ID,
 				"term-2",
@@ -1180,11 +1266,15 @@ describe("closing tabs + panes (T7)", () => {
 	test("closeTab drops the tab and falls focus back to the chat", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
+			flush();
 			expect(s.activeAgentTabId()).toBe("term-2");
 
 			s.closeTab("term-2");
+			flush();
 
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
 			expect(s.activeAgentTabId()).toBe(CHAT_TAB_ID);
@@ -1196,11 +1286,16 @@ describe("closing tabs + panes (T7)", () => {
 	test("closing a non-active tab leaves the active tab focused", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 			s.openTab({ id: "term-2", kind: "terminal", title: "tests" });
+			flush();
 			s.setActiveAgentTab("term-2");
+			flush();
 
 			s.closeTab("term-1");
+			flush();
 
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-2"]);
 			expect(s.activeAgentTabId()).toBe("term-2");
@@ -1211,10 +1306,13 @@ describe("closing tabs + panes (T7)", () => {
 	test("closeTab on the chat tab is a no-op", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 			expect(s.activeAgentTabId()).toBe("term-1");
 
 			s.closeTab(CHAT_TAB_ID);
+			flush();
 
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
 			expect(s.activeAgentTabId()).toBe("term-1");
@@ -1226,14 +1324,18 @@ describe("closing tabs + panes (T7)", () => {
 	test("closePane collapses the split around the surviving sibling", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 			s.splitActivePane(
 				{ id: "term-2", kind: "terminal", title: "tests" },
 				"row",
 			);
+			flush();
 			expect(paneIds(s.activeAgentTab())).toEqual(["term-1", "term-2"]);
 
 			s.closePane("term-1");
+			flush();
 
 			// The tab survives; its tree collapsed to the lone surviving pane.
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID, "term-1"]);
@@ -1249,10 +1351,13 @@ describe("closing tabs + panes (T7)", () => {
 	test("closing the last pane of a non-chat tab closes the tab", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 			expect(s.activeAgentTabId()).toBe("term-1");
 
 			s.closePane("term-1");
+			flush();
 
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID]);
 			expect(s.activeAgentTabId()).toBe(CHAT_TAB_ID);
@@ -1264,14 +1369,18 @@ describe("closing tabs + panes (T7)", () => {
 	test("closing the focused pane falls focus back to a surviving pane", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.openTab({ id: "term-1", kind: "terminal", title: "dev" });
+			flush();
 			s.splitActivePane(
 				{ id: "term-2", kind: "terminal", title: "tests" },
 				"row",
 			);
+			flush();
 			expect(s.activeAgentTab()?.focusedPaneId).toBe("term-2");
 
 			s.closePane("term-2");
+			flush();
 
 			expect(paneIds(s.activeAgentTab())).toEqual(["term-1"]);
 			expect(s.activeAgentTab()?.focusedPaneId).toBe("term-1");
@@ -1285,8 +1394,10 @@ describe("closing tabs + panes (T7)", () => {
 	test("closePane on the sole chat pane is a no-op (chat pane permanent)", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 
 			s.closePane(CHAT_TAB_ID);
+			flush();
 
 			expect(s.agentTabs().map((t) => t.id)).toEqual([CHAT_TAB_ID]);
 			expect(s.activeAgentTabId()).toBe(CHAT_TAB_ID);
@@ -1304,15 +1415,18 @@ describe("closing tabs + panes (T7)", () => {
 	test("closePane on the chat pane in a split chat tab is a no-op", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			// Split the chat tab: chat pane + term-1 beside it.
 			s.splitActivePane(
 				{ id: "term-1", kind: "terminal", title: "dev" },
 				"row",
 			);
+			flush();
 			// Sanity: the chat tab now holds both panes.
 			expect(paneIds(s.activeAgentTab())).toEqual([CHAT_TAB_ID, "term-1"]);
 
 			s.closePane(CHAT_TAB_ID); // permanent — no-op
+			flush();
 
 			// Both panes survive; the split is intact.
 			expect(paneIds(s.activeAgentTab())).toEqual([CHAT_TAB_ID, "term-1"]);
@@ -1326,13 +1440,16 @@ describe("closing tabs + panes (T7)", () => {
 	test("closePane on the non-chat pane of a split chat tab prunes it", () => {
 		withStore((s) => {
 			s.openAgent("acc-compass-ui");
+			flush();
 			s.splitActivePane(
 				{ id: "term-1", kind: "terminal", title: "dev" },
 				"row",
 			);
+			flush();
 			expect(paneIds(s.activeAgentTab())).toEqual([CHAT_TAB_ID, "term-1"]);
 
 			s.closePane("term-1");
+			flush();
 
 			// The split collapses back to the lone chat pane.
 			expect(s.activeAgentTab()?.layout).toEqual({
@@ -1462,9 +1579,11 @@ describe("log panel (D2)", () => {
 			expect(s.logOpen()).toBe(true);
 
 			s.toggleLog();
+			flush();
 			expect(s.logOpen()).toBe(false);
 
 			s.toggleLog();
+			flush();
 			expect(s.logOpen()).toBe(true);
 		});
 	});
@@ -1475,9 +1594,11 @@ describe("log panel (D2)", () => {
 	test("openAgent resets logOpen to true", () => {
 		withStore((s) => {
 			s.toggleLog();
+			flush();
 			expect(s.logOpen()).toBe(false);
 
 			s.openAgent("acc-compass-ui");
+			flush();
 
 			expect(s.logOpen()).toBe(true);
 		});
@@ -1495,16 +1616,19 @@ describe("sidebar section collapse", () => {
 			expect(s.isSectionCollapsed("agents")).toBe(false);
 
 			s.toggleSection("channels");
+			flush();
 			expect(s.isSectionCollapsed("channels")).toBe(true);
 			// Collapsing channels leaves agents expanded.
 			expect(s.isSectionCollapsed("agents")).toBe(false);
 
 			s.toggleSection("agents");
+			flush();
 			// Both collapsed simultaneously.
 			expect(s.isSectionCollapsed("channels")).toBe(true);
 			expect(s.isSectionCollapsed("agents")).toBe(true);
 
 			s.toggleSection("channels");
+			flush();
 			// Re-toggling channels expands only channels; agents stay collapsed.
 			expect(s.isSectionCollapsed("channels")).toBe(false);
 			expect(s.isSectionCollapsed("agents")).toBe(true);
@@ -1554,6 +1678,7 @@ describe("joinChannel", () => {
 			if (!target) return;
 
 			s.joinChannel(target.id);
+			flush();
 
 			expect(s.channels().find((c) => c.id === target.id)?.membership).toBe(
 				"none",
@@ -1568,6 +1693,7 @@ describe("joinChannel", () => {
 			const before = s.channels();
 			for (const channel of before) s.joinChannel(channel.id);
 			s.joinChannel("ch-nope");
+			flush();
 
 			expect(s.channels()).toBe(before);
 		});
@@ -1587,6 +1713,7 @@ describe("toggleSubscribe", () => {
 			if (!target) return;
 
 			s.toggleSubscribe(target.id);
+			flush();
 
 			expect(s.channels().find((c) => c.id === target.id)?.membership).toBe(
 				"joined",
@@ -1613,6 +1740,7 @@ describe("toggleSubscribe", () => {
 			const before = s.channels();
 			for (const channel of before) s.toggleSubscribe(channel.id);
 			s.toggleSubscribe("ch-nope");
+			flush();
 
 			expect(s.channels()).toBe(before);
 		});
@@ -1635,11 +1763,13 @@ describe("answerAsk", () => {
 
 		withStore((s) => {
 			s.answerAsk(messageId, ask.askId, question.questionId, first.id);
+			flush();
 			expect(questionIn(s, messageId, ask.askId)?.chosenOptionIds).toEqual([
 				first.id,
 			]);
 
 			s.answerAsk(messageId, ask.askId, question.questionId, second.id);
+			flush();
 			// first-wins: the second answer does nothing, the first choice stands.
 			expect(questionIn(s, messageId, ask.askId)?.chosenOptionIds).toEqual([
 				first.id,
@@ -1660,6 +1790,7 @@ describe("answerAsk", () => {
 				question.questionId,
 				question.options[0].id,
 			);
+			flush();
 			// the store's copy changed …
 			expect(questionIn(s, messageId, ask.askId)?.chosenOptionIds).toEqual([
 				question.options[0].id,
@@ -1681,12 +1812,15 @@ describe("answerAsk", () => {
 
 		withStore((s) => {
 			s.answerAsk("msg-nope", ask.askId, qid, good);
+			flush();
 			expect(questionIn(s, messageId, ask.askId)?.chosenOptionIds).toEqual([]);
 
 			s.answerAsk(messageId, "ask-nope", qid, good);
+			flush();
 			expect(questionIn(s, messageId, ask.askId)?.chosenOptionIds).toEqual([]);
 
 			s.answerAsk(messageId, ask.askId, qid, "opt-nope");
+			flush();
 			expect(questionIn(s, messageId, ask.askId)?.chosenOptionIds).toEqual([]);
 		});
 	});
@@ -1702,6 +1836,7 @@ describe("answerAsk", () => {
 
 		withStore((s) => {
 			s.answerAsk(messageId, ask.askId, "question-nope", good);
+			flush();
 			expect(questionIn(s, messageId, ask.askId)?.chosenOptionIds).toEqual([]);
 		});
 	});
@@ -1804,6 +1939,7 @@ describe("setTrackerConfig (PR3)", () => {
 			const next = { ...s.trackerConfig(), handle: "someone@else" };
 
 			s.setTrackerConfig(next);
+			flush();
 
 			expect(s.trackerConfig().handle).toBe("someone@else");
 		});
@@ -1820,6 +1956,7 @@ describe("openChannel (T5)", () => {
 			expect(s.view()).toBe("bridge");
 
 			s.openChannel("ch-svc-compass");
+			flush();
 
 			expect(s.view()).toBe("channel");
 			expect(s.selectedChannelId()).toBe("ch-svc-compass");
@@ -1836,6 +1973,7 @@ describe("openChannel (T5)", () => {
 			const dmId = agent?.account.homeChannelId ?? "dm-compass-ui";
 
 			s.openChannel(dmId);
+			flush();
 
 			expect(s.view()).toBe("agent");
 			expect(s.selectedAgentId()).toBe("acc-compass-ui");
@@ -1849,6 +1987,7 @@ describe("openChannel (T5)", () => {
 	test("routes a group DM to the channel view, not an agent workspace", () => {
 		withStore((s) => {
 			s.openChannel("dm-ui-server");
+			flush();
 
 			expect(s.view()).toBe("channel");
 			expect(s.selectedChannelId()).toBe("dm-ui-server");
@@ -1864,6 +2003,7 @@ describe("openChannel (T5)", () => {
 			const selected = s.selectedChannelId();
 
 			s.openChannel("ch-does-not-exist");
+			flush();
 
 			expect(s.view()).toBe(view);
 			expect(s.selectedChannelId()).toBe(selected);
@@ -1887,11 +2027,14 @@ describe("keyboard-shortcuts overlay (RIG-2482)", () => {
 		withStore((s) => {
 			expect(s.shortcutsOpen()).toBe(false);
 			s.toggleShortcuts();
+			flush();
 			expect(s.shortcutsOpen()).toBe(true);
 			s.toggleShortcuts();
+			flush();
 			expect(s.shortcutsOpen()).toBe(false);
 			s.toggleShortcuts();
 			s.hideShortcuts();
+			flush();
 			expect(s.shortcutsOpen()).toBe(false);
 		});
 	});
@@ -1899,12 +2042,15 @@ describe("keyboard-shortcuts overlay (RIG-2482)", () => {
 	test("navigation closes the overlay (close-on-navigation, Decision 9)", () => {
 		withStore((s) => {
 			s.toggleShortcuts();
+			flush();
 			expect(s.shortcutsOpen()).toBe(true);
 			s.showBridge();
+			flush();
 			expect(s.shortcutsOpen()).toBe(false);
 
 			s.toggleShortcuts();
 			s.showBacklog();
+			flush();
 			expect(s.shortcutsOpen()).toBe(false);
 		});
 	});
@@ -1915,6 +2061,7 @@ describe("keyboard-shortcuts overlay (RIG-2482)", () => {
 			expect(cmd).toBeDefined();
 			expect(cmd?.scope).toBe("global");
 			cmd?.run();
+			flush();
 			expect(s.shortcutsOpen()).toBe(true);
 		});
 	});

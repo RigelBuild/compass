@@ -1,5 +1,5 @@
-import { createVirtualizer } from "@tanstack/solid-virtual";
-import { type Component, createEffect, For, on, Show } from "solid-js";
+import { createVirtualizer } from "@rigelbuild/solid-virtual";
+import { type Component, createEffect, For, Show } from "solid-js";
 import type { Account, Message } from "../comms-stub";
 import { MessageRow } from "./ChannelView";
 import { messageVirtualizerOptions } from "./conv-virtual";
@@ -7,7 +7,7 @@ import { messageVirtualizerOptions } from "./conv-virtual";
 /** The virtualized conversation stream. Owns `.conv-stream`
  *  — the single `overflow-y: auto` scroll element the layout's structural
  *  invariant requires — and renders a topic's (or a DM's) flat message list
- *  through a `@tanstack/solid-virtual` chat-mode virtualizer: end-anchored (opens
+ *  through a `@rigelbuild/solid-virtual` chat-mode virtualizer: end-anchored (opens
  *  at latest, follows appends only when already at bottom), variable-size over
  *  the MESSAGE list, keyed by message id so prepend re-anchors without a jump.
  *
@@ -43,12 +43,10 @@ export const MessageStream: Component<{
 	// mount-only scroll would leave the new scope at the old scroll offset; a
 	// scope-id-keyed effect re-anchors each scope to its latest message.
 	createEffect(
-		on(
-			() => props.scopeId,
-			() => {
-				virtualizer.scrollToEnd();
-			},
-		),
+		() => props.scopeId,
+		() => {
+			virtualizer.scrollToEnd();
+		},
 	);
 
 	return (

@@ -66,13 +66,13 @@ const PaneView: Component<{ pane: Pane; agent: Agent; focused: boolean }> = (
 		store.splitActivePane(nextOrMintedTerminalPane(), direction);
 	};
 	return (
-		<div class="av-pane" classList={{ focused: props.focused }}>
+		<div class={["av-pane", { focused: props.focused }]}>
 			<div class="av-pane-head">
 				<button
 					type="button"
 					class="av-pane-title"
 					title={`Focus ${props.pane.title}`}
-					aria-pressed={props.focused}
+					aria-pressed={props.focused ? "true" : "false"}
 					onClick={() => store.setFocusedPane(props.pane.id)}
 				>
 					{props.pane.title}
@@ -148,7 +148,7 @@ const SplitView: Component<{
 		</Match>
 		<Match when={props.node.kind === "split" ? props.node : null}>
 			{(split) => (
-				<div class="av-split" classList={{ [split().direction]: true }}>
+				<div class={["av-split", { [split().direction]: true }]}>
 					<SplitView
 						node={split().left}
 						agent={props.agent}
@@ -237,14 +237,18 @@ export const AgentView: Component = () => {
 							<For each={store.agentTabs()}>
 								{(tab) => (
 									<div
-										class="av-tab"
-										classList={{ active: tab.id === store.activeAgentTabId() }}
+										class={[
+											"av-tab",
+											{ active: tab.id === store.activeAgentTabId() },
+										]}
 									>
 										<button
 											type="button"
 											role="tab"
 											class="av-tab-label"
-											aria-selected={tab.id === store.activeAgentTabId()}
+											aria-selected={
+												tab.id === store.activeAgentTabId() ? "true" : "false"
+											}
 											onClick={() => store.setActiveAgentTab(tab.id)}
 										>
 											{tab.title}

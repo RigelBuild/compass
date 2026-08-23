@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { render, waitFor } from "@solidjs/testing-library";
+import type { JSX } from "@solidjs/web";
 import * as realRuntime from "@wailsio/runtime";
-import { createSignal, ErrorBoundary } from "solid-js";
+import { createErrorBoundary, createSignal, flush } from "solid-js";
 import type { Account } from "../comms-stub";
+import { clearHighlightCache } from "../markdown/highlight-cache";
 import * as realHighlighter from "../markdown/highlighter";
 import { MarkdownText } from "./MarkdownText";
 
@@ -10,6 +12,15 @@ import { MarkdownText } from "./MarkdownText";
 // test can restore the REAL implementation in afterEach (mock.module otherwise
 // leaks to every later test IN THIS FILE and across files).
 const realHighlightToHtml = realHighlighter.highlightToHtml;
+
+// The R1 highlight cache (highlight-cache.ts) is module-level and persists
+// across component instances by design. Clear it after every test so a prior
+// render's cached `(lang, code)` → HTML entry never seeds a later test's
+// highlight path (which would make an assertion on the debounce/fetch cycle
+// read a synchronous cache hit instead).
+afterEach(() => {
+	clearHighlightCache();
+});
 
 // Tests for the message-surface renderer: it renders a text block as MARKDOWN
 // (CommonMark + GFM), composes the existing @-mention chips by post-processing
@@ -236,6 +247,10 @@ describe("MarkdownText — mid-stream growth stays stable", () => {
 		// and the code block's content now REFLECTS the streamed-in code (not just
 		// present — the actual latest text).
 		setText("intro paragraph\n\n```ts\nconst x = 1;\n");
+		// Solid 2's reconcile (the fork's renderingStrategy="reconcile" store
+		// update) is scheduled off the setter, not synchronous to it as in Solid 1
+		// — drain the effect queue so the grown tree is committed before asserting.
+		flush();
 		expect(container.querySelector("pre code")).not.toBeNull();
 		expect(container.querySelector("p")?.textContent).toContain("intro");
 		// Exact, not `toContain`: a renderer that silently eats the newline still
@@ -249,6 +264,7 @@ describe("MarkdownText — mid-stream growth stays stable", () => {
 		// newly appended line is present (and it is still a single code block, no
 		// prose flip).
 		setText("intro paragraph\n\n```ts\nconst x = 1;\nconst y = 2;\n```");
+		flush();
 		expect(container.querySelector("pre code")).not.toBeNull();
 		expect(container.querySelector("p")?.textContent).toContain("intro");
 		expect(container.querySelector("pre code")?.textContent).toBe(
@@ -442,6 +458,52 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		// wrapped in the markdown `pre` override.
 		expect(container.querySelectorAll("pre").length).toBe(1);
 		expect(container.querySelector("pre pre")).toBeNull();
+	});
+
+	// R1: the synchronous `(lang, code)` highlight cache. #44's reconcile renderer
+	// rebuilds the whole message subtree — a fresh `CodeBlock` instance — on every
+	// changed streaming tick, so a settled fence would flash back to the plain
+	// `<pre>` fallback until its async highlight re-resolves. The module-level
+	// cache lets a rebuilt instance seed `html` synchronously at construction, so
+	// an already-highlighted fence stays highlighted across a growth tick with no
+	// fallback frame.
+	test("a settled fence stays highlighted across a growth tick (R1 cache, no fallback frame)", async () => {
+		// Deterministic highlighter: resolves to known markup for the ts fence so
+		// the R1 cache is populated once it settles. `data-r1` survives the
+		// innerHTML swap (same pattern as the stale-resolution test's `data-tick`).
+		const HIGHLIGHTED =
+			'<pre class="shiki"><code><span style="color:green" data-r1="hit">const x = 1;</span></code></pre>';
+		mock.module("../markdown/highlighter", () => ({
+			...realHighlighter,
+			highlightToHtml: (code: string, lang: string) =>
+				Promise.resolve(
+					lang === "ts" && code.includes("const x = 1;") ? HIGHLIGHTED : null,
+				),
+		}));
+		const [text, setText] = createSignal("```ts\nconst x = 1;\n```");
+		const { container } = render(() => (
+			<MarkdownText text={text()} byHandle={byHandle()} />
+		));
+		// Let the debounce + async highlight settle so the (ts, "const x = 1;\n")
+		// cache entry is populated.
+		await waitFor(
+			() => expect(container.querySelector('[data-r1="hit"]')).not.toBeNull(),
+			{ timeout: HIGHLIGHT_WAIT_MS },
+		);
+		// Grow the message: append prose BELOW the settled fence. Under reconcile
+		// this rebuilds the subtree, reconstructing the fence's CodeBlock — the R1
+		// cache is what survives across instances. `flush()` drains Solid 2's
+		// scheduled reconcile so the rebuilt tree is committed before asserting.
+		setText("```ts\nconst x = 1;\n```\n\nmore prose below");
+		flush();
+		// The rebuilt fence ALREADY shows the highlighted markup, seeded from the
+		// R1 cache at construction: no plain `<pre class="code-block">` fallback
+		// frame is ever committed. Without R1 the rebuilt instance would paint the
+		// fallback and only re-highlight after the 150ms debounce.
+		expect(container.querySelector('[data-r1="hit"]')).not.toBeNull();
+		expect(container.querySelector("pre.code-block")).toBeNull();
+		// The appended prose rendered too (the grow actually took effect).
+		expect(container.textContent).toContain("more prose below");
 	});
 });
 
@@ -729,9 +791,11 @@ describe("MarkdownText — content preservation", () => {
 		// lines are separate text runs with a break between them. (The opening and
 		// closing tag lines get their own breaks too — the whole raw chunk is one
 		// multi-line node — so match on the two prose lines rather than on a
-		// fixed child count.)
+		// fixed child count.) react-markdown-10 renders the content directly under
+		// `.markdown-content` — the old solid-markdown's extra `<div>` wrapper is
+		// gone — so the raw chunk's text/`br` runs are its direct children.
 		const kids = [
-			...(container.querySelector(".markdown-content > div")?.childNodes ?? []),
+			...(container.querySelector(".markdown-content")?.childNodes ?? []),
 		];
 		const at = (text: string) => kids.findIndex((n) => n.textContent === text);
 		const one = at("line one");
@@ -933,11 +997,12 @@ describe("MarkdownText — highlight failure is contained", () => {
 		}));
 	});
 
-	// `createResource` RETHROWS a rejected fetcher's error when the accessor is
-	// read during render (solid-js read(): `if (err !== undefined && !pr) throw
-	// err`). There is no ErrorBoundary anywhere in the app, so one failed
-	// dynamic import (a stale Vite chunk after redeploy, an offline webview)
-	// would unmount the whole Compass window.
+	// The async highlight failure is caught INSIDE the block's highlight effect
+	// (a try/catch around `highlightToHtml`) and never surfaces into render, so a
+	// failed dynamic import (a stale Vite chunk after redeploy, an offline
+	// webview) degrades to the plain `<pre>` fallback instead of throwing. This
+	// test proves the containment holds even when an error boundary IS present:
+	// nothing propagates to it, so a real deployment (which mounts none) is safe.
 	test("a rejected highlight degrades to plain code, taking nothing else down", async () => {
 		mock.module("../markdown/highlighter", () => ({
 			...realHighlighter,
@@ -946,11 +1011,20 @@ describe("MarkdownText — highlight failure is contained", () => {
 					new Error("Failed to fetch dynamically imported module"),
 				),
 		}));
+		// Solid 2 has no `ErrorBoundary` component — build one from the
+		// `createErrorBoundary` primitive: it renders `fn`, and swaps to the
+		// fallback if any descendant throws during render/effect. If the rejection
+		// were to propagate, this boundary would show "BOUNDARY".
+		const Boundary = (props: { children: JSX.Element }) =>
+			createErrorBoundary(
+				() => props.children,
+				() => <span>BOUNDARY</span>,
+			)();
 		const { container } = render(() => (
-			<ErrorBoundary fallback={<span>BOUNDARY</span>}>
+			<Boundary>
 				<div>sibling content</div>
 				<MarkdownText text={"```ts\nconst x = 1;\n```"} byHandle={byHandle()} />
-			</ErrorBoundary>
+			</Boundary>
 		));
 		// Drain the microtask queue AND a macrotask so the rejection has actually
 		// propagated before asserting. Waiting on the fallback <pre> alone is

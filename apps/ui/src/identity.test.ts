@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createRoot } from "solid-js";
+import { createRoot, flush } from "solid-js";
 import { agentDmChannel } from "./comms";
 import {
 	STUB_ACCOUNTS,
@@ -206,6 +206,7 @@ describe("honest lifecycle vs session optionality", () => {
 			expect(agentView(store, candidate.account.id)?.lifecycle).toBeDefined();
 			// Open the agent's workspace → observation reads its session by selected id.
 			store.openAgent(candidate.account.id);
+			flush();
 			expect(store.selectedAgentId()).toBe(candidate.account.id);
 			expect(store.agentSession()).toBeUndefined();
 		});

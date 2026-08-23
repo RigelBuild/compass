@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { createMemoryHistory, MemoryRouter } from "@solidjs/router";
+import { createRouter, memoryHistory } from "@solidjs/router";
 import { render } from "@solidjs/testing-library";
+import { createRoot, flush as flushSync } from "solid-js";
 import App from "./App";
 import {
 	STUB_CHANNELS,
@@ -15,14 +16,14 @@ import {
 	wireChannel,
 	wireTopic,
 } from "./live/comms-fake";
-import { AppRoutes } from "./routes";
+import { appRoutes } from "./routes";
 import { type AppStore, createAppStore } from "./store";
 import { flush, mountApp } from "./test-router";
 import { testQueryClient } from "./test-support";
 
 // Route-behavior tests (record A4 / T3): the URL is the source of truth. These
-// exercise the shared route table (routes.tsx) on a MemoryRouter — the same
-// table index.tsx mounts under HashRouter — through the real App shell + store
+// exercise the shared route table (routes.tsx) on a memory-history router — the
+// same table mount.tsx mounts under hash history — through the real App shell + store
 // route-sync effect. Navigation is asynchronous (record A2): an action or a
 // deep-link updates the location, and the effect writes the routed signals one
 // reactive tick later, so every routed read follows a `flush()`.
@@ -79,7 +80,7 @@ describe("routing (record A1/A4)", () => {
 
 	// openChannel moves the memory history: an in-app action navigates, and the
 	// route drives the store. Proven through the public routed reads (the history
-	// is MemoryRouter-internal); a store action that still setView-d directly
+	// is memory-history-internal); a store action that still setView-d directly
 	// would leave the URL — and any future route stacked on it — behind.
 	test("openChannel moves the route and drives the surface", async () => {
 		const { store } = mountApp("/");
@@ -122,8 +123,10 @@ describe("pending-aware channel deep-link (record A3)", () => {
 			messagesByChannel: {},
 		});
 		let store!: AppStore;
-		const history = createMemoryHistory();
-		history.set({ value: initialPath });
+		const Router = createRouter({
+			routes: appRoutes,
+			history: memoryHistory(initialPath),
+		});
 		const { container } = render(() => {
 			store = createAppStore({
 				comms: fake.client,
@@ -131,11 +134,9 @@ describe("pending-aware channel deep-link (record A3)", () => {
 				queryClient: testQueryClient(),
 			});
 			return (
-				<StoreContext.Provider value={store}>
-					<MemoryRouter history={history} root={App}>
-						<AppRoutes />
-					</MemoryRouter>
-				</StoreContext.Provider>
+				<StoreContext value={store}>
+					<Router>{(props) => <App {...props} />}</Router>
+				</StoreContext>
 			);
 		});
 		return { store, container, fake };
@@ -209,8 +210,10 @@ describe("pending-aware topic deep-link (record A3)", () => {
 			messagesByChannel: {},
 		});
 		let store!: AppStore;
-		const history = createMemoryHistory();
-		history.set({ value: initialPath });
+		const Router = createRouter({
+			routes: appRoutes,
+			history: memoryHistory(initialPath),
+		});
 		const { container } = render(() => {
 			store = createAppStore({
 				comms: fake.client,
@@ -218,11 +221,9 @@ describe("pending-aware topic deep-link (record A3)", () => {
 				queryClient: testQueryClient(),
 			});
 			return (
-				<StoreContext.Provider value={store}>
-					<MemoryRouter history={history} root={App}>
-						<AppRoutes />
-					</MemoryRouter>
-				</StoreContext.Provider>
+				<StoreContext value={store}>
+					<Router>{(props) => <App {...props} />}</Router>
+				</StoreContext>
 			);
 		});
 		return { store, container, fake };
@@ -280,15 +281,26 @@ describe("route-sync seam (no router)", () => {
 	// Kept intentionally light — the transition matrix lives in store.test.ts;
 	// this only asserts the default seam applies a route without a bound router.
 	test("show* navigate the view synchronously through the default seam", () => {
-		const store = createAppStore({
-			initialComms: STUB_COMMS_STATE,
-			queryClient: testQueryClient(),
+		// createAppStore opens a solid-query (issuesQuery) that Solid 2 requires a
+		// reactive owner for (a bare call throws NoOwnerError); wrap in createRoot
+		// like store.test.ts's withStore. Under Solid 2 a signal write commits on
+		// the next scheduler tick, so a routed read follows a synchronous
+		// `flushSync()` (the store.test.ts show*-transition pattern).
+		createRoot((dispose) => {
+			const store = createAppStore({
+				initialComms: STUB_COMMS_STATE,
+				queryClient: testQueryClient(),
+			});
+			store.showBacklog();
+			flushSync();
+			expect(store.view()).toBe("backlog");
+			store.showSettings();
+			flushSync();
+			expect(store.view()).toBe("settings");
+			store.showBridge();
+			flushSync();
+			expect(store.view()).toBe("bridge");
+			dispose();
 		});
-		store.showBacklog();
-		expect(store.view()).toBe("backlog");
-		store.showSettings();
-		expect(store.view()).toBe("settings");
-		store.showBridge();
-		expect(store.view()).toBe("bridge");
 	});
 });

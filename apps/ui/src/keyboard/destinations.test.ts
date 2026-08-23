@@ -80,6 +80,7 @@ describe("createStoreDestinationProviders", () => {
 			const dest = prs.find((d) => d.id === `${row.pr.repo}#${row.pr.number}`);
 			expect(dest).toBeDefined();
 			dest?.navigate();
+			await flush();
 			expect(store.selectedIssueId()).toBe(row.issue.id);
 			expect(store.activeRightTab()).toBe("pr");
 		});

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { flush } from "solid-js";
 import {
 	type Ask,
 	STUB_ACCOUNTS,
@@ -91,7 +92,7 @@ const AUTHOR_HANDLE = (() => {
 })();
 
 // Mount TopicView over a real store through the app's StoreContext (index.tsx
-// wires it as `<StoreContext.Provider value={store}>`; there is no separate
+// wires it as `<StoreContext value={store}>`; there is no separate
 // provider wrapper). The store is built inside render's reactive root so its
 // memos are owned and disposed on the library's per-test cleanup; the reference
 // is captured so tests drive `openTopic` and re-read `messages()`.
@@ -110,9 +111,9 @@ function mountTopicView(): {
 			queryClient: testQueryClient(),
 		});
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<TopicView />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	return { store, container };
@@ -144,6 +145,7 @@ describe("ChannelView (T6)", () => {
 	test("an ask in a standalone channel renders answerable (options enabled, no read-only hint)", () => {
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
+		flush();
 
 		const options = askOptions(container);
 		// Precondition: the ask block actually rendered (proves the red is an
@@ -172,12 +174,14 @@ describe("ChannelView (T6)", () => {
 	test("an ask in a standalone channel records the answer on click", () => {
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
+		flush();
 
 		const options = askOptions(container);
 		expect(options.length).toBeGreaterThan(0);
 		expect(chosenIds(store)).toEqual([]); // starts unanswered
 
 		fireEvent.click(options[0]);
+		flush();
 
 		const winningId = STANDALONE_ASK.ask.questions[0].options[0].id;
 		// The store recorded the click …
@@ -196,6 +200,7 @@ describe("ChannelView (T6)", () => {
 	test("a settled single-select ask on the standalone surface renders locked (all disabled, winner chosen)", () => {
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
+		flush();
 
 		const question = STANDALONE_ASK.ask.questions[0];
 		const winningId = question.options[0].id;
@@ -207,6 +212,7 @@ describe("ChannelView (T6)", () => {
 			question.questionId,
 			winningId,
 		);
+		flush();
 		expect(chosenIds(store)).toEqual([winningId]);
 
 		const options = askOptions(container);
@@ -230,10 +236,12 @@ describe("ChannelView (T6)", () => {
 		// A second mount of the same channel — for the identical-render comparison.
 		const secondMount = mountTopicView();
 		secondMount.store.openTopic(STANDALONE_ASK.topicId);
+		flush();
 
 		// Default (interactive) mount.
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
+		flush();
 
 		const options = askOptions(container);
 		expect(options.length).toBeGreaterThan(0);
@@ -245,6 +253,7 @@ describe("ChannelView (T6)", () => {
 
 		// … and clicking one records the choice (single-select → exactly it).
 		fireEvent.click(options[0]);
+		flush();
 		expect(chosenIds(store)).toEqual([
 			STANDALONE_ASK.ask.questions[0].options[0].id,
 		]);
@@ -272,6 +281,7 @@ describe("ChannelView settled-state lock (T3)", () => {
 	test("a settled single-select ask renders all options disabled with the winner chosen", () => {
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
+		flush();
 
 		const question = STANDALONE_ASK.ask.questions[0];
 		const winningId = question.options[0].id;
@@ -281,6 +291,7 @@ describe("ChannelView settled-state lock (T3)", () => {
 			question.questionId,
 			winningId,
 		);
+		flush();
 
 		const options = askOptions(container);
 		expect(options.length).toBeGreaterThan(0);
@@ -301,6 +312,7 @@ describe("ChannelView settled-state lock (T3)", () => {
 	test("clicking a losing option on a settled ask is a no-op (first-wins holds)", () => {
 		const { store, container } = mountTopicView();
 		store.openTopic(STANDALONE_ASK.topicId);
+		flush();
 
 		const question = STANDALONE_ASK.ask.questions[0];
 		const winningId = question.options[0].id;
@@ -310,12 +322,14 @@ describe("ChannelView settled-state lock (T3)", () => {
 			question.questionId,
 			winningId,
 		);
+		flush();
 		expect(chosenIds(store)).toEqual([winningId]);
 
 		const options = askOptions(container);
 		// Click a different option than the winner (the second, which lost).
 		expect(options.length).toBeGreaterThan(1);
 		fireEvent.click(options[1]);
+		flush();
 
 		// The winner stands — no re-answer.
 		expect(chosenIds(store)).toEqual([winningId]);
@@ -347,9 +361,9 @@ describe("ChannelView is a composerless topic index (T5 model boundary)", () => 
 				queryClient: testQueryClient(),
 			});
 			return (
-				<StoreContext.Provider value={store}>
+				<StoreContext value={store}>
 					<ChannelView />
-				</StoreContext.Provider>
+				</StoreContext>
 			);
 		});
 		return { store, container };
@@ -358,6 +372,7 @@ describe("ChannelView is a composerless topic index (T5 model boundary)", () => 
 	test("the channel surface renders topic rows + new-topic but NO message composer", () => {
 		const { store, container } = mountChannelView();
 		store.openChannel(STANDALONE_ASK.channelId);
+		flush();
 
 		const index = container.querySelector(".topic-index");
 		expect(index).not.toBeNull();
@@ -409,6 +424,7 @@ describe("@compass system sender resolves as a known mention end-to-end (T5)", (
 	test("a fixture @compass mention chips as known through the real store", () => {
 		const { store, container } = mountTopicView();
 		store.openTopic(SYSTEM_MENTION.topicId);
+		flush();
 
 		const chip = [
 			...container.querySelectorAll<HTMLElement>(".mention-chip"),

@@ -18,9 +18,9 @@ function mountCard(advancing?: boolean): HTMLElement {
 	const { container } = render(() => {
 		const store = createAppStore({ queryClient: testQueryClient() });
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<IssueCard issue={issue} advancing={advancing} />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	const card = container.querySelector(".cx-card");

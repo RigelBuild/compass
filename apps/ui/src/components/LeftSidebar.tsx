@@ -34,12 +34,14 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 		<div class="tree-agent-row">
 			<button
 				type="button"
-				class="tree-agent"
-				classList={{
-					selected:
-						store.selectedAgentId() === a().account.id &&
-						store.view() === "agent",
-				}}
+				class={[
+					"tree-agent",
+					{
+						selected:
+							store.selectedAgentId() === a().account.id &&
+							store.view() === "agent",
+					},
+				]}
 				onClick={() => store.openAgent(a().account.id)}
 			>
 				<StateDot state={a().lifecycle ?? "idle"} />
@@ -60,9 +62,8 @@ const AgentLeaf: Component<{ agent: Agent; badge?: number }> = (props) => {
 			</button>
 			<button
 				type="button"
-				class="tree-agent-pin"
-				classList={{ pinned: pinned() }}
-				aria-pressed={pinned()}
+				class={["tree-agent-pin", { pinned: pinned() }]}
+				aria-pressed={pinned() ? "true" : "false"}
 				title={
 					pinned()
 						? `Unpin ${a().account.handle} from the fleet sidebar`
@@ -99,13 +100,11 @@ const Branch: Component<{ node: AgentTreeNode }> = (props) => {
 				<button
 					type="button"
 					class="tree-branch-caret"
-					aria-expanded={!collapsed()}
+					aria-expanded={!collapsed() ? "true" : "false"}
 					aria-label={`${collapsed() ? "Expand" : "Collapse"} ${props.node.agent.account.handle}'s agents`}
 					onClick={() => store.toggleAgent(agentId())}
 				>
-					<span class="folder-caret" classList={{ collapsed: collapsed() }}>
-						▼
-					</span>
+					<span class={["folder-caret", { collapsed: collapsed() }]}>▼</span>
 				</button>
 				<AgentLeaf
 					agent={props.node.agent}
@@ -181,7 +180,7 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 
 	return (
 		<div class="ch-row-group">
-			<div class="ch-row" classList={{ selected: selected() }}>
+			<div class={["ch-row", { selected: selected() }]}>
 				<button
 					type="button"
 					class="ch-row-select"
@@ -221,15 +220,14 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 					>
 						<button
 							type="button"
-							class="ch-sub"
-							classList={{ on: subscribed() }}
+							class={["ch-sub", { on: subscribed() }]}
 							disabled
 							title={
 								subscribed()
 									? "Subscribed — new messages are pushed to you. Unsubscribing is not wired up yet."
 									: "Joined, not subscribed. Subscribing is not wired up yet."
 							}
-							aria-pressed={subscribed()}
+							aria-pressed={subscribed() ? "true" : "false"}
 						>
 							{subscribed() ? "◉" : "○"}
 						</button>
@@ -244,12 +242,14 @@ const ChannelRow: Component<{ channel: Channel }> = (props) => {
 				{(group) => (
 					<button
 						type="button"
-						class="ch-topic-row"
-						classList={{
-							selected:
-								store.selectedTopicId() === group.topic.id &&
-								store.view() === "topic",
-						}}
+						class={[
+							"ch-topic-row",
+							{
+								selected:
+									store.selectedTopicId() === group.topic.id &&
+									store.view() === "topic",
+							},
+						]}
 						onClick={() => store.openTopic(group.topic.id)}
 					>
 						<span class="ch-topic-name">{group.topic.name}</span>
@@ -271,11 +271,9 @@ const BrowseChannels: Component<{ channels: Channel[] }> = (props) => {
 				type="button"
 				class="rail-section-head browse-head"
 				onClick={() => setOpen((o) => !o)}
-				aria-expanded={open()}
+				aria-expanded={open() ? "true" : "false"}
 			>
-				<span class="browse-caret" classList={{ open: open() }}>
-					▸
-				</span>
+				<span class={["browse-caret", { open: open() }]}>▸</span>
 				browse channels
 				<span class="browse-count">{props.channels.length}</span>
 			</button>
@@ -327,11 +325,9 @@ const ChannelsSection: Component = () => {
 				type="button"
 				class="ws-section-head"
 				onClick={() => store.toggleSection("channels")}
-				aria-expanded={!collapsed()}
+				aria-expanded={!collapsed() ? "true" : "false"}
 			>
-				<span class="ws-caret" classList={{ open: !collapsed() }}>
-					▸
-				</span>
+				<span class={["ws-caret", { open: !collapsed() }]}>▸</span>
 				Channels
 			</button>
 			<Show when={!collapsed()}>
@@ -386,11 +382,9 @@ const AgentsSection: Component = () => {
 				type="button"
 				class="ws-section-head"
 				onClick={() => store.toggleSection("agents")}
-				aria-expanded={!collapsed()}
+				aria-expanded={!collapsed() ? "true" : "false"}
 			>
-				<span class="ws-caret" classList={{ open: !collapsed() }}>
-					▸
-				</span>
+				<span class={["ws-caret", { open: !collapsed() }]}>▸</span>
 				Agent workspaces
 			</button>
 			<Show when={!collapsed()}>
@@ -447,8 +441,7 @@ export const LeftSidebar: Component = () => {
 			</div>
 			<button
 				type="button"
-				class="bridge-link"
-				classList={{ active: store.view() === "bridge" }}
+				class={["bridge-link", { active: store.view() === "bridge" }]}
 				onClick={() => store.showBridge()}
 				aria-keyshortcuts={ariaChord("view.bridge")}
 				title={
@@ -463,8 +456,7 @@ export const LeftSidebar: Component = () => {
 			</button>
 			<button
 				type="button"
-				class="bridge-link"
-				classList={{ active: store.view() === "backlog" }}
+				class={["bridge-link", { active: store.view() === "backlog" }]}
 				onClick={() => store.showBacklog()}
 				aria-keyshortcuts={ariaChord("view.backlog")}
 				title={
@@ -481,8 +473,7 @@ export const LeftSidebar: Component = () => {
 			</button>
 			<button
 				type="button"
-				class="bridge-link"
-				classList={{ active: store.view() === "done" }}
+				class={["bridge-link", { active: store.view() === "done" }]}
 				onClick={() => store.showDone()}
 				aria-keyshortcuts={ariaChord("view.done")}
 				title={chord("view.done") ? `Done (${chord("view.done")})` : undefined}
@@ -494,8 +485,7 @@ export const LeftSidebar: Component = () => {
 			</button>
 			<button
 				type="button"
-				class="bridge-link"
-				classList={{ active: store.view() === "settings" }}
+				class={["bridge-link", { active: store.view() === "settings" }]}
 				onClick={() => store.showSettings()}
 				aria-keyshortcuts={ariaChord("view.settings")}
 				title={

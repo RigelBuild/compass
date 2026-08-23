@@ -12,9 +12,11 @@ const BacklogRow: Component<{ issue: Issue }> = (props) => {
 		<li class="backlog-row">
 			<button
 				type="button"
-				class="backlog-row-main"
+				class={[
+					"backlog-row-main",
+					{ selected: props.issue.id === store.selectedIssueId() },
+				]}
 				data-priority={props.issue.priority}
-				classList={{ selected: props.issue.id === store.selectedIssueId() }}
 				onClick={() => store.selectIssue(props.issue.id)}
 			>
 				<span class="backlog-id">
@@ -57,13 +59,11 @@ const BacklogSection: Component<{
 			<button
 				type="button"
 				class="backlog-section-head"
-				aria-expanded={open()}
+				aria-expanded={open() ? "true" : "false"}
 				aria-controls={contentId}
 				onClick={() => setOpen(!open())}
 			>
-				<span class="backlog-chevron" classList={{ open: open() }}>
-					▸
-				</span>
+				<span class={["backlog-chevron", { open: open() }]}>▸</span>
 				<span class="backlog-section-title">{props.title}</span>
 				<span class="backlog-count">{props.rows.length}</span>
 			</button>

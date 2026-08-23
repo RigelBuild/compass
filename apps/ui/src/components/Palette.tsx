@@ -19,10 +19,10 @@
 import { Search } from "@kobalte/core/search";
 import {
 	type Component,
+	createEffect,
 	createMemo,
-	createResource,
 	createSignal,
-	onMount,
+	onSettled,
 	Show,
 } from "solid-js";
 import { useStore } from "../context";
@@ -88,12 +88,16 @@ export const Palette: Component = () => {
 
 	const [query, setQuery] = createSignal("");
 	// The latest-wins generation counter: bumped per keystroke, captured at issue
-	// and re-checked at resolve inside queryDestinations (A4/T3).
+	// and re-checked at resolve inside queryDestinations (A4/T3). Plain `let`s (not
+	// signals): they are the effect's own bookkeeping, read only inside the async
+	// resolve, never a reactive dependency of the render.
 	let generation = 0;
-	const [currentGen, setCurrentGen] = createSignal(0);
+	let currentGen = 0;
 
 	let inputRef: HTMLInputElement | undefined;
-	onMount(() => inputRef?.focus());
+	// Grant focus once after the first reactive settle (v2 onSettled ≙ 1.x
+	// onMount); Kobalte's Search does not autofocus its input.
+	onSettled(() => inputRef?.focus());
 
 	// ── Action mode: fuzzy over the registry, scoped-above-global (A3/D5) ──
 	const actionOptions = createMemo<PaletteOption[]>(() => {
@@ -142,17 +146,43 @@ export const Palette: Component = () => {
 	});
 
 	// ── Navigation mode: store-backed providers, grouped, latest-wins ──
-	const [destinations] = createResource(
+	// The last non-stale destination map (null until the first query resolves),
+	// plus an in-flight flag — both plain signals written from the effect's apply
+	// phase. v2 has no createResource; async work lives in a split effect (compute
+	// tracks `query()`, apply runs the async fetch and writes the signals), the
+	// pattern MarkdownText's highlight uses. Reading these signals in `allOptions`
+	// never suspends, preserving the original `.latest`/`.loading` semantics.
+	const [destinations, setDestinations] = createSignal<Map<
+		DestinationKind,
+		Destination[]
+	> | null>(null);
+	const [loading, setLoading] = createSignal(false);
+	createEffect(
 		() => query(),
-		async (input): Promise<Map<DestinationKind, Destination[]> | null> => {
+		(input) => {
 			generation += 1;
 			const mine = generation;
-			setCurrentGen(mine);
-			return queryDestinations(providers, input, mine, currentGen);
+			currentGen = mine;
+			setLoading(true);
+			void queryDestinations(providers, input, mine, () => currentGen)
+				.then((result) => {
+					// A stale resolve returns null and must apply nothing — a newer
+					// keystroke already owns the surface. The freshest in-flight query is
+					// the one whose generation is still current; only it clears loading.
+					if (mine !== currentGen) return;
+					if (result !== null) setDestinations(result);
+					setLoading(false);
+				})
+				.catch(() => {
+					// queryDestinations wraps providers in Promise.allSettled and never
+					// rejects today; this mirrors createResource's error containment so a
+					// future throwing path can't strand `loading` at true (there is no
+					// ErrorBoundary on this surface — an unhandled rejection would unmount
+					// the window). Same defensive posture as MarkdownText's highlight effect.
+					if (mine === currentGen) setLoading(false);
+				});
 		},
 	);
-
-	const loading = () => destinations.loading;
 
 	// The rendered rows, in display order: the Commands group first, then one
 	// group per destination kind. A flat list (Kobalte's <Key by="key"> renders
@@ -160,7 +190,7 @@ export const Palette: Component = () => {
 	// draws that group's `.cx-palette-group` header above it.
 	const allOptions = createMemo<PaletteOption[]>(() => {
 		const out: PaletteOption[] = [...actionOptions()];
-		const byKind = destinations.latest;
+		const byKind = destinations();
 		if (byKind) {
 			for (const kind of KIND_ORDER) {
 				const dests = byKind.get(kind);

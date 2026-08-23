@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { render } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
+import { createSignal, flush } from "solid-js";
 import { blockText, handleOf, pinnedMessages } from "../comms";
 import type { Channel } from "../comms-stub";
 import { STUB_ACCOUNTS, STUB_CHANNELS, STUB_COMMS_STATE } from "../comms-stub";
@@ -58,9 +58,9 @@ function mountChannelView(channel: () => Channel): {
 			queryClient: testQueryClient(),
 		});
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<ChannelView channel={channel()} />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	return { store, container };
@@ -129,6 +129,7 @@ describe("ChannelView pinned board (T8)", () => {
 			...BOARD_CHANNEL,
 			pinnedEntries: BOARD_CHANNEL.pinnedEntries,
 		});
+		flush();
 		const items = boardItems(container);
 		expect(items.length).toBe(expected.length);
 		expect(items[0].querySelector(".pinned-item-author")?.textContent).toBe(

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { flush } from "solid-js";
 import {
 	STUB_ACCOUNTS,
 	STUB_COMMS_STATE,
@@ -44,9 +45,9 @@ function mountRightSidebar(): { store: AppStore; container: HTMLElement } {
 			queryClient: testQueryClient(),
 		});
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<RightSidebar />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	return { store, container };
@@ -106,6 +107,7 @@ describe("RightSidebar fleet pane", () => {
 			const { store, container } = mountRightSidebar();
 			store.pinAgent(tab);
 			store.setActiveRightTab(`agent:${tab}`);
+			flush();
 
 			// Non-triviality: the fixture DM actually carries messages, so the home
 			// topic is a real, active topic — an "it rendered" pass can't be an
@@ -139,6 +141,7 @@ describe("RightSidebar fleet pane", () => {
 		const { store, container } = mountRightSidebar();
 		store.pinAgent("acc-supervisor");
 		store.setActiveRightTab("agent:acc-supervisor");
+		flush();
 
 		// The topic index rendered inside the pane, with the home topic row.
 		const row = [
@@ -156,6 +159,7 @@ describe("RightSidebar fleet pane", () => {
 		// Clicking the row drills into the topic's message view (openTopic), where
 		// the ask is answered.
 		fireEvent.click(row);
+		flush();
 		expect(store.view()).toBe("topic");
 		expect(store.selectedTopic()?.name).toBe(HOME_DM_TOPIC);
 	});
@@ -170,6 +174,7 @@ describe("RightSidebar fleet pane", () => {
 		const { store, container } = mountRightSidebar();
 		store.pinAgent("acc-supervisor");
 		store.setActiveRightTab("agent:acc-supervisor");
+		flush();
 
 		// Precondition: we start on the board with no agent selected.
 		expect(store.view()).toBe("bridge");
@@ -179,6 +184,7 @@ describe("RightSidebar fleet pane", () => {
 		expect(button).not.toBeNull();
 
 		fireEvent.click(button as HTMLButtonElement);
+		flush();
 
 		expect(store.view()).toBe("agent");
 		expect(store.selectedAgentId()).toBe("acc-supervisor");
@@ -193,6 +199,7 @@ describe("RightSidebar fleet pane", () => {
 		const { store, container } = mountRightSidebar();
 		store.pinAgent("acc-compass-ui");
 		store.setActiveRightTab("agent:acc-compass-ui");
+		flush();
 
 		expect(container.querySelector(".fleet-pane")).not.toBeNull();
 		expect(container.querySelector(".fleet-unreachable")).toBeNull();
@@ -207,6 +214,7 @@ describe("RightSidebar fleet pane", () => {
 		const { store, container } = mountRightSidebar();
 		store.pinAgent("acc-ghost");
 		store.setActiveRightTab("agent:acc-ghost");
+		flush();
 
 		// The unreachable block renders — message + unpin control.
 		const block = container.querySelector(".fleet-unreachable");
@@ -222,6 +230,7 @@ describe("RightSidebar fleet pane", () => {
 		// The unpin control works: it drops the pin and falls the active tab back
 		// to status, so the unreachable pane is gone.
 		fireEvent.click(unpin as HTMLButtonElement);
+		flush();
 		expect(store.isPinned("acc-ghost")).toBe(false);
 		expect(store.activeRightTab()).toBe("status");
 		expect(container.querySelector(".fleet-unreachable")).toBeNull();
@@ -240,6 +249,7 @@ describe("RightSidebar fleet pane", () => {
 		);
 		const { store, container } = mountRightSidebar();
 		store.setActiveRightTab("agent:acc-ghost");
+		flush();
 
 		// Anchor to the unreachable pane so the assertion can't drift onto a
 		// same-classed control added elsewhere later.

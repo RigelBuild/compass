@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { CompassClient } from "@compass/client";
 import { fireEvent, render } from "@solidjs/testing-library";
-import { Show } from "solid-js";
+import { flush, Show } from "solid-js";
 import { StoreContext } from "../context";
 import { createFakeCompass } from "../live/compass-fake";
 import { type AgentSession, foldSession } from "../session-events";
@@ -72,11 +72,11 @@ function mountLogPanel(
 		});
 		store.openAgent(agentId);
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<Show when={store.selectedAgent()} keyed>
 					{(agent) => <LogPanel agent={agent} />}
 				</Show>
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	return { store, container };
@@ -150,6 +150,7 @@ describe("LogPanel (T-U2)", () => {
 		expect(minimize).not.toBeNull();
 		if (!minimize) throw new Error("minimize toggle not rendered");
 		fireEvent.click(minimize);
+		flush();
 
 		// Minimized: trace body gone, running dot still shown.
 		expect(container.querySelector(".obs-body")).toBeNull();
@@ -163,6 +164,7 @@ describe("LogPanel (T-U2)", () => {
 		expect(expand).not.toBeNull();
 		if (!expand) throw new Error("expand toggle not rendered");
 		fireEvent.click(expand);
+		flush();
 
 		expect(container.querySelector(".obs-body")).not.toBeNull();
 	});
@@ -184,6 +186,7 @@ describe("LogPanel (T-U2)", () => {
 
 		// Re-open a running agent: the reactive prop + session update, Stop enables.
 		store.openAgent("acc-compass-server");
+		flush();
 
 		const liveStop = container.querySelector<HTMLButtonElement>(".obs-stop");
 		expect(liveStop).not.toBeNull();

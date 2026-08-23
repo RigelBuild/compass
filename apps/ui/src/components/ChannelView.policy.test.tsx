@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ChannelPostPolicy } from "@compass/client";
 import { fireEvent, render } from "@solidjs/testing-library";
+import { flush } from "solid-js";
 import { STUB_CHANNELS, STUB_COMMS_STATE } from "../comms-stub";
 import { StoreContext } from "../context";
 import {
@@ -80,9 +81,9 @@ async function mountComposer(fake: FakeComms): Promise<{
 			queryClient: testQueryClient(),
 		});
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<TopicView />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	const settled = async () => {
@@ -135,6 +136,7 @@ describe("composer post-policy gating (T8)", () => {
 			const send = composerSend(container);
 			if (!input || !send) throw new Error("composer did not render");
 
+			flush();
 			expect(input.disabled).toBe(false);
 			// No owner-only hint when the caller may post.
 			expect(
@@ -142,6 +144,7 @@ describe("composer post-policy gating (T8)", () => {
 			).toBeNull();
 
 			fireEvent.input(input, { target: { value: "an owner directive" } });
+			flush();
 			fireEvent.click(send);
 			await settled();
 
@@ -193,9 +196,9 @@ function mountChannelView(channelId: string): {
 			queryClient: testQueryClient(),
 		});
 		return (
-			<StoreContext.Provider value={store}>
+			<StoreContext value={store}>
 				<ChannelView channel={channel} />
-			</StoreContext.Provider>
+			</StoreContext>
 		);
 	});
 	return { store, container };
@@ -236,6 +239,7 @@ describe("new-topic post-policy gating (T8)", () => {
 		}
 
 		// Fields enabled; no owner-only hint.
+		flush();
 		expect(name.disabled).toBe(false);
 		expect(message.disabled).toBe(false);
 		expect(
@@ -245,6 +249,7 @@ describe("new-topic post-policy gating (T8)", () => {
 		// With both fields filled the start button enables (the write is offered).
 		fireEvent.input(name, { target: { value: "a new directive" } });
 		fireEvent.input(message, { target: { value: "first line" } });
+		flush();
 		expect(start.disabled).toBe(false);
 	});
 });
