@@ -32,6 +32,13 @@ projects:
   # image build is in the gate — affected-detection runs it only on PRs that
   # touch the image closure (see agent-image/moon.yml).
   compass-agent-image: 'agent-image'
+  # The microVM guest image: a standalone nix build (a direct-boot kernel + the
+  # guest rootfs contents closure) the V2a cloud-hypervisor runtime consumes.
+  # Registered here so the guest-image build rides the affected-gated pre-merge
+  # gate — a break surfaces on the PR that caused it, not post-merge in the E4
+  # cache lane or V2a boot bring-up. Same affected-detection posture as
+  # compass-agent-image (see guest-image/moon.yml).
+  compass-guest-image: 'guest-image'
   # The Compass native-app release bundle: a heavy nix build (realises the
   # WebKitGTK cc/pkg-config closure) that stages the versioned tarball. Same
   # affected-detection posture as compass-agent-image — registered here so the
