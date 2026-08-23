@@ -263,6 +263,12 @@ export interface AppStore {
 	showDone: () => void;
 	/** Show the Settings view (tracker mapping + handle, T11). */
 	showSettings: () => void;
+	/** Whether the keyboard-shortcuts overlay is open (RIG-2482). */
+	shortcutsOpen: Accessor<boolean>;
+	/** Close the keyboard-shortcuts overlay (Escape/backdrop/navigation). */
+	hideShortcuts: () => void;
+	/** Toggle the keyboard-shortcuts overlay — the `?` / `view.shortcuts` action. */
+	toggleShortcuts: () => void;
 	/** Inject the router seam (record A3). Called once from App (inside the
 	 *  router tree): supplies the real navigate + a reactive currentPath and
 	 *  installs the single-writer route-sync effect. The store stays
@@ -1886,14 +1892,36 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 			refuseStop(error);
 		}
 	};
-	const showBridge = () => navigateTo("/");
-	const showBacklog = () => navigateTo("/backlog");
-	const showDone = () => navigateTo("/done");
-	const showSettings = () => navigateTo("/settings");
+	// Keyboard-shortcuts overlay (RIG-2482): the open signal + its show/hide/
+	// toggle closures live here, so the spine's `view.shortcuts` command (created
+	// below) closes over `toggleShortcuts` next to its behavior, and App.tsx
+	// renders the overlay from `shortcutsOpen()`.
+	const [shortcutsOpen, setShortcutsOpen] = createSignal(false);
+	const hideShortcuts = () => setShortcutsOpen(false);
+	const toggleShortcuts = () => setShortcutsOpen((v) => !v);
+	// Close-on-navigation (Decision 9): a route change retracts the snapshot-at-
+	// open sheet so no modal floats over a new route advertising stale commands.
+	const showBridge = () => {
+		hideShortcuts();
+		navigateTo("/");
+	};
+	const showBacklog = () => {
+		hideShortcuts();
+		navigateTo("/backlog");
+	};
+	const showDone = () => {
+		hideShortcuts();
+		navigateTo("/done");
+	};
+	const showSettings = () => {
+		hideShortcuts();
+		navigateTo("/settings");
+	};
 	// The keyboard spine (RIG-2456): created here, after `showBridge` exists, so
 	// `view.bridge` is registered next to its behavior. App.tsx installs the one
-	// window keymap listener over its accessors.
-	const keyboard = createKeyboardSpine({ showBridge });
+	// window keymap listener over its accessors. `view.shortcuts` (RIG-2482)
+	// rides the same seam via `toggleShortcuts`.
+	const keyboard = createKeyboardSpine({ showBridge, toggleShortcuts });
 
 	const setTrackerConfig = (cfg: TrackerConfig) => {
 		setTrackerConfigSignal(cfg);
@@ -2002,6 +2030,9 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		showBacklog,
 		showDone,
 		showSettings,
+		shortcutsOpen,
+		hideShortcuts,
+		toggleShortcuts,
 		selectedAgentId,
 		selectedIssueId,
 		selectedAgent,

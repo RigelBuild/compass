@@ -1,0 +1,80 @@
+/* Keyboard-shortcuts overlay (RIG-2482). Overlay-specific layout only; the
+   modal float + scrim reuse `.cx-dialog` / `.cx-dialog-backdrop` (menu.css).
+   Consumes only --cx-* tokens; transitions ride --cx-motion-fast/--cx-ease-out
+   so reduced-motion zeroes them (tokens.css). */
+
+/* The scrim also centers the dialog panel over the viewport. */
+.cx-shortcuts-backdrop {
+	display: flex;
+	align-items: flex-start;
+	justify-content: center;
+	padding-top: 12vh;
+}
+
+.cx-shortcuts {
+	width: min(560px, 92vw);
+	max-height: 70vh;
+	gap: var(--cx-space-3);
+	animation: cx-shortcuts-in var(--cx-motion-fast) var(--cx-ease-out);
+}
+
+@keyframes cx-shortcuts-in {
+	from {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+/* The scrolling row region below the fixed search field. */
+.cx-shortcuts-scroll {
+	display: flex;
+	flex-direction: column;
+	gap: var(--cx-space-3);
+	overflow-y: auto;
+	min-height: 0;
+}
+
+.cx-shortcuts-group {
+	display: flex;
+	flex-direction: column;
+	gap: var(--cx-space-1);
+}
+
+/* Dim uppercase scope header. */
+.cx-shortcuts-header {
+	text-transform: uppercase;
+	letter-spacing: 0.08em;
+	font-size: var(--cx-text-xs);
+	color: var(--cx-text-faint);
+	padding: 0 var(--cx-space-1);
+}
+
+.cx-shortcuts-row {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: var(--cx-space-4);
+	padding: var(--cx-space-1) var(--cx-space-1);
+}
+
+.cx-shortcuts-title {
+	color: var(--cx-text);
+}
+
+/* Right-aligned mono chord chip (the UI face is already mono). */
+.cx-shortcuts-chord {
+	flex: none;
+	color: var(--cx-text-dim);
+	font-family: var(--cx-font-ui);
+	white-space: nowrap;
+}
+
+/* Dim empty row shown when a query matches nothing. */
+.cx-shortcuts-empty {
+	color: var(--cx-text-faint);
+	padding: var(--cx-space-2) var(--cx-space-1);
+}

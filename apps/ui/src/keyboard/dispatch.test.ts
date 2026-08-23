@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Command, CommandId, CommandScope } from "./commands";
-import { eventToChord, installKeymap } from "./dispatch";
+import { detectPlatform, eventToChord, installKeymap } from "./dispatch";
 import type { Platform } from "./keymap";
 import { createCommandRegistry } from "./registry";
 import type { RovingGroupHandle } from "./roving";
@@ -108,6 +108,65 @@ describe("eventToChord", () => {
 				"other",
 			),
 		).toBe("Ctrl+B");
+	});
+	test("drops Shift for a modifier-less printable non-letter (RIG-2482): ? stays ?", () => {
+		expect(
+			eventToChord(
+				new KeyboardEvent("keydown", { key: "?", shiftKey: true }),
+				"other",
+			),
+		).toBe("?");
+	});
+
+	test("Space is carved out of Shift-drop: Shift+Space stays Shift+Space", () => {
+		// The `" "` → `"Space"` rename runs before the Shift-drop predicate, so
+		// Space is multi-char and keeps its Shift — otherwise it would rebind to
+		// the bare `Space` chord (list.expandOrToggle).
+		expect(
+			eventToChord(
+				new KeyboardEvent("keydown", { key: " ", shiftKey: true }),
+				"other",
+			),
+		).toBe("Shift+Space");
+	});
+
+	test("letters keep Shift+UPPER shape: Shift+B stays Shift+B", () => {
+		expect(
+			eventToChord(
+				new KeyboardEvent("keydown", { key: "b", shiftKey: true }),
+				"other",
+			),
+		).toBe("Shift+B");
+	});
+
+	test("modifier-carrying and multi-char chords are untouched by Shift-drop", () => {
+		// Mod+Shift+\ carries a command modifier, so Shift is preserved.
+		expect(
+			eventToChord(
+				new KeyboardEvent("keydown", {
+					key: "\\",
+					ctrlKey: true,
+					shiftKey: true,
+				}),
+				"other",
+			),
+		).toBe("Ctrl+Shift+\\");
+		// Shift+Enter: multi-char key, Shift preserved.
+		expect(
+			eventToChord(
+				new KeyboardEvent("keydown", { key: "Enter", shiftKey: true }),
+				"other",
+			),
+		).toBe("Shift+Enter");
+	});
+});
+
+describe("detectPlatform", () => {
+	test("reads navigator: mac stub → mac, otherwise other", () => {
+		setPlatform("mac");
+		expect(detectPlatform()).toBe("mac");
+		setPlatform("other");
+		expect(detectPlatform()).toBe("other");
 	});
 });
 

@@ -1881,3 +1881,41 @@ describe("agents() seam (§T3)", () => {
 		});
 	});
 });
+
+describe("keyboard-shortcuts overlay (RIG-2482)", () => {
+	test("toggleShortcuts flips shortcutsOpen(); hideShortcuts closes", () => {
+		withStore((s) => {
+			expect(s.shortcutsOpen()).toBe(false);
+			s.toggleShortcuts();
+			expect(s.shortcutsOpen()).toBe(true);
+			s.toggleShortcuts();
+			expect(s.shortcutsOpen()).toBe(false);
+			s.toggleShortcuts();
+			s.hideShortcuts();
+			expect(s.shortcutsOpen()).toBe(false);
+		});
+	});
+
+	test("navigation closes the overlay (close-on-navigation, Decision 9)", () => {
+		withStore((s) => {
+			s.toggleShortcuts();
+			expect(s.shortcutsOpen()).toBe(true);
+			s.showBridge();
+			expect(s.shortcutsOpen()).toBe(false);
+
+			s.toggleShortcuts();
+			s.showBacklog();
+			expect(s.shortcutsOpen()).toBe(false);
+		});
+	});
+
+	test("view.shortcuts is registered on the spine and toggles the overlay", () => {
+		withStore((s) => {
+			const cmd = s.keyboard.registry.get("view.shortcuts" as never);
+			expect(cmd).toBeDefined();
+			expect(cmd?.scope).toBe("global");
+			cmd?.run();
+			expect(s.shortcutsOpen()).toBe(true);
+		});
+	});
+});

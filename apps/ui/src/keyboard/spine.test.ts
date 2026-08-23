@@ -31,7 +31,10 @@ function stubHandle(
 describe("createKeyboardSpine", () => {
 	test("registers view.bridge as a global command that runs showBridge", () => {
 		let ran = 0;
-		const spine = createKeyboardSpine({ showBridge: () => ran++ });
+		const spine = createKeyboardSpine({
+			showBridge: () => ran++,
+			toggleShortcuts: () => {},
+		});
 
 		const cmd = spine.registry.get(id("view.bridge"));
 		expect(cmd).toBeDefined();
@@ -44,7 +47,10 @@ describe("createKeyboardSpine", () => {
 	});
 
 	test("registerGroup/unregisterGroup round-trip: activeGroup reflects the set", () => {
-		const spine = createKeyboardSpine({ showBridge: () => {} });
+		const spine = createKeyboardSpine({
+			showBridge: () => {},
+			toggleShortcuts: () => {},
+		});
 		const g = stubHandle("board", "main", () => true);
 
 		expect(spine.activeGroup()).toBeNull(); // empty set
@@ -55,7 +61,10 @@ describe("createKeyboardSpine", () => {
 	});
 
 	test("activeGroup picks the focused group among several, null when none", () => {
-		const spine = createKeyboardSpine({ showBridge: () => {} });
+		const spine = createKeyboardSpine({
+			showBridge: () => {},
+			toggleShortcuts: () => {},
+		});
 		let treeFocused = false;
 		let boardFocused = false;
 		const tree = stubHandle("tree", "left", () => treeFocused);
@@ -74,7 +83,10 @@ describe("createKeyboardSpine", () => {
 	});
 
 	test("activeZone mirrors the focused group's zone (null when none)", () => {
-		const spine = createKeyboardSpine({ showBridge: () => {} });
+		const spine = createKeyboardSpine({
+			showBridge: () => {},
+			toggleShortcuts: () => {},
+		});
 		let focused = false;
 		const board = stubHandle("board", "main", () => focused);
 		spine.registerGroup(board);
@@ -82,5 +94,24 @@ describe("createKeyboardSpine", () => {
 		expect(spine.activeZone()).toBeNull();
 		focused = true;
 		expect(spine.activeZone()).toBe("main");
+	});
+
+	test("registers view.shortcuts as a global command that runs toggleShortcuts", () => {
+		let toggled = 0;
+		const spine = createKeyboardSpine({
+			showBridge: () => {},
+			toggleShortcuts: () => toggled++,
+		});
+
+		const cmd = spine.registry.get(id("view.shortcuts"));
+		expect(cmd).toBeDefined();
+		expect(cmd?.title).toBe("Keyboard shortcuts");
+		expect(cmd?.scope).toBe("global");
+		expect(spine.registry.all().map((c) => c.id)).toContain(
+			id("view.shortcuts"),
+		);
+
+		cmd?.run();
+		expect(toggled).toBe(1);
 	});
 });
