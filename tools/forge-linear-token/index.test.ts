@@ -16,6 +16,7 @@ import {
 	type MintDeps,
 	mintAppToken,
 	OUTPUT_ENV_NAME,
+	resolveGithubEnv,
 	runMint,
 	SCOPES,
 	TOKEN_URL,
@@ -203,5 +204,27 @@ describe("runMint", () => {
 		expect(code).toBe(1);
 		// Masked before the failed write, so the token never leaks even on error.
 		expect(logs).toContain("::add-mask::tok");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// resolveGithubEnv — the CLI shell's GITHUB_ENV guard (loud when unset).
+// ---------------------------------------------------------------------------
+
+describe("resolveGithubEnv", () => {
+	test("returns the path when GITHUB_ENV is set", () => {
+		const logs: string[] = [];
+		const result = resolveGithubEnv("/tmp/gh-env", (m) => logs.push(m));
+		expect(result).toBe("/tmp/gh-env");
+		expect(logs).toEqual([]);
+	});
+
+	test("returns exit code 1 and logs when GITHUB_ENV is unset", () => {
+		const logs: string[] = [];
+		const result = resolveGithubEnv(undefined, (m) => logs.push(m));
+		expect(result).toBe(1);
+		expect(logs).toHaveLength(1);
+		expect(logs[0]).toContain("::error::");
+		expect(logs[0]).toContain("GITHUB_ENV is unset");
 	});
 });

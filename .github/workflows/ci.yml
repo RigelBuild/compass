@@ -501,8 +501,9 @@ jobs:
           fi
 
       - name: Mint the forge live-oracle's Linear app token
-        # The oracle's Linear legs authenticate as a Linear OAuth app
-        # (client_credentials, actor=app), not a personal API key — a personal
+        # The oracle's Linear legs authenticate as a Linear OAuth app (the
+        # client_credentials grant yields an app-actor token — no `actor`
+        # request param), not a personal API key — a personal
         # key 400s against Linear's Bearer endpoint (RIG-2423). Those tokens
         # expire in ~30 days with no refresh, so rather than custody a token that
         # would red this required check monthly, the two static halves (client id

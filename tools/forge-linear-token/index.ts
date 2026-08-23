@@ -10,8 +10,8 @@
 // LINEAR_FORGE Actions-step env var the harness already reads.
 //
 // The mint is derived, never stored: the same client_credentials call the
-// linear-auto-done job uses (tools/linear-auto-done/auth.ts,
-// docs/designs/platform/linear-auto-done-auth.md / SEA-1087). client id + secret
+// platform's linear-auto-done job uses (design record
+// linear-auto-done-auth.md / SEA-1087). client id + secret
 // come from Actions secrets, cross TLS once to Linear's token endpoint, and the
 // minted token is masked out of the logs before it is exported.
 //
@@ -48,7 +48,8 @@ export const OUTPUT_ENV_NAME = "LINEAR_FORGE";
  * Linear's client_credentials grant. Returns the raw access token. Pure but for
  * the injected `fetchFn`, so tests drive it without a network. Fails closed
  * fast: a hung token request would otherwise block the job until the runner's
- * own timeout. Mirrors tools/linear-auto-done/auth.ts `mintAppToken`.
+ * timeout. Mirrors the platform linear-auto-done job's mintAppToken (design
+ * record linear-auto-done-auth.md / SEA-1087).
  */
 export async function mintAppToken(
 	creds: AppTokenCredentials,
@@ -155,20 +156,37 @@ export async function runMint(deps: MintDeps): Promise<number> {
 	return 0;
 }
 
-if (import.meta.main) {
-	const githubEnv = process.env.GITHUB_ENV;
+/**
+ * Resolve the Actions env file the minted token is appended to. Returns the
+ * GITHUB_ENV path, or exit code 1 (after logging) when it is unset — this tool
+ * only runs inside GitHub Actions, where GITHUB_ENV is always set, so an unset
+ * value means it was invoked outside that context and must fail loud.
+ */
+export function resolveGithubEnv(
+	githubEnv: string | undefined,
+	log: (msg: string) => void,
+): string | number {
 	if (!githubEnv) {
-		console.log(
+		log(
 			"::error::forge-linear-token: GITHUB_ENV is unset — this tool runs inside GitHub Actions",
 		);
-		process.exit(1);
+		return 1;
+	}
+	return githubEnv;
+}
+
+if (import.meta.main) {
+	const log = (msg: string) => {
+		console.log(msg);
+	};
+	const githubEnv = resolveGithubEnv(process.env.GITHUB_ENV, log);
+	if (typeof githubEnv === "number") {
+		process.exit(githubEnv);
 	}
 	const code = await runMint({
 		env: process.env,
 		appendGithubEnv: (line) => appendFile(githubEnv, `${line}\n`),
-		log: (msg) => {
-			console.log(msg);
-		},
+		log,
 	});
 	process.exit(code);
 }
