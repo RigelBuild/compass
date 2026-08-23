@@ -1216,6 +1216,38 @@ describe("CompassAgent — channel-borne steer (SEA-1310 §8 steer arm)", () => 
 		await h.close();
 	});
 
+	// Spin-up-window guard on the idle-steer arm (RIG-2488 review follow-up): the
+	// idle arm optimistically sets `#turnActive = true` BEFORE `prompt()`'s
+	// `agent_start` propagates (agent.ts:428), exactly as `#flushDelivers` does.
+	// Without it, a follow-on steer/deliver landing in that window — `isStreaming`
+	// still false, no `agent_start` yet — would re-gate as idle and start a SECOND
+	// turn (→ AgentBusyError, the message acked-and-dropped). Here the first idle
+	// steer starts a turn (one prompt); a second steer fired in the same window
+	// must take the MID-TURN arm (enqueue, no new turn). Non-vacuity: drop the
+	// optimistic `#turnActive = true` and the second steer re-gates idle → a
+	// second prompt (prompts length 2).
+	test("a follow-on steer inside the idle-steer spin-up window enqueues, not a second turn", async () => {
+		const h = startDeliverAgent();
+		// First idle steer starts a turn via prompt and optimistically marks the
+		// turn active — no `agent_start` driven, `isStreaming` still false.
+		h.agent.steer(deliverMsg("s1", "first"));
+		expect(h.session.agent.prompts).toHaveLength(1);
+		// A second steer arrives in the spin-up window (still no agent_start,
+		// isStreaming still false). The optimistic `#turnActive` flips the gate to
+		// the mid-turn arm: it ENQUEUES onto the steering queue, starts no turn.
+		h.agent.steer(deliverMsg("s2", "second"));
+		expect(h.session.agent.steers).toHaveLength(1);
+		expect(steerContent(h.session.agent.steers[0] as AgentMessage)).toContain(
+			"second",
+		);
+		// The prompt count did not grow — no second turn was started.
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		// Both are acked (s1 via the idle prompt path, s2 via the mid-turn arm).
+		expect(ackIds(h.frames)).toEqual(["s1", "s2"]);
+		await h.close();
+	});
+
 	test("one ack per injected steer, carrying its message_id", async () => {
 		const h = startDeliverAgent();
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
