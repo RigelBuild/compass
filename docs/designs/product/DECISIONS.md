@@ -22,11 +22,15 @@ check enforces the mechanical half. Full rationale:
 ## Conventions
 
 - **ID** — `DL-<zero-padded int>`, globally unique, append-only, never reused.
-- **Status** — exactly `Active (<who>, YYYY-MM-DD)` or `Superseded by DL-<n>
-  (<who>, YYYY-MM-DD)`. Every row carries provenance so overlapping one-liners
-  have a recency signal.
+- **Status** — exactly `Active (<who>, YYYY-MM-DD)`, `Retired (<who>,
+  YYYY-MM-DD)`, or `Superseded by DL-<n> (<who>, YYYY-MM-DD)`. Every row carries
+  provenance so overlapping one-liners have a recency signal. Use `Superseded
+  by DL-<n>` when a later row REPLACES this decision; use `Retired` when the
+  decision is abandoned with no replacement (the thing it decided was scrapped,
+  not re-decided).
 - **Decision** — a one-line paraphrase, immutable after append. A new ruling is
-  a new row plus a `Superseded` flip on the old, never an in-place reword.
+  a new row plus a `Superseded`/`Retired` flip on the old, never an in-place
+  reword.
 - **Record** — a relative link into the frozen record; an `#anchor` is required
   for links into large records so rationale is one hop away.
 

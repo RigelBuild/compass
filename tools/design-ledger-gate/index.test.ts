@@ -314,9 +314,51 @@ describe("evaluate — row status-cell grammar", () => {
 			),
 		).toEqual([]);
 	});
+	test("Retired form passes and needs no successor row", () => {
+		// A decision scrapped with no replacement: valid, and — unlike
+		// `Superseded by DL-<n>` — it must NOT require a target row to resolve.
+		expect(
+			evaluate(
+				[row({ status: "Retired (Matt, 2026-08-23)" })],
+				[],
+				noChange,
+				smallRecord,
+			),
+		).toEqual([]);
+	});
+	test("Retired does not enter a supersession chain (no dangling-target check)", () => {
+		// Two independent Retired rows: neither points anywhere, so neither can
+		// dangle or cycle.
+		expect(
+			evaluate(
+				[
+					row({ id: "DL-001", status: "Retired (Matt, 2026-08-23)", line: 5 }),
+					row({ id: "DL-002", status: "Retired (Matt, 2026-08-23)", line: 6 }),
+				],
+				[],
+				noChange,
+				smallRecord,
+			),
+		).toEqual([]);
+	});
 	test("neither form → 'malformed'", () => {
 		const vs = evaluate(
 			[row({ status: "sometime later" })],
+			[],
+			noChange,
+			smallRecord,
+		);
+		expect(vs.length).toBe(1);
+		expect(vs[0]?.message).toContain("malformed");
+		expect(vs[0]?.line).toBe(5);
+	});
+	test("Retired-shaped but dateless → 'malformed' (pins ROW_RETIRED_RE strictness)", () => {
+		// A cell that begins `Retired ` but omits the required date must be
+		// rejected — otherwise a future loosening of ROW_RETIRED_RE to a bare
+		// prefix would silently pass. Same strictness the Active/Superseded
+		// forms enforce.
+		const vs = evaluate(
+			[row({ status: "Retired (Matt)" })],
 			[],
 			noChange,
 			smallRecord,
