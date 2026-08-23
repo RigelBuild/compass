@@ -48,27 +48,23 @@ const FORBIDDEN =
 	/[/\\]node_modules[/\\](effect|@effect[/\\]opentelemetry|@opentelemetry[/\\])/;
 
 test("the package public type surface carries no effect/@effect/opentelemetry/@opentelemetry type", () => {
-	// Emit INTO the package's own `node_modules/` (not the package root, not the
-	// OS tmpdir). Two constraints pin this location:
-	//   1. Bare-specifier resolution — node/tsc bundler resolution probes
-	//      `<ancestor>/node_modules` at each ancestor directory of the emitted
-	//      `.d.ts`, so from `<pkg>/node_modules/.dts-surface-*/src/…` the ancestor
-	//      `<pkg>` still reaches `<pkg>/node_modules`, where `effect` /
-	//      `@opentelemetry/*` resolve to their real declaration files. Emitted to
-	//      the OS tmpdir they would not resolve, and a re-exported effect type
-	//      would show ZERO declaration files — a silent containment hole. (The
-	//      parent `<pkg>/node_modules` is guaranteed present: it is the same tree
-	//      the resolution walk-up needs, so its absence fails `Bun.resolveSync`
-	//      below first, more loudly than this `mkdtempSync`.)
-	//   2. No VCS-walk race — under the main-only full sweep (`moon run :ci`, max
-	//      concurrency) moon's git-based hasher walks the working tree for other
-	//      tasks while this test creates and `rmSync`s its temp dir. A dir under
-	//      the package ROOT is inside that walk, so git racing the teardown dies
-	//      `exit 128 … No such file`. `node_modules/` is pruned whole from the git
-	//      walk, so the transient emit dir is invisible to the hasher. (Trade-off:
-	//      a crash before the `finally` rmSync leaves git-invisible litter under
-	//      node_modules, cleared by a reinstall; accepted over the CI race.)
-	const out = mkdtempSync(join(PKG_ROOT, "node_modules", ".dts-surface-"));
+	// Emit signature-only declarations into a temp dir under the package root.
+	// node/tsc bundler resolution probes `<ancestor>/node_modules` at each
+	// ancestor of the emitted `.d.ts`, so from `<pkg>/.dts-surface-*/src/…` the
+	// ancestor `<pkg>` reaches `<pkg>/node_modules`, where `effect` /
+	// `@opentelemetry/*` resolve to their real declaration files. Emitted to the
+	// OS tmpdir they would not resolve, and a re-exported effect type would show
+	// ZERO declaration files — a silent containment hole.
+	//
+	// This gitignored temp dir is safe under the concurrent main full sweep
+	// because `.moon/workspace.yml` sets `experiments.nativeFileHashing: true`,
+	// which replaces moon's default `git ls-files` + `git hash-object` shell-out
+	// with an in-process walker that hashes file contents directly and tolerates
+	// a file that vanishes mid-walk — so git never races the `rmSync` teardown of
+	// this dir. (Under the default git hasher a dir under the package root is in
+	// the walk, and git dies `exit 128 … No such file` when it opens a path this
+	// test has since deleted.)
+	const out = mkdtempSync(join(PKG_ROOT, ".dts-surface-"));
 	try {
 		// Emit signature-only declarations for the whole package.
 		const tsc = Bun.resolveSync("typescript/bin/tsc", PKG_ROOT);
