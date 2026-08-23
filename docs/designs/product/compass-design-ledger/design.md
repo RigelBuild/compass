@@ -83,15 +83,26 @@ markdownlint-style):
 ```
 
 - `ID` — `DL-<zero-padded int>`, globally unique, append-only, never reused.
-- `Status` — exactly `Active (<who>, YYYY-MM-DD)` or
-  `Superseded by DL-<n> (<who>, YYYY-MM-DD)`. **Every** row carries
-  provenance (who + date), not only superseded ones — overlapping one-liners
-  need a recency signal to arbitrate. Machine-parseable; the gate (part 3)
-  verifies every `Superseded by DL-<n>` targets an existing row.
+- `Status` — exactly `Active (<who>, YYYY-MM-DD)`,
+  `Retired (<who>, YYYY-MM-DD)`, or `Superseded by DL-<n> (<who>, YYYY-MM-DD)`.
+  **Every** row carries provenance (who + date), not only superseded ones —
+  overlapping one-liners need a recency signal to arbitrate. Machine-parseable;
+  the gate (part 3) verifies every `Superseded by DL-<n>` targets an existing
+  row. `Retired` and `Superseded by` both retract a decision, and the
+  distinction is which one to use: **`Superseded by DL-<n>`** when a later
+  ruling REPLACES this one (the successor row carries the new truth);
+  **`Retired`** when the decision is abandoned with NO replacement — the thing
+  it decided was scrapped, not re-decided (e.g. a dropped product concept). A
+  `Retired` row points nowhere, so — unlike `Superseded by` — it needs no
+  target row to resolve. This mirrors the ADR/MADR distinction between
+  `superseded` (replaced by a successor) and `deprecated`/retired (dead, no
+  successor).
 - `Decision` — a one-line paraphrase, **immutable after append**: a new
-  ruling is a new row plus a `Superseded` flip on the old, never an in-place
-  reword (the cell is a truth surface the gate cannot re-derive from the
-  record, so it must not silently drift).
+  ruling is a new row plus a `Superseded`/`Retired` flip on the old, never an
+  in-place reword (the cell is a truth surface the gate cannot re-derive from
+  the record, so it must not silently drift). Retiring a decision is a `Status`
+  change only; a decision retracted-and-replaced additionally appends the
+  successor row the `Superseded by` points at.
 - `Record` — a relative markdown link into the frozen record (path must
   resolve; a `#anchor` is checked when present and **required** for links
   into large records (>~50 KB, e.g. `compass-0.6`), so rationale is genuinely

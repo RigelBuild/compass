@@ -93,6 +93,13 @@ const STATUS_RE = /^Status: (Draft|Active|Historical|Superseded by (\S+))$/;
 const ROW_ACTIVE_RE = /^Active \(.+, \d{4}-\d{2}-\d{2}\)$/;
 /** A ledger row's `Superseded by DL-<n> (<who>, YYYY-MM-DD)` status cell. */
 const ROW_SUPERSEDED_RE = /^Superseded by (DL-\d+) \(.+, \d{4}-\d{2}-\d{2}\)$/;
+/**
+ * A ledger row's `Retired (<who>, YYYY-MM-DD)` status cell — a decision
+ * retracted with NO successor (the ADR/MADR `deprecated`/retired state).
+ * Distinct from `Superseded by DL-<n>`, which requires a successor row; a
+ * `Retired` row points nowhere, so it never enters supersession resolution.
+ */
+const ROW_RETIRED_RE = /^Retired \(.+, \d{4}-\d{2}-\d{2}\)$/;
 
 // ---------------------------------------------------------------------------
 // Parsed shapes (produced by the pure parsers below, consumed by evaluate).
@@ -389,14 +396,17 @@ export function evaluate(
 			}
 		}
 
-		// Status-cell grammar, then supersession-target integrity.
+		// Status-cell grammar, then supersession-target integrity. `Active` and
+		// `Retired` are terminal (no target to resolve); only `Superseded by
+		// DL-<n>` carries a successor that must exist.
 		if (ROW_ACTIVE_RE.test(row.status)) continue;
+		if (ROW_RETIRED_RE.test(row.status)) continue;
 		const sup = ROW_SUPERSEDED_RE.exec(row.status);
 		if (sup === null) {
 			v(
 				DECISIONS_PATH,
 				row.line,
-				`${row.id}: malformed Status cell (want \`Active (<who>, YYYY-MM-DD)\` or \`Superseded by DL-<n> (<who>, YYYY-MM-DD)\`): ${row.status}`,
+				`${row.id}: malformed Status cell (want \`Active (<who>, YYYY-MM-DD)\`, \`Retired (<who>, YYYY-MM-DD)\`, or \`Superseded by DL-<n> (<who>, YYYY-MM-DD)\`): ${row.status}`,
 			);
 			continue;
 		}
