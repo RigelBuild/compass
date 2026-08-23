@@ -41,10 +41,19 @@ import {
 	Fiber,
 	Logger,
 	ManagedRuntime,
+	Metric,
 	Option,
 	Queue,
 } from "effect";
 import type { PublishFrameRequest } from "../gen/compass/v1/agent_gateway_pb";
+import {
+	priorityBatchRetries,
+	priorityFramesLost,
+	priorityRetryDepth,
+	traceFramesLostFailedBatch,
+	traceFramesLostOverflow,
+	traceQueueDepth,
+} from "./otel-metrics";
 import type { TransportRuntime } from "./runtime-channel";
 
 // The bounded trace/session send buffer. Chosen once here: large enough to
@@ -63,7 +72,7 @@ export const PUBLISH_BATCH_MAX = 256;
 // which are dropped on a failed batch, the priority frames are re-enqueued at
 // the front and the batch retried on this schedule; after the last delay they
 // are counted as definitively failed so drain() stays bounded on a dead socket.
-const PRIORITY_BATCH_RETRY_MS: readonly number[] = [50, 200, 800];
+export const PRIORITY_BATCH_RETRY_MS: readonly number[] = [50, 200, 800];
 
 export interface PublishSpine {
 	// Enqueue a trace/session frame. Loss-tolerable: if the trace queue is at the
@@ -171,6 +180,10 @@ export function createPublishSpine(
 			batch.push(priority.shift()!);
 		}
 		const priorityCount = batch.length;
+		// Sample the trace backlog at the moment of the take, BEFORE draining it,
+		// so the gauge reports the depth at the take (the saturation a depth gauge
+		// exists to surface) rather than the post-drain residual (Decision 2 gauge).
+		yield* Metric.set(traceQueueDepth, traceSize());
 		const room = PUBLISH_BATCH_MAX - batch.length;
 		if (room > 0) {
 			const traceFrames = yield* Queue.takeUpTo(traceQ, room);
@@ -215,6 +228,8 @@ export function createPublishSpine(
 			);
 			if (Either.isRight(result)) {
 				priorityRetries = 0;
+				// Successful send resets the pump-scoped retry-depth level.
+				yield* Metric.set(priorityRetryDepth, 0);
 				continue;
 			}
 			// A batch send failed (socket dropped, Runner mid-restart). Trace frames
@@ -222,6 +237,11 @@ export function createPublishSpine(
 			// durable conversation path is a separate awaited unary) and the dropped
 			// frames are counted with the overflow drops.
 			failedBatchFrames += batch.length - priorityCount;
+			// Trace loss on a failed batch (Decision 2 counter, reason=failed_batch).
+			yield* Metric.incrementBy(
+				traceFramesLostFailedBatch,
+				batch.length - priorityCount,
+			);
 			if (priorityCount === 0) continue;
 			// Priority frames (lifecycle/STOPPED — notably the terminal flush) are
 			// NOT loss-tolerable: re-enqueue them at the FRONT and retry the batch on
@@ -232,6 +252,8 @@ export function createPublishSpine(
 			// stops so drain() stays bounded.
 			if (priorityRetries >= PRIORITY_BATCH_RETRY_MS.length) {
 				failedPriorityFrames += priorityCount;
+				// Never-drop priority loss (Decision 2 counter, kept separate).
+				yield* Metric.incrementBy(priorityFramesLost, priorityCount);
 				continue;
 			}
 			priority.unshift(...batch.slice(0, priorityCount));
@@ -239,6 +261,10 @@ export function createPublishSpine(
 			// in [0, length-1] here — index directly, no clamp needed.
 			const delay = PRIORITY_BATCH_RETRY_MS[priorityRetries];
 			priorityRetries++;
+			// A priority-batch retry attempt (monotone counter) + the new
+			// pump-scoped retry-depth level (gauge).
+			yield* Metric.increment(priorityBatchRetries);
+			yield* Metric.set(priorityRetryDepth, priorityRetries);
 			yield* Effect.sleep(Duration.millis(delay));
 		}
 	});
@@ -258,7 +284,12 @@ export function createPublishSpine(
 			// queue the effectful offer evicts the OLDEST, which the offer itself
 			// does not signal. Sync producer, so the read and the offer share one
 			// tick and no take interleaves.
-			if (traceSize() >= TRACE_QUEUE_CAP) dropped++;
+			if (traceSize() >= TRACE_QUEUE_CAP) {
+				dropped++;
+				// Overflow drop (Decision 2 counter, reason=overflow). Sync enqueue
+				// site, so run it on the runtime like the queue offer below.
+				runtime.runSync(Metric.increment(traceFramesLostOverflow));
+			}
 			runtime.runSync(Queue.offer(traceQ, frame));
 			Queue.unsafeOffer(wake, undefined);
 			kick();

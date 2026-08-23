@@ -36,6 +36,7 @@ import {
 	FiberSet,
 	Logger,
 	ManagedRuntime,
+	Metric,
 	Option,
 	Schedule,
 	Scope,
@@ -51,6 +52,7 @@ import {
 } from "./../gen/compass/v1/agent_pb";
 import { AgentSessionState } from "./../gen/compass/v1/compass_pb";
 import type { RunnerTransport } from "./index";
+import { durableAttempts, durableGiveUps } from "./otel-metrics";
 import { getTransportRuntime } from "./runtime-channel";
 
 // Bounded-backoff retry schedule for the durable unary (ms). A transient unary
@@ -183,16 +185,22 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 			frame: toAgentFrame(frame),
 			idempotencyKey,
 		});
-		const send = Effect.tryPromise({
-			try: () =>
-				transport.postConversationFrame(request, {
-					timeoutMs: DURABLE_CALL_TIMEOUT_MS,
+		const send = Metric.increment(durableAttempts).pipe(
+			// Count each durable attempt (initial + every retry). The increment is
+			// INSIDE the unit Effect.retry re-runs, so it ticks once per attempt
+			// (Decision 2 counter, frame_sink.durable_attempts).
+			Effect.zipRight(
+				Effect.tryPromise({
+					try: () =>
+						transport.postConversationFrame(request, {
+							timeoutMs: DURABLE_CALL_TIMEOUT_MS,
+						}),
+					// Preserve the raw rejection (ConnectError) in the failure channel — do
+					// NOT let tryPromise wrap it in an UnknownException, so causeError can
+					// hand the original error back at the reject seam.
+					catch: (err) => err,
 				}),
-			// Preserve the raw rejection (ConnectError) in the failure channel — do
-			// NOT let tryPromise wrap it in an UnknownException, so causeError can
-			// hand the original error back at the reject seam.
-			catch: (err) => err,
-		}).pipe(
+			),
 			Effect.retry(
 				Schedule.fromDelays(
 					DURABLE_RETRY_BACKOFF_MS[0],
@@ -207,9 +215,16 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 		// synchronously, so the fiber (and this bridge) are wired into the set
 		// before launchDurable returns.
 		const bridged = Effect.flatMap(Effect.exit(send), (exit) =>
-			Effect.sync(() =>
-				onSettle(Exit.isFailure(exit) ? causeError(exit.cause) : undefined),
-			),
+			Effect.gen(function* () {
+				if (Exit.isFailure(exit)) {
+					// Definitive give-up: retry budget exhausted (Decision 2 counter,
+					// frame_sink.durable_give_ups). Only the error arm — never success.
+					yield* Metric.increment(durableGiveUps);
+					onSettle(causeError(exit.cause));
+				} else {
+					onSettle(undefined);
+				}
+			}),
 		);
 		runtime.runSync(FiberSet.run(inflight, bridged));
 	}
