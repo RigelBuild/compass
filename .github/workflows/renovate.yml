@@ -1,8 +1,8 @@
 # Self-hosted Renovate for compass (RIG-2432) — the GitHub Actions half of the
 # migration off Dependabot. This is a plain GHA job that reuses ci.yml's exact
 # two-phase toolchain bootstrap (install-nix-action + gate-tools.nix), builds the
-# vendored devenv fork onto PATH (compass CI never provisions a PATH `devenv` —
-# its only devenv invocations run the fork CLI by path), mints a per-run GitHub
+# devenv CLI onto PATH from the devenv input the root devenv.lock pins (compass
+# CI never provisions a PATH `devenv`), mints a per-run GitHub
 # App installation token, runs a preflight probe, then runs a pinned `bunx
 # renovate`. Design: docs/designs/platform/compass-renovate-migration.md.
 #
@@ -51,11 +51,11 @@ jobs:
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # Same trust posture as ci.yml:165-168 — name the two caches the forks
-          # legitimately use in this reviewed file rather than delegating via
+          # Same trust posture as ci.yml — name the two caches the devenv build
+          # legitimately uses in this reviewed file rather than delegating via
           # `accept-flake-config = true`, which would let any evaluated flake
-          # (forks/devenv/flake.nix carries a nixConfig block) inject its own
-          # substituter + trusted key.
+          # (the devenv flake this build fetches carries a nixConfig
+          # block) inject its own substituter + trusted key.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
@@ -79,20 +79,24 @@ jobs:
             echo "$store/bin" >>"$GITHUB_PATH"
           done
 
-      - name: Put the vendored devenv fork on PATH
+      - name: Put the devenv CLI on PATH
         # The one binary the toolchain bootstrap does NOT provide: compass CI
-        # never puts a `devenv` on PATH — its only devenv invocations run the
-        # vendored fork's CLI by path (ci.yml, agent-image/moon.yml, devenv.nix).
-        # refresh-devenv-nixpkgs.ts shells `devenv update nixpkgs` from PATH, so
-        # build the SAME fork CLI (the flake exports it as packages.<system>.devenv)
-        # and symlink it into a dir prepended to $GITHUB_PATH. A nixpkgs devenv
-        # would be a SECOND, divergent devenv — rejected on fork-posture grounds
-        # (design §Alternatives D). NOTE: when forks-reversal (RIG-2336) removes
-        # forks/devenv, repoint this to the pinned github:RigelBuild/devenv input
-        # and drop the fork-fence packageRule — tracked as the migration's
-        # post-reversal cleanup.
+        # never puts a `devenv` on PATH. refresh-devenv-nixpkgs.ts shells
+        # `devenv update nixpkgs` from PATH against the ROOT devenv.lock, so the
+        # CLI MUST be the exact devenv that lock is written by. Resolve its
+        # source straight from devenv.lock at runtime — owner/repo/rev of the
+        # `devenv` node — and build `github:<owner>/<repo>/<rev>#devenv`, so this
+        # step can never drift from the shell and carries no second, divergent
+        # devenv definition: it tracks whatever devenv source the root lock names
+        # with no edit here.
         run: |
-          out=$(nix build --no-link --print-out-paths path:forks/devenv#devenv)
+          src=$(jq -er '.nodes.devenv.locked as $d
+            | "github:\($d.owner // "" | select(. != "") // error("no owner"))/\($d.repo // "" | select(. != "") // error("no repo"))/\($d.rev // "" | select(. != "") // error("no rev"))#devenv"' \
+            devenv.lock) || {
+            echo "::error::could not resolve devenv source from devenv.lock"
+            exit 1
+          }
+          out=$(nix build --no-link --print-out-paths "$src")
           shimdir="$RUNNER_TEMP/devenv-shim/bin"
           mkdir -p "$shimdir"
           ln -s "$out/bin/devenv" "$shimdir/devenv"
