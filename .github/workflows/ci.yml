@@ -887,20 +887,41 @@ jobs:
     # tier just joins `needs` below.
     #
     # The `if` has two parts AND-ed together, and both are load-bearing:
-    #   - `always()` so the rollup runs even when a needed job FAILED. Without it
-    #     the default `success()` gate would SKIP this job when a work job failed,
-    #     and branch protection treats a skipped required check as passing — so a
-    #     red work job would be mergeable. `always()` forces the rollup to run and
-    #     inspect each result, turning any non-success into a red required check.
+    #   - `!cancelled()`, not the default `success()` and not `always()`. The
+    #     default `success()` gate would SKIP this job when a work job FAILED, and
+    #     branch protection treats a skipped required check as passing — so a red
+    #     work job would be mergeable. `!cancelled()` still runs on a work-job
+    #     failure and inspects each result below, turning any non-success into a
+    #     red required check. It differs from `always()` in the one case that
+    #     matters: when the RUN is cancelled — every push to a ref supersedes the
+    #     prior in-flight run via the `cancel-in-progress` concurrency above,
+    #     which cancels both work jobs — `always()` would STILL run this rollup,
+    #     see `needs.gates.result == 'cancelled'`, and red the required `CI`
+    #     check on that superseded commit. On a busy main that is a false red on
+    #     nearly every intermediate merge. `!cancelled()` instead SKIPS the
+    #     rollup on a cancelled run, so a superseded commit's `CI` check is
+    #     neutral, never red; the ref's tip run is never superseded, so it always
+    #     gets a real verdict and the merge gate is unaffected. A per-job cancel
+    #     that is NOT a run supersede (a work-job `timeout-minutes`) does not set
+    #     the run's cancelled state, so the rollup still runs and correctly reds
+    #     on that `cancelled` result below. The one deliberate narrowing vs
+    #     `always()`: manually cancelling the TIP run (a human clicking Cancel on
+    #     the PR head's own run, not a supersede) also lands in the cancelled
+    #     state, so the rollup skips and the required `CI` check goes neutral —
+    #     i.e. mergeable without a verdict. That takes a deliberate human action
+    #     against one's own gating run and is the accepted, standard `!cancelled()`
+    #     tradeoff; `always()` would have red'd it instead.
     #   - the SAME no-op-`edited` guard the work jobs carry, so on a PR title/body
     #     edit that did not move the base — where both work jobs skip — this rollup
     #     skips too, rather than running and failing on `skipped != success`. A
-    #     bare `always()` would red the required check on a legitimate no-op edit.
-    # `always()` must be parenthesized: `&&` binds tighter than `||`, so without
-    # the parens the trailing `|| changes.base != null` would detach from the AND.
+    #     bare `!cancelled()` would red the required check on a legitimate no-op
+    #     edit.
+    # `!cancelled()` must be parenthesized against the OR group: `&&` binds tighter
+    # than `||`, so without the parens the trailing `|| changes.base != null` would
+    # detach from the AND.
     needs: [gates, dogfood-e2e]
     if: >-
-      always() && (
+      !cancelled() && (
       github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
       github.event.changes.base != null )
@@ -909,10 +930,16 @@ jobs:
       - name: Require every work job to have succeeded
         # `needs.<job>.result` is one of success | failure | cancelled | skipped.
         # Only `success` passes. This step runs only when the rollup's own `if`
-        # let it (see above): the no-op-`edited` case skips the whole rollup, so a
-        # work-job `skipped` reaching here means a real dependency skip, not the
-        # benign no-op — still correctly a non-success. Any failure or
-        # cancellation reds the one required check.
+        # let it (see above): a cancelled RUN skips the whole rollup, and the
+        # no-op-`edited` case skips it too. So the only non-success that can
+        # actually reach this step is a work-job `failure` or a per-job
+        # `cancelled` (a work-job `timeout-minutes`). A `skipped` result cannot
+        # reach here: `gates`/`dogfood-e2e` have no `needs`, so their sole skip
+        # path is the edited-guard — which skips this rollup through the identical
+        # guard. The `!= success` check below still covers `skipped` as a
+        # belt-and-suspenders backstop, but no `needs` relationship in this
+        # workflow can produce it. Any failure or per-job cancellation reds the
+        # one required check.
         run: |
           gates='${{ needs.gates.result }}'
           dogfood='${{ needs.dogfood-e2e.result }}'
