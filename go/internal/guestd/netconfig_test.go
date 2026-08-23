@@ -123,6 +123,22 @@ func TestLeaseToConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("present-but-empty search list falls back to domain name", func(t *testing.T) {
+		ack := buildACK(t,
+			dhcpv4.WithYourIP(net.IPv4(10, 0, 0, 2)),
+			dhcpv4.WithNetmask(net.CIDRMask(24, 32)),
+			dhcpv4.WithOption(dhcpv4.OptDomainName("fallback.example")),
+			dhcpv4.WithOption(dhcpv4.OptDomainSearch(&rfc1035label.Labels{Labels: []string{}})),
+		)
+		cfg, err := leaseToConfig(ack)
+		if err != nil {
+			t.Fatalf("leaseToConfig: %v", err)
+		}
+		if len(cfg.searchDomains) != 1 || cfg.searchDomains[0] != "fallback.example" {
+			t.Fatalf("searchDomains = %v, want [fallback.example] (empty search must not shadow domain name)", cfg.searchDomains)
+		}
+	})
+
 	t.Run("no gateway leaves gateway nil", func(t *testing.T) {
 		ack := buildACK(t,
 			dhcpv4.WithYourIP(net.IPv4(10, 0, 0, 2)),

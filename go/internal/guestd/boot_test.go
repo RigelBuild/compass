@@ -52,19 +52,24 @@ func (f *fakeMount) Mount() error {
 	return f.err
 }
 
-// newSteps wires a bootSteps whose api/net/mount stages record into rec and
-// whose serve step signals reached (so a test can gate on serve being entered
-// without polling the recorder across goroutines), captures the Health service
-// it received, and then blocks until ctx is cancelled — serve as the terminal
-// step, exactly as production does. served holds the service serve was handed,
-// or nil if serve was never reached.
-func newSteps(rec *recorder, apiErr, netErr, mountErr error) (bootSteps, **healthService, chan struct{}) {
+// newSteps wires a bootSteps whose api/readCmdline/net/mount stages record into
+// rec and whose serve step signals reached (so a test can gate on serve being
+// entered without polling the recorder across goroutines), captures the Health
+// service it received, and then blocks until ctx is cancelled — serve as the
+// terminal step, exactly as production does. served holds the service serve was
+// handed, or nil if serve was never reached. cmdline is the kernel command line
+// the readCmdline step returns; cmdlineErr, when non-nil, makes that step fail.
+func newSteps(rec *recorder, apiErr, netErr, mountErr, cmdlineErr error, cmdline string) (bootSteps, **healthService, chan struct{}) {
 	served := new(*healthService)
 	reached := make(chan struct{})
 	steps := bootSteps{
 		mountAPIFilesystems: func() error {
 			rec.mark("api")
 			return apiErr
+		},
+		readCmdline: func() ([]byte, error) {
+			rec.mark("cmdline")
+			return []byte(cmdline), cmdlineErr
 		},
 		net:       &fakeNet{rec: rec, err: netErr},
 		workspace: &fakeMount{rec: rec, err: mountErr},
@@ -81,12 +86,12 @@ func newSteps(rec *recorder, apiErr, netErr, mountErr error) (bootSteps, **healt
 
 func TestBootServesHealthOnlyAfterNetAndMount(t *testing.T) {
 	rec := &recorder{}
-	steps, served, reached := newSteps(rec, nil, nil, nil)
+	steps, served, reached := newSteps(rec, nil, nil, nil, nil, "compass.vsock_port=1024")
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, config{vsockPort: 1024, guestdVersion: "test-ver"}, steps)
+		done <- run(ctx, config{guestdVersion: "test-ver"}, steps)
 	}()
 
 	// Gate on serve being entered (it closes reached before blocking on ctx),
@@ -100,8 +105,9 @@ func TestBootServesHealthOnlyAfterNetAndMount(t *testing.T) {
 		t.Fatalf("run returned %v, want context.Canceled (clean shutdown after serve)", err)
 	}
 
-	// Order: api, net, mount, serve — serve strictly last.
-	wantOrder := []string{"api", "net", "mount", "serve"}
+	// Order: api, cmdline, net, mount, serve — the cmdline read follows the API
+	// mount (§(d) step 1: /proc must be mounted first), and serve is last.
+	wantOrder := []string{"api", "cmdline", "net", "mount", "serve"}
 	if len(rec.steps) != len(wantOrder) {
 		t.Fatalf("boot ran steps %v, want %v", rec.steps, wantOrder)
 	}
@@ -126,9 +132,9 @@ func TestBootServesHealthOnlyAfterNetAndMount(t *testing.T) {
 
 func TestBootFailsClosedOnNetError(t *testing.T) {
 	rec := &recorder{}
-	steps, served, _ := newSteps(rec, nil, errors.New("dhcp timed out"), nil)
+	steps, served, _ := newSteps(rec, nil, errors.New("dhcp timed out"), nil, nil, "compass.vsock_port=1024")
 
-	err := run(t.Context(), config{vsockPort: 1024}, steps)
+	err := run(t.Context(), config{}, steps)
 	if err == nil {
 		t.Fatal("run with failing net returned nil, want fail-closed error")
 	}
@@ -147,9 +153,9 @@ func TestBootFailsClosedOnNetError(t *testing.T) {
 
 func TestBootFailsClosedOnMountError(t *testing.T) {
 	rec := &recorder{}
-	steps, served, _ := newSteps(rec, nil, nil, errors.New("virtiofs mount failed"))
+	steps, served, _ := newSteps(rec, nil, nil, errors.New("virtiofs mount failed"), nil, "compass.vsock_port=1024")
 
-	err := run(t.Context(), config{vsockPort: 1024}, steps)
+	err := run(t.Context(), config{}, steps)
 	if err == nil {
 		t.Fatal("run with failing mount returned nil, want fail-closed error")
 	}
@@ -168,9 +174,9 @@ func TestBootFailsClosedOnMountError(t *testing.T) {
 
 func TestBootFailsClosedOnAPIMountError(t *testing.T) {
 	rec := &recorder{}
-	steps, served, _ := newSteps(rec, errors.New("proc mount failed"), nil, nil)
+	steps, served, _ := newSteps(rec, errors.New("proc mount failed"), nil, nil, nil, "compass.vsock_port=1024")
 
-	err := run(t.Context(), config{vsockPort: 1024}, steps)
+	err := run(t.Context(), config{}, steps)
 	if err == nil {
 		t.Fatal("run with failing API mount returned nil, want fail-closed error")
 	}
@@ -180,5 +186,90 @@ func TestBootFailsClosedOnAPIMountError(t *testing.T) {
 	}
 	if *served != nil {
 		t.Fatal("a health service was constructed despite API mount failure")
+	}
+}
+
+// TestBootReadsCmdlineOnlyAfterAPIMount is the regression for the ordering
+// inversion where the kernel cmdline was read before /proc was mounted. The
+// initramfs hands over a bare root, so /proc/cmdline is unreadable until
+// mountAPIFilesystems runs (§(d) step 1). A readCmdline that hard-fails unless
+// the api-mount step ran first proves the read is inside the sequence, after the
+// mount — and that its failure fail-closes the boot before net/mount/serve.
+func TestBootReadsCmdlineOnlyAfterAPIMount(t *testing.T) {
+	rec := &recorder{}
+	steps, served, reached := newSteps(rec, nil, nil, nil, nil, "compass.vsock_port=1024")
+	// Replace readCmdline with one that hard-fails if /proc is not mounted yet,
+	// modelling the bare-root reality: the read must follow the api mount. If the
+	// old ordering (read before mount) regressed, this returns an error and the
+	// boot fail-closes before serve — caught by the assertions below.
+	steps.readCmdline = func() ([]byte, error) {
+		rec.mark("cmdline")
+		if !rec.ran("api") {
+			return nil, errors.New("/proc/cmdline: no such file or directory")
+		}
+		return []byte("compass.vsock_port=1024"), nil
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- run(ctx, config{}, steps) }()
+
+	// Gate on serve being entered — reaching it proves the cmdline read (and
+	// net+mount) all succeeded, which only happens if the read followed the
+	// api mount. Then cancel to let run return.
+	<-reached
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("run returned %v, want context.Canceled after clean serve", err)
+	}
+
+	// The cmdline read must appear immediately after the api mount, before net.
+	if len(rec.steps) < 2 || rec.steps[0] != "api" || rec.steps[1] != "cmdline" {
+		t.Fatalf("cmdline was not read right after the api mount; order was %v", rec.steps)
+	}
+	if *served == nil {
+		t.Fatal("serve was reached but received no health service")
+	}
+}
+
+// TestBootFailsClosedOnCmdlineReadError asserts an unreadable cmdline aborts the
+// boot right after the api mount — before net, mount, or serve — and constructs
+// no Health service. This is the fail-closed half of the ordering fix: even with
+// /proc mounted, a genuinely unreadable cmdline must not let the boot proceed.
+func TestBootFailsClosedOnCmdlineReadError(t *testing.T) {
+	rec := &recorder{}
+	steps, served, _ := newSteps(rec, nil, nil, nil, errors.New("cmdline unreadable"), "")
+
+	err := run(t.Context(), config{}, steps)
+	if err == nil {
+		t.Fatal("run with unreadable cmdline returned nil, want fail-closed error")
+	}
+	if !rec.ran("api") {
+		t.Fatalf("api mount must run before the cmdline read; order was %v", rec.steps)
+	}
+	if rec.ran("net") || rec.ran("mount") || rec.ran("serve") {
+		t.Fatalf("a step ran after the cmdline read failed; order was %v", rec.steps)
+	}
+	if *served != nil {
+		t.Fatal("a health service was constructed despite a cmdline read failure")
+	}
+}
+
+// TestBootFailsClosedOnBadCmdline asserts a cmdline missing compass.vsock_port
+// aborts the boot after the api mount and before net — parseVsockPort's error is
+// surfaced as a fail-closed boot error.
+func TestBootFailsClosedOnBadCmdline(t *testing.T) {
+	rec := &recorder{}
+	steps, served, _ := newSteps(rec, nil, nil, nil, nil, "console=ttyS0")
+
+	err := run(t.Context(), config{}, steps)
+	if err == nil {
+		t.Fatal("run with a portless cmdline returned nil, want fail-closed error")
+	}
+	if rec.ran("net") || rec.ran("mount") || rec.ran("serve") {
+		t.Fatalf("a step ran after a bad cmdline; order was %v", rec.steps)
+	}
+	if *served != nil {
+		t.Fatal("a health service was constructed despite a bad cmdline")
 	}
 }

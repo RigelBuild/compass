@@ -47,9 +47,10 @@ type workspaceMounter interface {
 	Mount() error
 }
 
-// config carries the resolved boot parameters.
+// config carries the resolved boot parameters that are known before the boot
+// sequence starts. The vsock port is NOT here: it is read from the kernel
+// cmdline inside run(), after /proc is mounted (§(d) step 1).
 type config struct {
-	vsockPort     uint32
 	guestdVersion string
 }
 
@@ -58,18 +59,49 @@ type config struct {
 // ordering/fail-closed tests supply fakes and assert the gate.
 type bootSteps struct {
 	mountAPIFilesystems func() error
-	net                 netProvisioner
-	workspace           workspaceMounter
+	// readCmdline returns the kernel command line. It is a step, not a
+	// pre-computed value, because /proc/cmdline is only readable AFTER
+	// mountAPIFilesystems mounts /proc — §(d) step 1 fixes that order, and the
+	// initramfs hands over a bare root with no /proc. Injectable so a test can
+	// assert the read happens after the api-mount step, not before.
+	readCmdline func() ([]byte, error)
+	net         netProvisioner
+	workspace   workspaceMounter
 	// serve receives the fully-provisioned Health service and serves it until
 	// ctx is cancelled. It is the LAST step: reaching it is the proof that net
 	// and mount both succeeded.
 	serve func(ctx context.Context, port uint32, svc *healthService) error
 }
 
-// Run is the production entry point: it reads the vsock port from the kernel
-// cmdline, wires the real Linux boot steps, and drives the fail-closed sequence.
+// Run is the production entry point: it wires the real Linux boot steps and
+// drives the fail-closed sequence. The vsock port is read from the kernel
+// cmdline inside the sequence, after /proc is mounted.
 func Run(ctx context.Context, log *slog.Logger) error {
-	cmdline, err := os.ReadFile(procCmdlinePath)
+	steps := bootSteps{
+		mountAPIFilesystems: mountAPIFilesystems,
+		readCmdline:         func() ([]byte, error) { return os.ReadFile(procCmdlinePath) },
+		net:                 &linuxNetProvisioner{iface: defaultNetIface, log: log},
+		workspace:           &virtioFSMounter{tag: workspaceTag, target: workspaceTarget},
+		serve:               serveVsock,
+	}
+	return run(ctx, config{guestdVersion: Version}, steps)
+}
+
+// run executes the fail-closed boot sequence in the exact order §(d) fixes:
+// (1) API filesystems, (2) read the vsock port from the now-readable kernel
+// cmdline, (3) networking, (4) virtio-fs workspace, (5) serve the vsock Health
+// handshake, (6) idle inside serve until ctx is cancelled. Any step error
+// aborts the sequence before the next one runs, so a failing provisioner never
+// reaches the mount and a failing mount never reaches the server — Health is
+// served only after net and mount both succeed. The cmdline read is inside the
+// sequence, after the API mount, because /proc is not readable before it.
+func run(ctx context.Context, cfg config, steps bootSteps) error {
+	if err := steps.mountAPIFilesystems(); err != nil {
+		return fmt.Errorf("mounting API filesystems: %w", err)
+	}
+
+	// /proc is mounted now, so the kernel cmdline is readable — §(d) step 1.
+	cmdline, err := steps.readCmdline()
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", procCmdlinePath, err)
 	}
@@ -78,25 +110,6 @@ func Run(ctx context.Context, log *slog.Logger) error {
 		return err
 	}
 
-	steps := bootSteps{
-		mountAPIFilesystems: mountAPIFilesystems,
-		net:                 &linuxNetProvisioner{iface: defaultNetIface, log: log},
-		workspace:           &virtioFSMounter{tag: workspaceTag, target: workspaceTarget},
-		serve:               serveVsock,
-	}
-	return run(ctx, config{vsockPort: port, guestdVersion: Version}, steps)
-}
-
-// run executes the fail-closed boot sequence in the exact order §(d) fixes:
-// (1) API filesystems, (2) networking, (3) virtio-fs workspace, (4) serve the
-// vsock Health handshake, (5) idle inside serve until ctx is cancelled. Any step
-// error aborts the sequence before the next one runs, so a failing provisioner
-// never reaches the mount and a failing mount never reaches the server — Health
-// is served only after net and mount both succeed.
-func run(ctx context.Context, cfg config, steps bootSteps) error {
-	if err := steps.mountAPIFilesystems(); err != nil {
-		return fmt.Errorf("mounting API filesystems: %w", err)
-	}
 	if err := steps.net.Provision(ctx); err != nil {
 		return fmt.Errorf("provisioning network: %w", err)
 	}
@@ -112,5 +125,5 @@ func run(ctx context.Context, cfg config, steps bootSteps) error {
 		netProvisioned:   true,
 		workspaceMounted: true,
 	}
-	return steps.serve(ctx, cfg.vsockPort, svc)
+	return steps.serve(ctx, port, svc)
 }

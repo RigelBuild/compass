@@ -41,6 +41,12 @@ var apiFilesystems = []apiFilesystem{
 // mounted. An already-mounted target (EBUSY) is tolerated — a re-exec or an
 // initramfs that pre-mounted one must not hard-fail the boot — but any other
 // mount failure is fatal.
+//
+// The mounts pass flags=0 deliberately: nosuid/nodev/noexec harden a privilege
+// boundary, and this single-tenant guest has none — the agent already runs as
+// root and guestd is PID 1, so there is nothing those flags would defend
+// against. Adding them to an as-yet-unbooted path (T4 proves the boot) would be
+// risk without benefit.
 func mountAPIFilesystems() error {
 	for _, fs := range apiFilesystems {
 		if err := os.MkdirAll(fs.target, 0o750); err != nil {
@@ -66,7 +72,10 @@ type virtioFSMounter struct {
 
 // Mount mounts the virtio-fs share (tag → target, type virtiofs). The target
 // directory is created if missing. An already-mounted target (EBUSY) is
-// tolerated; any other failure is fatal.
+// tolerated; any other failure is fatal. In the PID-1 single-boot path guestd
+// is the only thing that mounts /workspace, exactly once, so a tolerated EBUSY
+// cannot mask a foreign pre-mount here — the concern that would apply to a
+// re-runnable mounter does not arise.
 func (m *virtioFSMounter) Mount() error {
 	if err := os.MkdirAll(m.target, 0o750); err != nil {
 		return fmt.Errorf("creating workspace mount point %s: %w", m.target, err)

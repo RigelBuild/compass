@@ -47,10 +47,12 @@ func leaseToConfig(ack *dhcpv4.DHCPv4) (netConfig, error) {
 		return netConfig{}, fmt.Errorf("dhcp ack assigned address %s is not IPv4", ip)
 	}
 
-	// The subnet mask fixes the prefix length. passt always offers one; absent
-	// or malformed, fall back to a /32 host route rather than guessing a
-	// classful default — a /32 still lets the default route reach the gateway
-	// via on-link scope.
+	// The subnet mask fixes the prefix length. passt always offers one (§(c));
+	// absent or malformed, fall back to a /32 host route rather than guessing a
+	// classful default. A /32 leaves a gateway outside the host route off-link,
+	// so applyNetConfig's default route would fail-close (ENETUNREACH) — correct
+	// for a spike where the mask is always present, and a loud failure beats a
+	// wrong guessed prefix.
 	mask := ack.SubnetMask()
 	if len(mask) != net.IPv4len {
 		mask = net.CIDRMask(32, 32)
@@ -63,9 +65,11 @@ func leaseToConfig(ack *dhcpv4.DHCPv4) (netConfig, error) {
 		cfg.gateway = routers[0]
 	}
 
-	// Search list: prefer the explicit DNS domain search option; fall back to
-	// the single Domain Name. Either can be absent.
-	if search := ack.DomainSearch(); search != nil {
+	// Search list: prefer the explicit DNS domain search option when it carries
+	// labels; fall back to the single Domain Name. A present-but-empty search
+	// option must not shadow a usable Domain Name, so guard on content, not just
+	// presence. Either can be absent.
+	if search := ack.DomainSearch(); search != nil && len(search.Labels) > 0 {
 		cfg.searchDomains = append(cfg.searchDomains, search.Labels...)
 	} else if dn := ack.DomainName(); dn != "" {
 		cfg.searchDomains = append(cfg.searchDomains, dn)
