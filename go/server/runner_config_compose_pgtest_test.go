@@ -34,6 +34,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"math/rand/v2"
 	"path/filepath"
 	"testing"
 	"time"
@@ -47,15 +48,26 @@ import (
 	"github.com/RigelBuild/compass/go/internal/store"
 )
 
-// buildValidConfigBundle produces a minimal gzip+tar config bundle that passes the
-// store door grammar (validateAndHashConfigBundle): one whitelisted skills/ member
-// with a deterministic mtime, spanning more than one FetchAgentConfig chunk frame
-// so the reassembly loop is exercised. Returned bytes are what a real
-// `compass agent-config push` would send.
+// buildValidConfigBundle produces a gzip+tar config bundle that passes the store
+// door grammar (validateAndHashConfigBundle): one whitelisted skills/ member with
+// a deterministic mtime. FetchAgentConfig chunks the STORED bytes — the gzip
+// stream, not the decompressed content — so the member is filled with
+// incompressible bytes (a deterministic PRNG, fixed seed) sized so the compressed
+// bundle exceeds the door's 512 KiB chunk size several times over. The stream
+// then carries multiple chunk frames, exercising drainConfigStream's cross-frame
+// reassembly; a compressible filler would collapse to a single chunk and leave
+// that loop uncovered. Returned bytes are what a real `compass agent-config push`
+// would send.
 func buildValidConfigBundle(t *testing.T) []byte {
 	t.Helper()
-	// > configChunkBytes (512 KiB) of content so the stream chunks.
-	body := bytes.Repeat([]byte("compass-config-"), 512*1024/10)
+	// ~1.5 MiB of incompressible content, so the gzip-compressed STORED bundle
+	// (what the door chunks) stays above 512 KiB by ~3x and streams as several
+	// chunk frames. A fixed seed keeps the bundle — and thus its content-hash
+	// version — deterministic across runs.
+	body := make([]byte, 3*512*1024)
+	if _, err := rand.NewChaCha8([32]byte{1}).Read(body); err != nil {
+		t.Fatalf("fill random bundle body: %v", err)
+	}
 	var buf bytes.Buffer
 	gw := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gw)
@@ -95,14 +107,17 @@ func buildValidConfigBundle(t *testing.T) []byte {
 }
 
 // drainConfigStream reassembles a FetchAgentConfig server stream into (version,
-// bundle): the first frame carries the version, subsequent frames carry the
-// tarball in receive order. Fails on a chunk before the version frame.
-func drainConfigStream(t *testing.T, stream *connect.ServerStreamForClient[compassv1internal.FetchAgentConfigResponse]) (string, []byte) {
+// bundle, chunkFrames): the first frame carries the version, subsequent frames
+// carry the tarball in receive order, and chunkFrames counts the chunk frames so
+// a caller can assert the bundle actually streamed in more than one. Fails on a
+// chunk before the version frame.
+func drainConfigStream(t *testing.T, stream *connect.ServerStreamForClient[compassv1internal.FetchAgentConfigResponse]) (string, []byte, int) {
 	t.Helper()
 	var (
-		version    string
-		gotVersion bool
-		bundle     []byte
+		version     string
+		gotVersion  bool
+		bundle      []byte
+		chunkFrames int
 	)
 	for stream.Receive() {
 		switch frame := stream.Msg().GetFrame().(type) {
@@ -113,13 +128,14 @@ func drainConfigStream(t *testing.T, stream *connect.ServerStreamForClient[compa
 			if !gotVersion {
 				t.Fatal("received a chunk frame before the version frame")
 			}
+			chunkFrames++
 			bundle = append(bundle, frame.Chunk...)
 		}
 	}
 	if err := stream.Err(); err != nil {
 		t.Fatalf("FetchAgentConfig stream: %v", err)
 	}
-	return version, bundle
+	return version, bundle, chunkFrames
 }
 
 // TestRunnerFetchesConfigThroughNetworkDoor composes the fleet-config delivery seam
@@ -185,7 +201,7 @@ func TestRunnerFetchesConfigThroughNetworkDoor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FetchAgentConfig open: %v", err)
 	}
-	gotVersion, gotBundle := drainConfigStream(t, stream)
+	gotVersion, gotBundle, chunkFrames := drainConfigStream(t, stream)
 	_ = stream.Close()
 
 	if gotVersion != wantVersion {
@@ -193,5 +209,8 @@ func TestRunnerFetchesConfigThroughNetworkDoor(t *testing.T) {
 	}
 	if !bytes.Equal(gotBundle, wantBundle) {
 		t.Fatalf("reassembled bundle (%d bytes) != stored bundle (%d bytes) — buildNetworkServer must wire the real config store into the runner door", len(gotBundle), len(wantBundle))
+	}
+	if chunkFrames < 2 {
+		t.Fatalf("bundle streamed in %d chunk frame(s); want >= 2 so cross-frame reassembly is exercised (stored bundle %d bytes, 512 KiB chunk size)", chunkFrames, len(wantBundle))
 	}
 }
