@@ -91,7 +91,7 @@ jobs:
         # with no edit here.
         run: |
           src=$(jq -er '.nodes.devenv.locked as $d
-            | "github:\($d.owner // error("no owner"))/\($d.repo // error("no repo"))/\($d.rev // error("no rev"))#devenv"' \
+            | "github:\($d.owner // "" | select(. != "") // error("no owner"))/\($d.repo // "" | select(. != "") // error("no repo"))/\($d.rev // "" | select(. != "") // error("no rev"))#devenv"' \
             devenv.lock) || {
             echo "::error::could not resolve devenv source from devenv.lock"
             exit 1
