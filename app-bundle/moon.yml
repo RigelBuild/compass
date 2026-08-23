@@ -1,9 +1,10 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
 # compass-app-bundle (app-bundle/): builds the versioned Compass native-app
-# release tarball (compass-app-<version>-linux-amd64.tar.gz) — the A1/A2 bundle
-# of the gtk3 shell, its four pure-Go sidecars, the pinned postgres tooling, and
-# the UI dist. build.sh owns the realize/build/stage/sanity/tar pipeline.
+# release tarball (compass-app-<version>-linux-amd64.tar.gz) — the thin CLIENT
+# bundle of the gtk3 shell (compass-app), the UI dist, the desktop file, and
+# LICENSE. No sidecar binaries, no postgres tooling. build.sh owns the
+# realize/build/stage/sanity/tar pipeline.
 #
 # A heavy-nix-build-as-moon-project, mirroring agent-image/: the build realizes
 # the WebKitGTK cc/pkg-config closure, so it is registered in .moon/workspace.yml
@@ -21,9 +22,9 @@ workspace:
 
 tasks:
   build:
-    # build.sh realizes the pinned nix outputs, links the five binaries, stages
-    # the A2 layout, runs the sanity gate, and tars the bundle. Runs from
-    # app-bundle/ (moon's default project cwd).
+    # build.sh realizes the pinned nix outputs, links the one gtk3 binary,
+    # stages the thin client layout, runs the sanity gate, and tars the bundle.
+    # Runs from app-bundle/ (moon's default project cwd).
     #
     # cache:false — nix owns its store-path caching and the git-sha stamp makes
     # every commit a distinct artifact; moon must not false-green a build it did
@@ -35,11 +36,12 @@ tasks:
       runInCI: true
     outputs:
       - 'compass-app-*-linux-amd64.tar.gz'
-    # The packaging closure. `/go/**` covers every bundled binary's source
-    # (cmd + internal + server/gen/events), excluding tests; the UI dist is
-    # covered through the compass-ui:build deps edge (no /apps/ui/src/** belt —
-    # moon schedules dependents of affected projects). A leading `/` is
-    # workspace-root-relative; the bare globs are this project's own tree.
+    # The packaging closure. `/go/**` covers the gtk3 shell's source (cmd + the
+    # internal packages it imports, e.g. go/internal/bridge), excluding tests;
+    # the UI dist is covered through the compass-ui:build deps edge (no
+    # /apps/ui/src/** belt — moon schedules dependents of affected projects). A
+    # leading `/` is workspace-root-relative; the bare globs are this project's
+    # own tree.
     # gtk-e2e-env.nix is realized directly by build.sh (the cc/pkg-config env
     # every ELF is rpathed against); gtk-closure.nix + devenv.lock are pulled in
     # transitively (imported/read by the nix files) and listed explicitly
@@ -57,49 +59,10 @@ tasks:
       - '/devenv.lock'
       - '/LICENSE'
       - 'build.sh'
-      - 'bundle-env.nix'
       - 'compass.desktop'
 
-  smoke:
-    # The automated packaged-artifact bring-up gate (T6.5): unpack THIS build's
-    # tarball and drive the packaged postgres + server binaries to
-    # GetServerInfo-ready — stack.spawnChain steps 1-4, the T4 embedded smoke
-    # minus the two podman legs (agent image + compass-runner enroll). Those
-    # legs need rootless podman + GHCR, which on CI live only in the privileged
-    # dogfood-e2e job, not the bare gates runner this bundle task rides; wiring
-    # the bundle there would be a ci.yml edit the frozen packaging design forbids
-    # (A4). So this gate covers the podman-free bring-up automatically and
-    # app-bundle/SMOKE.md carries the runner/board residue as a manual runbook.
-    #
-    # Why it catches what compass-go:test + dogfood-e2e cannot: both bring the
-    # stack up from devenv-PATH binaries, where postgres share/ + lib/ sit beside
-    # bin/ in one nix store — so a bundle that staged only bin/ still passes
-    # there. This drives the PACKAGED tree (share + lib as separate store
-    # symlinks) from the tarball, so a staging regression (the defect T6.5 found)
-    # reds here and only here.
-    #
-    # The `bundlesmoke`-tagged test lives in the go module (go/bundlesmoke); run
-    # it with `go -C` so it resolves go.mod, handing it this project's dir via
-    # COMPASS_BUNDLE_DIR so resolveTarball globs the one artifact `build` just
-    # produced. `-count 1` (space, not `-count=1`: moon splits an arg on `=`, so
-    # the `=1` form parses as a bare `-count` plus a stray `=1`) so a cached PASS
-    # never stands in for a fresh bring-up; -timeout exceeds the test's own
-    # smokeBudget so a wedge surfaces as the test's legible phase error, not an
-    # opaque binary kill.
-    command: 'go -C ../go test -tags "unix bundlesmoke" -count 1 -timeout 5m ./bundlesmoke/'
-    deps: ['build']
-    env:
-      # $projectRoot is app-bundle/'s ABSOLUTE path. It must be absolute, not
-      # '.': `go test` runs the test binary with its cwd set to the package dir
-      # (go/bundlesmoke), so a relative dot would glob there, not here.
-      COMPASS_BUNDLE_DIR: '$projectRoot'
-    options:
-      cache: false
-      runInCI: true
-      runFromWorkspaceRoot: false
-
   ci:
-    deps: ['smoke'] # smoke deps [build], so build is transitive
+    deps: ['build']
     options:
       cache: false
       runInCI: true
