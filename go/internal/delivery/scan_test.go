@@ -225,6 +225,15 @@ func TestScanBatchReadFaultStops(t *testing.T) {
 	if got := reads.markCount("m1"); got != 0 {
 		t.Fatalf("marks for m1 = %d, want 0 (batch-read fault stops the scan before processing)", got)
 	}
+	// The read must have been ATTEMPTED exactly once, then the scan returned on
+	// the error — a regression that skipped the read entirely would also leave
+	// m1 unmarked, so the mark check alone does not prove attempted-then-stopped.
+	reads.mu.Lock()
+	calls := append([]int64(nil), reads.unroutedCalls...)
+	reads.mu.Unlock()
+	if len(calls) != 1 {
+		t.Fatalf("UnroutedMentionMessages calls = %d, want 1 (read attempted once, then scan stops on the fault)", len(calls))
+	}
 }
 
 // itoa is a tiny base-10 int→string for building distinct test message ids

@@ -85,7 +85,7 @@ func (c *Consumer) hold(authorSession, messageID string) {
 }
 
 // fanOut dispatches one settled message. It first routes any `@`-mentions to a
-// steer for each mentioned channel agent member (D5, routeMentions), then
+// steer for each mentioned channel agent member (D5, routeMentionsFor), then
 // delivers the plain message to every live subscribed agent session, author
 // excluded — but SKIPS any agent that was mentioned: the mentioned agent gets a
 // steer only, never steer + deliver of the same message (steer-only precedence,
