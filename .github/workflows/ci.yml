@@ -904,7 +904,13 @@ jobs:
     #     gets a real verdict and the merge gate is unaffected. A per-job cancel
     #     that is NOT a run supersede (a work-job `timeout-minutes`) does not set
     #     the run's cancelled state, so the rollup still runs and correctly reds
-    #     on that `cancelled` result below.
+    #     on that `cancelled` result below. The one deliberate narrowing vs
+    #     `always()`: manually cancelling the TIP run (a human clicking Cancel on
+    #     the PR head's own run, not a supersede) also lands in the cancelled
+    #     state, so the rollup skips and the required `CI` check goes neutral —
+    #     i.e. mergeable without a verdict. That takes a deliberate human action
+    #     against one's own gating run and is the accepted, standard `!cancelled()`
+    #     tradeoff; `always()` would have red'd it instead.
     #   - the SAME no-op-`edited` guard the work jobs carry, so on a PR title/body
     #     edit that did not move the base — where both work jobs skip — this rollup
     #     skips too, rather than running and failing on `skipped != success`. A
@@ -925,11 +931,15 @@ jobs:
         # `needs.<job>.result` is one of success | failure | cancelled | skipped.
         # Only `success` passes. This step runs only when the rollup's own `if`
         # let it (see above): a cancelled RUN skips the whole rollup, and the
-        # no-op-`edited` case skips it too, so a `cancelled` or `skipped` result
-        # reaching here is a real per-job cancel (a work-job timeout) or a real
-        # dependency skip, not a benign supersede or no-op — still correctly a
-        # non-success. Any failure or per-job cancellation reds the one required
-        # check.
+        # no-op-`edited` case skips it too. So the only non-success that can
+        # actually reach this step is a work-job `failure` or a per-job
+        # `cancelled` (a work-job `timeout-minutes`). A `skipped` result cannot
+        # reach here: `gates`/`dogfood-e2e` have no `needs`, so their sole skip
+        # path is the edited-guard — which skips this rollup through the identical
+        # guard. The `!= success` check below still covers `skipped` as a
+        # belt-and-suspenders backstop, but no `needs` relationship in this
+        # workflow can produce it. Any failure or per-job cancellation reds the
+        # one required check.
         run: |
           gates='${{ needs.gates.result }}'
           dogfood='${{ needs.dogfood-e2e.result }}'
