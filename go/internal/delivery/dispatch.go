@@ -98,6 +98,13 @@ func (c *Consumer) hold(authorSession, messageID string) {
 // MessageUpdated block is still seen (design.md:519-523).
 func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author store.AccountID, msg *compassv1.Message) {
 	mentioned := c.routeMentionsFor(ctx, channel, author, msg)
+	// Stamp the durable mention marker so the next recovery scan structurally
+	// excludes this message: the live settle edge routed its mentions. A mark
+	// failure is logged loud and swallowed — mention routing can never fail a
+	// post (design.md:522-523).
+	if err := c.st.MarkMentionsRouted(ctx, msg.GetId()); err != nil {
+		c.log.ErrorContext(ctx, "delivery: mark mentions routed", "error", err, "message_id", msg.GetId())
+	}
 	recipients, err := c.st.SubscribedAgents(ctx, channel, author)
 	if err != nil {
 		c.log.ErrorContext(ctx, "delivery: resolve subscribers", "error", err, "channel", string(channel))
