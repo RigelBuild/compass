@@ -202,6 +202,13 @@ message ReplayComplete {}
 message SteerControl {
   // The mention message to steer into the session.
   Message message = 1;
+  // The steering author's handle, denormalized onto the steer op so the agent
+  // emits the SessionInjection observation's from_handle without a roster
+  // lookup on the injection path (RIG-2486 T1) — mirrors DeliverControl's
+  // topic_name denorm rationale below. The comms Message carries only
+  // `author_account_id` (an id, not a handle), so the handle is denormalized
+  // here; the Server resolves it once when wrapping the AgentControl.
+  string from_handle = 2;
 }
 
 // Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
@@ -225,6 +232,13 @@ message DeliverControl {
   // carried transitively by `message.topic_id`; only the name is denormalized
   // here.
   string topic_name = 2;
+  // The delivering author's handle, denormalized onto the deliver op so the
+  // agent emits the SessionInjection observation's from_handle without a roster
+  // lookup on the injection path (RIG-2486 T1) — same rationale as topic_name
+  // above. The comms Message carries only `author_account_id` (an id, not a
+  // handle), so the handle is denormalized here; the Server resolves it once
+  // when wrapping the AgentControl.
+  string from_handle = 3;
 }
 
 // DeliveryAck — the agent's per-message delivery receipt (SEA-1569), an

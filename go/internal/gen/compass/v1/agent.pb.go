@@ -734,7 +734,14 @@ func (*ReplayComplete) Descriptor() ([]byte, []int) {
 type SteerControl struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The mention message to steer into the session.
-	Message       *v1.Message `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	Message *v1.Message `protobuf:"bytes,1,opt,name=message,proto3" json:"message,omitempty"`
+	// The steering author's handle, denormalized onto the steer op so the agent
+	// emits the SessionInjection observation's from_handle without a roster
+	// lookup on the injection path (RIG-2486 T1) — mirrors DeliverControl's
+	// topic_name denorm rationale below. The comms Message carries only
+	// `author_account_id` (an id, not a handle), so the handle is denormalized
+	// here; the Server resolves it once when wrapping the AgentControl.
+	FromHandle    string `protobuf:"bytes,2,opt,name=from_handle,json=fromHandle,proto3" json:"from_handle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -774,6 +781,13 @@ func (x *SteerControl) GetMessage() *v1.Message {
 		return x.Message
 	}
 	return nil
+}
+
+func (x *SteerControl) GetFromHandle() string {
+	if x != nil {
+		return x.FromHandle
+	}
+	return ""
 }
 
 // Empty shells — payload fields parked (SEA-1310). Present so the AgentControl
@@ -867,7 +881,14 @@ type DeliverControl struct {
 	// (compass-zulip-threading-model design.md D3/T3). The topic *id* is already
 	// carried transitively by `message.topic_id`; only the name is denormalized
 	// here.
-	TopicName     string `protobuf:"bytes,2,opt,name=topic_name,json=topicName,proto3" json:"topic_name,omitempty"`
+	TopicName string `protobuf:"bytes,2,opt,name=topic_name,json=topicName,proto3" json:"topic_name,omitempty"`
+	// The delivering author's handle, denormalized onto the deliver op so the
+	// agent emits the SessionInjection observation's from_handle without a roster
+	// lookup on the injection path (RIG-2486 T1) — same rationale as topic_name
+	// above. The comms Message carries only `author_account_id` (an id, not a
+	// handle), so the handle is denormalized here; the Server resolves it once
+	// when wrapping the AgentControl.
+	FromHandle    string `protobuf:"bytes,3,opt,name=from_handle,json=fromHandle,proto3" json:"from_handle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -912,6 +933,13 @@ func (x *DeliverControl) GetMessage() *v1.Message {
 func (x *DeliverControl) GetTopicName() string {
 	if x != nil {
 		return x.TopicName
+	}
+	return ""
+}
+
+func (x *DeliverControl) GetFromHandle() string {
+	if x != nil {
+		return x.FromHandle
 	}
 	return ""
 }
@@ -1105,15 +1133,19 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\x10AskAnswerControl\x12\x15\n" +
 	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x127\n" +
 	"\aanswers\x18\x02 \x03(\v2\x1d.compass.v1.AskQuestionAnswerR\aanswers\"\x10\n" +
-	"\x0eReplayComplete\"=\n" +
+	"\x0eReplayComplete\"^\n" +
 	"\fSteerControl\x12-\n" +
-	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\"\x12\n" +
+	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\x12\x1f\n" +
+	"\vfrom_handle\x18\x02 \x01(\tR\n" +
+	"fromHandle\"\x12\n" +
 	"\x10TranscriptReplay\"\x0f\n" +
-	"\rConfigControl\"^\n" +
+	"\rConfigControl\"\x7f\n" +
 	"\x0eDeliverControl\x12-\n" +
 	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\x12\x1d\n" +
 	"\n" +
-	"topic_name\x18\x02 \x01(\tR\ttopicName\",\n" +
+	"topic_name\x18\x02 \x01(\tR\ttopicName\x12\x1f\n" +
+	"\vfrom_handle\x18\x03 \x01(\tR\n" +
+	"fromHandle\",\n" +
 	"\vDeliveryAck\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\"\x13\n" +

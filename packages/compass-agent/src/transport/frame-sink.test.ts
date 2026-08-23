@@ -27,6 +27,8 @@ import {
 	DeliveryAckSchema,
 	SessionEventSchema,
 	SessionFrameSchema,
+	SessionInjectionKind,
+	SessionInjectionSchema,
 	SessionNoticeSchema,
 	TranscriptEntrySchema,
 } from "../compassv1";
@@ -656,6 +658,47 @@ test("a deliveryAck rides the Publish PRIORITY sub-lane, never the drop-oldest t
 	expect(inner?.case).toBe("deliveryAck");
 	expect(
 		inner?.case === "deliveryAck" ? inner.value.messageId : undefined,
+	).toBe("m-1");
+	// It never touched the loss-tolerable trace lane.
+	expect(traceFrames.length).toBe(0);
+});
+
+test("a SessionInjection rides the Publish PRIORITY sub-lane, never the drop-oldest trace queue", () => {
+	// RIG-2486 (T1) F3: a SessionInjection is a "session" trace frame (state
+	// UNSPECIFIED), so by the default classification it would ride the bounded,
+	// drop-oldest trace lane — where a busy trace stream could silently drop the
+	// op-kind observation a cross-process test depends on. isInjection() pins it
+	// onto the never-drop priority lane instead. The socket recorder cannot
+	// distinguish the two Publish sub-lanes, so this spy-spine test is what pins
+	// the choice. Non-vacuity: drop the `|| isInjection(frame)` arm in emit()
+	// (frame-sink.ts) → the priority assertion reddens (0) and the trace assertion
+	// reddens (1).
+	const { spine, priorityFrames, traceFrames } = spySpine();
+	const sink = createSocketFrameSink(spineTransport(spine));
+	sink.emit({
+		kind: "session",
+		value: create(SessionFrameSchema, {
+			state: AgentSessionState.UNSPECIFIED,
+			typedEvent: create(SessionEventSchema, {
+				event: {
+					case: "sessionInjection",
+					value: create(SessionInjectionSchema, {
+						opKind: SessionInjectionKind.STEER,
+						messageId: "m-1",
+					}),
+				},
+			}),
+		}),
+	});
+	// Exactly one priority frame, carrying the sessionInjection oneof case + id.
+	expect(priorityFrames.length).toBe(1);
+	const inner = priorityFrames[0]?.frame?.frame;
+	expect(inner?.case).toBe("session");
+	const event =
+		inner?.case === "session" ? inner.value.typedEvent?.event : undefined;
+	expect(event?.case).toBe("sessionInjection");
+	expect(
+		event?.case === "sessionInjection" ? event.value.messageId : undefined,
 	).toBe("m-1");
 	// It never touched the loss-tolerable trace lane.
 	expect(traceFrames.length).toBe(0);

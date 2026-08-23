@@ -826,8 +826,8 @@ export async function main(
 	// `agent` is assigned — so the `agent?.` guard never actually sees undefined.
 	let agent: CompassAgent | undefined;
 	const control = createSocketControlSource(transport, {
-		steer: (msg) => agent?.steer(msg),
-		deliver: (msg) => agent?.deliver(msg),
+		steer: (msg, fromHandle) => agent?.steer(msg, fromHandle),
+		deliver: (msg, fromHandle) => agent?.deliver(msg, fromHandle),
 	});
 
 	// Drain in `finally`, on both the clean and error paths. `run()` emits its

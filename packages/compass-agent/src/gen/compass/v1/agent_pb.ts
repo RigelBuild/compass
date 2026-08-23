@@ -35,7 +35,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/agent.proto.
  */
 export const file_compass_v1_agent: GenFile = /*@__PURE__*/
-  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIpkCCgpBZ2VudEZyYW1lEisKB3Nlc3Npb24YAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25GcmFtZUgAEjwKE3JlcGxheV9jb21wbGV0ZV9hY2sYBCABKAsyHS5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlQWNrSAASLQoLY29udHJvbF9hY2sYBSABKAsyFi5jb21wYXNzLnYxLkNvbnRyb2xBY2tIABIvCgxkZWxpdmVyeV9hY2sYBiABKAsyFy5jb21wYXNzLnYxLkRlbGl2ZXJ5QWNrSAASNwoQdHJhbnNjcmlwdF9lbnRyeRgHIAEoCzIbLmNvbXBhc3MudjEuVHJhbnNjcmlwdEVudHJ5SABCBwoFZnJhbWUiTAoPVHJhbnNjcmlwdEVudHJ5EhIKCmVudHJ5X2pzb24YASABKAkSEgoKY2hlY2twb2ludBgCIAEoCBIRCgllbnRyeV9zZXEYAyABKAQiawoMU2Vzc2lvbkZyYW1lEiwKBXN0YXRlGAEgASgOMh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25TdGF0ZRItCgt0eXBlZF9ldmVudBgCIAEoCzIYLmNvbXBhc3MudjEuU2Vzc2lvbkV2ZW50IroDCgxBZ2VudENvbnRyb2wSEwoLY29udHJvbF9zZXEYCCABKAQSKwoGcHJvbXB0GAEgASgLMhkuY29tcGFzcy52MS5Qcm9tcHRDb250cm9sSAASKQoFc3RlZXIYAiABKAsyGC5jb21wYXNzLnYxLlN0ZWVyQ29udHJvbEgAEi0KB2RlbGl2ZXIYAyABKAsyGi5jb21wYXNzLnYxLkRlbGl2ZXJDb250cm9sSAASMgoKYXNrX2Fuc3dlchgEIAEoCzIcLmNvbXBhc3MudjEuQXNrQW5zd2VyQ29udHJvbEgAEisKBmNvbmZpZxgFIAEoCzIZLmNvbXBhc3MudjEuQ29uZmlnQ29udHJvbEgAEi4KBnJlcGxheRgGIAEoCzIcLmNvbXBhc3MudjEuVHJhbnNjcmlwdFJlcGxheUgAEjUKD3JlcGxheV9jb21wbGV0ZRgHIAEoCzIaLmNvbXBhc3MudjEuUmVwbGF5Q29tcGxldGVIABI7ChJmb3JnZV9ub3RpZmljYXRpb24YCSABKAsyHS5jb21wYXNzLnYxLkZvcmdlTm90aWZpY2F0aW9uSABCCQoHY29udHJvbCIeCg1Qcm9tcHRDb250cm9sEg0KBWlucHV0GAEgASgJIlIKEEFza0Fuc3dlckNvbnRyb2wSDgoGYXNrX2lkGAEgASgJEi4KB2Fuc3dlcnMYAiADKAsyHS5jb21wYXNzLnYxLkFza1F1ZXN0aW9uQW5zd2VyIhAKDlJlcGxheUNvbXBsZXRlIjQKDFN0ZWVyQ29udHJvbBIkCgdtZXNzYWdlGAEgASgLMhMuY29tcGFzcy52MS5NZXNzYWdlIhIKEFRyYW5zY3JpcHRSZXBsYXkiDwoNQ29uZmlnQ29udHJvbCJKCg5EZWxpdmVyQ29udHJvbBIkCgdtZXNzYWdlGAEgASgLMhMuY29tcGFzcy52MS5NZXNzYWdlEhIKCnRvcGljX25hbWUYAiABKAkiIQoLRGVsaXZlcnlBY2sSEgoKbWVzc2FnZV9pZBgBIAEoCSITChFSZXBsYXlDb21wbGV0ZUFjayI2CgpDb250cm9sQWNrEhEKCWFja2VkX3NlcRgBIAEoBBIVCg1hcHBsaWVkX2Fib3ZlGAIgAygEYgZwcm90bzM", [file_compass_v1_comms, file_compass_v1_compass, file_compass_v1_forge]);
+  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIpkCCgpBZ2VudEZyYW1lEisKB3Nlc3Npb24YAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25GcmFtZUgAEjwKE3JlcGxheV9jb21wbGV0ZV9hY2sYBCABKAsyHS5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlQWNrSAASLQoLY29udHJvbF9hY2sYBSABKAsyFi5jb21wYXNzLnYxLkNvbnRyb2xBY2tIABIvCgxkZWxpdmVyeV9hY2sYBiABKAsyFy5jb21wYXNzLnYxLkRlbGl2ZXJ5QWNrSAASNwoQdHJhbnNjcmlwdF9lbnRyeRgHIAEoCzIbLmNvbXBhc3MudjEuVHJhbnNjcmlwdEVudHJ5SABCBwoFZnJhbWUiTAoPVHJhbnNjcmlwdEVudHJ5EhIKCmVudHJ5X2pzb24YASABKAkSEgoKY2hlY2twb2ludBgCIAEoCBIRCgllbnRyeV9zZXEYAyABKAQiawoMU2Vzc2lvbkZyYW1lEiwKBXN0YXRlGAEgASgOMh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25TdGF0ZRItCgt0eXBlZF9ldmVudBgCIAEoCzIYLmNvbXBhc3MudjEuU2Vzc2lvbkV2ZW50IroDCgxBZ2VudENvbnRyb2wSEwoLY29udHJvbF9zZXEYCCABKAQSKwoGcHJvbXB0GAEgASgLMhkuY29tcGFzcy52MS5Qcm9tcHRDb250cm9sSAASKQoFc3RlZXIYAiABKAsyGC5jb21wYXNzLnYxLlN0ZWVyQ29udHJvbEgAEi0KB2RlbGl2ZXIYAyABKAsyGi5jb21wYXNzLnYxLkRlbGl2ZXJDb250cm9sSAASMgoKYXNrX2Fuc3dlchgEIAEoCzIcLmNvbXBhc3MudjEuQXNrQW5zd2VyQ29udHJvbEgAEisKBmNvbmZpZxgFIAEoCzIZLmNvbXBhc3MudjEuQ29uZmlnQ29udHJvbEgAEi4KBnJlcGxheRgGIAEoCzIcLmNvbXBhc3MudjEuVHJhbnNjcmlwdFJlcGxheUgAEjUKD3JlcGxheV9jb21wbGV0ZRgHIAEoCzIaLmNvbXBhc3MudjEuUmVwbGF5Q29tcGxldGVIABI7ChJmb3JnZV9ub3RpZmljYXRpb24YCSABKAsyHS5jb21wYXNzLnYxLkZvcmdlTm90aWZpY2F0aW9uSABCCQoHY29udHJvbCIeCg1Qcm9tcHRDb250cm9sEg0KBWlucHV0GAEgASgJIlIKEEFza0Fuc3dlckNvbnRyb2wSDgoGYXNrX2lkGAEgASgJEi4KB2Fuc3dlcnMYAiADKAsyHS5jb21wYXNzLnYxLkFza1F1ZXN0aW9uQW5zd2VyIhAKDlJlcGxheUNvbXBsZXRlIkkKDFN0ZWVyQ29udHJvbBIkCgdtZXNzYWdlGAEgASgLMhMuY29tcGFzcy52MS5NZXNzYWdlEhMKC2Zyb21faGFuZGxlGAIgASgJIhIKEFRyYW5zY3JpcHRSZXBsYXkiDwoNQ29uZmlnQ29udHJvbCJfCg5EZWxpdmVyQ29udHJvbBIkCgdtZXNzYWdlGAEgASgLMhMuY29tcGFzcy52MS5NZXNzYWdlEhIKCnRvcGljX25hbWUYAiABKAkSEwoLZnJvbV9oYW5kbGUYAyABKAkiIQoLRGVsaXZlcnlBY2sSEgoKbWVzc2FnZV9pZBgBIAEoCSITChFSZXBsYXlDb21wbGV0ZUFjayI2CgpDb250cm9sQWNrEhEKCWFja2VkX3NlcRgBIAEoBBIVCg1hcHBsaWVkX2Fib3ZlGAIgAygEYgZwcm90bzM", [file_compass_v1_comms, file_compass_v1_compass, file_compass_v1_forge]);
 
 /**
  * The agent's stdout envelope: one discriminated frame per newline-delimited
@@ -411,6 +411,18 @@ export type SteerControl = Message<"compass.v1.SteerControl"> & {
    * @generated from field: compass.v1.Message message = 1;
    */
   message?: Message$1 | undefined;
+
+  /**
+   * The steering author's handle, denormalized onto the steer op so the agent
+   * emits the SessionInjection observation's from_handle without a roster
+   * lookup on the injection path (RIG-2486 T1) — mirrors DeliverControl's
+   * topic_name denorm rationale below. The comms Message carries only
+   * `author_account_id` (an id, not a handle), so the handle is denormalized
+   * here; the Server resolves it once when wrapping the AgentControl.
+   *
+   * @generated from field: string from_handle = 2;
+   */
+  fromHandle: string;
 };
 
 /**
@@ -478,6 +490,18 @@ export type DeliverControl = Message<"compass.v1.DeliverControl"> & {
    * @generated from field: string topic_name = 2;
    */
   topicName: string;
+
+  /**
+   * The delivering author's handle, denormalized onto the deliver op so the
+   * agent emits the SessionInjection observation's from_handle without a roster
+   * lookup on the injection path (RIG-2486 T1) — same rationale as topic_name
+   * above. The comms Message carries only `author_account_id` (an id, not a
+   * handle), so the handle is denormalized here; the Server resolves it once
+   * when wrapping the AgentControl.
+   *
+   * @generated from field: string from_handle = 3;
+   */
+  fromHandle: string;
 };
 
 /**

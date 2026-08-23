@@ -103,6 +103,7 @@ func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author s
 		c.log.ErrorContext(ctx, "delivery: resolve subscribers", "error", err, "channel", string(channel))
 		return
 	}
+	fromHandle := c.authorHandle(ctx, msg)
 	for _, agent := range recipients {
 		if mentioned[agent] {
 			continue // steer-only precedence: a mentioned agent never also gets a deliver
@@ -112,7 +113,7 @@ func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author s
 			c.wake(ctx, agent) // best-effort resume; the D2 sweep is the durable backstop
 			continue
 		}
-		c.dispatchTo(ctx, sessionID, msg)
+		c.dispatchTo(ctx, sessionID, msg, fromHandle)
 	}
 }
 
@@ -140,10 +141,11 @@ func (c *Consumer) routeMentions(ctx context.Context, channel store.ChannelID, a
 		return nil
 	}
 	mentioned := c.resolveMentioned(ctx, channel, author, handles)
+	fromHandle := c.authorHandle(ctx, msg)
 	for agent := range mentioned {
 		sessionID, live := c.resolver.SessionForAccount(agent)
 		if live {
-			c.dispatchSteerTo(ctx, sessionID, msg)
+			c.dispatchSteerTo(ctx, sessionID, msg, fromHandle)
 			continue
 		}
 		// Offline mentioned member: record (durable, if outside the sweep set)
@@ -161,7 +163,7 @@ func (c *Consumer) routeMentions(ctx context.Context, channel store.ChannelID, a
 			} else if sessionID, live := c.resolver.SessionForAccount(agent); live {
 				// Now-live between the first resolve and the record: steer directly,
 				// closing the record-vs-wake race.
-				c.dispatchSteerTo(ctx, sessionID, msg)
+				c.dispatchSteerTo(ctx, sessionID, msg, fromHandle)
 			}
 		}
 		c.wake(ctx, agent)
@@ -226,16 +228,16 @@ func (c *Consumer) resolveMentioned(ctx context.Context, channel store.ChannelID
 // sweep for the same session and never interleaves ahead of the sweep's ordered
 // re-dispatch. A synchronous refusal (no live stream) is not fatal: the cursor
 // was never advanced on send, so the D2 sweep redelivers.
-func (c *Consumer) dispatchTo(ctx context.Context, sessionID string, msg *compassv1.Message) {
-	c.gatedDispatch(ctx, sessionID, deliverOp(msg), msg.GetId())
+func (c *Consumer) dispatchTo(ctx context.Context, sessionID string, msg *compassv1.Message, fromHandle string) {
+	c.gatedDispatch(ctx, sessionID, deliverOp(msg, fromHandle), msg.GetId())
 }
 
 // dispatchSteerTo relays one steer for msg to a mentioned recipient's session,
 // through the same per-session gate as a deliver so a steer and a deliver for the
 // same session never interleave. A synchronous refusal falls to the sweep
 // exactly as a deliver does (design.md:546-548).
-func (c *Consumer) dispatchSteerTo(ctx context.Context, sessionID string, msg *compassv1.Message) {
-	c.gatedDispatch(ctx, sessionID, steerOp(msg), msg.GetId())
+func (c *Consumer) dispatchSteerTo(ctx context.Context, sessionID string, msg *compassv1.Message, fromHandle string) {
+	c.gatedDispatch(ctx, sessionID, steerOp(msg, fromHandle), msg.GetId())
 }
 
 // wake best-effort resumes an offline recipient via the AgentWaker seam (T3), so

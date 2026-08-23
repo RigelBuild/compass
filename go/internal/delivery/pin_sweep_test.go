@@ -134,3 +134,38 @@ func TestPinSweepIsUnconditionalWhenAlsoOwed(t *testing.T) {
 		t.Fatalf("dup-1 dispatched %d times, want 2 (cursor sweep + pin sweep, both unconditional; agent-side dedup collapses to one delivery — out of scope here)", dup)
 	}
 }
+
+// RIG-2486 T1 (pin-sweep coverage): the pin sweep denormalizes the author's
+// handle onto each pinned deliver op (sweepPins, settle.go:182,
+// deliverOp(wire, c.authorHandle(ctx, wire))). Seeds the author's account and
+// asserts the pin's deliver carries its handle. Mirrors
+// TestDeliverAndSteerCarryAuthorFromHandle's assertion (mention_test.go:261) and
+// reuses TestPinSweepDeliversCurrentPinsWhenCursorCaughtUp's harness.
+func TestSweepPinsCarriesAuthorFromHandle(t *testing.T) {
+	c, disp, res, reads := newTestConsumer(t)
+	const ch store.ChannelID = "chan-1"
+	const author store.AccountID = "human-1"
+	const recipient store.AccountID = "agent-recip"
+
+	reads.owed[recipient] = map[store.ChannelID][]store.Message{}
+	reads.sweepChannels[recipient] = []store.ChannelID{ch}
+	reads.pins[ch] = []store.PinnedEntry{{MessageID: "pinned-1", Position: 0}}
+	reads.seedMessage(textMessage("pinned-1", author, "the pinned board"))
+	// The author's account resolves its handle for the denormalized from_handle.
+	reads.accounts[author] = store.Account{ID: author, Handle: "matt"}
+	res.bind(recipient, "sess-recip")
+	startConsumer(t, c)
+
+	c.OnSessionStarted("sess-recip", recipient)
+	if !disp.waitForMessage(t, "pinned-1") {
+		t.Fatal("pinned-1 never dispatched: a fresh session must receive current pins")
+	}
+
+	got := disp.snapshot()
+	if len(got) != 1 || got[0].kind != opDeliver || got[0].messageID != "pinned-1" {
+		t.Fatalf("dispatch = %+v, want one deliver of pinned-1", got)
+	}
+	if got[0].fromHandle != "matt" {
+		t.Fatalf("from_handle = %q on pin deliver, want matt", got[0].fromHandle)
+	}
+}

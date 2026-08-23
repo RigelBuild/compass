@@ -106,6 +106,11 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// CountOwedMentions returns the total owed_mention row count — the startup
 	// visibility log (T2 observability).
 	CountOwedMentions(ctx context.Context) (int, error)
+	// GetAccount resolves an account by id, used to denormalize the author's
+	// handle onto the deliver/steer control (RIG-2486 T1 from_handle). An unknown
+	// id is store.ErrNotFound, which the caller logs and treats as an empty
+	// handle — never a delivery block.
+	GetAccount(ctx context.Context, id store.AccountID) (store.Account, error)
 }
 
 // settleEvent is one queued author-settle edge handed from the hub's Deliver
@@ -338,11 +343,15 @@ func (c *Consumer) handleEvent(ctx context.Context, resp *compassv1.SubscribeCom
 }
 
 // deliverOp wraps a wire message in the AgentControl deliver op the relay carries
-// (§5 command envelope; agent.proto deliver = 3).
-func deliverOp(msg *compassv1.Message) *compassv1internal.AgentControl {
+// (§5 command envelope; agent.proto deliver = 3). fromHandle is the author's
+// handle denormalized onto the control so the agent emits the SessionInjection
+// observation's from_handle without a roster lookup on the injection path
+// (RIG-2486 T1); empty when the author handle could not be resolved (logged at
+// the resolve site — a handle miss never blocks a delivery).
+func deliverOp(msg *compassv1.Message, fromHandle string) *compassv1internal.AgentControl {
 	return &compassv1internal.AgentControl{
 		Control: &compassv1internal.AgentControl_Deliver{
-			Deliver: &compassv1internal.DeliverControl{Message: msg},
+			Deliver: &compassv1internal.DeliverControl{Message: msg, FromHandle: fromHandle},
 		},
 	}
 }
@@ -352,13 +361,34 @@ func deliverOp(msg *compassv1.Message) *compassv1internal.AgentControl {
 // channel agent member as a steer (mid-turn interrupt) rather than a deliver
 // (turn-end coalesced) — the only deliver-vs-steer difference is recipient-side
 // (design.md:558-562). SteerControl carries the same single first-party Message
-// as DeliverControl (DL-073).
-func steerOp(msg *compassv1.Message) *compassv1internal.AgentControl {
+// as DeliverControl (DL-073), plus the same denormalized author from_handle
+// (RIG-2486 T1).
+func steerOp(msg *compassv1.Message, fromHandle string) *compassv1internal.AgentControl {
 	return &compassv1internal.AgentControl{
 		Control: &compassv1internal.AgentControl_Steer{
-			Steer: &compassv1internal.SteerControl{Message: msg},
+			Steer: &compassv1internal.SteerControl{Message: msg, FromHandle: fromHandle},
 		},
 	}
+}
+
+// authorHandle resolves a wire message's author account id to its handle — the
+// value denormalized onto the deliver/steer control as the SessionInjection
+// from_handle (RIG-2486 T1). A missing author id or a store miss is logged and
+// yields an empty handle: the from_handle is an observation signal, never a
+// delivery precondition, so a handle miss must not block the dispatch (matches
+// the log-and-continue posture the mention/subscriber resolvers already use).
+func (c *Consumer) authorHandle(ctx context.Context, msg *compassv1.Message) string {
+	author := store.AccountID(msg.GetAuthorAccountId())
+	if author == "" {
+		return ""
+	}
+	acc, err := c.st.GetAccount(ctx, author)
+	if err != nil {
+		c.log.ErrorContext(ctx, "delivery: resolve author handle for injection from_handle",
+			"error", err, "message_id", msg.GetId(), "author", string(author))
+		return ""
+	}
+	return acc.Handle
 }
 
 // mentionRE matches one `@`-mention token: `@` then a handle. The handle is

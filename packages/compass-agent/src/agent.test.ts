@@ -37,6 +37,7 @@ import {
 	type Message,
 	MessageBlockSchema,
 	MessageSchema,
+	SessionInjectionKind,
 } from "./compassv1";
 import type { AgentControl, ControlSource } from "./control";
 import type { OutboundFrame } from "./frame";
@@ -906,6 +907,27 @@ function ackIds(frames: OutboundFrame[]): string[] {
 	);
 }
 
+// The SessionInjection observation frames captured, in order, as
+// {opKind, messageId} pairs. A SessionInjection rides the `session` variant's
+// typed_event (the same FrameSink path the trace events use), so it is a
+// "session" OutboundFrame whose typedEvent oneof case is "sessionInjection".
+function injections(
+	frames: OutboundFrame[],
+): { opKind: SessionInjectionKind; messageId: string; fromHandle: string }[] {
+	return frames.flatMap((f) => {
+		if (f.kind !== "session") return [];
+		const event = f.value.typedEvent?.event;
+		if (event?.case !== "sessionInjection") return [];
+		return [
+			{
+				opKind: event.value.opKind,
+				messageId: event.value.messageId,
+				fromHandle: event.value.fromHandle,
+			},
+		];
+	});
+}
+
 // The `content` string of a recorded steer AgentMessage. CompassAgent.steer
 // injects a UserMessage ({ role:"user", content: <formatted text> }), but the
 // recorded type is the wide AgentMessage union (whose custom arms — e.g.
@@ -1333,6 +1355,110 @@ describe("CompassAgent — channel-borne steer (SEA-1310 §8 steer arm)", () => 
 		expect(h.session.agent.prompts).toHaveLength(1);
 		await tick();
 		expect(ackIds(h.frames)).toEqual(["x1"]);
+		await h.close();
+	});
+});
+
+// RIG-2486 (T1) — the cross-process op-kind signal. steer()/deliver() each emit
+// a first-class SessionInjection observation frame BESIDE the existing delivery
+// ack at injection time (design "steer/deliver split observation seam"). These
+// reuse the deliver/steer harness and assert the injection rides the session
+// trace path with the right op_kind + message_id, alongside the ack. Before the
+// emit arms exist these are RED: injections(h.frames) is empty, so the length
+// assertion fails.
+describe("CompassAgent — SessionInjection op-kind signal (RIG-2486 T1)", () => {
+	test("deliver(msg, fromHandle) emits one DELIVER SessionInjection with the handle beside the ack", async () => {
+		const h = startDeliverAgent();
+		// Idle deliver flushes immediately and injects m1, carrying the
+		// denormalized author handle off the wire deliver control (RIG-2486 T1).
+		h.agent.deliver(deliverMsg("m1", "hello"), "matt");
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		// The ack still fires (no regression).
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		// And exactly one injection, DELIVER, carrying the message id AND the
+		// non-empty from_handle threaded server->wire->emit. Non-vacuity: before
+		// the threading, fromHandle was hard-coded "" so this asserted-value fails.
+		expect(injections(h.frames)).toEqual([
+			{
+				opKind: SessionInjectionKind.DELIVER,
+				messageId: "m1",
+				fromHandle: "matt",
+			},
+		]);
+		await h.close();
+	});
+
+	test("steer(msg, fromHandle) idle emits one STEER SessionInjection with the handle beside the ack", async () => {
+		const h = startDeliverAgent();
+		// Idle steer injects s1, wakes a turn, and carries the author handle.
+		h.agent.steer(deliverMsg("s1", "hey"), "matt");
+		expect(h.session.agent.steers).toHaveLength(1);
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["s1"]);
+		expect(injections(h.frames)).toEqual([
+			{
+				opKind: SessionInjectionKind.STEER,
+				messageId: "s1",
+				fromHandle: "matt",
+			},
+		]);
+		await h.close();
+	});
+
+	test("steer(msg, fromHandle) mid-turn emits one STEER SessionInjection with the handle beside the ack", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		// Mid-turn steer injects onto the running loop's steering queue.
+		h.agent.steer(deliverMsg("s1", "one"), "matt");
+		await tick();
+		expect(ackIds(h.frames)).toEqual(["s1"]);
+		expect(injections(h.frames)).toEqual([
+			{
+				opKind: SessionInjectionKind.STEER,
+				messageId: "s1",
+				fromHandle: "matt",
+			},
+		]);
+		await h.close();
+	});
+
+	test("deliver with no fromHandle emits an empty from_handle (server store-miss path)", async () => {
+		const h = startDeliverAgent();
+		// The Server logs a handle-resolution miss and sends an empty from_handle
+		// rather than blocking the delivery — the injection still fires, empty.
+		h.agent.deliver(deliverMsg("m1", "hello"));
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		expect(injections(h.frames)).toEqual([
+			{ opKind: SessionInjectionKind.DELIVER, messageId: "m1", fromHandle: "" },
+		]);
+		await h.close();
+	});
+
+	test("two mid-turn delivers with DISTINCT fromHandles thread through per-message-id, not last-write-wins", async () => {
+		const h = startDeliverAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		// Two mid-turn delivers, each with its OWN author handle, coalesce into
+		// the one turn-end flush. #deliverFromHandles is keyed per message id, so
+		// each injection carries its own handle — a single scalar (last-write-wins)
+		// would collapse both to "jane".
+		h.agent.deliver(deliverMsg("m1", "hello one"), "matt");
+		h.agent.deliver(deliverMsg("m2", "hello two"), "jane");
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(injections(h.frames)).toEqual([
+			{
+				opKind: SessionInjectionKind.DELIVER,
+				messageId: "m1",
+				fromHandle: "matt",
+			},
+			{
+				opKind: SessionInjectionKind.DELIVER,
+				messageId: "m2",
+				fromHandle: "jane",
+			},
+		]);
 		await h.close();
 	});
 });
