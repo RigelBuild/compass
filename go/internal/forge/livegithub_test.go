@@ -283,7 +283,7 @@ func TestLiveGitHubListIssues(t *testing.T) {
 	filter := IssueFilter{State: "open", Labels: []string{"bug"}}
 	row, n, err := findListedIssueWithBackoff(ctx, gh, repo, filter, setup.Number)
 	if err != nil {
-		t.Fatalf("ListIssues: %v", err)
+		t.Fatalf("findListedIssueWithBackoff: %v", err)
 	}
 	if row.Number != setup.Number {
 		t.Fatalf("ListIssues did not return the setup issue #%d among %d rows after backoff", setup.Number, n)
