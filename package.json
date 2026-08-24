@@ -10,8 +10,8 @@
 			"tools/*"
 		],
 		"catalog": {
-			"@astrojs/check": "^0.9.4",
-			"@astrojs/starlight": "^0.39.2",
+			"@astrojs/check": "^0.9.10",
+			"@astrojs/starlight": "^0.41.5",
 			"@biomejs/biome": "2.5.4",
 			"@effect/opentelemetry": "0.64.0",
 			"@effect/platform": "^0.97.0",
@@ -26,7 +26,7 @@
 			"@opentelemetry/sdk-trace-web": "^2.0.0",
 			"@opentelemetry/semantic-conventions": "^1.33.0",
 			"@types/bun": "^1.4.0",
-			"astro": "^6.3.7",
+			"astro": "^7.1.6",
 			"effect": "^3.22.1",
 			"github-slugger": "^2.0.0",
 			"sharp": "^0.35.0",
