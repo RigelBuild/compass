@@ -109,23 +109,13 @@ projects:
   # which also states what that gate does and does not cover).
   oh-my-pi-fork: 'forks/oh-my-pi'
 
-# File hashing. The default VCS hasher shells to git —
-# `git ls-files --others --exclude-standard <proj>` to list a project's files,
-# then `git hash-object` to hash them. Under the main full sweep (`moon run
-# :ci`, every task at max concurrency) a build task rewrites its gitignored
-# output dir (apps/ui:build → dist/, :dev-smoke → e2e/.output/, eng-docs:gather
-# → src/content/docs/, the export-surface test → a .dts-surface-* temp dir)
-# while the hasher runs, so `git hash-object` opens a file `ls-files` listed a
-# moment earlier but the task has since deleted, and git dies mid-sweep:
-# `exit 128 … could not open '<path>': No such file`. It reddened a different
-# output path each run (the failure `hasher.ignorePatterns` cannot fix — it
-# filters moon's list AFTER git has already crashed inside its own walk).
-# nativeFileHashing replaces the git shell-out with moon's in-process walker,
-# which hashes file contents directly and tolerates a file that vanishes
-# mid-walk — so the race is structurally gone. moon defaults this on in v2.5+;
-# we run 2.4.2, so it is opted in here.
-experiments:
-  nativeFileHashing: true
+# File hashing uses moon's in-process native walker (the v2.5+ default), NOT the
+# git shell-out. This is load-bearing: the git hasher (`git ls-files` then `git
+# hash-object`) races the main full sweep — a build task rewrites its gitignored
+# output dir mid-hash, so `git hash-object` dies `exit 128 … No such file` on a
+# file `ls-files` listed a moment earlier. The native walker hashes contents
+# directly and tolerates a file vanishing mid-walk, so the race is structurally
+# gone. Do NOT switch `hasher.optimization`/`vcs` back to a git-based hasher.
 
 vcs:
   client: 'git'
