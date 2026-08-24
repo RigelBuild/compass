@@ -348,8 +348,9 @@ export class CompassAgent {
 	// settles, so a message that queued against it is not stranded. `waitForIdle`
 	// resolves only when the inner agent's streaming and post-prompt recovery are
 	// done (agent-session.ts:6478-6481), i.e. `#session.isStreaming` is false — so
-	// the re-check gate matches the caller's idle gate exactly. Idempotent via
-	// at a time. On resolve: no-op if the agent has closed (`#closed` — a resolve
+	// the re-check gate matches the caller's idle gate exactly. Idempotent via the
+	// `#strandRecoveryArmed` latch: one recovery in flight at a time. On resolve:
+	// no-op if the agent has closed (`#closed` — a resolve
 	// racing terminal STOPPED/ERRORED must not start a post-terminal turn) or a
 	// TRACKED turn started meanwhile (`#turnActive`) or the queue already drained;
 	// flush if still-idle with a non-empty queue; re-arm if a fresh probe is still
