@@ -30,3 +30,13 @@ inputs:
     inputs:
       nixpkgs:
         follows: nixpkgs
+  # hk — jj/git hook runner (jdx/hk), the pre-push gate driver. `enterShell`
+  # calls `hk install` to wire the git hooks; the binary itself comes from this
+  # input (pinned v1.48.0, matching the personal flake's hk pin) rather than a
+  # box-level install, so this shell owns its own hk and can't drift from the
+  # `hk.pkl` schema at the repo root. Its nixpkgs follows this shell's.
+  hk:
+    url: github:jdx/hk/v1.48.0
+    inputs:
+      nixpkgs:
+        follows: nixpkgs
