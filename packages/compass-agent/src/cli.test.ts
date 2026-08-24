@@ -37,6 +37,7 @@ import {
 	AGENT_SOCKET_PATH,
 	authSeedPath,
 	createSeedApiKeyResolver,
+	deriveLitellmMcpUrl,
 	envFilePath,
 	type MainDeps,
 	main,
@@ -178,6 +179,56 @@ describe("resolveRole", () => {
 
 	test("trims surrounding whitespace so a padded env value still resolves", () => {
 		expect(resolveRole({ COMPASS_ROLE: "  supervisor  " })).toBe("supervisor");
+	});
+});
+
+// The LiteLLM MCP URL is DERIVED from LITELLM_BASE_URL (RIG-2674), matching the
+// wave's SOPS loader (secrets-env.nix): strip a trailing slash, strip a trailing
+// /v1, append /mcp/. The trailing slash is load-bearing (LiteLLM 307-redirects
+// /mcp and MCP clients don't re-POST across the redirect).
+describe("deriveLitellmMcpUrl", () => {
+	test("derives /mcp/ from a /v1 base URL", () => {
+		expect(
+			deriveLitellmMcpUrl({ LITELLM_BASE_URL: "https://llm.example/v1" }),
+		).toBe("https://llm.example/mcp/");
+	});
+
+	test("strips a trailing slash before stripping /v1", () => {
+		// Non-vacuity: without the trailing-slash strip the /v1$ match misses and
+		// the result would be `…/v1//mcp/` — a broken double path.
+		expect(
+			deriveLitellmMcpUrl({ LITELLM_BASE_URL: "https://llm.example/v1/" }),
+		).toBe("https://llm.example/mcp/");
+	});
+
+	test("appends /mcp/ to a base with no /v1 suffix", () => {
+		expect(
+			deriveLitellmMcpUrl({ LITELLM_BASE_URL: "https://llm.example" }),
+		).toBe("https://llm.example/mcp/");
+	});
+
+	test("keeps the load-bearing trailing slash", () => {
+		// The whole point of the derivation: /mcp (no slash) 307-redirects and the
+		// MCP client drops the POST body. The result MUST end in a slash.
+		const url = deriveLitellmMcpUrl({
+			LITELLM_BASE_URL: "https://llm.example/v1",
+		});
+		expect(url?.endsWith("/mcp/")).toBe(true);
+	});
+
+	test("returns undefined when LITELLM_BASE_URL is unset (no gateway configured)", () => {
+		expect(deriveLitellmMcpUrl({})).toBeUndefined();
+	});
+
+	test("treats an empty or whitespace-only base as unset", () => {
+		expect(deriveLitellmMcpUrl({ LITELLM_BASE_URL: "" })).toBeUndefined();
+		expect(deriveLitellmMcpUrl({ LITELLM_BASE_URL: "   " })).toBeUndefined();
+	});
+
+	test("trims surrounding whitespace so a padded base still derives", () => {
+		expect(
+			deriveLitellmMcpUrl({ LITELLM_BASE_URL: "  https://llm.example/v1  " }),
+		).toBe("https://llm.example/mcp/");
 	});
 });
 
@@ -1379,6 +1430,8 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 		"COMPASS_MODEL",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"COMPASS_FUTURE_VAR",
+		"LITELLM_BASE_URL",
+		"LITELLM_MCP_URL",
 	] as const;
 	let savedEnv: Record<string, string | undefined> = {};
 	beforeEach(() => {
@@ -1460,6 +1513,44 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 			"http://collector.example:4318",
 		);
 		expect(process.env.COMPASS_FUTURE_VAR).toBeUndefined();
+	});
+
+	test("derives LITELLM_MCP_URL from a delivered LITELLM_BASE_URL (RIG-2674)", async () => {
+		const home = process.env.HOME as string;
+		// The keyring delivers only the base URL (+ API key). Without the derive,
+		// LITELLM_MCP_URL stays unset and the fleet mcp.json's ${LITELLM_MCP_URL}
+		// expands empty → the LiteLLM MCP server can't connect. Non-vacuity: with
+		// the derive removed this assertion reds (undefined, not the /mcp/ URL).
+		delete process.env.LITELLM_MCP_URL;
+		writeEnvFile(home, "LITELLM_BASE_URL=https://llm.example/v1\n");
+		await main(
+			{ HOME: home },
+			deps(
+				fakeSession(),
+				fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			),
+		);
+		expect(process.env.LITELLM_MCP_URL as string | undefined).toBe(
+			"https://llm.example/mcp/",
+		);
+	});
+
+	test("an explicitly-delivered LITELLM_MCP_URL wins over the derivation", async () => {
+		const home = process.env.HOME as string;
+		// If a deployer ever delivers the MCP URL directly (env file), the derive
+		// must not clobber it — same file-defines-it posture as the merge loop.
+		writeEnvFile(
+			home,
+			"LITELLM_BASE_URL=https://llm.example/v1\nLITELLM_MCP_URL=https://override.example/mcp/\n",
+		);
+		await main(
+			{ HOME: home },
+			deps(
+				fakeSession(),
+				fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			),
+		);
+		expect(process.env.LITELLM_MCP_URL).toBe("https://override.example/mcp/");
 	});
 });
 

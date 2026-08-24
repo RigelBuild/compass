@@ -180,6 +180,33 @@ export function resolveRole(
 	return raw ? raw : undefined;
 }
 
+/**
+ * The LiteLLM MCP endpoint, DERIVED from the delivered `LITELLM_BASE_URL`
+ * (mirroring the wave's SOPS loader `secrets-env.nix`). Compass's keyring
+ * delivers `LITELLM_BASE_URL` + `LITELLM_API_KEY` but NOT the MCP URL — it is a
+ * derived var, not a stored secret — so the fleet `mcp.json`'s
+ * `${LITELLM_MCP_URL}` would otherwise expand empty and the LiteLLM MCP server
+ * would fail to connect. Deriving (rather than seeding a second secret) keeps a
+ * single source of truth and no base/MCP drift.
+ *
+ * The rule matches the loader byte-for-byte: strip one trailing `/`, strip a
+ * trailing `/v1`, append `/mcp/`. The trailing slash is LOAD-BEARING — LiteLLM
+ * 307-redirects `/mcp` and MCP clients do not re-POST across the redirect
+ * (`secrets-env.nix:27-29`). So `https://host/v1` → `https://host/mcp/`.
+ *
+ * Unset (or blank) base is a legitimate configuration: no LiteLLM gateway is
+ * configured, so nothing to derive — returns undefined and `main` leaves
+ * `LITELLM_MCP_URL` untouched. Same unset/trim semantics as `resolveModelSelector`.
+ */
+export function deriveLitellmMcpUrl(
+	env: Record<string, string | undefined>,
+): string | undefined {
+	const raw = env.LITELLM_BASE_URL?.trim();
+	if (!raw) return undefined;
+	const base = raw.replace(/\/$/, "").replace(/\/v1$/, "");
+	return `${base}/mcp/`;
+}
+
 /** One provider's credential in the seed file. Mirrors the SDK's `ApiKeyCredential`. */
 interface SeedEntry {
 	readonly type?: string;
@@ -520,6 +547,18 @@ export async function main(
 		await readEnvFile(envFilePath(home)),
 	)) {
 		process.env[key] = value;
+	}
+
+	// Derive LITELLM_MCP_URL from the just-sourced LITELLM_BASE_URL (RIG-2674):
+	// Compass's keyring delivers the base URL + API key but not the derived MCP
+	// URL, so the fleet mcp.json's `${LITELLM_MCP_URL}` would expand empty and the
+	// LiteLLM MCP server would fail to connect. Derive it here — after the env
+	// merge, before the MCP connect below — reading from process.env (where the
+	// merge landed the base). An explicitly-delivered LITELLM_MCP_URL wins (same
+	// file-defines-it posture as the merge); we only fill the gap.
+	if (!process.env.LITELLM_MCP_URL) {
+		const mcpUrl = deriveLitellmMcpUrl(process.env);
+		if (mcpUrl) process.env.LITELLM_MCP_URL = mcpUrl;
 	}
 
 	// The identity overlay; undefined when unset or whitespace-only. What omits
