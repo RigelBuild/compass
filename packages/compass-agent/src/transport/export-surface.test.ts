@@ -57,11 +57,11 @@ test("the package public type surface carries no effect/@effect/opentelemetry/@o
 	// ZERO declaration files — a silent containment hole.
 	//
 	// This gitignored temp dir is safe under the concurrent main full sweep
-	// because `.moon/workspace.yml` sets `experiments.nativeFileHashing: true`,
-	// which replaces moon's default `git ls-files` + `git hash-object` shell-out
-	// with an in-process walker that hashes file contents directly and tolerates
+	// because moon 2.5+ uses native in-process file hashing by default, which
+	// replaces moon's legacy `git ls-files` + `git hash-object` shell-out with
+	// an in-process walker that hashes file contents directly and tolerates
 	// a file that vanishes mid-walk — so git never races the `rmSync` teardown of
-	// this dir. (Under the default git hasher a dir under the package root is in
+	// this dir. (Under the legacy git hasher a dir under the package root is in
 	// the walk, and git dies `exit 128 … No such file` when it opens a path this
 	// test has since deleted.)
 	const out = mkdtempSync(join(PKG_ROOT, ".dts-surface-"));
