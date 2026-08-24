@@ -271,9 +271,27 @@ func waitFor(t *testing.T, deadline time.Duration, cond func() bool) bool {
 // expected content or the deadline elapses. Used where the guest has no vsock to
 // probe (the net-only smoke and the corrupt-rootfs negative), so the console is
 // the only observable signal.
+//
+// It matches against the WHOLE console file, not VM.ConsoleTail's bounded
+// diagnostic tail: a fail-closed boot prints a kernel panic backtrace AFTER the
+// evidence line, and a dump larger than the 8 KiB tail window would evict the
+// evidence and turn a real failure into a false-negative timeout. The bounded
+// tail stays where it belongs — the failure MESSAGE (Diagnostics) — not the poll
+// predicate.
 func waitForConsole(t *testing.T, vm *VM, deadline time.Duration, match func(string) bool) bool {
 	t.Helper()
-	return waitFor(t, deadline, func() bool { return match(vm.ConsoleTail()) })
+	return waitFor(t, deadline, func() bool { return match(readConsole(vm)) })
+}
+
+// readConsole returns the full captured serial console, falling back to the
+// bounded tail if the file cannot be read yet (e.g. before the first byte is
+// flushed).
+func readConsole(vm *VM) string {
+	raw, err := os.ReadFile(vm.consolePath)
+	if err != nil {
+		return vm.ConsoleTail()
+	}
+	return string(raw)
 }
 
 func fileExists(path string) bool {

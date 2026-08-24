@@ -11,7 +11,7 @@
 // this has real logic — two nix builds whose out-paths must be parsed and mapped
 // to distinct env vars, a PATH assembled from three store paths, and a fail-fast
 // on any missing output — so the parsing/mapping core is pure and unit-tested
-// (./run.test.ts) while this file is the thin I/O shell.
+// (./run-core.test.ts) while this file is the thin I/O shell.
 //
 // It deliberately mirrors ci.yml's microVM step (the reviewed source of truth
 // for the exact nix invocations); it does NOT replace it — CI runs the microVM

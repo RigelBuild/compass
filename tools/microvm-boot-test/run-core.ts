@@ -1,7 +1,8 @@
 // The pure core of the local microVM boot-test lane (RIG-2591): parse nix
 // out-paths and map them to the env the tagged Go suite (microvmtest.Require)
-// reads. No I/O — every function is a total map over its inputs — so run.test.ts
-// can drive each mapping (and its fail-closed edges) without nix or a subprocess.
+// reads. No I/O — every function is a total map over its inputs — so
+// run-core.test.ts can drive each mapping (and its fail-closed edges) without
+// nix or a subprocess.
 
 /** Split `nix build --print-out-paths` stdout into trimmed, non-empty store
  * paths, one per line. */
