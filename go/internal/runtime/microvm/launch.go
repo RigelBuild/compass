@@ -121,9 +121,15 @@ func LaunchNetOnly(ctx context.Context, cfg BootConfig) (*VM, error) {
 // carried on BootConfig) so the harness stays a pure boot contract and the test
 // gate (microvmtest.Require) owns proving they are present; exec.LookPath
 // against the same PATH yields the identical binaries Require resolved.
-func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (vm *VM, err error) {
+func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (_ *VM, err error) {
 	dir := filepath.Dir(cfg.Net.VhostUserSocket)
-	vm = &VM{
+	// vm is a LOCAL, not the named return. The error sites below return an
+	// explicit `nil, err`; were vm the named return, that nil would clobber the
+	// handle before the deferred cleanup runs — nil-dereferencing in Shutdown
+	// and orphaning any daemon already started. Keeping vm local means the defer
+	// always sees the real, partially-built VM. (This is the fail-closed path CI
+	// exercises when a daemon cannot sandbox on the runner and dies on launch.)
+	vm := &VM{
 		consolePath: filepath.Join(dir, "console.log"),
 		vsockPort:   cfg.VsockPort,
 	}
@@ -134,8 +140,7 @@ func launch(ctx context.Context, cfg BootConfig, opts launchOptions) (vm *VM, er
 	// sockets on the error path.
 	defer func() {
 		if err != nil {
-			_ = vm.Shutdown(ctx) // best-effort cleanup on a already-failing launch
-			vm = nil
+			_ = vm.Shutdown(ctx) // best-effort cleanup on an already-failing launch
 		}
 	}()
 
