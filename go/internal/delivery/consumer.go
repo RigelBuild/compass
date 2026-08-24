@@ -272,6 +272,12 @@ func (c *Consumer) Run(ctx context.Context) error {
 		c.log.InfoContext(ctx, "delivery: owed mention backlog at start", "count", n)
 	}
 
+	// Recover the committed-but-unmarked mention set from durable state before
+	// draining replay: mirrors the subscribe-first/sweep-second seam ordering
+	// (see the overrun branch below), so the scan and the replay+live tail
+	// together cover every message with no loss (RIG-2490 T3).
+	c.scanMissedMentions(ctx)
+
 	for _, event := range sub.Replay {
 		select {
 		case <-ctx.Done():
@@ -330,6 +336,11 @@ func (c *Consumer) Run(ctx context.Context) error {
 					sub.Cancel()
 					sub = fresh
 					c.sweepAllLive(ctx)
+					// Recover the committed-but-unmarked mention set dropped in
+					// the overrun window: the scan/replay overlap is the same
+					// tolerated at-least-once boundary set the sweep above
+					// absorbs (RIG-2490 T3).
+					c.scanMissedMentions(ctx)
 					if c.afterResubscribe != nil {
 						c.afterResubscribe()
 					}
