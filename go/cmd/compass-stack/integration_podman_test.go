@@ -30,8 +30,8 @@ package main
 // AGENT IMAGE — alpine, not a real agent image (grounded): the stack pulls
 // Config.AgentImage into the local store (adapters/image.go EnsureImage ->
 // `podman pull`) and passes it to the runner as --image. It is NOT run as a
-// container at up: cmd/compass-runner/main.go run() only validates its uid
-// (verifyRunnerUID, main.go:93 — this box is uid 1000, verified) then
+// container at up: cmd/compass-runner/main.go run() only validates a podman
+// engine fact (the userns-remap version check, main.go:91) then
 // runner.Run (internal/runner/run.go:85-122) DIALS the server's TLS door and
 // enrolls; a per-agent container is built only later on a ProvisionAgentWorkspace
 // RPC. So a pullable stand-in (docker.io/library/alpine:latest) satisfies the

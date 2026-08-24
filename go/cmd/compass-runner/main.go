@@ -21,6 +21,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/RigelBuild/compass/go/internal/agentuid"
 	"github.com/RigelBuild/compass/go/internal/runner"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
@@ -138,7 +139,7 @@ func run() error {
 		Egress:      egress,
 		CheckoutDir: *checkoutDir,
 		HomeDir:     *homeDir,
-		UID:         defaultAgentUID,
+		UID:         agentuid.AgentUID,
 		NamePrefix:  runner.AgentContainerNamePrefix,
 		Mounts:      mounts,
 	})
@@ -205,10 +206,6 @@ func (f backendFlags) selectEngine() (runtime.ContainerRuntime, error) {
 		},
 	})
 }
-
-// defaultAgentUID is the unprivileged uid the agent user runs as inside the
-// container, matching the runtime package's agent-user convention.
-const defaultAgentUID uint32 = 1000
 
 // orEnv returns flagVal when non-empty, else the named environment variable.
 func orEnv(flagVal, envKey string) string {
