@@ -514,7 +514,11 @@ func TestLiveLinearCommentOnIssue(t *testing.T) {
 }
 
 // TestLiveLinearGetIssue creates then reads a Linear issue back, asserting the
-// decoded value matches the fixture under the allowlist.
+// decoded value matches the fixture under the allowlist. The setup create sends
+// no Labels: Linear's CreateIssue does not round-trip label NAMES (IssueCreateInput
+// takes label UUIDs, and name->UUID resolution is out of the issues-write slice —
+// see linear.go CreateIssue), so a fresh issue reads back with no labels and an
+// open (unstarted) state, which is exactly what the fixture pins.
 func TestLiveLinearGetIssue(t *testing.T) {
 	ts, team := requireLinear(t)
 	ctx := context.Background()
@@ -522,8 +526,7 @@ func TestLiveLinearGetIssue(t *testing.T) {
 
 	f := liveFixture(t, providerLinear, "get_issue")
 	issue, err := ln.CreateIssue(ctx, team, CreateIssue{
-		Title:  "compass-live-get-" + newRunID(),
-		Labels: []string{"bug", "p1"},
+		Title: "compass-live-get-" + newRunID(),
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
@@ -538,15 +541,19 @@ func TestLiveLinearGetIssue(t *testing.T) {
 }
 
 // TestLiveLinearListIssues lists issues on the test team and asserts the first
-// decoded row matches the fixture's row shape under the allowlist.
+// decoded row matches the fixture's row shape under the allowlist. The setup
+// create sends no Labels (Linear's CreateIssue does not round-trip label names —
+// see TestLiveLinearGetIssue), so the list filters on State alone: a label filter
+// could never match a label-less issue. ListIssues is eventually consistent after
+// a create, so it polls with the same bounded read-after-write backoff the GitHub
+// leg uses.
 func TestLiveLinearListIssues(t *testing.T) {
 	ts, team := requireLinear(t)
 	ctx := context.Background()
 	ln := liveLinear(ts)
 
 	setup, err := ln.CreateIssue(ctx, team, CreateIssue{
-		Title:  "compass-live-list-" + newRunID(),
-		Labels: []string{"bug"},
+		Title: "compass-live-list-" + newRunID(),
 	})
 	if err != nil {
 		t.Fatalf("CreateIssue (setup): %v", err)
@@ -554,21 +561,14 @@ func TestLiveLinearListIssues(t *testing.T) {
 	t.Cleanup(func() { archiveLinearIssue(t, ln, ts, team, setup.Number) })
 
 	f := liveFixture(t, providerLinear, "list_issues")
-	got, err := ln.ListIssues(ctx, team, IssueFilter{State: "open", Labels: []string{"bug"}})
+	row, n, err := findListedIssueWithBackoff(ctx, ln, team, IssueFilter{State: "open"}, setup.Number)
 	if err != nil {
-		t.Fatalf("ListIssues: %v", err)
+		t.Fatalf("findListedIssueWithBackoff: %v", err)
 	}
-	var row *Issue
-	for i := range got {
-		if got[i].Number == setup.Number {
-			row = &got[i]
-			break
-		}
+	if row.Number != setup.Number {
+		t.Fatalf("ListIssues did not return the setup issue #%d among %d rows after backoff", setup.Number, n)
 	}
-	if row == nil {
-		t.Fatalf("ListIssues did not return the setup issue #%d among %d rows", setup.Number, len(got))
-	}
-	assertMatchesFixture(t, *row, f.Response.firstWant(t))
+	assertMatchesFixture(t, row, f.Response.firstWant(t))
 }
 
 // TestLiveLinearPRUnsupported locks the Linear contract: the PR/review family is
@@ -638,17 +638,26 @@ func createWithBackoff[T any](ctx context.Context, create func() (T, error)) (T,
 	return got, err
 }
 
+// issueLister is the ListIssues read both live providers expose (GitHub and
+// Linear satisfy it structurally), so the read-after-write backoff below serves
+// either leg.
+type issueLister interface {
+	ListIssues(ctx context.Context, repo string, f IssueFilter) ([]Issue, error)
+}
+
 // findListedIssueWithBackoff polls ListIssues until the target issue appears,
-// tolerating GitHub's REST list-index read-after-write lag: the label-filtered
-// /repos/{repo}/issues list is eventually consistent, so a just-created issue
-// can be absent from the list for a few seconds even though GetIssue-by-number
-// already returns it. Like createWithBackoff this is real live-API timing
-// behavior on the network path — a bounded, ctx-aware event-gate, NOT a retry
-// loop masking a bug (rule://no-retries): a genuinely-absent issue still fails
-// loud after the bound, and it never executes on the skip path. Returns the
-// matching row, the row count observed on the last attempt (for the caller's
-// diagnostic), and an error only on ctx cancellation or a ListIssues failure.
-func findListedIssueWithBackoff(ctx context.Context, gh *GitHub, repo string, f IssueFilter, want uint64) (Issue, int, error) {
+// tolerating a provider's list read-after-write lag: the list index is eventually
+// consistent, so a just-created issue can be absent for a few seconds. GitHub's
+// REST /issues list exhibits this directly (the list index lags GetIssue-by-number);
+// the same bounded gate defensively covers any propagation lag on Linear's filtered
+// issues query. Like createWithBackoff this is real live-API timing behavior on the
+// network path — a bounded, ctx-aware event-gate, NOT a retry loop masking a bug
+// (rule://no-retries): a genuinely-absent issue still fails loud after the bound,
+// and it never executes on the skip path.
+// Returns the matching row, the row count observed on the last attempt (for the
+// caller's diagnostic), and an error only on ctx cancellation or a ListIssues
+// failure.
+func findListedIssueWithBackoff(ctx context.Context, lister issueLister, repo string, f IssueFilter, want uint64) (Issue, int, error) {
 	var lastLen int
 	// A few attempts spanning the propagation window; total bound (~17s) stays
 	// well under the oracle step budget, on the same scale as createWithBackoff.
@@ -661,7 +670,7 @@ func findListedIssueWithBackoff(ctx context.Context, gh *GitHub, repo string, f 
 			case <-time.After(d):
 			}
 		}
-		got, err := gh.ListIssues(ctx, repo, f)
+		got, err := lister.ListIssues(ctx, repo, f)
 		if err != nil {
 			return Issue{}, lastLen, err
 		}

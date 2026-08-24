@@ -138,6 +138,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/forge-linear-token": {
+      "name": "@compass/forge-linear-token",
+      "bin": {
+        "forge-linear-token": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/orion-ref-gate": {
       "name": "@compass/orion-ref-gate",
       "bin": {
@@ -387,6 +397,8 @@
     "@compass/design-ledger-gate": ["@compass/design-ledger-gate@workspace:tools/design-ledger-gate"],
 
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
+
+    "@compass/forge-linear-token": ["@compass/forge-linear-token@workspace:tools/forge-linear-token"],
 
     "@compass/orion-ref-gate": ["@compass/orion-ref-gate@workspace:tools/orion-ref-gate"],
 

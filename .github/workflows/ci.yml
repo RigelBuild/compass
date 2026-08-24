@@ -64,6 +64,13 @@ on:
     # `inputs` glob the affected PR gate skipped cannot hide indefinitely.
     # 07:17 UTC, off the top-of-hour cron congestion GitHub throttles.
     - cron: '17 7 * * *'
+  workflow_dispatch:
+    # The forge fixture-regeneration lane (regen-forge-fixtures job below). It is
+    # operator-triggered ONLY — the live `-update` capture rewrites the golden
+    # testdata against the real testbed, whose PATs live only in Actions secrets,
+    # so a local `-update` is impossible. The gate events above never trigger the
+    # regen job (its own `if:` gates on this event name); this trigger exists
+    # solely so an operator can dispatch a fixture refresh from the Actions tab.
 
 # One in-flight run per ref per event action. A superseded push's run is
 # answering a question nobody is asking any more. Both the event and its action
@@ -99,11 +106,15 @@ jobs:
     # only when the base branch was re-pointed, so a real base re-point still
     # runs (the whole reason `edited` is in the trigger set), while a title/body
     # edit is a no-op. push and schedule are not `pull_request` events, so the
-    # first clause lets them through unconditionally.
+    # first clause lets them through unconditionally. `workflow_dispatch` is
+    # excluded: it exists solely to drive the regen-forge-fixtures job, which
+    # carries its own `if:` — a fixture-regen dispatch has no business spinning
+    # up the full 90-minute gate battery, so this job stays off it.
     if: >-
-      github.event_name != 'pull_request' ||
+      github.event_name != 'workflow_dispatch' &&
+      (github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
-      github.event.changes.base != null
+      github.event.changes.base != null)
     # The vendored forks build through nix (devenv's Rust crates via its flake's
     # fenix pin), so this is a long job by construction.
     timeout-minutes: 90
@@ -452,6 +463,186 @@ jobs:
           echo "microvm: checked $(printf '%s\n' "$pkgs" | wc -l) KVM-backed packages"
           exit "$rc"
 
+      - name: Detect whether this PR touches the forge contract surface
+        id: forge_affected
+        working-directory: go
+        # PRs only. The live-contract oracle below is expensive (it drives a real
+        # GitHub + Linear testbed over the network) and secret-bearing, so on a PR
+        # it runs ONLY when the PR actually changes the forge surface it guards —
+        # the same affected posture the one-job gate takes everywhere else. The
+        # surface is two path sets: the forge package the suite exercises
+        # (go/internal/forge/**) and this workflow file itself (a change to the
+        # oracle's own wiring must re-run the oracle to prove the wiring).
+        #
+        # GitHub exposes no changed-paths primitive to a step `if:`, so — exactly
+        # as the dogfood job resolves image_affected into $GITHUB_OUTPUT for its
+        # own `if:` to read — this step computes the boolean and the oracle's
+        # `if:` reads steps.forge_affected.outputs.forge_affected. The checkout is
+        # fetch-depth 0 (see the checkout step), so the base branch's history is
+        # present locally; GITHUB_BASE_REF names the PR's base. `git diff
+        # --name-only origin/$GITHUB_BASE_REF...HEAD` lists the PR's changed files
+        # against the merge-base, and the grep is the path filter. Paths are
+        # repo-relative (this step's working-directory is go/, but git reports
+        # from the repo root), so the forge glob is the full go/internal/forge/
+        # prefix. On push/schedule this step never runs (the `if:` below), so the
+        # output is unset and the oracle's push/schedule arms carry it regardless.
+        if: github.event_name == 'pull_request'
+        run: |
+          base="origin/${GITHUB_BASE_REF}"
+          # Fail LOUD if the base ref does not resolve rather than swallowing the
+          # error as "not affected" (mirrors the gtk3-affected gate): an
+          # unresolvable base (e.g. a stacked PR's base churning under a
+          # pull_request.edited re-point) must red the gate, never skip it green.
+          if ! git rev-parse --verify --quiet "$base" >/dev/null; then
+            echo "::error::forge affected gate: base ref $base does not resolve — cannot compute the affected set"
+            exit 1
+          fi
+          changed=$(git diff --name-only "$base...HEAD")
+          if printf '%s\n' "$changed" \
+            | grep -qE '^(go/internal/forge/|\.github/workflows/ci\.yml$)'; then
+            echo "forge_affected=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "forge_affected=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Mint the forge live-oracle's Linear app token
+        # The oracle's Linear legs authenticate as a Linear OAuth app (the
+        # client_credentials grant yields an app-actor token — no `actor`
+        # request param), not a personal API key — a personal
+        # key 400s against Linear's Bearer endpoint (RIG-2423). Those tokens
+        # expire in ~30 days with no refresh, so rather than custody a token that
+        # would red this required check monthly, the two static halves (client id
+        # + secret) are the Actions secrets and this step mints a fresh app-actor
+        # token per run, exporting it to the job env as LINEAR_FORGE for the
+        # oracle step below. It carries the IDENTICAL tri-event `if:` as the
+        # oracle: on a run that legitimately skips the oracle (fork head — which
+        # GitHub withholds the secrets from anyway — or an unaffected forge
+        # surface) the mint skips in lockstep, so it never reds a build for a skip
+        # that was correct. When the guard DOES pass, an unset credential fails
+        # the mint loud (exit 1), which skips the oracle via the implicit
+        # success() gate — the intended fail-loud posture, never a silent empty
+        # LINEAR_FORGE that would let the Linear leg vacuously skip.
+        if: >-
+          (github.event_name == 'pull_request' &&
+           github.event.pull_request.head.repo.full_name == github.repository &&
+           steps.forge_affected.outputs.forge_affected == 'true') ||
+          github.event_name == 'push' ||
+          github.event_name == 'schedule'
+        env:
+          LINEAR_FORGE_CLIENT_ID: ${{ secrets.LINEAR_FORGE_CLIENT_ID }}
+          LINEAR_FORGE_CLIENT_SECRET: ${{ secrets.LINEAR_FORGE_CLIENT_SECRET }}
+        run: bun run tools/forge-linear-token/index.ts
+
+      - name: Forge live-contract oracle
+        working-directory: go
+        # The live-contract oracle: the build-tagged `livegithub` suite driven
+        # against a real GitHub + Linear testbed, proving the forge providers
+        # honor the contract the golden fixtures (leg 1) replay offline. It is a
+        # DEDICATED step, not a moon-battery task, for the same reason the pgtest
+        # and gtk3 gates are: it is build-tagged (`livegithub`) so moon's untagged
+        # `go test ./...` never compiles it, and it needs an environment the bare
+        # moon gate has no business realizing — live testbed credentials.
+        #
+        # THE TRI-EVENT CONDITION (design record §376-386). The oracle runs when:
+        #   - a pull_request AND its head is the SAME repo (not a fork) AND the
+        #     forge surface is affected — the fork guard is the Global-Constraints
+        #     secret boundary (a fork PR cannot be trusted with testbed creds, and
+        #     GitHub withholds them from it anyway, so a fork PR SKIPS rather than
+        #     fails); the affected guard is the per-PR cost filter above; OR
+        #   - a push to main, unconditionally with secrets; OR
+        #   - the nightly schedule, unconditionally with secrets.
+        # push and schedule are the backstop: they carry no `github.event.pull_request`
+        # (so the same-repo/affected clauses would null out), which is exactly why
+        # the condition is an explicit OR across the three events, NOT one same-repo
+        # guard ANDed across all of them (that form nulls the oracle out on
+        # push/schedule — design §376-379).
+        if: >-
+          (github.event_name == 'pull_request' &&
+           github.event.pull_request.head.repo.full_name == github.repository &&
+           steps.forge_affected.outputs.forge_affected == 'true') ||
+          github.event_name == 'push' ||
+          github.event_name == 'schedule'
+        env:
+          # The T2 env contract (design §358-362, §431-436): the GitHub live legs
+          # gate on the LIVEGITHUB_* trio, the Linear live legs gate independently
+          # on LINEAR_FORGE (+ its team). The LIVEGITHUB_* trio + LINEAR_FORGE_TEAM
+          # come straight from repo Actions secrets — never available to a fork PR,
+          # which is why the fork arm of the `if:` skips. LINEAR_FORGE itself is
+          # the app-actor token the mint step above just exported to the job env
+          # (a personal key 400s against Linear's Bearer endpoint — RIG-2423).
+          LIVEGITHUB_REPO: ${{ secrets.LIVEGITHUB_REPO }}
+          LIVEGITHUB_AUTHOR_TOKEN: ${{ secrets.LIVEGITHUB_AUTHOR_TOKEN }}
+          LIVEGITHUB_REVIEWER_TOKEN: ${{ secrets.LIVEGITHUB_REVIEWER_TOKEN }}
+          LINEAR_FORGE: ${{ env.LINEAR_FORGE }}
+          LINEAR_FORGE_TEAM: ${{ secrets.LINEAR_FORGE_TEAM }}
+          # -race needs cgo, matching go/moon.yml's race lane (§431-436). Without
+          # it `go test -race` refuses to build.
+          CGO_ENABLED: '1'
+        # Same capture-replay-exit shape as the pgtest and dogfood suites above:
+        # the redirect — not a `| tee` pipeline, whose exit status is tee's 0 and
+        # would swallow a FAIL — then replay the log, then exit on go test's own
+        # status. `|| rc=$?` because the step runs under `bash -e`, which would
+        # otherwise abort before the log is ever printed. The explicit -timeout is
+        # finite headroom for a run that drives a live testbed over the network.
+        run: |
+          rc=0
+          go test -tags livegithub -race -v -timeout 10m ./internal/forge/... >/tmp/forge-oracle.log 2>&1 || rc=$?
+          cat /tmp/forge-oracle.log
+          exit "$rc"
+
+      - name: Assert the forge live-contract oracle ran rather than skipped
+        working-directory: go
+        # The live legs t.Skip (never fail) when their credentials are unset —
+        # correct for a container-less sandbox, but a silent no-op here. A required
+        # step that let that skip pass would be VACUOUSLY green, so this guard makes
+        # a credential-less run loud. It carries the IDENTICAL `if:` as the oracle
+        # step above: on a PR that LEGITIMATELY skipped the oracle (fork head, or an
+        # unaffected forge surface) this guard must skip too, or it would red an
+        # otherwise-green build for a skip that was correct.
+        #
+        # The skip text is derived from source, not hardcoded, matching the pgtest
+        # guard's discipline (§388-389): a guard that drifts out of step with what
+        # it guards passes silently. Each provider's live legs carry their own
+        # stable one-line skip literal — the GitHub legs `const liveSkipMessage`,
+        # the Linear legs `const liveLinearSkipMessage` — kept greppable for
+        # exactly this read; sed extracts each verbatim. BOTH are asserted because
+        # the providers are CO-EQUAL and both required (design §525-526): asserting
+        # only the GitHub leg would leave a permanent vacuous-green hole where the
+        # Linear live-contract leg silently skips (e.g. a LINEAR_FORGE rotation to
+        # empty) yet the required check stays green. These two assertions ARE the
+        # enforcement: a missing or emptied credential makes a live leg skip, and
+        # this guard turns that skip into a hard red — the intended
+        # fail-loud posture for a required check, not a silent pass.
+        if: >-
+          (github.event_name == 'pull_request' &&
+           github.event.pull_request.head.repo.full_name == github.repository &&
+           steps.forge_affected.outputs.forge_affected == 'true') ||
+          github.event_name == 'push' ||
+          github.event_name == 'schedule'
+        run: |
+          src=internal/forge/livegithub_test.go
+          ghskip=$(sed -n 's/.*liveSkipMessage = "\(.*\)"/\1/p' "$src")
+          lnskip=$(sed -n 's/.*liveLinearSkipMessage = "\(.*\)"/\1/p' "$src")
+          if [ -z "$ghskip" ] || [ -z "$lnskip" ]; then
+            echo "::error::could not read the skip messages out of $src (github='$ghskip' linear='$lnskip') — this guard has drifted from the harness and is no longer checking anything"
+            exit 1
+          fi
+          if grep -qF "$ghskip" /tmp/forge-oracle.log; then
+            echo "::error::forge live-contract oracle skipped the GitHub legs — the LIVEGITHUB_* credentials were not reached, so nothing was asserted"
+            grep -nF "$ghskip" /tmp/forge-oracle.log | head
+            exit 1
+          fi
+          if grep -qF "$lnskip" /tmp/forge-oracle.log; then
+            echo "::error::forge live-contract oracle skipped the Linear legs — the LINEAR_FORGE credential was not reached, so the co-equal Linear contract was not asserted"
+            grep -nF "$lnskip" /tmp/forge-oracle.log | head
+            exit 1
+          fi
+          if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/internal/forge[[:space:]]" /tmp/forge-oracle.log; then
+            echo "::error::the forge live-contract package did not report ok — it failed, skipped, or never ran"
+            exit 1
+          fi
+          echo "forge oracle: the live-contract suite ran both the GitHub and Linear legs against the testbed and reported ok"
+
       - name: Multi-window gtk3 e2e gate
         # The ONE CI lane that compiles + runs the native app (Wails v3,
         # go/cmd/compass-app) — the multi-window smoke gate (design record
@@ -619,11 +810,13 @@ jobs:
       # container sandbox withholds.
       image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       options: --privileged
-    # Mirror the `gates` guard: skip only the no-op `edited` (title/body) case.
+    # Mirror the `gates` guard: skip the no-op `edited` (title/body) case, and
+    # stay off `workflow_dispatch` (regen-only — see the gates guard).
     if: >-
-      github.event_name != 'pull_request' ||
+      github.event_name != 'workflow_dispatch' &&
+      (github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
-      github.event.changes.base != null
+      github.event.changes.base != null)
     timeout-minutes: 60
     env:
       # Same short temp root as `gates`: the e2e suite binds AF_UNIX sockets
@@ -958,6 +1151,12 @@ jobs:
         # every PR. It is build-tagged `podman`, so the moon `go test ./...`
         # battery never compiles it — this step is the ONLY thing that runs it.
         #
+        # D2's no-secrets claim scopes to THIS dogfood tier specifically: the
+        # forge live-contract oracle in the gates job is a separate, secret-bearing
+        # per-PR step (the LIVEGITHUB_*/LINEAR_FORGE testbed creds), so "the PR gate
+        # carries no secrets" is now true of the dogfood tier alone — see the record
+        # docs/designs/product/compass-forge-integration-testing.
+        #
         # Same capture-replay-exit shape as the gates job's suites: redirect (not
         # a `| tee` pipeline, whose exit status is tee's 0 and would swallow a
         # FAIL), replay the log, then exit on go test's own status. `|| rc=$?`
@@ -1013,7 +1212,7 @@ jobs:
     # jobs can be split or renamed without touching branch protection — a new
     # tier just joins `needs` below.
     #
-    # The `if` has two parts AND-ed together, and both are load-bearing:
+    # The `if` has three parts AND-ed together, and all are load-bearing:
     #   - `!cancelled()`, not the default `success()` and not `always()`. The
     #     default `success()` gate would SKIP this job when a work job FAILED, and
     #     branch protection treats a skipped required check as passing — so a red
@@ -1038,6 +1237,10 @@ jobs:
     #     i.e. mergeable without a verdict. That takes a deliberate human action
     #     against one's own gating run and is the accepted, standard `!cancelled()`
     #     tradeoff; `always()` would have red'd it instead.
+    #   - `github.event_name != 'workflow_dispatch'`: the work jobs stay off a
+    #     fixture-regen dispatch (regen-forge-fixtures runs alone there), so both
+    #     `needs` skip — this rollup must skip too, or `!cancelled()` would red the
+    #     required check on `skipped != success` for a run that never gates a merge.
     #   - the SAME no-op-`edited` guard the work jobs carry, so on a PR title/body
     #     edit that did not move the base — where both work jobs skip — this rollup
     #     skips too, rather than running and failing on `skipped != success`. A
@@ -1048,7 +1251,8 @@ jobs:
     # detach from the AND.
     needs: [gates, dogfood-e2e]
     if: >-
-      !cancelled() && (
+      !cancelled() &&
+      github.event_name != 'workflow_dispatch' && (
       github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
       github.event.changes.base != null )
@@ -1076,4 +1280,127 @@ jobs:
             exit 1
           fi
           echo "all work jobs succeeded"
+
+  regen-forge-fixtures:
+    name: Regenerate forge golden fixtures
+    runs-on: ubuntu-latest
+    # The operator-only fixture-regeneration lane. The live `-update` capture
+    # (TestLiveUpdateFixtures) rewrites go/internal/forge/testdata/ against the
+    # real GitHub + Linear testbed — whose PATs live only in Actions secrets, so
+    # a local `-update` is impossible — then opens a BOT PR carrying the rewritten
+    # fixtures for human review. It is a SEPARATE job, never a step in `gates`:
+    # gating on `workflow_dispatch` keeps it off every normal gate event, so the
+    # required `CI` rollup above (which does not `needs:` this job) is untouched.
+    if: github.event_name == 'workflow_dispatch'
+    # The top-level `permissions: contents: read` is the floor; this job widens
+    # its own to open a PR: contents:write to push the regen branch,
+    # pull-requests:write to open the PR against it.
+    permissions:
+      contents: write
+      pull-requests: write
+    timeout-minutes: 90
+    env:
+      # Same short temp root as `gates`: the live suite binds AF_UNIX sockets
+      # under t.TempDir() and the 108-byte sun_path cap needs the budget.
+      TMPDIR: /tmp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the create-pull-request action can branch and diff
+          # cleanly, matching the gates checkout.
+          fetch-depth: 0
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # The SAME two-cache trust posture as the gates job — the two
+          # substituters the vendored forks use plus their trusted keys, never
+          # `accept-flake-config` (which would trust a PR-supplied substituter +
+          # key). See the gates install-nix-action step for the full rationale.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        # Phase one of the two-phase bootstrap, identical to the gates job: the
+        # language runtimes (bun/node/moon/go) from gate-tools.nix's `langs`, built
+        # from the devenv.lock pin so this lane runs the same toolchain the gate
+        # does. See the gates job for the two-phase rationale.
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Put the dev shell's nixpkgs tools on PATH
+        # Phase two: the nixpkgs tools (buf, the Go battery, …) from the parity
+        # script's own parse of devenv.nix, run under the bun phase one added.
+        run: |
+          attrs=$(bun tools/toolchain/parity.ts --print-nix-attrs)
+          out=$(nix build --no-link --print-out-paths \
+            -f tools/toolchain/gate-tools.nix env --arg attrs "$attrs")
+          echo "$out/bin" >>"$GITHUB_PATH"
+
+      - name: Mint the forge live-oracle's Linear app token
+        # Same per-run mint as the gates-job oracle (RIG-2423): the regen lane's
+        # `-update` capture drives the SAME live Linear legs, which authenticate
+        # as the OAuth app (client_credentials), so it needs a fresh app-actor
+        # token too. No `if:` guard here — the whole job is workflow_dispatch-only
+        # and operator-driven, so (like the regen step's own "no skip-guard"
+        # posture below) an unset credential is operator error: the mint fails
+        # loud (exit 1) and the run stops rather than capturing against a
+        # credential-less Linear leg.
+        env:
+          LINEAR_FORGE_CLIENT_ID: ${{ secrets.LINEAR_FORGE_CLIENT_ID }}
+          LINEAR_FORGE_CLIENT_SECRET: ${{ secrets.LINEAR_FORGE_CLIENT_SECRET }}
+        run: bun run tools/forge-linear-token/index.ts
+
+      - name: Regenerate the forge golden fixtures against the live testbed
+        working-directory: go
+        env:
+          # The SAME T2 env contract as the live-contract oracle in gates: the
+          # GitHub live legs gate on the LIVEGITHUB_* trio, the Linear legs on
+          # LINEAR_FORGE (+ team). The LIVEGITHUB_* trio + LINEAR_FORGE_TEAM come
+          # from Actions secrets; LINEAR_FORGE is the app-actor token the mint
+          # step above exported to the job env (client_credentials — RIG-2423). A
+          # dispatch run with the secrets unset is an operator error (the mint
+          # fails loud, or the -update capture would skip and rewrite nothing) —
+          # not a silent-green gate risk, so this lane needs no skip-guard.
+          LIVEGITHUB_REPO: ${{ secrets.LIVEGITHUB_REPO }}
+          LIVEGITHUB_AUTHOR_TOKEN: ${{ secrets.LIVEGITHUB_AUTHOR_TOKEN }}
+          LIVEGITHUB_REVIEWER_TOKEN: ${{ secrets.LIVEGITHUB_REVIEWER_TOKEN }}
+          LINEAR_FORGE: ${{ env.LINEAR_FORGE }}
+          LINEAR_FORGE_TEAM: ${{ secrets.LINEAR_FORGE_TEAM }}
+          CGO_ENABLED: '1'
+        # TestLiveUpdateFixtures is the agreed cross-slice update test (added to
+        # livegithub_test.go by leg 2); `-update` is its capture flag, rewriting
+        # go/internal/forge/testdata/ from the live testbed responses. No -race and
+        # no capture-replay-exit shape here: a regen is an operator-driven refresh,
+        # not a gate — a failure surfaces directly in the dispatch run's log.
+        run: |
+          go test -tags livegithub -run TestLiveUpdateFixtures -update -timeout 10m ./internal/forge/...
+
+      - name: Open a bot PR with the regenerated fixtures
+        # The regenerated testdata/ is a working-tree diff; this opens a bot PR
+        # carrying it for human review — the one bot-opens-a-PR credential path
+        # (design §394-398). create-pull-request stages the diff onto a fresh
+        # branch and opens the PR via the job's widened permissions above; it is
+        # SHA-pinned like every other action in this file, its trust anchor.
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: forge-fixture-regen-${{ github.run_id }}
+          title: 'test(forge): regenerate forge golden fixtures'
+          commit-message: 'test(forge): regenerate forge golden fixtures'
+          body: >-
+            Automated `-update` capture of the forge golden fixtures
+            (`go/internal/forge/testdata/`) against the live testbed, produced by
+            the `regen-forge-fixtures` workflow_dispatch lane. Review the fixture
+            diff before merging.
+          add-paths: go/internal/forge/testdata
 
