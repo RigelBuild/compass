@@ -80,6 +80,13 @@ in
     biome
     markdownlint-cli2
 
+    # actionlint: static checker for the GitHub Actions workflows under
+    # .github/workflows/ (ci, eng-docs-deploy, publish-agent-image, renovate).
+    # A bare nixpkgs attr, so it lives in this parsed literal where the
+    # toolchain-parity gate resolves it. Moved off the box into this shell so
+    # workflow linting resolves the same pinned binary everywhere.
+    actionlint
+
     # curl: the compass-server readiness probe (processes below) POSTs to
     # GetServerInfo over the loopback dev-http door to gate readiness on a real
     # serving handler. Pin it here (referenced via `lib.getExe` in the probe)
@@ -123,6 +130,17 @@ in
     toolchainTools.node
     toolchainTools.moon
     goToolchain
+  ]
+  # hk (jdx/hk): the jj/git pre-push hook runner. A dotted input reference
+  # (inputs.hk.packages.<system>.default), not a bare nixpkgs attr, so it is
+  # appended OUTSIDE the parsed `with pkgs` literal — the toolchain-parity gate
+  # THROWS on any non-bare token in that literal (same reason as goToolchain
+  # above). Cross-platform (linux + darwin), so it needs no isLinux guard.
+  # `enterShell` runs `hk install` to wire the hooks against the repo-root
+  # hk.pkl; this puts the binary that reads that schema on PATH so the two can't
+  # drift. Pinned to v1.48.0 via the `hk` input in devenv.yaml.
+  ++ [
+    inputs.hk.packages.${pkgs.stdenv.system}.default
   ]
   # xvfb-run: a virtual framebuffer wrapper for the multi-window gtk3 e2e
   # (go/cmd/compass-app, design record compass-multi-window §M4) — the real
