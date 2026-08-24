@@ -505,6 +505,121 @@ describe("MarkdownText — code highlighting with plain fallback", () => {
 		// The appended prose rendered too (the grow actually took effect).
 		expect(container.textContent).toContain("more prose below");
 	});
+
+	// RIG-1422: leading-edge first highlight. A settled (non-streaming) block —
+	// every historical message in a channel — must colorize on FIRST paint, not
+	// sit on the plain `<pre>` fallback for HIGHLIGHT_DEBOUNCE_MS. This is the
+	// cache-MISS counterpart to the R1 test above (which proves the sync-cache
+	// paint): here the (lang, code) pair is NOT cached (afterEach cleared it), so
+	// the highlight runs the async path — but on the leading edge, kicked
+	// immediately rather than gated behind the 150ms trailing timer. The proof is
+	// that the highlighter is asked, and its markup paints, WITHOUT ever elapsing
+	// `flushHighlightDebounce()`. A debounced-from-the-first-tick implementation
+	// would leave `asked` empty until the 150ms window passed.
+	test("a settled fence highlights on first paint, not gated behind the debounce (leading edge, cache miss)", async () => {
+		const HIGHLIGHTED =
+			'<pre class="shiki"><code><span style="color:green" data-le="hit">const x = 1;</span></code></pre>';
+		const asked: string[] = [];
+		mock.module("../markdown/highlighter", () => ({
+			...realHighlighter,
+			highlightToHtml: (code: string, lang: string) => {
+				asked.push(code);
+				return Promise.resolve(
+					lang === "ts" && code.includes("const x = 1;") ? HIGHLIGHTED : null,
+				);
+			},
+		}));
+		const { container } = render(() => (
+			<MarkdownText text={"```ts\nconst x = 1;\n```"} byHandle={byHandle()} />
+		));
+		// The highlight is kicked on the leading edge: the highlighter was asked
+		// synchronously at render, with NO debounce window elapsed. (A trailing-only
+		// debounce would have asked nothing yet.)
+		flush();
+		expect(asked.length).toBe(1);
+		expect(asked[0]).toContain("const x = 1;");
+		// And the resolved markup paints — still without ever elapsing the debounce
+		// flush, so no plain-fallback frame is gated behind the 150ms timer.
+		await waitFor(
+			() => expect(container.querySelector('[data-le="hit"]')).not.toBeNull(),
+			{ timeout: HIGHLIGHT_WAIT_MS },
+		);
+		expect(container.querySelector("pre.code-block")).toBeNull();
+	});
+
+	// RIG-1422: the leading-edge gate must NOT reintroduce the per-tick re-tokenize
+	// the debounce exists to collapse. A single fence grown across ticks that
+	// arrive inside the debounce window (no `flushHighlightDebounce` between them)
+	// must issue ONE leading-edge pass, then collapse the whole growth burst into
+	// exactly ONE trailing pass — not one per tick.
+	test("a fence's within-window growth ticks collapse to one trailing highlight", async () => {
+		const asked: string[] = [];
+		mock.module("../markdown/highlighter", () => ({
+			...realHighlighter,
+			// Never resolves: we count HOW MANY times the highlighter is asked, not
+			// what it returns.
+			highlightToHtml: (code: string) => {
+				asked.push(code);
+				return new Promise<string | null>(() => {});
+			},
+		}));
+		const [text, setText] = createSignal("```ts\nL0\n```");
+		render(() => <MarkdownText text={text()} byHandle={byHandle()} />);
+		flush();
+		// Leading edge: the fresh fence is asked once, immediately.
+		expect(asked.length).toBe(1);
+		// Three growth ticks inside the window (flush() is synchronous, far under
+		// HIGHLIGHT_DEBOUNCE_MS) — each is a growth tick, debounced, so no new ask.
+		setText("```ts\nL0\nL1\n```");
+		flush();
+		setText("```ts\nL0\nL1\nL2\n```");
+		flush();
+		setText("```ts\nL0\nL1\nL2\nL3\n```");
+		flush();
+		expect(asked.length).toBe(1);
+		// Once the window elapses, the burst collapses to exactly ONE trailing pass
+		// carrying the latest text — not one pass per tick.
+		await flushHighlightDebounce();
+		expect(asked.length).toBe(2);
+		expect(asked[1]).toContain("L3");
+	});
+
+	// RIG-1422 regression: the leading-edge gate is a MODULE-LEVEL record, so a
+	// message with more than one fence rebuilds every fence in the same reconcile
+	// tick. A naive single-slot record lets an earlier fence clobber the slot
+	// before a later, still-growing fence reads it, so the grower never matches
+	// its OWN prior code and (mis)fires an immediate re-tokenize every tick — the
+	// exact O(n²) the debounce collapses. The gate must match a growing fence
+	// against its own recent snapshot regardless of siblings scheduled between.
+	test("a second streaming fence beside a settled one still debounces (no per-tick re-tokenize)", async () => {
+		const asked: string[] = [];
+		mock.module("../markdown/highlighter", () => ({
+			...realHighlighter,
+			highlightToHtml: (code: string) => {
+				asked.push(code);
+				return new Promise<string | null>(() => {});
+			},
+		}));
+		// F1 is settled; F2 streams. Count only F2's asks (its "GROW" marker) so
+		// F1's own per-tick reconstruction (harmless — it hits the R1 cache in
+		// production) does not pollute the assertion.
+		const F1 = "```ts\nconst settled = 1;\n```";
+		const grows = () => asked.filter((c) => c.includes("GROW")).length;
+		const [text, setText] = createSignal(`${F1}\n\n\`\`\`ts\nGROW\n\`\`\``);
+		render(() => <MarkdownText text={text()} byHandle={byHandle()} />);
+		flush();
+		// F2's leading edge: asked once.
+		expect(grows()).toBe(1);
+		// Grow ONLY F2, within the window. Under a single-slot gate F1 clobbers the
+		// slot each tick, so F2 reads as a leading edge and re-asks every tick
+		// (grows() climbs). The window-list gate matches F2 against its own prior
+		// snapshot → growth tick → debounced → no new ask.
+		setText(`${F1}\n\n\`\`\`ts\nGROW\nMORE\n\`\`\``);
+		flush();
+		setText(`${F1}\n\n\`\`\`ts\nGROW\nMORE\nEVEN\n\`\`\``);
+		flush();
+		expect(grows()).toBe(1);
+	});
 });
 
 describe("MarkdownText — link safety", () => {
