@@ -3,15 +3,16 @@
 // `text` component key to route prose text through (hast text nodes render as
 // raw strings inside `hast-util-to-jsx-runtime`, never through `components`).
 // So mention chips are injected at the hast stage instead: this rehype plugin
-// walks the tree AFTER `rehypeInertRawAndBreaks` and, for every text node NOT
-// inside a code subtree, splits it through the existing pure `mentionRuns`
-// splitter and replaces it with an interleaved sequence of text nodes and
-// `span.mention-chip` elements — so chips are real hast elements before
-// `toJsxRuntime` and render with zero component overrides.
+// walks the tree AFTER `rehypeInertRaw` and `rehypeProseBreaks` and, for every
+// text node NOT inside a code subtree, splits it through the existing pure
+// `mentionRuns` splitter and replaces it with an interleaved sequence of text
+// nodes and `span.mention-chip` elements — so chips are real hast elements
+// before `toJsxRuntime` and render with zero component overrides.
 //
-// Ordering matters (design A3): this runs AFTER `rehypeInertRawAndBreaks`, which
-// retypes `raw` HTML nodes to `text`, so raw-HTML prose text chips like any
-// other prose text — matching the old `text`-override behavior.
+// Ordering matters (design A3): this runs AFTER `rehypeInertRaw`, which retypes
+// `raw` HTML nodes to `text`, so raw-HTML prose text chips like any other prose
+// text — matching the old `text`-override behavior — and after
+// `rehypeProseBreaks`, which has already rescued softbreaks into `br`.
 
 import type {
 	Element as HastElement,
@@ -60,10 +61,10 @@ function splitTextNode(
  *  `byHandle` resolves each mention's known/reserved state. Returns a unified
  *  ATTACHER (`() => transformer`) — the shape `rehypePlugins` expects for a bare
  *  entry, so `rehypeMentionChips({ byHandle })` drops straight into the array
- *  beside `rehypeInertRawAndBreaks` (itself a zero-arg attacher). Code subtrees
- *  are skipped verbatim (a `@handle` inside `code`/`pre` never chips),
- *  inheriting the `inCode` flag down the tree exactly as
- *  `rehypeInertRawAndBreaks` does. The visitor never descends into the chip
+ *  beside `rehypeInertRaw`/`rehypeProseBreaks` (each itself a zero-arg
+ *  attacher). Code subtrees are skipped verbatim (a `@handle` inside
+ *  `code`/`pre` never chips), inheriting the `inCode` flag down the tree
+ *  exactly as `rehypeProseBreaks` does. The visitor never descends into the chip
  *  spans it injects (it builds a fresh children array from the split output
  *  rather than re-walking it), so an injected `@handle` is never re-chipped. */
 export function rehypeMentionChips(options: {
