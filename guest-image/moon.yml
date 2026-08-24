@@ -43,7 +43,7 @@ tasks:
     # cache:false — nix owns its store-path caching; moon must not false-green a
     # build it did not re-run (the same posture agent-image/moon.yml:46-48 and
     # app-bundle/moon.yml:33-35 take).
-    command: 'nix build -f default.nix compass-guest-kernel compass-guest-rootfs --no-link --print-out-paths'
+    command: 'nix build -f default.nix compass-guest-kernel compass-guest-rootfs compass-guest-initrd --no-link --print-out-paths'
     options:
       cache: false
       runInCI: true
@@ -64,6 +64,16 @@ tasks:
       - '/tools/toolchain/toolchain-tools.nix'
       - '/tools/toolchain/versions/**'
       - '/packages/compass-agent/**'
+      # T1 packages the T2 guestd binary (buildGoModule of go/cmd/compass-guestd)
+      # as the rootfs /sbin/init, so the backend module is now a build input: a
+      # guestd or go.mod/go.sum change must reschedule this build. The module
+      # manifests are called out explicitly (a vendorHash move forces a rebuild)
+      # alongside the guestd command + its internal package tree.
+      - '/go/go.mod'
+      - '/go/go.sum'
+      - '/go/cmd/compass-guestd/**'
+      - '/go/internal/guestd/**'
+      - '/go/internal/gen/**'
       - '/package.json'
       - '/bun.lock'
       - '/devenv.lock'

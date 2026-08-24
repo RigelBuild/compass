@@ -384,13 +384,18 @@ jobs:
         run: |
           guest=$(nix build --no-link --print-out-paths \
             -f "$GITHUB_WORKSPACE/guest-image/default.nix" \
-            compass-guest-kernel compass-guest-rootfs)
+            compass-guest-kernel compass-guest-rootfs compass-guest-initrd)
           kernel=$(echo "$guest" | sed -n '1p')
           rootfs=$(echo "$guest" | sed -n '2p')
-          echo "COMPASS_TEST_GUEST_KERNEL=$kernel/bzImage" >>"$GITHUB_ENV"
-          echo "COMPASS_TEST_GUEST_ROOTFS=$rootfs" >>"$GITHUB_ENV"
+          initrd=$(echo "$guest" | sed -n '3p')
+          {
+            echo "COMPASS_TEST_GUEST_KERNEL=$kernel/bzImage"
+            echo "COMPASS_TEST_GUEST_ROOTFS=$rootfs"
+            echo "COMPASS_TEST_GUEST_INITRD=$initrd"
+          } >>"$GITHUB_ENV"
           export COMPASS_TEST_GUEST_KERNEL="$kernel/bzImage"
           export COMPASS_TEST_GUEST_ROOTFS="$rootfs"
+          export COMPASS_TEST_GUEST_INITRD="$initrd"
 
           for out in $(nix build --no-link --print-out-paths \
             -f "$GITHUB_WORKSPACE/tools/toolchain/microvm-vmm-env.nix" \
