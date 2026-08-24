@@ -138,6 +138,27 @@ export class CompassAgent {
 	// agent streaming synchronously (pi-agent-core agent.ts:1072) and the second
 	// would reject AgentBusyError.
 	#askAnswerQueue: string[] = [];
+	// RIG-2644 — strand-recovery latch. The idle-deliver gate (see `deliver`)
+	// flushes immediately only when the session is idle; when it queues a message
+	// because `#session.isStreaming` is true but no TRACKED turn is active
+	// (`#turnActive` false), no `agent_end` edge is guaranteed to arrive to flush
+	// it — a startup provider probe/prewarm (or any untracked in-flight that folds
+	// into `AgentSession.isStreaming` via `#promptInFlightCount`,
+	// agent-session.ts:6470) holds `isStreaming` true with no turn edge on the
+	// subscription. Left alone the message strands forever: control-acked but never
+	// injected, never `DeliveryAck`ed, board stuck STARTING. This latch arms a
+	// single `waitForIdle`-gated re-check that flushes once the untracked stream
+	// settles (surfaced investigating RIG-2617 Defect 2; the spin-up-race gate
+	// intact — a real turn's `agent_end` flushes first and the recovery no-ops on
+	// the now-empty queue). One recovery in flight at a time; re-armed if a fresh
+	// probe is still streaming when the wait resolves.
+	#strandRecoveryArmed = false;
+	// RIG-2644 — set true in run()'s finally, on the same edge that emits the
+	// terminal status and unsubscribes. A strand-recovery `waitForIdle` can
+	// resolve AFTER the session has terminated (STOPPED/ERRORED); flushing then
+	// would start a turn and emit a DeliveryAck past the terminal frame the board
+	// already saw. The recovery re-check consults this and no-ops when closed.
+	#closed = false;
 	// RIG-1509 correlation registry (co-ratified with RIG-1310): the ask ids the
 	// raise tool minted, so the askAnswer arm renders an inbound answer against
 	// the questions the model asked. Well-defined default (a fresh empty
@@ -202,6 +223,8 @@ export class CompassAgent {
 			this.#emitStatus(AgentSessionState.ERRORED);
 			throw err;
 		} finally {
+			// Terminal edge: no strand-recovery re-check may start a turn past here.
+			this.#closed = true;
 			unsubscribe();
 		}
 	}
@@ -307,7 +330,63 @@ export class CompassAgent {
 		// the prompt would reject with AgentBusyError, and the message would be
 		// acked-and-dropped. Gating on `isStreaming` too keeps the message queued
 		// to ride the live turn's `agent_end` flush.
-		if (!this.#turnActive && !this.#session.isStreaming) this.#flushDelivers();
+		if (!this.#turnActive && !this.#session.isStreaming) {
+			this.#flushDelivers();
+		} else if (!this.#turnActive) {
+			// Queued because the session reports streaming while NO tracked turn is
+			// active — the strand shape (RIG-2644): an untracked in-flight (startup
+			// probe/prewarm) holds `isStreaming` true and no `agent_end` will arrive
+			// to flush. Arm a recovery that flushes once the stream settles. A live
+			// TRACKED turn (`#turnActive` true) is NOT this case — its `agent_end`
+			// flushes normally, so it is left to that path.
+			this.#armStrandRecovery();
+		}
+	}
+
+	// RIG-2644 — flush the deliver/askAnswer queues once an UNTRACKED stream (a
+	// startup probe/prewarm holding `#session.isStreaming` with no turn edge)
+	// settles, so a message that queued against it is not stranded. `waitForIdle`
+	// resolves only when the inner agent's streaming and post-prompt recovery are
+	// done (agent-session.ts:6478-6481), i.e. `#session.isStreaming` is false — so
+	// the re-check gate matches the caller's idle gate exactly. Idempotent via the
+	// `#strandRecoveryArmed` latch: one recovery in flight at a time. On resolve:
+	// no-op if the agent has closed (`#closed` — a resolve
+	// racing terminal STOPPED/ERRORED must not start a post-terminal turn) or a
+	// TRACKED turn started meanwhile (`#turnActive`) or the queue already drained;
+	// flush if still-idle with a non-empty queue; re-arm if a fresh probe is still
+	// streaming. Fire-and-forget: `waitForIdle` can reject (an abort/dispose during
+	// the probe), so the chain terminates in a `.catch` that routes to onUnmapped
+	// rather than an unhandled rejection; the flush's own prompt rejection is
+	// belted separately in `#flushDelivers`.
+	#armStrandRecovery(): void {
+		if (this.#strandRecoveryArmed) return;
+		this.#strandRecoveryArmed = true;
+		void this.#session
+			.waitForIdle()
+			.then(() => {
+				this.#strandRecoveryArmed = false;
+				if (this.#closed) return;
+				if (
+					this.#deliverQueue.length === 0 &&
+					this.#askAnswerQueue.length === 0
+				) {
+					return;
+				}
+				if (!this.#turnActive && !this.#session.isStreaming) {
+					this.#flushDelivers();
+				} else if (!this.#turnActive) {
+					// Still an untracked stream (a second probe) — re-arm.
+					this.#armStrandRecovery();
+				}
+			})
+			.catch((err) => {
+				this.#strandRecoveryArmed = false;
+				this.#onUnmapped({
+					kind: "unmapped",
+					eventType: "strand_recovery",
+					reason: `waitForIdle recovery failed: ${err}`,
+				});
+			});
 	}
 
 	// SEA-1310 §8 — channel-borne steer arm. The entry the immediate handle calls
@@ -647,11 +726,20 @@ export class CompassAgent {
 				// Render the answers against the recorded questions and enqueue on the
 				// SAME turn-end coalescing path deliver uses: an idle answer starts a
 				// turn at once; a mid-turn answer coalesces into the `agent_end` flush.
+				// The strand shape is identical to deliver's (RIG-2644): if the answer
+				// queues because the session reports streaming while NO tracked turn is
+				// active, arm the same `waitForIdle`-gated recovery so it is not
+				// stranded against an untracked startup stream that never emits
+				// `agent_end`. `#flushDelivers` drains both queues, so a co-queued
+				// deliver+answer share one flush.
 				this.#askAnswerQueue.push(
 					formatAskAnswerForPrompt(questions, control.answers),
 				);
-				if (!this.#turnActive && !this.#session.isStreaming)
+				if (!this.#turnActive && !this.#session.isStreaming) {
 					this.#flushDelivers();
+				} else if (!this.#turnActive) {
+					this.#armStrandRecovery();
+				}
 				return;
 			}
 		}

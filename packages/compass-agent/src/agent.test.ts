@@ -87,6 +87,21 @@ interface RecordingSession {
 	// inner agent's `state.isStreaming` (minus the in-flight count the real getter
 	// also folds in — irrelevant to this fake's synchronous drive).
 	readonly isStreaming: boolean;
+	// RIG-2644 — the strand-recovery re-check awaits this (agent.ts
+	// #armStrandRecovery). Mirrors AgentSession.waitForIdle (agent-session.ts:6478):
+	// resolves once streaming has settled. Deterministic, no timers: resolves at
+	// once when already idle, else parks until `settleIdle()` releases it (the test
+	// models the untracked probe clearing).
+	waitForIdle(): Promise<void>;
+	// Test control: release any parked waitForIdle — models a startup
+	// probe/prewarm finishing with no agent_end on the stream. Default clears the
+	// streaming flag too (fully idle). `keepStreaming: true` resolves the waiters
+	// but LEAVES isStreaming true — faithfully modelling production's window where
+	// AgentSession.waitForIdle (which awaits the inner agent, agent-session.ts:6478-6481)
+	// resolves while `isStreaming` still reads true because a fresh probe holds
+	// `#promptInFlightCount > 0` (the fold at :6469-6470). That window is what
+	// makes the recovery re-arm branch fire.
+	settleIdle(opts?: { keepStreaming?: boolean }): void;
 }
 
 function recordingSession(natives: AgentTool[] = []): RecordingSession {
@@ -135,6 +150,8 @@ function recordingSession(natives: AgentTool[] = []): RecordingSession {
 		},
 	};
 	Object.assign(agent, agentImpl);
+	// Resolvers for waitForIdle calls parked while streaming (RIG-2644).
+	const idleWaiters: (() => void)[] = [];
 	const rec: RecordingSession = {
 		agent,
 		subscribed: 0,
@@ -142,6 +159,17 @@ function recordingSession(natives: AgentTool[] = []): RecordingSession {
 		listener: undefined,
 		get isStreaming(): boolean {
 			return agent.state.isStreaming;
+		},
+		waitForIdle(): Promise<void> {
+			if (!agent.state.isStreaming) return Promise.resolve();
+			return new Promise<void>((resolve) => {
+				idleWaiters.push(resolve);
+			});
+		},
+		settleIdle(opts?: { keepStreaming?: boolean }): void {
+			if (!opts?.keepStreaming) agent.state.isStreaming = false;
+			const waiters = idleWaiters.splice(0);
+			for (const w of waiters) w();
 		},
 	};
 	const sessionImpl = {
@@ -1152,6 +1180,226 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 		expect(h.session.agent.prompts).toHaveLength(1);
 		expect(ackIds(h.frames)).toEqual(["ask1"]);
 		await h.close();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// RIG-2644 — idle deliver after replay_complete must start a turn, and a deliver
+// against an UNTRACKED stream must not strand. Surfaced investigating RIG-2617
+// Defect 2; wire evidence (992f3b5e clean seed): control path binds, drains,
+// applies + acks replay_complete(1) + deliver(2,3,4), but the board stays
+// STARTING, comms delivery cursor acked_seq=0 (NO DeliveryAck), no turn. The
+// first two tests pin the correct idle-flush path; the last two pin the
+// strand-recovery fix (an untracked stream that never emits `agent_end`). All
+// drive the REAL run loop (startControlAgent) with production ordering:
+// replay_complete then a deliver, no agent_start/agent_end in between.
+describe("CompassAgent — RIG-2644 idle deliver / strand recovery after replay_complete", () => {
+	test("replay_complete then an idle deliver (no turn edges) → prompt turn + DeliveryAck", async () => {
+		const h = startControlAgent();
+		// Barrier lifts via the control script, exactly as the pump applies it.
+		await h.feed({ kind: "replayComplete" });
+		// An idle deliver arrives via the immediate handle — no agent_start has
+		// fired, no turn is live: the fresh-peer shape. The gate at agent.ts:325
+		// must read idle and flush.
+		h.agent.deliver(deliverMsg("m1", "channel msg"));
+		await tick();
+		// GROUND TRUTH: does a turn start and is the deliver acked?
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		await h.close();
+	});
+
+	test("replay_complete + idle deliver fired synchronously in one batch → turn + ack", async () => {
+		// The tightest production ordering: the pump dispatches replay_complete(1)
+		// (buffered) and deliver(2) (immediate) in ONE synchronous stream drain,
+		// BEFORE run() has pulled + applied replay_complete via #applyControl. The
+		// immediate deliver fires agent.deliver() before agent.ts #replayComplete is
+		// set — the two-barrier-flag window the supervisor flagged. agent.deliver's
+		// gate does not consult #replayComplete, so it must still flush when idle.
+		const h = startControlAgent();
+		// Fire the deliver in the same tick as the replayComplete feed, without
+		// awaiting the feed's drain first — the deliver lands while run() is still
+		// mid-pull of replay_complete.
+		const fed = h.feed({ kind: "replayComplete" });
+		h.agent.deliver(deliverMsg("m1", "channel msg"));
+		await fed;
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		await h.close();
+	});
+
+	test("a deliver against an UNTRACKED stream (startup probe, no agent_end) is recovered: flushes once the stream settles", async () => {
+		// THE production shape (supervisor's wire evidence, RIG-2617 Defect 2). The
+		// real AgentSession.isStreaming folds in #promptInFlightCount
+		// (agent-session.ts:6470), which a startup provider probe/prewarm holds > 0
+		// WITHOUT emitting an agent_end through subscribe(). Before the fix the
+		// idle gate (agent.ts:325) read !idle, the deliver QUEUED, and nothing ever
+		// fired the agent_end that would flush it → permanent strand (no prompt, no
+		// DeliveryAck, comms acked_seq 0, board stuck STARTING). The fix arms a
+		// waitForIdle-gated recovery: when the untracked stream settles, the queued
+		// deliver flushes.
+		const h = startControlAgent();
+		await h.feed({ kind: "replayComplete" });
+		// An untracked in-flight (probe/prewarm) holds isStreaming true; NO
+		// agent_start/agent_end ever reaches the subscription.
+		h.session.agent.state.isStreaming = true;
+		h.agent.deliver(deliverMsg("m1", "channel msg"));
+		await tick();
+		// Still queued while the probe streams — not flushed prematurely (that
+		// would AgentBusyError). Non-vacuity: this is the pre-settle state.
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(ackIds(h.frames)).toEqual([]);
+		// The probe finishes: isStreaming clears, waitForIdle resolves. The armed
+		// recovery re-checks and flushes the stranded deliver.
+		h.session.settleIdle();
+		await tick();
+		await tick();
+		// RECOVERED: the deliver became a turn and was acked. Non-vacuity: drop the
+		// #armStrandRecovery arm in deliver() → this stays [] / [] (the strand).
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("channel msg");
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		await h.close();
+	});
+
+	test("a real tracked turn flushes on agent_end; the strand recovery does not double-flush", async () => {
+		// The spin-up race the isStreaming gate exists to close (RIG-2488/SEA-1310)
+		// must stay closed: a deliver landing while a control-prompt has spun the
+		// inner agent streaming but agent_start has not yet propagated (#turnActive
+		// still false, isStreaming true) queues AND arms a recovery. When the REAL
+		// turn's agent_end fires it flushes the queue; the later waitForIdle
+		// recovery must then find an empty queue and no-op — exactly ONE flush, no
+		// double-inject / AgentBusyError.
+		const h = startControlAgent();
+		await h.feed({ kind: "replayComplete" });
+		// Control-prompt spin-up: streaming true, no agent_start yet.
+		h.session.agent.state.isStreaming = true;
+		h.agent.deliver(deliverMsg("m1", "spin-up"));
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		// The real turn's agent_end arrives (the inner loop cleared streaming
+		// before emitting it, agent.ts:1254 — model that ordering) and flushes.
+		h.session.agent.state.isStreaming = false;
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		// Now release the still-armed recovery's waitForIdle: the queue is already
+		// empty, so it must NOT flush again. Non-vacuity: a recovery that ignored
+		// the empty-queue guard would push a second (empty) prompt here.
+		h.session.settleIdle();
+		await tick();
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		await h.close();
+	});
+
+	test("an ask_answer against an UNTRACKED stream is recovered too: the strand-recovery arm is not deliver-only", async () => {
+		// RIG-2644 review M1. The askAnswer arm shares deliver's idle gate and the
+		// #flushDelivers drain (both queues), so it must ALSO arm the strand
+		// recovery — otherwise an operator's answer that lands in the untracked
+		// startup-probe window queues on #askAnswerQueue and hangs forever (the
+		// model raised a question, the answer never injects, the turn never comes).
+		// No prior deliver: this exercises the askAnswer ARM SITE alone.
+		const pending = seededAsks("a-1", [askQuestion("q-1", "Ship it?")]);
+		const h = startControlAgent([], pending);
+		await h.feed({ kind: "replayComplete" });
+		// An untracked in-flight (probe/prewarm) holds isStreaming true; no turn.
+		h.session.agent.state.isStreaming = true;
+		await h.feed({
+			kind: "askAnswer",
+			askId: "a-1",
+			answers: [
+				create(AskQuestionAnswerSchema, {
+					questionId: "q-1",
+					customText: "go",
+				}),
+			],
+		});
+		// Queued while the probe streams — not flushed. Non-vacuity: pre-settle.
+		expect(h.session.agent.prompts).toEqual([]);
+		// The probe finishes: waitForIdle resolves, the armed recovery flushes.
+		h.session.settleIdle();
+		await tick();
+		await tick();
+		// RECOVERED: the answer became a turn. Non-vacuity: drop the
+		// #armStrandRecovery arm in the askAnswer case → this stays [] (the strand).
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("Ship it?");
+		expect(h.session.agent.prompts[0]).toContain("go");
+		expect(h.unmapped).toEqual([]);
+		await h.close();
+	});
+
+	test("a second probe still streaming at resolve re-arms the recovery; it flushes once the second settles", async () => {
+		// RIG-2644 review M3. The re-arm branch (agent.ts, #armStrandRecovery
+		// else-if): waitForIdle can resolve while the session still reads streaming
+		// because a FRESH probe holds #promptInFlightCount > 0 (the fold at
+		// agent-session.ts:6469-6470). The recovery must NOT flush into that (it
+		// would AgentBusyError) — it re-arms and flushes only when the second probe
+		// settles. `settleIdle({ keepStreaming: true })` models exactly that window:
+		// waiters resolve, isStreaming stays true.
+		const h = startControlAgent();
+		await h.feed({ kind: "replayComplete" });
+		// First untracked probe: streaming, no turn. The deliver queues + arms.
+		h.session.agent.state.isStreaming = true;
+		h.agent.deliver(deliverMsg("m1", "channel msg"));
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		// First probe's inner agent settles, BUT a second probe is already in
+		// flight → waitForIdle resolves while isStreaming still reads true. The
+		// recovery hits the else-if and RE-ARMS rather than flushing.
+		h.session.settleIdle({ keepStreaming: true });
+		await tick();
+		await tick();
+		// Still not flushed — proves the re-arm branch fired (a recovery that
+		// flushed unconditionally would have rejected AgentBusyError here, leaving
+		// prompts empty AND surfacing an unmapped refusal). Non-vacuity: the queue
+		// is intact and no refusal was surfaced.
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(ackIds(h.frames)).toEqual([]);
+		// The second probe finishes fully idle: the re-armed recovery flushes once.
+		h.session.settleIdle();
+		await tick();
+		await tick();
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("channel msg");
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		await h.close();
+	});
+
+	test("a recovery whose waitForIdle resolves AFTER close does not start a post-terminal turn", async () => {
+		// RIG-2644 review M2 (close race). run()'s finally sets #closed on the same
+		// edge it emits the terminal status. A strand-recovery waitForIdle still
+		// pending at close must NOT flush when it later resolves — that would start
+		// a turn and emit a DeliveryAck AFTER the terminal STOPPED frame the board
+		// already saw. Order: arm the recovery (deliver against an untracked
+		// stream), close the agent (control stream ends → STOPPED, #closed set),
+		// THEN settle the probe so the pending .then fires.
+		const h = startControlAgent();
+		await h.feed({ kind: "replayComplete" });
+		h.session.agent.state.isStreaming = true;
+		h.agent.deliver(deliverMsg("m1", "channel msg"));
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		// Close: the control loop ends, run() emits STOPPED and its finally sets
+		// #closed = true, all while the recovery's waitForIdle is still parked.
+		await h.close();
+		const stopped = h.frames.some(
+			(f) =>
+				f.kind === "session" && f.value.state === AgentSessionState.STOPPED,
+		);
+		expect(stopped).toBe(true);
+		// Now the probe settles and the parked recovery .then resolves. The #closed
+		// guard must make it no-op. Non-vacuity: drop the `if (this.#closed) return`
+		// guard → this flushes a turn + acks m1 AFTER STOPPED, and both asserts red.
+		h.session.settleIdle();
+		await tick();
+		await tick();
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(ackIds(h.frames)).toEqual([]);
 	});
 });
 
