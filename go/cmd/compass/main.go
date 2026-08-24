@@ -25,6 +25,11 @@ import (
 // "-X main.version=<v>".
 var version = "0.1.0"
 
+// unspecifiedLabel is the operator-facing token for an enum value the CLI does
+// not recognize — the zero/unknown fallback shared by every enum renderer
+// (deliveryLabel, kindLabel, stateLabel), so an unknown value reads uniformly.
+const unspecifiedLabel = "unspecified"
+
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "compass:", err)
@@ -45,7 +50,9 @@ func newRootCmd() *cobra.Command {
 	}
 	addConnFlags(root.PersistentFlags())
 
+	root.AddCommand(newAgentCmd())
 	root.AddCommand(newAgentConfigCmd())
+	root.AddCommand(newMessageCmd())
 	root.AddCommand(newSecretCmd())
 	root.AddCommand(newTokenCmd())
 	return root

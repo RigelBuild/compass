@@ -236,3 +236,26 @@ func dialSecretsClient(cmd *cobra.Command) (compassv1connect.SecretsServiceClien
 	}
 	return newSecretsClient(cfg)
 }
+
+// newCommsClient constructs the CommsService client for the resolved
+// connection, reusing the same httpClient + bearer interceptor as newClient.
+func newCommsClient(cfg connConfig) (compassv1connect.CommsServiceClient, error) {
+	httpClient, err := httpClientFor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return compassv1connect.NewCommsServiceClient(
+		httpClient, cfg.serverAddr,
+		connect.WithInterceptors(&bearerToken{token: cfg.token}),
+	), nil
+}
+
+// dialCommsClient resolves the connection config and builds the CommsService
+// client in one step — the shared prelude every message subcommand runs.
+func dialCommsClient(cmd *cobra.Command) (compassv1connect.CommsServiceClient, error) {
+	cfg, err := resolveConn(cmd)
+	if err != nil {
+		return nil, err
+	}
+	return newCommsClient(cfg)
+}

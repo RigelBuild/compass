@@ -260,6 +260,8 @@ type fakeCompass struct {
 	info        *compassv1.GetAgentConfigInfoResponse
 	deleteCalls int
 	gotToken    string
+	gotStatus   *compassv1.GetAgentStatusRequest
+	statuses    []*compassv1.AgentSessionStatus
 	gotAuth     string
 }
 
@@ -288,6 +290,12 @@ func (f *fakeCompass) RevokeToken(_ context.Context, req *connect.Request[compas
 	f.gotToken = req.Msg.GetToken()
 	f.gotAuth = req.Header().Get("Authorization")
 	return connect.NewResponse(&compassv1.RevokeTokenResponse{}), nil
+}
+
+func (f *fakeCompass) GetAgentStatus(_ context.Context, req *connect.Request[compassv1.GetAgentStatusRequest]) (*connect.Response[compassv1.GetAgentStatusResponse], error) {
+	f.gotStatus = req.Msg
+	f.gotAuth = req.Header().Get("Authorization")
+	return connect.NewResponse(&compassv1.GetAgentStatusResponse{Statuses: f.statuses}), nil
 }
 
 // startFakeServer stands up the fake CompassService over a plain-HTTP httptest
