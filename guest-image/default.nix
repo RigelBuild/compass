@@ -130,30 +130,53 @@ let
   # (full tree, on-demand autoload) and the initrd (boot-critical subset).
   kernel = pkgs.linuxPackages.kernel;
 
-  # The boot-critical module set the initramfs must load to mount the root
-  # overlay before switch_root: the virtio transport + block device, erofs (the
-  # lower), and overlayfs (the writable view). Every one is `=m` in the pinned
-  # generic kernel (record §(a)); the derivation-time check below fails the build
-  # if a pin move flips one to `=y` or drops it, rather than silently producing a
-  # non-booting initrd. Post-switch_root module needs (virtio_net/virtiofs/vsock,
-  # V3's netfilter stack) autoload from the full /lib/modules tree the rootfs
-  # ships — they are deliberately NOT carried here.
+  # The module set the initramfs loads before switch_root. Two groups, one
+  # mechanism (kmod modprobe from the shrunk closure), because the guest has no
+  # udev/systemd-modules-load to autoload anything post-switch_root — guestd IS
+  # init (§(d)). Modules loaded here are kernel state that persists across
+  # switch_root, so every driver the guest needs is bound by the time guestd
+  # starts:
+  #   - boot-critical (mount the root overlay before switch_root): the virtio
+  #     transport + block device, erofs (the lower), overlayfs (the writable
+  #     view);
+  #   - runtime (the devices + socket families guestd binds right after
+  #     switch_root): virtio-net (guestd's eth0), virtio-fs (the /workspace
+  #     mount), the virtio vsock transport (the host↔guest GuestControl
+  #     channel), and af_packet (the AF_PACKET raw socket guestd's in-process
+  #     DHCP client opens for its broadcast DORA exchange — without it the
+  #     lease step fails with EAFNOSUPPORT). Their AF_VSOCK/fuse dependencies
+  #     are pulled into the closure automatically by modprobe.
+  # Every one is `=m` in the pinned generic kernel (record §(a)); the
+  # derivation-time check below fails the build if a pin move flips one to `=y`
+  # or drops it, rather than silently producing a guest that boots but cannot
+  # reach the network, its workspace, or the host.
   bootModules = [
     "virtio_pci"
     "virtio_blk"
     "erofs"
     "overlay"
+    "virtio_net"
+    "virtiofs"
+    "vmw_vsock_virtio_transport"
+    "af_packet"
   ];
 
-  # The .config symbol each boot-critical module is gated on, checked `=m` at
-  # build time. The mapping is module→Kconfig (virtio_blk⇒CONFIG_VIRTIO_BLK,
-  # erofs⇒CONFIG_EROFS_FS, overlay⇒CONFIG_OVERLAY_FS) — not a mechanical
-  # upper-casing, so it is spelled out.
+  # The .config symbol each named module is gated on, checked `=m` at build
+  # time. The mapping is module→Kconfig (virtio_blk⇒CONFIG_VIRTIO_BLK,
+  # erofs⇒CONFIG_EROFS_FS, overlay⇒CONFIG_OVERLAY_FS, virtiofs⇒CONFIG_VIRTIO_FS,
+  # vmw_vsock_virtio_transport⇒CONFIG_VIRTIO_VSOCKETS, af_packet⇒CONFIG_PACKET)
+  # — not a mechanical upper-casing, so it is spelled out. Only the explicitly-
+  # named modules are checked; their transitive deps (vsock, fuse) ride along
+  # via the closure.
   bootModuleConfigs = [
     "CONFIG_VIRTIO_PCI"
     "CONFIG_VIRTIO_BLK"
     "CONFIG_EROFS_FS"
     "CONFIG_OVERLAY_FS"
+    "CONFIG_VIRTIO_NET"
+    "CONFIG_VIRTIO_FS"
+    "CONFIG_VIRTIO_VSOCKETS"
+    "CONFIG_PACKET"
   ];
 
   # Derivation-time assertion (record §(a) test cycle): the pinned kernel's

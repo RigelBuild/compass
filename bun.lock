@@ -148,6 +148,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/microvm-boot-test": {
+      "name": "@compass/microvm-boot-test",
+      "bin": {
+        "microvm-boot-test": "./run.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/orion-ref-gate": {
       "name": "@compass/orion-ref-gate",
       "bin": {
@@ -399,6 +409,8 @@
     "@compass/eng-docs": ["@compass/eng-docs@workspace:apps/eng-docs"],
 
     "@compass/forge-linear-token": ["@compass/forge-linear-token@workspace:tools/forge-linear-token"],
+
+    "@compass/microvm-boot-test": ["@compass/microvm-boot-test@workspace:tools/microvm-boot-test"],
 
     "@compass/orion-ref-gate": ["@compass/orion-ref-gate@workspace:tools/orion-ref-gate"],
 

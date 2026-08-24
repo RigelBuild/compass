@@ -63,6 +63,9 @@ func TestCanaryMicroVMEnv(t *testing.T) {
 	if env.KernelImage == "" {
 		t.Error("resolved Env.KernelImage is empty")
 	}
+	if env.InitrdImage == "" {
+		t.Error("resolved Env.InitrdImage is empty")
+	}
 	if env.RootfsImage == "" {
 		t.Error("resolved Env.RootfsImage is empty")
 	}
@@ -71,6 +74,9 @@ func TestCanaryMicroVMEnv(t *testing.T) {
 	}
 	if env.VirtiofsdPath == "" {
 		t.Error("resolved Env.VirtiofsdPath is empty")
+	}
+	if env.PasstPath == "" {
+		t.Error("resolved Env.PasstPath is empty")
 	}
 
 	// The two guest-image paths must exist on disk: this is what proves E3's
@@ -84,6 +90,7 @@ func TestCanaryMicroVMEnv(t *testing.T) {
 	}{
 		{"guest kernel", env.KernelImage},
 		{"guest rootfs", env.RootfsImage},
+		{"guest initrd", env.InitrdImage},
 	} {
 		if _, err := os.Stat(img.path); err != nil {
 			t.Errorf("%s image %q does not exist on disk: %v", img.name, img.path, err)

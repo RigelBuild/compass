@@ -160,6 +160,31 @@ tasks:
       runFromWorkspaceRoot: false
     inputs: *go_sources
 
+  test-microvm:
+    # The KVM-gated microVM boot suite (RIG-2591, record §T4). It compiles only
+    # under `-tags microvm`, so the untagged `test` lane above never builds it;
+    # this task realises the guest image + VMM stack from nix and execs
+    # `go test -tags microvm ./internal/runtime/microvm/...` with the env
+    # microvmtest.Require reads. The realisation + exec logic lives in a bun
+    # script (rule://scripts-ts-over-bash + the no-bash-gate CI task forbid this
+    # much logic in a shell `script:`); the microvm-boot-test project carries its
+    # unit tests.
+    #
+    # deps: compass-guest-image:build orders the guest-image realise first and
+    # scopes this task to the SAME affected-detection, so the nix builds the
+    # script runs are store cache hits rather than cold builds.
+    #
+    # runInCI:false — the CI KVM leg runs the tagged suite its own way
+    # (ci.yml's "microVM suites" step); this lane is the dev-box entry point and
+    # needs KVM + a local nix build. cache:false — nix owns the build caching and
+    # the subject is a live KVM boot, never a hashable input.
+    command: 'bun run tools/microvm-boot-test/run.ts'
+    deps: ['compass-guest-image:build']
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+      runInCI: false
+
   vuln:
     # govulncheck: known-vulnerability scan over the module's actual call graph
     # (reports only vulns in code paths the module reaches). It queries the Go

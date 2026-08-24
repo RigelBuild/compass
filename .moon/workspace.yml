@@ -39,6 +39,12 @@ projects:
   # cache lane or V2a boot bring-up. Same affected-detection posture as
   # compass-agent-image (see guest-image/moon.yml).
   compass-guest-image: 'guest-image'
+  # The local microVM boot-test lane (RIG-2591): realises the guest image + VMM
+  # stack from nix and execs the KVM-gated `go test -tags microvm` suite the
+  # untagged compass-go:test lane never builds. Registered so its typecheck +
+  # unit tests ride the moon-driven CI sweep; the boot lane itself lives on
+  # compass-go:test-microvm (runInCI:false — it needs KVM + a nix build).
+  microvm-boot-test: 'tools/microvm-boot-test'
   # The Compass native-app release bundle: a heavy nix build (realises the
   # WebKitGTK cc/pkg-config closure) that stages the versioned tarball. Same
   # affected-detection posture as compass-agent-image — registered here so the

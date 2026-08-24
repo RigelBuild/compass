@@ -1,0 +1,36 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# microvm-boot-test (RIG-2591): the local entry point for the KVM-gated microVM
+# boot suite. The tagged suite compiles only under `-tags microvm`, which
+# compass-go:test (`go test -race ./...`, no tag) never builds; this project's
+# script realises the guest image + VMM stack from nix, exports the env
+# microvmtest.Require reads, and execs `go test -tags microvm`. It mirrors
+# ci.yml's microVM step (the reviewed source of truth for the nix invocations)
+# and does NOT replace it — CI runs the microVM leg its own way.
+#
+# The boot lane itself (compass-go:test-microvm) needs KVM + a nix build, so it
+# is never scheduled in CI (runInCI:false lives on that task, in go/moon.yml).
+# The typecheck/test tasks here ARE ordinary bun gates that ride CI.
+#
+# A bun/TypeScript CLI, hoisted root-workspace member (`bun` tag): install is
+# inherited via .moon/tasks/tag-bun.yml and lint/format are whole-repo root
+# tasks, so this leaf carries no own bun.lock.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  test:
+    # The pure core (run-core.ts) over fixtures: the out-path parsing + env
+    # mapping, incl. the fail-closed drift edges.
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false
