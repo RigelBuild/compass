@@ -1535,6 +1535,38 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 		);
 	});
 
+	test("LITELLM_MCP_URL is derived BEFORE the MCP manager connects (the load-bearing ordering)", async () => {
+		// The whole point of the fix is that the MCP connector — which reads
+		// ${LITELLM_MCP_URL} from process.env — sees the derived value. Asserting
+		// it only after main() resolves would pass even if a future refactor moved
+		// the derive AFTER the connect. Capture process.env AT the connect instant
+		// via the connectMcp seam (main calls it unconditionally, cli.ts:729, after
+		// loadMountedConfig and before session construction). Non-vacuity: move the
+		// derive block below the connect and this reds (undefined at capture) while
+		// the post-resolve assertion above would still pass.
+		const home = process.env.HOME as string;
+		delete process.env.LITELLM_MCP_URL;
+		writeEnvFile(home, "LITELLM_BASE_URL=https://llm.example/v1\n");
+		let atConnect: string | undefined = "UNSET-SENTINEL";
+		await main(
+			{ HOME: home },
+			{
+				...deps(
+					fakeSession(),
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				),
+				connectMcp: (_cwd, _mcp) => {
+					atConnect = process.env.LITELLM_MCP_URL;
+					return Promise.resolve({
+						tools: [] as never,
+						disconnect: () => Promise.resolve(),
+					});
+				},
+			},
+		);
+		expect(atConnect).toBe("https://llm.example/mcp/");
+	});
+
 	test("an explicitly-delivered LITELLM_MCP_URL wins over the derivation", async () => {
 		const home = process.env.HOME as string;
 		// If a deployer ever delivers the MCP URL directly (env file), the derive
