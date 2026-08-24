@@ -232,7 +232,13 @@ let
       -o lowerdir=/mnt/lower,upperdir=/mnt/rw/upper,workdir=/mnt/rw/work \
       /mnt/root || fail "mount whole-root overlay failed"
 
-    [ -x /mnt/root/sbin/init ] || fail "/sbin/init missing or not executable in rootfs"
+    # No pre-switch_root existence check on /mnt/root/sbin/init: it is an
+    # ABSOLUTE store symlink (-> /nix/store/…-compass-guestd/bin/compass-guestd),
+    # so `test -x` would follow the symlink and resolve its absolute target
+    # against the CURRENT process root — still the initramfs, where guestd is
+    # absent — and fail-close on every correct image. switch_root below is the
+    # gate: it chroots into /mnt/root first, so /sbin/init resolves in the
+    # overlay where guestd exists, and it is itself `|| fail`-closed.
 
     # Hand off to the real guest init. switch_root tears down the initramfs and
     # execs /sbin/init as PID 1 in the overlay root.
@@ -360,7 +366,11 @@ in
 
         # Pack twice with identical deterministic flags and assert bit-equality.
         # --workers=1 removes multi-threaded job-queue ordering as a determinism
-        # variable; the tree is small, so the cost is negligible.
+        # variable; the tree is small, so the cost is negligible. Scope: this is
+        # an intra-run smoke check only — it cannot catch cross-machine/-time/-tool
+        # drift. The real cross-build reproducibility guarantee is nix's
+        # input-addressing plus the stable -U/-T0/--all-root flags (verified with
+        # `nix build --rebuild`); V5's preflight hash-verify is the load-bearing gate.
         flags="-T0 --all-root -U ${rootfsUUID} --workers=1"
         mkfs.erofs $flags img1.erofs "$root"
         mkfs.erofs $flags img2.erofs "$root"
