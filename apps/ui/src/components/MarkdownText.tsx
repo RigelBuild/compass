@@ -1,10 +1,6 @@
 import Markdown, { type Components } from "@rigelbuild/solid-markdown";
 import { Browser } from "@wailsio/runtime";
-import type {
-	Element as HastElement,
-	Parent as HastParent,
-	RootContent as HastRootContent,
-} from "hast";
+import type { Element as HastElement } from "hast";
 import remarkGfm from "remark-gfm";
 import {
 	type Component,
@@ -19,180 +15,10 @@ import {
 	setCachedHighlight,
 } from "../markdown/highlight-cache";
 import { highlightToHtml } from "../markdown/highlighter";
+import { rehypeInertRaw } from "../markdown/rehype-inert-raw";
 import { rehypeMentionChips } from "../markdown/rehype-mention-chips";
+import { rehypeProseBreaks } from "../markdown/rehype-prose-breaks";
 import { safeHref } from "../safe-url";
-
-/** `@rigelbuild/solid-markdown` pipes `remarkRehype` with
- *  `allowDangerousHtml: true` (dist/index.jsx:14), so any `<…>` in a message
- *  becomes a hast `raw` node — and its renderer, `hast-util-to-jsx-runtime`,
- *  handles only `element`, `text`, and `mdxJsx*`/`comment` nodes: a `raw` node
- *  is ignored and therefore renders as NOTHING. `"use Vec<T>"` loses `<T>`, and
- *  a `<details>` block loses its whole body. Since `<` is a raw-HTML opener to
- *  CommonMark, ordinary agent prose about generics or JSX silently loses
- *  characters.
- *
- *  Retyping each `raw` node as `text` renders the source characters verbatim,
- *  escaped by the DOM text path. This restores the content WITHOUT making the
- *  markup live — the inertness that makes the XSS surface clean today comes
- *  from `raw` never becoming an element, and that still holds. Do NOT replace
- *  this with `rehype-raw`, which would restore the text by parsing it into real
- *  elements and hand agent-authored `<script>`/`<img onerror>` a live DOM.
- *
- *  Softbreaks are the same class of silent loss, one node type over. A single
- *  newline does NOT arrive as its own `"\n"` text node — mdast→hast leaves it
- *  EMBEDDED in a longer text node (verified: `"Done: **T4**\nT5 is next."`
- *  yields `text("Done: ") strong(T4) text("\nT5 is next.")`). The renderer emits
- *  that node's value as one DOM text node, and `.markdown-content` sets
- *  `white-space: normal` (its reset in app.css), so the newline collapses and
- *  the words join: `"T4T5 is next."`. Splitting such a node on `\n` and
- *  interleaving real `br` elements restores the line break under
- *  `white-space: normal`. That rescue is for PROSE only, and two guards keep
- *  it there.
- *
- *  Inside `pre`/`code` the newline already survives — `white-space: pre`
- *  renders it verbatim — and the split is actively destructive: the `code`
- *  override renders from `rawText`, which concatenates text descendants and
- *  ignores `br`, so an interleaved break vanishes and a multi-line block
- *  collapses onto one line (both plain and, since Shiki highlights that same
- *  string, highlighted).
- *
- *  Between BLOCK children mdast→hast also emits bare `"\n"` separator nodes
- *  (`ul`→`li`, `table`→`tr`, and inside a loose `li` around its `p`).
- *  solid-markdown drops those with its own `child.value !== "\n"` guard, but
- *  this plugin runs FIRST, and a `br` is an element, so it sails past that
- *  guard — into a parent where phrasing content is illegal (browsers
- *  foster-parent a `br` out of table internals) or simply as a blank line of
- *  height the virtualizer then measures.
- *
- *  What separates the two cases is the SIBLINGS, not the parent: `li` and
- *  `blockquote` are dual-mode (phrasing in a tight list, blocks in a loose
- *  one), so no parent-tag list can decide it. A bare `"\n"` sitting next to a
- *  block-level element is layout whitespace; anything else is prose. Keying on
- *  the value ALONE would be wrong — `"**T4**\n**T5**"` yields a bare `"\n"`
- *  between the two `strong`s, and that one is a genuine softbreak. */
-
-/** The block-level tags mdast→hast can emit, read off its handlers rather than
- *  off HTML's block list. `section` is the GFM footnote block; `dl`/`dt`/`dd`
- *  are absent because no definition-list handler exists, and `tfoot` because
- *  the table handler builds only `thead`/`tbody`.
- *
- *  `div` is here but unreachable today: its only emitter is
- *  `defaultUnknownHandler`, for an unknown mdast node carrying `data.hChildren`
- *  /`hProperties`, which nothing in this pipeline produces. It is NOT what raw
- *  HTML becomes — raw HTML stays a `raw` node and this plugin inerts it to
- *  text, which is the invariant the header above depends on. Kept as insurance
- *  against a future remark plugin that sets `hName`, where a missing entry
- *  would resurface as a stray break.
- *
- *  A bare `"\n"` adjacent to one of these is inter-block whitespace, never a
- *  line break the reader asked for. */
-const BLOCK_TAGS: Record<string, true> = {
-	blockquote: true,
-	div: true,
-	h1: true,
-	h2: true,
-	h3: true,
-	h4: true,
-	h5: true,
-	h6: true,
-	hr: true,
-	li: true,
-	ol: true,
-	p: true,
-	pre: true,
-	section: true,
-	table: true,
-	tbody: true,
-	td: true,
-	th: true,
-	thead: true,
-	tr: true,
-	ul: true,
-};
-
-function rehypeInertRawAndBreaks() {
-	// `raw` is not part of the stock hast content union — it is contributed by
-	// mdast-util-to-hast's `allowDangerousHtml` extension, which is exactly the
-	// mode solid-markdown runs remarkRehype in. Widen the child type to admit it
-	// rather than asserting, so the `raw` arm type-checks on its own terms.
-	type RawNode = { type: "raw"; value: string };
-	type Child = HastRootContent | RawNode;
-	const isBlock = (child: Child | undefined): boolean =>
-		child?.type === "element" && BLOCK_TAGS[child.tagName] === true;
-	// A hard break arrives as a PAIR — mdast-util-to-hast's break handler emits
-	// `[br, text("\n")]` — so the trailing newline is that `br`'s own source
-	// formatting, already rendered. Splitting it would emit a SECOND `br` and
-	// double the gap the author asked for. Only a PRECEDING `br` absorbs it: a
-	// `"\n"` BEFORE one is a genuine softbreak running into a hard break.
-	const isBr = (child: Child | undefined): boolean =>
-		child?.type === "element" && child.tagName === "br";
-	// `inCode` is INHERITED: a code subtree is verbatim all the way down.
-	const visit = (node: HastParent, inCode: boolean) => {
-		const children = node.children as Child[];
-		const out: HastRootContent[] = [];
-		for (const [i, source] of children.entries()) {
-			// Inert-retype `raw` to `text` HERE, at the top of the loop, so the
-			// newline rules below see it as the prose text it now is. Handling it
-			// in its own arm instead would skip the split: a multi-line raw block
-			// (`<div>` around two lines, or `<b>` spanning a softbreak) would reach
-			// the DOM as one text node whose newlines then collapse under
-			// `white-space: normal`, joining the lines onto one.
-			//
-			// The retype cannot disturb the `inCode` guard below, because a `raw`
-			// node never reaches a code subtree: fenced and indented code become
-			// mdast `code` nodes and only an mdast `html` node becomes `raw`
-			// (mdast-util-to-hast handlers/html.js), so the two are disjoint by
-			// construction. That guard exists for plain text, which is verbatim in
-			// code and whose `br` `rawText` would eat.
-			//
-			// The lookarounds below read the UNCONVERTED neighbours, which is
-			// harmless: `isBlock` and `isBr` both require `type === "element"`, and
-			// the retype only maps `"raw"` to `"text"`, so neither predicate can
-			// change its answer.
-			const child: Child =
-				source.type === "raw" ? { type: "text", value: source.value } : source;
-			// A bare `"\n"` between blocks is layout whitespace: drop it, exactly as
-			// solid-markdown's own renderer would have.
-			if (
-				child.type === "text" &&
-				child.value === "\n" &&
-				(isBlock(children[i - 1]) ||
-					isBlock(children[i + 1]) ||
-					isBr(children[i - 1]))
-			) {
-				continue;
-			}
-			if (!inCode && child.type === "text" && child.value.includes("\n")) {
-				// Split on the newline and interleave `br`, so the break survives
-				// `white-space: normal`. Empty segments (a leading/trailing newline)
-				// contribute no text node, only the break.
-				const parts = child.value.split("\n");
-				parts.forEach((part, partIndex) => {
-					if (partIndex > 0) {
-						out.push({
-							type: "element",
-							tagName: "br",
-							properties: {},
-							children: [],
-						});
-					}
-					if (part !== "") out.push({ type: "text", value: part });
-				});
-				continue;
-			}
-			if (child.type === "element")
-				visit(
-					child,
-					inCode || child.tagName === "code" || child.tagName === "pre",
-				);
-			out.push(child);
-		}
-		node.children = out;
-	};
-	return (tree: HastParent) => {
-		visit(tree, false);
-	};
-}
 
 // The message-surface renderer: renders a text block as markdown (CommonMark +
 // GFM) and composes the existing @-mention chips by post-processing the markdown
@@ -435,14 +261,19 @@ export const MarkdownText: Component<{
 	// Chips are injected by a rehype plugin (design A3), not a `text` component
 	// override — react-markdown-10 renders hast text nodes as raw strings, never
 	// routing them through `components`, so the old `text` override would never
-	// fire. Ordered AFTER `rehypeInertRawAndBreaks` so retyped raw-HTML text
-	// chips like any prose. Memoized on `byHandle`: #44's processor is a memo
-	// over its options, so a new map identity re-creates the processor and
-	// re-parses, refreshing chip known/reserved state (coarser than the old
-	// per-chip live resolution — an accepted tradeoff, account-map changes are
-	// rare and a full re-parse is what every streaming tick already costs).
+	// fire. The pipeline runs in three ordered passes: `rehypeInertRaw` FIRST
+	// (retype every `raw` HTML node to `text` across the whole tree),
+	// `rehypeProseBreaks` SECOND (the guarded softbreak→`br` rescue, operating on
+	// the now raw-free tree), and `rehypeMentionChips` LAST (so it splits the
+	// retyped raw-HTML text into chips like any prose). Memoized on `byHandle`:
+	// #44's processor is a memo over its options, so a new map identity re-creates
+	// the processor and re-parses, refreshing chip known/reserved state (coarser
+	// than the old per-chip live resolution — an accepted tradeoff, account-map
+	// changes are rare and a full re-parse is what every streaming tick already
+	// costs).
 	const rehypePlugins = createMemo(() => [
-		rehypeInertRawAndBreaks,
+		rehypeInertRaw,
+		rehypeProseBreaks,
 		rehypeMentionChips({ byHandle: props.byHandle }),
 	]);
 	const components: Components = {
