@@ -29,6 +29,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/RigelBuild/compass/go/internal/agentuid"
 )
 
 // capEffOf runs `grep CapEff /proc/self/status` inside container id as the given
@@ -70,7 +72,7 @@ func TestAgentExecDropsNetAdminInNetAdminContainer(t *testing.T) {
 
 	// A NET_ADMIN container remapped to the baked agent uid, mirroring a real
 	// agent container's create (agent.go createAndStart).
-	const agentUID uint32 = 1000
+	const agentUID uint32 = agentuid.AgentUID
 	spec := ContainerSpec{
 		Image:   "docker.io/library/alpine:latest",
 		Name:    "compass-egress-integrity-" + strconv.Itoa(os.Getpid()),

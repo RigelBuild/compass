@@ -46,6 +46,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/RigelBuild/compass/go/internal/agentuid"
 )
 
 // realImageEnv is the env var naming the real agent base image to prove against
@@ -59,12 +61,11 @@ const realImageEnv = "COMPASS_AGENT_IMAGE"
 const realImageDefault = "compass-agent:latest"
 
 // bakedAgentUID is the uid the real image bakes the agent user, /nix ownership,
-// and $HOME as. It equals the runner's verifyRunnerUID invariant and
-// preflight.DefaultAgentUID (both 1000) — the runtime package hardcodes this
-// same uid throughout (podman.go:103,156,388 "the image bakes gid==uid==1000").
-// The whole point of the proof is that the in-container agent IS this uid and
-// therefore owns /nix.
-const bakedAgentUID uint32 = 1000
+// and $HOME as. It is the shared agent-uid invariant (agentuid.AgentUID); the
+// runtime package hardcodes this same uid throughout (podman.go:103,156,388 "the
+// image bakes gid==uid==1000"). The whole point of the proof is that the
+// in-container agent IS this uid and therefore owns /nix.
+const bakedAgentUID uint32 = agentuid.AgentUID
 
 // resolveRealImage returns the real agent image ref to prove against.
 func resolveRealImage() string {
