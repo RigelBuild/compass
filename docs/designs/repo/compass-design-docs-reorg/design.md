@@ -380,9 +380,10 @@ the gate expansion it forces, and the migration strategy:
    only-the-four: (a) the governed/ungoverned seam is exactly what made
    `platform/` a policy island (the effect-otel ruling, §Recon 1) — reproducing
    it at `infra/`/`repo/` re-creates the problem this reorg exists to kill;
-   (b) the drift is already visible — 5 of the 17 platform records carry
-   Status headers outside the gate grammar (`Status: **Draft**`,
-   `Status: **decided**`, `Status: Ratified (Matt, 2026-08-05) …`,
+   (b) the drift is already visible — 6 of the 17 platform records carry
+   Status headers outside the gate grammar (5 distinct malformed patterns:
+   `Status: **Draft**` on two records, `Status: **decided**`,
+   `Status: Ratified (Matt, 2026-08-05) …`,
    `Status: Decided (Matt, 2026-08-20)`, `Status: proposed. Owner: …`;
    verified per-file this session) and `compass-eng-docs/design.md` has no
    Status header at all — none of which any check catches today; (c) the
@@ -726,7 +727,11 @@ cross-bucket pointer state. (`compass-multi-window/` and
 `compass-stack-cross-process-teardown/` are native-family by content but not
 by the `compass-native-*` carve-out name — the hot-lane check decides at move
 time whether they ride T8's ui/ PR or T10.) PR bodies carry
-`Ledger-impact: link re-point only` for the touch-coupling leg.
+`Ledger-impact: link re-point only` for the touch-coupling leg. The four bucket
+PRs land **serially (rebase-ordered)**, not concurrently: each re-points cells
+in the single `docs/designs/DECISIONS.md`, so parallel opens would contend on
+that one file and force mechanical rebases (no red window — each PR stays atomic
+and self-green via the transitional `product` root — purely merge friction).
 
 Interfaces:
 
