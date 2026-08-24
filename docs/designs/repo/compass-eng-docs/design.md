@@ -1,5 +1,7 @@
 # Compass engineering docs site
 
+Status: Active
+
 Design record for making Compass build-in-the-open: relocate the Compass design
 records + product specs into this PUBLIC repo (`RigelBuild/compass`) and
 stand up a public Astro Starlight **engineering docs** site with production

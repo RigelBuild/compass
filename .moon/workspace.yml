@@ -54,7 +54,7 @@ projects:
   # rather than the schema.
   stamp-gate: 'tools/stamp-gate'
   # The design-ledger gate: validates the Compass design-decision ledger
-  # (docs/designs/product/DECISIONS.md), the per-record `Status:` headers, and
+  # (docs/designs/DECISIONS.md), the per-record `Status:` headers, and
   # dangling supersession/Record pointers (SEA-1187). Migrated from the sealed
   # repo with the corpus it governs (SEA-1794).
   design-ledger-gate: 'tools/design-ledger-gate'
