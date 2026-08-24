@@ -6,8 +6,9 @@
 > that consumes these artifacts is referred to by role, never by name, path, PR,
 > or quoted source.
 
-Status: Active — the three load-bearing forks (OQ-1/2/3) were ruled by Matt
-(2026-08-22); freezes on merge as the contract T1–T5 execute against.
+Status: Active — the load-bearing forks (OQ-1/2/3, ruled 2026-08-22) and the
+whole-product semver policy (OQ-7, ruled 2026-08-24) were ruled by Matt;
+freezes on merge as the contract T1–T5 execute against.
 Tracking: RIG-1746 (whole-product semver + GitHub Releases). RIG-2103 is
 retargeted onto T4 (OQ-2); the OQ-1 desktop deferral is RIG-2477.
 
@@ -221,9 +222,10 @@ per-push image lane's pointer and a semver cut needs only `:vX.Y.Z`; *(c)
 `workflow_dispatch` the image workflow to add the tag* — indirection plus a
 second run for one manifest write. **(b) chosen**: the semver lane mints
 `:vX.Y.Z` only; `:latest` stays owned, moved, and verified exclusively by
-`publish-agent-image.yml`. What `vX.Y.Z` *means* across the product (cadence,
-changelog, what bumps major) stays RIG-1746's record — this lane only gives it
-the mechanical rail.
+`publish-agent-image.yml`. What `vX.Y.Z` *means* across the product — cadence,
+changelog, and what bumps major — is RIG-1746's core semver policy; Matt ruled
+it (2026-08-24), recorded as OQ-7 below. This lane gives that policy its
+mechanical rail.
 
 - *Per-build tag scheme:* `build-<sha12>` (12-hex short sha, matching the image
   tag derivation `publish.sh:43`). Git-sha, not date: it is the identity every
@@ -426,7 +428,8 @@ on main provisions the CLI with no `go` in the image.
 **T5 — Docs + record freeze.**
 Update `docs/architecture/build-and-ci.md` (the doc the image publish workflow
 already cross-references, `publish-agent-image.yml:39-40`) with the release
-lane; append the DECISIONS.md ledger rows for the choices in Forks 1-4.
+lane; append the DECISIONS.md ledger rows for the choices in Forks 1-4 and the
+OQ-7 semver policy.
 
 Ordering: T1 → T2 fold into one PR if small; T3 independent after T1; T4 lands
 in the internal CD monorepo only after the RIG-2025 fixes are green on main AND
@@ -439,12 +442,13 @@ with the record freeze.
 - [ ] T2 — release body generator (image digest pointer + nix-outputs.json)
 - [ ] T3 — semver `v*` lane + `:vX.Y.Z` image tag via publish.sh
 - [ ] T4 — internal config-publish cutover: go install → Release asset download
-- [ ] T5 — docs/architecture update + DECISIONS.md ledger rows
+- [ ] T5 — docs/architecture update + DECISIONS.md ledger rows (Forks 1–4 + the OQ-7 semver policy)
 
 ## Resolved decisions and deferred questions
 
-The three load-bearing questions were put to Matt and ruled (2026-08-22); the
-rulings below are the frozen contract. OQ-4/5/6 stay deferred (non-load-bearing).
+The load-bearing questions were put to Matt and ruled — OQ-1/2/3 (2026-08-22)
+and OQ-7 (the whole-product semver policy, 2026-08-24); the rulings below are
+the frozen contract. OQ-4/5/6 stay deferred (non-load-bearing).
 
 - **OQ-1 (load-bearing): binary set boundary. RESOLVED (Matt, 2026-08-22): DEFER
   the desktop lane.** v1 attaches `compass`, `compass-server`, `compass-runner`
@@ -472,6 +476,31 @@ rulings below are the frozen contract. OQ-4/5/6 stay deferred (non-load-bearing)
   versions downloadable binaries; the image already has an immutable per-sha GHCR
   identity, and unioning the filters would mint binary-identical Releases on
   image-only shas.
+- **OQ-7 (load-bearing): whole-product semver policy. RESOLVED (Matt,
+  2026-08-24): the ruling Fork 3 deferred.** What `vX.Y.Z` means across the
+  product, on four points:
+  - *Pre-GA scheme.* Stay `0.MINOR.PATCH` now — matching the current `0.1.0`
+    stamp (`compass go/cmd/compass-stack/main.go:38`) and the GA milestone. Cut
+    `v1.0.0` **at GA**; that is when the
+    "MAJOR gates a breaking user-facing contract" rule below turns on.
+  - *Bump mechanism.* **Manual now** — Matt pushes `vX.Y.Z` and the T3 tag lane
+    cuts the Release + `:vX.Y.Z` image. **At GA, adopt conventional-commit
+    automation** (release-please: derive the bump + CHANGELOG from the
+    Conventional Commit subjects the repo already writes), replacing the manual
+    tag push.
+  - *One whole-product version, architecturally forced.* A release stamps ONE
+    version across every binary from the tag: `compass go/cmd/compass-stack/main.go`
+    (`version` at :38, fed to `Deps.ExpectedVersion` at :232) hard-fails
+    the attach when a live server's version != the build's, so client and server
+    are strict same-version (shipped together; the attach-check enforces it).
+    This is DISTINCT from the wire-protocol interop axis — the app pins
+    `clientAPIVersion = "compass.v1"` (`compass go/cmd/compass-app/bridge_service.go:468`)
+    against the server's `apiVersion = "compass.v1"`
+    (`compass go/cmd/compass-server/main.go:33`), a separate cross-version
+    contract the release semver does not track.
+  - *Post-1.0 bump rule.* MAJOR = a breaking change to a user-facing contract
+    (the CLI / its flags, the operator config + DSN + stack layout, or the wire
+    protocol); MINOR = backward-compatible features; PATCH = fixes.
 - **OQ-4 (non-load-bearing, deferred): closure attachment.** Whether an
   archival lane should ever attach full nix closures (`nix copy --to file://`)
   for offline reproduction. No consumer today; caches + pinned substituters
