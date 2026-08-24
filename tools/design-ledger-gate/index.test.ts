@@ -729,6 +729,30 @@ describe("evaluate — record Status: header presence & grammar", () => {
 		expect(vs[0]?.message).toContain("malformed");
 		expect(vs[0]?.line).toBe(3);
 	});
+	test("newly-governed non-product bucket record, statusLine null → 'missing'", () => {
+		// The cutover made non-product buckets governed (repo/, infra/, …),
+		// which is why compass-eng-docs/design.md had to gain `Status: Active`.
+		// This locks that a record under a NON-product governed bucket is
+		// header-enforced identically — a regression that special-cased the
+		// product bucket for header presence would pass the product tests above
+		// yet silently un-enforce every repo/infra/ui/… record.
+		const vs = evaluate(
+			[row()],
+			[
+				header({
+					path: "docs/designs/repo/compass-eng-docs/design.md",
+					statusLine: null,
+					line: 3,
+				}),
+			],
+			noChange,
+			smallRecord,
+		);
+		expect(vs.length).toBe(1);
+		expect(vs[0]?.message).toContain("missing");
+		expect(vs[0]?.file).toBe("docs/designs/repo/compass-eng-docs/design.md");
+		expect(vs[0]?.line).toBe(3);
+	});
 });
 
 describe("evaluate — Historical-set membership", () => {
