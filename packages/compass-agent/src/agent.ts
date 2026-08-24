@@ -153,6 +153,12 @@ export class CompassAgent {
 	// the now-empty queue). One recovery in flight at a time; re-armed if a fresh
 	// probe is still streaming when the wait resolves.
 	#strandRecoveryArmed = false;
+	// RIG-2644 — set true in run()'s finally, on the same edge that emits the
+	// terminal status and unsubscribes. A strand-recovery `waitForIdle` can
+	// resolve AFTER the session has terminated (STOPPED/ERRORED); flushing then
+	// would start a turn and emit a DeliveryAck past the terminal frame the board
+	// already saw. The recovery re-check consults this and no-ops when closed.
+	#closed = false;
 	// RIG-1509 correlation registry (co-ratified with RIG-1310): the ask ids the
 	// raise tool minted, so the askAnswer arm renders an inbound answer against
 	// the questions the model asked. Well-defined default (a fresh empty
@@ -217,6 +223,8 @@ export class CompassAgent {
 			this.#emitStatus(AgentSessionState.ERRORED);
 			throw err;
 		} finally {
+			// Terminal edge: no strand-recovery re-check may start a turn past here.
+			this.#closed = true;
 			unsubscribe();
 		}
 	}
@@ -335,36 +343,49 @@ export class CompassAgent {
 		}
 	}
 
-	// RIG-2644 — flush the deliver queue once an UNTRACKED stream (a startup
-	// probe/prewarm holding `#session.isStreaming` with no turn edge) settles, so a
-	// deliver that queued against it is not stranded. `waitForIdle` resolves only
-	// when the inner agent's streaming AND post-prompt recovery are done
-	// (agent-session.ts:6477-6481), i.e. `#session.isStreaming` is false — so the
-	// re-check gate matches `deliver`'s idle gate exactly. Idempotent via
-	// `#strandRecoveryArmed`: one wait in flight at a time. On resolve, if a
-	// TRACKED turn started meanwhile (`#turnActive`) or the queue already drained,
-	// it no-ops; if still-idle with a non-empty queue, it flushes; if a fresh probe
-	// is still streaming, it re-arms. `void` — fire-and-forget, errors are
-	// impossible from `waitForIdle` (it only awaits) and the flush's own rejection
-	// belt handles a refused prompt.
+	// RIG-2644 — flush the deliver/askAnswer queues once an UNTRACKED stream (a
+	// startup probe/prewarm holding `#session.isStreaming` with no turn edge)
+	// settles, so a message that queued against it is not stranded. `waitForIdle`
+	// resolves only when the inner agent's streaming and post-prompt recovery are
+	// done (agent-session.ts:6478-6481), i.e. `#session.isStreaming` is false — so
+	// the re-check gate matches the caller's idle gate exactly. Idempotent via
+	// at a time. On resolve: no-op if the agent has closed (`#closed` — a resolve
+	// racing terminal STOPPED/ERRORED must not start a post-terminal turn) or a
+	// TRACKED turn started meanwhile (`#turnActive`) or the queue already drained;
+	// flush if still-idle with a non-empty queue; re-arm if a fresh probe is still
+	// streaming. Fire-and-forget: `waitForIdle` can reject (an abort/dispose during
+	// the probe), so the chain terminates in a `.catch` that routes to onUnmapped
+	// rather than an unhandled rejection; the flush's own prompt rejection is
+	// belted separately in `#flushDelivers`.
 	#armStrandRecovery(): void {
 		if (this.#strandRecoveryArmed) return;
 		this.#strandRecoveryArmed = true;
-		void this.#session.waitForIdle().then(() => {
-			this.#strandRecoveryArmed = false;
-			if (
-				this.#deliverQueue.length === 0 &&
-				this.#askAnswerQueue.length === 0
-			) {
-				return;
-			}
-			if (!this.#turnActive && !this.#session.isStreaming) {
-				this.#flushDelivers();
-			} else if (!this.#turnActive) {
-				// Still an untracked stream (a second probe) — re-arm.
-				this.#armStrandRecovery();
-			}
-		});
+		void this.#session
+			.waitForIdle()
+			.then(() => {
+				this.#strandRecoveryArmed = false;
+				if (this.#closed) return;
+				if (
+					this.#deliverQueue.length === 0 &&
+					this.#askAnswerQueue.length === 0
+				) {
+					return;
+				}
+				if (!this.#turnActive && !this.#session.isStreaming) {
+					this.#flushDelivers();
+				} else if (!this.#turnActive) {
+					// Still an untracked stream (a second probe) — re-arm.
+					this.#armStrandRecovery();
+				}
+			})
+			.catch((err) => {
+				this.#strandRecoveryArmed = false;
+				this.#onUnmapped({
+					kind: "unmapped",
+					eventType: "strand_recovery",
+					reason: `waitForIdle recovery failed: ${err}`,
+				});
+			});
 	}
 
 	// SEA-1310 §8 — channel-borne steer arm. The entry the immediate handle calls
@@ -704,11 +725,20 @@ export class CompassAgent {
 				// Render the answers against the recorded questions and enqueue on the
 				// SAME turn-end coalescing path deliver uses: an idle answer starts a
 				// turn at once; a mid-turn answer coalesces into the `agent_end` flush.
+				// The strand shape is identical to deliver's (RIG-2644): if the answer
+				// queues because the session reports streaming while NO tracked turn is
+				// active, arm the same `waitForIdle`-gated recovery so it is not
+				// stranded against an untracked startup stream that never emits
+				// `agent_end`. `#flushDelivers` drains both queues, so a co-queued
+				// deliver+answer share one flush.
 				this.#askAnswerQueue.push(
 					formatAskAnswerForPrompt(questions, control.answers),
 				);
-				if (!this.#turnActive && !this.#session.isStreaming)
+				if (!this.#turnActive && !this.#session.isStreaming) {
 					this.#flushDelivers();
+				} else if (!this.#turnActive) {
+					this.#armStrandRecovery();
+				}
 				return;
 			}
 		}
