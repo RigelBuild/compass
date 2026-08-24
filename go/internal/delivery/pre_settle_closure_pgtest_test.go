@@ -248,7 +248,11 @@ func TestCrashRecoveryStartScanOwedThenOneSteerThenAckClears(t *testing.T) {
 	}
 
 	// Ack clears the owed row (store T1, no cursor row needed); a second start
-	// edge then sweeps nothing — no re-steer, no leak.
+	// edge then sweeps nothing — no re-steer, no leak. The load-bearing guard is
+	// the owedTotal==0 durable read below (synchronous, right after AckDelivery);
+	// the post-re-start dispatch-count assertion is belt-and-suspenders, not a
+	// reliable negative barrier (waitStartsDrained only proves the start edge was
+	// dequeued before the sweep, per introspect_test.go).
 	if err := s.AckDelivery(ctx, member.ID, ch, string(msg.ID)); err != nil {
 		t.Fatalf("AckDelivery: %v", err)
 	}
@@ -335,6 +339,9 @@ func TestAgentAuthoredHeldThenRestartStartScanRecovers(t *testing.T) {
 	msg := postThroughStore(t, ctx, s, ch, author.ID, "@aa agent-authored mention held then lost")
 
 	c, _, _ := newPgConsumer(t, s) // fresh bus + fresh consumer => c.held empty, no live author
+	// Intent marker (a construction invariant, not a live guard): a freshly-built
+	// consumer's c.held is empty, so the restart premise — the held message is no
+	// longer held and is therefore scannable — holds by construction.
 	if c.messageHeld(string(msg.ID)) {
 		t.Fatalf("message %s unexpectedly held on a fresh consumer: the restart must clear c.held", msg.ID)
 	}
@@ -390,6 +397,10 @@ func TestLaggedOverrunBranchScanRecoversDroppedWindowMention(t *testing.T) {
 	<-disp.enteredFirst
 	m1 := postThroughStore(t, ctx, s, ch, owner.ID, "@aa dropped in the overrun window")
 	// Overrun the live buffer so the subscription latches lagged and closes.
+	// These flood events are bus-only overrun fuel — un-stored, sharing a literal
+	// wire id and helpers' "chan-1" that has no row in this pgtest's real store;
+	// the consumer is stalled inside the armed first dispatch, so none is ever
+	// handled. The id/channel mismatch is inert by construction, not a defect.
 	for range busLagFloodCount {
 		c.bus.Publish(postedResponse(wireText("flood", owner.ID, "x")))
 	}
