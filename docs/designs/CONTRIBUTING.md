@@ -74,3 +74,61 @@ gate resolves every row's `Record` link regardless of the row's status, so a
 cell re-pointed (to the successor, the new home for the rationale, or the
 ledger's own record) in the same PR — a retracted decision's link is held to the
 same standard as a live one's.
+
+## 6. The bucket taxonomy
+
+Design records live under one of six top-level buckets in `docs/designs/`. The
+bucket names the record's concern; pick the one that fits and place the record
+there.
+
+- `ui/` — the product's visible surfaces: shell, board, sidebar, keyboard,
+  rendering, the design system, and the native/desktop shell family.
+- `agent/` — agent behavior and lifecycle: config, comms, session, spawn,
+  transport, prompts, the ask contract, the agent container.
+- `server/` — server-side domain model and write paths: the ownership layer,
+  forge, threading/issue model, notification and mention delivery.
+- `meta/` — process and method records governing the corpus and the product's
+  engineering posture: architecture lineage, the design ledger itself, test
+  strategy, scope gates.
+- `infra/` — runtime and CI/testing infrastructure, sub-grouped as
+  `infra/runtime/` and `infra/ci/`.
+- `repo/` — repository tooling and the dependency/library decisions that govern
+  the build (Effect adoption, Renovate, proto drop, the eng-docs site).
+
+### Layout
+
+The layout rule is `<bucket>/[<subgroup>/]<name>/design.md`: a record is a
+`<name>/design.md` directory (which may own supporting `.md` files beside its
+`design.md`), optionally nested one subgroup deep under a bucket (as `infra/`
+is). A flat `<name>.md` is allowed **only at a bucket root** — a flat `.md`
+nested inside a subgroup falls out of gate governance, so a sub-grouped record
+must use the `<name>/design.md` directory layout. Add a subgroup when a bucket
+outgrows flat scanning; until then records sit directly under their bucket.
+
+### The design-ledger-gate governs every bucket
+
+`tools/design-ledger-gate` scans every governed bucket (the six taxonomy buckets
+above plus the transitional `product/` root, below): every record's `Status:`
+header is checked for presence and grammar, and a PR that touches a governed
+record must either touch the ledger (`docs/designs/DECISIONS.md`) or declare a
+`Ledger-impact:` line in its description. The `DECISIONS.md` ledger rows stay
+scoped to **product decisions** — the gate governing a record is independent of
+whether that record carries a ledger row.
+
+### Moving a record is not a freeze violation
+
+A move changes a record's path and its link graph, not one word of its
+decisions — so it is a link-integrity edit under rule 5, not a decision-content
+rewrite, and the freeze does not forbid it. When a record moves, re-point every
+inbound reference to it (other records' links, the ledger's `Record` cell, and
+code/config/doc citations) **in the same PR**, exactly as rule 5 requires on
+deletion — a move leaves the same dangling-link rot a deletion would. Two narrow
+metadata edits ride the same standard and are likewise not freeze violations:
+normalizing a newly-governed record's `Status:` header to the gate grammar, and
+a one-line correction of a record's stale self-described location.
+
+### `product/` is transitional
+
+A `product/` bucket persists transitionally alongside the six above until the
+`compass-native-*` records clear their in-flight lane and the final sweep
+removes it; records still under `product/` remain governed in the meantime.
