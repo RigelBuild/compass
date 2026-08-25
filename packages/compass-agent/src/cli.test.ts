@@ -1999,7 +1999,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
 			...createForgeTools(new ForgeBroker(fakeTransport)),
 		];
-		expect(natives).toHaveLength(17);
+		expect(natives).toHaveLength(20);
 		for (const tool of natives) {
 			expect({ name: tool.name, arity: tool.execute.length }).toEqual({
 				name: tool.name,
@@ -2049,7 +2049,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// natives are ALWAYS merged in (SEA-1741/RIG-2672) — so customTools carries
 		// exactly those, and never a discovered MCP tool.
 		expect(toolNames(seen[0].customTools)).toContain("agents_spawn_peer");
-		expect(seen[0].customTools).toHaveLength(17);
+		expect(seen[0].customTools).toHaveLength(20);
 		expect(seen[0].enableMCP).toBe(false);
 	});
 
@@ -2082,7 +2082,7 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		// (SEA-1741/RIG-2672) — so customTools is exactly the comms/lifecycle/forge
 		// natives.
 		expect(toolNames(seen[0].customTools)).toContain("comms_post_message");
-		expect(seen[0].customTools).toHaveLength(17);
+		expect(seen[0].customTools).toHaveLength(20);
 	});
 
 	// ── SEA-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──

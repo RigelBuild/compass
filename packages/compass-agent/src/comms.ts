@@ -45,8 +45,8 @@
 // `ask_answer` block on the deliver lane, rendered to the model on a subsequent
 // turn. See packages/compass-agent/AGENTS.md for the package contract.
 //
-// Five tools ship: post, post_ask, list, roster, and set_status; search is
-// deferred (OQ-3).
+// Eight tools ship: post, post_ask, list, roster, set_status, create_channel,
+// update_members, and create_channel_group; search is deferred (OQ-3).
 
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 // `arktype` is pinned exact in package.json to whatever the SDK resolves
@@ -60,9 +60,13 @@ import {
 	AskOptionSchema,
 	AskQuestionSchema,
 	AskSchema,
+	ChannelGroupVisibility,
+	ChannelKind,
 	type CommsCallRequest,
 	CommsCallRequestSchema,
 	type CommsCallResult,
+	CreateChannelGroupRequestSchema,
+	CreateChannelRequestSchema,
 	create,
 	GetRosterRequestSchema,
 	ListMessagesRequestSchema,
@@ -72,6 +76,7 @@ import {
 	type RosterEntry,
 	RosterScope,
 	SetAgentStatusRequestSchema,
+	UpdateChannelMembersRequestSchema,
 } from "./compassv1";
 import { attr, flat } from "./render-guard";
 
@@ -266,6 +271,74 @@ export const setStatusParameters = type({
 		),
 });
 
+/** Exported so a test can validate the wire contract the agent loop enforces. */
+export const createChannelParameters = type({
+	// Non-blank, the same `.narrow` idiom `postParameters` uses; the predicate
+	// does not survive into the JSON Schema the model is shown (`toJsonSchema`
+	// drops `.narrow`), so the description carries the rule.
+	name: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe("Leaf channel name within the group; must not be blank"),
+	// An empty string is not "omitted": the execute body gates on truthiness, so
+	// `""` would take the ungrouped branch rather than being told it is wrong —
+	// the same rule as post's `channel_id`. Same `.narrow`, repeated in the
+	// description for the same reason (it has no JSON Schema form).
+	"group_id?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"Channel group to create the channel in; omit entirely for an ungrouped, owner-scoped channel (an empty string is rejected)",
+		),
+	// The string maps onto the `ChannelKind` enum at construction; an omitted
+	// kind is the plain-channel default.
+	"kind?": type("'channel'|'dm'|'group_dm'").describe(
+		"Channel kind: channel (default), dm, or group_dm",
+	),
+	"member_account_ids?": type("string[]").describe(
+		"Initial member account ids party to the channel",
+	),
+});
+
+/** Exported so a test can validate the wire contract the agent loop enforces. */
+export const updateMembersParameters = type({
+	// Non-blank, the same `.narrow` idiom; the description carries the rule since
+	// it has no JSON Schema form.
+	channel_id: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe("The channel to mutate; must not be blank"),
+	"add_member_account_ids?": type("string[]").describe(
+		"Accounts to add as members (join, read access)",
+	),
+	"remove_member_account_ids?": type("string[]").describe(
+		"Accounts to remove from membership",
+	),
+	"subscribe_account_ids?": type("string[]").describe(
+		"Members to mark subscribed (push opt-in); must be current or added members",
+	),
+	"unsubscribe_account_ids?": type("string[]").describe(
+		"Members to mark unsubscribed (read-only)",
+	),
+});
+
+/** Exported so a test can validate the wire contract the agent loop enforces. */
+export const createChannelGroupParameters = type({
+	name: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe("Leaf name of the group; must not be blank"),
+	// An empty string is not "omitted": the execute body gates on truthiness, so
+	// `""` would take the top-level branch rather than being told it is wrong.
+	// Same `.narrow`, repeated in the description (no JSON Schema form).
+	"parent_group_id?": type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"Parent group; omit entirely for a top-level group (an empty string is rejected)",
+		),
+	// The string maps onto the `ChannelGroupVisibility` enum at construction; an
+	// omitted visibility is the owner-scoped default.
+	"visibility?": type("'owner'|'shared'").describe(
+		"Group visibility: owner (default; the owning user and its agents) or shared (all accounts)",
+	),
+});
+
 /**
  * The `Error` a non-matching `CommsCallResult` deserves — both shapes are tool
  * failures under the OMP contract ("throw an error when a tool fails"):
@@ -330,7 +403,7 @@ function presenceLabel(presence: AgentPresence): string {
 }
 
 /**
- * The native comms tool set. Five tools; never an ask-answering one.
+ * The native comms tool set. Eight tools; never an ask-answering one.
  *
  * Wired into the container entrypoint by `cli.ts main()` (SEA-1741): the tools
  * are merged into the session's `customTools` and so register as `#withNatives`
@@ -814,5 +887,186 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		},
 	};
 
-	return [postMessage, postAsk, listMessages, roster, setStatus];
+	const createChannel: AgentTool<typeof createChannelParameters> = {
+		name: "comms_create_channel",
+		label: "Create channel",
+		approval: "write",
+		description:
+			"Create a Compass channel. A channel is born open and ownerless — any " +
+			"member may post. Omit group_id for an ungrouped, owner-scoped channel; " +
+			"pass a group to inherit its visibility. kind defaults to channel. " +
+			"member_account_ids seeds the initial membership.",
+		parameters: createChannelParameters,
+		execute: async (toolCallId, params) => {
+			// The string param maps onto the ChannelKind enum; an omitted kind is
+			// the plain-channel default — mirror the roster scope ternary.
+			const kind =
+				params.kind === "dm"
+					? ChannelKind.DM
+					: params.kind === "group_dm"
+						? ChannelKind.GROUP_DM
+						: ChannelKind.CHANNEL;
+			const result = await broker.call(
+				create(CommsCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "createChannel",
+						value: create(CreateChannelRequestSchema, {
+							name: params.name,
+							// An empty group_id is rejected at the schema, so a falsy
+							// value here means omitted → the ungrouped default.
+							groupId: params.group_id ?? "",
+							kind,
+							memberAccountIds: params.member_account_ids ?? [],
+							// No clientRequestId: unlike the post arm, the reused
+							// CreateChannelRequest carries no dedup field (comms.proto —
+							// the create arms are not idempotency-keyed on this leg).
+						}),
+					},
+				}),
+			);
+			if (result.result.case !== "createChannel")
+				throw commsFailure(result, "comms_create_channel", "create_channel");
+			const channel = result.result.value.channel;
+			if (!channel)
+				throw new Error(
+					"comms_create_channel: protocol violation — create_channel result carried no channel",
+				);
+			// Server values interpolated into authoritative model-read output: the
+			// id is id-shaped (`attr`), the name is a free-text leaf that may carry
+			// spaces (`flat`, which only collapses line breaks — `attr` would
+			// degrade a spaced name to `(malformed)`).
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Created channel ${attr(channel.id)} (${flat(channel.name)}).`,
+					},
+				],
+			};
+		},
+	};
+
+	const updateMembers: AgentTool<typeof updateMembersParameters> = {
+		name: "comms_update_members",
+		label: "Update channel members",
+		approval: "write",
+		description:
+			"Add or remove channel members and flip a member's subscribe opt-in. " +
+			"Adds grant read access; subscribe marks push delivery (a subscriber " +
+			"gets messages at its turn end, a joined-but-unsubscribed member has " +
+			"read access only).",
+		parameters: updateMembersParameters,
+		execute: async (toolCallId, params) => {
+			const result = await broker.call(
+				create(CommsCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "updateMembers",
+						value: create(UpdateChannelMembersRequestSchema, {
+							channelId: params.channel_id,
+							addMemberAccountIds: params.add_member_account_ids ?? [],
+							removeMemberAccountIds: params.remove_member_account_ids ?? [],
+							subscribeAccountIds: params.subscribe_account_ids ?? [],
+							unsubscribeAccountIds: params.unsubscribe_account_ids ?? [],
+							// No clientRequestId: the reused UpdateChannelMembersRequest
+							// carries no dedup field, and the member set-op is idempotent
+							// by nature (re-adding a member is a no-op).
+						}),
+					},
+				}),
+			);
+			if (result.result.case !== "updateMembers")
+				throw commsFailure(result, "comms_update_members", "update_members");
+			const channel = result.result.value.channel;
+			if (!channel)
+				throw new Error(
+					"comms_update_members: protocol violation — update_members result carried no channel",
+				);
+			// The counts are locally computed integers, so they carry no injection
+			// risk; only the server channel id is a value the model reads as
+			// authoritative, so it alone is guarded (`attr`).
+			const added = params.add_member_account_ids?.length ?? 0;
+			const removed = params.remove_member_account_ids?.length ?? 0;
+			const subscribed = params.subscribe_account_ids?.length ?? 0;
+			const unsubscribed = params.unsubscribe_account_ids?.length ?? 0;
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Updated members on channel ${attr(channel.id)}: +${added} added, -${removed} removed, ${subscribed} subscribed, ${unsubscribed} unsubscribed.`,
+					},
+				],
+			};
+		},
+	};
+
+	const createChannelGroup: AgentTool<typeof createChannelGroupParameters> = {
+		name: "comms_create_channel_group",
+		label: "Create channel group",
+		approval: "write",
+		description:
+			"Create a channel group (a namespace for channels and nested groups). " +
+			"Omit parent_group_id for a top-level group. visibility defaults to " +
+			"owner (the owning user and its agents); shared exposes it to all " +
+			"accounts. The server rejects a visibility more open than the parent.",
+		parameters: createChannelGroupParameters,
+		execute: async (toolCallId, params) => {
+			// The string param maps onto the ChannelGroupVisibility enum; an omitted
+			// visibility is the owner-scoped default — mirror the kind ternary.
+			const visibility =
+				params.visibility === "shared"
+					? ChannelGroupVisibility.SHARED
+					: ChannelGroupVisibility.OWNER;
+			const result = await broker.call(
+				create(CommsCallRequestSchema, {
+					callId: toolCallId,
+					call: {
+						case: "createChannelGroup",
+						value: create(CreateChannelGroupRequestSchema, {
+							name: params.name,
+							// An empty parent_group_id is rejected at the schema, so a
+							// falsy value here means omitted → the top-level default.
+							parentGroupId: params.parent_group_id ?? "",
+							visibility,
+							// No clientRequestId: the reused CreateChannelGroupRequest
+							// carries no dedup field on this leg.
+						}),
+					},
+				}),
+			);
+			if (result.result.case !== "createChannelGroup")
+				throw commsFailure(
+					result,
+					"comms_create_channel_group",
+					"create_channel_group",
+				);
+			const group = result.result.value.group;
+			if (!group)
+				throw new Error(
+					"comms_create_channel_group: protocol violation — create_channel_group result carried no group",
+				);
+			// Same guard split as create_channel: the id is id-shaped (`attr`), the
+			// name is a free-text leaf that may carry spaces (`flat`).
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Created channel group ${attr(group.id)} (${flat(group.name)}).`,
+					},
+				],
+			};
+		},
+	};
+
+	return [
+		postMessage,
+		postAsk,
+		listMessages,
+		roster,
+		setStatus,
+		createChannel,
+		updateMembers,
+		createChannelGroup,
+	];
 }

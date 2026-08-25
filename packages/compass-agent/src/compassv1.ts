@@ -167,6 +167,25 @@ export {
 	AskQuestionAnswerSchema,
 	AskQuestionSchema,
 	AskSchema,
+	// The channel-management payloads + enums the org-management comms tools
+	// construct (RIG-2673 T6): create a channel, update its members, create a
+	// channel group. Each response wraps the created/updated Channel or
+	// ChannelGroup; the enums are the kind/visibility the tools map their string
+	// params onto.
+	type Channel,
+	type ChannelGroup,
+	ChannelGroupSchema,
+	ChannelGroupVisibility,
+	ChannelKind,
+	ChannelSchema,
+	type CreateChannelGroupRequest,
+	CreateChannelGroupRequestSchema,
+	type CreateChannelGroupResponse,
+	CreateChannelGroupResponseSchema,
+	type CreateChannelRequest,
+	CreateChannelRequestSchema,
+	type CreateChannelResponse,
+	CreateChannelResponseSchema,
 	// The roster read payloads the agent's `compass_roster` tool constructs: the
 	// request names a `scope` (RosterScope) and, for an agent caller, omits the
 	// session-resolved `agentAccountId`; the response carries the RosterEntry
@@ -205,6 +224,10 @@ export {
 	type RosterEntry,
 	RosterEntrySchema,
 	RosterScope,
+	type UpdateChannelMembersRequest,
+	UpdateChannelMembersRequestSchema,
+	type UpdateChannelMembersResponse,
+	UpdateChannelMembersResponseSchema,
 } from "./gen/compass/v1/comms_pb";
 export {
 	// ── Forge canonical result types (DL-069/DL-092: the forge domain arms

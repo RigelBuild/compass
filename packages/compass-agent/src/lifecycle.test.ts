@@ -176,6 +176,8 @@ describe("agents_spawn_peer", () => {
 		await exec(t, "tc-42", {
 			handle: "worker-a",
 			display_name: "Worker A",
+			role: "reviewer",
+			persona: "works the compass-agent TS lane out of the rigel monorepo",
 		});
 
 		expect(transport.requests).toHaveLength(1);
@@ -186,6 +188,13 @@ describe("agents_spawn_peer", () => {
 		const spawn = req.call.value;
 		expect(spawn.handle).toBe("worker-a");
 		expect(spawn.displayName).toBe("Worker A");
+		// role and persona are threaded verbatim into the request (SET-AT-CREATION;
+		// the wire fields are proto3-optional strings, presence is enforced at the
+		// schema).
+		expect(spawn.role).toBe("reviewer");
+		expect(spawn.persona).toBe(
+			"works the compass-agent TS lane out of the rigel monorepo",
+		);
 		expect(spawn.clientRequestId.length).toBeGreaterThan(0);
 		expect(spawn.clientRequestId).toEndWith(":tc-42");
 		expect(spawn.clientRequestId).toBe(broker.idempotencyKey("tc-42"));
@@ -394,11 +403,51 @@ describe("lifecycle parameter schemas", () => {
 	const rejects = (schema: Type<object>, params: unknown): boolean =>
 		schema(params) instanceof ArkErrors;
 
+	// A fully-valid spawn: every required field present and non-blank. Reused as
+	// the baseline the per-field rejection tests perturb one field at a time.
+	const validSpawn = {
+		handle: "worker-a",
+		role: "reviewer",
+		persona: "works the compass-agent TS lane out of the rigel monorepo",
+	};
+
 	test("spawn rejects an empty or whitespace-only handle", () => {
-		expect(rejects(spawnParameters, {})).toBe(true);
-		expect(rejects(spawnParameters, { handle: "" })).toBe(true);
-		expect(rejects(spawnParameters, { handle: "  " })).toBe(true);
-		expect(rejects(spawnParameters, { handle: "worker-a" })).toBe(false);
+		expect(rejects(spawnParameters, { ...validSpawn, handle: undefined })).toBe(
+			true,
+		);
+		expect(rejects(spawnParameters, { ...validSpawn, handle: "" })).toBe(true);
+		expect(rejects(spawnParameters, { ...validSpawn, handle: "  " })).toBe(
+			true,
+		);
+		expect(rejects(spawnParameters, validSpawn)).toBe(false);
+	});
+
+	// role is REQUIRED and non-blank — presence is enforced at the tool, not on
+	// the wire (the proto3 field is an optional string). A missing or blank role
+	// is a caller mistake, rejected before `execute`.
+	test("spawn rejects a missing, empty, or whitespace-only role", () => {
+		expect(rejects(spawnParameters, { ...validSpawn, role: undefined })).toBe(
+			true,
+		);
+		expect(rejects(spawnParameters, { ...validSpawn, role: "" })).toBe(true);
+		expect(rejects(spawnParameters, { ...validSpawn, role: "  " })).toBe(true);
+		expect(rejects(spawnParameters, { ...validSpawn, role: "reviewer" })).toBe(
+			false,
+		);
+	});
+
+	// persona is REQUIRED and non-blank, same as role.
+	test("spawn rejects a missing, empty, or whitespace-only persona", () => {
+		expect(
+			rejects(spawnParameters, { ...validSpawn, persona: undefined }),
+		).toBe(true);
+		expect(rejects(spawnParameters, { ...validSpawn, persona: "" })).toBe(true);
+		expect(rejects(spawnParameters, { ...validSpawn, persona: "  " })).toBe(
+			true,
+		);
+		expect(
+			rejects(spawnParameters, { ...validSpawn, persona: "the TS lane" }),
+		).toBe(false);
 	});
 
 	test("despawn rejects an empty or whitespace-only agent_account_id", () => {

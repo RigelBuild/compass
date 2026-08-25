@@ -36,7 +36,7 @@ restatement of the role prompt.
 
 ## The comms toolset
 
-Five native comms tools ship (`src/comms.ts`), none of them ask-answering:
+Eight native comms tools ship (`src/comms.ts`), none of them ask-answering:
 
 - `comms_post_message` — post a markdown message to a channel topic.
 - `comms_post_ask` — raise a structured ask (async; the answer arrives on a
@@ -44,6 +44,17 @@ Five native comms tools ship (`src/comms.ts`), none of them ask-answering:
 - `comms_list_messages` — read a channel's recent messages.
 - `compass_roster` — list the agent's neighborhood/subtree/owner roster.
 - `compass_set_status` — set the agent's presence activity.
+- `comms_create_channel` — create a channel (born open and ownerless).
+- `comms_update_members` — add/remove members and flip a member's subscribe
+  opt-in on a channel.
+- `comms_create_channel_group` — create a channel group (a namespace for
+  channels and nested groups).
+
+Each tool executes under the server-resolved caller (D9) with the same authz as
+a human: the agent presents no token, the Server resolves session → account and
+runs under `WithActor`, so a non-member or otherwise unauthorized call comes
+back as an in-band error (rendered as a thrown tool failure), never a transport
+teardown.
 
 `comms_post_ask` mints each `AskOption.id` as the option's zero-based index
 (a decimal string) — the native SDK ask option carries no id, and the id is the

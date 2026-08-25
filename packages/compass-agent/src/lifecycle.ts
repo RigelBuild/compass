@@ -85,6 +85,23 @@ export const spawnParameters = type({
 	"display_name?": type("string").describe(
 		"Human-readable display name for the new peer",
 	),
+	// role AND persona are REQUIRED (non-blank), even though the wire fields are
+	// proto3-optional strings: presence is enforced HERE at the tool with the
+	// same `.narrow` idiom `handle` uses, not on the wire. Both are
+	// SET-AT-CREATION-ONLY — a spawn onto an existing handle is idempotent
+	// success under the STORED values and ignores these. The `.narrow` predicate
+	// has no JSON Schema form, so the description carries the rule (see the
+	// comms.ts `postParameters` note).
+	role: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"The peer's role, set when the peer is first created; must not be blank. Ignored on a spawn onto an existing handle (the stored role is kept).",
+		),
+	persona: type("string")
+		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
+		.describe(
+			"The peer's stable working context (the repos, projects, and lanes it works out of), set when the peer is first created; must not be blank. Keep it stable — not churning per-issue detail. Ignored on a spawn onto an existing handle (the stored persona is kept).",
+		),
 });
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
@@ -139,8 +156,13 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 		label: "Spawn peer agent",
 		approval: "write",
 		description:
-			"Spawn a new peer agent owned by your owner. Provide a unique handle; " +
-			"optionally a display name.",
+			"Spawn a new peer agent owned by your owner. Provide a unique handle, " +
+			"a required role, and a required persona; optionally a display name. " +
+			"role and persona are SET-AT-CREATION-ONLY: they are recorded when the " +
+			"peer is first created and a spawn onto an existing handle keeps the " +
+			"stored role and persona (idempotent success). The persona is the " +
+			"peer's stable working context (repos, projects, lanes) — not churning " +
+			"per-issue detail.",
 		parameters: spawnParameters,
 		execute: async (toolCallId, params) => {
 			const result = await broker.call(
@@ -151,6 +173,12 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 						value: create(SpawnPeerRequestSchema, {
 							handle: params.handle,
 							displayName: params.display_name ?? "",
+							// role/persona are SET-AT-CREATION-ONLY. Presence is enforced at
+							// the tool schema (non-blank), not on the wire — the fields are
+							// proto3-optional strings; a spawn onto an existing handle
+							// ignores them and keeps the stored values.
+							role: params.role,
+							persona: params.persona,
 							// Idempotency key, so a replayed spawn (an agent-turn/model
 							// retry of the same tool call) dedupes at the lifecycle handler
 							// rather than double-spawning. Broker-scoped, never the bare
