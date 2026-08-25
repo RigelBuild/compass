@@ -12,6 +12,11 @@
 export { CompassAgent, type CompassAgentOptions } from "./agent";
 export { CommsBroker, type CommsTransport, createCommsTools } from "./comms";
 export type { AgentControl, ControlSource } from "./control";
+export {
+	createForgeTools,
+	ForgeBroker,
+	type ForgeTransport,
+} from "./forge";
 export { type FrameSink, type OutboundFrame, ProtojsonLineSink } from "./frame";
 export {
 	createLifecycleTools,

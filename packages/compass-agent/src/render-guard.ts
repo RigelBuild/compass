@@ -63,3 +63,25 @@ export const attr = (v: string, fence?: string): string =>
 // encoding nobody here thought of is already covered.
 export const flat = (v: string): string =>
 	v.replaceAll(/[\p{Cc}\p{Zl}\p{Zp}\s]+/gu, " ");
+
+// `attr` guards an id-shaped value; `ref` guards a URL or an `<owner>/<name>`
+// repo slug — the two shapes a forge write-ack line interpolates that `attr`
+// rejects. `attr`'s class is `[\w.:-]+`, which excludes `/`, so every
+// well-formed `https://…` permalink and every `owner/name` repo would degrade
+// to `(malformed)` under it — the field the ack exists to surface, silently
+// dropped. So `ref` widens the shape to the characters a URL and a repo slug
+// legitimately carry (`/ ? # = & % ~ + @` on top of `attr`'s set) while keeping
+// the SAME constrain-don't-escape doctrine: the class still admits no quote, no
+// angle bracket, and no whitespace-or-control (`\s`/`Cc`/`Zl`/`Zp`), so a value
+// that conforms cannot close an attribute, forge a tag, or split the single ack
+// line, and a value that has stopped being URL/slug-shaped degrades visibly
+// inert rather than breaking out. The bound is `+`, not `*`, for the reason
+// `attr` states — an empty value would render as a real-looking but empty ref;
+// the create-ack's own dedup-hit branch (an empty `url`) is handled by the
+// caller BEFORE reaching here, never by degrading to `(malformed)`.
+export const ref = (v: string, fence?: string): string =>
+	/^[\w.:/?#=&%~+@-]+$/.test(v)
+		? v
+		: fence === undefined
+			? "(malformed)"
+			: `(malformed ${fence})`;

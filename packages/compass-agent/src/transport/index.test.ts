@@ -22,6 +22,10 @@ import {
 	CommsCallRequestSchema,
 	type CommsCallResult,
 	CommsCallResultSchema,
+	ForgeCallRequestSchema,
+	type ForgeCallResult,
+	ForgeCallResultSchema,
+	GetIssueRequestSchema,
 	PublishFrameResponseSchema,
 } from "../gen/compass/v1/agent_gateway_pb";
 import {
@@ -29,6 +33,7 @@ import {
 	PostMessageRequestSchema,
 	PostMessageResponseSchema,
 } from "../gen/compass/v1/comms_pb";
+import { IssueSchema } from "../gen/compass/v1/compass_pb";
 import { createSocketFrameSink } from "./frame-sink";
 import { createUnixSocketTransport } from "./index";
 import { getTransportRuntime } from "./runtime-channel";
@@ -148,6 +153,95 @@ test("comms() round-trips the in-band error variant", async () => {
 	if (result.result.case !== "error") throw new Error("expected error variant");
 	expect(result.result.value.code).toBe("not_found");
 	expect(result.result.value.message).toBe("no such channel");
+});
+
+// Stand up an h2c server serving AgentGateway.Forge with the supplied handler.
+// Same short-socket-path + listen-only synchronization as serveComms; only the
+// mounted RPC differs, proving the transport's `forge` delegation reaches the
+// generated client's Forge method (not comms/lifecycle).
+async function serveForge(
+	handler: (callId: string) => ForgeCallResult,
+): Promise<string> {
+	const socketPath = path.join(
+		os.tmpdir(),
+		`t4f-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.sock`,
+	);
+	const adapter = connectNodeAdapter({
+		routes(router) {
+			router.rpc(AgentGateway.method.forge, async (req) => handler(req.callId));
+		},
+	});
+	const server = http2.createServer(adapter);
+	activeServer = server;
+	activeSocketPath = socketPath;
+	await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+	return socketPath;
+}
+
+test("forge() dials the Unix socket over h2c and round-trips the issue result", async () => {
+	const socketPath = await serveForge((callId) =>
+		create(ForgeCallResultSchema, {
+			callId,
+			result: {
+				case: "issue",
+				value: create(IssueSchema, { number: 42, repo: "octo/repo" }),
+			},
+		}),
+	);
+
+	const transport = createUnixSocketTransport(socketPath);
+	const result = await transport.forge(
+		create(ForgeCallRequestSchema, {
+			callId: "tc-f1",
+			call: {
+				case: "getIssue",
+				value: create(GetIssueRequestSchema, {
+					repo: "octo/repo",
+					issueNumber: 42n,
+				}),
+			},
+		}),
+	);
+
+	expect(result.callId).toBe("tc-f1");
+	expect(result.result.case).toBe("issue");
+	if (result.result.case !== "issue") throw new Error("expected issue variant");
+	expect(result.result.value.number).toBe(42);
+	expect(result.result.value.repo).toBe("octo/repo");
+});
+
+test("forge() round-trips the in-band error variant", async () => {
+	const socketPath = await serveForge((callId) =>
+		create(ForgeCallResultSchema, {
+			callId,
+			result: {
+				case: "error",
+				value: { code: "not_found", message: "no such repo", retryAfterMs: 0 },
+			},
+		}),
+	);
+
+	const transport = createUnixSocketTransport(socketPath);
+	const result = await transport.forge(
+		create(ForgeCallRequestSchema, {
+			callId: "tc-f2",
+			call: {
+				case: "getIssue",
+				value: create(GetIssueRequestSchema, {
+					repo: "octo/repo",
+					issueNumber: 1n,
+				}),
+			},
+		}),
+	);
+
+	expect(result.callId).toBe("tc-f2");
+	// In-band error is a typed result variant (a tool error the agent renders),
+	// NOT a thrown ConnectError.
+	expect(result.result.case).toBe("error");
+	if (result.result.case !== "error") throw new Error("expected error variant");
+	expect(result.result.value.code).toBe("not_found");
+	expect(result.result.value.message).toBe("no such repo");
 });
 
 // Stand up an h2c server serving AgentGateway.Publish (the client-stream the

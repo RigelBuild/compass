@@ -54,6 +54,7 @@ import {
 	PromptControlSchema,
 	type AgentControl as WireAgentControl,
 } from "./compassv1";
+import { createForgeTools, ForgeBroker } from "./forge";
 import {
 	type PostConversationFrameRequest,
 	PostConversationFrameResponseSchema,
@@ -489,6 +490,7 @@ function fakeCarrier(
 	return {
 		comms: () => Promise.reject(new Error("comms is not used by main")),
 		lifecycle: () => Promise.reject(new Error("lifecycle is not used by main")),
+		forge: () => Promise.reject(new Error("forge is not used by main")),
 		publishSpine: () => spine,
 		postConversationFrame: async (req) => {
 			if (hooks.onDurable) await hooks.onDurable(req);
@@ -1926,10 +1928,12 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		const fakeTransport = {
 			comms: async () => ({}) as never,
 			lifecycle: async () => ({}) as never,
+			forge: async () => ({}) as never,
 		};
 		const expectedNames = [
 			...createCommsTools(new CommsBroker(fakeTransport)),
 			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
+			...createForgeTools(new ForgeBroker(fakeTransport)),
 		].map((t) => t.name);
 
 		const session = fakeSession();
@@ -1961,9 +1965,11 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		const names = toolNames(seen[0].customTools);
 		// Every native tool the factories produce reached customTools.
 		for (const name of expectedNames) expect(names).toContain(name);
-		// Discriminating anchor: the two confirmed lifecycle names (lifecycle.ts:144).
+		// Discriminating anchors: two confirmed lifecycle names and two forge names.
 		expect(names).toContain("agents_spawn_peer");
 		expect(names).toContain("agents_despawn_peer");
+		expect(names).toContain("forge_get_issue");
+		expect(names).toContain("forge_create_pull_request");
 		// Headless approval policy (SEA-1741): the entrypoint pins autoApprove so
 		// the write-approval natives auto-execute with no human in the container.
 		expect(seen[0].autoApprove).toBe(true);
@@ -1986,12 +1992,14 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		const fakeTransport = {
 			comms: async () => ({}) as never,
 			lifecycle: async () => ({}) as never,
+			forge: async () => ({}) as never,
 		};
 		const natives = [
 			...createCommsTools(new CommsBroker(fakeTransport)),
 			...createLifecycleTools(new LifecycleBroker(fakeTransport)),
+			...createForgeTools(new ForgeBroker(fakeTransport)),
 		];
-		expect(natives).toHaveLength(7);
+		expect(natives).toHaveLength(17);
 		for (const tool of natives) {
 			expect({ name: tool.name, arity: tool.execute.length }).toEqual({
 				name: tool.name,
@@ -2037,11 +2045,11 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(seen[0].skills).toEqual([]);
 		expect(seen[0].additionalExtensionPaths).toEqual([]);
 		expect(seen[0].disableExtensionDiscovery).toBe(true);
-		// No MCP tools (empty mount → empty connect), but the comms/lifecycle
-		// natives are ALWAYS merged in (SEA-1741) — so customTools carries exactly
-		// those, and never a discovered MCP tool.
+		// No MCP tools (empty mount → empty connect), but the comms/lifecycle/forge
+		// natives are ALWAYS merged in (SEA-1741/RIG-2672) — so customTools carries
+		// exactly those, and never a discovered MCP tool.
 		expect(toolNames(seen[0].customTools)).toContain("agents_spawn_peer");
-		expect(seen[0].customTools).toHaveLength(7);
+		expect(seen[0].customTools).toHaveLength(17);
 		expect(seen[0].enableMCP).toBe(false);
 	});
 
@@ -2071,9 +2079,10 @@ describe("main wires the mounted agent-config into createAgentSession", () => {
 		expect(skillNames(seen[0].skills)).toEqual(["only"]);
 		expect(seen[0].additionalExtensionPaths).toEqual([]);
 		// No MCP tools from a skills-only mount, but the natives always merge in
-		// (SEA-1741) — so customTools is exactly the seven comms/lifecycle natives.
+		// (SEA-1741/RIG-2672) — so customTools is exactly the comms/lifecycle/forge
+		// natives.
 		expect(toolNames(seen[0].customTools)).toContain("comms_post_message");
-		expect(seen[0].customTools).toHaveLength(7);
+		expect(seen[0].customTools).toHaveLength(17);
 	});
 
 	// ── SEA-1732 T10: COMPASS_ROLE → prompts/<role>/SYSTEM.md → customSystemPrompt ──

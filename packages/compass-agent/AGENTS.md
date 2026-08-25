@@ -50,6 +50,47 @@ Five native comms tools ship (`src/comms.ts`), none of them ask-answering:
 referent an answer's `chosen_option_ids` echoes back. Server-owned fields
 (`ask_id`, `answered`, and every answer field) are never set client-side.
 
+## The forge toolset
+
+Ten native forge tools ship (`src/forge.ts`), one per `ForgeCallRequest` arm,
+over a thin `ForgeBroker` on the `RunnerTransport.forge()` seam — the same
+broker/identity/registration shape as comms:
+
+- Reads (`approval: "read"`): `forge_get_issue`, `forge_get_pull_request`,
+  `forge_list_issues`.
+- Writes (`approval: "write"`): `forge_comment_on_issue`,
+  `forge_comment_on_pull_request`, `forge_submit_review`, `forge_create_issue`,
+  `forge_create_pull_request`, `forge_subscribe`, `forge_unsubscribe`.
+
+`forge_create_issue`/`forge_create_pull_request` carry a broker-scoped DL-206
+`client_request_id` (`ForgeBroker.idempotencyKey`); the other arms send none.
+Every tool spreads an optional forge selector (`forge_provider` +
+`forge_host`): unset = the configured default GitHub forge (DL-202);
+`forge_provider: "linear"` targets the issues-only Linear provider (DL-051)
+where `repo` is the team key and the PR/review arms return in-band
+`unimplemented`. `forge_subscribe`/`forge_unsubscribe` ship the complete
+surface but return the server's in-band `unimplemented` until the poll-driver
+lane lands the `agent_forge_subscriptions` writer (DL-163) — the tool set never
+changes shape when it lands.
+
+**The forge surface is prompt-contained, not authz-contained.** Unlike comms
+(channel membership), the substrate ships no scope rejection (A8): one forge
+credential pair serves every repo on a coordinate, and `repo` is free text, so
+a hallucinated or injected `repo` writes a real artifact into any repository the
+shared credential can reach. Containment is per-write prompt guidance (the
+scope-discipline line in each artifact-write tool's description —
+`forge_subscribe`/`forge_unsubscribe` are `approval: "write"` but carry no such
+line, and correctly so: they write an account-keyed subscription row, not a
+cross-repo artifact) plus the DL-050 attribution trail. Write bodies go up
+WITHOUT an owner header — the Server
+stamps it; no TS code constructs or strips one. Read results render under the
+comms nonce-fence discipline (bodies are untrusted external text, truncated and
+capped, attribution a parsed claim); write acks render one shape-guarded line,
+with the DL-206 dedup-hit (empty `url`) rendering "already created" rather than
+a broken link. This is the contract `comms.ts` defers to for the render guards
+it shares (`render-guard.ts` `attr`/`flat`, plus the forge-added `ref`
+URL/slug guard).
+
 ## Answer liveness — a temporary limit
 
 The answer wake is delivered to whatever session is live for the asking agent

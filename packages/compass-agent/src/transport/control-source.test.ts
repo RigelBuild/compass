@@ -1324,6 +1324,7 @@ function headerObserver(
 	return {
 		comms: (req) => inner.comms(req),
 		lifecycle: (req) => inner.lifecycle(req),
+		forge: (req) => inner.forge(req),
 		publishSpine: () => inner.publishSpine(),
 		postConversationFrame: (req, options) =>
 			inner.postConversationFrame(req, options),
@@ -1393,6 +1394,7 @@ function observingTransport(inner: RunnerTransport): TransportObserver {
 	const transport: RunnerTransport = {
 		comms: (req) => inner.comms(req),
 		lifecycle: (req) => inner.lifecycle(req),
+		forge: (req) => inner.forge(req),
 		publishSpine: () => inner.publishSpine(),
 		postConversationFrame: (req, options) =>
 			inner.postConversationFrame(req, options),
