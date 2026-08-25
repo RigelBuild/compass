@@ -456,9 +456,16 @@ Agent tree + channel/topic rows; caret, state dot, pin affordance.
 ## Tooltip (Kobalte)
 
 - **Class:** `.cx-tooltip`.
+- **Consumer:** `CoachTip` (`components/CoachTip.tsx`) — the shipped
+  label+chord coaching tooltip adopted across the command-backed chrome
+  (topbar Bridge tab, the four LeftSidebar view buttons, the two sidebar
+  toggles). `CoachTipContent` renders the control's label, then its chord
+  resolved from the keymap via `shortcutFor` (never hand-authored): a plus-chord
+  reuses `ShortcutChip`, a `" then "` leader sequence renders as plain text, and
+  a command with no keymap row is label-only.
 - **States:** display surface (elev-1); open delay `--cx-tooltip-delay`
   (400ms) is Kobalte's timing prop. Never load-bearing — the same info is
-  reachable elsewhere.
+  reachable elsewhere (a converted control keeps its `aria-keyshortcuts`).
 - **Tokens:** `--cx-bg-raised`, `--cx-border`, `--cx-text`, `--cx-font-ui`,
   `--cx-text-xs`, `--cx-space-1/-2`, `--cx-radius-sm`, `--cx-elev-1`,
   `--cx-z-overlay`.
