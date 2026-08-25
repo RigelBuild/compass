@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { CommandId } from "./commands";
-import { shortcutFor, shortcutForAria } from "./keymap";
+import {
+	chordSegments,
+	formatChordForDisplay,
+	type KeymapEntry,
+	leaderPrefixes,
+	shortcutFor,
+	shortcutForAria,
+} from "./keymap";
 
 // shortcutFor (RIG-2483, A5/D4) — the single derivation for every shortcut chip:
 // the first DEFAULT_KEYMAP row bound to an id, resolveChord-resolved. Pure
@@ -50,5 +57,51 @@ describe("shortcutForAria", () => {
 	test("undefined for a command with no keymap row (miss)", () => {
 		expect(shortcutForAria(id("view.backlog"), "other")).toBeUndefined();
 		expect(shortcutForAria(id("nonexistent.command"), "other")).toBeUndefined();
+	});
+});
+
+// Sequence-grammar helpers (RIG-2484 T1) — pure, table-independent. Tested over
+// a FIXTURE keymap because DEFAULT_KEYMAP carries no sequence rows until T2.
+
+const seqFixture: readonly KeymapEntry[] = [
+	{ chord: "Mod+B", commandId: id("view.bridge") },
+	{ chord: "G B", commandId: id("view.bridge") },
+	{ chord: "G L", commandId: id("view.backlog") },
+];
+
+describe("chordSegments", () => {
+	test("splits a sequence on its single space", () => {
+		expect(chordSegments("G B")).toEqual(["G", "B"]);
+	});
+
+	test("a plain chord yields a one-element array", () => {
+		expect(chordSegments("Mod+B")).toEqual(["Mod+B"]);
+		expect(chordSegments("Shift+Enter")).toEqual(["Shift+Enter"]);
+	});
+});
+
+describe("leaderPrefixes", () => {
+	test("collects the resolved first segment of every sequence row, and nothing else", () => {
+		const prefixes = leaderPrefixes(seqFixture, "other");
+		expect([...prefixes]).toEqual(["G"]);
+	});
+
+	test("empty for a table with no sequence rows", () => {
+		const single: readonly KeymapEntry[] = [
+			{ chord: "Mod+B", commandId: id("view.bridge") },
+		];
+		expect(leaderPrefixes(single, "other").size).toBe(0);
+	});
+});
+
+describe("formatChordForDisplay", () => {
+	test("a single chord resolves platform-specifically (Mod→Cmd/Ctrl)", () => {
+		expect(formatChordForDisplay("Mod+B", "mac")).toBe("Cmd+B");
+		expect(formatChordForDisplay("Mod+B", "other")).toBe("Ctrl+B");
+	});
+
+	test("a sequence joins resolved segments with ' then '", () => {
+		expect(formatChordForDisplay("G B", "mac")).toBe("G then B");
+		expect(formatChordForDisplay("G L", "other")).toBe("G then L");
 	});
 });
