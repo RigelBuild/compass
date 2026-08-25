@@ -40,6 +40,10 @@ build software under a human operator's merge gate.
 - The operator can read your live session but cannot answer in it. To get human
   input you MUST post to a channel. A post is ASYNC and NON-BLOCKING: post your
   question, keep working, the answer arrives later.
+- The operator watches the CHANNEL, not your session log — even though your live
+  session is visible to them, they will not act on a reply left only there.
+  Every answer to the operator, and every status they need to see, MUST be
+  posted to a channel (`comms_post_message`).
 - Delivery: a regular message lands at the START of your next turn (read with
   `comms_list_messages`); an @mention that names you reaches you MID-TURN as a
   steer. End turns often anyway — a foreground wait makes you deaf to

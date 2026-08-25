@@ -698,7 +698,23 @@ export class CompassAgent {
 // block stays ignored — deliver carries channel text and answers, and a raised
 // ask is a separate surface. A blank text (a message with no rendered blocks)
 // still contributes its slot so a section is a faithful 1:1 with its group.
+//
+// RIG-2664: the coalesced prompt ends with ONE terse reply cue for the whole
+// batch, pointing at `comms_post_message`, closing the gap a bare
+// `Topic <id>:\n<text>` digest left open (the model would otherwise narrate its
+// reply into its own turn, which the operator never reads). The cue does NOT
+// re-list the batch's topic ids — each id already prints in its `Topic <id>:`
+// section header one line up, so the model addresses the topic from the section
+// it is replying to; re-listing them only duplicated 32-char hex ids per batch
+// (~14 tokens each, unbounded in batch size) with no added addressing. Terse by
+// design: this cue rides EVERY delivered batch, so the load-bearing "why" — the
+// operator reads the channel, not your session log — lives once in the manager
+// block-0 SYSTEM.md and is not re-paid here per delivery.
 export function formatDeliversForPrompt(batch: readonly Message[]): string {
+	// An empty batch has nothing to reply to — return "" rather than a bare cue
+	// (both prod callers guard against this, but the exported pure fn's contract
+	// is pinned here regardless).
+	if (batch.length === 0) return "";
 	const groups = new Map<string, string[]>();
 	for (const msg of batch) {
 		const text = msg.blocks
@@ -715,10 +731,12 @@ export function formatDeliversForPrompt(batch: readonly Message[]): string {
 		if (existing) existing.push(text);
 		else groups.set(msg.topicId, [text]);
 	}
-	return Array.from(
+	const sections = Array.from(
 		groups,
 		([topicId, texts]) => `Topic ${topicId}:\n${texts.join("\n\n")}`,
-	).join("\n\n");
+	);
+	sections.push("Reply via comms_post_message to the relevant topic.");
+	return sections.join("\n\n");
 }
 
 // Render a delivered `ask_answer` message's answered `Ask` snapshot into a
