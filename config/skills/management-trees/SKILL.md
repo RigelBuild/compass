@@ -28,6 +28,33 @@ The root Supervisor:
   Supervisor is specifically the top-down / first-contact node.
 - Spawns and owns the project subtrees.
 
+## The contract — report to your parent, delegate to your children
+
+Every agent's place in the tree is a **model fact, not a prompt convention**.
+Each agent account carries a `parent_agent_id`: empty for a root agent,
+otherwise the account id of the agent it reports to. It is set at creation — on
+a spawn the spawning agent becomes the parent; a user-created agent may be given
+an explicit parent (or none, making it a new root) — and stays editable
+afterward via the `ReparentAgent` mutation, so a subtree can be reshaped without
+teardown (the server rejects a cross-owner or cycle-forming move).
+
+From that one field every agent derives its standing instructions:
+
+- **Report up.** Results, PRs, and status flow to your parent — the agent named
+  by your `parent_agent_id`, or the operator if you are a root. You surface
+  state to the node directly above you; you do not report sideways or skip
+  levels.
+- **Delegate down.** A parent decomposes work and pushes it to its children,
+  spawning or `task`-ing them (see *Delegation mechanics* below). Work flows
+  toward the leaves; results flow back toward the root.
+
+This is exactly how a running wave already behaves — hierarchical
+report-to-parent, today held entirely in prompt text. The tree turns "who do I
+report to" from per-prompt convention into a fact the instruction layer states
+mechanically: read your `parent_agent_id`, report there. (Reading *your own*
+current parent fresh — re-read because `ReparentAgent` can change it — is a
+deferred affordance; see *Deferred affordances* below.)
+
 ## Tenet — name a Manager for what it DOES, not the tool it uses
 
 Name each node the way you would name a **team or department in a company** —
