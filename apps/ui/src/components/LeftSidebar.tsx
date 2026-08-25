@@ -401,7 +401,7 @@ const AgentsSection: Component = () => {
 						}
 					>
 						<div class="tree-empty">
-							No agents in the fleet yet — spawn one from the command palette.
+							No agents in the fleet yet — the supervisor builds the tree.
 						</div>
 					</Show>
 				</div>

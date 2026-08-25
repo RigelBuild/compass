@@ -3,11 +3,11 @@
 // registry (buildShortcutGroups), so it can never drift from the real bindings;
 // this component only renders that model + owns the modal chrome.
 //
-// Hand-rolled modal on the `.cx-dialog` convention (StartAgentDialog precedent,
-// ratified D5 — no @kobalte/core), with two correctness additions the precedent
-// lacks: focus-RESTORE (capture activeElement on mount, restore on cleanup) and
-// a minimal Tab/Shift+Tab focus TRAP, so a modal claiming aria-modal cannot let
-// focus walk out and leave its local Escape handler unreachable.
+// Hand-rolled modal on the `.cx-dialog` convention (ratified D5 — no
+// @kobalte/core), with two correctness features: focus-RESTORE (capture
+// activeElement on mount, restore on cleanup) and a minimal Tab/Shift+Tab focus
+// TRAP, so a modal claiming aria-modal cannot let focus walk out and leave its
+// local Escape handler unreachable.
 
 import {
 	type Component,
