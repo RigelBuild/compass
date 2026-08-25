@@ -71,6 +71,7 @@ func TestProvisionSameClientRequestIdDedups(t *testing.T) {
 		hub := newHubOnly()
 		send := newRecordingSend()
 		router := enrollAttached(t, hub, send)
+		defer router.detach(errStreamClosed)
 
 		const id = "req-1"
 		// A fully-specified workspace: the dedup id now binds to the agent
@@ -135,6 +136,7 @@ func TestProvisionEmptyClientRequestIdDoesNotDedup(t *testing.T) {
 		hub := newHubOnly()
 		send := newRecordingSend()
 		router := enrollAttached(t, hub, send)
+		defer router.detach(errStreamClosed)
 
 		req := &compassv1.ProvisionAgentWorkspaceRequest{}
 		outcomes := make(chan provisionOutcome, 2)
@@ -196,6 +198,7 @@ func TestProvisionSameIdDifferentAccountDoesNotDedup(t *testing.T) {
 		hub := newHubOnly()
 		send := newRecordingSend()
 		router := enrollAttached(t, hub, send)
+		defer router.detach(errStreamClosed)
 
 		const id = "dup" // the SAME client_request_id for both callers
 		reqA := &compassv1.ProvisionAgentWorkspaceRequest{

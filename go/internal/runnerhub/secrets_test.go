@@ -264,10 +264,13 @@ func TestSignalSecretsVersionPushesMonotonicToken(t *testing.T) {
 	}
 	rec := newRecordingSend()
 	router.attach(rec.send)
+	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalSecretsVersion(); err != nil {
 		t.Fatalf("SignalSecretsVersion #1 = %v, want nil", err)
 	}
+	// Signals are queued-not-pushed; gate on the sender draining both to the wire.
+	waitRecorded(t, rec, 2)
 	first := secretsVersionsPushed(t, rec)
 	// One signal per live session.
 	if len(first) != 2 {
@@ -289,6 +292,7 @@ func TestSignalSecretsVersionPushesMonotonicToken(t *testing.T) {
 	if err := hub.SignalSecretsVersion(); err != nil {
 		t.Fatalf("SignalSecretsVersion #2 = %v, want nil", err)
 	}
+	waitRecorded(t, rec, 3)
 	all := secretsVersionsPushed(t, rec)
 	token2 := all[len(all)-1].GetVersion()
 	if token2 == token1 {

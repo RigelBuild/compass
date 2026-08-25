@@ -387,11 +387,12 @@ func TestDispatchControlNoLiveStreamRefuses(t *testing.T) {
 // (no result) is never counted a refusal.
 func TestSendOnlyRefusalIsObservedNotDropped(t *testing.T) {
 	r := newCommandRouter()
-	var captured *compassv1internal.SessionsResponse
+	captured := make(chan *compassv1internal.SessionsResponse, 1)
 	r.attach(func(cmd *compassv1internal.SessionsResponse) error {
-		captured = cmd
+		captured <- cmd
 		return nil
 	})
+	defer r.detach(errStreamClosed)
 	deliverCmd := &compassv1internal.SessionsResponse{
 		RequestId: "req-deliver",
 		Command: &compassv1internal.SessionsResponse_DeliverControl{
@@ -401,8 +402,14 @@ func TestSendOnlyRefusalIsObservedNotDropped(t *testing.T) {
 	if err := r.send1(deliverCmd); err != nil {
 		t.Fatalf("send1 = %v, want nil", err)
 	}
-	if captured.GetRequestId() != "req-deliver" {
-		t.Fatalf("send1 pushed %q, want req-deliver", captured.GetRequestId())
+	// The frame is queued-not-pushed; gate on the sender draining it to the wire.
+	select {
+	case got := <-captured:
+		if got.GetRequestId() != "req-deliver" {
+			t.Fatalf("send1 pushed %q, want req-deliver", got.GetRequestId())
+		}
+	case <-timeAfter():
+		t.Fatal("send1 never reached the wire")
 	}
 	if got := r.RefusedDelivers(); got != 0 {
 		t.Fatalf("RefusedDelivers before any refusal = %d, want 0", got)

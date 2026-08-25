@@ -33,11 +33,14 @@ func TestSignalConfigVersionPushesStoreVersion(t *testing.T) {
 	}
 	rec := newRecordingSend()
 	router.attach(rec.send)
+	defer router.detach(errStreamClosed)
 
 	const version = "deadbeefcafe"
 	if err := hub.SignalConfigVersion(version); err != nil {
 		t.Fatalf("SignalConfigVersion = %v, want nil", err)
 	}
+	// The fleet-wide frame is queued-not-pushed; gate on the sender draining it.
+	waitRecorded(t, rec, 1)
 	pushed := configVersionsPushed(t, rec)
 	// One fleet-wide frame per stream, regardless of how many sessions are live —
 	// ConfigVersion carries no session_id (record §527-528, §563).
@@ -64,10 +67,12 @@ func TestSignalConfigVersionEmptyVersionIsTheClearedMarker(t *testing.T) {
 	}
 	rec := newRecordingSend()
 	router.attach(rec.send)
+	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalConfigVersion(""); err != nil {
 		t.Fatalf("SignalConfigVersion(empty) = %v, want nil", err)
 	}
+	waitRecorded(t, rec, 1)
 	pushed := configVersionsPushed(t, rec)
 	if len(pushed) != 1 {
 		t.Fatalf("pushed %d ConfigVersion frames, want 1", len(pushed))
@@ -85,6 +90,7 @@ func TestSignalConfigVersionNoLiveSessionsIsNoop(t *testing.T) {
 	router, _, _ := hub.routerFor("any")
 	rec := newRecordingSend()
 	router.attach(rec.send)
+	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalConfigVersion("v1"); err != nil {
 		t.Fatalf("SignalConfigVersion with no live sessions = %v, want nil", err)

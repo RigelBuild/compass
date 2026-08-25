@@ -54,7 +54,7 @@ func waitRouterAttached(t *testing.T, hub *Hub) {
 		}
 		if router, _, err := hub.routerFor("gate"); err == nil {
 			router.mu.Lock()
-			attached := router.send != nil
+			attached := router.sender != nil
 			router.mu.Unlock()
 			if attached {
 				return
@@ -71,6 +71,27 @@ func waitRouterAttached(t *testing.T, hub *Hub) {
 const testTimeout = 15 * time.Second
 
 func timeAfter() <-chan time.Time { return time.After(testTimeout) }
+
+// waitRecorded blocks until the recording send has observed at least n frames,
+// or fails at the deadline. Since attach now drains an outbound queue on a
+// sender goroutine, a frame is queued-not-pushed: a test asserting a signal
+// reached the wire must gate on the recorder observing it rather than assuming
+// the enqueue call pushed synchronously. Channel-gated on the deadline, never a
+// wall-clock sleep.
+func waitRecorded(t *testing.T, rec *recordingSend, n int) {
+	t.Helper()
+	deadline := timeAfter()
+	for {
+		if rec.count() >= n {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("recording send saw %d frames, want at least %d", rec.count(), n)
+		default:
+		}
+	}
+}
 
 // fakeLifecycleSink records the AgentSessionStatus values extracted onto
 // SubscribeEvents.

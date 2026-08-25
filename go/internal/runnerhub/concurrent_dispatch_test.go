@@ -3,15 +3,17 @@
 package runnerhub
 
 // A concurrent-Send data-race regression for the command router over the REAL
-// connect Sessions stream. dispatch() pushes each command through the live
-// server-side BidiStream.Send, which connect-go does NOT make safe for
-// concurrent use. In production, many client-facing session RPCs dispatch onto
-// the ONE shared Sessions stream at once, so two goroutines can enter Send
-// concurrently — a data race on the stream's write path that corrupts frames.
-// router.go serializes those pushes with a dedicated sendMu; this test drives
-// many concurrent dispatches over the real mounted handler under -race, so a
-// regression that dropped sendMu reddens here (WARNING: DATA RACE) rather than
-// silently shipping corrupted frames.
+// connect Sessions stream. dispatch() enqueues each command onto the router's
+// bounded outbound queue, which a single per-router sender goroutine drains as
+// the SOLE caller of the server-side BidiStream.Send — connect-go does NOT make
+// that Send safe for concurrent use. In production, many client-facing session
+// RPCs dispatch onto the ONE shared Sessions stream at once; the single-sender
+// invariant is what keeps two of them from entering Send concurrently and
+// corrupting frames on the stream's write path. This test drives many concurrent
+// dispatches over the real mounted handler under -race, so a regression that
+// broke the single-sender invariant (e.g. a direct Send from a caller goroutine)
+// reddens here (WARNING: DATA RACE) rather than silently shipping corrupted
+// frames. See docs/designs/platform/compass-runnerhub-send-queue/design.md.
 //
 // Unlike the router_test.go cases (a fake in-process send), this exercises the
 // real wire: the Runner-side loop drains every command the Server pushes and

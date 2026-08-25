@@ -90,6 +90,7 @@ func TestDispatchSameRequestIdSendsOnceBothGetResult(t *testing.T) {
 		r := newCommandRouter()
 		send := newRecordingSend()
 		r.attach(send.send)
+		defer r.detach(errStreamClosed)
 
 		const id = "req-dup"
 		outcomes := make(chan dispatchOutcome, 2)
@@ -138,6 +139,7 @@ func TestDispatchDistinctRequestIdsSendTwice(t *testing.T) {
 		r := newCommandRouter()
 		send := newRecordingSend()
 		r.attach(send.send)
+		defer r.detach(errStreamClosed)
 
 		outcomes := make(chan dispatchOutcome, 2)
 		go func() {
@@ -184,6 +186,7 @@ func TestCompleteCorrelatesByRequestId(t *testing.T) {
 		r := newCommandRouter()
 		send := newRecordingSend()
 		r.attach(send.send)
+		defer r.detach(errStreamClosed)
 
 		outX := make(chan dispatchOutcome, 1)
 		outY := make(chan dispatchOutcome, 1)
@@ -235,6 +238,7 @@ func TestCompleteUnknownIdIsIgnored(t *testing.T) {
 		r := newCommandRouter()
 		send := newRecordingSend()
 		r.attach(send.send)
+		defer r.detach(errStreamClosed)
 
 		// No in-flight call; completing an unknown id must not panic.
 		r.complete(startResult("ghost", "sess-ghost"))
@@ -263,6 +267,7 @@ func TestDetachFailsAllInFlight(t *testing.T) {
 		r := newCommandRouter()
 		send := newRecordingSend()
 		r.attach(send.send)
+		defer r.detach(errStreamClosed)
 
 		outcomes := make(chan dispatchOutcome, 3)
 		for _, id := range []string{"a", "b", "c"} {
@@ -305,6 +310,7 @@ func TestDispatchRequiresRequestId(t *testing.T) {
 	r := newCommandRouter()
 	send := newRecordingSend()
 	r.attach(send.send)
+	defer r.detach(errStreamClosed)
 	_, err := r.dispatch(context.Background(), startCmd(""))
 	if err == nil {
 		t.Fatal("dispatch with empty request id = nil error, want a required-id error")
@@ -327,7 +333,9 @@ func TestDispatchRequiresRequestId(t *testing.T) {
 // present, so the Contains("req-0")==false eviction assertion goes RED.
 func TestSend1DeliverRefusalsBounded(t *testing.T) {
 	r := newCommandRouter()
-	r.attach(func(*compassv1internal.SessionsResponse) error { return nil })
+	rec := newRecordingSend()
+	r.attach(rec.send)
+	defer r.detach(errStreamClosed)
 
 	const overflow = 100
 	total := deliverRefusalsMax + overflow
@@ -342,6 +350,11 @@ func TestSend1DeliverRefusalsBounded(t *testing.T) {
 		if err := r.send1(cmd); err != nil {
 			t.Fatalf("send1(%q) = %v, want nil", id(i), err)
 		}
+		// Gate on the sender draining this frame before enqueuing the next: the
+		// refusal-set bound (deliverRefusalsMax) is independent of the outbound
+		// queue bound (sendQueueCap), so keep the queue depth ~0 to isolate the
+		// LRU behavior from a queue overflow.
+		waitRecorded(t, rec, i+1)
 	}
 
 	// The set is bounded, not grown to total. After adding deliverRefusalsMax+overflow

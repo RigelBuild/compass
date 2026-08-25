@@ -25,12 +25,45 @@ import (
 	"github.com/hashicorp/golang-lru/v2/expirable"
 )
 
+// frameClass tags an outbound frame with its overflow/teardown contract. The
+// three classes share one FIFO — they share the wire, and a command gains
+// nothing by overtaking a deliver — but their full-queue and detach-time
+// semantics differ. See
+// docs/designs/platform/compass-runnerhub-send-queue/design.md.
+type frameClass int
+
+const (
+	frameDeliver frameClass = iota // send1: send-only, cursor-backstopped
+	frameSignal                    // push: fire-and-forget, best-effort
+	frameCommand                   // dispatch: pendingCall-correlated, blocking caller
+)
+
+// outFrame is one queued outbound Sessions frame.
+type outFrame struct {
+	cmd   *compassv1internal.SessionsResponse
+	class frameClass
+}
+
+// sendQueueCap bounds the per-router outbound queue. A frame is one small proto
+// pointer, so memory is negligible; the bound exists to fail fast on a wedged
+// stream, not to save memory.
+const sendQueueCap = 256
+
+// senderState is one attachment's queue plus its sender goroutine. A fresh
+// senderState per attach means a re-attached stream never inherits stale frames
+// from a previous attachment.
+type senderState struct {
+	queue chan outFrame
+	done  chan struct{} // closed when the sender goroutine exits
+}
+
 // commandRouter correlates outbound session commands with the results the Runner
 // returns on its request stream. One router per attached Runner.
 type commandRouter struct {
-	// send pushes a command onto the Runner's Sessions response stream. Set when
-	// a Runner's Sessions stream is live; nil before it opens. Guarded by mu.
-	send func(*compassv1internal.SessionsResponse) error
+	// sender is the live attachment's outbound queue plus its sender goroutine.
+	// Set when a Runner's Sessions stream is live; nil before it opens or after
+	// it detaches. Guarded by mu.
+	sender *senderState
 
 	mu sync.Mutex
 	// inflight maps a request id to the pending call awaiting its result. A
@@ -67,12 +100,6 @@ type commandRouter struct {
 	// (enroll); nil falls back to slog.Default at use so a bare newCommandRouter
 	// (tests) still logs safely.
 	log *slog.Logger
-
-	// sendMu serializes concurrent calls into the live stream's Send. connect's
-	// server-side BidiStream.Send is not safe for concurrent use, and multiple
-	// client RPCs dispatch onto the one shared stream at once; a dedicated lock
-	// (never held with mu) keeps map bookkeeping off the Send critical section.
-	sendMu sync.Mutex
 }
 
 // pendingCall is one outstanding command awaiting its result. done closes when
@@ -115,25 +142,119 @@ func (r *commandRouter) RefusedDelivers() uint64 {
 }
 
 // attach binds the router to a live Sessions stream's send function. Called when
-// the Runner opens its Sessions stream; detached (send=nil) when it closes.
+// the Runner opens its Sessions stream; detached when it closes. It builds a
+// fresh senderState (queue + done) and spawns runSender, the sole caller of send
+// for this attachment. See
+// docs/designs/platform/compass-runnerhub-send-queue/design.md.
 func (r *commandRouter) attach(send func(*compassv1internal.SessionsResponse) error) {
+	s := &senderState{
+		queue: make(chan outFrame, sendQueueCap),
+		done:  make(chan struct{}),
+	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.send = send
+	r.sender = s
+	r.mu.Unlock()
+	go r.runSender(s, send)
 }
 
-// detach clears the send function and fails every in-flight call — the Runner's
-// Sessions stream dropped, so no pending command can complete. Callers observe
-// the error and the session-disconnect path (OQ6) takes over.
+// detach tears down the live attachment: it nils and closes the outbound queue
+// under mu, fails every in-flight call (the Runner's Sessions stream dropped, so
+// no pending command can complete — callers observe the cause and the OQ6
+// disconnect path takes over), then joins the sender goroutine on its done
+// channel outside mu. Closing the queue is safe: every enqueue is a non-blocking
+// send performed under mu after a non-nil sender check, so no send can race the
+// close.
 func (r *commandRouter) detach(cause error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.send = nil
+	s := r.sender
+	r.sender = nil
+	if s != nil {
+		close(s.queue)
+	}
 	for id, call := range r.inflight {
 		call.err = cause
 		close(call.done)
 		delete(r.inflight, id)
 	}
+	r.mu.Unlock()
+	if s != nil {
+		<-s.done
+	}
+}
+
+// runSender drains the attachment's queue into the stream in FIFO order. It is
+// the ONLY caller of send for this attachment — the single-sender invariant that
+// replaces the old sendMu (connect's server-side BidiStream.Send is not safe for
+// concurrent use). It exits when the queue is closed (detach) or when a Send
+// fails: a failed Send means the stream is dead, and the handler's
+// defer router.detach tears down the rest (frames still queued then follow the
+// detach semantics — a command's pendingCall is failed by detach, a deliver's
+// cursor was never advanced, a signal is best-effort). See
+// docs/designs/platform/compass-runnerhub-send-queue/design.md.
+func (r *commandRouter) runSender(s *senderState, send func(*compassv1internal.SessionsResponse) error) {
+	defer close(s.done)
+	for f := range s.queue {
+		if err := send(f.cmd); err != nil {
+			r.failFrameOnSendError(f, err)
+			return
+		}
+	}
+}
+
+// failFrameOnSendError applies the per-class teardown for the one frame whose
+// Send failed. A command's pendingCall is COMPLETED with the error (set err,
+// close done, delete from inflight — all under mu and presence-checked, exactly
+// as detach and complete finish a waiting call, NOT a delete-only: the caller
+// is parked in waitCall since the real Send now happens here, so a delete-only
+// would hang it to ctx timeout; the presence check keeps this from
+// double-closing against detach's in-flight sweep). A deliver's refusal entry is
+// removed and the failure warn-logged (no command reached the Runner, so no
+// refusal can arrive). A signal is warn-logged only, best-effort by contract.
+func (r *commandRouter) failFrameOnSendError(f outFrame, err error) {
+	id := f.cmd.GetRequestId()
+	switch f.class {
+	case frameCommand:
+		r.mu.Lock()
+		if call, ok := r.inflight[id]; ok {
+			call.err = fmt.Errorf("pushing session command %q to runner: %w", id, err)
+			close(call.done)
+			delete(r.inflight, id)
+		}
+		r.mu.Unlock()
+	case frameDeliver:
+		r.mu.Lock()
+		r.deliverRefusals.Remove(id)
+		r.mu.Unlock()
+		r.logger().Warn("pushing deliver to runner failed; cursor left unadvanced for the reconnect sweep",
+			"request_id", id, "error", err)
+	case frameSignal:
+		r.logger().Warn("pushing signal to runner failed; best-effort, the runner refetches on reconnect",
+			"error", err)
+	}
+}
+
+// enqueue performs the non-blocking outbound send under mu. It returns false when
+// there is no live sender OR the queue is full; callers distinguish the two under
+// the same mu hold by checking r.sender themselves before calling.
+func (r *commandRouter) enqueue(f outFrame) bool {
+	if r.sender == nil {
+		return false
+	}
+	select {
+	case r.sender.queue <- f:
+		return true
+	default:
+		return false
+	}
+}
+
+// logger returns the refusal diagnostic logger, falling back to slog.Default so a
+// bare newCommandRouter (tests) still logs safely.
+func (r *commandRouter) logger() *slog.Logger {
+	if r.log != nil {
+		return r.log
+	}
+	return slog.Default()
 }
 
 // dispatch pushes cmd (already carrying its request id) to the Runner and waits
@@ -154,92 +275,91 @@ func (r *commandRouter) dispatch(ctx context.Context, cmd *compassv1internal.Ses
 		r.mu.Unlock()
 		return waitCall(ctx, existing)
 	}
-	if r.send == nil {
+	if r.sender == nil {
 		r.mu.Unlock()
 		return nil, fmt.Errorf("no live runner sessions stream for command %q", id)
 	}
 	call := &pendingCall{done: make(chan struct{})}
 	r.inflight[id] = call
-	send := r.send
-	r.mu.Unlock()
-
-	r.sendMu.Lock()
-	err := send(cmd)
-	r.sendMu.Unlock()
-	if err != nil {
-		// The push failed; drop the registration so a later retry can re-issue.
-		r.mu.Lock()
+	// Fail-fast on a full queue: a blocking command must never be silently
+	// dropped under a waiting caller. Delete the registration and return an
+	// error immediately — the exact shape of the old synchronous push-failure
+	// path, so OQ6 idempotent retry is untouched (a retry with the same id
+	// re-issues cleanly, a retry racing a still-queued first attempt joins its
+	// live pendingCall). The caller-side contract already surfaces a prompt
+	// error as CodeUnavailable.
+	if !r.enqueue(outFrame{cmd: cmd, class: frameCommand}) {
 		delete(r.inflight, id)
 		r.mu.Unlock()
-		return nil, fmt.Errorf("pushing session command %q to runner: %w", id, err)
+		return nil, fmt.Errorf("runner send queue full for command %q", id)
 	}
+	r.mu.Unlock()
 	return waitCall(ctx, call)
 }
 
-// push sends cmd down the live Sessions stream WITHOUT registering a pendingCall
-// or waiting for a result — the fire-and-forget counterpart to dispatch, for a
-// signal-only Server->Runner push (SecretsVersion) that has no result variant on
-// the request stream. A nil send (no attached Runner) is a no-op success: the
-// signal is best-effort, and the Runner re-fetches its secret set on reconnect
-// regardless, so a session whose stream is momentarily detached loses nothing
-// permanent. It takes sendMu (never mu while sending) exactly as dispatch does,
-// because connect's server-side BidiStream.Send is not safe for concurrent use.
+// push enqueues cmd onto the outbound queue WITHOUT registering a pendingCall or
+// waiting for a result — the fire-and-forget counterpart to dispatch, for a
+// signal-only Server->Runner push (SecretsVersion/ConfigVersion) that has no
+// result variant on the request stream. A nil sender (no attached Runner) is a
+// no-op success: the signal is best-effort, and the Runner re-fetches its secret
+// set on reconnect regardless, so a session whose stream is momentarily detached
+// loses nothing permanent. A full queue is the same best-effort outcome with a
+// warn log for observability — the signal is advisory. A real Send error is
+// handled asynchronously in runSender.
 func (r *commandRouter) push(cmd *compassv1internal.SessionsResponse) error {
 	r.mu.Lock()
-	send := r.send
+	live := r.sender != nil
+	enqueued := r.enqueue(outFrame{cmd: cmd, class: frameSignal})
 	r.mu.Unlock()
-	if send == nil {
-		return nil
+	if live && !enqueued {
+		r.logger().Warn("runner send queue full for signal; dropped, the runner refetches on reconnect")
 	}
-	r.sendMu.Lock()
-	defer r.sendMu.Unlock()
-	return send(cmd)
+	return nil
 }
 
-// send1 pushes a single send-only DELIVER command down the live Sessions stream
+// send1 enqueues a single send-only DELIVER command onto the outbound queue
 // WITHOUT registering a blocking pendingCall — the crux of SEA-1569 §5. A
 // successful deliver returns NO synchronous result (success rides a later
 // AgentFrame.delivery_ack), so reusing dispatch — which registers an inflight
 // call and blocks on waitCall for a result that never comes — would hang until
-// ctx timeout on EVERY successful delivery. send1 pushes and returns nil the
-// instant the push succeeds.
+// ctx timeout on EVERY successful delivery. send1 enqueues and returns nil the
+// instant the frame is queued; nil now means "queued", no longer "pushed", but
+// success still rides the later delivery_ack exactly as before.
 //
 // It DOES register a lightweight refusal-only entry for cmd's request id: a
 // refused deliver rides the Sessions request stream as a RunnerError result
 // (SessionsRequest.error, correlated by request id, §5), which complete() would
 // otherwise drop as "unknown". The entry makes such a refusal observable
 // (logged + counted) rather than silently lost; it is NOT a pendingCall and no
-// caller ever blocks on it. A nil send (no attached Runner / detached stream)
-// returns an error so the consumer treats the id as "no live session" and falls
-// to the D2 sweep, mirroring dispatch's no-live-stream error.
+// caller ever blocks on it.
+//
+// A nil sender (no attached Runner / detached stream) OR a FULL queue returns
+// the "no live stream"-class refusal error: the consumer already treats any
+// error as "no live session" and leaves the cursor unadvanced for the D2 sweep.
+// On a full queue the refusal entry is removed (no frame will reach the Runner,
+// so no refusal can arrive for it). See
+// docs/designs/platform/compass-runnerhub-send-queue/design.md.
 func (r *commandRouter) send1(cmd *compassv1internal.SessionsResponse) error {
 	id := cmd.GetRequestId()
 	if id == "" {
 		return errors.New("deliver command requires a request id")
 	}
 	r.mu.Lock()
-	if r.send == nil {
-		r.mu.Unlock()
+	defer r.mu.Unlock()
+	if r.sender == nil {
 		return fmt.Errorf("no live runner sessions stream for deliver %q", id)
 	}
-	send := r.send
-	// Add returns whether it evicted an LRU victim; not actionable — an evicted id
-	// is a long-past successful deliver that will never be looked up for a refusal.
+	// Add returns whether it evicted an LRU victim (a bool, not an error); not
+	// actionable — an evicted id is a long-past successful deliver that will
+	// never be looked up for a refusal.
 	_ = r.deliverRefusals.Add(id, struct{}{})
-	r.mu.Unlock()
-
-	r.sendMu.Lock()
-	err := send(cmd)
-	r.sendMu.Unlock()
-	if err != nil {
-		// The push failed: drop the refusal registration (no command reached the
-		// Runner, so no refusal can arrive for it) and report the failure so the
-		// consumer falls to the sweep. The cursor was never advanced on send, so
-		// there is nothing to roll back.
-		r.mu.Lock()
+	if !r.enqueue(outFrame{cmd: cmd, class: frameDeliver}) {
+		// The queue is full: no command will reach the Runner, so no refusal can
+		// arrive for it — drop the refusal entry. The cursor was never advanced
+		// on send, so there is nothing to roll back; the consumer falls to the
+		// sweep on the returned error.
 		r.deliverRefusals.Remove(id)
-		r.mu.Unlock()
-		return fmt.Errorf("pushing deliver %q to runner: %w", id, err)
+		return fmt.Errorf("runner send queue full for deliver %q", id)
 	}
 	return nil
 }
