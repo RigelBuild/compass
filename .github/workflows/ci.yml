@@ -35,13 +35,14 @@
 # to hide; the nightly sweep re-checks main even on a quiet day. Fast affected
 # path on PRs, exhaustive sweep on everything that reaches main.
 #
-# pgtest — the real-Postgres suites — runs as a step in the same `CI` job,
-# after the moon battery, against a Postgres service container attached to the
-# job. It was once a separate job to keep a Postgres-service outage from redding
-# the hermetic gate; folded in so there is one required check, at the cost that a
-# service-container flake now reds `CI` (a re-run clears it). The suites are
-# build-tagged `pgtest`, so the moon battery's `go test ./...` never compiles
-# them — the folded step below is the only thing that runs them.
+# pgtest — the real-Postgres suites — now runs as its own peer job (below),
+# behind the `CI` rollup, rather than as a step in the moon `gates` job. It was
+# peeled out so a Postgres-service flake or the slow `-race` suite no longer
+# serializes behind the whole moon battery: the two lanes fail independently and
+# a service-container flake reds only `pgtest` (a re-run clears it), not the
+# hermetic gate. The suites are build-tagged `pgtest`, so the moon battery's `go
+# test ./...` never compiles them — the pgtest job is the only thing that runs
+# them. It joins the `CI` rollup's `needs`, so there is still one required check.
 
 name: CI
 
@@ -99,7 +100,7 @@ permissions:
 
 jobs:
   gates:
-    name: Gates (moon + pgtest)
+    name: Gates (moon)
     runs-on: ubuntu-latest
     # Skip only the no-op case of the `edited` trigger above: a PR title/body
     # edit that did NOT move the base. `changes.base` is present on the payload
@@ -130,27 +131,6 @@ jobs:
       # guards against it are elsewhere; nothing about this repo's sockets should
       # be redesigned around one runner's choice of temp root.
       TMPDIR: /tmp
-    services:
-      postgres:
-        # Matches pgtest.go's pinned image: the suites assert on generated-tsvector
-        # and websearch_to_tsquery behavior, which is major-version-sensitive.
-        #
-        # Pinned by DIGEST, not tag. `16-alpine` is mutable, so a repoint would
-        # ship unreviewed container code into the gate and could change the
-        # database behavior the suites assert on — with the tag unchanged, so
-        # nothing in the diff would show it. The digest must stay equal to
-        # pgtest.go's pgImage, or CI and a local run stop exercising the same
-        # Postgres, which is the parity the line above claims.
-        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
-        env:
-          POSTGRES_PASSWORD: compass-test
-          POSTGRES_DB: compass
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -262,79 +242,6 @@ jobs:
         # ci`: affected detection would find nothing to do on a push to main.
         if: github.event_name != 'pull_request'
         run: moon run :ci
-
-
-      - name: Real-Postgres suites
-        working-directory: go
-        env:
-          # pgtest.go's documented CI-service path: with a DSN set the harness
-          # uses this database (giving each test its own schema) instead of
-          # managing a container.
-          COMPASS_TEST_DATABASE_DSN: postgres://postgres:compass-test@127.0.0.1:5432/compass?sslmode=disable
-          CGO_ENABLED: '1'
-          # The harness SKIPS when it can reach no database — correct for a
-          # container-less sandbox, but in CI the service Postgres above is
-          # mandatory, so a skip here would silently pass nothing. Setting this
-          # turns the no-DSN/no-runtime SKIP into a hard failure.
-          COMPASS_REQUIRE_LIVE: '1'
-        # -v so the assertion below can read per-test outcomes. The redirect —
-        # rather than a pipe to tee — is deliberate: a pipeline's exit status is
-        # its LAST command's, so `go test ... | tee` returns tee's 0 and a real
-        # test failure is silently discarded (this job reported green over a
-        # `FAIL` before this was fixed). Capture, replay the log, then exit on
-        # go test's own status. `|| rc=$?` because the step runs under `bash -e`,
-        # which would otherwise abort before the log is ever printed. The
-        # explicit -timeout exceeds the job's slowest suite: on the default 10m a
-        # wedged test panics mid-run and the panic, not the failure, is the story.
-        run: |
-          rc=0
-          go test -tags pgtest -race -v -timeout 15m ./... >/tmp/pgtest.log 2>&1 || rc=$?
-          cat /tmp/pgtest.log
-          exit "$rc"
-
-      - name: Assert the real-Postgres suites ran rather than skipped
-        working-directory: go
-        # The harness SKIPS (never fails) when it can find no database — correct
-        # for a container-less sandbox, and a silent no-op here. This step exists
-        # to run those assertions, so a skip is a failure of its whole purpose and
-        # must be loud.
-        #
-        # Both halves are derived from source rather than hardcoded, because a
-        # guard that drifts out of step with what it guards passes silently:
-        #   - the skip text is read from pgtest.go, so rewording it cannot leave
-        #     this grep matching nothing and reporting success;
-        #   - the package list is the set that actually calls RequireDSN, so the
-        #     count means "the real-Postgres packages ran". Counting every
-        #     `--- PASS` in the module would be inert: the module has hundreds of
-        #     tests that touch no database, so the total stays high even if every
-        #     database suite vanished.
-        run: |
-          skip=$(sed -n 's/.*t\.Skip("\(no COMPASS_TEST_DATABASE_DSN[^"]*\)").*/\1/p' \
-            internal/pgtest/pgtest.go)
-          if [ -z "$skip" ]; then
-            echo "::error::could not read the skip message out of internal/pgtest/pgtest.go — this guard has drifted from the harness and is no longer checking anything"
-            exit 1
-          fi
-          if grep -qF "$skip" /tmp/pgtest.log; then
-            echo "::error::pgtest harness skipped — the service Postgres was not reached, so nothing was asserted"
-            grep -nF "$skip" /tmp/pgtest.log | head
-            exit 1
-          fi
-          pkgs=$({ grep -rl 'pgtest\.RequireDSN' --include='*.go' . || true; } \
-            | sed 's|^\./||' | xargs -r -n1 dirname | sort -u)
-          if [ -z "$pkgs" ]; then
-            echo "::error::no package calls pgtest.RequireDSN — the harness moved and this guard is vacuous"
-            exit 1
-          fi
-          rc=0
-          for pkg in $pkgs; do
-            if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/$pkg[[:space:]]" /tmp/pgtest.log; then
-              echo "::error::real-Postgres package '$pkg' did not report ok — it failed, skipped, or never ran"
-              rc=1
-            fi
-          done
-          echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
-          exit "$rc"
 
       - name: Enable KVM and unprivileged user namespaces
         # Two ephemeral-runner relaxations the microVM boot leg needs, both the
@@ -793,6 +700,169 @@ jobs:
         # the same dependabot config as the other pinned actions), never drift it.
         if: success() || failure()
         uses: appthrust/moon-ci-retrospect@631a1e667f96e8ca893eab69f03e425f7fbfdc2b # v2.1.0
+
+  pgtest:
+    name: pgtest (real-Postgres suites)
+    runs-on: ubuntu-latest
+    # Peeled out of the moon gate so a Postgres-service flake or a slow -race
+    # suite no longer serializes behind the whole battery. Runs unconditionally
+    # on every gate event; a later task gates it on the Go affected-closure so an
+    # unaffected PR pays zero. Same no-op-`edited` guard the other work jobs carry.
+    if: >-
+      github.event_name != 'workflow_dispatch' &&
+      (github.event_name != 'pull_request' ||
+      github.event.action != 'edited' ||
+      github.event.changes.base != null)
+    timeout-minutes: 20
+    env:
+      # The Real-Postgres suites bind AF_UNIX sockets under t.TempDir(); the
+      # runner's default TMPDIR overflows sun_path's 108-byte cap. Same reason as
+      # the moon gate.
+      TMPDIR: /tmp
+    services:
+      postgres:
+        # Matches pgtest.go's pinned image: the suites assert on generated-tsvector
+        # and websearch_to_tsquery behavior, which is major-version-sensitive.
+        #
+        # Pinned by DIGEST, not tag. `16-alpine` is mutable, so a repoint would
+        # ship unreviewed container code into the gate and could change the
+        # database behavior the suites assert on — with the tag unchanged, so
+        # nothing in the diff would show it. The digest must stay equal to
+        # pgtest.go's pgImage, or CI and a local run stop exercising the same
+        # Postgres, which is the parity the line above claims.
+        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        env:
+          POSTGRES_PASSWORD: compass-test
+          POSTGRES_DB: compass
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      # checkout: pgtest runs NO git diff (its guard greps files via `grep -rl`),
+      # so a default shallow checkout suffices — no `fetch-depth: 0` needed.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # The forks' functional CI is `nix build` of their own flakes, and the
+          # whole toolchain — language runtimes AND the nixpkgs tools — is built
+          # from nix below. Flakes are needed for the former; nix-command for both.
+          #
+          # The substituters below are declared here rather than delegated via
+          # `accept-flake-config = true`. That setting makes nix accept the
+          # `nixConfig` of ANY flake it evaluates, and the RigelBuild/devenv
+          # flake the build fetches carries exactly such a block — so a PR could add its own substituter
+          # AND its own trusted public key, and CI would fetch and run binaries
+          # signed by the attacker's key, with signature verification satisfied
+          # by the key the same PR supplied. Naming the two caches the forks
+          # legitimately use keeps that trust in a reviewed file: adding a third
+          # is a change to this workflow, not to a vendored tree.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        # Phase one of the two-phase bootstrap. The language runtimes
+        # (bun/node/moon/go) come from nix, not `setup-*` actions: gate-tools.nix's
+        # `langs` output resolves the identical derivations the dev shell does —
+        # bun/node/moon from tools/toolchain/toolchain-tools.nix, go from the
+        # go-overlay applied to the devenv.lock-pinned nixpkgs — so CI runs the
+        # pinned versions byte-for-byte and the parity gate has a concrete store
+        # path to check each against. `langs` is a closed set, so it needs no
+        # `--arg attrs` (the head defaults it).
+        #
+        # This must precede phase two: `--print-nix-attrs` runs under `bun`, so
+        # bun has to be on PATH before that parse can run.
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          # Fail closed locally rather than leaning on the absence of a
+          # root-level flake.nix: with no installables `nix build` would build a
+          # default package if one existed, so an empty `langs` must error here.
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Real-Postgres suites
+        working-directory: go
+        env:
+          # pgtest.go's documented CI-service path: with a DSN set the harness
+          # uses this database (giving each test its own schema) instead of
+          # managing a container.
+          COMPASS_TEST_DATABASE_DSN: postgres://postgres:compass-test@127.0.0.1:5432/compass?sslmode=disable
+          CGO_ENABLED: '1'
+          # The harness SKIPS when it can reach no database — correct for a
+          # container-less sandbox, but in CI the service Postgres above is
+          # mandatory, so a skip here would silently pass nothing. Setting this
+          # turns the no-DSN/no-runtime SKIP into a hard failure.
+          COMPASS_REQUIRE_LIVE: '1'
+        # -v so the assertion below can read per-test outcomes. The redirect —
+        # rather than a pipe to tee — is deliberate: a pipeline's exit status is
+        # its LAST command's, so `go test ... | tee` returns tee's 0 and a real
+        # test failure is silently discarded (this job reported green over a
+        # `FAIL` before this was fixed). Capture, replay the log, then exit on
+        # go test's own status. `|| rc=$?` because the step runs under `bash -e`,
+        # which would otherwise abort before the log is ever printed. The
+        # explicit -timeout exceeds the job's slowest suite: on the default 10m a
+        # wedged test panics mid-run and the panic, not the failure, is the story.
+        run: |
+          rc=0
+          go test -tags pgtest -race -v -timeout 15m ./... >/tmp/pgtest.log 2>&1 || rc=$?
+          cat /tmp/pgtest.log
+          exit "$rc"
+
+      - name: Assert the real-Postgres suites ran rather than skipped
+        working-directory: go
+        # The harness SKIPS (never fails) when it can find no database — correct
+        # for a container-less sandbox, and a silent no-op here. This step exists
+        # to run those assertions, so a skip is a failure of its whole purpose and
+        # must be loud.
+        #
+        # Both halves are derived from source rather than hardcoded, because a
+        # guard that drifts out of step with what it guards passes silently:
+        #   - the skip text is read from pgtest.go, so rewording it cannot leave
+        #     this grep matching nothing and reporting success;
+        #   - the package list is the set that actually calls RequireDSN, so the
+        #     count means "the real-Postgres packages ran". Counting every
+        #     `--- PASS` in the module would be inert: the module has hundreds of
+        #     tests that touch no database, so the total stays high even if every
+        #     database suite vanished.
+        run: |
+          skip=$(sed -n 's/.*t\.Skip("\(no COMPASS_TEST_DATABASE_DSN[^"]*\)").*/\1/p' \
+            internal/pgtest/pgtest.go)
+          if [ -z "$skip" ]; then
+            echo "::error::could not read the skip message out of internal/pgtest/pgtest.go — this guard has drifted from the harness and is no longer checking anything"
+            exit 1
+          fi
+          if grep -qF "$skip" /tmp/pgtest.log; then
+            echo "::error::pgtest harness skipped — the service Postgres was not reached, so nothing was asserted"
+            grep -nF "$skip" /tmp/pgtest.log | head
+            exit 1
+          fi
+          pkgs=$({ grep -rl 'pgtest\.RequireDSN' --include='*.go' . || true; } \
+            | sed 's|^\./||' | xargs -r -n1 dirname | sort -u)
+          if [ -z "$pkgs" ]; then
+            echo "::error::no package calls pgtest.RequireDSN — the harness moved and this guard is vacuous"
+            exit 1
+          fi
+          rc=0
+          for pkg in $pkgs; do
+            if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/$pkg[[:space:]]" /tmp/pgtest.log; then
+              echo "::error::real-Postgres package '$pkg' did not report ok — it failed, skipped, or never ran"
+              rc=1
+            fi
+          done
+          echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
+          exit "$rc"
 
   dogfood-e2e:
     name: Dogfood e2e (deterministic full-stack tier)
@@ -1269,7 +1339,7 @@ jobs:
     # `!cancelled()` must be parenthesized against the OR group: `&&` binds tighter
     # than `||`, so without the parens the trailing `|| changes.base != null` would
     # detach from the AND.
-    needs: [gates, dogfood-e2e]
+    needs: [gates, dogfood-e2e, pgtest]
     if: >-
       !cancelled() &&
       github.event_name != 'workflow_dispatch' && (
@@ -1285,7 +1355,7 @@ jobs:
         # no-op-`edited` case skips it too. So the only non-success that can
         # actually reach this step is a work-job `failure` or a per-job
         # `cancelled` (a work-job `timeout-minutes`). A `skipped` result cannot
-        # reach here: `gates`/`dogfood-e2e` have no `needs`, so their sole skip
+        # reach here: `gates`/`dogfood-e2e`/`pgtest` have no `needs`, so their sole skip
         # path is the edited-guard — which skips this rollup through the identical
         # guard. The `!= success` check below still covers `skipped` as a
         # belt-and-suspenders backstop, but no `needs` relationship in this
@@ -1294,9 +1364,10 @@ jobs:
         run: |
           gates='${{ needs.gates.result }}'
           dogfood='${{ needs.dogfood-e2e.result }}'
-          echo "gates=$gates dogfood-e2e=$dogfood"
-          if [ "$gates" != "success" ] || [ "$dogfood" != "success" ]; then
-            echo "::error::a required work job did not succeed (gates=$gates, dogfood-e2e=$dogfood)"
+          pgtest='${{ needs.pgtest.result }}'
+          echo "gates=$gates dogfood-e2e=$dogfood pgtest=$pgtest"
+          if [ "$gates" != "success" ] || [ "$dogfood" != "success" ] || [ "$pgtest" != "success" ]; then
+            echo "::error::a required work job did not succeed (gates=$gates, dogfood-e2e=$dogfood, pgtest=$pgtest)"
             exit 1
           fi
           echo "all work jobs succeeded"
