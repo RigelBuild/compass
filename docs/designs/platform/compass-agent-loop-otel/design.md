@@ -3,7 +3,7 @@
 Status: Draft (freezes on merge). OQ1 RULED by Matt 2026-08-23 → (b) two
 independent providers to one collector; the (b) plan below is the one to build.
 Linear: RIG-2508 (Refs RIG-2384; spun out of RIG-2426 OQ4).
-Sibling record: `docs/designs/platform/compass-agent-effect-otel/design.md`
+Sibling record: `docs/designs/repo/compass-agent-effect-otel/design.md`
 (RIG-2426/RIG-2518 — the transport OTel, MERGED; its Decision 3 egress posture
 and Decision 4 runtime containment are inherited constraints here).
 
@@ -12,13 +12,13 @@ and Decision 4 runtime containment are inherited constraints here).
 The compass-agent loop emits zero traces today: the sibling record put OTel on
 the TRANSPORT only, and its OQ4 deferred loop observability on the premise that
 the loop is plain TypeScript needing a from-scratch adoption
-(`compass-agent-effect-otel/design.md:560-571`). That premise is FALSE: the OMP
+(`../../repo/compass-agent-effect-otel/design.md:560-571`). That premise is FALSE: the OMP
 SDK the loop is built on ships FULL native OpenTelemetry GenAI instrumentation
 — `invoke_agent > chat` / `execute_tool` / `handoff` spans per the GenAI
 semantic conventions (`pi-agent-core@16.4.8/src/telemetry.ts:9-17`) — that is
 merely opt-in and never switched on: `AgentLoopConfig.telemetry` undefined ⇒
 "the loop performs zero tracer lookups" (`pi-agent-core@16.4.8/src/types.ts:434-443`),
-and compass-agent's sole `createAgentSession` call (`packages/compass-agent/src/cli.ts:721`)
+and compass-agent's sole `createAgentSession` call (`packages/compass-agent/src/cli.ts:758`)
 passes no `telemetry` and sources no `OTEL_*` (verified: zero `OTEL`/`otel`
 matches in `cli.ts`). So RIG-2508 is an ACTIVATION + COMPOSITION task, not an
 adoption: register a tracer provider in the entrypoint, pass `telemetry` to the
@@ -83,13 +83,13 @@ sessionOptions.telemetry = {}`. compass-agent does NOT run pi-coding-agent's
 `main()` — `cli.ts` is a first-party entrypoint — so it must make these two
 calls itself. Placement inside `main()`:
 
-1. AFTER the env-file merge into `process.env` (`cli.ts:519-523`), so an
+1. AFTER the env-file merge into `process.env` (`cli.ts:547-551`), so an
    `OTEL_EXPORTER_OTLP_ENDPOINT` set in the Runner-materialized env file is
    honored. The key is not `COMPASS_*`-prefixed, so `isReservedEnvKey`
-   (`cli.ts:103-105`) does not drop it — the exact reachability chain the
+   (`cli.ts:104-106`) does not drop it — the exact reachability chain the
    sibling record's O5 pinned with a test
-   (`compass-agent-effect-otel/design.md:478-500`).
-2. BEFORE the `createAgentSession` call (`cli.ts:721`), where the gated
+   (`../../repo/compass-agent-effect-otel/design.md:478-500`).
+2. BEFORE the `createAgentSession` call (`cli.ts:758`), where the gated
    `telemetry: {}` option is added.
 
 **Reuse is available and preferred.** `initTelemetryExport` /
@@ -237,7 +237,7 @@ part of why reuse is preferred.)
   (joined to loop spans on `compass.session.id`), not on the agent. This
   record's agent-side `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`
   hatch stays a debug-only opt-in: the loop's trace *structure* (spans, tool
-  calls, timings, errors, token/cost) is already captured agent-side and is the
+  calls, timings, errors, token usage) is already captured agent-side and is the
   actual per-agent debug surface, so keeping message *content* off the agent by
   default loses no debuggability. Gateway placement and the settings-UI toggle
   are a compass-server + UI surface tracked in RIG-2711.
@@ -277,19 +277,19 @@ is in the AsyncLocalStorage context (`getOtelParent` reads `contextApi.active()`
      `NodeSdk.layer` call unchanged; only the tracer moves to the global.
   2. **But the parentage it buys is fictional — this is why (a) loses.** The
      transport spans worth having run on detached pump/batch/reconnect fibers
-     forked at TRANSPORT CONSTRUCTION (`cli.ts:548`), before any session exists
-     (`cli.ts:721`), on Effect's scheduler OUTSIDE the loop's ALS context — so
+     forked at TRANSPORT CONSTRUCTION (`cli.ts:588`), before any session exists
+     (`cli.ts:758`), on Effect's scheduler OUTSIDE the loop's ALS context — so
      when their spans start there is no active loop span for `getOtelParent` to
      pick up. `…publish.batch` also aggregates frames from MANY loop turns
      (sibling Decision 1), so a single parent is not even well-defined; and
      `…control.connection` has no loop parent at all. The only spans that would
      genuinely nest are the sync `emit()` enqueues, which the sibling record
-     deliberately does NOT span (`compass-agent-effect-otel/design.md:159-162`).
+     deliberately does NOT span (`../../repo/compass-agent-effect-otel/design.md:159-162`).
      (a) therefore delivers a shared exporter and NO real tree — the same
      correlation (b) gets from a shared collector, at the cost of the ordering
      invariant below and a coupling to the frozen transport.
   3. **Ordering coupling.** The global provider must be registered BEFORE
-     transport construction (`cli.ts:548`) or the transport's
+     transport construction (`cli.ts:588`) or the transport's
      `Tracer.layerGlobal` captures the no-op global provider — a startup-order
      invariant that today does not exist.
 - Honest residual for (a): a genuinely unified VIEW of "this loop turn and the
@@ -402,10 +402,10 @@ froze. The global-provider path needs no new surface anywhere.
   the module, so a withdrawn subpath or changed signature fails typecheck/test
   at CI, not in production. That is the honest answer to OQ2.
 - **Placement invariant:** provider registration + `telemetry` gating happen
-  in `main()` AFTER the env-file merge (`cli.ts:519-523`) and BEFORE
-  `createAgentSession` (`cli.ts:721`). NOTE the transport is constructed at
-  `cli.ts:548`, between the two — harmless under (b); **if OQ1 is ruled (a),
-  registration must additionally precede transport construction (`cli.ts:548`)**
+  in `main()` AFTER the env-file merge (`cli.ts:547-551`) and BEFORE
+  `createAgentSession` (`cli.ts:758`). NOTE the transport is constructed at
+  `cli.ts:588`, between the two — harmless under (b); **if OQ1 is ruled (a),
+  registration must additionally precede transport construction (`cli.ts:588`)**
   or the transport's `Tracer.layerGlobal` captures the no-op global provider.
 - Commit identity per repo convention (mintaka author, Matt co-author
   trailer); code comments cite this record by path
@@ -416,7 +416,7 @@ froze. The global-provider path needs no new surface anywhere.
   exist at drafting time — the only ledger is
   `docs/designs/product/DECISIONS.md`, and the sibling record's OQ3 ruled
   "no ledger entry; the record is the ruling" for platform records
-  (`compass-agent-effect-otel/design.md:552-559`). If the platform ledger has
+  (`../../repo/compass-agent-effect-otel/design.md:552-559`). If the platform ledger has
   since been created, the rows to add are: (1) loop OTel activation via
   reused `telemetry-export` in the first-party entrypoint; (2) the OQ1
   composition ruling ((a) or (b) as Matt decides); (3) no-new-deps / no FOD
@@ -433,8 +433,8 @@ before freeze; the plan below is the (b) shape).
 
 ### T1 — Activate: registration + gated `telemetry: {}` in `cli.ts` `main()`
 
-In `main()` (`packages/compass-agent/src/cli.ts:500`), after the env-file
-merge (`:519-523`):
+In `main()` (`packages/compass-agent/src/cli.ts:528`), after the env-file
+merge (`:547-551`):
 
 The order is load-bearing — the loop provider reads `OTEL_SERVICE_NAME` /
 `OTEL_RESOURCE_ATTRIBUTES` at `initTelemetryExport()` time, so the env defaults
@@ -455,7 +455,7 @@ and breaks off-is-bit-identical):
 3. `await initTelemetryExport();` — deep import from
    `@oh-my-pi/pi-coding-agent/telemetry-export`; idempotent
    (`telemetry-export.ts:54-55`), now registers with the env defaults in place.
-4. In the `createAgentSession` options (`:721`): spread
+4. In the `createAgentSession` options (`:758`): spread
    `...(isTelemetryExportEnabled() ? { telemetry: {} } : {})` — key omitted
    entirely when export is off, so the loop keeps its literal-undefined
    zero-lookup path (`types.ts:437-438`).
@@ -465,7 +465,7 @@ Tests (the seam, not OMP's loop — OMP's own suite owns span correctness):
 - Endpoint unset ⇒ `createAgentSession` receives NO `telemetry` key AND
   `process.env` is unmutated (no `OTEL_SERVICE_NAME`/`OTEL_RESOURCE_ATTRIBUTES`
   written) — true bit-identical inertness (F2). Drive `main()` with the
-  existing `MainDeps.createSession` injection seam (`cli.ts:456-494` — tests
+  existing `MainDeps.createSession` injection seam (`cli.ts:484-522` — tests
   already compose `main` over recorded deps) and assert on the captured options
   and on `process.env` deltas.
 - Endpoint set ⇒ the captured options carry `telemetry: {}` and the enabled-path
@@ -495,9 +495,9 @@ Interfaces:
   `isTelemetryExportEnabled(): boolean`
   (`pi-coding-agent@16.5.2/src/telemetry-export.ts:43-45,53-81`);
   `CreateAgentSessionOptions.telemetry?: AgentTelemetryConfig`
-  (`sdk.ts:561-570`); the `MainDeps` test seam (`cli.ts:456-494`).
+  (`sdk.ts:561-570`); the `MainDeps` test seam (`cli.ts:484-522`).
 - Produces: no exported-signature change anywhere; `main(env?, deps?)`
-  unchanged (`cli.ts:500-503`).
+  unchanged (`cli.ts:528-531`).
 
 ### T2 — Deployer contract + env reachability pin
 
@@ -505,7 +505,7 @@ Extend the sibling O5 reachability guarantee to the loop's env set: a test
 asserting `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`,
 `OTEL_RESOURCE_ATTRIBUTES`, and `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`
 set in the Runner-materialized env file survive `readEnvFile` filtering
-(`isReservedEnvKey`, `cli.ts:103-105` — none are `COMPASS_*`/`HOME`) and land
+(`isReservedEnvKey`, `cli.ts:104-106` — none are `COMPASS_*`/`HOME`) and land
 in `process.env` before the registration point. Document the deployer
 contract in the record's directory (`docs/designs/platform/
 compass-agent-loop-otel/deployer-contract.md`): endpoint key(s), service-name
@@ -529,8 +529,8 @@ No Runner/Go change (same ruling as sibling OQ5).
 
 Interfaces:
 
-- Consumes: `readEnvFile`/`envFilePath` (`cli.ts:90-93,107-115`), the merge
-  loop (`cli.ts:519-523`).
+- Consumes: `envFilePath`/`readEnvFile` (`cli.ts:92-94,278-285`), the merge
+  loop (`cli.ts:547-551`).
 - Produces: the reachability test + `deployer-contract.md`; no code-path
   change beyond T1's.
 
@@ -558,7 +558,7 @@ Interfaces:
    gracefully with the span processor omitted, `NodeSdk.js:26-31`) — it is that
    (a) buys almost NOTHING: the parent/child links it would create are
    fictional at every seam that matters (the transport's pump/batch/reconnect
-   fibers are forked at construction, `cli.ts:548`, outside any loop span's ALS
+   fibers are forked at construction, `cli.ts:588`, outside any loop span's ALS
    context, so `getOtelParent` picks up no parent; `publish.batch` aggregates
    many turns into one span with no well-defined single parent). So (a) trades
    a registration-before-construction ordering invariant and a coupling to the
