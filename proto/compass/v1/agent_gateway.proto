@@ -111,13 +111,19 @@ message CommsCallRequest {
     GetRosterRequest roster = 4;
     SetAgentStatusRequest set_status = 5;
     UpdatePinnedBoardRequest pin = 6;
+    CreateChannelRequest create_channel = 7;
+    UpdateChannelMembersRequest update_members = 8;
+    CreateChannelGroupRequest create_channel_group = 9;
   }
 }
 
 // The result of one comms call, correlated by `call_id`. A successful call sets
-// `post`/`list`; an in-band failure (a tool error — non-member channel, bad
-// input) sets `error`, which is NOT a transport teardown. The same message is
-// the `RelayCommsCallResponse.result` payload on the Runner->Server leg.
+// the response arm matching the request's operation (`post`, `list`, `roster`,
+// `set_status`, `pin`, `create_channel`, `update_members`,
+// `create_channel_group`); an in-band failure (a tool error — non-member
+// channel, bad input) sets `error`, which is NOT a transport teardown. The same
+// message is the `RelayCommsCallResponse.result` payload on the Runner->Server
+// leg.
 message CommsCallResult {
   string call_id = 1;
   oneof result {
@@ -127,6 +133,9 @@ message CommsCallResult {
     GetRosterResponse roster = 5;
     SetAgentStatusResponse set_status = 6;
     UpdatePinnedBoardResponse pin = 7;
+    CreateChannelResponse create_channel = 8;
+    UpdateChannelMembersResponse update_members = 9;
+    CreateChannelGroupResponse create_channel_group = 10;
   }
 }
 
@@ -170,6 +179,10 @@ message SpawnPeerRequest {
   reserved 3;
   reserved "initial_prompt";
   string client_request_id = 4;    // whole-chain idempotency key (handler-level join + Provision dedup)
+  // Manager creation (org-management, RIG-2673): set at creation only. The
+  // Server drops the Persona==""/Role=="" hardcodes when these are present.
+  string role = 5;
+  string persona = 6;
 }
 message SpawnPeerResponse {
   string agent_account_id = 1;

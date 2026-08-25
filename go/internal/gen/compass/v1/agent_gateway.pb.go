@@ -65,6 +65,9 @@ type CommsCallRequest struct {
 	//	*CommsCallRequest_Roster
 	//	*CommsCallRequest_SetStatus
 	//	*CommsCallRequest_Pin
+	//	*CommsCallRequest_CreateChannel
+	//	*CommsCallRequest_UpdateMembers
+	//	*CommsCallRequest_CreateChannelGroup
 	Call          isCommsCallRequest_Call `protobuf_oneof:"call"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -159,6 +162,33 @@ func (x *CommsCallRequest) GetPin() *v1.UpdatePinnedBoardRequest {
 	return nil
 }
 
+func (x *CommsCallRequest) GetCreateChannel() *v1.CreateChannelRequest {
+	if x != nil {
+		if x, ok := x.Call.(*CommsCallRequest_CreateChannel); ok {
+			return x.CreateChannel
+		}
+	}
+	return nil
+}
+
+func (x *CommsCallRequest) GetUpdateMembers() *v1.UpdateChannelMembersRequest {
+	if x != nil {
+		if x, ok := x.Call.(*CommsCallRequest_UpdateMembers); ok {
+			return x.UpdateMembers
+		}
+	}
+	return nil
+}
+
+func (x *CommsCallRequest) GetCreateChannelGroup() *v1.CreateChannelGroupRequest {
+	if x != nil {
+		if x, ok := x.Call.(*CommsCallRequest_CreateChannelGroup); ok {
+			return x.CreateChannelGroup
+		}
+	}
+	return nil
+}
+
 type isCommsCallRequest_Call interface {
 	isCommsCallRequest_Call()
 }
@@ -183,6 +213,18 @@ type CommsCallRequest_Pin struct {
 	Pin *v1.UpdatePinnedBoardRequest `protobuf:"bytes,6,opt,name=pin,proto3,oneof"`
 }
 
+type CommsCallRequest_CreateChannel struct {
+	CreateChannel *v1.CreateChannelRequest `protobuf:"bytes,7,opt,name=create_channel,json=createChannel,proto3,oneof"`
+}
+
+type CommsCallRequest_UpdateMembers struct {
+	UpdateMembers *v1.UpdateChannelMembersRequest `protobuf:"bytes,8,opt,name=update_members,json=updateMembers,proto3,oneof"`
+}
+
+type CommsCallRequest_CreateChannelGroup struct {
+	CreateChannelGroup *v1.CreateChannelGroupRequest `protobuf:"bytes,9,opt,name=create_channel_group,json=createChannelGroup,proto3,oneof"`
+}
+
 func (*CommsCallRequest_Post) isCommsCallRequest_Call() {}
 
 func (*CommsCallRequest_List) isCommsCallRequest_Call() {}
@@ -193,10 +235,19 @@ func (*CommsCallRequest_SetStatus) isCommsCallRequest_Call() {}
 
 func (*CommsCallRequest_Pin) isCommsCallRequest_Call() {}
 
+func (*CommsCallRequest_CreateChannel) isCommsCallRequest_Call() {}
+
+func (*CommsCallRequest_UpdateMembers) isCommsCallRequest_Call() {}
+
+func (*CommsCallRequest_CreateChannelGroup) isCommsCallRequest_Call() {}
+
 // The result of one comms call, correlated by `call_id`. A successful call sets
-// `post`/`list`; an in-band failure (a tool error — non-member channel, bad
-// input) sets `error`, which is NOT a transport teardown. The same message is
-// the `RelayCommsCallResponse.result` payload on the Runner->Server leg.
+// the response arm matching the request's operation (`post`, `list`, `roster`,
+// `set_status`, `pin`, `create_channel`, `update_members`,
+// `create_channel_group`); an in-band failure (a tool error — non-member
+// channel, bad input) sets `error`, which is NOT a transport teardown. The same
+// message is the `RelayCommsCallResponse.result` payload on the Runner->Server
+// leg.
 type CommsCallResult struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	CallId string                 `protobuf:"bytes,1,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
@@ -208,6 +259,9 @@ type CommsCallResult struct {
 	//	*CommsCallResult_Roster
 	//	*CommsCallResult_SetStatus
 	//	*CommsCallResult_Pin
+	//	*CommsCallResult_CreateChannel
+	//	*CommsCallResult_UpdateMembers
+	//	*CommsCallResult_CreateChannelGroup
 	Result        isCommsCallResult_Result `protobuf_oneof:"result"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -311,6 +365,33 @@ func (x *CommsCallResult) GetPin() *v1.UpdatePinnedBoardResponse {
 	return nil
 }
 
+func (x *CommsCallResult) GetCreateChannel() *v1.CreateChannelResponse {
+	if x != nil {
+		if x, ok := x.Result.(*CommsCallResult_CreateChannel); ok {
+			return x.CreateChannel
+		}
+	}
+	return nil
+}
+
+func (x *CommsCallResult) GetUpdateMembers() *v1.UpdateChannelMembersResponse {
+	if x != nil {
+		if x, ok := x.Result.(*CommsCallResult_UpdateMembers); ok {
+			return x.UpdateMembers
+		}
+	}
+	return nil
+}
+
+func (x *CommsCallResult) GetCreateChannelGroup() *v1.CreateChannelGroupResponse {
+	if x != nil {
+		if x, ok := x.Result.(*CommsCallResult_CreateChannelGroup); ok {
+			return x.CreateChannelGroup
+		}
+	}
+	return nil
+}
+
 type isCommsCallResult_Result interface {
 	isCommsCallResult_Result()
 }
@@ -339,6 +420,18 @@ type CommsCallResult_Pin struct {
 	Pin *v1.UpdatePinnedBoardResponse `protobuf:"bytes,7,opt,name=pin,proto3,oneof"`
 }
 
+type CommsCallResult_CreateChannel struct {
+	CreateChannel *v1.CreateChannelResponse `protobuf:"bytes,8,opt,name=create_channel,json=createChannel,proto3,oneof"`
+}
+
+type CommsCallResult_UpdateMembers struct {
+	UpdateMembers *v1.UpdateChannelMembersResponse `protobuf:"bytes,9,opt,name=update_members,json=updateMembers,proto3,oneof"`
+}
+
+type CommsCallResult_CreateChannelGroup struct {
+	CreateChannelGroup *v1.CreateChannelGroupResponse `protobuf:"bytes,10,opt,name=create_channel_group,json=createChannelGroup,proto3,oneof"`
+}
+
 func (*CommsCallResult_Post) isCommsCallResult_Result() {}
 
 func (*CommsCallResult_List) isCommsCallResult_Result() {}
@@ -350,6 +443,12 @@ func (*CommsCallResult_Roster) isCommsCallResult_Result() {}
 func (*CommsCallResult_SetStatus) isCommsCallResult_Result() {}
 
 func (*CommsCallResult_Pin) isCommsCallResult_Result() {}
+
+func (*CommsCallResult_CreateChannel) isCommsCallResult_Result() {}
+
+func (*CommsCallResult_UpdateMembers) isCommsCallResult_Result() {}
+
+func (*CommsCallResult_CreateChannelGroup) isCommsCallResult_Result() {}
 
 // An in-band comms-call failure: a tool error the agent renders to the model,
 // never a stream teardown. `code` is a short stable token (e.g. "not_found");
@@ -593,8 +692,12 @@ type SpawnPeerRequest struct {
 	Handle          string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"` // the new agent's account handle (unique)
 	DisplayName     string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
 	ClientRequestId string                 `protobuf:"bytes,4,opt,name=client_request_id,json=clientRequestId,proto3" json:"client_request_id,omitempty"` // whole-chain idempotency key (handler-level join + Provision dedup)
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Manager creation (org-management, RIG-2673): set at creation only. The
+	// Server drops the Persona==""/Role=="" hardcodes when these are present.
+	Role          string `protobuf:"bytes,5,opt,name=role,proto3" json:"role,omitempty"`
+	Persona       string `protobuf:"bytes,6,opt,name=persona,proto3" json:"persona,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SpawnPeerRequest) Reset() {
@@ -644,6 +747,20 @@ func (x *SpawnPeerRequest) GetDisplayName() string {
 func (x *SpawnPeerRequest) GetClientRequestId() string {
 	if x != nil {
 		return x.ClientRequestId
+	}
+	return ""
+}
+
+func (x *SpawnPeerRequest) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *SpawnPeerRequest) GetPersona() string {
+	if x != nil {
+		return x.Persona
 	}
 	return ""
 }
@@ -2863,7 +2980,7 @@ var File_compass_v1_agent_gateway_proto protoreflect.FileDescriptor
 const file_compass_v1_agent_gateway_proto_rawDesc = "" +
 	"\n" +
 	"\x1ecompass/v1/agent_gateway.proto\x12\n" +
-	"compass.v1\x1a\x16compass/v1/comms.proto\x1a\x16compass/v1/agent.proto\x1a\x18compass/v1/compass.proto\x1a\x16compass/v1/forge.proto\"\xd6\x02\n" +
+	"compass.v1\x1a\x16compass/v1/comms.proto\x1a\x16compass/v1/agent.proto\x1a\x18compass/v1/compass.proto\x1a\x16compass/v1/forge.proto\"\xce\x04\n" +
 	"\x10CommsCallRequest\x12\x17\n" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x124\n" +
 	"\x04post\x18\x02 \x01(\v2\x1e.compass.v1.PostMessageRequestH\x00R\x04post\x125\n" +
@@ -2871,8 +2988,11 @@ const file_compass_v1_agent_gateway_proto_rawDesc = "" +
 	"\x06roster\x18\x04 \x01(\v2\x1c.compass.v1.GetRosterRequestH\x00R\x06roster\x12B\n" +
 	"\n" +
 	"set_status\x18\x05 \x01(\v2!.compass.v1.SetAgentStatusRequestH\x00R\tsetStatus\x128\n" +
-	"\x03pin\x18\x06 \x01(\v2$.compass.v1.UpdatePinnedBoardRequestH\x00R\x03pinB\x06\n" +
-	"\x04call\"\x90\x03\n" +
+	"\x03pin\x18\x06 \x01(\v2$.compass.v1.UpdatePinnedBoardRequestH\x00R\x03pin\x12I\n" +
+	"\x0ecreate_channel\x18\a \x01(\v2 .compass.v1.CreateChannelRequestH\x00R\rcreateChannel\x12P\n" +
+	"\x0eupdate_members\x18\b \x01(\v2'.compass.v1.UpdateChannelMembersRequestH\x00R\rupdateMembers\x12Y\n" +
+	"\x14create_channel_group\x18\t \x01(\v2%.compass.v1.CreateChannelGroupRequestH\x00R\x12createChannelGroupB\x06\n" +
+	"\x04call\"\x8b\x05\n" +
 	"\x0fCommsCallResult\x12\x17\n" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x125\n" +
 	"\x04post\x18\x02 \x01(\v2\x1f.compass.v1.PostMessageResponseH\x00R\x04post\x126\n" +
@@ -2881,7 +3001,11 @@ const file_compass_v1_agent_gateway_proto_rawDesc = "" +
 	"\x06roster\x18\x05 \x01(\v2\x1d.compass.v1.GetRosterResponseH\x00R\x06roster\x12C\n" +
 	"\n" +
 	"set_status\x18\x06 \x01(\v2\".compass.v1.SetAgentStatusResponseH\x00R\tsetStatus\x129\n" +
-	"\x03pin\x18\a \x01(\v2%.compass.v1.UpdatePinnedBoardResponseH\x00R\x03pinB\b\n" +
+	"\x03pin\x18\a \x01(\v2%.compass.v1.UpdatePinnedBoardResponseH\x00R\x03pin\x12J\n" +
+	"\x0ecreate_channel\x18\b \x01(\v2!.compass.v1.CreateChannelResponseH\x00R\rcreateChannel\x12Q\n" +
+	"\x0eupdate_members\x18\t \x01(\v2(.compass.v1.UpdateChannelMembersResponseH\x00R\rupdateMembers\x12Z\n" +
+	"\x14create_channel_group\x18\n" +
+	" \x01(\v2&.compass.v1.CreateChannelGroupResponseH\x00R\x12createChannelGroupB\b\n" +
 	"\x06result\">\n" +
 	"\x0eCommsCallError\x12\x12\n" +
 	"\x04code\x18\x01 \x01(\tR\x04code\x12\x18\n" +
@@ -2893,11 +3017,13 @@ const file_compass_v1_agent_gateway_proto_rawDesc = "" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x124\n" +
 	"\x05spawn\x18\x02 \x01(\v2\x1c.compass.v1.SpawnPeerRequestH\x00R\x05spawn\x12:\n" +
 	"\adespawn\x18\x03 \x01(\v2\x1e.compass.v1.DespawnPeerRequestH\x00R\adespawnB\x06\n" +
-	"\x04call\"\x8f\x01\n" +
+	"\x04call\"\xbd\x01\n" +
 	"\x10SpawnPeerRequest\x12\x16\n" +
 	"\x06handle\x18\x01 \x01(\tR\x06handle\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12*\n" +
-	"\x11client_request_id\x18\x04 \x01(\tR\x0fclientRequestIdJ\x04\b\x03\x10\x04R\x0einitial_prompt\"\x83\x01\n" +
+	"\x11client_request_id\x18\x04 \x01(\tR\x0fclientRequestId\x12\x12\n" +
+	"\x04role\x18\x05 \x01(\tR\x04role\x12\x18\n" +
+	"\apersona\x18\x06 \x01(\tR\apersonaJ\x04\b\x03\x10\x04R\x0einitial_prompt\"\x83\x01\n" +
 	"\x11SpawnPeerResponse\x12(\n" +
 	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12%\n" +
 	"\x0econtainer_name\x18\x02 \x01(\tR\rcontainerName\x12\x1d\n" +
@@ -3056,62 +3182,68 @@ func file_compass_v1_agent_gateway_proto_rawDescGZIP() []byte {
 
 var file_compass_v1_agent_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 39)
 var file_compass_v1_agent_gateway_proto_goTypes = []any{
-	(*CommsCallRequest)(nil),              // 0: compass.v1.CommsCallRequest
-	(*CommsCallResult)(nil),               // 1: compass.v1.CommsCallResult
-	(*CommsCallError)(nil),                // 2: compass.v1.CommsCallError
-	(*SetAgentStatusRequest)(nil),         // 3: compass.v1.SetAgentStatusRequest
-	(*SetAgentStatusResponse)(nil),        // 4: compass.v1.SetAgentStatusResponse
-	(*LifecycleCallRequest)(nil),          // 5: compass.v1.LifecycleCallRequest
-	(*SpawnPeerRequest)(nil),              // 6: compass.v1.SpawnPeerRequest
-	(*SpawnPeerResponse)(nil),             // 7: compass.v1.SpawnPeerResponse
-	(*DespawnPeerRequest)(nil),            // 8: compass.v1.DespawnPeerRequest
-	(*DespawnPeerResponse)(nil),           // 9: compass.v1.DespawnPeerResponse
-	(*LifecycleCallResult)(nil),           // 10: compass.v1.LifecycleCallResult
-	(*LifecycleCallError)(nil),            // 11: compass.v1.LifecycleCallError
-	(*ForgeCallRequest)(nil),              // 12: compass.v1.ForgeCallRequest
-	(*ForgeCallResult)(nil),               // 13: compass.v1.ForgeCallResult
-	(*ForgeCallError)(nil),                // 14: compass.v1.ForgeCallError
-	(*CreateIssueRequest)(nil),            // 15: compass.v1.CreateIssueRequest
-	(*CommentOnIssueRequest)(nil),         // 16: compass.v1.CommentOnIssueRequest
-	(*GetIssueRequest)(nil),               // 17: compass.v1.GetIssueRequest
-	(*ListIssuesRequest)(nil),             // 18: compass.v1.ListIssuesRequest
-	(*ListIssuesResponse)(nil),            // 19: compass.v1.ListIssuesResponse
-	(*CreatePullRequestRequest)(nil),      // 20: compass.v1.CreatePullRequestRequest
-	(*CommentOnPullRequestRequest)(nil),   // 21: compass.v1.CommentOnPullRequestRequest
-	(*GetPullRequestRequest)(nil),         // 22: compass.v1.GetPullRequestRequest
-	(*SubmitReviewRequest)(nil),           // 23: compass.v1.SubmitReviewRequest
-	(*ReviewCommentInput)(nil),            // 24: compass.v1.ReviewCommentInput
-	(*SubscribeForgeRequest)(nil),         // 25: compass.v1.SubscribeForgeRequest
-	(*SubscribeForgeResponse)(nil),        // 26: compass.v1.SubscribeForgeResponse
-	(*UnsubscribeForgeRequest)(nil),       // 27: compass.v1.UnsubscribeForgeRequest
-	(*UnsubscribeForgeResponse)(nil),      // 28: compass.v1.UnsubscribeForgeResponse
-	(*BoardCallRequest)(nil),              // 29: compass.v1.BoardCallRequest
-	(*SetIssueStateRequest)(nil),          // 30: compass.v1.SetIssueStateRequest
-	(*SetIssueStateResponse)(nil),         // 31: compass.v1.SetIssueStateResponse
-	(*BoardCallResult)(nil),               // 32: compass.v1.BoardCallResult
-	(*BoardCallError)(nil),                // 33: compass.v1.BoardCallError
-	(*PublishFrameRequest)(nil),           // 34: compass.v1.PublishFrameRequest
-	(*PublishFrameResponse)(nil),          // 35: compass.v1.PublishFrameResponse
-	(*PostConversationFrameRequest)(nil),  // 36: compass.v1.PostConversationFrameRequest
-	(*PostConversationFrameResponse)(nil), // 37: compass.v1.PostConversationFrameResponse
-	(*ControlSubscribeRequest)(nil),       // 38: compass.v1.ControlSubscribeRequest
-	(*v1.PostMessageRequest)(nil),         // 39: compass.v1.PostMessageRequest
-	(*v1.ListMessagesRequest)(nil),        // 40: compass.v1.ListMessagesRequest
-	(*v1.GetRosterRequest)(nil),           // 41: compass.v1.GetRosterRequest
-	(*v1.UpdatePinnedBoardRequest)(nil),   // 42: compass.v1.UpdatePinnedBoardRequest
-	(*v1.PostMessageResponse)(nil),        // 43: compass.v1.PostMessageResponse
-	(*v1.ListMessagesResponse)(nil),       // 44: compass.v1.ListMessagesResponse
-	(*v1.GetRosterResponse)(nil),          // 45: compass.v1.GetRosterResponse
-	(*v1.UpdatePinnedBoardResponse)(nil),  // 46: compass.v1.UpdatePinnedBoardResponse
-	(*v1.ForgeRef)(nil),                   // 47: compass.v1.ForgeRef
-	(*v1.Issue)(nil),                      // 48: compass.v1.Issue
-	(*CommentRef)(nil),                    // 49: compass.v1.CommentRef
-	(*v1.PullRequest)(nil),                // 50: compass.v1.PullRequest
-	(*ReviewRef)(nil),                     // 51: compass.v1.ReviewRef
-	(ForgeArtifactKind)(0),                // 52: compass.v1.ForgeArtifactKind
-	(v1.IssueState)(0),                    // 53: compass.v1.IssueState
-	(*AgentFrame)(nil),                    // 54: compass.v1.AgentFrame
-	(*AgentControl)(nil),                  // 55: compass.v1.AgentControl
+	(*CommsCallRequest)(nil),                // 0: compass.v1.CommsCallRequest
+	(*CommsCallResult)(nil),                 // 1: compass.v1.CommsCallResult
+	(*CommsCallError)(nil),                  // 2: compass.v1.CommsCallError
+	(*SetAgentStatusRequest)(nil),           // 3: compass.v1.SetAgentStatusRequest
+	(*SetAgentStatusResponse)(nil),          // 4: compass.v1.SetAgentStatusResponse
+	(*LifecycleCallRequest)(nil),            // 5: compass.v1.LifecycleCallRequest
+	(*SpawnPeerRequest)(nil),                // 6: compass.v1.SpawnPeerRequest
+	(*SpawnPeerResponse)(nil),               // 7: compass.v1.SpawnPeerResponse
+	(*DespawnPeerRequest)(nil),              // 8: compass.v1.DespawnPeerRequest
+	(*DespawnPeerResponse)(nil),             // 9: compass.v1.DespawnPeerResponse
+	(*LifecycleCallResult)(nil),             // 10: compass.v1.LifecycleCallResult
+	(*LifecycleCallError)(nil),              // 11: compass.v1.LifecycleCallError
+	(*ForgeCallRequest)(nil),                // 12: compass.v1.ForgeCallRequest
+	(*ForgeCallResult)(nil),                 // 13: compass.v1.ForgeCallResult
+	(*ForgeCallError)(nil),                  // 14: compass.v1.ForgeCallError
+	(*CreateIssueRequest)(nil),              // 15: compass.v1.CreateIssueRequest
+	(*CommentOnIssueRequest)(nil),           // 16: compass.v1.CommentOnIssueRequest
+	(*GetIssueRequest)(nil),                 // 17: compass.v1.GetIssueRequest
+	(*ListIssuesRequest)(nil),               // 18: compass.v1.ListIssuesRequest
+	(*ListIssuesResponse)(nil),              // 19: compass.v1.ListIssuesResponse
+	(*CreatePullRequestRequest)(nil),        // 20: compass.v1.CreatePullRequestRequest
+	(*CommentOnPullRequestRequest)(nil),     // 21: compass.v1.CommentOnPullRequestRequest
+	(*GetPullRequestRequest)(nil),           // 22: compass.v1.GetPullRequestRequest
+	(*SubmitReviewRequest)(nil),             // 23: compass.v1.SubmitReviewRequest
+	(*ReviewCommentInput)(nil),              // 24: compass.v1.ReviewCommentInput
+	(*SubscribeForgeRequest)(nil),           // 25: compass.v1.SubscribeForgeRequest
+	(*SubscribeForgeResponse)(nil),          // 26: compass.v1.SubscribeForgeResponse
+	(*UnsubscribeForgeRequest)(nil),         // 27: compass.v1.UnsubscribeForgeRequest
+	(*UnsubscribeForgeResponse)(nil),        // 28: compass.v1.UnsubscribeForgeResponse
+	(*BoardCallRequest)(nil),                // 29: compass.v1.BoardCallRequest
+	(*SetIssueStateRequest)(nil),            // 30: compass.v1.SetIssueStateRequest
+	(*SetIssueStateResponse)(nil),           // 31: compass.v1.SetIssueStateResponse
+	(*BoardCallResult)(nil),                 // 32: compass.v1.BoardCallResult
+	(*BoardCallError)(nil),                  // 33: compass.v1.BoardCallError
+	(*PublishFrameRequest)(nil),             // 34: compass.v1.PublishFrameRequest
+	(*PublishFrameResponse)(nil),            // 35: compass.v1.PublishFrameResponse
+	(*PostConversationFrameRequest)(nil),    // 36: compass.v1.PostConversationFrameRequest
+	(*PostConversationFrameResponse)(nil),   // 37: compass.v1.PostConversationFrameResponse
+	(*ControlSubscribeRequest)(nil),         // 38: compass.v1.ControlSubscribeRequest
+	(*v1.PostMessageRequest)(nil),           // 39: compass.v1.PostMessageRequest
+	(*v1.ListMessagesRequest)(nil),          // 40: compass.v1.ListMessagesRequest
+	(*v1.GetRosterRequest)(nil),             // 41: compass.v1.GetRosterRequest
+	(*v1.UpdatePinnedBoardRequest)(nil),     // 42: compass.v1.UpdatePinnedBoardRequest
+	(*v1.CreateChannelRequest)(nil),         // 43: compass.v1.CreateChannelRequest
+	(*v1.UpdateChannelMembersRequest)(nil),  // 44: compass.v1.UpdateChannelMembersRequest
+	(*v1.CreateChannelGroupRequest)(nil),    // 45: compass.v1.CreateChannelGroupRequest
+	(*v1.PostMessageResponse)(nil),          // 46: compass.v1.PostMessageResponse
+	(*v1.ListMessagesResponse)(nil),         // 47: compass.v1.ListMessagesResponse
+	(*v1.GetRosterResponse)(nil),            // 48: compass.v1.GetRosterResponse
+	(*v1.UpdatePinnedBoardResponse)(nil),    // 49: compass.v1.UpdatePinnedBoardResponse
+	(*v1.CreateChannelResponse)(nil),        // 50: compass.v1.CreateChannelResponse
+	(*v1.UpdateChannelMembersResponse)(nil), // 51: compass.v1.UpdateChannelMembersResponse
+	(*v1.CreateChannelGroupResponse)(nil),   // 52: compass.v1.CreateChannelGroupResponse
+	(*v1.ForgeRef)(nil),                     // 53: compass.v1.ForgeRef
+	(*v1.Issue)(nil),                        // 54: compass.v1.Issue
+	(*CommentRef)(nil),                      // 55: compass.v1.CommentRef
+	(*v1.PullRequest)(nil),                  // 56: compass.v1.PullRequest
+	(*ReviewRef)(nil),                       // 57: compass.v1.ReviewRef
+	(ForgeArtifactKind)(0),                  // 58: compass.v1.ForgeArtifactKind
+	(v1.IssueState)(0),                      // 59: compass.v1.IssueState
+	(*AgentFrame)(nil),                      // 60: compass.v1.AgentFrame
+	(*AgentControl)(nil),                    // 61: compass.v1.AgentControl
 }
 var file_compass_v1_agent_gateway_proto_depIdxs = []int32{
 	39, // 0: compass.v1.CommsCallRequest.post:type_name -> compass.v1.PostMessageRequest
@@ -3119,66 +3251,72 @@ var file_compass_v1_agent_gateway_proto_depIdxs = []int32{
 	41, // 2: compass.v1.CommsCallRequest.roster:type_name -> compass.v1.GetRosterRequest
 	3,  // 3: compass.v1.CommsCallRequest.set_status:type_name -> compass.v1.SetAgentStatusRequest
 	42, // 4: compass.v1.CommsCallRequest.pin:type_name -> compass.v1.UpdatePinnedBoardRequest
-	43, // 5: compass.v1.CommsCallResult.post:type_name -> compass.v1.PostMessageResponse
-	44, // 6: compass.v1.CommsCallResult.list:type_name -> compass.v1.ListMessagesResponse
-	2,  // 7: compass.v1.CommsCallResult.error:type_name -> compass.v1.CommsCallError
-	45, // 8: compass.v1.CommsCallResult.roster:type_name -> compass.v1.GetRosterResponse
-	4,  // 9: compass.v1.CommsCallResult.set_status:type_name -> compass.v1.SetAgentStatusResponse
-	46, // 10: compass.v1.CommsCallResult.pin:type_name -> compass.v1.UpdatePinnedBoardResponse
-	6,  // 11: compass.v1.LifecycleCallRequest.spawn:type_name -> compass.v1.SpawnPeerRequest
-	8,  // 12: compass.v1.LifecycleCallRequest.despawn:type_name -> compass.v1.DespawnPeerRequest
-	7,  // 13: compass.v1.LifecycleCallResult.spawn:type_name -> compass.v1.SpawnPeerResponse
-	9,  // 14: compass.v1.LifecycleCallResult.despawn:type_name -> compass.v1.DespawnPeerResponse
-	11, // 15: compass.v1.LifecycleCallResult.error:type_name -> compass.v1.LifecycleCallError
-	15, // 16: compass.v1.ForgeCallRequest.create_issue:type_name -> compass.v1.CreateIssueRequest
-	16, // 17: compass.v1.ForgeCallRequest.comment_on_issue:type_name -> compass.v1.CommentOnIssueRequest
-	17, // 18: compass.v1.ForgeCallRequest.get_issue:type_name -> compass.v1.GetIssueRequest
-	18, // 19: compass.v1.ForgeCallRequest.list_issues:type_name -> compass.v1.ListIssuesRequest
-	20, // 20: compass.v1.ForgeCallRequest.create_pull_request:type_name -> compass.v1.CreatePullRequestRequest
-	21, // 21: compass.v1.ForgeCallRequest.comment_on_pull_request:type_name -> compass.v1.CommentOnPullRequestRequest
-	22, // 22: compass.v1.ForgeCallRequest.get_pull_request:type_name -> compass.v1.GetPullRequestRequest
-	25, // 23: compass.v1.ForgeCallRequest.subscribe:type_name -> compass.v1.SubscribeForgeRequest
-	27, // 24: compass.v1.ForgeCallRequest.unsubscribe:type_name -> compass.v1.UnsubscribeForgeRequest
-	23, // 25: compass.v1.ForgeCallRequest.submit_review:type_name -> compass.v1.SubmitReviewRequest
-	47, // 26: compass.v1.ForgeCallRequest.forge:type_name -> compass.v1.ForgeRef
-	48, // 27: compass.v1.ForgeCallResult.issue:type_name -> compass.v1.Issue
-	49, // 28: compass.v1.ForgeCallResult.issue_comment:type_name -> compass.v1.CommentRef
-	19, // 29: compass.v1.ForgeCallResult.issues:type_name -> compass.v1.ListIssuesResponse
-	50, // 30: compass.v1.ForgeCallResult.pull_request:type_name -> compass.v1.PullRequest
-	49, // 31: compass.v1.ForgeCallResult.pr_comment:type_name -> compass.v1.CommentRef
-	26, // 32: compass.v1.ForgeCallResult.subscribed:type_name -> compass.v1.SubscribeForgeResponse
-	28, // 33: compass.v1.ForgeCallResult.unsubscribed:type_name -> compass.v1.UnsubscribeForgeResponse
-	14, // 34: compass.v1.ForgeCallResult.error:type_name -> compass.v1.ForgeCallError
-	51, // 35: compass.v1.ForgeCallResult.review:type_name -> compass.v1.ReviewRef
-	48, // 36: compass.v1.ListIssuesResponse.issues:type_name -> compass.v1.Issue
-	24, // 37: compass.v1.SubmitReviewRequest.comments:type_name -> compass.v1.ReviewCommentInput
-	52, // 38: compass.v1.SubscribeForgeRequest.kind:type_name -> compass.v1.ForgeArtifactKind
-	30, // 39: compass.v1.BoardCallRequest.set_issue_state:type_name -> compass.v1.SetIssueStateRequest
-	53, // 40: compass.v1.SetIssueStateRequest.state:type_name -> compass.v1.IssueState
-	48, // 41: compass.v1.SetIssueStateResponse.issue:type_name -> compass.v1.Issue
-	31, // 42: compass.v1.BoardCallResult.set_issue_state:type_name -> compass.v1.SetIssueStateResponse
-	33, // 43: compass.v1.BoardCallResult.error:type_name -> compass.v1.BoardCallError
-	54, // 44: compass.v1.PublishFrameRequest.frame:type_name -> compass.v1.AgentFrame
-	54, // 45: compass.v1.PostConversationFrameRequest.frame:type_name -> compass.v1.AgentFrame
-	0,  // 46: compass.v1.AgentGateway.Comms:input_type -> compass.v1.CommsCallRequest
-	5,  // 47: compass.v1.AgentGateway.Lifecycle:input_type -> compass.v1.LifecycleCallRequest
-	34, // 48: compass.v1.AgentGateway.Publish:input_type -> compass.v1.PublishFrameRequest
-	36, // 49: compass.v1.AgentGateway.PostConversationFrame:input_type -> compass.v1.PostConversationFrameRequest
-	38, // 50: compass.v1.AgentGateway.Control:input_type -> compass.v1.ControlSubscribeRequest
-	12, // 51: compass.v1.AgentGateway.Forge:input_type -> compass.v1.ForgeCallRequest
-	29, // 52: compass.v1.AgentGateway.Board:input_type -> compass.v1.BoardCallRequest
-	1,  // 53: compass.v1.AgentGateway.Comms:output_type -> compass.v1.CommsCallResult
-	10, // 54: compass.v1.AgentGateway.Lifecycle:output_type -> compass.v1.LifecycleCallResult
-	35, // 55: compass.v1.AgentGateway.Publish:output_type -> compass.v1.PublishFrameResponse
-	37, // 56: compass.v1.AgentGateway.PostConversationFrame:output_type -> compass.v1.PostConversationFrameResponse
-	55, // 57: compass.v1.AgentGateway.Control:output_type -> compass.v1.AgentControl
-	13, // 58: compass.v1.AgentGateway.Forge:output_type -> compass.v1.ForgeCallResult
-	32, // 59: compass.v1.AgentGateway.Board:output_type -> compass.v1.BoardCallResult
-	53, // [53:60] is the sub-list for method output_type
-	46, // [46:53] is the sub-list for method input_type
-	46, // [46:46] is the sub-list for extension type_name
-	46, // [46:46] is the sub-list for extension extendee
-	0,  // [0:46] is the sub-list for field type_name
+	43, // 5: compass.v1.CommsCallRequest.create_channel:type_name -> compass.v1.CreateChannelRequest
+	44, // 6: compass.v1.CommsCallRequest.update_members:type_name -> compass.v1.UpdateChannelMembersRequest
+	45, // 7: compass.v1.CommsCallRequest.create_channel_group:type_name -> compass.v1.CreateChannelGroupRequest
+	46, // 8: compass.v1.CommsCallResult.post:type_name -> compass.v1.PostMessageResponse
+	47, // 9: compass.v1.CommsCallResult.list:type_name -> compass.v1.ListMessagesResponse
+	2,  // 10: compass.v1.CommsCallResult.error:type_name -> compass.v1.CommsCallError
+	48, // 11: compass.v1.CommsCallResult.roster:type_name -> compass.v1.GetRosterResponse
+	4,  // 12: compass.v1.CommsCallResult.set_status:type_name -> compass.v1.SetAgentStatusResponse
+	49, // 13: compass.v1.CommsCallResult.pin:type_name -> compass.v1.UpdatePinnedBoardResponse
+	50, // 14: compass.v1.CommsCallResult.create_channel:type_name -> compass.v1.CreateChannelResponse
+	51, // 15: compass.v1.CommsCallResult.update_members:type_name -> compass.v1.UpdateChannelMembersResponse
+	52, // 16: compass.v1.CommsCallResult.create_channel_group:type_name -> compass.v1.CreateChannelGroupResponse
+	6,  // 17: compass.v1.LifecycleCallRequest.spawn:type_name -> compass.v1.SpawnPeerRequest
+	8,  // 18: compass.v1.LifecycleCallRequest.despawn:type_name -> compass.v1.DespawnPeerRequest
+	7,  // 19: compass.v1.LifecycleCallResult.spawn:type_name -> compass.v1.SpawnPeerResponse
+	9,  // 20: compass.v1.LifecycleCallResult.despawn:type_name -> compass.v1.DespawnPeerResponse
+	11, // 21: compass.v1.LifecycleCallResult.error:type_name -> compass.v1.LifecycleCallError
+	15, // 22: compass.v1.ForgeCallRequest.create_issue:type_name -> compass.v1.CreateIssueRequest
+	16, // 23: compass.v1.ForgeCallRequest.comment_on_issue:type_name -> compass.v1.CommentOnIssueRequest
+	17, // 24: compass.v1.ForgeCallRequest.get_issue:type_name -> compass.v1.GetIssueRequest
+	18, // 25: compass.v1.ForgeCallRequest.list_issues:type_name -> compass.v1.ListIssuesRequest
+	20, // 26: compass.v1.ForgeCallRequest.create_pull_request:type_name -> compass.v1.CreatePullRequestRequest
+	21, // 27: compass.v1.ForgeCallRequest.comment_on_pull_request:type_name -> compass.v1.CommentOnPullRequestRequest
+	22, // 28: compass.v1.ForgeCallRequest.get_pull_request:type_name -> compass.v1.GetPullRequestRequest
+	25, // 29: compass.v1.ForgeCallRequest.subscribe:type_name -> compass.v1.SubscribeForgeRequest
+	27, // 30: compass.v1.ForgeCallRequest.unsubscribe:type_name -> compass.v1.UnsubscribeForgeRequest
+	23, // 31: compass.v1.ForgeCallRequest.submit_review:type_name -> compass.v1.SubmitReviewRequest
+	53, // 32: compass.v1.ForgeCallRequest.forge:type_name -> compass.v1.ForgeRef
+	54, // 33: compass.v1.ForgeCallResult.issue:type_name -> compass.v1.Issue
+	55, // 34: compass.v1.ForgeCallResult.issue_comment:type_name -> compass.v1.CommentRef
+	19, // 35: compass.v1.ForgeCallResult.issues:type_name -> compass.v1.ListIssuesResponse
+	56, // 36: compass.v1.ForgeCallResult.pull_request:type_name -> compass.v1.PullRequest
+	55, // 37: compass.v1.ForgeCallResult.pr_comment:type_name -> compass.v1.CommentRef
+	26, // 38: compass.v1.ForgeCallResult.subscribed:type_name -> compass.v1.SubscribeForgeResponse
+	28, // 39: compass.v1.ForgeCallResult.unsubscribed:type_name -> compass.v1.UnsubscribeForgeResponse
+	14, // 40: compass.v1.ForgeCallResult.error:type_name -> compass.v1.ForgeCallError
+	57, // 41: compass.v1.ForgeCallResult.review:type_name -> compass.v1.ReviewRef
+	54, // 42: compass.v1.ListIssuesResponse.issues:type_name -> compass.v1.Issue
+	24, // 43: compass.v1.SubmitReviewRequest.comments:type_name -> compass.v1.ReviewCommentInput
+	58, // 44: compass.v1.SubscribeForgeRequest.kind:type_name -> compass.v1.ForgeArtifactKind
+	30, // 45: compass.v1.BoardCallRequest.set_issue_state:type_name -> compass.v1.SetIssueStateRequest
+	59, // 46: compass.v1.SetIssueStateRequest.state:type_name -> compass.v1.IssueState
+	54, // 47: compass.v1.SetIssueStateResponse.issue:type_name -> compass.v1.Issue
+	31, // 48: compass.v1.BoardCallResult.set_issue_state:type_name -> compass.v1.SetIssueStateResponse
+	33, // 49: compass.v1.BoardCallResult.error:type_name -> compass.v1.BoardCallError
+	60, // 50: compass.v1.PublishFrameRequest.frame:type_name -> compass.v1.AgentFrame
+	60, // 51: compass.v1.PostConversationFrameRequest.frame:type_name -> compass.v1.AgentFrame
+	0,  // 52: compass.v1.AgentGateway.Comms:input_type -> compass.v1.CommsCallRequest
+	5,  // 53: compass.v1.AgentGateway.Lifecycle:input_type -> compass.v1.LifecycleCallRequest
+	34, // 54: compass.v1.AgentGateway.Publish:input_type -> compass.v1.PublishFrameRequest
+	36, // 55: compass.v1.AgentGateway.PostConversationFrame:input_type -> compass.v1.PostConversationFrameRequest
+	38, // 56: compass.v1.AgentGateway.Control:input_type -> compass.v1.ControlSubscribeRequest
+	12, // 57: compass.v1.AgentGateway.Forge:input_type -> compass.v1.ForgeCallRequest
+	29, // 58: compass.v1.AgentGateway.Board:input_type -> compass.v1.BoardCallRequest
+	1,  // 59: compass.v1.AgentGateway.Comms:output_type -> compass.v1.CommsCallResult
+	10, // 60: compass.v1.AgentGateway.Lifecycle:output_type -> compass.v1.LifecycleCallResult
+	35, // 61: compass.v1.AgentGateway.Publish:output_type -> compass.v1.PublishFrameResponse
+	37, // 62: compass.v1.AgentGateway.PostConversationFrame:output_type -> compass.v1.PostConversationFrameResponse
+	61, // 63: compass.v1.AgentGateway.Control:output_type -> compass.v1.AgentControl
+	13, // 64: compass.v1.AgentGateway.Forge:output_type -> compass.v1.ForgeCallResult
+	32, // 65: compass.v1.AgentGateway.Board:output_type -> compass.v1.BoardCallResult
+	59, // [59:66] is the sub-list for method output_type
+	52, // [52:59] is the sub-list for method input_type
+	52, // [52:52] is the sub-list for extension type_name
+	52, // [52:52] is the sub-list for extension extendee
+	0,  // [0:52] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_agent_gateway_proto_init() }
@@ -3194,6 +3332,9 @@ func file_compass_v1_agent_gateway_proto_init() {
 		(*CommsCallRequest_Roster)(nil),
 		(*CommsCallRequest_SetStatus)(nil),
 		(*CommsCallRequest_Pin)(nil),
+		(*CommsCallRequest_CreateChannel)(nil),
+		(*CommsCallRequest_UpdateMembers)(nil),
+		(*CommsCallRequest_CreateChannelGroup)(nil),
 	}
 	file_compass_v1_agent_gateway_proto_msgTypes[1].OneofWrappers = []any{
 		(*CommsCallResult_Post)(nil),
@@ -3202,6 +3343,9 @@ func file_compass_v1_agent_gateway_proto_init() {
 		(*CommsCallResult_Roster)(nil),
 		(*CommsCallResult_SetStatus)(nil),
 		(*CommsCallResult_Pin)(nil),
+		(*CommsCallResult_CreateChannel)(nil),
+		(*CommsCallResult_UpdateMembers)(nil),
+		(*CommsCallResult_CreateChannelGroup)(nil),
 	}
 	file_compass_v1_agent_gateway_proto_msgTypes[5].OneofWrappers = []any{
 		(*LifecycleCallRequest_Spawn)(nil),
