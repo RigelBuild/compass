@@ -152,3 +152,28 @@ func TestPostMessageRejectsAskAnswerBlock(t *testing.T) {
 	}))
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "PostMessage with an ask_answer block")
 }
+
+// TestCommitAgentUpdateRejectsAskAnswerBlock pins the SAME server-ownership
+// enforcement on the agent-update path: a relayed update frame carrying an
+// ask_answer block is refused with CodeInvalidArgument. updateBlocksFromWire
+// rejects before any store access, so this needs only an actor — no seeded row.
+// Mirrors TestPostMessageRejectsAskAnswerBlock so a regression deleting either
+// wire-edge reject arm reddens a test.
+func TestCommitAgentUpdateRejectsAskAnswerBlock(t *testing.T) {
+	h := newStreamHarness(t)
+	ctx := context.Background()
+	owner := mustUser(t, h.store, "owner")
+	agent := mustAgent(t, h.store, owner.ID, "agent")
+
+	_, err := h.svc.CommitAgentUpdate(ctx, agent.ID, updatedFrame("msg-1", []*compassv1.MessageBlock{{
+		Block: &compassv1.MessageBlock_AskAnswer{AskAnswer: &compassv1.AskAnswerBlock{
+			Ask: &compassv1.Ask{
+				AskId:     "ask-1",
+				Answered:  true,
+				Questions: []*compassv1.AskQuestion{{QuestionId: "q1", Question: "?"}},
+			},
+			AskerAccountId: string(agent.ID),
+		}},
+	}}))
+	connectCodeIs(t, err, connect.CodeInvalidArgument, "CommitAgentUpdate with an ask_answer block")
+}
