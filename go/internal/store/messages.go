@@ -250,7 +250,7 @@ func resolveTopicForAppend(ctx context.Context, tx pgx.Tx, channelID string, top
 // committing in the window between subscribe and this read lands on the live
 // tail rather than falling between the snapshot and the tail.
 // The head is instance-global (COALESCE(MAX(seq),0) over all messages), not
-// actor- or channel-scoped: a single instance-wide token is the frozen
+// actor- or channel-scoped: a single instance-wide token is the established
 // contract's ratified shape (design.md:809-816), store-space so it survives
 // restarts and covers the empty-ring bootstrap. The subscribe path sends it
 // before visibility filtering, so a subscriber learns the instance-wide durable

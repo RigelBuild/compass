@@ -10,7 +10,7 @@
 // Because the Runner dials out, the Server has no inbound route to it: every RPC
 // is Runner-initiated. Enroll is the handshake; Sessions is Runner-opened with
 // the Server pushing commands on the response half; PublishEvents is a
-// Runner->Server client-stream. This is the dial-out model the frozen proto
+// Runner->Server client-stream. This is the dial-out model the established proto
 // shape realizes (go-toolchain-default.md:929-934).
 package runner
 

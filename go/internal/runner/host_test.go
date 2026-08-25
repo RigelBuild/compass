@@ -395,7 +395,7 @@ func TestStartUnknownContainerIsSessionUnknown(t *testing.T) {
 }
 
 // Stop is idempotent: stopping an unknown/already-stopped session succeeds
-// (matching the frozen StopAgentSession semantics). A bug that errored on an
+// (matching the established StopAgentSession semantics). A bug that errored on an
 // unknown session would make a retry after a successful stop fail.
 func TestStopUnknownSessionSucceeds(t *testing.T) {
 	specs := &fakeSpecBuilder{spec: liveSpec()}

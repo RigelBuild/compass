@@ -1,5 +1,5 @@
 /**
- * Command registry (RIG-2130 T1) — the runtime backing of the frozen
+ * Command registry (RIG-2130 T1) — the runtime backing of the established
  * `CommandRegistry` contract (commands.ts). Map-backed, last-write-wins: a
  * re-`register` under an existing id replaces the prior command (so a user
  * remap or a later default override is a plain overwrite), and in a dev build a

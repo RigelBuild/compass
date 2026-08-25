@@ -420,7 +420,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		// The load-bearing precedence test, re-hosted onto the App-root spine (RD-3):
 		// a competing `comms.newline`/`comms.send` is seeded into the SAME shared
 		// registry, in the SAME `main` zone; `Shift+Enter → comms.newline
-		// {when:"main"}` is a frozen keymap entry. The board's `board.openAssignedAgent`
+		// {when:"main"}` is an established keymap entry. The board's `board.openAssignedAgent`
 		// is group-relative, so the dispatcher's tier 1 claims it AHEAD of the scoped
 		// comms entry.
 		const { store, container } = mountApp("/");
@@ -577,7 +577,7 @@ describe("Bridge board roving group (T4, DL-220/221)", () => {
 		// the scope gate's `command.scope === zone` is `"main" === null` → false, and
 		// the chord falls out of tier 3 UN-consumed. The button keeps its native
 		// activation and the assigned-agent escape does NOT fire. This is the
-		// production-wiring proof (real App, real chord, real store) that the frozen
+		// production-wiring proof (real App, real chord, real store) that the established
 		// dispatch contract changed deliberately.
 		const viewBefore = store.view();
 		const escapeEvent = press({ key: "Enter", shiftKey: true });

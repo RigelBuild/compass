@@ -5,7 +5,7 @@
 // RunnerHub delivers (runnerhub.LifecycleSink) and exposes them two ways off one
 // source of truth: a point-in-time snapshot for GetAgentStatus, and a live
 // fan-out on SubscribeEvents. The board is a projection — it reflects workstream
-// state, so it reuses the frozen AgentSessionStatus payload (compass.proto:133)
+// state, so it reuses the established AgentSessionStatus payload (compass.proto:133)
 // and adds no proto surface.
 //
 // Recording each transition (not only publishing it onto the bus) lets

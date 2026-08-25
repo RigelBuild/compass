@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Command, CommandId } from "./commands";
 import { createCommandRegistry } from "./registry";
 
-// The runtime registry behind the frozen CommandRegistry contract. These defend
+// The runtime registry behind the established CommandRegistry contract. These defend
 // the two behaviors the contract does not spell out: last-write-wins on a
 // duplicate id, and a dev-only warning when that collision happens (silent in a
 // non-dev build so offline tests and production stay quiet).

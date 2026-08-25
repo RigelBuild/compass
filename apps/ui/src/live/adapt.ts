@@ -364,7 +364,7 @@ function adaptForgeRef(w: WireForgeRef | undefined): DomainForgeRef {
 	};
 }
 
-/** Map a wire AgentAttribution to the domain one. The frozen wire shape carries
+/** Map a wire AgentAttribution to the domain one. The current wire shape carries
  *  only `agentHandle` (DL-094 burned owner_handle/verified as reserved); the
  *  domain's `ownerHandle`/`verified` have no wire source, so they take honest
  *  hedged defaults (`""` / `false` — an unverified claim with no owner) rather

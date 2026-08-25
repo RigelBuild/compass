@@ -475,7 +475,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 }
 
 // Stop tears a session down. An unknown/already-stopped session succeeds
-// (idempotent, matching the frozen StopAgentSession semantics).
+// (idempotent, matching the established StopAgentSession semantics).
 func (h *agentHost) Stop(_ context.Context, sessionID string) error {
 	// Resolve session→container under h.mu first, release, then take the
 	// container lock and re-check — the resolve-then-lock protocol (the lock key

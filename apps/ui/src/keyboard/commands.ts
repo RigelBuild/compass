@@ -114,7 +114,7 @@ export interface CommandRegistry {
 	register(cmd: Command): void;
 	get(id: CommandId): Command | undefined;
 	all(): Command[];
-	/** Remove a command by id; an unknown id is a no-op. Additive to the frozen
+	/** Remove a command by id; an unknown id is a no-op. Additive to the established
 	 *  D5 contract so a surface can retract the commands it registered when it
 	 *  unmounts (the shared registry is app-lifetime — see keyboard/spine.ts). */
 	unregister(id: CommandId): void;
