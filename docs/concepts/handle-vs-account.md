@@ -21,6 +21,11 @@ So `mintaka` is **not** an agent handle. It is the billing account that all the
 handles share. A hundred agents can be running under a hundred handles and still
 present to GitHub and Linear as the single `mintaka` account.
 
+At the concept level the shared account is `mintaka`; the literal on-forge
+identities differ by surface — the git author is `mintaka <mintaka@rigel.build>`,
+the GitHub login is `rigel-mintaka`, and the App workflow commits as the App
+bot. They are all the one shared account wearing each forge's native identity.
+
 ## Why one shared account
 
 A per-agent forge account would mean a per-agent paid seat (and a per-agent

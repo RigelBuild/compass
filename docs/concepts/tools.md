@@ -6,8 +6,8 @@ also carry. Each tool carries its own description at the call site; this doc is
 the higher-level map: what the set covers and the general flow of using it.
 
 > **Keep this current as tools land.** The comms and lifecycle tools below have
-> shipped and are documented here. The org-management tools (RIG-2673), the
-> forge tools (RIG-2672), and the subscription tools are landing; as each lands,
+> shipped and are documented here. The org-management tools, the forge tools,
+> and the subscription tools are landing; as each lands,
 > add it to the right group below and note its flow. A tool that has shipped but
 > is not listed here is a documentation gap to close.
 
