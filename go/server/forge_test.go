@@ -21,6 +21,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -51,13 +52,64 @@ type fakeForgeStore struct {
 	recorded []store.AuthoredArtifact
 	getErr   error // if set, GetAccount returns it verbatim
 	recErr   error // if set, RecordAuthoredArtifact returns it verbatim
+
+	// DL-053 subscriptions: subs is keyed by subscription id; subKey indexes the
+	// UNIQUE (agent, coordinate) to the existing id so a repeat subscribe is
+	// idempotent, exactly as the real store's ON CONFLICT does. subErr / delErr
+	// let a test force a store fault on either path.
+	subs    map[string]store.AgentForgeSubscription
+	subKey  map[string]string // agent|provider|host|repo|kind|number -> id
+	nextSub int
+	subErr  error
+	delErr  error
 }
 
 func newFakeForgeStore() *fakeForgeStore {
 	return &fakeForgeStore{
 		accounts: make(map[store.AccountID]store.Account),
 		memo:     make(map[string]store.AuthoredArtifact),
+		subs:     make(map[string]store.AgentForgeSubscription),
+		subKey:   make(map[string]string),
 	}
+}
+
+// subCoordKey builds the UNIQUE (agent, coordinate) index key the real store's
+// ON CONFLICT constrains on, so a repeat subscribe re-lands on the same id.
+func subCoordKey(agent store.AccountID, sub store.AgentForgeSubscription) string {
+	return fmt.Sprintf("%s|%d|%s|%s|%d|%d", agent, sub.Provider, sub.Host, sub.Repo, sub.Kind, sub.Number)
+}
+
+// EnsureAgentForgeSubscription mirrors the real store's idempotent upsert: a
+// repeat (agent, coordinate) returns the stored id; a new coordinate mints one.
+func (f *fakeForgeStore) EnsureAgentForgeSubscription(_ context.Context, sub store.AgentForgeSubscription) (string, error) {
+	if f.subErr != nil {
+		return "", f.subErr
+	}
+	key := subCoordKey(sub.AgentAccountID, sub)
+	if id, ok := f.subKey[key]; ok {
+		return id, nil
+	}
+	f.nextSub++
+	id := fmt.Sprintf("sub-%d", f.nextSub)
+	sub.ID = id
+	f.subs[id] = sub
+	f.subKey[key] = id
+	return id, nil
+}
+
+// DeleteAgentForgeSubscription mirrors the real store's id+agent-scoped delete:
+// an unknown id, or one owned by another agent, is ErrNotFound.
+func (f *fakeForgeStore) DeleteAgentForgeSubscription(_ context.Context, agent store.AccountID, subscriptionID string) error {
+	if f.delErr != nil {
+		return f.delErr
+	}
+	sub, ok := f.subs[subscriptionID]
+	if !ok || sub.AgentAccountID != agent {
+		return store.ErrNotFound
+	}
+	delete(f.subs, subscriptionID)
+	delete(f.subKey, subCoordKey(agent, sub))
+	return nil
 }
 
 func (f *fakeForgeStore) GetAccount(_ context.Context, id store.AccountID) (store.Account, error) {
@@ -736,6 +788,150 @@ func TestForgeRecordFailureAfterProviderSuccessIsInternal(t *testing.T) {
 	}
 	if len(st.recorded) != 0 {
 		t.Fatalf("recorded rows = %d, want 0 (record failed)", len(st.recorded))
+	}
+}
+
+// --- tests: DL-053 subscribe/unsubscribe arms (RIG-2732 Piece 1) -------------
+
+// subscribeCall builds a Subscribe request against the default GitHub coordinate.
+func subscribeCall(kind compassv1internal.ForgeArtifactKind, number uint64) *compassv1internal.ForgeCallRequest {
+	return &compassv1internal.ForgeCallRequest{
+		Call: &compassv1internal.ForgeCallRequest_Subscribe{Subscribe: &compassv1internal.SubscribeForgeRequest{
+			Repo: testRepo, Kind: kind, Number: number,
+		}},
+	}
+}
+
+// unsubscribeCall builds an Unsubscribe request by subscription id.
+func unsubscribeCall(subscriptionID string) *compassv1internal.ForgeCallRequest {
+	return &compassv1internal.ForgeCallRequest{
+		Call: &compassv1internal.ForgeCallRequest_Unsubscribe{Unsubscribe: &compassv1internal.UnsubscribeForgeRequest{
+			SubscriptionId: subscriptionID,
+		}},
+	}
+}
+
+// TestForgeSubscribeReturnsIdAndIsIdempotent pins the subscribe arm: a subscribe
+// returns a non-empty subscription id, and a REPEAT subscribe to the same
+// artifact returns the SAME id (the store upsert dedups on the UNIQUE
+// coordinate) — not a fresh row, not an error.
+func TestForgeSubscribeReturnsIdAndIsIdempotent(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	reviewer := forge.NewFakeProvider("gh-reviewer")
+	svc, st := newForgeServiceForTest(t, author, reviewer)
+
+	res := svc.ExecuteForgeCallAsAccountMust(t, subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, 42))
+	sub := res.GetSubscribed()
+	if sub == nil || sub.GetSubscriptionId() == "" {
+		t.Fatalf("subscribe result = %v, want a subscription id", res.GetResult())
+	}
+	first := sub.GetSubscriptionId()
+
+	res2 := svc.ExecuteForgeCallAsAccountMust(t, subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, 42))
+	if got := res2.GetSubscribed().GetSubscriptionId(); got != first {
+		t.Fatalf("repeat subscribe id = %q, want %q (idempotent)", got, first)
+	}
+	if len(st.subs) != 1 {
+		t.Fatalf("subscription rows = %d, want 1 (no duplicate)", len(st.subs))
+	}
+}
+
+// TestForgeSubscribeUnspecifiedKindIsInvalidArgument pins the kind guard: a
+// subscribe with an UNSPECIFIED kind is an in-band invalid_argument with no row
+// written — the arm rejects the zero kind before the store.
+func TestForgeSubscribeUnspecifiedKindIsInvalidArgument(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	reviewer := forge.NewFakeProvider("gh-reviewer")
+	svc, st := newForgeServiceForTest(t, author, reviewer)
+
+	res := svc.ExecuteForgeCallAsAccountMust(t, subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_UNSPECIFIED, 1))
+	if fe := res.GetError(); fe == nil || fe.GetCode() != "invalid_argument" {
+		t.Fatalf("unspecified kind error = %v, want invalid_argument", res.GetError())
+	}
+	if len(st.subs) != 0 {
+		t.Fatalf("subscription rows = %d, want 0", len(st.subs))
+	}
+}
+
+// TestForgeSubscribeEmptyRepoIsInvalidArgument pins that an empty repo is an
+// in-band invalid_argument before any store touch (resolveTarget guard).
+func TestForgeSubscribeEmptyRepoIsInvalidArgument(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	reviewer := forge.NewFakeProvider("gh-reviewer")
+	svc, st := newForgeServiceForTest(t, author, reviewer)
+
+	call := &compassv1internal.ForgeCallRequest{
+		Call: &compassv1internal.ForgeCallRequest_Subscribe{Subscribe: &compassv1internal.SubscribeForgeRequest{
+			Repo: "", Kind: compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, Number: 1,
+		}},
+	}
+	res := svc.ExecuteForgeCallAsAccountMust(t, call)
+	if fe := res.GetError(); fe == nil || fe.GetCode() != "invalid_argument" {
+		t.Fatalf("empty repo error = %v, want invalid_argument", res.GetError())
+	}
+	if len(st.subs) != 0 {
+		t.Fatalf("subscription rows = %d, want 0", len(st.subs))
+	}
+}
+
+// TestForgeUnsubscribeSucceedsThenNotFound pins the unsubscribe arm: an existing
+// subscription id unsubscribes to the Unsubscribed arm and removes the row; a
+// repeat (now-unknown) id is an in-band not_found — never a Connect teardown.
+func TestForgeUnsubscribeSucceedsThenNotFound(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	reviewer := forge.NewFakeProvider("gh-reviewer")
+	svc, st := newForgeServiceForTest(t, author, reviewer)
+
+	sub := svc.ExecuteForgeCallAsAccountMust(t, subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_PULL_REQUEST, 7)).GetSubscribed()
+	id := sub.GetSubscriptionId()
+
+	res := svc.ExecuteForgeCallAsAccountMust(t, unsubscribeCall(id))
+	if res.GetUnsubscribed() == nil {
+		t.Fatalf("unsubscribe result = %v, want Unsubscribed", res.GetResult())
+	}
+	if len(st.subs) != 0 {
+		t.Fatalf("subscription rows = %d, want 0 after unsubscribe", len(st.subs))
+	}
+
+	again := svc.ExecuteForgeCallAsAccountMust(t, unsubscribeCall(id))
+	if fe := again.GetError(); fe == nil || fe.GetCode() != "not_found" {
+		t.Fatalf("repeat unsubscribe error = %v, want not_found", again.GetError())
+	}
+}
+
+// TestForgeUnsubscribeBogusIdIsInbandNotFound pins that an unknown subscription
+// id is an in-band not_found ForgeCallError, NOT a Connect error.
+func TestForgeUnsubscribeBogusIdIsInbandNotFound(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	reviewer := forge.NewFakeProvider("gh-reviewer")
+	svc, _ := newForgeServiceForTest(t, author, reviewer)
+
+	res := svc.ExecuteForgeCallAsAccountMust(t, unsubscribeCall("no-such-sub"))
+	if fe := res.GetError(); fe == nil || fe.GetCode() != "not_found" {
+		t.Fatalf("bogus unsubscribe error = %v, want not_found", res.GetError())
+	}
+}
+
+// TestForgeSubscribeUnsubscribeStoreFaultIsInbandInternal pins the store-fault
+// rail: a generic store failure on either the subscribe or unsubscribe path
+// renders as an in-band ForgeCallError (code "internal", via storeForgeError),
+// never a Connect stream teardown — the same tool-failure-is-not-a-teardown
+// contract the read/write arms hold.
+func TestForgeSubscribeUnsubscribeStoreFaultIsInbandInternal(t *testing.T) {
+	author := forge.NewFakeProvider("gh-author")
+	reviewer := forge.NewFakeProvider("gh-reviewer")
+	svc, st := newForgeServiceForTest(t, author, reviewer)
+
+	st.subErr = errors.New("boom: subscribe store fault")
+	subRes := svc.ExecuteForgeCallAsAccountMust(t, subscribeCall(compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE, 42))
+	if fe := subRes.GetError(); fe == nil || fe.GetCode() != "internal" {
+		t.Fatalf("subscribe store-fault error = %v, want in-band internal", subRes.GetError())
+	}
+
+	st.delErr = errors.New("boom: unsubscribe store fault")
+	delRes := svc.ExecuteForgeCallAsAccountMust(t, unsubscribeCall("any-id"))
+	if fe := delRes.GetError(); fe == nil || fe.GetCode() != "internal" {
+		t.Fatalf("unsubscribe store-fault error = %v, want in-band internal", delRes.GetError())
 	}
 }
 
