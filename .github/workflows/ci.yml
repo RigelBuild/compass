@@ -243,153 +243,6 @@ jobs:
         if: github.event_name != 'pull_request'
         run: moon run :ci
 
-      - name: Enable KVM and unprivileged user namespaces
-        # Two ephemeral-runner relaxations the microVM boot leg needs, both the
-        # §E-D2 throwaway-runner class (a GHA runner is a single-tenant throwaway,
-        # so a looser device/kernel posture that the dev box would never take is
-        # harmless here). sudo is the runner's passwordless sudo; the test
-        # processes themselves run rootless as the invoking uid.
-        #
-        # 1. /dev/kvm openable. The tagged microVM suites open /dev/kvm; on a
-        #    fresh ubuntu-latest runner the device is root:kvm 0660, so the
-        #    invoking uid cannot open it. Write the udev group-perms rule the
-        #    ecosystem standardizes on — the same rule the Determinate
-        #    nix-installer-action installs — then reload+trigger so it applies to
-        #    the live node. We install Nix via cachix/install-nix-action (above),
-        #    not the Determinate action, so we write the rule ourselves. MODE
-        #    "0666" (world-RW) is deliberately looser than the dev box's kvm-group
-        #    0660: on this throwaway runner a world-RW /dev/kvm is harmless, so we
-        #    skip the group-membership dance and just make it openable.
-        #
-        # 2. Unprivileged user namespaces allowed. ubuntu-latest is now Ubuntu
-        #    24.04, which ships AppArmor's apparmor_restrict_unprivileged_userns=1
-        #    — an unconfined non-root process can no longer create a user
-        #    namespace. passt AND virtiofsd both self-sandbox by detaching into
-        #    their own userns (passt's --sandbox has no opt-out; virtiofsd's
-        #    --sandbox=namespace is what the record §T4 specifies), so under the
-        #    restriction they die at startup with "Failed to detach isolating
-        #    namespaces: Operation not permitted" and the guest never boots. Set
-        #    the sysctl to 0 to lift the restriction for this boot. This is a
-        #    kernel-hardening knob, not a capability grant: the daemons still run
-        #    rootless as the invoking uid with no added privilege — the record's
-        #    "only privilege is the kvm group, no CAP_NET_ADMIN, no rootful
-        #    helper" constraint holds. The setting reverts on the runner's
-        #    teardown (it is a throwaway VM); nothing persists.
-        #
-        # Assume-KVM required-leg posture (§E-D2): the microVM step below sets
-        # COMPASS_REQUIRE_MICROVM=1, so a run where GitHub withholds /dev/kvm reds
-        # rather than silently skipping — cleared by a re-run.
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
-
-      - name: microVM suites
-        working-directory: go
-        env:
-          # Turns microvmtest.Require's no-KVM SKIP into a hard failure: the KVM
-          # leg is mandatory here, so a skip would silently pass the suite without
-          # exercising anything (the pgtest/COMPASS_REQUIRE_LIVE posture,
-          # go/internal/microvmtest/microvmtest.go).
-          COMPASS_REQUIRE_MICROVM: '1'
-          CGO_ENABLED: '1'
-        # Realize E3's guest-image attrs and put the E1 VMM binaries on PATH, then
-        # run the tagged suite. Both nix builds substitute their heavy inputs from
-        # the caches configured above (extra-substituters); the guest kernel is an
-        # unmodified pinned nixpkgs kernel, substituted free from cache.nixos.org.
-        #
-        # working-directory is `go`, so the guest-image build uses an absolute
-        # -f $GITHUB_WORKSPACE/guest-image/default.nix rather than a brittle
-        # ../guest-image relative path.
-        #
-        # The VMM stack (cloud-hypervisor, virtiofsd, passt) is Linux-only and so
-        # lives OUTSIDE devenv.nix's parsed `packages` literal — the parity gate
-        # does NOT install it. It is realized out-of-band here from its own pinned
-        # helper, the chromium-e2e pattern above: read each out-path's bin/ into
-        # $GITHUB_PATH so the test processes resolve them (via exec.LookPath in
-        # microvmtest.Require). A $GITHUB_PATH append only affects SUBSEQUENT
-        # steps, so this must precede the `go test` below — hence a separate step
-        # would work too, but keeping the realize+run together documents the pair.
-        #
-        # -v so the guard below can read per-package outcomes. The redirect (not a
-        # pipe to tee) is deliberate: a pipeline's exit status is its LAST
-        # command's, so `go test ... | tee` returns tee's 0 and a real failure is
-        # silently discarded. Capture, replay the log, then exit on go test's own
-        # status. `|| rc=$?` because the step runs under `bash -e`, which would
-        # otherwise abort before the log is ever printed.
-        run: |
-          guest=$(nix build --no-link --print-out-paths \
-            -f "$GITHUB_WORKSPACE/guest-image/default.nix" \
-            compass-guest-kernel compass-guest-rootfs compass-guest-initrd)
-          kernel=$(echo "$guest" | sed -n '1p')
-          rootfs=$(echo "$guest" | sed -n '2p')
-          initrd=$(echo "$guest" | sed -n '3p')
-          {
-            echo "COMPASS_TEST_GUEST_KERNEL=$kernel/bzImage"
-            echo "COMPASS_TEST_GUEST_ROOTFS=$rootfs"
-            echo "COMPASS_TEST_GUEST_INITRD=$initrd"
-          } >>"$GITHUB_ENV"
-          export COMPASS_TEST_GUEST_KERNEL="$kernel/bzImage"
-          export COMPASS_TEST_GUEST_ROOTFS="$rootfs"
-          export COMPASS_TEST_GUEST_INITRD="$initrd"
-
-          for out in $(nix build --no-link --print-out-paths \
-            -f "$GITHUB_WORKSPACE/tools/toolchain/microvm-vmm-env.nix" \
-            cloud-hypervisor virtiofsd passt); do
-            echo "$out/bin" >>"$GITHUB_PATH"
-            PATH="$out/bin:$PATH"
-          done
-          export PATH
-
-          rc=0
-          go test -tags microvm -race -v -timeout 15m ./... >/tmp/microvm.log 2>&1 || rc=$?
-          cat /tmp/microvm.log
-          exit "$rc"
-
-      - name: Assert the microVM suites ran rather than skipped
-        working-directory: go
-        # microvmtest.Require SKIPS (never fails) when /dev/kvm is not openable —
-        # correct for a KVM-less box, and a silent no-op here. This step exists to
-        # run those assertions KVM-backed, so a skip is a failure of its whole
-        # purpose and must be loud (the pgtest guard's exact shape).
-        #
-        # Both halves are derived from source rather than hardcoded, because a
-        # guard that drifts out of step with what it guards passes silently:
-        #   - the skip text is read from microvmtest.go, so rewording it cannot
-        #     leave this grep matching nothing and reporting success;
-        #   - the package list is the set that actually calls microvmtest.Require,
-        #     so the count means "the microVM packages ran". grep reads file text
-        #     regardless of build tags, so it finds the tagged canary too.
-        run: |
-          skip=$(sed -n 's/.*t\.Skip("\(\/dev\/kvm is not openable[^"]*\)").*/\1/p' \
-            internal/microvmtest/microvmtest.go)
-          if [ -z "$skip" ]; then
-            echo "::error::could not read the skip message out of internal/microvmtest/microvmtest.go — this guard has drifted from the harness and is no longer checking anything"
-            exit 1
-          fi
-          if grep -qF "$skip" /tmp/microvm.log; then
-            echo "::error::microvmtest harness skipped — /dev/kvm was not openable, so nothing was asserted"
-            grep -nF "$skip" /tmp/microvm.log | head
-            exit 1
-          fi
-          pkgs=$({ grep -rl 'microvmtest\.Require' --include='*.go' . || true; } \
-            | sed 's|^\./||' | xargs -r -n1 dirname | sort -u)
-          if [ -z "$pkgs" ]; then
-            echo "::error::no package calls microvmtest.Require — the harness moved and this guard is vacuous"
-            exit 1
-          fi
-          rc=0
-          for pkg in $pkgs; do
-            if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/$pkg[[:space:]]" /tmp/microvm.log; then
-              echo "::error::microVM package '$pkg' did not report ok — it failed, skipped, or never ran"
-              rc=1
-            fi
-          done
-          echo "microvm: checked $(printf '%s\n' "$pkgs" | wc -l) KVM-backed packages"
-          exit "$rc"
-
       - name: Detect whether this PR touches the forge contract surface
         id: forge_affected
         working-directory: go
@@ -864,6 +717,228 @@ jobs:
             fi
           done
           echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
+          exit "$rc"
+
+  microvm:
+    name: microvm (KVM boot suite)
+    runs-on: ubuntu-latest
+    # Peeled out of the moon gate so the KVM boot suite runs as its own lane, in
+    # parallel with the moon battery and the other peer jobs, behind the CI
+    # rollup. Runs unconditionally on every gate event; a later task gates it on
+    # the microVM affected-closure so an unaffected PR pays zero. No privileged
+    # container — the boot leg runs rootless on a bare runner with the udev +
+    # sysctl relaxations below (design T2 / §E-D2). Same no-op-`edited` guard the
+    # other work jobs carry.
+    if: >-
+      github.event_name != 'workflow_dispatch' &&
+      (github.event_name != 'pull_request' ||
+      github.event.action != 'edited' ||
+      github.event.changes.base != null)
+    timeout-minutes: 30
+    env:
+      # microVM suites bind AF_UNIX sockets under t.TempDir(); the runner's
+      # default TMPDIR overflows sun_path's 108-byte cap. Same reason as the moon
+      # gate and the pgtest job.
+      TMPDIR: /tmp
+    steps:
+      # microVM runs no git-diff, so a default shallow checkout suffices.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # The forks' functional CI is `nix build` of their own flakes, and the
+          # whole toolchain — language runtimes AND the nixpkgs tools — is built
+          # from nix below. Flakes are needed for the former; nix-command for both.
+          #
+          # The substituters below are declared here rather than delegated via
+          # `accept-flake-config = true`. That setting makes nix accept the
+          # `nixConfig` of ANY flake it evaluates, and the RigelBuild/devenv
+          # flake the build fetches carries exactly such a block — so a PR could add its own substituter
+          # AND its own trusted public key, and CI would fetch and run binaries
+          # signed by the attacker's key, with signature verification satisfied
+          # by the key the same PR supplied. Naming the two caches the forks
+          # legitimately use keeps that trust in a reviewed file: adding a third
+          # is a change to this workflow, not to a vendored tree.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        # The nix-pinned language toolchains (bun/node/moon/go) — microvm needs
+        # only `go` on PATH, but the whole `langs` set is a closed group built in
+        # one nix build. They come from nix, not `setup-*` actions: gate-tools.nix's
+        # `langs` output resolves the identical derivations the dev shell does —
+        # bun/node/moon from tools/toolchain/toolchain-tools.nix, go from the
+        # go-overlay applied to the devenv.lock-pinned nixpkgs — so CI runs the
+        # pinned versions byte-for-byte and the parity gate has a concrete store
+        # path to check each against. `langs` is a closed set, so it needs no
+        # `--arg attrs` (the head defaults it).
+        #
+        # Unlike the moon gate, this job carries no phase-two nixpkgs-tools step:
+        # the microVM suite runs only `go test` plus its own out-of-band nix
+        # realizes (the guest image and the VMM env, both IN the step below), so
+        # the language toolchains are the whole bootstrap.
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          # Fail closed locally rather than leaning on the absence of a
+          # root-level flake.nix: with no installables `nix build` would build a
+          # default package if one existed, so an empty `langs` must error here.
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Enable KVM and unprivileged user namespaces
+        # Two ephemeral-runner relaxations the microVM boot leg needs, both the
+        # §E-D2 throwaway-runner class (a GHA runner is a single-tenant throwaway,
+        # so a looser device/kernel posture that the dev box would never take is
+        # harmless here). sudo is the runner's passwordless sudo; the test
+        # processes themselves run rootless as the invoking uid.
+        #
+        # 1. /dev/kvm openable. The tagged microVM suites open /dev/kvm; on a
+        #    fresh ubuntu-latest runner the device is root:kvm 0660, so the
+        #    invoking uid cannot open it. Write the udev group-perms rule the
+        #    ecosystem standardizes on — the same rule the Determinate
+        #    nix-installer-action installs — then reload+trigger so it applies to
+        #    the live node. We install Nix via cachix/install-nix-action (above),
+        #    not the Determinate action, so we write the rule ourselves. MODE
+        #    "0666" (world-RW) is deliberately looser than the dev box's kvm-group
+        #    0660: on this throwaway runner a world-RW /dev/kvm is harmless, so we
+        #    skip the group-membership dance and just make it openable.
+        #
+        # 2. Unprivileged user namespaces allowed. ubuntu-latest is now Ubuntu
+        #    24.04, which ships AppArmor's apparmor_restrict_unprivileged_userns=1
+        #    — an unconfined non-root process can no longer create a user
+        #    namespace. passt AND virtiofsd both self-sandbox by detaching into
+        #    their own userns (passt's --sandbox has no opt-out; virtiofsd's
+        #    --sandbox=namespace is what the record §T4 specifies), so under the
+        #    restriction they die at startup with "Failed to detach isolating
+        #    namespaces: Operation not permitted" and the guest never boots. Set
+        #    the sysctl to 0 to lift the restriction for this boot. This is a
+        #    kernel-hardening knob, not a capability grant: the daemons still run
+        #    rootless as the invoking uid with no added privilege — the record's
+        #    "only privilege is the kvm group, no CAP_NET_ADMIN, no rootful
+        #    helper" constraint holds. The setting reverts on the runner's
+        #    teardown (it is a throwaway VM); nothing persists.
+        #
+        # Assume-KVM required-leg posture (§E-D2): the microVM step below sets
+        # COMPASS_REQUIRE_MICROVM=1, so a run where GitHub withholds /dev/kvm reds
+        # rather than silently skipping — cleared by a re-run.
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+
+      - name: microVM suites
+        working-directory: go
+        env:
+          # Turns microvmtest.Require's no-KVM SKIP into a hard failure: the KVM
+          # leg is mandatory here, so a skip would silently pass the suite without
+          # exercising anything (the pgtest/COMPASS_REQUIRE_LIVE posture,
+          # go/internal/microvmtest/microvmtest.go).
+          COMPASS_REQUIRE_MICROVM: '1'
+          CGO_ENABLED: '1'
+        # Realize E3's guest-image attrs and put the E1 VMM binaries on PATH, then
+        # run the tagged suite. Both nix builds substitute their heavy inputs from
+        # the caches configured above (extra-substituters); the guest kernel is an
+        # unmodified pinned nixpkgs kernel, substituted free from cache.nixos.org.
+        #
+        # working-directory is `go`, so the guest-image build uses an absolute
+        # -f $GITHUB_WORKSPACE/guest-image/default.nix rather than a brittle
+        # ../guest-image relative path.
+        #
+        # The VMM stack (cloud-hypervisor, virtiofsd, passt) is Linux-only and so
+        # lives OUTSIDE devenv.nix's parsed `packages` literal — the parity gate
+        # does NOT install it. It is realized out-of-band here from its own pinned
+        # helper, the chromium-e2e pattern above: read each out-path's bin/ into
+        # $GITHUB_PATH so the test processes resolve them (via exec.LookPath in
+        # microvmtest.Require). A $GITHUB_PATH append only affects SUBSEQUENT
+        # steps, so this must precede the `go test` below — hence a separate step
+        # would work too, but keeping the realize+run together documents the pair.
+        #
+        # -v so the guard below can read per-package outcomes. The redirect (not a
+        # pipe to tee) is deliberate: a pipeline's exit status is its LAST
+        # command's, so `go test ... | tee` returns tee's 0 and a real failure is
+        # silently discarded. Capture, replay the log, then exit on go test's own
+        # status. `|| rc=$?` because the step runs under `bash -e`, which would
+        # otherwise abort before the log is ever printed.
+        run: |
+          guest=$(nix build --no-link --print-out-paths \
+            -f "$GITHUB_WORKSPACE/guest-image/default.nix" \
+            compass-guest-kernel compass-guest-rootfs compass-guest-initrd)
+          kernel=$(echo "$guest" | sed -n '1p')
+          rootfs=$(echo "$guest" | sed -n '2p')
+          initrd=$(echo "$guest" | sed -n '3p')
+          {
+            echo "COMPASS_TEST_GUEST_KERNEL=$kernel/bzImage"
+            echo "COMPASS_TEST_GUEST_ROOTFS=$rootfs"
+            echo "COMPASS_TEST_GUEST_INITRD=$initrd"
+          } >>"$GITHUB_ENV"
+          export COMPASS_TEST_GUEST_KERNEL="$kernel/bzImage"
+          export COMPASS_TEST_GUEST_ROOTFS="$rootfs"
+          export COMPASS_TEST_GUEST_INITRD="$initrd"
+
+          for out in $(nix build --no-link --print-out-paths \
+            -f "$GITHUB_WORKSPACE/tools/toolchain/microvm-vmm-env.nix" \
+            cloud-hypervisor virtiofsd passt); do
+            echo "$out/bin" >>"$GITHUB_PATH"
+            PATH="$out/bin:$PATH"
+          done
+          export PATH
+
+          rc=0
+          go test -tags microvm -race -v -timeout 15m ./... >/tmp/microvm.log 2>&1 || rc=$?
+          cat /tmp/microvm.log
+          exit "$rc"
+
+      - name: Assert the microVM suites ran rather than skipped
+        working-directory: go
+        # microvmtest.Require SKIPS (never fails) when /dev/kvm is not openable —
+        # correct for a KVM-less box, and a silent no-op here. This step exists to
+        # run those assertions KVM-backed, so a skip is a failure of its whole
+        # purpose and must be loud (the pgtest guard's exact shape).
+        #
+        # Both halves are derived from source rather than hardcoded, because a
+        # guard that drifts out of step with what it guards passes silently:
+        #   - the skip text is read from microvmtest.go, so rewording it cannot
+        #     leave this grep matching nothing and reporting success;
+        #   - the package list is the set that actually calls microvmtest.Require,
+        #     so the count means "the microVM packages ran". grep reads file text
+        #     regardless of build tags, so it finds the tagged canary too.
+        run: |
+          skip=$(sed -n 's/.*t\.Skip("\(\/dev\/kvm is not openable[^"]*\)").*/\1/p' \
+            internal/microvmtest/microvmtest.go)
+          if [ -z "$skip" ]; then
+            echo "::error::could not read the skip message out of internal/microvmtest/microvmtest.go — this guard has drifted from the harness and is no longer checking anything"
+            exit 1
+          fi
+          if grep -qF "$skip" /tmp/microvm.log; then
+            echo "::error::microvmtest harness skipped — /dev/kvm was not openable, so nothing was asserted"
+            grep -nF "$skip" /tmp/microvm.log | head
+            exit 1
+          fi
+          pkgs=$({ grep -rl 'microvmtest\.Require' --include='*.go' . || true; } \
+            | sed 's|^\./||' | xargs -r -n1 dirname | sort -u)
+          if [ -z "$pkgs" ]; then
+            echo "::error::no package calls microvmtest.Require — the harness moved and this guard is vacuous"
+            exit 1
+          fi
+          rc=0
+          for pkg in $pkgs; do
+            if ! grep -qE "^ok[[:space:]]+github\.com/RigelBuild/compass/go/$pkg[[:space:]]" /tmp/microvm.log; then
+              echo "::error::microVM package '$pkg' did not report ok — it failed, skipped, or never ran"
+              rc=1
+            fi
+          done
+          echo "microvm: checked $(printf '%s\n' "$pkgs" | wc -l) KVM-backed packages"
           exit "$rc"
 
   dogfood-e2e:
@@ -1341,7 +1416,7 @@ jobs:
     # `!cancelled()` must be parenthesized against the OR group: `&&` binds tighter
     # than `||`, so without the parens the trailing `|| changes.base != null` would
     # detach from the AND.
-    needs: [gates, dogfood-e2e, pgtest]
+    needs: [gates, dogfood-e2e, pgtest, microvm]
     if: >-
       !cancelled() &&
       github.event_name != 'workflow_dispatch' && (
@@ -1357,7 +1432,7 @@ jobs:
         # no-op-`edited` case skips it too. So the only non-success that can
         # actually reach this step is a work-job `failure` or a per-job
         # `cancelled` (a work-job `timeout-minutes`). A `skipped` result cannot
-        # reach here: `gates`/`dogfood-e2e`/`pgtest` have no `needs`, so their sole skip
+        # reach here: `gates`/`dogfood-e2e`/`pgtest`/`microvm` have no `needs`, so their sole skip
         # path is the edited-guard — which skips this rollup through the identical
         # guard. The `!= success` check below still covers `skipped` as a
         # belt-and-suspenders backstop, but no `needs` relationship in this
@@ -1367,9 +1442,10 @@ jobs:
           gates='${{ needs.gates.result }}'
           dogfood='${{ needs.dogfood-e2e.result }}'
           pgtest='${{ needs.pgtest.result }}'
-          echo "gates=$gates dogfood-e2e=$dogfood pgtest=$pgtest"
-          if [ "$gates" != "success" ] || [ "$dogfood" != "success" ] || [ "$pgtest" != "success" ]; then
-            echo "::error::a required work job did not succeed (gates=$gates, dogfood-e2e=$dogfood, pgtest=$pgtest)"
+          microvm='${{ needs.microvm.result }}'
+          echo "gates=$gates dogfood-e2e=$dogfood pgtest=$pgtest microvm=$microvm"
+          if [ "$gates" != "success" ] || [ "$dogfood" != "success" ] || [ "$pgtest" != "success" ] || [ "$microvm" != "success" ]; then
+            echo "::error::a required work job did not succeed (gates=$gates, dogfood-e2e=$dogfood, pgtest=$pgtest, microvm=$microvm)"
             exit 1
           fi
           echo "all work jobs succeeded"
