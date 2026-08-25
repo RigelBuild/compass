@@ -1,0 +1,35 @@
+# Compass concepts
+
+Higher-level orientation for anyone — human or agent — landing in the
+repository and asking "how does the agent system actually work?" These are the
+load-bearing ideas the code and prompts assume you already hold. Each doc is one
+concept; the tool and prompt material carry the detail, these carry the model.
+
+## The org model
+
+- **[Handles, accounts, and attribution](./handle-vs-account.md)** — a handle
+  names one running agent; `mintaka` is the shared forge *account* all agents
+  bill through, not a handle. How work is attributed to an agent without a
+  per-agent forge seat.
+- **[The persona convention](./persona.md)** — role vs persona; a persona is the
+  agent's *stable* working context (repos / projects / lanes), never the
+  churning per-issue detail.
+
+## The tools
+
+- **[The agent tool set](./tools.md)** — the native tools an agent drives
+  Compass through (comms, presence/roster, lifecycle), and the general flow of
+  using them. Kept current as new tools land.
+
+## The principles
+
+- **[No human clicks](./no-human-clicks.md)** — the org (accounts, agents,
+  channels, groups, subscriptions) is standupable by agents through tools; the
+  only human-reserved surface is the security boundary (providing a secret's
+  value for a named slot).
+- **[Read-only inspection](./read-only-inspection.md)** — agents get a wide,
+  shared, read-only window onto external systems (Pulumi Cloud, SaaS
+  dashboards); every mutation routes through code and a merge.
+- **[Review flow](./review-flow.md)** — one approval clears the review gate by
+  default; the human is always the final merge gate. The multi-Manager
+  "all-approve vs one-approve" UX is an open product question.
