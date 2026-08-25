@@ -27,8 +27,10 @@
 // is the first surface to hand a MODEL a free-text `repo` over that org-wide
 // credential — a hallucinated or injected `repo` writes a real artifact into any
 // repository the shared credential can reach. The containment is prompt-level,
-// not authz-level: every write tool's description carries the scope-discipline
-// line, and the DL-050 attribution trail is the only audit. See
+// not authz-level: every artifact-write tool's description carries the
+// scope-discipline line (`forge_subscribe`/`forge_unsubscribe` write an
+// account-keyed row, not a repo artifact, so they carry none), and the DL-050
+// attribution trail is the only audit. See
 // packages/compass-agent/AGENTS.md for the package contract.
 //
 // TWO SUBSCRIPTION TOOLS SHIP DORMANT. `forge_subscribe`/`forge_unsubscribe` are

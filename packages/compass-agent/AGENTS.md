@@ -78,8 +78,11 @@ changes shape when it lands.
 credential pair serves every repo on a coordinate, and `repo` is free text, so
 a hallucinated or injected `repo` writes a real artifact into any repository the
 shared credential can reach. Containment is per-write prompt guidance (the
-scope-discipline line in each write tool's description) plus the DL-050
-attribution trail. Write bodies go up WITHOUT an owner header — the Server
+scope-discipline line in each artifact-write tool's description —
+`forge_subscribe`/`forge_unsubscribe` are `approval: "write"` but carry no such
+line, and correctly so: they write an account-keyed subscription row, not a
+cross-repo artifact) plus the DL-050 attribution trail. Write bodies go up
+WITHOUT an owner header — the Server
 stamps it; no TS code constructs or strips one. Read results render under the
 comms nonce-fence discipline (bodies are untrusted external text, truncated and
 capped, attribution a parsed claim); write acks render one shape-guarded line,
