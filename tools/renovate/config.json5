@@ -447,6 +447,20 @@
       // would be a no-op here anyway. fileFilters cover exactly the files the script
       // writes (compass has no committed inner-rev guard file, so no such entry).
       //
+      // FOD-REFRESH IS INTENTIONALLY ABSENT here, though this branch rewrites
+      // bun.lock + a workspace manifest (the biome catalog pin) — the two inputs
+      // agent-image/entrypoint.nix names as moving its bun `outputHash`. It is
+      // safe because biome never enters the hashed tree: the FOD installs with
+      // `bun install --frozen-lockfile --ignore-scripts --filter '@compass/agent'`
+      // (entrypoint.nix), and biome is a ROOT-ONLY devDependency (package.json
+      // `devDependencies`, absent from @compass/agent's manifest). Verified: that
+      // exact filtered install yields biome in neither `node_modules` nor the
+      // `.bun` virtual store, so a channel/biome bump cannot move outputHash. If
+      // biome ever becomes a compass-agent dependency, this rule must append
+      // `bun tools/renovate/refresh-fod-hashes.ts` + `agent-image/entrypoint.nix`
+      // to its task (it runs after the bun.lock rewrite, so it would self-gate and
+      // refresh in the same branch). config.test.ts pins this exemption.
+      //
       // Self-hosted bot config MUST allow the command:
       //   allowedCommands: [… , "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$"]
       // see tools/renovate/bot-config.json5 (config.test.ts pins the two together).
@@ -496,8 +510,21 @@
       // pass to fire on every catalog branch regardless of sort order. Same command
       // string as top-level → one allowlist entry; refresh-fod-hashes.ts self-gates
       // on bun.lock so it refreshes the bun outputHash alone here and no-ops the Go
-      // vendorHash. Idempotent, so a double-fire (both passes on a bun-first branch)
-      // is harmless.
+      // vendorHash. Correctness is last-write-wins and order-independent.
+      //
+      // COST — unlike the lockfile leg, the FOD leg is idempotent but NOT free.
+      // `executionMode: "update"` runs it once PER catalog upgrade, and each run
+      // fakes the pin (a guaranteed FOD cache-miss) and realises the rootfs
+      // vehicle, forcing a full networked `bun install` of compass-agent's
+      // node_modules FOD. On a K-dep catalog rollup the outputHash is thus
+      // re-realised K times — including for catalog deps outside compass-agent's
+      // closure (astro/stylelint/starlight move bun.lock but not the hashed tree),
+      // which pay a realise to confirm no change. Accepted: last-write-wins is
+      // correct and a same-branch short-circuit is unsafe without relying on
+      // Renovate's grouped-update apply ordering (an early per-upgrade pass could
+      // see a partial tree and freeze a wrong hash). The double-fire on a
+      // bun-first branch (both this pass and the top-level task) is likewise
+      // correct, just a second realise.
       //
       // Self-hosted bot config MUST allow both commands:
       //   allowedCommands: [… , "^bun install --lockfile-only$",

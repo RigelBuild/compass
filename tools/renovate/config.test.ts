@@ -492,6 +492,15 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 
 	// Branch-mode lockstep task over exactly the three files the script writes
 	// (compass has NO committed inner-rev guard file, unlike the internal monorepo's fourth entry).
+	//
+	// The `every(... refresh-devenv-nixpkgs ...)` assertion also PINS the verified
+	// FOD-refresh exemption: this branch rewrites bun.lock + the biome catalog pin,
+	// but biome is a root-only devDependency absent from the FOD's filtered
+	// `--filter '@compass/agent'` install (verified: not in node_modules nor .bun),
+	// so a channel bump cannot move agent-image/entrypoint.nix's outputHash and the
+	// FOD refresh is intentionally NOT wired here. If biome ever enters the
+	// compass-agent closure, adding the FOD command is what makes this test fail —
+	// forcing a conscious revisit of the exemption rather than a silent red build.
 	test("the lockstep postUpgradeTask is branch-mode over the written files", () => {
 		const task = devenvRule?.postUpgradeTasks;
 		expect(task?.executionMode).toBe("branch");
@@ -506,6 +515,11 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 				/^bun tools\/renovate\/refresh-devenv-nixpkgs\.ts$/.test(c),
 			),
 		).toBe(true);
+		// Explicit: the FOD refresh is NOT on this rule (the verified exemption).
+		expect(task?.commands).not.toContain(
+			"bun tools/renovate/refresh-fod-hashes.ts",
+		);
+		expect(task?.fileFilters).not.toContain("agent-image/entrypoint.nix");
 	});
 
 	// The digest-excludes-rollup seam: the TS rollup ALSO matches custom.regex, so

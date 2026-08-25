@@ -123,7 +123,11 @@ export function rewriteInlineHash(
 		throw new Error(`renovate-fod: marker '${marker}' not found in ${file}`);
 	}
 	const line = lines[i] as string;
-	lines[i] = line.replace(/sha256-[^"]*/, newSri);
+	// Function replacer: newSri is inserted LITERALLY. A string replacement would
+	// interpret `$&`/`$1`/`$$` sequences in it — inert for a base64 SRI today
+	// (alphabet A-Za-z0-9+/=), but a latent silent-corruption path if the parse
+	// ever widened, so keep the write literal.
+	lines[i] = line.replace(/sha256-[^"]*/, () => newSri);
 	return lines.join("\n");
 }
 
@@ -146,8 +150,14 @@ export function parseGotForFragment(
 			l.includes("hash mismatch in fixed-output derivation") &&
 			l.includes(fragment)
 		) {
-			for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
-				const m = (lines[j] as string).match(/got:\s*(sha256-\S+)/);
+			// Scan from this header to the NEXT mismatch header (or end of output),
+			// not a fixed N-line window: the `got:` line's offset below the header is
+			// nix's mismatch-block shape, and pinning it to a magic count would break
+			// silently if a future nix wrapped the drv path or added context lines.
+			for (let j = i + 1; j < lines.length; j++) {
+				const lj = lines[j] as string;
+				if (lj.includes("hash mismatch in fixed-output derivation")) break;
+				const m = lj.match(/got:\s*(sha256-\S+)/);
 				if (m?.[1]) return m[1];
 			}
 		}

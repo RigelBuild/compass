@@ -296,6 +296,34 @@ describe("parseGotForFragment", () => {
 		expect(parseGotForFragment(onlyGo, "go-modules")).toBe("sha256-realgo=");
 	});
 
+	test("finds got: beyond a fixed 5-line window (scans to next header)", () => {
+		// Guards the unbounded within-block scan against a future nix that adds
+		// context lines before `got:` (or wraps the drv path) — a fixed lookahead
+		// window would silently miss it and fail every FOD build.
+		const wide = [
+			"error: hash mismatch in fixed-output derivation '/nix/store/x-compass-go-modules.drv':",
+			"         specified: sha256-AAAA=",
+			"         (context line a)",
+			"         (context line b)",
+			"         (context line c)",
+			"            got:    sha256-farbelow=",
+		].join("\n");
+		expect(parseGotForFragment(wide, "go-modules")).toBe("sha256-farbelow=");
+	});
+
+	test("stops at the next mismatch header (no cross-block got: bleed)", () => {
+		// A fragment whose own block reports no got: (defensive) must not scan past
+		// the next header and steal the sibling's got:.
+		const noGotThenSibling = [
+			"error: hash mismatch in fixed-output derivation '/nix/store/x-compass-go-modules.drv':",
+			"         specified: sha256-AAAA=",
+			"error: hash mismatch in fixed-output derivation '/nix/store/y-compass-node-modules.drv':",
+			"         specified: sha256-BBBB=",
+			"            got:    sha256-realbun=",
+		].join("\n");
+		expect(parseGotForFragment(noGotThenSibling, "go-modules")).toBeUndefined();
+	});
+
 	test("returns undefined when no mismatch is reported", () => {
 		expect(
 			parseGotForFragment("built '/nix/store/x'\n", "go-modules"),
@@ -339,5 +367,19 @@ describe("rewriteInlineHash", () => {
 				GO_ENTRY.file,
 			),
 		).toThrow(/marker .* not found/);
+	});
+
+	test("inserts the new SRI literally (no $-sequence interpretation)", () => {
+		// A base64 SRI cannot contain `$` today, but the write must stay literal so
+		// a future parse widening can't let `$&`/`$1`/`$$` in the replacement mangle
+		// the pin. Feed a `$`-bearing value and assert it lands verbatim.
+		const withDollars = "sha256-a$&b$1c$$d=";
+		const out = rewriteInlineHash(
+			GO_NIX_FIXTURE,
+			GO_ENTRY.marker,
+			withDollars,
+			GO_ENTRY.file,
+		);
+		expect(hashOnMarker(out, GO_ENTRY.marker)).toBe(withDollars);
 	});
 });
