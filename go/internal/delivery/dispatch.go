@@ -98,6 +98,11 @@ func (c *Consumer) hold(authorSession, messageID string) {
 // MessageUpdated block is still seen (design.md:519-523).
 func (c *Consumer) fanOut(ctx context.Context, channel store.ChannelID, author store.AccountID, msg *compassv1.Message) {
 	mentioned := c.routeMentionsFor(ctx, channel, author, msg)
+	// RIG-2257: an ask_answer message targets its asking agent when that agent is
+	// outside the channel's sweep set (invisible to both the deliver loop below
+	// and the reconnect cursor sweep). Shared with the recovery scan so a restart
+	// in the commit→fanOut window still re-derives the owed row.
+	c.routeAskAnswerFor(ctx, channel, msg)
 	// Stamp the durable mention marker so the next recovery scan structurally
 	// excludes this message: the live settle edge routed its mentions. A mark
 	// failure is logged loud and swallowed — mention routing can never fail a
@@ -179,6 +184,76 @@ func (c *Consumer) routeMentionsFor(ctx context.Context, channel store.ChannelID
 		c.wake(ctx, agent)
 	}
 	return mentioned
+}
+
+// askAnswerTarget reports the asking agent an ask_answer message targets. The
+// answer message carries a single server-owned ask_answer block whose
+// asker_account_id is the agent that posted the original ask (denormalized at
+// AnswerAsk time). A message with no ask_answer block returns ok=false.
+func askAnswerTarget(msg *compassv1.Message) (store.AccountID, bool) {
+	for _, b := range msg.GetBlocks() {
+		if aa := b.GetAskAnswer(); aa != nil {
+			if asker := aa.GetAskerAccountId(); asker != "" {
+				return store.AccountID(asker), true
+			}
+		}
+	}
+	return "", false
+}
+
+// routeAskAnswerFor targets the asking agent of an ask_answer message when it
+// falls OUTSIDE the answer channel's sweep set (RIG-2257 T5). The deliver set
+// (SubscribedAgents) and the sweep set (InSweepSet) are the same disjunct
+// (subscribed OR home OR mandatory), so an asker that is a channel member but
+// unsubscribed, non-home, and non-mandatory is invisible to BOTH the live
+// deliver loop AND the reconnect cursor sweep — its answer would never arrive
+// without this arm. A subscribed/home/mandatory asker needs neither arm: the
+// normal deliver + cursor sweep already covers it.
+//
+// It is the ONE implementation of the ask_answer targeting policy, shared
+// verbatim by the live settle path (fanOut) and the RIG-2490 recovery scan
+// (scanMissedMentions) — so a consumer restart between AnswerAsk's commit and
+// fanOut re-derives the owed row on the next recovery scan (the answer message
+// is committed mentions_routed_at IS NULL, so it reappears in
+// UnroutedMentionMessages) rather than stranding the out-of-sweep asker. A
+// second targeting body would be a second correctness surface and is prohibited.
+//
+// For an out-of-sweep asker: (1) RECORD the durable owed row (the offline
+// backstop, drained by the OwedMentions start-edge sweep, which dispatches it as
+// a STEER); then (2) re-check the session and, if now live, dispatch the answer
+// directly as a steer — the latency path, closing the record-vs-start race.
+// Owed row and live dispatch are complements (durability vs latency), not
+// either/or: without the live dispatch an unsubscribed asker with a live session
+// strands until its next restart. A record failure is logged loud and swallowed
+// — delivery targeting must never fail a post.
+func (c *Consumer) routeAskAnswerFor(ctx context.Context, channel store.ChannelID, msg *compassv1.Message) {
+	asker, ok := askAnswerTarget(msg)
+	if !ok {
+		return
+	}
+	inSweep, err := c.st.InSweepSet(ctx, asker, channel)
+	if err != nil {
+		c.log.ErrorContext(ctx, "delivery: in-sweep-set check for ask_answer asker", "error", err,
+			"agent", string(asker), "channel", string(channel), "message_id", msg.GetId())
+		return
+	}
+	if inSweep {
+		return // the normal deliver + cursor sweep already reaches a swept asker
+	}
+	if err := c.st.RecordOwedMention(ctx, asker, channel, msg.GetId()); err != nil {
+		// The no-loss edge: an owed answer that fails to record is lost.
+		c.log.ErrorContext(ctx, "delivery: record owed ask_answer for out-of-sweep-set asker", "error", err,
+			"agent", string(asker), "channel", string(channel), "message_id", msg.GetId())
+		return
+	}
+	// Now-live between the sweep-set check and the record: steer directly,
+	// closing the record-vs-start race (the owed row is the offline backstop,
+	// this is the latency path). The owed sweep dispatches as a STEER, so the
+	// direct dispatch matches — both render through the same T6 ask_answer arm
+	// and dedup by msg.id absorbs any overlap.
+	if sessionID, live := c.resolver.SessionForAccount(asker); live {
+		c.dispatchSteerTo(ctx, sessionID, msg, c.authorHandle(ctx, msg))
+	}
 }
 
 // resolveMentioned resolves parsed handles to the set of agent members of

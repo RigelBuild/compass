@@ -34,15 +34,15 @@
 // comes back as a `CommsCallError`, in-band, not as a transport teardown.
 //
 // NEVER AN ASK-ANSWERING TOOL. The agent may RAISE an ask but never answer one:
-// answering is the human side of the conversation and arrives over the control
-// lane. The prohibition is structural rather than a convention to uphold — the
-// request oneof cannot express RespondToAsk — so widening that oneof is what
-// re-checks it. Raising stays permitted: post can carry `ask` blocks, and the
-// dedicated `comms_post_ask` tool raises one. An ask is an ASYNC channel
-// message, never a session dialog — there is no promptable session (the session
-// log is operator observe+stop only). `comms_post_ask` posts and returns with a
-// server-minted ask id; the operator's answer arrives later as an
-// AskAnswerControl over the control lane, delivered to the model on a subsequent
+// answering is the human side of the conversation. The prohibition is structural
+// rather than a convention to uphold — the request oneof cannot express
+// RespondToAsk — so widening that oneof is what re-checks it. Raising stays
+// permitted: post can carry `ask` blocks, and the dedicated `comms_post_ask`
+// tool raises one. An ask is an ASYNC channel message, never a session dialog —
+// there is no promptable session (the session log is operator observe+stop
+// only). `comms_post_ask` posts and returns with a server-minted ask id; the
+// operator's answer arrives later as a delivered channel message carrying an
+// `ask_answer` block on the deliver lane, rendered to the model on a subsequent
 // turn. See packages/compass-agent/AGENTS.md for the package contract.
 //
 // Five tools ship: post, post_ask, list, roster, and set_status; search is
@@ -58,7 +58,6 @@ import { type } from "arktype";
 import {
 	AgentPresence,
 	AskOptionSchema,
-	type AskQuestion,
 	AskQuestionSchema,
 	AskSchema,
 	type CommsCallRequest,
@@ -221,33 +220,6 @@ export const postAskParameters = type({
 		),
 });
 
-/**
- * A live-session, in-memory registry of the asks this agent has raised, keyed
- * by the server-minted `ask_id`. The raise tool records the questions it built
- * so the answer lane can render an inbound `AskAnswerControl` against them; the
- * registry is session-scoped and not durable (design "The answer lane", the
- * owed-to-handle delivery is a filed runner/hub dependency).
- */
-export interface PendingAsks {
-	record(askId: string, questions: AskQuestion[]): void;
-	take(askId: string): AskQuestion[] | undefined;
-}
-
-/** A `Map`-backed in-memory `PendingAsks`. */
-export function createPendingAsks(): PendingAsks {
-	const asks = new Map<string, AskQuestion[]>();
-	return {
-		record(askId, questions) {
-			asks.set(askId, questions);
-		},
-		take(askId) {
-			const questions = asks.get(askId);
-			asks.delete(askId);
-			return questions;
-		},
-	};
-}
-
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const listParameters = type({
 	"channel_id?": type("string")
@@ -364,10 +336,7 @@ function presenceLabel(presence: AgentPresence): string {
  * are merged into the session's `customTools` and so register as `#withNatives`
  * natives. This package's tests also exercise the end-to-end contract directly.
  */
-export function createCommsTools(
-	broker: CommsBroker,
-	pendingAsks?: PendingAsks,
-): AgentTool[] {
+export function createCommsTools(broker: CommsBroker): AgentTool[] {
 	const postMessage: AgentTool<typeof postParameters> = {
 		name: "comms_post_message",
 		label: "Post channel message",
@@ -502,10 +471,6 @@ export function createCommsTools(
 					"comms_post_ask: protocol violation — post result carried no ask block",
 				);
 			const askId = askValue.value.askId;
-			// Record the questions the model asked, keyed by the server-minted ask
-			// id, so the answer lane can render an inbound AskAnswerControl against
-			// them (session-scoped, in-memory).
-			pendingAsks?.record(askId, questions);
 			return {
 				content: [
 					{

@@ -81,7 +81,7 @@ func TestAgentHasOpenAskFalseOnceAnswered(t *testing.T) {
 	}
 
 	// A member answers it; answered flips to true.
-	if _, err := s.AnswerAsk(ctx, owner.ID, "ask-1", []AskAnswer{
+	if _, _, err := s.AnswerAsk(ctx, owner.ID, "ask-1", []AskAnswer{
 		{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}},
 	}); err != nil {
 		t.Fatalf("AnswerAsk: %v", err)

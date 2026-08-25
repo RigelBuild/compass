@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -36,11 +37,10 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	if (topic.ID == "") == (topic.Name == "") {
 		return Message{}, false, fmt.Errorf("%w: exactly one of topic id or name is required", ErrInvalidArgument)
 	}
+	// Mint ask ids before the insert so the returned (and stored) message
+	// carries the ids RespondToAsk correlates against; insertMessageTx
+	// serializes and validates the blocks inside the tx.
 	mintAskIDs(m.Blocks)
-	blocksJSON, err := marshalBlocks(m.Blocks)
-	if err != nil {
-		return Message{}, false, err
-	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -87,7 +87,57 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 		return Message{}, false, err
 	}
 
+	inserted, err := insertMessageTx(ctx, tx, m, topicID, clientRequestID)
+	switch {
+	case errors.Is(err, errMessageInsertConflict):
+		// ON CONFLICT DO NOTHING suppressed the insert: a message with this
+		// idempotency key already exists (a retry). Nothing was written, so the
+		// tx rolls back (unwinding the topic get-or-create too); return the
+		// already-committed row with inserted=false so the handler suppresses a
+		// duplicate MessagePosted. AnswerAsk does NOT share this arm — its
+		// answer insert carries no idempotency key, so the conflict path is
+		// unreachable there (see insertMessageTx).
+		stored, err := s.getMessageByRequestID(ctx, m.AuthorAccountID, clientRequestID)
+		return stored, false, err
+	case pgErrIs(err, pgForeignKeyViolation):
+		return Message{}, false, fmt.Errorf("%w: unknown author %q", ErrInvalidArgument, m.AuthorAccountID)
+	case err != nil:
+		return Message{}, false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Message{}, false, fmt.Errorf("store: commit append message: %w", err)
+	}
+	return inserted, true, nil
+}
+
+// errMessageInsertConflict signals that insertMessageTx's INSERT was suppressed
+// by the ON CONFLICT (author_account_id, client_request_id) idempotency index —
+// a retry with a re-used non-empty client_request_id. It is an internal signal,
+// never returned to a caller: AppendMessage catches it and re-reads the
+// already-committed row (inserted=false). AnswerAsk cannot hit it — its answer
+// insert passes clientRequestID="", so the partial index (WHERE
+// client_request_id <> ”) is unreachable — and treats any insert error as a
+// fatal invariant violation that rolls the whole answer back.
+var errMessageInsertConflict = errors.New("store: message insert conflict")
+
+// insertMessageTx is the tx-scoped insert core shared by AppendMessage and
+// AnswerAsk: it inserts the message row under topicID and maintains the topic's
+// denormalized last_seq (GREATEST) — nothing else. It does NOT port
+// AppendMessage's ON CONFLICT handling (pool re-read + rollback-and-return):
+// that arm cannot run inside AnswerAsk's tx without either losing the Answered
+// flip on rollback or racing the still-uncommitted row on a pool read. So the
+// helper only signals a conflict (errMessageInsertConflict) and leaves the
+// caller to decide: AppendMessage re-reads the committed row; AnswerAsk treats
+// it as an impossible-invariant error. It assigns the row id and timestamp and
+// returns the populated Message; it does NOT commit — the caller owns the tx.
+func insertMessageTx(ctx context.Context, tx pgx.Tx, m Message, topicID string, clientRequestID string) (Message, error) {
+	blocksJSON, err := marshalBlocks(m.Blocks)
+	if err != nil {
+		return Message{}, err
+	}
 	id := newID()
+	at := time.Now().UTC()
 	const q = `
 		INSERT INTO messages (id, topic_id, author_account_id, at_unix_ms, blocks, text_content, client_request_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -105,17 +155,9 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 	).Scan(&storedID, &atMS, &seq)
 	switch {
 	case noRows(err):
-		// ON CONFLICT DO NOTHING suppressed the insert: a message with this
-		// idempotency key already exists (a retry). Nothing was written, so the
-		// tx rolls back (unwinding the topic get-or-create too); return the
-		// already-committed row with inserted=false so the handler suppresses a
-		// duplicate MessagePosted.
-		stored, err := s.getMessageByRequestID(ctx, m.AuthorAccountID, clientRequestID)
-		return stored, false, err
-	case pgErrIs(err, pgForeignKeyViolation):
-		return Message{}, false, fmt.Errorf("%w: unknown author %q", ErrInvalidArgument, m.AuthorAccountID)
+		return Message{}, errMessageInsertConflict
 	case err != nil:
-		return Message{}, false, fmt.Errorf("store: insert message: %w", err)
+		return Message{}, fmt.Errorf("store: insert message: %w", err)
 	}
 
 	// Maintain the topic's denormalized activity marker in the same tx. GREATEST
@@ -125,16 +167,13 @@ func (s *Store) AppendMessage(ctx context.Context, m Message, channelID string, 
 		`UPDATE topics SET last_seq = GREATEST(last_seq, $2) WHERE id = $1`,
 		topicID, seq,
 	); err != nil {
-		return Message{}, false, fmt.Errorf("store: update topic last_seq: %w", err)
+		return Message{}, fmt.Errorf("store: update topic last_seq: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return Message{}, false, fmt.Errorf("store: commit append message: %w", err)
-	}
 	m.ID = MessageID(storedID)
 	m.TopicID = topicID
 	m.At = time.UnixMilli(atMS).UTC()
-	return m, true, nil
+	return m, nil
 }
 
 // resolveTopicForAppend resolves the target topic for an append inside the
@@ -522,8 +561,12 @@ func (s *Store) SearchMessages(ctx context.Context, actor AccountID, scope Searc
 // locates the message whose blocks carry an ask with askID within the actor's
 // visible set — the membership JOIN makes "the message exists" and "the actor
 // participates" one gate — records the per-question answers on that ask block,
-// and persists via the immutable-ask_id update path, returning the updated
-// message. The handler publishes MessageUpdated.
+// and persists via the immutable-ask_id update path. It ALSO posts the answer
+// as a new message — authored by actor, in the ask's channel/topic, carrying a
+// single ask_answer block snapshotting the just-answered ask — inserted in the
+// SAME tx so "ask answered" and "answer message exists" are one atomic fact.
+// It returns both messages: the updated ask (the handler publishes
+// MessageUpdated) and the answer (the handler publishes MessagePosted).
 //
 // Answering is atomic: answers must cover EXACTLY the ask's question_id set —
 // every question answered once, no unknown or repeated question_id. An answer
@@ -537,9 +580,9 @@ func (s *Store) SearchMessages(ctx context.Context, actor AccountID, scope Searc
 // forbidden merge). Validation failures — coverage gaps, an option not offered
 // by the question, or multiple choices on a single-select question — are
 // ErrInvalidArgument.
-func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, answers []AskAnswer) (Message, error) {
+func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, answers []AskAnswer) (askMsg Message, answerMsg Message, err error) {
 	if askID == "" {
-		return Message{}, fmt.Errorf("%w: ask id is required", ErrInvalidArgument)
+		return Message{}, Message{}, fmt.Errorf("%w: ask id is required", ErrInvalidArgument)
 	}
 
 	// Serialized find-and-answer: the whole read-modify-write runs in one
@@ -553,9 +596,9 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 	// survive (SEA-1226).
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return Message{}, fmt.Errorf("store: begin answer ask: %w", err)
+		return Message{}, Message{}, fmt.Errorf("store: begin answer ask: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	defer func() { _ = tx.Rollback(ctx) }() // deferred cleanup; the Commit below is the real outcome.
 
 	// Visibility + existence in one gate: the message's channel must be one the
 	// actor is a member of, and its blocks JSONB must contain an ask with askID.
@@ -571,35 +614,68 @@ func (s *Store) AnswerAsk(ctx context.Context, actor AccountID, askID string, an
 		FOR UPDATE OF m`
 	filter, err := askIDContainmentFilter(askID)
 	if err != nil {
-		return Message{}, fmt.Errorf("store: marshal ask filter: %w", err)
+		return Message{}, Message{}, fmt.Errorf("store: marshal ask filter: %w", err)
 	}
 	rows, err := tx.Query(ctx, q, string(actor), filter)
 	if err != nil {
-		return Message{}, fmt.Errorf("store: find ask: %w", err)
+		return Message{}, Message{}, fmt.Errorf("store: find ask: %w", err)
 	}
 	defer rows.Close()
 	msgs, err := scanMessages(rows)
 	if err != nil {
-		return Message{}, err
+		return Message{}, Message{}, err
 	}
 	if len(msgs) == 0 {
-		return Message{}, fmt.Errorf("%w: ask %q", ErrNotFound, askID)
+		return Message{}, Message{}, fmt.Errorf("%w: ask %q", ErrNotFound, askID)
 	}
 	msg := msgs[0]
+	// rows must be closed before issuing further queries on the same tx (pgx
+	// serializes a connection: an open rows cursor blocks the answer insert).
+	rows.Close()
 
 	// Locate the ask block and validate the answers cover its questions exactly,
 	// each answer against its question's offered options and arity, then record
-	// them in place.
+	// them in place. The answer-once guard inside applyAskAnswer is the sole
+	// single-fire mechanism: a second answer is ErrConflict here, BEFORE the
+	// answer message is built, so at most one answer message ever exists.
 	if err := applyAskAnswer(&msg, askID, answers); err != nil {
-		return Message{}, err
+		return Message{}, Message{}, err
 	}
 	if err := updateMessageBlocksExec(ctx, tx, msg.ID, msg.Blocks); err != nil {
-		return Message{}, err
+		return Message{}, Message{}, err
+	}
+
+	// Build the answer message: authored by the answerer (actor), in the ask's
+	// own topic, carrying a single ask_answer block snapshotting the
+	// just-answered ask with the asking agent (the ask message's author)
+	// denormalized as the target. Insert it in THIS tx via insertMessageTx, so
+	// the Answered flip and the delivering message commit atomically. NO
+	// idempotency key (clientRequestID="") — the answer-once guard above is the
+	// sole single-fire mechanism, so the ON CONFLICT dedup is unreachable. The
+	// membership/post-policy gates are NOT re-run: the actor's membership in the
+	// ask's channel is already proven by the visibility JOIN above, in this same
+	// tx. A zero-rows insert is an impossible-invariant violation (the answer
+	// carries no dedup key), so any insert error rolls the whole answer back
+	// rather than committing a flip with no message.
+	answered := findAsk(msg.Blocks, askID)
+	if answered == nil {
+		return Message{}, Message{}, fmt.Errorf("store: answered ask %q vanished from blocks", askID)
+	}
+	answer := Message{
+		AuthorAccountID: actor,
+		Blocks: []MessageBlock{{AskAnswer: &AskAnswerBlock{
+			Ask:            *answered,
+			AskerAccountID: msg.AuthorAccountID,
+		}}},
+	}
+	inserted, err := insertMessageTx(ctx, tx, answer, msg.TopicID, "")
+	if err != nil {
+		return Message{}, Message{}, fmt.Errorf("store: insert answer message: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return Message{}, fmt.Errorf("store: commit answer ask: %w", err)
+		return Message{}, Message{}, fmt.Errorf("store: commit answer ask: %w", err)
 	}
-	return msg, nil
+	return msg, inserted, nil
 }
 
 // AskAnswer is one participant answer to a single question within an ask, keyed
@@ -609,6 +685,18 @@ type AskAnswer struct {
 	QuestionID      string
 	ChosenOptionIDs []string
 	CustomText      string
+}
+
+// findAsk returns the ask carrying askID within blocks, or nil when no block
+// holds it. Used to snapshot the just-answered ask into the answer message
+// after applyAskAnswer has recorded the answers in place.
+func findAsk(blocks []MessageBlock, askID string) *Ask {
+	for i := range blocks {
+		if a := blocks[i].Ask; a != nil && a.AskID == askID {
+			return a
+		}
+	}
+	return nil
 }
 
 // applyAskAnswer finds the ask block carrying askID in msg and records an atomic

@@ -72,25 +72,17 @@ func newRunnerHub(st *store.Store, brd *board.Projection, tail runnerhub.Session
 	return hub
 }
 
-// SEA-1577: *runnerhub.Hub structurally satisfies the comms-defined
-// AskAnswerWaker (comms defines the narrow interface it needs; runnerhub never
-// imports comms). The assertion lives here in the server package, which imports
-// both — the same direction the other sink wiring is proven, mirroring how comms
-// satisfies the runnerhub-defined CommsCaller.
-var _ comms.AskAnswerWaker = (*runnerhub.Hub)(nil)
-
 // RIG-1641 T3: *lifecycleService satisfies the delivery-defined AgentWaker
 // (delivery defines the narrow interface it needs; the server package implements
 // it over the resume machinery). The assertion lives here in the server package,
-// which imports both — the same direction the AskAnswerWaker assertion above is
-// proven, so delivery never imports server.
+// which imports both — so delivery never imports server.
 var _ delivery.AgentWaker = (*lifecycleService)(nil)
 
 // Compass forge write path T8: *forgeService (forge.go, the DL-050 write
 // chokepoint) satisfies the T5-defined runnerhub.ForgeCaller seam the hub relays
 // RelayForgeCall into. The assertion lives here in the server package — which
 // imports both forgeService (unexported, same package) and runnerhub — the same
-// direction the sibling AskAnswerWaker assertion above is proven; T4 could not
+// direction the sibling assertion above is proven; T4 could not
 // place it because the runnerhub interface was not importable in its isolated
 // slice.
 var _ runnerhub.ForgeCaller = (*forgeService)(nil)
@@ -98,14 +90,12 @@ var _ runnerhub.ForgeCaller = (*forgeService)(nil)
 // wireHubServiceCycles breaks the post-construction cycles between the hub and
 // the account-facing services that are built before it (the hub relays through
 // them, so they cannot take the hub at construction): the hub<->lifecycle cycle
-// (SEA-1618 T5, RelayLifecycleCall), the hub<->board cycle (agent primary
+// (SEA-1618 T5, RelayLifecycleCall) and the hub<->board cycle (agent primary
 // lifecycle T3-a, RelayBoardCall — the board caller executes against the store +
-// the issue projection), and the comms<->hub ask-answer wake cycle (SEA-1577).
-// Called once at assembly before any RPC is served.
+// the issue projection). Called once at assembly before any RPC is served.
 func wireHubServiceCycles(hub *runnerhub.Hub, commsSvc *comms.Comms, st *store.Store, issueBrd *board.IssueProjection) {
 	hub.SetLifecycleCaller(newLifecycleService(st, hub))
 	hub.SetBoardCaller(newBoardService(st, issueBrd))
-	commsSvc.SetAskWaker(hub)
 	// The roster read (SEA-1721 T2) joins the hub's in-memory presence enum; the
 	// hub in turn reads it from the T8 presence projection wired at
 	// startPresencePublisher (hub.SetPresenceSource). comms->hub is set here (the
@@ -118,7 +108,7 @@ func wireHubServiceCycles(hub *runnerhub.Hub, commsSvc *comms.Comms, st *store.S
 // the hub returns the enum wrapped in a runnerhub.PresenceSnapshot (leaving room
 // for a later live-only attribute), while comms consumes the bare enum. The
 // projection lives here in the server package, which imports both — the same
-// direction the AskAnswerWaker assertion above is proven, so neither comms nor
+// direction the ForgeCaller assertion above is proven, so neither comms nor
 // runnerhub depends on the other.
 type hubPresenceSource struct{ hub *runnerhub.Hub }
 

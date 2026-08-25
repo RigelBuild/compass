@@ -708,7 +708,7 @@ func TestAnswerAskHappyPath(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	updated, err := s.AnswerAsk(ctx, author.ID, "ask-1", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
+	updated, _, err := s.AnswerAsk(ctx, author.ID, "ask-1", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
 	if err != nil {
 		t.Fatalf("AnswerAsk: %v", err)
 	}
@@ -738,7 +738,7 @@ func TestAnswerAskVisibilityCollapse(t *testing.T) {
 	// this, the collapse assertions below pass vacuously whenever AnswerAsk is
 	// broken for everyone — a not-found that means "nobody can answer" is not
 	// the D9 collapse. alice, a member, must succeed.
-	if _, err := s.AnswerAsk(ctx, actorA.ID, "ask-secret", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}}); err != nil {
+	if _, _, err := s.AnswerAsk(ctx, actorA.ID, "ask-secret", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}}); err != nil {
 		t.Fatalf("member alice cannot answer her own ask: %v", err)
 	}
 
@@ -746,11 +746,11 @@ func TestAnswerAskVisibilityCollapse(t *testing.T) {
 	// non-visible ask gets ErrNotFound — identical to a nonexistent ask — so the
 	// ask's existence cannot leak across the membership boundary. It must NOT be
 	// a distinct not-authorized error.
-	_, err := s.AnswerAsk(ctx, actorB.ID, "ask-secret", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-b"}}})
+	_, _, err := s.AnswerAsk(ctx, actorB.ID, "ask-secret", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-b"}}})
 	sentinelIs(t, err, ErrNotFound, "answer a non-visible ask")
 
 	// The collapse must be indistinguishable from a truly nonexistent ask id.
-	_, ghostErr := s.AnswerAsk(ctx, actorB.ID, "ask-does-not-exist", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
+	_, _, ghostErr := s.AnswerAsk(ctx, actorB.ID, "ask-does-not-exist", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
 	sentinelIs(t, ghostErr, ErrNotFound, "answer a nonexistent ask")
 
 	// bob's rejected answer had no effect: the ask still carries only the
@@ -769,7 +769,7 @@ func TestAnswerAskNonexistentNotFound(t *testing.T) {
 	if _, _, err := s.AppendMessage(ctx, Message{AuthorAccountID: author.ID, Blocks: []MessageBlock{textBlock("no ask here")}}, string(ch.ID), TopicRef{Name: "general"}, ""); err != nil {
 		t.Fatalf("AppendMessage: %v", err)
 	}
-	_, err := s.AnswerAsk(ctx, author.ID, "ask-ghost", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
+	_, _, err := s.AnswerAsk(ctx, author.ID, "ask-ghost", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
 	sentinelIs(t, err, ErrNotFound, "answer a nonexistent ask id")
 }
 
@@ -824,7 +824,7 @@ func TestAnswerAskValidation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := s.AnswerAsk(ctx, author.ID, tc.askID, tc.answers)
+			_, _, err := s.AnswerAsk(ctx, author.ID, tc.askID, tc.answers)
 			sentinelIs(t, err, ErrInvalidArgument, tc.name)
 		})
 	}
@@ -858,7 +858,7 @@ func TestAnswerAskEmptySkipSatisfiesCoverage(t *testing.T) {
 
 	// q1 gets a real answer; q2 is an explicit empty-skip. Coverage is
 	// satisfied (both questions named) and the whole answer is accepted.
-	if _, err := s.AnswerAsk(ctx, author.ID, "ask-mq", []AskAnswer{
+	if _, _, err := s.AnswerAsk(ctx, author.ID, "ask-mq", []AskAnswer{
 		{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}},
 		{QuestionID: "q2"},
 	}); err != nil {
@@ -899,7 +899,7 @@ func TestAnswerAskRejectsReAnswer(t *testing.T) {
 	}
 
 	// First answer succeeds and records opt-a.
-	if _, err := s.AnswerAsk(ctx, author.ID, "ask-1", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}}); err != nil {
+	if _, _, err := s.AnswerAsk(ctx, author.ID, "ask-1", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}}); err != nil {
 		t.Fatalf("first AnswerAsk: %v", err)
 	}
 	if got := answeredAsk(t, ctx, s, author.ID, ch.ID, "ask-1"); !reflect.DeepEqual(got, []string{"opt-a"}) {
@@ -909,7 +909,7 @@ func TestAnswerAskRejectsReAnswer(t *testing.T) {
 	// Second answer — a DIFFERENT valid choice — is rejected as a conflict. The
 	// containment SELECT re-reads the persisted JSONB, so this also proves the
 	// Answered flag survived the round-trip.
-	_, err := s.AnswerAsk(ctx, author.ID, "ask-1", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-b"}}})
+	_, _, err := s.AnswerAsk(ctx, author.ID, "ask-1", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-b"}}})
 	sentinelIs(t, err, ErrConflict, "re-answer an answered ask")
 
 	// The reject is atomic: the original opt-a is intact, never overwritten by
@@ -937,7 +937,7 @@ func TestAnswerAskRejectsReAnswerAfterSkip(t *testing.T) {
 
 	// An empty-skip entry is an accepted answer that satisfies coverage; it
 	// records no chosen option but still flips Answered.
-	if _, err := s.AnswerAsk(ctx, author.ID, "ask-skip", []AskAnswer{{QuestionID: "q1"}}); err != nil {
+	if _, _, err := s.AnswerAsk(ctx, author.ID, "ask-skip", []AskAnswer{{QuestionID: "q1"}}); err != nil {
 		t.Fatalf("first AnswerAsk(empty-skip): %v", err)
 	}
 	if got := answeredAsk(t, ctx, s, author.ID, ch.ID, "ask-skip"); len(got) != 0 {
@@ -946,7 +946,7 @@ func TestAnswerAskRejectsReAnswerAfterSkip(t *testing.T) {
 
 	// Despite the ask carrying no per-question trace, the re-answer is rejected
 	// as a conflict — the Answered flag alone gates it.
-	_, err := s.AnswerAsk(ctx, author.ID, "ask-skip", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
+	_, _, err := s.AnswerAsk(ctx, author.ID, "ask-skip", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
 	sentinelIs(t, err, ErrConflict, "re-answer a skipped ask")
 
 	// The reject took no effect: the ask stays skipped, never gaining opt-a.
@@ -966,7 +966,7 @@ func TestAnswerAskMultiSelect(t *testing.T) {
 	}
 
 	// A multi-select ask accepts and records more than one offered option.
-	if _, err := s.AnswerAsk(ctx, author.ID, "ask-multi", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a", "opt-b"}}}); err != nil {
+	if _, _, err := s.AnswerAsk(ctx, author.ID, "ask-multi", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a", "opt-b"}}}); err != nil {
 		t.Fatalf("AnswerAsk(multi): %v", err)
 	}
 	if got := answeredAsk(t, ctx, s, author.ID, ch.ID, "ask-multi"); !reflect.DeepEqual(got, []string{"opt-a", "opt-b"}) {
@@ -990,7 +990,7 @@ func TestAnswerAskRejectsDuplicateOption(t *testing.T) {
 	}
 
 	// The same offered option chosen twice is rejected.
-	_, err := s.AnswerAsk(ctx, author.ID, "ask-dup", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a", "opt-a"}}})
+	_, _, err := s.AnswerAsk(ctx, author.ID, "ask-dup", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a", "opt-a"}}})
 	sentinelIs(t, err, ErrInvalidArgument, "duplicate chosen option")
 
 	// The rejected answer left no trace: the ask is still unanswered.
@@ -999,7 +999,7 @@ func TestAnswerAskRejectsDuplicateOption(t *testing.T) {
 	}
 
 	// Distinct multi-selections still succeed on the same ask.
-	if _, err := s.AnswerAsk(ctx, author.ID, "ask-dup", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a", "opt-b"}}}); err != nil {
+	if _, _, err := s.AnswerAsk(ctx, author.ID, "ask-dup", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a", "opt-b"}}}); err != nil {
 		t.Fatalf("distinct multi-select rejected: %v", err)
 	}
 	if got := answeredAsk(t, ctx, s, author.ID, ch.ID, "ask-dup"); !reflect.DeepEqual(got, []string{"opt-a", "opt-b"}) {
@@ -1033,7 +1033,7 @@ func TestAnswerAskConcurrentDistinctAsksSerialize(t *testing.T) {
 	answer := func(askID, opt string) {
 		defer wg.Done()
 		<-start
-		_, _ = s.AnswerAsk(ctx, author.ID, askID, []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{opt}}})
+		_, _, _ = s.AnswerAsk(ctx, author.ID, askID, []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{opt}}})
 	}
 	wg.Add(2)
 	go answer("ask-x", "opt-a")
@@ -1090,7 +1090,7 @@ func TestAnswerAskConcurrentSameAskOneConflict(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			_, errs[i] = s.AnswerAsk(ctx, author.ID, "ask-race", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{opts[i]}}})
+			_, _, errs[i] = s.AnswerAsk(ctx, author.ID, "ask-race", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{opts[i]}}})
 		}(i)
 	}
 	close(start)
@@ -1316,7 +1316,7 @@ func TestAnswerAskRecordsCustomText(t *testing.T) {
 	}
 
 	// q-region answered by custom_text with no chosen options; q1 by an option.
-	if _, err := s.AnswerAsk(ctx, author.ID, "ask-free", []AskAnswer{
+	if _, _, err := s.AnswerAsk(ctx, author.ID, "ask-free", []AskAnswer{
 		{QuestionID: "q-region", CustomText: "us-east-2, please"},
 		{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}},
 	}); err != nil {
@@ -1358,7 +1358,7 @@ func TestAnswerAskRejectsOptionPlusCustomTextOnSingleSelect(t *testing.T) {
 	}
 
 	// One chosen option AND a custom_text on the single-select question: reject.
-	_, err := s.AnswerAsk(ctx, author.ID, "ask-single", []AskAnswer{
+	_, _, err := s.AnswerAsk(ctx, author.ID, "ask-single", []AskAnswer{
 		{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}, CustomText: "foo"},
 	})
 	sentinelIs(t, err, ErrInvalidArgument, "option plus custom text on single-select")

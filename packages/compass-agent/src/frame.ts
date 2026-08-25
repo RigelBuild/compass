@@ -16,8 +16,8 @@
 //     Publish spine) so the Server can reconstruct the session on resume.
 //   - stdin: `AgentControl` — oneof control {
 //         PromptControl prompt; SteerControl steer; DeliverControl deliver;
-//         AskAnswerControl ask_answer; ConfigControl config; TranscriptReplay
-//         replay; ReplayComplete replay_complete }.
+//         ConfigControl config; TranscriptReplay replay; ReplayComplete
+//         replay_complete }.
 //
 // `AgentFrame` is an internal-only additive proto message generated with the
 // agent's proto via the path-filtered gen lane (not the public client surface);

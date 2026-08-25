@@ -346,7 +346,24 @@ message MessageBlock {
     string text = 1;
     // A structured question awaiting an answer.
     Ask ask = 2;
+    // The answer to a previously-posted Ask, authored by the answerer.
+    // Server-owned: constructed only by RespondToAsk from the just-answered
+    // stored ask; a client-supplied ask_answer block (PostMessage / the agent
+    // update path) is rejected — answers enter only through RespondToAsk,
+    // which enforces the answer-once guard and answer validation.
+    AskAnswerBlock ask_answer = 3;
   }
+}
+
+// The answer to a previously-posted Ask, authored by the answerer. Entirely
+// server-owned: constructed by RespondToAsk from the just-answered stored ask.
+message AskAnswerBlock {
+  // The answered ask snapshot: ask_id for correlation, answered=true, and the
+  // per-question recorded answers (chosen_option_ids / custom_text).
+  Ask ask = 1;
+  // The asking agent's account id, denormalized so the delivery consumer can
+  // target the asker without an ask_id -> author lookup per message.
+  string asker_account_id = 2;
 }
 
 // A structured question set the agent asks: one atomic form of one or more

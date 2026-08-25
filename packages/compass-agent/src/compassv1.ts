@@ -70,8 +70,6 @@ export {
 	// line by the set oneof field.
 	type AgentFrame,
 	AgentFrameSchema,
-	type AskAnswerControl,
-	AskAnswerControlSchema,
 	type ConfigControl,
 	ConfigControlSchema,
 	// Agent -> Runner control-plane ack frames (AgentFrame oneof variants),
@@ -114,12 +112,16 @@ export {
 	// server-side, rendered as a fixed label so it needs no render guard.
 	AgentPresence,
 	type Ask,
+	// The answered-ask snapshot a delivered `ask_answer` message carries on the
+	// deliver lane (RIG-2257): the answered `Ask` plus the denormalized asker
+	// account id. The agent renders it via `formatAskAnswerForPrompt`.
+	type AskAnswerBlock,
+	AskAnswerBlockSchema,
 	type AskOption,
 	AskOptionSchema,
 	type AskQuestion,
 	// The answer to one AskQuestion (question_id + chosen option ids + free
-	// text). AskAnswerControl carries a repeated AskQuestionAnswer so a
-	// multi-question ask survives the control wire keyed per question — the
+	// text). A repeated AskQuestionAnswer keys one answer per question — the
 	// same shape RespondToAskRequest uses.
 	type AskQuestionAnswer,
 	AskQuestionAnswerSchema,

@@ -10,8 +10,8 @@ import (
 // activity string is durable in the store, the presence enum is ephemeral and
 // in-memory). runnerhub.Hub implements it; comms depends only on this narrow,
 // public-typed surface — the runnerhub PresenceSnapshot / presence-map internals
-// stay in the rail layer, off the comms handler, exactly as AskAnswerWaker keeps
-// the control-dispatch envelope out of comms.
+// stay in the rail layer, off the comms handler, exactly as CommsCaller keeps
+// the runnerhub relay envelope out of comms.
 //
 // An agent absent from the returned map reports OFFLINE at the roster (the hub's
 // PresenceFor already defaults absent agents to OFFLINE, but the handler

@@ -49,7 +49,7 @@ type Store struct {
 	// ReparentAgent) on their own tx right after writing parent_agent_id. nil
 	// until wired (a store with no hook — every store-only test — is a no-op).
 	// No lock: set once before serving, so the write happens-before the first
-	// concurrent parent-edge write (mirrors comms.SetAskWaker / hub.SetSettleSink).
+	// concurrent parent-edge write (mirrors hub.SetSettleSink).
 	coordinationHook CoordinationHook
 }
 

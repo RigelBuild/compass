@@ -20,16 +20,25 @@ import (
 type blockKind string
 
 const (
-	blockKindText blockKind = "text"
-	blockKindAsk  blockKind = "ask"
+	blockKindText      blockKind = "text"
+	blockKindAsk       blockKind = "ask"
+	blockKindAskAnswer blockKind = "ask_answer"
 )
 
 // storedBlock is the JSONB shape of one MessageBlock. Kind is the discriminant;
-// exactly one of Text / Ask is populated to match it.
+// exactly one of Text / Ask / AskAnswer is populated to match it.
 type storedBlock struct {
-	Kind blockKind  `json:"kind"`
-	Text *string    `json:"text,omitempty"`
-	Ask  *storedAsk `json:"ask,omitempty"`
+	Kind      blockKind        `json:"kind"`
+	Text      *string          `json:"text,omitempty"`
+	Ask       *storedAsk       `json:"ask,omitempty"`
+	AskAnswer *storedAskAnswer `json:"ask_answer,omitempty"`
+}
+
+// storedAskAnswer is the JSONB shape of an ask_answer block: the answered ask
+// snapshot plus the asking agent's account id.
+type storedAskAnswer struct {
+	Ask            storedAsk `json:"ask"`
+	AskerAccountID string    `json:"asker_account_id"`
 }
 
 // storedAsk is the JSONB shape of an Ask block.
@@ -63,24 +72,33 @@ type storedAskOption struct {
 }
 
 // marshalBlocks serializes a message's blocks to JSONB for storage, rejecting a
-// malformed block (neither or both of text/ask set, or an ask with zero
-// questions or a duplicate/empty question_id) as ErrInvalidArgument so a
-// bad oneof never reaches a row. It is pure: ask_id is assigned once at append
-// (mintAskIDs), never here, so re-serializing an existing message (the update
-// path) can never re-mint an id and break RespondToAsk correlation.
+// malformed block (not exactly one of text/ask/ask_answer set, an ask with zero
+// questions or a duplicate/empty question_id, or a malformed ask_answer) as
+// ErrInvalidArgument so a bad oneof never reaches a row. It is pure: ask_id is
+// assigned once at append (mintAskIDs), never here, so re-serializing an
+// existing message (the update path) can never re-mint an id and break
+// RespondToAsk correlation. It does NOT reject the server-owned ask_answer
+// variant on caller identity (it has none — it receives only the block slice);
+// server-ownership is enforced at the wire edge (T4). It accepts and
+// structurally validates the variant so AnswerAsk's own answer persist works.
 func marshalBlocks(blocks []MessageBlock) ([]byte, error) {
 	stored := make([]storedBlock, 0, len(blocks))
 	for i, b := range blocks {
 		switch {
-		case b.Text != nil && b.Ask == nil:
+		case b.Text != nil && b.Ask == nil && b.AskAnswer == nil:
 			stored = append(stored, storedBlock{Kind: blockKindText, Text: b.Text})
-		case b.Ask != nil && b.Text == nil:
+		case b.Ask != nil && b.Text == nil && b.AskAnswer == nil:
 			if err := validateAskQuestions(b.Ask); err != nil {
 				return nil, err
 			}
 			stored = append(stored, storedBlock{Kind: blockKindAsk, Ask: toStoredAsk(b.Ask)})
+		case b.AskAnswer != nil && b.Text == nil && b.Ask == nil:
+			if err := validateAskAnswer(b.AskAnswer); err != nil {
+				return nil, err
+			}
+			stored = append(stored, storedBlock{Kind: blockKindAskAnswer, AskAnswer: toStoredAskAnswer(b.AskAnswer)})
 		default:
-			return nil, fmt.Errorf("%w: block %d must set exactly one of text/ask", ErrInvalidArgument, i)
+			return nil, fmt.Errorf("%w: block %d must set exactly one of text/ask/ask_answer", ErrInvalidArgument, i)
 		}
 	}
 	out, err := json.Marshal(stored)
@@ -114,6 +132,29 @@ func validateAskQuestions(a *Ask) error {
 		if q.Recommended != nil && (*q.Recommended < 0 || int(*q.Recommended) >= len(q.Options)) {
 			return fmt.Errorf("%w: ask question %q recommended index %d out of range for %d options", ErrInvalidArgument, q.QuestionID, *q.Recommended, len(q.Options))
 		}
+	}
+	return nil
+}
+
+// validateAskAnswer enforces the ask_answer variant invariant on the write
+// path: a non-nil answered Ask snapshot (a non-empty AskID, Answered=true, and
+// well-formed questions — the same structural integrity every stored ask must
+// have), plus a non-empty AskerAccountID. Caller-supplied shape, so the
+// ErrInvalidArgument family — same as marshalBlocks' exactly-one-of check. The
+// server-ownership rule (only AnswerAsk may construct one) is a wire-edge
+// concern (T4), NOT enforced here.
+func validateAskAnswer(b *AskAnswerBlock) error {
+	if b.Ask.AskID == "" {
+		return fmt.Errorf("%w: ask_answer snapshot has empty ask_id", ErrInvalidArgument)
+	}
+	if !b.Ask.Answered {
+		return fmt.Errorf("%w: ask_answer snapshot must be answered", ErrInvalidArgument)
+	}
+	if err := askQuestionsWellFormed(&b.Ask); err != nil {
+		return fmt.Errorf("%w: ask_answer snapshot: %w", ErrInvalidArgument, err)
+	}
+	if b.AskerAccountID == "" {
+		return fmt.Errorf("%w: ask_answer has empty asker_account_id", ErrInvalidArgument)
 	}
 	return nil
 }
@@ -209,6 +250,33 @@ func unmarshalBlocks(data []byte) ([]MessageBlock, error) {
 				return nil, fmt.Errorf("store: block %d ask is corrupt or pre-reshape: %w", i, err)
 			}
 			blocks = append(blocks, MessageBlock{Ask: ask})
+		case blockKindAskAnswer:
+			if sb.AskAnswer == nil {
+				return nil, fmt.Errorf("store: block %d kind=ask_answer but no ask_answer payload", i)
+			}
+			// A stored ask_answer must satisfy the same invariant the write
+			// path guarantees: an answered snapshot (non-empty ask_id,
+			// answered=true, well-formed questions) and a non-empty
+			// asker_account_id. A row that fails this is corrupt — fail loud
+			// rather than decode a broken answer (the totality discipline). A
+			// stored-row defect, not caller input, so NOT ErrInvalidArgument.
+			ask := fromStoredAsk(&sb.AskAnswer.Ask)
+			if sb.AskAnswer.Ask.AskID == "" {
+				return nil, fmt.Errorf("store: block %d ask_answer snapshot has empty ask_id", i)
+			}
+			if !sb.AskAnswer.Ask.Answered {
+				return nil, fmt.Errorf("store: block %d ask_answer snapshot is not answered", i)
+			}
+			if err := askQuestionsWellFormed(ask); err != nil {
+				return nil, fmt.Errorf("store: block %d ask_answer snapshot is corrupt: %w", i, err)
+			}
+			if sb.AskAnswer.AskerAccountID == "" {
+				return nil, fmt.Errorf("store: block %d ask_answer has empty asker_account_id", i)
+			}
+			blocks = append(blocks, MessageBlock{AskAnswer: &AskAnswerBlock{
+				Ask:            *ask,
+				AskerAccountID: AccountID(sb.AskAnswer.AskerAccountID),
+			}})
 		default:
 			return nil, fmt.Errorf("store: block %d has unknown kind %q", i, sb.Kind)
 		}
@@ -217,9 +285,10 @@ func unmarshalBlocks(data []byte) ([]MessageBlock, error) {
 }
 
 // textContent concatenates the text of a message's text blocks (with an ask's
-// question folded in, so a question is searchable) into the string the
-// generated tsvector indexes. Newline-joined so distinct blocks don't merge
-// words across a boundary.
+// question folded in, and an ask_answer's snapshot questions + custom answer
+// text folded in, so both are searchable) into the string the generated
+// tsvector indexes. Newline-joined so distinct blocks don't merge words across
+// a boundary.
 func textContent(blocks []MessageBlock) string {
 	var parts []string
 	for _, b := range blocks {
@@ -229,6 +298,13 @@ func textContent(blocks []MessageBlock) string {
 		case b.Ask != nil:
 			for _, q := range b.Ask.Questions {
 				parts = append(parts, q.Question)
+			}
+		case b.AskAnswer != nil:
+			for _, q := range b.AskAnswer.Ask.Questions {
+				parts = append(parts, q.Question)
+				if q.CustomText != "" {
+					parts = append(parts, q.CustomText)
+				}
 			}
 		}
 	}
@@ -279,4 +355,13 @@ func fromStoredAsk(s *storedAsk) *Ask {
 		})
 	}
 	return &Ask{AskID: s.AskID, Questions: qs, Answered: s.Answered}
+}
+
+// toStoredAskAnswer maps the domain AskAnswerBlock onto its JSONB shape,
+// reusing toStoredAsk for the answered snapshot.
+func toStoredAskAnswer(b *AskAnswerBlock) *storedAskAnswer {
+	return &storedAskAnswer{
+		Ask:            *toStoredAsk(&b.Ask),
+		AskerAccountID: string(b.AskerAccountID),
+	}
 }

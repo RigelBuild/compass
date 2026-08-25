@@ -17,8 +17,8 @@ export interface Queued {
 export class AsyncBuffer {
 	// Intentionally UNCAPPED, unlike the FrameSink's trace queue (TRACE_QUEUE_CAP,
 	// drop-oldest under a wedged consumer, OQ-2(c)). Control ops are NOT
-	// loss-tolerable — silently dropping the oldest would lose a prompt/askAnswer
-	// the agent must apply — so the trace path's drop-oldest is the wrong policy
+	// loss-tolerable — silently dropping the oldest would lose a prompt the
+	// agent must apply — so the trace path's drop-oldest is the wrong policy
 	// here. Unbounded growth is bounded in practice by the Runner's own retention:
 	// it only redelivers ops past the acked cursor, and control volume is low, so
 	// the backlog a parked consumer + reconnect can accumulate is small. The

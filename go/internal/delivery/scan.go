@@ -53,6 +53,11 @@ func (c *Consumer) scanMissedMentions(ctx context.Context) {
 				continue // leave unmarked; re-scanned next recovery point
 			}
 			c.routeMentionsFor(ctx, channel, author, wireMsg)
+			// RIG-2257: re-derive the ask_answer out-of-sweep owed row here too,
+			// so a consumer restart in the AnswerAsk-commit → fanOut window still
+			// backstops the out-of-sweep asker (the answer message is committed
+			// mentions_routed_at IS NULL, so it appears in this scan).
+			c.routeAskAnswerFor(ctx, channel, wireMsg)
 			if err := c.st.MarkMentionsRouted(ctx, id); err != nil {
 				c.log.ErrorContext(ctx, "delivery: scan missed mentions mark", "error", err, "message_id", id)
 				continue // leave unmarked; the pass ran but re-runs next point (at-least-once)

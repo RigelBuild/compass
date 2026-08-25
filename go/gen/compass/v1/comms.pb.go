@@ -1186,6 +1186,7 @@ type MessageBlock struct {
 	//
 	//	*MessageBlock_Text
 	//	*MessageBlock_Ask
+	//	*MessageBlock_AskAnswer
 	Block         isMessageBlock_Block `protobuf_oneof:"block"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1246,6 +1247,15 @@ func (x *MessageBlock) GetAsk() *Ask {
 	return nil
 }
 
+func (x *MessageBlock) GetAskAnswer() *AskAnswerBlock {
+	if x != nil {
+		if x, ok := x.Block.(*MessageBlock_AskAnswer); ok {
+			return x.AskAnswer
+		}
+	}
+	return nil
+}
+
 type isMessageBlock_Block interface {
 	isMessageBlock_Block()
 }
@@ -1260,9 +1270,78 @@ type MessageBlock_Ask struct {
 	Ask *Ask `protobuf:"bytes,2,opt,name=ask,proto3,oneof"`
 }
 
+type MessageBlock_AskAnswer struct {
+	// The answer to a previously-posted Ask, authored by the answerer.
+	// Server-owned: constructed only by RespondToAsk from the just-answered
+	// stored ask; a client-supplied ask_answer block (PostMessage / the agent
+	// update path) is rejected — answers enter only through RespondToAsk,
+	// which enforces the answer-once guard and answer validation.
+	AskAnswer *AskAnswerBlock `protobuf:"bytes,3,opt,name=ask_answer,json=askAnswer,proto3,oneof"`
+}
+
 func (*MessageBlock_Text) isMessageBlock_Block() {}
 
 func (*MessageBlock_Ask) isMessageBlock_Block() {}
+
+func (*MessageBlock_AskAnswer) isMessageBlock_Block() {}
+
+// The answer to a previously-posted Ask, authored by the answerer. Entirely
+// server-owned: constructed by RespondToAsk from the just-answered stored ask.
+type AskAnswerBlock struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The answered ask snapshot: ask_id for correlation, answered=true, and the
+	// per-question recorded answers (chosen_option_ids / custom_text).
+	Ask *Ask `protobuf:"bytes,1,opt,name=ask,proto3" json:"ask,omitempty"`
+	// The asking agent's account id, denormalized so the delivery consumer can
+	// target the asker without an ask_id -> author lookup per message.
+	AskerAccountId string `protobuf:"bytes,2,opt,name=asker_account_id,json=askerAccountId,proto3" json:"asker_account_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *AskAnswerBlock) Reset() {
+	*x = AskAnswerBlock{}
+	mi := &file_compass_v1_comms_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AskAnswerBlock) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AskAnswerBlock) ProtoMessage() {}
+
+func (x *AskAnswerBlock) ProtoReflect() protoreflect.Message {
+	mi := &file_compass_v1_comms_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AskAnswerBlock.ProtoReflect.Descriptor instead.
+func (*AskAnswerBlock) Descriptor() ([]byte, []int) {
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *AskAnswerBlock) GetAsk() *Ask {
+	if x != nil {
+		return x.Ask
+	}
+	return nil
+}
+
+func (x *AskAnswerBlock) GetAskerAccountId() string {
+	if x != nil {
+		return x.AskerAccountId
+	}
+	return ""
+}
 
 // A structured question set the agent asks: one atomic form of one or more
 // questions (mirrors the native OMP ask tool, which is multi-question by
@@ -1299,7 +1378,7 @@ type Ask struct {
 
 func (x *Ask) Reset() {
 	*x = Ask{}
-	mi := &file_compass_v1_comms_proto_msgTypes[11]
+	mi := &file_compass_v1_comms_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1311,7 +1390,7 @@ func (x *Ask) String() string {
 func (*Ask) ProtoMessage() {}
 
 func (x *Ask) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[11]
+	mi := &file_compass_v1_comms_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1324,7 +1403,7 @@ func (x *Ask) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Ask.ProtoReflect.Descriptor instead.
 func (*Ask) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{11}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *Ask) GetAskId() string {
@@ -1389,7 +1468,7 @@ type AskQuestion struct {
 
 func (x *AskQuestion) Reset() {
 	*x = AskQuestion{}
-	mi := &file_compass_v1_comms_proto_msgTypes[12]
+	mi := &file_compass_v1_comms_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1401,7 +1480,7 @@ func (x *AskQuestion) String() string {
 func (*AskQuestion) ProtoMessage() {}
 
 func (x *AskQuestion) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[12]
+	mi := &file_compass_v1_comms_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1414,7 +1493,7 @@ func (x *AskQuestion) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AskQuestion.ProtoReflect.Descriptor instead.
 func (*AskQuestion) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{12}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *AskQuestion) GetQuestionId() string {
@@ -1496,7 +1575,7 @@ type AskOption struct {
 
 func (x *AskOption) Reset() {
 	*x = AskOption{}
-	mi := &file_compass_v1_comms_proto_msgTypes[13]
+	mi := &file_compass_v1_comms_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1508,7 +1587,7 @@ func (x *AskOption) String() string {
 func (*AskOption) ProtoMessage() {}
 
 func (x *AskOption) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[13]
+	mi := &file_compass_v1_comms_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1521,7 +1600,7 @@ func (x *AskOption) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AskOption.ProtoReflect.Descriptor instead.
 func (*AskOption) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{13}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *AskOption) GetId() string {
@@ -1602,7 +1681,7 @@ type SubscribeCommsResponse struct {
 
 func (x *SubscribeCommsResponse) Reset() {
 	*x = SubscribeCommsResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[14]
+	mi := &file_compass_v1_comms_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1614,7 +1693,7 @@ func (x *SubscribeCommsResponse) String() string {
 func (*SubscribeCommsResponse) ProtoMessage() {}
 
 func (x *SubscribeCommsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[14]
+	mi := &file_compass_v1_comms_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1627,7 +1706,7 @@ func (x *SubscribeCommsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeCommsResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeCommsResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{14}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *SubscribeCommsResponse) GetSeq() uint64 {
@@ -1818,7 +1897,7 @@ type MessagePosted struct {
 
 func (x *MessagePosted) Reset() {
 	*x = MessagePosted{}
-	mi := &file_compass_v1_comms_proto_msgTypes[15]
+	mi := &file_compass_v1_comms_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1830,7 +1909,7 @@ func (x *MessagePosted) String() string {
 func (*MessagePosted) ProtoMessage() {}
 
 func (x *MessagePosted) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[15]
+	mi := &file_compass_v1_comms_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1843,7 +1922,7 @@ func (x *MessagePosted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessagePosted.ProtoReflect.Descriptor instead.
 func (*MessagePosted) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{15}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *MessagePosted) GetMessage() *Message {
@@ -1865,7 +1944,7 @@ type MessageUpdated struct {
 
 func (x *MessageUpdated) Reset() {
 	*x = MessageUpdated{}
-	mi := &file_compass_v1_comms_proto_msgTypes[16]
+	mi := &file_compass_v1_comms_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1877,7 +1956,7 @@ func (x *MessageUpdated) String() string {
 func (*MessageUpdated) ProtoMessage() {}
 
 func (x *MessageUpdated) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[16]
+	mi := &file_compass_v1_comms_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1890,7 +1969,7 @@ func (x *MessageUpdated) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MessageUpdated.ProtoReflect.Descriptor instead.
 func (*MessageUpdated) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{16}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *MessageUpdated) GetMessage() *Message {
@@ -1913,7 +1992,7 @@ type TopicUpserted struct {
 
 func (x *TopicUpserted) Reset() {
 	*x = TopicUpserted{}
-	mi := &file_compass_v1_comms_proto_msgTypes[17]
+	mi := &file_compass_v1_comms_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1925,7 +2004,7 @@ func (x *TopicUpserted) String() string {
 func (*TopicUpserted) ProtoMessage() {}
 
 func (x *TopicUpserted) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[17]
+	mi := &file_compass_v1_comms_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1938,7 +2017,7 @@ func (x *TopicUpserted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TopicUpserted.ProtoReflect.Descriptor instead.
 func (*TopicUpserted) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{17}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *TopicUpserted) GetTopic() *Topic {
@@ -1966,7 +2045,7 @@ type ChannelChanged struct {
 
 func (x *ChannelChanged) Reset() {
 	*x = ChannelChanged{}
-	mi := &file_compass_v1_comms_proto_msgTypes[18]
+	mi := &file_compass_v1_comms_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1978,7 +2057,7 @@ func (x *ChannelChanged) String() string {
 func (*ChannelChanged) ProtoMessage() {}
 
 func (x *ChannelChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[18]
+	mi := &file_compass_v1_comms_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1991,7 +2070,7 @@ func (x *ChannelChanged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelChanged.ProtoReflect.Descriptor instead.
 func (*ChannelChanged) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{18}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ChannelChanged) GetChannel() *Channel {
@@ -2018,7 +2097,7 @@ type ChannelGroupChanged struct {
 
 func (x *ChannelGroupChanged) Reset() {
 	*x = ChannelGroupChanged{}
-	mi := &file_compass_v1_comms_proto_msgTypes[19]
+	mi := &file_compass_v1_comms_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2030,7 +2109,7 @@ func (x *ChannelGroupChanged) String() string {
 func (*ChannelGroupChanged) ProtoMessage() {}
 
 func (x *ChannelGroupChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[19]
+	mi := &file_compass_v1_comms_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2043,7 +2122,7 @@ func (x *ChannelGroupChanged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChannelGroupChanged.ProtoReflect.Descriptor instead.
 func (*ChannelGroupChanged) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{19}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ChannelGroupChanged) GetGroup() *ChannelGroup {
@@ -2063,7 +2142,7 @@ type AccountChanged struct {
 
 func (x *AccountChanged) Reset() {
 	*x = AccountChanged{}
-	mi := &file_compass_v1_comms_proto_msgTypes[20]
+	mi := &file_compass_v1_comms_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2075,7 +2154,7 @@ func (x *AccountChanged) String() string {
 func (*AccountChanged) ProtoMessage() {}
 
 func (x *AccountChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[20]
+	mi := &file_compass_v1_comms_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2088,7 +2167,7 @@ func (x *AccountChanged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccountChanged.ProtoReflect.Descriptor instead.
 func (*AccountChanged) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{20}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *AccountChanged) GetAccount() *Account {
@@ -2108,7 +2187,7 @@ type AgentWorkspaceChanged struct {
 
 func (x *AgentWorkspaceChanged) Reset() {
 	*x = AgentWorkspaceChanged{}
-	mi := &file_compass_v1_comms_proto_msgTypes[21]
+	mi := &file_compass_v1_comms_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2120,7 +2199,7 @@ func (x *AgentWorkspaceChanged) String() string {
 func (*AgentWorkspaceChanged) ProtoMessage() {}
 
 func (x *AgentWorkspaceChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[21]
+	mi := &file_compass_v1_comms_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2133,7 +2212,7 @@ func (x *AgentWorkspaceChanged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentWorkspaceChanged.ProtoReflect.Descriptor instead.
 func (*AgentWorkspaceChanged) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{21}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *AgentWorkspaceChanged) GetWorkspace() *AgentWorkspace {
@@ -2154,7 +2233,7 @@ type CommsResyncRequired struct {
 
 func (x *CommsResyncRequired) Reset() {
 	*x = CommsResyncRequired{}
-	mi := &file_compass_v1_comms_proto_msgTypes[22]
+	mi := &file_compass_v1_comms_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2166,7 +2245,7 @@ func (x *CommsResyncRequired) String() string {
 func (*CommsResyncRequired) ProtoMessage() {}
 
 func (x *CommsResyncRequired) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[22]
+	mi := &file_compass_v1_comms_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2179,7 +2258,7 @@ func (x *CommsResyncRequired) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommsResyncRequired.ProtoReflect.Descriptor instead.
 func (*CommsResyncRequired) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{22}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{23}
 }
 
 // A live agent's presence changed (SEA-1569). Presence is derived from the
@@ -2201,7 +2280,7 @@ type AgentPresenceChanged struct {
 
 func (x *AgentPresenceChanged) Reset() {
 	*x = AgentPresenceChanged{}
-	mi := &file_compass_v1_comms_proto_msgTypes[23]
+	mi := &file_compass_v1_comms_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2213,7 +2292,7 @@ func (x *AgentPresenceChanged) String() string {
 func (*AgentPresenceChanged) ProtoMessage() {}
 
 func (x *AgentPresenceChanged) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[23]
+	mi := &file_compass_v1_comms_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2226,7 +2305,7 @@ func (x *AgentPresenceChanged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentPresenceChanged.ProtoReflect.Descriptor instead.
 func (*AgentPresenceChanged) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{23}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *AgentPresenceChanged) GetAgentAccountId() string {
@@ -2260,7 +2339,7 @@ type CreateUserRequest struct {
 
 func (x *CreateUserRequest) Reset() {
 	*x = CreateUserRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[24]
+	mi := &file_compass_v1_comms_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2272,7 +2351,7 @@ func (x *CreateUserRequest) String() string {
 func (*CreateUserRequest) ProtoMessage() {}
 
 func (x *CreateUserRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[24]
+	mi := &file_compass_v1_comms_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2285,7 +2364,7 @@ func (x *CreateUserRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateUserRequest.ProtoReflect.Descriptor instead.
 func (*CreateUserRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{24}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CreateUserRequest) GetHandle() string {
@@ -2311,7 +2390,7 @@ type CreateUserResponse struct {
 
 func (x *CreateUserResponse) Reset() {
 	*x = CreateUserResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[25]
+	mi := &file_compass_v1_comms_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2323,7 +2402,7 @@ func (x *CreateUserResponse) String() string {
 func (*CreateUserResponse) ProtoMessage() {}
 
 func (x *CreateUserResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[25]
+	mi := &file_compass_v1_comms_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2336,7 +2415,7 @@ func (x *CreateUserResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateUserResponse.ProtoReflect.Descriptor instead.
 func (*CreateUserResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{25}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *CreateUserResponse) GetAccount() *Account {
@@ -2360,7 +2439,7 @@ type CreateAgentRequest struct {
 
 func (x *CreateAgentRequest) Reset() {
 	*x = CreateAgentRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[26]
+	mi := &file_compass_v1_comms_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2372,7 +2451,7 @@ func (x *CreateAgentRequest) String() string {
 func (*CreateAgentRequest) ProtoMessage() {}
 
 func (x *CreateAgentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[26]
+	mi := &file_compass_v1_comms_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2385,7 +2464,7 @@ func (x *CreateAgentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAgentRequest.ProtoReflect.Descriptor instead.
 func (*CreateAgentRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{26}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *CreateAgentRequest) GetHandle() string {
@@ -2418,7 +2497,7 @@ type CreateAgentResponse struct {
 
 func (x *CreateAgentResponse) Reset() {
 	*x = CreateAgentResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[27]
+	mi := &file_compass_v1_comms_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2430,7 +2509,7 @@ func (x *CreateAgentResponse) String() string {
 func (*CreateAgentResponse) ProtoMessage() {}
 
 func (x *CreateAgentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[27]
+	mi := &file_compass_v1_comms_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2443,7 +2522,7 @@ func (x *CreateAgentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateAgentResponse.ProtoReflect.Descriptor instead.
 func (*CreateAgentResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{27}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *CreateAgentResponse) GetAccount() *Account {
@@ -2464,7 +2543,7 @@ type ListAccountsRequest struct {
 
 func (x *ListAccountsRequest) Reset() {
 	*x = ListAccountsRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[28]
+	mi := &file_compass_v1_comms_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2476,7 +2555,7 @@ func (x *ListAccountsRequest) String() string {
 func (*ListAccountsRequest) ProtoMessage() {}
 
 func (x *ListAccountsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[28]
+	mi := &file_compass_v1_comms_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2489,7 +2568,7 @@ func (x *ListAccountsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAccountsRequest.ProtoReflect.Descriptor instead.
 func (*ListAccountsRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{28}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListAccountsRequest) GetSnapshotSeq() uint64 {
@@ -2508,7 +2587,7 @@ type ListAccountsResponse struct {
 
 func (x *ListAccountsResponse) Reset() {
 	*x = ListAccountsResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[29]
+	mi := &file_compass_v1_comms_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2520,7 +2599,7 @@ func (x *ListAccountsResponse) String() string {
 func (*ListAccountsResponse) ProtoMessage() {}
 
 func (x *ListAccountsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[29]
+	mi := &file_compass_v1_comms_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2533,7 +2612,7 @@ func (x *ListAccountsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListAccountsResponse.ProtoReflect.Descriptor instead.
 func (*ListAccountsResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{29}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListAccountsResponse) GetAccounts() []*Account {
@@ -2556,7 +2635,7 @@ type CreateChannelGroupRequest struct {
 
 func (x *CreateChannelGroupRequest) Reset() {
 	*x = CreateChannelGroupRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[30]
+	mi := &file_compass_v1_comms_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2568,7 +2647,7 @@ func (x *CreateChannelGroupRequest) String() string {
 func (*CreateChannelGroupRequest) ProtoMessage() {}
 
 func (x *CreateChannelGroupRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[30]
+	mi := &file_compass_v1_comms_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2581,7 +2660,7 @@ func (x *CreateChannelGroupRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateChannelGroupRequest.ProtoReflect.Descriptor instead.
 func (*CreateChannelGroupRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{30}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *CreateChannelGroupRequest) GetName() string {
@@ -2614,7 +2693,7 @@ type CreateChannelGroupResponse struct {
 
 func (x *CreateChannelGroupResponse) Reset() {
 	*x = CreateChannelGroupResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[31]
+	mi := &file_compass_v1_comms_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2626,7 +2705,7 @@ func (x *CreateChannelGroupResponse) String() string {
 func (*CreateChannelGroupResponse) ProtoMessage() {}
 
 func (x *CreateChannelGroupResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[31]
+	mi := &file_compass_v1_comms_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2639,7 +2718,7 @@ func (x *CreateChannelGroupResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateChannelGroupResponse.ProtoReflect.Descriptor instead.
 func (*CreateChannelGroupResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{31}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *CreateChannelGroupResponse) GetGroup() *ChannelGroup {
@@ -2660,7 +2739,7 @@ type ListChannelGroupsRequest struct {
 
 func (x *ListChannelGroupsRequest) Reset() {
 	*x = ListChannelGroupsRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[32]
+	mi := &file_compass_v1_comms_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2672,7 +2751,7 @@ func (x *ListChannelGroupsRequest) String() string {
 func (*ListChannelGroupsRequest) ProtoMessage() {}
 
 func (x *ListChannelGroupsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[32]
+	mi := &file_compass_v1_comms_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2685,7 +2764,7 @@ func (x *ListChannelGroupsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListChannelGroupsRequest.ProtoReflect.Descriptor instead.
 func (*ListChannelGroupsRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{32}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ListChannelGroupsRequest) GetSnapshotSeq() uint64 {
@@ -2704,7 +2783,7 @@ type ListChannelGroupsResponse struct {
 
 func (x *ListChannelGroupsResponse) Reset() {
 	*x = ListChannelGroupsResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[33]
+	mi := &file_compass_v1_comms_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2716,7 +2795,7 @@ func (x *ListChannelGroupsResponse) String() string {
 func (*ListChannelGroupsResponse) ProtoMessage() {}
 
 func (x *ListChannelGroupsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[33]
+	mi := &file_compass_v1_comms_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2729,7 +2808,7 @@ func (x *ListChannelGroupsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListChannelGroupsResponse.ProtoReflect.Descriptor instead.
 func (*ListChannelGroupsResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{33}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ListChannelGroupsResponse) GetGroups() []*ChannelGroup {
@@ -2750,7 +2829,7 @@ type ListChannelsRequest struct {
 
 func (x *ListChannelsRequest) Reset() {
 	*x = ListChannelsRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[34]
+	mi := &file_compass_v1_comms_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2762,7 +2841,7 @@ func (x *ListChannelsRequest) String() string {
 func (*ListChannelsRequest) ProtoMessage() {}
 
 func (x *ListChannelsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[34]
+	mi := &file_compass_v1_comms_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2775,7 +2854,7 @@ func (x *ListChannelsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListChannelsRequest.ProtoReflect.Descriptor instead.
 func (*ListChannelsRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{34}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *ListChannelsRequest) GetSnapshotSeq() uint64 {
@@ -2794,7 +2873,7 @@ type ListChannelsResponse struct {
 
 func (x *ListChannelsResponse) Reset() {
 	*x = ListChannelsResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[35]
+	mi := &file_compass_v1_comms_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2806,7 +2885,7 @@ func (x *ListChannelsResponse) String() string {
 func (*ListChannelsResponse) ProtoMessage() {}
 
 func (x *ListChannelsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[35]
+	mi := &file_compass_v1_comms_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2819,7 +2898,7 @@ func (x *ListChannelsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListChannelsResponse.ProtoReflect.Descriptor instead.
 func (*ListChannelsResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{35}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ListChannelsResponse) GetChannels() []*Channel {
@@ -2845,7 +2924,7 @@ type CreateChannelRequest struct {
 
 func (x *CreateChannelRequest) Reset() {
 	*x = CreateChannelRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[36]
+	mi := &file_compass_v1_comms_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2857,7 +2936,7 @@ func (x *CreateChannelRequest) String() string {
 func (*CreateChannelRequest) ProtoMessage() {}
 
 func (x *CreateChannelRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[36]
+	mi := &file_compass_v1_comms_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2870,7 +2949,7 @@ func (x *CreateChannelRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateChannelRequest.ProtoReflect.Descriptor instead.
 func (*CreateChannelRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{36}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *CreateChannelRequest) GetName() string {
@@ -2910,7 +2989,7 @@ type CreateChannelResponse struct {
 
 func (x *CreateChannelResponse) Reset() {
 	*x = CreateChannelResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[37]
+	mi := &file_compass_v1_comms_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2922,7 +3001,7 @@ func (x *CreateChannelResponse) String() string {
 func (*CreateChannelResponse) ProtoMessage() {}
 
 func (x *CreateChannelResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[37]
+	mi := &file_compass_v1_comms_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2935,7 +3014,7 @@ func (x *CreateChannelResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateChannelResponse.ProtoReflect.Descriptor instead.
 func (*CreateChannelResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{37}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *CreateChannelResponse) GetChannel() *Channel {
@@ -2963,7 +3042,7 @@ type UpdateChannelMembersRequest struct {
 
 func (x *UpdateChannelMembersRequest) Reset() {
 	*x = UpdateChannelMembersRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[38]
+	mi := &file_compass_v1_comms_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2975,7 +3054,7 @@ func (x *UpdateChannelMembersRequest) String() string {
 func (*UpdateChannelMembersRequest) ProtoMessage() {}
 
 func (x *UpdateChannelMembersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[38]
+	mi := &file_compass_v1_comms_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2988,7 +3067,7 @@ func (x *UpdateChannelMembersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateChannelMembersRequest.ProtoReflect.Descriptor instead.
 func (*UpdateChannelMembersRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{38}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *UpdateChannelMembersRequest) GetChannelId() string {
@@ -3035,7 +3114,7 @@ type UpdateChannelMembersResponse struct {
 
 func (x *UpdateChannelMembersResponse) Reset() {
 	*x = UpdateChannelMembersResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[39]
+	mi := &file_compass_v1_comms_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3047,7 +3126,7 @@ func (x *UpdateChannelMembersResponse) String() string {
 func (*UpdateChannelMembersResponse) ProtoMessage() {}
 
 func (x *UpdateChannelMembersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[39]
+	mi := &file_compass_v1_comms_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3060,7 +3139,7 @@ func (x *UpdateChannelMembersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateChannelMembersResponse.ProtoReflect.Descriptor instead.
 func (*UpdateChannelMembersResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{39}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *UpdateChannelMembersResponse) GetChannel() *Channel {
@@ -3082,7 +3161,7 @@ type ReparentAgentRequest struct {
 
 func (x *ReparentAgentRequest) Reset() {
 	*x = ReparentAgentRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[40]
+	mi := &file_compass_v1_comms_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3094,7 +3173,7 @@ func (x *ReparentAgentRequest) String() string {
 func (*ReparentAgentRequest) ProtoMessage() {}
 
 func (x *ReparentAgentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[40]
+	mi := &file_compass_v1_comms_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3107,7 +3186,7 @@ func (x *ReparentAgentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReparentAgentRequest.ProtoReflect.Descriptor instead.
 func (*ReparentAgentRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{40}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ReparentAgentRequest) GetAgentAccountId() string {
@@ -3133,7 +3212,7 @@ type ReparentAgentResponse struct {
 
 func (x *ReparentAgentResponse) Reset() {
 	*x = ReparentAgentResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[41]
+	mi := &file_compass_v1_comms_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3145,7 +3224,7 @@ func (x *ReparentAgentResponse) String() string {
 func (*ReparentAgentResponse) ProtoMessage() {}
 
 func (x *ReparentAgentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[41]
+	mi := &file_compass_v1_comms_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3158,7 +3237,7 @@ func (x *ReparentAgentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReparentAgentResponse.ProtoReflect.Descriptor instead.
 func (*ReparentAgentResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{41}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *ReparentAgentResponse) GetAccount() *Account {
@@ -3184,7 +3263,7 @@ type SetChannelPolicyRequest struct {
 
 func (x *SetChannelPolicyRequest) Reset() {
 	*x = SetChannelPolicyRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[42]
+	mi := &file_compass_v1_comms_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3196,7 +3275,7 @@ func (x *SetChannelPolicyRequest) String() string {
 func (*SetChannelPolicyRequest) ProtoMessage() {}
 
 func (x *SetChannelPolicyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[42]
+	mi := &file_compass_v1_comms_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3209,7 +3288,7 @@ func (x *SetChannelPolicyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetChannelPolicyRequest.ProtoReflect.Descriptor instead.
 func (*SetChannelPolicyRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{42}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *SetChannelPolicyRequest) GetChannelId() string {
@@ -3250,7 +3329,7 @@ type SetChannelPolicyResponse struct {
 
 func (x *SetChannelPolicyResponse) Reset() {
 	*x = SetChannelPolicyResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[43]
+	mi := &file_compass_v1_comms_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3262,7 +3341,7 @@ func (x *SetChannelPolicyResponse) String() string {
 func (*SetChannelPolicyResponse) ProtoMessage() {}
 
 func (x *SetChannelPolicyResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[43]
+	mi := &file_compass_v1_comms_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3275,7 +3354,7 @@ func (x *SetChannelPolicyResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetChannelPolicyResponse.ProtoReflect.Descriptor instead.
 func (*SetChannelPolicyResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{43}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *SetChannelPolicyResponse) GetChannel() *Channel {
@@ -3298,7 +3377,7 @@ type GetRosterRequest struct {
 
 func (x *GetRosterRequest) Reset() {
 	*x = GetRosterRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[44]
+	mi := &file_compass_v1_comms_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3310,7 +3389,7 @@ func (x *GetRosterRequest) String() string {
 func (*GetRosterRequest) ProtoMessage() {}
 
 func (x *GetRosterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[44]
+	mi := &file_compass_v1_comms_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3323,7 +3402,7 @@ func (x *GetRosterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRosterRequest.ProtoReflect.Descriptor instead.
 func (*GetRosterRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{44}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *GetRosterRequest) GetScope() RosterScope {
@@ -3349,7 +3428,7 @@ type GetRosterResponse struct {
 
 func (x *GetRosterResponse) Reset() {
 	*x = GetRosterResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[45]
+	mi := &file_compass_v1_comms_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3361,7 +3440,7 @@ func (x *GetRosterResponse) String() string {
 func (*GetRosterResponse) ProtoMessage() {}
 
 func (x *GetRosterResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[45]
+	mi := &file_compass_v1_comms_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3374,7 +3453,7 @@ func (x *GetRosterResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRosterResponse.ProtoReflect.Descriptor instead.
 func (*GetRosterResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{45}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *GetRosterResponse) GetEntries() []*RosterEntry {
@@ -3401,7 +3480,7 @@ type RosterEntry struct {
 
 func (x *RosterEntry) Reset() {
 	*x = RosterEntry{}
-	mi := &file_compass_v1_comms_proto_msgTypes[46]
+	mi := &file_compass_v1_comms_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3413,7 +3492,7 @@ func (x *RosterEntry) String() string {
 func (*RosterEntry) ProtoMessage() {}
 
 func (x *RosterEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[46]
+	mi := &file_compass_v1_comms_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3426,7 +3505,7 @@ func (x *RosterEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RosterEntry.ProtoReflect.Descriptor instead.
 func (*RosterEntry) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{46}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *RosterEntry) GetAgentAccountId() string {
@@ -3493,7 +3572,7 @@ type UpdatePinnedBoardRequest struct {
 
 func (x *UpdatePinnedBoardRequest) Reset() {
 	*x = UpdatePinnedBoardRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[47]
+	mi := &file_compass_v1_comms_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3505,7 +3584,7 @@ func (x *UpdatePinnedBoardRequest) String() string {
 func (*UpdatePinnedBoardRequest) ProtoMessage() {}
 
 func (x *UpdatePinnedBoardRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[47]
+	mi := &file_compass_v1_comms_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3518,7 +3597,7 @@ func (x *UpdatePinnedBoardRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdatePinnedBoardRequest.ProtoReflect.Descriptor instead.
 func (*UpdatePinnedBoardRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{47}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *UpdatePinnedBoardRequest) GetChannelId() string {
@@ -3584,7 +3663,7 @@ type PinMessage struct {
 
 func (x *PinMessage) Reset() {
 	*x = PinMessage{}
-	mi := &file_compass_v1_comms_proto_msgTypes[48]
+	mi := &file_compass_v1_comms_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3596,7 +3675,7 @@ func (x *PinMessage) String() string {
 func (*PinMessage) ProtoMessage() {}
 
 func (x *PinMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[48]
+	mi := &file_compass_v1_comms_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3609,7 +3688,7 @@ func (x *PinMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PinMessage.ProtoReflect.Descriptor instead.
 func (*PinMessage) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{48}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *PinMessage) GetMessageId() string {
@@ -3636,7 +3715,7 @@ type UpdatePinnedBoardResponse struct {
 
 func (x *UpdatePinnedBoardResponse) Reset() {
 	*x = UpdatePinnedBoardResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[49]
+	mi := &file_compass_v1_comms_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3648,7 +3727,7 @@ func (x *UpdatePinnedBoardResponse) String() string {
 func (*UpdatePinnedBoardResponse) ProtoMessage() {}
 
 func (x *UpdatePinnedBoardResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[49]
+	mi := &file_compass_v1_comms_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3661,7 +3740,7 @@ func (x *UpdatePinnedBoardResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdatePinnedBoardResponse.ProtoReflect.Descriptor instead.
 func (*UpdatePinnedBoardResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{49}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *UpdatePinnedBoardResponse) GetChannel() *Channel {
@@ -3681,7 +3760,7 @@ type OpenAgentWorkspaceRequest struct {
 
 func (x *OpenAgentWorkspaceRequest) Reset() {
 	*x = OpenAgentWorkspaceRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[50]
+	mi := &file_compass_v1_comms_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3693,7 +3772,7 @@ func (x *OpenAgentWorkspaceRequest) String() string {
 func (*OpenAgentWorkspaceRequest) ProtoMessage() {}
 
 func (x *OpenAgentWorkspaceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[50]
+	mi := &file_compass_v1_comms_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3706,7 +3785,7 @@ func (x *OpenAgentWorkspaceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenAgentWorkspaceRequest.ProtoReflect.Descriptor instead.
 func (*OpenAgentWorkspaceRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{50}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *OpenAgentWorkspaceRequest) GetAgentAccountId() string {
@@ -3725,7 +3804,7 @@ type OpenAgentWorkspaceResponse struct {
 
 func (x *OpenAgentWorkspaceResponse) Reset() {
 	*x = OpenAgentWorkspaceResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[51]
+	mi := &file_compass_v1_comms_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3737,7 +3816,7 @@ func (x *OpenAgentWorkspaceResponse) String() string {
 func (*OpenAgentWorkspaceResponse) ProtoMessage() {}
 
 func (x *OpenAgentWorkspaceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[51]
+	mi := &file_compass_v1_comms_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3750,7 +3829,7 @@ func (x *OpenAgentWorkspaceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenAgentWorkspaceResponse.ProtoReflect.Descriptor instead.
 func (*OpenAgentWorkspaceResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{51}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *OpenAgentWorkspaceResponse) GetWorkspace() *AgentWorkspace {
@@ -3785,7 +3864,7 @@ type ListMessagesRequest struct {
 
 func (x *ListMessagesRequest) Reset() {
 	*x = ListMessagesRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[52]
+	mi := &file_compass_v1_comms_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3797,7 +3876,7 @@ func (x *ListMessagesRequest) String() string {
 func (*ListMessagesRequest) ProtoMessage() {}
 
 func (x *ListMessagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[52]
+	mi := &file_compass_v1_comms_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3810,7 +3889,7 @@ func (x *ListMessagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMessagesRequest.ProtoReflect.Descriptor instead.
 func (*ListMessagesRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{52}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *ListMessagesRequest) GetContainer() isListMessagesRequest_Container {
@@ -3877,7 +3956,7 @@ type ListMessagesResponse struct {
 
 func (x *ListMessagesResponse) Reset() {
 	*x = ListMessagesResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[53]
+	mi := &file_compass_v1_comms_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3889,7 +3968,7 @@ func (x *ListMessagesResponse) String() string {
 func (*ListMessagesResponse) ProtoMessage() {}
 
 func (x *ListMessagesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[53]
+	mi := &file_compass_v1_comms_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3902,7 +3981,7 @@ func (x *ListMessagesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMessagesResponse.ProtoReflect.Descriptor instead.
 func (*ListMessagesResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{53}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *ListMessagesResponse) GetMessages() []*Message {
@@ -3946,7 +4025,7 @@ type PostMessageRequest struct {
 
 func (x *PostMessageRequest) Reset() {
 	*x = PostMessageRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[54]
+	mi := &file_compass_v1_comms_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3958,7 +4037,7 @@ func (x *PostMessageRequest) String() string {
 func (*PostMessageRequest) ProtoMessage() {}
 
 func (x *PostMessageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[54]
+	mi := &file_compass_v1_comms_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3971,7 +4050,7 @@ func (x *PostMessageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostMessageRequest.ProtoReflect.Descriptor instead.
 func (*PostMessageRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{54}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *PostMessageRequest) GetContainer() isPostMessageRequest_Container {
@@ -4064,7 +4143,7 @@ type PostMessageResponse struct {
 
 func (x *PostMessageResponse) Reset() {
 	*x = PostMessageResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[55]
+	mi := &file_compass_v1_comms_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4076,7 +4155,7 @@ func (x *PostMessageResponse) String() string {
 func (*PostMessageResponse) ProtoMessage() {}
 
 func (x *PostMessageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[55]
+	mi := &file_compass_v1_comms_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4089,7 +4168,7 @@ func (x *PostMessageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostMessageResponse.ProtoReflect.Descriptor instead.
 func (*PostMessageResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{55}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *PostMessageResponse) GetMessage() *Message {
@@ -4111,7 +4190,7 @@ type ListTopicsRequest struct {
 
 func (x *ListTopicsRequest) Reset() {
 	*x = ListTopicsRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[56]
+	mi := &file_compass_v1_comms_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4123,7 +4202,7 @@ func (x *ListTopicsRequest) String() string {
 func (*ListTopicsRequest) ProtoMessage() {}
 
 func (x *ListTopicsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[56]
+	mi := &file_compass_v1_comms_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4136,7 +4215,7 @@ func (x *ListTopicsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTopicsRequest.ProtoReflect.Descriptor instead.
 func (*ListTopicsRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{56}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *ListTopicsRequest) GetChannelId() string {
@@ -4162,7 +4241,7 @@ type ListTopicsResponse struct {
 
 func (x *ListTopicsResponse) Reset() {
 	*x = ListTopicsResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[57]
+	mi := &file_compass_v1_comms_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4174,7 +4253,7 @@ func (x *ListTopicsResponse) String() string {
 func (*ListTopicsResponse) ProtoMessage() {}
 
 func (x *ListTopicsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[57]
+	mi := &file_compass_v1_comms_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4187,7 +4266,7 @@ func (x *ListTopicsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTopicsResponse.ProtoReflect.Descriptor instead.
 func (*ListTopicsResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{57}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *ListTopicsResponse) GetTopics() []*Topic {
@@ -4212,7 +4291,7 @@ type UpdateTopicRequest struct {
 
 func (x *UpdateTopicRequest) Reset() {
 	*x = UpdateTopicRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[58]
+	mi := &file_compass_v1_comms_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4224,7 +4303,7 @@ func (x *UpdateTopicRequest) String() string {
 func (*UpdateTopicRequest) ProtoMessage() {}
 
 func (x *UpdateTopicRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[58]
+	mi := &file_compass_v1_comms_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4237,7 +4316,7 @@ func (x *UpdateTopicRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateTopicRequest.ProtoReflect.Descriptor instead.
 func (*UpdateTopicRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{58}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *UpdateTopicRequest) GetTopicId() string {
@@ -4270,7 +4349,7 @@ type UpdateTopicResponse struct {
 
 func (x *UpdateTopicResponse) Reset() {
 	*x = UpdateTopicResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[59]
+	mi := &file_compass_v1_comms_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4282,7 +4361,7 @@ func (x *UpdateTopicResponse) String() string {
 func (*UpdateTopicResponse) ProtoMessage() {}
 
 func (x *UpdateTopicResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[59]
+	mi := &file_compass_v1_comms_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4295,7 +4374,7 @@ func (x *UpdateTopicResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateTopicResponse.ProtoReflect.Descriptor instead.
 func (*UpdateTopicResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{59}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *UpdateTopicResponse) GetTopic() *Topic {
@@ -4318,7 +4397,7 @@ type RespondToAskRequest struct {
 
 func (x *RespondToAskRequest) Reset() {
 	*x = RespondToAskRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[60]
+	mi := &file_compass_v1_comms_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4330,7 +4409,7 @@ func (x *RespondToAskRequest) String() string {
 func (*RespondToAskRequest) ProtoMessage() {}
 
 func (x *RespondToAskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[60]
+	mi := &file_compass_v1_comms_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4343,7 +4422,7 @@ func (x *RespondToAskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RespondToAskRequest.ProtoReflect.Descriptor instead.
 func (*RespondToAskRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{60}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *RespondToAskRequest) GetAskId() string {
@@ -4375,7 +4454,7 @@ type AskQuestionAnswer struct {
 
 func (x *AskQuestionAnswer) Reset() {
 	*x = AskQuestionAnswer{}
-	mi := &file_compass_v1_comms_proto_msgTypes[61]
+	mi := &file_compass_v1_comms_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4387,7 +4466,7 @@ func (x *AskQuestionAnswer) String() string {
 func (*AskQuestionAnswer) ProtoMessage() {}
 
 func (x *AskQuestionAnswer) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[61]
+	mi := &file_compass_v1_comms_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4400,7 +4479,7 @@ func (x *AskQuestionAnswer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AskQuestionAnswer.ProtoReflect.Descriptor instead.
 func (*AskQuestionAnswer) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{61}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *AskQuestionAnswer) GetQuestionId() string {
@@ -4432,7 +4511,7 @@ type RespondToAskResponse struct {
 
 func (x *RespondToAskResponse) Reset() {
 	*x = RespondToAskResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[62]
+	mi := &file_compass_v1_comms_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4444,7 +4523,7 @@ func (x *RespondToAskResponse) String() string {
 func (*RespondToAskResponse) ProtoMessage() {}
 
 func (x *RespondToAskResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[62]
+	mi := &file_compass_v1_comms_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4457,7 +4536,7 @@ func (x *RespondToAskResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RespondToAskResponse.ProtoReflect.Descriptor instead.
 func (*RespondToAskResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{62}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{63}
 }
 
 type SearchMessagesRequest struct {
@@ -4481,7 +4560,7 @@ type SearchMessagesRequest struct {
 
 func (x *SearchMessagesRequest) Reset() {
 	*x = SearchMessagesRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[63]
+	mi := &file_compass_v1_comms_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4493,7 +4572,7 @@ func (x *SearchMessagesRequest) String() string {
 func (*SearchMessagesRequest) ProtoMessage() {}
 
 func (x *SearchMessagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[63]
+	mi := &file_compass_v1_comms_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4506,7 +4585,7 @@ func (x *SearchMessagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchMessagesRequest.ProtoReflect.Descriptor instead.
 func (*SearchMessagesRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{63}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *SearchMessagesRequest) GetQuery() string {
@@ -4566,7 +4645,7 @@ type SearchMessagesResponse struct {
 
 func (x *SearchMessagesResponse) Reset() {
 	*x = SearchMessagesResponse{}
-	mi := &file_compass_v1_comms_proto_msgTypes[64]
+	mi := &file_compass_v1_comms_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4578,7 +4657,7 @@ func (x *SearchMessagesResponse) String() string {
 func (*SearchMessagesResponse) ProtoMessage() {}
 
 func (x *SearchMessagesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[64]
+	mi := &file_compass_v1_comms_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4591,7 +4670,7 @@ func (x *SearchMessagesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchMessagesResponse.ProtoReflect.Descriptor instead.
 func (*SearchMessagesResponse) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{64}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *SearchMessagesResponse) GetMessages() []*Message {
@@ -4615,7 +4694,7 @@ type SubscribeCommsRequest struct {
 
 func (x *SubscribeCommsRequest) Reset() {
 	*x = SubscribeCommsRequest{}
-	mi := &file_compass_v1_comms_proto_msgTypes[65]
+	mi := &file_compass_v1_comms_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4627,7 +4706,7 @@ func (x *SubscribeCommsRequest) String() string {
 func (*SubscribeCommsRequest) ProtoMessage() {}
 
 func (x *SubscribeCommsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_comms_proto_msgTypes[65]
+	mi := &file_compass_v1_comms_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4640,7 +4719,7 @@ func (x *SubscribeCommsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeCommsRequest.ProtoReflect.Descriptor instead.
 func (*SubscribeCommsRequest) Descriptor() ([]byte, []int) {
-	return file_compass_v1_comms_proto_rawDescGZIP(), []int{65}
+	return file_compass_v1_comms_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *SubscribeCommsRequest) GetSinceSeq() uint64 {
@@ -4723,11 +4802,16 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x11author_account_id\x18\x03 \x01(\tR\x0fauthorAccountId\x12\x1c\n" +
 	"\n" +
 	"at_unix_ms\x18\x04 \x01(\x03R\batUnixMs\x120\n" +
-	"\x06blocks\x18\x05 \x03(\v2\x18.compass.v1.MessageBlockR\x06blocks\"R\n" +
+	"\x06blocks\x18\x05 \x03(\v2\x18.compass.v1.MessageBlockR\x06blocks\"\x8f\x01\n" +
 	"\fMessageBlock\x12\x14\n" +
 	"\x04text\x18\x01 \x01(\tH\x00R\x04text\x12#\n" +
-	"\x03ask\x18\x02 \x01(\v2\x0f.compass.v1.AskH\x00R\x03askB\a\n" +
-	"\x05block\"o\n" +
+	"\x03ask\x18\x02 \x01(\v2\x0f.compass.v1.AskH\x00R\x03ask\x12;\n" +
+	"\n" +
+	"ask_answer\x18\x03 \x01(\v2\x1a.compass.v1.AskAnswerBlockH\x00R\taskAnswerB\a\n" +
+	"\x05block\"]\n" +
+	"\x0eAskAnswerBlock\x12!\n" +
+	"\x03ask\x18\x01 \x01(\v2\x0f.compass.v1.AskR\x03ask\x12(\n" +
+	"\x10asker_account_id\x18\x02 \x01(\tR\x0easkerAccountId\"o\n" +
 	"\x03Ask\x12\x15\n" +
 	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x125\n" +
 	"\tquestions\x18\x02 \x03(\v2\x17.compass.v1.AskQuestionR\tquestions\x12\x1a\n" +
@@ -4996,7 +5080,7 @@ func file_compass_v1_comms_proto_rawDescGZIP() []byte {
 }
 
 var file_compass_v1_comms_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_compass_v1_comms_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
+var file_compass_v1_comms_proto_msgTypes = make([]protoimpl.MessageInfo, 67)
 var file_compass_v1_comms_proto_goTypes = []any{
 	(UserRole)(0),                        // 0: compass.v1.UserRole
 	(ChannelGroupVisibility)(0),          // 1: compass.v1.ChannelGroupVisibility
@@ -5015,61 +5099,62 @@ var file_compass_v1_comms_proto_goTypes = []any{
 	(*Topic)(nil),                        // 14: compass.v1.Topic
 	(*Message)(nil),                      // 15: compass.v1.Message
 	(*MessageBlock)(nil),                 // 16: compass.v1.MessageBlock
-	(*Ask)(nil),                          // 17: compass.v1.Ask
-	(*AskQuestion)(nil),                  // 18: compass.v1.AskQuestion
-	(*AskOption)(nil),                    // 19: compass.v1.AskOption
-	(*SubscribeCommsResponse)(nil),       // 20: compass.v1.SubscribeCommsResponse
-	(*MessagePosted)(nil),                // 21: compass.v1.MessagePosted
-	(*MessageUpdated)(nil),               // 22: compass.v1.MessageUpdated
-	(*TopicUpserted)(nil),                // 23: compass.v1.TopicUpserted
-	(*ChannelChanged)(nil),               // 24: compass.v1.ChannelChanged
-	(*ChannelGroupChanged)(nil),          // 25: compass.v1.ChannelGroupChanged
-	(*AccountChanged)(nil),               // 26: compass.v1.AccountChanged
-	(*AgentWorkspaceChanged)(nil),        // 27: compass.v1.AgentWorkspaceChanged
-	(*CommsResyncRequired)(nil),          // 28: compass.v1.CommsResyncRequired
-	(*AgentPresenceChanged)(nil),         // 29: compass.v1.AgentPresenceChanged
-	(*CreateUserRequest)(nil),            // 30: compass.v1.CreateUserRequest
-	(*CreateUserResponse)(nil),           // 31: compass.v1.CreateUserResponse
-	(*CreateAgentRequest)(nil),           // 32: compass.v1.CreateAgentRequest
-	(*CreateAgentResponse)(nil),          // 33: compass.v1.CreateAgentResponse
-	(*ListAccountsRequest)(nil),          // 34: compass.v1.ListAccountsRequest
-	(*ListAccountsResponse)(nil),         // 35: compass.v1.ListAccountsResponse
-	(*CreateChannelGroupRequest)(nil),    // 36: compass.v1.CreateChannelGroupRequest
-	(*CreateChannelGroupResponse)(nil),   // 37: compass.v1.CreateChannelGroupResponse
-	(*ListChannelGroupsRequest)(nil),     // 38: compass.v1.ListChannelGroupsRequest
-	(*ListChannelGroupsResponse)(nil),    // 39: compass.v1.ListChannelGroupsResponse
-	(*ListChannelsRequest)(nil),          // 40: compass.v1.ListChannelsRequest
-	(*ListChannelsResponse)(nil),         // 41: compass.v1.ListChannelsResponse
-	(*CreateChannelRequest)(nil),         // 42: compass.v1.CreateChannelRequest
-	(*CreateChannelResponse)(nil),        // 43: compass.v1.CreateChannelResponse
-	(*UpdateChannelMembersRequest)(nil),  // 44: compass.v1.UpdateChannelMembersRequest
-	(*UpdateChannelMembersResponse)(nil), // 45: compass.v1.UpdateChannelMembersResponse
-	(*ReparentAgentRequest)(nil),         // 46: compass.v1.ReparentAgentRequest
-	(*ReparentAgentResponse)(nil),        // 47: compass.v1.ReparentAgentResponse
-	(*SetChannelPolicyRequest)(nil),      // 48: compass.v1.SetChannelPolicyRequest
-	(*SetChannelPolicyResponse)(nil),     // 49: compass.v1.SetChannelPolicyResponse
-	(*GetRosterRequest)(nil),             // 50: compass.v1.GetRosterRequest
-	(*GetRosterResponse)(nil),            // 51: compass.v1.GetRosterResponse
-	(*RosterEntry)(nil),                  // 52: compass.v1.RosterEntry
-	(*UpdatePinnedBoardRequest)(nil),     // 53: compass.v1.UpdatePinnedBoardRequest
-	(*PinMessage)(nil),                   // 54: compass.v1.PinMessage
-	(*UpdatePinnedBoardResponse)(nil),    // 55: compass.v1.UpdatePinnedBoardResponse
-	(*OpenAgentWorkspaceRequest)(nil),    // 56: compass.v1.OpenAgentWorkspaceRequest
-	(*OpenAgentWorkspaceResponse)(nil),   // 57: compass.v1.OpenAgentWorkspaceResponse
-	(*ListMessagesRequest)(nil),          // 58: compass.v1.ListMessagesRequest
-	(*ListMessagesResponse)(nil),         // 59: compass.v1.ListMessagesResponse
-	(*PostMessageRequest)(nil),           // 60: compass.v1.PostMessageRequest
-	(*PostMessageResponse)(nil),          // 61: compass.v1.PostMessageResponse
-	(*ListTopicsRequest)(nil),            // 62: compass.v1.ListTopicsRequest
-	(*ListTopicsResponse)(nil),           // 63: compass.v1.ListTopicsResponse
-	(*UpdateTopicRequest)(nil),           // 64: compass.v1.UpdateTopicRequest
-	(*UpdateTopicResponse)(nil),          // 65: compass.v1.UpdateTopicResponse
-	(*RespondToAskRequest)(nil),          // 66: compass.v1.RespondToAskRequest
-	(*AskQuestionAnswer)(nil),            // 67: compass.v1.AskQuestionAnswer
-	(*RespondToAskResponse)(nil),         // 68: compass.v1.RespondToAskResponse
-	(*SearchMessagesRequest)(nil),        // 69: compass.v1.SearchMessagesRequest
-	(*SearchMessagesResponse)(nil),       // 70: compass.v1.SearchMessagesResponse
-	(*SubscribeCommsRequest)(nil),        // 71: compass.v1.SubscribeCommsRequest
+	(*AskAnswerBlock)(nil),               // 17: compass.v1.AskAnswerBlock
+	(*Ask)(nil),                          // 18: compass.v1.Ask
+	(*AskQuestion)(nil),                  // 19: compass.v1.AskQuestion
+	(*AskOption)(nil),                    // 20: compass.v1.AskOption
+	(*SubscribeCommsResponse)(nil),       // 21: compass.v1.SubscribeCommsResponse
+	(*MessagePosted)(nil),                // 22: compass.v1.MessagePosted
+	(*MessageUpdated)(nil),               // 23: compass.v1.MessageUpdated
+	(*TopicUpserted)(nil),                // 24: compass.v1.TopicUpserted
+	(*ChannelChanged)(nil),               // 25: compass.v1.ChannelChanged
+	(*ChannelGroupChanged)(nil),          // 26: compass.v1.ChannelGroupChanged
+	(*AccountChanged)(nil),               // 27: compass.v1.AccountChanged
+	(*AgentWorkspaceChanged)(nil),        // 28: compass.v1.AgentWorkspaceChanged
+	(*CommsResyncRequired)(nil),          // 29: compass.v1.CommsResyncRequired
+	(*AgentPresenceChanged)(nil),         // 30: compass.v1.AgentPresenceChanged
+	(*CreateUserRequest)(nil),            // 31: compass.v1.CreateUserRequest
+	(*CreateUserResponse)(nil),           // 32: compass.v1.CreateUserResponse
+	(*CreateAgentRequest)(nil),           // 33: compass.v1.CreateAgentRequest
+	(*CreateAgentResponse)(nil),          // 34: compass.v1.CreateAgentResponse
+	(*ListAccountsRequest)(nil),          // 35: compass.v1.ListAccountsRequest
+	(*ListAccountsResponse)(nil),         // 36: compass.v1.ListAccountsResponse
+	(*CreateChannelGroupRequest)(nil),    // 37: compass.v1.CreateChannelGroupRequest
+	(*CreateChannelGroupResponse)(nil),   // 38: compass.v1.CreateChannelGroupResponse
+	(*ListChannelGroupsRequest)(nil),     // 39: compass.v1.ListChannelGroupsRequest
+	(*ListChannelGroupsResponse)(nil),    // 40: compass.v1.ListChannelGroupsResponse
+	(*ListChannelsRequest)(nil),          // 41: compass.v1.ListChannelsRequest
+	(*ListChannelsResponse)(nil),         // 42: compass.v1.ListChannelsResponse
+	(*CreateChannelRequest)(nil),         // 43: compass.v1.CreateChannelRequest
+	(*CreateChannelResponse)(nil),        // 44: compass.v1.CreateChannelResponse
+	(*UpdateChannelMembersRequest)(nil),  // 45: compass.v1.UpdateChannelMembersRequest
+	(*UpdateChannelMembersResponse)(nil), // 46: compass.v1.UpdateChannelMembersResponse
+	(*ReparentAgentRequest)(nil),         // 47: compass.v1.ReparentAgentRequest
+	(*ReparentAgentResponse)(nil),        // 48: compass.v1.ReparentAgentResponse
+	(*SetChannelPolicyRequest)(nil),      // 49: compass.v1.SetChannelPolicyRequest
+	(*SetChannelPolicyResponse)(nil),     // 50: compass.v1.SetChannelPolicyResponse
+	(*GetRosterRequest)(nil),             // 51: compass.v1.GetRosterRequest
+	(*GetRosterResponse)(nil),            // 52: compass.v1.GetRosterResponse
+	(*RosterEntry)(nil),                  // 53: compass.v1.RosterEntry
+	(*UpdatePinnedBoardRequest)(nil),     // 54: compass.v1.UpdatePinnedBoardRequest
+	(*PinMessage)(nil),                   // 55: compass.v1.PinMessage
+	(*UpdatePinnedBoardResponse)(nil),    // 56: compass.v1.UpdatePinnedBoardResponse
+	(*OpenAgentWorkspaceRequest)(nil),    // 57: compass.v1.OpenAgentWorkspaceRequest
+	(*OpenAgentWorkspaceResponse)(nil),   // 58: compass.v1.OpenAgentWorkspaceResponse
+	(*ListMessagesRequest)(nil),          // 59: compass.v1.ListMessagesRequest
+	(*ListMessagesResponse)(nil),         // 60: compass.v1.ListMessagesResponse
+	(*PostMessageRequest)(nil),           // 61: compass.v1.PostMessageRequest
+	(*PostMessageResponse)(nil),          // 62: compass.v1.PostMessageResponse
+	(*ListTopicsRequest)(nil),            // 63: compass.v1.ListTopicsRequest
+	(*ListTopicsResponse)(nil),           // 64: compass.v1.ListTopicsResponse
+	(*UpdateTopicRequest)(nil),           // 65: compass.v1.UpdateTopicRequest
+	(*UpdateTopicResponse)(nil),          // 66: compass.v1.UpdateTopicResponse
+	(*RespondToAskRequest)(nil),          // 67: compass.v1.RespondToAskRequest
+	(*AskQuestionAnswer)(nil),            // 68: compass.v1.AskQuestionAnswer
+	(*RespondToAskResponse)(nil),         // 69: compass.v1.RespondToAskResponse
+	(*SearchMessagesRequest)(nil),        // 70: compass.v1.SearchMessagesRequest
+	(*SearchMessagesResponse)(nil),       // 71: compass.v1.SearchMessagesResponse
+	(*SubscribeCommsRequest)(nil),        // 72: compass.v1.SubscribeCommsRequest
 }
 var file_compass_v1_comms_proto_depIdxs = []int32{
 	8,  // 0: compass.v1.Account.user:type_name -> compass.v1.UserAccount
@@ -5081,97 +5166,99 @@ var file_compass_v1_comms_proto_depIdxs = []int32{
 	2,  // 6: compass.v1.Channel.post_policy:type_name -> compass.v1.ChannelPostPolicy
 	12, // 7: compass.v1.Channel.pinned_entries:type_name -> compass.v1.PinnedEntry
 	16, // 8: compass.v1.Message.blocks:type_name -> compass.v1.MessageBlock
-	17, // 9: compass.v1.MessageBlock.ask:type_name -> compass.v1.Ask
-	18, // 10: compass.v1.Ask.questions:type_name -> compass.v1.AskQuestion
-	19, // 11: compass.v1.AskQuestion.options:type_name -> compass.v1.AskOption
-	21, // 12: compass.v1.SubscribeCommsResponse.message_posted:type_name -> compass.v1.MessagePosted
-	22, // 13: compass.v1.SubscribeCommsResponse.message_updated:type_name -> compass.v1.MessageUpdated
-	24, // 14: compass.v1.SubscribeCommsResponse.channel_changed:type_name -> compass.v1.ChannelChanged
-	25, // 15: compass.v1.SubscribeCommsResponse.channel_group_changed:type_name -> compass.v1.ChannelGroupChanged
-	26, // 16: compass.v1.SubscribeCommsResponse.account_changed:type_name -> compass.v1.AccountChanged
-	27, // 17: compass.v1.SubscribeCommsResponse.agent_workspace_changed:type_name -> compass.v1.AgentWorkspaceChanged
-	28, // 18: compass.v1.SubscribeCommsResponse.resync_required:type_name -> compass.v1.CommsResyncRequired
-	29, // 19: compass.v1.SubscribeCommsResponse.agent_presence_changed:type_name -> compass.v1.AgentPresenceChanged
-	23, // 20: compass.v1.SubscribeCommsResponse.topic_upserted:type_name -> compass.v1.TopicUpserted
-	15, // 21: compass.v1.MessagePosted.message:type_name -> compass.v1.Message
-	15, // 22: compass.v1.MessageUpdated.message:type_name -> compass.v1.Message
-	14, // 23: compass.v1.TopicUpserted.topic:type_name -> compass.v1.Topic
-	11, // 24: compass.v1.ChannelChanged.channel:type_name -> compass.v1.Channel
-	10, // 25: compass.v1.ChannelGroupChanged.group:type_name -> compass.v1.ChannelGroup
-	6,  // 26: compass.v1.AccountChanged.account:type_name -> compass.v1.Account
-	13, // 27: compass.v1.AgentWorkspaceChanged.workspace:type_name -> compass.v1.AgentWorkspace
-	4,  // 28: compass.v1.AgentPresenceChanged.presence:type_name -> compass.v1.AgentPresence
-	6,  // 29: compass.v1.CreateUserResponse.account:type_name -> compass.v1.Account
-	6,  // 30: compass.v1.CreateAgentResponse.account:type_name -> compass.v1.Account
-	6,  // 31: compass.v1.ListAccountsResponse.accounts:type_name -> compass.v1.Account
-	1,  // 32: compass.v1.CreateChannelGroupRequest.visibility:type_name -> compass.v1.ChannelGroupVisibility
-	10, // 33: compass.v1.CreateChannelGroupResponse.group:type_name -> compass.v1.ChannelGroup
-	10, // 34: compass.v1.ListChannelGroupsResponse.groups:type_name -> compass.v1.ChannelGroup
-	11, // 35: compass.v1.ListChannelsResponse.channels:type_name -> compass.v1.Channel
-	3,  // 36: compass.v1.CreateChannelRequest.kind:type_name -> compass.v1.ChannelKind
-	11, // 37: compass.v1.CreateChannelResponse.channel:type_name -> compass.v1.Channel
-	11, // 38: compass.v1.UpdateChannelMembersResponse.channel:type_name -> compass.v1.Channel
-	6,  // 39: compass.v1.ReparentAgentResponse.account:type_name -> compass.v1.Account
-	2,  // 40: compass.v1.SetChannelPolicyRequest.post_policy:type_name -> compass.v1.ChannelPostPolicy
-	11, // 41: compass.v1.SetChannelPolicyResponse.channel:type_name -> compass.v1.Channel
-	5,  // 42: compass.v1.GetRosterRequest.scope:type_name -> compass.v1.RosterScope
-	52, // 43: compass.v1.GetRosterResponse.entries:type_name -> compass.v1.RosterEntry
-	4,  // 44: compass.v1.RosterEntry.presence:type_name -> compass.v1.AgentPresence
-	54, // 45: compass.v1.UpdatePinnedBoardRequest.pin:type_name -> compass.v1.PinMessage
-	11, // 46: compass.v1.UpdatePinnedBoardResponse.channel:type_name -> compass.v1.Channel
-	13, // 47: compass.v1.OpenAgentWorkspaceResponse.workspace:type_name -> compass.v1.AgentWorkspace
-	15, // 48: compass.v1.ListMessagesResponse.messages:type_name -> compass.v1.Message
-	16, // 49: compass.v1.PostMessageRequest.blocks:type_name -> compass.v1.MessageBlock
-	15, // 50: compass.v1.PostMessageResponse.message:type_name -> compass.v1.Message
-	14, // 51: compass.v1.ListTopicsResponse.topics:type_name -> compass.v1.Topic
-	14, // 52: compass.v1.UpdateTopicResponse.topic:type_name -> compass.v1.Topic
-	67, // 53: compass.v1.RespondToAskRequest.answers:type_name -> compass.v1.AskQuestionAnswer
-	15, // 54: compass.v1.SearchMessagesResponse.messages:type_name -> compass.v1.Message
-	30, // 55: compass.v1.CommsService.CreateUser:input_type -> compass.v1.CreateUserRequest
-	32, // 56: compass.v1.CommsService.CreateAgent:input_type -> compass.v1.CreateAgentRequest
-	34, // 57: compass.v1.CommsService.ListAccounts:input_type -> compass.v1.ListAccountsRequest
-	36, // 58: compass.v1.CommsService.CreateChannelGroup:input_type -> compass.v1.CreateChannelGroupRequest
-	38, // 59: compass.v1.CommsService.ListChannelGroups:input_type -> compass.v1.ListChannelGroupsRequest
-	40, // 60: compass.v1.CommsService.ListChannels:input_type -> compass.v1.ListChannelsRequest
-	42, // 61: compass.v1.CommsService.CreateChannel:input_type -> compass.v1.CreateChannelRequest
-	44, // 62: compass.v1.CommsService.UpdateChannelMembers:input_type -> compass.v1.UpdateChannelMembersRequest
-	46, // 63: compass.v1.CommsService.ReparentAgent:input_type -> compass.v1.ReparentAgentRequest
-	56, // 64: compass.v1.CommsService.OpenAgentWorkspace:input_type -> compass.v1.OpenAgentWorkspaceRequest
-	58, // 65: compass.v1.CommsService.ListMessages:input_type -> compass.v1.ListMessagesRequest
-	60, // 66: compass.v1.CommsService.PostMessage:input_type -> compass.v1.PostMessageRequest
-	62, // 67: compass.v1.CommsService.ListTopics:input_type -> compass.v1.ListTopicsRequest
-	64, // 68: compass.v1.CommsService.UpdateTopic:input_type -> compass.v1.UpdateTopicRequest
-	66, // 69: compass.v1.CommsService.RespondToAsk:input_type -> compass.v1.RespondToAskRequest
-	69, // 70: compass.v1.CommsService.SearchMessages:input_type -> compass.v1.SearchMessagesRequest
-	48, // 71: compass.v1.CommsService.SetChannelPolicy:input_type -> compass.v1.SetChannelPolicyRequest
-	50, // 72: compass.v1.CommsService.GetRoster:input_type -> compass.v1.GetRosterRequest
-	53, // 73: compass.v1.CommsService.UpdatePinnedBoard:input_type -> compass.v1.UpdatePinnedBoardRequest
-	71, // 74: compass.v1.CommsService.SubscribeComms:input_type -> compass.v1.SubscribeCommsRequest
-	31, // 75: compass.v1.CommsService.CreateUser:output_type -> compass.v1.CreateUserResponse
-	33, // 76: compass.v1.CommsService.CreateAgent:output_type -> compass.v1.CreateAgentResponse
-	35, // 77: compass.v1.CommsService.ListAccounts:output_type -> compass.v1.ListAccountsResponse
-	37, // 78: compass.v1.CommsService.CreateChannelGroup:output_type -> compass.v1.CreateChannelGroupResponse
-	39, // 79: compass.v1.CommsService.ListChannelGroups:output_type -> compass.v1.ListChannelGroupsResponse
-	41, // 80: compass.v1.CommsService.ListChannels:output_type -> compass.v1.ListChannelsResponse
-	43, // 81: compass.v1.CommsService.CreateChannel:output_type -> compass.v1.CreateChannelResponse
-	45, // 82: compass.v1.CommsService.UpdateChannelMembers:output_type -> compass.v1.UpdateChannelMembersResponse
-	47, // 83: compass.v1.CommsService.ReparentAgent:output_type -> compass.v1.ReparentAgentResponse
-	57, // 84: compass.v1.CommsService.OpenAgentWorkspace:output_type -> compass.v1.OpenAgentWorkspaceResponse
-	59, // 85: compass.v1.CommsService.ListMessages:output_type -> compass.v1.ListMessagesResponse
-	61, // 86: compass.v1.CommsService.PostMessage:output_type -> compass.v1.PostMessageResponse
-	63, // 87: compass.v1.CommsService.ListTopics:output_type -> compass.v1.ListTopicsResponse
-	65, // 88: compass.v1.CommsService.UpdateTopic:output_type -> compass.v1.UpdateTopicResponse
-	68, // 89: compass.v1.CommsService.RespondToAsk:output_type -> compass.v1.RespondToAskResponse
-	70, // 90: compass.v1.CommsService.SearchMessages:output_type -> compass.v1.SearchMessagesResponse
-	49, // 91: compass.v1.CommsService.SetChannelPolicy:output_type -> compass.v1.SetChannelPolicyResponse
-	51, // 92: compass.v1.CommsService.GetRoster:output_type -> compass.v1.GetRosterResponse
-	55, // 93: compass.v1.CommsService.UpdatePinnedBoard:output_type -> compass.v1.UpdatePinnedBoardResponse
-	20, // 94: compass.v1.CommsService.SubscribeComms:output_type -> compass.v1.SubscribeCommsResponse
-	75, // [75:95] is the sub-list for method output_type
-	55, // [55:75] is the sub-list for method input_type
-	55, // [55:55] is the sub-list for extension type_name
-	55, // [55:55] is the sub-list for extension extendee
-	0,  // [0:55] is the sub-list for field type_name
+	18, // 9: compass.v1.MessageBlock.ask:type_name -> compass.v1.Ask
+	17, // 10: compass.v1.MessageBlock.ask_answer:type_name -> compass.v1.AskAnswerBlock
+	18, // 11: compass.v1.AskAnswerBlock.ask:type_name -> compass.v1.Ask
+	19, // 12: compass.v1.Ask.questions:type_name -> compass.v1.AskQuestion
+	20, // 13: compass.v1.AskQuestion.options:type_name -> compass.v1.AskOption
+	22, // 14: compass.v1.SubscribeCommsResponse.message_posted:type_name -> compass.v1.MessagePosted
+	23, // 15: compass.v1.SubscribeCommsResponse.message_updated:type_name -> compass.v1.MessageUpdated
+	25, // 16: compass.v1.SubscribeCommsResponse.channel_changed:type_name -> compass.v1.ChannelChanged
+	26, // 17: compass.v1.SubscribeCommsResponse.channel_group_changed:type_name -> compass.v1.ChannelGroupChanged
+	27, // 18: compass.v1.SubscribeCommsResponse.account_changed:type_name -> compass.v1.AccountChanged
+	28, // 19: compass.v1.SubscribeCommsResponse.agent_workspace_changed:type_name -> compass.v1.AgentWorkspaceChanged
+	29, // 20: compass.v1.SubscribeCommsResponse.resync_required:type_name -> compass.v1.CommsResyncRequired
+	30, // 21: compass.v1.SubscribeCommsResponse.agent_presence_changed:type_name -> compass.v1.AgentPresenceChanged
+	24, // 22: compass.v1.SubscribeCommsResponse.topic_upserted:type_name -> compass.v1.TopicUpserted
+	15, // 23: compass.v1.MessagePosted.message:type_name -> compass.v1.Message
+	15, // 24: compass.v1.MessageUpdated.message:type_name -> compass.v1.Message
+	14, // 25: compass.v1.TopicUpserted.topic:type_name -> compass.v1.Topic
+	11, // 26: compass.v1.ChannelChanged.channel:type_name -> compass.v1.Channel
+	10, // 27: compass.v1.ChannelGroupChanged.group:type_name -> compass.v1.ChannelGroup
+	6,  // 28: compass.v1.AccountChanged.account:type_name -> compass.v1.Account
+	13, // 29: compass.v1.AgentWorkspaceChanged.workspace:type_name -> compass.v1.AgentWorkspace
+	4,  // 30: compass.v1.AgentPresenceChanged.presence:type_name -> compass.v1.AgentPresence
+	6,  // 31: compass.v1.CreateUserResponse.account:type_name -> compass.v1.Account
+	6,  // 32: compass.v1.CreateAgentResponse.account:type_name -> compass.v1.Account
+	6,  // 33: compass.v1.ListAccountsResponse.accounts:type_name -> compass.v1.Account
+	1,  // 34: compass.v1.CreateChannelGroupRequest.visibility:type_name -> compass.v1.ChannelGroupVisibility
+	10, // 35: compass.v1.CreateChannelGroupResponse.group:type_name -> compass.v1.ChannelGroup
+	10, // 36: compass.v1.ListChannelGroupsResponse.groups:type_name -> compass.v1.ChannelGroup
+	11, // 37: compass.v1.ListChannelsResponse.channels:type_name -> compass.v1.Channel
+	3,  // 38: compass.v1.CreateChannelRequest.kind:type_name -> compass.v1.ChannelKind
+	11, // 39: compass.v1.CreateChannelResponse.channel:type_name -> compass.v1.Channel
+	11, // 40: compass.v1.UpdateChannelMembersResponse.channel:type_name -> compass.v1.Channel
+	6,  // 41: compass.v1.ReparentAgentResponse.account:type_name -> compass.v1.Account
+	2,  // 42: compass.v1.SetChannelPolicyRequest.post_policy:type_name -> compass.v1.ChannelPostPolicy
+	11, // 43: compass.v1.SetChannelPolicyResponse.channel:type_name -> compass.v1.Channel
+	5,  // 44: compass.v1.GetRosterRequest.scope:type_name -> compass.v1.RosterScope
+	53, // 45: compass.v1.GetRosterResponse.entries:type_name -> compass.v1.RosterEntry
+	4,  // 46: compass.v1.RosterEntry.presence:type_name -> compass.v1.AgentPresence
+	55, // 47: compass.v1.UpdatePinnedBoardRequest.pin:type_name -> compass.v1.PinMessage
+	11, // 48: compass.v1.UpdatePinnedBoardResponse.channel:type_name -> compass.v1.Channel
+	13, // 49: compass.v1.OpenAgentWorkspaceResponse.workspace:type_name -> compass.v1.AgentWorkspace
+	15, // 50: compass.v1.ListMessagesResponse.messages:type_name -> compass.v1.Message
+	16, // 51: compass.v1.PostMessageRequest.blocks:type_name -> compass.v1.MessageBlock
+	15, // 52: compass.v1.PostMessageResponse.message:type_name -> compass.v1.Message
+	14, // 53: compass.v1.ListTopicsResponse.topics:type_name -> compass.v1.Topic
+	14, // 54: compass.v1.UpdateTopicResponse.topic:type_name -> compass.v1.Topic
+	68, // 55: compass.v1.RespondToAskRequest.answers:type_name -> compass.v1.AskQuestionAnswer
+	15, // 56: compass.v1.SearchMessagesResponse.messages:type_name -> compass.v1.Message
+	31, // 57: compass.v1.CommsService.CreateUser:input_type -> compass.v1.CreateUserRequest
+	33, // 58: compass.v1.CommsService.CreateAgent:input_type -> compass.v1.CreateAgentRequest
+	35, // 59: compass.v1.CommsService.ListAccounts:input_type -> compass.v1.ListAccountsRequest
+	37, // 60: compass.v1.CommsService.CreateChannelGroup:input_type -> compass.v1.CreateChannelGroupRequest
+	39, // 61: compass.v1.CommsService.ListChannelGroups:input_type -> compass.v1.ListChannelGroupsRequest
+	41, // 62: compass.v1.CommsService.ListChannels:input_type -> compass.v1.ListChannelsRequest
+	43, // 63: compass.v1.CommsService.CreateChannel:input_type -> compass.v1.CreateChannelRequest
+	45, // 64: compass.v1.CommsService.UpdateChannelMembers:input_type -> compass.v1.UpdateChannelMembersRequest
+	47, // 65: compass.v1.CommsService.ReparentAgent:input_type -> compass.v1.ReparentAgentRequest
+	57, // 66: compass.v1.CommsService.OpenAgentWorkspace:input_type -> compass.v1.OpenAgentWorkspaceRequest
+	59, // 67: compass.v1.CommsService.ListMessages:input_type -> compass.v1.ListMessagesRequest
+	61, // 68: compass.v1.CommsService.PostMessage:input_type -> compass.v1.PostMessageRequest
+	63, // 69: compass.v1.CommsService.ListTopics:input_type -> compass.v1.ListTopicsRequest
+	65, // 70: compass.v1.CommsService.UpdateTopic:input_type -> compass.v1.UpdateTopicRequest
+	67, // 71: compass.v1.CommsService.RespondToAsk:input_type -> compass.v1.RespondToAskRequest
+	70, // 72: compass.v1.CommsService.SearchMessages:input_type -> compass.v1.SearchMessagesRequest
+	49, // 73: compass.v1.CommsService.SetChannelPolicy:input_type -> compass.v1.SetChannelPolicyRequest
+	51, // 74: compass.v1.CommsService.GetRoster:input_type -> compass.v1.GetRosterRequest
+	54, // 75: compass.v1.CommsService.UpdatePinnedBoard:input_type -> compass.v1.UpdatePinnedBoardRequest
+	72, // 76: compass.v1.CommsService.SubscribeComms:input_type -> compass.v1.SubscribeCommsRequest
+	32, // 77: compass.v1.CommsService.CreateUser:output_type -> compass.v1.CreateUserResponse
+	34, // 78: compass.v1.CommsService.CreateAgent:output_type -> compass.v1.CreateAgentResponse
+	36, // 79: compass.v1.CommsService.ListAccounts:output_type -> compass.v1.ListAccountsResponse
+	38, // 80: compass.v1.CommsService.CreateChannelGroup:output_type -> compass.v1.CreateChannelGroupResponse
+	40, // 81: compass.v1.CommsService.ListChannelGroups:output_type -> compass.v1.ListChannelGroupsResponse
+	42, // 82: compass.v1.CommsService.ListChannels:output_type -> compass.v1.ListChannelsResponse
+	44, // 83: compass.v1.CommsService.CreateChannel:output_type -> compass.v1.CreateChannelResponse
+	46, // 84: compass.v1.CommsService.UpdateChannelMembers:output_type -> compass.v1.UpdateChannelMembersResponse
+	48, // 85: compass.v1.CommsService.ReparentAgent:output_type -> compass.v1.ReparentAgentResponse
+	58, // 86: compass.v1.CommsService.OpenAgentWorkspace:output_type -> compass.v1.OpenAgentWorkspaceResponse
+	60, // 87: compass.v1.CommsService.ListMessages:output_type -> compass.v1.ListMessagesResponse
+	62, // 88: compass.v1.CommsService.PostMessage:output_type -> compass.v1.PostMessageResponse
+	64, // 89: compass.v1.CommsService.ListTopics:output_type -> compass.v1.ListTopicsResponse
+	66, // 90: compass.v1.CommsService.UpdateTopic:output_type -> compass.v1.UpdateTopicResponse
+	69, // 91: compass.v1.CommsService.RespondToAsk:output_type -> compass.v1.RespondToAskResponse
+	71, // 92: compass.v1.CommsService.SearchMessages:output_type -> compass.v1.SearchMessagesResponse
+	50, // 93: compass.v1.CommsService.SetChannelPolicy:output_type -> compass.v1.SetChannelPolicyResponse
+	52, // 94: compass.v1.CommsService.GetRoster:output_type -> compass.v1.GetRosterResponse
+	56, // 95: compass.v1.CommsService.UpdatePinnedBoard:output_type -> compass.v1.UpdatePinnedBoardResponse
+	21, // 96: compass.v1.CommsService.SubscribeComms:output_type -> compass.v1.SubscribeCommsResponse
+	77, // [77:97] is the sub-list for method output_type
+	57, // [57:77] is the sub-list for method input_type
+	57, // [57:57] is the sub-list for extension type_name
+	57, // [57:57] is the sub-list for extension extendee
+	0,  // [0:57] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_comms_proto_init() }
@@ -5187,9 +5274,10 @@ func file_compass_v1_comms_proto_init() {
 	file_compass_v1_comms_proto_msgTypes[10].OneofWrappers = []any{
 		(*MessageBlock_Text)(nil),
 		(*MessageBlock_Ask)(nil),
+		(*MessageBlock_AskAnswer)(nil),
 	}
-	file_compass_v1_comms_proto_msgTypes[12].OneofWrappers = []any{}
-	file_compass_v1_comms_proto_msgTypes[14].OneofWrappers = []any{
+	file_compass_v1_comms_proto_msgTypes[13].OneofWrappers = []any{}
+	file_compass_v1_comms_proto_msgTypes[15].OneofWrappers = []any{
 		(*SubscribeCommsResponse_MessagePosted)(nil),
 		(*SubscribeCommsResponse_MessageUpdated)(nil),
 		(*SubscribeCommsResponse_ChannelChanged)(nil),
@@ -5200,20 +5288,20 @@ func file_compass_v1_comms_proto_init() {
 		(*SubscribeCommsResponse_AgentPresenceChanged)(nil),
 		(*SubscribeCommsResponse_TopicUpserted)(nil),
 	}
-	file_compass_v1_comms_proto_msgTypes[47].OneofWrappers = []any{
+	file_compass_v1_comms_proto_msgTypes[48].OneofWrappers = []any{
 		(*UpdatePinnedBoardRequest_Pin)(nil),
 		(*UpdatePinnedBoardRequest_UnpinMessageId)(nil),
 	}
-	file_compass_v1_comms_proto_msgTypes[52].OneofWrappers = []any{
+	file_compass_v1_comms_proto_msgTypes[53].OneofWrappers = []any{
 		(*ListMessagesRequest_ChannelId)(nil),
 	}
-	file_compass_v1_comms_proto_msgTypes[54].OneofWrappers = []any{
+	file_compass_v1_comms_proto_msgTypes[55].OneofWrappers = []any{
 		(*PostMessageRequest_ChannelId)(nil),
 		(*PostMessageRequest_TopicId)(nil),
 		(*PostMessageRequest_TopicName)(nil),
 	}
-	file_compass_v1_comms_proto_msgTypes[58].OneofWrappers = []any{}
-	file_compass_v1_comms_proto_msgTypes[63].OneofWrappers = []any{
+	file_compass_v1_comms_proto_msgTypes[59].OneofWrappers = []any{}
+	file_compass_v1_comms_proto_msgTypes[64].OneofWrappers = []any{
 		(*SearchMessagesRequest_ChannelId)(nil),
 	}
 	type x struct{}
@@ -5222,7 +5310,7 @@ func file_compass_v1_comms_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compass_v1_comms_proto_rawDesc), len(file_compass_v1_comms_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   66,
+			NumMessages:   67,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -36,6 +36,13 @@ func actorFrom(ctx context.Context) (store.AccountID, bool) {
 // unset (neither text nor ask). Sent as an InvalidArgument connect error.
 var errEmptyBlock = errors.New("message block has neither text nor ask set")
 
+// errServerOwnedBlock is the invalid-argument cause for a client write path
+// carrying an ask_answer block: the ask_answer variant is server-owned,
+// constructed only by RespondToAsk, so an inbound one (PostMessage / the agent
+// update path) is rejected at the wire edge — the only layer with caller
+// identity (RIG-2257).
+var errServerOwnedBlock = errors.New("ask_answer blocks are server-owned")
+
 // edgeError maps a store error onto the connect status code the wire contract
 // expects, at the service edge. The store's sentinel errors (errors.go) are the
 // vocabulary; anything unrecognized is an internal error, never leaked verbatim.
