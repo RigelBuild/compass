@@ -758,8 +758,9 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 			// (see the list renderer): a one-element array is the fixed point of
 			// any provider join, so no block handling can alter what the model
 			// reads. Every server-supplied string — `handle`, `displayName`,
-			// `agentAccountId`, `activity` — is a value the model reads as authoritative harness
-			// output, so each is render-guarded. The guard is `flat`, not `attr`:
+			// `agentAccountId`, `activity` — is a value the model reads as
+			// authoritative harness output, so each is render-guarded. The guard
+			// is `flat`, not `attr`:
 			// a roster row is a markdown LINE, and a line's only structural threat
 			// is a forged newline that splits one entry into two — exactly what
 			// `flat` collapses. `attr` is for a quoted tag attribute, where a `"`
