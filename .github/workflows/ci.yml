@@ -766,8 +766,9 @@ jobs:
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
       - name: Put the language toolchains on PATH
-        # Phase one of the two-phase bootstrap. The language runtimes
-        # (bun/node/moon/go) come from nix, not `setup-*` actions: gate-tools.nix's
+        # The nix-pinned language toolchains (bun/node/moon/go) — pgtest needs
+        # only `go` on PATH, but the whole `langs` set is a closed group built in
+        # one nix build. They come from nix, not `setup-*` actions: gate-tools.nix's
         # `langs` output resolves the identical derivations the dev shell does —
         # bun/node/moon from tools/toolchain/toolchain-tools.nix, go from the
         # go-overlay applied to the devenv.lock-pinned nixpkgs — so CI runs the
@@ -775,8 +776,9 @@ jobs:
         # path to check each against. `langs` is a closed set, so it needs no
         # `--arg attrs` (the head defaults it).
         #
-        # This must precede phase two: `--print-nix-attrs` runs under `bun`, so
-        # bun has to be on PATH before that parse can run.
+        # Unlike the moon gate, this job carries no phase-two nixpkgs-tools step:
+        # the real-Postgres suite runs only `go test`, which needs no buf/protoc/
+        # biome/markdownlint, so the language toolchains are the whole bootstrap.
         run: |
           stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
             | jq -r '.[].store')
