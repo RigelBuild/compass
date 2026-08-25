@@ -86,9 +86,10 @@ export const spawnParameters = type({
 		"Human-readable display name for the new peer",
 	),
 	// role AND persona are REQUIRED (non-blank), even though the wire fields are
-	// proto3-optional strings: presence is enforced HERE at the tool with the
-	// same `.narrow` idiom `handle` uses, not on the wire. Both are
-	// SET-AT-CREATION-ONLY — a spawn onto an existing handle is idempotent
+	// plain proto3 strings with no field presence — an unset value is
+	// indistinguishable from "" on the wire, which is exactly why presence is
+	// enforced HERE at the tool with the same `.narrow` idiom `handle` uses. Both
+	// are SET-AT-CREATION-ONLY — a spawn onto an existing handle is idempotent
 	// success under the STORED values and ignores these. The `.narrow` predicate
 	// has no JSON Schema form, so the description carries the rule (see the
 	// comms.ts `postParameters` note).
@@ -175,7 +176,8 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 							displayName: params.display_name ?? "",
 							// role/persona are SET-AT-CREATION-ONLY. Presence is enforced at
 							// the tool schema (non-blank), not on the wire — the fields are
-							// proto3-optional strings; a spawn onto an existing handle
+							// plain proto3 strings (no field presence; an unset value is
+							// the empty string), so a spawn onto an existing handle
 							// ignores them and keeps the stored values.
 							role: params.role,
 							persona: params.persona,

@@ -423,7 +423,8 @@ describe("lifecycle parameter schemas", () => {
 	});
 
 	// role is REQUIRED and non-blank — presence is enforced at the tool, not on
-	// the wire (the proto3 field is an optional string). A missing or blank role
+	// the wire (the proto3 field is a plain string with no presence: an unset
+	// value cannot be told apart from ""). A missing or blank role
 	// is a caller mistake, rejected before `execute`.
 	test("spawn rejects a missing, empty, or whitespace-only role", () => {
 		expect(rejects(spawnParameters, { ...validSpawn, role: undefined })).toBe(
