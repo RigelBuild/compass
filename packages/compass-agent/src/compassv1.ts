@@ -14,8 +14,25 @@
 // the @connectrpc transport the biome fence restricts. No fence override needed.
 
 // Codec: protobuf-es v2 runtime (the gen files import from the same package).
-export { create, fromJson, type JsonValue, toJson } from "@bufbuild/protobuf";
 export {
+	create,
+	fromJson,
+	type JsonValue,
+	type MessageInitShape,
+	toJson,
+} from "@bufbuild/protobuf";
+export {
+	// The agent-initiated forge call envelopes (internal-only AgentGateway gen).
+	// One `ForgeCallRequest` carries the SDK toolCallId as `call_id`, a oneof over
+	// the ten forge arms, an optional `ForgeRef forge` (unset = the configured
+	// default GitHub forge, DL-202), and a `client_request_id` (create arms only,
+	// DL-206); the `ForgeCallResult` retypes the domain arms to the canonical
+	// compass.v1 `Issue`/`PullRequest`/`CommentRef`/`ReviewRef` (DL-069/DL-092)
+	// plus an in-band `error` arm carrying a `retry_after_ms` a forge — unlike the
+	// in-process comms handler — can rate-limit on. The same messages are reused
+	// verbatim as the RelayForgeCall payloads on the Runner->Server leg.
+	CommentOnIssueRequestSchema,
+	CommentOnPullRequestRequestSchema,
 	// The agent-initiated comms call envelopes (internal-only AgentGateway gen).
 	// One `CommsCallRequest` carries the SDK toolCallId as `call_id` plus a oneof
 	// over the comms operations; the `CommsCallResult` mirrors it with a third
@@ -28,6 +45,8 @@ export {
 	CommsCallRequestSchema,
 	type CommsCallResult,
 	CommsCallResultSchema,
+	CreateIssueRequestSchema,
+	CreatePullRequestRequestSchema,
 	// The agent-initiated lifecycle call envelopes (internal-only AgentGateway
 	// gen). One `LifecycleCallRequest` carries the SDK toolCallId as `call_id`
 	// plus a oneof over spawn/despawn; the `LifecycleCallResult` mirrors it with a
@@ -38,12 +57,26 @@ export {
 	DespawnPeerRequestSchema,
 	type DespawnPeerResponse,
 	DespawnPeerResponseSchema,
+	type ForgeCallError,
+	ForgeCallErrorSchema,
+	type ForgeCallRequest,
+	ForgeCallRequestSchema,
+	type ForgeCallResult,
+	ForgeCallResultSchema,
+	GetIssueRequestSchema,
+	GetPullRequestRequestSchema,
 	type LifecycleCallError,
 	LifecycleCallErrorSchema,
 	type LifecycleCallRequest,
 	LifecycleCallRequestSchema,
 	type LifecycleCallResult,
 	LifecycleCallResultSchema,
+	type ListIssuesRequest,
+	ListIssuesRequestSchema,
+	type ListIssuesResponse,
+	ListIssuesResponseSchema,
+	type ReviewCommentInput,
+	ReviewCommentInputSchema,
 	// The agent's activity-status upsert (internal-only AgentGateway gen): the
 	// `SetAgentStatusRequest` carries the human-readable activity string; the
 	// empty `SetAgentStatusResponse` is the non-error ack (a durable
@@ -56,6 +89,13 @@ export {
 	SpawnPeerRequestSchema,
 	type SpawnPeerResponse,
 	SpawnPeerResponseSchema,
+	SubmitReviewRequestSchema,
+	SubscribeForgeRequestSchema,
+	type SubscribeForgeResponse,
+	SubscribeForgeResponseSchema,
+	UnsubscribeForgeRequestSchema,
+	type UnsubscribeForgeResponse,
+	UnsubscribeForgeResponseSchema,
 } from "./gen/compass/v1/agent_gateway_pb";
 export {
 	// The inbound control envelope (internal-only §T5): a oneof over the control
@@ -165,6 +205,12 @@ export {
 	RosterScope,
 } from "./gen/compass/v1/comms_pb";
 export {
+	// ── Forge canonical result types (DL-069/DL-092: the forge domain arms
+	// retype to these) plus the multi-forge selector. `Issue`/`PullRequest` are
+	// the read + create-ack payloads; `Review`/`ReviewThread`/`Comment`/
+	// `ChecksSummary`/`AgentAttribution` are the nested read-render sub-messages;
+	// `ForgeRef`/`ForgeProvider` are the selector every forge tool spreads.
+	type AgentAttribution,
 	// The plan entry the typed session plan reuses (content + status) and its
 	// status enum — reused rather than minting parallel enums
 	// (compass.proto:272-277, 297-300).
@@ -174,6 +220,17 @@ export {
 	// The board lifecycle state carried by SessionFrame.state.
 	AgentSessionState,
 	AgentToolCallStatus,
+	type ChecksSummary,
+	type Comment,
+	ForgeProvider,
+	type ForgeRef,
+	ForgeRefSchema,
+	type Issue,
+	IssueSchema,
+	type PullRequest,
+	PullRequestSchema,
+	type Review,
+	type ReviewThread,
 	// The typed observation-trace event (design: architecture-lineage)
 	// carried by SessionFrame.typed_event: a oneof over assistant-text
 	// / thinking chunks, a tool call + its updates (with file diffs), a plan, or a
@@ -199,3 +256,15 @@ export {
 	type SessionToolCallUpdate,
 	SessionToolCallUpdateSchema,
 } from "./gen/compass/v1/compass_pb";
+export {
+	// The forge write-ack references (internal-only forge gen). `CommentRef` is
+	// the ack for both comment arms (url + comment_id; body/forge_account/agent
+	// set only on a notification, unused here); `ReviewRef` is the submit_review
+	// ack (url + review_id + echoed verdict). `ForgeArtifactKind` is the
+	// subscribe arm's kind selector.
+	type CommentRef,
+	CommentRefSchema,
+	ForgeArtifactKind,
+	type ReviewRef,
+	ReviewRefSchema,
+} from "./gen/compass/v1/forge_pb";

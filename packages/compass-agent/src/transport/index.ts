@@ -22,6 +22,8 @@ import type {
 	CommsCallRequest,
 	CommsCallResult,
 	ControlSubscribeRequest,
+	ForgeCallRequest,
+	ForgeCallResult,
 	LifecycleCallRequest,
 	LifecycleCallResult,
 	PostConversationFrameRequest,
@@ -65,6 +67,7 @@ import { setTransportRuntime } from "./runtime-channel";
 export interface RunnerTransport {
 	comms(req: CommsCallRequest): Promise<CommsCallResult>;
 	lifecycle(req: LifecycleCallRequest): Promise<LifecycleCallResult>;
+	forge(req: ForgeCallRequest): Promise<ForgeCallResult>;
 	publishSpine(): PublishSpine;
 	postConversationFrame(
 		req: PostConversationFrameRequest,
@@ -126,6 +129,7 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 	const runnerTransport: RunnerTransport = {
 		comms: (req) => client.comms(req),
 		lifecycle: (req) => client.lifecycle(req),
+		forge: (req) => client.forge(req),
 		publishSpine: () => {
 			spine ??= createPublishSpine((stream) => client.publish(stream), runtime);
 			return spine;

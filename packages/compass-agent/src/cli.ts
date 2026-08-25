@@ -61,6 +61,7 @@ import {
 	type MountedMcp,
 	readMountedRolePrompt,
 } from "./config-reader";
+import { createForgeTools, ForgeBroker } from "./forge";
 import type { FrameSink } from "./frame";
 import { createLifecycleTools, LifecycleBroker } from "./lifecycle";
 import {
@@ -599,6 +600,7 @@ export async function main(
 	// resolve as session natives rather than "unknown tool".
 	const commsBroker = new CommsBroker(transport);
 	const lifecycleBroker = new LifecycleBroker(transport);
+	const forgeBroker = new ForgeBroker(transport);
 	// The comms/lifecycle natives are authored as `AgentTool` (pi-agent-core)
 	// because CompassAgent's `#withNatives` mechanism (agent.ts) operates on
 	// `AgentTool[]`. `createAgentSession`'s `customTools` wants
@@ -636,6 +638,7 @@ export async function main(
 	const nativeTools = [
 		...createCommsTools(commsBroker, pendingAsks),
 		...createLifecycleTools(lifecycleBroker),
+		...createForgeTools(forgeBroker),
 	] as ToolDefinition[];
 
 	// The tee session storage, wrapped + initialize()d (its scan of the session
