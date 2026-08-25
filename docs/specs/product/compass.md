@@ -4,7 +4,7 @@ Living source-of-truth for how **Compass** currently behaves and is built. The
 point-in-time design rationale — the ADE vision (the Dispatcher, the Bridge,
 per-agent containers, the three-tier Client→Server→Runner architecture) — lives
 in the design corpus, indexed by the decision ledger
-([`../../designs/product/DECISIONS.md`](../../designs/product/DECISIONS.md)) with
+([`../../designs/DECISIONS.md`](../../designs/DECISIONS.md)) with
 the surviving milestone rationale in the
 [architecture lineage](../../designs/product/compass-architecture-lineage/design.md)
 record; this spec describes only what the code exposes today.

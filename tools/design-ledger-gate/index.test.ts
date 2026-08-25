@@ -6,10 +6,10 @@
 //
 // Conventions (mirroring tools/spec-impact-gate/gate.test.ts and
 // tools/no-bash-gate/index.test.ts):
-// - Literal paths (`docs/designs/product/...`), NOT values derived from the
-//   module constants (PRODUCT_DIR / DECISIONS_PATH / HISTORICAL_CHAIN /
-//   LARGE_RECORD_BYTES): those constants ARE the thing under test, so deriving
-//   inputs from them would let a drifted constant pass silently.
+// - Literal paths (`docs/designs/<bucket>/...`), NOT values derived from the
+//   module constants (DESIGNS_ROOT / GOVERNED_ROOTS / DECISIONS_PATH /
+//   HISTORICAL_CHAIN / LARGE_RECORD_BYTES): those constants ARE the thing under
+//   test, so deriving inputs from them would let a drifted constant pass silently.
 // - `row()` / `header()` yield valid baselines so each test perturbs one axis.
 // - `.message` is human prose, asserted only by its identifying substring.
 
@@ -33,7 +33,7 @@ import {
 	touchesRecord,
 } from "./index.ts";
 
-const LEDGER = "docs/designs/product/DECISIONS.md";
+const LEDGER = "docs/designs/DECISIONS.md";
 const smallRecord = (): RecordContent => ({ headings: [], sizeBytes: 100 });
 const noChange: Changed = { files: [], body: null, headBranch: "" };
 
@@ -116,14 +116,26 @@ describe("touchesRecord", () => {
 			true,
 		);
 	});
+	test("a record under a second governed root (agent) is a record", () => {
+		expect(touchesRecord("docs/designs/agent/compass-x/design.md")).toBe(true);
+	});
+	test("a flat <name>.md at a second governed root is a record", () => {
+		expect(touchesRecord("docs/designs/repo/compass-drop-proto.md")).toBe(true);
+	});
 	test("the ledger DECISIONS.md is NOT a record", () => {
-		expect(touchesRecord("docs/designs/product/DECISIONS.md")).toBe(false);
+		expect(touchesRecord("docs/designs/DECISIONS.md")).toBe(false);
 	});
 	test("a nested non-design.md file is not a record", () => {
 		expect(touchesRecord("docs/designs/product/foo/bar.md")).toBe(false);
 	});
-	test("a file outside the product dir is not a record", () => {
+	test("a flat .md inside a subgroup is NOT a record (governed at root only)", () => {
+		expect(touchesRecord("docs/designs/infra/ci/foo.md")).toBe(false);
+	});
+	test("a file under an ungoverned bucket is not a record", () => {
 		expect(touchesRecord("docs/designs/platform/x.md")).toBe(false);
+	});
+	test("a file under a non-bucket path is not a record", () => {
+		expect(touchesRecord("docs/designs/notabucket/x.md")).toBe(false);
 	});
 	test("a non-markdown product file is not a record", () => {
 		expect(touchesRecord("docs/designs/product/notes.txt")).toBe(false);
@@ -131,18 +143,28 @@ describe("touchesRecord", () => {
 });
 
 describe("resolveRecordRelative", () => {
-	test("a nested record's `../sibling` pointer → product-relative sibling", () => {
+	test("a nested record's `../sibling` pointer → designs-root-relative sibling", () => {
 		expect(
 			resolveRecordRelative(
-				"compass-0.6/design.md",
+				"product/compass-0.6/design.md",
 				"../compass-0.8/design.md",
 			),
-		).toBe("compass-0.8/design.md");
+		).toBe("product/compass-0.8/design.md");
 	});
-	test("a top-level record's bare pointer → that product-relative path", () => {
+	test("a cross-bucket pointer resolves inside DESIGNS_ROOT", () => {
+		// A ui/ record superseded by an agent/ record: `../../agent/...` from
+		// `ui/<name>/design.md` climbs to the designs root then into agent/.
+		expect(
+			resolveRecordRelative(
+				"ui/compass-tauri-shell/design.md",
+				"../../agent/compass-native-app/design.md",
+			),
+		).toBe("agent/compass-native-app/design.md");
+	});
+	test("a top-level record's bare pointer → that designs-root-relative path", () => {
 		expect(resolveRecordRelative("a.md", "b.md")).toBe("b.md");
 	});
-	test("a pointer that climbs out of PRODUCT_DIR → null", () => {
+	test("a pointer that climbs out of DESIGNS_ROOT → null", () => {
 		expect(resolveRecordRelative("a.md", "../../escape.md")).toBeNull();
 	});
 });
@@ -707,6 +729,30 @@ describe("evaluate — record Status: header presence & grammar", () => {
 		expect(vs[0]?.message).toContain("malformed");
 		expect(vs[0]?.line).toBe(3);
 	});
+	test("newly-governed non-product bucket record, statusLine null → 'missing'", () => {
+		// The cutover made non-product buckets governed (repo/, infra/, …),
+		// which is why compass-eng-docs/design.md had to gain `Status: Active`.
+		// This locks that a record under a NON-product governed bucket is
+		// header-enforced identically — a regression that special-cased the
+		// product bucket for header presence would pass the product tests above
+		// yet silently un-enforce every repo/infra/ui/… record.
+		const vs = evaluate(
+			[row()],
+			[
+				header({
+					path: "docs/designs/repo/compass-eng-docs/design.md",
+					statusLine: null,
+					line: 3,
+				}),
+			],
+			noChange,
+			smallRecord,
+		);
+		expect(vs.length).toBe(1);
+		expect(vs[0]?.message).toContain("missing");
+		expect(vs[0]?.file).toBe("docs/designs/repo/compass-eng-docs/design.md");
+		expect(vs[0]?.line).toBe(3);
+	});
 });
 
 describe("evaluate — Historical-set membership", () => {
@@ -755,9 +801,10 @@ describe("evaluate — Historical-set membership", () => {
 
 describe("evaluate — record-level Superseded pointer", () => {
 	// The Status pointer is RECORD-relative; readRecord receives a
-	// product-relative path. This path-aware resolver (unlike smallRecord, which
-	// ignores its arg) returns a record only for the exact product-relative path
-	// that exists, so it locks down the resolution base.
+	// designs-root-relative (bucket-qualified) path. This path-aware resolver
+	// (unlike smallRecord, which ignores its arg) returns a record only for the
+	// exact designs-root-relative path that exists, so it locks down the
+	// resolution base.
 	const onlyExists =
 		(existing: string) =>
 		(p: string): RecordContent | null =>
@@ -780,9 +827,9 @@ describe("evaluate — record-level Superseded pointer", () => {
 		expect(vs[0]?.line).toBe(3);
 	});
 	test("record-relative pointer resolves to a sibling under a nested record", () => {
-		// A nested non-chain record + `../sibling/design.md` → product-relative
-		// `sibling/design.md`. The resolver only knows that product-relative path,
-		// so a correct base is the only way this passes.
+		// A nested non-chain record + `../sibling/design.md` → designs-root-relative
+		// `product/sibling/design.md`. The resolver only knows that path, so a
+		// correct base is the only way this passes.
 		expect(
 			evaluate(
 				[],
@@ -794,14 +841,34 @@ describe("evaluate — record-level Superseded pointer", () => {
 					}),
 				],
 				noChange,
-				onlyExists("compass-dock-in-sidebar/design.md"),
+				onlyExists("product/compass-dock-in-sidebar/design.md"),
 			),
 		).toEqual([]);
 	});
-	test("a product-relative form does NOT resolve from a nested record (base is locked)", () => {
-		// Writing the pointer product-relative (`sibling/design.md`) from inside a
-		// nested record is wrong: it resolves record-relative to
-		// `compass-ade-shell/sibling/design.md`, which the resolver rejects.
+	test("a cross-bucket record-relative pointer resolves inside DESIGNS_ROOT", () => {
+		// A ui/ record superseded by an agent/ record: `../../agent/...` climbs to
+		// the designs root, then into agent/. Resolves as long as it stays inside
+		// DESIGNS_ROOT.
+		expect(
+			evaluate(
+				[],
+				[
+					header({
+						path: "docs/designs/ui/compass-tauri-shell/design.md",
+						statusLine:
+							"Status: Superseded by ../../agent/compass-native-app/design.md",
+					}),
+				],
+				noChange,
+				onlyExists("agent/compass-native-app/design.md"),
+			),
+		).toEqual([]);
+	});
+	test("a designs-root-relative form does NOT resolve from a nested record (base is locked)", () => {
+		// Writing the pointer bucket-qualified (`compass-dock-in-sidebar/design.md`)
+		// from inside a nested record is wrong: it resolves record-relative to
+		// `product/compass-ade-shell/compass-dock-in-sidebar/design.md`, which the
+		// resolver rejects.
 		const vs = evaluate(
 			[],
 			[
@@ -811,7 +878,7 @@ describe("evaluate — record-level Superseded pointer", () => {
 				}),
 			],
 			noChange,
-			onlyExists("compass-dock-in-sidebar/design.md"),
+			onlyExists("product/compass-dock-in-sidebar/design.md"),
 		);
 		expect(vs.length).toBe(1);
 		expect(vs[0]?.message).toContain("does not resolve");
@@ -827,7 +894,7 @@ describe("evaluate — record-level Superseded pointer", () => {
 					}),
 				],
 				noChange,
-				onlyExists("other-record.md"),
+				onlyExists("product/other-record.md"),
 			),
 		).toEqual([]);
 	});
@@ -853,7 +920,7 @@ describe("evaluate — touch-coupling (DL-Q1)", () => {
 			evaluate(
 				[],
 				[],
-				changed([rec, "docs/designs/product/DECISIONS.md"], null),
+				changed([rec, "docs/designs/DECISIONS.md"], null),
 				smallRecord,
 			),
 		).toEqual([]);
@@ -922,7 +989,7 @@ describe("runOnce", () => {
 		const d: Deps = {
 			root: "/fake",
 			readText: async (_root, rel) =>
-				rel === "docs/designs/product/DECISIONS.md"
+				rel === "docs/designs/DECISIONS.md"
 					? validLedger
 					: "# Title\n\nStatus: Active\n",
 			listRecordFiles: async () => [oneRecord],
@@ -953,7 +1020,7 @@ describe("runOnce", () => {
 	test("a violation present → exit 1 and prints it", async () => {
 		const { d, errs } = deps({
 			readText: async (_root, rel) =>
-				rel === "docs/designs/product/DECISIONS.md"
+				rel === "docs/designs/DECISIONS.md"
 					? validLedger
 					: "# Title\n\nStatus: bogus value\n",
 		});

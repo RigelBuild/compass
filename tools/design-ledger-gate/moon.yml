@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
 #
 # design-ledger-gate (SEA-1187) — validate the Compass design-decision ledger
-# (docs/designs/product/DECISIONS.md), the per-record `Status:` headers, and
+# (docs/designs/DECISIONS.md), the per-record `Status:` headers, and
 # dangling supersession/Record pointers. A bun/TypeScript CLI; a hoisted
 # root-workspace member (`bun` tag): install is inherited via
 # .moon/tasks/tag-bun.yml (the shared root install) and lint/format are
@@ -27,7 +27,7 @@ tasks:
     deps: ['install']
     inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
   check:
-    # The snapshot gate: scan the whole repo's docs/designs/product/ tree for
+    # The snapshot gate: scan the whole repo's docs/designs/ governed buckets
     # ledger/header/pointer integrity. Run from the workspace root so links and
     # record paths resolve repo-relative (GATE_ROOT defaults to the git
     # toplevel = workspace root). Distinct from `test`, which drives the pure
@@ -41,8 +41,7 @@ tasks:
       # gate exists to stop.
       cache: false
     inputs:
-      - '/docs/designs/product/**/*.md'
-      - '/docs/designs/platform/**/*.md'
+      - '/docs/designs/**/*.md'
       - 'index.ts'
   ci:
     deps: ['typecheck', 'test', 'check']

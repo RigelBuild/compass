@@ -1,6 +1,6 @@
 // design-ledger-gate — validate the Compass design-decision ledger (SEA-1187).
 //
-// The design corpus under docs/designs/product/ freezes on merge; later
+// The design corpus under docs/designs/<bucket>/ freezes on merge; later
 // records supersede specific decisions by citation. Supersession was only
 // visible forward (the superseding record cites the superseded one, nothing
 // points back), so an agent grounding on a single record could not tell a
@@ -17,7 +17,7 @@
 //     record link without the required anchor), and every record's `Status:`
 //     header (present, grammar-conformant, correct Historical-set membership).
 //     Runs on every event (the tool's own `moon run design-ledger-gate:gate`).
-//   * TOUCH-COUPLING (DL-Q1) — a PR whose changed set touches a product design
+//   * TOUCH-COUPLING (DL-Q1) — a PR whose changed set touches a governed design
 //     record MUST also touch DECISIONS.md, unless it declares `Ledger-impact:`
 //     in the PR body. PR-event-only (needs PR context); on non-PR events the
 //     changed set is empty and this leg no-ops.
@@ -41,10 +41,25 @@ import { existsSync, readFileSync } from "node:fs";
 import { posix as pathPosix } from "node:path";
 import { $ } from "bun";
 
-/** The product design-corpus directory the gate governs. */
-export const PRODUCT_DIR = "docs/designs/product";
+/** The design-corpus root the gate governs (all buckets beneath it). */
+export const DESIGNS_ROOT = "docs/designs";
+/**
+ * The governed buckets under `DESIGNS_ROOT`. `product` is transitional — the
+ * reorg (RIG-2577) dissolves it into the other buckets; it stays in the list
+ * (still governed) until the RIG-2542-gated native sweep empties it. An empty
+ * bucket directory scans to zero records, which is green.
+ */
+export const GOVERNED_ROOTS: readonly string[] = [
+	"ui",
+	"agent",
+	"server",
+	"meta",
+	"infra",
+	"repo",
+	"product",
+];
 /** The canonical ledger, parsed as the decision table (never as a record). */
-export const DECISIONS_PATH = `${PRODUCT_DIR}/DECISIONS.md`;
+export const DECISIONS_PATH = `${DESIGNS_ROOT}/DECISIONS.md`;
 /**
  * A Record link into a record larger than this MUST carry a resolving
  * `#anchor`, so rationale is genuinely one hop away, not a hunt through a big
@@ -204,36 +219,40 @@ export function splitLink(
 	return { path: target.slice(0, hash), anchor: target.slice(hash + 1) };
 }
 
-/** True when a repo-relative path is a product design record (not the ledger). */
+/** True when a repo-relative path is a governed design record (not the ledger). */
 export function touchesRecord(file: string): boolean {
-	if (!file.startsWith(`${PRODUCT_DIR}/`)) return false;
 	if (file === DECISIONS_PATH) return false;
-	const rest = file.slice(PRODUCT_DIR.length + 1);
-	if (rest.endsWith("/design.md")) return true; // <name>/design.md layout
-	if (rest.endsWith(".md") && !rest.includes("/")) return true; // <name>.md layout
+	for (const root of GOVERNED_ROOTS) {
+		const prefix = `${DESIGNS_ROOT}/${root}/`;
+		if (!file.startsWith(prefix)) continue;
+		// First governed root the file sits under: apply the two-layout test to
+		// the remainder (byte-identical to the historical per-PRODUCT_DIR logic).
+		const rest = file.slice(prefix.length);
+		if (rest.endsWith("/design.md")) return true; // <name>/design.md layout
+		if (rest.endsWith(".md") && !rest.includes("/")) return true; // <name>.md layout
+		return false;
+	}
 	return false;
 }
 
 /**
  * Resolve a record-level `Status: Superseded by <path>` pointer to a
- * product-relative path for `readRecord`. That header value is written
+ * designs-root-relative path for `readRecord`. That header value is written
  * RECORD-relative (a link a human follows from inside the record's own
- * directory — e.g. `../compass-0.8/design.md` from `compass-0.6/design.md`),
- * unlike a ledger Record cell which is product-relative. `recordProductRelPath`
- * is the superseded record's own product-relative path; the result is
- * normalized product-relative (no leading `./`), or null if the pointer escapes
- * PRODUCT_DIR.
+ * directory — e.g. `../compass-native-app/design.md` from another bucket),
+ * unlike a ledger Record cell which is designs-root-relative (bucket-qualified).
+ * `recordRelPath` is the superseded record's own designs-root-relative path;
+ * the result is normalized designs-root-relative (no leading `./`), or null if
+ * the pointer escapes DESIGNS_ROOT. Cross-bucket pointers resolve as long as
+ * they stay inside DESIGNS_ROOT.
  */
 export function resolveRecordRelative(
-	recordProductRelPath: string,
+	recordRelPath: string,
 	pointer: string,
 ): string | null {
-	const joined = pathPosix.join(
-		pathPosix.dirname(recordProductRelPath),
-		pointer,
-	);
-	// A pointer that climbs out of PRODUCT_DIR (leading `..`) can't be a product
-	// record; readRecord would resolve it outside the corpus.
+	const joined = pathPosix.join(pathPosix.dirname(recordRelPath), pointer);
+	// A pointer that climbs out of DESIGNS_ROOT (leading `..`) can't be a
+	// governed record; readRecord would resolve it outside the corpus.
 	if (joined.startsWith("..")) return null;
 	return joined;
 }
@@ -501,12 +520,13 @@ export function evaluate(
 		}
 		if (value.kind === "Superseded") {
 			// `rec.path` is repo-relative; readRecord + resolveRecordRelative work
-			// in product-relative space. The Superseded pointer is record-relative
-			// (resolved from the record's own directory), unlike a ledger Record cell.
-			const recProductRel = rec.path.startsWith(`${PRODUCT_DIR}/`)
-				? rec.path.slice(PRODUCT_DIR.length + 1)
+			// in designs-root-relative space. The Superseded pointer is
+			// record-relative (resolved from the record's own directory), unlike a
+			// ledger Record cell (designs-root-relative / bucket-qualified).
+			const recDesignsRel = rec.path.startsWith(`${DESIGNS_ROOT}/`)
+				? rec.path.slice(DESIGNS_ROOT.length + 1)
 				: rec.path;
-			const resolved = resolveRecordRelative(recProductRel, value.path);
+			const resolved = resolveRecordRelative(recDesignsRel, value.path);
 			if (resolved === null || readRecord(resolved) === null) {
 				v(
 					rec.path,
@@ -518,7 +538,7 @@ export function evaluate(
 	}
 
 	// --- Touch-coupling (DL-Q1): PR-event-only. A changed set that touches a
-	//     product record but not DECISIONS.md, with no `Ledger-impact:` body
+	//     governed record but not DECISIONS.md, with no `Ledger-impact:` body
 	//     declaration, fails. Off PR events the changed set is empty → no-op.
 	//     An automation-exempt head branch (renovate/) skips this leg — it
 	//     cannot author a declaration (mirrors spec-impact-gate); the SNAPSHOT
@@ -534,7 +554,7 @@ export function evaluate(
 			v(
 				"(pull request)",
 				0,
-				"PR touches a docs/designs/product/ design record but neither updates " +
+				"PR touches a governed docs/designs/<bucket>/ design record but neither updates " +
 					`${DECISIONS_PATH} nor declares \`Ledger-impact:\` in the body. Append/flip ` +
 					"the record's ledger rows in this PR, or add a `Ledger-impact: none` line.",
 			);
@@ -552,10 +572,10 @@ export interface Deps {
 	root: string;
 	/** Read a repo-relative file, or null if it does not exist. */
 	readText: (root: string, relPath: string) => Promise<string | null>;
-	/** List repo-relative record paths under PRODUCT_DIR (excl. DECISIONS.md). */
+	/** List repo-relative record paths under the governed roots (excl. DECISIONS.md). */
 	listRecordFiles: (root: string) => Promise<string[]>;
-	/** Resolve a link/pointer target (product-relative) to its slugs + bytes. */
-	readRecord: (root: string, productRelPath: string) => RecordContent | null;
+	/** Resolve a link/pointer target (designs-root-relative) to its slugs + bytes. */
+	readRecord: (root: string, recordRelPath: string) => RecordContent | null;
 	/** The PR's changed set (empty off PR events). */
 	changed: Changed;
 	log: (msg: string) => void;
@@ -681,7 +701,7 @@ if (import.meta.main) {
 			root,
 			readText: readTextReal,
 			listRecordFiles: async (r) => {
-				const glob = new Bun.Glob(`${PRODUCT_DIR}/**/*.md`);
+				const glob = new Bun.Glob(`${DESIGNS_ROOT}/**/*.md`);
 				const out: string[] = [];
 				for await (const rel of glob.scan({ cwd: r })) {
 					const posix = rel.replaceAll("\\", "/");
@@ -689,8 +709,8 @@ if (import.meta.main) {
 				}
 				return out.sort();
 			},
-			readRecord: (r, productRelPath) => {
-				const path = `${r}/${PRODUCT_DIR}/${productRelPath}`;
+			readRecord: (r, recordRelPath) => {
+				const path = `${r}/${DESIGNS_ROOT}/${recordRelPath}`;
 				// Synchronous read (readRecord is sync); missing path → null.
 				try {
 					if (!existsSync(path)) return null;
