@@ -102,6 +102,23 @@ export const FOD_ENTRIES: FodEntry[] = [
 	},
 ];
 
+// Fragment attribution (parseGotForFragment) matches a mismatch block by
+// `drvName.includes(fragment)`, so two fragments where one contains the other
+// (e.g. "modules" vs "node-modules") would let one entry's got: bind the other's
+// block and write the WRONG hash. The current two fragments are mutually
+// disjoint; assert it at load time so a future table edit that reintroduces an
+// ambiguous fragment fails loud here rather than silently misattributing at run.
+for (const a of FOD_ENTRIES) {
+	for (const b of FOD_ENTRIES) {
+		if (a !== b && b.drvFragment.includes(a.drvFragment)) {
+			throw new Error(
+				`renovate-fod: ambiguous drvFragment '${a.drvFragment}' is a substring of ` +
+					`'${b.drvFragment}' — fragments must be mutually disjoint for got: attribution`,
+			);
+		}
+	}
+}
+
 // ── Pure rewrite: replace the `sha256-…` SRI on the line carrying `marker`. ──
 // Unlike refresh-toolchain-hashes.ts (whose hash sits on the line AFTER the URL
 // marker), a vendorHash/outputHash IS the marker line. Throws on an empty SRI or

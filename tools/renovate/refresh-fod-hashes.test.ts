@@ -383,3 +383,19 @@ describe("rewriteInlineHash", () => {
 		expect(hashOnMarker(out, GO_ENTRY.marker)).toBe(withDollars);
 	});
 });
+
+describe("FOD_ENTRIES table invariant", () => {
+	test("no drvFragment is a substring of another (got: attribution safety)", () => {
+		// parseGotForFragment attributes a mismatch block by includes(fragment);
+		// if one fragment contained another, one entry's got: could bind the
+		// other's block and write the wrong hash. The module also asserts this at
+		// load time — this test states the property explicitly and pins it against
+		// a future table edit.
+		for (const a of FOD_ENTRIES) {
+			for (const b of FOD_ENTRIES) {
+				if (a === b) continue;
+				expect(b.drvFragment.includes(a.drvFragment)).toBe(false);
+			}
+		}
+	});
+});
