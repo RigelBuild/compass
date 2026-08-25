@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"testing"
 
 	compassv1internal "github.com/RigelBuild/compass/go/internal/gen/compass/v1"
@@ -378,6 +379,7 @@ func waitInflight(t *testing.T, r *commandRouter, id string) {
 		case <-deadline:
 			t.Fatalf("command %q never registered inflight", id)
 		default:
+			runtime.Gosched()
 		}
 	}
 }
@@ -404,6 +406,7 @@ func waitOrder(t *testing.T, p *parkedSend, want []string) {
 		case <-deadline:
 			t.Fatalf("wire saw %v, want %v (incomplete drain)", got, want)
 		default:
+			runtime.Gosched()
 		}
 	}
 }
@@ -491,10 +494,11 @@ func TestQueuedDeliverAtDetachNeverSends(t *testing.T) {
 		}
 	}
 
-	// complete for the queued deliver's id is a no-op: it was removed from the
-	// refusal set at detach-time discard is not required, but a stray result must
-	// not be counted a refusal for a frame that never went out. (The entry may or
-	// may not be resident; the contract is only that complete does not panic.)
+	// A stray complete for the queued deliver's id must be a harmless no-op: no
+	// result can arrive for a frame that never left, so at most it is an
+	// observable-refusal miss, never a panic. detach does NOT clean deliverRefusals
+	// entries (per design (e)); the entry is left to LRU eviction, so it may or may
+	// not still be resident — the contract asserted here is only non-panic.
 	r.complete(&compassv1internal.SessionsRequest{
 		RequestId: deliverID,
 		Result:    &compassv1internal.SessionsRequest_Error{Error: &compassv1internal.RunnerError{}},

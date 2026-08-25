@@ -316,6 +316,7 @@ func TestSignalSecretsVersionNoLiveSessionsIsNoop(t *testing.T) {
 	router, _, _ := hub.routerFor("any")
 	rec := newRecordingSend()
 	router.attach(rec.send)
+	defer router.detach(errStreamClosed)
 
 	if err := hub.SignalSecretsVersion(); err != nil {
 		t.Fatalf("SignalSecretsVersion with no live sessions = %v, want nil", err)
