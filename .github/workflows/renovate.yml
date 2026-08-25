@@ -4,7 +4,7 @@
 # devenv CLI onto PATH from the devenv input the root devenv.lock pins (compass
 # CI never provisions a PATH `devenv`), mints a per-run GitHub
 # App installation token, runs a preflight probe, then runs a pinned `bunx
-# renovate`. Design: docs/designs/platform/compass-renovate-migration.md.
+# renovate`. Design: docs/designs/repo/compass-renovate-migration.md.
 #
 # Auth is a GitHub App, not a stored PAT: the workflow mints an installation
 # token that expires ~1h later, so no long-lived credential lives on the CI

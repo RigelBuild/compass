@@ -1,5 +1,5 @@
 // O4 span wiring on the OUTBOUND transport (frame-sink.ts + publish-spine.ts).
-// Decision 1 of docs/designs/platform/compass-agent-effect-otel/design.md: the
+// Decision 1 of docs/designs/repo/compass-agent-effect-otel/design.md: the
 // four outbound spans — the durable-send parent + its per-attempt children on
 // the frame sink, and the two teardown drain spans (one per module).
 //

@@ -1,12 +1,13 @@
 # Design: Adopt Effect on the compass agent-runner transport
 
+Status: Draft
+
 **AMENDMENT (2026-08-21, platform — RIG-2424 T1 smoke test):** OQ-3's assertion that the sync `emit()` trace-lane path uses `Queue.unsafeOffer` on a `Queue.sliding` and is drop-oldest / "always returns true (never signals eviction)" / needs **no runtime** is **factually wrong** for `effect` 3.22.1, verified at source (`effect/internal/queue.js`: `unsafeOffer` L114-137 bypasses the strategy and offers to the backing bounded queue -> on a full sliding queue it **rejects** the newest element and returns `false` = drop-**newest**; the effectful `offer` L138-163 is the only path reaching `SlidingStrategy.handleSurplus` L449-455, which is `core.sync` and drops-**oldest**) and empirically (`unsafeOffer` [1,2,3,4,5]->sliding(3) survivors [1,2,3] returns [T,T,T,F,F]; `runSync(Queue.offer)` survivors [3,4,5]).
 
 **Forced correction (unique mechanism):** the trace-lane sync `emit()` path is `runtime.runSync(Queue.offer(q, frame))` on the `Queue.sliding` — sliding `offer` completes synchronously (never suspends, so `runSync` cannot throw on a live queue), drops-**oldest**, and the eviction stays synchronously countable by reading `q.unsafeSize()` (returns `Option<number>`) **before** the offer (`size == capacity` => imminent eviction). Spelling: `q.unsafeSize()`, not `Queue.sizeUnsafe`.
 
 **Contract preserved — this revises one internal mechanism, not the frozen shape:** `emit()` stays sync/void; no `Effect<>` in any exported signature (`runSync` is transport-internal); the trace lane -> `Queue.sliding` mapping is unchanged; drop-oldest and the sync drop-count are preserved (`frame-sink.test.ts:435` drop-oldest ordinals stay green). OQ-3's "sync path needs no runtime" becomes "sync path calls `runtime.runSync`." T5's single-transport-owned-`ManagedRuntime` containment is **unaffected**. Scope: contained to T3 (trace lane); T1, T2 untouched.
 
-Status: Draft
 Linear: RIG-2384. The adopt/don't-adopt call is **frozen** — ruled by Matt
 (2026-08-20) and recorded in the compass effect-adoption decision record
 ([`../compass-effect-adoption-decision.md`](../compass-effect-adoption-decision.md)).

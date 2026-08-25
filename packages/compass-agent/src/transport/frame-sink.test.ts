@@ -437,7 +437,7 @@ test("a durable send gives up after the retry budget, rejecting emitDurable", as
 
 test("emitDurable's give-up rejection carries the ORIGINAL ConnectError, not an Effect wrapper", async () => {
 	// RIG-2448 coverage gap (design record
-	// docs/designs/platform/compass-agent-effect-adoption/design.md, Global
+	// docs/designs/repo/compass-agent-effect-adoption/design.md, Global
 	// Constraints "Error identity is preserved at the promise boundary"; T2
 	// give-up seam). The durable send uses two-arg
 	// Effect.tryPromise({ try, catch: (e) => e }) so the raw rejection stays in

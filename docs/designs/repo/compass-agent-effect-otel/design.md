@@ -2,7 +2,7 @@
 
 Status: Draft
 Linear: RIG-2426 (decision-to-adopt; implementation is a separate later issue).
-Parent record: `docs/designs/platform/compass-agent-effect-adoption/design.md`
+Parent record: `docs/designs/repo/compass-agent-effect-adoption/design.md`
 (RIG-2424, merged as PRs #465/#467/#471/#474; T5 runtime consolidation is
 PR #475 — OPEN at drafting time; see Global Constraints for the ordering
 dependency).
@@ -337,7 +337,7 @@ the parent record modeled for `effect` 3.22.1.
   `minimumReleaseAgeExcludes` additions (`bunfig.toml:20-24` stays as-is).
 - Commit identity per repo convention (mintaka author, Matt co-author
   trailer, `Spec-impact:` line); code comments cite this record by path
-  (`docs/designs/platform/compass-agent-effect-otel/design.md`), no issue-id
+  (`docs/designs/repo/compass-agent-effect-otel/design.md`), no issue-id
   in code.
 
 ## Plan
@@ -379,7 +379,7 @@ the same PR adds a test (or a lint fence) asserting the `src/transport/`
 package export surface — `index.ts` / the emitted `.d.ts` — contains no type
 from `effect`, `@effect/opentelemetry`, or `@opentelemetry/*`. This turns the
 parent record's frozen rule ("the public `.d.ts` stays free of the `effect`
-package", `docs/designs/platform/compass-agent-effect-adoption/design.md`
+package", `docs/designs/repo/compass-agent-effect-adoption/design.md`
 Global Constraints) from remembered convention into a red test.
 
 Interfaces:
