@@ -190,7 +190,7 @@ in
   ]
   # cloud-hypervisor / virtiofsd / passt: the microVM VMM userspace toolset the
   # elastic-session runtime's KVM-backed backend drives (design record
-  # docs/designs/platform/compass-elastic-session-runtime/microvm-ci-dev-enablement.md,
+  # docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-ci-dev-enablement.md,
   # § E-D1). cloud-hypervisor is the microVM VMM chosen in design D1; virtiofsd
   # is the virtio-fs daemon that serves the guest's filesystem; passt is the
   # userspace network backend instantiating the D6 passt/gvproxy-class net path

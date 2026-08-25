@@ -6,7 +6,7 @@ package runnerhub
 // (runner.RunSessions) over the in-memory h2c Sessions wire against a fake
 // runner.SessionHost, exercising the per-command goroutine dispatch, its
 // leak-free shutdown join, and the Provision-arm concurrency cap
-// (docs/designs/platform/compass-runner-concurrent-dispatch/design.md, Approach
+// (docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md, Approach
 // (a)/(e) + Plan T1 tests 1 & 4, T-cap).
 //
 // Why here and not package runner: the record's T1 note drives RunSessions "over

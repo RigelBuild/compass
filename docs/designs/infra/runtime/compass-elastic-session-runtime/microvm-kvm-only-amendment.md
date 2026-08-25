@@ -1,7 +1,7 @@
 # Elastic session runtime — amendment: microVM is KVM-only, no degrade-to-container
 
 > **Design amendment.** Amends the frozen elastic session runtime record
-> (`docs/designs/platform/compass-elastic-session-runtime/design.md`, RIG-1717,
+> (`docs/designs/infra/runtime/compass-elastic-session-runtime/design.md`, RIG-1717,
 > merged in PR #446). The merged record is frozen and is **not** rewritten in
 > place (a later change adds a record, never rewrites the merged one); this
 > amendment records a direction ruled by Matt (2026-08-23) and is the authority

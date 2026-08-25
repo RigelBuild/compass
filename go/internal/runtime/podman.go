@@ -109,7 +109,7 @@ type ContainerSpec struct {
 	// UID is the container uid the invoking host user is mapped to via
 	// --userns=keep-id:uid=,gid= — the baked agent uid the image bakes /nix and
 	// $HOME as (the T1/T2 baked-agent-uid invariant; see
-	// docs/designs/platform/compass-runner-arbitrary-uid/design.md).
+	// docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md).
 	UID uint32
 }
 
@@ -412,7 +412,7 @@ func createArgs(spec ContainerSpec) []string {
 		// Rootless uid remap: maps the invoking host user to the baked agent
 		// uid, so files the agent writes in a bind-mount still map back to the
 		// invoking user on the host (design: architecture-lineage;
-		// docs/designs/platform/compass-runner-arbitrary-uid/design.md). gid
+		// docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md). gid
 		// collapses to uid: the image bakes gid==uid==1000.
 		fmt.Sprintf("--userns=keep-id:uid=%d,gid=%d", spec.UID, spec.UID),
 	)
@@ -433,7 +433,7 @@ func createArgs(spec ContainerSpec) []string {
 // minUsernsRemapMajor / minUsernsRemapMinor are the podman version floor for
 // the --userns=keep-id:uid=,gid= remap Create relies on: keep-id:uid= is a
 // podman 4.3+ option
-// (docs/designs/platform/compass-runner-arbitrary-uid/design.md §(b)). There is
+// (docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md §(b)). There is
 // no --uidmap fallback below it — the floor is hard.
 const (
 	minUsernsRemapMajor = 4

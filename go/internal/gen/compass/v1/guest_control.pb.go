@@ -1,5 +1,5 @@
 // The compass.v1 host->guest control plane for the V2a microVM runtime spike
-// (design docs/designs/platform/compass-elastic-session-runtime/
+// (design docs/designs/infra/runtime/compass-elastic-session-runtime/
 // microvm-v2a-guest-image-boot-spike.md, RIG-2588 T3).
 //
 // INTERNAL-ONLY surface. Unlike compass.proto / comms.proto — the public,

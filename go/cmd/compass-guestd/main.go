@@ -5,7 +5,7 @@
 // boot sequence — mount API filesystems, bring networking up via an in-process
 // DHCP client, mount the virtio-fs workspace, then serve the GuestControl
 // Connect/h2c Health handshake over AF_VSOCK, and idle until the host tears the
-// VMM down (design docs/designs/platform/compass-elastic-session-runtime/
+// VMM down (design docs/designs/infra/runtime/compass-elastic-session-runtime/
 // microvm-v2a-guest-image-boot-spike.md, §(d), RIG-2589 T2). All boot logic
 // lives in internal/guestd; this binary is a thin wrapper that assembles the
 // process root context, wires signal-driven shutdown, and exits non-zero on any

@@ -79,7 +79,7 @@ type fakeSessionHost struct {
 	// provisionEntered at its start (buffered by the test so a parked op never
 	// blocks the send) and then blocks until provisionRelease is closed;
 	// stopEntered, when non-nil, signals that Stop was reached. These back the
-	// concurrent-dispatch tests (docs/designs/platform/compass-runner-concurrent-dispatch/design.md).
+	// concurrent-dispatch tests (docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md).
 	provisionEntered chan struct{}
 	provisionRelease chan struct{}
 	stopEntered      chan struct{}
@@ -792,7 +792,7 @@ func (w *wrapError) Unwrap() error { return w.inner }
 // original diagnostic text is preserved on the wire message. Red before the
 // ErrOperatorConfig arm existed: the classifier fell an operator-fault provision
 // to INTERNAL — the exact over-classification this change fixes. See
-// docs/designs/platform/compass-runner-gateway-error-sentinels/design.md.
+// docs/designs/infra/runtime/compass-runner-gateway-error-sentinels/design.md.
 func TestExecuteProvisionOperatorFaultMapsToFailedPrecondition(t *testing.T) {
 	diag := fmt.Errorf("serving agent socket for container %q: %w", "cont-op", gateway.ErrOperatorConfig)
 	host := &fakeSessionHost{provisionErr: diag}
@@ -841,7 +841,7 @@ func (h *levelHandler) snapshot() []slog.Record {
 // class: Error for INTERNAL, Warn for a classified code, and Debug for a
 // context cancellation — so the shutdown/ctx.Err() arm never emits an ERROR for
 // a routine cancel. Pinning the noise posture makes it a contract, not an
-// accident. See docs/designs/platform/compass-runner-gateway-error-sentinels/design.md.
+// accident. See docs/designs/infra/runtime/compass-runner-gateway-error-sentinels/design.md.
 func TestErrorResultLogsLevelByClass(t *testing.T) {
 	cases := []struct {
 		name string

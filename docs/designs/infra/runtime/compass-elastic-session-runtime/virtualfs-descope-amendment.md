@@ -1,7 +1,7 @@
 # Elastic session runtime — amendment: `VirtualFS` descoped from S1 to P2
 
 > **Design amendment.** Amends the frozen elastic session runtime record
-> (`docs/designs/platform/compass-elastic-session-runtime/design.md`, RIG-1717,
+> (`docs/designs/infra/runtime/compass-elastic-session-runtime/design.md`, RIG-1717,
 > merged in PR #446). The merged record is frozen and is **not** rewritten in
 > place (a later change adds a record, never rewrites the merged one); this
 > amendment records a scope change ruled by Matt during S1 execution and is the

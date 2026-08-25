@@ -1,5 +1,8 @@
 # Compass hosted agent platform — the elastic session runtime (end-state)
 
+Status: Draft
+Tracking: RIG-1717
+
 > **Design record.** This designs the hosted multi-tenant agent-platform
 > end-state for Compass: the fused, colocated agent+compute session
 > environment, hardened along three axes — elastic compute, a persistent
@@ -7,12 +10,9 @@
 > `agent-image/*`, and `docs/*` citation below is a path in the
 > **`RigelBuild/compass`** monorepo at HEAD `13a43cec` (line numbers drift as
 > the code evolves; resolve them against that commit). It lives in the design
-> corpus (`docs/designs/platform/`) because that is where the wave's design
+> corpus (`docs/designs/infra/runtime/`) because that is where the wave's design
 > records freeze. Frozen on merge; executing agents read this as the contract
 > for RIG-1717.
-
-Status: Draft
-Tracking: RIG-1717
 
 ## Problem / Intent
 

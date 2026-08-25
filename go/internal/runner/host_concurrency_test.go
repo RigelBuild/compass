@@ -3,7 +3,7 @@
 package runner
 
 // Per-container transition-lock tests for the production agentHost
-// (docs/designs/platform/compass-runner-concurrent-dispatch/design.md, Approach
+// (docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md, Approach
 // (d) / Plan T4). Concurrent dispatch makes concurrent SessionHost callers
 // reachable, so the lifecycle ops on ONE container must serialize while ops on
 // DIFFERENT containers still overlap — the per-container granularity that keeps

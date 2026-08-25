@@ -3,7 +3,7 @@
 package runner
 
 // Concurrent-dispatch tests for the dispatcher's in-flight-sentinel idempotency
-// (docs/designs/platform/compass-runner-concurrent-dispatch/design.md, Approach
+// (docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md, Approach
 // (b) / Plan T2). Under per-command goroutine dispatch the request-id dedup
 // window is open concurrently: a retry of an IN-FLIGHT id must JOIN the running
 // execution rather than double-execute it. Every test is event-gated on the

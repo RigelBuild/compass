@@ -3,7 +3,7 @@
 package runner
 
 // Loop-level tests for the unexported runSessions seam
-// (docs/designs/platform/compass-runner-concurrent-dispatch/design.md, Approach
+// (docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md, Approach
 // (a) + Plan T1 tests 4 & 6, T-cap). These drive runSessions directly over a
 // scripted in-memory sessionStream so a send failure, a shutdown-cancel join,
 // and the Provision-arm concurrency cap can each be forced DETERMINISTICALLY —
