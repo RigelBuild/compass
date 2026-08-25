@@ -1,6 +1,11 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import type { Command, CommandId, CommandScope } from "./commands";
-import { detectPlatform, eventToChord, installKeymap } from "./dispatch";
+import {
+	detectPlatform,
+	eventToChord,
+	installKeymap,
+	LEADER_TIMEOUT_MS,
+} from "./dispatch";
 import type { Platform } from "./keymap";
 import { createCommandRegistry } from "./registry";
 import type { RovingGroupHandle } from "./roving";
@@ -443,5 +448,221 @@ describe("installKeymap", () => {
 		keydown({ key: "b", ctrlKey: true });
 
 		expect(ran).toBe(0);
+	});
+});
+
+// The leader/mnemonic runtime (RIG-2484 T3): "press G, then <key>" sequences
+// armed inside the ONE keydown handler, with a timeout, the editable guard
+// ahead of arming, and dead-sequence fall-through to single-chord resolution.
+describe("installKeymap — leader sequences", () => {
+	let uninstall: (() => void) | null = null;
+
+	afterEach(() => {
+		uninstall?.();
+		uninstall = null;
+		jest.useRealTimers();
+		setPlatform("other");
+	});
+
+	test("g then b runs view.bridge (G B); the arming g is defaultPrevented", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("view.bridge", () => ran++));
+		uninstall = installKeymap(registry, () => null);
+
+		const armed = keydown({ key: "g" });
+		expect(armed.defaultPrevented).toBe(true);
+		expect(ran).toBe(0);
+
+		keydown({ key: "b" });
+		expect(ran).toBe(1);
+		// The completion disarmed the leader: a second bare b is a no-op, not a
+		// stuck-pending double-complete.
+		keydown({ key: "b" });
+		expect(ran).toBe(1);
+	});
+
+	test("timeout: after LEADER_TIMEOUT_MS the leader disarms, so b does not complete", () => {
+		jest.useFakeTimers();
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("view.bridge", () => ran++));
+		uninstall = installKeymap(registry, () => null);
+
+		keydown({ key: "g" });
+		jest.advanceTimersByTime(LEADER_TIMEOUT_MS + 1);
+		keydown({ key: "b" });
+
+		expect(ran).toBe(0);
+	});
+
+	test("editable-guard: g then b in an input arms nothing, runs nothing, prevents nothing", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("view.bridge", () => ran++));
+		uninstall = installKeymap(registry, () => null);
+
+		const input = document.createElement("input");
+		document.body.appendChild(input);
+		const armed = keydown({ key: "g" }, input);
+		const completed = keydown({ key: "b" }, input);
+
+		expect(armed.defaultPrevented).toBe(false);
+		expect(completed.defaultPrevented).toBe(false);
+		expect(ran).toBe(0);
+		input.remove();
+	});
+
+	test("<select> non-regression: g on a focused select does not arm (native typeahead intact)", () => {
+		const registry = createCommandRegistry();
+		uninstall = installKeymap(registry, () => null);
+
+		const select = document.createElement("select");
+		document.body.appendChild(select);
+		const event = keydown({ key: "g" }, select);
+
+		expect(event.defaultPrevented).toBe(false);
+		select.remove();
+	});
+
+	test("ARIA-widget non-regression: g inside a role=listbox does not arm", () => {
+		const registry = createCommandRegistry();
+		uninstall = installKeymap(registry, () => null);
+
+		const listbox = document.createElement("div");
+		listbox.setAttribute("role", "listbox");
+		const option = document.createElement("div");
+		listbox.appendChild(option);
+		document.body.appendChild(listbox);
+		const event = keydown({ key: "g" }, option);
+
+		expect(event.defaultPrevented).toBe(false);
+		listbox.remove();
+	});
+
+	test("dead-sequence fall-through: g then ArrowDown routes to the active group", () => {
+		const registry = createCommandRegistry();
+		const { handle, routed } = stubGroup(() => true);
+		uninstall = installKeymap(registry, () => handle);
+
+		keydown({ key: "g" });
+		const event = keydown({ key: "ArrowDown" });
+
+		// "G ArrowDown" matches no row → falls through to the single-chord path,
+		// where the active group claims list.moveNext.
+		expect(routed).toEqual([id("list.moveNext")]);
+		expect(event.defaultPrevented).toBe(true);
+	});
+
+	test("re-arm: g g then b runs view.bridge (the second g re-arms)", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("view.bridge", () => ran++));
+		uninstall = installKeymap(registry, () => null);
+
+		keydown({ key: "g" });
+		const rearmed = keydown({ key: "g" });
+		expect(rearmed.defaultPrevented).toBe(true);
+		keydown({ key: "b" });
+
+		expect(ran).toBe(1);
+	});
+
+	test("arm-then-refocus: g on window, then b in a composer input, does not complete", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("view.bridge", () => ran++));
+		uninstall = installKeymap(registry, () => null);
+
+		keydown({ key: "g" });
+		const input = document.createElement("input");
+		document.body.appendChild(input);
+		const event = keydown({ key: "b" }, input);
+
+		expect(ran).toBe(0); // the editable guard swallowed the completion key
+		expect(event.defaultPrevented).toBe(false);
+		input.remove();
+	});
+
+	test("Escape disarms: g, Escape, then b does not complete", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("view.bridge", () => ran++));
+		uninstall = installKeymap(registry, () => null);
+
+		keydown({ key: "g" });
+		const esc = keydown({ key: "Escape" });
+		expect(esc.defaultPrevented).toBe(true);
+		keydown({ key: "b" });
+
+		expect(ran).toBe(0);
+	});
+
+	test.each([
+		["Shift", { shiftKey: true }],
+		["Control", { ctrlKey: true }],
+		["Alt", { altKey: true }],
+		["Meta", { metaKey: true }],
+	] as const)(
+		"a lone %s keydown mid-sequence does NOT disarm: g, %s, b completes",
+		(key, flag) => {
+			const registry = createCommandRegistry();
+			let ran = 0;
+			registry.register(makeCommand("view.bridge", () => ran++));
+			uninstall = installKeymap(registry, () => null);
+
+			keydown({ key: "g" });
+			keydown({ key, ...flag });
+			keydown({ key: "b" });
+
+			expect(ran).toBe(1);
+		},
+	);
+
+	test("Mod+B mid-sequence disarms AND runs view.bridge in the same keydown", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("view.bridge", () => ran++));
+		uninstall = installKeymap(registry, () => null);
+
+		keydown({ key: "g" });
+		// "G Ctrl+B" matches no row → falls through; the leader disarmed, and the
+		// single-chord Ctrl+B resolves view.bridge.
+		keydown({ key: "b", ctrlKey: true });
+
+		expect(ran).toBe(1);
+		// The leader disarmed (not left pending): a bare b now does nothing.
+		keydown({ key: "b" });
+		expect(ran).toBe(1);
+	});
+
+	test("held g (repeat) does not arm", () => {
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("view.bridge", () => ran++));
+		uninstall = installKeymap(registry, () => null);
+
+		const event = keydown({ key: "g", repeat: true });
+		expect(event.defaultPrevented).toBe(false);
+
+		// Nothing armed, so a following b never completes.
+		keydown({ key: "b" });
+		expect(ran).toBe(0);
+	});
+
+	test("uninstall while a leader is pending leaves no timer firing", () => {
+		jest.useFakeTimers();
+		const registry = createCommandRegistry();
+		let ran = 0;
+		registry.register(makeCommand("view.bridge", () => ran++));
+		const stop = installKeymap(registry, () => null);
+
+		keydown({ key: "g" });
+		stop(); // clears the live pending.timer
+		uninstall = null;
+
+		expect(() => jest.advanceTimersByTime(LEADER_TIMEOUT_MS + 1)).not.toThrow();
+		keydown({ key: "b" });
+		expect(ran).toBe(0); // listener gone; nothing runs
 	});
 });

@@ -116,6 +116,35 @@ describe("App-root keyboard spine (RIG-2456)", () => {
 
 		expect(store.view()).toBe("settings");
 	});
+
+	test("G then S lands on Settings (leader sequence, real App wiring)", async () => {
+		setPlatform("other");
+		const { store } = mountApp("/");
+		expect(store.view()).toBe("bridge");
+
+		// The `G S` sequence (keymap.ts) resolves through the same tier-3 path as
+		// `Mod+,` once the T3 runtime arms the leader. Registers nothing — the
+		// spine already registered view.settings.
+		press({ key: "g" });
+		press({ key: "s" });
+		await flush();
+
+		expect(store.view()).toBe("settings");
+	});
+
+	test("G then L lands on Backlog (sequence-only command, real App wiring)", async () => {
+		setPlatform("other");
+		const { store } = mountApp("/");
+		expect(store.view()).toBe("bridge");
+
+		// view.backlog's ONLY keyboard binding is the `G L` sequence; this proves
+		// the leader runtime resolves it end to end with no App-specific setup.
+		press({ key: "g" });
+		press({ key: "l" });
+		await flush();
+
+		expect(store.view()).toBe("backlog");
+	});
 });
 
 describe("shortcuts overlay (RIG-2482)", () => {
