@@ -275,7 +275,7 @@ func deliveryLabel(d compassv1.SecretDelivery) string {
 	case compassv1.SecretDelivery_SECRET_DELIVERY_FILE:
 		return deliveryFile
 	default:
-		return "unspecified"
+		return unspecifiedLabel
 	}
 }
 
@@ -290,7 +290,7 @@ func kindLabel(k compassv1.SecretKind) string {
 	case compassv1.SecretKind_SECRET_KIND_GH:
 		return kindGH
 	default:
-		return "unspecified"
+		return unspecifiedLabel
 	}
 }
 
