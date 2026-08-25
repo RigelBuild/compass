@@ -1,5 +1,7 @@
 # Compass dogfood e2e harness — full-stack scenario testing (SEA-1681)
 
+Status: Draft
+
 > **Design record.** A reusable full-stack e2e HARNESS for Compass — shared
 > stack-bring-up core, a scenario-authoring API of composable primitives, two
 > fidelity tiers (backend-only headless, UI-inclusive), and a model-backend
@@ -11,12 +13,6 @@
 > citation below is a path in that repo at origin/main HEAD `abdb412c`, not
 > this one. It lives in the sealed design corpus because that is where the
 > wave's design records freeze.
-
-Status: **Draft** — SEA-1681. Three forks are ruled by Matt (2026-08-05):
-model axis (D1), per-PR gate cadence (D2), harness shape (D3); he re-ratifies
-at the design-PR gate. Two forks remain open and cross-lane (OQ3 UI tier, OQ4
-leg-2 sequencing) — batched in §Open Questions; the record designs against the
-recommended arm of each so no task is blocked.
 
 ## Problem / Intent
 

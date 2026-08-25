@@ -1,5 +1,7 @@
 # Compass dogfood loop
 
+Status: Active
+
 > **Design record.** The full `devenv up` dogfood loop for Compass: build + load
 > the `compass-agent` image, bring up postgres + a TLS-door `compass-server`,
 > mint a runner token, enroll `compass-runner`, and drive one real agent session
@@ -8,9 +10,6 @@
 > `agent-image/*`, and `go/cmd/*` citation below is a path in that repo at HEAD
 > `21241f720`, not this one. It lives in the sealed design corpus because that is
 > where the wave's design records freeze.
-
-Status: **decided** — SEA-1360. Every fork (D1–D5) ruled by Matt; the record is
-the frozen contract the implementation reads. Design-first per AGENTS.md.
 
 ## Problem / Intent
 

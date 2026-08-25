@@ -125,7 +125,7 @@ Skipping what it cannot verify would make its green mean nothing.
 The `compass-agent` runtime image (the base every agent workstream runs in) is
 published to GHCR by a workflow separate from the gate above. For the full
 rationale see the design record
-`docs/designs/platform/compass-agent-image-publish.md`; the durable operational
+`docs/designs/infra/ci/compass-agent-image-publish/design.md`; the durable operational
 shape is here.
 
 **Ref and tags.** The image is `ghcr.io/rigelbuild/compass-agent`. Every

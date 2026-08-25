@@ -3,7 +3,7 @@
 Status: Approved — the three load-bearing forks below were ruled by Matt
 (2026-08-19); this record freezes on merge as the contract T1–T6 execute
 against. No implementation in this record's PR.
-Parent record: [compass-dogfood-e2e](../compass-dogfood-e2e/design.md) (FROZEN —
+Parent record: [compass-dogfood-e2e](../../infra/ci/compass-dogfood-e2e/design.md) (FROZEN —
 this record does not reopen its tier or its assertion; it settles only the
 observation MECHANISM that record explicitly deferred).
 Ledger-impact: none — this is a `docs/designs/platform/` record; the
