@@ -53,21 +53,32 @@ const KernelEnvVar = "COMPASS_TEST_GUEST_KERNEL"
 // export it pointing at the `nix build .#compass-guest-rootfs` result).
 const RootfsEnvVar = "COMPASS_TEST_GUEST_ROOTFS"
 
+// InitrdEnvVar points the harness at the guest initramfs image to boot. Like
+// KernelEnvVar it is supplied by the environment (the dev shell / CI KVM leg
+// export it pointing at the `nix build .#compass-guest-initrd` result). The
+// initrd is load-bearing, not optional: the pinned generic kernel ships virtio/
+// erofs/overlay as modules, so the initrd is what loads them and mounts the
+// root before switch_root (record §(a)).
+const InitrdEnvVar = "COMPASS_TEST_GUEST_INITRD"
+
 // vmmBinary is the VMM the microVM suites drive; virtiofsdBinary is the
 // virtio-fs daemon they pair it with. Both are resolved from PATH (the dev shell
 // and CI KVM leg put them there) when Require builds the Env.
 const (
 	vmmBinary       = "cloud-hypervisor"
 	virtiofsdBinary = "virtiofsd"
+	passtBinary     = "passt"
 )
 
 // Env is the resolved microVM test environment Require hands back: the guest
 // images to boot and the host binaries to drive them with.
 type Env struct {
 	KernelImage   string
+	InitrdImage   string
 	RootfsImage   string
 	VMMPath       string
 	VirtiofsdPath string
+	PasstPath     string
 }
 
 // kvmSource is which of the three KVM-availability paths Require takes.
@@ -148,10 +159,19 @@ func resolveEnv(t *testing.T) Env {
 	if err != nil {
 		t.Fatalf("microVM test requires %s on PATH: %v", virtiofsdBinary, err)
 	}
+	passtPath, err := exec.LookPath(passtBinary)
+	if err != nil {
+		t.Fatalf("microVM test requires %s on PATH: %v", passtBinary, err)
+	}
 	kernelImage := os.Getenv(KernelEnvVar)
 	if kernelImage == "" {
 		t.Fatalf("microVM test requires %s to point at the guest kernel image "+
 			"(exported by the dev shell / CI KVM leg from `nix build .#compass-guest-kernel`)", KernelEnvVar)
+	}
+	initrdImage := os.Getenv(InitrdEnvVar)
+	if initrdImage == "" {
+		t.Fatalf("microVM test requires %s to point at the guest initramfs image "+
+			"(exported by the dev shell / CI KVM leg from `nix build .#compass-guest-initrd`)", InitrdEnvVar)
 	}
 	rootfsImage := os.Getenv(RootfsEnvVar)
 	if rootfsImage == "" {
@@ -160,8 +180,10 @@ func resolveEnv(t *testing.T) Env {
 	}
 	return Env{
 		KernelImage:   kernelImage,
+		InitrdImage:   initrdImage,
 		RootfsImage:   rootfsImage,
 		VMMPath:       vmmPath,
 		VirtiofsdPath: virtiofsdPath,
+		PasstPath:     passtPath,
 	}
 }

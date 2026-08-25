@@ -1,0 +1,14 @@
+{
+	"name": "@compass/microvm-boot-test",
+	"private": true,
+	"type": "module",
+	"description": "The local microVM boot-test lane (RIG-2591): realise the guest image + VMM stack from nix, export the env vars microvmtest.Require reads, and exec the KVM-gated `go test -tags microvm` suite. Mirrors ci.yml's microVM step; the dev-box entry point, not a CI replacement.",
+	"module": "run.ts",
+	"bin": {
+		"microvm-boot-test": "./run.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

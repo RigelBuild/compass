@@ -336,19 +336,38 @@ jobs:
           echo "pgtest: checked $(printf '%s\n' "$pkgs" | wc -l) real-Postgres packages against the service database"
           exit "$rc"
 
-      - name: Enable KVM
-        # The tagged microVM suites open /dev/kvm; on a fresh ubuntu-latest runner
-        # the device is root:kvm 0660, so the invoking uid cannot open it. Write
-        # the udev group-perms rule the ecosystem standardizes on — the same rule
-        # the Determinate nix-installer-action installs — then reload+trigger so
-        # it applies to the live node. We install Nix via cachix/install-nix-action
-        # (above), not the Determinate action, so we write the rule ourselves.
+      - name: Enable KVM and unprivileged user namespaces
+        # Two ephemeral-runner relaxations the microVM boot leg needs, both the
+        # §E-D2 throwaway-runner class (a GHA runner is a single-tenant throwaway,
+        # so a looser device/kernel posture that the dev box would never take is
+        # harmless here). sudo is the runner's passwordless sudo; the test
+        # processes themselves run rootless as the invoking uid.
         #
-        # MODE="0666" (world-RW), deliberately looser than the dev box's kvm-group
-        # 0660 (record §E-D2): a GHA runner is an ephemeral single-tenant throwaway
-        # where a world-RW /dev/kvm is harmless, so we skip the group-membership
-        # dance and just make it openable. sudo is the runner's passwordless sudo;
-        # the test processes themselves run rootless as the invoking uid.
+        # 1. /dev/kvm openable. The tagged microVM suites open /dev/kvm; on a
+        #    fresh ubuntu-latest runner the device is root:kvm 0660, so the
+        #    invoking uid cannot open it. Write the udev group-perms rule the
+        #    ecosystem standardizes on — the same rule the Determinate
+        #    nix-installer-action installs — then reload+trigger so it applies to
+        #    the live node. We install Nix via cachix/install-nix-action (above),
+        #    not the Determinate action, so we write the rule ourselves. MODE
+        #    "0666" (world-RW) is deliberately looser than the dev box's kvm-group
+        #    0660: on this throwaway runner a world-RW /dev/kvm is harmless, so we
+        #    skip the group-membership dance and just make it openable.
+        #
+        # 2. Unprivileged user namespaces allowed. ubuntu-latest is now Ubuntu
+        #    24.04, which ships AppArmor's apparmor_restrict_unprivileged_userns=1
+        #    — an unconfined non-root process can no longer create a user
+        #    namespace. passt AND virtiofsd both self-sandbox by detaching into
+        #    their own userns (passt's --sandbox has no opt-out; virtiofsd's
+        #    --sandbox=namespace is what the record §T4 specifies), so under the
+        #    restriction they die at startup with "Failed to detach isolating
+        #    namespaces: Operation not permitted" and the guest never boots. Set
+        #    the sysctl to 0 to lift the restriction for this boot. This is a
+        #    kernel-hardening knob, not a capability grant: the daemons still run
+        #    rootless as the invoking uid with no added privilege — the record's
+        #    "only privilege is the kvm group, no CAP_NET_ADMIN, no rootful
+        #    helper" constraint holds. The setting reverts on the runner's
+        #    teardown (it is a throwaway VM); nothing persists.
         #
         # Assume-KVM required-leg posture (§E-D2): the microVM step below sets
         # COMPASS_REQUIRE_MICROVM=1, so a run where GitHub withholds /dev/kvm reds
@@ -358,6 +377,7 @@ jobs:
             | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+          echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
 
       - name: microVM suites
         working-directory: go
