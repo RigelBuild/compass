@@ -10,13 +10,13 @@
 // turn's await, the source consumes the Connect stream on the Node event loop (a
 // background pump) and routes by variant:
 //
-//   - `prompt` / `askAnswer` / `replayComplete` are REPRESENTABLE on the wire
-//     today (string / id+answers / empty) — decoded to the domain union and
-//     yielded on the iterable the CompassAgent pulls. They are ACKED on
-//     apply-then-ack: the consumer returning for the next op is proof the
-//     previous one applied (a sequential `for await` cannot pull op N+1 until op
-//     N's body resolved), so the source advances its `ControlAck` cursor at the
-//     start of each `next()`, never on mere receipt (P1 #6).
+//   - `prompt` / `replayComplete` are REPRESENTABLE on the wire today (string /
+//     empty) — decoded to the domain union and yielded on the iterable the
+//     CompassAgent pulls. They are ACKED on apply-then-ack: the consumer
+//     returning for the next op is proof the previous one applied (a sequential
+//     `for await` cannot pull op N+1 until op N's body resolved), so the source
+//     advances its `ControlAck` cursor at the start of each `next()`, never on
+//     mere receipt (P1 #6).
 //   - `steer` / `deliver` are the IMMEDIATE-dispatch class (mid-turn interrupt /
 //     turn-end delivery): processed on the event loop at decode, ahead of any
 //     queued iterator op. As of SEA-1310 §8 BOTH carry the comms Message on the
@@ -375,15 +375,6 @@ export function createSocketControlSource(
 				queued.add(seq);
 				buffer.push({
 					op: { kind: "prompt", input: wire.control.value.input },
-					seq,
-				});
-				return;
-			}
-			case "askAnswer": {
-				const v = wire.control.value;
-				queued.add(seq);
-				buffer.push({
-					op: { kind: "askAnswer", askId: v.askId, answers: v.answers },
 					seq,
 				});
 				return;

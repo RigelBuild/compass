@@ -140,8 +140,8 @@ message SessionFrame {
 // its first WIRE definition, replacing the never-built stdin decoder.
 //
 // Payload FIELDS: only the variants representable with existing compass.v1
-// scalars carry fields here (PromptControl.input, AskAnswerControl,
-// DeliverControl.message, SteerControl.message). The TranscriptReplay /
+// scalars carry fields here (PromptControl.input, DeliverControl.message,
+// SteerControl.message). The TranscriptReplay /
 // ConfigControl payloads stay empty shells — their fields carry an inbound SDK
 // `AgentMessage` (a four-way union with an opaque provider payload) and a tool
 // set (whose SDK representation includes a non-serializable `execute` handle),
@@ -161,7 +161,6 @@ message AgentControl {
     PromptControl prompt = 1;
     SteerControl steer = 2;
     DeliverControl deliver = 3;
-    AskAnswerControl ask_answer = 4;
     ConfigControl config = 5;
     TranscriptReplay replay = 6;
     ReplayComplete replay_complete = 7;
@@ -177,17 +176,6 @@ message AgentControl {
 message PromptControl {
   // The live user prompt text.
   string input = 1;
-}
-message AskAnswerControl {
-  // Correlates to the in-flight ask (the ask_id the agent emitted).
-  string ask_id = 1;
-  // Exactly one answer per AskQuestion in the ask, keyed by question_id —
-  // reuses comms.v1 AskQuestionAnswer so the answer survives the wire with the
-  // same shape RespondToAskRequest carries: multi-question asks stay keyed, and
-  // a free-text ("Other") answer rides custom_text. A flat chosen_option_ids
-  // (the superseded single-question shape RespondToAskRequest itself reserved,
-  // comms.proto) cannot represent either, so it is not used here.
-  repeated AskQuestionAnswer answers = 2;
 }
 // A bare barrier signal: replay is complete, live ops may now flow. No payload.
 message ReplayComplete {}

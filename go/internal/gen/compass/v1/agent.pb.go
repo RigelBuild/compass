@@ -377,8 +377,8 @@ func (x *SessionFrame) GetTypedEvent() *v1.SessionEvent {
 // its first WIRE definition, replacing the never-built stdin decoder.
 //
 // Payload FIELDS: only the variants representable with existing compass.v1
-// scalars carry fields here (PromptControl.input, AskAnswerControl,
-// DeliverControl.message, SteerControl.message). The TranscriptReplay /
+// scalars carry fields here (PromptControl.input, DeliverControl.message,
+// SteerControl.message). The TranscriptReplay /
 // ConfigControl payloads stay empty shells — their fields carry an inbound SDK
 // `AgentMessage` (a four-way union with an opaque provider payload) and a tool
 // set (whose SDK representation includes a non-serializable `execute` handle),
@@ -400,7 +400,6 @@ type AgentControl struct {
 	//	*AgentControl_Prompt
 	//	*AgentControl_Steer
 	//	*AgentControl_Deliver
-	//	*AgentControl_AskAnswer
 	//	*AgentControl_Config
 	//	*AgentControl_Replay
 	//	*AgentControl_ReplayComplete
@@ -481,15 +480,6 @@ func (x *AgentControl) GetDeliver() *DeliverControl {
 	return nil
 }
 
-func (x *AgentControl) GetAskAnswer() *AskAnswerControl {
-	if x != nil {
-		if x, ok := x.Control.(*AgentControl_AskAnswer); ok {
-			return x.AskAnswer
-		}
-	}
-	return nil
-}
-
 func (x *AgentControl) GetConfig() *ConfigControl {
 	if x != nil {
 		if x, ok := x.Control.(*AgentControl_Config); ok {
@@ -542,10 +532,6 @@ type AgentControl_Deliver struct {
 	Deliver *DeliverControl `protobuf:"bytes,3,opt,name=deliver,proto3,oneof"`
 }
 
-type AgentControl_AskAnswer struct {
-	AskAnswer *AskAnswerControl `protobuf:"bytes,4,opt,name=ask_answer,json=askAnswer,proto3,oneof"`
-}
-
 type AgentControl_Config struct {
 	Config *ConfigControl `protobuf:"bytes,5,opt,name=config,proto3,oneof"`
 }
@@ -571,8 +557,6 @@ func (*AgentControl_Prompt) isAgentControl_Control() {}
 func (*AgentControl_Steer) isAgentControl_Control() {}
 
 func (*AgentControl_Deliver) isAgentControl_Control() {}
-
-func (*AgentControl_AskAnswer) isAgentControl_Control() {}
 
 func (*AgentControl_Config) isAgentControl_Control() {}
 
@@ -628,65 +612,6 @@ func (x *PromptControl) GetInput() string {
 	return ""
 }
 
-type AskAnswerControl struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// Correlates to the in-flight ask (the ask_id the agent emitted).
-	AskId string `protobuf:"bytes,1,opt,name=ask_id,json=askId,proto3" json:"ask_id,omitempty"`
-	// Exactly one answer per AskQuestion in the ask, keyed by question_id —
-	// reuses comms.v1 AskQuestionAnswer so the answer survives the wire with the
-	// same shape RespondToAskRequest carries: multi-question asks stay keyed, and
-	// a free-text ("Other") answer rides custom_text. A flat chosen_option_ids
-	// (the superseded single-question shape RespondToAskRequest itself reserved,
-	// comms.proto) cannot represent either, so it is not used here.
-	Answers       []*v1.AskQuestionAnswer `protobuf:"bytes,2,rep,name=answers,proto3" json:"answers,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *AskAnswerControl) Reset() {
-	*x = AskAnswerControl{}
-	mi := &file_compass_v1_agent_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *AskAnswerControl) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*AskAnswerControl) ProtoMessage() {}
-
-func (x *AskAnswerControl) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use AskAnswerControl.ProtoReflect.Descriptor instead.
-func (*AskAnswerControl) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *AskAnswerControl) GetAskId() string {
-	if x != nil {
-		return x.AskId
-	}
-	return ""
-}
-
-func (x *AskAnswerControl) GetAnswers() []*v1.AskQuestionAnswer {
-	if x != nil {
-		return x.Answers
-	}
-	return nil
-}
-
 // A bare barrier signal: replay is complete, live ops may now flow. No payload.
 type ReplayComplete struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -696,7 +621,7 @@ type ReplayComplete struct {
 
 func (x *ReplayComplete) Reset() {
 	*x = ReplayComplete{}
-	mi := &file_compass_v1_agent_proto_msgTypes[6]
+	mi := &file_compass_v1_agent_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -708,7 +633,7 @@ func (x *ReplayComplete) String() string {
 func (*ReplayComplete) ProtoMessage() {}
 
 func (x *ReplayComplete) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[6]
+	mi := &file_compass_v1_agent_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -721,7 +646,7 @@ func (x *ReplayComplete) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplayComplete.ProtoReflect.Descriptor instead.
 func (*ReplayComplete) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{6}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{5}
 }
 
 // SteerControl carries a comms Message: a channel `@`-mention routed into the
@@ -748,7 +673,7 @@ type SteerControl struct {
 
 func (x *SteerControl) Reset() {
 	*x = SteerControl{}
-	mi := &file_compass_v1_agent_proto_msgTypes[7]
+	mi := &file_compass_v1_agent_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -760,7 +685,7 @@ func (x *SteerControl) String() string {
 func (*SteerControl) ProtoMessage() {}
 
 func (x *SteerControl) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[7]
+	mi := &file_compass_v1_agent_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -773,7 +698,7 @@ func (x *SteerControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SteerControl.ProtoReflect.Descriptor instead.
 func (*SteerControl) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{7}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *SteerControl) GetMessage() *v1.Message {
@@ -803,7 +728,7 @@ type TranscriptReplay struct {
 
 func (x *TranscriptReplay) Reset() {
 	*x = TranscriptReplay{}
-	mi := &file_compass_v1_agent_proto_msgTypes[8]
+	mi := &file_compass_v1_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -815,7 +740,7 @@ func (x *TranscriptReplay) String() string {
 func (*TranscriptReplay) ProtoMessage() {}
 
 func (x *TranscriptReplay) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[8]
+	mi := &file_compass_v1_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -828,7 +753,7 @@ func (x *TranscriptReplay) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TranscriptReplay.ProtoReflect.Descriptor instead.
 func (*TranscriptReplay) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{8}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{7}
 }
 
 type ConfigControl struct {
@@ -839,7 +764,7 @@ type ConfigControl struct {
 
 func (x *ConfigControl) Reset() {
 	*x = ConfigControl{}
-	mi := &file_compass_v1_agent_proto_msgTypes[9]
+	mi := &file_compass_v1_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -851,7 +776,7 @@ func (x *ConfigControl) String() string {
 func (*ConfigControl) ProtoMessage() {}
 
 func (x *ConfigControl) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[9]
+	mi := &file_compass_v1_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -864,7 +789,7 @@ func (x *ConfigControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigControl.ProtoReflect.Descriptor instead.
 func (*ConfigControl) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{9}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{8}
 }
 
 // DeliverControl carries a comms Message to deliver into the agent's live
@@ -895,7 +820,7 @@ type DeliverControl struct {
 
 func (x *DeliverControl) Reset() {
 	*x = DeliverControl{}
-	mi := &file_compass_v1_agent_proto_msgTypes[10]
+	mi := &file_compass_v1_agent_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -907,7 +832,7 @@ func (x *DeliverControl) String() string {
 func (*DeliverControl) ProtoMessage() {}
 
 func (x *DeliverControl) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[10]
+	mi := &file_compass_v1_agent_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -920,7 +845,7 @@ func (x *DeliverControl) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliverControl.ProtoReflect.Descriptor instead.
 func (*DeliverControl) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{10}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DeliverControl) GetMessage() *v1.Message {
@@ -958,7 +883,7 @@ type DeliveryAck struct {
 
 func (x *DeliveryAck) Reset() {
 	*x = DeliveryAck{}
-	mi := &file_compass_v1_agent_proto_msgTypes[11]
+	mi := &file_compass_v1_agent_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -970,7 +895,7 @@ func (x *DeliveryAck) String() string {
 func (*DeliveryAck) ProtoMessage() {}
 
 func (x *DeliveryAck) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[11]
+	mi := &file_compass_v1_agent_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -983,7 +908,7 @@ func (x *DeliveryAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeliveryAck.ProtoReflect.Descriptor instead.
 func (*DeliveryAck) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{11}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *DeliveryAck) GetMessageId() string {
@@ -1005,7 +930,7 @@ type ReplayCompleteAck struct {
 
 func (x *ReplayCompleteAck) Reset() {
 	*x = ReplayCompleteAck{}
-	mi := &file_compass_v1_agent_proto_msgTypes[12]
+	mi := &file_compass_v1_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1017,7 +942,7 @@ func (x *ReplayCompleteAck) String() string {
 func (*ReplayCompleteAck) ProtoMessage() {}
 
 func (x *ReplayCompleteAck) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[12]
+	mi := &file_compass_v1_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1030,7 +955,7 @@ func (x *ReplayCompleteAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReplayCompleteAck.ProtoReflect.Descriptor instead.
 func (*ReplayCompleteAck) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{12}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{11}
 }
 
 type ControlAck struct {
@@ -1047,7 +972,7 @@ type ControlAck struct {
 
 func (x *ControlAck) Reset() {
 	*x = ControlAck{}
-	mi := &file_compass_v1_agent_proto_msgTypes[13]
+	mi := &file_compass_v1_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1059,7 +984,7 @@ func (x *ControlAck) String() string {
 func (*ControlAck) ProtoMessage() {}
 
 func (x *ControlAck) ProtoReflect() protoreflect.Message {
-	mi := &file_compass_v1_agent_proto_msgTypes[13]
+	mi := &file_compass_v1_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1072,7 +997,7 @@ func (x *ControlAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlAck.ProtoReflect.Descriptor instead.
 func (*ControlAck) Descriptor() ([]byte, []int) {
-	return file_compass_v1_agent_proto_rawDescGZIP(), []int{13}
+	return file_compass_v1_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ControlAck) GetAckedSeq() uint64 {
@@ -1114,25 +1039,20 @@ const file_compass_v1_agent_proto_rawDesc = "" +
 	"\fSessionFrame\x123\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1d.compass.v1.AgentSessionStateR\x05state\x129\n" +
 	"\vtyped_event\x18\x02 \x01(\v2\x18.compass.v1.SessionEventR\n" +
-	"typedEvent\"\x9c\x04\n" +
+	"typedEvent\"\xdd\x03\n" +
 	"\fAgentControl\x12\x1f\n" +
 	"\vcontrol_seq\x18\b \x01(\x04R\n" +
 	"controlSeq\x123\n" +
 	"\x06prompt\x18\x01 \x01(\v2\x19.compass.v1.PromptControlH\x00R\x06prompt\x120\n" +
 	"\x05steer\x18\x02 \x01(\v2\x18.compass.v1.SteerControlH\x00R\x05steer\x126\n" +
-	"\adeliver\x18\x03 \x01(\v2\x1a.compass.v1.DeliverControlH\x00R\adeliver\x12=\n" +
-	"\n" +
-	"ask_answer\x18\x04 \x01(\v2\x1c.compass.v1.AskAnswerControlH\x00R\taskAnswer\x123\n" +
+	"\adeliver\x18\x03 \x01(\v2\x1a.compass.v1.DeliverControlH\x00R\adeliver\x123\n" +
 	"\x06config\x18\x05 \x01(\v2\x19.compass.v1.ConfigControlH\x00R\x06config\x126\n" +
 	"\x06replay\x18\x06 \x01(\v2\x1c.compass.v1.TranscriptReplayH\x00R\x06replay\x12E\n" +
 	"\x0freplay_complete\x18\a \x01(\v2\x1a.compass.v1.ReplayCompleteH\x00R\x0ereplayComplete\x12N\n" +
 	"\x12forge_notification\x18\t \x01(\v2\x1d.compass.v1.ForgeNotificationH\x00R\x11forgeNotificationB\t\n" +
 	"\acontrol\"%\n" +
 	"\rPromptControl\x12\x14\n" +
-	"\x05input\x18\x01 \x01(\tR\x05input\"b\n" +
-	"\x10AskAnswerControl\x12\x15\n" +
-	"\x06ask_id\x18\x01 \x01(\tR\x05askId\x127\n" +
-	"\aanswers\x18\x02 \x03(\v2\x1d.compass.v1.AskQuestionAnswerR\aanswers\"\x10\n" +
+	"\x05input\x18\x01 \x01(\tR\x05input\"\x10\n" +
 	"\x0eReplayComplete\"^\n" +
 	"\fSteerControl\x12-\n" +
 	"\amessage\x18\x01 \x01(\v2\x13.compass.v1.MessageR\amessage\x12\x1f\n" +
@@ -1167,52 +1087,48 @@ func file_compass_v1_agent_proto_rawDescGZIP() []byte {
 	return file_compass_v1_agent_proto_rawDescData
 }
 
-var file_compass_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
+var file_compass_v1_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_compass_v1_agent_proto_goTypes = []any{
-	(*AgentFrame)(nil),           // 0: compass.v1.AgentFrame
-	(*TranscriptEntry)(nil),      // 1: compass.v1.TranscriptEntry
-	(*SessionFrame)(nil),         // 2: compass.v1.SessionFrame
-	(*AgentControl)(nil),         // 3: compass.v1.AgentControl
-	(*PromptControl)(nil),        // 4: compass.v1.PromptControl
-	(*AskAnswerControl)(nil),     // 5: compass.v1.AskAnswerControl
-	(*ReplayComplete)(nil),       // 6: compass.v1.ReplayComplete
-	(*SteerControl)(nil),         // 7: compass.v1.SteerControl
-	(*TranscriptReplay)(nil),     // 8: compass.v1.TranscriptReplay
-	(*ConfigControl)(nil),        // 9: compass.v1.ConfigControl
-	(*DeliverControl)(nil),       // 10: compass.v1.DeliverControl
-	(*DeliveryAck)(nil),          // 11: compass.v1.DeliveryAck
-	(*ReplayCompleteAck)(nil),    // 12: compass.v1.ReplayCompleteAck
-	(*ControlAck)(nil),           // 13: compass.v1.ControlAck
-	(v1.AgentSessionState)(0),    // 14: compass.v1.AgentSessionState
-	(*v1.SessionEvent)(nil),      // 15: compass.v1.SessionEvent
-	(*ForgeNotification)(nil),    // 16: compass.v1.ForgeNotification
-	(*v1.AskQuestionAnswer)(nil), // 17: compass.v1.AskQuestionAnswer
-	(*v1.Message)(nil),           // 18: compass.v1.Message
+	(*AgentFrame)(nil),        // 0: compass.v1.AgentFrame
+	(*TranscriptEntry)(nil),   // 1: compass.v1.TranscriptEntry
+	(*SessionFrame)(nil),      // 2: compass.v1.SessionFrame
+	(*AgentControl)(nil),      // 3: compass.v1.AgentControl
+	(*PromptControl)(nil),     // 4: compass.v1.PromptControl
+	(*ReplayComplete)(nil),    // 5: compass.v1.ReplayComplete
+	(*SteerControl)(nil),      // 6: compass.v1.SteerControl
+	(*TranscriptReplay)(nil),  // 7: compass.v1.TranscriptReplay
+	(*ConfigControl)(nil),     // 8: compass.v1.ConfigControl
+	(*DeliverControl)(nil),    // 9: compass.v1.DeliverControl
+	(*DeliveryAck)(nil),       // 10: compass.v1.DeliveryAck
+	(*ReplayCompleteAck)(nil), // 11: compass.v1.ReplayCompleteAck
+	(*ControlAck)(nil),        // 12: compass.v1.ControlAck
+	(v1.AgentSessionState)(0), // 13: compass.v1.AgentSessionState
+	(*v1.SessionEvent)(nil),   // 14: compass.v1.SessionEvent
+	(*ForgeNotification)(nil), // 15: compass.v1.ForgeNotification
+	(*v1.Message)(nil),        // 16: compass.v1.Message
 }
 var file_compass_v1_agent_proto_depIdxs = []int32{
 	2,  // 0: compass.v1.AgentFrame.session:type_name -> compass.v1.SessionFrame
-	12, // 1: compass.v1.AgentFrame.replay_complete_ack:type_name -> compass.v1.ReplayCompleteAck
-	13, // 2: compass.v1.AgentFrame.control_ack:type_name -> compass.v1.ControlAck
-	11, // 3: compass.v1.AgentFrame.delivery_ack:type_name -> compass.v1.DeliveryAck
+	11, // 1: compass.v1.AgentFrame.replay_complete_ack:type_name -> compass.v1.ReplayCompleteAck
+	12, // 2: compass.v1.AgentFrame.control_ack:type_name -> compass.v1.ControlAck
+	10, // 3: compass.v1.AgentFrame.delivery_ack:type_name -> compass.v1.DeliveryAck
 	1,  // 4: compass.v1.AgentFrame.transcript_entry:type_name -> compass.v1.TranscriptEntry
-	14, // 5: compass.v1.SessionFrame.state:type_name -> compass.v1.AgentSessionState
-	15, // 6: compass.v1.SessionFrame.typed_event:type_name -> compass.v1.SessionEvent
+	13, // 5: compass.v1.SessionFrame.state:type_name -> compass.v1.AgentSessionState
+	14, // 6: compass.v1.SessionFrame.typed_event:type_name -> compass.v1.SessionEvent
 	4,  // 7: compass.v1.AgentControl.prompt:type_name -> compass.v1.PromptControl
-	7,  // 8: compass.v1.AgentControl.steer:type_name -> compass.v1.SteerControl
-	10, // 9: compass.v1.AgentControl.deliver:type_name -> compass.v1.DeliverControl
-	5,  // 10: compass.v1.AgentControl.ask_answer:type_name -> compass.v1.AskAnswerControl
-	9,  // 11: compass.v1.AgentControl.config:type_name -> compass.v1.ConfigControl
-	8,  // 12: compass.v1.AgentControl.replay:type_name -> compass.v1.TranscriptReplay
-	6,  // 13: compass.v1.AgentControl.replay_complete:type_name -> compass.v1.ReplayComplete
-	16, // 14: compass.v1.AgentControl.forge_notification:type_name -> compass.v1.ForgeNotification
-	17, // 15: compass.v1.AskAnswerControl.answers:type_name -> compass.v1.AskQuestionAnswer
-	18, // 16: compass.v1.SteerControl.message:type_name -> compass.v1.Message
-	18, // 17: compass.v1.DeliverControl.message:type_name -> compass.v1.Message
-	18, // [18:18] is the sub-list for method output_type
-	18, // [18:18] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	6,  // 8: compass.v1.AgentControl.steer:type_name -> compass.v1.SteerControl
+	9,  // 9: compass.v1.AgentControl.deliver:type_name -> compass.v1.DeliverControl
+	8,  // 10: compass.v1.AgentControl.config:type_name -> compass.v1.ConfigControl
+	7,  // 11: compass.v1.AgentControl.replay:type_name -> compass.v1.TranscriptReplay
+	5,  // 12: compass.v1.AgentControl.replay_complete:type_name -> compass.v1.ReplayComplete
+	15, // 13: compass.v1.AgentControl.forge_notification:type_name -> compass.v1.ForgeNotification
+	16, // 14: compass.v1.SteerControl.message:type_name -> compass.v1.Message
+	16, // 15: compass.v1.DeliverControl.message:type_name -> compass.v1.Message
+	16, // [16:16] is the sub-list for method output_type
+	16, // [16:16] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_compass_v1_agent_proto_init() }
@@ -1232,7 +1148,6 @@ func file_compass_v1_agent_proto_init() {
 		(*AgentControl_Prompt)(nil),
 		(*AgentControl_Steer)(nil),
 		(*AgentControl_Deliver)(nil),
-		(*AgentControl_AskAnswer)(nil),
 		(*AgentControl_Config)(nil),
 		(*AgentControl_Replay)(nil),
 		(*AgentControl_ReplayComplete)(nil),
@@ -1244,7 +1159,7 @@ func file_compass_v1_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_compass_v1_agent_proto_rawDesc), len(file_compass_v1_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   14,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

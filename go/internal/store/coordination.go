@@ -23,8 +23,8 @@ import (
 type CoordinationHook func(ctx context.Context, tx pgx.Tx, managerAgentID AccountID) error
 
 // SetCoordinationHook registers the coordination-channel reconcile hook, wired
-// once at server assembly before serving (mirrors comms.SetAskWaker /
-// hub.SetSettleSink). No lock: the write happens-before the first concurrent
+// once at server assembly before serving (mirrors hub.SetSettleSink). No lock:
+// the write happens-before the first concurrent
 // parent-edge write. A nil hook (the store-only test path) leaves the writers a
 // no-op. The comms layer owns the closure; the store only invokes it.
 func (s *Store) SetCoordinationHook(h CoordinationHook) {

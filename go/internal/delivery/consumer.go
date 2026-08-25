@@ -237,8 +237,8 @@ func NewConsumer(bus *events.Bus[*compassv1.SubscribeCommsResponse], st Delivery
 
 // SetAgentWaker wires the offline-agent wake sink (the server's resume machinery)
 // AFTER both the consumer and the hub exist — the post-construction setter that
-// breaks the delivery<->server construction cycle, mirroring comms.SetAskWaker
-// (comms.go:82-84). Called once at server assembly before serving; no lock
+// breaks the delivery<->server construction cycle, mirroring comms.SetPresenceSource.
+// Called once at server assembly before serving; no lock
 // because the write happens-before the first dispatch. Nil-safe to leave unset (a
 // consumer with no waker does not wake — today's behavior).
 func (c *Consumer) SetAgentWaker(w AgentWaker) {

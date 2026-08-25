@@ -10,8 +10,6 @@ import { describe, expect, test } from "bun:test";
 import {
 	AgentControlSchema,
 	AgentFrameSchema,
-	AskAnswerControlSchema,
-	AskQuestionAnswerSchema,
 	type ControlAck,
 	ControlAckSchema,
 	create,
@@ -38,28 +36,6 @@ describe("AgentControl — camelCase oneof discriminator per control variant", (
 				control: {
 					case: "prompt",
 					value: create(PromptControlSchema, { input: "hello" }),
-				},
-			}),
-		},
-		{
-			name: "askAnswer",
-			key: "askAnswer",
-			msg: create(AgentControlSchema, {
-				control: {
-					case: "askAnswer",
-					value: create(AskAnswerControlSchema, {
-						askId: "a1",
-						answers: [
-							create(AskQuestionAnswerSchema, {
-								questionId: "q1",
-								chosenOptionIds: ["opt1", "opt2"],
-							}),
-							create(AskQuestionAnswerSchema, {
-								questionId: "q2",
-								customText: "other",
-							}),
-						],
-					}),
 				},
 			}),
 		},

@@ -305,14 +305,35 @@ type Message struct {
 	Blocks []MessageBlock
 }
 
-// MessageBlock is one content block, narrowed to the two durable-conversation
+// MessageBlock is one content block, narrowed to the durable-conversation
 // variants (OQ-A: the trace variants thought/tool_call/plan/diff are removed).
-// Exactly one of Text / Ask is non-nil, mirroring the wire `block` oneof.
+// Exactly one of Text / Ask / AskAnswer is non-nil, mirroring the wire `block`
+// oneof.
 type MessageBlock struct {
-	// Text is settled user-facing / assistant markdown; nil if this is an ask.
+	// Text is settled user-facing / assistant markdown; nil unless this is a
+	// text block.
 	Text *string
-	// Ask is a structured question; nil if this is a text block.
+	// Ask is a structured question; nil unless this is an ask block.
 	Ask *Ask
+	// AskAnswer is the answer to a previously-posted Ask, authored by the
+	// answerer; nil unless this is an ask_answer block. Server-owned —
+	// constructed only by AnswerAsk; the comms edge rejects it on every client
+	// write path.
+	AskAnswer *AskAnswerBlock
+}
+
+// AskAnswerBlock is the answer to a previously-posted Ask, authored by the
+// answerer: the answered ask snapshot plus the asking agent's account id. The
+// snapshot carries the questions AND the recorded answers so the delivered
+// message renders registry-free.
+type AskAnswerBlock struct {
+	// Ask is the answered snapshot: AskID set, Answered=true, and the recorded
+	// per-question answers.
+	Ask Ask
+	// AskerAccountID is the ask message's author — the asking agent,
+	// denormalized so the delivery consumer can target the asker without an
+	// ask_id -> author lookup per message.
+	AskerAccountID AccountID
 }
 
 // Ask is a structured question set the agent posts and, at the turn level,

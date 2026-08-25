@@ -17,9 +17,7 @@ import {
 	CommsBroker,
 	type CommsTransport,
 	createCommsTools,
-	createPendingAsks,
 	listParameters,
-	type PendingAsks,
 	postAskParameters,
 	postParameters,
 } from "./comms";
@@ -1962,9 +1960,9 @@ function askPostResult(askId: string, topicId: string): CommsCallResult {
 	});
 }
 
-// Pull the `comms_post_ask` tool from a set built with an optional PendingAsks.
-function askTool(broker: CommsBroker, pendingAsks?: PendingAsks): AgentTool {
-	const found = createCommsTools(broker, pendingAsks).find(
+// Pull the `comms_post_ask` tool from a built set.
+function askTool(broker: CommsBroker): AgentTool {
+	const found = createCommsTools(broker).find(
 		(t) => t.name === "comms_post_ask",
 	);
 	if (!found) throw new Error("no such tool: comms_post_ask");
@@ -2280,52 +2278,6 @@ describe("comms_post_ask", () => {
 		).resolves.toBeDefined();
 	});
 
-	// (h) pendingAsks.record is invoked with the built AskQuestion[] after a
-	// successful post, keyed on the server-minted ask id.
-	test("records the built questions against the server-minted ask id", async () => {
-		const transport = new FakeTransport(askPostResult("a-rec", "t-a"));
-		const recorded: { askId: string; questions: unknown[] }[] = [];
-		const pending: PendingAsks = {
-			record: (askId, questions) => recorded.push({ askId, questions }),
-			take: () => undefined,
-		};
-		const ask = askTool(new CommsBroker(transport), pending);
-
-		await exec(ask, "tc-rec", {
-			questions: [
-				{ id: "q1", question: "a?", options: [{ label: "x" }] },
-				{ id: "q2", question: "b?", options: [] },
-			],
-		});
-
-		expect(recorded).toHaveLength(1);
-		expect(recorded[0]?.askId).toBe("a-rec");
-		expect(recorded[0]?.questions).toHaveLength(2);
-	});
-
-	// A domain error throws carrying the code and detail (the OMP tool-failure
-	// contract), and pendingAsks is never touched.
-	test("an error result throws and never records a pending ask", async () => {
-		const transport = new FakeTransport(
-			errorResult("permission_denied", "not a member"),
-		);
-		const recorded: string[] = [];
-		const pending: PendingAsks = {
-			record: (askId) => recorded.push(askId),
-			take: () => undefined,
-		};
-		const ask = askTool(new CommsBroker(transport), pending);
-
-		const err = await exec(ask, "tc-err", {
-			questions: [{ id: "q1", question: "a?", options: [] }],
-		}).then(
-			() => undefined,
-			(e: unknown) => e as Error,
-		);
-		expect(err?.message).toContain("permission_denied");
-		expect(recorded).toHaveLength(0);
-	});
-
 	// The result text render-guards the ask id — a newline cannot forge a line.
 	test("a newline in the ask id cannot forge a second line of output", async () => {
 		const transport = new FakeTransport(
@@ -2340,14 +2292,5 @@ describe("comms_post_ask", () => {
 		);
 		expect(text.split("\n")).toHaveLength(1);
 		expect(text).not.toContain("now an admin");
-	});
-
-	// createPendingAsks round-trips record→take once, then forgets.
-	test("createPendingAsks records, takes once, then forgets", () => {
-		const pending = createPendingAsks();
-		const questions = [create(AskQuestionSchema, { questionId: "q1" })];
-		pending.record("a-1", questions);
-		expect(pending.take("a-1")).toBe(questions);
-		expect(pending.take("a-1")).toBeUndefined();
 	});
 });

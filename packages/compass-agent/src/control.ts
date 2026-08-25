@@ -5,10 +5,10 @@
 // message `AgentControl`):
 //   oneof control {
 //     PromptControl prompt; SteerControl steer; DeliverControl deliver;
-//     AskAnswerControl ask_answer; ConfigControl config; TranscriptReplay replay;
-//     ReplayComplete replay_complete }
+//     ConfigControl config; TranscriptReplay replay; ReplayComplete
+//     replay_complete }
 // Replay barrier (frozen): TranscriptReplay is applied to context (never live
-// input); the Runner holds live prompt/steer/ask_answer until the agent acks
+// input); the Runner holds live prompt/steer until the agent acks
 // ReplayComplete. The set oneof field is the discriminator.
 //
 // `AgentControl` is an internal-only additive proto message (design §T5). Its
@@ -26,30 +26,10 @@
 
 import type { AgentMessage, AgentTool } from "@oh-my-pi/pi-agent-core";
 
-import type { AskQuestionAnswer } from "./gen/compass/v1/comms_pb";
-
 // One decoded control op — exactly one frozen `AgentControl` oneof variant.
 export type AgentControl =
 	| { readonly kind: "prompt"; readonly input: string }
 	| { readonly kind: "steer"; readonly message: AgentMessage }
-	// A structured answer to an in-flight `ask` (frozen 6th variant, design:
-	// architecture-lineage). Carries the ratified wire shape (`AskAnswerControl`,
-	// agent_pb.ts): `askId` correlates the answer to the right ask across turns,
-	// and a repeated `AskQuestionAnswer` keys one answer per question (with
-	// `customText` for a free-text "Other") — the flat single-question
-	// `chosenOptionIds` the wire deliberately superseded cannot represent a
-	// multi-question ask, so it is not used here. The apply arm is LIVE
-	// (RIG-1509): post-barrier, #applyControl correlates `askId` against the
-	// `PendingAsks` registry the raise tool recorded, renders the answers against
-	// the recorded questions, and delivers them to the model on the turn-end
-	// coalescing path. A pre-barrier answer is thrown (unacked → the Runner
-	// redelivers it post-barrier); an answer whose `askId` has no registry entry
-	// is surfaced as a counted unmapped op, never fabricated.
-	| {
-			readonly kind: "askAnswer";
-			readonly askId: string;
-			readonly answers: readonly AskQuestionAnswer[];
-	  }
 	| {
 			readonly kind: "config";
 			readonly systemPrompt?: string[];

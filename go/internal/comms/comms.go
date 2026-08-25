@@ -47,21 +47,12 @@ type Comms struct {
 	// interceptor yet). The T3 interceptor overrides this per-request by setting
 	// a caller on the context; adminID is the fallback when none is set.
 	adminID store.AccountID
-	// askWaker pushes an ask-answer wake to the asking agent's live session when
-	// a participant answers (SEA-1577), over the runnerhub T3 rail. Nil until
-	// SetAskWaker wires it (comms<->hub is a construction cycle, broken by a
-	// post-construction setter exactly like hub.SetSettleSink). Set once at
-	// server assembly BEFORE any RPC is served, so it needs no lock: the write
-	// happens-before the first concurrent read. Nil-safe: a Comms with no waker
-	// (a unit test, or today's un-wired path) still answers asks.
-	askWaker AskAnswerWaker
 	// presence is the in-memory presence enum source GetRoster joins the durable
 	// tree + activity against (SEA-1721 T2). Nil until SetPresenceSource wires it
 	// (comms<->hub is a construction cycle, broken by a post-construction setter
-	// exactly like askWaker / hub.SetSettleSink). Set once at server assembly
-	// BEFORE any RPC is served, so it needs no lock. Nil-safe: a Comms with no
-	// presence source (a unit test, or an un-wired path) reports every agent
-	// OFFLINE.
+	// exactly like hub.SetSettleSink). Set once at server assembly BEFORE any RPC
+	// is served, so it needs no lock. Nil-safe: a Comms with no presence source
+	// (a unit test, or an un-wired path) reports every agent OFFLINE.
 	presence PresenceSource
 }
 
@@ -72,20 +63,10 @@ func NewComms(st *store.Store, bus commsBus, adminID store.AccountID) *Comms {
 	return &Comms{store: st, bus: bus, adminID: adminID}
 }
 
-// SetAskWaker wires the ask-answer wake sink (runnerhub) AFTER both Comms and the
-// hub exist — the post-construction setter that breaks the comms<->hub
-// construction cycle (comms is built before the hub because the hub's
-// RelayCommsCall executes through the comms handler; serve.go:228,247). Mirrors
-// hub.SetSettleSink. Called once at server assembly before serving; no lock
-// because the write happens-before the first RPC. Nil-safe to leave unset (a
-// hub-less handler does not wake — today's behavior).
-func (c *Comms) SetAskWaker(w AskAnswerWaker) {
-	c.askWaker = w
-}
-
 // SetPresenceSource wires the in-memory presence enum source GetRoster joins
-// against, AFTER both Comms and the hub exist — the same post-construction
-// setter that breaks the comms<->hub construction cycle as SetAskWaker. Called
+// against, AFTER both Comms and the hub exist — a post-construction setter that
+// breaks the comms<->hub construction cycle (comms is built before the hub
+// because the hub's RelayCommsCall executes through the comms handler). Called
 // once at server assembly before serving; no lock because the write
 // happens-before the first RPC. Nil-safe to leave unset (a hub-less handler
 // reports every agent OFFLINE — today's behavior).
@@ -379,7 +360,11 @@ func (c *Comms) PostMessage(
 
 // RespondToAsk answers a pending structured ask; the caller must be a member of
 // the channel the ask belongs to (store-enforced). Answering updates the ask's
-// message in place and emits MessageUpdated.
+// message in place AND posts the answer as a new message authored by the
+// answerer, both in one store transaction. It emits MessageUpdated for the ask
+// (the UI ask-state update) and MessagePosted for the answer message (the
+// delivery trigger: the answer rides the normal message rail to the asking
+// agent — RIG-2257).
 func (c *Comms) RespondToAsk(
 	ctx context.Context,
 	req *connect.Request[compassv1.RespondToAskRequest],
@@ -392,7 +377,7 @@ func (c *Comms) RespondToAsk(
 			CustomText:      a.GetCustomText(),
 		}
 	}
-	msg, err := c.store.AnswerAsk(
+	askMsg, answerMsg, err := c.store.AnswerAsk(
 		ctx,
 		c.actorFromContext(ctx),
 		req.Msg.GetAskId(),
@@ -401,17 +386,13 @@ func (c *Comms) RespondToAsk(
 	if err != nil {
 		return nil, edgeError(err)
 	}
-	c.publishMessageUpdated(msg)
-	// SEA-1577: wake the asking agent's live session with the answer, after the
-	// AnswerAsk err short-circuit — so a second RespondToAsk (rejected by the
-	// answer-once guard) never wakes. The ask is authored by the AGENT; the
-	// human/participant answers it, so the account to wake is the ask message's
-	// author. Best-effort and nil-safe: a wake failure is swallowed in the rail
-	// layer (the answer is already durably recorded + fanned out), never failing
-	// the RPC.
-	if c.askWaker != nil {
-		c.askWaker.WakeAskAnswer(ctx, msg.AuthorAccountID, req.Msg.GetAskId(), req.Msg.GetAnswers())
-	}
+	// MessageUpdated carries the ask's new answered state to the UI; it is NOT a
+	// delivery trigger. MessagePosted for the answer message IS the delivery
+	// trigger — it fans out on the normal message rail, so an offline or
+	// reconnecting asker gets the answer via the ack-gated cursor + resweep
+	// (RIG-2257: no bespoke ask wake).
+	c.publishMessageUpdated(askMsg)
+	c.publishMessagePosted(answerMsg)
 	return connect.NewResponse(&compassv1.RespondToAskResponse{}), nil
 }
 

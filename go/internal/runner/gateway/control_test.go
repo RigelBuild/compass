@@ -266,8 +266,8 @@ func TestControlRejectsEmptyVariants(t *testing.T) {
 
 		for _, op := range []*compassv1internal.AgentControl{
 			prompt("live"),
-			{Control: &compassv1internal.AgentControl_AskAnswer{
-				AskAnswer: &compassv1internal.AskAnswerControl{AskId: "ask-1"}}},
+			{Control: &compassv1internal.AgentControl_Deliver{
+				Deliver: &compassv1internal.DeliverControl{Message: &compassv1.Message{Id: "m-1"}}}},
 			{Control: &compassv1internal.AgentControl_ReplayComplete{
 				ReplayComplete: &compassv1internal.ReplayComplete{}}},
 		} {

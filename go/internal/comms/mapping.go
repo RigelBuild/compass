@@ -192,9 +192,20 @@ func blocksToWire(blocks []store.MessageBlock) []*compassv1.MessageBlock {
 			out[i] = &compassv1.MessageBlock{Block: &compassv1.MessageBlock_Text{Text: *b.Text}}
 		case b.Ask != nil:
 			out[i] = &compassv1.MessageBlock{Block: &compassv1.MessageBlock_Ask{Ask: askToWire(b.Ask)}}
+		case b.AskAnswer != nil:
+			out[i] = &compassv1.MessageBlock{Block: &compassv1.MessageBlock_AskAnswer{AskAnswer: askAnswerToWire(b.AskAnswer)}}
 		}
 	}
 	return out
+}
+
+// askAnswerToWire maps the server-owned store AskAnswerBlock onto the wire
+// variant, reusing askToWire for the answered snapshot.
+func askAnswerToWire(b *store.AskAnswerBlock) *compassv1.AskAnswerBlock {
+	return &compassv1.AskAnswerBlock{
+		Ask:            askToWire(&b.Ask),
+		AskerAccountId: string(b.AskerAccountID),
+	}
 }
 
 func askToWire(a *store.Ask) *compassv1.Ask {
@@ -318,6 +329,11 @@ func blocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBlock, err
 			out = append(out, store.MessageBlock{Text: &text})
 		case *compassv1.MessageBlock_Ask:
 			out = append(out, store.MessageBlock{Ask: askFromWire(body.Ask)})
+		case *compassv1.MessageBlock_AskAnswer:
+			// ask_answer is server-owned: constructed only by RespondToAsk. An
+			// inbound one on the POST path is rejected at this edge — the only
+			// layer with caller identity (RIG-2257).
+			return nil, connect.NewError(connect.CodeInvalidArgument, errServerOwnedBlock)
 		default:
 			return nil, connect.NewError(connect.CodeInvalidArgument,
 				errEmptyBlock)
@@ -344,6 +360,10 @@ func updateBlocksFromWire(blocks []*compassv1.MessageBlock) ([]store.MessageBloc
 			out = append(out, store.MessageBlock{Text: &text})
 		case *compassv1.MessageBlock_Ask:
 			out = append(out, store.MessageBlock{Ask: askFromWireForUpdate(body.Ask)})
+		case *compassv1.MessageBlock_AskAnswer:
+			// ask_answer is server-owned: an inbound one on the agent update
+			// path is rejected at this edge, mirroring the POST path.
+			return nil, connect.NewError(connect.CodeInvalidArgument, errServerOwnedBlock)
 		default:
 			return nil, connect.NewError(connect.CodeInvalidArgument,
 				errEmptyBlock)

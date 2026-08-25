@@ -282,7 +282,7 @@ func TestAnswerAskStillWorksForANonAuthorMember(t *testing.T) {
 		t.Fatalf("AppendMessage: %v", err)
 	}
 
-	updated, err := s.AnswerAsk(ctx, answerer.ID, "ask-1", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
+	updated, _, err := s.AnswerAsk(ctx, answerer.ID, "ask-1", []AskAnswer{{QuestionID: "q1", ChosenOptionIDs: []string{"opt-a"}}})
 	if err != nil {
 		t.Fatalf("AnswerAsk by a non-author member: %v", err)
 	}
