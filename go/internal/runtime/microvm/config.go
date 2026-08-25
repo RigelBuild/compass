@@ -1,5 +1,5 @@
 // Package microvm is the host-side microVM boot harness (design
-// docs/designs/platform/compass-elastic-session-runtime/
+// docs/designs/infra/runtime/compass-elastic-session-runtime/
 // microvm-v2a-guest-image-boot-spike.md, RIG-2588). It boots one session guest
 // under cloud-hypervisor and dials the in-guest GuestControl plane over the
 // hybrid vsock. It is reached only by its own tests today and (later) by V2b's

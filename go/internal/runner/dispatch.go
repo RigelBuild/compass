@@ -77,7 +77,7 @@ type SessionHost interface {
 // These are package-private to runner; the operator-fault sentinel
 // gateway.ErrOperatorConfig is exported from package gateway (it is raised
 // there) and errorResult maps it to RUNNER_ERROR_CODE_FAILED_PRECONDITION —
-// see docs/designs/platform/compass-runner-gateway-error-sentinels/design.md.
+// see docs/designs/infra/runtime/compass-runner-gateway-error-sentinels/design.md.
 var (
 	errAlreadyRunning = errors.New("session already running on container")
 	errSessionUnknown = errors.New("session unknown to runner")
@@ -98,7 +98,7 @@ type dispatcher struct {
 	// pendingCall (runnerhub/router.go). Single-Runner MVP: the set is small and
 	// lives for the stream's life — it is not evicted. Bounded eviction (plus the
 	// per-container transition lock this change already lands) is the remaining
-	// T9 work (SEA-1328); see docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
+	// T9 work (SEA-1328); see docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
 	handled map[string]*inflightResult
 
 	// configSignal coalesces ConfigVersion signals into a single pending
@@ -141,7 +141,7 @@ type dispatcher struct {
 // OQ-4=(i)): the single tunable restoring an intentional throttle on
 // agent-triggered Provisions in place of the accidental concurrency-1 the serial
 // dispatch loop provided. Sized for the single-Runner dogfood target; see
-// docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
+// docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
 const provisionConcurrency = 8
 
 // inflightResult is one request id's dispatch entry: done closes when the
@@ -480,7 +480,7 @@ func (d *dispatcher) execute(ctx context.Context, id string, cmd *compassv1inter
 // errorResult maps a host error to a RunnerError result with the wire code the
 // Server translates to a Connect status, and logs the failure once at a level
 // chosen by class (see
-// docs/designs/platform/compass-runner-gateway-error-sentinels/design.md): a
+// docs/designs/infra/runtime/compass-runner-gateway-error-sentinels/design.md): a
 // context cancellation (a routine shutdown/deadline outcome) is dropped to
 // Debug, an INTERNAL fault logs at Error, and a classified operator/client
 // fault logs at Warn. The diagnostic thus survives locally independent of relay

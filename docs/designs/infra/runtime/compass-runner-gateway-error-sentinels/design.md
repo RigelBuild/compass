@@ -1,6 +1,6 @@
 # Design: Runner gateway/operator-fault error sentinels
 
-Status: Ratified (Matt, 2026-08-05) — all four Open Questions ruled; frozen on merge.
+Status: Active
 
 Linear: SEA-1442. Approach ruled by Matt (full fix across all three lanes:
 proto enum value + server mapping arm + runner sentinels); this record

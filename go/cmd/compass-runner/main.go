@@ -91,7 +91,7 @@ func run() error {
 	// Ahead of every operator-input check: this validates an engine fact the
 	// whole launch path depends on — that podman is new enough for the
 	// container userns remap (--userns=keep-id:uid=,gid=, podman ≥ 4.3;
-	// docs/designs/platform/compass-runner-arbitrary-uid/design.md). It takes no
+	// docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md). It takes no
 	// operator configuration and its failure is unconditional. Behind the flag
 	// checks, an operator on too-old a podman is told to set a token, fixes
 	// that, re-runs, and only then learns the engine can never launch a

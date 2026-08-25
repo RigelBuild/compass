@@ -89,7 +89,7 @@ type agentHost struct {
 	// class as handled/configVersions, and T9's bounded-eviction (SEA-1328)
 	// covers them together. Status deliberately does NOT lock (it answers from
 	// the session set under h.mu), so it never queues behind a slow Provision.
-	// See docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
+	// See docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
 	containerLocks map[string]*sync.Mutex
 }
 
@@ -292,7 +292,7 @@ func (h *agentHost) Start(ctx context.Context, req *compassv1.StartAgentSessionR
 	// until the first records its session, then sees it and returns
 	// errAlreadyRunning. Concurrent dispatch (per-command goroutines) made this
 	// reachable; T9's in-process reattach (SEA-1328) consumes the same lock — do
-	// not reintroduce it. See docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
+	// not reintroduce it. See docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
 	unlock := h.lockContainer(name)
 	defer unlock()
 
@@ -583,7 +583,7 @@ func (h *agentHost) Remove(ctx context.Context, containerName string) error {
 // NOT be called from a caller that already holds the container lock — the
 // config worker's RefreshConfig leg calls reloadLocked directly for exactly that
 // reason (the lock is non-reentrant; calling Reload while holding it would
-// self-deadlock). See docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
+// self-deadlock). See docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
 func (h *agentHost) Reload(ctx context.Context, sessionID string) error {
 	// Resolve session→container under h.mu, release, take the container lock,
 	// then delegate — the resolve-then-lock protocol, mirroring Stop. A session
@@ -757,7 +757,7 @@ func (h *agentHost) RefreshConfig(ctx context.Context) error {
 		// interleave with the config update. The leg calls reloadLocked (NOT the
 		// public Reload, which would re-take this same non-reentrant lock and
 		// self-deadlock the worker forever, wedging every later transition on the
-		// container behind it). See docs/designs/platform/compass-runner-concurrent-dispatch/design.md.
+		// container behind it). See docs/designs/infra/runtime/compass-runner-concurrent-dispatch/design.md.
 		if err := h.refreshOneContainer(ctx, t.sessionID, t.containerName, t.containerID, t.lastVersion); err != nil {
 			continue
 		}

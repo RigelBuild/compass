@@ -2,7 +2,7 @@ package agentuid
 
 // AgentUID is the unprivileged uid the Compass agent user runs as inside every
 // agent container. The agent image bakes gid==uid==AgentUID, /nix and $HOME are
-// owned by it (docs/designs/platform/compass-runner-arbitrary-uid/design.md),
+// owned by it (docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md),
 // and the runner launches agent work under it so it runs unprivileged.
 //
 // The const is untyped on purpose: it flows into the uint32 runtime.AgentSpec.UID

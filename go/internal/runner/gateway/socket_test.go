@@ -614,7 +614,7 @@ func TestMountTargetsLiveSocketReadWrite(t *testing.T) {
 // assertion is the over-classification guard the record requires (a future
 // blanket-wrap refactor that mislabels an OS anomaly as operator-fault reddens
 // here). Both directions matter; see
-// docs/designs/platform/compass-runner-gateway-error-sentinels/design.md.
+// docs/designs/infra/runtime/compass-runner-gateway-error-sentinels/design.md.
 func TestOperatorFaultSentinelClassification(t *testing.T) {
 	t.Run("path over the AF_UNIX limit is operator-fault", func(t *testing.T) {
 		// Build a path one byte over the cap under a short root, mirroring

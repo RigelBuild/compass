@@ -4,7 +4,7 @@
 // need more CPU/memory than the session is sized for — so the Runner routes it
 // to a resize-in-place or a burst-to-transient-environment backend rather than
 // starving it in place
-// (docs/designs/platform/compass-elastic-session-runtime/design.md, the
+// (docs/designs/infra/runtime/compass-elastic-session-runtime/design.md, the
 // ComputeRuntime seam under S1 and the elastic backends under C3).
 //
 // The layering mirrors the container-runtime seam in internal/runtime:

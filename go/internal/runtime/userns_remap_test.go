@@ -3,7 +3,7 @@
 package runtime
 
 // Arbitrary-host-uid remap proof against real rootless podman
-// (docs/designs/platform/compass-runner-arbitrary-uid/design.md §P3). The GA
+// (docs/designs/infra/runtime/compass-runner-arbitrary-uid/design.md §P3). The GA
 // contract: a launch whose remap target differs from the invoking host uid
 // still yields an agent that is the baked agent uid in-container and owns
 // /nix-equivalent paths.

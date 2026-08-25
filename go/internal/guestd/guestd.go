@@ -2,7 +2,7 @@
 
 // Package guestd is the logic behind the compass-guestd binary — the real
 // guest PID-1 init for the V2a microVM runtime spike (design
-// docs/designs/platform/compass-elastic-session-runtime/microvm-v2a-guest-image-boot-spike.md,
+// docs/designs/infra/runtime/compass-elastic-session-runtime/microvm-v2a-guest-image-boot-spike.md,
 // §(d), RIG-2589 T2). It runs post-switch_root as PID 1 and executes a fixed,
 // fail-closed boot sequence: mount the API filesystems, bring networking up via
 // an in-process DHCP client (OQ-C), mount the virtio-fs workspace, then serve
