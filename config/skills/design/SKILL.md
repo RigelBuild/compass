@@ -66,7 +66,8 @@ artifact) skips it entirely.
 ## One pass, one artifact
 
 Write a single design record **into the repo** under `docs/designs/<domain>/`
-(`<domain>` = `ui` / `agent` / `server` / `meta` / `infra` / `repo`) — either a flat
+(`<domain>` = the repo's design-doc bucket for the change's concern — match the
+buckets the repo already uses, never a fixed list) — either a flat
 `<record>.md` (a short kebab slug) or a `<record>/design.md` directory when the
 design owns supporting files, matching the layout its sibling records already
 use. **You pick that exact path and pass it in the subagent's brief** — it is the
