@@ -174,7 +174,7 @@ func (h *Hub) accountForSession(sessionID string) (store.AccountID, bool) {
 // Runner reconnect): the consumer pushes nothing now and lets the D2 cursor
 // sweep deliver on the recipient's next start (design.md:137). It satisfies the
 // delivery.SessionResolver interface the consumer holds, kept separate from the
-// ControlDispatcher (DispatchControl) so that stays the frozen dispatch-only
+// ControlDispatcher (DispatchControl) so that stays the established dispatch-only
 // shape.
 func (h *Hub) SessionForAccount(account store.AccountID) (string, bool) {
 	h.mu.Lock()
@@ -296,7 +296,7 @@ func (h *Hub) RelayCommsCall(
 // the Zulip threading model, so the durable lane now carries ONLY the SEA-1570
 // transcript_entry variant — the exact frame the Runner's Gateway forwards
 // (runner/gateway/post_conversation_frame.go). The method name and the request/
-// response messages keep the frozen CommitConversationFrame shape.
+// response messages keep the established CommitConversationFrame shape.
 //
 // Contract (ratified — do not redesign):
 //   - An unresolved session fails closed CodeNotFound — never a stale account,

@@ -18,7 +18,7 @@ import {
 import type { CommsState, MapMessage } from "./comms-state";
 import { fetchSnapshot, runCommsStream } from "./stream";
 
-// stream.ts is the SubscribeComms driver: it applies the frozen
+// stream.ts is the SubscribeComms driver: it applies the established
 // snapshot+tail+resync protocol over a CommsClient, pushing each reduced state
 // to onState. It owns the TWO transport cursors kept out of the reducer
 // (SEA-1333): the read-RPC boundary `snapshotSeq` (an opaque token forwarded

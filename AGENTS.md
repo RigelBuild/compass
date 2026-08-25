@@ -30,6 +30,15 @@ and in CI.
 - UI code reaches the server only through the generated client
   (`@compass/client`) — never a raw socket or hand-written stub.
 
+## Pre-GA posture: nothing is frozen
+
+This is a pre-GA, greenfield prototype. Interfaces are **not** frozen —
+reimagine them freely when a better shape presents itself; describe the current
+contract as what it *is* today, never as a bar on new design. The one
+change-controlled artifact is a **merged design record** under `docs/designs/`:
+a merged record is amended by adding a new record, not rewritten in place. The
+record is change-controlled; the interface it describes is fair game.
+
 ## Tests
 
 Add tests for new behavior; a bug fix gets a regression test that fails before

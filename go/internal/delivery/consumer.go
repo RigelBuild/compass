@@ -44,7 +44,7 @@ type ControlDispatcher interface {
 }
 
 // SessionResolver resolves agent accounts to their live sessions, kept separate
-// from ControlDispatcher so that stays the frozen dispatch-only shape.
+// from ControlDispatcher so that stays the established dispatch-only shape.
 // runnerhub.Hub implements it.
 type SessionResolver interface {
 	// SessionForAccount returns the live session bound to account, or ok=false

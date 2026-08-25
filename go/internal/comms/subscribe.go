@@ -63,7 +63,7 @@ func (c *Comms) SubscribeComms(
 	// messages.go:129) and is sent before per-event visibility filtering, so any
 	// authenticated subscriber — including a non-member of a private channel —
 	// learns the instance-wide durable message count (one monotonic integer, no
-	// content, author, or channel identity) from frame 1. This is the frozen
+	// content, author, or channel identity) from frame 1. This is the established
 	// contract's ratified shape: a single instance-wide, store-space snapshot_seq
 	// token that survives restarts and covers the empty-ring bootstrap
 	// (design.md:809-816). A visibility-scoped boundary is a different token with

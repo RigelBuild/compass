@@ -194,7 +194,7 @@ func (s *service) ProvisionAgentWorkspace(
 // Stop/Reload/GetAgentStatus and the attribution id on every agent payload.
 // StartAgentSessionRequest carries no client_request_id (unlike Provision), so
 // the relay request id is Server-minted per call; client-retry idempotency is
-// not part of Start's frozen contract. hub is nil only on a server built with no
+// not part of Start's established contract. hub is nil only on a server built with no
 // Runner door, where a lifecycle RPC is Unavailable rather than a panic.
 func (s *service) StartAgentSession(
 	ctx context.Context,
@@ -259,7 +259,7 @@ func (s *service) StartAgentSession(
 }
 
 // StopAgentSession deliberately kills the in-container agent and releases the
-// session by relaying to the owning Runner. Idempotent per the frozen contract
+// session by relaying to the owning Runner. Idempotent per the established contract
 // (compass.proto): stopping an unknown/already-stopped session succeeds, since
 // the Runner returns success for a session it no longer holds.
 func (s *service) StopAgentSession(
@@ -318,7 +318,7 @@ func (s *service) ReloadAgentSession(
 // is free for a future provision. This is the ADMIN-gated operator door (the
 // AdminGate classifies RemoveAgentWorkspace as adminOnly); the agent-facing
 // despawn reaches teardown through lifecycleService.DespawnAsAccount, not here.
-// Idempotent end to end per the frozen contract (compass.proto): the Runner
+// Idempotent end to end per the established contract (compass.proto): the Runner
 // returns success for an unknown/already-removed container, and
 // DeleteAgentPlacement treats an absent row as success — so a retried Remove
 // succeeds. hub is nil only on a server built with no Runner door, where the RPC

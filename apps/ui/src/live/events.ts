@@ -6,7 +6,7 @@
 // (./stream.ts runCommsStream) snapshot+tail shape: a cold-start subscription
 // pairs the durable board re-snapshot read (ListBoardIssues) with the live
 // SubscribeEvents tail, unioned into one board map and deduped by issue id
-// (compass_pb.ts:326-346, the frozen snapshot_seq contract). The bus replays
+// (compass_pb.ts:326-346, the established snapshot_seq contract). The bus replays
 // only a bounded event ring on connect, so the durable read is what covers
 // issues older than the ring plus the ARCHIVED set the Done view needs.
 //

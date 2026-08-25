@@ -1,7 +1,7 @@
 //go:build unix
 
 // The RunnerService connect-go handler: the server surface the Runner dials out
-// to. It terminates the three frozen RPCs and drives them through the hub —
+// to. It terminates the three established RPCs and drives them through the hub —
 // Enroll registers the Runner, Sessions binds the command router to the live
 // bidi stream and pumps results back, PublishEvents feeds each relayed frame
 // into Deliver. Mounted on serve.go beside the CompassService/CommsService

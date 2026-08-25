@@ -39,7 +39,7 @@ type SessionHost interface {
 	// start are separate: a container can exist idle before a session runs in it.
 	Provision(ctx context.Context, req *compassv1.ProvisionAgentWorkspaceRequest) (containerName string, err error)
 	// Stop tears a session down. Stopping an unknown/already-stopped session
-	// succeeds (idempotent, matching the frozen StopAgentSession semantics).
+	// succeeds (idempotent, matching the established StopAgentSession semantics).
 	Stop(ctx context.Context, sessionID string) error
 	// Remove tears down a container and everything bound to it: it retires any
 	// live session on the container, tears the container down (stop + remove +

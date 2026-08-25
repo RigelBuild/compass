@@ -19,6 +19,6 @@ type AgentWaker interface {
 	// only when none exists) so an owed mention or subscribed deliver can reach
 	// it. No-op when the agent is live or has no placement. Void: a fault is
 	// logged in the implementing layer, never surfaced — mention routing can
-	// never fail a post (design.md frozen contract).
+	// never fail a post (design.md established contract).
 	WakeAgent(ctx context.Context, agent store.AccountID)
 }

@@ -70,7 +70,7 @@ var _ runnerhub.LifecycleCaller = (*lifecycleService)(nil)
 // owed mention or a subscribed deliver reaches it promptly (RIG-1641 T3,
 // §Decisions OQ-7). It implements delivery.AgentWaker — void and best-effort:
 // every fault is logged with outcome=failed and NEVER surfaced, so mention
-// routing can never fail a post (the frozen "mention routing can never fail a
+// routing can never fail a post (the established "mention routing can never fail a
 // post" contract, design.md:521-523).
 //
 // The chain, all cost-controlled:
@@ -453,7 +453,7 @@ func (l *lifecycleService) wakeOnce(ctx context.Context, agent store.AccountID) 
 			// deleted). Benign and common, exactly like freshStart's no-placement
 			// arm — a logged no-op, NOT outcome=failed: the owed row waits for the
 			// agent's next natural start. Emitting ERROR here would trip error-rate
-			// alerting on a routine path and drift from the frozen OQ-7 enum.
+			// alerting on a routine path and drift from the established OQ-7 enum.
 			return wakeOutcomeNoPlacement
 		default:
 			slog.ErrorContext(ctx, "agent wake: resume failed", "agent_account_id", agent, "session_id", sessionID, "error", err)

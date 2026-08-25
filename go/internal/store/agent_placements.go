@@ -84,7 +84,7 @@ func (s *Store) RecordAgentPlacement(ctx context.Context, agentAccountID Account
 
 // AgentForContainer resolves the agent account a placed container belongs to.
 // StartAgentSession is the caller: its request carries only container_name (the
-// frozen StartAgentSessionRequest field), so this is how it learns whose session
+// established StartAgentSessionRequest field), so this is how it learns whose session
 // it is about to record. Reading it from the durable placement rather than an
 // in-memory binding is what makes the ownership record survive a Server restart
 // or a Runner re-enroll between Provision and Start.
