@@ -8,6 +8,11 @@ import "./design/components/card.css";
 import "./design/components/menu.css";
 import "./design/components/shortcuts.css";
 import "./app.css";
+import {
+	CoachTip,
+	CoachTipContent,
+	CoachTipTrigger,
+} from "./components/CoachTip";
 import { LeftSidebar } from "./components/LeftSidebar";
 import { Palette } from "./components/Palette";
 import { RightSidebar } from "./components/RightSidebar";
@@ -17,7 +22,7 @@ import { UsageBar } from "./components/UsageBar";
 import { useStore } from "./context";
 import type { CommandId } from "./keyboard/commands";
 import { detectPlatform, installKeymap } from "./keyboard/dispatch";
-import { shortcutFor, shortcutForAria } from "./keyboard/keymap";
+import { shortcutForAria } from "./keyboard/keymap";
 
 // The Compass ADE shell — an Orca-inspired layout over the compass.v1 surface
 // (docs/specs/product/compass.md). A CSS grid: a topbar, a left agent-folder
@@ -58,10 +63,9 @@ const App: Component<RouteSectionProps> = (props) => {
 			store.keyboard.activeZone,
 		),
 	);
-	// Point-of-use chip parity (RIG-2483, D10): the topbar Bridge tab announces
-	// its chord via aria-keyshortcuts + title, resolved from the keymap through
+	// Point-of-use coaching (RIG-2530): the topbar Bridge tab announces its chord
+	// via aria-keyshortcuts + a CoachTip tooltip, resolved from the keymap through
 	// shortcutFor (D4) — matching the LeftSidebar view buttons.
-	const bridgeChord = shortcutFor("view.bridge" as CommandId, detectPlatform());
 	const bridgeAria = shortcutForAria(
 		"view.bridge" as CommandId,
 		detectPlatform(),
@@ -80,18 +84,24 @@ const App: Component<RouteSectionProps> = (props) => {
 				<div class="topbar-sep" />
 
 				<nav class="view-tabs" aria-label="View">
-					<button
-						type="button"
-						class={["view-tab", { active: store.view() === "bridge" }]}
-						onClick={() => store.showBridge()}
-						aria-keyshortcuts={bridgeAria}
-						title={bridgeChord ? `Bridge (${bridgeChord})` : undefined}
-					>
-						<span class="tab-glyph" aria-hidden="true">
-							▦
-						</span>
-						Bridge
-					</button>
+					<CoachTip>
+						<CoachTipTrigger
+							as="button"
+							type="button"
+							class={["view-tab", { active: store.view() === "bridge" }]}
+							onClick={() => store.showBridge()}
+							aria-keyshortcuts={bridgeAria}
+						>
+							<span class="tab-glyph" aria-hidden="true">
+								▦
+							</span>
+							Bridge
+						</CoachTipTrigger>
+						<CoachTipContent
+							label="Bridge"
+							command={"view.bridge" as CommandId}
+						/>
+					</CoachTip>
 					<Show when={store.selectedAgent()}>
 						{(agent) => (
 							<button
@@ -119,22 +129,44 @@ const App: Component<RouteSectionProps> = (props) => {
 				</div>
 
 				<div class="pane-toggles">
-					<button
-						type="button"
-						class={["pane-toggle", { active: store.leftOpen() }]}
-						title="Toggle left sidebar"
-						onClick={() => store.toggleLeft()}
-					>
-						▐
-					</button>
-					<button
-						type="button"
-						class={["pane-toggle", { active: store.rightOpen() }]}
-						title="Toggle right sidebar"
-						onClick={() => store.toggleRight()}
-					>
-						▌
-					</button>
+					<CoachTip>
+						<CoachTipTrigger
+							as="button"
+							type="button"
+							class={["pane-toggle", { active: store.leftOpen() }]}
+							aria-label="Toggle left sidebar"
+							aria-keyshortcuts={shortcutForAria(
+								"sidebar.toggleLeft" as CommandId,
+								detectPlatform(),
+							)}
+							onClick={() => store.toggleLeft()}
+						>
+							▐
+						</CoachTipTrigger>
+						<CoachTipContent
+							label="Toggle left sidebar"
+							command={"sidebar.toggleLeft" as CommandId}
+						/>
+					</CoachTip>
+					<CoachTip>
+						<CoachTipTrigger
+							as="button"
+							type="button"
+							class={["pane-toggle", { active: store.rightOpen() }]}
+							aria-label="Toggle right sidebar"
+							aria-keyshortcuts={shortcutForAria(
+								"sidebar.toggleRight" as CommandId,
+								detectPlatform(),
+							)}
+							onClick={() => store.toggleRight()}
+						>
+							▌
+						</CoachTipTrigger>
+						<CoachTipContent
+							label="Toggle right sidebar"
+							command={"sidebar.toggleRight" as CommandId}
+						/>
+					</CoachTip>
 				</div>
 			</header>
 

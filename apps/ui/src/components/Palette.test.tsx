@@ -237,7 +237,7 @@ describe("Palette (RIG-2483)", () => {
 		expect(container.querySelector(".cx-palette-loading")).toBeNull();
 	});
 
-	test("the LeftSidebar view buttons carry aria-keyshortcuts in WAI-ARIA tokens while title keeps the display chord", () => {
+	test("the LeftSidebar view buttons carry aria-keyshortcuts in WAI-ARIA tokens; the display chord moved to a CoachTip (RIG-2530), so no native title", () => {
 		setPlatform("other");
 		const { container } = mountApp("/");
 		const links = Array.from(
@@ -245,10 +245,12 @@ describe("Palette (RIG-2483)", () => {
 		);
 		const bridge = links.find((b) => b.textContent?.includes("Bridge"));
 		const settings = links.find((b) => b.textContent?.includes("Settings"));
-		// view.bridge → Mod+B, view.settings → Mod+, — aria uses Control (WAI-ARIA
-		// token), the display title keeps Ctrl.
+		// view.bridge → Mod+B, view.settings → Mod+, — aria uses the WAI-ARIA
+		// Control token. The display chord no longer rides a native title (the
+		// RIG-2530 sweep coaches it via CoachTip); a native title would
+		// double-tooltip, so it must be absent.
 		expect(bridge?.getAttribute("aria-keyshortcuts")).toBe("Control+B");
-		expect(bridge?.getAttribute("title")).toContain("Ctrl+B");
+		expect(bridge?.getAttribute("title")).toBeNull();
 		expect(settings?.getAttribute("aria-keyshortcuts")).toBe("Control+,");
 	});
 });

@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { flush as flushSync } from "solid-js";
 import { STUB_CHANNELS, STUB_MESSAGES, STUB_TOPICS } from "./comms-stub";
+import type { CommandId } from "./keyboard/commands";
+import { detectPlatform } from "./keyboard/dispatch";
+import { shortcutFor } from "./keyboard/keymap";
 import { STUB_AGENTS } from "./stub-data";
 import { flush, mountApp } from "./test-router";
 
@@ -195,5 +198,124 @@ describe("App shell (T7)", () => {
 		store.toggleLeft();
 		flushSync();
 		expect(leftPresent()).toBe(true);
+	});
+});
+
+// Coaching-tooltip adoption sweep (RIG-2530 T2). The topbar Bridge tab and the
+// two glyph-only sidebar toggles convert from a native `title=` to a CoachTip;
+// the toggles' dead chords are registered so they now dispatch. These assert
+// the observable adoption contract: the tooltip reveals on focus, no `title`
+// double-tooltips, `aria-keyshortcuts` survives, and the glyph toggles keep a
+// non-glyph accessible name via the added `aria-label`.
+
+// Kobalte portals its tooltip content on a macrotask, so a focus that opens it
+// is observable only after one setTimeout(0).
+async function settle(): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	setTimeout(resolve, 0);
+	await promise;
+}
+
+describe("coaching tooltips (RIG-2530 T2)", () => {
+	test("the Bridge tab opens a coaching tooltip on focus showing the label + chord", async () => {
+		const { container } = mountApp("/backlog");
+		const tab = navViewTabs(container).find((t) =>
+			t.textContent?.includes("Bridge"),
+		);
+		expect(tab).toBeDefined();
+
+		tab?.focus();
+		await settle();
+
+		// Kobalte portals the tooltip content to document.body.
+		const tooltip =
+			document.body.querySelector<HTMLElement>('[role="tooltip"]');
+		expect(tooltip).not.toBeNull();
+		expect(tooltip?.textContent).toContain("Bridge");
+		// Chord derived from the keymap, never hand-authored (D4).
+		const chip = tooltip?.querySelector(".cx-palette-shortcut");
+		const kbds = Array.from(chip?.querySelectorAll("kbd") ?? []).map(
+			(k) => k.textContent,
+		);
+		expect(shortcutFor("view.bridge" as CommandId, detectPlatform())).toBe(
+			"Ctrl+B",
+		);
+		expect(kbds).toEqual(["Ctrl", "B"]);
+	});
+
+	test("converted controls drop `title` but keep `aria-keyshortcuts`", () => {
+		const { container } = mountApp();
+		const bridgeTab = navViewTabs(container).find((t) =>
+			t.textContent?.includes("Bridge"),
+		);
+		expect(bridgeTab?.hasAttribute("title")).toBe(false);
+		expect(bridgeTab?.getAttribute("aria-keyshortcuts")).toBeTruthy();
+
+		for (const label of ["Toggle left sidebar", "Toggle right sidebar"]) {
+			const toggle = container.querySelector<HTMLElement>(
+				`.pane-toggle[aria-label="${label}"]`,
+			);
+			expect(toggle).not.toBeNull();
+			expect(toggle?.hasAttribute("title")).toBe(false);
+			expect(toggle?.getAttribute("aria-keyshortcuts")).toBeTruthy();
+		}
+	});
+
+	test("the glyph-only sidebar toggles are named by aria-label, not the bare glyph", () => {
+		const { container } = mountApp();
+		const left = container.querySelector<HTMLElement>(
+			'.pane-toggle[aria-label="Toggle left sidebar"]',
+		);
+		const right = container.querySelector<HTMLElement>(
+			'.pane-toggle[aria-label="Toggle right sidebar"]',
+		);
+		expect(left).not.toBeNull();
+		expect(right).not.toBeNull();
+		// The visible content is a decorative block glyph; the accessible name
+		// must come from aria-label, never the glyph.
+		expect(left?.getAttribute("aria-label")).toBe("Toggle left sidebar");
+		expect(right?.getAttribute("aria-label")).toBe("Toggle right sidebar");
+		expect(left?.textContent?.trim()).not.toBe("");
+		expect(left?.getAttribute("aria-label")).not.toBe(
+			left?.textContent?.trim(),
+		);
+	});
+
+	test("both sidebar toggles are now live: their coached chords dispatch", async () => {
+		const { store } = mountApp();
+		expect(store.leftOpen()).toBe(true);
+		expect(store.rightOpen()).toBe(true);
+
+		// Both commands the sweep coaches resolve in the registry (dispatch path),
+		// not only the keymap (display path) — the drift the A4 boundary guards.
+		expect(
+			store.keyboard.registry.get("sidebar.toggleLeft" as CommandId),
+		).toBeDefined();
+		expect(
+			store.keyboard.registry.get("sidebar.toggleRight" as CommandId),
+		).toBeDefined();
+
+		// Mod+Shift+\ → toggleLeft; Mod+\ → toggleRight (keymap rows), now that
+		// the commands are registered.
+		window.dispatchEvent(
+			new KeyboardEvent("keydown", {
+				key: "\\",
+				ctrlKey: true,
+				shiftKey: true,
+				bubbles: true,
+			}),
+		);
+		await flush();
+		expect(store.leftOpen()).toBe(false);
+
+		window.dispatchEvent(
+			new KeyboardEvent("keydown", {
+				key: "\\",
+				ctrlKey: true,
+				bubbles: true,
+			}),
+		);
+		await flush();
+		expect(store.rightOpen()).toBe(false);
 	});
 });

@@ -305,3 +305,45 @@ describe("shortcuts overlay (RIG-2482)", () => {
 		expect(event.defaultPrevented).toBe(false);
 	});
 });
+
+// Coached-chord dispatch (RIG-2530 T2). Every command id the adoption sweep
+// coaches must resolve in the command REGISTRY (dispatch path), not merely the
+// keymap (display path) — the drift the A4 boundary exists to prevent. The two
+// sidebar toggles are the load-bearing case: T2 registered them beside their
+// store behavior, so their coached chord now actually fires.
+describe("coached-chord dispatch (RIG-2530 T2)", () => {
+	// Every command id the sweep coaches. view.backlog/view.done are coached
+	// label-only (no keymap row yet) but must still resolve in the registry.
+	const COACHED_COMMANDS = [
+		"view.bridge",
+		"view.backlog",
+		"view.done",
+		"view.settings",
+		"sidebar.toggleLeft",
+		"sidebar.toggleRight",
+	] as const;
+
+	test("every coached command id resolves in the command registry", () => {
+		const { store } = mountApp("/");
+		for (const id of COACHED_COMMANDS) {
+			expect(store.keyboard.registry.get(id as CommandId)).toBeDefined();
+		}
+	});
+
+	test("the sidebar-toggle chords now dispatch (live after T2 registration)", async () => {
+		setPlatform("other");
+		const { store } = mountApp("/");
+		expect(store.leftOpen()).toBe(true);
+		expect(store.rightOpen()).toBe(true);
+
+		// Mod+Shift+\ → sidebar.toggleLeft (keymap.ts).
+		press({ key: "\\", ctrlKey: true, shiftKey: true });
+		await flush();
+		expect(store.leftOpen()).toBe(false);
+
+		// Mod+\ → sidebar.toggleRight.
+		press({ key: "\\", ctrlKey: true });
+		await flush();
+		expect(store.rightOpen()).toBe(false);
+	});
+});
