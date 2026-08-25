@@ -1,5 +1,5 @@
 // The PublishSpine timing/bound contract (transport-consolidation C4; design
-// record docs/designs/platform/compass-agent-effect-adoption/design.md, T3).
+// record docs/designs/repo/compass-agent-effect-adoption/design.md, T3).
 // RIG-2448 closes a coverage gap: the spine had NO standalone test file — its
 // behavior was pinned only INDIRECTLY through frame-sink.test.ts, which drives
 // the spine over a live socket and never isolates the pump's priority-retry

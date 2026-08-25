@@ -1,6 +1,6 @@
 // O2 metric wiring on the two OUTBOUND transport modules — the publish spine
 // (publish-spine.ts) and the durable frame sink (frame-sink.ts).
-// Decision 2 of docs/designs/platform/compass-agent-effect-otel/design.md.
+// Decision 2 of docs/designs/repo/compass-agent-effect-otel/design.md.
 //
 // The metrics no-op WITHOUT an OTel provider — but Effect still accumulates them
 // in its process-global in-memory registry, which every ManagedRuntime shares by

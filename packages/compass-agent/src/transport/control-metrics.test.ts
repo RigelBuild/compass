@@ -1,6 +1,6 @@
 // O3 metric + span wiring on the INBOUND control source (control-source.ts).
 // Decision 1 (span) + Decision 2 (control.* metrics) of
-// docs/designs/platform/compass-agent-effect-otel/design.md.
+// docs/designs/repo/compass-agent-effect-otel/design.md.
 //
 // The four control.* metrics no-op WITHOUT an OTel provider but still accumulate
 // in Effect's process-global in-memory registry, which every ManagedRuntime

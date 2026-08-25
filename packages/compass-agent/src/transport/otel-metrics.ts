@@ -1,6 +1,6 @@
 // Module-private OTel metric constants for the two OUTBOUND transport modules —
 // the publish spine (publish-spine.ts) and the durable frame sink (frame-sink.ts).
-// Decision 2 of docs/designs/platform/compass-agent-effect-otel/design.md
+// Decision 2 of docs/designs/repo/compass-agent-effect-otel/design.md
 // (the metric table) owns these seven names; the control.* rows live in O3.
 //
 // `Metric` is from core `effect` (already a dependency — this module adds none).
@@ -74,7 +74,7 @@ export const durableGiveUps = Metric.counter(
 
 // -----------------------------------------------------------------------------
 // control source (O3) — the INBOUND control-stream lane (control-source.ts).
-// Decision 2 of docs/designs/platform/compass-agent-effect-otel/design.md owns
+// Decision 2 of docs/designs/repo/compass-agent-effect-otel/design.md owns
 // these four control.* names; same style as the O2 constants above.
 // -----------------------------------------------------------------------------
 

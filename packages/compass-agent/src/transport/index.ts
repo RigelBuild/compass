@@ -52,7 +52,7 @@ import { setTransportRuntime } from "./runtime-channel";
  *    consumes it.
  *  - `close()` — release the underlying HTTP/2 session AND dispose the single
  *    transport-owned `ManagedRuntime` that backs the sink/spine/source lanes
- *    (design docs/designs/platform/compass-agent-effect-adoption/design.md §T5).
+ *    (design docs/designs/repo/compass-agent-effect-adoption/design.md §T5).
  *    The composition root calls it AFTER the sink's drain barrier: the session
  *    manager keeps an idle connection alive for `idleConnectionTimeoutMs` (15
  *    minutes by default), so a self-terminating agent that only drains would
@@ -111,7 +111,7 @@ export function createUnixSocketTransport(socketPath: string): RunnerTransport {
 	// handled/swallowed lane failure does not double-report to the console;
 	// makeOtelLayer() adds the transport's OTel provider when an OTLP endpoint is
 	// configured and Layer.empty otherwise, so instrumentation is inert with no
-	// endpoint (design docs/designs/platform/compass-agent-effect-otel/design.md
+	// endpoint (design docs/designs/repo/compass-agent-effect-otel/design.md
 	// Decision 4). close() disposes it; the sibling factories BORROW it (never
 	// dispose) via the module-private channel.
 	const runtime = ManagedRuntime.make(

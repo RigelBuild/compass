@@ -1,7 +1,7 @@
 // The module-private channel that threads the transport-owned ManagedRuntime
 // from createUnixSocketTransport into its sibling factories (frame-sink,
 // control-source) without putting an `effect` type on any exported signature
-// (design docs/designs/platform/compass-agent-effect-adoption/design.md, Global
+// (design docs/designs/repo/compass-agent-effect-adoption/design.md, Global
 // Constraints: no `Effect<>`/`ManagedRuntime`/`Runtime` in a signature exported
 // from src/transport/; §T5: the runtime is threaded through a module-private
 // channel, never an exported factory parameter).

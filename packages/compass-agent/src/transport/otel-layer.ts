@@ -1,7 +1,7 @@
 // The transport's OpenTelemetry layer: the single place the whole `src/transport/`
 // tree gets a Tracer and Meter provider, composed into the one transport-owned
 // `ManagedRuntime` at the construction seam in `index.ts`
-// (design docs/designs/platform/compass-agent-effect-otel/design.md, Decision 4).
+// (design docs/designs/repo/compass-agent-effect-otel/design.md, Decision 4).
 //
 // This module is module-private: it is NEVER re-exported from `index.ts`, so no
 // `@effect/opentelemetry` / `@opentelemetry/*` type reaches the package's public

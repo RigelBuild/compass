@@ -1,5 +1,5 @@
 // The module-private OTel layer
-// (design docs/designs/platform/compass-agent-effect-otel/design.md, O1a + O1b).
+// (design docs/designs/repo/compass-agent-effect-otel/design.md, O1a + O1b).
 // These cases pin three guarantees:
 //
 //   1. Off by default — with no OTEL_EXPORTER_OTLP_ENDPOINT the layer IS

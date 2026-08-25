@@ -29,7 +29,7 @@
 //   5. `bun install --lockfile-only` — re-resolve bun.lock so the fail-closed
 //      `bun install --frozen-lockfile` root-check passes.
 //
-// Design: docs/designs/platform/compass-renovate-migration.md
+// Design: docs/designs/repo/compass-renovate-migration.md
 //
 // Invoked by the devenv-nixpkgs packageRule's postUpgradeTasks command
 // (config.json5) as `bun tools/renovate/refresh-devenv-nixpkgs.ts`, allowlisted

@@ -2,7 +2,7 @@
 
 This is the deployer-facing contract for enabling transport telemetry export on
 the compass-agent. It is a sibling of the frozen design record
-(`docs/designs/platform/compass-agent-effect-otel/design.md`, task O5).
+(`docs/designs/repo/compass-agent-effect-otel/design.md`, task O5).
 
 ## The contract
 
