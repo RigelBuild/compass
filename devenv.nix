@@ -20,6 +20,14 @@ let
   # database, surfacing only as a runner enroll failure.
   dogfoodDSN = "host=${config.env.PGHOST} port=${toString config.env.PGPORT} dbname=compass sslmode=disable";
 
+  # Runner id (enrollment subject) shared by dogfood:mint-runner-token and the
+  # compass-runner process. The runner's Enroll cross-checks the token subject
+  # against its --runner-id, so mint and runner MUST agree or enroll is rejected
+  # `unauthenticated` — both consumers reference one binding rather than a pair
+  # of copies that could silently drift. An overlay that overrides the runner id
+  # sets it here once and both consumers move in lockstep.
+  dogfoodRunnerID = "dogfood";
+
   # The go pin (tools/toolchain/versions/go.nix), version-selected from the
   # go-overlay input. go-overlay's flake exposes each version as a package attr
   # named `go_<major>_<minor>_<patch>` (dots→underscores; nix attr names hold no
@@ -443,7 +451,7 @@ in
         go build -o "$bin" ./cmd/compass-runner
         export COMPASS_RUNNER_TOKEN="$(cat "${config.devenv.state}/compass/runner.token")"
         exec "$bin" \
-          --runner-id dogfood \
+          --runner-id ${dogfoodRunnerID} \
           --server "https://127.0.0.1:${toString config.processes.compass-server.ports.network.value}" \
           --ca "${config.devenv.state}/compass/tls.crt" \
           --image compass-agent:latest \
@@ -492,7 +500,7 @@ in
         bin="${config.devenv.state}/compass/compass-mint-runner-token"
         go build -o "$bin" ./cmd/compass-mint-runner-token
         exec "$bin" \
-          --runner-id dogfood \
+          --runner-id ${dogfoodRunnerID} \
           --token-out "${config.devenv.state}/compass/runner.token"
       '';
       cwd = "${config.devenv.root}/go";
