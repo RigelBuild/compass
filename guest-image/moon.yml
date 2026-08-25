@@ -63,6 +63,12 @@ tasks:
       - '/agent-image/entrypoint.nix'
       - '/tools/toolchain/toolchain-tools.nix'
       - '/tools/toolchain/versions/**'
+      # The microVM boot leg (ci.yml `microvm` job) realizes this VMM-env
+      # (cloud-hypervisor/virtiofsd/passt) to boot the guest image this project
+      # builds. Tracking it here keeps the moon graph — not a hand-kept path
+      # list — the source of the leg's true build closure, so a change to only
+      # the VMM-env still marks this project affected and the boot test runs.
+      - '/tools/toolchain/microvm-vmm-env.nix'
       - '/packages/compass-agent/**'
       # T1 packages the T2 guestd binary (buildGoModule of go/cmd/compass-guestd)
       # as the rootfs /sbin/init, so the backend module is now a build input: a
