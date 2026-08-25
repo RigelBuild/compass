@@ -28,6 +28,28 @@ post. See the [Zulip threading model](../designs/product/compass-zulip-threading
 record (ledger DL-098, DL-099) and [session persistence](../designs/product/compass-agent-session-persistence/design.md)
 (the log and the live trace are two projections of one artifact, DL-088).
 
+## The session log is read-only — you never prompt into a session
+
+This is the departure from standard agent models most likely to trip up an
+integration or a newcomer: **there is no way to prompt an agent directly into
+its session.** The session log is a *read-only live view* — you watch the
+agent's streamed output there, but nothing you do in it reaches the agent.
+Every input to a running agent goes over comms, and there are exactly three
+ways to reach a live session:
+
+- **Post in a thread** — a normal comms message on the agent's home channel,
+  which the agent picks up on its turn.
+- **Ping the agent for a steering message** — a mid-turn nudge to a working
+  agent, comms-originated (a channel post) and delivered over the control lane
+  as a mid-turn injection, never typed into the read-only log surface.
+- **Stop the agent** — halt the running session if needed.
+
+Standard agent models assume a direct prompt-into-the-session REPL; Compass
+does not have one, on purpose. Every assumption a bridge or a tool carries
+about "send the user's text straight to the agent" must be re-expressed as one
+of the three above: the session log streams *out*, and communication flows
+*in* only through channels and threads.
+
 ## Stable agents with home channels
 
 Compass agents are **long-lived tree nodes** — Managers and their peers — each
