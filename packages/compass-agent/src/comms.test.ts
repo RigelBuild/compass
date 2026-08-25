@@ -1795,6 +1795,16 @@ describe("compass_roster", () => {
 		expect(text).toContain("reviewing PR");
 	});
 
+	test("renders each peer's account id so the model can address the org-management tools", async () => {
+		const transport = new FakeTransport(
+			rosterResult(rosterEntry("alice", "reviewing PR", AgentPresence.WORKING)),
+		);
+		const roster = tool(new CommsBroker(transport), "compass_roster");
+
+		const text = textOf(await exec(roster, "tc-r-acct", {}));
+		expect(text).toContain("acct-alice");
+	});
+
 	// A human display name is not token-shaped — it carries spaces. The guard
 	// must be `flat` (which only collapses line breaks), not `attr` (which
 	// rejects anything failing the id-shape test and would degrade a real name
