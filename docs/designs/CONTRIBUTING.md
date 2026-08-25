@@ -107,7 +107,8 @@ outgrows flat scanning; until then records sit directly under their bucket.
 
 ### The design-ledger-gate governs every bucket
 
-`tools/design-ledger-gate` scans all six buckets: every record's `Status:`
+`tools/design-ledger-gate` scans every governed bucket (the six taxonomy buckets
+above plus the transitional `product/` root, below): every record's `Status:`
 header is checked for presence and grammar, and a PR that touches a governed
 record must either touch the ledger (`docs/designs/DECISIONS.md`) or declare a
 `Ledger-impact:` line in its description. The `DECISIONS.md` ledger rows stay
