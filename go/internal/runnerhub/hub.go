@@ -255,6 +255,9 @@ type CommsCaller interface {
 	// half of the set_status ordered write-then-publish (RIG-1721 T2 / T3).
 	SetStatusAsAccount(ctx context.Context, account store.AccountID, activity string) (string, error)
 	UpdatePinnedBoardAsAccount(ctx context.Context, account store.AccountID, req *compassv1.UpdatePinnedBoardRequest) (*compassv1.UpdatePinnedBoardResponse, error)
+	CreateChannelAsAccount(ctx context.Context, account store.AccountID, req *compassv1.CreateChannelRequest) (*compassv1.CreateChannelResponse, error)
+	UpdateChannelMembersAsAccount(ctx context.Context, account store.AccountID, req *compassv1.UpdateChannelMembersRequest) (*compassv1.UpdateChannelMembersResponse, error)
+	CreateChannelGroupAsAccount(ctx context.Context, account store.AccountID, req *compassv1.CreateChannelGroupRequest) (*compassv1.CreateChannelGroupResponse, error)
 }
 
 // Hub is the Server-side seam: enrollment registry + command router + the
