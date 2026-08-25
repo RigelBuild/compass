@@ -1675,6 +1675,44 @@ describe("formatDeliversForPrompt — coalescing format (SEA-1310 §8)", () => {
 		expect(out.match(/^Topic /gm)).toHaveLength(1);
 		expect(out.indexOf("one")).toBeLessThan(out.indexOf("two"));
 	});
+
+	// RIG-2664: the coalesced prompt carries ONE terse reply cue for the whole
+	// batch, pointing at comms_post so the model posts its answer back to the
+	// channel instead of only narrating it into its session. Terse by design: the
+	// load-bearing "why" lives once in the manager SYSTEM.md, not re-paid per
+	// delivered batch. The cue does NOT re-list topic ids — each id already prints
+	// in its `Topic <id>:` section header, so the list was pure duplication (Matt
+	// review, #583).
+	test("appends a single terse reply cue, id-free, pointing at comms_post", () => {
+		const batch = [
+			deliverMsg("m1", "alpha msg", "t-alpha"),
+			deliverMsg("m2", "beta msg", "t-beta"),
+		];
+		const out = formatDeliversForPrompt(batch);
+
+		// The cue is the trailing section (topics render first, one cue last).
+		const cueLine = out.split("\n\n").at(-1) ?? "";
+		// Exact-shape lock: the durable guard. Any re-expansion of the cue (verbose
+		// "why", per-message repetition, a re-added id list) breaks this equality.
+		expect(cueLine).toBe("Reply via comms_post_message to the relevant topic.");
+		// Anti-regression: the cue names NO topic id — re-adding the id list (the
+		// unbounded 14-tok-per-id duplication this PR removed) reintroduces them.
+		expect(cueLine).not.toContain("t-alpha");
+		expect(cueLine).not.toContain("t-beta");
+		// The ids are NOT lost — each still prints once, in its section header.
+		expect(out).toContain("Topic t-alpha:");
+		expect(out).toContain("Topic t-beta:");
+		// Exactly one cue for the whole batch, not one per message/topic.
+		expect(out.match(/comms_post_message/g)).toHaveLength(1);
+		// Terse tripwire: the verbose block-0 "why" is NOT re-paid in the cue. Uses
+		// a phrase that actually appears in the block-0 "why" (SYSTEM.md), so a
+		// re-expansion that pastes that reasoning back into the cue trips it.
+		expect(out).not.toContain("session log");
+	});
+
+	test("returns an empty string for an empty batch (no cue with nothing to reply to)", () => {
+		expect(formatDeliversForPrompt([])).toBe("");
+	});
 });
 
 describe("formatAskAnswerForPrompt — answer render (RIG-2257)", () => {
