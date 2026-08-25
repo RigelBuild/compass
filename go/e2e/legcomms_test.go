@@ -51,7 +51,11 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 		postBody, postTopic,
 	)
 	// The assistant text the closing turn settles on after the tool result
-	// returns — a clean text settle, mirroring the sibling's settleReply.
+	// returns — a clean text settle, mirroring the sibling's settleReply. Unlike
+	// the sibling, it is deliberately NOT asserted in the transcript: the comms
+	// fan-out + author assertion below is a strictly stronger proof that the tool
+	// executed, so it is the proof of record here. This const only gives turn 1
+	// something to settle on.
 	const settleReply = "posted, standing by"
 
 	// A 2-turn script: turn 0 issues the comms_post_message tool-call (so the
@@ -156,4 +160,9 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 	if got := posted.GetAuthorAccountId(); got != posterID {
 		t.Fatalf("posted message author = %q, want the poster agent's account id %q (the agent posted it, not the human trigger)", got, posterID)
 	}
+	// The 'omit channel_id => home channel' branch is not separately asserted:
+	// the returned Message carries no channel container (F9 removed it), and
+	// GetTopicId() is a server-minted id, not the scripted topic NAME, so there
+	// is nothing on the wire Message to compare against poster.Agent.HomeChannelID
+	// or postTopic. Body + author is the correct assertion ceiling here.
 }
