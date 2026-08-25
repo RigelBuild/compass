@@ -1,5 +1,7 @@
 # Compass local dev: UI in `devenv up`, macOS full setup, gate hazard
 
+Status: Draft
+
 > **Design record (platform).** Local development experience on Linux and
 > macOS for the Compass repo. Three lanes: (1) `devenv up` starts the browser
 > UI with a route to the server's gRPC-Web dev door — direct-dial, no proxy
@@ -10,8 +12,6 @@
 > workaround — the durable fix is a harness change owned by the zireael
 > (jj-hp) lane, out of scope for this repo (Matt, 2026-08-14). All file:line
 > citations are from this checkout (`RigelBuild/compass` working copy).
-
-Status: Draft
 
 ## Problem / Intent
 

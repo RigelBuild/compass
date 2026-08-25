@@ -37,7 +37,7 @@
 # This exercises the exact seam compass-stack consumes (`--image` /
 # $COMPASS_AGENT_IMAGE) and is the acceptance check compass-native repeats from
 # the pull side. See docs/architecture/build-and-ci.md and the design record
-# docs/designs/platform/compass-agent-image-publish.md.
+# docs/designs/infra/ci/compass-agent-image-publish/design.md.
 
 name: Publish agent image
 

@@ -1,17 +1,17 @@
 # Publish the compass-agent image to GHCR
 
+Status: Draft
+Tracking: SEA-1690 (blocks compass-native SEA-1683/T2, SEA-1685/T4, SEA-1687/T6)
+
 > **Design record.** This designs the GHCR publish lane for the `compass-agent`
 > runtime image; it targets the **`RigelBuild/compass`** repo — every
 > `agent-image/*`, `.github/workflows/*`, `forks/*`, `go/cmd/*`, `ci.yml`,
 > `devenv.nix`, `packages/compass-agent/*`, and `docs/architecture/*` citation
 > below is a path in that repo at HEAD `b3fc25311`, not this one (line numbers
 > drift as the code evolves; resolve them against that commit). It lives in the
-> sealed design corpus (`docs/designs/platform/`) because that is where the wave's design
+> sealed design corpus (`docs/designs/infra/ci/`) because that is where the wave's design
 > records freeze; the `docs/designs/product/*` cross-references (e.g. DL-112)
 > are paths in this (sealed) corpus.
-
-Status: Draft
-Tracking: SEA-1690 (blocks compass-native SEA-1683/T2, SEA-1685/T4, SEA-1687/T6)
 
 ## Problem / Intent
 
@@ -498,7 +498,7 @@ Interfaces:
 ## Open Questions
 
 - **[Resolved] Record placement.** This record lives in the sealed design
-  corpus (`docs/designs/platform/`), the wave's canonical home for frozen
+  corpus (`docs/designs/infra/ci/`), the wave's canonical home for frozen
   design records, beside the other `compass-*` records. T4 folds the durable
   operational content into the compass repo's `docs/architecture/build-and-ci.md`
   once implemented; this record stays the design of record in sealed.
