@@ -4,7 +4,7 @@
 # generated client (src/gen); compass-proto:drift gates its freshness.
 layer: 'library'
 language: 'typescript'
-tags: ['bun', 'oss']
+tags: ['bun', 'oss', 'ci-group.bun']
 dependsOn: ['compass-proto']
 
 tasks:

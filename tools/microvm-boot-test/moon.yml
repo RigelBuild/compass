@@ -17,7 +17,7 @@
 # tasks, so this leaf carries no own bun.lock.
 layer: 'tool'
 language: 'typescript'
-tags: ['bun']
+tags: ['bun', 'ci-group.bun']
 
 tasks:
   typecheck:

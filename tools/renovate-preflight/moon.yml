@@ -12,7 +12,7 @@
 # inherited via the `bun` tag (.moon/tasks/tag-bun.yml).
 layer: 'tool'
 language: 'typescript'
-tags: ['bun']
+tags: ['bun', 'ci-group.bun']
 
 tasks:
   typecheck:
@@ -24,3 +24,8 @@ tasks:
     command: 'bun test'
     deps: ['install']
     inputs: ['*.ts', 'package.json', 'tsconfig.json', '/bun.lock']
+
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

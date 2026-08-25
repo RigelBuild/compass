@@ -34,7 +34,7 @@
 # scope decision, not an import detail.
 layer: 'application'
 language: 'typescript'
-tags: ['oss']
+tags: ['oss', 'ci-group.forks']
 
 workspace:
   inheritedTasks:

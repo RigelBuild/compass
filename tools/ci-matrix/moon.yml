@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# ci-matrix (T5) — the CI concern-matrix generator. Reads moon's affected
+# closure and every project's `ci-group.*` tag, then emits (to $GITHUB_OUTPUT)
+# the per-group GitHub Actions matrix + the four special-leg affected flags
+# (pgtest/microvm/forge/gtk3). A bun/TypeScript CLI; a hoisted root-workspace
+# member (`bun` tag): install is inherited via .moon/tasks/tag-bun.yml (the
+# shared root install), so this leaf has no own bun.lock and never runs its own
+# install. It is itself a `ci-group.bun` project so the generator's own
+# zero-untagged assertion does not fire on it.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  test:
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false

@@ -12,6 +12,7 @@
 # input changes, unconditional on main + nightly.
 layer: 'application'
 language: 'nix'
+tags: ['ci-group.nix']
 
 workspace:
   inheritedTasks:

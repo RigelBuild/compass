@@ -19,6 +19,7 @@
 # realises.
 layer: 'application'
 language: 'nix'
+tags: ['ci-group.nix']
 
 workspace:
   inheritedTasks:

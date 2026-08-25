@@ -1,0 +1,14 @@
+{
+	"name": "@compass/ci-matrix",
+	"private": true,
+	"type": "module",
+	"description": "CI concern-matrix generator: reads moon's affected closure + ci-group.* tags and emits the per-group GitHub Actions matrix + the special-leg affected flags.",
+	"module": "index.ts",
+	"bin": {
+		"ci-matrix": "./index.ts"
+	},
+	"devDependencies": {
+		"@types/bun": "catalog:",
+		"typescript": "catalog:"
+	}
+}

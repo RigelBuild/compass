@@ -11,7 +11,7 @@
 # branch including the two fail-closed ones a shell version would drop.
 layer: 'tool'
 language: 'typescript'
-tags: ['bun', 'oss']
+tags: ['bun', 'oss', 'ci-group.bun']
 
 tasks:
   typecheck:

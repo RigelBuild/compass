@@ -14,7 +14,7 @@
 # fence/cap rule goes missing, or if the catalog regex silently truncates.
 layer: 'tool'
 language: 'typescript'
-tags: ['bun']
+tags: ['bun', 'ci-group.bun']
 
 tasks:
   typecheck:

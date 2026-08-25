@@ -103,6 +103,15 @@ projects:
   # so its typecheck + unit test run in the moon-driven CI sweep — unregistered,
   # moon never discovers it and the mint's pure core ships untested.
   forge-linear-token: 'tools/forge-linear-token'
+  # The CI concern-matrix generator (RIG-2700): translates moon's affected
+  # closure + every project's `ci-group.*` tag into the per-group matrix the
+  # `moon` battery fans out over, plus the four special-leg affected flags.
+  # Registered so its own typecheck + unit tests ride the moon-driven CI sweep,
+  # AND — since moon discovers projects only from this explicit map — so the
+  # generator can see itself: its own `ci-group.bun` tag must appear in `moon
+  # query projects`, or the generator's zero-untagged assertion never covers the
+  # very tool that enforces it.
+  ci-matrix: 'tools/ci-matrix'
   # Vendored upstream fork subtrees (forks/<name>, SEA-1512). Each carries its
   # own nix-driven build as functional CI — so a fork-only change is gated by
   # the fork's own suite — while its tree stays exempt from the style gates
