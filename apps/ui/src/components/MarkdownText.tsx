@@ -12,6 +12,7 @@ import {
 import type { Account } from "../comms-stub";
 import {
 	getCachedHighlight,
+	isLeadingEdgeHighlight,
 	setCachedHighlight,
 } from "../markdown/highlight-cache";
 import { highlightToHtml } from "../markdown/highlighter";
@@ -137,9 +138,36 @@ function BlockCode(props: { code: string; codeClass?: string }) {
 	// setTimeout/cleanup cycle in the (untracked) apply phase so it only re-runs
 	// when a tracked source changes. Solid 2's two-arg createEffect returns its
 	// cleanup from the apply phase.
+	//
+	// Leading-edge first, trailing-debounce the rest (RIG-1422): a settled
+	// (non-streaming) block — every historical message in a channel — must
+	// colorize on first paint, not sit on the plain `<pre>` fallback for
+	// HIGHLIGHT_DEBOUNCE_MS while a timer it never needed elapses. So a FRESH
+	// block pushes `[code, lang]` into `settled` immediately (no timer); only a
+	// streaming GROWTH tick arms the trailing timer, collapsing a burst into one
+	// pass exactly as before.
+	//
+	// Why the leading-edge test lives OUTSIDE this instance: under
+	// `renderingStrategy="reconcile"` solid-markdown REBUILDS the fenced subtree
+	// on every growth tick, so `BlockCode` is reconstructed each tick (a fresh
+	// closure — verified: the component body re-runs per tick). A per-instance
+	// `firstRun` flag would therefore read true on every tick and fire an
+	// immediate highlight for each, reintroducing the O(n²) re-tokenize the
+	// debounce exists to collapse. `isLeadingEdgeHighlight` is module-level so a
+	// reconstructed instance can tell a fresh block (immediate) from a growth tick
+	// of a stream still inside its debounce window (keep debouncing).
+	const immediate = isLeadingEdgeHighlight(
+		lang(),
+		props.code,
+		HIGHLIGHT_DEBOUNCE_MS,
+	);
 	createEffect(
 		() => [props.code, lang()] as const,
 		([nextCode, nextLang]) => {
+			if (immediate) {
+				setSettled([nextCode, nextLang] as const);
+				return;
+			}
 			const t = setTimeout(
 				() => setSettled([nextCode, nextLang] as const),
 				HIGHLIGHT_DEBOUNCE_MS,

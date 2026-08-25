@@ -48,10 +48,83 @@ export function setCachedHighlight(
 	cache.set(key(lang, code), html);
 }
 
-/** Empty the cache. The cache is module-level and persists across component
- *  instances by design (that persistence is what R1 buys); a test that asserts
- *  on the highlight path must clear it between cases so a prior render's entry
- *  does not seed a later one. */
+/** The recent `(lang, code)` snapshots blocks have scheduled a highlight for, in
+ *  schedule order (oldest first) — the cross-instance thread the leading-edge
+ *  gate needs (RIG-1422).
+ *
+ *  `BlockCode` is reconstructed on every streaming growth tick (solid-markdown
+ *  rebuilds the fenced subtree under `renderingStrategy="reconcile"`), so a
+ *  per-instance "first run" flag reads true every tick and cannot tell a fresh
+ *  settled block from a growth tick. A module-level record can — but a SINGLE
+ *  slot is wrong: a message with more than one fence rebuilds every fence in the
+ *  same reconcile tick, in document order, so an earlier fence clobbers the slot
+ *  before a later, still-growing fence reads it; the grower never sees its own
+ *  prior code and (mis)fires an immediate re-tokenize every tick — the exact
+ *  O(n²) the debounce exists to collapse. A short list, matched against ANY
+ *  recent same-lang snapshot, lets each fence find its own prior code regardless
+ *  of siblings scheduled in between. Bounded by the debounce window (stale
+ *  entries pruned) with a coarse size cap as a backstop. */
+const recentScheduled: { lang: string; code: string; at: number }[] = [];
+const MAX_RECENT = 64;
+
+/** Whether `(lang, code)` should highlight on the LEADING edge — immediately,
+ *  no debounce — vs. be debounced as a streaming growth tick. Leading edge for a
+ *  fresh block and for a batch of distinct settled blocks (a history load, where
+ *  no two are a prefix of each other); debounced only when this code strictly
+ *  extends a recent same-lang snapshot within `windowMs` (an active stream).
+ *
+ *  Records `(lang, code)` as a recent snapshot as a side effect, so later calls
+ *  see it. `windowMs` guards against a stale snapshot: two blocks far apart in
+ *  time that happen to be prefix-related are independent, not a stream. A
+ *  settled block that coincidentally extends a sibling settled block rendered in
+ *  the same paint is misread as a growth tick (debounced ~one window, then
+ *  colorized) — a rare one-time timing shift, never a wrong render. Uses
+ *  `performance.now()` (monotonic) so a wall-clock adjustment can't reorder
+ *  snapshots. */
+export function isLeadingEdgeHighlight(
+	lang: string,
+	code: string,
+	windowMs: number,
+): boolean {
+	const now = performance.now();
+	// Scan newest-first: an active stream matches its own latest prior snapshot
+	// even when sibling fences were scheduled in between. Snapshots are appended
+	// in (monotonic) time order, so once one is older than the window every
+	// earlier one is too — stop there.
+	let isGrowthTick = false;
+	for (let i = recentScheduled.length - 1; i >= 0; i--) {
+		const prev = recentScheduled[i];
+		if (now - prev.at >= windowMs) break;
+		if (
+			prev.lang === lang &&
+			code !== prev.code &&
+			code.startsWith(prev.code)
+		) {
+			isGrowthTick = true;
+			break;
+		}
+	}
+	recentScheduled.push({ lang, code, at: now });
+	// Prune snapshots older than the window (a prefix of the array, by time
+	// order); cap the length as a coarse backstop against a dense burst.
+	const cutoff = now - windowMs;
+	let stale = 0;
+	while (stale < recentScheduled.length && recentScheduled[stale].at <= cutoff)
+		stale++;
+	if (stale > 0) recentScheduled.splice(0, stale);
+	if (recentScheduled.length > MAX_RECENT)
+		recentScheduled.splice(0, recentScheduled.length - MAX_RECENT);
+	return !isGrowthTick;
+}
+
+/** Empty the cache AND clear the leading-edge snapshots. The cache is
+ *  module-level and persists across component instances by design (that
+ *  persistence is what R1 buys); a test that asserts on the highlight path must
+ *  clear it between cases so a prior render's entry does not seed a later one —
+ *  and must reset the leading-edge snapshots (RIG-1422) too, so a prior test's
+ *  recently-scheduled code cannot make a later test's fresh block read as a
+ *  growth tick. */
 export function clearHighlightCache(): void {
 	cache.clear();
+	recentScheduled.length = 0;
 }
