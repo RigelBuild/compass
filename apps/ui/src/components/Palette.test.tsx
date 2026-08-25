@@ -245,6 +245,8 @@ describe("Palette (RIG-2483)", () => {
 		);
 		const bridge = links.find((b) => b.textContent?.includes("Bridge"));
 		const settings = links.find((b) => b.textContent?.includes("Settings"));
+		const backlog = links.find((b) => b.textContent?.includes("Backlog"));
+		const done = links.find((b) => b.textContent?.includes("Done"));
 		// view.bridge → Mod+B, view.settings → Mod+, — aria uses the WAI-ARIA
 		// Control token. The display chord no longer rides a native title (the
 		// RIG-2530 sweep coaches it via CoachTip); a native title would
@@ -252,5 +254,13 @@ describe("Palette (RIG-2483)", () => {
 		expect(bridge?.getAttribute("aria-keyshortcuts")).toBe("Control+B");
 		expect(bridge?.getAttribute("title")).toBeNull();
 		expect(settings?.getAttribute("aria-keyshortcuts")).toBe("Control+,");
+		expect(settings?.getAttribute("title")).toBeNull();
+		// view.backlog / view.done are sequence-only (G L / G D): shortcutForAria
+		// skips the sequence so NO aria-keyshortcuts is emitted, and the RIG-2530
+		// sweep moved coaching to a CoachTip, so there is no native title either.
+		expect(backlog?.getAttribute("aria-keyshortcuts")).toBeNull();
+		expect(backlog?.getAttribute("title")).toBeNull();
+		expect(done?.getAttribute("aria-keyshortcuts")).toBeNull();
+		expect(done?.getAttribute("title")).toBeNull();
 	});
 });

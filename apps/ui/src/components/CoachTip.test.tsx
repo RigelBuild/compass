@@ -104,15 +104,21 @@ describe("CoachTip (RIG-2530)", () => {
 
 	test("label-only: a command with no keymap row renders the label and no chip", async () => {
 		setPlatform("other");
-		// Guard the premise: view.backlog has no keymap row on this base.
-		expect(shortcutFor(cmd("view.backlog"), "other")).toBeUndefined();
+		// Guard the premise: board.openCardCrossLink has no keymap row (it is
+		// board-nav dispatched, never a global chord — keymap.test.ts pins this).
+		expect(
+			shortcutFor(cmd("board.openCardCrossLink"), "other"),
+		).toBeUndefined();
 
 		const { getByRole, baseElement } = render(() => (
 			<CoachTip>
 				<CoachTipTrigger as="button" type="button">
-					Backlog
+					Open cross-link
 				</CoachTipTrigger>
-				<CoachTipContent label="Backlog" command={cmd("view.backlog")} />
+				<CoachTipContent
+					label="Open cross-link"
+					command={cmd("board.openCardCrossLink")}
+				/>
 			</CoachTip>
 		));
 
@@ -121,7 +127,7 @@ describe("CoachTip (RIG-2530)", () => {
 
 		const tooltip = tooltipOf(baseElement);
 		expect(tooltip).not.toBeNull();
-		expect(tooltip?.textContent).toContain("Backlog");
+		expect(tooltip?.textContent).toContain("Open cross-link");
 		expect(tooltip?.querySelector(".cx-palette-shortcut")).toBeNull();
 		expect(tooltip?.querySelector("kbd")).toBeNull();
 	});

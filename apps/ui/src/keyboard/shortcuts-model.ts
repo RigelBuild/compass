@@ -13,16 +13,21 @@
  *     iterated — the keymap is the row source).
  *   - Group by the resolved COMMAND's `scope` (NOT the keymap `when` field),
  *     ordered `global, left, main, right, topbar`; keymap order within a group.
- *   - Render chords via `resolveChord(entry.chord, platform)`.
+ *   - Render chords via `formatChordForDisplay(entry.chord, platform)` (a leader
+ *     sequence renders `"G then B"`; a single chord resolves as before).
  *   - Substring filter (case-insensitive over the lowercased title, each
- *     keyword, and the resolved chord); an empty query passes every row.
+ *     keyword, and the formatted chord); an empty query passes every row.
  */
 
 import type { CommandId, CommandRegistry, CommandScope } from "./commands";
-import { type KeymapEntry, type Platform, resolveChord } from "./keymap";
+import {
+	formatChordForDisplay,
+	type KeymapEntry,
+	type Platform,
+} from "./keymap";
 
 export interface ShortcutRow {
-	readonly chord: string; // platform-resolved via resolveChord
+	readonly chord: string; // platform-resolved + display-formatted via formatChordForDisplay
 	readonly title: string; // command.title
 	readonly commandId: CommandId;
 }
@@ -54,7 +59,7 @@ export function buildShortcutGroups(
 		const command = registry.get(entry.commandId);
 		if (!command) continue; // unregistered → dead chord, omit
 
-		const chord = resolveChord(entry.chord, platform);
+		const chord = formatChordForDisplay(entry.chord, platform);
 		if (needle && !matches(command.title, command.keywords, chord, needle)) {
 			continue;
 		}
