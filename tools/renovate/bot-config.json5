@@ -56,7 +56,7 @@
   // addon, so the workflow sets RENOVATE_X_IGNORE_RE2=true to take the RegExp path
   // quietly.)
   //
-  // Three entries, all load-bearing:
+  // Four entries, all load-bearing:
   //   1. the toolchain-hash refresh, which re-prefetches the vendored-binary
   //      sha256 pins a tools/toolchain/versions/*.nix bump invalidates;
   //   2. the catalog lockfile regeneration. Renovate's custom.regex manager exports
@@ -68,11 +68,20 @@
   //   3. the devenv-nixpkgs lockstep, which re-locks devenv.lock at a new channel
   //      rev and rewrites the biome catalog pin to the version that rev bakes,
   //      keeping dev-shell baked==catalog parity.
-  // (1) and (3) are `bun <script>.ts` — the Renovate hooks are TypeScript run via
-  // bun (AGENTS.md "Scripts: TypeScript over bash"); bun is on the runner PATH.
+  //   4. the FOD-hash refresh, which recomputes the pinned Nix fixed-output-
+  //      derivation hashes a dep bump invalidates — the Go `vendorHash`
+  //      (guest-image/default.nix) on a gomod bump, the bun `outputHash`
+  //      (agent-image/entrypoint.nix) on a bun/catalog bump. Left stale the image
+  //      build fails `hash mismatch in fixed-output derivation` (PR #579). Wired at
+  //      both the top-level (branch mode) and catalog-rule (update mode)
+  //      postUpgradeTasks in config.json5 — one command string, so ONE allowlist
+  //      entry covers both sites.
+  // (1), (3), and (4) are `bun <script>.ts` — the Renovate hooks are TypeScript run
+  // via bun (AGENTS.md "Scripts: TypeScript over bash"); bun is on the runner PATH.
   allowedCommands: [
     "^bun tools/renovate/refresh-toolchain-hashes\\.ts$",
     "^bun install --lockfile-only$",
     "^bun tools/renovate/refresh-devenv-nixpkgs\\.ts$",
+    "^bun tools/renovate/refresh-fod-hashes\\.ts$",
   ],
 }

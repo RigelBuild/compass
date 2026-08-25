@@ -339,6 +339,22 @@
       enabled: false,
     },
     {
+      // ── Go dependency rollup + guestd vendorHash lockstep ──
+      // A gomod bump rewrites go/go.mod|go.sum, moving the fetched Go module set —
+      // which invalidates the pinned `vendorHash` in guest-image/default.nix
+      // (buildGoModule compass-guestd, no in-repo vendor/ dir). Nothing regenerates
+      // that hash on its own, so the guest-image nix build fails
+      // `hash mismatch in fixed-output derivation …-go-modules.drv` and the bump PR
+      // goes red (PR #579's exact failure). The refresh task recomputes it in the
+      // same branch so the PR lands green.
+      //
+      // The command is NOT declared here — it rides the TOP-LEVEL postUpgradeTasks
+      // (branch mode) below, which every gomod branch inherits (a gomod branch
+      // never shares the single branch-task slot with the catalog rule, whose task
+      // is `executionMode: "update"`). refresh-fod-hashes.ts self-gates on
+      // go/go.mod|go.sum, so it refreshes the Go vendorHash alone here and no-ops
+      // the bun outputHash. Keeping the command in one place (top-level) avoids a
+      // second branch-mode task that would compete for that slot.
       matchManagers: ["gomod"],
       matchUpdateTypes: ["patch", "minor"],
       groupName: "Go dependencies",
@@ -468,15 +484,33 @@
       // changing, so the evicted task would have been a no-op. It runs once per
       // catalog upgrade, which is harmless: `bun install --lockfile-only` is
       // idempotent and writes only bun.lock.
+      // The catalog-scoped task ALSO carries the FOD-hash refresh, for the same
+      // eviction reason it must carry the lockfile regen: a catalog bump changes
+      // compass-agent's installed node_modules tree (it consumes `catalog:` deps —
+      // effect, opentelemetry), which moves the pinned `outputHash` in
+      // agent-image/entrypoint.nix; left stale the agent/guest-image build fails
+      // `hash mismatch …-node-modules.drv`. The top-level branch-mode FOD task
+      // (below) is evicted on a catalog-FIRST rollup branch (the collapsed branch
+      // config spreads the alphabetically-first upgrade, and only ONE branch-mode
+      // task is built), so the refresh must ALSO ride this per-upgrade "update"
+      // pass to fire on every catalog branch regardless of sort order. Same command
+      // string as top-level → one allowlist entry; refresh-fod-hashes.ts self-gates
+      // on bun.lock so it refreshes the bun outputHash alone here and no-ops the Go
+      // vendorHash. Idempotent, so a double-fire (both passes on a bun-first branch)
+      // is harmless.
       //
-      // Self-hosted bot config MUST allow the command:
-      //   allowedCommands: [… , "^bun install --lockfile-only$"]
+      // Self-hosted bot config MUST allow both commands:
+      //   allowedCommands: [… , "^bun install --lockfile-only$",
+      //                          "^bun tools/renovate/refresh-fod-hashes\\.ts$"]
       // see tools/renovate/bot-config.json5 (config.test.ts pins the two together).
       matchManagers: ["custom.regex"],
       matchDepTypes: ["workspaces.catalog"],
       postUpgradeTasks: {
-        commands: ["bun install --lockfile-only"],
-        fileFilters: ["bun.lock"],
+        commands: [
+          "bun install --lockfile-only",
+          "bun tools/renovate/refresh-fod-hashes.ts",
+        ],
+        fileFilters: ["bun.lock", "agent-image/entrypoint.nix"],
         executionMode: "update",
       },
     },
@@ -496,24 +530,47 @@
     },
   ],
 
-  // ── Toolchain hash coupling ──
-  // A versions/*.nix toolchain pin bump (bun/node/moon) leaves the vendored-binary
-  // sha256 pins beside each version stale → the dev-shell/CI build fails. This
-  // script re-prefetches and rewrites all three platform legs in each changed pin
-  // file in the same branch so the bump PR lands green. It self-gates (no-op unless
-  // a versions/*.nix pin changed), so it's cheap on every other branch — and it
-  // no-ops on go.nix, whose hashes come from go-overlay, not a per-file pin.
-  // `executionMode: branch` runs it once per branch after the update is applied.
+  // ── Toolchain hash + FOD hash coupling (top-level branch-mode tasks) ──
+  // Two refreshers ride the single per-branch task slot Renovate builds from the
+  // collapsed branch config; both self-gate on their trigger files, so each is a
+  // cheap no-op on a branch it doesn't apply to.
   //
-  // Self-hosted bot config MUST allow the command:
-  //   allowedCommands: ["^bun tools/renovate/refresh-toolchain-hashes\\.ts$"]
-  // and the runner needs `nix` (nix-command) on PATH.
+  //  1. refresh-toolchain-hashes.ts — a versions/*.nix toolchain pin bump
+  //     (bun/node/moon) leaves the vendored-binary sha256 pins beside each version
+  //     stale → the dev-shell/CI build fails. Re-prefetches and rewrites all three
+  //     platform legs in each changed pin file in the same branch. Self-gates (no-op
+  //     unless a versions/*.nix pin changed); no-ops on go.nix, whose hashes come
+  //     from go-overlay.
+  //  2. refresh-fod-hashes.ts — a gomod bump (go/go.mod|go.sum) moves the pinned
+  //     Go vendorHash in guest-image/default.nix; a bun bump (bun.lock) moves the
+  //     pinned bun outputHash in agent-image/entrypoint.nix. Left stale the
+  //     guest-image/agent-image build fails `hash mismatch in fixed-output
+  //     derivation` (PR #579). Recomputes the invalidated hash by realising it.
+  //     Self-gates per FOD on its trigger manifest. This is the branch-mode leg
+  //     that covers gomod branches and bun/npm-first TypeScript-rollup branches;
+  //     catalog-FIRST rollup branches evict this whole top-level task (their
+  //     collapsed config carries the catalog rule's update-mode task instead), so
+  //     the SAME fod command also rides that rule above — one command, one
+  //     allowlist entry, idempotent on a double-fire.
+  //
+  // `executionMode: branch` runs each once per branch after the update is applied.
+  //
+  // Self-hosted bot config MUST allow both commands:
+  //   allowedCommands: ["^bun tools/renovate/refresh-toolchain-hashes\\.ts$",
+  //                     "^bun tools/renovate/refresh-fod-hashes\\.ts$"]
+  // and the runner needs `nix` (nix-command) on PATH (refresh-fod-hashes realises
+  // a nix build; refresh-toolchain-hashes prefetches).
   postUpgradeTasks: {
-    commands: ["bun tools/renovate/refresh-toolchain-hashes.ts"],
+    commands: [
+      "bun tools/renovate/refresh-toolchain-hashes.ts",
+      "bun tools/renovate/refresh-fod-hashes.ts",
+    ],
     fileFilters: [
       "tools/toolchain/versions/bun.nix",
       "tools/toolchain/versions/node.nix",
       "tools/toolchain/versions/moon.nix",
+      "guest-image/default.nix",
+      "agent-image/entrypoint.nix",
     ],
     executionMode: "branch",
   },
