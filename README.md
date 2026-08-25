@@ -56,11 +56,31 @@ apps/
 forks/                   vendored upstream fork subtrees, each nix-built
 tools/toolchain/         the CI/dev-shell version-parity gate
 docs/architecture/       architecture notes
+docs/concepts/           the agent-system model — read to orient
 ```
 
 The build and toolchain config (`package.json`, `.moon/`, `buf.*`,
 `devenv.nix`, `tools/toolchain/versions/*.nix`, `biome.json`) lives at the
 repository root.
+
+## Agent concepts
+
+Compass runs, supervises, and orchestrates AI coding agents, so a reader
+orienting in this repo needs the model behind that — how agents are named and
+billed, how they are prompted, what tools they drive, and the principles the
+design holds to. That model lives under
+[`docs/concepts/`](./docs/concepts/README.md):
+
+- [Handles, accounts, and attribution](./docs/concepts/handle-vs-account.md) —
+  a handle names one agent; `mintaka` is the shared forge account they bill
+  through.
+- [The persona convention](./docs/concepts/persona.md) — role vs persona; a
+  persona is the agent's stable working context.
+- [The agent tool set](./docs/concepts/tools.md) — the native tools agents
+  drive Compass through, and the flow of using them.
+- [No human clicks](./docs/concepts/no-human-clicks.md) and [read-only
+  inspection](./docs/concepts/read-only-inspection.md) — agents stand up the org
+  through tools; the human holds only the security boundary.
 
 ## Toolchain
 

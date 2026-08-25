@@ -4,6 +4,29 @@ Instructions for AI coding agents working in this repository. Humans should
 skim this too — the conventions are not agent-specific. See
 [CONTRIBUTING.md](./CONTRIBUTING.md) for the full contributor guide.
 
+## The agent system
+
+Compass runs, supervises, and orchestrates AI coding agents — so before the
+build conventions below, orient on the model the code and prompts assume. It
+lives under [`docs/concepts/`](./docs/concepts/README.md):
+
+- **[Handles, accounts, and attribution](./docs/concepts/handle-vs-account.md)**
+  — a handle names one running agent; `mintaka` is the shared forge *account*
+  every agent bills through, not a handle. Read an agent's identity off a
+  written `Owner:`/stamp, never a forge author/assignee field.
+- **[The persona convention](./docs/concepts/persona.md)** — a persona is the
+  agent's *stable* working context (repos / projects / lanes), layered over the
+  role prompt; the churning per-issue detail lives in the tracker, never the
+  persona.
+- **[The agent tool set](./docs/concepts/tools.md)** — the native comms,
+  presence, and lifecycle tools an agent drives Compass through, and the flow of
+  using them.
+- **[No human clicks](./docs/concepts/no-human-clicks.md)** — the org is
+  standupable by agents through tools; the human holds only the security
+  boundary (a secret's value for a named slot). See also [read-only
+  inspection](./docs/concepts/read-only-inspection.md) and [review
+  flow](./docs/concepts/review-flow.md).
+
 ## Toolchain and the gate
 
 The toolchain is [devenv](https://devenv.sh) (nix underneath): it owns every
