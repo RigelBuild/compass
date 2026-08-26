@@ -1,4 +1,4 @@
-//go:build unix && !gtk3
+//go:build linux && !gtk3
 
 // The compass-app entrypoint for builds WITHOUT the gtk3 desktop stack.
 //

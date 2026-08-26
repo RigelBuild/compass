@@ -1,4 +1,4 @@
-//go:build unix && gtk3
+//go:build (linux && gtk3) || darwin
 
 // The gtk3 build's binding of the bridge service's per-window frame routing
 // (M3) to the real Wails window API. It is split out of bridge_service.go

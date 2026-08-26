@@ -1,4 +1,4 @@
-//go:build unix && gtk3
+//go:build (linux && gtk3) || darwin
 
 // The native-client launch: the app dials a headless Compass stack over the
 // authenticated TLS door (design §T5.6). Embedded mode — the in-process stack

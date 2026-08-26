@@ -1,4 +1,4 @@
-//go:build unix && gtk3
+//go:build (linux && gtk3) || darwin
 
 package main
 
