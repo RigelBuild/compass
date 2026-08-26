@@ -51,6 +51,10 @@ import {
 	ruleCapability,
 } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp";
+import {
+	initTelemetryExport,
+	isTelemetryExportEnabled,
+} from "@oh-my-pi/pi-coding-agent/telemetry-export";
 import { YAML } from "bun";
 import { CompassAgent } from "./agent";
 import { CommsBroker, createCommsTools } from "./comms";
@@ -207,6 +211,60 @@ export function deriveLitellmMcpUrl(
 	const base = raw.replace(/\/$/, "").replace(/\/v1$/, "");
 	return `${base}/mcp/`;
 }
+
+/**
+ * Whether an OTLP trace endpoint is configured — the pre-registration gate for
+ * the loop's OpenTelemetry activation (design
+ * docs/designs/platform/compass-agent-loop-otel/design.md T1). Mirrors the
+ * predicate `initTelemetryExport` applies before it registers a provider
+ * (`telemetry-export.ts`): an endpoint present via
+ * `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` (falling back to the base
+ * `OTEL_EXPORTER_OTLP_ENDPOINT`) AND the kill-switches clear
+ * (`OTEL_SDK_DISABLED` not `true`, `OTEL_TRACES_EXPORTER` not naming `none`).
+ *
+ * This is the gate for `main`'s env writes + `init()` call: with no endpoint the
+ * whole activation is skipped so `process.env` stays UNMUTATED and the session
+ * build is bit-identical to a no-telemetry container (Global Constraints, "Off
+ * by default"; F2). The authoritative "did a provider actually register" check
+ * is `isTelemetryExportEnabled()` AFTER `init()` — which additionally declines
+ * an unsupported transport protocol — and that is what gates the `telemetry`
+ * session option.
+ */
+export function isTelemetryEndpointConfigured(
+	env: Record<string, string | undefined>,
+): boolean {
+	if (env.OTEL_SDK_DISABLED?.trim().toLowerCase() === "true") return false;
+	if (
+		env.OTEL_TRACES_EXPORTER?.split(",").some(
+			(entry) => entry.trim().toLowerCase() === "none",
+		)
+	) {
+		return false;
+	}
+	const endpoint =
+		env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT ?? env.OTEL_EXPORTER_OTLP_ENDPOINT;
+	return endpoint !== undefined && endpoint !== "";
+}
+
+/**
+ * The loop-telemetry activation hooks, injectable at the `MainDeps` seam. The
+ * default binds the reused `@oh-my-pi/pi-coding-agent/telemetry-export` module.
+ * A test overrides it so it can assert `main`'s gating/env logic WITHOUT the
+ * real `initTelemetryExport`, which registers a live global TracerProvider + a
+ * real OTLP exporter with no teardown and would poison every later test in the
+ * shared process (design record F3).
+ */
+interface TelemetryHooks {
+	/** Register the global provider when an endpoint is configured. Idempotent. */
+	init: () => Promise<void>;
+	/** Whether a real provider registered — gates the `telemetry` session option. */
+	isEnabled: () => boolean;
+}
+
+const defaultTelemetryHooks: TelemetryHooks = {
+	init: initTelemetryExport,
+	isEnabled: isTelemetryExportEnabled,
+};
 
 /** One provider's credential in the seed file. Mirrors the SDK's `ApiKeyCredential`. */
 interface SeedEntry {
@@ -519,6 +577,15 @@ export interface MainDeps {
 	 * way to reach the customTools wiring and the teardown-disconnect barrier.
 	 */
 	connectMcp?: (cwd: string, mcp: MountedMcp) => Promise<ConnectedMcp>;
+	/**
+	 * Loop-OpenTelemetry activation hooks (design
+	 * docs/designs/platform/compass-agent-loop-otel/design.md T1). Defaults to the
+	 * reused telemetry-export module. Injectable ONLY so a test asserts the
+	 * gating/env logic without the real `initTelemetryExport` — it registers a
+	 * live global provider + OTLP exporter with no teardown (F3), so it must never
+	 * run in the shared test process.
+	 */
+	telemetry?: TelemetryHooks;
 }
 
 /**
@@ -755,6 +822,29 @@ export async function main(
 	).items;
 	const rules = [...mounted.rules, ...discoveredRules];
 
+	// Loop OpenTelemetry activation (design
+	// docs/designs/platform/compass-agent-loop-otel/design.md T1). Gated HARD on
+	// an OTLP endpoint being configured: with none set this block is skipped
+	// whole, so process.env is UNMUTATED and the createAgentSession path below is
+	// bit-identical to a no-telemetry build (Global Constraints, "Off by default";
+	// F2 — an unconditional env write would leak to every tool subprocess). The
+	// order is load-bearing: the loop provider reads OTEL_SERVICE_NAME /
+	// OTEL_RESOURCE_ATTRIBUTES at registration time, so the env defaults must be
+	// in place BEFORE init(). The session id the manager owns (fresh-minted, or
+	// the resumed header's id after setSessionFile above) is the shared
+	// cross-signal join key (Decision 3a): APPENDED to OTEL_RESOURCE_ATTRIBUTES,
+	// never clobbering a deployer-set value.
+	const telemetryHooks = deps.telemetry ?? defaultTelemetryHooks;
+	if (isTelemetryEndpointConfigured(process.env)) {
+		process.env.OTEL_SERVICE_NAME ??= "compass-agent";
+		const joinKey = `compass.session.id=${manager.getSessionId()}`;
+		const existing = process.env.OTEL_RESOURCE_ATTRIBUTES;
+		process.env.OTEL_RESOURCE_ATTRIBUTES = existing
+			? `${existing},${joinKey}`
+			: joinKey;
+		await telemetryHooks.init();
+	}
+
 	const { session } = await (deps.createSession ?? createAgentSession)({
 		cwd,
 		modelPattern: resolveModelSelector(env),
@@ -837,6 +927,12 @@ export async function main(
 					],
 				}
 			: {}),
+		// Loop telemetry (design docs/designs/platform/compass-agent-loop-otel/
+		// design.md T1): `{}` is the complete activation — the empty config enables
+		// the loop's GenAI spans (types.ts). Keyed off the AUTHORITATIVE
+		// post-registration check, so the key is OMITTED entirely when export is
+		// off and the loop keeps its literal-undefined zero-lookup path.
+		...(telemetryHooks.isEnabled() ? { telemetry: {} } : {}),
 	});
 
 	// Post-construction assignment, not a `createAgentSession` option: the SDK
