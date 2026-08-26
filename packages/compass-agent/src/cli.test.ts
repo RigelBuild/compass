@@ -1646,9 +1646,12 @@ describe("main activates loop OpenTelemetry", () => {
 	});
 
 	// A recording telemetry seam + the captured createSession options. `isEnabled`
-	// mirrors the real module: it reports true only AFTER init() ran (a real
-	// provider registered), so the option gate keys off registration, not the
-	// endpoint. The seam records call order so a test can pin env-before-init.
+	// mirrors the real module: it reports true only AFTER init() ran AND a provider
+	// actually registered, so the option gate keys off registration, not the
+	// endpoint. `registerOnInit` (default true) models the ordinary success; set it
+	// false to model the protocol-decline branch — init() runs (endpoint gate
+	// fired, env defaults written) yet no provider registers, so isEnabled() stays
+	// false. The seam records call order so a test can pin env-before-init.
 	interface TelemetrySpy {
 		calls: string[];
 		telemetryOption: unknown;
@@ -1658,6 +1661,7 @@ describe("main activates loop OpenTelemetry", () => {
 		session: FakeSession,
 		transport: RunnerTransport,
 		spy: TelemetrySpy,
+		registerOnInit = true,
 	): MainDeps {
 		let registered = false;
 		return {
@@ -1676,7 +1680,7 @@ describe("main activates loop OpenTelemetry", () => {
 					spy.calls.push(
 						`init:${process.env.OTEL_SERVICE_NAME}:${process.env.OTEL_RESOURCE_ATTRIBUTES}`,
 					);
-					registered = true;
+					if (registerOnInit) registered = true;
 					return Promise.resolve();
 				},
 				isEnabled: () => registered,
@@ -1812,6 +1816,42 @@ describe("main activates loop OpenTelemetry", () => {
 			/^deployment\.environment=prod,compass\.session\.id=.+/,
 		);
 		expect(spy.hasTelemetryKey).toBe(true);
+	});
+
+	// Option gate AUTHORITY: the `telemetry` session key gates on the
+	// post-registration isEnabled() — did a provider actually register — NOT on the
+	// endpoint being configured (Decision 1 + Global Constraints). The distinguishing
+	// branch is a set endpoint whose protocol the real module can't honor: init()
+	// runs (endpoint gate fired, env defaults written) yet declines to register, so
+	// isEnabled() stays false and NO telemetry key is added. Non-vacuity: swapping
+	// the gate from `telemetryHooks.isEnabled()` to `isTelemetryEndpointConfigured`
+	// reds this (endpoint is set ⇒ key would appear) while every other test in the
+	// block stays green — this is the only test that pins the two gates apart.
+	test("endpoint set but provider declines to register ⇒ init ran, env written, but NO telemetry key", async () => {
+		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4318";
+		const spy: TelemetrySpy = {
+			calls: [],
+			telemetryOption: "SENTINEL",
+			hasTelemetryKey: true,
+		};
+		await main(
+			{ HOME: scratch() },
+			telemetryDeps(
+				fakeSession(),
+				fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				spy,
+				false,
+			),
+		);
+		// init() DID run — the endpoint gate fired and wrote the env defaults before
+		// the (declining) registration attempt.
+		expect(spy.calls).toHaveLength(1);
+		expect(spy.calls[0]).toMatch(/^init:compass-agent:compass\.session\.id=.+/);
+		expect(process.env.OTEL_SERVICE_NAME).toBe("compass-agent");
+		// But registration declined ⇒ isEnabled() false ⇒ the option gate withholds
+		// the telemetry key, even though the endpoint is configured.
+		expect(spy.hasTelemetryKey).toBe(false);
+		expect(spy.telemetryOption).toBeUndefined();
 	});
 });
 
