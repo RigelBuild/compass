@@ -188,15 +188,36 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 	// postUpgradeTasks.commands are gated by the BOT config's global
 	// `allowedCommands` allowlist (a repo config cannot self-authorize a command),
 	// which Renovate matches UNANCHORED via regEx(pattern).test(cmd). So each
-	// entry's `^…$` IS the security property. Compass has exactly 3 commands and 3
-	// allowlist entries; every command must be permitted, every entry must be used,
-	// and no entry may be an unanchored substring rule.
+	// entry's `^…$` IS the security property. Compass declares four DISTINCT
+	// commands across the task sites (the FOD-hash refresh rides two sites — the
+	// top-level branch-mode task and the catalog rule's update-mode task — so it
+	// appears twice in the declared list but needs only one allowlist entry); every
+	// distinct command must be permitted, every entry must be used, and no entry may
+	// be an unanchored substring rule.
 	const commands = allDeclaredCommands();
+	const distinctCommands = [...new Set(commands)];
 	const allowed = bot.allowedCommands ?? [];
 
-	test("declares exactly three postUpgrade commands and three allowlist entries", () => {
-		expect(commands).toHaveLength(3);
-		expect(allowed).toHaveLength(3);
+	test("declares four DISTINCT postUpgrade commands and four allowlist entries", () => {
+		expect(distinctCommands).toHaveLength(4);
+		expect(allowed).toHaveLength(4);
+	});
+
+	test("the fod-hash refresh is declared at BOTH task sites (top-level + catalog)", () => {
+		// The command must ride two sites so it fires on every branch shape: the
+		// top-level branch-mode slot (gomod + bun/npm-first branches) AND the catalog
+		// rule's update-mode pass (catalog-first branches evict the top-level slot).
+		// If it collapses to one site, one of those branch shapes ships a stale FOD
+		// pin — PR #579's failure. So the raw (non-deduped) list carries it twice.
+		const fod = "bun tools/renovate/refresh-fod-hashes.ts";
+		expect(commands.filter((c) => c === fod)).toHaveLength(2);
+		const topLevel = cfg.postUpgradeTasks?.commands ?? [];
+		expect(topLevel).toContain(fod);
+		const catalogRule = cfg.packageRules.find(
+			(r) =>
+				r.matchDepTypes?.includes("workspaces.catalog") && r.postUpgradeTasks,
+		);
+		expect(catalogRule?.postUpgradeTasks?.commands).toContain(fod);
 	});
 
 	test("every declared command is permitted by an anchored allowlist entry", () => {
@@ -222,15 +243,63 @@ describe("tools/renovate postUpgradeTasks ↔ allowedCommands (RIG-2432)", () =>
 				new RegExp(a).test("bun install --lockfile-only; id"),
 			),
 		).toBe(false);
+		// …including on the FOD command (a `; rm -rf` tail must not slip through).
+		expect(
+			allowed.some((a) =>
+				new RegExp(a).test("bun tools/renovate/refresh-fod-hashes.ts; id"),
+			),
+		).toBe(false);
 	});
 
-	test("permits exactly the three RIG-2432 commands", () => {
-		expect(commands.sort()).toEqual(
+	test("permits exactly the four RIG-2432 commands", () => {
+		expect(distinctCommands.sort()).toEqual(
 			[
 				"bun install --lockfile-only",
 				"bun tools/renovate/refresh-devenv-nixpkgs.ts",
+				"bun tools/renovate/refresh-fod-hashes.ts",
 				"bun tools/renovate/refresh-toolchain-hashes.ts",
 			].sort(),
+		);
+	});
+});
+
+describe("tools/renovate FOD-hash refresh wiring (PR #579)", () => {
+	// A dep bump moves a pinned Nix fixed-output-derivation hash; left stale the
+	// image build fails `hash mismatch in fixed-output derivation`. refresh-fod-
+	// hashes.ts recomputes it, but Renovate only COMMITS files a task's fileFilters
+	// name — so a task that rewrites a FOD file without listing it silently drops
+	// the fix and the bump PR still goes red. Guard both sites' fileFilters.
+	const FOD = "bun tools/renovate/refresh-fod-hashes.ts";
+	const topLevel = cfg.postUpgradeTasks;
+	const catalogRule = cfg.packageRules.find(
+		(r) =>
+			r.matchDepTypes?.includes("workspaces.catalog") && r.postUpgradeTasks,
+	);
+
+	test("the top-level branch-mode task runs the fod refresh and is branch mode", () => {
+		expect(topLevel?.commands).toContain(FOD);
+		expect(topLevel?.executionMode).toBe("branch");
+	});
+
+	test("the top-level task commits BOTH FOD files (fileFilters cover them)", () => {
+		// gomod branches + bun/npm-first branches inherit this slot; it must be able
+		// to commit both the Go vendorHash file and the bun outputHash file.
+		expect(topLevel?.fileFilters).toContain("guest-image/default.nix");
+		expect(topLevel?.fileFilters).toContain("agent-image/entrypoint.nix");
+	});
+
+	test("the catalog rule runs the fod refresh in UPDATE mode (eviction-proof)", () => {
+		// A catalog-first rollup branch evicts the top-level branch task, so the
+		// refresh must also ride the catalog rule's per-upgrade update pass.
+		expect(catalogRule?.postUpgradeTasks?.commands).toContain(FOD);
+		expect(catalogRule?.postUpgradeTasks?.executionMode).toBe("update");
+	});
+
+	test("the catalog task commits the bun outputHash file it can move", () => {
+		// A catalog bump moves the bun outputHash (compass-agent consumes catalog:
+		// deps); it never touches the Go module set, so only entrypoint.nix is listed.
+		expect(catalogRule?.postUpgradeTasks?.fileFilters).toContain(
+			"agent-image/entrypoint.nix",
 		);
 	});
 });
@@ -423,6 +492,15 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 
 	// Branch-mode lockstep task over exactly the three files the script writes
 	// (compass has NO committed inner-rev guard file, unlike the internal monorepo's fourth entry).
+	//
+	// The `every(... refresh-devenv-nixpkgs ...)` assertion also PINS the verified
+	// FOD-refresh exemption: this branch rewrites bun.lock + the biome catalog pin,
+	// but biome is a root-only devDependency absent from the FOD's filtered
+	// `--filter '@compass/agent'` install (verified: not in node_modules nor .bun),
+	// so a channel bump cannot move agent-image/entrypoint.nix's outputHash and the
+	// FOD refresh is intentionally NOT wired here. If biome ever enters the
+	// compass-agent closure, adding the FOD command is what makes this test fail —
+	// forcing a conscious revisit of the exemption rather than a silent red build.
 	test("the lockstep postUpgradeTask is branch-mode over the written files", () => {
 		const task = devenvRule?.postUpgradeTasks;
 		expect(task?.executionMode).toBe("branch");
@@ -437,6 +515,11 @@ describe("tools/renovate devenv nixpkgs lockstep", () => {
 				/^bun tools\/renovate\/refresh-devenv-nixpkgs\.ts$/.test(c),
 			),
 		).toBe(true);
+		// Explicit: the FOD refresh is NOT on this rule (the verified exemption).
+		expect(task?.commands).not.toContain(
+			"bun tools/renovate/refresh-fod-hashes.ts",
+		);
+		expect(task?.fileFilters).not.toContain("agent-image/entrypoint.nix");
 	});
 
 	// The digest-excludes-rollup seam: the TS rollup ALSO matches custom.regex, so
