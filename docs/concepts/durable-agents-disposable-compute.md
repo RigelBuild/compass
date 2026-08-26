@@ -20,12 +20,12 @@ state).
 - **The session is durable and Server-owned.** Everything the agent has thought
   and done — its streamed reasoning, tool calls, and edits — is persisted by the
   Server as a durable transcript. The Server owns this store; the agent does not
-  custody it. (ledger DL-084, DL-093)
+  custody it. (ledger DL-093)
 - **The compute is disposable.** The container or microVM the agent executes in
   holds only an *ephemeral working copy* of the session file, and it **dies with
   the container**. It custodies nothing of record: no durable state, and — by
   the [isolation and egress](./isolation-and-egress.md) posture — no storage
-  credentials at all. (ledger DL-085, DL-089)
+  credentials at all. (ledger DL-089)
 
 The test for which bucket something falls in: **would it survive the sandbox
 being destroyed right now?** The agent, its identity, and its transcript survive.
@@ -49,7 +49,7 @@ The Server's durable store is **two-tier**:
 
 So "the session streams out to durable object storage" is exactly right — the
 durable home of a session's history is Server-owned Postgres plus S3-compatible
-storage, never the sandbox's disk. (ledger DL-063, DL-093)
+storage, never the sandbox's disk. (ledger DL-093)
 
 The durable transcript and the live trace you watch in the session log are the
 **same artifact seen two ways** — the agent emits committed entries once, and
@@ -69,7 +69,7 @@ bringing an agent back is a **reconstruct-into-a-fresh-sandbox** operation, not 
    picks up exactly where it left off.
 
 The agent never notices it is running on different hardware. The identity was
-never in the box; it was always in the Server. (ledger DL-086, DL-087)
+never in the box; it was always in the Server. (ledger DL-087)
 
 ## The compute substrate is moving: container → microVM
 
