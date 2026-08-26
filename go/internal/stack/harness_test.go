@@ -287,6 +287,63 @@ func (f *fakeGroupSignaller) set(pgid int, startTime uint64, alive bool) {
 	f.identity[pgid] = startTime
 }
 
+// fakeContainerController is the container-teardown seam under test: it records
+// each stop/remove in order and models per-container existence as a controllable
+// state machine, the container analogue of fakeGroupSignaller. exists maps
+// name→presence; a name absent from exists is treated as gone. onStop / onRemove
+// hooks flip a container's existence at the right escalation step so a test can
+// model a graceful stop, a stop-ignored→rm-f escalation, or a genuine survivor.
+type fakeContainerController struct {
+	rec      *recorder
+	mu       sync.Mutex
+	exists   map[string]bool
+	onStop   map[string]func()
+	onRemove map[string]func()
+}
+
+func newFakeContainerController(rec *recorder) *fakeContainerController {
+	return &fakeContainerController{
+		rec:      rec,
+		exists:   map[string]bool{},
+		onStop:   map[string]func(){},
+		onRemove: map[string]func(){},
+	}
+}
+
+func (c *fakeContainerController) Exists(name string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.exists[name]
+}
+
+func (c *fakeContainerController) Stop(name string, timeout time.Duration) error {
+	c.mu.Lock()
+	c.rec.add("ctr-stop " + name)
+	cb := c.onStop[name]
+	c.mu.Unlock()
+	if cb != nil {
+		cb() // outside the lock: a hook calls setExists, which locks c.mu.
+	}
+	return nil
+}
+
+func (c *fakeContainerController) Remove(name string) error {
+	c.mu.Lock()
+	c.rec.add("ctr-rm " + name)
+	cb := c.onRemove[name]
+	c.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
+	return nil
+}
+
+func (c *fakeContainerController) setExists(exists bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.exists[pgContainerName] = exists
+}
+
 // harness bundles the recorder, the shared serverStarted flag, and the stub
 // seams so a test can tweak individual fields before calling Up.
 type harness struct {
@@ -299,6 +356,7 @@ type harness struct {
 	prober        *stubProber
 	dbProber      *stubDBProber
 	groupSig      *fakeGroupSignaller
+	containers    *fakeContainerController
 	deps          Deps
 }
 
@@ -321,6 +379,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 	prober := &stubProber{rec: rec, version: testVersion, serverStarted: started}
 	dbProber := &stubDBProber{rec: rec}
 	groupSig := newFakeGroupSignaller(rec)
+	containers := newFakeContainerController(rec)
 
 	// Stub the start-time reader so the pgid-capture path never touches /proc:
 	// map each fake pid to a deterministic token (pid*10) and restore the real
@@ -330,7 +389,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 	t.Cleanup(func() { readStartTime = prev })
 	h := &harness{
 		rec: rec, serverStarted: started,
-		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber, groupSig: groupSig,
+		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber, groupSig: groupSig, containers: containers,
 	}
 	h.deps = Deps{
 		Supervisor:      sup,
@@ -340,6 +399,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 		Prober:          prober,
 		DBProber:        dbProber,
 		GroupSignaller:  groupSig,
+		Containers:      containers,
 		ExpectedVersion: testVersion,
 	}
 	cfg := Config{

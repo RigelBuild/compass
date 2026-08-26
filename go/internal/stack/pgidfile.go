@@ -19,18 +19,71 @@ const pgidFileName = "stack.pgids"
 
 // pgidFileVersion is the format/provenance version written in the record header.
 // It is a format guard only — never a child-liveness signal (see pgidRecord).
-const pgidFileVersion = "1"
+//
+// v2 (this build) grows the entry line into a kind-tagged discriminated union
+// (proc / ctr, see pgidEntry): the container-backed postgres of S4 has no
+// process-group teardown identity, so it is recorded and torn down by container
+// name instead. v2 is a strict superset — a v1 record (untagged 3-field proc
+// lines) still parses, as all-process entries. A shipped v1 binary reading a v2
+// record never half-parses it: not by a header check (v1 never compares the
+// header version) but by the entry grammar — a v2 `proc` line is 4 fields where
+// v1 demands exactly 3, and a `ctr` line's leading token is not a known
+// component — so v1's parser hard-errors under the same
+// signal-off-a-half-understood-record discipline. The forward guard (this
+// reader refusing an unknown/newer version) protects a v2 reader from a future
+// v3; it never gates v1↔v2.
+const pgidFileVersion = "2"
 
-// pgidEntry is one supervised child's teardown identity: its component, the
-// process-group id (== the child's pid, set via Setpgid at spawn), and the
-// group leader's start time as read at spawn. StartTime is the identity token —
-// it turns the down-side check from "does a group with this pgid exist" (which a
-// recycled pid passes falsely) into "does a group with this pgid AND this leader
-// start time exist", closing the pid-recycling window.
+// pgidFileVersionV1 is the prior format this build still reads for back-compat:
+// untagged 3-field proc lines (no kind tag), parsed as all-process entries.
+const pgidFileVersionV1 = "1"
+
+// pgidEntryKind tags an entry line's grammar in the v2 discriminated union.
+type pgidEntryKind int
+
+const (
+	// entryProc is a process-group child, torn down by group signal
+	// (identity-checked pgid + leader start time). It is the zero value, so an
+	// unqualified pgidEntry literal is a process entry — the v1 shape unchanged.
+	entryProc pgidEntryKind = iota
+	// entryContainer is a container child (S4's containerized postgres), torn
+	// down by name via podman (stop, then rm -f). A container has no process
+	// group of its own under rootless podman (it runs beneath conmon), so its
+	// teardown identity is its stable per-state-dir name, not a pgid.
+	entryContainer
+)
+
+// entryKindTag renders a kind as its on-disk line tag.
+func (k pgidEntryKind) entryKindTag() string {
+	switch k {
+	case entryContainer:
+		return "ctr"
+	default:
+		return "proc"
+	}
+}
+
+// pgidEntry is one supervised child's teardown identity, a kind-tagged
+// discriminated union (Kind):
+//
+//   - entryProc (the v1 shape, unchanged): a process-group child. Component +
+//     the process-group id (== the child's pid, set via Setpgid at spawn) +
+//     the group leader's start time as read at spawn. StartTime is the identity
+//     token — it turns the down-side check from "does a group with this pgid
+//     exist" (which a recycled pid passes falsely) into "does a group with this
+//     pgid AND this leader start time exist", closing the pid-recycling window.
+//     ContainerName is empty.
+//   - entryContainer: a container child (S4's containerized postgres).
+//     Component + ContainerName (the stable per-state-dir podman name, the
+//     authoritative teardown identity). Pgid/StartTime are unused (zero): a
+//     rootless container runs beneath conmon, outside the client's process
+//     group, so it has no group to signal — it is torn down by name.
 type pgidEntry struct {
-	Component Component
-	Pgid      int
-	StartTime uint64
+	Kind          pgidEntryKind
+	Component     Component
+	Pgid          int
+	StartTime     uint64
+	ContainerName string
 }
 
 // pgidRecord is the parsed pgid file: a provenance header plus the per-child
@@ -55,16 +108,26 @@ type pgidRecord struct {
 // successful child spawn, so the on-disk file is always a complete earlier
 // prefix of the start sequence.
 //
-// Format:
+// Format (v2):
 //
 //	<version> <writerPid>
-//	<component> <pgid> <starttime>
+//	proc <component> <pgid> <starttime>   (a process-group child)
+//	ctr <component> <name>                (a container child)
 //	...          (one line per entry, in start order)
+//
+// The leading kind tag makes the entry line a discriminated union; a v1 record
+// (untagged 3-field proc lines) is read-only back-compat — this build never
+// writes it.
 func writePgidFile(stateDir string, rec pgidRecord) error {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %d\n", rec.Version, rec.WriterPid)
+	fmt.Fprintf(&b, "%s %d\n", pgidFileVersion, rec.WriterPid)
 	for _, e := range rec.Entries {
-		fmt.Fprintf(&b, "%s %d %d\n", e.Component, e.Pgid, e.StartTime)
+		switch e.Kind {
+		case entryContainer:
+			fmt.Fprintf(&b, "%s %s %s\n", e.Kind.entryKindTag(), e.Component, e.ContainerName)
+		default:
+			fmt.Fprintf(&b, "%s %s %d %d\n", e.Kind.entryKindTag(), e.Component, e.Pgid, e.StartTime)
+		}
 	}
 
 	path := filepath.Join(stateDir, pgidFileName)
@@ -101,6 +164,16 @@ func writePgidFile(stateDir string, rec pgidRecord) error {
 // header or entry line is a hard error rather than a silent partial parse, since
 // signaling off a half-understood record is exactly the blast radius the design
 // forbids.
+//
+// Version dispatch (the S4/DL-262 cross-version rule):
+//   - "2" — this build's format: kind-tagged entry lines (proc / ctr).
+//   - "1" — back-compat: untagged 3-field proc lines, read as all-process
+//     entries (v2 is a strict superset of v1).
+//   - anything else — refused legibly. This is the FORWARD guard, protecting a
+//     v2 reader from a future v3 it cannot understand, the same
+//     never-signal-off-a-half-understood-record discipline. (The reverse
+//     direction — a v1 binary meeting a v2 record — is guarded by the entry
+//     grammar in v1's own parser, not here.)
 func readPgidFile(stateDir string) (pgidRecord, error) {
 	path := filepath.Join(stateDir, pgidFileName)
 	data, err := os.ReadFile(path) //nolint:gosec // G304: path is the stack-owned pgid file in the state dir, not user input
@@ -117,17 +190,21 @@ func readPgidFile(stateDir string) (pgidRecord, error) {
 	if len(header) != 2 {
 		return pgidRecord{}, fmt.Errorf("pgid file %q: malformed header %q", path, lines[0])
 	}
+	version := header[0]
+	if version != pgidFileVersion && version != pgidFileVersionV1 {
+		return pgidRecord{}, fmt.Errorf("pgid file %q: unsupported record version %q (this build reads %q and %q); stop the stack with the build that started it", path, version, pgidFileVersionV1, pgidFileVersion)
+	}
 	writerPid, err := strconv.Atoi(header[1])
 	if err != nil {
 		return pgidRecord{}, fmt.Errorf("pgid file %q: unparseable writer pid %q: %w", path, header[1], err)
 	}
-	rec := pgidRecord{WriterPid: writerPid, Version: header[0]}
+	rec := pgidRecord{WriterPid: writerPid, Version: version}
 
 	for _, line := range lines[1:] {
 		if line == "" {
 			continue
 		}
-		entry, err := parsePgidLine(line)
+		entry, err := parsePgidLine(version, line)
 		if err != nil {
 			return pgidRecord{}, fmt.Errorf("pgid file %q: %w", path, err)
 		}
@@ -136,13 +213,48 @@ func readPgidFile(stateDir string) (pgidRecord, error) {
 	return rec, nil
 }
 
-// parsePgidLine parses one "<component> <pgid> <starttime>" entry line. An
-// unknown component name or an unparseable number is a hard error — the record
-// must be understood exactly or not signaled off at all.
-func parsePgidLine(line string) (pgidEntry, error) {
+// parsePgidLine parses one entry line, dispatched on the record version.
+//
+//   - v1 ("1"): an untagged "<component> <pgid> <starttime>" line, parsed as a
+//     process entry — the format DL-183 froze, kept for back-compat.
+//   - v2 ("2"): a kind-tagged line, "proc <component> <pgid> <starttime>" or
+//     "ctr <component> <name>", a discriminated union.
+//
+// An unknown component name, an unparseable number, or an unknown/mismatched
+// kind tag is a hard error — the record must be understood exactly or not
+// signaled off at all. This is also the guard a shipped v1 binary relies on when
+// it meets a v2 record: its v1 parser sees a 4-field "proc …" line (where it
+// demands exactly 3) or a "ctr" leading token that is not a known component, and
+// hard-errors — refusing to half-parse, by the entry grammar, not a header
+// check.
+func parsePgidLine(version, line string) (pgidEntry, error) {
+	if version == pgidFileVersionV1 {
+		// v1: the whole line is an untagged proc body.
+		return parseProcEntry(line, strings.Fields(line))
+	}
+
+	// v2: the leading token is the kind tag.
 	f := strings.Fields(line)
-	if len(f) != 3 {
+	if len(f) == 0 {
 		return pgidEntry{}, fmt.Errorf("malformed entry line %q", line)
+	}
+	switch f[0] {
+	case entryProc.entryKindTag():
+		return parseProcEntry(line, f[1:])
+	case entryContainer.entryKindTag():
+		return parseContainerEntry(line, f[1:])
+	default:
+		return pgidEntry{}, fmt.Errorf("unknown entry kind %q in entry line %q", f[0], line)
+	}
+}
+
+// parseProcEntry parses a process entry's "<component> <pgid> <starttime>" body
+// (the fields after the kind tag, or the whole v1 line). It is the identity-and-
+// safety-checked path: an unknown component, an unparseable or degenerate pgid,
+// or an unparseable start time is a hard error.
+func parseProcEntry(line string, f []string) (pgidEntry, error) {
+	if len(f) != 3 {
+		return pgidEntry{}, fmt.Errorf("malformed proc entry line %q", line)
 	}
 	comp, ok := componentFromString(f[0])
 	if !ok {
@@ -165,7 +277,26 @@ func parsePgidLine(line string) (pgidEntry, error) {
 	if err != nil {
 		return pgidEntry{}, fmt.Errorf("unparseable start time %q in entry line %q: %w", f[2], line, err)
 	}
-	return pgidEntry{Component: comp, Pgid: pgid, StartTime: startTime}, nil
+	return pgidEntry{Kind: entryProc, Component: comp, Pgid: pgid, StartTime: startTime}, nil
+}
+
+// parseContainerEntry parses a container entry's "<component> <name>" body (the
+// fields after the ctr kind tag). An unknown component or a missing/empty name
+// is a hard error — the name is the container's whole teardown identity, so an
+// unusable one must not reach the podman sink.
+func parseContainerEntry(line string, f []string) (pgidEntry, error) {
+	if len(f) != 2 {
+		return pgidEntry{}, fmt.Errorf("malformed ctr entry line %q", line)
+	}
+	comp, ok := componentFromString(f[0])
+	if !ok {
+		return pgidEntry{}, fmt.Errorf("unknown component %q in entry line %q", f[0], line)
+	}
+	name := f[1]
+	if name == "" {
+		return pgidEntry{}, fmt.Errorf("empty container name in entry line %q", line)
+	}
+	return pgidEntry{Kind: entryContainer, Component: comp, ContainerName: name}, nil
 }
 
 // componentFromString is the inverse of Component.String for the three

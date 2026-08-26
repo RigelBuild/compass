@@ -35,6 +35,12 @@ type Deps struct {
 	// no Process handle for); the real adapter targets the negative pgid, the
 	// same primitive the in-process escalation uses.
 	GroupSignaller GroupSignaller
+	// Containers tears down container children by their stable name for the
+	// cross-process teardown (DownDetached), the container analogue of
+	// GroupSignaller. Nil until the container-backed postgres adapter (T8) wires
+	// the real podman-exec adapter; a record with no container entries never
+	// dereferences it.
+	Containers ContainerController
 	// Now is the clock the cert-expiry math reads. Nil defaults to time.Now.
 	Now func() time.Time
 
@@ -131,6 +137,25 @@ type ProcessSupervisor interface {
 type GroupSignaller interface {
 	Signal(pgid int, sig ProcessSignal) error
 	Alive(pgid int, startTime uint64) bool
+}
+
+// ContainerController tears down a container child by its stable name for the
+// cross-process teardown (DownDetached), the container analogue of
+// GroupSignaller: DownDetached reads container names from the state-dir record
+// and drives them here, since the tearing process holds no handle for a
+// container a prior up ran. It is the only seam that touches containers this
+// process did not start.
+//
+// Exists reports whether a container with this name is present (the real adapter
+// runs `podman container exists <name>`) — the liveness channel, the container
+// analogue of GroupSignaller.Alive; a container needs no start-time identity
+// token because its name is unique per state dir (S4). Stop requests a graceful
+// stop bounded by timeout (`podman stop -t <seconds> <name>`); Remove is the
+// SIGKILL-tier escalation that force-removes it (`podman rm -f <name>`).
+type ContainerController interface {
+	Exists(name string) bool
+	Stop(name string, timeout time.Duration) error
+	Remove(name string) error
 }
 
 // CertEnsurer ensures the TLS anchor (one PEM that is both the server's
