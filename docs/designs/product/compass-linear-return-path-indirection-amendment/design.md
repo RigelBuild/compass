@@ -24,7 +24,7 @@ resolved at dispatch time:
 But the target that link should carry is not stable at `created` time. Part 2
 routes an issue with no recorded ownership row "to the **supervisor /
 top-level Manager** via a **dedicated routing channel**, which decides the
-owning lane and stamps it accordingly" (#625 design.md:230-237, DL-255,
+owning lane and stamps accordingly" (#625 design.md:230-237, DL-255,
 DECISIONS.md:361) — so at `created` the best target may be the routing
 channel, and only later (once the supervisor stamps a lane and a DL-055
 ownership row exists) the resolved Manager's home channel. And there is no
@@ -78,11 +78,15 @@ Properties this buys:
   record binds the external-URL emit to (#625 design.md:337-344: the
   dispatcher "sets the session external URL directly from the webhook dispatch
   path, before any agent turn begins").
-- **Never rewritten.** The stored URL NEVER changes after the one emit. This
-  preserves — and strengthens — DL-256's dumb-link invariant: a direct
-  home-channel link could in principle need rewriting if the Manager changed;
-  the indirection link never does. There is still exactly one
-  `agentSessionUpdate`, ever, per session.
+- **Never rewritten — and now never stale.** The stored URL NEVER changes
+  after the one emit; DL-256's one-emit dumb-link invariant is preserved
+  unchanged (exactly one `agentSessionUpdate`, ever, per session). What the
+  indirection *adds* is staleness-immunity: DL-256 already forbade rewriting
+  the link, so a direct home-channel link that resolved wrong at `created`
+  would stay wrong forever with no correction event (the failure this
+  amendment removes). The indirection link is equally immutable but resolves
+  to the correct target at click time, so immutability no longer implies
+  staleness.
 
 ### The redirect resolver — `GET /l/session/<linear-session-id>`
 
@@ -92,22 +96,46 @@ TLS door (inside `buildNetworkServer`, beside the Connect mounts …)",
 DECISIONS.md:360). At CLICK time it:
 
 1. Reads the `linear_agent_sessions` association row for the session id
-   (#625 design.md:279-286).
-2. Reads the DL-055 recorded ownership index for the associated issue's forge
-   coordinate — the same trusted routing source DL-255 fixes ("routed to a
-   stable Compass Manager keyed on Compass's recorded forge ownership index
-   (`forge_authored_artifacts`, DL-055/DL-205) — NEVER a header parsed from
-   forge text", DECISIONS.md:361).
-3. Issues a **302 redirect** to the current best target:
+   (#625 design.md:279-286) — **only to recover the session's
+   `linear_issue_id`** (the issue's forge coordinate) for the ownership
+   lookup. The row's stored `channel_id` / `manager_account_id` are the
+   **created-time** target #646 wrote, and are deliberately **NOT** used as
+   the redirect target — that stale value (e.g. the routing channel an issue
+   was unrouted to at `created`) is exactly what this indirection exists to
+   bypass.
+2. Resolves the current best target from that coordinate by running the same
+   click-time resolution the dispatcher runs at `created` — #625's
+   `ResolveResponder` (T4) walk keyed on the DL-055 recorded ownership index
+   ("routed to a stable Compass Manager keyed on Compass's recorded forge
+   ownership index (`forge_authored_artifacts`, DL-055/DL-205) — NEVER a
+   header parsed from forge text", DECISIONS.md:361): from the recorded
+   authoring agent, walk the owner relation up to the owning Manager, then
+   that Manager's home channel (#625 design.md:218-229).
+3. Issues a **302 redirect** to the walk's current output:
+   - the resolved **Manager's home channel** once a DL-055 ownership row
+     exists for the coordinate;
    - the **dedicated routing channel** while the issue is still unrouted (no
      ownership row yet — the DL-255 supervisor-fallback state, #625
      design.md:230-237);
-   - the resolved **Manager's home channel** once an ownership row exists.
+   - the **dedicated routing channel** also for a **bare `@mention` session
+     with no issue** — `linear_issue_id` is nullable (#625 design.md:284) and
+     #625 supports a session with no issue (the topic "[falls] back to the
+     session id for a bare @mention with no issue", #625 design.md:262-266).
+     With no forge coordinate no ownership row can ever resolve, so the
+     routing channel is the only possible target, matching #646's
+     `ResolveResponder` bare-@mention fallback.
 
 All the routing smarts are a READ-ONLY server redirect computed at click time.
 Nothing ever writes back to the Linear session; nothing observes agent
 lifecycle; nothing relays activity. An unknown session id (no association row)
-is a plain 404 — the route mutates nothing and leaks nothing.
+is a plain 404. Security posture, stated rather than asserted away: the
+404-vs-302 split is an existence oracle over Linear `AgentSession` ids, and a
+302 discloses a target channel id to any caller holding a session id. This is
+acceptable — session ids are non-secret-grade opaque identifiers, and the
+redirect target is itself an auth-gated Compass surface (the channel id alone
+grants nothing without a Compass session) — so the route leaks no
+authorization and mutates nothing. If id-enumeration is later judged a
+concern, the route can 302 unknown ids to a generic landing rather than 404.
 
 ### What survives of DL-256 (everything except the link target)
 
@@ -118,8 +146,9 @@ survive verbatim:
   nothing else"; still exactly that, and the link is now immutable by
   construction.
 - **NO activity relay** — unchanged; the resolver emits no Linear activity.
-- **NO settle observation** — unchanged; the resolver reads two store rows at
-  click time, it observes no turn edges.
+- **NO settle observation** — unchanged; the resolver only reads store state
+  at click time (the association row + the ownership-index walk), it observes
+  no turn edges or agent lifecycle.
 - **NO Linear session-lifecycle machine** — unchanged; there is still exactly
   one external-URL update per session, ever.
 - **NOT-1-1 topic mapping** — unchanged; the redirect targets a CHANNEL (the
