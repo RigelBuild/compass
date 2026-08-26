@@ -282,7 +282,9 @@ no cycle" (`config.go:5-7`) — V2b is the planned importer.
   (`<runroot>/microvm/<session>/` — the layout V7 formalizes with pidfiles,
   microvm-runner.md:589-591), assemble the `BootConfig` (kernel/initrd/rootfs
   from `MicroVMConfig` (`microvm.go:25-35`), fresh AF_UNIX socket paths inside
-  the runtime dir, a fresh guest CID ≥ 3 and vsock port, `FSSharedDir` from
+  the runtime dir, a fixed guest CID (3) and fixed guestd vsock port —
+  per-session uniqueness carried entirely by those AF_UNIX socket paths, since
+  nothing routes on the CID (OQ-F) — `FSSharedDir` from
   the spec's workspace mount), and record `spec.UID` + `spec.Env` for
   Provision. `spec.Command` is IGNORED on this backend: the sleep-loop
   keep-alive exists only because podman needs a main process ("Keep the
@@ -563,7 +565,10 @@ in V2b-concrete form.
 Tasks are ordered by dependency. U1 (proto) gates everything; U2 (guestd
 supervisor) and U3 (host exec client layer) both compile against U1's
 generated code and proceed in parallel — U3 is testable hermetically against a
-fake `GuestControl` server, not against U2. U4 (lifecycle methods) consumes
+fake `GuestControl` server, not against U2. U3b (gated on Matt's OQ-G ruling)
+produces the portable exit-signal error type U3's waitFunc constructs, so under
+option 1 it lands with or just before U3; under option 2 U3's waitFunc contract
+and the U5 kill/wait row change per OQ-G. U4 (lifecycle methods) consumes
 U2+U3; U5 (the contract suite) consumes U4 and is the milestone's acceptance
 gate.
 
@@ -571,9 +576,10 @@ gate.
 
 Grow `proto/compass/v1/guest_control.proto` per (a): `Exec`, `ExecStream`,
 `Signal`, `Provision` and their messages, doc-comments carrying the
-non-zero-exit and uid-refusal contracts onto the wire surface, and the header's
-auth paragraph (`guest_control.proto:40-46`) rewritten to record the (e)
-resolution. Regenerate the internal lane.
+non-zero-exit and uid-refusal contracts onto the wire surface, the additive
+`boot_nonce` (bytes) field on the V2a `HealthResponse` per (e), and the
+header's auth paragraph (`guest_control.proto:40-46`) rewritten to record the
+(e) resolution. Regenerate the internal lane.
 
 - **Interfaces:** produces the (a) message set verbatim
   (`ExecRequest{command, uid, workdir, env, stdin, timeout_seconds}`,
@@ -582,10 +588,12 @@ resolution. Regenerate the internal lane.
   `ExecStreamResponse{oneof: ExecStarted{exec_id}|stdout|stderr|ExecExit{exit_code, signal}}`,
   `SignalRequest{exec_id, signal}`, `SignalResponse{}`,
   `ProvisionRequest{nft_script, default_exec_uid, base_env}`,
-  `ProvisionResponse{}`) and the regenerated
+  `ProvisionResponse{}`) plus one additive field on the V2a seed's
+  `HealthResponse` (`guest_control.proto:47-57`) —
+  `HealthResponse{guestd_version, net_provisioned, workspace_mounted, boot_nonce}`,
+  field 4 per (e) — and the regenerated
   `compassv1internalconnect.GuestControlClient`/`GuestControlHandler` in
-  `go/internal/gen`. Consumes the V2a seed unchanged
-  (`guest_control.proto:47-57`).
+  `go/internal/gen`. The rest of the V2a seed is consumed unchanged.
 - **Test cycle (hardware-independent):** `buf lint` + `buf breaking` green
   (additive change against main); the moon proto gate green; a compile check
   that the V2a `Health` client/handler call sites (`guestd/vsock.go:43`,
@@ -610,7 +618,8 @@ shutdown and exits on, so the host's `Stop` sees a real VMM exit within
 
 - **Interfaces:** produces the full
   `compassv1internalconnect.GuestControlHandler` implementation in `guestd`
-  (replacing the Health-only `healthService`, `vsock.go:27-33`), a
+  (replacing the Health-only `healthService` (`health.go:14-40`), threaded
+  through `serveVsock`/`serveHandshake` (`vsock.go:27-41`)), a
   `supervisor` type owning the exec table (`exec_id → child`), and the
   cmdline addition `compass.boot_nonce=<hex>` parsed beside
   `compass.vsock_port` (`guestd/cmdline.go`). Consumes U1's generated
