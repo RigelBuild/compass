@@ -3,6 +3,9 @@ import { fireEvent, render } from "@solidjs/testing-library";
 import { flush } from "solid-js";
 import { STUB_CHANNELS, STUB_COMMS_STATE } from "../comms-stub";
 import { StoreContext } from "../context";
+import type { CommandId } from "../keyboard/commands";
+import { detectPlatform } from "../keyboard/dispatch";
+import { shortcutFor } from "../keyboard/keymap";
 import { type AppStore, createAppStore } from "../store";
 import { STUB_AGENTS } from "../stub-data";
 import { testQueryClient } from "../test-support";
@@ -344,5 +347,72 @@ describe("LeftSidebar (T5)", () => {
 		const serverAcpRow = leafByHandle("compass-server-acp");
 		expect(serverAcpRow).toBeDefined();
 		expect(serverAcpRow?.querySelector(".agent-activity")).toBeNull();
+	});
+});
+
+// Coaching-tooltip adoption sweep (RIG-2530 T2). The four view buttons
+// (Bridge/Backlog/Done/Settings) convert from a native `title=` to a CoachTip;
+// the new-folder button stays native (no registered command → nothing to
+// coach, the A4/D4 boundary). These assert the observable adoption contract.
+
+// Kobalte portals its tooltip content on a macrotask.
+async function settle(): Promise<void> {
+	const { promise, resolve } = Promise.withResolvers<void>();
+	setTimeout(resolve, 0);
+	await promise;
+}
+
+const viewButtons = (container: HTMLElement): HTMLElement[] => [
+	...container.querySelectorAll<HTMLElement>("button.bridge-link"),
+];
+
+describe("LeftSidebar coaching tooltips (RIG-2530 T2)", () => {
+	test("the Bridge button opens a coaching tooltip on focus with label + chord", async () => {
+		const { container } = mountSidebar();
+		const bridge = viewButtons(container).find((b) =>
+			b.textContent?.includes("Bridge"),
+		);
+		expect(bridge).toBeDefined();
+
+		bridge?.focus();
+		await settle();
+
+		const tooltip =
+			document.body.querySelector<HTMLElement>('[role="tooltip"]');
+		expect(tooltip).not.toBeNull();
+		expect(tooltip?.textContent).toContain("Bridge");
+		const chip = tooltip?.querySelector(".cx-palette-shortcut");
+		const kbds = Array.from(chip?.querySelectorAll("kbd") ?? []).map(
+			(k) => k.textContent,
+		);
+		expect(shortcutFor("view.bridge" as CommandId, detectPlatform())).toBe(
+			"Ctrl+B",
+		);
+		expect(kbds).toEqual(["Ctrl", "B"]);
+	});
+
+	test("every converted view button drops `title`, keeps `aria-keyshortcuts` where a chord exists, and has a text accessible name", () => {
+		const { container } = mountSidebar();
+		const buttons = viewButtons(container);
+		expect(buttons.length).toBe(4);
+		for (const b of buttons) {
+			expect(b.hasAttribute("title")).toBe(false);
+			// Text-labelled buttons carry their accessible name from visible text —
+			// no aria-label needed.
+			expect(b.hasAttribute("aria-label")).toBe(false);
+			expect(b.textContent?.trim()).not.toBe("");
+		}
+		// Bridge + Settings have keymap rows → aria-keyshortcuts present.
+		const bridge = buttons.find((b) => b.textContent?.includes("Bridge"));
+		expect(bridge?.getAttribute("aria-keyshortcuts")).toBeTruthy();
+	});
+
+	test("the keep-native new-folder button still carries its native title (sweep boundary held)", () => {
+		const { container } = mountSidebar();
+		const newFolder = [
+			...container.querySelectorAll<HTMLElement>("button.icon-btn"),
+		].find((b) => b.getAttribute("title") === "New folder");
+		expect(newFolder).toBeDefined();
+		expect(newFolder?.getAttribute("title")).toBe("New folder");
 	});
 });

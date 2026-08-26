@@ -15,8 +15,9 @@ import type { Channel } from "../comms-stub";
 import { useStore } from "../context";
 import type { CommandId } from "../keyboard/commands";
 import { detectPlatform } from "../keyboard/dispatch";
-import { shortcutFor, shortcutForAria } from "../keyboard/keymap";
+import { shortcutForAria } from "../keyboard/keymap";
 import { type Agent, type AgentTreeNode, agentTree } from "../stub-data";
+import { CoachTip, CoachTipContent, CoachTipTrigger } from "./CoachTip";
 import { StateDot } from "./StateDot";
 
 /** An agent leaf row in the tree — the per-agent select button, plus a hover
@@ -423,13 +424,11 @@ export const LeftSidebar: Component = () => {
 	// Backlog view badge: the pre-active tier (Todo + Backlog) the human triages.
 	const backlogCount = () =>
 		backlogIssues(store.issues()).length + store.assignedIssues().length;
-	// Point-of-use shortcut chips (RIG-2483, D10): the view buttons that fire the
-	// D6-seeded show* paths announce their chord via aria-keyshortcuts + title,
-	// resolved from the keymap through shortcutFor (never hand-authored — D4).
-	// view.backlog/view.done have no keymap row yet, so shortcutFor is undefined
-	// and the attribute is simply omitted.
+	// Point-of-use coaching (RIG-2530): the view buttons announce their chord via
+	// aria-keyshortcuts + a CoachTip tooltip, resolved from the keymap through
+	// shortcutFor inside CoachTipContent (never hand-authored — D4). view.backlog/
+	// view.done have no keymap row yet, so the tooltip is label-only there.
 	const platform = detectPlatform();
-	const chord = (id: string) => shortcutFor(id as CommandId, platform);
 	const ariaChord = (id: string) => shortcutForAria(id as CommandId, platform);
 	return (
 		<aside class="left" aria-label="Agents">
@@ -439,66 +438,74 @@ export const LeftSidebar: Component = () => {
 					+
 				</button>
 			</div>
-			<button
-				type="button"
-				class={["bridge-link", { active: store.view() === "bridge" }]}
-				onClick={() => store.showBridge()}
-				aria-keyshortcuts={ariaChord("view.bridge")}
-				title={
-					chord("view.bridge") ? `Bridge (${chord("view.bridge")})` : undefined
-				}
-			>
-				<span class="glyph" aria-hidden="true">
-					▦
-				</span>
-				<span>Bridge</span>
-				<span class="count">{inFlightCount()}</span>
-			</button>
-			<button
-				type="button"
-				class={["bridge-link", { active: store.view() === "backlog" }]}
-				onClick={() => store.showBacklog()}
-				aria-keyshortcuts={ariaChord("view.backlog")}
-				title={
-					chord("view.backlog")
-						? `Backlog (${chord("view.backlog")})`
-						: undefined
-				}
-			>
-				<span class="glyph" aria-hidden="true">
-					▤
-				</span>
-				<span>Backlog</span>
-				<span class="count">{backlogCount()}</span>
-			</button>
-			<button
-				type="button"
-				class={["bridge-link", { active: store.view() === "done" }]}
-				onClick={() => store.showDone()}
-				aria-keyshortcuts={ariaChord("view.done")}
-				title={chord("view.done") ? `Done (${chord("view.done")})` : undefined}
-			>
-				<span class="glyph" aria-hidden="true">
-					✓
-				</span>
-				<span>Done</span>
-			</button>
-			<button
-				type="button"
-				class={["bridge-link", { active: store.view() === "settings" }]}
-				onClick={() => store.showSettings()}
-				aria-keyshortcuts={ariaChord("view.settings")}
-				title={
-					chord("view.settings")
-						? `Settings (${chord("view.settings")})`
-						: undefined
-				}
-			>
-				<span class="glyph" aria-hidden="true">
-					⚙
-				</span>
-				<span>Settings</span>
-			</button>
+			<CoachTip>
+				<CoachTipTrigger
+					as="button"
+					type="button"
+					class={["bridge-link", { active: store.view() === "bridge" }]}
+					onClick={() => store.showBridge()}
+					aria-keyshortcuts={ariaChord("view.bridge")}
+				>
+					<span class="glyph" aria-hidden="true">
+						▦
+					</span>
+					<span>Bridge</span>
+					<span class="count">{inFlightCount()}</span>
+				</CoachTipTrigger>
+				<CoachTipContent label="Bridge" command={"view.bridge" as CommandId} />
+			</CoachTip>
+			<CoachTip>
+				<CoachTipTrigger
+					as="button"
+					type="button"
+					class={["bridge-link", { active: store.view() === "backlog" }]}
+					onClick={() => store.showBacklog()}
+					aria-keyshortcuts={ariaChord("view.backlog")}
+				>
+					<span class="glyph" aria-hidden="true">
+						▤
+					</span>
+					<span>Backlog</span>
+					<span class="count">{backlogCount()}</span>
+				</CoachTipTrigger>
+				<CoachTipContent
+					label="Backlog"
+					command={"view.backlog" as CommandId}
+				/>
+			</CoachTip>
+			<CoachTip>
+				<CoachTipTrigger
+					as="button"
+					type="button"
+					class={["bridge-link", { active: store.view() === "done" }]}
+					onClick={() => store.showDone()}
+					aria-keyshortcuts={ariaChord("view.done")}
+				>
+					<span class="glyph" aria-hidden="true">
+						✓
+					</span>
+					<span>Done</span>
+				</CoachTipTrigger>
+				<CoachTipContent label="Done" command={"view.done" as CommandId} />
+			</CoachTip>
+			<CoachTip>
+				<CoachTipTrigger
+					as="button"
+					type="button"
+					class={["bridge-link", { active: store.view() === "settings" }]}
+					onClick={() => store.showSettings()}
+					aria-keyshortcuts={ariaChord("view.settings")}
+				>
+					<span class="glyph" aria-hidden="true">
+						⚙
+					</span>
+					<span>Settings</span>
+				</CoachTipTrigger>
+				<CoachTipContent
+					label="Settings"
+					command={"view.settings" as CommandId}
+				/>
+			</CoachTip>
 			<ChannelsSection />
 			<AgentsSection />
 		</aside>

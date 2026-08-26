@@ -1992,6 +1992,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		if (paletteOpen()) closePalette();
 		else openPalette();
 	};
+	const toggleLeft = () => setLeftOpen((v) => !v);
+	const toggleRight = () => setRightOpen((v) => !v);
 	// The keyboard spine (RIG-2456): created here, after the `show*`/toggle
 	// closures exist, so `view.bridge` + the RIG-2482/2483 seeds are registered
 	// next to their behavior. App.tsx installs the one window keymap listener over
@@ -2004,6 +2006,8 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		showDone,
 		showSettings,
 		togglePalette,
+		toggleLeft,
+		toggleRight,
 	});
 
 	const setTrackerConfig = (cfg: TrackerConfig) => {
@@ -2013,9 +2017,6 @@ export function createAppStore(options: AppStoreOptions): AppStore {
 		// changed handle re-keys and refetches automatically (§A3).
 		seam = createFixtureTrackerSeam(cfg);
 	};
-
-	const toggleLeft = () => setLeftOpen((v) => !v);
-	const toggleRight = () => setRightOpen((v) => !v);
 
 	const isAgentCollapsed = (agentId: string) => collapsed().has(agentId);
 	const toggleAgent = (agentId: string) =>

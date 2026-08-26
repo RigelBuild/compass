@@ -23,6 +23,8 @@ function stubDeps(
 		showDone: () => void;
 		showSettings: () => void;
 		togglePalette: () => void;
+		toggleLeft: () => void;
+		toggleRight: () => void;
 	}> = {},
 ) {
 	return {
@@ -32,6 +34,8 @@ function stubDeps(
 		showDone: () => {},
 		showSettings: () => {},
 		togglePalette: () => {},
+		toggleLeft: () => {},
+		toggleRight: () => {},
 		...overrides,
 	};
 }
@@ -167,5 +171,32 @@ describe("createKeyboardSpine", () => {
 		expect(settings).toBe(1);
 		expect(backlog).toBe(1);
 		expect(done).toBe(1);
+	});
+
+	test("registers sidebar.toggleLeft/toggleRight as global commands beside their store behavior (RIG-2530 T2/D1)", () => {
+		const spine = createKeyboardSpine(stubDeps());
+		for (const [seed, title] of [
+			["sidebar.toggleLeft", "Toggle left sidebar"],
+			["sidebar.toggleRight", "Toggle right sidebar"],
+		] as const) {
+			const cmd = spine.registry.get(id(seed));
+			expect(cmd).toBeDefined();
+			expect(cmd?.title).toBe(title);
+			expect(cmd?.scope).toBe("global");
+			// No hand-authored shortcut — the chord derives from the keymap (D4).
+			expect(cmd?.shortcut).toBeUndefined();
+		}
+	});
+
+	test("sidebar.toggleLeft/toggleRight run() fire their toggle legs", () => {
+		let left = 0;
+		let right = 0;
+		const spine = createKeyboardSpine(
+			stubDeps({ toggleLeft: () => left++, toggleRight: () => right++ }),
+		);
+		spine.registry.get(id("sidebar.toggleLeft"))?.run();
+		spine.registry.get(id("sidebar.toggleRight"))?.run();
+		expect(left).toBe(1);
+		expect(right).toBe(1);
 	});
 });

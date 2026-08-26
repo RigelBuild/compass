@@ -74,6 +74,8 @@ export function createKeyboardSpine(deps: {
 	showDone: () => void;
 	showSettings: () => void;
 	togglePalette: () => void;
+	toggleLeft: () => void;
+	toggleRight: () => void;
 }): KeyboardSpine {
 	const registry = createCommandRegistry();
 	const viewBridge: Command = {
@@ -124,6 +126,22 @@ export function createKeyboardSpine(deps: {
 		run: () => deps.showDone(),
 	};
 	registry.register(viewDone);
+	const sidebarToggleLeft: Command = {
+		id: "sidebar.toggleLeft" as CommandId,
+		title: "Toggle left sidebar",
+		keywords: ["sidebar", "left", "toggle", "pane"],
+		scope: "global",
+		run: () => deps.toggleLeft(),
+	};
+	registry.register(sidebarToggleLeft);
+	const sidebarToggleRight: Command = {
+		id: "sidebar.toggleRight" as CommandId,
+		title: "Toggle right sidebar",
+		keywords: ["sidebar", "right", "toggle", "pane"],
+		scope: "global",
+		run: () => deps.toggleRight(),
+	};
+	registry.register(sidebarToggleRight);
 
 	const groups = new Set<RovingGroupHandle>();
 
