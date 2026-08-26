@@ -5,6 +5,15 @@ repository and asking "how does the agent system actually work?" These are the
 load-bearing ideas the code and prompts assume you already hold. Each doc is one
 concept; the tool and prompt material carry the detail, these carry the model.
 
+## The product model
+
+- **[Self-hosted and managed](./self-host-and-managed.md)** — Compass ships as
+  two products over one shared core: the open-source self-hosted core (this
+  repo, any deployer URL) and the private, commercially-licensed managed
+  multi-tenant service (private monorepo, `compass.rigel.build`, reuses the
+  core). Which product a change lives in, and what a design record here may
+  assume.
+
 ## The org model
 
 - **[Handles, accounts, and attribution](./handle-vs-account.md)** — a handle
