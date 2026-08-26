@@ -29,8 +29,9 @@ mid-turn-steer cases — via a small first-party bridge module that composes
 with the sibling record's activation through the loop's shipped `onSpanStart`
 hook. Trace context crosses every boundary as a plain string, never an OTel
 type. Server-side origination (the load-bearing fork) is RECOMMENDED but
-cross-lane; the agent-side machinery is identical under either ruling and
-lands first, inert.**
+cross-lane; the agent-side TOPOLOGY machinery is identical under either ruling
+and lands first, inert, while the `traceparent`-string signature threaded
+through `steer`/`deliver` is (b)-shaped and finalizes on the OQ1 ruling.**
 
 ### The verified mechanism (what makes each case possible)
 
@@ -96,7 +97,11 @@ TelemetryAttributeContext { readonly span: Span; }` (`telemetry.ts:306-309`),
 gives the agent a handle to attach links after creation:
 `addLink(link: Link): this;`
 (`@opentelemetry/api@1.9.1/build/src/trace/span.d.ts:65`; the installed SDK
-line is `sdk-trace-base@2.10.0`, which implements it). Hook failures are
+line is `sdk-trace-base@2.10.0`, which implements it). Per the `addLink` API
+contract, a link added AFTER creation does not affect the `invoke_agent` span's
+sampling decision — fine here: that decision is made at turn start and the
+off-by-default `BatchSpanProcessor` path runs no head sampler that could drop a
+linked-late span. Hook failures are
 non-fatal by contract (`telemetry.ts:284` `"on_span_start_failed"` warning
 code). The sibling record anticipated exactly this extension: richer config
 "is additive one-field-at-a-time later"
@@ -181,7 +186,11 @@ routing, and dispatch is a DIFFERENT trace, so "end-to-end" stops at the
 container boundary. The `SessionInjection` observation frame
 (`agent.ts:225-233`, `mapping.ts:256-268`) already records
 (opKind, messageId, fromHandle) at injection time; an agent-local span adds a
-span-shaped duplicate of that record and little else.
+span-shaped duplicate of that record and little else. The minted
+`compass.message.injection` span is itself a local trace ROOT (or, if a
+`SessionInjection` observation span exists, parented to it) — making explicit
+that under (a) the trace begins at the agent, the same limitation this option
+already concedes.
 
 **(b) Server-side stamping — RECOMMENDED:** the server serializes its current
 span context as a W3C `traceparent` string onto the inbound control, exactly
@@ -205,14 +214,22 @@ but not (b): correlation stays a query, not a parent/link edge, so no trace
 viewer renders a single connected message→turn→tool-calls trace. Named so the
 fork shows its full option space.
 
-The agent-side machinery (bridge, parent/link plumbing, threading through
-`steer`/`deliver`) is IDENTICAL under either ruling — only the SOURCE of the
-remote context differs (a locally-minted span context vs a wire-carried
-string). So T1/T2 land first under either ruling, inert until a context
-source exists; the ruling gates only T3/T4. This record recommends (b): (a)
-delivers a trace that begins at the agent for a directive that asks for
-message-to-turn continuity, and the precedent (from_handle) shows the wire
-change is routine.
+The agent-side TOPOLOGY machinery — the `onSpanStart` capture hook and its
+subagent filter, the single `capturedInvokeAgent` slot, `linkActiveTurn`'s
+`addLink` target, the `context.with` parent-wrapping, and the three-shapes
+threading through the injection sites — is IDENTICAL under either ruling; only
+the SOURCE of the remote context differs. Under (b) that source is a
+wire-carried `traceparent` STRING arriving at `steer`/`deliver`, so those
+methods gain a `traceparent: string` arg (T2). Under (a) there is NO string at
+the boundary: the context is minted INSIDE the bridge at injection (T3′), so
+`steer`/`deliver` would take an internal mint seam, not a string. So the
+topology core lands first inert under EITHER ruling, but the `traceparent:
+string` signature on `steer`/`deliver`/`parseTraceparent` is (b)-shaped and
+FINALIZES only once Matt rules OQ1 — under (a) it is replaced by the T3′ mint
+seam. The ruling gates T3/T4 and this one signature detail, not the topology
+core. This record recommends (b): (a) delivers a trace that begins at the agent
+for a directive that asks for message-to-turn continuity, and the precedent
+(from_handle) shows the wire change is routine.
 
 ### Carriage (Decision 3)
 
@@ -312,18 +329,27 @@ Plan).
 
 ## Plan
 
-T1 and T2 are agent-lane and ruling-independent (the machinery is identical
-under either OQ1 answer; only the context SOURCE differs) — they land first,
-inert without a context source when telemetry is off and self-contained when
-on. Both DEPEND on the sibling record's T1 (the gated `telemetry: {}` block
-in `cli.ts`, a separate in-flight PR) merging first: the bridge installs its
-hooks INTO that gated option and needs its registered context manager for
-parentage — no gated block, nowhere to install. T3 (wire decode, agent lane)
-and T4 (proto + server stamping, SERVER lane) are gated on Matt ruling
-OQ1 = (b); if Matt rules (a), T3/T4 are replaced by a small T3′ (agent-local
-injection span minting inside the bridge) and the plan re-freezes. Each task
-is its own PR gated by the package suite (`bun test` from
-`packages/compass-agent/`) plus its own additions.
+T1 (the bridge module) and T2's TOPOLOGY core — the `onSpanStart` capture +
+subagent filter, the `capturedInvokeAgent` slot, `linkActiveTurn`/`addLink`,
+the `context.with` wrapping, the three-shapes threading, and the
+`compass.message.ids` stamping — are agent-lane and ruling-independent (the
+machinery is identical under either OQ1 answer). They land first, inert without
+a context source when telemetry is off and self-contained when on. The one part
+of T2 that is NOT ruling-independent is the `traceparent: string` argument on
+`steer`/`deliver`/`parseTraceparent`: that shape assumes (b) (a wire-carried
+string), so it FINALIZES only once Matt rules OQ1 — under (a) there is no
+boundary string and it is replaced by the T3′ agent-local mint seam. So T2 lands
+its topology core inert under either ruling and treats the string signature as
+provisional until the ruling, avoiding a (b)-shaped param baked into the
+exported `CompassAgentOptions`/`CompassAgent` surface ahead of the fork. Both
+DEPEND on the sibling record's T1 (the gated `telemetry: {}` block in `cli.ts`,
+a separate in-flight PR) merging first: the bridge installs its hooks INTO that
+gated option and needs its registered context manager for parentage — no gated
+block, nowhere to install. T3 (wire decode, agent lane) and T4 (proto + server
+stamping, SERVER lane) are gated on Matt ruling OQ1 = (b); if Matt rules (a),
+T3/T4 are replaced by a small T3′ (agent-local injection span minting inside the
+bridge) and the plan re-freezes. Each task is its own PR gated by the package
+suite (`bun test` from `packages/compass-agent/`) plus its own additions.
 
 ### T1 — Trace-continuity bridge module (agent lane)
 
@@ -348,6 +374,11 @@ members.
     `capturedInvokeAgent?.addLink({ context: spanContext, attributes:
     { "compass.message.id": messageId } })`; no-op if no live turn span or
     parse failure.
+  - `stampActiveTurn(messageIds: string): void` —
+    `capturedInvokeAgent?.setAttribute("compass.message.ids", messageIds)`;
+    stamps the query key DIRECTLY on the captured span (the hook's
+    `TelemetryHookContext` carries no message ids, `telemetry.ts:306-309`);
+    no-op if no live turn span.
   - `onSpanStart(ctx: TelemetryHookContext): void` — captures `ctx.span` only
     when `ctx.kind === "invoke_agent"` AND `ctx.agent === undefined` (the
     subagent filter: every task-subagent loop runs with a non-undefined
@@ -381,7 +412,8 @@ Interfaces:
 - Produces: `parseTraceparent(header: string): SpanContext | undefined`;
   `interface TurnTracer { runWithParent<T>(traceparent: string,
   fn: () => T): T; linkActiveTurn(traceparent: string, messageId: string):
-  void; }` — the agent-facing type, ZERO OTel types;
+  void; stampActiveTurn(messageIds: string): void; }` — the agent-facing type,
+  ZERO OTel types;
   `createTraceBridge(): TraceBridge` where `interface TraceBridge extends
   TurnTracer { onSpanStart(ctx: TelemetryHookContext): void;
   onSpanEnd(ctx: TelemetryHookContext): void; }` — cli.ts-facing only. Only
@@ -411,8 +443,10 @@ Interfaces:
   else run bare and `linkActiveTurn` each queued context onto the new turn
   span once it starts (capture order: the hook fires synchronously inside
   `prompt()`, so links attach on the next microtask alongside the acks).
-- Every case stamps `compass.message.ids` (comma-joined) onto the turn via
-  the hook — the topology-independent query key.
+- Every case stamps `compass.message.ids` (comma-joined) DIRECTLY on the
+  captured `invoke_agent` span (`stampActiveTurn`, a `setAttribute` on the slot,
+  NOT through `onSpanStart` — the hook context carries no message ids) — the
+  topology-independent query key.
 - `cli.ts` (sibling T1's gated block — sibling-T1-first is a hard ordering
   dependency, see the Plan preamble): the enabled path builds the full
   bridge, installs `telemetry: { onSpanStart: bridge.onSpanStart, onSpanEnd:
@@ -495,11 +529,12 @@ Interfaces:
   filter; `TurnTracer` (agent-facing, OTel-type-free) split from the full
   `TraceBridge` (cli.ts-facing); in-memory span tests incl. the
   subagent-no-clobber case (agent lane)
-- [ ] T2 — thread `TurnTracer` + traceparent strings through
-  steer/deliver/flush; hybrid parent/link topology; `compass.message.ids`
-  attribute; gated wiring in `cli.ts` (hooks installed by cli.ts into the
-  telemetry option; DEPENDS on sibling-record T1 merging first);
-  bit-identical-off tests + the synchronicity canary (agent lane)
+- [ ] T2 — thread `TurnTracer` through steer/deliver/flush; hybrid parent/link
+  topology; `compass.message.ids` attribute; gated wiring in `cli.ts` (hooks
+  installed by cli.ts into the telemetry option; DEPENDS on sibling-record T1
+  merging first); bit-identical-off tests + the synchronicity canary. The
+  `traceparent: string` arg on steer/deliver/parseTraceparent is (b)-shaped and
+  FINALIZES on the OQ1 ruling — provisional until then (agent lane)
 - [ ] T3 — decode `traceparent` off `SteerControl`/`DeliverControl` through
   `ImmediateControl` to the agent (agent lane; after T4's proto)
 - [ ] T4 — proto field + server-side stamping at control-wrap time
