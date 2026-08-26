@@ -1,4 +1,4 @@
-//go:build unix && !gtk3
+//go:build linux && !gtk3
 
 // The non-gtk3 build's stub for the bridge service's per-window frame routing
 // (M3). The untagged module build (`go build ./...`) and the unix-tagged bridge
