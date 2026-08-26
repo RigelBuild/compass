@@ -23,6 +23,7 @@ type fakeContainerCLI struct {
 	stopped    []string
 	removed    []string
 	existsResp map[string]bool
+	existsErr  error
 }
 
 func (f *fakeContainerCLI) run(_ context.Context, args []string) error {
@@ -46,6 +47,9 @@ func (f *fakeContainerCLI) remove(_ context.Context, name string) error {
 }
 
 func (f *fakeContainerCLI) exists(_ context.Context, name string) (bool, error) {
+	if f.existsErr != nil {
+		return false, f.existsErr
+	}
 	return f.existsResp[name], nil
 }
 
@@ -184,6 +188,20 @@ func TestControllerDispatch(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cli.removed, []string{"live"}) {
 		t.Errorf("remove calls = %v, want [live]", cli.removed)
+	}
+}
+
+// TestExistsAssumesPresentOnEngineError pins the stranded-container guard: a
+// genuine podman engine error (not the exit-1 "absent" verdict) makes Exists
+// report PRESENT, so entryAlive still builds a teardown target instead of
+// silently dropping a live container after the pgid record is consumed. A
+// false "absent" here would strand the container and let down report success.
+func TestExistsAssumesPresentOnEngineError(t *testing.T) {
+	cli := &fakeContainerCLI{existsErr: errors.New("podman: daemon wedged")}
+	pc := &PostgresContainer{cli: cli, superuser: "bob"}
+
+	if !pc.Exists("compass-postgres-x") {
+		t.Error("Exists() on a podman engine error = false, want true (assume present so teardown still drives Stop/Remove)")
 	}
 }
 

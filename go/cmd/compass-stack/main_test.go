@@ -122,6 +122,7 @@ func TestResolveConfigContainerFlags(t *testing.T) {
 		f := baseFlags(t.TempDir())
 		f.postgresImage = "docker.io/library/postgres:18@sha256:abc"
 		f.databaseExternal = true
+		f.database = "host=/var/run/postgresql port=5432 dbname=compass sslmode=disable" // external requires an explicit DSN
 		cfg, err := resolveConfig(f)
 		if err != nil {
 			t.Fatalf("resolveConfig: %v", err)
@@ -131,6 +132,21 @@ func TestResolveConfigContainerFlags(t *testing.T) {
 		}
 		if !cfg.ExternalDatabase {
 			t.Error("ExternalDatabase = false, want true (flag set)")
+		}
+		if cfg.DatabaseDSN != f.database {
+			t.Errorf("DatabaseDSN = %q, want the supplied external DSN %q", cfg.DatabaseDSN, f.database)
+		}
+	})
+
+	t.Run("database-external without an explicit DSN is rejected", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.databaseExternal = true // no --database, no $COMPASS_DATABASE_DSN
+		_, err := resolveConfig(f)
+		if err == nil {
+			t.Fatal("resolveConfig(external, no DSN) = nil error, want a rejection (would silently default to the private socket)")
+		}
+		if !strings.Contains(err.Error(), "--database-external requires an explicit --database DSN") {
+			t.Errorf("error = %v, want it to name the missing external DSN", err)
 		}
 	})
 

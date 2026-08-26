@@ -106,13 +106,19 @@ func (c *PostgresContainer) Start(ctx context.Context, spec stack.PostgresContai
 }
 
 // Exists reports whether the named container is present (stack.ContainerController).
-// A podman error is treated as not-present: the teardown's socket-quiescence
-// confirm is the verdict, so a transient inspect failure must not strand the
-// down by reporting a phantom-live container.
+// A genuine podman engine error (neither the exit-0 "present" nor the exit-1
+// "absent" verdict — a wedged daemon, a restart mid-inspect) is treated as
+// PRESENT, not absent: entryAlive gates whether a teardown target is built at
+// all, so a false "absent" here drops the target entirely — no Stop, no Remove,
+// and the socket-quiescence confirm never runs — while the record has already
+// been consumed, stranding a live container the down then reports as gone.
+// Assuming-present is safe: Stop/Remove are idempotent (an already-gone
+// container normalizes to success), so signaling a container that turns out gone
+// is harmless, while signaling a still-live one is the whole point.
 func (c *PostgresContainer) Exists(name string) bool {
 	present, err := c.cli.exists(context.Background(), name)
 	if err != nil {
-		return false
+		return true // cannot confirm absence → assume present and drive teardown
 	}
 	return present
 }

@@ -183,6 +183,16 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 	if dsn == "" {
 		dsn = os.Getenv("COMPASS_DATABASE_DSN")
 	}
+	// The external-DB opt-out points the stack at an operator-run postgres, so it
+	// MUST carry an explicit DSN. With no --database and no $COMPASS_DATABASE_DSN,
+	// the state-dir default below would silently aim at the private socket this
+	// path never starts, surfacing as a slow "postgres did not accept connections"
+	// timeout on the obvious misuse rather than a clear config error. Reject it
+	// here, where flag/env emptiness is still visible — once defaulted, Validate
+	// cannot tell a supplied DSN from a defaulted one.
+	if f.databaseExternal && dsn == "" {
+		return stack.Config{}, errors.New("--database-external requires an explicit --database DSN (or $COMPASS_DATABASE_DSN): point the stack at your own postgres")
+	}
 	if dsn == "" {
 		dsn = defaultDSN(f.stateDir)
 	}
