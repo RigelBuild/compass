@@ -73,28 +73,37 @@ The four surfaces:
   `go test -tags 'unix gtk3'`) flip to the new tag. The e2e gate is the
   migration's compile-and-link proof — the ONE CI lane that compiles + runs
   the real shell (`gtk-e2e-env.nix:1-3`) exercises cgo link, window lifecycle,
-  and event plumbing on GTK4, but only under X11/Xvfb (see the Wayland
-  tradeoff below). It is not a full runtime proof.
+  and event plumbing on GTK4, primarily under a headless Wayland compositor
+  (GTK4's default user backend) with a secondary X11/Xvfb regression lane (see
+  the Wayland tradeoff below and T4). It is not a full runtime proof.
 + **The ledger.** A new DL row records the GTK4 default and amends the
   SEA-1172 closure definition; DL-110 (Wails v3) is untouched. See
   §Ledger delta.
 
 ### The honest tradeoffs (why this is a real fork, not a rubber-stamp)
 
-+ **Experimental upstream.** GTK4 support in Wails v3-beta is explicitly
-  feedback-stage (wails#4957, "[Feedback Wanted] Experimental GTK4 + WebKitGTK
-  6.0 Support"). The pinned `v3.0.0-beta.0` carries the GTK4 files, but GTK4
-  fixes have landed in later v3.0.x betas — the migration should ride a Wails
-  pin bump (OQ1).
-+ **Distro floor bump.** The default GTK4 stack requires Ubuntu 24.04+ /
-  Debian 13+; distros shipping only webkit2gtk-4.1 (Ubuntu 22.04 LTS,
-  Debian 12, Fedora ≤ 39, RHEL 9.x) can only build the legacy tag
-  (v3.wails.io/quick-start/installation). For Compass this bites **source
-  builds against system libs and any future non-nix packaging (the A5
-  installer follow-up)** — the shipped tarball is immune, because its ELFs are
-  store-rpathed against the nix closure and self-contained
-  (`compass-native-packaging/design.md:168-169`: "a box with no nix store
-  cannot run this tarball" is the existing, unchanged limit).
++ **Upstream maturity.** GTK4 + webkitgtk-6.0 is now the DEFAULT documented
+  Linux stack in the current Wails v3 install docs (v3.wails.io: "Linux
+  requires ... gtk4 and webkitgtk-6.0"; supported platform Ubuntu 24.04),
+  with GTK3 the explicit `-tags gtk3` legacy opt-out until v3.1 — so the
+  default path reads GA, not an opt-in experiment. The only residual
+  immaturity signal is the still-open tracking issue wails#4957 (its title
+  still reads "[Feedback Wanted] Experimental GTK4 + WebKitGTK 6.0 Support")
+  and the beta's newness; GTK4 fixes have landed across the v3.0.x betas, so
+  the migration rides a Wails pin bump to the newest v3.0.x (T1/OQ1). Matt's
+  ruling (2026-08-26): proceed with the flip regardless of the label.
++ **Distro floor bump (ACCEPTED — Matt 2026-08-26).** The default GTK4 stack
+  requires Ubuntu 24.04+ / Debian 13+; distros shipping only webkit2gtk-4.1
+  (Ubuntu 22.04 LTS, Debian 12, Fedora ≤ 39, RHEL 9.x) can only build the
+  legacy tag (v3.wails.io/getting-started/installation). For Compass this
+  bites only **source builds against system libs and any future non-nix
+  packaging (the A5 installer follow-up)** — the shipped tarball is immune,
+  because its ELFs are store-rpathed against the nix closure and
+  self-contained (`compass-native-packaging/design.md:168-169`: "a box with
+  no nix store cannot run this tarball" is the existing, unchanged limit).
+  Matt's ruling: acceptable — Compass is a greenfield app with no legacy
+  install base, so the floor costs us nothing. Recorded as a settled
+  constraint (§Global Constraints), not an open tradeoff.
 + **Closure growth.** The bundle and the e2e runner realize the WebKitGTK
   closure; GTK4 adds gtk4 (+graphene, +gst plugins pulled by webkitgtk_6_0's
   propagations) while dropping gtk3/atk. webkitgtk_6_0 and webkitgtk_4_1 are
@@ -106,15 +115,18 @@ The four surfaces:
   per artifact" rejection ground (`compass-native-packaging/design.md:317-318`)
   and `agent-image/devenv.nix:116-127`'s layer-budget machinery, which does
   NOT carry GTK and is unaffected).
-+ **Wayland-first runtime behavior.** GTK4 prefers the Wayland backend; the CI
-  e2e runs under Xvfb (X11), and T4 pins `GDK_BACKEND=x11` there. GTK4 retains
-  the X11 backend, so the gate stays green — but CI then permanently exercises
-  a backend real users won't use. Under GTK3 the same X11-only gap existed, yet
-  GTK3-on-X11 was the mainstream, decade-hardened path; after the flip the
-  *untested* Wayland path becomes the default user path, on a stack upstream
-  still calls experimental. Residual risk, mitigated (not closed) by the
-  mandatory manual Wayland smoke in T5's test cycle; the weston-headless CI
-  fallback is OQ4.
++ **Wayland-first runtime — CI now exercises Wayland (Matt 2026-08-26).**
+  GTK4's default user backend is Wayland. The original plan ran the e2e gate
+  under Xvfb/X11 only (`GDK_BACKEND=x11`), so CI would permanently exercise a
+  backend real users won't use — the migration's default user path would ship
+  untested. Matt's ruling: switch CI to Wayland. The e2e gate runs the shell
+  under a headless Wayland compositor (`weston --backend=headless`, in the
+  pinned nixpkgs) with `GDK_BACKEND=wayland`, so the gate exercises the real
+  default backend; a cheap X11/Xvfb run is kept as a secondary regression lane
+  (GTK4 retains the X11 backend). The compositor lands in the e2e-runner
+  closure ONLY, so the tarball size budget (OQ2) is untouched. This closes the
+  residual-risk gap the X11-only plan carried; the manual Wayland smoke in T5
+  stays as belt-and-suspenders on the shipped tarball.
 
 ### Alternatives considered
 
@@ -183,9 +195,17 @@ here) and in code/CI, not in a compass DL row. Therefore:
 
 + **Wails floor:** `github.com/wailsapp/wails/v3` ≥ the latest v3.0.x beta at
   implementation time (currently pinned `v3.0.0-beta.0`, `go/go.mod:32`).
-  GTK4 is experimental in-beta; the migration PR bumps the pin first (T1) so
-  it carries upstream GTK4 fixes. Never v3.1 (that removes gtk3 and lands
-  unknown breaking changes; the point is to migrate before it).
+  GTK4 is the default documented Linux stack across v3.0.x; the migration PR
+  bumps the pin first (T1) so it carries the latest GTK4 fixes. Never v3.1
+  (that removes gtk3 and lands unknown breaking changes; the point is to
+  migrate before it). **Renovate does NOT auto-bump this pin (Matt
+  2026-08-26).** The gomod manager sees `wails/v3` (unfenced,
+  `tools/renovate/config.json5`), but the repo runs no automerge — every bump
+  is a human-merged PR — and the pin is a `-beta` prerelease Renovate does not
+  track reliably across betas. More importantly, T1 gates the pin move behind
+  the gtk e2e (F3 re-runs it on any later pin move); an unattended bump would
+  bypass that safety net. Keep the Wails pin MANUAL until upstream ships a
+  stable (non-beta) tag; revisit auto-bump then.
 + **Package names:** pkg-config `gtk4`, `webkitgtk-6.0` (Wails
   `linux_cgo.go:17`); nixpkgs attrs `gtk4` (4.22.4), `webkitgtk_6_0` (2.52.5)
   — both present in the pinned devenv.lock/flake.lock rev `c946ff36bf19`
@@ -198,7 +218,8 @@ here) and in code/CI, not in a compass DL row. Therefore:
   `main_nogtk3.go:5-12`).
 + **Distro floor (system-lib builds only):** Ubuntu 24.04+/Debian 13+ for
   webkitgtk-6.0 dev packages. Shipped tarball unaffected (store-rpathed,
-  DL-214). Docs that name system prerequisites must say so.
+  DL-214). Docs that name system prerequisites must say so. ACCEPTED by Matt
+  (2026-08-26): greenfield app, no legacy install base — the floor is free.
 + **Size budget:** the closure delta (bundle tarball + e2e runner realization)
   is measured and recorded in the migration PR body; a regression > ~15% on
   the app-bundle tarball re-opens the size-budget question for Matt before
@@ -295,7 +316,7 @@ after T1 lands.
   intact); `go build -tags gtk4 ./cmd/compass-app` links against the T2
   closure; duplicate-symbol check `go vet -tags gtk4 ./cmd/compass-app`.
 
-### T4 — CI e2e lane flip + X11-under-Xvfb verification
+### T4 — CI e2e lane flip + Wayland-first verification (X11 secondary)
 
 + **Do:** in `.github/workflows/ci.yml` rename the `gtk3-e2e` job → `gtk4-e2e`
   (job name, `gtk3_affected` output plumbing at `ci.yml:141,201-203,1041-1051`,
@@ -309,9 +330,13 @@ after T1 lands.
   (the T2 atk/gdk-pixbuf trim this plan schedules) would skip the ONE lane that
   compiles the shell — add `tools/toolchain/gtk-closure.nix` and
   `gtk-e2e-env.nix` to the trigger (both `index.ts` and the ci.yml in-step
-  diff). Verify GTK4-under-Xvfb: pin `GDK_BACKEND=x11` in the step env (GTK4
-  keeps the X11 backend; Wayland preference is runtime-selected). Keep the
-  PASS-line guard (`ci.yml:1214`) verbatim.
+  diff). **Run the e2e under Wayland (Matt 2026-08-26):** launch a headless
+  compositor (`weston --backend=headless`, pinned nixpkgs) and set
+  `GDK_BACKEND=wayland` so the gate exercises GTK4's default user backend, not
+  X11. Keep a cheap secondary X11/Xvfb run (`GDK_BACKEND=x11`; GTK4 retains
+  the X11 backend) as a regression lane. The compositor is an
+  e2e-runner-only closure addition (not in the bundle — OQ2/size budget
+  untouched). Keep the PASS-line guard (`ci.yml:1214`) verbatim.
 + **Interfaces:** consumes T3's `gtk4` tag + T2's closure via
   `gtk-e2e-env.nix` (unchanged file — it imports gtk-closure.nix); produces
   the renamed required-check plumbing under the `CI` rollup (branch
@@ -332,10 +357,11 @@ after T1 lands.
 + **Test cycle:** `nix flake check` (realizes every package,
   `flake.nix:121-128`); the DL-238 bundle smoke (`app-bundle/SMOKE.md`)
   against the GTK4 tarball, run **on both an X11 and a Wayland session**
-  (mandatory, W2 — the CI gate only ever exercises X11, so a human run of the
-  shipped tarball under Wayland before merge is the only proof of the default
-  user backend; the dev box can do this); tarball size delta recorded (Global
-  Constraint 5).
+  (mandatory, W2 — CI now exercises Wayland via the headless compositor (T4),
+  but that runs the e2e binary, not the shipped tarball; a human run of the
+  PACKAGED tarball under a real Wayland session before merge is the only proof
+  the distributed artifact works on the default backend; the dev box can do
+  this); tarball size delta recorded (Global Constraint 5).
 
 ### T6 — Docs sweep + ledger encode
 
@@ -364,7 +390,8 @@ after T1 lands.
 + [ ] **T3** Repo tag flip `gtk3` → `gtk4` per the T3 file table; stub-pair
   invariant intact; comment/error-string sweep in cmd/compass-app.
 + [ ] **T4** ci.yml lane rename + tag flip; `gtk4_affected` plumbing;
-  GTK4-under-Xvfb verified (GDK_BACKEND=x11 if needed); PASS-line guard kept.
+  GTK4 e2e under headless Wayland (`weston --backend=headless`,
+  `GDK_BACKEND=wayland`) with X11/Xvfb as secondary lane; PASS-line guard kept.
 + [ ] **T5** app-bundle/build.sh + flake.nix tag flip; `nix flake check` +
   bundle smoke green on GTK4.
 + [ ] **T6** Docs sweep + amendment banners; coordinator encodes the new DL
@@ -372,12 +399,12 @@ after T1 lands.
 
 ## Open Questions
 
-+ **OQ1 (load-bearing): Wails pin target.** Which v3.0.x beta to bump to, and
-  does Matt accept riding an upstream-experimental GTK4 path now vs waiting
-  for upstream to drop the "experimental" label within v3.0.x?
-  **Recommendation:** bump to the newest v3.0.x at implementation time and
-  proceed — the e2e gate is the safety net, and waiting recreates option (a)'s
-  forced-migration risk.
++ **OQ1 (RESOLVED — Matt 2026-08-26): Wails pin target.** Matt: GTK4 reads GA
+  in the current Wails docs (default documented Linux stack); proceed with the
+  flip regardless of the still-open feedback issue. **Resolution:** bump to
+  the newest v3.0.x beta at implementation time (T1), gated by the e2e;
+  Renovate does NOT auto-track it (see §Global Constraints, Wails floor). The
+  exact target tag is picked at T1 against the then-current release list.
 + **OQ2 (load-bearing): size-budget threshold.** Global Constraint 5 proposes
   "> ~15% tarball growth re-opens the question with Matt". The SEA-1101
   image-layer-budget decision this is said to touch is NOT resolvable in this
@@ -390,11 +417,13 @@ after T1 lands.
   self-describing) vs `desktop` (version-neutral, no rename at GTK5).
   **Recommendation:** `gtk4` — it must be spelled at every cgo boundary
   anyway, and a neutral name would hide which Wails variant is selected.
-+ **OQ4 (non-load-bearing): Xvfb vs wayland headless in CI.** If GTK4-on-Xvfb
-  proves flaky, the fallback is a headless Wayland compositor (`weston
-  --backend=headless` or `wlheadless-run`) in the e2e env.
-  **Recommendation:** keep Xvfb + `GDK_BACKEND=x11` first (smallest diff to a
-  known-good lane); switch only on observed flake.
++ **OQ4 (RESOLVED — Matt 2026-08-26): CI backend.** Matt: switch CI to
+  Wayland. **Resolution:** the e2e gate runs GTK4 under a headless Wayland
+  compositor (`weston --backend=headless`, pinned nixpkgs) with
+  `GDK_BACKEND=wayland` as the PRIMARY lane (it exercises the real default
+  user backend); an X11/Xvfb run stays as a cheap secondary regression lane.
+  Folded into T4. Compositor is e2e-runner-closure-only, so OQ2/size budget is
+  untouched.
 + **OQ5 (load-bearing): SEA-1172 / sealed-image amendment sequencing.** The
   frozen toolchain closure is defined in the sealed monorepo's
   `ci-toolchain-shared-defs.md` (referenced at `gtk-closure.nix:3`, not present
