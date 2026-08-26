@@ -470,7 +470,9 @@ Interfaces:
 - Produces: `CompassAgentOptions.tracer?: TurnTracer` (string-only, no OTel
   types on the export); `CompassAgent.steer(msg: Message, fromHandle?:
   string, traceparent?: string): void` and `deliver(…)` likewise —
-  string-only widening, fence-clean.
+  string-only widening, fence-clean. The `traceparent: string` arg is
+  (b)-shaped and PROVISIONAL until OQ1: under (a) there is no boundary string
+  and it is replaced by the T3′ agent-local mint seam (see Plan preamble).
 
 ### T3 — Decode `traceparent` off the wire control (agent lane; gated on OQ1 = (b))
 
