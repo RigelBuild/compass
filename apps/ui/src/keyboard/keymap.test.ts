@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { CommandId } from "./commands";
 import {
 	chordSegments,
+	DEFAULT_KEYMAP,
 	formatChordForDisplay,
 	type KeymapEntry,
 	leaderPrefixes,
@@ -37,8 +38,17 @@ describe("shortcutFor", () => {
 
 	test("undefined for a command with no keymap row (miss)", () => {
 		expect(shortcutFor(id("board.openCardCrossLink"), "other")).toBeUndefined();
-		expect(shortcutFor(id("view.backlog"), "other")).toBeUndefined();
 		expect(shortcutFor(id("nonexistent.command"), "other")).toBeUndefined();
+	});
+
+	test("a sequence-only command renders its formatted sequence chord", () => {
+		// view.backlog's only keymap row is the G L sequence (T2, RIG-2484).
+		expect(shortcutFor(id("view.backlog"), "other")).toBe("G then L");
+	});
+
+	test("a dual-bound command shows its modifier chord (sequence row is later)", () => {
+		// view.bridge is Mod+B (first) then G B; the modifier row wins.
+		expect(shortcutFor(id("view.bridge"), "other")).toBe("Ctrl+B");
 	});
 
 	test("returns the FIRST matching row for an id bound more than once", () => {
@@ -103,5 +113,38 @@ describe("formatChordForDisplay", () => {
 	test("a sequence joins resolved segments with ' then '", () => {
 		expect(formatChordForDisplay("G B", "mac")).toBe("G then B");
 		expect(formatChordForDisplay("G L", "other")).toBe("G then L");
+	});
+});
+
+// DEFAULT_KEYMAP authoring invariants for leader sequences (RIG-2484 §A2).
+describe("DEFAULT_KEYMAP sequence authoring invariants", () => {
+	const MODIFIER = /(?:^|\+)(?:Mod|Shift|Alt|Ctrl|Cmd|Meta)(?:\+|$)/;
+	const sequenceRows = DEFAULT_KEYMAP.filter(
+		(e) => chordSegments(e.chord).length > 1,
+	);
+	const singleChords = new Set(
+		DEFAULT_KEYMAP.filter((e) => chordSegments(e.chord).length === 1).map(
+			(e) => e.chord,
+		),
+	);
+
+	test("every sequence is exactly two segments", () => {
+		for (const entry of sequenceRows) {
+			expect(chordSegments(entry.chord).length).toBe(2);
+		}
+	});
+
+	test("every segment of a sequence is modifier-less", () => {
+		for (const entry of sequenceRows) {
+			for (const segment of chordSegments(entry.chord)) {
+				expect(MODIFIER.test(segment)).toBe(false);
+			}
+		}
+	});
+
+	test("a sequence's first segment is not also a complete single chord", () => {
+		for (const entry of sequenceRows) {
+			expect(singleChords.has(chordSegments(entry.chord)[0])).toBe(false);
+		}
 	});
 });

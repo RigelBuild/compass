@@ -63,8 +63,11 @@ describe("ShortcutsOverlay (RIG-2482)", () => {
 		fireEvent.input(input, { target: { value: "bridge" } });
 		await flush();
 		const rows = container.querySelectorAll(".cx-shortcuts-row");
-		expect(rows.length).toBe(1);
-		expect(rows[0]?.textContent).toContain("Bridge");
+		// "bridge" now matches both Mod+B and the G B leader sequence (RIG-2484).
+		expect(rows.length).toBe(2);
+		const text = [...rows].map((r) => r.textContent ?? "");
+		expect(text.every((t) => t.includes("Bridge"))).toBe(true);
+		expect(text.some((t) => t.includes("G then B"))).toBe(true);
 	});
 
 	test("a no-match query shows the dim empty row and no rows", async () => {

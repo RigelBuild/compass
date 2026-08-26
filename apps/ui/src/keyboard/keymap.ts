@@ -110,7 +110,7 @@ export function shortcutFor(
 	platform: Platform,
 ): string | undefined {
 	const entry = DEFAULT_KEYMAP.find((e) => e.commandId === id);
-	return entry ? resolveChord(entry.chord, platform) : undefined;
+	return entry ? formatChordForDisplay(entry.chord, platform) : undefined;
 }
 
 /**
@@ -122,7 +122,9 @@ export function shortcutForAria(
 	id: CommandId,
 	platform: Platform,
 ): string | undefined {
-	const entry = DEFAULT_KEYMAP.find((e) => e.commandId === id);
+	const entry = DEFAULT_KEYMAP.find(
+		(e) => e.commandId === id && chordSegments(e.chord).length === 1,
+	);
 	return entry ? resolveChordAria(entry.chord, platform) : undefined;
 }
 
@@ -170,6 +172,14 @@ export const DEFAULT_KEYMAP: readonly KeymapEntry[] = [
 	// dispatcher's eventToChord drops Shift for modifier-less printable
 	// non-ASCII-letter keys, so a US `Shift+/` normalizes to `?`.
 	{ chord: "?", commandId: cmd("view.shortcuts") },
+
+	// Go-to sequences (RIG-2484). Leader "G then <letter>" destinations, all
+	// unscoped/global; each sits AFTER any existing modifier row for the same
+	// command so shortcutFor/shortcutForAria resolve the modifier chord first.
+	{ chord: "G B", commandId: cmd("view.bridge") },
+	{ chord: "G L", commandId: cmd("view.backlog") },
+	{ chord: "G D", commandId: cmd("view.done") },
+	{ chord: "G S", commandId: cmd("view.settings") },
 
 	// Zones (D5:448-449)
 	{ chord: "Mod+1", commandId: cmd("zone.focusLeft") },
