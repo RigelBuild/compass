@@ -141,6 +141,8 @@ type forgeStore interface {
 	GetAccount(ctx context.Context, id store.AccountID) (store.Account, error)
 	AuthoredArtifactByRequestID(ctx context.Context, agent store.AccountID, clientRequestID string) (store.AuthoredArtifact, bool, error)
 	RecordAuthoredArtifact(ctx context.Context, a store.AuthoredArtifact) error
+	EnsureAgentForgeSubscription(ctx context.Context, sub store.AgentForgeSubscription) (string, error)
+	DeleteAgentForgeSubscription(ctx context.Context, agent store.AccountID, subscriptionID string) error
 }
 
 // forgeService is the ForgeCaller implementation and the DL-050 write
@@ -203,13 +205,9 @@ func (s *forgeService) ExecuteForgeCallAsAccount(
 	case *compassv1internal.ForgeCallRequest_GetPullRequest:
 		return s.getPullRequest(ctx, call, c.GetPullRequest), nil
 	case *compassv1internal.ForgeCallRequest_Subscribe:
-		// Row writes on agent_forge_subscriptions are the poll-driver lane's
-		// surface (DL-053/A8); no store writer for that table exists in this
-		// slice, so the arm is unimplemented rather than inventing a store
-		// method (see summary: subscription-writer dependency).
-		return forgeErrorResult(forgeErr(connect.CodeUnimplemented, "forge: subscribe is not wired (no agent_forge_subscriptions store writer yet)")), nil
+		return s.subscribeForge(ctx, caller, call, c.Subscribe), nil
 	case *compassv1internal.ForgeCallRequest_Unsubscribe:
-		return forgeErrorResult(forgeErr(connect.CodeUnimplemented, "forge: unsubscribe is not wired (no agent_forge_subscriptions store writer yet)")), nil
+		return s.unsubscribeForge(ctx, caller, c.Unsubscribe), nil
 	default:
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("forge: call has no operation variant set"))
 	}
@@ -257,6 +255,68 @@ func (s *forgeService) resolveTarget(call *compassv1internal.ForgeCallRequest, r
 		return resolvedForge{}, forgeErr(connect.CodeNotFound, "forge: no provider configured for the requested coordinate")
 	}
 	return rf, nil
+}
+
+// subscribeToStoreKind maps the wire ForgeArtifactKind onto the store enum,
+// rejecting UNSPECIFIED(0) as an in-band invalid_argument (a subscription must
+// name an issue or a pull request). The two enums share their numeric domain
+// (issue=1, pull_request=2), so a known kind is a direct cast.
+func subscribeToStoreKind(kind compassv1internal.ForgeArtifactKind) (store.ForgeArtifactKind, *compassv1internal.ForgeCallError) {
+	switch kind {
+	case compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_ISSUE:
+		return store.ForgeArtifactKindIssue, nil
+	case compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_PULL_REQUEST:
+		return store.ForgeArtifactKindPullRequest, nil
+	default:
+		return store.ForgeArtifactKindUnspecified, forgeErr(connect.CodeInvalidArgument, "forge: subscription kind must be issue or pull_request")
+	}
+}
+
+// subscribeForge records the caller's standing interest in one forge artifact
+// (DL-053). It resolves the coordinate (repo + provider/host), maps the wire
+// kind to the store enum, and idempotently ensures the subscription row —
+// returning the EXISTING subscription id on a repeat (the store upsert dedups on
+// the UNIQUE coordinate per agent). No owner stamp: a subscribe authors nothing.
+func (s *forgeService) subscribeForge(ctx context.Context, caller store.AccountID, call *compassv1internal.ForgeCallRequest, req *compassv1internal.SubscribeForgeRequest) *compassv1internal.ForgeCallResult {
+	rf, fe := s.resolveTarget(call, req.GetRepo())
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	kind, fe := subscribeToStoreKind(req.GetKind())
+	if fe != nil {
+		return forgeErrorResult(fe)
+	}
+	id, err := s.store.EnsureAgentForgeSubscription(ctx, store.AgentForgeSubscription{
+		AgentAccountID: caller,
+		Provider:       store.ForgeProvider(rf.provider),
+		Host:           rf.host,
+		Repo:           req.GetRepo(),
+		Kind:           kind,
+		Number:         req.GetNumber(),
+	})
+	if err != nil {
+		return forgeErrorResult(storeForgeError(err))
+	}
+	return &compassv1internal.ForgeCallResult{
+		Result: &compassv1internal.ForgeCallResult_Subscribed{
+			Subscribed: &compassv1internal.SubscribeForgeResponse{SubscriptionId: id},
+		},
+	}
+}
+
+// unsubscribeForge deletes the caller's subscription by id (scoped to the
+// calling agent — an unknown id, or one owned by another agent, is an in-band
+// not_found), running the DL-053 last-subscription cursor GC in the store's
+// transaction. Unsubscribe is by id, so it needs no coordinate resolution.
+func (s *forgeService) unsubscribeForge(ctx context.Context, caller store.AccountID, req *compassv1internal.UnsubscribeForgeRequest) *compassv1internal.ForgeCallResult {
+	if err := s.store.DeleteAgentForgeSubscription(ctx, caller, req.GetSubscriptionId()); err != nil {
+		return forgeErrorResult(storeForgeError(err))
+	}
+	return &compassv1internal.ForgeCallResult{
+		Result: &compassv1internal.ForgeCallResult_Unsubscribed{
+			Unsubscribed: &compassv1internal.UnsubscribeForgeResponse{},
+		},
+	}
 }
 
 // dedup is the F3 idempotency-memo lookup: the artifact the agent authored under
