@@ -1,10 +1,14 @@
 /* Tooltip — .cx-tooltip (D3, Kobalte). Elev-1 float, open delay
    --cx-tooltip-delay (the delay is Kobalte's timing prop — this owns the
    visual box). Never load-bearing: the same info is reachable elsewhere.
-   Display surface (no interactive states). Consumes only --cx-* tiers. */
+   Display surface (no interactive states). Consumes only --cx-* tiers.
+   Lays out its content as a row: the label, then a right-aligned chord chip
+   (.cx-palette-shortcut, reused — its margin-left:auto needs a flex parent). */
 
 .cx-tooltip {
-	display: block;
+	display: flex;
+	align-items: center;
+	gap: var(--cx-space-2);
 	max-width: 280px;
 	padding: var(--cx-space-1) var(--cx-space-2);
 	border: 1px solid var(--cx-border);
@@ -16,4 +20,10 @@
 	line-height: 1.4;
 	box-shadow: var(--cx-elev-1);
 	z-index: var(--cx-z-overlay);
+}
+
+/* Label sub-part — the control's name; takes free space so the chord chip
+   right-aligns via its own margin-left:auto. */
+.cx-tooltip-label {
+	flex: 1 1 auto;
 }
