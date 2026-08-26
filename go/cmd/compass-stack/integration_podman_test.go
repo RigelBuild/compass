@@ -177,11 +177,15 @@ func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 		t.Fatalf("resolveConfig: %v", err)
 	}
 
+	deps, err := buildDeps(cfg)
+	if err != nil {
+		t.Fatalf("buildDeps: %v", err)
+	}
 	return stackFixture{
 		cfg:    cfg,
 		pgSock: filepath.Join(pgSockDir, ".s.PGSQL."+strconv.Itoa(pgPort)),
 		socket: serverSock,
-	}, buildDeps(cfg)
+	}, deps
 }
 
 // shortRoot creates a short, unique, 0700 root under /tmp for one subtest and
@@ -300,7 +304,10 @@ func TestStackIntegration(t *testing.T) {
 		}
 
 		// Fresh deps, same Config: a genuinely independent second up.
-		deps2 := buildDeps(fx.cfg)
+		deps2, err := buildDeps(fx.cfg)
+		if err != nil {
+			t.Fatalf("buildDeps (second): %v", err)
+		}
 		s2, err := stack.Up(ctx, fx.cfg, deps2)
 		if err != nil {
 			t.Fatalf("second Up: %v", err)
@@ -348,7 +355,12 @@ func TestStackIntegration(t *testing.T) {
 			go func() {
 				// Each goroutine gets its own real deps; the shared Config points
 				// them at the same state dir / socket, so the lock arbitrates.
-				s, err := stack.Up(ctx, fx.cfg, buildDeps(fx.cfg))
+				deps, derr := buildDeps(fx.cfg)
+				if derr != nil {
+					results <- result{nil, derr}
+					return
+				}
+				s, err := stack.Up(ctx, fx.cfg, deps)
 				results <- result{s, err}
 			}()
 		}
@@ -401,7 +413,11 @@ func TestStackIntegration(t *testing.T) {
 		if err := spawner.Down(ctx); err != nil {
 			t.Fatalf("spawner Down: %v", err)
 		}
-		assertServerGone(t, buildDeps(fx.cfg), fx.socket)
+		goneDeps, err := buildDeps(fx.cfg)
+		if err != nil {
+			t.Fatalf("buildDeps (gone probe): %v", err)
+		}
+		assertServerGone(t, goneDeps, fx.socket)
 		assertPostgresGone(t, fx.pgSock)
 	})
 }

@@ -99,13 +99,15 @@ func usageError(sub string) error {
 // resolution. It is the input to resolveConfig, keeping that helper pure and
 // unit-testable (no flag.FlagSet, no os.Args).
 type configFlags struct {
-	stateDir   string
-	socket     string
-	listen     string
-	database   string
-	image      string
-	runtimeDir string
-	linger     bool
+	stateDir         string
+	socket           string
+	listen           string
+	database         string
+	image            string
+	runtimeDir       string
+	postgresImage    string
+	databaseExternal bool
+	linger           bool
 }
 
 // newFlagSet builds a flag.FlagSet for one subcommand, registering the config
@@ -132,6 +134,14 @@ func newFlagSet(name string, lingerable bool) (*flag.FlagSet, *configFlags) {
 		"Runner-owned base dir for per-container agent sockets. Defaults under "+
 			"$XDG_RUNTIME_DIR/compass, else a short state-dir fallback (kept short "+
 			"for the AF_UNIX sun_path budget).")
+	fs.StringVar(&f.postgresImage, "postgres-image", stack.DefaultPostgresImage,
+		"Container image for the bundled postgres store of record (S4). Defaults "+
+			"to the pinned stock postgres:18 digest. Set empty to use the dev-path "+
+			"compass-postgres wrapper on PATH instead of a container. Ignored with "+
+			"--database-external.")
+	fs.BoolVar(&f.databaseExternal, "database-external", false,
+		"Do not start postgres; use the --database DSN as-is (the external-DB "+
+			"opt-out, S4). Point --database at your own postgres.")
 	if lingerable {
 		fs.BoolVar(&f.linger, "linger", false,
 			"Leave the stack running after this process exits (records Config.Linger).")
@@ -183,13 +193,15 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 	}
 
 	cfg := stack.Config{
-		StateDir:    f.stateDir,
-		SocketPath:  socketPath,
-		ListenAddr:  listen,
-		DatabaseDSN: dsn,
-		AgentImage:  f.image,
-		RuntimeDir:  runtimeDir,
-		Linger:      f.linger,
+		StateDir:         f.stateDir,
+		SocketPath:       socketPath,
+		ListenAddr:       listen,
+		DatabaseDSN:      dsn,
+		AgentImage:       f.image,
+		RuntimeDir:       runtimeDir,
+		PostgresImage:    f.postgresImage,
+		ExternalDatabase: f.databaseExternal,
+		Linger:           f.linger,
 	}
 	if err := cfg.Validate(); err != nil {
 		return stack.Config{}, fmt.Errorf("invalid stack config: %w", err)
@@ -199,10 +211,19 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 
 // defaultDSN builds the keyword/value DSN for the private postgres reachable over
 // a unix socket under the state dir. The host is the socket directory postgres
-// listens on (compass-postgres -k <dir>), not a file, per libpq's unix-socket
-// convention.
+// listens on (compass-postgres -k <dir> on the process path; a bind-mount on the
+// container path), not a file, per libpq's unix-socket convention.
+//
+// The socket dir is <state-dir>/pgsock — a SIBLING of the PGDATA dir
+// (<state-dir>/postgres), NOT nested under it. On the container path PGDATA is a
+// podman bind-mount whose source must pre-exist, and postgres's initdb refuses a
+// non-empty PGDATA; a socket dir nested inside PGDATA (the old
+// <state-dir>/postgres/sock) would have to be created first and would then make
+// PGDATA non-empty, breaking initdb. A sibling dir sidesteps that entirely and
+// is transparent to the process path (the wrapper binds whatever dir the DSN
+// names).
 func defaultDSN(stateDir string) string {
-	sockDir := filepath.Join(stateDir, "postgres", "sock")
+	sockDir := filepath.Join(stateDir, "pgsock")
 	return fmt.Sprintf("host=%s port=5432 dbname=compass sslmode=disable", sockDir)
 }
 
@@ -219,8 +240,11 @@ func defaultRuntimeDir(stateDir string) string {
 
 // buildDeps wires the real seam adapters into stack.Deps. Each field is one
 // genuine external effect; the CLI is the composition root that supplies them.
-func buildDeps(cfg stack.Config) stack.Deps {
-	return stack.Deps{
+// It returns an error because the container-backed postgres adapter resolves
+// the OS user (the container superuser, S4) at construction and a failure there
+// must surface loudly rather than default to a wrong role.
+func buildDeps(cfg stack.Config) (stack.Deps, error) {
+	deps := stack.Deps{
 		Supervisor:      adapters.NewProcessSupervisor(),
 		Certs:           adapters.NewCertEnsurer(0), // 0 -> DefaultRotateWindow
 		Tokens:          adapters.NewTokenEnsurer(cfg.DatabaseDSN),
@@ -231,6 +255,22 @@ func buildDeps(cfg stack.Config) stack.Deps {
 		Now:             time.Now,
 		ExpectedVersion: version,
 	}
+	// The container-backed postgres seams (start + teardown) are wired whenever
+	// a container postgres could be in play: the container start path (up with a
+	// PostgresImage) AND the cross-process down path (which reads a v2 container
+	// entry and needs Containers to tear it down, without knowing at down time
+	// whether up used the container). The external-DB path needs neither, but
+	// wiring them unconditionally when not external is simplest and the adapter
+	// is inert unless dispatched to. One adapter satisfies both seams.
+	if !cfg.ExternalDatabase {
+		pc, err := adapters.NewPostgresContainer()
+		if err != nil {
+			return stack.Deps{}, err
+		}
+		deps.PostgresContainer = pc
+		deps.Containers = pc
+	}
+	return deps, nil
 }
 
 // runUp resolves config, wires deps, and brings the stack up. stack.Up returns
@@ -246,7 +286,10 @@ func runUp(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	deps := buildDeps(cfg)
+	deps, err := buildDeps(cfg)
+	if err != nil {
+		return fmt.Errorf("wiring stack dependencies: %w", err)
+	}
 
 	st, err := stack.Up(ctx, cfg, deps)
 	if err != nil {
@@ -279,7 +322,10 @@ func runDown(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	deps := buildDeps(cfg)
+	deps, err := buildDeps(cfg)
+	if err != nil {
+		return fmt.Errorf("wiring stack dependencies: %w", err)
+	}
 
 	if err := stack.DownDetached(ctx, cfg, deps); err != nil {
 		if errors.Is(err, stack.ErrStackStarting) {
@@ -308,7 +354,10 @@ func runStatus(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	deps := buildDeps(cfg)
+	deps, err := buildDeps(cfg)
+	if err != nil {
+		return fmt.Errorf("wiring stack dependencies: %w", err)
+	}
 
 	st, err := stack.Up(ctx, cfg, deps)
 	if err != nil {

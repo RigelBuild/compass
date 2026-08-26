@@ -3,6 +3,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -106,6 +107,56 @@ func TestResolveConfig(t *testing.T) {
 		}
 		if cfg.DatabaseDSN != "host=/flag/sock dbname=compass" {
 			t.Errorf("DatabaseDSN = %q, want the flag value (flag wins over env)", cfg.DatabaseDSN)
+		}
+	})
+}
+
+// TestResolveConfigContainerFlags covers the S4 container/external flags,
+// kept separate from TestResolveConfig to hold each test's cognitive complexity
+// under the gate.
+func TestResolveConfigContainerFlags(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+
+	t.Run("postgres-image and database-external thread into config", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.postgresImage = "docker.io/library/postgres:18@sha256:abc"
+		f.databaseExternal = true
+		cfg, err := resolveConfig(f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.PostgresImage != f.postgresImage {
+			t.Errorf("PostgresImage = %q, want %q", cfg.PostgresImage, f.postgresImage)
+		}
+		if !cfg.ExternalDatabase {
+			t.Error("ExternalDatabase = false, want true (flag set)")
+		}
+	})
+
+	t.Run("empty postgres-image is the dev-path process spawn", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.postgresImage = ""
+		cfg, err := resolveConfig(f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.PostgresImage != "" {
+			t.Errorf("PostgresImage = %q, want empty (dev-path)", cfg.PostgresImage)
+		}
+	})
+
+	t.Run("default socket dir is a sibling of PGDATA, not nested", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg, err := resolveConfig(baseFlags(dir))
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		// The container path bind-mounts <state>/postgres as PGDATA and requires
+		// the socket dir NOT to nest under it (initdb refuses a non-empty PGDATA).
+		pgdata := filepath.Join(dir, "postgres")
+		if strings.Contains(cfg.DatabaseDSN, "host="+pgdata+"/") {
+			t.Fatalf("default DSN %q nests the socket dir under PGDATA %q; container initdb would refuse it", cfg.DatabaseDSN, pgdata)
 		}
 	})
 }

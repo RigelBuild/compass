@@ -41,6 +41,17 @@ type Deps struct {
 	// the real podman-exec adapter; a record with no container entries never
 	// dereferences it.
 	Containers ContainerController
+	// PostgresContainer starts the container-backed postgres child (S4): the
+	// installed-stack default when Config.PostgresImage is set. Start runs
+	// `podman run` per the S4 contract and returns a Process handle whose Pid
+	// the caller does NOT persist as a pgid (a rootless container runs beneath
+	// conmon, outside the client's group) — the container's teardown identity
+	// is its stable name, recorded as a v2 container entry and torn down via
+	// Containers on a fresh down. Nil on the dev/process path (empty
+	// PostgresImage) and on the external-database path, where no container
+	// starts; the core dereferences it only when it dispatches to the container
+	// path.
+	PostgresContainer PostgresContainer
 	// Now is the clock the cert-expiry math reads. Nil defaults to time.Now.
 	Now func() time.Time
 
@@ -156,6 +167,24 @@ type ContainerController interface {
 	Exists(name string) bool
 	Stop(name string, timeout time.Duration) error
 	Remove(name string) error
+}
+
+// PostgresContainer starts the container-backed postgres child (S4): the
+// installed-stack store-of-record, run as a supervised stack component so the
+// one-command up/down lifecycle holds (the container is a child, not an
+// out-of-tree quadlet). It is the START analogue of ContainerController (which
+// tears down): this seam brings the container up at spawn; ContainerController
+// tears it down on a fresh cross-process down by the persisted name.
+//
+// Start runs the S4 `podman run` (detached) from spec and returns a Process
+// handle for the in-process lifecycle: Signal(SignalTerm) maps to `podman stop`
+// and Wait blocks until the container exits, so an in-process Down drains it the
+// same way it drains a process child. The handle's Pid is NOT a process-group id
+// (a rootless container runs beneath conmon) and is never persisted as a pgid;
+// the container's durable teardown identity is spec.Name, recorded as a v2
+// container entry. A non-nil error means the container could not be launched.
+type PostgresContainer interface {
+	Start(ctx context.Context, spec PostgresContainerSpec) (Process, error)
 }
 
 // CertEnsurer ensures the TLS anchor (one PEM that is both the server's
