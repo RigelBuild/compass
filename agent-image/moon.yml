@@ -20,6 +20,7 @@
 # build resolves already build through nix in this same gate.
 layer: 'application'
 language: 'nix'
+tags: ['ci-group.nix']
 
 workspace:
   inheritedTasks:

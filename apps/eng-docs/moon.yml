@@ -9,7 +9,7 @@
 # Access gate, no PostHog analytics.
 layer: 'application'
 language: 'typescript'
-tags: ['bun', 'oss']
+tags: ['bun', 'oss', 'ci-group.bun']
 
 tasks:
   # Mirror the monorepo's reviewed markdown into the gitignored

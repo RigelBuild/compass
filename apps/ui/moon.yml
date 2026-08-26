@@ -4,7 +4,7 @@
 # (@compass/client -> compass.v1); compass-proto:drift gates its freshness.
 layer: 'application'
 language: 'typescript'
-tags: ['bun', 'oss']
+tags: ['bun', 'oss', 'ci-group.bun']
 dependsOn: ['compass-client']
 
 tasks:

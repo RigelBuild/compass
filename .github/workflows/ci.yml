@@ -1,45 +1,55 @@
 # The remote gate for every pull request and every push to main, plus a nightly
 # full sweep of main.
 #
-# ONE JOB, NOT A MATRIX — the central structural decision, made deliberately.
+# A MATRIX OF NAMED CONCERN GROUPS, NOT ONE JOB — this reverses the earlier
+# single-job decision recorded here. That decision rejected a matrix on one
+# ground: a matrix could only be built by ENUMERATING projects (or tasks) in
+# YAML, a second source of truth for something .moon/workspace.yml already owns,
+# and such a list goes stale silently (a fork tree once shipped a functional-CI
+# registration with no entry in the project map, so it read as covered and gated
+# nothing). That ground no longer applies, because the matrix is no longer
+# enumerated in YAML. moon still owns project DISCOVERY: the `setup` job below
+# runs `moon query projects` (the affected closure on a PR, the full set on
+# push/schedule) and a generator (tools/ci-matrix) translates that live answer
+# into the matrix the `moon` job fans out over. The generator owns only
+# GROUPING — bucketing each discovered project by its one `ci-group.<name>` tag
+# — and that grouping is guarded so it cannot silently drift: the generator
+# fails loud (naming the offending project id) on any untagged project
+# (zero-untagged), any project carrying two ci-group tags (disjointness), and
+# any coverage gap. A new project with a `ci` task is picked up the moment it is
+# registered and tagged — no matrix entry to forget — so the arriving oh-my-pi
+# fork still needs no edit to this file, the same property the one-job design
+# prized, now with per-group named checks instead of one opaque `gates` status.
 #
-# A matrix fanning each moon task into its own job would give per-task check
-# names and crisper failure attribution. It was rejected on one decisive
-# ground: it can only be built by enumerating projects (or tasks) in YAML, and
-# a project list in a workflow is a second source of truth for something
-# .moon/workspace.yml already owns. That list goes stale silently. It has
-# already happened in this repo's history — a fork tree shipped a functional-CI
-# registration with no entry in the project map, so it read as covered and
-# gated nothing. A YAML enumeration recreates exactly that failure at the CI
-# layer: add a project, forget the matrix entry, and the gate goes quiet about
-# it while still reporting green. moon discovers projects from
-# .moon/workspace.yml, so a new project with a `ci` task is picked up the moment
-# it is registered — no matrix entry to forget, which is why the arriving
-# oh-my-pi fork needs no edit to this file.
+# The `gates` display name is gone. Each concern group runs as its own matrix
+# leg named `Moon battery (<group>)` (go / bun / nix / forks today), so a
+# failure is attributed to a named check rather than to a line in one job's log.
+# The four special legs that already needed an environment the bare moon battery
+# has no business realizing — pgtest, microvm, forge-oracle, gtk3-e2e — remain
+# their own peer jobs. A single required `CI` rollup (below) still fronts the
+# whole set, so branch protection requires one check regardless of the fan-out.
 #
-# The costs of one job are real and accepted: a single check name to require,
-# and the failing task named in the log rather than in the check list. moon
-# already prints the failing target and only the failing target's output, so
-# attribution costs one click, not a bisect.
+# AFFECTED ON PRs, FULL ON MAIN — now per leg. A pull request runs only what it
+# affects: `setup` computes the affected closure once and emits, per group, the
+# affected members' `:ci` targets (an unaffected group's leg no-ops) plus a
+# per-special-leg affected flag (pgtest/microvm/forge/gtk3), so a Go, UI, or
+# docs PR never pays for the vendored forks' nix builds (the dominant cost, and
+# the reason the forks leg's timeout is 90m). The tradeoff is real and named:
+# affected detection trusts each task's `inputs` globs to be complete, so an
+# inputs glob that misses a file would skip a task that should have run. The
+# backstop is that main is never gated by affected: every push to main AND a
+# nightly `schedule` run the FULL set — every group, every special leg, no
+# filter (setup emits every group with run:true and every flag true). So an
+# inputs gap a PR skipped is caught the moment the change lands on main (named
+# and attributable), not left to hide; the nightly sweep re-checks main even on
+# a quiet day. Fast affected path on PRs, exhaustive sweep on everything that
+# reaches main.
 #
-# AFFECTED ON PRs, FULL ON MAIN. A pull request runs `moon ci :ci`, which runs
-# only the projects the PR affects — a Go, UI, or docs PR never pays for the
-# vendored forks' nix builds (the dominant cost, and the reason the CI job's
-# timeout is 90m). The tradeoff is real and named: affected detection trusts
-# each task's `inputs` globs to be complete, so an inputs glob that misses a
-# file would skip a task that should have run — the same silent-skip class the
-# matrix rationale above rejects. The backstop is that main is never gated by
-# affected: every push to main AND a nightly `schedule` run the FULL `moon run
-# :ci` — every task, every project, no filter. So an inputs gap a PR skipped is
-# caught the moment the change lands on main (named and attributable), not left
-# to hide; the nightly sweep re-checks main even on a quiet day. Fast affected
-# path on PRs, exhaustive sweep on everything that reaches main.
-#
-# pgtest — the real-Postgres suites — now runs as its own peer job (below),
-# behind the `CI` rollup, rather than as a step in the moon `gates` job. It was
-# peeled out so a Postgres-service flake or the slow `-race` suite no longer
-# serializes behind the whole moon battery: the two lanes fail independently and
-# a service-container flake reds only `pgtest` (a re-run clears it), not the
+# pgtest — the real-Postgres suites — runs as its own peer job (below), behind
+# the `CI` rollup, rather than as a step in the moon battery. It was peeled out
+# so a Postgres-service flake or the slow `-race` suite no longer serializes
+# behind the whole battery: the two lanes fail independently and a
+# service-container flake reds only `pgtest` (a re-run clears it), not the
 # hermetic gate. The suites are build-tagged `pgtest`, so the moon battery's `go
 # test ./...` never compiles them — the pgtest job is the only thing that runs
 # them. It joins the `CI` rollup's `needs`, so there is still one required check.
@@ -99,43 +109,44 @@ permissions:
   contents: read
 
 jobs:
-  gates:
-    name: Gates (moon)
+  setup:
+    name: Setup (concern matrix)
     runs-on: ubuntu-latest
-    # Skip only the no-op case of the `edited` trigger above: a PR title/body
-    # edit that did NOT move the base. `changes.base` is present on the payload
-    # only when the base branch was re-pointed, so a real base re-point still
-    # runs (the whole reason `edited` is in the trigger set), while a title/body
-    # edit is a no-op. push and schedule are not `pull_request` events, so the
-    # first clause lets them through unconditionally. `workflow_dispatch` is
-    # excluded: it exists solely to drive the regen-forge-fixtures job, which
-    # carries its own `if:` — a fixture-regen dispatch has no business spinning
-    # up the full 90-minute gate battery, so this job stays off it.
+    # The discovery + grouping stage: run `moon query projects` (affected on a
+    # PR, full on push/schedule) and translate the live answer into the matrix
+    # the `moon` job fans out over, plus the four special-leg affected flags.
+    # moon owns discovery; the generator owns only grouping, guarded loud on any
+    # untagged / double-tagged project or coverage gap. Same no-op-`edited` guard
+    # every gate job carries.
     if: >-
       github.event_name != 'workflow_dispatch' &&
       (github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
       github.event.changes.base != null)
-    # The vendored forks build through nix (devenv's Rust crates via its flake's
-    # fenix pin), so this is a long job by construction.
-    timeout-minutes: 90
+    timeout-minutes: 15
     env:
-      # A short temp root, because AF_UNIX sun_path is 108 bytes and the Go
-      # suites bind sockets under `t.TempDir()`. The runner's default TMPDIR is
-      # /home/runner/work/_temp — 22 bytes before the test's own name-derived
-      # path — which pushes the runner and server socket tests past the cap and
-      # fails them with a bare EINVAL from bind(2). /tmp is 4 bytes and leaves
-      # the budget those tests were written against.
-      #
-      # A CI-shaped constraint, fixed in CI: the cap is real and the code's own
-      # guards against it are elsewhere; nothing about this repo's sockets should
-      # be redesigned around one runner's choice of temp root.
+      # Same short temp root as every gate job — see the moon battery below for
+      # the sun_path rationale. Harmless here; kept for consistency.
       TMPDIR: /tmp
+    outputs:
+      # The matrix the `moon` job fans out over (one entry per group that exists
+      # in the workspace), plus the four special-leg affected flags each gated
+      # job reads to decide whether a PR must run it. The full set is emitted on
+      # push/schedule (every group run:true, every flag true) — the full-sweep
+      # backstop lives in the generator, not here.
+      matrix: ${{ steps.gen.outputs.matrix }}
+      pgtest_affected: ${{ steps.gen.outputs.pgtest_affected }}
+      microvm_affected: ${{ steps.gen.outputs.microvm_affected }}
+      forge_affected: ${{ steps.gen.outputs.forge_affected }}
+      gtk3_affected: ${{ steps.gen.outputs.gtk3_affected }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # The drift gate's `git diff --no-index` needs real git; a shallow
-          # single-ref checkout does not provide it.
+          # fetch-depth 0 gives the base branch history the generator's affected
+          # closure + the forge/gtk3 changed-paths diff need. moon reads the base
+          # from GITHUB_BASE_REF and diffs against it; the generator's own path
+          # detection diffs base...HEAD — both need real history, not a shallow
+          # single-ref checkout.
           fetch-depth: 0
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
@@ -159,6 +170,119 @@ jobs:
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
       - name: Put the language toolchains on PATH
+        # Phase one of the two-phase bootstrap — the generator needs only bun and
+        # moon on PATH (it runs `moon query projects` under bun), so setup carries
+        # phase one alone and skips the heavier phase-two nixpkgs-tools step. The
+        # language runtimes (bun/node/moon/go) come from nix, not `setup-*`
+        # actions: gate-tools.nix's `langs` output resolves the identical
+        # derivations the dev shell does — bun/node/moon from
+        # tools/toolchain/toolchain-tools.nix, go from the go-overlay applied to
+        # the devenv.lock-pinned nixpkgs — so CI runs the pinned versions
+        # byte-for-byte. `langs` is a closed set, so it needs no `--arg attrs`
+        # (the head defaults it).
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          # Fail closed locally rather than leaning on the absence of a
+          # root-level flake.nix: with no installables `nix build` would build a
+          # default package if one existed, so an empty `langs` must error here.
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Generate the concern matrix
+        id: gen
+        # The discovery + grouping edge: runs `moon query projects` (affected
+        # closure on a PR via GITHUB_BASE_REF; full set on push/schedule) and its
+        # own base...HEAD changed-paths diff for the forge/gtk3 detection, then
+        # translates that into the matrix + the four affected flags written to
+        # $GITHUB_OUTPUT (mapped up into this job's `outputs:` above). The pure
+        # translation core is exhaustively unit-tested; this invocation is the
+        # thin impure shell around it. It fails loud (exit 1, `::error::`) on any
+        # untagged / double-tagged project or coverage gap — the fail-loud posture
+        # that lets moon own discovery without a stale YAML enumeration.
+        run: bun run tools/ci-matrix/index.ts
+
+  moon:
+    name: Moon battery (${{ matrix.group }})
+    runs-on: ubuntu-latest
+    needs: setup
+    # One leg per concern group, discovered at run time from setup's matrix. No
+    # YAML project enumeration — the group set is whatever `ci-group.*` tags
+    # exist in the workspace, translated by the generator. `fail-fast: false` so
+    # one group's failure does not cancel the others (each is an independently
+    # attributable named check). NO `continue-on-error`: a leg's failure must red
+    # its check and, through the rollup, the required `CI` status.
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    # Same no-op-`edited` guard every gate job carries (see setup): a title/body
+    # edit that did not move the base is a no-op; push/schedule pass through;
+    # workflow_dispatch stays off (regen-only).
+    if: >-
+      github.event_name != 'workflow_dispatch' &&
+      (github.event_name != 'pull_request' ||
+      github.event.action != 'edited' ||
+      github.event.changes.base != null)
+    # The forks group builds through nix (devenv's Rust crates via its flake's
+    # fenix pin), the dominant cost, so 90m is the ceiling every leg shares for
+    # now. A later dedup can give each group its own tighter ceiling; the forks
+    # leg is the one that actually needs 90.
+    timeout-minutes: 90
+    env:
+      # A short temp root, because AF_UNIX sun_path is 108 bytes and the Go
+      # suites bind sockets under `t.TempDir()`. The runner's default TMPDIR is
+      # /home/runner/work/_temp — 22 bytes before the test's own name-derived
+      # path — which pushes the runner and server socket tests past the cap and
+      # fails them with a bare EINVAL from bind(2). /tmp is 4 bytes and leaves
+      # the budget those tests were written against.
+      #
+      # A CI-shaped constraint, fixed in CI: the cap is real and the code's own
+      # guards against it are elsewhere; nothing about this repo's sockets should
+      # be redesigned around one runner's choice of temp root.
+      TMPDIR: /tmp
+    steps:
+      # Every step is gated on `matrix.run == 'true'`: an unaffected group is a
+      # placeholder leg (run:'false', empty targets) that the generator emits to
+      # keep the matrix non-empty and the check names stable, so its leg spins up
+      # and no-ops rather than never appearing. A running leg does the full
+      # two-phase bootstrap the moon battery does.
+      - if: matrix.run == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The drift gate's `git diff --no-index` needs real git; a shallow
+          # single-ref checkout does not provide it.
+          fetch-depth: 0
+
+      - if: matrix.run == 'true'
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # The forks' functional CI is `nix build` of their own flakes, and the
+          # whole toolchain — language runtimes AND the nixpkgs tools — is built
+          # from nix below. Flakes are needed for the former; nix-command for both.
+          #
+          # The substituters below are declared here rather than delegated via
+          # `accept-flake-config = true`. That setting makes nix accept the
+          # `nixConfig` of ANY flake it evaluates, and the RigelBuild/devenv
+          # flake the build fetches carries exactly such a block — so a PR could add its own substituter
+          # AND its own trusted public key, and CI would fetch and run binaries
+          # signed by the attacker's key, with signature verification satisfied
+          # by the key the same PR supplied. Naming the two caches the forks
+          # legitimately use keeps that trust in a reviewed file: adding a third
+          # is a change to this workflow, not to a vendored tree.
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        if: matrix.run == 'true'
         # Phase one of the two-phase bootstrap. The language runtimes
         # (bun/node/moon/go) come from nix, not `setup-*` actions: gate-tools.nix's
         # `langs` output resolves the identical derivations the dev shell does —
@@ -186,6 +310,7 @@ jobs:
           done
 
       - name: Put the dev shell's nixpkgs tools on PATH
+        if: matrix.run == 'true'
         # Phase two. buf, protoc, the Go analysis battery, biome and markdownlint
         # have no `setup-*` action that could reproduce a nixpkgs pin. Rather than
         # pick a close-enough release from some other channel and hope, CI
@@ -215,40 +340,34 @@ jobs:
           echo "PLAYWRIGHT_CHROMIUM_PATH=$chromium/bin/chromium" >>"$GITHUB_ENV"
 
       - name: Toolchain parity
-        # Runs BEFORE the gate, though `:ci` schedules it again (it takes under a
-        # second). A toolchain skew invalidates every result the gate is about to
-        # produce, so finding out first is worth running it twice.
+        if: matrix.run == 'true'
+        # Runs BEFORE the battery, though `:ci` schedules it again (it takes under
+        # a second). A toolchain skew invalidates every result the battery is
+        # about to produce, so finding out first is worth running it twice.
         run: bun tools/toolchain/parity.ts
 
-      - name: CI (affected)
-        # Pull requests only: run only what the PR affects. moon reads the base
-        # from GITHUB_BASE_REF (the PR's target branch) via the ci_env crate and
-        # diffs against it — see the AFFECTED section in the header for the
-        # tradeoff and the backstop. Restricted to `pull_request` deliberately:
-        # on a push GITHUB_BASE_REF is unset, so moon would fall back to
-        # comparing vcs.defaultBranch against HEAD — which on a push to main is
-        # main against its own tip, an empty diff that runs nothing and reports a
-        # misleading green. So affected is the fast PR path; every landing on
-        # main gets the full sweep below.
-        if: github.event_name == 'pull_request'
-        run: moon ci :ci
-
-      - name: CI (full sweep)
-        # Every push to main and the nightly schedule: the whole battery,
-        # unconditionally. This is what makes the affected PR gate safe — an
-        # incomplete `inputs` glob that let a task be skipped on a PR is caught
-        # here the moment the change lands on main (and again nightly), named and
-        # attributable, not left to hide indefinitely. `moon run :ci`, not `moon
-        # ci`: affected detection would find nothing to do on a push to main.
-        if: github.event_name != 'pull_request'
-        run: moon run :ci
+      - name: Moon battery
+        if: matrix.run == 'true'
+        # `moon run <targets>`, NOT `moon ci`: setup already computed the affected
+        # set and this leg's `matrix.targets` are exactly the affected members'
+        # `:ci` targets for this group (full set on push/schedule). Re-running
+        # `moon ci` here would recompute affected — redundant on a PR and, on a
+        # push where GITHUB_BASE_REF is unset, an empty-diff no-op that runs
+        # nothing. Passing the precomputed targets keeps discovery in one place
+        # (setup) and makes each leg run exactly its share. `matrix.targets` is a
+        # JSON array; `join(...)` renders it as the space-separated argument list
+        # `moon run` expects (a bare `${{ matrix.targets }}` would inline the raw
+        # JSON, not a target list). A running leg always has >=1 target, so this
+        # is never an empty `moon run`.
+        run: moon run ${{ join(matrix.targets, ' ') }}
 
       - name: Retrospect
-        # Collapse the single job's flat task fan-out into per-task sections in
-        # the Actions log, so a failure is one expand instead of a scroll. Reads
+        if: matrix.run == 'true' && (success() || failure())
+        # Collapse this leg's flat task fan-out into per-task sections in the
+        # Actions log, so a failure is one expand instead of a scroll. Reads
         # .moon/cache/{ci,run}Report.json — no token, no added permissions, so
         # `permissions: contents: read` above is untouched. `success() ||
-        # failure()` so it still renders when the gate failed.
+        # failure()` so it still renders when the battery failed.
         #
         # This is third-party JS that runs on every event, fork PRs included, so
         # the SHA pin below IS its trust anchor — the same posture the pgtest
@@ -257,21 +376,27 @@ jobs:
         # and only reads and prints local cache files, so a fork PR cannot turn it
         # into an exfiltration or write path. Bump the pin deliberately (it rides
         # the same dependabot config as the other pinned actions), never drift it.
-        if: success() || failure()
         uses: appthrust/moon-ci-retrospect@631a1e667f96e8ca893eab69f03e425f7fbfdc2b # v2.1.0
 
   pgtest:
     name: pgtest (real-Postgres suites)
     runs-on: ubuntu-latest
+    needs: setup
     # Peeled out of the moon gate so a Postgres-service flake or a slow -race
-    # suite no longer serializes behind the whole battery. Runs unconditionally
-    # on every gate event; a later task gates it on the Go affected-closure so an
-    # unaffected PR pays zero. Same no-op-`edited` guard the other work jobs carry.
+    # suite no longer serializes behind the whole battery. The job-level `if:`
+    # ANDs the shared no-op-`edited` guard with the pgtest affected gate: on a PR
+    # it runs only when setup's closure contains compass-go (pgtest_affected),
+    # and always on push/schedule (setup emits the flag 'true' there). A failed
+    # setup leaves the output empty → `'' == 'true'` is false → the job skips,
+    # and the rollup turns that skip red because the paired flag is not 'false'.
+    # The in-step guards stay as defense-in-depth.
     if: >-
       github.event_name != 'workflow_dispatch' &&
       (github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
-      github.event.changes.base != null)
+      github.event.changes.base != null) &&
+      (github.event_name != 'pull_request' ||
+      needs.setup.outputs.pgtest_affected == 'true')
     timeout-minutes: 20
     env:
       # The Real-Postgres suites bind AF_UNIX sockets under t.TempDir(); the
@@ -428,18 +553,22 @@ jobs:
   microvm:
     name: microvm (KVM boot suite)
     runs-on: ubuntu-latest
+    needs: setup
     # Peeled out of the moon gate so the KVM boot suite runs as its own lane, in
     # parallel with the moon battery and the other peer jobs, behind the CI
-    # rollup. Runs unconditionally on every gate event; a later task gates it on
-    # the microVM affected-closure so an unaffected PR pays zero. No privileged
-    # container — the boot leg runs rootless on a bare runner with the udev +
-    # sysctl relaxations below (design T2 / §E-D2). Same no-op-`edited` guard the
-    # other work jobs carry.
+    # rollup. The job-level `if:` ANDs the shared no-op-`edited` guard with the
+    # microVM affected gate: on a PR it runs only when setup's closure contains
+    # compass-go or compass-guest-image (microvm_affected), and always on
+    # push/schedule. No privileged container — the boot leg runs rootless on a
+    # bare runner with the udev + sysctl relaxations below (design T2 / §E-D2).
+    # The in-step guards stay as defense-in-depth.
     if: >-
       github.event_name != 'workflow_dispatch' &&
       (github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
-      github.event.changes.base != null)
+      github.event.changes.base != null) &&
+      (github.event_name != 'pull_request' ||
+      needs.setup.outputs.microvm_affected == 'true')
     timeout-minutes: 30
     env:
       # microVM suites bind AF_UNIX sockets under t.TempDir(); the runner's
@@ -650,16 +779,22 @@ jobs:
   forge-oracle:
     name: forge-oracle (live-contract oracle)
     runs-on: ubuntu-latest
+    needs: setup
     # Peeled out of the moon gate so the secret-bearing live oracle runs as its
     # own lane behind the CI rollup; the tri-event + same-repo-head guards stay
-    # on the steps as defense-in-depth. Runs its own bootstrap to reach the
-    # in-step forge-affected detection until T5 hoists that into setup and adds a
-    # job-level gate. No privileged container.
+    # on the steps as defense-in-depth. The job-level `if:` ANDs the shared
+    # no-op-`edited` guard with the forge affected gate: on a PR the job runs
+    # only when setup found the forge surface affected (forge_affected — the
+    # go/internal/forge/** or ci.yml change), and always on push/schedule. The
+    # in-step forge_affected detection + tri-event/same-repo-head guards stay as
+    # defense-in-depth. No privileged container.
     if: >-
       github.event_name != 'workflow_dispatch' &&
       (github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
-      github.event.changes.base != null)
+      github.event.changes.base != null) &&
+      (github.event_name != 'pull_request' ||
+      needs.setup.outputs.forge_affected == 'true')
     timeout-minutes: 30
     env:
       TMPDIR: /tmp
@@ -899,17 +1034,21 @@ jobs:
   gtk3-e2e:
     name: gtk3-e2e (multi-window native app gate)
     runs-on: ubuntu-latest
+    needs: setup
     # Peeled out of the moon gate into its own lane behind the CI rollup; the
     # native GTK3/WebKit app gate realizes a heavy out-of-band WebKitGTK/xvfb
-    # closure the bare moon gate has no business building. The in-step affected
-    # guard stays as defense-in-depth; runs its own bootstrap to reach that guard
-    # until T5 hoists the affected detection into setup and adds a job-level
-    # gtk3_affected gate. No privileged container.
+    # closure the bare moon gate has no business building. The job-level `if:`
+    # ANDs the shared no-op-`edited` guard with the gtk3 affected gate: on a PR
+    # it runs only when setup found go/cmd/compass-app/ changed (gtk3_affected),
+    # and always on push/schedule. The in-step affected guard stays as
+    # defense-in-depth. No privileged container.
     if: >-
       github.event_name != 'workflow_dispatch' &&
       (github.event_name != 'pull_request' ||
       github.event.action != 'edited' ||
-      github.event.changes.base != null)
+      github.event.changes.base != null) &&
+      (github.event_name != 'pull_request' ||
+      needs.setup.outputs.gtk3_affected == 'true')
     timeout-minutes: 30
     env:
       TMPDIR: /tmp
@@ -1083,7 +1222,7 @@ jobs:
   dogfood-e2e:
     name: Dogfood e2e (deterministic full-stack tier)
     runs-on: ubuntu-latest
-    # A DEDICATED job in a PRIVILEGED container, split off from `gates`, for one
+    # A DEDICATED job in a PRIVILEGED container, split off from the moon battery, for one
     # reason: the image-affected seed path. On a PR that changes the image
     # closure the gate builds the agent image from THIS tree and copies it into
     # local containers-storage (`nix run …#devenv -- container copy agent`,
@@ -1094,9 +1233,9 @@ jobs:
     # pulled-image legs execute), but the copy-to-storage does not. A privileged
     # container is the reliable way to grant the userns caps that copy needs
     # (the redhat-actions / travier pattern), so the from-tree seed runs here
-    # rather than in `gates`.
+    # rather than in the moon battery.
     #
-    # It is its OWN job, not `gates` wrapped in a container, so `gates` stays on
+    # It is its OWN job, not that battery wrapped in a container, so the moon battery stays on
     # the bare runner: wrapping the whole job would flip its Postgres service
     # from 127.0.0.1 to the `postgres` service hostname (containerized jobs reach
     # services by label) and break the Real-Postgres step's DSN. This tier needs
@@ -1116,8 +1255,8 @@ jobs:
       # container sandbox withholds.
       image: quay.io/podman/stable@sha256:663e0dbf407987b7db3f20d3588c283a8228db17b282d2029a482d4d47e36964
       options: --privileged
-    # Mirror the `gates` guard: skip the no-op `edited` (title/body) case, and
-    # stay off `workflow_dispatch` (regen-only — see the gates guard).
+    # Mirror the moon battery's guard: skip the no-op `edited` (title/body) case, and
+    # stay off `workflow_dispatch` (regen-only — see the moon job's guard).
     if: >-
       github.event_name != 'workflow_dispatch' &&
       (github.event_name != 'pull_request' ||
@@ -1125,7 +1264,7 @@ jobs:
       github.event.changes.base != null)
     timeout-minutes: 60
     env:
-      # Same short temp root as `gates`: the e2e suite binds AF_UNIX sockets
+      # Same short temp root as the moon battery: the e2e suite binds AF_UNIX sockets
       # under t.TempDir() and the 108-byte sun_path cap needs the budget.
       TMPDIR: /tmp
       # The rootless runtime dir for the podman user. Without it, containers
@@ -1291,7 +1430,7 @@ jobs:
           # build-users-group =) AND the podman user's own ~/.config/nix/nix.conf
           # (so `nix eval`/`nix build` in the steps below see nix-command + flakes;
           # the system /etc/nix/nix.conf the installer writes is not consulted for a
-          # single-user install run as a normal user). Mirrors the `gates`
+          # single-user install run as a normal user). Mirrors the moon job's
           # install-nix-action config exactly — the SAME two cache substituters +
           # trusted keys the vendored forks use, never `accept-flake-config` (which
           # would trust a PR-supplied substituter + key).
@@ -1302,7 +1441,7 @@ jobs:
           extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
           extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
           NIXCONF
-          # Pin the installer by content hash, not just version+TLS: the gates
+          # Pin the installer by content hash, not just version+TLS: the moon
           # job gets its nix from a SHA-pinned action, so this bare curl must not
           # be the one unverified fetch feeding a --privileged job that then holds
           # passwordless sudo and builds+loads the agent image. Fail closed if the
@@ -1317,8 +1456,8 @@ jobs:
 
       - name: Put the language toolchains on PATH
         # The dogfood seed's `moon query tasks --affected` and the e2e `go test`
-        # need the same nix-pinned toolchain the gates job builds. Phase one:
-        # bun/node/moon/go from gate-tools.nix's `langs` (see the gates job for
+        # need the same nix-pinned toolchain the moon job builds. Phase one:
+        # bun/node/moon/go from gate-tools.nix's `langs` (see the moon job for
         # the two-phase rationale). Duplicated here because this is a separate
         # job with its own runner filesystem.
         run: |
@@ -1464,7 +1603,7 @@ jobs:
         # tier alone — see the record
         # docs/designs/product/compass-forge-integration-testing.
         #
-        # Same capture-replay-exit shape as the gates job's suites: redirect (not
+        # Same capture-replay-exit shape as the moon job's suites: redirect (not
         # a `| tee` pipeline, whose exit status is tee's 0 and would swallow a
         # FAIL), replay the log, then exit on go test's own status. `|| rc=$?`
         # because the step runs under `bash -e`. The 20m timeout is finite
@@ -1529,7 +1668,7 @@ jobs:
     #     matters: when the RUN is cancelled — every push to a ref supersedes the
     #     prior in-flight run via the `cancel-in-progress` concurrency above,
     #     which cancels both work jobs — `always()` would STILL run this rollup,
-    #     see `needs.gates.result == 'cancelled'`, and red the required `CI`
+    #     see `needs.moon.result == 'cancelled'`, and red the required `CI`
     #     check on that superseded commit. On a busy main that is a false red on
     #     nearly every intermediate merge. `!cancelled()` instead SKIPS the
     #     rollup on a cancelled run, so a superseded commit's `CI` check is
@@ -1556,7 +1695,7 @@ jobs:
     # `!cancelled()` must be parenthesized against the OR group: `&&` binds tighter
     # than `||`, so without the parens the trailing `|| changes.base != null` would
     # detach from the AND.
-    needs: [gates, dogfood-e2e, pgtest, microvm, forge-oracle, gtk3-e2e]
+    needs: [setup, moon, dogfood-e2e, pgtest, microvm, forge-oracle, gtk3-e2e]
     if: >-
       !cancelled() &&
       github.event_name != 'workflow_dispatch' && (
@@ -1567,30 +1706,77 @@ jobs:
     steps:
       - name: Require every work job to have succeeded
         # `needs.<job>.result` is one of success | failure | cancelled | skipped.
-        # Only `success` passes. This step runs only when the rollup's own `if`
-        # let it (see above): a cancelled RUN skips the whole rollup, and the
-        # no-op-`edited` case skips it too. So the only non-success that can
-        # actually reach this step is a work-job `failure` or a per-job
-        # `cancelled` (a work-job `timeout-minutes`). A `skipped` result cannot
-        # reach here: `gates`/`dogfood-e2e`/`pgtest`/`microvm` have no `needs`, so their sole skip
-        # path is the edited-guard — which skips this rollup through the identical
-        # guard. The `!= success` check below still covers `skipped` as a
-        # belt-and-suspenders backstop, but no `needs` relationship in this
-        # workflow can produce it. Any failure or per-job cancellation reds the
-        # one required check.
+        # This step runs only when the rollup's own `if` let it (see above): a
+        # cancelled RUN skips the whole rollup, and the no-op-`edited` case skips
+        # it too.
+        #
+        # `setup` and `moon` are UNCONDITIONALLY required: they run on every gate
+        # event, so only plain `success` passes for them — a failure, a per-job
+        # cancellation (timeout), or a skip all red the required check. `moon`'s
+        # result is the matrix job's aggregate across its legs: any leg failing
+        # makes `needs.moon.result` non-success.
+        #
+        # The four special legs are affected-GATED at the job level, so on a PR
+        # that legitimately does not touch their surface they SKIP — and a skip
+        # there is correct, not a failure. But a skip is only accepted when its
+        # PAIRED setup flag says the leg was meant to skip: `result == 'skipped'`
+        # passes ONLY when `needs.setup.outputs.<flag> == 'false'`. This is
+        # fail-safe against a broken setup: a failed `setup` leaves its outputs
+        # EMPTY, so the flag reads '' — `'' != 'false'`, the skipped leg is NOT
+        # excused, and the rollup reds. Never a blanket skipped-is-green: a leg
+        # that skipped for any reason other than its own flag being 'false'
+        # (setup failure, a spurious skip) reds the required check.
         run: |
-          gates='${{ needs.gates.result }}'
+          setup='${{ needs.setup.result }}'
+          moon='${{ needs.moon.result }}'
           dogfood='${{ needs.dogfood-e2e.result }}'
           pgtest='${{ needs.pgtest.result }}'
           microvm='${{ needs.microvm.result }}'
           forge='${{ needs.forge-oracle.result }}'
           gtk3='${{ needs.gtk3-e2e.result }}'
-          echo "gates=$gates dogfood-e2e=$dogfood pgtest=$pgtest microvm=$microvm forge-oracle=$forge gtk3-e2e=$gtk3"
-          if [ "$gates" != "success" ] || [ "$dogfood" != "success" ] || [ "$pgtest" != "success" ] || [ "$microvm" != "success" ] || [ "$forge" != "success" ] || [ "$gtk3" != "success" ]; then
-            echo "::error::a required work job did not succeed (gates=$gates, dogfood-e2e=$dogfood, pgtest=$pgtest, microvm=$microvm, forge-oracle=$forge, gtk3-e2e=$gtk3)"
+          pgtest_flag='${{ needs.setup.outputs.pgtest_affected }}'
+          microvm_flag='${{ needs.setup.outputs.microvm_affected }}'
+          forge_flag='${{ needs.setup.outputs.forge_affected }}'
+          gtk3_flag='${{ needs.setup.outputs.gtk3_affected }}'
+          echo "setup=$setup moon=$moon dogfood-e2e=$dogfood pgtest=$pgtest microvm=$microvm forge-oracle=$forge gtk3-e2e=$gtk3"
+          echo "flags: pgtest=$pgtest_flag microvm=$microvm_flag forge=$forge_flag gtk3=$gtk3_flag"
+          rc=0
+          # setup and moon must plainly succeed.
+          if [ "$setup" != "success" ]; then
+            echo "::error::setup did not succeed (result=$setup)"
+            rc=1
+          fi
+          if [ "$moon" != "success" ]; then
+            echo "::error::the moon battery did not succeed (result=$moon)"
+            rc=1
+          fi
+          # dogfood-e2e is not affected-gated — plain success required.
+          if [ "$dogfood" != "success" ]; then
+            echo "::error::dogfood-e2e did not succeed (result=$dogfood)"
+            rc=1
+          fi
+          # Each gated special leg: success always passes; skipped passes ONLY
+          # when its paired setup flag is 'false' (a failed setup → empty flag →
+          # '' != 'false' → reds, never blanket skipped-is-green).
+          require_gated() {
+            local name="$1" result="$2" flag="$3"
+            if [ "$result" = "success" ]; then
+              return 0
+            fi
+            if [ "$result" = "skipped" ] && [ "$flag" = "false" ]; then
+              return 0
+            fi
+            echo "::error::$name did not succeed (result=$result, affected flag=$flag) — skipped is accepted only when its setup flag is 'false'"
+            rc=1
+          }
+          require_gated pgtest "$pgtest" "$pgtest_flag"
+          require_gated microvm "$microvm" "$microvm_flag"
+          require_gated forge-oracle "$forge" "$forge_flag"
+          require_gated gtk3-e2e "$gtk3" "$gtk3_flag"
+          if [ "$rc" != 0 ]; then
             exit 1
           fi
-          echo "all work jobs succeeded"
+          echo "all required work jobs succeeded (or correctly skipped per their setup flag)"
 
   regen-forge-fixtures:
     name: Regenerate forge golden fixtures
@@ -1599,7 +1785,7 @@ jobs:
     # (TestLiveUpdateFixtures) rewrites go/internal/forge/testdata/ against the
     # real GitHub + Linear testbed — whose PATs live only in Actions secrets, so
     # a local `-update` is impossible — then opens a BOT PR carrying the rewritten
-    # fixtures for human review. It is a SEPARATE job, never a step in `gates`:
+    # fixtures for human review. It is a SEPARATE job, never a step in the moon battery:
     # gating on `workflow_dispatch` keeps it off every normal gate event, so the
     # required `CI` rollup above (which does not `needs:` this job) is untouched.
     if: github.event_name == 'workflow_dispatch'
@@ -1611,32 +1797,32 @@ jobs:
       pull-requests: write
     timeout-minutes: 90
     env:
-      # Same short temp root as `gates`: the live suite binds AF_UNIX sockets
+      # Same short temp root as the moon battery: the live suite binds AF_UNIX sockets
       # under t.TempDir() and the 108-byte sun_path cap needs the budget.
       TMPDIR: /tmp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history so the create-pull-request action can branch and diff
-          # cleanly, matching the gates checkout.
+          # cleanly, matching the moon job's checkout.
           fetch-depth: 0
 
       - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
         with:
-          # The SAME two-cache trust posture as the gates job — the two
+          # The SAME two-cache trust posture as the moon job — the two
           # substituters the vendored forks use plus their trusted keys, never
           # `accept-flake-config` (which would trust a PR-supplied substituter +
-          # key). See the gates install-nix-action step for the full rationale.
+          # key). See the moon job's install-nix-action step for the full rationale.
           extra_nix_config: |
             experimental-features = nix-command flakes
             extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
             extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
 
       - name: Put the language toolchains on PATH
-        # Phase one of the two-phase bootstrap, identical to the gates job: the
+        # Phase one of the two-phase bootstrap, identical to the moon job: the
         # language runtimes (bun/node/moon/go) from gate-tools.nix's `langs`, built
         # from the devenv.lock pin so this lane runs the same toolchain the gate
-        # does. See the gates job for the two-phase rationale.
+        # does. See the moon job for the two-phase rationale.
         run: |
           stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
             | jq -r '.[].store')
@@ -1659,7 +1845,7 @@ jobs:
           echo "$out/bin" >>"$GITHUB_PATH"
 
       - name: Mint the forge live-oracle's Linear app token
-        # Same per-run mint as the gates-job oracle (RIG-2423): the regen lane's
+        # Same per-run mint as the forge-oracle job's oracle (RIG-2423): the regen lane's
         # `-update` capture drives the SAME live Linear legs, which authenticate
         # as the OAuth app (client_credentials), so it needs a fresh app-actor
         # token too. No `if:` guard here — the whole job is workflow_dispatch-only
@@ -1675,7 +1861,7 @@ jobs:
       - name: Regenerate the forge golden fixtures against the live testbed
         working-directory: go
         env:
-          # The SAME T2 env contract as the live-contract oracle in gates: the
+          # The SAME T2 env contract as the live-contract oracle in forge-oracle: the
           # GitHub live legs gate on the LIVEGITHUB_* trio, the Linear legs on
           # LINEAR_FORGE (+ team). The LIVEGITHUB_* trio + LINEAR_FORGE_TEAM come
           # from Actions secrets; LINEAR_FORGE is the app-actor token the mint

@@ -12,7 +12,7 @@
 # before pushing rather than from a red run.
 layer: 'tool'
 language: 'typescript'
-tags: ['bun', 'oss']
+tags: ['bun', 'oss', 'ci-group.bun']
 
 tasks:
   typecheck:

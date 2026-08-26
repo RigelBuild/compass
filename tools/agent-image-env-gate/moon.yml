@@ -21,7 +21,7 @@
 # `moon run :ci`), so the `ci` aggregate below is swept automatically.
 layer: 'tool'
 language: 'typescript'
-tags: ['bun']
+tags: ['bun', 'ci-group.bun']
 
 tasks:
   typecheck:

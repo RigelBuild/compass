@@ -118,6 +118,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/ci-matrix": {
+      "name": "@compass/ci-matrix",
+      "bin": {
+        "ci-matrix": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/cx-token-gate": {
       "name": "@compass/cx-token-gate",
       "bin": {
@@ -399,6 +409,8 @@
     "@compass/agent": ["@compass/agent@workspace:packages/compass-agent"],
 
     "@compass/agent-image-env-gate": ["@compass/agent-image-env-gate@workspace:tools/agent-image-env-gate"],
+
+    "@compass/ci-matrix": ["@compass/ci-matrix@workspace:tools/ci-matrix"],
 
     "@compass/client": ["@compass/client@workspace:packages/compass-client"],
 

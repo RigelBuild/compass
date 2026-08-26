@@ -15,7 +15,7 @@
 # wiring (unlike sealed's Woodpecker pipeline).
 layer: 'tool'
 language: 'typescript'
-tags: ['bun']
+tags: ['bun', 'ci-group.bun']
 
 tasks:
   typecheck:

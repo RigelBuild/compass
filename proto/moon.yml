@@ -14,7 +14,7 @@
 # from.
 layer: 'library'
 language: 'bash'
-tags: ['oss']
+tags: ['oss', 'ci-group.go']
 
 workspace:
   inheritedTasks:

@@ -8,7 +8,7 @@
 # mapping is the package's own testable surface (no Runner-side translator).
 layer: 'library'
 language: 'typescript'
-tags: ['bun', 'oss']
+tags: ['bun', 'oss', 'ci-group.bun']
 
 tasks:
   typecheck:

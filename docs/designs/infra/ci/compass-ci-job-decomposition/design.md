@@ -82,20 +82,22 @@ check-name attribution plus special-infra alignment:
 
 ### Concern groups — declared by an explicit `ci-group` tag, never by project id in ci.yml
 
-Each project declares exactly one `ci-group:<name>` tag in its `moon.yml`, so
+Each project declares exactly one `ci-group.<name>` tag in its `moon.yml`, so
 group membership is data on the project itself — colocated with the project
 registration the vendored-fork incident showed can otherwise drift — never a
-filter expression in the workflow. Membership as of `main@fc835ca6` (live
+filter expression in the workflow. moon 2.5.3 tag ids forbid a colon (only
+alnum / `-` / `_` / `/` / `.` are allowed), so the group delimiter is a DOT,
+not the colon this record first drafted. Membership as of `main@fc835ca6` (live
 `moon query projects` this session):
 
 | Group | Tag (declared per project) | Members today |
 | --- | --- | --- |
-| `go` | `ci-group:go` | `compass-go`, `compass-proto` |
-| `bun` | `ci-group:bun` | 13 first-party projects (plus `root`; see below, for 14 total): `compass-agent`, `compass-client`, `compass-ui`, `compass-eng-docs`, the gate tools (`toolchain-parity`, `stamp-gate`, `design-ledger-gate`, `orion-ref-gate`, `cx-token-gate`, `agent-image-env-gate`), `renovate`, `renovate-preflight`, `forge-linear-token` |
-| `nix` | `ci-group:nix` | `compass-agent-image`, `compass-guest-image`, `compass-app-bundle` — the heavy nix builds (agent-image/moon.yml:45, guest-image/moon.yml:46, app-bundle/moon.yml:32) |
-| `forks` | `ci-group:forks` | **Transient** (see below) — `oh-my-pi-fork` (workspace.yml:117; TypeScript but deliberately not `bun`-tagged — its ci is upstream's own check, forks/oh-my-pi/moon.yml:52–92) |
+| `go` | `ci-group.go` | `compass-go`, `compass-proto` |
+| `bun` | `ci-group.bun` | 13 first-party projects (plus `root`; see below, for 14 total): `compass-agent`, `compass-client`, `compass-ui`, `compass-eng-docs`, the gate tools (`toolchain-parity`, `stamp-gate`, `design-ledger-gate`, `orion-ref-gate`, `cx-token-gate`, `agent-image-env-gate`), `renovate`, `renovate-preflight`, `forge-linear-token` |
+| `nix` | `ci-group.nix` | `compass-agent-image`, `compass-guest-image`, `compass-app-bundle` — the heavy nix builds (agent-image/moon.yml:45, guest-image/moon.yml:46, app-bundle/moon.yml:32) |
+| `forks` | `ci-group.forks` | **Transient** (see below) — `oh-my-pi-fork` (workspace.yml:117; TypeScript but deliberately not `bun`-tagged — its ci is upstream's own check, forks/oh-my-pi/moon.yml:52–92) |
 
-Plus `root` (workspace.yml:16, the lint/format sweeps): tagged `ci-group:bun`
+Plus `root` (workspace.yml:16, the lint/format sweeps): tagged `ci-group.bun`
 (it owns the single bun install the bun projects' `install` no-op depends on,
 workspace.yml:11–15).
 
@@ -106,7 +108,7 @@ cost" the ci.yml header names (ci.yml:26–27) and the worst case the `gates`
 job's `timeout-minutes: 90` was sized for (ci.yml:118–120). The frozen forks
 reversal (`docs/designs/platform/compass-forks-reversal/design.md`) removes
 all three vendored forks; when `oh-my-pi-fork` is deleted, its
-`ci-group:forks` tag vanishes with its `moon.yml`, and the group empties
+`ci-group.forks` tag vanishes with its `moon.yml`, and the group empties
 cleanly — no untagged project is left behind, so the zero-untagged and
 coverage assertions still pass over the remaining groups — while the
 dominant-cost worst case departs with it. Nothing in this design is premised
@@ -443,7 +445,7 @@ tasks T1–T4, which land value even before T5.
 ## Global Constraints
 
 - **No project id may appear in ci.yml.** Grouping is declared as exactly one
-  explicit `ci-group:<name>` tag per project in its moon.yml; membership is
+  explicit `ci-group.<name>` tag per project in its moon.yml; membership is
   computed at run time. The setup generator MUST fail loud — naming the
   offending project id in one line — on any coverage gap, double membership,
   or untagged project.
@@ -579,9 +581,9 @@ and Retrospect.
 
 ### T5 — the moon-owned concern matrix; dissolve `gates`; gate every leg
 
-Tag every project: add exactly one `ci-group:<name>` tag to each project's
+Tag every project: add exactly one `ci-group.<name>` tag to each project's
 moon.yml (go/bun/nix/forks per the membership table above; `root` gets
-`ci-group:bun`).
+`ci-group.bun`).
 
 Add a `setup` job (fetch-depth-0 checkout, nix install, phase-one
 bootstrap, `edited` guard) running the generator — a bun-run TypeScript

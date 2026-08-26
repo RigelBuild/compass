@@ -16,6 +16,8 @@
 layer: 'library'
 language: 'typescript'
 
+tags: ['ci-group.bun']
+
 workspace:
   inheritedTasks:
     exclude: ['install', 'lint', 'format']
