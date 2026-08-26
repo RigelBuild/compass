@@ -1,0 +1,94 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# The repo-root flake gate (design record compass-distribution §T6). Two checks
+# on the /flake.nix distribution surface:
+#
+#   flake-check   `nix flake check` — the flake evaluates and every package
+#                 (compass{,-server,-runner,-stack}, compass-app, the
+#                 compass-stack-env) builds from a bare checkout.
+#   flake-parity  the nixpkgs-pin parity gate (tools/toolchain/flake-parity.ts):
+#                 flake.lock's nixpkgs rev must equal devenv.lock's. The flake
+#                 carries its OWN lock, a SECOND independent nixpkgs pin, so a
+#                 devenv pin bump silently skews it — this gate turns the drift
+#                 into a red check, keeping the flake-built ≡ bundle-built "one
+#                 closure" claim honest. (The parity script's PURE core is
+#                 unit-tested under toolchain-parity:test.)
+#
+# A moon project, not a bare workflow step, so both checks ride the affected-
+# gated pre-merge gate: on a PR `moon ci :ci` runs them only when the PR affects
+# the flake's build closure (the `inputs` below — flake.nix/flake.lock plus the
+# go/ module the packages build and devenv.lock, whose bump is the drift event),
+# and every push to main runs them unconditionally. devenv.lock is in the
+# trigger set precisely because a devenv pin bump is what causes the skew.
+#
+# A nix-source project like its siblings (agent-image, guest-image, app-bundle):
+# ci-group.nix, and the tag-bun install / whole-repo lint+format are never
+# inherited here.
+layer: 'tool'
+language: 'nix'
+tags: ['ci-group.nix']
+
+# The ci-matrix generator computes a PR's affected set with
+# `moon query projects --affected` (tools/ci-matrix/index.ts:224), which walks
+# the PROJECT graph only — a project is affected when its own source tree or a
+# project it `dependsOn` changed. It NEVER consults a project's cross-tree task
+# `inputs` globs (.github/workflows/ci.yml:1498-1505). flake-gate's entire
+# trigger surface lives in OTHER projects' trees (flake.nix/flake.lock/
+# devenv.lock in `root`, go/** in `compass-go`, the parity sources in
+# `toolchain-parity`), so without these edges the gate is marked affected only
+# when tools/flake-gate/moon.yml itself changes — never for the drift it exists
+# to catch. Declaring the owners as deps lets `--downstream direct` pull
+# flake-gate into the affected set whenever any owner is affected. The `inputs:`
+# globs on flake-check remain the true closure (main-sweep + local `moon ci`).
+dependsOn:
+  - 'root'
+  - 'compass-go'
+  - 'toolchain-parity'
+
+workspace:
+  inheritedTasks:
+    exclude: ['install', 'lint', 'format']
+
+tasks:
+  flake-check:
+    # Evaluate + build every flake output. Runs from the workspace root where
+    # flake.nix lives. cache:false — nix owns its store-path caching; moon must
+    # not false-green a check it did not re-run (the posture guest-image and
+    # app-bundle take).
+    command: 'nix flake check'
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+      runInCI: true
+    # Affected-detection closure for the whole gate (the deps below inherit it
+    # via the project). A change to any reschedules the gate under per-PR
+    # affected detection; every push to main runs it unconditionally (ci.yml's
+    # affected-PR / full-main split). devenv.lock is in the set precisely
+    # because a devenv pin bump is the drift event the parity dep catches. A
+    # leading `/` is workspace-root-relative (the sibling nix projects'
+    # convention, guest-image/moon.yml:59-63).
+    inputs:
+      - '/flake.nix'
+      - '/flake.lock'
+      - '/devenv.lock'
+      - '/go/**'
+      - '/tools/toolchain/gtk-closure.nix'
+      - '/tools/toolchain/flake-parity.ts'
+      - '/tools/toolchain/flake-parity-core.ts'
+
+  flake-parity:
+    # The nixpkgs-pin parity gate. bun runs the thin shell from the workspace
+    # root (it reads /flake.lock + /devenv.lock relative to the repo root).
+    # cache:false: a fail-closed gate never rides a cached green from another
+    # checkout.
+    command: 'bun tools/toolchain/flake-parity.ts'
+    options:
+      runFromWorkspaceRoot: true
+      cache: false
+      runInCI: true
+
+  ci:
+    deps: ['flake-check', 'flake-parity']
+    options:
+      cache: false
+      runInCI: true
