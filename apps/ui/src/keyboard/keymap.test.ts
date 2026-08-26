@@ -102,6 +102,26 @@ describe("leaderPrefixes", () => {
 		];
 		expect(leaderPrefixes(single, "other").size).toBe(0);
 	});
+
+	test("resolves the leader segment per-platform (a Mod leader → Cmd/Ctrl)", () => {
+		const modLeader: readonly KeymapEntry[] = [
+			{ chord: "Mod+X Y", commandId: id("view.bridge") },
+		];
+		expect([...leaderPrefixes(modLeader, "mac")]).toEqual(["Cmd+X"]);
+		expect([...leaderPrefixes(modLeader, "other")]).toEqual(["Ctrl+X"]);
+	});
+
+	test("accumulates distinct leaders and dedups rows sharing one leader", () => {
+		const twoLeaders: readonly KeymapEntry[] = [
+			{ chord: "G B", commandId: id("view.bridge") },
+			{ chord: "G L", commandId: id("view.backlog") },
+			{ chord: "Space X", commandId: id("view.done") },
+		];
+		expect([...leaderPrefixes(twoLeaders, "other")].sort()).toEqual([
+			"G",
+			"Space",
+		]);
+	});
 });
 
 describe("formatChordForDisplay", () => {

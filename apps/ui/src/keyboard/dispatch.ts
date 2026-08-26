@@ -10,7 +10,13 @@
  */
 
 import type { CommandId, CommandRegistry } from "./commands";
-import { DEFAULT_KEYMAP, type Platform, resolveChord } from "./keymap";
+import {
+	DEFAULT_KEYMAP,
+	type KeymapEntry,
+	leaderPrefixes,
+	type Platform,
+	resolveChord,
+} from "./keymap";
 import type { RovingGroupHandle } from "./roving";
 import type { FocusZone } from "./zones";
 
@@ -62,12 +68,22 @@ function isGroupRelative(id: CommandId): boolean {
 	return id.startsWith("list.") || id.startsWith("board.");
 }
 
-/** Whether an event target owns its own text keys (comms composer, etc.). */
+/**
+ * Whether an event target owns its own text keys (comms composer, native
+ * `<select>` typeahead, or an ARIA combobox/listbox/menu widget). A bare letter
+ * on any of these must reach the widget, never arm a leader or fire a chord —
+ * arming unconditionally `preventDefault`s (§A3 step 4), which would otherwise
+ * steal a `<select>`'s typeahead or the palette listbox's search keys (§A1).
+ */
 function isEditableTarget(target: EventTarget | null): boolean {
 	return (
 		target instanceof HTMLInputElement ||
 		target instanceof HTMLTextAreaElement ||
-		(target instanceof HTMLElement && target.isContentEditable)
+		target instanceof HTMLSelectElement ||
+		(target instanceof HTMLElement &&
+			(target.isContentEditable ||
+				target.closest('[role="combobox"],[role="listbox"],[role="menu"]') !==
+					null))
 	);
 }
 
@@ -83,6 +99,21 @@ export function detectPlatform(): Platform {
 		? "mac"
 		: "other";
 }
+
+/**
+ * A pending leader sequence: the resolved first-segment chord (`"G"`) plus the
+ * live disarm timer handle. `null` when no sequence is armed. Per-install
+ * closure state — no module-level global (matches App.tsx's install/onCleanup
+ * discipline).
+ */
+type PendingLeader = { leader: string; timer: number } | null;
+
+/**
+ * How long an armed leader waits for its completion key before self-disarming
+ * (§A3, OQ1 ratified at 1000 ms). Exported so the runtime and its tests share
+ * the one value.
+ */
+export const LEADER_TIMEOUT_MS = 1000;
 
 /**
  * Install the global keymap. Adds one `keydown` listener and returns the
@@ -106,21 +137,28 @@ export function installKeymap(
 	activeZone: () => FocusZone | null = () => null,
 ): () => void {
 	const platform: Platform = detectPlatform();
+	// The leader-prefix set is table-derived and platform-fixed, so compute it
+	// once at install rather than per keydown.
+	const leaders = leaderPrefixes(DEFAULT_KEYMAP, platform);
 
-	const handler = (event: KeyboardEvent): void => {
-		const chord = eventToChord(event, platform);
-		const matching = DEFAULT_KEYMAP.filter(
-			(entry) => resolveChord(entry.chord, platform) === chord,
-		);
-		if (matching.length === 0) return;
+	// Per-install pending-leader state (§A3). `null` unless a leader is armed.
+	let pending: PendingLeader = null;
+	const disarm = (): void => {
+		if (pending) {
+			clearTimeout(pending.timer);
+			pending = null;
+		}
+	};
 
-		// Editable-target guard: a modifier-less chord (arrows, Enter, Space,
-		// Home/End, and bare Shift combos) never fires while focus is in a text
-		// field — the composer keeps its local keys. Mod/Ctrl/Alt chords are
-		// global and are NOT guarded.
-		const hasCommandModifier = event.metaKey || event.ctrlKey || event.altKey;
-		if (!hasCommandModifier && isEditableTarget(event.target)) return;
-
+	// Resolve a set of matching rows through the ratified three tiers (active
+	// group → scoped → global). Factored so a single chord and a completed
+	// leader sequence run byte-identical resolution — the completion path passes
+	// the sequence-matched rows, the single-chord path passes the single-chord
+	// rows, and both flow through here.
+	const resolve = (
+		matching: readonly KeymapEntry[],
+		event: KeyboardEvent,
+	): void => {
 		// Tier 1 — active group. Route a group-relative chord to the group; a
 		// `true` return handles it (and suppresses native activation), a `false`
 		// (declines) falls through to the next tier.
@@ -167,6 +205,83 @@ export function installKeymap(
 		}
 	};
 
+	const handler = (event: KeyboardEvent): void => {
+		// Step 1 — normalize.
+		const chord = eventToChord(event, platform);
+
+		// Step 2 — editable-target guard FIRST, before any leader logic and
+		// before the empty-matching return, but only for modifier-less keys. A
+		// bare key in a text field / native <select> / ARIA widget must type,
+		// never arm, complete, or fire. Mod/Ctrl/Alt chords are global and stay
+		// unguarded (and, via the completion fall-through below, still disarm).
+		const hasCommandModifier = event.metaKey || event.ctrlKey || event.altKey;
+		if (!hasCommandModifier && isEditableTarget(event.target)) return;
+
+		// Step 3 — completion. A leader is pending.
+		if (pending) {
+			// A pure-modifier keydown (holding Shift/Control/Alt/Meta mid-sequence
+			// is human) neither completes nor disarms.
+			if (
+				event.key === "Shift" ||
+				event.key === "Control" ||
+				event.key === "Alt" ||
+				event.key === "Meta"
+			) {
+				return;
+			}
+			// Escape disarms and is consumed.
+			if (event.key === "Escape") {
+				disarm();
+				event.preventDefault();
+				return;
+			}
+			// Otherwise resolve the two-segment chord "<leader> <completionChord>"
+			// where the completion segment is the FULL normalized chord. Disarm
+			// first (the sequence is spent either way).
+			const { leader } = pending;
+			disarm();
+			const sequence = `${leader} ${chord}`;
+			const seqMatching = DEFAULT_KEYMAP.filter(
+				(entry) => resolveChord(entry.chord, platform) === sequence,
+			);
+			if (seqMatching.length > 0) {
+				resolve(seqMatching, event);
+				return;
+			}
+			// No row matches: fall through and process this key as a plain single
+			// chord in the same keydown, RE-ENTERING the arming step first (so a
+			// repeated leader re-arms and any other key resolves on its own).
+		}
+
+		// Step 4 — arming. No leader pending (or the sequence fell through): if
+		// the normalized chord is a table-derived leader prefix (which, per the
+		// A2 authoring rule, has no single-chord row of its own) and the key is
+		// not an auto-repeat, arm and consume. Modifier chords never arm; the
+		// editable guard already returned for interactive targets.
+		if (!hasCommandModifier && !event.repeat && leaders.has(chord)) {
+			pending = {
+				leader: chord,
+				timer: setTimeout(disarm, LEADER_TIMEOUT_MS) as unknown as number,
+			};
+			event.preventDefault();
+			event.stopPropagation();
+			return;
+		}
+
+		// Step 5 — single-chord path (unchanged): the empty-matching return and
+		// the three tiers.
+		const matching = DEFAULT_KEYMAP.filter(
+			(entry) => resolveChord(entry.chord, platform) === chord,
+		);
+		if (matching.length === 0) return;
+		resolve(matching, event);
+	};
+
 	window.addEventListener("keydown", handler);
-	return () => window.removeEventListener("keydown", handler);
+	return () => {
+		window.removeEventListener("keydown", handler);
+		// Clear any live disarm timer so an uninstall (test teardown / HMR) never
+		// leaks a timer that fires against a torn-down closure.
+		disarm();
+	};
 }
