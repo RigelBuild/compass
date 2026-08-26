@@ -15,6 +15,13 @@ concept; the tool and prompt material carry the detail, these carry the model.
   agent's *stable* working context (repos / projects / lanes), never the
   churning per-issue detail.
 
+## The comms model
+
+- **[The comms model](./comms-model.md)** — threads for conversation, the
+  session log for work: an agent's two surfaces and why they are split. The
+  load-bearing premise any external-session integration maps onto, never
+  replaces.
+
 ## The tools
 
 - **[The agent tool set](./tools.md)** — the native tools an agent drives
