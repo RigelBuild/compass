@@ -512,6 +512,15 @@ Owned by compass-server, exactly like the from_handle denorm (RIG-2486 T1):
   a delivery on trace machinery.
 - Optional observation symmetry (OQ3): `SessionInjection` gains the same
   string so server-side consumers can join the observation to the trace.
+- **Downstream Go instrumentation:** the server-side spans this leg parents
+  off are the subject of compass-server's RIG-2685 (instrument
+  `CommsService.PostMessage` as trace root + delivery consumer + gateway
+  control + gRPC context propagation). Under this (b) ruling RIG-2685's
+  gRPC-propagation leg EXTRACTS+CONTINUES the traceparent this task stamps
+  rather than minting a fresh root at `PostMessage` — the server becomes the
+  trace origin and RIG-2685 is a continuation. Coordinated with compass-server
+  (owns RIG-2685); no dependency in the other direction (T4 stamps whatever
+  context is active, root or continuation).
 
 Interfaces:
 
@@ -559,8 +568,14 @@ Interfaces:
    construction, (c) never yields a single connected trace, and the
    from_handle precedent (RIG-2486 T1) shows this exact
    denorm-onto-the-control move is routine and additive. The agent machinery
-   (T1/T2) is identical either way, so the ruling gates only T3/T4. BLOCKS
-   T3/T4 merge; driver raises to Matt via `ask`.
+   (T1/T2) is identical either way, so the ruling gates only T3/T4. **The
+   ruling also sets the scope of compass-server's RIG-2685** (Go OTel message
+   tracing: `PostMessage` root + delivery consumer + gateway control + gRPC
+   propagation): under (b) RIG-2685's propagation leg EXTRACTS+CONTINUES this
+   record's stamped traceparent (server = origin, RIG-2685 = continuation);
+   under (a) RIG-2685 mints server-side and the agent continues; under (c)
+   RIG-2685 is unaffected. BLOCKS T3/T4 merge; driver raises to Matt via
+   `ask`.
 2. **Topology: hybrid (parent when 1:1-idle, links otherwise) vs
    links-uniform?** Weighed in Decision 1. **Recommendation: hybrid** — the
    majority case earns a real connected trace; attributes
