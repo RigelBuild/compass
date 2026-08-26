@@ -10,6 +10,12 @@ Compass runs, supervises, and orchestrates AI coding agents — so before the
 build conventions below, orient on the model the code and prompts assume. It
 lives under [`docs/concepts/`](./docs/concepts/README.md):
 
+- **[Self-hosted and managed](./docs/concepts/self-host-and-managed.md)** —
+  Compass is two products over one shared core: the open-source self-hosted core
+  (this repo, any deployer URL) and the private, commercially-licensed managed
+  multi-tenant service (private monorepo, `compass.rigel.build`). A design record
+  here designs the core; managed control-plane concerns are named and deferred,
+  never designed in this repo.
 - **[Handles, accounts, and attribution](./docs/concepts/handle-vs-account.md)**
   — a handle names one running agent; `mintaka` is the shared forge *account*
   every agent bills through, not a handle. Read an agent's identity off a
