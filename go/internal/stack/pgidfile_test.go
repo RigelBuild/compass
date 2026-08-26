@@ -36,6 +36,127 @@ func TestPgidFileRoundTrip(t *testing.T) {
 	}
 }
 
+// TestPgidFileRoundTripBothKinds proves the v2 discriminated union round-trips
+// both entry kinds: a container entry (ctr) interleaved with process entries
+// (proc) survives a write→read cycle intact, in order.
+func TestPgidFileRoundTripBothKinds(t *testing.T) {
+	dir := t.TempDir()
+	rec := pgidRecord{
+		WriterPid: 4242,
+		Version:   pgidFileVersion,
+		Entries: []pgidEntry{
+			{Kind: entryContainer, Component: ComponentPostgres, ContainerName: "compass-postgres-abc123"},
+			{Kind: entryProc, Component: ComponentServer, Pgid: 1002, StartTime: 10020},
+			{Kind: entryProc, Component: ComponentRunner, Pgid: 1003, StartTime: 10030},
+		},
+	}
+	if err := writePgidFile(dir, rec); err != nil {
+		t.Fatalf("writePgidFile = %v", err)
+	}
+	got, err := readPgidFile(dir)
+	if err != nil {
+		t.Fatalf("readPgidFile = %v", err)
+	}
+	if !reflect.DeepEqual(got, rec) {
+		t.Fatalf("round-trip mismatch:\n got  %+v\n want %+v", got, rec)
+	}
+}
+
+// TestPgidFileV2ContainerLineGrammar pins the exact on-disk ctr line grammar so a
+// format drift is caught: "ctr <component> <name>", no pgid/starttime columns.
+func TestPgidFileV2ContainerLineGrammar(t *testing.T) {
+	dir := t.TempDir()
+	rec := pgidRecord{
+		WriterPid: 7,
+		Version:   pgidFileVersion,
+		Entries: []pgidEntry{
+			{Kind: entryContainer, Component: ComponentPostgres, ContainerName: "compass-postgres-deadbeef"},
+		},
+	}
+	if err := writePgidFile(dir, rec); err != nil {
+		t.Fatalf("writePgidFile = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, pgidFileName))
+	if err != nil {
+		t.Fatalf("ReadFile = %v", err)
+	}
+	want := "2 7\nctr postgres compass-postgres-deadbeef\n"
+	if string(data) != want {
+		t.Fatalf("file content = %q, want %q", string(data), want)
+	}
+}
+
+// TestReadPgidFileV1CompatAllProcess proves the cross-version back-compat rule: a
+// v1 record (untagged 3-field proc lines, header version "1") parses under this
+// v2 build as all-process entries — v2 is a strict superset of v1.
+func TestReadPgidFileV1CompatAllProcess(t *testing.T) {
+	dir := t.TempDir()
+	v1 := "1 7\npostgres 200 999\ncompass-server 201 1000\n"
+	if err := os.WriteFile(filepath.Join(dir, pgidFileName), []byte(v1), 0o600); err != nil {
+		t.Fatalf("seed v1 file = %v", err)
+	}
+	got, err := readPgidFile(dir)
+	if err != nil {
+		t.Fatalf("readPgidFile(v1) = %v, want a parsed record", err)
+	}
+	want := pgidRecord{
+		WriterPid: 7,
+		Version:   pgidFileVersionV1,
+		Entries: []pgidEntry{
+			{Kind: entryProc, Component: ComponentPostgres, Pgid: 200, StartTime: 999},
+			{Kind: entryProc, Component: ComponentServer, Pgid: 201, StartTime: 1000},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("v1-compat parse:\n got  %+v\n want %+v", got, want)
+	}
+}
+
+// TestReadPgidFileUnknownVersionRefuses proves the forward guard: a record whose
+// header version is neither "1" nor "2" is refused legibly rather than
+// half-parsed — the never-signal-off-a-half-understood-record discipline
+// extended to a future format this build cannot understand.
+func TestReadPgidFileUnknownVersionRefuses(t *testing.T) {
+	for _, version := range []string{"3", "0", "v2", "99"} {
+		t.Run(version, func(t *testing.T) {
+			dir := t.TempDir()
+			content := version + " 7\nproc postgres 200 999\n"
+			if err := os.WriteFile(filepath.Join(dir, pgidFileName), []byte(content), 0o600); err != nil {
+				t.Fatalf("seed file = %v", err)
+			}
+			if _, err := readPgidFile(dir); err == nil {
+				t.Fatalf("readPgidFile(version %q) = nil, want a refusal error", version)
+			}
+		})
+	}
+}
+
+// TestReadPgidFileV2Malformed proves the v2 entry grammar is defensive: a garbled
+// kind tag or a wrong-arity proc/ctr body is a hard error, never a partial parse.
+func TestReadPgidFileV2Malformed(t *testing.T) {
+	cases := map[string]string{
+		"unknown kind tag":       "2 7\nbogus postgres 200 999\n",
+		"proc wrong arity":       "2 7\nproc postgres 200\n",
+		"proc unknown component": "2 7\nproc not-a-component 200 999\n",
+		"proc bad pgid":          "2 7\nproc postgres xx 999\n",
+		"proc degenerate pgid":   "2 7\nproc postgres 1 999\n",
+		"ctr wrong arity":        "2 7\nctr postgres\n",
+		"ctr unknown component":  "2 7\nctr not-a-component name\n",
+		"v1-style line under v2": "2 7\npostgres 200 999\n",
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, pgidFileName), []byte(content), 0o600); err != nil {
+				t.Fatalf("seed file = %v", err)
+			}
+			if _, err := readPgidFile(dir); err == nil {
+				t.Fatalf("readPgidFile(%q) = nil, want parse error", content)
+			}
+		})
+	}
+}
+
 // TestPgidFileMode0600 pins the record file's permissions.
 func TestPgidFileMode0600(t *testing.T) {
 	dir := t.TempDir()
@@ -69,7 +190,7 @@ func TestPgidFileTrailingNewline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile = %v", err)
 	}
-	want := "1 7\npostgres 200 999\n"
+	want := "2 7\nproc postgres 200 999\n"
 	if string(data) != want {
 		t.Fatalf("file content = %q, want %q", string(data), want)
 	}

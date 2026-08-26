@@ -197,7 +197,7 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 		if !ok {
 			continue // never recorded (half-spawned prefix) — nothing to tear down
 		}
-		if !deps.GroupSignaller.Alive(e.Pgid, e.StartTime) {
+		if !entryAlive(deps, e) {
 			continue // gone or recycled — skip, never signal
 		}
 		targets = append(targets, target{entry: e, budget: o.budget, confirm: o.confirm(e)})
@@ -218,12 +218,7 @@ func drainTargets(ctx context.Context, deps Deps, targets []target) []Component 
 	// intentionally not fatal here (an ESRCH means the group vanished in the
 	// irreducible verify→signal gap, which the confirm reads as dead).
 	for _, t := range targets {
-		if err := deps.GroupSignaller.Signal(t.entry.Pgid, SignalTerm); err != nil {
-			// Not actionable: delivery is not proof of death, and death is not
-			// proof of failure; the confirm channel decides. Recorded only for the
-			// operator's stderr, never used as the teardown verdict.
-			logSignalMiss("SIGTERM", t.entry, err)
-		}
+		signalTerm(deps, t.entry, t.budget)
 	}
 
 	// Phase B: per-target confirm with bounded SIGKILL escalation.
@@ -253,11 +248,10 @@ func drainOne(ctx context.Context, deps Deps, t target) bool {
 		return true // SIGTERM sufficed (or the group was already gone)
 	}
 
-	// Escalate: hard-kill the whole group. A delivery error is not the verdict
-	// (an ESRCH means it died during the drain); the confirm below decides.
-	if err := deps.GroupSignaller.Signal(t.entry.Pgid, SignalKill); err != nil {
-		logSignalMiss("SIGKILL", t.entry, err)
-	}
+	// Escalate: hard-kill. For a process group this is a group SIGKILL; for a
+	// container it is `podman rm -f`. A delivery error is not the verdict (an
+	// ESRCH / already-gone means it died during the drain); the confirm decides.
+	signalKill(deps, t.entry)
 
 	if t.entry.Component == ComponentRunner {
 		// Socketless + SIGKILL unblockable → any residual non-ESRCH group is a
@@ -333,4 +327,60 @@ func clearLockFile(stateDir string) error {
 func logSignalMiss(sig string, e pgidEntry, err error) {
 	slog.Debug("group signal not delivered (group likely already gone)",
 		"signal", sig, "component", e.Component.String(), "pgid", e.Pgid, "error", err)
+}
+
+// entryAlive reports whether a recorded entry's target is still live, dispatched
+// on kind: a process group by identity-checked pgid (existence AND leader
+// start-time), a container by name via `podman container exists`. A gone target
+// reports not-alive so it is skipped, never signaled.
+func entryAlive(deps Deps, e pgidEntry) bool {
+	switch e.Kind {
+	case entryContainer:
+		return deps.Containers.Exists(e.ContainerName)
+	default:
+		return deps.GroupSignaller.Alive(e.Pgid, e.StartTime)
+	}
+}
+
+// signalTerm delivers the graceful-stop tier, dispatched on kind: a group
+// SIGTERM for a process, `podman stop -t <budget>` for a container (the budget
+// is the container's own drain budget, deliberate parity with the process
+// model's capped drain). A delivery error is not the teardown verdict — the
+// per-component confirm channel is — so it is logged, never fatal.
+func signalTerm(deps Deps, e pgidEntry, budget time.Duration) {
+	switch e.Kind {
+	case entryContainer:
+		if err := deps.Containers.Stop(e.ContainerName, budget); err != nil {
+			logContainerSignalMiss("stop", e, err)
+		}
+	default:
+		if err := deps.GroupSignaller.Signal(e.Pgid, SignalTerm); err != nil {
+			logSignalMiss("SIGTERM", e, err)
+		}
+	}
+}
+
+// signalKill delivers the hard-kill tier, dispatched on kind: a group SIGKILL
+// for a process, `podman rm -f` for a container. A delivery error is not the
+// teardown verdict — the per-component confirm decides — so it is logged.
+func signalKill(deps Deps, e pgidEntry) {
+	switch e.Kind {
+	case entryContainer:
+		if err := deps.Containers.Remove(e.ContainerName); err != nil {
+			logContainerSignalMiss("rm -f", e, err)
+		}
+	default:
+		if err := deps.GroupSignaller.Signal(e.Pgid, SignalKill); err != nil {
+			logSignalMiss("SIGKILL", e, err)
+		}
+	}
+}
+
+// logContainerSignalMiss is the container analogue of logSignalMiss: a podman
+// teardown-delivery error (most often "no such container": it went away in the
+// verify→signal gap) is an expected, benign event, logged at debug rather than
+// surfaced, since the socket-quiescence confirm is the verdict.
+func logContainerSignalMiss(op string, e pgidEntry, err error) {
+	slog.Debug("container teardown not delivered (container likely already gone)",
+		"op", op, "component", e.Component.String(), "container", e.ContainerName, "error", err)
 }

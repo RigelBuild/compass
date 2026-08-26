@@ -321,6 +321,38 @@ func TestDownDetachedHalfSpawnedPrefix(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
+// TestDownDetachedNilContainersAllProcessRecord pins the nil-safety contract
+// documented in deps.go: a record with no container entries never dereferences
+// deps.Containers. Production wiring leaves Deps.Containers nil, so an all-process
+// record must tear down cleanly without a nil-pointer panic — the container path
+// is gated on `case entryContainer` and never fires here.
+func TestDownDetachedNilContainersAllProcessRecord(t *testing.T) {
+	cfg, h := newHarness(t)
+	deps := downTestDeps(t, h)
+	// Mirror production wiring: no container controller is provided.
+	deps.Containers = nil
+
+	rec := pgidRecord{
+		WriterPid: 1, Version: pgidFileVersion,
+		Entries: []pgidEntry{
+			{Component: ComponentPostgres, Pgid: pgPgid, StartTime: pgToken(pgPgid)},
+			{Component: ComponentServer, Pgid: serverPgid, StartTime: pgToken(serverPgid)},
+		},
+	}
+	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+		t.Fatalf("seed all-process record = %v", err)
+	}
+	h.groupSig.set(pgPgid, pgToken(pgPgid), true)
+	h.groupSig.onTerm[pgPgid] = func() { h.groupSig.set(pgPgid, pgToken(pgPgid), false) }
+	h.groupSig.set(serverPgid, pgToken(serverPgid), true)
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached with nil Containers on an all-process record = %v, want nil (no deref, clean teardown)", err)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
 // TestDownDetachedAbsentFileNoSocketIsNoStack proves the "no stack" branch:
 // absent pgid file and no answering socket → nil, no error, no signals.
 func TestDownDetachedAbsentFileNoSocketIsNoStack(t *testing.T) {
@@ -402,6 +434,176 @@ func TestDownDetachedConcurrentSerializedByGuard(t *testing.T) {
 	assertPgidFileGone(t, cfg.StateDir)
 }
 
+// The stable container name a v2 postgres entry carries in these tests.
+const pgContainerName = "compass-postgres-test01"
+
+// seedContainerRecord writes a v2 record whose postgres entry is a container
+// (ctr) and whose server/runner entries are processes, and marks all three live
+// (the container present, the two groups alive + identity-matched).
+func seedContainerRecord(t *testing.T, cfg Config, h *harness) {
+	t.Helper()
+	rec := pgidRecord{
+		WriterPid: 4242,
+		Version:   pgidFileVersion,
+		Entries: []pgidEntry{
+			{Kind: entryContainer, Component: ComponentPostgres, ContainerName: pgContainerName},
+			{Kind: entryProc, Component: ComponentServer, Pgid: serverPgid, StartTime: pgToken(serverPgid)},
+			{Kind: entryProc, Component: ComponentRunner, Pgid: runnerPgid, StartTime: pgToken(runnerPgid)},
+		},
+	}
+	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+		t.Fatalf("seed container record = %v", err)
+	}
+	h.containers.setExists(true)
+	h.groupSig.set(serverPgid, pgToken(serverPgid), true)
+	h.groupSig.set(runnerPgid, pgToken(runnerPgid), true)
+}
+
+// containerBackedDBProber answers the postgres-reachability probe iff the
+// container is still present — the socket goes dark when the container stops
+// (the socket dir is bind-mounted, so the confirm channel is unchanged; only the
+// signal-delivery side differs from the process path).
+type containerBackedDBProber struct {
+	c    *fakeContainerController
+	name string
+}
+
+func (p *containerBackedDBProber) ProbeDB(ctx context.Context, dsn string) error {
+	if p.c.Exists(p.name) {
+		return nil // container up → socket answers → reachable
+	}
+	return errPostgresNotReady // container gone → socket dark → confirmed dead
+}
+
+// containerDownDeps points the server confirm at the group signaller (as the
+// process path) and the postgres confirm at the container's existence.
+func containerDownDeps(t *testing.T, h *harness) Deps {
+	t.Helper()
+	shrinkBudgets(t)
+	deps := h.deps
+	deps.Prober = &groupBackedProber{gs: h.groupSig, pgid: serverPgid, token: pgToken(serverPgid)}
+	deps.DBProber = &containerBackedDBProber{c: h.containers, name: pgContainerName}
+	return deps
+}
+
+// ctrEvents keeps only container stop/rm events in order.
+func ctrEvents(events []string) []string {
+	var out []string
+	for _, e := range events {
+		if len(e) >= 4 && e[:4] == "ctr-" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// TestDownDetachedContainerGracefulStop proves the container teardown path: a
+// container postgres entry is torn down by `podman stop` (graceful), confirmed
+// by socket quiescence, with no `rm -f` escalation — the container analogue of
+// the reverse-order SIGTERM happy path.
+func TestDownDetachedContainerGracefulStop(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedContainerRecord(t, cfg, h)
+	deps := containerDownDeps(t, h)
+
+	// SIGTERM tears the two groups down; `podman stop` removes the container.
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+	h.containers.onStop[pgContainerName] = func() { h.containers.setExists(false) }
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil", err)
+	}
+
+	got := ctrEvents(h.rec.snapshot())
+	want := []string{"ctr-stop " + pgContainerName}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("container teardown:\n got  %v\n want %v (graceful stop, no rm -f)", got, want)
+	}
+	// The two process groups were still signaled by group SIGTERM.
+	sig := signalEvents(h.rec.snapshot())
+	for _, pgid := range []int{serverPgid, runnerPgid} {
+		if countEvent(sig, "group-term "+strconv.Itoa(pgid)) != 1 {
+			t.Fatalf("process group %d should be SIGTERMed once: %v", pgid, sig)
+		}
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedContainerEscalatesToRemove proves the container SIGKILL tier: a
+// container that survives `podman stop` is force-removed by `podman rm -f`, then
+// (socket dark) confirmed — the container analogue of the group-SIGKILL
+// escalation.
+func TestDownDetachedContainerEscalatesToRemove(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedContainerRecord(t, cfg, h)
+	deps := containerDownDeps(t, h)
+
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+	// The container ignores stop, only dying on rm -f.
+	h.containers.onRemove[pgContainerName] = func() { h.containers.setExists(false) }
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil", err)
+	}
+	events := ctrEvents(h.rec.snapshot())
+	want := []string{"ctr-stop " + pgContainerName, "ctr-rm " + pgContainerName}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("container escalation:\n got  %v\n want %v (stop then rm -f)", events, want)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedContainerSurvivorRewritesRecord proves the partial-failure
+// policy holds for a container: one still present after `podman rm -f` (its
+// socket keeps answering) is a genuine survivor — reported, the record NOT
+// removed, rewritten to exactly the surviving container entry so a retry can
+// finish by name.
+func TestDownDetachedContainerSurvivorRewritesRecord(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedContainerRecord(t, cfg, h)
+	deps := containerDownDeps(t, h)
+
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+	// The container survives even rm -f (existence never flips) → real survivor.
+
+	err := DownDetached(context.Background(), cfg, deps)
+	if err == nil {
+		t.Fatal("DownDetached = nil, want a partial-failure error naming the surviving container")
+	}
+	rec, rerr := readPgidFile(cfg.StateDir)
+	if rerr != nil {
+		t.Fatalf("survivor record read = %v, want the rewritten survivor set", rerr)
+	}
+	if len(rec.Entries) != 1 || rec.Entries[0].Kind != entryContainer || rec.Entries[0].ContainerName != pgContainerName {
+		t.Fatalf("survivor record = %+v, want exactly the postgres container entry", rec.Entries)
+	}
+}
+
+// TestDownDetachedContainerGoneIsSkipped proves the identity gate for containers:
+// a recorded container that no longer exists is skipped — never stopped, never
+// removed, never an error — while the live process entries are still torn down.
+func TestDownDetachedContainerGoneIsSkipped(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedContainerRecord(t, cfg, h)
+	deps := containerDownDeps(t, h)
+
+	// The container is already gone.
+	h.containers.setExists(false)
+	h.groupSig.onTerm[serverPgid] = func() { h.groupSig.set(serverPgid, pgToken(serverPgid), false) }
+	h.groupSig.onTerm[runnerPgid] = func() { h.groupSig.set(runnerPgid, pgToken(runnerPgid), false) }
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil (gone container skipped)", err)
+	}
+	if events := ctrEvents(h.rec.snapshot()); len(events) != 0 {
+		t.Fatalf("a gone container must not be signaled: %v", events)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
 // assertPgidFileGone fails if the pgid record still exists.
 func assertPgidFileGone(t *testing.T, stateDir string) {
 	t.Helper()
@@ -417,5 +619,46 @@ func writeLockHeldBy(t *testing.T, stateDir string, pid int) {
 	path := filepath.Join(stateDir, lockFileName)
 	if err := os.WriteFile(path, []byte(strconv.Itoa(pid)), 0o600); err != nil {
 		t.Fatalf("write lockfile = %v", err)
+	}
+}
+
+// TestSurvivorRecordV1RoundTrip is the FIX-1 regression: a v1 record (header
+// version "1", untagged proc entries) read from a shipped build, narrowed to
+// survivors on the partial-teardown path, then rewritten and reread must survive
+// the round-trip. Before the fix writePgidFile stamped the carried "1" header
+// over v2 `proc` grammar, so the reread dispatched to the v1 parser and
+// hard-errored `malformed proc entry line`, turning a recoverable partial
+// teardown into a permanently unreadable record.
+func TestSurvivorRecordV1RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	rec := pgidRecord{
+		WriterPid: 7,
+		Version:   pgidFileVersionV1,
+		Entries: []pgidEntry{
+			{Kind: entryProc, Component: ComponentPostgres, Pgid: 200, StartTime: 999},
+			{Kind: entryProc, Component: ComponentServer, Pgid: 201, StartTime: 1000},
+			{Kind: entryProc, Component: ComponentRunner, Pgid: 202, StartTime: 1001},
+		},
+	}
+
+	survivors := survivorRecord(rec, []Component{ComponentServer, ComponentRunner})
+	if err := writePgidFile(dir, survivors); err != nil {
+		t.Fatalf("writePgidFile survivor = %v", err)
+	}
+
+	got, err := readPgidFile(dir)
+	if err != nil {
+		t.Fatalf("readPgidFile after survivor round-trip = %v; want success", err)
+	}
+	want := pgidRecord{
+		WriterPid: 7,
+		Version:   pgidFileVersion,
+		Entries: []pgidEntry{
+			{Kind: entryProc, Component: ComponentServer, Pgid: 201, StartTime: 1000},
+			{Kind: entryProc, Component: ComponentRunner, Pgid: 202, StartTime: 1001},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("reread record = %+v; want %+v", got, want)
 	}
 }

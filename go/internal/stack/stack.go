@@ -255,18 +255,25 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 	return nil
 }
 
-// recordChild appends a spawned child's teardown identity (pgid == pid, plus the
-// leader start-time token read at spawn) and rewrites the state-dir pgid record
-// so it reflects every child started so far. Rewriting after each spawn keeps
-// the crash window one child wide: the atomically-renamed file on disk is always
-// a complete earlier prefix of the start sequence, so a fresh down never reads a
-// torn record and drains exactly the prefix that was started.
+// recordChild appends a spawned process child's teardown identity (pgid == pid,
+// plus the leader start-time token read at spawn) and rewrites the state-dir
+// pgid record so it reflects every child started so far. Rewriting after each
+// spawn keeps the crash window one child wide: the atomically-renamed file on
+// disk is always a complete earlier prefix of the start sequence, so a fresh
+// down never reads a torn record and drains exactly the prefix that was started.
 func (s *Stack) recordChild(c Component, p Process) error {
 	startTime, err := readStartTime(p.Pid())
 	if err != nil {
 		return fmt.Errorf("read start time for %s (pid %d): %w", c, p.Pid(), err)
 	}
-	s.pgids = append(s.pgids, pgidEntry{Component: c, Pgid: p.Pid(), StartTime: startTime})
+	return s.appendEntry(c, pgidEntry{Kind: entryProc, Component: c, Pgid: p.Pid(), StartTime: startTime})
+}
+
+// appendEntry appends one teardown entry and republishes the record, preserving
+// the rewrite-after-each-spawn / one-child-wide-crash-window discipline both
+// record paths share.
+func (s *Stack) appendEntry(c Component, e pgidEntry) error {
+	s.pgids = append(s.pgids, e)
 	rec := pgidRecord{WriterPid: os.Getpid(), Version: pgidFileVersion, Entries: s.pgids}
 	if err := writePgidFile(s.cfg.StateDir, rec); err != nil {
 		return fmt.Errorf("persist pgid record after starting %s: %w", c, err)
