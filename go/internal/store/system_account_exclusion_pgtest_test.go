@@ -188,3 +188,162 @@ func accountsFromIDs(ids []AccountID) []Account {
 	}
 	return accts
 }
+
+// TestLinearBridgeAccountSeedsIdempotently asserts EnsureLinearBridgeAccount
+// mints @linear as a single system-subtype row and that a second call resolves
+// the SAME id rather than a duplicate — the unique-violation-means-fetch restart
+// path, exactly as @compass. It also pins that @linear is a DISTINCT account from
+// @compass, so the two system handles never collapse into one row.
+func TestLinearBridgeAccountSeedsIdempotently(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	first, err := s.EnsureLinearBridgeAccount(ctx)
+	if err != nil {
+		t.Fatalf("first EnsureLinearBridgeAccount: %v", err)
+	}
+	if first.System == nil {
+		t.Fatalf("@linear has nil System subtype: %+v", first)
+	}
+	if first.User != nil || first.Agent != nil {
+		t.Fatalf("@linear carries a user/agent subtype: %+v", first)
+	}
+	if first.Handle != LinearBridgeAccountHandle {
+		t.Fatalf("@linear handle = %q, want %q", first.Handle, LinearBridgeAccountHandle)
+	}
+	if first.DisplayName != "Linear" {
+		t.Fatalf("@linear display name = %q, want %q", first.DisplayName, "Linear")
+	}
+
+	second, err := s.EnsureLinearBridgeAccount(ctx)
+	if err != nil {
+		t.Fatalf("second EnsureLinearBridgeAccount: %v", err)
+	}
+	if first.ID != second.ID {
+		t.Fatalf("EnsureLinearBridgeAccount not idempotent: first id %q, second id %q", first.ID, second.ID)
+	}
+	if second.System == nil {
+		t.Fatalf("second call returned non-system account: %+v", second)
+	}
+
+	// Exactly one @linear row exists after two calls.
+	var n int
+	if err := s.pool.QueryRow(ctx,
+		"SELECT count(*) FROM accounts WHERE handle = $1", LinearBridgeAccountHandle,
+	).Scan(&n); err != nil {
+		t.Fatalf("count @linear rows: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("@linear row count = %d, want 1 after two idempotent seeds", n)
+	}
+
+	// @linear and @compass are distinct system accounts.
+	sys, err := s.EnsureSystemAccount(ctx)
+	if err != nil {
+		t.Fatalf("EnsureSystemAccount: %v", err)
+	}
+	if sys.ID == first.ID {
+		t.Fatalf("@linear and @compass collapsed into one account id %q", first.ID)
+	}
+}
+
+// TestLinearBridgeAccountExcludedFromDeliverSet asserts SubscribedAgents never
+// returns @linear, even when it is a subscribed member — the same structural
+// INNER JOIN agent_accounts exclusion that protects @compass, proved
+// contrastively against a real agent member.
+func TestLinearBridgeAccountExcludedFromDeliverSet(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	owner := mustUser(t, s, "owner")
+	author := mustAgent(t, s, owner.ID, "author")
+	recip := mustAgent(t, s, owner.ID, "recip")
+	ch := mustNamedChannelWith(t, s, owner.ID, "shared", author.ID, recip.ID)
+	subscribeAgent(t, s, owner.ID, ch, recip.ID)
+
+	linear, err := s.EnsureLinearBridgeAccount(ctx)
+	if err != nil {
+		t.Fatalf("EnsureLinearBridgeAccount: %v", err)
+	}
+	insertSystemMember(t, s, ch, linear.ID)
+
+	agents, err := s.SubscribedAgents(ctx, ch, author.ID)
+	if err != nil {
+		t.Fatalf("SubscribedAgents: %v", err)
+	}
+	got := accountIDSet(accountsFromIDs(agents))
+	if !got[recip.ID] {
+		t.Fatalf("deliver set %v missing the real agent member %s; the query must resolve agents", agents, recip.ID)
+	}
+	if got[linear.ID] {
+		t.Fatalf("deliver set %v leaked the @linear system account %s; it must never be a delivery recipient", agents, linear.ID)
+	}
+}
+
+// TestLinearBridgeAccountExcludedFromAgentRoster asserts ChannelAgentMembers
+// never returns @linear, mirroring the @compass roster exclusion.
+func TestLinearBridgeAccountExcludedFromAgentRoster(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	owner := mustUser(t, s, "owner")
+	author := mustAgent(t, s, owner.ID, "author")
+	member := mustAgent(t, s, owner.ID, "member")
+	ch := mustNamedChannelWith(t, s, owner.ID, "shared", author.ID, member.ID)
+
+	linear, err := s.EnsureLinearBridgeAccount(ctx)
+	if err != nil {
+		t.Fatalf("EnsureLinearBridgeAccount: %v", err)
+	}
+	insertSystemMember(t, s, ch, linear.ID)
+
+	agents, err := s.ChannelAgentMembers(ctx, ch, author.ID)
+	if err != nil {
+		t.Fatalf("ChannelAgentMembers: %v", err)
+	}
+	got := accountIDSet(accountsFromIDs(agents))
+	if !got[member.ID] {
+		t.Fatalf("roster %v missing the real agent member %s; the query must resolve agent members", agents, member.ID)
+	}
+	if got[linear.ID] {
+		t.Fatalf("roster %v leaked the @linear system account %s; it must never appear in the agent roster", agents, linear.ID)
+	}
+}
+
+// TestLinearBridgeAccountByHandleIsNotFound asserts AgentByHandle("linear") fails
+// closed as ErrNotFound after @linear is seeded: it exists as an account but has
+// no agent_accounts row, so the IsAgent gate rejects it. The GetAccount anchor
+// proves the account exists so the ErrNotFound is the gate, not a no-op seed.
+func TestLinearBridgeAccountByHandleIsNotFound(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	linear, err := s.EnsureLinearBridgeAccount(ctx)
+	if err != nil {
+		t.Fatalf("EnsureLinearBridgeAccount: %v", err)
+	}
+	if _, err := s.GetAccount(ctx, linear.ID); err != nil {
+		t.Fatalf("GetAccount(%s) after seed: %v; the account must exist for the ErrNotFound below to prove the IsAgent gate", linear.ID, err)
+	}
+
+	_, err = s.AgentByHandle(ctx, LinearBridgeAccountHandle)
+	sentinelIs(t, err, ErrNotFound, "AgentByHandle on the reserved @linear handle")
+}
+
+// TestReservedHandleRejectsLinearForUserAndAgent asserts the reserved-handle
+// guard rejects `linear` for both user and agent creation with
+// ErrInvalidArgument and writes no row — the T1 guard extended to the bridge
+// handle, mirroring the `compass` rejection.
+func TestReservedHandleRejectsLinearForUserAndAgent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+
+	_, err := s.CreateUser(ctx, NewUser{Handle: LinearBridgeAccountHandle, DisplayName: "x"})
+	sentinelIs(t, err, ErrInvalidArgument, "CreateUser reserved @linear handle")
+	assertNoAccountRow(t, s, LinearBridgeAccountHandle)
+
+	owner := mustUser(t, s, "owner")
+	_, err = s.CreateAgent(ctx, owner.ID, NewAgent{Handle: LinearBridgeAccountHandle, DisplayName: "x"})
+	sentinelIs(t, err, ErrInvalidArgument, "CreateAgent reserved @linear handle")
+	assertNoAccountRow(t, s, LinearBridgeAccountHandle)
+}
