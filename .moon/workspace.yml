@@ -51,6 +51,15 @@ projects:
   # bundle build rides the gate per-PR when a packaging input changes, and the
   # unconditional main + nightly full sweep (see app-bundle/moon.yml).
   compass-app-bundle: 'app-bundle'
+  # The repo-root flake gate (compass-distribution §T6): `nix flake check`
+  # (the flake evaluates + every package builds from a bare checkout) plus the
+  # nixpkgs-pin parity check (flake.lock's nixpkgs rev == devenv.lock's — the
+  # flake's SECOND independent lock cannot silently skew the "one closure"
+  # claim). A nix-source project like agent-image/guest-image/app-bundle;
+  # registered here so both checks ride the affected-gated pre-merge gate (its
+  # closure includes flake.nix/flake.lock, go/, and devenv.lock — the drift
+  # event). See tools/flake-gate/moon.yml.
+  flake-gate: 'tools/flake-gate'
   # The toolchain version-parity gate: asserts CI's PATH holds the dev shell's
   # toolchain, and carries the unit tests for its own comparison logic.
   toolchain-parity: 'tools/toolchain'
