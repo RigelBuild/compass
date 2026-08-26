@@ -7,6 +7,19 @@
  * group does not claim (e.g. `Mod+B` while the board is focused) still reaches
  * the global `view.bridge`. The caller registers commands and supplies the
  * active-group accessor; this module registers nothing.
+ *
+ * Leader sequences (RIG-2484). The same one listener also arms "press G, then
+ * <key>" chords. Each keydown runs in a fixed order: normalize → editable-target
+ * guard FIRST (a modifier-less key in a text field / `<select>` / ARIA
+ * combobox/listbox/menu types, never arms or fires) → completion (when a leader
+ * is armed: a pure-modifier key is ignored, Escape disarms and is consumed, else
+ * the leader disarms and the two-segment chord `"<leader> <key>"` resolves; a
+ * sequence that matches no row falls through and re-enters arming in the same
+ * keydown) → arming (a table-derived leader prefix with no command modifier and
+ * not an auto-repeat arms and is consumed, starting a `LEADER_TIMEOUT_MS` disarm
+ * timer) → single-chord path. A completed sequence and a single chord run the
+ * SAME three-tier resolution. Leaders are derived from the keymap
+ * (`leaderPrefixes`), never hard-coded; the uninstaller clears any live timer.
  */
 
 import type { CommandId, CommandRegistry } from "./commands";
