@@ -98,14 +98,14 @@ nothing below re-litigates them:
    p12 + App Store Connect API key) live as GHA repo secrets on the release
    workflow only (never a PR-triggered workflow, per Constraint 2). The
    Developer ID identity is GA-gated on Apple Developer Program org enrollment
-   (OQ-2 / DL-258): dev/internal builds self-sign in the interim — ad-hoc
+   (OQ-2 / DL-261): dev/internal builds self-sign in the interim — ad-hoc
    `codesign --sign -` (mandatory on Apple Silicon) or a local self-signed
    cert, neither needing an Apple account — so T2/T3 proceed unblocked and
    only the public-channel T4/T5-cask leg waits on the enrollment secrets.
 7. **The postgres major is pinned and matches the repo's parity pin.** The
    dev shell pins bare `postgresql` "for strict parity" (`devenv.nix:123-128`,
    postgresql 18.x at the current lock); the postgres container image is the
-   stock upstream `postgres:18` pinned BY DIGEST (OQ-5 / DL-257), the same
+   stock upstream `postgres:18` pinned BY DIGEST (OQ-5 / DL-260), the same
    major, so the private cluster's on-disk format never skews between a
    dev-box stack and an installed stack — and the digest pin (not a mutable
    tag) matches the discipline `ci.yml:138-144` already applies to the pgtest
@@ -332,7 +332,7 @@ Mechanics, grounded in the current seams:
   `DownDetached`'s socket-quiescence confirm ("postgres stops accepting on
   the DSN socket", `downdetached.go:188-191`) reports a genuine survivor,
   and `down` fails while leaking the container. **Resolution (Matt ruled
-  OQ-7 2026-08-25, DL-259 — the contract change is blessed):** the containerized
+  OQ-7 2026-08-25, DL-262 — the contract change is blessed):** the containerized
   postgres stays a *supervised stack component* — preserving the
   one-command up/down lifecycle that is the reason postgres is a supervised
   child at all — and the pgid record format grows a first-class **container
@@ -444,7 +444,7 @@ Mechanics, grounded in the current seams:
   up-starts-all / down-tears-all lifecycle — `compass-stack up` would bring
   up a stack whose database it neither started nor can stop. The supervised
   container + v2 teardown identity keeps the one-command lifecycle; the
-  format change it costs is the DL-259 pgid-v2 extension Matt blessed (OQ-7).
+  format change it costs is the DL-262 pgid-v2 extension Matt blessed (OQ-7).
 + **homebrew-core / distro-official packages** — rejected for v1: core/distro
   inclusion has review latency and policy floors (notarization, popularity)
   that a young project fails; an org tap ships today and migrates later
@@ -461,7 +461,7 @@ Mechanics, grounded in the current seams:
 
 Dependency order: T1 → T2 → T3 → T4 → T5; T6 → T7 → T8; T8a → T8
 (T8a is the pgid-format-v2 teardown identity T8's fresh-`down` needs, per the
-DL-259 ruling); T9 after T6+T8
+DL-262 ruling); T9 after T6+T8
 (T9's preflight ships its own checks — see T9 — so it does not block on the
 runtime lane); T10 last. S1/S2 (client) and S3/S4 (stack) are independent
 lanes until T9. **Cross-lane impl order:** T1-T5 hard-depend on the
@@ -529,7 +529,7 @@ PR; the dependency is between their *impl* lanes, not their design records.)
 + **Test cycle:** `go build ./...` (untagged, on Linux) still green — this
   is what a Linux box CAN verify; a full darwin compile is NOT runnable on
   Linux (the darwin entrypoint's cgo needs the macOS SDK), so the real
-  darwin compile gate is T3's `macos-14` job (cadence per DL-260: main +
+  darwin compile gate is T3's `macos-14` job (cadence per DL-263: main +
   nightly always, plus a moon-affected-gated PR leg). On a mac: the build
   launches, loads `dist`, and completes the
   client connect flow against a live stack.
@@ -679,7 +679,7 @@ PR; the dependency is between their *impl* lanes, not their design records.)
   `downdetached.go`) and podman on the host. Produces: a v2 record format;
   `writePgidFile`/`readPgidFile` round-tripping both entry kinds; a fresh
   `down` that tears down a containerized postgres by name. Implements the
-  DL-259 format extension (OQ-7, blessed by Matt 2026-08-25).
+  DL-262 format extension (OQ-7, blessed by Matt 2026-08-25).
 + **Test cycle:** unit tests: v2 round-trip both kinds; a v1 record parses
   (compat); an unknown-version record refuses legibly (the
   `ErrNoTeardownRecord` posture, `downdetached.go:47-51`); the existing
@@ -731,28 +731,28 @@ PR; the dependency is between their *impl* lanes, not their design records.)
 + [ ] T6 — `flake.nix`: client + stack + stack-env packages, `nix flake check` CI
 + [ ] T7 — pin stock `postgres:18` container image by digest (no build lane)
 + [ ] T8 — stack container-backed postgres component + `--database-external`
-+ [ ] T8a — pgid record format v2 (container teardown identity, DL-259)
++ [ ] T8a — pgid record format v2 (container teardown identity, DL-262)
 + [ ] T9 — `compass-stack` preflight + `docs/self-host.md`
 + [ ] T10 — build-and-ci docs, ledger rows, RIG-2477/RIG-2608 follow-through
 
 ## Ledger delta (intended)
 
-Ledger-impact: new rows (DL-254..260) + no status flips (DL-217 is already
+Ledger-impact: new rows (DL-257..263) + no status flips (DL-217 is already
 `Superseded by DL-238`; DL-238/DL-214/DL-183 stay Active — this record
 *extends* them, per the DL-213 partial-supersession-by-citation pattern).
 Rows land in `docs/designs/DECISIONS.md` in this PR, written by the driver.
 IDs verified free at landing: the observed highest on main is DL-240, so
-DL-254..260 are the next free block.
+DL-257..263 are the next free block.
 
 | ID | Decision | Status | Record |
 | --- | --- | --- | --- |
-| DL-254 | The client app ships a full per-OS matrix from day one — Linux x86_64 (thin-client tarball, DL-238 content) AND macOS arm64 (signed+notarized `.app` in a dmg, built on a macOS runner, never cross-compiled) — attached to the RIG-1746 release lanes, extending the release-bundling record's Fork 2(i) asset boundary and resolving its OQ-1 deferral (RIG-2477) | Active (Matt, 2026-08-24) | this record §S1 |
-| DL-255 | Client install channels are homebrew (RigelBuild/homebrew-tap: cask for the macOS app + a cross-OS CLI formula, semver-bumped by the release workflow) and a repo `flake.nix` (client + stack packages pinned to the devenv.lock nixpkgs), over the raw release assets; distro-native packages (deb/rpm/AUR) deferred | Active (Matt, 2026-08-24) | this record §S2 |
-| DL-256 | The self-host stack stays a host-level bring-up on a KVM-capable Linux machine (`compass-stack up`; microVM D3 hard-fail consumed, no compose/Swarm packaging); `compass-stack` joins the release binary matrix, and the flake + preflight + self-host doc are its install surface — resolving the client-only record's OQ-3 (RIG-2608) | Active (Matt, 2026-08-24) | this record §S3 |
-| DL-257 | Postgres leaves the installed stack's host-process tree: the zero-config default is a dedicated postgres container run by the supervisor via rootless podman (socket-dir bind-mounted so the DSN contract is unchanged); a user-supplied DSN (`--database-external`) opts out. The image is the STOCK upstream `postgres:18` pinned by DIGEST — NOT a nix2container build of nixpkgs `postgresql` (that is the agent-shell mechanism, not a bundled stock service) and NOT a custom wrapper-entrypoint image; the official entrypoint does initdb+createdb+SIGTERM drain, so the `compass-postgres` wrapper collapses into env config (`POSTGRES_DB`, `POSTGRES_HOST_AUTH_METHOD=trust`, PGDATA volume, `unix_socket_directories`) on the container path and stays the host/dev-path bring-up. Supersedes the host-prerequisite interim answer (client-only OQ-3) atop the already-superseded DL-217; resolves OQ-5 | Active (Matt, 2026-08-24; image mechanism 2026-08-25) | this record §S4, §T7 |
-| DL-258 | macOS signing identity provisioning waits for the company rename (Sealed Security Inc → Rigel AI Software Inc, same DE entity so its D-U-N-S carries over as an update, not a new request); enroll the Apple Developer Program org clean as Rigel AI Software Inc post-rename. Nothing pre-GA needs public signing, so dev/internal builds self-sign meanwhile (ad-hoc `codesign --sign -`, mandatory on Apple Silicon, or a local self-signed cert — no Apple account); the Developer ID cert + notarization (the distribute-to-other-Macs leg) is GA-gated on the enrollment. Resolves OQ-2 | Active (Matt, 2026-08-25) | this record §GC6, §T4 |
-| DL-259 | Containerized-postgres teardown extends the DL-183 pgid record to format v2: `pgidFileVersion` `"1"`→`"2"`, entries become a kind-tagged discriminated union (`proc <component> <pgid> <starttime>` torn down by group signal as today; `ctr <component> <name>` torn down by `podman stop`/`rm -f`), `readPgidFile` dispatches on the tag and a shipped v1 binary hard-errors on a v2 entry line by the entry-grammar (not a header check) under the unchanged signal-off-a-half-understood-record discipline. The per-agent microVMs are the runner's sandbox one layer below the stack and are untouched (the stack tears the runner down by pgid as a plain host process); what forces v2 is postgres containerizing, not microVMs. Extends DL-183 (which stays Active); resolves OQ-7 | Active (Matt, 2026-08-25) | this record §S4, §T8a |
-| DL-260 | darwin CI cadence mirrors the shipped affected-on-PR + full-sweep-on-main + nightly shape (`ci.yml:25-36`): a `macos-14` compile+bundle sweep runs on every push to main AND nightly ALWAYS (the backstop), plus an affected-on-PR leg gated by a small ubuntu pre-job asking moon which projects the PR affects (moon's own affected-detection — the signal `moon ci` uses — never a GitHub `paths:` filter, so moon stays the single source of affected-truth per the ci.yml header's rejection of a YAML project list), so a scarce mac runner spins up on a PR only when a darwin-relevant project is affected. Resolves OQ-8 | Active (Matt, 2026-08-25) | this record §T3 |
+| DL-257 | The client app ships a full per-OS matrix from day one — Linux x86_64 (thin-client tarball, DL-238 content) AND macOS arm64 (signed+notarized `.app` in a dmg, built on a macOS runner, never cross-compiled) — attached to the RIG-1746 release lanes, extending the release-bundling record's Fork 2(i) asset boundary and resolving its OQ-1 deferral (RIG-2477) | Active (Matt, 2026-08-24) | this record §S1 |
+| DL-258 | Client install channels are homebrew (RigelBuild/homebrew-tap: cask for the macOS app + a cross-OS CLI formula, semver-bumped by the release workflow) and a repo `flake.nix` (client + stack packages pinned to the devenv.lock nixpkgs), over the raw release assets; distro-native packages (deb/rpm/AUR) deferred | Active (Matt, 2026-08-24) | this record §S2 |
+| DL-259 | The self-host stack stays a host-level bring-up on a KVM-capable Linux machine (`compass-stack up`; microVM D3 hard-fail consumed, no compose/Swarm packaging); `compass-stack` joins the release binary matrix, and the flake + preflight + self-host doc are its install surface — resolving the client-only record's OQ-3 (RIG-2608) | Active (Matt, 2026-08-24) | this record §S3 |
+| DL-260 | Postgres leaves the installed stack's host-process tree: the zero-config default is a dedicated postgres container run by the supervisor via rootless podman (socket-dir bind-mounted so the DSN contract is unchanged); a user-supplied DSN (`--database-external`) opts out. The image is the STOCK upstream `postgres:18` pinned by DIGEST — NOT a nix2container build of nixpkgs `postgresql` (that is the agent-shell mechanism, not a bundled stock service) and NOT a custom wrapper-entrypoint image; the official entrypoint does initdb+createdb+SIGTERM drain, so the `compass-postgres` wrapper collapses into env config (`POSTGRES_DB`, `POSTGRES_HOST_AUTH_METHOD=trust`, PGDATA volume, `unix_socket_directories`) on the container path and stays the host/dev-path bring-up. Supersedes the host-prerequisite interim answer (client-only OQ-3) atop the already-superseded DL-217; resolves OQ-5 | Active (Matt, 2026-08-24; image mechanism 2026-08-25) | this record §S4, §T7 |
+| DL-261 | macOS signing identity provisioning waits for the company rename (Sealed Security Inc → Rigel AI Software Inc, same DE entity so its D-U-N-S carries over as an update, not a new request); enroll the Apple Developer Program org clean as Rigel AI Software Inc post-rename. Nothing pre-GA needs public signing, so dev/internal builds self-sign meanwhile (ad-hoc `codesign --sign -`, mandatory on Apple Silicon, or a local self-signed cert — no Apple account); the Developer ID cert + notarization (the distribute-to-other-Macs leg) is GA-gated on the enrollment. Resolves OQ-2 | Active (Matt, 2026-08-25) | this record §GC6, §T4 |
+| DL-262 | Containerized-postgres teardown extends the DL-183 pgid record to format v2: `pgidFileVersion` `"1"`→`"2"`, entries become a kind-tagged discriminated union (`proc <component> <pgid> <starttime>` torn down by group signal as today; `ctr <component> <name>` torn down by `podman stop`/`rm -f`), `readPgidFile` dispatches on the tag and a shipped v1 binary hard-errors on a v2 entry line by the entry-grammar (not a header check) under the unchanged signal-off-a-half-understood-record discipline. The per-agent microVMs are the runner's sandbox one layer below the stack and are untouched (the stack tears the runner down by pgid as a plain host process); what forces v2 is postgres containerizing, not microVMs. Extends DL-183 (which stays Active); resolves OQ-7 | Active (Matt, 2026-08-25) | this record §S4, §T8a |
+| DL-263 | darwin CI cadence mirrors the shipped affected-on-PR + full-sweep-on-main + nightly shape (`ci.yml:25-36`): a `macos-14` compile+bundle sweep runs on every push to main AND nightly ALWAYS (the backstop), plus an affected-on-PR leg gated by a small ubuntu pre-job asking moon which projects the PR affects (moon's own affected-detection — the signal `moon ci` uses — never a GitHub `paths:` filter, so moon stays the single source of affected-truth per the ci.yml header's rejection of a YAML project list), so a scarce mac runner spins up on a PR only when a darwin-relevant project is affected. Resolves OQ-8 | Active (Matt, 2026-08-25) | this record §T3 |
 
 ## Open Questions
 
@@ -760,7 +760,7 @@ Per the batched-clarifications rule; each carries a recommendation. Matt's
 two rulings above are NOT here — they are decided. The **load-bearing set**
 — OQ-2 (Apple account), OQ-5 (postgres image mechanism), OQ-7 (pgid-v2
 contract change), OQ-8 (darwin CI cadence) — is now RESOLVED (Matt,
-2026-08-25; DL-257..260). Each carries its resolution inline below.
+2026-08-25; DL-260..263). Each carries its resolution inline below.
 
 ### OQ-1 [non-load-bearing] — native Linux distro packages (deb/rpm/AUR)
 
@@ -774,7 +774,7 @@ channels in S2 are additive — a later `.deb` wraps the same bundle content.
 T4 requires an Apple Developer Program membership (org or individual), a
 Developer ID Application certificate, and an App Store Connect API key — a
 human/console prerequisite no agent can perform. **RESOLVED (Matt,
-2026-08-25 — DL-258):** WAIT for the company rename (Sealed Security Inc →
+2026-08-25 — DL-261):** WAIT for the company rename (Sealed Security Inc →
 Rigel AI Software Inc, same DE entity, D-U-N-S carries over as an update),
 then enroll the org clean as Rigel AI Software Inc. Nothing pre-GA needs
 public signing, so dev/internal builds self-sign in the interim (ad-hoc
@@ -807,7 +807,7 @@ real tradeoff: nix2container reuses the `agent-image/` publish machinery and
 the repo's pinning discipline (`agent-image/publish.sh` + the vendored
 skopeo), while a Containerfile over the official `postgres:18` base is
 simpler and inherits upstream security updates by rebuild.
-**RESOLVED (Matt, 2026-08-25 — DL-257):** the STOCK upstream `postgres:18`
+**RESOLVED (Matt, 2026-08-25 — DL-260):** the STOCK upstream `postgres:18`
 image pinned by DIGEST — NOT nix2container (that mechanism is for the
 NixOS+devenv agent shell, not a bundled stock service). The official
 entrypoint does initdb+createdb+SIGTERM drain, so the `compass-postgres`
@@ -834,7 +834,7 @@ container entry kind in the `stack.pgids` record — a `"1"` → `"2"` bump of
 alternative that avoids the format change is the systemd/quadlet-managed
 container (§Alternatives): the stack only probes the DSN, but the install
 story gains unit provisioning and `up`/`down` stop owning the database
-lifecycle. **RESOLVED (Matt, 2026-08-25 — DL-259):** the pgid-format-v2
+lifecycle. **RESOLVED (Matt, 2026-08-25 — DL-262):** the pgid-format-v2
 contract change (the S4/T8a design), NOT the systemd/quadlet lifecycle
 change. The one-command up/down lifecycle is the reason postgres is a
 supervised child at all; the v2 format is a strict superset (v1 records
@@ -851,7 +851,7 @@ Nothing keeps the darwin build green between releases: the per-PR gate is
 a PR can silently break darwin (exactly the T2 duplicate-symbol class of
 error) and it surfaces on release day inside the signing-gated semver lane,
 the worst place. macOS runners cost ~10x Linux minutes, so this is a
-recurring-spend policy call. **RESOLVED (Matt, 2026-08-25 — DL-260):**
+recurring-spend policy call. **RESOLVED (Matt, 2026-08-25 — DL-263):**
 mirror the shipped CI shape (`ci.yml:25-36`, affected-on-PR + full-sweep-on-
 main + nightly): a `macos-14` compile+bundle sweep on every push to main AND
 nightly, ALWAYS (the backstop Matt wants for everything), PLUS an
