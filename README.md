@@ -81,6 +81,10 @@ design holds to. That model lives under
 - [No human clicks](./docs/concepts/no-human-clicks.md) and [read-only
   inspection](./docs/concepts/read-only-inspection.md) — agents stand up the org
   through tools; the human holds only the security boundary.
+- [Durable agents, disposable compute](./docs/concepts/durable-agents-disposable-compute.md)
+  and [isolation and egress](./docs/concepts/isolation-and-egress.md) — the agent
+  and its session are durable and Server-owned; the container/microVM it runs in
+  is disposable and contained.
 
 ## Toolchain
 
