@@ -48,6 +48,57 @@ export const resolveChordAria = (chord: string, platform: Platform): string =>
 	chord.replaceAll(MOD, platform === "mac" ? "Meta" : "Control");
 
 /**
+ * Split a chord string into its sequence segments on a single space. A plain
+ * (single-press) chord yields a one-element array; a leader sequence like
+ * `"G B"` yields `["G", "B"]`. Space is unambiguous as the separator because
+ * the literal Space key normalizes to the multi-char token `"Space"`
+ * (`dispatch.ts`), so a raw `" "` never appears as a key name inside a chord.
+ */
+export function chordSegments(chord: string): string[] {
+	return chord.split(" ");
+}
+
+/**
+ * The set of resolved leader keys for `platform`: the `resolveChord`-resolved
+ * FIRST segment of every multi-segment (sequence) row in `keymap`. Derived from
+ * the table so the dispatcher never hard-codes a leader key — adding a second
+ * leader later is a data change, not a runtime change. A single-chord row
+ * contributes nothing.
+ */
+export function leaderPrefixes(
+	keymap: readonly KeymapEntry[],
+	platform: Platform,
+): ReadonlySet<string> {
+	const prefixes = new Set<string>();
+	for (const entry of keymap) {
+		const segments = chordSegments(entry.chord);
+		if (segments.length > 1) {
+			prefixes.add(resolveChord(segments[0], platform));
+		}
+	}
+	return prefixes;
+}
+
+/**
+ * The display form of a chord for `platform`. A single chord resolves through
+ * `resolveChord` (`"Mod+B"` → `"Cmd+B"`); a leader sequence resolves each
+ * segment and joins them with `" then "` (`"G B"` → `"G then B"`), making
+ * press order explicit where a bare `"G B"` would read as one simultaneous
+ * chord. The single formatter behind every display surface (chips, titles,
+ * the shortcuts overlay).
+ */
+export function formatChordForDisplay(
+	chord: string,
+	platform: Platform,
+): string {
+	const segments = chordSegments(chord);
+	if (segments.length === 1) return resolveChord(chord, platform);
+	return segments
+		.map((segment) => resolveChord(segment, platform))
+		.join(" then ");
+}
+
+/**
  * The display chord for a command: the FIRST `DEFAULT_KEYMAP` row bound to `id`,
  * `resolveChord`-resolved for `platform` (Mod→Cmd/Ctrl). `undefined` when no row
  * binds the id. This is the single derivation for every shortcut chip (D4) — a
@@ -87,6 +138,18 @@ export function shortcutForAria(
  * scoped entry takes precedence while its zone is active (D5's ranking rule:
  * "scoped commands rank above global ones when their scope is active"); the
  * consumer applies that precedence rather than double-firing.
+ *
+ * A `chord` may be a LEADER SEQUENCE: two segments separated by one space
+ * (`"G B"` = press `G` then `B`), resolved for display by
+ * `formatChordForDisplay` (`"G then B"`) and split by `chordSegments`. The
+ * dispatcher's leader runtime resolves the completed sequence through the same
+ * tiers as a single chord. Authoring rules (enforced by a `DEFAULT_KEYMAP`
+ * invariant test once the first sequence rows land): a sequence is exactly two
+ * segments; every segment is
+ * modifier-less (so it inherits the editable-target guard — a modified segment
+ * would fire while a text field is focused); and a sequence's first segment
+ * (the leader) must not also be bound as a complete single chord (the leader
+ * key is reserved, which keeps the runtime's fall-through simple).
  */
 export interface KeymapEntry {
 	readonly chord: string;
