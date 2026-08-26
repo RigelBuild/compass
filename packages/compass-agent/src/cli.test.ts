@@ -39,6 +39,7 @@ import {
 	createSeedApiKeyResolver,
 	deriveLitellmMcpUrl,
 	envFilePath,
+	isTelemetryEndpointConfigured,
 	type MainDeps,
 	main,
 	parseEnvFile,
@@ -567,11 +568,25 @@ function fakeSession(opts: { promptError?: Error } = {}): FakeSession {
 // `createTeeSessionStorage`, writing under the per-test scratch HOME (pinned in
 // beforeEach) — so `main`'s full composition (build sink → tee storage →
 // SessionManager.create) is exercised, not stubbed.
+//
+// The telemetry seam is a RECORDING NO-OP (never the real `initTelemetryExport`,
+// which registers a live global TracerProvider + OTLP exporter with no teardown
+// and would poison every later test in this shared process — design record F3).
+// It reports enabled iff an OTLP endpoint is configured at call time, so a test
+// that sources an endpoint still exercises main's gating without real
+// registration. The dedicated telemetry tests below use their own recording
+// seam to assert the calls.
 function deps(session: FakeSession, transport: RunnerTransport): MainDeps {
 	return {
 		createSession: () =>
 			Promise.resolve({ session: session as unknown as AgentSession }),
 		createTransport: () => transport,
+		telemetry: {
+			init: () => Promise.resolve(),
+			isEnabled: () =>
+				process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT !== undefined ||
+				process.env.OTEL_EXPORTER_OTLP_ENDPOINT !== undefined,
+		},
 	};
 }
 
@@ -1431,6 +1446,10 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 		"SOME_TEST_KEY",
 		"COMPASS_MODEL",
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		// main's enabled-path telemetry activation writes these when an endpoint is
+		// sourced (the OTEL-endpoint test below); save+restore so they never leak.
+		"OTEL_SERVICE_NAME",
+		"OTEL_RESOURCE_ATTRIBUTES",
 		"COMPASS_FUTURE_VAR",
 		"LITELLM_BASE_URL",
 		"LITELLM_MCP_URL",
@@ -1585,6 +1604,254 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 			),
 		);
 		expect(process.env.LITELLM_MCP_URL).toBe("https://override.example/mcp/");
+	});
+});
+
+// ── main(): loop OpenTelemetry activation ────────────────────────────────────
+//
+// design docs/designs/platform/compass-agent-loop-otel/design.md T1. These run
+// over the MainDeps composition seam with a RECORDING telemetry seam — NEVER the
+// real `initTelemetryExport`, which registers a live global TracerProvider + a
+// real OTLP exporter with no teardown and would poison every later test in this
+// shared process (design record F3). They assert exactly what cli.ts owns: the
+// endpoint gate, the enabled-path env writes (defaulted service name + appended
+// join key), the bit-identical inertness when off, and the gated `telemetry`
+// session option. Span correctness is OMP's own suite; the real registration is
+// left to a spawned-subprocess smoke (not run in-process, per F3).
+describe("main activates loop OpenTelemetry", () => {
+	// Every OTEL_* key these tests read or main may write, saved+restored so a
+	// leaked var can never flake a later test — the savedHome/TOUCHED_KEYS pattern.
+	const OTEL_KEYS = [
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"OTEL_SERVICE_NAME",
+		"OTEL_RESOURCE_ATTRIBUTES",
+		"OTEL_SDK_DISABLED",
+		"OTEL_TRACES_EXPORTER",
+	] as const;
+	let savedOtel: Record<string, string | undefined> = {};
+	beforeEach(() => {
+		savedOtel = {};
+		for (const key of OTEL_KEYS) {
+			savedOtel[key] = process.env[key];
+			delete process.env[key];
+		}
+	});
+	afterEach(() => {
+		for (const key of OTEL_KEYS) {
+			const prev = savedOtel[key];
+			if (prev === undefined) delete process.env[key];
+			else process.env[key] = prev;
+		}
+	});
+
+	// A recording telemetry seam + the captured createSession options. `isEnabled`
+	// mirrors the real module: it reports true only AFTER init() ran AND a provider
+	// actually registered, so the option gate keys off registration, not the
+	// endpoint. `registerOnInit` (default true) models the ordinary success; set it
+	// false to model the protocol-decline branch — init() runs (endpoint gate
+	// fired, env defaults written) yet no provider registers, so isEnabled() stays
+	// false. The seam records call order so a test can pin env-before-init.
+	interface TelemetrySpy {
+		calls: string[];
+		telemetryOption: unknown;
+		hasTelemetryKey: boolean;
+	}
+	function telemetryDeps(
+		session: FakeSession,
+		transport: RunnerTransport,
+		spy: TelemetrySpy,
+		registerOnInit = true,
+	): MainDeps {
+		let registered = false;
+		return {
+			createSession: (options) => {
+				spy.telemetryOption = options.telemetry;
+				spy.hasTelemetryKey = "telemetry" in options;
+				return Promise.resolve({
+					session: session as unknown as AgentSession,
+				});
+			},
+			createTransport: () => transport,
+			telemetry: {
+				init: () => {
+					// Capture the env the real provider would read at registration —
+					// pinning that the defaults are in place BEFORE init runs.
+					spy.calls.push(
+						`init:${process.env.OTEL_SERVICE_NAME}:${process.env.OTEL_RESOURCE_ATTRIBUTES}`,
+					);
+					if (registerOnInit) registered = true;
+					return Promise.resolve();
+				},
+				isEnabled: () => registered,
+			},
+		};
+	}
+
+	// The predicate main gates on, exercised directly — the endpoint contract in
+	// isolation from the composition (the enum-list + kill-switch branches are
+	// awkward to reach through the env file, and this is the authoritative gate).
+	describe("isTelemetryEndpointConfigured", () => {
+		test("false when no endpoint is set", () => {
+			expect(isTelemetryEndpointConfigured({})).toBe(false);
+		});
+		test("true for the base endpoint", () => {
+			expect(
+				isTelemetryEndpointConfigured({
+					OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318",
+				}),
+			).toBe(true);
+		});
+		test("true for the traces-specific endpoint alone", () => {
+			expect(
+				isTelemetryEndpointConfigured({
+					OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://collector:4318/v1/traces",
+				}),
+			).toBe(true);
+		});
+		test("false when OTEL_SDK_DISABLED is true, even with an endpoint", () => {
+			expect(
+				isTelemetryEndpointConfigured({
+					OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318",
+					OTEL_SDK_DISABLED: "TRUE",
+				}),
+			).toBe(false);
+		});
+		test("false when OTEL_TRACES_EXPORTER names none, even with an endpoint", () => {
+			expect(
+				isTelemetryEndpointConfigured({
+					OTEL_EXPORTER_OTLP_ENDPOINT: "http://collector:4318",
+					OTEL_TRACES_EXPORTER: "otlp,none",
+				}),
+			).toBe(false);
+		});
+	});
+
+	// Endpoint UNSET ⇒ true bit-identical inertness (F2): NO `telemetry` key on
+	// the options AND process.env is unmutated. Snapshot the two enabled-path keys
+	// before and after so a stray write (an ungated mutation) reddens. Non-vacuity:
+	// dropping the `if (isTelemetryEndpointConfigured(...))` gate writes
+	// OTEL_SERVICE_NAME here → red.
+	test("endpoint unset ⇒ no telemetry key and process.env is unmutated", async () => {
+		const beforeName = process.env.OTEL_SERVICE_NAME;
+		const beforeAttrs = process.env.OTEL_RESOURCE_ATTRIBUTES;
+		const spy: TelemetrySpy = {
+			calls: [],
+			telemetryOption: "SENTINEL",
+			hasTelemetryKey: true,
+		};
+		await main(
+			{ HOME: scratch() },
+			telemetryDeps(
+				fakeSession(),
+				fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				spy,
+			),
+		);
+		expect(spy.calls).toEqual([]);
+		expect(spy.hasTelemetryKey).toBe(false);
+		expect(spy.telemetryOption).toBeUndefined();
+		expect(process.env.OTEL_SERVICE_NAME).toBe(beforeName);
+		expect(process.env.OTEL_RESOURCE_ATTRIBUTES).toBe(beforeAttrs);
+	});
+
+	// Endpoint SET ⇒ init() ran with the env defaults in place, and the options
+	// carry `telemetry: {}`. Pins: OTEL_SERVICE_NAME defaulted, compass.session.id
+	// appended to OTEL_RESOURCE_ATTRIBUTES, and — via the recorded init call — that
+	// both were set BEFORE init ran (the load-bearing order).
+	test("endpoint set ⇒ env defaults set before init, and telemetry:{} on the options", async () => {
+		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4318";
+		const spy: TelemetrySpy = {
+			calls: [],
+			telemetryOption: "SENTINEL",
+			hasTelemetryKey: false,
+		};
+		await main(
+			{ HOME: scratch() },
+			telemetryDeps(
+				fakeSession(),
+				fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				spy,
+			),
+		);
+		expect(spy.hasTelemetryKey).toBe(true);
+		expect(spy.telemetryOption).toEqual({});
+		expect(process.env.OTEL_SERVICE_NAME).toBe("compass-agent");
+		// The join key was appended; the session id is minted, so assert the shape,
+		// not a fixed id.
+		expect(process.env.OTEL_RESOURCE_ATTRIBUTES).toMatch(
+			/^compass\.session\.id=.+/,
+		);
+		// init ran exactly once, and it observed the defaults already in place —
+		// the load-bearing env-before-registration order.
+		expect(spy.calls).toHaveLength(1);
+		expect(spy.calls[0]).toMatch(/^init:compass-agent:compass\.session\.id=.+/);
+	});
+
+	// Deployer-set values are PRESERVED: ??= no-ops the service name, and the join
+	// key APPENDS after the deployer's existing OTEL_RESOURCE_ATTRIBUTES (never
+	// clobbers it — Decision 3a). Non-vacuity: a `=` instead of `??=`, or an
+	// assignment instead of an append, reds one of these.
+	test("deployer-set OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES are preserved", async () => {
+		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4318";
+		process.env.OTEL_SERVICE_NAME = "deployer-name";
+		process.env.OTEL_RESOURCE_ATTRIBUTES = "deployment.environment=prod";
+		const spy: TelemetrySpy = {
+			calls: [],
+			telemetryOption: undefined,
+			hasTelemetryKey: false,
+		};
+		await main(
+			{ HOME: scratch() },
+			telemetryDeps(
+				fakeSession(),
+				fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				spy,
+			),
+		);
+		// ??= left the deployer's name untouched.
+		expect(process.env.OTEL_SERVICE_NAME).toBe("deployer-name");
+		// The join key was appended AFTER the deployer's value, comma-joined.
+		expect(process.env.OTEL_RESOURCE_ATTRIBUTES).toMatch(
+			/^deployment\.environment=prod,compass\.session\.id=.+/,
+		);
+		expect(spy.hasTelemetryKey).toBe(true);
+	});
+
+	// Option gate AUTHORITY: the `telemetry` session key gates on the
+	// post-registration isEnabled() — did a provider actually register — NOT on the
+	// endpoint being configured (Decision 1 + Global Constraints). The distinguishing
+	// branch is a set endpoint whose protocol the real module can't honor: init()
+	// runs (endpoint gate fired, env defaults written) yet declines to register, so
+	// isEnabled() stays false and NO telemetry key is added. Non-vacuity: swapping
+	// the gate from `telemetryHooks.isEnabled()` to `isTelemetryEndpointConfigured`
+	// reds this (endpoint is set ⇒ key would appear) while every other test in the
+	// block stays green — this is the only test that pins the two gates apart.
+	test("endpoint set but provider declines to register ⇒ init ran, env written, but NO telemetry key", async () => {
+		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4318";
+		const spy: TelemetrySpy = {
+			calls: [],
+			telemetryOption: "SENTINEL",
+			hasTelemetryKey: true,
+		};
+		await main(
+			{ HOME: scratch() },
+			telemetryDeps(
+				fakeSession(),
+				fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				spy,
+				false,
+			),
+		);
+		// init() DID run — the endpoint gate fired and wrote the env defaults before
+		// the (declining) registration attempt.
+		expect(spy.calls).toHaveLength(1);
+		expect(spy.calls[0]).toMatch(/^init:compass-agent:compass\.session\.id=.+/);
+		expect(process.env.OTEL_SERVICE_NAME).toBe("compass-agent");
+		// But registration declined ⇒ isEnabled() false ⇒ the option gate withholds
+		// the telemetry key, even though the endpoint is configured.
+		expect(spy.hasTelemetryKey).toBe(false);
+		expect(spy.telemetryOption).toBeUndefined();
 	});
 });
 
