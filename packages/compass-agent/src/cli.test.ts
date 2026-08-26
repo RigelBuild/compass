@@ -1554,9 +1554,15 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 		// (The TRACES_ endpoint fires T1's enabled-path activation, which APPENDS
 		// compass.session.id to OTEL_RESOURCE_ATTRIBUTES — never clobbering the
 		// deployer-set value, Decision 3a — so the file value survives as a prefix.)
+		// OTEL_SERVICE_NAME uses a DISTINCT sentinel (not "compass-agent") on
+		// purpose: the activation's `??=` default (cli.ts:839) is "compass-agent",
+		// so a file value equal to that default would keep the assertion green even
+		// if the key were wrongly dropped by isReservedEnvKey and re-defaulted. A
+		// distinct value only survives when the key genuinely reaches process.env
+		// AND the `??=` no-ops on the already-present value — pinning the invariant.
 		writeEnvFile(
 			home,
-			"OTEL_SERVICE_NAME=compass-agent\n" +
+			"OTEL_SERVICE_NAME=deployer-custom-name\n" +
 				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://collector.example:4318/v1/traces\n" +
 				"OTEL_RESOURCE_ATTRIBUTES=deployment.environment=prod\n" +
 				"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true\n",
@@ -1568,7 +1574,7 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 				fakeCarrier(emptyLog(), { control: emptyControlStream }),
 			),
 		);
-		expect(process.env.OTEL_SERVICE_NAME).toBe("compass-agent");
+		expect(process.env.OTEL_SERVICE_NAME).toBe("deployer-custom-name");
 		expect(process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).toBe(
 			"http://collector.example:4318/v1/traces",
 		);
