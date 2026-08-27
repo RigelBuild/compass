@@ -213,10 +213,12 @@ record captures.
 
 ## Ledger-impact
 
-Ledger-impact: adds DL-264 to `docs/designs/DECISIONS.md` under the "Linear
-agent responder" section (highest row on current `main` is DL-263,
-DECISIONS.md:258; the driver MUST re-verify the next-free id against current
-main at freeze rather than trusting a session-time snapshot). DL-256 does NOT
+Ledger-impact: adds DL-268 to `docs/designs/DECISIONS.md` under the "Linear
+agent responder" section. (Originally authored as DL-264 against a `main`
+topping out at DL-263; a concurrent forge-notification record, RIG-2732, also
+claimed DL-264 and merged first, taking the contiguous DL-264..DL-267 block, so
+this row was renumbered to the next free id DL-268 to clear the duplicate.)
+DL-256 does NOT
 flip: its status cell stays `Active` and its frozen Decision-cell prose is
 untouched (rows are append-only, `tools/design-ledger-gate/index.ts:25-27`) —
 this amendment is its amending sibling, and the new row carries the delta,
