@@ -488,6 +488,76 @@ guest-world-readable via /proc/cmdline — worse than no secret). If Matt rules
 the other way, the nonce slot is where a real credential would ride, so the
 design degrades gracefully into that ruling.
 
+## Prior art
+
+Two design surfaces here are well-trodden: the in-guest exec RPC shape §(a),
+and the PID-1 supervisor/reaper §(b). We adopt the proven prior art as a
+*reference model*, not as vendored code — the interface shape and the
+reaper-correctness model transfer, but the implementations do not (four walls
+below). V2b implements both fresh in Go.
+
+**Exec RPC shape — kata-containers `agent.proto`.** kata's in-guest agent
+exposes, among its full runtime surface, the session-over-vsock exec verbs
+V2b's §(a) collapses into three RPCs: `ExecProcess`, `SignalProcess`,
+`WaitProcess` (commented "wait & reap like waitpid(2)"), plus the stdio and
+tty-control verbs `WriteStdin`/`ReadStdout`/`ReadStderr`/`CloseStdin`/
+`TtyWinResize` (`kata-containers/src/libs/protocols/protos/agent.proto`,
+`service AgentService`). V2b's four added RPCs are `Exec`/`ExecStream`/`Signal`
+— those exec verbs — plus `Provision`, a gate-transition RPC with no kata-exec
+analog; kata's `WaitProcess` folds into `ExecStream`'s terminal `exit` frame
+rather than a standalone RPC. Two shape decisions we reuse directly: (1) a
+non-zero process exit is carried in the wait response
+(`WaitProcessResponse.status int32`), not as a transport error — the same
+"exit code is data, not a Connect error" invariant in §(a) and the Global
+Constraints; (2) an empty `exec_id` widens a signal's scope from a single exec
+to the whole session — kata's `SignalProcessRequest.exec_id` empty ("") means
+"send the signal to all the processes including their descendants". V2b narrows
+that instinct to a single guest Stop: an empty `exec_id` triggers the
+supervised shutdown of §(d) (SIGTERM the children, drain, then
+`reboot(RB_POWER_OFF)`), not an arbitrary-signal fan-out. V2b also folds kata's
+separate stdio-read/-write RPCs into one bidi `ExecStream` (kata pre-creates
+host-side vsock ports per stream — the `stdin_port`/`stdout_port`/`stderr_port`
+fields on `ExecProcessRequest`; our hybrid-vsock door multiplexes one h2c
+connection, so a bidi stream is the natural fit) and drops the container-id
+dimension entirely (one session per VM, not kata's many-containers-per-sandbox
+model).
+
+**PID-1 supervisor/reaper — tini and dumb-init.** guestd is guest PID 1, so it
+inherits the init-process obligations these minimal container inits exist to
+discharge, and §(b)'s reaper is built to the same contract they document:
+
+- *Zombie reaping.* An orphaned child re-parents to PID 1, which must `wait()`
+  on it or leak a defunct entry until VM teardown; tini "spawn[s] a single
+  child … all the while reaping zombies", and dumb-init is "responsible for
+  `wait()`-ing on orphaned zombie processes" (their READMEs). guestd reaps every
+  exec child on exit and emits the reaped status as the terminal `exit` frame.
+- *Signal forwarding to the process group.* A signal delivered to the init
+  process must reach the whole session, not just the immediate child — tini's
+  process-group-kill mode (`-g`) and dumb-init's default "session rooted at the
+  child … sends signals to the entire process group" both exist because a bare
+  child (e.g. a shell) won't forward signals to its own children. §(b) spawns
+  each exec in its own process group and §(d)'s Stop signals the group, so a
+  `Signal("", SIGTERM)` reaches descendants the same way.
+- *Exit-code propagation.* tini "reuse[s] the child's exit code when exiting";
+  §(b) surfaces the reaped child status verbatim through `WaitProcessResponse`-
+  equivalent framing rather than remapping it.
+
+**Why reference and not adoption (four walls).** Adopting either body of code
+outright was weighed and rejected: (1) *Language* — the kata agent is Rust,
+tini and dumb-init are C; guestd is Go, and its reaper logic is a small amount
+of Go — cheaper to write than an FFI boundary or a second runtime in the guest.
+(2) *Transport* — kata speaks ttRPC over vsock; V2b is Connect/h2c over the
+frozen V2a hybrid-vsock door, so the wire layer does not port. (3) *Scope* —
+kata's `AgentService` is a full OCI container runtime (~50 RPCs spanning
+execution, stdio, networking, and observability, plus a `rustjail` embedded
+OCI runtime); V2b is one exec session per VM (~4 RPCs), so adopting the agent
+would mean importing an order of magnitude more surface than the design needs,
+against the "guest supervisor is a thin exec supervisor" non-goal. (4) *Host
+interface* — the acceptance bar is our frozen `runtime.ContainerRuntime`
+(`microvm.go:71-116`); no external agent implements it, so the host-side
+translation layer §(c) is ours regardless. The prior art proves the shape and
+the correctness model; the code stays a reference.
+
 ## Global Constraints
 
 Every task below inherits these; they restate the parent's binding decisions
