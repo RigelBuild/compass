@@ -18,6 +18,18 @@ method today is a typed stub ("returned by every MicroVMRuntime method until
 the in-guest control plane lands", `go/internal/runtime/microvm.go:48-55`);
 V2b fills them. Egress arming stays V3's; the gateway transport stays V4's.
 
+**Non-goal V2b must not foreclose: containers inside the guest.** The agent
+will eventually start its own containers inside a session VM (dev containers,
+build sandboxes). V2b does not build that, and nothing in its surface blocks
+it: an in-guest container runtime is an ordinary child process the agent
+launches through `ExecStream`, and the isolation boundary is the VM, not the
+guest uid — so a container runtime running *inside* the guest is unrelated to
+the host-facing uid-0 refusal this record enforces on the exec surface. A later
+milestone owns the two orthogonal pieces: the guest rootfs shipping a container
+runtime with the kernel namespace/cgroup support it needs, and a scoped review
+of the per-exec empty-capability posture ((b)) for the runtime's child. The
+V2b proto and `MicroVMRuntime` methods are unaffected.
+
 ## Approach
 
 Each subsection resolves one fork the parent's V2b plan leaves to detailing
@@ -545,13 +557,11 @@ in V2b-concrete form.
 - **No podman-path regression.** V2b touches `MicroVMRuntime`, the `microvm`
   package, `guestd`, and the proto; `PodmanCLI` and every caller above the
   interface are unchanged, and the existing suite keeps running unchanged
-  against the container backend (microvm-runner.md:397-402). **One scoped
-  exception, gated on OQ-G:** if Matt rules to widen `isDeliberateKill` for a
-  portable exit-signal error (U3b), that one runner-side symbol changes — but
-  additively (the `*exec.ExitError` branch stays, guarded by a podman-row
-  regression test), so the podman byte-path itself does not regress. Absent
-  that ruling, this constraint holds verbatim and the microVM Stop cannot
-  distinguish deliberate kill from crash (OQ-G option 2).
+  against the container backend (microvm-runner.md:397-402). **One scoped,
+  additive exception (U3b):** the runner's `isDeliberateKill` is widened to
+  recognize a portable exit-signal error, so a remote guest exit can be told
+  from a crash. The `*exec.ExitError` branch stays, guarded by a podman-row
+  regression test, so the podman byte-path itself does not regress.
 - **V7-shaped residue.** Per-session state on disk lands in the
   `<runroot>/microvm/<session>/` layout V7 formalizes
   (microvm-runner.md:589-591), so the crash-recovery task extends rather than
@@ -668,20 +678,20 @@ the stream-to-`StreamingIO` pump, and the killFunc/waitFunc pair the
   it, ctx cancellation kills the exec and the fake server observes the
   stream break, timeout maps to `TimeoutError`.
 
-### U3b — runner deliberate-kill error taxonomy (OQ-G; gated on Matt's ruling)
+### U3b — runner deliberate-kill error taxonomy
 
-Per OQ-G: the frozen `isDeliberateKill` (`agent_exec.go:232-239`) matches only
-a concrete `*exec.ExitError`, which a remote-exec `waitFunc` cannot fabricate,
-so without this task the microVM Wait error can never be recognized as a
-deliberate kill and every microVM-agent teardown surfaces as an error. This
-task exists ONLY if Matt rules to amend the "No podman-path regression"
-constraint (OQ-G option 1); it is the one plan item gated on that ruling.
+The `isDeliberateKill` check (`agent_exec.go:232-239`) matches only a concrete
+`*exec.ExitError`, which a remote-exec `waitFunc` cannot fabricate, so without
+this task the microVM Wait error can never be recognized as a deliberate kill
+and every microVM-agent teardown surfaces as an error. This widens one
+runner-side symbol above the interface — additively, so the podman byte-path is
+unchanged (below).
 
 - **Interfaces:** produces an exported, backend-portable deliberate-kill error
-  in `go/internal/runtime` — `ExitStatusError{Code int; Signal syscall.Signal}`
-  (or the interface `interface{ ExitSignal() (syscall.Signal, bool) }`) — and
-  WIDENS `isDeliberateKill` to `errors.As` on it FIRST, falling back to the
-  existing `*exec.ExitError` branch so the podman byte-path is byte-unchanged.
+  in `go/internal/runtime` — the concrete struct `ExitStatusError{Code int;
+  Signal syscall.Signal}` — and WIDENS `isDeliberateKill` to `errors.As` on it
+  FIRST, falling back to the existing `*exec.ExitError` branch so the podman
+  byte-path is byte-unchanged.
   U3's `waitFunc` constructs it for a signalled guest exit; `PodmanCLI`'s Wait
   path is left untouched (its `*exec.ExitError` still matches the fallback).
   Consumes nothing beyond the existing runner package.
@@ -763,9 +773,9 @@ the interface, run against both backends.
       check, boot-nonce echo, RPC-driven shutdown via `reboot(RB_POWER_OFF)`
 - [ ] U3 — host exec layer: `GuestExec` one-shot + stream-to-StreamingIO
       pump + killFunc/waitFunc ChildHandle over the V2a dialer
-- [ ] U3b — runner deliberate-kill error taxonomy (OQ-G, gated on Matt's
-      ruling): exported portable exit-signal error + widened `isDeliberateKill`
-      with a podman-row regression test
+- [ ] U3b — runner deliberate-kill error taxonomy: exported portable
+      exit-signal error + widened `isDeliberateKill` with a podman-row
+      regression test
 - [ ] U4 — `MicroVMRuntime` lifecycle: Create/Start/Exec/ExecStreaming/
       Stop/Remove/Exists/MountLabel behind the frozen signatures (Exists +
       dup-name Create keyed on `spec.Name`)
@@ -775,7 +785,14 @@ the interface, run against both backends.
 ## Open Questions
 
 Batched for the pre-freeze ruling; the body designs against each
-recommendation.
+recommendation. The freeze-gated forks (OQ-B, OQ-D, OQ-G — each open only
+because it touched a prior contract) are resolved by adopting their
+recommendation: this is a prototype with no frozen interface, so a prior
+contract informs but does not veto a detailing refinement. OQ-A (auth posture)
+and OQ-C (mount-owner milestone) remain genuine design choices — the record
+designs against their recommendations and they are reversible, so they do not
+block the freeze; they are tracked for confirm-or-redirect outside this record.
+The non-load-bearing OQ-E/OQ-F stand at their recommendations.
 
 - **OQ-A (load-bearing) — exec-transport authentication.** The V2a proto
   header requires this to be revisited when Exec/Signal/Provision land
@@ -792,16 +809,15 @@ recommendation.
   cmdline-delivered secret is guest-world-readable (/proc/cmdline), making it
   actively misleading. Full reasoning in Approach (e). If ruled toward (2),
   the nonce slot is where the credential rides — no structural rework.
-- **OQ-B (load-bearing, small) — `ExecStream` message naming deviates from
-  the frozen parent's sketch.** The parent sketched `ExecStream(stream
-  ExecStreamFrame) returns (stream ExecStreamFrame)`
+- **OQ-B (RESOLVED — `ExecStreamRequest`/`ExecStreamResponse`) — `ExecStream`
+  message naming refines the parent's sketch.** The parent sketched
+  `ExecStream(stream ExecStreamFrame) returns (stream ExecStreamFrame)`
   (microvm-runner.md:480); a shared frame message violates buf's
   RPC_REQUEST/RESPONSE_STANDARD_NAME rules the V2a seed deliberately
   satisfies (`guest_control.proto:27-28`), and the two directions carry
-  disjoint payloads. **Recommend `ExecStreamRequest`/`ExecStreamResponse`**
-  with direction-specific oneofs (Approach (a)) — a detailing refinement of a
-  sketch, not a contradiction of a decision, but it touches the frozen
-  parent's text so it is batched for an explicit OK.
+  disjoint payloads. Adopted: `ExecStreamRequest`/`ExecStreamResponse` with
+  direction-specific oneofs (Approach (a)) — a detailing refinement of a
+  sketch, forced by buf lint regardless, not a contradiction of a decision.
 - **OQ-C (load-bearing) — mount expressiveness in V2b, and who owns the real
   mount shapes.** podman accepts arbitrary bind mounts
   (`ContainerSpec.Mounts`, `podman.go:100-103`); the microVM backend has
@@ -828,13 +844,13 @@ recommendation.
   microVM `Create` consumes? The socket mount retires into V4's
   gateway-over-vsock; the config and workspace shares have no named owner today.
   The contract suite pins the refusal; the plan needs the owners.
-- **OQ-D (load-bearing, small) — `MicroVMConfig` growth.** V1 froze four
-  fields (VMMPath/VirtiofsdPath/KernelImage/RootfsImage, `microvm.go:25-35`);
-  V2b needs at minimum `InitrdImage` (the pinned kernel boots via the V2a
-  module initramfs — load-bearing, microvm-v2a §(a)), `RunRoot`, and default
-  guest sizing (`DefaultCPUs`/`DefaultMemoryMB`, hotplug-grown later per D5).
-  Additive config-struct growth mirroring the V2a BootConfig ratification
-  (its OQ-E). **Recommend ratifying the U4 field set.**
+- **OQ-D (RESOLVED — ratify the U4 field set) — `MicroVMConfig` growth.** V1
+  seeded four fields (VMMPath/VirtiofsdPath/KernelImage/RootfsImage,
+  `microvm.go:25-35`); V2b needs at minimum `InitrdImage` (the pinned kernel
+  boots via the V2a module initramfs — load-bearing, microvm-v2a §(a)),
+  `RunRoot`, and default guest sizing (`DefaultCPUs`/`DefaultMemoryMB`,
+  hotplug-grown later per D5). Additive config-struct growth mirroring the V2a
+  BootConfig ratification (its OQ-E); adopted.
 - **OQ-E (non-load-bearing) — exec output size bounds AND stdin bounds.**
   `ExecResponse` buffers a one-shot exec's stdout/stderr in memory on both
   ends, as podman's `spawnCapture` does host-side today (`podman.go:689-699`).
@@ -855,8 +871,8 @@ recommendation.
   Recommend: fixed guest CID 3 for every VM, fixed guestd port, uniqueness
   carried entirely by the per-session socket paths. Simplest thing that can
   work; nothing routes on CID.
-- **OQ-G (load-bearing, needs a scope ruling) — the deliberate-kill error
-  taxonomy crosses the interface.** The contract requires
+- **OQ-G (RESOLVED — option 1; U3b is unconditional) — the deliberate-kill
+  error taxonomy crosses the interface.** The contract requires
   `ChildHandle.Wait`-after-SIGKILL to yield an error `isDeliberateKill`
   accepts, so `AgentStream.Stop` reports a deliberate teardown as success and
   any other exit as a failure (`agent_exec.go:200-207`). But `isDeliberateKill`
@@ -864,30 +880,22 @@ recommendation.
   WaitStatus)` (`agent_exec.go:232-239`). `*exec.ExitError` embeds
   `*os.ProcessState`, which has unexported fields and no public constructor: a
   `waitFunc` reporting a REMOTE guest child's exit cannot fabricate one, so the
-  microVM Wait error can NEVER satisfy `isDeliberateKill`, and every deliberate
-  microVM-agent teardown would surface as an error. The record's own U5 kill/
-  wait row (U5, "Kill mid-stream → Wait returns the deliberate-kill error
-  `isDeliberateKill` accepts") cannot pass as long as `isDeliberateKill` stays
-  `*exec.ExitError`-only. Fixing it requires touching a symbol ABOVE the
-  interface — which the "No podman-path regression" Global Constraint currently
-  scopes out ("`PodmanCLI` and every caller above the interface are
-  unchanged"). Options: (1) introduce an exported, backend-portable
-  deliberate-kill error the runner recognizes —
-  `runtime.ExitStatusError{Code int; Signal syscall.Signal}` (or an interface
-  `interface{ ExitSignal() (syscall.Signal, bool) }`) — and WIDEN
-  `isDeliberateKill` to `errors.As` on it FIRST, falling back to the existing
-  `*exec.ExitError` branch so the podman byte-path stays untouched; both
-  backends' Wait errors satisfy it (podman by wrapping/extending; microVM by
+  microVM Wait error could never satisfy `isDeliberateKill`, and every
+  deliberate microVM-agent teardown would surface as an error. Resolution:
+  introduce an exported, backend-portable deliberate-kill error the runner
+  recognizes — `runtime.ExitStatusError{Code int; Signal syscall.Signal}` — and
+  WIDEN `isDeliberateKill` to `errors.As` on it FIRST, falling back to the
+  existing `*exec.ExitError` branch so the podman byte-path stays untouched;
+  both backends' Wait errors satisfy it (podman by the fallback, microVM by
   constructing it in `waitFunc`). ~10 host-side lines, guarded by a podman-row
-  regression test. (2) leave `isDeliberateKill` alone and accept that microVM
-  Stop cannot distinguish deliberate kill from crash — rejected: it breaks the
-  crash-vs-stop signal D4 depends on (`podman.go:230-233`). **Recommend (1),
-  but it AMENDS the no-caller-change constraint**, so it needs Matt's explicit
-  OK and its own task. This is the one genuine scope fork: U3's `waitFunc`, the
-  U5 kill/wait row, and the Global Constraint text all depend on the ruling.
-  The record below is written against (1) (a new U3b task owns the runner
-  change); if Matt rules (2) or a different error shape, U3b and the U5 row
-  change accordingly.
+  regression test, owned by U3b. This widens one runner-side symbol above the
+  `ContainerRuntime` interface — sanctioned because the prototype holds no
+  interface immutable; the alternative (leave `isDeliberateKill` alone and
+  accept that microVM Stop cannot distinguish deliberate kill from crash) was
+  rejected as it breaks the crash-vs-stop signal D4 depends on
+  (`podman.go:230-233`). The exported error is a concrete struct rather than an
+  interface: it is the simplest `errors.As` target and no caller needs the
+  abstraction today.
 
 ### Ledger assessment
 
