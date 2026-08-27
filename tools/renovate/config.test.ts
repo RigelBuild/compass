@@ -281,10 +281,16 @@ describe("tools/renovate FOD-hash refresh wiring (PR #579)", () => {
 		expect(topLevel?.executionMode).toBe("branch");
 	});
 
-	test("the top-level task commits BOTH FOD files (fileFilters cover them)", () => {
+	test("the top-level task commits ALL THREE Go/bun FOD files (fileFilters cover them)", () => {
 		// gomod branches + bun/npm-first branches inherit this slot; it must be able
-		// to commit both the Go vendorHash file and the bun outputHash file.
+		// to commit the Go vendorHash file, its flake.nix mirror (identical hash,
+		// same buildGoModule proxyVendor set over go/ — refresh-fod-hashes.ts mirrors
+		// the recomputed value into it), and the bun outputHash file. Renovate only
+		// commits files a task's fileFilters names, so a missing flake.nix here would
+		// silently drop the mirror edit → a gomod bump lands with flake.nix's
+		// vendorHash stale and `nix flake check` red (RIG-2852 Gap 1).
 		expect(topLevel?.fileFilters).toContain("guest-image/default.nix");
+		expect(topLevel?.fileFilters).toContain("flake.nix");
 		expect(topLevel?.fileFilters).toContain("agent-image/entrypoint.nix");
 	});
 
@@ -659,6 +665,49 @@ describe("tools/renovate postgres + gomod go disables", () => {
 		expect(rule).toBeDefined();
 		expect(rule?.matchManagers).toEqual(["gomod"]);
 		expect(rule?.matchDepNames).toEqual(["go"]);
+	});
+});
+
+describe("tools/renovate wails/v3 floor cap (RIG-2852, GTK4 migration)", () => {
+	// The GTK4 migration record freezes a "Never v3.1" floor: wails v3.1 removes
+	// the legacy GTK3 build tag, so an auto-opened v3.1 bump before the GTK4 flip
+	// (RIG-2819) is proven would strand the app with no native shell. A gomod
+	// packageRule caps github.com/wailsapp/wails/v3 below v3.1 via a REGEX
+	// allowedVersions (not a semver range — gomod's node-semver ranges exclude a
+	// prerelease at a different major.minor.patch, so `< 3.1.0-0` would wrongly
+	// reject the current v3.0.0-beta.0). Find it by behavior, not index.
+	const wailsRule = cfg.packageRules.find(
+		(r) =>
+			r.matchManagers?.includes("gomod") &&
+			r.matchDepNames?.includes("github.com/wailsapp/wails/v3"),
+	);
+
+	test("a gomod cap rule exists for wails/v3 with a regex allowedVersions", () => {
+		expect(wailsRule).toBeDefined();
+		expect(wailsRule?.matchManagers).toEqual(["gomod"]);
+		expect(wailsRule?.matchDepNames).toEqual(["github.com/wailsapp/wails/v3"]);
+		const allowedVersions = wailsRule?.allowedVersions ?? "";
+		// Slash-delimited regex form (matched against the raw version string),
+		// mirroring the postgres-stack /^18$/ rule.
+		expect(allowedVersions.startsWith("/")).toBe(true);
+		expect(allowedVersions.endsWith("/")).toBe(true);
+	});
+
+	test("the cap admits v3.0.0-beta.N and future v3.0.x, rejects v3.1.x and v4+", () => {
+		// Compile the shipped regex from its /.../ delimiters and replay it against
+		// the real pinned version and the floor boundary — so a fat-fingered cap
+		// that still admitted v3.1 (e.g. `^v?3\.`) fails here, not just a changed
+		// literal. go/go.mod pins v3.0.0-beta.0 today; it MUST stay admitted or the
+		// cap opens zero PRs and freezes the pin (the RIG-1220 silent-no-updates
+		// shape).
+		const allowedVersions = wailsRule?.allowedVersions ?? "";
+		const matcher = new RegExp(allowedVersions.slice(1, -1));
+		expect(matcher.test("v3.0.0-beta.0")).toBe(true); // the current pin
+		expect(matcher.test("v3.0.0-beta.7")).toBe(true); // a newer beta
+		expect(matcher.test("v3.0.1")).toBe(true); // a future v3.0 patch
+		expect(matcher.test("v3.1.0")).toBe(false); // the frozen floor
+		expect(matcher.test("v3.1.0-beta.0")).toBe(false); // a v3.1 prerelease
+		expect(matcher.test("v4.0.0")).toBe(false); // a future major
 	});
 });
 

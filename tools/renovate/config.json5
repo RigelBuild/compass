@@ -394,6 +394,31 @@
       enabled: false,
     },
     {
+      // ── wails/v3: hold below v3.1 (GTK4-migration floor, RIG-2818/RIG-2819) ──
+      // The GTK4 migration record freezes a hard "Never v3.1" floor
+      // (docs/designs/product/compass-gtk4-migration/design.md §Global Constraints
+      // "Wails floor"): wails v3.1 drops the legacy GTK3 build tag, so bumping to it
+      // before the GTK4 flip (RIG-2819) is proven would strand the app with no
+      // working native shell. go/go.mod pins v3.0.0-beta.0 today; Renovate would
+      // auto-open a v3.1.x bump the moment upstream ships it, violating the floor
+      // silently. Cap it here until the flip lands and every wails bump is gated by
+      // the gtk4-e2e lane.
+      //
+      // REGEX, not a semver range: gomod uses `semver` versioning, whose node-semver
+      // ranges admit a prerelease ONLY when a comparator shares its exact
+      // major.minor.patch tuple — so `< 3.1.0-0` would REJECT the current
+      // v3.0.0-beta.0 (its only comparator sits at tuple 3.1.0), opening zero PRs
+      // and freezing the pin. A slash-delimited regex is matched against the raw
+      // version string instead, sidestepping prerelease-range semantics entirely
+      // (mirrors the postgres-stack `/^18$/` rule above). `^v?3\.0\.` admits
+      // v3.0.0-beta.N and any future v3.0.x, rejects v3.1.x and v4+. config.test.ts
+      // replays it against v3.0.0-beta.0 / v3.1.0 / v4.0.0. Remove this rule + its
+      // guard once RIG-2819's GTK4 flip is merged.
+      matchManagers: ["gomod"],
+      matchDepNames: ["github.com/wailsapp/wails/v3"],
+      allowedVersions: "/^v?3\\.0\\./",
+    },
+    {
       // ── bunfig soak exemption for the bun types packages ──
       // bunfig.toml `minimumReleaseAgeExcludes` exempts `@types/bun` and `bun-types`
       // from the 5-day cooldown because the types track the nix-pinned bun runtime
@@ -597,6 +622,11 @@
       "tools/toolchain/versions/node.nix",
       "tools/toolchain/versions/moon.nix",
       "guest-image/default.nix",
+      // flake.nix carries the SAME Go vendorHash as guest-image/default.nix
+      // (both buildGoModule + proxyVendor over go/); refresh-fod-hashes.ts mirrors
+      // the recomputed value into it, so it must be committable too or a gomod
+      // bump lands with flake.nix's vendorHash stale → `nix flake check` red.
+      "flake.nix",
       "agent-image/entrypoint.nix",
     ],
     executionMode: "branch",

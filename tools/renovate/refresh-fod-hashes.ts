@@ -4,12 +4,19 @@
 // red on a `hash mismatch in fixed-output derivation` build break (the RIG-2432
 // easy-dep-bump goal, PR #579's failure class).
 //
-// Compass pins exactly two FOD hashes outside the vendored forks/ trees, each
-// content-addressing a fetched dependency set that MOVES when a manifest bumps:
+// Compass pins two FOD hash VALUES outside the vendored forks/ trees, each
+// content-addressing a fetched dependency set that MOVES when a manifest bumps.
+// The Go vendorHash is pinned in TWO files that share it by design (below):
 //
 //   guest-image/default.nix   vendorHash   compass-guestd's Go module set
-//                                          (buildGoModule; no vendor/ dir) —
-//                                          invalidated by a go/go.mod|go.sum bump
+//   flake.nix                 vendorHash   compass-app + cmd-binaries' module set
+//                                          — the SAME proxyVendor hash over go/
+//                                          (flake.nix:46-52 documents the equality),
+//                                          both invalidated by a go/go.mod|go.sum
+//                                          bump. The build vehicle realises ONLY
+//                                          guestd's FOD; flake.nix is refreshed as a
+//                                          MIRROR — the identical value, no second
+//                                          realise — see FodEntry.mirrorFiles.
 //   agent-image/entrypoint.nix outputHash  compass-agent's installed node_modules
 //                                          tree (recursive FOD of `bun install`) —
 //                                          invalidated by a bun.lock bump
@@ -85,6 +92,13 @@ export type FodEntry = {
 	// Manifests whose change invalidates this FOD (repo-root-relative). The
 	// per-entry self-gate fires when any of these differs from the base branch.
 	triggers: string[];
+	// Extra files carrying the IDENTICAL pinned hash (same `marker`), equal to
+	// `file`'s by construction — e.g. a second buildGoModule with the same
+	// proxyVendor set over the same go/. They are NOT separately realised (the
+	// build vehicle content-addresses only `file`'s FOD, so a faked mirror pin
+	// would never surface in its output); each is rewritten to the SRI `file`'s
+	// realise reports. Absent for a lone pin.
+	mirrorFiles?: string[];
 };
 
 export const FOD_ENTRIES: FodEntry[] = [
@@ -93,6 +107,7 @@ export const FOD_ENTRIES: FodEntry[] = [
 		marker: 'vendorHash = "sha256-',
 		drvFragment: "go-modules",
 		triggers: ["go/go.mod", "go/go.sum"],
+		mirrorFiles: ["flake.nix"],
 	},
 	{
 		file: "agent-image/entrypoint.nix",
@@ -264,6 +279,14 @@ async function main(): Promise<void> {
 			rewriteInlineHash(origText, entry.marker, got, entry.file),
 		);
 		console.log(`renovate-fod: ${entry.file} -> ${got}`);
+		for (const mirror of entry.mirrorFiles ?? []) {
+			const mirrorText = await Bun.file(mirror).text();
+			await Bun.write(
+				mirror,
+				rewriteInlineHash(mirrorText, entry.marker, got, mirror),
+			);
+			console.log(`renovate-fod: ${mirror} (mirror) -> ${got}`);
+		}
 	}
 
 	console.log("renovate-fod: FOD hashes refreshed.");
