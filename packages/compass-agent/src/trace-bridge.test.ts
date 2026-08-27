@@ -121,8 +121,8 @@ test("linkActiveTurn links the captured turn span to the parsed header, then no-
 	expect(exported?.links[0]?.context.spanId).toBe(SPAN_ID);
 	expect(exported?.links[0]?.attributes?.["compass.message.id"]).toBe("msg-1");
 
-	// After the span ends it is cleared by onSpanEnd — but even a fresh bridge
-	// with no captured span must not throw.
+	// A fresh bridge has never captured a span; linkActiveTurn on the empty
+	// slot must no-op, not throw.
 	const fresh = createTraceBridge();
 	expect(() => fresh.linkActiveTurn(VALID_HEADER, "msg-2")).not.toThrow();
 });
