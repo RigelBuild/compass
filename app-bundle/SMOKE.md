@@ -31,7 +31,7 @@ board → one agent session to a real container — end to end.
 
 ## What the automated gates cover
 
-- **`dogfood-e2e`** stands up a real headless stack (`compass-stack` /
+- **`ci / e2e`** stands up a real headless stack (`compass-stack` /
   `compass-postgres` / a podman-run agent container) and drives it end to end on
   every PR. That is the stack-side regression check; a green PR has already
   proven the headless bring-up.
@@ -168,7 +168,7 @@ rm -rf "$STATE" "$RT"
 ## Manual checklist
 
 What a human confirms on the dev box (the headless bring-up itself is the
-`dogfood-e2e` gate's job — not on this list):
+`ci / e2e` gate's job — not on this list):
 
 - [ ] client `app.toml` is client-only (`mode = "client"`, https `server_url`,
       `ca_cert` = the stack's `tls.crt`); no token in it (§2)
