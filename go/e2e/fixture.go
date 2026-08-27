@@ -255,6 +255,16 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 		// image without a production or image change (mirrors
 		// runner/config_delivery_e2e_test.go).
 		CheckoutDir: "/home/agent/repo",
+		// The bundled Plane-B fan-in collector is a container-only component (no
+		// light/process path, unlike postgres above which the fixture runs via the
+		// ProcessSupervisor). This headless stack emits no OTLP, so a running
+		// collector would only drop-sink an empty stream — pure CI cost for zero
+		// assertions; the real collector container start/teardown/readiness is
+		// covered by the podman-guarded collector_container / collector_podman
+		// tests. Opt out via the --otel-external switch, mirroring the fixture's
+		// light-postgres choice, so spawnChain skips startCollector entirely rather
+		// than dereferencing the (deliberately unwired) CollectorContainer seam.
+		ExternalOTLPEndpoint: "127.0.0.1:4317",
 	}
 
 	// Canned-model mode (SEA-1787 H3): stand up the deterministic stub, write a
