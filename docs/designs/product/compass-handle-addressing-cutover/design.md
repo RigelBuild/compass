@@ -4,8 +4,11 @@ Status: Draft
 
 Tracking: RIG-2751 (Matt ruled Option A, contract-wide, 2026-08-25; the storage
 shape, owner-qualified wire, and rename/reclaim policy were negotiated to a
-FINAL contract and Matt-ratified 2026-08-26 with "LGTM, can start" — the whole
-contract is frozen; this record designs the how and freezes on merge)
+FINAL contract and Matt-ratified 2026-08-26 with "LGTM, can start"; all
+remaining wire-cutover open questions — OQ-1…7 — were Matt-ruled 2026-08-27
+(RIG-2751 comment f59001de), so the Open Questions section below is now closed
+as Rulings; the whole contract is frozen; this record designs the how and
+freezes on merge)
 
 ## Problem / Intent
 
@@ -110,6 +113,18 @@ request, then hand ids to the unchanged store layer. The lifecycle
 (`DespawnPeer`) equivalent lives in `go/server/lifecycle.go` where
 `req.GetAgentAccountId()` is read today (`lifecycle.go:221`).
 
+The **admin/ops lane** (CompassService, adminOnly door) is the third resolution
+site — Matt ruled OQ-4 EXTEND (2026-08-27), so no id-typed request field
+survives anywhere. `SpawnAgent` (`go/server/spawn.go:87`) and
+`ProvisionAgentWorkspace` (`go/server/service.go:139`) name an owned agent →
+`AgentByHandle`, owner-qualified (an admin/UI caller supplies the `owner/`
+qualifier explicitly; there is no agent-session `callerOwner` to default from on
+this door); `IssueToken` (`service.go:416`) names a user OR agent → the general
+`AccountsByHandles` singular path. Resolution slots in before the existing
+`GetAccount` id lookups (`service.go:152,425`; `spawn.go:103,153,158`).
+IssueToken-by-handle also lets the IaC path name a bot account by `@handle`
+rather than a looked-up id.
+
 Two store lookups back the resolvers, both re-pointed at `account_handles` (the
 handle column moves off `accounts` per §"The storage contract"):
 
@@ -170,9 +185,13 @@ member-field NOT_FOUND to inherit: today an unknown member account surfaces as
 `ErrInvalidArgument` "unknown member account %q" via FK violation
 (`go/internal/store/channels.go:157-158`, `upsertMemberErr`
 `channels.go:569-573`) — the NOT_FOUND posture for member handles is DEFINED
-by this record, not carried over. Whether member resolution is additionally
-visibility-scoped (invisible ≡ unknown) is OQ-6, the one new load-bearing
-fork; this record recommends scoped.
+by this record, not carried over. Member resolution is additionally
+visibility-scoped (invisible ≡ unknown): Matt RULED OQ-6 SCOPED (2026-08-27) —
+the T2 resolver intersects the shared D9 predicate `accountVisibleFromWhere`
+(`go/internal/store/accounts.go:683-698`) after the namespace split, aligning
+with the roster clip which reads the same predicate
+(`go/internal/comms/roster.go:43-64`), so resolution and roster stay aligned
+by construction.
 
 ### GetRoster's dual vantage
 
@@ -185,8 +204,8 @@ empty, `apps/ui/src/live/stream.ts:99-101`). The cutover keeps the exact
 semantics with a handle-typed field: empty ⇒ caller vantage (agent
 session-resolved, unchanged); non-empty ⇒ a handle the server resolves via
 `AgentByHandle`. No ambiguity arises because the two paths were already
-discriminated by emptiness, not by type. The field's final name is an Open
-Question (below), not its mechanics.
+discriminated by emptiness, not by type. The field's final name is
+`vantage_handle` (Matt ruled OQ-3, 2026-08-27), not `agent_handle`.
 
 Roster's ERROR posture is DEFINED here, not inherited — today a bogus or
 invisible id vantage produces NO resolution error at all: the tree is built,
@@ -210,14 +229,17 @@ the ruling. For the UI lane this holds: the UI acts on ids the server already
 gave it (roster entries, channel snapshots, message authors all carry ids
 today and the UI joins them locally, e.g. `apps/ui/src/live/adapt.ts:173-208`);
 the concern the ruling fixes is INPUT resolution only. The AGENT lane is the
-known exception: the agent's ListMessages tool renders raw author ids into the
-model-visible fence (`author="${attr(m.authorAccountId, fence)}"`,
+known exception, and Matt RULED it (OQ-5, 2026-08-27): the agent's ListMessages
+tool renders raw author ids into the model-visible fence
+(`author="${attr(m.authorAccountId, fence)}"`,
 `packages/compass-agent/src/comms.ts:694`) and the agent has no id→handle
 resolver (`CommsCallRequest` carries no ListAccounts arm,
-`proto/compass/v1/agent_gateway.proto:106-114`) — a concrete surface carried
-in OQ-5, fixable by DL-270's own additive-sibling mechanism without
-reopening this non-goal. Unchanged, deliberately:
-`Channel.{member,subscriber}_account_ids` / `owner_account_id`
+`proto/compass/v1/agent_gateway.proto:106-114`). Disposition: ship an additive
+`author_handle` sibling on `Message` now (DL-270's response-sibling path); the
+agent fence renders `author_handle` ONLY and drops the id — agents never see an
+id — while `author_account_id` STAYS on the wire `Message` for the UI's local
+join (`adapt.ts:173-208`) and its rename-proof correlation key. Unchanged,
+deliberately:
 (`comms.proto:233,238,243`), `AgentWorkspace.agent_account_id`
 (`comms.proto:293`), `Topic.created_by_account_id` (`comms.proto:312`),
 `ChannelChanged.removed_account_ids` (`comms.proto:526`),
@@ -236,8 +258,9 @@ held in draft specifically so their three new `CommsCallRequest` arms
 handle-first. Because #628 reuses the `comms.proto` payload messages verbatim,
 flipping the payload messages here flips the arms automatically. The order:
 
-1. **This cutover's proto change lands first** (T1): `comms.proto` +
-   `agent_gateway.proto` request fields flip, all four gen lanes regenerate.
+1. **This cutover's proto change lands first** (T1): `comms.proto`,
+   `agent_gateway.proto`, and `compass.proto` (admin lane) request fields flip,
+   all four gen lanes regenerate.
 2. **#628 rebases onto it** (regen-only delta — its arms reference the
    now-handle-typed payloads verbatim).
 3. **#630's handlers rebase** to do the server-side resolution for the new
@@ -281,6 +304,9 @@ current tree at authoring time.
 | 11 | `CreateAgentRequest.parent_agent_id` (3) | `comms.proto:590` | `comms.go:124-141` |
 | 12 | `DespawnPeerRequest.agent_account_id` (1) | `proto/compass/v1/agent_gateway.proto:184` | `go/server/lifecycle.go:221` |
 | 13 | The 3 new `CommsCallRequest` arms on PR #628 (`create_channel` = 7, `update_members` = 8, `create_channel_group` = 9) | #628 head, `agent_gateway.proto` | reuse rows 1–5 verbatim (`create_channel_group` carries no account field — `comms.proto:607-613` — it rides the flip only via its sibling arms' payloads) |
+| 14 | `SpawnAgentRequest.agent_account_id` (1) — admin/ops lane (CompassService, adminOnly) | `proto/compass/v1/compass.proto:650` | `go/server/spawn.go:103,153,158` |
+| 15 | `ProvisionAgentWorkspaceRequest.agent_account_id` (1) — admin/ops lane | `compass.proto:567` | `go/server/service.go:152,166` |
+| 16 | `IssueTokenRequest.account_id` (1) — admin/ops lane; names a user OR agent | `compass.proto:702` | `go/server/service.go:420` |
 
 Rows 7 and 11 were not in the original RIG-2751 enumeration but are the same
 class (an agent-account input a UI would otherwise have to resolve): flipping
@@ -295,7 +321,8 @@ server owns the id (`SpawnPeerResponse.agent_account_id`,
 **Out of scope**: `channel_id` / `group_id` / `parent_group_id` (not account
 handles); every response/stored/event field (see the non-goal above); the
 `asker`/author fields on stored messages (server-derived, never
-client-supplied). The compass.proto admin lane is OQ-4.
+client-supplied). The compass.proto admin/ops lane IS in scope (Matt ruled
+OQ-4 EXTEND, 2026-08-27) — inventory rows 14–16.
 
 ## Global Constraints
 
@@ -362,18 +389,20 @@ read `account_handles`, so T0 lands before or with T2 in the stack.
 
 ### T1 — proto flip + regen (lands first; #628/#630 rebase onto it)
 
-Rename and re-comment every row of the inventory in `comms.proto` and
-`agent_gateway.proto` to its handle form (working names, pending OQ-1:
-`member_handles`, `add_member_handles`, `remove_member_handles`,
-`subscribe_handles`, `unsubscribe_handles`, `agent_handle`,
-`new_parent_handle`, `owner_handle`, `parent_handle`). Semantics comment on
-each: "a `@handle`; the server resolves it to an account id; unknown →
-NOT_FOUND". Regenerate all four lanes.
+Rename and re-comment every row of the inventory in `comms.proto`,
+`agent_gateway.proto`, and `compass.proto` (admin rows 14–16) to its handle
+form (final names, Matt ruled OQ-1 2026-08-27): `member_handles`,
+`add_member_handles`, `remove_member_handles`, `subscribe_handles`,
+`unsubscribe_handles`, `agent_handle`, `new_parent_handle`, `owner_handle`,
+`parent_handle`, and the roster vantage field `vantage_handle` (OQ-3). Semantics
+comment on each: "a `@handle`; the server resolves it to an account id; unknown
+→ NOT_FOUND". Field numbers are kept in place (Matt confirmed OQ-1b
+rename-in-place per Active DL-186). Regenerate all four lanes.
 
 - **Interfaces**: proto fields per the inventory table (same string wire type;
-  field numbers kept in place under the OQ-1b working assumption).
-  `GetRosterRequest.agent_handle`: empty ⇒ caller vantage (unchanged
-  session-resolved semantics), non-empty ⇒ server-resolved agent handle.
+  field numbers kept in place per OQ-1b). `GetRosterRequest.vantage_handle`:
+  empty ⇒ caller vantage (unchanged session-resolved semantics), non-empty ⇒
+  server-resolved agent handle.
 - **Test cycle**: `moon run compass-proto:lint compass-proto:drift
   compass-proto:gen-fence`; Go/TS builds red until T3/T6 land in the same
   stack — T1 therefore lands as the first commit of the server PR, not as a
@@ -389,13 +418,13 @@ first `/`, resolves the owner segment in the user/system index
 owner's agent index (`UNIQUE(owner_user_id, handle)`); a bare handle resolves
 either as a user/system handle in the global index or as an agent handle in the
 **caller's own** owner namespace (the edge supplies `callerOwner` from
-session→account). Its signature also depends on OQ-6 (member-resolution
-visibility scoping); recommended form
+session→account). Its signature is visibility-scoped: Matt RULED OQ-6 SCOPED
+(2026-08-27), so the resolver form is
 `Store.AccountsByHandles(ctx context.Context, viewer AccountID, callerOwner AccountID, handles []QualifiedHandle) (map[string]AccountID, error)`,
 one query per namespace against `account_handles` intersected with
-`accountVisibleFromWhere` (`accounts.go:670-683`) so an invisible handle misses
-exactly like an unknown one; if Matt rules unscoped (OQ-6 option b) the `viewer`
-param drops. No subtype assertion beyond the index split (member/owner fields
+`accountVisibleFromWhere` (`accounts.go:683-698`) so an invisible handle misses
+exactly like an unknown one.
+No subtype assertion beyond the index split (member/owner fields
 legitimately name users and agents; never the system account — exclude
 `system_accounts` rows, matching the roster/delivery exclusion in
 `go/internal/store/system_account_exclusion_pgtest_test.go:11-14`). Any missing
@@ -408,7 +437,8 @@ reuse `AgentByHandle`, re-keyed to `(owner_user_id, handle)` over
 
 - **Interfaces**: `AccountsByHandles(ctx context.Context, viewer AccountID,
   callerOwner AccountID, handles []QualifiedHandle) (map[string]AccountID, error)`
-  over `account_handles` — the `viewer` param is RULING-DEPENDENT on OQ-6;
+  over `account_handles` — the `viewer` param carries the OQ-6-ruled visibility
+  scope;
   `callerOwner` supplies the bare-agent-handle default namespace; a
   `QualifiedHandle` carries the parsed `{owner, handle}` (owner empty = bare).
   Atomic — any missing handle fails the whole call, the error naming every
@@ -528,13 +558,54 @@ UI suite against the regenerated client.
 - **Test cycle**: `bun test` in `apps/ui`; grep-verify no `_account_ids`
   request construction remains outside response adapters.
 
+### T8 — admin/ops lane (CompassService) handle resolution
+
+The three admin/ops request fields (inventory rows 14–16) resolve at the
+CompassService handler edge, mirroring T3's comms edge. `SpawnAgent`
+(`go/server/spawn.go:87`) and `ProvisionAgentWorkspace`
+(`go/server/service.go:139`) resolve `agent_handle` via `AgentByHandle`;
+`IssueToken` (`service.go:416`) resolves `account_handle` via the singular
+`AccountsByHandles` path (it may name a user or an agent). Because this is the
+adminOnly door with no agent session, the caller supplies the `owner/` qualifier
+explicitly — there is no `callerOwner` default. Resolution slots in before the
+existing `GetAccount` id lookups (`spawn.go:103,153,158`; `service.go:152,166`
+for Provision, `:420,425` for IssueToken); an unresolvable handle → the same
+in-band NOT_FOUND the existing `GetAccount` miss already returns
+(`service.go:154-156,427-429`), naming the submitted handle not a resolved id.
+
+- **Interfaces**: CompassService handler signatures unchanged; the three request
+  fields become handle-typed (T1 regen); internal id derivation becomes
+  handle-resolved.
+- **Test cycle**: handler pgtests — spawn/provision/issue-token by owner-qualified
+  handle, unknown-handle NOT_FOUND, system-handle refusal on IssueToken
+  (unchanged from `service.go:436-438`).
+
+### T9 — additive `author_handle` on `Message` + agent handle-only fence
+
+Add an additive `author_handle` field to `Message` (`proto/compass/v1/comms.proto:322`,
+next free field number 6 — `author_account_id = 3` STAYS). The server populates
+it wherever it builds a `Message` for the wire, resolving `author_account_id`→handle
+the same way `from_handle` denormalizes (`go/internal/delivery/consumer.go:398-413`).
+The agent's ListMessages fence renders `author_handle` ONLY and drops the id
+(`packages/compass-agent/src/comms.ts:694` — `author="${attr(m.authorHandle, fence)}"`),
+so an agent never sees an account id. The UI keeps keying its local join on
+`author_account_id` (`apps/ui/src/live/adapt.ts:173-208`), unchanged. This is
+DL-270's additive-sibling path — a response field gaining a handle beside its
+id, never a retype.
+
+- **Interfaces**: `Message.author_handle` (new field 6); server Message-build
+  sites populate it; the agent fence render switches to it.
+- **Test cycle**: pgtest/handler — `author_handle` populated on posted messages;
+  `comms.test.ts` fence-shape assert renders handle, no id; `bun test` in
+  `packages/compass-agent`.
+
 ## Tasks
 
 - [ ] T0 — `account_handles` in `0001_init.sql` (table + two partial-unique
   indexes, no backfill) + author `accounts.handle` without global-unique; store
   handle read/write re-pointed at `account_handles` + pgtests
-- [ ] T1 — proto flip (inventory rows 1–12) + 4-lane regen; lint/drift/fence
-  green
+- [ ] T1 — proto flip (inventory rows 1–16, incl. admin lane) + 4-lane regen;
+  lint/drift/fence green
 - [ ] T2 — `Store.AccountsByHandles` owner-qualified batch resolver +
   `AgentByHandle` re-keyed to `(owner, handle)` + pgtests
 - [ ] T3 — comms edge resolution (mapping.go + handler sites) + pgtests
@@ -543,6 +614,10 @@ UI suite against the regenerated client.
 - [ ] T6 — compass-agent despawn tool + #632 tools rewired to handles + bun
   tests
 - [ ] T7 — UI/client sweep, regenerated client, UI suite green
+- [ ] T8 — admin/ops lane (CompassService) handle resolution
+  (spawn/provision/issue-token) + handler pgtests
+- [ ] T9 — additive `Message.author_handle` + server populate + agent fence
+  renders handle-only + bun tests
 
 ## Ledger impact
 
@@ -578,102 +653,57 @@ confirm at freeze):
   edge (RIG-2796), not handle reservation. The handle column stays on
   `accounts` for display only; `account_handles` is the resolution key.
 
-## Open Questions
+## Rulings (Open Questions — all closed)
 
 Matt ratified the storage/format contract on 2026-08-26 ("LGTM, can start"),
-which CLOSED the forks that were open during negotiation: storage shape
-(`account_handles` + two partial-unique indexes), the owner-qualified wire
-(agents `owner/handle`, users/system bare), and rename/reclaim policy (in-place
-both tiers, reclaim allowed, no history/reservation, cross-human safety →
-RIG-2796). Those are now the frozen contract above, not open questions. The
-questions below are the remaining wire-cutover forks the ratification did NOT
-decide — mostly proto-naming taste plus two real scope forks (OQ-4 admin lane,
-OQ-6 member visibility) — plus one new fork the owner qualifier introduces
-(OQ-7, the qualifier grammar).
+which CLOSED the negotiation forks: storage shape (`account_handles` + two
+partial-unique indexes), the owner-qualified wire (agents `owner/handle`,
+users/system bare), and rename/reclaim policy (in-place both tiers, reclaim
+allowed, no history/reservation, cross-human safety → RIG-2796). The remaining
+wire-cutover open questions (OQ-1…7) were then Matt-ruled 2026-08-27 (RIG-2751
+comment f59001de). All are closed below; the record is ready to freeze.
 
-1. **Field naming (OQ-1)** — working assumption: `*_account_ids`→`*_handles`,
+1. **Field naming (OQ-1) — RULED as proposed.** `*_account_ids`→`*_handles`,
    `agent_account_id`→`agent_handle`, `new_parent_agent_id`→`new_parent_handle`,
-   `owner_account_id`→`owner_handle`, `parent_agent_id`→`parent_handle`. Pure
-   taste. Matt picks the final names.
-2. **Field numbering (OQ-1b) — a confirm, not an open fork** — DL-186
-   (`docs/designs/DECISIONS.md:203`, Active) already rules rename IN PLACE
-   keeping field numbers: the renumber+reserve alternative would ADD
-   `reserved` markers, contradicting an Active DL (same string wire type;
-   pre-GA, single-repo, the breaking gate is off — `proto/moon.yml:169`).
-   Caveat checked: DL-187's later `reserved 3` on `SpawnPeerRequest`
-   (`agent_gateway.proto:170-171`) guards the semantic revival of
-   `initial_prompt`, not wire compat — it does not reopen this.
-   Rename-in-place is also what makes the §Sequencing skew window degrade
-   gracefully (an old bundle's id string parses fine and fails resolution
-   in-band, never a decode error). Matt confirms rename-in-place, or
-   explicitly overrides DL-186.
-3. **Repeated-field NOT_FOUND semantics (OQ-2) — a confirm** — working
-   assumption ATOMIC: one bad handle in `add_member_handles` fails the whole
-   request (matches the store's all-or-nothing transaction posture —
-   `UpdateChannelMembers` runs one tx, `channels.go:407-410`), with the error
-   naming ALL unresolved handles, not just the first — the batch
-   `WHERE handle = ANY($1)` returns the full hit map, so the complete missing
-   set is a free set-difference (a 50-member CreateChannel with 3 typos fails
-   once naming all 3, not across 3 round trips). Alternative: partial
-   success plus a per-handle error list — needs a response-shape change and
-   weakens the idempotent-retry story; dismissed. Matt confirms atomic.
-4. **GetRoster vantage field name (OQ-3)** — the dual-path mechanics are
-   settled (empty ⇒ session-resolved caller; non-empty ⇒ UI-named handle), but
-   the name `agent_handle` on a field an agent must always leave empty invites
-   misuse. Alternative: `vantage_handle` — the better fit given the vantage
-   posture §GetRoster now defines. Matt picks the name.
-5. **compass.proto admin lane (OQ-4)** — `SpawnAgentRequest.agent_account_id`
-   (`compass.proto:650`), `ProvisionAgentWorkspaceRequest.agent_account_id`
-   (`compass.proto:567`), and `IssueTokenRequest.account_id`
-   (`compass.proto:702`) are also request-input account fields, but on the
-   admin/ops lane (adminOnly door; DL-253 dropped the spawn UI). Does the
-   contract-wide ruling extend to them in this cutover, or do admin/ops
-   callers (which receive ids from prior admin responses) keep ids?
-6. **Response handles (OQ-5)** — no response field flips (the non-goal
-   above), and the UI lane needs nothing today (it joins via its account
-   directory, `apps/ui/src/comms.ts:139-151`). But one concrete surface IS
-   identified: the agent's ListMessages tool renders raw author ids into the
-   model-visible fence (`author="${attr(m.authorAccountId, fence)}"`,
-   `packages/compass-agent/src/comms.ts:694`) and the agent has no id→handle
-   resolver — the same cannot-resolve argument that motivated this cutover,
-   pointed at a response. Two mechanisms, never a retype of the id field: an
-   additive `author_handle` sibling on `Message` (squarely DL-270's
-   response-field path), or a `from_handle`-style denorm on the agent list
-   result (a control-plane denorm, outside DL-270's response/stored/event-field
-   wording). Matt rules: ship the sibling with this cutover, or defer?
-7. **Member-resolution visibility scoping (OQ-6, load-bearing)** — T2's
-   batch resolver must pick a side the record previously assumed both of:
-   its parity sentence promises invisible ≡ unknown, but an unscoped resolver
-   cannot distinguish visible from invisible — every real handle resolves,
-   making member-add a global handle-existence oracle AND letting a caller
-   ATTACH an account outside its D9-visible set to its channel by guessing the
-   handle (today's by-id path is FK-only, `channels.go:151-161,529-573`, with
-   no visibility gate either — but ids are unguessable, so it never mattered).
-   The owner qualifier does NOT close this — it disambiguates namespaces, not
-   visibility (`alice/compass-ux` is well-formed whether or not the caller can
-   see it). The options: (a) visibility-scoped — the T2 resolver intersects
-   `accountVisibleFromWhere` (`go/internal/store/accounts.go:670-683`) after
-   the namespace split; invisible ≡ unknown holds, and naming-a-member GAINS a
-   visibility gate the id path never had (a semantic TIGHTENING: who may be
-   named as a channel member). (b) unscoped — every real handle resolves,
-   preserving today's FK-only permissiveness at the cost of an enumeration
-   oracle under guessable handles. A real user-facing policy choice: can I add
-   a teammate's agent I can't see to my channel? **Recommended: (a)** — the
-   only option consistent with the ruling's oracle posture and DL-269. The T2
-   interface signature depends on this ruling.
-8. **Owner-qualifier grammar (OQ-7, NEW — introduced by the storage
-   contract)** — the owner-qualified form `matt/compass-ux` needs a defined
-   grammar before T1 comments the fields. Working assumption: `/` is the
-   separator, the owner segment is a bare user/system handle (never itself
-   qualified — no nesting), a leading `/` is illegal, exactly one `/` is
-   permitted, and both segments obey the existing handle charset (the same
-   grammar constraint the ownership layer already names for `owner=<handle>`,
-   `docs/designs/product/compass-server-ownership-layer/design.md:559-563`). A
-   bare handle (no `/`) is a user/system handle OR the caller's own agent —
-   disambiguated by which index resolves it, users/system first. Open sub-fork:
-   if a bare handle matches BOTH a user handle and one of the caller's own
-   agents, which wins? Working assumption: user/system global index takes
-   precedence (a human is never shadowed by one of your agents), so address
-   your own agent that collides with a username by qualifying it
-   (`matt/compass-ux`). Matt confirms the separator + the collision precedence,
-   or picks another grammar.
+   `owner_account_id`→`owner_handle`, `parent_agent_id`→`parent_handle`.
+2. **Field numbering (OQ-1b) — RULED rename-in-place.** Field numbers kept
+   (Active DL-186; renumber+reserve would re-add `reserved` markers DL-186
+   stripped). Rename-in-place is also what makes the §Sequencing skew window
+   degrade gracefully (an old bundle's id string parses fine and fails
+   resolution in-band, never a decode error).
+3. **Repeated-field NOT_FOUND semantics (OQ-2) — RULED ATOMIC.** One bad handle
+   fails the whole request (matching the store's one-tx posture,
+   `channels.go:407-410`), the error naming ALL unresolved handles in their
+   submitted spelling, not just the first.
+4. **GetRoster vantage field name (OQ-3) — RULED `vantage_handle`.** Not
+   `agent_handle`, which would invite misuse on a field agents must leave empty.
+5. **compass.proto admin lane (OQ-4) — RULED EXTEND.** The three admin/ops
+   fields (`SpawnAgentRequest.agent_account_id` `compass.proto:650`,
+   `ProvisionAgentWorkspaceRequest.agent_account_id` `compass.proto:567`,
+   `IssueTokenRequest.account_id` `compass.proto:702`) flip to handles too, so
+   no id-typed request field survives anywhere (inventory rows 14–16; T8).
+   IssueToken-by-handle also helps the IaC path name a bot account by `@handle`.
+6. **Agent-facing author id (OQ-5) — RULED ship the additive sibling now.** Add
+   `author_handle` to `Message`; the agent fence renders handle-only and drops
+   the id; `author_account_id` stays on the wire for the UI join (DL-270's
+   response-sibling path; T9).
+7. **Member-resolution visibility scoping (OQ-6) — RULED SCOPED (option a).**
+   The T2 resolver intersects `accountVisibleFromWhere`
+   (`go/internal/store/accounts.go:683-698`) after the namespace split, so
+   invisible ≡ unknown holds and naming-a-member gains the visibility gate the
+   id path never had — aligned with the roster clip, which reads the same
+   predicate (`go/internal/comms/roster.go:43-64`). **Follow-on (Matt-directed,
+   NOT in this freeze):** widen D9 so an agent always sees every agent owned by
+   its own owner-user (today same-owner siblings are visible only via a shared
+   channel; `accountVisibleFromWhere`'s `ag.owner_user_id = $1` matches only a
+   *user* caller). Because both the OQ-6 resolver and the roster intersect the
+   one shared predicate, widening it lights up both surfaces at once. This lands
+   as its OWN compass-server change to `accountVisibleFromWhere`; the resolver
+   spec here stays "intersects the shared D9 predicate" and inherits the wider
+   one. Filed as a separate compass-server issue.
+8. **Owner-qualifier grammar (OQ-7) — RULED as proposed.** `/` separator,
+   exactly one level (no nesting), leading `/` illegal, both segments obey the
+   existing handle charset. A bare handle is a user/system handle OR the
+   caller's own agent; on a bare-handle collision the user/system global index
+   wins (a human is never shadowed by one of your agents), so address your own
+   agent that collides with a username by qualifying it (`matt/compass-ux`).
