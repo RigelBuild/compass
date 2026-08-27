@@ -213,11 +213,14 @@ test("onSpanEnd for the main turn clears the slot so later steers no-op", () => 
 	const mainCtx = hookCtx(mainSpan, "invoke_agent", undefined);
 	bridge.onSpanStart(mainCtx);
 	bridge.onSpanEnd(mainCtx);
+
+	// The slot is cleared while the main span is still LIVE: a follow-up steer
+	// must no-op, not add a link. Steering BEFORE mainSpan.end() is what makes
+	// this discriminating -- OTel silently drops addLink on an already-ended
+	// span, so ending first would give 0 links whether or not the slot cleared.
+	expect(() => bridge.linkActiveTurn(VALID_HEADER, "msg-late")).not.toThrow();
 	mainSpan.end();
 
-	// The slot is cleared: a follow-up steer must no-op, not add a link to the
-	// ended main span.
-	expect(() => bridge.linkActiveTurn(VALID_HEADER, "msg-late")).not.toThrow();
 	const mainExported = exporter
 		.getFinishedSpans()
 		.find((s) => s.spanContext().spanId === mainSpan.spanContext().spanId);
