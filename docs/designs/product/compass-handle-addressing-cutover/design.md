@@ -192,8 +192,10 @@ Roster's ERROR posture is DEFINED here, not inherited — today a bogus or
 invisible id vantage produces NO resolution error at all: the tree is built,
 then clipped to the caller-visible set (`roster.go:38-53`), degrading to an
 empty/clipped roster. After the flip, an unknown handle → NOT_FOUND while a
-real-but-caller-invisible handle would resolve (`AgentByHandle` is global — no
-viewer scoping, `accounts.go:638-668`) and return a clipped, likely empty,
+real-but-caller-invisible handle would resolve (`AgentByHandle` is
+owner-namespaced per §"The storage contract" but NOT viewer-scoped — an
+invisible-but-real handle in the vantage's owner namespace still resolves,
+`accounts.go:638-668` re-keyed) and return a clipped, likely empty,
 roster SUCCESS — a NOT_FOUND-vs-empty-success vantage-probe oracle. Therefore:
 post-resolve, the vantage handle MUST be in the caller-visible set (the same
 `ListAccounts` projection the clip already fetches at `roster.go:47`), and an
@@ -304,7 +306,7 @@ client-supplied). The compass.proto admin lane is OQ-4.
 - **Pre-GA breaking allowance**: the buf breaking gate is removed pre-dogfood
   (`proto/moon.yml:169` — "RE-ADD AT GA", SEA-1922/SEA-1951; RIG-2675). A
   breaking rename is allowed and this record uses it; DL-186
-  (`docs/designs/DECISIONS.md:199`, Active) rules rename-in-place keeping
+  (`docs/designs/DECISIONS.md:203`, Active) rules rename-in-place keeping
   field numbers — renumber+reserve would re-add `reserved` markers DL-186
   stripped (OQ-1b is a confirm of this, not an open fork).
 - **Codegen**: after any schema edit run `moon run compass-proto:gen` from the
@@ -551,7 +553,7 @@ No existing DL row mandates id-typed request addressing
 display attribution — "the bare `@handle`... owner resolved server-side" —
 DL-188/DL-191 cover reserved system handles, DL-202 covers forge provider
 addressing; none constrains request account fields). One DL row DOES bear on
-the mechanics: **DL-186** (`DECISIONS.md:199`, Active) strips pre-dogfood
+the mechanics: **DL-186** (`DECISIONS.md:203`, Active) strips pre-dogfood
 proto wire-compat — all `reserved` markers removed across compass/v1, live
 fields densely renumbered, the buf breaking gate removed (re-armed at GA) —
 which rules OQ-1b's renumber+reserve alternative OUT unless Matt overrides an
@@ -596,7 +598,7 @@ OQ-6 member visibility) — plus one new fork the owner qualifier introduces
    `owner_account_id`→`owner_handle`, `parent_agent_id`→`parent_handle`. Pure
    taste. Matt picks the final names.
 2. **Field numbering (OQ-1b) — a confirm, not an open fork** — DL-186
-   (`docs/designs/DECISIONS.md:199`, Active) already rules rename IN PLACE
+   (`docs/designs/DECISIONS.md:203`, Active) already rules rename IN PLACE
    keeping field numbers: the renumber+reserve alternative would ADD
    `reserved` markers, contradicting an Active DL (same string wire type;
    pre-GA, single-repo, the breaking gate is off — `proto/moon.yml:169`).
@@ -636,10 +638,11 @@ OQ-6 member visibility) — plus one new fork the owner qualifier introduces
    model-visible fence (`author="${attr(m.authorAccountId, fence)}"`,
    `packages/compass-agent/src/comms.ts:694`) and the agent has no id→handle
    resolver — the same cannot-resolve argument that motivated this cutover,
-   pointed at a response. The fix is DL-270's OWN additive-sibling
-   mechanism (an additive `author_handle` on `Message`, or a
-   `from_handle`-style denorm on the agent list result), never a retype of
-   the id field. Matt rules: ship the sibling with this cutover, or defer?
+   pointed at a response. Two mechanisms, never a retype of the id field: an
+   additive `author_handle` sibling on `Message` (squarely DL-270's
+   response-field path), or a `from_handle`-style denorm on the agent list
+   result (a control-plane denorm, outside DL-270's response/stored/event-field
+   wording). Matt rules: ship the sibling with this cutover, or defer?
 7. **Member-resolution visibility scoping (OQ-6, load-bearing)** — T2's
    batch resolver must pick a side the record previously assumed both of:
    its parity sentence promises invisible ≡ unknown, but an unscoped resolver
