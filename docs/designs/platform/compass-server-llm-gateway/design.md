@@ -287,13 +287,22 @@ stickiness map, per-credential backoff, `auth-storage.ts:1235-1266`), so
 per-request pool scoping is NOT an injection into that singleton. The compass
 integration runs ONE `AuthStorage` per tenant (`owner_user_id`), each over a
 pool-scoped store view, keeping selection/backoff/usage-cache state correctly
-partitioned; the cost (per-tenant state and usage-fetch fan-out) is carried in
-T2/T3. The rejected alternative — threading identity through the selection
-core (`getApiKey` → `#selectCredentialByType`) — is a routing-core signature
-change that would break the "never the routing core" fork-sync constraint.
-Delivery to containers reuses the
+partitioned. On the managed plane one gateway process fronts many tenants, so
+these per-tenant instances live in a bounded LRU pool — constructed lazily on
+a tenant's first request and idle-evicted (`close()`) — so live memory and
+usage-fetch fan-out scale with ACTIVE tenants, not the total roster: one
+gateway process, never one per tenant. The eviction-miss cost is a cold
+`AuthStorage` reload for a returning idle tenant, bounded and operational, and
+the per-tenant state/fan-out cost is carried in T2/T3. The rejected
+alternative — threading identity through the selection core (`getApiKey` →
+`#selectCredentialByType`), or equivalently re-keying its process-wide
+selection maps by `(tenant, provider)` — is a routing-core signature change
+that would break the "never the routing core" fork-sync constraint the whole
+standalone-adoption case (A1) rests on, and downgrades tenant isolation from a
+structural property to one re-audited on every upstream sync.
+Delivery to containers reuses the container seed path
 (`ProviderSeed` → 0600 `$HOME/.compass/auth-seed.json`,
-`go/internal/runtime/secrets_materialize.go:72-77`) changes meaning — instead
+`go/internal/runtime/secrets_materialize.go:72-77`), whose payload changes meaning — instead
 of raw provider keys it carries ONE credential, the gateway base URL + the
 agent's gateway token (env: `COMPASS_LLM_GATEWAY_URL`,
 `COMPASS_LLM_GATEWAY_TOKEN`), and OMP-in-container points at the gateway
@@ -314,7 +323,10 @@ different in kind: OAuth access/refresh tokens are refreshed by the gateway on
 the hour and MUST survive restarts, so they need a value store compass owns.
 This record adds a dedicated `gateway_credentials` store — api_key and
 OAuth-shaped payloads (access/refresh/expiry), a monotonic `version` per row
-supplying the CAS substrate, keyed by `owner_user_id` for pool scoping —
+supplying the CAS substrate, and a scope column resolving each row into a
+caller's pool: an owner-scoped row keyed by `owner_user_id` (a user's own
+credential) or a shared row keyed by the org/company scope (the company key its
+users fall back to) —
 distinct from the declared-secrets registry, whose never-persist-values
 invariant is left intact. The `SECRET_KIND_PROVIDER` registry rows stay as
 they are (they NAME which providers a user configured); the value store holds
@@ -360,17 +372,45 @@ a racing rotation is never clobbered. Raw provider credentials STOP being
 materialized into agent containers once the gateway ships (the flag-day is
 T5).
 
-### Account pools: per-user, day-1
+### Account pools: own credentials, then a shared org key
 
-A pool is "the provider credentials owned by user U", keyed by the agent's
-`owner_user_id` (`0001_init.sql:74-80`). The gateway's existing account-pool
-filter (`isCredentialInAccountPool`, `remote-store.ts:41-51`) provides the
-semantics; the compass `AuthStorage` adapter provides the source — the store,
-not a JSON file (`discover.ts:119-167` is the wiring being replaced).
+A pool is the set of provider credentials a request may draw on, resolved from
+the caller's tenant identity (`owner_user_id`, `0001_init.sql:74-80`). Two
+credential SOURCES compose, in precedence order: (1) the user's OWN credentials
+— their personal subscription/OAuth login and their own API keys — preferred so
+a user who brought their own provider access uses it; and (2) a SHARED
+org/company key the company provides to all its users, used as the fallback
+when the caller brought none of their own for that provider. Own-before-shared
+(a paid personal subscription is never silently displaced by the company key),
+riding OMP's existing within-provider type precedence unchanged — a deliberate
+OAuth/login credential wins over a stored API key (`peekApiKey`/`getApiKey`,
+`auth-storage.ts:5133-5166`). Subscriptions and API keys are already distinct
+credential backends there (a claude.ai OAuth login and an Anthropic API key are
+separate rows of different `type`), so own-then-shared is a pool-membership +
+ordering rule over that seam, not a new selection mechanism. The gateway's
+account-pool filter (`isCredentialInAccountPool`, `remote-store.ts:41-51`)
+provides the membership semantics; the compass `AuthStorage` adapter provides
+the source — the store, not a JSON file (`discover.ts:119-167` is the wiring
+being replaced) — with the shared-vs-own distinction a column on the credential
+row resolved server-side into the caller's pool.
+
 Self-host is single-team, so per-user pools degrade gracefully to "the
-operator's accounts"; the managed plane's per-org pools are the same query
-keyed by org — the pool-resolution seam inside the T2 adapter is where the
-managed plane swaps in org scoping.
+operator's accounts" plus whatever shared keys the operator configured. The
+managed plane needs org grouping, and the schema does NOT model it today —
+`owner_user_id` is the only ownership key and no org/tenant/team table exists
+(`0001_init.sql`). Org-scoped shared pools are therefore an added entity (an
+org id on `user_accounts` and on the shared-credential rows) the managed plane
+introduces when it lands, resolved through the SAME T2 pool-resolution seam;
+this record does not build it but names it as the seam's one open extension, so
+the T2 adapter is designed to take an org key, not only a user key.
+
+**Out of scope here — role/model policy above the pool.** Which MODEL a Compass
+agent role uses, and how a stable model name (e.g. `claude-opus-4-8`) maps to a
+preferred BACKEND order across the providers a user holds (own subscription,
+own API key, then alternates like OpenRouter or Bedrock), is a policy layer
+ABOVE this credential substrate — designed separately in RIG-2845 (Compass
+Model Roles + stable-name provider routing), which consumes this pool
+resolution and the RIG-2562 model evaluations.
 
 ### The Plane-A data contract (what #656 T1/T2/T3 build against)
 
@@ -739,8 +779,11 @@ Postgres-direct kept as the self-host-single-node alternative behind the
 same interface. Server-side: add the dedicated `gateway_credentials` value
 store (NOT an extension of the names-only secrets registry — see §Credential
 storage and rotation) with a monotonic `version` column supplying the CAS
-substrate for `UpdateOAuth`/`Disable`, and implement per-user pool resolution
-keyed by `owner_user_id` (`0001_init.sql:74-80`) with the account-pool filter
+substrate for `UpdateOAuth`/`Disable` and a scope column (owner-scoped by
+`owner_user_id` vs org/company-shared), and implement pool resolution that
+composes a caller's OWN credentials (their subscription/OAuth + API keys)
+with the SHARED org key as an own-before-shared fallback
+(`0001_init.sql:74-80`), with the account-pool filter
 semantics (`remote-store.ts:41-51`) enforced SERVER-SIDE on the list surface,
 so tenant isolation is a Server boundary and not merely a routing policy
 inside the TS process. A `compass.proto` change is likely (today
@@ -878,7 +921,7 @@ specified here.
       green at pin.
 - [ ] T2 — AuthStorage-over-compass adapter (Owner: compass-server) —
       RPC-to-Server credential store (Postgres-direct alt), OAuth payloads in
-      secrets registry, per-user PoolResolver, CAS rotation.
+      secrets registry, own-then-shared PoolResolver (org-key seam), CAS rotation.
 - [ ] T3 — Per-agent bearer→tenant adapter (Owner: compass-server) —
       token mint/verify, flat-bearer replacement, pool isolation.
 - [ ] T4 — Usage emission hook + UsageService (Owner: compass-obs) —
