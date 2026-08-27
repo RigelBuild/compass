@@ -11,7 +11,7 @@ The Compass Linux desktop shell (`go/cmd/compass-app`, Wails v3, DL-110) builds
 against Wails' **legacy** GTK3 variant: the repo-local `gtk3` build tag selects
 Wails' `linux && cgo && gtk3` cgo files
 (`linux_cgo_gtk3.go:18` — `#cgo linux pkg-config: gtk+-3.0 webkit2gtk-4.1  gdk-3.0`),
-linked against the frozen SEA-1172 closure
+linked against the repo's own GTK closure
 (`tools/toolchain/gtk-closure.nix:22-23` — `gtk3`, `webkitgtk_4_1`). Upstream,
 GTK4 + webkitgtk-6.0 is already the **default** Linux stack
 (`linux_cgo.go:17` — `#cgo linux pkg-config: gtk4 webkitgtk-6.0`, tag gate
@@ -76,8 +76,8 @@ The four surfaces:
   and event plumbing on GTK4, primarily under a headless Wayland compositor
   (GTK4's default user backend) with a secondary X11/Xvfb regression lane (see
   the Wayland tradeoff below and T4). It is not a full runtime proof.
-+ **The ledger.** A new DL row records the GTK4 default and amends the
-  SEA-1172 closure definition; DL-110 (Wails v3) is untouched. See
++ **The ledger.** A new DL row records the GTK4 default and updates the
+  closure definition; DL-110 (Wails v3) is untouched. See
   §Ledger delta.
 
 ### The honest tradeoffs (why this is a real fork, not a rubber-stamp)
@@ -104,17 +104,14 @@ The four surfaces:
   Matt's ruling: acceptable — Compass is a greenfield app with no legacy
   install base, so the floor costs us nothing. Recorded as a settled
   constraint (§Global Constraints), not an open tradeoff.
-+ **Closure growth.** The bundle and the e2e runner realize the WebKitGTK
-  closure; GTK4 adds gtk4 (+graphene, +gst plugins pulled by webkitgtk_6_0's
-  propagations) while dropping gtk3/atk. webkitgtk_6_0 and webkitgtk_4_1 are
-  the same 2.52.5 source, so the WebKit half is roughly size-neutral; the
-  delta must be MEASURED, not assumed (Plan G2), because it re-opens the
-  image/artifact size-budget concern the notes file under SEA-1101 (see the
-  grounding caveat in §Ledger delta — the id does not appear in this tree; the
-  closest in-tree artifacts are the packaging record's "WebKitGTK-closure size
-  per artifact" rejection ground (`compass-native-packaging/design.md:317-318`)
-  and `agent-image/devenv.nix:116-127`'s layer-budget machinery, which does
-  NOT carry GTK and is unaffected).
++ **Closure growth (measured, not gating — Matt 2026-08-26).** The bundle and
+  the e2e runner realize the WebKitGTK closure; GTK4 adds gtk4 (+graphene,
+  +gst plugins pulled by webkitgtk_6_0's propagations) while dropping
+  gtk3/atk. webkitgtk_6_0 and webkitgtk_4_1 are the same 2.52.5 source, so the
+  WebKit half is roughly size-neutral. The tarball delta is MEASURED and
+  recorded in the migration PR body (Plan T2), but it does NOT gate the flip:
+  Compass ships GTK4 regardless of the size change. Matt's ruling — surface
+  the number only if it comes back surprisingly large.
 + **Wayland-first runtime — CI now exercises Wayland (Matt 2026-08-26).**
   GTK4's default user backend is Wayland. The original plan ran the e2e gate
   under Xvfb/X11 only (`GDK_BACKEND=x11`), so CI would permanently exercise a
@@ -124,7 +121,7 @@ The four surfaces:
   pinned nixpkgs) with `GDK_BACKEND=wayland`, so the gate exercises the real
   default backend; a cheap X11/Xvfb run is kept as a secondary regression lane
   (GTK4 retains the X11 backend). The compositor lands in the e2e-runner
-  closure ONLY, so the tarball size budget (OQ2) is untouched. This closes the
+  closure ONLY, so the tarball size (OQ2) is unaffected. This closes the
   residual-risk gap the X11-only plan carried; the manual Wayland smoke in T5
   stays as belt-and-suspenders on the shipped tarball.
 
@@ -135,7 +132,7 @@ The four surfaces:
 Zero work now; the gtk3 variant is supported "through the v3.0.x line". But:
 the deadline is upstream-controlled and lands as a forced migration coupled to
 whatever else v3.1 changes (worst time to absorb an experimental-stack flip);
-every month on GTK3 deepens the SEA-1172 freeze around a stack upstream calls
+every month on GTK3 deepens the freeze around a stack upstream calls
 legacy; and the flip is cheap NOW precisely because the pinned nixpkgs already
 carries gtk4/webkitgtk_6_0 at the same WebKit release — a later nixpkgs pin
 may not be so aligned. Matt's steer (2026-08-26) is (b); (a) is recorded as
@@ -169,11 +166,9 @@ an optional T3.5), not a reason to hold the freeze.
 No DECISIONS.md row pins GTK3 by name: `grep 'GTK3\|GTK4\|WebKit'
 docs/designs/DECISIONS.md` returns nothing, and the DL-110 row
 (`DECISIONS.md:240`) pins only "Wails v3 (Go)" — framework, not GTK variant.
-The GTK3 pin lives in the SEA-1172 toolchain-closure freeze
-(`gtk-closure.nix:1-3`: "the frozen SEA-1172 closure
-(docs/designs/platform/ci-toolchain-shared-defs.md)" — note that path does not
-exist in this repo; SEA-1172 is a sealed-monorepo artifact referenced from
-here) and in code/CI, not in a compass DL row. Therefore:
+The GTK3 pin lives in the repo's own GTK closure definition
+(`tools/toolchain/gtk-closure.nix`, one definition imported by every in-repo
+consumer) and in code/CI, not in a compass DL row. Therefore:
 
 + **No DL row is Superseded.** DL-110 stays Active unchanged (Wails v3 is
   unchanged); DL-214/DL-216 (packaging) stay Active (the bundle shape is
@@ -181,15 +176,8 @@ here) and in code/CI, not in a compass DL row. Therefore:
 + **One NEW DL row** (id assigned at freeze): "The Compass Linux shell builds
   Wails' default GTK4 + webkitgtk-6.0 stack (repo tag `gtk4`; closure
   `gtk4`/`webkitgtk_6_0` in gtk-closure.nix), retiring the legacy `gtk3` +
-  webkit2gtk-4.1 variant ahead of its Wails v3.1 removal; amends the SEA-1172
-  frozen GTK closure definition in place (one definition, all consumers)."
-+ **SEA-1172 / sealed-image amendment (merge-blocking, see OQ5)**: the sealed
-  toolchain record AND the hand-synced sealed CI step image
-  (`devenv.nix:233-235`) both carry the GTK3 closure out of this repo — kept in
-  step by hand, so the flip re-triggers exactly the drift the one-definition
-  closure prevents in-repo. Amending them is a HARD PREDECESSOR of the T2–T5
-  merge (or the coordinator first confirms no sealed lane consumes the
-  closure's GTK `-dev` outputs) — not same-wave coordination.
+  webkit2gtk-4.1 variant ahead of its Wails v3.1 removal; the closure edit is
+  in place (one definition, all consumers)."
 
 ## Global Constraints
 
@@ -220,11 +208,11 @@ here) and in code/CI, not in a compass DL row. Therefore:
   webkitgtk-6.0 dev packages. Shipped tarball unaffected (store-rpathed,
   DL-214). Docs that name system prerequisites must say so. ACCEPTED by Matt
   (2026-08-26): greenfield app, no legacy install base — the floor is free.
-+ **Size budget:** the closure delta (bundle tarball + e2e runner realization)
-  is measured and recorded in the migration PR body; a regression > ~15% on
-  the app-bundle tarball re-opens the size-budget question for Matt before
-  merge (SEA-1101 concern; id not resolvable in this tree — see §Ledger
-  delta).
++ **Size (measured, not gating — Matt 2026-08-26):** the closure delta (bundle
+  tarball + e2e runner realization) is measured and recorded in the migration
+  PR body for the record, but it does NOT gate the flip — Compass ships GTK4
+  regardless. Surface the number to Matt only if it comes back surprisingly
+  large.
 + **markdownlint:** MD004 `+` bullets, MD040 fenced languages, blank lines
   around blocks — this record and any doc edits comply.
 
@@ -234,13 +222,6 @@ Ordering: T1 (pin bump) → T2 (closure swap) → T3 (tag flip) → T4 (CI gate)
 T5 (packaging) → T6 (docs + ledger). T2–T5 land as ONE PR (the tag and the
 closure are load-bearing together: `-tags gtk4` against a gtk3 closure fails
 the cgo link, and vice versa); T1 and T6 may be separate PRs.
-
-**Merge-blocking predecessor (W1/OQ5):** before the T2–T5 PR merges, the
-sealed CI step image's hand-synced GTK closure (`devenv.nix:233-235`) and the
-out-of-repo SEA-1172 record must be amended to GTK4 — OR the coordinator must
-confirm no sealed lane consumes the closure's GTK `-dev` outputs. The flip
-drifts the hand-synced image the moment it lands, and that breakage surfaces in
-a repo the executors cannot fix.
 
 **Revert precondition (F3):** the T2–T5 revert path (revert one PR back to
 new-pin + gtk3) is guaranteed green only while the T1-tested `(pin, gtk3)`
@@ -370,8 +351,7 @@ after T1 lands.
   system-libs constraint (`compass-native-app/design.md:384-391` names
   `webkit2gtk-4.1` — annotate, don't rewrite frozen prose, per the repo's
   banner-amendment convention seen at `compass-native-app/design.md:25-29`).
-  Coordinator encodes the new DL row (§Ledger delta) and files the SEA-1172
-  amendment coordination.
+  Coordinator encodes the new DL row (§Ledger delta).
 + **Interfaces:** consumes the landed T2–T5 state; produces the amendment
   banners + the DL row text handed to the coordinator (this record's §Ledger
   delta is the source).
@@ -395,7 +375,7 @@ after T1 lands.
 + [ ] **T5** app-bundle/build.sh + flake.nix tag flip; `nix flake check` +
   bundle smoke green on GTK4.
 + [ ] **T6** Docs sweep + amendment banners; coordinator encodes the new DL
-  row and the SEA-1172 amendment.
+  row.
 
 ## Open Questions
 
@@ -405,14 +385,13 @@ after T1 lands.
   the newest v3.0.x beta at implementation time (T1), gated by the e2e;
   Renovate does NOT auto-track it (see §Global Constraints, Wails floor). The
   exact target tag is picked at T1 against the then-current release list.
-+ **OQ2 (load-bearing): size-budget threshold.** Global Constraint 5 proposes
-  "> ~15% tarball growth re-opens the question with Matt". The SEA-1101
-  image-layer-budget decision this is said to touch is NOT resolvable in this
-  repo (no match for `SEA-1101` in the tree; `agent-image/devenv.nix:116-127`'s
-  layer budget carries no GTK). Matt should confirm (i) the actual SEA-1101
-  constraint text from the sealed monorepo and (ii) the acceptable growth
-  threshold. **Recommendation:** treat the measured delta as a PR-body fact
-  gated at 15% until the sealed constraint says otherwise.
++ **OQ2 (RESOLVED — Matt 2026-08-26): tarball size.** Matt: ship GTK4
+  regardless of the bundle-size change — the size delta does not gate the
+  flip. **Resolution:** measure the closure + tarball delta and record it in
+  the migration PR body (Plan T2) for the record; surface the number to Matt
+  only if it comes back surprisingly large. No threshold, no gate. (An earlier
+  draft cited a private image-layer-budget constraint here; that citation was
+  wrong and is removed — no such budget governs the app-bundle tarball.)
 + **OQ3 (non-load-bearing): repo tag name.** `gtk4` (proposed; symmetric,
   self-describing) vs `desktop` (version-neutral, no rename at GTK5).
   **Recommendation:** `gtk4` — it must be spelled at every cgo boundary
@@ -424,15 +403,13 @@ after T1 lands.
   user backend); an X11/Xvfb run stays as a cheap secondary regression lane.
   Folded into T4. Compositor is e2e-runner-closure-only, so OQ2/size budget is
   untouched.
-+ **OQ5 (load-bearing): SEA-1172 / sealed-image amendment sequencing.** The
-  frozen toolchain closure is defined in the sealed monorepo's
-  `ci-toolchain-shared-defs.md` (referenced at `gtk-closure.nix:3`, not present
-  here) AND the sealed CI step image stages the same closure's `-dev` outputs
-  "kept in step by hand" (`devenv.nix:233-235`). This is the one cross-repo
-  coupling the flip re-triggers: if the sealed image stays GTK3 when T2–T5
-  merges, any sealed lane that builds or links compass-app breaks in a repo
-  this record's executors cannot fix. Resolve BEFORE the T2–T5 merge: either
-  (a) confirm no sealed lane consumes the closure's GTK `-dev` outputs (then
-  this demotes), or (b) land the sealed-image + SEA-1172 amendment as a HARD
-  PREDECESSOR of that merge. **Recommendation:** (b) unless (a) is confirmed;
-  see the Plan's merge-blocking-predecessor constraint.
++ **OQ5 (RESOLVED — private monorepo verified 2026-08-26): no cross-repo
+  closure coupling.** An earlier draft asserted that a hand-synced private-side
+  CI image staged this GTK closure's `-dev` outputs, making a private-side
+  amendment a merge-blocking predecessor. Reading the private monorepo directly
+  disproves that: nothing there builds or links `compass-app`, and its CI
+  toolchain does not consume this GTK closure. So no private lane depends on
+  it — case (a) is confirmed and there is no predecessor.
+  `tools/toolchain/gtk-closure.nix` is compass's own single definition,
+  imported only by in-repo consumers (`devenv.nix`, `gtk-e2e-env.nix`,
+  `flake.nix`); the flip is self-contained to this repo.
