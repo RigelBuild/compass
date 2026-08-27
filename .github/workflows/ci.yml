@@ -1275,6 +1275,18 @@ jobs:
       # puts the rootless runroot there instead. `-E` on the step shell forwards
       # it across the user switch.
       XDG_RUNTIME_DIR: /run/user/1000
+      # Pin the Go build + module caches to the podman user's HOME-derived
+      # defaults, stated explicitly so THREE things provably agree: the paths the
+      # actions/cache step restores, the `chown -R podman:podman` that hands those
+      # dirs to the work uid, and where the nix-provisioned `go` actually reads
+      # and writes. A nix go still derives GOCACHE/GOMODCACHE from HOME
+      # (/home/podman → ~/.cache/go-build and ~/go/pkg/mod) — there is no GOENV or
+      # GOFLAGS override anywhere in this job — but naming them here removes the
+      # dependency on that default holding and makes the cache-path/chown/go triple
+      # impossible to drift apart. `-E` on the step shell forwards them across the
+      # sudo user switch.
+      GOCACHE: /home/podman/.cache/go-build
+      GOMODCACHE: /home/podman/go/pkg/mod
     # Every `run:` step executes as the image's built-in rootless `podman` user
     # (uid 1000), NOT root. The container itself must stay root (no `--user`): the
     # root-only prep step below needs to create /nix and grant sudo, which a
@@ -1409,6 +1421,55 @@ jobs:
         # chown), so it is one of the two root steps in this job.
         shell: bash -e {0}
         run: chown -R podman:podman "$GITHUB_WORKSPACE"
+
+      - name: Restore the Go build + module caches (as root)
+        # RIG-2738 lever L4. This job has NO warm Go caches: it is a dedicated
+        # container job with its own runner filesystem, so fixture-1's first
+        # compile AND the `-race` cgo build (go/moon.yml's race lane never runs
+        # here) start stone cold every run. Persisting GOCACHE + GOMODCACHE across
+        # runs turns both warm and cuts the dominant compile cost off the ~20m
+        # e2e wall.
+        #
+        # Like actions/checkout above, a `uses:` step ignores the podman-user
+        # `defaults.run.shell` and executes as the CONTAINER user (root), so the
+        # restored cache dirs land root-owned. The go test step runs as the podman
+        # user (uid 1000) and must WRITE into them (a restore repopulates only what
+        # was saved; the run then compiles the rest and the post-run save reads
+        # them back), so the next step hands them to podman — the same
+        # root-creates / podman-writes handoff the checkout uses.
+        #
+        # Key shape: scoped to this job (`dogfood-e2e-`) so it never collides with
+        # a future cache in another job, pinned to the go minor (`go1.25.0`,
+        # matching go/go.mod) so a toolchain bump starts fresh, and hashed on
+        # go/go.sum (the module root is go/) so any dependency change invalidates
+        # the module cache. The restore-keys prefix lets a go.sum change still warm
+        # from the previous run's cache (a partial hit beats a cold build) before
+        # the post-run save writes the new exact key.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            /home/podman/.cache/go-build
+            /home/podman/go/pkg/mod
+          key: dogfood-e2e-go-${{ runner.os }}-go1.25.0-${{ hashFiles('go/go.sum') }}
+          restore-keys: |
+            dogfood-e2e-go-${{ runner.os }}-go1.25.0-
+
+      - name: Hand the Go caches to the podman user (as root)
+        # The cache restore above ran as root, so GOCACHE (/home/podman/.cache/
+        # go-build) and GOMODCACHE (/home/podman/go/pkg/mod) are root-owned even
+        # though they sit under the podman user's HOME. The go test step runs as
+        # podman and both reads (restored objects) and writes (newly compiled
+        # objects, plus the post-run save) them, so chown them to podman first —
+        # the same ownership handoff the checkout uses. `install -d` first so the
+        # chown succeeds on a cold cache (a full miss restores nothing, leaving the
+        # dirs absent). Overrides the default podman shell because only root can
+        # chown.
+        shell: bash -e {0}
+        run: |
+          install -d -o podman -g podman \
+            /home/podman/.cache/go-build /home/podman/go/pkg/mod
+          chown -R podman:podman \
+            /home/podman/.cache/go-build /home/podman/go/pkg/mod
 
       - name: Install Nix (single-user, as the podman user)
         # This REPLACES cachix/install-nix-action, which cannot serve this job:
