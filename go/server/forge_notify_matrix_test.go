@@ -336,10 +336,10 @@ func (d *matrixDispatcher) Notify(_ context.Context, _ string, n *compassv1inter
 
 // matrixChecksRoller scripts the combined roll-up for a CHECKS event.
 type matrixChecksRoller struct {
-	res ingest.ChecksResult
+	res forge.ConditionalResult[forge.Checks]
 }
 
-func (c *matrixChecksRoller) RollUp(context.Context, string, uint64, string, string) (ingest.ChecksResult, error) {
+func (c *matrixChecksRoller) RollUp(context.Context, string, uint64, string, string) (forge.ConditionalResult[forge.Checks], error) {
 	return c.res, nil
 }
 
