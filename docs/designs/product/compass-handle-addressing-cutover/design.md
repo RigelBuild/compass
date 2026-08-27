@@ -247,8 +247,8 @@ deliberately:
 `RosterEntry.agent_account_id` (`comms.proto:723` — it already carries
 `handle` at `:724` beside the id, the right dual shape),
 `SpawnPeerResponse.agent_account_id` (`agent_gateway.proto:175`). If a UI
-surface genuinely needs a handle a response lacks, that is an Open Question to
-surface, not a reflex flip (OQ-5).
+surface genuinely needs a handle a response lacks, that is a future question to
+raise, not a reflex flip.
 
 ### Sequencing against the in-flight org-management stack
 
@@ -394,7 +394,7 @@ Rename and re-comment every row of the inventory in `comms.proto`,
 form (final names, Matt ruled OQ-1 2026-08-27): `member_handles`,
 `add_member_handles`, `remove_member_handles`, `subscribe_handles`,
 `unsubscribe_handles`, `agent_handle`, `new_parent_handle`, `owner_handle`,
-`parent_handle`, and the roster vantage field `vantage_handle` (OQ-3). Semantics
+`parent_handle`, `account_handle` (IssueToken admin lane, OQ-4), and the roster vantage field `vantage_handle` (OQ-3). Semantics
 comment on each: "a `@handle`; the server resolves it to an account id; unknown
 → NOT_FOUND". Field numbers are kept in place (Matt confirmed OQ-1b
 rename-in-place per Active DL-186). Regenerate all four lanes.
@@ -442,7 +442,7 @@ reuse `AgentByHandle`, re-keyed to `(owner_user_id, handle)` over
   `callerOwner` supplies the bare-agent-handle default namespace; a
   `QualifiedHandle` carries the parsed `{owner, handle}` (owner empty = bare).
   Atomic — any missing handle fails the whole call, the error naming every
-  unresolved handle in its submitted spelling (per the OQ-2 working assumption).
+  unresolved handle in its submitted spelling (per the OQ-2 ruling — atomic, naming all unresolved handles).
 - **Test cycle**: pgtests — round-trip, owner-qualified agent resolution
   (`matt/compass-ux` vs `alice/compass-ux` disambiguated by owner), bare agent
   handle defaulting to the caller's owner, bare user/system handle in the global
@@ -568,8 +568,9 @@ CompassService handler edge, mirroring T3's comms edge. `SpawnAgent`
 `AccountsByHandles` path (it may name a user or an agent). Because this is the
 adminOnly door with no agent session, the caller supplies the `owner/` qualifier
 explicitly — there is no `callerOwner` default. Resolution slots in before the
-existing `GetAccount` id lookups (`spawn.go:103,153,158`; `service.go:152,166`
-for Provision, `:420,425` for IssueToken); an unresolvable handle → the same
+existing `GetAccount` id lookups (`spawn.go:103,153,158`; `service.go:152` for
+Provision — the `hub.Provision` relay at `:166` then consumes the resolved id —
+`:420,425` for IssueToken); an unresolvable handle → the same
 in-band NOT_FOUND the existing `GetAccount` miss already returns
 (`service.go:154-156,427-429`), naming the submitted handle not a resolved id.
 
@@ -582,7 +583,7 @@ in-band NOT_FOUND the existing `GetAccount` miss already returns
 
 ### T9 — additive `author_handle` on `Message` + agent handle-only fence
 
-Add an additive `author_handle` field to `Message` (`proto/compass/v1/comms.proto:322`,
+Add an additive `author_handle` field to `Message` (`proto/compass/v1/comms.proto:332`,
 next free field number 6 — `author_account_id = 3` STAYS). The server populates
 it wherever it builds a `Message` for the wire, resolving `author_account_id`→handle
 the same way `from_handle` denormalizes (`go/internal/delivery/consumer.go:398-413`).
