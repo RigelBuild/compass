@@ -592,6 +592,11 @@ func newHarness(t *testing.T) (Config, *harness) {
 		DatabaseDSN: "postgres:///compass",
 		AgentImage:  "ghcr.io/example/compass-agent:latest",
 		RuntimeDir:  "/run/user/1000/compass",
+		// Bundle path (ExternalOTLPEndpoint unset): the fake CollectorContainer
+		// runs, but collectorContainerSpec now rejects an empty image, so the
+		// harness pins a dummy pinned ref. Tests exercising the opt-out set
+		// ExternalOTLPEndpoint explicitly.
+		CollectorImage: "otel/opentelemetry-collector-contrib:test",
 	}
 	return cfg, h
 }

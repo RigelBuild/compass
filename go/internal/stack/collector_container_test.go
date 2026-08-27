@@ -60,6 +60,23 @@ func TestCollectorContainerSpecRejectsMissingStateDir(t *testing.T) {
 	}
 }
 
+// TestCollectorContainerSpecRejectsMissingImage pins that a bundle-path config
+// with no collector image is a hard error at spec time, not an opaque
+// `podman run ""` deep in the adapter. The collector is container-only (no
+// process fallback like postgres), so an empty image is always invalid; a
+// struct-literal Config (or one built by resolveConfig from a configFlags that
+// bypasses newFlagSet's default) that leaves CollectorImage empty without
+// opting out via ExternalOTLPEndpoint must be rejected here.
+func TestCollectorContainerSpecRejectsMissingImage(t *testing.T) {
+	_, err := collectorContainerSpec(Config{StateDir: "/state"})
+	if err == nil {
+		t.Fatal("collectorContainerSpec(no CollectorImage) = nil error, want a rejection")
+	}
+	if !strings.Contains(err.Error(), "CollectorImage") {
+		t.Fatalf("error %q does not mention CollectorImage", err.Error())
+	}
+}
+
 // TestCollectorContainerNameDeterministicPerStateDir pins the stable-name
 // contract: the name is a pure function of the state dir (so a fresh down
 // reconstructs it), distinct across state dirs (so concurrent stacks never

@@ -361,6 +361,9 @@ func (s *Stack) startCollector(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if s.deps.CollectorContainer == nil {
+		return errors.New("start otel-collector: CollectorContainer dep is nil on the bundle path (ExternalOTLPEndpoint unset but no collector adapter wired) — a legible failure, not a nil-deref panic")
+	}
 	col, err := s.deps.CollectorContainer.Start(ctx, spec)
 	if err != nil {
 		return fmt.Errorf("start otel-collector container: %w", err)
@@ -456,6 +459,9 @@ func (s *Stack) waitPostgres(ctx context.Context) error {
 func (s *Stack) waitCollector(ctx context.Context) error {
 	if s.cfg.ExternalOTLPEndpoint != "" {
 		return nil
+	}
+	if s.deps.CollectorProber == nil {
+		return errors.New("wait otel-collector: CollectorProber dep is nil on the bundle path (ExternalOTLPEndpoint unset but no collector adapter wired) — a legible failure, not a nil-deref panic")
 	}
 	deadline := s.deps.now().Add(collectorReadyPollBudget)
 	ticker := time.NewTicker(collectorReadyPollInterval)

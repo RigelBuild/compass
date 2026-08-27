@@ -91,6 +91,9 @@ func collectorContainerSpec(cfg Config) (CollectorContainerSpec, error) {
 	if cfg.StateDir == "" {
 		return CollectorContainerSpec{}, errors.New("stack config: StateDir is required for the collector container (config bind-mount + name derivation)")
 	}
+	if cfg.CollectorImage == "" {
+		return CollectorContainerSpec{}, errors.New("stack config: CollectorImage is required to bundle the collector (set --collector-image or use --otel-external to opt out)")
+	}
 	return CollectorContainerSpec{
 		Name:           collectorContainerName(cfg.StateDir),
 		Image:          cfg.CollectorImage,
