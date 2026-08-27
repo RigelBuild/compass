@@ -575,10 +575,9 @@ in V2b-concrete form.
 Tasks are ordered by dependency. U1 (proto) gates everything; U2 (guestd
 supervisor) and U3 (host exec client layer) both compile against U1's
 generated code and proceed in parallel — U3 is testable hermetically against a
-fake `GuestControl` server, not against U2. U3b (gated on Matt's OQ-G ruling)
-produces the portable exit-signal error type U3's waitFunc constructs, so under
-option 1 it lands with or just before U3; under option 2 U3's waitFunc contract
-and the U5 kill/wait row change per OQ-G. U4 (lifecycle methods) consumes
+fake `GuestControl` server, not against U2. U3b produces the portable
+exit-signal error type U3's waitFunc constructs, so it lands with or just
+before U3. U4 (lifecycle methods) consumes
 U2+U3; U5 (the contract suite) consumes U4 and is the milestone's acceptance
 gate.
 
