@@ -276,13 +276,14 @@ Postgres) is authoritative for usage/spend"
 
 **1. The token-usage event (gateway → store, append-only).** One event per
 completed upstream model call (including failed/aborted calls with partial
-usage, flagged). Shape (Go struct = the T1 write contract; field set derived
-from pi-ai's canonical `Usage` — `input/output/cacheRead/cacheWrite/
-totalTokens` + `cost{input,output,cacheRead,cacheWrite,total}`,
+usage, flagged). Shape (Go struct = the write contract **#656 T1** stores and
+**this record's T5** emits; field set derived from pi-ai's canonical `Usage` —
+`input/output/cacheRead/cacheWrite/totalTokens` +
+`cost{input,output,cacheRead,cacheWrite,total}`,
 `forks/oh-my-pi/packages/catalog/src/types.ts:95-149`):
 
 ```go
-// package llmusage — the T1 write contract.
+// package llmusage — the write contract #656 T1 stores; this record's T5 emits it.
 type TokenUsageEvent struct {
     ID              string // server-assigned UUID
     OccurredAtUnixMs int64
@@ -312,17 +313,25 @@ compute-usage event, which is runtime-sourced and out of this record's
 scope, `design.md:552-567`).
 
 Cost is integer micro-USD (no floats in the store), computed at write time
-from a Go pricing table keyed by (provider, model) — the port of the
-catalog's per-model cost rates (T2b carries the table; staleness handled by
-recording the rate-version used).
+from a Go pricing table keyed by (provider, model, `RateVersion`) that retains
+**per-component rates** (input/output/cache-read/cache-write) — the port of
+the catalog's per-model cost rates (this record's **T2b** carries the table;
+staleness handled by recording the rate-version used).
 
-Per-component cost (input/output/cache-read/cache-write) is deliberately NOT
-stored on the event — only `CostMicroUSD` total. It stays reconstructable
-from the per-component token counts × the versioned pricing table pinned by
-`RateVersion`, so the event row stays narrow without losing auditability
-(the pricing table is retained by version, never mutated in place).
+The canonical `Usage` also reports orchestration tokens (billed but outside
+the conversation prompt/cache buckets, `catalog/src/types.ts:106-113`),
+reasoning tokens, and server-tool counts. These are deliberately NOT carried
+as separate `TokenUsageEvent` fields (a display quantity, not a billing-grade
+breakdown); the T5 mapping folds orchestration + reasoning tokens into
+`TotalTokens` and `CostMicroUSD` (so the total stays faithful to what the
+provider billed) and drops the per-server-tool attribution. Per-component
+cost (input/output/cache-read/cache-write) is not stored on the event — only
+`CostMicroUSD` total — but stays reconstructable from the per-component token
+counts × the versioned per-component rates pinned by `RateVersion`, so the
+event row stays narrow without losing auditability (the pricing table is
+retained by version, never mutated in place).
 
-**2. Storage (T1's lane, #656 owns the task).** `token_usage_events`
+**2. Storage (#656 T1's lane, #656 owns the task).** `token_usage_events`
 append-only + hourly/daily rollup tables keyed (owner_user_id,
 agent_account_id, provider, model, bucket) — rebuildable from the event log,
 per #656 T1 ("Postgres rollup tables derived and rebuildable",
@@ -331,7 +340,8 @@ convention (`0001_init.sql:10-15`). This record hands T1 the event shape
 above; T1 owns the DDL, retention, and the `UsageStore` interface
 (`design.md:545-551`).
 
-**3. The tenant-scoped read contract (T2's lane).** New RPCs on a new
+**3. The tenant-scoped read contract (#656 T2's lane; implemented by this
+record's T5 + `UsageService`).** New RPCs on a new
 `UsageService` in `proto/compass/v1` (schema change + `moon run
 compass-proto:gen`, never a raw stub — the compass.v1 discipline):
 
@@ -583,8 +593,10 @@ Interfaces:
 
 Independent of T2's streaming path: per-account provider usage-report
 fetchers (anthropic + codex windows) that feed the ranking comparator and
-`GetProviderQuota`, plus the (provider, model) → micro-USD pricing table with
-a rate-version stamp.
+`GetProviderQuota`, plus the (provider, model, rate-version) → per-component
+micro-USD pricing table (input/output/cache-read/cache-write rates retained,
+not just a total — that is what makes the event's per-component cost
+reconstructable, Approach §Plane-A).
 
 Interfaces:
 
@@ -592,7 +604,7 @@ Interfaces:
   (`forks/oh-my-pi/packages/ai/src/usage/claude.ts`, `usage/openai-codex.ts`);
   the canonical cost rates (`catalog/src/types.ts:95-149`).
 - Produces: `FetchUsage(ctx, cred Credential) (*QuotaReport, error)` per
-  provider; `func Price(provider, model string, u TokenCounts) (microUSD int64, rateVersion string)`.
+  provider; `func Price(provider, model string, u TokenCounts) (total int64, perComponent ComponentCost, rateVersion string)` — returns the micro-USD total AND the per-component breakdown from the versioned per-component rates.
 - Test cycle: httptest fake usage endpoints; pricing-table unit tests.
 
 ### T3 — Credential store + pool resolution
@@ -694,8 +706,10 @@ One-line dependency flip: #656's "PREREQUISITE ... OMP-gateway-into-Server"
 (`compass-observability-architecture/design.md:698-699`) is satisfied by
 this record; #656 T1 consumes `TokenUsageEvent`, T2's usage RPCs are
 superseded-by/merged-into this record's `UsageService` (single service, no
-duplicate proto surface — coordinate at freeze). T3 (compass-ui) consumes
-`GetProviderQuota` for UsageBar and `GetUsageSeries` for charts.
+duplicate proto surface — coordinate at freeze; when #656 is next touched,
+annotate its T2 `Produces` line "superseded by RIG-1715 `UsageService`" so the
+deferral is visible from #656's side, not only via its PREREQUISITE gate).
+T3 (compass-ui) consumes
 
 ## Tasks
 
