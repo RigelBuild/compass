@@ -35,6 +35,12 @@ concept; the tool and prompt material carry the detail, these carry the model.
   load-bearing premise any external-session integration maps onto, never
   replaces.
 
+## The architecture
+
+- **[The architecture](./architecture.md)** — the three-tier topology (Server
+  control plane, Runner host substrate, resident agent per sandbox) and the two
+  load-bearing paths across it: the privileged-op relay and the durability tee.
+
 ## The runtime
 
 - **[Durable agents, disposable compute](./durable-agents-disposable-compute.md)**
