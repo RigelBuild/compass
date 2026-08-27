@@ -42,7 +42,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/forge.proto.
  */
 export const file_compass_v1_forge: GenFile = /*@__PURE__*/
-  fileDesc("ChZjb21wYXNzL3YxL2ZvcmdlLnByb3RvEgpjb21wYXNzLnYxIn8KCkNvbW1lbnRSZWYSCwoDdXJsGAEgASgJEhIKCmNvbW1lbnRfaWQYAiABKAQSDAoEYm9keRgDIAEoCRIVCg1mb3JnZV9hY2NvdW50GAQgASgJEisKBWFnZW50GAUgASgLMhwuY29tcGFzcy52MS5BZ2VudEF0dHJpYnV0aW9uIjwKCVJldmlld1JlZhILCgN1cmwYASABKAkSEQoJcmV2aWV3X2lkGAIgASgEEg8KB3ZlcmRpY3QYAyABKAkivwIKEUZvcmdlTm90aWZpY2F0aW9uEhcKD3N1YnNjcmlwdGlvbl9pZBgBIAEoCRIjCgVmb3JnZRgCIAEoCzIULmNvbXBhc3MudjEuRm9yZ2VSZWYSDAoEcmVwbxgDIAEoCRIrCgRraW5kGAQgASgOMh0uY29tcGFzcy52MS5Gb3JnZUFydGlmYWN0S2luZBIOCgZudW1iZXIYBSABKAQSCwoDdXJsGAYgASgJEjEKBmNoYW5nZRgHIAEoDjIhLmNvbXBhc3MudjEuRm9yZ2VOb3RpZmljYXRpb25LaW5kEicKB2NvbW1lbnQYCCABKAsyFi5jb21wYXNzLnYxLkNvbW1lbnRSZWYSKQoGY2hlY2tzGAkgASgLMhkuY29tcGFzcy52MS5DaGVja3NTdW1tYXJ5Eg0KBXN0YXRlGAogASgJKn0KEUZvcmdlQXJ0aWZhY3RLaW5kEiMKH0ZPUkdFX0FSVElGQUNUX0tJTkRfVU5TUEVDSUZJRUQQABIdChlGT1JHRV9BUlRJRkFDVF9LSU5EX0lTU1VFEAESJAogRk9SR0VfQVJUSUZBQ1RfS0lORF9QVUxMX1JFUVVFU1QQAirQAQoVRm9yZ2VOb3RpZmljYXRpb25LaW5kEicKI0ZPUkdFX05PVElGSUNBVElPTl9LSU5EX1VOU1BFQ0lGSUVEEAASIwofRk9SR0VfTk9USUZJQ0FUSU9OX0tJTkRfQ09NTUVOVBABEiEKHUZPUkdFX05PVElGSUNBVElPTl9LSU5EX1NUQVRFEAISIgoeRk9SR0VfTk9USUZJQ0FUSU9OX0tJTkRfVVBEQVRFEAMSIgoeRk9SR0VfTk9USUZJQ0FUSU9OX0tJTkRfQ0hFQ0tTEARiBnByb3RvMw", [file_compass_v1_compass]);
+  fileDesc("ChZjb21wYXNzL3YxL2ZvcmdlLnByb3RvEgpjb21wYXNzLnYxIn8KCkNvbW1lbnRSZWYSCwoDdXJsGAEgASgJEhIKCmNvbW1lbnRfaWQYAiABKAQSDAoEYm9keRgDIAEoCRIVCg1mb3JnZV9hY2NvdW50GAQgASgJEisKBWFnZW50GAUgASgLMhwuY29tcGFzcy52MS5BZ2VudEF0dHJpYnV0aW9uIjwKCVJldmlld1JlZhILCgN1cmwYASABKAkSEQoJcmV2aWV3X2lkGAIgASgEEg8KB3ZlcmRpY3QYAyABKAki0QIKEUZvcmdlTm90aWZpY2F0aW9uEhcKD3N1YnNjcmlwdGlvbl9pZBgBIAEoCRIjCgVmb3JnZRgCIAEoCzIULmNvbXBhc3MudjEuRm9yZ2VSZWYSDAoEcmVwbxgDIAEoCRIrCgRraW5kGAQgASgOMh0uY29tcGFzcy52MS5Gb3JnZUFydGlmYWN0S2luZBIOCgZudW1iZXIYBSABKAQSCwoDdXJsGAYgASgJEjEKBmNoYW5nZRgHIAEoDjIhLmNvbXBhc3MudjEuRm9yZ2VOb3RpZmljYXRpb25LaW5kEicKB2NvbW1lbnQYCCABKAsyFi5jb21wYXNzLnYxLkNvbW1lbnRSZWYSKQoGY2hlY2tzGAkgASgLMhkuY29tcGFzcy52MS5DaGVja3NTdW1tYXJ5Eg0KBXN0YXRlGAogASgJEhAKCHJldmlzaW9uGAsgASgJKn0KEUZvcmdlQXJ0aWZhY3RLaW5kEiMKH0ZPUkdFX0FSVElGQUNUX0tJTkRfVU5TUEVDSUZJRUQQABIdChlGT1JHRV9BUlRJRkFDVF9LSU5EX0lTU1VFEAESJAogRk9SR0VfQVJUSUZBQ1RfS0lORF9QVUxMX1JFUVVFU1QQAiqYAgoVRm9yZ2VOb3RpZmljYXRpb25LaW5kEicKI0ZPUkdFX05PVElGSUNBVElPTl9LSU5EX1VOU1BFQ0lGSUVEEAASIwofRk9SR0VfTk9USUZJQ0FUSU9OX0tJTkRfQ09NTUVOVBABEiEKHUZPUkdFX05PVElGSUNBVElPTl9LSU5EX1NUQVRFEAISIgoeRk9SR0VfTk9USUZJQ0FUSU9OX0tJTkRfVVBEQVRFEAMSIgoeRk9SR0VfTk9USUZJQ0FUSU9OX0tJTkRfQ0hFQ0tTEAQSIgoeRk9SR0VfTk9USUZJQ0FUSU9OX0tJTkRfUkVWSUVXEAUSIgoeRk9SR0VfTk9USUZJQ0FUSU9OX0tJTkRfT1BFTkVEEAZiBnByb3RvMw", [file_compass_v1_compass]);
 
 /**
  * A reference to a forge comment, carried on a comment write result and on a
@@ -203,6 +203,16 @@ export type ForgeNotification = Message<"compass.v1.ForgeNotification"> & {
    * @generated from field: string state = 10;
    */
   state: string;
+
+  /**
+   * The whole-artifact snapshot digest this notification reflects (T4's
+   * SnapshotRevision, computed at ApplyEvent). The agent echoes it back in
+   * ForgeNotificationAck.revision at turn-end flush; the Server advances the
+   * subscription's delivered_revision to it (two-cursor split, DL-053/DL-266).
+   *
+   * @generated from field: string revision = 11;
+   */
+  revision: string;
 };
 
 /**
@@ -280,6 +290,22 @@ export enum ForgeNotificationKind {
    * @generated from enum value: FORGE_NOTIFICATION_KIND_CHECKS = 4;
    */
   CHECKS = 4,
+
+  /**
+   * a submitted PR review; comment carries
+   *
+   * @generated from enum value: FORGE_NOTIFICATION_KIND_REVIEW = 5;
+   */
+  REVIEW = 5,
+
+  /**
+   * body+url, state the verdict
+   *
+   * container-scope: a new artifact; the
+   *
+   * @generated from enum value: FORGE_NOTIFICATION_KIND_OPENED = 6;
+   */
+  OPENED = 6,
 }
 
 /**

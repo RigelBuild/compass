@@ -92,6 +92,11 @@ message ForgeNotification {
   ChecksSummary checks = 9;
   // Set for STATE: the new forge state string ("closed", "merged", …).
   string state = 10;
+  // The whole-artifact snapshot digest this notification reflects (T4's
+  // SnapshotRevision, computed at ApplyEvent). The agent echoes it back in
+  // ForgeNotificationAck.revision at turn-end flush; the Server advances the
+  // subscription's delivered_revision to it (two-cursor split, DL-053/DL-266).
+  string revision = 11;
 }
 enum ForgeNotificationKind {
   FORGE_NOTIFICATION_KIND_UNSPECIFIED = 0;
@@ -99,4 +104,8 @@ enum ForgeNotificationKind {
   FORGE_NOTIFICATION_KIND_STATE = 2;     // opened/closed/merged/reopened
   FORGE_NOTIFICATION_KIND_UPDATE = 3;    // title/body/labels edited
   FORGE_NOTIFICATION_KIND_CHECKS = 4;    // CI or status-check state changed
+  FORGE_NOTIFICATION_KIND_REVIEW = 5;    // a submitted PR review; comment carries
+                                         // body+url, state the verdict
+  FORGE_NOTIFICATION_KIND_OPENED = 6;    // container-scope: a new artifact; the
+                                         // envelope's number/url address it
 }

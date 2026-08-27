@@ -255,3 +255,397 @@ func TestAgentForgeSubscriptionUnknownAgentIsInvalidArgument(t *testing.T) {
 	})
 	sentinelIs(t, err, ErrInvalidArgument, "unknown agent (FK violation)")
 }
+
+// ── T3: container-scope subscriptions ─────────────────────────────────────────
+
+// containerSubCount counts subscription rows at a container coordinate
+// (scope=2, number=0) for a given project — the T3 assertion surface.
+func containerSubCount(t *testing.T, s *Store, provider ForgeProvider, host, repo string, kind ForgeArtifactKind, project string) int {
+	t.Helper()
+	var n int
+	if err := s.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM agent_forge_subscriptions
+		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4
+		    AND scope = 2 AND number = 0 AND project = $5`,
+		int32(provider), host, repo, int32(kind), project,
+	).Scan(&n); err != nil {
+		t.Fatalf("count container subs: %v", err)
+	}
+	return n
+}
+
+// TestAgentForgeContainerSubscriptionIdempotent: a GitHub CONTAINER subscribe is
+// idempotent on (agent, repo, kind, 0, project=”) — a repeat returns the same
+// id and adds no row.
+func TestAgentForgeContainerSubscriptionIdempotent(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "t3-ctr-idem")
+
+	base := AgentForgeSubscription{
+		AgentAccountID: agent,
+		Provider:       ForgeProviderGitHub,
+		Host:           "github.com",
+		Repo:           "a/b",
+		Kind:           ForgeArtifactKindIssue,
+		Scope:          ForgeSubscriptionScopeContainer,
+	}
+	first, err := s.EnsureAgentForgeSubscription(ctx, base)
+	if err != nil {
+		t.Fatalf("first container ensure: %v", err)
+	}
+	second, err := s.EnsureAgentForgeSubscription(ctx, base)
+	if err != nil {
+		t.Fatalf("second container ensure: %v", err)
+	}
+	if second != first {
+		t.Fatalf("repeat container subscribe id = %q, want %q (idempotent)", second, first)
+	}
+	if n := containerSubCount(t, s, base.Provider, base.Host, base.Repo, base.Kind, ""); n != 1 {
+		t.Fatalf("container row count = %d, want 1 (no duplicate)", n)
+	}
+}
+
+// TestAgentForgeSubscriptionScopeValidation: the scope-shape guard rejects each
+// mismatched (scope, number, project) combination with ErrInvalidArgument.
+func TestAgentForgeSubscriptionScopeValidation(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "t3-scope-valid")
+
+	cases := []struct {
+		name string
+		sub  AgentForgeSubscription
+	}{
+		{"artifact with number=0", AgentForgeSubscription{
+			AgentAccountID: agent, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/b",
+			Kind: ForgeArtifactKindIssue, Scope: ForgeSubscriptionScopeArtifact, Number: 0,
+		}},
+		{"artifact with project set", AgentForgeSubscription{
+			AgentAccountID: agent, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/b",
+			Kind: ForgeArtifactKindIssue, Scope: ForgeSubscriptionScopeArtifact, Number: 5, Project: "P1",
+		}},
+		{"container with number set", AgentForgeSubscription{
+			AgentAccountID: agent, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/b",
+			Kind: ForgeArtifactKindIssue, Scope: ForgeSubscriptionScopeContainer, Number: 3,
+		}},
+		{"linear container without project", AgentForgeSubscription{
+			AgentAccountID: agent, Provider: ForgeProviderLinear, Host: "linear.app", Repo: "TEAM",
+			Kind: ForgeArtifactKindIssue, Scope: ForgeSubscriptionScopeContainer,
+		}},
+		{"github container with project", AgentForgeSubscription{
+			AgentAccountID: agent, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/b",
+			Kind: ForgeArtifactKindIssue, Scope: ForgeSubscriptionScopeContainer, Project: "P1",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.EnsureAgentForgeSubscription(ctx, tc.sub)
+			sentinelIs(t, err, ErrInvalidArgument, tc.name)
+		})
+	}
+}
+
+// TestAgentForgeLinearProjectContainersDistinct: two Linear project containers
+// on one team (same agent, repo, kind; different project) coexist as two rows —
+// the project column in the widened UNIQUE keeps them from colliding.
+func TestAgentForgeLinearProjectContainersDistinct(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	agent, _ := seedAgent(t, s, "t3-linear-proj")
+
+	base := AgentForgeSubscription{
+		AgentAccountID: agent, Provider: ForgeProviderLinear, Host: "linear.app", Repo: "TEAM",
+		Kind: ForgeArtifactKindIssue, Scope: ForgeSubscriptionScopeContainer,
+	}
+	p1 := base
+	p1.Project = "proj-1"
+	p2 := base
+	p2.Project = "proj-2"
+
+	id1, err := s.EnsureAgentForgeSubscription(ctx, p1)
+	if err != nil {
+		t.Fatalf("ensure proj-1: %v", err)
+	}
+	id2, err := s.EnsureAgentForgeSubscription(ctx, p2)
+	if err != nil {
+		t.Fatalf("ensure proj-2: %v", err)
+	}
+	if id1 == id2 {
+		t.Fatalf("two project containers share id %q, want distinct", id1)
+	}
+	if n := containerSubCount(t, s, base.Provider, base.Host, base.Repo, base.Kind, "proj-1"); n != 1 {
+		t.Fatalf("proj-1 container count = %d, want 1", n)
+	}
+	if n := containerSubCount(t, s, base.Provider, base.Host, base.Repo, base.Kind, "proj-2"); n != 1 {
+		t.Fatalf("proj-2 container count = %d, want 1", n)
+	}
+}
+
+// ── T3: SubscribersForArtifact — exact + container fan-out ────────────────────
+
+// TestSubscribersForArtifactGitHub: an artifact event returns the exact-artifact
+// subscriber always, and the GitHub container subscriber only when openedEvent.
+func TestSubscribersForArtifactGitHub(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	exact, _ := seedAgent(t, s, "t3-sfa-exact")
+	ctr, _ := seedAgent(t, s, "t3-sfa-ctr")
+
+	const (
+		host   = "github.com"
+		repo   = "a/b"
+		number = uint64(42)
+	)
+	provider := ForgeProviderGitHub
+	kind := ForgeArtifactKindIssue
+
+	if _, err := s.EnsureAgentForgeSubscription(ctx, AgentForgeSubscription{
+		AgentAccountID: exact, Provider: provider, Host: host, Repo: repo, Kind: kind,
+		Number: number, Scope: ForgeSubscriptionScopeArtifact,
+	}); err != nil {
+		t.Fatalf("ensure exact: %v", err)
+	}
+	if _, err := s.EnsureAgentForgeSubscription(ctx, AgentForgeSubscription{
+		AgentAccountID: ctr, Provider: provider, Host: host, Repo: repo, Kind: kind,
+		Scope: ForgeSubscriptionScopeContainer,
+	}); err != nil {
+		t.Fatalf("ensure container: %v", err)
+	}
+
+	// Non-opened event: only the exact-artifact subscriber.
+	subs, err := s.SubscribersForArtifact(ctx, provider, host, repo, kind, number, "", false)
+	if err != nil {
+		t.Fatalf("SubscribersForArtifact (not opened): %v", err)
+	}
+	if len(subs) != 1 || subs[0].AgentAccountID != exact {
+		t.Fatalf("not-opened subs = %+v, want just exact agent %q", subs, exact)
+	}
+
+	// Opened event: exact + container.
+	subs, err = s.SubscribersForArtifact(ctx, provider, host, repo, kind, number, "", true)
+	if err != nil {
+		t.Fatalf("SubscribersForArtifact (opened): %v", err)
+	}
+	got := map[AccountID]bool{}
+	for _, sub := range subs {
+		got[sub.AgentAccountID] = true
+	}
+	if len(subs) != 2 || !got[exact] || !got[ctr] {
+		t.Fatalf("opened subs = %+v, want exact %q + container %q", subs, exact, ctr)
+	}
+}
+
+// TestSubscribersForArtifactLinearProjectMatch: a Linear opened event fans out
+// to the container subscriber whose project matches the artifact's project, and
+// NOT to a container subscriber on a different project.
+func TestSubscribersForArtifactLinearProjectMatch(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	match, _ := seedAgent(t, s, "t3-sfa-match")
+	miss, _ := seedAgent(t, s, "t3-sfa-miss")
+
+	const (
+		host   = "linear.app"
+		repo   = "TEAM"
+		number = uint64(7)
+	)
+	provider := ForgeProviderLinear
+	kind := ForgeArtifactKindIssue
+
+	if _, err := s.EnsureAgentForgeSubscription(ctx, AgentForgeSubscription{
+		AgentAccountID: match, Provider: provider, Host: host, Repo: repo, Kind: kind,
+		Scope: ForgeSubscriptionScopeContainer, Project: "proj-A",
+	}); err != nil {
+		t.Fatalf("ensure match container: %v", err)
+	}
+	if _, err := s.EnsureAgentForgeSubscription(ctx, AgentForgeSubscription{
+		AgentAccountID: miss, Provider: provider, Host: host, Repo: repo, Kind: kind,
+		Scope: ForgeSubscriptionScopeContainer, Project: "proj-B",
+	}); err != nil {
+		t.Fatalf("ensure miss container: %v", err)
+	}
+
+	// Opened event on an artifact in proj-A: only the proj-A container subscriber.
+	subs, err := s.SubscribersForArtifact(ctx, provider, host, repo, kind, number, "proj-A", true)
+	if err != nil {
+		t.Fatalf("SubscribersForArtifact (linear opened): %v", err)
+	}
+	if len(subs) != 1 || subs[0].AgentAccountID != match {
+		t.Fatalf("linear opened subs = %+v, want just proj-A agent %q", subs, match)
+	}
+}
+
+// TestSubscribersForArtifactRejectsZeroNumber: an artifact event MUST name an
+// artifact — number=0 is a caller bug.
+func TestSubscribersForArtifactRejectsZeroNumber(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	_, err := s.SubscribersForArtifact(ctx, ForgeProviderGitHub, "github.com", "a/b", ForgeArtifactKindIssue, 0, "", false)
+	sentinelIs(t, err, ErrInvalidArgument, "artifact event with number=0")
+}
+
+// ── T3: ListForgeNotifyTargets — enumeration + grouping ───────────────────────
+
+// TestListForgeNotifyTargetsArtifactGrouping: two agents on one artifact collapse
+// to ONE target carrying two subscribers, with a nil cursor before any upsert.
+func TestListForgeNotifyTargetsArtifactGrouping(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	agentA, _ := seedAgent(t, s, "t3-lnt-a")
+	agentB, _ := seedAgent(t, s, "t3-lnt-b")
+
+	const (
+		host   = "github.com"
+		repo   = "a/b"
+		number = uint64(11)
+	)
+	provider := ForgeProviderGitHub
+	kind := ForgeArtifactKindIssue
+
+	for _, ag := range []AccountID{agentA, agentB} {
+		if _, err := s.EnsureAgentForgeSubscription(ctx, AgentForgeSubscription{
+			AgentAccountID: ag, Provider: provider, Host: host, Repo: repo, Kind: kind,
+			Number: number, Scope: ForgeSubscriptionScopeArtifact,
+		}); err != nil {
+			t.Fatalf("ensure %s: %v", ag, err)
+		}
+	}
+
+	targets, err := s.ListForgeNotifyTargets(ctx, provider, host)
+	if err != nil {
+		t.Fatalf("ListForgeNotifyTargets: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets = %d, want 1", len(targets))
+	}
+	tg := targets[0]
+	if tg.Number != number || tg.Repo != repo || tg.Kind != kind {
+		t.Fatalf("target coord = %+v, want repo=%q kind=%d number=%d", tg, repo, kind, number)
+	}
+	if tg.Cursor != nil {
+		t.Fatalf("cursor = %+v, want nil before first upsert", tg.Cursor)
+	}
+	if len(tg.Subscribers) != 2 {
+		t.Fatalf("subscribers = %d, want 2", len(tg.Subscribers))
+	}
+
+	// After an upsert, the cursor is observed.
+	if err := s.UpsertForgeArtifactCursor(ctx, ForgeArtifactCursor{
+		Provider: provider, Host: host, Repo: repo, Kind: kind, Number: number,
+		ETag: `"e1"`, Revision: "rev-1",
+	}); err != nil {
+		t.Fatalf("UpsertForgeArtifactCursor: %v", err)
+	}
+	targets, err = s.ListForgeNotifyTargets(ctx, provider, host)
+	if err != nil {
+		t.Fatalf("ListForgeNotifyTargets (post-upsert): %v", err)
+	}
+	if len(targets) != 1 || targets[0].Cursor == nil {
+		t.Fatalf("post-upsert target cursor = %+v, want non-nil", targets)
+	}
+	if targets[0].Cursor.Revision != "rev-1" || targets[0].Cursor.ETag != `"e1"` {
+		t.Fatalf("cursor = %+v, want rev-1 / \"e1\"", targets[0].Cursor)
+	}
+}
+
+// TestListForgeNotifyTargetsContainerCollapse: N Linear project container subs on
+// one team collapse to ONE (repo, kind, number=0) container target carrying all
+// N subscribers.
+func TestListForgeNotifyTargetsContainerCollapse(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	agentA, _ := seedAgent(t, s, "t3-cc-a")
+	agentB, _ := seedAgent(t, s, "t3-cc-b")
+	agentC, _ := seedAgent(t, s, "t3-cc-c")
+
+	const (
+		host = "linear.app"
+		repo = "TEAM"
+	)
+	provider := ForgeProviderLinear
+	kind := ForgeArtifactKindIssue
+
+	projects := map[AccountID]string{agentA: "p1", agentB: "p2", agentC: "p3"}
+	for ag, proj := range projects {
+		if _, err := s.EnsureAgentForgeSubscription(ctx, AgentForgeSubscription{
+			AgentAccountID: ag, Provider: provider, Host: host, Repo: repo, Kind: kind,
+			Scope: ForgeSubscriptionScopeContainer, Project: proj,
+		}); err != nil {
+			t.Fatalf("ensure %s: %v", ag, err)
+		}
+	}
+
+	targets, err := s.ListForgeNotifyTargets(ctx, provider, host)
+	if err != nil {
+		t.Fatalf("ListForgeNotifyTargets: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("targets = %d, want 1 collapsed container target", len(targets))
+	}
+	tg := targets[0]
+	if tg.Number != 0 || tg.Repo != repo || tg.Kind != kind {
+		t.Fatalf("container target coord = %+v, want repo=%q kind=%d number=0", tg, repo, kind)
+	}
+	if len(tg.Subscribers) != 3 {
+		t.Fatalf("container subscribers = %d, want 3", len(tg.Subscribers))
+	}
+	// Each collapsed subscriber must carry back its own project — the router
+	// fans a project-P change out to only its project-P subscribers, so the
+	// per-subscriber project must survive the (repo, kind) collapse.
+	gotProjects := make(map[AccountID]string, len(tg.Subscribers))
+	for _, sub := range tg.Subscribers {
+		gotProjects[sub.AgentAccountID] = sub.Project
+	}
+	for ag, want := range projects {
+		if got := gotProjects[ag]; got != want {
+			t.Fatalf("subscriber %s project = %q, want %q", ag, got, want)
+		}
+	}
+}
+
+// ── T3: AdvanceForgeDeliveredRevision ─────────────────────────────────────────
+
+// TestAdvanceForgeDeliveredRevision: happy path advances the cursor; an unknown
+// id and a foreign-agent id both return ErrNotFound.
+func TestAdvanceForgeDeliveredRevision(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	owner, _ := seedAgent(t, s, "t3-adv-owner")
+	foreign, _ := seedAgent(t, s, "t3-adv-foreign")
+
+	id, err := s.EnsureAgentForgeSubscription(ctx, AgentForgeSubscription{
+		AgentAccountID: owner, Provider: ForgeProviderGitHub, Host: "github.com",
+		Repo: "a/b", Kind: ForgeArtifactKindIssue, Number: 1, Scope: ForgeSubscriptionScopeArtifact,
+	})
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	// Happy path.
+	if err := s.AdvanceForgeDeliveredRevision(ctx, owner, id, "rev-9"); err != nil {
+		t.Fatalf("advance happy: %v", err)
+	}
+	var got string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT delivered_revision FROM agent_forge_subscriptions WHERE id = $1`, id,
+	).Scan(&got); err != nil {
+		t.Fatalf("read delivered_revision: %v", err)
+	}
+	if got != "rev-9" {
+		t.Fatalf("delivered_revision = %q, want rev-9", got)
+	}
+
+	// Unknown id -> ErrNotFound.
+	sentinelIs(t, s.AdvanceForgeDeliveredRevision(ctx, owner, "no-such-id", "rev-x"), ErrNotFound, "advance unknown id")
+	// Foreign agent on a real id -> ErrNotFound (scoping), row untouched.
+	sentinelIs(t, s.AdvanceForgeDeliveredRevision(ctx, foreign, id, "rev-x"), ErrNotFound, "advance foreign agent")
+	if err := s.pool.QueryRow(ctx,
+		`SELECT delivered_revision FROM agent_forge_subscriptions WHERE id = $1`, id,
+	).Scan(&got); err != nil {
+		t.Fatalf("re-read delivered_revision: %v", err)
+	}
+	if got != "rev-9" {
+		t.Fatalf("delivered_revision after foreign advance = %q, want rev-9 (untouched)", got)
+	}
+}

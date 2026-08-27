@@ -624,8 +624,12 @@ CREATE TABLE forge_repo_subscriptions (
 );
 
 -- DL-053's forge_subscriptions, renamed agent_forge_subscriptions (OQ-C) and
--- coordinate-aligned. The UNIQUE (agent, coordinate, kind, number) makes an
--- agent's subscription to one artifact idempotent.
+-- coordinate-aligned. The UNIQUE (agent, coordinate, kind, number, project)
+-- makes an agent's subscription to one artifact (or one container) idempotent.
+-- scope (RIG-2732 T3, OQ-1 ruled (i)) discriminates ARTIFACT(1) rows (number>0,
+-- project='') from CONTAINER(2) rows (number=0; project=the Linear project id on
+-- LINEAR, '' on GitHub). project rides the UNIQUE so two Linear project
+-- containers on one team do not collide.
 CREATE TABLE agent_forge_subscriptions (
     id               TEXT PRIMARY KEY,
     agent_account_id TEXT NOT NULL REFERENCES agent_accounts (account_id) ON DELETE RESTRICT,
@@ -634,10 +638,12 @@ CREATE TABLE agent_forge_subscriptions (
     repo             TEXT NOT NULL,
     kind             SMALLINT NOT NULL CHECK (kind IN (1, 2)),
     number           BIGINT NOT NULL,
+    scope            SMALLINT NOT NULL DEFAULT 1 CHECK (scope IN (1, 2)),  -- 1 artifact, 2 container
+    project          TEXT NOT NULL DEFAULT '',  -- Linear CONTAINER rows: project id; else ''
     delivered_revision TEXT NOT NULL DEFAULT '',
     delivered_at     TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (agent_account_id, forge_provider, forge_host, repo, kind, number)
+    UNIQUE (agent_account_id, forge_provider, forge_host, repo, kind, number, project)
 );
 
 CREATE INDEX agent_forge_subscriptions_artifact_idx
