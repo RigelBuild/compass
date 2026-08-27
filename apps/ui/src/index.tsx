@@ -1,4 +1,6 @@
 import { createRoot } from "solid-js";
+import { createAnalytics } from "./analytics/analytics";
+import { analyticsConfigFromEnv } from "./analytics/config";
 import { bootCaller, bootConnection, renderBootError } from "./boot";
 import { bootNativeClient } from "./boot-native";
 import { createLiveClients, resolveCaller } from "./live/client";
@@ -101,6 +103,15 @@ async function main(
 	if (!callerId) {
 		return;
 	}
+
+	// Product analytics, OFF by default: analyticsConfigFromEnv returns undefined
+	// unless a PostHog project key is configured, and createAnalytics then hands
+	// back a no-op that never touches posthog — an unconfigured deployment emits
+	// zero analytics. Identify the caller we just learned via WhoAmI so events
+	// attach to a stable distinct id. Correlation stamping (trace/session id into
+	// captured events) is a follow-up slice and is deliberately not wired here.
+	const analytics = createAnalytics(analyticsConfigFromEnv());
+	analytics.identify(callerId);
 
 	// One app-lifetime QueryClient — the server-state cache the query layer keys
 	// against (query record §A1). Built BEFORE the store so the store can hold it
