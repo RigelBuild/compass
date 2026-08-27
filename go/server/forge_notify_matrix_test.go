@@ -47,14 +47,15 @@ const (
 
 // wantEvent is the normalized shape a matrix cell expects out of the ingress.
 type wantEvent struct {
-	provider compassv1.ForgeProvider
-	kind     compassv1internal.ForgeArtifactKind
-	number   uint64
-	change   compassv1internal.ForgeNotificationKind
-	state    string // STATE verdict / REVIEW verdict
-	url      string
-	comment  bool   // a Comment ref is expected
-	project  string // Linear container project id
+	provider     compassv1.ForgeProvider
+	kind         compassv1internal.ForgeArtifactKind
+	number       uint64
+	change       compassv1internal.ForgeNotificationKind
+	state        string // STATE verdict / REVIEW verdict
+	url          string
+	comment      bool   // a Comment ref is expected
+	forgeAccount string // expected Comment.ForgeAccount (when comment)
+	project      string // Linear container project id
 }
 
 func assertEvent(t *testing.T, ev forge.ForgeEvent, w wantEvent) {
@@ -82,6 +83,9 @@ func assertEvent(t *testing.T, ev forge.ForgeEvent, w wantEvent) {
 	}
 	if !w.comment && ev.Comment != nil {
 		t.Errorf("Comment = %v, want nil", ev.Comment)
+	}
+	if w.forgeAccount != "" && ev.Comment.GetForgeAccount() != w.forgeAccount {
+		t.Errorf("Comment.ForgeAccount = %q, want %q", ev.Comment.GetForgeAccount(), w.forgeAccount)
 	}
 	if w.project != "" && ev.Project != w.project {
 		t.Errorf("Project = %q, want %q", ev.Project, w.project)
@@ -136,7 +140,7 @@ func TestForgeWebhookMatrix_GitHubIngress(t *testing.T) {
 			send: func() signedWebhook {
 				return gh.commentOnIssue(t, 11, "https://gh/octo/repo/issues/11#c1", "hi there", "octocat")
 			},
-			want: wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, kind: mxIssue, number: 11, change: mxComment, url: "https://gh/octo/repo/issues/11#c1", comment: true},
+			want: wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, kind: mxIssue, number: 11, change: mxComment, url: "https://gh/octo/repo/issues/11#c1", comment: true, forgeAccount: "octocat"},
 		},
 		{
 			name: "PR opened",
@@ -163,21 +167,21 @@ func TestForgeWebhookMatrix_GitHubIngress(t *testing.T) {
 			send: func() signedWebhook {
 				return gh.commentOnPR(t, 12, "https://gh/octo/repo/pull/12#c2", "looks good", "octocat")
 			},
-			want: wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, kind: mxPR, number: 12, change: mxComment, url: "https://gh/octo/repo/pull/12#c2", comment: true},
+			want: wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, kind: mxPR, number: 12, change: mxComment, url: "https://gh/octo/repo/pull/12#c2", comment: true, forgeAccount: "octocat"},
 		},
 		{
 			name: "PR review comment (COMMENT, kind=PR)",
 			send: func() signedWebhook {
 				return gh.reviewCommentOnPR(t, 12, "https://gh/octo/repo/pull/12#rc1", "nit here", "octocat")
 			},
-			want: wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, kind: mxPR, number: 12, change: mxComment, url: "https://gh/octo/repo/pull/12#rc1", comment: true},
+			want: wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, kind: mxPR, number: 12, change: mxComment, url: "https://gh/octo/repo/pull/12#rc1", comment: true, forgeAccount: "octocat"},
 		},
 		{
 			name: "PR review submitted (REVIEW)",
 			send: func() signedWebhook {
 				return gh.reviewPR(t, 12, "https://gh/octo/repo/pull/12#r1", "approving", "approved", "reviewer")
 			},
-			want: wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, kind: mxPR, number: 12, change: mxReview, state: "approved", url: "https://gh/octo/repo/pull/12#r1", comment: true},
+			want: wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, kind: mxPR, number: 12, change: mxReview, state: "approved", url: "https://gh/octo/repo/pull/12#r1", comment: true, forgeAccount: "reviewer"},
 		},
 	}
 	for _, tc := range tests {
@@ -221,7 +225,9 @@ func TestForgeWebhookMatrix_LinearIngress(t *testing.T) {
 		if !ok {
 			t.Fatal("ok = false, want true")
 		}
-		assertEvent(t, ev, wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, kind: mxIssue, number: 5, change: mxState, state: forge.MapLinearState("completed"), project: "proj-alpha"})
+		// "completed" is a closed Linear workflow-state type; pin the mapped
+		// verdict literally rather than recomputing it via MapLinearState.
+		assertEvent(t, ev, wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, kind: mxIssue, number: 5, change: mxState, state: "closed", project: "proj-alpha"})
 	})
 
 	t.Run("issue edit no-state (UPDATE)", func(t *testing.T) {
@@ -237,7 +243,7 @@ func TestForgeWebhookMatrix_LinearIngress(t *testing.T) {
 		if !ok {
 			t.Fatal("ok = false, want true")
 		}
-		assertEvent(t, ev, wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, kind: mxIssue, number: 5, change: mxComment, url: "https://linear.app/rigel/SEA-5", comment: true, project: "proj-alpha"})
+		assertEvent(t, ev, wantEvent{provider: compassv1.ForgeProvider_FORGE_PROVIDER_LINEAR, kind: mxIssue, number: 5, change: mxComment, url: "https://linear.app/rigel/SEA-5", comment: true, forgeAccount: "matt", project: "proj-alpha"})
 	})
 
 	t.Run("issue remove (counted-and-dropped, ok=false)", func(t *testing.T) {
@@ -258,7 +264,7 @@ func TestForgeWebhookMatrix_TamperedRejected(t *testing.T) {
 		sw := gh.openIssue(t, 1, "u")
 		h, sink := newTestHandler(t, secret)
 		tampered := append([]byte{}, sw.body...)
-		tampered[len(tampered)-1] = '!' // corrupt the last byte; signature no longer matches
+		tampered[len(tampered)-1] = '!' // corrupt one body byte so the HMAC no longer matches (fail-closed happens before parse)
 		rec := doPost(h, sw.event, sw.delivery, sw.sig, tampered)
 		if rec.Code != 400 {
 			t.Fatalf("code = %d, want 400 (fail-closed)", rec.Code)
