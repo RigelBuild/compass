@@ -1,12 +1,12 @@
-//go:build (linux && gtk3) || darwin
+//go:build (linux && gtk4) || darwin
 
-// The gtk3 build's binding of the bridge service's per-window frame routing
+// The gtk4 build's binding of the bridge service's per-window frame routing
 // (M3) to the real Wails window API. It is split out of bridge_service.go
 // (//go:build unix) so that file — and its unix-tagged tests — never import
-// github.com/wailsapp/wails/v3/pkg/application, which only compiles under
-// -tags gtk3 on this toolchain (the default GTK4/WebKit6.0 path has no
-// pkg-config here; main_nogtk3.go documents it repo-wide). This mirrors the
-// main.go / main_nogtk3.go split: the real shell is the gtk3 binary, and the
+// github.com/wailsapp/wails/v3/pkg/application, which only compiles under the
+// GTK stack (the untagged module build has no pkg-config for it;
+// main_nogtk4.go documents it repo-wide). This mirrors the
+// main.go / main_nogtk4.go split: the real shell is the gtk4 binary, and the
 // windowDispatcher seam (bridge_service.go) is what keeps the forwarding path
 // testable without the GTK stack.
 package main

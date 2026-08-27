@@ -35,7 +35,7 @@ board → one agent session to a real container — end to end.
   `compass-postgres` / a podman-run agent container) and drives it end to end on
   every PR. That is the stack-side regression check; a green PR has already
   proven the headless bring-up.
-- The **multi-window gtk3 e2e** step compiles and runs `compass-app` under a
+- The **multi-window gtk4 e2e** step compiles and runs `compass-app` under a
   virtual framebuffer and exercises the shell/windowing surface.
 
 Neither drives the **packaged tarball's** GUI webview against a live stack and a
@@ -116,7 +116,7 @@ screen, **never** in `app.toml` (DL-109).
 A virtual framebuffer is required on a headless box:
 
 ```bash
-# realize xvfb the same way CI's gtk3 e2e gate does (path is repo-root-relative)
+# realize xvfb the same way CI's gtk4 e2e gate does (path is repo-root-relative)
 BINENV=$(nix build --no-link --print-out-paths \
   -f tools/toolchain/gtk-e2e-env.nix bin)
 PATH="$BINENV/bin:$BUNDLE/bin:$PATH" \

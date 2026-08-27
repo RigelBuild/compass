@@ -1,7 +1,7 @@
-//go:build unix && gtk3
+//go:build unix && gtk4
 
-// gtk3-only e2e helpers: the real-window plumbing the multi-window smoke gate
-// needs and the unix (non-gtk3) unit suite has no equivalent for, because they
+// gtk4-only e2e helpers: the real-window plumbing the multi-window smoke gate
+// needs and the unix (non-gtk4) unit suite has no equivalent for, because they
 // touch application.Window and application.WindowKey — the very symbols the
 // windowDispatcher seam exists to keep out of the unix build.
 package main

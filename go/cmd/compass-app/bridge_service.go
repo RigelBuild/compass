@@ -51,13 +51,13 @@ type eventEmitter interface {
 //
 // The seam is why this file stays //go:build unix and imports no
 // github.com/wailsapp/wails/v3/pkg/application: that package only compiles under
-// -tags gtk3 on this toolchain (the default GTK4/WebKit6.0 path has no
-// pkg-config here; main_nogtk3.go documents it repo-wide), so a direct import
+// the GTK4/WebKitGTK 6.0 stack, which the untagged toolchain has no pkg-config
+// for (main_nogtk4.go documents it repo-wide), so a direct import
 // would break the untagged module build and the unix-tagged tests. The concrete
 // window handle is captured from the bound-method ctx by windowFromContext, a
-// build-tagged helper (bridge_service_window_gtk3.go reads application.WindowKey
-// and returns the window; the nogtk3 stub returns nil), mirroring the
-// main.go / main_nogtk3.go split. §A4/§M3 mandate exactly this: per-window
+// build-tagged helper (bridge_service_window_gtk4.go reads application.WindowKey
+// and returns the window; the nogtk4 stub returns nil), mirroring the
+// main.go / main_nogtk4.go split. §A4/§M3 mandate exactly this: per-window
 // routing behind the existing eventEmitter seam.
 type windowDispatcher interface {
 	// dispatch delivers one frame to this window's webview under the given event
@@ -116,7 +116,7 @@ type inflightCall struct {
 	// ctx by the time the pump goroutine emits, so it is captured up front and
 	// stored here (record §M3:354). This call's response frames route to this
 	// window only, via the windowDispatcher seam; nil means no originating window
-	// was in context (a windowless transport, a non-gtk3 build, or a direct test
+	// was in context (a windowless transport, a non-gtk4 build, or a direct test
 	// call), and the frames fall back to the app-wide eventEmitter. The interface
 	// value is comparable, so it is also the index M3b's close-time
 	// cancel-all-for-window keys on.
@@ -350,13 +350,13 @@ func (s *bridgeService) cancelWindow(win windowDispatcher) {
 // compass_rpc_cancel, never by Wails reclaiming the call context.
 //
 // The originating window is captured HERE, off the still-live bound-method ctx,
-// by windowFromContext (a build-tagged helper: the gtk3 build reads
+// by windowFromContext (a build-tagged helper: the gtk4 build reads
 // application.WindowKey, set by Wails at messageprocessor_call.go:136, and
-// returns the window; the nogtk3 build returns nil). WithoutCancel would preserve
+// returns the window; the nogtk4 build returns nil). WithoutCancel would preserve
 // the value on callCtx too, but the frames emit on the pump goroutine after
 // CompassRPC has returned, so the handle is read synchronously up front and
 // stored (record §M3:354). A nil result (no window in ctx — a windowless
-// transport, a non-gtk3 build, or a direct test call) routes frames to the
+// transport, a non-gtk4 build, or a direct test call) routes frames to the
 // app-wide fallback.
 func (s *bridgeService) register(ctx context.Context, requestID string) (context.Context, *inflightCall) {
 	win := windowFromContext(ctx)
@@ -402,7 +402,7 @@ func (s *bridgeService) run(callCtx context.Context, call *inflightCall, req rpc
 // M3 routes and inherits that drop; it adds no destroyed check of its own (A4).
 //
 // A nil window (no window in the caller's ctx — a windowless transport, a
-// non-gtk3 build, or a direct test call) falls back to the app-wide eventEmitter
+// non-gtk4 build, or a direct test call) falls back to the app-wide eventEmitter
 // seam (main.go:104), preserving both non-window callers and the fake-emitter
 // test path (§M3).
 func (s *bridgeService) emitFrame(call *inflightCall, name string, resp responseFrame) {

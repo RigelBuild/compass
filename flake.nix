@@ -1,6 +1,6 @@
 {
   # Compass distribution flake (docs/designs/platform/compass-distribution/design.md
-  # §T6). Packages the four backend binaries + the native gtk3 app + the
+  # §T6). Packages the four backend binaries + the native gtk4 app + the
   # microVM stack-env from a bare checkout, so
   # `nix profile install github:RigelBuild/compass#<pkg>` and
   # `nix run .#compass-stack -- status` work with nothing but nix on PATH.
@@ -24,7 +24,7 @@
     let
       # A manual forAllSystems (no flake-utils dependency — the record's preferred
       # simplest shape). x86_64-linux is the load-bearing system: it builds every
-      # package including the gtk3 cgo app. aarch64-darwin is a follow-up (see the
+      # package including the gtk4 cgo app. aarch64-darwin is a follow-up (see the
       # TODO in the per-system set below) — not blocked on here.
       systems = [ "x86_64-linux" ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f (import nixpkgs { inherit system; }));
@@ -79,11 +79,11 @@
           compass-runner = goBin "compass-runner";
           compass-stack = goBin "compass-stack";
 
-          # The Linux gtk3 cgo native shell (Wails v3). Links the
+          # The Linux gtk4 cgo native shell (Wails v3). Links the
           # WebKitGTK closure through cgo — the same gtk-closure.nix the dev shell
           # and the e2e helper realize, applied against this flake's pinned pkgs so
-          # the three cannot drift (gtk-e2e-env.nix:38). tags=[gtk3] selects the
-          # gtk3 build (main.go's //go:build unix && gtk3).
+          # the three cannot drift (gtk-e2e-env.nix:38). tags=[gtk4] selects the
+          # gtk4 build (main.go's //go:build unix && gtk4).
           #
           # TODO(aarch64-darwin follow-up): the darwin app links system WebKit via
           # frameworks, NOT this gtk closure — no pkg-config/gtk buildInputs, a
@@ -99,7 +99,7 @@
             env.CGO_ENABLED = 1;
             nativeBuildInputs = [ pkgs.pkg-config ];
             buildInputs = pkgs.lib.closePropagation (import ./tools/toolchain/gtk-closure.nix pkgs);
-            tags = [ "gtk3" ];
+            tags = [ "gtk4" ];
             ldflags = [ "-X main.version=${version}" ];
             doCheck = false;
           };

@@ -560,7 +560,7 @@ func TestAccountIDBoundGetter(t *testing.T) {
 // the routed frame path is verified without the GTK webview stack (which does
 // not compile under the unix test tag). The service consults call.window through
 // the windowDispatcher seam, so a test injects one by setting inflightCall.window
-// directly — windowFromContext returns nil in the non-gtk3 test build.
+// directly — windowFromContext returns nil in the non-gtk4 test build.
 type fakeWindow struct {
 	ch chan emitted
 }
@@ -606,7 +606,7 @@ func assertNoEmit(t *testing.T, e *fakeEmitter) {
 // the inflightCall, returning after every frame has been routed and the entry
 // cleared (the deterministic single-shot pattern of TestCompassRPCUnaryRoundTrip).
 // The window is set on the registered call directly because windowFromContext
-// returns nil in the non-gtk3 test build; the seam field is exactly what the
+// returns nil in the non-gtk4 test build; the seam field is exactly what the
 // routed sink (emitFrame) consults.
 func runWindowed(svc *bridgeService, win windowDispatcher, req rpcRequest) {
 	callCtx, call := svc.register(context.Background(), req.RequestID)
@@ -677,7 +677,7 @@ func TestCompassRPCConcurrentTwoWindowIsolation(t *testing.T) {
 	// Drive both calls on the ONE service concurrently, mirroring CompassRPC's
 	// own register-then-go-run, with each call's originating window injected on
 	// the registered inflightCall (windowFromContext returns nil in this
-	// non-gtk3 test build, so the seam field is set directly). The two run
+	// non-gtk4 test build, so the seam field is set directly). The two run
 	// goroutines share svc.inflight — the concurrency the arm exists to stress.
 	// Each run signals done on return (after its deferred finish clears the
 	// inflight entry), so the not-inflight assertion is gated on completion
@@ -830,7 +830,7 @@ func TestCancelWindowSweepsOnlyClosingWindow(t *testing.T) {
 	// Launch the calls on the ONE service, each on its own run goroutine
 	// (CompassRPC's own register-then-go-run shape). The window is injected on
 	// the registered inflightCall directly because windowFromContext returns nil
-	// in this non-gtk3 test build. Each run signals done on return so teardown is
+	// in this non-gtk4 test build. Each run signals done on return so teardown is
 	// event-gated, not raced.
 	launch := func(win windowDispatcher, req rpcRequest) chan struct{} {
 		callCtx, call := svc.register(context.Background(), req.RequestID)

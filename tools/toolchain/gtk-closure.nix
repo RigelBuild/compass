@@ -1,11 +1,11 @@
-# The GTK3/WebKitGTK package set the Compass native app (Wails v3,
+# The GTK4/WebKitGTK package set the Compass native app (Wails v3,
 # go/cmd/compass-app) links through cgo on Linux. ONE definition, imported
 # by three consumers so they cannot drift:
 #
 #   - devenv.nix's `env` block builds PKG_CONFIG_PATH over `lib.closePropagation`
-#     of this set for the dev shell (and a local gtk3 build/test);
+#     of this set for the dev shell (and a local gtk4 build/test);
 #   - tools/toolchain/gtk-e2e-env.nix realizes the same closure on a CI runner
-#     for the multi-window gtk3 e2e gate (design record compass-multi-window
+#     for the multi-window gtk4 e2e gate (design record compass-multi-window
 #     §M4), the ONE CI lane that compiles + runs the native app.
 #   - flake.nix's `compass-app` package realizes the same closure as cgo
 #     buildInputs for the `nix build .#compass-app` / bundle build.
@@ -20,13 +20,17 @@ with pkgs;
   dbus
   openssl
   glib
-  gtk3
-  webkitgtk_4_1
+  gtk4
+  webkitgtk_6_0
   libsoup_3
   cairo
   pango
-  gdk-pixbuf
-  atk
+  # atk (GTK3-era accessibility) and gdk-pixbuf are intentionally omitted:
+  # GTK4 routes accessibility through at-spi2 (gtk4.pc pulls atspi-2 via
+  # gtk4-atspi.pc), so atk is unreachable in the gtk4/webkitgtk-6.0 .pc
+  # Requires-walk and would be dead closure weight; gdk-pixbuf is still needed
+  # at link but gtk4.pc (and librsvg) already `Requires: gdk-pixbuf-2.0`, so
+  # closePropagation pulls it in transitively — the explicit entry is redundant.
   harfbuzz
   librsvg
   gobject-introspection

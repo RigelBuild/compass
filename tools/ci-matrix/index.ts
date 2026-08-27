@@ -32,7 +32,7 @@ export type GenInput = {
 	projects: ProjectInput[];
 	/** closure members (PR) or all ids (push/schedule) */
 	affectedIds: string[];
-	/** PR changed paths (for forge/gtk3 detection); [] on push/schedule */
+	/** PR changed paths (for forge/gtk4 detection); [] on push/schedule */
 	changedPaths: string[];
 	event: "pull_request" | "push" | "schedule";
 };
@@ -55,8 +55,8 @@ export type GenOutput = {
 	microvmAffected: boolean;
 	/** push/schedule OR changedPaths matches forge trigger */
 	forgeAffected: boolean;
-	/** push/schedule OR changedPaths has any path under go/cmd/compass-app/ */
-	gtk3Affected: boolean;
+	/** push/schedule OR changedPaths has any path under go/cmd/compass-app/ or a shared GTK closure input */
+	gtk4Affected: boolean;
 };
 
 // ── Pure-core constants ────────────────────────────────────────────────────
@@ -71,8 +71,17 @@ const GUEST_IMAGE_PROJECT = "compass-guest-image";
 /** forge trigger: changed path under go/internal/forge/ OR ci.yml itself. */
 const FORGE_PATH_RE =
 	/^(?:go\/internal\/forge\/|\.github\/workflows\/ci\.yml$)/;
-/** gtk3 trigger: any changed path under go/cmd/compass-app/. */
-const GTK3_PATH_PREFIX = "go/cmd/compass-app/";
+/**
+ * gtk4 trigger: any changed path under go/cmd/compass-app/, OR one of the
+ * shared GTK closure inputs. The e2e lane is the ONLY CI lane that compiles the
+ * native shell, so a closure-only change (e.g. the T2 atk/gdk-pixbuf trim) must
+ * still trigger it — keying on the app path prefix alone would skip it (F2).
+ */
+const GTK4_PATH_PREFIX = "go/cmd/compass-app/";
+const GTK4_CLOSURE_PATHS = [
+	"tools/toolchain/gtk-closure.nix",
+	"tools/toolchain/gtk-e2e-env.nix",
+];
 
 // ── Pure core ──────────────────────────────────────────────────────────────
 
@@ -170,16 +179,18 @@ export function generate(input: GenInput): GenOutput {
 		affectedSet.has(PGTEST_PROJECT) || affectedSet.has(GUEST_IMAGE_PROJECT);
 	const forgeAffected =
 		isFullSweep || input.changedPaths.some((p) => FORGE_PATH_RE.test(p));
-	const gtk3Affected =
+	const gtk4Affected =
 		isFullSweep ||
-		input.changedPaths.some((p) => p.startsWith(GTK3_PATH_PREFIX));
+		input.changedPaths.some(
+			(p) => p.startsWith(GTK4_PATH_PREFIX) || GTK4_CLOSURE_PATHS.includes(p),
+		);
 
 	return {
 		matrix,
 		pgtestAffected,
 		microvmAffected,
 		forgeAffected,
-		gtk3Affected,
+		gtk4Affected,
 	};
 }
 
@@ -232,7 +243,7 @@ async function main(): Promise<void> {
 		affectedIds = projects.map((p) => p.id);
 	}
 
-	// Changed paths for forge/gtk3 detection (PR only; unused on push/schedule
+	// Changed paths for forge/gtk4 detection (PR only; unused on push/schedule
 	// where the flags are unconditionally true).
 	let changedPaths: string[] = [];
 	if (event === "pull_request") {
@@ -257,7 +268,7 @@ async function main(): Promise<void> {
 			`pgtest_affected=${out.pgtestAffected ? "true" : "false"}`,
 			`microvm_affected=${out.microvmAffected ? "true" : "false"}`,
 			`forge_affected=${out.forgeAffected ? "true" : "false"}`,
-			`gtk3_affected=${out.gtk3Affected ? "true" : "false"}`,
+			`gtk4_affected=${out.gtk4Affected ? "true" : "false"}`,
 		];
 
 		const githubOutput = process.env.GITHUB_OUTPUT;
@@ -281,7 +292,7 @@ async function main(): Promise<void> {
 			);
 		}
 		console.log(
-			`  flags: pgtest=${out.pgtestAffected} microvm=${out.microvmAffected} forge=${out.forgeAffected} gtk3=${out.gtk3Affected}`,
+			`  flags: pgtest=${out.pgtestAffected} microvm=${out.microvmAffected} forge=${out.forgeAffected} gtk4=${out.gtk4Affected}`,
 		);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
