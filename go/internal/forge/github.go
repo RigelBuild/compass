@@ -21,6 +21,10 @@ import (
 // the driver's ticker.
 var ErrBudgetExhausted = errors.New("forge: rate budget exhausted")
 
+// hostGitHub is the canonical github.com host; an empty or "github.com" Host on
+// a config resolves to the public api.github.com base (vs a GHES host).
+const hostGitHub = "github.com"
+
 // TokenSource yields the current forge token and lets the client drop a cached
 // value when it observes an auth failure, so the next batch re-resolves. Token
 // is called per fetch batch (not per request); the client calls Invalidate on a
@@ -900,7 +904,7 @@ func (g *GitHub) doJSON(ctx context.Context, url string, in, out any) error {
 // apiBase derives the REST API base URL from the configured host. github.com
 // maps to api.github.com; a GHES host maps to https://<host>/api/v3.
 func (g *GitHub) apiBase() string {
-	if g.host == "" || g.host == "github.com" {
+	if g.host == "" || g.host == hostGitHub {
 		return "https://api.github.com"
 	}
 	return "https://" + g.host + "/api/v3"
