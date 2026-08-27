@@ -123,6 +123,12 @@ export {
 	// id. Emitted by the CompassAgent at injection time (SEA-1310 §8 deliver arm).
 	type DeliveryAck,
 	DeliveryAckSchema,
+	// The agent's per-notification forge delivery receipt (RIG-2732 W3), an
+	// AgentFrame oneof variant riding the Publish spine beside DeliveryAck.
+	// Correlates a forge notification by subscription_id and carries the notified
+	// revision. Emitted by the CompassAgent at turn-end flush (T6 forge arm).
+	type ForgeNotificationAck,
+	ForgeNotificationAckSchema,
 	type PromptControl,
 	PromptControlSchema,
 	type ReplayComplete,
@@ -223,6 +229,7 @@ export {
 	AgentSessionState,
 	AgentToolCallStatus,
 	type ChecksSummary,
+	ChecksSummarySchema,
 	type Comment,
 	ForgeProvider,
 	type ForgeRef,
@@ -267,6 +274,13 @@ export {
 	type CommentRef,
 	CommentRefSchema,
 	ForgeArtifactKind,
+	// The forge change pushed to the agent (RIG-2732 DL-053/DL-054): the
+	// per-artifact notification the control-source decodes off
+	// AgentControl.forge_notification and the agent renders + acks at turn-end
+	// flush. `ForgeNotificationKind` discriminates the per-kind render.
+	type ForgeNotification,
+	ForgeNotificationKind,
+	ForgeNotificationSchema,
 	type ReviewRef,
 	ReviewRefSchema,
 } from "./gen/compass/v1/forge_pb";

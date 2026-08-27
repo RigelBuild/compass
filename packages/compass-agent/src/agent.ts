@@ -37,6 +37,10 @@ import {
 	create,
 	type DeliveryAck,
 	DeliveryAckSchema,
+	type ForgeNotification,
+	type ForgeNotificationAck,
+	ForgeNotificationAckSchema,
+	ForgeNotificationKind,
 	type Message,
 	type SessionFrame,
 	SessionFrameSchema,
@@ -117,6 +121,17 @@ export class CompassAgent {
 	// fresh control_seq (independent of the control-source's seq dedup) is dropped
 	// here so a message is injected at most once (frozen record :811-812).
 	readonly #processedMessageIds = new Set<string>();
+	// RIG-2732 W3 — the turn-end forge-notification queue, the RT-3 sibling of
+	// `#deliverQueue`: forge changes pushed mid-turn coalesce here and flush as
+	// ONE turn-end prompt (rendered per-kind), an idle notification flushes at
+	// once. Each entry pairs the decoded notification with the control-source's
+	// `ackRail` thunk — the deferred rail ack the flush calls AFTER emitting the
+	// ForgeNotificationAck frame, retiring the op on the control rail (the forge
+	// arm defers BOTH acks to flush, unlike steer/deliver which ack at decode;
+	// design.md:1006-1013). Dedup of a redelivery within the decode->flush window
+	// rides the control-source's SEQ-based `queued`/`acks.isApplied` path (no
+	// content key); this queue holds only ops past that dedup.
+	#forgeQueue: { notification: ForgeNotification; ackRail: () => void }[] = [];
 	// RIG-2644 — strand-recovery latch. The idle-deliver gate (see `deliver`)
 	// flushes immediately only when the session is idle; when it queues a message
 	// because `#session.isStreaming` is true but no TRACKED turn is active
@@ -335,9 +350,11 @@ export class CompassAgent {
 			.then(() => {
 				this.#strandRecoveryArmed = false;
 				if (this.#closed) return;
-				if (this.#deliverQueue.length === 0) return;
+				if (this.#deliverQueue.length === 0 && this.#forgeQueue.length === 0)
+					return;
 				if (!this.#turnActive && !this.#session.isStreaming) {
 					this.#flushDelivers();
+					this.#flushForgeNotifications();
 				} else if (!this.#turnActive) {
 					// Still an untracked stream (a second probe) — re-arm.
 					this.#armStrandRecovery();
@@ -493,10 +510,47 @@ export class CompassAgent {
 		});
 	}
 
-	// Track a session turn edge (SEA-1310 §8). A turn-start edge marks the session
-	// active; `agent_end` settles it and flushes the coalesced deliver queue as
-	// one turn-end prompt. See the `#turnActive` field comment for why the flush
-	// is safe synchronously on the `agent_end` edge.
+	// RIG-2732 W3 — the turn-end forge-notification arm. The entry the immediate
+	// handle calls when an AgentControl.forge_notification decodes (past the
+	// replay barrier, enforced upstream at the control source, control-source.ts).
+	// The RT-3 sibling of `deliver`: a mid-turn notification coalesces onto the
+	// turn-end queue and flushes as one prompt at `agent_end`; an idle
+	// notification flushes at once (frozen deliver model, agent.ts turn comments).
+	//
+	// UNLIKE deliver, BOTH acks are deferred to the FLUSH: the control-rail ack
+	// (via `ackRail`, retiring the op on the AckCursor) AND the forge delivery ack
+	// (the ForgeNotificationAck frame that advances delivered_revision) fire at
+	// flush, never at decode — a decode-ack would discard the Runner's
+	// retain-until-acked durability for the decode->flush window (design.md
+	// 1006-1013). Rail-level redelivery dedup rides the control-source's SEQ-based
+	// `queued`/`acks.isApplied` path (no content-tuple key), so this arm keeps NO
+	// per-notification dedup set of its own: a duplicate in the decode->flush
+	// window never reaches here (the source drops it as already-queued).
+	forgeNotification(
+		notification: ForgeNotification,
+		ackRail: () => void,
+	): void {
+		this.#forgeQueue.push({ notification, ackRail });
+		// Idle notification starts a turn immediately; a mid-turn one waits for the
+		// `agent_end` flush. "Idle" consults BOTH `#turnActive` AND the
+		// authoritative `#session.isStreaming`, exactly as deliver does (the
+		// control-prompt spin-up race the event flag alone cannot close).
+		if (!this.#turnActive && !this.#session.isStreaming) {
+			this.#flushForgeNotifications();
+		} else if (!this.#turnActive) {
+			// Queued while the session reports streaming with NO tracked turn — the
+			// strand shape (RIG-2644): an untracked in-flight holds `isStreaming`
+			// true and no `agent_end` will arrive to flush. Arm the shared recovery
+			// that flushes once the stream settles.
+			this.#armStrandRecovery();
+		}
+	}
+
+	// Track a session turn edge (SEA-1310 §8, RIG-2732 W3). A turn-start edge
+	// marks the session active; `agent_end` settles it and flushes the coalesced
+	// deliver AND forge-notification queues as turn-end prompts. See the
+	// `#turnActive` field comment for why the flush is safe synchronously on the
+	// `agent_end` edge.
 	#trackTurn(eventType: string): void {
 		switch (eventType) {
 			case "agent_start":
@@ -507,6 +561,7 @@ export class CompassAgent {
 			case "agent_end":
 				this.#turnActive = false;
 				this.#flushDelivers();
+				this.#flushForgeNotifications();
 				return;
 		}
 	}
@@ -578,6 +633,69 @@ export class CompassAgent {
 				const fromHandle = this.#deliverFromHandles.get(msg.id) ?? "";
 				this.#deliverFromHandles.delete(msg.id);
 				this.#emitInjection(SessionInjectionKind.DELIVER, msg.id, fromHandle);
+			}
+		});
+	}
+
+	// RIG-2732 W3 — flush the coalesced turn-end FORGE-notification queue as ONE
+	// prompt (each notification rendered per-kind by `formatForgeNotifications`),
+	// then, once injection is known-accepted, emit one ForgeNotificationAck frame
+	// per notification AND retire each on the control rail via its `ackRail`
+	// thunk. The RT-3 sibling of `#flushDelivers`, with the same rejection-safety
+	// belt: `Agent.prompt` injects synchronously up to its first await and signals
+	// a not-injected batch only as a settled REJECTION (the AgentBusyError /
+	// no-model guards, both before any injection). A genuine mid-turn failure does
+	// NOT reject. So the acks ride the next microtask, gated on the prompt not
+	// having synchronously-rejected.
+	//
+	// BOTH acks fire here at flush, never at decode (design.md:1006-1013): the
+	// ForgeNotificationAck frame (which advances the Server's delivered_revision)
+	// and the control-rail ack (`ackRail`, retiring the op on the AckCursor). On
+	// rejection we fail closed: NEITHER ack fires and the queue is NOT re-enqueued
+	// — the Runner retained every op past its rail cursor (no ackRail fired), so
+	// it redelivers on reconnect; re-enqueueing on top of that would double-inject
+	// (the Runner is the single redelivery authority). Death before this flush is
+	// the same shape: no ack of either kind, so delivered_revision stays put and
+	// the reconciliation sweep re-notifies from the durable gap (design.md
+	// 387-401, 1022-1025).
+	#flushForgeNotifications(): void {
+		const batch = this.#forgeQueue;
+		if (batch.length === 0) return;
+		this.#forgeQueue = [];
+		const input = formatForgeNotifications(batch.map((e) => e.notification));
+		// Optimistically mark a turn active — an idle flush starts one; the
+		// rejection path below clears it, since a refused prompt starts no turn.
+		this.#turnActive = true;
+		let rejected = false;
+		let acked = false;
+		this.#session.agent.prompt(input).catch((err) => {
+			// Reached ONLY on a settled-rejected prompt, i.e. a not-injected batch.
+			// If the acks already went out this is the SDK-impossible post-injection
+			// rejection — leave the injected batch alone.
+			if (acked) return;
+			rejected = true;
+			this.#turnActive = false;
+			// No ackRail fired: the Runner still retains every op past its rail
+			// cursor and redelivers on reconnect. Do NOT re-enqueue locally.
+			this.#onUnmapped({
+				kind: "unmapped",
+				eventType: "forge:prompt",
+				reason: `forge notification flush prompt rejected — batch not injected, un-acked for redelivery: ${String(err)}`,
+			});
+		});
+		queueMicrotask(() => {
+			if (rejected) return;
+			acked = true;
+			for (const entry of batch) {
+				const value: ForgeNotificationAck = create(ForgeNotificationAckSchema, {
+					subscriptionId: entry.notification.subscriptionId,
+					revision: entry.notification.revision,
+				});
+				this.#sink.emit({ kind: "forgeNotificationAck", value });
+				// Retire the op on the control rail AFTER the forge delivery ack —
+				// the deferred rail ack the control source handed us (advances the
+				// AckCursor + drops the in-window seq dedup).
+				entry.ackRail();
 			}
 		});
 	}
@@ -766,4 +884,88 @@ export function formatAskAnswerForPrompt(ask: Ask): string {
 		return lines.join("\n");
 	});
 	return `Answer received for ask:\n${sections.join("\n\n")}`;
+}
+
+// Coalesce a batch of forge notifications into ONE prompt input string
+// (RIG-2732 W3). Pure + exported so it is unit-testable, mirroring
+// `formatDeliversForPrompt`. ONE section per notification, first-seen order:
+// a header line `<forge> <repo>#<number> — <kind>` (the artifact coordinate the
+// agent re-reads), then the per-kind payload:
+//   - COMMENT: the new comment's author + body (CommentRef.forge_account / body).
+//   - STATE:   the new forge state string ("closed", "merged", …).
+//   - CHECKS:  the rolled-up CI/status state (ChecksSummary.state).
+//   - REVIEW:  the verdict (ForgeNotification.state) + the review body
+//              (CommentRef.body) — the two the REVIEW kind carries (proto
+//              forge.proto:102-103).
+//   - OPENED:  a container-scope new artifact — rendered "new <kind> <repo>#<n>"
+//              (design.md:1005-1006); the envelope's number/url address it.
+//   - UPDATE / UNSPECIFIED: header only (a payload-free re-read cue — the
+//              synthesized catch-up UPDATE and any unmapped kind, design.md:369).
+// Every interpolated value passes through `flat` (the marker-line render guard),
+// so a forge-controlled title/body/verdict cannot break the section structure
+// with an embedded newline. The batch ends with ONE terse cue: the notification
+// is a signal to re-read the artifact with the forge tools, not a channel
+// message to reply to.
+export function formatForgeNotifications(
+	batch: readonly ForgeNotification[],
+): string {
+	if (batch.length === 0) return "";
+	const sections = batch.map((n) => {
+		const coord = `${flat(n.repo)}#${n.number}`;
+		const kind = forgeKindLabel(n.change);
+		// The forge display name: the ForgeRef host when set, else "forge" (the
+		// ForgeRef is optional on the wire, DL-091).
+		const forge = flat(n.forge?.host ?? "forge");
+		if (n.change === ForgeNotificationKind.OPENED) {
+			return `${forge} ${coord} — new ${kind} ${coord}`;
+		}
+		const lines = [`${forge} ${coord} — ${kind}`];
+		switch (n.change) {
+			case ForgeNotificationKind.COMMENT: {
+				const c = n.comment;
+				if (c !== undefined) {
+					const who =
+						c.forgeAccount === "" ? "comment" : `@${flat(c.forgeAccount)}`;
+					lines.push(`${who}: ${flat(c.body)}`);
+				}
+				break;
+			}
+			case ForgeNotificationKind.STATE:
+				if (n.state !== "") lines.push(`State: ${flat(n.state)}`);
+				break;
+			case ForgeNotificationKind.CHECKS:
+				if (n.checks !== undefined)
+					lines.push(`Checks: ${flat(n.checks.state)}`);
+				break;
+			case ForgeNotificationKind.REVIEW:
+				if (n.state !== "") lines.push(`Verdict: ${flat(n.state)}`);
+				if (n.comment !== undefined && n.comment.body !== "")
+					lines.push(`Review: ${flat(n.comment.body)}`);
+				break;
+		}
+		if (n.url !== "") lines.push(flat(n.url));
+		return lines.join("\n");
+	});
+	sections.push("Re-read the artifact with the forge tools to act on this.");
+	return sections.join("\n\n");
+}
+
+// A stable human label per notification kind for the section header. UNSPECIFIED
+// and any future/unmapped kind render "update" — a payload-free re-read cue,
+// never a crash (symmetric with the mapper's unmapped arm).
+function forgeKindLabel(kind: ForgeNotificationKind): string {
+	switch (kind) {
+		case ForgeNotificationKind.COMMENT:
+			return "comment";
+		case ForgeNotificationKind.STATE:
+			return "state";
+		case ForgeNotificationKind.CHECKS:
+			return "checks";
+		case ForgeNotificationKind.REVIEW:
+			return "review";
+		case ForgeNotificationKind.OPENED:
+			return "opened";
+		default:
+			return "update";
+	}
 }

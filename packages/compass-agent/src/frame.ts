@@ -34,6 +34,7 @@ import {
 	AgentFrameSchema,
 	create,
 	type DeliveryAck,
+	type ForgeNotificationAck,
 	type SessionFrame,
 	type TranscriptEntry,
 	toJson,
@@ -52,7 +53,17 @@ export type OutboundFrame =
 	// delivery. `value` is a branded generated message (`create(DeliveryAckSchema,
 	// …)`) and `kind` matches the generated oneof case name 1:1 like every other
 	// variant, so the sink stamps it generically (no ProtojsonLineSink change).
-	| { readonly kind: "deliveryAck"; readonly value: DeliveryAck };
+	| { readonly kind: "deliveryAck"; readonly value: DeliveryAck }
+	// RIG-2732 W3: the agent's per-notification forge delivery receipt, emitted at
+	// turn-end flush (T6). Correlates to the subscription by id and carries the
+	// notified `revision` the Server advances delivered_revision to. `value` is a
+	// branded generated message (`create(ForgeNotificationAckSchema, …)`) and
+	// `kind` matches the generated oneof case name 1:1, so the sink stamps it
+	// generically (no ProtojsonLineSink change).
+	| {
+			readonly kind: "forgeNotificationAck";
+			readonly value: ForgeNotificationAck;
+	  };
 
 // The sink the agent writes outbound frames to. The wire envelope lives
 // entirely behind this interface.

@@ -961,6 +961,8 @@ export async function main(
 	const control = createSocketControlSource(transport, {
 		steer: (msg, fromHandle) => agent?.steer(msg, fromHandle),
 		deliver: (msg, fromHandle) => agent?.deliver(msg, fromHandle),
+		forgeNotification: (notification, ackRail) =>
+			agent?.forgeNotification(notification, ackRail),
 	});
 
 	// Drain in `finally`, on both the clean and error paths. `run()` emits its

@@ -27,15 +27,28 @@ type ackCall struct {
 	messageID string
 }
 
-// fakeDeliveryStore records the ack arm's channel resolution + cursor advance.
+// forgeAdvance is one recorded AdvanceForgeDeliveredRevision: the (agent,
+// subscription, revision) the forge-ack arm advanced the delivered cursor for.
+type forgeAdvance struct {
+	agent          store.AccountID
+	subscriptionID string
+	revision       string
+}
+
+// fakeDeliveryStore records the ack arm's channel resolution + cursor advance
+// (comms) AND the forge-ack arm's delivered-revision advance (RIG-2732 W3).
 // channels maps message id -> channel (the ack-arm resolution); an id absent
-// from it resolves ErrNotFound (a foreign/fabricated ack). Concurrency-safe for
-// parity with the real store.
+// from it resolves ErrNotFound (a foreign/fabricated ack). forgeAdvances
+// records each forge cursor advance; forgeErr, when set, is returned by
+// AdvanceForgeDeliveredRevision (a store fault or an unsubscribed-mid-flight
+// ErrNotFound). Concurrency-safe for parity with the real store.
 type fakeDeliveryStore struct {
-	mu       sync.Mutex
-	channels map[string]store.ChannelID
-	acks     []ackCall
-	ackErr   error // if set, AckDelivery returns it (a store fault)
+	mu            sync.Mutex
+	channels      map[string]store.ChannelID
+	acks          []ackCall
+	ackErr        error // if set, AckDelivery returns it (a store fault)
+	forgeAdvances []forgeAdvance
+	forgeErr      error // if set, AdvanceForgeDeliveredRevision returns it
 }
 
 func newFakeDeliveryStore() *fakeDeliveryStore {
@@ -62,11 +75,29 @@ func (f *fakeDeliveryStore) AckDelivery(_ context.Context, agent store.AccountID
 	return nil
 }
 
+func (f *fakeDeliveryStore) AdvanceForgeDeliveredRevision(_ context.Context, agent store.AccountID, subscriptionID, revision string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.forgeErr != nil {
+		return f.forgeErr
+	}
+	f.forgeAdvances = append(f.forgeAdvances, forgeAdvance{agent: agent, subscriptionID: subscriptionID, revision: revision})
+	return nil
+}
+
 func (f *fakeDeliveryStore) ackSnapshot() []ackCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]ackCall, len(f.acks))
 	copy(out, f.acks)
+	return out
+}
+
+func (f *fakeDeliveryStore) forgeSnapshot() []forgeAdvance {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]forgeAdvance, len(f.forgeAdvances))
+	copy(out, f.forgeAdvances)
 	return out
 }
 

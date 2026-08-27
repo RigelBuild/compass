@@ -338,6 +338,44 @@ func TestControlSendsSteer(t *testing.T) {
 	}
 }
 
+// TestControlSendsForgeNotification pins the receive-side regression the design
+// names (RIG-2732 T6, design.md:993-994, 1017-1019): a forge op relayed via the
+// generic DispatchControl relay rides the SAME control spine. An
+// AgentControl_ForgeNotification carries a defined ForgeNotification payload, so
+// representable() admits it (its default branch — everything but Replay/Config/
+// nil) and Send stamps, retains and drains it to the subscription. Zero new
+// Runner dispatch code: this is a REGRESSION TEST proving the existing spine
+// carries the additive variant. A bug that added the forge variant to the
+// empty-shell reject set (as Steer once was, TestControlSendsSteer) would return
+// errEmptyControlVariant here.
+func TestControlSendsForgeNotification(t *testing.T) {
+	p := newTestProducer()
+	stream := newControlStream()
+	stop := p.subscribe(t, stream)
+	defer stop()
+
+	op := &compassv1internal.AgentControl{
+		Control: &compassv1internal.AgentControl_ForgeNotification{
+			ForgeNotification: &compassv1internal.ForgeNotification{
+				SubscriptionId: "sub-1",
+				Repo:           "o/r",
+				Number:         42,
+				Change:         compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_COMMENT,
+			},
+		},
+	}
+	if err := p.Send(testSession, op); err != nil {
+		t.Fatalf("Send(forge_notification) = %v, want nil (representable via the additive variant)", err)
+	}
+	got := stream.recv(t)
+	if id := got.GetForgeNotification().GetSubscriptionId(); id != "sub-1" {
+		t.Fatalf("forge notification subscription id = %q, want sub-1 (op reached the stream intact)", id)
+	}
+	if got.GetControlSeq() == 0 {
+		t.Fatal("forge notification op carried no control_seq; Send must stamp it")
+	}
+}
+
 // TestControlTakeoverTransfersUnackedOps pins subscription takeover. A second
 // Control subscription cancels the first AND inherits every op the first never
 // acked, so a container replacement loses nothing.

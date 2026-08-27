@@ -25,6 +25,7 @@ import { connectNodeAdapter } from "@connectrpc/connect-node";
 import {
 	AgentSessionState,
 	DeliveryAckSchema,
+	ForgeNotificationAckSchema,
 	SessionEventSchema,
 	SessionFrameSchema,
 	SessionInjectionKind,
@@ -660,6 +661,34 @@ test("a deliveryAck rides the Publish PRIORITY sub-lane, never the drop-oldest t
 	expect(
 		inner?.case === "deliveryAck" ? inner.value.messageId : undefined,
 	).toBe("m-1");
+	// It never touched the loss-tolerable trace lane.
+	expect(traceFrames.length).toBe(0);
+});
+
+test("a forgeNotificationAck rides the Publish PRIORITY sub-lane, never the drop-oldest trace queue", () => {
+	// RIG-2732 W3: the turn-end forge delivery receipt is a control-plane ack,
+	// the sibling of deliveryAck — it must ride the same never-drop PRIORITY lane
+	// so a busy trace stream can never drop it (a dropped ack strands the
+	// Server's delivered_revision cursor). Non-vacuity: the pre-fix emit() had no
+	// forgeNotificationAck arm, so the frame fell through to the no-op tail and
+	// NEVER reached the spine at all — both assertions below would redden (0 and
+	// 0). This pins the frame onto the priority lane, never the trace lane.
+	const { spine, priorityFrames, traceFrames } = spySpine();
+	const sink = createSocketFrameSink(spineTransport(spine));
+	sink.emit({
+		kind: "forgeNotificationAck",
+		value: create(ForgeNotificationAckSchema, {
+			subscriptionId: "sub-1",
+			revision: "rev-1",
+		}),
+	});
+	// Exactly one priority frame, carrying the forgeNotificationAck oneof case.
+	expect(priorityFrames.length).toBe(1);
+	const inner = priorityFrames[0]?.frame?.frame;
+	expect(inner?.case).toBe("forgeNotificationAck");
+	expect(
+		inner?.case === "forgeNotificationAck" ? inner.value.revision : undefined,
+	).toBe("rev-1");
 	// It never touched the loss-tolerable trace lane.
 	expect(traceFrames.length).toBe(0);
 });

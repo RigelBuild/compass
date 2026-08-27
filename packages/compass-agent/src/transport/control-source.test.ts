@@ -43,6 +43,11 @@ import {
 	MessageBlockSchema,
 	MessageSchema,
 } from "../gen/compass/v1/comms_pb";
+import {
+	type ForgeNotification,
+	ForgeNotificationKind,
+	ForgeNotificationSchema,
+} from "../gen/compass/v1/forge_pb";
 import type { UnmappedEvent } from "../mapping";
 import {
 	CONTROL_RECONNECT_NO_PROGRESS_MAX,
@@ -121,21 +126,28 @@ function emptyRecorder(): Recorder {
 // No-op immediate handle — C4b never invokes it (empty-shell payloads, OQ-2(A)),
 // but a test can pass a recording one to prove that. Records the second
 // `fromHandle` arg (RIG-2486 T1) alongside each dispatched Message so a test can
-// assert the wire from_handle threaded through.
+// assert the wire from_handle threaded through. RIG-2732 W3: also records each
+// forge notification and its `ackRail` thunk (the deferred rail ack), so a test
+// can prove the forge arm enqueues at decode and defers the rail ack to flush.
 function recordingImmediate(): {
 	immediate: {
 		steer(m: unknown, fromHandle: string): void;
 		deliver(m: unknown, fromHandle: string): void;
+		forgeNotification(n: ForgeNotification, ackRail: () => void): void;
 	};
 	steers: unknown[];
 	delivers: unknown[];
 	steerHandles: string[];
 	deliverHandles: string[];
+	forgeNotifications: ForgeNotification[];
+	forgeAckRails: (() => void)[];
 } {
 	const steers: unknown[] = [];
 	const delivers: unknown[] = [];
 	const steerHandles: string[] = [];
 	const deliverHandles: string[] = [];
+	const forgeNotifications: ForgeNotification[] = [];
+	const forgeAckRails: (() => void)[] = [];
 	return {
 		immediate: {
 			steer: (m, fromHandle) => {
@@ -146,11 +158,17 @@ function recordingImmediate(): {
 				delivers.push(m);
 				deliverHandles.push(fromHandle);
 			},
+			forgeNotification: (n, ackRail) => {
+				forgeNotifications.push(n);
+				forgeAckRails.push(ackRail);
+			},
 		},
 		steers,
 		delivers,
 		steerHandles,
 		deliverHandles,
+		forgeNotifications,
+		forgeAckRails,
 	};
 }
 
@@ -225,6 +243,27 @@ function replayCompleteOp(seq: bigint): WireAgentControl {
 	});
 }
 
+// A forge_notification op: an AgentControl carrying a ForgeNotification with a
+// subscription id + revision and a COMMENT change (RIG-2732 W3). The subscription
+// id + revision are what the agent echoes back in the turn-end ForgeNotificationAck.
+function forgeNotificationOp(
+	seq: bigint,
+	subscriptionId: string,
+	revision: string,
+): WireAgentControl {
+	const notification: ForgeNotification = create(ForgeNotificationSchema, {
+		subscriptionId,
+		revision,
+		repo: "o/r",
+		number: 42n,
+		change: ForgeNotificationKind.COMMENT,
+	});
+	return create(AgentControlSchema, {
+		controlSeq: seq,
+		control: { case: "forgeNotification", value: notification },
+	});
+}
+
 // Read an ack frame's kind + payload off a captured PublishFrameRequest.
 function ackOf(
 	frame: PublishFrameRequest,
@@ -236,6 +275,18 @@ function ackOf(
 	if (f?.case === "controlAck") return { kind: "controlAck", value: f.value };
 	if (f?.case === "replayCompleteAck") return { kind: "replayCompleteAck" };
 	return undefined;
+}
+
+// Every ackedSeq across the recorded ControlAck frames, in receipt order. Reads
+// through `ackOf`'s discriminated union (no cast) — the RIG-2732 forge tests use
+// it to prove the contiguous cursor is pinned below an un-retired forge seq.
+function controlAckSeqs(rec: Recorder): bigint[] {
+	const seqs: bigint[] = [];
+	for (const frame of rec.publishFrames) {
+		const ack = ackOf(frame);
+		if (ack?.kind === "controlAck") seqs.push(ack.value.ackedSeq);
+	}
+	return seqs;
 }
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -472,6 +523,76 @@ test("a pre-ReplayComplete immediate op is refused by the barrier and counted (i
 	await collect(source);
 	expect(steers).toEqual([]);
 	const refused = unmapped.find((u) => u.eventType === "control:steer");
+	expect(refused?.reason).toContain("refused by replay barrier");
+});
+
+test("a forge notification is enqueued (dispatched to immediate.forgeNotification), NOT yielded, and NOT acked until its ackRail fires (RIG-2732 W3)", async () => {
+	// Non-vacuity: if the forge arm acked at decode (like steer/deliver) a
+	// ControlAck for seq 2 would appear before ackRail → the "no ack yet"
+	// assertion reds; if it yielded the op, ops would carry a forge kind → red.
+	const rec = emptyRecorder();
+	// Resolves when a ControlAck retiring seq >= 2 lands on the spine — the
+	// deferred rail ack is async, so the after-rail assertion gates on arrival.
+	const railAckLanded = deferred();
+	const socketPath = await serve(rec, {
+		control: async function* () {
+			yield replayCompleteOp(1n);
+			yield forgeNotificationOp(2n, "sub-1", "rev-abc");
+			yield promptOp(3n, "after");
+		},
+		onPublish: (frame) => {
+			const ack = ackOf(frame);
+			if (ack?.kind === "controlAck" && ack.value.ackedSeq >= 2n)
+				railAckLanded.resolve();
+		},
+	});
+	const { immediate, forgeNotifications, forgeAckRails } = recordingImmediate();
+	const source = createSocketControlSource(
+		createUnixSocketTransport(socketPath),
+		immediate,
+	);
+	const ops = await collect(source);
+	// The forge notification is enqueued at decode, never yielded on the iterable.
+	expect(ops.map((o) => o.kind)).toEqual(["replayComplete", "prompt"]);
+	// It reached immediate.forgeNotification with the decoded notification intact.
+	expect(forgeNotifications).toHaveLength(1);
+	expect(forgeNotifications[0]?.subscriptionId).toBe("sub-1");
+	expect(forgeNotifications[0]?.revision).toBe("rev-abc");
+	// The rail ack is DEFERRED: no ControlAck has retired seq 2 (only 1 and 3 the
+	// iterator applied). A decode-ack would show seq 2 acked here. The contiguous
+	// cursor is pinned at 1 while seq 2 sits unacked (the pump received seq 3 but
+	// the cursor cannot pass the un-retired seq 2).
+	expect(controlAckSeqs(rec).every((s) => s < 2n)).toBe(true);
+	// Firing the deferred rail ack now retires seq 2 on the control rail; the
+	// resulting ControlAck reaches the server asynchronously, so await its arrival.
+	expect(forgeAckRails).toHaveLength(1);
+	forgeAckRails[0]?.();
+	await railAckLanded.promise;
+	expect(controlAckSeqs(rec).some((s) => s >= 2n)).toBe(true);
+});
+
+test("a pre-ReplayComplete forge notification is refused by the barrier and counted, never enqueued (RIG-2732 W3)", async () => {
+	// Non-vacuity: if the barrier were not enforced on the forge arm, the
+	// notification would reach immediate.forgeNotification → forgeNotifications
+	// non-empty → red.
+	const rec = emptyRecorder();
+	const socketPath = await serve(rec, {
+		control: async function* () {
+			yield forgeNotificationOp(1n, "sub-1", "rev-abc"); // before any replayComplete
+		},
+	});
+	const unmapped: UnmappedEvent[] = [];
+	const { immediate, forgeNotifications } = recordingImmediate();
+	const source = createSocketControlSource(
+		createUnixSocketTransport(socketPath),
+		immediate,
+		{ onUnmapped: (u) => unmapped.push(u) },
+	);
+	await collect(source);
+	expect(forgeNotifications).toEqual([]);
+	const refused = unmapped.find(
+		(u) => u.eventType === "control:forgeNotification",
+	);
 	expect(refused?.reason).toContain("refused by replay barrier");
 });
 

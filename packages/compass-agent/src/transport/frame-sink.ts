@@ -273,15 +273,19 @@ export function createSocketFrameSink(transport: RunnerTransport): FrameSink {
 				}
 				return;
 			}
-			if (frame.kind === "deliveryAck") {
-				// A per-message delivery receipt is a control-plane ack (SEA-1310 §8):
-				// it rides the Publish spine's never-drop PRIORITY lane, NOT the durable
-				// unary. The Runner's isConversationFrame guard REJECTS an ack on the
-				// PostConversationFrame unary (post_conversation_frame.go:94-108), and
-				// its consume side ingests the ack off the PublishEvents spine
-				// (runnerhub/hub.go:358-360). Control-plane acks are never-drop by the
-				// spine's own contract (publish-spine.ts:24-26,62), so enqueuePriority
-				// unconditionally — never enqueueTrace, never launchDurable.
+			if (
+				frame.kind === "deliveryAck" ||
+				frame.kind === "forgeNotificationAck"
+			) {
+				// A per-notification/message delivery receipt is a control-plane ack
+				// (SEA-1310 §8; RIG-2732 W3 forge ack): it rides the Publish spine's
+				// never-drop PRIORITY lane, NOT the durable unary. The Runner's
+				// isConversationFrame guard REJECTS an ack on the PostConversationFrame
+				// unary (post_conversation_frame.go:94-108), and its consume side
+				// ingests the ack off the PublishEvents spine (runnerhub/hub.go). Both
+				// the deliveryAck and the forgeNotificationAck are control-plane acks,
+				// never-drop by the spine's own contract (publish-spine.ts:24-26,62), so
+				// enqueuePriority unconditionally — never enqueueTrace, never launchDurable.
 				const request = create(PublishFrameRequestSchema, {
 					frame: toAgentFrame(frame),
 				});
