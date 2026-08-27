@@ -1455,21 +1455,29 @@ jobs:
             dogfood-e2e-go-${{ runner.os }}-go1.25.0-
 
       - name: Hand the Go caches to the podman user (as root)
-        # The cache restore above ran as root, so GOCACHE (/home/podman/.cache/
-        # go-build) and GOMODCACHE (/home/podman/go/pkg/mod) are root-owned even
-        # though they sit under the podman user's HOME. The go test step runs as
-        # podman and both reads (restored objects) and writes (newly compiled
-        # objects, plus the post-run save) them, so chown them to podman first —
-        # the same ownership handoff the checkout uses. `install -d` first so the
-        # chown succeeds on a cold cache (a full miss restores nothing, leaving the
-        # dirs absent). Overrides the default podman shell because only root can
-        # chown.
+        # The cache restore above ran as root, so it created GOCACHE
+        # (/home/podman/.cache/go-build) and GOMODCACHE (/home/podman/go/pkg/mod)
+        # AND their parents (/home/podman/.cache, /home/podman/go) root-owned. The
+        # go test step runs as podman and must read (restored objects) + write
+        # (newly compiled objects, plus the post-run save) the caches, so hand them
+        # to podman first — the same ownership handoff the checkout uses.
+        #
+        # Chown the PARENTS (/home/podman/.cache, /home/podman/go), not just the
+        # leaf cache dirs: `.cache` is shared with the very next step's single-user
+        # nix install (/home/podman/.cache/nix) and `go` holds the module cache's
+        # siblings, so a root-owned parent blocks the podman user from creating
+        # anything else under it (`mkdir /home/podman/.cache/nix: Permission
+        # denied`). `install -d` first so the chown succeeds on a cold cache (a full
+        # miss restores nothing, leaving the dirs absent); `-o/-g` on install only
+        # applies to the leaves it creates, so the explicit `chown -R` over the
+        # parents is what actually transfers ownership of the tree. Overrides the
+        # default podman shell because only root can chown.
         shell: bash -e {0}
         run: |
           install -d -o podman -g podman \
-            /home/podman/.cache/go-build /home/podman/go/pkg/mod
-          chown -R podman:podman \
-            /home/podman/.cache/go-build /home/podman/go/pkg/mod
+            /home/podman/.cache /home/podman/.cache/go-build \
+            /home/podman/go /home/podman/go/pkg/mod
+          chown -R podman:podman /home/podman/.cache /home/podman/go
 
       - name: Install Nix (single-user, as the podman user)
         # This REPLACES cachix/install-nix-action, which cannot serve this job:
