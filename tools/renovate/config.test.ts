@@ -675,7 +675,7 @@ describe("tools/renovate wails/v3 floor cap (RIG-2852, GTK4 migration)", () => {
 	// packageRule caps github.com/wailsapp/wails/v3 below v3.1 via a REGEX
 	// allowedVersions (not a semver range — gomod's node-semver ranges exclude a
 	// prerelease at a different major.minor.patch, so `< 3.1.0-0` would wrongly
-	// reject the current v3.0.0-beta.0). Find it by behavior, not index.
+	// reject the current v3.0.0 prerelease pin). Find it by behavior, not index.
 	const wailsRule = cfg.packageRules.find(
 		(r) =>
 			r.matchManagers?.includes("gomod") &&
@@ -693,16 +693,24 @@ describe("tools/renovate wails/v3 floor cap (RIG-2852, GTK4 migration)", () => {
 		expect(allowedVersions.endsWith("/")).toBe(true);
 	});
 
-	test("the cap admits v3.0.0-beta.N and future v3.0.x, rejects v3.1.x and v4+", () => {
-		// Compile the shipped regex from its /.../ delimiters and replay it against
-		// the real pinned version and the floor boundary — so a fat-fingered cap
-		// that still admitted v3.1 (e.g. `^v?3\.`) fails here, not just a changed
-		// literal. go/go.mod pins v3.0.0-beta.0 today; it MUST stay admitted or the
-		// cap opens zero PRs and freezes the pin (the RIG-1220 silent-no-updates
-		// shape).
+	test("the cap admits the LIVE go.mod pin + future v3.0.x, rejects v3.1.x and v4+", () => {
+		// Compile the shipped regex from its /.../ delimiters and replay it. The
+		// load-bearing assertion reads the ACTUAL wails require line from go/go.mod
+		// and asserts the cap admits whatever is pinned — so a future pin/regex
+		// pairing that would open zero PRs (the cap silently rejecting the real pin,
+		// the RIG-1220 freeze shape) fails HERE, tied to ground truth rather than a
+		// hard-coded literal. The boundary cases below then pin the reject edge so a
+		// fat-fingered cap (e.g. `^v?3\.`) that leaked v3.1 also fails.
 		const allowedVersions = wailsRule?.allowedVersions ?? "";
 		const matcher = new RegExp(allowedVersions.slice(1, -1));
-		expect(matcher.test("v3.0.0-beta.0")).toBe(true); // the current pin
+
+		const goMod = readFileSync(join(repoRoot, "go", "go.mod"), "utf8");
+		const pin = goMod.match(
+			/github\.com\/wailsapp\/wails\/v3\s+(?<version>\S+)/,
+		)?.groups?.version;
+		expect(pin).toBeDefined(); // the require line must exist
+		expect(matcher.test(pin as string)).toBe(true); // the cap MUST admit it
+
 		expect(matcher.test("v3.0.0-beta.7")).toBe(true); // a newer beta
 		expect(matcher.test("v3.0.1")).toBe(true); // a future v3.0 patch
 		expect(matcher.test("v3.1.0")).toBe(false); // the frozen floor
