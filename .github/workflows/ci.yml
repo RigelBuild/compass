@@ -1242,6 +1242,15 @@ jobs:
           # private per-run bus via `dbus-run-session --` (torn down with the
           # leg). GTK3/webkit2gtk-4.1 tolerated a missing bus; GTK4 does not.
           #
+          # dbus-daemon reads its session config from the compiled-in sysconfdir
+          # (/etc/dbus-1/session.conf), which does NOT exist on the minimal
+          # Ubuntu runner — only the nixpkgs dbus store path ships it. Point
+          # dbus-run-session at the store copy via --config-file, derived from
+          # the on-PATH dbus-daemon (store-hash-agnostic: bin/dbus-daemon ->
+          # ../share/dbus-1/session.conf). A NixOS dev box has /etc/dbus-1 so it
+          # works without this, which is why it only shows up in CI.
+          dbus_conf="$(dirname "$(dirname "$(readlink -f "$(command -v dbus-daemon)")")")/share/dbus-1/session.conf"
+          #
           # --- PRIMARY: headless Wayland (GTK4's default user backend). weston
           # --backend=headless needs an XDG_RUNTIME_DIR for its socket; run it in
           # the background, wait for the socket to appear, then drive the shell
@@ -1265,7 +1274,7 @@ jobs:
           fi
           rc=0
           WAYLAND_DISPLAY="$wl_sock" GDK_BACKEND=wayland \
-            dbus-run-session -- \
+            dbus-run-session --config-file="$dbus_conf" -- \
             go test -tags 'unix gtk4' -run 'E2E' -count=1 -v -timeout 10m \
             ./cmd/compass-app/ >/tmp/gtk4-e2e.log 2>&1 || rc=$?
           cp /tmp/gtk4-e2e.log /tmp/gtk4-e2e-wayland.log
@@ -1295,7 +1304,7 @@ jobs:
           rc=0
           xvfb-run -a -e /tmp/xvfb-server.log \
             env GDK_BACKEND=x11 \
-            dbus-run-session -- \
+            dbus-run-session --config-file="$dbus_conf" -- \
             go test -tags 'unix gtk4' -run 'E2E' -count=1 -v -timeout 10m \
             ./cmd/compass-app/ >/tmp/gtk4-e2e.log 2>&1 || rc=$?
           cp /tmp/gtk4-e2e.log /tmp/gtk4-e2e-x11.log
