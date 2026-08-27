@@ -137,6 +137,16 @@ function recordingSession(natives: AgentTool[] = []): RecordingSession {
 			if (agent.promptRejectsNoModel) {
 				return Promise.reject(new Error("No model configured"));
 			}
+			// Faithful to production: `Agent.prompt` sets `#state.isStreaming = true`
+			// SYNCHRONOUSLY on the success path (pi-agent-core agent.ts:1072), AFTER
+			// both refusal guards above (:985 busy, :990 no-model, which reject
+			// BEFORE any injection and never flip streaming). The inner loop clears
+			// it again at the `agent_end` edge (:1254) — modeled in the `drive`
+			// helpers, which clear it before delivering an `agent_end` event, exactly
+			// as production emits that edge with streaming already false. This is
+			// what makes a SECOND synchronous `prompt()` on one turn-end edge collide
+			// with AgentBusyError — the bug the single-prompt turn-end flush closes.
+			agent.state.isStreaming = true;
 			agent.prompts.push(input);
 			return Promise.resolve();
 		},
@@ -434,6 +444,11 @@ function startControlAgent(natives: AgentTool[] = []) {
 		await tick();
 	};
 	const drive = (event: AgentSessionEvent): void => {
+		// Model production's inner loop clearing `#state.isStreaming = false` at the
+		// `agent_end` case (pi-agent-core agent.ts:1254) BEFORE emitting the edge —
+		// so a turn-end flush's single prompt is not refused by the just-settled
+		// turn's own streaming flag, and a following turn's flush starts clean.
+		if (event.type === "agent_end") session.agent.state.isStreaming = false;
 		session.listener?.(event);
 	};
 	const close = async (): Promise<void> => {
@@ -704,6 +719,10 @@ function startDeliverAgent(natives: AgentTool[] = []) {
 	});
 	const done = agent.run();
 	const drive = (event: AgentSessionEvent): void => {
+		// Model production's inner loop clearing `#state.isStreaming = false` at the
+		// `agent_end` case (pi-agent-core agent.ts:1254) BEFORE emitting the edge,
+		// so the turn-end flush's single prompt starts from a settled turn.
+		if (event.type === "agent_end") session.agent.state.isStreaming = false;
 		session.listener?.(event);
 	};
 	const close = async (): Promise<void> => {
@@ -908,22 +927,21 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 	});
 
 	// Rejection-safety belt (SEA-1310 §8): if a flush's prompt is REFUSED (the
-	// only prompt-rejection shape — a not-injected batch, see #flushDelivers), the
-	// batch must not be acked (no false receipt) and its ids must leave the
-	// processed set so the Server's redelivery re-injects them. Forced by driving
-	// the agent_end flush while the fake is still streaming, so its prompt guard
-	// rejects with AgentBusyError.
+	// only prompt-rejection shape — a not-injected batch), the batch must not be
+	// acked (no false receipt) and its ids must leave the processed set so the
+	// Server's redelivery re-injects them. Forced via the model-independent
+	// `promptRejectsNoModel` trigger (the "No model configured" throw, pi-agent-core
+	// agent.ts:990) — a pre-injection rejection that does not hinge on the
+	// streaming flag the `agent_end` edge now clears.
 	test("a refused flush prompt emits no ack, un-dedups the batch, and surfaces it", async () => {
 		const h = startDeliverAgent();
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
 		h.agent.deliver(deliverMsg("m1", "refused"));
-		// The agent is (pathologically) still streaming when agent_end fires, so
-		// the flush's prompt is refused. #turnActive is cleared by the edge, so the
-		// flush is attempted.
-		h.session.agent.state.isStreaming = true;
+		// The turn-end flush's prompt is refused (no model configured).
+		h.session.agent.promptRejectsNoModel = true;
 		h.drive({ type: "agent_end" } as AgentSessionEvent);
 		await tick();
-		// No injection recorded (the guard refused it), and crucially NO ack.
+		// No injection recorded (the prompt rejected), and crucially NO ack.
 		expect(h.session.agent.prompts).toEqual([]);
 		expect(ackIds(h.frames)).toEqual([]);
 		// The refusal is surfaced, never a silent drop.
@@ -932,9 +950,9 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 				u.eventType === "deliver:prompt" && u.reason.includes("not injected"),
 		);
 		expect(refused).toBeDefined();
-		// The id left the processed set: the Server's redelivery (streaming now
-		// clear) is NOT deduped away — it injects exactly once.
-		h.session.agent.state.isStreaming = false;
+		// The id left the processed set: the Server's redelivery is NOT deduped
+		// away — it injects exactly once.
+		h.session.agent.promptRejectsNoModel = false;
 		h.agent.deliver(deliverMsg("m1", "refused"));
 		await tick();
 		expect(h.session.agent.prompts).toHaveLength(1);
@@ -1095,6 +1113,10 @@ function startForgeAgent() {
 		agent.forgeNotification(notification, () => railAcks.push(mySeq));
 	};
 	const drive = (event: AgentSessionEvent): void => {
+		// Model production's inner loop clearing `#state.isStreaming = false` at the
+		// `agent_end` case (pi-agent-core agent.ts:1254) BEFORE emitting the edge,
+		// so the turn-end flush's single prompt starts from a settled turn.
+		if (event.type === "agent_end") session.agent.state.isStreaming = false;
 		session.listener?.(event);
 	};
 	const close = async (): Promise<void> => {
@@ -1241,6 +1263,54 @@ describe("CompassAgent — RIG-2732 W3 turn-end forge-notification arm", () => {
 			"s-opened",
 		]);
 		expect(h.railAcks).toEqual([1, 2, 3, 4, 5]);
+		await h.close();
+	});
+
+	// RIG-2732 Piece-2 review HIGH — the mixed-queue turn-end collision. Before
+	// the single-prompt fix, `agent_end` issued TWO independent `prompt()` calls
+	// (deliver flush then forge flush) on one synchronous edge; the first set the
+	// inner agent streaming SYNCHRONOUSLY (pi-agent-core agent.ts:1072), so the
+	// second threw AgentBusyError and the forge batch was silently dropped — no
+	// ForgeNotificationAck, no rail ack, delivered_revision stranded. The faithful
+	// fake now sets `state.isStreaming = true` on the first prompt, so this test
+	// REDS against the two-prompt code (the forge acks never fire) and GREENS
+	// against the combined single-prompt flush. It asserts (a) exactly ONE prompt
+	// carrying BOTH rendered sections, (b) the deliveryAck for the message, (c) the
+	// ForgeNotificationAck AND the rail-ack retirement for the notification.
+	test("a mixed deliver+forge queue flushes as ONE prompt with BOTH sections and all acks", async () => {
+		const h = startForgeAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		// Mid-turn: BOTH a deliver and a forge notification queue for this turn.
+		h.agent.deliver(deliverMsg("m1", "hello channel"));
+		h.push(forgeNote("sub-1", "rev-1", { repo: "o/r", number: 7n }));
+		// Nothing acked mid-turn — both coalesce onto the turn-end queue.
+		expect(h.session.agent.prompts).toEqual([]);
+		await tick();
+		expect(ackIds(h.frames)).toEqual([]);
+		expect(forgeAcks(h.frames)).toEqual([]);
+		expect(h.railAcks).toEqual([]);
+		// Turn ends: EXACTLY ONE prompt, carrying both rendered sections (deliver
+		// first, then forge — the stable order the combined flush pins).
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		const prompt = h.session.agent.prompts[0] ?? "";
+		expect(prompt).toContain("hello channel");
+		expect(prompt).toContain("o/r#7");
+		expect(prompt.indexOf("hello channel")).toBeLessThan(
+			prompt.indexOf("o/r#7"),
+		);
+		await tick();
+		// All ack kinds fire in the shared post-injection microtask: the deliver's
+		// DeliveryAck, the forge's ForgeNotificationAck, AND the forge rail-ack.
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		expect(forgeAcks(h.frames)).toEqual([
+			{ subscriptionId: "sub-1", revision: "rev-1" },
+		]);
+		expect(h.railAcks).toEqual([1]);
+		// The deliver's DELIVER injection observation also fired at flush.
+		expect(injections(h.frames)).toEqual([
+			{ opKind: SessionInjectionKind.DELIVER, messageId: "m1", fromHandle: "" },
+		]);
 		await h.close();
 	});
 });

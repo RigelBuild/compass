@@ -315,7 +315,7 @@ export class CompassAgent {
 		// acked-and-dropped. Gating on `isStreaming` too keeps the message queued
 		// to ride the live turn's `agent_end` flush.
 		if (!this.#turnActive && !this.#session.isStreaming) {
-			this.#flushDelivers();
+			this.#flushTurnEnd();
 		} else if (!this.#turnActive) {
 			// Queued because the session reports streaming while NO tracked turn is
 			// active — the strand shape (RIG-2644): an untracked in-flight (startup
@@ -341,7 +341,7 @@ export class CompassAgent {
 	// streaming. Fire-and-forget: `waitForIdle` can reject (an abort/dispose during
 	// the probe), so the chain terminates in a `.catch` that routes to onUnmapped
 	// rather than an unhandled rejection; the flush's own prompt rejection is
-	// belted separately in `#flushDelivers`.
+	// belted separately in `#flushTurnEnd`.
 	#armStrandRecovery(): void {
 		if (this.#strandRecoveryArmed) return;
 		this.#strandRecoveryArmed = true;
@@ -353,8 +353,7 @@ export class CompassAgent {
 				if (this.#deliverQueue.length === 0 && this.#forgeQueue.length === 0)
 					return;
 				if (!this.#turnActive && !this.#session.isStreaming) {
-					this.#flushDelivers();
-					this.#flushForgeNotifications();
+					this.#flushTurnEnd();
 				} else if (!this.#turnActive) {
 					// Still an untracked stream (a second probe) — re-arm.
 					this.#armStrandRecovery();
@@ -458,7 +457,7 @@ export class CompassAgent {
 			return;
 		}
 		// Idle: START A NEW TURN with the mention as its content via `prompt()`,
-		// mirroring the idle-DELIVER path (`#flushDelivers`). The frozen record ties
+		// mirroring the idle-DELIVER path (`#flushTurnEnd`). The frozen record ties
 		// an idle frame to "starts a new turn" (design: architecture-lineage). `prompt()`
 		// runs on ANY history — including a fresh, just-spawned peer's EMPTY history
 		// — whereas `continue()` (the earlier mechanism) rejects "No messages to
@@ -469,7 +468,7 @@ export class CompassAgent {
 		// prompt carries the mention as the turn's initial content, so an enqueued
 		// copy would be a double-inject (drained again by a later turn).
 		//
-		// Rejection-safety belt (mirrors `#flushDelivers`): `prompt` injects
+		// Rejection-safety belt (mirrors `#flushTurnEnd`): `prompt` injects
 		// synchronously up to its first await and can only signal refusal as a
 		// settled REJECTION — the AgentBusyError streaming guard or the "No model
 		// configured" throw, both BEFORE any injection. (AgentBusyError cannot fire
@@ -481,7 +480,7 @@ export class CompassAgent {
 		// before this `queueMicrotask`, so `rejected` is observed deterministically
 		// under `tick()`: no timer, no race.
 		// Optimistically mark a turn active — starting a turn here closes the same
-		// spin-up window `#flushDelivers` does: before `agent_start` propagates,
+		// spin-up window `#flushTurnEnd` does: before `agent_start` propagates,
 		// `isStreaming` may still read false, so a follow-on deliver/steer in that
 		// window would re-gate as idle and start a SECOND turn (→ AgentBusyError).
 		// The rejection path below clears it, since a refused prompt starts no turn.
@@ -536,7 +535,7 @@ export class CompassAgent {
 		// authoritative `#session.isStreaming`, exactly as deliver does (the
 		// control-prompt spin-up race the event flag alone cannot close).
 		if (!this.#turnActive && !this.#session.isStreaming) {
-			this.#flushForgeNotifications();
+			this.#flushTurnEnd();
 		} else if (!this.#turnActive) {
 			// Queued while the session reports streaming with NO tracked turn — the
 			// strand shape (RIG-2644): an untracked in-flight holds `isStreaming`
@@ -560,72 +559,101 @@ export class CompassAgent {
 				return;
 			case "agent_end":
 				this.#turnActive = false;
-				this.#flushDelivers();
-				this.#flushForgeNotifications();
+				this.#flushTurnEnd();
 				return;
 		}
 	}
 
-	// Flush the coalesced turn-end DELIVER queue (channel messages, including a
-	// delivered ask_answer message rendered via `formatAskAnswerForPrompt`) as
-	// ONE prompt, then emit one delivery ack per delivered message once injection
-	// is known-accepted.
+	// RIG-2732 W3 — flush BOTH coalesced turn-end queues (DELIVER + FORGE) as
+	// EXACTLY ONE prompt on a single turn-end edge, then emit ALL acks in one
+	// shared post-injection microtask. Coalescing to a single prompt is
+	// load-bearing, not a tidy-up: `Agent.prompt` sets `#state.isStreaming` true
+	// SYNCHRONOUSLY up to its first await (pi-agent-core agent.ts:1072), so two
+	// independent `prompt()` calls on one synchronous `agent_end` edge collide —
+	// the first sets isStreaming, the second throws AgentBusyError and its batch
+	// is dropped. One prompt carrying both sections is the fix (the mixed-queue
+	// turn is the normal case for an active agent).
+	//
+	// The prompt input concatenates the two pure renderers in a STABLE order —
+	// delivers first, then forge — joined with the SAME "\n\n" separator both
+	// renderers use between their own sections. A queue that is empty contributes
+	// no section, so a single non-empty queue reproduces today's single-arm
+	// prompt byte-for-byte (idle single-arm behavior preserved).
 	//
 	// The ack means "injected into the agent", NOT "the resulting turn finished"
-	// (frozen :800): it is emitted at injection time (the microtask right after
-	// the synchronous `prompt` call, by which point injection has happened),
-	// never gated behind the prompt's completion — so a crash mid-turn does not
-	// lose the receipt for a message that WAS injected.
+	// (frozen :800): emitted at injection time (the microtask right after the
+	// synchronous `prompt` call), never gated behind the prompt's completion — so
+	// a crash mid-turn does not lose a receipt for a batch that WAS injected.
 	//
-	// Rejection-safety belt (SEA-1310 §8): `Agent.prompt` injects SYNCHRONOUSLY up
-	// to its first await (pi-agent-core agent.ts:1072) and can only signal refusal
-	// as a promise REJECTION — a synchronous throw at its very top: the
-	// AgentBusyError streaming guard (:985) or the "No model" check (:990), both
-	// BEFORE any injection. A genuine mid-turn failure does NOT reject — the loop
-	// swallows it, emits `agent_end`, and RESOLVES (:1279-1332). So a rejection
-	// here means the batch was NOT injected. We therefore emit the acks on the
-	// next microtask, gated on the prompt not having synchronously-rejected: a
-	// settled-rejected promise schedules its `.catch` microtask BEFORE this
-	// `queueMicrotask`, so the guard flag is observed deterministically — no
-	// timer, no race. On rejection we fail closed: no ack, and the delivered ids
-	// are un-deduped so the Server (which never saw an ack, so its delivery cursor
-	// never advanced — agent_pb.ts:483) redelivers and re-injects them. The batch
-	// is NOT locally re-enqueued: the Server is the single redelivery authority,
-	// so re-enqueueing on top of its resend would double-inject.
-	#flushDelivers(): void {
-		const batch = this.#deliverQueue;
-		if (batch.length === 0) return;
+	// Rejection-safety belt (SEA-1310 §8 / RIG-2732 W3): `Agent.prompt` injects
+	// synchronously up to its first await and can only signal a NOT-injected
+	// batch as a settled REJECTION — a synchronous throw at its very top: the
+	// AgentBusyError streaming guard (agent.ts:985) or the "No model" check
+	// (:990), both BEFORE any injection. A genuine mid-turn failure does NOT
+	// reject — the loop swallows it, emits `agent_end`, and RESOLVES
+	// (:1279-1332). So a rejection here means NEITHER batch was injected, and we
+	// fail closed for BOTH kinds: the acks ride the next microtask, gated on the
+	// prompt not having synchronously-rejected (a settled-rejected promise
+	// schedules its `.catch` microtask BEFORE this `queueMicrotask`, so the guard
+	// flag is observed deterministically — no timer, no race). On rejection: for
+	// delivers, un-dedup the ids so the Server (whose delivery cursor never
+	// advanced) redelivers; for forge, do NOT re-enqueue and do NOT fire ackRail
+	// (the Runner retained every op past its rail cursor and redelivers on
+	// reconnect) — the Runner/Server are the single redelivery authorities, so a
+	// local re-enqueue on top of their resend would double-inject.
+	#flushTurnEnd(): void {
+		const delivers = this.#deliverQueue;
+		const forges = this.#forgeQueue;
 		this.#deliverQueue = [];
-		const input = formatDeliversForPrompt(batch);
+		this.#forgeQueue = [];
+		if (delivers.length === 0 && forges.length === 0) return;
+		const sections: string[] = [];
+		if (delivers.length > 0) sections.push(formatDeliversForPrompt(delivers));
+		if (forges.length > 0)
+			sections.push(
+				formatForgeNotifications(forges.map((e) => e.notification)),
+			);
+		const input = sections.join("\n\n");
 		// Optimistically mark a turn active — an idle flush starts one; the
 		// rejection path below clears it, since a refused prompt starts no turn.
 		this.#turnActive = true;
 		let rejected = false;
 		let acked = false;
 		this.#session.agent.prompt(input).catch((err) => {
-			// Reached ONLY on a settled-rejected prompt, i.e. a not-injected batch
-			// (see the method comment). If the acks already went out this is the
-			// SDK-impossible post-injection rejection — leave the injected batch
-			// alone rather than un-dedup a message that WAS delivered.
+			// Reached ONLY on a settled-rejected prompt, i.e. neither batch was
+			// injected (see the method comment). If the acks already went out this
+			// is the SDK-impossible post-injection rejection — leave the injected
+			// batches alone rather than un-dedup a message that WAS delivered.
 			if (acked) return;
 			rejected = true;
 			this.#turnActive = false;
-			for (const msg of batch) {
+			// DELIVER: un-dedup every id so the Server redelivers + re-injects.
+			for (const msg of delivers) {
 				this.#processedMessageIds.delete(msg.id);
 				this.#deliverFromHandles.delete(msg.id);
 			}
-			if (batch.length > 0) {
+			if (delivers.length > 0) {
 				this.#onUnmapped({
 					kind: "unmapped",
 					eventType: "deliver:prompt",
 					reason: `deliver flush prompt rejected — batch not injected, un-acked for redelivery: ${String(err)}`,
 				});
 			}
+			// FORGE: no ackRail fired, so the Runner still retains every op past
+			// its rail cursor and redelivers on reconnect. Do NOT re-enqueue.
+			if (forges.length > 0) {
+				this.#onUnmapped({
+					kind: "unmapped",
+					eventType: "forge:prompt",
+					reason: `forge notification flush prompt rejected — batch not injected, un-acked for redelivery: ${String(err)}`,
+				});
+			}
 		});
 		queueMicrotask(() => {
 			if (rejected) return;
 			acked = true;
-			for (const msg of batch) {
+			// DELIVER acks: one DeliveryAck + one DELIVER injection per message.
+			for (const msg of delivers) {
 				const value: DeliveryAck = create(DeliveryAckSchema, {
 					messageId: msg.id,
 				});
@@ -634,67 +662,15 @@ export class CompassAgent {
 				this.#deliverFromHandles.delete(msg.id);
 				this.#emitInjection(SessionInjectionKind.DELIVER, msg.id, fromHandle);
 			}
-		});
-	}
-
-	// RIG-2732 W3 — flush the coalesced turn-end FORGE-notification queue as ONE
-	// prompt (each notification rendered per-kind by `formatForgeNotifications`),
-	// then, once injection is known-accepted, emit one ForgeNotificationAck frame
-	// per notification AND retire each on the control rail via its `ackRail`
-	// thunk. The RT-3 sibling of `#flushDelivers`, with the same rejection-safety
-	// belt: `Agent.prompt` injects synchronously up to its first await and signals
-	// a not-injected batch only as a settled REJECTION (the AgentBusyError /
-	// no-model guards, both before any injection). A genuine mid-turn failure does
-	// NOT reject. So the acks ride the next microtask, gated on the prompt not
-	// having synchronously-rejected.
-	//
-	// BOTH acks fire here at flush, never at decode (design.md:1006-1013): the
-	// ForgeNotificationAck frame (which advances the Server's delivered_revision)
-	// and the control-rail ack (`ackRail`, retiring the op on the AckCursor). On
-	// rejection we fail closed: NEITHER ack fires and the queue is NOT re-enqueued
-	// — the Runner retained every op past its rail cursor (no ackRail fired), so
-	// it redelivers on reconnect; re-enqueueing on top of that would double-inject
-	// (the Runner is the single redelivery authority). Death before this flush is
-	// the same shape: no ack of either kind, so delivered_revision stays put and
-	// the reconciliation sweep re-notifies from the durable gap (design.md
-	// 387-401, 1022-1025).
-	#flushForgeNotifications(): void {
-		const batch = this.#forgeQueue;
-		if (batch.length === 0) return;
-		this.#forgeQueue = [];
-		const input = formatForgeNotifications(batch.map((e) => e.notification));
-		// Optimistically mark a turn active — an idle flush starts one; the
-		// rejection path below clears it, since a refused prompt starts no turn.
-		this.#turnActive = true;
-		let rejected = false;
-		let acked = false;
-		this.#session.agent.prompt(input).catch((err) => {
-			// Reached ONLY on a settled-rejected prompt, i.e. a not-injected batch.
-			// If the acks already went out this is the SDK-impossible post-injection
-			// rejection — leave the injected batch alone.
-			if (acked) return;
-			rejected = true;
-			this.#turnActive = false;
-			// No ackRail fired: the Runner still retains every op past its rail
-			// cursor and redelivers on reconnect. Do NOT re-enqueue locally.
-			this.#onUnmapped({
-				kind: "unmapped",
-				eventType: "forge:prompt",
-				reason: `forge notification flush prompt rejected — batch not injected, un-acked for redelivery: ${String(err)}`,
-			});
-		});
-		queueMicrotask(() => {
-			if (rejected) return;
-			acked = true;
-			for (const entry of batch) {
+			// FORGE acks: one ForgeNotificationAck frame (advances the Server's
+			// delivered_revision) then the control-rail ack (`ackRail`, retiring
+			// the op on the AckCursor) per notification, in that order.
+			for (const entry of forges) {
 				const value: ForgeNotificationAck = create(ForgeNotificationAckSchema, {
 					subscriptionId: entry.notification.subscriptionId,
 					revision: entry.notification.revision,
 				});
 				this.#sink.emit({ kind: "forgeNotificationAck", value });
-				// Retire the op on the control rail AFTER the forge delivery ack —
-				// the deferred rail ack the control source handed us (advances the
-				// AckCursor + drops the in-window seq dedup).
 				entry.ackRail();
 			}
 		});
@@ -807,7 +783,7 @@ export class CompassAgent {
 // per topic (`msg.topicId`) at format time: a topic belongs to exactly one
 // channel, so topic-grouping is per-(channel, topic), one digest section per
 // topic within the channel batch (D3/D4). This is FORMAT-TIME only — the flush
-// still emits one coalesced prompt and one ack per message (`#flushDelivers`),
+// still emits one coalesced prompt and one ack per message (`#flushTurnEnd`),
 // so the SEA-1310 §8 ack-safety belt is untouched.
 //
 // Topic order is first-seen; message order within a topic is preserved. Each
