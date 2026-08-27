@@ -6,6 +6,30 @@ Sibling record: `docs/designs/platform/compass-agent-loop-otel/design.md`
 (FROZEN; merged in PR #561 at `2740d2d3`). This record does NOT reopen its OQ1
 ruling (b): two independent providers to one collector.
 
+## Ruling (Matt, 2026-08-27)
+
+All four Open Questions ruled; the record freezes on merge as (b)-shaped
+throughout:
+
+- **OQ1 (load-bearing) = (b)** — server-side `traceparent` stamping on the
+  inbound control. The turn joins the SERVER's trace for its message
+  (creation → routing → delivery → turn → tool calls, one connected trace);
+  the cross-lane wire contract (compass-server stamps, mirroring the
+  from_handle denorm) is authorized. The (a) agent-side-mint / T3′ contingency
+  is CLOSED.
+- **OQ2 = hybrid** — true parent when one message starts an idle turn, span
+  links for the coalesced (N→1) and mid-turn-steer cases.
+- **OQ3 = yes** — `SessionInjection` carries the same `traceparent` string,
+  folded into T4.
+- **OQ4 = out of scope** (confirmed) — outbound turn → published frames gets
+  its own record if/when asked.
+
+So the full T1→T4 set is live: T1/T2 land agent-side (topology core + the now
+FINAL `traceparent: string` signature), then T4 (compass-server proto + stamp)
+and T3 (agent-side decode) ship as a stacked pair. This ruling also fixes the
+scope of compass-server's RIG-2685 as a CONTINUATION of the stamped context
+(server = trace origin), not a fresh root.
+
 ## Problem / Intent
 
 Once the sibling record's T1 activation lands, the loop emits a connected
@@ -335,20 +359,17 @@ the `context.with` wrapping, the three-shapes threading, and the
 `compass.message.ids` stamping — are agent-lane and ruling-independent (the
 machinery is identical under either OQ1 answer). They land first, inert without
 a context source when telemetry is off and self-contained when on. The one part
-of T2 that is NOT ruling-independent is the `traceparent: string` argument on
-`steer`/`deliver`/`parseTraceparent`: that shape assumes (b) (a wire-carried
-string), so it FINALIZES only once Matt rules OQ1 — under (a) there is no
-boundary string and it is replaced by the T3′ agent-local mint seam. So T2 lands
-its topology core inert under either ruling and treats the string signature as
-provisional until the ruling, avoiding a (b)-shaped param baked into the
-exported `CompassAgentOptions`/`CompassAgent` surface ahead of the fork. Both
-DEPEND on the sibling record's T1 (the gated `telemetry: {}` block in `cli.ts`,
-a separate in-flight PR) merging first: the bridge installs its hooks INTO that
-gated option and needs its registered context manager for parentage — no gated
-block, nowhere to install. T3 (wire decode, agent lane) and T4 (proto + server
-stamping, SERVER lane) are gated on Matt ruling OQ1 = (b); if Matt rules (a),
-T3/T4 are replaced by a small T3′ (agent-local injection span minting inside the
-bridge) and the plan re-freezes. Each task is its own PR gated by the package
+of T2 that carried the OQ1 dependency is the `traceparent: string` argument on
+`steer`/`deliver`/`parseTraceparent`: that shape assumes (b), a wire-carried
+string. With OQ1 ruled (b), the signature is FINAL — no T3′ mint-seam
+contingency remains — so T2 lands its topology core and its settled string
+signature together. Both T1 and T2 DEPEND on the sibling record's T1 (the gated
+`telemetry: {}` block in `cli.ts`, a separate in-flight PR) merging first: the
+bridge installs its hooks INTO that gated option and needs its registered
+context manager for parentage — no gated block, nowhere to install. T3 (wire
+decode, agent lane) and T4 (proto + server stamping, SERVER lane) are UNBLOCKED
+by the OQ1 = (b) ruling and sequence as a stacked pair — T4's proto lands first,
+T3 regenerates against it. Each task is its own PR gated by the package
 suite (`bun test` from `packages/compass-agent/`) plus its own additions.
 
 ### T1 — Trace-continuity bridge module (agent lane)
@@ -470,11 +491,11 @@ Interfaces:
 - Produces: `CompassAgentOptions.tracer?: TurnTracer` (string-only, no OTel
   types on the export); `CompassAgent.steer(msg: Message, fromHandle?:
   string, traceparent?: string): void` and `deliver(…)` likewise —
-  string-only widening, fence-clean. The `traceparent: string` arg is
-  (b)-shaped and PROVISIONAL until OQ1: under (a) there is no boundary string
-  and it is replaced by the T3′ agent-local mint seam (see Plan preamble).
+  string-only widening, fence-clean. The `traceparent: string` arg is FINAL
+  under the OQ1 = (b) ruling (a wire-carried string arriving at
+  `steer`/`deliver`); no T3′ agent-local mint-seam contingency remains.
 
-### T3 — Decode `traceparent` off the wire control (agent lane; gated on OQ1 = (b))
+### T3 — Decode `traceparent` off the wire control (agent lane; OQ1 ruled (b))
 
 `packages/compass-agent/src/transport/control-source.ts` +
 `src/gen` regeneration once T4's proto field exists:
@@ -499,7 +520,7 @@ Interfaces:
 - Produces: `ImmediateControl` with the widened string signatures; no other
   export change.
 
-### T4 — Wire field + server-side stamping (compass-server lane; CROSS-LANE, gated on OQ1 = (b))
+### T4 — Wire field + server-side stamping (compass-server lane; CROSS-LANE, OQ1 ruled (b))
 
 Owned by compass-server, exactly like the from_handle denorm (RIG-2486 T1):
 
@@ -531,10 +552,9 @@ Interfaces:
 
 ## Tasks
 
-- [ ] OQ1 ruled by Matt — origination: (a) agent-side minting or
-  (b) server-side traceparent stamping (RECOMMENDED (b)). Gates T3/T4; if
-  (a), replace them with T3′ (bridge-local injection-span minting) and
-  re-freeze.
+- [x] OQ1 RULED by Matt (2026-08-27) — origination = (b) server-side
+  `traceparent` stamping. T3/T4 unblocked and (b)-shaped; the (a)/T3′
+  contingency is closed.
 - [ ] T1 — `trace-bridge.ts`: W3C parser, `runWithParent`, `linkActiveTurn`,
   invoke_agent capture hook with the `ctx.agent === undefined` subagent
   filter; `TurnTracer` (agent-facing, OTel-type-free) split from the full
@@ -574,22 +594,23 @@ Interfaces:
    propagation): under (b) RIG-2685's propagation leg EXTRACTS+CONTINUES this
    record's stamped traceparent (server = origin, RIG-2685 = continuation);
    under (a) RIG-2685 mints server-side and the agent continues; under (c)
-   RIG-2685 is unaffected. BLOCKS T3/T4 merge; driver raises to Matt via
-   `ask`.
+   RIG-2685 is unaffected. **RULED by Matt (2026-08-27): (b).** T3/T4 are
+   unblocked; compass-server's RIG-2685 continues this record's stamped
+   traceparent (server = origin).
 2. **Topology: hybrid (parent when 1:1-idle, links otherwise) vs
    links-uniform?** Weighed in Decision 1. **Recommendation: hybrid** — the
    majority case earns a real connected trace; attributes
    (`compass.message.ids`) carry query uniformity; the split costs two
    branches on code paths that are already distinct. Not load-bearing:
-   agent-local, reversible without touching any wire shape.
+   agent-local, reversible without touching any wire shape. **RULED: hybrid.**
 3. **Should `SessionInjection` also carry the traceparent string?** Additive
    observation symmetry so the server can join its injection record to the
    trace. **Recommendation: yes, folded into T4** (it is the same proto
-   surface and lane). Not load-bearing.
+   surface and lane). Not load-bearing. **RULED: yes.**
 4. **Outbound symmetry — linking a turn to its PUBLISHED frames.** Explicitly
    OUT OF SCOPE, restating the sibling record's deferral: the transport's
    `publish.batch` aggregates frames from many turns, so it is a
    links-through-the-frame-sink problem on the OUTBOUND side
    (`../compass-agent-loop-otel/design.md:295-299`). This record covers
    inbound only; outbound gets its own record if/when Matt asks for it. Noted
-   so the deferral is a decision, not an omission.
+   so the deferral is a decision, not an omission. **CONFIRMED out of scope.**
