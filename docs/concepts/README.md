@@ -35,6 +35,16 @@ concept; the tool and prompt material carry the detail, these carry the model.
   load-bearing premise any external-session integration maps onto, never
   replaces.
 
+## The runtime
+
+- **[Durable agents, disposable compute](./durable-agents-disposable-compute.md)**
+  — the agent and its session are durable and Server-owned (Postgres + S3);
+  the container/microVM it runs in is disposable and dies with the session.
+  Resume rebuilds the compute and reconstructs the transcript into it.
+- **[Isolation and egress](./isolation-and-egress.md)** — model-written code is
+  contained, not trusted: a per-agent sandbox (container today, microVM in the
+  end state) with default-deny egress and no server credential.
+
 ## The tools
 
 - **[The agent tool set](./tools.md)** — the native tools an agent drives
