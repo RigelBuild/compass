@@ -32,6 +32,12 @@ var version = "0.1.0"
 // RPC).
 const apiVersion = "compass.v1"
 
+// (no default public URL: the managed-service host is a deployment concern that
+// never lives in this repo. --public-url / $COMPASS_PUBLIC_URL supplies it;
+// unset means empty, which the responder-assembly boot guard rejects for a
+// deployment that consumes Linear webhooks, and which yields relative deep-link
+// fragments for a socket-only local deploy.)
+
 // errUsage marks a CLI usage error (a bad flag) that buildServeConfig's FlagSet
 // has ALREADY reported to stderr (usage + the parse error). run() returns it so
 // main() can exit non-zero without re-logging it through slog — a typo'd flag is
@@ -192,6 +198,7 @@ func buildServeConfig(args []string) (server.ServeConfig, bool, error) {
 		StateDir:          *f.stateDir,
 		AdminHandle:       *f.adminHandle,
 		CORSAllowedOrigin: *f.corsAllowedOrigin,
+		PublicURL:         firstNonEmpty(*f.publicURL, os.Getenv("COMPASS_PUBLIC_URL")),
 	}, false, nil
 }
 
@@ -230,6 +237,7 @@ type serveFlags struct {
 	stateDir          *string
 	adminHandle       *string
 	corsAllowedOrigin *string
+	publicURL         *string
 }
 
 // registerServeFlags declares the core compass-server flags on the given FlagSet
@@ -284,6 +292,12 @@ func registerServeFlags(fs *flag.FlagSet) serveFlags {
 		corsAllowedOrigin: fs.String("cors-allowed-origin", "",
 			"Single browser origin the network door exposes gRPC-Web CORS for "+
 				"(e.g. https://host.example.ts.net). Empty = no CORS on the network door."),
+		publicURL: fs.String("public-url", "",
+			"Per-deployment public base URL Compass is reachable at (e.g. "+
+				"https://host.example.ts.net), the base for the Linear Agent "+
+				"responder's \"Open in Compass\" deep links. Falls back to "+
+				"$COMPASS_PUBLIC_URL. No default: a deployment that consumes "+
+				"Linear webhooks must set it."),
 	}
 }
 
@@ -432,13 +446,15 @@ func parseForgeRepos(repos string) ([]string, error) {
 	return out, nil
 }
 
-// firstNonEmpty returns a if it is non-empty, else b — the flag-then-env
-// precedence used across the server config.
-func firstNonEmpty(a, b string) string {
-	if a != "" {
-		return a
+// firstNonEmpty returns the first non-empty argument, or "" when all are empty —
+// the flag-then-env precedence used across the server config.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
 	}
-	return b
+	return ""
 }
 
 // envTrue reports whether an env value is a truthy toggle ("1"/"true", any case).

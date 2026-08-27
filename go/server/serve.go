@@ -94,6 +94,15 @@ type ServeConfig struct {
 	// CORSAllowedOrigin, when set, is the single browser origin the network door
 	// exposes gRPC-Web CORS for. Empty = closed (no CORS on the network door).
 	CORSAllowedOrigin string
+	// PublicURL is the per-deployment public base URL Compass is reachable at
+	// (e.g. "https://host.example.ts.net"), the base for the Linear Agent
+	// responder's "Open in Compass" deep links (RIG-2717 T5, design Part 6).
+	// Per-deployment, never hardcoded and with no default — the managed-service
+	// host is a deployment concern that does not live in this repo. The CLI
+	// supplies it (flag --public-url / $COMPASS_PUBLIC_URL); a deployment that
+	// consumes Linear webhooks needs it non-empty, enforced by deepLinkFor's
+	// boot guard where the responder is assembled.
+	PublicURL string
 	// Forge is the board-ingestion poll driver config (SEA-1810). All-optional
 	// exactly like S3: forge polling disabled (empty SeedRepos, Poll false)
 	// leaves the driver off — today's behavior, zero new requirements on
@@ -291,6 +300,11 @@ func seedBootstrapAccounts(ctx context.Context, st *store.Store, cfg ServeConfig
 		return store.Account{}, store.Account{}, fmt.Errorf("seeding system account: %w", err)
 	}
 	slog.Default().Info("system account seeded", "account_id", system.ID, "handle", system.Handle)
+	linearBridge, err := st.EnsureLinearBridgeAccount(ctx)
+	if err != nil {
+		return store.Account{}, store.Account{}, fmt.Errorf("seeding linear bridge account: %w", err)
+	}
+	slog.Default().Info("linear bridge account seeded", "account_id", linearBridge.ID, "handle", linearBridge.Handle)
 	return admin, system, nil
 }
 
@@ -385,19 +399,27 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 	defer st.Close()
 
-	// Seed the two platform accounts before serving: the bootstrap admin and the
-	// reserved system sender @compass. Created unconditionally — even socket-only
-	// — so the AdminGate always has a real admin id to compare against. Both are
-	// idempotent find-or-create; a wrong-shape row under either reserved handle
-	// fails startup rather than being adopted. The system account id backs the
-	// first-turn seed a later task wires; for now the helper logs it so the
-	// seeded row is observable at boot.
+	// Seed the platform accounts before serving: the bootstrap admin, the
+	// reserved system sender @compass, and the reserved Linear bridge sender
+	// @linear. Created unconditionally — even socket-only — so the AdminGate
+	// always has a real admin id to compare against and the Linear responder
+	// (a later wave) always finds its bridge author. All idempotent
+	// find-or-create; a wrong-shape row under any reserved handle fails startup
+	// rather than being adopted. The helper logs each seeded row so it is
+	// observable at boot.
 	admin, systemAccount, err := seedBootstrapAccounts(ctx, st, cfg)
 	if err != nil {
 		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
 		listeners.close()
 		return err
 	}
+
+	// Log the resolved public base URL so an operator can see which host the
+	// Linear "Open in Compass" deep links will point at — there is no default, so
+	// a deploy that forgets --public-url/$COMPASS_PUBLIC_URL logs an empty base
+	// (and the responder-assembly boot guard rejects it when Linear webhooks are
+	// enabled), and this line is how that misconfiguration is observable.
+	slog.Default().Info("public base URL resolved", "public_url", cfg.PublicURL)
 
 	// The store of record backs the network door's bearer credentials: IssueToken
 	// persists a token hash into it, and the bearer interceptor resolves against it.
