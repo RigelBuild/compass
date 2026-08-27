@@ -52,10 +52,11 @@ message starts an idle turn, and as SPAN LINKS for the coalesced (N→1) and
 mid-turn-steer cases — via a small first-party bridge module that composes
 with the sibling record's activation through the loop's shipped `onSpanStart`
 hook. Trace context crosses every boundary as a plain string, never an OTel
-type. Server-side origination (the load-bearing fork) is RECOMMENDED but
+type. Server-side origination (the load-bearing fork) is RULED (b) though
 cross-lane; the agent-side TOPOLOGY machinery is identical under either ruling
 and lands first, inert, while the `traceparent`-string signature threaded
-through `steer`/`deliver` is (b)-shaped and finalizes on the OQ1 ruling.**
+through `steer`/`deliver` is (b)-shaped and was finalized by the OQ1 = (b)
+ruling.**
 
 ### The verified mechanism (what makes each case possible)
 
