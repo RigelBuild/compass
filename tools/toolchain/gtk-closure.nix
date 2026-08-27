@@ -1,12 +1,14 @@
 # The GTK3/WebKitGTK package set the Compass native app (Wails v3,
 # go/cmd/compass-app) links through cgo on Linux. ONE definition, imported
-# by two consumers so they cannot drift:
+# by three consumers so they cannot drift:
 #
 #   - devenv.nix's `env` block builds PKG_CONFIG_PATH over `lib.closePropagation`
 #     of this set for the dev shell (and a local gtk3 build/test);
 #   - tools/toolchain/gtk-e2e-env.nix realizes the same closure on a CI runner
 #     for the multi-window gtk3 e2e gate (design record compass-multi-window
 #     §M4), the ONE CI lane that compiles + runs the native app.
+#   - flake.nix's `compass-app` package realizes the same closure as cgo
+#     buildInputs for the `nix build .#compass-app` / bundle build.
 #
 # Kept as a bare name list (not the resolved derivations) so a consumer applies
 # it against whichever pinned `pkgs` it already resolves — the dev shell's, or
