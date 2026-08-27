@@ -263,5 +263,11 @@ func TestCollectorNeverReady(t *testing.T) {
 	if n := countEvent(h.rec.snapshot(), "start compass-server"); n != 0 {
 		t.Fatalf("compass-server started %d times before the collector was ready; want 0", n)
 	}
+	// The launched-but-never-ready collector must be drained on the failure path
+	// (drainChildren owns s.collector): a regression dropping it from the drain
+	// list would leak the container here.
+	if n := countEvent(h.rec.snapshot(), "signal otel-collector"); n != 1 {
+		t.Fatalf("collector signalled %d times on the never-ready drain; want 1", n)
+	}
 	assertLockFree(t, cfg.StateDir)
 }

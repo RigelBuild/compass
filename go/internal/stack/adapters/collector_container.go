@@ -5,7 +5,6 @@ package adapters
 import (
 	"context"
 	"fmt"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -157,21 +156,13 @@ func collectorRunArgs(spec stack.CollectorContainerSpec, configFile string) []st
 		"--rm",
 		"--replace",
 		"--name", spec.Name,
-		"--stop-timeout", strconv.FormatInt(collectorStopSeconds(spec.StopTimeout), 10),
+		"--stop-timeout", strconv.FormatInt(stopSeconds(spec.StopTimeout), 10),
 		"-p", spec.GRPCEndpoint + ":4317",
 		"-p", spec.HTTPEndpoint + ":4318",
 		"-p", spec.HealthEndpoint + ":13133",
 		"-v", configFile + ":" + collectorConfigPath + ":ro,Z",
 		spec.Image,
 	}
-}
-
-// collectorStopSeconds converts the stop-timeout Duration to podman's
-// whole-second flag, rounding a positive duration up so a sub-second grace never
-// truncates to 0 (an immediate SIGKILL), and clamping negatives to 0. Mirrors
-// the postgres adapter's stopSeconds.
-func collectorStopSeconds(timeout time.Duration) int64 {
-	return int64(math.Max(math.Ceil(timeout.Seconds()), 0))
 }
 
 // httpHealthGetter is the real healthGetter: a thin GET over an *http.Client.

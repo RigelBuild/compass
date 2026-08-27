@@ -350,9 +350,15 @@ func (c *fakeContainerController) Remove(name string) error {
 }
 
 func (c *fakeContainerController) setExists(exists bool) {
+	c.setExistsName(pgContainerName, exists)
+}
+
+// setExistsName models a specific container's presence, so a record with more
+// than one container entry (postgres + collector) can drive each independently.
+func (c *fakeContainerController) setExistsName(name string, exists bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.exists[pgContainerName] = exists
+	c.exists[name] = exists
 }
 
 // fakePostgresContainer is the container-START seam under test (the analogue of

@@ -61,6 +61,11 @@ type Stack struct {
 	// is the in-process Down's teardown identity for the collector (the same
 	// name persisted in the v2 pgid record for a cross-process down).
 	collectorContainerName string
+	// collectorHealthEndpoint is the host loopback health_check endpoint the
+	// bundled collector published when it ran (T4); empty on the opt-out path.
+	// startCollector captures it off the spec it already builds so waitCollector
+	// reads the readiness target without rebuilding the spec.
+	collectorHealthEndpoint string
 	// pgContainerName is the stable name of the container-backed postgres child
 	// when the container path ran (S4); empty on the process and external paths.
 	// It is the in-process Down's teardown identity for the container (the same
@@ -362,6 +367,7 @@ func (s *Stack) startCollector(ctx context.Context) error {
 	}
 	s.collector = col
 	s.collectorContainerName = spec.Name
+	s.collectorHealthEndpoint = spec.HealthEndpoint
 	return s.appendEntry(ComponentCollector, pgidEntry{Kind: entryContainer, Component: ComponentCollector, ContainerName: spec.Name})
 }
 
@@ -451,15 +457,11 @@ func (s *Stack) waitCollector(ctx context.Context) error {
 	if s.cfg.ExternalOTLPEndpoint != "" {
 		return nil
 	}
-	spec, err := collectorContainerSpec(s.cfg)
-	if err != nil {
-		return err
-	}
 	deadline := s.deps.now().Add(collectorReadyPollBudget)
 	ticker := time.NewTicker(collectorReadyPollInterval)
 	defer ticker.Stop()
 	for {
-		if err := s.deps.CollectorProber.ProbeCollector(ctx, spec.HealthEndpoint); err == nil {
+		if err := s.deps.CollectorProber.ProbeCollector(ctx, s.collectorHealthEndpoint); err == nil {
 			return nil
 		}
 		if !s.deps.now().Before(deadline) {

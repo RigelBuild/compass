@@ -47,7 +47,10 @@ type CollectorContainerSpec struct {
 	// Name is the stable per-state-dir container name (derived from StateDir),
 	// the teardown identity a fresh `down` reconstructs and the v2 pgid record
 	// persists. Unique per state dir so concurrent stacks never collide in
-	// podman's flat container namespace.
+	// podman's flat container namespace. Note this scopes only the container
+	// name: the loopback ports below publish on fixed host ports (like postgres's
+	// default 5432), so two stacks on one host still contend for those binds —
+	// the embedded stack is one-per-host by design.
 	Name string
 	// Image is the collector image ref to run (Config.CollectorImage; the pinned
 	// DefaultCollectorImage on the installed path).
@@ -104,9 +107,10 @@ func collectorContainerSpec(cfg Config) (CollectorContainerSpec, error) {
 // name. Like containerName (the postgres derivation) it is a deterministic
 // function of the state dir alone so a fresh `down` with no in-memory handle
 // reconstructs the same name, and the hash keeps concurrent stacks on different
-// state dirs from colliding in podman's flat container namespace. A distinct
-// prefix from the postgres name keeps the two components' containers legible
-// apart in `podman ps`.
+// state dirs from colliding in podman's flat container namespace (the host-port
+// binds are fixed, so multi-stack-per-host is out of scope either way). A
+// distinct prefix from the postgres name keeps the two components' containers
+// legible apart in `podman ps`.
 func collectorContainerName(stateDir string) string {
 	sum := sha256.Sum256([]byte(filepath.Clean(stateDir)))
 	return "compass-otel-collector-" + hex.EncodeToString(sum[:6])
