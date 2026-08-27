@@ -194,11 +194,9 @@ func NewFixture(ctx context.Context, t *testing.T, opts ...fixtureOption) *Fixtu
 	for _, opt := range opts {
 		opt(&fc)
 	}
-	// Compile the three stack child binaries from the module root and put them on
-	// PATH: the ProcessSupervisor resolves each Component to a bare binary name
-	// via exec.LookPath, so the stack only stands up if they are found.
-	binDir := buildBinariesFromModuleRoot(t)
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// The three stack child binaries are built once per run by TestMain and
+	// exported on PATH there (see main_test.go); the ProcessSupervisor resolves
+	// each Component to a bare binary name via exec.LookPath against that entry.
 
 	// Acquire the root/stateDir/ports either fresh (the default ephemeral
 	// fixture) or from a persistent site (WithSite — the H6 cross-restart
@@ -457,31 +455,6 @@ func configureCannedModel(t *testing.T, cfg *stack.Config, cfgRoot string, scrip
 	cfg.EgressAllow = []string{pastaHostGateway}
 	cfg.Mounts = []string{agentCfgDir + ":" + cannedAgentDir}
 	return stub
-}
-
-// buildBinariesFromModuleRoot compiles the three stack child binaries from the
-// module root into a temp dir and returns it. This package lives at go/e2e, so
-// the module root (the dir holding go.mod) is ONE `..` up — verified by the
-// go.mod check below, which fails legibly if the layout ever moves.
-func buildBinariesFromModuleRoot(t *testing.T) string {
-	t.Helper()
-	wd, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	moduleRoot := filepath.Join(wd, "..") // go/e2e -> go
-	if _, err := os.Stat(filepath.Join(moduleRoot, "go.mod")); err != nil {
-		t.Fatalf("module root %q has no go.mod (layout changed?): %v", moduleRoot, err)
-	}
-	binDir := t.TempDir()
-	for _, name := range []string{"compass-postgres", "compass-server", "compass-runner"} {
-		cmd := exec.Command("go", "build", "-o", filepath.Join(binDir, name), "./cmd/"+name)
-		cmd.Dir = moduleRoot
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("build %s: %v\n%s", name, err, out)
-		}
-	}
-	return binDir
 }
 
 // freePorts returns n distinct free TCP ports on loopback by binding :0 on each,
