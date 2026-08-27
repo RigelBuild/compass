@@ -60,9 +60,11 @@ explicitly allowlisted. (`go/internal/runtime/egress.go`)
 Containment extends to what the agent is *given*, not just what it can *reach*.
 The agent is **egress-sealed and holds no Compass server token** — it cannot call
 privileged server RPCs directly. Privileged operations an agent appears to
-perform (spawning a peer, a forge write) are **relayed through the Server**, which
-resolves the caller's identity and authority at the edge, rather than handed to
-the agent as a credential it could misuse. (ledger DL-076)
+perform (spawning a peer, a forge write) are **forwarded by the Runner to the
+Server** — the Runner asserts no identity and is a pure relay; the Server
+resolves the caller's account and authority from the session binding at the
+edge and executes the call — rather than handed to the agent as a credential it
+could misuse. (ledger DL-076)
 
 This is the same shape as the [handle/account split](./handle-vs-account.md)
 (the agent never holds a per-agent forge seat) and the [no-human-clicks
@@ -91,5 +93,5 @@ mediated by the Server.
 | Execution | per-agent sandbox (container today → microVM end state) | touch the host or another agent's sandbox |
 | Network | default-deny nftables egress, allowlist-only | reach any host not explicitly allowed |
 | Firewall control | rules armed by root at launch; agent runs non-root, empty caps | flush or edit its own egress ruleset |
-| Server authority | egress-sealed, no server token; privileged calls relayed via Server | call privileged server RPCs directly |
+| Server authority | egress-sealed, no server token; privileged calls forwarded by the Runner, resolved + executed by the Server | call privileged server RPCs directly |
 | Durable state / secrets | Server-owned; none in the sandbox | exfiltrate durable data or credentials it never held |
