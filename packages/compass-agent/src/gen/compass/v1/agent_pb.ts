@@ -35,7 +35,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file compass/v1/agent.proto.
  */
 export const file_compass_v1_agent: GenFile = /*@__PURE__*/
-  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIpkCCgpBZ2VudEZyYW1lEisKB3Nlc3Npb24YAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25GcmFtZUgAEjwKE3JlcGxheV9jb21wbGV0ZV9hY2sYBCABKAsyHS5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlQWNrSAASLQoLY29udHJvbF9hY2sYBSABKAsyFi5jb21wYXNzLnYxLkNvbnRyb2xBY2tIABIvCgxkZWxpdmVyeV9hY2sYBiABKAsyFy5jb21wYXNzLnYxLkRlbGl2ZXJ5QWNrSAASNwoQdHJhbnNjcmlwdF9lbnRyeRgHIAEoCzIbLmNvbXBhc3MudjEuVHJhbnNjcmlwdEVudHJ5SABCBwoFZnJhbWUiTAoPVHJhbnNjcmlwdEVudHJ5EhIKCmVudHJ5X2pzb24YASABKAkSEgoKY2hlY2twb2ludBgCIAEoCBIRCgllbnRyeV9zZXEYAyABKAQiawoMU2Vzc2lvbkZyYW1lEiwKBXN0YXRlGAEgASgOMh0uY29tcGFzcy52MS5BZ2VudFNlc3Npb25TdGF0ZRItCgt0eXBlZF9ldmVudBgCIAEoCzIYLmNvbXBhc3MudjEuU2Vzc2lvbkV2ZW50IoYDCgxBZ2VudENvbnRyb2wSEwoLY29udHJvbF9zZXEYCCABKAQSKwoGcHJvbXB0GAEgASgLMhkuY29tcGFzcy52MS5Qcm9tcHRDb250cm9sSAASKQoFc3RlZXIYAiABKAsyGC5jb21wYXNzLnYxLlN0ZWVyQ29udHJvbEgAEi0KB2RlbGl2ZXIYAyABKAsyGi5jb21wYXNzLnYxLkRlbGl2ZXJDb250cm9sSAASKwoGY29uZmlnGAUgASgLMhkuY29tcGFzcy52MS5Db25maWdDb250cm9sSAASLgoGcmVwbGF5GAYgASgLMhwuY29tcGFzcy52MS5UcmFuc2NyaXB0UmVwbGF5SAASNQoPcmVwbGF5X2NvbXBsZXRlGAcgASgLMhouY29tcGFzcy52MS5SZXBsYXlDb21wbGV0ZUgAEjsKEmZvcmdlX25vdGlmaWNhdGlvbhgJIAEoCzIdLmNvbXBhc3MudjEuRm9yZ2VOb3RpZmljYXRpb25IAEIJCgdjb250cm9sIh4KDVByb21wdENvbnRyb2wSDQoFaW5wdXQYASABKAkiEAoOUmVwbGF5Q29tcGxldGUiSQoMU3RlZXJDb250cm9sEiQKB21lc3NhZ2UYASABKAsyEy5jb21wYXNzLnYxLk1lc3NhZ2USEwoLZnJvbV9oYW5kbGUYAiABKAkiEgoQVHJhbnNjcmlwdFJlcGxheSIPCg1Db25maWdDb250cm9sIl8KDkRlbGl2ZXJDb250cm9sEiQKB21lc3NhZ2UYASABKAsyEy5jb21wYXNzLnYxLk1lc3NhZ2USEgoKdG9waWNfbmFtZRgCIAEoCRITCgtmcm9tX2hhbmRsZRgDIAEoCSIhCgtEZWxpdmVyeUFjaxISCgptZXNzYWdlX2lkGAEgASgJIhMKEVJlcGxheUNvbXBsZXRlQWNrIjYKCkNvbnRyb2xBY2sSEQoJYWNrZWRfc2VxGAEgASgEEhUKDWFwcGxpZWRfYWJvdmUYAiADKARiBnByb3RvMw", [file_compass_v1_comms, file_compass_v1_compass, file_compass_v1_forge]);
+  fileDesc("ChZjb21wYXNzL3YxL2FnZW50LnByb3RvEgpjb21wYXNzLnYxIt0CCgpBZ2VudEZyYW1lEisKB3Nlc3Npb24YAyABKAsyGC5jb21wYXNzLnYxLlNlc3Npb25GcmFtZUgAEjwKE3JlcGxheV9jb21wbGV0ZV9hY2sYBCABKAsyHS5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlQWNrSAASLQoLY29udHJvbF9hY2sYBSABKAsyFi5jb21wYXNzLnYxLkNvbnRyb2xBY2tIABIvCgxkZWxpdmVyeV9hY2sYBiABKAsyFy5jb21wYXNzLnYxLkRlbGl2ZXJ5QWNrSAASNwoQdHJhbnNjcmlwdF9lbnRyeRgHIAEoCzIbLmNvbXBhc3MudjEuVHJhbnNjcmlwdEVudHJ5SAASQgoWZm9yZ2Vfbm90aWZpY2F0aW9uX2FjaxgIIAEoCzIgLmNvbXBhc3MudjEuRm9yZ2VOb3RpZmljYXRpb25BY2tIAEIHCgVmcmFtZSJMCg9UcmFuc2NyaXB0RW50cnkSEgoKZW50cnlfanNvbhgBIAEoCRISCgpjaGVja3BvaW50GAIgASgIEhEKCWVudHJ5X3NlcRgDIAEoBCJrCgxTZXNzaW9uRnJhbWUSLAoFc3RhdGUYASABKA4yHS5jb21wYXNzLnYxLkFnZW50U2Vzc2lvblN0YXRlEi0KC3R5cGVkX2V2ZW50GAIgASgLMhguY29tcGFzcy52MS5TZXNzaW9uRXZlbnQihgMKDEFnZW50Q29udHJvbBITCgtjb250cm9sX3NlcRgIIAEoBBIrCgZwcm9tcHQYASABKAsyGS5jb21wYXNzLnYxLlByb21wdENvbnRyb2xIABIpCgVzdGVlchgCIAEoCzIYLmNvbXBhc3MudjEuU3RlZXJDb250cm9sSAASLQoHZGVsaXZlchgDIAEoCzIaLmNvbXBhc3MudjEuRGVsaXZlckNvbnRyb2xIABIrCgZjb25maWcYBSABKAsyGS5jb21wYXNzLnYxLkNvbmZpZ0NvbnRyb2xIABIuCgZyZXBsYXkYBiABKAsyHC5jb21wYXNzLnYxLlRyYW5zY3JpcHRSZXBsYXlIABI1Cg9yZXBsYXlfY29tcGxldGUYByABKAsyGi5jb21wYXNzLnYxLlJlcGxheUNvbXBsZXRlSAASOwoSZm9yZ2Vfbm90aWZpY2F0aW9uGAkgASgLMh0uY29tcGFzcy52MS5Gb3JnZU5vdGlmaWNhdGlvbkgAQgkKB2NvbnRyb2wiHgoNUHJvbXB0Q29udHJvbBINCgVpbnB1dBgBIAEoCSIQCg5SZXBsYXlDb21wbGV0ZSJJCgxTdGVlckNvbnRyb2wSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZRITCgtmcm9tX2hhbmRsZRgCIAEoCSISChBUcmFuc2NyaXB0UmVwbGF5Ig8KDUNvbmZpZ0NvbnRyb2wiXwoORGVsaXZlckNvbnRyb2wSJAoHbWVzc2FnZRgBIAEoCzITLmNvbXBhc3MudjEuTWVzc2FnZRISCgp0b3BpY19uYW1lGAIgASgJEhMKC2Zyb21faGFuZGxlGAMgASgJIiEKC0RlbGl2ZXJ5QWNrEhIKCm1lc3NhZ2VfaWQYASABKAkiQQoURm9yZ2VOb3RpZmljYXRpb25BY2sSFwoPc3Vic2NyaXB0aW9uX2lkGAEgASgJEhAKCHJldmlzaW9uGAIgASgJIhMKEVJlcGxheUNvbXBsZXRlQWNrIjYKCkNvbnRyb2xBY2sSEQoJYWNrZWRfc2VxGAEgASgEEhUKDWFwcGxpZWRfYWJvdmUYAiADKARiBnByb3RvMw", [file_compass_v1_comms, file_compass_v1_compass, file_compass_v1_forge]);
 
 /**
  * The agent's stdout envelope: one discriminated frame per newline-delimited
@@ -126,6 +126,18 @@ export type AgentFrame = Message<"compass.v1.AgentFrame"> & {
      */
     value: TranscriptEntry;
     case: "transcriptEntry";
+  } | {
+    /**
+     *   forge_notification_ack — the agent's per-notification receipt for a
+     *     ForgeNotification pushed down the session (W3; forge sibling of
+     *     delivery_ack). Emitted at turn-end flush (T6), applied by a hub ack
+     *     arm beside deliverAck (T7): on receipt the Server advances the
+     *     subscription's delivered_revision to the acked revision.
+     *
+     * @generated from field: compass.v1.ForgeNotificationAck forge_notification_ack = 8;
+     */
+    value: ForgeNotificationAck;
+    case: "forgeNotificationAck";
   } | { case: undefined; value?: undefined };
 };
 
@@ -499,6 +511,37 @@ export const DeliveryAckSchema: GenMessage<DeliveryAck> = /*@__PURE__*/
   messageDesc(file_compass_v1_agent, 10);
 
 /**
+ * ForgeNotificationAck — the agent's per-notification delivery receipt (W3), an
+ * AgentFrame oneof variant riding the Publish spine beside DeliveryAck. Where
+ * DeliveryAck correlates a comms delivery by message_id, this correlates a forge
+ * notification by subscription_id and carries the notified `revision` (the
+ * advance target): on receipt the Server advances that subscription's
+ * delivered_revision (T7 hub ack arm; store AdvanceForgeDeliveredRevision).
+ *
+ * @generated from message compass.v1.ForgeNotificationAck
+ */
+export type ForgeNotificationAck = Message<"compass.v1.ForgeNotificationAck"> & {
+  /**
+   * @generated from field: string subscription_id = 1;
+   */
+  subscriptionId: string;
+
+  /**
+   * the notified revision; the advance target
+   *
+   * @generated from field: string revision = 2;
+   */
+  revision: string;
+};
+
+/**
+ * Describes the message compass.v1.ForgeNotificationAck.
+ * Use `create(ForgeNotificationAckSchema)` to create a new message.
+ */
+export const ForgeNotificationAckSchema: GenMessage<ForgeNotificationAck> = /*@__PURE__*/
+  messageDesc(file_compass_v1_agent, 11);
+
+/**
  * Two agent -> Runner control-plane ACK frames, added as AgentFrame oneof
  * variants above (riding the loss-tolerable Publish spine beside DeliveryAck,
  * the established frame-spine ack convention — consolidation OQ-4(i) + amended
@@ -514,7 +557,7 @@ export type ReplayCompleteAck = Message<"compass.v1.ReplayCompleteAck"> & {
  * Use `create(ReplayCompleteAckSchema)` to create a new message.
  */
 export const ReplayCompleteAckSchema: GenMessage<ReplayCompleteAck> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent, 11);
+  messageDesc(file_compass_v1_agent, 12);
 
 /**
  * @generated from message compass.v1.ControlAck
@@ -542,5 +585,5 @@ export type ControlAck = Message<"compass.v1.ControlAck"> & {
  * Use `create(ControlAckSchema)` to create a new message.
  */
 export const ControlAckSchema: GenMessage<ControlAck> = /*@__PURE__*/
-  messageDesc(file_compass_v1_agent, 12);
+  messageDesc(file_compass_v1_agent, 13);
 

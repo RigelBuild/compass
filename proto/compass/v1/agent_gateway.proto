@@ -337,10 +337,21 @@ message ReviewCommentInput {
 // Subscribe/unsubscribe a forge artifact for change notifications (DL-053). The
 // notification payload is ForgeNotification (forge.proto), delivered on the
 // Sessions -> AgentGateway.Control push path.
+// The subscription scope (W2, decided (b): the number=0 sentinel is dropped;
+// OQ-1 ruled (i)). ARTIFACT addresses one issue/PR; CONTAINER addresses the
+// whole repo on GitHub or a PROJECT on Linear. Zero is treated as ARTIFACT for
+// pre-scope callers.
+enum ForgeSubscriptionScope {
+  FORGE_SUBSCRIPTION_SCOPE_UNSPECIFIED = 0; // treated as ARTIFACT (pre-scope callers)
+  FORGE_SUBSCRIPTION_SCOPE_ARTIFACT = 1;    // one issue/PR; number REQUIRED (> 0)
+  FORGE_SUBSCRIPTION_SCOPE_CONTAINER = 2;   // GitHub: the whole repo; Linear: a PROJECT
+}
 message SubscribeForgeRequest {
-  string repo = 1;
+  string repo = 1;                   // GitHub owner/name; Linear team key
   ForgeArtifactKind kind = 2;
-  uint64 number = 3;
+  uint64 number = 3;                 // ARTIFACT only; MUST be 0 under CONTAINER
+  ForgeSubscriptionScope scope = 4;  // additive; UNSPECIFIED = ARTIFACT
+  string project = 5;                // CONTAINER on LINEAR only: the project id
 }
 message SubscribeForgeResponse {
   string subscription_id = 1;

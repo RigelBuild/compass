@@ -82,6 +82,12 @@ message AgentFrame {
     //     container-ephemeral. Reconstructed into a session-JSONL body on
     //     resume (T4/T5).
     TranscriptEntry transcript_entry = 7;
+    //   forge_notification_ack — the agent's per-notification receipt for a
+    //     ForgeNotification pushed down the session (W3; forge sibling of
+    //     delivery_ack). Emitted at turn-end flush (T6), applied by a hub ack
+    //     arm beside deliverAck (T7): on receipt the Server advances the
+    //     subscription's delivered_revision to the acked revision.
+    ForgeNotificationAck forge_notification_ack = 8;
   }
 }
 
@@ -236,6 +242,17 @@ message DeliverControl {
 message DeliveryAck {
   // The delivered comms Message's id.
   string message_id = 1;
+}
+
+// ForgeNotificationAck — the agent's per-notification delivery receipt (W3), an
+// AgentFrame oneof variant riding the Publish spine beside DeliveryAck. Where
+// DeliveryAck correlates a comms delivery by message_id, this correlates a forge
+// notification by subscription_id and carries the notified `revision` (the
+// advance target): on receipt the Server advances that subscription's
+// delivered_revision (T7 hub ack arm; store AdvanceForgeDeliveredRevision).
+message ForgeNotificationAck {
+  string subscription_id = 1;
+  string revision = 2;  // the notified revision; the advance target
 }
 
 // Two agent -> Runner control-plane ACK frames, added as AgentFrame oneof

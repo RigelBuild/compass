@@ -114,6 +114,9 @@ const (
 	ForgeNotificationKind_FORGE_NOTIFICATION_KIND_STATE       ForgeNotificationKind = 2 // opened/closed/merged/reopened
 	ForgeNotificationKind_FORGE_NOTIFICATION_KIND_UPDATE      ForgeNotificationKind = 3 // title/body/labels edited
 	ForgeNotificationKind_FORGE_NOTIFICATION_KIND_CHECKS      ForgeNotificationKind = 4 // CI or status-check state changed
+	ForgeNotificationKind_FORGE_NOTIFICATION_KIND_REVIEW      ForgeNotificationKind = 5 // a submitted PR review; comment carries
+	// body+url, state the verdict
+	ForgeNotificationKind_FORGE_NOTIFICATION_KIND_OPENED ForgeNotificationKind = 6 // container-scope: a new artifact; the
 )
 
 // Enum value maps for ForgeNotificationKind.
@@ -124,6 +127,8 @@ var (
 		2: "FORGE_NOTIFICATION_KIND_STATE",
 		3: "FORGE_NOTIFICATION_KIND_UPDATE",
 		4: "FORGE_NOTIFICATION_KIND_CHECKS",
+		5: "FORGE_NOTIFICATION_KIND_REVIEW",
+		6: "FORGE_NOTIFICATION_KIND_OPENED",
 	}
 	ForgeNotificationKind_value = map[string]int32{
 		"FORGE_NOTIFICATION_KIND_UNSPECIFIED": 0,
@@ -131,6 +136,8 @@ var (
 		"FORGE_NOTIFICATION_KIND_STATE":       2,
 		"FORGE_NOTIFICATION_KIND_UPDATE":      3,
 		"FORGE_NOTIFICATION_KIND_CHECKS":      4,
+		"FORGE_NOTIFICATION_KIND_REVIEW":      5,
+		"FORGE_NOTIFICATION_KIND_OPENED":      6,
 	}
 )
 
@@ -330,7 +337,12 @@ type ForgeNotification struct {
 	// Set for CHECKS: the rolled-up CI/status state after the change.
 	Checks *v1.ChecksSummary `protobuf:"bytes,9,opt,name=checks,proto3" json:"checks,omitempty"`
 	// Set for STATE: the new forge state string ("closed", "merged", …).
-	State         string `protobuf:"bytes,10,opt,name=state,proto3" json:"state,omitempty"`
+	State string `protobuf:"bytes,10,opt,name=state,proto3" json:"state,omitempty"`
+	// The whole-artifact snapshot digest this notification reflects (T4's
+	// SnapshotRevision, computed at ApplyEvent). The agent echoes it back in
+	// ForgeNotificationAck.revision at turn-end flush; the Server advances the
+	// subscription's delivered_revision to it (two-cursor split, DL-053/DL-266).
+	Revision      string `protobuf:"bytes,11,opt,name=revision,proto3" json:"revision,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -435,6 +447,13 @@ func (x *ForgeNotification) GetState() string {
 	return ""
 }
 
+func (x *ForgeNotification) GetRevision() string {
+	if x != nil {
+		return x.Revision
+	}
+	return ""
+}
+
 var File_compass_v1_forge_proto protoreflect.FileDescriptor
 
 const file_compass_v1_forge_proto_rawDesc = "" +
@@ -452,7 +471,7 @@ const file_compass_v1_forge_proto_rawDesc = "" +
 	"\tReviewRef\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x1b\n" +
 	"\treview_id\x18\x02 \x01(\x04R\breviewId\x12\x18\n" +
-	"\averdict\x18\x03 \x01(\tR\averdict\"\x8f\x03\n" +
+	"\averdict\x18\x03 \x01(\tR\averdict\"\xab\x03\n" +
 	"\x11ForgeNotification\x12'\n" +
 	"\x0fsubscription_id\x18\x01 \x01(\tR\x0esubscriptionId\x12*\n" +
 	"\x05forge\x18\x02 \x01(\v2\x14.compass.v1.ForgeRefR\x05forge\x12\x12\n" +
@@ -464,17 +483,20 @@ const file_compass_v1_forge_proto_rawDesc = "" +
 	"\acomment\x18\b \x01(\v2\x16.compass.v1.CommentRefR\acomment\x121\n" +
 	"\x06checks\x18\t \x01(\v2\x19.compass.v1.ChecksSummaryR\x06checks\x12\x14\n" +
 	"\x05state\x18\n" +
-	" \x01(\tR\x05state*}\n" +
+	" \x01(\tR\x05state\x12\x1a\n" +
+	"\brevision\x18\v \x01(\tR\brevision*}\n" +
 	"\x11ForgeArtifactKind\x12#\n" +
 	"\x1fFORGE_ARTIFACT_KIND_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19FORGE_ARTIFACT_KIND_ISSUE\x10\x01\x12$\n" +
-	" FORGE_ARTIFACT_KIND_PULL_REQUEST\x10\x02*\xd0\x01\n" +
+	" FORGE_ARTIFACT_KIND_PULL_REQUEST\x10\x02*\x98\x02\n" +
 	"\x15ForgeNotificationKind\x12'\n" +
 	"#FORGE_NOTIFICATION_KIND_UNSPECIFIED\x10\x00\x12#\n" +
 	"\x1fFORGE_NOTIFICATION_KIND_COMMENT\x10\x01\x12!\n" +
 	"\x1dFORGE_NOTIFICATION_KIND_STATE\x10\x02\x12\"\n" +
 	"\x1eFORGE_NOTIFICATION_KIND_UPDATE\x10\x03\x12\"\n" +
-	"\x1eFORGE_NOTIFICATION_KIND_CHECKS\x10\x04b\x06proto3"
+	"\x1eFORGE_NOTIFICATION_KIND_CHECKS\x10\x04\x12\"\n" +
+	"\x1eFORGE_NOTIFICATION_KIND_REVIEW\x10\x05\x12\"\n" +
+	"\x1eFORGE_NOTIFICATION_KIND_OPENED\x10\x06b\x06proto3"
 
 var (
 	file_compass_v1_forge_proto_rawDescOnce sync.Once
