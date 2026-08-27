@@ -1,6 +1,5 @@
 # The GTK3/WebKitGTK package set the Compass native app (Wails v3,
-# go/cmd/compass-app) links through cgo on Linux — the frozen SEA-1172 closure
-# (docs/designs/platform/ci-toolchain-shared-defs.md). ONE definition, imported
+# go/cmd/compass-app) links through cgo on Linux. ONE definition, imported
 # by two consumers so they cannot drift:
 #
 #   - devenv.nix's `env` block builds PKG_CONFIG_PATH over `lib.closePropagation`

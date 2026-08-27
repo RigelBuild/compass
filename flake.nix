@@ -79,7 +79,7 @@
           compass-runner = goBin "compass-runner";
           compass-stack = goBin "compass-stack";
 
-          # The Linux gtk3 cgo native shell (Wails v3). Links the SEA-1172
+          # The Linux gtk3 cgo native shell (Wails v3). Links the
           # WebKitGTK closure through cgo — the same gtk-closure.nix the dev shell
           # and the e2e helper realize, applied against this flake's pinned pkgs so
           # the three cannot drift (gtk-e2e-env.nix:38). tags=[gtk3] selects the

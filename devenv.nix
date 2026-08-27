@@ -104,7 +104,7 @@ in
     curl
 
     # pkg-config: the Wails v3 cgo link needs it to discover the GTK3/WebKitGTK
-    # `.pc` files (via PKG_CONFIG_PATH, set over the frozen SEA-1172 closure in
+    # `.pc` files (via PKG_CONFIG_PATH, set over the GTK closure in
     # `env` below, which owns that rationale). Kept in this parsed list, not the
     # Linux-guarded env block, because it has a bin the toolchain-parity gate
     # resolves and is cross-platform — harmless on macOS, where the app links
@@ -230,9 +230,9 @@ in
   # Both `.pc` install subdirs are searched: a dev output splits its `.pc` files
   # across `lib/pkgconfig` and `share/pkgconfig` (zlib ships `zlib.pc` under
   # `share/`, which gdk-3.0 requires), so searching only `lib/` fails the walk.
-  # The package set and subdir order are the frozen SEA-1172 shape
-  # (sealed docs/designs/platform/ci-toolchain-shared-defs.md): the sealed CI
-  # step image stages the same closure's `-dev` outputs, kept in step by hand.
+  # The package set and subdir order are defined once in
+  # tools/toolchain/gtk-closure.nix (imported just below), the single
+  # definition every in-repo consumer resolves so they cannot drift.
   #
   # Linux-only, and set in `env` rather than `packages`: on macOS the app links
   # the system WebKit framework, so the closure is Linux's alone; and keeping it
@@ -245,7 +245,7 @@ in
   // lib.optionalAttrs pkgs.stdenv.isLinux {
     PKG_CONFIG_PATH =
       let
-        # The frozen SEA-1172 GTK3/WebKitGTK set, imported from the shared
+        # The GTK3/WebKitGTK set, imported from the shared
         # module so the dev shell and the gtk3 e2e CI helper
         # (tools/toolchain/gtk-e2e-env.nix) resolve one closure and cannot drift.
         pcClosure = lib.closePropagation (import ./tools/toolchain/gtk-closure.nix pkgs);
