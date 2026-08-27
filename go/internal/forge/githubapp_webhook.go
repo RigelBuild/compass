@@ -109,7 +109,7 @@ func ParseGitHubEvent(event string, body []byte) (ev ForgeEvent, ok bool, err er
 
 	base := ForgeEvent{
 		Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB,
-		Host:     "github.com",
+		Host:     hostGitHub,
 		Repo:     wh.Repository.FullName,
 	}
 

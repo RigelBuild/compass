@@ -98,7 +98,7 @@ func NewAppTokenSource(cfg GitHubAppConfig) (TokenSource, error) {
 // (*GitHub).apiBase (github.go:900-907): github.com -> api.github.com; a GHES
 // host -> https://<host>/api/v3.
 func appAPIBase(host string) string {
-	if host == "" || host == "github.com" {
+	if host == "" || host == hostGitHub {
 		return "https://api.github.com"
 	}
 	return "https://" + host + "/api/v3"
