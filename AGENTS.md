@@ -16,6 +16,11 @@ lives under [`docs/concepts/`](./docs/concepts/README.md):
   multi-tenant service (private monorepo, `compass.rigel.build`). A design record
   here designs the core; managed control-plane concerns are named and deferred,
   never designed in this repo.
+- **[Tokens and billing](./docs/concepts/tokens-and-billing.md)** — the user
+  brings the tokens (BYOK or their own cloud subscription); Rigel bills for the
+  compute the managed service brings, never for tokens. All tokens flow through
+  the bundled OMP gateway, the single metering point; what gets recorded and why
+  the self-hosted/managed split makes billing asymmetric.
 - **[Handles, accounts, and attribution](./docs/concepts/handle-vs-account.md)**
   — a handle names one running agent; `mintaka` is the shared forge *account*
   every agent bills through, not a handle. Read an agent's identity off a
