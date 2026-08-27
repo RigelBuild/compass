@@ -60,8 +60,7 @@ type appTokenSource struct {
 
 	mu       sync.Mutex
 	token    string
-	expsAt   time.Time // when the cached installation token itself expires
-	refresh  time.Time // when we proactively re-mint (expsAt - tokenRefreshLead)
+	refresh  time.Time // when we proactively re-mint (token expiry - tokenRefreshLead)
 	hasToken bool
 }
 
@@ -140,7 +139,6 @@ func (s *appTokenSource) Invalidate() {
 	defer s.mu.Unlock()
 	s.hasToken = false
 	s.token = ""
-	s.expsAt = time.Time{}
 	s.refresh = time.Time{}
 }
 
@@ -231,7 +229,6 @@ func (s *appTokenSource) store(out installationToken) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.token = out.Token
-	s.expsAt = exp
 	s.refresh = exp.Add(-tokenRefreshLead)
 	s.hasToken = true
 }

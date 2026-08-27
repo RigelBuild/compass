@@ -12,6 +12,7 @@ package forge
 import (
 	"context"
 	"crypto"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -49,13 +50,38 @@ func pemPKCS1(t *testing.T, key *rsa.PrivateKey) []byte {
 	})
 }
 
+// pemPKCS8 encodes an RSA key as a PKCS#8 "PRIVATE KEY" PEM block.
+func pemPKCS8(t *testing.T, key *rsa.PrivateKey) []byte {
+	t.Helper()
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal PKCS#8 key: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+}
+
+// pemEd25519 encodes a freshly generated ed25519 key as a PKCS#8 "PRIVATE KEY"
+// PEM block — a non-RSA key for the negative parse path.
+func pemEd25519(t *testing.T) []byte {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate ed25519 key: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshal ed25519 PKCS#8 key: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+}
+
 // mintServer scripts the access-tokens endpoint: it counts hits, captures the
 // last presented App JWT, and returns the configured token/expiry (or a status
 // override). expiresAt is resolved lazily per request via nowFn so a test can
 // advance the clock and assert the fresh expiry.
 type mintServer struct {
 	srv      *httptest.Server
-	hits     int64
+	hits     atomic.Int64
 	lastJWT  string
 	token    string
 	status   int
@@ -67,7 +93,7 @@ func newMintServer(t *testing.T, token string, nowFn func() time.Time) *mintServ
 	t.Helper()
 	m := &mintServer{token: token, status: http.StatusCreated, nowFn: nowFn, lifetime: time.Hour}
 	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt64(&m.hits, 1)
+		m.hits.Add(1)
 		auth := r.Header.Get("Authorization")
 		m.lastJWT = strings.TrimPrefix(auth, "Bearer ")
 		if m.status != http.StatusCreated {
@@ -169,7 +195,7 @@ func TestAppTokenSourceCaches(t *testing.T) {
 			t.Fatalf("Token #%d: %v", i, err)
 		}
 	}
-	if got := atomic.LoadInt64(&m.hits); got != 1 {
+	if got := m.hits.Load(); got != 1 {
 		t.Fatalf("mint hits = %d, want 1 (cache should serve calls 2 and 3)", got)
 	}
 }
@@ -197,7 +223,7 @@ func TestAppTokenSourceRefreshBeforeExpiry(t *testing.T) {
 	if _, err := src.Token(context.Background()); err != nil {
 		t.Fatalf("pre-boundary Token: %v", err)
 	}
-	if got := atomic.LoadInt64(&m.hits); got != 1 {
+	if got := m.hits.Load(); got != 1 {
 		t.Fatalf("mint hits before boundary = %d, want 1", got)
 	}
 	// Past the refresh boundary: re-mint.
@@ -206,7 +232,7 @@ func TestAppTokenSourceRefreshBeforeExpiry(t *testing.T) {
 	if _, err := src.Token(context.Background()); err != nil {
 		t.Fatalf("post-boundary Token: %v", err)
 	}
-	if got := atomic.LoadInt64(&m.hits); got != 2 {
+	if got := m.hits.Load(); got != 2 {
 		t.Fatalf("mint hits after boundary = %d, want 2 (re-mint)", got)
 	}
 }
@@ -230,7 +256,7 @@ func TestAppTokenSourceInvalidateForcesRemint(t *testing.T) {
 	if _, err := src.Token(context.Background()); err != nil {
 		t.Fatalf("post-invalidate Token: %v", err)
 	}
-	if got := atomic.LoadInt64(&m.hits); got != 2 {
+	if got := m.hits.Load(); got != 2 {
 		t.Fatalf("mint hits = %d, want 2 (Invalidate should force a re-mint)", got)
 	}
 }
@@ -254,6 +280,75 @@ func TestAppTokenSourceMintErrorSurfaces(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "401") {
 		t.Errorf("error = %v, want it to mention 401", err)
+	}
+}
+
+// TestAppTokenSourcePKCS8Key mints successfully when the App private key is
+// PKCS#8-encoded ("PRIVATE KEY"), the second encoding parseRSAPrivateKey
+// accepts — mirrors TestAppTokenSourceCaches' happy-path setup but feeds a
+// PKCS#8 key.
+func TestAppTokenSourcePKCS8Key(t *testing.T) {
+	key := testAppKey(t)
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	m := newMintServer(t, "ghs_pkcs8", clock)
+	src := newAppSource(t, m, GitHubAppConfig{
+		AppID:          1,
+		InstallationID: 2,
+		PrivateKey:     func(context.Context) ([]byte, error) { return pemPKCS8(t, key), nil },
+		Clock:          clock,
+	})
+
+	tok, err := src.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token with PKCS#8 key: %v", err)
+	}
+	if tok != "ghs_pkcs8" {
+		t.Errorf("token = %q, want ghs_pkcs8", tok)
+	}
+}
+
+// TestAppTokenSourceMalformedPEM surfaces the "no PEM block found" error when
+// the App private key bytes contain no PEM block.
+func TestAppTokenSourceMalformedPEM(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	m := newMintServer(t, "unused", clock)
+	src := newAppSource(t, m, GitHubAppConfig{
+		AppID:          1,
+		InstallationID: 2,
+		PrivateKey:     func(context.Context) ([]byte, error) { return []byte("not a pem block"), nil },
+		Clock:          clock,
+	})
+
+	_, err := src.Token(context.Background())
+	if err == nil {
+		t.Fatal("Token returned nil error on malformed PEM")
+	}
+	if !strings.Contains(err.Error(), "no PEM block found") {
+		t.Errorf("error = %v, want it to mention 'no PEM block found'", err)
+	}
+}
+
+// TestAppTokenSourceNonRSAKey surfaces the "PEM key is %T, not RSA" error when
+// the App private key is a valid PKCS#8 block for a non-RSA (ed25519) key.
+func TestAppTokenSourceNonRSAKey(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	m := newMintServer(t, "unused", clock)
+	src := newAppSource(t, m, GitHubAppConfig{
+		AppID:          1,
+		InstallationID: 2,
+		PrivateKey:     func(context.Context) ([]byte, error) { return pemEd25519(t), nil },
+		Clock:          clock,
+	})
+
+	_, err := src.Token(context.Background())
+	if err == nil {
+		t.Fatal("Token returned nil error on non-RSA key")
+	}
+	if !strings.Contains(err.Error(), "not RSA") {
+		t.Errorf("error = %v, want it to mention 'not RSA'", err)
 	}
 }
 
