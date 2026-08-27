@@ -20,16 +20,16 @@ func TestDeepLinkFor(t *testing.T) {
 		want      string
 	}{
 		{
-			name:      "managed base and channel",
-			base:      "https://compass.rigel.build",
+			name:      "base and channel",
+			base:      "https://compass.example.com",
 			channelID: "ch-svc-compass",
-			want:      "https://compass.rigel.build/#/channel/ch-svc-compass",
+			want:      "https://compass.example.com/#/channel/ch-svc-compass",
 		},
 		{
 			name:      "trailing slash on base is collapsed",
-			base:      "https://compass.rigel.build/",
+			base:      "https://compass.example.com/",
 			channelID: "ch-svc-compass",
-			want:      "https://compass.rigel.build/#/channel/ch-svc-compass",
+			want:      "https://compass.example.com/#/channel/ch-svc-compass",
 		},
 		{
 			name:      "tailnet deploy base with port",
@@ -39,9 +39,9 @@ func TestDeepLinkFor(t *testing.T) {
 		},
 		{
 			name:      "channel id with metacharacters is path-escaped",
-			base:      "https://compass.rigel.build",
+			base:      "https://compass.example.com",
 			channelID: "ch a/b?c",
-			want:      "https://compass.rigel.build/#/channel/ch%20a%2Fb%3Fc",
+			want:      "https://compass.example.com/#/channel/ch%20a%2Fb%3Fc",
 		},
 	}
 	for _, tc := range tests {
@@ -69,7 +69,7 @@ func TestDeepLinkRequirePublicURL(t *testing.T) {
 		}
 	})
 	t.Run("non-empty base passes", func(t *testing.T) {
-		if err := requirePublicURL("https://compass.rigel.build"); err != nil {
+		if err := requirePublicURL("https://compass.example.com"); err != nil {
 			t.Errorf("requirePublicURL(valid) = %v, want nil", err)
 		}
 	})

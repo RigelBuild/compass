@@ -95,11 +95,11 @@ type ServeConfig struct {
 	// exposes gRPC-Web CORS for. Empty = closed (no CORS on the network door).
 	CORSAllowedOrigin string
 	// PublicURL is the per-deployment public base URL Compass is reachable at
-	// (e.g. "https://compass.rigel.build"), the base for the Linear Agent
+	// (e.g. "https://host.example.ts.net"), the base for the Linear Agent
 	// responder's "Open in Compass" deep links (RIG-2717 T5, design Part 6).
-	// Per-deployment, never hardcoded: the managed service defaults to
-	// https://compass.rigel.build, self-host/dev deploys set their own. The CLI
-	// defaults it (flag --public-url / $COMPASS_PUBLIC_URL); a deployment that
+	// Per-deployment, never hardcoded and with no default — the managed-service
+	// host is a deployment concern that does not live in this repo. The CLI
+	// supplies it (flag --public-url / $COMPASS_PUBLIC_URL); a deployment that
 	// consumes Linear webhooks needs it non-empty, enforced by deepLinkFor's
 	// boot guard where the responder is assembled.
 	PublicURL string
@@ -415,10 +415,10 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	// Log the resolved public base URL so an operator can see which host the
-	// Linear "Open in Compass" deep links will point at — the CLI defaults it to
-	// the managed host, so a self-host deploy that forgets --public-url/
-	// $COMPASS_PUBLIC_URL emits links to the managed host, and this line is how
-	// that misconfiguration is observable rather than silent.
+	// Linear "Open in Compass" deep links will point at — there is no default, so
+	// a deploy that forgets --public-url/$COMPASS_PUBLIC_URL logs an empty base
+	// (and the responder-assembly boot guard rejects it when Linear webhooks are
+	// enabled), and this line is how that misconfiguration is observable.
 	slog.Default().Info("public base URL resolved", "public_url", cfg.PublicURL)
 
 	// The store of record backs the network door's bearer credentials: IssueToken

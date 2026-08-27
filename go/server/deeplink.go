@@ -26,9 +26,9 @@ var errNoPublicURL = errors.New(
 
 // requirePublicURL is the boot guard the responder assembly calls before wiring
 // the Linear webhook path: it rejects an empty base with a legible error rather
-// than letting deepLinkFor emit a base-less relative link at request time. The
-// managed CLI defaults the base (defaultPublicURL), so this fires only when a
-// deploy explicitly clears it while enabling Linear webhooks.
+// than letting deepLinkFor emit a base-less relative link at request time. There
+// is no default base, so this fires whenever a deploy enables Linear webhooks
+// without setting --public-url / $COMPASS_PUBLIC_URL.
 func requirePublicURL(base string) error {
 	if strings.TrimSpace(base) == "" {
 		return errNoPublicURL
