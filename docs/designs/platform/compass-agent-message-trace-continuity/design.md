@@ -226,8 +226,8 @@ as it already denormalizes the author handle — `SteerControl.from_handle`,
 `immediate.steer(msg, wire.control.value.fromHandle)`). The turn then joins
 the SERVER's trace for that message: creation → routing → delivery → turn →
 tool calls, one connected trace. Cost: a cross-lane wire contract
-(compass-server stamps; the `AgentControl` wire is its lane), gated on Matt's
-ruling.
+(compass-server stamps; the `AgentControl` wire is its lane), authorized by
+Matt's OQ1 = (b) ruling.
 
 **(c) Attribute-only correlation — REJECTED, noted for completeness:** the
 turn already gets `compass.message.ids` stamped (Decision 1), and the
@@ -248,10 +248,11 @@ methods gain a `traceparent: string` arg (T2). Under (a) there is NO string at
 the boundary: the context is minted INSIDE the bridge at injection (T3′), so
 `steer`/`deliver` would take an internal mint seam, not a string. So the
 topology core lands first inert under EITHER ruling, but the `traceparent:
-string` signature on `steer`/`deliver`/`parseTraceparent` is (b)-shaped and
-FINALIZES only once Matt rules OQ1 — under (a) it is replaced by the T3′ mint
-seam. The ruling gates T3/T4 and this one signature detail, not the topology
-core. This record recommends (b): (a) delivers a trace that begins at the agent
+string` signature on `steer`/`deliver`/`parseTraceparent` is (b)-shaped and was
+finalized by Matt's OQ1 = (b) ruling — under the rejected (a) it would have been
+replaced by the T3′ mint seam. The ruling gates T3/T4 and this one signature
+detail, not the topology core. This record recommends (b): (a) delivers a trace
+that begins at the agent
 for a directive that asks for message-to-turn continuity, and the precedent
 (from_handle) shows the wire change is routine.
 
@@ -564,8 +565,8 @@ Interfaces:
   topology; `compass.message.ids` attribute; gated wiring in `cli.ts` (hooks
   installed by cli.ts into the telemetry option; DEPENDS on sibling-record T1
   merging first); bit-identical-off tests + the synchronicity canary. The
-  `traceparent: string` arg on steer/deliver/parseTraceparent is (b)-shaped and
-  FINALIZES on the OQ1 ruling — provisional until then (agent lane)
+  `traceparent: string` arg on steer/deliver/parseTraceparent is FINAL under
+  the OQ1 = (b) ruling — no T3′ mint-seam contingency remains (agent lane)
 - [ ] T3 — decode `traceparent` off `SteerControl`/`DeliverControl` through
   `ImmediateControl` to the agent (agent lane; after T4's proto)
 - [ ] T4 — proto field + server-side stamping at control-wrap time
