@@ -137,6 +137,37 @@ func (s *Store) AuthoredArtifactByRequestID(ctx context.Context, agent AccountID
 	return a, true, nil
 }
 
+// AuthoredArtifactByCoordinate reads the ownership row at a forge coordinate —
+// the by-coordinate lookup T4 uses to resolve a delegated issue's recorded
+// authoring agent (design compass-linear-agent-responder §Part 2). The forge
+// coordinate (provider, host, repo, kind, number) IS the
+// forge_authored_artifacts PK, so this is a trivial PK lookup: an unknown
+// coordinate is ErrNotFound; zero/empty coordinate fields (or a zero kind) are
+// ErrInvalidArgument, mirroring the validation RecordAuthoredArtifact applies.
+func (s *Store) AuthoredArtifactByCoordinate(ctx context.Context, provider ForgeProvider, host, repo string, kind ForgeArtifactKind, number uint64) (AuthoredArtifact, error) {
+	if err := validCoordinate(provider, host, repo); err != nil {
+		return AuthoredArtifact{}, err
+	}
+	if kind == ForgeArtifactKindUnspecified {
+		return AuthoredArtifact{}, fmt.Errorf("%w: artifact kind is required", ErrInvalidArgument)
+	}
+	row := s.pool.QueryRow(ctx,
+		`SELECT forge_provider, forge_host, repo, kind, number,
+		        agent_account_id, owner_user_id, session_id, client_request_id, created_at_unix_ms
+		   FROM forge_authored_artifacts
+		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND kind = $4 AND number = $5`,
+		int32(provider), host, repo, int32(kind), int64(number), //nolint:gosec // G115: number is a canonical forge artifact number (a positive issue/PR number) written to a BIGINT, always well within the int64 domain.
+	)
+	a, err := scanAuthoredArtifact(row)
+	if err != nil {
+		if noRows(err) {
+			return AuthoredArtifact{}, fmt.Errorf("%w: authored artifact at coordinate %d/%s/%s kind %d number %d", ErrNotFound, provider, host, repo, kind, number)
+		}
+		return AuthoredArtifact{}, fmt.Errorf("store: read authored artifact by coordinate: %w", err)
+	}
+	return a, nil
+}
+
 // ListAuthoredArtifactsByAgent reads every artifact the agent authored, ordered
 // deterministically by created_at then coordinate. No rows is a nil slice, not
 // an error. Zero agent -> ErrInvalidArgument.

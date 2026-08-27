@@ -15,14 +15,16 @@ import (
 var handleRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]*$`)
 
 // reservedHandles are handles no account may register. `compass` is the system
-// handle; `everyone`/`agents`/`users` are the server's reserved broadcast
-// mentions — an account registered as one of those would shadow a live
-// broadcast semantic. The reserved-mention names duplicate delivery's
-// reservedMentions (consumer.go:326, the source of truth) rather than importing
-// the delivery package, to avoid a store->delivery dependency; keep them in
-// sync.
+// handle and `linear` the Linear bridge system handle (both seeded as
+// system-subtype accounts, never registrable by a user/agent);
+// `everyone`/`agents`/`users` are the server's reserved broadcast mentions — an
+// account registered as one of those would shadow a live broadcast semantic.
+// The reserved-mention names duplicate delivery's reservedMentions
+// (consumer.go:326, the source of truth) rather than importing the delivery
+// package, to avoid a store->delivery dependency; keep them in sync.
 var reservedHandles = map[string]bool{
 	"compass":  true,
+	"linear":   true,
 	"everyone": true,
 	"agents":   true,
 	"users":    true,

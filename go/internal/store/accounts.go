@@ -141,6 +141,29 @@ func (s *Store) adminByHandle(ctx context.Context, handle string) (Account, erro
 // ErrConflict and fails startup — never silent adoption, mirroring
 // adminByHandle's posture.
 func (s *Store) EnsureSystemAccount(ctx context.Context) (Account, error) {
+	return s.ensureSystemSubtypeAccount(ctx, SystemAccountHandle, systemAccountDisplayName)
+}
+
+// EnsureLinearBridgeAccount ensures the reserved Linear bridge sender (@linear)
+// exists and returns it, idempotently — the author of Part 2 bridge posts. It
+// mints a SECOND system-subtype account beside @compass with the exact same
+// find-or-create shape (see ensureSystemSubtypeAccount): one accounts row plus a
+// system_accounts row on first boot, the existing row fetched on every later
+// boot. A pre-existing @linear row of the wrong shape is ErrConflict.
+func (s *Store) EnsureLinearBridgeAccount(ctx context.Context) (Account, error) {
+	return s.ensureSystemSubtypeAccount(ctx, LinearBridgeAccountHandle, linearBridgeDisplayName)
+}
+
+// ensureSystemSubtypeAccount is the shared find-or-create for a reserved
+// system-subtype account (handle + display name). Mirrors BootstrapAdmin's
+// unique-violation-means-fetch shape: on first boot it mints one accounts row
+// with a system_accounts subtype row — NOT a user or agent row; on every later
+// boot the insert hits the unique handle and the existing row is fetched and
+// returned. Its own insert is deliberately NOT routed through validateHandle:
+// this is the one path that mints a reserved handle. A pre-existing row of the
+// wrong shape (a user or agent row from a pre-guard database) is ErrConflict and
+// fails startup — never silent adoption, mirroring adminByHandle's posture.
+func (s *Store) ensureSystemSubtypeAccount(ctx context.Context, handle, displayName string) (Account, error) {
 	id := newID()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -150,11 +173,11 @@ func (s *Store) EnsureSystemAccount(ctx context.Context) (Account, error) {
 
 	if _, err := tx.Exec(ctx,
 		"INSERT INTO accounts (id, handle, display_name) VALUES ($1, $2, $3)",
-		id, SystemAccountHandle, systemAccountDisplayName,
+		id, handle, displayName,
 	); err != nil {
 		if pgErrIs(err, pgUniqueViolation) {
 			// Already seeded (restart): fetch and return the existing system account.
-			return s.systemByHandle(ctx, SystemAccountHandle)
+			return s.systemByHandle(ctx, handle)
 		}
 		return Account{}, fmt.Errorf("store: insert account: %w", err)
 	}
@@ -169,8 +192,8 @@ func (s *Store) EnsureSystemAccount(ctx context.Context) (Account, error) {
 
 	return Account{
 		ID:          AccountID(id),
-		Handle:      SystemAccountHandle,
-		DisplayName: systemAccountDisplayName,
+		Handle:      handle,
+		DisplayName: displayName,
 		System:      &SystemAccount{},
 	}, nil
 }

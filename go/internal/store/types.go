@@ -126,6 +126,16 @@ const SystemAccountHandle = "compass"
 // account by EnsureSystemAccount.
 const systemAccountDisplayName = "Compass"
 
+// LinearBridgeAccountHandle is the reserved handle of the Linear bridge system
+// sender (@linear), seeded by EnsureLinearBridgeAccount and rejected for
+// user/agent creation. Like SystemAccountHandle it names a system-subtype
+// account, minted at boot.
+const LinearBridgeAccountHandle = "linear"
+
+// linearBridgeDisplayName is the display name minted for the Linear bridge
+// system account by EnsureLinearBridgeAccount.
+const linearBridgeDisplayName = "Linear"
+
 // SystemAccount is the reserved system sender's payload: empty, because the row's
 // existence in system_accounts is the entire discriminator.
 type SystemAccount struct{}
