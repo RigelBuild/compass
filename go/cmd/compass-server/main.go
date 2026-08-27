@@ -446,9 +446,8 @@ func parseForgeRepos(repos string) ([]string, error) {
 	return out, nil
 }
 
-// firstNonEmpty returns the first non-empty argument (the flag-then-env, and
-// where a managed default follows, flag-then-env-then-default precedence used
-// across the server config), or "" when all are empty.
+// firstNonEmpty returns the first non-empty argument, or "" when all are empty —
+// the flag-then-env precedence used across the server config.
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {
