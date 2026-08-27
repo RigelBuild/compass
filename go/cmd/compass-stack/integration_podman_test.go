@@ -172,6 +172,13 @@ func newFixture(t *testing.T, shortRoot string) (stackFixture, stack.Deps) {
 		database:   dsn,
 		image:      agentImage,
 		runtimeDir: runtimeDir,
+		// Headless T2 stack emits no OTLP; opt out of the bundled collector so
+		// buildDeps wires no collector adapter (the real collector path is
+		// covered by collector_podman_test.go). Without this, a struct-literal
+		// configFlags bypasses newFlagSet's CollectorImage default, leaving both
+		// CollectorImage and ExternalOTLPEndpoint empty -> an empty-image
+		// `podman run` deep in the adapter.
+		otelExternal: "127.0.0.1:4317",
 	})
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)

@@ -45,6 +45,20 @@ type Config struct {
 	// at their own postgres. When false, the stack provisions its private
 	// postgres per PostgresImage (container or dev-path process).
 	ExternalDatabase bool
+	// CollectorImage selects the image the bundled Plane-B fan-in OTel Collector
+	// component runs (T4 / D3), mirroring PostgresImage. Non-empty is the
+	// installed-stack default: a container-backed collector run from this image
+	// ref (the pinned DefaultCollectorImage) via the Deps.CollectorContainer
+	// seam. The CLI slice resolves the default; the core applies none. Ignored
+	// when ExternalOTLPEndpoint is set (no collector component starts at all).
+	CollectorImage string
+	// ExternalOTLPEndpoint opts the stack out of starting the bundled collector
+	// entirely (T4 / D3, the --otel-external opt-out, the ExternalDatabase
+	// template). When set, Up skips the collector component and compass surfaces
+	// point their OTLP emission straight at this operator/managed-plane-supplied
+	// endpoint. Empty is the D3 default posture: the bundled collector is
+	// provisioned per CollectorImage (present and receiving, exporting nowhere).
+	ExternalOTLPEndpoint string
 	// AgentImage is the container image ref every agent workstream runs; the
 	// runner refuses to boot without it present in the local store.
 	AgentImage string
@@ -96,7 +110,8 @@ const sunPathMax = len(syscall.RawSockaddrUnix{}.Path) - 1
 // overflows the cap. Built with the same filepath.Join the runner uses rather
 // than hand-summed, so it tracks the real path construction.
 var agentSocketTailWidth = len(filepath.Join(
-	"containers", "compass-agent-"+strings.Repeat("0", 32), "agent.sock")) + 1 // +1 for the separator joining RuntimeDir to the tail
+	"containers", "compass-agent-"+strings.Repeat("0", 32), "agent.sock",
+)) + 1 // +1 for the separator joining RuntimeDir to the tail
 
 // Validate enforces the config invariants that would otherwise surface as opaque
 // runtime failures far from the misconfiguration: an unbindable network door and
@@ -118,7 +133,8 @@ func (c Config) Validate() error {
 	if budget := sunPathMax - agentSocketTailWidth; len(c.RuntimeDir) > budget {
 		return fmt.Errorf(
 			"stack config: RuntimeDir %q (%d bytes) is too long: the per-container agent socket tail adds %d bytes, over this platform's AF_UNIX sun_path limit of %d; RuntimeDir must be at most %d bytes (shorten it by at least %d)",
-			c.RuntimeDir, len(c.RuntimeDir), agentSocketTailWidth, sunPathMax, budget, len(c.RuntimeDir)-budget)
+			c.RuntimeDir, len(c.RuntimeDir), agentSocketTailWidth, sunPathMax, budget, len(c.RuntimeDir)-budget,
+		)
 	}
 	return nil
 }

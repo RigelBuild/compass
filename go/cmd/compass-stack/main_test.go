@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/RigelBuild/compass/go/internal/stack"
 )
 
 // baseFlags returns a configFlags with the two required fields set to valid
@@ -173,6 +175,80 @@ func TestResolveConfigContainerFlags(t *testing.T) {
 		pgdata := filepath.Join(dir, "postgres")
 		if strings.Contains(cfg.DatabaseDSN, "host="+pgdata+"/") {
 			t.Fatalf("default DSN %q nests the socket dir under PGDATA %q; container initdb would refuse it", cfg.DatabaseDSN, pgdata)
+		}
+	})
+}
+
+// TestResolveConfigCollectorFlags covers the T4 collector / --otel-external
+// flags: the endpoint threads into ExternalOTLPEndpoint, the collector image
+// defaults when unset, and an explicit-empty --otel-external is rejected.
+func TestResolveConfigCollectorFlags(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+	t.Setenv("COMPASS_DATABASE_DSN", "")
+
+	t.Run("otel-external threads into config", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.otelExternal = "otlp.example.com:4317"
+		f.otelExternalSet = true
+		cfg, err := resolveConfig(f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.ExternalOTLPEndpoint != f.otelExternal {
+			t.Errorf("ExternalOTLPEndpoint = %q, want %q", cfg.ExternalOTLPEndpoint, f.otelExternal)
+		}
+	})
+
+	t.Run("otel-external explicit empty is rejected", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.otelExternal = ""
+		f.otelExternalSet = true // the flag was passed with an empty value
+		_, err := resolveConfig(f)
+		if err == nil {
+			t.Fatal("resolveConfig(--otel-external \"\") = nil error, want a rejection")
+		}
+		if !strings.Contains(err.Error(), "--otel-external requires an explicit OTLP endpoint") {
+			t.Errorf("error = %v, want it to name the missing endpoint", err)
+		}
+	})
+
+	t.Run("otel-external unset is the D3 default (empty endpoint, bundle)", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		// otelExternalSet stays false: the flag was never passed.
+		cfg, err := resolveConfig(f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.ExternalOTLPEndpoint != "" {
+			t.Errorf("ExternalOTLPEndpoint = %q, want empty (bundle the collector)", cfg.ExternalOTLPEndpoint)
+		}
+	})
+
+	t.Run("collector-image threads into config", func(t *testing.T) {
+		f := baseFlags(t.TempDir())
+		f.collectorImage = "docker.io/otel/opentelemetry-collector-contrib@sha256:abc"
+		cfg, err := resolveConfig(f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.CollectorImage != f.collectorImage {
+			t.Errorf("CollectorImage = %q, want %q", cfg.CollectorImage, f.collectorImage)
+		}
+	})
+
+	t.Run("collector-image defaults to the pinned digest when flag-set via newFlagSet", func(t *testing.T) {
+		// newFlagSet registers --collector-image with DefaultCollectorImage as
+		// its default, so an unparsed flag set carries the pinned digest — the
+		// resolve path passes it through unchanged.
+		_, f := newFlagSet("up", true)
+		f.stateDir = t.TempDir()
+		f.image = "example.com/agent:latest"
+		cfg, err := resolveConfig(*f)
+		if err != nil {
+			t.Fatalf("resolveConfig: %v", err)
+		}
+		if cfg.CollectorImage != stack.DefaultCollectorImage {
+			t.Errorf("CollectorImage = %q, want the pinned default %q", cfg.CollectorImage, stack.DefaultCollectorImage)
 		}
 	})
 }

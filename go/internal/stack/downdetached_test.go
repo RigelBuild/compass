@@ -45,14 +45,15 @@ func downTestDeps(t *testing.T, h *harness) Deps {
 // test, restoring them after. Small but nonzero so the deadline math is real.
 func shrinkBudgets(t *testing.T) {
 	t.Helper()
-	pr, ps, pp, pk, pi := runnerDrainBudget, serverDrainBudget, postgresDrainBudget, postKillGrace, downPollInterval
+	pr, ps, pp, pc, pk, pi := runnerDrainBudget, serverDrainBudget, postgresDrainBudget, collectorDrainBudget, postKillGrace, downPollInterval
 	runnerDrainBudget = 20 * time.Millisecond
 	serverDrainBudget = 20 * time.Millisecond
 	postgresDrainBudget = 20 * time.Millisecond
+	collectorDrainBudget = 20 * time.Millisecond
 	postKillGrace = 20 * time.Millisecond
 	downPollInterval = time.Millisecond
 	t.Cleanup(func() {
-		runnerDrainBudget, serverDrainBudget, postgresDrainBudget, postKillGrace, downPollInterval = pr, ps, pp, pk, pi
+		runnerDrainBudget, serverDrainBudget, postgresDrainBudget, collectorDrainBudget, postKillGrace, downPollInterval = pr, ps, pp, pc, pk, pi
 	})
 }
 
@@ -600,6 +601,123 @@ func TestDownDetachedContainerGoneIsSkipped(t *testing.T) {
 	}
 	if events := ctrEvents(h.rec.snapshot()); len(events) != 0 {
 		t.Fatalf("a gone container must not be signaled: %v", events)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// The stable name a v2 collector container entry carries in these tests.
+const collectorContainerNameTest = "compass-otel-collector-test01"
+
+// seedCollectorRecord writes a v2 record whose collector entry is a container
+// (ctr) sitting between the server and postgres process entries — the exact
+// start-order shape a real up records — and marks all four children live. This
+// is the hermetic guard for the cross-process collector teardown: the invariant
+// that broke once (liveTargets not knowing ComponentCollector, so a detached
+// down silently skipped the container and leaked it) is invisible on the
+// podman-gated integration test but caught here on every default-CI run.
+func seedCollectorRecord(t *testing.T, cfg Config, h *harness) {
+	t.Helper()
+	rec := pgidRecord{
+		WriterPid: 4242,
+		Version:   pgidFileVersion,
+		Entries: []pgidEntry{
+			{Kind: entryProc, Component: ComponentPostgres, Pgid: pgPgid, StartTime: pgToken(pgPgid)},
+			{Kind: entryProc, Component: ComponentServer, Pgid: serverPgid, StartTime: pgToken(serverPgid)},
+			{Kind: entryContainer, Component: ComponentCollector, ContainerName: collectorContainerNameTest},
+			{Kind: entryProc, Component: ComponentRunner, Pgid: runnerPgid, StartTime: pgToken(runnerPgid)},
+		},
+	}
+	if err := writePgidFile(cfg.StateDir, rec); err != nil {
+		t.Fatalf("seed collector record = %v", err)
+	}
+	h.containers.setExistsName(collectorContainerNameTest, true)
+	h.groupSig.set(pgPgid, pgToken(pgPgid), true)
+	h.groupSig.set(serverPgid, pgToken(serverPgid), true)
+	h.groupSig.set(runnerPgid, pgToken(runnerPgid), true)
+}
+
+// collectorDownDeps points the collector confirm at container existence while
+// the server/postgres confirms track their group liveness (they are processes
+// in this record).
+func collectorDownDeps(t *testing.T, h *harness) Deps {
+	t.Helper()
+	deps := downTestDeps(t, h)
+	deps.Containers = h.containers
+	return deps
+}
+
+// indexOf returns the position of want in events, or -1.
+func indexOf(events []string, want string) int {
+	for i, e := range events {
+		if e == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestDownDetachedCollectorContainerTornDownByName proves the cross-process
+// teardown of the bundled collector: a detached down reads the v2 record, stops
+// the collector container BY NAME (graceful, no rm -f) and in reverse start
+// order — after the server is signaled, before postgres. A regression dropping
+// ComponentCollector from liveTargets' order slice fails here (the container is
+// never stopped), on every default-CI run.
+func TestDownDetachedCollectorContainerTornDownByName(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedCollectorRecord(t, cfg, h)
+	deps := collectorDownDeps(t, h)
+
+	for _, pgid := range []int{pgPgid, serverPgid, runnerPgid} {
+		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
+	}
+	h.containers.onStop[collectorContainerNameTest] = func() {
+		h.containers.setExistsName(collectorContainerNameTest, false)
+	}
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil", err)
+	}
+
+	// The collector was stopped by name, gracefully (no rm -f escalation).
+	if got := ctrEvents(h.rec.snapshot()); !reflect.DeepEqual(got, []string{"ctr-stop " + collectorContainerNameTest}) {
+		t.Fatalf("collector teardown:\n got  %v\n want [ctr-stop %s] (graceful, by name)", got, collectorContainerNameTest)
+	}
+	// Reverse start order: the collector stop lands after the server SIGTERM and
+	// before the postgres SIGTERM (runner → server → collector → postgres).
+	ev := h.rec.snapshot()
+	iServer := indexOf(ev, "group-term "+strconv.Itoa(serverPgid))
+	iColl := indexOf(ev, "ctr-stop "+collectorContainerNameTest)
+	iPg := indexOf(ev, "group-term "+strconv.Itoa(pgPgid))
+	if !(iServer >= 0 && iColl >= 0 && iPg >= 0 && iServer < iColl && iColl < iPg) {
+		t.Fatalf("teardown order wrong: server@%d collector@%d postgres@%d; want server<collector<postgres in %v", iServer, iColl, iPg, ev)
+	}
+	assertPgidFileGone(t, cfg.StateDir)
+}
+
+// TestDownDetachedCollectorEscalatesToRemove proves the collector SIGKILL tier:
+// a collector container that ignores `podman stop` is force-removed by
+// `podman rm -f`, then (existence gone) confirmed — the container escalation for
+// the collector entry specifically.
+func TestDownDetachedCollectorEscalatesToRemove(t *testing.T) {
+	cfg, h := newHarness(t)
+	seedCollectorRecord(t, cfg, h)
+	deps := collectorDownDeps(t, h)
+
+	for _, pgid := range []int{pgPgid, serverPgid, runnerPgid} {
+		h.groupSig.onTerm[pgid] = func() { h.groupSig.set(pgid, pgToken(pgid), false) }
+	}
+	// The collector ignores stop, only dying on rm -f.
+	h.containers.onRemove[collectorContainerNameTest] = func() {
+		h.containers.setExistsName(collectorContainerNameTest, false)
+	}
+
+	if err := DownDetached(context.Background(), cfg, deps); err != nil {
+		t.Fatalf("DownDetached = %v, want nil", err)
+	}
+	got := ctrEvents(h.rec.snapshot())
+	want := []string{"ctr-stop " + collectorContainerNameTest, "ctr-rm " + collectorContainerNameTest}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("collector escalation:\n got  %v\n want %v (stop then rm -f)", got, want)
 	}
 	assertPgidFileGone(t, cfg.StateDir)
 }

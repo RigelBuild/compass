@@ -14,24 +14,31 @@ import (
 
 // Per-component drain budgets: after SIGTERM, how long DownDetached waits for a
 // component's confirmation channel to go quiet before escalating to a group
-// SIGKILL. Reverse start order (runner → server → postgres); the server's
-// graceful drain is the long pole. On the SIGTERM-succeeds path they sum to 55s;
-// on the escalation path the two socket-confirmed components each add a
-// postKillGrace, so the true worst case is 15 + (30+5) + (10+5) = 65s. That can
-// exceed the app's 60s stackDownTimeout (lifecycle.go:35) — and is bounded by
-// its ctx cancellation, not by this arithmetic: on ctx.Done waitDead returns the
-// current dead() verdict, so an overrun becomes a partial-failure survivor
-// rewrite + loud report (Open Question 2), never an unbounded wait. They are
-// package vars, not consts, so tests can shrink them; the budget is enforced via
-// deps.now(), so a test drives expiry with a controlled clock rather than real
-// waiting.
+// SIGKILL. Reverse start order (runner → server → collector → postgres); the
+// server's graceful drain is the long pole. On the SIGTERM-succeeds path they
+// sum to 65s; on the escalation path the three non-runner components each add a
+// postKillGrace, so the true worst case is 15 + (30+5) + (10+5) + (10+5) = 80s.
+// That can exceed the app's 60s stackDownTimeout (lifecycle.go:35) — and is
+// bounded by its ctx cancellation, not by this arithmetic: on ctx.Done waitDead
+// returns the current dead() verdict, so an overrun becomes a partial-failure
+// survivor rewrite + loud report (Open Question 2), never an unbounded wait.
+// They are package vars, not consts, so tests can shrink them; the budget is
+// enforced via deps.now(), so a test drives expiry with a controlled clock
+// rather than real waiting.
 var (
 	runnerDrainBudget   = 15 * time.Second
 	serverDrainBudget   = 30 * time.Second
 	postgresDrainBudget = 10 * time.Second
-	// postKillGrace bounds the confirm after a group SIGKILL for the
-	// socket-confirmed components (server, postgres): SIGKILL is unblockable, so
-	// a socket still answering past this grace is a genuine survivor, not a
+	// collectorDrainBudget bounds the collector container's graceful `podman
+	// stop` before the `podman rm -f` escalation. The collector holds no on-disk
+	// state to drain (D3 drops rather than buffering), so it stops fast; the
+	// budget matches postgres's container-drain tier for parity.
+	collectorDrainBudget = 10 * time.Second
+	// postKillGrace bounds the confirm after the hard kill for the non-runner
+	// components (server, collector, postgres): the kill is unblockable
+	// (group SIGKILL for the socket children, `podman rm -f` for the container),
+	// so a component still confirming alive past this grace — a socket still
+	// answering, or the container still existing — is a genuine survivor, not a
 	// zombie. The runner (group-ESRCH confirmed) needs no grace — see drainTarget.
 	postKillGrace = 5 * time.Second
 	// downPollInterval paces the confirmation polls. Real wall-time; a test
@@ -160,7 +167,7 @@ type target struct {
 }
 
 // liveTargets returns the identity-matched live groups in reverse start order
-// (runner → server → postgres). Each recorded group is checked with
+// (runner → server → collector → postgres). Each recorded group is checked with
 // GroupSignaller.Alive (existence AND start-time identity); a gone or recycled
 // group is omitted — never signaled.
 func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []target {
@@ -184,6 +191,14 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 		{ComponentServer, serverDrainBudget, func(pgidEntry) func() bool {
 			// Socket quiescence: the UDS stops answering GetServerInfo.
 			return func() bool { _, err := deps.Prober.Probe(ctx, cfg.SocketPath); return err != nil }
+		}},
+		{ComponentCollector, collectorDrainBudget, func(e pgidEntry) func() bool {
+			// Container existence: the collector is a container child (like the
+			// container-backed postgres), torn down by name; it is confirmed gone
+			// when `podman container exists` reports absent. Reverse start order
+			// places it after the server (which emits to it in T4b) and before
+			// postgres.
+			return func() bool { return !deps.Containers.Exists(e.ContainerName) }
 		}},
 		{ComponentPostgres, postgresDrainBudget, func(pgidEntry) func() bool {
 			// Socket quiescence: postgres stops accepting on the DSN socket.
