@@ -18,7 +18,6 @@ package comms
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"connectrpc.com/connect"
 
@@ -117,18 +116,25 @@ func (c *Comms) CreateAgent(
 	// authorized correctly, and the store's owner_user_id FK (which requires a
 	// user) is satisfied.
 	// A supplied parent is validated before the account is minted (§Server
-	// validation, applied on creation too): it must exist (clause 3 → NotFound)
-	// and belong to the creating caller's owner (clauses 0/1 → PermissionDenied,
-	// since the creator owns what it creates). Clause 2 (cycle) cannot arise on
-	// create — a new account has no descendants.
-	if parent := req.Msg.GetParentAgentId(); parent != "" {
-		parentOwner, err := c.store.AgentOwner(ctx, store.AccountID(parent))
+	// validation, applied on creation too): the parent_handle must resolve to an
+	// existing agent (clause 3 → NotFound) that belongs to the creating caller's
+	// owner. Clause 2 (cycle) cannot arise on create — a new account has no
+	// descendants. Oracle-safe remap (DL-269): a resolved-but-foreign parent
+	// (an owner-qualified handle naming another owner's agent) is byte-identical
+	// to an unknown one — NOT_FOUND naming the SUBMITTED handle, never the old
+	// PermissionDenied "different owner" that leaked the parent's existence.
+	var parentID store.AccountID
+	if parent := req.Msg.GetParentHandle(); parent != "" {
+		parentID, err = c.resolveAgentHandle(ctx, caller, parent)
 		if err != nil {
-			return nil, edgeError(err) // ErrNotFound → NotFound
+			return nil, edgeError(err) // resolver miss → NOT_FOUND naming the handle
+		}
+		parentOwner, err := c.store.AgentOwner(ctx, parentID)
+		if err != nil {
+			return nil, edgeError(notFoundHandle(err, parent))
 		}
 		if parentOwner != owner {
-			return nil, connect.NewError(connect.CodePermissionDenied,
-				fmt.Errorf("parent agent %q has a different owner", parent))
+			return nil, edgeError(notFoundHandle(store.ErrNotFound, parent))
 		}
 	}
 	// Install the coordination emit buffer so the store's in-tx coordination hook
@@ -138,7 +144,7 @@ func (c *Comms) CreateAgent(
 	acc, err := c.store.CreateAgent(ctx, owner, store.NewAgent{
 		Handle:        req.Msg.GetHandle(),
 		DisplayName:   req.Msg.GetDisplayName(),
-		ParentAgentID: store.AccountID(req.Msg.GetParentAgentId()),
+		ParentAgentID: parentID,
 	})
 	if err != nil {
 		return nil, edgeError(err)
@@ -221,11 +227,16 @@ func (c *Comms) CreateChannel(
 	ctx context.Context,
 	req *connect.Request[compassv1.CreateChannelRequest],
 ) (*connect.Response[compassv1.CreateChannelResponse], error) {
-	ch, err := c.store.CreateChannel(ctx, c.actorFromContext(ctx), store.NewChannel{
+	caller := c.actorFromContext(ctx)
+	members, err := c.resolveHandles(ctx, caller, req.Msg.GetMemberHandles())
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	ch, err := c.store.CreateChannel(ctx, caller, store.NewChannel{
 		Name:             req.Msg.GetName(),
 		GroupID:          store.ChannelGroupID(req.Msg.GetGroupId()),
 		Kind:             channelKindFromWire(req.Msg.GetKind()),
-		MemberAccountIDs: accountIDsFromWire(req.Msg.GetMemberAccountIds()),
+		MemberAccountIDs: members,
 	})
 	if err != nil {
 		return nil, edgeError(err)
@@ -243,11 +254,16 @@ func (c *Comms) UpdateChannelMembers(
 	ctx context.Context,
 	req *connect.Request[compassv1.UpdateChannelMembersRequest],
 ) (*connect.Response[compassv1.UpdateChannelMembersResponse], error) {
+	caller := c.actorFromContext(ctx)
+	updates, err := c.memberUpdatesFromWire(ctx, caller, req.Msg)
+	if err != nil {
+		return nil, edgeError(err)
+	}
 	ch, removed, err := c.store.UpdateChannelMembers(
 		ctx,
-		c.actorFromContext(ctx),
+		caller,
 		store.ChannelID(req.Msg.GetChannelId()),
-		memberUpdatesFromWire(req.Msg),
+		updates,
 	)
 	if err != nil {
 		return nil, edgeError(err)
@@ -271,13 +287,35 @@ func (c *Comms) ReparentAgent(
 	// (fired inside ReparentAgent for both the new and old managers) records its
 	// channel changes here; drained + emitted post-commit below (SEA-1722 T5).
 	ctx, coordChanges := withCoordChanges(ctx)
+	caller := c.actorFromContext(ctx)
+	agentID, err := c.resolveAgentHandle(ctx, caller, req.Msg.GetAgentHandle())
+	if err != nil {
+		return nil, edgeError(err)
+	}
+	// new_parent_handle empty ⇒ promote to root (no parent to resolve).
+	var newParentID store.AccountID
+	if h := req.Msg.GetNewParentHandle(); h != "" {
+		newParentID, err = c.resolveAgentHandle(ctx, caller, h)
+		if err != nil {
+			return nil, edgeError(err)
+		}
+	}
 	acc, err := c.store.ReparentAgent(
 		ctx,
-		c.actorFromContext(ctx),
-		store.AccountID(req.Msg.GetAgentAccountId()),
-		store.AccountID(req.Msg.GetNewParentAgentId()),
+		caller,
+		agentID,
+		newParentID,
 	)
 	if err != nil {
+		// Oracle-safe remap (DL-269): the store's clause-0 authority failure
+		// (ErrPermissionDenied "caller may not re-parent agent %q") on a resolved
+		// but foreign agent must be byte-identical to the unknown-handle
+		// NOT_FOUND — a real-but-foreign handle is guessable, so it cannot leak a
+		// distinct code/message. Re-key it to NOT_FOUND naming the SUBMITTED
+		// agent handle, never the resolved id.
+		if errors.Is(err, store.ErrPermissionDenied) {
+			return nil, edgeError(notFoundHandle(store.ErrNotFound, req.Msg.GetAgentHandle()))
+		}
 		return nil, edgeError(err)
 	}
 	c.publishAccountChanged(acc)
@@ -294,12 +332,20 @@ func (c *Comms) OpenAgentWorkspace(
 	ctx context.Context,
 	req *connect.Request[compassv1.OpenAgentWorkspaceRequest],
 ) (*connect.Response[compassv1.OpenAgentWorkspaceResponse], error) {
-	ws, err := c.store.OpenAgentWorkspace(
-		ctx,
-		c.actorFromContext(ctx),
-		store.AccountID(req.Msg.GetAgentAccountId()),
-	)
+	caller := c.actorFromContext(ctx)
+	agentID, err := c.resolveAgentHandle(ctx, caller, req.Msg.GetAgentHandle())
 	if err != nil {
+		return nil, edgeError(err)
+	}
+	ws, err := c.store.OpenAgentWorkspace(ctx, caller, agentID)
+	if err != nil {
+		// The store names the resolved ACCOUNT ID in its NOT_FOUND (`agent %q`)
+		// and edgeError maps store errors verbatim — leaking the resolved id of
+		// an invisible target. Re-key to name the SUBMITTED handle (DL-269), so
+		// an invisible/unknown/foreign target is byte-identical.
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, edgeError(notFoundHandle(store.ErrNotFound, req.Msg.GetAgentHandle()))
+		}
 		return nil, edgeError(err)
 	}
 	c.publishAgentWorkspaceChanged(ws)
@@ -467,13 +513,25 @@ func (c *Comms) SetChannelPolicy(
 	ctx context.Context,
 	req *connect.Request[compassv1.SetChannelPolicyRequest],
 ) (*connect.Response[compassv1.SetChannelPolicyResponse], error) {
+	caller := c.actorFromContext(ctx)
+	// owner_handle empty ⇒ the channel is left unowned (no resolution). A
+	// non-empty owner_handle names a user OR agent, so it resolves through the
+	// general batch resolver; a miss is NOT_FOUND naming the submitted handle.
+	var ownerID store.AccountID
+	if h := req.Msg.GetOwnerHandle(); h != "" {
+		ids, err := c.resolveHandles(ctx, caller, []string{h})
+		if err != nil {
+			return nil, edgeError(err)
+		}
+		ownerID = ids[0]
+	}
 	ch, err := c.store.SetChannelPolicy(
 		ctx,
-		c.actorFromContext(ctx),
+		caller,
 		store.ChannelID(req.Msg.GetChannelId()),
 		store.ChannelPolicy{
 			PostPolicy:            channelPostPolicyFromWire(req.Msg.GetPostPolicy()),
-			OwnerAccountID:        store.AccountID(req.Msg.GetOwnerAccountId()),
+			OwnerAccountID:        ownerID,
 			MandatorySubscription: req.Msg.GetMandatorySubscription(),
 		},
 	)
@@ -492,7 +550,7 @@ func (c *Comms) GetRoster(
 	ctx context.Context,
 	req *connect.Request[compassv1.GetRosterRequest],
 ) (*connect.Response[compassv1.GetRosterResponse], error) {
-	entries, err := c.roster(ctx, c.actorFromContext(ctx), req.Msg.GetAgentAccountId(), req.Msg.GetScope())
+	entries, err := c.roster(ctx, c.actorFromContext(ctx), req.Msg.GetVantageHandle(), req.Msg.GetScope())
 	if err != nil {
 		return nil, err
 	}

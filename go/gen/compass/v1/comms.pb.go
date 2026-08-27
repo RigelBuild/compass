@@ -2429,10 +2429,10 @@ type CreateAgentRequest struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	Handle      string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
 	DisplayName string                 `protobuf:"bytes,2,opt,name=display_name,json=displayName,proto3" json:"display_name,omitempty"`
-	// Optional parent in the agent tree; empty = root. The server validates it
-	// (must resolve to an existing agent under the caller's resolved owner) before
-	// set-at-creation.
-	ParentAgentId string `protobuf:"bytes,3,opt,name=parent_agent_id,json=parentAgentId,proto3" json:"parent_agent_id,omitempty"`
+	// Optional parent in the agent tree; empty = root. A `@handle`; the server
+	// resolves it to an account id; unknown → NOT_FOUND. Resolves owner-qualified
+	// (a bare handle defaults to the caller's own owner namespace).
+	ParentHandle  string `protobuf:"bytes,3,opt,name=parent_handle,json=parentHandle,proto3" json:"parent_handle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2481,9 +2481,9 @@ func (x *CreateAgentRequest) GetDisplayName() string {
 	return ""
 }
 
-func (x *CreateAgentRequest) GetParentAgentId() string {
+func (x *CreateAgentRequest) GetParentHandle() string {
 	if x != nil {
-		return x.ParentAgentId
+		return x.ParentHandle
 	}
 	return ""
 }
@@ -2916,10 +2916,11 @@ type CreateChannelRequest struct {
 	// owner-scoped channel.
 	GroupId string      `protobuf:"bytes,2,opt,name=group_id,json=groupId,proto3" json:"group_id,omitempty"`
 	Kind    ChannelKind `protobuf:"varint,3,opt,name=kind,proto3,enum=compass.v1.ChannelKind" json:"kind,omitempty"`
-	// Initial members party to the channel.
-	MemberAccountIds []string `protobuf:"bytes,4,rep,name=member_account_ids,json=memberAccountIds,proto3" json:"member_account_ids,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Initial members party to the channel. Each is a `@handle`; the server
+	// resolves it to an account id; unknown → NOT_FOUND.
+	MemberHandles []string `protobuf:"bytes,4,rep,name=member_handles,json=memberHandles,proto3" json:"member_handles,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateChannelRequest) Reset() {
@@ -2973,9 +2974,9 @@ func (x *CreateChannelRequest) GetKind() ChannelKind {
 	return ChannelKind_CHANNEL_KIND_CHANNEL
 }
 
-func (x *CreateChannelRequest) GetMemberAccountIds() []string {
+func (x *CreateChannelRequest) GetMemberHandles() []string {
 	if x != nil {
-		return x.MemberAccountIds
+		return x.MemberHandles
 	}
 	return nil
 }
@@ -3028,16 +3029,21 @@ type UpdateChannelMembersRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The channel to mutate.
 	ChannelId string `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
-	// Accounts to add as members (join, read access).
-	AddMemberAccountIds []string `protobuf:"bytes,2,rep,name=add_member_account_ids,json=addMemberAccountIds,proto3" json:"add_member_account_ids,omitempty"`
-	// Accounts to remove from membership.
-	RemoveMemberAccountIds []string `protobuf:"bytes,3,rep,name=remove_member_account_ids,json=removeMemberAccountIds,proto3" json:"remove_member_account_ids,omitempty"`
+	// Accounts to add as members (join, read access). Each is a `@handle`; the
+	// server resolves it to an account id; unknown → NOT_FOUND.
+	AddMemberHandles []string `protobuf:"bytes,2,rep,name=add_member_handles,json=addMemberHandles,proto3" json:"add_member_handles,omitempty"`
+	// Accounts to remove from membership. Each is a `@handle`; the server
+	// resolves it to an account id; unknown → NOT_FOUND.
+	RemoveMemberHandles []string `protobuf:"bytes,3,rep,name=remove_member_handles,json=removeMemberHandles,proto3" json:"remove_member_handles,omitempty"`
 	// Members to mark subscribed (push opt-in); must be current or added members.
-	SubscribeAccountIds []string `protobuf:"bytes,4,rep,name=subscribe_account_ids,json=subscribeAccountIds,proto3" json:"subscribe_account_ids,omitempty"`
-	// Members to mark unsubscribed (read-only).
-	UnsubscribeAccountIds []string `protobuf:"bytes,5,rep,name=unsubscribe_account_ids,json=unsubscribeAccountIds,proto3" json:"unsubscribe_account_ids,omitempty"`
-	unknownFields         protoimpl.UnknownFields
-	sizeCache             protoimpl.SizeCache
+	// Each is a `@handle`; the server resolves it to an account id; unknown →
+	// NOT_FOUND.
+	SubscribeHandles []string `protobuf:"bytes,4,rep,name=subscribe_handles,json=subscribeHandles,proto3" json:"subscribe_handles,omitempty"`
+	// Members to mark unsubscribed (read-only). Each is a `@handle`; the server
+	// resolves it to an account id; unknown → NOT_FOUND.
+	UnsubscribeHandles []string `protobuf:"bytes,5,rep,name=unsubscribe_handles,json=unsubscribeHandles,proto3" json:"unsubscribe_handles,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *UpdateChannelMembersRequest) Reset() {
@@ -3077,30 +3083,30 @@ func (x *UpdateChannelMembersRequest) GetChannelId() string {
 	return ""
 }
 
-func (x *UpdateChannelMembersRequest) GetAddMemberAccountIds() []string {
+func (x *UpdateChannelMembersRequest) GetAddMemberHandles() []string {
 	if x != nil {
-		return x.AddMemberAccountIds
+		return x.AddMemberHandles
 	}
 	return nil
 }
 
-func (x *UpdateChannelMembersRequest) GetRemoveMemberAccountIds() []string {
+func (x *UpdateChannelMembersRequest) GetRemoveMemberHandles() []string {
 	if x != nil {
-		return x.RemoveMemberAccountIds
+		return x.RemoveMemberHandles
 	}
 	return nil
 }
 
-func (x *UpdateChannelMembersRequest) GetSubscribeAccountIds() []string {
+func (x *UpdateChannelMembersRequest) GetSubscribeHandles() []string {
 	if x != nil {
-		return x.SubscribeAccountIds
+		return x.SubscribeHandles
 	}
 	return nil
 }
 
-func (x *UpdateChannelMembersRequest) GetUnsubscribeAccountIds() []string {
+func (x *UpdateChannelMembersRequest) GetUnsubscribeHandles() []string {
 	if x != nil {
-		return x.UnsubscribeAccountIds
+		return x.UnsubscribeHandles
 	}
 	return nil
 }
@@ -3151,12 +3157,14 @@ func (x *UpdateChannelMembersResponse) GetChannel() *Channel {
 
 type ReparentAgentRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The agent to move.
-	AgentAccountId string `protobuf:"bytes,1,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
-	// The new parent; empty promotes the agent to a root.
-	NewParentAgentId string `protobuf:"bytes,2,opt,name=new_parent_agent_id,json=newParentAgentId,proto3" json:"new_parent_agent_id,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The agent to move. A `@handle`; the server resolves it to an account id;
+	// unknown → NOT_FOUND.
+	AgentHandle string `protobuf:"bytes,1,opt,name=agent_handle,json=agentHandle,proto3" json:"agent_handle,omitempty"`
+	// The new parent; empty promotes the agent to a root. A `@handle`; the server
+	// resolves it to an account id; unknown → NOT_FOUND.
+	NewParentHandle string `protobuf:"bytes,2,opt,name=new_parent_handle,json=newParentHandle,proto3" json:"new_parent_handle,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ReparentAgentRequest) Reset() {
@@ -3189,16 +3197,16 @@ func (*ReparentAgentRequest) Descriptor() ([]byte, []int) {
 	return file_compass_v1_comms_proto_rawDescGZIP(), []int{41}
 }
 
-func (x *ReparentAgentRequest) GetAgentAccountId() string {
+func (x *ReparentAgentRequest) GetAgentHandle() string {
 	if x != nil {
-		return x.AgentAccountId
+		return x.AgentHandle
 	}
 	return ""
 }
 
-func (x *ReparentAgentRequest) GetNewParentAgentId() string {
+func (x *ReparentAgentRequest) GetNewParentHandle() string {
 	if x != nil {
-		return x.NewParentAgentId
+		return x.NewParentHandle
 	}
 	return ""
 }
@@ -3253,8 +3261,9 @@ type SetChannelPolicyRequest struct {
 	ChannelId string `protobuf:"bytes,1,opt,name=channel_id,json=channelId,proto3" json:"channel_id,omitempty"`
 	// The new post policy.
 	PostPolicy ChannelPostPolicy `protobuf:"varint,2,opt,name=post_policy,json=postPolicy,proto3,enum=compass.v1.ChannelPostPolicy" json:"post_policy,omitempty"`
-	// The owner/operator account for the channel; empty leaves it unowned.
-	OwnerAccountId string `protobuf:"bytes,3,opt,name=owner_account_id,json=ownerAccountId,proto3" json:"owner_account_id,omitempty"`
+	// The owner/operator account for the channel; empty leaves it unowned. A
+	// `@handle`; the server resolves it to an account id; unknown → NOT_FOUND.
+	OwnerHandle string `protobuf:"bytes,3,opt,name=owner_handle,json=ownerHandle,proto3" json:"owner_handle,omitempty"`
 	// Whether membership implies a non-togglable subscription.
 	MandatorySubscription bool `protobuf:"varint,4,opt,name=mandatory_subscription,json=mandatorySubscription,proto3" json:"mandatory_subscription,omitempty"`
 	unknownFields         protoimpl.UnknownFields
@@ -3305,9 +3314,9 @@ func (x *SetChannelPolicyRequest) GetPostPolicy() ChannelPostPolicy {
 	return ChannelPostPolicy_CHANNEL_POST_POLICY_OPEN
 }
 
-func (x *SetChannelPolicyRequest) GetOwnerAccountId() string {
+func (x *SetChannelPolicyRequest) GetOwnerHandle() string {
 	if x != nil {
-		return x.OwnerAccountId
+		return x.OwnerHandle
 	}
 	return ""
 }
@@ -3368,11 +3377,12 @@ type GetRosterRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The vantage the roster is computed around.
 	Scope RosterScope `protobuf:"varint,1,opt,name=scope,proto3,enum=compass.v1.RosterScope" json:"scope,omitempty"`
-	// The agent whose vantage to use. Optional for human/UI callers naming a
-	// vantage point; an agent caller gets it session-resolved server-side.
-	AgentAccountId string `protobuf:"bytes,2,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The vantage whose roster to compute. A `@handle`; empty ⇒ the caller's own
+	// vantage (an agent caller is session-resolved server-side), non-empty ⇒ the
+	// server resolves it to an account id; unknown → NOT_FOUND.
+	VantageHandle string `protobuf:"bytes,2,opt,name=vantage_handle,json=vantageHandle,proto3" json:"vantage_handle,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetRosterRequest) Reset() {
@@ -3412,9 +3422,9 @@ func (x *GetRosterRequest) GetScope() RosterScope {
 	return RosterScope_ROSTER_SCOPE_NEIGHBORHOOD
 }
 
-func (x *GetRosterRequest) GetAgentAccountId() string {
+func (x *GetRosterRequest) GetVantageHandle() string {
 	if x != nil {
-		return x.AgentAccountId
+		return x.VantageHandle
 	}
 	return ""
 }
@@ -3752,10 +3762,11 @@ func (x *UpdatePinnedBoardResponse) GetChannel() *Channel {
 
 type OpenAgentWorkspaceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The agent account to open the workspace (ACP surface) for.
-	AgentAccountId string `protobuf:"bytes,1,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// The agent account to open the workspace (ACP surface) for. A `@handle`; the
+	// server resolves it to an account id; unknown → NOT_FOUND.
+	AgentHandle   string `protobuf:"bytes,1,opt,name=agent_handle,json=agentHandle,proto3" json:"agent_handle,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *OpenAgentWorkspaceRequest) Reset() {
@@ -3788,9 +3799,9 @@ func (*OpenAgentWorkspaceRequest) Descriptor() ([]byte, []int) {
 	return file_compass_v1_comms_proto_rawDescGZIP(), []int{51}
 }
 
-func (x *OpenAgentWorkspaceRequest) GetAgentAccountId() string {
+func (x *OpenAgentWorkspaceRequest) GetAgentHandle() string {
 	if x != nil {
-		return x.AgentAccountId
+		return x.AgentHandle
 	}
 	return ""
 }
@@ -4875,11 +4886,11 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x06handle\x18\x01 \x01(\tR\x06handle\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\"C\n" +
 	"\x12CreateUserResponse\x12-\n" +
-	"\aaccount\x18\x01 \x01(\v2\x13.compass.v1.AccountR\aaccount\"w\n" +
+	"\aaccount\x18\x01 \x01(\v2\x13.compass.v1.AccountR\aaccount\"t\n" +
 	"\x12CreateAgentRequest\x12\x16\n" +
 	"\x06handle\x18\x01 \x01(\tR\x06handle\x12!\n" +
-	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12&\n" +
-	"\x0fparent_agent_id\x18\x03 \x01(\tR\rparentAgentId\"D\n" +
+	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12#\n" +
+	"\rparent_handle\x18\x03 \x01(\tR\fparentHandle\"D\n" +
 	"\x13CreateAgentResponse\x12-\n" +
 	"\aaccount\x18\x01 \x01(\v2\x13.compass.v1.AccountR\aaccount\"8\n" +
 	"\x13ListAccountsRequest\x12!\n" +
@@ -4901,40 +4912,40 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"\x13ListChannelsRequest\x12!\n" +
 	"\fsnapshot_seq\x18\x01 \x01(\x04R\vsnapshotSeq\"G\n" +
 	"\x14ListChannelsResponse\x12/\n" +
-	"\bchannels\x18\x01 \x03(\v2\x13.compass.v1.ChannelR\bchannels\"\xa0\x01\n" +
+	"\bchannels\x18\x01 \x03(\v2\x13.compass.v1.ChannelR\bchannels\"\x99\x01\n" +
 	"\x14CreateChannelRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x19\n" +
 	"\bgroup_id\x18\x02 \x01(\tR\agroupId\x12+\n" +
-	"\x04kind\x18\x03 \x01(\x0e2\x17.compass.v1.ChannelKindR\x04kind\x12,\n" +
-	"\x12member_account_ids\x18\x04 \x03(\tR\x10memberAccountIds\"F\n" +
+	"\x04kind\x18\x03 \x01(\x0e2\x17.compass.v1.ChannelKindR\x04kind\x12%\n" +
+	"\x0emember_handles\x18\x04 \x03(\tR\rmemberHandles\"F\n" +
 	"\x15CreateChannelResponse\x12-\n" +
-	"\achannel\x18\x01 \x01(\v2\x13.compass.v1.ChannelR\achannel\"\x98\x02\n" +
+	"\achannel\x18\x01 \x01(\v2\x13.compass.v1.ChannelR\achannel\"\xfc\x01\n" +
 	"\x1bUpdateChannelMembersRequest\x12\x1d\n" +
 	"\n" +
-	"channel_id\x18\x01 \x01(\tR\tchannelId\x123\n" +
-	"\x16add_member_account_ids\x18\x02 \x03(\tR\x13addMemberAccountIds\x129\n" +
-	"\x19remove_member_account_ids\x18\x03 \x03(\tR\x16removeMemberAccountIds\x122\n" +
-	"\x15subscribe_account_ids\x18\x04 \x03(\tR\x13subscribeAccountIds\x126\n" +
-	"\x17unsubscribe_account_ids\x18\x05 \x03(\tR\x15unsubscribeAccountIds\"M\n" +
+	"channel_id\x18\x01 \x01(\tR\tchannelId\x12,\n" +
+	"\x12add_member_handles\x18\x02 \x03(\tR\x10addMemberHandles\x122\n" +
+	"\x15remove_member_handles\x18\x03 \x03(\tR\x13removeMemberHandles\x12+\n" +
+	"\x11subscribe_handles\x18\x04 \x03(\tR\x10subscribeHandles\x12/\n" +
+	"\x13unsubscribe_handles\x18\x05 \x03(\tR\x12unsubscribeHandles\"M\n" +
 	"\x1cUpdateChannelMembersResponse\x12-\n" +
-	"\achannel\x18\x01 \x01(\v2\x13.compass.v1.ChannelR\achannel\"o\n" +
-	"\x14ReparentAgentRequest\x12(\n" +
-	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12-\n" +
-	"\x13new_parent_agent_id\x18\x02 \x01(\tR\x10newParentAgentId\"F\n" +
+	"\achannel\x18\x01 \x01(\v2\x13.compass.v1.ChannelR\achannel\"e\n" +
+	"\x14ReparentAgentRequest\x12!\n" +
+	"\fagent_handle\x18\x01 \x01(\tR\vagentHandle\x12*\n" +
+	"\x11new_parent_handle\x18\x02 \x01(\tR\x0fnewParentHandle\"F\n" +
 	"\x15ReparentAgentResponse\x12-\n" +
-	"\aaccount\x18\x01 \x01(\v2\x13.compass.v1.AccountR\aaccount\"\xd9\x01\n" +
+	"\aaccount\x18\x01 \x01(\v2\x13.compass.v1.AccountR\aaccount\"\xd2\x01\n" +
 	"\x17SetChannelPolicyRequest\x12\x1d\n" +
 	"\n" +
 	"channel_id\x18\x01 \x01(\tR\tchannelId\x12>\n" +
 	"\vpost_policy\x18\x02 \x01(\x0e2\x1d.compass.v1.ChannelPostPolicyR\n" +
-	"postPolicy\x12(\n" +
-	"\x10owner_account_id\x18\x03 \x01(\tR\x0eownerAccountId\x125\n" +
+	"postPolicy\x12!\n" +
+	"\fowner_handle\x18\x03 \x01(\tR\vownerHandle\x125\n" +
 	"\x16mandatory_subscription\x18\x04 \x01(\bR\x15mandatorySubscription\"I\n" +
 	"\x18SetChannelPolicyResponse\x12-\n" +
-	"\achannel\x18\x01 \x01(\v2\x13.compass.v1.ChannelR\achannel\"k\n" +
+	"\achannel\x18\x01 \x01(\v2\x13.compass.v1.ChannelR\achannel\"h\n" +
 	"\x10GetRosterRequest\x12-\n" +
-	"\x05scope\x18\x01 \x01(\x0e2\x17.compass.v1.RosterScopeR\x05scope\x12(\n" +
-	"\x10agent_account_id\x18\x02 \x01(\tR\x0eagentAccountId\"F\n" +
+	"\x05scope\x18\x01 \x01(\x0e2\x17.compass.v1.RosterScopeR\x05scope\x12%\n" +
+	"\x0evantage_handle\x18\x02 \x01(\tR\rvantageHandle\"F\n" +
 	"\x11GetRosterResponse\x121\n" +
 	"\aentries\x18\x01 \x03(\v2\x17.compass.v1.RosterEntryR\aentries\"\x9c\x02\n" +
 	"\vRosterEntry\x12(\n" +
@@ -4957,9 +4968,9 @@ const file_compass_v1_comms_proto_rawDesc = "" +
 	"message_id\x18\x01 \x01(\tR\tmessageId\x12,\n" +
 	"\x12replace_message_id\x18\x02 \x01(\tR\x10replaceMessageId\"J\n" +
 	"\x19UpdatePinnedBoardResponse\x12-\n" +
-	"\achannel\x18\x01 \x01(\v2\x13.compass.v1.ChannelR\achannel\"E\n" +
-	"\x19OpenAgentWorkspaceRequest\x12(\n" +
-	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\"V\n" +
+	"\achannel\x18\x01 \x01(\v2\x13.compass.v1.ChannelR\achannel\">\n" +
+	"\x19OpenAgentWorkspaceRequest\x12!\n" +
+	"\fagent_handle\x18\x01 \x01(\tR\vagentHandle\"V\n" +
 	"\x1aOpenAgentWorkspaceResponse\x128\n" +
 	"\tworkspace\x18\x01 \x01(\v2\x1a.compass.v1.AgentWorkspaceR\tworkspace\"\xc3\x01\n" +
 	"\x13ListMessagesRequest\x12\x1f\n" +

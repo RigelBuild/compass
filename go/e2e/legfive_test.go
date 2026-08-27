@@ -92,7 +92,7 @@ func TestLegFivePersistAndResume(t *testing.T) {
 	// exactly why post1 below must be acked (cursor advanced) before the resume:
 	// otherwise container2's start-sweep would redeliver it and consume the
 	// resumed lifetime's canned turn. So each post must precede its settle wait.
-	acc, err := st.AgentByHandle(ctx, "leg5-persistresume")
+	acc, err := adminAgentByHandle(ctx, st, "leg5-persistresume")
 	if err != nil {
 		t.Fatalf("AgentByHandle: %v", err)
 	}

@@ -727,7 +727,7 @@ export function createCommsTools(broker: CommsBroker): AgentTool[] {
 		parameters: rosterParameters,
 		execute: async (toolCallId, params) => {
 			// The string param maps onto the RosterScope enum; an omitted scope is
-			// the neighborhood default. `agentAccountId` is intentionally left
+			// the neighborhood default. `vantageHandle` is intentionally left
 			// unset — an agent caller is session-resolved server-side and never
 			// names an account.
 			const scope =

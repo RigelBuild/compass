@@ -63,7 +63,7 @@ func TestRefreshSecretsMaterializesForBoundSession(t *testing.T) {
 	host, engine := newRefreshHostFixture(t, fetch)
 	ctx := context.Background()
 
-	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
 	sessionID, err := host.Start(ctx, &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}, "")

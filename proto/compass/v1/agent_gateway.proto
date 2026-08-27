@@ -181,7 +181,7 @@ message SpawnPeerResponse {
 // Same-owner authority (F2); the account row, home channel, and history survive
 // (despawn tears down compute, not identity).
 message DespawnPeerRequest {
-  string agent_account_id = 1;     // the peer to tear down
+  string agent_handle = 1;         // the peer to tear down; a `@handle` the server resolves to an account id; unknown → NOT_FOUND
 }
 message DespawnPeerResponse {}
 

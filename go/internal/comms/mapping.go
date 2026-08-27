@@ -1,6 +1,8 @@
 package comms
 
 import (
+	"context"
+
 	"connectrpc.com/connect"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -261,60 +263,69 @@ func channelKindFromWire(k compassv1.ChannelKind) store.ChannelKind {
 	}
 }
 
-func accountIDsFromWire(ids []string) []store.AccountID {
-	if len(ids) == 0 {
-		return nil
+// memberUpdatesFromWire resolves the UpdateChannelMembers request's four
+// parallel HANDLE lists (add / remove / subscribe / unsubscribe) to account ids,
+// then collapses them into the store's per-member MemberUpdate set (RT-1). A
+// removed member is one update with Remove; an added member and a
+// subscribe-toggle for an existing member merge onto the same MemberUpdate so
+// one member never yields two conflicting rows.
+//
+// Merge is keyed POST-resolution (by resolved account id), so two distinct
+// spellings of the SAME handle (e.g. `matt/ux` and a bare `ux` from one of
+// matt's agents) collapse onto one MemberUpdate rather than yielding two
+// conflicting rows. Resolution is ATOMIC across all four lists (OQ-2): any
+// unresolved handle fails the whole call with NOT_FOUND naming every unresolved
+// handle. All four lists resolve in the caller's namespace/visibility scope.
+func (c *Comms) memberUpdatesFromWire(ctx context.Context, caller store.AccountID, req *compassv1.UpdateChannelMembersRequest) ([]store.MemberUpdate, error) {
+	add, err := c.resolveHandles(ctx, caller, req.GetAddMemberHandles())
+	if err != nil {
+		return nil, err
 	}
-	out := make([]store.AccountID, len(ids))
-	for i, id := range ids {
-		out[i] = store.AccountID(id)
+	subscribe, err := c.resolveHandles(ctx, caller, req.GetSubscribeHandles())
+	if err != nil {
+		return nil, err
 	}
-	return out
-}
+	unsubscribe, err := c.resolveHandles(ctx, caller, req.GetUnsubscribeHandles())
+	if err != nil {
+		return nil, err
+	}
+	remove, err := c.resolveHandles(ctx, caller, req.GetRemoveMemberHandles())
+	if err != nil {
+		return nil, err
+	}
 
-// memberUpdatesFromWire collapses the UpdateChannelMembers request's four
-// parallel lists (add / remove / subscribe / unsubscribe) into the store's
-// per-member MemberUpdate set (RT-1). A removed member is one update with
-// Remove; an added member and a subscribe-toggle for an existing member merge
-// onto the same MemberUpdate so one member never yields two conflicting rows.
-func memberUpdatesFromWire(req *compassv1.UpdateChannelMembersRequest) []store.MemberUpdate {
 	byID := make(map[store.AccountID]*store.MemberUpdate)
-	upd := func(id store.AccountID) *store.MemberUpdate {
+	order := make([]store.AccountID, 0)
+	touch := func(id store.AccountID) *store.MemberUpdate {
 		if u, ok := byID[id]; ok {
 			return u
 		}
 		u := &store.MemberUpdate{AccountID: id}
 		byID[id] = u
+		order = append(order, id)
 		return u
 	}
-	order := make([]store.AccountID, 0)
-	touch := func(id store.AccountID) *store.MemberUpdate {
-		if _, seen := byID[id]; !seen {
-			order = append(order, id)
-		}
-		return upd(id)
-	}
 
-	for _, id := range req.GetAddMemberAccountIds() {
-		touch(store.AccountID(id))
+	for _, id := range add {
+		touch(id)
 	}
-	for _, id := range req.GetSubscribeAccountIds() {
-		touch(store.AccountID(id)).Subscribed = true
+	for _, id := range subscribe {
+		touch(id).Subscribed = true
 	}
-	for _, id := range req.GetUnsubscribeAccountIds() {
-		u := touch(store.AccountID(id))
+	for _, id := range unsubscribe {
+		u := touch(id)
 		u.Subscribed = false
 		u.Unsubscribe = true
 	}
-	for _, id := range req.GetRemoveMemberAccountIds() {
-		touch(store.AccountID(id)).Remove = true
+	for _, id := range remove {
+		touch(id).Remove = true
 	}
 
 	out := make([]store.MemberUpdate, len(order))
 	for i, id := range order {
 		out[i] = *byID[id]
 	}
-	return out
+	return out, nil
 }
 
 // blocksFromWire maps wire message blocks onto store blocks, rejecting an empty

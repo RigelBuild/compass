@@ -76,7 +76,7 @@ func TestDevDoorGatesAdminOnlyRPCsWithoutBearer(t *testing.T) {
 	t.Run("IssueToken is PermissionDenied and mints no token", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		resp, err := compassClient.IssueToken(ctx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: "any-account"}))
+		resp, err := compassClient.IssueToken(ctx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: "any-account"}))
 		if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
 			t.Fatalf("IssueToken on the dev door = %v, want CodePermissionDenied (no bearer → no caller → fail-closed)", code)
 		}

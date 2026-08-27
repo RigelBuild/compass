@@ -235,7 +235,7 @@ func TestSpawnMidChainFailureRollsBack(t *testing.T) {
 		t.Fatalf("rollback never sent a Remove for %q; the container is stranded (commands: %v)", fakeContainer, f.runner.commands())
 	}
 	// The account exists but is UNPLACED — the handle is not burned.
-	created, err := f.store.AgentByHandle(ctx, "peer-roll")
+	created, err := f.store.AgentByHandle(ctx, f.ownerAdmin, "peer-roll")
 	if err != nil {
 		t.Fatalf("AgentByHandle(peer-roll) after rollback = %v, want the durable account", err)
 	}
@@ -333,17 +333,13 @@ func TestDespawnDifferentOwnerIsIndistinguishableNotFound(t *testing.T) {
 	}
 
 	// The fixture caller (owner A) tries to despawn owner B's peer.
-	_, foreignErr := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{
-		AgentAccountId: peerB.GetAgentAccountId(),
-	})
+	_, foreignErr := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{AgentHandle: peerB.GetAgentAccountId()})
 	if foreignErr == nil {
 		t.Fatal("despawn of a foreign-owner peer = success, want CodeNotFound (never touch a foreign peer)")
 	}
 
 	// The same caller despawns an entirely unknown id.
-	_, unknownErr := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{
-		AgentAccountId: "acct-does-not-exist",
-	})
+	_, unknownErr := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{AgentHandle: "acct-does-not-exist"})
 	if unknownErr == nil {
 		t.Fatal("despawn of an unknown id = success, want CodeNotFound")
 	}
@@ -367,9 +363,7 @@ func TestDespawnSelfIsInvalidArgument(t *testing.T) {
 	f := newLifecycleFixture(t)
 	ctx := context.Background()
 
-	_, err := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{
-		AgentAccountId: string(f.agentID),
-	})
+	_, err := f.lc.DespawnAsAccount(ctx, f.agentID, &compassv1internal.DespawnPeerRequest{AgentHandle: string(f.agentID)})
 	if err == nil {
 		t.Fatal("despawn of self = success, want CodeInvalidArgument")
 	}
@@ -403,9 +397,7 @@ func TestDespawnSameOwnerSiblingSucceeds(t *testing.T) {
 		t.Fatalf("CreateAgent(other-sib) = %v", err)
 	}
 
-	if _, err := f.lc.DespawnAsAccount(ctx, other.ID, &compassv1internal.DespawnPeerRequest{
-		AgentAccountId: target.GetAgentAccountId(),
-	}); err != nil {
+	if _, err := f.lc.DespawnAsAccount(ctx, other.ID, &compassv1internal.DespawnPeerRequest{AgentHandle: target.GetAgentAccountId()}); err != nil {
 		t.Fatalf("same-owner sibling despawn = %v, want success (owner authority, not spawner)", err)
 	}
 
@@ -435,7 +427,7 @@ func TestDespawnSecondTimeIsIdempotentSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("spawn = %v, want success", err)
 	}
-	req := &compassv1internal.DespawnPeerRequest{AgentAccountId: target.GetAgentAccountId()}
+	req := &compassv1internal.DespawnPeerRequest{AgentHandle: target.GetAgentAccountId()}
 
 	if _, err := f.lc.DespawnAsAccount(ctx, f.agentID, req); err != nil {
 		t.Fatalf("first despawn = %v, want success", err)
@@ -458,10 +450,7 @@ func TestRemoveAgentWorkspaceHandler(t *testing.T) {
 	ctx := context.Background()
 
 	// Provision a real placement to release.
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(f.agentID),
-		ClientRequestId: "prov-rm",
-	})); err != nil {
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(f.agentID), ClientRequestId: "prov-rm"})); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 	if _, _, err := f.store.PlacementForAgent(ctx, f.agentID); err != nil {
@@ -530,9 +519,7 @@ func TestDespawnCallerNotAnAgentIsInternal(t *testing.T) {
 	}
 
 	// Target differs from the caller so the self-despawn guard does not fire first.
-	_, err = f.lc.DespawnAsAccount(ctx, user.ID, &compassv1internal.DespawnPeerRequest{
-		AgentAccountId: "acct-some-other-id",
-	})
+	_, err = f.lc.DespawnAsAccount(ctx, user.ID, &compassv1internal.DespawnPeerRequest{AgentHandle: "acct-some-other-id"})
 	if err == nil {
 		t.Fatal("despawn by a non-agent caller = success, want CodeInternal (errCallerNotAgent)")
 	}

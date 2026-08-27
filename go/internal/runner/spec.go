@@ -78,7 +78,7 @@ func NewConfigSpecBuilder(defaults SpecDefaults) (SpecBuilder, error) {
 // image/egress/workspace-layout from the defaults.
 func (b *configSpecBuilder) BuildSpec(req *compassv1.ProvisionAgentWorkspaceRequest) (runtime.AgentSpec, error) {
 	d := b.defaults
-	accountID := req.GetAgentAccountId()
+	accountID := req.GetAgentHandle()
 	if err := validAccountID(accountID); err != nil {
 		return runtime.AgentSpec{}, err
 	}

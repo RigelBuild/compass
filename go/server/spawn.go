@@ -100,7 +100,7 @@ func (s *service) SpawnAgent(
 	// (not the id alone) matches provisionDedupID: a client_request_id reused
 	// across accounts is a distinct spawn, never a cross-account join.
 	if crid != "" {
-		key := spawnKey{account: req.Msg.GetAgentAccountId(), crid: crid}
+		key := spawnKey{account: req.Msg.GetAgentHandle(), crid: crid}
 		call, joined := s.joinOrBeginSpawn(key)
 		if joined {
 			// Joined an in-flight or completed spawn: wait for it to settle and
@@ -150,12 +150,12 @@ func (s *service) runSpawn(ctx context.Context, msg *compassv1.SpawnAgentRequest
 	// rejected spawn churns no container. Sourced from the Runner's status scan,
 	// never Server in-memory state (which fails open after a reconnect clears the
 	// bindings and would let the spawn collide on the container name mid-Provision).
-	if err := s.rejectIfAgentLive(ctx, msg.GetAgentAccountId()); err != nil {
+	if err := s.rejectIfAgentLive(ctx, msg.GetAgentHandle()); err != nil {
 		return nil, err
 	}
 
 	provResp, err := s.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  msg.GetAgentAccountId(),
+		AgentHandle:     msg.GetAgentHandle(),
 		ClientRequestId: msg.GetClientRequestId(),
 	}))
 	if err != nil {

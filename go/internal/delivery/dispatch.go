@@ -272,6 +272,15 @@ func (c *Consumer) resolveMentioned(ctx context.Context, channel store.ChannelID
 		c.log.ErrorContext(ctx, "delivery: resolve channel agent members for mention routing", "error", err, "channel", string(channel))
 		return nil // drop all mentions; the post still delivers normally
 	}
+	// A bare mention resolves in the POSTING AUTHOR's owner namespace (RIG-2751:
+	// agent handles are per-owner; a mention carries no owner qualifier, so the
+	// author's own namespace is the resolution scope). Resolve it once for the
+	// per-handle lookups below.
+	authorOwner, err := c.st.ResolveOwner(ctx, author)
+	if err != nil {
+		c.log.ErrorContext(ctx, "delivery: resolve author owner for mention routing", "error", err, "author", string(author))
+		return nil // drop all mentions; the post still delivers normally
+	}
 	memberSet := make(map[store.AccountID]bool, len(members))
 	for _, m := range members {
 		memberSet[m] = true
@@ -288,7 +297,7 @@ func (c *Consumer) resolveMentioned(ctx context.Context, channel store.ChannelID
 			// @users expands to human members only: no agent session to steer.
 			continue
 		}
-		acc, err := c.st.AgentByHandle(ctx, h)
+		acc, err := c.st.AgentByHandle(ctx, authorOwner, h)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				continue // unknown or human handle: a no-op

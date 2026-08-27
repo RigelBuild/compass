@@ -36,7 +36,7 @@ func TestSetChannelPolicyUpdatesAndEchoes(t *testing.T) {
 	resp, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
 		ChannelId:             chID,
 		PostPolicy:            compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
-		OwnerAccountId:        string(owner.ID),
+		OwnerHandle:           owner.Handle,
 		MandatorySubscription: true,
 	}))
 	if err != nil {
@@ -65,7 +65,7 @@ func TestPostMessageOwnerOnlyNonOwnerIsNotFound(t *testing.T) {
 
 	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-		MemberAccountIds: []string{string(other.ID)},
+		MemberHandles: []string{other.Handle},
 	}))
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
@@ -73,9 +73,9 @@ func TestPostMessageOwnerOnlyNonOwnerIsNotFound(t *testing.T) {
 	chID := created.Msg.GetChannel().GetId()
 
 	if _, err := svc.SetChannelPolicy(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.SetChannelPolicyRequest{
-		ChannelId:      chID,
-		PostPolicy:     compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
-		OwnerAccountId: string(owner.ID),
+		ChannelId:   chID,
+		PostPolicy:  compassv1.ChannelPostPolicy_CHANNEL_POST_POLICY_OWNER_ONLY,
+		OwnerHandle: owner.Handle,
 	})); err != nil {
 		t.Fatalf("SetChannelPolicy: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestUpdateChannelMembersUnsubscribeMandatoryIsInvalidArgument(t *testing.T)
 
 	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-		MemberAccountIds: []string{string(member.ID)},
+		MemberHandles: []string{member.Handle},
 	}))
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
@@ -113,8 +113,8 @@ func TestUpdateChannelMembersUnsubscribeMandatoryIsInvalidArgument(t *testing.T)
 	}
 
 	_, err = svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
-		ChannelId:             chID,
-		UnsubscribeAccountIds: []string{string(member.ID)},
+		ChannelId:          chID,
+		UnsubscribeHandles: []string{member.Handle},
 	}))
 	connectCodeIs(t, err, connect.CodeInvalidArgument, "unsubscribe on mandatory channel")
 }

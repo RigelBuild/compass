@@ -89,9 +89,9 @@ export const spawnParameters = type({
 
 /** Exported so a test can validate the wire contract the agent loop enforces. */
 export const despawnParameters = type({
-	agent_account_id: type("string")
+	agent_handle: type("string")
 		.narrow((s, ctx) => s.trim().length > 0 || ctx.mustBe("non-blank"))
-		.describe("The peer's agent account id to tear down; must not be blank"),
+		.describe("The peer's agent handle to tear down; must not be blank"),
 });
 
 /**
@@ -183,7 +183,7 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 		label: "Despawn peer agent",
 		approval: "write",
 		description:
-			"Tear down a peer agent your owner owns, by its agent account id. " +
+			"Tear down a peer agent your owner owns, by its agent handle. " +
 			"Idempotent: despawning an already-absent peer succeeds.",
 		parameters: despawnParameters,
 		execute: async (toolCallId, params) => {
@@ -196,20 +196,20 @@ export function createLifecycleTools(broker: LifecycleBroker): AgentTool[] {
 						// (removing an absent peer succeeds), so the message carries no
 						// dedup field.
 						value: create(DespawnPeerRequestSchema, {
-							agentAccountId: params.agent_account_id,
+							agentHandle: params.agent_handle,
 						}),
 					},
 				}),
 			);
 			if (result.result.case !== "despawn")
 				throw lifecycleFailure(result, "agents_despawn_peer", "despawn");
-			// `agent_account_id` is caller-supplied; guard it as a server value
+			// `agent_handle` is caller-supplied; guard it as a server value
 			// would be, since it renders into authoritative tool output.
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Despawned peer ${attr(params.agent_account_id)}.`,
+						text: `Despawned peer ${attr(params.agent_handle)}.`,
 					},
 				],
 			};

@@ -561,10 +561,10 @@ message AgentSessionFrame {
 // workstream. Agent ref + repo/workstream spec in, container_name out — the
 // handle StartAgentSession then brings online (design: architecture-lineage).
 message ProvisionAgentWorkspaceRequest {
-  // The owned agent account this workstream belongs to (the AgentAccount id
-  // from CommsService). Names whose credentials + home channel the container
-  // is provisioned for.
-  string agent_account_id = 1;
+  // The owned agent account this workstream belongs to. A `@handle`
+  // (owner-qualified, e.g. `matt/compass-ux`); the server resolves it to an
+  // account id; unknown → NOT_FOUND.
+  string agent_handle = 1;
   // Repo carriage removed (SEA-1527, Matt 2026-07-29): spawn/provision no longer
   // clone a repo for the agent. The container is provisioned with a git
   // credential + workspace and the agent self-clones whatever it needs after
@@ -644,10 +644,10 @@ message StartAgentSessionResponse {
 // SpawnAgent: the composite start — Provision then Start under one
 // client_request_id, the single call a UI makes to bring an agent online.
 message SpawnAgentRequest {
-  // The owned agent account to bring online (the AgentAccount id from
-  // CommsService). The container is provisioned for, and the session bound to,
-  // this account.
-  string agent_account_id = 1;
+  // The owned agent account to bring online. A `@handle` (owner-qualified,
+  // e.g. `matt/compass-ux`); the server resolves it to an account id; unknown
+  // → NOT_FOUND.
+  string agent_handle = 1;
   reserved 2;
   reserved "initial_prompt";
   // End-to-end idempotency key. A retry with the same id returns the same
@@ -696,10 +696,10 @@ message GetAgentStatusResponse {
 
 // IssueToken: the admin-only path to mint a bearer token for an account.
 message IssueTokenRequest {
-  // The account to mint a token for — the id of an Account created via
-  // CommsService. The caller's identity is the authenticated connection, never
-  // a field here.
-  string account_id = 1;
+  // The account to mint a token for — a `@handle` naming a user or agent; the
+  // server resolves it to an account id; unknown → NOT_FOUND. The caller's
+  // identity is the authenticated connection, never a field here.
+  string account_handle = 1;
 }
 
 message IssueTokenResponse {

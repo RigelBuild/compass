@@ -12,6 +12,7 @@ package comms
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -106,8 +107,8 @@ func TestMembershipTiersJoinVersusSubscribe(t *testing.T) {
 	// Join tier: add as a member WITHOUT subscribing -> read access
 	// (MemberAccountIDs) but no push (absent from SubscriberAccountIDs).
 	joined, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
-		ChannelId:           chID,
-		AddMemberAccountIds: []string{string(newcomer.ID)},
+		ChannelId:        chID,
+		AddMemberHandles: []string{newcomer.Handle},
 	}))
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(join): %v", err)
@@ -122,8 +123,8 @@ func TestMembershipTiersJoinVersusSubscribe(t *testing.T) {
 	// Subscribe tier: a subscribe toggle flips the per-member boolean, so the
 	// member now appears in SubscriberAccountIDs too.
 	subbed, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
-		ChannelId:           chID,
-		SubscribeAccountIds: []string{string(newcomer.ID)},
+		ChannelId:        chID,
+		SubscribeHandles: []string{newcomer.Handle},
 	}))
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(subscribe): %v", err)
@@ -134,8 +135,8 @@ func TestMembershipTiersJoinVersusSubscribe(t *testing.T) {
 
 	// Unsubscribe flips it back off while keeping membership.
 	unsubbed, err := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
-		ChannelId:             chID,
-		UnsubscribeAccountIds: []string{string(newcomer.ID)},
+		ChannelId:          chID,
+		UnsubscribeHandles: []string{newcomer.Handle},
 	}))
 	if err != nil {
 		t.Fatalf("UpdateChannelMembers(unsubscribe): %v", err)
@@ -145,6 +146,33 @@ func TestMembershipTiersJoinVersusSubscribe(t *testing.T) {
 	}
 	if !containsString(unsubbed.Msg.GetChannel().GetMemberAccountIds(), string(newcomer.ID)) {
 		t.Fatalf("unsubscribe dropped %s from members %v; it should keep read access", newcomer.ID, unsubbed.Msg.GetChannel().GetMemberAccountIds())
+	}
+}
+
+// TestUpdateChannelMembersUnknownHandleIsNotFound: adding an unknown member
+// handle to a REAL channel the caller owns fails atomically (OQ-2) with
+// CodeNotFound, and the error names the submitted handle — the resolveHandles
+// miss leg, distinct from the unknown-channel miss in TestEdgeErrorMapping.
+func TestUpdateChannelMembersUnknownHandleIsNotFound(t *testing.T) {
+	svc, st := newHandler(t)
+	ctx := context.Background()
+	owner := mustUser(t, st, "owner")
+
+	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
+		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+	}))
+	if err != nil {
+		t.Fatalf("CreateChannel: %v", err)
+	}
+	chID := created.Msg.GetChannel().GetId()
+
+	_, addErr := svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
+		ChannelId:        chID,
+		AddMemberHandles: []string{"ghost"},
+	}))
+	connectCodeIs(t, addErr, connect.CodeNotFound, "add an unknown member handle")
+	if addErr == nil || !strings.Contains(addErr.Error(), "ghost") {
+		t.Fatalf("error %v must name the submitted handle (ghost)", addErr)
 	}
 }
 
@@ -763,8 +791,8 @@ func TestEdgeErrorMapping(t *testing.T) {
 
 	// ErrNotFound -> CodeNotFound: mutating an unknown channel.
 	_, nfErr := svc.UpdateChannelMembers(ctx, connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
-		ChannelId:           "ghost-channel",
-		AddMemberAccountIds: []string{"whoever"},
+		ChannelId:        "ghost-channel",
+		AddMemberHandles: []string{"whoever"},
 	}))
 	connectCodeIs(t, nfErr, connect.CodeNotFound, "update members of an unknown channel")
 }

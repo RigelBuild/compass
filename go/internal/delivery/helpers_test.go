@@ -535,8 +535,10 @@ func (f *fakeReads) ChannelAgentMembers(_ context.Context, channel store.Channel
 
 // AgentByHandle resolves a lowercased handle to its seeded agent account; an
 // unseeded handle is store.ErrNotFound, mirroring the store's fail-closed
-// treatment of an unknown or human handle.
-func (f *fakeReads) AgentByHandle(_ context.Context, handle string) (store.Account, error) {
+// treatment of an unknown or human handle. The owner param (RIG-2751 handle
+// cutover: agent handles are per-owner) is ignored here — the fake models one
+// owner namespace, so a handle resolves regardless of the owner passed.
+func (f *fakeReads) AgentByHandle(_ context.Context, _ store.AccountID, handle string) (store.Account, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	acc, ok := f.handles[handle]
@@ -544,6 +546,13 @@ func (f *fakeReads) AgentByHandle(_ context.Context, handle string) (store.Accou
 		return store.Account{}, store.ErrNotFound
 	}
 	return acc, nil
+}
+
+// ResolveOwner returns the caller itself — the single-owner fake namespace, so
+// the author's mention-resolution owner is stable and every seeded handle
+// resolves under it (mirrors the store's user-owns-itself fallback).
+func (f *fakeReads) ResolveOwner(_ context.Context, caller store.AccountID) (store.AccountID, error) {
+	return caller, nil
 }
 
 // GetAccount resolves an account by id from the seeded accounts map — the store

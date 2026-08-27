@@ -356,7 +356,7 @@ func TestProvisionThenStartBindsSessionToProvisionedAccount(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	if _, _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "0123456789abcdef0123456789abcdef"}); err != nil {
+	if _, _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatalf("Provision = %v, want success", err)
 	}
 	if _, err := hub.Start(ctx, "req-start", &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}); err != nil {
@@ -401,7 +401,7 @@ func TestProvisionWithEmptyAccountLeavesNoBindingAndFailsClosed(t *testing.T) {
 	})
 
 	ctx := context.Background()
-	if _, _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: ""}); err != nil {
+	if _, _, err := hub.Provision(ctx, "req-prov", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: ""}); err != nil {
 		t.Fatalf("Provision (empty account) = %v, want success", err)
 	}
 	if _, err := hub.Start(ctx, "req-start", &compassv1.StartAgentSessionRequest{ContainerName: "cont-1"}); err != nil {

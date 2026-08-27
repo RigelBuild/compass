@@ -77,10 +77,7 @@ func TestProvisionSameClientRequestIdDedups(t *testing.T) {
 		// A fully-specified workspace: the dedup id now binds to the agent
 		// account, so both callers must send the identical request for the retry
 		// to join. Same id + same account = one derived dedup id = one command.
-		req := &compassv1.ProvisionAgentWorkspaceRequest{
-			ClientRequestId: id,
-			AgentAccountId:  "0123456789abcdef0123456789abcdef",
-		}
+		req := &compassv1.ProvisionAgentWorkspaceRequest{ClientRequestId: id, AgentHandle: "0123456789abcdef0123456789abcdef"}
 		outcomes := make(chan provisionOutcome, 2)
 		call := func() {
 			resp, _, err := hub.Provision(context.Background(), id, req)
@@ -201,14 +198,9 @@ func TestProvisionSameIdDifferentAccountDoesNotDedup(t *testing.T) {
 		defer router.detach(errStreamClosed)
 
 		const id = "dup" // the SAME client_request_id for both callers
-		reqA := &compassv1.ProvisionAgentWorkspaceRequest{
-			ClientRequestId: id,
-			AgentAccountId:  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		}
-		reqB := &compassv1.ProvisionAgentWorkspaceRequest{
-			ClientRequestId: id,
-			AgentAccountId:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", // different account, same id
-		}
+		reqA := &compassv1.ProvisionAgentWorkspaceRequest{ClientRequestId: id, AgentHandle: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+		// different account, same id:
+		reqB := &compassv1.ProvisionAgentWorkspaceRequest{ClientRequestId: id, AgentHandle: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
 		outcomes := make(chan provisionOutcome, 2)
 		call := func(req *compassv1.ProvisionAgentWorkspaceRequest) {
 			resp, _, err := hub.Provision(context.Background(), id, req)
@@ -234,7 +226,7 @@ func TestProvisionSameIdDifferentAccountDoesNotDedup(t *testing.T) {
 		containers := map[string]string{}
 		for _, c := range cmds {
 			rid := c.GetRequestId()
-			container := "container-for-" + c.GetProvision().GetAgentAccountId()
+			container := "container-for-" + c.GetProvision().GetAgentHandle()
 			containers[rid] = container
 			router.complete(&compassv1internal.SessionsRequest{
 				RequestId: rid,

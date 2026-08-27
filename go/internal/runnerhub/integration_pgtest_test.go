@@ -267,9 +267,7 @@ func provisionWhenSeamLive(t *testing.T, ctx context.Context, hub *runnerhub.Hub
 	t.Helper()
 	deadline := time.After(integrationTimeout)
 	for {
-		resp, _, err := hub.Provision(ctx, "prov-1", &compassv1.ProvisionAgentWorkspaceRequest{
-			AgentAccountId: string(agentID),
-		})
+		resp, _, err := hub.Provision(ctx, "prov-1", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(agentID)})
 		if err == nil {
 			name := resp.GetContainerName()
 			if name == "" {

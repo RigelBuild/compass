@@ -326,11 +326,11 @@ describe("agents_spawn_peer", () => {
 });
 
 describe("agents_despawn_peer", () => {
-	test("maps agent_account_id and sends NO clientRequestId", async () => {
+	test("maps agent_handle and sends NO clientRequestId", async () => {
 		const transport = new FakeTransport(despawnResult());
 		const t = tool(new LifecycleBroker(transport), "agents_despawn_peer");
 
-		await exec(t, "tc-7", { agent_account_id: "acct-3" });
+		await exec(t, "tc-7", { agent_handle: "acct-3" });
 
 		expect(transport.requests).toHaveLength(1);
 		const req = transport.requests[0];
@@ -338,7 +338,7 @@ describe("agents_despawn_peer", () => {
 		expect(req.call.case).toBe("despawn");
 		if (req.call.case !== "despawn") throw new Error("expected despawn case");
 		const despawn = req.call.value;
-		expect(despawn.agentAccountId).toBe("acct-3");
+		expect(despawn.agentHandle).toBe("acct-3");
 		// The despawn message carries no dedup field at all — assert nothing named
 		// clientRequestId leaked onto it.
 		expect("clientRequestId" in despawn).toBe(false);
@@ -348,20 +348,20 @@ describe("agents_despawn_peer", () => {
 		const transport = new FakeTransport(despawnResult());
 		const t = tool(new LifecycleBroker(transport), "agents_despawn_peer");
 
-		const result = await exec(t, "tc-1", { agent_account_id: "acct-3" });
+		const result = await exec(t, "tc-1", { agent_handle: "acct-3" });
 
 		expect(textOf(result)).toBe("Despawned peer acct-3.");
 	});
 
-	// `agent_account_id` is caller-supplied but renders into authoritative tool
+	// `agent_handle` is caller-supplied but renders into authoritative tool
 	// output, so it is guarded as a server value would be. This is the last
 	// uncovered `attr` site.
-	test("a malformed agent_account_id degrades rather than forging output", async () => {
+	test("a malformed agent_handle degrades rather than forging output", async () => {
 		const transport = new FakeTransport(despawnResult());
 		const t = tool(new LifecycleBroker(transport), "agents_despawn_peer");
 
 		const result = await exec(t, "tc-1", {
-			agent_account_id: 'acct"3\ninjected',
+			agent_handle: 'acct"3\ninjected',
 		});
 
 		expect(textOf(result)).toBe("Despawned peer (malformed).");
@@ -373,18 +373,16 @@ describe("agents_despawn_peer", () => {
 		);
 		const t = tool(new LifecycleBroker(transport), "agents_despawn_peer");
 
-		await expect(
-			exec(t, "tc-1", { agent_account_id: "acct-3" }),
-		).rejects.toThrow("agents_despawn_peer failed: not_found: other owner");
+		await expect(exec(t, "tc-1", { agent_handle: "acct-3" })).rejects.toThrow(
+			"agents_despawn_peer failed: not_found: other owner",
+		);
 	});
 
 	test("a wrong result case throws a protocol violation", async () => {
 		const transport = new FakeTransport(spawnResult("a", "c", "s"));
 		const t = tool(new LifecycleBroker(transport), "agents_despawn_peer");
 
-		await expect(
-			exec(t, "tc-1", { agent_account_id: "acct-3" }),
-		).rejects.toThrow(
+		await expect(exec(t, "tc-1", { agent_handle: "acct-3" })).rejects.toThrow(
 			"agents_despawn_peer: protocol violation — expected a despawn result, got spawn",
 		);
 	});
@@ -401,12 +399,10 @@ describe("lifecycle parameter schemas", () => {
 		expect(rejects(spawnParameters, { handle: "worker-a" })).toBe(false);
 	});
 
-	test("despawn rejects an empty or whitespace-only agent_account_id", () => {
+	test("despawn rejects an empty or whitespace-only agent_handle", () => {
 		expect(rejects(despawnParameters, {})).toBe(true);
-		expect(rejects(despawnParameters, { agent_account_id: "" })).toBe(true);
-		expect(rejects(despawnParameters, { agent_account_id: "  " })).toBe(true);
-		expect(rejects(despawnParameters, { agent_account_id: "acct-3" })).toBe(
-			false,
-		);
+		expect(rejects(despawnParameters, { agent_handle: "" })).toBe(true);
+		expect(rejects(despawnParameters, { agent_handle: "  " })).toBe(true);
+		expect(rejects(despawnParameters, { agent_handle: "acct-3" })).toBe(false);
 	});
 });

@@ -286,10 +286,7 @@ func TestProvisionAgentWorkspaceRecordsPlacementNamingServingRunner(t *testing.T
 	f := newPlacementFixture(t)
 	ctx := context.Background() // the test root context
 
-	resp, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(f.agentID),
-		ClientRequestId: "prov-1",
-	}))
+	resp, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(f.agentID), ClientRequestId: "prov-1"}))
 	if err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
@@ -354,11 +351,8 @@ func TestProvisionAgentWorkspaceOverwritesPersonaFromStore(t *testing.T) {
 	}
 
 	f.runner.forget() // discard the attach probe
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(personaAgent.ID),
-		ClientRequestId: "prov-persona",
-		Persona:         "CLIENT-INJECTED-EVIL",
-	})); err != nil {
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(personaAgent.ID), ClientRequestId: "prov-persona",
+		Persona: "CLIENT-INJECTED-EVIL"})); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 
@@ -389,11 +383,8 @@ func TestProvisionAgentWorkspaceClearsPersonaForNonAgentAccount(t *testing.T) {
 	// persona-clear is still observable because the Provision command is recorded
 	// (persona cleared) before the placement write runs. The error is expected
 	// and not what this test pins, so it is deliberately discarded.
-	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(adminID),
-		ClientRequestId: "prov-nonagent",
-		Persona:         "CLIENT-INJECTED-EVIL",
-	}))
+	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(adminID), ClientRequestId: "prov-nonagent",
+		Persona: "CLIENT-INJECTED-EVIL"}))
 
 	if got := f.runner.provisionPersona(t); got != "" {
 		t.Fatalf("Runner received persona %q for a non-agent account, want empty (client value must be cleared)", got)
@@ -428,11 +419,8 @@ func TestProvisionAgentWorkspaceOverwritesRoleFromStore(t *testing.T) {
 	}
 
 	f.runner.forget() // discard the attach probe
-	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(roleAgent.ID),
-		ClientRequestId: "prov-role",
-		Role:            "client-injected-evil",
-	})); err != nil {
+	if _, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(roleAgent.ID), ClientRequestId: "prov-role",
+		Role: "client-injected-evil"})); err != nil {
 		t.Fatalf("ProvisionAgentWorkspace = %v, want success", err)
 	}
 
@@ -463,11 +451,8 @@ func TestProvisionAgentWorkspaceClearsRoleForNonAgentAccount(t *testing.T) {
 	// role-clear is still observable because the Provision command is recorded
 	// (role cleared) before the placement write runs. The error is expected and
 	// not what this test pins, so it is deliberately discarded.
-	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(adminID),
-		ClientRequestId: "prov-nonagent-role",
-		Role:            "client-injected-evil",
-	}))
+	_, _ = f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(adminID), ClientRequestId: "prov-nonagent-role",
+		Role: "client-injected-evil"}))
 
 	if got := f.runner.provisionRole(t); got != "" {
 		t.Fatalf("Runner received role %q for a non-agent account, want empty (client value must be cleared)", got)
@@ -481,11 +466,8 @@ func TestProvisionAgentWorkspaceUnknownAccountIsNotFound(t *testing.T) {
 	f := newPlacementFixture(t)
 	ctx := context.Background() // the test root context
 
-	_, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  "acct-does-not-exist",
-		ClientRequestId: "prov-unknown",
-		Persona:         "whatever",
-	}))
+	_, err := f.client.ProvisionAgentWorkspace(ctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "acct-does-not-exist", ClientRequestId: "prov-unknown",
+		Persona: "whatever"}))
 	if err == nil {
 		t.Fatalf("ProvisionAgentWorkspace = nil error, want CodeNotFound for an unknown account id")
 	}
@@ -779,7 +761,7 @@ func (r *recordingRunner) commands() []string {
 	for _, c := range r.seen {
 		switch v := c.GetCommand().(type) {
 		case *compassv1internal.SessionsResponse_Provision:
-			out = append(out, "provision "+v.Provision.GetAgentAccountId())
+			out = append(out, "provision "+v.Provision.GetAgentHandle())
 		case *compassv1internal.SessionsResponse_Start:
 			out = append(out, "start "+v.Start.GetContainerName())
 		case *compassv1internal.SessionsResponse_Stop:

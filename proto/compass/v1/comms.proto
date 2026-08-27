@@ -584,10 +584,10 @@ message CreateUserResponse {
 message CreateAgentRequest {
   string handle = 1;
   string display_name = 2;
-  // Optional parent in the agent tree; empty = root. The server validates it
-  // (must resolve to an existing agent under the caller's resolved owner) before
-  // set-at-creation.
-  string parent_agent_id = 3;
+  // Optional parent in the agent tree; empty = root. A `@handle`; the server
+  // resolves it to an account id; unknown → NOT_FOUND. Resolves owner-qualified
+  // (a bare handle defaults to the caller's own owner namespace).
+  string parent_handle = 3;
 }
 
 message CreateAgentResponse {
@@ -643,8 +643,9 @@ message CreateChannelRequest {
   // owner-scoped channel.
   string group_id = 2;
   ChannelKind kind = 3;
-  // Initial members party to the channel.
-  repeated string member_account_ids = 4;
+  // Initial members party to the channel. Each is a `@handle`; the server
+  // resolves it to an account id; unknown → NOT_FOUND.
+  repeated string member_handles = 4;
 }
 
 message CreateChannelResponse {
@@ -654,14 +655,19 @@ message CreateChannelResponse {
 message UpdateChannelMembersRequest {
   // The channel to mutate.
   string channel_id = 1;
-  // Accounts to add as members (join, read access).
-  repeated string add_member_account_ids = 2;
-  // Accounts to remove from membership.
-  repeated string remove_member_account_ids = 3;
+  // Accounts to add as members (join, read access). Each is a `@handle`; the
+  // server resolves it to an account id; unknown → NOT_FOUND.
+  repeated string add_member_handles = 2;
+  // Accounts to remove from membership. Each is a `@handle`; the server
+  // resolves it to an account id; unknown → NOT_FOUND.
+  repeated string remove_member_handles = 3;
   // Members to mark subscribed (push opt-in); must be current or added members.
-  repeated string subscribe_account_ids = 4;
-  // Members to mark unsubscribed (read-only).
-  repeated string unsubscribe_account_ids = 5;
+  // Each is a `@handle`; the server resolves it to an account id; unknown →
+  // NOT_FOUND.
+  repeated string subscribe_handles = 4;
+  // Members to mark unsubscribed (read-only). Each is a `@handle`; the server
+  // resolves it to an account id; unknown → NOT_FOUND.
+  repeated string unsubscribe_handles = 5;
 }
 
 message UpdateChannelMembersResponse {
@@ -669,10 +675,12 @@ message UpdateChannelMembersResponse {
 }
 
 message ReparentAgentRequest {
-  // The agent to move.
-  string agent_account_id = 1;
-  // The new parent; empty promotes the agent to a root.
-  string new_parent_agent_id = 2;
+  // The agent to move. A `@handle`; the server resolves it to an account id;
+  // unknown → NOT_FOUND.
+  string agent_handle = 1;
+  // The new parent; empty promotes the agent to a root. A `@handle`; the server
+  // resolves it to an account id; unknown → NOT_FOUND.
+  string new_parent_handle = 2;
 }
 
 message ReparentAgentResponse {
@@ -684,8 +692,9 @@ message SetChannelPolicyRequest {
   string channel_id = 1;
   // The new post policy.
   ChannelPostPolicy post_policy = 2;
-  // The owner/operator account for the channel; empty leaves it unowned.
-  string owner_account_id = 3;
+  // The owner/operator account for the channel; empty leaves it unowned. A
+  // `@handle`; the server resolves it to an account id; unknown → NOT_FOUND.
+  string owner_handle = 3;
   // Whether membership implies a non-togglable subscription.
   bool mandatory_subscription = 4;
 }
@@ -698,9 +707,10 @@ message SetChannelPolicyResponse {
 message GetRosterRequest {
   // The vantage the roster is computed around.
   RosterScope scope = 1;
-  // The agent whose vantage to use. Optional for human/UI callers naming a
-  // vantage point; an agent caller gets it session-resolved server-side.
-  string agent_account_id = 2;
+  // The vantage whose roster to compute. A `@handle`; empty ⇒ the caller's own
+  // vantage (an agent caller is session-resolved server-side), non-empty ⇒ the
+  // server resolves it to an account id; unknown → NOT_FOUND.
+  string vantage_handle = 2;
 }
 
 // The scope of a roster read, relative to a vantage agent.
@@ -754,8 +764,9 @@ message UpdatePinnedBoardResponse {
 }
 
 message OpenAgentWorkspaceRequest {
-  // The agent account to open the workspace (ACP surface) for.
-  string agent_account_id = 1;
+  // The agent account to open the workspace (ACP surface) for. A `@handle`; the
+  // server resolves it to an account id; unknown → NOT_FOUND.
+  string agent_handle = 1;
 }
 
 message OpenAgentWorkspaceResponse {

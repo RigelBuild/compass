@@ -68,7 +68,7 @@ func TestStartSameContainerSerializesClosingTOCTOU(t *testing.T) {
 	// Reap both children (RED leaves two live sessions on one container) on exit.
 	t.Cleanup(func() { host.Close(context.Background()) })
 
-	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"})
+	name, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "a"})
 	if err != nil {
 		t.Fatalf("Provision = %v", err)
 	}
@@ -160,11 +160,11 @@ func TestStartDifferentContainersOverlap(t *testing.T) {
 	ctx := context.Background()
 	t.Cleanup(func() { host.Close(context.Background()) })
 
-	nameA, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "a"})
+	nameA, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "a"})
 	if err != nil {
 		t.Fatalf("Provision(a) = %v", err)
 	}
-	nameB, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "b"})
+	nameB, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "b"})
 	if err != nil {
 		t.Fatalf("Provision(b) = %v", err)
 	}

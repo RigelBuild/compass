@@ -218,7 +218,7 @@ func (l *lifecycleService) DespawnAsAccount(
 	ctx, cancel := context.WithTimeout(ctx, spawnChainTimeout)
 	defer cancel()
 
-	target := store.AccountID(req.GetAgentAccountId())
+	target := store.AccountID(req.GetAgentHandle())
 	if target == caller {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errCannotDespawnSelf)
 	}
@@ -296,7 +296,7 @@ func (l *lifecycleService) resumeOrReject(
 	callerOwner store.AccountID,
 	req *compassv1internal.SpawnPeerRequest,
 ) (*compassv1internal.SpawnPeerResponse, error) {
-	existing, err := l.store.AgentByHandle(ctx, req.GetHandle())
+	existing, err := l.store.AgentByHandle(ctx, callerOwner, req.GetHandle())
 	if err != nil {
 		// The handle is taken (CreateAgent conflicted) but does not resolve to an
 		// agent — a non-agent account holds it. Collapse to already_exists; never
@@ -350,7 +350,7 @@ func (l *lifecycleService) provisionAndStart(
 	req *compassv1internal.SpawnPeerRequest,
 ) (*compassv1internal.SpawnPeerResponse, error) {
 	resp, runnerID, err := l.hub.Provision(ctx, req.GetClientRequestId(), &compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  string(agentID),
+		AgentHandle:     string(agentID),
 		ClientRequestId: req.GetClientRequestId(),
 		Persona:         persona,
 		Role:            role,

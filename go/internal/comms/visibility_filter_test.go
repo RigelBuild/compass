@@ -418,7 +418,7 @@ func TestSubscribeCommsRemovedMemberGetsFinalChannelChanged(t *testing.T) {
 	// ChannelChanged with removed_account_ids empty).
 	ch, err := h.svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
 		Name: "room", Kind: compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-		MemberAccountIds: []string{string(removed.ID)},
+		MemberHandles: []string{removed.Handle},
 	}))
 	if err != nil {
 		t.Fatalf("CreateChannel: %v", err)
@@ -428,8 +428,8 @@ func TestSubscribeCommsRemovedMemberGetsFinalChannelChanged(t *testing.T) {
 	// Owner removes `removed` (emits a ChannelChanged with removed in
 	// removed_account_ids).
 	if _, err := h.svc.UpdateChannelMembers(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.UpdateChannelMembersRequest{
-		ChannelId:              chID,
-		RemoveMemberAccountIds: []string{string(removed.ID)},
+		ChannelId:           chID,
+		RemoveMemberHandles: []string{removed.Handle},
 	})); err != nil {
 		t.Fatalf("UpdateChannelMembers(remove): %v", err)
 	}

@@ -445,7 +445,7 @@ func TestAgentByHandleRoundTrips(t *testing.T) {
 	owner := mustUser(t, s, "owner")
 	agent := mustAgent(t, s, owner.ID, "bot")
 
-	got, err := s.AgentByHandle(ctx, "bot")
+	got, err := s.AgentByHandle(ctx, owner.ID, "bot")
 	if err != nil {
 		t.Fatalf("AgentByHandle: %v", err)
 	}
@@ -464,7 +464,8 @@ func TestAgentByHandleRoundTrips(t *testing.T) {
 // names no account: ErrNotFound, so the resume path resolves nothing to elevate.
 func TestAgentByHandleUnknownIsNotFound(t *testing.T) {
 	s := newTestStore(t)
-	_, err := s.AgentByHandle(t.Context(), "nobody")
+	owner := mustUser(t, s, "owner")
+	_, err := s.AgentByHandle(t.Context(), owner.ID, "nobody")
 	sentinelIs(t, err, ErrNotFound, "unknown agent handle lookup")
 }
 
@@ -476,7 +477,10 @@ func TestAgentByHandleUnknownIsNotFound(t *testing.T) {
 func TestAgentByHandleUserHandleIsNotFound(t *testing.T) {
 	s := newTestStore(t)
 	user := mustUser(t, s, "human")
-	_, err := s.AgentByHandle(t.Context(), user.Handle)
+	// A user handle lives in the global index, not any owner's agent namespace,
+	// so an owner-qualified agent lookup for it misses closed regardless of the
+	// owner passed — indistinguishable from unknown.
+	_, err := s.AgentByHandle(t.Context(), user.ID, user.Handle)
 	sentinelIs(t, err, ErrNotFound, "agent handle lookup for a user handle")
 }
 
@@ -745,11 +749,14 @@ func TestEnsureSystemAccountRoundTripsThroughGetAccount(t *testing.T) {
 }
 
 // TestEnsureSystemAccountWrongShapeSquatterConflicts asserts a pre-existing
-// @compass row of the WRONG shape (a user, then separately an agent) fails with
-// ErrConflict rather than being silently adopted as the system sender. The
-// squatters are inserted directly through the pool because CreateUser/
-// CreateAgent reject the reserved handle (T1), so a squatter can only originate
-// from a pre-guard database — exactly what this simulates.
+// @compass row of the WRONG shape (a user, then separately an agent) that OWNS
+// the reserved handle in the global resolution index fails with ErrConflict
+// rather than being silently adopted as the system sender. The squatters are
+// inserted directly through the pool because CreateUser/CreateAgent reject the
+// reserved handle (T1); the account_handles global row (owner_user_id NULL) is
+// planted too, since handle ownership now lives there (RIG-2751 handle cutover)
+// and systemByHandle resolves through it — a squatter that owns only the legacy
+// accounts.handle column but not the resolution index would not contend.
 func TestEnsureSystemAccountWrongShapeSquatterConflicts(t *testing.T) {
 	ctx := context.Background()
 
@@ -766,6 +773,14 @@ func TestEnsureSystemAccountWrongShapeSquatterConflicts(t *testing.T) {
 			"INSERT INTO user_accounts (account_id, role) VALUES ($1, $2)", id, int32(UserRoleMember),
 		); err != nil {
 			t.Fatalf("insert squatter user_account: %v", err)
+		}
+		// Plant the reserved handle in the GLOBAL index (owner_user_id NULL): the
+		// squatter owns the resolution key the system seeder contends for.
+		if _, err := s.pool.Exec(ctx,
+			"INSERT INTO account_handles (account_id, handle, owner_user_id) VALUES ($1, $2, NULL)",
+			id, SystemAccountHandle,
+		); err != nil {
+			t.Fatalf("insert squatter handle row: %v", err)
 		}
 		_, err := s.EnsureSystemAccount(ctx)
 		sentinelIs(t, err, ErrConflict, "user squatter on the reserved handle")
@@ -785,6 +800,15 @@ func TestEnsureSystemAccountWrongShapeSquatterConflicts(t *testing.T) {
 			"INSERT INTO agent_accounts (account_id, owner_user_id) VALUES ($1, $2)", id, string(owner.ID),
 		); err != nil {
 			t.Fatalf("insert squatter agent_account: %v", err)
+		}
+		// Plant the reserved handle in the GLOBAL index (owner_user_id NULL) so
+		// the squatter actually owns the resolution key the system seeder
+		// contends for — the wrong-shape-row-in-the-global-index threat.
+		if _, err := s.pool.Exec(ctx,
+			"INSERT INTO account_handles (account_id, handle, owner_user_id) VALUES ($1, $2, NULL)",
+			id, SystemAccountHandle,
+		); err != nil {
+			t.Fatalf("insert squatter handle row: %v", err)
 		}
 		_, err := s.EnsureSystemAccount(ctx)
 		sentinelIs(t, err, ErrConflict, "agent squatter on the reserved handle")

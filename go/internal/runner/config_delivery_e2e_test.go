@@ -305,7 +305,7 @@ func TestConfigDeliveryReloadPicksUpNewBundle(t *testing.T) {
 	// 1. Seed the fleet at v1 and bring the container + agent online.
 	pub.setConfigBundle(AgentConfigBundle{Version: v1hash, Tarball: buildConfigTarball(t, validBundle())})
 
-	container, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentAccountId: "e2e"})
+	container, err := host.Provision(ctx, &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: "e2e"})
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}

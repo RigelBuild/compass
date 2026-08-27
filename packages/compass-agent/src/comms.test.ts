@@ -1744,7 +1744,7 @@ describe("comms_list_messages", () => {
 
 describe("compass_roster", () => {
 	// Session-resolved: an AGENT caller names no account. The request must leave
-	// `agentAccountId` at its default empty string — the Server resolves the
+	// `vantageHandle` at its default empty string — the Server resolves the
 	// vantage from the session it owns — and default the scope to NEIGHBORHOOD
 	// when the model omits it.
 	test("session-resolved with the default neighborhood scope when scope is omitted", async () => {
@@ -1757,7 +1757,7 @@ describe("compass_roster", () => {
 		expect(req?.callId).toBe("tc-r1");
 		expect(req?.call.case).toBe("roster");
 		if (req?.call.case !== "roster") throw new Error("expected a roster call");
-		expect(req.call.value.agentAccountId).toBe("");
+		expect(req.call.value.vantageHandle).toBe("");
 		expect(req.call.value.scope).toBe(RosterScope.NEIGHBORHOOD);
 	});
 

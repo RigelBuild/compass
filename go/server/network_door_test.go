@@ -401,7 +401,7 @@ func TestNetworkDoorBearerAuthAcceptAndReject(t *testing.T) {
 	// issue calls IssueToken (adminOnly) carrying the given bearer value (""
 	// leaves the Authorization header absent), returning connect's error code.
 	issue := func(bearer string) connect.Code {
-		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: string(admin)})
+		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(admin)})
 		if bearer != "" {
 			req.Header().Set("Authorization", bearer)
 		}
@@ -412,7 +412,7 @@ func TestNetworkDoorBearerAuthAcceptAndReject(t *testing.T) {
 	}
 
 	t.Run("valid admin token on adminOnly RPC succeeds", func(t *testing.T) {
-		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: string(admin)})
+		req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(admin)})
 		req.Header().Set("Authorization", "Bearer "+adminTok)
 		ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
@@ -658,7 +658,7 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 	t.Run("empty account id is InvalidArgument", func(t *testing.T) {
 		rpcCtx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		_, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: ""}))
+		_, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: ""}))
 		if code := connect.CodeOf(err); code != connect.CodeInvalidArgument {
 			t.Fatalf("empty account_id = %v, want CodeInvalidArgument", code)
 		}
@@ -667,7 +667,7 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 	t.Run("unknown account id is NotFound", func(t *testing.T) {
 		rpcCtx, cancel := context.WithTimeout(context.Background(), testTimeout)
 		defer cancel()
-		_, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: unknownAccountID}))
+		_, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: unknownAccountID}))
 		if code := connect.CodeOf(err); code != connect.CodeNotFound {
 			t.Fatalf("non-empty but unknown account_id = %v, want CodeNotFound", code)
 		}
@@ -676,7 +676,7 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 	t.Run("existing account mints a resolvable token", func(t *testing.T) {
 		rpcCtx, cancel := context.WithTimeout(ctx, testTimeout)
 		defer cancel()
-		resp, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: string(admin)}))
+		resp, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(admin)}))
 		if err != nil {
 			t.Fatalf("IssueToken for an existing account: %v", err)
 		}
@@ -700,7 +700,7 @@ func TestIssueTokenHandlerInputContract(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EnsureSystemAccount: %v", err)
 		}
-		resp, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: string(sys.ID)}))
+		resp, err := client.IssueToken(rpcCtx, connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: string(sys.ID)}))
 		if code := connect.CodeOf(err); code != connect.CodePermissionDenied {
 			t.Fatalf("IssueToken for the system account = %v, want CodePermissionDenied — @compass is not authenticatable", code)
 		}
@@ -752,7 +752,7 @@ func TestServeWithListenWritesAdminToken0600(t *testing.T) {
 	}
 
 	client := newTLSClient(t, addr, pool)
-	req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountId: unknownAccountID})
+	req := connect.NewRequest(&compassv1.IssueTokenRequest{AccountHandle: unknownAccountID})
 	req.Header().Set("Authorization", "Bearer "+token)
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()

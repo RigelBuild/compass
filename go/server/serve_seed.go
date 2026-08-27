@@ -92,7 +92,7 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 	// Find-or-create the supervisor. AgentByHandle resolves a prior boot's row;
 	// ErrNotFound means it does not exist yet, so fall through to the empty-tree
 	// create gate.
-	supervisor, err := st.AgentByHandle(ctx, rootSupervisorHandle)
+	supervisor, err := st.AgentByHandle(ctx, adminID, rootSupervisorHandle)
 	switch {
 	case err == nil:
 		// Exists already (prior boot). The find half resolves by a globally
@@ -123,7 +123,7 @@ func seedRootSupervisor(ctx context.Context, st *store.Store, svc *service, cm *
 	// spawn memo make this a no-op for an already-live supervisor, so a re-enroll
 	// re-fire never launches a second container.
 	if _, err := svc.SpawnAgent(ctx, connect.NewRequest(&compassv1.SpawnAgentRequest{
-		AgentAccountId:  string(supervisor.ID),
+		AgentHandle:     string(supervisor.ID),
 		ClientRequestId: seedClientRequestID,
 	})); err != nil {
 		if connect.CodeOf(err) == connect.CodeAlreadyExists {

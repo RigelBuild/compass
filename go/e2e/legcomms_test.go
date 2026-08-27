@@ -112,7 +112,7 @@ func TestCommsPostMessageThroughAgentLoop(t *testing.T) {
 	// Resolve the poster to get its home channel id (the channel the trigger post
 	// lands on and the channel the agent's own post — channel_id omitted — fans
 	// onto).
-	poster, err := st.AgentByHandle(ctx, "comms-leg-poster")
+	poster, err := adminAgentByHandle(ctx, st, "comms-leg-poster")
 	if err != nil {
 		t.Fatalf("AgentByHandle(poster): %v", err)
 	}

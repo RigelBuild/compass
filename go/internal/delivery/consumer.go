@@ -74,9 +74,16 @@ type DeliveryReads interface { //nolint:interfacebloat // one method per store r
 	// state irrelevant), author excluded — the mention→steer routing set (D5,
 	// design.md:526-527), distinct from SubscribedAgents' deliver set.
 	ChannelAgentMembers(ctx context.Context, channel store.ChannelID, author store.AccountID) ([]store.AccountID, error)
-	// AgentByHandle resolves a mention handle to its agent account; an unknown or
-	// non-agent (human) handle is store.ErrNotFound (a mention no-op, D5).
-	AgentByHandle(ctx context.Context, handle string) (store.Account, error)
+	// AgentByHandle resolves a bare mention handle to its agent account within
+	// owner's namespace (RIG-2751 handle cutover: agent handles are per-owner);
+	// the caller passes the posting author's owner, since a mention is a bare
+	// handle in the author's own namespace. An unknown, wrong-owner, or non-agent
+	// (human) handle is store.ErrNotFound (a mention no-op, D5).
+	AgentByHandle(ctx context.Context, owner store.AccountID, handle string) (store.Account, error)
+	// ResolveOwner resolves the posting author to the owner-user namespace its
+	// bare mentions resolve in (an agent author → its owner_user_id, a user
+	// author → itself).
+	ResolveOwner(ctx context.Context, caller store.AccountID) (store.AccountID, error)
 	// SweepChannels resolves the D1 disjunct channel set an agent sweeps: every
 	// subscribed channel, PLUS its home channel, PLUS any mandatory_subscription
 	// channel it is a member of (T4 policy) — the pin sweep's channel

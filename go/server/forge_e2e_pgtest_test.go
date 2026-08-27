@@ -381,9 +381,7 @@ func TestForgeNoLiveSessionFailsClosedOverTheWire(t *testing.T) {
 	// The seam is already live (the supervisor started in newE2EWire), so a direct
 	// Provision succeeds without the retry gate; a unique request id avoids
 	// colliding with the supervisor's provision.
-	provResp, _, err := w.hub.Provision(ctx, "prov-unbound", &compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId: string(unboundAgent.ID),
-	})
+	provResp, _, err := w.hub.Provision(ctx, "prov-unbound", &compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: string(unboundAgent.ID)})
 	if err != nil {
 		t.Fatalf("hub.Provision(unbound agent) = %v", err)
 	}

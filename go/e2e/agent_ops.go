@@ -39,10 +39,7 @@ func (f *Fixture) CreateAgent(ctx context.Context, handle, displayName string) (
 func (f *Fixture) Provision(ctx context.Context, accountID, clientRequestID string) (containerName string, err error) {
 	rctx, cancel := context.WithTimeout(ctx, rpcTimeout)
 	defer cancel()
-	resp, err := f.Compass().ProvisionAgentWorkspace(rctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{
-		AgentAccountId:  accountID,
-		ClientRequestId: clientRequestID,
-	}))
+	resp, err := f.Compass().ProvisionAgentWorkspace(rctx, connect.NewRequest(&compassv1.ProvisionAgentWorkspaceRequest{AgentHandle: accountID, ClientRequestId: clientRequestID}))
 	if err != nil {
 		return "", fmt.Errorf("ProvisionAgentWorkspace RPC: %w", err)
 	}
@@ -337,6 +334,26 @@ func (f *Fixture) waitRunnerEnrolled(ctx context.Context) error {
 // the gate.
 const rootSupervisorHandle = "supervisor"
 
+// bootstrapAdminHandle mirrors the server's default bootstrap-admin handle
+// (server/serve.go bootstrapAdminHandle) — the same cross-package literal
+// coupling as rootSupervisorHandle above. The seeded root supervisor is owned by
+// this admin, so the owner-qualified AgentByHandle lookup resolves the admin's
+// account id through this handle first.
+const bootstrapAdminHandle = "admin"
+
+// adminAgentByHandle resolves an admin-owned agent by its bare handle. Every leg
+// creates its agents through the fixture's admin-authed CreateAgent, so they all
+// live in the bootstrap admin's agent namespace; after the RIG-2751 handle
+// cutover AgentByHandle is owner-qualified, so the lookup first resolves the
+// admin's account id (bare user handle, global index) then the agent under it.
+func adminAgentByHandle(ctx context.Context, st *store.Store, handle string) (store.Account, error) {
+	admin, err := st.UserByHandle(ctx, bootstrapAdminHandle)
+	if err != nil {
+		return store.Account{}, err
+	}
+	return st.AgentByHandle(ctx, admin.ID, handle)
+}
+
 // waitSeedSettled blocks until the first-launch root-supervisor seed has finished
 // provisioning its container, or the budget elapses. It is the seed counterpart
 // to waitRunnerEnrolled: the seed (server/serve_seed.go) hangs off the Runner
@@ -419,7 +436,17 @@ func (f *Fixture) seedSettledProbe(ctx context.Context, st *store.Store, deadlin
 	}
 	rctx, cancel := context.WithTimeout(ctx, perProbe)
 	defer cancel()
-	sup, handleErr := st.AgentByHandle(rctx, rootSupervisorHandle)
+	// The supervisor is a root agent owned by the bootstrap admin, so resolve the
+	// admin's account id first (bare user handle in the global index) and look
+	// the supervisor up in that owner's agent namespace (AgentByHandle is
+	// owner-qualified after the RIG-2751 handle cutover). A not-yet-created admin
+	// or supervisor is the same "still seeding" ErrNotFound the caller polls
+	// through.
+	admin, adminErr := st.UserByHandle(rctx, bootstrapAdminHandle)
+	if adminErr != nil {
+		return classifySeedSettle(adminErr, nil)
+	}
+	sup, handleErr := st.AgentByHandle(rctx, admin.ID, rootSupervisorHandle)
 	if handleErr != nil {
 		return classifySeedSettle(handleErr, nil)
 	}

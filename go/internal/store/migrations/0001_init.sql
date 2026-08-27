@@ -31,11 +31,15 @@
 
 -- ── Accounts ────────────────────────────────────────────────────────────────
 -- One row per account; the user/agent split lives in the two subtype tables
--- below, mirroring the compass.v1 Account `kind` oneof. handle is globally
--- unique (the ErrConflict source for CreateUser/CreateAgent).
+-- below, mirroring the compass.v1 Account `kind` oneof. handle is a display
+-- column kept in sync with the account's current handle (CreateUser/CreateAgent
+-- populate it, a rename UPDATEs it); it is NO LONGER the resolution key — that
+-- moved to account_handles below, whose partial-unique indexes express the
+-- two-namespace contract (global-unique user/system handles, per-owner agent
+-- handles) a single global column could not (RIG-2751 handle cutover).
 CREATE TABLE accounts (
     id           TEXT PRIMARY KEY,
-    handle       TEXT NOT NULL UNIQUE,
+    handle       TEXT NOT NULL,
     display_name TEXT NOT NULL,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -103,6 +107,32 @@ CREATE INDEX agent_accounts_parent_idx ON agent_accounts (parent_agent_id);
 CREATE TABLE system_accounts (
     account_id TEXT PRIMARY KEY REFERENCES accounts (id) ON DELETE RESTRICT
 );
+
+-- ── Account handles (the resolution index) ──────────────────────────────────
+-- Handle→id resolution's source of truth (RIG-2751 handle cutover). One row per
+-- account. owner_user_id is NULL for user and system accounts and the owning
+-- user's id for agent accounts (it mirrors agent_accounts.owner_user_id), which
+-- is what makes an agent handle unique only within its owner's namespace while a
+-- user/system handle is globally unique. account_id is PK/FK to accounts (one
+-- handle row per account); owner_user_id FKs user_accounts so an agent handle's
+-- owner is a real user. Both FKs ON DELETE RESTRICT so a referenced account or
+-- owner cannot be orphaned out from under a handle row.
+CREATE TABLE account_handles (
+    account_id    TEXT PRIMARY KEY REFERENCES accounts (id) ON DELETE RESTRICT,
+    handle        TEXT NOT NULL,
+    owner_user_id TEXT REFERENCES user_accounts (account_id) ON DELETE RESTRICT
+);
+
+-- The two partial-unique indexes ARE the resolution index and enforce the
+-- two-namespace contract:
+--   * user/system handles (owner_user_id IS NULL) are globally unique — the
+--     tier that preserves today's accounts.handle global-unique invariant;
+--   * agent handles (owner_user_id IS NOT NULL) are unique only per owner.
+-- An agent handle MAY overlap a global user handle with no collision at resolve
+-- time: a user is only ever looked up bare (first index) and an agent only ever
+-- owner-qualified (second index), so the two never contend on one lookup.
+CREATE UNIQUE INDEX account_handles_global_key ON account_handles (handle) WHERE owner_user_id IS NULL;
+CREATE UNIQUE INDEX account_handles_owner_key ON account_handles (owner_user_id, handle) WHERE owner_user_id IS NOT NULL;
 
 -- ── Channel groups ──────────────────────────────────────────────────────────
 -- Namespace nodes. parent_group_id nests them (NULL = a top-level root);

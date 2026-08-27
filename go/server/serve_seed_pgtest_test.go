@@ -142,7 +142,7 @@ func TestServeSeedsRootSupervisorOnEmptyTree(t *testing.T) {
 	attachFakeRunner(t, h.store, h.hub, false) // enroll + Sessions attach -> ready hook -> seed on an empty tree
 	h.awaitSeed(t)
 
-	supervisor, err := h.store.AgentByHandle(ctx, rootSupervisorHandle)
+	supervisor, err := h.store.AgentByHandle(ctx, h.adminID, rootSupervisorHandle)
 	if err != nil {
 		t.Fatalf("AgentByHandle(supervisor) after seed = %v, want the seeded root", err)
 	}
@@ -190,7 +190,7 @@ func TestServeSeedsNothingOnNonEmptyTree(t *testing.T) {
 	attachFakeRunner(t, h.store, h.hub, false) // enroll + Sessions attach -> ready hook -> seed on a NON-empty tree
 	h.awaitSeed(t)
 
-	if _, err := h.store.AgentByHandle(ctx, rootSupervisorHandle); err == nil {
+	if _, err := h.store.AgentByHandle(ctx, h.adminID, rootSupervisorHandle); err == nil {
 		t.Fatal("a supervisor was seeded on a non-empty tree, want none")
 	} else if !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("AgentByHandle(supervisor) = %v, want ErrNotFound (never seeded)", err)
@@ -243,7 +243,7 @@ func TestServeReDrivesNeverStartedSupervisor(t *testing.T) {
 
 	// The find half re-drove the EXISTING row: same id + display name, never
 	// re-created, and still the admin's single root.
-	supervisor, err := h.store.AgentByHandle(ctx, rootSupervisorHandle)
+	supervisor, err := h.store.AgentByHandle(ctx, h.adminID, rootSupervisorHandle)
 	if err != nil {
 		t.Fatalf("AgentByHandle(supervisor) after re-drive = %v, want the pre-created root", err)
 	}
@@ -297,7 +297,7 @@ func TestSeedPostsSetupThreadAsCompass(t *testing.T) {
 	attachFakeRunner(t, h.store, h.hub, false)
 	h.awaitSeed(t)
 
-	supervisor, err := h.store.AgentByHandle(ctx, rootSupervisorHandle)
+	supervisor, err := h.store.AgentByHandle(ctx, h.adminID, rootSupervisorHandle)
 	if err != nil {
 		t.Fatalf("AgentByHandle(supervisor) after seed = %v, want the seeded root", err)
 	}
@@ -329,7 +329,7 @@ func TestSeedSetupThreadIdempotentOnReFire(t *testing.T) {
 	attachFakeRunner(t, h.store, h.hub, false)
 	h.awaitSeed(t)
 
-	supervisor, err := h.store.AgentByHandle(ctx, rootSupervisorHandle)
+	supervisor, err := h.store.AgentByHandle(ctx, h.adminID, rootSupervisorHandle)
 	if err != nil {
 		t.Fatalf("AgentByHandle(supervisor) after seed = %v, want the seeded root", err)
 	}
@@ -370,7 +370,7 @@ func TestSeedSetupThreadPublishesOneMessagePosted(t *testing.T) {
 	attachFakeRunner(t, h.store, h.hub, false)
 	h.awaitSeed(t)
 
-	supervisor, err := h.store.AgentByHandle(ctx, rootSupervisorHandle)
+	supervisor, err := h.store.AgentByHandle(ctx, h.adminID, rootSupervisorHandle)
 	if err != nil {
 		t.Fatalf("AgentByHandle(supervisor) after seed = %v, want the seeded root", err)
 	}

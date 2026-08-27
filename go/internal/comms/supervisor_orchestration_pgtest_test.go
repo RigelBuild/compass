@@ -55,9 +55,9 @@ func TestSupervisorAssignsToTwoWorkersAuditable(t *testing.T) {
 	// the supervisor and both workers as founding members. (The owner is a
 	// founding member by construction — expandOwnerMembership adds the actor.)
 	created, err := svc.CreateChannel(WithActor(ctx, owner.ID), connect.NewRequest(&compassv1.CreateChannelRequest{
-		Name:             "coordination",
-		Kind:             compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
-		MemberAccountIds: []string{string(supervisor.ID), string(workerA.ID), string(workerB.ID)},
+		Name:          "coordination",
+		Kind:          compassv1.ChannelKind_CHANNEL_KIND_CHANNEL,
+		MemberHandles: []string{supervisor.Handle, workerA.Handle, workerB.Handle},
 	}))
 	if err != nil {
 		t.Fatalf("CreateChannel(coordination): %v", err)

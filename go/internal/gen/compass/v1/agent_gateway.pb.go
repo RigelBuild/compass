@@ -768,10 +768,10 @@ func (x *SpawnPeerResponse) GetSessionId() string {
 // Same-owner authority (F2); the account row, home channel, and history survive
 // (despawn tears down compute, not identity).
 type DespawnPeerRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	AgentAccountId string                 `protobuf:"bytes,1,opt,name=agent_account_id,json=agentAccountId,proto3" json:"agent_account_id,omitempty"` // the peer to tear down
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	AgentHandle   string                 `protobuf:"bytes,1,opt,name=agent_handle,json=agentHandle,proto3" json:"agent_handle,omitempty"` // the peer to tear down; a `@handle` the server resolves to an account id; unknown → NOT_FOUND
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DespawnPeerRequest) Reset() {
@@ -804,9 +804,9 @@ func (*DespawnPeerRequest) Descriptor() ([]byte, []int) {
 	return file_compass_v1_agent_gateway_proto_rawDescGZIP(), []int{8}
 }
 
-func (x *DespawnPeerRequest) GetAgentAccountId() string {
+func (x *DespawnPeerRequest) GetAgentHandle() string {
 	if x != nil {
-		return x.AgentAccountId
+		return x.AgentHandle
 	}
 	return ""
 }
@@ -2971,9 +2971,9 @@ const file_compass_v1_agent_gateway_proto_rawDesc = "" +
 	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\x12%\n" +
 	"\x0econtainer_name\x18\x02 \x01(\tR\rcontainerName\x12\x1d\n" +
 	"\n" +
-	"session_id\x18\x03 \x01(\tR\tsessionId\">\n" +
-	"\x12DespawnPeerRequest\x12(\n" +
-	"\x10agent_account_id\x18\x01 \x01(\tR\x0eagentAccountId\"\x15\n" +
+	"session_id\x18\x03 \x01(\tR\tsessionId\"7\n" +
+	"\x12DespawnPeerRequest\x12!\n" +
+	"\fagent_handle\x18\x01 \x01(\tR\vagentHandle\"\x15\n" +
 	"\x13DespawnPeerResponse\"\xe4\x01\n" +
 	"\x13LifecycleCallResult\x12\x17\n" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x125\n" +
