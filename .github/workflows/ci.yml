@@ -1251,6 +1251,21 @@ jobs:
           # works without this, which is why it only shows up in CI.
           dbus_conf="$(dirname "$(dirname "$(readlink -f "$(command -v dbus-daemon)")")")/share/dbus-1/session.conf"
           #
+          # WebKitGTK 6.0 (2.52.x, the GTK4 API flavor) has no sandbox toggle —
+          # the sandbox is always on — and at startup it spawns xdg-dbus-proxy
+          # inside a bubblewrap (bwrap) user namespace. Ubuntu 24.04 runners
+          # restrict unprivileged userns via AppArmor, so bwrap cannot create
+          # the namespace; the proxy child exits and WebKit aborts with
+          # `Failed to fully launch dbus-proxy` (g_error -> SIGABRT,
+          # WebKit XDGDBusProxy.cpp waitUntilSyncedOrDie). The ONLY runtime knob
+          # that skips this path in 6.0 is WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS
+          # (WebProcessPoolGLib.cpp) — set for the CI test step ONLY. Safe here:
+          # the e2e drives our own app UI (no untrusted web content), the var is
+          # never shipped to the app, and a NixOS dev box (userns unrestricted)
+          # masks this, which is why it only surfaces on the CI runner. It is
+          # exported once and inherited by both legs below.
+          export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+          #
           # --- PRIMARY: headless Wayland (GTK4's default user backend). weston
           # --backend=headless needs an XDG_RUNTIME_DIR for its socket; run it in
           # the background, wait for the socket to appear, then drive the shell
