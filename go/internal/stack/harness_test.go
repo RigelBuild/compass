@@ -415,20 +415,122 @@ func (p *stubContainerProcess) Wait(_ context.Context) error {
 
 func (p *stubContainerProcess) Pid() int { return 0 }
 
+// fakeCollectorContainer is the collector-START seam under test (the analogue of
+// fakePostgresContainer): Start records the run and the spec it was handed, so a
+// test can assert the collector path was taken and inspect the resolved spec. It
+// returns a stub Process whose Signal/Wait record into the shared recorder as
+// "signal otel-collector"/"wait otel-collector" so the reverse-drain assertion
+// reads the collector like any other child. startErr injects a launch failure.
+type fakeCollectorContainer struct {
+	rec      *recorder
+	mu       sync.Mutex
+	startErr error
+	started  int
+	lastSpec CollectorContainerSpec
+}
+
+func newFakeCollectorContainer(rec *recorder) *fakeCollectorContainer {
+	return &fakeCollectorContainer{rec: rec}
+}
+
+func (c *fakeCollectorContainer) Start(_ context.Context, spec CollectorContainerSpec) (Process, error) {
+	c.mu.Lock()
+	c.started++
+	c.lastSpec = spec
+	c.rec.add("start otel-collector")
+	err := c.startErr
+	c.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return &stubCollectorProcess{rec: c.rec}, nil
+}
+
+func (c *fakeCollectorContainer) spec() CollectorContainerSpec {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastSpec
+}
+
+// stubCollectorProcess is the in-process handle a fakeCollectorContainer.Start
+// hands back. Its Signal/Wait record with the "otel-collector" label so
+// drain-order assertions read it like the process/postgres paths; Pid is the 0
+// sentinel a real container handle also returns.
+type stubCollectorProcess struct {
+	rec     *recorder
+	stopped atomic.Bool
+}
+
+func (p *stubCollectorProcess) Signal(sig ProcessSignal) error {
+	p.rec.add("signal otel-collector")
+	p.stopped.Store(true)
+	return nil
+}
+
+func (p *stubCollectorProcess) Wait(_ context.Context) error {
+	p.rec.add("wait otel-collector")
+	return nil
+}
+
+func (p *stubCollectorProcess) Pid() int { return 0 }
+
+// stubCollectorProber answers the collector-health probe. By default it is ready
+// immediately (readyAfter == 0). readyAfter > 0 models a cold collector: the
+// first readyAfter probes report not-ready, then it flips ready. never makes it
+// report not-ready forever, so a test can drive the budget-timeout failure via a
+// controlled clock. It records the last health endpoint it probed.
+type stubCollectorProber struct {
+	rec        *recorder
+	readyAfter int
+	never      bool
+	calls      atomic.Int64
+	mu         sync.Mutex
+	lastEP     string
+}
+
+func (p *stubCollectorProber) ProbeCollector(_ context.Context, healthEndpoint string) error {
+	p.rec.add("probe-collector")
+	p.mu.Lock()
+	p.lastEP = healthEndpoint
+	p.mu.Unlock()
+	n := p.calls.Add(1)
+	if p.never {
+		return errCollectorNotReady
+	}
+	if n <= int64(p.readyAfter) {
+		return errCollectorNotReady
+	}
+	return nil
+}
+
+func (p *stubCollectorProber) lastEndpoint() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastEP
+}
+
+var errCollectorNotReady = &collectorProbeError{}
+
+type collectorProbeError struct{}
+
+func (*collectorProbeError) Error() string { return "otel-collector not answering" }
+
 // harness bundles the recorder, the shared serverStarted flag, and the stub
 // seams so a test can tweak individual fields before calling Up.
 type harness struct {
-	rec           *recorder
-	serverStarted *atomic.Bool
-	sup           *stubSupervisor
-	cert          *stubCert
-	token         *stubToken
-	image         *stubImage
-	prober        *stubProber
-	dbProber      *stubDBProber
-	groupSig      *fakeGroupSignaller
-	containers    *fakeContainerController
-	deps          Deps
+	rec             *recorder
+	serverStarted   *atomic.Bool
+	sup             *stubSupervisor
+	cert            *stubCert
+	token           *stubToken
+	image           *stubImage
+	prober          *stubProber
+	dbProber        *stubDBProber
+	groupSig        *fakeGroupSignaller
+	containers      *fakeContainerController
+	collector       *fakeCollectorContainer
+	collectorProber *stubCollectorProber
+	deps            Deps
 }
 
 const testVersion = "1.0.0"
@@ -451,6 +553,8 @@ func newHarness(t *testing.T) (Config, *harness) {
 	dbProber := &stubDBProber{rec: rec}
 	groupSig := newFakeGroupSignaller(rec)
 	containers := newFakeContainerController(rec)
+	collector := newFakeCollectorContainer(rec)
+	collectorProber := &stubCollectorProber{rec: rec}
 
 	// Stub the start-time reader so the pgid-capture path never touches /proc:
 	// map each fake pid to a deterministic token (pid*10) and restore the real
@@ -460,18 +564,20 @@ func newHarness(t *testing.T) (Config, *harness) {
 	t.Cleanup(func() { readStartTime = prev })
 	h := &harness{
 		rec: rec, serverStarted: started,
-		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber, groupSig: groupSig, containers: containers,
+		sup: sup, cert: cert, token: token, image: image, prober: prober, dbProber: dbProber, groupSig: groupSig, containers: containers, collector: collector, collectorProber: collectorProber,
 	}
 	h.deps = Deps{
-		Supervisor:      sup,
-		Certs:           cert,
-		Tokens:          token,
-		Images:          image,
-		Prober:          prober,
-		DBProber:        dbProber,
-		GroupSignaller:  groupSig,
-		Containers:      containers,
-		ExpectedVersion: testVersion,
+		Supervisor:         sup,
+		Certs:              cert,
+		Tokens:             token,
+		Images:             image,
+		Prober:             prober,
+		DBProber:           dbProber,
+		GroupSignaller:     groupSig,
+		Containers:         containers,
+		CollectorContainer: collector,
+		CollectorProber:    collectorProber,
+		ExpectedVersion:    testVersion,
 	}
 	cfg := Config{
 		StateDir:    t.TempDir(),
@@ -489,7 +595,7 @@ func newHarness(t *testing.T) (Config, *harness) {
 func filterEvents(events []string) []string {
 	out := events[:0:0]
 	for _, e := range events {
-		if e == "probe" || e == "probe-db" {
+		if e == "probe" || e == "probe-db" || e == "probe-collector" {
 			continue
 		}
 		out = append(out, e)

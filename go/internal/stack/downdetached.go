@@ -29,6 +29,11 @@ var (
 	runnerDrainBudget   = 15 * time.Second
 	serverDrainBudget   = 30 * time.Second
 	postgresDrainBudget = 10 * time.Second
+	// collectorDrainBudget bounds the collector container's graceful `podman
+	// stop` before the `podman rm -f` escalation. The collector holds no on-disk
+	// state to drain (D3 drops rather than buffering), so it stops fast; the
+	// budget matches postgres's container-drain tier for parity.
+	collectorDrainBudget = 10 * time.Second
 	// postKillGrace bounds the confirm after a group SIGKILL for the
 	// socket-confirmed components (server, postgres): SIGKILL is unblockable, so
 	// a socket still answering past this grace is a genuine survivor, not a
@@ -184,6 +189,14 @@ func liveTargets(ctx context.Context, cfg Config, deps Deps, rec pgidRecord) []t
 		{ComponentServer, serverDrainBudget, func(pgidEntry) func() bool {
 			// Socket quiescence: the UDS stops answering GetServerInfo.
 			return func() bool { _, err := deps.Prober.Probe(ctx, cfg.SocketPath); return err != nil }
+		}},
+		{ComponentCollector, collectorDrainBudget, func(e pgidEntry) func() bool {
+			// Container existence: the collector is a container child (like the
+			// container-backed postgres), torn down by name; it is confirmed gone
+			// when `podman container exists` reports absent. Reverse start order
+			// places it after the server (which emits to it in T4b) and before
+			// postgres.
+			return func() bool { return !deps.Containers.Exists(e.ContainerName) }
 		}},
 		{ComponentPostgres, postgresDrainBudget, func(pgidEntry) func() bool {
 			// Socket quiescence: postgres stops accepting on the DSN socket.

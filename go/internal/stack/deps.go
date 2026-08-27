@@ -52,6 +52,24 @@ type Deps struct {
 	// starts; the core dereferences it only when it dispatches to the container
 	// path.
 	PostgresContainer PostgresContainer
+	// CollectorContainer starts the container-backed Plane-B fan-in OTel
+	// Collector child (T4 / D3): the installed-stack default when
+	// Config.ExternalOTLPEndpoint is empty. Start runs `podman run` (detached)
+	// per the T4 contract and returns a Process handle whose Pid the caller does
+	// NOT persist as a pgid (a rootless container runs beneath conmon, outside
+	// the client's group) — the container's teardown identity is its stable
+	// name, recorded as a v2 container entry and torn down via Containers on a
+	// fresh down, exactly like PostgresContainer. Nil on the --otel-external
+	// path, where no collector container starts; the core dereferences it only
+	// when it dispatches to the collector start.
+	CollectorContainer CollectorContainer
+	// CollectorProber probes the collector's health_check extension for
+	// readiness between launching the collector and the components that emit to
+	// it — the collector analogue of DBProber, since CollectorContainer.Start
+	// returns at launch, not at readiness. Nil on the --otel-external path,
+	// where no collector component starts; the core dereferences it only on the
+	// collector-readiness gate.
+	CollectorProber CollectorProber
 	// Now is the clock the cert-expiry math reads. Nil defaults to time.Now.
 	Now func() time.Time
 
@@ -86,6 +104,11 @@ const (
 	ComponentServer
 	// ComponentRunner is compass-runner (enrolls over the TLS door).
 	ComponentRunner
+	// ComponentCollector is the bundled Plane-B fan-in OTel Collector child (T4
+	// / D3). Like ComponentPostgres on the container path it is a container
+	// child, so it uses no componentBinary; the enum + String case are its log
+	// label and the component key its v2 container pgid entry records.
+	ComponentCollector
 )
 
 // String renders the component for logs and errors.
@@ -97,6 +120,8 @@ func (c Component) String() string {
 		return "compass-server"
 	case ComponentRunner:
 		return "compass-runner"
+	case ComponentCollector:
+		return "otel-collector"
 	default:
 		return "unknown-component"
 	}
@@ -187,6 +212,24 @@ type PostgresContainer interface {
 	Start(ctx context.Context, spec PostgresContainerSpec) (Process, error)
 }
 
+// CollectorContainer starts the container-backed Plane-B fan-in OTel Collector
+// child (T4 / D3), the collector analogue of PostgresContainer. It is the START
+// seam; ContainerController tears the collector down on a fresh cross-process
+// down by the persisted name (the same reusable teardown contract postgres
+// uses).
+//
+// Start writes the generated collector config to disk, runs `podman run`
+// (detached) from spec, and returns a Process handle for the in-process
+// lifecycle: Signal(SignalTerm) maps to `podman stop` and Wait blocks until the
+// container exits, so an in-process Down drains it the same way it drains a
+// process child. The handle's Pid is NOT a process-group id (a rootless
+// container runs beneath conmon) and is never persisted as a pgid; the
+// container's durable teardown identity is spec.Name, recorded as a v2 container
+// entry. A non-nil error means the container could not be launched.
+type CollectorContainer interface {
+	Start(ctx context.Context, spec CollectorContainerSpec) (Process, error)
+}
+
 // CertEnsurer ensures the TLS anchor (one PEM that is both the server's
 // --tls-cert and the runner's --ca) exists under stateDir and is valid well past
 // now. It is expiry-aware, not skip-if-present: when the existing anchor's
@@ -235,6 +278,16 @@ type HealthProber interface {
 // compass database not yet created by the postgres wrapper's ensureDatabase).
 type DBProber interface {
 	ProbeDB(ctx context.Context, dsn string) error
+}
+
+// CollectorProber probes the bundled collector's health_check extension for
+// readiness — the collector analogue of DBProber. CollectorContainer.Start
+// returns at launch, not at readiness, so spawnChain polls this between
+// launching the collector and the components that emit to it. A nil error means
+// the collector answered healthy on healthEndpoint; a non-nil error means not
+// yet (the collector still starting).
+type CollectorProber interface {
+	ProbeCollector(ctx context.Context, healthEndpoint string) error
 }
 
 // ServerInfo is the subset of GetServerInfo the core consumes.

@@ -14,6 +14,7 @@ import (
 // probes filtered out.
 var coldStartSequence = []string{
 	"start postgres",
+	"start otel-collector",
 	"ensure-cert",
 	"start compass-server",
 	"ensure-token",
@@ -218,9 +219,11 @@ func TestUpServerNeverReady(t *testing.T) {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	h.deps.Now = func() time.Time {
 		ticks++
-		// First few reads are the deadline base + polls within budget; after
-		// enough reads jump past the budget so waitReady gives up deterministically.
-		if ticks > 3 {
+		// First few reads are the deadline bases (postgres gate, collector gate,
+		// cert, server-readiness deadline) + polls within budget; after enough
+		// reads jump past the budget so waitReady gives up deterministically. The
+		// collector-readiness gate adds one now() read ahead of waitReady.
+		if ticks > 4 {
 			return start.Add(readyPollBudget + time.Second)
 		}
 		return start
@@ -323,10 +326,12 @@ func TestDownDrainsReverseAndReleasesLock(t *testing.T) {
 	// stack.pgids is left for a later cross-process down to act on.
 	assertPgidFileGone(t, cfg.StateDir)
 
-	// Children stopped in reverse start order: runner → server → postgres.
+	// Children stopped in reverse start order: runner → server → collector →
+	// postgres.
 	wantStops := []string{
 		"signal compass-runner", "wait compass-runner",
 		"signal compass-server", "wait compass-server",
+		"signal otel-collector", "wait otel-collector",
 		"signal postgres", "wait postgres",
 	}
 	got := stopEvents(h.rec.snapshot())

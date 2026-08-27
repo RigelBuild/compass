@@ -106,8 +106,15 @@ type configFlags struct {
 	image            string
 	runtimeDir       string
 	postgresImage    string
+	collectorImage   string
 	databaseExternal bool
-	linger           bool
+	otelExternal     string
+	// otelExternalSet records whether --otel-external was explicitly passed
+	// (via fs.Visit), so resolveConfig can reject an explicit empty endpoint the
+	// way --database-external+empty-DSN is rejected — a bare string flag cannot
+	// tell "set to empty" from "unset" on the value alone.
+	otelExternalSet bool
+	linger          bool
 }
 
 // newFlagSet builds a flag.FlagSet for one subcommand, registering the config
@@ -142,11 +149,32 @@ func newFlagSet(name string, lingerable bool) (*flag.FlagSet, *configFlags) {
 	fs.BoolVar(&f.databaseExternal, "database-external", false,
 		"Do not start postgres; use the --database DSN as-is (the external-DB "+
 			"opt-out, S4). Point --database at your own postgres.")
+	fs.StringVar(&f.collectorImage, "collector-image", stack.DefaultCollectorImage,
+		"Container image for the bundled Plane-B fan-in OTel Collector (T4). "+
+			"Defaults to the pinned upstream opentelemetry-collector-contrib digest. "+
+			"Ignored with --otel-external.")
+	fs.StringVar(&f.otelExternal, "otel-external", "",
+		"Do not start the bundled OTel Collector; point compass surfaces at this "+
+			"OTLP endpoint instead (the --otel-external opt-out, D3). The managed "+
+			"plane supplies its own collector.")
 	if lingerable {
 		fs.BoolVar(&f.linger, "linger", false,
 			"Leave the stack running after this process exits (records Config.Linger).")
 	}
 	return fs, f
+}
+
+// markExplicitFlags records which string flags were explicitly passed (as
+// opposed to left at their default), for the flags whose "set to empty" must be
+// told apart from "unset". Today that is only --otel-external: an explicit empty
+// endpoint is a misuse resolveConfig rejects, while an unset flag is the D3
+// default (bundle the collector). Called after fs.Parse on every subcommand.
+func markExplicitFlags(fs *flag.FlagSet, f *configFlags) {
+	fs.Visit(func(fl *flag.Flag) {
+		if fl.Name == "otel-external" {
+			f.otelExternalSet = true
+		}
+	})
 }
 
 // resolveConfig builds and validates a stack.Config from the parsed flags,
@@ -202,16 +230,28 @@ func resolveConfig(f configFlags) (stack.Config, error) {
 		runtimeDir = defaultRuntimeDir(f.stateDir)
 	}
 
+	// The --otel-external opt-out points compass surfaces at an operator/managed
+	// endpoint, so it MUST carry an explicit endpoint. An explicit empty value
+	// (--otel-external "") is a misuse: it would set ExternalOTLPEndpoint empty,
+	// which the core reads as "bundle the collector" — the opposite of the
+	// operator's intent — so reject it here where the explicit-empty is still
+	// visible (fs.Visit recorded it), mirroring the --database-external reject.
+	if f.otelExternalSet && f.otelExternal == "" {
+		return stack.Config{}, errors.New("--otel-external requires an explicit OTLP endpoint: point compass surfaces at your own collector (omit the flag to bundle one)")
+	}
+
 	cfg := stack.Config{
-		StateDir:         f.stateDir,
-		SocketPath:       socketPath,
-		ListenAddr:       listen,
-		DatabaseDSN:      dsn,
-		AgentImage:       f.image,
-		RuntimeDir:       runtimeDir,
-		PostgresImage:    f.postgresImage,
-		ExternalDatabase: f.databaseExternal,
-		Linger:           f.linger,
+		StateDir:             f.stateDir,
+		SocketPath:           socketPath,
+		ListenAddr:           listen,
+		DatabaseDSN:          dsn,
+		AgentImage:           f.image,
+		RuntimeDir:           runtimeDir,
+		PostgresImage:        f.postgresImage,
+		ExternalDatabase:     f.databaseExternal,
+		CollectorImage:       f.collectorImage,
+		ExternalOTLPEndpoint: f.otelExternal,
+		Linger:               f.linger,
 	}
 	if err := cfg.Validate(); err != nil {
 		return stack.Config{}, fmt.Errorf("invalid stack config: %w", err)
@@ -280,6 +320,26 @@ func buildDeps(cfg stack.Config) (stack.Deps, error) {
 		deps.PostgresContainer = pc
 		deps.Containers = pc
 	}
+	// The bundled collector seams (start + readiness probe) are wired whenever a
+	// bundled collector could be in play: not on the --otel-external opt-out. Its
+	// teardown reuses the ContainerController contract like postgres — the
+	// concrete Stop/Remove/Exists are name-agnostic podman calls, so ONE
+	// Containers seam tears down both container components by their recorded
+	// names. Set Containers from the collector adapter when the postgres block
+	// above did not (the external-DB + bundled-collector combo), so a
+	// cross-process down that reads a collector container entry always has a
+	// teardown seam.
+	if cfg.ExternalOTLPEndpoint == "" {
+		cc, err := adapters.NewCollectorContainer()
+		if err != nil {
+			return stack.Deps{}, err
+		}
+		deps.CollectorContainer = cc
+		deps.CollectorProber = cc
+		if deps.Containers == nil {
+			deps.Containers = cc
+		}
+	}
 	return deps, nil
 }
 
@@ -292,6 +352,7 @@ func runUp(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	markExplicitFlags(fs, f)
 	cfg, err := resolveConfig(*f)
 	if err != nil {
 		return err
@@ -328,6 +389,7 @@ func runDown(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	markExplicitFlags(fs, f)
 	cfg, err := resolveConfig(*f)
 	if err != nil {
 		return err
@@ -360,6 +422,7 @@ func runStatus(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	markExplicitFlags(fs, f)
 	cfg, err := resolveConfig(*f)
 	if err != nil {
 		return err

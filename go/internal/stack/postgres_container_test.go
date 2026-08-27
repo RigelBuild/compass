@@ -37,6 +37,7 @@ func TestExternalDatabaseSkipsPostgres(t *testing.T) {
 	// No postgres start of either kind; the sequence is the cold chain minus the
 	// postgres step.
 	want := []string{
+		"start otel-collector",
 		"ensure-cert",
 		"start compass-server",
 		"ensure-token",
@@ -90,6 +91,7 @@ func TestContainerPathBuildsSpecAndRecordsContainerEntry(t *testing.T) {
 	// The container path was taken, not the process path.
 	want := []string{
 		"start postgres-container",
+		"start otel-collector",
 		"ensure-cert",
 		"start compass-server",
 		"ensure-token",
@@ -161,6 +163,7 @@ func TestContainerPathBuildsSpecAndRecordsContainerEntry(t *testing.T) {
 	wantStops := []string{
 		"signal compass-runner", "wait compass-runner",
 		"signal compass-server", "wait compass-server",
+		"signal otel-collector", "wait otel-collector",
 		"signal postgres", "wait postgres",
 	}
 	if gotStops := stopEvents(h.rec.snapshot()); !reflect.DeepEqual(gotStops, wantStops) {

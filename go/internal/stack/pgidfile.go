@@ -310,6 +310,8 @@ func componentFromString(s string) (Component, bool) {
 		return ComponentServer, true
 	case ComponentRunner.String():
 		return ComponentRunner, true
+	case ComponentCollector.String():
+		return ComponentCollector, true
 	default:
 		return 0, false
 	}

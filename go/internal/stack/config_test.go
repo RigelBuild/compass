@@ -54,6 +54,22 @@ func TestConfigValidate(t *testing.T) {
 			},
 			wantErr: false,
 		},
+		{
+			name: "collector fields set are accepted (additive, no new Validate rule)",
+			mutate: func(c *Config) {
+				c.CollectorImage = "docker.io/otel/opentelemetry-collector-contrib@sha256:abc"
+				c.ExternalOTLPEndpoint = "otlp.example.com:4317"
+			},
+			wantErr: false,
+		},
+		{
+			name: "collector fields zero are the D3 default (bundle), still valid",
+			mutate: func(c *Config) {
+				c.CollectorImage = ""
+				c.ExternalOTLPEndpoint = ""
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tc := range tests {

@@ -33,18 +33,34 @@ const (
 	// wedged cluster legibly rather than hanging.
 	dbReadyPollInterval = 100 * time.Millisecond
 	dbReadyPollBudget   = 60 * time.Second
+	// collectorReadyPollInterval/collectorReadyPollBudget bound the
+	// collector-health poll between launching the bundled collector and the
+	// components that emit to it. The collector holds no on-disk state and does
+	// no cold init like postgres's initdb — it binds its OTLP receivers and
+	// health_check extension in well under a second once the image is present —
+	// so the budget is the smaller readyPollBudget-tier value, ample for a cold
+	// `podman run` of a present image while still failing a genuinely wedged
+	// collector legibly rather than hanging.
+	collectorReadyPollInterval = 100 * time.Millisecond
+	collectorReadyPollBudget   = 30 * time.Second
 )
 
 // Stack is a supervised embedded stack: the resolved config plus the child
 // handles this process owns. An attached stack (a live server was already
 // answering) owns no children — Down on it only releases the lock.
 type Stack struct {
-	cfg    Config
-	deps   Deps
-	lock   *stackLock
-	server Process
-	runner Process
-	pg     Process
+	cfg       Config
+	deps      Deps
+	lock      *stackLock
+	server    Process
+	runner    Process
+	pg        Process
+	collector Process
+	// collectorContainerName is the stable name of the bundled collector
+	// container when it ran (T4); empty on the --otel-external opt-out path. It
+	// is the in-process Down's teardown identity for the collector (the same
+	// name persisted in the v2 pgid record for a cross-process down).
+	collectorContainerName string
 	// pgContainerName is the stable name of the container-backed postgres child
 	// when the container path ran (S4); empty on the process and external paths.
 	// It is the in-process Down's teardown identity for the container (the same
@@ -209,6 +225,22 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return err
 	}
 
+	// 1c. Bundled Plane-B fan-in OTel Collector (T4 / D3). Placed early — before
+	// compass-server and compass-runner — because those are the surfaces that
+	// emit TO it (server/runner emission lands in T4b; the agent already emits),
+	// so the fan-in endpoint must be receiving before an emitter comes up. On
+	// the --otel-external opt-out (ExternalOTLPEndpoint set) startCollector is a
+	// no-op and no readiness gate runs: surfaces point straight at the external
+	// endpoint, so nothing bundled starts (mirrors startPostgres's early return
+	// on ExternalDatabase). Start returns at launch; waitCollector is the
+	// readiness gate.
+	if err := s.startCollector(ctx); err != nil {
+		return err
+	}
+	if err := s.waitCollector(ctx); err != nil {
+		return err
+	}
+
 	// 2. TLS anchor, expiry-aware (rotates when NotAfter is within the window).
 	cert, err := s.deps.Certs.EnsureCert(ctx, s.cfg.StateDir, s.deps.now())
 	if err != nil {
@@ -306,6 +338,33 @@ func (s *Stack) startPostgresContainer(ctx context.Context) error {
 	return s.appendEntry(ComponentPostgres, pgidEntry{Kind: entryContainer, Component: ComponentPostgres, ContainerName: spec.Name})
 }
 
+// startCollector brings up the bundled Plane-B fan-in OTel Collector (T4 / D3)
+// and records it as a v2 container entry (torn down by name, never by pgid — a
+// rootless container runs beneath conmon, outside the client's process group),
+// exactly like startPostgresContainer. The Process handle is held on the Stack
+// so the in-process Down drains it (Signal → podman stop); the persisted name is
+// what a fresh cross-process down reconstructs and signals. On the
+// --otel-external opt-out (ExternalOTLPEndpoint set) it is a no-op: no bundled
+// collector starts, nothing is recorded, and a down tears down only the other
+// children — the collector analogue of startPostgres's ExternalDatabase early
+// return.
+func (s *Stack) startCollector(ctx context.Context) error {
+	if s.cfg.ExternalOTLPEndpoint != "" {
+		return nil
+	}
+	spec, err := collectorContainerSpec(s.cfg)
+	if err != nil {
+		return err
+	}
+	col, err := s.deps.CollectorContainer.Start(ctx, spec)
+	if err != nil {
+		return fmt.Errorf("start otel-collector container: %w", err)
+	}
+	s.collector = col
+	s.collectorContainerName = spec.Name
+	return s.appendEntry(ComponentCollector, pgidEntry{Kind: entryContainer, Component: ComponentCollector, ContainerName: spec.Name})
+}
+
 // recordChild appends a spawned process child's teardown identity (pgid == pid,
 // plus the leader start-time token read at spawn) and rewrites the state-dir
 // pgid record so it reflects every child started so far. Rewriting after each
@@ -380,9 +439,43 @@ func (s *Stack) waitPostgres(ctx context.Context) error {
 	}
 }
 
+// waitCollector polls CollectorProber.ProbeCollector until the bundled
+// collector answers healthy on its health_check endpoint or the budget elapses
+// — a direct mirror of waitPostgres for the collector precondition, since
+// CollectorContainer.Start returns at launch. On the --otel-external opt-out no
+// collector was started (deps.CollectorProber is nil), so the gate is skipped
+// entirely — mirroring how startCollector no-ops on that path. A budget timeout
+// is a legible error the caller renders as Failed. The poll respects ctx
+// cancellation.
+func (s *Stack) waitCollector(ctx context.Context) error {
+	if s.cfg.ExternalOTLPEndpoint != "" {
+		return nil
+	}
+	spec, err := collectorContainerSpec(s.cfg)
+	if err != nil {
+		return err
+	}
+	deadline := s.deps.now().Add(collectorReadyPollBudget)
+	ticker := time.NewTicker(collectorReadyPollInterval)
+	defer ticker.Stop()
+	for {
+		if err := s.deps.CollectorProber.ProbeCollector(ctx, spec.HealthEndpoint); err == nil {
+			return nil
+		}
+		if !s.deps.now().Before(deadline) {
+			return fmt.Errorf("otel-collector did not answer healthy within %s", collectorReadyPollBudget)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 // drainChildren signals and waits each owned child in reverse start order
-// (runner → server → postgres). It is safe to call with nil handles (a
-// mid-sequence failure) and on an attached stack (all nil).
+// (runner → server → collector → postgres). It is safe to call with nil handles
+// (a mid-sequence failure) and on an attached stack (all nil).
 func (s *Stack) drainChildren(ctx context.Context) error {
 	var errs error
 	for _, c := range []struct {
@@ -391,6 +484,7 @@ func (s *Stack) drainChildren(ctx context.Context) error {
 	}{
 		{"compass-runner", s.runner},
 		{"compass-server", s.server},
+		{"otel-collector", s.collector},
 		{"postgres", s.pg},
 	} {
 		if c.p == nil {
@@ -404,6 +498,6 @@ func (s *Stack) drainChildren(ctx context.Context) error {
 			errs = errors.Join(errs, fmt.Errorf("wait %s: %w", c.name, err))
 		}
 	}
-	s.runner, s.server, s.pg = nil, nil, nil
+	s.runner, s.server, s.collector, s.pg = nil, nil, nil, nil
 	return errs
 }
