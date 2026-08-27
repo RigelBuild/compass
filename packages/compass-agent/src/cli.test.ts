@@ -1449,7 +1449,9 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 		// main's enabled-path telemetry activation writes these when an endpoint is
 		// sourced (the OTEL-endpoint test below); save+restore so they never leak.
 		"OTEL_SERVICE_NAME",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
 		"OTEL_RESOURCE_ATTRIBUTES",
+		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
 		"COMPASS_FUTURE_VAR",
 		"LITELLM_BASE_URL",
 		"LITELLM_MCP_URL",
@@ -1534,6 +1536,54 @@ describe("main sources $HOME/.compass/env into process.env", () => {
 			"http://collector.example:4318",
 		);
 		expect(process.env.COMPASS_FUTURE_VAR).toBeUndefined();
+	});
+
+	test("all four loop-OTel env keys from the Runner-materialized env file survive isReservedEnvKey filtering and reach process.env", async () => {
+		const home = process.env.HOME as string;
+		// Invariant (RIG-2508 T2): the four loop-OTel keys the Runner materializes
+		// into $HOME/.compass/env reach process.env BEFORE the telemetry
+		// registration point (cli.ts:838), because the env-merge loop
+		// (cli.ts:614-618) runs earlier — so a file-sourced OTEL_* key is in
+		// process.env by the time initTelemetryExport / the loop tracer reads it.
+		// None of the four is HOME or COMPASS_*-prefixed, so isReservedEnvKey
+		// (cli.ts:108-110) lets them all through.
+		// Non-vacuity: were any of these keys COMPASS_-prefixed or HOME, it would
+		// be dropped by isReservedEnvKey (as the neighboring test pins for
+		// COMPASS_FUTURE_VAR) → the assertion reds. So this pins that the loop
+		// keys are genuinely NOT reserved and survive the filter unaltered.
+		// (The TRACES_ endpoint fires T1's enabled-path activation, which APPENDS
+		// compass.session.id to OTEL_RESOURCE_ATTRIBUTES — never clobbering the
+		// deployer-set value, Decision 3a — so the file value survives as a prefix.)
+		// OTEL_SERVICE_NAME uses a DISTINCT sentinel (not "compass-agent") on
+		// purpose: the activation's `??=` default (cli.ts:839) is "compass-agent",
+		// so a file value equal to that default would keep the assertion green even
+		// if the key were wrongly dropped by isReservedEnvKey and re-defaulted. A
+		// distinct value only survives when the key genuinely reaches process.env
+		// AND the `??=` no-ops on the already-present value — pinning the invariant.
+		writeEnvFile(
+			home,
+			"OTEL_SERVICE_NAME=deployer-custom-name\n" +
+				"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://collector.example:4318/v1/traces\n" +
+				"OTEL_RESOURCE_ATTRIBUTES=deployment.environment=prod\n" +
+				"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true\n",
+		);
+		await main(
+			{ HOME: home },
+			deps(
+				fakeSession(),
+				fakeCarrier(emptyLog(), { control: emptyControlStream }),
+			),
+		);
+		expect(process.env.OTEL_SERVICE_NAME).toBe("deployer-custom-name");
+		expect(process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).toBe(
+			"http://collector.example:4318/v1/traces",
+		);
+		expect(process.env.OTEL_RESOURCE_ATTRIBUTES).toContain(
+			"deployment.environment=prod",
+		);
+		expect(process.env.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT).toBe(
+			"true",
+		);
 	});
 
 	test("derives LITELLM_MCP_URL from a delivered LITELLM_BASE_URL (RIG-2674)", async () => {
