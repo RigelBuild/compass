@@ -10,6 +10,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,8 +92,8 @@ func TestGitHubWebhookHandler_BadSignature(t *testing.T) {
 	body := []byte(`{"action":"opened","issue":{"number":1},"repository":{"full_name":"o/r"}}`)
 
 	rec := doPost(h, "issues", "d1", "sha256=deadbeef", body)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("code = %d, want 401", rec.Code)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400", rec.Code)
 	}
 	if sink.count() != 0 {
 		t.Errorf("enqueued = %d, want 0 (fail-closed)", sink.count())
@@ -145,6 +146,56 @@ func TestGitHubWebhookHandler_IgnoredEventAcks(t *testing.T) {
 	}
 	if sink.count() != 0 {
 		t.Errorf("enqueued = %d, want 0 (ignored event)", sink.count())
+	}
+}
+
+func TestGitHubWebhookHandler_VerifiedMalformedAcksAndDrops(t *testing.T) {
+	secret := []byte("shh")
+	h, sink := newTestHandler(t, secret)
+	// A mapped event (issues) whose body is invalid JSON: verified but
+	// unparseable, so it is ack'd and dropped (never enqueued).
+	body := []byte(`{"action":"opened","issue":`)
+
+	rec := doPost(h, "issues", "d1", ghSign(secret, body), body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rec.Code)
+	}
+	if sink.count() != 0 {
+		t.Errorf("enqueued = %d, want 0 (verified-but-malformed drop)", sink.count())
+	}
+}
+
+func TestGitHubWebhookHandler_MissingSignature(t *testing.T) {
+	secret := []byte("shh")
+	h, sink := newTestHandler(t, secret)
+	body := []byte(`{"action":"opened","issue":{"number":1,"html_url":"u"},"repository":{"full_name":"o/r"}}`)
+
+	rec := doPost(h, "issues", "d1", "", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400", rec.Code)
+	}
+	if sink.count() != 0 {
+		t.Errorf("enqueued = %d, want 0 (fail-closed)", sink.count())
+	}
+}
+
+func TestGitHubWebhookHandler_SecretError(t *testing.T) {
+	secret := []byte("shh")
+	sink := &recordingSink{}
+	_, h := NewGitHubWebhookHandler(
+		func(context.Context) ([]byte, error) {
+			return nil, errors.New("secret unavailable")
+		},
+		sink, nil,
+	)
+	body := []byte(`{"action":"opened","issue":{"number":1,"html_url":"u"},"repository":{"full_name":"o/r"}}`)
+
+	rec := doPost(h, "issues", "d1", ghSign(secret, body), body)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want 503", rec.Code)
+	}
+	if sink.count() != 0 {
+		t.Errorf("enqueued = %d, want 0", sink.count())
 	}
 }
 

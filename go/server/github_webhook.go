@@ -23,11 +23,12 @@ const (
 	// githubWebhookPath is the ingress path T7 mounts this handler at.
 	githubWebhookPath = "/webhooks/github"
 
-	// githubWebhookMaxBody bounds a webhook request body (bytes). GitHub caps
-	// webhook payloads at 25 MiB; this ceiling rejects anything larger before
+	// githubWebhookMaxBody bounds a webhook request body (bytes). The 1 MiB
+	// ceiling keeps the per-request buffered-body allocation small — these
+	// events are single-digit KB — and rejects anything larger before
 	// buffering it, closing the memory-amplification window the raw-body HMAC
 	// read would otherwise open.
-	githubWebhookMaxBody = 25 << 20
+	githubWebhookMaxBody = 1 << 20
 
 	// githubDeliveryLRUSize is the number of recent X-GitHub-Delivery ids the
 	// dedup LRU retains. GitHub redelivers on our slow ack or its own retry;
@@ -44,6 +45,8 @@ const (
 // router satisfies it; the handler calls Enqueue after acking 200, so a slow
 // downstream never delays the ack GitHub's delivery timeout depends on.
 type ForgeEventSink interface {
+	// Enqueue MUST NOT block: it hands the event off to the async drain loop
+	// and returns immediately, so the ack is never on its latency path.
 	Enqueue(ctx context.Context, ev forge.ForgeEvent)
 }
 
@@ -151,8 +154,8 @@ func (h *githubWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if !forge.VerifyGitHubSignature(secret, body, r.Header.Get(githubSignatureHeader)) {
-		// Fail-closed: an unverifiable delivery is a 401, never processed.
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		// Fail-closed: an unverifiable delivery is a 400, never processed.
+		http.Error(w, "invalid signature", http.StatusBadRequest)
 		return
 	}
 
@@ -178,6 +181,12 @@ func (h *githubWebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	w.WriteHeader(http.StatusOK)
 	if !ok {
 		return // ignored event/action: counted-and-dropped.
+	}
+	// Flush the ack onto the wire before handing off: WriteHeader only records
+	// the status, so a blocking Enqueue would otherwise delay the client-visible
+	// 200 until ServeHTTP returns.
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
 	}
 	ev.DeliveryID = delivery
 	h.sink.Enqueue(ctx, ev)
