@@ -1806,10 +1806,12 @@ describe("main activates loop OpenTelemetry", () => {
 	});
 
 	// Endpoint SET ⇒ init() ran with the env defaults in place, and the options
-	// carry `telemetry: {}`. Pins: OTEL_SERVICE_NAME defaulted, compass.session.id
+	// carry the telemetry key with the trace-continuity bridge's capture hooks
+	// installed (message-trace-continuity §T2: `{} → { onSpanStart, onSpanEnd }`
+	// on the enabled path). Pins: OTEL_SERVICE_NAME defaulted, compass.session.id
 	// appended to OTEL_RESOURCE_ATTRIBUTES, and — via the recorded init call — that
 	// both were set BEFORE init ran (the load-bearing order).
-	test("endpoint set ⇒ env defaults set before init, and telemetry:{} on the options", async () => {
+	test("endpoint set ⇒ env defaults set before init, and telemetry hooks on the options", async () => {
 		process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector:4318";
 		const spy: TelemetrySpy = {
 			calls: [],
@@ -1825,7 +1827,16 @@ describe("main activates loop OpenTelemetry", () => {
 			),
 		);
 		expect(spy.hasTelemetryKey).toBe(true);
-		expect(spy.telemetryOption).toEqual({});
+		// The enabled path installs the bridge's span-capture hooks into the
+		// telemetry config (not a bare `{}`), so injected messages can parent/link
+		// onto the turn span. A regression that dropped the hooks (or reverted to
+		// `{}`) reddens here.
+		const option = spy.telemetryOption as {
+			onSpanStart?: unknown;
+			onSpanEnd?: unknown;
+		};
+		expect(typeof option.onSpanStart).toBe("function");
+		expect(typeof option.onSpanEnd).toBe("function");
 		expect(process.env.OTEL_SERVICE_NAME).toBe("compass-agent");
 		// The join key was appended; the session id is minted, so assert the shape,
 		// not a fixed id.

@@ -50,6 +50,7 @@ import type { AgentControl, ControlSource } from "./control";
 import type { FrameSink } from "./frame";
 import { EventMapper, type UnmappedEvent } from "./mapping";
 import { flat } from "./render-guard";
+import type { TurnTracer } from "./trace-bridge";
 
 export interface CompassAgentOptions {
 	// The session to drive. Constructed by the caller (container entrypoint) via
@@ -66,6 +67,12 @@ export interface CompassAgentOptions {
 	// Sink for frames the mapper could not map — logged + counted, never
 	// dropped. Defaults to a no-op counter-less logger via console.
 	readonly onUnmapped?: (u: UnmappedEvent) => void;
+	// Optional trace-continuity tracer (design record:
+	// docs/designs/platform/compass-agent-message-trace-continuity/design.md §T2).
+	// The NARROW, OTel-type-free `TurnTracer` facet only, so this exported option
+	// stays fence-clean. `undefined` (telemetry off) ⇒ every trace call below
+	// no-ops via optional chaining, so frames stay bit-identical to today.
+	readonly tracer?: TurnTracer;
 }
 
 export class CompassAgent {
@@ -74,6 +81,7 @@ export class CompassAgent {
 	readonly #control: ControlSource;
 	readonly #mapper: EventMapper;
 	readonly #onUnmapped: (u: UnmappedEvent) => void;
+	readonly #tracer: TurnTracer | undefined;
 	// The tools the session was constructed with (container entrypoint) — the
 	// native set no control frame may drop or substitute (see #withNatives).
 	// Snapshotted as a COPY: `agent.state` hands back the live, caller-owned
@@ -117,6 +125,25 @@ export class CompassAgent {
 	// with the message to the `#emitInjection` at flush time. Populated at enqueue
 	// beside `#deliverQueue.push`, read + deleted per message at flush.
 	readonly #deliverFromHandles = new Map<string, string>();
+	// Trace-continuity (design record §T2): the W3C `traceparent` string per
+	// queued deliver, keyed on `Message.id`, EXACTLY mirroring `#deliverFromHandles`.
+	// A deliver coalesces into `#deliverQueue` and is injected later at the
+	// turn-end flush, so its traceparent (carried on the wire deliver control,
+	// stamped server-side) must be stashed here to travel with the message to the
+	// flush, where it becomes the turn span's parent (N=1) or a link (N>1).
+	// Populated at enqueue beside `#deliverQueue.push`, read + deleted per message
+	// at flush.
+	readonly #deliverTraceparents = new Map<string, string>();
+	// Trace-continuity (design record §T2): the ids of every channel message that
+	// has fed the CURRENT turn span, in arrival order — the source for the
+	// `compass.message.ids` stamp. T1's `stampActiveTurn` OVERWRITES the
+	// attribute, so the topology-independent query key (design.md:199-200: "which
+	// messages fed this turn" must NOT depend on parent-vs-link topology) is only
+	// complete if every stamp passes the FULL accumulated list, not the delta.
+	// Reset at each turn-START site (idle steer, deliver/forge flush); appended at
+	// the mid-turn-steer stamp site. Reset at turn-start (not `agent_end`) keeps it
+	// self-contained — a rejected turn-start fires no `agent_end`.
+	readonly #turnMessageIds: string[] = [];
 	// Session-lifetime dedup set keyed on `Message.id`. A sweep redelivery under a
 	// fresh control_seq (independent of the control-source's seq dedup) is dropped
 	// here so a message is injected at most once (frozen record :811-812).
@@ -162,6 +189,7 @@ export class CompassAgent {
 		this.#natives = [...(opts.session.agent?.state?.tools ?? [])];
 		this.#sink = opts.sink;
 		this.#control = opts.control;
+		this.#tracer = opts.tracer;
 		this.#mapper = new EventMapper();
 		this.#onUnmapped =
 			opts.onUnmapped ??
@@ -252,7 +280,7 @@ export class CompassAgent {
 	// The replay barrier is enforced UPSTREAM at the control source (a
 	// pre-ReplayComplete immediate op is refused-and-counted before it reaches
 	// this handle, control-source.ts), so this method does not re-check it.
-	deliver(msg: Message, fromHandle = ""): void {
+	deliver(msg: Message, fromHandle = "", traceparent = ""): void {
 		// A message with no id cannot be acked or deduped — fail-visible, never a
 		// silent drop (and never injected, since there would be no receipt for it).
 		if (msg.id === "") {
@@ -302,6 +330,7 @@ export class CompassAgent {
 		this.#processedMessageIds.add(msg.id);
 		this.#deliverQueue.push(msg);
 		this.#deliverFromHandles.set(msg.id, fromHandle);
+		this.#deliverTraceparents.set(msg.id, traceparent);
 		// Idle deliver starts a turn immediately (frozen :799/:810); a mid-turn
 		// deliver waits for the `agent_end` flush. "Idle" consults BOTH the
 		// event-derived `#turnActive` AND the authoritative `#session.isStreaming`
@@ -383,7 +412,7 @@ export class CompassAgent {
 	// "injected", emitted at injection time (frozen :540-546, :283). The replay
 	// barrier is enforced UPSTREAM at the control source (control-source.ts), so
 	// this method does not re-check it — same as `deliver`.
-	steer(msg: Message, fromHandle = ""): void {
+	steer(msg: Message, fromHandle = "", traceparent = ""): void {
 		// A message with no id cannot be acked or deduped — fail-visible, never a
 		// silent drop (and never injected, since there would be no receipt for it).
 		// Mirrors deliver's empty-id guard.
@@ -447,6 +476,13 @@ export class CompassAgent {
 				timestamp: 0,
 			};
 			this.#session.agent.steer(agentMsg);
+			// Case-3 LINK (design record §T2): the `invoke_agent` span already exists
+			// and is already parented; a mid-turn steer adds a link to the captured
+			// live span, then stamps the message id onto the topology-independent
+			// query key. No-ops when the tracer is absent or no turn span is live.
+			this.#tracer?.linkActiveTurn(traceparent, msg.id);
+			this.#turnMessageIds.push(msg.id);
+			this.#tracer?.stampActiveTurn(this.#turnMessageIds.join(","));
 			queueMicrotask(() => {
 				const value: DeliveryAck = create(DeliveryAckSchema, {
 					messageId: msg.id,
@@ -487,7 +523,29 @@ export class CompassAgent {
 		this.#turnActive = true;
 		let rejected = false;
 		let acked = false;
-		this.#session.agent.prompt(content).catch((err) => {
+		// Case-1 PARENT (design record §T2): the remote context becomes the new
+		// turn's `invoke_agent` parent. `runWithParent` wraps the SYNCHRONOUS
+		// `prompt()` call — the loop starts the span before its first await, still
+		// inside the wrapped context, so the parentage rides `context.active()`
+		// (the SDK-synchronicity property the idle-steer-parent test canaries).
+		// When the tracer is absent, `prompt(content)` runs directly — bit-identical.
+		const started =
+			this.#tracer === undefined
+				? this.#session.agent.prompt(content)
+				: this.#tracer.runWithParent(traceparent, () =>
+						this.#session.agent.prompt(content),
+					);
+		// Stamp the topology-independent query key on the captured span (the hook
+		// fired synchronously inside `prompt()`, so the slot is set by now). This
+		// message STARTS the turn, so it RESETS the accumulator to its own id
+		// (a later mid-turn steer appends + re-stamps the full joined list). Reset
+		// at every turn-start site keeps the accumulator self-contained — no
+		// dependence on an `agent_end` edge that a rejected turn-start never fires.
+		// No-op when the tracer is absent or no turn span is live.
+		this.#turnMessageIds.length = 0;
+		this.#turnMessageIds.push(msg.id);
+		this.#tracer?.stampActiveTurn(this.#turnMessageIds.join(","));
+		started.catch((err) => {
 			if (acked) return;
 			rejected = true;
 			this.#turnActive = false;
@@ -619,7 +677,33 @@ export class CompassAgent {
 		this.#turnActive = true;
 		let rejected = false;
 		let acked = false;
-		this.#session.agent.prompt(input).catch((err) => {
+		// Reset the per-turn message-id accumulator at this turn-start (design
+		// record §T2): a flush STARTS a new turn (including a forge-only flush with
+		// zero delivers), so the accumulator must carry only THIS turn's feeding
+		// messages. The deliver ids append in the ack microtask below; a later
+		// mid-turn steer appends onto the same accumulator. Reset here (not at
+		// `agent_end`) keeps it self-contained — a rejected turn-start fires no
+		// `agent_end`.
+		this.#turnMessageIds.length = 0;
+		// Trace-continuity topology (design record §T2): a SINGLE-message deliver
+		// batch PARENTS the new turn on that message's stashed traceparent (case-2,
+		// N=1); a MULTI-message batch runs bare and LINKS each message's context
+		// onto the turn span in the ack microtask (case-2, N>1). A forge-only flush
+		// carries no channel message, so it runs bare with no parent/link. The
+		// parent must wrap the SYNCHRONOUS `prompt()` (the loop starts the span
+		// before its first await, inside the wrapped context); links + the
+		// `compass.message.ids` stamp attach on the next microtask, once the hook
+		// has captured the live span. Tracer absent ⇒ `prompt(input)` runs directly,
+		// bit-identical to today.
+		const startPrompt = (): Promise<void> => this.#session.agent.prompt(input);
+		const started =
+			this.#tracer !== undefined && delivers.length === 1
+				? this.#tracer.runWithParent(
+						this.#deliverTraceparents.get(delivers[0].id) ?? "",
+						startPrompt,
+					)
+				: startPrompt();
+		started.catch((err) => {
 			// Reached ONLY on a settled-rejected prompt, i.e. neither batch was
 			// injected (see the method comment). If the acks already went out this
 			// is the SDK-impossible post-injection rejection — leave the injected
@@ -627,10 +711,12 @@ export class CompassAgent {
 			if (acked) return;
 			rejected = true;
 			this.#turnActive = false;
-			// DELIVER: un-dedup every id so the Server redelivers + re-injects.
+			// DELIVER: un-dedup every id so the Server redelivers + re-injects, and
+			// drop the stashed from-handle + traceparent (the redelivery re-stashes).
 			for (const msg of delivers) {
 				this.#processedMessageIds.delete(msg.id);
 				this.#deliverFromHandles.delete(msg.id);
+				this.#deliverTraceparents.delete(msg.id);
 			}
 			if (delivers.length > 0) {
 				this.#onUnmapped({
@@ -652,6 +738,25 @@ export class CompassAgent {
 		queueMicrotask(() => {
 			if (rejected) return;
 			acked = true;
+			// Trace continuity (design record §T2): the hook fired synchronously
+			// inside `prompt()`, so the captured turn span is live now. A
+			// multi-message batch LINKS each message's stashed context onto it; every
+			// non-empty deliver batch stamps the comma-joined ids as the
+			// topology-independent query key. No-ops when the tracer is absent.
+			if (delivers.length > 1) {
+				for (const msg of delivers) {
+					this.#tracer?.linkActiveTurn(
+						this.#deliverTraceparents.get(msg.id) ?? "",
+						msg.id,
+					);
+				}
+			}
+			for (const msg of delivers) {
+				this.#turnMessageIds.push(msg.id);
+			}
+			if (delivers.length > 0) {
+				this.#tracer?.stampActiveTurn(this.#turnMessageIds.join(","));
+			}
 			// DELIVER acks: one DeliveryAck + one DELIVER injection per message.
 			for (const msg of delivers) {
 				const value: DeliveryAck = create(DeliveryAckSchema, {
@@ -660,6 +765,7 @@ export class CompassAgent {
 				this.#sink.emit({ kind: "deliveryAck", value });
 				const fromHandle = this.#deliverFromHandles.get(msg.id) ?? "";
 				this.#deliverFromHandles.delete(msg.id);
+				this.#deliverTraceparents.delete(msg.id);
 				this.#emitInjection(SessionInjectionKind.DELIVER, msg.id, fromHandle);
 			}
 			// FORGE acks: one ForgeNotificationAck frame (advances the Server's
