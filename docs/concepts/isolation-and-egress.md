@@ -62,9 +62,9 @@ The agent is **egress-sealed and holds no Compass server token** — it cannot c
 privileged server RPCs directly. Privileged operations an agent appears to
 perform (spawning a peer, a forge write) are **forwarded by the Runner to the
 Server** — the Runner asserts no identity and is a pure relay; the Server
-resolves the caller's account and authority from the session binding at the
-edge and executes the call — rather than handed to the agent as a credential it
-could misuse. (ledger DL-076)
+resolves the caller's account from the session binding at the edge and executes
+the call under that account's authority — rather than handed to the agent as a
+credential it could misuse. (ledger DL-076)
 
 This is the same shape as the [handle/account split](./handle-vs-account.md)
 (the agent never holds a per-agent forge seat) and the [no-human-clicks
