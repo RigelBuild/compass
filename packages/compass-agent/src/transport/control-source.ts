@@ -56,7 +56,7 @@
 
 import { create } from "@bufbuild/protobuf";
 import { Effect, Either, Fiber, Logger, ManagedRuntime, Metric } from "effect";
-import type { Message } from "./../compassv1";
+import type { ForgeNotification, Message } from "./../compassv1";
 import type { AgentControl, ControlSource } from "./../control";
 import { ControlSubscribeRequestSchema } from "./../gen/compass/v1/agent_gateway_pb";
 import type {
@@ -173,6 +173,17 @@ export interface ImmediateControl {
 	// logged server-side, never a delivery block).
 	steer(msg: Message, fromHandle: string): void; // compass.v1.Message — .id intact
 	deliver(msg: Message, fromHandle: string): void; // compass.v1.Message — .id intact
+	// RIG-2732 W3 forge notification arm. UNLIKE steer/deliver — which ack their
+	// control_seq at DECODE because they dispatch at decode — the forge arm
+	// enqueues on the CompassAgent's turn-end queue (RT-3 coalescing) and defers
+	// BOTH acks to the turn-end FLUSH: a decode-ack would discard the Runner's
+	// retain-until-acked durability for the decode->flush window (design.md
+	// 1006-1013). So the source hands the agent an `ackRail` thunk closing over
+	// this op's control_seq; the agent calls it at flush, AFTER emitting the
+	// ForgeNotificationAck frame, to retire the op on the control rail (advancing
+	// the AckCursor + deleting the in-window dedup entry). The agent sources the
+	// forge delivery ack (subscription_id + revision) straight off `notification`.
+	forgeNotification(notification: ForgeNotification, ackRail: () => void): void;
 }
 
 // Decode the immediate-op payload into the comms `Message` the `immediate`
@@ -427,6 +438,35 @@ export function createSocketControlSource(
 					"empty-shell replay/config — payload staged (SEA-1310)",
 				);
 				acks.markApplied(seq);
+				return;
+			}
+			case "forgeNotification": {
+				// RIG-2732 W3 turn-end forge arm. Barrier-enforced (invariant 1): a
+				// live forge notification before ReplayComplete is refused-and-counted
+				// and acked at decode, exactly as a pre-barrier steer/deliver — it never
+				// reaches the turn-end queue.
+				if (!replayComplete) {
+					count(
+						`control:${kind}`,
+						"live forge notification before ReplayComplete — refused by replay barrier",
+					);
+					acks.markApplied(seq);
+					return;
+				}
+				// Otherwise ENQUEUE on the CompassAgent's turn-end queue and DEFER both
+				// acks to the flush (unlike steer/deliver, which ack here at decode).
+				// The seq is tracked in `queued` so a redelivery in the decode->flush
+				// window dedups as already-queued (the rail ack has not fired yet); the
+				// `ackRail` thunk the agent calls at flush removes it and markApplied's
+				// the control_seq, retiring the op on the rail AFTER the agent emitted
+				// the ForgeNotificationAck frame. A decode-ack here would discard the
+				// Runner's retain-until-acked durability for that window (design.md
+				// 1006-1013).
+				queued.add(seq);
+				immediate.forgeNotification(wire.control.value, () => {
+					queued.delete(seq);
+					acks.markApplied(seq);
+				});
 				return;
 			}
 			default:

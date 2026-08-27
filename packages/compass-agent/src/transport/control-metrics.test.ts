@@ -152,6 +152,7 @@ function emptyRecorder(): Recorder {
 const noopImmediate = {
 	steer: (): void => {},
 	deliver: (): void => {},
+	forgeNotification: (): void => {},
 };
 
 function promptOp(seq: bigint, input: string): WireAgentControl {

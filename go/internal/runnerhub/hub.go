@@ -145,19 +145,30 @@ type PresenceSink interface {
 	OnSessionPromoted(account store.AccountID, sessionID string)
 }
 
-// DeliveryStore is the durable delivery-cursor surface the hub's ack arm needs
-// (SEA-1569 T3 §6): resolve a delivered message's channel and advance the
-// per-(agent, channel) cursor on the recipient's ack. *store.Store implements
-// it; the hub depends only on this narrow surface (pattern: LifecycleSink).
-// Wired via SetDeliveryStore after construction so no NewHub caller signature
-// changes, and nil-safe: a hub with no delivery store simply drops delivery_ack
-// frames (a Deliver-only test hub never receives one).
+// DeliveryStore is the durable delivery-cursor surface the hub's ack arms need:
+// the comms delivery cursor (SEA-1569 T3 §6) — resolve a delivered message's
+// channel and advance the per-(agent, channel) cursor on the recipient's ack —
+// and the forge delivery cursor (RIG-2732 W3) — advance one subscription's
+// per-subscriber delivered_revision on the agent's forge_notification_ack.
+// *store.Store implements it; the hub depends only on this narrow surface
+// (pattern: LifecycleSink). Wired via SetDeliveryStore after construction so no
+// NewHub caller signature changes, and nil-safe: a hub with no delivery store
+// simply drops delivery_ack / forge_notification_ack frames (a Deliver-only
+// test hub never receives one). The forge advance rides THIS same handle rather
+// than a second setter: the store that owns the comms cursor owns the forge
+// cursor too, so the one SetDeliveryStore(st) boot call (sinks.go) satisfies
+// both arms — RIG-2732 T7 adds no new boot wiring for it.
 type DeliveryStore interface {
 	// MessageChannel resolves a message id to its channel — the ack carries only
 	// message_id, but AckDelivery is keyed (agent, channel, message_id).
 	MessageChannel(ctx context.Context, messageID string) (store.ChannelID, error)
 	// AckDelivery advances the (agent, channel) cursor across the acked message.
 	AckDelivery(ctx context.Context, agent store.AccountID, channel store.ChannelID, messageID string) error
+	// AdvanceForgeDeliveredRevision advances one subscription's per-subscriber
+	// delivered_revision to revision, scoped to the owning agent. Zero rows
+	// (unknown id, foreign agent, or unsubscribed mid-flight) -> store.ErrNotFound
+	// (RIG-2732 W3; forge_subscriptions.go).
+	AdvanceForgeDeliveredRevision(ctx context.Context, agent store.AccountID, subscriptionID, revision string) error
 }
 
 // TranscriptStore is the durable transcript surface the hub's commit arm writes
@@ -539,6 +550,9 @@ func (h *Hub) Deliver(ctx context.Context, ev RunnerEvent) error {
 	case *compassv1internal.AgentFrame_DeliveryAck:
 		h.deliverAck(ctx, ev, f.DeliveryAck)
 		return nil
+	case *compassv1internal.AgentFrame_ForgeNotificationAck:
+		h.forgeNotificationAck(ctx, ev, f.ForgeNotificationAck)
+		return nil
 	default:
 		// Unset or unrecognized oneof — the "unknown frame". Log + count so a
 		// contract skew (a new variant the Server does not yet handle) is
@@ -743,6 +757,50 @@ func (h *Hub) deliverAck(ctx context.Context, ev RunnerEvent, ack *compassv1inte
 		// sweep (the cursor stays where it was), so it never justifies tearing
 		// down the relay.
 		h.countDroppedAck(ev, "delivery_ack cursor advance failed: "+err.Error())
+		return
+	}
+}
+
+// forgeNotificationAck advances the durable forge delivery cursor for a
+// subscriber's forge_notification_ack (RIG-2732 W3): the Runner->Server receipt
+// that a ForgeNotification pushed down the session was rendered at the agent's
+// turn-end flush. It resolves session->agent from the hub's own binding (the
+// SAME binding deliverAck resolves against), then advances that subscription's
+// delivered_revision through the delivery store. The store scopes the UPDATE to
+// (id, agent_account_id), so a session bound to a DIFFERENT agent than the
+// subscription's owner advances nothing (zero rows -> ErrNotFound) — the store
+// resolution IS the ownership guard, exactly as MessageChannel+AckDelivery is
+// for deliverAck. Fail-closed and non-fatal throughout, mirroring deliverAck:
+// an unbound acking session, an empty subscription id, or a store fault
+// (including the ErrNotFound of an unsubscribed-mid-flight subscription) is
+// logged + counted and dropped, NEVER a stream teardown — a bad ack must not
+// kill the Runner's whole event stream; the reconciliation sweep re-notifies
+// from the durable gap. A nil delivery store (a Deliver-only hub) drops the ack
+// silently: no cursor exists to advance.
+func (h *Hub) forgeNotificationAck(ctx context.Context, ev RunnerEvent, ack *compassv1internal.ForgeNotificationAck) {
+	h.mu.Lock()
+	delivery := h.delivery
+	h.mu.Unlock()
+	if delivery == nil {
+		return
+	}
+	subscriptionID := ack.GetSubscriptionId()
+	if subscriptionID == "" {
+		h.countDroppedAck(ev, "forge_notification_ack carries no subscription id")
+		return
+	}
+	agent, ok := h.accountForSession(ev.SessionID)
+	if !ok {
+		h.countDroppedAck(ev, "no agent account bound to the acking session")
+		return
+	}
+	if err := delivery.AdvanceForgeDeliveredRevision(ctx, agent, subscriptionID, ack.GetRevision()); err != nil {
+		// A store fault (or the ErrNotFound of a subscription unsubscribed
+		// mid-flight / owned by a different agent) advancing the cursor: log +
+		// count and drop. A missed advance costs only a redundant re-notify on
+		// the reconciliation sweep's next pass (the cursor stays where it was),
+		// so it never justifies tearing down the relay.
+		h.countDroppedAck(ev, "forge_notification_ack cursor advance failed: "+err.Error())
 		return
 	}
 }

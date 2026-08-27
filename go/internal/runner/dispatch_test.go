@@ -755,6 +755,63 @@ func TestExecuteDeliverControlRoutesToHostNoResult(t *testing.T) {
 	}
 }
 
+// forgeNotificationControlCommand builds a send-only DeliverControl command
+// wrapping a forge_notification control op for sessionID, carrying a request id.
+// The forge notification rides the GENERIC DispatchControl relay envelope
+// (SessionsResponse.deliver_control wrapping AgentControl.forge_notification),
+// NOT the bare reserved SessionsResponse.forge_notification variant (DL-265).
+func forgeNotificationControlCommand(id, sessionID, subscriptionID string) *compassv1internal.SessionsResponse {
+	return &compassv1internal.SessionsResponse{
+		RequestId: id,
+		Command: &compassv1internal.SessionsResponse_DeliverControl{
+			DeliverControl: &compassv1internal.DispatchControl{
+				SessionId: sessionID,
+				Op: &compassv1internal.AgentControl{
+					Control: &compassv1internal.AgentControl_ForgeNotification{
+						ForgeNotification: &compassv1internal.ForgeNotification{
+							SubscriptionId: subscriptionID,
+							Repo:           "o/r",
+							Number:         42,
+							Change:         compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_COMMENT,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// A forge notification relayed via the generic DispatchControl envelope routes
+// to host.Deliver with the wrapped session id and op, producing NO result frame
+// — the same send-only invariant DeliverControl rides (success is confirmed
+// later by the agent's turn-end forge_notification_ack, which advances the
+// Server's durable delivered_revision). This is the RIG-2732 T6 receive-side
+// REGRESSION TEST: zero new Runner dispatch code carries the forge op — the
+// existing DeliverControl arm relays any AgentControl variant, forge included.
+// RED check: were the forge op NOT a valid AgentControl variant the relay
+// carries, host.lastDeliverOp.GetForgeNotification() would be nil.
+func TestExecuteDispatchControlCarriesForgeNotificationToHost(t *testing.T) {
+	host := &fakeSessionHost{}
+	d := newDispatcher(host, discardLoggerRunner())
+	res := d.execute(context.Background(), "req-forge", forgeNotificationControlCommand("req-forge", "sess-1", "sub-1"))
+	if res != nil {
+		t.Fatalf("forge DispatchControl produced a result frame %+v, want nil (send-only)", res)
+	}
+	if host.deliverCalls != 1 {
+		t.Fatalf("Deliver called %d times, want 1", host.deliverCalls)
+	}
+	if host.lastDeliverID != "sess-1" {
+		t.Fatalf("Deliver got session %q, want sess-1", host.lastDeliverID)
+	}
+	fn := host.lastDeliverOp.GetForgeNotification()
+	if fn == nil {
+		t.Fatal("Deliver op carried no forge_notification; the generic relay must pass the forge variant intact")
+	}
+	if fn.GetSubscriptionId() != "sub-1" {
+		t.Fatalf("forge notification subscription id = %q, want sub-1 (op relayed intact)", fn.GetSubscriptionId())
+	}
+}
+
 // A host Deliver failure returns an errorResult carrying the mapped wire code:
 // errSessionUnknown → NOT_FOUND. The Server reads this async refusal on the
 // send-only id and leaves the delivery cursor unadvanced for the D2 sweep.

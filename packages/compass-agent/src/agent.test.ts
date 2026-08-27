@@ -24,6 +24,7 @@ import {
 	CompassAgent,
 	formatAskAnswerForPrompt,
 	formatDeliversForPrompt,
+	formatForgeNotifications,
 } from "./agent";
 import {
 	AgentSessionState,
@@ -33,9 +34,16 @@ import {
 	type AskQuestion,
 	AskQuestionSchema,
 	AskSchema,
+	ChecksSummarySchema,
+	CommentRefSchema,
 	create,
+	type ForgeNotification,
+	ForgeNotificationKind,
+	ForgeNotificationSchema,
+	ForgeRefSchema,
 	type Message,
 	MessageBlockSchema,
+	type MessageInitShape,
 	MessageSchema,
 	SessionInjectionKind,
 } from "./compassv1";
@@ -129,6 +137,16 @@ function recordingSession(natives: AgentTool[] = []): RecordingSession {
 			if (agent.promptRejectsNoModel) {
 				return Promise.reject(new Error("No model configured"));
 			}
+			// Faithful to production: `Agent.prompt` sets `#state.isStreaming = true`
+			// SYNCHRONOUSLY on the success path (pi-agent-core agent.ts:1072), AFTER
+			// both refusal guards above (:985 busy, :990 no-model, which reject
+			// BEFORE any injection and never flip streaming). The inner loop clears
+			// it again at the `agent_end` edge (:1254) — modeled in the `drive`
+			// helpers, which clear it before delivering an `agent_end` event, exactly
+			// as production emits that edge with streaming already false. This is
+			// what makes a SECOND synchronous `prompt()` on one turn-end edge collide
+			// with AgentBusyError — the bug the single-prompt turn-end flush closes.
+			agent.state.isStreaming = true;
 			agent.prompts.push(input);
 			return Promise.resolve();
 		},
@@ -426,6 +444,11 @@ function startControlAgent(natives: AgentTool[] = []) {
 		await tick();
 	};
 	const drive = (event: AgentSessionEvent): void => {
+		// Model production's inner loop clearing `#state.isStreaming = false` at the
+		// `agent_end` case (pi-agent-core agent.ts:1254) BEFORE emitting the edge —
+		// so a turn-end flush's single prompt is not refused by the just-settled
+		// turn's own streaming flag, and a following turn's flush starts clean.
+		if (event.type === "agent_end") session.agent.state.isStreaming = false;
 		session.listener?.(event);
 	};
 	const close = async (): Promise<void> => {
@@ -696,6 +719,10 @@ function startDeliverAgent(natives: AgentTool[] = []) {
 	});
 	const done = agent.run();
 	const drive = (event: AgentSessionEvent): void => {
+		// Model production's inner loop clearing `#state.isStreaming = false` at the
+		// `agent_end` case (pi-agent-core agent.ts:1254) BEFORE emitting the edge,
+		// so the turn-end flush's single prompt starts from a settled turn.
+		if (event.type === "agent_end") session.agent.state.isStreaming = false;
 		session.listener?.(event);
 	};
 	const close = async (): Promise<void> => {
@@ -900,22 +927,21 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 	});
 
 	// Rejection-safety belt (SEA-1310 §8): if a flush's prompt is REFUSED (the
-	// only prompt-rejection shape — a not-injected batch, see #flushDelivers), the
-	// batch must not be acked (no false receipt) and its ids must leave the
-	// processed set so the Server's redelivery re-injects them. Forced by driving
-	// the agent_end flush while the fake is still streaming, so its prompt guard
-	// rejects with AgentBusyError.
+	// only prompt-rejection shape — a not-injected batch), the batch must not be
+	// acked (no false receipt) and its ids must leave the processed set so the
+	// Server's redelivery re-injects them. Forced via the model-independent
+	// `promptRejectsNoModel` trigger (the "No model configured" throw, pi-agent-core
+	// agent.ts:990) — a pre-injection rejection that does not hinge on the
+	// streaming flag the `agent_end` edge now clears.
 	test("a refused flush prompt emits no ack, un-dedups the batch, and surfaces it", async () => {
 		const h = startDeliverAgent();
 		h.drive({ type: "agent_start" } as AgentSessionEvent);
 		h.agent.deliver(deliverMsg("m1", "refused"));
-		// The agent is (pathologically) still streaming when agent_end fires, so
-		// the flush's prompt is refused. #turnActive is cleared by the edge, so the
-		// flush is attempted.
-		h.session.agent.state.isStreaming = true;
+		// The turn-end flush's prompt is refused (no model configured).
+		h.session.agent.promptRejectsNoModel = true;
 		h.drive({ type: "agent_end" } as AgentSessionEvent);
 		await tick();
-		// No injection recorded (the guard refused it), and crucially NO ack.
+		// No injection recorded (the prompt rejected), and crucially NO ack.
 		expect(h.session.agent.prompts).toEqual([]);
 		expect(ackIds(h.frames)).toEqual([]);
 		// The refusal is surfaced, never a silent drop.
@@ -924,9 +950,9 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 				u.eventType === "deliver:prompt" && u.reason.includes("not injected"),
 		);
 		expect(refused).toBeDefined();
-		// The id left the processed set: the Server's redelivery (streaming now
-		// clear) is NOT deduped away — it injects exactly once.
-		h.session.agent.state.isStreaming = false;
+		// The id left the processed set: the Server's redelivery is NOT deduped
+		// away — it injects exactly once.
+		h.session.agent.promptRejectsNoModel = false;
 		h.agent.deliver(deliverMsg("m1", "refused"));
 		await tick();
 		expect(h.session.agent.prompts).toHaveLength(1);
@@ -988,6 +1014,303 @@ describe("CompassAgent — RT-3 turn-end delivery (SEA-1310 §8 deliver arm)", (
 		// It flushed idle: exactly one prompt (its empty text slot) and one ack.
 		expect(h.session.agent.prompts).toHaveLength(1);
 		expect(ackIds(h.frames)).toEqual(["ask1"]);
+		await h.close();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// RIG-2732 W3 — turn-end forge-notification arm. The RT-3 sibling of the deliver
+// arm: a forge notification pushed mid-turn coalesces onto the turn-end queue
+// and flushes as ONE prompt at agent_end; an idle notification flushes at once.
+// BOTH acks fire at flush — the ForgeNotificationAck frame AND the deferred
+// control-rail ack (the `ackRail` thunk the control source hands the agent) —
+// never at decode (design.md:1006-1013). forgeNotification() rides the immediate
+// handle, so these tests construct CompassAgent directly and drive turn edges
+// through the recorded listener, exactly as the deliver tests do.
+
+// A forge notification fixture for the agent arm: subscription id + revision (the
+// ack correlation + advance target) and a per-kind payload. `change` defaults to
+// COMMENT; `overrides` sets the kind-specific fields.
+function forgeNote(
+	subscriptionId: string,
+	revision: string,
+	overrides: Omit<
+		Partial<MessageInitShape<typeof ForgeNotificationSchema>>,
+		"$typeName"
+	> = {},
+): ForgeNotification {
+	return create(ForgeNotificationSchema, {
+		subscriptionId,
+		revision,
+		repo: "o/r",
+		number: 42n,
+		change: ForgeNotificationKind.COMMENT,
+		...overrides,
+	});
+}
+
+// The forge-notification-ack frames captured, in order, as {subscriptionId,
+// revision} pairs — the turn-end forge delivery receipt that advances the
+// Server's delivered_revision.
+function forgeAcks(
+	frames: OutboundFrame[],
+): { subscriptionId: string; revision: string }[] {
+	return frames.flatMap((f) =>
+		f.kind === "forgeNotificationAck"
+			? [
+					{
+						subscriptionId: f.value.subscriptionId,
+						revision: f.value.revision,
+					},
+				]
+			: [],
+	);
+}
+
+// Start a CompassAgent forge harness, mirroring startDeliverAgent. `railAcks`
+// records every control-rail ack the agent fires (the `ackRail` thunk the
+// control source would hand it), so a test can prove BOTH acks land at flush and
+// neither before it.
+function startForgeAgent() {
+	const session = recordingSession();
+	const frames: OutboundFrame[] = [];
+	const unmapped: UnmappedEvent[] = [];
+	const railAcks: number[] = [];
+	let seq = 0;
+	let releaseControl!: () => void;
+	const controlClosed = new Promise<void>((resolve) => {
+		releaseControl = resolve;
+	});
+	const control: ControlSource = {
+		[Symbol.asyncIterator]() {
+			return {
+				async next(): Promise<IteratorResult<AgentControl>> {
+					await controlClosed;
+					return { done: true, value: undefined };
+				},
+			};
+		},
+	};
+	const agent = new CompassAgent({
+		session: session as unknown as AgentSession,
+		sink: {
+			emit: (f) => {
+				frames.push(f);
+			},
+			emitDurable: (f) => {
+				frames.push(f);
+				return Promise.resolve();
+			},
+		},
+		control,
+		onUnmapped: (u) => unmapped.push(u),
+	});
+	const done = agent.run();
+	// Push a forge notification through the same seam the control source drives,
+	// pairing it with a rail-ack thunk that records the seq it retired.
+	const push = (notification: ForgeNotification): void => {
+		const mySeq = ++seq;
+		agent.forgeNotification(notification, () => railAcks.push(mySeq));
+	};
+	const drive = (event: AgentSessionEvent): void => {
+		// Model production's inner loop clearing `#state.isStreaming = false` at the
+		// `agent_end` case (pi-agent-core agent.ts:1254) BEFORE emitting the edge,
+		// so the turn-end flush's single prompt starts from a settled turn.
+		if (event.type === "agent_end") session.agent.state.isStreaming = false;
+		session.listener?.(event);
+	};
+	const close = async (): Promise<void> => {
+		releaseControl();
+		await done;
+	};
+	return { agent, session, frames, unmapped, railAcks, push, drive, close };
+}
+
+describe("CompassAgent — RIG-2732 W3 turn-end forge-notification arm", () => {
+	test("mid-turn forge notifications coalesce into ONE turn-end prompt; NOTHING acked until flush", async () => {
+		const h = startForgeAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.push(forgeNote("sub-1", "rev-1", { repo: "o/r", number: 7n }));
+		h.push(forgeNote("sub-2", "rev-2", { repo: "o/r", number: 8n }));
+		// No prompt while the turn is active — the notifications are queued.
+		expect(h.session.agent.prompts).toEqual([]);
+		// And crucially NEITHER ack has fired: no forge frame, no rail ack. A
+		// decode-ack would show them here (the durability window the defer protects).
+		await tick();
+		expect(forgeAcks(h.frames)).toEqual([]);
+		expect(h.railAcks).toEqual([]);
+		// Turn ends: one coalesced prompt, then both acks per notification.
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		expect(h.session.agent.prompts[0]).toContain("o/r#7");
+		expect(h.session.agent.prompts[0]).toContain("o/r#8");
+		await tick();
+		expect(forgeAcks(h.frames)).toEqual([
+			{ subscriptionId: "sub-1", revision: "rev-1" },
+			{ subscriptionId: "sub-2", revision: "rev-2" },
+		]);
+		// Both rail acks fire at flush, AFTER the forge frames (order pinned by the
+		// per-entry flush loop).
+		expect(h.railAcks).toEqual([1, 2]);
+		await h.close();
+	});
+
+	test("an idle forge notification flushes immediately as a turn-start prompt and acks", async () => {
+		const h = startForgeAgent();
+		// No active turn, not streaming: the notification flushes at once.
+		h.push(forgeNote("sub-1", "rev-1"));
+		expect(h.session.agent.prompts).toHaveLength(1);
+		await tick();
+		expect(forgeAcks(h.frames)).toEqual([
+			{ subscriptionId: "sub-1", revision: "rev-1" },
+		]);
+		expect(h.railAcks).toEqual([1]);
+		await h.close();
+	});
+
+	test("death before the flush leaves NO ack of either kind — the Runner redelivers, the sweep re-notifies", async () => {
+		const h = startForgeAgent();
+		// Mid-turn: the notification queues, and no agent_end ever arrives (the
+		// agent dies before the turn settles).
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.push(forgeNote("sub-1", "rev-1"));
+		await tick();
+		// No prompt, no forge ack, no rail ack: delivered_revision stays put, so
+		// the reconciliation sweep re-notifies from the durable gap.
+		expect(h.session.agent.prompts).toEqual([]);
+		expect(forgeAcks(h.frames)).toEqual([]);
+		expect(h.railAcks).toEqual([]);
+		await h.close();
+	});
+
+	test("a flush whose prompt is refused emits NO ack of either kind (un-acked for redelivery)", async () => {
+		const h = startForgeAgent();
+		// The idle flush's prompt rejects (no model): the batch was NOT injected.
+		h.session.agent.promptRejectsNoModel = true;
+		h.push(forgeNote("sub-1", "rev-1"));
+		await tick();
+		// The prompt was attempted but rejected — neither ack fires, and the
+		// refusal is surfaced (never a silent drop).
+		expect(forgeAcks(h.frames)).toEqual([]);
+		expect(h.railAcks).toEqual([]);
+		const refused = h.unmapped.find((u) => u.eventType === "forge:prompt");
+		expect(refused?.reason).toContain("not injected");
+		await h.close();
+	});
+
+	test("each notification kind renders its per-kind payload at flush (COMMENT/STATE/CHECKS/REVIEW/OPENED)", async () => {
+		const h = startForgeAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.push(
+			forgeNote("s-comment", "r1", {
+				number: 1n,
+				change: ForgeNotificationKind.COMMENT,
+				comment: create(CommentRefSchema, {
+					forgeAccount: "octocat",
+					body: "please rebase",
+				}),
+			}),
+		);
+		h.push(
+			forgeNote("s-state", "r2", {
+				number: 2n,
+				change: ForgeNotificationKind.STATE,
+				state: "merged",
+			}),
+		);
+		h.push(
+			forgeNote("s-checks", "r3", {
+				number: 3n,
+				change: ForgeNotificationKind.CHECKS,
+				checks: create(ChecksSummarySchema, { state: "failure" }),
+			}),
+		);
+		h.push(
+			forgeNote("s-review", "r4", {
+				number: 4n,
+				change: ForgeNotificationKind.REVIEW,
+				state: "approved",
+				comment: create(CommentRefSchema, { body: "LGTM" }),
+			}),
+		);
+		h.push(
+			forgeNote("s-opened", "r5", {
+				number: 5n,
+				change: ForgeNotificationKind.OPENED,
+			}),
+		);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		const prompt = h.session.agent.prompts[0] ?? "";
+		// COMMENT: author + body.
+		expect(prompt).toContain("@octocat: please rebase");
+		// STATE: the new forge state string.
+		expect(prompt).toContain("State: merged");
+		// CHECKS: the rolled-up state.
+		expect(prompt).toContain("Checks: failure");
+		// REVIEW: verdict + body.
+		expect(prompt).toContain("Verdict: approved");
+		expect(prompt).toContain("Review: LGTM");
+		// OPENED: "new <kind> repo#number".
+		expect(prompt).toContain("new opened o/r#5");
+		await tick();
+		// One forge ack per notification, all five, in order.
+		expect(forgeAcks(h.frames).map((a) => a.subscriptionId)).toEqual([
+			"s-comment",
+			"s-state",
+			"s-checks",
+			"s-review",
+			"s-opened",
+		]);
+		expect(h.railAcks).toEqual([1, 2, 3, 4, 5]);
+		await h.close();
+	});
+
+	// RIG-2732 Piece-2 review HIGH — the mixed-queue turn-end collision. Before
+	// the single-prompt fix, `agent_end` issued TWO independent `prompt()` calls
+	// (deliver flush then forge flush) on one synchronous edge; the first set the
+	// inner agent streaming SYNCHRONOUSLY (pi-agent-core agent.ts:1072), so the
+	// second threw AgentBusyError and the forge batch was silently dropped — no
+	// ForgeNotificationAck, no rail ack, delivered_revision stranded. The faithful
+	// fake now sets `state.isStreaming = true` on the first prompt, so this test
+	// REDS against the two-prompt code (the forge acks never fire) and GREENS
+	// against the combined single-prompt flush. It asserts (a) exactly ONE prompt
+	// carrying BOTH rendered sections, (b) the deliveryAck for the message, (c) the
+	// ForgeNotificationAck AND the rail-ack retirement for the notification.
+	test("a mixed deliver+forge queue flushes as ONE prompt with BOTH sections and all acks", async () => {
+		const h = startForgeAgent();
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		// Mid-turn: BOTH a deliver and a forge notification queue for this turn.
+		h.agent.deliver(deliverMsg("m1", "hello channel"));
+		h.push(forgeNote("sub-1", "rev-1", { repo: "o/r", number: 7n }));
+		// Nothing acked mid-turn — both coalesce onto the turn-end queue.
+		expect(h.session.agent.prompts).toEqual([]);
+		await tick();
+		expect(ackIds(h.frames)).toEqual([]);
+		expect(forgeAcks(h.frames)).toEqual([]);
+		expect(h.railAcks).toEqual([]);
+		// Turn ends: EXACTLY ONE prompt, carrying both rendered sections (deliver
+		// first, then forge — the stable order the combined flush pins).
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		expect(h.session.agent.prompts).toHaveLength(1);
+		const prompt = h.session.agent.prompts[0] ?? "";
+		expect(prompt).toContain("hello channel");
+		expect(prompt).toContain("o/r#7");
+		expect(prompt.indexOf("hello channel")).toBeLessThan(
+			prompt.indexOf("o/r#7"),
+		);
+		await tick();
+		// All ack kinds fire in the shared post-injection microtask: the deliver's
+		// DeliveryAck, the forge's ForgeNotificationAck, AND the forge rail-ack.
+		expect(ackIds(h.frames)).toEqual(["m1"]);
+		expect(forgeAcks(h.frames)).toEqual([
+			{ subscriptionId: "sub-1", revision: "rev-1" },
+		]);
+		expect(h.railAcks).toEqual([1]);
+		// The deliver's DELIVER injection observation also fired at flush.
+		expect(injections(h.frames)).toEqual([
+			{ opKind: SessionInjectionKind.DELIVER, messageId: "m1", fromHandle: "" },
+		]);
 		await h.close();
 	});
 });
@@ -1767,6 +2090,64 @@ describe("formatAskAnswerForPrompt — answer render (RIG-2257)", () => {
 		]);
 		const out = formatAskAnswerForPrompt(ask);
 		// The label's newline is collapsed — it cannot forge a new section line.
+		expect(out).toContain("line one line two");
+		expect(out).not.toContain("line one\nline two");
+	});
+});
+
+describe("formatForgeNotifications — per-kind render (RIG-2732 W3)", () => {
+	test("returns an empty string for an empty batch (nothing to render)", () => {
+		expect(formatForgeNotifications([])).toBe("");
+	});
+
+	test("renders one section per notification, in order, each carrying its repo#number coord", () => {
+		const out = formatForgeNotifications([
+			forgeNote("s1", "r1", { repo: "o/a", number: 1n }),
+			forgeNote("s2", "r2", { repo: "o/b", number: 2n }),
+		]);
+		expect(out).toContain("o/a#1");
+		expect(out).toContain("o/b#2");
+		expect(out.indexOf("o/a#1")).toBeLessThan(out.indexOf("o/b#2"));
+	});
+
+	test("closes the batch with a single re-read cue (the act-on-this instruction)", () => {
+		const out = formatForgeNotifications([forgeNote("s1", "r1")]);
+		const cue = out.split("\n\n").at(-1) ?? "";
+		expect(cue).toContain("Re-read the artifact");
+	});
+
+	test("uses the ForgeRef host as the display name when set, else 'forge'", () => {
+		const withHost = formatForgeNotifications([
+			forgeNote("s1", "r1", {
+				forge: create(ForgeRefSchema, { host: "github.com" }),
+			}),
+		]);
+		expect(withHost).toContain("github.com");
+		const withoutHost = formatForgeNotifications([forgeNote("s1", "r1")]);
+		expect(withoutHost).toContain("forge");
+	});
+
+	test("a COMMENT with no forge account renders 'comment:' rather than a bare '@'", () => {
+		const out = formatForgeNotifications([
+			forgeNote("s1", "r1", {
+				change: ForgeNotificationKind.COMMENT,
+				comment: create(CommentRefSchema, { body: "ping" }),
+			}),
+		]);
+		expect(out).toContain("comment: ping");
+		expect(out).not.toContain("@:");
+	});
+
+	test("flattens an embedded newline in a comment body, keeping the section intact", () => {
+		const out = formatForgeNotifications([
+			forgeNote("s1", "r1", {
+				change: ForgeNotificationKind.COMMENT,
+				comment: create(CommentRefSchema, {
+					forgeAccount: "octocat",
+					body: "line one\nline two",
+				}),
+			}),
+		]);
 		expect(out).toContain("line one line two");
 		expect(out).not.toContain("line one\nline two");
 	});
