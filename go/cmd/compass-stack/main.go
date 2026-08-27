@@ -2,13 +2,15 @@
 
 // Command compass-stack is the operator/integration entry point for the T2
 // embedded stack supervisor: it resolves a stack.Config from flags/env, wires
-// the real seam adapters into stack.Deps, and dispatches up|down|status to the
-// internal/stack core.
+// the real seam adapters into stack.Deps, and dispatches
+// up|down|status|preflight to the internal/stack core.
 //
 //   - up:     bring the embedded stack to Ready (or attach to a live one) and
 //     return once ready; the children keep running (up does NOT block).
 //   - down:   attach to the live stack and stop its children, releasing the lock.
 //   - status: attach and report the stack's health (state + detail).
+//   - preflight: check the host's KVM/podman/microVM prerequisites; no stack
+//     contact, no config resolution.
 //
 // All logs go to stderr; the command's own output (a status line, --version)
 // goes to stdout. This is a thin wrapper around internal/stack — mirroring
@@ -49,8 +51,8 @@ func main() {
 	}
 }
 
-// run dispatches the subcommand in args[0] to up/down/status. An unknown or
-// empty subcommand is a usage error naming the three. Logs go to stderr.
+// run dispatches the subcommand in args[0] to up/down/status/preflight. An
+// unknown or empty subcommand is a usage error naming the four. Logs go to stderr.
 func run(args []string) error {
 	// Version is the command's own output, so it goes to stdout. Handle it
 	// before subcommand dispatch so `compass-stack --version` works without a
@@ -81,18 +83,20 @@ func run(args []string) error {
 		return runDown(ctx, rest)
 	case "status":
 		return runStatus(ctx, rest)
+	case "preflight":
+		return runPreflight(rest)
 	default:
 		return usageError(sub)
 	}
 }
 
-// usageError names the three valid subcommands. An empty sub is the no-subcommand
+// usageError names the four valid subcommands. An empty sub is the no-subcommand
 // case; a non-empty sub is an unknown one.
 func usageError(sub string) error {
 	if sub == "" {
-		return errors.New("a subcommand is required: one of up, down, status")
+		return errors.New("a subcommand is required: one of up, down, status, preflight")
 	}
-	return fmt.Errorf("unknown subcommand %q: expected one of up, down, status", sub)
+	return fmt.Errorf("unknown subcommand %q: expected one of up, down, status, preflight", sub)
 }
 
 // configFlags holds the resolved flag values shared by every subcommand's config
