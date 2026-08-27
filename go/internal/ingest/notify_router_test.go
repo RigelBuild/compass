@@ -400,6 +400,69 @@ func TestRouteVanishedSubscriptionLoggedNoCrash(t *testing.T) {
 	}
 }
 
+// TestRouteLoadCursorErrorAborts: a LoadArtifactCursor error aborts the route
+// before any upsert or dispatch — the wrapped error surfaces and no fetch-side
+// truth advances.
+func TestRouteLoadCursorErrorAborts(t *testing.T) {
+	loadErr := errors.New("load boom")
+	st := &fakeNotifyStore{
+		loadErr:     loadErr,
+		artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}},
+	}
+	d := &fakeDispatcher{}
+	err := newRouter(t, st, d, &fakeChecksRoller{}).Route(context.Background(), commentEvent("https://gh/c1"))
+	if !errors.Is(err, loadErr) {
+		t.Fatalf("err = %v, want wrapped load error", err)
+	}
+	if len(st.upserts) != 0 {
+		t.Errorf("upserts = %d, want 0 (aborted before upsert)", len(st.upserts))
+	}
+	if len(d.sent) != 0 {
+		t.Errorf("notifications = %d, want 0 (aborted before notify)", len(d.sent))
+	}
+}
+
+// TestRouteChecksRollerErrorAborts: a ChecksRoller error on a CHECKS event
+// aborts BEFORE apply — the wrapped error surfaces, no upsert, no dispatch.
+func TestRouteChecksRollerErrorAborts(t *testing.T) {
+	rollErr := errors.New("roll boom")
+	st := &fakeNotifyStore{
+		cursor:      &ArtifactCursor{Repo: "o/r", Kind: kindPR, Number: 7, ChecksETag: `"e"`},
+		artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}},
+	}
+	d := &fakeDispatcher{}
+	ev := forge.ForgeEvent{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com", Repo: "o/r", Kind: kindPR, Number: 7, URL: "u", Change: chChecks, HeadSHA: "sha1"}
+	err := newRouter(t, st, d, &fakeChecksRoller{err: rollErr}).Route(context.Background(), ev)
+	if !errors.Is(err, rollErr) {
+		t.Fatalf("err = %v, want wrapped roller error", err)
+	}
+	if len(st.upserts) != 0 {
+		t.Errorf("upserts = %d, want 0 (aborted before apply)", len(st.upserts))
+	}
+	if len(d.sent) != 0 {
+		t.Errorf("notifications = %d, want 0 (aborted before notify)", len(d.sent))
+	}
+}
+
+// TestRouteUpsertErrorNoDispatch: an UpsertArtifactCursor error surfaces and NO
+// notification dispatches — proving the upsert-before-notify ordering under
+// failure (fetch-side truth must land before any agent is told).
+func TestRouteUpsertErrorNoDispatch(t *testing.T) {
+	upsertErr := errors.New("upsert boom")
+	st := &fakeNotifyStore{
+		upsertErr:   upsertErr,
+		artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}},
+	}
+	d := &fakeDispatcher{}
+	err := newRouter(t, st, d, &fakeChecksRoller{}).Route(context.Background(), commentEvent("https://gh/c1"))
+	if !errors.Is(err, upsertErr) {
+		t.Fatalf("err = %v, want wrapped upsert error", err)
+	}
+	if len(d.sent) != 0 {
+		t.Errorf("notifications = %d, want 0 (upsert failed before notify)", len(d.sent))
+	}
+}
+
 // TestMeetingPointInvariant is the cross-producer canonicalization invariant
 // (design.md:517-533, 882-885): for EVERY event kind, the webhook ApplyEvent
 // must produce a snapshot whose revision is IDENTICAL to what a full-fetch

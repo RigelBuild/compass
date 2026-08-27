@@ -159,8 +159,9 @@ func NewNotifyRouter(st NotifyStore, disp NotifyDispatcher, checks ChecksRoller,
 //     is logged and skipped; a vanished subscription never crashes the route.
 func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 	if ev.Provider == compassv1.ForgeProvider_FORGE_PROVIDER_UNSPECIFIED ||
-		ev.Kind == compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_UNSPECIFIED {
-		return fmt.Errorf("ingest: route: zero provider/kind: %w", errInvalidEvent)
+		ev.Kind == compassv1internal.ForgeArtifactKind_FORGE_ARTIFACT_KIND_UNSPECIFIED ||
+		ev.Number == 0 {
+		return fmt.Errorf("ingest: route: zero provider/kind/number: %w", errInvalidEvent)
 	}
 
 	// 1. Prior snapshot from the cursor.
