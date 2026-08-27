@@ -214,3 +214,176 @@ func cloneChecks(cs *ChecksSnapshot) *ChecksSnapshot {
 	}
 	return &ChecksSnapshot{HeadSHA: cs.HeadSHA, State: cs.State, Checks: slices.Clone(cs.Checks)}
 }
+
+// FetchedArtifact is one coordinate's freshly-observed state, assembled by the
+// reconcile sweep (T5) from its conditional reads, with any 304'd half ALREADY
+// resolved to the carried-forward prior value (design.md:946: "a 304'd half
+// carries prev's values forward"). DetectChanges diffs it against the stored
+// snapshot. It is the fetch-side producer of the cross-producer canonicalization
+// invariant (design.md:517-533): the snapshot DetectChanges rebuilds from a
+// FetchedArtifact for a given state MUST be byte-identical (post-canonicalJSON)
+// to what T4's webhook ApplyEvent built for that same state.
+//
+// An ARTIFACT target (Container=false) carries State/Comments/Checks; a CONTAINER
+// target (Container=true, the number==0 reconcile row) carries NewArtifacts (the
+// artifacts opened above the stored high-water) and leaves the artifact halves
+// zero.
+type FetchedArtifact struct {
+	Provider  compassv1.ForgeProvider
+	Host      string
+	Repo      string
+	Kind      compassv1internal.ForgeArtifactKind
+	Number    uint64
+	URL       string
+	Container bool
+
+	// Artifact-scope effective state (Container=false).
+	State    string          // effective forge state (already domain-mapped)
+	Comments []forge.Comment // effective full comment set (bodies RAW; stripped here)
+	Checks   *forge.Checks   // effective combined roll-up (PR only; nil when none)
+
+	// Container-scope (Container=true): the artifacts opened above the stored
+	// high-water, newest-first, each carrying its own number/url/project.
+	NewArtifacts []forge.Issue
+}
+
+// DetectChanges diffs the stored snapshot against a full-fetch observation,
+// returning the synthetic ForgeEvents the changes map to, the rebuilt next
+// snapshot, and its revision (design.md:943-946). It is PURE: it never touches
+// the store or network. Contract:
+//   - prev == nil is the BASELINE (first observation): it rebuilds next from
+//     fetched and returns NO changes — the coordinate is recorded, not notified.
+//   - Otherwise it emits: a COMMENT event per URL present in fetched but not in
+//     prev; a STATE event when the state half changed; a CHECKS event when the
+//     combined roll-up changed; an OPENED event per NewArtifact above the stored
+//     high-water (container scope).
+//   - next is the canonical rebuild of the fetched state, marshalled through the
+//     SAME ArtifactSnapshot/canonicalJSON as ApplyEvent (labels excluded — the
+//     invariant), so revision == SnapshotRevision(&next) matches the webhook arm
+//     for identical state.
+func DetectChanges(prev *ArtifactSnapshot, fetched FetchedArtifact) (changes []forge.ForgeEvent, next ArtifactSnapshot, revision string) {
+	if fetched.Container {
+		next, changes = detectContainer(prev, fetched)
+	} else {
+		next, changes = detectArtifact(prev, fetched)
+	}
+	// Canonicalize the rebuilt snapshot through the same codec ApplyEvent's
+	// revision runs through, so an empty diff is byte-identical to the webhook
+	// arm (the meeting-point invariant). Round-tripping next through
+	// canonicalJSON pins the checks-slice ordering the digest depends on.
+	var canon ArtifactSnapshot
+	_ = json.Unmarshal(canonicalJSON(&next), &canon) // canonicalJSON emits well-formed JSON for a fixed shape; unmarshal cannot fail
+	next = canon
+	revision = SnapshotRevision(&next)
+	return changes, next, revision
+}
+
+// detectArtifact rebuilds the artifact-scope snapshot (state + comment set +
+// checks) from the fetched observation and emits the per-kind change events.
+func detectArtifact(prev *ArtifactSnapshot, fetched FetchedArtifact) (ArtifactSnapshot, []forge.ForgeEvent) {
+	next := ArtifactSnapshot{State: fetched.State}
+	if len(fetched.Comments) > 0 {
+		next.Comments = make(map[string]SnapshotComment, len(fetched.Comments))
+	}
+	for _, c := range fetched.Comments {
+		if c.URL == "" {
+			continue
+		}
+		clean, _, _ := forge.StripOwner(c.Body) // strip the owner header, same as the webhook normalize (design.md:554-557)
+		next.Comments[c.URL] = SnapshotComment{URL: c.URL, Body: clean, ForgeAccount: c.ForgeAccount}
+	}
+	if fetched.Checks != nil {
+		next.Checks = checksFromSummary(checksSummaryFromForge(*fetched.Checks))
+	}
+	if prev != nil {
+		next.HighWaterNumber = prev.HighWaterNumber // artifact reads never touch the container high-water
+	}
+
+	if prev == nil {
+		return next, nil // baseline: record, do not notify
+	}
+
+	var changes []forge.ForgeEvent
+	// New comments: a URL in fetched not in prev (at-least-once; deletions are
+	// not in the event alphabet, so a dropped comment heals the snapshot silently).
+	for _, c := range fetched.Comments {
+		if c.URL == "" {
+			continue
+		}
+		if _, had := prev.Comments[c.URL]; had {
+			continue
+		}
+		clean, author, ok := forge.StripOwner(c.Body)
+		ref := &compassv1internal.CommentRef{Url: c.URL, Body: clean, ForgeAccount: c.ForgeAccount}
+		if ok {
+			ref.Agent = &compassv1.AgentAttribution{AgentHandle: author.AgentHandle}
+		}
+		changes = append(changes, forge.ForgeEvent{
+			Provider: fetched.Provider, Host: fetched.Host, Repo: fetched.Repo,
+			Kind: fetched.Kind, Number: fetched.Number, URL: c.URL,
+			Change:  compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_COMMENT,
+			Comment: ref,
+		})
+	}
+	// State change.
+	if fetched.State != prev.State {
+		changes = append(changes, forge.ForgeEvent{
+			Provider: fetched.Provider, Host: fetched.Host, Repo: fetched.Repo,
+			Kind: fetched.Kind, Number: fetched.Number, URL: fetched.URL,
+			Change: compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_STATE,
+			State:  fetched.State,
+		})
+	}
+	// Checks change: compare the canonical checks halves (digest equality). A
+	// non-nil fetched roll-up carries its summary + head SHA; a checks half that
+	// vanished (fetched.Checks nil while prev had one) still heals the snapshot
+	// but emits no CHECKS event (a "checks gone" has no place in the alphabet).
+	if fetched.Checks != nil && checksChanged(prev.Checks, next.Checks) {
+		changes = append(changes, forge.ForgeEvent{
+			Provider: fetched.Provider, Host: fetched.Host, Repo: fetched.Repo,
+			Kind: fetched.Kind, Number: fetched.Number, URL: fetched.URL,
+			Change:  compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_CHECKS,
+			Checks:  checksSummaryFromForge(*fetched.Checks),
+			HeadSHA: fetched.Checks.HeadSHA,
+		})
+	}
+	return next, changes
+}
+
+// detectContainer rebuilds the container-scope snapshot (high-water only) and
+// emits an OPENED event per newly-opened artifact above the stored high-water.
+func detectContainer(prev *ArtifactSnapshot, fetched FetchedArtifact) (ArtifactSnapshot, []forge.ForgeEvent) {
+	base := uint64(0)
+	if prev != nil {
+		base = prev.HighWaterNumber
+	}
+	next := ArtifactSnapshot{HighWaterNumber: base}
+	for _, a := range fetched.NewArtifacts {
+		if a.Number > next.HighWaterNumber {
+			next.HighWaterNumber = a.Number
+		}
+	}
+	if prev == nil {
+		return next, nil // baseline: record the high-water, do not notify
+	}
+	var changes []forge.ForgeEvent
+	for _, a := range fetched.NewArtifacts {
+		if a.Number <= base {
+			continue
+		}
+		changes = append(changes, forge.ForgeEvent{
+			Provider: fetched.Provider, Host: fetched.Host, Repo: fetched.Repo,
+			Kind: fetched.Kind, Number: a.Number, URL: a.URL, Project: a.Project,
+			Change: compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_OPENED,
+		})
+	}
+	return next, changes
+}
+
+// checksChanged reports whether two canonical checks halves differ, by comparing
+// their canonical-JSON bytes (the same ordering the digest uses).
+func checksChanged(a, b *ChecksSnapshot) bool {
+	sa := canonicalJSON(&ArtifactSnapshot{Checks: a})
+	sb := canonicalJSON(&ArtifactSnapshot{Checks: b})
+	return string(sa) != string(sb)
+}

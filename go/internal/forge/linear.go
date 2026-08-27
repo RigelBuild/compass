@@ -67,6 +67,7 @@ const (
 	varKey    = "key"
 	varTeam   = "team"
 	varFilter = "filter"
+	varNumber = "number"
 )
 
 // linearClosedStateTypes are the Linear workflow-state `type` values that map
@@ -212,8 +213,8 @@ func (l *Linear) GetIssue(ctx context.Context, repo string, number uint64) (Issu
   }
 }` + issueFieldsFragment
 	filter := map[string]any{
-		varTeam:  map[string]any{varKey: map[string]any{"eq": repo}},
-		"number": map[string]any{"eq": float64(number)},
+		varTeam:   map[string]any{varKey: map[string]any{"eq": repo}},
+		varNumber: map[string]any{"eq": float64(number)},
 	}
 	var out struct {
 		Issues struct {
@@ -517,8 +518,8 @@ func (l *Linear) resolveIssueID(ctx context.Context, repo string, number uint64)
   }
 }`
 	filter := map[string]any{
-		varTeam:  map[string]any{varKey: map[string]any{"eq": repo}},
-		"number": map[string]any{"eq": float64(number)},
+		varTeam:   map[string]any{varKey: map[string]any{"eq": repo}},
+		varNumber: map[string]any{"eq": float64(number)},
 	}
 	var out struct {
 		Issues struct {
