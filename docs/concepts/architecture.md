@@ -10,6 +10,11 @@ separate systems.
 
 ## The components
 
+Five named components map onto the three tiers: **RunnerHub** is the Server's
+binding leg, and the **sandbox** is the environment the Runner provisions and
+holds — so the Server and Runner tiers each have an inner and an outer face,
+and the agent process is the third tier.
+
 - **Server — the control plane.** It owns identity, persona/role, session
   lifecycle from the outside, secrets brokering, and the forge relay; it holds
   the sole forge write credential as a `server_only` declared secret. It places
