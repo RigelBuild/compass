@@ -337,6 +337,10 @@ func TestAgentForgeSubscriptionScopeValidation(t *testing.T) {
 			AgentAccountID: agent, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/b",
 			Kind: ForgeArtifactKindIssue, Scope: ForgeSubscriptionScopeContainer, Project: "P1",
 		}},
+		{"unknown scope", AgentForgeSubscription{
+			AgentAccountID: agent, Provider: ForgeProviderGitHub, Host: "github.com", Repo: "a/b",
+			Kind: ForgeArtifactKindIssue, Scope: ForgeSubscriptionScope(99), Number: 5,
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -602,6 +606,98 @@ func TestListForgeNotifyTargetsContainerCollapse(t *testing.T) {
 			t.Fatalf("subscriber %s project = %q, want %q", ag, got, want)
 		}
 	}
+
+	// The container arm of the cursor LEFT JOIN (c.number = 0 for scope=2) is
+	// exercised by upserting a cursor at the CONTAINER coordinate (Number:0) and
+	// asserting the collapsed target picks it up — mirrors the number=11
+	// post-upsert assertion in TestListForgeNotifyTargetsArtifactGrouping.
+	if tg.Cursor != nil {
+		t.Fatalf("container cursor = %+v, want nil before first upsert", tg.Cursor)
+	}
+	if err := s.UpsertForgeArtifactCursor(ctx, ForgeArtifactCursor{
+		Provider: provider, Host: host, Repo: repo, Kind: kind, Number: 0,
+		ETag: `"c1"`, Revision: "rev-c1",
+	}); err != nil {
+		t.Fatalf("UpsertForgeArtifactCursor (container): %v", err)
+	}
+	targets, err = s.ListForgeNotifyTargets(ctx, provider, host)
+	if err != nil {
+		t.Fatalf("ListForgeNotifyTargets (post-upsert): %v", err)
+	}
+	if len(targets) != 1 || targets[0].Cursor == nil {
+		t.Fatalf("post-upsert container target cursor = %+v, want non-nil", targets)
+	}
+	if targets[0].Cursor.Revision != "rev-c1" || targets[0].Cursor.ETag != `"c1"` {
+		t.Fatalf("container cursor = %+v, want rev-c1 / \"c1\"", targets[0].Cursor)
+	}
+}
+
+// TestListForgeNotifyTargetsMixedArtifactAndContainer: one artifact sub
+// (number>0) and two container subs (number=0, distinct projects) on the same
+// (repo, kind) yield exactly TWO targets — the artifact target stands alone
+// (number>0) while the two container subs collapse to ONE (number=0) target.
+// This pins the collapse-vs-distinct boundary of the
+// CASE WHEN s.scope=2 THEN 0 ELSE s.number END grouping.
+func TestListForgeNotifyTargetsMixedArtifactAndContainer(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	artAgent, _ := seedAgent(t, s, "t3-mix-art")
+	c1Agent, _ := seedAgent(t, s, "t3-mix-c1")
+	c2Agent, _ := seedAgent(t, s, "t3-mix-c2")
+
+	const (
+		host   = "linear.app"
+		repo   = "TEAM"
+		number = uint64(7)
+	)
+	provider := ForgeProviderLinear
+	kind := ForgeArtifactKindIssue
+
+	if _, err := s.EnsureAgentForgeSubscription(ctx, AgentForgeSubscription{
+		AgentAccountID: artAgent, Provider: provider, Host: host, Repo: repo, Kind: kind,
+		Number: number, Scope: ForgeSubscriptionScopeArtifact,
+	}); err != nil {
+		t.Fatalf("ensure artifact: %v", err)
+	}
+	for ag, proj := range map[AccountID]string{c1Agent: "p1", c2Agent: "p2"} {
+		if _, err := s.EnsureAgentForgeSubscription(ctx, AgentForgeSubscription{
+			AgentAccountID: ag, Provider: provider, Host: host, Repo: repo, Kind: kind,
+			Scope: ForgeSubscriptionScopeContainer, Project: proj,
+		}); err != nil {
+			t.Fatalf("ensure container %s: %v", ag, err)
+		}
+	}
+
+	targets, err := s.ListForgeNotifyTargets(ctx, provider, host)
+	if err != nil {
+		t.Fatalf("ListForgeNotifyTargets: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("targets = %d, want 2 (one artifact + one collapsed container)", len(targets))
+	}
+	var artTarget, containerTarget *ForgeNotifyTarget
+	for i := range targets {
+		switch targets[i].Number {
+		case number:
+			artTarget = &targets[i]
+		case 0:
+			containerTarget = &targets[i]
+		default:
+			t.Fatalf("unexpected target number %d", targets[i].Number)
+		}
+	}
+	if artTarget == nil {
+		t.Fatalf("no artifact target (number=%d) in %+v", number, targets)
+	}
+	if len(artTarget.Subscribers) != 1 {
+		t.Fatalf("artifact subscribers = %d, want 1", len(artTarget.Subscribers))
+	}
+	if containerTarget == nil {
+		t.Fatalf("no collapsed container target (number=0) in %+v", targets)
+	}
+	if len(containerTarget.Subscribers) != 2 {
+		t.Fatalf("container subscribers = %d, want 2", len(containerTarget.Subscribers))
+	}
 }
 
 // ── T3: AdvanceForgeDeliveredRevision ─────────────────────────────────────────
@@ -640,6 +736,9 @@ func TestAdvanceForgeDeliveredRevision(t *testing.T) {
 	sentinelIs(t, s.AdvanceForgeDeliveredRevision(ctx, owner, "no-such-id", "rev-x"), ErrNotFound, "advance unknown id")
 	// Foreign agent on a real id -> ErrNotFound (scoping), row untouched.
 	sentinelIs(t, s.AdvanceForgeDeliveredRevision(ctx, foreign, id, "rev-x"), ErrNotFound, "advance foreign agent")
+	// Empty agent / empty subscription id -> ErrInvalidArgument (early guards).
+	sentinelIs(t, s.AdvanceForgeDeliveredRevision(ctx, "", id, "rev-x"), ErrInvalidArgument, "advance empty agent")
+	sentinelIs(t, s.AdvanceForgeDeliveredRevision(ctx, owner, "", "rev-x"), ErrInvalidArgument, "advance empty id")
 	if err := s.pool.QueryRow(ctx,
 		`SELECT delivered_revision FROM agent_forge_subscriptions WHERE id = $1`, id,
 	).Scan(&got); err != nil {

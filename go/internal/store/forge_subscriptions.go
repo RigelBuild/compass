@@ -13,11 +13,13 @@ import (
 // Postgres row that records an agent's standing interest in one forge artifact.
 // agent_forge_subscriptions is the per-subscriber DELIVERY-cursor table
 // (delivered_revision/delivered_at); forge_artifact_cursors is the shared
-// per-artifact FETCH cursor the poll driver writes. The GC invariant here is the
-// only place this slice touches forge_artifact_cursors: when the LAST
-// subscription for a coordinate is deleted, its cursor row is collected in the
-// same transaction (DL-053). The poll driver owns the cursor WRITER (Piece 2);
-// this file never inserts a cursor row.
+// per-artifact FETCH cursor. This file owns two writers/readers of that shared
+// table: UpsertForgeArtifactCursor (the FETCH-cursor WRITER — INSERT ... ON
+// CONFLICT DO UPDATE, keyed by the coordinate PK) and ListForgeNotifyTargets
+// (the notify-target READER — LEFT JOINs the cursor onto each subscribed
+// coordinate). The GC invariant also lives here: when the LAST subscription for
+// a coordinate is deleted, its cursor row is collected in the same transaction
+// (DL-053).
 
 // ForgeSubscriptionScope mirrors compass.v1 ForgeSubscriptionScope
 // (UNSPECIFIED=0, ARTIFACT=1, CONTAINER=2; RIG-2732 T3, OQ-1 ruled (i)). It
@@ -245,7 +247,8 @@ type ForgeNotifySubscriber struct {
 // per-artifact FETCH cursor (conditional-GET ETags + the last observed snapshot
 // + its revision digest). Number == 0 is the container-scope reconcile cursor
 // row (one per (repo, kind); the table admits number=0, project-less). Snapshot
-// is the raw JSONB (nil when never stored).
+// is the raw JSONB (nil when never stored). UpsertForgeArtifactCursor (this
+// file) is the writer of these rows.
 type ForgeArtifactCursor struct {
 	Provider                 ForgeProvider
 	Host, Repo               string
