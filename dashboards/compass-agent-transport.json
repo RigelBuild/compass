@@ -65,7 +65,7 @@
 						"drawStyle": "line",
 						"fillOpacity": 10
 					},
-					"unit": "fps"
+					"unit": "short"
 				},
 				"overrides": []
 			},
@@ -113,7 +113,7 @@
 						"drawStyle": "line",
 						"fillOpacity": 10
 					},
-					"unit": "fps"
+					"unit": "short"
 				},
 				"overrides": []
 			},
