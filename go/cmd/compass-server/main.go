@@ -32,12 +32,6 @@ var version = "0.1.0"
 // RPC).
 const apiVersion = "compass.v1"
 
-// (no default public URL: the managed-service host is a deployment concern that
-// never lives in this repo. --public-url / $COMPASS_PUBLIC_URL supplies it;
-// unset means empty, which the responder-assembly boot guard rejects for a
-// deployment that consumes Linear webhooks, and which yields relative deep-link
-// fragments for a socket-only local deploy.)
-
 // errUsage marks a CLI usage error (a bad flag) that buildServeConfig's FlagSet
 // has ALREADY reported to stderr (usage + the parse error). run() returns it so
 // main() can exit non-zero without re-logging it through slog — a typo'd flag is
