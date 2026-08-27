@@ -32,17 +32,20 @@ type NotifySubscriber struct {
 }
 
 // ArtifactCursor is the router's view of one shared per-artifact FETCH cursor:
-// the last observed snapshot + its revision digest + the checks ETag the
-// ChecksRoller conditional-GET threads. Coordinate-bound: (provider, host) are
-// bound by the server adapter, so this carries only (repo, kind, number). It
-// mirrors the store.ForgeArtifactCursor half the router reads/writes.
+// the last observed snapshot + its revision digest + the per-endpoint ETags the
+// conditional GETs thread (issue/PR detail, comments, checks). Coordinate-bound:
+// (provider, host) are bound by the server adapter, so this carries only (repo,
+// kind, number). It mirrors the store.ForgeArtifactCursor half the router (checks
+// etag) and the reconcile sweep (all three etags) read/write.
 type ArtifactCursor struct {
-	Repo       string
-	Kind       compassv1internal.ForgeArtifactKind
-	Number     uint64
-	ChecksETag string
-	Revision   string
-	Snapshot   []byte // canonical-JSON ArtifactSnapshot; nil when never observed
+	Repo         string
+	Kind         compassv1internal.ForgeArtifactKind
+	Number       uint64
+	ETag         string // issue/PR detail endpoint ETag (sweep-threaded)
+	CommentsETag string // comments endpoint ETag (sweep-threaded)
+	ChecksETag   string // check-runs endpoint ETag (router + sweep)
+	Revision     string
+	Snapshot     []byte // canonical-JSON ArtifactSnapshot; nil when never observed
 }
 
 // NotifyTarget is one enumerated subscribed coordinate + its FETCH cursor and
@@ -98,28 +101,15 @@ type NotifyDispatcher interface {
 	Notify(ctx context.Context, account string, n *compassv1internal.ForgeNotification) error
 }
 
-// ChecksResult is the ChecksRoller's conditional roll-up result.
-//
-// FORK (surfaced): the frozen seam signature (design.md:838-840) names
-// forge.ConditionalResult[forge.Checks], which does not exist in this workspace
-// — it is T5's to introduce (the record itself notes "if they don't exist yet
-// they are T5's — define a minimal local result type and flag it"). This local
-// type is that placeholder: NotModified mirrors the 304 arm (forge.ListPage's
-// NotModified shape, github.go:40-46); on NotModified the router carries the
-// prior stored checks forward. When T5 lands forge.ConditionalResult[forge.Checks],
-// the ChecksRoller seam + this type collapse into it.
-type ChecksResult struct {
-	NotModified bool
-	Checks      forge.Checks
-	ETag        string
-}
-
 // ChecksRoller resolves the COMBINED checks roll-up for a CHECKS event's head
 // SHA — a check_suite is per-App, never roll-up truth (design.md:834-837).
-// Satisfied in go/server by the T5 NotifyReader's conditional checks read,
-// passing the cursor's checks_etag.
+// Satisfied in go/server by the T5 NotifyReader's conditional checks read
+// (NotifyReader.ChecksConditional), passing the cursor's checks_etag. The result
+// is forge.ConditionalResult[forge.Checks] (T5 landed the real type; T4's local
+// ChecksResult placeholder is collapsed into it): NotModified mirrors the 304
+// arm — on NotModified the router carries the prior stored checks forward.
 type ChecksRoller interface {
-	RollUp(ctx context.Context, repo string, number uint64, headSHA, etag string) (ChecksResult, error)
+	RollUp(ctx context.Context, repo string, number uint64, headSHA, etag string) (forge.ConditionalResult[forge.Checks], error)
 }
 
 // NotifyRouter routes one normalized event: load the coordinate's snapshot,
@@ -175,8 +165,15 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 		checksETag = cur.ChecksETag
 	}
 
-	// 2. CHECKS: resolve the combined roll-up BEFORE apply.
-	if ev.Change == compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_CHECKS {
+	// 2. CHECKS: resolve the combined roll-up BEFORE apply — UNLESS the caller
+	// already resolved it. A webhook CHECKS event carries only a head SHA
+	// (ev.Checks nil), so the router fetches the combined roll-up via the
+	// ChecksRoller seam (passing the cursor's checks_etag); a 304 carries the
+	// prior stored checks forward. The reconcile sweep (T5) already fetched the
+	// roll-up when it built the synthetic event, so it passes ev.Checks set and
+	// the router skips the second read (the sweep's cost model is one checks GET
+	// per PR per sweep, not two).
+	if ev.Change == compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_CHECKS && ev.Checks == nil {
 		res, rerr := r.checksRoller.RollUp(ctx, ev.Repo, ev.Number, ev.HeadSHA, checksETag)
 		if rerr != nil {
 			return fmt.Errorf("ingest: route: checks roll-up %s#%d: %w", ev.Repo, ev.Number, rerr)
@@ -189,7 +186,7 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 				ev.Checks = summaryFromChecks(prev.Checks)
 			}
 		} else {
-			ev.Checks = checksSummaryFromForge(res.Checks)
+			ev.Checks = checksSummaryFromForge(res.V)
 			checksETag = res.ETag
 		}
 	}
@@ -197,20 +194,28 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 	// 3. Apply -> next snapshot + revision.
 	next := ApplyEvent(prev, ev)
 	revision := SnapshotRevision(&next)
-
 	// 4. Upsert the cursor BEFORE notify (fetch-side truth advances
-	// unconditionally). encoding/json marshal of a fixed scalar/map shape.
+	// unconditionally). encoding/json marshal of a fixed scalar/map shape. The
+	// issue/PR + comments ETags a prior sweep stored are carried forward
+	// UNCHANGED (a webhook carries none; the next sweep re-conditions on them):
+	// zeroing them would force an uncharged-but-pointless full re-fetch.
 	snapBytes, merr := json.Marshal(&next)
 	if merr != nil {
 		return fmt.Errorf("ingest: route: marshal snapshot %s#%d: %w", ev.Repo, ev.Number, merr)
 	}
+	detailETag, commentsETag := "", ""
+	if cur != nil {
+		detailETag, commentsETag = cur.ETag, cur.CommentsETag
+	}
 	if err := r.store.UpsertArtifactCursor(ctx, ArtifactCursor{
-		Repo:       ev.Repo,
-		Kind:       ev.Kind,
-		Number:     ev.Number,
-		ChecksETag: checksETag,
-		Revision:   revision,
-		Snapshot:   snapBytes,
+		Repo:         ev.Repo,
+		Kind:         ev.Kind,
+		Number:       ev.Number,
+		ETag:         detailETag,
+		CommentsETag: commentsETag,
+		ChecksETag:   checksETag,
+		Revision:     revision,
+		Snapshot:     snapBytes,
 	}); err != nil {
 		return fmt.Errorf("ingest: route: upsert cursor %s#%d: %w", ev.Repo, ev.Number, err)
 	}
@@ -237,6 +242,34 @@ func (r *NotifyRouter) Route(ctx context.Context, ev forge.ForgeEvent) error {
 		}
 	}
 	return nil
+}
+
+// SynthesizeUpdate dispatches ONE payload-free UPDATE notification to a lagging
+// subscriber — the reconcile sweep's (T5) restart-safe recovery for a subscriber
+// whose delivered_revision trails the shared cursor's revision on an artifact
+// with NO pending diff (the snapshot is current, but this subscriber never got
+// acked up to it). It carries only the coordinate + url + the current revision
+// (the agent's ack advances delivered_revision — W3), so the agent re-reads and
+// re-acks. A dispatch error is logged and swallowed (a vanished session heals on
+// the next sweep), mirroring Route's per-subscriber isolation.
+func (r *NotifyRouter) SynthesizeUpdate(ctx context.Context, sub NotifySubscriber, repo string, kind compassv1internal.ForgeArtifactKind, number uint64, url, revision string) {
+	n := &compassv1internal.ForgeNotification{
+		SubscriptionId: sub.SubscriptionID,
+		Forge:          r.forgeRef,
+		Repo:           repo,
+		Kind:           kind,
+		Number:         number,
+		Url:            url,
+		Change:         compassv1internal.ForgeNotificationKind_FORGE_NOTIFICATION_KIND_UPDATE,
+		Revision:       revision,
+	}
+	if derr := r.dispatcher.Notify(ctx, sub.AgentAccountID, n); derr != nil {
+		r.log.WarnContext(ctx, "forge notify synthesized update dispatch failed",
+			"subscription_id", sub.SubscriptionID,
+			"account", sub.AgentAccountID,
+			"repo", repo, "number", number,
+			"error", derr)
+	}
 }
 
 // notification builds the wire ForgeNotification for one subscriber: the

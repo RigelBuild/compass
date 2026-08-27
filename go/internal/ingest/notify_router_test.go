@@ -21,10 +21,12 @@ type fakeNotifyStore struct {
 	cursor      *ArtifactCursor
 	artifactSub []NotifySubscriber // returned when opened=false
 	openedSub   []NotifySubscriber // extra rows returned when opened=true
+	targets     []NotifyTarget     // returned by ListNotifyTargets (the T5 sweep)
 	upserts     []ArtifactCursor
 	loadErr     error
 	subErr      error
 	upsertErr   error
+	targetsErr  error
 
 	lastOpened  bool
 	lastProject string
@@ -62,7 +64,10 @@ func (f *fakeNotifyStore) SubscribersForArtifact(_ context.Context, _ string, _ 
 }
 
 func (f *fakeNotifyStore) ListNotifyTargets(_ context.Context) ([]NotifyTarget, error) {
-	return nil, nil
+	if f.targetsErr != nil {
+		return nil, f.targetsErr
+	}
+	return f.targets, nil
 }
 
 func (f *fakeNotifyStore) UpsertArtifactCursor(_ context.Context, cur ArtifactCursor) error {
@@ -90,9 +95,10 @@ func (d *fakeDispatcher) Notify(_ context.Context, account string, n *compassv1i
 	return nil
 }
 
-// fakeChecksRoller scripts the combined roll-up result.
+// fakeChecksRoller scripts the combined roll-up result (the real
+// forge.ConditionalResult[forge.Checks] the collapsed seam returns).
 type fakeChecksRoller struct {
-	res      ChecksResult
+	res      forge.ConditionalResult[forge.Checks]
 	err      error
 	calls    int
 	lastETag string
@@ -101,7 +107,7 @@ type fakeChecksRoller struct {
 	lastNum  uint64
 }
 
-func (c *fakeChecksRoller) RollUp(_ context.Context, repo string, number uint64, headSHA, etag string) (ChecksResult, error) {
+func (c *fakeChecksRoller) RollUp(_ context.Context, repo string, number uint64, headSHA, etag string) (forge.ConditionalResult[forge.Checks], error) {
 	c.calls++
 	c.lastRepo, c.lastNum, c.lastHead, c.lastETag = repo, number, headSHA, etag
 	return c.res, c.err
@@ -320,9 +326,9 @@ func TestRouteChecksRollUpCombinedTruth(t *testing.T) {
 		cursor:      &ArtifactCursor{Repo: "o/r", Kind: kindPR, Number: 7, ChecksETag: `"prev-etag"`},
 		artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}},
 	}
-	roller := &fakeChecksRoller{res: ChecksResult{
+	roller := &fakeChecksRoller{res: forge.ConditionalResult[forge.Checks]{
 		ETag: `"new-etag"`,
-		Checks: forge.Checks{HeadSHA: "sha1", State: "failure", Checks: []forge.Check{
+		V: forge.Checks{HeadSHA: "sha1", State: "failure", Checks: []forge.Check{
 			{Name: "build", State: "success"},
 			{Name: "test", State: "failure"},
 		}},
@@ -362,7 +368,7 @@ func TestRouteChecksNotModifiedCarriesPrior(t *testing.T) {
 		cursor:      &ArtifactCursor{Repo: "o/r", Kind: kindPR, Number: 7, ChecksETag: `"e"`, Snapshot: mustJSON(t, &prior)},
 		artifactSub: []NotifySubscriber{{SubscriptionID: "s", AgentAccountID: "a"}},
 	}
-	roller := &fakeChecksRoller{res: ChecksResult{NotModified: true}}
+	roller := &fakeChecksRoller{res: forge.ConditionalResult[forge.Checks]{NotModified: true}}
 	d := &fakeDispatcher{}
 	ev := forge.ForgeEvent{Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com", Repo: "o/r", Kind: kindPR, Number: 7, URL: "u", Change: chChecks, HeadSHA: "sha1"}
 	if err := newRouter(t, st, d, roller).Route(context.Background(), ev); err != nil {
@@ -464,78 +470,90 @@ func TestRouteUpsertErrorNoDispatch(t *testing.T) {
 }
 
 // TestMeetingPointInvariant is the cross-producer canonicalization invariant
-// (design.md:517-533, 882-885): for EVERY event kind, the webhook ApplyEvent
-// must produce a snapshot whose revision is IDENTICAL to what a full-fetch
-// rebuild of the same resulting state would produce, with an empty diff.
+// (design.md:517-533, 882-885, 978-981): for EVERY event kind, T4's webhook
+// ApplyEvent must produce a snapshot whose revision is IDENTICAL to what T5's
+// full-fetch rebuild of the SAME resulting state produces, with an empty diff.
 //
-// rebuildFromFetch is this test's model of the T5 full-fetch rebuild path: it
-// constructs the same canonical ArtifactSnapshot from the "fetched" artifact
-// state directly. This IS the shared meeting-point contract — the canonical
-// form both producers must marshal through. FLAGGED: T5 owns the REAL
-// DetectChanges / full-fetch rebuild; this test freezes the canonical form so
-// T5 can reuse it, but the real fetch-side builder is out of T4's scope.
+// This is the REAL form of T4's rebuildFromFetch stand-in: the fetch-side
+// builder is DetectChanges over a FetchedArtifact that observes the same state
+// the event produced. The T5-half acceptance: apply-event-then-full-fetch of the
+// same state -> empty diff (no synthetic changes), identical revision.
 func TestMeetingPointInvariant(t *testing.T) {
 	cases := []struct {
-		name string
-		ev   forge.ForgeEvent
-		// fetched is the artifact state a full fetch would observe after the
-		// event, expressed as the canonical snapshot the rebuild produces.
-		fetched ArtifactSnapshot
+		name    string
+		ev      forge.ForgeEvent
+		fetched FetchedArtifact // the state a full fetch observes AFTER the event
 	}{
 		{
-			name:    "comment",
-			ev:      commentEvent("https://gh/c1"),
-			fetched: ArtifactSnapshot{Comments: map[string]SnapshotComment{"https://gh/c1": {URL: "https://gh/c1", Body: "hi", ForgeAccount: "octocat"}}},
+			name: "comment",
+			ev:   commentEvent("https://gh/c1"),
+			fetched: FetchedArtifact{
+				Provider: compassv1.ForgeProvider_FORGE_PROVIDER_GITHUB, Host: "github.com",
+				Repo: "o/r", Kind: kindIssue, Number: 7,
+				Comments: []forge.Comment{{URL: "https://gh/c1", Body: "hi", ForgeAccount: "octocat"}},
+			},
 		},
 		{
 			name:    "state",
 			ev:      forge.ForgeEvent{Repo: "o/r", Kind: kindPR, Number: 7, Change: chState, State: "merged"},
-			fetched: ArtifactSnapshot{State: "merged"},
+			fetched: FetchedArtifact{Repo: "o/r", Kind: kindPR, Number: 7, State: "merged"},
 		},
 		{
-			name:    "opened",
-			ev:      forge.ForgeEvent{Repo: "SEA", Kind: kindIssue, Number: 42, Change: chOpened},
-			fetched: ArtifactSnapshot{HighWaterNumber: 42},
+			name: "opened",
+			ev:   forge.ForgeEvent{Repo: "SEA", Kind: kindIssue, Number: 42, Change: chOpened},
+			fetched: FetchedArtifact{
+				Repo: "SEA", Kind: kindIssue, Number: 0, Container: true,
+				NewArtifacts: []forge.Issue{{Number: 42}},
+			},
 		},
 		{
 			name: "checks",
 			ev: forge.ForgeEvent{Repo: "o/r", Kind: kindPR, Number: 7, Change: chChecks, HeadSHA: "sha1", Checks: &compassv1.ChecksSummary{
 				HeadSha: "sha1", State: "failure",
-				// Deliberately UNSORTED to prove canonicalization sorts them.
 				Checks: []*compassv1.Check{{Name: "test", State: "failure"}, {Name: "build", State: "success"}},
 			}},
-			fetched: ArtifactSnapshot{Checks: &ChecksSnapshot{HeadSHA: "sha1", State: "failure", Checks: []CheckSnapshot{
-				{Name: "build", State: "success"}, {Name: "test", State: "failure"},
-			}}},
+			fetched: FetchedArtifact{
+				Repo: "o/r", Kind: kindPR, Number: 7,
+				// Deliberately UNSORTED to prove canonicalization sorts them.
+				Checks: &forge.Checks{HeadSHA: "sha1", State: "failure", Checks: []forge.Check{
+					{Name: "test", State: "failure"}, {Name: "build", State: "success"},
+				}},
+			},
 		},
 		{
 			name:    "update-neutral",
 			ev:      forge.ForgeEvent{Repo: "o/r", Kind: kindIssue, Number: 7, Change: chUpdate},
-			fetched: ArtifactSnapshot{},
+			fetched: FetchedArtifact{Repo: "o/r", Kind: kindIssue, Number: 7},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			applied := ApplyEvent(nil, tc.ev)
-			rebuilt := rebuildFromFetch(tc.fetched)
-			// Empty diff: byte-identical canonical JSON.
+			// The webhook-applied snapshot is the sweep's prior; a full fetch of
+			// the same state must detect NO change and rebuild the identical
+			// snapshot + revision (the meeting-point invariant, T5 half).
+			changes, rebuilt, revision := DetectChanges(&applied, tc.fetched)
+			if len(changes) != 0 {
+				t.Errorf("apply-then-fetch produced %d changes, want 0 (phantom-diff heartbeat)", len(changes))
+			}
 			if string(canonicalJSON(&applied)) != string(canonicalJSON(&rebuilt)) {
 				t.Errorf("canonical diff nonempty:\n apply  = %s\n rebuild= %s", canonicalJSON(&applied), canonicalJSON(&rebuilt))
 			}
-			// Identical revision.
-			if SnapshotRevision(&applied) != SnapshotRevision(&rebuilt) {
-				t.Errorf("revision mismatch: apply=%s rebuild=%s", SnapshotRevision(&applied), SnapshotRevision(&rebuilt))
+			if revision != SnapshotRevision(&applied) {
+				t.Errorf("revision mismatch: apply=%s rebuild=%s", SnapshotRevision(&applied), revision)
+			}
+			// Baseline arm: a nil prior is a first observation -> rebuilds the
+			// same canonical snapshot but emits NO changes.
+			baseChanges, baseSnap, baseRev := DetectChanges(nil, tc.fetched)
+			if len(baseChanges) != 0 {
+				t.Errorf("baseline produced %d changes, want 0", len(baseChanges))
+			}
+			if baseRev != SnapshotRevision(&applied) || string(canonicalJSON(&baseSnap)) != string(canonicalJSON(&applied)) {
+				t.Errorf("baseline rebuild diverged from applied: base=%s applied=%s", baseRev, SnapshotRevision(&applied))
 			}
 		})
 	}
 }
-
-// rebuildFromFetch is the test's stand-in for T5's full-fetch rebuild: it takes
-// the canonical snapshot the fetch would build and returns it as-is (the
-// canonical form is the contract). It exists so the meeting-point test names the
-// rebuild path explicitly; T5 replaces the identity body with a real
-// forge-read -> canonical-snapshot builder that MUST land on this same form.
-func rebuildFromFetch(fetched ArtifactSnapshot) ArtifactSnapshot { return fetched }
 
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()
