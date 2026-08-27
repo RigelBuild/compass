@@ -344,7 +344,7 @@ owner_user_id IS NULL`; `UNIQUE(owner_user_id, handle) WHERE owner_user_id IS
 NOT NULL`). In the same file `accounts.handle` is authored WITHOUT its former
 global-unique constraint (`0001_init.sql:38` today) — the column stays (display
 reads still use it and `store.CreateUser`/`CreateAgent` still populate it at
-runtime, `accounts.go:29,81`) but is no longer the resolution key; the
+runtime, `accounts.go:29,254`) but is no longer the resolution key; the
 resolution source of truth becomes `account_handles`. There
 is no backfill step — no deployed rows exist to migrate.
 
