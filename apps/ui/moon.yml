@@ -21,6 +21,27 @@ tasks:
     deps: ['install']
     inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
     outputs: ['dist']
+  build-dogfood:
+    # The dogfood layout build (RIG-1362 Task 3): the tailscale Serve host owns
+    # `/` for the gRPC-Web door and mounts the UI under `/ui`, so the bundle's
+    # assets MUST be emitted under `/ui/` — a plain `build` emits root-relative
+    # `/assets/…` URLs that hit the door's `/` proxy and 404. This is the base
+    # contract T4's `tailscale serve --set-path=/ui <dist>` consumes.
+    #
+    # `--base=/ui/` is the only thing baked here. The door URL and bearer are
+    # deploy-time inputs the operator supplies at invocation as
+    # `VITE_COMPASS_BASE_URL` (required) / `VITE_COMPASS_TOKEN` (optional) —
+    # every `import.meta.env.VITE_*` present at build time inlines into the
+    # bundle (see src/preview-build.test.ts), so they are never committed here.
+    # The caller's account id is NOT an input: it is learned from the server via
+    # WhoAmI after connect (src/live/client.ts resolveCaller), not an env var.
+    # Emitted to `dist-dogfood/` (not `dist/`) so the two build tasks never
+    # clobber one shared output dir: `build` owns `dist/`, this owns
+    # `dist-dogfood/`, and T4 mounts this one.
+    command: 'bunx vite build --base=/ui/ --outDir dist-dogfood --emptyOutDir'
+    deps: ['install']
+    inputs: ['src/**/*', 'index.html', 'tsconfig.json', 'package.json', 'vite.config.ts', '/bun.lock', '/packages/compass-client/src/**/*', '/packages/compass-client/package.json']
+    outputs: ['dist-dogfood']
   test:
     # `--conditions browser` resolves solid-js to its client build (dist/solid.js),
     # matching what vite bundles for the app. Bun's default `node` condition pulls

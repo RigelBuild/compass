@@ -13,6 +13,7 @@
 # Node / bun
 node_modules
 dist
+dist-dogfood
 *.tsbuildinfo
 # transient tsc declaration emit for the transport export-surface containment
 # test (packages/compass-agent/src/transport/export-surface.test.ts); always
