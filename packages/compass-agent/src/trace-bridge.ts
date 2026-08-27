@@ -26,6 +26,11 @@ const FLAGS_LENGTH = 2;
 const ZERO_TRACE_ID = "0".repeat(TRACE_ID_LENGTH);
 const ZERO_SPAN_ID = "0".repeat(SPAN_ID_LENGTH);
 
+// Lowercase-only is intentional and W3C-mandated: `traceparent` fields are
+// lowercase hex on the wire, and compass-server (the stamper) emits lowercase.
+// Matching that exactly is required — a case-insensitive relax would accept
+// spec-violating input and yield ids that no longer byte-match the server's
+// stamp, breaking the trace join. Do not add the `i` flag.
 function isHex(value: string): boolean {
 	return /^[0-9a-f]+$/.test(value);
 }

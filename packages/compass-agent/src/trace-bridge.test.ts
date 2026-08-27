@@ -69,6 +69,7 @@ test("parseTraceparent rejects malformed, empty, all-zero-id, and wrong-version 
 	expect(parseTraceparent("")).toBeUndefined();
 	expect(parseTraceparent("00-tooshort-b7ad6b7169203331-01")).toBeUndefined();
 	expect(parseTraceparent(`00-${TRACE_ID}-b7ad6b7169203331`)).toBeUndefined(); // wrong field count
+	expect(parseTraceparent(`${VALID_HEADER}-extra`)).toBeUndefined(); // trailing data (5 fields)
 	expect(
 		parseTraceparent(`00-${TRACE_ID}-zzzzzzzzzzzzzzzz-01`),
 	).toBeUndefined(); // non-hex span-id
@@ -171,4 +172,54 @@ test("the subagent filter does not clobber the captured main-turn span", () => {
 		"msg-main",
 	);
 	expect(subExported?.links).toHaveLength(0);
+});
+
+test("onSpanEnd for a subagent turn does not clear the captured main-turn span", () => {
+	const exporter = recordingExporter();
+	const bridge = createTraceBridge();
+	const mainSpan = startTurnSpan();
+	bridge.onSpanStart(hookCtx(mainSpan, "invoke_agent", undefined));
+
+	// A subagent invoke_agent turn starts and ENDS (agent identity SET). Its
+	// onSpanEnd must NOT clear the main slot — a regression dropping the
+	// `agent === undefined` guard on the clear path would no-op every later steer.
+	const subagentSpan = startTurnSpan();
+	const subCtx = hookCtx(subagentSpan, "invoke_agent", {
+		id: "sub",
+		name: "subagent",
+	});
+	bridge.onSpanStart(subCtx);
+	bridge.onSpanEnd(subCtx);
+	subagentSpan.end();
+
+	// The main slot must survive the subagent end: this link still lands.
+	bridge.linkActiveTurn(VALID_HEADER, "msg-main");
+	mainSpan.end();
+
+	const spans = exporter.getFinishedSpans();
+	const mainExported = spans.find(
+		(s) => s.spanContext().spanId === mainSpan.spanContext().spanId,
+	);
+	expect(mainExported?.links).toHaveLength(1);
+	expect(mainExported?.links[0]?.attributes?.["compass.message.id"]).toBe(
+		"msg-main",
+	);
+});
+
+test("onSpanEnd for the main turn clears the slot so later steers no-op", () => {
+	const exporter = recordingExporter();
+	const bridge = createTraceBridge();
+	const mainSpan = startTurnSpan();
+	const mainCtx = hookCtx(mainSpan, "invoke_agent", undefined);
+	bridge.onSpanStart(mainCtx);
+	bridge.onSpanEnd(mainCtx);
+	mainSpan.end();
+
+	// The slot is cleared: a follow-up steer must no-op, not add a link to the
+	// ended main span.
+	expect(() => bridge.linkActiveTurn(VALID_HEADER, "msg-late")).not.toThrow();
+	const mainExported = exporter
+		.getFinishedSpans()
+		.find((s) => s.spanContext().spanId === mainSpan.spanContext().spanId);
+	expect(mainExported?.links).toHaveLength(0);
 });
