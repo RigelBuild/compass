@@ -45,6 +45,11 @@ type Stack struct {
 	server Process
 	runner Process
 	pg     Process
+	// pgContainerName is the stable name of the container-backed postgres child
+	// when the container path ran (S4); empty on the process and external paths.
+	// It is the in-process Down's teardown identity for the container (the same
+	// name persisted in the v2 pgid record for a cross-process down).
+	pgContainerName string
 	// pgids accumulates each spawned child's teardown identity (pgid +
 	// start-time token) in start order, so spawnChain can rewrite the state-dir
 	// pgid record after each spawn and a fully successful Down knows the file it
@@ -188,17 +193,12 @@ func (s *Stack) Health(ctx context.Context) (Status, error) {
 // recorded on the Stack before the next step, so drainChildren can reverse
 // exactly what started.
 func (s *Stack) spawnChain(ctx context.Context) error {
-	// 1. Private postgres child (up, but not yet reachable — Supervisor.Start
-	// returns at process launch, not at readiness).
-	pg, err := s.deps.Supervisor.Start(ctx, ProcessSpec{
-		Component: ComponentPostgres,
-		Args:      []string{"--state-dir", s.cfg.StateDir, "--database", s.cfg.DatabaseDSN},
-	})
-	if err != nil {
-		return fmt.Errorf("start postgres: %w", err)
-	}
-	s.pg = pg
-	if err := s.recordChild(ComponentPostgres, pg); err != nil {
+	// 1. Private postgres child. Three paths (S4): external (skip the component
+	// entirely, probe the caller's DSN as-is), container-backed (the installed
+	// default), or the dev-path wrapper process. Start returns at launch, not at
+	// readiness — the waitPostgres poll below is the readiness gate for all
+	// three.
+	if err := s.startPostgres(ctx); err != nil {
 		return err
 	}
 
@@ -253,6 +253,57 @@ func (s *Stack) spawnChain(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+// startPostgres brings up the private store-of-record via the path Config
+// selects (S4), or skips it entirely for an external database. All three paths
+// leave readiness to the waitPostgres poll spawnChain runs next — Start returns
+// at launch, not at accept.
+//
+//   - ExternalDatabase: no postgres component starts. The caller points the
+//     stack at their own postgres; spawnChain probes DatabaseDSN as-is. Nothing
+//     is recorded, so a down tears down only server+runner.
+//   - PostgresImage set: the container-backed path (the installed default). The
+//     container is a supervised child (its Process handle drives the in-process
+//     Down), and its durable teardown identity — the stable name — is persisted
+//     as a v2 container entry so a fresh cross-process down tears it down by name.
+//   - PostgresImage empty: the dev/devenv path, today's ProcessSupervisor
+//     LookPath spawn of the compass-postgres wrapper, unchanged.
+func (s *Stack) startPostgres(ctx context.Context) error {
+	if s.cfg.ExternalDatabase {
+		return nil
+	}
+	if s.cfg.PostgresImage != "" {
+		return s.startPostgresContainer(ctx)
+	}
+	pg, err := s.deps.Supervisor.Start(ctx, ProcessSpec{
+		Component: ComponentPostgres,
+		Args:      []string{"--state-dir", s.cfg.StateDir, "--database", s.cfg.DatabaseDSN},
+	})
+	if err != nil {
+		return fmt.Errorf("start postgres: %w", err)
+	}
+	s.pg = pg
+	return s.recordChild(ComponentPostgres, pg)
+}
+
+// startPostgresContainer runs the S4 container-backed postgres and records it as
+// a v2 container entry (torn down by name, never by pgid — a rootless container
+// runs beneath conmon, outside the client's process group). The Process handle
+// is held on the Stack so the in-process Down drains it (Signal → podman stop);
+// the persisted name is what a fresh cross-process down reconstructs and signals.
+func (s *Stack) startPostgresContainer(ctx context.Context) error {
+	spec, err := postgresContainerSpec(s.cfg)
+	if err != nil {
+		return err
+	}
+	pg, err := s.deps.PostgresContainer.Start(ctx, spec)
+	if err != nil {
+		return fmt.Errorf("start postgres container: %w", err)
+	}
+	s.pg = pg
+	s.pgContainerName = spec.Name
+	return s.appendEntry(ComponentPostgres, pgidEntry{Kind: entryContainer, Component: ComponentPostgres, ContainerName: spec.Name})
 }
 
 // recordChild appends a spawned process child's teardown identity (pgid == pid,

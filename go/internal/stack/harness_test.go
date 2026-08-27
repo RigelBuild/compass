@@ -137,10 +137,15 @@ type stubDBProber struct {
 	readyAfter int
 	never      bool
 	calls      atomic.Int64
+	mu         sync.Mutex
+	lastDSN    string
 }
 
 func (p *stubDBProber) ProbeDB(ctx context.Context, dsn string) error {
 	p.rec.add("probe-db")
+	p.mu.Lock()
+	p.lastDSN = dsn
+	p.mu.Unlock()
 	n := p.calls.Add(1)
 	if p.never {
 		return errPostgresNotReady
@@ -149,6 +154,12 @@ func (p *stubDBProber) ProbeDB(ctx context.Context, dsn string) error {
 		return errPostgresNotReady
 	}
 	return nil
+}
+
+func (p *stubDBProber) lastProbedDSN() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastDSN
 }
 
 var errPostgresNotReady = &dbProbeError{}
@@ -343,6 +354,66 @@ func (c *fakeContainerController) setExists(exists bool) {
 	defer c.mu.Unlock()
 	c.exists[pgContainerName] = exists
 }
+
+// fakePostgresContainer is the container-START seam under test (the analogue of
+// stubSupervisor for the container path): Start records the run and the spec it
+// was handed, so a test can assert the container path was taken and inspect the
+// resolved run spec. It returns a stub Process whose Signal/Wait record into the
+// shared recorder as "signal postgres"/"wait postgres" — the same event labels
+// the process path uses — so the reverse-drain assertion is path-agnostic.
+// startErr injects a launch failure.
+type fakePostgresContainer struct {
+	rec      *recorder
+	mu       sync.Mutex
+	startErr error
+	started  int
+	lastSpec PostgresContainerSpec
+}
+
+func newFakePostgresContainer(rec *recorder) *fakePostgresContainer {
+	return &fakePostgresContainer{rec: rec}
+}
+
+func (c *fakePostgresContainer) Start(_ context.Context, spec PostgresContainerSpec) (Process, error) {
+	c.mu.Lock()
+	c.started++
+	c.lastSpec = spec
+	c.rec.add("start postgres-container")
+	err := c.startErr
+	c.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	return &stubContainerProcess{rec: c.rec}, nil
+}
+
+func (c *fakePostgresContainer) spec() PostgresContainerSpec {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.lastSpec
+}
+
+// stubContainerProcess is the in-process handle a fakePostgresContainer.Start
+// hands back. Its Signal/Wait record with the "postgres" label so drain-order
+// assertions read identically to the process path; Pid is the sentinel 0 the
+// real container handle also returns (a container carries no persisted pgid).
+type stubContainerProcess struct {
+	rec     *recorder
+	stopped atomic.Bool
+}
+
+func (p *stubContainerProcess) Signal(sig ProcessSignal) error {
+	p.rec.add("signal postgres")
+	p.stopped.Store(true)
+	return nil
+}
+
+func (p *stubContainerProcess) Wait(_ context.Context) error {
+	p.rec.add("wait postgres")
+	return nil
+}
+
+func (p *stubContainerProcess) Pid() int { return 0 }
 
 // harness bundles the recorder, the shared serverStarted flag, and the stub
 // seams so a test can tweak individual fields before calling Up.

@@ -29,6 +29,22 @@ type Config struct {
 	// DatabaseDSN is the postgres DSN compass-server opens the store of record
 	// on.
 	DatabaseDSN string
+	// PostgresImage selects how the private store-of-record postgres is brought
+	// up (S4 / DL-257). Non-empty is the installed-stack default: a
+	// container-backed postgres run from this image ref (the pinned stock
+	// DefaultPostgresImage) via the Deps.PostgresContainer seam. Empty is the
+	// dev/devenv path: today's ProcessSupervisor LookPath spawn of the
+	// compass-postgres wrapper binary, unchanged. The CLI slice resolves the
+	// default; the core applies none. Ignored when ExternalDatabase is set (no
+	// postgres component starts at all).
+	PostgresImage string
+	// ExternalDatabase opts the stack out of starting postgres entirely (S4 /
+	// DL-257, the GitLab-omnibus external-DB escape hatch). When true, Up skips
+	// the postgres component — neither the wrapper process nor the container —
+	// and probes DatabaseDSN as-is via DBProber, so the caller points the stack
+	// at their own postgres. When false, the stack provisions its private
+	// postgres per PostgresImage (container or dev-path process).
+	ExternalDatabase bool
 	// AgentImage is the container image ref every agent workstream runs; the
 	// runner refuses to boot without it present in the local store.
 	AgentImage string
