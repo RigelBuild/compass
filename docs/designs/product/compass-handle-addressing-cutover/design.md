@@ -2,8 +2,10 @@
 
 Status: Draft
 
-Tracking: RIG-2751 (Matt ruled Option A, contract-wide, 2026-08-25 — the
-cutover is frozen; this record designs the how)
+Tracking: RIG-2751 (Matt ruled Option A, contract-wide, 2026-08-25; the storage
+shape, owner-qualified wire, and rename/reclaim policy were negotiated to a
+FINAL contract and Matt-ratified 2026-08-26 with "LGTM, can start" — the whole
+contract is frozen; this record designs the how and freezes on merge)
 
 ## Problem / Intent
 
@@ -19,6 +21,67 @@ resolve an arbitrary handle to an id client-side. This record designs the HOW
 of the cutover — the whether is frozen.
 
 ## Approach
+
+### The storage contract: `account_handles` + owner-qualified resolution
+
+Handle→id resolution is not a flat global lookup. Matt ratified a two-namespace
+contract (RIG-2751, 2026-08-26): **user and system handles are globally unique;
+agent handles are unique only within their owner's namespace**, and an agent is
+always addressed owner-qualified (`matt/compass-ux`). Two different humans may
+each own an agent named `compass-ux`; the owner qualifier is what disambiguates
+them, so resolution is `(owner, handle)` for agents and bare `handle` for
+users/system.
+
+Today the handle lives directly on `accounts` as a single global-unique column
+(`handle TEXT NOT NULL UNIQUE`, `go/internal/store/migrations/0001_init.sql:38`),
+which cannot express the per-owner agent namespace. The contract moves handle
+ownership into a dedicated table:
+
+- **`account_handles(account_id TEXT PK/FK→accounts(id), handle TEXT NOT NULL,
+  owner_user_id TEXT NULL FK→user_accounts(account_id))`** — one row per account.
+  `owner_user_id` is NULL for user and system accounts, the owning user's id for
+  agent accounts (it mirrors `agent_accounts.owner_user_id`,
+  `0001_init.sql:76`).
+- **Two partial-unique indexes**, which double as the resolution index:
+  - `UNIQUE(handle) WHERE owner_user_id IS NULL` — user/system handles are
+    globally unique (preserving today's `accounts.handle` global-unique
+    invariant for the human/system tier).
+  - `UNIQUE(owner_user_id, handle) WHERE owner_user_id IS NOT NULL` — agent
+    handles are unique per owner.
+- An agent handle MAY overlap a global user handle with no collision at resolve
+  time, because an agent is only ever looked up owner-qualified and a user only
+  ever looked up bare — the two indexes never contend on the same lookup.
+
+**Resolution at the edge** (the site §"Where resolution lives" names) parses the
+owner qualifier first, then resolves in the matching namespace:
+
+- `matt/compass-ux` → resolve `matt` bare in the user/system index → its
+  `account_id` is the `owner_user_id` → resolve `compass-ux` in the agent index
+  under that owner.
+- A bare handle from an agent caller defaults to the **caller's own owner**
+  namespace (`compass-ux` from one of matt's agents means `matt/compass-ux`),
+  resolved from the session→account→`owner_user_id` the edge already holds.
+- A bare user/system handle (`matt`, `compass`) resolves in the global index.
+
+**Rename is in-place for both tiers**: `UPDATE account_handles SET handle = $new
+WHERE account_id = $id`, no history, no tombstone, no `retired_at`, no
+reservation table. The partial-unique index enforces the new handle is free at
+rename time. **Reclaim is allowed for both tiers** — a freed handle (user or
+agent) may be re-registered — so nothing needs remembering. A user rename has
+**zero cascade to agents**: agents key on `owner_user_id` = the owner's stable
+`account_id` (`0001_init.sql:76`), never the owner's handle, so a user rename
+touches exactly one `account_handles` row and every owned agent re-renders
+through the new owner handle automatically.
+
+**Cross-human reclaim safety is NOT solved here.** Reclaim lets a freed user
+handle be re-registered by a *different* human, so a stale `matt/compass-ux`
+addresser could resolve into a stranger's namespace. That blast radius is closed
+one layer up, at the authorization edge, not by reserving handles: cross-user
+agent-to-agent reachability requires a bilateral owner-peering approval (filed
+**RIG-2796**), so the new owner of a reclaimed handle receives nothing from
+another fleet until the two owners have mutually approved. The handle is just an
+address; authorization is the peering edge, not the name. RIG-2796 sits ABOVE
+this contract and does not reopen the storage shape.
 
 ### The pattern being mirrored: `from_handle`
 
@@ -47,17 +110,26 @@ request, then hand ids to the unchanged store layer. The lifecycle
 (`DespawnPeer`) equivalent lives in `go/server/lifecycle.go` where
 `req.GetAgentAccountId()` is read today (`lifecycle.go:221`).
 
-Two store lookups back the resolvers, both existing-or-minimal:
+Two store lookups back the resolvers, both re-pointed at `account_handles` (the
+handle column moves off `accounts` per §"The storage contract"):
 
-- `AgentByHandle` already exists and is exactly right for agent-typed fields:
-  non-elevating, agent-asserting, unknown/non-agent handle →
-  `ErrNotFound` with a message indistinguishable from unknown
-  (`go/internal/store/accounts.go:631-668`).
-- A new general `AccountsByHandles(ctx, handles []string) (map[string]AccountID, error)`
-  batch lookup (one `WHERE handle = ANY($1)` query) for member/owner fields,
-  which legitimately name users as well as agents. No general public
-  by-handle lookup exists today — `adminByHandle`/`systemByHandle` are
-  private and subtype-asserting (`accounts.go:107-111,178-183`).
+- **`AgentByHandle` resolves owner-qualified**: it takes the owner id (from the
+  parsed `owner/` qualifier, or the caller's own `owner_user_id` for a bare
+  handle) and the agent handle, and looks up the agent index
+  (`UNIQUE(owner_user_id, handle) WHERE owner_user_id IS NOT NULL`). It stays
+  non-elevating and agent-asserting; an unknown, non-agent, or wrong-owner
+  handle → `ErrNotFound` with a message indistinguishable from unknown. Today's
+  `AgentByHandle` (`go/internal/store/accounts.go:631-668`) resolves against the
+  global `accounts.handle`; the cutover re-keys it to `(owner_user_id, handle)`
+  over `account_handles`.
+- A new general **`AccountsByHandles`** batch lookup for member/owner fields,
+  which legitimately name users as well as agents. Each input is an
+  owner-qualified or bare handle; the resolver parses the qualifier per input
+  and resolves in the matching namespace (bare → user/system global index or
+  the caller's own agent namespace; `owner/agent` → that owner's agent
+  namespace). No general public by-handle lookup exists today —
+  `adminByHandle`/`systemByHandle` are private and subtype-asserting
+  (`accounts.go:107-111,178-183`).
 
 ### Error contract: in-band NOT_FOUND, oracle-safe
 
@@ -74,7 +146,7 @@ BROUGHT to that posture, because edge resolution turns their current splits
 into a handle-enumeration oracle: an unknown handle gets the resolver's
 NOT_FOUND while a real-but-foreign handle gets the handler's current distinct
 error, and handles — unlike ids — are guessable. The invariant this record
-mandates (DL-NEW-1): for every handle-addressed target, ANY post-resolution
+mandates (DL-269): for every handle-addressed target, ANY post-resolution
 authority/visibility failure returns the SAME
 NOT_FOUND-naming-the-submitted-handle the resolver emits for an unknown
 handle. Per-handler remap table:
@@ -88,7 +160,7 @@ handle. Per-handler remap table:
 
 This deliberately changes two public error codes (ReparentAgent and the
 CreateAgent parent check: PermissionDenied → NotFound). That is a contract
-change made on purpose — mandated by DL-NEW-1's oracle invariant, not an
+change made on purpose — mandated by DL-269's oracle invariant, not an
 accident of the refactor.
 
 **Message parity**: `AgentByHandle` already keeps the unknown-handle and
@@ -141,7 +213,7 @@ model-visible fence (`author="${attr(m.authorAccountId, fence)}"`,
 `packages/compass-agent/src/comms.ts:694`) and the agent has no id→handle
 resolver (`CommsCallRequest` carries no ListAccounts arm,
 `proto/compass/v1/agent_gateway.proto:106-114`) — a concrete surface carried
-in OQ-5, fixable by DL-NEW-2's own additive-sibling mechanism without
+in OQ-5, fixable by DL-270's own additive-sibling mechanism without
 reopening this non-goal. Unchanged, deliberately:
 `Channel.{member,subscriber}_account_ids` / `owner_account_id`
 (`comms.proto:233,238,243`), `AgentWorkspace.agent_account_id`
@@ -257,6 +329,37 @@ client-supplied). The compass.proto admin lane is OQ-4.
 
 ## Plan
 
+### T0 — schema: `account_handles` migration + backfill
+
+A new migration `go/internal/store/migrations/0002_account_handles.sql` (the
+first after `0001_init.sql`; the migrations dir holds exactly that one file
+today) creates `account_handles(account_id TEXT PK/FK→accounts(id) ON DELETE
+RESTRICT, handle TEXT NOT NULL, owner_user_id TEXT NULL FK→user_accounts(account_id)
+ON DELETE RESTRICT)` with the two partial-unique indexes from §"The storage
+contract" (`UNIQUE(handle) WHERE owner_user_id IS NULL`; `UNIQUE(owner_user_id,
+handle) WHERE owner_user_id IS NOT NULL`). It backfills one row per existing
+account — `owner_user_id` = the agent's `owner_user_id` for agents
+(`agent_accounts.owner_user_id`, `0001_init.sql:76`), NULL for users/system —
+then drops the now-redundant global-unique constraint on `accounts.handle`
+(`0001_init.sql:38`). The `accounts.handle` COLUMN stays (display reads and the
+`0001_init.sql` seed still populate it; it is no longer the resolution key, and
+dropping the column is a separate cleanup out of scope here); the resolution
+source of truth becomes `account_handles`.
+
+This task is INDEPENDENT of the proto flip (T1) — schema vs wire — and lands in
+the same server PR. The store resolvers (T2) and every edge resolver (T3/T4)
+read `account_handles`, so T0 lands before or with T2 in the stack.
+
+- **Interfaces**: the migration file + the store's handle read/write paths
+  re-pointed at `account_handles` (`CreateUser`/`CreateAgent` insert a handle
+  row in the same tx that inserts the account; a rename UPDATEs the handle row).
+- **Test cycle**: pgtests — backfill parity (every pre-migration account has
+  exactly one handle row with the right `owner_user_id`), the two uniqueness
+  invariants (a second global `matt` rejected; a second `matt/compass-ux`
+  rejected; `matt/compass-ux` and `alice/compass-ux` coexist; an agent handle
+  overlapping a user handle coexists), rename in-place both tiers, reclaim of a
+  freed handle both tiers.
+
 ### T1 — proto flip + regen (lands first; #628/#630 rebase onto it)
 
 Rename and re-comment every row of the inventory in `comms.proto` and
@@ -278,29 +381,44 @@ NOT_FOUND". Regenerate all four lanes.
 
 ### T2 — store batch handle resolver
 
-Add a batch resolver in `go/internal/store/accounts.go` — its signature
-depends on OQ-6 (member-resolution visibility scoping). Recommended form:
-`Store.AccountsByHandles(ctx context.Context, viewer AccountID, handles []string) (map[string]AccountID, error)`,
-one `WHERE a.handle = ANY($2)` query over `accounts` intersected with
-`accountVisibleFromWhere` (`accounts.go:670-683`) so an invisible handle
-misses exactly like an unknown one; if Matt rules unscoped (OQ-6 option b) the
-viewer param drops. No subtype assertion (member/owner fields legitimately
-name users and agents; never the system account — exclude `system_accounts`
-rows, matching the roster/delivery exclusion in
-`go/internal/store/system_account_exclusion_pgtest_test.go:11-14`). Any
-missing handle → `ErrNotFound`; the batch query returns the full hit map, so
-the set-difference is free and the error names ALL unresolved handles, not
-just the first, with the same message template as `AgentByHandle`
-(`accounts.go:655,665`). Agent-typed singular fields reuse the existing
-`AgentByHandle` (`accounts.go:638`) unchanged.
+Add a batch resolver in `go/internal/store/accounts.go` over `account_handles`
+(T0's table), plus a small edge helper that parses the `owner/handle` qualifier
+before it. Each input is owner-qualified or bare; the resolver splits on the
+first `/`, resolves the owner segment in the user/system index
+(`UNIQUE(handle) WHERE owner_user_id IS NULL`), then the agent segment in that
+owner's agent index (`UNIQUE(owner_user_id, handle)`); a bare handle resolves
+either as a user/system handle in the global index or as an agent handle in the
+**caller's own** owner namespace (the edge supplies `callerOwner` from
+session→account). Its signature also depends on OQ-6 (member-resolution
+visibility scoping); recommended form
+`Store.AccountsByHandles(ctx context.Context, viewer AccountID, callerOwner AccountID, handles []QualifiedHandle) (map[string]AccountID, error)`,
+one query per namespace against `account_handles` intersected with
+`accountVisibleFromWhere` (`accounts.go:670-683`) so an invisible handle misses
+exactly like an unknown one; if Matt rules unscoped (OQ-6 option b) the `viewer`
+param drops. No subtype assertion beyond the index split (member/owner fields
+legitimately name users and agents; never the system account — exclude
+`system_accounts` rows, matching the roster/delivery exclusion in
+`go/internal/store/system_account_exclusion_pgtest_test.go:11-14`). Any missing
+handle → `ErrNotFound`; the resolver returns the full hit map, so the
+set-difference is free and the error names ALL unresolved handles (in their
+submitted `owner/handle` spelling), not just the first, with the same message
+template as `AgentByHandle` (`accounts.go:655,665`). Agent-typed singular fields
+reuse `AgentByHandle`, re-keyed to `(owner_user_id, handle)` over
+`account_handles` per §"Where resolution lives" (`accounts.go:638`).
 
 - **Interfaces**: `AccountsByHandles(ctx context.Context, viewer AccountID,
-  handles []string) (map[string]AccountID, error)` — the `viewer` param is
-  RULING-DEPENDENT on OQ-6; atomic — any missing handle fails the whole call,
-  the error naming every unresolved handle (per the OQ-2 working assumption).
-- **Test cycle**: pgtests — round-trip, missing-handle NOT_FOUND naming ALL
-  missing handles, system-handle NOT_FOUND, invisible-handle ≡ unknown
-  (OQ-6a leg), user+agent mixed resolution, empty-input no-op.
+  callerOwner AccountID, handles []QualifiedHandle) (map[string]AccountID, error)`
+  over `account_handles` — the `viewer` param is RULING-DEPENDENT on OQ-6;
+  `callerOwner` supplies the bare-agent-handle default namespace; a
+  `QualifiedHandle` carries the parsed `{owner, handle}` (owner empty = bare).
+  Atomic — any missing handle fails the whole call, the error naming every
+  unresolved handle in its submitted spelling (per the OQ-2 working assumption).
+- **Test cycle**: pgtests — round-trip, owner-qualified agent resolution
+  (`matt/compass-ux` vs `alice/compass-ux` disambiguated by owner), bare agent
+  handle defaulting to the caller's owner, bare user/system handle in the global
+  index, missing-handle NOT_FOUND naming ALL missing handles, system-handle
+  NOT_FOUND, invisible-handle ≡ unknown (OQ-6a leg), user+agent mixed
+  resolution, empty-input no-op.
 
 ### T3 — comms edge resolution
 
@@ -348,6 +466,13 @@ already selects `ag.owner_user_id` and returns the full `Account`,
 Both outcomes run exactly two queries; unknown handle ≡ foreign peer ≡
 non-agent, byte-identical. Self-despawn guard (`lifecycle.go:221-224`)
 compares post-resolution ids.
+
+The despawn `agent_handle` is owner-qualified like every other agent handle; a
+bare handle defaults to the caller's own owner namespace, which is exactly the
+peer set despawn already scopes to (the `callerOwner` comparison), so the
+common same-owner despawn stays a bare handle and the resolution re-keys to
+`(callerOwner, handle)` over `account_handles` with no change to the
+constant-query-shape ordering above.
 
 - **Interfaces**: `DespawnAsAccount(ctx, caller store.AccountID, req
   *compassv1internal.DespawnPeerRequest)` unchanged externally; internal target
@@ -405,9 +530,13 @@ UI suite against the regenerated client.
 
 ## Tasks
 
+- [ ] T0 — `0002_account_handles.sql` migration (table + two partial-unique
+  indexes) + backfill + relax `accounts.handle` global-unique; store handle
+  read/write re-pointed at `account_handles` + pgtests
 - [ ] T1 — proto flip (inventory rows 1–12) + 4-lane regen; lint/drift/fence
   green
-- [ ] T2 — `Store.AccountsByHandles` batch resolver + pgtests
+- [ ] T2 — `Store.AccountsByHandles` owner-qualified batch resolver +
+  `AgentByHandle` re-keyed to `(owner, handle)` + pgtests
 - [ ] T3 — comms edge resolution (mapping.go + handler sites) + pgtests
 - [ ] T4 — lifecycle despawn handle resolution, merged NOT_FOUND + pgtests
 - [ ] T5 — rebase #628/#630 handle-first; stack CI green
@@ -426,20 +555,41 @@ the mechanics: **DL-186** (`DECISIONS.md:199`, Active) strips pre-dogfood
 proto wire-compat — all `reserved` markers removed across compass/v1, live
 fields densely renumbered, the buf breaking gate removed (re-armed at GA) —
 which rules OQ-1b's renumber+reserve alternative OUT unless Matt overrides an
-Active row. The cutover ADDS two rows on merge:
+Active row. The cutover ADDS three rows on merge (next-free at authoring;
+confirm at freeze):
 
-- **DL-NEW-1**: every request-input account field on the compass proto
+- **DL-269**: every request-input account field on the compass proto
   contract is handle-typed; the server resolves handle→account_id at the
   service edge (the `from_handle` posture generalized); an unresolvable,
   invisible, foreign, or wrong-subtype handle is one indistinguishable in-band
   NOT_FOUND. No agent or client UI ever resolves an id.
-- **DL-NEW-2**: response, stored, and event account fields stay id-typed
+- **DL-270**: response, stored, and event account fields stay id-typed
   (ids are the stable join keys clients already hold); a response that needs a
   handle for display carries it as an explicit sibling field (the
   `RosterEntry.agent_account_id`+`handle` dual, `comms.proto:723-724`), never
   by retyping the id field.
+- **DL-271**: handle→id resolution is owner-namespaced, stored in a dedicated
+  `account_handles(account_id, handle, owner_user_id NULL)` table with two
+  partial-unique indexes (user/system handles globally unique; agent handles
+  unique per owner). Agents are addressed owner-qualified (`matt/compass-ux`,
+  bare = caller's own owner); users/system bare. Rename is in-place for both
+  tiers; reclaim is allowed for both tiers (no history, tombstone, or
+  reservation). Cross-human reclaim safety is the owner-peering authorization
+  edge (RIG-2796), not handle reservation. The handle column stays on
+  `accounts` for display only; `account_handles` is the resolution key.
 
 ## Open Questions
+
+Matt ratified the storage/format contract on 2026-08-26 ("LGTM, can start"),
+which CLOSED the forks that were open during negotiation: storage shape
+(`account_handles` + two partial-unique indexes), the owner-qualified wire
+(agents `owner/handle`, users/system bare), and rename/reclaim policy (in-place
+both tiers, reclaim allowed, no history/reservation, cross-human safety →
+RIG-2796). Those are now the frozen contract above, not open questions. The
+questions below are the remaining wire-cutover forks the ratification did NOT
+decide — mostly proto-naming taste plus two real scope forks (OQ-4 admin lane,
+OQ-6 member visibility) — plus one new fork the owner qualifier introduces
+(OQ-7, the qualifier grammar).
 
 1. **Field naming (OQ-1)** — working assumption: `*_account_ids`→`*_handles`,
    `agent_account_id`→`agent_handle`, `new_parent_agent_id`→`new_parent_handle`,
@@ -486,27 +636,43 @@ Active row. The cutover ADDS two rows on merge:
    model-visible fence (`author="${attr(m.authorAccountId, fence)}"`,
    `packages/compass-agent/src/comms.ts:694`) and the agent has no id→handle
    resolver — the same cannot-resolve argument that motivated this cutover,
-   pointed at a response. The fix is DL-NEW-2's OWN additive-sibling
+   pointed at a response. The fix is DL-270's OWN additive-sibling
    mechanism (an additive `author_handle` on `Message`, or a
    `from_handle`-style denorm on the agent list result), never a retype of
    the id field. Matt rules: ship the sibling with this cutover, or defer?
-7. **Member-resolution visibility scoping (OQ-6, NEW, load-bearing)** — T2's
+7. **Member-resolution visibility scoping (OQ-6, load-bearing)** — T2's
    batch resolver must pick a side the record previously assumed both of:
-   its parity sentence promises invisible ≡ unknown, but a viewer-less
-   `AccountsByHandles(ctx, handles)` cannot distinguish visible from
-   invisible — every real handle resolves, making member-add a global
-   handle-existence oracle AND letting a caller ATTACH an account outside its
-   D9-visible set to its channel by guessing the handle (today's by-id path
-   is FK-only, `channels.go:151-161,529-573`, with no visibility gate either
-   — but ids are unguessable, so it never mattered). The options:
-   (a) visibility-scoped — `AccountsByHandles(ctx, viewer AccountID, handles
-   []string)` intersecting `accountVisibleFromWhere`
-   (`go/internal/store/accounts.go:670-683`); invisible ≡ unknown holds, and
-   naming-a-member GAINS a visibility gate the id path never had (a semantic
-   TIGHTENING: who may be named as a channel member). (b) unscoped — every
-   real handle resolves, preserving today's FK-only permissiveness at the
-   cost of an enumeration oracle under guessable handles. A real user-facing
-   policy choice: can I add a teammate's agent I can't see to my channel?
-   **Recommended: (a)** — the only option consistent with the ruling's
-   oracle posture and DL-NEW-1. The T2 interface signature depends on this
-   ruling.
+   its parity sentence promises invisible ≡ unknown, but an unscoped resolver
+   cannot distinguish visible from invisible — every real handle resolves,
+   making member-add a global handle-existence oracle AND letting a caller
+   ATTACH an account outside its D9-visible set to its channel by guessing the
+   handle (today's by-id path is FK-only, `channels.go:151-161,529-573`, with
+   no visibility gate either — but ids are unguessable, so it never mattered).
+   The owner qualifier does NOT close this — it disambiguates namespaces, not
+   visibility (`alice/compass-ux` is well-formed whether or not the caller can
+   see it). The options: (a) visibility-scoped — the T2 resolver intersects
+   `accountVisibleFromWhere` (`go/internal/store/accounts.go:670-683`) after
+   the namespace split; invisible ≡ unknown holds, and naming-a-member GAINS a
+   visibility gate the id path never had (a semantic TIGHTENING: who may be
+   named as a channel member). (b) unscoped — every real handle resolves,
+   preserving today's FK-only permissiveness at the cost of an enumeration
+   oracle under guessable handles. A real user-facing policy choice: can I add
+   a teammate's agent I can't see to my channel? **Recommended: (a)** — the
+   only option consistent with the ruling's oracle posture and DL-269. The T2
+   interface signature depends on this ruling.
+8. **Owner-qualifier grammar (OQ-7, NEW — introduced by the storage
+   contract)** — the owner-qualified form `matt/compass-ux` needs a defined
+   grammar before T1 comments the fields. Working assumption: `/` is the
+   separator, the owner segment is a bare user/system handle (never itself
+   qualified — no nesting), a leading `/` is illegal, exactly one `/` is
+   permitted, and both segments obey the existing handle charset (the same
+   grammar constraint the ownership layer already names for `owner=<handle>`,
+   `docs/designs/product/compass-server-ownership-layer/design.md:559-563`). A
+   bare handle (no `/`) is a user/system handle OR the caller's own agent —
+   disambiguated by which index resolves it, users/system first. Open sub-fork:
+   if a bare handle matches BOTH a user handle and one of the caller's own
+   agents, which wins? Working assumption: user/system global index takes
+   precedence (a human is never shadowed by one of your agents), so address
+   your own agent that collides with a username by qualifying it
+   (`matt/compass-ux`). Matt confirms the separator + the collision precedence,
+   or picks another grammar.
