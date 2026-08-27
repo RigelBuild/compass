@@ -331,22 +331,21 @@ client-supplied). The compass.proto admin lane is OQ-4.
 
 ## Plan
 
-### T0 — schema: `account_handles` migration + backfill
+### T0 — schema: `account_handles` in `0001_init.sql` (no backfill)
 
-A new migration `go/internal/store/migrations/0002_account_handles.sql` (the
-first after `0001_init.sql`; the migrations dir holds exactly that one file
-today) creates `account_handles(account_id TEXT PK/FK→accounts(id) ON DELETE
-RESTRICT, handle TEXT NOT NULL, owner_user_id TEXT NULL FK→user_accounts(account_id)
-ON DELETE RESTRICT)` with the two partial-unique indexes from §"The storage
-contract" (`UNIQUE(handle) WHERE owner_user_id IS NULL`; `UNIQUE(owner_user_id,
-handle) WHERE owner_user_id IS NOT NULL`). It backfills one row per existing
-account — `owner_user_id` = the agent's `owner_user_id` for agents
-(`agent_accounts.owner_user_id`, `0001_init.sql:76`), NULL for users/system —
-then drops the now-redundant global-unique constraint on `accounts.handle`
-(`0001_init.sql:38`). The `accounts.handle` COLUMN stays (display reads and the
-`0001_init.sql` seed still populate it; it is no longer the resolution key, and
-dropping the column is a separate cleanup out of scope here); the resolution
-source of truth becomes `account_handles`.
+The `account_handles` table is authored directly into `0001_init.sql` — the
+single existing migration — not as an incremental `0002` migration. Pre-dogfood
+there is no deployed database and no data to migrate, so the schema the first
+deployment creates already carries the final shape: `account_handles(account_id
+TEXT PK/FK→accounts(id) ON DELETE RESTRICT, handle TEXT NOT NULL, owner_user_id
+TEXT NULL FK→user_accounts(account_id) ON DELETE RESTRICT)` with the two
+partial-unique indexes from §"The storage contract" (`UNIQUE(handle) WHERE
+owner_user_id IS NULL`; `UNIQUE(owner_user_id, handle) WHERE owner_user_id IS
+NOT NULL`). In the same file `accounts.handle` is authored WITHOUT its former
+global-unique constraint (`0001_init.sql:38` today) — the column stays (display
+reads and the `0001_init.sql` seed still populate it) but is no longer the
+resolution key; the resolution source of truth becomes `account_handles`. There
+is no backfill step — no deployed rows exist to migrate.
 
 This task is INDEPENDENT of the proto flip (T1) — schema vs wire — and lands in
 the same server PR. The store resolvers (T2) and every edge resolver (T3/T4)
@@ -355,12 +354,10 @@ read `account_handles`, so T0 lands before or with T2 in the stack.
 - **Interfaces**: the migration file + the store's handle read/write paths
   re-pointed at `account_handles` (`CreateUser`/`CreateAgent` insert a handle
   row in the same tx that inserts the account; a rename UPDATEs the handle row).
-- **Test cycle**: pgtests — backfill parity (every pre-migration account has
-  exactly one handle row with the right `owner_user_id`), the two uniqueness
-  invariants (a second global `matt` rejected; a second `matt/compass-ux`
-  rejected; `matt/compass-ux` and `alice/compass-ux` coexist; an agent handle
-  overlapping a user handle coexists), rename in-place both tiers, reclaim of a
-  freed handle both tiers.
+- **Test cycle**: pgtests — the two uniqueness invariants (a second global
+  `matt` rejected; a second `matt/compass-ux` rejected; `matt/compass-ux` and
+  `alice/compass-ux` coexist; an agent handle overlapping a user handle
+  coexists), rename in-place both tiers, reclaim of a freed handle both tiers.
 
 ### T1 — proto flip + regen (lands first; #628/#630 rebase onto it)
 
@@ -532,9 +529,9 @@ UI suite against the regenerated client.
 
 ## Tasks
 
-- [ ] T0 — `0002_account_handles.sql` migration (table + two partial-unique
-  indexes) + backfill + relax `accounts.handle` global-unique; store handle
-  read/write re-pointed at `account_handles` + pgtests
+- [ ] T0 — `account_handles` in `0001_init.sql` (table + two partial-unique
+  indexes, no backfill) + author `accounts.handle` without global-unique; store
+  handle read/write re-pointed at `account_handles` + pgtests
 - [ ] T1 — proto flip (inventory rows 1–12) + 4-lane regen; lint/drift/fence
   green
 - [ ] T2 — `Store.AccountsByHandles` owner-qualified batch resolver +
