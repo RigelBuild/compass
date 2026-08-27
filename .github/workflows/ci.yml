@@ -1234,6 +1234,14 @@ jobs:
             return "$rc"
           }
 
+          # GTK4/webkitgtk-6.0 + Wails v3's linux power-event monitor
+          # (application_linux_dbus.go) open a D-Bus SESSION bus at startup and
+          # abort (g_error -> SIGABRT) if none exists. The headless CI sandbox
+          # has no session bus and cannot autolaunch one (no X11 $DISPLAY under
+          # wayland; no dbus-launch on PATH under x11), so each leg runs under a
+          # private per-run bus via `dbus-run-session --` (torn down with the
+          # leg). GTK3/webkit2gtk-4.1 tolerated a missing bus; GTK4 does not.
+          #
           # --- PRIMARY: headless Wayland (GTK4's default user backend). weston
           # --backend=headless needs an XDG_RUNTIME_DIR for its socket; run it in
           # the background, wait for the socket to appear, then drive the shell
@@ -1257,6 +1265,7 @@ jobs:
           fi
           rc=0
           WAYLAND_DISPLAY="$wl_sock" GDK_BACKEND=wayland \
+            dbus-run-session -- \
             go test -tags 'unix gtk4' -run 'E2E' -count=1 -v -timeout 10m \
             ./cmd/compass-app/ >/tmp/gtk4-e2e.log 2>&1 || rc=$?
           cp /tmp/gtk4-e2e.log /tmp/gtk4-e2e-wayland.log
@@ -1286,6 +1295,7 @@ jobs:
           rc=0
           xvfb-run -a -e /tmp/xvfb-server.log \
             env GDK_BACKEND=x11 \
+            dbus-run-session -- \
             go test -tags 'unix gtk4' -run 'E2E' -count=1 -v -timeout 10m \
             ./cmd/compass-app/ >/tmp/gtk4-e2e.log 2>&1 || rc=$?
           cp /tmp/gtk4-e2e.log /tmp/gtk4-e2e-x11.log

@@ -16,8 +16,10 @@
 # `nix eval`, which strips the store context that would build the closure):
 #
 #   bin        a buildEnv whose bin/ holds xvfb-run (and its bundled Xvfb) +
-#              pkg-config; the step prepends it to PATH so `xvfb-run` wraps
-#              `go test` and pkg-config is on hand for the cgo link.
+#              pkg-config + dbus (for dbus-run-session, which gives the GTK4
+#              app the session bus it aborts without); the step prepends it to
+#              PATH so `xvfb-run` wraps `go test` and pkg-config is on hand for
+#              the cgo link.
 #   pkgConfig  a buildEnv over the closure; the step sets PKG_CONFIG_PATH to its
 #              lib/pkgconfig + share/pkgconfig subdirs so the cgo link resolves
 #              the gtk+-3.0 / webkit2gtk-4.1 `.pc` files (and the libs they
@@ -40,9 +42,14 @@ in
 {
   bin = pkgs.buildEnv {
     name = "compass-gtk-e2e-bin";
-    # xvfb-run (with its bundled Xvfb) + pkg-config, from the same pinned
-    # nixpkgs, so the step needs nothing off the ambient CI PATH to link + run.
-    paths = [ pkgs.xvfb-run pkgs.pkg-config ];
+    # xvfb-run (with its bundled Xvfb) + pkg-config + dbus (dbus-run-session),
+    # from the same pinned nixpkgs, so the step needs nothing off the ambient
+    # CI PATH to link + run.
+    paths = [
+      pkgs.xvfb-run
+      pkgs.pkg-config
+      pkgs.dbus
+    ];
   };
 
   # A REALIZABLE pkg-config tree over the closure — ci.yml `nix build`s this so
