@@ -97,8 +97,9 @@ parity strategy from this record. Rationale:
 
 **Cost of adoption, stated honestly:** the self-host stack ships and
 supervises a Bun runtime — a real exception to the all-Go direction
-(RIG-1719) and a fourth supervised child where today there are three Go
-binaries plus postgres (`go/internal/stack/deps.go:82-89`). Matt accepts this
+(RIG-1719) and a fourth supervised child where today there are two Go
+binaries plus postgres — three supervised children
+(`go/internal/stack/deps.go:82-89`). Matt accepts this
 explicitly: OMP already runs in every agent container, "so not everything is
 Go anyway and that will remain in TS as the extensions etc need to stay TS."
 The Bun runtime is not NEW to the shipped product — the agent image already
@@ -235,7 +236,7 @@ follows from the language choice. It also matches Matt's intent ("we're
 keeping it seperate anyway") and the managed-plane scaling point — a gateway
 tier scales independently of the control plane — and self-host mirrors that
 shape so the two deployments run the same artifact. The stack supervisor
-today spawns three Go children plus postgres
+today spawns three supervised children — postgres plus two Go binaries
 (`ComponentPostgres`/`ComponentServer`/`ComponentRunner`,
 `go/internal/stack/deps.go:82-89`) via the `spawnChain` cold-start sequence
 (`go/internal/stack/stack.go:192-256`); the gateway becomes a fourth child
