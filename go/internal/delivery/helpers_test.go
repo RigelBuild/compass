@@ -626,8 +626,8 @@ func (f *fakeReads) seedOwedMention(agent store.AccountID, channel store.Channel
 
 // waitForOwed blocks until agent has exactly n owed-mention rows, or fails at the
 // deadline — a polling barrier for cases where the owed-row count is the only
-// observable effect to gate on: a nil-waker record (no dispatch/wake signal), or
-// a start-edge sweep's ClearOwedMention (owed -> 0 after the async sweep runs).
+// observable effect to gate on, e.g. a nil-waker record (no dispatch/wake
+// signal) or a start-edge sweep's ClearOwedMention (owed -> 0 after the sweep).
 func (f *fakeReads) waitForOwed(t *testing.T, agent store.AccountID, n int) {
 	t.Helper()
 	deadline := time.After(testTimeout)
