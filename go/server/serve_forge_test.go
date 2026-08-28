@@ -45,19 +45,19 @@ func (r *fakeResolver) Set(context.Context, string, string) error { return nil }
 func (r *fakeResolver) Delete(context.Context, string) error      { return nil }
 
 func TestForgeConfigEnableAndDefaults(t *testing.T) {
-	t.Run("disabled by default", func(t *testing.T) {
-		if (ForgeConfig{}).forgePollingEnabled() {
-			t.Fatal("empty ForgeConfig should be polling-disabled")
+	t.Run("board ingestion disabled by default", func(t *testing.T) {
+		if (ForgeConfig{}).boardIngestionEnabled() {
+			t.Fatal("empty ForgeConfig should be board-ingestion-disabled")
 		}
 	})
-	t.Run("enabled by a non-empty seed", func(t *testing.T) {
-		if !(ForgeConfig{SeedRepos: []string{"a/b"}}).forgePollingEnabled() {
-			t.Fatal("a non-empty seed should enable polling")
+	t.Run("board ingestion enabled by a configured App id", func(t *testing.T) {
+		if !(ForgeConfig{App: ForgeAppConfig{AppID: 42}}).boardIngestionEnabled() {
+			t.Fatal("a non-zero App id should enable board ingestion")
 		}
 	})
-	t.Run("enabled by the poll flag", func(t *testing.T) {
-		if !(ForgeConfig{Poll: true}).forgePollingEnabled() {
-			t.Fatal("Poll=true should enable polling")
+	t.Run("a seed alone does NOT enable board ingestion (App-only)", func(t *testing.T) {
+		if (ForgeConfig{SeedRepos: []string{"a/b"}}).boardIngestionEnabled() {
+			t.Fatal("a seed without an App must NOT enable board ingestion (Constraint #3)")
 		}
 	})
 	t.Run("defaults applied to zero fields", func(t *testing.T) {
@@ -68,14 +68,14 @@ func TestForgeConfigEnableAndDefaults(t *testing.T) {
 		if got.SecretName != defaultForgeSecretName {
 			t.Fatalf("SecretName = %q, want %q", got.SecretName, defaultForgeSecretName)
 		}
-		if got.PollInterval != defaultForgePollInterval {
-			t.Fatalf("PollInterval = %v, want %v", got.PollInterval, defaultForgePollInterval)
+		if got.App.ReconcileBackstop != defaultReconcileBackstop {
+			t.Fatalf("ReconcileBackstop = %v, want %v", got.App.ReconcileBackstop, defaultReconcileBackstop)
 		}
 	})
 	t.Run("explicit fields survive defaulting", func(t *testing.T) {
-		in := ForgeConfig{Host: "ghe.example.com", SecretName: "TOK", PollInterval: 3 * time.Minute}
+		in := ForgeConfig{Host: "ghe.example.com", SecretName: "TOK", App: ForgeAppConfig{ReconcileBackstop: 3 * time.Minute}}
 		got := in.resolved()
-		if got.Host != "ghe.example.com" || got.SecretName != "TOK" || got.PollInterval != 3*time.Minute {
+		if got.Host != "ghe.example.com" || got.SecretName != "TOK" || got.App.ReconcileBackstop != 3*time.Minute {
 			t.Fatalf("explicit fields clobbered by defaulting: %+v", got)
 		}
 	})
@@ -135,16 +135,16 @@ func TestForgeReviewerSecretDefaultingAndWritesEnabled(t *testing.T) {
 			t.Fatal("default names must not satisfy a config that declared custom secret names")
 		}
 	})
-	t.Run("write enablement is independent of the poll gate", func(t *testing.T) {
-		// forgePollingEnabled is false (no seed, no Poll) yet writes are enabled
-		// on both secrets — the two gates are orthogonal (Matt's ruling).
+	t.Run("write enablement is independent of the board ingestion gate", func(t *testing.T) {
+		// boardIngestionEnabled is false (no App) yet writes are enabled on both
+		// secrets — the two gates are orthogonal (Matt's ruling).
 		cfg := ForgeConfig{}
-		if cfg.forgePollingEnabled() {
-			t.Fatal("fixture precondition: polling should be disabled")
+		if cfg.boardIngestionEnabled() {
+			t.Fatal("fixture precondition: board ingestion should be disabled")
 		}
 		declared := []secrets.ResolvedSecret{{Name: defaultForgeSecretName}, {Name: defaultForgeReviewerSecretName}}
 		if !cfg.forgeWritesEnabled(declared) {
-			t.Fatal("writes must enable on both secrets even with polling disabled")
+			t.Fatal("writes must enable on both secrets even with board ingestion disabled")
 		}
 	})
 }

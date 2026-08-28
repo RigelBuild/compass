@@ -4,7 +4,7 @@
 -- channels + membership + policy, topics and topic-scoped messages, the pinned
 -- board, agent workspaces, delivery cursors, session ownership + placement, the
 -- two-tier transcript store, the secrets names registry, the fleet config
--- bundle, board issues, the forge-poll fetch machinery, and forge
+-- bundle, board issues, the forge webhook-lane target machinery, and forge
 -- authored-artifact ownership.
 --
 -- History note: this replaces the original sequential 0001..0016 migration
@@ -635,19 +635,22 @@ CREATE TABLE issues (
 CREATE UNIQUE INDEX issues_coordinate_key
     ON issues (forge_provider, forge_host, repo, number);
 
--- ── Forge subscriptions & fetch cursors ──────────────────────────────────────
--- The DL-053 forge-poll fetch machinery (SEA-1810). Coordinate-aligned to the
--- 0013 issue convention: SMALLINT provider enum + forge_host in every key. Every
--- provider CHECK admits the full declared enum IN (1, 2, 3, 4) — the CHECK's job
--- is "never UNSPECIFIED(0)", not gating rollout (rollout is gated by which
--- forge.Provider has a real client). Convention: text ids, FK ON DELETE RESTRICT.
+-- ── Forge subscriptions & reconcile watermarks ───────────────────────────────
+-- The DL-053 forge webhook-lane target machinery (SEA-1810; webhook-driven per
+-- DL-281). Coordinate-aligned to the 0013 issue convention: SMALLINT provider
+-- enum + forge_host in every key. Every provider CHECK admits the full declared
+-- enum IN (1, 2, 3, 4) — the CHECK's job is "never UNSPECIFIED(0)", not gating
+-- rollout (rollout is gated by which forge.Provider has a real client).
+-- Convention: text ids, FK ON DELETE RESTRICT.
 
--- The board's repo-level poll targets (OQ-C): one row per (provider, host, repo)
--- the poll driver walks. enabled=FALSE soft-disables a target without deleting
--- its cursor history. For GITHUB the repo string is lowercased at the seed/upsert
--- boundary (owner/name is case-insensitive-but-case-preserving, so Owner/Name and
--- owner/name must NOT mint two PK rows). updated_at is touched on every
--- upsert/enable-flip.
+-- The board's repo-level webhook targets (OQ-C): one row per (provider, host,
+-- repo) the board ingest lane accepts events for and the reconciler sweeps.
+-- enabled=FALSE soft-disables a target without deleting its watermark. For
+-- GITHUB the repo string is lowercased at the seed/upsert boundary (owner/name
+-- is case-insensitive-but-case-preserving, so Owner/Name and owner/name must NOT
+-- mint two PK rows). swept_updated_at is the per-repo updated-at reconcile
+-- watermark (NULL = never swept); list_etag is the conditional-GET etag for the
+-- reconcile LIST walk. updated_at is touched on every upsert/enable-flip.
 CREATE TABLE forge_repo_subscriptions (
     forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
     forge_host     TEXT     NOT NULL,
@@ -702,23 +705,6 @@ CREATE TABLE forge_artifact_cursors (
     snapshot       JSONB,                      -- last observed state, for DetectChanges
     polled_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (forge_provider, forge_host, repo, kind, number)
-);
-
--- FETCH cursor for a repo-level issue LIST walk: one row per (coordinate, page).
--- A durable conditional-GET cache; etag advances ONLY after every row of that
--- page's content is durably sunk. has_next persists the Link-chain fact so a 304
--- can keep walking a multi-page repo. advanced_at records the last content
--- advance (an etag-storing 200+sink), NOT the last poll. Retires with the poll
--- driver (RIG-2883 T5), atomically with its serve.go consumer.
-CREATE TABLE forge_list_cursors (
-    forge_provider SMALLINT NOT NULL CHECK (forge_provider IN (1, 2, 3, 4)),
-    forge_host     TEXT     NOT NULL,
-    repo           TEXT     NOT NULL,
-    page           INTEGER  NOT NULL CHECK (page >= 1),
-    etag           TEXT     NOT NULL DEFAULT '',
-    has_next       BOOLEAN  NOT NULL DEFAULT FALSE,
-    advanced_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (forge_provider, forge_host, repo, page)
 );
 
 -- One row per forge artifact Compass AUTHORED on behalf of an agent (DL-055):

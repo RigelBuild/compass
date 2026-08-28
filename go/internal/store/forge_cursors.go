@@ -10,23 +10,9 @@ import (
 )
 
 // The board arm's durable state (RIG-2883): the per-REPO poll targets and their
-// swept-updated-at watermark (forge_repo_subscriptions), plus the poll driver's
-// per-page FETCH cursor (forge_list_cursors) — the latter retires atomically
-// with its serve.go consumer in T5, so it survives this additive slice. The two
-// DL-053 anticipatory tables (agent_forge_subscriptions, forge_artifact_cursors)
-// are writer-less this slice and get their store surface with their writers.
-
-// ForgeListPageCursor is one durable page row of a repo's issue-LIST fetch
-// cursor (the DL-053 FETCH-cursor model at repo-LIST granularity). ETag ""
-// means never fetched (an unconditional GET). Retires with the poll driver (T5).
-type ForgeListPageCursor struct {
-	Provider ForgeProvider // GITHUB(1)/GITLAB(2)/FORGEJO(3)/LINEAR(4); never 0
-	Host     string
-	Repo     string
-	Page     int32 // 1-based
-	ETag     string
-	HasNext  bool
-}
+// swept-updated-at watermark (forge_repo_subscriptions). The two DL-053
+// anticipatory tables (agent_forge_subscriptions, forge_artifact_cursors) are
+// writer-less this slice and get their store surface with their writers.
 
 // ForgeRepoSubscription is one board poll target: a repo the board arm walks
 // (OQ-C's table model). Enabled=false soft-disables the target without deleting
@@ -51,88 +37,6 @@ func validCoordinate(provider ForgeProvider, host, repo string) error {
 	}
 	if repo == "" {
 		return fmt.Errorf("%w: repo is required", ErrInvalidArgument)
-	}
-	return nil
-}
-
-// ForgeListCursor reads every stored page row for the repo, ascending page. No
-// rows is a nil slice, not an error (a never-polled repo). Zero/empty
-// coordinate fields -> ErrInvalidArgument.
-func (s *Store) ForgeListCursor(ctx context.Context, provider ForgeProvider, host, repo string) ([]ForgeListPageCursor, error) {
-	if err := validCoordinate(provider, host, repo); err != nil {
-		return nil, err
-	}
-	rows, err := s.pool.Query(ctx,
-		`SELECT forge_provider, forge_host, repo, page, etag, has_next
-		   FROM forge_list_cursors
-		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3
-		  ORDER BY page ASC`,
-		int32(provider), host, repo,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("store: read forge list cursor: %w", err)
-	}
-	defer rows.Close()
-
-	var out []ForgeListPageCursor
-	for rows.Next() {
-		var c ForgeListPageCursor
-		var p int32
-		if err := rows.Scan(&p, &c.Host, &c.Repo, &c.Page, &c.ETag, &c.HasNext); err != nil {
-			return nil, fmt.Errorf("store: scan forge list cursor: %w", err)
-		}
-		c.Provider = ForgeProvider(p)
-		out = append(out, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: iterate forge list cursor: %w", err)
-	}
-	return out, nil
-}
-
-// UpsertForgeListCursorPage inserts-or-updates one page row (touching
-// advanced_at — the last CONTENT advance, since this is called only after a
-// 200+sink; an all-304 tick rewrites no row). Called by the driver ONLY after
-// the page's content durably sank — the advance-attests-sink invariant lives in
-// the caller; the store method is a plain upsert. Zero/empty coordinate fields
-// or page < 1 -> ErrInvalidArgument.
-func (s *Store) UpsertForgeListCursorPage(ctx context.Context, cur ForgeListPageCursor) error {
-	if err := validCoordinate(cur.Provider, cur.Host, cur.Repo); err != nil {
-		return err
-	}
-	if cur.Page < 1 {
-		return fmt.Errorf("%w: page must be >= 1", ErrInvalidArgument)
-	}
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO forge_list_cursors
-		     (forge_provider, forge_host, repo, page, etag, has_next, advanced_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, now())
-		 ON CONFLICT (forge_provider, forge_host, repo, page) DO UPDATE
-		    SET etag = EXCLUDED.etag, has_next = EXCLUDED.has_next, advanced_at = now()`,
-		int32(cur.Provider), cur.Host, cur.Repo, cur.Page, cur.ETag, cur.HasNext,
-	); err != nil {
-		return fmt.Errorf("store: upsert forge list cursor page: %w", err)
-	}
-	return nil
-}
-
-// PruneForgeListCursorPages deletes the repo's page rows with page > maxPage (a
-// repo whose walk shrank). maxPage < 1 -> ErrInvalidArgument; zero/empty
-// coordinate fields -> ErrInvalidArgument. Pruning a never-polled repo is a
-// no-op success.
-func (s *Store) PruneForgeListCursorPages(ctx context.Context, provider ForgeProvider, host, repo string, maxPage int32) error {
-	if err := validCoordinate(provider, host, repo); err != nil {
-		return err
-	}
-	if maxPage < 1 {
-		return fmt.Errorf("%w: max page must be >= 1", ErrInvalidArgument)
-	}
-	if _, err := s.pool.Exec(ctx,
-		`DELETE FROM forge_list_cursors
-		  WHERE forge_provider = $1 AND forge_host = $2 AND repo = $3 AND page > $4`,
-		int32(provider), host, repo, maxPage,
-	); err != nil {
-		return fmt.Errorf("store: prune forge list cursor pages: %w", err)
 	}
 	return nil
 }
