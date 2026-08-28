@@ -737,6 +737,37 @@ embedded server takes no network sockets — so its Phase-0 implementation wraps
 the existing command router (`go/internal/runnerhub/hub.go:925-938`);
 per-Runner NATS command subjects land with clustered NATS at T5.
 
+- **Interfaces:** consumes the comms write-through publish sites
+  (`go/internal/comms/doc.go:9-12`), the delivery consumer seams
+  (`ControlDispatcher` / `SessionResolver` / `DeliveryReads`,
+  `go/internal/delivery/consumer.go:42-63`), the hub's command router
+  (`go/internal/runnerhub/hub.go:925-938`), and
+  `github.com/nats-io/nats-server/v2/server` +
+  `github.com/nats-io/nats.go`. Produces:
+  `package fabric` with
+  `type EventFabric interface { Publish(ctx context.Context, subject string, ref EventRef) error; Subscribe(ctx context.Context, subject string, fn func(EventRef)) (Unsubscribe, error) }`
+  where `EventRef` is a compact reference (event kind + row id + tenant),
+  never a payload copy — subscribers re-read Postgres;
+  `type RunnerFabric interface { SendCommand(ctx context.Context, runnerID string, cmd *compassv1internal.SessionsResponse) error; Events(ctx context.Context) (<-chan RunnerEvent, error) }`;
+  `fabric.New(cfg Config) (*Fabric, error)` where `Config` selects embedded
+  (`server.Options{DontListen: true, JetStream: true}` + `nats.Connect(ns.ClientURL(), nats.InProcessServer(ns))`)
+  or clustered (`nats.Connect(url, opts...)`) — one implementation, one
+  config value. The `RunnerFabric` Phase-0 implementation drives the Runner
+  over today's Connect command router (the Runner is external; embedded NATS
+  has no listening socket), and per-Runner NATS command subjects land at T5.
+  Also produces: the JetStream delivery stream (durable at-least-once
+  fan-out, `sync_interval: 100ms`, explicit acks, `max_deliver` + DLQ
+  subject); and the subject-naming doc
+  (`compass.<tenant>.comms.<kind>`, `compass.runner.<runner_id>.cmd`,
+  `compass.runner.events` queue-grouped, `client.<sessionID>` per-connection
+  delivery) as a supporting file beside this record. Gate instrumentation:
+  the delivery-backlog OTel emitter (Phase-1 gate signal) rides this task.
+- **Test cycle:** comms + delivery behavior unchanged under the embedded
+  fabric (existing suites green — no external NATS process in CI); a
+  two-fabric-instance test (two embedded servers clustered, or one test
+  server with two clients) proves a publish crosses instances; JetStream
+  redelivery on unacked messages; DLQ parking after `max_deliver`.
+
 ### T4 — durable session bindings
 
 Move the hub's session→account/Runner binding truth from single-hub RAM to
@@ -866,7 +897,7 @@ they are named N1-N4 here only for cross-reference.
   record, §Q3. Supersedes DL-019, re-scoping ONLY its "JetStream is
   comms-only" clause.
 
-### Proposed supersessions (Active rows, Matt-ruled — see Open Questions OQ-1)
+### Proposed supersessions of Matt-ruled Active rows (the supersession call is Matt's at freeze — see OQ-1)
 
 - **DL-014** ("NATS/JetStream is not a Client/Runner-facing transport; it is
   comms-internal only", `docs/designs/DECISIONS.md:66`) → Superseded by N3.
@@ -954,7 +985,8 @@ multi-instance mode, and the switch is one configuration value. What remains
 deferred: cluster sizing, placement (co-located with Servers vs dedicated),
 and whether per-tenant fabric isolation uses NATS accounts or
 subject-permission scoping alone. Deferred with rationale: the `EventRef`
-carries references only (event kind + row id + tenant — N4), and the durable
+carries references only (event kind + row id + tenant — the compact-reference
+envelope defined in T3's `EventFabric`), and the durable
 tenant boundary is RLS on the Postgres re-read, so a cross-tenant `EventRef`
 delivered to the wrong instance re-reads under that instance's *request-path*
 RLS scope and returns zero rows (the system-role background paths of OQ-4
