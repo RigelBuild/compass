@@ -334,11 +334,17 @@ func (g *GitHub) ListUpdatedIssues(ctx context.Context, repo string, since time.
 		reachedOld := false
 		for _, r := range rows {
 			iss := r.toIssue()
-			if iss.UpdatedAt.Before(since) {
+			if !iss.UpdatedAt.IsZero() && iss.UpdatedAt.Before(since) {
 				// Newest-updated-first: strictly older than the watermark, so this
 				// and everything after it is old. A row == since is NOT Before it,
-				// so it is re-included (second-granularity dedup safety).
+				// so it is re-included (second-granularity dedup safety). A row
+				// whose updated_at failed to parse (zero time) is NOT a stop
+				// signal — treating it as one would let a single malformed row
+				// truncate the whole sweep persistently; skip it and keep walking.
 				reachedOld = true
+				continue
+			}
+			if iss.UpdatedAt.IsZero() {
 				continue
 			}
 			// Drop the PR rows GitHub interleaves into /issues (mirroring

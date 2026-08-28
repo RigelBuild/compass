@@ -321,6 +321,37 @@ func TestListUpdatedIssuesStopsStrictlyBelowSince(t *testing.T) {
 	}
 }
 
+// TestListUpdatedIssuesMalformedRowDoesNotTruncate: a row whose updated_at fails
+// to parse (zero time) must NOT be treated as the strictly-below-since stop
+// signal — otherwise one malformed row truncates the whole sweep persistently.
+// It is skipped (no output), and the walk continues to the valid rows behind it.
+func TestListUpdatedIssuesMalformedRowDoesNotTruncate(t *testing.T) {
+	since := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	// A malformed updated_at sits BETWEEN two valid >= since rows on page 1. If
+	// the zero time were a stop signal it would drop #48 (a real, fresh issue).
+	page1 := `[
+		{"number":50,"state":"open","html_url":"u50","updated_at":"2026-08-01T12:00:05Z"},
+		{"number":49,"state":"open","html_url":"u49","updated_at":"not-a-timestamp"},
+		{"number":48,"state":"open","html_url":"u48","updated_at":"2026-08-01T12:00:03Z"}
+	]`
+	rt := &scriptedRoundTripper{responses: []scriptedResponse{
+		{status: 200, body: page1, headers: map[string]string{"ETag": `"n1"`}},
+	}}
+	g := newTestGitHub(rt, &fakeTokenSource{token: "t"})
+
+	res, err := g.ListUpdatedIssues(context.Background(), "org/repo", since, "")
+	if err != nil {
+		t.Fatalf("ListUpdatedIssues: %v", err)
+	}
+	// 50 and 48 are collected; the malformed 49 is skipped, not a stop signal.
+	if len(res.V) != 2 {
+		t.Fatalf("kept %d (%+v), want 2 (50,48; the malformed 49 is skipped without truncating)", len(res.V), res.V)
+	}
+	if res.V[0].Number != 50 || res.V[1].Number != 48 {
+		t.Errorf("kept %d,%d, want 50,48 (the row behind the malformed one still collected)", res.V[0].Number, res.V[1].Number)
+	}
+}
+
 // TestListUpdatedIssuesPage1_304: a 304 on page 1 short-circuits to NotModified
 // without walking (nothing updated since the last sweep).
 func TestListUpdatedIssuesPage1_304(t *testing.T) {
