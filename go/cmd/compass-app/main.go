@@ -1,4 +1,4 @@
-//go:build (linux && gtk3) || darwin
+//go:build (linux && gtk4) || darwin
 
 // Command compass-app is the Compass native desktop shell: a Wails v3
 // application that opens one window loading the prebuilt SolidJS UI (apps/ui

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # build.sh — build the versioned Compass native-app release tarball
-# (compass-app-<version>-linux-amd64.tar.gz), the thin CLIENT bundle: the gtk3
+# (compass-app-<version>-linux-amd64.tar.gz), the thin CLIENT bundle: the gtk4
 # shell (compass-app) + the UI dist + the desktop file + LICENSE. No sidecar
 # binaries, no postgres tooling — the headless stack ships separately.
 #
 # Why bash: this is nix + go build orchestration glue — it realizes the pinned
-# GTK cc/pkg-config closure with `nix build`, links the one gtk3 binary against
+# GTK cc/pkg-config closure with `nix build`, links the one gtk4 binary against
 # it, and stages a directory tree. It carries no runtime deps beyond nix/go/tar,
 # and runs byte-identically in CI and on the dev box.
 #
@@ -25,7 +25,7 @@ err() { printf 'ERROR: %s\n' "$*" >&2; }
 #        app-bundle/ so nix-collect-garbage cannot dangle the tarball's rpaths.
 #        A bare `nix build --no-link` creates NO GC root. Reuse the
 #        already-pinned pkgConfig + cc outputs directly off gtk-e2e-env.nix (no
-#        re-pinned copy) — the one gtk3 binary is rpathed against them.
+#        re-pinned copy) — the one gtk4 binary is rpathed against them.
 log "Realizing pinned nix outputs (pkgConfig, cc)"
 nix build -f "$REPO_ROOT/tools/toolchain/gtk-e2e-env.nix" pkgConfig \
   -o "$SCRIPT_DIR/result-pkgconfig"
@@ -51,15 +51,15 @@ STAGE="$SCRIPT_DIR/$BUNDLE"
 rm -rf "$STAGE"
 mkdir -p "$STAGE/bin" "$STAGE/share/applications"
 
-# The gtk3 shell: CGO, linked against the pinned cc + pkg-config closure so the
+# The gtk4 shell: CGO, linked against the pinned cc + pkg-config closure so the
 # ELF is store-rpathed and self-contained (§446-447).
-log "Building gtk3 shell (compass-app)"
+log "Building gtk4 shell (compass-app)"
 CGO_ENABLED=1 CC="$CC_BIN" PKG_CONFIG_PATH="$PKG_CONFIG_PATH" \
-  go -C "$GO_DIR" build -trimpath -tags gtk3 \
+  go -C "$GO_DIR" build -trimpath -tags gtk4 \
   -ldflags "-X main.version=$v" \
   -o "$STAGE/bin/compass-app" ./cmd/compass-app
 
-# --- 5. Stage the A2 layout — the thin client bundle: one gtk3 binary + dist +
+# --- 5. Stage the A2 layout — the thin client bundle: one gtk4 binary + dist +
 # desktop + LICENSE (§156-168).
 
 # dist: the compass-ui:build output (apps/ui/dist), staged beside the shell.

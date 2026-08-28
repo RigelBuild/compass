@@ -207,7 +207,7 @@ describe("determinism — shuffled input yields identical sorted output", () => 
 	});
 });
 
-describe("flags — pgtest / microvm / forge / gtk3 rules", () => {
+describe("flags — pgtest / microvm / forge / gtk4 rules", () => {
 	test("pgtestAffected iff compass-go in closure", () => {
 		expect(
 			generate(prInput({ affectedIds: ["compass-go"] })).pgtestAffected,
@@ -268,23 +268,54 @@ describe("flags — pgtest / microvm / forge / gtk3 rules", () => {
 		).toBe(false);
 	});
 
-	test("gtk3Affected on any go/cmd/compass-app/ path", () => {
+	test("gtk4Affected on any go/cmd/compass-app/ path", () => {
 		expect(
 			generate(
 				prInput({
 					affectedIds: [],
 					changedPaths: ["go/cmd/compass-app/main.go"],
 				}),
-			).gtk3Affected,
+			).gtk4Affected,
 		).toBe(true);
 		expect(
 			generate(
 				prInput({ affectedIds: [], changedPaths: ["go/cmd/other/main.go"] }),
-			).gtk3Affected,
+			).gtk4Affected,
 		).toBe(false);
 	});
 
-	test("push: forge + gtk3 unconditionally true, changedPaths ignored", () => {
+	test("gtk4Affected on a shared GTK closure input (F2 trigger extension)", () => {
+		// A closure-only PR (the T2 atk/gdk-pixbuf trim) touches no
+		// go/cmd/compass-app/ path, but the e2e lane is the ONLY lane that
+		// compiles the shell against that closure — so it MUST still trigger.
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["tools/toolchain/gtk-closure.nix"],
+				}),
+			).gtk4Affected,
+		).toBe(true);
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["tools/toolchain/gtk-e2e-env.nix"],
+				}),
+			).gtk4Affected,
+		).toBe(true);
+		// A different toolchain nix file must NOT trigger it.
+		expect(
+			generate(
+				prInput({
+					affectedIds: [],
+					changedPaths: ["tools/toolchain/gate-tools.nix"],
+				}),
+			).gtk4Affected,
+		).toBe(false);
+	});
+
+	test("push: forge + gtk4 unconditionally true, changedPaths ignored", () => {
 		const out = generate({
 			projects: workspace(),
 			affectedIds: workspace().map((p) => p.id),
@@ -292,10 +323,10 @@ describe("flags — pgtest / microvm / forge / gtk3 rules", () => {
 			event: "push",
 		});
 		expect(out.forgeAffected).toBe(true);
-		expect(out.gtk3Affected).toBe(true);
+		expect(out.gtk4Affected).toBe(true);
 	});
 
-	test("schedule: forge + gtk3 unconditionally true", () => {
+	test("schedule: forge + gtk4 unconditionally true", () => {
 		const out = generate({
 			projects: workspace(),
 			affectedIds: workspace().map((p) => p.id),
@@ -303,7 +334,7 @@ describe("flags — pgtest / microvm / forge / gtk3 rules", () => {
 			event: "schedule",
 		});
 		expect(out.forgeAffected).toBe(true);
-		expect(out.gtk3Affected).toBe(true);
+		expect(out.gtk4Affected).toBe(true);
 	});
 
 	test("push: every non-empty group runs (full sweep)", () => {
@@ -368,6 +399,6 @@ describe("empty affected closure — matrix still non-empty (fromJSON safe)", ()
 		expect(out.pgtestAffected).toBe(false);
 		expect(out.microvmAffected).toBe(false);
 		expect(out.forgeAffected).toBe(false);
-		expect(out.gtk3Affected).toBe(false);
+		expect(out.gtk4Affected).toBe(false);
 	});
 });

@@ -2,7 +2,7 @@
 #
 # compass-app-bundle (app-bundle/): builds the versioned Compass native-app
 # release tarball (compass-app-<version>-linux-amd64.tar.gz) — the thin CLIENT
-# bundle of the gtk3 shell (compass-app), the UI dist, the desktop file, and
+# bundle of the gtk4 shell (compass-app), the UI dist, the desktop file, and
 # LICENSE. No sidecar binaries, no postgres tooling. build.sh owns the
 # realize/build/stage/sanity/tar pipeline.
 #
@@ -23,7 +23,7 @@ workspace:
 
 tasks:
   build:
-    # build.sh realizes the pinned nix outputs, links the one gtk3 binary,
+    # build.sh realizes the pinned nix outputs, links the one gtk4 binary,
     # stages the thin client layout, runs the sanity gate, and tars the bundle.
     # Runs from app-bundle/ (moon's default project cwd).
     #
@@ -37,7 +37,7 @@ tasks:
       runInCI: true
     outputs:
       - 'compass-app-*-linux-amd64.tar.gz'
-    # The packaging closure. `/go/**` covers the gtk3 shell's source (cmd + the
+    # The packaging closure. `/go/**` covers the gtk4 shell's source (cmd + the
     # internal packages it imports, e.g. go/internal/bridge), excluding tests;
     # the UI dist is covered through the compass-ui:build deps edge (no
     # /apps/ui/src/** belt — moon schedules dependents of affected projects). A

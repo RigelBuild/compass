@@ -1,19 +1,19 @@
-//go:build unix && gtk3
+//go:build unix && gtk4
 
 // The Compass multi-window smoke gate (design record §M4). This is the ONE test
-// that drives the REAL GTK3/WebKit Wails shell — the window factory, real
+// that drives the REAL GTK4/WebKit Wails shell — the window factory, real
 // application.Window handles, and a real WindowClosing event — rather than the
-// windowDispatcher seam's fakes. It covers exactly the gap the unix (non-gtk3)
+// windowDispatcher seam's fakes. It covers exactly the gap the unix (non-gtk4)
 // unit suite cannot reach and the M3/M3b reviews flagged as architecturally
-// forced: windowFromContext reads application.WindowKey (nil in the nogtk3
+// forced: windowFromContext reads application.WindowKey (nil in the nogtk4
 // build, so the unit test injects call.window by hand), and the newAppWindow
 // close handler fires cancelWindow only on a real WindowClosing.
 //
 // It runs only under a display: TestMain hosts app.Run() (the blocking GTK loop
 // MUST own the main goroutine / OS thread 0) and the Test* bodies run on a
-// driver goroutine gated on ApplicationStarted. With no display the gtk3 tests
+// driver goroutine gated on ApplicationStarted. With no display the gtk4 tests
 // self-skip, so a container-less sandbox skips rather than fails — the posture
-// of the podman e2e legs. The ci.yml "Multi-window gtk3 e2e gate" step wraps the
+// of the podman e2e legs. The ci.yml "Multi-window gtk4 e2e gate" step wraps the
 // run in xvfb-run so CI and the dev box both have a framebuffer.
 //
 // No sleeps gate an assertion: window creation and the count after a close are
@@ -75,14 +75,14 @@ func TestMain(m *testing.M) {
 // TestMultiWindowCloseCancelsOnlyClosingWindowE2E is the leak-gate proof through
 // the REAL shell: two real Bridge windows each own an in-flight bridge call
 // (registered through the real windowFromContext, which reads the window off
-// application.WindowKey — the path the nogtk3 unit test cannot exercise);
+// application.WindowKey — the path the nogtk4 unit test cannot exercise);
 // closing one window fires its real WindowClosing handler, which calls
 // cancelWindow and sweeps ONLY that window's call, while the other window's call
 // stays in-flight. This is the daemon-observable half of the §M4 checklist
 // (a closed window's bridge subscription terminates) driven end to end.
 func TestMultiWindowCloseCancelsOnlyClosingWindowE2E(t *testing.T) {
 	if !hasDisplay() {
-		t.Skip("no DISPLAY/WAYLAND_DISPLAY; run under xvfb-run (the ci.yml gtk3 e2e gate, or `xvfb-run go test -tags 'unix gtk3'` locally)")
+		t.Skip("no DISPLAY/WAYLAND_DISPLAY; run under xvfb-run (the ci.yml gtk4 e2e gate, or `xvfb-run go test -tags 'unix gtk4'` locally)")
 	}
 
 	// A stub bridge target whose handler blocks until released, so each

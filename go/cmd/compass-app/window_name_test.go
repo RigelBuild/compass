@@ -1,4 +1,4 @@
-//go:build unix && gtk3
+//go:build unix && gtk4
 
 package main
 
