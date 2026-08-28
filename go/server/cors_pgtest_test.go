@@ -28,6 +28,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"connectrpc.com/otelconnect"
+
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
@@ -67,7 +69,11 @@ func buildDoorHandler(t *testing.T, corsOrigin string) http.Handler {
 		CORSAllowedOrigin: corsOrigin,
 	}
 	secretsSvc := newSecretsService(st, nil, nil)
-	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, nil, st, admin, nil, nil)
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		t.Fatalf("otelconnect.NewInterceptor: %v", err)
+	}
+	srv, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, nil, st, admin, nil, nil, otelIC)
 	if err != nil {
 		t.Fatalf("buildNetworkServer: %v", err)
 	}

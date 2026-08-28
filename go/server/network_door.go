@@ -20,11 +20,13 @@ import (
 
 	"connectrpc.com/connect"
 	connectcors "connectrpc.com/cors"
+	"connectrpc.com/otelconnect"
 	"github.com/rs/cors"
 
 	"github.com/RigelBuild/compass/go/gen/compass/v1/compassv1connect"
 	"github.com/RigelBuild/compass/go/internal/auth"
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
+	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -140,7 +142,7 @@ func networkCORS(origin string) *cors.Cors {
 		AllowedOrigins:   []string{origin},
 		AllowedMethods:   connectcors.AllowedMethods(),
 		AllowedHeaders:   append(connectcors.AllowedHeaders(), "Authorization"),
-		ExposedHeaders:   connectcors.ExposedHeaders(),
+		ExposedHeaders:   append(connectcors.ExposedHeaders(), "traceresponse"),
 		AllowCredentials: false,
 	})
 }
@@ -241,6 +243,7 @@ func buildNetworkServer(
 	adminID store.AccountID,
 	netTLS *tls.Config,
 	resolver secrets.Resolver,
+	otelIC *otelconnect.Interceptor,
 ) (*http.Server, error) {
 	handle := cfg.resolvedAdminHandle()
 	stateDir := cfg.StateDir
@@ -260,7 +263,16 @@ func buildNetworkServer(
 	slog.Info("network door bootstrap admin token written",
 		"path", tokenPath, "handle", handle, "listen", cfg.Listen)
 
+	// otelconnect (outermost) produces the RPC span and NewTraceResponseInterceptor
+	// stamps the traceresponse header, prepended to the shared bearer + admin-gate
+	// chain so every network-door service (CompassService, CommsService, and
+	// SecretsService, which rides the same chain) carries them. Both are inert
+	// no-ops when no provider is installed (empty OtelEndpoint). Ordering: otel
+	// first keeps the security-critical Bearer→AdminGate order unchanged relative
+	// to itself.
 	interceptors := connect.WithInterceptors(
+		otelIC,
+		otel.NewTraceResponseInterceptor(),
 		auth.BearerInterceptor(st),
 		auth.BearerStreamInterceptor(st),
 		auth.NewAdminGate(adminID),

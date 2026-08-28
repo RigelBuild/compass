@@ -21,6 +21,8 @@ import (
 	"fmt"
 
 	"connectrpc.com/connect"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/RigelBuild/compass/go/events"
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
@@ -349,6 +351,10 @@ func (c *Comms) PostMessage(
 	if err != nil {
 		return nil, edgeError(err)
 	}
+	// Stamp the appended message's id onto the handler's RPC span (the
+	// otelconnect origin span mounted on this service), so a trace filters to
+	// one message. A no-op when no span is active (no provider installed).
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("compass.message.id", string(msg.ID)))
 	// Publish only on a genuine insert: an idempotent retry returns the stored
 	// row unchanged (inserted=false), so re-fanning MessagePosted would emit a
 	// spurious live state-change for a row that did not change.
@@ -386,6 +392,10 @@ func (c *Comms) RespondToAsk(
 	if err != nil {
 		return nil, edgeError(err)
 	}
+	// Stamp the answer message's id onto the handler's RPC span (the delivery
+	// origin for the answer post), matching PostMessage. A no-op when no span is
+	// active.
+	trace.SpanFromContext(ctx).SetAttributes(attribute.String("compass.message.id", string(answerMsg.ID)))
 	// MessageUpdated carries the ask's new answered state to the UI; it is NOT a
 	// delivery trigger. MessagePosted for the answer message IS the delivery
 	// trigger — it fans out on the normal message rail, so an offline or

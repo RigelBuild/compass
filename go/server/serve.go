@@ -29,6 +29,7 @@ import (
 
 	"connectrpc.com/connect"
 	connectcors "connectrpc.com/cors"
+	"connectrpc.com/otelconnect"
 	"github.com/rs/cors"
 	"golang.org/x/sync/errgroup"
 
@@ -40,6 +41,7 @@ import (
 	"github.com/RigelBuild/compass/go/internal/comms"
 	"github.com/RigelBuild/compass/go/internal/forge"
 	"github.com/RigelBuild/compass/go/internal/ingest"
+	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runnerhub"
 	"github.com/RigelBuild/compass/go/internal/secrets"
 	"github.com/RigelBuild/compass/go/internal/store"
@@ -108,6 +110,11 @@ type ServeConfig struct {
 	// leaves the driver off — today's behavior, zero new requirements on
 	// existing deployments. See ForgeConfig and forgePollingEnabled.
 	Forge ForgeConfig
+	// OtelEndpoint is the OTLP collector endpoint (OTEL_EXPORTER_OTLP_ENDPOINT);
+	// empty = tracing off. It gates OTel emission on both binaries: when unset,
+	// the bootstrap installs no provider and the RPC interceptors are inert
+	// no-ops (no active span, so no traceresponse header).
+	OtelEndpoint string
 }
 
 // ForgeConfig configures the board-ingestion poll driver (SEA-1810, DL-053).
@@ -455,7 +462,6 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	commsBus := events.NewBus[*compassv1.SubscribeCommsResponse]()
 	defer commsBus.Close()
 	commsSvc := comms.NewComms(st, commsBus, admin.ID)
-	commsPath, commsHandler := compassv1connect.NewCommsServiceHandler(commsSvc)
 	// Register the coordination-channel reconcile as the store's in-tx hook, so
 	// the two parent-edge writers auto-provision/reconcile a manager's
 	// coordination channel atomically with the tree edge (SEA-1722 T5). Wired here
@@ -506,7 +512,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// loopback, optional authenticated network). On a net-door build error the
 	// listeners this Serve bound are still ours to close.
 	doors, err := buildDoors(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, admin.ID, resolver,
-		commsPath, commsHandler, devListener, netListener, netTLS)
+		devListener, netListener, netTLS)
 	if err != nil {
 		udsListener.Close() //nolint:errcheck,gosec // teardown on an already-failing startup path — nothing actionable remains (errcheck + its gosec G104 twin)
 		listeners.close()
@@ -608,12 +614,25 @@ func buildDoors(
 	st *store.Store,
 	adminID store.AccountID,
 	resolver secrets.Resolver,
-	commsPath string,
-	commsHandler http.Handler,
 	devListener net.Listener,
 	netListener net.Listener,
 	netTLS *tls.Config,
 ) (serveDoors, error) {
+	// otelconnect produces the server RPC span (and, once a MeterProvider is
+	// installed, RPC duration/count metrics); NewTraceResponseInterceptor stamps
+	// the span's trace id onto the "traceresponse" response header. Both are
+	// inert no-ops when OtelEndpoint is empty (no provider ⇒ no active span), so
+	// they are mounted unconditionally. otelconnect goes FIRST (outermost) in
+	// every chain so the span envelopes the security-critical interceptors and
+	// the AdminGate→Ambient ordering is unchanged relative to itself.
+	otelIC, err := otelconnect.NewInterceptor()
+	if err != nil {
+		return serveDoors{}, fmt.Errorf("otel: rpc interceptor: %w", err)
+	}
+	// CommsService rides the socket + dev doors and the network shared chain; it
+	// mounts the same otelconnect + trace-response pair as CompassService.
+	commsPath, commsHandler := compassv1connect.NewCommsServiceHandler(commsSvc,
+		connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor()))
 	// Shipped door: the Unix socket serves native gRPC (cleartext HTTP/2),
 	// gRPC-Web, and Connect off the one connect-go handler. No CORS — the socket
 	// is same-origin (the shell's webview / a native client). The 0600 socket is
@@ -623,7 +642,8 @@ func buildDoors(
 	// natively (http.Protocols); these connections are tracked by
 	// http.Server.Shutdown and drain with the rest on shutdown.
 	socketPath, socketHandler := compassv1connect.NewCompassServiceHandler(svc,
-		connect.WithInterceptors(auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+		connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
+			auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 	// SecretsService rides the same ambient-identity pair so its handler reads a
 	// caller via CallerFrom (the bootstrap admin, a user): the socket's 0600 mode
 	// is the credential, and admin being a user satisfies the user-only writes.
@@ -659,7 +679,8 @@ func buildDoors(
 	var devServer *http.Server
 	if devListener != nil {
 		devPath, devHandler := compassv1connect.NewCompassServiceHandler(svc,
-			connect.WithInterceptors(auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
+			connect.WithInterceptors(otelIC, otel.NewTraceResponseInterceptor(),
+				auth.NewAdminGate(adminID), auth.AmbientIdentity(adminID), auth.AmbientStreamInterceptor(adminID)))
 		// SecretsService on the dev door: same admin-gate + ambient chain as
 		// CompassService. The gate classifies its 3 procedures authenticatedOpen,
 		// so it passes them, then the ambient pair attaches the bootstrap admin
@@ -681,7 +702,7 @@ func buildDoors(
 	// On a build error the listeners this Serve bound are still ours to close.
 	var netServer *http.Server
 	if netListener != nil {
-		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, resolver)
+		s, err := buildNetworkServer(ctx, cfg, svc, commsSvc, secretsSvc, hub, st, adminID, netTLS, resolver, otelIC)
 		if err != nil {
 			return serveDoors{}, err
 		}
@@ -760,7 +781,7 @@ func devCORS() *cors.Cors {
 		AllowedOrigins:   []string{"*"},
 		AllowedMethods:   connectcors.AllowedMethods(),
 		AllowedHeaders:   connectcors.AllowedHeaders(),
-		ExposedHeaders:   connectcors.ExposedHeaders(),
+		ExposedHeaders:   append(connectcors.ExposedHeaders(), "traceresponse"),
 		AllowCredentials: false,
 	})
 }
