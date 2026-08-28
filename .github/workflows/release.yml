@@ -1,0 +1,246 @@
+# Cuts a GitHub Release per qualifying build, carrying the compiled binaries,
+# the container-image identity (a GHCR digest pointer), and the nix build-output
+# identity manifest — so consumers pin and download a verified artifact instead
+# of rebuilding from source.
+#
+# WHY A SEPARATE WORKFLOW, NOT A STEP IN THE CI GATE — the same deliberate
+# exception to this repo's ONE-JOB doctrine that publish-agent-image.yml makes,
+# with `contents: write` where that lane needs `packages: write`:
+#
+#   - Least privilege. Cutting a Release needs `contents: write`; the gate job
+#     runs `contents: read` only. This workflow gets `contents: write` and
+#     NOTHING else — in particular NOT `packages: write`: this per-build lane
+#     only writes Releases. Moving the GHCR image tags is the semver lane's job
+#     (T3 adds `push: tags: ['v*']` + a job-level `packages: write`); the
+#     per-build lane never touches a registry.
+#   - No PR trigger, ever. PR events never reach this workflow, so fork-PR code
+#     never runs with the write token (Global Constraint 3 / Fork 4 posture —
+#     identical to publish-agent-image.yml, which has no PR trigger for the same
+#     reason).
+#   - Native paths scoping. `on.push.paths` restricts the lane to
+#     binary-affecting pushes (the Go tree + the Go toolchain pin + this file),
+#     NOT unioned with the image lane's closure paths — an image-only sha
+#     republishes the image but mints no Release (OQ-3, ruled).
+#   - Its own concurrency. Releases SERIALIZE (`cancel-in-progress: false`), the
+#     opposite of the gate's cancelling group — a superseded run cleanly skips
+#     rather than half-superseding a Release mid-upload.
+#   - Off the hot path, not a required check. The nix toolchain resolve sizes
+#     the timeout the same way it does for ci.yml; keeping it here leaves PR
+#     latency untouched.
+#
+# See docs/designs/platform/compass-release-bundling.md (§Plan T1/T2, Forks 3-4)
+# and docs/architecture/build-and-ci.md.
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    # Each glob is a binary-affecting input: a change to any of them can change
+    # a built binary, so it must mint a new Release. Deliberately NOT the image
+    # lane's closure paths — an image-only sha mints no Release (OQ-3).
+    paths:
+      # The Go tree — every binary's source.
+      - go/**
+      # The pinned Go toolchain: a pin move rebuilds every binary. NOTE the
+      # boundary (OQ-3, within-contract): the built go is the go-overlay applied
+      # to devenv.lock's nixpkgs, so a devenv.lock rev bump that changes the go
+      # derivation byte-for-byte re-cuts NO Release — and the 0.1.0+g<sha> string
+      # would be identical across it, so the two builds are indistinguishable by
+      # Release identity. Only a versions/go.nix move re-cuts.
+      - tools/toolchain/versions/go.nix
+      # A fix to this lane itself must re-cut.
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+# Least privilege: write Releases, nothing else. NOT packages:write — that is
+# the T3 semver lane's grant only.
+permissions:
+  contents: write
+
+# Releases SERIALIZE — a superseded run must not half-supersede a Release
+# mid-upload. The OPPOSITE of ci.yml's cancelling group, mirroring
+# publish-agent-image.yml:76-82.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    # workflow_dispatch runs on any branch; guard so a dispatch from a feature
+    # branch can never mint a Release for unmerged code. Main pushes satisfy
+    # this trivially (mirrors publish-agent-image.yml:87).
+    if: github.ref == 'refs/heads/main'
+    # The nix toolchain resolve is the cost that sizes this timeout — the same
+    # ceiling ci.yml uses.
+    timeout-minutes: 90
+    steps:
+      # Default depth — the lane needs only HEAD (git rev-parse HEAD for the
+      # build-<sha12> tag).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          # nix-command + flakes for the RigelBuild forks' flakes. The two caches
+          # are declared HERE, not delegated via `accept-flake-config` — that
+          # setting makes nix trust the `nixConfig` of ANY flake it evaluates
+          # (the RigelBuild/devenv flake carries such a block), so a PR could add
+          # its own substituter AND trusted key and have CI run attacker-signed
+          # binaries. Naming the caches in this reviewed file keeps that trust
+          # reviewed (copied verbatim from ci.yml:191-194).
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            extra-substituters = https://devenv.cachix.org https://cachix.cachix.org
+            extra-trusted-public-keys = devenv.cachix.org-1:w1cLUi8dv3hnoSPGAuibQv+f9TZLr6cv/Hm9XgU50cw= cachix.cachix.org-1:eWNHQldwUO7G2VkjpnjDbWwy4KQ/HNxht7H4SSoMckM=
+
+      - name: Put the language toolchains on PATH
+        # The pinned toolchain comes from nix, never `setup-go` (Global
+        # Constraint 6): gate-tools.nix's `langs` output resolves the identical
+        # derivations the dev shell does — go from the go-overlay applied to the
+        # devenv.lock-pinned nixpkgs — so this build runs the pinned go
+        # byte-for-byte. Copied verbatim from ci.yml:207-220 (phase one).
+        run: |
+          stores=$(nix eval --json -f tools/toolchain/gate-tools.nix langs \
+            | jq -r '.[].store')
+          # Fail closed locally rather than leaning on the absence of a
+          # root-level flake.nix: with no installables `nix build` would build a
+          # default package if one existed, so an empty `langs` must error here.
+          [ -n "$stores" ] || {
+            echo "::error::gate-tools.nix langs produced no store paths"
+            exit 1
+          }
+          nix build --no-link $stores
+          for store in $stores; do
+            echo "$store/bin" >>"$GITHUB_PATH"
+          done
+
+      - name: Put the fork's patched skopeo on PATH
+        # The release-notes generator queries GHCR for the image config digest
+        # with a plain `skopeo` (the RigelBuild/nix2container fork's patched
+        # build). The langs bootstrap above carries only go/bun/node/moon, so
+        # skopeo must be provisioned here or the digest query — a core T2
+        # deliverable (Fork 2(ii)) — silently records the image absent on every
+        # release. Resolve it from the shared pinned helper
+        # tools/toolchain/skopeo-nix2container-env.nix and prepend its bin/, the
+        # same out-of-band `nix build` pattern publish-agent-image.yml:117-148
+        # uses. The image is public (Matt-ruled), so reading the digest needs no
+        # `skopeo login` / packages:read — this lane stays contents:write-only.
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # `--print-out-paths` prints every output (skopeo ships a `-man` output
+          # too); take the one carrying bin/skopeo, not a fixed line.
+          skopeo_bin=""
+          for store in $(nix build --no-link --print-out-paths \
+            -f tools/toolchain/skopeo-nix2container-env.nix skopeo); do
+            if [ -x "$store/bin/skopeo" ]; then
+              skopeo_bin="$store/bin"
+              break
+            fi
+          done
+          if [ -z "$skopeo_bin" ]; then
+            echo "::error::skopeo-nix2container-env.nix produced no output carrying bin/skopeo" >&2
+            exit 1
+          fi
+          echo "$skopeo_bin" >> "$GITHUB_PATH"
+
+      - name: Build the release binaries
+        # Version string: `0.1.0+g<sha12>` — the app-bundle/build.sh
+        # `0.1.0+g<shortsha>` shape (semver build metadata off the `0.1.0` base
+        # each main.go stamps), with the 12-hex short sha the image tag and
+        # Release name also speak. ONE string across all binaries in a Release
+        # (Global Constraint 4). The Release NAME is `build-<sha12>` (Global
+        # Constraint 2). -trimpath + CGO_ENABLED=0: the three daemons/CLI are
+        # pure Go (cgo is needed only by the pgtest suites, not any build here),
+        # and the darwin-arm64 CLI cross-compiles cleanly from this ubuntu runner.
+        run: |
+          set -euo pipefail
+          sha12="$(git rev-parse --short=12 HEAD)"
+          tag="build-$sha12"
+          version="0.1.0+g$sha12"
+          echo "SHA12=$sha12" >>"$GITHUB_ENV"
+          echo "TAG=$tag" >>"$GITHUB_ENV"
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+
+          ldflags="-X main.version=$version"
+
+          # Three linux-amd64 binaries (the deployable daemons + the CLI).
+          for name in compass compass-server compass-runner; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+              go -C go build -trimpath -ldflags "$ldflags" \
+              -o "../${name}_${tag}_linux-amd64" "./cmd/${name}"
+          done
+
+          # The CLI cross-built for darwin-arm64 (Matt's dev machines run the CLI
+          # against remote stacks; the daemons deploy on Linux only — Fork 2(i)).
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+            go -C go build -trimpath -ldflags "$ldflags" \
+            -o "../compass_${tag}_darwin-arm64" ./cmd/compass
+
+      - name: Generate SHA256SUMS over the built assets
+        run: |
+          set -euo pipefail
+          sha256sum \
+            "compass_${TAG}_linux-amd64" \
+            "compass-server_${TAG}_linux-amd64" \
+            "compass-runner_${TAG}_linux-amd64" \
+            "compass_${TAG}_darwin-arm64" \
+            > SHA256SUMS
+
+      - name: Generate the release body + nix-outputs manifest
+        # The T2 generator (a bun/TS tool with a pure, unit-tested core). It
+        # queries GHCR for the image digest (DEGRADING to a recorded-absence line
+        # when the image lane has not published this sha) and runs
+        # `nix path-info` over the toolchain `langs` set. --dry-run would print
+        # both without writing; here it writes the two files the release upload
+        # consumes.
+        run: |
+          set -euo pipefail
+          bun run tools/release-notes/index.ts \
+            --sha "$SHA12" \
+            --version "$VERSION" \
+            --tag "$TAG" \
+            --asset "compass_${TAG}_linux-amd64" \
+            --asset "compass-server_${TAG}_linux-amd64" \
+            --asset "compass-runner_${TAG}_linux-amd64" \
+            --asset "compass_${TAG}_darwin-arm64" \
+            --asset "SHA256SUMS" \
+            --body-out RELEASE_BODY.md \
+            --manifest-out nix-outputs.json
+
+      - name: Create or update the prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Prereleases are PUBLISHED, not draft — a draft is invisible to the
+        # anonymous asset-download consumer and this lane has no human step
+        # (Fork 3). Idempotency (re-run on the same sha): check-then-branch. If
+        # the Release already exists, re-upload its assets with --clobber rather
+        # than failing on the duplicate tag; otherwise create it fresh. Both
+        # paths converge on the same six assets.
+        run: |
+          set -euo pipefail
+          assets=(
+            "compass_${TAG}_linux-amd64"
+            "compass-server_${TAG}_linux-amd64"
+            "compass-runner_${TAG}_linux-amd64"
+            "compass_${TAG}_darwin-arm64"
+            SHA256SUMS
+            nix-outputs.json
+          )
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Re-run on the same sha: converge BOTH assets AND notes. The
+            # image-absent->present transition (Fork 2(ii)/OQ-3) mints the build
+            # with the image recorded absent; a later workflow_dispatch re-run
+            # after the image publishes must refresh the body to the
+            # freshly-computed digest pointer, not leave the stale absence line.
+            gh release upload --clobber "$TAG" "${assets[@]}"
+            gh release edit "$TAG" --prerelease --notes-file RELEASE_BODY.md
+          else
+            gh release create "$TAG" \
+              --prerelease \
+              --title "$TAG" \
+              --notes-file RELEASE_BODY.md \
+              "${assets[@]}"
+          fi

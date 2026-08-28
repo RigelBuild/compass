@@ -179,6 +179,16 @@
         "typescript": "catalog:",
       },
     },
+    "tools/release-notes": {
+      "name": "@compass/release-notes",
+      "bin": {
+        "release-notes": "./index.ts",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "tools/renovate": {
       "name": "@compass/renovate",
       "devDependencies": {
@@ -426,6 +436,8 @@
     "@compass/microvm-boot-test": ["@compass/microvm-boot-test@workspace:tools/microvm-boot-test"],
 
     "@compass/orion-ref-gate": ["@compass/orion-ref-gate@workspace:tools/orion-ref-gate"],
+
+    "@compass/release-notes": ["@compass/release-notes@workspace:tools/release-notes"],
 
     "@compass/renovate": ["@compass/renovate@workspace:tools/renovate"],
 

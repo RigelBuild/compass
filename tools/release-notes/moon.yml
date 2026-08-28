@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://moonrepo.dev/schemas/project.json
+#
+# release-notes (T2) — the Release body + nix-outputs manifest generator. Emits
+# the GitHub Release body (binaries + the GHCR image-digest pointer, degrading
+# to a recorded absence when the image lane has not published the sha) and
+# nix-outputs.json (nix path-info identity over the toolchain `langs` set). A
+# bun/TypeScript CLI; a hoisted root-workspace member (`bun` tag): install is
+# inherited via .moon/tasks/tag-bun.yml (the shared root install), so this leaf
+# has no own bun.lock and never runs its own install. It is itself a
+# `ci-group.bun` project so the CI matrix generator's zero-untagged assertion
+# does not fire on it.
+layer: 'tool'
+language: 'typescript'
+tags: ['bun', 'ci-group.bun']
+
+tasks:
+  typecheck:
+    command: 'bunx tsc --noEmit'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  test:
+    command: 'bun test'
+    deps: ['install']
+    inputs: ['*.ts', 'tsconfig.json', 'package.json', '/bun.lock']
+  ci:
+    deps: ['typecheck', 'test']
+    options:
+      cache: false
