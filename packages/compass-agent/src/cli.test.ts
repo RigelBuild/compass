@@ -1047,7 +1047,9 @@ describe("main", () => {
 						fakeCarrier(emptyLog(), { control: emptyControlStream }),
 					),
 				),
-			).rejects.toThrow(/pinned model "litellm\/claude-opus"/);
+			).rejects.toThrow(
+				/pinned model "litellm\/claude-opus".*config error: provider foo rejected/,
+			);
 		} finally {
 			console.error = original;
 		}
@@ -1123,6 +1125,45 @@ describe("main", () => {
 		}
 		expect(closed).toBe(true);
 		expect(disconnected).toBe(true);
+	});
+
+	test("still closes the socket and surfaces the diagnostic when the fail-closed disconnect rejects", async () => {
+		// The belt nests `mcp.disconnect()` in a try/catch/finally so a rejecting
+		// disconnect neither leaks the socket (finally still runs transport.close)
+		// nor masks the actionable diagnostic (the catch swallows-and-logs the
+		// disconnect error rather than letting it propagate in place of the throw).
+		// Pin both: un-nesting the catch would leave the socket open AND reject with
+		// the disconnect error instead of the pinned-model message.
+		let closed = false;
+		const original = console.error;
+		console.error = () => {};
+		try {
+			await expect(
+				main(
+					{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+					{
+						...deps(
+							fakeSession({ model: undefined }),
+							fakeCarrier(emptyLog(), {
+								control: emptyControlStream,
+								onClose: () => {
+									closed = true;
+								},
+							}),
+						),
+						connectMcp: () =>
+							Promise.resolve({
+								tools: [],
+								disconnect: () =>
+									Promise.reject(new Error("MCP manager disconnect boom")),
+							}),
+					},
+				),
+			).rejects.toThrow(/pinned model "litellm\/claude-opus"/);
+		} finally {
+			console.error = original;
+		}
+		expect(closed).toBe(true);
 	});
 
 	test("refuses a pinned-unresolvable boot even when the registry recorded no config error", async () => {
