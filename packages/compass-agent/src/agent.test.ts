@@ -2176,9 +2176,14 @@ describe("formatForgeNotifications — per-kind render (RIG-2732 W3)", () => {
 // synchronous span start: `prompt()` starts an `invoke_agent` span reading
 // `context.active()` (so a `runWithParent` wrapper makes the remote context its
 // PARENT) and fires the bridge's `onSpanStart` hook, exactly as the loop does
-// inside `prompt()` before its first await. The idle-steer-parent test is the
-// SDK-synchronicity CANARY: an SDK bump inserting an await before the span
-// starts would leave the turn span rootless and redden it.
+// inside `prompt()` before its first await. The idle-steer-parent test canaries
+// the MODELED contract: it pins that `runWithParent` wraps the (modeled)
+// synchronous prompt so the remote context is the turn span's PARENT — dropping
+// the wrap, or an await slipping in before the fake's span start, reddens it.
+// It does NOT guard the REAL SDK's synchronicity (the fake starts the span
+// synchronously by construction); that property — startInvokeAgentSpan runs
+// before the loop's first await (agent-loop.ts:692, ahead of runInActiveSpan at
+// :696) — belongs to a separate real-`prompt()` integration assertion.
 
 const TP_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
 const TP_SPAN_ID = "b7ad6b7169203331";
@@ -2248,18 +2253,25 @@ function startTracedAgent() {
 		setTools(): void {},
 		state,
 	};
-	let releaseControl!: () => void;
-	const controlClosed = new Promise<void>((resolve) => {
-		releaseControl = resolve;
-	});
+	// A feedable control source (mirrors startControlAgent): parks awaiting
+	// `notify` when the queue drains, so with no feed it behaves exactly like the
+	// held-open source the other traced tests rely on; `feed` enqueues a control
+	// op (e.g. a control prompt) and drains the pull+apply microtasks.
+	const queue: AgentControl[] = [];
+	let notify: (() => void) | undefined;
+	let closed = false;
 	const control: ControlSource = {
-		[Symbol.asyncIterator]() {
-			return {
-				async next(): Promise<IteratorResult<AgentControl>> {
-					await controlClosed;
-					return { done: true, value: undefined };
-				},
-			};
+		async *[Symbol.asyncIterator]() {
+			while (true) {
+				while (queue.length > 0) {
+					const next = queue.shift();
+					if (next !== undefined) yield next;
+				}
+				if (closed) return;
+				await new Promise<void>((resolve) => {
+					notify = resolve;
+				});
+			}
 		},
 	};
 	let listener: AgentSessionEventListener | undefined;
@@ -2304,8 +2316,18 @@ function startTracedAgent() {
 		currentSpan.end();
 		currentSpan = undefined;
 	};
+	// Enqueue a control op and drain the pull+apply microtasks (mirrors
+	// startControlAgent.feed).
+	const feed = async (c: AgentControl): Promise<void> => {
+		queue.push(c);
+		notify?.();
+		notify = undefined;
+		await tick();
+		await tick();
+	};
 	const close = async (): Promise<void> => {
-		releaseControl();
+		closed = true;
+		notify?.();
 		await done;
 	};
 	return {
@@ -2317,6 +2339,7 @@ function startTracedAgent() {
 		exporter,
 		drive,
 		endTurn,
+		feed,
 		close,
 	};
 }
@@ -2430,6 +2453,32 @@ describe("CompassAgent — T2 trace continuity (message → turn topology)", () 
 		// Empty header ⇒ parse fails ⇒ the turn runs as a ROOT (no parent), no link.
 		expect(span?.parentSpanContext).toBeUndefined();
 		expect(span?.links).toHaveLength(0);
+		await h.close();
+	});
+
+	test("a control prompt starts a fresh turn and resets the id accumulator (no prior-turn leak)", async () => {
+		const h = startTracedAgent();
+		// Turn 1: an idle steer seeds the accumulator with m0 and leaves it that
+		// way — the empty agent_end flush returns early WITHOUT resetting it, so m0
+		// survives into the next turn-start unless that site clears it.
+		h.agent.steer(deliverMsg("m0", "first"), "", TP_HEADER);
+		await tick();
+		// End turn 1 (clears isStreaming/turnActive so the control prompt can
+		// start). Its span is never ended here, so only turn 2's span is exported.
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// Turn 2: a CONTROL prompt (the fourth prompt-driven turn-start). It must
+		// reset the accumulator like every other turn-start site.
+		await h.feed({ kind: "replayComplete" });
+		await h.feed({ kind: "prompt", input: "go" });
+		// A mid-turn steer feeds m1 onto the live control-prompt turn.
+		h.agent.steer(deliverMsg("m1", "interrupt"), "", TP_HEADER);
+		await tick();
+		h.endTurn();
+		const span = exportedTurnSpan(h.exporter);
+		// Only m1 fed THIS turn, so the topology-independent query key is "m1".
+		// If the control-prompt case omitted the accumulator reset, m0 from turn 1
+		// would leak → "m1" becomes "m0,m1" and this reddens (design.md:199-200).
+		expect(span?.attributes["compass.message.ids"]).toBe("m1");
 		await h.close();
 	});
 });

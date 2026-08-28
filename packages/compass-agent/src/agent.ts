@@ -815,6 +815,12 @@ export class CompassAgent {
 					});
 					return;
 				}
+				// A control prompt STARTS a fresh turn (a new `invoke_agent` span),
+				// so reset the accumulator like every other turn-start site — else a
+				// prior deliver-flush's ids would leak into this turn's
+				// topology-independent query key via a later mid-turn steer. No-op
+				// when the tracer is absent (the array op is unobservable off-path).
+				this.#turnMessageIds.length = 0;
 				await this.#session.agent.prompt(control.input);
 				return;
 			case "steer":
