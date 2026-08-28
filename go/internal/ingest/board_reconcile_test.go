@@ -222,18 +222,95 @@ func TestBoardSweepPoisonRowBounded(t *testing.T) {
 }
 
 // poisonSink sinks every issue except the poison number, which fails on every
-// call — modeling a persistently-rejected row.
+// call — modeling a persistently-rejected row. attempts counts how many times
+// the poison number was attempted, so a test can prove a persistently-failing
+// row keeps being retried across sweeps rather than being abandoned.
 type poisonSink struct {
-	got    []*compassv1.Issue
-	poison uint32
+	got      []*compassv1.Issue
+	poison   uint32
+	attempts int
 }
 
 func (s *poisonSink) PublishIssueUpdate(_ context.Context, issue *compassv1.Issue) error {
 	if issue.GetNumber() == s.poison {
+		s.attempts++
 		return errors.New("poison row: persistent store validation error")
 	}
 	s.got = append(s.got, issue)
 	return nil
+}
+
+// sinceAwareLister returns, on each call, the subset of a fixed issue set whose
+// UpdatedAt is NOT strictly below since (mirroring ListUpdatedIssues' strictly-<
+// since stop with == since re-included), so a multi-sweep test sees the re-walk
+// window actually shrink to the rows at/after the stored watermark. lastWindow
+// records the size of the most recent returned window.
+type sinceAwareLister struct {
+	all        []forge.Issue
+	etag       string
+	calls      atomic.Int64
+	lastWindow atomic.Int64
+}
+
+func (l *sinceAwareLister) ListUpdatedIssues(_ context.Context, _ string, since time.Time, _ string) (forge.ConditionalResult[[]forge.Issue], error) {
+	l.calls.Add(1)
+	var out []forge.Issue
+	for _, iss := range l.all {
+		if iss.UpdatedAt.Before(since) {
+			continue // strictly older than the watermark — excluded
+		}
+		out = append(out, iss)
+	}
+	l.lastWindow.Store(int64(len(out)))
+	return forge.ConditionalResult[[]forge.Issue]{V: out, ETag: l.etag}, nil
+}
+
+// TestBoardSweepPoisonNewestBoundedAcrossSweeps: a persistently-failing row that
+// is the NEWEST in the list stays above the advanced watermark, so it is
+// re-listed and retried EVERY sweep — but the re-walk window stays BOUNDED (it
+// does not grow sweep over sweep) and the watermark floor holds at the healthy
+// max. This is the multi-sweep invariant the single-sweep
+// TestBoardSweepPoisonRowBounded only implies, over the poison-is-newest variant.
+func TestBoardSweepPoisonNewestBoundedAcrossSweeps(t *testing.T) {
+	// Row #9 (ts 30) is poison AND the newest; #7/#8 (ts 10/20) are healthy.
+	sink := &poisonSink{poison: 9}
+	l := &sinceAwareLister{
+		all: []forge.Issue{
+			{Number: 7, UpdatedAt: ts(10)},
+			{Number: 8, UpdatedAt: ts(20)},
+			{Number: 9, UpdatedAt: ts(30)}, // poison, newest
+		},
+		etag: `"e1"`,
+	}
+	st := newBoardStore("o/r")
+	in := NewIngester(nil, sink, testForgeRef())
+	rc := NewBoardReconciler(l, in, st, BoardReconcileConfig{Pace: -1})
+	// Sweep 1: cold start lists all 3; #7/#8 sink, #9 fails. The watermark
+	// advances to the healthy max (ts 20), NOT to the poison's ts 30.
+	rc.sweep(context.Background())
+	if got := st.marks["o/r"]; !got.mark.Equal(ts(20)) {
+		t.Fatalf("after sweep 1: watermark = %v, want %v (healthy max, below the poison)", got.mark, ts(20))
+	}
+	window1 := l.lastWindow.Load()
+
+	// Sweep 2: lists since=ts20 → rows at/after 20 (#8 re-included at == since,
+	// #9). #8 re-sinks, #9 fails again. The watermark holds at ts 20 (no regress,
+	// never advances past the poison), and the re-walk window did NOT grow.
+	rc.sweep(context.Background())
+	if got := st.marks["o/r"]; !got.mark.Equal(ts(20)) {
+		t.Fatalf("after sweep 2: watermark = %v, want %v (floor holds; poison never advances it)", got.mark, ts(20))
+	}
+	window2 := l.lastWindow.Load()
+	if window2 > window1 {
+		t.Errorf("re-walk window grew %d -> %d across sweeps; the bound must not grow behind the poison", window1, window2)
+	}
+	if window2 != 2 {
+		t.Errorf("sweep 2 window = %d, want 2 (rows at/after the ts20 watermark: #8 re-included, #9 poison)", window2)
+	}
+	// The poison was attempted on BOTH sweeps — retried every sweep, not abandoned.
+	if sink.attempts != 2 {
+		t.Errorf("poison attempts = %d, want 2 (persistently retried within the bounded window)", sink.attempts)
+	}
 }
 
 // TestBoardSweepBudgetAbortStopsSweep: a repo whose list returns

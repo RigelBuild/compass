@@ -166,6 +166,14 @@ func (rc *BoardReconciler) sweep(ctx context.Context) {
 // counted, the rest sink, and the watermark advances only past the rows that
 // actually sank — the re-walk window stays bounded rather than growing every
 // sweep behind a pinned watermark.
+//
+// Tradeoff (deliberate, do not "fix"): the watermark advances to the max
+// timestamp over the HEALTHY rows, so a row that fails only TRANSIENTLY while
+// co-batched with a newer healthy row is left below the advanced watermark and
+// is dropped until its next forge update re-lists it. Capping the advance below
+// the min failed-row timestamp instead would re-introduce the poison-pin
+// livelock this isolation exists to prevent — the bounded re-walk window is the
+// correct resolution of that tradeoff.
 func (rc *BoardReconciler) reconcileRepo(ctx context.Context, repo string) error {
 	since, etag, err := rc.store.LoadRepoWatermark(ctx, repo)
 	if err != nil {
