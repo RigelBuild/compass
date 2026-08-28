@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"connectrpc.com/connect"
 
@@ -159,48 +160,56 @@ func run() error { //nolint:funlen // flag registration + operator-input validat
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// OTel emission (env-only, bound to the shutdown ctx); see setupOtel.
-	otelEndpoint, otelShutdown, err := setupOtel(ctx)
+	// OTel emission (env-only, bounded flush on drain); see setupOtel.
+	otelShutdown, err := setupOtel(ctx)
 	if err != nil {
 		return err
 	}
 	defer otelShutdown()
 
 	return runner.Run(ctx, runner.RunnerConfig{
-		RunnerID:     id,
-		ServerAddr:   addr,
-		Token:        token,
-		Engine:       engine,
-		RuntimeDir:   *runtimeDir,
-		AgentModel:   orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
-		HTTPClient:   httpClient,
-		OtelEndpoint: otelEndpoint,
+		RunnerID:   id,
+		ServerAddr: addr,
+		Token:      token,
+		Engine:     engine,
+		RuntimeDir: *runtimeDir,
+		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
+		HTTPClient: httpClient,
 	}, specs, log)
 }
 
-// setupOtel resolves the env-only OTLP endpoint and installs the tracer and
-// meter providers, returning the endpoint (for RunnerConfig) and one shutdown
-// that flushes both. When OTEL_EXPORTER_OTLP_ENDPOINT is empty the providers are
-// no-ops and the shutdown is a no-op, so tracing is off with zero overhead.
-func setupOtel(ctx context.Context) (endpoint string, shutdown func(), err error) {
-	endpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+// setupOtel installs the tracer and meter providers off the env-only OTLP
+// endpoint, returning one shutdown that flushes both. When
+// OTEL_EXPORTER_OTLP_ENDPOINT is empty the providers are no-ops and the shutdown
+// is a no-op, so tracing is off with zero overhead. The export gate lives here in
+// the global-provider install — the runner's outbound otelconnect interceptor is
+// mounted unconditionally and is inert against the no-op global.
+func setupOtel(ctx context.Context) (shutdown func(), err error) {
 	cfg := otel.Config{
 		ServiceName:    "compass-runner",
 		ServiceVersion: version,
-		Endpoint:       endpoint,
+		Endpoint:       os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 	}
 	tracerShutdown, err := otel.SetupTracerProvider(ctx, cfg)
 	if err != nil {
-		return "", nil, fmt.Errorf("otel: tracer provider: %w", err)
+		return nil, fmt.Errorf("otel: tracer provider: %w", err)
 	}
 	meterShutdown, err := otel.SetupMeterProvider(ctx, cfg)
 	if err != nil {
 		_ = tracerShutdown(ctx) // roll back the tracer provider we just installed; nothing actionable on its error here
-		return "", nil, fmt.Errorf("otel: meter provider: %w", err)
+		return nil, fmt.Errorf("otel: meter provider: %w", err)
 	}
-	return endpoint, func() {
-		_ = tracerShutdown(ctx) // best-effort flush on shutdown; export error not actionable at exit
-		_ = meterShutdown(ctx)  // best-effort flush on shutdown; export error not actionable at exit
+	// The drain ctx is already cancelled by the time this fires (the signal that
+	// ends runner.Run is the same one that cancels ctx), so a raw ctx.Shutdown
+	// would abort its final ForceFlush and drop the last batch. Sever the
+	// cancellation and bound the flush at 2s (design.md: mirror the agent's 2s
+	// shutdown bound), derived at fire time so the deadline is not consumed by the
+	// process lifetime — matching the context.WithoutCancel precedent in run.go.
+	return func() {
+		sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer cancel()
+		_ = tracerShutdown(sctx) // best-effort flush on shutdown; export error not actionable at exit
+		_ = meterShutdown(sctx)  // best-effort flush on shutdown; export error not actionable at exit
 	}, nil
 }
 

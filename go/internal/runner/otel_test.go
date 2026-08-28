@@ -2,17 +2,16 @@
 
 package runner
 
-// OTel wiring tests for the Runner-side seam: RunnerConfig.OtelEndpoint carries
-// the OTEL_EXPORTER_OTLP_ENDPOINT knob, and Dial's outbound RunnerService client
-// (which mounts the otelconnect interceptor) emits a CLIENT span per RPC when a
-// tracer provider is installed — and none when disabled, since the
-// empty-endpoint path installs no global provider.
+// OTel wiring tests for the Runner-side seam: Dial's outbound RunnerService
+// client mounts the otelconnect interceptor, which emits a CLIENT span per RPC
+// when a global tracer provider is installed — and none when disabled, since the
+// empty-endpoint path installs no global provider (the export gate lives in the
+// provider install, not in RunnerConfig).
 
 import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/RigelBuild/compass/go/internal/gen/compass/v1/compassv1internalconnect"
@@ -22,18 +21,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
-
-// TestRunnerConfigOtelEndpointFromEnv asserts the env knob populates the config
-// field the bootstrap reads — the single source of the enable gate.
-func TestRunnerConfigOtelEndpointFromEnv(t *testing.T) {
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.local:4318")
-
-	cfg := RunnerConfig{OtelEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")}
-
-	if cfg.OtelEndpoint != "http://collector.local:4318" {
-		t.Fatalf("OtelEndpoint = %q, want the OTEL_EXPORTER_OTLP_ENDPOINT value", cfg.OtelEndpoint)
-	}
-}
 
 // enrollServerURL stands up an h2c httptest RunnerService serving enrollStub and
 // returns its base URL, torn down via t.Cleanup — so a test can drive Dial (which
@@ -85,11 +72,12 @@ func TestDialEmitsClientSpanWhenEnabled(t *testing.T) {
 
 	// context.Background() is the test root context.
 	if _, err := Dial(context.Background(), RunnerConfig{
-		RunnerID:     "r-1",
-		ServerAddr:   url,
-		Token:        "tok",
-		HTTPClient:   h2cHTTPClient(t),
-		OtelEndpoint: "http://collector.local:4318",
+		RunnerID:   "r-1",
+		ServerAddr: url,
+		Token:      "tok",
+		HTTPClient: h2cHTTPClient(t),
+		// Emission gated by the installed global tracer provider, not any config
+		// field — installInMemoryTracer set one above.
 	}); err != nil {
 		t.Fatalf("Dial err = %v, want nil", err)
 	}
@@ -122,7 +110,6 @@ func TestDialEmitsNoClientSpanWhenDisabled(t *testing.T) {
 		ServerAddr: url,
 		Token:      "tok",
 		HTTPClient: h2cHTTPClient(t),
-		// OtelEndpoint empty: tracing off.
 	}); err != nil {
 		t.Fatalf("Dial err = %v, want nil", err)
 	}

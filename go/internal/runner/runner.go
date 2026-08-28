@@ -53,11 +53,6 @@ type RunnerConfig struct {
 	// HTTPClient dials the Server. Nil uses a default HTTP/2 client; tests inject
 	// one wired to an httptest server.
 	HTTPClient connect.HTTPClient
-	// OtelEndpoint is the OTEL_EXPORTER_OTLP_ENDPOINT value; empty = tracing off
-	// (OTEL_EXPORTER_OTLP_ENDPOINT). It gates whether this Runner exports OTel
-	// data; the outbound otelconnect interceptor is a no-op when no global
-	// provider is installed, so it is always mounted regardless.
-	OtelEndpoint string
 }
 
 // ServerLink is a live connection to the Server: the RunnerService client plus
