@@ -975,7 +975,7 @@ export async function main(
 	// on to the deferred first-turn crash).
 	const modelRegistry = session.modelRegistry;
 	const modelError = modelRegistry.getError();
-	if (modelError) {
+	if (modelError !== undefined) {
 		console.error(
 			`[compass-agent] models.yml config rejected (${modelError.id}): ${modelError.message} — falling back to built-in model resolution`,
 		);
@@ -983,14 +983,24 @@ export async function main(
 	// A pinned pattern sets the SDK's explicit-model flag, which SKIPS the
 	// default-role fallback — so pinned-but-unresolvable is exactly `model ===
 	// undefined` here, while an unpinned boot gets the SDK default and is left
-	// alone. Release the two resource holders `main` owns (the connected MCP
-	// manager, then the socket) before throwing, since this early throw bypasses
-	// the drain→close→disconnect finally below.
+	// alone. This early throw bypasses the drain→close→disconnect finally below,
+	// so release the two holders `main` owns (the connected MCP manager, then the
+	// socket) here. Nest them so a rejecting disconnect still closes the socket,
+	// and log — never rethrow — that rejection, so it cannot mask the actionable
+	// diagnostic this belt exists to surface.
 	if (modelPattern !== undefined && session.model === undefined) {
-		await mcp.disconnect();
-		transport.close();
+		try {
+			await mcp.disconnect();
+		} catch (disconnectError) {
+			console.error(
+				"[compass-agent] MCP disconnect failed during fail-closed shutdown:",
+				disconnectError,
+			);
+		} finally {
+			transport.close();
+		}
 		throw new Error(
-			`[compass-agent] pinned model "${modelPattern}" did not resolve against the model registry — refusing to boot model-less (would throw "No model configured" on first turn)${modelError ? `; config error: ${modelError.message}` : ""}`,
+			`[compass-agent] pinned model "${modelPattern}" did not resolve against the model registry — refusing to boot model-less (would throw "No model configured" on first turn)${modelError !== undefined ? `; config error: ${modelError.message}` : ""}`,
 		);
 	}
 

@@ -1082,11 +1082,55 @@ describe("main", () => {
 		).resolves.toBeUndefined();
 	});
 
-	test("releases the carrier when it refuses a pinned-unresolvable boot", async () => {
+	test("releases both resource holders when it refuses a pinned-unresolvable boot", async () => {
 		// The early throw bypasses the drain→close→disconnect finally, so the belt
-		// must tear down the resource holders itself. Pin that the socket closed;
-		// dropping the `transport.close()` on the fail-closed path reddens this.
+		// must tear down BOTH holders it owns: the connected MCP manager and the
+		// socket. Pin both — dropping `await mcp.disconnect()` leaks every MCP
+		// subprocess/HTTP session, dropping `transport.close()` leaks the socket;
+		// each reddens exactly one assertion here. `connectMcp` is injected (rather
+		// than left at the default no-op) so the disconnect is observable.
 		let closed = false;
+		let disconnected = false;
+		const original = console.error;
+		console.error = () => {};
+		try {
+			await expect(
+				main(
+					{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+					{
+						...deps(
+							fakeSession({ model: undefined }),
+							fakeCarrier(emptyLog(), {
+								control: emptyControlStream,
+								onClose: () => {
+									closed = true;
+								},
+							}),
+						),
+						connectMcp: () =>
+							Promise.resolve({
+								tools: [],
+								disconnect: () => {
+									disconnected = true;
+									return Promise.resolve();
+								},
+							}),
+					},
+				),
+			).rejects.toThrow(/pinned model/);
+		} finally {
+			console.error = original;
+		}
+		expect(closed).toBe(true);
+		expect(disconnected).toBe(true);
+	});
+
+	test("refuses a pinned-unresolvable boot even when the registry recorded no config error", async () => {
+		// Pinned + model-less + getError() === undefined: the belt still refuses
+		// (the fail-closed guard is model resolution, not the presence of a config
+		// error), and the throw's `; config error:` suffix collapses to empty.
+		// Pins the ternary's empty branch — a regression that always appended the
+		// suffix, or gated the throw on a present modelError, reddens this.
 		const original = console.error;
 		console.error = () => {};
 		try {
@@ -1095,19 +1139,15 @@ describe("main", () => {
 					{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
 					deps(
 						fakeSession({ model: undefined }),
-						fakeCarrier(emptyLog(), {
-							control: emptyControlStream,
-							onClose: () => {
-								closed = true;
-							},
-						}),
+						fakeCarrier(emptyLog(), { control: emptyControlStream }),
 					),
 				),
-			).rejects.toThrow(/pinned model/);
+			).rejects.toThrow(
+				/pinned model "litellm\/claude-opus" did not resolve.*first turn\)$/,
+			);
 		} finally {
 			console.error = original;
 		}
-		expect(closed).toBe(true);
 	});
 
 	test("treats an empty or whitespace-only COMPASS_WORKDIR as unset, not as a cwd", async () => {
