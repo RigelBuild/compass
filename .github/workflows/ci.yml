@@ -543,8 +543,8 @@ jobs:
         #
         # Both halves are derived from source rather than hardcoded, because a
         # guard that drifts out of step with what it guards passes silently:
-        #   - the skip text is read from pgtest.go, so rewording it cannot leave
-        #     this grep matching nothing and reporting success;
+        #   - the skip text is read from pgshare.go (the shared acquisition core
+        #     pgtest delegates to), so rewording it cannot leave
         #   - the package list is the set that actually calls RequireDSN, so the
         #     count means "the real-Postgres packages ran". Counting every
         #     `--- PASS` in the module would be inert: the module has hundreds of
@@ -552,9 +552,9 @@ jobs:
         #     database suite vanished.
         run: |
           skip=$(sed -n 's/.*t\.Skip("\(no COMPASS_TEST_DATABASE_DSN[^"]*\)").*/\1/p' \
-            internal/pgtest/pgtest.go)
+            internal/pgshare/pgshare.go)
           if [ -z "$skip" ]; then
-            echo "::error::could not read the skip message out of internal/pgtest/pgtest.go — this guard has drifted from the harness and is no longer checking anything"
+            echo "::error::could not read the skip message out of internal/pgshare/pgshare.go — this guard has drifted from the harness and is no longer checking anything"
             exit 1
           fi
           if grep -qF "$skip" /tmp/pgtest.log; then

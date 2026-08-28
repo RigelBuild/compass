@@ -16,7 +16,8 @@ import {
 
 describe("the Postgres image pin", () => {
 	// Two files name the image the real-Postgres suites run against: the CI
-	// service (.github/workflows/ci.yml) and the local harness (pgtest.go). Their
+	// service (.github/workflows/ci.yml) and the local harness (pgshare.go — the
+	// shared db-acquisition core pgtest delegates to). Their
 	// comments each assert the two are the same image, and nothing enforced it —
 	// so a digest bump to one would leave CI and a local run silently exercising
 	// different databases, which is precisely the divergence the pin exists to
@@ -41,9 +42,9 @@ describe("the Postgres image pin", () => {
 		const root = new URL("../../", import.meta.url).pathname;
 		const [ci, harness] = await Promise.all([
 			Bun.file(`${root}.github/workflows/ci.yml`).text(),
-			Bun.file(`${root}go/internal/pgtest/pgtest.go`).text(),
+			Bun.file(`${root}go/internal/pgshare/pgshare.go`).text(),
 		]);
-		expect(digestOf(harness, "pgtest.go")).toBe(
+		expect(digestOf(harness, "pgshare.go")).toBe(
 			digestOf(ci, ".github/workflows/ci.yml"),
 		);
 	});
