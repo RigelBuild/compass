@@ -5,7 +5,10 @@ import (
 	"regexp"
 	"testing"
 
+	"connectrpc.com/connect"
 	"go.opentelemetry.io/otel"
+	noopmetric "go.opentelemetry.io/otel/metric/noop"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -55,6 +58,10 @@ func TestSetupTracerProviderDisabled(t *testing.T) {
 // non-nil no-op shutdown and installs NO global meter provider.
 func TestSetupMeterProviderDisabled(t *testing.T) {
 	resetGlobals(t)
+	// A sentinel noop provider proves Setup* did not overwrite the global.
+	sentinel := noopmetric.NewMeterProvider()
+	otel.SetMeterProvider(sentinel)
+
 	shutdown, err := SetupMeterProvider(context.Background(), Config{ServiceName: "compass-runner"})
 	if err != nil {
 		t.Fatalf("disabled SetupMeterProvider err = %v, want nil", err)
@@ -64,6 +71,9 @@ func TestSetupMeterProviderDisabled(t *testing.T) {
 	}
 	if err := shutdown(context.Background()); err != nil {
 		t.Fatalf("no-op shutdown err = %v, want nil", err)
+	}
+	if _, ok := otel.GetMeterProvider().(*sdkmetric.MeterProvider); ok {
+		t.Fatal("disabled path installed an SDK MeterProvider, want none")
 	}
 }
 
@@ -158,3 +168,110 @@ func TestContextWithTraceparentMalformed(t *testing.T) {
 		}
 	}
 }
+
+// TestSetupMeterProviderEnabled asserts the enabled path installs a global SDK
+// MeterProvider (mirrors the tracer enabled-path assertion).
+func TestSetupMeterProviderEnabled(t *testing.T) {
+	resetGlobals(t)
+	cfg := Config{ServiceName: "compass-server", ServiceVersion: "1.2.3", Endpoint: "http://localhost:4318"}
+	shutdown, err := SetupMeterProvider(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("enabled SetupMeterProvider err = %v, want nil", err)
+	}
+	t.Cleanup(func() { _ = shutdown(context.Background()) }) // best-effort flush; no collector, error not actionable in test
+	if _, ok := otel.GetMeterProvider().(*sdkmetric.MeterProvider); !ok {
+		t.Fatalf("enabled path did not install an SDK MeterProvider, got %T", otel.GetMeterProvider())
+	}
+}
+
+// TestFormatTraceResponse asserts the pure header formatter emits the exact W3C
+// traceresponse grammar for a known span context.
+func TestFormatTraceResponse(t *testing.T) {
+	traceID, err := trace.TraceIDFromHex("0af7651916cd43dd8448eb211c80319c")
+	if err != nil {
+		t.Fatalf("TraceIDFromHex err = %v", err)
+	}
+	spanID, err := trace.SpanIDFromHex("b7ad6b7169203331")
+	if err != nil {
+		t.Fatalf("SpanIDFromHex err = %v", err)
+	}
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+	got := formatTraceResponse(sc)
+	want := "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+	if got != want {
+		t.Errorf("formatTraceResponse = %q, want %q", got, want)
+	}
+}
+
+// TestTraceResponseInterceptor asserts the interceptor sets the traceresponse
+// header when the ctx carries a valid span context, sets none otherwise, and
+// never alters the handler's error.
+func TestTraceResponseInterceptor(t *testing.T) {
+	interceptor := NewTraceResponseInterceptor()
+
+	traceID, err := trace.TraceIDFromHex("0af7651916cd43dd8448eb211c80319c")
+	if err != nil {
+		t.Fatalf("TraceIDFromHex err = %v", err)
+	}
+	spanID, err := trace.SpanIDFromHex("b7ad6b7169203331")
+	if err != nil {
+		t.Fatalf("SpanIDFromHex err = %v", err)
+	}
+	validSC := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    traceID,
+		SpanID:     spanID,
+		TraceFlags: trace.FlagsSampled,
+	})
+
+	t.Run("valid span sets header", func(t *testing.T) {
+		ctx := trace.ContextWithSpanContext(context.Background(), validSC)
+		resp := connect.NewResponse(&struct{}{})
+		next := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+			return resp, nil
+		})
+		got, err := interceptor(next)(ctx, connect.NewRequest(&struct{}{}))
+		if err != nil {
+			t.Fatalf("interceptor err = %v, want nil", err)
+		}
+		want := "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+		if h := got.Header().Get(traceResponseHeader); h != want {
+			t.Errorf("%s = %q, want %q", traceResponseHeader, h, want)
+		}
+	})
+
+	t.Run("no span sets no header", func(t *testing.T) {
+		resp := connect.NewResponse(&struct{}{})
+		next := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+			return resp, nil
+		})
+		got, err := interceptor(next)(context.Background(), connect.NewRequest(&struct{}{}))
+		if err != nil {
+			t.Fatalf("interceptor err = %v, want nil", err)
+		}
+		if h := got.Header().Get(traceResponseHeader); h != "" {
+			t.Errorf("%s = %q, want empty", traceResponseHeader, h)
+		}
+	})
+
+	t.Run("handler error passthrough", func(t *testing.T) {
+		ctx := trace.ContextWithSpanContext(context.Background(), validSC)
+		wantErr := connect.NewError(connect.CodeInternal, errSentinel)
+		next := connect.UnaryFunc(func(context.Context, connect.AnyRequest) (connect.AnyResponse, error) {
+			return nil, wantErr
+		})
+		_, err := interceptor(next)(ctx, connect.NewRequest(&struct{}{}))
+		if err != wantErr {
+			t.Errorf("interceptor err = %v, want the handler's error unchanged", err)
+		}
+	})
+}
+
+var errSentinel = &sentinelError{}
+
+type sentinelError struct{}
+
+func (*sentinelError) Error() string { return "boom" }

@@ -2,6 +2,7 @@ package otel
 
 import (
 	"context"
+	"fmt"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -39,7 +40,7 @@ func SetupTracerProvider(ctx context.Context, cfg Config) (shutdown func(context
 
 	res, err := newResource(ctx, cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("otel: build resource: %w", err)
 	}
 
 	// The exporter reads OTEL_EXPORTER_OTLP_ENDPOINT itself (standard OTLP
@@ -47,7 +48,7 @@ func SetupTracerProvider(ctx context.Context, cfg Config) (shutdown func(context
 	// defeat the /v1/traces suffixing, so no endpoint option is set here.
 	exporter, err := otlptracehttp.New(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("otel: new trace exporter: %w", err)
 	}
 
 	tp := sdktrace.NewTracerProvider(
@@ -71,12 +72,12 @@ func SetupMeterProvider(ctx context.Context, cfg Config) (shutdown func(context.
 
 	res, err := newResource(ctx, cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("otel: build resource: %w", err)
 	}
 
 	exporter, err := otlpmetrichttp.New(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("otel: new metric exporter: %w", err)
 	}
 
 	mp := metric.NewMeterProvider(
