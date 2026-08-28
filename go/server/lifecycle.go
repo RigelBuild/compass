@@ -142,14 +142,20 @@ var errCallerNotAgent = errors.New("resolved caller is not an agent account")
 // spawn takes. The new agent's owner is the caller agent's owner (F2), resolved
 // from the store — never the caller itself, never admin, never a client value.
 //
-// Idempotency / resume on a taken handle. A duplicate handle is not blindly an
-// error: if the existing agent is owned by the SAME owner and has a live
+// Idempotency / resume on a taken handle. A handle already taken in the CALLER'S
+// OWN owner namespace is not blindly an error: if that existing agent has a live
 // placement, the spawn is an idempotent no-op returning the existing
-// container/session (a completed-call retry); if it is same-owner but UNPLACED
-// (a spawn that crashed after CreateAgent, or one rolled back), it is RESUMED —
-// re-provisioned and started against the existing account rather than creating a
-// second. A handle owned by a DIFFERENT user (or a non-agent account) is
-// CodeAlreadyExists and never resumes/steals it.
+// container/session (a completed-call retry); if it is UNPLACED (a spawn that
+// crashed after CreateAgent, or one rolled back), it is RESUMED — re-provisioned
+// and started against the existing account rather than creating a second. A
+// handle owned by a DIFFERENT user is a distinct namespace and spawns a distinct
+// peer (DL-271/OQ-7: two owners may each hold an agent named `compass-ux`); the
+// caller never touches, resumes, or steals the other owner's agent.
+//
+// Shadow guard. Storage lets an agent handle overlap a user/system handle (the
+// two partial-unique indexes never contend), but a spawned peer must never
+// SHADOW a human or the system sender, so a spawn whose handle names an existing
+// user/system account is refused CodeAlreadyExists before any create.
 //
 // Concurrent-spawn window. Two truly-concurrent same-handle+same-owner spawns
 // bearing DISTINCT client_request_ids can both reach provisionAndStart before
@@ -175,6 +181,22 @@ func (l *lifecycleService) SpawnAsAccount(
 			return nil, connect.NewError(connect.CodeInternal, errCallerNotAgent)
 		}
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving caller owner: %w", err))
+	}
+
+	// Shadow guard (defense in depth): an agent may never be spawned onto a
+	// handle a user or the system account already holds. Storage permits the
+	// overlap — a user/system handle lives in the global partial-unique index
+	// (owner_user_id IS NULL) and an agent handle in the per-owner one, so they
+	// never collide on insert — but a peer that shadowed a human's handle could
+	// be addressed in its place. Refuse it up front with the same in-band
+	// already_exists a duplicate agent handle gets, never revealing the kind of
+	// account that holds it. UserByHandle resolves the bare handle in that global
+	// index (users AND the system sender); a clean miss (ErrNotFound) is the
+	// common case and falls through to the create.
+	if _, err := l.store.UserByHandle(ctx, req.GetHandle()); err == nil {
+		return nil, connect.NewError(connect.CodeAlreadyExists, errHandleTaken)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("checking handle for user shadow: %w", err))
 	}
 
 	// Persona and role are server-authoritative and empty on spawn
@@ -287,10 +309,14 @@ func (l *lifecycleService) DespawnAsAccount(
 	return &compassv1internal.DespawnPeerResponse{}, nil
 }
 
-// resumeOrReject handles a spawn whose handle is already taken. Same-owner with
-// no live placement resumes the existing account; same-owner already placed is an
-// idempotent success returning the existing container/session; a foreign owner
-// (or a non-agent handle) is CodeAlreadyExists that never resumes or steals it.
+// resumeOrReject handles a spawn whose handle is already taken in the CALLER'S
+// OWN owner namespace (CreateAgent conflicted on the per-owner agent index). An
+// already-placed agent is an idempotent success returning the existing
+// container/session; an unplaced one is resumed. The handle is guaranteed to
+// resolve to a same-owner agent here: the shadow guard already excluded
+// user/system handles, and a foreign owner's same-name agent lives in a
+// separate namespace partition that never conflicts on insert — so a miss is an
+// invariant violation, not a foreign or non-agent handle to collapse.
 func (l *lifecycleService) resumeOrReject(
 	ctx context.Context,
 	callerOwner store.AccountID,
@@ -298,18 +324,11 @@ func (l *lifecycleService) resumeOrReject(
 ) (*compassv1internal.SpawnPeerResponse, error) {
 	existing, err := l.store.AgentByHandle(ctx, callerOwner, req.GetHandle())
 	if err != nil {
-		// The handle is taken (CreateAgent conflicted) but does not resolve to an
-		// agent — a non-agent account holds it. Collapse to already_exists; never
-		// reveal what kind of account it is.
-		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeAlreadyExists, errHandleTaken)
-		}
+		// CreateAgent conflicted on the caller's own agent namespace, so the
+		// handle MUST resolve to a same-owner agent here. A miss is an invariant
+		// violation (a torn index or a concurrent delete), not a routine outcome
+		// — surface it rather than masking a real fault as already_exists.
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("resolving existing handle: %w", err))
-	}
-	if existing.Agent.OwnerUserID != callerOwner {
-		// A DIFFERENT owner's agent holds this handle: never resume or steal it,
-		// and never reveal whose it is — the same already_exists a human gets.
-		return nil, connect.NewError(connect.CodeAlreadyExists, errHandleTaken)
 	}
 
 	// Same owner: is it already placed (live), or unplaced (resumable)?

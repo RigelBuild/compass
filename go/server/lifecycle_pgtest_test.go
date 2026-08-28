@@ -261,23 +261,34 @@ func TestSpawnMidChainFailureRollsBack(t *testing.T) {
 	}
 }
 
-// TestSpawnSameHandleDifferentOwnerIsAlreadyExists pins that a foreign owner's
-// handle is never resumed or stolen: a second user's agent spawning a peer whose
-// handle collides with the first owner's peer gets in-band already_exists, never
-// a resume of the other owner's account.
+// TestSpawnSameHandleDifferentOwnerCreatesDistinctPeer pins the per-owner handle
+// namespace (DL-271/OQ-7): two owners may each hold an agent named the same
+// handle, so a second user's agent spawning a peer whose handle matches the
+// first owner's peer creates its OWN distinct agent under its OWN owner — it
+// never resumes, steals, or even touches the first owner's account.
 //
-// Mutation: dropping the owner check on the resume path (resuming any same-handle
-// unplaced/placed agent regardless of owner) reddens this — a foreign caller would
-// resume someone else's agent and get a success.
-func TestSpawnSameHandleDifferentOwnerIsAlreadyExists(t *testing.T) {
+// Mutation: dropping the owner qualification on the resume path (resolving the
+// handle globally and resuming any same-handle agent) reddens this — owner-B
+// would resume owner-A's account and get A's id back, collapsing the two
+// distinct peers into one.
+func TestSpawnSameHandleDifferentOwnerCreatesDistinctPeer(t *testing.T) {
 	f := newLifecycleFixture(t)
 	ctx := context.Background()
 
-	// Owner A's caller spawns peer-shared.
-	if _, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+	// The two spawns land distinct containers AND distinct session ids (both are
+	// unique-keyed in the store); without distinct names the second placement,
+	// and without distinct ids the second session record, would collide on the
+	// fixture's fixed fakeContainer/fakeSessionID rather than exercising the
+	// cross-owner path.
+	f.runner.setContainerNames("compass-agent-a", "compass-agent-b")
+	f.runner.setStartIDs("sess-a", "sess-b")
+
+	// Owner A's caller (the fixture agent, owned by admin) spawns peer-shared.
+	respA, err := f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-shared",
 		ClientRequestId: "spawn-a",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("owner-A spawn = %v, want success", err)
 	}
 
@@ -291,15 +302,32 @@ func TestSpawnSameHandleDifferentOwnerIsAlreadyExists(t *testing.T) {
 		t.Fatalf("CreateAgent(caller-b) = %v", err)
 	}
 
-	_, err = f.lc.SpawnAsAccount(ctx, callerB.ID, &compassv1internal.SpawnPeerRequest{
+	// Owner B spawns the SAME handle: a distinct agent in owner B's namespace.
+	respB, err := f.lc.SpawnAsAccount(ctx, callerB.ID, &compassv1internal.SpawnPeerRequest{
 		Handle:          "peer-shared",
 		ClientRequestId: "spawn-b",
 	})
-	if err == nil {
-		t.Fatal("owner-B spawn of owner-A's handle = success, want in-band already_exists (never steal)")
+	if err != nil {
+		t.Fatalf("owner-B spawn of the same handle = %v, want success (distinct per-owner peer)", err)
 	}
-	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
-		t.Fatalf("owner-B spawn code = %v, want CodeAlreadyExists", got)
+	if respA.GetAgentAccountId() == respB.GetAgentAccountId() {
+		t.Fatalf("owner-B spawn resumed owner-A's agent %q — the per-owner namespace is broken (never steal)", respA.GetAgentAccountId())
+	}
+
+	// Each owner's handle resolves to its own agent; A's is untouched.
+	agentA, err := f.store.AgentByHandle(ctx, f.ownerAdmin, "peer-shared")
+	if err != nil {
+		t.Fatalf("AgentByHandle(ownerA, peer-shared) = %v, want owner-A's agent", err)
+	}
+	if string(agentA.ID) != respA.GetAgentAccountId() {
+		t.Fatalf("owner-A's handle resolves to %q, want the spawned %q", agentA.ID, respA.GetAgentAccountId())
+	}
+	agentB, err := f.store.AgentByHandle(ctx, userB.ID, "peer-shared")
+	if err != nil {
+		t.Fatalf("AgentByHandle(ownerB, peer-shared) = %v, want owner-B's agent", err)
+	}
+	if string(agentB.ID) != respB.GetAgentAccountId() {
+		t.Fatalf("owner-B's handle resolves to %q, want the spawned %q", agentB.ID, respB.GetAgentAccountId())
 	}
 }
 
@@ -531,15 +559,19 @@ func TestDespawnCallerNotAnAgentIsInternal(t *testing.T) {
 	}
 }
 
-// TestSpawnHandleCollidesWithUserAccountIsAlreadyExists pins that a spawn Handle
-// colliding with a NON-agent (user) account collapses to CodeAlreadyExists —
-// NOT a resume, and NOT a leak that the handle belongs to a user. CreateAgent
-// conflicts on the taken handle, AgentByHandle fails closed to ErrNotFound for a
-// non-agent handle, and resumeOrReject maps that to errHandleTaken — the same
-// answer a human gets for any taken handle.
+// TestSpawnHandleCollidesWithUserAccountIsAlreadyExists pins the shadow guard: a
+// spawn Handle naming an existing USER (or SYSTEM) account collapses to
+// CodeAlreadyExists — NOT a resume, and NOT a leak that the handle belongs to a
+// user. Storage would permit the overlap (a user handle lives in the global
+// partial-unique index, an agent handle in the per-owner one, so they never
+// collide on insert), so a dedicated pre-create guard resolves the handle in the
+// global user/system index and refuses it with the same already_exists a human
+// gets for any taken handle — a peer must never shadow a human or the system
+// sender.
 //
-// Mutation: revealing the account kind (e.g. a distinct code for a user-held
-// handle) or resuming against a non-agent account reddens this.
+// Mutation: dropping the shadow guard lets the spawn succeed onto a human's
+// handle (storage permits it); revealing the account kind (a distinct code)
+// reddens the indistinguishability.
 func TestSpawnHandleCollidesWithUserAccountIsAlreadyExists(t *testing.T) {
 	f := newLifecycleFixture(t)
 	ctx := context.Background()
@@ -561,5 +593,38 @@ func TestSpawnHandleCollidesWithUserAccountIsAlreadyExists(t *testing.T) {
 	}
 	if !errors.Is(err, errHandleTaken) {
 		t.Fatalf("user-handle-collision spawn err = %v, want wrapping errHandleTaken", err)
+	}
+}
+
+// TestSpawnHandleCollidesWithSystemAccountIsAlreadyExists is the shadow guard's
+// system-tier half: a spawn Handle naming the system sender (@compass) is
+// refused the same already_exists as a user collision — the system handle also
+// lives in the global index UserByHandle resolves, so a peer can never shadow it.
+// The load-bearing assertion is the error CODE shape: a system handle is also a
+// reserved handle (store/handle.go), so validateHandle is a second, independent
+// line of defense that would reject it as CodeInternal — this test pins that a
+// system collision returns the INDISTINGUISHABLE CodeAlreadyExists, never the
+// reserved path's distinguishable Internal.
+func TestSpawnHandleCollidesWithSystemAccountIsAlreadyExists(t *testing.T) {
+	f := newLifecycleFixture(t)
+	ctx := context.Background()
+
+	sys, err := f.store.EnsureSystemAccount(ctx)
+	if err != nil {
+		t.Fatalf("EnsureSystemAccount = %v", err)
+	}
+
+	_, err = f.lc.SpawnAsAccount(ctx, f.agentID, &compassv1internal.SpawnPeerRequest{
+		Handle:          sys.Handle,
+		ClientRequestId: "spawn-collides-system",
+	})
+	if err == nil {
+		t.Fatal("spawn onto the system handle = success, want CodeAlreadyExists (never shadow the system sender)")
+	}
+	if got := connect.CodeOf(err); got != connect.CodeAlreadyExists {
+		t.Fatalf("system-handle-collision spawn code = %v, want CodeAlreadyExists", got)
+	}
+	if !errors.Is(err, errHandleTaken) {
+		t.Fatalf("system-handle-collision spawn err = %v, want wrapping errHandleTaken", err)
 	}
 }

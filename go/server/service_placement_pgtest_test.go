@@ -640,6 +640,13 @@ type recordingRunner struct {
 	// logical session) gets distinct live ids. Empty falls back to answer()'s
 	// fixed fakeSessionID. Read/popped under mu.
 	startIDs []string
+	// containerNames, when non-empty, overrides the fixed answer() Provision
+	// container name one per Provision (FIFO) — so a test driving several
+	// distinct spawns (e.g. two owners spawning the same handle into separate
+	// namespaces) gets distinct container names instead of colliding on the one
+	// fakeContainer placement. Empty falls back to answer()'s fixed fakeContainer.
+	// Read/popped under mu.
+	containerNames []string
 	// statuses, when set, is what the loop answers a GetAgentStatus command with
 	// (the all-sessions scan the SpawnAgent reject-on-live check reads). Empty
 	// answers an empty set — no live session, so reject-on-live never fires.
@@ -715,6 +722,18 @@ func (r *recordingRunner) serve(
 				if err := stream.Send(&compassv1internal.SessionsRequest{
 					RequestId: cmd.GetRequestId(),
 					Result:    &compassv1internal.SessionsRequest_Start{Start: &compassv1.StartAgentSessionResponse{SessionId: id}},
+				}); err != nil {
+					done <- err
+					return
+				}
+				continue
+			}
+		}
+		if cmd.GetProvision() != nil {
+			if name, ok := r.nextContainerName(); ok {
+				if err := stream.Send(&compassv1internal.SessionsRequest{
+					RequestId: cmd.GetRequestId(),
+					Result:    &compassv1internal.SessionsRequest_Provision{Provision: &compassv1.ProvisionAgentWorkspaceResponse{ContainerName: name}},
 				}); err != nil {
 					done <- err
 					return
@@ -820,6 +839,28 @@ func (r *recordingRunner) setStartIDs(ids ...string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.startIDs = append([]string(nil), ids...)
+}
+
+// nextContainerName pops the next overriding Provision container name (FIFO),
+// returning ok=false once the queue is empty (the loop then falls back to
+// answer()'s fixed fakeContainer).
+func (r *recordingRunner) nextContainerName() (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.containerNames) == 0 {
+		return "", false
+	}
+	name := r.containerNames[0]
+	r.containerNames = r.containerNames[1:]
+	return name, true
+}
+
+// setContainerNames queues the container names the loop answers successive
+// Provisions with. Set before the Provisions it should affect are driven.
+func (r *recordingRunner) setContainerNames(names ...string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.containerNames = append([]string(nil), names...)
 }
 
 // setStartGate installs a gate the serve loop blocks each Start on until the gate
