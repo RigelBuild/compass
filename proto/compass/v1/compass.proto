@@ -532,6 +532,14 @@ message SessionInjection {
   string message_id = 2;
   // The handle the message came from, when known (empty when unavailable).
   string from_handle = 3;
+  // The W3C `traceparent` of the Server's active span when it emitted this
+  // observation, denormalized so a subscriber joins the SessionInjection to the
+  // message's server-side trace (creation -> routing -> delivery -> turn, one
+  // connected trace). W3C format `00-<32hex trace-id>-<16hex span-id>-<2hex
+  // flags>`; EMPTY when the Server had no active span (trace machinery never
+  // blocks or fails a delivery). Server-side stamping per
+  // docs/designs/platform/compass-server-runner-otel/design.md.
+  string traceparent = 4;
 }
 
 // The control op-kind a SessionInjection records. Mirrors the internal

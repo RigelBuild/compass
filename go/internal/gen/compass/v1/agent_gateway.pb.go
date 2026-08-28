@@ -121,9 +121,20 @@ type CommsCallRequest struct {
 	//	*CommsCallRequest_Roster
 	//	*CommsCallRequest_SetStatus
 	//	*CommsCallRequest_Pin
-	Call          isCommsCallRequest_Call `protobuf_oneof:"call"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Call isCommsCallRequest_Call `protobuf_oneof:"call"`
+	// The W3C `traceparent` of the delivered message that triggered this outbound
+	// call, re-attached by the agent so the Server can LINK the reply's fresh
+	// trace back to its trigger — a trace terminates at the turn, and a reply is
+	// a new root causally linked to the message it answers, not a child span that
+	// would grow an unbounded conversation tree. W3C format
+	// `00-<32hex trace-id>-<16hex span-id>-<2hex flags>`; EMPTY on a human-seeded
+	// first turn (no triggering message). Field 10 leaves 7-9 for the in-flight
+	// org-management oneof arms (RIG-2673); numbers are frozen (DL-186/OQ-1b).
+	// Server-side link per
+	// docs/designs/platform/compass-server-runner-otel/design.md.
+	TriggerTraceparent string `protobuf:"bytes,10,opt,name=trigger_traceparent,json=triggerTraceparent,proto3" json:"trigger_traceparent,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *CommsCallRequest) Reset() {
@@ -213,6 +224,13 @@ func (x *CommsCallRequest) GetPin() *v1.UpdatePinnedBoardRequest {
 		}
 	}
 	return nil
+}
+
+func (x *CommsCallRequest) GetTriggerTraceparent() string {
+	if x != nil {
+		return x.TriggerTraceparent
+	}
+	return ""
 }
 
 type isCommsCallRequest_Call interface {
@@ -2932,7 +2950,7 @@ var File_compass_v1_agent_gateway_proto protoreflect.FileDescriptor
 const file_compass_v1_agent_gateway_proto_rawDesc = "" +
 	"\n" +
 	"\x1ecompass/v1/agent_gateway.proto\x12\n" +
-	"compass.v1\x1a\x16compass/v1/comms.proto\x1a\x16compass/v1/agent.proto\x1a\x18compass/v1/compass.proto\x1a\x16compass/v1/forge.proto\"\xd6\x02\n" +
+	"compass.v1\x1a\x16compass/v1/comms.proto\x1a\x16compass/v1/agent.proto\x1a\x18compass/v1/compass.proto\x1a\x16compass/v1/forge.proto\"\x87\x03\n" +
 	"\x10CommsCallRequest\x12\x17\n" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x124\n" +
 	"\x04post\x18\x02 \x01(\v2\x1e.compass.v1.PostMessageRequestH\x00R\x04post\x125\n" +
@@ -2940,7 +2958,9 @@ const file_compass_v1_agent_gateway_proto_rawDesc = "" +
 	"\x06roster\x18\x04 \x01(\v2\x1c.compass.v1.GetRosterRequestH\x00R\x06roster\x12B\n" +
 	"\n" +
 	"set_status\x18\x05 \x01(\v2!.compass.v1.SetAgentStatusRequestH\x00R\tsetStatus\x128\n" +
-	"\x03pin\x18\x06 \x01(\v2$.compass.v1.UpdatePinnedBoardRequestH\x00R\x03pinB\x06\n" +
+	"\x03pin\x18\x06 \x01(\v2$.compass.v1.UpdatePinnedBoardRequestH\x00R\x03pin\x12/\n" +
+	"\x13trigger_traceparent\x18\n" +
+	" \x01(\tR\x12triggerTraceparentB\x06\n" +
 	"\x04call\"\x90\x03\n" +
 	"\x0fCommsCallResult\x12\x17\n" +
 	"\acall_id\x18\x01 \x01(\tR\x06callId\x125\n" +
