@@ -1081,6 +1081,14 @@ jobs:
     # input changed (gtk4_affected), and always on push/schedule and on a
     # base-re-point re-trigger. The in-step affected guard stays as
     # defense-in-depth. No privileged container.
+    if: >-
+      (github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.pr != '') &&
+      (github.event_name != 'pull_request' ||
+      needs.setup.outputs.gtk4_affected == 'true')
+    timeout-minutes: 30
+    env:
+      TMPDIR: /tmp
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
