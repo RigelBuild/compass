@@ -30,7 +30,7 @@ There are two forge read paths on `main`, and only one still polls:
    it is the proven model being extended.
 
 2. **Board-ingestion lane — still a poll. This is what switches.**
-   `go/server/serve.go` `buildForgeDriver` (`serve.go:800-807`) assembles
+   `go/server/serve.go` `buildForgeDriver` (`serve.go:800-841`) assembles
    `ingest.Driver`, whose `Run` — *"performs an immediate pass, then a pass on
    every Interval tick"* (`driver.go:95`, loop at `driver.go:99-112`) — walks
    each enabled repo's issue pages via the `pageLister` seam
@@ -67,8 +67,9 @@ Extend the DL-264 lane shape to the board projection: the one GitHub webhook
 ingress fans accepted events out to a second consumer — a board ingest arm —
 while a bounded per-repo reconcile sweep (startup + slow ticker, the
 `NotifyReconciler` pattern) replaces the standing poll as the reliability and
-cold-start/backfill path. The poll driver, its config/flags, and its
-`forge_list_cursors` page-cursor table retire; the `forge_repo_subscriptions`
+cold-start/backfill path. The poll driver and its config/flags retire; its
+`forge_list_cursors` page-cursor table loses its only writer now and is
+dropped in a later post-soak migration (T4/OQ-3); the `forge_repo_subscriptions`
 target table survives unchanged as the webhook lane's subscribed-repo set
 (DL-162's table-is-authoritative model is transport-independent). The shared
 GitHub client moves onto `NewAppTokenSource`, completing the App-only
@@ -390,14 +391,43 @@ granularity.
 - Migrations (NEW files — constraint 4), SPLIT additive-from-destructive:
   - `0002_board_webhook.sql` — additive only: `ALTER TABLE
     forge_repo_subscriptions ADD COLUMN swept_updated_at TIMESTAMPTZ,
-    ADD COLUMN list_etag TEXT NOT NULL DEFAULT '';` plus, per OQ-6(a),
-    `ALTER TABLE issues ADD COLUMN forge_updated_at TIMESTAMPTZ;` (the
-    recency-guard column the conditional upsert compares against).
+    ADD COLUMN list_etag TEXT NOT NULL DEFAULT '';`. Per **OQ-6(a) —
+    CONTINGENT on Matt ruling (a)** — also `ALTER TABLE issues ADD COLUMN
+    forge_updated_at TIMESTAMPTZ;`. This column is INERT until the write path
+    populates it: the bare column plus a `>=` guard is a silent no-op, because
+    `Issue.UpdatedAt` reaches no writer today — the canonical proto `Issue`
+    has no `updated_at` slot (`compass.proto:825-855`, fields 1-18),
+    `TranslateIssue` does not map it (`translate.go:44-55`),
+    `protoToForgeFields` does not carry it (`issue_projection.go:208-224`),
+    `IssueForgeFields` has no such field (`issues.go:78-90`), and
+    `UpsertIssueForgeFields`'s INSERT column list never sets it
+    (`issues.go:118-121`). So OQ-6(a) is NOT just a column — it is the
+    multi-file threading in T4a below; the column and the threading land
+    together or not at all.
   - `0003_drop_forge_list_cursors.sql` — `DROP TABLE forge_list_cursors;`,
     shipped AFTER a soak window (OQ-3). Coupling the irreversible DROP to
     the reversible ALTER in one migration would crash an old poll-driver
     binary still running during a rolling deploy or a code revert; the split
     is the PRIMARY recommendation, not the fallback.
+- **T4a — recency-guard write-path threading (CONTINGENT on OQ-6 = (a)).**
+  Only if Matt rules OQ-6 option (a). The full chain the guard needs, or it
+  never fires: (1) add `updated_at` to the canonical proto `Issue` (next free
+  field number) + regen Go/TS; (2) map it in `TranslateIssue`
+  (`translate.go:44-55`) from `forge.Issue.UpdatedAt` (`provider.go:54-57`);
+  (3) carry it in `protoToForgeFields` (`issue_projection.go:208-224`) and
+  add it to `IssueForgeFields` (`issues.go:78-90`); (4) include it in
+  `UpsertIssueForgeFields`'s INSERT column list (`issues.go:118-121`); (5)
+  make the `ON CONFLICT DO UPDATE` conditional —
+  `WHERE issues.forge_updated_at IS NULL OR EXCLUDED.forge_updated_at IS NULL
+  OR EXCLUDED.forge_updated_at >= issues.forge_updated_at` (the NULL arms let
+  pre-migration rows and any not-yet-threaded writer still update, so the
+  guard is additive, never a regression). Test cycle: two interleaved sinks
+  of one coordinate (stale-then-fresh AND fresh-then-stale) — the fresher
+  `updated_at` wins both orders; a NULL-either-side write still applies.
+  **If OQ-6 resolves to (b) [funnel the reconciler through the T1 drain] or
+  (c), T4 drops the `forge_updated_at` column entirely and T4a does not
+  exist** — (b)/(c) need no store change, so the `0002` migration then adds
+  only the two `forge_repo_subscriptions` columns.
 - Re-enable semantics (correct as-is, stated to save the derivation): a repo
   disabled then re-enabled keeps its stale watermark — the next sweep walks
   from that watermark and back-fills the disabled-window gap. No reset
@@ -491,8 +521,12 @@ granularity.
 - [ ] T2 — `(*forge.GitHub).ListUpdatedIssues` updated-order conditional walk
 - [ ] T3 — `BoardReconciler`: startup sweep + 30-min ticker + watermark
       advance-after-sink
-- [ ] T4 — store: repo watermark + recency-guard columns (`0002`, additive)
-      + `forge_list_cursors` DROP post-soak (`0003`)
+- [ ] T4 — store: repo watermark columns (`swept_updated_at`, `list_etag`) in
+      the additive `0002` + `forge_list_cursors` DROP post-soak (`0003`)
+- [ ] T4a — recency-guard write-path threading (proto `updated_at` + regen →
+      `TranslateIssue` → `protoToForgeFields`/`IssueForgeFields` → conditional
+      `UpsertIssueForgeFields`) — CONTINGENT on Matt ruling OQ-6 = (a); dropped
+      if OQ-6 = (b)/(c)
 - [ ] T5 — serve wiring: retire `ingest.Driver` + poll flags + read-path PAT;
       mount board arm behind the shared ingress; App-only credential
 - [ ] T6 — docs + runbook delta (superseded poll record, App webhook events,
@@ -592,8 +626,12 @@ batched ask.
     recency-guard precedent already in the tree (`provider.go:55-56` cites
     it for PR-C). Writer-count-agnostic: handles interleaving at the store,
     no cold-start queue-flood, and future-proofs any later writer — the
-    minimal correct answer. Cost: the `forge_updated_at` column (T4's
-    `0002`) + a conditional upsert in the sink.
+    minimal correct answer. Cost is NOT just a column: the guard fires only
+    if `Issue.UpdatedAt` is threaded end-to-end — proto `updated_at` + regen,
+    `TranslateIssue`, `protoToForgeFields`/`IssueForgeFields`, and a
+    conditional `UpsertIssueForgeFields` — the full chain scoped as **T4a**
+    (a bare `forge_updated_at` column with no writer is a silent NULL no-op).
+    T4a lands only if this option is ruled; (b)/(c) drop it.
   - (b) Funnel the reconciler through the T1 drain queue (the reconciler
     becomes a producer; the drain stays the one writer): restores the
     documented single-writer assumption with NO store change, but a
