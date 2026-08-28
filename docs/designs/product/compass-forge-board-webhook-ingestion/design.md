@@ -396,7 +396,7 @@ granularity.
     forge_updated_at TIMESTAMPTZ;`. This column is INERT until the write path
     populates it: the bare column plus a `>=` guard is a silent no-op, because
     `Issue.UpdatedAt` reaches no writer today — the canonical proto `Issue`
-    has no `updated_at` slot (`compass.proto:825-855`, fields 1-18),
+    has no `updated_at` slot (`compass.proto:825-854`, fields 1-18),
     `TranslateIssue` does not map it (`translate.go:44-55`),
     `protoToForgeFields` does not carry it (`issue_projection.go:208-224`),
     `IssueForgeFields` has no such field (`issues.go:78-90`), and
