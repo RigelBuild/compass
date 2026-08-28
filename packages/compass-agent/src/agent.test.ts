@@ -9,17 +9,26 @@
 // load-bearing contract: live input is refused (and surfaced, never dropped)
 // until ReplayComplete lifts it.
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import {
 	AgentBusyError,
+	type AgentIdentity,
 	type AgentMessage,
 	type AgentTool,
+	type TelemetryHookContext,
+	type TelemetrySpanKind,
 } from "@oh-my-pi/pi-agent-core";
 import type {
 	AgentSession,
 	AgentSessionEvent,
 	AgentSessionEventListener,
 } from "@oh-my-pi/pi-coding-agent";
+import { context, type Span, trace } from "@opentelemetry/api";
+import {
+	InMemorySpanExporter,
+	SimpleSpanProcessor,
+} from "@opentelemetry/sdk-trace-base";
+import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import {
 	CompassAgent,
 	formatAskAnswerForPrompt,
@@ -50,6 +59,7 @@ import {
 import type { AgentControl, ControlSource } from "./control";
 import type { OutboundFrame } from "./frame";
 import type { UnmappedEvent } from "./mapping";
+import { createTraceBridge, type TraceBridge } from "./trace-bridge";
 
 // A recording fake for the SDK Agent — the control surface CompassAgent drives
 // (now reached through `session.agent`). It records the calls the class makes so
@@ -680,7 +690,7 @@ function deliverAskAnswerMsg(id: string, ask: Ask, topicId = ""): Message {
 // source, so `run()` registers the turn-tracking listener but never terminates
 // on its own. Returns the agent, the captured frames/unmapped, a `drive` to
 // push session turn edges, and a `close` that ends the run loop cleanly.
-function startDeliverAgent(natives: AgentTool[] = []) {
+function startDeliverAgent(natives: AgentTool[] = [], tracer?: TraceBridge) {
 	const session = recordingSession(natives);
 	const frames: OutboundFrame[] = [];
 	const unmapped: UnmappedEvent[] = [];
@@ -716,6 +726,7 @@ function startDeliverAgent(natives: AgentTool[] = []) {
 		},
 		control,
 		onUnmapped: (u) => unmapped.push(u),
+		...(tracer ? { tracer } : {}),
 	});
 	const done = agent.run();
 	const drive = (event: AgentSessionEvent): void => {
@@ -2150,5 +2161,366 @@ describe("formatForgeNotifications — per-kind render (RIG-2732 W3)", () => {
 		]);
 		expect(out).toContain("line one line two");
 		expect(out).not.toContain("line one\nline two");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// T2 — trace continuity: thread the TurnTracer through the three injection
+// shapes (design record
+// docs/designs/platform/compass-agent-message-trace-continuity/design.md §T2).
+//
+// These tests exercise the REAL bridge (createTraceBridge) against a real
+// in-memory OTel provider — the same house recipe trace-bridge.test.ts uses (a
+// NodeTracerProvider installs a context manager so `context.with` propagates
+// into the wrapped prompt). The recording agent below MODELS the SDK's
+// synchronous span start: `prompt()` starts an `invoke_agent` span reading
+// `context.active()` (so a `runWithParent` wrapper makes the remote context its
+// PARENT) and fires the bridge's `onSpanStart` hook, exactly as the loop does
+// inside `prompt()` before its first await. The idle-steer-parent test canaries
+// the MODELED contract: it pins that `runWithParent` wraps the (modeled)
+// synchronous prompt so the remote context is the turn span's PARENT — dropping
+// the wrap, or an await slipping in before the fake's span start, reddens it.
+// It does NOT guard the REAL SDK's synchronicity (the fake starts the span
+// synchronously by construction); that property — startInvokeAgentSpan runs
+// before the loop's first await (agent-loop.ts:692, ahead of runInActiveSpan at
+// :696) — belongs to a separate real-`prompt()` integration assertion.
+
+const TP_TRACE_ID = "0af7651916cd43dd8448eb211c80319c";
+const TP_SPAN_ID = "b7ad6b7169203331";
+const TP_HEADER = `00-${TP_TRACE_ID}-${TP_SPAN_ID}-01`;
+const TP_TRACE_ID_2 = "4bf92f3577b34da6a3ce929d0e0e4736";
+const TP_SPAN_ID_2 = "00f067aa0ba902b7";
+const TP_HEADER_2 = `00-${TP_TRACE_ID_2}-${TP_SPAN_ID_2}-01`;
+
+let traceProvider: NodeTracerProvider | undefined;
+
+afterEach(async () => {
+	trace.disable();
+	context.disable();
+	await traceProvider?.shutdown();
+	traceProvider = undefined;
+});
+
+function traceHookCtx(
+	span: Span,
+	kind: TelemetrySpanKind,
+	agent: AgentIdentity | undefined,
+): TelemetryHookContext {
+	return { span, kind, agent, model: undefined, conversationId: undefined };
+}
+
+// A CompassAgent wired to the REAL bridge + a recording, span-aware session.
+// `prompt()` starts an `invoke_agent` span in the active context (so
+// `runWithParent` parents it on the remote header) and fires `onSpanStart`;
+// `endTurn()` ends that span (exporting it) and fires `onSpanEnd`. The held-open
+// control source keeps run() parked, exactly like startDeliverAgent.
+function startTracedAgent() {
+	const exporter = new InMemorySpanExporter();
+	traceProvider = new NodeTracerProvider({
+		spanProcessors: [new SimpleSpanProcessor(exporter)],
+	});
+	traceProvider.register();
+	const bridge = createTraceBridge();
+
+	const frames: OutboundFrame[] = [];
+	const unmapped: UnmappedEvent[] = [];
+	const prompts: string[] = [];
+	const steers: AgentMessage[] = [];
+	const state = { tools: [] as AgentTool[], isStreaming: false };
+	let currentSpan: Span | undefined;
+
+	const startInvokeAgentSpan = (): void => {
+		// Faithful to the loop: the span starts SYNCHRONOUSLY inside prompt(),
+		// reading context.active() as its parent (agent-loop.ts:691-692), and the
+		// capture hook fires for it (agent === undefined ⇒ main turn).
+		const span = trace.getTracer("test").startSpan("invoke_agent");
+		currentSpan = span;
+		bridge.onSpanStart(traceHookCtx(span, "invoke_agent", undefined));
+	};
+	const agent = {
+		prompt(input: string): Promise<void> {
+			if (state.isStreaming) return Promise.reject(new AgentBusyError());
+			startInvokeAgentSpan();
+			state.isStreaming = true;
+			prompts.push(input);
+			return Promise.resolve();
+		},
+		steer(m: AgentMessage): void {
+			steers.push(m);
+		},
+		appendMessage(): void {},
+		setSystemPrompt(): void {},
+		setTools(): void {},
+		state,
+	};
+	// A feedable control source (mirrors startControlAgent): parks awaiting
+	// `notify` when the queue drains, so with no feed it behaves exactly like the
+	// held-open source the other traced tests rely on; `feed` enqueues a control
+	// op (e.g. a control prompt) and drains the pull+apply microtasks.
+	const queue: AgentControl[] = [];
+	let notify: (() => void) | undefined;
+	let closed = false;
+	const control: ControlSource = {
+		async *[Symbol.asyncIterator]() {
+			while (true) {
+				while (queue.length > 0) {
+					const next = queue.shift();
+					if (next !== undefined) yield next;
+				}
+				if (closed) return;
+				await new Promise<void>((resolve) => {
+					notify = resolve;
+				});
+			}
+		},
+	};
+	let listener: AgentSessionEventListener | undefined;
+	const session = {
+		agent,
+		get isStreaming(): boolean {
+			return state.isStreaming;
+		},
+		waitForIdle(): Promise<void> {
+			return Promise.resolve();
+		},
+		subscribe(fn: AgentSessionEventListener): () => void {
+			listener = fn;
+			return () => {};
+		},
+	};
+	const compass = new CompassAgent({
+		session: session as unknown as AgentSession,
+		sink: {
+			emit: (f) => {
+				frames.push(f);
+			},
+			emitDurable: (f) => {
+				frames.push(f);
+				return Promise.resolve();
+			},
+		},
+		control,
+		onUnmapped: (u) => unmapped.push(u),
+		tracer: bridge,
+	});
+	const done = compass.run();
+	const drive = (event: AgentSessionEvent): void => {
+		if (event.type === "agent_end") state.isStreaming = false;
+		listener?.(event);
+	};
+	// End the live turn span (exports it) and fire the matching onSpanEnd, so a
+	// test can read the recorded links/attributes/parent off the exporter.
+	const endTurn = (): void => {
+		if (currentSpan === undefined) return;
+		bridge.onSpanEnd(traceHookCtx(currentSpan, "invoke_agent", undefined));
+		currentSpan.end();
+		currentSpan = undefined;
+	};
+	// Enqueue a control op and drain the pull+apply microtasks (mirrors
+	// startControlAgent.feed).
+	const feed = async (c: AgentControl): Promise<void> => {
+		queue.push(c);
+		notify?.();
+		notify = undefined;
+		await tick();
+		await tick();
+	};
+	const close = async (): Promise<void> => {
+		closed = true;
+		notify?.();
+		await done;
+	};
+	return {
+		agent: compass,
+		prompts,
+		steers,
+		frames,
+		unmapped,
+		exporter,
+		drive,
+		endTurn,
+		feed,
+		close,
+	};
+}
+
+// The single exported invoke_agent span (there is exactly one per traced test).
+function exportedTurnSpan(exporter: InMemorySpanExporter) {
+	const spans = exporter
+		.getFinishedSpans()
+		.filter((s) => s.name === "invoke_agent");
+	expect(spans).toHaveLength(1);
+	return spans[0];
+}
+
+describe("CompassAgent — T2 trace continuity (message → turn topology)", () => {
+	test("idle steer with a valid traceparent PARENTS the turn span on the remote context (modeled runWithParent-wrap contract)", async () => {
+		const h = startTracedAgent();
+		h.agent.steer(deliverMsg("m1", "hi"), "", TP_HEADER);
+		await tick();
+		h.endTurn();
+		const span = exportedTurnSpan(h.exporter);
+		// PARENT, not link: the remote context is the turn span's true parent.
+		// The canary — if `runWithParent` did not wrap the SYNCHRONOUS prompt (an
+		// SDK await inserted before startInvokeAgentSpan, or the wrap dropped), the
+		// span comes out rootless and both assertions redden.
+		expect(span?.parentSpanContext?.traceId).toBe(TP_TRACE_ID);
+		expect(span?.parentSpanContext?.spanId).toBe(TP_SPAN_ID);
+		// No link (parentage, not a link) and the id is stamped as the query key.
+		expect(span?.links).toHaveLength(0);
+		expect(span?.attributes["compass.message.ids"]).toBe("m1");
+		await h.close();
+	});
+
+	test("N=1 deliver flush PARENTS the turn span on that message's traceparent", async () => {
+		const h = startTracedAgent();
+		// Idle deliver of a single message flushes at once with N=1 → parent.
+		h.agent.deliver(deliverMsg("m1", "one"), "", TP_HEADER);
+		await tick();
+		h.endTurn();
+		const span = exportedTurnSpan(h.exporter);
+		expect(span?.parentSpanContext?.traceId).toBe(TP_TRACE_ID);
+		expect(span?.parentSpanContext?.spanId).toBe(TP_SPAN_ID);
+		expect(span?.links).toHaveLength(0);
+		expect(span?.attributes["compass.message.ids"]).toBe("m1");
+		await h.close();
+	});
+
+	test("N=2 deliver flush LINKS both messages (no parent) with per-message ids", async () => {
+		const h = startTracedAgent();
+		// A live turn: both delivers queue and coalesce to the agent_end flush.
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("m1", "one"), "", TP_HEADER);
+		h.agent.deliver(deliverMsg("m2", "two"), "", TP_HEADER_2);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		h.endTurn();
+		const span = exportedTurnSpan(h.exporter);
+		// LINKS, not a parent: a multi-message batch has no single causal parent.
+		// A parent-vs-link regression (wrapping the N>1 prompt in runWithParent)
+		// would give a parentSpanContext and 0 links — this reddens.
+		expect(span?.parentSpanContext).toBeUndefined();
+		expect(span?.links).toHaveLength(2);
+		const linkByMsg = new Map(
+			(span?.links ?? []).map((l) => [
+				l.attributes?.["compass.message.id"],
+				l.context,
+			]),
+		);
+		expect(linkByMsg.get("m1")?.traceId).toBe(TP_TRACE_ID);
+		expect(linkByMsg.get("m1")?.spanId).toBe(TP_SPAN_ID);
+		expect(linkByMsg.get("m2")?.traceId).toBe(TP_TRACE_ID_2);
+		expect(linkByMsg.get("m2")?.spanId).toBe(TP_SPAN_ID_2);
+		// The comma-joined ids are stamped as the topology-independent query key.
+		expect(span?.attributes["compass.message.ids"]).toBe("m1,m2");
+		await h.close();
+	});
+
+	test("mid-turn steer LINKS onto the LIVE turn span, not a new one", async () => {
+		const h = startTracedAgent();
+		// Start a turn with an idle steer (no traceparent → root turn span).
+		h.agent.steer(deliverMsg("m0", "start"), "", "");
+		await tick();
+		// Now a mid-turn steer (session streaming): links onto the SAME live span.
+		h.agent.steer(deliverMsg("m1", "interrupt"), "", TP_HEADER);
+		await tick();
+		h.endTurn();
+		const span = exportedTurnSpan(h.exporter);
+		// The mid-turn steer injected into the running loop (a recorded steer),
+		// NOT a new prompt — so exactly one turn span exists and it carries the
+		// link. If mid-turn were mis-routed to a new-turn PARENT this reddens
+		// (two spans, or a parent instead of a link).
+		expect(h.steers).toHaveLength(1);
+		expect(span?.links).toHaveLength(1);
+		expect(span?.links[0]?.attributes?.["compass.message.id"]).toBe("m1");
+		expect(span?.links[0]?.context.traceId).toBe(TP_TRACE_ID);
+		expect(span?.links[0]?.context.spanId).toBe(TP_SPAN_ID);
+		// The query key ACCUMULATES across the turn: m0 STARTED the turn and m1 fed
+		// it mid-turn, so both must be answerable by attribute regardless of
+		// topology (m0 is the parent, m1 is a link). A delta-only stamp
+		// (`stampActiveTurn(msg.id)`) would overwrite to "m1" and drop m0 — this
+		// assertion reddens on that regression (design.md:199-200).
+		expect(span?.attributes["compass.message.ids"]).toBe("m0,m1");
+		await h.close();
+	});
+
+	test("empty traceparent yields no parent and no link, and does not throw", async () => {
+		const h = startTracedAgent();
+		expect(() => h.agent.steer(deliverMsg("m1", "hi"), "", "")).not.toThrow();
+		await tick();
+		h.endTurn();
+		const span = exportedTurnSpan(h.exporter);
+		// Empty header ⇒ parse fails ⇒ the turn runs as a ROOT (no parent), no link.
+		expect(span?.parentSpanContext).toBeUndefined();
+		expect(span?.links).toHaveLength(0);
+		await h.close();
+	});
+
+	test("a control prompt starts a fresh turn and resets the id accumulator (no prior-turn leak)", async () => {
+		const h = startTracedAgent();
+		// Turn 1: an idle steer seeds the accumulator with m0 and leaves it that
+		// way — the empty agent_end flush returns early WITHOUT resetting it, so m0
+		// survives into the next turn-start unless that site clears it.
+		h.agent.steer(deliverMsg("m0", "first"), "", TP_HEADER);
+		await tick();
+		// End turn 1 (clears isStreaming/turnActive so the control prompt can
+		// start). Its span is never ended here, so only turn 2's span is exported.
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		// Turn 2: a CONTROL prompt (the fourth prompt-driven turn-start). It must
+		// reset the accumulator like every other turn-start site.
+		await h.feed({ kind: "replayComplete" });
+		await h.feed({ kind: "prompt", input: "go" });
+		// A mid-turn steer feeds m1 onto the live control-prompt turn.
+		h.agent.steer(deliverMsg("m1", "interrupt"), "", TP_HEADER);
+		await tick();
+		h.endTurn();
+		const span = exportedTurnSpan(h.exporter);
+		// Only m1 fed THIS turn, so the topology-independent query key is "m1".
+		// If the control-prompt case omitted the accumulator reset, m0 from turn 1
+		// would leak → "m1" becomes "m0,m1" and this reddens (design.md:199-200).
+		expect(span?.attributes["compass.message.ids"]).toBe("m1");
+		await h.close();
+	});
+});
+
+describe("CompassAgent — T2 tracer absent is bit-identical to today", () => {
+	// Drive the SAME deliver script (mid-turn coalesce of two, then an idle
+	// single) against a no-tracer agent and a real-bridge agent, and assert the
+	// observable frame emission — kind sequence, acks, injections, prompts — is
+	// IDENTICAL. The tracer only touches spans, never frames, so any frame delta
+	// would be a regression (an errant emit, a reordered/dropped ack or
+	// injection). The bridge run needs a provider registered for context.with.
+	async function runDeliverScript(tracer?: TraceBridge) {
+		const h = startDeliverAgent([], tracer);
+		h.drive({ type: "agent_start" } as AgentSessionEvent);
+		h.agent.deliver(deliverMsg("m1", "one"), "h1", TP_HEADER);
+		h.agent.deliver(deliverMsg("m2", "two"), "h2", TP_HEADER_2);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		h.agent.deliver(deliverMsg("m3", "three"), "h3", TP_HEADER);
+		h.drive({ type: "agent_end" } as AgentSessionEvent);
+		await tick();
+		await h.close();
+		return {
+			kinds: h.frames.map((f) => f.kind),
+			acks: ackIds(h.frames),
+			injections: injections(h.frames),
+			prompts: [...h.session.agent.prompts],
+			unmapped: h.unmapped.map((u) => u.eventType),
+		};
+	}
+
+	test("emitted frames, acks, injections, and prompts match a no-tracer construction", async () => {
+		const withoutTracer = await runDeliverScript(undefined);
+		traceProvider = new NodeTracerProvider();
+		traceProvider.register();
+		const withTracer = await runDeliverScript(createTraceBridge());
+		expect(withTracer.kinds).toEqual(withoutTracer.kinds);
+		expect(withTracer.acks).toEqual(withoutTracer.acks);
+		expect(withTracer.injections).toEqual(withoutTracer.injections);
+		expect(withTracer.prompts).toEqual(withoutTracer.prompts);
+		expect(withTracer.unmapped).toEqual(withoutTracer.unmapped);
+		// Non-vacuity: the script really produced acks + injections to compare.
+		expect(withoutTracer.acks).toEqual(["m1", "m2", "m3"]);
 	});
 });

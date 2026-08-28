@@ -73,6 +73,7 @@ import {
 	type TranscriptTeeBackend,
 	type TranscriptTeeOptions,
 } from "./session-tee";
+import { createTraceBridge, type TraceBridge } from "./trace-bridge";
 import { createSocketControlSource } from "./transport/control-source";
 import { createSocketFrameSink } from "./transport/frame-sink";
 import {
@@ -845,6 +846,19 @@ export async function main(
 		await telemetryHooks.init();
 	}
 
+	// Trace-continuity bridge (design
+	// docs/designs/platform/compass-agent-message-trace-continuity/design.md §T2):
+	// built ONLY on the same enabled path that registered the loop provider +
+	// context manager above — the parentage the bridge installs presupposes that
+	// registration. When telemetry is off, `undefined` flows to both the session
+	// telemetry option and the agent's `tracer` dep, so no hook is installed and
+	// every agent-side trace call no-ops (bit-identical off). The full
+	// `TraceBridge` (with the `Span`-typed hook members) lives here in the cli.ts
+	// composition; CompassAgent receives only its narrow `TurnTracer` facet.
+	const traceBridge: TraceBridge | undefined = telemetryHooks.isEnabled()
+		? createTraceBridge()
+		: undefined;
+
 	const { session } = await (deps.createSession ?? createAgentSession)({
 		cwd,
 		modelPattern: resolveModelSelector(env),
@@ -928,11 +942,21 @@ export async function main(
 				}
 			: {}),
 		// Loop telemetry (design docs/designs/platform/compass-agent-loop-otel/
-		// design.md T1): `{}` is the complete activation — the empty config enables
-		// the loop's GenAI spans (types.ts). Keyed off the AUTHORITATIVE
-		// post-registration check, so the key is OMITTED entirely when export is
-		// off and the loop keeps its literal-undefined zero-lookup path.
-		...(telemetryHooks.isEnabled() ? { telemetry: {} } : {}),
+		// design.md T1) + trace continuity (message-trace-continuity §T2): the
+		// enabled path installs the bridge's capture hooks INTO the telemetry
+		// config, so the bridge sees each `invoke_agent` span start/end and can
+		// parent/link injected messages onto the turn. Keyed off the same
+		// authoritative post-registration check (`traceBridge` is defined iff
+		// enabled), so the key is OMITTED entirely when export is off and the loop
+		// keeps its literal-undefined zero-lookup path.
+		...(traceBridge !== undefined
+			? {
+					telemetry: {
+						onSpanStart: traceBridge.onSpanStart,
+						onSpanEnd: traceBridge.onSpanEnd,
+					},
+				}
+			: {}),
 	});
 
 	// Post-construction assignment, not a `createAgentSession` option: the SDK
@@ -986,7 +1010,9 @@ export async function main(
 	// broke it a skipped `close()` would leak the session, which is the exact
 	// defect `close()` was added to fix.
 	try {
-		agent = new CompassAgent({ session, sink, control });
+		// `traceBridge` (undefined when telemetry is off) flows in as the narrow
+		// `TurnTracer` facet — off ⇒ every agent-side trace call no-ops.
+		agent = new CompassAgent({ session, sink, control, tracer: traceBridge });
 		await agent.run();
 	} finally {
 		// The load-bearing drain→close chain is UNTOUCHED — storage.drain →
