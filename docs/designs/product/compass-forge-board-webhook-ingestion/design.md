@@ -702,7 +702,7 @@ agent, NOT this record):
   post-soak-migrated). The other three tables are unchanged.
 - **DL-264 (`DECISIONS.md:99`) — UNCHANGED, cited as precedent.** Its
   webhook-only + bounded-reconcile model is extended to the board lane.
-- **NEW DL — landed as DL-279 (`DECISIONS.md:103`); its ledger row's
+- **NEW DL — landed as DL-281 (`DECISIONS.md:103`); its ledger row's
   "`forge_list_cursors` dropped post-soak" clause needs the OQ-3 wording fix
   (dropped by editing `0001_init.sql`, pre-live) — coordinator-owned.
   Proposed statement:** "Board ingestion is WEBHOOK-DRIVEN: the
