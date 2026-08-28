@@ -14,8 +14,10 @@ package forge
 
 import (
 	"math"
+	"time"
 
 	compassv1 "github.com/RigelBuild/compass/go/gen/compass/v1"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // narrowNumber narrows a forge's uint64 issue/PR number to the canonical
@@ -38,6 +40,17 @@ func nilIfEmpty[T any](s []T) []T {
 	return s
 }
 
+// updatedAtProto maps a forge last-updated time to the canonical proto
+// timestamp, returning nil for the zero time so a not-yet-populated
+// UpdatedAt leaves the proto field unset (the store-side recency guard's
+// NULL arm then keeps the write additive).
+func updatedAtProto(t time.Time) *timestamppb.Timestamp {
+	if t.IsZero() {
+		return nil
+	}
+	return timestamppb.New(t)
+}
+
 // TranslateIssue maps a raw forge Issue to the forge-subset canonical Issue,
 // filling only forge-derived fields plus the passed-in agent attribution
 // (nil ⇒ non-Compass author, left unset).
@@ -51,6 +64,7 @@ func TranslateIssue(in Issue, attr *compassv1.AgentAttribution) *compassv1.Issue
 		ForgeAccount: in.ForgeAccount,
 		Labels:       nilIfEmpty(in.Labels),
 		Agent:        attr,
+		UpdatedAt:    updatedAtProto(in.UpdatedAt),
 	}
 }
 

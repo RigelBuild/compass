@@ -10,6 +10,8 @@ syntax = "proto3";
 
 package compass.v1;
 
+import "google/protobuf/timestamp.proto";
+
 // The Compass server service.
 service CompassService {
   // Liveness probe plus the server's build + contract version. The first
@@ -842,6 +844,13 @@ message Issue {
   string forge_account = 10;    // the native forge account that authored the
                                 // artifact (e.g. the GitHub login); always set
   repeated string labels = 11;
+
+  // The forge's last-updated timestamp for the issue (translated from the LIST
+  // row's updated_at). The OQ-6(a) recency guard (RIG-2883 T4a) reads it to
+  // keep the board sink order-independent: a stale re-sink never overwrites a
+  // fresher row. Unset for a not-yet-threaded writer, in which case the guard
+  // is additive (the store-side NULL arms still let the write apply).
+  google.protobuf.Timestamp updated_at = 19;
 
   // ── Compass machinery (Compass-owned; none of this is on the forge) ──
   IssueState state = 12;        // the canonical lifecycle, server-authoritative

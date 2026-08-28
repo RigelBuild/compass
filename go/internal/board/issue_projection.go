@@ -221,6 +221,13 @@ func protoToForgeFields(p *compassv1.Issue) store.IssueForgeFields {
 	if len(p.GetLabels()) > 0 {
 		out.Labels = append([]string(nil), p.GetLabels()...)
 	}
+	// The OQ-6(a) recency guard (RIG-2883 T4a): carry the forge's last-updated
+	// timestamp so the store's conditional upsert can skip a stale re-sink. An
+	// unset proto field leaves ForgeUpdatedAt zero, which stores NULL and keeps
+	// the write additive.
+	if ts := p.GetUpdatedAt(); ts != nil {
+		out.ForgeUpdatedAt = ts.AsTime()
+	}
 	return out
 }
 

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // IssueState mirrors compass.v1 IssueState (UNSPECIFIED=0 .. ARCHIVED=8). A
@@ -87,6 +88,11 @@ type IssueForgeFields struct {
 	ForgeAccount  string
 	Labels        []string
 	AgentHandle   string
+	// ForgeUpdatedAt is the forge's last-updated timestamp for the artifact,
+	// the OQ-6(a) recency-guard input (RIG-2883 T4a). The zero value means
+	// "unset": it stores SQL NULL and the ON CONFLICT guard's NULL arm keeps
+	// the write additive, so a writer that does not populate it still upserts.
+	ForgeUpdatedAt time.Time
 }
 
 // UpsertIssueForgeFields inserts-or-updates the issue at in's forge coordinate,
@@ -98,8 +104,17 @@ type IssueForgeFields struct {
 // The ON CONFLICT DO UPDATE sets ONLY the forge columns — never state or any
 // machinery column. This is the load-bearing property: a re-poll must not
 // clobber a human-set lifecycle state (part 5's SetIssueState) or any
-// server-owned field a later producer wrote. Empty Repo/ForgeHost →
-// ErrInvalidArgument.
+// server-owned field a later producer wrote.
+//
+// The OQ-6(a) recency guard (RIG-2883 T4a) makes the UPDATE conditional: when
+// both the stored row and the incoming write carry a forge_updated_at, a write
+// whose timestamp is OLDER than the stored one is skipped, so an out-of-order
+// (stale) re-sink never overwrites a fresher row. The guard is ADDITIVE — a
+// write that leaves forge_updated_at unset (SQL NULL on either side) always
+// applies, so an unthreaded writer is never regressed. A guard-SKIPPED write is
+// NOT an error: the coordinate already exists, so the id is still returned (the
+// CTE's fallback SELECT), keeping the returned id stable across polls. Empty
+// Repo/ForgeHost → ErrInvalidArgument.
 func (s *Store) UpsertIssueForgeFields(ctx context.Context, in IssueForgeFields) (string, error) {
 	if in.Repo == "" {
 		return "", fmt.Errorf("%w: repo is required", ErrInvalidArgument)
@@ -113,20 +128,40 @@ func (s *Store) UpsertIssueForgeFields(ctx context.Context, in IssueForgeFields)
 	if labels == nil {
 		labels = []string{}
 	}
+	// A zero time stores SQL NULL so the recency guard's NULL arm keeps the
+	// write additive; a set time drives the >= comparison in ON CONFLICT.
+	var forgeUpdatedAt *time.Time
+	if !in.ForgeUpdatedAt.IsZero() {
+		forgeUpdatedAt = &in.ForgeUpdatedAt
+	}
 	var id string
 	if err := s.pool.QueryRow(ctx,
-		`INSERT INTO issues
-		     (id, forge_provider, forge_host, repo, number,
-		      title, body, forge_state, url, forge_account, labels, agent_handle)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		 ON CONFLICT (forge_provider, forge_host, repo, number) DO UPDATE
-		    SET title = EXCLUDED.title, body = EXCLUDED.body,
-		        forge_state = EXCLUDED.forge_state, url = EXCLUDED.url,
-		        forge_account = EXCLUDED.forge_account, labels = EXCLUDED.labels,
-		        agent_handle = EXCLUDED.agent_handle
-		 RETURNING id`,
+		`WITH up AS (
+		     INSERT INTO issues
+		         (id, forge_provider, forge_host, repo, number,
+		          title, body, forge_state, url, forge_account, labels, agent_handle,
+		          forge_updated_at)
+		     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		     ON CONFLICT (forge_provider, forge_host, repo, number) DO UPDATE
+		        SET title = EXCLUDED.title, body = EXCLUDED.body,
+		            forge_state = EXCLUDED.forge_state, url = EXCLUDED.url,
+		            forge_account = EXCLUDED.forge_account, labels = EXCLUDED.labels,
+		            agent_handle = EXCLUDED.agent_handle,
+		            forge_updated_at = EXCLUDED.forge_updated_at
+		      WHERE issues.forge_updated_at IS NULL
+		         OR EXCLUDED.forge_updated_at IS NULL
+		         OR EXCLUDED.forge_updated_at >= issues.forge_updated_at
+		     RETURNING id
+		 )
+		 SELECT id FROM up
+		 UNION ALL
+		 SELECT id FROM issues
+		  WHERE NOT EXISTS (SELECT 1 FROM up)
+		    AND forge_provider = $2 AND forge_host = $3 AND repo = $4 AND number = $5
+		 LIMIT 1`,
 		newID(), int32(in.ForgeProvider), in.ForgeHost, in.Repo, int64(in.Number),
 		in.Title, in.Body, in.ForgeState, in.URL, in.ForgeAccount, labels, in.AgentHandle,
+		forgeUpdatedAt,
 	).Scan(&id); err != nil {
 		return "", fmt.Errorf("store: upsert issue forge fields: %w", err)
 	}
