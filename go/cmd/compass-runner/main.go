@@ -22,6 +22,7 @@ import (
 	"connectrpc.com/connect"
 
 	"github.com/RigelBuild/compass/go/internal/agentuid"
+	"github.com/RigelBuild/compass/go/internal/otel"
 	"github.com/RigelBuild/compass/go/internal/runner"
 	"github.com/RigelBuild/compass/go/internal/runtime"
 )
@@ -37,7 +38,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() error { //nolint:funlen // flag registration + operator-input validation is the honest bulk; the env-only OTel setup call tips it 2 lines over — extracting the flags would scatter ~15 flag vars for no readability gain
 	runnerID := flag.String("runner-id", "",
 		"This Runner's stable id, cross-checked against the token subject. Defaults to $COMPASS_RUNNER_ID.")
 	serverAddr := flag.String("server", "",
@@ -158,15 +159,49 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// OTel emission (env-only, bound to the shutdown ctx); see setupOtel.
+	otelEndpoint, otelShutdown, err := setupOtel(ctx)
+	if err != nil {
+		return err
+	}
+	defer otelShutdown()
+
 	return runner.Run(ctx, runner.RunnerConfig{
-		RunnerID:   id,
-		ServerAddr: addr,
-		Token:      token,
-		Engine:     engine,
-		RuntimeDir: *runtimeDir,
-		AgentModel: orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
-		HTTPClient: httpClient,
+		RunnerID:     id,
+		ServerAddr:   addr,
+		Token:        token,
+		Engine:       engine,
+		RuntimeDir:   *runtimeDir,
+		AgentModel:   orEnv(*agentModel, "COMPASS_AGENT_MODEL"),
+		HTTPClient:   httpClient,
+		OtelEndpoint: otelEndpoint,
 	}, specs, log)
+}
+
+// setupOtel resolves the env-only OTLP endpoint and installs the tracer and
+// meter providers, returning the endpoint (for RunnerConfig) and one shutdown
+// that flushes both. When OTEL_EXPORTER_OTLP_ENDPOINT is empty the providers are
+// no-ops and the shutdown is a no-op, so tracing is off with zero overhead.
+func setupOtel(ctx context.Context) (endpoint string, shutdown func(), err error) {
+	endpoint = os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	cfg := otel.Config{
+		ServiceName:    "compass-runner",
+		ServiceVersion: version,
+		Endpoint:       endpoint,
+	}
+	tracerShutdown, err := otel.SetupTracerProvider(ctx, cfg)
+	if err != nil {
+		return "", nil, fmt.Errorf("otel: tracer provider: %w", err)
+	}
+	meterShutdown, err := otel.SetupMeterProvider(ctx, cfg)
+	if err != nil {
+		_ = tracerShutdown(ctx) // roll back the tracer provider we just installed; nothing actionable on its error here
+		return "", nil, fmt.Errorf("otel: meter provider: %w", err)
+	}
+	return endpoint, func() {
+		_ = tracerShutdown(ctx) // best-effort flush on shutdown; export error not actionable at exit
+		_ = meterShutdown(ctx)  // best-effort flush on shutdown; export error not actionable at exit
+	}, nil
 }
 
 // backendFlags holds the runtime-backend selection flags, registered on the
