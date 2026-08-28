@@ -537,11 +537,29 @@ interface FakeSession {
 	// test awaits before pushing session events, so there is no race and no spin.
 	readonly subscribed: Promise<AgentSessionEventListener>;
 	agent: { getApiKey?: (model: Model) => Promise<string | undefined> };
+	// The boot-model-health belt reads these two: a recorded models.yml config
+	// error (swallowed by createAgentSession) and the resolved model. `model` is
+	// only ever checked for undefined, so `unknown` is honest.
+	modelRegistry: { getError(): { id: string; message: string } | undefined };
+	model: unknown;
 }
 
-function fakeSession(opts: { promptError?: Error } = {}): FakeSession {
+function fakeSession(
+	opts: {
+		promptError?: Error;
+		modelError?: { id: string; message: string };
+		model?: unknown;
+	} = {},
+): FakeSession {
 	const gate = Promise.withResolvers<AgentSessionEventListener>();
-	const rec: FakeSession = { subscribed: gate.promise, agent: {} };
+	const rec: FakeSession = {
+		subscribed: gate.promise,
+		agent: {},
+		// Default: no config error, and a truthy resolved model — the happy path
+		// every existing test represents, which never trips the fail-closed belt.
+		modelRegistry: { getError: () => opts.modelError },
+		model: "model" in opts ? opts.model : { id: "resolved" },
+	};
 	Object.assign(rec.agent, {
 		// `promptError` makes an SDK op reject, which is how a real turn failure
 		// crashes the run loop (agent.ts:163 awaits it inside the try).
@@ -954,6 +972,142 @@ describe("main", () => {
 		expect(seen).toEqual([
 			{ cwd: "/work/repo", modelPattern: "anthropic/claude-opus-4-5" },
 		]);
+	});
+
+	// BOOT-MODEL-HEALTH BELT.
+	//
+	// createAgentSession swallows a models.yml validation error and falls back to
+	// built-in resolution; a pinned selector that no longer resolves then boots
+	// the session model-less, and the first prompt throws "No model configured"
+	// far from the cause. The belt surfaces the error loudly at boot and refuses a
+	// pinned-but-unresolvable boot.
+	test("logs the swallowed models.yml config error loudly at boot", async () => {
+		const errs: string[] = [];
+		const original = console.error;
+		console.error = (...args: unknown[]) => {
+			errs.push(args.map(String).join(" "));
+		};
+		try {
+			await main(
+				{ HOME: scratch() },
+				deps(
+					fakeSession({
+						modelError: { id: "litellm", message: "provider foo rejected" },
+					}),
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				),
+			);
+		} finally {
+			console.error = original;
+		}
+		// A resolved model + a recorded error: main completes (no throw) AND the
+		// loud line names both the offending config id and the reason.
+		const line = errs.find((e) => e.includes("models.yml config rejected"));
+		if (line === undefined) throw new Error("no config-rejected line logged");
+		expect(line).toContain("litellm");
+		expect(line).toContain("provider foo rejected");
+	});
+
+	test("does NOT log a config-rejected line when the registry has no error", async () => {
+		// Non-vacuity for the log test: the default fake reports getError() ===
+		// undefined, so the loud line must NOT fire on a clean boot.
+		const errs: string[] = [];
+		const original = console.error;
+		console.error = (...args: unknown[]) => {
+			errs.push(args.map(String).join(" "));
+		};
+		try {
+			await main(
+				{ HOME: scratch() },
+				deps(
+					fakeSession(),
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				),
+			);
+		} finally {
+			console.error = original;
+		}
+		expect(errs.some((e) => e.includes("models.yml config rejected"))).toBe(
+			false,
+		);
+	});
+
+	test("refuses to boot when a pinned model did not resolve, naming the pattern", async () => {
+		const original = console.error;
+		console.error = () => {};
+		try {
+			await expect(
+				main(
+					{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+					deps(
+						fakeSession({
+							model: undefined,
+							modelError: { id: "litellm", message: "provider foo rejected" },
+						}),
+						fakeCarrier(emptyLog(), { control: emptyControlStream }),
+					),
+				),
+			).rejects.toThrow(/pinned model "litellm\/claude-opus"/);
+		} finally {
+			console.error = original;
+		}
+	});
+
+	test("boots normally when a pinned model resolved", async () => {
+		// Pinned + resolved (default fake model) is the ordinary success path — no
+		// throw, even though a selector was pinned.
+		await expect(
+			main(
+				{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+				deps(
+					fakeSession(),
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				),
+			),
+		).resolves.toBeUndefined();
+	});
+
+	test("does NOT refuse a model-less boot when NO model was pinned", async () => {
+		// The load-bearing discriminator: unpinned + model-less is the legitimate
+		// SDK-default path (the operator pinned nothing), so the belt must NOT
+		// refuse. Dropping the `modelPattern !== undefined` guard reddens this.
+		await expect(
+			main(
+				{ HOME: scratch() },
+				deps(
+					fakeSession({ model: undefined }),
+					fakeCarrier(emptyLog(), { control: emptyControlStream }),
+				),
+			),
+		).resolves.toBeUndefined();
+	});
+
+	test("releases the carrier when it refuses a pinned-unresolvable boot", async () => {
+		// The early throw bypasses the drain→close→disconnect finally, so the belt
+		// must tear down the resource holders itself. Pin that the socket closed;
+		// dropping the `transport.close()` on the fail-closed path reddens this.
+		let closed = false;
+		const original = console.error;
+		console.error = () => {};
+		try {
+			await expect(
+				main(
+					{ HOME: scratch(), COMPASS_MODEL: "litellm/claude-opus" },
+					deps(
+						fakeSession({ model: undefined }),
+						fakeCarrier(emptyLog(), {
+							control: emptyControlStream,
+							onClose: () => {
+								closed = true;
+							},
+						}),
+					),
+				),
+			).rejects.toThrow(/pinned model/);
+		} finally {
+			console.error = original;
+		}
+		expect(closed).toBe(true);
 	});
 
 	test("treats an empty or whitespace-only COMPASS_WORKDIR as unset, not as a cwd", async () => {

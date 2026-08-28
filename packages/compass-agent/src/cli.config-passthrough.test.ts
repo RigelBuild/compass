@@ -113,6 +113,11 @@ function fakeSession(): AgentSession {
 	};
 	const session = {
 		agent,
+		// The boot-model-health belt reads these: a clean registry (no swallowed
+		// config error) and a resolved model, so the belt is a no-op for every
+		// config-passthrough fixture (none pin an unresolvable model).
+		modelRegistry: { getError: () => undefined },
+		model: { id: "resolved" },
 		subscribe(fn: () => void): () => void {
 			gate.resolve(fn);
 			return () => {};
