@@ -226,10 +226,28 @@ func (s *AgentStream) endDrains() {
 }
 
 // isDeliberateKill reports whether err is the exit of a process we SIGKILLed on
-// purpose — an *exec.ExitError whose wait status is "terminated by SIGKILL".
-// That is exactly the outcome Terminate produces on the deliberate-teardown
-// path, so Stop treats it as success while still surfacing any other failure.
+// purpose, so Stop treats it as success while still surfacing any other
+// failure. Two backends produce that outcome in two shapes:
+//
+//   - The microVM GuestExec ChildHandle waitFunc returns a portable
+//     *runtime.ExitStatusError; a remote guest child's exit cannot be reported
+//     as an *exec.ExitError (it embeds an unforgeable *os.ProcessState), so the
+//     portable type is checked FIRST — a deliberate signal counts as a kill.
+//   - The podman backend's Wait returns an *exec.ExitError whose wait status is
+//     "terminated by SIGKILL"; that branch is unchanged, so the podman
+//     byte-path is byte-identical (OQ-G/U3b).
 func isDeliberateKill(err error) bool {
+	var exitStatus *runtime.ExitStatusError
+	if errors.As(err, &exitStatus) {
+		// The two branches are deliberately asymmetric (OQ-G): the portable
+		// branch counts ANY signalled exit as a kill, while the podman branch
+		// below pins SIGKILL. That is intentional — the guest reports a
+		// deliberate teardown as SIGKILL (Kill) or SIGTERM (Stop), and OQ-G
+		// blessed Signal!=0 rather than enumerating signals. Do NOT "align" the
+		// two by narrowing this to SIGKILL: the microVM path has no os.ProcessState
+		// to inspect, and Stop's SIGTERM teardown must still classify as a kill.
+		return exitStatus.Signal != 0
+	}
 	var exitErr *exec.ExitError
 	if !errors.As(err, &exitErr) {
 		return false
